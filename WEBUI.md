@@ -87,35 +87,41 @@ and starts no second process on the laptop.
 
 ## Start and connect
 
-Replace `TARGET` with the SSH host alias or address.
+Replace `TARGET` with the SSH host alias or address. `qwen-webui-control.sh`
+runs the session inside the `qwen-webui` tmux session on the `qwen-runtime`
+socket, so it outlives the SSH connection that started it.
 
-Start the priority-first 4K profile only when the desktop user is idle:
+Serve the network at the 24,576 token ceiling:
+
+```sh
+ssh TARGET 'QWEN_BIND_HOST=0.0.0.0 $HOME/qwen-laptop-setup/remote/qwen-webui-control.sh start'
+```
+
+Serve only the operator over loopback, for the SSH tunnel deployment:
 
 ```sh
 ssh TARGET '$HOME/qwen-laptop-setup/remote/qwen-webui-control.sh start'
 ```
 
-Run the retained paced control explicitly:
+`start` defaults to 24,576 tokens against a 4,608 MiB Vulkan preflight gate,
+`observe` latency mode, port 8080, and the one-slot `low-serialized` policy.
+`QWEN_CONTEXT_SIZE`, `QWEN_REQUIRED_VULKAN_MIB`, `QWEN_SERVER_PORT`, and
+`QWEN_LATENCY_MODE` override each in turn. Run the retained paced control by
+naming it: `qwen-webui-control.sh start paced-60`.
 
-```sh
-ssh TARGET '$HOME/qwen-laptop-setup/remote/qwen-webui-control.sh start paced-60'
-```
-
-Read the API key through SSH and enter it in the page:
+Read the API key and enter it in the page:
 
 ```sh
 ssh TARGET '$HOME/qwen-laptop-setup/remote/qwen-webui-control.sh key'
 ```
 
-Keep the tunnel command running on the client workstation:
+A LAN reader opens `http://hp14-dk1xxx.local:8080` directly. A loopback
+deployment instead keeps a tunnel running on the client workstation and opens
+`http://127.0.0.1:8080`:
 
 ```sh
 ./remote/connect-qwen-webui.sh TARGET 8080 8080
 ```
-
-Open `http://127.0.0.1:8080`. The initial profile uses the measured 4K
-allocation rung, a 4,096 MiB Vulkan preflight gate, a 512-token response budget,
-and the repository's one-slot `low-serialized` policy.
 
 Inspect status and retained log tails:
 
@@ -123,21 +129,28 @@ Inspect status and retained log tails:
 ssh TARGET '$HOME/qwen-laptop-setup/remote/qwen-webui-control.sh status'
 ```
 
-Stop the server and its dedicated tmux session:
+Stop the server and its tmux session:
 
 ```sh
 ssh TARGET '$HOME/qwen-laptop-setup/remote/qwen-webui-control.sh stop'
 ```
 
-The retained `paced-60` transport request completed with 3.79 prompt tok/s and
-0.677 decode tok/s. The equal-request priority comparison then measured 11.437
-prompt tok/s and 1.316 decode tok/s under `low-serialized`. The admitted
-16-node `low-async` experiment measured 14.103 prompt tok/s and 2.713 decode
-tok/s while its independent MEDIUM queue stayed below 11.185 ms. The 32-node
-async arm is rejected because one fence reached 20.017 ms. The serialized
-profile remains the default until the 16-node arm passes an external
-desktop-input oracle and a longer thermal soak. Full evidence and percentile
-calculations are in
+## Measured throughput
+
+The prefill depth ladder served 4,096, 8,192, 16,384, and 24,000 token prompts
+from one `low-serialized` load at 12.438, 10.767, 11.347, and 9.979 prompt
+tok/s, decoding at 1.195, 1.199, 1.120, and 1.052 tok/s. Prefill is not
+monotonic in depth, so those are four measured points rather than a curve.
+Every rung retrieved the value planted near the start of its prompt. Evidence
+is in `evidence/benchmarks/qwen35-4b-depth-ladder-24k/`.
+
+The earlier equal-request priority comparison measured 11.437 prompt tok/s and
+1.316 decode tok/s under `low-serialized`, against 14.103 and 2.713 for the
+admitted 16-node `low-async` experiment and 3.79 and 0.677 for the retained
+`paced-60` transport request. The 32-node async arm is rejected because one
+fence reached 20.017 ms. The serialized profile remains the default until the
+16-node arm passes an external desktop-input oracle and a longer thermal soak.
+Full evidence and percentile calculations are in
 `evidence/benchmarks/qwen35-4b-vulkan-priority-comparison.md`.
 
 ## UI selection

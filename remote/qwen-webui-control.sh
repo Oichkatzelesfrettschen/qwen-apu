@@ -16,6 +16,16 @@ tmux_session=qwen-webui
 # repair. Reusing its separate tmux server preserves offscreen Vulkan access
 # without inheriting the older qwen-admin server's supplementary group set.
 state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
+# The served depth is the operational ceiling, admitted by the measured 24K
+# allocation of 2,974 MiB against this gate. QWEN_BIND_HOST and
+# QWEN_LATENCY_MODE reach the session script, so `start` reproduces the
+# deployed listener instead of a loopback server the documentation would then
+# contradict.
+context_size=${QWEN_CONTEXT_SIZE:-24576}
+required_vulkan_mib=${QWEN_REQUIRED_VULKAN_MIB:-4608}
+bind_host=${QWEN_BIND_HOST:-127.0.0.1}
+latency_mode=${QWEN_LATENCY_MODE:-observe}
+server_port=${QWEN_SERVER_PORT:-8080}
 pid_file=$state_directory/server.pid
 status_file=$state_directory/session.status
 
@@ -34,9 +44,10 @@ case $action in
         fi
         mkdir -p "$state_directory"
         tmux -L "$tmux_socket" new-session -d -s "$tmux_session" \
-            "$script_directory/qwen-webui-session.sh \"\$HOME/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-server\" \"\$HOME/models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf\" \"$script_directory/../webui\" 4096 4096 8080 \"$state_directory\" \"$profile\""
-        printf 'started tmux_socket=%s tmux_session=%s profile=%s\n' \
-            "$tmux_socket" "$tmux_session" "$profile"
+            "env QWEN_BIND_HOST=\"$bind_host\" QWEN_LATENCY_MODE=\"$latency_mode\" $script_directory/qwen-webui-session.sh \"\$HOME/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-server\" \"\$HOME/models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf\" \"$script_directory/../webui\" $context_size $required_vulkan_mib $server_port \"$state_directory\" \"$profile\""
+        printf 'started tmux_socket=%s tmux_session=%s profile=%s host=%s port=%s context=%s latency_mode=%s\n' \
+            "$tmux_socket" "$tmux_session" "$profile" "$bind_host" \
+            "$server_port" "$context_size" "$latency_mode"
         ;;
     status)
         if [ "$#" -ne 1 ]; then
