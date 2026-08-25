@@ -15,7 +15,7 @@ profile=${1:-low-async}
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 control=$script_directory/qwen-webui-control.sh
 state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
-bind_host=${QWEN_BIND_HOST:-0.0.0.0}
+bind_host=${QWEN_BIND_HOST:-127.0.0.1}
 server_port=${QWEN_SERVER_PORT:-8080}
 ready_attempts=${QWEN_READY_ATTEMPTS:-3000}
 
@@ -24,13 +24,18 @@ if pgrep -x llama-server >/dev/null 2>&1; then
     exit 2
 fi
 
-# Vision is on when the projector is present, since a projector that exists and
-# is not loaded is the same as no vision at all.
-mmproj=${QWEN_MMPROJ:-"${HOME:?}/models/Qwen3.5-4B-GGUF/mmproj-F16.gguf"}
+model_path=${QWEN_MODEL_PATH:-"${HOME:?}/models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf"}
+
+# A projector encodes images into the embedding space of the checkpoint it was
+# exported with, and a mismatched one loads without error while placing image
+# tokens where the language model does not read them. Binding the search to the
+# model's own directory makes the pairing structural: a checkpoint published
+# without a projector runs text-only instead of borrowing another model's.
+mmproj=${QWEN_MMPROJ:-"$(dirname -- "$model_path")/mmproj-F16.gguf"}
 [ -f "$mmproj" ] || mmproj=''
 
 QWEN_BIND_HOST=$bind_host QWEN_SERVER_PORT=$server_port \
-QWEN_MMPROJ=$mmproj \
+QWEN_MODEL_PATH=$model_path QWEN_MMPROJ=$mmproj \
     "$control" start "$profile"
 
 attempt=0
