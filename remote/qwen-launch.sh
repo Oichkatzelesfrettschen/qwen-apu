@@ -11,7 +11,7 @@ if [ "$#" -gt 1 ]; then
     exit 2
 fi
 
-profile=${1:-low-serialized}
+profile=${1:-low-async}
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 control=$script_directory/qwen-webui-control.sh
 state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}

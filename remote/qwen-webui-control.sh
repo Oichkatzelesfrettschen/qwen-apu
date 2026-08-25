@@ -8,7 +8,13 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
 fi
 
 action=$1
-profile=${2:-low-serialized}
+# The submission sweep measured low-async at 2.718 decode tok/s against 1.348
+# serialized on a chat request, with zero deadline breaches and 100.00% of probe
+# submissions inside one 60 Hz frame in both. Serialization costs half the
+# decode rate and buys nothing back under this workload. low-serialized remains
+# for sustained long-context prefill, where the depth ladder measured async
+# raising probe p90 8.6-fold.
+profile=${2:-low-async}
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 tmux_socket=qwen-runtime
 tmux_session=qwen-webui
