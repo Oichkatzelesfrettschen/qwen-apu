@@ -5,6 +5,13 @@
 The laptop runs one `llama-server` process, the existing runtime monitor, and
 no graphical client. Two deployments differ only in the listener address.
 
+The laptop is the whole system. `http://127.0.0.1:8080` is the canonical
+address, and the model, the projector, the static UI, and the guards all live
+on the machine running the browser, so the appliance answers with the Wi-Fi
+off. `qwen-launch.sh` binds loopback by default. The tunnel and the LAN
+listener below are conveniences for reaching that appliance from elsewhere,
+and neither is on the path a local reader uses.
+
 An SSH tunnel keeps both endpoints on loopback and serves the operator alone:
 
 ```text

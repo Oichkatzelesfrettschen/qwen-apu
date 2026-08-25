@@ -146,6 +146,7 @@ set -- "$@" \
     --cache-type-v q4_0 \
     --ctx-checkpoints 0 \
     --cache-ram 0 \
-    --no-context-shift
+    --no-context-shift \
+    --offline
 
 exec "$script_directory/radv-low-priority-env.sh" "$@"

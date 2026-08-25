@@ -38,13 +38,30 @@ For Qwen3.8-9B-Q4_K_M against a 7,168 MiB Vulkan request the gate computed
 rejected the load. Without the second charge the requirement is 11.811 GB,
 which the same machine satisfied.
 
-The gate is left as written. Correcting it means relaxing the admission control
-that protects the desktop, and the correction is only justified by a
-measurement that has not been taken: loading 9B with the gate relaxed and
-recording whether peak anonymous host memory approaches
-`vulkan + model + reserve` or settles near `vulkan + reserve`. The 4B path is
-unaffected either way, since its requirement clears the gate with the second
-charge included.
+The second charge is spurious, measured on the running 4B server rather than
+argued. `/proc/PID/smaps_rollup` for the live process holding 2.74 GB of
+weights reports:
+
+```
+Rss:              229044 kB
+Private_Dirty:    156092 kB
+Private_Clean:     26032 kB
+Swap:                  0 kB
+```
+
+229 MB resident and no swap. The weights are not in the process's address
+space as host pages; they reach the Vulkan heap through a mapping whose file
+pages are reclaimable and, at 26 MB of `Private_Clean`, largely already
+reclaimed. Host demand beyond the Vulkan allocation is roughly 0.23 GB, not
+the 2.74 GB the gate charges.
+
+The gate is nonetheless left as written. Relaxing admission control on one
+model's measurement would trade the desktop's protection for a checkpoint that
+has not been shown to run well here, and the 9B figure is the confirmation
+that would license the change: load it with the gate relaxed on an idle
+machine and record whether peak resident host memory tracks the 4B result or
+climbs toward `vulkan + model`. The 4B path is unaffected either way, since its
+requirement clears the gate with the second charge included.
 
 ## The laptop was not idle during the rejection
 

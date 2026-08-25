@@ -16,20 +16,33 @@ matching the repository's published `SHA256SUMS`.
 
 ## Measured
 
-| Property | Qwen3.5-4B base | Qwen3.8-4B distill |
-| --- | ---: | ---: |
-| Weight bytes | 2,740,937,888 | 2,783,446,304 |
-| Prefill tok/s, 32-token prompt | 17.70 | 17.80 |
-| Decode tok/s, 301 and 227 tokens | 2.537 | 2.721 |
-| Reasoning tokens for one arithmetic comparison | 301 | 227 |
-| Wall clock to the same correct answer | 120.0 s | 84.7 s |
-| Vulkan0 total residency | 2,974 MiB | 2,943 MiB |
-| Vision modality reported by `/props` | true | false |
-| Probe frames inside one 60 Hz budget | 99.87% | 99.96% |
-| Probe deadline breaches | 6 in 8,509 | 2 in 5,358 |
+The base carries a projector and the distill does not, so the base runs twice:
+once as deployed and once with the projector withheld. Only the text-only
+column is a like-for-like comparison against the distill.
 
-Both answered "9.9 is larger than 9.11" correctly with reasoning in either
-state.
+| Property | base, vision | base, text-only | distill |
+| --- | ---: | ---: | ---: |
+| Weight bytes | 2,740,937,888 | 2,740,937,888 | 2,783,446,304 |
+| Prefill tok/s, 32-token prompt | 17.70 | 18.10 | 17.80 |
+| Decode tok/s over a 301 or 227 token span | 2.537 | 2.563 | 2.721 |
+| Vulkan0 `self` | 2,974 MiB | 2,974 MiB | 2,943 MiB |
+| Vulkan0 `unaccounted` | 2,102 MiB | 1,218 MiB | 1,257 MiB |
+| Vision modality reported by `/props` | true | false | false |
+| Probe frames inside one 60 Hz budget | 99.87% | -- | 99.96% |
+
+All three answered "9.9 is larger than 9.11" correctly with reasoning in
+either state.
+
+The projector costs 1.0% of decode, so the distill's 6.2% advantage over the
+base measured text-only is a property of the checkpoint rather than of the
+vision encoder's absence. It also costs no itemized Vulkan memory: `self` is
+2,974 MiB with the projector and without it, since the CLIP context allocates
+outside the model buffer llama-server itemizes. The cost appears as an
+884 MiB rise in `unaccounted` between two runs whose `self` figures are
+identical, which agrees with the 672 MB projector file plus the 223 MiB
+compute reservation the vision path prints at load. Vision therefore places
+the deployed configuration at roughly 3,858 MiB against the 4,608 MiB
+preflight gate, which is the confirmation that gate never had.
 
 ## The chat template survives the distillation
 
