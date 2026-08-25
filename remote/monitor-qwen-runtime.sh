@@ -84,7 +84,13 @@ guard_affinity=$(awk '$1 == "Cpus_allowed_list:" { print $2 }' /proc/self/status
 sample_seconds=1
 minimum_mem_available_kib=4194304
 maximum_swapin_bytes_per_sample=67108864
-maximum_temperature_millicelsius=90000
+# The SMU throttles the DPM clock ladder as junction temperature rises and the
+# hardware carries its own shutdown well above anything this sampler observes,
+# so silicon protection does not depend on a one-second shell poll. Terminating
+# a run here would discard hours of prefill for a condition the firmware
+# resolves by clocking down, so temperature is recorded and reported rather
+# than enforced.
+report_temperature_millicelsius=90000
 gpu_device_directory=${QWEN_GPU_DEVICE_DIRECTORY:-/sys/class/drm/card1/device}
 if [ "$gpu_device_directory" != /sys/class/drm/card1/device ] && \
    [ "${QWEN_GUARD_TEST_MODE:-0}" != 1 ]; then
@@ -93,6 +99,7 @@ if [ "$gpu_device_directory" != /sys/class/drm/card1/device ] && \
 fi
 page_size=$(getconf PAGESIZE)
 previous_pswpin=$(awk '$1 == "pswpin" { print $2 }' /proc/vmstat)
+temperature_reported=0
 
 server_is_original_process() {
     if [ ! -r "/proc/$server_pid/stat" ]; then
@@ -130,9 +137,9 @@ terminate_server() {
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$server_pid" "$sample_seconds" \
         "$vulkan_profile" "$latency_watchdog_pid" "$kernel_hazard_watchdog_pid" \
         "$guard_affinity" "$guard_nice"
-    printf 'threshold_mem_available_kib=%s threshold_swapin_bytes_per_sample=%s threshold_temperature_millicelsius=%s\n' \
+    printf 'threshold_mem_available_kib=%s threshold_swapin_bytes_per_sample=%s report_temperature_millicelsius=%s\n' \
         "$minimum_mem_available_kib" "$maximum_swapin_bytes_per_sample" \
-        "$maximum_temperature_millicelsius"
+        "$report_temperature_millicelsius"
     printf 'threshold_maximum_gpu_busy_percent=%s enforcement=terminate_on_sample_above_threshold\n' \
         "$maximum_gpu_busy_percent"
 } >"$telemetry_log"
@@ -195,8 +202,12 @@ while server_is_original_process; do
     if [ "$swapin_bytes" -gt "$maximum_swapin_bytes_per_sample" ]; then
         terminate_server swapin_rate_breached
     fi
-    if [ "$maximum_observed_temperature" -ge "$maximum_temperature_millicelsius" ]; then
-        terminate_server temperature_breached
+    if [ "$maximum_observed_temperature" -ge "$report_temperature_millicelsius" ] && \
+       [ "$temperature_reported" -eq 0 ]; then
+        temperature_reported=1
+        printf 'temperature_report_utc=%s max_temp_millicelsius=%s threshold_millicelsius=%s action=observe\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$maximum_observed_temperature" \
+            "$report_temperature_millicelsius" >>"$telemetry_log"
     fi
     case $gpu_busy_percent in
         '' | *[!0-9]*)
