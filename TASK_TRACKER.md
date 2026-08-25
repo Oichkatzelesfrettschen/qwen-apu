@@ -9,13 +9,14 @@ remain gated by a reviewed simulation and rollback path.
 
 - SSH and terminal operations only. Remote GUI control stays out of scope.
 - The desktop remains the highest-priority workload.
-- Remote CPU work uses one logical CPU, absolute nice value 19, and idle I/O.
+- The model process uses CPU 0 at nice 19 and idle I/O; safety guards use CPU 1.
 - Model tensors execute through RADV Vulkan. CPU tensor fallback stops the run.
 - The server binds to `127.0.0.1`, uses one slot, and starts without MTP.
 - The operational server context cannot exceed 24,576 tokens, and benchmark
   prompts cannot exceed 24,000 tokens.
-- A sampled GPU busy value above 75% terminates the server. New performance
-  measurements require a proven microbatch pacer that stays at or below 75%.
+- `paced-60` terminates above 75% aggregate GPU busy. The serialized and async
+  LOW profiles use a 20 ms MEDIUM graphics-family service deadline and treat
+  100% busy as an observation.
 - Qwen3.8-27B is the primary quality benchmark, not the presumed daily model.
 - Sudo credentials are entered only by the user in the `qwen-admin` tmux
   session. Passwords never cross SSH commands, logs, or project files.
@@ -331,6 +332,24 @@ remain gated by a reviewed simulation and rollback path.
 - [x] Add focused tests and documentation for low-priority selection. Evidence:
   `remote/test-vulkan-low-priority.sh` and
   `evidence/vulkan-low-priority-admission.md`.
+- [x] Trace Vulkan LOW through RADV, libdrm, the amdgpu context ioctl, and the
+  DRM scheduler. Evidence: `evidence/vulkan-priority-first-policy.md` names
+  each source function and primary-source revision.
+- [x] Prove `AMDGPU_CTX_PRIORITY_VERY_LOW` and LOW collapse to the same Linux
+  7.0 scheduler and hardware class. Evidence: both map to
+  `DRM_SCHED_PRIORITY_LOW`, normal GFX pipe priority, and ring priority zero.
+- [x] Detect Mesa's post-Vulkan `AMD_PRIORITY` override and clear it at the
+  process boundary. Evidence: the installed RADV binary contains the option,
+  the Mesa 26.2.1 source consumes it in `ac_drm_cs_ctx_create2()`, and the
+  wrapper test observes it unset.
+- [x] Clear inherited Vulkan memory-priority, graphics-queue, RADV performance,
+  device-selection, layer-injection, and backend-tuning variables. Evidence:
+  the closed wrapper replaces its complete performance policy and tests
+  `GGML_VK_ENABLE_MEMORY_PRIORITY`, `GGML_VK_ALLOW_GRAPHICS_QUEUE`, and
+  `RADV_PERFTEST=nogttspill` as negative inherited controls.
+- [x] Require the exact `GGML_VK_LOW_PRIORITY=1` opt-in and reject malformed
+  values before device creation. Evidence: patch replay and negative server
+  test.
 - [x] Configure Vulkan as the only accelerator while retaining the CPU control
   backend required by llama.cpp. Evidence: `remote/build-llama-vulkan.sh` and
   `evidence/build-backend-policy.md`.
@@ -359,6 +378,12 @@ remain gated by a reviewed simulation and rollback path.
   `evidence/capacity-server-policy.md`.
 - [x] Enforce one-core affinity, absolute nice 19, and idle I/O scheduling.
   Evidence: the remote policy test observes CPU 0, nice 19, and idle I/O.
+- [x] Remove inherited environment sentinels as scheduling-policy bypasses.
+  Evidence: the environment test injects both former names and proves they are
+  unset; the runtime-guard test independently proves CPU 1 and nice 0.
+- [x] Replace duration-sensitive negative guard fixtures with explicitly
+  terminated persistent processes. Evidence: the retained failed run records
+  the expired target, and the full remote gate passes with status 0.
 - [x] Add an opt-in native Vulkan submission pacer at each completed intra-graph
   fence.
   Evidence: `patches/llama-vulkan-duty-cycle.patch` and
@@ -370,6 +395,24 @@ remain gated by a reviewed simulation and rollback path.
   the closed argument surface fixes batch 128 and microbatch 32.
 - [x] Verify pacing arithmetic and invalid-input rejection with compiler
   warnings treated as errors. Evidence: `remote/test-vulkan-pacing-math.sh`.
+- [x] Define `paced-60`, `low-serialized`, and `low-async` as closed profiles.
+  Evidence: inherited pacing, serialization, node-limit, and Mesa-priority
+  values cannot escape `remote/radv-low-priority-env.sh`.
+- [x] Add a validated 32-node runtime submission bound to llama.cpp. Evidence:
+  `llama-vulkan-runtime-submit-limit.patch`, its warning-clean parser test, and
+  the byte-exact four-patch replay.
+- [x] Build a headless MEDIUM-priority graphics-family service probe. Evidence:
+  `vulkan-graphics-service-probe.c` compiles with all warnings as errors,
+  creates no surface, and completes five positive queue submissions.
+- [x] Prove the graphics-service deadline terminates its watched process.
+  Evidence: a 1 microsecond synthetic deadline produces `probe_breach`, sends
+  SIGTERM, and returns status 3.
+- [x] Require the graphics-service watcher for every Web server profile and
+  terminate the server if it disappears. Evidence: session wiring and the
+  synthetic watcher-loss runtime test.
+- [x] Measure idle MEDIUM graphics-family fence latency before a model load.
+  Evidence: 400 retained 16 ms samples measure 0.510 ms mean, 0.987 ms P95,
+  1.886 ms P99, and 7.343 ms maximum on RADV Raven2.
 - [x] Enforce localhost-only binding and one inference slot. Evidence: the
   closed argument surface fixes `--host 127.0.0.1` and `--parallel 1`.
 - [x] Reject server contexts above 24,576 tokens and benchmark prompts above
@@ -411,8 +454,8 @@ remain gated by a reviewed simulation and rollback path.
 - [x] Terminate the server on the first GPU busy sample above 75%. Evidence:
   the one-second monitor and synthetic 76% negative test return the documented
   `gpu_busy_percent_breached` reason.
-- [x] Rebuild the pinned remote binaries with the Vulkan duty-cycle patch.
-  Evidence: the warnings-as-errors one-job build completed at pinned llama.cpp
+- [x] Rebuild the pinned remote binaries with all four qwen-apu patches.
+  Evidence: the fatal-compiler-warning build completed at pinned llama.cpp
   commit `f280b26983ad0fdb705a0d9ebf0503e76f2899b0`.
 - [x] Verify the real model path reports LOW queue priority and 60% duty.
   Evidence: the server log records the Raven2 device, all model layers on
@@ -421,8 +464,13 @@ remain gated by a reviewed simulation and rollback path.
   guarded 4K Web UI request. Evidence:
   `evidence/benchmarks/qwen35-4b-webui-serialized/summary.md` records 3.79 prompt
   tok/s, 0.677 decode tok/s, 49.65% mean GPU busy, and 72% maximum GPU busy.
-- [ ] Measure desktop input latency through an external headless latency oracle.
+- [ ] ACTIVE: Measure desktop input latency through an external headless
+  latency oracle for `low-serialized` and 16-node `low-async`.
   Manual impressions do not satisfy this row.
+- [x] Build the isolated pinned `llama.cpp-qwen-apu` source and binary
+  with exact LOW opt-in, duty control, strict Vulkan placement, and the runtime
+  submission limit. Evidence: the retained build log, patch hashes, fatal
+  compiler-warning flags, binary hashes, and warning-clean focused tests.
 - [x] Retain command, environment, model hash, build identity, telemetry, kernel
   delta, exit status, and stop reason for every run. Evidence:
   `evidence/benchmarks/qwen35-4b-c32k-partial-summary.md` links the retained
@@ -434,21 +482,26 @@ remain gated by a reviewed simulation and rollback path.
   revision, byte size, and expected SHA-256 before downloading
   `Qwen3.5-4B-Q4_K_M.gguf`. Evidence:
   `evidence/qwen35-4b-download-admission.md`.
-- [ ] Admit the Qwen3.5-4B daily candidate only when host and desktop reserve
-  gates pass.
+- [x] Admit Qwen3.5-4B as the provisional daily candidate after its host,
+  desktop-reserve, strict-placement, queue-service, temperature, and kernel
+  gates pass. External desktop-input latency remains an independent promotion
+  gate for the async profile.
 - [x] Download and verify Qwen3.8-27B `UD-Q2_K_XL` at the pinned source
   revision. Evidence: 9,828,981,664 bytes and SHA-256
   `fd4730dd8aad070517978752b63d530aeb1740d2283cab9fa24f1e404032ddb0`.
 - [ ] Run Qwen3.8-27B `UD-Q2_K_XL` at 4K through the guarded Web server. Record
   load time, prompt tok/s, decode tok/s, GPU samples, memory, temperature,
-  hazards, and output-quality result. The live preflight rejects the present
-  14.70 GB MemAvailable against a 24.86 GB loading requirement while accepting
-  the Vulkan budget; the model remains unopened.
-- [ ] ACTIVE: Download and verify Qwen3.8-27B `UD-IQ3_XXS` at the pinned source
-  revision. Evidence: exact byte count, SHA-256, and Apache-2.0 license.
+  hazards, and output-quality result. The refreshed live preflight rejects
+  15,474,085,888 available host bytes against a 24,861,367,200-byte loading
+  requirement while accepting the Vulkan budget; the model remains unopened.
+- [x] Download and verify Qwen3.8-27B `UD-IQ3_XXS` at the pinned source
+  revision. Evidence: 10,934,860,704 bytes and SHA-256
+  `c0b7c3038681ed2e3040456c1dd45f9858b6c2290bed172c70388a94874f3eee`.
 - [ ] Run Qwen3.8-27B `UD-IQ3_XXS` at 4K through the guarded Web server. Record
   load time, prompt tok/s, decode tok/s, GPU samples, memory, temperature,
-  hazards, and output-quality result.
+  hazards, and output-quality result. The refreshed live preflight rejects
+  15,480,442,880 available host bytes against a 27,040,988,064-byte loading
+  requirement while accepting the Vulkan budget; the model remains unopened.
 - [ ] Download and verify Qwen3.8-27B `UD-IQ3_S` at the pinned source revision.
   Evidence: exact byte count, SHA-256, and Apache-2.0 license.
 - [ ] Run Qwen3.8-27B `UD-IQ3_S` at 4K through the guarded Web server. Record
@@ -461,6 +514,20 @@ remain gated by a reviewed simulation and rollback path.
   hazards, and output-quality result.
 - [ ] Advance a passing Qwen3.8-27B candidate from 4K to 24K only after the
   measured 4K working set preserves the 4 GiB desktop reserve.
+- [x] Identify the exact Qwen3.8-9B Distill Q4_K_M repository, revision,
+  filename, byte count, hash, and license. Evidence:
+  `evidence/qwen38-9b-distill-admission.md`.
+- [x] Download and verify Qwen3.8-9B Distill Q4_K_M through the resumable
+  pinned downloader. Evidence: 5,780,090,176 bytes and SHA-256
+  `df13d66021cef676f82be74053220fd75af6bf2a6a7fb77f5222ab9e50744a7a`.
+- [ ] Run Qwen3.8-9B Distill at 4K under `low-serialized`. Record load time,
+  prompt tok/s, decode tok/s, graphics-service latency, GPU busy, memory,
+  temperature, kernel hazards, and output-quality result. The live 6,144 MiB
+  preflight rejects 15,140,962,304 available host bytes against a
+  16,517,508,416-byte loading requirement while accepting the Vulkan budget;
+  the model remains unopened.
+- [ ] Advance Qwen3.8-9B Distill to 24K only after the measured 4K working set
+  preserves the 4 GiB desktop reserve and the 20 ms graphics deadline.
 - [x] Download through tmux with one-core verification and idle I/O priority.
   Evidence: `evidence/runtime-logs/qwen-qwen35-4b-download.log`.
 - [x] SHA-256 verify the complete artifact before llama.cpp opens it. Evidence:
@@ -493,10 +560,14 @@ remain gated by a reviewed simulation and rollback path.
   prompt ingestion.
 - [x] Implement and prove llama.cpp intra-graph submission pacing that holds
   the measured 4K request below 75% without raising queue priority.
-- [ ] Quantify the standalone serialization cost with a real-model
-  control that independently preserves the 75% aggregate GPU guard.
+- [x] Quantify standalone serialization cost with equal 46-token prompt and
+  128-token decode requests. The passing 16-node async arm gains 23.31% prompt
+  throughput and 106.12% decode throughput; the 32-node arm is rejected at a
+  20.017 ms MEDIUM fence. Evidence:
+  `evidence/benchmarks/qwen35-4b-vulkan-priority-comparison.md`.
 - [ ] Run the guarded 24K prefill and fixed-depth decode gate only after the
-  75% pacing gate passes and the desktop is free of user-visible impact.
+  selected profile passes the external desktop-input oracle and the desktop is
+  free of user-visible impact.
 - [ ] Review retained 24K memory, hazard, fallback, speed, and desktop evidence.
 - [ ] Judge the daily laptop profile from the 24K operational result and the
   retained partial 32K falsifier.
@@ -511,7 +582,7 @@ remain gated by a reviewed simulation and rollback path.
 
 | Context | Prompt tokens completed | Prefill tok/s | Decode tok/s | Status |
 | ---: | ---: | ---: | ---: | --- |
-| 24K | not run | not run | not run | Blocked on proven 75% GPU pacing |
+| 24K | not run | not run | not run | Blocked on external desktop-input oracle |
 | 32K | 20,992 of 32,000 | 12.63 cumulative | not run | User-stopped partial; prohibited by current policy |
 | 64K | not run | not run | not run | Prohibited by 24K operational cap |
 | 96K | not run | not run | not run | Prohibited by 24K operational cap |

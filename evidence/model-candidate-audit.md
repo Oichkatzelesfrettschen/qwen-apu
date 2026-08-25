@@ -5,7 +5,8 @@
 Qwen3.8-27B remains the primary quality benchmark. The daily-model ladder is:
 
 1. `Qwen3.5-4B-Q4_K_M` as the balanced daily candidate.
-2. `Qwen3.5-9B-Q4_K_M` as the higher-quality local candidate.
+2. `Qwen3.8-9B-Q4_K_M` from the pinned Empero Distill repository as the
+   higher-quality local candidate.
 3. `Qwen3.5-2B-Q6_K` as the fast draft, tool-routing, and speculative candidate.
 
 The 4B candidate is the first model to download after the Vulkan build and
@@ -30,20 +31,21 @@ and GGUF architecture metadata.
 |---|---:|---|---:|---:|---:|
 | Qwen3.5-2B | 6 layers, 2 KV heads, dim 256 | Q6_K | 1.467 GiB | 0.609 GiB | 2.076 GiB |
 | Qwen3.5-4B | 8 layers, 4 KV heads, dim 256 | Q4_K_M | 2.553 GiB | 1.625 GiB | 4.178 GiB |
-| Qwen3.5-9B | 8 layers, 4 KV heads, dim 256 | Q4_K_M | 5.290 GiB | 1.625 GiB | 6.915 GiB |
+| Qwen3.8-9B Distill | 8 layers, 4 KV heads, dim 256 | Q4_K_M | 5.383 GiB | 1.625 GiB | 7.008 GiB |
 
 The KV estimate uses Q8_0 K and Q4_0 V block costs of
 `34/32 + 18/32 = 1.625 bytes` per K/V element. It excludes recurrent state,
 checkpoints, graphs, scratch, staging, loading peaks, prompt cache, the OS, and
 the desktop reserve. It is an allocation lower bound rather than a fit proof.
 
-Qwen3.5-4B and 9B arrange 32 layers as eight repetitions of three
+Qwen3.5-4B and Qwen3.8-9B Distill arrange 32 layers as eight repetitions of three
 linear-attention layers followed by one full-attention layer. Their C128 KV
 allocation is much smaller than a dense full-attention model of similar width.
 
-Qwen-reported results place 9B above 4B on GPQA, long context, coding,
-instruction following, multilingual, and most agent measures. The official 2B
-card reports strong BFCL-V4 and TAU2 scores but materially weaker math,
+The Qwen3.8-9B Distill card reports MMLU 0.751 versus 0.546 for its Qwen3.5-9B
+base under the author's protocol, while GSM8K falls from 0.885 to 0.870. It
+does not establish an across-size comparison with the 4B control. The official
+2B card reports strong BFCL-V4 and TAU2 scores but materially weaker math,
 knowledge, and coding results. These vendor results remain hypotheses until the
 common local corpus is run.
 
@@ -51,16 +53,16 @@ Official models and GGUF lineages:
 
 - https://huggingface.co/Qwen/Qwen3.5-2B
 - https://huggingface.co/Qwen/Qwen3.5-4B
-- https://huggingface.co/Qwen/Qwen3.5-9B
+- https://huggingface.co/empero-ai/Qwen3.8-9B-Distill
 - https://huggingface.co/unsloth/Qwen3.5-2B-GGUF
 - https://huggingface.co/unsloth/Qwen3.5-4B-GGUF
-- https://huggingface.co/unsloth/Qwen3.5-9B-GGUF
+- https://huggingface.co/empero-ai/Qwen3.8-9B-Distill-GGUF
 
 | File | Bytes | SHA-256 |
 |---|---:|---|
 | `Qwen3.5-2B-Q6_K.gguf` | 1,574,961,408 | `fc90339420b4298887aafb307a4291c55440b730133bbffe6ba9630503dcb548` |
 | `Qwen3.5-4B-Q4_K_M.gguf` | 2,740,937,888 | `00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4` |
-| `Qwen3.5-9B-Q4_K_M.gguf` | 5,680,522,464 | `03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8` |
+| `Qwen3.8-9B-Q4_K_M.gguf` | 5,780,090,176 | `df13d66021cef676f82be74053220fd75af6bf2a6a7fb77f5222ab9e50744a7a` |
 
 ## Qwen controls and exclusions
 
@@ -90,8 +92,8 @@ and SHA-256 validation before llama.cpp opens it.
 The file sizes in decimal GB are 9.83, 10.93, 12.04, and 14.25. Binary GiB
 values govern RAM and Vulkan budgeting. Each candidate starts at 4K through the
 same authenticated Web server profile. A candidate advances to 24K only after
-its 4K load, prompt, decode, memory, temperature, hardware-hazard, and 75% GPU
-guard gates pass.
+its 4K load, prompt, decode, memory, temperature, hardware-hazard, and 20 ms
+MEDIUM service gates pass.
 
 ## Non-Qwen comparators
 
@@ -127,12 +129,14 @@ Sources:
 
 ## Evaluation contract
 
-Every admitted model runs the same text-only corpus at 32K, 64K, 96K, and
-128K where its context claim permits it. The corpus covers code, research
-prose, JSON tool transcripts, multi-document retrieval, multilingual material,
-and dependencies separated by tens of thousands of tokens. Measurements cover
-retrieval, reasoning, valid tool calls, coding tests, prefill, decode, peak and
-steady memory, GPU faults, and desktop responsiveness.
+The generated research corpus defines 32K, 64K, 96K, and 128K depth points,
+but the operational launcher rejects contexts above 24,576 tokens. The active
+laptop program uses at most 24K until the user changes that safety boundary.
+Within that bound, each admitted model receives the same code, research prose,
+JSON tool transcript, multi-document retrieval, multilingual, and
+long-separated-dependency material. Measurements cover retrieval, reasoning,
+valid tool calls, coding tests, prefill, decode, peak and steady memory, GPU
+faults, and desktop responsiveness.
 
 Native, trained, and extrapolated context remain separate fields. Manufacturer
 scores remain cited claims until reproduced. A model becomes daily only after

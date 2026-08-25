@@ -6,10 +6,9 @@ if [ "$#" -gt 2 ]; then
     exit 2
 fi
 
-if [ "${QWEN_ONE_CORE_ACTIVE:-0}" != 1 ]; then
-    renice -n 19 -p $$ >/dev/null
-    QWEN_ONE_CORE_ACTIVE=1 exec taskset -c 0 ionice -c 3 "$0" "$@"
-fi
+renice -n 19 -p $$ >/dev/null
+taskset -pc 0 $$ >/dev/null
+ionice -c 3 -p $$
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repository_directory=$(CDPATH='' cd -- "$script_directory/.." && pwd)
@@ -28,14 +27,16 @@ git clone --quiet --shared --no-checkout "$source_directory" \
     "$temporary_directory/llama.cpp"
 git -C "$temporary_directory/llama.cpp" checkout --quiet --detach \
     "$expected_commit"
-git -C "$temporary_directory/llama.cpp" apply --check \
-    "$patch_directory/llama-vulkan-low-priority.patch" \
-    "$patch_directory/llama-no-cpu-fallback.patch" \
-    "$patch_directory/llama-vulkan-duty-cycle.patch"
-git -C "$temporary_directory/llama.cpp" apply \
-    "$patch_directory/llama-vulkan-low-priority.patch" \
-    "$patch_directory/llama-no-cpu-fallback.patch" \
-    "$patch_directory/llama-vulkan-duty-cycle.patch"
+for patch_name in \
+    llama-vulkan-low-priority.patch \
+    llama-no-cpu-fallback.patch \
+    llama-vulkan-duty-cycle.patch \
+    llama-vulkan-runtime-submit-limit.patch; do
+    git -C "$temporary_directory/llama.cpp" apply --check \
+        "$patch_directory/$patch_name"
+    git -C "$temporary_directory/llama.cpp" apply \
+        "$patch_directory/$patch_name"
+done
 git -C "$temporary_directory/llama.cpp" diff --check
 
 verify_source() {
@@ -50,10 +51,12 @@ verify_source() {
     printf 'patch_replay_match=%s sha256=%s\n' "$relative_path" "$actual_sha256"
 }
 
-verify_source 18e66e9dcfdf59cd02e84a5a0038ce8fa72fdfd65f48af696851f8bd6cf53277 \
+verify_source db34fbfc5ee5368ccc5999dc5a37c90dd3198ae0aff8138440cd7f5f0532eca4 \
     ggml/src/ggml-vulkan/ggml-vulkan.cpp
 verify_source 16abd2face079cad962bb722026d7418e65de67c18c1e1f954df733c1598a70a \
     ggml/src/ggml-vulkan/ggml-vulkan-pacing.h
+verify_source 4b8befd927e9b0c83cfc7cfe843d2f853a9a9db7f6a55c147ffcd4129afd95f8 \
+    ggml/src/ggml-vulkan/ggml-vulkan-submit-limit.h
 verify_source ecc818cdce4a7265f6f932962c325a582f42b91cb2661916fa28b5a79a49d1ad \
     src/llama-context.cpp
 verify_source d0d6c8725891ac4baf68fd947ab4be75cc93ba37b1e988ca1c556881a49d0abc \

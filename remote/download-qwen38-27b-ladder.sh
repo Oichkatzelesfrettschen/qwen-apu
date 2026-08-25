@@ -1,10 +1,9 @@
 #!/bin/sh
 set -eu
 
-if [ "${QWEN_ONE_CORE_ACTIVE:-0}" != 1 ]; then
-    renice -n 19 -p $$ >/dev/null
-    QWEN_ONE_CORE_ACTIVE=1 exec taskset -c 0 ionice -c 3 "$0" "$@"
-fi
+renice -n 19 -p $$ >/dev/null
+taskset -pc 0 $$ >/dev/null
+ionice -c 3 -p $$
 
 if [ "$#" -gt 2 ]; then
     printf 'usage: %s [VARIANT|all [DESTINATION_DIRECTORY]]\n' "$0" >&2

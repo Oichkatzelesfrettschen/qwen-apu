@@ -1,13 +1,12 @@
 #!/bin/sh
 set -eu
 
-if [ "${QWEN_ONE_CORE_ACTIVE:-0}" != 1 ]; then
-    renice -n 19 -p $$ >/dev/null
-    QWEN_ONE_CORE_ACTIVE=1 exec taskset -c 0 ionice -c 3 "$0" "$@"
-fi
+renice -n 19 -p $$ >/dev/null
+taskset -pc 0 $$ >/dev/null
+ionice -c 3 -p $$
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-source_directory=${1:-"${HOME:?}/src/llama.cpp"}
+source_directory=${1:-"${HOME:?}/src/llama.cpp-qwen-apu"}
 build_directory=${2:-$source_directory/build-qwen-vulkan}
 expected_commit=f280b26983ad0fdb705a0d9ebf0503e76f2899b0
 ui_dist_directory=$build_directory/tools/ui/dist
@@ -73,6 +72,7 @@ cmake -S "$source_directory" -B "$build_directory" -G Ninja \
 
 cmake --build "$build_directory" --parallel 1 --target llama-server llama-cli
 "$script_directory/test-vulkan-pacing-math.sh" "$source_directory"
+"$script_directory/test-vulkan-submit-limit.sh" "$source_directory"
 
-printf 'build_commit=%s build_directory=%s cpu_backend=required vulkan_backend=enabled duty_cycle_test=accepted parallel_jobs=1\n' \
+printf 'build_commit=%s build_directory=%s cpu_backend=required vulkan_backend=enabled duty_cycle_test=accepted submit_limit_test=accepted parallel_jobs=1\n' \
     "$actual_commit" "$build_directory"

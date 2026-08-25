@@ -13,7 +13,7 @@ active.
 | Subclaim | Authority | Falsifier | Validation | Artifact |
 |---|---|---|---|---|
 | One slot and one thread are explicit | llama.cpp option parser and fixed argument sequence | A generated invocation omits or changes any of the three values | `remote/test-qwen-capacity-policy.sh` | Captured fake-server arguments |
-| The desktop retains scheduling priority | `/proc/self/status`, `ps`, `ionice`, and the Vulkan pacer environment | Affinity differs from CPU 0, nice differs from 19, I/O class differs from idle, or model duty differs from 60% | `remote/test-qwen-capacity-policy.sh` | Captured fake-server environment |
+| The desktop retains scheduling priority | `/proc/self/status`, `ps`, `ionice`, and the closed Vulkan profile | Affinity differs from CPU 0, nice differs from 19, I/O class differs from idle, LOW is absent, or inherited Mesa priority escapes | `remote/test-qwen-capacity-policy.sh` | Captured fake-server environment |
 | The API remains local | llama.cpp `--host` option and fixed argument sequence | Host differs from `127.0.0.1` | `remote/test-qwen-capacity-policy.sh` | Captured fake-server arguments |
 | Static UI admission is explicit | Validated directory plus fixed `--path` and `--ui` arguments | A missing `index.html` reaches llama.cpp or a headless launch enables UI | `remote/test-qwen-capacity-policy.sh` | Positive and negative static-path controls |
 | Interactive routes require a secret | Generated mode-0600 key plus fixed `--api-key-file` argument | An empty key file reaches llama.cpp | `remote/test-qwen-capacity-policy.sh` | Positive and negative key-file controls |
@@ -32,7 +32,10 @@ automatic fitting, one slot, one CPU thread, Q8/Q4 KV cache, zero recurrent
 checkpoints, zero prompt RAM cache, and disabled context shift. The existing
 RADV wrapper then applies CPU 0 affinity, nice level 19, idle I/O scheduling,
 LOW Vulkan queue priority, the RADV ICD, and strict CPU-fallback rejection.
-It also fixes a 60% native Vulkan duty cycle. The policy uses a 128-token
+The default `low-serialized` profile fixes one in-flight submission, a 32-node
+submission boundary, and no deliberate sleep. `paced-60` retains the 60% native
+Vulkan duty-cycle control, while `low-async` is a separately guarded experiment.
+The policy uses a 128-token
 logical batch and 32-token microbatch so prompt ingestion yields to the
 compositor at short graph boundaries.
 The policy rejects context values above 24,576 before the RADV wrapper starts
@@ -74,7 +77,7 @@ context, a 1 MiB synthetic Vulkan working set, and fake server port 18080. The
 live preflight selected `AMD Radeon Graphics (RADV RAVEN2)`, reported
 16,611,995,648 available Vulkan bytes, preserved a 4 GiB desktop reserve, and
 accepted both memory gates. The fake server then observed CPU 0, nice 19, idle
-I/O, LOW Vulkan priority, a 60% model duty cycle, strict CPU-fallback rejection, and the exact 46 fixed
+I/O, LOW Vulkan priority, strict CPU-fallback rejection, and the exact 46 fixed
 argument tokens, including `--no-ui`, allocation-summary verbosity 4, and
 `--override-tensor '.*=Vulkan0'`. No model was opened and no network listener
 was created.

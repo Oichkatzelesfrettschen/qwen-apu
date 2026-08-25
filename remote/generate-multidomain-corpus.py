@@ -7,7 +7,6 @@ import argparse
 import json
 from pathlib import Path
 
-
 RETRIEVAL_KEY = "ORBITAL-CEDAR-7319"
 RETRIEVAL_VALUE = "violet compass at archive shelf 42"
 

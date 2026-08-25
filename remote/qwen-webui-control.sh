@@ -1,12 +1,14 @@
 #!/bin/sh
 set -eu
 
-if [ "$#" -ne 1 ]; then
-    printf 'usage: %s start|status|stop|key\n' "$0" >&2
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+    printf 'usage: %s start [paced-60|low-serialized|low-async]|status|stop|key\n' \
+        "$0" >&2
     exit 2
 fi
 
 action=$1
+profile=${2:-low-serialized}
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 tmux_socket=qwen-runtime
 tmux_session=qwen-webui
@@ -19,17 +21,28 @@ status_file=$state_directory/session.status
 
 case $action in
     start)
+        case $profile in
+            paced-60 | low-serialized | low-async) ;;
+            *)
+                printf 'unknown Vulkan profile: %s\n' "$profile" >&2
+                exit 2
+                ;;
+        esac
         if tmux -L "$tmux_socket" has-session -t "$tmux_session" 2>/dev/null; then
             printf 'tmux session already exists: %s\n' "$tmux_session" >&2
             exit 2
         fi
         mkdir -p "$state_directory"
         tmux -L "$tmux_socket" new-session -d -s "$tmux_session" \
-            "$script_directory/qwen-webui-session.sh"
-        printf 'started tmux_socket=%s tmux_session=%s\n' \
-            "$tmux_socket" "$tmux_session"
+            "$script_directory/qwen-webui-session.sh \"\$HOME/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-server\" \"\$HOME/models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf\" \"$script_directory/../webui\" 4096 4096 8080 \"$state_directory\" \"$profile\""
+        printf 'started tmux_socket=%s tmux_session=%s profile=%s\n' \
+            "$tmux_socket" "$tmux_session" "$profile"
         ;;
     status)
+        if [ "$#" -ne 1 ]; then
+            printf 'status does not accept a profile\n' >&2
+            exit 2
+        fi
         recorded_status=state=not-started
         if [ -r "$status_file" ]; then
             recorded_status=$(sed -n '1p' "$status_file")
@@ -72,6 +85,10 @@ case $action in
         fi
         ;;
     key)
+        if [ "$#" -ne 1 ]; then
+            printf 'key does not accept a profile\n' >&2
+            exit 2
+        fi
         api_key_file=$state_directory/api.key
         if [ ! -s "$api_key_file" ]; then
             printf 'API key is unavailable; start the session first\n' >&2
@@ -80,6 +97,10 @@ case $action in
         sed -n '1p' "$api_key_file"
         ;;
     stop)
+        if [ "$#" -ne 1 ]; then
+            printf 'stop does not accept a profile\n' >&2
+            exit 2
+        fi
         if [ -r "$pid_file" ]; then
             server_pid=$(sed -n '1p' "$pid_file")
             case $server_pid in
@@ -108,7 +129,8 @@ case $action in
             "$tmux_socket" "$tmux_session"
         ;;
     *)
-        printf 'usage: %s start|status|stop|key\n' "$0" >&2
+        printf 'usage: %s start [paced-60|low-serialized|low-async]|status|stop|key\n' \
+            "$0" >&2
         exit 2
         ;;
 esac

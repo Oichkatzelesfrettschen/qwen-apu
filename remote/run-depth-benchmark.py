@@ -14,7 +14,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-
 QUERY = (
     "\nFINAL RETRIEVAL QUESTION\n"
     "Return only the exact value paired with key ORBITAL-CEDAR-7319 in the "

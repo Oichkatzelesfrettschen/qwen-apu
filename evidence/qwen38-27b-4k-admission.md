@@ -24,3 +24,11 @@ The model opens only when the live preflight accepts both host memory and the
 RADV aggregate budget. A successful load replaces the 64 MiB compute estimate
 and rounded gate with the exact startup memory breakdown. A rejected preflight
 is a capacity result; swap does not convert it into permission to load.
+
+The refreshed verified-artifact preflights reject host capacity and accept
+Vulkan capacity for both resident candidates. `UD-Q2_K_XL` reports
+15,474,085,888 available host bytes against a 24,861,367,200-byte requirement.
+`UD-IQ3_XXS` reports 15,480,442,880 available host bytes against a
+27,040,988,064-byte requirement. Both commands return 3, and no llama.cpp
+process opens either model. The exact outputs are retained under
+`evidence/model-admission/`.

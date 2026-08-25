@@ -1,10 +1,9 @@
 #!/bin/sh
 set -eu
 
-if [ "${QWEN_ONE_CORE_ACTIVE:-0}" != 1 ]; then
-    renice -n 19 -p $$ >/dev/null
-    QWEN_ONE_CORE_ACTIVE=1 exec taskset -c 0 ionice -c 3 "$0" "$@"
-fi
+renice -n 19 -p $$ >/dev/null
+taskset -pc 0 $$ >/dev/null
+ionice -c 3 -p $$
 
 evidence_directory=${1:-"${HOME:?}/qwen-apu/evidence"}
 kernel_log=$evidence_directory/kernel-post-runtime.log
@@ -12,11 +11,10 @@ hazard_log=$evidence_directory/kernel-post-runtime-hazards.log
 temporary_directory=$(mktemp -d)
 trap 'rm -rf "$temporary_directory"' EXIT HUP INT TERM
 
-sudo -n true
-# The unprivileged shell owns the private temporary file; sudo grants journal
-# access only to journalctl.
-# shellcheck disable=SC2024
-sudo -n journalctl -k -b --no-pager >"$temporary_directory/kernel.log"
+if ! dmesg --color=never >"$temporary_directory/kernel.log"; then
+    printf 'unprivileged dmesg access is required for kernel capture\n' >&2
+    exit 1
+fi
 
 hazard_pattern='ring[^[:cntrl:]]*timeout|GPU reset|amdgpu[^[:cntrl:]]*reset|VM fault|device loss|device lost|out of memory|oom-kill'
 hazard_status=0
@@ -32,7 +30,7 @@ install -d -m 0755 "$evidence_directory"
     printf 'captured_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'boot_id=%s\n' "$(cat /proc/sys/kernel/random/boot_id)"
     printf 'kernel=%s\n' "$(uname -r)"
-    printf 'sudo_cached=yes\n'
+    printf 'source=dmesg\n'
     cat "$temporary_directory/kernel.log"
 } >"$kernel_log"
 {

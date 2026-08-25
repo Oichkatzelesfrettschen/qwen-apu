@@ -16,11 +16,16 @@ API key lives at `$HOME/qwen-webui-state/api.key` with mode 0600. The browser
 keeps the entered key in tab-scoped session storage. The tunnel binds only the
 client loopback address, so neither HTTP endpoint is exposed to the LAN.
 
-The native Vulkan backend synchronizes each bounded intra-graph submission and
-inserts idle time for a 60 percent model duty cycle. LOW queue priority gives
-the compositor precedence between submissions, and 32-token microbatches
-shorten prompt bursts. The runtime monitor independently terminates the server
-on the first aggregate Raven2 busy value above 75 percent.
+The default `low-serialized` profile synchronizes each bounded intra-graph
+submission without inserting duty-cycle sleeps. LOW is the lowest distinct
+amdgpu scheduler class on Linux 7.0, and the one-job queue depth exposes a
+scheduling boundary after each short submission. A MEDIUM-priority
+graphics-family probe must receive fence service within 20 ms. The runtime
+terminates the server when the probe misses that deadline or disappears.
+The retained `paced-60` control inserts duty-cycle sleeps and retains the 75%
+aggregate busy stop. The `low-async` experiment uses the same 20 ms MEDIUM
+service deadline as the serialized profile so it isolates the throughput and
+service-latency cost of multiple in-flight LOW jobs.
 
 ## Runtime provenance
 
@@ -28,10 +33,12 @@ The laptop does not contain a clone of this repository. Its paths have separate
 roles:
 
 - `$HOME/qwen-laptop-setup` is the synchronized deployment mirror;
-- `$HOME/src/llama.cpp` is the Git checkout at
+- `$HOME/src/llama.cpp` is the earlier Git checkout at
   `f280b26983ad0fdb705a0d9ebf0503e76f2899b0`;
-- `$HOME/src/llama.cpp/build-qwen-vulkan/bin/llama-server` is the one-job Vulkan
-  build produced from that checkout and the retained patches; and
+- `$HOME/src/llama.cpp-qwen-apu` is a separate checkout at the same commit with
+  the four replayed qwen-apu patches;
+- `$HOME/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-server` is the
+  one-job Vulkan build produced from the isolated patched checkout; and
 - `$HOME/models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf` is the external,
   hash-pinned model.
 
@@ -47,10 +54,16 @@ and starts no second process on the laptop.
 
 Replace `TARGET` with the SSH host alias or address.
 
-Start the guarded 4K profile only when the desktop user is idle:
+Start the priority-first 4K profile only when the desktop user is idle:
 
 ```sh
 ssh TARGET '$HOME/qwen-laptop-setup/remote/qwen-webui-control.sh start'
+```
+
+Run the retained paced control explicitly:
+
+```sh
+ssh TARGET '$HOME/qwen-laptop-setup/remote/qwen-webui-control.sh start paced-60'
 ```
 
 Read the API key through SSH and enter it in the page:
@@ -67,7 +80,7 @@ Keep the tunnel command running on the client workstation:
 
 Open `http://127.0.0.1:8080`. The initial profile uses the measured 4K
 allocation rung, a 4,096 MiB Vulkan preflight gate, a 512-token response budget,
-and the repository's fixed one-slot, 60 percent model-duty policy.
+and the repository's one-slot `low-serialized` policy.
 
 Inspect status and retained log tails:
 
@@ -81,11 +94,16 @@ Stop the server and its dedicated tmux session:
 ssh TARGET '$HOME/qwen-laptop-setup/remote/qwen-webui-control.sh stop'
 ```
 
-The real 4K Qwen3.5-4B request completed with 3.79 prompt tok/s, 0.677 decode
-tok/s, 49.65% mean aggregate GPU busy, and 72% maximum aggregate GPU busy. The
-16-token response ended during hidden reasoning and produced no user-visible
-answer. The profile proves the guarded transport but remains too slow for daily
-interactive use.
+The retained `paced-60` transport request completed with 3.79 prompt tok/s and
+0.677 decode tok/s. The equal-request priority comparison then measured 11.437
+prompt tok/s and 1.316 decode tok/s under `low-serialized`. The admitted
+16-node `low-async` experiment measured 14.103 prompt tok/s and 2.713 decode
+tok/s while its independent MEDIUM queue stayed below 11.185 ms. The 32-node
+async arm is rejected because one fence reached 20.017 ms. The serialized
+profile remains the default until the 16-node arm passes an external
+desktop-input oracle and a longer thermal soak. Full evidence and percentile
+calculations are in
+`evidence/benchmarks/qwen35-4b-vulkan-priority-comparison.md`.
 
 ## UI selection
 

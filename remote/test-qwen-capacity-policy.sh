@@ -13,15 +13,22 @@ fake_icd=$temporary_directory/radeon_icd.x86_64.json
 : > "$model_path"
 : > "$fake_icd"
 
-QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$output_path \
+QWEN_VULKAN_PROFILE=low-serialized QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$output_path \
     "$policy" "$fake_server" "$model_path" 24576 8080
 
 grep -Fx 'affinity=0' "$output_path" >/dev/null
 grep -Fx 'nice=19' "$output_path" >/dev/null
 grep -Fx 'io=idle' "$output_path" >/dev/null
 grep -Fx 'low=1' "$output_path" >/dev/null
-grep -Fx 'duty=60' "$output_path" >/dev/null
+grep -Fx 'duty=unset' "$output_path" >/dev/null
 grep -Fx 'serialized=1' "$output_path" >/dev/null
+grep -Fx 'max_nodes=32' "$output_path" >/dev/null
+grep -Fx 'profile=low-serialized' "$output_path" >/dev/null
+grep -Fx 'amd_priority=unset' "$output_path" >/dev/null
+grep -Fx 'memory_priority=unset' "$output_path" >/dev/null
+grep -Fx 'allow_graphics=unset' "$output_path" >/dev/null
+grep -Fx 'radv_perftest=unset' "$output_path" >/dev/null
 grep -Fx 'strict=1' "$output_path" >/dev/null
 grep -Fx 'display=unset' "$output_path" >/dev/null
 grep -Fx 'wayland=unset' "$output_path" >/dev/null
@@ -81,6 +88,33 @@ $expected_arguments
 EOF
     exit 1
 fi
+
+profile_output=$temporary_directory/profile-policy.out
+QWEN_VULKAN_PROFILE=paced-60 QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$profile_output \
+    "$policy" "$fake_server" "$model_path" 4096 18081
+grep -Fx 'duty=60' "$profile_output" >/dev/null
+grep -Fx 'serialized=1' "$profile_output" >/dev/null
+grep -Fx 'max_nodes=32' "$profile_output" >/dev/null
+grep -Fx 'profile=paced-60' "$profile_output" >/dev/null
+
+QWEN_VULKAN_PROFILE=low-async QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$profile_output \
+    "$policy" "$fake_server" "$model_path" 4096 18082
+grep -Fx 'duty=unset' "$profile_output" >/dev/null
+grep -Fx 'serialized=unset' "$profile_output" >/dev/null
+grep -Fx 'max_nodes=16' "$profile_output" >/dev/null
+grep -Fx 'profile=low-async' "$profile_output" >/dev/null
+
+if QWEN_VULKAN_PROFILE=unknown QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$profile_output \
+    "$policy" "$fake_server" "$model_path" 4096 18083 \
+    >"$temporary_directory/profile.stdout" \
+    2>"$temporary_directory/profile.stderr"; then
+    printf 'policy accepted an unknown Vulkan profile\n' >&2
+    exit 1
+fi
+grep -F 'unknown Vulkan profile' "$temporary_directory/profile.stderr" >/dev/null
 
 static_path=$temporary_directory/webui
 static_output_path=$temporary_directory/static-policy.out

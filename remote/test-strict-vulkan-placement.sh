@@ -18,10 +18,9 @@ if [ ! -f "$model_path" ]; then
     exit 2
 fi
 
-if [ "${QWEN_ONE_CORE_ACTIVE:-0}" != 1 ]; then
-    renice -n 19 -p $$ >/dev/null
-    QWEN_ONE_CORE_ACTIVE=1 exec taskset -c 0 ionice -c 3 "$0" "$@"
-fi
+renice -n 19 -p $$ >/dev/null
+taskset -pc 0 $$ >/dev/null
+ionice -c 3 -p $$
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 wrapper=$script_directory/radv-low-priority-env.sh
@@ -59,7 +58,8 @@ fi
 grep -F 'selected CPU buffer' "$temporary_directory/cpu-tensor.log" >/dev/null
 
 set +e
-"$wrapper" timeout --signal=TERM 10 "$llama_server_binary" \
+QWEN_VULKAN_PROFILE=paced-60 "$wrapper" \
+    timeout --signal=TERM 10 "$llama_server_binary" \
     --model "$model_path" --fit off --ctx-size 128 --parallel 1 \
     --threads 1 --threads-batch 1 --batch-size 128 --ubatch-size 128 \
     --no-ui --host 127.0.0.1 -lv 10 \
@@ -76,7 +76,7 @@ grep -E 'CPU fallback rejected for graph node [^ ]+ \(GET_ROWS\)' \
 
 positive_log=$temporary_directory/vulkan-positive.log
 response_path=$temporary_directory/response.json
-"$wrapper" "$llama_server_binary" \
+QWEN_VULKAN_PROFILE=paced-60 "$wrapper" "$llama_server_binary" \
     --model "$model_path" --fit off --ctx-size 128 --parallel 1 \
     --threads 1 --threads-batch 1 --batch-size 128 --ubatch-size 128 \
     --no-ui --host 127.0.0.1 -lv 10 \
@@ -86,7 +86,7 @@ server_pid=$!
 
 server_ready=0
 attempt=0
-while [ "$attempt" -lt 50 ]; do
+while [ "$attempt" -lt 300 ]; do
     if curl --silent --fail http://127.0.0.1:18086/health >/dev/null 2>&1; then
         server_ready=1
         break

@@ -6,10 +6,9 @@ if [ "$#" -eq 0 ]; then
     exit 2
 fi
 
-if [ "${QWEN_ONE_CORE_ACTIVE:-0}" != 1 ]; then
-    renice -n 19 -p $$ >/dev/null
-    QWEN_ONE_CORE_ACTIVE=1 exec taskset -c 0 ionice -c 3 "$0" "$@"
-fi
+renice -n 19 -p $$ >/dev/null
+taskset -pc 0 $$ >/dev/null
+ionice -c 3 -p $$
 
 radv_icd=${QWEN_RADV_ICD:-/usr/share/vulkan/icd.d/radeon_icd.x86_64.json}
 if [ ! -r "$radv_icd" ]; then
@@ -19,13 +18,77 @@ fi
 
 unset DISPLAY
 unset WAYLAND_DISPLAY
+unset QWEN_ONE_CORE_ACTIVE
+unset QWEN_GUARD_CPU_ACTIVE
+unset AMD_PRIORITY
+unset AMD_DEBUG
+unset DRI_PRIME
+unset MESA_VK_DEVICE_SELECT
+unset RADV_DEBUG
+unset RADV_PERFTEST
+unset VK_ADD_LAYER_PATH
+unset VK_INSTANCE_LAYERS
+unset VK_LAYER_PATH
+unset VK_LOADER_LAYERS_ENABLE
+unset GGML_VK_ALLOW_GRAPHICS_QUEUE
 unset GGML_VK_ALLOW_SYSMEM_FALLBACK
+unset GGML_VK_ASYNC_USE_TRANSFER_QUEUE
+unset GGML_VK_DEBUG_MARKERS
+unset GGML_VK_DISABLE_ASYNC
+unset GGML_VK_DISABLE_BFLOAT16
+unset GGML_VK_DISABLE_COOPMAT
+unset GGML_VK_DISABLE_COOPMAT2
+unset GGML_VK_DISABLE_COOPMAT2_DECODE_VECTOR
+unset GGML_VK_DISABLE_DOT2
+unset GGML_VK_DISABLE_F16
+unset GGML_VK_DISABLE_FUSION
+unset GGML_VK_DISABLE_GRAPH_OPTIMIZE
+unset GGML_VK_DISABLE_HOST_VISIBLE_VIDMEM
+unset GGML_VK_DISABLE_INTEGER_DOT_PRODUCT
+unset GGML_VK_DISABLE_MMVQ
+unset GGML_VK_DISABLE_MULTI_ADD
+unset GGML_VK_DISABLE_OCP_FP4
+unset GGML_VK_DUTY_CYCLE_PERCENT
+unset GGML_VK_ENABLE_MEMORY_PRIORITY
+unset GGML_VK_FORCE_MAX_ALLOCATION_SIZE
+unset GGML_VK_FORCE_MAX_BUFFER_SIZE
+unset GGML_VK_FORCE_MMVQ
+unset GGML_VK_MEMORY_LOGGER
+unset GGML_VK_SERIALIZE_SUBMISSIONS
+unset GGML_VK_MAX_NODES_PER_SUBMIT
+unset GGML_VK_PERF_LOGGER
+unset GGML_VK_PERF_LOGGER_CONCURRENT
+unset GGML_VK_PERF_LOGGER_FREQUENCY
+unset GGML_VK_PIPELINE_STATS
+unset GGML_VK_PREFER_HOST_MEMORY
+unset GGML_VK_SUBALLOCATION_BLOCK_SIZE
+unset GGML_VK_SYNC_LOGGER
+unset GGML_VK_VISIBLE_DEVICES
 
 export VK_DRIVER_FILES="$radv_icd"
 export VK_ICD_FILENAMES="$radv_icd"
 export GGML_VK_LOW_PRIORITY=1
-export GGML_VK_DUTY_CYCLE_PERCENT=60
-export GGML_VK_SERIALIZE_SUBMISSIONS=1
 export LLAMA_NO_CPU_FALLBACK=1
+
+vulkan_profile=${QWEN_VULKAN_PROFILE:-low-serialized}
+case $vulkan_profile in
+    paced-60)
+        export GGML_VK_DUTY_CYCLE_PERCENT=60
+        export GGML_VK_SERIALIZE_SUBMISSIONS=1
+        export GGML_VK_MAX_NODES_PER_SUBMIT=32
+        ;;
+    low-serialized)
+        export GGML_VK_SERIALIZE_SUBMISSIONS=1
+        export GGML_VK_MAX_NODES_PER_SUBMIT=32
+        ;;
+    low-async)
+        export GGML_VK_MAX_NODES_PER_SUBMIT=16
+        ;;
+    *)
+        printf 'unknown Vulkan profile: %s\n' "$vulkan_profile" >&2
+        exit 2
+        ;;
+esac
+export QWEN_VULKAN_PROFILE=$vulkan_profile
 
 exec "$@"

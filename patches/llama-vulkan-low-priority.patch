@@ -59,15 +59,19 @@
              } else if (strcmp("VK_EXT_device_fault", properties.extensionName) == 0) {
                  device->device_fault = true;
              }
-@@ -6460,6 +6498,7 @@
+@@ -6460,6 +6498,11 @@
          const vk::QueueFlagBits graphics_flag = allow_graphics_queue ? (vk::QueueFlagBits)0 : vk::QueueFlagBits::eGraphics;
          const uint32_t compute_queue_family_index = ggml_vk_find_queue_family_index(queue_family_props, vk::QueueFlagBits::eCompute, graphics_flag, -1, 1);
          const uint32_t transfer_queue_family_index = ggml_vk_find_queue_family_index(queue_family_props, vk::QueueFlagBits::eTransfer, vk::QueueFlagBits::eCompute | graphics_flag, compute_queue_family_index, 1);
-+        const bool low_priority_requested = getenv("GGML_VK_LOW_PRIORITY") != nullptr;
++        const char * low_priority_environment = getenv("GGML_VK_LOW_PRIORITY");
++        if (low_priority_environment != nullptr && strcmp(low_priority_environment, "1") != 0) {
++            throw std::runtime_error("GGML_VK_LOW_PRIORITY accepts only the exact value 1");
++        }
++        const bool low_priority_requested = low_priority_environment != nullptr;
  
          const float priorities[] = { 1.0f, 1.0f };
          device->single_queue = compute_queue_family_index == transfer_queue_family_index && queue_family_props[compute_queue_family_index].queueCount == 1;
-@@ -6491,6 +6530,22 @@
+@@ -6491,6 +6534,22 @@
          internally_synchronized_queues_features.pNext = nullptr;
          internally_synchronized_queues_features.internallySynchronizedQueues = VK_FALSE;
  
@@ -90,7 +94,7 @@
          if (internally_sync_support) {
              last_struct->pNext = (VkBaseOutStructure *)&internally_synchronized_queues_features;
              last_struct = (VkBaseOutStructure *)&internally_synchronized_queues_features;
-@@ -6643,6 +6698,28 @@
+@@ -6643,6 +6702,28 @@
  
          vkGetPhysicalDeviceFeatures2(device->physical_device, &device_features2);
  
@@ -119,7 +123,7 @@
          device->device_fault = device->device_fault && fault_features.deviceFault;
  
          device->has_internally_synchronized_queues = internally_synchronized_queues_features.internallySynchronizedQueues;
-@@ -6662,6 +6739,14 @@
+@@ -6662,6 +6743,14 @@
              device_queue_create_infos.push_back({queue_flags, compute_queue_family_index, 1, priorities});
          }
  
@@ -134,7 +138,7 @@
          device->pipeline_executable_properties_support = pipeline_executable_properties_support;
  
          device->fp16 = device->fp16 && vk12_features.shaderFloat16;
-@@ -6941,7 +7026,21 @@
+@@ -6941,7 +7030,21 @@
              .setQueueCreateInfos(device_queue_create_infos)
              .setPEnabledExtensionNames(device_extensions);
          device_create_info.setPNext(&device_features2);

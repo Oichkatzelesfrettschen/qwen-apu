@@ -2,7 +2,7 @@
 set -eu
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-llama_server=${1:-"${HOME:?}/src/llama.cpp/build-qwen-vulkan/bin/llama-server"}
+llama_server=${1:-"${HOME:?}/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-server"}
 model_path=${2:-"${HOME:?}/models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf"}
 static_path=${3:-"$script_directory/../webui"}
 # The 4K allocation rung consumes 2,724 MiB of measured Vulkan memory and uses
@@ -12,15 +12,20 @@ context_size=${4:-4096}
 required_vulkan_mib=${5:-4096}
 server_port=${6:-8080}
 state_directory=${7:-"${HOME:?}/qwen-webui-state"}
+vulkan_profile=${8:-low-serialized}
 
 umask 077
 mkdir -p "$state_directory"
 server_log=$state_directory/server.log
 telemetry_log=$state_directory/telemetry.log
+graphics_latency_log=$state_directory/graphics-latency.log
+kernel_hazard_log=$state_directory/kernel-hazards.log
 pid_file=$state_directory/server.pid
 status_file=$state_directory/session.status
 api_key_file=$state_directory/api.key
 monitor_pid=""
+latency_watchdog_pid=""
+kernel_hazard_watchdog_pid=""
 server_pid=""
 
 cleanup() {
@@ -28,12 +33,20 @@ cleanup() {
         kill "$monitor_pid" 2>/dev/null || true
         wait "$monitor_pid" 2>/dev/null || true
     fi
+    if [ -n "$latency_watchdog_pid" ]; then
+        kill "$latency_watchdog_pid" 2>/dev/null || true
+        wait "$latency_watchdog_pid" 2>/dev/null || true
+    fi
+    if [ -n "$kernel_hazard_watchdog_pid" ]; then
+        kill "$kernel_hazard_watchdog_pid" 2>/dev/null || true
+        wait "$kernel_hazard_watchdog_pid" 2>/dev/null || true
+    fi
     if [ -n "$server_pid" ]; then
         kill "$server_pid" 2>/dev/null || true
         wait "$server_pid" 2>/dev/null || true
     fi
 }
-trap cleanup HUP INT TERM
+trap cleanup EXIT HUP INT TERM
 
 if [ -s "$pid_file" ]; then
     prior_pid=$(sed -n '1p' "$pid_file")
@@ -56,6 +69,7 @@ fi
 chmod 600 "$api_key_file"
 
 printf 'state=starting utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
+QWEN_VULKAN_PROFILE=$vulkan_profile \
 "$script_directory/run-qwen-capacity-server.sh" \
     "$llama_server" "$model_path" "$context_size" "$required_vulkan_mib" \
     "$server_port" "$static_path" "$api_key_file" >"$server_log" 2>&1 &
@@ -89,13 +103,76 @@ if [ "$ready_for_monitor" -ne 1 ]; then
     exit 1
 fi
 
-"$script_directory/monitor-qwen-runtime.sh" "$server_pid" "$telemetry_log" &
+latency_probe=${QWEN_VULKAN_LATENCY_PROBE:-"$script_directory/../build/vulkan-graphics-service-probe"}
+if [ ! -x "$latency_probe" ]; then
+    printf 'state=failed reason=graphics_latency_probe_unavailable path=%s utc=%s\n' \
+        "$latency_probe" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
+    exit 1
+fi
+
+: >"$graphics_latency_log"
+(
+    unset AMD_PRIORITY DISPLAY WAYLAND_DISPLAY
+    export VK_DRIVER_FILES=${QWEN_RADV_ICD:-/usr/share/vulkan/icd.d/radeon_icd.x86_64.json}
+    export VK_ICD_FILENAMES=$VK_DRIVER_FILES
+    exec taskset -c 1 ionice -c 3 "$latency_probe" \
+        --log "$graphics_latency_log" --watch-pid "$server_pid" \
+        --interval-ms 16 --deadline-us 20000
+) &
+latency_watchdog_pid=$!
+
+latency_ready=0
+attempt=0
+while [ "$attempt" -lt 100 ]; do
+    if grep -F 'probe_start ' "$graphics_latency_log" >/dev/null 2>&1; then
+        latency_ready=1
+        break
+    fi
+    if ! kill -0 "$latency_watchdog_pid" 2>/dev/null; then
+        break
+    fi
+    attempt=$((attempt + 1))
+    sleep 0.1
+done
+if [ "$latency_ready" -ne 1 ]; then
+    printf 'state=failed reason=graphics_latency_probe_not_ready utc=%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
+    exit 1
+fi
+
+"$script_directory/watch-qwen-kernel-hazards.sh" \
+    "$server_pid" "$kernel_hazard_log" &
+kernel_hazard_watchdog_pid=$!
+
+kernel_watch_ready=0
+attempt=0
+while [ "$attempt" -lt 100 ]; do
+    if grep -F 'watch_ready_utc=' "$kernel_hazard_log" >/dev/null 2>&1; then
+        kernel_watch_ready=1
+        break
+    fi
+    if ! kill -0 "$kernel_hazard_watchdog_pid" 2>/dev/null; then
+        break
+    fi
+    attempt=$((attempt + 1))
+    sleep 0.1
+done
+if [ "$kernel_watch_ready" -ne 1 ]; then
+    printf 'state=failed reason=kernel_hazard_watchdog_not_ready utc=%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
+    exit 1
+fi
+
+"$script_directory/monitor-qwen-runtime.sh" "$server_pid" "$telemetry_log" \
+    "$vulkan_profile" "$latency_watchdog_pid" \
+    "$kernel_hazard_watchdog_pid" &
 monitor_pid=$!
-# monitor-qwen-runtime.sh samples Raven2 busy state once per second and
-# terminates the server on the first value above 75 percent. Native Vulkan
-# pacing fixes the model graph duty cycle at 60 percent.
-printf 'state=running server_pid=%s monitor_pid=%s port=%s context=%s utc=%s\n' \
-    "$server_pid" "$monitor_pid" "$server_port" "$context_size" \
+# The paced profile uses the aggregate busy ceiling. The serialized LOW
+# profile uses the MEDIUM graphics-family deadline as its responsiveness gate.
+printf 'state=running server_pid=%s monitor_pid=%s latency_watchdog_pid=%s kernel_hazard_watchdog_pid=%s profile=%s port=%s context=%s utc=%s\n' \
+    "$server_pid" "$monitor_pid" "$latency_watchdog_pid" \
+    "$kernel_hazard_watchdog_pid" "$vulkan_profile" \
+    "$server_port" "$context_size" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
 
 set +e
@@ -103,10 +180,18 @@ wait "$server_pid"
 server_status=$?
 wait "$monitor_pid"
 monitor_status=$?
+wait "$latency_watchdog_pid"
+latency_status=$?
+wait "$kernel_hazard_watchdog_pid"
+kernel_hazard_status=$?
 set -e
 server_pid=""
 monitor_pid=""
-printf 'state=stopped server_status=%s monitor_status=%s utc=%s\n' \
-    "$server_status" "$monitor_status" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+latency_watchdog_pid=""
+kernel_hazard_watchdog_pid=""
+printf 'state=stopped server_status=%s monitor_status=%s latency_status=%s kernel_hazard_status=%s profile=%s utc=%s\n' \
+    "$server_status" "$monitor_status" "$latency_status" \
+    "$kernel_hazard_status" "$vulkan_profile" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     >"$status_file"
 exit "$server_status"

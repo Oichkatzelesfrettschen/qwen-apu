@@ -99,6 +99,14 @@ affect the desktop. Admission still requires compositor/frame responsiveness,
 memory reserve, temperature, and device-loss telemetry under the real model
 workload.
 
+Mesa reads `AMD_PRIORITY` when it creates the amdgpu context, after RADV maps
+the Vulkan request. The qwen-apu wrapper clears that variable so an inherited
+override cannot replace LOW. The llama.cpp patch accepts only the exact value
+`GGML_VK_LOW_PRIORITY=1`; zero, an empty value, and arbitrary strings fail
+before device creation. Linux 7.0 maps `AMDGPU_CTX_PRIORITY_LOW` and
+`AMDGPU_CTX_PRIORITY_VERY_LOW` to the same DRM scheduler and hardware priority,
+so LOW is the lowest distinct class on the running stack.
+
 Upstream issue 23950 records the same desktop-responsiveness need for NVIDIA's
 different occupancy-priority extension. It does not implement or validate the
 AMD global-priority mechanism used here:

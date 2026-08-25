@@ -22,14 +22,14 @@ completion. Treating that entire interval as active GPU time makes the duty
 cycle conservative when CPU-side command work is present. The backend rejects
 a duty-cycle target unless serialized submissions are also active.
 
-The launcher fixes the model target at 60%. The existing runtime monitor still
+The `paced-60` control fixes the model target at 60%. Its runtime monitor still
 terminates the process when aggregate Raven2 busy time first exceeds 75%.
 Raven2 reports one device-wide busy value that includes the compositor, so the
 15-point gap reserves measured headroom for desktop work. LOW global queue
 priority gives the compositor precedence between submissions, while
 `--batch-size 128 --ubatch-size 32` also limits prompt-ingest graph size.
 
-This policy controls model submission duty at intra-graph fence boundaries. It
+This control profile manages model submission duty at intra-graph fence boundaries. It
 does not partition the GPU or promise that an individual command batch never
 reaches full engine occupancy. The LOW queue, short microbatch, serialized
 submission pacer, and aggregate abort form one responsiveness policy.
@@ -51,12 +51,13 @@ The policy fails if any of these observations occurs:
 `remote/test-vulkan-pacing-math.sh` compiles the shared pacing header with
 `-Wall -Wextra -Werror -pedantic`. It verifies disabled behavior, accepted
 boundaries, malformed-input rejection, and exact 75% and 60% idle intervals.
-`remote/verify-llama-patch-series.sh` replays all three patches against commit
+`remote/verify-llama-patch-series.sh` replays all four patches against commit
 `f280b26983ad0fdb705a0d9ebf0503e76f2899b0` and verifies the resulting source
 hashes. `remote/test-qwen-capacity-policy.sh` observes target 60 in the child
 environment and the exact 128/32 batch arguments.
 
-The first real Qwen3.5-4B startup falsified whole-graph pacing: model loading
+The priority-first daily candidate is specified separately in
+`evidence/vulkan-priority-first-policy.md`. The first real Qwen3.5-4B startup falsified whole-graph pacing: model loading
 sampled 32-37% busy, then the warmup graph sampled 97% before reaching its
 end-of-graph sleep and the guard terminated the server. That observation moved
 the sleep boundary into the already bounded serialized submission path. The

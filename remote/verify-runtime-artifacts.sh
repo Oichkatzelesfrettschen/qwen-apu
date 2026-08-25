@@ -6,10 +6,9 @@ if [ "$#" -gt 2 ]; then
     exit 2
 fi
 
-if [ "${QWEN_ONE_CORE_ACTIVE:-0}" != 1 ]; then
-    renice -n 19 -p $$ >/dev/null
-    QWEN_ONE_CORE_ACTIVE=1 exec taskset -c 0 ionice -c 3 "$0" "$@"
-fi
+renice -n 19 -p $$ >/dev/null
+taskset -pc 0 $$ >/dev/null
+ionice -c 3 -p $$
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repository_directory=$(CDPATH='' cd -- "$script_directory/.." && pwd)
@@ -37,9 +36,9 @@ verify_artifact() {
         "$artifact_path" "$actual_bytes" "$actual_sha256"
 }
 
-verify_artifact "$binary_directory/llama-server" 57480016 \
-    2951bdfe1b5c0ecae49c75f38c64f16ba0cce6e57b05f081ffa7c50355aecc13
-verify_artifact "$binary_directory/llama-cli" 57648216 \
-    213c779a9bee040381754b97585ff5115a4bc1bb0e6ce230ac923f453d190cdc
+verify_artifact "$binary_directory/llama-server" 57475792 \
+    3d5b158160b08cf897bb05b47186a13f67e8a17def31012f2f8282f12e95cb08
+verify_artifact "$binary_directory/llama-cli" 57643992 \
+    83cc86e271b7fe784d208c00ca22d1fe6875e7a956790d16b55a9e617d23cc5b
 verify_artifact "$model_path" 2740937888 \
     00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4
