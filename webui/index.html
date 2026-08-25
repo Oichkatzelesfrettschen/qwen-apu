@@ -81,7 +81,7 @@
   <span id="model">connecting</span>
   <span id="ctx">context pending</span>
   <span>Raven2 UMA | LOW-priority Vulkan | service-latency guarded</span>
-  <input class="key" type="password" id="api-key" placeholder="API key" autocomplete="off">
+  <input class="key" type="password" id="api-key" placeholder="API key (only if the server asks)" autocomplete="off">
   <button class="act" id="set-key">set key</button>
   <label class="chip"><input type="checkbox" id="tools"> offer a demo tool</label>
   <button class="act" id="clear">clear</button>
@@ -120,7 +120,7 @@ $('#set-key').onclick = () => {
   apiKey = $('#api-key').value.trim();
   if (apiKey) sessionStorage.setItem('qwen-apu-api-key', apiKey);
   else sessionStorage.removeItem('qwen-apu-api-key');
-  $('#model').textContent = apiKey ? 'key set; connecting' : 'enter API key';
+  $('#model').textContent = apiKey ? 'key set; connecting' : 'connecting';
   void boot();
 };
 $('#api-key').addEventListener('keydown', event => {
@@ -155,14 +155,14 @@ const DEMO_TOOL = [{
 }];
 
 async function boot() {
-  if (!apiKey) {
-    $('#model').textContent = 'enter API key';
-    return;
-  }
+  // The server runs without an API key unless one was configured, so the page
+  // asks for /props first and treats 401 as the request for a credential. A
+  // page that demanded a key up front locked readers out of a keyless server.
   try {
     const response = await fetch('./props', { headers: authHeaders() });
     if (response.status === 401) {
-      $('#model').textContent = 'API key rejected';
+      $('#model').textContent =
+        apiKey ? 'API key rejected' : 'this server wants an API key';
       return;
     }
     if (!response.ok) {

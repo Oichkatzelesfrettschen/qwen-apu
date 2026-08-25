@@ -59,14 +59,21 @@ if [ -s "$pid_file" ]; then
     fi
 fi
 
-if [ ! -s "$api_key_file" ]; then
-    if ! command -v openssl >/dev/null 2>&1; then
-        printf 'openssl is required to create the Web UI API key\n' >&2
-        exit 1
+# QWEN_REQUIRE_API_KEY=1 mints a key and makes llama-server demand it. The
+# default serves without one, because this deployment is a local model on a
+# trusted network and a key there only stands between a reader and the page.
+if [ "${QWEN_REQUIRE_API_KEY:-0}" = 1 ]; then
+    if [ ! -s "$api_key_file" ]; then
+        if ! command -v openssl >/dev/null 2>&1; then
+            printf 'openssl is required to create the Web UI API key\n' >&2
+            exit 1
+        fi
+        openssl rand -hex 32 >"$api_key_file"
     fi
-    openssl rand -hex 32 >"$api_key_file"
+    chmod 600 "$api_key_file"
+else
+    api_key_file=''
 fi
-chmod 600 "$api_key_file"
 
 printf 'state=starting utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
 QWEN_VULKAN_PROFILE=$vulkan_profile \

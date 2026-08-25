@@ -116,7 +116,10 @@ if [ "$ready" -ne 1 ]; then
     exit 1
 fi
 
-api_key=$(sed -n '1p' "$state_directory/api.key")
+api_key=''
+if [ -s "$state_directory/api.key" ]; then
+    api_key=$(sed -n '1p' "$state_directory/api.key")
+fi
 ladder_status=0
 : >"$state_directory/ladder-summary.tsv"
 printf 'depth\tprefill_tok_per_second\tdecode_tok_per_second\tstatus\n' \

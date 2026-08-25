@@ -25,16 +25,9 @@ case $bind_host in
         ;;
 esac
 
-# A loopback listener is reachable only by local accounts, so the API key is
-# optional there. Any wider bind publishes the Vulkan queue to every host on
-# the network, where an unauthenticated caller could occupy the single slot
-# indefinitely, so the key becomes mandatory.
-if [ "$bind_host" != 127.0.0.1 ] && [ "$bind_host" != localhost ] && \
-   [ -z "$api_key_file" ]; then
-    printf 'a non-loopback bind requires an API key file\n' >&2
-    exit 2
-fi
-
+# The API key is optional at every bind address. A key authenticates callers on
+# a shared network; it grants no capability the model itself withholds, so a
+# trusted network serves without one and reaches the page directly.
 if [ -n "$api_key_file" ] && [ -z "$static_path" ]; then
     printf 'an API key file requires a static path\n' >&2
     exit 2
