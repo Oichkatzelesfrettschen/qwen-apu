@@ -83,6 +83,7 @@
   <span>Raven2 UMA | LOW-priority Vulkan | service-latency guarded</span>
   <input class="key" type="password" id="api-key" placeholder="API key (only if the server asks)" autocomplete="off">
   <button class="act" id="set-key">set key</button>
+  <label class="chip"><input type="checkbox" id="reasoning"> reasoning</label>
   <label class="chip"><input type="checkbox" id="tools"> offer a demo tool</label>
   <button class="act" id="clear">clear</button>
 </header>
@@ -109,6 +110,18 @@ let nctx = null;
 let busy = false;
 let apiKey = sessionStorage.getItem('qwen-apu-api-key') || '';
 $('#api-key').value = apiKey;
+
+// Reasoning costs decode tokens at about one per second on this APU, so the
+// choice persists across reloads rather than resetting to on each visit.
+try {
+  $('#reasoning').checked = localStorage.getItem('qwen-apu-reasoning') === 'on';
+} catch { $('#reasoning').checked = false; }
+$('#reasoning').addEventListener('change', () => {
+  try {
+    localStorage.setItem(
+      'qwen-apu-reasoning', $('#reasoning').checked ? 'on' : 'off');
+  } catch { /* a browser refusing storage still honours the live checkbox */ }
+});
 
 function authHeaders(additional = {}) {
   const headers = { ...additional };
@@ -285,6 +298,13 @@ async function send() {
   const body = { model: 'qwen-apu', stream: true, temperature: 0.7,
                  stream_options: { include_usage: true },
                  max_tokens: 512, messages: history };
+  const reasoningOn = $('#reasoning').checked;
+  // Qwen3 emits its <think> block from the chat template, so the switch is a
+  // template argument. reasoning_budget 0 ends the block immediately on builds
+  // that read the OpenAI-side field instead, and both are ignored by a
+  // template that does not offer the option.
+  body.chat_template_kwargs = { enable_thinking: reasoningOn };
+  if (!reasoningOn) body.reasoning_budget = 0;
   if ($('#tools').checked) body.tools = DEMO_TOOL;
 
   const t0 = performance.now();
