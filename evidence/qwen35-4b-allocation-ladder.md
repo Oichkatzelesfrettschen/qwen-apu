@@ -19,9 +19,12 @@ interpolated Vulkan compute buffer.
 | 16K | 2,603.50 MiB | 208.00 MiB | 50.25 MiB | 21.52 MiB | 2,883 MiB | 4,608 MiB | 1,725 MiB |
 | 24K | 2,603.50 MiB | 312.00 MiB | 50.25 MiB | 23.52 MiB | 2,989 MiB | 4,608 MiB | 1,619 MiB |
 
-The 4K row is measured. The 8K, 16K, and 24K rows interpolate between the
-measured 4K and 32K allocations and remain conservative admission estimates
-until a run replaces each one with the values the exact binary reports. The
+The 4K and 24K rows are measured. Loading at `--ctx-size 24576` reports a
+2,974 MiB Vulkan self figure against the 2,989 MiB interpolated estimate, a
+0.5% overstatement, and leaves 12,804 MiB free under a 4,608 MiB gate. The 8K
+and 16K rows interpolate between the measured 4K and 32K allocations and remain
+conservative admission estimates until a run replaces each one with the values
+the exact binary reports. The
 headroom covers recurrent state, graph and scratch buffers, allocator rounding,
 and staging. Any measured allocation above its gate, or any desktop-reserve
 failure, stops escalation to the next depth.
