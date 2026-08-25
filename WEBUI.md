@@ -2,26 +2,54 @@
 
 ## Deployment boundary
 
-The browser runs on the SSH client workstation. The laptop runs one
-`llama-server` process, the existing runtime monitor, and no graphical client:
+The laptop runs one `llama-server` process, the existing runtime monitor, and
+no graphical client. Two deployments differ only in the listener address.
+
+An SSH tunnel keeps both endpoints on loopback and serves the operator alone:
 
 ```text
 local browser -> local 127.0.0.1:8080 -> SSH tunnel
               -> laptop 127.0.0.1:8080 -> guarded llama-server
 ```
 
-The server fixes `--host 127.0.0.1`, `--cors-origins localhost`, one slot, one
-CPU thread, the LOW RADV queue, and strict Vulkan model placement. A generated
-API key lives at `$HOME/qwen-webui-state/api.key` with mode 0600. The browser
-keeps the entered key in tab-scoped session storage. The tunnel binds only the
-client loopback address, so neither HTTP endpoint is exposed to the LAN.
+`QWEN_BIND_HOST=0.0.0.0` serves every browser on the network directly:
+
+```text
+any browser on the LAN -> hp14-dk1xxx.local:8080 -> guarded llama-server
+```
+
+The server fixes one slot, one CPU thread, the LOW RADV queue, and strict
+Vulkan model placement. `QWEN_BIND_HOST` sets the listener and defaults to
+`127.0.0.1`; `QWEN_CORS_ORIGINS` sets the allowed origins and defaults to
+`localhost`. A generated API key lives at `$HOME/qwen-webui-state/api.key` with
+mode 0600, and the browser keeps the entered key in tab-scoped session storage.
+A loopback listener reaches only local accounts, so the key is optional there.
+Any wider bind is refused without one, because a single slot lets an
+unauthenticated caller on the network occupy the GPU indefinitely.
+
+With `--parallel 1` the slot serves one request at a time. A second person
+waits for the first to finish, which at a 24K prompt is minutes. Raising
+`--parallel` divides the KV cache between slots and lowers the context each
+person gets, so the single slot stands.
 
 The default `low-serialized` profile synchronizes each bounded intra-graph
 submission without inserting duty-cycle sleeps. LOW is the lowest distinct
 amdgpu scheduler class on Linux 7.0, and the one-job queue depth exposes a
-scheduling boundary after each short submission. A MEDIUM-priority
-graphics-family probe must receive fence service within 20 ms. The runtime
-terminates the server when the probe misses that deadline or disappears.
+scheduling boundary after each short submission. That priority is what yields
+the desktop the machine: the desktop's own queue outranks inference and
+preempts it. A MEDIUM-priority graphics-family probe submits every 16 ms and
+measures whether the yielding holds, requiring fence service within 20 ms.
+
+`QWEN_LATENCY_MODE` selects what a missed deadline does. `terminate` stops the
+server on the first late frame and is the default for unattended serving.
+`observe` counts the same breaches and lets the run continue. A measurement run
+needs `observe`: the retained idle-serving session recorded a 520 us mean fence
+across 78,177 samples with exactly one sample at 20,976 us, so a ladder that
+saturates the GPU for the better part of an hour would otherwise be ended by a
+single outlier and return no timing at all. A fence that returns anything other
+than success ends the run in both modes, because that is a device fault rather
+than a scheduling delay.
+
 The retained `paced-60` control inserts duty-cycle sleeps and retains the 75%
 aggregate busy stop. The `low-async` experiment uses the same 20 ms MEDIUM
 service deadline as the serialized profile so it isolates the throughput and
