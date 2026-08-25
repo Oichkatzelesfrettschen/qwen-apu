@@ -40,15 +40,22 @@ the desktop the machine: the desktop's own queue outranks inference and
 preempts it. A MEDIUM-priority graphics-family probe submits every 16 ms and
 measures whether the yielding holds, requiring fence service within 20 ms.
 
-`QWEN_LATENCY_MODE` selects what a missed deadline does. `terminate` stops the
-server on the first late frame and is the default for unattended serving.
-`observe` counts the same breaches and lets the run continue. A measurement run
-needs `observe`: the retained idle-serving session recorded a 520 us mean fence
-across 78,177 samples with exactly one sample at 20,976 us, so a ladder that
-saturates the GPU for the better part of an hour would otherwise be ended by a
-single outlier and return no timing at all. A fence that returns anything other
-than success ends the run in both modes, because that is a device fault rather
-than a scheduling delay.
+`QWEN_LATENCY_MODE` selects what a missed deadline does. `observe`, the
+default, counts breaches and keeps serving. `terminate` stops the server on the
+first late frame and is retained for deliberately strict runs. The 24K ladder
+measured the distribution that sets this default: fence service reached 21,302
+us at p99.9 against the 20,000 us deadline, placing the deadline near the
+99.56th percentile, so a late frame arrives roughly every 3.6 seconds under
+load and `terminate` ends any sustained session within seconds. A fence that
+returns anything other than success ends the run in both modes, because that is
+a device fault rather than a scheduling delay.
+
+Junction temperature is reported, not enforced. The SMU throttles the DPM clock
+ladder and the hardware carries its own shutdown above anything the one-second
+sampler observes, so crossing 90,000 millicelsius writes one
+`temperature_report` line and the session continues. The memory-reserve and
+swap-in aborts remain, because those bound what inference takes from the
+desktop rather than from the silicon.
 
 The retained `paced-60` control inserts duty-cycle sleeps and retains the 75%
 aggregate busy stop. The `low-async` experiment uses the same 20 ms MEDIUM

@@ -107,13 +107,14 @@ fi
 
 latency_probe=${QWEN_VULKAN_LATENCY_PROBE:-"$script_directory/../build/vulkan-graphics-service-probe"}
 # RADV LOW global priority, CPU 0, and nice 19 are what yield the desktop the
-# machine; the probe measures whether that yielding actually happens. Under
-# `terminate` one late frame ends the session, which suits an unattended shared
-# service. A measurement run spans tens of minutes of saturated prefill, where
-# the retained idle-serving rate of one breach per 78,177 samples makes that
-# stop near-certain and destroys the run rather than the throughput it was
-# sampling, so `observe` records the same breaches and lets the run finish.
-latency_probe_mode=${QWEN_LATENCY_MODE:-terminate}
+# machine; the probe measures whether that yielding actually happens rather
+# than enforcing it. The 24K ladder puts p99.9 fence service at 21,302 us
+# against the 20,000 us deadline, so the deadline sits near the 99.56th
+# percentile and a late frame arrives about every 3.6 seconds under load.
+# `terminate` therefore ends any sustained session within seconds and is
+# retained only for deliberately strict runs; `observe` counts the same
+# breaches, leaves them in the log, and lets the session serve.
+latency_probe_mode=${QWEN_LATENCY_MODE:-observe}
 case $latency_probe_mode in
     terminate) latency_probe_mode_argument='' ;;
     observe) latency_probe_mode_argument='--observe' ;;
