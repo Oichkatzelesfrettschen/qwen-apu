@@ -78,16 +78,18 @@ printf '%s\n' "$server_pid" >"$pid_file"
 
 ready_for_monitor=0
 attempt=0
-# The preflight runs before radv-low-priority-env.sh applies CPU 0, nice 19, and
-# idle I/O policy. Monitoring starts only after the server PID carries that
-# policy, so startup cannot be misclassified as a scheduling-policy breach.
-while [ "$attempt" -lt 100 ]; do
+# Model loading performs one-time Vulkan allocation and transfer work before the
+# HTTP service can accept inference. Arm the service-latency watchdog only after
+# llama-server reports the model ready, while still requiring the runtime CPU
+# policy before admitting the session.
+while [ "$attempt" -lt 1200 ]; do
     if ! kill -0 "$server_pid" 2>/dev/null; then
         break
     fi
     affinity=$(awk '$1 == "Cpus_allowed_list:" { print $2 }' "/proc/$server_pid/status")
     nice_value=$(ps -o ni= -p "$server_pid" | tr -d ' ')
-    if [ "$affinity" = 0 ] && [ "$nice_value" = 19 ]; then
+    if [ "$affinity" = 0 ] && [ "$nice_value" = 19 ] && \
+       grep -F 'model loaded' "$server_log" >/dev/null 2>&1; then
         ready_for_monitor=1
         break
     fi
