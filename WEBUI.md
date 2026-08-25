@@ -21,11 +21,14 @@ any browser on the LAN -> hp14-dk1xxx.local:8080 -> guarded llama-server
 The server fixes one slot, one CPU thread, the LOW RADV queue, and strict
 Vulkan model placement. `QWEN_BIND_HOST` sets the listener and defaults to
 `127.0.0.1`; `QWEN_CORS_ORIGINS` sets the allowed origins and defaults to
-`localhost`. A generated API key lives at `$HOME/qwen-webui-state/api.key` with
-mode 0600, and the browser keeps the entered key in tab-scoped session storage.
-A loopback listener reaches only local accounts, so the key is optional there.
-Any wider bind is refused without one, because a single slot lets an
-unauthenticated caller on the network occupy the GPU indefinitely.
+`localhost`. The server runs without an API key at every bind address. A key
+authenticates a caller on a shared network and withholds nothing the model
+itself protects, so a local model on a trusted network serves the page
+directly. `QWEN_REQUIRE_API_KEY=1` mints one at
+`$HOME/qwen-webui-state/api.key` with mode 0600 and makes llama-server demand
+it; the browser then keeps the entered key in tab-scoped session storage. The
+page requests `/props` before asking for anything, so it reaches a keyless
+server and prompts only when a server answers 401.
 
 With `--parallel 1` the slot serves one request at a time. A second person
 waits for the first to finish, which at a 24K prompt is minutes. Raising
