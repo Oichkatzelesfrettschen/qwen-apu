@@ -64,6 +64,37 @@ wrong answer rather than a failure. `remote/qwen-launch.sh` searches for the
 projector in the model's own directory, so a checkpoint published without one
 runs text-only instead of borrowing another model's.
 
+## Reasoning span across five prompts
+
+`remote/reasoning-span-probe.sh` drives five fixed prompts with reasoning
+enabled and a 2,048-token ceiling. One deterministic generation reports what a
+model does with one sentence; five report how long it reasons.
+
+| Prompt | base tokens | distill tokens |
+| --- | ---: | ---: |
+| Decimal comparison | 540 | 227 |
+| Elapsed time between two clock readings | 1,109 | 632 |
+| Percentage discount | 502 | 359 |
+| Capital of Australia, with a reason | 2,048 | 568 |
+| 17 percent of 350 | 675 | 325 |
+| **Total** | **4,874** | **2,111** |
+| **Wall clock for the set** | **1,997.2 s** | **737.0 s** |
+| Mean decode tok/s | 2.455 | 2.887 |
+
+The distill reasons shorter on every prompt and finishes the set in 12.3
+minutes against 33.3, a 2.71-fold reduction in wall clock. Its higher mean
+decode rate is not independent of that: a shorter span keeps the KV cache
+shallower for most of the generation, so part of the 17.6% rate difference is
+an effect of the token count rather than a separate advantage. The isolated
+rate comparison over matched spans is the 2.563 against 2.721 measured above.
+
+Four answers are identical and correct in both models. The fifth is not: the
+base spent its entire 2,048-token budget inside the reasoning span and emitted
+**no answer at all** after 830 seconds, while the distill answered correctly in
+568 tokens. On a machine where a token costs 0.4 seconds, a reasoning span that
+fails to terminate is a failure to answer, and this set found one in five
+prompts.
+
 ## Quality is the publisher's measurement, not this repository's
 
 The model card reports mmlu CoT 0.354 to 0.553 and gsm8k_cot 0.850 to 0.785
@@ -74,6 +105,10 @@ and separating 0.850 from 0.785 at conventional significance needs several
 hundred items per model -- a run of about a day per checkpoint. A 20-item or
 60-item sample has a standard error wider than the 6.5-point difference it
 would be asked to resolve, so it would report noise as a verdict.
+
+Three of the five prompts above are arithmetic and both models answered all
+three correctly, which is consistent with parity and far too small to weigh
+against a 6.5-point published difference.
 
 The base model remains the default. The distill is available by argument:
 
