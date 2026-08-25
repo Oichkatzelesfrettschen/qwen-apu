@@ -23,10 +23,17 @@ MAXIMUM_PROMPT_TOKENS = 24_000
 
 
 def post_json(base_url: str, endpoint: str, payload: dict[str, Any], timeout: int) -> Any:
+    headers = {"Content-Type": "application/json"}
+    # The server rejects an unauthenticated caller once it holds an API key
+    # file. The key arrives through the environment so it stays out of the
+    # process arguments that /proc exposes to every account on the host.
+    api_key = os.environ.get("QWEN_API_KEY", "")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     request = urllib.request.Request(
         base_url + endpoint,
         data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:

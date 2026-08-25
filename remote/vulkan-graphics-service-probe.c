@@ -135,7 +135,7 @@ static void print_usage(const char *program_name)
 {
     fprintf(stderr,
             "usage: %s --log PATH [--watch-pid PID] [--samples COUNT] "
-            "[--interval-ms N] [--deadline-us N]\n",
+            "[--interval-ms N] [--deadline-us N] [--observe]\n",
             program_name);
 }
 
@@ -146,6 +146,8 @@ int main(int argument_count, char **argument_values)
     uint64_t sample_limit = 0;
     uint64_t interval_milliseconds = 16;
     uint64_t deadline_microseconds = 20000;
+    bool observe_only = false;
+    uint64_t deadline_breach_count = 0;
     int argument_index;
     FILE *log_file = NULL;
     VkInstance instance = VK_NULL_HANDLE;
@@ -187,6 +189,8 @@ int main(int argument_count, char **argument_values)
                    argument_index + 1 < argument_count) {
             deadline_microseconds = parse_unsigned(
                 "deadline microseconds", argument_values[++argument_index], 1, 60000000);
+        } else if (strcmp(argument, "--observe") == 0) {
+            observe_only = true;
         } else {
             print_usage(argument_values[0]);
             return 2;
@@ -466,11 +470,12 @@ int main(int argument_count, char **argument_values)
             "probe_start realtime_ns=%" PRIu64 " device=%s vendor=0x%04x "
             "device_id=0x%04x queue_family=%u global_priority=MEDIUM "
             "deadline_us=%" PRIu64 " interval_ms=%" PRIu64
-            " watched_pid=%ld\n",
+            " watched_pid=%ld mode=%s\n",
             realtime_nanoseconds(), physical_device_properties.deviceName,
             physical_device_properties.vendorID,
             physical_device_properties.deviceID, queue_family_index,
-            deadline_microseconds, interval_milliseconds, (long)watched_pid);
+            deadline_microseconds, interval_milliseconds, (long)watched_pid,
+            observe_only ? "observe" : "terminate");
 
     while (!stop_requested &&
            (sample_limit == 0 || sample_index < sample_limit)) {
@@ -519,20 +524,33 @@ int main(int argument_count, char **argument_values)
 
         if (result != VK_SUCCESS ||
             elapsed_microseconds > deadline_microseconds) {
+            /* A fence that misses the deadline reports a late frame; the queue
+             * still completed the submission and the next one may proceed. A
+             * non-success result is a device-level fault, so it ends the run
+             * whatever the mode. Observe mode therefore tolerates exactly the
+             * overrun case and counts it. */
+            const bool tolerated = observe_only && result == VK_SUCCESS;
+
+            if (tolerated) {
+                ++deadline_breach_count;
+            }
             fprintf(log_file,
                     "probe_breach realtime_ns=%" PRIu64 " index=%" PRIu64
                     " elapsed_us=%" PRIu64 " deadline_us=%" PRIu64
-                    " result=%d action=SIGTERM\n",
+                    " result=%d action=%s\n",
                     realtime_nanoseconds(), sample_index,
-                    elapsed_microseconds, deadline_microseconds, result);
-            if (watched_pid != 0) {
-                (void)kill(watched_pid, SIGTERM);
+                    elapsed_microseconds, deadline_microseconds, result,
+                    tolerated ? "observe" : "SIGTERM");
+            if (!tolerated) {
+                if (watched_pid != 0) {
+                    (void)kill(watched_pid, SIGTERM);
+                }
+                if (result == VK_TIMEOUT) {
+                    abandon_device_cleanup = true;
+                }
+                exit_status = 3;
+                break;
             }
-            if (result == VK_TIMEOUT) {
-                abandon_device_cleanup = true;
-            }
-            exit_status = 3;
-            break;
         }
 
         if (sample_limit == 0 || sample_index < sample_limit) {
@@ -543,10 +561,10 @@ int main(int argument_count, char **argument_values)
     fprintf(log_file,
             "probe_stop realtime_ns=%" PRIu64 " samples=%" PRIu64
             " mean_elapsed_us=%" PRIu64 " maximum_elapsed_us=%" PRIu64
-            " status=%d\n",
+            " deadline_breaches=%" PRIu64 " status=%d\n",
             realtime_nanoseconds(), sample_index,
             sample_index == 0 ? 0 : total_elapsed_microseconds / sample_index,
-            maximum_elapsed_microseconds, exit_status);
+            maximum_elapsed_microseconds, deadline_breach_count, exit_status);
 
 cleanup:
     if (!abandon_device_cleanup && device != VK_NULL_HANDLE) {

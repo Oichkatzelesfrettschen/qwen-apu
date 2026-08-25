@@ -13,9 +13,30 @@ server_port=${4:-8080}
 static_path=${5:-}
 api_key_file=${6:-}
 
-if { [ -n "$static_path" ] && [ -z "$api_key_file" ]; } || \
-   { [ -z "$static_path" ] && [ -n "$api_key_file" ]; }; then
-    printf 'static path and API key file must be supplied together\n' >&2
+bind_host=${QWEN_BIND_HOST:-127.0.0.1}
+cors_origins=${QWEN_CORS_ORIGINS:-localhost}
+
+case $bind_host in
+    127.0.0.1 | localhost | 0.0.0.0) ;;
+    *[!0-9.]* | '')
+        printf 'bind host must be 127.0.0.1, localhost, 0.0.0.0, or an IPv4 address: %s\n' \
+            "$bind_host" >&2
+        exit 2
+        ;;
+esac
+
+# A loopback listener is reachable only by local accounts, so the API key is
+# optional there. Any wider bind publishes the Vulkan queue to every host on
+# the network, where an unauthenticated caller could occupy the single slot
+# indefinitely, so the key becomes mandatory.
+if [ "$bind_host" != 127.0.0.1 ] && [ "$bind_host" != localhost ] && \
+   [ -z "$api_key_file" ]; then
+    printf 'a non-loopback bind requires an API key file\n' >&2
+    exit 2
+fi
+
+if [ -n "$api_key_file" ] && [ -z "$static_path" ]; then
+    printf 'an API key file requires a static path\n' >&2
     exit 2
 fi
 
@@ -79,10 +100,10 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 
 set -- "$llama_server" \
     --model "$model_path" \
-    --host 127.0.0.1 \
+    --host "$bind_host" \
     --port "$server_port" \
     --alias qwen-apu \
-    --cors-origins localhost
+    --cors-origins "$cors_origins"
 
 if [ -n "$static_path" ]; then
     set -- "$@" --path "$static_path" --ui

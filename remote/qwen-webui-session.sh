@@ -106,6 +106,23 @@ if [ "$ready_for_monitor" -ne 1 ]; then
 fi
 
 latency_probe=${QWEN_VULKAN_LATENCY_PROBE:-"$script_directory/../build/vulkan-graphics-service-probe"}
+# RADV LOW global priority, CPU 0, and nice 19 are what yield the desktop the
+# machine; the probe measures whether that yielding actually happens. Under
+# `terminate` one late frame ends the session, which suits an unattended shared
+# service. A measurement run spans tens of minutes of saturated prefill, where
+# the retained idle-serving rate of one breach per 78,177 samples makes that
+# stop near-certain and destroys the run rather than the throughput it was
+# sampling, so `observe` records the same breaches and lets the run finish.
+latency_probe_mode=${QWEN_LATENCY_MODE:-terminate}
+case $latency_probe_mode in
+    terminate) latency_probe_mode_argument='' ;;
+    observe) latency_probe_mode_argument='--observe' ;;
+    *)
+        printf 'QWEN_LATENCY_MODE must be terminate or observe: %s\n' \
+            "$latency_probe_mode" >&2
+        exit 2
+        ;;
+esac
 if [ ! -x "$latency_probe" ]; then
     printf 'state=failed reason=graphics_latency_probe_unavailable path=%s utc=%s\n' \
         "$latency_probe" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
@@ -119,7 +136,7 @@ fi
     export VK_ICD_FILENAMES=$VK_DRIVER_FILES
     exec taskset -c 1 ionice -c 3 "$latency_probe" \
         --log "$graphics_latency_log" --watch-pid "$server_pid" \
-        --interval-ms 16 --deadline-us 20000
+        --interval-ms 16 --deadline-us 20000 $latency_probe_mode_argument
 ) &
 latency_watchdog_pid=$!
 
@@ -171,10 +188,11 @@ fi
 monitor_pid=$!
 # The paced profile uses the aggregate busy ceiling. The serialized LOW
 # profile uses the MEDIUM graphics-family deadline as its responsiveness gate.
-printf 'state=running server_pid=%s monitor_pid=%s latency_watchdog_pid=%s kernel_hazard_watchdog_pid=%s profile=%s port=%s context=%s utc=%s\n' \
+printf 'state=running server_pid=%s monitor_pid=%s latency_watchdog_pid=%s kernel_hazard_watchdog_pid=%s profile=%s host=%s port=%s context=%s latency_mode=%s utc=%s\n' \
     "$server_pid" "$monitor_pid" "$latency_watchdog_pid" \
     "$kernel_hazard_watchdog_pid" "$vulkan_profile" \
-    "$server_port" "$context_size" \
+    "${QWEN_BIND_HOST:-127.0.0.1}" "$server_port" "$context_size" \
+    "$latency_probe_mode" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
 
 set +e

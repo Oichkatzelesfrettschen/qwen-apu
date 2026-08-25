@@ -11,12 +11,23 @@ remain gated by a reviewed simulation and rollback path.
 - The desktop remains the highest-priority workload.
 - The model process uses CPU 0 at nice 19 and idle I/O; safety guards use CPU 1.
 - Model tensors execute through RADV Vulkan. CPU tensor fallback stops the run.
-- The server binds to `127.0.0.1`, uses one slot, and starts without MTP.
+- The server defaults to `127.0.0.1`, uses one slot, and starts without MTP.
+  `QWEN_BIND_HOST` widens the listener for shared serving, and any bind
+  beyond loopback requires the locally generated `api.key`.
 - The operational server context cannot exceed 24,576 tokens, and benchmark
   prompts cannot exceed 24,000 tokens.
 - `paced-60` terminates above 75% aggregate GPU busy. The serialized and async
   LOW profiles use a 20 ms MEDIUM graphics-family service deadline and treat
   100% busy as an observation.
+- Desktop responsiveness comes from RADV LOW global priority, CPU 0, and nice
+  19, which let the desktop's own queue preempt inference. The graphics-family
+  probe measures whether that preemption holds. `QWEN_LATENCY_MODE=terminate`
+  stops the server on the first late frame and remains the default for
+  unattended serving; `observe` records the same breaches and lets a run
+  finish, because a measurement run spanning tens of minutes of saturated
+  prefill would otherwise be ended by a single outlier and yield no timing.
+- A fence that returns anything other than `VK_SUCCESS` ends the run in both
+  modes. Observe mode tolerates a deadline overrun, not a device fault.
 - Qwen3.8-27B is the primary quality benchmark, not the presumed daily model.
 - Sudo credentials are entered only by the user in the `qwen-admin` tmux
   session. Passwords never cross SSH commands, logs, or project files.

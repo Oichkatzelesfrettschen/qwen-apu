@@ -1,31 +1,38 @@
 # Qwen3.5 4B Allocation Ladder
 
-The Q4_K_M artifact is 2,740,937,888 bytes, or about 2,614 MiB. Q8 K plus Q4
-V cache requires about 52 MiB at 4K, 416 MiB at 32K, 832 MiB at 64K, and 1,664
-MiB at 128K for the eight full-attention layers.
+The Q4_K_M artifact is 2,740,937,888 bytes, or about 2,614 MiB. The eight
+full-attention layers carry a Q8 K plus Q4 V cache costing 13 MiB per 1,024
+tokens, so the cache scales linearly with the served context.
 
-The provisional live Vulkan gates are:
+## Operational rungs
 
-| Context | Weights plus KV | Required Vulkan gate | Unassigned headroom |
-|---:|---:|---:|---:|
-| 4K | 2,666 MiB | 4,096 MiB | 1,430 MiB |
-| 32K | 3,030 MiB | 4,608 MiB | 1,578 MiB |
-| 64K | 3,446 MiB | 5,120 MiB | 1,674 MiB |
-| 128K | 4,278 MiB | 6,144 MiB | 1,866 MiB |
+`qwen-capacity-policy.sh` caps the served context at 24,576 tokens and
+`run-depth-benchmark.py` caps a benchmark prompt at 24,000 tokens. The served
+ladder therefore spans 4K through 24K. Each estimate below sums the measured
+model buffer, the linear KV term, the measured recurrent state, and the
+interpolated Vulkan compute buffer.
 
-The headroom covers recurrent state, graph and scratch buffers, allocator
-rounding, and staging. These values are conservative admission estimates, not
-measured consumption. Each successful allocation run replaces its estimate
-with the model, KV, compute, host, and peak process values from the exact
-binary. Any measured allocation above the gate or any desktop-reserve failure
-stops escalation to the next depth.
+| Context | Model | KV | Recurrent state | Vulkan compute | Estimated Vulkan self | Required gate | Headroom |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 4K | 2,603.50 MiB | 52.00 MiB | 50.25 MiB | 18.52 MiB | 2,724 MiB | 4,096 MiB | 1,372 MiB |
+| 8K | 2,603.50 MiB | 104.00 MiB | 50.25 MiB | 19.52 MiB | 2,777 MiB | 4,096 MiB | 1,319 MiB |
+| 16K | 2,603.50 MiB | 208.00 MiB | 50.25 MiB | 21.52 MiB | 2,883 MiB | 4,608 MiB | 1,725 MiB |
+| 24K | 2,603.50 MiB | 312.00 MiB | 50.25 MiB | 23.52 MiB | 2,989 MiB | 4,608 MiB | 1,619 MiB |
 
-The 4K rung proves architecture, quant, KV type, Flash Attention, queue, and
-strict-placement compatibility without generation. The 32K, 64K, and 128K
-allocation rungs follow only after the preceding kernel hazard scan remains
-clean. Prompt-prefill and decode benchmarks are separate later gates.
+The 4K row is measured. The 8K, 16K, and 24K rows interpolate between the
+measured 4K and 32K allocations and remain conservative admission estimates
+until a run replaces each one with the values the exact binary reports. The
+headroom covers recurrent state, graph and scratch buffers, allocator rounding,
+and staging. Any measured allocation above its gate, or any desktop-reserve
+failure, stops escalation to the next depth.
 
 ## Measured allocation results
+
+The 4K, 32K, 64K, and 128K rungs were measured while establishing that the
+architecture, quant, KV type, Flash Attention, queue, and strict-placement
+choices hold together. The 32K, 64K, and 128K depths exceed the 24,576 token
+operating ceiling; they are retained as the evidence that fixes the linear KV
+term and the Vulkan compute slope used above, not as served configurations.
 
 All four rungs pass with Q8 K, Q4 V, Flash Attention, one slot, zero context
 checkpoints, zero RAM cache, strict Vulkan placement, and zero matching kernel
