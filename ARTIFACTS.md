@@ -14,7 +14,7 @@ The Git copies replace the private laptop hostname with `qwen-laptop`, the
 machine-local home prefix with `$HOME`, and network MAC addresses with
 `<mac>`. `evidence/PRE_SANITIZATION_SHA256SUMS` records the imported artifact
 hashes before the repository-wide identifier pass. Exact raw originals remain
-in the untracked working mirror and on the source host.
+on the source host.
 
 ## Exact artifacts
 
