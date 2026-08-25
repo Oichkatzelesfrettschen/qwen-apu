@@ -24,7 +24,13 @@ if pgrep -x llama-server >/dev/null 2>&1; then
     exit 2
 fi
 
+# Vision is on when the projector is present, since a projector that exists and
+# is not loaded is the same as no vision at all.
+mmproj=${QWEN_MMPROJ:-"${HOME:?}/models/Qwen3.5-4B-GGUF/mmproj-F16.gguf"}
+[ -f "$mmproj" ] || mmproj=''
+
 QWEN_BIND_HOST=$bind_host QWEN_SERVER_PORT=$server_port \
+QWEN_MMPROJ=$mmproj \
     "$control" start "$profile"
 
 attempt=0

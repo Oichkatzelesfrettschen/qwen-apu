@@ -108,6 +108,26 @@ if [ -n "$api_key_file" ]; then
     set -- "$@" --api-key-file "$api_key_file"
 fi
 
+# The projector turns images into embeddings the language model consumes; a
+# text GGUF alone never gains vision. It must come from the same checkpoint as
+# the language weights, which download-qwen35-4b-mmproj.sh pins to the same
+# repository revision. Offloading it to Vulkan costs about 672 MiB of a heap
+# with over 12 GiB free, and the alternative is running a vision encoder on two
+# CPU cores.
+if [ -n "${QWEN_MMPROJ:-}" ]; then
+    if [ ! -f "$QWEN_MMPROJ" ]; then
+        printf 'projector is not a regular file: %s\n' "$QWEN_MMPROJ" >&2
+        exit 2
+    fi
+    set -- "$@" --mmproj "$QWEN_MMPROJ"
+    if [ "${QWEN_MMPROJ_OFFLOAD:-1}" = 0 ]; then
+        set -- "$@" --no-mmproj-offload
+    fi
+    if [ -n "${QWEN_IMAGE_MAX_TOKENS:-}" ]; then
+        set -- "$@" --image-max-tokens "$QWEN_IMAGE_MAX_TOKENS"
+    fi
+fi
+
 set -- "$@" \
     --log-verbosity 4 \
     --device Vulkan0 \

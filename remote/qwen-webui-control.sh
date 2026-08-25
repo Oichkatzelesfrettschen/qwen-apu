@@ -32,6 +32,13 @@ required_vulkan_mib=${QWEN_REQUIRED_VULKAN_MIB:-4608}
 bind_host=${QWEN_BIND_HOST:-127.0.0.1}
 latency_mode=${QWEN_LATENCY_MODE:-observe}
 server_port=${QWEN_SERVER_PORT:-8080}
+# llama-ui is a SvelteKit build produced on a machine with Node and copied here
+# as static files, so the laptop serves it without a build toolchain or a second
+# process. QWEN_STATIC_PATH selects it against the hand-written diagnostic page.
+static_path=${QWEN_STATIC_PATH:-"$script_directory/../webui-llama-ui"}
+if [ ! -f "$static_path/index.html" ]; then
+    static_path=$script_directory/../webui
+fi
 pid_file=$state_directory/server.pid
 status_file=$state_directory/session.status
 
@@ -52,6 +59,13 @@ case $action in
         # tmux runs the new session from its server's environment, not this
         # shell's, so submission settings must travel in the command itself.
         forwarded_environment=''
+        # The projector and its image budget must survive the tmux boundary too.
+        for forwarded_name in QWEN_MMPROJ QWEN_MMPROJ_OFFLOAD QWEN_IMAGE_MAX_TOKENS; do
+            eval "forwarded_value=\${$forwarded_name:-}"
+            if [ -n "$forwarded_value" ]; then
+                forwarded_environment="$forwarded_environment $forwarded_name=$forwarded_value"
+            fi
+        done
         for forwarded_name in GGML_VK_MAX_NODES_PER_SUBMIT \
                               GGML_VK_SERIALIZE_SUBMISSIONS \
                               GGML_VK_ALLOW_GRAPHICS_QUEUE \
@@ -62,7 +76,7 @@ case $action in
             fi
         done
         tmux -L "$tmux_socket" new-session -d -s "$tmux_session" \
-            "env $forwarded_environment QWEN_BIND_HOST=\"$bind_host\" QWEN_LATENCY_MODE=\"$latency_mode\" $script_directory/qwen-webui-session.sh \"\$HOME/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-server\" \"\$HOME/models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf\" \"$script_directory/../webui\" $context_size $required_vulkan_mib $server_port \"$state_directory\" \"$profile\""
+            "env $forwarded_environment QWEN_BIND_HOST=\"$bind_host\" QWEN_LATENCY_MODE=\"$latency_mode\" $script_directory/qwen-webui-session.sh \"\$HOME/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-server\" \"\$HOME/models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf\" \"$static_path\" $context_size $required_vulkan_mib $server_port \"$state_directory\" \"$profile\""
         printf 'started tmux_socket=%s tmux_session=%s profile=%s host=%s port=%s context=%s latency_mode=%s\n' \
             "$tmux_socket" "$tmux_session" "$profile" "$bind_host" \
             "$server_port" "$context_size" "$latency_mode"
