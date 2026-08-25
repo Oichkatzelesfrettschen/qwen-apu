@@ -16,11 +16,12 @@ and current GPU memory and core clock states. It sends SIGTERM when:
 - sampled GPU busy percentage exceeds 75%; or
 - the amdgpu busy, GTT, or VRAM telemetry paths become unreadable.
 
-The 75% check is a fail-closed ceiling, not smooth rate control. RADV global
-priority orders competing queues but exposes no per-process utilization quota.
-The monitor terminates a run on the first sample above the ceiling. A future
-benchmark requires llama.cpp microbatch pacing that proves sustained GPU busy
-at or below 75% before its tok/s result is admitted.
+The 75% check remains a fail-closed aggregate ceiling. RADV global priority
+orders competing queues but exposes no per-process utilization quota. The
+native Vulkan patch synchronizes each bounded intra-graph submission and
+inserts enough idle time for a 60% model duty cycle. The 15-point gap leaves measured capacity for the
+compositor because the amdgpu busy counter covers the complete GPU. Source:
+`evidence/vulkan-duty-cycle-policy.md`.
 
 `remote/watch-qwen-kernel-hazards.sh` starts from the cached-sudo
 `qwen-admin:admin.0` TTY and follows only new kernel records. It sends SIGTERM

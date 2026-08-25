@@ -31,8 +31,15 @@ thread.
 - static libraries; and
 - one Ninja job under one-core affinity, nice level 19, and idle I/O priority.
 
+The retained Vulkan patch makes pacing opt-in and preserves upstream behavior
+when its environment variable is absent. The production wrapper selects 60%,
+and the build runs the warning-clean pacing math test after both executables
+link.
+
 The server still exposes its localhost HTTP API. Disabling the embedded Web UI
-removes a GUI payload but does not remove the headless server.
+removes a GUI payload but does not remove the headless server. The same binary
+retains `--path`, so the guarded interactive profile serves the tracked static
+panel without rebuilding or adding another laptop process.
 
 ## Runtime enforcement boundary
 

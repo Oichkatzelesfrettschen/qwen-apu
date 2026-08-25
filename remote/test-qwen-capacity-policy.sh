@@ -20,6 +20,8 @@ grep -Fx 'affinity=0' "$output_path" >/dev/null
 grep -Fx 'nice=19' "$output_path" >/dev/null
 grep -Fx 'io=idle' "$output_path" >/dev/null
 grep -Fx 'low=1' "$output_path" >/dev/null
+grep -Fx 'duty=60' "$output_path" >/dev/null
+grep -Fx 'serialized=1' "$output_path" >/dev/null
 grep -Fx 'strict=1' "$output_path" >/dev/null
 grep -Fx 'display=unset' "$output_path" >/dev/null
 grep -Fx 'wayland=unset' "$output_path" >/dev/null
@@ -30,6 +32,10 @@ expected_arguments='--model
 127.0.0.1
 --port
 8080
+--alias
+qwen-apu
+--cors-origins
+localhost
 --no-ui
 --log-verbosity
 4
@@ -52,9 +58,9 @@ off
 --threads-batch
 1
 --batch-size
-512
---ubatch-size
 128
+--ubatch-size
+32
 --flash-attn
 on
 --cache-type-k
@@ -75,6 +81,59 @@ $expected_arguments
 EOF
     exit 1
 fi
+
+static_path=$temporary_directory/webui
+static_output_path=$temporary_directory/static-policy.out
+api_key_file=$temporary_directory/api.key
+mkdir -p "$static_path"
+: > "$static_path/index.html"
+printf 'synthetic-test-key\n' >"$api_key_file"
+chmod 600 "$api_key_file"
+QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$static_output_path \
+    "$policy" "$fake_server" "$model_path" 4096 18080 "$static_path" \
+    "$api_key_file"
+grep -Fx 'argument=--path' "$static_output_path" >/dev/null
+grep -Fx "argument=$static_path" "$static_output_path" >/dev/null
+grep -Fx 'argument=--ui' "$static_output_path" >/dev/null
+grep -Fx 'argument=--api-key-file' "$static_output_path" >/dev/null
+grep -Fx "argument=$api_key_file" "$static_output_path" >/dev/null
+if grep -Fx 'argument=--no-ui' "$static_output_path" >/dev/null; then
+    printf 'static policy disabled the Web UI\n' >&2
+    exit 1
+fi
+
+if QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$output_path \
+    "$policy" "$fake_server" "$model_path" 4096 18080 \
+    "$temporary_directory/missing-webui" "$api_key_file" \
+    >"$temporary_directory/static-path.stdout" \
+    2>"$temporary_directory/static-path.stderr"; then
+    printf 'policy accepted a static path without index.html\n' >&2
+    exit 1
+fi
+grep -F 'static path must contain index.html' \
+    "$temporary_directory/static-path.stderr" >/dev/null
+
+empty_key_file=$temporary_directory/empty-api.key
+: >"$empty_key_file"
+if QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$output_path \
+    "$policy" "$fake_server" "$model_path" 4096 18080 "$static_path" \
+    "$empty_key_file" >"$temporary_directory/api-key.stdout" \
+    2>"$temporary_directory/api-key.stderr"; then
+    printf 'policy accepted an empty API key file\n' >&2
+    exit 1
+fi
+grep -F 'API key file must be a non-empty regular file' \
+    "$temporary_directory/api-key.stderr" >/dev/null
+
+if QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$output_path \
+    "$policy" "$fake_server" "$model_path" 4096 18080 "$static_path" \
+    >"$temporary_directory/unpaired-static.stdout" \
+    2>"$temporary_directory/unpaired-static.stderr"; then
+    printf 'policy accepted a static path without an API key\n' >&2
+    exit 1
+fi
+grep -F 'static path and API key file must be supplied together' \
+    "$temporary_directory/unpaired-static.stderr" >/dev/null
 
 if LLAMA_ARG_N_PARALLEL=2 QWEN_RADV_ICD=$fake_icd \
     QWEN_POLICY_TEST_OUTPUT=$output_path \

@@ -26,12 +26,17 @@ fi
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 wrapper=$script_directory/radv-low-priority-env.sh
 temporary_directory=$(mktemp -d)
+evidence_directory=${QWEN_TEST_EVIDENCE_DIRECTORY:-}
 server_pid=""
 
 cleanup() {
     if [ -n "$server_pid" ]; then
         kill "$server_pid" 2>/dev/null || true
         wait "$server_pid" 2>/dev/null || true
+    fi
+    if [ -n "$evidence_directory" ]; then
+        mkdir -p "$evidence_directory"
+        cp -f "$temporary_directory"/* "$evidence_directory"/ 2>/dev/null || true
     fi
     rm -rf "$temporary_directory"
 }
@@ -116,9 +121,11 @@ grep -F '"tokens_predicted":2' "$response_path" >/dev/null
 grep -F 'Vulkan0 model buffer size' "$positive_log" >/dev/null
 grep -F 'Vulkan0 KV buffer size' "$positive_log" >/dev/null
 grep -F 'Vulkan0 compute buffer size' "$positive_log" >/dev/null
+grep -F 'global queue priority = LOW' "$positive_log" >/dev/null
+grep -F 'duty cycle = 60%' "$positive_log" >/dev/null
 if grep -F 'CPU fallback rejected' "$positive_log" >/dev/null; then
     printf 'strict Vulkan completion reached a CPU graph node\n' >&2
     exit 1
 fi
 
-printf 'cpu_tensor_rejection=accepted cpu_graph_rejection=accepted strict_vulkan_completion=accepted\n'
+printf 'cpu_tensor_rejection=accepted cpu_graph_rejection=accepted strict_vulkan_completion=accepted duty_cycle=60 low_priority=accepted\n'

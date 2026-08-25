@@ -6,6 +6,7 @@ if [ "${QWEN_ONE_CORE_ACTIVE:-0}" != 1 ]; then
     QWEN_ONE_CORE_ACTIVE=1 exec taskset -c 0 ionice -c 3 "$0" "$@"
 fi
 
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 source_directory=${1:-"${HOME:?}/src/llama.cpp"}
 build_directory=${2:-$source_directory/build-qwen-vulkan}
 expected_commit=f280b26983ad0fdb705a0d9ebf0503e76f2899b0
@@ -71,6 +72,7 @@ cmake -S "$source_directory" -B "$build_directory" -G Ninja \
     -DGGML_VULKAN=ON
 
 cmake --build "$build_directory" --parallel 1 --target llama-server llama-cli
+"$script_directory/test-vulkan-pacing-math.sh" "$source_directory"
 
-printf 'build_commit=%s build_directory=%s cpu_backend=required vulkan_backend=enabled parallel_jobs=1\n' \
+printf 'build_commit=%s build_directory=%s cpu_backend=required vulkan_backend=enabled duty_cycle_test=accepted parallel_jobs=1\n' \
     "$actual_commit" "$build_directory"

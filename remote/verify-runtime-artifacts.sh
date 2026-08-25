@@ -37,9 +37,9 @@ verify_artifact() {
         "$artifact_path" "$actual_bytes" "$actual_sha256"
 }
 
-verify_artifact "$binary_directory/llama-server" 57467440 \
-    9c31bf00b548ac1bc7f7cb775afb3e06ee0d20eb0293ebaf2e0b6d20a5a1020f
-verify_artifact "$binary_directory/llama-cli" 57639736 \
-    74afcb3bad505d181989fa4daf715525db1b0b2e4d2fe240d3542ad4c961a788
+verify_artifact "$binary_directory/llama-server" 57480016 \
+    2951bdfe1b5c0ecae49c75f38c64f16ba0cce6e57b05f081ffa7c50355aecc13
+verify_artifact "$binary_directory/llama-cli" 57648216 \
+    213c779a9bee040381754b97585ff5115a4bc1bb0e6ce230ac923f453d190cdc
 verify_artifact "$model_path" 2740937888 \
     00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4

@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>qwen-apu</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<!--
+  llama-server serves this front end from --path, so the laptop runs no second
+  web service or graphical process. The browser runs on the SSH client machine;
+  the Raven2 APU keeps its shared DDR4 and graphics queues for inference and the
+  existing desktop. The pinned build omits upstream's embedded SvelteKit assets
+  but retains the static-file and OpenAI-compatible API routes.
+
+  Reasoning is shown, folded, beside the answer. A model can spend a whole small
+  token budget reasoning and return empty answer content. The separate display
+  distinguishes that result from a dead server.
+
+  A text file is tokenized by this server before it is attached. The count comes
+  from the loaded Qwen tokenizer rather than a prose character ratio. There is
+  no file API: the browser reads the bytes and places them in the prompt, and
+  the server refuses a prompt that exceeds the active context.
+
+  Server timings are preferred when the stream supplies them. Browser-derived
+  rates remain interactive diagnostics rather than admitted benchmark results.
+  The native Vulkan backend paces bounded intra-graph submissions to a 60
+  percent duty cycle. The runtime monitor separately terminates the server on
+  the first aggregate GPU busy sample above 75 percent.
+-->
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfaf8; --fg: #1a1a19; --dim: #6b6a66; --line: #e2e0da;
+    --mine: #eceae4; --warn: #8a5a00; --bad: #a03020;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#16161a; --fg:#e6e5e2; --dim:#9a9892; --line:#2c2c32;
+            --mine:#23232a; --warn:#d0a040; --bad:#e08070; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.55 system-ui,sans-serif;
+         display:flex; flex-direction:column; height:100dvh; }
+  header { padding:.6rem 1rem; border-bottom:1px solid var(--line); display:flex;
+           gap:1rem; align-items:center; flex-wrap:wrap; }
+  header b { font-weight:600; }
+  header span { color:var(--dim); font-size:13px; }
+  #log { flex:1; overflow-y:auto; padding:1rem; display:flex; flex-direction:column; gap:1rem; }
+  .turn { max-width:min(52rem,100%); }
+  .turn.me { align-self:flex-end; background:var(--mine); padding:.5rem .8rem; border-radius:.6rem; }
+  .who { font-size:12px; color:var(--dim); margin-bottom:.2rem; }
+  .body { white-space:pre-wrap; overflow-wrap:anywhere; }
+  details.think { margin:.3rem 0 .5rem; border-left:2px solid var(--line); padding-left:.6rem; }
+  details.think summary { cursor:pointer; color:var(--dim); font-size:13px; }
+  details.think .body { color:var(--dim); font-size:13px; }
+  pre.tool { background:var(--mine); padding:.5rem .7rem; border-radius:.4rem;
+             overflow-x:auto; font-size:13px; margin:.4rem 0; }
+  .meta { font-size:12px; color:var(--dim); margin-top:.3rem; }
+  .meta.bad { color:var(--bad); }
+  footer { border-top:1px solid var(--line); padding:.6rem 1rem; display:flex;
+           flex-direction:column; gap:.5rem; }
+  #attached { display:flex; gap:.5rem; flex-wrap:wrap; }
+  .chip { font-size:12px; background:var(--mine); border-radius:.4rem; padding:.2rem .5rem;
+          display:flex; gap:.4rem; align-items:center; }
+  .chip.over { color:var(--bad); }
+  .chip button { border:0; background:none; color:inherit; cursor:pointer; font-size:14px; padding:0; }
+  .row { display:flex; gap:.5rem; align-items:flex-end; }
+  textarea { flex:1; resize:none; font:inherit; padding:.5rem .7rem; border-radius:.5rem;
+             border:1px solid var(--line); background:var(--bg); color:var(--fg); min-height:2.6rem; }
+  button.act { font:inherit; padding:.5rem .9rem; border-radius:.5rem; border:1px solid var(--line);
+               background:var(--mine); color:var(--fg); cursor:pointer; }
+  button.act:disabled { opacity:.5; cursor:default; }
+  input.key { width:13rem; margin-left:auto; font:13px system-ui,sans-serif; padding:.35rem .5rem;
+              border:1px solid var(--line); border-radius:.4rem; background:var(--bg); color:var(--fg); }
+  label.file { cursor:pointer; }
+  input[type=file] { display:none; }
+</style>
+</head>
+
+<body>
+
+<header>
+  <b>qwen-apu</b>
+  <span id="model">connecting</span>
+  <span id="ctx">context pending</span>
+  <span>Raven2 UMA | model duty 60% | aggregate abort above 75%</span>
+  <input class="key" type="password" id="api-key" placeholder="API key" autocomplete="off">
+  <button class="act" id="set-key">set key</button>
+  <label class="chip"><input type="checkbox" id="tools"> offer a demo tool</label>
+  <button class="act" id="clear">clear</button>
+</header>
+
+<div id="log"></div>
+
+<footer>
+  <div id="attached"></div>
+  <div class="row">
+    <label class="file chip">attach
+      <input type="file" id="file" multiple accept="text/*,.md,.txt,.log,.csv,.json,.py,.c,.h,.rs,.sh">
+    </label>
+    <textarea id="input" rows="1" placeholder="Ask. Shift+Enter for a newline."></textarea>
+    <button class="act" id="send">send</button>
+  </div>
+</footer>
+
+<script>
+const $ = s => document.querySelector(s);
+const logEl = $('#log');
+let history = [];
+let attachments = [];   // {name, text, tokens}
+let nctx = null;
+let busy = false;
+let apiKey = sessionStorage.getItem('qwen-apu-api-key') || '';
+$('#api-key').value = apiKey;
+
+function authHeaders(additional = {}) {
+  const headers = { ...additional };
+  if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
+  return headers;
+}
+
+$('#set-key').onclick = () => {
+  apiKey = $('#api-key').value.trim();
+  if (apiKey) sessionStorage.setItem('qwen-apu-api-key', apiKey);
+  else sessionStorage.removeItem('qwen-apu-api-key');
+  $('#model').textContent = apiKey ? 'key set; connecting' : 'enter API key';
+};
+
+async function serverTokenCount(text) {
+  const response = await fetch('./tokenize', {
+    method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({ content: text, add_special: false })
+  });
+  if (!response.ok) throw new Error(`tokenizer returned HTTP ${response.status}`);
+  const result = await response.json();
+  if (!Array.isArray(result.tokens)) throw new Error('tokenizer returned no token array');
+  return result.tokens.length;
+}
+
+const DEMO_TOOL = [{
+  type: "function",
+  function: {
+    name: "get_weather",
+    description: "Current weather for a named city.",
+    parameters: {
+      type: "object",
+      properties: {
+        city: { type: "string", description: "City name" },
+        unit: { type: "string", enum: ["celsius", "fahrenheit"] }
+      },
+      required: ["city"]
+    }
+  }
+}];
+
+async function boot() {
+  // /props can answer with a loading message while the Q4 model is entering the
+  // APU's shared-memory Vulkan allocation. Poll until the served context exists.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const response = await fetch('./props', { headers: authHeaders() });
+      if (response.status === 401) {
+        $('#model').textContent = 'enter API key';
+        await new Promise(r => setTimeout(r, 2000));
+        continue;
+      }
+      const p = await response.json();
+      nctx = p.default_generation_settings?.n_ctx ?? p.n_ctx ?? null;
+      if (nctx) {
+        $('#model').textContent = (p.model_path || '').split('/').pop() || 'model';
+        $('#ctx').textContent = nctx.toLocaleString() + ' token context';
+        renderAttached();
+        return;
+      }
+      $('#model').textContent = p.message || 'loading';
+    } catch {
+      $('#model').textContent = 'no /props; is llama-server running?';
+    }
+    if (attempt > 240) { $('#model').textContent = 'gave up waiting for /props'; return; }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+}
+boot();
+
+function chip(text, over, onRemove) {
+  const c = document.createElement('span');
+  c.className = 'chip' + (over ? ' over' : '');
+  c.append(text);
+  const b = document.createElement('button');
+  b.textContent = 'remove';
+  b.onclick = onRemove;
+  c.append(b);
+  return c;
+}
+
+function renderAttached() {
+  const box = $('#attached');
+  box.textContent = '';
+  let total = 0;
+  attachments.forEach(a => total += a.tokens);
+  attachments.forEach((a, i) => {
+    const over = nctx && total > nctx * 0.9;
+    box.append(chip(
+      `${a.name} -- ${a.tokens.toLocaleString()} tokens`,
+      over, () => { attachments.splice(i, 1); renderAttached(); }));
+  });
+  if (attachments.length && nctx && total > nctx * 0.9) {
+    const w = document.createElement('span');
+    w.className = 'chip over';
+    w.textContent = `about ${total.toLocaleString()} tokens against a ${nctx.toLocaleString()} context; the server will refuse this with a 400`;
+    box.append(w);
+  }
+}
+
+$('#file').onchange = async e => {
+  for (const f of e.target.files) {
+    const text = await f.text();
+    try {
+      const tokens = await serverTokenCount(text);
+      attachments.push({ name: f.name, text, tokens });
+    } catch (error) {
+      window.alert(`Could not attach ${f.name}: ${error.message || error}`);
+    }
+  }
+  e.target.value = '';
+  renderAttached();
+};
+
+function turn(who, cls) {
+  const d = document.createElement('div');
+  d.className = 'turn' + (cls ? ' ' + cls : '');
+  const w = document.createElement('div');
+  w.className = 'who'; w.textContent = who;
+  const b = document.createElement('div');
+  b.className = 'body';
+  d.append(w, b);
+  logEl.append(d);
+  logEl.scrollTop = logEl.scrollHeight;
+  return { root: d, body: b };
+}
+
+$('#clear').onclick = () => { history = []; logEl.textContent = ''; };
+
+$('#input').addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+});
+$('#send').onclick = send;
+
+async function send() {
+  if (busy) return;
+  const text = $('#input').value.trim();
+  if (!text && !attachments.length) return;
+
+  let prompt = text;
+  for (const f of attachments) {
+    prompt = `--- ${f.name} ---\n${f.text}\n--- end ${f.name} ---\n\n` + prompt;
+  }
+  const content = prompt;
+
+  const shown = text + (attachments.length
+    ? '\n' + attachments.map(a => `[${a.name}]`).join(' ') : '');
+  turn('you', 'me').body.textContent = shown;
+  history.push({ role: 'user', content });
+  $('#input').value = '';
+  attachments = [];
+  renderAttached();
+
+  busy = true; $('#send').disabled = true;
+  const t = turn('qwen');
+  const think = document.createElement('details');
+  think.className = 'think';
+  const sum = document.createElement('summary');
+  sum.textContent = 'reasoning';
+  const tb = document.createElement('div');
+  tb.className = 'body';
+  think.append(sum, tb);
+  let thinkShown = false;
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  t.root.append(meta);
+
+  const body = { model: 'qwen-apu', stream: true, temperature: 0.7,
+                 stream_options: { include_usage: true },
+                 max_tokens: 512, messages: history };
+  if ($('#tools').checked) body.tools = DEMO_TOOL;
+
+  const t0 = performance.now();
+  let first = null, streamChunks = 0, completionTokens = null;
+  let serverTimings = null, answer = '', reasoning = '', finish = null;
+  const toolCalls = {};
+  try {
+    const resp = await fetch('./v1/chat/completions', {
+      method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) {
+      const detail = await resp.text();
+      throw new Error(`HTTP ${resp.status}. ${detail.slice(0, 300)}`);
+    }
+    const reader = resp.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        if (line === 'data: [DONE]') continue;
+        let d; try { d = JSON.parse(line.slice(6)); } catch { continue; }
+        if (d.usage?.completion_tokens !== undefined) completionTokens = d.usage.completion_tokens;
+        if (d.timings) serverTimings = d.timings;
+        const ch = d.choices?.[0]; if (!ch) continue;
+        if (ch.finish_reason) finish = ch.finish_reason;
+        const delta = ch.delta || {};
+        for (const tc of delta.tool_calls || []) {
+          const k = tc.index ?? 0;
+          toolCalls[k] ||= { name: '', args: '' };
+          if (tc.function?.name) toolCalls[k].name += tc.function.name;
+          if (tc.function?.arguments) toolCalls[k].args += tc.function.arguments;
+        }
+        if (delta.reasoning_content) {
+          if (first === null) first = performance.now();
+          streamChunks++; reasoning += delta.reasoning_content; tb.textContent = reasoning;
+          if (!thinkShown) { t.root.insertBefore(think, t.body); thinkShown = true; }
+        }
+        if (delta.content) {
+          if (first === null) first = performance.now();
+          streamChunks++; answer += delta.content; t.body.textContent = answer;
+        }
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+    }
+  } catch (err) {
+    meta.className = 'meta bad';
+    meta.textContent = String(err.message || err);
+    busy = false; $('#send').disabled = false;
+    return;
+  }
+
+  const calls = Object.values(toolCalls);
+  if (calls.length) {
+    const pre = document.createElement('pre');
+    pre.className = 'tool';
+    pre.textContent = calls.map(c => `${c.name}(${c.args})`).join('\n');
+    t.root.insertBefore(pre, meta);
+  }
+
+  const total = (performance.now() - t0) / 1000;
+  const ttft = first ? (first - t0) / 1000 : null;
+  const browserDecodeSeconds = first ? (performance.now() - first) / 1000 : null;
+  const rate = serverTimings?.predicted_per_second ??
+    (browserDecodeSeconds && completionTokens ? completionTokens / browserDecodeSeconds : null);
+  const bits = [];
+  if (serverTimings?.prompt_per_second !== undefined) {
+    bits.push(`${serverTimings.prompt_per_second.toFixed(1)} tok/s prefill`);
+  } else if (ttft !== null) {
+    bits.push(`time to first token ${ttft.toFixed(2)}s`);
+  }
+  if (rate !== null) bits.push(`${rate.toFixed(1)} tok/s decode`);
+  if (completionTokens !== null) {
+    bits.push(`${completionTokens} generated tokens in ${total.toFixed(1)}s`);
+  } else {
+    bits.push(`${streamChunks} streamed chunks in ${total.toFixed(1)}s`);
+  }
+  // A non-stop finish is a budget or a tool hand-off, not a wrong answer, and
+  // saying so is the difference between reading a truncation as a model failure
+  // and reading it as a harness limit.
+  if (finish && finish !== 'stop') bits.push(`ended on ${finish}`);
+  if (!answer && reasoning) bits.push('the answer is empty; the model spent the budget reasoning');
+  meta.textContent = bits.join(' | ');
+
+  const msg = { role: 'assistant', content: answer };
+  if (calls.length) {
+    msg.tool_calls = calls.map((c, i) => ({
+      id: `call_${i}`, type: 'function',
+      function: { name: c.name, arguments: c.args }
+    }));
+  }
+  history.push(msg);
+  busy = false; $('#send').disabled = false;
+  $('#input').focus();
+}
+</script>
+</body>
+</html>

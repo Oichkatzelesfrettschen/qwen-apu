@@ -74,11 +74,24 @@ but keep all expert weights resident. Their weight footprint conflicts with the
 measured 15.46 GiB Vulkan budget and the desktop reserve. Active parameter count
 does not make them admission candidates.
 
-The 27B benchmark lineage remains
-https://huggingface.co/unsloth/Qwen3.8-27B-GGUF. Its initial capacity arm is
-`UD-Q2_K_XL`, its practical-quality arm is `UD-IQ3_XXS`, and `UD-Q4_K_M` is the
-high-quality control. No 27B download occurs before the live desktop reserve,
-Vulkan budget, build, and launcher gates pass.
+The 27B benchmark lineage is pinned to revision
+`4ca720788d1e01f1bff70c033e0d0028fd02e502` of
+https://huggingface.co/unsloth/Qwen3.8-27B-GGUF. The repository declares
+Apache-2.0. Each file requires resumable download, exact byte-count validation,
+and SHA-256 validation before llama.cpp opens it.
+
+| Candidate | Bytes | GiB | SHA-256 | Role |
+| --- | ---: | ---: | --- | --- |
+| `Qwen3.8-27B-UD-Q2_K_XL.gguf` | 9,828,981,664 | 9.153 | `fd4730dd8aad070517978752b63d530aeb1740d2283cab9fa24f1e404032ddb0` | Maximum-speed resident candidate |
+| `Qwen3.8-27B-UD-IQ3_XXS.gguf` | 10,934,860,704 | 10.186 | `c0b7c3038681ed2e3040456c1dd45f9858b6c2290bed172c70388a94874f3eee` | Likely speed and quality frontier |
+| `Qwen3.8-27B-UD-IQ3_S.gguf` | 12,040,883,104 | 11.214 | `d847e2c1e4aa276e4b7b8e9ad7628050e61e165d49ab995407bc36677a6f3864` | Higher-quality resident candidate |
+| `Qwen3.8-27B-UD-IQ4_XS.gguf` | 14,252,845,984 | 13.274 | `40fac4050e940397dbf13087afd50f4734a11805bf9d65ef8ddd7483470e6199` | Compact four-bit candidate |
+
+The file sizes in decimal GB are 9.83, 10.93, 12.04, and 14.25. Binary GiB
+values govern RAM and Vulkan budgeting. Each candidate starts at 4K through the
+same authenticated Web server profile. A candidate advances to 24K only after
+its 4K load, prompt, decode, memory, temperature, hardware-hazard, and 75% GPU
+guard gates pass.
 
 ## Non-Qwen comparators
 

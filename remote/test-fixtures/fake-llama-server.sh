@@ -11,6 +11,8 @@ fi
     printf 'nice=%s\n' "$(ps -o ni= -p $$ | tr -d ' ')"
     printf 'io=%s\n' "$(ionice -p $$)"
     printf 'low=%s\n' "${GGML_VK_LOW_PRIORITY:-unset}"
+    printf 'duty=%s\n' "${GGML_VK_DUTY_CYCLE_PERCENT:-unset}"
+    printf 'serialized=%s\n' "${GGML_VK_SERIALIZE_SUBMISSIONS:-unset}"
     printf 'strict=%s\n' "${LLAMA_NO_CPU_FALLBACK:-unset}"
     printf 'display=%s\n' "${DISPLAY-unset}"
     printf 'wayland=%s\n' "${WAYLAND_DISPLAY-unset}"

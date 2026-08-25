@@ -235,6 +235,8 @@ remain gated by a reviewed simulation and rollback path.
 - [x] Define a live preflight gate for MemAvailable, swap use, Vulkan budget,
   and desktop VRAM use. Evidence: `remote/model-memory-preflight.sh` and
   `evidence/model-memory-preflight.md`.
+- [x] Define one 4K host and Vulkan admission gate for each requested
+  Qwen3.8-27B quant. Evidence: `evidence/qwen38-27b-4k-admission.md`.
 - [x] Define provisional Qwen3.5-4B Vulkan allocation gates for 4K, 32K, 64K,
   and 128K. Evidence: `evidence/qwen35-4b-allocation-ladder.md`.
 - [x] Define the operator abort command and numeric resource thresholds before
@@ -357,14 +359,33 @@ remain gated by a reviewed simulation and rollback path.
   `evidence/capacity-server-policy.md`.
 - [x] Enforce one-core affinity, absolute nice 19, and idle I/O scheduling.
   Evidence: the remote policy test observes CPU 0, nice 19, and idle I/O.
+- [x] Add an opt-in native Vulkan submission pacer at each completed intra-graph
+  fence.
+  Evidence: `patches/llama-vulkan-duty-cycle.patch` and
+  `evidence/vulkan-duty-cycle-policy.md`.
+- [x] Fix the model duty cycle at 60% beneath the 75% aggregate abort boundary.
+  Evidence: the policy test observes `GGML_VK_DUTY_CYCLE_PERCENT=60` after the
+  wrapper replaces inherited environment state.
+- [x] Bound interactive prompt bursts to 32-token Vulkan microbatches. Evidence:
+  the closed argument surface fixes batch 128 and microbatch 32.
+- [x] Verify pacing arithmetic and invalid-input rejection with compiler
+  warnings treated as errors. Evidence: `remote/test-vulkan-pacing-math.sh`.
 - [x] Enforce localhost-only binding and one inference slot. Evidence: the
   closed argument surface fixes `--host 127.0.0.1` and `--parallel 1`.
 - [x] Reject server contexts above 24,576 tokens and benchmark prompts above
   24,000 tokens. Evidence: both boundary tests pass and a 32K launch is
   rejected before model load.
-- [x] Disable the Web UI at build time and runtime. Evidence: both UI build
-  switches are off, no asset directory or HTML payload remains, and the closed
-  argument surface supplies `--no-ui`.
+- [x] Disable embedded Web UI assets at build time and in the default capacity
+  runtime. Evidence: both UI build switches are off, no embedded HTML payload
+  remains, and a launch without a validated static path supplies `--no-ui`.
+- [x] Admit an APU-specific static UI only through the closed runtime surface.
+  Evidence: `remote/test-qwen-capacity-policy.sh` requires `--path`, `--ui`,
+  localhost CORS, and a non-empty API-key file together.
+- [x] Bind both ends of client access to loopback and require SSH transport.
+  Evidence: `remote/connect-qwen-webui.sh` fixes both forwarding addresses to
+  `127.0.0.1` and rejects privileged or malformed ports.
+- [x] Keep the browser and all graphical work on the client machine. Evidence:
+  `WEBUI.md` defines a same-process static server and no remote GUI command.
 - [x] Enforce zero checkpoints and zero RAM cache for capacity runs. Evidence:
   the closed argument surface fixes both values to zero.
 - [x] Enforce no context shift and no MTP for initial runs. Evidence: the closed
@@ -390,6 +411,18 @@ remain gated by a reviewed simulation and rollback path.
 - [x] Terminate the server on the first GPU busy sample above 75%. Evidence:
   the one-second monitor and synthetic 76% negative test return the documented
   `gpu_busy_percent_breached` reason.
+- [x] Rebuild the pinned remote binaries with the Vulkan duty-cycle patch.
+  Evidence: the warnings-as-errors one-job build completed at pinned llama.cpp
+  commit `f280b26983ad0fdb705a0d9ebf0503e76f2899b0`.
+- [x] Verify the real model path reports LOW queue priority and 60% duty.
+  Evidence: the server log records the Raven2 device, all model layers on
+  `Vulkan0`, and `duty cycle = 60%`.
+- [x] Measure aggregate GPU busy, prompt tok/s, and decode tok/s through one
+  guarded 4K Web UI request. Evidence:
+  `evidence/benchmarks/qwen35-4b-webui-serialized/summary.md` records 3.79 prompt
+  tok/s, 0.677 decode tok/s, 49.65% mean GPU busy, and 72% maximum GPU busy.
+- [ ] Measure desktop input latency through an external headless latency oracle.
+  Manual impressions do not satisfy this row.
 - [x] Retain command, environment, model hash, build identity, telemetry, kernel
   delta, exit status, and stop reason for every run. Evidence:
   `evidence/benchmarks/qwen35-4b-c32k-partial-summary.md` links the retained
@@ -403,8 +436,31 @@ remain gated by a reviewed simulation and rollback path.
   `evidence/qwen35-4b-download-admission.md`.
 - [ ] Admit the Qwen3.5-4B daily candidate only when host and desktop reserve
   gates pass.
-- [ ] Admit Qwen3.8-27B IQ3_XXS only after the daily-model runtime and memory
-  telemetry gates pass.
+- [x] Download and verify Qwen3.8-27B `UD-Q2_K_XL` at the pinned source
+  revision. Evidence: 9,828,981,664 bytes and SHA-256
+  `fd4730dd8aad070517978752b63d530aeb1740d2283cab9fa24f1e404032ddb0`.
+- [ ] Run Qwen3.8-27B `UD-Q2_K_XL` at 4K through the guarded Web server. Record
+  load time, prompt tok/s, decode tok/s, GPU samples, memory, temperature,
+  hazards, and output-quality result. The live preflight rejects the present
+  14.70 GB MemAvailable against a 24.86 GB loading requirement while accepting
+  the Vulkan budget; the model remains unopened.
+- [ ] ACTIVE: Download and verify Qwen3.8-27B `UD-IQ3_XXS` at the pinned source
+  revision. Evidence: exact byte count, SHA-256, and Apache-2.0 license.
+- [ ] Run Qwen3.8-27B `UD-IQ3_XXS` at 4K through the guarded Web server. Record
+  load time, prompt tok/s, decode tok/s, GPU samples, memory, temperature,
+  hazards, and output-quality result.
+- [ ] Download and verify Qwen3.8-27B `UD-IQ3_S` at the pinned source revision.
+  Evidence: exact byte count, SHA-256, and Apache-2.0 license.
+- [ ] Run Qwen3.8-27B `UD-IQ3_S` at 4K through the guarded Web server. Record
+  load time, prompt tok/s, decode tok/s, GPU samples, memory, temperature,
+  hazards, and output-quality result.
+- [ ] Download and verify Qwen3.8-27B `UD-IQ4_XS` at the pinned source revision.
+  Evidence: exact byte count, SHA-256, and Apache-2.0 license.
+- [ ] Run Qwen3.8-27B `UD-IQ4_XS` at 4K through the guarded Web server. Record
+  load time, prompt tok/s, decode tok/s, GPU samples, memory, temperature,
+  hazards, and output-quality result.
+- [ ] Advance a passing Qwen3.8-27B candidate from 4K to 24K only after the
+  measured 4K working set preserves the 4 GiB desktop reserve.
 - [x] Download through tmux with one-core verification and idle I/O priority.
   Evidence: `evidence/runtime-logs/qwen-qwen35-4b-download.log`.
 - [x] SHA-256 verify the complete artifact before llama.cpp opens it. Evidence:
@@ -435,8 +491,10 @@ remain gated by a reviewed simulation and rollback path.
 - [x] Prohibit 64K, 96K, and 128K operational launches under the 24K cap.
   Capacity-only allocation evidence remains historical and does not authorize
   prompt ingestion.
-- [ ] ACTIVE: Implement and prove llama.cpp microbatch pacing that holds GPU
-  busy at or below 75% without raising queue priority.
+- [x] Implement and prove llama.cpp intra-graph submission pacing that holds
+  the measured 4K request below 75% without raising queue priority.
+- [ ] Quantify the standalone serialization cost with a real-model
+  control that independently preserves the 75% aggregate GPU guard.
 - [ ] Run the guarded 24K prefill and fixed-depth decode gate only after the
   75% pacing gate passes and the desktop is free of user-visible impact.
 - [ ] Review retained 24K memory, hazard, fallback, speed, and desktop evidence.
@@ -471,9 +529,18 @@ remain gated by a reviewed simulation and rollback path.
   persistence.
 - [ ] Add unit tests for prefix equality, mutation rejection, and delta append.
 - [ ] Add integration tests for 100K-plus append-only multi-turn operation.
-- [ ] Evaluate a Debian-installable CLI, TUI, and lightweight local GUI client.
-- [ ] Select the client that preserves desktop priority and requires no remote
-  GUI control.
+- [x] Audit llama.cpp's embedded UI, Open WebUI, LibreChat, LobeHub, and the
+  existing qwen-lab diagnostic panel from their primary sources.
+- [x] Select the same-process qwen-apu static panel for the first test. It runs
+  the browser on the client, adds no laptop service, and uses exact server-side
+  token counts.
+- [x] Start the guarded 4K Web UI after the submission pacer passes the 75% GPU
+  gate. Evidence: the authenticated real-model request completes with a 72%
+  maximum aggregate GPU sample.
+- [ ] Evaluate a Debian-installable CLI and TUI after the Web UI path proves the
+  API, reasoning display, cancellation, and timing surfaces.
+- [ ] Run Open WebUI on the client workstation only if persistent history, RAG,
+  or multi-user controls justify its additional services.
 
 ## Closure
 

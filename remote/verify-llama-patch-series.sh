@@ -30,10 +30,12 @@ git -C "$temporary_directory/llama.cpp" checkout --quiet --detach \
     "$expected_commit"
 git -C "$temporary_directory/llama.cpp" apply --check \
     "$patch_directory/llama-vulkan-low-priority.patch" \
-    "$patch_directory/llama-no-cpu-fallback.patch"
+    "$patch_directory/llama-no-cpu-fallback.patch" \
+    "$patch_directory/llama-vulkan-duty-cycle.patch"
 git -C "$temporary_directory/llama.cpp" apply \
     "$patch_directory/llama-vulkan-low-priority.patch" \
-    "$patch_directory/llama-no-cpu-fallback.patch"
+    "$patch_directory/llama-no-cpu-fallback.patch" \
+    "$patch_directory/llama-vulkan-duty-cycle.patch"
 git -C "$temporary_directory/llama.cpp" diff --check
 
 verify_source() {
@@ -48,8 +50,10 @@ verify_source() {
     printf 'patch_replay_match=%s sha256=%s\n' "$relative_path" "$actual_sha256"
 }
 
-verify_source 71b037b1f46022d2550a5067a11dac10ddf87e4357af168255ab83a2da017800 \
+verify_source 18e66e9dcfdf59cd02e84a5a0038ce8fa72fdfd65f48af696851f8bd6cf53277 \
     ggml/src/ggml-vulkan/ggml-vulkan.cpp
+verify_source 16abd2face079cad962bb722026d7418e65de67c18c1e1f954df733c1598a70a \
+    ggml/src/ggml-vulkan/ggml-vulkan-pacing.h
 verify_source ecc818cdce4a7265f6f932962c325a582f42b91cb2661916fa28b5a79a49d1ad \
     src/llama-context.cpp
 verify_source d0d6c8725891ac4baf68fd947ab4be75cc93ba37b1e988ca1c556881a49d0abc \
