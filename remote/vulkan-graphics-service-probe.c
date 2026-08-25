@@ -524,12 +524,16 @@ int main(int argument_count, char **argument_values)
 
         if (result != VK_SUCCESS ||
             elapsed_microseconds > deadline_microseconds) {
-            /* A fence that misses the deadline reports a late frame; the queue
-             * still completed the submission and the next one may proceed. A
-             * non-success result is a device-level fault, so it ends the run
-             * whatever the mode. Observe mode therefore tolerates exactly the
-             * overrun case and counts it. */
-            const bool tolerated = observe_only && result == VK_SUCCESS;
+            /* The deadline is also the vkWaitForFences timeout, so a frame
+             * that runs long returns VK_TIMEOUT rather than VK_SUCCESS with a
+             * large elapsed time. VK_TIMEOUT and an over-deadline success are
+             * therefore the two forms of a late frame; every other result is a
+             * device-level fault that ends the run whatever the mode. */
+            const bool late_frame =
+                result == VK_TIMEOUT ||
+                (result == VK_SUCCESS &&
+                 elapsed_microseconds > deadline_microseconds);
+            const bool tolerated = observe_only && late_frame;
 
             if (tolerated) {
                 ++deadline_breach_count;
@@ -550,6 +554,26 @@ int main(int argument_count, char **argument_values)
                 }
                 exit_status = 3;
                 break;
+            }
+            if (result == VK_TIMEOUT) {
+                /* The submission is still in flight, so the next iteration
+                 * cannot reset this fence until it signals. Drain it under a
+                 * bound far above any scheduling delay; exceeding that bound
+                 * is a stalled queue rather than a late frame. */
+                result = vkWaitForFences(device, 1, &fence, VK_TRUE,
+                                         UINT64_C(5000000000));
+                if (result != VK_SUCCESS) {
+                    fprintf(log_file,
+                            "probe_stall realtime_ns=%" PRIu64 " index=%"
+                            PRIu64 " result=%d action=SIGTERM\n",
+                            realtime_nanoseconds(), sample_index, result);
+                    if (watched_pid != 0) {
+                        (void)kill(watched_pid, SIGTERM);
+                    }
+                    abandon_device_cleanup = true;
+                    exit_status = 3;
+                    break;
+                }
             }
         }
 
