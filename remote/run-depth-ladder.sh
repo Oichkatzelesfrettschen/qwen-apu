@@ -50,7 +50,7 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 case $profile in
-    paced-60 | low-serialized | low-async) ;;
+    paced-60 | low-serialized | low-async | custom) ;;
     *)
         printf 'unknown Vulkan profile: %s\n' "$profile" >&2
         exit 2

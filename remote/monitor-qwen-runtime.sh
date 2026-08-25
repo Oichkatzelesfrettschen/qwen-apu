@@ -43,7 +43,7 @@ case $vulkan_profile in
         # responsiveness stop condition for the continuously submitted profile.
         maximum_gpu_busy_percent=100
         ;;
-    low-async)
+    low-async | custom)
         maximum_gpu_busy_percent=100
         ;;
     *)

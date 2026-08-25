@@ -32,7 +32,7 @@ status_file=$state_directory/session.status
 case $action in
     start)
         case $profile in
-            paced-60 | low-serialized | low-async) ;;
+            paced-60 | low-serialized | low-async | custom) ;;
             *)
                 printf 'unknown Vulkan profile: %s\n' "$profile" >&2
                 exit 2
@@ -43,8 +43,20 @@ case $action in
             exit 2
         fi
         mkdir -p "$state_directory"
+        # tmux runs the new session from its server's environment, not this
+        # shell's, so submission settings must travel in the command itself.
+        forwarded_environment=''
+        for forwarded_name in GGML_VK_MAX_NODES_PER_SUBMIT \
+                              GGML_VK_SERIALIZE_SUBMISSIONS \
+                              GGML_VK_ALLOW_GRAPHICS_QUEUE \
+                              GGML_VK_DUTY_CYCLE_PERCENT; do
+            eval "forwarded_value=\${$forwarded_name:-}"
+            if [ -n "$forwarded_value" ]; then
+                forwarded_environment="$forwarded_environment $forwarded_name=$forwarded_value"
+            fi
+        done
         tmux -L "$tmux_socket" new-session -d -s "$tmux_session" \
-            "env QWEN_BIND_HOST=\"$bind_host\" QWEN_LATENCY_MODE=\"$latency_mode\" $script_directory/qwen-webui-session.sh \"\$HOME/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-server\" \"\$HOME/models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf\" \"$script_directory/../webui\" $context_size $required_vulkan_mib $server_port \"$state_directory\" \"$profile\""
+            "env $forwarded_environment QWEN_BIND_HOST=\"$bind_host\" QWEN_LATENCY_MODE=\"$latency_mode\" $script_directory/qwen-webui-session.sh \"\$HOME/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-server\" \"\$HOME/models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf\" \"$script_directory/../webui\" $context_size $required_vulkan_mib $server_port \"$state_directory\" \"$profile\""
         printf 'started tmux_socket=%s tmux_session=%s profile=%s host=%s port=%s context=%s latency_mode=%s\n' \
             "$tmux_socket" "$tmux_session" "$profile" "$bind_host" \
             "$server_port" "$context_size" "$latency_mode"

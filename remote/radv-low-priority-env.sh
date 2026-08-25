@@ -16,6 +16,13 @@ if [ ! -r "$radv_icd" ]; then
     exit 1
 fi
 
+# The unset block below scrubs the ambient environment so a named profile
+# always means one thing. `custom` still needs its inputs, so record them
+# before the scrub and restore them from these copies afterwards.
+requested_max_nodes_per_submit=${GGML_VK_MAX_NODES_PER_SUBMIT:-}
+requested_serialize_submissions=${GGML_VK_SERIALIZE_SUBMISSIONS:-}
+requested_allow_graphics_queue=${GGML_VK_ALLOW_GRAPHICS_QUEUE:-}
+
 unset DISPLAY
 unset WAYLAND_DISPLAY
 unset QWEN_ONE_CORE_ACTIVE
@@ -83,6 +90,21 @@ case $vulkan_profile in
         ;;
     low-async)
         export GGML_VK_MAX_NODES_PER_SUBMIT=16
+        ;;
+    custom)
+        # The named profiles fix both submission settings together, which makes
+        # them useless for measuring either one alone. `custom` restores only
+        # what the caller asked for, so a sweep can vary node count and
+        # serialization independently and attribute the result.
+        if [ -n "$requested_max_nodes_per_submit" ]; then
+            export GGML_VK_MAX_NODES_PER_SUBMIT=$requested_max_nodes_per_submit
+        fi
+        if [ -n "$requested_serialize_submissions" ]; then
+            export GGML_VK_SERIALIZE_SUBMISSIONS=$requested_serialize_submissions
+        fi
+        if [ -n "$requested_allow_graphics_queue" ]; then
+            export GGML_VK_ALLOW_GRAPHICS_QUEUE=$requested_allow_graphics_queue
+        fi
         ;;
     *)
         printf 'unknown Vulkan profile: %s\n' "$vulkan_profile" >&2
