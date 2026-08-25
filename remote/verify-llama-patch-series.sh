@@ -1,0 +1,57 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -gt 2 ]; then
+    printf 'usage: %s [LLAMA_SOURCE] [PATCH_DIRECTORY]\n' "$0" >&2
+    exit 2
+fi
+
+if [ "${QWEN_ONE_CORE_ACTIVE:-0}" != 1 ]; then
+    renice -n 19 -p $$ >/dev/null
+    QWEN_ONE_CORE_ACTIVE=1 exec taskset -c 0 ionice -c 3 "$0" "$@"
+fi
+
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+repository_directory=$(CDPATH='' cd -- "$script_directory/.." && pwd)
+source_directory=${1:-"${HOME:?}/src/llama.cpp"}
+patch_directory=${2:-"$repository_directory/patches"}
+expected_commit=f280b26983ad0fdb705a0d9ebf0503e76f2899b0
+temporary_directory=$(mktemp -d)
+trap 'rm -rf "$temporary_directory"' EXIT HUP INT TERM
+
+if [ ! -d "$source_directory/.git" ]; then
+    printf 'llama.cpp source repository is missing: %s\n' "$source_directory" >&2
+    exit 1
+fi
+
+git clone --quiet --shared --no-checkout "$source_directory" \
+    "$temporary_directory/llama.cpp"
+git -C "$temporary_directory/llama.cpp" checkout --quiet --detach \
+    "$expected_commit"
+git -C "$temporary_directory/llama.cpp" apply --check \
+    "$patch_directory/llama-vulkan-low-priority.patch" \
+    "$patch_directory/llama-no-cpu-fallback.patch"
+git -C "$temporary_directory/llama.cpp" apply \
+    "$patch_directory/llama-vulkan-low-priority.patch" \
+    "$patch_directory/llama-no-cpu-fallback.patch"
+git -C "$temporary_directory/llama.cpp" diff --check
+
+verify_source() {
+    expected_sha256=$1
+    relative_path=$2
+    actual_sha256=$(sha256sum "$temporary_directory/llama.cpp/$relative_path" | cut -d ' ' -f 1)
+    if [ "$actual_sha256" != "$expected_sha256" ]; then
+        printf 'source replay mismatch: %s expected %s found %s\n' \
+            "$relative_path" "$expected_sha256" "$actual_sha256" >&2
+        exit 1
+    fi
+    printf 'patch_replay_match=%s sha256=%s\n' "$relative_path" "$actual_sha256"
+}
+
+verify_source 71b037b1f46022d2550a5067a11dac10ddf87e4357af168255ab83a2da017800 \
+    ggml/src/ggml-vulkan/ggml-vulkan.cpp
+verify_source ecc818cdce4a7265f6f932962c325a582f42b91cb2661916fa28b5a79a49d1ad \
+    src/llama-context.cpp
+verify_source d0d6c8725891ac4baf68fd947ab4be75cc93ba37b1e988ca1c556881a49d0abc \
+    src/llama-model-loader.cpp
+printf 'patch_series=accepted commit=%s\n' "$expected_commit"

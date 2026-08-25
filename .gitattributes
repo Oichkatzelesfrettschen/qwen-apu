@@ -1,0 +1,4 @@
+artifacts/bin/llama-cli filter=lfs diff=lfs merge=lfs -text
+artifacts/bin/llama-server filter=lfs diff=lfs merge=lfs -text
+*.patch whitespace=-blank-at-eol
+*.log whitespace=-trailing-space

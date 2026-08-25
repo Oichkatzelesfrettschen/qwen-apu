@@ -1,0 +1,486 @@
+# Raven2 Vulkan Qwen Setup Tracker
+
+This tracker governs the headless setup on the SSH host alias `qwen-laptop`.
+Exactly one unchecked row carries `ACTIVE`. A task closes only when its stated evidence is
+retained or linked. Package, kernel, firmware, GTT, and model-load mutations
+remain gated by a reviewed simulation and rollback path.
+
+## Fixed operating constraints
+
+- SSH and terminal operations only. Remote GUI control stays out of scope.
+- The desktop remains the highest-priority workload.
+- Remote CPU work uses one logical CPU, absolute nice value 19, and idle I/O.
+- Model tensors execute through RADV Vulkan. CPU tensor fallback stops the run.
+- The server binds to `127.0.0.1`, uses one slot, and starts without MTP.
+- The operational server context cannot exceed 24,576 tokens, and benchmark
+  prompts cannot exceed 24,000 tokens.
+- A sampled GPU busy value above 75% terminates the server. New performance
+  measurements require a proven microbatch pacer that stays at or below 75%.
+- Qwen3.8-27B is the primary quality benchmark, not the presumed daily model.
+- Sudo credentials are entered only by the user in the `qwen-admin` tmux
+  session. Passwords never cross SSH commands, logs, or project files.
+
+## Confirmed host facts
+
+- Host access: `qwen-laptop` accepts the configured SSH key.
+- Distribution: Linux Mint 22.2 `zara`, Ubuntu Noble package base.
+- Running kernel: Ubuntu HWE `7.0.0-28-generic`.
+- Installed alternate HWE kernel: `7.0.0-29-generic`.
+- Candidate HWE kernel: `7.0.0-30.30~24.04.1`.
+- GPU: AMD Raven2 `1002:15d8`, two active compute units.
+- Vulkan device: `AMD Radeon Graphics (RADV RAVEN2)`.
+- Mesa source: `ernstp/mesarc` Noble PPA is already enabled.
+- Mesa runtime and candidate:
+  `26.2.1+git2608201115.88947685514~n~mesarc0`.
+- Secure Boot: disabled; platform reports Setup Mode.
+- Sudo timestamp: active only on `qwen-admin:admin.0`; timestamp scope is the
+  pane TTY.
+- Durable remote session: tmux session `qwen-admin`.
+
+## Access, identity, and security
+
+- [x] Resolve the laptop hostname through mDNS and prove key-based SSH access.
+- [x] Create and validate the `eirikr` account without using SMB as an
+  authentication bypass.
+- [x] Preserve `nick` and `eirikr` as separate accounts.
+- [x] Add `eirikr` to `render` and `video` through the privileged doctor.
+- [x] Add `nick` to `render` and `video` through the privileged doctor.
+- [x] Verify `/dev/dri/renderD128` is `0660 root:render`.
+- [x] Verify `/dev/dri/card1` is `0660 root:video`.
+- [x] Verify offscreen Vulkan for `eirikr` selects RADV Raven2.
+- [x] Verify offscreen Vulkan for `nick` selects RADV Raven2.
+- [x] Verify neither account's permission test selects llvmpipe.
+- [x] Establish the `qwen-admin` tmux session for secure sudo refreshes.
+- [x] Refresh the sudo timestamp with `sudo -v` inside `qwen-admin`. Evidence:
+  `sudo -n true` and the privileged post-runtime kernel capture succeed inside
+  `qwen-admin:admin.0` without exposing the credential.
+- [ ] Design bidirectional SSH for `eirikr` with separate purpose-bound keys.
+  Evidence: host aliases, key permissions, and both directions pass BatchMode.
+- [ ] Configure sudo authentication through the SSH terminal or a reviewed
+  askpass mechanism. Evidence: sudo requires authentication and never becomes
+  passwordless.
+- [ ] Invalidate the final sudo timestamp. Evidence: `sudo -n true` fails.
+
+## Host and driver evidence
+
+- [x] Capture CPU topology, memory modules, GPU PCI identity, and Vulkan device.
+- [x] Capture default RADV heap size, budget, maximum allocation, and buffer.
+- [x] Measure the default GTT budget as approximately 5.15 GiB.
+- [x] Measure the device-local budget as approximately 10.30 GiB.
+- [x] Measure the combined Vulkan budget as approximately 15.46 GiB.
+- [x] Measure the per-allocation and buffer ceiling just below 4 GiB.
+- [x] Build a process-local RADV unified-heap comparator.
+- [x] Prove the unified heap merges visibility without adding capacity.
+- [x] Repair the capacity audit to distinguish init warnings from runtime
+  hazards.
+- [x] Validate the repaired audit with ShellCheck, syntax, negative, and
+  synthetic-positive cases.
+- [x] Hash and compare `raven2_rlc.bin` with upstream linux-firmware.
+- [x] Prove the three RLC restore payloads are nonzero and in bounds.
+- [x] Trace the PSP stale-response warning to preserved Ubuntu AMD source
+  behavior.
+- [x] Separate the display workqueue CPU-hog warning from PSP firmware loading.
+- [x] Capture a fresh privileged kernel baseline after sudo refresh. Evidence:
+  `evidence/kernel-baseline-7.0.0-28.log` and
+  `evidence/kernel-post-runtime.log` retain boot identity and kernel output.
+- [x] Confirm the fresh baseline contains no ring timeout, GPU reset, VM fault,
+  OOM, or device loss. Evidence:
+  `evidence/kernel-post-runtime-hazards.log` records `hazard_count=0` after the
+  final Vulkan runtime tests.
+- [ ] Quantify the display workqueue warning frequency and correlate it with
+  visible desktop activity. Evidence: timestamped kernel and load samples.
+- [ ] Audit Linux 7.0 Raven2, Picasso, Renoir, and comparable UMA changes from
+  kernel source and Ubuntu packaging. Evidence: commit and package ledger.
+- [ ] Audit Linux 7.1 Raven2, Picasso, Renoir, and comparable UMA changes from
+  kernel source and Ubuntu packaging. Evidence: commit and package ledger.
+- [ ] Audit recent field reports for Raven2 UMA allocation, GTT, Vulkan device
+  loss, suspend, display, and long-compute behavior. Evidence: URL, date,
+  hardware, stack, observation, and confidence ledger.
+- [ ] Reconcile firmware, kernel amdgpu, Mesa RADV, Vulkan loader, and llama.cpp
+  responsibilities. Evidence: each claimed limit has one owning layer and one
+  falsifier.
+
+## Mesa PPA and kernel admission
+
+- [x] Inventory enabled APT repositories and package preferences.
+- [x] Detect that `ernstp/mesarc` is already the active Mesa source.
+- [x] Record the Mesa transition from installed 26.2.0 to installed and
+  candidate 26.2.1.
+- [x] Record installed HWE kernels 7.0.0-28 and 7.0.0-29.
+- [x] Record candidate HWE kernel 7.0.0-30 and the running `-28` kernel.
+- [x] Record Secure Boot disabled and Setup Mode enabled.
+- [x] Inspect the mesarc PPA publication cadence, source package provenance,
+  signing key, supported Noble dependencies, and downgrade instructions.
+- [x] Compare mesarc with Kisak, Oibaf, and Ubuntu's supported Mesa packages.
+  Evidence: freshness, patch policy, package scope, downgrade path, and Raven2
+  relevance table.
+- [x] Prove whether a second graphics PPA would conflict with mesarc.
+  Evidence: package origins and version ordering for every replaced library.
+- [x] Simulate the Mesa 26.2.1 upgrade with `apt-get -s`.
+  Evidence: complete install, remove, upgrade, downgrade, and held-package set.
+- [x] Check multiarch, VA-API, VDPAU, OpenGL, Vulkan, libdrm, and LLVM package
+  coherence in the simulated transaction.
+- [x] Review Mesa 26.2.0 to 26.2.1 RADV changes affecting Raven/Raven2, memory,
+  queue priority, and device loss.
+- [x] Define the Mesa upgrade admission rule: a relevant fix or measurable
+  Vulkan benefit, coherent packages, a desktop smoke test, and proven rollback.
+- [ ] Refresh the mesarc, Kisak, Oibaf, and Ubuntu candidate versions immediately
+  before any graphics-stack mutation. Evidence: timestamped package-origin and
+  Launchpad publication ledger.
+- [ ] Capture every installed Mesa, libdrm, LLVM, Vulkan loader, VA-API, and
+  OpenGL package version before any graphics-stack mutation. Evidence: sorted
+  package manifest and APT policy output.
+- [ ] Prove a graphics-track transition returns to one coherent Ubuntu Noble
+  origin before another PPA is enabled. Evidence: simulated purge and downgrade
+  transaction with no mixed ABI-coupled package origins.
+- [x] Remove the obsolete dangling `mesa-vdpau-drivers` package after sudo
+  refresh. Evidence: the transaction removed one package, installed four build
+  prerequisites, preserved VA-API, and left no broken `libvdpau_radeonsi` link.
+- [x] Record installed and residual kernel package states accurately with
+  `dpkg-query` status fields.
+- [x] Review Ubuntu HWE `-29` and `-30` changelogs and source deltas affecting
+  amdgpu, DRM, scheduler, memory management, suspend, and display.
+- [x] Check DKMS modules against each installed kernel. Evidence: `dkms status`
+  plus module build state for the candidate kernel.
+- [ ] Verify GRUB retains known-good `7.0.0-28` and `6.14.0-29` boot entries.
+- [x] Capture initramfs hashes and available boot-space before kernel changes.
+- [x] Define the kernel admission rule: relevant fix, no known Raven2 regression,
+  complete initramfs, retained fallback, and one-reboot validation plan.
+- [ ] Refresh the Ubuntu HWE changelog, Mint Update Manager kernel status, and
+  installed fallback inventory immediately before a kernel mutation.
+- [ ] Prove the selected kernel remains an Ubuntu Noble HWE package with a
+  complete image, modules, headers, initramfs, and GRUB entry before reboot.
+- [ ] Complete post-upgrade admission validation for Mesa 26.2.1. Evidence:
+  desktop, media, suspend, heap, offscreen Vulkan, and hazard checks.
+- [ ] Upgrade a future Mesa version only if its admission rule passes.
+- [ ] Boot a newer HWE kernel only if its admission rule passes and the user
+  authorizes the required reboot.
+- [ ] Re-run desktop graphics, offscreen Vulkan, heap, suspend, and hazard checks
+  after any admitted Mesa or kernel change.
+- [ ] Prove rollback to the retained package and kernel baseline.
+
+## Compiler and alternative GPU backend admission
+
+- [x] Capture the user-initiated Mesa 26.2.1 and OpenCL package transaction.
+  Evidence: `evidence/compiler-opencl-admission.md`.
+- [x] Verify the post-transaction Vulkan device remains RADV Raven2. Evidence:
+  `vulkaninfo --summary` reports RADV and Mesa 26.2.1.
+- [x] Inventory the installed OpenCL loader, headers, ICD package, and `clinfo`.
+- [x] Prove mesarc's 26.2.1 `mesa-opencl-icd` contains documentation only and
+  installs no ICD manifest or runtime library.
+- [x] Prove the installed OpenCL state exposes zero platforms. Evidence:
+  `/etc/OpenCL/vendors` has no manifest and `clinfo -l` is empty.
+- [x] Prove the pinned llama.cpp OpenCL backend rejects AMD devices. Evidence:
+  `ggml_opencl_is_device_supported()` accepts only Adreno and Intel families.
+- [x] Reject PoCL as a model backend because it executes on the CPU.
+- [x] Reject ROCm and AMDGPU-PRO as assumed Raven2 fallbacks without explicit
+  device support, package-coherence, and runtime evidence.
+- [ ] Audit upstream llama.cpp AMD OpenCL support, issues, and retained patches
+  before building another ICD.
+- [ ] Design Raven2 family detection, kernel compile flags, operation coverage,
+  memory reporting, and strict fallback handling for the OpenCL backend.
+- [ ] Audit an exact-source Mesa 26.2.1 Rusticl build in an isolated prefix only
+  after the llama.cpp AMD device gate has an evidence-backed implementation.
+  Evidence: source commit, Meson options, LLVM version, ICD path, and rollback.
+- [ ] Admit an OpenCL comparator only after both `eirikr` and `nick` select
+  Raven2 through the isolated ICD without a CPU platform.
+- [ ] Build llama.cpp OpenCL in a separate build directory without changing the
+  production Vulkan build.
+- [ ] Verify Qwen3.8 operations, quant formats, KV types, Flash Attention, and
+  strict no-CPU-fallback behavior on the OpenCL backend.
+- [ ] Compare OpenCL and Vulkan memory ceilings, prefill, decode, stability, and
+  desktop responsiveness before naming OpenCL an operator-selectable backend.
+- [x] Keep Vulkan as the only automatic backend; OpenCL requires both a working
+  Raven2 ICD and implemented llama.cpp AMD support before a manual profile can
+  exist.
+- [x] Inventory Noble compiler candidates: GCC 14 and Clang/LLVM 20 are
+  distribution packages and install side by side.
+- [x] Audit apt.llvm.org Noble packages for LLVM 21 and 22, including signing,
+  versioned libraries, dependencies, and publication cadence.
+- [x] Audit the Ubuntu Toolchain Test PPA GCC 16 snapshot and prove it publishes
+  replacement global `libgcc-s1` and `libstdc++6` packages.
+- [x] Reject the GCC 16 test PPA for the desktop baseline because it changes the
+  global runtime without a llama.cpp requirement.
+- [x] Preserve GCC 13 as `/usr/bin/cc` and `/usr/bin/c++`; invoke every compiler
+  comparator by its versioned executable and an isolated build directory.
+  Evidence: `evidence/llama-vulkan-build-provenance.log` records GCC/G++ 13.3.
+- [ ] Install Clang/LLVM 20 from Noble only if a measured compiler comparator is
+  needed after the GCC 13 production build passes.
+- [ ] Admit apt.llvm.org LLVM 22 only for an isolated compiler experiment with a
+  dedicated keyring, `signed-by`, narrow APT pins, transaction simulation, and
+  removal proof.
+- [ ] Build GCC 16 in an isolated prefix or container only if a compiler-specific
+  hypothesis justifies its CPU cost; never replace the system libgcc or
+  libstdc++ baseline.
+- [ ] Record compile time, binary hash, size, warnings, tests, and llama
+  throughput before preferring a newer compiler.
+
+## Memory and capacity model
+
+- [x] Convert published model byte sizes to binary GiB.
+- [x] Calculate Q8 K plus Q4 V KV growth at 32K, 64K, and 128K.
+- [x] Include approximately 0.15 GiB of live recurrent state in lower bounds.
+- [x] Establish 27B C128 lower bounds for Q2_K_XL through Q4_K_M.
+- [x] Prove Q4_K_M cannot remain fully Vulkan-resident at long context within
+  the measured 15.46 GiB Vulkan budget.
+- [x] Identify Q2_K_XL as the only plausible 27B 128K capacity arm under the
+  measured heap budget.
+- [x] Identify current desktop memory pressure as unsafe for a 27B 128K run.
+- [ ] Measure graph, scratch, staging, loading-peak, prompt-cache, and OS
+  overhead with the exact llama.cpp build.
+- [ ] Measure peak and steady RSS and GTT separately.
+- [ ] Detect whether model loading creates a transient second resident copy.
+- [ ] Recalculate every quant and context row with measured overhead and a 4 GiB
+  desktop reserve.
+- [x] Define a live preflight gate for MemAvailable, swap use, Vulkan budget,
+  and desktop VRAM use. Evidence: `remote/model-memory-preflight.sh` and
+  `evidence/model-memory-preflight.md`.
+- [x] Define provisional Qwen3.5-4B Vulkan allocation gates for 4K, 32K, 64K,
+  and 128K. Evidence: `evidence/qwen35-4b-allocation-ladder.md`.
+- [x] Define the operator abort command and numeric resource thresholds before
+  prompt ingestion. Evidence: `remote/monitor-qwen-runtime.sh`,
+  `remote/watch-qwen-kernel-hazards.sh`, and
+  `evidence/runtime-guard-policy.md`.
+
+## Checkpoints and session topology
+
+- [x] Verify recurrent-state bytes per checkpoint from the exact Qwen3.8 model
+  metadata and llama.cpp revision. Evidence:
+  `evidence/qwen38-checkpoint-memory.md`.
+- [x] Verify `--ctx-checkpoints`, `--cache-ram`, `--checkpoint-min-step`, and
+  `--no-context-shift` behavior from source. Evidence:
+  `evidence/checkpoint-cache-context-semantics.md`.
+- [x] Verify the generated `llama-server --help` defaults and option names after
+  the pinned build exists. Evidence:
+  `evidence/llama-vulkan-runtime-validation.log` records checkpoint default 32,
+  minimum step 8192, RAM cache 8192 MiB, disabled context shift, and enabled UI
+  runtime default; the fixed launcher explicitly supplies `--no-ui`.
+- [x] Record that `--checkpoint-every-n-tokens` is not a registered option in
+  the selected revision.
+- [x] Prove the generated parser rejects `--checkpoint-every-n-tokens`.
+  Evidence: the parser exits 1 with `invalid argument` in
+  `evidence/llama-vulkan-runtime-validation.log`.
+- [x] Define one-shot capacity mode with one slot, zero checkpoints, zero RAM
+  cache, and no context shift. Evidence: `remote/qwen-capacity-policy.sh` and
+  `evidence/capacity-server-policy.md`.
+- [ ] Define bounded multi-turn mode with four checkpoints and an 8192-token
+  minimum step.
+- [ ] Admit eight checkpoints only after the four-checkpoint memory and reuse
+  evidence passes.
+- [ ] Sweep checkpoint minimum steps of 8192, 4096, and 2048 tokens.
+- [ ] Measure actual prefix reuse and recomputed tail tokens for every checkpoint
+  mode.
+- [ ] Define persistent append-only session invariants: one sequence, delta-only
+  appends, fixed system prompt, and prefix-mutation rejection.
+- [ ] Design restart recovery without claiming that slot metadata restores
+  recurrent checkpoint state.
+
+## Model and quantization audit
+
+- [x] Keep `unsloth/Qwen3.8-27B-GGUF` as the primary benchmark lineage.
+- [x] Record Q2_K_XL and IQ3_XXS exact published byte sizes.
+- [x] Record the known IQ3 artifact SHA-256.
+- [x] Audit smaller Qwen candidates for reasoning, coding, tool use, context,
+  multilingual ability, license, GGUF support, and Vulkan fit.
+- [x] Audit non-Qwen candidates against the same rubric.
+- [x] Verify every candidate from its model card, config, tokenizer, license,
+  GGUF repository, and exact artifact listing.
+- [x] Separate trained context from demonstrated usable context.
+- [x] Separate benchmark claims from reproducible evaluations.
+- [x] Estimate Vulkan-resident C32, C64, and C128 envelopes for every candidate.
+- [x] Reject candidates that require CPU tensor fallback under the operating
+  policy.
+- [x] Rank a daily model frontier separately from the 27B quality benchmark.
+- [x] Define a depth-curve corpus covering 32K, 64K, 96K, and 128K.
+- [x] Include code, research prose, JSON tool transcripts, multi-document
+  retrieval, multilingual text, and long-separated dependencies.
+- [ ] Define Q2_K_XL versus Q4_K_M as the 27B low/high quality control.
+- [ ] Design protected-attention IQ3 and IQ4 conversion experiments.
+- [ ] Verify whether the converter can retain recurrent gates at F32,
+  full-attention Q/K/V/O at Q8, embeddings and output at Q5/Q6, and bulk
+  projections at IQ3/IQ4.
+- [ ] Build a long-context importance matrix rather than relying on a 512-token
+  calibration corpus.
+- [ ] Measure retrieval, reasoning, tool accuracy, and perplexity across the
+  full context-depth curve.
+
+## llama.cpp build and scheduling
+
+- [x] Clone llama.cpp at
+  `f280b26983ad0fdb705a0d9ebf0503e76f2899b0`.
+- [x] Verify the remote checkout is clean.
+- [x] Identify missing build packages `glslc` and `spirv-headers`.
+- [x] Verify `libvulkan-dev` is installed.
+- [x] Install `glslc`, `libshaderc1`, `spirv-headers`, and `shellcheck` after
+  sudo and package-source gates pass. Evidence: simulation reports four new
+  Noble packages, zero upgrades, and zero removals.
+- [x] Inspect Vulkan instance, physical-device, queue-family, device-create, and
+  submit paths in the pinned llama.cpp revision. Evidence:
+  `evidence/vulkan-low-priority-admission.md`.
+- [x] Determine whether RADV exposes global-priority query and low-priority queue
+  creation for Raven2. Evidence: the headless queue-creation probe returns
+  `VK_SUCCESS` for compute-only family 1.
+- [x] Design an opt-in low global queue priority that leaves default behavior
+  unchanged and reports the selected priority. Evidence:
+  `evidence/vulkan-low-priority-admission.md`.
+- [x] Implement capability detection and explicit handling for permission or
+  unsupported-priority errors. Evidence:
+  `patches/llama-vulkan-low-priority.patch` and `git diff --check`.
+- [x] Add focused tests and documentation for low-priority selection. Evidence:
+  `remote/test-vulkan-low-priority.sh` and
+  `evidence/vulkan-low-priority-admission.md`.
+- [x] Configure Vulkan as the only accelerator while retaining the CPU control
+  backend required by llama.cpp. Evidence: `remote/build-llama-vulkan.sh` and
+  `evidence/build-backend-policy.md`.
+- [x] Build with one Ninja job under one-core affinity, `nice 19`, and idle I/O.
+- [x] Treat compiler and linker warnings as errors. Evidence: 451 generated
+  compile commands contain `-Werror`.
+- [x] Record compiler, CMake, Ninja, Vulkan header, loader, Mesa, and commit
+  versions. Evidence: `evidence/llama-vulkan-build-provenance.log`.
+- [x] Verify `llama-cli --list-devices` and `llama-server --list-devices` name
+  RADV Raven2 exactly. Evidence:
+  `evidence/llama-vulkan-runtime-validation.log`.
+
+## Runtime guardrails
+
+- [x] Implement a process-local RADV-only launcher environment. Evidence:
+  `remote/radv-low-priority-env.sh`.
+- [x] Reject llvmpipe and every non-RADV Vulkan device before model load.
+  Evidence: `remote/test-radv-low-priority-env.sh` selects the single RADV ICD
+  and requires the exact Raven2 device name.
+- [x] Reject an insufficient live host-memory or Vulkan-budget reserve.
+  Evidence: `remote/model-memory-preflight.sh`,
+  `remote/vulkan-memory-budget-probe.c`, and
+  `evidence/model-memory-preflight.md`.
+- [x] Enforce `--parallel 1`, `--threads 1`, and `--threads-batch 1`.
+  Evidence: `remote/qwen-capacity-policy.sh` and
+  `evidence/capacity-server-policy.md`.
+- [x] Enforce one-core affinity, absolute nice 19, and idle I/O scheduling.
+  Evidence: the remote policy test observes CPU 0, nice 19, and idle I/O.
+- [x] Enforce localhost-only binding and one inference slot. Evidence: the
+  closed argument surface fixes `--host 127.0.0.1` and `--parallel 1`.
+- [x] Reject server contexts above 24,576 tokens and benchmark prompts above
+  24,000 tokens. Evidence: both boundary tests pass and a 32K launch is
+  rejected before model load.
+- [x] Disable the Web UI at build time and runtime. Evidence: both UI build
+  switches are off, no asset directory or HTML payload remains, and the closed
+  argument surface supplies `--no-ui`.
+- [x] Enforce zero checkpoints and zero RAM cache for capacity runs. Evidence:
+  the closed argument surface fixes both values to zero.
+- [x] Enforce no context shift and no MTP for initial runs. Evidence: the closed
+  argument surface supplies `--no-context-shift` and contains no draft option.
+- [x] Detect CPU tensor assignment and stop instead of continuing with fallback.
+  Evidence: `patches/llama-no-cpu-fallback.patch` and
+  `evidence/strict-vulkan-placement.md`.
+- [x] Force every model tensor to `Vulkan0`; complete layer offload alone leaves
+  the embedding graph eligible for CPU execution. Evidence: the policy fixes
+  `--override-tensor '.*=Vulkan0'`.
+- [x] Verify the strict tensor and graph gates with positive Vulkan and forced
+  CPU-fallback tests after the build exists. Evidence:
+  `remote/test-strict-vulkan-placement.sh` and
+  `evidence/llama-vulkan-runtime-validation.log`.
+- [x] Sample RSS, GTT, heap budget, clocks, temperature, swap, and desktop load.
+  Evidence: `evidence/benchmarks/qwen35-4b-c32k-telemetry.log` retains 337
+  five-second samples through the interrupted 32K prefill.
+- [x] Scan kernel logs for device loss, ring timeout, reset, VM fault, and OOM.
+  Evidence: the post-runtime hazard count is zero.
+- [x] Stop on any hardware hazard or desktop-responsiveness threshold breach.
+  Evidence: the 32K request stopped when an active desktop user reported
+  degraded performance.
+- [x] Terminate the server on the first GPU busy sample above 75%. Evidence:
+  the one-second monitor and synthetic 76% negative test return the documented
+  `gpu_busy_percent_breached` reason.
+- [x] Retain command, environment, model hash, build identity, telemetry, kernel
+  delta, exit status, and stop reason for every run. Evidence:
+  `evidence/benchmarks/qwen35-4b-c32k-partial-summary.md` links the retained
+  surfaces and records the user stop.
+
+## Download and benchmark ladder
+
+- [x] Verify disk capacity, partial-download handling, pinned source
+  revision, byte size, and expected SHA-256 before downloading
+  `Qwen3.5-4B-Q4_K_M.gguf`. Evidence:
+  `evidence/qwen35-4b-download-admission.md`.
+- [ ] Admit the Qwen3.5-4B daily candidate only when host and desktop reserve
+  gates pass.
+- [ ] Admit Qwen3.8-27B IQ3_XXS only after the daily-model runtime and memory
+  telemetry gates pass.
+- [x] Download through tmux with one-core verification and idle I/O priority.
+  Evidence: `evidence/runtime-logs/qwen-qwen35-4b-download.log`.
+- [x] SHA-256 verify the complete artifact before llama.cpp opens it. Evidence:
+  the download log records the exact published byte count, SHA-256, and pinned
+  source revision before the `.part` rename.
+- [x] Run a 4K minimal allocation smoke test without generation. Evidence:
+  `evidence/qwen35-4b-c4k-allocation.log` and
+  `evidence/qwen35-4b-c4k-kernel-hazards.log`.
+- [x] Run a 32K allocation smoke without generation after the 4K resource and
+  kernel gates pass. Evidence: `evidence/qwen35-4b-c32k-allocation.log` and
+  `evidence/qwen35-4b-c32k-kernel-hazards.log`.
+- [x] Run a 64K allocation smoke without generation after the 32K resource and
+  kernel gates pass. Evidence: `evidence/qwen35-4b-c64k-allocation.log` and
+  `evidence/qwen35-4b-c64k-kernel-hazards.log`.
+- [x] Run a 128K allocation smoke without generation after the 64K resource and
+  kernel gates pass. Evidence: `evidence/qwen35-4b-c128k-allocation.log` and
+  `evidence/qwen35-4b-c128k-kernel-hazards.log`.
+- [x] Define the automated abort command and numeric memory, swap-in,
+  temperature, process-placement, and GPU-hazard thresholds before 32K prefill.
+  Evidence: `remote/test-qwen-runtime-guards.sh` passes both positive and
+  synthetic-negative controls.
+- [x] Start the guarded 32K multi-domain prefill and stop at 20,992 tokens when
+  an active desktop user reports degraded performance. Evidence:
+  `evidence/benchmarks/qwen35-4b-c32k-partial-summary.md`.
+- [x] Review retained partial 32K memory, hazard, fallback, speed, and desktop
+  evidence. The partial cumulative rate is 12.63 tok/s, decode is not run, the
+  maximum temperature is 87.75 C, and the live hazard count is zero.
+- [x] Prohibit 64K, 96K, and 128K operational launches under the 24K cap.
+  Capacity-only allocation evidence remains historical and does not authorize
+  prompt ingestion.
+- [ ] ACTIVE: Implement and prove llama.cpp microbatch pacing that holds GPU
+  busy at or below 75% without raising queue priority.
+- [ ] Run the guarded 24K prefill and fixed-depth decode gate only after the
+  75% pacing gate passes and the desktop is free of user-visible impact.
+- [ ] Review retained 24K memory, hazard, fallback, speed, and desktop evidence.
+- [ ] Judge the daily laptop profile from the 24K operational result and the
+  retained partial 32K falsifier.
+- [ ] Add four recurrent checkpoints only after stable 128K one-shot operation.
+- [ ] Test n-gram speculation only after long-context stability.
+- [ ] Test MTP only for generation after n-gram, with draft processing excluded
+  from prompt microbatches.
+- [ ] Measure accepted drafts, extra context memory, device stability, and actual
+  speedup before admitting speculation to a daily profile.
+
+### Context speed ledger
+
+| Context | Prompt tokens completed | Prefill tok/s | Decode tok/s | Status |
+| ---: | ---: | ---: | ---: | --- |
+| 24K | not run | not run | not run | Blocked on proven 75% GPU pacing |
+| 32K | 20,992 of 32,000 | 12.63 cumulative | not run | User-stopped partial; prohibited by current policy |
+| 64K | not run | not run | not run | Prohibited by 24K operational cap |
+| 96K | not run | not run | not run | Prohibited by 24K operational cap |
+| 128K | not run | not run | not run | Prohibited by 24K operational cap |
+
+## Append-only service and client
+
+- [ ] Specify an OpenAI-compatible facade around one owned llama sequence.
+- [ ] Reject edits to prior messages, system prompt changes, and divergent
+  prefixes within an active session.
+- [ ] Append only new user, tool, and assistant tokens to the retained context.
+- [ ] Define explicit new-session and checkpoint-mediated branch operations.
+- [ ] Implement bounded request size, cancellation, timeout, and clean shutdown.
+- [ ] Implement crash-safe metadata without overstating recurrent-state
+  persistence.
+- [ ] Add unit tests for prefix equality, mutation rejection, and delta append.
+- [ ] Add integration tests for 100K-plus append-only multi-turn operation.
+- [ ] Evaluate a Debian-installable CLI, TUI, and lightweight local GUI client.
+- [ ] Select the client that preserves desktop priority and requires no remote
+  GUI control.
+
+## Closure
+
+- [ ] Verify no unauthorized PPA, Mesa, kernel, firmware, GTT, GUI, or sudoers
+  change occurred.
+- [ ] Verify no unintended llama, build, download, or benchmark process remains.
+- [ ] Retain hashes for scripts, configs, binaries, models, and evidence indexes.
+- [ ] Document package, kernel, account, SSH, launcher, and service rollback.
+- [ ] Publish measured daily and benchmark profiles with explicit limits.
+- [ ] Verify the complete setup end to end under live desktop use.

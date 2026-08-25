@@ -1,0 +1,15 @@
+artifact	class	bytes	sha256	replay_authority
+artifacts/bin/llama-server	retained-exact-build-binary	57467440	9c31bf00b548ac1bc7f7cb775afb3e06ee0d20eb0293ebaf2e0b6d20a5a1020f	llama.cpp-f280b269-plus-active-patches
+artifacts/bin/llama-cli	retained-exact-build-binary	57639736	74afcb3bad505d181989fa4daf715525db1b0b2e4d2fe240d3542ad4c961a788	llama.cpp-f280b269-plus-active-patches
+external/Qwen3.5-4B-Q4_K_M.gguf	external-reproducible-dependency	2740937888	00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4	unsloth-Qwen3.5-4B-GGUF-e87f176
+patches/llama-vulkan-low-priority.patch	canonical-source-patch	8229	811d0a8247c67a88fcab3e2e57a19e0138ef18468ad2a5fb359d64cd32b4b79f	remote-verify-llama-patch-series
+patches/llama-no-cpu-fallback.patch	canonical-source-patch	2642	f4ea470983665595ea02074f125b801452cac91bb5ea46067f652e9e6b39ffb7	remote-verify-llama-patch-series
+patches/superseded/llama-no-cpu-view-metadata-increment.patch	superseded-retain	1296	aa1bab261116941292386b4aa3c471f72c5be4729f5569b0c88de27595dcc6da	folded-into-llama-no-cpu-fallback
+evidence/runtime-logs/qwen-strict-vulkan-one-token-response.json	sanitized-exact-target-evidence	1631	67d1ddc22f1f415d09b401d146395dfd1c6d56a5e6e71532838aa5ec054bfc4c	original-sha256-637787208a6ce93726b7f0661547923ec3e5756711494c0777eebd4594c1cdff
+benchmarks/corpora/multidomain-long-context.txt	canonical-generated-corpus	1581189	7e1a929cb955ca58f038ab12127cdfb7fadd11d8bf53ba4e78e60860946694a3	remote-generate-multidomain-corpus.py-records-2000
+evidence/benchmarks/qwen35-4b-c32k-client.log	user-stopped-raw-evidence	0	e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855	client-stopped-before-response
+evidence/benchmarks/qwen35-4b-c32k-kernel-hazards.log	user-stopped-raw-evidence	186	97e5007721a82bf5797c4e14a6b11af63bcfa962e0651a64ad6c51ccae325c97	live-privileged-kernel-watcher
+evidence/benchmarks/qwen35-4b-c32k-partial-summary.md	synthesized-truth-surface	1692	27a4fb8312fa512dad35c9bc74ec34c4ff859c4678a54f4cc3db51050ba7ddf3	server-telemetry-hazard-join
+evidence/benchmarks/qwen35-4b-c32k-server.log	user-stopped-sanitized-evidence	29930	6310efb38b990fe1a06cedc508eb1c330c33fdbe11fe05314979f7c49c0843ea	original-sha256-7417a6ee288ba9088eb70f51adc5788b7eb70aa3ccaaf5e896f945850c9ac116
+evidence/benchmarks/qwen35-4b-c32k-telemetry.log	user-stopped-raw-evidence	108068	3e71186406ee719e1232110ad84bf0407ebd93a4e3bc79d34ce55038544883bd	remote-monitor-qwen-runtime.sh
+evidence/PRE_SANITIZATION_SHA256SUMS	hash-manifest	7443	9abd9ad1e7846f762f0b6f4f8b66bb23cd6515fa77e1aa3b4cb5f91296cec772	imported-artifact-hashes-before-identifier-pass

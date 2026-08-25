@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+*.part
+*.tmp
+/build*/
+/models/
+!evidence/*.log
+!evidence/**/*.log
