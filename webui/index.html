@@ -22,9 +22,8 @@
 
   Server timings are preferred when the stream supplies them. Browser-derived
   rates remain interactive diagnostics rather than admitted benchmark results.
-  The native Vulkan backend paces bounded intra-graph submissions to a 60
-  percent duty cycle. The runtime monitor separately terminates the server on
-  the first aggregate GPU busy sample above 75 percent.
+  The native Vulkan backend uses LOW-priority bounded submissions so desktop
+  graphics can preempt inference work.
 -->
 <style>
   :root {
@@ -81,7 +80,7 @@
   <b>qwen-apu</b>
   <span id="model">connecting</span>
   <span id="ctx">context pending</span>
-  <span>Raven2 UMA | model duty 60% | aggregate abort above 75%</span>
+  <span>Raven2 UMA | LOW-priority Vulkan | service-latency guarded</span>
   <input class="key" type="password" id="api-key" placeholder="API key" autocomplete="off">
   <button class="act" id="set-key">set key</button>
   <label class="chip"><input type="checkbox" id="tools"> offer a demo tool</label>
@@ -122,7 +121,11 @@ $('#set-key').onclick = () => {
   if (apiKey) sessionStorage.setItem('qwen-apu-api-key', apiKey);
   else sessionStorage.removeItem('qwen-apu-api-key');
   $('#model').textContent = apiKey ? 'key set; connecting' : 'enter API key';
+  void boot();
 };
+$('#api-key').addEventListener('keydown', event => {
+  if (event.key === 'Enter') $('#set-key').click();
+});
 
 async function serverTokenCount(text) {
   const response = await fetch('./tokenize', {
@@ -152,33 +155,35 @@ const DEMO_TOOL = [{
 }];
 
 async function boot() {
-  // /props can answer with a loading message while the Q4 model is entering the
-  // APU's shared-memory Vulkan allocation. Poll until the served context exists.
-  for (let attempt = 0; ; attempt++) {
-    try {
-      const response = await fetch('./props', { headers: authHeaders() });
-      if (response.status === 401) {
-        $('#model').textContent = 'enter API key';
-        await new Promise(r => setTimeout(r, 2000));
-        continue;
-      }
-      const p = await response.json();
-      nctx = p.default_generation_settings?.n_ctx ?? p.n_ctx ?? null;
-      if (nctx) {
-        $('#model').textContent = (p.model_path || '').split('/').pop() || 'model';
-        $('#ctx').textContent = nctx.toLocaleString() + ' token context';
-        renderAttached();
-        return;
-      }
-      $('#model').textContent = p.message || 'loading';
-    } catch {
-      $('#model').textContent = 'no /props; is llama-server running?';
+  if (!apiKey) {
+    $('#model').textContent = 'enter API key';
+    return;
+  }
+  try {
+    const response = await fetch('./props', { headers: authHeaders() });
+    if (response.status === 401) {
+      $('#model').textContent = 'API key rejected';
+      return;
     }
-    if (attempt > 240) { $('#model').textContent = 'gave up waiting for /props'; return; }
-    await new Promise(r => setTimeout(r, 2000));
+    if (!response.ok) {
+      $('#model').textContent = `/props returned HTTP ${response.status}`;
+      return;
+    }
+    const props = await response.json();
+    nctx = props.default_generation_settings?.n_ctx ?? props.n_ctx ?? null;
+    if (!nctx) {
+      $('#model').textContent = props.message || '/props returned no context';
+      return;
+    }
+    $('#model').textContent =
+      (props.model_path || '').split('/').pop() || 'model';
+    $('#ctx').textContent = nctx.toLocaleString() + ' token context';
+    renderAttached();
+  } catch {
+    $('#model').textContent = 'cannot reach /props';
   }
 }
-boot();
+void boot();
 
 function chip(text, over, onRemove) {
   const c = document.createElement('span');
