@@ -19,6 +19,7 @@ usage() {
     printf 'usage: %s PRESET [SOURCE_DIRECTORY]\n' "$0" >&2
     printf '\npresets:\n' >&2
     printf '  raven2-vulkan-production  serving build, znver1\n' >&2
+    printf '  raven2-vulkan-reference   production without the znver1 target\n' >&2
     printf '  raven2-vulkan-profile     production plus RelWithDebInfo for captures\n' >&2
     printf '  raven2-vulkan-tests       tests and fatal warnings\n' >&2
     printf '  raven2-cpu-control        CPU backend alone, the placement control\n' >&2
@@ -79,6 +80,17 @@ case $preset in
         preset_targets='llama-server llama-cli llama-bench'
         preset_outputs='bin/llama-server bin/llama-cli bin/llama-bench'
         compiler_flags=$zen_target
+        ;;
+    raven2-vulkan-reference)
+        # The znver1 arm is a claim about scheduling and instruction selection,
+        # and a claim needs a control that differs in that alone. This preset
+        # holds every other flag of the production arm and names no
+        # microarchitecture, so the two binaries differ in the target and in
+        # nothing else.
+        preset_flags="$serving_flags -DGGML_VULKAN=ON -DLLAMA_SUBPROCESS=ON"
+        preset_targets='llama-server llama-cli llama-bench'
+        preset_outputs='bin/llama-server bin/llama-cli bin/llama-bench'
+        compiler_flags=''
         ;;
     raven2-vulkan-profile)
         # Per-operator captures name kernels and call sites, which needs frame
@@ -149,10 +161,33 @@ fi
 worktree_state=clean
 git -C "$source_directory" diff --quiet HEAD 2>/dev/null || worktree_state=dirty
 
-# The desktop stays responsive while a build runs, on the workstation for the
-# same reason as on the laptop: someone is using the machine.
-renice -n 19 -p $$ >/dev/null 2>&1 || true
-ionice -c 3 -p $$ >/dev/null 2>&1 || true
+# A build someone is waiting on runs at normal priority and finishes sooner;
+# inference keeps nice 19 because it competes with the desktop compositor for
+# the two cores. QWEN_BACKGROUND_BUILD=1 selects the idle classes for a build
+# started beside interactive work.
+build_nice=${QWEN_BUILD_NICE:-0}
+build_ionice_class=${QWEN_BUILD_IONICE_CLASS:-2}
+if [ "${QWEN_BACKGROUND_BUILD:-0}" = 1 ]; then
+    build_nice=19
+    build_ionice_class=3
+fi
+case $build_nice in
+    '' | *[!0-9-]*)
+        printf 'build nice must be an integer: %s\n' "$build_nice" >&2
+        exit 2
+        ;;
+esac
+case $build_ionice_class in
+    1 | 2 | 3) ;;
+    *)
+        printf 'build I/O class must be 1, 2, or 3: %s\n' "$build_ionice_class" >&2
+        exit 2
+        ;;
+esac
+if [ "$build_nice" -ne 0 ]; then
+    renice -n "$build_nice" -p $$ >/dev/null 2>&1 || true
+fi
+ionice -c "$build_ionice_class" -p $$ >/dev/null 2>&1 || true
 
 build_directory=$source_directory/build-$preset
 mkdir -p "$build_directory"
