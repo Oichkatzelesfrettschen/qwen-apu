@@ -11,8 +11,16 @@ RADV Vulkan backend. Every machine fact below is read from the running system.
 | Kernel | 7.0.0-28-generic | `uname -r` |
 | GPU | `1002:15d8` rev `cd`, driver `amdgpu` | `lspci -nnk` |
 | ATOM BIOS | `113-RAVEN2-117` | `dmesg` |
-| Mesa device string | `AMD Radeon Graphics (RADV RAVEN2)` | `llama-bench` |
-| Memory bus | `RAM width 128bits DDR4` | `dmesg` |
+| Mesa chip name | `RAVEN2` | `RADV_DEBUG=info` |
+| Mesa `gfx_level` | 11, which is GFX9 | `RADV_DEBUG=info` |
+| Chip revision | 9 | `RADV_DEBUG=info` |
+| Family id | 142, `AMDGPU_FAMILY_RV` | `RADV_DEBUG=info` |
+| Compute units | `num_cu = 2`, `cu_mask[SE0][SA0] = 0x3` | `RADV_DEBUG=info` |
+| Shader engines, render backends | 1 and 1 | `RADV_DEBUG=info` |
+| L2 cache | 128 KB | `RADV_DEBUG=info` |
+| GC IP version | 9.1.0 | `ip_discovery` sysfs |
+| Memory bus | 128 bits, `RAM width 128bits DDR4` | `RADV_DEBUG=info`, `dmesg` |
+| Memory frequency | 3 GHz effective | `RADV_DEBUG=info` |
 | VRAM carveout | 2,048 MiB | `mem_info_vram_total` |
 | GTT | 15,723 MiB | `mem_info_gtt_total` |
 | `/dev/kfd` | present | `ls -l` |
@@ -20,9 +28,20 @@ RADV Vulkan backend. Every machine fact below is read from the running system.
 
 ## The ASIC is gfx909, not gfx902
 
-`113-RAVEN2-117` and RADV's `RAVEN2` both name Raven2, whose LLVM AMDGPU target
-is `gfx909`. `gfx902` is Raven and Picasso. PCI ID `1002:15d8` covers both
-parts, and the revision and the VBIOS string separate them.
+Three independent sources agree. The video BIOS string is `113-RAVEN2-117`.
+Mesa's own device query reports `name = RAVEN2` with `gfx_level = 11`, which is
+GFX9. And `chip_rev = 9` is the digit that separates the family members:
+`gfx900` is Vega 10, `gfx902` is Raven and Picasso, and `gfx909` is Raven2.
+PCI ID `1002:15d8` covers Picasso and Raven2 alike, so the ID alone decides
+nothing while the revision and the VBIOS string decide it together. The GC IP
+version of 9.1.0 places the part in the Raven family and separates no member
+within it.
+
+Mesa also reports `num_cu = 2` with `cu_mask[SE0][SA0] = 0x3`, one shader
+engine, one render backend, and 128 KB of L2. That count is the ground truth
+against which a ROCm enumeration is checked: the reported freezes on this exact
+3050U followed an enumeration of 11 compute units, and Mesa reading the same
+hardware as 2 is what makes such a report recognizable as a defect.
 
 That distinction governs native compilation. `--offload-arch=gfx909` produces
 code objects for this device; `--offload-arch=gfx902` produces objects for a
@@ -37,8 +56,13 @@ libraries, and the two kept apart per process.
 
 ## Memory is already dual-channel
 
-The kernel reports a 128-bit DDR4 bus, which is two 64-bit channels and a
-nominal 38.4 GB/s at DDR4-2400. A second DIMM therefore adds nothing.
+The kernel and Mesa independently report a 128-bit DDR4 bus, which is two
+64-bit channels. A second DIMM therefore adds nothing.
+
+Mesa reports a 3 GHz effective memory frequency, which places nominal bandwidth
+at 48 GB/s rather than the 38.4 GB/s a DDR4-2400 assumption gives. The exact
+module speed and slot population read from DMI type 17, which needs root, and
+the conclusion holds across the range.
 
 Measured sequential host read bandwidth reaches 7.97 GB/s on one CPU thread and
 15.44 GB/s on two, or 40% of nominal, which is where two Zen+ cores at 2.3 GHz
@@ -120,9 +144,10 @@ ROCm stack buys risk alone.
 The sequence, in order of what each step falsifies:
 
 1. `sudo apt install rocminfo hipcc libamdhip64-dev librocblas-dev libhipblas-dev`
-2. `rocminfo | grep -oE 'gfx[0-9a-z]+'` -- confirms the target this audit
-   derives as `gfx909`, and confirms 2 compute units. An 11-compute-unit
-   report stops the experiment.
+2. `rocminfo | grep -oE 'gfx[0-9a-z]+'` -- checks the ROCm stack against the
+   `gfx909` and 2-compute-unit identity established above. A report of
+   `gfx909` and 2 CUs means the stack reads the hardware correctly; a report
+   of 11 CUs is the known defect and stops the experiment.
 3. A native HIP smoke test at `--offload-arch=gfx909`, which establishes that
    KFD, ROCr, the HIP runtime, queue creation, dispatch, and memory copy all
    function before any library is involved.
