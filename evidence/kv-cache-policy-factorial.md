@@ -47,6 +47,48 @@ reprocesses its whole prefix before every repetition and 16384 tokens of prefill
 cost about 12 minutes each. A single-repetition rate carries no spread, and the
 summary records the repetition count beside the rate.
 
+## The 16384 cell wedged the ring under the served cache triple
+
+`d16384-kq8_0-vq4_0-faon` aborted with `vk::Queue::submit: ErrorDeviceLost`
+after RADV reported `The CS has been cancelled because the context is lost`.
+The kernel reset `comp_1.3.0` and the device recovered; the following cells ran.
+Unlike the Nanbeige wedge, the driver produced a coredump, and it names more
+than a timeout:
+
+```
+Ring timed out details
+IP Type: 1 Ring Name: comp_1.3.0
+
+[gfxhub] Page fault observed
+Faulty page starting at address: 0x0000000000000000
+Protection fault status register: 0x0
+```
+
+`evidence/model-admission/amdgpu-coredump-d16384-served-cache.txt` retains the
+fault report and the graphics IP register dump. The gfxhub page fault is
+reported with a zero faulty address and a zero protection-fault status, and
+`mmGDS_PROTECTION_FAULT` and `mmGDS_VM_PROTECTION_FAULT` read 0x0fc00007 and
+0x0fc00113. Whether the zero address is a null access or an uncaptured field is
+not decidable from this dump, so the recorded fact is that the driver reported a
+page fault rather than a duration alone.
+
+**The depth and the submission size are confounded, and this is the decisive
+open question.** llama-bench prefills a depth rung at its own batch defaults
+while `qwen-capacity-policy.sh` serves with `--batch-size 128 --ubatch-size 32`,
+which is two orders of magnitude smaller per submission and is the reason those
+settings exist. Both wedges this tree has recorded were found under llama-bench
+at its defaults, at 16384 tokens, and neither has been separated from the other.
+`remote/probe-depth-wedge.sh` repeats the wedge at the harness defaults and then
+at the served batch settings with everything else held. A completion at the
+served batch attributes the wedge to submission size and leaves the served depth
+ceiling standing. A wedge at the served batch attributes it to the depth and
+puts the 24576 interactive default for this checkpoint in question, which is the
+outcome that changes a shipped default rather than a measurement method.
+
+Until that runs, the registry keeps its ceilings: the wedge is established under
+llama-bench and unestablished under the served path, and lowering a ceiling on a
+harness artifact would be the same error as raising one on scaled arithmetic.
+
 ## Results
 
-Pending.
+Pending the 16384 block.
