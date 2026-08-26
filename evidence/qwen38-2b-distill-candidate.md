@@ -25,55 +25,65 @@ implies, so the 2B reaches that slope with the fixed per-token term absent and
 that term is not a constant of the machine. A two-point fit across two model
 sizes attributed depth-dependent overhead to an intercept, and a third point at
 a different depth exposes it. Both the fit and its refutation take file size as
-a stand-in for per-token traffic, which the next section shows is biased by the
-token embedding tensor; correcting for it lowers all three rates and leaves the
-refutation standing, because the 2B correction is the largest of the three.
+a stand-in for per-token traffic, which the next section corrects for the 9B and
+leaves unchanged for the 2B and the 4B, so the refutation stands on corrected
+figures as well.
 
-## Effective throughput per file byte varies, and the proxy is biased
+## Embedding tying decides what decode streams, and it splits these three
 
 Multiplying GGUF size by decode rate gives an effective-throughput proxy rather
-than measured DRAM traffic:
+than measured DRAM traffic. The correction that matters is the token embedding
+tensor, and it depends on `tie_word_embeddings` rather than on file size.
 
-| Checkpoint | file bytes | decode tok/s | GB per second of file |
-| --- | ---: | ---: | ---: |
-| Qwen3.8-2B distill | 1.299 GB | 9.46 | 12.29 |
-| Qwen3.8-4B distill | 2.770 GB | 3.07 | 8.50 |
-| Qwen3.8-9B distill | 5.766 GB | 1.76 | 10.15 |
+An untied checkpoint carries two tensors of shape vocabulary by hidden width.
+Decode reads `token_embd` as one row of a few kilobytes and streams
+`output.weight` in full through the logit projection, so the file's copy of
+`token_embd` leaves the per-token total. A tied checkpoint carries one tensor
+that serves both, and the logit projection reads all of it every step, so
+nothing leaves the total. `config.json` gives `tie_word_embeddings` true for the
+2B and the 4B and false for the 9B, so the correction applies to the 9B alone:
 
-The proxy overstates traffic by the token embedding tensor, which decode reads
-as a single row lookup of a few kilobytes while the file carries the whole
-tensor. The bias is size-dependent, so it distorts the comparison rather than
-shifting it. `config.json` gives vocabulary 248,320 across all three
-checkpoints against hidden widths of 2048, 2560, and 4096, which makes the
-embedding a larger share of the smaller file. Reading the tensor at Q6_K, the
-type llama.cpp's Q4_K_M recipe usually assigns it:
+| Checkpoint | tied | file bytes | streamed per token | GB/s |
+| --- | --- | ---: | ---: | ---: |
+| Qwen3.8-2B distill | yes | 1.299 GB | 1.299 GB | 12.29 |
+| Qwen3.8-4B distill | yes | 2.770 GB | 2.770 GB | 8.50 |
+| Qwen3.8-9B distill | no | 5.766 GB | 4.932 GB | 8.68 |
 
-| Checkpoint | token_embd | share of file | streamed bytes | GB/s streamed |
-| --- | ---: | ---: | ---: | ---: |
-| Qwen3.8-2B distill | 0.417 GB | 32.1% | 0.882 GB | 8.34 |
-| Qwen3.8-4B distill | 0.521 GB | 18.8% | 2.249 GB | 6.90 |
-| Qwen3.8-9B distill | 0.834 GB | 14.5% | 4.932 GB | 8.68 |
+The 9B row subtracts a `token_embd` read at Q6_K, the type llama.cpp's Q4_K_M
+recipe usually assigns it, so that row alone is estimated;
+`remote/gguf-tensor-census.py` reads the actual assignment and settles it. At
+Q4_K the row reads 9.14 GB/s instead, which changes the margin and leaves the
+ordering intact.
 
-The tensor type is estimated rather than read, so the row values are estimated;
-`remote/gguf-tensor-census.py` reads the actual assignment and settles them. The
-conclusion survives the assumption. At Q4_K the same arithmetic gives 9.58,
-7.41, and 9.14 GB/s, so under either type the correction reorders the table:
-the 2B and the 9B land within 4% of each other and the 4B alone sits about a
-fifth below both. The 45% shortfall in the uncorrected table is mostly the
-embedding share of a tied-embedding 1.2 GiB file, and the residual 4B anomaly
-is roughly 17 to 19%.
+## The 4B is not the outlier; the 2B is
 
-`tie_word_embeddings` is true for the 2B and the 4B and false for the 9B, so
-the 9B file carries a separate output tensor that decode does stream. That
-distinction is folded into the row above and is the reason the 9B correction is
-the smallest of the three.
+The corrected table reverses the question. The 4B and the 9B agree to 2% across
+a 1.8-fold span in streamed bytes, so at 32 layers per-token cost is
+proportional to bytes and the pair fixes a rate of about 8.6 GB/s. The 2B
+reaches 12.29 GB/s, 42% above both, and it is the row that needs explaining.
+
+Depth alone does not explain it. Fitting per-layer and per-byte terms to the two
+32-layer points gives 0.472 ms per layer and 0.11214 s per GB, which applied to
+24 layers and 1.299 GB predicts 6.37 decode tok/s against 9.46 measured. That is
+the second cost model this checkpoint refutes, and it fails in the same
+direction as the first: whatever the 2B does, it is cheaper than either a fixed
+per-token term or a fixed per-layer term allows.
+
+What separates the 2B from the other two is more than layer count. It runs 24
+layers at 2048/6144 against 32 layers at 2560/9216 and 4096/12288, and it also
+carries 8 attention heads with 2 key-value heads and 16 linear value heads,
+against 16 attention heads with 4 key-value heads and 32 linear value heads in
+both of the others. The layer pattern is identical across all three, three
+linear-attention layers followed by one full attention layer, so the Gated
+DeltaNet ratio is constant and is not a candidate.
 
 Sequential host read bandwidth measures 7.97 GB/s on one CPU thread and 15.44
 GB/s on two. Those figures measure two Zen+ cores through the load/store path,
 which is a different consumer of the same DDR4 controller than the two Vega
-compute units, so they bound nothing about the GPU. The physical device ceiling
-stays unmeasured until a direct Vulkan buffer-read and Q4_K dequantization
-benchmark runs.
+compute units, so they bound nothing about the GPU. The device ceiling stays
+unmeasured until a direct Vulkan buffer-read and Q4_K dequantization benchmark
+runs, and until then 12.29 GB/s is the highest rate observed rather than a
+ceiling.
 
 Prefill behaves as the compute-bound half should, with both checkpoints near the
 arithmetic ceiling of 281.6 GFLOP/s: the 2B reaches 221.7 GFLOP/s at 79% and the
@@ -83,22 +93,16 @@ count, and lane width rather than a measured device bound.
 ## What is settled and what is open
 
 Settled: the 2B decodes 3.1 times faster than the 4B and prefills 2.4 times
-faster, and this appliance serves a Qwen-class checkpoint at 9.46 tok/s.
+faster, this appliance serves a Qwen-class checkpoint at 9.46 tok/s, and at 32
+layers achieved rate is independent of width across a 1.8-fold byte span.
 
-Open, and the finding worth the next probe: the 4B moves roughly a fifth fewer
-streamed bytes per second than either neighbour. The architecture rules out the
-first explanation offered for it. `config.json` gives all three checkpoints the
-same layer pattern of three linear-attention layers followed by one full
-attention layer, so the Gated DeltaNet ratio is uniform and the operator mix in
-that sense is constant. The three differ instead in width, in head counts, and
-in embedding tying: the 2B runs 24 layers at 2048/6144 with 8 attention heads
-and 16 linear value heads, while the 4B and the 9B run 32 layers at 2560/9216
-and 4096/12288, both with 16 attention heads and 32 linear value heads. Tensor
-shape, quantization mixture, kernel-selection thresholds, fusion, dispatch
-structure, and two-compute-unit occupancy remain as candidates, and a
-per-operator Vulkan profile of the 4B against the 9B separates them because
-those two share layer count, head counts, and layer pattern and differ only in
-width.
+Open: why the 2B moves 42% more streamed bytes per second than either of the
+other two. The profile that separates the candidates is the 2B against the 4B,
+because the 4B and the 9B already agree and serve as the control that rules
+width out. Head count, layer count, Gated DeltaNet value-head width, tensor
+shapes selecting different kernels, dispatch count per token, and two-compute-
+unit occupancy all remain, and a per-operator Vulkan capture normalized to
+microseconds per token separates them.
 
 Untested: quality. Throughput states nothing about whether the 2B answers
 correctly, and the five-prompt suite and reasoning-span probe that promoted the
