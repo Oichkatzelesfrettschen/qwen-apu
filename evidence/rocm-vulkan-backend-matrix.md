@@ -12,16 +12,61 @@ Full offload, `-ngl 99`, two threads, one repetition, 600 s per phase.
 
 ## Rows
 
-| Arm | prefill tok/s | decode tok/s | prefill seconds | decode seconds |
-| --- | ---: | ---: | ---: | ---: |
-| V, RADV Vulkan | 21.49 | 3.10 | 52 | 26 |
-| H0, `gfx900` under override, automatic kernels | 14.06 | 2.22 | 80 | 33 |
+Measurement runs under the policy the appliance serves under, nice 19 with the
+idle I/O class, verified on the running process rather than assumed from the
+shell. The rows are the retained ones:
 
-HIP reaches 65.4% of the Vulkan prefill rate and 71.6% of its decode rate. The
+| Arm | ggml threads | prefill tok/s | decode tok/s | prefill seconds | decode seconds |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| V, RADV Vulkan | 2 | 23.48 | 3.09 | 50 | 26 |
+| H0, `gfx900` under override, automatic kernels | 2 | 12.20 | 1.97 | 89 | 38 |
+| H0t1, the same arm at one ggml thread | 1 | | 1.98 | | 37 |
+
+HIP reaches 52.0% of the Vulkan prefill rate and 63.8% of its decode rate. The
 falsification criterion recorded in `evidence/rocm-feasibility-audit.md` asks
 for a HIP row above 22.00 prefill or 3.02 decode on this checkpoint. Both rows
 fall below both figures, so the criterion is tested and unmet, and RADV Vulkan
 holds the serving backend on measurement rather than on default.
+
+## The thread-contention prediction is falsified
+
+`BusyWaitSignal` polls a completion value in userspace rather than sleeping on
+it, so a HIP arm holds one of this machine's two cores before ggml asks for any,
+and `-t 2` then asks for both. The prediction recorded before the run was that
+removing that oversubscription would recover decode.
+
+It recovers nothing. One ggml thread measures 1.98 decode tok/s against two
+threads at 1.97, a difference inside the run-to-run spread of a single
+repetition. The deficit survives the arm designed to remove it, so ggml thread
+count is not the mechanism and the deviation is the result: whatever the host
+spin costs, it is not costing decode through ggml worker starvation.
+
+## The two policies measure different-sized deficits
+
+The same two arms ran earlier at normal priority, and those rows are retained
+here as a comparison between scheduling policies rather than backends:
+
+| Arm | prefill, nice 0 | prefill, nice 19 | decode, nice 0 | decode, nice 19 |
+| --- | ---: | ---: | ---: | ---: |
+| V, RADV Vulkan | 21.49 | 23.48 | 3.10 | 3.09 |
+| H0, HIP | 14.06 | 12.20 | 2.22 | 1.97 |
+
+Vulkan is unchanged by the policy: decode moves 0.3% and prefill measures 9.3%
+higher, which at one repetition sits within what a machine running a desktop and
+a QEMU guest varies by. The guards costing nothing against this hardware is the
+repository's existing result, measured at 2.86 tok/s unconstrained against 2.87
+served, and this reproduces it.
+
+HIP loses under the same policy, 13.2% of prefill and 11.3% of decode. A backend
+whose completion detection sleeps on a fence is indifferent to the priority of
+the thread waiting; a backend that polls a value in userspace gets its poll loop
+descheduled. That separates cleanly from the `-t 1` result: the sensitivity is
+in the HSA wait thread rather than in the ggml worker pool, which is why
+changing the worker count moves nothing and changing the priority moves both
+phases.
+
+The appliance serves at nice 19. A backend that measures worse there is worse
+where it would run.
 
 The Vulkan row here differs from the figures the README quotes, 21.49 against
 22.00 prefill and 3.10 against 3.02 decode. Two things changed at once and this
@@ -49,16 +94,17 @@ variable on this silicon.
 
 ## What the split shows about the mechanism
 
-The deficit is larger on prefill than on decode, 34.6% against 28.4%. Prefill is
+The deficit is larger on prefill than on decode, 48.0% against 36.2%. Prefill is
 the compute-bound half and the half that enters rocBLAS, so a `gfx900` Tensile
 solution set tuned for a 64-compute-unit Vega 10 running on two compute units is
 consistent with the larger gap.
 
 It does not account for the decode gap. Decode is bandwidth-bound and moves
-weights at a rate the backend does not change, so a 28.4% decode deficit points
-at per-token overhead outside the matrix multiplications: dispatch frequency,
-short-kernel synchronization, and the host wait state that `BusyWaitSignal`
-spins in while holding one of this machine's two cores.
+weights at a rate the backend does not change, so a 36.2% decode deficit points
+at per-token overhead outside the matrix multiplications: dispatch frequency and
+short-kernel synchronization, both untested, and the host wait state, which the
+`-t 1` arm has now excluded as a ggml-worker effect while the priority
+comparison keeps it alive as an HSA-thread effect.
 
 ## Predictions recorded before the arms run
 
@@ -67,17 +113,18 @@ matrix multiplication through ggml's own kernels instead of dequantize plus
 rocBLAS. Decode at batch one goes through `mul_mat_vec_q` in `mmvq.cu` whatever
 that option says, because the flag governs a choice the batched path makes.
 
-H1 therefore predicts prefill above 14.06 and decode within noise of 2.22. A
+H1 therefore predicts prefill above 12.20 and decode within noise of 1.97. A
 decode figure that moves materially falsifies the reading of what the option
 controls, and that deviation is the finding rather than a footnote.
 
-Nothing in H1 or a native `gfx902` arm addresses the decode gap, which is the
-number the serving verdict rests on. The candidate there is CPU contention:
-`BusyWaitSignal` spins a full core while `-t 2` asks ggml for both of them, so
-the HIP arm is oversubscribed on a two-core machine in a way the RADV arm is
-not. Re-running H0 decode at `-t 1` against the recorded `-t 2` row tests it,
-needs no rebuild, and costs about a minute. If `-t 1` recovers decode, the
-deficit is the host wait state rather than kernel quality.
+H1 remains unbuilt. `GGML_CUDA_FORCE_MMQ` is compiled in, and seeding its tree
+by copying the reference tree carried a nested ExternalProject cache naming the
+original directory; clearing that prefix regenerated `ggml-vulkan-shaders.hpp`
+and forced the Vulkan backend to recompile, where GCC 13 took an internal
+compiler error in `mul_mm.comp.cpp` under the memory pressure of a resident
+QEMU guest and a saturated zram device. Reconfiguring the reference tree in
+place rebuilds the HIP objects alone and is the remaining route, at the cost of
+the arms replacing each other rather than coexisting.
 
 ## How a partial result is read
 
