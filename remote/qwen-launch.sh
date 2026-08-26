@@ -24,7 +24,7 @@ if pgrep -x llama-server >/dev/null 2>&1; then
     exit 2
 fi
 
-model_path=${QWEN_MODEL_PATH:-"${HOME:?}/models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf"}
+model_path=${QWEN_MODEL_PATH:-"${HOME:?}/models/Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf"}
 
 # A projector encodes images into the embedding space of the checkpoint it was
 # exported with, and a mismatched one loads without error while placing image
