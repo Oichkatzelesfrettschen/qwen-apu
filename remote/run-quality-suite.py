@@ -82,7 +82,7 @@ def grade(row, reply):
         try:
             document = json.loads(
                 body, parse_constant=reject_nonfinite_json_constant)
-        except ValueError as error:
+        except (ValueError, RecursionError) as error:
             return False, f"not JSON: {error}"
         if not isinstance(document, dict):
             return False, "JSON is not an object"

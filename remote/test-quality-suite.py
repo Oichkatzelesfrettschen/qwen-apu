@@ -49,6 +49,7 @@ CASES = [
     ("nonempty", "", "Any answer at all.", True),
     ("nonempty", "", "   \n  ", False),
 ]
+CASES.append(("json_keys", "name", "[" * 2000 + "0" + "]" * 2000, False))
 
 failures = 0
 for kind, expectation, reply, expected in CASES:
