@@ -379,10 +379,28 @@ Every arm that diverges was built with more output slots than the unspeculated
 one, and the two that diverge differently were built with different counts. The
 divergence points are also late rather than immediate once the prompts stop
 looping, at indices 4 through 125 of 192, which is what ordinary low-margin
-positions look like rather than a systematic corruption. The cause is located in
-the target context's output configuration; identifying it needs a logit capture
-at one output slot against two on the same prompt, which is the probe still
-owed.
+positions look like rather than a systematic corruption.
+
+`R1` closes it from the `draft-mtp` side. It runs `draft-mtp` at `n_max=1` with
+`QWEN_SPEC_DRAFT_P_MIN=1.0`, and `common/speculative.cpp` breaks out of the draft
+loop whenever `llama_get_embeddings_nextn` reports confidence below the floor, so
+nothing survives to be verified: the code and arithmetic requests draft zero
+tokens and prose drafts one. The prose and arithmetic sequences diverge anyway,
+at the same two prompts every other speculative arm parts on, while code matches.
+
+Three arms therefore diverge without drafting: `N1b` on prose with no MTP block
+loaded, and `R1` on prose and arithmetic with the block loaded and the drafter
+silenced. Drafting, accepting, and `load_mtp` are each excluded, and what is left
+across all of them is that the target context was built for more than one output.
+Identifying the numerical path needs a logit capture at one output slot against
+two on the same prompt, which is the probe still owed; the cause is located.
+
+`R1` also prices the draft pass a second way. It measures 2.53 to 2.55 tok/s
+against 3.08 to 3.09 unspeculated, which is 67.5 ms per token of pure loss: the
+MTP forward pass runs to produce the confidence the floor then rejects, and its
+result is discarded. The `dur(g)` decomposition of the `S1` arms priced that same
+pass at 66.4 ms. Two independent derivations agreeing to 1.6% is what makes the
+323 and 463 ms column figures trustworthy rather than fitted.
 
 The operational question this raises belongs to whoever sets the criterion. The
 stated rule is that speculative decoding must reproduce the target-only token
