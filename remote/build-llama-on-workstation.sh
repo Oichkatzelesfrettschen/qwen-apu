@@ -70,6 +70,11 @@ if [ "$backends" != vulkan ]; then
     exit 2
 fi
 
+# The container build yields to the workstation desktop for the same reason the
+# laptop builds do: someone is using the machine while it runs.
+renice -n 19 -p $$ >/dev/null 2>&1 || true
+ionice -c 3 -p $$ >/dev/null 2>&1 || true
+
 build_directory=$source_directory/build-workstation-vulkan
 mkdir -p "$build_directory"
 

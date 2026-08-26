@@ -45,6 +45,13 @@ rocm_path=${ROCM_PATH:-"${HOME:?}/.venvs/rocm-gfx900/lib/python3.12/site-package
 
 mkdir -p "$(dirname -- "$output_path")"
 
+# Measurement runs under the policy the appliance serves under. The launch chain
+# puts inference at nice 19 with idle I/O so the desktop's own work preempts it,
+# and a benchmark at normal priority measures a machine the service never
+# becomes. The laptop is in use while these run, which is the same reason.
+renice -n 19 -p $$ >/dev/null 2>&1 || true
+ionice -c 3 -p $$ >/dev/null 2>&1 || true
+
 model_digest=$(sha256sum "$model_path" | cut -d' ' -f1)
 # llama-bench prints its `build:` line with the result table rather than under a
 # version flag, so provenance reads from the source tree the binary came from.
@@ -62,6 +69,7 @@ fi
     printf 'model_sha256=%s\n' "$model_digest"
     printf 'llama_commit=%s worktree=%s\n' "$source_commit" "$source_worktree"
     printf 'phase_timeout_seconds=%s repetitions=%s\n' "$phase_timeout" "$repetitions"
+    printf 'scheduling=nice_19_idle_io\n'
 } | tee "$output_path"
 
 # One arm is a label, a binary, a device, a ggml thread count, and the

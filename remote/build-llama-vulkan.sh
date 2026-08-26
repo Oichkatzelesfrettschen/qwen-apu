@@ -1,10 +1,14 @@
 #!/bin/sh
 set -eu
 
-# A build is foreground work someone waits on, so it runs at normal priority
-# across every core. The nice 19 single-core policy belongs to the inference
-# service, which yields the machine to the desktop while it serves.
-ionice -c 2 -n 4 -p $$ >/dev/null 2>&1 || true
+# The desktop is the highest-priority workload on this machine and the laptop is
+# in use while these run, so every long job here yields to it: nice 19 and idle
+# I/O, which the kernel hands the CPU only when nothing the user is waiting on
+# wants it. Two 2.3 GHz cores make a build long enough that normal priority is
+# felt at the desktop, and a measurement taken while the desktop stutters
+# describes a machine nobody would run.
+renice -n 19 -p $$ >/dev/null 2>&1 || true
+ionice -c 3 -p $$ >/dev/null 2>&1 || true
 build_jobs=${QWEN_BUILD_JOBS:-$(nproc 2>/dev/null || echo 1)}
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
