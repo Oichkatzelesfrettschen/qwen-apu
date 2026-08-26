@@ -7,8 +7,10 @@
 # a digest drift and the fetch script is the one that verifies the file.
 #
 # context_default is the interactive depth. context_ceiling is the depth the
-# policy admits. context_target names the depth still to be proved and carries
-# `untested` until an allocation at that depth is measured. decode_tok_s and
+# policy admits; the 24576 rows are measured, at 2,974 MiB for the 4B, and the
+# 32768 rows are scaled from that measurement rather than allocated, so a launch
+# at 32K is the check that promotes them. context_target names the depth still
+# to be proved. decode_tok_s and
 # prefill_tok_s are measured through llama-bench with full Vulkan offload; a
 # `-` means the row is admitted on a different basis.
 #

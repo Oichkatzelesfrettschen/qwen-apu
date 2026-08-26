@@ -104,20 +104,38 @@ acceptance of 0.93 is `sum_{k=0}^{N} 0.93^k`, which reproduces the measured
 | S6 | 1561.4 | 5.69 | 3.64 |
 
 Per-position acceptance falls with draft depth, so each row is an upper bound
-rather than an estimate. The prediction is that the curve peaks flat near N=2
-to N=3 around 3.8 tok/s and declines, and that 4.5 tok/s is unreachable by
-drafting deeper against this kernel. The falsifier is any arm above 4.1 tok/s.
+on accepted length rather than an estimate. The prediction is that the curve
+peaks flat near N=2 to N=3 around 3.8 tok/s and declines, and that 4.5 tok/s is
+unreachable by drafting deeper against this kernel.
+
+The linear column term is a two-point fit, which is the extrapolation this tree
+has already had refuted twice, and the code names the reason it should break.
+`ggml_vk_get_dequantize_mul_mat_vec` indexes
+`pipeline_dequant_mul_mat_vec_f16_f32[wg_size][type][num_cols - 1]`, so each
+column count is a separately compiled shader, and `FLOAT_TYPE
+temp[NUM_COLS][NUM_ROWS]` is per-invocation storage that grows with `NUM_COLS`.
+Two Vega compute units hold a fixed register file, so occupancy falls at some
+column count and the cost curve is piecewise rather than linear. The falsifier
+is therefore two-sided: any arm above 4.1 tok/s refutes the ceiling, and any arm
+more than 15% below its predicted rate refutes the linear column term and
+locates the knee.
 
 ## The candidate the decomposition names
 
-`smin` in `mul_mat_vec_q4_k.comp` accumulates sixteen fused multiply-adds per
-column, four per `vec4`, each pairing one component of `b` with a scale that is
-constant across the four. Factoring it to four horizontal sums and four
-multiply-adds removes roughly half the per-column arithmetic, which the
-decomposition prices at 70 ms of the 140. Applied to N=2 that predicts 3.81
-rising toward 4.2 tok/s. This is a derived candidate rather than a measured
-result, and it is stated here so the shader arm has a falsifiable target before
-it is written.
+`smin` in `mul_mat_vec_q4_k.comp` is one chain of sixteen dependent fused
+multiply-adds per column. Each scale multiplies four components of `b` that the
+chain visits separately, so the same value is applied four times in sequence:
+`sc2` against the four components of `by10`, `sc3` against `by132`, `sc6`
+against `by20`, `sc7` against `by232`. Summing each `vec4` first and then
+applying its scale is four independent three-add reductions feeding four
+multiply-adds, which is the same sixteen operations rearranged. The arithmetic
+volume is unchanged; what changes is the dependency chain, from sixteen deep to
+four, and the instruction-level parallelism available to hide it.
+
+That makes the candidate worth measuring and its size unpredicted. A chain that
+is latency-bound gains; one that the compiler already reassociates gains
+nothing. The measurement is the two-column target pass time against the 463.1 ms
+this arm recorded, and the falsification criterion is that it does not move.
 
 ## Greedy token identity breaks, and the control rules out the easy explanation
 
@@ -144,12 +162,22 @@ different unrolling and different accumulation order. The speculative arm
 evaluates the target on a pipeline the unspeculated arm never uses, and greedy
 argmax is not stable across that difference where two logits are close.
 
-That reading predicts the divergence is reproducible rather than random: an arm
-repeated at the same `n_max` runs the same pipeline both times and should
-reproduce itself. `S1b` tests it. Until it reports, the divergence is
-attributed to the speculative path and its cause is a stated hypothesis.
+Two arms separate that hypothesis from its alternatives, and both are cheap.
+`S1b` repeats `S1` unchanged: the same `n_max` selects the same pipeline both
+times, so a reproducible divergence is consistent with pipeline selection and a
+random one refutes it. `S0c` sets `QWEN_SPEC_DRAFT_N_MAX=0` with `draft-mtp`
+still active, which loads the MTP block, creates the draft context, drafts
+nothing, and leaves the target verifying one column. If `S0c` reproduces `S0`
+exactly, column count is the whole cause and `load_mtp`'s effect on buffer
+layout is exonerated; if it diverges, the hypothesis is wrong.
 
-Either outcome leaves the same operational conclusion. Exact reproduction of
-the target-only sequence is what makes speculation free, and this build does not
-deliver it at the token level on this backend, so the arm is admitted on
-throughput and quality rather than on identity.
+The operational question this raises belongs to whoever sets the criterion. The
+stated rule is that speculative decoding must reproduce the target-only token
+sequence and that any difference is a correctness defect rather than a quality
+trade. Under that rule this arm fails regardless of cause, because the
+divergence is measured. The reading that would admit it is that the rule exists
+to catch a broken accept-reject test, and what is measured here is instead an
+argmax that moves when the same logits are computed by a different shader --
+the target's own choice at a low-margin position, not a draft token wrongly
+kept. This file records the measurement and the mechanism; which of those two
+readings governs the default is a decision, not a finding.
