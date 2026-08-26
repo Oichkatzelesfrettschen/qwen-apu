@@ -63,7 +63,7 @@ OPERATION_FAMILIES = (
     (re.compile(r"\.ffn_(gate|up|down)_(exps|shexp)"), "moe_ffn"),
     (re.compile(r"\.ffn_gate_inp"), "moe_router"),
     (re.compile(r"\.ffn_(gate|up|down)"), "ffn"),
-    (re.compile(r"\.attn_(q|k|v|output|qkv)\b"), "attention"),
+    (re.compile(r"\.attn_(q|k|v|output|qkv|gate)\b"), "attention"),
     (re.compile(r"\.(ssm|linear_attn)_"), "gated_deltanet"),
     (re.compile(r"\.(ssm|linear_attn)\."), "gated_deltanet"),
     (re.compile(r"_norm"), "norm"),
@@ -71,6 +71,15 @@ OPERATION_FAMILIES = (
 )
 
 LAYER_PATTERN = re.compile(r"^blk\.(\d+)\.")
+
+# Qwen3.5 checkpoints append multi-token-prediction blocks after the transformer
+# stack and declare how many through <arch>.nextn_predict_layers. Those blocks
+# hold a full layer's attention and feed-forward tensors alongside the nextn
+# projections, so a name-based rule counts them as ordinary layers.
+# llama_hparams::n_layer_effective returns n_layer_all - n_layer_nextn, so decode
+# never runs them: they occupy memory and leave per-token traffic untouched.
+NEXTN_KEY_SUFFIX = ".nextn_predict_layers"
+BLOCK_COUNT_KEY_SUFFIX = ".block_count"
 
 # Metadata keys that record how the file was produced. Absence is itself a
 # result: a file without them cannot be reproduced from the repository.
@@ -217,7 +226,17 @@ def parse_header(reader):
             "family": classify_operation(name),
         })
 
-    return {"version": version, "metadata": metadata, "tensors": tensors}
+    architecture = metadata.get("general.architecture", "")
+    nextn_layers = int(metadata.get(architecture + NEXTN_KEY_SUFFIX, 0) or 0)
+    block_count = int(metadata.get(architecture + BLOCK_COUNT_KEY_SUFFIX, 0) or 0)
+    if nextn_layers > 0 and block_count > 0:
+        first_nextn_layer = block_count - nextn_layers
+        for tensor in tensors:
+            if tensor["layer"] is not None and tensor["layer"] >= first_nextn_layer:
+                tensor["family"] = "mtp"
+
+    return {"version": version, "metadata": metadata, "tensors": tensors,
+            "nextn_layers": nextn_layers, "block_count": block_count}
 
 
 def sha256_of(path):
@@ -256,7 +275,8 @@ def summarize(census):
     # the lookup share is excluded; the exclusion is the same tensor either way
     # because the output matvec is already counted through it.
     streamed_bytes = sum(
-        tensor["bytes"] for tensor in tensors if tensor["family"] != "embedding"
+        tensor["bytes"] for tensor in tensors
+        if tensor["family"] not in ("embedding", "mtp")
     )
     if not has_output:
         # Tied: the output projection streams the embedding tensor, so add it
@@ -275,6 +295,8 @@ def summarize(census):
         "output_bytes": output_bytes,
         "streamed_bytes": streamed_bytes,
         "layer_count": len([k for k in by_layer if k is not None]),
+        "nextn_layers": census.get("nextn_layers", 0),
+        "mtp_bytes": by_family.get("mtp", 0),
     }
 
 
@@ -305,6 +327,8 @@ def report(census, summary):
     add(f"embeddings_tied\t{'absent' if tied is None else str(tied).lower()}")
     add(f"embedding_bytes\t{summary['embedding_bytes']}")
     add(f"output_bytes\t{summary['output_bytes']}")
+    add(f"nextn_layers\t{summary['nextn_layers']}")
+    add(f"mtp_bytes\t{summary['mtp_bytes']}")
     add(f"streamed_bytes_per_token\t{summary['streamed_bytes']}")
 
     add("")

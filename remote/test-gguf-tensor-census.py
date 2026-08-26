@@ -239,6 +239,60 @@ def check_tied_branch(census_module, gguf, directory):
     return failures
 
 
+def check_mtp_branch(census_module, gguf, directory):
+    """A checkpoint declaring nextn_predict_layers carries multi-token-prediction
+    blocks after the transformer stack. llama_hparams::n_layer_effective subtracts
+    them, so decode never runs them and their bytes leave the per-token total even
+    though they carry ordinary attention and feed-forward names."""
+    import numpy as np
+    path = directory / "mtp.gguf"
+    writer = gguf.GGUFWriter(str(path), "qwen35")
+    writer.add_uint32("qwen35.block_count", 2)
+    writer.add_uint32("qwen35.nextn_predict_layers", 1)
+    for layer in range(2):
+        writer.add_tensor(f"blk.{layer}.ffn_up.weight",
+                          np.ones((256, 128), dtype=np.float32))
+        writer.add_tensor(f"blk.{layer}.attn_q.weight",
+                          np.ones((128, 128), dtype=np.float32))
+    writer.add_tensor("blk.1.nextn.eh_proj.weight",
+                      np.ones((128, 64), dtype=np.float32))
+    writer.add_tensor("token_embd.weight", np.ones((64, 32), dtype=np.float32))
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+
+    census = census_module.read_gguf(str(path), hash_file=False)
+    summary = census_module.summarize(census)
+    failures = []
+    if summary["nextn_layers"] != 1:
+        failures.append(f"mtp: nextn_layers is {summary['nextn_layers']}, expected 1")
+
+    layer_one = [t for t in census["tensors"] if t["layer"] == 1]
+    misfiled = [t["name"] for t in layer_one if t["family"] != "mtp"]
+    if misfiled:
+        failures.append(f"mtp: block 1 tensors outside the mtp family: {misfiled}")
+    layer_zero = [t for t in census["tensors"] if t["layer"] == 0]
+    if any(t["family"] == "mtp" for t in layer_zero):
+        failures.append("mtp: block 0 must stay outside the mtp family")
+
+    # The fixture carries no output.weight, so the embedding is tied and the
+    # logit projection streams it; what the nextn block contributes is what must
+    # be absent.
+    expected_streamed = (sum(t["bytes"] for t in layer_zero)
+                         + summary["embedding_bytes"])
+    if summary["streamed_bytes"] != expected_streamed:
+        failures.append(
+            f"mtp: streamed bytes {summary['streamed_bytes']} must exclude the "
+            f"nextn block, expected {expected_streamed}")
+    if summary["mtp_bytes"] != sum(t["bytes"] for t in layer_one):
+        failures.append("mtp: mtp_bytes must total the nextn block")
+    if not failures:
+        print(f"mtp\tfixture\tmtp_bytes={summary['mtp_bytes']}\t"
+              f"streamed={summary['streamed_bytes']}")
+    return failures
+
+
 def main(argv):
     gguf_py_path = locate_gguf_py()
     if gguf_py_path is None:
@@ -265,6 +319,7 @@ def main(argv):
         failures += compare(census_module, gguf, fixture, "fixture")
         failures += check_fixture_summary(census_module, fixture)
         failures += check_tied_branch(census_module, gguf, directory)
+        failures += check_mtp_branch(census_module, gguf, directory)
     finally:
         shutil.rmtree(directory, ignore_errors=True)
 
