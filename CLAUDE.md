@@ -144,6 +144,7 @@ QWEN_FORCE_MMQ=ON remote/build-llama-dual.sh   # the MMQ kernel-policy arm
 remote/download-qwen35-4b-q4km.sh
 remote/download-qwen35-4b-mmproj.sh
 remote/download-qwen38-4b-distill-q4km.sh
+remote/download-nanbeige42-3b-q4km.sh            # community conversion
 ```
 
 Tests are standalone POSIX shell scripts that exit non-zero on failure. Run one
