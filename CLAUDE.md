@@ -52,14 +52,29 @@ CPU-only at its first partial point: a split adds CPU-to-Vulkan synchronization
 and activation transfers while both sides draw on the one DDR4 controller, so
 the placements share a bandwidth domain instead of combining two.
 
-The memory controller runs on a DPM ladder and the step it selects is a term in
-every decode rate. `pp_dpm_mclk` offers 933 MHz and 1067 MHz as its top two
-steps, a 12.6% span, and sampling the part under sustained inference finds it at
-933 MHz with the die at 93 C. Two rates measured at different steps are not
-comparable, which is why `remote/sample-gpu-clocks.sh` runs alongside a
-measurement and the harnesses report the modal step beside the rate. The GPU
-core clock holds its top step, 1100 MHz, at the same time, so the ladder that
-moves is the memory one.
+Memory runs at 933 MHz, which is DDR4-1866, and the 1067 MHz step above it in
+`pp_dpm_mclk` is a table entry the SMU never selects. Writing `high` to
+`power_dpm_force_performance_level` pins `sclk` to 1100 MHz and leaves `mclk` at
+933; writing `manual` and then the step index 3 is accepted and also leaves it at
+933. Two 16 GiB dual-rank Crucial CT16G4SFD8213 SODIMMs fill both channels,
+`dmesg` reports `RAM width 128bits DDR4`, and their SPD rates them at 2133 MT/s,
+so the part operates one grade below the modules and two below the SoC's
+specified DDR4-2400. Dual-rank derating fits the evidence and a single-DIMM boot
+test would settle it. Theoretical peak is 2 x 8 bytes x 1866 MT/s = 29.9 GB/s,
+and the `Configured Memory Speed: 2400 MT/s` that dmidecode prints exceeds both
+the SPD rating and the reachable step, so that field is wrong.
+
+Two Zen+ cores cannot saturate that: the 15.44 GB/s measured on two threads is
+52% of the 29.9 GB/s ceiling, so the host figure bounds the cores rather than the
+controller.
+
+`remote/sample-gpu-clocks.sh` records the step beside every rate, and what it
+has recorded so far is that the step does not move. The measurement spread it
+was added to explain is real and lies elsewhere:
+`evidence/measurement-state-and-memory-clock.md` measures 3.11 tok/s and 3.24
+tok/s from identical flags ten minutes apart with `mclk` at 933 and `sclk`
+peaking at 1100 in both, so a depth-0 rate on this machine carries about 4% of
+uncontrolled spread that neither ladder explains.
 
 The registry rather than a constant sets the admitted depth.
 `remote/models.tsv` carries `context_default`, `context_ceiling`, and
