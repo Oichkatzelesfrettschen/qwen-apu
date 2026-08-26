@@ -2,10 +2,15 @@
 
 `empero-ai/Qwen3.8-4B-Distill` Q4_K_M through the guarded launch path on the
 Raven2 laptop, full RADV Vulkan offload, `low-async`, 24576 context, greedy
-sampling with `temperature 0`, `top_k 1`, `seed 42`, `cache_prompt false`,
-128 predicted tokens per prompt. `remote/run-speculation-matrix.sh` owns every
-launch and teardown, so a difference between two rows is a difference between
-two speculation settings.
+sampling with `temperature 0`, `top_k 1`, `seed 42`, `cache_prompt false`.
+`remote/run-speculation-matrix.sh` owns every launch and teardown, so a
+difference between two rows is a difference between two speculation settings.
+
+Every number below the arm tables comes from the first prompt suite: three
+128-token greedy continuations of a bare prefix. That suite is retired for the
+reason the n-gram section gives, and the tables that survive it are named there.
+The column cost series and the occupancy cliff rest on that suite alone, because
+they need arms at five and seven columns and only it has them.
 
 ## The head needs no patch and no sidecar
 

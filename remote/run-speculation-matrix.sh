@@ -53,13 +53,15 @@ umask 077
 mkdir -p "$output_directory"
 
 # Acceptance is a property of the text rather than of the speculator, and a bare
-# prefix continued greedily for 128 tokens drives this model into repetition,
-# where an n-gram drafter accepts everything and reports a rate that measures the
-# loop. Each prompt is therefore written in the chat format the checkpoint was
-# trained on, which produces an instruction-following answer that terminates
-# instead of looping. The summary reports the repeated-eight-gram fraction of
-# every continuation beside its rate, so a rate carried by repetition is visible
-# rather than inferred.
+# prefix continued greedily drives this model into repetition, where an n-gram
+# drafter accepts everything and reports a rate that measures the loop. Each
+# prompt is therefore written in the chat format the checkpoint was trained on,
+# which puts the model in the instruction-following mode it serves in. The
+# /completion endpoint takes the text as given rather than applying the
+# template, so the server's `thinking = 1` default stands and a continuation may
+# spend its whole budget inside `<think>`; that is the workload this checkpoint
+# actually decodes. The summary reports the repeated-eight-gram fraction of every
+# continuation beside its rate, so a rate carried by repetition stays visible.
 chat_prefix='<|im_start|>user\n'
 chat_suffix='<|im_end|>\n<|im_start|>assistant\n'
 prompt_name_list='code prose arithmetic'
