@@ -88,37 +88,83 @@ column is the dot product and the `smin` correction, roughly 31 fused
 multiply-adds per 32-element chunk, and that is the work the measurement bills
 at 140 ms.
 
-## Prediction, recorded before the deeper arms run
+## The prediction is refuted, and the deviation locates a cliff
 
 The MTP head drafts sequentially, so an arm at N pays N draft passes and
-verifies 1+N columns. Time per verification step is therefore
-`323 + 206.4 N` ms. Mean accepted length under a uniform per-position
-acceptance of 0.93 is `sum_{k=0}^{N} 0.93^k`, which reproduces the measured
-1.90 to 1.97 at N=1.
+verifies 1+N columns. Before the deeper arms ran, the recorded model was a step
+time of `323 + 206.4 N` ms with a mean accepted length of `sum 0.93^k`, giving a
+flat peak near 3.8 tok/s at N=2 to N=3, a ceiling below 4.5, and a two-sided
+falsifier: any arm above 4.1 tok/s, or any arm more than 15% below its predicted
+rate.
 
-| arm | predicted step ms | predicted accepted length | predicted decode tok/s |
-| --- | ---: | ---: | ---: |
-| S2 | 735.8 | 2.80 | 3.81 |
-| S3 | 942.2 | 3.60 | 3.82 |
-| S4 | 1148.6 | 4.35 | 3.79 |
-| S6 | 1561.4 | 5.69 | 3.64 |
+The low side tripped, hard.
 
-Per-position acceptance falls with draft depth, so each row is an upper bound
-on accepted length rather than an estimate. The prediction is that the curve
-peaks flat near N=2 to N=3 around 3.8 tok/s and declines, and that 4.5 tok/s is
-unreachable by drafting deeper against this kernel.
+| arm | cols | predicted tok/s | measured tok/s, code / prose / arithmetic |
+| --- | ---: | ---: | --- |
+| S1 | 2 | 3.65 | 3.63 / 3.70 / 3.76 |
+| S2 | 3 | 3.81 | 3.27 / 3.40 / 3.62 |
+| S3 | 4 | 3.82 | 3.24 / 3.34 / 3.65 |
+| S4 | 5 | 3.79 | 2.23 / 1.73 / 2.62 |
+| S6 | 7 | 3.64 | 1.93 / 1.73 / 2.63 |
 
-The linear column term is a two-point fit, which is the extrapolation this tree
-has already had refuted twice, and the code names the reason it should break.
-`ggml_vk_get_dequantize_mul_mat_vec` indexes
-`pipeline_dequant_mul_mat_vec_f16_f32[wg_size][type][num_cols - 1]`, so each
-column count is a separately compiled shader, and `FLOAT_TYPE
-temp[NUM_COLS][NUM_ROWS]` is per-invocation storage that grows with `NUM_COLS`.
-Two Vega compute units hold a fixed register file, so occupancy falls at some
-column count and the cost curve is piecewise rather than linear. The falsifier
-is therefore two-sided: any arm above 4.1 tok/s refutes the ceiling, and any arm
-more than 15% below its predicted rate refutes the linear column term and
-locates the knee.
+S4 and S6 fall below the 3.09 of the unspeculated arm, so drafting four or six
+tokens ahead is slower than not speculating at all. Two errors combine there and
+they separate cleanly.
+
+Acceptance decays faster than a uniform 0.93 allows. Measured mean accepted
+length is 2.00, 2.91, 3.66, 4.16, and 5.41 against a predicted 1.93, 2.80, 3.60,
+4.35, and 5.69, so depth is close through N=3 and the top two arms fall short.
+
+The cost model is where the refutation lives. Subtracting the draft time the
+speculation statistics report leaves the target verification pass:
+
+| columns | target pass ms | added by the last column |
+| ---: | ---: | ---: |
+| 1 | 323 | - |
+| 2 | 459 | 136 |
+| 3 | 662 | 203 |
+| 4 | 783 | 121 |
+| 5 | 1319 | 536 |
+| 7 | 1636 | 159 for two, 79 each |
+
+Columns one through four cost about 150 ms each and column five costs 536, after
+which the curve flattens again at 79. That is a step, not a slope, and the linear
+term the prediction extrapolated from two points is refuted exactly where the
+code said it would be.
+
+The mechanism is occupancy. `ggml_vk_get_dequantize_mul_mat_vec` chooses
+`DMMV_WG_SIZE_LARGE` only for NVIDIA past Pre-Turing and for Intel, so RADV on
+this device always takes `DMMV_WG_SIZE_SUBGROUP` and the workgroup size is the
+same in every arm. What varies is the specialization constant: the pipeline is
+created as `{wg_size_subgroup, 2*rm_kq, i+1}` with `i+1` the column count, and
+`mul_mat_vec_q4_k.comp` declares `FLOAT_TYPE temp[NUM_COLS][NUM_ROWS]` as
+per-invocation storage while its `[[unroll]]` column loop holds four `vec4`
+loads of `b` live per column. Register demand therefore grows with the column
+count against a fixed 256-register file per lane, and Vega occupancy falls in
+integer steps rather than continuously. A step at the fifth column is what a
+drop from two waves per SIMD to one produces. This is the mechanism the code
+supports; the register count itself is unmeasured, and a `GGML_VK_PIPELINE_STATS`
+capture is what would settle it.
+
+## What the matrix decides
+
+N=1 is the operating point. It is the only arm that beats the unspeculated
+baseline by a useful margin, and it does so on all three prompts:
+
+| arm | code | prose | arithmetic | acceptance |
+| --- | ---: | ---: | ---: | ---: |
+| S0 | 3.09 | 3.10 | 3.09 | - |
+| S1 | 3.63 | 3.70 | 3.76 | 0.934 |
+| S2 | 3.27 | 3.40 | 3.62 | 0.856 |
+| S3 | 3.24 | 3.34 | 3.65 | 0.784 |
+| S4 | 2.23 | 1.73 | 2.62 | 0.615 |
+| S6 | 1.93 | 1.73 | 2.63 | 0.543 |
+
+The gain is 1.17 to 1.22 times. Reaching 4.5 tok/s from 3.07 needs 1.466, so
+the embedded head closes about a third of that gap and drafting deeper closes
+none of the rest. The two remaining paths are a cheaper verification pass, which
+the column table prices, and a checkpoint that streams fewer bytes, which the
+low-bit quantization ladder measures.
 
 ## The candidate the decomposition names
 
@@ -141,7 +187,9 @@ this arm recorded, and the falsification criterion is that it does not move.
 
 One of three prompts reproduced the unspeculated token sequence exactly; prose
 and arithmetic diverged, both at index 1, after which 122 and 121 of 128
-positions differ.
+positions differ. The pattern holds across the matrix: the code prompt matches
+at N=1, N=2, N=3, and N=6 and diverges at N=4, while prose and arithmetic
+diverge in every speculative arm.
 
 The control was run before attributing that. `S0b` repeats the unspeculated arm
 in a separate server launch with identical settings, and it reproduces `S0`
