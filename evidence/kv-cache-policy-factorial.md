@@ -125,10 +125,17 @@ cache bytes. At 4096 the served triple retains 0.927 against f16's 0.951 with
 the same kernel, so it loses at depth by more than it loses at zero, and it does
 so in the direction opposite the prediction. At 16384 it did not complete.
 
-The served policy costs rate at every depth it completed and buys memory. The
-coredump reports `real vram size: 2147483648`, and a q8_0/q4_0 cache holds about
-2.4 times fewer bytes than f16, which is what makes the 24576 default and the
-32768 target allocatable rather than what makes them fast.
+The served policy costs rate at every depth it completed. What it buys is
+memory, and the size of that purchase is smaller than a reading of the carve-out
+suggests. The coredump reports `real vram size: 2147483648` beside `gtt size:
+15723495424`: the first is the amdgpu VRAM carve-out and the second is the GTT
+aperture, and a UMA device allocates from both out of the same 29 GiB of DDR4.
+The 24576 allocation this tree already measured is 2,974 MiB, larger than the
+carve-out, so the carve-out is demonstrably not the ceiling. A q8_0/q4_0 cache
+holds about 2.4 times fewer bytes than f16 and that headroom is real, but which
+depths f16 can actually reach on this machine is unmeasured, and the capacity
+argument for the served policy rests on that measurement rather than on the
+2 GiB figure.
 
 ### Flash attention is neutral shallow and decisive deep
 
