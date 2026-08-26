@@ -66,10 +66,11 @@ built `--offload-arch=gfx900` runs under the override, which then reports
 The kernel and Mesa independently report a 128-bit DDR4 bus, which is two
 64-bit channels. A second DIMM therefore adds nothing.
 
-Mesa reports a 3 GHz effective memory frequency, which places nominal bandwidth
-at 48 GB/s rather than the 38.4 GB/s a DDR4-2400 assumption gives. The exact
-module speed and slot population read from DMI type 17, which needs root, and
-the conclusion holds across the range.
+DMI type 17 reports two 16 GB modules configured at 2400 MT/s, which fixes
+nominal bandwidth at 38.4 GB/s across a 128-bit bus. Mesa reports a 3 GHz
+effective memory frequency in the same field; the two disagree, the DMI figure
+is the one that states a physical module rate, and what Mesa's field counts here
+is unresolved. The conclusion holds across both figures.
 
 Measured sequential host read bandwidth reaches 7.97 GB/s on one CPU thread and
 15.44 GB/s on two, or 40% of nominal, which is where two Zen+ cores at 2.3 GHz
@@ -121,9 +122,20 @@ The newer runtime reads the same silicon differently and fixes the hang:
 | TheRock nightly | 7.16.26332 | returns the correct result |
 
 10.1 negotiates `gfx902:xnack-` where 5.7.1 negotiates `gfx902:xnack+`, and it
-advertises `gfx9-generic:xnack-` besides. The freezes recorded against this
-hardware are therefore a runtime defect that upstream has since repaired, and
-not a property of the APU.
+advertises `gfx9-generic:xnack-` besides. The xnack change is simultaneous with
+the smoke-test repair across a runtime revision that moves many components, so
+it is correlated with it rather than established as its cause.
+
+The repair is narrower than the smoke test suggests. A 2.58 GiB tensor upload
+under 10.1 reaches the same wait state through `hipEventSynchronize`, and
+`HSA_ENABLE_SDMA=0` clears it exactly as it clears the 5.7.1 case;
+`evidence/rocm-h0-operational-failure.md` records both. What 10.1 repairs is the
+small copy, and the copy engine still requires the variable on this silicon.
+
+The scope of that result is the hang reproduced here. Whether the freezes
+reported elsewhere against this 3050U share the mechanism is untested, and the
+invalid 11-compute-unit enumeration in those reports is a second difference from
+this machine.
 
 Both target paths run under 10.1: a binary built `--offload-arch=gfx902`
 executes natively, and one built `--offload-arch=gfx900` executes under
@@ -152,20 +164,29 @@ Nominal FP32 throughput for this GPU:
 ```
 
 Prefill is the compute-bound half of inference. `llama-bench` measures 21.2
-prompt tok/s on Qwen3.5-4B, so 512 tokens take 24.2 s. Prefill arithmetic is
+prompt tok/s on the Qwen3.5-4B base checkpoint, so 512 tokens take 24.2 s. Prefill arithmetic is
 about `2 x 4.21e9 x 512 = 4.31 TFLOP`, giving:
 
 ```text
 4.31e12 / 24.2 = 178 GFLOP/s = 63% of nominal FP32 peak
 ```
 
-The Vulkan backend is already inside a factor of 1.6 of the arithmetic ceiling.
-A flawless rocBLAS path is bounded above by that same factor, and `gfx900`
-Tensile solutions are tuned for a 64-compute-unit Vega 10, not for two compute
-units sharing DDR4 with a desktop.
+That 63% is a heuristic, not a bound. `2 x parameters x tokens` counts a dense
+transformer's multiply-accumulates and omits dequantization, attention,
+normalization, elementwise kernels, packing, and synchronization, none of which
+map onto nominal FP32 FMA peak. The figure says the Vulkan backend is within the
+same order as the arithmetic ceiling; it does not cap what a different backend
+can return.
 
-Decode is the bandwidth-bound half, and ROCm changes no memory bandwidth. The
-expected decode return is zero.
+Decode is the bandwidth-bound half, so a backend change that leaves memory
+traffic identical returns nothing there. A backend can still change coalescing,
+cache behavior, dequantization cost, and the number of passes over
+intermediates, and the 9B row shows the simple model's error: pure bandwidth
+predicts 1.31 decode tok/s where 1.76 measures, 34% high.
+
+The empirical falsifier below is the operative test. The arithmetic excludes an
+interactive 27B deployment and does not bound backend implementation
+differences.
 
 Combining both halves: the reachable upside is a fraction of prefill and
 nothing on decode, against an unsupported stack, an ISA impersonation, rocBLAS
@@ -176,10 +197,23 @@ being enumerated as an 11-compute-unit device followed by application freezes.
 
 RADV Vulkan remains the serving backend until a measurement moves it.
 
-Falsification criterion, recorded before the run: a HIP `llama-bench` that
-measures prefill above 22.0 prompt tok/s or decode above 3.02 tok/s on the same
-checkpoint refutes that verdict. At or below those figures the Vulkan backend
-already holds the reachable performance.
+The first HIP run against that criterion produced no row: it hung in model load
+for 51 minutes and was terminated. The criterion is unreached rather than
+failed, and `evidence/rocm-h0-operational-failure.md` carries the backtrace and
+the `HSA_ENABLE_SDMA=0` result that lets the same binary finish in 19 seconds.
+
+Falsification criterion, recorded before the run: a HIP `llama-bench` row that
+exceeds its own checkpoint's Vulkan row refutes that verdict. Each retained
+result names the checkpoint it ran against, because the two in this tree carry
+different thresholds:
+
+| Checkpoint | prefill falsifier | decode falsifier |
+| --- | ---: | ---: |
+| Qwen3.8-4B Distill Q4_K_M | above 22.00 tok/s | above 3.02 tok/s |
+| Qwen3.5-4B base Q4_K_M | above 20.88 tok/s | above 2.84 tok/s |
+
+At or below those figures the Vulkan backend already holds the reachable
+performance.
 
 The comparison runs from one binary. `build-qwen-dual` configures
 `-DGGML_VULKAN=ON -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx900` against the same
@@ -211,4 +245,9 @@ targets, so the newer stack impersonates exactly as the older one does. It
 earns its place here by supplying a HIP the build accepts and a runtime that
 completes a copy.
 
-RustiCL remains the OpenCL answer and supplies no rocBLAS, MIOpen, or HIP.
+OpenCL availability and OpenCL support are separate questions. TheRock installs
+an AMD ICD, and RustiCL supplies another from Mesa, so a runtime can enumerate
+this GPU. The pinned llama.cpp OpenCL backend nevertheless admits Adreno and
+Intel devices and rejects every other vendor before the model loads, so neither
+ICD yields a benchmark row without a backend patch. What an ICD settles is
+device enumeration and compute-unit count.

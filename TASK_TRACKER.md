@@ -1,36 +1,53 @@
 # Raven2 Vulkan Qwen Setup Tracker
 
-This tracker governs the headless setup on the SSH host alias `qwen-laptop`.
-Exactly one unchecked row carries `ACTIVE`. A task closes only when its stated evidence is
-retained or linked. Package, kernel, firmware, GTT, and model-load mutations
-remain gated by a reviewed simulation and rollback path.
+This file is the execution ledger for the appliance on the SSH host alias
+`qwen-laptop`. It retains what was attempted, in what order, and against which
+evidence. The settled operating configuration lives in `README.md`, repository
+doctrine lives in `CLAUDE.md`, and `evidence/` holds the measurements; where a
+completed row below disagrees with those, they are current and the row is
+history.
+
+Rows close when their stated evidence is retained or linked. Package, kernel,
+firmware, GTT, and model-load mutations remain gated by a reviewed simulation
+and rollback path.
 
 ## Fixed operating constraints
 
 - SSH and terminal operations only. Remote GUI control stays out of scope.
 - The desktop remains the highest-priority workload.
-- The model process uses CPU 0 at nice 19 and idle I/O; safety guards use CPU 1.
-- Model tensors execute through RADV Vulkan. CPU tensor fallback stops the run.
-- The server defaults to `127.0.0.1`, uses one slot, and starts without MTP.
-  `QWEN_BIND_HOST` widens the listener for shared serving, and any bind
-  beyond loopback requires the locally generated `api.key`.
-- The operational server context cannot exceed 24,576 tokens, and benchmark
-  prompts cannot exceed 24,000 tokens.
+- Model tensors execute through RADV Vulkan, in full offload. Every tested
+  hybrid placement lost to it, so a CPU tensor split is a measured regression
+  rather than a tuning option.
+- `QWEN_INFERENCE_CPU` selects the inference core and defaults to CPU 0 at nice
+  19 and idle I/O; safety guards run on the other core.
+- The server defaults to `127.0.0.1` and one slot. `QWEN_BIND_HOST` widens the
+  listener, and the listener carries no key: `--tools all` is what makes a bind
+  dangerous, and the read-only tool set is `read_file,file_glob_search,grep_search`.
+- The operational server context runs at 24,576 tokens. A 32K floor is stated
+  and unmet, so that figure is the active point rather than a ceiling.
 - `paced-60` terminates above 75% aggregate GPU busy. The serialized and async
   LOW profiles use a 20 ms MEDIUM graphics-family service deadline and treat
   100% busy as an observation.
-- Desktop responsiveness comes from RADV LOW global priority, CPU 0, and nice
-  19, which let the desktop's own queue preempt inference. The graphics-family
-  probe measures whether that preemption holds. `QWEN_LATENCY_MODE=terminate`
-  stops the server on the first late frame and remains the default for
-  unattended serving; `observe` records the same breaches and lets a run
+- Desktop responsiveness comes from RADV LOW global priority, the pinned core,
+  and nice 19, which let the desktop's own queue preempt inference. The
+  graphics-family probe measures whether that preemption holds.
+  `QWEN_LATENCY_MODE=terminate` stops the server on the first late frame and
+  arms after model load; `observe` records the same breaches and lets a run
   finish, because a measurement run spanning tens of minutes of saturated
   prefill would otherwise be ended by a single outlier and yield no timing.
-- A fence that returns anything other than `VK_SUCCESS` ends the run in both
-  modes. Observe mode tolerates a deadline overrun, not a device fault.
-- Qwen3.8-27B is the primary quality benchmark, not the presumed daily model.
-- Sudo credentials are entered only by the user in the `qwen-admin` tmux
-  session. Passwords never cross SSH commands, logs, or project files.
+- A fence returning anything other than `VK_SUCCESS` ends the run in both modes.
+  Observe mode tolerates a deadline overrun, not a device fault.
+- `model-memory-preflight.sh` reports host and Vulkan headroom and admits every
+  launch. A load that exceeds the machine fails at once and names its reason.
+- Qwen3.8-4B Distill Q4_K_M is the text default, on measured appliance behavior.
+  Qwen3.8-27B is a quality reference whose predicted 1.17 decode tok/s places it
+  outside interactive use.
+- HIP through TheRock is an open comparison, not a rejected one. It requires
+  `HSA_ENABLE_SDMA=0`, without which model load hangs.
+- Sudo credentials are entered only by the user. `/etc/sudoers.d/90-qwen-agent`
+  sets `timestamp_type=global` with a 60 minute timeout, so one `sudo -v` covers
+  the SSH sessions that administer the machine. Passwords never cross SSH
+  command lines, logs, or project files.
 
 ## Confirmed host facts
 

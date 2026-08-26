@@ -185,9 +185,9 @@ breaches.
 surface. Git copies replace the private hostname with `qwen-laptop`, the home
 prefix with `$HOME`, and MAC addresses with `<mac>`.
 
-`README.md` predates the async default, the keyless listener, the observational
-preflight, and the llama-ui deployment. Prefer this file and `evidence/` where
-they disagree.
+`README.md` states the selected operating configuration. This file governs
+repository work, and `evidence/` retains the measurements that put each default
+where it is.
 
 ## Prose and comments
 
