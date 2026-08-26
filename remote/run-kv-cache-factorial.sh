@@ -57,10 +57,25 @@ for depth in $depths; do
 done
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+clock_sampler=${QWEN_CLOCK_SAMPLER:-"$script_directory/sample-gpu-clocks.sh"}
 mkdir -p "$output_directory"
 summary=$output_directory/factorial-summary.tsv
 printf 'cell\tdepth\tcache_type_k\tcache_type_v\tflash_attn\trepetitions\tdecode_tok_s\tstatus\tring_resets\tmclk_mhz_modal\ttemp_c_max\n' \
     >"$summary"
+
+sampler_pid=''
+stop_sampler() {
+    [ -n "$sampler_pid" ] || return 0
+    kill "$sampler_pid" 2>/dev/null || true
+    wait "$sampler_pid" 2>/dev/null || true
+    sampler_pid=''
+}
+trap 'stop_sampler' EXIT
+trap 'stop_sampler; exit 130' INT
+trap 'stop_sampler; exit 143' TERM
+
+failed_cells=0
+harness_failed=0
 
 # amdgpu logs one line per ring reset and this kernel leaves dmesg readable at
 # `kernel.dmesg_restrict=0`, so counting those lines around a cell separates an
@@ -92,7 +107,7 @@ run_cell() {
 
     printf 'cell_start_utc=%s label=%s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$cell_label"
-    "$script_directory/sample-gpu-clocks.sh" "$cell_samples" &
+    "$clock_sampler" "$cell_samples" &
     sampler_pid=$!
     set +e
     nice -n 19 ionice -c 3 "$bench" -m "$model_path" \
@@ -101,8 +116,7 @@ run_cell() {
         -fa "$cell_flash" -o md >"$cell_log" 2>&1
     cell_status=$?
     set -e
-    kill "$sampler_pid" 2>/dev/null || true
-    wait "$sampler_pid" 2>/dev/null || true
+    stop_sampler
     reset_after=$(read_reset_count)
 
     if [ "$cell_status" -eq 0 ]; then
@@ -129,14 +143,23 @@ run_cell() {
     else
         resets=$((reset_after - reset_before))
     fi
+    if [ "$cell_status" -eq 0 ] && [ "$decode" = n/a ]; then
+        cell_status=1
+        harness_failed=1
+    fi
+    [ "$cell_status" -eq 0 ] || failed_cells=$((failed_cells + 1))
     clock_report=$(awk -F'\t' '
-        { count[$1]++; samples++
-          if ($3 + 0 > temp_max) { temp_max = $3 + 0 } }
+        $1 ~ /^[0-9]+([.][0-9]+)?$/ { count[$1]++; clock_samples++ }
+        $3 ~ /^[0-9]+([.][0-9]+)?$/ {
+          if ($3 + 0 > temp_max) { temp_max = $3 + 0 }
+          temperature_samples++
+        }
         END {
             for (step in count) {
                 if (count[step] > best) { best = count[step]; modal = step }
             }
-            printf "%s\t%.1f", (samples ? modal : "n/a"), temp_max / 1000
+            printf "%s\t%s", (clock_samples ? modal : "unavailable"),
+                (temperature_samples ? sprintf("%.1f", temp_max / 1000) : "unavailable")
         }' "$cell_samples")
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$cell_label" "$cell_depth" "$cell_type_k" "$cell_type_v" "$cell_flash" \
@@ -167,5 +190,13 @@ for depth in $depths; do
     QWEN_CELL_SUFFIX=''
 done
 
-printf 'kv_cache_factorial=completed output_directory=%s\n' "$output_directory"
+if [ "$harness_failed" -ne 0 ]; then
+    printf 'kv_cache_factorial=failed failed_cells=%s output_directory=%s\n' \
+        "$failed_cells" "$output_directory" >&2
+    cat "$summary"
+    exit 1
+fi
+
+printf 'kv_cache_factorial=completed failed_cells=%s output_directory=%s\n' \
+    "$failed_cells" "$output_directory"
 cat "$summary"

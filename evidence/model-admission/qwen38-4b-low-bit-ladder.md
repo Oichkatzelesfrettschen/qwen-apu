@@ -8,9 +8,10 @@ below Q4_K_M and `remote/download-qwen38-4b-distill-i1-q2k.sh` and
 `remote/download-qwen38-4b-distill-i1-iq3s.sh` pin two rungs of it.
 
 The imatrix build is taken over the static one at Q2_K. The two differ by 256
-bytes, 1,959,168,512 against 1,959,168,256, so they share a tensor recipe and
-measure the same rate, and the calibrated build removes one explanation for a
-quality failure.
+bytes, 1,959,168,512 against 1,959,168,256. The published sizes suggest the
+same tensor recipe, while the static file remains uncensused and unmeasured.
+The calibrated build removes a missing imatrix as one explanation for a quality
+failure without asserting a rate comparison that did not run.
 
 | rung | file | bytes | role in the ladder |
 | --- | --- | ---: | --- |
@@ -73,9 +74,42 @@ being resolved.
 
 **Quality.** The 55-row suite at temperature 0, reporting correctness on
 completed rows apart from completion rate, empty-answer rate, truncation rate,
-reasoning tokens, answer tokens, and wall time to the final answer.
+reasoning words, total generated tokens, and wall time to the final answer.
 
 ## Results
 
-Pending. The first rung waits on `remote/run-kv-cache-factorial.sh`, because a
-2 GB download during a bandwidth measurement perturbs the measurement.
+**L1 i1-Q2_K passes the structural gate and fails on performance.** Its chat
+template hashes to
+`a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715` across 7756
+bytes, byte-identical to Q4_K_M, with the same tokenizer model and the same
+248,320-entry vocabulary. The tied Q6_K vocabulary projection is byte-identical
+at 521,472,000 bytes, so the requantizer compressed the trunk and left the
+projection untouched.
+
+Performance refuses it. `evidence/decode-bound-analysis.md` sweeps both
+checkpoints four times, alternating the model order, and Q4_K_M leads in every
+sweep: 3.28 against 3.18, 2.93 against 2.67, 2.68 against 2.62, and 3.13 against
+3.13. The registered falsifier was a rate below 3.5 and the highest Q2_K arm
+measured 3.18. Achieved streaming fell from 8.11 GB/s to 5.53, a 31.8% drop that
+cancels a 29.4% byte saving.
+
+The quality suite did not run on L1. Grading 55 rows costs about an hour on this
+part, and the performance failure alone prevents admission for the role this
+ladder targets. The scope cut leaves its quality unmeasured rather than assuming
+the magnitude or category of a quantization loss.
+
+**The two upper K-quant rungs are withdrawn from admission.** i1-Q6_K and
+i1-Q5_K_M extend the series upward, and Q4_K_M leads both in every sweep by 28%
+and 55% on paired means. IQ3_S remains unmeasured and cannot be interpolated
+from those K-quant endpoints because its codebook reconstruction is a different
+kernel mechanism. Its fetch script stays pinned at
+`remote/download-qwen38-4b-distill-i1-iq3s.sh` for the one purpose that survives:
+IQ formats reconstruct through a codebook rather than a scaled field, and an
+IQ4_XS or Q3_K_M arm is the measurement that would discriminate the conjecture in
+`evidence/decode-bound-analysis.md` about what separates the 8 GB/s group from
+the 5.9 GB/s group.
+
+**BF16 plus local quantization stays unbuilt.** The decision that opened this
+ladder named it the instrument for repairing a measured quality gap rather than
+the tool for discovering one. No quality gap was measured, and the performance
+gap it would have been aimed at is closed across the tested K-quant ladder.

@@ -18,7 +18,6 @@ promoter=$script_directory/promote-llama-build.sh
 work_directory=$(mktemp -d)
 trap 'rm -rf "$work_directory"' EXIT INT TERM
 failures=0
-tab=$(printf '\t')
 
 report() {
     printf '%s=%s\n' "$1" "$2"

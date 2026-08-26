@@ -197,8 +197,11 @@ def main(argv):
             "empty_answer": not content.strip(),
             "error": error,
             "content": content[:600],
-            "reasoning_tokens": len(reasoning.split()) if reasoning else 0,
-            "answer_tokens": timings.get("predicted_n"),
+            # The API exposes text for the reasoning span and one generated-token
+            # count for the whole response. Word count stays explicitly a word
+            # count instead of posing as tokenizer output.
+            "reasoning_words": len(reasoning.split()) if reasoning else 0,
+            "generated_tokens": timings.get("predicted_n"),
             "prompt_tokens": timings.get("prompt_n"),
             "decode_tok_per_second": timings.get("predicted_per_second"),
             "wall_seconds": document.get("_wall_seconds"),
@@ -229,8 +232,8 @@ def main(argv):
         "correct_on_completed": (
             sum(r["passed"] for r in completed) / len(completed)
             if completed else None),
-        "reasoning_tokens_total": sum(r["reasoning_tokens"] for r in records),
-        "answer_tokens_total": sum(r["answer_tokens"] or 0 for r in records),
+        "reasoning_words_total": sum(r["reasoning_words"] for r in records),
+        "generated_tokens_total": sum(r["generated_tokens"] or 0 for r in records),
         "wall_seconds_total": sum(r["wall_seconds"] or 0 for r in records),
         "by_category": by_category,
     }
@@ -242,11 +245,14 @@ def main(argv):
         bucket = by_category[name]
         print(f"category={name} passed={bucket['passed']}/{bucket['attempted']} "
               f"truncated={bucket['truncated']} empty={bucket['empty']}")
-    print(f"quality_suite=completed passed={summary['passed']}/{summary['rows']} "
+    transport_errors = sum(bool(record["error"]) for record in records)
+    terminal_state = "completed" if transport_errors == 0 else "failed"
+    print(f"quality_suite={terminal_state} passed={summary['passed']}/{summary['rows']} "
           f"completion_rate={summary['completion_rate']:.3f} "
           f"empty_answer_rate={summary['empty_answer_rate']:.3f} "
+          f"transport_errors={transport_errors} "
           f"wall_seconds={summary['wall_seconds_total']:.1f}")
-    return 0
+    return 0 if transport_errors == 0 else 1
 
 
 if __name__ == "__main__":

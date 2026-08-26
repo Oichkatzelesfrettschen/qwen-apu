@@ -35,7 +35,7 @@ cd "$repository_root"
 
 # Tracked files alone, so an untracked scratch file under evidence/ never enters
 # the manifest and a manifest entry always names something a clone receives.
-git ls-files benchmarks evidence |
+git -c core.fsmonitor=false ls-files benchmarks evidence |
     grep -v -e '/PRE_SANITIZATION_SHA256SUMS$' -e '^evidence/PRE_SANITIZATION_SHA256SUMS$' \
             -e '^evidence/SHA256SUMS$' |
     sort >"$temporary_manifest.paths"

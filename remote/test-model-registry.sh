@@ -67,6 +67,15 @@ else
     report registry_rows rejected
 fi
 
+expected_header=$(printf '# id\trole\tmodel_file\tfetch_script\tcontext_default\tcontext_ceiling\tcontext_target\tcache_type_k\tcache_type_v\tflash_attention\tprojector\tdecode_tok_s\tprefill_tok_s\tquality')
+actual_header=$(grep '^# id' "$registry" || true)
+if [ "$actual_header" = "$expected_header" ]; then
+    report schema_header accepted
+else
+    report schema_header rejected
+    printf 'registry schema header differs from the reader schema\n' >&2
+fi
+
 if [ "$("$reader" id qwen38-4b-distill role)" = balanced-text ]; then
     report id_lookup accepted
 else
