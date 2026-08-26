@@ -17,10 +17,21 @@ rsync -a remote/ eirikr@qwen-laptop:~/qwen-laptop-setup/remote/
 ```
 
 Every `remote/` script executes from `~/qwen-laptop-setup/remote/` on the
-laptop. A change tested without that copy tests the previous revision. Node,
-CMake, and any other build toolchain run on the workstation and deliver
-artifacts to the laptop, which keeps the two CPU cores for inference and the
-desktop.
+laptop. A change tested without that copy tests the previous revision.
+
+The laptop runs the appliance by itself. `remote/build-llama-vulkan.sh` builds
+there with the distribution toolchain, the fetch scripts pull the checkpoint
+from its pinned revision, and the launch and teardown scripts need nothing
+else. That path is what the repository requires, and it stays free of
+containers, daemons, and package managers beyond the distribution's own.
+
+Two workstation-side helpers exist because two 2.3 GHz cores are slow, and
+neither is a dependency. `remote/build-llama-ui.sh` runs Node where Node
+already is and copies static files over. `remote/build-llama-on-workstation.sh`
+builds llama.cpp inside an `ubuntu:24.04` container on the workstation and
+rsyncs plain binaries; the image supplies the glibc 2.39 the laptop links
+against, and the container stays on the workstation. What reaches the laptop is
+an ELF executable.
 
 ## Hardware sets every ceiling in this repository
 
@@ -114,7 +125,8 @@ remote/reasoning-span-probe.sh OUTPUT_JSON     # against a live server
 remote/summarize-probe.sh ~/qwen-webui-state/graphics-latency.log
 
 # Rebuild llama.cpp and the static UI
-remote/build-llama-vulkan.sh                   # on the laptop
+remote/build-llama-vulkan.sh                   # on the laptop, the required path
+remote/build-llama-on-workstation.sh           # optional, ships binaries over
 remote/build-llama-ui.sh                       # Node on the workstation
 
 # Hash-pinned model fetches
