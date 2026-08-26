@@ -1,5 +1,4 @@
-# What a depth-0 rate on this machine actually repeats to, and what the memory
-# is doing
+# Memory-clock state and depth-0 repeatability
 
 Two rates for the same cell -- Qwen3.8-4B Distill Q4_K_M, full Vulkan offload,
 `-ngl 99 -t 2 -r 3 -p 0 -n 64` on one build and one file -- disagreed by 7.5%:
@@ -46,34 +45,37 @@ added to control is constant across the spread it was meant to explain, so it
 does not explain it. The sampler stays because a constant that is recorded is a
 constant that is known.
 
-## Memory runs at DDR4-1866 and the step above it is unreachable
+## Memory is trained at DDR4-2133; the reported steps are dynamic FCLK
 
 | property | value | source |
 | --- | --- | --- |
-| modules | 2 x 16 GiB Crucial CT16G4SFD8213, dual-rank | `dmidecode -t memory` |
-| module rating | 2133 MT/s | SPD `Speed`, both DIMMs |
-| channels | 2, both banks populated | `RAM width 128bits DDR4`, `P0 CHANNEL A`/`B` |
-| operating clock | 933 MHz, which is DDR4-1866 | selected step in `pp_dpm_mclk` |
-| theoretical peak | 29.9 GB/s | 2 x 8 bytes x 1866 MT/s |
+| modules | 2 x 16 GiB Crucial, dual-rank | DMI |
+| rated | 2133 MT/s | both SPD EEPROMs |
+| channels | 2, both populated | kernel and DMI |
+| trained | 2133.33 MT/s | both UMC `0x50200` values |
+| timings | 15-15-15-36, tRP 15, tRC 51 | both UMC timing pairs |
+| peak | 34.13 GB/s | 2 x 8 bytes x 2133.33 MT/s |
 
-The 1067 MHz entry at the top of `pp_dpm_mclk` is a capability the SMU never
-selects. Writing `high` to `power_dpm_force_performance_level` pins `sclk` to
-1100 MHz and leaves `mclk` at 933. Writing `manual` and then the step index 3 is
-accepted without error and also leaves it at 933. Reading that entry as evidence
-of a trained 2133 MT/s is therefore wrong; the reachable step is the operating
-point and it is one grade below what the modules are rated for and two below the
-DDR4-2400 the SoC specifies.
+For DDR4, bits 7:0 of UMC register `0x50200` encode the ratio as value/3, with a
+200 MT/s multiplier. Both channel values have `0x20` in that field, so the
+trained rate is `(32 / 3) x 200 = 2133.33 MT/s`. Both channels also report
+`0x0f0f240f` at `0x50204` and `0x000f0033` at `0x50208`, which decode to
+15-15-15-36, tRP 15, and tRC 51. That is the DDR4-2133 timing profile in both
+CRC-valid SPD EEPROMs. The installed four-rank population is not being derated
+to DDR4-1866, and firmware F.69 is not capping it at that rate.
 
-Dual-rank population fits: both modules report `Rank: 2`, and Raven2 commonly
-derates a dual-rank dual-channel population below its single-rank maximum. A
-single-DIMM boot test would separate that from an OEM BIOS cap, and neither is
-established here. If rank is the cause, two single-rank DDR4-2400 modules would
-raise memory bandwidth by 2400/1866, which is 1.29 times, and that exceeds every
-software lever this tree has measured.
+The apparent contradiction came from treating `pp_dpm_mclk` as a direct DRAM
+clock oracle. In the kernel's SMU10 implementation, the `PP_MCLK` display path
+calls `PPSMC_MSG_GetFclkFrequency`; it reports the dynamic fabric clock through
+a legacy memory-clock filename. The selected 933 MHz state is therefore a
+fabric power state, not the UMC training result. The retained Vulkan telemetry
+also contains 1067 MHz selected states, directly falsifying the earlier claim
+that the highest entry was unreachable. Governor experiments can move or pin
+dynamic clocks but cannot change the UMC training registers.
 
 `dmidecode` prints `Configured Memory Speed: 2400 MT/s` for both DIMMs. That
-exceeds the modules' own SPD rating and the reachable DPM step, so the field is
-wrong rather than informative.
+exceeds the modules' own SPD rating and the measured UMC rate, so SMBIOS is not
+an operating-clock oracle on this firmware.
 
 ## Forcing the governor buys nothing
 
@@ -89,14 +91,15 @@ looked for. The original level is restored from an EXIT trap.
 | 2 | high | 3.22 +/- 0.07 |
 
 The two settings are indistinguishable, which follows from what the ladders do:
-`mclk` cannot leave 933 and `sclk` already reaches 1100 under `auto`. The
-governor is not a lever on this machine and the appliance keeps `auto`.
+the fabric already reaches its 1067 MHz state under real Vulkan loads and
+`sclk` already reaches 1100 MHz under `auto`. The governor is not a useful
+throughput lever on this machine and the appliance keeps `auto`.
 
 ## Where the ceiling is not
 
-Host sequential read measures 15.44 GB/s on two threads, 52% of the 29.9 GB/s
-controller peak. That figure bounds the two Zen+ cores through the load/store
-path and says nothing about the iGPU, which reaches memory through the Data
-Fabric on a different path with its own limit. The GPU's achievable streaming
-rate is unmeasured, so the fraction of it that decode uses is unknown, and
-`evidence/decode-bound-analysis.md` carries what replaced the guess.
+Host sequential read measures 15.44 GB/s on two threads, about 45% of the
+34.13 GB/s dual-channel peak. That figure bounds the two Zen+ cores through the
+load/store path and says nothing about the iGPU, which reaches memory through
+the Data Fabric on a different path with its own limit. The GPU's achievable
+streaming rate is unmeasured, so the fraction of it that decode uses is unknown,
+and `evidence/decode-bound-analysis.md` carries what replaced the guess.

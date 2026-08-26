@@ -1,6 +1,7 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with
+code in this repository.
 
 `~/AGENTS.md` loads through the user memory and supplies the shared baseline.
 This file holds the repository doctrine and wins inside this tree.
@@ -52,25 +53,25 @@ CPU-only at its first partial point: a split adds CPU-to-Vulkan synchronization
 and activation transfers while both sides draw on the one DDR4 controller, so
 the placements share a bandwidth domain instead of combining two.
 
-Memory runs at 933 MHz, which is DDR4-1866, and the 1067 MHz step above it in
-`pp_dpm_mclk` is a table entry the SMU never selects. Writing `high` to
-`power_dpm_force_performance_level` pins `sclk` to 1100 MHz and leaves `mclk` at
-933; writing `manual` and then the step index 3 is accepted and also leaves it at
-933. Two 16 GiB dual-rank Crucial CT16G4SFD8213 SODIMMs fill both channels,
-`dmesg` reports `RAM width 128bits DDR4`, and their SPD rates them at 2133 MT/s,
-so the part operates one grade below the modules and two below the SoC's
-specified DDR4-2400. Dual-rank derating fits the evidence and a single-DIMM boot
-test would settle it. Theoretical peak is 2 x 8 bytes x 1866 MT/s = 29.9 GB/s,
-and the `Configured Memory Speed: 2400 MT/s` that dmidecode prints exceeds both
-the SPD rating and the reachable step, so that field is wrong.
+Memory is trained at the DIMMs' rated DDR4-2133 speed. Both UMC channels report
+`0x00000520` at SMN register `0x50200`; the DDR4 ratio in bits 7:0 is `0x20`,
+and `(0x20 / 3) x 200` is 2133.33 MT/s. Their timing registers decode to
+15-15-15-36, tRP 15, and tRC 51, which match the fastest profile in both Crucial
+CT16G4SFD8213 SPD EEPROMs. Rank derating and an HP firmware speed cap are ruled
+out for the installed population.
 
-Two Zen+ cores cannot saturate that: the 15.44 GB/s measured on two threads is
-52% of the 29.9 GB/s ceiling, so the host figure bounds the cores rather than the
-controller.
+On this SMU10 path, `pp_dpm_mclk` is a misleading sysfs name: the kernel obtains
+its selected value with `PPSMC_MSG_GetFclkFrequency`. The 933 and 1067 MHz
+entries are dynamic fabric-clock states, not alternate DRAM training results,
+and retained Vulkan telemetry shows 1067 MHz selected under load. Theoretical
+dual-channel peak is therefore `2 x 8 bytes x 2133 MT/s = 34.13 GB/s`. The
+15.44 GB/s two-thread host read is about 45% of that peak and bounds the two
+Zen+ cores' load/store path rather than the memory controller or iGPU.
 
-`remote/sample-gpu-clocks.sh` records the step beside every rate, and what it
-has recorded so far is that the step does not move. The measurement spread it
-was added to explain is real and lies elsewhere:
+`remote/sample-gpu-clocks.sh` records dynamic FCLK beside every rate. All five
+repeatability arms stayed at 933 MHz even though other retained Vulkan runs
+selected 1067 MHz. The measurement spread it was added to explain is real and
+lies elsewhere:
 `evidence/measurement-state-and-memory-clock.md` measures 3.11 tok/s and 3.24
 tok/s from identical flags ten minutes apart with `mclk` at 933 and `sclk`
 peaking at 1100 in both, so a depth-0 rate on this machine carries about 4% of
@@ -305,7 +306,11 @@ where it is.
 
 ## Prose and comments
 
-Prefer affirmative, mechanism-centered prose. Describe what the system does, the state transitions it performs, and the observable result. Avoid defining behavior primarily through negation such as "no," "does not," "lacks," or "without" when the actual behavior can be stated directly. Use negation only when the absence itself is the relevant fact.
+Prefer affirmative, mechanism-centered prose. Describe what the system does,
+the state transitions it performs, and the observable result. Avoid defining
+behavior primarily through negation such as "no," "does not," "lacks," or
+"without" when the actual behavior can be stated directly. Use negation only
+when the absence itself is the relevant fact.
 
 Comments, commit messages, durable docs, thinking, replies in session, and
 end-of-session summaries share one voice: direct, declarative, indicative
