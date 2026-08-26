@@ -91,7 +91,10 @@ The registry rather than a constant sets the admitted depth.
 flash-attention setting, and `qwen-capacity-policy.sh` reads them.
 `QWEN_CACHE_TYPE_K`, `QWEN_CACHE_TYPE_V`, and `QWEN_FLASH_ATTN` override the
 cache triple, so an experiment arm runs through the served path rather than
-through llama-bench alone. A ceiling never exceeds a depth measured to fail.
+through llama-bench alone. Any override changes the allocation tuple and must
+also set `QWEN_CACHE_OVERRIDE_CONTEXT_CEILING` to a positive depth measured for
+that exact tuple. The override ceiling cannot exceed the checkpoint registry
+ceiling. A ceiling never exceeds a depth measured to fail.
 
 Sequential host read bandwidth measures 7.97 GB/s on one thread and 15.44 GB/s
 on two. Those figures measure the two Zen+ cores through the load/store path,
@@ -103,7 +106,10 @@ arm on a desktop under load 4.9 to 7.0 and measures a paired mean difference of
 1.10% in favour of nice 19, with two negative pairs, three positive pairs, and
 one exact zero. A nominal paired 95% interval spans -6.1% to +3.9%, so the run
 resolves no directional decode cost and does not establish equivalence. The
-priority is read back from `/proc` rather than asserted.
+priority is read back from `/proc` rather than asserted. That comparison is
+retained historical evidence. The live bandwidth harness now admits nice 19
+alone and applies it as an absolute child priority, independent of the calling
+shell's niceness.
 
 Decode scales with checkpoint size, and a linear cost model over it is refuted.
 Two points, the 4B and the 9B, fit 0.1015 s per token plus 0.0869 s per GiB and
@@ -180,8 +186,10 @@ remote/run-rocm-vulkan-matrix.sh [OUTPUT]      # HIP against Vulkan, phase by ph
 remote/run-kv-cache-factorial.sh MODEL [OUT]   # cache type crossed with flash attention
 remote/measure-served-decode.sh LABEL MODEL    # served decode at a fixed length
 remote/measure-bench-repeatability.sh MODEL    # what a depth-0 rate repeats to
-remote/run-quality-suite.py ENDPOINT OUT_JSON  # the 55-row graded suite
+remote/run-quality-suite.py ENDPOINT OUT_JSON --long-context-characters 24000
+                                                # the 55-row graded suite at explicit depth
 remote/sample-gpu-clocks.sh OUT_TSV [SECONDS]  # the DPM step a rate ran at
+remote/measure-dpm-force.sh MODEL [OUT]         # auto against global high governor
 remote/model-registry.sh id|path SELECTOR [FIELD]
 
 # Rebuild llama.cpp and the static UI
@@ -207,6 +215,7 @@ remote/test-qwen-runtime-guards.sh
 remote/test-radv-low-priority-env.sh
 remote/test-model-registry.sh
 remote/test-quality-suite.py
+remote/test-gguf-tokenizer-identity.py
 remote/test-promote-llama-build.sh
 remote/verify-llama-patch-series.sh
 GGUF_PY_PATH=~/src/llama.cpp-qwen-apu/gguf-py \

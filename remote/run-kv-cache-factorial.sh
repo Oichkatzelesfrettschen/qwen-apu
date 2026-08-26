@@ -43,8 +43,9 @@ if [ ! -f "$model_path" ]; then
     printf 'model file is absent: %s\n' "$model_path" >&2
     exit 2
 fi
-if pgrep -x llama-server >/dev/null 2>&1; then
-    printf 'a llama-server is running and would contend for the device\n' >&2
+if pgrep -x llama-server >/dev/null 2>&1 ||
+   pgrep -x llama-bench >/dev/null 2>&1; then
+    printf 'another llama process holds the device\n' >&2
     exit 2
 fi
 for depth in $depths; do

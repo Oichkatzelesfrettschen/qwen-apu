@@ -5,8 +5,23 @@ set -eu
 # either by its registry id or by the path it is served from, so the launch
 # path resolves a row from QWEN_MODEL_PATH without the caller naming an id.
 
+validate_cache_type() {
+    case $1 in
+        f32 | f16 | bf16 | q8_0 | q5_1 | q5_0 | q4_1 | q4_0 | iq4_nl)
+            return 0
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+if [ "$#" -eq 2 ] && [ "$1" = validate-cache-type ]; then
+    validate_cache_type "$2"
+    exit $?
+fi
+
 if [ "$#" -ne 2 ] && [ "$#" -ne 3 ]; then
     printf 'usage: %s id|path SELECTOR [FIELD]\n' "$0" >&2
+    printf '       %s validate-cache-type TYPE\n' "$0" >&2
     printf 'fields: id role model_file fetch_script context_default context_ceiling\n' >&2
     printf '        context_target cache_type_k cache_type_v flash_attention\n' >&2
     printf '        projector decode_tok_s prefill_tok_s quality\n' >&2
@@ -23,7 +38,8 @@ registry=${QWEN_MODEL_REGISTRY:-$script_directory/models.tsv}
 case $selector_kind in
     id | path) ;;
     *)
-        printf 'selector kind must be id or path: %s\n' "$selector_kind" >&2
+        printf 'selector kind must be id, path, or validate-cache-type: %s\n' \
+            "$selector_kind" >&2
         exit 2
         ;;
 esac

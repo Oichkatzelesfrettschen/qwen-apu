@@ -63,11 +63,11 @@ through a hardcoded `nice -n 19`, so all twenty arms ran at nice 19 and the two
 priority blocks differed by position alone. `~/qwen-bandwidth-ladder` on the
 appliance carries `COLUMN-DEFECT.txt`, and its column now reads the block index.
 
-Two properties of the repair are what keep the defect from recurring. The
-priority column is an observation of the child rather than a restatement of the
-request, so an invocation that drops the parameter reports the value it actually
-got. The caller's own niceness is checked at startup, because `nice` adjusts
-relative to its caller and an unprivileged process cannot lower its niceness: run
-from a shell at nice 19, every arm requesting 0 would silently run at 19. That
-hazard is real on the workstation, where the interactive shell sits at nice -4
-and `nice -n 0` produces a child at -4.
+The priority column remains an observation of the child rather than a
+restatement of the request, so an invocation that drops the parameter reports
+the value it actually got. The current harness no longer exposes the historical
+nice-0 comparison: it accepts nice 19 alone and uses absolute `renice` before
+executing the census and benchmark. This removes caller-relative drift while
+preserving these rows as historical evidence. The hazard is real on the
+workstation, where an interactive shell at nice -4 turns relative `nice -n 19`
+into nice 15.

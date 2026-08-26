@@ -1,5 +1,6 @@
-#!/bin/sh
+#!/usr/bin/env bash
 set -eu
+set -o pipefail
 
 # Measure achieved streaming rate per checkpoint, in bytes rather than tokens.
 #
@@ -20,14 +21,11 @@ set -eu
 # decode skips the multi-token-prediction block and reads a tied embedding once
 # for the lookup and once for the projection.
 #
-# Scheduling priority is a measured dimension rather than a fixed setting. The
-# appliance serves at nice 19 underneath a live desktop, so nice 19 is the
-# operating condition and nice 0 is the comparison that prices what the guard
-# costs. The I/O class stays at idle across both arms, so the pair differs in CPU
-# scheduling priority alone; llama-bench reads its weights through mmap before
-# the timed repetitions, which leaves the decode rate outside the I/O scheduler's
-# reach. Each arm records the load average it ran under, because a rate measured
-# against an idle machine describes a machine that never serves.
+# Scheduling priority is fixed at nice 19, the appliance's desktop-safe
+# operating condition. The I/O class stays at idle, and llama-bench reads its
+# weights through mmap before the timed repetitions. Each arm records the load
+# average it ran under, because a rate measured against an idle machine
+# describes a machine that never serves.
 
 if [ "$#" -lt 1 ]; then
     printf 'usage: %s MODEL_PATH [MODEL_PATH...]\n' "$0" >&2
@@ -42,21 +40,19 @@ census=${QWEN_TENSOR_CENSUS:-"$script_directory/gguf-tensor-census.py"}
 clock_sampler=${QWEN_CLOCK_SAMPLER:-"$script_directory/sample-gpu-clocks.sh"}
 generate_tokens=${QWEN_BENCH_GENERATE:-64}
 repetitions=${QWEN_BENCH_REPETITIONS:-3}
-nice_levels=${QWEN_BENCH_NICE_LEVELS:-"19 0"}
-for nice_level in $nice_levels; do
-    case $nice_level in
-        '' | *[!0-9-]*)
-            printf 'nice level must be an integer: %s\n' "$nice_level" >&2
-            exit 2
-            ;;
-    esac
-done
+nice_levels=${QWEN_BENCH_NICE_LEVELS:-19}
+if [ "$nice_levels" != 19 ]; then
+    printf 'bandwidth ladder requires nice 19: %s\n' "$nice_levels" >&2
+    exit 2
+fi
+nice_level_values=(19)
+model_paths=("$@")
 
 if [ ! -x "$bench" ]; then
     printf 'llama-bench is not built at %s\n' "$bench" >&2
     exit 2
 fi
-for model_path in "$@"; do
+for model_path in "${model_paths[@]}"; do
     if [ ! -f "$model_path" ]; then
         printf 'model file is absent: %s\n' "$model_path" >&2
         exit 2
@@ -64,17 +60,6 @@ for model_path in "$@"; do
 done
 if pgrep -x llama-server >/dev/null 2>&1 || pgrep -x llama-bench >/dev/null 2>&1; then
     printf 'another llama process holds the device\n' >&2
-    exit 2
-fi
-
-# nice(1) adjusts relative to the caller and an unprivileged process cannot
-# lower its own niceness, so an arm requesting nice 0 from a shell already at
-# nice 19 runs at 19 and reports 0. Requiring the caller at nice 0 makes the
-# requested level the absolute level.
-caller_nice=$(awk '{ print $19 }' /proc/self/stat)
-if [ "$caller_nice" -ne 0 ]; then
-    printf 'run from a shell at nice 0; this one is at %s, which raises every arm\n' \
-        "$caller_nice" >&2
     exit 2
 fi
 
@@ -115,7 +100,10 @@ run_model() {
     arm_log=$output_directory/$arm_label.log
     arm_samples=$output_directory/$arm_label.clocks.tsv
 
-    streamed=$(nice -n 19 python3 "$census" --skip-hash "$model_path" 2>/dev/null |
+    streamed=$(sh -c '
+        renice -n 19 -p $$ >/dev/null
+        exec "$@"
+    ' sh python3 "$census" --skip-hash "$model_path" 2>/dev/null |
         awk -F'\t' '$1 == "streamed_bytes_per_token" { print $2 }')
     case $streamed in
         '' | *[!0-9]*)
@@ -131,16 +119,18 @@ run_model() {
     "$clock_sampler" "$arm_samples" 1 &
     sampler_pid=$!
     set +e
-    nice -n "$arm_nice" ionice -c 3 "$bench" -m "$model_path" \
-        -ngl 99 -t 2 -r "$repetitions" -p 0 -n "$generate_tokens" -o md \
-        >"$arm_log" 2>&1 &
+    sh -c '
+        renice -n 19 -p $$ >/dev/null
+        exec ionice -c 3 "$@"
+    ' sh "$bench" -m "$model_path" -ngl 99 -t 2 -r "$repetitions" \
+        -p 0 -n "$generate_tokens" -o md >"$arm_log" 2>&1 &
     bench_pid=$!
     # Read the priority the kernel gave the child. A column that restates the
     # request survives an invocation that drops it, which is how twenty arms
     # once reported two priorities while every one of them ran at nice 19.
-    # nice(1) calls setpriority and then execs, so the read waits for the
-    # command name to become llama-bench; before that it would return the
-    # priority the shell forked with rather than the one the arm requested.
+    # The wrapper applies an absolute priority and then execs, so the read waits
+    # for the command name to become llama-bench; before that it would return
+    # the wrapper's state rather than the benchmark's observed state.
     observed_nice=unread
     settle=0
     while [ "$settle" -lt 20 ]; do
@@ -218,25 +208,19 @@ run_model() {
     return 0
 }
 
-for model_path in "$@"; do
-    for nice_level in $nice_levels; do
+for model_path in "${model_paths[@]}"; do
+    for nice_level in "${nice_level_values[@]}"; do
         run_model forward "$nice_level" "$model_path" || measurement_failed=1
     done
 done
 
 # The reverse pass gives every checkpoint an early slot and a late one, and it
-# reverses the priority order within each checkpoint, so neither the model
-# position nor the priority position stands in for a result that survives both.
-reversed_models=''
-for model_path in "$@"; do
-    reversed_models="$model_path${reversed_models:+ }$reversed_models"
-done
-reversed_levels=''
-for nice_level in $nice_levels; do
-    reversed_levels="$nice_level${reversed_levels:+ }$reversed_levels"
-done
-for model_path in $reversed_models; do
-    for nice_level in $reversed_levels; do
+# holds nice 19 in both directions, so model position cannot stand in for a
+# result that survives both.
+for ((model_index = ${#model_paths[@]} - 1; model_index >= 0; model_index--)); do
+    model_path=${model_paths[$model_index]}
+    for ((level_index = ${#nice_level_values[@]} - 1; level_index >= 0; level_index--)); do
+        nice_level=${nice_level_values[$level_index]}
         run_model reverse "$nice_level" "$model_path" || measurement_failed=1
     done
 done

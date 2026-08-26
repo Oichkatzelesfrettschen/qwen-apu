@@ -99,7 +99,19 @@ fi
 # through the served path. A value outside what llama-server accepts is refused
 # before the server sees it.
 cache_output=$temporary_directory/cache-policy.out
+if QWEN_CACHE_TYPE_K=f16 QWEN_CACHE_TYPE_V=f16 QWEN_FLASH_ATTN=off \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$cache_output \
+    "$policy" "$fake_server" "$model_path" 4096 18080 \
+    >"$temporary_directory/cache-ceiling.stdout" \
+    2>"$temporary_directory/cache-ceiling.stderr"; then
+    printf 'policy reused the registered ceiling for an overridden cache tuple\n' >&2
+    exit 1
+fi
+grep -F 'cache-policy overrides require a positive QWEN_CACHE_OVERRIDE_CONTEXT_CEILING' \
+    "$temporary_directory/cache-ceiling.stderr" >/dev/null
+
 QWEN_CACHE_TYPE_K=f16 QWEN_CACHE_TYPE_V=f16 QWEN_FLASH_ATTN=off \
+    QWEN_CACHE_OVERRIDE_CONTEXT_CEILING=4096 \
     QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$cache_output \
     "$policy" "$fake_server" "$model_path" 4096 18080
 cache_arguments=$(sed -n 's/^argument=//p' "$cache_output" | tr '\n' ' ')
@@ -111,6 +123,30 @@ case $cache_arguments in
         exit 1
         ;;
 esac
+
+if QWEN_CACHE_TYPE_K=f16 QWEN_CACHE_TYPE_V=f16 QWEN_FLASH_ATTN=off \
+    QWEN_CACHE_OVERRIDE_CONTEXT_CEILING=24577 \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$cache_output \
+    "$policy" "$fake_server" "$model_path" 4096 18080 \
+    >"$temporary_directory/cache-high.stdout" \
+    2>"$temporary_directory/cache-high.stderr"; then
+    printf 'policy accepted an override ceiling above the registered ceiling\n' >&2
+    exit 1
+fi
+grep -F 'cache override ceiling must not exceed the registered ceiling: 24577 > 24576' \
+    "$temporary_directory/cache-high.stderr" >/dev/null
+
+if QWEN_CACHE_TYPE_K=f16 QWEN_CACHE_TYPE_V=f16 QWEN_FLASH_ATTN=off \
+    QWEN_CACHE_OVERRIDE_CONTEXT_CEILING=4096 \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$cache_output \
+    "$policy" "$fake_server" "$model_path" 4097 18080 \
+    >"$temporary_directory/cache-context.stdout" \
+    2>"$temporary_directory/cache-context.stderr"; then
+    printf 'policy accepted a context above the cache override ceiling\n' >&2
+    exit 1
+fi
+grep -F 'context size exceeds the admitted ceiling for this cache policy: 4097 > 4096' \
+    "$temporary_directory/cache-context.stderr" >/dev/null
 
 # A fabricated registry carries a triple the fallback never produces, so this
 # check separates the registry read from the built-in default.
@@ -282,7 +318,7 @@ if QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$output_path \
     printf 'policy accepted a context above the registered ceiling\n' >&2
     exit 1
 fi
-grep -F 'context size exceeds the registered ceiling for this model: 24577 > 24576' \
+grep -F 'context size exceeds the admitted ceiling for this cache policy: 24577 > 24576' \
     "$temporary_directory/context.stderr" >/dev/null
 
 printf 'qwen_capacity_policy=accepted\n'

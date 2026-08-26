@@ -330,6 +330,39 @@ def architecture_dimensions(metadata, architecture):
     }
 
 
+def metadata_value_sha256(value):
+    """Hash arrays through a typed, ordered stream, including non-finite floats."""
+    digest = hashlib.sha256()
+
+    def append_value(type_tag, payload=b""):
+        digest.update(type_tag)
+        digest.update(str(len(payload)).encode("ascii"))
+        digest.update(b":")
+        digest.update(payload)
+
+    def visit(item):
+        if item is None:
+            append_value(b"N")
+        elif isinstance(item, bool):
+            append_value(b"B", b"1" if item else b"0")
+        elif isinstance(item, int):
+            append_value(b"I", str(item).encode("ascii"))
+        elif isinstance(item, float):
+            append_value(b"F", item.hex().encode("ascii"))
+        elif isinstance(item, str):
+            append_value(b"S", item.encode("utf-8"))
+        elif isinstance(item, (list, tuple)):
+            append_value(b"L", str(len(item)).encode("ascii"))
+            for member in item:
+                visit(member)
+        else:
+            raise TypeError(
+                f"unsupported tokenizer metadata value: {type(item).__name__}")
+
+    visit(value)
+    return digest.hexdigest()
+
+
 def tokenizer_identity(metadata):
     """Name the decoder half of a checkpoint that the tensor census cannot see.
 
@@ -354,6 +387,16 @@ def tokenizer_identity(metadata):
     tokens = metadata.get("tokenizer.ggml.tokens")
     if isinstance(tokens, list):
         identity["vocabulary_size"] = len(tokens)
+        identity["tokens_sha256"] = metadata_value_sha256(tokens)
+    for metadata_key, identity_name in (
+        ("tokenizer.ggml.scores", "scores"),
+        ("tokenizer.ggml.token_type", "token_types"),
+        ("tokenizer.ggml.merges", "merges"),
+    ):
+        values = metadata.get(metadata_key)
+        if isinstance(values, list):
+            identity[f"{identity_name}_count"] = len(values)
+            identity[f"{identity_name}_sha256"] = metadata_value_sha256(values)
     return identity
 
 
