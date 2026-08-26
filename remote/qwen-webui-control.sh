@@ -68,7 +68,8 @@ case $action in
         # shell's, so submission settings must travel in the command itself.
         forwarded_environment=''
         # The projector and its image budget must survive the tmux boundary too.
-        for forwarded_name in QWEN_MMPROJ QWEN_MMPROJ_OFFLOAD QWEN_IMAGE_MAX_TOKENS; do
+        for forwarded_name in QWEN_MMPROJ QWEN_MMPROJ_OFFLOAD QWEN_IMAGE_MAX_TOKENS \
+                              QWEN_INFERENCE_CPU; do
             eval "forwarded_value=\${$forwarded_name:-}"
             if [ -n "$forwarded_value" ]; then
                 forwarded_environment="$forwarded_environment $forwarded_name=$forwarded_value"

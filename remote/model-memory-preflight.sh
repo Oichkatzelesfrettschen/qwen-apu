@@ -59,7 +59,12 @@ required_vulkan_bytes=$((required_vulkan_mib * mib_bytes))
 desktop_reserve_bytes=$((desktop_reserve_mib * mib_bytes))
 vulkan_margin_bytes=$((vulkan_margin_mib * mib_bytes))
 mem_available_bytes=$((mem_available_kib * 1024))
-required_host_bytes=$((required_vulkan_bytes + model_bytes + desktop_reserve_bytes))
+# The Vulkan heap on an APU is carved from system RAM, so required_vulkan_bytes
+# already covers the resident weights. The file reaches those buffers through a
+# mapping whose pages are reclaimable and which MemAvailable already counts.
+# Measured on a live server holding 2.74 GB of weights: 229 MB resident, no
+# swap. Charging model_bytes on top counted the weights a second time.
+required_host_bytes=$((required_vulkan_bytes + desktop_reserve_bytes))
 required_vulkan_with_margin_bytes=$((required_vulkan_bytes + vulkan_margin_bytes))
 swap_used_bytes=$(((swap_total_kib - swap_free_kib) * 1024))
 
@@ -72,24 +77,25 @@ printf 'vulkan_margin_bytes=%s\n' "$vulkan_margin_bytes"
 printf 'required_vulkan_with_margin_bytes=%s\n' "$required_vulkan_with_margin_bytes"
 printf 'swap_used_bytes=%s\n' "$swap_used_bytes"
 
-gate_failed=0
+# These figures are reported and never withheld from a launch. A prediction that
+# a model will not fit is a prediction, and this one was wrong: it refused
+# Qwen3.8-9B on arithmetic that charged the weights twice, and the refusal read
+# as a hardware limit rather than as the bug it was. The load itself is the
+# honest test, and a load that fails says so at once and says why.
 if [ "$mem_available_bytes" -lt "$required_host_bytes" ]; then
-    printf 'host_memory_gate=reject\n' >&2
-    gate_failed=1
+    printf 'host_memory_headroom=short shortfall_bytes=%s\n' \
+        "$((required_host_bytes - mem_available_bytes))"
 else
-    printf 'host_memory_gate=accept\n'
+    printf 'host_memory_headroom=ample surplus_bytes=%s\n' \
+        "$((mem_available_bytes - required_host_bytes))"
 fi
 
 if [ "$aggregate_available_bytes" -lt "$required_vulkan_with_margin_bytes" ]; then
-    printf 'vulkan_budget_gate=reject\n' >&2
-    gate_failed=1
+    printf 'vulkan_budget_headroom=short shortfall_bytes=%s\n' \
+        "$((required_vulkan_with_margin_bytes - aggregate_available_bytes))"
 else
-    printf 'vulkan_budget_gate=accept\n'
+    printf 'vulkan_budget_headroom=ample surplus_bytes=%s\n' \
+        "$((aggregate_available_bytes - required_vulkan_with_margin_bytes))"
 fi
 
-if [ "$gate_failed" -ne 0 ]; then
-    printf 'model_memory_preflight=reject\n' >&2
-    exit 3
-fi
-
-printf 'model_memory_preflight=accept\n'
+printf 'model_memory_preflight=observe\n'

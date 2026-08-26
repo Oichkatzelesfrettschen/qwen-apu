@@ -85,6 +85,7 @@ printf '%s\n' "$server_pid" >"$pid_file"
 
 ready_for_monitor=0
 attempt=0
+inference_cpu=${QWEN_INFERENCE_CPU:-0}
 # Model loading performs one-time Vulkan allocation and transfer work before the
 # HTTP service can accept inference. Arm the service-latency watchdog only after
 # llama-server reports the model ready, while still requiring the runtime CPU
@@ -95,7 +96,7 @@ while [ "$attempt" -lt 1200 ]; do
     fi
     affinity=$(awk '$1 == "Cpus_allowed_list:" { print $2 }' "/proc/$server_pid/status")
     nice_value=$(ps -o ni= -p "$server_pid" | tr -d ' ')
-    if [ "$affinity" = 0 ] && [ "$nice_value" = 19 ] && \
+    if [ "$affinity" = "$inference_cpu" ] && [ "$nice_value" = 19 ] && \
        grep -F 'model loaded' "$server_log" >/dev/null 2>&1; then
         ready_for_monitor=1
         break

@@ -7,7 +7,13 @@ if [ "$#" -eq 0 ]; then
 fi
 
 renice -n 19 -p $$ >/dev/null
-taskset -pc 0 $$ >/dev/null
+# Inference holds one core and the desktop keeps the other. Which core is
+# measurable rather than obvious: /proc/interrupts puts the keyboard, touchpad,
+# and GPIO controller entirely on CPU0, and amdgpu's own completion interrupts
+# three-to-one on CPU1. Input latency and GPU-completion latency therefore pull
+# in opposite directions, and QWEN_INFERENCE_CPU lets the probe decide.
+inference_cpu=${QWEN_INFERENCE_CPU:-0}
+taskset -pc "$inference_cpu" $$ >/dev/null
 ionice -c 3 -p $$
 
 radv_icd=${QWEN_RADV_ICD:-/usr/share/vulkan/icd.d/radeon_icd.x86_64.json}
