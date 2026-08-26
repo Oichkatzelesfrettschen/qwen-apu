@@ -12,6 +12,12 @@
 | View-metadata incremental patch | superseded retain | `patches/superseded/` | folded into `llama-no-cpu-fallback.patch` |
 | Raven2 diagnostic Web UI | adapted source asset | ordinary Git under `webui/` | qwen-lab 1.5.0 source plus APU-specific policy tests |
 
+`remote/refresh-evidence-manifest.sh` regenerates `evidence/SHA256SUMS` from
+the tracked `benchmarks/` and `evidence/` trees, and `--check` exits non-zero on
+drift. The manifest covered 154 of 216 tracked files before it was regenerated,
+because each new measurement was committed without it, so a surface it omits is
+retained without a replay authority.
+
 The Git copies replace the private laptop hostname with `qwen-laptop`, the
 machine-local home prefix with `$HOME`, and network MAC addresses with
 `<mac>`. `evidence/PRE_SANITIZATION_SHA256SUMS` records the imported artifact
