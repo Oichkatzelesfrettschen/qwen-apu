@@ -293,6 +293,47 @@ def check_mtp_branch(census_module, gguf, directory):
     return failures
 
 
+def check_loop_branch(census_module, gguf, directory):
+    """A looped transformer shares its physical layers across num_loops
+    iterations, so per-token traffic counts the layer bytes once per loop while
+    the embedding lookup and the logit projection stay outside the loop."""
+    import numpy as np
+    path = directory / "loop.gguf"
+    writer = gguf.GGUFWriter(str(path), "nanbeige")
+    writer.add_uint32("nanbeige.block_count", 2)
+    writer.add_uint32("nanbeige.num_loops", 3)
+    for layer in range(2):
+        writer.add_tensor(f"blk.{layer}.ffn_up.weight",
+                          np.ones((256, 128), dtype=np.float32))
+    writer.add_tensor("token_embd.weight", np.ones((64, 32), dtype=np.float32))
+    writer.add_tensor("output.weight", np.ones((64, 32), dtype=np.float32))
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_tensors_to_file()
+    writer.close()
+
+    census = census_module.read_gguf(str(path), hash_file=False)
+    summary = census_module.summarize(census)
+    failures = []
+    if summary["num_loops"] != 3:
+        failures.append(f"loop: num_loops is {summary['num_loops']}, expected 3")
+
+    layer_bytes = sum(t["bytes"] for t in census["tensors"] if t["layer"] is not None)
+    expected = layer_bytes * 3 + summary["output_bytes"]
+    if summary["streamed_bytes"] != expected:
+        failures.append(
+            f"loop: streamed bytes {summary['streamed_bytes']} must count the "
+            f"layer bytes three times and the output projection once, expected "
+            f"{expected}")
+    if summary["looped_bytes"] != layer_bytes:
+        failures.append(
+            f"loop: looped_bytes {summary['looped_bytes']} must be the "
+            f"single-pass layer total {layer_bytes}")
+    if not failures:
+        print(f"loop\tfixture\tnum_loops=3\tstreamed={summary['streamed_bytes']}")
+    return failures
+
+
 def main(argv):
     gguf_py_path = locate_gguf_py()
     if gguf_py_path is None:
@@ -320,6 +361,7 @@ def main(argv):
         failures += check_fixture_summary(census_module, fixture)
         failures += check_tied_branch(census_module, gguf, directory)
         failures += check_mtp_branch(census_module, gguf, directory)
+        failures += check_loop_branch(census_module, gguf, directory)
     finally:
         shutil.rmtree(directory, ignore_errors=True)
 

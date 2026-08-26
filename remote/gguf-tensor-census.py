@@ -81,6 +81,15 @@ LAYER_PATTERN = re.compile(r"^blk\.(\d+)\.")
 NEXTN_KEY_SUFFIX = ".nextn_predict_layers"
 BLOCK_COUNT_KEY_SUFFIX = ".block_count"
 
+# A looped transformer declares <arch>.num_loops and runs its physical layers
+# once per loop, sharing the weights across iterations: src/models/nanbeige.cpp
+# sets hparams.n_layer_all = n_layer_phys * n_loops and gives each slot its own
+# KV index. Parameter count falls and per-token weight traffic does not, because
+# a working set of gigabytes cannot stay in a 4 MB L3 between iterations. The
+# loop count therefore multiplies the layer bytes and leaves the embedding and
+# output projections read once.
+NUM_LOOPS_KEY_SUFFIX = ".num_loops"
+
 # Metadata keys that record how the file was produced. Absence is itself a
 # result: a file without them cannot be reproduced from the repository.
 PROVENANCE_KEYS = (
@@ -227,6 +236,7 @@ def parse_header(reader):
         })
 
     architecture = metadata.get("general.architecture", "")
+    num_loops = int(metadata.get(architecture + NUM_LOOPS_KEY_SUFFIX, 1) or 1)
     nextn_layers = int(metadata.get(architecture + NEXTN_KEY_SUFFIX, 0) or 0)
     block_count = int(metadata.get(architecture + BLOCK_COUNT_KEY_SUFFIX, 0) or 0)
     if nextn_layers > 0 and block_count > 0:
@@ -236,7 +246,8 @@ def parse_header(reader):
                 tensor["family"] = "mtp"
 
     return {"version": version, "metadata": metadata, "tensors": tensors,
-            "nextn_layers": nextn_layers, "block_count": block_count}
+            "nextn_layers": nextn_layers, "block_count": block_count,
+            "num_loops": num_loops}
 
 
 def sha256_of(path):
@@ -274,10 +285,18 @@ def summarize(census):
     # output projection, in which case the projection reads it in full and only
     # the lookup share is excluded; the exclusion is the same tensor either way
     # because the output matvec is already counted through it.
-    streamed_bytes = sum(
+    num_loops = census.get("num_loops", 1)
+    # Layer tensors are re-read once per loop; the logit projection and the
+    # embedding lookup sit outside the loop and are read once.
+    looped_bytes = sum(
         tensor["bytes"] for tensor in tensors
-        if tensor["family"] not in ("embedding", "mtp")
+        if tensor["layer"] is not None and tensor["family"] not in ("embedding", "mtp")
     )
+    unlooped_bytes = sum(
+        tensor["bytes"] for tensor in tensors
+        if tensor["layer"] is None and tensor["family"] not in ("embedding", "mtp")
+    )
+    streamed_bytes = looped_bytes * num_loops + unlooped_bytes
     if not has_output:
         # Tied: the output projection streams the embedding tensor, so add it
         # back once.
@@ -297,6 +316,8 @@ def summarize(census):
         "layer_count": len([k for k in by_layer if k is not None]),
         "nextn_layers": census.get("nextn_layers", 0),
         "mtp_bytes": by_family.get("mtp", 0),
+        "num_loops": num_loops,
+        "looped_bytes": looped_bytes,
     }
 
 
@@ -327,6 +348,8 @@ def report(census, summary):
     add(f"embeddings_tied\t{'absent' if tied is None else str(tied).lower()}")
     add(f"embedding_bytes\t{summary['embedding_bytes']}")
     add(f"output_bytes\t{summary['output_bytes']}")
+    add(f"num_loops\t{summary['num_loops']}")
+    add(f"looped_layer_bytes\t{summary['looped_bytes']}")
     add(f"nextn_layers\t{summary['nextn_layers']}")
     add(f"mtp_bytes\t{summary['mtp_bytes']}")
     add(f"streamed_bytes_per_token\t{summary['streamed_bytes']}")
