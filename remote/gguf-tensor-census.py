@@ -330,6 +330,33 @@ def architecture_dimensions(metadata, architecture):
     }
 
 
+def tokenizer_identity(metadata):
+    """Name the decoder half of a checkpoint that the tensor census cannot see.
+
+    A requantization rewrites tensors and copies metadata, so two files that
+    agree tensor for tensor still answer differently when one carries a
+    different chat template, a different pre-tokenizer, or different special
+    token ids. The template is hashed rather than printed because it runs to
+    kilobytes of Jinja and only its identity is being compared.
+    """
+    identity = {}
+    template = metadata.get("tokenizer.chat_template")
+    if isinstance(template, str):
+        identity["chat_template_sha256"] = hashlib.sha256(
+            template.encode("utf-8")).hexdigest()
+        identity["chat_template_bytes"] = len(template.encode("utf-8"))
+    for key in ("tokenizer.ggml.model", "tokenizer.ggml.pre",
+                "tokenizer.ggml.bos_token_id", "tokenizer.ggml.eos_token_id",
+                "tokenizer.ggml.eot_token_id", "tokenizer.ggml.padding_token_id",
+                "tokenizer.ggml.add_bos_token", "tokenizer.ggml.add_eos_token"):
+        if key in metadata:
+            identity[key[len("tokenizer.ggml."):]] = metadata[key]
+    tokens = metadata.get("tokenizer.ggml.tokens")
+    if isinstance(tokens, list):
+        identity["vocabulary_size"] = len(tokens)
+    return identity
+
+
 def report(census, summary):
     metadata = census["metadata"]
     architecture = summary["architecture"]
@@ -367,6 +394,15 @@ def report(census, summary):
     missing = [key for key in PROVENANCE_KEYS if key not in metadata]
     if missing:
         add(f"absent\t{' '.join(missing)}")
+
+    add("")
+    add("# tokenizer identity")
+    identity = tokenizer_identity(metadata)
+    if identity:
+        for key, value in identity.items():
+            add(f"{key}\t{value}")
+    else:
+        add("absent\ttokenizer metadata")
 
     add("")
     add("# bytes by ggml type")
@@ -416,6 +452,7 @@ def main(argv):
                 "file_bytes": census["file_bytes"],
                 "gguf_version": census["version"],
                 "summary": summary,
+                "tokenizer_identity": tokenizer_identity(census["metadata"]),
                 "tensors": census["tensors"] if arguments.tensors else None,
             })
             continue

@@ -5,6 +5,9 @@ renice -n 19 -p $$ >/dev/null
 taskset -pc 0 $$ >/dev/null
 ionice -c 3 -p $$
 
+# dash implements the core-size limit used by this POSIX-sh test even though
+# ShellCheck classifies the option outside its portable ulimit subset.
+# shellcheck disable=SC3045
 ulimit -c 0
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)

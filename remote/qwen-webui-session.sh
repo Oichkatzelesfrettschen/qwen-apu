@@ -210,6 +210,12 @@ printf 'speculation spec_type=%s draft_n_max=%s draft_p_min=%s draft_backend_sam
     "${QWEN_SPEC_TYPE:-off}" "${QWEN_SPEC_DRAFT_N_MAX:-default}" \
     "${QWEN_SPEC_DRAFT_P_MIN:-default}" \
     "${QWEN_SPEC_BACKEND_SAMPLING:-0}" "${QWEN_BACKEND_SAMPLING:-0}" >>"$status_file"
+# The cache triple lands on a third line for the same reason, and it records
+# `registry` where the row supplied the value, so a retained status file
+# distinguishes an experiment arm from the served default.
+printf 'cache cache_type_k=%s cache_type_v=%s flash_attention=%s\n' \
+    "${QWEN_CACHE_TYPE_K:-registry}" "${QWEN_CACHE_TYPE_V:-registry}" \
+    "${QWEN_FLASH_ATTN:-registry}" >>"$status_file"
 
 set +e
 wait "$server_pid"

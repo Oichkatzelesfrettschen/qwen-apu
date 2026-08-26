@@ -26,7 +26,7 @@ check_rows() {
         /^[[:space:]]*$/ { next }
         {
             rows++
-            if (NF != 13) {
+            if (NF != 14) {
                 printf "row %d holds %d fields\n", NR, NF
                 bad++
                 next
@@ -40,8 +40,12 @@ check_rows() {
                 printf "%s: context_ceiling %s exceeds context_target %s\n", $1, $6, $7
                 bad++
             }
-            if ($10 != "none" && $10 != "required" && $10 != "optional") {
-                printf "%s: projector policy %s is not none, required, or optional\n", $1, $10
+            if ($10 != "on" && $10 != "off" && $10 != "auto") {
+                printf "%s: flash_attention %s is not on, off, or auto\n", $1, $10
+                bad++
+            }
+            if ($11 != "none" && $11 != "required" && $11 != "optional") {
+                printf "%s: projector policy %s is not none, required, or optional\n", $1, $11
                 bad++
             }
             script = directory "/" $4
@@ -61,6 +65,15 @@ if check_rows; then
     report registry_rows accepted
 else
     report registry_rows rejected
+fi
+
+expected_header=$(printf '# id\trole\tmodel_file\tfetch_script\tcontext_default\tcontext_ceiling\tcontext_target\tcache_type_k\tcache_type_v\tflash_attention\tprojector\tdecode_tok_s\tprefill_tok_s\tquality')
+actual_header=$(grep '^# id' "$registry" || true)
+if [ "$actual_header" = "$expected_header" ]; then
+    report schema_header accepted
+else
+    report schema_header rejected
+    printf 'registry schema header differs from the reader schema\n' >&2
 fi
 
 if [ "$("$reader" id qwen38-4b-distill role)" = balanced-text ]; then

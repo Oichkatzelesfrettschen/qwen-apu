@@ -1,0 +1,252 @@
+#!/bin/sh
+set -eu
+
+# Measure achieved streaming rate per checkpoint, in bytes rather than tokens.
+#
+# Decode reads every weight once per token, so tokens per second and streamed
+# bytes per token give an achieved GB/s that is comparable across checkpoints of
+# different sizes. The 2B reaches 11.95 GB/s where the 4B reaches 8.28, so the
+# lower figure is not a device ceiling, and what separates them is 24 layers
+# against 32 rather than any property of the memory system.
+#
+# Each checkpoint runs twice, once in each direction of the model order, and the
+# priority arms of one checkpoint run back to back. Identical flags at identical
+# priority measured 9.60 and 7.08 tok/s fifteen minutes apart on a loaded
+# desktop, a 26% spread that decays as the part settles into its 86 to 88 C
+# band, so an arm separated from its comparison by five other arms reports its
+# position in the queue rather than its flags.
+#
+# Streamed bytes come from the census rather than from the file size, because
+# decode skips the multi-token-prediction block and reads a tied embedding once
+# for the lookup and once for the projection.
+#
+# Scheduling priority is a measured dimension rather than a fixed setting. The
+# appliance serves at nice 19 underneath a live desktop, so nice 19 is the
+# operating condition and nice 0 is the comparison that prices what the guard
+# costs. The I/O class stays at idle across both arms, so the pair differs in CPU
+# scheduling priority alone; llama-bench reads its weights through mmap before
+# the timed repetitions, which leaves the decode rate outside the I/O scheduler's
+# reach. Each arm records the load average it ran under, because a rate measured
+# against an idle machine describes a machine that never serves.
+
+if [ "$#" -lt 1 ]; then
+    printf 'usage: %s MODEL_PATH [MODEL_PATH...]\n' "$0" >&2
+    printf 'output directory comes from QWEN_BANDWIDTH_OUTPUT\n' >&2
+    exit 2
+fi
+
+output_directory=${QWEN_BANDWIDTH_OUTPUT:-"${HOME:?}/qwen-bandwidth-ladder"}
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+bench=${QWEN_LLAMA_BENCH:-"${HOME:?}/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-bench"}
+census=${QWEN_TENSOR_CENSUS:-"$script_directory/gguf-tensor-census.py"}
+clock_sampler=${QWEN_CLOCK_SAMPLER:-"$script_directory/sample-gpu-clocks.sh"}
+generate_tokens=${QWEN_BENCH_GENERATE:-64}
+repetitions=${QWEN_BENCH_REPETITIONS:-3}
+nice_levels=${QWEN_BENCH_NICE_LEVELS:-"19 0"}
+for nice_level in $nice_levels; do
+    case $nice_level in
+        '' | *[!0-9-]*)
+            printf 'nice level must be an integer: %s\n' "$nice_level" >&2
+            exit 2
+            ;;
+    esac
+done
+
+if [ ! -x "$bench" ]; then
+    printf 'llama-bench is not built at %s\n' "$bench" >&2
+    exit 2
+fi
+for model_path in "$@"; do
+    if [ ! -f "$model_path" ]; then
+        printf 'model file is absent: %s\n' "$model_path" >&2
+        exit 2
+    fi
+done
+if pgrep -x llama-server >/dev/null 2>&1 || pgrep -x llama-bench >/dev/null 2>&1; then
+    printf 'another llama process holds the device\n' >&2
+    exit 2
+fi
+
+# nice(1) adjusts relative to the caller and an unprivileged process cannot
+# lower its own niceness, so an arm requesting nice 0 from a shell already at
+# nice 19 runs at 19 and reports 0. Requiring the caller at nice 0 makes the
+# requested level the absolute level.
+caller_nice=$(awk '{ print $19 }' /proc/self/stat)
+if [ "$caller_nice" -ne 0 ]; then
+    printf 'run from a shell at nice 0; this one is at %s, which raises every arm\n' \
+        "$caller_nice" >&2
+    exit 2
+fi
+
+mkdir -p "$output_directory"
+summary=$output_directory/bandwidth-summary.tsv
+printf 'pass\tnice_observed\tmodel\tstreamed_bytes\tdecode_tok_s\tachieved_gb_s\tmclk_modal\ttemp_c_max\tload_mean\tload_max\n' \
+    >"$summary"
+
+# A killed run leaves its sampler writing once a second into a file the next run
+# recreates, which contaminates that run and hides the orphan behind a plausible
+# name. The trap ends the sampler with the script that started it.
+sampler_pid=''
+stop_sampler() {
+    [ -n "$sampler_pid" ] || return 0
+    kill "$sampler_pid" 2>/dev/null || true
+    wait "$sampler_pid" 2>/dev/null || true
+    sampler_pid=''
+}
+trap 'stop_sampler' EXIT
+trap 'stop_sampler; exit 130' INT
+trap 'stop_sampler; exit 143' TERM
+
+arm_index=0
+measurement_failed=0
+
+run_model() {
+    pass_label=$1
+    arm_nice=$2
+    model_path=$3
+    model_name=$(basename "$model_path" .gguf)
+    # The sequence number keeps every arm's log and clock samples separate. A
+    # priority list that repeats a level gives two arms the same pass, level,
+    # and model, and the clock sampler appends, so a shared name pools two arms'
+    # temperature and load into one row.
+    arm_index=$((arm_index + 1))
+    arm_label=$(printf '%02d-%s-nice%s-%s' "$arm_index" "$pass_label" \
+        "$arm_nice" "$model_name")
+    arm_log=$output_directory/$arm_label.log
+    arm_samples=$output_directory/$arm_label.clocks.tsv
+
+    streamed=$(nice -n 19 python3 "$census" --skip-hash "$model_path" 2>/dev/null |
+        awk -F'\t' '$1 == "streamed_bytes_per_token" { print $2 }')
+    case $streamed in
+        '' | *[!0-9]*)
+            printf 'census reported no streamed byte count for %s\n' \
+                "$model_path" >&2
+            return 1
+            ;;
+    esac
+
+    printf 'arm_start_utc=%s label=%s nice=%s streamed_bytes=%s load=%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$arm_label" "$arm_nice" "$streamed" \
+        "$(awk '{ print $1 }' /proc/loadavg)"
+    "$clock_sampler" "$arm_samples" 1 &
+    sampler_pid=$!
+    set +e
+    nice -n "$arm_nice" ionice -c 3 "$bench" -m "$model_path" \
+        -ngl 99 -t 2 -r "$repetitions" -p 0 -n "$generate_tokens" -o md \
+        >"$arm_log" 2>&1 &
+    bench_pid=$!
+    # Read the priority the kernel gave the child. A column that restates the
+    # request survives an invocation that drops it, which is how twenty arms
+    # once reported two priorities while every one of them ran at nice 19.
+    # nice(1) calls setpriority and then execs, so the read waits for the
+    # command name to become llama-bench; before that it would return the
+    # priority the shell forked with rather than the one the arm requested.
+    observed_nice=unread
+    settle=0
+    while [ "$settle" -lt 20 ]; do
+        child_state=$(cat "/proc/$bench_pid/stat" 2>/dev/null) || break
+        case $child_state in
+            *'(llama-bench)'*)
+                observed_nice=$(printf '%s\n' "$child_state" | awk '{ print $19 }')
+                break
+                ;;
+        esac
+        settle=$((settle + 1))
+        sleep 1
+    done
+    wait "$bench_pid"
+    arm_status=$?
+    set -e
+    stop_sampler
+
+    priority_matches=1
+    if [ "$observed_nice" != "$arm_nice" ]; then
+        printf 'arm_priority_mismatch label=%s requested=%s observed=%s\n' \
+            "$arm_label" "$arm_nice" "$observed_nice" >&2
+        priority_matches=0
+    fi
+
+    decode=n/a
+    if [ "$arm_status" -eq 0 ]; then
+        decode=$(awk -F'|' '$0 ~ /\| *tg[0-9]+( @ d[0-9]+)? *\|/ {
+                                split($(NF - 1), parts, /[^0-9.]+/)
+                                for (i = 1; i <= 3; i++) {
+                                    if (parts[i] != "") { rate = parts[i]; break }
+                                }
+                            }
+                            END { print (rate == "" ? "n/a" : rate) }' "$arm_log")
+    fi
+    achieved=n/a
+    case $decode in
+        n/a) ;;
+        *) achieved=$(awk -v r="$decode" -v b="$streamed" \
+            'BEGIN { printf "%.2f", r * b / 1000000000 }') ;;
+    esac
+    clock_report=$(awk -F'\t' '
+        $1 ~ /^[0-9]+([.][0-9]+)?$/ { count[$1]++; clock_samples++ }
+        $3 ~ /^[0-9]+([.][0-9]+)?$/ {
+          if ($3 + 0 > temp_max) { temp_max = $3 + 0 }
+          temperature_samples++
+        }
+        $4 ~ /^[0-9]+([.][0-9]+)?$/ {
+          load_sum += $4 + 0
+          if ($4 + 0 > load_max) { load_max = $4 + 0 }
+          load_samples++
+        }
+        END {
+            for (step in count) {
+                if (count[step] > best) { best = count[step]; modal = step }
+            }
+            printf "%s\t%s\t%s\t%s",
+                (clock_samples ? modal : "unavailable"),
+                (temperature_samples ? sprintf("%.1f", temp_max / 1000) : "unavailable"),
+                (load_samples ? sprintf("%.2f", load_sum / load_samples) : "unavailable"),
+                (load_samples ? sprintf("%.2f", load_max) : "unavailable")
+        }' "$arm_samples")
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$pass_label" "$observed_nice" \
+        "$model_name" "$streamed" "$decode" "$achieved" "$clock_report" \
+        >>"$summary"
+    printf 'arm_stop_utc=%s label=%s nice_observed=%s decode=%s achieved_gb_s=%s clocks_load=%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$arm_label" "$observed_nice" "$decode" "$achieved" \
+        "$(printf '%s' "$clock_report" | tr '\t' ' ')"
+
+    if [ "$arm_status" -ne 0 ] || [ "$decode" = n/a ] || \
+       [ "$priority_matches" -ne 1 ]; then
+        return 1
+    fi
+    return 0
+}
+
+for model_path in "$@"; do
+    for nice_level in $nice_levels; do
+        run_model forward "$nice_level" "$model_path" || measurement_failed=1
+    done
+done
+
+# The reverse pass gives every checkpoint an early slot and a late one, and it
+# reverses the priority order within each checkpoint, so neither the model
+# position nor the priority position stands in for a result that survives both.
+reversed_models=''
+for model_path in "$@"; do
+    reversed_models="$model_path${reversed_models:+ }$reversed_models"
+done
+reversed_levels=''
+for nice_level in $nice_levels; do
+    reversed_levels="$nice_level${reversed_levels:+ }$reversed_levels"
+done
+for model_path in $reversed_models; do
+    for nice_level in $reversed_levels; do
+        run_model reverse "$nice_level" "$model_path" || measurement_failed=1
+    done
+done
+
+if [ "$measurement_failed" -ne 0 ]; then
+    printf 'bandwidth_ladder=failed output_directory=%s\n' \
+        "$output_directory" >&2
+    cat "$summary"
+    exit 1
+fi
+
+printf 'bandwidth_ladder=completed output_directory=%s\n' "$output_directory"
+cat "$summary"

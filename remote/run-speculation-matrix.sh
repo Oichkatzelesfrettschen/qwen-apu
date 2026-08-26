@@ -104,7 +104,15 @@ run_arm() {
         >"$arm_directory/startup-speculation.txt" 2>/dev/null || true
 
     for prompt_name in $prompt_name_list; do
-        eval "prompt_body=\$prompt_body_$prompt_name"
+        case $prompt_name in
+            code) prompt_body=$prompt_body_code ;;
+            prose) prompt_body=$prompt_body_prose ;;
+            arithmetic) prompt_body=$prompt_body_arithmetic ;;
+            *)
+                printf 'unknown speculation prompt: %s\n' "$prompt_name" >&2
+                return 1
+                ;;
+        esac
         prompt_text=$chat_prefix$prompt_body$chat_suffix
         printf '{"prompt":"%s","n_predict":%s,"temperature":0,"top_k":1,"seed":42,"cache_prompt":false,"return_tokens":true,"stream":false}\n' \
             "$prompt_text" "$predict_tokens" \

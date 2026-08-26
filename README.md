@@ -9,6 +9,11 @@ so the appliance answers with the network off.
 This repository retains the setup scripts, runtime policy, source patches,
 measurements, and benchmark results that produce that deployment.
 
+`evidence/research-claim-methodology.md` maps the hardware, kernel, driver,
+inference engine, appliance policy, measurement, and retention authorities. It
+defines which observations support an article-facing claim and which residuals
+remain open.
+
 ## Evidence classes
 
 Every performance figure below carries its class, because the classes carry
@@ -78,10 +83,12 @@ of combining independent ones. Full offload also leaves both CPU cores to the
 desktop.
 
 Sequential host read bandwidth measures 7.97 GB/s on one thread and 15.44 GB/s
-on two, while decode moves weights at roughly 7.8 GB/s. The two compute units
-therefore reach the single-thread figure, which is where the ceiling sits.
+on two, while one decode arm moves weights at roughly 7.8 GB/s. The numerical
+similarity is descriptive rather than a ceiling: the Zen+ load/store path and
+the Vega compute units are different consumers of the shared controller, and
+the retained host test does not measure the GPU path.
 
-## The responsiveness guards cost no throughput
+## The responsiveness guards show no resolved throughput cost
 
 | Configuration | decode tok/s | class |
 | --- | ---: | --- |
@@ -90,7 +97,12 @@ therefore reach the single-thread figure, which is where the ceiling sits.
 
 LOW RADV queue priority, nice 19, single-core affinity, idle I/O priority, one
 slot, and one thread land within measurement variation of the unconstrained
-rate. The guards are part of the correct configuration.
+rate. A separate six-pair nice 19 against nice 0 run under desktop load measures
+a 1.10% mean difference in favour of nice 19, while its nominal paired interval
+spans -6.1% to +3.9%. The retained data resolve no directional cost and do not
+establish statistical equivalence. The guards remain the operating
+configuration because they preserve desktop priority without a measured
+throughput regression.
 
 The graphics latency probe measures the desktop side of that claim: 99.87% to
 99.96% of probe submissions complete inside one 60 Hz frame under chat load,

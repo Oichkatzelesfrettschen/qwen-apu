@@ -1,0 +1,45 @@
+#!/bin/sh
+set -eu
+
+# Run the clone-local gates that protect executable policy and retained
+# evidence. Hardware, model files, and the pinned llama.cpp source remain
+# separate integration surfaces; this gate names that boundary by running only
+# tests whose complete fixtures live in this repository.
+
+if [ "$#" -ne 0 ]; then
+    printf 'usage: %s\n' "$0" >&2
+    exit 2
+fi
+
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+repository_root=$(CDPATH='' cd -- "$script_directory/.." && pwd)
+cd "$repository_root"
+
+for required_command in shellcheck ruff python3; do
+    if ! command -v "$required_command" >/dev/null 2>&1; then
+        printf 'required quality-gate command is absent: %s\n' \
+            "$required_command" >&2
+        exit 2
+    fi
+done
+
+shell_files=$(find remote -type f -name '*.sh' -print | sort)
+for shell_file in $shell_files; do
+    sh -n "$shell_file"
+done
+# Warning-level diagnostics fail the gate. The repository treats warning drift
+# as a defect even where ShellCheck would return success at error level.
+shellcheck -S warning $shell_files
+ruff check remote
+
+PYTHONDONTWRITEBYTECODE=1 python3 remote/test-quality-suite.py
+remote/test-measurement-harnesses.sh
+remote/test-model-registry.sh
+remote/test-projector-pairing.sh
+remote/test-promote-llama-build.sh
+remote/test-qwen-capacity-policy.sh
+remote/test-qwen-runtime-guards.sh
+remote/refresh-evidence-manifest.sh --check
+PYTHONDONTWRITEBYTECODE=1 python3 remote/check-text-policy.py
+
+printf 'repository_quality_gates=accepted\n'

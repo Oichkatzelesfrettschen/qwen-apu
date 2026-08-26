@@ -90,6 +90,14 @@ that rate before any per-layer cost is counted. The same solve predicts 6.03
 tok/s against 9.46 measured, which is the second cost model this checkpoint
 refutes.
 
+Each rate in that table is one arm, and `evidence/decode-bound-analysis.md`
+later measured what one arm is worth: four sweeps of the 2B at identical flags
+span 8.95 to 12.13 GB/s, and four of the 4B span 7.23 to 8.85. The conclusion
+survives because the 2B leads the 4B in all four sweeps, which is a paired
+comparison; the three-figure separation between 11.95 and 8.28 does not, since
+the two ranges overlap. Read the ordering from the pairs and treat the figures
+here as the arms they are.
+
 ## The quantization mixture argues against itself
 
 | Checkpoint | Q4_K | Q6_K | F32 |

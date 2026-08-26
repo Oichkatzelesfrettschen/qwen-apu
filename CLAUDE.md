@@ -1,6 +1,7 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with
+code in this repository.
 
 `~/AGENTS.md` loads through the user memory and supplies the shared baseline.
 This file holds the repository doctrine and wins inside this tree.
@@ -52,12 +53,57 @@ CPU-only at its first partial point: a split adds CPU-to-Vulkan synchronization
 and activation transfers while both sides draw on the one DDR4 controller, so
 the placements share a bandwidth domain instead of combining two.
 
+Memory is trained at the DIMMs' rated DDR4-2133 speed. Both UMC channels report
+`0x00000520` at SMN register `0x50200`; the DDR4 ratio in bits 7:0 is `0x20`,
+and `(0x20 / 3) x 200` is 2133.33 MT/s. Their timing registers decode to
+15-15-15-36, tRP 15, and tRC 51, which match the fastest profile in both Crucial
+CT16G4SFD8213 SPD EEPROMs. Rank derating and an HP firmware speed cap are ruled
+out for the installed population.
+
+On this SMU10 path, `pp_dpm_mclk` is a misleading sysfs name: the kernel obtains
+its selected value with `PPSMC_MSG_GetFclkFrequency`. The 933 and 1067 MHz
+entries are dynamic fabric-clock states, not alternate DRAM training results,
+and retained Vulkan telemetry shows 1067 MHz selected under load. Theoretical
+dual-channel peak is therefore `2 x 8 bytes x 2133 MT/s = 34.13 GB/s`. The
+15.44 GB/s two-thread host read is about 45% of that peak and bounds the two
+Zen+ cores' load/store path rather than the memory controller or iGPU.
+
+`remote/sample-gpu-clocks.sh` records dynamic FCLK beside every rate. All five
+repeatability arms stayed at 933 MHz even though other retained Vulkan runs
+selected 1067 MHz. The measurement spread it was added to explain is real and
+lies elsewhere:
+`evidence/measurement-state-and-memory-clock.md` measures 3.11 tok/s and 3.24
+tok/s from identical flags ten minutes apart with `mclk` at 933 and `sclk`
+peaking at 1100 in both, so a depth-0 rate on this machine carries about 4% of
+uncontrolled spread that neither ladder explains.
+
+Under desktop load that spread reaches 30.6%. `evidence/decode-bound-analysis.md`
+sweeps five checkpoints four times at nice 19 and finds the 2B spanning 8.95 to
+12.13 GB/s, three of those arms at 88 C with `mclk` at 933, so neither die
+temperature nor memory clock orders it, and load average orders it with the
+opposite sign on Q6_K. A comparison on this machine is therefore read within a
+sweep, where both arms met the same machine minutes apart, and a difference
+below about 20% quoted from single arms reports queue position.
+
+The registry rather than a constant sets the admitted depth.
+`remote/models.tsv` carries `context_default`, `context_ceiling`, and
+`context_target` per checkpoint along with the KV cache types and the
+flash-attention setting, and `qwen-capacity-policy.sh` reads them.
+`QWEN_CACHE_TYPE_K`, `QWEN_CACHE_TYPE_V`, and `QWEN_FLASH_ATTN` override the
+cache triple, so an experiment arm runs through the served path rather than
+through llama-bench alone. A ceiling never exceeds a depth measured to fail.
+
 Sequential host read bandwidth measures 7.97 GB/s on one thread and 15.44 GB/s
 on two. Those figures measure the two Zen+ cores through the load/store path,
 which is a different consumer of the one DDR4 controller than the two Vega
 compute units, so they bound nothing about the GPU and the device ceiling
-stays unmeasured. The guards cost nothing against whatever that ceiling is:
-2.86 tok/s unconstrained against 2.87 tok/s served.
+stays unmeasured. The retained runs resolve no directional nice-level cost:
+`evidence/scheduling-priority-cost.md` alternates nice 19 against nice 0 arm by
+arm on a desktop under load 4.9 to 7.0 and measures a paired mean difference of
+1.10% in favour of nice 19, with two negative pairs, three positive pairs, and
+one exact zero. A nominal paired 95% interval spans -6.1% to +3.9%, so the run
+resolves no directional decode cost and does not establish equivalence. The
+priority is read back from `/proc` rather than asserted.
 
 Decode scales with checkpoint size, and a linear cost model over it is refuted.
 Two points, the 4B and the 9B, fit 0.1015 s per token plus 0.0869 s per GiB and
@@ -131,6 +177,12 @@ remote/summarize-probe.sh ~/qwen-webui-state/graphics-latency.log
 remote/gguf-tensor-census.py MODEL [MODEL...]   # what a Q4_K_M file holds
 remote/hash-load-closure.sh EXECUTABLE [OUT]    # identity of every loaded object
 remote/run-rocm-vulkan-matrix.sh [OUTPUT]      # HIP against Vulkan, phase by phase
+remote/run-kv-cache-factorial.sh MODEL [OUT]   # cache type crossed with flash attention
+remote/measure-served-decode.sh LABEL MODEL    # served decode at a fixed length
+remote/measure-bench-repeatability.sh MODEL    # what a depth-0 rate repeats to
+remote/run-quality-suite.py ENDPOINT OUT_JSON  # the 55-row graded suite
+remote/sample-gpu-clocks.sh OUT_TSV [SECONDS]  # the DPM step a rate ran at
+remote/model-registry.sh id|path SELECTOR [FIELD]
 
 # Rebuild llama.cpp and the static UI
 remote/build-llama-preset.sh PRESET [SOURCE]   # one directory per build arm
@@ -153,6 +205,9 @@ directly:
 ```sh
 remote/test-qwen-runtime-guards.sh
 remote/test-radv-low-priority-env.sh
+remote/test-model-registry.sh
+remote/test-quality-suite.py
+remote/test-promote-llama-build.sh
 remote/verify-llama-patch-series.sh
 GGUF_PY_PATH=~/src/llama.cpp-qwen-apu/gguf-py \
     remote/test-gguf-tensor-census.py [MODEL...]
@@ -207,12 +262,20 @@ gsm8k_cot fall from 0.850 to 0.785 alongside an mmlu CoT rise from 0.354 to
 0.553.
 
 `empero-ai/Qwen3.8-2B-Distill` is the same architecture at 24 layers and
-2048/6144, and it decodes at 9.46 tok/s against the 4B's 3.07. It streams 1.263
-GB per token at 11.95 GB/s where the 4B and the 9B both sit near 8.6, and the
-gap survives every explanation tried against it: the fitted 32-layer rate of
-9.69 GB/s would need 130.4 ms to move the 2B's bytes against a measured
-105.7 ms per token, so the 2B streams strictly faster rather than carrying less
-overhead.
+2048/6144, and it decodes above the 4B in every arm that measured both. It
+streams 1.263 GB per token and reaches 10.41 GB/s against the 4B's 8.11 on the
+mean of four sweeps, with the 2B ahead in all four pairs, so it streams faster
+rather than carrying less overhead. Read the pairs and not the means: the same
+checkpoint under identical flags spans 30.6% across those four sweeps, enough
+that the 2B's slowest arm falls below the 4B's fastest.
+
+The tested 4B K-quant ladder is exhausted as a performance lever.
+`evidence/decode-bound-analysis.md` measures Q4_K_M ahead of i1-Q2_K, i1-Q5_K_M,
+and i1-Q6_K in every block. Q2_K streams 29.4% fewer bytes per token and decodes
+no faster, which closes that low-bit route, and Q6_K and Q5_K_M close the tested
+route upward. Achieved streaming forms two observed groups rather than ordering
+by bit width: a Q4_K trunk and a Q6_K trunk both reach about 8.1 GB/s where a
+Q5_K trunk reaches 5.9. IQ and other reconstruction kernels remain unmeasured.
 
 Every distill ships a multi-token-prediction block that the speculation setting
 decides the fate of. `qwen35.nextn_predict_layers` is 1 and `block_count` counts
@@ -258,13 +321,23 @@ breaches.
 surface. Git copies replace the private hostname with `qwen-laptop`, the home
 prefix with `$HOME`, and MAC addresses with `<mac>`.
 
+`evidence/research-claim-methodology.md` defines the article-facing claim
+record, architecture authorities, missing-data semantics, experimental design,
+and publication gate. A performance document states unresolved direction where
+its uncertainty still crosses zero; equivalence requires a declared margin and
+two one-sided bounds inside it.
+
 `README.md` states the selected operating configuration. This file governs
 repository work, and `evidence/` retains the measurements that put each default
 where it is.
 
 ## Prose and comments
 
-Prefer affirmative, mechanism-centered prose. Describe what the system does, the state transitions it performs, and the observable result. Avoid defining behavior primarily through negation such as "no," "does not," "lacks," or "without" when the actual behavior can be stated directly. Use negation only when the absence itself is the relevant fact.
+Prefer affirmative, mechanism-centered prose. Describe what the system does,
+the state transitions it performs, and the observable result. Avoid defining
+behavior primarily through negation such as "no," "does not," "lacks," or
+"without" when the actual behavior can be stated directly. Use negation only
+when the absence itself is the relevant fact.
 
 Comments, commit messages, durable docs, thinking, replies in session, and
 end-of-session summaries share one voice: direct, declarative, indicative
