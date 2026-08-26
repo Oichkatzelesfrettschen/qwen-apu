@@ -235,3 +235,54 @@ flash attention, so this ladder supports the relative claim between two models
 given identical treatment and supports no statement about served depth. A
 CPU-buffer fallback at 16384 would read as degradation, so the loader's
 allocation lines are checked before the ratio is computed.
+
+## The 4096 rung confirms the prediction; the 16384 rung wedged the GPU
+
+`llama-bench -ngl 99 -t 2 -r 3 -p 0 -n 64`, f16 KV, flash attention off, both
+models in the same invocation pair.
+
+| depth | Nanbeige tok/s | retained | Qwen3.8-4B tok/s | retained |
+| ---: | ---: | ---: | ---: | ---: |
+| 0 | 2.38 | 1.0000 | 3.31 | 1.0000 |
+| 4096 | 1.86 | 0.7815 | 3.12 | 0.9426 |
+| 16384 | device wedged | - | 2.69 | 0.8127 |
+
+At 4096 the loss ratio is 0.2185 against 0.0574, which is 3.81. The prediction
+was 5.5 with a falsifier below 3 or above 9, so it stands and the centre was 31%
+too pessimistic. Slot count sets the direction and the magnitude within a factor
+of one and a half; it is not the whole depth cost.
+
+The 16384 rung is a result rather than a gap. `llama-bench` aborted with
+`vk::Queue::submit: ErrorDeviceLost` after RADV reported the context lost, and
+the kernel names the cause:
+
+```
+amdgpu 0000:04:00.0: ring comp_1.2.0 timeout, signaled seq=1051998, emitted seq=1052000
+amdgpu 0000:04:00.0:  Process llama-bench pid <pid> thread llama-bench pid <pid>
+amdgpu 0000:04:00.0: Starting comp_1.2.0 ring reset
+amdgpu 0000:04:00.0: Ring comp_1.2.0 reset succeeded
+amdgpu 0000:04:00.0: [drm] device wedged, but recovered through reset
+```
+
+A compute ring timed out, the driver reset the ring, and the device recovered:
+the 4B control ran to completion immediately afterwards on the same GPU. What
+timed out is a single submission taking longer than the driver admits, which at
+44 KV slots and 16384 tokens of f16 cache is the attention pass over roughly
+2.8 GiB of cache on two compute units.
+
+That fixes the registry ceiling by measurement. `remote/models.tsv` carried
+16384 for this checkpoint on scaled arithmetic, and 16384 is the depth that
+wedged the device under f16 KV. The served path quantizes both caches, which
+cuts that traffic by about 2.4 times and may well complete, but a ceiling
+admitted on an untested margin above a measured hang is the wrong default for a
+research row. The ceiling drops to the 8192 interactive default until a served
+allocation at a greater depth is measured.
+
+The comparison the ladder supports is between two models under identical
+treatment. It says nothing about served depth, where `--cache-type-k q8_0
+--cache-type-v q4_0` and flash attention change both the traffic and the kernel.
+The 4B's own shallow rate shows the size of that gap: 3.31 tok/s here against
+3.07 through the served path, so the served cache policy costs 7.2% at zero
+depth and buys the memory that makes depth reachable. Which policy wins at
+depth is unmeasured and is the ladder worth running next, because the registry's
+32768 and 131072 targets rest on it.
