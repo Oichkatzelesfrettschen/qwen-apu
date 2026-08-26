@@ -55,9 +55,10 @@ for depth in $depths; do
     esac
 done
 
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 mkdir -p "$output_directory"
 summary=$output_directory/factorial-summary.tsv
-printf 'depth\tcache_type_k\tcache_type_v\tflash_attn\trepetitions\tdecode_tok_s\tstatus\tring_resets\n' \
+printf 'depth\tcache_type_k\tcache_type_v\tflash_attn\trepetitions\tdecode_tok_s\tstatus\tring_resets\tmclk_mhz_modal\ttemp_c_max\n' \
     >"$summary"
 
 # amdgpu logs one line per ring reset and this kernel leaves dmesg readable at
@@ -86,9 +87,12 @@ run_cell() {
     cell_label=d$cell_depth-k$cell_type_k-v$cell_type_v-fa$cell_flash
     cell_log=$output_directory/$cell_label.log
     reset_before=$(read_reset_count)
+    cell_samples=$output_directory/$cell_label.clocks.tsv
 
     printf 'cell_start_utc=%s label=%s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$cell_label"
+    "$script_directory/sample-gpu-clocks.sh" "$cell_samples" &
+    sampler_pid=$!
     set +e
     nice -n 19 ionice -c 3 "$bench" -m "$model_path" \
         -ngl 99 -t 2 -r "$cell_repetitions" -p 0 -n "$generate_tokens" \
@@ -96,6 +100,8 @@ run_cell() {
         -fa "$cell_flash" -o md >"$cell_log" 2>&1
     cell_status=$?
     set -e
+    kill "$sampler_pid" 2>/dev/null || true
+    wait "$sampler_pid" 2>/dev/null || true
     reset_after=$(read_reset_count)
 
     if [ "$cell_status" -eq 0 ]; then
@@ -122,12 +128,23 @@ run_cell() {
     else
         resets=$((reset_after - reset_before))
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    clock_report=$(awk -F'\t' '
+        { count[$1]++; samples++
+          if ($3 + 0 > temp_max) { temp_max = $3 + 0 } }
+        END {
+            for (step in count) {
+                if (count[step] > best) { best = count[step]; modal = step }
+            }
+            printf "%s\t%.1f", (samples ? modal : "n/a"), temp_max / 1000
+        }' "$cell_samples")
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$cell_depth" "$cell_type_k" "$cell_type_v" "$cell_flash" \
-        "$cell_repetitions" "$decode" "$cell_status" "$resets" >>"$summary"
-    printf 'cell_stop_utc=%s label=%s status=%s decode=%s ring_resets=%s\n' \
+        "$cell_repetitions" "$decode" "$cell_status" "$resets" \
+        "$clock_report" >>"$summary"
+    printf 'cell_stop_utc=%s label=%s status=%s decode=%s ring_resets=%s clocks=%s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$cell_label" "$cell_status" \
-        "$decode" "$resets"
+        "$decode" "$resets" \
+        "$(printf '%s' "$clock_report" | tr '\t' ' ')"
 }
 
 # The quantized cells run before the f16 cells at every depth. f16 holds the
