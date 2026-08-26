@@ -176,6 +176,16 @@ if [ -n "$spec_type" ]; then
                 "$spec_draft_n_max" >&2
             exit 2
         fi
+        # Zero aborts the pinned server on the first prompt:
+        # common_speculative_get_output_limits sizes the target context for
+        # `1 + n_draft` outputs while the speculative decode path still asks for
+        # two, and llama-context.cpp:2227 asserts
+        # `n_outputs_max <= cparams.n_outputs_max`. common/arg.cpp accepts any
+        # value at or above zero, so the gate is here.
+        if [ "$spec_draft_n_max" -eq 0 ]; then
+            printf 'draft length of zero aborts the pinned server; omit QWEN_SPEC_TYPE to disable speculation\n' >&2
+            exit 2
+        fi
         set -- "$@" --spec-draft-n-max "$spec_draft_n_max"
     fi
 

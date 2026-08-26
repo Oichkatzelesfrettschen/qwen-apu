@@ -146,6 +146,25 @@ drop from two waves per SIMD to one produces. This is the mechanism the code
 supports; the register count itself is unmeasured, and a `GGML_VK_PIPELINE_STATS`
 capture is what would settle it.
 
+## Backend sampling moves nothing on this device
+
+The vocabulary is 248,320 entries wide, so moving the sampler onto the device
+removes the largest per-token host copy the server makes. That was the reason to
+test it; the measurement refutes it as a lever.
+
+| arm | speculation | backend sampling | code | prose | arithmetic |
+| --- | --- | --- | ---: | ---: | ---: |
+| S0d | off | off | 3.10 | 3.09 | 3.08 |
+| B1 | off | target | 3.07 | 3.08 | 3.06 |
+| S1b | draft-mtp N=1 | off | 3.63 | 3.66 | 3.63 |
+| B2 | draft-mtp N=1 | target and draft | 3.58 | 3.68 | 3.69 |
+
+Both comparisons sit inside the spread of repeated arms, and `B1` reproduces the
+unspeculated token sequence exactly while `B2` reproduces the speculative one.
+The transfer it removes is not on the critical path at one token per pass, which
+is consistent with the column table: a verification pass is priced in hundreds of
+milliseconds of kernel time, and a single logit copy is not.
+
 ## What the matrix decides
 
 N=1 is the operating point. It is the only arm that beats the unspeculated
@@ -228,12 +247,35 @@ prompt survives three arms and the prose prompt diverges at index 1 in all of
 them: the prompts differ in where their first tied position falls, not in how
 much noise they accumulate.
 
-`S0c` separates the remaining candidates. It sets `QWEN_SPEC_DRAFT_N_MAX=0` with
-`draft-mtp` active, so the MTP block loads, the draft context exists, nothing is
-drafted, and the target verifies one column through the speculative path. A
-divergence there puts the cause in the load or the code path; a match puts it in
-drafting itself. `S1b` repeats `S1` unchanged to confirm the divergence is
-reproducible rather than merely deterministic within one process.
+`S1b` repeats `S1` unchanged and reproduces it token for token on all three
+prompts, so the divergence is stable across a reload rather than merely
+deterministic within one process. `B2` adds backend sampling on both the target
+and the draft and reproduces the same sequences again, so the sampler placement
+is not the cause either. Speculation off and speculation on are two fixed
+sequences, and every arm lands on one of them.
+
+`S0c` was to separate the remaining candidates by setting
+`QWEN_SPEC_DRAFT_N_MAX=0` with `draft-mtp` active, loading the MTP block and
+creating the draft context while drafting nothing. It aborts the server on the
+first prompt instead:
+
+```
+src/llama-context.cpp:2227: GGML_ASSERT(n_outputs_max <= cparams.n_outputs_max) failed
+  llama_context::output_reserve(int)
+  llama_context::decode(llama_batch const&)
+```
+
+`common_speculative_get_output_limits` sizes the target context for
+`1 + max(0, n_draft)` outputs, which is one at `n_draft = 0`, while the
+speculative decode path still requests two. `common/arg.cpp` accepts any
+`--spec-draft-n-max` at or above zero, so a documented value reaches a reachable
+abort. `qwen-capacity-policy.sh` rejects it and names the alternative, and the
+arm it was to run is unavailable in this build.
+
+`ngram-simple` replaces it. It drafts through the same accept-and-verify path
+with no MTP block loaded and no draft context built against the target model, so
+a divergence there puts the cause in the shared verification path and a match
+with the unspeculated sequence puts it in the MTP machinery.
 
 The operational question this raises belongs to whoever sets the criterion. The
 stated rule is that speculative decoding must reproduce the target-only token
