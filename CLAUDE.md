@@ -34,9 +34,14 @@ through `llama-bench`, free of the guarded launch path:
 | CPU only, 2 threads | 16.09 | 2.63 |
 | CPU only, 1 thread | 17.17 | 2.02 |
 
-Decode rises monotonically with layers on Vulkan, so full offload is the
-placement the launch path deploys. Sequential host read bandwidth measures
-7.97 GB/s on one thread and 15.44 GB/s on two, while decode moves weights at
+Every tested hybrid placement lost to full Vulkan, and decode rises from the
+9-layer minimum through the fully offloaded endpoint. The ladder dips below
+CPU-only at its first partial point: a split adds CPU-to-Vulkan synchronization
+and activation transfers while both sides draw on the one DDR4 controller, so
+the placements share a bandwidth domain instead of combining two.
+
+Sequential host read bandwidth measures 7.97 GB/s on one thread and 15.44 GB/s
+on two, while decode moves weights at
 roughly 7.8 GB/s, which places the two compute units at the single-thread
 figure. The guards cost nothing against this ceiling: 2.86 tok/s unconstrained
 against 2.87 tok/s served.
@@ -139,9 +144,14 @@ wrongly rather than failing. Binding the search to the model's own directory
 makes a checkpoint published without a projector run text-only.
 
 `empero-ai/Qwen3.8-4B-Distill` distills into the Qwen3.5-4B architecture, so
-the pinned build loads it unchanged. It ships text-only, reasons roughly half
-as long as the base, and its chat template still gates `<think>` on
-`chat_template_kwargs.enable_thinking`.
+the pinned build loads it unchanged. It is the text default: it reasons in
+43.3% of the base model's tokens, reaches an answer 2.71 times faster across
+the five-prompt suite, and its chat template still gates `<think>` on
+`chat_template_kwargs.enable_thinking`. It ships text-only, so the vision
+profile selects the base checkpoint with its revision-matched projector.
+Local math accuracy against the base is untested, and the publisher reports a
+gsm8k_cot fall from 0.850 to 0.785 alongside an mmlu CoT rise from 0.354 to
+0.553.
 
 GGUF weights stay outside Git because their sizes exceed the LFS per-file
 limit. Each download script pins a Hugging Face revision, a byte count, and a
