@@ -78,16 +78,83 @@ q4_0
 0
 --cache-ram
 0
---no-context-shift'
+--no-context-shift
+--offline'
 
 actual_arguments=$(sed -n 's/^argument=//p' "$output_path")
 if [ "$actual_arguments" != "$expected_arguments" ]; then
     printf 'fixed policy arguments differ from the expected sequence\n' >&2
-    diff -u - "$output_path" <<EOF >&2 || true
-$expected_arguments
-EOF
+    # Both sides carry argument values alone. Diffing the expected list against
+    # the raw capture reports the profile block as a difference and buries the
+    # one argument that moved.
+    printf '%s\n' "$expected_arguments" >"$temporary_directory/expected.txt"
+    printf '%s\n' "$actual_arguments" >"$temporary_directory/actual.txt"
+    diff -u "$temporary_directory/expected.txt" \
+        "$temporary_directory/actual.txt" >&2 || true
     exit 1
 fi
+
+# The KV cache triple comes from the registry row the model path resolves to,
+# and the three environment variables override it, so a cache factorial runs
+# through the served path. A value outside what llama-server accepts is refused
+# before the server sees it.
+cache_output=$temporary_directory/cache-policy.out
+QWEN_CACHE_TYPE_K=f16 QWEN_CACHE_TYPE_V=f16 QWEN_FLASH_ATTN=off \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$cache_output \
+    "$policy" "$fake_server" "$model_path" 4096 18080
+cache_arguments=$(sed -n 's/^argument=//p' "$cache_output" | tr '\n' ' ')
+case $cache_arguments in
+    *'--flash-attn off '*'--cache-type-k f16 --cache-type-v f16 '*) ;;
+    *)
+        printf 'cache overrides did not reach the argument list: %s\n' \
+            "$cache_arguments" >&2
+        exit 1
+        ;;
+esac
+
+# A fabricated registry carries a triple the fallback never produces, so this
+# check separates the registry read from the built-in default.
+fabricated_registry=$temporary_directory/models.tsv
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    fabricated research fabricated.gguf download-qwen38-4b-distill-q4km.sh \
+    4096 8192 8192 q5_1 iq4_nl auto none - - untested \
+    >"$fabricated_registry"
+registry_model=$temporary_directory/fabricated.gguf
+: >"$registry_model"
+QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$cache_output \
+    "$policy" "$fake_server" "$registry_model" 4096 18080
+cache_arguments=$(sed -n 's/^argument=//p' "$cache_output" | tr '\n' ' ')
+case $cache_arguments in
+    *'--flash-attn auto '*'--cache-type-k q5_1 --cache-type-v iq4_nl '*) ;;
+    *)
+        printf 'registry cache row did not reach the argument list: %s\n' \
+            "$cache_arguments" >&2
+        exit 1
+        ;;
+esac
+
+if QWEN_CACHE_TYPE_K=q3_k QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$cache_output \
+    "$policy" "$fake_server" "$model_path" 4096 18080 \
+    >"$temporary_directory/cache-type.stdout" \
+    2>"$temporary_directory/cache-type.stderr"; then
+    printf 'policy accepted a cache type llama-server rejects\n' >&2
+    exit 1
+fi
+grep -F 'cache type is outside the set llama-server accepts' \
+    "$temporary_directory/cache-type.stderr" >/dev/null
+
+if QWEN_FLASH_ATTN=1 QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$cache_output \
+    "$policy" "$fake_server" "$model_path" 4096 18080 \
+    >"$temporary_directory/flash.stdout" \
+    2>"$temporary_directory/flash.stderr"; then
+    printf 'policy accepted a flash attention value outside on, off, auto\n' >&2
+    exit 1
+fi
+grep -F 'flash attention must be on, off, or auto' \
+    "$temporary_directory/flash.stderr" >/dev/null
 
 profile_output=$temporary_directory/profile-policy.out
 QWEN_VULKAN_PROFILE=paced-60 QWEN_RADV_ICD=$fake_icd \
@@ -159,15 +226,33 @@ fi
 grep -F 'API key file must be a non-empty regular file' \
     "$temporary_directory/api-key.stderr" >/dev/null
 
-if QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$output_path \
+# A static path alone serves the page without authentication, which the policy
+# admits because the key authenticates callers rather than granting the model a
+# capability it otherwise withholds. The reverse pairing stays refused: a key
+# with nothing to serve names a caller mistake.
+if ! QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$output_path \
     "$policy" "$fake_server" "$model_path" 4096 18080 "$static_path" \
     >"$temporary_directory/unpaired-static.stdout" \
     2>"$temporary_directory/unpaired-static.stderr"; then
-    printf 'policy accepted a static path without an API key\n' >&2
+    printf 'policy refused a static path served without an API key\n' >&2
+    cat "$temporary_directory/unpaired-static.stderr" >&2
     exit 1
 fi
-grep -F 'static path and API key file must be supplied together' \
-    "$temporary_directory/unpaired-static.stderr" >/dev/null
+if sed -n 's/^argument=//p' "$output_path" | grep -Fqx -- --api-key-file; then
+    printf 'policy passed --api-key-file with no key file supplied\n' >&2
+    exit 1
+fi
+
+if QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$output_path \
+    "$policy" "$fake_server" "$model_path" 4096 18080 '' \
+    "$temporary_directory/api.key" \
+    >"$temporary_directory/unpaired-key.stdout" \
+    2>"$temporary_directory/unpaired-key.stderr"; then
+    printf 'policy accepted an API key file with no static path\n' >&2
+    exit 1
+fi
+grep -F 'an API key file requires a static path' \
+    "$temporary_directory/unpaired-key.stderr" >/dev/null
 
 if LLAMA_ARG_N_PARALLEL=2 QWEN_RADV_ICD=$fake_icd \
     QWEN_POLICY_TEST_OUTPUT=$output_path \
@@ -194,10 +279,10 @@ if QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$output_path \
     "$policy" "$fake_server" "$model_path" 24577 8080 \
     >"$temporary_directory/context.stdout" \
     2>"$temporary_directory/context.stderr"; then
-    printf 'policy accepted a context above 24K\n' >&2
+    printf 'policy accepted a context above the registered ceiling\n' >&2
     exit 1
 fi
-grep -F 'context size exceeds operational maximum: 24577 > 24576' \
+grep -F 'context size exceeds the registered ceiling for this model: 24577 > 24576' \
     "$temporary_directory/context.stderr" >/dev/null
 
 printf 'qwen_capacity_policy=accepted\n'

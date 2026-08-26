@@ -213,6 +213,50 @@ if [ -n "$spec_type" ]; then
     fi
 fi
 
+# The KV cache policy is a property of the checkpoint and of the experiment
+# rather than a constant of the appliance. remote/models.tsv carries the served
+# types and the flash-attention setting per row, and QWEN_CACHE_TYPE_K,
+# QWEN_CACHE_TYPE_V, and QWEN_FLASH_ATTN override them, so a factorial that
+# separates cache traffic from the attention kernel runs through the served path
+# rather than through llama-bench alone. A checkpoint outside the registry keeps
+# the measured production triple.
+cache_type_k=${QWEN_CACHE_TYPE_K:-}
+cache_type_v=${QWEN_CACHE_TYPE_V:-}
+flash_attention=${QWEN_FLASH_ATTN:-}
+if [ -z "$cache_type_k" ]; then
+    cache_type_k=$("$script_directory/model-registry.sh" path "$model_path" \
+        cache_type_k 2>/dev/null) || cache_type_k=''
+fi
+if [ -z "$cache_type_v" ]; then
+    cache_type_v=$("$script_directory/model-registry.sh" path "$model_path" \
+        cache_type_v 2>/dev/null) || cache_type_v=''
+fi
+if [ -z "$flash_attention" ]; then
+    flash_attention=$("$script_directory/model-registry.sh" path "$model_path" \
+        flash_attention 2>/dev/null) || flash_attention=''
+fi
+[ -n "$cache_type_k" ] || cache_type_k=q8_0
+[ -n "$cache_type_v" ] || cache_type_v=q4_0
+[ -n "$flash_attention" ] || flash_attention=on
+for cache_type in "$cache_type_k" "$cache_type_v"; do
+    case $cache_type in
+        f32 | f16 | bf16 | q8_0 | q5_1 | q5_0 | q4_1 | q4_0 | iq4_nl) ;;
+        *)
+            printf 'cache type is outside the set llama-server accepts: %s\n' \
+                "$cache_type" >&2
+            exit 2
+            ;;
+    esac
+done
+case $flash_attention in
+    on | off | auto) ;;
+    *)
+        printf 'flash attention must be on, off, or auto: %s\n' \
+            "$flash_attention" >&2
+        exit 2
+        ;;
+esac
+
 # Backend sampling moves the supported sampler chain onto the device. This
 # vocabulary is 248,320 entries wide, so the transfer it removes is the largest
 # per-token host copy the server makes. It is experimental in the pinned build,
@@ -234,9 +278,9 @@ set -- "$@" \
     --threads-batch 1 \
     --batch-size 128 \
     --ubatch-size 32 \
-    --flash-attn on \
-    --cache-type-k q8_0 \
-    --cache-type-v q4_0 \
+    --flash-attn "$flash_attention" \
+    --cache-type-k "$cache_type_k" \
+    --cache-type-v "$cache_type_v" \
     --ctx-checkpoints 0 \
     --cache-ram 0 \
     --no-context-shift \

@@ -264,11 +264,17 @@ amdgpu 0000:04:00.0: Ring comp_1.2.0 reset succeeded
 amdgpu 0000:04:00.0: [drm] device wedged, but recovered through reset
 ```
 
-A compute ring timed out, the driver reset the ring, and the device recovered:
-the 4B control ran to completion immediately afterwards on the same GPU. What
-timed out is a single submission taking longer than the driver admits, which at
-44 KV slots and 16384 tokens of f16 cache is the attention pass over roughly
-2.8 GiB of cache on two compute units.
+At 16384 with f16 KV and flash attention off, the Nanbeige decode graph caused
+a compute-ring submission to fail to retire before the amdgpu timeout. The
+driver reset the ring successfully and the subsequent Qwen control passed. The
+exact kernel-level cause remains unisolated: the kernel record establishes that
+a submission on `comp_1.2.0` did not retire, and it separates none of a
+legitimately overlong kernel, a dependency or synchronization deadlock, an
+amdgpu or RADV defect, a shader compiler defect, and a malformed or
+pathologically inefficient dispatch. Naming the attention pass over 44 KV slots
+of f16 cache as the submission is the obvious candidate and it is untested; a
+`GGML_VK_PERF_LOGGER` capture or a bisected depth ladder between 4096 and 16384
+would tell which dispatch grows and whether the growth is continuous.
 
 That fixes the registry ceiling by measurement. `remote/models.tsv` carried
 16384 for this checkpoint on scaled arithmetic, and 16384 is the depth that
@@ -281,8 +287,10 @@ allocation at a greater depth is measured.
 The comparison the ladder supports is between two models under identical
 treatment. It says nothing about served depth, where `--cache-type-k q8_0
 --cache-type-v q4_0` and flash attention change both the traffic and the kernel.
-The 4B's own shallow rate shows the size of that gap: 3.31 tok/s here against
-3.07 through the served path, so the served cache policy costs 7.2% at zero
-depth and buys the memory that makes depth reachable. Which policy wins at
-depth is unmeasured and is the ladder worth running next, because the registry's
-32768 and 131072 targets rest on it.
+The 4B's own shallow rate marks the size of the unexplained gap rather than its
+cause: 3.31 tok/s here against 3.07 through the served path, a 7.2% difference
+across four simultaneous changes -- llama-bench against a served request, f16
+against q8_0/q4_0, flash attention off against on, and a different prompt and
+timing instrumentation. At zero depth the cache holds almost nothing, so
+assigning that difference to cache quantization is the least likely of the four.
+`evidence/kv-cache-policy-factorial.md` separates them.

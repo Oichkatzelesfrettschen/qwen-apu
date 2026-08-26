@@ -88,7 +88,9 @@ case $action in
         for forwarded_name in QWEN_MMPROJ QWEN_MMPROJ_OFFLOAD QWEN_IMAGE_MAX_TOKENS \
                               QWEN_INFERENCE_CPU QWEN_SPEC_TYPE \
                               QWEN_SPEC_DRAFT_N_MAX QWEN_SPEC_DRAFT_P_MIN \
-                              QWEN_SPEC_BACKEND_SAMPLING QWEN_BACKEND_SAMPLING; do
+                              QWEN_SPEC_BACKEND_SAMPLING QWEN_BACKEND_SAMPLING \
+                              QWEN_CACHE_TYPE_K QWEN_CACHE_TYPE_V \
+                              QWEN_FLASH_ATTN; do
             eval "forwarded_value=\${$forwarded_name:-}"
             if [ -n "$forwarded_value" ]; then
                 forwarded_environment="$forwarded_environment $forwarded_name=$forwarded_value"
@@ -113,6 +115,9 @@ case $action in
             "${QWEN_SPEC_TYPE:-off}" "${QWEN_SPEC_DRAFT_N_MAX:-default}" \
             "${QWEN_SPEC_DRAFT_P_MIN:-default}" \
             "${QWEN_SPEC_BACKEND_SAMPLING:-0}" "${QWEN_BACKEND_SAMPLING:-0}"
+        printf 'cache cache_type_k=%s cache_type_v=%s flash_attention=%s\n' \
+            "${QWEN_CACHE_TYPE_K:-registry}" "${QWEN_CACHE_TYPE_V:-registry}" \
+            "${QWEN_FLASH_ATTN:-registry}"
         ;;
     status)
         if [ "$#" -ne 1 ]; then
