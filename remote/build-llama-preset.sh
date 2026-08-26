@@ -18,8 +18,7 @@ set -eu
 usage() {
     printf 'usage: %s PRESET [SOURCE_DIRECTORY]\n' "$0" >&2
     printf '\npresets:\n' >&2
-    printf '  raven2-vulkan-production  serving build, znver1, one model\n' >&2
-    printf '  raven2-vulkan-router      production plus subprocess for router mode\n' >&2
+    printf '  raven2-vulkan-production  serving build, znver1\n' >&2
     printf '  raven2-vulkan-profile     production plus RelWithDebInfo for captures\n' >&2
     printf '  raven2-vulkan-tests       tests and fatal warnings\n' >&2
     printf '  raven2-cpu-control        CPU backend alone, the placement control\n' >&2
@@ -70,18 +69,15 @@ serving_flags="-DCMAKE_BUILD_TYPE=Release
 
 case $preset in
     raven2-vulkan-production)
-        preset_flags="$serving_flags -DGGML_VULKAN=ON -DLLAMA_SUBPROCESS=OFF"
+        # LLAMA_SUBPROCESS stays on, which is upstream's Linux default.
+        # common/subproc.cpp compiles create() to an unconditional failure when
+        # it is off, and that one function is what router mode spawns children
+        # through and what the MCP tool servers behind --tools run, so a
+        # production build without it serves one model and refuses both. Router
+        # mode therefore needs no separate arm.
+        preset_flags="$serving_flags -DGGML_VULKAN=ON -DLLAMA_SUBPROCESS=ON"
         preset_targets='llama-server llama-cli llama-bench'
         preset_outputs='bin/llama-server bin/llama-cli bin/llama-bench'
-        compiler_flags=$zen_target
-        ;;
-    raven2-vulkan-router)
-        # Router mode spawns a child server per model, which the pinned source
-        # implements through the subprocess helper, so this arm differs from
-        # production in that one option alone.
-        preset_flags="$serving_flags -DGGML_VULKAN=ON -DLLAMA_SUBPROCESS=ON"
-        preset_targets='llama-server'
-        preset_outputs='bin/llama-server'
         compiler_flags=$zen_target
         ;;
     raven2-vulkan-profile)
@@ -89,7 +85,7 @@ case $preset in
         # pointers and symbols that a Release build discards.
         preset_flags="$(printf '%s' "$serving_flags" |
             sed 's/-DCMAKE_BUILD_TYPE=Release/-DCMAKE_BUILD_TYPE=RelWithDebInfo/') \
-            -DGGML_VULKAN=ON -DLLAMA_SUBPROCESS=OFF"
+            -DGGML_VULKAN=ON -DLLAMA_SUBPROCESS=ON"
         preset_targets='llama-server llama-bench'
         preset_outputs='bin/llama-server bin/llama-bench'
         compiler_flags="$zen_target -fno-omit-frame-pointer"
@@ -105,7 +101,7 @@ case $preset in
     raven2-cpu-control)
         # The placement control. Vulkan off rather than layers set to zero, so
         # a comparison against it carries no Vulkan initialization at all.
-        preset_flags="$serving_flags -DGGML_VULKAN=OFF -DLLAMA_SUBPROCESS=OFF"
+        preset_flags="$serving_flags -DGGML_VULKAN=OFF -DLLAMA_SUBPROCESS=ON"
         preset_targets='llama-bench llama-server'
         preset_outputs='bin/llama-bench bin/llama-server'
         compiler_flags=$zen_target

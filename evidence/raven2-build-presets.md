@@ -13,8 +13,7 @@ database, and manifest, so an arm changes only by being rebuilt:
 
 | Preset | Arm |
 | --- | --- |
-| `raven2-vulkan-production` | serving build, one model |
-| `raven2-vulkan-router` | production plus `LLAMA_SUBPROCESS=ON` |
+| `raven2-vulkan-production` | serving build |
 | `raven2-vulkan-profile` | `RelWithDebInfo` with frame pointers, for captures |
 | `raven2-vulkan-tests` | tests and fatal warnings |
 | `raven2-cpu-control` | CPU backend alone, the placement control |
@@ -28,6 +27,16 @@ the start stamp, which a surviving stale file fails. The manifest then records
 the preset, the commit, the worktree state, the compiler flags, the full CMake
 line, and the load closure of each output through
 `remote/hash-load-closure.sh`.
+
+Router mode gets no separate arm, and the reason is a regression the split
+would have introduced. `common/CMakeLists.txt` defines `LLAMA_SUBPROCESS` only
+when the option is on, and `common/subproc.cpp` compiles `create()` to an
+unconditional failure otherwise. That one function is what router mode spawns a
+child server through and what the MCP tool servers behind `--tools` run, so a
+production build with the option off serves one model and refuses both
+features. Upstream defaults it on for every system except iOS, Android, and
+Emscripten, so every serving preset here keeps it on and router mode is a
+runtime flag rather than a build.
 
 The HIP arms leave Vulkan off. Shader generation is the longest step in the dual
 tree and it has no bearing on a HIP row, and the dual tree is where GCC 13 hit
