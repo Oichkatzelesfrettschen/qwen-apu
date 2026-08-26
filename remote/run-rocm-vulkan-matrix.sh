@@ -64,44 +64,80 @@ fi
     printf 'phase_timeout_seconds=%s repetitions=%s\n' "$phase_timeout" "$repetitions"
 } | tee "$output_path"
 
-# One arm is a label, a device, and the environment that selects its kernels.
-# The phase pair is identical across arms so the rows compare directly.
+# One arm is a label, a binary, a device, a ggml thread count, and the
+# environment that selects its kernels. The phase pair is identical across arms
+# so the rows compare directly.
 run_arm() {
     arm_label=$1
-    arm_device=$2
-    shift 2
+    arm_binary=$2
+    arm_device=$3
+    arm_threads=$4
+    arm_phases=$5
+    shift 5
 
-    for phase_arguments in '-p 512 -n 0' '-p 0 -n 64'; do
+    if [ ! -x "$arm_binary" ]; then
+        printf '\narm=%s state=absent binary=%s\n' "$arm_label" "$arm_binary" |
+            tee -a "$output_path"
+        return 0
+    fi
+
+    for phase_arguments in $arm_phases; do
+        phase_arguments=$(echo "$phase_arguments" | tr '_' ' ')
         {
             printf '\n===== %s %s =====\n' "$arm_label" "$phase_arguments"
         } | tee -a "$output_path"
 
         start_seconds=$(date +%s)
         if env "$@" timeout "$phase_timeout" \
-            "$binary_directory/llama-bench" \
+            "$arm_binary" \
             -m "$model_path" --device "$arm_device" -ngl 99 \
-            $phase_arguments -t 2 -r "$repetitions" 2>&1 |
+            $phase_arguments -t "$arm_threads" -r "$repetitions" 2>&1 |
             grep -vE '^(ggml_cuda_init|ggml_vulkan|  Device)' | tee -a "$output_path"
         then
             elapsed_seconds=$(( $(date +%s) - start_seconds ))
-            printf 'arm=%s phase="%s" state=completed seconds=%s\n' \
-                "$arm_label" "$phase_arguments" "$elapsed_seconds" | tee -a "$output_path"
+            printf 'arm=%s phase="%s" threads=%s state=completed seconds=%s\n' \
+                "$arm_label" "$phase_arguments" "$arm_threads" "$elapsed_seconds" |
+                tee -a "$output_path"
         else
             elapsed_seconds=$(( $(date +%s) - start_seconds ))
-            printf 'arm=%s phase="%s" state=timeout seconds=%s\n' \
-                "$arm_label" "$phase_arguments" "$elapsed_seconds" | tee -a "$output_path"
+            printf 'arm=%s phase="%s" threads=%s state=timeout seconds=%s\n' \
+                "$arm_label" "$phase_arguments" "$arm_threads" "$elapsed_seconds" |
+                tee -a "$output_path"
         fi
     done
 }
 
 hip_library_path=$rocm_path/lib:$rocm_path/lib64:${LD_LIBRARY_PATH:-}
+mmq_binary=${QWEN_MMQ_BIN:-"${HOME:?}/src/llama.cpp-qwen-apu/build-qwen-dual-gfx900-mmq/bin"}/llama-bench
 
-run_arm 'V  RADV Vulkan reference' Vulkan0
+both_phases='-p_512_-n_0 -p_0_-n_64'
+decode_phase='-p_0_-n_64'
 
-run_arm 'H0 gfx900 override, automatic kernels' ROCm0 \
-    "ROCM_PATH=$rocm_path" \
-    "LD_LIBRARY_PATH=$hip_library_path" \
-    HSA_OVERRIDE_GFX_VERSION=9.0.0 \
-    HSA_ENABLE_SDMA=0
+run_arm 'V  RADV Vulkan reference' \
+    "$binary_directory/llama-bench" Vulkan0 2 "$both_phases"
+
+run_arm 'H0 gfx900 override, automatic kernels' \
+    "$binary_directory/llama-bench" ROCm0 2 "$both_phases" \
+    "ROCM_PATH=$rocm_path" "LD_LIBRARY_PATH=$hip_library_path" \
+    HSA_OVERRIDE_GFX_VERSION=9.0.0 HSA_ENABLE_SDMA=0
+
+# HSA parks the calling thread in BusyWaitSignal rather than sleeping on the
+# completion signal, so a HIP arm holds one of this machine's two cores before
+# ggml asks for any. Asking for one thread instead of two removes the
+# oversubscription that the RADV arm never has, which separates host contention
+# from kernel quality in the decode deficit.
+run_arm 'H0t1 gfx900 override, one ggml thread' \
+    "$binary_directory/llama-bench" ROCm0 1 "$decode_phase" \
+    "ROCM_PATH=$rocm_path" "LD_LIBRARY_PATH=$hip_library_path" \
+    HSA_OVERRIDE_GFX_VERSION=9.0.0 HSA_ENABLE_SDMA=0
+
+# GGML_CUDA_FORCE_MMQ is compiled in, so the kernel-policy arm is its own tree.
+# It routes batched quantized matrix multiplication through ggml's kernels
+# rather than dequantize plus rocBLAS, which reaches prefill; decode at batch
+# one goes through mul_mat_vec_q either way.
+run_arm 'H1 gfx900 override, forced MMQ kernels' \
+    "$mmq_binary" ROCm0 2 "$both_phases" \
+    "ROCM_PATH=$rocm_path" "LD_LIBRARY_PATH=$hip_library_path" \
+    HSA_OVERRIDE_GFX_VERSION=9.0.0 HSA_ENABLE_SDMA=0
 
 printf '\nmatrix_run=completed output=%s\n' "$output_path" | tee -a "$output_path"
