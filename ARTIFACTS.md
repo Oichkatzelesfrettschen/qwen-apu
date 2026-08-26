@@ -5,6 +5,7 @@
 | Setup scripts, tests, policies, and tracker | canonical generator or synthesized truth surface | ordinary Git | tracked source |
 | Kernel, allocation, build, and runtime logs | raw exact-target evidence | ordinary Git under `evidence/` | `evidence/SHA256SUMS` |
 | `llama-server` and `llama-cli` | derived regenerable | excluded from Git and LFS | byte size and SHA-256 below, against a rebuild |
+| Dual-backend `llama-bench` and its ggml backends | derived regenerable | excluded from Git and LFS | `remote/build-llama-dual.sh`, byte sizes and SHA-256 values below |
 | Qwen3.5-4B, Qwen3.8-9B Distill, and Qwen3.8-27B GGUFs | external reproducible dependencies | excluded from Git and LFS | pinned Hugging Face revisions, byte sizes, and SHA-256 values |
 | llama.cpp source | external canonical source plus local patch series | pinned commit and four replay patches | `remote/verify-llama-patch-series.sh` |
 | llama.cpp build tree | derived regenerable | excluded | `remote/build-llama-vulkan.sh` |
@@ -23,6 +24,10 @@ on the source host.
 | --- | ---: | --- |
 | `llama-server` | 57,475,792 | `3d5b158160b08cf897bb05b47186a13f67e8a17def31012f2f8282f12e95cb08` |
 | `llama-cli` | 57,643,992 | `83cc86e271b7fe784d208c00ca22d1fe6875e7a956790d16b55a9e617d23cc5b` |
+| `llama-bench`, dual backend | 17,920 | `5d8dc29d0b012f4b8dd5057fcfe0f1786311835efe0445a6608000c8e9536d34` |
+| `libllama-bench-impl.so` | 472,200 | `b69ad09e4623116c5e6756c5210b9e29e8e2451e95c685e383ae9b82b28fae53` |
+| `libggml-hip.so` | 66,553,472 | `1034a6fb7ac6319608f69e2b351b56c4c7d6c450cf092cb79a16454072114266` |
+| `libggml-vulkan.so` | 43,788,776 | `57675d461a5d15cb7915bc496d1ba37fa7352cb4f4ceb045b73d839a57a7650f` |
 | `Qwen3.5-4B-Q4_K_M.gguf` | 2,740,937,888 | `00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4` |
 | `Qwen3.8-9B-Q4_K_M.gguf` | 5,780,090,176 | `df13d66021cef676f82be74053220fd75af6bf2a6a7fb77f5222ab9e50744a7a` |
 
@@ -73,3 +78,22 @@ The partial 32K server log replaces the machine-local model directory with
 `7417a6ee288ba9088eb70f51adc5788b7eb70aa3ccaaf5e896f945850c9ac116`;
 the sanitized retained log SHA-256 is
 `6310efb38b990fe1a06cedc508eb1c330c33fdbe11fe05314979f7c49c0843ea`.
+
+## The dual-backend measurement binary
+
+`remote/build-llama-dual.sh` configures `-DGGML_VULKAN=ON -DGGML_HIP=ON` against
+one source commit, so `llama-bench --device` selects the backend and two rows
+differ by the backend rather than by the build.
+`remote/run-rocm-vulkan-matrix.sh` runs it, and
+`evidence/therock-sdk-manifest.tsv` pins the ROCm nightly, the HIP version, the
+toolchain, and the worktree state that produced the recorded rows.
+
+`llama-bench` is a 17 KB launcher: the measurement code lives in
+`libllama-bench-impl.so` and the kernels in the two ggml backend objects, so all
+four carry identities. The binary links `librocblas.so.5`, `libhipblas.so.3`,
+and `libhipblaslt.so.1` whatever `GGML_CUDA_FORCE_MMQ` selects, because the HIP
+CMake path requires and links them unconditionally; the option changes which
+kernels the quantized matrix path calls rather than which libraries load.
+
+Both backends are built from a worktree carrying the repository patch series on
+top of the pinned commit, which `remote/verify-llama-patch-series.sh` checks.
