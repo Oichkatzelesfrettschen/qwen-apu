@@ -1,0 +1,77 @@
+# The graded admission suite. The five-prompt screen separates the 4B from the
+# 9B no further, so a candidate that crosses a throughput threshold needs a
+# suite that resolves the quality it trades away. Every row is graded by a
+# program rather than by reading, because forty-five prompts read by hand
+# reward the reader's memory of the previous candidate.
+#
+# grader kinds:
+#   numeric        expectation is the answer; the last number in the reply must
+#                  equal it within a relative tolerance of 1e-6
+#   contains_all   expectation is a |-separated list; every entry must appear
+#                  case-insensitively in the reply
+#   contains_any   expectation is a |-separated list; one entry suffices
+#   json_keys      the reply must parse as JSON and hold every |-separated key
+#   regex          expectation is a Python regular expression, searched
+#                  case-insensitively
+#   nonempty       the reply must hold a non-whitespace answer, which is what a
+#                  reasoning-termination failure withholds
+#
+# The five original prompts are retained as the `screen` category so a
+# candidate's suite result stays comparable to every figure already recorded.
+#
+# id	category	grader	expectation	prompt
+screen-01	screen	numeric	9.9	Which is larger, 9.11 or 9.9? Reply with the larger number alone.
+screen-02	screen	contains_all	2|45	A train leaves at 14:20 and arrives at 17:05. How long is the trip? Give hours and minutes.
+screen-03	screen	numeric	30	If a shirt costs 40 and is discounted 25 percent, what is the price? Reply with the number alone.
+screen-04	screen	contains_all	canberra	Name the capital of Australia and explain in one sentence why it is not Sydney.
+screen-05	screen	numeric	59.5	What is 17 percent of 350? Reply with the number alone.
+arith-01	arithmetic	numeric	3168	Compute 48 times 66. Reply with the number alone.
+arith-02	arithmetic	numeric	17	Compute 1073 divided by 63, rounded down to a whole number. Reply with the number alone.
+arith-03	arithmetic	numeric	0.375	Express 3/8 as a decimal. Reply with the number alone.
+arith-04	arithmetic	numeric	2540	How many millimetres are in 100 inches, taking one inch as 25.4 millimetres? Reply with the number alone.
+arith-05	arithmetic	numeric	37	Convert 98.6 degrees Fahrenheit to Celsius, rounded to the nearest whole degree. Reply with the number alone.
+arith-06	arithmetic	numeric	-11	Compute 7 minus 3 times 6. Reply with the number alone.
+arith-07	arithmetic	numeric	1024	What is 2 raised to the power 10? Reply with the number alone.
+arith-08	arithmetic	numeric	0.08	What is 8 percent expressed as a decimal fraction? Reply with the number alone.
+arith-09	arithmetic	numeric	86400	How many seconds are in one day? Reply with the number alone.
+arith-10	arithmetic	numeric	4.5	What is the average of 3, 4, 5, and 6? Reply with the number alone.
+word-01	word_problem	numeric	22	A shop sells pens at 3 for 5 units of currency. Ada buys 12 pens and pays with a 40 note. How much change does she receive? Reply with the number alone.
+word-02	word_problem	numeric	48	A tank holds 120 litres and is three-fifths full. How many litres must be added to fill it? Reply with the number alone.
+word-03	word_problem	numeric	14	A cyclist rides 42 kilometres at 18 km/h, rests 40 minutes, then rides 18 kilometres at 18 km/h. How many minutes does the rest and the second ride take together? Reply with the number alone.
+word-04	word_problem	numeric	150	A book costs 200 after a 20 percent increase, then falls 25 percent. What is the final price? Reply with the number alone.
+word-05	word_problem	numeric	9	Three machines fill 27 crates in one hour. Working at the same rate, how many crates does one machine fill in one hour? Reply with the number alone.
+word-06	word_problem	numeric	64	A square field has a perimeter of 32 metres. What is its area in square metres? Reply with the number alone.
+word-07	word_problem	numeric	35	A recipe for 4 people uses 280 grams of rice. How many grams are needed per person, if the amount scales linearly? Reply with the number alone.
+word-08	word_problem	numeric	26	A bus starts with 18 passengers. At the first stop 7 leave and 12 board; at the second stop 4 leave and 7 board. How many passengers are aboard? Reply with the number alone.
+word-09	word_problem	numeric	12	A rectangle is twice as long as it is wide and has a perimeter of 36 centimetres. What is its length in centimetres? Reply with the number alone.
+word-10	word_problem	numeric	2400	An investment of 2000 grows 10 percent in the first year and a further 9.0909 percent of the new amount in the second, rounded to the nearest whole unit. What is the final amount? Reply with the number alone.
+code-01	code	contains_any	off-by-one|<=|less than or equal|one past	In C, `for (int i = 0; i <= n; i++) sum += a[i];` over an array `a` of `n` elements has a defect. Name it in one sentence.
+code-02	code	contains_any	free|double free|use after free|dangling	In C, a function calls `free(p)` and then reads `p->next`. Name the defect in one sentence.
+code-03	code	contains_any	null|NULL|return value|check	In C, `FILE *f = fopen(path, "r"); fread(buf, 1, n, f);` has a defect on a missing file. Name it in one sentence.
+code-04	code	contains_any	sizeof|strlen|null terminator|nul|overflow	In C, `char b[8]; strcpy(b, argv[1]);` has a defect. Name it in one sentence.
+code-05	code	contains_any	EINTR|interrupt|partial|short read|loop	A POSIX `read(fd, buf, n)` returns a value smaller than `n` and the caller treats that as an error. Name the defect in one sentence.
+code-06	code	contains_any	stack|local|out of scope|dangling|automatic	In C, a function returns the address of a local array. Name the defect in one sentence.
+code-07	code	contains_any	uninitialized|indeterminate|garbage	In C, `int n; scanf("%d", n);` has two defects. Name the one about the argument in one sentence.
+code-08	code	contains_any	race|atomic|signal|volatile|async-signal	A POSIX signal handler writes a global `int` that the main loop reads without qualification. Name the defect in one sentence.
+code-09	code	contains_any	fork|zombie|wait|waitpid|reap	A POSIX program calls `fork` in a loop and never calls `wait`. Name the resulting defect in one sentence.
+code-10	code	contains_any	integer overflow|overflow|wrap|signed	In C, `int total = a * b;` where `a` and `b` are large `int` values has a defect. Name it in one sentence.
+fmt-01	format	json_keys	name|age	Reply with JSON alone, no prose and no code fence: an object with keys "name" set to "Ada" and "age" set to 36.
+fmt-02	format	json_keys	items	Reply with JSON alone, no prose and no code fence: an object with a key "items" holding the list 1, 2, 3.
+fmt-03	format	json_keys	city|country	Reply with JSON alone, no prose and no code fence: an object describing Oslo with keys "city" and "country".
+fmt-04	format	regex	^\s*(yes|no)\s*[.!]?\s*$	Is 12 divisible by 4? Answer with the single word yes or no and nothing else.
+fmt-05	format	regex	^\s*[A-D]\s*[.)]?\s*$	Which letter comes third in the alphabet? Answer with the single capital letter and nothing else.
+fmt-06	format	regex	^(\s*-[^\n]*\n?){3}$	List exactly three primary colours as a markdown bullet list, one per line, with no heading and no other text.
+fmt-07	format	json_keys	answer|confidence	Reply with JSON alone, no prose and no code fence: an object with keys "answer" holding the capital of France and "confidence" holding a number between 0 and 1.
+fmt-08	format	regex	^\s*\d{4}-\d{2}-\d{2}\s*$	What is the date one day after 2024-02-28, in a leap year? Reply in YYYY-MM-DD form and nothing else.
+fmt-09	format	contains_all	SELECT|FROM|WHERE	Write a single SQL statement selecting the column name from the table users where id equals 7. Reply with the statement alone.
+fmt-10	format	regex	^[^\n]*$	Summarize the purpose of a hash function in exactly one line with no line break.
+ctx-01	long_context	contains_all	7429	Read the passage and answer. The maintenance code for the north pump is 7429. What is the maintenance code for the north pump? Reply with the number alone.
+ctx-02	long_context	contains_all	basalt	Read the passage and answer. The sample from borehole four is basalt. Which rock type came from borehole four? Reply with the word alone.
+ctx-03	long_context	numeric	31	Read the passage and answer. Crew A logged 18 hours and crew B logged 13 hours. What is the total number of hours? Reply with the number alone.
+ctx-04	long_context	contains_all	kepler	Read the passage and answer. The instrument was named Kepler by the survey team. What name did the survey team give the instrument? Reply with the word alone.
+ctx-05	long_context	numeric	1962	Read the passage and answer. The station opened in 1962 and closed in 1988. In what year did the station open? Reply with the number alone.
+term-01	termination	nonempty		Is this statement true or false: this statement is false? Give your reading in at most three sentences.
+term-02	termination	nonempty		What is the largest prime number? Answer in at most two sentences.
+term-03	termination	nonempty		Count the number of letters r in the word strawberry and state the count.
+term-04	termination	nonempty		A barber shaves everyone who does not shave himself. Who shaves the barber? Answer in at most three sentences.
+term-05	termination	nonempty		Choose between two identical options, A and B, and state which you chose.
