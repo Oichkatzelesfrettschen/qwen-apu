@@ -199,6 +199,27 @@ Local math accuracy against the base is untested, and the publisher reports a
 gsm8k_cot fall from 0.850 to 0.785 alongside an mmlu CoT rise from 0.354 to
 0.553.
 
+`empero-ai/Qwen3.8-2B-Distill` is the same architecture at 24 layers and
+2048/6144, and it decodes at 9.46 tok/s against the 4B's 3.07. It streams 1.263
+GB per token at 11.95 GB/s where the 4B and the 9B both sit near 8.6, and the
+gap survives every explanation tried against it: the fitted 32-layer rate of
+9.69 GB/s would need 130.4 ms to move the 2B's bytes against a measured
+105.7 ms per token, so the 2B streams strictly faster rather than carrying less
+overhead.
+
+Every distill ships a multi-token-prediction block that decode never runs.
+`qwen35.nextn_predict_layers` is 1 and `block_count` counts it, so the 2B
+declares 25 blocks against 24 transformer layers.
+`llama_hparams::n_layer_effective` subtracts it, which leaves between 2.61% and
+2.88% of each file resident and idle. `common/speculative.cpp` drafts through
+`llama_set_embeddings_nextn`, so the mechanism that block feeds exists in the
+pinned build; whether it accepts a head carried inside the target GGUF rather
+than a downloaded sidecar is untested.
+
+`remote/gguf-tensor-census.py` reports these properties from the file, because
+a Q4_K_M label names a recipe rather than a layout: the 2B is 50.08% Q6_K by
+byte where the 9B is 32.59%.
+
 GGUF weights stay outside Git because their sizes exceed the LFS per-file
 limit. Each download script pins a Hugging Face revision, a byte count, and a
 SHA-256, and verifies an existing file in place.
