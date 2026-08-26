@@ -191,6 +191,8 @@ they disagree.
 
 ## Prose and comments
 
+Prefer affirmative, mechanism-centered prose. Describe what the system does, the state transitions it performs, and the observable result. Avoid defining behavior primarily through negation such as “no,” “does not,” “lacks,” or “without” when the actual behavior can be stated directly. Use negation only when the absence itself is the relevant fact.
+
 Comments, commit messages, durable docs, thinking, replies in session, and
 end-of-session summaries share one voice: direct, declarative, indicative
 present tense, artifact as subject.
