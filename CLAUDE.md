@@ -123,11 +123,14 @@ remote/compare-model-candidate.sh LABEL MODEL_PATH [PROFILE]
 remote/run-placement-sweep.sh [OUTPUT]
 remote/reasoning-span-probe.sh OUTPUT_JSON     # against a live server
 remote/summarize-probe.sh ~/qwen-webui-state/graphics-latency.log
+remote/run-rocm-vulkan-matrix.sh [OUTPUT]      # HIP against Vulkan, phase by phase
 
 # Rebuild llama.cpp and the static UI
 remote/build-llama-vulkan.sh                   # on the laptop, the required path
 remote/build-llama-on-workstation.sh           # optional, ships binaries over
 remote/build-llama-ui.sh                       # Node on the workstation
+remote/build-llama-dual.sh                     # Vulkan and HIP in one binary
+QWEN_FORCE_MMQ=ON remote/build-llama-dual.sh   # the MMQ kernel-policy arm
 
 # Hash-pinned model fetches
 remote/download-qwen35-4b-q4km.sh
@@ -146,6 +149,26 @@ remote/verify-llama-patch-series.sh
 
 `remote/test-fixtures/fake-llama-server.sh` stands in for the real server so a
 guard test runs without a GPU.
+
+## The HIP backend needs one variable to load a model at all
+
+`remote/build-llama-dual.sh` puts Vulkan and HIP in one binary, so
+`llama-bench --device` selects the backend and two rows differ by the backend
+rather than by the build. Every HIP invocation exports `HSA_ENABLE_SDMA=0`.
+Without it `llama_model_loader::load_all_data` parks in `hipEventSynchronize`
+and never returns: `evidence/rocm-h0-operational-failure.md` records a run that
+held that wait state for 51 minutes where the same binary completes in 19
+seconds.
+
+HIP measures 14.06 prefill and 2.22 decode tok/s on Qwen3.8-4B Distill Q4_K_M
+against RADV Vulkan's 21.49 and 3.10 in the same phase-split protocol, so the
+recorded falsification criterion is tested and unmet.
+
+The build requires TheRock rather than the distribution. Ubuntu Noble ships HIP
+5.7.31921 where `ggml/src/ggml-hip/CMakeLists.txt` requires 6.1, TheRock's
+headers collide with `/usr/include/hip` when the distribution packages are also
+installed, and its LLVM 24 selects GCC 14's libstdc++.
+`evidence/therock-sdk-manifest.tsv` pins the nightly that produced the rows.
 
 ## Models and projectors pair by directory
 
