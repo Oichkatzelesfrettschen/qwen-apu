@@ -53,20 +53,25 @@ and activation transfers while both sides draw on the one DDR4 controller, so
 the placements share a bandwidth domain instead of combining two.
 
 Sequential host read bandwidth measures 7.97 GB/s on one thread and 15.44 GB/s
-on two, while decode moves weights at
-roughly 7.8 GB/s, which places the two compute units at the single-thread
-figure. The guards cost nothing against this ceiling: 2.86 tok/s unconstrained
-against 2.87 tok/s served.
+on two. Those figures measure the two Zen+ cores through the load/store path,
+which is a different consumer of the one DDR4 controller than the two Vega
+compute units, so they bound nothing about the GPU and the device ceiling
+stays unmeasured. The guards cost nothing against whatever that ceiling is:
+2.86 tok/s unconstrained against 2.87 tok/s served.
 
-Two decode points fix a linear cost model of 0.158 s per token plus 0.0763 s
-per GiB of weights:
+Decode scales with checkpoint size, and a linear cost model over it is refuted.
+Two points, the 4B and the 9B, fit 0.1015 s per token plus 0.0869 s per GiB and
+predict 4.82 tok/s at 1.21 GiB; the 2B measures 9.46. The intercept absorbed
+depth-dependent overhead that a third depth exposes, so size predicts decode
+only within a narrow band around the fitted points and
+`evidence/qwen38-2b-distill-candidate.md` carries the refutation.
 
 | Checkpoint | weights | decode tok/s |
 | --- | ---: | ---: |
-| Qwen3.8-4B distill Q4_K_M | 2.58 GiB | 3.02 measured |
+| Qwen3.8-2B distill Q4_K_M | 1.21 GiB | 9.46 measured |
+| Qwen3.8-4B distill Q4_K_M | 2.58 GiB | 3.07 measured |
 | Qwen3.5-4B base Q4_K_M | 2.54 GiB | 2.84 measured |
 | Qwen3.8-9B distill Q4_K_M | 5.37 GiB | 1.76 measured |
-| Qwen3.8-27B UD-Q2_K_XL | 9.15 GiB | 1.17 predicted |
 
 ## The launch chain
 
