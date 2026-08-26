@@ -154,22 +154,38 @@ and both answer the arithmetic prompt correctly with 2 hours 45 minutes; they
 differ from the second token onward the way two greedy decodes differ once the
 argmax at one low-margin position goes the other way.
 
-The mechanism the code names is pipeline selection.
+### Pipeline selection was the hypothesis, and the deeper arms refute it
+
 `ggml_vk_get_dequantize_mul_mat_vec` indexes
 `pipeline_dequant_mul_mat_vec_f16_f32[wg_size][type][num_cols - 1]`, so a
 one-column pass and a two-column pass run different compiled shaders with
-different unrolling and different accumulation order. The speculative arm
-evaluates the target on a pipeline the unspeculated arm never uses, and greedy
-argmax is not stable across that difference where two logits are close.
+different unrolling and different accumulation order. That made column count the
+first candidate: the speculative arm evaluates the target on a pipeline the
+unspeculated arm never uses, and greedy argmax is unstable across such a
+difference where two logits are close.
 
-Two arms separate that hypothesis from its alternatives, and both are cheap.
-`S1b` repeats `S1` unchanged: the same `n_max` selects the same pipeline both
-times, so a reproducible divergence is consistent with pipeline selection and a
-random one refutes it. `S0c` sets `QWEN_SPEC_DRAFT_N_MAX=0` with `draft-mtp`
-still active, which loads the MTP block, creates the draft context, drafts
-nothing, and leaves the target verifying one column. If `S0c` reproduces `S0`
-exactly, column count is the whole cause and `load_mtp`'s effect on buffer
-layout is exonerated; if it diverges, the hypothesis is wrong.
+The arms already run refute it. `S1`, `S2`, and `S3` verify at two, three, and
+four columns, so each runs a different compiled shader. All three produce
+byte-identical 128-token sequences on all three prompts, and all three differ
+from the one-column result the same way. Different shaders agreeing to 128
+tokens on three prompts is not what independent rounding produces.
+
+The split is therefore between speculation off and speculation on, not between
+verification widths, and it is deterministic. What changes across that line is
+that `load_mtp` loads fifteen more tensors, a second context exists, and the
+target's token selection runs through the speculative accept-and-verify path
+rather than through the ordinary sampler. A different argmax tie-break between
+those two code paths reproduces every observation here, including why the code
+prompt survives three arms and the prose prompt diverges at index 1 in all of
+them: the prompts differ in where their first tied position falls, not in how
+much noise they accumulate.
+
+`S0c` separates the remaining candidates. It sets `QWEN_SPEC_DRAFT_N_MAX=0` with
+`draft-mtp` active, so the MTP block loads, the draft context exists, nothing is
+drafted, and the target verifies one column through the speculative path. A
+divergence there puts the cause in the load or the code path; a match puts it in
+drafting itself. `S1b` repeats `S1` unchanged to confirm the divergence is
+reproducible rather than merely deterministic within one process.
 
 The operational question this raises belongs to whoever sets the criterion. The
 stated rule is that speculative decoding must reproduce the target-only token
