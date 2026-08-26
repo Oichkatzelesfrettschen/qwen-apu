@@ -33,16 +33,13 @@ model_path=${QWEN_MODEL_PATH:-"${HOME:?}/models/Qwen3.8-4B-Distill-GGUF/Qwen3.8-
 # matches, which makes this line a no-op on every launch after the first.
 if [ ! -f "$model_path" ]; then
     fetch_script=''
-    case $model_path in
-        *Qwen3.8-4B-Distill-GGUF*)
-            fetch_script=$script_directory/download-qwen38-4b-distill-q4km.sh ;;
-        *Qwen3.5-4B-GGUF*)
-            fetch_script=$script_directory/download-qwen35-4b-q4km.sh ;;
-        *Qwen3.8-9B-Distill-GGUF*)
-            fetch_script=$script_directory/download-qwen38-9b-distill-q4km.sh ;;
-    esac
+    registry_fetch=$("$script_directory/model-registry.sh" path "$model_path" \
+        fetch_script 2>/dev/null) || registry_fetch=''
+    if [ -n "$registry_fetch" ]; then
+        fetch_script=$script_directory/$registry_fetch
+    fi
     if [ -z "$fetch_script" ] || [ ! -x "$fetch_script" ]; then
-        printf 'model is absent and no pinned fetch script matches it: %s\n' \
+        printf 'model is absent and remote/models.tsv holds no row for it: %s\n' \
             "$model_path" >&2
         exit 1
     fi
