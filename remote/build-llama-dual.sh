@@ -50,8 +50,16 @@ build_directory=${QWEN_BUILD_DIRECTORY:-$source_directory/build-qwen-dual-$build
 # subbuild's CMakeCache.txt records the absolute path it was created under.
 # Copying a configured tree to seed a second arm therefore carries a cache
 # naming the first arm's directory, and the subbuild refuses to configure
-# against it. Removing the prefix lets it regenerate while the compiled objects
-# beside it stay valid, which is what makes seeding by copy worth doing.
+# against it.
+#
+# Removing the prefix regenerates the generator and with it
+# `ggml-vulkan-shaders.hpp`, which every shader translation unit includes, so
+# the whole Vulkan backend recompiles. Those units are among the largest here
+# and GCC 13 has taken an internal compiler error in `mul_mm.comp.cpp` under
+# memory pressure on this machine, which makes copy-to-seed the expensive path
+# rather than the cheap one. Reconfiguring the existing tree with a different
+# GGML_CUDA_FORCE_MMQ rebuilds the HIP objects alone and leaves the Vulkan side
+# untouched; the arms then replace each other instead of coexisting.
 shader_generator_prefix=$build_directory/ggml/src/ggml-vulkan/vulkan-shaders-gen-prefix
 if [ -f "$shader_generator_prefix/src/vulkan-shaders-gen-build/CMakeCache.txt" ] &&
     ! grep -q "^CMAKE_CACHEFILE_DIR:INTERNAL=$shader_generator_prefix/" \

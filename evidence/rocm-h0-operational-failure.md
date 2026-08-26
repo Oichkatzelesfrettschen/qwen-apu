@@ -75,10 +75,11 @@ loop, two RADV disk-cache threads on futexes. Nothing is waiting on the host.
 
 `BusyWaitSignal` polls a signal value in userspace rather than sleeping on it,
 which is why a deadlocked process holds 99.3% of one of this machine's two
-cores. The 99% GPU busy reading belongs to the same stall: it falls to 0% the
-moment the process dies, and `gpu_busy_percent` counts work resident on the
+cores. The 99% GPU busy reading belongs to the same stall: sampled again after
+termination it reads 0%, and `gpu_busy_percent` counts work resident on the
 device rather than work completing, so a queue holding a packet that never
-retires reads the same as a queue doing useful arithmetic.
+retires reads the same as a queue doing useful arithmetic. The two samples
+bracket the kill rather than catching a transition.
 
 ## KFD userptr restore runs only during the ROCm run
 
