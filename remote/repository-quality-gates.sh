@@ -15,7 +15,7 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repository_root=$(CDPATH='' cd -- "$script_directory/.." && pwd)
 cd "$repository_root"
 
-for required_command in shellcheck ruff python3; do
+for required_command in bash shellcheck ruff python3; do
     if ! command -v "$required_command" >/dev/null 2>&1; then
         printf 'required quality-gate command is absent: %s\n' \
             "$required_command" >&2
@@ -25,7 +25,11 @@ done
 
 shell_files=$(find remote -type f -name '*.sh' -print | sort)
 for shell_file in $shell_files; do
-    sh -n "$shell_file"
+    IFS= read -r shebang <"$shell_file"
+    case $shebang in
+        *bash*) bash -n "$shell_file" ;;
+        *) sh -n "$shell_file" ;;
+    esac
 done
 # Warning-level diagnostics fail the gate. The repository treats warning drift
 # as a defect even where ShellCheck would return success at error level.
