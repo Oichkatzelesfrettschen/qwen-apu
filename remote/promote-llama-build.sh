@@ -56,17 +56,43 @@ if [ "$manifest_preset" != "$preset" ]; then
     exit 1
 fi
 
-# Every hashed object in the manifest must still hash to what the build
-# recorded, so a rebuild of one dependency under a promoted tree is caught here
-# rather than in a serving difference nobody attributes.
-manifest_drift=$(awk -F'\t' 'NF == 3 && $1 ~ /^\// { print $1 "\t" $3 }' "$manifest_path" |
-    while IFS="$(printf '\t')" read -r object_path recorded_digest; do
-        [ -f "$object_path" ] || { printf '%s missing\n' "$object_path"; continue; }
-        actual_digest=$(sha256sum "$object_path" | awk '{ print $1 }')
-        [ "$actual_digest" = "$recorded_digest" ] || printf '%s changed\n' "$object_path"
-    done)
+# Every hashed object in the manifest must still hash to what the build recorded,
+# so a rebuild of one dependency under a promoted tree is caught here rather than
+# in a serving difference nobody attributes. hash-load-closure.sh writes
+# `role<TAB>basename<TAB>bytes<TAB>sha256` and the objects sit beside the
+# executable, so the basename resolves against bin/.
+manifest_object_count=0
+manifest_drift=''
+while IFS="$(printf '\t')" read -r object_role object_name object_bytes object_digest; do
+    case $object_role in
+        executable | linked | loadable) ;;
+        *) continue ;;
+    esac
+    manifest_object_count=$((manifest_object_count + 1))
+    object_path=$build_directory/bin/$object_name
+    if [ ! -f "$object_path" ]; then
+        manifest_drift="$manifest_drift$object_name missing
+"
+        continue
+    fi
+    actual_bytes=$(stat -c %s "$object_path")
+    actual_digest=$(sha256sum "$object_path" | cut -d ' ' -f 1)
+    if [ "$actual_bytes" != "$object_bytes" ] || [ "$actual_digest" != "$object_digest" ]; then
+        manifest_drift="$manifest_drift$object_name changed
+"
+    fi
+done <"$manifest_path"
+
+# A manifest that names no hashable object would otherwise pass this gate
+# without checking anything, which is the failure mode the gate exists against.
+if [ "$manifest_object_count" -eq 0 ]; then
+    printf 'manifest names no executable, linked, or loadable object: %s\n' \
+        "$manifest_path" >&2
+    exit 1
+fi
+
 if [ -n "$manifest_drift" ]; then
-    printf 'manifest objects no longer match the build:\n%s\n' "$manifest_drift" >&2
+    printf 'manifest objects no longer match the build:\n%s' "$manifest_drift" >&2
     exit 1
 fi
 

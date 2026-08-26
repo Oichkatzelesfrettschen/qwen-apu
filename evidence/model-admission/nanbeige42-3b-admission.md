@@ -206,3 +206,32 @@ checkpoint that answers better at 2.38 tok/s remains a legitimate choice for
 work that is not interactive: the measurement sets the price, not the verdict.
 The published agent-benchmark evidence that prompted the test is the reason to
 run that suite rather than to skip it.
+
+## Depth prediction, recorded before the ladder ran
+
+Nanbeige holds 22 physical layers run twice, and every one of the 44 effective
+slots keeps its own KV index, against 8 full-attention layers in the 32-layer
+Qwen hybrid. Derived from two served logs, its cache costs 5.5 times the 4B
+distill's per token of context. Decode is bandwidth-bound in the depth term:
+each token attends over the whole cache, so the added per-token traffic is
+proportional to cache size and Nanbeige should lose decode about 5.5 times as
+fast per token of depth as the 4B.
+
+Expressed as the fraction of shallow decode retained at a given depth, with the
+4B measured alongside as the control that makes the ratio a comparison rather
+than an assertion, the prediction is that
+
+    (1 - retained_nanbeige) / (1 - retained_qwen4b)
+
+lands near 5.5 at both 4096 and 16384. The falsifier is a ratio below 3 or above
+9 at either depth: below 3 refutes the claim that slot count sets the depth cost
+and points at cache layout or attention kernel instead, and above 9 refutes
+proportionality and says the deeper cache costs superlinearly.
+
+The row measures `llama-bench` at `-ngl 99 -t 2 -r 3 -p 0 -n 64` over depths 0,
+4096, and 16384, which is f16 KV with flash attention off. The served path
+quantizes both caches with `--cache-type-k q8_0 --cache-type-v q4_0` and enables
+flash attention, so this ladder supports the relative claim between two models
+given identical treatment and supports no statement about served depth. A
+CPU-buffer fallback at 16384 would read as degradation, so the loader's
+allocation lines are checked before the ratio is computed.
