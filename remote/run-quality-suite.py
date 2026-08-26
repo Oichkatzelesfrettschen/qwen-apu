@@ -94,11 +94,27 @@ def grade(row, reply):
     return False, f"unknown grader {kind}"
 
 
+NEEDLE_SEPARATOR = " ||| "
+
+
 def pad_prompt(prompt, depth_characters):
+    """Bury the fact inside the filler and leave the question at the end.
+
+    A long_context row states its fact before ` ||| ` and its question after.
+    Filler goes on both sides of the fact, so the model reads the fact, then a
+    long stretch of irrelevant text, then the question. Placing the filler
+    before an intact fact-and-question pair measures answering after a long
+    prefix, which every candidate passes and which is not retrieval.
+    """
+    fact, separator, question = prompt.partition(NEEDLE_SEPARATOR)
+    if not separator:
+        fact, question = "", prompt
     if depth_characters <= 0:
-        return prompt
-    repeats = depth_characters // len(FILLER_SENTENCE) + 1
-    return FILLER_SENTENCE * repeats + prompt
+        return (fact + " " + question).strip()
+    half = max(depth_characters // 2, len(FILLER_SENTENCE))
+    repeats = half // len(FILLER_SENTENCE) + 1
+    filler = FILLER_SENTENCE * repeats
+    return (filler + fact.strip() + " " + filler + question.strip()).strip()
 
 
 def request(endpoint, api_key, prompt, max_tokens, thinking, timeout):

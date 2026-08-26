@@ -103,7 +103,7 @@ run_cell() {
         # `value +/- error`, so the first field of that column is the rate and
         # the second is its spread. Stripping every non-digit joins the two into
         # one number that looks like a rate and is not one.
-        decode=$(awk -F'|' '$0 ~ /\| *tg[0-9]+ *\|/ {
+        decode=$(awk -F'|' '$0 ~ /\| *tg[0-9]+( @ d[0-9]+)? *\|/ {
                                 split($(NF - 1), parts, /[^0-9.]+/)
                                 for (i = 1; i <= 3; i++) {
                                     if (parts[i] != "") { rate = parts[i]; break }

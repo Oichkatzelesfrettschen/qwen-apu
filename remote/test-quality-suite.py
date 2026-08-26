@@ -73,12 +73,56 @@ for row in rows:
         print(f"{row['id']}: empty prompt", file=sys.stderr)
         failures += 1
 
-# The filler reaches the requested length and leaves the question last, which is
-# what makes a long-context row a retrieval test rather than a longer prompt.
-padded = module.pad_prompt("QUESTION", 4000)
-if len(padded) < 4000 or not padded.endswith("QUESTION"):
+# The fact lands inside the filler and the question lands last, which is what
+# makes a long-context row a retrieval test rather than a longer prompt. A fact
+# left adjacent to its question is answerable from the final sentence alone.
+padded = module.pad_prompt("FACT ||| QUESTION", 4000)
+if len(padded) < 4000:
     print(f"padding produced {len(padded)} characters", file=sys.stderr)
     failures += 1
+if not padded.endswith("QUESTION"):
+    print("padding left the question away from the end", file=sys.stderr)
+    failures += 1
+if "FACT QUESTION" in padded or padded.index("FACT") > padded.index("QUESTION"):
+    print("padding left the fact adjacent to the question", file=sys.stderr)
+    failures += 1
+gap = padded.index("QUESTION") - (padded.index("FACT") + len("FACT"))
+if gap < 1000:
+    print(f"padding left only {gap} characters between fact and question",
+          file=sys.stderr)
+    failures += 1
+if module.pad_prompt("FACT ||| QUESTION", 0) != "FACT QUESTION":
+    print("unpadded long-context prompt kept its separator", file=sys.stderr)
+    failures += 1
+
+# Every long_context row must carry the separator, or its fact stays welded to
+# its question and the category silently stops testing retrieval.
+for row in rows:
+    if row["category"] == "long_context" and module.NEEDLE_SEPARATOR not in row["prompt"]:
+        print(f"{row['id']}: long_context row holds no fact separator",
+              file=sys.stderr)
+        failures += 1
+
+# A grader that accepts a reply carrying no answer is a no-op, and a no-op
+# grader reports a perfect candidate. Every row except the termination category,
+# which grades presence rather than content, must refuse this.
+REFUSAL = "I am not able to answer that question right now."
+for row in rows:
+    if row["grader"] == "nonempty":
+        continue
+    passed, reason = module.grade(row, REFUSAL)
+    if passed:
+        print(f"{row['id']}: grader {row['grader']} accepted a reply with no "
+              f"answer ({reason})", file=sys.stderr)
+        failures += 1
+
+# `$` under re.MULTILINE matches at every line end, so an unanchored pattern
+# accepts a compliant line inside a reply that violated the instruction.
+for row in rows:
+    if row["grader"] == "regex" and not row["expectation"].startswith("\\A"):
+        print(f"{row['id']}: regex expectation is not anchored at \\A",
+              file=sys.stderr)
+        failures += 1
 
 if failures:
     print(f"quality_suite_grader=rejected failures={failures}", file=sys.stderr)
