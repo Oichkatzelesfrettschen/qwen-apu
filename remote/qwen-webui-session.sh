@@ -203,6 +203,13 @@ printf 'state=running server_pid=%s monitor_pid=%s latency_watchdog_pid=%s kerne
     "${QWEN_BIND_HOST:-127.0.0.1}" "$server_port" "$context_size" \
     "$latency_probe_mode" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
+# The speculation settings occupy a second line because the control script and
+# the teardown script both read the first line alone, the teardown to recover
+# the guard PIDs before `stop` rewrites the file.
+printf 'speculation spec_type=%s draft_n_max=%s draft_p_min=%s draft_backend_sampling=%s backend_sampling=%s\n' \
+    "${QWEN_SPEC_TYPE:-off}" "${QWEN_SPEC_DRAFT_N_MAX:-default}" \
+    "${QWEN_SPEC_DRAFT_P_MIN:-default}" \
+    "${QWEN_SPEC_BACKEND_SAMPLING:-0}" "${QWEN_BACKEND_SAMPLING:-0}" >>"$status_file"
 
 set +e
 wait "$server_pid"

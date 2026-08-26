@@ -13,6 +13,7 @@ server_port=${4:-8080}
 static_path=${5:-}
 api_key_file=${6:-}
 
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 bind_host=${QWEN_BIND_HOST:-127.0.0.1}
 cors_origins=${QWEN_CORS_ORIGINS:-localhost}
 
@@ -55,9 +56,20 @@ if [ "$context_size" -eq 0 ]; then
     exit 2
 fi
 
-maximum_context_size=24576
+# The admitted depth is a property of the checkpoint rather than of the
+# appliance: KV cost scales with full-attention layer count and key-value head
+# width, so the 9B pays more per token of context than the 2B at the same
+# depth. remote/models.tsv carries one ceiling per row and this gate reads it.
+# A checkpoint outside the registry keeps the depth that the 24K allocation of
+# 2,974 MiB was measured against.
+registry_ceiling=$("$script_directory/model-registry.sh" path "$model_path" \
+    context_ceiling 2>/dev/null) || registry_ceiling=''
+case $registry_ceiling in
+    '' | *[!0-9]*) registry_ceiling=24576 ;;
+esac
+maximum_context_size=$registry_ceiling
 if [ "$context_size" -gt "$maximum_context_size" ]; then
-    printf 'context size exceeds operational maximum: %s > %s\n' \
+    printf 'context size exceeds the registered ceiling for this model: %s > %s\n' \
         "$context_size" "$maximum_context_size" >&2
     exit 2
 fi
@@ -88,8 +100,6 @@ if env | awk -F= '$1 ~ /^LLAMA_ARG_/ { found = 1 } END { exit !found }'; then
     printf 'LLAMA_ARG_* environment overrides are forbidden by the fixed policy\n' >&2
     exit 2
 fi
-
-script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 
 set -- "$llama_server" \
     --model "$model_path" \
@@ -126,6 +136,72 @@ if [ -n "${QWEN_MMPROJ:-}" ]; then
     if [ -n "${QWEN_IMAGE_MAX_TOKENS:-}" ]; then
         set -- "$@" --image-max-tokens "$QWEN_IMAGE_MAX_TOKENS"
     fi
+fi
+
+# Speculation is a policy argument rather than an ambient override, so the four
+# variables below are the whole surface and LLAMA_ARG_* stays refused above.
+# draft-mtp needs no second checkpoint: common_speculative_init_result takes the
+# `else if (spec_mtp)` branch and builds the draft context against the target
+# model, and llama_model::create_memory filters the MTP KV cache to
+# `il >= hparams.n_layer()`, so the draft cache holds the one appended NextN
+# block. The 4B distill carries that block at 37,767,168 bytes, which the
+# ordinary load reports as an unused tensor and skips.
+spec_type=${QWEN_SPEC_TYPE:-}
+if [ -n "$spec_type" ]; then
+    case $spec_type in
+        draft-mtp | ngram-simple | ngram-map-k | ngram-map-k4v | ngram-mod | ngram-cache) ;;
+        *)
+            printf 'speculation type must be draft-mtp or an ngram type: %s\n' \
+                "$spec_type" >&2
+            exit 2
+            ;;
+    esac
+    set -- "$@" --spec-type "$spec_type"
+
+    spec_draft_n_max=${QWEN_SPEC_DRAFT_N_MAX:-}
+    if [ -n "$spec_draft_n_max" ]; then
+        case $spec_draft_n_max in
+            '' | *[!0-9]*)
+                printf 'draft length must be a non-negative integer: %s\n' \
+                    "$spec_draft_n_max" >&2
+                exit 2
+                ;;
+        esac
+        # A draft of N tokens makes the target emit N+1 output positions in one
+        # pass, and common_speculative_get_output_limits clamps that count to
+        # the batch size. Sixteen keeps the product inside the 128-token batch
+        # this policy sets.
+        if [ "$spec_draft_n_max" -gt 16 ]; then
+            printf 'draft length exceeds operational maximum: %s > 16\n' \
+                "$spec_draft_n_max" >&2
+            exit 2
+        fi
+        set -- "$@" --spec-draft-n-max "$spec_draft_n_max"
+    fi
+
+    spec_draft_p_min=${QWEN_SPEC_DRAFT_P_MIN:-}
+    if [ -n "$spec_draft_p_min" ]; then
+        case $spec_draft_p_min in
+            *[!0-9.]* | '' | *.*.*)
+                printf 'draft probability floor must be a decimal fraction: %s\n' \
+                    "$spec_draft_p_min" >&2
+                exit 2
+                ;;
+        esac
+        set -- "$@" --spec-draft-p-min "$spec_draft_p_min"
+    fi
+
+    if [ "${QWEN_SPEC_BACKEND_SAMPLING:-0}" = 1 ]; then
+        set -- "$@" --spec-draft-backend-sampling
+    fi
+fi
+
+# Backend sampling moves the supported sampler chain onto the device. This
+# vocabulary is 248,320 entries wide, so the transfer it removes is the largest
+# per-token host copy the server makes. It is experimental in the pinned build,
+# which is why it is a variable rather than the default.
+if [ "${QWEN_BACKEND_SAMPLING:-0}" = 1 ]; then
+    set -- "$@" --backend-sampling
 fi
 
 set -- "$@" \
