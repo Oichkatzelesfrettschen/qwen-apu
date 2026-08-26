@@ -189,7 +189,14 @@ if [ -n "$spec_type" ]; then
         set -- "$@" --spec-draft-n-max "$spec_draft_n_max"
     fi
 
+    # p_min gates drafting rather than acceptance: common/speculative.cpp reads
+    # llama_get_embeddings_nextn and breaks out of the draft loop when the
+    # head's confidence falls below it, so a floor of 1 leaves the MTP block
+    # loaded and the draft context built while no draft reaches the target.
     spec_draft_p_min=${QWEN_SPEC_DRAFT_P_MIN:-}
+    if [ "$spec_draft_p_min" = 0 ]; then
+        spec_draft_p_min=''
+    fi
     if [ -n "$spec_draft_p_min" ]; then
         case $spec_draft_p_min in
             *[!0-9.]* | '' | *.*.*)

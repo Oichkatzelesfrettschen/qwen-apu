@@ -23,14 +23,14 @@ fi
 # The first arm is the baseline the token-identity column compares against, so
 # an invocation that names its own arms names an unspeculated one first.
 if [ "$#" -eq 0 ]; then
-    set -- S0:none:0:0:0 S1:draft-mtp:1:0:0
+    set -- S0:none:0:0:0:0 S1:draft-mtp:1:0:0:0
 fi
 
 for arm in "$@"; do
     field_count=$(printf '%s\n' "$arm" | awk -F: '{ print NF }')
-    if [ "$field_count" -ne 5 ]; then
+    if [ "$field_count" -ne 6 ]; then
         printf 'usage: %s [OUTPUT_DIRECTORY [ARM ...]]\n' "$0" >&2
-        printf 'ARM is LABEL:SPEC_TYPE:N_MAX:BACKEND_SAMPLING:DRAFT_BACKEND_SAMPLING, got %s\n' \
+        printf 'ARM is LABEL:SPEC_TYPE:N_MAX:BACKEND_SAMPLING:DRAFT_BACKEND_SAMPLING:P_MIN, got %s\n' \
             "$arm" >&2
         exit 2
     fi
@@ -75,6 +75,7 @@ run_arm() {
     arm_n_max=$3
     arm_backend_sampling=$4
     arm_draft_backend_sampling=$5
+    arm_p_min=$6
     arm_directory=$output_directory/$arm_label
 
     mkdir -p "$arm_directory"
@@ -89,6 +90,7 @@ run_arm() {
     QWEN_SPEC_DRAFT_N_MAX=$arm_n_max \
     QWEN_BACKEND_SAMPLING=$arm_backend_sampling \
     QWEN_SPEC_BACKEND_SAMPLING=$arm_draft_backend_sampling \
+    QWEN_SPEC_DRAFT_P_MIN=$arm_p_min \
         "$script_directory/qwen-launch.sh" "$profile" \
         >"$arm_directory/launch.txt" 2>&1 || {
             cat "$arm_directory/launch.txt" >&2
@@ -121,9 +123,9 @@ run_arm() {
     "$script_directory/qwen-teardown.sh" >"$arm_directory/teardown.txt" 2>&1 || true
 
     cp "$state_directory/server.log" "$arm_directory/server.log" 2>/dev/null || true
-    printf 'label=%s spec_type=%s n_max=%s backend_sampling=%s draft_backend_sampling=%s\n' \
+    printf 'label=%s spec_type=%s n_max=%s backend_sampling=%s draft_backend_sampling=%s p_min=%s\n' \
         "$arm_label" "$arm_spec_type" "$arm_n_max" \
-        "$arm_backend_sampling" "$arm_draft_backend_sampling" \
+        "$arm_backend_sampling" "$arm_draft_backend_sampling" "$arm_p_min" \
         >"$arm_directory/arm.txt"
 }
 
@@ -135,12 +137,14 @@ for arm in "$@"; do
     arm_n_max=${arm_rest%%:*}
     arm_rest=${arm_rest#*:}
     arm_backend_sampling=${arm_rest%%:*}
-    arm_draft_backend_sampling=${arm_rest#*:}
+    arm_rest=${arm_rest#*:}
+    arm_draft_backend_sampling=${arm_rest%%:*}
+    arm_p_min=${arm_rest#*:}
 
     printf 'arm_start label=%s spec_type=%s n_max=%s\n' \
         "$arm_label" "$arm_spec_type" "$arm_n_max"
     run_arm "$arm_label" "$arm_spec_type" "$arm_n_max" \
-        "$arm_backend_sampling" "$arm_draft_backend_sampling"
+        "$arm_backend_sampling" "$arm_draft_backend_sampling" "$arm_p_min"
     printf 'arm_done label=%s\n' "$arm_label"
 done
 
