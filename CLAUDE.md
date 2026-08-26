@@ -210,11 +210,13 @@ overhead.
 Every distill ships a multi-token-prediction block that decode never runs.
 `qwen35.nextn_predict_layers` is 1 and `block_count` counts it, so the 2B
 declares 25 blocks against 24 transformer layers.
-`llama_hparams::n_layer_effective` subtracts it, which leaves between 2.61% and
-2.88% of each file resident and idle. `common/speculative.cpp` drafts through
-`llama_set_embeddings_nextn`, so the mechanism that block feeds exists in the
-pinned build; whether it accepts a head carried inside the target GGUF rather
-than a downloaded sidecar is untested.
+`llama_hparams::n_layer_effective` subtracts it, and the loader reports each of
+its tensors as `model has unused tensor ... -- ignoring`, so it never reaches
+device memory: 37,767,168 bytes on the 2B, which matches the census exactly. The
+block costs download and disk alone, between 2.61% and 2.88% of each file.
+`--spec-type` accepts `draft-mtp` and `common/speculative.cpp` drafts through
+`llama_set_embeddings_nextn`, so the mechanism exists while this build declines
+the head these checkpoints carry.
 
 `remote/gguf-tensor-census.py` reports these properties from the file, because
 a Q4_K_M label names a recipe rather than a layout: the 2B is 50.08% Q6_K by

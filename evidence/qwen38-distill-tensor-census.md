@@ -16,8 +16,11 @@ against 32. The extra block holds a complete layer -- `attn_q`, `attn_k`,
 `nextn.eh_proj`, `nextn.enorm`, `nextn.hnorm`, and `nextn.shared_head_norm`.
 
 `llama_hparams::n_layer_effective` returns `n_layer_all - n_layer_nextn`, so
-decode never runs it. The block is a speculative-decoding draft head that the
-serving path loads and leaves idle:
+decode never runs it, and the loader goes further: it prints `model has unused
+tensor blk.24.<name> -- ignoring` for all fifteen of the 2B's and never
+allocates them. The ignored total is 37,767,168 bytes, which matches this
+census to the byte and cross-checks the census against the runtime. The block
+is a speculative-decoding draft head that costs download and disk alone:
 
 | Checkpoint | MTP block | share of file |
 | --- | ---: | ---: |
@@ -26,11 +29,16 @@ serving path loads and leaves idle:
 | Qwen3.8-9B distill | 150,980,608 | 2.61% |
 
 `common/speculative.cpp` implements MTP drafting against
-`llama_set_embeddings_nextn` and `llama_get_embeddings_nextn_ith`, and
-`--spec-type` selects a draft type on the server, so the mechanism the block
-feeds is present in the pinned build. Whether it accepts a head carried inside
-the target GGUF rather than a downloaded sidecar is untested; `--mtp` in
-`common/arg.cpp` is a download option and belongs to `LLAMA_EXAMPLE_DOWNLOAD`.
+`llama_set_embeddings_nextn` and `llama_get_embeddings_nextn_ith`, and the
+server's `--spec-type` accepts `draft-mtp` among `none`, `draft-simple`,
+`draft-eagle3`, `draft-dflash`, `draft-dspark`, and five n-gram modes. The
+mechanism is therefore present while this build declines the head these
+checkpoints carry, and `--mtp` in `common/arg.cpp` downloads a sidecar rather
+than reading one in place, belonging to `LLAMA_EXAMPLE_DOWNLOAD`. Whether
+`draft-mtp` can be pointed at a head extracted from the target GGUF is the
+untested question, and it is the only measured path left toward 4.5 tok/s on
+the 4B, since the 4B is already at the per-byte rate its 32-layer neighbour
+sustains.
 
 ## Embedding tying splits the three, and the type assignment was mis-estimated
 
@@ -60,14 +68,16 @@ block in every case, and `token_embd` where an untied `output.weight` exists.
 The two 32-layer checkpoints agree to 6.7% across a 1.9-fold span in streamed
 bytes, and the 2B runs 34.6% above the 9B and 44.3% above the 4B.
 
-The 2B result is not an overhead difference, and the arithmetic that shows it
-needs no model. Fitting per-layer and per-byte terms to the two 32-layer points
-gives 9.69 GB/s and 1.474 ms per layer. The 2B's entire per-token budget is
-105.7 ms, while streaming its 1.263 GB at 9.69 GB/s would take 130.4 ms before
-any per-layer cost at all. The 2B therefore streams strictly faster than the
-rate the 32-layer pair sustains, and no reduction in fixed overhead can produce
-that. The fitted model predicts 6.03 tok/s against 9.46 measured, which is the
-second cost model this checkpoint refutes.
+The 11.95 against 8.28 and 8.88 GB/s is the result, and it rests on measured
+bytes and measured tokens per second alone. A corollary sharpens it without
+adding evidence: fitting per-layer and per-byte terms to the two 32-layer
+points is an exact solve rather than a measurement, having two parameters and
+two points, and it returns 9.69 GB/s and 1.474 ms per layer. Read as a
+description of those two checkpoints, streaming the 2B's 1.263 GB at their rate
+would take 130.4 ms against a measured 105.7 ms per token, so the 2B exceeds
+that rate before any per-layer cost is counted. The same solve predicts 6.03
+tok/s against 9.46 measured, which is the second cost model this checkpoint
+refutes.
 
 ## The quantization mixture argues against itself
 
