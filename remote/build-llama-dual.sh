@@ -46,6 +46,21 @@ case $force_mmq in
 esac
 build_directory=${QWEN_BUILD_DIRECTORY:-$source_directory/build-qwen-dual-$build_suffix}
 
+# ggml builds its Vulkan shader compiler as a nested ExternalProject, and that
+# subbuild's CMakeCache.txt records the absolute path it was created under.
+# Copying a configured tree to seed a second arm therefore carries a cache
+# naming the first arm's directory, and the subbuild refuses to configure
+# against it. Removing the prefix lets it regenerate while the compiled objects
+# beside it stay valid, which is what makes seeding by copy worth doing.
+shader_generator_prefix=$build_directory/ggml/src/ggml-vulkan/vulkan-shaders-gen-prefix
+if [ -f "$shader_generator_prefix/src/vulkan-shaders-gen-build/CMakeCache.txt" ] &&
+    ! grep -q "^CMAKE_CACHEFILE_DIR:INTERNAL=$shader_generator_prefix/" \
+        "$shader_generator_prefix/src/vulkan-shaders-gen-build/CMakeCache.txt"
+then
+    printf 'shader_generator_cache=stale removing=%s\n' "$shader_generator_prefix"
+    rm -rf "$shader_generator_prefix"
+fi
+
 [ -d "$source_directory/.git" ] || {
     printf 'llama.cpp checkout is missing: %s\n' "$source_directory" >&2
     exit 1
