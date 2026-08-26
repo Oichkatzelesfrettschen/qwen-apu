@@ -26,6 +26,7 @@ model_path=$1
 output_directory=${2:-"${HOME:?}/qwen-kv-cache-factorial"}
 bench=${QWEN_LLAMA_BENCH:-"${HOME:?}/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-bench"}
 depths=${QWEN_FACTORIAL_DEPTHS:-"0 4096 16384"}
+QWEN_CELL_SUFFIX=''
 generate_tokens=${QWEN_BENCH_GENERATE:-64}
 # A rung reprocesses its whole prefix before each repetition, so at 23 tok/s of
 # prefill a 16384 rung costs 12 minutes per repetition against 21 seconds of
@@ -58,7 +59,7 @@ done
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 mkdir -p "$output_directory"
 summary=$output_directory/factorial-summary.tsv
-printf 'depth\tcache_type_k\tcache_type_v\tflash_attn\trepetitions\tdecode_tok_s\tstatus\tring_resets\tmclk_mhz_modal\ttemp_c_max\n' \
+printf 'cell\tdepth\tcache_type_k\tcache_type_v\tflash_attn\trepetitions\tdecode_tok_s\tstatus\tring_resets\tmclk_mhz_modal\ttemp_c_max\n' \
     >"$summary"
 
 # amdgpu logs one line per ring reset and this kernel leaves dmesg readable at
@@ -84,7 +85,7 @@ run_cell() {
     else
         cell_repetitions=$deep_repetitions
     fi
-    cell_label=d$cell_depth-k$cell_type_k-v$cell_type_v-fa$cell_flash
+    cell_label=d$cell_depth-k$cell_type_k-v$cell_type_v-fa$cell_flash${QWEN_CELL_SUFFIX:-}
     cell_log=$output_directory/$cell_label.log
     reset_before=$(read_reset_count)
     cell_samples=$output_directory/$cell_label.clocks.tsv
@@ -137,8 +138,8 @@ run_cell() {
             }
             printf "%s\t%.1f", (samples ? modal : "n/a"), temp_max / 1000
         }' "$cell_samples")
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$cell_depth" "$cell_type_k" "$cell_type_v" "$cell_flash" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$cell_label" "$cell_depth" "$cell_type_k" "$cell_type_v" "$cell_flash" \
         "$cell_repetitions" "$decode" "$cell_status" "$resets" \
         "$clock_report" >>"$summary"
     printf 'cell_stop_utc=%s label=%s status=%s decode=%s ring_resets=%s clocks=%s\n' \
@@ -157,6 +158,13 @@ for depth in $depths; do
     run_cell "$depth" q8_0 f16 off
     run_cell "$depth" f16 f16 on
     run_cell "$depth" f16 f16 off
+    # The first cell runs again last. Cell order is fixed, so thermal and DPM
+    # state correlate with cell identity, and a block whose bracketing pair
+    # disagrees cannot support a comparison between the cells inside it. The
+    # repeat measures that drift instead of leaving it to be assumed absent.
+    QWEN_CELL_SUFFIX=-repeat
+    run_cell "$depth" q8_0 q4_0 on
+    QWEN_CELL_SUFFIX=''
 done
 
 printf 'kv_cache_factorial=completed output_directory=%s\n' "$output_directory"
