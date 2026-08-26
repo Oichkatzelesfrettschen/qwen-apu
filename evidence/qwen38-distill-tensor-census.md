@@ -16,11 +16,15 @@ against 32. The extra block holds a complete layer -- `attn_q`, `attn_k`,
 `nextn.eh_proj`, `nextn.enorm`, `nextn.hnorm`, and `nextn.shared_head_norm`.
 
 `llama_hparams::n_layer_effective` returns `n_layer_all - n_layer_nextn`, so
-decode never runs it, and the loader goes further: it prints `model has unused
-tensor blk.24.<name> -- ignoring` for all fifteen of the 2B's and never
-allocates them. The ignored total is 37,767,168 bytes, which matches this
-census to the byte and cross-checks the census against the runtime. The block
-is a speculative-decoding draft head that costs download and disk alone:
+ordinary decode never runs it, and the loader goes further: `src/models/qwen35.cpp`
+sets `mtp_flags = !ml.load_mtp ? TENSOR_SKIP : 0`, so a load that leaves
+`load_mtp` false prints `model has unused tensor blk.24.<name> -- ignoring` for
+all fifteen of the 2B's and never allocates them. The ignored total is
+37,767,168 bytes, which matches this census to the byte and cross-checks the
+census against the runtime. That skip is conditional on the speculation
+setting, not a property of the file: `--spec-type draft-mtp` sets `load_mtp`
+and the same block reaches device memory. Where it stays skipped it costs
+download and disk alone:
 
 | Checkpoint | MTP block | share of file |
 | --- | ---: | ---: |
@@ -28,16 +32,23 @@ is a speculative-decoding draft head that costs download and disk alone:
 | Qwen3.8-4B distill | 74,641,408 | 2.68% |
 | Qwen3.8-9B distill | 150,980,608 | 2.61% |
 
-`common/speculative.cpp` implements MTP drafting against
-`llama_set_embeddings_nextn` and `llama_get_embeddings_nextn_ith`, and the
-server's `--spec-type` accepts `draft-mtp` among `none`, `draft-simple`,
-`draft-eagle3`, `draft-dflash`, `draft-dspark`, and five n-gram modes. The
-mechanism is therefore present while this build declines the head these
-checkpoints carry, and `--mtp` in `common/arg.cpp` downloads a sidecar rather
-than reading one in place, belonging to `LLAMA_EXAMPLE_DOWNLOAD`. Whether
-`draft-mtp` can be pointed at a head extracted from the target GGUF is the
-untested question, and it is the only measured path left toward 4.5 tok/s on
-the 4B, since the 4B is already at the per-byte rate its 32-layer neighbour
+The pinned build runs this head in place, and reading the chain settles a
+question an earlier revision of this file left open. `common/common.cpp` sets
+`mparams.load_mtp` when `params.speculative.types` contains
+`COMMON_SPECULATIVE_TYPE_DRAFT_MTP`, so the target model loads the appended
+block. `common_speculative_init_result` then branches on `else if (spec_mtp)`
+and calls `llama_init_from_model(model_tgt, cparams)` with
+`cparams.ctx_type = LLAMA_CONTEXT_TYPE_MTP`, so the draft context runs against
+the target model itself and `-md` stays unused.
+`llama_model::create_memory` filters that context's KV cache with
+`il >= hparams.n_layer()`, so the draft cache holds the one appended block
+rather than a second copy of the trunk, and `src/models/qwen35.cpp` builds the
+`LLM_GRAPH_TYPE_DECODER_MTP` graph for the Qwen3.5 dense series these distills
+declare. Extracting the head into a sidecar is therefore unnecessary; `--mtp`
+in `common/arg.cpp` downloads one and belongs to `LLAMA_EXAMPLE_DOWNLOAD`.
+`remote/run-speculation-matrix.sh` measures what the head buys, and it is the
+path left toward 4.5 tok/s on the 4B that leaves the target distribution
+unchanged, since the 4B is already at the per-byte rate its 32-layer neighbour
 sustains.
 
 ## Embedding tying splits the three, and the type assignment was mis-estimated

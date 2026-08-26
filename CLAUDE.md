@@ -214,16 +214,26 @@ gap survives every explanation tried against it: the fitted 32-layer rate of
 105.7 ms per token, so the 2B streams strictly faster rather than carrying less
 overhead.
 
-Every distill ships a multi-token-prediction block that decode never runs.
-`qwen35.nextn_predict_layers` is 1 and `block_count` counts it, so the 2B
-declares 25 blocks against 24 transformer layers.
-`llama_hparams::n_layer_effective` subtracts it, and the loader reports each of
-its tensors as `model has unused tensor ... -- ignoring`, so it never reaches
-device memory: 37,767,168 bytes on the 2B, which matches the census exactly. The
-block costs download and disk alone, between 2.61% and 2.88% of each file.
-`--spec-type` accepts `draft-mtp` and `common/speculative.cpp` drafts through
-`llama_set_embeddings_nextn`, so the mechanism exists while this build declines
-the head these checkpoints carry.
+Every distill ships a multi-token-prediction block that the speculation setting
+decides the fate of. `qwen35.nextn_predict_layers` is 1 and `block_count` counts
+it, so the 2B declares 25 blocks against 24 transformer layers.
+`llama_hparams::n_layer_effective` subtracts it from the trunk, and
+`src/models/qwen35.cpp` sets `mtp_flags = !ml.load_mtp ? TENSOR_SKIP : 0`, so an
+ordinary load reports each of its tensors as `model has unused tensor ... --
+ignoring` and skips 37,767,168 bytes on the 2B, matching the census exactly.
+That block costs download and disk alone, between 2.61% and 2.88% of each file,
+until `--spec-type draft-mtp` sets `load_mtp` and loads it.
+
+The head runs in place. `common/common.cpp` sets `mparams.load_mtp` from
+`params.speculative.types`, `common_speculative_init_result` takes its
+`else if (spec_mtp)` branch and builds the draft context against the target
+model with `cparams.ctx_type = LLAMA_CONTEXT_TYPE_MTP`, and
+`llama_model::create_memory` filters that context's KV cache to
+`il >= hparams.n_layer()`, so the draft cache holds the appended block rather
+than a second trunk. `QWEN_SPEC_TYPE`, `QWEN_SPEC_DRAFT_N_MAX`,
+`QWEN_SPEC_DRAFT_P_MIN`, `QWEN_SPEC_BACKEND_SAMPLING`, and
+`QWEN_BACKEND_SAMPLING` carry those settings through the tmux boundary into
+`qwen-capacity-policy.sh`, which keeps `LLAMA_ARG_*` refused.
 
 `remote/gguf-tensor-census.py` reports these properties from the file, because
 a Q4_K_M label names a recipe rather than a layout: the 2B is 50.08% Q6_K by
