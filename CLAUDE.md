@@ -8,11 +8,12 @@ This file holds the repository doctrine and wins inside this tree.
 ## The repository runs on two machines
 
 The Git tree lives on the workstation. The runtime lives on a Raven2 laptop
-reachable as `hp14-dk1xxx.local` over cached SSH credentials. Editing a script
-here changes nothing on the laptop until it is copied:
+reached over SSH. `qwen-laptop` stands for that host throughout this
+repository, and a working copy substitutes its own name. Editing a script here
+changes nothing on the laptop until it is copied:
 
 ```sh
-rsync -a remote/ eirikr@hp14-dk1xxx.local:~/qwen-laptop-setup/remote/
+rsync -a remote/ eirikr@qwen-laptop:~/qwen-laptop-setup/remote/
 ```
 
 Every `remote/` script executes from `~/qwen-laptop-setup/remote/` on the

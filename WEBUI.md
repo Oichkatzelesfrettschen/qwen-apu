@@ -22,7 +22,7 @@ local browser -> local 127.0.0.1:8080 -> SSH tunnel
 `QWEN_BIND_HOST=0.0.0.0` serves every browser on the network directly:
 
 ```text
-any browser on the LAN -> hp14-dk1xxx.local:8080 -> guarded llama-server
+any browser on the LAN -> qwen-laptop:8080 -> guarded llama-server
 ```
 
 The server fixes one slot, one CPU thread, the LOW RADV queue, and strict
@@ -125,7 +125,7 @@ Read the API key and enter it in the page:
 ssh TARGET '$HOME/qwen-laptop-setup/remote/qwen-webui-control.sh key'
 ```
 
-A LAN reader opens `http://hp14-dk1xxx.local:8080` directly. A loopback
+A LAN reader opens `http://qwen-laptop:8080` directly. A loopback
 deployment instead keeps a tunnel running on the client workstation and opens
 `http://127.0.0.1:8080`:
 

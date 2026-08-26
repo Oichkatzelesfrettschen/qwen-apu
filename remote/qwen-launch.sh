@@ -26,12 +26,44 @@ fi
 
 model_path=${QWEN_MODEL_PATH:-"${HOME:?}/models/Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf"}
 
+# GGUF weights live outside Git because their size exceeds what Git LFS carries
+# on a free account, so the checkpoint arrives from its pinned Hugging Face
+# revision on first launch. The fetch script verifies an existing file against
+# the recorded byte count and SHA-256 and exits without downloading when it
+# matches, which makes this line a no-op on every launch after the first.
+if [ ! -f "$model_path" ]; then
+    fetch_script=''
+    case $model_path in
+        *Qwen3.8-4B-Distill-GGUF*)
+            fetch_script=$script_directory/download-qwen38-4b-distill-q4km.sh ;;
+        *Qwen3.5-4B-GGUF*)
+            fetch_script=$script_directory/download-qwen35-4b-q4km.sh ;;
+        *Qwen3.8-9B-Distill-GGUF*)
+            fetch_script=$script_directory/download-qwen38-9b-distill-q4km.sh ;;
+    esac
+    if [ -z "$fetch_script" ] || [ ! -x "$fetch_script" ]; then
+        printf 'model is absent and no pinned fetch script matches it: %s\n' \
+            "$model_path" >&2
+        exit 1
+    fi
+    printf 'model_fetch=starting path=%s\n' "$model_path"
+    "$fetch_script" "$(dirname -- "$model_path")" || {
+        printf 'model fetch failed for %s\n' "$model_path" >&2
+        exit 1
+    }
+fi
+
 # A projector encodes images into the embedding space of the checkpoint it was
 # exported with, and a mismatched one loads without error while placing image
 # tokens where the language model does not read them. Binding the search to the
 # model's own directory makes the pairing structural: a checkpoint published
 # without a projector runs text-only instead of borrowing another model's.
 mmproj=${QWEN_MMPROJ:-"$(dirname -- "$model_path")/mmproj-F16.gguf"}
+if [ ! -f "$mmproj" ] && [ "${QWEN_FETCH_MMPROJ:-0}" = 1 ] && \
+   [ -x "$script_directory/download-qwen35-4b-mmproj.sh" ]; then
+    "$script_directory/download-qwen35-4b-mmproj.sh" \
+        "$(dirname -- "$mmproj")" || true
+fi
 [ -f "$mmproj" ] || mmproj=''
 
 QWEN_BIND_HOST=$bind_host QWEN_SERVER_PORT=$server_port \

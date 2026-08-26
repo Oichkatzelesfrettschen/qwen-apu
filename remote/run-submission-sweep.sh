@@ -16,7 +16,7 @@ output_directory=$2
 decode_tokens=${3:-128}
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 remote_root=${QWEN_REMOTE_ROOT:-'$HOME/qwen-laptop-setup'}
-base_url=${QWEN_BASE_URL:-http://hp14-dk1xxx.local:8080}
+base_url=${QWEN_BASE_URL:-http://qwen-laptop:8080}
 
 mkdir -p "$output_directory"
 summary=$output_directory/sweep-summary.tsv
