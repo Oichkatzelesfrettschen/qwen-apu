@@ -201,6 +201,43 @@ any absolute throughput claim, and `remote/run-speculation-matrix.sh` now report
 the repetition fraction beside each rate so the artifact cannot hide in a later
 run.
 
+## The chat suite reprices every gain
+
+Repeating the decisive arms on non-degenerate text, 192 predicted tokens, with
+the repeated-eight-gram fraction beside each rate:
+
+| arm | prompt | decode tok/s | drafted | acceptance | repeated 8-grams |
+| --- | --- | ---: | ---: | ---: | ---: |
+| S0f | code | 3.09 | - | - | 6% |
+| S0f | prose | 3.10 | - | - | 1% |
+| S0f | arithmetic | 3.10 | - | - | 0% |
+| S1c | code | 3.48 | 105 | 0.819 | 6% |
+| S1c | prose | 3.48 | 104 | 0.827 | 1% |
+| S1c | arithmetic | 3.59 | 101 | 0.891 | 0% |
+| N1b | code | 3.00 | 20 | 0.350 | 6% |
+| N1b | prose | 3.07 | 0 | - | 1% |
+| N1b | arithmetic | 2.92 | 48 | 0.208 | 0% |
+
+The unspeculated rate is unchanged at 3.09 to 3.10, which is expected: decode
+cost is per token and does not depend on which tokens. Everything else moves.
+
+MTP acceptance falls from 0.934 to 0.846 and the speedup with it, from 1.17-1.22
+to 1.13-1.16 times. That is the figure to carry.
+
+`ngram-simple` is a net loss. It measures 3.00, 3.07, and 2.92 against a
+baseline of 3.09, 3.10, and 3.10, so on text that does not repeat, the drafts it
+generates are rejected often enough that verifying them costs more than decoding
+directly. Acceptance is 0.350 and 0.208 where it drafts at all, against the
+1.000 the looping suite reported. The n-gram lane closes here.
+
+The depth arms in that lane never varied depth. `--spec-draft-n-max` sets
+`params.speculative.draft.n_max`, which the draft-model speculators read;
+`ngram-simple` reads `params.speculative.ngram_simple` and is configured by
+`--spec-ngram-simple-size-n`, `-size-m`, and `-min-hits`. `N1`, `N2`, and `N3`
+were three runs of one configuration, and the server log shows all of them
+sizing the target for 49 outputs. Their agreement measured reproducibility
+rather than insensitivity to depth.
+
 ## What the matrix decides
 
 N=1 is the operating point. It is the only arm that beats the unspeculated
@@ -215,11 +252,13 @@ baseline by a useful margin, and it does so on all three prompts:
 | S4 | 2.23 | 1.73 | 2.62 | 0.615 |
 | S6 | 1.93 | 1.73 | 2.63 | 0.543 |
 
-The gain is 1.17 to 1.22 times. Reaching 4.5 tok/s from 3.07 needs 1.466, so
-the embedded head closes about a third of that gap and drafting deeper closes
-none of the rest. The two remaining paths are a cheaper verification pass, which
-the column table prices, and a checkpoint that streams fewer bytes, which the
-low-bit quantization ladder measures.
+The gain is 1.17 to 1.22 times on the looping suite and 1.13 to 1.16 on the chat
+suite, and the latter is the operational figure. Reaching 4.5 tok/s from 3.07
+needs 1.466, so the embedded head closes about a quarter of that gap, drafting
+deeper closes none of the rest, backend sampling closes none, and n-gram
+drafting costs rather than closes. The two remaining paths are a cheaper
+verification pass, which the column table prices, and a checkpoint that streams
+fewer bytes, which the low-bit quantization ladder measures.
 
 ## The candidate the decomposition names
 
@@ -287,8 +326,8 @@ much noise they accumulate.
 prompts, so the divergence is stable across a reload rather than merely
 deterministic within one process. `B2` adds backend sampling on both the target
 and the draft and reproduces the same sequences again, so the sampler placement
-is not the cause either. Speculation off and speculation on are two fixed
-sequences, and every arm lands on one of them.
+is not the cause either. Within one speculation setting the output is fixed;
+across settings it is not, as the chat suite shows below.
 
 `S0c` was to separate the remaining candidates by setting
 `QWEN_SPEC_DRAFT_N_MAX=0` with `draft-mtp` active, loading the MTP block and
@@ -313,17 +352,37 @@ with no MTP block loaded and no draft context built against the target model, so
 a divergence there puts the cause in the shared verification path and a match
 with the unspeculated sequence puts it in the MTP machinery.
 
-It matches. `N1`, `N2`, and `N3` reproduce the unspeculated token sequence
-exactly on all three prompts, and prose and arithmetic drafted 69 and 76 tokens
-to do it, so the accept-and-verify path was exercised rather than bypassed. The
-shared verification path is therefore exonerated and the divergence is specific
-to `draft-mtp`.
+On the bare-prefix suite it matched, and that reading is withdrawn. Repeating
+the arm on the chat suite diverges, and it does so where nothing was drafted at
+all: the prose request records no `draft_n` in its timings, meaning zero drafts,
+and its sequence still parts from the unspeculated one at index 125 of 192.
+Drafting and accepting are therefore both excluded as causes, and so is
+`mparams.load_mtp`, which `ngram-simple` never sets.
 
-What remains inside that boundary is `mparams.load_mtp` changing the target
-model load, and the MTP draft context sharing `cparams.ctx_other` with the
-target. Separating those two needs a capture of the target's own logits
-with `load_mtp` set and cleared against the same prompt, and until that runs the
-cause is located rather than identified.
+The `draft-mtp` and `ngram-simple` arms also produce *different* divergent
+sequences from each other on both prompts, so the earlier reading that
+speculation selects one fixed alternative sequence is withdrawn with it. That
+reading rested on the bare-prefix suite, where every speculative arm landed
+identically; on non-degenerate text they do not.
+
+What does track the divergence is how the target context is built.
+`common_speculative_get_output_limits` sizes it from the draft length, and the
+server logs the result:
+
+| arm | speculation | `n_outputs_max` | prose | arithmetic |
+| --- | --- | ---: | --- | --- |
+| S0f | off | 1 | baseline | baseline |
+| S1c | draft-mtp, n_max 1 | 2 | diverges at 125 | diverges at 4 |
+| N1b | ngram-simple | 49 | diverges at 125 | diverges at 109 |
+
+Every arm that diverges was built with more output slots than the unspeculated
+one, and the two that diverge differently were built with different counts. The
+divergence points are also late rather than immediate once the prompts stop
+looping, at indices 4 through 125 of 192, which is what ordinary low-margin
+positions look like rather than a systematic corruption. The cause is located in
+the target context's output configuration; identifying it needs a logit capture
+at one output slot against two on the same prompt, which is the probe still
+owed.
 
 The operational question this raises belongs to whoever sets the criterion. The
 stated rule is that speculative decoding must reproduce the target-only token
