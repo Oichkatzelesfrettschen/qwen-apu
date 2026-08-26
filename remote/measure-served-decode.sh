@@ -28,6 +28,7 @@ state_directory=${QWEN_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
 result_directory=${QWEN_RESULT_DIRECTORY:-"${HOME:?}/qwen-served-decode/$label"}
 endpoint=http://127.0.0.1:${QWEN_SERVER_PORT:-8080}
 generate_tokens=${QWEN_BENCH_GENERATE:-64}
+export QWEN_WEBUI_STATE_DIRECTORY=$state_directory
 
 case $generate_tokens in
     '' | *[!0-9]* | 0)

@@ -33,6 +33,7 @@ shellcheck -S warning $shell_files
 ruff check remote
 
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-quality-suite.py
+PYTHONDONTWRITEBYTECODE=1 python3 remote/test-gguf-tokenizer-identity.py
 remote/test-measurement-harnesses.sh
 remote/test-model-registry.sh
 remote/test-projector-pairing.sh

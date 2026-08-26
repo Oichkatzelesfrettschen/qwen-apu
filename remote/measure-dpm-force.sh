@@ -1,22 +1,23 @@
 #!/bin/sh
 set -eu
 
-# Measure what the unused top memory DPM step is worth.
+# Measure the effect of the global high-performance governor.
 #
-# Under sustained inference the SMU selects `pp_dpm_mclk` step 2, 933 MHz, while
-# step 3 offers 1067 MHz. Decode is bandwidth-bound, so 12.6% of memory clock
-# sits unused. Writing `high` to `power_dpm_force_performance_level` pins the
-# top steps; the original value is restored from an EXIT trap so an interrupted
-# run leaves the laptop on its own governor.
+# Writing `high` to `power_dpm_force_performance_level` can move SCLK, FCLK,
+# and other device power domains together. This experiment therefore measures
+# the global governor policy and records both SCLK and the legacy
+# `pp_dpm_mclk` FCLK surface; it makes no isolated memory-clock claim. The
+# original value is restored from an EXIT trap so an interrupted run leaves the
+# laptop on its own governor.
 #
 # Arms alternate between the two settings rather than running one block each.
 # Repeating the same flags ten minutes apart already measured a 4.2% spread on
 # this part, which is larger than the effect being looked for, so a block design
 # would let that drift stand in for the result.
 #
-# The forced step is verified before each arm's rate is trusted. A write that
-# the SMU declines leaves the governor where it was and returns a number that
-# looks like a measurement of a change that never happened.
+# The requested global level is verified before each arm's rate is trusted. A
+# write that the SMU declines leaves the governor where it was and returns a
+# number that looks like a measurement of a change that never happened.
 
 if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
     printf 'usage: %s MODEL_PATH [OUTPUT_DIRECTORY]\n' "$0" >&2
@@ -31,6 +32,13 @@ clock_sampler=${QWEN_CLOCK_SAMPLER:-"$script_directory/sample-gpu-clocks.sh"}
 drm_device=${QWEN_DRM_DEVICE:-/sys/class/drm/card1/device}
 level_node=$drm_device/power_dpm_force_performance_level
 rounds=${QWEN_DPM_ROUNDS:-2}
+
+case $rounds in
+    '' | *[!0-9]* | 0)
+        printf 'DPM rounds must be a positive integer: %s\n' "$rounds" >&2
+        exit 2
+        ;;
+esac
 
 if [ ! -x "$bench" ] || [ ! -f "$model_path" ]; then
     printf 'llama-bench and the model must both exist\n' >&2
@@ -74,7 +82,7 @@ trap 'exit 143' TERM
 
 mkdir -p "$output_directory"
 summary=$output_directory/dpm-summary.tsv
-printf 'arm\tlevel\tmclk_forced\tdecode_tok_s\tstatus\tmclk_modal\tsclk_max\ttemp_c_max\n' \
+printf 'arm\tlevel\tfclk_before_load\tdecode_tok_s\tstatus\tfclk_modal\tsclk_max\ttemp_c_max\n' \
     >"$summary"
 
 measurement_failed=0
@@ -98,16 +106,16 @@ run_arm() {
             "$arm_level" "$applied_level" >&2
         exit 1
     fi
-    forced_mclk=$(selected_mclk)
-    if [ -z "$forced_mclk" ]; then
-        printf 'selected memory clock is unreadable after applying %s\n' \
+    selected_fclk=$(selected_mclk)
+    if [ -z "$selected_fclk" ]; then
+        printf 'selected FCLK is unreadable after applying %s\n' \
             "$arm_level" >&2
         return 1
     fi
 
     printf 'arm_start_utc=%s label=%s level=%s mclk_before_load=%s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$arm_label" "$applied_level" \
-        "$forced_mclk"
+        "$selected_fclk"
     "$clock_sampler" "$arm_samples" 1 &
     sampler_pid=$!
     set +e
@@ -153,7 +161,7 @@ run_arm() {
         }' "$arm_samples")
 
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$arm_label" "$applied_level" \
-        "$forced_mclk" "$decode" "$arm_status" "$clock_report" >>"$summary"
+        "$selected_fclk" "$decode" "$arm_status" "$clock_report" >>"$summary"
     printf 'arm_stop_utc=%s label=%s decode=%s status=%s clocks=%s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$arm_label" "$decode" "$arm_status" \
         "$(printf '%s' "$clock_report" | tr '\t' ' ')"

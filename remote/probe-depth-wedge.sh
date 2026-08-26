@@ -52,6 +52,11 @@ if [ ! -x "$bench" ] || [ ! -f "$model_path" ]; then
     printf 'llama-bench and the model must both exist\n' >&2
     exit 2
 fi
+if pgrep -x llama-server >/dev/null 2>&1 ||
+   pgrep -x llama-bench >/dev/null 2>&1; then
+    printf 'another llama process holds the device\n' >&2
+    exit 2
+fi
 
 mkdir -p "$output_directory"
 summary=$output_directory/wedge-summary.tsv
@@ -62,15 +67,29 @@ printf 'arm\tdepth\tbatch\tubatch\tcache_k\tcache_v\tflash_attn\tstatus\tring_re
 # recreates, which contaminates that run and hides the orphan behind a plausible
 # name. The trap ends the sampler with the script that started it.
 sampler_pid=''
+active_arm_label=''
 stop_sampler() {
     [ -n "$sampler_pid" ] || return 0
     kill "$sampler_pid" 2>/dev/null || true
     wait "$sampler_pid" 2>/dev/null || true
     sampler_pid=''
 }
+interrupt_run() {
+    signal_status=$1
+    stop_sampler
+    if [ -n "$active_arm_label" ]; then
+        printf 'arm_abort_utc=%s label=%s status=%s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$active_arm_label" \
+            "$signal_status" >&2
+    fi
+    printf 'depth_wedge=interrupted status=%s output_directory=%s\n' \
+        "$signal_status" "$output_directory" >&2
+    exit "$signal_status"
+}
 trap 'stop_sampler' EXIT
-trap 'stop_sampler; exit 130' INT
-trap 'stop_sampler; exit 143' TERM
+trap 'interrupt_run 129' HUP
+trap 'interrupt_run 130' INT
+trap 'interrupt_run 143' TERM
 
 kernel_line_count() {
     if dmesg >/dev/null 2>&1; then
@@ -86,6 +105,7 @@ kernel_line_count() {
 kernel_delta_lines() {
     delta_before=$1
     delta_file=$2
+    rm -f -- "$delta_file"
     [ "$delta_before" != unavailable ] || return 0
     dmesg | tail -n "+$((delta_before + 1))" >"$delta_file" 2>/dev/null || true
 }
@@ -136,6 +156,7 @@ run_arm() {
     arm_samples=$output_directory/$arm_label.clocks.tsv
     arm_kernel=$output_directory/$arm_label.dmesg.txt
     control_log=$output_directory/$arm_label.control.log
+    active_arm_label=$arm_label
     kernel_before=$(kernel_line_count)
     arm_started=$(date +%s)
 
@@ -163,6 +184,9 @@ run_arm() {
 
     decode=n/a
     [ "$arm_status" -ne 0 ] || decode=$(parse_decode_rate "$arm_log")
+    if [ "$arm_status" -eq 0 ] && [ "$decode" = n/a ]; then
+        arm_status=65
+    fi
 
     # The memory the arm actually held, read from amdgpu's accounting during the
     # arm rather than parsed from the log: llama-bench prints no buffer sizes at
@@ -198,6 +222,9 @@ run_arm() {
     set -e
     control_decode=n/a
     [ "$control_status" -ne 0 ] || control_decode=$(parse_decode_rate "$control_log")
+    if [ "$control_status" -eq 0 ] && [ "$control_decode" = n/a ]; then
+        control_status=65
+    fi
 
     clock_report=$(awk -F'\t' '
         $1 ~ /^[0-9]+([.][0-9]+)?$/ { count[$1]++; clock_samples++ }
@@ -223,6 +250,7 @@ run_arm() {
         "$resets" "$faults" "$arm_wall" \
         "$(printf '%s' "$memory_report" | tr '\t' '/')" "$control_status" \
         "$control_decode"
+    active_arm_label=''
 
     if [ "$control_status" -ne 0 ]; then
         printf 'control_failed label=%s: the device did not recover, so the remaining arms would measure a corrupt device\n' \
