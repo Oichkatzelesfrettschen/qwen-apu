@@ -51,22 +51,30 @@ here as a comparison between scheduling policies rather than backends:
 | V, RADV Vulkan | 21.49 | 23.48 | 3.10 | 3.09 |
 | H0, HIP | 14.06 | 12.20 | 2.22 | 1.97 |
 
-Vulkan is unchanged by the policy: decode moves 0.3% and prefill measures 9.3%
-higher, which at one repetition sits within what a machine running a desktop and
-a QEMU guest varies by. The guards costing nothing against this hardware is the
-repository's existing result, measured at 2.86 tok/s unconstrained against 2.87
-served, and this reproduces it.
+Vulkan decode moves 0.3% across the policies and its prefill measures 9.3%
+higher at nice 19. HIP measures 13.2% lower on prefill and 11.3% lower on
+decode.
 
-HIP loses under the same policy, 13.2% of prefill and 11.3% of decode. A backend
-whose completion detection sleeps on a fence is indifferent to the priority of
-the thread waiting; a backend that polls a value in userspace gets its poll loop
-descheduled. That separates cleanly from the `-t 1` result: the sensitivity is
-in the HSA wait thread rather than in the ggml worker pool, which is why
-changing the worker count moves nothing and changing the priority moves both
-phases.
+Every one of those figures comes from a single repetition, so the comparison
+does not yet support a mechanism. A 9.3% Vulkan swing that is called run-to-run
+variation and an 11.3% HIP swing that is called a scheduling effect cannot both
+be read from the same evidence; either the machine varies by roughly ten percent
+at one repetition or it does not. The decode phases are being re-run at three
+repetitions to settle which, and the paragraph that follows stands or falls on
+that.
 
-The appliance serves at nice 19. A backend that measures worse there is worse
-where it would run.
+The candidate mechanism, stated so the re-run can refute it: a backend whose
+completion detection sleeps on a fence is indifferent to the priority of the
+waiting thread, and a backend that polls a value in userspace has its poll loop
+descheduled. That would separate cleanly from the `-t 1` result by placing the
+sensitivity in the HSA wait thread rather than in the ggml worker pool, which is
+why changing the worker count moves nothing. If the HIP decode difference
+between the policies does not survive error bars, this mechanism has no support
+here and the observation reduces to the rows themselves.
+
+The verdict does not rest on it either way. HIP decodes at 1.97 tok/s against
+3.09 under the policy the appliance actually serves under, and the falsification
+criterion is unmet by a margin no scheduling attribution changes.
 
 The Vulkan row here differs from the figures the README quotes, 21.49 against
 22.00 prefill and 3.10 against 3.02 decode. Two things changed at once and this
