@@ -4,7 +4,7 @@
 | --- | --- | --- | --- |
 | Setup scripts, tests, policies, and tracker | canonical generator or synthesized truth surface | ordinary Git | tracked source |
 | Kernel, allocation, build, and runtime logs | raw exact-target evidence | ordinary Git under `evidence/` | `evidence/SHA256SUMS` |
-| `llama-server` and `llama-cli` | retained exact-build binary | Git LFS under `artifacts/bin/` | byte size and SHA-256 below |
+| `llama-server` and `llama-cli` | derived regenerable | excluded from Git and LFS | byte size and SHA-256 below, against a rebuild |
 | Qwen3.5-4B, Qwen3.8-9B Distill, and Qwen3.8-27B GGUFs | external reproducible dependencies | excluded from Git and LFS | pinned Hugging Face revisions, byte sizes, and SHA-256 values |
 | llama.cpp source | external canonical source plus local patch series | pinned commit and four replay patches | `remote/verify-llama-patch-series.sh` |
 | llama.cpp build tree | derived regenerable | excluded | `remote/build-llama-vulkan.sh` |
@@ -21,14 +21,24 @@ on the source host.
 
 | Artifact | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `artifacts/bin/llama-server` | 57,475,792 | `3d5b158160b08cf897bb05b47186a13f67e8a17def31012f2f8282f12e95cb08` |
-| `artifacts/bin/llama-cli` | 57,643,992 | `83cc86e271b7fe784d208c00ca22d1fe6875e7a956790d16b55a9e617d23cc5b` |
+| `llama-server` | 57,475,792 | `3d5b158160b08cf897bb05b47186a13f67e8a17def31012f2f8282f12e95cb08` |
+| `llama-cli` | 57,643,992 | `83cc86e271b7fe784d208c00ca22d1fe6875e7a956790d16b55a9e617d23cc5b` |
 | `Qwen3.5-4B-Q4_K_M.gguf` | 2,740,937,888 | `00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4` |
 | `Qwen3.8-9B-Q4_K_M.gguf` | 5,780,090,176 | `df13d66021cef676f82be74053220fd75af6bf2a6a7fb77f5222ab9e50744a7a` |
 
 `benchmarks/models/qwen38-27b-files.tsv` is the replay authority for the four
 external Qwen3.8-27B benchmark files. Those 9.83 GB through 14.25 GB files stay
 outside Git LFS.
+
+GitHub bills Git LFS storage and bandwidth to the account owning the
+repository, public or private alike, against a free allowance of 1 GB of each.
+The two executables cost 116 MB of that allowance per clone and embedded the
+builder's home directory 231 times, so they are excluded and the manifest above
+carries their identity instead. `remote/build-llama-vulkan.sh` regenerates them
+from the pinned commit and patch series, `remote/verify-llama-patch-series.sh`
+confirms the source reproduces, and `remote/verify-runtime-artifacts.sh`
+compares a rebuild against the recorded byte counts and SHA-256 values. Pass it
+the directory holding the rebuilt binaries.
 
 The llama.cpp source commit is
 `f280b26983ad0fdb705a0d9ebf0503e76f2899b0`. Apply

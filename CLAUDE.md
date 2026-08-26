@@ -179,8 +179,23 @@ they disagree.
 
 ## Prose and comments
 
-Comments, commit messages, durable docs, and thinking share one voice: direct,
-declarative, indicative present tense, artifact as subject.
+Comments, commit messages, durable docs, thinking, replies in session, and
+end-of-session summaries share one voice: direct, declarative, indicative
+present tense, artifact as subject.
+
+The voice reaches conversation whole. A reply opens on the finding rather than
+on a preamble, states the mechanism before the consequence, and gives each
+number its evidence class. Length follows the count of decisive facts, so a
+one-fact answer is one or two sentences and a measurement table earns its rows.
+A result that contradicts a prediction leads, because the deviation is the
+finding; a correction states what is true now and continues, since the
+narration of an error costs more than the error. Ceremony, restatement of the
+request, and summaries of work about to be described all fall away.
+
+Conversation keeps what its purpose requires. A question the user must answer
+is asked plainly, uncertainty is named with its falsifier, and a
+recommendation carries the reasoning that would change it. Those are content,
+so the voice carries them the same way it carries a register fact.
 
 Write the mechanism first. Name the authority that makes the statement true --
 the function, register, spec chapter, environment variable, or measured value
@@ -231,8 +246,10 @@ reserved for human co-authors.
 - Secrets, local absolute paths, and private hostnames stay out of commits.
   `api.key` files stay outside the repository and their contents stay unprinted
   and untransmitted.
-- Sudo credentials are entered by the user in a `qwen-admin` tmux session on
-  the laptop. Passwords stay out of SSH command lines, logs, and project files.
+- `/etc/sudoers.d/90-qwen-agent` sets `timestamp_type=global` with a 60 minute
+  timeout, so one `sudo -v` on the laptop covers the SSH sessions that
+  administer it. The user types the password; it stays out of SSH command
+  lines, scripts, logs, and project files.
 - New files carry no copyright line. Existing upstream headers stay verbatim.
 - Scripts are POSIX `sh` with `set -eu`, long descriptive variable names, and a
   usage block that exits 2 on argument error.

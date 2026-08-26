@@ -268,7 +268,8 @@ caching. Node is a build-time dependency on the workstation, and
 voice. `TASK_TRACKER.md` is the execution ledger. `remote/` holds the
 launchers, guards, tests, and measurement harnesses. `patches/` reconstructs
 the pinned llama.cpp changes. `evidence/` retains raw and synthesized
-measurements. `artifacts/bin/` holds the verified executables through Git LFS.
+measurements. The executables stay outside Git, and `ARTIFACTS.md` records the
+byte count and SHA-256 that a rebuild reproduces.
 `webui/` holds the diagnostic panel, and `WEBUI.md` defines deployment and
 control.
 
