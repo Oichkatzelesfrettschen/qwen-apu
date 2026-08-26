@@ -128,6 +128,8 @@ remote/compare-model-candidate.sh LABEL MODEL_PATH [PROFILE]
 remote/run-placement-sweep.sh [OUTPUT]
 remote/reasoning-span-probe.sh OUTPUT_JSON     # against a live server
 remote/summarize-probe.sh ~/qwen-webui-state/graphics-latency.log
+remote/gguf-tensor-census.py MODEL [MODEL...]   # what a Q4_K_M file holds
+remote/hash-load-closure.sh EXECUTABLE [OUT]    # identity of every loaded object
 remote/run-rocm-vulkan-matrix.sh [OUTPUT]      # HIP against Vulkan, phase by phase
 
 # Rebuild llama.cpp and the static UI
@@ -150,6 +152,8 @@ directly:
 remote/test-qwen-runtime-guards.sh
 remote/test-radv-low-priority-env.sh
 remote/verify-llama-patch-series.sh
+GGUF_PY_PATH=~/src/llama.cpp-qwen-apu/gguf-py \
+    remote/test-gguf-tensor-census.py [MODEL...]
 ```
 
 `remote/test-fixtures/fake-llama-server.sh` stands in for the real server so a
