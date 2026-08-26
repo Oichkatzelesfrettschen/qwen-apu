@@ -52,6 +52,23 @@ CPU-only at its first partial point: a split adds CPU-to-Vulkan synchronization
 and activation transfers while both sides draw on the one DDR4 controller, so
 the placements share a bandwidth domain instead of combining two.
 
+The memory controller runs on a DPM ladder and the step it selects is a term in
+every decode rate. `pp_dpm_mclk` offers 933 MHz and 1067 MHz as its top two
+steps, a 12.6% span, and sampling the part under sustained inference finds it at
+933 MHz with the die at 93 C. Two rates measured at different steps are not
+comparable, which is why `remote/sample-gpu-clocks.sh` runs alongside a
+measurement and the harnesses report the modal step beside the rate. The GPU
+core clock holds its top step, 1100 MHz, at the same time, so the ladder that
+moves is the memory one.
+
+The registry rather than a constant sets the admitted depth.
+`remote/models.tsv` carries `context_default`, `context_ceiling`, and
+`context_target` per checkpoint along with the KV cache types and the
+flash-attention setting, and `qwen-capacity-policy.sh` reads them.
+`QWEN_CACHE_TYPE_K`, `QWEN_CACHE_TYPE_V`, and `QWEN_FLASH_ATTN` override the
+cache triple, so an experiment arm runs through the served path rather than
+through llama-bench alone. A ceiling never exceeds a depth measured to fail.
+
 Sequential host read bandwidth measures 7.97 GB/s on one thread and 15.44 GB/s
 on two. Those figures measure the two Zen+ cores through the load/store path,
 which is a different consumer of the one DDR4 controller than the two Vega
@@ -131,6 +148,12 @@ remote/summarize-probe.sh ~/qwen-webui-state/graphics-latency.log
 remote/gguf-tensor-census.py MODEL [MODEL...]   # what a Q4_K_M file holds
 remote/hash-load-closure.sh EXECUTABLE [OUT]    # identity of every loaded object
 remote/run-rocm-vulkan-matrix.sh [OUTPUT]      # HIP against Vulkan, phase by phase
+remote/run-kv-cache-factorial.sh MODEL [OUT]   # cache type crossed with flash attention
+remote/measure-served-decode.sh LABEL MODEL    # served decode at a fixed length
+remote/measure-bench-repeatability.sh MODEL    # what a depth-0 rate repeats to
+remote/run-quality-suite.py ENDPOINT OUT_JSON  # the 55-row graded suite
+remote/sample-gpu-clocks.sh OUT_TSV [SECONDS]  # the DPM step a rate ran at
+remote/model-registry.sh id|path SELECTOR [FIELD]
 
 # Rebuild llama.cpp and the static UI
 remote/build-llama-preset.sh PRESET [SOURCE]   # one directory per build arm
@@ -153,6 +176,9 @@ directly:
 ```sh
 remote/test-qwen-runtime-guards.sh
 remote/test-radv-low-priority-env.sh
+remote/test-model-registry.sh
+remote/test-quality-suite.py
+remote/test-promote-llama-build.sh
 remote/verify-llama-patch-series.sh
 GGUF_PY_PATH=~/src/llama.cpp-qwen-apu/gguf-py \
     remote/test-gguf-tensor-census.py [MODEL...]
