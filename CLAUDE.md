@@ -183,12 +183,18 @@ installed, and its LLVM 24 selects GCC 14's libstdc++.
 
 ## Models and projectors pair by directory
 
-`qwen-launch.sh` searches for `mmproj-F16.gguf` beside the model file. A
-projector encodes images into the embedding space of the checkpoint that
-exported it, and a foreign projector of matching dimensions loads cleanly while
-placing image tokens where the language model reads nothing, which answers
-wrongly rather than failing. Binding the search to the model's own directory
-makes a checkpoint published without a projector run text-only.
+`qwen-launch.sh` calls `remote/select-projector.sh`, which searches the model
+file's own directory. A projector encodes images into the embedding space of the
+checkpoint that exported it, and a foreign projector of matching dimensions
+loads cleanly while placing image tokens where the language model reads nothing,
+which answers wrongly rather than failing. Binding the search to the model's own
+directory makes a checkpoint published without a projector run text-only.
+
+Publishers name the file differently: Qwen ships `mmproj-F16.gguf` and Ornith
+ships `mmproj-Ornith-1.5-9B-BF16.gguf`. The exact name wins where it exists and
+a sole `mmproj*.gguf` is taken otherwise, while several candidates print nothing
+and name `QWEN_MMPROJ` as the way to choose, since resolving two projectors by
+sort order is the mismatch the pairing exists to prevent.
 
 `empero-ai/Qwen3.8-4B-Distill` distills into the Qwen3.5-4B architecture, so
 the pinned build loads it unchanged. It is the text default: it reasons in

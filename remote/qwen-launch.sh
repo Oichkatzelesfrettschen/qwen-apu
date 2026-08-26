@@ -53,18 +53,19 @@ if [ ! -f "$model_path" ]; then
     }
 fi
 
-# A projector encodes images into the embedding space of the checkpoint it was
-# exported with, and a mismatched one loads without error while placing image
-# tokens where the language model does not read them. Binding the search to the
-# model's own directory makes the pairing structural: a checkpoint published
-# without a projector runs text-only instead of borrowing another model's.
-mmproj=${QWEN_MMPROJ:-"$(dirname -- "$model_path")/mmproj-F16.gguf"}
-if [ ! -f "$mmproj" ] && [ "${QWEN_FETCH_MMPROJ:-0}" = 1 ] && \
+# A mismatched projector loads without error and places image tokens where the
+# language model does not read them, so remote/select-projector.sh binds the
+# search to the checkpoint's own directory and prints nothing where the pairing
+# is absent or ambiguous. remote/test-projector-pairing.sh covers its branches.
+model_directory=$(dirname -- "$model_path")
+mmproj=${QWEN_MMPROJ:-$("$script_directory/select-projector.sh" "$model_path")}
+if [ -z "$mmproj" ] && [ "${QWEN_FETCH_MMPROJ:-0}" = 1 ] && \
    [ -x "$script_directory/download-qwen35-4b-mmproj.sh" ]; then
-    "$script_directory/download-qwen35-4b-mmproj.sh" \
-        "$(dirname -- "$mmproj")" || true
+    "$script_directory/download-qwen35-4b-mmproj.sh" "$model_directory" || true
+    mmproj=$("$script_directory/select-projector.sh" "$model_path")
 fi
-[ -f "$mmproj" ] || mmproj=''
+[ -n "$mmproj" ] && [ -f "$mmproj" ] || mmproj=''
+[ -n "$mmproj" ] && printf 'projector=%s\n' "$(basename -- "$mmproj")"
 
 QWEN_BIND_HOST=$bind_host QWEN_SERVER_PORT=$server_port \
 QWEN_MODEL_PATH=$model_path QWEN_MMPROJ=$mmproj \
