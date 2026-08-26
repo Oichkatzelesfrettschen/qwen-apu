@@ -119,14 +119,37 @@ rising toward 4.2 tok/s. This is a derived candidate rather than a measured
 result, and it is stated here so the shader arm has a falsifiable target before
 it is written.
 
-## Greedy token identity is unresolved
+## Greedy token identity breaks, and the control rules out the easy explanation
 
-Two of six comparisons reproduced the unspeculated token sequence exactly and
-two diverged, the prose pair at index 1. A speculative decoder must reproduce
-the target-only sequence, so a divergence is a correctness defect rather than a
-quality trade. The comparison as constructed cannot yet make that call: each
-arm is a separate server launch, and a near-tie in the logits flips under any
-reordering between two launches. `S0b` repeats the unspeculated arm with
-identical settings to measure whether the target alone reproduces itself across
-a reload. Until that control reports, the divergence is unexplained rather than
-attributed.
+One of three prompts reproduced the unspeculated token sequence exactly; prose
+and arithmetic diverged, both at index 1, after which 122 and 121 of 128
+positions differ.
+
+The control was run before attributing that. `S0b` repeats the unspeculated arm
+in a separate server launch with identical settings, and it reproduces `S0`
+token for token on all three prompts at 3.07 to 3.10 tok/s. The target alone is
+therefore reproducible across a reload, and the divergence belongs to the
+speculative path rather than to launch ordering.
+
+It is a near-tie flip rather than a corruption. Both continuations are fluent,
+and both answer the arithmetic prompt correctly with 2 hours 45 minutes; they
+differ from the second token onward the way two greedy decodes differ once the
+argmax at one low-margin position goes the other way.
+
+The mechanism the code names is pipeline selection.
+`ggml_vk_get_dequantize_mul_mat_vec` indexes
+`pipeline_dequant_mul_mat_vec_f16_f32[wg_size][type][num_cols - 1]`, so a
+one-column pass and a two-column pass run different compiled shaders with
+different unrolling and different accumulation order. The speculative arm
+evaluates the target on a pipeline the unspeculated arm never uses, and greedy
+argmax is not stable across that difference where two logits are close.
+
+That reading predicts the divergence is reproducible rather than random: an arm
+repeated at the same `n_max` runs the same pipeline both times and should
+reproduce itself. `S1b` tests it. Until it reports, the divergence is
+attributed to the speculative path and its cause is a stated hypothesis.
+
+Either outcome leaves the same operational conclusion. Exact reproduction of
+the target-only sequence is what makes speculation free, and this build does not
+deliver it at the token level on this backend, so the arm is admitted on
+throughput and quality rather than on identity.
