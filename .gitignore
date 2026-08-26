@@ -6,3 +6,5 @@ __pycache__/
 /models/
 !evidence/*.log
 !evidence/**/*.log
+api.key
+*.key
