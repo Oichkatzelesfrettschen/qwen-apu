@@ -40,15 +40,29 @@ collect_closure() {
     # arrow for the loader and for vDSO, so the arrow is the filter that keeps
     # resolvable paths. Objects outside the build directory are the
     # distribution's and carry their own package identity.
-    ldd "$executable_path" 2>/dev/null |
-        sed -n 's/^.* => \(\/[^ ]*\).*$/\1/p' |
-        sort -u |
-        while read -r resolved_path; do
-            case $resolved_path in
-                "$executable_directory"/*) emit_row "$resolved_path" build ;;
-                *) ;;
-            esac
-        done
+    # Space-separated so that the membership test below is a substring match;
+    # the sed pattern already rejects a path containing a space.
+    linked_paths=$(ldd "$executable_path" 2>/dev/null |
+        sed -n 's/^.* => \(\/[^ ]*\).*$/\1/p' | sort -u | tr '\n' ' ')
+
+    for resolved_path in $linked_paths; do
+        case $resolved_path in
+            "$executable_directory"/*) emit_row "$resolved_path" linked ;;
+            *) ;;
+        esac
+    done
+
+    # ldd reports DT_NEEDED alone. A GGML_BACKEND_DL build loads its backends
+    # through dlopen, so the objects whose kernels produced a row are exactly
+    # the ones the linked walk misses. Every shared object beside the
+    # executable is recorded, and one already named above is skipped.
+    for candidate_path in "$executable_directory"/*.so "$executable_directory"/*.so.*; do
+        [ -f "$candidate_path" ] || continue
+        case " $linked_paths " in
+            *" $candidate_path "*) continue ;;
+        esac
+        emit_row "$candidate_path" loadable
+    done
 }
 
 if [ -n "$output_path" ]; then

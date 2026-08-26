@@ -133,6 +133,7 @@ remote/hash-load-closure.sh EXECUTABLE [OUT]    # identity of every loaded objec
 remote/run-rocm-vulkan-matrix.sh [OUTPUT]      # HIP against Vulkan, phase by phase
 
 # Rebuild llama.cpp and the static UI
+remote/build-llama-preset.sh PRESET [SOURCE]   # one directory per build arm
 remote/build-llama-vulkan.sh                   # on the laptop, the required path
 remote/build-llama-on-workstation.sh           # optional, ships binaries over
 remote/build-llama-ui.sh                       # Node on the workstation
