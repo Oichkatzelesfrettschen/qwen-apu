@@ -137,11 +137,72 @@ its reasoning traces did not finish. This appliance already measured that
 failure on the Qwen3.5-4B base, which produced an empty answer at the 2048-token
 cap, and it decodes several times slower than the phones tested.
 
+## Measured: the mechanism holds and the rate does not
+
+`llama-bench` on the appliance, full Vulkan offload, two threads, `nice 19` with
+idle I/O, phases split, three repetitions:
+
+```text
+| nanbeige ?B Q4_K - Medium | 2.39 GiB | 4.17 B | Vulkan | 99 | tg64  |  2.38 +/- 0.00 |
+| nanbeige ?B Q4_K - Medium | 2.39 GiB | 4.17 B | Vulkan | 99 | pp512 | 14.06 +/- 0.00 |
+```
+
+The reported 4.17 B matches the parameter count derived from `config.json`,
+4,169,662,464, so the loader and the census agree on what the file holds.
+
+Decode measures 2.38 against a predicted 2.00 to 2.14. The falsification
+criterion was 2.5, so the re-streaming model stands and the band was too
+pessimistic by 11 to 19%. The band, not the mechanism, was the error: it assumed
+this checkpoint would achieve the 8.28 to 8.88 GB/s the two 32-layer
+Qwen3.5-architecture checkpoints reach, and 4.149 GB at 2.38 tok/s is 9.87 GB/s.
+
+That the loop re-streams is settled by the same measurement read the other way.
+Were the second pass served from cache, per-token traffic would be 2.284 GB and
+the achieved rate 5.44 GB/s, which is below every checkpoint measured on this
+hardware and below the 8.28 GB/s floor of the pair nearest in size. The
+alternative reading requires the machine to have become 40% worse at streaming
+for this file alone.
+
+| Checkpoint | streamed/token | decode tok/s | GB/s | architecture |
+| --- | ---: | ---: | ---: | --- |
+| Qwen3.8-2B distill | 1.263 GB | 9.46 | 11.95 | hybrid 3:1, 24 layers |
+| **Nanbeige4.2-3B** | **4.149 GB** | **2.38** | **9.87** | dense, 22 layers x 2 loops |
+| Qwen3.8-9B distill | 5.046 GB | 1.76 | 8.88 | hybrid 3:1, 32 layers |
+| Qwen3.8-4B distill | 2.698 GB | 3.07 | 8.28 | hybrid 3:1, 32 layers |
+
+Nanbeige achieves a higher rate than either 32-layer hybrid while running 44
+effective layers, which a simple depth-cost account does not predict. One
+mechanism fits and is untested: the loop re-runs the same 22 layers with the
+same pipelines, descriptor sets, and dispatch shapes, so the second pass repeats
+work the driver has already set up, and dispatch overhead falls where memory
+traffic does not. A per-operator capture separates that from the alternative,
+that dense attention and feed-forward simply stream better than the hybrid's
+recurrent-state operators.
+
+Prefill measures 14.06 tok/s. The loop doubles compute as well, giving 6.808 B
+effective parameters and 6.97 TFLOP for 512 tokens, so 36.4 seconds is 191.4
+GFLOP/s, 68% of the 281.6 GFLOP/s heuristic against the 2B's 79% and the 4B's
+72%. Prefill is therefore ordinary for this machine and the loop is paid in
+full on both halves.
+
+## Verdict
+
+The checkpoint is admitted and it is not the resident model for this appliance.
+It is slower than the Qwen3.8-4B distill on both halves, 2.38 against 3.07 and
+14.06 against 23.48, while being nominally smaller, and it is four times slower
+than the 2B. Its KV cache is 5.5 times the 4B's at the same context and its
+context tax grows with the same factor, so the gap widens exactly where an agent
+workload lives.
+
+The loop is a good trade on hardware with bandwidth to spare and memory to save.
+This machine has 29 GiB of DDR4 and 38.4 GB/s nominal, which is the other case.
+
 ## What still has to be measured
 
-Throughput is predicted rather than measured, and quality is untested. The
-suite that separates the checkpoints here is
-`remote/compare-model-candidate.sh` and `remote/reasoning-span-probe.sh`, and
-the loop argument says nothing about whether the model answers correctly. A
-model that answers better at 2 tok/s remains a legitimate choice for work that
-is not interactive; the prediction sets the price, not the verdict.
+Quality is untested. `remote/compare-model-candidate.sh` and
+`remote/reasoning-span-probe.sh` are the suite that separates checkpoints here,
+and the loop argument says nothing about whether the model answers correctly. A
+checkpoint that answers better at 2.38 tok/s remains a legitimate choice for
+work that is not interactive: the measurement sets the price, not the verdict.
+The published agent-benchmark evidence that prompted the test is the reason to
+run that suite rather than to skip it.
