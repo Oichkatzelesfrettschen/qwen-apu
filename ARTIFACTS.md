@@ -89,8 +89,15 @@ differ by the backend rather than by the build.
 toolchain, and the worktree state that produced the recorded rows.
 
 `llama-bench` is a 17 KB launcher: the measurement code lives in
-`libllama-bench-impl.so` and the kernels in the two ggml backend objects, so all
-four carry identities. The binary links `librocblas.so.5`, `libhipblas.so.3`,
+`libllama-bench-impl.so` and the kernels in the two ggml backend objects, so the
+artifact of a measurement is the load closure rather than the executable. Four
+of its members carry identities above. `remote/hash-load-closure.sh` reads the
+rest, walking what `ldd` resolves, keeping the objects the build directory owns,
+and emitting one TSV row of role, name, byte count, and SHA-256 per object. The
+remaining members -- `libggml.so`, `libggml-base.so`, the `libggml-cpu` variant
+the loader selects, `libllama.so`, and `libmtmd.so` -- are not recorded here
+because the run that produced the four recorded rows predates the walker. That
+gap closes on the next dual build. The binary links `librocblas.so.5`, `libhipblas.so.3`,
 and `libhipblaslt.so.1` whatever `GGML_CUDA_FORCE_MMQ` selects, because the HIP
 CMake path requires and links them unconditionally; the option changes which
 kernels the quantized matrix path calls rather than which libraries load.
