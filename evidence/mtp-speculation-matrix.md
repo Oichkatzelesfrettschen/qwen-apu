@@ -165,6 +165,37 @@ The transfer it removes is not on the critical path at one token per pass, which
 is consistent with the column table: a verification pass is priced in hundreds of
 milliseconds of kernel time, and a single logit copy is not.
 
+## The prompt suite measures repetition, and one arm exposes it
+
+`ngram-simple` reached 4.57 and 5.47 tok/s on prose and arithmetic with an
+acceptance of 1.000, above the 4.5 target, and drafted nothing at all on code.
+That spread is a property of the prompts rather than of the speculator.
+
+Each prompt is a 128-token greedy continuation of a bare prefix, which drives
+this model into repetition, and n-gram drafting is free exactly there. Counting
+the fraction of positions whose eight-token window already appeared earlier in
+the same continuation:
+
+| prompt | repeated 8-grams | n-gram drafts | n-gram tok/s | MTP acceptance |
+| --- | ---: | ---: | ---: | ---: |
+| code | 2% | 0 | 3.10 | 0.896 |
+| arithmetic | 46% | 76 | 5.47 | 0.969 |
+| prose | 68% | 69 | 4.57 | 0.938 |
+
+The n-gram rate tracks repetition and nothing else, so those two figures measure
+how fast a loop decodes and support no claim about serving throughput. The same
+gradient inflates the MTP acceptance column: the code prompt at 2% repetition
+gives 0.896, and that is the figure to carry rather than the 0.934 mean.
+
+The MTP conclusions survive the flaw because every arm saw the same three
+prompts, so the comparison between arms holds even where the absolute rates do
+not. The column cost table is derived from per-step timing and is consistent to
+within 3% across all three prompts, so it is independent of content. The backend
+sampling comparison holds for the same reason. What the suite cannot support is
+any absolute throughput claim, and `remote/run-speculation-matrix.sh` now reports
+the repetition fraction beside each rate so the artifact cannot hide in a later
+run.
+
 ## What the matrix decides
 
 N=1 is the operating point. It is the only arm that beats the unspeculated
@@ -276,6 +307,18 @@ arm it was to run is unavailable in this build.
 with no MTP block loaded and no draft context built against the target model, so
 a divergence there puts the cause in the shared verification path and a match
 with the unspeculated sequence puts it in the MTP machinery.
+
+It matches. `N1`, `N2`, and `N3` reproduce the unspeculated token sequence
+exactly on all three prompts, and prose and arithmetic drafted 69 and 76 tokens
+to do it, so the accept-and-verify path was exercised rather than bypassed. The
+shared verification path is therefore exonerated and the divergence is specific
+to `draft-mtp`.
+
+What remains inside that boundary is `mparams.load_mtp` changing the target
+model load, and the MTP draft context sharing `cparams.ctx_other` with the
+target. Separating those two needs a capture of the target's own logits
+with `load_mtp` set and cleared against the same prompt, and until that runs the
+cause is located rather than identified.
 
 The operational question this raises belongs to whoever sets the criterion. The
 stated rule is that speculative decoding must reproduce the target-only token

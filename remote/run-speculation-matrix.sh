@@ -52,13 +52,20 @@ fi
 umask 077
 mkdir -p "$output_directory"
 
-# Three prompt shapes because acceptance is a property of the text, not of the
-# head alone: code repeats structure a one-token draft predicts well, free prose
-# repeats least, and arithmetic sits between them.
+# Acceptance is a property of the text rather than of the speculator, and a bare
+# prefix continued greedily for 128 tokens drives this model into repetition,
+# where an n-gram drafter accepts everything and reports a rate that measures the
+# loop. Each prompt is therefore written in the chat format the checkpoint was
+# trained on, which produces an instruction-following answer that terminates
+# instead of looping. The summary reports the repeated-eight-gram fraction of
+# every continuation beside its rate, so a rate carried by repetition is visible
+# rather than inferred.
+chat_prefix='<|im_start|>user\n'
+chat_suffix='<|im_end|>\n<|im_start|>assistant\n'
 prompt_name_list='code prose arithmetic'
-prompt_text_code='def fibonacci(n):\n    if n < 2:\n        return n\n    return'
-prompt_text_prose='The two Vega compute units of a Raven2 accelerated processing unit share'
-prompt_text_arithmetic='Q: A train leaves at 14:20 and arrives at 17:05. How long is the journey?\nA:'
+prompt_body_code='Write a Python function that merges two sorted lists into one sorted list without using sorted(). Explain the loop invariant in two sentences.'
+prompt_body_prose='Describe how an integrated GPU and its host CPU share one memory controller, and what that means for a program that streams a large array. Four sentences.'
+prompt_body_arithmetic='A shop sells 3 kinds of tea at 4.50, 6.20, and 11.00 per box. Someone buys two of the first, one of the second, and three of the third, then pays with a 60 note. Show the arithmetic and give the change.'
 
 run_arm() {
     arm_label=$1
@@ -93,7 +100,8 @@ run_arm() {
         >"$arm_directory/startup-speculation.txt" 2>/dev/null || true
 
     for prompt_name in $prompt_name_list; do
-        eval "prompt_text=\$prompt_text_$prompt_name"
+        eval "prompt_body=\$prompt_body_$prompt_name"
+        prompt_text=$chat_prefix$prompt_body$chat_suffix
         printf '{"prompt":"%s","n_predict":%s,"temperature":0,"top_k":1,"seed":42,"cache_prompt":false,"return_tokens":true,"stream":false}\n' \
             "$prompt_text" "$predict_tokens" \
             >"$arm_directory/$prompt_name.request.json"
@@ -141,6 +149,22 @@ directory = sys.argv[1]
 arms = sys.argv[2:]
 prompts = ('code', 'prose', 'arithmetic')
 
+def repeated_fraction(tokens, window=8):
+    # An n-gram drafter accepts every token of a loop, so a rate reported beside
+    # a high repetition fraction measures the loop rather than the speculator.
+    if len(tokens) <= window:
+        return None
+    seen = set()
+    repeated = 0
+    for index in range(len(tokens) - window + 1):
+        gram = tuple(tokens[index:index + window])
+        if gram in seen:
+            repeated += 1
+        else:
+            seen.add(gram)
+    return repeated / (len(tokens) - window + 1)
+
+
 def load(arm, name):
     path = os.path.join(directory, arm, name + '.json')
     try:
@@ -156,13 +180,14 @@ for arm in arms:
     for prompt in prompts:
         payload = load(label, prompt)
         if payload is None:
-            rows.append((label, prompt, None, None, None, None, 'no response'))
+            rows.append((label, prompt, None, None, None, None, None, 'no response'))
             continue
         timings = payload.get('timings') or {}
         tokens = payload.get('tokens') or []
         draft_n = timings.get('draft_n')
         draft_accepted = timings.get('draft_n_accepted')
         acceptance = (draft_accepted / draft_n) if draft_n else None
+        repetition = repeated_fraction(tokens)
         if label == arms[0].split(':', 1)[0]:
             baseline_tokens[prompt] = tokens
             identical = 'baseline'
@@ -172,34 +197,35 @@ for arm in arms:
             label, prompt,
             timings.get('predicted_n'),
             timings.get('predicted_per_second'),
-            draft_n, acceptance, identical,
+            draft_n, acceptance, repetition, identical,
         ))
 
 def show(value, fmt='{:.2f}'):
     return '-' if value is None else fmt.format(value)
 
-print('| arm | prompt | tokens | decode tok/s | drafted | acceptance | token IDs |')
-print('| --- | --- | ---: | ---: | ---: | ---: | --- |')
-for label, prompt, n, tps, draft_n, acceptance, identical in rows:
-    print('| {} | {} | {} | {} | {} | {} | {} |'.format(
+HEADER = ('| arm | prompt | tokens | decode tok/s | drafted | acceptance '
+          '| repeated 8-grams | token IDs |\n'
+          '| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |\n')
+
+def render(row):
+    label, prompt, n, tps, draft_n, acceptance, repetition, identical = row
+    return '| {} | {} | {} | {} | {} | {} | {} | {} |'.format(
         label, prompt,
         '-' if n is None else n,
         show(tps),
         '-' if draft_n is None else draft_n,
         '-' if acceptance is None else '{:.3f}'.format(acceptance),
-        identical))
+        '-' if repetition is None else '{:.0%}'.format(repetition),
+        identical)
+
+print(HEADER, end='')
+for row in rows:
+    print(render(row))
 
 with open(os.path.join(directory, 'matrix.md'), 'w') as handle:
-    handle.write('| arm | prompt | tokens | decode tok/s | drafted | acceptance | token IDs |\n')
-    handle.write('| --- | --- | ---: | ---: | ---: | ---: | --- |\n')
-    for label, prompt, n, tps, draft_n, acceptance, identical in rows:
-        handle.write('| {} | {} | {} | {} | {} | {} | {} |\n'.format(
-            label, prompt,
-            '-' if n is None else n,
-            show(tps),
-            '-' if draft_n is None else draft_n,
-            '-' if acceptance is None else '{:.3f}'.format(acceptance),
-            identical))
+    handle.write(HEADER)
+    for row in rows:
+        handle.write(render(row) + '\n')
 PY
 
 printf 'speculation_matrix=completed output_directory=%s\n' "$output_directory"
