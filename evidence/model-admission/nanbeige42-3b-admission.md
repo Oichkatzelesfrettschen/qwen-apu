@@ -76,6 +76,52 @@ A measurement inside 2.00 to 2.14 confirms it. Below 2.00 indicates depth cost
 beyond the 32-layer band, which is a quantitative correction rather than a
 refutation.
 
+## The loop doubles the KV cache, and the architecture is dense
+
+Weight traffic is half the account. `nanbeige.cpp` comments that each loop slot
+keeps its own KV index, so the cache is sized for 44 layers, and Nanbeige is
+dense full attention: every one of those 44 holds a key-value cache. The
+Qwen3.5-architecture checkpoints are 3:1 hybrids where only the full-attention
+layers do, six of the 2B's 24 and eight of the 32 in the 4B and 9B, with the
+rest holding recurrent state instead.
+
+`qwen-capacity-policy.sh` sets `--cache-type-k q8_0` and `--cache-type-v q4_0`,
+which is 34 and 18 bytes per 32 elements. That gives
+`layers x kv_heads x head_dim x (34+18)/32` bytes per token, and the formula
+reproduces the served logs exactly:
+
+| Checkpoint | KV layers | bytes/token | KV at 24576 | measured |
+| --- | ---: | ---: | ---: | --- |
+| Qwen3.8-2B distill | 6 of 24 | 4,992 | 117.0 MiB | 117.00 MiB |
+| Qwen3.8-4B distill | 8 of 32 | 13,312 | 312.0 MiB | 312.00 MiB |
+| Qwen3.8-9B distill | 8 of 32 | 13,312 | 312.0 MiB | 312.00 MiB |
+| Nanbeige4.2-3B | 44 of 44 | 73,216 | 1716.0 MiB | derived |
+
+Two measured rows fix the formula, so the Nanbeige row is derived rather than
+estimated: 1716 MiB against the 4B's 312, 5.5 times the footprint at the same
+context.
+
+The consequence for throughput is larger than the footprint. Attention reads the
+whole cache every token, so the context tax scales with the same factor:
+
+| Context | 4B and 9B | Nanbeige4.2-3B |
+| ---: | ---: | ---: |
+| 4,096 | 54.5 MB/token | 299.9 MB/token |
+| 16,384 | 218.1 MB/token | 1199.6 MB/token |
+| 24,576 | 327.2 MB/token | 1799.4 MB/token |
+
+`llama-bench tg64` measures decode against a near-empty cache, so the 2.00 to
+2.14 tok/s prediction is the optimistic end and applies to the first tokens of a
+conversation. At 4K of context Nanbeige adds 0.30 GB per token to a 4.15 GB
+weight stream, a 7% cost, while the 4B adds 0.05 GB to 2.70 GB, a 2% cost. The
+gap widens with depth in a way it does not for the incumbents, which is the
+opposite of what an agent workload wants: repository and terminal work is
+long-context by nature.
+
+`model-memory-preflight.sh` reports headroom and admits every launch, so the
+resident total of roughly 2.4 GB of weights plus 1.7 GB of cache is read from
+its report rather than predicted here.
+
 ## Why the published evidence does not transfer
 
 The Artificial Analysis mobile study that places Nanbeige4.2-3B at the top of
