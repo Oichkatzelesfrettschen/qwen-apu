@@ -106,7 +106,7 @@ requires HIP 6.1 or newer and Ubuntu ships 5.7.31921, so the backend refuses to
 configure. Newer distribution packages do not exist for this release, which
 makes the current-ROCm route mandatory rather than optional.
 
-## TheRock supplies the runtime and repairs the copy engine
+## TheRock supplies the runtime and repairs the small copy
 
 `rocm[libraries,devel,device-gfx900]` from the AMD nightly index installs ROCm
 10.1.0a20260825 with HIP 7.16.26332 into a virtual environment, which clears
@@ -114,7 +114,8 @@ the 6.1 requirement. Its device pack ships `gfx900` rocBLAS kernels and its
 target list omits `gfx902`, so the impersonation the Ubuntu route needed is
 still the one that applies.
 
-The newer runtime reads the same silicon differently and fixes the hang:
+The newer runtime reads the same silicon differently and clears the smoke
+test:
 
 | Runtime | HIP | `gfx902` smoke test, SDMA enabled |
 | --- | --- | --- |
@@ -155,7 +156,7 @@ names the HIP compiler directly. And its clang, LLVM 24, selects GCC 14's
 libstdc++ where Ubuntu 24.04 installs only GCC 13's, so `libstdc++-14-dev`
 supplies what it looks for and spares every target a `--gcc-install-dir` flag.
 
-## The arithmetic bounds what ROCm can return
+## The arithmetic heuristic sizes what ROCm can return
 
 Nominal FP32 throughput for this GPU:
 
@@ -215,6 +216,26 @@ different thresholds:
 At or below those figures the Vulkan backend already holds the reachable
 performance.
 
+The criterion is now tested and unmet. Under `HSA_ENABLE_SDMA=0` the same
+binary benchmarks both backends against Qwen3.8-4B Distill Q4_K_M at nice 19
+with idle I/O, phases split, and HIP loses both serving metrics:
+
+| Backend | prefill tok/s | decode tok/s |
+| --- | ---: | ---: |
+| RADV Vulkan | 23.48 | 3.07 +/- 0.02 |
+| HIP, gfx900 override | 12.20 | 2.02 +/- 0.15 |
+
+HIP decode variance is 7.4% against Vulkan's 0.7%, eleven times wider over the
+same three repetitions. A one-thread HIP arm returns 1.98 against two threads'
+1.97, which falsifies host-worker starvation as the explanation.
+`evidence/rocm-vulkan-backend-matrix.md` carries the arms.
+
+`gpu_busy_percent` reads high throughout the hung run, so it establishes that
+work is resident on the device rather than that the run makes forward
+progress. The counters that distinguish the two are the process read counters
+and the GTT allocation, and `evidence/rocm-h0-operational-failure.md` records
+them flat across the wait.
+
 The comparison runs from one binary. `build-qwen-dual` configures
 `-DGGML_VULKAN=ON -DGGML_HIP=ON -DAMDGPU_TARGETS=gfx900` against the same
 source commit, so `llama-bench --device` selects the backend and a difference
@@ -235,15 +256,17 @@ Four inputs differ. The distribution is Mint 22.2 "Zara" rather than 22.3
 bus is 128-bit with both slots holding 16 GB at 2400 MT/s, which removes a
 dual-channel upgrade from consideration and fixes nominal bandwidth at
 38.4 GB/s. Ubuntu's ROCm cannot build llama.cpp at all, which promotes
-TheRock from secondary route to the only route. And TheRock repairs the copy
-engine that the older runtime hangs on, which turns the plan's SDMA workaround
-into a version requirement.
+TheRock from secondary route to the only route. And TheRock clears the
+small-buffer copy that the older runtime hangs on, which narrows rather than
+retires the plan's SDMA workaround: a 2.58 GiB model upload still enters
+`rocr::core::BusyWaitSignal` under 10.1, so `HSA_ENABLE_SDMA=0` remains
+mandatory on this silicon at every runtime revision tested.
 
 The plan's own reservation about TheRock stands: `gfx900` is build-passing
 rather than sanity-tested, and `gfx902` is absent from its public device
 targets, so the newer stack impersonates exactly as the older one does. It
 earns its place here by supplying a HIP the build accepts and a runtime that
-completes a copy.
+completes a small copy.
 
 OpenCL availability and OpenCL support are separate questions. TheRock installs
 an AMD ICD, and RustiCL supplies another from Mesa, so a runtime can enumerate
