@@ -47,6 +47,11 @@ def last_number(text):
     return float(matches[-1]) if matches else None
 
 
+def reject_nonfinite_json_constant(constant):
+    """Reject Python's non-standard NaN and infinity JSON extensions."""
+    raise ValueError(f"non-finite JSON constant: {constant}")
+
+
 def grade(row, reply):
     """Return (passed, reason). A grader reports why it refused, because a
     category-level pass rate without reasons hides a formatting failure inside
@@ -75,8 +80,9 @@ def grade(row, reply):
                                else f"none of {'|'.join(wanted)}")
     if kind == "json_keys":
         try:
-            document = json.loads(body)
-        except Exception as error:
+            document = json.loads(
+                body, parse_constant=reject_nonfinite_json_constant)
+        except (ValueError, RecursionError) as error:
             return False, f"not JSON: {error}"
         if not isinstance(document, dict):
             return False, "JSON is not an object"
