@@ -59,6 +59,17 @@ if [ "$actual_commit" != "$expected_commit" ] && [ "${QWEN_ALLOW_ANY_COMMIT:-0}"
     exit 1
 fi
 
+# The repository applies a patch series on top of the pinned commit, so the
+# tree that produces a measurement is the commit plus that diff. A revision
+# alone names a different tree, which is why the state is printed and recorded
+# rather than assumed clean; `verify-llama-patch-series.sh` checks its content.
+worktree_state=clean
+if [ -n "$(git -C "$source_directory" status --porcelain)" ]; then
+    worktree_state=dirty
+fi
+printf 'source_commit=%s worktree=%s\n' "$actual_commit" "$worktree_state"
+git -C "$source_directory" diff --stat | tail -1
+
 hip_compiler=$rocm_path/lib/llvm/bin/clang++
 [ -x "$hip_compiler" ] || {
     printf 'TheRock clang++ is absent: %s\n' "$hip_compiler" >&2

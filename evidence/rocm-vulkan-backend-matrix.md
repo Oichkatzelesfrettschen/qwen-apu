@@ -23,11 +23,16 @@ for a HIP row above 22.00 prefill or 3.02 decode on this checkpoint. Both rows
 fall below both figures, so the criterion is tested and unmet, and RADV Vulkan
 holds the serving backend on measurement rather than on default.
 
-The Vulkan phase-split rows differ slightly from the combined-run figures they
-replace, 21.49 against 22.00 prefill and 3.10 against 3.02 decode. Splitting the
-phases removes the shared warmup and the alternation between them, which moves
-each figure by about 2.5% in opposite directions. The combined figures remain
-the ones the README quotes for serving, because serving alternates the phases.
+The Vulkan row here differs from the figures the README quotes, 21.49 against
+22.00 prefill and 3.10 against 3.02 decode. Two things changed at once and this
+run separates neither: the protocol split the phases, and the binary is the
+dual-backend build rather than the Vulkan-only one, which is why its backend
+column reads `ROCm,Vulkan`. Attributing the 2.5% to phase splitting alone would
+overstate what the run shows.
+
+The V row is the correct control for H0 regardless, because H0 came from the
+same binary in the same protocol. The README figures stay as the serving
+numbers, because serving alternates the phases.
 
 ## Every HIP arm requires HSA_ENABLE_SDMA=0
 
@@ -55,8 +60,31 @@ at per-token overhead outside the matrix multiplications: dispatch frequency,
 short-kernel synchronization, and the host wait state that `BusyWaitSignal`
 spins in while holding one of this machine's two cores.
 
-Two arms separate those. `GGML_CUDA_FORCE_MMQ` is a compile-time option that
-routes quantized matrix multiplication through ggml's own kernels instead of
-rocBLAS, which moves prefill if Tensile selection is the prefill term and leaves
-decode where it is. A native `gfx902` build without the override tests whether
-the impersonation costs anything on top.
+## Predictions recorded before the arms run
+
+`GGML_CUDA_FORCE_MMQ` is a compile-time option that routes batched quantized
+matrix multiplication through ggml's own kernels instead of dequantize plus
+rocBLAS. Decode at batch one goes through `mul_mat_vec_q` in `mmvq.cu` whatever
+that option says, because the flag governs a choice the batched path makes.
+
+H1 therefore predicts prefill above 14.06 and decode within noise of 2.22. A
+decode figure that moves materially falsifies the reading of what the option
+controls, and that deviation is the finding rather than a footnote.
+
+Nothing in H1 or a native `gfx902` arm addresses the decode gap, which is the
+number the serving verdict rests on. The candidate there is CPU contention:
+`BusyWaitSignal` spins a full core while `-t 2` asks ggml for both of them, so
+the HIP arm is oversubscribed on a two-core machine in a way the RADV arm is
+not. Re-running H0 decode at `-t 1` against the recorded `-t 2` row tests it,
+needs no rebuild, and costs about a minute. If `-t 1` recovers decode, the
+deficit is the host wait state rather than kernel quality.
+
+## How a partial result is read
+
+The recorded criterion asks for prefill above 22.00 tok/s or decode above 3.02.
+A HIP arm that satisfies the prefill half while decode stays near 2.22 refutes
+the arithmetic claim that Vulkan holds the reachable prefill performance, and
+leaves the serving default where it is: an appliance answering a chat prompt
+spends its time in decode, and a backend that loses there loses the deployment
+whatever prefill does. The report names which half moved rather than reporting
+the disjunction as satisfied.

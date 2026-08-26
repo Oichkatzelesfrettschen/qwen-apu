@@ -46,12 +46,21 @@ rocm_path=${ROCM_PATH:-"${HOME:?}/.venvs/rocm-gfx900/lib/python3.12/site-package
 mkdir -p "$(dirname -- "$output_path")"
 
 model_digest=$(sha256sum "$model_path" | cut -d' ' -f1)
-source_commit=$("$binary_directory/llama-bench" --version 2>&1 | awk '/^build:/ { print $2; exit }')
+# llama-bench prints its `build:` line with the result table rather than under a
+# version flag, so provenance reads from the source tree the binary came from.
+# The patch series this repository applies means the revision alone names a
+# different tree, and the worktree state travels with it.
+source_directory=${QWEN_LLAMA_SOURCE:-"${HOME:?}/src/llama.cpp-qwen-apu"}
+source_commit=$(git -C "$source_directory" rev-parse HEAD 2>/dev/null || echo unknown)
+source_worktree=clean
+if [ -n "$(git -C "$source_directory" status --porcelain 2>/dev/null)" ]; then
+    source_worktree=dirty
+fi
 
 {
     printf 'matrix_run model=%s\n' "$(basename -- "$model_path")"
     printf 'model_sha256=%s\n' "$model_digest"
-    printf 'llama_build=%s\n' "${source_commit:-unknown}"
+    printf 'llama_commit=%s worktree=%s\n' "$source_commit" "$source_worktree"
     printf 'phase_timeout_seconds=%s repetitions=%s\n' "$phase_timeout" "$repetitions"
 } | tee "$output_path"
 
