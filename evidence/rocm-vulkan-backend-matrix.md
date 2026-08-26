@@ -22,7 +22,14 @@ shell. The rows are the retained ones:
 | H0, `gfx900` under override, automatic kernels | 2 | 12.20 | 1.97 | 89 | 38 |
 | H0t1, the same arm at one ggml thread | 1 | | 1.98 | | 37 |
 
-HIP reaches 52.0% of the Vulkan prefill rate and 63.8% of its decode rate. The
+Decode repeated three times, which the section below uses:
+
+| Arm | decode tok/s |
+| --- | ---: |
+| V, RADV Vulkan | 3.07 +/- 0.02 |
+| H0, HIP | 2.02 +/- 0.15 |
+
+HIP reaches 52.0% of the Vulkan prefill rate and 65.8% of its decode rate. The
 falsification criterion recorded in `evidence/rocm-feasibility-audit.md` asks
 for a HIP row above 22.00 prefill or 3.02 decode on this checkpoint. Both rows
 fall below both figures, so the criterion is tested and unmet, and RADV Vulkan
@@ -55,26 +62,39 @@ Vulkan decode moves 0.3% across the policies and its prefill measures 9.3%
 higher at nice 19. HIP measures 13.2% lower on prefill and 11.3% lower on
 decode.
 
-Every one of those figures comes from a single repetition, so the comparison
-does not yet support a mechanism. A 9.3% Vulkan swing that is called run-to-run
-variation and an 11.3% HIP swing that is called a scheduling effect cannot both
-be read from the same evidence; either the machine varies by roughly ten percent
-at one repetition or it does not. The decode phases are being re-run at three
-repetitions to settle which, and the paragraph that follows stands or falls on
-that.
+Those figures each come from a single repetition. Re-running both decode phases
+at three repetitions under the serving policy refuses the scheduling reading:
 
-The candidate mechanism, stated so the re-run can refute it: a backend whose
-completion detection sleeps on a fence is indifferent to the priority of the
-waiting thread, and a backend that polls a value in userspace has its poll loop
-descheduled. That would separate cleanly from the `-t 1` result by placing the
-sensitivity in the HSA wait thread rather than in the ggml worker pool, which is
-why changing the worker count moves nothing. If the HIP decode difference
-between the policies does not survive error bars, this mechanism has no support
-here and the observation reduces to the rows themselves.
+| Arm | decode, three repetitions | spread |
+| --- | ---: | ---: |
+| V, RADV Vulkan | 3.07 +/- 0.02 | 0.7% |
+| H0, HIP | 2.02 +/- 0.15 | 7.4% |
 
-The verdict does not rest on it either way. HIP decodes at 1.97 tok/s against
-3.09 under the policy the appliance actually serves under, and the falsification
-criterion is unmet by a margin no scheduling attribution changes.
+HIP's 2.02 +/- 0.15 covers the 2.22 measured at normal priority within about
+1.3 standard deviations, so the policy difference has no support and the
+candidate mechanism -- a userspace poll loop descheduled where a fence sleep is
+not -- is withdrawn. What was read as a scheduling effect on the mean is one
+repetition of a wide distribution.
+
+The distribution itself is the retained observation. HIP decode varies eleven
+times as much as Vulkan decode across repetitions of an identical workload,
+7.4% against 0.7%, on a machine whose desktop and QEMU guest load both arms
+equally. A backend that sleeps on a fence hands its wait to the scheduler and
+resumes when the work completes; a backend that polls a value in userspace
+competes for the CPU it polls on, and that competition varies with whatever else
+the machine is doing. The variance separates the backends where the mean shift
+did not survive.
+
+Vulkan's 3.07 +/- 0.02 also settles the earlier prefill question in the other
+direction. Decode reproduces to better than one percent, so this machine does
+not simply vary by ten percent at one repetition, and the 9.3% Vulkan prefill
+swing between the policies is unexplained rather than dismissed. Prefill was not
+re-run at three repetitions and stays a single-repetition figure.
+
+The verdict rests on none of it. HIP decodes at 2.02 +/- 0.15 against 3.07
++/- 0.02 under the policy the appliance serves under, a separation far outside
+either spread, and the falsification criterion is unmet by a margin no
+scheduling attribution changes.
 
 The Vulkan row here differs from the figures the README quotes, 21.49 against
 22.00 prefill and 3.10 against 3.02 decode. Two things changed at once and this
