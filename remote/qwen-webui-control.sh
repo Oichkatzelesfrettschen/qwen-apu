@@ -41,6 +41,18 @@ server_port=${QWEN_SERVER_PORT:-8080}
 # faster across the five-prompt suite. It ships text-only, so the vision profile
 # names the base checkpoint, whose projector travels beside it.
 model_path=${QWEN_MODEL_PATH:-"${HOME:?}/models/Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf"}
+# remote/promote-llama-build.sh gates a preset and points build-appliance-current
+# at it in one rename, so switching build arms or rolling one back leaves this
+# script untouched. The named directory is what the appliance was built with
+# before presets existed, and it serves until a promotion happens.
+llama_source_directory=${QWEN_LLAMA_SOURCE_DIRECTORY:-"${HOME:?}/src/llama.cpp-qwen-apu"}
+llama_server=${QWEN_LLAMA_SERVER:-}
+if [ -z "$llama_server" ]; then
+    llama_server=$llama_source_directory/build-appliance-current/bin/llama-server
+    if [ ! -x "$llama_server" ]; then
+        llama_server=$llama_source_directory/build-qwen-vulkan/bin/llama-server
+    fi
+fi
 static_path=${QWEN_STATIC_PATH:-"$script_directory/../webui-llama-ui"}
 if [ ! -f "$static_path/index.html" ]; then
     static_path=$script_directory/../webui
@@ -92,10 +104,11 @@ case $action in
             fi
         done
         tmux -L "$tmux_socket" new-session -d -s "$tmux_session" \
-            "env $forwarded_environment QWEN_BIND_HOST=\"$bind_host\" QWEN_LATENCY_MODE=\"$latency_mode\" $script_directory/qwen-webui-session.sh \"\$HOME/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-server\" \"$model_path\" \"$static_path\" $context_size $required_vulkan_mib $server_port \"$state_directory\" \"$profile\""
-        printf 'started tmux_socket=%s tmux_session=%s profile=%s host=%s port=%s context=%s latency_mode=%s model=%s\n' \
+            "env $forwarded_environment QWEN_BIND_HOST=\"$bind_host\" QWEN_LATENCY_MODE=\"$latency_mode\" $script_directory/qwen-webui-session.sh \"$llama_server\" \"$model_path\" \"$static_path\" $context_size $required_vulkan_mib $server_port \"$state_directory\" \"$profile\""
+        printf 'started tmux_socket=%s tmux_session=%s profile=%s host=%s port=%s context=%s latency_mode=%s model=%s server=%s\n' \
             "$tmux_socket" "$tmux_session" "$profile" "$bind_host" \
-            "$server_port" "$context_size" "$latency_mode" "$model_path"
+            "$server_port" "$context_size" "$latency_mode" "$model_path" \
+            "$llama_server"
         printf 'speculation spec_type=%s draft_n_max=%s draft_p_min=%s draft_backend_sampling=%s backend_sampling=%s\n' \
             "${QWEN_SPEC_TYPE:-off}" "${QWEN_SPEC_DRAFT_N_MAX:-default}" \
             "${QWEN_SPEC_DRAFT_P_MIN:-default}" \
