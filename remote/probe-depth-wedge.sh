@@ -92,6 +92,18 @@ if [ -s "$summary" ]; then
             "$duplicate_arm" >&2
         exit 2
     fi
+    if ! awk -F'\t' -v cache_k="$cache_type_k" \
+        -v cache_v="$cache_type_v" -v flash="$flash_attention" '
+        NR > 1 && ($5 != cache_k || $6 != cache_v || $7 != flash) {
+            printf "recorded arm %s belongs to cache policy %s/%s/%s, not %s/%s/%s; use a new output directory\n", \
+                $1, $5, $6, $7, cache_k, cache_v, flash > "/dev/stderr"
+            mismatch = 1
+            exit
+        }
+        END { exit mismatch }
+    ' "$summary"; then
+        exit 2
+    fi
     if awk 'NR > 1 { found = 1; exit } END { exit !found }' "$summary"; then
         summary_has_arms=1
     fi

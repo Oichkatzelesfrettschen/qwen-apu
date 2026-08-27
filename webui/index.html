@@ -107,11 +107,12 @@
 const $ = s => document.querySelector(s);
 const logEl = $('#log');
 let history = [];
-let attachments = [];   // {name, text, tokens}
+let attachments = [];   // {name, text, tokens, tokenModel}
 let nctx = null;
+let nctxModel = null;
 let busy = false;
 let requestModel = null;
-let bootGeneration = 0;
+let modelStateGeneration = 0;
 
 function readBrowserStorage(storageName, key) {
   try { return window[storageName].getItem(key); } catch { return null; }
@@ -154,8 +155,7 @@ $('#api-key').addEventListener('keydown', event => {
   if (event.key === 'Enter') $('#set-key').click();
 });
 
-async function serverTokenCount(text) {
-  const selectedModel = requestModel;
+async function serverTokenCount(text, selectedModel) {
   if (!selectedModel) throw new Error('no routable model is selected');
   const response = await fetch('./tokenize', {
     method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
@@ -165,6 +165,72 @@ async function serverTokenCount(text) {
   const result = await response.json();
   if (!Array.isArray(result.tokens)) throw new Error('tokenizer returned no token array');
   return result.tokens.length;
+}
+
+function modelStateMatches(selectedModel, generation) {
+  return requestModel === selectedModel && modelStateGeneration === generation;
+}
+
+async function refreshModelContext(selectedModel, generation) {
+  try {
+    const modelUrl = `./props?model=${encodeURIComponent(selectedModel)}`;
+    const propsResponse = await fetch(modelUrl, { headers: authHeaders() });
+    if (!modelStateMatches(selectedModel, generation)) return;
+    if (propsResponse.ok) {
+      const props = await propsResponse.json();
+      if (!modelStateMatches(selectedModel, generation)) return;
+      const reportedContext =
+        props.default_generation_settings?.n_ctx ?? props.n_ctx ?? null;
+      if (Number.isFinite(reportedContext) && reportedContext > 0) {
+        nctx = reportedContext;
+        nctxModel = selectedModel;
+      }
+    }
+  } catch { /* the selected model remains routable without context metadata */ }
+  if (!modelStateMatches(selectedModel, generation)) return;
+  $('#ctx').textContent = nctxModel === selectedModel
+    ? nctx.toLocaleString() + ' token context'
+    : 'context unavailable for selected model';
+  renderAttached();
+}
+
+async function refreshAttachmentTokens(selectedModel, generation) {
+  const retainedAttachments = [...attachments];
+  await Promise.all(retainedAttachments.map(async attachment => {
+    let tokens = null;
+    try { tokens = await serverTokenCount(attachment.text, selectedModel); }
+    catch { /* an explicit unavailable count replaces the prior model's count */ }
+    if (!modelStateMatches(selectedModel, generation)) return;
+    if (!attachments.includes(attachment)) return;
+    attachment.tokens = tokens;
+    attachment.tokenModel = selectedModel;
+  }));
+  if (modelStateMatches(selectedModel, generation)) renderAttached();
+}
+
+function selectRequestModel(selectedModel) {
+  const generation = ++modelStateGeneration;
+  requestModel = selectedModel;
+  nctx = null;
+  nctxModel = null;
+  attachments.forEach(attachment => {
+    attachment.tokens = null;
+    attachment.tokenModel = null;
+  });
+  writeBrowserStorage('localStorage', 'qwen-apu-model-id', selectedModel);
+  $('#ctx').textContent = 'context pending for selected model';
+  renderAttached();
+  void refreshModelContext(selectedModel, generation);
+  void refreshAttachmentTokens(selectedModel, generation);
+}
+
+async function tokenCountForCurrentModel(text) {
+  while (requestModel) {
+    const selectedModel = requestModel;
+    const tokens = await serverTokenCount(text, selectedModel);
+    if (selectedModel === requestModel) return { tokens, tokenModel: selectedModel };
+  }
+  throw new Error('no routable model is selected');
 }
 
 const DEMO_TOOL = [{
@@ -187,16 +253,22 @@ async function boot() {
   // The router creates no qwen-apu compatibility alias. Its roster is the
   // authority for request ids, so the fallback page selects only a model that
   // the listener reports instead of assuming the single-model alias exists.
-  const generation = ++bootGeneration;
+  const generation = ++modelStateGeneration;
   const modelPicker = $('#model-picker');
   requestModel = null;
   nctx = null;
+  nctxModel = null;
+  attachments.forEach(attachment => {
+    attachment.tokens = null;
+    attachment.tokenModel = null;
+  });
   modelPicker.hidden = true;
   $('#ctx').textContent = 'context pending';
+  renderAttached();
 
   try {
     const rosterResponse = await fetch('./v1/models', { headers: authHeaders() });
-    if (generation !== bootGeneration) return;
+    if (generation !== modelStateGeneration) return;
     if (rosterResponse.status === 401) {
       $('#model').textContent =
         apiKey ? 'API key rejected' : 'this server wants an API key';
@@ -207,7 +279,7 @@ async function boot() {
       return;
     }
     const roster = await rosterResponse.json();
-    if (generation !== bootGeneration) return;
+    if (generation !== modelStateGeneration) return;
     const rosterModels = Array.isArray(roster.data) ? roster.data : [];
     const modelIds = [...new Set(rosterModels
       .map(model => model?.id)
@@ -218,7 +290,7 @@ async function boot() {
     }
 
     const storedModel = readBrowserStorage('localStorage', 'qwen-apu-model-id');
-    requestModel = modelIds.includes(storedModel) ? storedModel : modelIds[0];
+    const selectedModel = modelIds.includes(storedModel) ? storedModel : modelIds[0];
     modelPicker.textContent = '';
     for (const modelId of modelIds) {
       const option = document.createElement('option');
@@ -226,28 +298,13 @@ async function boot() {
       option.textContent = modelId;
       modelPicker.append(option);
     }
-    modelPicker.value = requestModel;
+    modelPicker.value = selectedModel;
     modelPicker.hidden = false;
     $('#model').textContent = `${modelIds.length} model${modelIds.length === 1 ? '' : 's'} available`;
 
-    try {
-      const propsResponse = await fetch('./props', { headers: authHeaders() });
-      if (generation !== bootGeneration) return;
-      if (propsResponse.ok) {
-        const props = await propsResponse.json();
-        if (generation !== bootGeneration) return;
-        nctx = props.default_generation_settings?.n_ctx ?? props.n_ctx ?? null;
-      }
-    } catch {
-      if (generation !== bootGeneration) return;
-      nctx = null;
-    }
-    $('#ctx').textContent = nctx
-      ? nctx.toLocaleString() + ' token context'
-      : 'context reported after model load';
-    renderAttached();
+    selectRequestModel(selectedModel);
   } catch (error) {
-    if (generation !== bootGeneration) return;
+    if (generation !== modelStateGeneration) return;
     requestModel = null;
     modelPicker.hidden = true;
     $('#model').textContent = `cannot load model roster: ${error.message || error}`;
@@ -256,8 +313,7 @@ async function boot() {
 void boot();
 
 $('#model-picker').addEventListener('change', event => {
-  requestModel = event.target.value;
-  writeBrowserStorage('localStorage', 'qwen-apu-model-id', requestModel);
+  selectRequestModel(event.target.value);
 });
 
 function chip(text, over, onRemove) {
@@ -275,14 +331,29 @@ function renderAttached() {
   const box = $('#attached');
   box.textContent = '';
   let total = 0;
-  attachments.forEach(a => total += a.tokens);
+  let countsComplete = true;
+  attachments.forEach(attachment => {
+    if (attachment.tokenModel === requestModel &&
+        Number.isInteger(attachment.tokens)) total += attachment.tokens;
+    else countsComplete = false;
+  });
+  const contextReady = nctxModel === requestModel && Number.isFinite(nctx);
   attachments.forEach((a, i) => {
-    const over = nctx && total > nctx * 0.9;
+    const countReady = a.tokenModel === requestModel && Number.isInteger(a.tokens);
+    const countText = countReady
+      ? `${a.tokens.toLocaleString()} tokens`
+      : a.tokenModel === requestModel ? 'token count unavailable' : 'token count pending';
+    const over = countsComplete && contextReady && total > nctx * 0.9;
     box.append(chip(
-      `${a.name} -- ${a.tokens.toLocaleString()} tokens`,
+      `${a.name} -- ${countText}`,
       over, () => { attachments.splice(i, 1); renderAttached(); }));
   });
-  if (attachments.length && nctx && total > nctx * 0.9) {
+  if (attachments.length && !countsComplete) {
+    const w = document.createElement('span');
+    w.className = 'chip over';
+    w.textContent = 'token counts remain unavailable for the selected model; context fit is unknown';
+    box.append(w);
+  } else if (attachments.length && contextReady && total > nctx * 0.9) {
     const w = document.createElement('span');
     w.className = 'chip over';
     w.textContent = `about ${total.toLocaleString()} tokens against a ${nctx.toLocaleString()} context; the server will refuse this with a 400`;
@@ -294,8 +365,8 @@ $('#file').onchange = async e => {
   for (const f of e.target.files) {
     const text = await f.text();
     try {
-      const tokens = await serverTokenCount(text);
-      attachments.push({ name: f.name, text, tokens });
+      const tokenState = await tokenCountForCurrentModel(text);
+      attachments.push({ name: f.name, text, ...tokenState });
     } catch (error) {
       window.alert(`Could not attach ${f.name}: ${error.message || error}`);
     }

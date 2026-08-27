@@ -26,14 +26,16 @@ bind_host=${QWEN_BIND_HOST:-127.0.0.1}
 cors_origins=${QWEN_CORS_ORIGINS:-localhost}
 
 validate_router_preset_tuples() {
-    awk '
+    awk -F'\t' -v model_root="$3" '
         function reset_tuple() {
+            model_count = 0
             context_count = 0
             cache_k_count = 0
             cache_v_count = 0
             flash_count = 0
             batch_count = 0
             ubatch_count = 0
+            model_value = ""
             context_value = ""
             cache_k_value = ""
             cache_v_value = ""
@@ -51,11 +53,17 @@ validate_router_preset_tuples() {
                 section, key, value > "/dev/stderr"
             rejected = 1
         }
+        function reject_registry_value(key, value, expected) {
+            printf "router preset section %s carries %s %s, registry admits %s\n", \
+                section, key, value, expected > "/dev/stderr"
+            rejected = 1
+        }
         function finish_section() {
             if (section == "" || section == "*") {
                 return
             }
             model_sections++
+            if (model_count != 1) reject_key("LLAMA_ARG_MODEL", model_count)
             if (context_count != 1) reject_key("LLAMA_ARG_CTX_SIZE", context_count)
             if (cache_k_count != 1) reject_key("LLAMA_ARG_CACHE_TYPE_K", cache_k_count)
             if (cache_v_count != 1) reject_key("LLAMA_ARG_CACHE_TYPE_V", cache_v_count)
@@ -85,8 +93,55 @@ validate_router_preset_tuples() {
             if (flash_count == 1 && flash_value !~ /^(on|off|auto)$/) {
                 reject_value("LLAMA_ARG_FLASH_ATTN", flash_value)
             }
+            if (registry_count[section] != 1) {
+                printf "router preset section %s resolves to %d registry rows\n", \
+                    section, registry_count[section] > "/dev/stderr"
+                rejected = 1
+                return
+            }
+            expected_model = model_root "/" registry_model[section]
+            if (model_count == 1 && model_value != expected_model) {
+                reject_registry_value("LLAMA_ARG_MODEL", model_value,
+                    expected_model)
+            }
+            if (context_count == 1 && context_value != registry_context[section]) {
+                reject_registry_value("LLAMA_ARG_CTX_SIZE", context_value,
+                    registry_context[section])
+            }
+            if (cache_k_count == 1 && cache_k_value != registry_cache_k[section]) {
+                reject_registry_value("LLAMA_ARG_CACHE_TYPE_K", cache_k_value,
+                    registry_cache_k[section])
+            }
+            if (cache_v_count == 1 && cache_v_value != registry_cache_v[section]) {
+                reject_registry_value("LLAMA_ARG_CACHE_TYPE_V", cache_v_value,
+                    registry_cache_v[section])
+            }
+            if (flash_count == 1 && flash_value != registry_flash[section]) {
+                reject_registry_value("LLAMA_ARG_FLASH_ATTN", flash_value,
+                    registry_flash[section])
+            }
+            if (batch_count == 1 && batch_value != registry_batch[section]) {
+                reject_registry_value("LLAMA_ARG_BATCH", batch_value,
+                    registry_batch[section])
+            }
+            if (ubatch_count == 1 && ubatch_value != registry_ubatch[section]) {
+                reject_registry_value("LLAMA_ARG_UBATCH", ubatch_value,
+                    registry_ubatch[section])
+            }
         }
         BEGIN { reset_tuple() }
+        FNR == NR {
+            if ($0 ~ /^[[:space:]]*($|#)/) next
+            registry_count[$1]++
+            registry_model[$1] = $3
+            registry_context[$1] = $5
+            registry_cache_k[$1] = $8
+            registry_cache_v[$1] = $9
+            registry_flash[$1] = $10
+            registry_batch[$1] = $17
+            registry_ubatch[$1] = $18
+            next
+        }
         /^[[:space:]]*($|[#;])/ { next }
         /^[[:space:]]*\[/ {
             finish_section()
@@ -116,7 +171,10 @@ validate_router_preset_tuples() {
             value = substr($0, separator + 1)
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
-            if (key == "LLAMA_ARG_CTX_SIZE") {
+            if (key == "LLAMA_ARG_MODEL") {
+                model_count++
+                model_value = value
+            } else if (key == "LLAMA_ARG_CTX_SIZE") {
                 context_count++
                 context_value = value
             } else if (key == "LLAMA_ARG_CACHE_TYPE_K") {
@@ -144,7 +202,7 @@ validate_router_preset_tuples() {
             }
             exit rejected
         }
-    ' "$1"
+    ' "$1" "$2"
 }
 
 case $bind_host in
@@ -369,11 +427,17 @@ fi
 # resident model competes for a pool already saturated by one. Switching models
 # unloads the previous one, which costs a reload and buys a device that fits.
 router_presets=${QWEN_ROUTER_PRESETS:-"${HOME:?}/qwen-webui-state/router-presets.ini"}
+router_registry=${QWEN_MODEL_REGISTRY:-"$script_directory/models.tsv"}
+router_model_root=${QWEN_MODEL_ROOT:-"${HOME:?}/models"}
 router_max=${QWEN_ROUTER_MAX:-1}
 if [ "$router_enabled" = 1 ]; then
     if [ ! -r "$router_presets" ]; then
         printf 'router presets are unreadable: %s\n' "$router_presets" >&2
         printf 'generate them with remote/build-router-presets.sh\n' >&2
+        exit 2
+    fi
+    if [ ! -r "$router_registry" ]; then
+        printf 'router model registry is unreadable: %s\n' "$router_registry" >&2
         exit 2
     fi
     case $router_max in
@@ -400,7 +464,8 @@ if [ "$router_enabled" = 1 ]; then
             exit 2
             ;;
     esac
-    if ! validate_router_preset_tuples "$router_presets"; then
+    if ! validate_router_preset_tuples "$router_registry" "$router_presets" \
+        "$router_model_root"; then
         printf 'router presets do not carry complete admitted tuples: %s\n' \
             "$router_presets" >&2
         exit 2

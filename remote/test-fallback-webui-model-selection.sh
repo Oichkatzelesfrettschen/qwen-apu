@@ -13,16 +13,29 @@ grep -F "fetch('./v1/models'" "$fallback_ui" >/dev/null
 grep -F 'model: requestModel' "$fallback_ui" >/dev/null
 grep -F 'model: selectedModel, content: text, add_special: false' \
     "$fallback_ui" >/dev/null
+grep -F './props?model=${encodeURIComponent(selectedModel)}' \
+    "$fallback_ui" >/dev/null
 grep -F "if (!selectedModel) throw new Error('no routable model is selected')" \
     "$fallback_ui" >/dev/null
 grep -F "modelIds.includes(storedModel) ? storedModel : modelIds[0]" \
     "$fallback_ui" >/dev/null
 grep -F "readBrowserStorage('localStorage', 'qwen-apu-model-id')" \
     "$fallback_ui" >/dev/null
-grep -F "writeBrowserStorage('localStorage', 'qwen-apu-model-id', requestModel)" \
+grep -F "writeBrowserStorage('localStorage', 'qwen-apu-model-id', selectedModel)" \
     "$fallback_ui" >/dev/null
-grep -F 'const generation = ++bootGeneration' "$fallback_ui" >/dev/null
-grep -F 'if (generation !== bootGeneration) return' "$fallback_ui" >/dev/null
+grep -F 'const generation = ++modelStateGeneration' "$fallback_ui" >/dev/null
+grep -F 'return requestModel === selectedModel && modelStateGeneration === generation' \
+    "$fallback_ui" >/dev/null
+grep -F 'attachment.tokenModel = selectedModel' "$fallback_ui" >/dev/null
+grep -F 'attachment.tokenModel = null' "$fallback_ui" >/dev/null
+grep -F 'nctxModel = selectedModel' "$fallback_ui" >/dev/null
+grep -F 'nctxModel = null' "$fallback_ui" >/dev/null
+grep -F 'selectRequestModel(event.target.value)' "$fallback_ui" >/dev/null
+
+if grep -F "fetch('./props'" "$fallback_ui" >/dev/null; then
+    printf 'fallback Web UI requests unscoped router context metadata\n' >&2
+    exit 1
+fi
 
 if grep -E '(localStorage|sessionStorage)\.(getItem|setItem|removeItem)' \
     "$fallback_ui" >/dev/null; then

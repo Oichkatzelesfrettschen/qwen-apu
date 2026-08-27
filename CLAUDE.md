@@ -118,14 +118,15 @@ fields rather than constants in the argv.
 
 `remote/probe-depth-wedge.sh` treats an output directory as a resumable evidence
 ledger. `wedge-metadata.tsv` binds the ledger to the model SHA-256, model byte
-count, and recovery-control length. A recorded arm resumes only when its summary
-row is structurally complete, unique, and carries the requested depth,
-submission geometry, cache types, and Flash Attention state, with its bench log,
-clock samples, control log, and any claimed kernel delta still present. A
-different model, tuple, incomplete artifact set, duplicate row, or legacy row
-without model identity requires a new output directory. The retained row also
-restores health and device-corruption state, so conditional arms and terminal
-halt behavior remain the same across an interrupted run.
+count, and recovery-control length. Startup validates every retained row against
+the invocation's cache K/V and Flash Attention tuple before it selects the
+requested arms. A recorded arm resumes only when its summary row is structurally
+complete, unique, and carries the requested depth and submission geometry, with
+its bench log, clock samples, control log, and any claimed kernel delta still
+present. A different model, tuple, incomplete artifact set, duplicate row, or
+legacy row without model identity requires a new output directory. The retained
+row also restores health and device-corruption state, so conditional arms and
+terminal halt behavior remain the same across an interrupted run.
 
 The `tier` field states what is claimed about a row and
 `remote/build-router-presets.sh` turns it into what the picker offers.
@@ -170,18 +171,24 @@ geometry.
 Router startup still selects the largest installed servable GGUF as the
 resident-memory preflight subject. That path sizes weight headroom only. Its
 standalone context ceiling never constrains the listener, because each preset
-section supplies its own complete tuple and the capacity policy revalidates the
-six key values before launch. The launcher's positive context argument remains
-a control-path input but never reaches the router argv.
+section supplies its own complete tuple. The capacity policy resolves the
+section ID and model path to one registry row and requires the section's
+context, cache K/V, Flash Attention, batch, and ubatch values to equal that row
+before launch. The launcher's positive context argument remains a control-path
+input but never reaches the router argv.
 
 The repository fallback Web UI treats `GET /v1/models` as the request-model
 authority and sends only a returned id for chat completion and attachment
 tokenization. Its picker retains a still-valid choice when browser storage
-permits and continues with live state when storage is denied. `GET /props`
-supplies optional context display metadata; an unavailable or malformed props
-response leaves the selected model routable. A new API-key attempt clears the
-prior selection until the authenticated roster returns, and late responses
-from an older attempt never replace the newer state.
+permits and continues with live state when storage is denied. Each selection
+uses `GET /props?model=<encoded-id>` for context metadata and retokenizes every
+retained attachment with that same id. Context and token counts carry the model
+identity and selection generation that produced them, so a change marks both
+pending before any asynchronous response arrives. An unavailable or malformed
+response leaves an explicit unknown value while the selected model remains
+routable. A new API-key attempt clears the prior selection until the
+authenticated roster returns, and late responses from an older attempt never
+replace the newer state.
 
 Sequential host read bandwidth measures 7.97 GB/s on one thread and 15.44 GB/s
 on two. Those figures measure the two Zen+ cores through the load/store path,
@@ -199,10 +206,12 @@ alone and applies it as an absolute child priority, independent of the calling
 shell's niceness.
 
 A positive `QWEN_BENCH_PREFILL` requests a paired prefill/decode arm. A
-successful `llama-bench` process must emit both the requested `pp` row and its
-`tg` row. Missing prefill output remains `n/a` in the retained summary, emits
-`arm_prefill_missing`, and makes the ladder terminal state `failed`; the decode
-half never promotes an incomplete pair to a completed sweep.
+successful `llama-bench` process must emit exactly one
+`pp${QWEN_BENCH_PREFILL}` row and one `tg${QWEN_BENCH_GENERATE}` row, with an
+optional depth suffix on either label. A row for another token count cannot
+satisfy the requested arm. Missing or duplicate output remains `n/a` in the
+retained summary and makes the ladder terminal state `failed`; one half never
+promotes an incomplete pair to a completed sweep.
 
 Decode scales with checkpoint size, and a linear cost model over it is refuted.
 Two points, the 4B and the 9B, fit 0.1015 s per token plus 0.0869 s per GiB and
