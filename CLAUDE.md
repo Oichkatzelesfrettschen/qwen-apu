@@ -146,7 +146,11 @@ signature, its validated safe tuples, and its re-entry gate.
 `model-registry.sh servable-ids` and `servable-files` apply the same
 router-child exclusions to the registry's default tuple, and an unreadable
 or malformed quarantine registry stops router and standalone tuple
-construction. A research override labels every
+construction. Each query validates and consumes one opened quarantine snapshot,
+so a replacement cannot separate semantic admission from the rows acted upon.
+Profile depth, batch, and ubatch fields use canonical positive decimal integers
+without leading zeroes because the runtime builds exact string tuple keys. A
+research override labels every
 exposed excluded tuple `quarantine` and withholds the `default` tag.
 `QWEN_ROUTER_INCLUDE_QUARANTINE=1` exposes a quarantined checkpoint for research.
 The generated preset records that override, and `qwen-capacity-policy.sh`
@@ -164,7 +168,10 @@ startup queries the same quarantine authority and rejects a persisted section
 that a later model- or profile-scope row excludes. It also rejects sections
 whose registry tier moves to `archive` or `rejected`, and a `quarantine` tier
 requires model-scope authority. The marked research override admits authorized
-quarantine sections and forces the listener to loopback.
+quarantine sections and forces the listener to loopback. Every persisted
+quarantine section retains exactly one `LLAMA_ARG_TAGS` key that contains
+`quarantine` and excludes `default` and every conflicting tier tag; startup
+rejects a stale tag set before the server runs.
 
 Router mode leaves depth, cache triple, and submission geometry off its own
 argv. `server-models.cpp` ends its preset assembly with
@@ -510,7 +517,10 @@ cleanly while writing image tokens the language model reads nothing from, so
 declares and requires the answer to carry it. Promotion requires the text model,
 vision model, projector, and image before either smoke stage begins. The artifact
 manifest owns `llama-server`, `llama-cli`, `llama-mtmd-cli`, and the multimodal
-consumer's current load closure. `tools/mtmd/mtmd-cli.cpp:403` sets
+consumer's current load closure. Promotion stops when load-closure enumeration
+fails, including a helper failure that emits a partial prefix, because that
+prefix does not establish a complete dependency identity.
+`tools/mtmd/mtmd-cli.cpp:403` sets
 `is_single_turn` from a non-empty prompt **and** a non-empty image, so
 `--prompt` alone enters the interactive chat loop and a single-shot text run
 through that binary is unavailable at the pinned commit.

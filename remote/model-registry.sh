@@ -41,67 +41,6 @@ fi
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 quarantine_registry=${QWEN_QUARANTINE_REGISTRY:-$script_directory/quarantine.tsv}
 
-validate_quarantine_registry() {
-    awk -F'\t' '
-        $0 ~ /^#/ || $0 ~ /^[[:space:]]*$/ { next }
-        NF != 14 {
-            printf "quarantine row %d holds %d fields, expected 14\n", NR, NF \
-                > "/dev/stderr"
-            invalid = 1
-            next
-        }
-        $1 == "" || $3 == "" {
-            printf "quarantine row %d requires non-empty id and subject\n", NR \
-                > "/dev/stderr"
-            invalid = 1
-        }
-        $2 != "model" && $2 != "profile" {
-            printf "quarantine row %d carries invalid scope %s\n", NR, $2 \
-                > "/dev/stderr"
-            invalid = 1
-        }
-        $14 != "any" && $14 != "router-child" && $14 != "standalone" {
-            printf "quarantine row %d carries invalid runtime mode %s\n", \
-                NR, $14 > "/dev/stderr"
-            invalid = 1
-        }
-        $2 == "model" {
-            for (field = 5; field <= 10; field++) {
-                if ($field != "-") {
-                    printf "model quarantine row %d carries tuple field %d: %s\n", \
-                        NR, field, $field > "/dev/stderr"
-                    invalid = 1
-                }
-            }
-        }
-        $2 == "profile" {
-            if ($5 !~ /^[0-9]+$/ || $5 + 0 < 1 ||
-                $6 !~ /^[0-9]+$/ || $6 + 0 < 1 ||
-                $7 !~ /^[0-9]+$/ || $7 + 0 < 1) {
-                printf "profile quarantine row %d carries invalid depth or geometry\n", \
-                    NR > "/dev/stderr"
-                invalid = 1
-            } else if ($7 + 0 > $6 + 0) {
-                printf "profile quarantine row %d carries ubatch above batch\n", \
-                    NR > "/dev/stderr"
-                invalid = 1
-            }
-            if ($8 !~ /^(f32|f16|bf16|q8_0|q5_1|q5_0|q4_1|q4_0|iq4_nl)$/ ||
-                $9 !~ /^(f32|f16|bf16|q8_0|q5_1|q5_0|q4_1|q4_0|iq4_nl)$/) {
-                printf "profile quarantine row %d carries invalid cache type\n", \
-                    NR > "/dev/stderr"
-                invalid = 1
-            }
-            if ($10 !~ /^(on|off|auto)$/) {
-                printf "profile quarantine row %d carries invalid flash attention\n", \
-                    NR > "/dev/stderr"
-                invalid = 1
-            }
-        }
-        END { exit invalid ? 1 : 0 }
-    ' "$1"
-}
-
 # The quarantine queries read a second file rather than the tier field alone,
 # because a quarantine has two scopes and the model registry has one row per
 # checkpoint. A scope `model` row removes a checkpoint entirely; a scope
@@ -128,37 +67,89 @@ if [ "$#" -ge 1 ] && [ "$#" -le 2 ]; then
                 "$quarantine_registry" >&2
             exit 1
         fi
-        validate_quarantine_registry "$quarantine_registry" || exit 1
         awk -F'\t' -v mode="$quarantine_runtime_mode" \
             -v query="$quarantine_query" '
+            function validate_quarantine_row(row_number, field_index) {
+                row_invalid = 0
+                if (NF != 14) {
+                    printf "quarantine row %d holds %d fields, expected 14\n", \
+                        row_number, NF > "/dev/stderr"
+                    invalid = 1
+                    return 1
+                }
+                if ($1 == "" || $3 == "") {
+                    printf "quarantine row %d requires non-empty id and subject\n", \
+                        row_number > "/dev/stderr"
+                    invalid = row_invalid = 1
+                }
+                if ($2 != "model" && $2 != "profile") {
+                    printf "quarantine row %d carries invalid scope %s\n", \
+                        row_number, $2 > "/dev/stderr"
+                    invalid = row_invalid = 1
+                }
+                if ($14 != "any" && $14 != "router-child" &&
+                    $14 != "standalone") {
+                    printf "quarantine row %d carries invalid runtime mode %s\n", \
+                        row_number, $14 > "/dev/stderr"
+                    invalid = row_invalid = 1
+                }
+                if ($2 == "model") {
+                    for (field_index = 5; field_index <= 10; field_index++) {
+                        if ($field_index != "-") {
+                            printf "model quarantine row %d carries tuple field %d: %s\n", \
+                                row_number, field_index, $field_index > "/dev/stderr"
+                            invalid = row_invalid = 1
+                        }
+                    }
+                }
+                if ($2 == "profile") {
+                    if ($5 !~ /^[1-9][0-9]*$/ ||
+                        $6 !~ /^[1-9][0-9]*$/ ||
+                        $7 !~ /^[1-9][0-9]*$/) {
+                        printf "profile quarantine row %d carries invalid depth or geometry\n", \
+                            row_number > "/dev/stderr"
+                        invalid = row_invalid = 1
+                    } else if ($7 + 0 > $6 + 0) {
+                        printf "profile quarantine row %d carries ubatch above batch\n", \
+                            row_number > "/dev/stderr"
+                        invalid = row_invalid = 1
+                    }
+                    if ($8 !~ /^(f32|f16|bf16|q8_0|q5_1|q5_0|q4_1|q4_0|iq4_nl)$/ ||
+                        $9 !~ /^(f32|f16|bf16|q8_0|q5_1|q5_0|q4_1|q4_0|iq4_nl)$/) {
+                        printf "profile quarantine row %d carries invalid cache type\n", \
+                            row_number > "/dev/stderr"
+                        invalid = row_invalid = 1
+                    }
+                    if ($10 !~ /^(on|off|auto)$/) {
+                        printf "profile quarantine row %d carries invalid flash attention\n", \
+                            row_number > "/dev/stderr"
+                        invalid = row_invalid = 1
+                    }
+                }
+                return row_invalid
+            }
             $0 ~ /^#/ || $0 ~ /^[[:space:]]*$/ { next }
-            NF != 14 {
-                printf "quarantine row %d holds %d fields, expected 14\n", NR, NF \
-                    > "/dev/stderr"
-                invalid = 1
-                next
-            }
-            $2 != "model" && $2 != "profile" {
-                printf "quarantine row %d carries invalid scope %s\n", NR, $2 \
-                    > "/dev/stderr"
-                invalid = 1
-                next
-            }
-            $14 != "any" && $14 != "router-child" && $14 != "standalone" {
-                printf "quarantine row %d carries invalid runtime mode %s\n", \
-                    NR, $14 > "/dev/stderr"
-                invalid = 1
-                next
-            }
+            { row_invalid = validate_quarantine_row(NR) }
+            row_invalid { next }
             mode != "" && $14 != "any" && $14 != mode { next }
-            query == "quarantine-subjects" && $2 == "model" { print $3; next }
-            query == "quarantine-profiles" && $2 == "profile" {
-                printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", \
-                    $3, $5, $6, $7, $8, $9, $10
+            query == "quarantine-subjects" && $2 == "model" {
+                query_rows[++query_row_count] = $3
                 next
             }
-            query == "quarantine-rows" { print }
-            END { exit invalid ? 1 : 0 }
+            query == "quarantine-profiles" && $2 == "profile" {
+                query_rows[++query_row_count] = sprintf("%s\t%s\t%s\t%s\t%s\t%s\t%s", \
+                    $3, $5, $6, $7, $8, $9, $10)
+                next
+            }
+            query == "quarantine-rows" { query_rows[++query_row_count] = $0 }
+            END {
+                if (invalid) { exit 1 }
+                for (query_row_index = 1;
+                     query_row_index <= query_row_count;
+                     query_row_index++) {
+                    print query_rows[query_row_index]
+                }
+            }
         ' "$quarantine_registry"
         exit 0
     fi
@@ -176,27 +167,73 @@ emit_servable_rows() {
             "$quarantine_registry" >&2
         return 1
     fi
-    validate_quarantine_registry "$quarantine_registry" || return 1
-
     # Read the quarantine authority first, then admit only registry rows whose
     # router-child tuple survives both exclusion scopes. The field selector is
     # fixed by the caller; it is not user-provided AWK source.
     awk -F'\t' -v output_field="$servable_output_field" '
-        FILENAME == ARGV[1] {
-            if ($0 ~ /^#/ || $0 ~ /^[[:space:]]*$/) { next }
+        function validate_quarantine_row(row_number, field_index) {
+            row_invalid = 0
             if (NF != 14) {
-                printf "quarantine row %d holds %d fields, expected 14\n", FNR, NF \
-                    > "/dev/stderr"
+                printf "quarantine row %d holds %d fields, expected 14\n", \
+                    row_number, NF > "/dev/stderr"
                 invalid = 1
-                next
+                return 1
+            }
+            if ($1 == "" || $3 == "") {
+                printf "quarantine row %d requires non-empty id and subject\n", \
+                    row_number > "/dev/stderr"
+                invalid = row_invalid = 1
+            }
+            if ($2 != "model" && $2 != "profile") {
+                printf "quarantine row %d carries invalid scope %s\n", \
+                    row_number, $2 > "/dev/stderr"
+                invalid = row_invalid = 1
             }
             if ($14 != "any" && $14 != "router-child" &&
                 $14 != "standalone") {
                 printf "quarantine row %d carries invalid runtime mode %s\n", \
-                    FNR, $14 > "/dev/stderr"
-                invalid = 1
-                next
+                    row_number, $14 > "/dev/stderr"
+                invalid = row_invalid = 1
             }
+            if ($2 == "model") {
+                for (field_index = 5; field_index <= 10; field_index++) {
+                    if ($field_index != "-") {
+                        printf "model quarantine row %d carries tuple field %d: %s\n", \
+                            row_number, field_index, $field_index > "/dev/stderr"
+                        invalid = row_invalid = 1
+                    }
+                }
+            }
+            if ($2 == "profile") {
+                if ($5 !~ /^[1-9][0-9]*$/ ||
+                    $6 !~ /^[1-9][0-9]*$/ ||
+                    $7 !~ /^[1-9][0-9]*$/) {
+                    printf "profile quarantine row %d carries invalid depth or geometry\n", \
+                        row_number > "/dev/stderr"
+                    invalid = row_invalid = 1
+                } else if ($7 + 0 > $6 + 0) {
+                    printf "profile quarantine row %d carries ubatch above batch\n", \
+                        row_number > "/dev/stderr"
+                    invalid = row_invalid = 1
+                }
+                if ($8 !~ /^(f32|f16|bf16|q8_0|q5_1|q5_0|q4_1|q4_0|iq4_nl)$/ ||
+                    $9 !~ /^(f32|f16|bf16|q8_0|q5_1|q5_0|q4_1|q4_0|iq4_nl)$/) {
+                    printf "profile quarantine row %d carries invalid cache type\n", \
+                        row_number > "/dev/stderr"
+                    invalid = row_invalid = 1
+                }
+                if ($10 !~ /^(on|off|auto)$/) {
+                    printf "profile quarantine row %d carries invalid flash attention\n", \
+                        row_number > "/dev/stderr"
+                    invalid = row_invalid = 1
+                }
+            }
+            return row_invalid
+        }
+        FILENAME == ARGV[1] {
+            if ($0 ~ /^#/ || $0 ~ /^[[:space:]]*$/) { next }
+            row_invalid = validate_quarantine_row(FNR)
+            if (row_invalid) { next }
             if ($14 == "standalone") { next }
             if ($2 == "model") {
                 quarantined_models[$3] = 1
@@ -204,14 +241,11 @@ emit_servable_rows() {
                 profile_key = $3 SUBSEP $5 SUBSEP $6 SUBSEP $7 SUBSEP \
                     $8 SUBSEP $9 SUBSEP $10
                 quarantined_profiles[profile_key] = 1
-            } else {
-                printf "quarantine row %d carries invalid scope %s\n", FNR, $2 \
-                    > "/dev/stderr"
-                invalid = 1
             }
             next
         }
         $0 ~ /^#/ || $0 ~ /^[[:space:]]*$/ { next }
+        invalid { next }
         NF != 20 {
             printf "model row %d holds %d fields, expected 20\n", FNR, NF \
                 > "/dev/stderr"

@@ -780,6 +780,8 @@ printf '%s\n' \
     '# qwen_router_include_quarantine=1' \
     >"$quarantine_router_presets"
 append_complete_router_section "$quarantine_router_presets"
+printf 'LLAMA_ARG_TAGS = quarantine,research\n' \
+    >>"$quarantine_router_presets"
 QWEN_MODEL_REGISTRY=$fabricated_registry \
 QWEN_QUARANTINE_REGISTRY=$router_profile_quarantine \
 QWEN_MODEL_ROOT=$router_model_root QWEN_RADV_ICD=$fake_icd \
@@ -799,6 +801,57 @@ case " $quarantine_router_arguments " in
 esac
 grep -F 'quarantine override forces the listener to loopback' \
     "$temporary_directory/quarantine-router.stderr" >/dev/null
+
+missing_quarantine_tag=$temporary_directory/missing-quarantine-tag.ini
+sed 's/^LLAMA_ARG_TAGS = quarantine,research$/LLAMA_ARG_TAGS = research/' \
+    "$quarantine_router_presets" >"$missing_quarantine_tag"
+if QWEN_MODEL_REGISTRY=$fabricated_registry \
+    QWEN_QUARANTINE_REGISTRY=$router_profile_quarantine \
+    QWEN_MODEL_ROOT=$router_model_root QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS=$missing_quarantine_tag \
+    "$policy" "$fake_server" "$model_path" 4096 18080 \
+    >"$temporary_directory/missing-quarantine-tag.stdout" \
+    2>"$temporary_directory/missing-quarantine-tag.stderr"; then
+    printf 'policy accepted a research override without its quarantine tag\n' >&2
+    exit 1
+fi
+grep -F 'router preset section fabricated carries unsafe quarantine tags:' \
+    "$temporary_directory/missing-quarantine-tag.stderr" >/dev/null
+
+default_quarantine_tag=$temporary_directory/default-quarantine-tag.ini
+sed 's/^LLAMA_ARG_TAGS = quarantine,research$/LLAMA_ARG_TAGS = quarantine,research,default/' \
+    "$quarantine_router_presets" >"$default_quarantine_tag"
+if QWEN_MODEL_REGISTRY=$fabricated_registry \
+    QWEN_QUARANTINE_REGISTRY=$router_profile_quarantine \
+    QWEN_MODEL_ROOT=$router_model_root QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS=$default_quarantine_tag \
+    "$policy" "$fake_server" "$model_path" 4096 18080 \
+    >"$temporary_directory/default-quarantine-tag.stdout" \
+    2>"$temporary_directory/default-quarantine-tag.stderr"; then
+    printf 'policy accepted a default tag on a quarantined override section\n' >&2
+    exit 1
+fi
+grep -F 'router preset section fabricated carries unsafe quarantine tags:' \
+    "$temporary_directory/default-quarantine-tag.stderr" >/dev/null
+
+candidate_quarantine_tag=$temporary_directory/candidate-quarantine-tag.ini
+sed 's/^LLAMA_ARG_TAGS = quarantine,research$/LLAMA_ARG_TAGS = candidate,quarantine,research/' \
+    "$quarantine_router_presets" >"$candidate_quarantine_tag"
+if QWEN_MODEL_REGISTRY=$fabricated_registry \
+    QWEN_QUARANTINE_REGISTRY=$router_profile_quarantine \
+    QWEN_MODEL_ROOT=$router_model_root QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS=$candidate_quarantine_tag \
+    "$policy" "$fake_server" "$model_path" 4096 18080 \
+    >"$temporary_directory/candidate-quarantine-tag.stdout" \
+    2>"$temporary_directory/candidate-quarantine-tag.stderr"; then
+    printf 'policy accepted contradictory candidate and quarantine tags\n' >&2
+    exit 1
+fi
+grep -F 'router preset section fabricated carries unsafe quarantine tags:' \
+    "$temporary_directory/candidate-quarantine-tag.stderr" >/dev/null
 
 # A generated file from before the provenance field existed is not assumed
 # clean. Regeneration is required before a potentially persistent preset runs.

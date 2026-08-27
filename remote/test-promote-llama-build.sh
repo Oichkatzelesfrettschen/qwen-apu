@@ -99,6 +99,34 @@ case $promotion_status:$promotion_output in
        printf '%s\n' "$promotion_output" >&2 ;;
 esac
 
+# Partial helper output carries no usable identity when closure enumeration
+# fails. The promotion gate must preserve the helper status instead of letting
+# the final pipeline command convert that failure into a successful subset.
+failing_closure_tools=$work_directory/failing-closure-tools
+mkdir -p "$failing_closure_tools"
+cp "$promoter" "$failing_closure_tools/promote-llama-build.sh"
+cat >"$failing_closure_tools/hash-load-closure.sh" <<'CLOSURE'
+#!/bin/sh
+printf 'role\tbasename\tbytes\tsha256\n'
+printf 'executable\tllama-mtmd-cli\t1\tpartial\n'
+exit 1
+CLOSURE
+chmod +x "$failing_closure_tools/hash-load-closure.sh"
+set +e
+closure_failure_output=$(
+    "$failing_closure_tools/promote-llama-build.sh" \
+        "$preset" "$work_directory" 2>&1
+)
+closure_failure_status=$?
+set -e
+case $closure_failure_status:$closure_failure_output in
+    0:*) report closure_enumeration_failure_propagates rejected ;;
+    *:*multimodal\ load-closure\ enumeration\ failed*)
+        report closure_enumeration_failure_propagates accepted ;;
+    *) report closure_enumeration_failure_propagates rejected
+       printf '%s\n' "$closure_failure_output" >&2 ;;
+esac
+
 if [ "$(readlink "$work_directory/build-appliance-current")" = "$build_directory" ]; then
     report current_link_points_at_preset accepted
 else

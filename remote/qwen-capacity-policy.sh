@@ -36,6 +36,7 @@ validate_router_preset_tuples() {
             flash_count = 0
             batch_count = 0
             ubatch_count = 0
+            tags_count = 0
             model_value = ""
             context_value = ""
             cache_k_value = ""
@@ -43,6 +44,7 @@ validate_router_preset_tuples() {
             flash_value = ""
             batch_value = ""
             ubatch_value = ""
+            tags_value = ""
         }
         function reject_key(key, count) {
             printf "router preset section %s requires exactly one %s, found %d\n", \
@@ -150,6 +152,34 @@ validate_router_preset_tuples() {
             profile_key = section SUBSEP context_value SUBSEP batch_value SUBSEP \
                 ubatch_value SUBSEP cache_k_value SUBSEP cache_v_value SUBSEP \
                 flash_value
+            quarantined_section = quarantined_models[section] ||
+                quarantined_profiles[profile_key] ||
+                registry_tier[section] == "quarantine"
+            if (include_quarantine == 1 && quarantined_section) {
+                if (tags_count != 1) {
+                    reject_key("LLAMA_ARG_TAGS", tags_count)
+                } else {
+                    quarantine_tag = 0
+                    default_tag = 0
+                    conflicting_tier_tag = 0
+                    tag_count = split(tags_value, tags, ",")
+                    for (tag_index = 1; tag_index <= tag_count; tag_index++) {
+                        if (tags[tag_index] == "quarantine") quarantine_tag = 1
+                        if (tags[tag_index] == "default") default_tag = 1
+                        if (tags[tag_index] == "production" ||
+                            tags[tag_index] == "candidate" ||
+                            tags[tag_index] == "archive" ||
+                            tags[tag_index] == "rejected") {
+                            conflicting_tier_tag = 1
+                        }
+                    }
+                    if (!quarantine_tag || default_tag || conflicting_tier_tag) {
+                        printf "router preset section %s carries unsafe quarantine tags: %s\n", \
+                            section, tags_value > "/dev/stderr"
+                        rejected = 1
+                    }
+                }
+            }
             if (include_quarantine != 1 &&
                 quarantined_profiles[profile_key]) {
                 printf "router preset section %s is excluded by profile quarantine\n", \
@@ -232,6 +262,9 @@ validate_router_preset_tuples() {
             } else if (key == "LLAMA_ARG_UBATCH") {
                 ubatch_count++
                 ubatch_value = value
+            } else if (key == "LLAMA_ARG_TAGS") {
+                tags_count++
+                tags_value = value
             }
         }
         END {

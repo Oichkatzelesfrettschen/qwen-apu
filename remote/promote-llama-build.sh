@@ -133,8 +133,14 @@ done
 # Recompute the multimodal consumer's current load closure and require every
 # exact row in the recorded manifest. This catches a CLI copied in after the
 # build as well as a dependency that only the projector path loads.
-multimodal_closure=$("$script_directory/hash-load-closure.sh" \
-    "$multimodal_path" | sed 1d)
+if ! multimodal_closure_with_header=$(
+    "$script_directory/hash-load-closure.sh" "$multimodal_path"
+); then
+    printf 'multimodal load-closure enumeration failed: %s\n' \
+        "$multimodal_path" >&2
+    exit 1
+fi
+multimodal_closure=$(printf '%s\n' "$multimodal_closure_with_header" | sed 1d)
 while IFS= read -r closure_row; do
     [ -n "$closure_row" ] || continue
     if ! grep -F -x -- "$closure_row" "$manifest_path" >/dev/null; then

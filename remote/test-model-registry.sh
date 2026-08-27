@@ -292,6 +292,39 @@ else
     report invalid_quarantine_profile_refused rejected
 fi
 
+# Tuple fields are serialized into exact string keys. The authority admits
+# canonical positive decimal spellings because raw string keys distinguish
+# zero-padded text from its numerically equivalent value.
+zero_padded_quarantine=$work_directory/zero-padded-quarantine.tsv
+printf '%b\n' \
+    'model-record\tmodel\tmodel-blocked\tdevice-lost\t-\t-\t-\t-\t-\t-\t-\t-\tevidence/model.md\tany' \
+    'zero-padded\tprofile\tprofile-blocked\tring-timeout\t08192\t128\t32\tq8_0\tq4_0\ton\t-\t-\tevidence/profile.md\trouter-child' \
+    >"$zero_padded_quarantine"
+set +e
+QWEN_MODEL_REGISTRY=$fixture_registry \
+QWEN_QUARANTINE_REGISTRY=$zero_padded_quarantine \
+    "$reader" servable-ids >"$work_directory/zero-padded-servable.out" \
+    2>"$work_directory/zero-padded-servable.err"
+zero_padded_servable_status=$?
+QWEN_QUARANTINE_REGISTRY=$zero_padded_quarantine \
+    "$reader" quarantine-rows router-child \
+    >"$work_directory/zero-padded-query.out" \
+    2>"$work_directory/zero-padded-query.err"
+zero_padded_query_status=$?
+set -e
+if [ "$zero_padded_servable_status" -ne 0 ] &&
+   [ "$zero_padded_query_status" -ne 0 ] &&
+   [ ! -s "$work_directory/zero-padded-servable.out" ] &&
+   [ ! -s "$work_directory/zero-padded-query.out" ] &&
+   grep -F 'carries invalid depth or geometry' \
+       "$work_directory/zero-padded-servable.err" >/dev/null &&
+   grep -F 'carries invalid depth or geometry' \
+       "$work_directory/zero-padded-query.err" >/dev/null; then
+    report noncanonical_quarantine_integer_refused accepted
+else
+    report noncanonical_quarantine_integer_refused rejected
+fi
+
 # A misspelled runtime mode is invalid safety data. It cannot mean that the row
 # applies to some other path, because that interpretation would re-admit the
 # model on every known path.
