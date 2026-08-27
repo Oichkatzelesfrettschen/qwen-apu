@@ -143,6 +143,15 @@ removes one tuple of a checkpoint that otherwise serves, and
 `qwen-capacity-policy.sh` refuses to construct that tuple rather than warning
 about it. `evidence/quarantine/` holds one reason record per row with its kernel
 signature, its validated safe tuples, and its re-entry gate.
+`model-registry.sh servable-ids` and `servable-files` apply the same
+router-child exclusions to the registry's default tuple, and an unreadable
+or malformed quarantine registry stops router and standalone tuple
+construction. Each query validates and consumes one opened quarantine snapshot,
+so a replacement cannot separate semantic admission from the rows acted upon.
+Profile depth, batch, and ubatch fields use canonical positive decimal integers
+without leading zeroes because the runtime builds exact string tuple keys. A
+research override labels every
+exposed excluded tuple `quarantine` and withholds the `default` tag.
 `QWEN_ROUTER_INCLUDE_QUARANTINE=1` exposes a quarantined checkpoint for research.
 The generated preset records that override, and `qwen-capacity-policy.sh`
 derives the listener restriction from the file on every later launch. It
@@ -150,14 +159,19 @@ refuses generated presets that predate the marker and forces an exposed preset
 to `127.0.0.1`, because the appliance binds `0.0.0.0` and a warning alone would
 put a model with a recorded device failure on the LAN.
 
-Two mechanisms guard the quarantined tuple because two paths construct one.
-`qwen-capacity-policy.sh` refuses it on the single-model path, where the policy
-builds the argv the server runs. In router mode the children take their geometry
-from the preset file rather than from a second pass through the policy, so
-`build-router-presets.sh` is the guard there and `test-model-tiers.sh` is what
-checks it. The builder queries `quarantine.tsv` for router-child rows instead of
-trusting the model tier: a model-scope row overrides a stale production tier,
-and a profile-scope row removes the exact section tuple.
+Three mechanisms guard the quarantined tuple because two paths construct one
+and router presets persist across registry changes. `qwen-capacity-policy.sh`
+refuses the tuple on the single-model path, where the policy builds the argv the
+server runs. `build-router-presets.sh` filters router-child rows while generating
+the child geometry, and `test-model-tiers.sh` checks that generation. Router
+startup queries the same quarantine authority and rejects a persisted section
+that a later model- or profile-scope row excludes. It also rejects sections
+whose registry tier moves to `archive` or `rejected`, and a `quarantine` tier
+requires model-scope authority. The marked research override admits authorized
+quarantine sections and forces the listener to loopback. Every persisted
+quarantine section retains exactly one `LLAMA_ARG_TAGS` key that contains
+`quarantine` and excludes `default` and every conflicting tier tag; startup
+rejects a stale tag set before the server runs.
 
 Router mode leaves depth, cache triple, and submission geometry off its own
 argv. `server-models.cpp` ends its preset assembly with
@@ -169,7 +183,16 @@ llama.cpp defaults of batch 2048 and ubatch 512, which is the quarantined
 geometry.
 
 Router startup still selects the largest installed servable GGUF as the
-resident-memory preflight subject. That path sizes weight headroom only. Its
+resident-memory preflight subject. The launcher copies the source preset to a
+unique active-session snapshot, reads every section's model path from that
+snapshot, and selects the largest installed artifact as the load-observation
+subject. Normal and research presets therefore use the exact set they can
+launch rather than separate registry enumerations. The launcher records the
+snapshot SHA-256 and forwards both path and digest across the tmux boundary.
+The capacity policy verifies that identity before tuple validation and again at
+the server exec boundary, so preset or authority changes cannot widen the
+launched set after preflight. The preflight reports artifact bytes and fixed
+host and Vulkan headroom; the subsequent load remains the fit test. Its
 standalone context ceiling never constrains the listener, because each preset
 section supplies its own complete tuple. The capacity policy resolves the
 section ID and model path to one registry row and requires the section's
@@ -470,6 +493,8 @@ A tool row executes nothing. The appliance runs without `--tools`, so the server
 holds no tool server; the request body's `tools` field asks the model to emit a
 `tool_calls` object and `tool_call` and `no_tool_call` grade that object, which
 measures selection with the read-only boundary intact.
+An image-withheld control retains the multipart text part and removes the image
+parts, so image presence is the single changed request dimension.
 
 The fixtures are committed and `--check` compares pixels rather than file bytes.
 Deflate is not reproducible across hosts -- zlib 1.3 on the appliance re-encodes
@@ -482,13 +507,20 @@ A grader defect is corrected over retained replies rather than by re-running.
 failure the row tests, and `remote/regrade-quality-roster.py` re-applies the
 corrected grader to the reply each record already holds. The records stay as the
 harness wrote them and `evidence/quality-roster/regrade-summary.tsv` carries the
-recorded total beside the corrected one.
+recorded total beside the corrected one. Transport and served-model attribution
+failures remain failures because a content grader cannot repair evidence origin.
 
 `llama-mtmd-cli` is built beside `llama-server` because the projector path fails
 by answering rather than by erroring. A projector of matching dimensions loads
 cleanly while writing image tokens the language model reads nothing from, so
 `remote/promote-llama-build.sh` reads an image whose content this repository
-declares and requires the answer to carry it. `tools/mtmd/mtmd-cli.cpp:403` sets
+declares and requires the answer to carry it. Promotion requires the text model,
+vision model, projector, and image before either smoke stage begins. The artifact
+manifest owns `llama-server`, `llama-cli`, `llama-mtmd-cli`, and the multimodal
+consumer's current load closure. Promotion stops when load-closure enumeration
+fails, including a helper failure that emits a partial prefix, because that
+prefix does not establish a complete dependency identity.
+`tools/mtmd/mtmd-cli.cpp:403` sets
 `is_single_turn` from a non-empty prompt **and** a non-empty image, so
 `--prompt` alone enters the interactive chat loop and a single-shot text run
 through that binary is unavailable at the pinned commit.

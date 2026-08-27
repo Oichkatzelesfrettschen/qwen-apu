@@ -26,6 +26,22 @@ fi
 
 "$script_directory/qwen-webui-control.sh" stop || true
 
+# Forced tmux termination bypasses the session EXIT trap. Once control has
+# stopped the only session that can own these unique snapshots, remove the
+# reserved active-session files left by either forced or interrupted startup.
+snapshot_residue=0
+for router_preset_snapshot in "$state_directory"/.router-presets.active.*; do
+    [ -e "$router_preset_snapshot" ] || \
+        [ -L "$router_preset_snapshot" ] || continue
+    if [ -f "$router_preset_snapshot" ] || [ -L "$router_preset_snapshot" ]; then
+        rm -f -- "$router_preset_snapshot"
+    else
+        printf 'router snapshot path is not a regular file: %s\n' \
+            "$router_preset_snapshot" >&2
+        snapshot_residue=1
+    fi
+done
+
 attempt=0
 while [ "$attempt" -lt 300 ] && pgrep -x llama-server >/dev/null 2>&1; do
     attempt=$((attempt + 1))
@@ -66,7 +82,7 @@ for probe_pid in $(pgrep -x vulkan-graphics-service-probe 2>/dev/null || true); 
     kill -KILL "$probe_pid" 2>/dev/null || true
 done
 
-residue=0
+residue=$snapshot_residue
 if pgrep -x llama-server >/dev/null 2>&1; then
     printf 'llama-server still running: %s\n' \
         "$(pgrep -x llama-server | tr '\n' ' ')" >&2
@@ -89,7 +105,7 @@ fi
 
 rm -f "$state_directory/server.pid"
 if [ "$residue" -eq 0 ]; then
-    printf 'torn down: no llama-server, no tmux session, no probe, port %s free\n' \
+    printf 'torn down: no server, tmux session, probe, or router snapshot; port %s free\n' \
         "$server_port"
 else
     printf 'teardown incomplete\n' >&2

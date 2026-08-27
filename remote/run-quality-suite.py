@@ -327,13 +327,21 @@ def load_image_part(directory, name):
             "image_url": {"url": f"data:{media_type};base64," + encoded}}
 
 
-def request(endpoint, api_key, model, prompt, max_tokens, thinking, timeout,
-            image_parts=(), tools=None):
+def build_request_content(prompt, image_parts=(), preserve_multipart=False):
     content = prompt
-    if image_parts:
+    if image_parts or preserve_multipart:
         # The text part leads so the question is read before the pixels, which
-        # is the order the text rows already establish.
+        # is the order the text rows already establish. An image-withheld
+        # control retains this multipart text shape so image presence is the
+        # only changed request dimension.
         content = [{"type": "text", "text": prompt}, *image_parts]
+    return content
+
+
+def request(endpoint, api_key, model, prompt, max_tokens, thinking, timeout,
+            image_parts=(), tools=None, preserve_multipart=False):
+    content = build_request_content(
+        prompt, image_parts, preserve_multipart=preserve_multipart)
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": content}],
@@ -444,7 +452,9 @@ def main(argv):
         try:
             document = request(arguments.endpoint, api_key, arguments.model,
                                prompt, arguments.max_tokens, thinking,
-                               arguments.timeout, row_images, row_tools)
+                               arguments.timeout, image_parts=row_images,
+                               tools=row_tools,
+                               preserve_multipart=kind == "image")
             error = None
         except (urllib.error.URLError, OSError, http.client.HTTPException,
                 json.JSONDecodeError) as failure:

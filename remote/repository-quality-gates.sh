@@ -37,6 +37,7 @@ shellcheck -S warning $shell_files
 ruff check remote
 
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-quality-suite.py
+PYTHONDONTWRITEBYTECODE=1 python3 remote/test-regrade-quality-roster.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-gguf-tokenizer-identity.py
 remote/test-fallback-webui-model-selection.sh
 node remote/test-fallback-webui-model-state.mjs
@@ -46,6 +47,7 @@ remote/test-model-tiers.sh
 remote/test-projector-fetch-dispatch.sh
 remote/test-projector-pairing.sh
 remote/test-promote-llama-build.sh
+remote/test-qwen-launch-router-preflight.sh
 remote/test-qwen-capacity-policy.sh
 remote/test-quality-roster.sh
 remote/test-qwen-runtime-guards.sh

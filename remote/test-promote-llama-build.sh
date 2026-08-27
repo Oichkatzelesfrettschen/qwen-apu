@@ -37,7 +37,21 @@ cat >"$build_directory/bin/llama-server" <<'SERVER'
 exit 1
 SERVER
 chmod +x "$build_directory/bin/llama-server"
-cp "$build_directory/bin/llama-server" "$build_directory/bin/llama-mtmd-cli"
+cat >"$build_directory/bin/llama-cli" <<'CLIENT'
+#!/bin/sh
+: >"${QWEN_TEST_STRICT_SMOKE_MARKER:?}"
+printf 'fixture Vulkan output\n'
+CLIENT
+cat >"$build_directory/bin/llama-mtmd-cli" <<'MULTIMODAL'
+#!/bin/sh
+if [ "${1:-}" = --version ]; then
+    printf 'version 0 (fixture)\n'
+    exit 0
+fi
+printf 'red square and green circle\n'
+MULTIMODAL
+chmod +x "$build_directory/bin/llama-cli" \
+    "$build_directory/bin/llama-mtmd-cli"
 printf 'fixture backend\n' >"$build_directory/bin/libggml-vulkan.so"
 
 write_manifest() {
@@ -45,9 +59,12 @@ write_manifest() {
         printf 'preset\t%s\n' "$preset"
         printf 'commit\t0000000000000000000000000000000000000000\n'
         printf 'worktree\tclean\n'
-        for object_name in llama-server libggml-vulkan.so; do
+        for object_name in llama-server llama-cli llama-mtmd-cli \
+            libggml-vulkan.so; do
             object_path=$build_directory/bin/$object_name
-            printf 'linked\t%s\t%s\t%s\n' "$object_name" \
+            object_role=loadable
+            case $object_name in llama-*) object_role=executable ;; esac
+            printf '%s\t%s\t%s\t%s\n' "$object_role" "$object_name" \
                 "$(stat -c %s "$object_path")" \
                 "$(sha256sum "$object_path" | cut -d ' ' -f 1)"
         done
@@ -55,20 +72,59 @@ write_manifest() {
 }
 write_manifest
 
-# No promotion model, so the strict Vulkan stage reports not-run instead of
-# fabricating a pass, and the gate still has to reach its rename.
-QWEN_PROMOTION_MODEL=$work_directory/absent.gguf
-export QWEN_PROMOTION_MODEL
+promotion_model=$work_directory/text-model.gguf
+vision_directory=$work_directory/vision-model
+promotion_vision_model=$vision_directory/vision-model.gguf
+promotion_projector=$vision_directory/mmproj-F16.gguf
+promotion_image=$work_directory/shapes.png
+strict_smoke_marker=$work_directory/strict-smoke-ran
+mkdir -p "$vision_directory"
+for smoke_input in "$promotion_model" "$promotion_vision_model" \
+    "$promotion_projector" "$promotion_image"; do
+    : >"$smoke_input"
+done
+export QWEN_PROMOTION_MODEL=$promotion_model
+export QWEN_PROMOTION_VISION_MODEL=$promotion_vision_model
+export QWEN_PROMOTION_IMAGE=$promotion_image
+export QWEN_TEST_STRICT_SMOKE_MARKER=$strict_smoke_marker
 
 set +e
 promotion_output=$("$promoter" "$preset" "$work_directory" 2>&1)
 promotion_status=$?
 set -e
 case $promotion_status:$promotion_output in
-    0:*strict_vulkan=not-run*multimodal=not-run*)
+    0:*strict_vulkan=passed*multimodal=passed*)
         report clean_manifest_promotes accepted ;;
     *) report clean_manifest_promotes rejected
        printf '%s\n' "$promotion_output" >&2 ;;
+esac
+
+# Partial helper output carries no usable identity when closure enumeration
+# fails. The promotion gate must preserve the helper status instead of letting
+# the final pipeline command convert that failure into a successful subset.
+failing_closure_tools=$work_directory/failing-closure-tools
+mkdir -p "$failing_closure_tools"
+cp "$promoter" "$failing_closure_tools/promote-llama-build.sh"
+cat >"$failing_closure_tools/hash-load-closure.sh" <<'CLOSURE'
+#!/bin/sh
+printf 'role\tbasename\tbytes\tsha256\n'
+printf 'executable\tllama-mtmd-cli\t1\tpartial\n'
+exit 1
+CLOSURE
+chmod +x "$failing_closure_tools/hash-load-closure.sh"
+set +e
+closure_failure_output=$(
+    "$failing_closure_tools/promote-llama-build.sh" \
+        "$preset" "$work_directory" 2>&1
+)
+closure_failure_status=$?
+set -e
+case $closure_failure_status:$closure_failure_output in
+    0:*) report closure_enumeration_failure_propagates rejected ;;
+    *:*multimodal\ load-closure\ enumeration\ failed*)
+        report closure_enumeration_failure_propagates accepted ;;
+    *) report closure_enumeration_failure_propagates rejected
+       printf '%s\n' "$closure_failure_output" >&2 ;;
 esac
 
 if [ "$(readlink "$work_directory/build-appliance-current")" = "$build_directory" ]; then
@@ -76,6 +132,64 @@ if [ "$(readlink "$work_directory/build-appliance-current")" = "$build_directory
 else
     report current_link_points_at_preset rejected
 fi
+
+# Both smoke stages are mandatory promotion evidence. The symlink retains its
+# accepted target when either stage lacks the input needed to run.
+QWEN_PROMOTION_MODEL=$work_directory/absent-text-model.gguf
+export QWEN_PROMOTION_MODEL
+set +e
+strict_absent_output=$("$promoter" "$preset" "$work_directory" 2>&1)
+strict_absent_status=$?
+set -e
+export QWEN_PROMOTION_MODEL=$promotion_model
+case $strict_absent_status:$strict_absent_output in
+    0:*) report strict_input_required rejected ;;
+    *:*promotion\ model\ is\ absent*) report strict_input_required accepted ;;
+    *) report strict_input_required rejected
+       printf '%s\n' "$strict_absent_output" >&2 ;;
+esac
+
+QWEN_PROMOTION_IMAGE=$work_directory/absent-image.png
+export QWEN_PROMOTION_IMAGE
+rm -f "$strict_smoke_marker"
+set +e
+vision_absent_output=$("$promoter" "$preset" "$work_directory" 2>&1)
+vision_absent_status=$?
+set -e
+export QWEN_PROMOTION_IMAGE=$promotion_image
+case $vision_absent_status:$vision_absent_output in
+    0:*) report multimodal_inputs_required rejected ;;
+    *:*multimodal\ promotion\ inputs\ are\ incomplete*)
+        if [ ! -e "$strict_smoke_marker" ]; then
+            report multimodal_inputs_required accepted
+        else
+            report multimodal_inputs_required rejected
+            printf 'strict smoke ran before multimodal input validation\n' >&2
+        fi
+        ;;
+    *) report multimodal_inputs_required rejected
+       printf '%s\n' "$vision_absent_output" >&2 ;;
+esac
+
+# A matching executable row binds llama-mtmd-cli to the build manifest. Merely
+# leaving an executable with that name beside the build cannot satisfy it.
+nice -n 19 sed '/^executable\tllama-mtmd-cli\t/d' \
+    "$build_directory/artifact-manifest.tsv" \
+    >"$build_directory/artifact-manifest.tsv.without-mtmd"
+mv "$build_directory/artifact-manifest.tsv.without-mtmd" \
+    "$build_directory/artifact-manifest.tsv"
+set +e
+unmanifested_output=$("$promoter" "$preset" "$work_directory" 2>&1)
+unmanifested_status=$?
+set -e
+case $unmanifested_status:$unmanifested_output in
+    0:*) report multimodal_manifest_identity_required rejected ;;
+    *:*requires\ exactly\ one\ executable\ row\ for\ llama-mtmd-cli*)
+        report multimodal_manifest_identity_required accepted ;;
+    *) report multimodal_manifest_identity_required rejected
+       printf '%s\n' "$unmanifested_output" >&2 ;;
+esac
+write_manifest
 
 # One byte of drift in a backend object must stop the promotion.
 printf 'fixture backend, rebuilt\n' >"$build_directory/bin/libggml-vulkan.so"
@@ -142,15 +256,20 @@ second_preset=fixture-preset-second
 second_build_directory=$work_directory/build-$second_preset
 mkdir -p "$second_build_directory/bin"
 cp "$build_directory/bin/llama-server" "$second_build_directory/bin/llama-server"
-cp "$build_directory/bin/llama-server" "$second_build_directory/bin/llama-mtmd-cli"
+cp "$build_directory/bin/llama-cli" "$second_build_directory/bin/llama-cli"
+cp "$build_directory/bin/llama-mtmd-cli" \
+    "$second_build_directory/bin/llama-mtmd-cli"
 printf 'fixture backend, second arm\n' >"$second_build_directory/bin/libggml-vulkan.so"
 {
     printf 'preset\t%s\n' "$second_preset"
     printf 'commit\t0000000000000000000000000000000000000000\n'
     printf 'worktree\tclean\n'
-    for object_name in llama-server libggml-vulkan.so; do
+    for object_name in llama-server llama-cli llama-mtmd-cli \
+        libggml-vulkan.so; do
         object_path=$second_build_directory/bin/$object_name
-        printf 'linked\t%s\t%s\t%s\n' "$object_name" \
+        object_role=loadable
+        case $object_name in llama-*) object_role=executable ;; esac
+        printf '%s\t%s\t%s\t%s\n' "$object_role" "$object_name" \
             "$(stat -c %s "$object_path")" \
             "$(sha256sum "$object_path" | cut -d ' ' -f 1)"
     done

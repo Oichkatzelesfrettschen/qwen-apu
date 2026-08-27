@@ -27,6 +27,12 @@ monitor_pid=""
 latency_watchdog_pid=""
 kernel_hazard_watchdog_pid=""
 server_pid=""
+router_preset_snapshot=''
+case ${QWEN_ROUTER_PRESETS:-} in
+    "$state_directory"/.router-presets.active.*)
+        router_preset_snapshot=$QWEN_ROUTER_PRESETS
+        ;;
+esac
 
 cleanup() {
     if [ -n "$monitor_pid" ]; then
@@ -44,6 +50,10 @@ cleanup() {
     if [ -n "$server_pid" ]; then
         kill "$server_pid" 2>/dev/null || true
         wait "$server_pid" 2>/dev/null || true
+    fi
+    if [ -n "$router_preset_snapshot" ]; then
+        rm -f -- "$router_preset_snapshot"
+        router_preset_snapshot=''
     fi
 }
 trap cleanup EXIT HUP INT TERM
@@ -230,9 +240,11 @@ printf 'cache cache_type_k=%s cache_type_v=%s flash_attention=%s override_contex
 # checkpoints behind one port and spawns a child process per loaded model, so a
 # retained status file that named only the default model would describe one of
 # the processes running rather than the service.
-printf 'router enabled=%s presets=%s models_max=%s\n' \
+printf 'router enabled=%s presets=%s preset_sha256=%s models_max=%s\n' \
     "${QWEN_ROUTER:-0}" \
-    "${QWEN_ROUTER_PRESETS:-default}" "${QWEN_ROUTER_MAX:-1}" >>"$status_file"
+    "${QWEN_ROUTER_PRESETS:-default}" \
+    "${QWEN_ROUTER_PRESET_SHA256:-unbound}" \
+    "${QWEN_ROUTER_MAX:-1}" >>"$status_file"
 
 set +e
 wait "$server_pid"

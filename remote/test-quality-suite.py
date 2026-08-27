@@ -321,6 +321,48 @@ def synthetic_document(content, finish_reason="stop", served_model="qwen-apu"):
     return document
 
 
+# An image-withheld control changes image presence alone. Sending the prompt as
+# a bare string would also change the chat-template input from multipart to
+# scalar content and confound the control with representation sensitivity.
+with tempfile.TemporaryDirectory() as temporary_directory:
+    suite = os.path.join(temporary_directory, "suite.tsv")
+    output = os.path.join(temporary_directory, "result.json")
+    with open(suite, "w") as handle:
+        handle.write(
+            "vision-control\tvision\tnonempty\t\tDescribe the image.\t"
+            "image:shapes\n")
+    captured_request = {}
+
+    def capture_withheld_request(*_arguments, **keyword_arguments):
+        captured_request.update(keyword_arguments)
+        return synthetic_document("A control reply.")
+
+    original_request = module.request
+    module.request = capture_withheld_request
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            status = module.main((
+                "run-quality-suite.py", "http://fixture", output,
+                "--suite", suite, "--omit-images",
+                "--images", os.path.join(remote_directory, "quality-images"),
+            ))
+    finally:
+        module.request = original_request
+    withheld_content = module.build_request_content(
+        "Describe the image.", captured_request.get("image_parts", ()),
+        preserve_multipart=captured_request.get("preserve_multipart", False))
+    if status != 0:
+        print("image-withheld control returned failure", file=sys.stderr)
+        failures += 1
+    if captured_request.get("image_parts") != []:
+        print("image-withheld control still sent image parts", file=sys.stderr)
+        failures += 1
+    if withheld_content != [{"type": "text", "text": "Describe the image."}]:
+        print(f"image-withheld control changed request shape: {withheld_content!r}",
+              file=sys.stderr)
+        failures += 1
+
+
 # The retained reply is the object that the grader reads. Truncating only the
 # JSON evidence makes a later re-grade unable to reproduce the recorded verdict.
 with tempfile.TemporaryDirectory() as temporary_directory:

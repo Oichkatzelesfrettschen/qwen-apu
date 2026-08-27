@@ -26,7 +26,8 @@ bind_host=${QWEN_BIND_HOST:-127.0.0.1}
 cors_origins=${QWEN_CORS_ORIGINS:-localhost}
 
 validate_router_preset_tuples() {
-    awk -F'\t' -v model_root="$3" '
+    printf '%s\n' "$4" | awk -F'\t' -v model_root="$3" \
+        -v include_quarantine="$5" '
         function reset_tuple() {
             model_count = 0
             context_count = 0
@@ -35,6 +36,7 @@ validate_router_preset_tuples() {
             flash_count = 0
             batch_count = 0
             ubatch_count = 0
+            tags_count = 0
             model_value = ""
             context_value = ""
             cache_k_value = ""
@@ -42,6 +44,7 @@ validate_router_preset_tuples() {
             flash_value = ""
             batch_value = ""
             ubatch_value = ""
+            tags_value = ""
         }
         function reject_key(key, count) {
             printf "router preset section %s requires exactly one %s, found %d\n", \
@@ -99,6 +102,19 @@ validate_router_preset_tuples() {
                 rejected = 1
                 return
             }
+            if (registry_tier[section] != "production" &&
+                registry_tier[section] != "candidate" &&
+                registry_tier[section] != "quarantine") {
+                printf "router preset section %s has non-servable registry tier %s\n", \
+                    section, registry_tier[section] > "/dev/stderr"
+                rejected = 1
+            }
+            if (registry_tier[section] == "quarantine" &&
+                (include_quarantine != 1 || !quarantined_models[section])) {
+                printf "router preset section %s lacks an admitted model quarantine override\n", \
+                    section > "/dev/stderr"
+                rejected = 1
+            }
             expected_model = model_root "/" registry_model[section]
             if (model_count == 1 && model_value != expected_model) {
                 reject_registry_value("LLAMA_ARG_MODEL", model_value,
@@ -128,9 +144,62 @@ validate_router_preset_tuples() {
                 reject_registry_value("LLAMA_ARG_UBATCH", ubatch_value,
                     registry_ubatch[section])
             }
+            if (include_quarantine != 1 && quarantined_models[section]) {
+                printf "router preset section %s is excluded by model quarantine\n", \
+                    section > "/dev/stderr"
+                rejected = 1
+            }
+            profile_key = section SUBSEP context_value SUBSEP batch_value SUBSEP \
+                ubatch_value SUBSEP cache_k_value SUBSEP cache_v_value SUBSEP \
+                flash_value
+            quarantined_section = quarantined_models[section] ||
+                quarantined_profiles[profile_key] ||
+                registry_tier[section] == "quarantine"
+            if (include_quarantine == 1 && quarantined_section) {
+                if (tags_count != 1) {
+                    reject_key("LLAMA_ARG_TAGS", tags_count)
+                } else {
+                    quarantine_tag = 0
+                    default_tag = 0
+                    conflicting_tier_tag = 0
+                    tag_count = split(tags_value, tags, ",")
+                    for (tag_index = 1; tag_index <= tag_count; tag_index++) {
+                        if (tags[tag_index] == "quarantine") quarantine_tag = 1
+                        if (tags[tag_index] == "default") default_tag = 1
+                        if (tags[tag_index] == "production" ||
+                            tags[tag_index] == "candidate" ||
+                            tags[tag_index] == "archive" ||
+                            tags[tag_index] == "rejected") {
+                            conflicting_tier_tag = 1
+                        }
+                    }
+                    if (!quarantine_tag || default_tag || conflicting_tier_tag) {
+                        printf "router preset section %s carries unsafe quarantine tags: %s\n", \
+                            section, tags_value > "/dev/stderr"
+                        rejected = 1
+                    }
+                }
+            }
+            if (include_quarantine != 1 &&
+                quarantined_profiles[profile_key]) {
+                printf "router preset section %s is excluded by profile quarantine\n", \
+                    section > "/dev/stderr"
+                rejected = 1
+            }
         }
         BEGIN { reset_tuple() }
-        FNR == NR {
+        FILENAME == "-" {
+            if ($0 == "") next
+            if ($2 == "model") {
+                quarantined_models[$3] = 1
+            } else if ($2 == "profile") {
+                profile_key = $3 SUBSEP $5 SUBSEP $6 SUBSEP $7 SUBSEP \
+                    $8 SUBSEP $9 SUBSEP $10
+                quarantined_profiles[profile_key] = 1
+            }
+            next
+        }
+        FILENAME == ARGV[2] {
             if ($0 ~ /^[[:space:]]*($|#)/) next
             registry_count[$1]++
             registry_model[$1] = $3
@@ -138,6 +207,7 @@ validate_router_preset_tuples() {
             registry_cache_k[$1] = $8
             registry_cache_v[$1] = $9
             registry_flash[$1] = $10
+            registry_tier[$1] = $16
             registry_batch[$1] = $17
             registry_ubatch[$1] = $18
             next
@@ -192,6 +262,9 @@ validate_router_preset_tuples() {
             } else if (key == "LLAMA_ARG_UBATCH") {
                 ubatch_count++
                 ubatch_value = value
+            } else if (key == "LLAMA_ARG_TAGS") {
+                tags_count++
+                tags_value = value
             }
         }
         END {
@@ -202,7 +275,7 @@ validate_router_preset_tuples() {
             }
             exit rejected
         }
-    ' "$1" "$2"
+    ' - "$1" "$2"
 }
 
 case $bind_host in
@@ -352,13 +425,18 @@ fi
 registry_id=$("$script_directory/model-registry.sh" path "$model_path" \
     id 2>/dev/null) || registry_id=''
 if [ -n "$registry_id" ]; then
-    quarantine_hit=$("$script_directory/model-registry.sh" quarantine-profiles standalone |
-        awk -F'\t' -v id="$registry_id" -v depth="$context_size" \
-            -v batch="$batch_size" -v ubatch="$ubatch_size" \
-            -v cache_k="$cache_type_k" -v cache_v="$cache_type_v" \
-            -v flash="$flash_attention" '
-            $1 == id && $2 == depth && $3 == batch && $4 == ubatch &&
-            $5 == cache_k && $6 == cache_v && $7 == flash { print $1; exit }')
+    quarantine_profiles=$("$script_directory/model-registry.sh" \
+        quarantine-profiles standalone)
+    quarantine_hit=$(awk -F'\t' -v id="$registry_id" \
+        -v depth="$context_size" -v batch="$batch_size" \
+        -v ubatch="$ubatch_size" -v cache_k="$cache_type_k" \
+        -v cache_v="$cache_type_v" -v flash="$flash_attention" '
+        $1 == id && $2 == depth && $3 == batch && $4 == ubatch &&
+        $5 == cache_k && $6 == cache_v && $7 == flash { print $1; exit }
+    ' <<EOF
+$quarantine_profiles
+EOF
+    )
     if [ -n "$quarantine_hit" ]; then
         printf 'this tuple is quarantined: %s at depth %s, batch %s, ubatch %s, K %s, V %s, flash attention %s\n' \
             "$registry_id" "$context_size" "$batch_size" "$ubatch_size" \
@@ -430,12 +508,40 @@ router_presets=${QWEN_ROUTER_PRESETS:-"${HOME:?}/qwen-webui-state/router-presets
 router_registry=${QWEN_MODEL_REGISTRY:-"$script_directory/models.tsv"}
 router_model_root=${QWEN_MODEL_ROOT:-"${HOME:?}/models"}
 router_max=${QWEN_ROUTER_MAX:-1}
+router_preset_expected_sha256=${QWEN_ROUTER_PRESET_SHA256:-}
+verify_router_preset_identity() {
+    if [ -z "$router_preset_expected_sha256" ]; then
+        return 0
+    fi
+    if [ "${#router_preset_expected_sha256}" -ne 64 ]; then
+        printf 'router preset SHA-256 must hold 64 lowercase hexadecimal characters\n' >&2
+        return 1
+    fi
+    case $router_preset_expected_sha256 in
+        *[!0-9a-f]*)
+            printf 'router preset SHA-256 must hold 64 lowercase hexadecimal characters\n' >&2
+            return 1
+            ;;
+    esac
+    if ! router_preset_identity=$(sha256sum "$router_presets"); then
+        printf 'router preset identity cannot be measured: %s\n' \
+            "$router_presets" >&2
+        return 1
+    fi
+    router_preset_actual_sha256=${router_preset_identity%% *}
+    if [ "$router_preset_actual_sha256" != "$router_preset_expected_sha256" ]; then
+        printf 'router preset identity changed: expected %s, measured %s\n' \
+            "$router_preset_expected_sha256" "$router_preset_actual_sha256" >&2
+        return 1
+    fi
+}
 if [ "$router_enabled" = 1 ]; then
     if [ ! -r "$router_presets" ]; then
         printf 'router presets are unreadable: %s\n' "$router_presets" >&2
         printf 'generate them with remote/build-router-presets.sh\n' >&2
         exit 2
     fi
+    verify_router_preset_identity || exit 2
     if [ ! -r "$router_registry" ]; then
         printf 'router model registry is unreadable: %s\n' "$router_registry" >&2
         exit 2
@@ -464,8 +570,15 @@ if [ "$router_enabled" = 1 ]; then
             exit 2
             ;;
     esac
+    if ! router_quarantine_rows=$(
+        "$script_directory/model-registry.sh" quarantine-rows router-child
+    ); then
+        printf 'router quarantine authority is unavailable\n' >&2
+        exit 2
+    fi
     if ! validate_router_preset_tuples "$router_registry" "$router_presets" \
-        "$router_model_root"; then
+        "$router_model_root" "$router_quarantine_rows" \
+        "$quarantine_override_from_preset"; then
         printf 'router presets do not carry complete admitted tuples: %s\n' \
             "$router_presets" >&2
         exit 2
@@ -657,6 +770,13 @@ if [ "$router_enabled" != 1 ]; then
         --flash-attn "$flash_attention" \
         --cache-type-k "$cache_type_k" \
         --cache-type-v "$cache_type_v"
+fi
+
+# The launcher hashes its immutable-per-session snapshot before preflight. A
+# second measurement at the exec boundary binds the validated rows and marker
+# to the exact file llama-server opens.
+if [ "$router_enabled" = 1 ]; then
+    verify_router_preset_identity || exit 2
 fi
 
 exec "$script_directory/radv-low-priority-env.sh" "$@"

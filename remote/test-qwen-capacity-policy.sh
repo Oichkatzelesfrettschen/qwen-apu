@@ -359,6 +359,134 @@ case $router_arguments in
         ;;
 esac
 
+# Preset validation consumes the same router-child quarantine authority as
+# generation. A persisted section can match models.tsv exactly and still lose
+# admission when a later model- or profile-scope quarantine row arrives.
+router_model_quarantine=$temporary_directory/router-model-quarantine.tsv
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    fabricated-model model fabricated no-validated-safe-tuple - - - - - - \
+    evidence/x.md evidence/y.md evidence/z.md router-child \
+    >"$router_model_quarantine"
+if QWEN_MODEL_REGISTRY=$fabricated_registry \
+    QWEN_QUARANTINE_REGISTRY=$router_model_quarantine \
+    QWEN_MODEL_ROOT=$router_model_root QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS=$router_presets \
+    "$policy" "$fake_server" "$registry_model" 4096 18080 \
+    >"$temporary_directory/router-model-quarantine.stdout" \
+    2>"$temporary_directory/router-model-quarantine.stderr"; then
+    printf 'router accepted a stale preset under model quarantine\n' >&2
+    exit 1
+fi
+grep -F 'router preset section fabricated is excluded by model quarantine' \
+    "$temporary_directory/router-model-quarantine.stderr" >/dev/null
+
+router_profile_quarantine=$temporary_directory/router-profile-quarantine.tsv
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    fabricated-profile profile fabricated ring-timeout-only 4096 256 64 \
+    q5_1 iq4_nl auto evidence/x.md evidence/y.md evidence/z.md any \
+    >"$router_profile_quarantine"
+if QWEN_MODEL_REGISTRY=$fabricated_registry \
+    QWEN_QUARANTINE_REGISTRY=$router_profile_quarantine \
+    QWEN_MODEL_ROOT=$router_model_root QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS=$router_presets \
+    "$policy" "$fake_server" "$registry_model" 4096 18080 \
+    >"$temporary_directory/router-profile-quarantine.stdout" \
+    2>"$temporary_directory/router-profile-quarantine.stderr"; then
+    printf 'router accepted a stale preset under profile quarantine\n' >&2
+    exit 1
+fi
+grep -F 'router preset section fabricated is excluded by profile quarantine' \
+    "$temporary_directory/router-profile-quarantine.stderr" >/dev/null
+
+# An ambient research override cannot bless a preset that records no override.
+# The persisted marker governs both section admission and later loopback policy.
+marker_zero_router_presets=$temporary_directory/marker-zero-router-presets.ini
+printf '%s\n' '# qwen_router_include_quarantine=0' \
+    >"$marker_zero_router_presets"
+append_complete_router_section "$marker_zero_router_presets"
+if QWEN_MODEL_REGISTRY=$fabricated_registry \
+    QWEN_QUARANTINE_REGISTRY=$router_profile_quarantine \
+    QWEN_MODEL_ROOT=$router_model_root QWEN_RADV_ICD=$fake_icd \
+    QWEN_ROUTER_INCLUDE_QUARANTINE=1 \
+    QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS=$marker_zero_router_presets \
+    "$policy" "$fake_server" "$registry_model" 4096 18080 \
+    >"$temporary_directory/marker-zero-router.stdout" \
+    2>"$temporary_directory/marker-zero-router.stderr"; then
+    printf 'ambient override admitted a marker-zero stale preset\n' >&2
+    exit 1
+fi
+grep -F 'router preset section fabricated is excluded by profile quarantine' \
+    "$temporary_directory/marker-zero-router.stderr" >/dev/null
+
+# Profile authority is tuple-exact. A quarantine at a neighbouring depth leaves
+# the persisted 4096-token section admitted.
+router_neighbour_quarantine=$temporary_directory/router-neighbour-quarantine.tsv
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    fabricated-neighbour profile fabricated ring-timeout-only 8192 256 64 \
+    q5_1 iq4_nl auto evidence/x.md evidence/y.md evidence/z.md any \
+    >"$router_neighbour_quarantine"
+QWEN_MODEL_REGISTRY=$fabricated_registry \
+QWEN_QUARANTINE_REGISTRY=$router_neighbour_quarantine \
+QWEN_MODEL_ROOT=$router_model_root QWEN_RADV_ICD=$fake_icd \
+QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+QWEN_ROUTER_PRESETS=$router_presets \
+    "$policy" "$fake_server" "$registry_model" 4096 18080
+grep -Fx "argument=$router_presets" "$router_output" >/dev/null
+
+# Missing or malformed authority stops router launch before a stale preset can
+# be interpreted as admitted.
+if QWEN_MODEL_REGISTRY=$fabricated_registry \
+    QWEN_QUARANTINE_REGISTRY=$temporary_directory/absent-router-quarantine.tsv \
+    QWEN_MODEL_ROOT=$router_model_root QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS=$router_presets \
+    "$policy" "$fake_server" "$registry_model" 4096 18080 \
+    >"$temporary_directory/absent-router-quarantine.stdout" \
+    2>"$temporary_directory/absent-router-quarantine.stderr"; then
+    printf 'router accepted missing quarantine authority\n' >&2
+    exit 1
+fi
+grep -F 'router quarantine authority is unavailable' \
+    "$temporary_directory/absent-router-quarantine.stderr" >/dev/null
+
+malformed_router_quarantine=$temporary_directory/malformed-router-quarantine.tsv
+printf 'malformed\trow\n' >"$malformed_router_quarantine"
+if QWEN_MODEL_REGISTRY=$fabricated_registry \
+    QWEN_QUARANTINE_REGISTRY=$malformed_router_quarantine \
+    QWEN_MODEL_ROOT=$router_model_root QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS=$router_presets \
+    "$policy" "$fake_server" "$registry_model" 4096 18080 \
+    >"$temporary_directory/malformed-router-quarantine.stdout" \
+    2>"$temporary_directory/malformed-router-quarantine.stderr"; then
+    printf 'router accepted malformed quarantine authority\n' >&2
+    exit 1
+fi
+grep -F 'router quarantine authority is unavailable' \
+    "$temporary_directory/malformed-router-quarantine.stderr" >/dev/null
+
+semantic_malformed_router_quarantine=$temporary_directory/semantic-malformed-router-quarantine.tsv
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    malformed-profile profile fabricated ring-timeout-only not-a-depth 256 64 \
+    q5_1 iq4_nl auto evidence/x.md evidence/y.md evidence/z.md router-child \
+    >"$semantic_malformed_router_quarantine"
+if QWEN_MODEL_REGISTRY=$fabricated_registry \
+    QWEN_QUARANTINE_REGISTRY=$semantic_malformed_router_quarantine \
+    QWEN_MODEL_ROOT=$router_model_root QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS=$router_presets \
+    "$policy" "$fake_server" "$registry_model" 4096 18080 \
+    >"$temporary_directory/semantic-malformed-router-quarantine.stdout" \
+    2>"$temporary_directory/semantic-malformed-router-quarantine.stderr"; then
+    printf 'router accepted semantically malformed quarantine authority\n' >&2
+    exit 1
+fi
+grep -F 'router quarantine authority is unavailable' \
+    "$temporary_directory/semantic-malformed-router-quarantine.stderr" >/dev/null
+
 # The router preflight subject sizes installed weights only. Its standalone
 # context ceiling does not constrain other preset sections, and the listener
 # carries none of the six per-checkpoint tuple flags.
@@ -489,6 +617,50 @@ fi
 grep -F "router preset section fabricated carries LLAMA_ARG_MODEL $alternate_model_path, registry admits $router_model_root/fabricated.gguf" \
     "$temporary_directory/repointed-router.stderr" >/dev/null
 
+# Registry tier changes invalidate persisted sections even when every runtime
+# tuple field still matches. Archive and rejected rows never reach a generated
+# router preset.
+archived_registry=$temporary_directory/archived-models.tsv
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    fabricated research fabricated.gguf download-qwen38-4b-distill-q4km.sh \
+    4096 8192 8192 q5_1 iq4_nl auto none - - - untested archive 256 64 4096 - \
+    >"$archived_registry"
+if QWEN_MODEL_REGISTRY=$archived_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$router_output \
+    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$router_presets \
+    "$policy" "$fake_server" "$registry_model" 4096 18080 \
+    >"$temporary_directory/archived-router.stdout" \
+    2>"$temporary_directory/archived-router.stderr"; then
+    printf 'router accepted a persisted section after archival\n' >&2
+    exit 1
+fi
+grep -F 'router preset section fabricated has non-servable registry tier archive' \
+    "$temporary_directory/archived-router.stderr" >/dev/null
+
+# A quarantine tier requires both the durable override and model-scope
+# router-child authority. The marker alone cannot manufacture that authority.
+quarantine_tier_registry=$temporary_directory/quarantine-tier-models.tsv
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    fabricated research fabricated.gguf download-qwen38-4b-distill-q4km.sh \
+    4096 8192 8192 q5_1 iq4_nl auto none - - - untested quarantine 256 64 4096 - \
+    >"$quarantine_tier_registry"
+unowned_quarantine_preset=$temporary_directory/unowned-quarantine-tier.ini
+printf '%s\n' '# qwen_router_include_quarantine=1' \
+    >"$unowned_quarantine_preset"
+append_complete_router_section "$unowned_quarantine_preset"
+if QWEN_MODEL_REGISTRY=$quarantine_tier_registry \
+    QWEN_MODEL_ROOT=$router_model_root QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS=$unowned_quarantine_preset \
+    "$policy" "$fake_server" "$registry_model" 4096 18080 \
+    >"$temporary_directory/unowned-quarantine-tier.stdout" \
+    2>"$temporary_directory/unowned-quarantine-tier.stderr"; then
+    printf 'router accepted a quarantine tier without model authority\n' >&2
+    exit 1
+fi
+grep -F 'router preset section fabricated lacks an admitted model quarantine override' \
+    "$temporary_directory/unowned-quarantine-tier.stderr" >/dev/null
+
 case $router_arguments in
     *'--model '*)
         printf 'router mode still passed a single model: %s\n' \
@@ -546,6 +718,59 @@ if QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$router_output \
 fi
 grep -F 'router presets are unreadable' "$temporary_directory/router.stderr" >/dev/null
 
+# A launcher-bound snapshot carries the digest measured before memory preflight.
+# Any mutation before the server exec boundary invalidates the launch.
+wrong_router_preset_sha256=0000000000000000000000000000000000000000000000000000000000000000
+if QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$router_output \
+    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$router_presets \
+    QWEN_ROUTER_PRESET_SHA256=$wrong_router_preset_sha256 \
+    "$policy" "$fake_server" "$registry_model" 4096 18080 \
+    >"$temporary_directory/router-identity.stdout" \
+    2>"$temporary_directory/router-identity.stderr"; then
+    printf 'policy accepted a router preset with the wrong identity\n' >&2
+    exit 1
+fi
+grep -F 'router preset identity changed:' \
+    "$temporary_directory/router-identity.stderr" >/dev/null
+
+identity_bin=$temporary_directory/identity-bin
+identity_count=$temporary_directory/identity-count
+mkdir -p "$identity_bin"
+cat >"$identity_bin/sha256sum" <<'SHA256SUM'
+#!/bin/sh
+count=0
+if [ -r "$QWEN_TEST_IDENTITY_COUNT" ]; then
+    count=$(sed -n '1p' "$QWEN_TEST_IDENTITY_COUNT")
+fi
+count=$((count + 1))
+printf '%s\n' "$count" >"$QWEN_TEST_IDENTITY_COUNT"
+if [ "$count" -eq 1 ]; then
+    exec "$QWEN_TEST_REAL_SHA256SUM" "$@"
+fi
+printf '%s  %s\n' \
+    0000000000000000000000000000000000000000000000000000000000000000 "$1"
+SHA256SUM
+chmod +x "$identity_bin/sha256sum"
+router_preset_identity=$(sha256sum "$router_presets")
+router_preset_sha256=${router_preset_identity%% *}
+if QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$router_output \
+    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$router_presets \
+    QWEN_ROUTER_PRESET_SHA256=$router_preset_sha256 \
+    QWEN_TEST_IDENTITY_COUNT=$identity_count \
+    QWEN_TEST_REAL_SHA256SUM=$(command -v sha256sum) \
+    PATH="$identity_bin:$PATH" \
+    "$policy" "$fake_server" "$registry_model" 4096 18080 \
+    >"$temporary_directory/router-identity-race.stdout" \
+    2>"$temporary_directory/router-identity-race.stderr"; then
+    printf 'policy accepted a router preset mutated after validation\n' >&2
+    exit 1
+fi
+grep -Fx 2 "$identity_count" >/dev/null
+grep -F 'router preset identity changed:' \
+    "$temporary_directory/router-identity-race.stderr" >/dev/null
+
 # A generated preset carries its quarantine override after the generation
 # environment is gone. The launch derives loopback isolation from that durable
 # file rather than from an ambient variable that can disappear on a later run.
@@ -555,8 +780,12 @@ printf '%s\n' \
     '# qwen_router_include_quarantine=1' \
     >"$quarantine_router_presets"
 append_complete_router_section "$quarantine_router_presets"
-QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
-QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+printf 'LLAMA_ARG_TAGS = quarantine,research\n' \
+    >>"$quarantine_router_presets"
+QWEN_MODEL_REGISTRY=$fabricated_registry \
+QWEN_QUARANTINE_REGISTRY=$router_profile_quarantine \
+QWEN_MODEL_ROOT=$router_model_root QWEN_RADV_ICD=$fake_icd \
+QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
 QWEN_ROUTER_PRESETS=$quarantine_router_presets QWEN_BIND_HOST=0.0.0.0 \
     "$policy" "$fake_server" "$model_path" 4096 18080 \
     2>"$temporary_directory/quarantine-router.stderr"
@@ -572,6 +801,57 @@ case " $quarantine_router_arguments " in
 esac
 grep -F 'quarantine override forces the listener to loopback' \
     "$temporary_directory/quarantine-router.stderr" >/dev/null
+
+missing_quarantine_tag=$temporary_directory/missing-quarantine-tag.ini
+sed 's/^LLAMA_ARG_TAGS = quarantine,research$/LLAMA_ARG_TAGS = research/' \
+    "$quarantine_router_presets" >"$missing_quarantine_tag"
+if QWEN_MODEL_REGISTRY=$fabricated_registry \
+    QWEN_QUARANTINE_REGISTRY=$router_profile_quarantine \
+    QWEN_MODEL_ROOT=$router_model_root QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS=$missing_quarantine_tag \
+    "$policy" "$fake_server" "$model_path" 4096 18080 \
+    >"$temporary_directory/missing-quarantine-tag.stdout" \
+    2>"$temporary_directory/missing-quarantine-tag.stderr"; then
+    printf 'policy accepted a research override without its quarantine tag\n' >&2
+    exit 1
+fi
+grep -F 'router preset section fabricated carries unsafe quarantine tags:' \
+    "$temporary_directory/missing-quarantine-tag.stderr" >/dev/null
+
+default_quarantine_tag=$temporary_directory/default-quarantine-tag.ini
+sed 's/^LLAMA_ARG_TAGS = quarantine,research$/LLAMA_ARG_TAGS = quarantine,research,default/' \
+    "$quarantine_router_presets" >"$default_quarantine_tag"
+if QWEN_MODEL_REGISTRY=$fabricated_registry \
+    QWEN_QUARANTINE_REGISTRY=$router_profile_quarantine \
+    QWEN_MODEL_ROOT=$router_model_root QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS=$default_quarantine_tag \
+    "$policy" "$fake_server" "$model_path" 4096 18080 \
+    >"$temporary_directory/default-quarantine-tag.stdout" \
+    2>"$temporary_directory/default-quarantine-tag.stderr"; then
+    printf 'policy accepted a default tag on a quarantined override section\n' >&2
+    exit 1
+fi
+grep -F 'router preset section fabricated carries unsafe quarantine tags:' \
+    "$temporary_directory/default-quarantine-tag.stderr" >/dev/null
+
+candidate_quarantine_tag=$temporary_directory/candidate-quarantine-tag.ini
+sed 's/^LLAMA_ARG_TAGS = quarantine,research$/LLAMA_ARG_TAGS = candidate,quarantine,research/' \
+    "$quarantine_router_presets" >"$candidate_quarantine_tag"
+if QWEN_MODEL_REGISTRY=$fabricated_registry \
+    QWEN_QUARANTINE_REGISTRY=$router_profile_quarantine \
+    QWEN_MODEL_ROOT=$router_model_root QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS=$candidate_quarantine_tag \
+    "$policy" "$fake_server" "$model_path" 4096 18080 \
+    >"$temporary_directory/candidate-quarantine-tag.stdout" \
+    2>"$temporary_directory/candidate-quarantine-tag.stderr"; then
+    printf 'policy accepted contradictory candidate and quarantine tags\n' >&2
+    exit 1
+fi
+grep -F 'router preset section fabricated carries unsafe quarantine tags:' \
+    "$temporary_directory/candidate-quarantine-tag.stderr" >/dev/null
 
 # A generated file from before the provenance field existed is not assumed
 # clean. Regeneration is required before a potentially persistent preset runs.
@@ -609,6 +889,21 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     >"$quarantine_table"
 quarantine_model=$temporary_directory/quarantined.gguf
 : >"$quarantine_model"
+
+# The standalone policy consumes the quarantine query as a required safety
+# input. A missing registry stops tuple construction before an unknown profile
+# can reach the server.
+if QWEN_MODEL_REGISTRY=$quarantine_registry \
+    QWEN_QUARANTINE_REGISTRY=$temporary_directory/absent-quarantine.tsv \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$cache_output \
+    "$policy" "$fake_server" "$quarantine_model" 16384 18080 \
+    >"$temporary_directory/absent-quarantine.stdout" \
+    2>"$temporary_directory/absent-quarantine.stderr"; then
+    printf 'policy accepted an unreadable quarantine registry\n' >&2
+    exit 1
+fi
+grep -F 'quarantine registry is unreadable' \
+    "$temporary_directory/absent-quarantine.stderr" >/dev/null
 
 if QWEN_MODEL_REGISTRY=$quarantine_registry \
     QWEN_QUARANTINE_REGISTRY=$quarantine_table QWEN_RADV_ICD=$fake_icd \

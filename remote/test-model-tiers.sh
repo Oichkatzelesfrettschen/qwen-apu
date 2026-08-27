@@ -374,18 +374,23 @@ fixture_quarantine=$work/quarantine-fixture.tsv
 fixture_reasons=$work/quarantine-fixture-reasons
 fixture_model_root=$work/quarantine-fixture-models
 fixture_presets=$work/quarantine-fixture.ini
-mkdir -p "$fixture_reasons" "$fixture_model_root/Hidden" "$fixture_model_root/Profile"
+mkdir -p "$fixture_reasons" "$fixture_model_root/Hidden" \
+    "$fixture_model_root/Profile" "$fixture_model_root/Archived"
 : >"$fixture_model_root/Hidden/model.gguf"
 : >"$fixture_model_root/Profile/model.gguf"
+: >"$fixture_model_root/Archived/model.gguf"
 : >"$fixture_reasons/hidden-record.md"
 : >"$fixture_reasons/profile-record.md"
+: >"$fixture_reasons/archived-record.md"
 printf '%s\n' \
     'hidden-model	fixture	Hidden/model.gguf	fetch.sh	8192	8192	8192	q8_0	q4_0	on	none	-	-	-	untested	production	128	32	-	-' \
     'profile-model	fixture	Profile/model.gguf	fetch.sh	8192	8192	8192	q8_0	q4_0	on	none	-	-	-	untested	production	128	32	-	-' \
+    'archived-model	fixture	Archived/model.gguf	fetch.sh	8192	8192	8192	q8_0	q4_0	on	none	-	-	-	untested	archive	128	32	-	-' \
     >"$fixture_registry"
 printf '%s\n' \
     'hidden-record	model	hidden-model	device-lost	-	-	-	-	-	-	-	-	evidence/quarantine/hidden-record.md	any' \
     'profile-record	profile	profile-model	ring-timeout-only	8192	128	32	q8_0	q4_0	on	-	-	evidence/quarantine/profile-record.md	router-child' \
+    'archived-record	model	archived-model	device-lost	-	-	-	-	-	-	-	-	evidence/quarantine/archived-record.md	any' \
     >"$fixture_quarantine"
 QWEN_MODEL_REGISTRY=$fixture_registry QWEN_MODEL_ROOT=$fixture_model_root \
 QWEN_QUARANTINE_REGISTRY=$fixture_quarantine \
@@ -402,13 +407,29 @@ fi
 QWEN_MODEL_REGISTRY=$fixture_registry QWEN_MODEL_ROOT=$fixture_model_root \
 QWEN_QUARANTINE_REGISTRY=$fixture_quarantine \
 QWEN_QUARANTINE_REASONS=$fixture_reasons QWEN_ROUTER_INCLUDE_QUARANTINE=1 \
+QWEN_DEFAULT_MODEL_ID=hidden-model \
     "$builder" "$fixture_presets" >"$work/quarantine-fixture-override.log"
 fixture_sections=$(awk -F'[][]' '/^\[/ { print $2 }' "$fixture_presets" | sort)
+hidden_tags=$(awk -F' = ' '
+    /^\[hidden-model\]$/ { wanted = 1; next }
+    /^\[/ { wanted = 0 }
+    wanted && $1 == "LLAMA_ARG_TAGS" { print $2; exit }
+' "$fixture_presets")
+profile_tags=$(awk -F' = ' '
+    /^\[profile-model\]$/ { wanted = 1; next }
+    /^\[/ { wanted = 0 }
+    wanted && $1 == "LLAMA_ARG_TAGS" { print $2; exit }
+' "$fixture_presets")
 if [ "$fixture_sections" = "$(printf '%s\n' hidden-model profile-model)" ] &&
-   grep -qx '# qwen_router_include_quarantine=1' "$fixture_presets"; then
+   grep -qx '# qwen_router_include_quarantine=1' "$fixture_presets" &&
+   [ ! -L "$fixture_model_root/quarantine/Archived" ] &&
+   [ "$hidden_tags" = quarantine,fixture ] &&
+   [ "$profile_tags" = quarantine,fixture ]; then
     report quarantine_registry_override accepted
 else
     report quarantine_registry_override rejected
+    printf 'override tags hidden=%s profile=%s\n' \
+        "$hidden_tags" "$profile_tags" >&2
 fi
 
 if [ "$failures" -eq 0 ]; then

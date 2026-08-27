@@ -37,9 +37,17 @@ def regrade_arm(module, document):
             continue
         # The retained tool calls are re-read as well, so a change to a tool
         # grader re-grades from the record on the same terms a text grader does.
-        passed, reason = module.grade(record, content,
-                                      record.get("truncated", False),
-                                      record.get("tool_calls") or ())
+        # Transport and attribution failures are properties of the evidence,
+        # not grader verdicts. Re-applying a content rule cannot repair a reset,
+        # an omitted served-model identity, or a response from another model.
+        retained_evidence_error = (record.get("error")
+                                   or record.get("attribution_error"))
+        if retained_evidence_error:
+            passed, reason = False, retained_evidence_error
+        else:
+            passed, reason = module.grade(
+                record, content, record.get("truncated", False),
+                record.get("tool_calls") or ())
         rows.append({
             "id": record["id"],
             "category": record["category"],
