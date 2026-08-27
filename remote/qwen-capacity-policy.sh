@@ -126,6 +126,75 @@ if [ "$context_size" -gt "$maximum_context_size" ]; then
     exit 2
 fi
 
+# Submission geometry comes from the row rather than from a constant, because
+# the ceiling and the geometry are one claim. At 16384 the same checkpoint,
+# cache triple, Flash Attention state, and device wedged the amdgpu compute ring
+# at 2048/512 and completed twice at 128/32, so a depth is admitted under a
+# geometry and reading the ceiling without it reads half the measurement.
+registry_batch=$("$script_directory/model-registry.sh" path "$model_path" \
+    batch 2>/dev/null) || registry_batch=''
+registry_ubatch=$("$script_directory/model-registry.sh" path "$model_path" \
+    ubatch 2>/dev/null) || registry_ubatch=''
+case $registry_batch in '' | *[!0-9]*) registry_batch=128 ;; esac
+case $registry_ubatch in '' | *[!0-9]*) registry_ubatch=32 ;; esac
+batch_size=${QWEN_BATCH_SIZE:-$registry_batch}
+ubatch_size=${QWEN_UBATCH_SIZE:-$registry_ubatch}
+for submission_value in "$batch_size" "$ubatch_size"; do
+    case $submission_value in
+        '' | *[!0-9]* | 0)
+            printf 'batch and ubatch must be positive integers: %s\n' \
+                "$submission_value" >&2
+            exit 2
+            ;;
+    esac
+done
+if [ "$ubatch_size" -gt "$batch_size" ]; then
+    printf 'ubatch exceeds batch: %s > %s\n' "$ubatch_size" "$batch_size" >&2
+    exit 2
+fi
+
+# A quarantined profile names a tuple that produced a device failure. The launch
+# refuses to construct it rather than warning about it, because the failure it
+# reproduces resets the compute ring on a live desktop.
+registry_id=$("$script_directory/model-registry.sh" path "$model_path" \
+    id 2>/dev/null) || registry_id=''
+if [ -n "$registry_id" ]; then
+    quarantine_hit=$("$script_directory/model-registry.sh" quarantine-profiles |
+        awk -F'\t' -v id="$registry_id" -v depth="$context_size" \
+            -v batch="$batch_size" -v ubatch="$ubatch_size" \
+            -v cache_k="$cache_type_k" -v cache_v="$cache_type_v" \
+            -v flash="$flash_attention" '
+            $1 == id && $2 == depth && $3 == batch && $4 == ubatch &&
+            $5 == cache_k && $6 == cache_v && $7 == flash { print $1; exit }')
+    if [ -n "$quarantine_hit" ]; then
+        printf 'this tuple is quarantined: %s at depth %s, batch %s, ubatch %s, K %s, V %s, flash attention %s\n' \
+            "$registry_id" "$context_size" "$batch_size" "$ubatch_size" \
+            "$cache_type_k" "$cache_type_v" "$flash_attention" >&2
+        printf 'the reason record is evidence/quarantine/%s-d%s-b%s-ub%s.md\n' \
+            "$registry_id" "$context_size" "$batch_size" "$ubatch_size" >&2
+        exit 2
+    fi
+fi
+
+# The allocation and the validated depth are separate claims and the status line
+# carries both, so a served depth above anything measured to fill and decode is
+# a visible gap rather than an implied guarantee.
+registry_validated_depth=$("$script_directory/model-registry.sh" path \
+    "$model_path" validated_filled_depth 2>/dev/null) || registry_validated_depth=''
+[ -n "$registry_validated_depth" ] || registry_validated_depth=-
+if [ "$registry_validated_depth" = - ]; then
+    printf 'depth_validation admitted=%s validated=none geometry=%s/%s\n' \
+        "$context_size" "$batch_size" "$ubatch_size" >&2
+elif [ "$context_size" -gt "$registry_validated_depth" ]; then
+    printf 'depth_validation admitted=%s validated=%s geometry=%s/%s allocation_beyond_validation=yes\n' \
+        "$context_size" "$registry_validated_depth" "$batch_size" \
+        "$ubatch_size" >&2
+else
+    printf 'depth_validation admitted=%s validated=%s geometry=%s/%s\n' \
+        "$context_size" "$registry_validated_depth" "$batch_size" \
+        "$ubatch_size" >&2
+fi
+
 case $server_port in
     '' | *[!0-9]*)
         printf 'port must be an integer from 1024 through 65535\n' >&2
@@ -178,6 +247,20 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
             exit 2
             ;;
     esac
+    # A quarantined checkpoint reaches the picker only through the research
+    # override, and it stays on the loopback while it does. The appliance binds
+    # 0.0.0.0 so the laptop serves the LAN, and a warning alone would leave a
+    # model with a recorded device failure or no validated safe tuple reachable
+    # from every host on that network. The bind host is forced rather than
+    # refused, so the override runs the experiment it exists for and the
+    # exposure it would create does not follow it.
+    if [ "${QWEN_ROUTER_INCLUDE_QUARANTINE:-0}" = 1 ]; then
+        if [ "$bind_host" != 127.0.0.1 ]; then
+            printf 'quarantine override forces the listener to loopback: %s -> 127.0.0.1\n' \
+                "$bind_host" >&2
+            bind_host=127.0.0.1
+        fi
+    fi
     set -- "$llama_server" \
         --models-preset "$router_presets" \
         --models-max "$router_max" \
@@ -317,8 +400,8 @@ set -- "$@" \
     --parallel 1 \
     --threads 1 \
     --threads-batch 1 \
-    --batch-size 128 \
-    --ubatch-size 32 \
+    --batch-size "$batch_size" \
+    --ubatch-size "$ubatch_size" \
     --flash-attn "$flash_attention" \
     --cache-type-k "$cache_type_k" \
     --cache-type-v "$cache_type_v" \

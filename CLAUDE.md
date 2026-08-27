@@ -96,6 +96,38 @@ also set `QWEN_CACHE_OVERRIDE_CONTEXT_CEILING` to a positive depth measured for
 that exact tuple. The override ceiling cannot exceed the checkpoint registry
 ceiling. A ceiling never exceeds a depth measured to fail.
 
+An allocation and a validated depth are two claims and the registry carries them
+as two fields. `context_ceiling` is the depth the policy admits;
+`validated_filled_depth` is the deepest depth measured to fill and decode under
+the row's own cache triple, Flash Attention state, `batch`, and `ubatch`. A
+server that loads a 24576-token allocation has proven it can reserve the memory
+and has not proven a near-full cache executes, so the 4B distill reads 24576 and
+16384 in those two fields and `qwen-capacity-policy.sh` prints the gap on its
+`depth_validation` line at every launch. Submission geometry belongs to the same
+claim: at 16384 the same checkpoint, cache, and device wedged the compute ring
+at 2048/512 and completed twice at 128/32, so `batch` and `ubatch` are registry
+fields rather than constants in the argv.
+
+The `tier` field states what is claimed about a row and
+`remote/build-router-presets.sh` turns it into what the picker offers.
+`production` is a serving tuple measured safe and useful; `candidate` leaves
+quality or performance unqualified with no device failure under its admitted
+tuple; `quarantine` names a reset, fault, device loss, correctness hazard, or
+the absence of any validated safe tuple; `archive` is a valid artifact displaced
+or too slow to serve; `rejected` lost admission on measurement without being
+dangerous. Only `production` and `candidate` reach the preset file.
+
+The failure unit is a tuple rather than a checkpoint, so `remote/quarantine.tsv`
+carries two scopes. A `model` row removes a checkpoint entirely; a `profile` row
+removes one tuple of a checkpoint that otherwise serves, and
+`qwen-capacity-policy.sh` refuses to construct that tuple rather than warning
+about it. `evidence/quarantine/` holds one reason record per row with its kernel
+signature, its validated safe tuples, and its re-entry gate.
+`QWEN_ROUTER_INCLUDE_QUARANTINE=1` exposes a quarantined checkpoint for research
+and forces the listener to `127.0.0.1` while it does, because the appliance
+binds `0.0.0.0` and a warning alone would put a model with a recorded device
+failure on the LAN.
+
 Sequential host read bandwidth measures 7.97 GB/s on one thread and 15.44 GB/s
 on two. Those figures measure the two Zen+ cores through the load/store path,
 which is a different consumer of the one DDR4 controller than the two Vega
@@ -191,6 +223,7 @@ remote/run-quality-suite.py ENDPOINT OUT_JSON --long-context-characters 24000
 remote/sample-gpu-clocks.sh OUT_TSV [SECONDS]  # the DPM step a rate ran at
 remote/measure-dpm-force.sh MODEL [OUT]         # auto against global high governor
 remote/model-registry.sh id|path SELECTOR [FIELD]
+remote/build-router-presets.sh [OUTPUT_INI]    # the picker, from the tier field
 
 # Rebuild llama.cpp and the static UI
 remote/build-llama-preset.sh PRESET [SOURCE]   # one directory per build arm
@@ -214,6 +247,7 @@ directly:
 remote/test-qwen-runtime-guards.sh
 remote/test-radv-low-priority-env.sh
 remote/test-model-registry.sh
+remote/test-model-tiers.sh
 remote/test-quality-suite.py
 remote/test-gguf-tokenizer-identity.py
 remote/test-promote-llama-build.sh

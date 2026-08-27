@@ -151,9 +151,9 @@ grep -F 'context size exceeds the admitted ceiling for this cache policy: 4097 >
 # A fabricated registry carries a triple the fallback never produces, so this
 # check separates the registry read from the built-in default.
 fabricated_registry=$temporary_directory/models.tsv
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     fabricated research fabricated.gguf download-qwen38-4b-distill-q4km.sh \
-    4096 8192 8192 q5_1 iq4_nl auto none - - untested candidate \
+    4096 8192 8192 q5_1 iq4_nl auto none - - untested candidate 256 64 4096 - \
     >"$fabricated_registry"
 registry_model=$temporary_directory/fabricated.gguf
 : >"$registry_model"
@@ -162,7 +162,7 @@ QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_RADV_ICD=$fake_icd \
     "$policy" "$fake_server" "$registry_model" 4096 18080
 cache_arguments=$(sed -n 's/^argument=//p' "$cache_output" | tr '\n' ' ')
 case $cache_arguments in
-    *'--flash-attn auto '*'--cache-type-k q5_1 --cache-type-v iq4_nl '*) ;;
+    *'--batch-size 256 --ubatch-size 64 '*'--flash-attn auto '*'--cache-type-k q5_1 --cache-type-v iq4_nl '*) ;;
     *)
         printf 'registry cache row did not reach the argument list: %s\n' \
             "$cache_arguments" >&2
@@ -366,5 +366,64 @@ if QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$router_output \
     exit 1
 fi
 grep -F 'router presets are unreadable' "$temporary_directory/router.stderr" >/dev/null
+
+# A quarantined profile names one tuple of an otherwise servable checkpoint, so
+# the policy refuses that tuple and serves every neighbour of it. Reproducing
+# the quarantined geometry resets the amdgpu compute ring on a live desktop,
+# which is why this is a refusal rather than a warning.
+quarantine_registry=$temporary_directory/quarantine-models.tsv
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    quarantined research quarantined.gguf download-qwen38-4b-distill-q4km.sh \
+    4096 16384 16384 q8_0 q4_0 on none - - untested production 2048 512 4096 - \
+    >"$quarantine_registry"
+quarantine_table=$temporary_directory/quarantine.tsv
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    quarantined-tuple profile quarantined ring-timeout-only 16384 2048 512 \
+    q8_0 q4_0 on evidence/x.md evidence/y.md evidence/z.md \
+    >"$quarantine_table"
+quarantine_model=$temporary_directory/quarantined.gguf
+: >"$quarantine_model"
+
+if QWEN_MODEL_REGISTRY=$quarantine_registry \
+    QWEN_QUARANTINE_REGISTRY=$quarantine_table QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$cache_output \
+    "$policy" "$fake_server" "$quarantine_model" 16384 18080 \
+    2>"$temporary_directory/quarantine.stderr"; then
+    printf 'the policy built the quarantined tuple\n' >&2
+    exit 1
+fi
+grep -F 'this tuple is quarantined' "$temporary_directory/quarantine.stderr" \
+    >/dev/null
+
+# The neighbouring depth under the same geometry is not quarantined and serves.
+QWEN_MODEL_REGISTRY=$quarantine_registry \
+    QWEN_QUARANTINE_REGISTRY=$quarantine_table QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$cache_output \
+    "$policy" "$fake_server" "$quarantine_model" 8192 18080
+quarantine_neighbour=$(sed -n 's/^argument=//p' "$cache_output" | tr '\n' ' ')
+case $quarantine_neighbour in
+    *'--ctx-size 8192 '*'--batch-size 2048 --ubatch-size 512 '*) ;;
+    *)
+        printf 'the neighbouring depth did not build: %s\n' \
+            "$quarantine_neighbour" >&2
+        exit 1
+        ;;
+esac
+
+# The same depth at the served geometry is a different tuple and serves.
+QWEN_MODEL_REGISTRY=$quarantine_registry \
+    QWEN_QUARANTINE_REGISTRY=$quarantine_table QWEN_RADV_ICD=$fake_icd \
+    QWEN_BATCH_SIZE=128 QWEN_UBATCH_SIZE=32 \
+    QWEN_POLICY_TEST_OUTPUT=$cache_output \
+    "$policy" "$fake_server" "$quarantine_model" 16384 18080
+quarantine_geometry=$(sed -n 's/^argument=//p' "$cache_output" | tr '\n' ' ')
+case $quarantine_geometry in
+    *'--ctx-size 16384 '*'--batch-size 128 --ubatch-size 32 '*) ;;
+    *)
+        printf 'the served geometry at the quarantined depth did not build: %s\n' \
+            "$quarantine_geometry" >&2
+        exit 1
+        ;;
+esac
 
 printf 'qwen_capacity_policy=accepted\n'
