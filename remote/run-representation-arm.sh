@@ -81,16 +81,38 @@ streamed_bytes_of() {
 }
 
 # One token with every tensor forced onto the device, so an arm that silently
-# placed weights on the CPU backend is named here rather than read as a slow
-# representation.
+# placed weights elsewhere is named here rather than read as a slow
+# representation. The discriminating line is the owner of the model buffer
+# rather than the word CPU: llama-cli at -ngl 0 reports `Vulkan_Host model
+# buffer size` and reserves its output, KV, and recurrent buffers on CPU, so a
+# grep for `CPU buffer size` matches those three and misses where the weights
+# went. The loader prints none of it at the default verbosity, which is why -v
+# is passed; without it the check reads an empty log and can never fail.
+weights_off_device() {
+    awk '/load_tensors:.*model buffer size/ {
+            size = $(NF - 1) + 0
+            if (size <= 0) { next }
+            owner = ""
+            for (field = 1; field <= NF; field++) {
+                if ($field == "model") { owner = $(field - 1) }
+            }
+            if (owner != "Vulkan0") { printf "%s holds %s MiB of weights\n", owner, size }
+        }' "$1"
+}
+
 check_strict_placement() {
     placement_model=$1
     placement_log=$2
     nice -n 19 "$cli" --model "$placement_model" --device Vulkan0 \
         --n-gpu-layers all --override-tensor '.*=Vulkan0' --no-warmup \
         --ctx-size 256 --n-predict 1 --temp 0 --prompt 'ok' \
-        --no-conversation >"$placement_log" 2>&1 || return 1
-    if grep -q 'CPU buffer size' "$placement_log"; then
+        --single-turn -v >"$placement_log" 2>&1 || return 1
+    # An empty result from an empty log would pass, so the log must carry at
+    # least one model buffer line before its owners mean anything.
+    if ! grep -q 'load_tensors:.*model buffer size' "$placement_log"; then
+        return 3
+    fi
+    if [ -n "$(weights_off_device "$placement_log")" ]; then
         return 2
     fi
     return 0
@@ -118,7 +140,7 @@ run_arm() {
     nice -n 19 "$bench" --model "$arm_model" -ngl 99 -t 2 \
         -ot '.*=Vulkan0' -r "$arm_repeats" -p "$prompt_tokens" \
         -n "$generate_tokens" -b 128 -ub 32 -fa on -ctk q8_0 -ctv q4_0 \
-        -o csv >"$arm_log" 2>"$arm_diagnostics" || {
+        -o csv -v >"$arm_log" 2>"$arm_diagnostics" || {
             printf 'bench arm failed: position %s role %s\n' \
                 "$arm_position" "$arm_role" >&2
             tail -20 "$arm_diagnostics" >&2
@@ -132,10 +154,16 @@ run_arm() {
     # that produced the rate took it. A weight tensor left on the CPU backend
     # makes the ratio a placement measurement rather than a format one, and the
     # 0.8B keeps 34% of its streamed bytes in one tied embedding tensor.
-    if grep -q 'CPU buffer size' "$arm_diagnostics"; then
-        printf 'arm placed tensors on the CPU backend: position %s role %s\n' \
+    arm_misplaced=$(weights_off_device "$arm_diagnostics")
+    if [ -n "$arm_misplaced" ]; then
+        printf 'arm placed weights off the device: position %s role %s\n' \
             "$arm_position" "$arm_role" >&2
-        grep -F 'buffer size' "$arm_diagnostics" >&2
+        printf '%s\n' "$arm_misplaced" >&2
+        return 1
+    fi
+    if ! grep -q 'load_tensors:.*model buffer size' "$arm_diagnostics"; then
+        printf 'arm log carries no model buffer line, so placement is unproven: %s\n' \
+            "$arm_diagnostics" >&2
         return 1
     fi
 
@@ -206,8 +234,11 @@ for placement_role in control subject; do
     set -e
     case $placement_status in
         0) printf 'placement=%s strict_vulkan=passed\n' "$placement_role" ;;
-        2) printf 'placement=%s strict_vulkan=cpu-fallback\n' "$placement_role" >&2
-           grep -F 'buffer size' "$output_directory/placement-$placement_role.txt" >&2
+        2) printf 'placement=%s strict_vulkan=weights-off-device\n' "$placement_role" >&2
+           weights_off_device "$output_directory/placement-$placement_role.txt" >&2
+           exit 1 ;;
+        3) printf 'placement=%s strict_vulkan=unproven reason=no-model-buffer-line\n' \
+               "$placement_role" >&2
            exit 1 ;;
         *) printf 'placement=%s strict_vulkan=failed\n' "$placement_role" >&2
            tail -20 "$output_directory/placement-$placement_role.txt" >&2

@@ -184,20 +184,49 @@ fi
 # One token, all layers on Vulkan, no CPU fallback admitted. The model is
 # required because the check is that the device path completes, not that the
 # binary runs.
+#
+# -v is required: llama-cli prints no loader line at the default verbosity, so
+# the placement test would read an empty log and pass whatever it is given.
 strict_output=$(nice -n 19 "$client_path" \
     --model "$promotion_model" --device Vulkan0 --n-gpu-layers all \
     --override-tensor '.*=Vulkan0' --no-warmup --ctx-size 256 \
-    --n-predict 1 --temp 0 --prompt 'ok' --no-conversation 2>&1) || {
-        printf 'strict Vulkan one-token check failed:\n%s\n' "$strict_output" >&2
+    --n-predict 1 --temp 0 --prompt 'ok' --single-turn -v 2>&1) || {
+        printf 'strict Vulkan one-token check failed:
+%s
+' "$strict_output" >&2
         exit 1
     }
+# The owner of the model buffer is the discriminating fact. At -ngl 0 this build
+# reports `Vulkan_Host model buffer size` and reserves output, KV, and recurrent
+# buffers on CPU, so matching the word CPU catches those three and misses the
+# 1205 MiB of weights that left the device.
 case $strict_output in
-    *"CPU buffer size"*)
-        printf 'strict Vulkan check placed tensors on the CPU backend\n' >&2
-        printf '%s\n' "$strict_output" | grep -F 'buffer size' >&2
+    *"load_tensors:"*"model buffer size"*) ;;
+    *)
+        printf 'strict Vulkan check produced no model buffer line, so placement is unproven
+' >&2
         exit 1
         ;;
 esac
+misplaced_weights=$(printf '%s
+' "$strict_output" |
+    awk '/load_tensors:.*model buffer size/ {
+            size = $(NF - 1) + 0
+            if (size <= 0) { next }
+            owner = ""
+            for (field = 1; field <= NF; field++) {
+                if ($field == "model") { owner = $(field - 1) }
+            }
+            if (owner != "Vulkan0") { printf "%s holds %s MiB of weights
+", owner, size }
+        }')
+if [ -n "$misplaced_weights" ]; then
+    printf 'strict Vulkan check placed weights off the device:
+%s
+' \
+        "$misplaced_weights" >&2
+    exit 1
+fi
 strict_state=passed
 
 "$multimodal_path" --version >/dev/null 2>&1 || {
