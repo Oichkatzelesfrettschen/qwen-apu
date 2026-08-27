@@ -56,7 +56,16 @@ cleanup() {
         router_preset_snapshot=''
     fi
 }
-trap cleanup EXIT HUP INT TERM
+terminate_session() {
+    signal_status=$1
+    cleanup
+    trap - EXIT HUP INT TERM
+    exit "$signal_status"
+}
+trap cleanup EXIT
+trap 'terminate_session 129' HUP
+trap 'terminate_session 130' INT
+trap 'terminate_session 143' TERM
 
 if [ -s "$pid_file" ]; then
     prior_pid=$(sed -n '1p' "$pid_file")

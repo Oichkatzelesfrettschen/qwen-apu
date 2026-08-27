@@ -12,7 +12,15 @@ fi
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 temporary_directory=$(mktemp -d)
-trap 'rm -rf "$temporary_directory"' EXIT INT TERM
+cleanup_fixture() {
+    if [ -r "$temporary_directory/detached-session.pid.last" ]; then
+        detached_pid=$(sed -n '1p' \
+            "$temporary_directory/detached-session.pid.last")
+        kill "$detached_pid" 2>/dev/null || true
+    fi
+    rm -rf "$temporary_directory"
+}
+trap cleanup_fixture EXIT INT TERM
 fixture_remote=$temporary_directory/remote
 fixture_bin=$temporary_directory/bin
 mkdir -p "$fixture_remote" "$fixture_bin"
@@ -84,6 +92,9 @@ PROJECTOR
 cat >"$fixture_remote/qwen-webui-control.sh" <<'CONTROL'
 #!/bin/sh
 if [ "$1" = stop ]; then
+    if [ -n "${QWEN_TEST_TMUX_PID_FILE:-}" ]; then
+        tmux -L qwen-runtime kill-session -t qwen-webui 2>/dev/null || true
+    fi
     exit 0
 fi
 mkdir -p "$QWEN_WEBUI_STATE_DIRECTORY"
@@ -95,6 +106,7 @@ printf 'presets=%s\nexpected_sha256=%s\nmeasured_sha256=%s\n' \
 sed -n '1p' "$QWEN_ROUTER_PRESETS" >>"$FIXTURE_CONTROL_LOG"
 printf 'state=running fixture=1\n' >"$QWEN_WEBUI_STATE_DIRECTORY/session.status"
 if [ -n "${QWEN_TEST_CONTROL_WAIT_MARKER:-}" ]; then
+    tmux -L qwen-runtime new-session -d -s qwen-webui
     : >"$QWEN_TEST_CONTROL_WAIT_MARKER"
     while [ ! -e "$QWEN_TEST_CONTROL_RELEASE" ]; do
         sleep 0.01
@@ -109,7 +121,38 @@ exit 0
 CURL
 cat >"$fixture_bin/tmux" <<'TMUX'
 #!/bin/sh
-exit 1
+if [ -z "${QWEN_TEST_TMUX_PID_FILE:-}" ]; then
+    exit 1
+fi
+case " $* " in
+    *" new-session "*)
+        sh -c 'trap "exit 0" TERM; while :; do sleep 1; done' &
+        printf '%s\n' "$!" >"$QWEN_TEST_TMUX_PID_FILE"
+        printf '%s\n' "$!" >"$QWEN_TEST_TMUX_PID_FILE.last"
+        ;;
+    *" kill-session "*)
+        if [ -r "$QWEN_TEST_TMUX_PID_FILE" ]; then
+            session_pid=$(sed -n '1p' "$QWEN_TEST_TMUX_PID_FILE")
+            kill -TERM "$session_pid" 2>/dev/null || true
+            session_attempt=0
+            while kill -0 "$session_pid" 2>/dev/null && \
+                  [ "$session_attempt" -lt 200 ]; do
+                session_attempt=$((session_attempt + 1))
+                sleep 0.01
+            done
+            if kill -0 "$session_pid" 2>/dev/null; then
+                kill -KILL "$session_pid" 2>/dev/null || true
+            fi
+            rm -f "$QWEN_TEST_TMUX_PID_FILE"
+        fi
+        ;;
+    *" has-session "*)
+        [ -r "$QWEN_TEST_TMUX_PID_FILE" ] || exit 1
+        session_pid=$(sed -n '1p' "$QWEN_TEST_TMUX_PID_FILE")
+        kill -0 "$session_pid" 2>/dev/null
+        ;;
+    *) exit 1 ;;
+esac
 TMUX
 cat >"$fixture_bin/ss" <<'SS'
 #!/bin/sh
@@ -211,58 +254,80 @@ printf '%s\n' \
     >"$source_router_presets"
 cancellation_mutation_marker=$temporary_directory/cancellation-no-mutation
 : >"$cancellation_mutation_marker"
-cancellation_control_log=$temporary_directory/cancellation-control.log
-cancellation_wait_marker=$temporary_directory/cancellation-control-waiting
-cancellation_release=$temporary_directory/cancellation-control-release
-cancellation_curl_marker=$temporary_directory/cancellation-curl-ran
-HOME=$temporary_directory QWEN_ROUTER=1 \
-QWEN_MODEL_PATH=$temporary_directory/models/Normal/small.gguf \
-QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
-QWEN_TEST_CONTROL_WAIT_MARKER=$cancellation_wait_marker \
-QWEN_TEST_CONTROL_RELEASE=$cancellation_release \
-QWEN_TEST_CURL_MARKER=$cancellation_curl_marker \
-FIXTURE_SOURCE_PRESET=$source_router_presets \
-FIXTURE_MUTATION_MARKER=$cancellation_mutation_marker \
-FIXTURE_REAL_STAT=$(command -v stat) \
-FIXTURE_CONTROL_LOG=$cancellation_control_log \
-PATH="$fixture_bin:$PATH" \
-    "$fixture_remote/qwen-launch.sh" \
-    >"$temporary_directory/cancellation.stdout" \
-    2>"$temporary_directory/cancellation.stderr" &
-cancellation_pid=$!
-cancellation_attempt=0
-while [ ! -e "$cancellation_wait_marker" ] && \
-      [ "$cancellation_attempt" -lt 100 ]; do
-    cancellation_attempt=$((cancellation_attempt + 1))
-    sleep 0.01
+for cancellation_signal_and_status in HUP:129 INT:130 TERM:143; do
+    cancellation_signal=${cancellation_signal_and_status%%:*}
+    cancellation_expected_status=${cancellation_signal_and_status#*:}
+    cancellation_control_log=$temporary_directory/cancellation-$cancellation_signal-control.log
+    cancellation_wait_marker=$temporary_directory/cancellation-$cancellation_signal-waiting
+    cancellation_release=$temporary_directory/cancellation-$cancellation_signal-release
+    cancellation_curl_marker=$temporary_directory/cancellation-$cancellation_signal-curl-ran
+    detached_session_pid_file=$temporary_directory/detached-session.pid
+    (
+        trap - HUP INT TERM
+        HOME=$temporary_directory QWEN_ROUTER=1 \
+        QWEN_MODEL_PATH=$temporary_directory/models/Normal/small.gguf \
+        QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+        QWEN_TEST_CONTROL_WAIT_MARKER=$cancellation_wait_marker \
+        QWEN_TEST_CONTROL_RELEASE=$cancellation_release \
+        QWEN_TEST_CURL_MARKER=$cancellation_curl_marker \
+        QWEN_TEST_TMUX_PID_FILE=$detached_session_pid_file \
+        FIXTURE_SOURCE_PRESET=$source_router_presets \
+        FIXTURE_MUTATION_MARKER=$cancellation_mutation_marker \
+        FIXTURE_REAL_STAT=$(command -v stat) \
+        FIXTURE_CONTROL_LOG=$cancellation_control_log \
+        PATH="$fixture_bin:$PATH" \
+            exec "$fixture_remote/qwen-launch.sh"
+    ) >"$temporary_directory/cancellation-$cancellation_signal.stdout" \
+      2>"$temporary_directory/cancellation-$cancellation_signal.stderr" &
+    cancellation_pid=$!
+    cancellation_attempt=0
+    while [ ! -e "$cancellation_wait_marker" ] && \
+          [ "$cancellation_attempt" -lt 100 ]; do
+        cancellation_attempt=$((cancellation_attempt + 1))
+        sleep 0.01
+    done
+    if [ ! -e "$cancellation_wait_marker" ]; then
+        kill -TERM "$cancellation_pid" 2>/dev/null || true
+        wait "$cancellation_pid" 2>/dev/null || true
+        printf 'launcher did not reach the %s cancellation boundary\n' \
+            "$cancellation_signal" >&2
+        exit 1
+    fi
+    detached_session_pid=$(sed -n '1p' "$detached_session_pid_file")
+    kill -"$cancellation_signal" "$cancellation_pid"
+    : >"$cancellation_release"
+    set +e
+    wait "$cancellation_pid"
+    cancellation_status=$?
+    set -e
+    if [ "$cancellation_status" -ne "$cancellation_expected_status" ]; then
+        printf '%s launcher cancellation returned %s instead of %s\n' \
+            "$cancellation_signal" "$cancellation_status" \
+            "$cancellation_expected_status" >&2
+        exit 1
+    fi
+    cancellation_snapshot=$(sed -n 's/^presets=//p' "$cancellation_control_log")
+    if [ -e "$cancellation_snapshot" ] || [ -L "$cancellation_snapshot" ]; then
+        printf '%s cancellation retained its router snapshot: %s\n' \
+            "$cancellation_signal" "$cancellation_snapshot" >&2
+        exit 1
+    fi
+    if [ -e "$detached_session_pid_file" ]; then
+        printf '%s cancellation retained its detached session\n' \
+            "$cancellation_signal" >&2
+        exit 1
+    fi
+    if kill -0 "$detached_session_pid" 2>/dev/null; then
+        printf '%s cancellation retained detached session pid %s\n' \
+            "$cancellation_signal" "$detached_session_pid" >&2
+        exit 1
+    fi
+    if [ -e "$cancellation_curl_marker" ]; then
+        printf '%s cancellation entered readiness polling\n' \
+            "$cancellation_signal" >&2
+        exit 1
+    fi
 done
-if [ ! -e "$cancellation_wait_marker" ]; then
-    kill -TERM "$cancellation_pid" 2>/dev/null || true
-    wait "$cancellation_pid" 2>/dev/null || true
-    printf 'launcher did not reach the cancellable control boundary\n' >&2
-    exit 1
-fi
-kill -TERM "$cancellation_pid"
-: >"$cancellation_release"
-set +e
-wait "$cancellation_pid"
-cancellation_status=$?
-set -e
-if [ "$cancellation_status" -ne 143 ]; then
-    printf 'terminated launcher returned %s instead of 143\n' \
-        "$cancellation_status" >&2
-    exit 1
-fi
-cancellation_snapshot=$(sed -n 's/^presets=//p' "$cancellation_control_log")
-if [ -e "$cancellation_snapshot" ] || [ -L "$cancellation_snapshot" ]; then
-    printf 'terminated launcher retained its router snapshot: %s\n' \
-        "$cancellation_snapshot" >&2
-    exit 1
-fi
-if [ -e "$cancellation_curl_marker" ]; then
-    printf 'terminated launcher entered readiness polling\n' >&2
-    exit 1
-fi
 
 dangling_snapshot=$state_directory/.router-presets.active.dangling
 ln -s "$state_directory/absent-snapshot-target" "$dangling_snapshot"
