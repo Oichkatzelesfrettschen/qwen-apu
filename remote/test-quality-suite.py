@@ -181,6 +181,52 @@ if passed:
     print("no_tool_call accepted a reply that called a tool", file=sys.stderr)
     failures += 1
 
+# A tool row answered by its call alone is not an empty answer. Counting it as
+# one made a tool arm report an 0.800 empty-answer rate beside nine of ten rows
+# graded correct, and correct_on_completed was computed over the two rows that
+# happened to carry prose.
+with tempfile.TemporaryDirectory() as temporary_directory:
+    suite = os.path.join(temporary_directory, "suite.tsv")
+    output = os.path.join(temporary_directory, "result.json")
+    with open(suite, "w") as handle:
+        handle.write("call\ttool\ttool_call\tget_weather:city=Oslo\t"
+                     "Weather in Oslo?\ttools:weather\n")
+    tool_document = {
+        "choices": [{
+            "message": {
+                "content": "",
+                "tool_calls": [{"function": {"name": "get_weather",
+                                             "arguments": '{"city": "Oslo"}'}}],
+            },
+            "finish_reason": "tool_calls",
+        }],
+        "timings": {"predicted_n": 12, "prompt_n": 200},
+        "_wall_seconds": 1.0,
+    }
+    original_request = module.request
+    module.request = lambda *args, **kwargs: tool_document
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            module.main(("run-quality-suite.py", "http://fixture", output,
+                         "--suite", suite))
+    finally:
+        module.request = original_request
+    with open(output) as handle:
+        tool_result = json.load(handle)
+    tool_summary = tool_result["summary"]
+    if tool_summary["empty_answer_rate"] != 0.0:
+        print(f"a tool call counted as an empty answer: {tool_summary}",
+              file=sys.stderr)
+        failures += 1
+    if tool_summary["correct_on_completed"] != 1.0:
+        print(f"a graded tool call fell outside completed: {tool_summary}",
+              file=sys.stderr)
+        failures += 1
+    if (tool_summary["tool_stages"] or {}).get("arguments_match") != 1:
+        print(f"tool stages did not record the match: {tool_summary}",
+              file=sys.stderr)
+        failures += 1
+
 # The fact lands inside the filler and the question lands last, which is what
 # makes a long-context row a retrieval test rather than a longer prompt. A fact
 # left adjacent to its question is answerable from the final sentence alone.

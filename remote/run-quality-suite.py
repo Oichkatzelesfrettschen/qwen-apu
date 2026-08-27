@@ -455,7 +455,13 @@ def main(argv):
             "passed": bool(passed),
             "reason": reason,
             "truncated": truncated,
-            "empty_answer": not content.strip(),
+            # A tool row's answer is the call it emitted, so a valid call with
+            # no prose beside it is an answer rather than an empty reply. Left
+            # as a bare content test, a tool arm reported an 0.800 empty-answer
+            # rate while nine of its ten rows were graded correct, and
+            # correct_on_completed was then computed over the two rows that
+            # happened to carry prose.
+            "empty_answer": not content.strip() and not tool_calls,
             "error": error,
             "content": content,
             # The API exposes text for the reasoning span and one generated-token
