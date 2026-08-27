@@ -212,7 +212,6 @@ fi
 QWEN_BIND_HOST=$bind_host QWEN_SERVER_PORT=$server_port \
 QWEN_MODEL_PATH=$model_path QWEN_MMPROJ=$mmproj \
     "$control" start "$profile"
-router_snapshot_owned=''
 
 attempt=0
 while [ "$attempt" -lt "$ready_attempts" ]; do
@@ -237,6 +236,10 @@ if [ "$attempt" -ge "$ready_attempts" ]; then
     "$script_directory/qwen-teardown.sh" >/dev/null 2>&1 || true
     exit 1
 fi
+
+# The running session now owns the unique snapshot and removes it through its
+# EXIT trap. Until this acknowledgement, the launcher trap owns startup errors.
+router_snapshot_owned=''
 
 sed -n '1p' "$state_directory/session.status"
 if [ "$bind_host" = 127.0.0.1 ] || [ "$bind_host" = localhost ]; then

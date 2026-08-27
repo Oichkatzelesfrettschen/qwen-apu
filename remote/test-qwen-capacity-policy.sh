@@ -734,6 +734,43 @@ fi
 grep -F 'router preset identity changed:' \
     "$temporary_directory/router-identity.stderr" >/dev/null
 
+identity_bin=$temporary_directory/identity-bin
+identity_count=$temporary_directory/identity-count
+mkdir -p "$identity_bin"
+cat >"$identity_bin/sha256sum" <<'SHA256SUM'
+#!/bin/sh
+count=0
+if [ -r "$QWEN_TEST_IDENTITY_COUNT" ]; then
+    count=$(sed -n '1p' "$QWEN_TEST_IDENTITY_COUNT")
+fi
+count=$((count + 1))
+printf '%s\n' "$count" >"$QWEN_TEST_IDENTITY_COUNT"
+if [ "$count" -eq 1 ]; then
+    exec "$QWEN_TEST_REAL_SHA256SUM" "$@"
+fi
+printf '%s  %s\n' \
+    0000000000000000000000000000000000000000000000000000000000000000 "$1"
+SHA256SUM
+chmod +x "$identity_bin/sha256sum"
+router_preset_identity=$(sha256sum "$router_presets")
+router_preset_sha256=${router_preset_identity%% *}
+if QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$router_output \
+    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$router_presets \
+    QWEN_ROUTER_PRESET_SHA256=$router_preset_sha256 \
+    QWEN_TEST_IDENTITY_COUNT=$identity_count \
+    QWEN_TEST_REAL_SHA256SUM=$(command -v sha256sum) \
+    PATH="$identity_bin:$PATH" \
+    "$policy" "$fake_server" "$registry_model" 4096 18080 \
+    >"$temporary_directory/router-identity-race.stdout" \
+    2>"$temporary_directory/router-identity-race.stderr"; then
+    printf 'policy accepted a router preset mutated after validation\n' >&2
+    exit 1
+fi
+grep -Fx 2 "$identity_count" >/dev/null
+grep -F 'router preset identity changed:' \
+    "$temporary_directory/router-identity-race.stderr" >/dev/null
+
 # A generated preset carries its quarantine override after the generation
 # environment is gone. The launch derives loopback isolation from that durable
 # file rather than from an ambient variable that can disappear on a later run.

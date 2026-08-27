@@ -17,6 +17,7 @@ fixture_remote=$temporary_directory/remote
 fixture_bin=$temporary_directory/bin
 mkdir -p "$fixture_remote" "$fixture_bin"
 cp "$script_directory/qwen-launch.sh" "$fixture_remote/qwen-launch.sh"
+cp "$script_directory/qwen-teardown.sh" "$fixture_remote/qwen-teardown.sh"
 
 cat >"$fixture_bin/pgrep" <<'PGREP'
 #!/bin/sh
@@ -75,13 +76,16 @@ grep -F "router preflight model is not a regular file: $missing_model" \
 
 # A durable research marker expands the preflight denominator before the
 # launcher selects the largest installed model. The quarantined checkpoint is
-# larger than the normal row and therefore becomes the memory-safety subject.
+# larger than the normal row and therefore becomes the weight-size subject.
 cat >"$fixture_remote/select-projector.sh" <<'PROJECTOR'
 #!/bin/sh
 exit 0
 PROJECTOR
 cat >"$fixture_remote/qwen-webui-control.sh" <<'CONTROL'
 #!/bin/sh
+if [ "$1" = stop ]; then
+    exit 0
+fi
 mkdir -p "$QWEN_WEBUI_STATE_DIRECTORY"
 measured_identity=$(sha256sum "$QWEN_ROUTER_PRESETS")
 measured_sha256=${measured_identity%% *}
@@ -92,14 +96,18 @@ sed -n '1p' "$QWEN_ROUTER_PRESETS" >>"$FIXTURE_CONTROL_LOG"
 printf 'state=running fixture=1\n' >"$QWEN_WEBUI_STATE_DIRECTORY/session.status"
 exit 0
 CONTROL
-cat >"$fixture_remote/qwen-teardown.sh" <<'TEARDOWN'
-#!/bin/sh
-exit 0
-TEARDOWN
 cat >"$fixture_bin/curl" <<'CURL'
 #!/bin/sh
 exit 0
 CURL
+cat >"$fixture_bin/tmux" <<'TMUX'
+#!/bin/sh
+exit 1
+TMUX
+cat >"$fixture_bin/ss" <<'SS'
+#!/bin/sh
+exit 0
+SS
 cat >"$fixture_bin/stat" <<'STAT'
 #!/bin/sh
 case ${FIXTURE_STAT_MODE:-success}:$* in
@@ -145,7 +153,7 @@ fi
 grep -F 'router preflight cannot measure model bytes:' \
     "$temporary_directory/stat-failure.stderr" >/dev/null
 
-# Restore the marker after the stat-failure fixture mutates no source content.
+# Restore the source preset after the stat fixture exercises its mutation hook.
 printf '%s\n' \
     '# qwen_router_include_quarantine=1' \
     '[normal]' \
@@ -186,4 +194,21 @@ grep -Fx '# qwen_router_include_quarantine=1' \
 grep -Fx '[quarantine]' "$preset_snapshot" >/dev/null
 grep -Fx '# qwen_router_include_quarantine=0' \
     "$source_router_presets" >/dev/null
+dangling_snapshot=$state_directory/.router-presets.active.dangling
+ln -s "$state_directory/absent-snapshot-target" "$dangling_snapshot"
+HOME=$temporary_directory QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+PATH="$fixture_bin:$PATH" \
+    "$fixture_remote/qwen-teardown.sh" \
+    >"$temporary_directory/teardown.stdout" \
+    2>"$temporary_directory/teardown.stderr"
+if [ -e "$preset_snapshot" ]; then
+    printf 'forced teardown retained router snapshot: %s\n' \
+        "$preset_snapshot" >&2
+    exit 1
+fi
+if [ -L "$dangling_snapshot" ]; then
+    printf 'forced teardown retained dangling router snapshot: %s\n' \
+        "$dangling_snapshot" >&2
+    exit 1
+fi
 printf 'qwen_launch_router_preflight=accepted\n'

@@ -178,19 +178,20 @@ geometry.
 Router startup still selects the largest installed servable GGUF as the
 resident-memory preflight subject. The launcher copies the source preset to a
 unique active-session snapshot, reads every section's model path from that
-snapshot, and sizes against the largest installed path. Normal and research
-presets therefore use the exact set they can launch rather than separate
-registry enumerations. The launcher records the snapshot SHA-256 and forwards
-both path and digest across the tmux boundary. The capacity policy verifies that
-identity before tuple validation and again at the server exec boundary, so
-preset or authority changes cannot widen the launched set after preflight. That
-path sizes weight headroom only. Its standalone context ceiling never
-constrains the listener, because each preset section supplies its own complete
-tuple. The capacity policy resolves the section ID and model path to one
-registry row and requires the section's context, cache K/V, Flash Attention,
-batch, and ubatch values to equal that row before launch. The launcher's
-positive context argument remains a control-path input but never reaches the
-router argv.
+snapshot, and selects the largest installed artifact as the load-observation
+subject. Normal and research presets therefore use the exact set they can
+launch rather than separate registry enumerations. The launcher records the
+snapshot SHA-256 and forwards both path and digest across the tmux boundary.
+The capacity policy verifies that identity before tuple validation and again at
+the server exec boundary, so preset or authority changes cannot widen the
+launched set after preflight. The preflight reports artifact bytes and fixed
+host and Vulkan headroom; the subsequent load remains the fit test. Its
+standalone context ceiling never constrains the listener, because each preset
+section supplies its own complete tuple. The capacity policy resolves the
+section ID and model path to one registry row and requires the section's
+context, cache K/V, Flash Attention, batch, and ubatch values to equal that row
+before launch. The launcher's positive context argument remains a control-path
+input but never reaches the router argv.
 
 The repository fallback Web UI treats `GET /v1/models` as the request-model
 authority and sends only a returned id for chat completion and attachment
