@@ -231,6 +231,19 @@ routable. A new API-key attempt clears the prior selection until the
 authenticated roster returns, and late responses from an older attempt never
 replace the newer state.
 
+RADV on this device reports `shaderFloat16 = true` and names no bfloat16
+extension, so F16 is the 16-bit format the hardware advertises and BF16 is a
+separate question about llama.cpp's scalar pipelines. Both publishers of this
+tree's small checkpoints ship BF16 as their only 16-bit artifact, so
+`remote/build-llama-vulkan.sh` builds `llama-quantize` and the appliance
+produces F16 from BF16 itself. `remote/run-representation-arm.sh` measures one
+value format against another on the same weights in the order control, subject,
+subject, control, and reports the ratio of paired means, because this tree has
+measured one checkpoint under identical flags spanning 30.6% between sweeps.
+The census figure rather than the file size sets the streamed bytes a ratio
+rests on, since an ordinary load skips the multi-token-prediction block the file
+carries. `evidence/representation-gate-16-bit.md` registers the predictions.
+
 Sequential host read bandwidth measures 7.97 GB/s on one thread and 15.44 GB/s
 on two. Those figures measure the two Zen+ cores through the load/store path,
 which is a different consumer of the one DDR4 controller than the two Vega
@@ -339,6 +352,8 @@ remote/sample-gpu-clocks.sh OUT_TSV [SECONDS]  # the DPM step a rate ran at
 remote/measure-dpm-force.sh MODEL [OUT]         # auto against global high governor
 remote/model-registry.sh id|path SELECTOR [FIELD]
 remote/build-router-presets.sh [OUTPUT_INI]    # the picker, from the tier field
+remote/run-representation-arm.sh LABEL CONTROL SUBJECT
+                                                # one value format against another, ABBA
 
 # Rebuild llama.cpp and the static UI
 remote/build-llama-preset.sh PRESET [SOURCE]   # one directory per build arm
@@ -353,6 +368,8 @@ remote/download-qwen35-4b-q4km.sh
 remote/download-qwen35-4b-mmproj.sh
 remote/download-qwen38-4b-distill-q4km.sh
 remote/download-nanbeige42-3b-q4km.sh            # community conversion
+remote/download-qwen38-2b-distill-bf16.sh       # the 16-bit rung, and the F16 source
+remote/download-qwen35-08b-bf16.sh
 ```
 
 Tests are standalone POSIX shell scripts that exit non-zero on failure. Run one
