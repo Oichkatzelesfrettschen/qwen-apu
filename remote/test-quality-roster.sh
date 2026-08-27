@@ -91,10 +91,14 @@ server = HTTPServer(("127.0.0.1", int(sys.argv[1])), Handler)
 server.serve_forever()
 PYTHON
 
+# The fixture suite carries the loader's own column order. Its first revision
+# put the prompt third, so both rows reached grade() with the prompt text as
+# their grader kind and scored `unknown grader` while the driver's row counts
+# still passed.
 cat > "$work_directory/suite.tsv" <<'TSV'
-# id	category	prompt	grader	expectation
-mul-1	arithmetic	What is 17 x 24?	numeric	408
-mul-2	arithmetic	What is 12 x 34?	nonempty	-
+# id	category	grader	expectation	prompt	attachment
+mul-1	arithmetic	numeric	408	What is 17 x 24?	-
+mul-2	arithmetic	nonempty		What is 12 x 34?	-
 TSV
 
 cat > "$work_directory/registry.tsv" <<'TSV'

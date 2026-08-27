@@ -10,9 +10,19 @@ without a reader in the loop.
 Long-context rows are padded to a requested depth with generated filler placed
 before the question, which measures retrieval past a prefix rather than
 retrieval from a short prompt.
+
+A row's `attachment` column names what the request carries besides the prompt.
+`image:NAME` sends the fixture that remote/generate-quality-images.py draws,
+whose content this repository declares, so a vision row is graded against a
+known answer rather than against a reader's impression. `tools:SET` offers the
+named set from remote/quality-tools.json in the request body. Nothing is
+executed on either path: the appliance runs without --tools, so the server holds
+no tool server, and what a tool row grades is the `tool_calls` object the model
+emitted.
 """
 
 import argparse
+import base64
 import http.client
 import json
 import os
@@ -28,6 +38,9 @@ FILLER_SENTENCE = (
 )
 
 
+SUITE_FIELDS = ("id", "category", "grader", "expectation", "prompt", "attachment")
+
+
 def load_suite(path):
     rows = []
     with open(path) as handle:
@@ -35,11 +48,32 @@ def load_suite(path):
             if line.startswith("#") or not line.strip():
                 continue
             fields = line.rstrip("\n").split("\t")
-            if len(fields) != 5:
+            if len(fields) != len(SUITE_FIELDS):
                 raise SystemExit(f"suite row holds {len(fields)} fields: {fields[0]}")
-            rows.append(dict(zip(
-                ("id", "category", "grader", "expectation", "prompt"), fields)))
+            rows.append(dict(zip(SUITE_FIELDS, fields)))
     return rows
+
+
+def parse_attachment(value):
+    """Return (kind, names). `-` is a row that carries the prompt alone.
+
+    One column rather than two because a row carries images or tools and never
+    both: an image row measures what the projector put in the embedding space
+    and a tool row measures selection from a declared set, and mixing them would
+    leave a failure unattributable between the two.
+    """
+    value = (value or "-").strip()
+    if value in ("", "-"):
+        return "none", ()
+    kind, separator, names = value.partition(":")
+    if not separator or kind not in ("image", "tools"):
+        raise SystemExit(f"attachment must be `-`, `image:...`, or `tools:...`: {value}")
+    parts = tuple(part for part in names.split("|") if part)
+    if not parts:
+        raise SystemExit(f"attachment names nothing: {value}")
+    if kind == "tools" and len(parts) != 1:
+        raise SystemExit(f"a tool row names one set: {value}")
+    return kind, parts
 
 
 def last_number(text):
@@ -52,7 +86,105 @@ def reject_nonfinite_json_constant(constant):
     raise ValueError(f"non-finite JSON constant: {constant}")
 
 
-def grade(row, reply, truncated=False):
+def parse_tool_expectation(expectation):
+    """`name:key=value|key=value` for one call, `;` between calls.
+
+    The expectation names what the model should have asked for. It is parsed
+    rather than compared as text because a model emits its arguments as a JSON
+    string whose key order and spacing it chooses.
+    """
+    wanted = []
+    for clause in expectation.split(";"):
+        clause = clause.strip()
+        if not clause:
+            continue
+        name, separator, argument_text = clause.partition(":")
+        arguments = {}
+        if separator:
+            for pair in argument_text.split("|"):
+                if not pair.strip():
+                    continue
+                key, equals, value = pair.partition("=")
+                if not equals:
+                    raise SystemExit(f"tool argument holds no `=`: {pair}")
+                arguments[key.strip()] = value.strip()
+        wanted.append((name.strip(), arguments))
+    return wanted
+
+
+def read_tool_calls(message):
+    """Normalise the emitted calls to (name, arguments dict).
+
+    A call whose arguments do not parse as JSON keeps its name and an empty
+    dict, so the grader can separate `chose the right tool and malformed its
+    arguments` from `chose the wrong tool`.
+    """
+    calls = []
+    for call in message.get("tool_calls") or ():
+        function = call.get("function") or {}
+        raw = function.get("arguments")
+        if isinstance(raw, dict):
+            arguments, parsed = raw, True
+        else:
+            try:
+                arguments = json.loads(raw or "{}")
+                parsed = isinstance(arguments, dict)
+                if not parsed:
+                    arguments = {}
+            except (ValueError, TypeError):
+                arguments, parsed = {}, False
+        calls.append({"name": function.get("name") or "",
+                      "arguments": arguments, "arguments_parsed": parsed})
+    return calls
+
+
+def argument_matches(actual, expected):
+    """Compare one emitted argument against its expectation.
+
+    Numerically where both sides are numbers, because a schema declaring
+    `{"type": "number"}` lets a model emit 47, 47.0, or "47" for the same value
+    and a string comparison would score two of those three wrong.
+    """
+    if actual is None:
+        return False
+    try:
+        return float(actual) == float(expected)
+    except (TypeError, ValueError):
+        return str(actual).strip().lower() == expected.strip().lower()
+
+
+def describe_tool_calls(row, calls):
+    """Report the stages of a tool call apart, because one pass rate merges
+    `chose no tool`, `chose the wrong tool`, and `chose the right tool with the
+    wrong city` into a single number that names none of them."""
+    if row["grader"] not in ("tool_call", "no_tool_call"):
+        return None
+    emitted = [call["name"] for call in calls]
+    detail = {
+        "emitted": emitted,
+        "called_a_tool": bool(calls),
+        "arguments_parsed": all(call["arguments_parsed"] for call in calls),
+    }
+    if row["grader"] == "no_tool_call":
+        detail["names_match"] = not calls
+        detail["arguments_match"] = not calls
+        return detail
+    wanted = parse_tool_expectation(row["expectation"])
+    detail["names_match"] = sorted(emitted) == sorted(name for name, _ in wanted)
+    arguments_match = detail["names_match"]
+    for name, expected_arguments in wanted:
+        call = next((entry for entry in calls if entry["name"] == name), None)
+        if call is None:
+            arguments_match = False
+            continue
+        for key, value in expected_arguments.items():
+            if not argument_matches(call["arguments"].get(key), value):
+                arguments_match = False
+    detail["arguments_match"] = arguments_match
+    return detail
+
+
+def grade(row, reply, truncated=False, tool_calls=()):
     """Return (passed, reason). A grader reports why it refused, because a
     category-level pass rate without reasons hides a formatting failure inside
     a correctness figure.
@@ -67,6 +199,31 @@ def grade(row, reply, truncated=False):
     """
     kind, expectation = row["grader"], row["expectation"]
     body = reply.strip()
+    # A tool row is answered by the emitted call rather than by prose, and a
+    # model that calls a tool correctly and says nothing has answered it.
+    if kind == "tool_call":
+        detail = describe_tool_calls(row, tool_calls)
+        if not detail["called_a_tool"]:
+            return False, "no tool call emitted"
+        if not detail["arguments_parsed"]:
+            return False, "tool arguments are not a JSON object"
+        if not detail["names_match"]:
+            return False, ("called " + "|".join(detail["emitted"] or ["nothing"])
+                           + f", want {expectation}")
+        if not detail["arguments_match"]:
+            return False, f"arguments disagree with {expectation}"
+        return True, "tool and arguments match"
+    if kind == "no_tool_call":
+        if tool_calls:
+            return False, ("called " + "|".join(
+                call["name"] for call in tool_calls) + " where none is needed")
+        if not body:
+            return False, "empty reply"
+        wanted = [part.lower() for part in expectation.split("|")]
+        present = [part for part in wanted if part in body.lower()]
+        return bool(present), ("answered without a tool call, matched "
+                               + present[0] if present
+                               else f"none of {'|'.join(wanted)}")
     if not body:
         return False, "empty reply"
     if kind == "nonempty":
@@ -130,16 +287,40 @@ def pad_prompt(prompt, depth_characters):
     return (filler + fact.strip() + " " + filler + question.strip()).strip()
 
 
-def request(endpoint, api_key, model, prompt, max_tokens, thinking, timeout):
-    body = json.dumps({
+def load_image_part(directory, name):
+    """One fixture as a data URI content part.
+
+    The image travels in the request rather than by path, because the server
+    reads it in a child process whose working directory and file access this
+    harness does not control, and a path that resolves here and not there fails
+    as a wrong answer rather than as a missing file.
+    """
+    path = os.path.join(directory, name + ".png")
+    with open(path, "rb") as handle:
+        encoded = base64.b64encode(handle.read()).decode()
+    return {"type": "image_url",
+            "image_url": {"url": "data:image/png;base64," + encoded}}
+
+
+def request(endpoint, api_key, model, prompt, max_tokens, thinking, timeout,
+            image_parts=(), tools=None):
+    content = prompt
+    if image_parts:
+        # The text part leads so the question is read before the pixels, which
+        # is the order the text rows already establish.
+        content = [{"type": "text", "text": prompt}, *image_parts]
+    payload = {
         "model": model,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": [{"role": "user", "content": content}],
         "max_tokens": max_tokens,
         "temperature": 0,
         "top_k": 1,
         "seed": 1,
         "chat_template_kwargs": {"enable_thinking": thinking},
-    }).encode()
+    }
+    if tools:
+        payload["tools"] = tools
+    body = json.dumps(payload).encode()
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -172,6 +353,18 @@ def main(argv):
         "--long-context-characters", type=int,
         help="required positive filler depth when long_context rows are selected")
     parser.add_argument("--timeout", type=float, default=1800)
+    parser.add_argument("--images", default=os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "quality-images"),
+        help="directory holding the fixtures an image row names")
+    parser.add_argument("--tools", default=os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "quality-tools.json"),
+        help="tool sets a tool row offers")
+    # The control arm for the vision category. A vision row that a model answers
+    # with the image withheld was answered from the prompt, its world knowledge,
+    # or the shape of the question, and the row measures none of those. Running
+    # it withheld is what separates the three.
+    parser.add_argument("--omit-images", action="store_true",
+                        help="send image rows without their image")
     arguments = parser.parse_args(argv[1:])
 
     rows = load_suite(arguments.suite)
@@ -187,6 +380,31 @@ def main(argv):
                 "--long-context-characters must be positive when long_context "
                 "rows are selected")
 
+    # Every attachment resolves before the first request. A fixture absent from
+    # the appliance would otherwise surface as a wrong answer partway through an
+    # arm that has already spent device time.
+    attachments = {}
+    tool_sets = {}
+    for row in rows:
+        kind, names = parse_attachment(row.get("attachment"))
+        attachments[row["id"]] = (kind, names)
+        if kind == "tools":
+            tool_sets[names[0]] = None
+    if tool_sets:
+        with open(arguments.tools) as handle:
+            declared = json.load(handle)
+        for name in tool_sets:
+            if name not in declared:
+                raise SystemExit(f"tool set is undeclared: {name}")
+            tool_sets[name] = declared[name]
+    image_parts = {}
+    for kind, names in attachments.values():
+        if kind != "image":
+            continue
+        for name in names:
+            if name not in image_parts:
+                image_parts[name] = load_image_part(arguments.images, name)
+
     api_key = os.environ.get("QWEN_API_KEY", "")
     thinking = arguments.thinking == "on"
     records = []
@@ -194,10 +412,14 @@ def main(argv):
         prompt = row["prompt"]
         if row["category"] == "long_context":
             prompt = pad_prompt(prompt, arguments.long_context_characters)
+        kind, names = attachments[row["id"]]
+        row_images = ([image_parts[name] for name in names]
+                      if kind == "image" and not arguments.omit_images else [])
+        row_tools = tool_sets[names[0]] if kind == "tools" else None
         try:
             document = request(arguments.endpoint, api_key, arguments.model,
                                prompt, arguments.max_tokens, thinking,
-                               arguments.timeout)
+                               arguments.timeout, row_images, row_tools)
             error = None
         except (urllib.error.URLError, OSError, http.client.HTTPException,
                 json.JSONDecodeError) as failure:
@@ -211,8 +433,9 @@ def main(argv):
         # A reply cut off at the token budget is a completion failure rather
         # than a wrong answer, and the two are reported apart.
         truncated = choice.get("finish_reason") == "length"
+        tool_calls = read_tool_calls(message)
         passed, reason = ((False, error) if error
-                          else grade(row, content, truncated))
+                          else grade(row, content, truncated, tool_calls))
 
         records.append({
             "id": row["id"],
@@ -221,6 +444,13 @@ def main(argv):
             "category": row["category"],
             "grader": row["grader"],
             "expectation": row["expectation"],
+            "attachment": row.get("attachment", "-"),
+            "images_sent": len(row_images),
+            "tool_calls": tool_calls,
+            # The stages of a tool row are reported apart, because a single pass
+            # rate merges choosing no tool, choosing the wrong one, and choosing
+            # the right one with wrong arguments.
+            "tool_detail": describe_tool_calls(row, tool_calls),
             "prompt_characters": len(prompt),
             "passed": bool(passed),
             "reason": reason,
@@ -263,9 +493,24 @@ def main(argv):
     served_models = sorted({
         record["served_model"] for record in records
         if record["served_model"]})
+    # Tool rows report their stages in the summary too. A category pass rate of
+    # 6/10 says nothing about whether the misses chose no tool or the wrong one.
+    tool_records = [record for record in records if record["tool_detail"]]
+    tool_stages = {
+        "rows": len(tool_records),
+        "called_a_tool": sum(r["tool_detail"]["called_a_tool"] for r in tool_records),
+        "arguments_parsed": sum(
+            r["tool_detail"]["arguments_parsed"] for r in tool_records),
+        "names_match": sum(r["tool_detail"]["names_match"] for r in tool_records),
+        "arguments_match": sum(
+            r["tool_detail"]["arguments_match"] for r in tool_records),
+    } if tool_records else None
     summary = {
         "rows": len(records),
         "requested_model": arguments.model,
+        "tool_stages": tool_stages,
+        "images_omitted": bool(arguments.omit_images),
+        "images_sent": sum(record["images_sent"] for record in records),
         "served_models": served_models,
         "passed": sum(r["passed"] for r in records),
         "completion_rate": len(completed) / len(records),
@@ -289,6 +534,12 @@ def main(argv):
         bucket = by_category[name]
         print(f"category={name} passed={bucket['passed']}/{bucket['attempted']} "
               f"truncated={bucket['truncated']} empty={bucket['empty']}")
+    if tool_stages:
+        print(f"tool_stages rows={tool_stages['rows']} "
+              f"called={tool_stages['called_a_tool']} "
+              f"parsed={tool_stages['arguments_parsed']} "
+              f"names={tool_stages['names_match']} "
+              f"arguments={tool_stages['arguments_match']}")
     transport_errors = sum(bool(record["error"]) for record in records)
     print(f"served_models={','.join(served_models) if served_models else 'none'} "
           f"requested_model={arguments.model}")

@@ -35,7 +35,11 @@ def regrade_arm(module, document):
         if content is None:
             rows.append({"id": record["id"], "regradable": False})
             continue
-        passed, reason = module.grade(record, content, record.get("truncated", False))
+        # The retained tool calls are re-read as well, so a change to a tool
+        # grader re-grades from the record on the same terms a text grader does.
+        passed, reason = module.grade(record, content,
+                                      record.get("truncated", False),
+                                      record.get("tool_calls") or ())
         rows.append({
             "id": record["id"],
             "category": record["category"],

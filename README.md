@@ -45,10 +45,20 @@ time, so the profile above names the default the picker opens on.
 
 ## Graded quality
 
-`remote/run-quality-roster.sh` grades every servable row against the same 55 rows
-in one sweep, thinking off, 1024-token budget.
+`remote/run-quality-roster.sh` grades every servable row against the same 55 text
+rows in one sweep, thinking off, 1024-token budget.
 `evidence/model-admission/roster-quality-sweep.md` holds the method and the
 per-category table.
+
+The suite reaches past text through one column. A row's `attachment` is `-` for
+text, `image:NAME` for a vision row, and `tools:SET` for a tool row.
+`remote/generate-quality-images.py` draws every fixture from a declaration in
+its own source, so a vision answer is graded against a fact this repository
+states rather than against a reader's impression, and `--check` compares pixels
+because deflate is not reproducible across hosts while inflate is. A tool row
+executes nothing: the appliance runs without `--tools`, so the request body's
+`tools` field asks for a `tool_calls` object and the graders read that object.
+`evidence/model-admission/vision-and-tool-sweep.md` holds those results.
 
 | Checkpoint | passed | correct on completed | class |
 | --- | ---: | ---: | --- |
