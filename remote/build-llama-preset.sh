@@ -77,8 +77,8 @@ case $preset in
         # production build without it serves one model and refuses both. Router
         # mode therefore needs no separate arm.
         preset_flags="$serving_flags -DGGML_VULKAN=ON -DLLAMA_SUBPROCESS=ON"
-        preset_targets='llama-server llama-cli llama-bench'
-        preset_outputs='bin/llama-server bin/llama-cli bin/llama-bench'
+        preset_targets='llama-server llama-cli llama-bench llama-mtmd-cli'
+        preset_outputs='bin/llama-server bin/llama-cli bin/llama-bench bin/llama-mtmd-cli'
         compiler_flags=$zen_target
         ;;
     raven2-vulkan-reference)
@@ -88,8 +88,8 @@ case $preset in
         # microarchitecture, so the two binaries differ in the target and in
         # nothing else.
         preset_flags="$serving_flags -DGGML_VULKAN=ON -DLLAMA_SUBPROCESS=ON"
-        preset_targets='llama-server llama-cli llama-bench'
-        preset_outputs='bin/llama-server bin/llama-cli bin/llama-bench'
+        preset_targets='llama-server llama-cli llama-bench llama-mtmd-cli'
+        preset_outputs='bin/llama-server bin/llama-cli bin/llama-bench bin/llama-mtmd-cli'
         compiler_flags=''
         ;;
     raven2-vulkan-profile)

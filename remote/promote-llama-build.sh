@@ -10,6 +10,12 @@ set -eu
 # preset, the executable must report its own version, and it must complete one
 # token entirely on Vulkan, because a binary that loads and then falls back to
 # the CPU backend serves at a third of the rate while looking healthy.
+#
+# The gate reads an image through llama-mtmd-cli for the same reason it decodes
+# a token through llama-cli: the projector path fails by answering wrongly. A
+# projector of matching dimensions loads cleanly while writing image tokens the
+# language model reads nothing from, so a binary that serves text correctly and
+# describes every image from the prompt alone passes every text check.
 
 if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
     printf 'usage: %s PRESET [SOURCE_DIRECTORY]\n' "$0" >&2
@@ -19,6 +25,7 @@ fi
 
 preset=$1
 source_directory=${2:-"${HOME:?}/src/llama.cpp-qwen-apu"}
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 current_link=$source_directory/build-appliance-current
 previous_link=$source_directory/build-appliance-previous
 
@@ -40,6 +47,12 @@ server_path=$build_directory/bin/llama-server
 
 if [ ! -x "$server_path" ]; then
     printf 'preset has no executable llama-server: %s\n' "$server_path" >&2
+    exit 1
+fi
+
+multimodal_path=$build_directory/bin/llama-mtmd-cli
+if [ ! -x "$multimodal_path" ]; then
+    printf 'preset has no executable llama-mtmd-cli: %s\n' "$multimodal_path" >&2
     exit 1
 fi
 
@@ -126,6 +139,65 @@ else
     strict_state=not-run
 fi
 
+"$multimodal_path" --version >/dev/null 2>&1 || {
+    printf 'llama-mtmd-cli does not report a version: %s\n' "$multimodal_path" >&2
+    exit 1
+}
+
+# The projector path carries a failure the text path cannot show: a projector
+# that loads cleanly and writes image tokens the language model reads nothing
+# from answers wrongly rather than erroring. The gate therefore reads an image
+# whose content this repository declares and requires the answer to carry it.
+#
+# The vision model is its own variable. QWEN_PROMOTION_MODEL defaults to the 2B
+# distill, which the registry lists as `projector: none`, so wiring the image
+# smoke to that variable would either fail on a text-only checkpoint or skip
+# without saying so.
+promotion_vision_model=${QWEN_PROMOTION_VISION_MODEL:-"${HOME:?}/models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf"}
+promotion_image=${QWEN_PROMOTION_IMAGE:-$script_directory/quality-images/shapes.png}
+promotion_projector=''
+if [ -f "$promotion_vision_model" ]; then
+    promotion_projector=$("$script_directory/select-projector.sh" \
+        "$promotion_vision_model" 2>/dev/null) || promotion_projector=''
+fi
+
+if [ -f "$promotion_vision_model" ] && [ -n "$promotion_projector" ] &&
+    [ -f "$promotion_image" ]; then
+    multimodal_output=$(nice -n 19 "$multimodal_path" \
+        --model "$promotion_vision_model" --mmproj "$promotion_projector" \
+        --image "$promotion_image" --device Vulkan0 --n-gpu-layers all \
+        --ctx-size 4096 --batch-size 128 --ubatch-size 32 --threads 1 \
+        --n-predict 64 --temp 0 --seed 1 \
+        --prompt 'Name the colours of the shapes in this image.' 2>&1) || {
+            printf 'multimodal one-image check failed:\n%s\n' "$multimodal_output" >&2
+            exit 1
+        }
+    # remote/generate-quality-images.py draws shapes.png as a red square, a green
+    # circle, and a blue triangle. Two of the three names is the threshold: it
+    # refuses a reply that carries no image content while leaving room for a
+    # model that describes the image in fewer words than it holds shapes.
+    named_colours=0
+    for colour in red green blue; do
+        case $(printf '%s' "$multimodal_output" | tr 'A-Z' 'a-z') in
+            *"$colour"*) named_colours=$((named_colours + 1)) ;;
+        esac
+    done
+    if [ "$named_colours" -lt 2 ]; then
+        printf 'multimodal check named %s of 3 declared colours:\n%s\n' \
+            "$named_colours" "$multimodal_output" >&2
+        exit 1
+    fi
+    multimodal_state=passed
+else
+    # Same discipline as the strict Vulkan check above: a skip is reported
+    # rather than folded into a pass, and it names which input was absent.
+    printf 'multimodal_inputs_absent model=%s projector=%s image=%s multimodal=not-run\n' \
+        "$([ -f "$promotion_vision_model" ] && printf present || printf absent)" \
+        "$([ -n "$promotion_projector" ] && printf present || printf absent)" \
+        "$([ -f "$promotion_image" ] && printf present || printf absent)" >&2
+    multimodal_state=not-run
+fi
+
 if [ -L "$current_link" ]; then
     ln -sfn "$(readlink "$current_link")" "$previous_link.new"
     mv -T "$previous_link.new" "$previous_link"
@@ -134,6 +206,6 @@ fi
 ln -sfn "$build_directory" "$current_link.new"
 mv -T "$current_link.new" "$current_link"
 
-printf 'promotion=accepted preset=%s target=%s strict_vulkan=%s previous=%s\n' \
-    "$preset" "$build_directory" "$strict_state" \
+printf 'promotion=accepted preset=%s target=%s strict_vulkan=%s multimodal=%s previous=%s\n' \
+    "$preset" "$build_directory" "$strict_state" "$multimodal_state" \
     "$([ -L "$previous_link" ] && readlink "$previous_link" || printf none)"

@@ -4,7 +4,7 @@
 | --- | --- | --- | --- |
 | Setup scripts, tests, policies, and tracker | canonical generator or synthesized truth surface | ordinary Git | tracked source |
 | Kernel, allocation, build, and runtime logs | raw exact-target evidence | ordinary Git under `evidence/` | `evidence/SHA256SUMS` |
-| `llama-server` and `llama-cli` | derived regenerable | excluded from Git and LFS | byte size and SHA-256 below, against a rebuild |
+| `llama-server`, `llama-cli`, and `llama-mtmd-cli` | derived regenerable | excluded from Git and LFS | byte size and SHA-256 below, against a rebuild |
 | Dual-backend `llama-bench` and its ggml backends | derived regenerable | excluded from Git and LFS | `remote/build-llama-dual.sh`, byte sizes and SHA-256 values below |
 | Qwen3.5-4B, Qwen3.8-9B Distill, and Qwen3.8-27B GGUFs | external reproducible dependencies | excluded from Git and LFS | pinned Hugging Face revisions, byte sizes, and SHA-256 values |
 | llama.cpp source | external canonical source plus local patch series | pinned commit and four replay patches | `remote/verify-llama-patch-series.sh` |
@@ -30,12 +30,21 @@ on the source host.
 | --- | ---: | --- |
 | `llama-server` | 57,475,792 | `3d5b158160b08cf897bb05b47186a13f67e8a17def31012f2f8282f12e95cb08` |
 | `llama-cli` | 57,643,992 | `83cc86e271b7fe784d208c00ca22d1fe6875e7a956790d16b55a9e617d23cc5b` |
+| `llama-mtmd-cli` | 55,610,680 | `96e01162de9b4f5c1ebbaed246ad9cfe8964812c6e006c468df9cf44322cba52` |
 | `llama-bench`, dual backend | 17,920 | `5d8dc29d0b012f4b8dd5057fcfe0f1786311835efe0445a6608000c8e9536d34` |
 | `libllama-bench-impl.so` | 472,200 | `b69ad09e4623116c5e6756c5210b9e29e8e2451e95c685e383ae9b82b28fae53` |
 | `libggml-hip.so` | 66,553,472 | `1034a6fb7ac6319608f69e2b351b56c4c7d6c450cf092cb79a16454072114266` |
 | `libggml-vulkan.so` | 43,788,776 | `57675d461a5d15cb7915bc496d1ba37fa7352cb4f4ceb045b73d839a57a7650f` |
 | `Qwen3.5-4B-Q4_K_M.gguf` | 2,740,937,888 | `00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4` |
 | `Qwen3.8-9B-Q4_K_M.gguf` | 5,780,090,176 | `df13d66021cef676f82be74053220fd75af6bf2a6a7fb77f5222ab9e50744a7a` |
+
+The vision fixtures under `remote/quality-images/` are committed rather than
+regenerated, because deflate is not reproducible across hosts: zlib 1.3 on the
+appliance re-encodes 7 of the 8 to different bytes than the workstation wrote,
+with identical pixels. `remote/generate-quality-images.py --check` therefore
+decodes both sides and compares pixels, which is the claim a fixture makes;
+inflate is fully specified where deflate leaves the match search to the
+implementation.
 
 `benchmarks/models/qwen38-27b-files.tsv` is the replay authority for the four
 external Qwen3.8-27B benchmark files. Those 9.83 GB through 14.25 GB files stay

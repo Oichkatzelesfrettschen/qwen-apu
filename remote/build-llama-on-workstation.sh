@@ -101,13 +101,16 @@ printf 'workstation_build=starting image=%s jobs=%s commit=%s\n' \
             -DGGML_NATIVE=OFF \
             -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF
         cmake --build /src/build-workstation-vulkan \
-            --parallel $build_jobs --target llama-server llama-cli llama-bench
+            --parallel $build_jobs \
+            --target llama-server llama-cli llama-bench llama-mtmd-cli
     "
 
-if [ ! -x "$build_directory/bin/llama-server" ]; then
-    printf 'workstation build produced no llama-server\n' >&2
-    exit 1
-fi
+for required_output in llama-server llama-cli llama-bench llama-mtmd-cli; do
+    if [ ! -x "$build_directory/bin/$required_output" ]; then
+        printf 'workstation build produced no %s\n' "$required_output" >&2
+        exit 1
+    fi
+done
 
 printf 'workstation_build=complete\n'
 ls -l "$build_directory/bin/" | awk 'NR > 1 { print $9, $5 }'

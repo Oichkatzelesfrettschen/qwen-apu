@@ -40,5 +40,7 @@ verify_artifact "$binary_directory/llama-server" 57475792 \
     3d5b158160b08cf897bb05b47186a13f67e8a17def31012f2f8282f12e95cb08
 verify_artifact "$binary_directory/llama-cli" 57643992 \
     83cc86e271b7fe784d208c00ca22d1fe6875e7a956790d16b55a9e617d23cc5b
+verify_artifact "$binary_directory/llama-mtmd-cli" 55610680 \
+    96e01162de9b4f5c1ebbaed246ad9cfe8964812c6e006c468df9cf44322cba52
 verify_artifact "$model_path" 2740937888 \
     00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4
