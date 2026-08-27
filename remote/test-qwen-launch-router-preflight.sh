@@ -295,6 +295,7 @@ for cancellation_signal_and_status in HUP:129 INT:130 TERM:143; do
         sleep 0.01
     done
     if [ ! -e "$cancellation_wait_marker" ]; then
+        : >"$cancellation_release"
         kill -TERM "$cancellation_pid" 2>/dev/null || true
         wait "$cancellation_pid" 2>/dev/null || true
         printf 'launcher did not reach the %s cancellation boundary\n' \
