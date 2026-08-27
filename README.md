@@ -202,10 +202,18 @@ on this hardware.
 
 Modes select their own schemas: chat sends none, files sends `read_file`,
 `file_glob_search`, and `grep_search`, math sends a calculator or verifier, and
-an agent mode sends a chosen read-only subset. `--tools all` grants shell
-execution and file writing to a prompt-injectable model and stays unused.
-Prompt caching lowers the cost of repeated tool-enabled turns and leaves the
-first turn's penalty intact.
+an agent mode sends a chosen read-only subset. Prompt caching lowers the cost of
+repeated tool-enabled turns and leaves the first turn's penalty intact.
+
+The pinned llama-ui at `f280b26` declares `exec_shell_command`, `write_file`,
+and `edit_file` with `ToolSource.SERVER` in `tools/ui/src/lib/enums/tools.enums.ts`,
+so llama-server executes them and the front end only offers them. `--tools`
+grants them, the appliance binds `0.0.0.0` in router mode, and no launch script
+in this tree emits that flag. `remote/test-qwen-capacity-policy.sh` asserts its
+absence from both the single-model and the router argument list, and
+`remote/test-model-tiers.sh` asserts `LLAMA_ARG_TOOLS` appears in no preset
+section, since a preset key grants what a flag grants. `run_javascript` is
+`ToolSource.BROWSER` and executes in the viewer's own sandbox.
 
 ## Memory admission
 

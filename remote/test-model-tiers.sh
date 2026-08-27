@@ -212,6 +212,15 @@ for section in $section_ids; do
         fi
     done
 done
+# A preset key grants what a CLI flag grants, so the tool surface is refused on
+# this path too. LLAMA_ARG_TOOLS in one section would put exec_shell_command and
+# write_file behind that section's child while every other section stayed clean.
+if grep -q '^LLAMA_ARG_TOOLS' "$presets"; then
+    report tool_grant_absent rejected
+else
+    report tool_grant_absent accepted
+fi
+
 if [ "$section_completeness" -eq 0 ]; then
     report section_completeness accepted
 else

@@ -355,6 +355,21 @@ case $router_arguments in
         ;;
 esac
 
+# The pinned llama-ui declares exec_shell_command, write_file, and edit_file as
+# ToolSource.SERVER, so llama-server executes them and the UI merely offers
+# them. The server grants them through --tools, and the appliance binds 0.0.0.0,
+# so the flag reaching either argv would put shell execution and file writing on
+# the LAN behind a prompt-injectable model.
+for tool_argv in "$actual_arguments" "$router_arguments"; do
+    case " $tool_argv " in
+        *' --tools '* | *' --tool '*)
+            printf 'a tool grant reached the server argument list: %s\n' \
+                "$tool_argv" >&2
+            exit 1
+            ;;
+    esac
+done
+
 # server-models.cpp overlays the router's own CLI arguments on top of every
 # model preset with common_preset::merge, which overwrites, so any of these six
 # on the router argv silently replaces the same key in every section. Router
