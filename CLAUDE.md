@@ -143,6 +143,10 @@ removes one tuple of a checkpoint that otherwise serves, and
 `qwen-capacity-policy.sh` refuses to construct that tuple rather than warning
 about it. `evidence/quarantine/` holds one reason record per row with its kernel
 signature, its validated safe tuples, and its re-entry gate.
+`model-registry.sh servable-ids` and `servable-files` apply the same
+router-child exclusions to the registry's default tuple, and an unreadable
+quarantine registry stops enumeration. A research override labels every
+exposed excluded tuple `quarantine` and withholds the `default` tag.
 `QWEN_ROUTER_INCLUDE_QUARANTINE=1` exposes a quarantined checkpoint for research.
 The generated preset records that override, and `qwen-capacity-policy.sh`
 derives the listener restriction from the file on every later launch. It
@@ -470,6 +474,8 @@ A tool row executes nothing. The appliance runs without `--tools`, so the server
 holds no tool server; the request body's `tools` field asks the model to emit a
 `tool_calls` object and `tool_call` and `no_tool_call` grade that object, which
 measures selection with the read-only boundary intact.
+An image-withheld control retains the multipart text part and removes the image
+parts, so image presence is the single changed request dimension.
 
 The fixtures are committed and `--check` compares pixels rather than file bytes.
 Deflate is not reproducible across hosts -- zlib 1.3 on the appliance re-encodes
@@ -482,13 +488,17 @@ A grader defect is corrected over retained replies rather than by re-running.
 failure the row tests, and `remote/regrade-quality-roster.py` re-applies the
 corrected grader to the reply each record already holds. The records stay as the
 harness wrote them and `evidence/quality-roster/regrade-summary.tsv` carries the
-recorded total beside the corrected one.
+recorded total beside the corrected one. Transport and served-model attribution
+failures remain failures because a content grader cannot repair evidence origin.
 
 `llama-mtmd-cli` is built beside `llama-server` because the projector path fails
 by answering rather than by erroring. A projector of matching dimensions loads
 cleanly while writing image tokens the language model reads nothing from, so
 `remote/promote-llama-build.sh` reads an image whose content this repository
-declares and requires the answer to carry it. `tools/mtmd/mtmd-cli.cpp:403` sets
+declares and requires the answer to carry it. Promotion requires the text model,
+vision model, projector, and image before either smoke stage begins. The artifact
+manifest owns `llama-server`, `llama-cli`, `llama-mtmd-cli`, and the multimodal
+consumer's current load closure. `tools/mtmd/mtmd-cli.cpp:403` sets
 `is_single_turn` from a non-empty prompt **and** a non-empty image, so
 `--prompt` alone enters the interactive chat loop and a single-shot text run
 through that binary is unavailable at the pinned commit.

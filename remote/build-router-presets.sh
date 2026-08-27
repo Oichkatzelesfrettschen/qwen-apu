@@ -156,11 +156,14 @@ while IFS='	' read -r id role model_file _fetch_script context_default \
     fi
 
     effective_tier=$tier
+    preset_tier=$tier
     quarantine_row=''
     if [ -n "$model_quarantine_row" ]; then
         effective_tier=quarantine
+        preset_tier=quarantine
         quarantine_row=$model_quarantine_row
     elif [ -n "$profile_quarantine_row" ]; then
+        preset_tier=quarantine
         quarantine_row=$profile_quarantine_row
     fi
 
@@ -206,10 +209,11 @@ while IFS='	' read -r id role model_file _fetch_script context_default \
         printf '[%s]\n' "$id"
         printf 'LLAMA_ARG_MODEL = %s\n' "$model_path"
         printf 'LLAMA_ARG_ALIAS = %s\n' "$id"
-        if [ "$id" = "$default_model_id" ]; then
-            printf 'LLAMA_ARG_TAGS = %s,%s,default\n' "$tier" "$role"
+        if [ "$id" = "$default_model_id" ] &&
+            [ "$preset_tier" != quarantine ]; then
+            printf 'LLAMA_ARG_TAGS = %s,%s,default\n' "$preset_tier" "$role"
         else
-            printf 'LLAMA_ARG_TAGS = %s,%s\n' "$tier" "$role"
+            printf 'LLAMA_ARG_TAGS = %s,%s\n' "$preset_tier" "$role"
         fi
         printf 'LLAMA_ARG_CTX_SIZE = %s\n' "$context_default"
         printf 'LLAMA_ARG_CACHE_TYPE_K = %s\n' "$cache_type_k"

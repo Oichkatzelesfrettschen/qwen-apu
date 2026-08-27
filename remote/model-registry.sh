@@ -62,7 +62,11 @@ if [ "$#" -ge 1 ] && [ "$#" -le 2 ]; then
                 exit 2
                 ;;
         esac
-        [ -r "$quarantine_registry" ] || exit 0
+        if [ ! -r "$quarantine_registry" ]; then
+            printf 'quarantine registry is unreadable: %s\n' \
+                "$quarantine_registry" >&2
+            exit 1
+        fi
         case $quarantine_query in
             quarantine-subjects)
                 awk -F'\t' -v mode="$quarantine_runtime_mode" '
@@ -93,13 +97,68 @@ if [ "$#" -ge 1 ] && [ "$#" -le 2 ]; then
     fi
 fi
 
+emit_servable_rows() {
+    servable_output_field=$1
+    servable_registry=${QWEN_MODEL_REGISTRY:-$script_directory/models.tsv}
+    if [ ! -r "$servable_registry" ]; then
+        printf 'model registry is unreadable: %s\n' "$servable_registry" >&2
+        return 1
+    fi
+    if [ ! -r "$quarantine_registry" ]; then
+        printf 'quarantine registry is unreadable: %s\n' \
+            "$quarantine_registry" >&2
+        return 1
+    fi
+
+    # Read the quarantine authority first, then admit only registry rows whose
+    # router-child tuple survives both exclusion scopes. The field selector is
+    # fixed by the caller; it is not user-provided AWK source.
+    awk -F'\t' -v output_field="$servable_output_field" '
+        FILENAME == ARGV[1] {
+            if ($0 ~ /^#/ || $0 ~ /^[[:space:]]*$/) { next }
+            if (NF != 14) {
+                printf "quarantine row %d holds %d fields, expected 14\n", FNR, NF \
+                    > "/dev/stderr"
+                invalid = 1
+                next
+            }
+            if ($14 != "any" && $14 != "router-child") { next }
+            if ($2 == "model") {
+                quarantined_models[$3] = 1
+            } else if ($2 == "profile") {
+                profile_key = $3 SUBSEP $5 SUBSEP $6 SUBSEP $7 SUBSEP \
+                    $8 SUBSEP $9 SUBSEP $10
+                quarantined_profiles[profile_key] = 1
+            } else {
+                printf "quarantine row %d carries invalid scope %s\n", FNR, $2 \
+                    > "/dev/stderr"
+                invalid = 1
+            }
+            next
+        }
+        $0 ~ /^#/ || $0 ~ /^[[:space:]]*$/ { next }
+        NF != 20 {
+            printf "model row %d holds %d fields, expected 20\n", FNR, NF \
+                > "/dev/stderr"
+            invalid = 1
+            next
+        }
+        $16 == "production" || $16 == "candidate" {
+            profile_key = $1 SUBSEP $5 SUBSEP $17 SUBSEP $18 SUBSEP \
+                $8 SUBSEP $9 SUBSEP $10
+            if (!quarantined_models[$1] && !quarantined_profiles[profile_key]) {
+                print $output_field
+            }
+        }
+        END { exit invalid ? 1 : 0 }
+    ' "$quarantine_registry" "$servable_registry"
+}
+
 # The rows the router can load on demand. Router mode serves any of them behind
 # one listener, so a caller sizing the machine reads this list rather than the
 # one checkpoint it happened to name.
 if [ "$#" -eq 1 ] && [ "$1" = servable-files ]; then
-    awk -F'\t' '/^#/ { next } NF < 20 { next }
-        $16 == "production" || $16 == "candidate" { print $3 }' \
-        "${QWEN_MODEL_REGISTRY:-$script_directory/models.tsv}"
+    emit_servable_rows 3
     exit 0
 fi
 
@@ -108,9 +167,7 @@ fi
 # here rather than reading the live endpoint, which would also list a
 # quarantined row exposed by QWEN_ROUTER_INCLUDE_QUARANTINE.
 if [ "$#" -eq 1 ] && [ "$1" = servable-ids ]; then
-    awk -F'\t' '/^#/ { next } NF < 20 { next }
-        $16 == "production" || $16 == "candidate" { print $1 }' \
-        "${QWEN_MODEL_REGISTRY:-$script_directory/models.tsv}"
+    emit_servable_rows 1
     exit 0
 fi
 

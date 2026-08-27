@@ -14,6 +14,8 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 registry=$script_directory/models.tsv
 reader=$script_directory/model-registry.sh
 failures=0
+work_directory=$(mktemp -d)
+trap 'rm -rf "$work_directory"' EXIT INT TERM
 
 report() {
     printf '%s=%s\n' "$1" "$2"
@@ -192,6 +194,72 @@ if [ "$usage_status" -eq 2 ]; then
     report usage_exit accepted
 else
     report usage_exit rejected
+fi
+
+# Servable enumeration follows the router-child quarantine authority rather
+# than the model tier alone. Model scope removes every tuple; profile scope
+# removes only the registry row whose complete default tuple matches.
+fixture_registry=$work_directory/models.tsv
+fixture_quarantine=$work_directory/quarantine.tsv
+printf '%b\n' \
+    'safe\ttext\tmodels/safe.gguf\tfetch.sh\t8192\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\tproduction\t128\t32\t-\t-' \
+    'model-blocked\ttext\tmodels/model-blocked.gguf\tfetch.sh\t8192\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\tproduction\t128\t32\t-\t-' \
+    'profile-blocked\ttext\tmodels/profile-blocked.gguf\tfetch.sh\t8192\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\tcandidate\t128\t32\t-\t-' \
+    'profile-neighbour\ttext\tmodels/profile-neighbour.gguf\tfetch.sh\t4096\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\tcandidate\t128\t32\t-\t-' \
+    >"$fixture_registry"
+printf '%b\n' \
+    'model-record\tmodel\tmodel-blocked\tdevice-lost\t-\t-\t-\t-\t-\t-\t-\t-\tevidence/model.md\tany' \
+    'profile-record\tprofile\tprofile-blocked\tring-timeout\t8192\t128\t32\tq8_0\tq4_0\ton\t-\t-\tevidence/profile.md\trouter-child' \
+    'neighbour-record\tprofile\tprofile-neighbour\tring-timeout\t8192\t128\t32\tq8_0\tq4_0\ton\t-\t-\tevidence/neighbour.md\trouter-child' \
+    >"$fixture_quarantine"
+
+servable_ids=$(QWEN_MODEL_REGISTRY=$fixture_registry \
+    QWEN_QUARANTINE_REGISTRY=$fixture_quarantine \
+    "$reader" servable-ids)
+if [ "$servable_ids" = "$(printf '%s\n' safe profile-neighbour)" ]; then
+    report quarantine_filtered_ids accepted
+else
+    report quarantine_filtered_ids rejected
+    printf 'unexpected servable ids:\n%s\n' "$servable_ids" >&2
+fi
+
+servable_files=$(QWEN_MODEL_REGISTRY=$fixture_registry \
+    QWEN_QUARANTINE_REGISTRY=$fixture_quarantine \
+    "$reader" servable-files)
+if [ "$servable_files" = "$(printf '%s\n' \
+    models/safe.gguf models/profile-neighbour.gguf)" ]; then
+    report quarantine_filtered_files accepted
+else
+    report quarantine_filtered_files rejected
+    printf 'unexpected servable files:\n%s\n' "$servable_files" >&2
+fi
+
+# An absent safety authority is an invocation failure. Treating it as an empty
+# set would re-admit every stale production or candidate tier.
+set +e
+QWEN_MODEL_REGISTRY=$fixture_registry \
+QWEN_QUARANTINE_REGISTRY=$work_directory/absent-quarantine.tsv \
+    "$reader" servable-ids >"$work_directory/absent-servable.out" \
+    2>"$work_directory/absent-servable.err"
+absent_servable_status=$?
+QWEN_QUARANTINE_REGISTRY=$work_directory/absent-quarantine.tsv \
+    "$reader" quarantine-rows >"$work_directory/absent-query.out" \
+    2>"$work_directory/absent-query.err"
+absent_query_status=$?
+set -e
+if [ "$absent_servable_status" -ne 0 ] &&
+   grep -F 'quarantine registry is unreadable' \
+       "$work_directory/absent-servable.err" >/dev/null; then
+    report absent_quarantine_blocks_servable_ids accepted
+else
+    report absent_quarantine_blocks_servable_ids rejected
+fi
+if [ "$absent_query_status" -ne 0 ] &&
+   grep -F 'quarantine registry is unreadable' \
+       "$work_directory/absent-query.err" >/dev/null; then
+    report absent_quarantine_blocks_queries accepted
+else
+    report absent_quarantine_blocks_queries rejected
 fi
 
 if [ "$failures" -eq 0 ]; then

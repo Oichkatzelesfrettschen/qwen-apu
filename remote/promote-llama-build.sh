@@ -44,9 +44,15 @@ fi
 build_directory=$source_directory/build-$preset
 manifest_path=$build_directory/artifact-manifest.tsv
 server_path=$build_directory/bin/llama-server
+client_path=$build_directory/bin/llama-cli
 
 if [ ! -x "$server_path" ]; then
     printf 'preset has no executable llama-server: %s\n' "$server_path" >&2
+    exit 1
+fi
+
+if [ ! -x "$client_path" ]; then
+    printf 'preset has no executable llama-cli: %s\n' "$client_path" >&2
     exit 1
 fi
 
@@ -108,6 +114,38 @@ if [ -n "$manifest_drift" ]; then
     exit 1
 fi
 
+# The smoke consumers must be manifest-owned executables. An executable found
+# beside the recorded build can come from an older arm and still produce a
+# plausible answer, so filesystem presence alone does not bind either smoke
+# result to the promoted artifact set.
+for required_executable in llama-server llama-cli llama-mtmd-cli; do
+    required_executable_count=$(awk -F'\t' -v object="$required_executable" '
+        $1 == "executable" && $2 == object && NF == 4 { count++ }
+        END { print count + 0 }
+    ' "$manifest_path")
+    if [ "$required_executable_count" -ne 1 ]; then
+        printf 'manifest requires exactly one executable row for %s, found %s\n' \
+            "$required_executable" "$required_executable_count" >&2
+        exit 1
+    fi
+done
+
+# Recompute the multimodal consumer's current load closure and require every
+# exact row in the recorded manifest. This catches a CLI copied in after the
+# build as well as a dependency that only the projector path loads.
+multimodal_closure=$("$script_directory/hash-load-closure.sh" \
+    "$multimodal_path" | sed 1d)
+while IFS= read -r closure_row; do
+    [ -n "$closure_row" ] || continue
+    if ! grep -F -x -- "$closure_row" "$manifest_path" >/dev/null; then
+        printf 'manifest omits llama-mtmd-cli closure row: %s\n' \
+            "$closure_row" >&2
+        exit 1
+    fi
+done <<EOF
+$multimodal_closure
+EOF
+
 "$server_path" --version >/dev/null 2>&1 || {
     printf 'llama-server does not report a version: %s\n' "$server_path" >&2
     exit 1
@@ -116,28 +154,25 @@ fi
 # One token, all layers on Vulkan, no CPU fallback admitted. A model is required
 # because the check is that the device path completes, not that the binary runs.
 promotion_model=${QWEN_PROMOTION_MODEL:-"${HOME:?}/models/Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf"}
-if [ -f "$promotion_model" ]; then
-    strict_output=$(nice -n 19 "$build_directory/bin/llama-cli" \
-        --model "$promotion_model" --device Vulkan0 --n-gpu-layers all \
-        --override-tensor '.*=Vulkan0' --no-warmup --ctx-size 256 \
-        --n-predict 1 --temp 0 --prompt 'ok' --no-conversation 2>&1) || {
-            printf 'strict Vulkan one-token check failed:\n%s\n' "$strict_output" >&2
-            exit 1
-        }
-    case $strict_output in
-        *"CPU buffer size"*)
-            printf 'strict Vulkan check placed tensors on the CPU backend\n' >&2
-            printf '%s\n' "$strict_output" | grep -F 'buffer size' >&2
-            exit 1
-            ;;
-    esac
-    strict_state=passed
-else
-    # A check that silently skips is a check that never fails, so the absence is
-    # reported rather than folded into a pass.
-    printf 'promotion_model_absent path=%s strict_vulkan=not-run\n' "$promotion_model" >&2
-    strict_state=not-run
+if [ ! -f "$promotion_model" ]; then
+    printf 'promotion model is absent: %s\n' "$promotion_model" >&2
+    exit 1
 fi
+strict_output=$(nice -n 19 "$client_path" \
+    --model "$promotion_model" --device Vulkan0 --n-gpu-layers all \
+    --override-tensor '.*=Vulkan0' --no-warmup --ctx-size 256 \
+    --n-predict 1 --temp 0 --prompt 'ok' --no-conversation 2>&1) || {
+        printf 'strict Vulkan one-token check failed:\n%s\n' "$strict_output" >&2
+        exit 1
+    }
+case $strict_output in
+    *"CPU buffer size"*)
+        printf 'strict Vulkan check placed tensors on the CPU backend\n' >&2
+        printf '%s\n' "$strict_output" | grep -F 'buffer size' >&2
+        exit 1
+        ;;
+esac
+strict_state=passed
 
 "$multimodal_path" --version >/dev/null 2>&1 || {
     printf 'llama-mtmd-cli does not report a version: %s\n' "$multimodal_path" >&2
@@ -161,42 +196,40 @@ if [ -f "$promotion_vision_model" ]; then
         "$promotion_vision_model" 2>/dev/null) || promotion_projector=''
 fi
 
-if [ -f "$promotion_vision_model" ] && [ -n "$promotion_projector" ] &&
-    [ -f "$promotion_image" ]; then
-    multimodal_output=$(nice -n 19 "$multimodal_path" \
-        --model "$promotion_vision_model" --mmproj "$promotion_projector" \
-        --image "$promotion_image" --device Vulkan0 --n-gpu-layers all \
-        --ctx-size 4096 --batch-size 128 --ubatch-size 32 --threads 1 \
-        --n-predict 64 --temp 0 --seed 1 \
-        --prompt 'Name the colours of the shapes in this image.' 2>&1) || {
-            printf 'multimodal one-image check failed:\n%s\n' "$multimodal_output" >&2
-            exit 1
-        }
-    # remote/generate-quality-images.py draws shapes.png as a red square, a green
-    # circle, and a blue triangle. Two of the three names is the threshold: it
-    # refuses a reply that carries no image content while leaving room for a
-    # model that describes the image in fewer words than it holds shapes.
-    named_colours=0
-    for colour in red green blue; do
-        case $(printf '%s' "$multimodal_output" | tr 'A-Z' 'a-z') in
-            *"$colour"*) named_colours=$((named_colours + 1)) ;;
-        esac
-    done
-    if [ "$named_colours" -lt 2 ]; then
-        printf 'multimodal check named %s of 3 declared colours:\n%s\n' \
-            "$named_colours" "$multimodal_output" >&2
-        exit 1
-    fi
-    multimodal_state=passed
-else
-    # Same discipline as the strict Vulkan check above: a skip is reported
-    # rather than folded into a pass, and it names which input was absent.
-    printf 'multimodal_inputs_absent model=%s projector=%s image=%s multimodal=not-run\n' \
+if [ ! -f "$promotion_vision_model" ] || [ ! -f "$promotion_projector" ] ||
+    [ ! -f "$promotion_image" ]; then
+    printf 'multimodal promotion inputs are incomplete: model=%s projector=%s image=%s\n' \
         "$([ -f "$promotion_vision_model" ] && printf present || printf absent)" \
-        "$([ -n "$promotion_projector" ] && printf present || printf absent)" \
+        "$([ -f "$promotion_projector" ] && printf present || printf absent)" \
         "$([ -f "$promotion_image" ] && printf present || printf absent)" >&2
-    multimodal_state=not-run
+    exit 1
 fi
+
+multimodal_output=$(nice -n 19 "$multimodal_path" \
+    --model "$promotion_vision_model" --mmproj "$promotion_projector" \
+    --image "$promotion_image" --device Vulkan0 --n-gpu-layers all \
+    --ctx-size 4096 --batch-size 128 --ubatch-size 32 --threads 1 \
+    --n-predict 64 --temp 0 --seed 1 \
+    --prompt 'Name the colours of the shapes in this image.' 2>&1) || {
+        printf 'multimodal one-image check failed:\n%s\n' "$multimodal_output" >&2
+        exit 1
+    }
+# remote/generate-quality-images.py draws shapes.png as a red square, a green
+# circle, and a blue triangle. Two of the three names is the threshold: it
+# refuses a reply that carries no image content while leaving room for a model
+# that describes the image in fewer words than it holds shapes.
+named_colours=0
+for colour in red green blue; do
+    case $(printf '%s' "$multimodal_output" | tr 'A-Z' 'a-z') in
+        *"$colour"*) named_colours=$((named_colours + 1)) ;;
+    esac
+done
+if [ "$named_colours" -lt 2 ]; then
+    printf 'multimodal check named %s of 3 declared colours:\n%s\n' \
+        "$named_colours" "$multimodal_output" >&2
+    exit 1
+fi
+multimodal_state=passed
 
 if [ -L "$current_link" ]; then
     ln -sfn "$(readlink "$current_link")" "$previous_link.new"

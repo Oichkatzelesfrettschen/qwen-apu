@@ -402,13 +402,28 @@ fi
 QWEN_MODEL_REGISTRY=$fixture_registry QWEN_MODEL_ROOT=$fixture_model_root \
 QWEN_QUARANTINE_REGISTRY=$fixture_quarantine \
 QWEN_QUARANTINE_REASONS=$fixture_reasons QWEN_ROUTER_INCLUDE_QUARANTINE=1 \
+QWEN_DEFAULT_MODEL_ID=hidden-model \
     "$builder" "$fixture_presets" >"$work/quarantine-fixture-override.log"
 fixture_sections=$(awk -F'[][]' '/^\[/ { print $2 }' "$fixture_presets" | sort)
+hidden_tags=$(awk -F' = ' '
+    /^\[hidden-model\]$/ { wanted = 1; next }
+    /^\[/ { wanted = 0 }
+    wanted && $1 == "LLAMA_ARG_TAGS" { print $2; exit }
+' "$fixture_presets")
+profile_tags=$(awk -F' = ' '
+    /^\[profile-model\]$/ { wanted = 1; next }
+    /^\[/ { wanted = 0 }
+    wanted && $1 == "LLAMA_ARG_TAGS" { print $2; exit }
+' "$fixture_presets")
 if [ "$fixture_sections" = "$(printf '%s\n' hidden-model profile-model)" ] &&
-   grep -qx '# qwen_router_include_quarantine=1' "$fixture_presets"; then
+   grep -qx '# qwen_router_include_quarantine=1' "$fixture_presets" &&
+   [ "$hidden_tags" = quarantine,fixture ] &&
+   [ "$profile_tags" = quarantine,fixture ]; then
     report quarantine_registry_override accepted
 else
     report quarantine_registry_override rejected
+    printf 'override tags hidden=%s profile=%s\n' \
+        "$hidden_tags" "$profile_tags" >&2
 fi
 
 if [ "$failures" -eq 0 ]; then
