@@ -119,9 +119,9 @@ def pad_prompt(prompt, depth_characters):
     return (filler + fact.strip() + " " + filler + question.strip()).strip()
 
 
-def request(endpoint, api_key, prompt, max_tokens, thinking, timeout):
+def request(endpoint, api_key, model, prompt, max_tokens, thinking, timeout):
     body = json.dumps({
-        "model": "qwen-apu",
+        "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_tokens,
         "temperature": 0,
@@ -150,6 +150,12 @@ def main(argv):
     parser.add_argument("--categories", default="",
                         help="comma-separated subset; empty runs every row")
     parser.add_argument("--max-tokens", type=int, default=1024)
+    # Router mode routes on this name and answers 400 for one it does not hold,
+    # so the served id is the name a preset section carries. A single-model
+    # server accepts any name and answers with its own alias, which is why the
+    # served id is recorded per row rather than assumed from this argument.
+    parser.add_argument("--model", default="qwen-apu",
+                        help="model id sent in the request body")
     parser.add_argument("--thinking", default="on", choices=("on", "off"))
     parser.add_argument(
         "--long-context-characters", type=int,
@@ -178,8 +184,9 @@ def main(argv):
         if row["category"] == "long_context":
             prompt = pad_prompt(prompt, arguments.long_context_characters)
         try:
-            document = request(arguments.endpoint, api_key, prompt,
-                               arguments.max_tokens, thinking, arguments.timeout)
+            document = request(arguments.endpoint, api_key, arguments.model,
+                               prompt, arguments.max_tokens, thinking,
+                               arguments.timeout)
             error = None
         except (urllib.error.URLError, OSError, http.client.HTTPException,
                 json.JSONDecodeError) as failure:
@@ -197,6 +204,8 @@ def main(argv):
 
         records.append({
             "id": row["id"],
+            "requested_model": arguments.model,
+            "served_model": document.get("model"),
             "category": row["category"],
             "grader": row["grader"],
             "expectation": row["expectation"],
@@ -217,6 +226,7 @@ def main(argv):
             "wall_seconds": document.get("_wall_seconds"),
         })
         print(f"row={row['id']} category={row['category']} "
+              f"served={document.get('model')} "
               f"passed={bool(passed)} truncated={truncated} reason={reason}",
               flush=True)
 
@@ -235,8 +245,16 @@ def main(argv):
         if (not record["error"] and not record["empty_answer"]
             and not record["truncated"])
     ]
+    # The served id comes from the response rather than from the request, so a
+    # router that answered from a different preset than the one named shows up
+    # here as a second entry instead of being hidden by the loop variable.
+    served_models = sorted({
+        record["served_model"] for record in records
+        if record["served_model"]})
     summary = {
         "rows": len(records),
+        "requested_model": arguments.model,
+        "served_models": served_models,
         "passed": sum(r["passed"] for r in records),
         "completion_rate": len(completed) / len(records),
         "empty_answer_rate": sum(r["empty_answer"] for r in records) / len(records),
@@ -260,6 +278,8 @@ def main(argv):
         print(f"category={name} passed={bucket['passed']}/{bucket['attempted']} "
               f"truncated={bucket['truncated']} empty={bucket['empty']}")
     transport_errors = sum(bool(record["error"]) for record in records)
+    print(f"served_models={','.join(served_models) if served_models else 'none'} "
+          f"requested_model={arguments.model}")
     terminal_state = "completed" if transport_errors == 0 else "failed"
     print(f"quality_suite={terminal_state} passed={summary['passed']}/{summary['rows']} "
           f"completion_rate={summary['completion_rate']:.3f} "

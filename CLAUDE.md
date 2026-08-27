@@ -244,6 +244,7 @@ remote/measure-served-decode.sh LABEL MODEL    # served decode at a fixed length
 remote/measure-bench-repeatability.sh MODEL    # what a depth-0 rate repeats to
 remote/run-quality-suite.py ENDPOINT OUT_JSON --long-context-characters 24000
                                                 # the 55-row graded suite at explicit depth
+remote/run-quality-roster.sh [OUTPUT_DIR]      # that suite against every servable row
 remote/sample-gpu-clocks.sh OUT_TSV [SECONDS]  # the DPM step a rate ran at
 remote/measure-dpm-force.sh MODEL [OUT]         # auto against global high governor
 remote/model-registry.sh id|path SELECTOR [FIELD]
@@ -273,6 +274,7 @@ remote/test-radv-low-priority-env.sh
 remote/test-model-registry.sh
 remote/test-model-tiers.sh
 remote/test-quality-suite.py
+remote/test-quality-roster.sh
 remote/test-gguf-tokenizer-identity.py
 remote/test-promote-llama-build.sh
 remote/verify-llama-patch-series.sh
