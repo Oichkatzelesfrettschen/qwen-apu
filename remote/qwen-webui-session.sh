@@ -222,9 +222,10 @@ printf 'speculation spec_type=%s draft_n_max=%s draft_p_min=%s draft_backend_sam
 # The cache triple lands on a third line for the same reason, and it records
 # `registry` where the row supplied the value, so a retained status file
 # distinguishes an experiment arm from the served default.
-printf 'cache cache_type_k=%s cache_type_v=%s flash_attention=%s\n' \
+printf 'cache cache_type_k=%s cache_type_v=%s flash_attention=%s override_context_ceiling=%s\n' \
     "${QWEN_CACHE_TYPE_K:-registry}" "${QWEN_CACHE_TYPE_V:-registry}" \
-    "${QWEN_FLASH_ATTN:-registry}" >>"$status_file"
+    "${QWEN_FLASH_ATTN:-registry}" \
+    "${QWEN_CACHE_OVERRIDE_CONTEXT_CEILING:-registry}" >>"$status_file"
 # Router state lands on a fourth line. A router listener serves several
 # checkpoints behind one port and spawns a child process per loaded model, so a
 # retained status file that named only the default model would describe one of

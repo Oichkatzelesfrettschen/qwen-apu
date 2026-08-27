@@ -7,8 +7,12 @@ suite file is checked for well-formed rows in the same run, because a row with
 the wrong field count fails at measurement time rather than here.
 """
 
+import contextlib
+import io
+import json
 import os
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import importlib.util
@@ -33,7 +37,10 @@ CASES = [
     ("json_keys", "name|age", '{"name": "Ada", "age": 36}', True),
     ("json_keys", "name|age", '{"name": "Ada"}', False),
     ("json_keys", "name|age", 'Sure! {"name": "Ada", "age": 36}', False),
-    ("json_keys", "name|age", '```json\n{"name": "Ada", "age": 36}\n```', True),
+    ("json_keys", "name|age", '```json\n{"name": "Ada", "age": 36}\n```', False),
+    ("json_keys", "name|age", '{"name": NaN, "age": 36}', False),
+    ("json_keys", "name|age", '{"name": Infinity, "age": 36}', False),
+    ("json_keys", "name|age", '{"name": -Infinity, "age": 36}', False),
     ("json_keys", "items", '[1, 2, 3]', False),
     ("regex", r"^\s*(yes|no)\s*[.!]?\s*$", "yes", True),
     ("regex", r"^\s*(yes|no)\s*[.!]?\s*$", "Yes, 12 is divisible by 4.", False),
@@ -42,6 +49,7 @@ CASES = [
     ("nonempty", "", "Any answer at all.", True),
     ("nonempty", "", "   \n  ", False),
 ]
+CASES.append(("json_keys", "name", "[" * 2000 + "0" + "]" * 2000, False))
 
 failures = 0
 for kind, expectation, reply, expected in CASES:
@@ -100,6 +108,107 @@ if module.pad_prompt("FACT ||| QUESTION", 0) != "FACT QUESTION":
 for row in rows:
     if row["category"] == "long_context" and module.NEEDLE_SEPARATOR not in row["prompt"]:
         print(f"{row['id']}: long_context row holds no fact separator",
+              file=sys.stderr)
+        failures += 1
+
+
+def synthetic_document(content, finish_reason="stop"):
+    return {
+        "choices": [{
+            "message": {"content": content, "reasoning_content": ""},
+            "finish_reason": finish_reason,
+        }],
+        "timings": {
+            "predicted_n": 1,
+            "prompt_n": 1,
+            "predicted_per_second": 1.0,
+        },
+        "_wall_seconds": 1.0,
+    }
+
+
+# The retained reply is the object that the grader reads. Truncating only the
+# JSON evidence makes a later re-grade unable to reproduce the recorded verdict.
+with tempfile.TemporaryDirectory() as temporary_directory:
+    suite = os.path.join(temporary_directory, "suite.tsv")
+    output = os.path.join(temporary_directory, "result.json")
+    with open(suite, "w") as handle:
+        handle.write(
+            "wrong\tscreen\tnumeric\t1\tFirst prompt\n"
+            "truncated\tscreen\tnumeric\t1\tSecond prompt\n"
+            "long-reply\tscreen\tnonempty\t\tThird prompt\n")
+    documents = iter((
+        synthetic_document("2"),
+        synthetic_document("1", finish_reason="length"),
+        synthetic_document("x" * 700),
+    ))
+    original_request = module.request
+    module.request = lambda *args, **kwargs: next(documents)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            status = module.main(("run-quality-suite.py", "http://fixture", output,
+                                  "--suite", suite))
+    finally:
+        module.request = original_request
+    with open(output) as handle:
+        result = json.load(handle)
+    if status != 0:
+        print("synthetic quality run returned failure", file=sys.stderr)
+        failures += 1
+    if result["records"][2]["content"] != "x" * 700:
+        print("quality evidence truncated the reply used for grading",
+              file=sys.stderr)
+        failures += 1
+    if result["summary"]["completion_rate"] != 2 / 3:
+        print("truncated reply counted as completed", file=sys.stderr)
+        failures += 1
+    if result["summary"]["correct_on_completed"] != 0.5:
+        print("truncated reply entered completed-row accuracy", file=sys.stderr)
+        failures += 1
+
+# A reset is one row's transport result, not an exception that prevents the
+# remaining suite and its summary JSON from being retained.
+with tempfile.TemporaryDirectory() as temporary_directory:
+    suite = os.path.join(temporary_directory, "suite.tsv")
+    output = os.path.join(temporary_directory, "result.json")
+    with open(suite, "w") as handle:
+        handle.write("reset\tscreen\tnonempty\t\tPrompt\n")
+    original_request = module.request
+    module.request = lambda *args, **kwargs: (_ for _ in ()).throw(
+        ConnectionResetError("fixture reset"))
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            status = module.main(("run-quality-suite.py", "http://fixture", output,
+                                  "--suite", suite))
+    finally:
+        module.request = original_request
+    with open(output) as handle:
+        result = json.load(handle)
+    if status != 1 or "fixture reset" not in result["records"][0]["error"]:
+        print("connection reset did not become a retained transport failure",
+              file=sys.stderr)
+        failures += 1
+
+# Selecting a retrieval row without a real depth is an invocation error. The
+# suite never silently degrades that category into short recall.
+with tempfile.TemporaryDirectory() as temporary_directory:
+    suite = os.path.join(temporary_directory, "suite.tsv")
+    output = os.path.join(temporary_directory, "result.json")
+    with open(suite, "w") as handle:
+        handle.write(
+            "long\tlong_context\tcontains_all\tneedle\t"
+            "needle ||| What is the needle?\n")
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            module.main(("run-quality-suite.py", "http://fixture", output,
+                         "--suite", suite))
+    except SystemExit as error:
+        if error.code != 2:
+            print(f"missing long-context depth exited {error.code}, expected 2",
+                  file=sys.stderr)
+            failures += 1
+    else:
+        print("quality suite accepted long-context rows without a real depth",
               file=sys.stderr)
         failures += 1
 

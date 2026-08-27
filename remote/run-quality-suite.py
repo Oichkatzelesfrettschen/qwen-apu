@@ -13,6 +13,7 @@ retrieval from a short prompt.
 """
 
 import argparse
+import http.client
 import json
 import os
 import re
@@ -46,9 +47,9 @@ def last_number(text):
     return float(matches[-1]) if matches else None
 
 
-def strip_fence(text):
-    fence = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
-    return fence.group(1).strip() if fence else text.strip()
+def reject_nonfinite_json_constant(constant):
+    """Reject Python's non-standard NaN and infinity JSON extensions."""
+    raise ValueError(f"non-finite JSON constant: {constant}")
 
 
 def grade(row, reply):
@@ -79,8 +80,9 @@ def grade(row, reply):
                                else f"none of {'|'.join(wanted)}")
     if kind == "json_keys":
         try:
-            document = json.loads(strip_fence(body))
-        except Exception as error:
+            document = json.loads(
+                body, parse_constant=reject_nonfinite_json_constant)
+        except (ValueError, RecursionError) as error:
             return False, f"not JSON: {error}"
         if not isinstance(document, dict):
             return False, "JSON is not an object"
@@ -149,8 +151,9 @@ def main(argv):
                         help="comma-separated subset; empty runs every row")
     parser.add_argument("--max-tokens", type=int, default=1024)
     parser.add_argument("--thinking", default="on", choices=("on", "off"))
-    parser.add_argument("--long-context-characters", type=int, default=0,
-                        help="filler placed before every long_context prompt")
+    parser.add_argument(
+        "--long-context-characters", type=int,
+        help="required positive filler depth when long_context rows are selected")
     parser.add_argument("--timeout", type=float, default=1800)
     arguments = parser.parse_args(argv[1:])
 
@@ -160,6 +163,12 @@ def main(argv):
         rows = [row for row in rows if row["category"] in wanted]
     if not rows:
         raise SystemExit("no suite rows selected")
+    if any(row["category"] == "long_context" for row in rows):
+        if (arguments.long_context_characters is None
+                or arguments.long_context_characters <= 0):
+            parser.error(
+                "--long-context-characters must be positive when long_context "
+                "rows are selected")
 
     api_key = os.environ.get("QWEN_API_KEY", "")
     thinking = arguments.thinking == "on"
@@ -172,7 +181,8 @@ def main(argv):
             document = request(arguments.endpoint, api_key, prompt,
                                arguments.max_tokens, thinking, arguments.timeout)
             error = None
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as failure:
+        except (urllib.error.URLError, OSError, http.client.HTTPException,
+                json.JSONDecodeError) as failure:
             document, error = {}, str(failure)
 
         choice = (document.get("choices") or [{}])[0]
@@ -196,7 +206,7 @@ def main(argv):
             "truncated": truncated,
             "empty_answer": not content.strip(),
             "error": error,
-            "content": content[:600],
+            "content": content,
             # The API exposes text for the reasoning span and one generated-token
             # count for the whole response. Word count stays explicitly a word
             # count instead of posing as tokenizer output.
@@ -220,7 +230,11 @@ def main(argv):
         bucket["truncated"] += int(record["truncated"])
         bucket["empty"] += int(record["empty_answer"])
 
-    completed = [r for r in records if not r["error"] and not r["empty_answer"]]
+    completed = [
+        record for record in records
+        if (not record["error"] and not record["empty_answer"]
+            and not record["truncated"])
+    ]
     summary = {
         "rows": len(records),
         "passed": sum(r["passed"] for r in records),

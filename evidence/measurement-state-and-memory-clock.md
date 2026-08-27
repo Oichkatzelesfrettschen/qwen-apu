@@ -77,11 +77,15 @@ dynamic clocks but cannot change the UMC training registers.
 exceeds the modules' own SPD rating and the measured UMC rate, so SMBIOS is not
 an operating-clock oracle on this firmware.
 
-## Forcing the governor buys nothing
+## The global high governor buys nothing
 
 `remote/measure-dpm-force.sh` alternates `auto` and `high` rather than running a
 block of each, because the 4.2% state spread above exceeds the effect being
-looked for. The original level is restored from an EXIT trap.
+looked for. The `high` setting can move SCLK, FCLK, and other device power
+domains together, so this comparison measures a global governor intervention
+and does not isolate a memory-clock effect. The harness records both SCLK and
+the legacy `pp_dpm_mclk` FCLK surface, and the original level is restored from
+an EXIT trap.
 
 | round | level | decode tok/s |
 | ---: | --- | ---: |

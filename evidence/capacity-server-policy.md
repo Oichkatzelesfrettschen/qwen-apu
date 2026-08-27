@@ -18,6 +18,7 @@ active.
 | Static UI admission is explicit | Validated directory plus fixed `--path` and `--ui` arguments | A missing `index.html` reaches llama.cpp or a headless launch enables UI | `remote/test-qwen-capacity-policy.sh` | Positive and negative static-path controls |
 | Interactive routes require a secret | Generated mode-0600 key plus fixed `--api-key-file` argument | An empty key file reaches llama.cpp | `remote/test-qwen-capacity-policy.sh` | Positive and negative key-file controls |
 | Operational context is bounded | `qwen-capacity-policy.sh` maximum context check | A value above 24,576 reaches llama.cpp | 24,576 positive and 24,577 negative boundary tests | Captured exit status and diagnostic |
+| Cache overrides carry their own admission depth | Registry cache and attention tuple plus `QWEN_CACHE_OVERRIDE_CONTEXT_CEILING` | An overridden tuple reuses the registry tuple's ceiling, accepts a non-positive ceiling, or exceeds the registry ceiling | Override-ceiling positive and negative boundary tests | Captured fake-server arguments and diagnostics |
 | Capacity caches remain bounded | llama.cpp option parser and fixed argument sequence | Checkpoints or RAM cache differ from zero, or context shift is enabled | `remote/test-qwen-capacity-policy.sh` | Captured fake-server arguments |
 | RADV is the sole model backend | strict llama.cpp patch plus RADV environment wrapper | CPU tensor placement, CPU graph execution, another ICD, or llvmpipe proceeds | Post-build strict fallback tests | `evidence/strict-vulkan-placement.md` |
 | Speculative decoding stays inactive | Closed argument surface with no draft options | Any `--spec-*` option reaches the server | `remote/test-qwen-capacity-policy.sh` | Captured fake-server arguments |
@@ -39,8 +40,12 @@ The policy uses a 128-token
 logical batch and 32-token microbatch so prompt ingestion yields to the
 compositor at short graph boundaries.
 The policy rejects context values above 24,576 before the RADV wrapper starts
-llama.cpp. The benchmark client independently rejects prompt depths above
-24,000 tokens so fixed decode output retains context headroom.
+llama.cpp. Each registry ceiling belongs to the cache-type and Flash Attention
+tuple stored in the same row. Changing any tuple member requires a positive
+`QWEN_CACHE_OVERRIDE_CONTEXT_CEILING` measured for that experiment, and the
+policy rejects an override ceiling above the registry ceiling. The benchmark
+client independently rejects prompt depths above 24,000 tokens so fixed decode
+output retains context headroom.
 
 The default capacity path keeps `--no-ui`. An interactive path must supply a
 directory containing `index.html`; the closed policy then adds `--path`,
@@ -86,3 +91,9 @@ The static-path regression separately observes `--path`, `--ui`, localhost
 CORS, and `--api-key-file`. It rejects a missing `index.html` and an empty key
 file, and it rejects a static path without an API key before the fake server
 starts. The test performs no model load or network listen.
+
+The cache-policy regression rejects tuple overrides without a dedicated
+ceiling, rejects override ceilings above the registry ceiling, forwards the
+overridden cache arguments at an admitted depth, and rejects a context one token
+above that override ceiling. These are construction-policy tests; they do not
+claim a new cache tuple has completed a hardware depth ladder.

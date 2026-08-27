@@ -61,10 +61,43 @@ check_rows() {
     ' "$registry"
 }
 
+check_cache_types() {
+    cache_type_failures=0
+    tab=$(printf '\t')
+    while IFS="$tab" read -r model_id _role _model_file _fetch_script \
+        _context_default _context_ceiling _context_target cache_type_k \
+        cache_type_v _flash_attention _projector _decode_tok_s _prefill_tok_s \
+        _quality; do
+        case $model_id in
+            '' | \#*) continue ;;
+        esac
+        for cache_type in "$cache_type_k" "$cache_type_v"; do
+            if ! "$reader" validate-cache-type "$cache_type"; then
+                printf '%s: cache type is outside the runtime vocabulary: %s\n' \
+                    "$model_id" "$cache_type" >&2
+                cache_type_failures=$((cache_type_failures + 1))
+            fi
+        done
+    done <"$registry"
+    [ "$cache_type_failures" -eq 0 ]
+}
+
 if check_rows; then
     report registry_rows accepted
 else
     report registry_rows rejected
+fi
+if check_cache_types; then
+    report cache_types accepted
+else
+    report cache_types rejected
+fi
+
+if "$reader" validate-cache-type q8_0 &&
+   ! "$reader" validate-cache-type q3_k; then
+    report cache_type_vocabulary accepted
+else
+    report cache_type_vocabulary rejected
 fi
 
 expected_header=$(printf '# id\trole\tmodel_file\tfetch_script\tcontext_default\tcontext_ceiling\tcontext_target\tcache_type_k\tcache_type_v\tflash_attention\tprojector\tdecode_tok_s\tprefill_tok_s\tquality\ttier')
