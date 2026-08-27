@@ -88,3 +88,107 @@ concealed.
 | 3 | Completion stays uniform at a 1024-token budget with thinking off | any arm reports a completion rate below 0.95 |
 | 4 | The suite separates Qwen3.5-2B from the 2B distill, which decode measurement left unresolved at 2.6% | the two land within 2 rows of each other |
 
+## Results
+
+Six arms, 330 graded rows, no transport error, and every served id equal to the
+id its arm requested. Records are retained under `evidence/quality-roster/`.
+
+| checkpoint | passed | corrected | completion | correct on completed | wall s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Qwen3.5-4B base Q4_K_M | 47/55 | 47 | 1.000 | 0.855 | 1756.4 |
+| Qwen3.8-4B Distill Q4_K_M | 47/55 | 47 | 1.000 | 0.855 | 1659.5 |
+| LFM2.5-VL-1.6B Q4_K_M | 43/55 | 43 | 1.000 | 0.782 | 442.3 |
+| Qwen3.5-2B Q4_K_M | 41/55 | 41 | 1.000 | 0.745 | 667.4 |
+| Qwen3.8-2B Distill Q4_K_M | 41/55 | **40** | 0.964 | 0.755 | 880.4 |
+| Qwen3.5-0.8B Q8_0 | 33/55 | 33 | 1.000 | 0.600 | 277.0 |
+
+| checkpoint | screen | arith | word | code | format | ctx | term |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Qwen3.8-4B Distill | 5/5 | 8/10 | 6/10 | 9/10 | 9/10 | 5/5 | 5/5 |
+| Qwen3.5-4B base | 5/5 | 7/10 | 7/10 | 9/10 | 9/10 | 5/5 | 5/5 |
+| LFM2.5-VL-1.6B | 4/5 | 9/10 | 8/10 | 7/10 | 6/10 | 4/5 | 5/5 |
+| Qwen3.8-2B Distill | 3/5 | 8/10 | 5/10 | 7/10 | 9/10 | 4/5 | 5/5 |
+| Qwen3.5-2B | 3/5 | 7/10 | 4/10 | 9/10 | 8/10 | 5/5 | 5/5 |
+| Qwen3.5-0.8B | 4/5 | 5/10 | 1/10 | 7/10 | 6/10 | 5/5 | 5/5 |
+
+## The registered predictions
+
+| # | outcome |
+| --- | --- |
+| 1 | holds -- 33 for the 0.8B, 41 for both 2B rows, 47 for both 4B rows |
+| 2 | holds -- LFM2.5-VL's 9/10 arithmetic lead ends at 43 against 47, four rows behind |
+| 3 | holds -- the lowest completion rate is 0.964 against a 0.95 falsifier |
+| 4 | **falsified** -- Qwen3.5-2B and the 2B distill tie exactly at 41/55 |
+
+## Two categories resolve nothing and one grader passes its own failure
+
+`termination` is 5/5 on all six and `long_context` is 4/5 or 5/5 on all six, so
+neither separates any pair in this roster. The long-context prompt occupies 4216
+tokens against an 8192-token floor, which is the depth it was built to test and
+is far from any admitted ceiling.
+
+`term-02` asks for the largest prime in at most two sentences and grades
+`nonempty`. The 2B distill ran it to the full 1024-token budget and the grader
+passed it, which is the termination failure the category exists to detect. The
+per-row `truncated` field makes the correction computable from the retained
+record rather than needing a re-run, and the corrected column above applies it:
+the 2B distill alone moves, 41 to 40, which breaks its tie with Qwen3.5-2B
+against it. The other credited truncation count is zero everywhere.
+
+## The two 4B rows are indistinguishable on quality
+
+They tie at 47/55, at 0.855 correct-on-completed, and within one row in every
+category. `evidence/qwen38-2b-distill-quality.md` promoted the distill over the
+base at 5/5 against 4/5, and the base's single failure there was an empty answer
+after 2048 predicted tokens of reasoning -- the termination failure that thinking
+off removes. **With thinking off across 55 rows the quality half of that
+promotion does not reproduce.** The throughput half stands untouched: the distill
+reasons in 43.3% of the base's tokens and decodes 3.34 against 3.11 tok/s.
+
+## A graded result depends on which rows preceded it in the same session
+
+The gate scored the 2B distill 7/10 on arithmetic and the full sweep scored it
+8/10, so the ten rows were re-run to find the reproducibility floor.
+
+| run | preceding rows | 2B distill | Qwen3.5-2B |
+| --- | --- | ---: | ---: |
+| repeat 1 | none | 7/10 | 6/10 |
+| repeat 2 | none | 7/10 | 6/10 |
+| repeat 3 | none | 7/10 | 6/10 |
+| `screen,arithmetic` | the 5 screen rows | **8/10** | **7/10** |
+| full sweep | the 5 screen rows | **8/10** | **7/10** |
+
+Three repeats reproduce exactly, so greedy decoding on this backend is
+deterministic within a fixed request sequence. Prepending the five `screen` rows
+moves both checkpoints up one row, deterministically and in the same direction,
+and `arith-05` is the row that moves: `Convert 98.6 degrees Fahrenheit to
+Celsius` answers 37 with no predecessors and 23 with the screen rows ahead of it.
+
+**Prefix-cache reuse is excluded.** The arithmetic rows report identical
+`prompt_n` in all three conditions -- 27, 37, 27, 44, 36, 28 for the first six --
+so every request reprocesses its prompt in full and no cached prefix shortens it.
+
+**A single predecessor is not enough.** One unrelated 300-token request between a
+fresh model load and `arith-05` leaves the answer at 37, so a stale KV tail
+beyond the current sequence length does not by itself produce the effect.
+
+The mechanism is not isolated and is recorded as an effect rather than a cause,
+on the same terms as the two wedge signatures this tree declines to merge. What
+is established is the measurement consequence: **a suite result is conditioned on
+the request sequence that produced it, so a difference of one or two rows between
+two checkpoints reports position in a sequence rather than capability.** Every
+quality figure previously recorded in this tree came from a single fixed prompt
+sequence and carries the same conditioning. Comparisons in the table above are
+read inside this one sweep, where all six arms met the same 55 rows in the same
+order.
+
+## What this admits
+
+The three candidate rows now hold a graded result under the tuple they are
+admitted at, which is what `candidate` left unqualified. None of the three
+promotes on it. Qwen3.5-0.8B is last by 8 rows and answers 1 of 10 word problems.
+LFM2.5-VL leads arithmetic and word problems and trails both 4B rows by four,
+with its losses concentrated in `format` at 6/10. Qwen3.5-2B ties the serving
+default. Promotion also needs an image through the projector for the two vision
+rows, which has not run.
+

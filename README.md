@@ -30,7 +30,8 @@ different weight in a decision:
 
 | Profile | Checkpoint | Placement | Purpose |
 | --- | --- | --- | --- |
-| `text` | Qwen3.8-4B-Distill Q4_K_M | all layers on Vulkan | default chat, homework, coding, text reasoning |
+| `text` | Qwen3.8-2B-Distill Q4_K_M | all layers on Vulkan | default chat, homework, text reasoning at 9.19 tok/s |
+| `balanced-text` | Qwen3.8-4B-Distill Q4_K_M | all layers on Vulkan | coding and formatting, 47 of 55 graded rows |
 | `vision` | Qwen3.5-4B Q4_K_M with its matched `mmproj-F16.gguf` | language model and projector on Vulkan | images, diagrams, screenshots, textbook pages |
 | `deep-text` | Qwen3.8-9B Distill Q4_K_M | all layers on Vulkan | optional slower candidate, quality unqualified |
 | `serialized-prefill` | the selected checkpoint | Vulkan, serialized submissions | fallback for long sustained prefill |
@@ -38,7 +39,29 @@ different weight in a decision:
 
 The text profile runs full Vulkan placement, the `low-async` submission
 profile, LOW RADV queue priority, one server slot, one CPU orchestration
-thread at nice 19, a loopback binding, and tools disabled.
+thread at nice 19, a loopback binding, and tools disabled. Router mode serves
+every production and candidate row behind one listener and loads one child at a
+time, so the profile above names the default the picker opens on.
+
+## Graded quality
+
+`remote/run-quality-roster.sh` grades every servable row against the same 55 rows
+in one sweep, thinking off, 1024-token budget.
+`evidence/model-admission/roster-quality-sweep.md` holds the method and the
+per-category table.
+
+| Checkpoint | passed | correct on completed | class |
+| --- | ---: | ---: | --- |
+| Qwen3.5-4B base Q4_K_M | 47/55 | 0.855 | measured |
+| Qwen3.8-4B Distill Q4_K_M | 47/55 | 0.855 | measured |
+| LFM2.5-VL-1.6B Q4_K_M | 43/55 | 0.782 | measured |
+| Qwen3.5-2B Q4_K_M | 41/55 | 0.745 | measured |
+| Qwen3.8-2B Distill Q4_K_M | 41/55 | 0.755 | measured |
+| Qwen3.5-0.8B Q8_0 | 33/55 | 0.600 | measured |
+
+A one-row or two-row difference reports position in a request sequence rather
+than capability: prepending five rows moves both 2B checkpoints up one
+arithmetic row, deterministically.
 
 ## Throughput
 

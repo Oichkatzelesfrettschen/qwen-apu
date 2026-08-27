@@ -321,14 +321,20 @@ and name `QWEN_MMPROJ` as the way to choose, since resolving two projectors by
 sort order is the mismatch the pairing exists to prevent.
 
 `empero-ai/Qwen3.8-4B-Distill` distills into the Qwen3.5-4B architecture, so
-the pinned build loads it unchanged. It is the text default: it reasons in
-43.3% of the base model's tokens, reaches an answer 2.71 times faster across
-the five-prompt suite, and its chat template still gates `<think>` on
+the pinned build loads it unchanged. It reasons in 43.3% of the base model's
+tokens, reaches an answer 2.71 times faster across the five-prompt suite, and
+its chat template still gates `<think>` on
 `chat_template_kwargs.enable_thinking`. It ships text-only, so the vision
 profile selects the base checkpoint with its revision-matched projector.
-Local math accuracy against the base is untested, and the publisher reports a
-gsm8k_cot fall from 0.850 to 0.785 alongside an mmlu CoT rise from 0.354 to
-0.553.
+The publisher reports a gsm8k_cot fall from 0.850 to 0.785 alongside an mmlu CoT
+rise from 0.354 to 0.553.
+
+The distill's advantage over the base is throughput alone.
+`evidence/model-admission/roster-quality-sweep.md` grades both at 47 of 55 with
+thinking off, at the same 0.855 correct-on-completed, and within one row in every
+category. The five-prompt screen that separated them at 5/5 against 4/5 scored
+the base's one failure as an empty answer after 2048 predicted tokens of
+reasoning, which is the termination failure thinking off removes.
 
 `empero-ai/Qwen3.8-2B-Distill` is the same architecture at 24 layers and
 2048/6144, and it decodes above the 4B in every arm that measured both. It
@@ -389,6 +395,18 @@ breaches.
 `evidence/SHA256SUMS` and `ARTIFACTS.md` fix the retention class of every
 surface. Git copies replace the private hostname with `qwen-laptop`, the home
 prefix with `$HOME`, and MAC addresses with `<mac>`.
+
+A graded result is conditioned on the request sequence that produced it. Three
+repeats of the ten arithmetic rows reproduce exactly, so greedy decoding on this
+backend is deterministic within a fixed sequence; prepending the five `screen`
+rows moves both 2B checkpoints up one row, deterministically and in the same
+direction, and `arith-05` answers 37 cold and 23 warm. Prefix reuse is excluded,
+because every arithmetic row reports the same `prompt_n` in all three conditions,
+and one unrelated 300-token predecessor does not reproduce it. The mechanism is
+unisolated and recorded as an effect. The measurement consequence stands on its
+own: a one-row or two-row difference between two checkpoints reports position in
+a sequence rather than capability, and a quality comparison is read inside one
+sweep for the same reason a rate comparison is.
 
 `evidence/research-claim-methodology.md` defines the article-facing claim
 record, architecture authorities, missing-data semantics, experimental design,
