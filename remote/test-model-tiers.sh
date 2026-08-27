@@ -374,18 +374,23 @@ fixture_quarantine=$work/quarantine-fixture.tsv
 fixture_reasons=$work/quarantine-fixture-reasons
 fixture_model_root=$work/quarantine-fixture-models
 fixture_presets=$work/quarantine-fixture.ini
-mkdir -p "$fixture_reasons" "$fixture_model_root/Hidden" "$fixture_model_root/Profile"
+mkdir -p "$fixture_reasons" "$fixture_model_root/Hidden" \
+    "$fixture_model_root/Profile" "$fixture_model_root/Archived"
 : >"$fixture_model_root/Hidden/model.gguf"
 : >"$fixture_model_root/Profile/model.gguf"
+: >"$fixture_model_root/Archived/model.gguf"
 : >"$fixture_reasons/hidden-record.md"
 : >"$fixture_reasons/profile-record.md"
+: >"$fixture_reasons/archived-record.md"
 printf '%s\n' \
     'hidden-model	fixture	Hidden/model.gguf	fetch.sh	8192	8192	8192	q8_0	q4_0	on	none	-	-	-	untested	production	128	32	-	-' \
     'profile-model	fixture	Profile/model.gguf	fetch.sh	8192	8192	8192	q8_0	q4_0	on	none	-	-	-	untested	production	128	32	-	-' \
+    'archived-model	fixture	Archived/model.gguf	fetch.sh	8192	8192	8192	q8_0	q4_0	on	none	-	-	-	untested	archive	128	32	-	-' \
     >"$fixture_registry"
 printf '%s\n' \
     'hidden-record	model	hidden-model	device-lost	-	-	-	-	-	-	-	-	evidence/quarantine/hidden-record.md	any' \
     'profile-record	profile	profile-model	ring-timeout-only	8192	128	32	q8_0	q4_0	on	-	-	evidence/quarantine/profile-record.md	router-child' \
+    'archived-record	model	archived-model	device-lost	-	-	-	-	-	-	-	-	evidence/quarantine/archived-record.md	any' \
     >"$fixture_quarantine"
 QWEN_MODEL_REGISTRY=$fixture_registry QWEN_MODEL_ROOT=$fixture_model_root \
 QWEN_QUARANTINE_REGISTRY=$fixture_quarantine \
@@ -417,6 +422,7 @@ profile_tags=$(awk -F' = ' '
 ' "$fixture_presets")
 if [ "$fixture_sections" = "$(printf '%s\n' hidden-model profile-model)" ] &&
    grep -qx '# qwen_router_include_quarantine=1' "$fixture_presets" &&
+   [ ! -L "$fixture_model_root/quarantine/Archived" ] &&
    [ "$hidden_tags" = quarantine,fixture ] &&
    [ "$profile_tags" = quarantine,fixture ]; then
     report quarantine_registry_override accepted

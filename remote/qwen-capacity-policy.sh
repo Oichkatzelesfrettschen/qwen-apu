@@ -100,6 +100,19 @@ validate_router_preset_tuples() {
                 rejected = 1
                 return
             }
+            if (registry_tier[section] != "production" &&
+                registry_tier[section] != "candidate" &&
+                registry_tier[section] != "quarantine") {
+                printf "router preset section %s has non-servable registry tier %s\n", \
+                    section, registry_tier[section] > "/dev/stderr"
+                rejected = 1
+            }
+            if (registry_tier[section] == "quarantine" &&
+                (include_quarantine != 1 || !quarantined_models[section])) {
+                printf "router preset section %s lacks an admitted model quarantine override\n", \
+                    section > "/dev/stderr"
+                rejected = 1
+            }
             expected_model = model_root "/" registry_model[section]
             if (model_count == 1 && model_value != expected_model) {
                 reject_registry_value("LLAMA_ARG_MODEL", model_value,
@@ -164,6 +177,7 @@ validate_router_preset_tuples() {
             registry_cache_k[$1] = $8
             registry_cache_v[$1] = $9
             registry_flash[$1] = $10
+            registry_tier[$1] = $16
             registry_batch[$1] = $17
             registry_ubatch[$1] = $18
             next
@@ -461,12 +475,40 @@ router_presets=${QWEN_ROUTER_PRESETS:-"${HOME:?}/qwen-webui-state/router-presets
 router_registry=${QWEN_MODEL_REGISTRY:-"$script_directory/models.tsv"}
 router_model_root=${QWEN_MODEL_ROOT:-"${HOME:?}/models"}
 router_max=${QWEN_ROUTER_MAX:-1}
+router_preset_expected_sha256=${QWEN_ROUTER_PRESET_SHA256:-}
+verify_router_preset_identity() {
+    if [ -z "$router_preset_expected_sha256" ]; then
+        return 0
+    fi
+    if [ "${#router_preset_expected_sha256}" -ne 64 ]; then
+        printf 'router preset SHA-256 must hold 64 lowercase hexadecimal characters\n' >&2
+        return 1
+    fi
+    case $router_preset_expected_sha256 in
+        *[!0-9a-f]*)
+            printf 'router preset SHA-256 must hold 64 lowercase hexadecimal characters\n' >&2
+            return 1
+            ;;
+    esac
+    if ! router_preset_identity=$(sha256sum "$router_presets"); then
+        printf 'router preset identity cannot be measured: %s\n' \
+            "$router_presets" >&2
+        return 1
+    fi
+    router_preset_actual_sha256=${router_preset_identity%% *}
+    if [ "$router_preset_actual_sha256" != "$router_preset_expected_sha256" ]; then
+        printf 'router preset identity changed: expected %s, measured %s\n' \
+            "$router_preset_expected_sha256" "$router_preset_actual_sha256" >&2
+        return 1
+    fi
+}
 if [ "$router_enabled" = 1 ]; then
     if [ ! -r "$router_presets" ]; then
         printf 'router presets are unreadable: %s\n' "$router_presets" >&2
         printf 'generate them with remote/build-router-presets.sh\n' >&2
         exit 2
     fi
+    verify_router_preset_identity || exit 2
     if [ ! -r "$router_registry" ]; then
         printf 'router model registry is unreadable: %s\n' "$router_registry" >&2
         exit 2
@@ -695,6 +737,13 @@ if [ "$router_enabled" != 1 ]; then
         --flash-attn "$flash_attention" \
         --cache-type-k "$cache_type_k" \
         --cache-type-v "$cache_type_v"
+fi
+
+# The launcher hashes its immutable-per-session snapshot before preflight. A
+# second measurement at the exec boundary binds the validated rows and marker
+# to the exact file llama-server opens.
+if [ "$router_enabled" = 1 ]; then
+    verify_router_preset_identity || exit 2
 fi
 
 exec "$script_directory/radv-low-priority-env.sh" "$@"

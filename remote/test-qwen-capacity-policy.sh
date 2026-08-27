@@ -617,6 +617,50 @@ fi
 grep -F "router preset section fabricated carries LLAMA_ARG_MODEL $alternate_model_path, registry admits $router_model_root/fabricated.gguf" \
     "$temporary_directory/repointed-router.stderr" >/dev/null
 
+# Registry tier changes invalidate persisted sections even when every runtime
+# tuple field still matches. Archive and rejected rows never reach a generated
+# router preset.
+archived_registry=$temporary_directory/archived-models.tsv
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    fabricated research fabricated.gguf download-qwen38-4b-distill-q4km.sh \
+    4096 8192 8192 q5_1 iq4_nl auto none - - - untested archive 256 64 4096 - \
+    >"$archived_registry"
+if QWEN_MODEL_REGISTRY=$archived_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$router_output \
+    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$router_presets \
+    "$policy" "$fake_server" "$registry_model" 4096 18080 \
+    >"$temporary_directory/archived-router.stdout" \
+    2>"$temporary_directory/archived-router.stderr"; then
+    printf 'router accepted a persisted section after archival\n' >&2
+    exit 1
+fi
+grep -F 'router preset section fabricated has non-servable registry tier archive' \
+    "$temporary_directory/archived-router.stderr" >/dev/null
+
+# A quarantine tier requires both the durable override and model-scope
+# router-child authority. The marker alone cannot manufacture that authority.
+quarantine_tier_registry=$temporary_directory/quarantine-tier-models.tsv
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    fabricated research fabricated.gguf download-qwen38-4b-distill-q4km.sh \
+    4096 8192 8192 q5_1 iq4_nl auto none - - - untested quarantine 256 64 4096 - \
+    >"$quarantine_tier_registry"
+unowned_quarantine_preset=$temporary_directory/unowned-quarantine-tier.ini
+printf '%s\n' '# qwen_router_include_quarantine=1' \
+    >"$unowned_quarantine_preset"
+append_complete_router_section "$unowned_quarantine_preset"
+if QWEN_MODEL_REGISTRY=$quarantine_tier_registry \
+    QWEN_MODEL_ROOT=$router_model_root QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS=$unowned_quarantine_preset \
+    "$policy" "$fake_server" "$registry_model" 4096 18080 \
+    >"$temporary_directory/unowned-quarantine-tier.stdout" \
+    2>"$temporary_directory/unowned-quarantine-tier.stderr"; then
+    printf 'router accepted a quarantine tier without model authority\n' >&2
+    exit 1
+fi
+grep -F 'router preset section fabricated lacks an admitted model quarantine override' \
+    "$temporary_directory/unowned-quarantine-tier.stderr" >/dev/null
+
 case $router_arguments in
     *'--model '*)
         printf 'router mode still passed a single model: %s\n' \
@@ -673,6 +717,22 @@ if QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$router_output \
     exit 1
 fi
 grep -F 'router presets are unreadable' "$temporary_directory/router.stderr" >/dev/null
+
+# A launcher-bound snapshot carries the digest measured before memory preflight.
+# Any mutation before the server exec boundary invalidates the launch.
+wrong_router_preset_sha256=0000000000000000000000000000000000000000000000000000000000000000
+if QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$router_output \
+    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$router_presets \
+    QWEN_ROUTER_PRESET_SHA256=$wrong_router_preset_sha256 \
+    "$policy" "$fake_server" "$registry_model" 4096 18080 \
+    >"$temporary_directory/router-identity.stdout" \
+    2>"$temporary_directory/router-identity.stderr"; then
+    printf 'policy accepted a router preset with the wrong identity\n' >&2
+    exit 1
+fi
+grep -F 'router preset identity changed:' \
+    "$temporary_directory/router-identity.stderr" >/dev/null
 
 # A generated preset carries its quarantine override after the generation
 # environment is gone. The launch derives loopback isolation from that durable

@@ -161,8 +161,10 @@ refuses the tuple on the single-model path, where the policy builds the argv the
 server runs. `build-router-presets.sh` filters router-child rows while generating
 the child geometry, and `test-model-tiers.sh` checks that generation. Router
 startup queries the same quarantine authority and rejects a persisted section
-that a later model- or profile-scope row excludes. The marked research override
-admits that section and forces the listener to loopback.
+that a later model- or profile-scope row excludes. It also rejects sections
+whose registry tier moves to `archive` or `rejected`, and a `quarantine` tier
+requires model-scope authority. The marked research override admits authorized
+quarantine sections and forces the listener to loopback.
 
 Router mode leaves depth, cache triple, and submission geometry off its own
 argv. `server-models.cpp` ends its preset assembly with
@@ -174,13 +176,21 @@ llama.cpp defaults of batch 2048 and ubatch 512, which is the quarantined
 geometry.
 
 Router startup still selects the largest installed servable GGUF as the
-resident-memory preflight subject. That path sizes weight headroom only. Its
-standalone context ceiling never constrains the listener, because each preset
-section supplies its own complete tuple. The capacity policy resolves the
-section ID and model path to one registry row and requires the section's
-context, cache K/V, Flash Attention, batch, and ubatch values to equal that row
-before launch. The launcher's positive context argument remains a control-path
-input but never reaches the router argv.
+resident-memory preflight subject. The launcher copies the source preset to a
+unique active-session snapshot, reads every section's model path from that
+snapshot, and sizes against the largest installed path. Normal and research
+presets therefore use the exact set they can launch rather than separate
+registry enumerations. The launcher records the snapshot SHA-256 and forwards
+both path and digest across the tmux boundary. The capacity policy verifies that
+identity before tuple validation and again at the server exec boundary, so
+preset or authority changes cannot widen the launched set after preflight. That
+path sizes weight headroom only. Its standalone context ceiling never
+constrains the listener, because each preset section supplies its own complete
+tuple. The capacity policy resolves the section ID and model path to one
+registry row and requires the section's context, cache K/V, Flash Attention,
+batch, and ubatch values to equal that row before launch. The launcher's
+positive context argument remains a control-path input but never reaches the
+router argv.
 
 The repository fallback Web UI treats `GET /v1/models` as the request-model
 authority and sends only a returned id for chat completion and attachment

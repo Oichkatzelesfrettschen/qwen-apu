@@ -138,6 +138,16 @@ while IFS='	' read -r id role model_file _fetch_script context_default \
         exit 1
     fi
 
+    # Archive and rejected rows stay outside every preset even when a retained
+    # model-scope quarantine record also names them. The research override
+    # exposes quarantined serving candidates; it never reverses archival.
+    case $tier in
+        archive | rejected)
+            skipped_unlisted=$((skipped_unlisted + 1))
+            continue
+            ;;
+    esac
+
     model_quarantine_row=$(printf '%s\n' "$quarantine_rows" |
         awk -F'\t' -v subject="$id" '$2 == "model" && $3 == subject { print; exit }')
     profile_quarantine_row=$(printf '%s\n' "$quarantine_rows" |
@@ -166,13 +176,6 @@ while IFS='	' read -r id role model_file _fetch_script context_default \
         preset_tier=quarantine
         quarantine_row=$profile_quarantine_row
     fi
-
-    case $effective_tier in
-        archive | rejected)
-            skipped_unlisted=$((skipped_unlisted + 1))
-            continue
-            ;;
-    esac
 
     model_path=$model_root/$model_file
     if [ ! -f "$model_path" ]; then

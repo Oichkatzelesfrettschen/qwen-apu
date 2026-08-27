@@ -25,28 +25,118 @@ if pgrep -x llama-server >/dev/null 2>&1; then
 fi
 
 model_path=${QWEN_MODEL_PATH:-"${HOME:?}/models/Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf"}
+router_snapshot_owned=''
+cleanup_router_snapshot() {
+    if [ -n "$router_snapshot_owned" ]; then
+        rm -f -- "$router_snapshot_owned"
+    fi
+}
+
+# Snapshot the exact router preset before deriving the preflight denominator.
+# Generation replaces the source file independently; the session receives the
+# snapshot path and digest so a later source replacement cannot widen the model
+# set after sizing completes.
+if [ "${QWEN_ROUTER:-0}" = 1 ]; then
+    source_router_presets=${QWEN_ROUTER_PRESETS:-"$state_directory/router-presets.ini"}
+    if [ ! -r "$source_router_presets" ]; then
+        printf 'router presets are unreadable: %s\n' "$source_router_presets" >&2
+        exit 2
+    fi
+    mkdir -p "$state_directory"
+    router_presets=$(mktemp \
+        "$state_directory/.router-presets.active.XXXXXX")
+    router_snapshot_owned=$router_presets
+    trap cleanup_router_snapshot EXIT HUP INT TERM
+    cp -- "$source_router_presets" "$router_presets"
+    chmod 600 "$router_presets"
+    router_preset_identity=$(sha256sum "$router_presets")
+    router_preset_sha256=${router_preset_identity%% *}
+    QWEN_ROUTER_PRESETS=$router_presets
+    QWEN_ROUTER_PRESET_SHA256=$router_preset_sha256
+    export QWEN_ROUTER_PRESETS QWEN_ROUTER_PRESET_SHA256
+fi
 
 # Router mode sizes the machine against the largest checkpoint the picker can
 # reach rather than against the one this launch names. `--models-max 1` unloads
 # the resident model before loading the next, so any servable row can be the one
 # holding the device, and a preflight run against the smallest of them reports
-# headroom for a load that never happens. The named path still selects the
-# projector and resolves the fetch, which is why it is replaced here rather than
-# ignored.
-if [ "${QWEN_ROUTER:-0}" = 1 ] && [ -z "${QWEN_MODEL_PATH:-}" ]; then
-    model_root=${QWEN_MODEL_ROOT:-"${HOME:?}/models"}
+# headroom for a load that never happens. Router presets carry their own model
+# and projector paths, so the largest registry subject replaces any explicit
+# single-model path for fetch and preflight.
+if [ "${QWEN_ROUTER:-0}" = 1 ]; then
     largest_servable=''
     largest_bytes=0
-    servable_files=$("$script_directory/model-registry.sh" servable-files)
-    for servable_file in $servable_files; do
-        servable_path=$model_root/$servable_file
-        [ -f "$servable_path" ] || continue
-        servable_bytes=$(stat -c %s "$servable_path" 2>/dev/null) || continue
+    preset_model_paths=$(awk '
+        function finish_section() {
+            if (section == "" || section == "*") return
+            model_sections++
+            if (model_count != 1) {
+                printf "router preflight section %s requires exactly one LLAMA_ARG_MODEL, found %d\n", \
+                    section, model_count > "/dev/stderr"
+                invalid = 1
+            } else {
+                print model_path
+            }
+        }
+        /^[[:space:]]*($|[#;])/ { next }
+        /^[[:space:]]*\[/ {
+            finish_section()
+            section = $0
+            if (section !~ /^[[:space:]]*\[[^]]+\][[:space:]]*$/) {
+                printf "router preflight carries malformed section header: %s\n", \
+                    section > "/dev/stderr"
+                invalid = 1
+                section = ""
+                model_count = 0
+                model_path = ""
+                next
+            }
+            sub(/^[[:space:]]*\[/, "", section)
+            sub(/\][[:space:]]*$/, "", section)
+            model_count = 0
+            model_path = ""
+            next
+        }
+        {
+            if (section == "" || section == "*") next
+            separator = index($0, "=")
+            if (separator == 0) next
+            key = substr($0, 1, separator - 1)
+            value = substr($0, separator + 1)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+            if (key == "LLAMA_ARG_MODEL") {
+                model_count++
+                model_path = value
+            }
+        }
+        END {
+            finish_section()
+            if (model_sections == 0) {
+                print "router preflight carries no model section" > "/dev/stderr"
+                invalid = 1
+            }
+            exit invalid
+        }
+    ' "$router_presets")
+    while IFS= read -r servable_path; do
+        if [ -z "$servable_path" ] || [ ! -f "$servable_path" ]; then
+            printf 'router preflight model is not a regular file: %s\n' \
+                "$servable_path" >&2
+            exit 1
+        fi
+        if ! servable_bytes=$(stat -c %s "$servable_path" 2>/dev/null); then
+            printf 'router preflight cannot measure model bytes: %s\n' \
+                "$servable_path" >&2
+            exit 1
+        fi
         if [ "$servable_bytes" -gt "$largest_bytes" ]; then
             largest_bytes=$servable_bytes
             largest_servable=$servable_path
         fi
-    done
+    done <<EOF
+$preset_model_paths
+EOF
     if [ -n "$largest_servable" ]; then
         printf 'router_preflight_subject=%s bytes=%s\n' \
             "$(basename -- "$largest_servable")" "$largest_bytes"
@@ -122,6 +212,7 @@ fi
 QWEN_BIND_HOST=$bind_host QWEN_SERVER_PORT=$server_port \
 QWEN_MODEL_PATH=$model_path QWEN_MMPROJ=$mmproj \
     "$control" start "$profile"
+router_snapshot_owned=''
 
 attempt=0
 while [ "$attempt" -lt "$ready_attempts" ]; do
