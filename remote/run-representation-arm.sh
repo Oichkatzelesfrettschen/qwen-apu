@@ -17,7 +17,9 @@ set -eu
 if [ "$#" -lt 3 ] || [ "$#" -gt 4 ]; then
     printf 'usage: %s LABEL CONTROL_MODEL SUBJECT_MODEL [OUTPUT_DIRECTORY]\n' "$0" >&2
     printf 'environment: QWEN_LLAMA_BENCH QWEN_CLOCK_SAMPLER QWEN_ARM_REPEATS\n' >&2
-    printf '             QWEN_BENCH_PROMPT QWEN_BENCH_GENERATE QWEN_COOLDOWN_SECONDS\n' >&2
+    printf '             QWEN_BENCH_PROMPT QWEN_BENCH_GENERATE QWEN_COOLDOWN_SECONDS
+' >&2
+    printf '             QWEN_SAMPLE_INTERVAL_SECONDS\n' >&2
     exit 2
 fi
 
@@ -33,6 +35,7 @@ arm_repeats=${QWEN_ARM_REPEATS:-3}
 prompt_tokens=${QWEN_BENCH_PROMPT:-512}
 generate_tokens=${QWEN_BENCH_GENERATE:-64}
 cooldown_seconds=${QWEN_COOLDOWN_SECONDS:-90}
+sample_interval_seconds=${QWEN_SAMPLE_INTERVAL_SECONDS:-2}
 
 for required_file in "$bench" "$cli"; do
     if [ ! -x "$required_file" ]; then
@@ -56,7 +59,7 @@ fi
 
 mkdir -p "$output_directory"
 summary=$output_directory/representation-summary.tsv
-printf 'position\trole\tmodel\tstreamed_bytes\tprefill_tok_s\tdecode_tok_s\twall_seconds\tmclk_mhz_modal\tsclk_mhz_max\ttemp_c_max\n' \
+printf 'position\trole\tmodel\tstreamed_bytes\tprefill_tok_s\tdecode_tok_s\twall_seconds\tmclk_mhz_modal\tsclk_mhz_max\ttemp_c_max\tvram_bytes_max\tgtt_bytes_max\n' \
     >"$summary"
 
 sampler_pid=''
@@ -99,58 +102,92 @@ run_arm() {
     arm_model=$3
     arm_stem=$output_directory/$(printf '%02d' "$arm_position")-$arm_role
     arm_clocks=$arm_stem-clocks.tsv
-    arm_log=$arm_stem-bench.txt
+    arm_log=$arm_stem-bench.csv
+    arm_diagnostics=$arm_stem-bench.log
 
-    "$clock_sampler" "$arm_clocks" 100000 >/dev/null 2>&1 &
+    # The sampler's second argument is the interval between rows, so a large
+    # value writes one row and sleeps rather than running for that long.
+    "$clock_sampler" "$arm_clocks" "$sample_interval_seconds" >/dev/null 2>&1 &
     sampler_pid=$!
 
     arm_started=$(date +%s)
+    # The CSV goes to its own file. llama-bench writes the loader's key-value
+    # dump to stderr, and a merged stream puts comma-bearing log lines ahead of
+    # the header, which a reader that takes the first comma-bearing line adopts
+    # as the header instead.
     nice -n 19 "$bench" --model "$arm_model" -ngl 99 -t 2 \
-        -r "$arm_repeats" -p "$prompt_tokens" -n "$generate_tokens" \
-        -b 128 -ub 32 -fa 1 -ctk q8_0 -ctv q4_0 -o csv \
-        >"$arm_log" 2>&1 || {
+        -ot '.*=Vulkan0' -r "$arm_repeats" -p "$prompt_tokens" \
+        -n "$generate_tokens" -b 128 -ub 32 -fa on -ctk q8_0 -ctv q4_0 \
+        -o csv >"$arm_log" 2>"$arm_diagnostics" || {
             printf 'bench arm failed: position %s role %s\n' \
                 "$arm_position" "$arm_role" >&2
-            cat "$arm_log" >&2
+            tail -20 "$arm_diagnostics" >&2
             stop_sampler
             return 1
         }
     arm_wall=$(( $(date +%s) - arm_started ))
     stop_sampler
 
-    # llama-bench csv names its columns, so the rate is read by header rather
-    # than by column position, which moves between builds.
+    # The pre-check proves strict placement is reachable; this proves the arm
+    # that produced the rate took it. A weight tensor left on the CPU backend
+    # makes the ratio a placement measurement rather than a format one, and the
+    # 0.8B keeps 34% of its streamed bytes in one tied embedding tensor.
+    if grep -q 'CPU buffer size' "$arm_diagnostics"; then
+        printf 'arm placed tensors on the CPU backend: position %s role %s\n' \
+            "$arm_position" "$arm_role" >&2
+        grep -F 'buffer size' "$arm_diagnostics" >&2
+        return 1
+    fi
+
+    # The header is found by the column it must contain rather than by being the
+    # first line with a comma, so a diagnostic line cannot stand in for it.
     arm_rates=$(python3 - "$arm_log" <<'PYTHON'
 import csv
 import sys
 
+with open(sys.argv[1]) as handle:
+    lines = handle.read().splitlines()
+start = next((i for i, line in enumerate(lines) if "avg_ts" in line), None)
+if start is None:
+    print("-\t-")
+    raise SystemExit(0)
+
 prefill = decode = "-"
-with open(sys.argv[1], newline="") as handle:
-    for row in csv.DictReader(line for line in handle if "," in line):
-        name = (row.get("n_prompt") or "0", row.get("n_gen") or "0")
-        rate = row.get("avg_ts") or row.get("t/s") or ""
-        if name[0] != "0" and name[1] == "0":
-            prefill = f"{float(rate):.2f}"
-        elif name[1] != "0":
-            decode = f"{float(rate):.2f}"
+for row in csv.DictReader(lines[start:]):
+    rate = row.get("avg_ts") or ""
+    n_prompt = (row.get("n_prompt") or "0").strip()
+    n_gen = (row.get("n_gen") or "0").strip()
+    if not rate:
+        continue
+    if n_prompt != "0" and n_gen == "0":
+        prefill = f"{float(rate):.2f}"
+    elif n_gen != "0":
+        decode = f"{float(rate):.2f}"
 print(f"{prefill}\t{decode}")
 PYTHON
 )
 
-    arm_clock_summary=$(awk -F'\t' 'NR > 1 {
-            mclk[$3]++; if ($4 + 0 > sclk) { sclk = $4 + 0 }
-            if ($5 + 0 > temp) { temp = $5 + 0 }
-        }
+    # sample-gpu-clocks.sh writes no header and six columns: memory clock,
+    # shader clock, temperature in millidegrees, load average, VRAM bytes, and
+    # GTT bytes. Rows carrying `unavailable` are skipped per column rather than
+    # per row, because one absent sysfs node leaves the others readable.
+    arm_device_summary=$(awk -F'\t' '
+        $1 ~ /^[0-9]+$/ { mclk[$1]++ }
+        $2 ~ /^[0-9]+$/ { if ($2 + 0 > sclk) { sclk = $2 + 0 } }
+        $3 ~ /^[0-9]+$/ { if ($3 + 0 > temp) { temp = $3 + 0 } }
+        $5 ~ /^[0-9]+$/ { if ($5 + 0 > vram) { vram = $5 + 0 } }
+        $6 ~ /^[0-9]+$/ { if ($6 + 0 > gtt) { gtt = $6 + 0 } }
         END {
             modal = "-"; best = 0
             for (value in mclk) { if (mclk[value] > best) { best = mclk[value]; modal = value } }
-            printf "%s\t%s\t%s", modal, (sclk ? sclk : "-"), (temp ? temp : "-")
-        }' "$arm_clocks" 2>/dev/null || printf -- '-\t-\t-')
+            printf "%s\t%s\t%s\t%s\t%s", modal, (sclk ? sclk : "-"),
+                (temp ? temp / 1000 : "-"), (vram ? vram : "-"), (gtt ? gtt : "-")
+        }' "$arm_clocks" 2>/dev/null || printf -- '-\t-\t-\t-\t-')
 
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$arm_position" "$arm_role" "$(basename "$arm_model")" \
         "$(streamed_bytes_of "$arm_model")" "$arm_rates" "$arm_wall" \
-        "$arm_clock_summary" >>"$summary"
+        "$arm_device_summary" >>"$summary"
     printf 'position=%s role=%s prefill=%s decode=%s wall=%ss\n' \
         "$arm_position" "$arm_role" \
         "$(printf '%s' "$arm_rates" | cut -f1)" \

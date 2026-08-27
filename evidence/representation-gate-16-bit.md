@@ -38,9 +38,9 @@ prediction uses the checkpoint's own point rather than one device constant.
 
 The arm is `remote/run-representation-arm.sh`, which runs control, subject,
 subject, control through `llama-bench` at `-ngl 99 -t 2 -r 3 -p 512 -n 64 -b 128
--ub 32 -fa 1 -ctk q8_0 -ctv q4_0`, samples GPU clocks across every arm, and
-proves strict Vulkan placement for both representations before any rate is
-taken. The ratio is read from the paired means, because the same checkpoint
+-ub 32 -fa on -ctk q8_0 -ctv q4_0 -ot '.*=Vulkan0'`, samples clocks, temperature,
+and VRAM and GTT occupancy across every arm, and refuses any arm whose own
+diagnostics name a CPU buffer. The ratio is read from the paired means, because the same checkpoint
 under identical flags spans up to 30.6% between sweeps in this tree and an
 absolute band built across sweeps measures the sweep.
 
@@ -55,13 +55,18 @@ absolute band built across sweeps measures the sweep.
    measures plus room for a format-trunk change. This is the arm whose outcome
    the fit leaves open: it straddles the floor rather than clearing or missing
    it. Falsified by a rate outside the band.
-4. F16 achieves at least the GiB tok/s its K-quant control achieves, because an
-   F16 weight is read and used where a K-quant weight is read and unpacked.
-   Falsified by F16 achieving less, which would place the cost in the wider
-   memory footprint rather than in the arithmetic.
+4. F16 achieves at least the GiB tok/s its own control achieves, because an F16
+   weight is read and used where a quantized weight is read and unpacked. The 2B
+   control is Q4_K_M and the 0.8B control is Q8_0, so the comparison is against
+   each arm's own control rather than against one quantization family. Falsified
+   by F16 achieving less, which would place the cost in the wider memory
+   footprint rather than in the arithmetic.
 5. Strict Vulkan placement passes for F16 on both checkpoints. Falsified by a
-   `CPU buffer size` line in the one-token placement check, which would make
-   every rate below a hybrid measurement rather than a device one.
+   `CPU buffer size` line in either the one-token pre-check or an arm's own
+   diagnostics, which would make that rate a hybrid measurement rather than a
+   device one. The per-arm check is what the ratio rests on: a pre-check proves
+   placement is reachable rather than taken, and the 0.8B carries 34% of its
+   streamed bytes in one tied embedding tensor.
 
 ## What this gate decides
 

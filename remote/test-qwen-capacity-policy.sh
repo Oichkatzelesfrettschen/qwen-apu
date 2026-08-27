@@ -153,7 +153,8 @@ grep -F 'context size exceeds the admitted ceiling for this cache policy: 4097 >
 fabricated_registry=$temporary_directory/models.tsv
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     fabricated research fabricated.gguf download-qwen38-4b-distill-q4km.sh \
-    4096 8192 8192 q5_1 iq4_nl auto none - - - untested candidate 256 64 4096 - unmeasured refused \
+    4096 8192 8192 q5_1 iq4_nl auto none - - - untested candidate 256 64 4096 - \
+    unmeasured refused \
     >"$fabricated_registry"
 registry_model=$temporary_directory/fabricated.gguf
 : >"$registry_model"
@@ -928,7 +929,8 @@ grep -F 'generated router presets omit quarantine provenance' \
 quarantine_registry=$temporary_directory/quarantine-models.tsv
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     quarantined research quarantined.gguf download-qwen38-4b-distill-q4km.sh \
-    4096 16384 16384 q8_0 q4_0 on none - - - untested production 2048 512 4096 - unmeasured refused \
+    4096 16384 16384 q8_0 q4_0 on none - - - untested production 2048 512 4096 - \
+    unmeasured refused \
     >"$quarantine_registry"
 quarantine_table=$temporary_directory/quarantine.tsv
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
