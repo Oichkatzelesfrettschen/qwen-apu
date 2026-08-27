@@ -67,32 +67,37 @@ if [ "$#" -ge 1 ] && [ "$#" -le 2 ]; then
                 "$quarantine_registry" >&2
             exit 1
         fi
-        case $quarantine_query in
-            quarantine-subjects)
-                awk -F'\t' -v mode="$quarantine_runtime_mode" '
-                    /^#/ { next }
-                    NF < 14 { next }
-                    $2 == "model" && (mode == "" || $14 == "any" || $14 == mode) {
-                        print $3
-                    }' "$quarantine_registry"
-                ;;
-            quarantine-profiles)
-                awk -F'\t' -v mode="$quarantine_runtime_mode" '
-                    /^#/ { next }
-                    NF < 14 { next }
-                    $2 == "profile" && (mode == "" || $14 == "any" || $14 == mode) {
-                        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", \
-                            $3, $5, $6, $7, $8, $9, $10
-                    }' "$quarantine_registry"
-                ;;
-            quarantine-rows)
-                awk -F'\t' -v mode="$quarantine_runtime_mode" '
-                    /^#/ { next }
-                    NF < 14 { next }
-                    mode == "" || $14 == "any" || $14 == mode { print }' \
-                    "$quarantine_registry"
-                ;;
-        esac
+        awk -F'\t' -v mode="$quarantine_runtime_mode" \
+            -v query="$quarantine_query" '
+            $0 ~ /^#/ || $0 ~ /^[[:space:]]*$/ { next }
+            NF != 14 {
+                printf "quarantine row %d holds %d fields, expected 14\n", NR, NF \
+                    > "/dev/stderr"
+                invalid = 1
+                next
+            }
+            $2 != "model" && $2 != "profile" {
+                printf "quarantine row %d carries invalid scope %s\n", NR, $2 \
+                    > "/dev/stderr"
+                invalid = 1
+                next
+            }
+            $14 != "any" && $14 != "router-child" && $14 != "standalone" {
+                printf "quarantine row %d carries invalid runtime mode %s\n", \
+                    NR, $14 > "/dev/stderr"
+                invalid = 1
+                next
+            }
+            mode != "" && $14 != "any" && $14 != mode { next }
+            query == "quarantine-subjects" && $2 == "model" { print $3; next }
+            query == "quarantine-profiles" && $2 == "profile" {
+                printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", \
+                    $3, $5, $6, $7, $8, $9, $10
+                next
+            }
+            query == "quarantine-rows" { print }
+            END { exit invalid ? 1 : 0 }
+        ' "$quarantine_registry"
         exit 0
     fi
 fi
@@ -122,7 +127,14 @@ emit_servable_rows() {
                 invalid = 1
                 next
             }
-            if ($14 != "any" && $14 != "router-child") { next }
+            if ($14 != "any" && $14 != "router-child" &&
+                $14 != "standalone") {
+                printf "quarantine row %d carries invalid runtime mode %s\n", \
+                    FNR, $14 > "/dev/stderr"
+                invalid = 1
+                next
+            }
+            if ($14 == "standalone") { next }
             if ($2 == "model") {
                 quarantined_models[$3] = 1
             } else if ($2 == "profile") {

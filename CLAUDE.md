@@ -145,7 +145,8 @@ about it. `evidence/quarantine/` holds one reason record per row with its kernel
 signature, its validated safe tuples, and its re-entry gate.
 `model-registry.sh servable-ids` and `servable-files` apply the same
 router-child exclusions to the registry's default tuple, and an unreadable
-quarantine registry stops enumeration. A research override labels every
+or malformed quarantine registry stops router and standalone tuple
+construction. A research override labels every
 exposed excluded tuple `quarantine` and withholds the `default` tag.
 `QWEN_ROUTER_INCLUDE_QUARANTINE=1` exposes a quarantined checkpoint for research.
 The generated preset records that override, and `qwen-capacity-policy.sh`

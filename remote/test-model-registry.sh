@@ -262,6 +262,36 @@ else
     report absent_quarantine_blocks_queries rejected
 fi
 
+# A misspelled runtime mode is invalid safety data. It cannot mean that the row
+# applies to some other path, because that interpretation would re-admit the
+# model on every known path.
+invalid_runtime_quarantine=$work_directory/invalid-runtime-quarantine.tsv
+printf '%b\n' \
+    'invalid-runtime\tmodel\tmodel-blocked\tdevice-lost\t-\t-\t-\t-\t-\t-\t-\t-\tevidence/model.md\trouter-chlid' \
+    >"$invalid_runtime_quarantine"
+set +e
+QWEN_MODEL_REGISTRY=$fixture_registry \
+QWEN_QUARANTINE_REGISTRY=$invalid_runtime_quarantine \
+    "$reader" servable-ids >"$work_directory/invalid-runtime-servable.out" \
+    2>"$work_directory/invalid-runtime-servable.err"
+invalid_runtime_servable_status=$?
+QWEN_QUARANTINE_REGISTRY=$invalid_runtime_quarantine \
+    "$reader" quarantine-rows router-child \
+    >"$work_directory/invalid-runtime-query.out" \
+    2>"$work_directory/invalid-runtime-query.err"
+invalid_runtime_query_status=$?
+set -e
+if [ "$invalid_runtime_servable_status" -ne 0 ] &&
+   [ "$invalid_runtime_query_status" -ne 0 ] &&
+   grep -F 'invalid runtime mode router-chlid' \
+       "$work_directory/invalid-runtime-servable.err" >/dev/null &&
+   grep -F 'invalid runtime mode router-chlid' \
+       "$work_directory/invalid-runtime-query.err" >/dev/null; then
+    report invalid_quarantine_runtime_mode_refused accepted
+else
+    report invalid_quarantine_runtime_mode_refused rejected
+fi
+
 if [ "$failures" -eq 0 ]; then
     printf 'model_registry=accepted\n'
     exit 0

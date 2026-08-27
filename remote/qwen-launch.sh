@@ -37,7 +37,8 @@ if [ "${QWEN_ROUTER:-0}" = 1 ] && [ -z "${QWEN_MODEL_PATH:-}" ]; then
     model_root=${QWEN_MODEL_ROOT:-"${HOME:?}/models"}
     largest_servable=''
     largest_bytes=0
-    for servable_file in $("$script_directory/model-registry.sh" servable-files); do
+    servable_files=$("$script_directory/model-registry.sh" servable-files)
+    for servable_file in $servable_files; do
         servable_path=$model_root/$servable_file
         [ -f "$servable_path" ] || continue
         servable_bytes=$(stat -c %s "$servable_path" 2>/dev/null) || continue

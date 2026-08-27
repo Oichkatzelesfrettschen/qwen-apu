@@ -146,18 +146,38 @@ done <<EOF
 $multimodal_closure
 EOF
 
+# Resolve every smoke input before either device workload begins. A promotion
+# with one absent input is already invalid, so the gate reports that deterministic
+# boundary without spending device time or masking it behind another smoke.
+promotion_model=${QWEN_PROMOTION_MODEL:-"${HOME:?}/models/Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf"}
+promotion_vision_model=${QWEN_PROMOTION_VISION_MODEL:-"${HOME:?}/models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf"}
+promotion_image=${QWEN_PROMOTION_IMAGE:-$script_directory/quality-images/shapes.png}
+promotion_projector=''
+if [ -f "$promotion_vision_model" ]; then
+    promotion_projector=$("$script_directory/select-projector.sh" \
+        "$promotion_vision_model" 2>/dev/null) || promotion_projector=''
+fi
+if [ ! -f "$promotion_model" ]; then
+    printf 'promotion model is absent: %s\n' "$promotion_model" >&2
+    exit 1
+fi
+if [ ! -f "$promotion_vision_model" ] || [ ! -f "$promotion_projector" ] ||
+    [ ! -f "$promotion_image" ]; then
+    printf 'multimodal promotion inputs are incomplete: model=%s projector=%s image=%s\n' \
+        "$([ -f "$promotion_vision_model" ] && printf present || printf absent)" \
+        "$([ -f "$promotion_projector" ] && printf present || printf absent)" \
+        "$([ -f "$promotion_image" ] && printf present || printf absent)" >&2
+    exit 1
+fi
+
 "$server_path" --version >/dev/null 2>&1 || {
     printf 'llama-server does not report a version: %s\n' "$server_path" >&2
     exit 1
 }
 
-# One token, all layers on Vulkan, no CPU fallback admitted. A model is required
-# because the check is that the device path completes, not that the binary runs.
-promotion_model=${QWEN_PROMOTION_MODEL:-"${HOME:?}/models/Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf"}
-if [ ! -f "$promotion_model" ]; then
-    printf 'promotion model is absent: %s\n' "$promotion_model" >&2
-    exit 1
-fi
+# One token, all layers on Vulkan, no CPU fallback admitted. The model is
+# required because the check is that the device path completes, not that the
+# binary runs.
 strict_output=$(nice -n 19 "$client_path" \
     --model "$promotion_model" --device Vulkan0 --n-gpu-layers all \
     --override-tensor '.*=Vulkan0' --no-warmup --ctx-size 256 \
@@ -188,23 +208,6 @@ strict_state=passed
 # distill, which the registry lists as `projector: none`, so wiring the image
 # smoke to that variable would either fail on a text-only checkpoint or skip
 # without saying so.
-promotion_vision_model=${QWEN_PROMOTION_VISION_MODEL:-"${HOME:?}/models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf"}
-promotion_image=${QWEN_PROMOTION_IMAGE:-$script_directory/quality-images/shapes.png}
-promotion_projector=''
-if [ -f "$promotion_vision_model" ]; then
-    promotion_projector=$("$script_directory/select-projector.sh" \
-        "$promotion_vision_model" 2>/dev/null) || promotion_projector=''
-fi
-
-if [ ! -f "$promotion_vision_model" ] || [ ! -f "$promotion_projector" ] ||
-    [ ! -f "$promotion_image" ]; then
-    printf 'multimodal promotion inputs are incomplete: model=%s projector=%s image=%s\n' \
-        "$([ -f "$promotion_vision_model" ] && printf present || printf absent)" \
-        "$([ -f "$promotion_projector" ] && printf present || printf absent)" \
-        "$([ -f "$promotion_image" ] && printf present || printf absent)" >&2
-    exit 1
-fi
-
 multimodal_output=$(nice -n 19 "$multimodal_path" \
     --model "$promotion_vision_model" --mmproj "$promotion_projector" \
     --image "$promotion_image" --device Vulkan0 --n-gpu-layers all \

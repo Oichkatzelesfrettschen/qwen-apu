@@ -352,13 +352,18 @@ fi
 registry_id=$("$script_directory/model-registry.sh" path "$model_path" \
     id 2>/dev/null) || registry_id=''
 if [ -n "$registry_id" ]; then
-    quarantine_hit=$("$script_directory/model-registry.sh" quarantine-profiles standalone |
-        awk -F'\t' -v id="$registry_id" -v depth="$context_size" \
-            -v batch="$batch_size" -v ubatch="$ubatch_size" \
-            -v cache_k="$cache_type_k" -v cache_v="$cache_type_v" \
-            -v flash="$flash_attention" '
-            $1 == id && $2 == depth && $3 == batch && $4 == ubatch &&
-            $5 == cache_k && $6 == cache_v && $7 == flash { print $1; exit }')
+    quarantine_profiles=$("$script_directory/model-registry.sh" \
+        quarantine-profiles standalone)
+    quarantine_hit=$(awk -F'\t' -v id="$registry_id" \
+        -v depth="$context_size" -v batch="$batch_size" \
+        -v ubatch="$ubatch_size" -v cache_k="$cache_type_k" \
+        -v cache_v="$cache_type_v" -v flash="$flash_attention" '
+        $1 == id && $2 == depth && $3 == batch && $4 == ubatch &&
+        $5 == cache_k && $6 == cache_v && $7 == flash { print $1; exit }
+    ' <<EOF
+$quarantine_profiles
+EOF
+    )
     if [ -n "$quarantine_hit" ]; then
         printf 'this tuple is quarantined: %s at depth %s, batch %s, ubatch %s, K %s, V %s, flash attention %s\n' \
             "$registry_id" "$context_size" "$batch_size" "$ubatch_size" \

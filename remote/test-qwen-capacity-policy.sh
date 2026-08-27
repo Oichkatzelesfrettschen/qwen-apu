@@ -610,6 +610,21 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
 quarantine_model=$temporary_directory/quarantined.gguf
 : >"$quarantine_model"
 
+# The standalone policy consumes the quarantine query as a required safety
+# input. A missing registry stops tuple construction before an unknown profile
+# can reach the server.
+if QWEN_MODEL_REGISTRY=$quarantine_registry \
+    QWEN_QUARANTINE_REGISTRY=$temporary_directory/absent-quarantine.tsv \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$cache_output \
+    "$policy" "$fake_server" "$quarantine_model" 16384 18080 \
+    >"$temporary_directory/absent-quarantine.stdout" \
+    2>"$temporary_directory/absent-quarantine.stderr"; then
+    printf 'policy accepted an unreadable quarantine registry\n' >&2
+    exit 1
+fi
+grep -F 'quarantine registry is unreadable' \
+    "$temporary_directory/absent-quarantine.stderr" >/dev/null
+
 if QWEN_MODEL_REGISTRY=$quarantine_registry \
     QWEN_QUARANTINE_REGISTRY=$quarantine_table QWEN_RADV_ICD=$fake_icd \
     QWEN_POLICY_TEST_OUTPUT=$cache_output \

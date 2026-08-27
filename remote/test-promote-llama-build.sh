@@ -39,6 +39,7 @@ SERVER
 chmod +x "$build_directory/bin/llama-server"
 cat >"$build_directory/bin/llama-cli" <<'CLIENT'
 #!/bin/sh
+: >"${QWEN_TEST_STRICT_SMOKE_MARKER:?}"
 printf 'fixture Vulkan output\n'
 CLIENT
 cat >"$build_directory/bin/llama-mtmd-cli" <<'MULTIMODAL'
@@ -76,6 +77,7 @@ vision_directory=$work_directory/vision-model
 promotion_vision_model=$vision_directory/vision-model.gguf
 promotion_projector=$vision_directory/mmproj-F16.gguf
 promotion_image=$work_directory/shapes.png
+strict_smoke_marker=$work_directory/strict-smoke-ran
 mkdir -p "$vision_directory"
 for smoke_input in "$promotion_model" "$promotion_vision_model" \
     "$promotion_projector" "$promotion_image"; do
@@ -84,6 +86,7 @@ done
 export QWEN_PROMOTION_MODEL=$promotion_model
 export QWEN_PROMOTION_VISION_MODEL=$promotion_vision_model
 export QWEN_PROMOTION_IMAGE=$promotion_image
+export QWEN_TEST_STRICT_SMOKE_MARKER=$strict_smoke_marker
 
 set +e
 promotion_output=$("$promoter" "$preset" "$work_directory" 2>&1)
@@ -120,6 +123,7 @@ esac
 
 QWEN_PROMOTION_IMAGE=$work_directory/absent-image.png
 export QWEN_PROMOTION_IMAGE
+rm -f "$strict_smoke_marker"
 set +e
 vision_absent_output=$("$promoter" "$preset" "$work_directory" 2>&1)
 vision_absent_status=$?
@@ -128,7 +132,13 @@ export QWEN_PROMOTION_IMAGE=$promotion_image
 case $vision_absent_status:$vision_absent_output in
     0:*) report multimodal_inputs_required rejected ;;
     *:*multimodal\ promotion\ inputs\ are\ incomplete*)
-        report multimodal_inputs_required accepted ;;
+        if [ ! -e "$strict_smoke_marker" ]; then
+            report multimodal_inputs_required accepted
+        else
+            report multimodal_inputs_required rejected
+            printf 'strict smoke ran before multimodal input validation\n' >&2
+        fi
+        ;;
     *) report multimodal_inputs_required rejected
        printf '%s\n' "$vision_absent_output" >&2 ;;
 esac
