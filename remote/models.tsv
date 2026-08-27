@@ -6,19 +6,69 @@
 # The SHA-256 stays in each fetch script rather than here, because two copies of
 # a digest drift and the fetch script is the one that verifies the file.
 #
-# context_default is the interactive depth. context_ceiling is the depth the
-# policy admits, and it never exceeds a depth measured to fail: 16384 wedged the
-# amdgpu compute ring under Nanbeige with an f16 cache, so that row admits 8192
-# until a served allocation deeper than that is measured; the 24576 rows are measured, at 2,974 MiB for the 4B, and the
-# 32768 rows are scaled from that measurement rather than allocated, so a launch
-# at 32K is the check that promotes them. context_target names the depth still
-# to be proved. decode_tok_s and
-# prefill_tok_s are measured through llama-bench with full Vulkan offload; a
-# `-` means the row is admitted on a different basis.
+# context_default is the interactive depth and context_ceiling is the depth the
+# policy admits, and both describe an allocation. validated_filled_depth is the
+# deepest depth measured to fill and decode under this row's own cache triple,
+# Flash Attention state, batch, and ubatch, which is a different claim: a server
+# that loads a 24576-token allocation has proven it can reserve the memory and
+# has not proven that a near-full cache executes. `-` means no depth has been
+# filled and decoded on this row and the allocation stands alone.
 #
-# id	role	model_file	fetch_script	context_default	context_ceiling	context_target	cache_type_k	cache_type_v	flash_attention	projector	decode_tok_s	prefill_tok_s	quality
-qwen38-4b-distill	balanced-text	Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf	download-qwen38-4b-distill-q4km.sh	24576	32768	131072	q8_0	q4_0	on	none	3.07	23.48	5/5
-qwen38-2b-distill	fast-text	Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf	download-qwen38-2b-distill-q4km.sh	24576	32768	131072	q8_0	q4_0	on	none	9.46	57.15	4/5
-qwen38-9b-distill	deep-text	Qwen3.8-9B-Distill-GGUF/Qwen3.8-9B-Q4_K_M.gguf	download-qwen38-9b-distill-q4km.sh	16384	24576	65536	q8_0	q4_0	on	none	1.76	11.47	5/5
-qwen35-4b-base	vision	Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf	download-qwen35-4b-q4km.sh	16384	24576	32768	q8_0	q4_0	on	required	2.84	20.88	4/5
-nanbeige42-3b	research	Nanbeige4.2-3B-GGUF/Nanbeige4.2-3B-Q4_K_M.gguf	download-nanbeige42-3b-q4km.sh	8192	8192	32768	q8_0	q4_0	on	none	2.38	14.06	untested
+# batch and ubatch name the submission geometry the validated depth was measured
+# under and the geometry qwen-capacity-policy.sh launches with. They are a field
+# rather than a constant because submission geometry rather than depth decides
+# whether the amdgpu compute ring retires its work at 16384:
+# evidence/depth-versus-submission-geometry.md wedges the ring at 2048/512 and
+# completes the same depth, cache, and device at 128/32 and 32/8.
+#
+# tier states what is claimed about a row. `production` is a serving tuple
+# measured safe and useful. `candidate` leaves quality or performance
+# unqualified while no reset, fault, or device loss exists under its admitted
+# tuple. `quarantine` names a checkpoint or profile that has produced a reset,
+# fault, device loss, or correctness hazard, or that carries no validated safe
+# tuple; remote/quarantine.tsv holds its reason record and
+# remote/build-router-presets.sh keeps it out of the picker. `archive` is a
+# valid artifact displaced by a better one or too slow to serve. `rejected` lost
+# admission on measurement without being dangerous.
+#
+# A candidate enters at 8192 default and ceiling with `-` for
+# validated_filled_depth, because architecture and a depth-0 rate say nothing
+# about what a filled cache executes and the tree has wedged the compute ring at
+# a depth it had only allocated. The depth arm is what moves those two fields.
+#
+# decode_tok_s and prefill_tok_s are measured through llama-bench with full
+# Vulkan offload; a `-` means the row is admitted on a different basis. Every
+# servable row carries the forward-and-reverse paired mean from the seven-
+# checkpoint sweep in evidence/model-admission/universal-candidate-ladder.md, so
+# the column is one sweep and readable across rows. That matters because the
+# same checkpoint under identical flags spans up to 30.6% between sweeps, and
+# bands built across sweeps measured the sweep rather than the checkpoint. The
+# three i1 rows carry the four-block mean from evidence/decode-bound-analysis.md
+# and belong to a different sweep, so they compare to each other and not to the
+# rows above them.
+#
+# quality names its own scale because two scales exist. `NN/55` is the graded
+# suite in evidence/model-admission/roster-quality-sweep.md, run with thinking
+# off at a 1024-token budget across every servable row in one sweep. `5/5-screen`
+# is the earlier five-prompt screen, run with thinking on, which the suite
+# carries forward as its `screen` category; the two do not compare. A suite
+# result is conditioned on the request sequence that produced it -- prepending
+# five rows moves two checkpoints by one arithmetic row each, deterministically
+# -- so a one-row or two-row difference between rows here reports position in a
+# sequence rather than capability.
+#
+# id	role	model_file	fetch_script	context_default	context_ceiling	context_target	cache_type_k	cache_type_v	flash_attention	projector	decode_tok_s	prefill_tok_s	quality	tier	batch	ubatch	validated_filled_depth	validation_evidence
+qwen38-4b-distill	balanced-text	Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf	download-qwen38-4b-distill-q4km.sh	24576	32768	131072	q8_0	q4_0	on	none	3.34	22.40	47/55	production	128	32	16384	evidence/depth-versus-submission-geometry.md
+qwen38-2b-distill	fast-text	Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf	download-qwen38-2b-distill-q4km.sh	24576	32768	131072	q8_0	q4_0	on	none	9.19	63.85	41/55	production	128	32	-	-
+qwen35-4b-base	vision	Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf	download-qwen35-4b-q4km.sh	16384	24576	32768	q8_0	q4_0	on	required	3.11	21.88	47/55	production	128	32	-	-
+qwen38-9b-distill	deep-text	Qwen3.8-9B-Distill-GGUF/Qwen3.8-9B-Q4_K_M.gguf	download-qwen38-9b-distill-q4km.sh	16384	24576	65536	q8_0	q4_0	on	none	1.76	11.47	5/5-screen	archive	128	32	-	-
+nanbeige42-3b	research	Nanbeige4.2-3B-GGUF/Nanbeige4.2-3B-Q4_K_M.gguf	download-nanbeige42-3b-q4km.sh	8192	8192	32768	q8_0	q4_0	on	none	2.38	14.06	untested	quarantine	128	32	-	evidence/quarantine/nanbeige42-3b.md
+qwen38-4b-i1-q2k	low-bit-ladder	Qwen3.8-4B-Distill-Q2_K-GGUF/Qwen3.8-4B-i1-Q2_K.gguf	download-qwen38-4b-distill-i1-q2k.sh	24576	32768	131072	q8_0	q4_0	on	none	2.90	-	untested	rejected	128	32	-	evidence/decode-bound-analysis.md
+qwen38-4b-i1-q5km	low-bit-ladder	Qwen3.8-4B-Distill-Q5_K_M-GGUF/Qwen3.8-4B-i1-Q5_K_M.gguf	download-qwen38-4b-distill-i1-q5km.sh	24576	32768	131072	q8_0	q4_0	on	none	1.93	-	untested	rejected	128	32	-	evidence/decode-bound-analysis.md
+qwen38-4b-i1-q6k	low-bit-ladder	Qwen3.8-4B-Distill-Q6_K-GGUF/Qwen3.8-4B-i1-Q6_K.gguf	download-qwen38-4b-distill-i1-q6k.sh	24576	32768	131072	q8_0	q4_0	on	none	2.35	-	untested	rejected	128	32	-	evidence/decode-bound-analysis.md
+qwen38-27b-q2kxl	capacity-experiment	Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q2_K_XL.gguf	download-qwen38-27b-ladder.sh	4096	4096	8192	q8_0	q4_0	on	none	-	-	untested	archive	128	32	-	evidence/qwen38-27b-4k-admission.md
+qwen38-27b-iq3xxs	capacity-experiment	Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-IQ3_XXS.gguf	download-qwen38-27b-ladder.sh	4096	4096	8192	q8_0	q4_0	on	none	-	-	untested	archive	128	32	-	evidence/qwen38-27b-4k-admission.md
+qwen35-08b	compact-text	Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf	download-qwen35-08b-q80.sh	8192	8192	131072	q8_0	q4_0	on	none	18.53	161.69	33/55	candidate	128	32	-	evidence/model-admission/universal-candidate-ladder.md
+qwen35-2b	compact-vision	Qwen3.5-2B-GGUF/Qwen3.5-2B-Q4_K_M.gguf	download-qwen35-2b-q4km.sh	8192	8192	131072	q8_0	q4_0	on	required	9.43	60.72	41/55	candidate	128	32	-	evidence/model-admission/universal-candidate-ladder.md
+lfm25-vl-16b	fast-vision	LFM2.5-VL-1.6B-GGUF/LFM2.5-VL-1.6B-Q4_K_M.gguf	download-lfm25-vl-16b-q4km.sh	8192	8192	32768	q8_0	q4_0	on	required	15.87	93.15	43/55	candidate	128	32	-	evidence/model-admission/universal-candidate-ladder.md
+ministral3-3b	dense-vision	Ministral-3-3B-Instruct-GGUF/Ministral-3-3B-Instruct-Q4_K_M.gguf	download-ministral3-3b-q4km.sh	8192	8192	16384	q8_0	q4_0	on	required	4.66	31.14	untested	quarantine	128	32	-	evidence/quarantine/ministral3-3b.md

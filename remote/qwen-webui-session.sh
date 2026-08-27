@@ -88,8 +88,17 @@ attempt=0
 inference_cpu=${QWEN_INFERENCE_CPU:-0}
 # Model loading performs one-time Vulkan allocation and transfer work before the
 # HTTP service can accept inference. Arm the service-latency watchdog only after
-# llama-server reports the model ready, while still requiring the runtime CPU
+# llama-server reports itself ready, while still requiring the runtime CPU
 # policy before admitting the session.
+#
+# A router reports readiness differently because it loads nothing at startup: it
+# binds the port and waits for a request to name a model. Waiting for the
+# single-model marker there times out against a server that is already serving,
+# and the session tears down a healthy listener.
+readiness_marker='model loaded'
+if [ "${QWEN_ROUTER:-0}" = 1 ]; then
+    readiness_marker='starting server in router mode'
+fi
 while [ "$attempt" -lt 1200 ]; do
     if ! kill -0 "$server_pid" 2>/dev/null; then
         break
@@ -97,7 +106,7 @@ while [ "$attempt" -lt 1200 ]; do
     affinity=$(awk '$1 == "Cpus_allowed_list:" { print $2 }' "/proc/$server_pid/status")
     nice_value=$(ps -o ni= -p "$server_pid" | tr -d ' ')
     if [ "$affinity" = "$inference_cpu" ] && [ "$nice_value" = 19 ] && \
-       grep -F 'model loaded' "$server_log" >/dev/null 2>&1; then
+       grep -F "$readiness_marker" "$server_log" >/dev/null 2>&1; then
         ready_for_monitor=1
         break
     fi
@@ -217,6 +226,13 @@ printf 'cache cache_type_k=%s cache_type_v=%s flash_attention=%s override_contex
     "${QWEN_CACHE_TYPE_K:-registry}" "${QWEN_CACHE_TYPE_V:-registry}" \
     "${QWEN_FLASH_ATTN:-registry}" \
     "${QWEN_CACHE_OVERRIDE_CONTEXT_CEILING:-registry}" >>"$status_file"
+# Router state lands on a fourth line. A router listener serves several
+# checkpoints behind one port and spawns a child process per loaded model, so a
+# retained status file that named only the default model would describe one of
+# the processes running rather than the service.
+printf 'router enabled=%s presets=%s models_max=%s\n' \
+    "${QWEN_ROUTER:-0}" \
+    "${QWEN_ROUTER_PRESETS:-default}" "${QWEN_ROUTER_MAX:-1}" >>"$status_file"
 
 set +e
 wait "$server_pid"

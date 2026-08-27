@@ -85,6 +85,14 @@ opposite sign on Q6_K. A comparison on this machine is therefore read within a
 sweep, where both arms met the same machine minutes apart, and a difference
 below about 20% quoted from single arms reports queue position.
 
+A prediction band on this machine states a ratio against a checkpoint measured
+in the same sweep. Four absolute bands built from the four-block means in
+`evidence/decode-bound-analysis.md` all read low against the seven-checkpoint
+sweep in `evidence/model-admission/universal-candidate-ladder.md`, because that
+sweep ran 11.1 to 11.5% above those means on the two checkpoints common to both.
+No falsifier was met, and the offset was larger than every effect the
+predictions were trying to resolve, so an absolute band measures the sweep.
+
 The registry rather than a constant sets the admitted depth.
 `remote/models.tsv` carries `context_default`, `context_ceiling`, and
 `context_target` per checkpoint along with the KV cache types and the
@@ -95,6 +103,54 @@ through llama-bench alone. Any override changes the allocation tuple and must
 also set `QWEN_CACHE_OVERRIDE_CONTEXT_CEILING` to a positive depth measured for
 that exact tuple. The override ceiling cannot exceed the checkpoint registry
 ceiling. A ceiling never exceeds a depth measured to fail.
+
+An allocation and a validated depth are two claims and the registry carries them
+as two fields. `context_ceiling` is the depth the policy admits;
+`validated_filled_depth` is the deepest depth measured to fill and decode under
+the row's own cache triple, Flash Attention state, `batch`, and `ubatch`. A
+server that loads a 24576-token allocation has proven it can reserve the memory
+and has not proven a near-full cache executes, so the 4B distill reads 24576 and
+16384 in those two fields and `qwen-capacity-policy.sh` prints the gap on its
+`depth_validation` line at every launch. Submission geometry belongs to the same
+claim: at 16384 the same checkpoint, cache, and device wedged the compute ring
+at 2048/512 and completed twice at 128/32, so `batch` and `ubatch` are registry
+fields rather than constants in the argv.
+
+The `tier` field states what is claimed about a row and
+`remote/build-router-presets.sh` turns it into what the picker offers.
+`production` is a serving tuple measured safe and useful; `candidate` leaves
+quality or performance unqualified with no device failure under its admitted
+tuple; `quarantine` names a reset, fault, device loss, correctness hazard, or
+the absence of any validated safe tuple; `archive` is a valid artifact displaced
+or too slow to serve; `rejected` lost admission on measurement without being
+dangerous. Only `production` and `candidate` reach the preset file.
+
+The failure unit is a tuple rather than a checkpoint, so `remote/quarantine.tsv`
+carries two scopes. A `model` row removes a checkpoint entirely; a `profile` row
+removes one tuple of a checkpoint that otherwise serves, and
+`qwen-capacity-policy.sh` refuses to construct that tuple rather than warning
+about it. `evidence/quarantine/` holds one reason record per row with its kernel
+signature, its validated safe tuples, and its re-entry gate.
+`QWEN_ROUTER_INCLUDE_QUARANTINE=1` exposes a quarantined checkpoint for research
+and forces the listener to `127.0.0.1` while it does, because the appliance
+binds `0.0.0.0` and a warning alone would put a model with a recorded device
+failure on the LAN.
+
+Two mechanisms guard the quarantined tuple because two paths construct one.
+`qwen-capacity-policy.sh` refuses it on the single-model path, where the policy
+builds the argv the server runs. In router mode the children take their geometry
+from the preset file rather than from a second pass through the policy, so
+`build-router-presets.sh` is the guard there and `test-model-tiers.sh` is what
+checks it.
+
+Router mode leaves depth, cache triple, and submission geometry off its own
+argv. `server-models.cpp` ends its preset assembly with
+`preset.merge(base_preset)` and `common_preset::merge` overwrites, so a router
+CLI argument replaces the same key in every model section: passing `--ctx-size
+24576` served the vision row at 24576 where its section named 16384. Every
+section therefore carries all six keys, since an absent one falls through to the
+llama.cpp defaults of batch 2048 and ubatch 512, which is the quarantined
+geometry.
 
 Sequential host read bandwidth measures 7.97 GB/s on one thread and 15.44 GB/s
 on two. Those figures measure the two Zen+ cores through the load/store path,
@@ -188,9 +244,11 @@ remote/measure-served-decode.sh LABEL MODEL    # served decode at a fixed length
 remote/measure-bench-repeatability.sh MODEL    # what a depth-0 rate repeats to
 remote/run-quality-suite.py ENDPOINT OUT_JSON --long-context-characters 24000
                                                 # the 55-row graded suite at explicit depth
+remote/run-quality-roster.sh [OUTPUT_DIR]      # that suite against every servable row
 remote/sample-gpu-clocks.sh OUT_TSV [SECONDS]  # the DPM step a rate ran at
 remote/measure-dpm-force.sh MODEL [OUT]         # auto against global high governor
 remote/model-registry.sh id|path SELECTOR [FIELD]
+remote/build-router-presets.sh [OUTPUT_INI]    # the picker, from the tier field
 
 # Rebuild llama.cpp and the static UI
 remote/build-llama-preset.sh PRESET [SOURCE]   # one directory per build arm
@@ -214,7 +272,9 @@ directly:
 remote/test-qwen-runtime-guards.sh
 remote/test-radv-low-priority-env.sh
 remote/test-model-registry.sh
+remote/test-model-tiers.sh
 remote/test-quality-suite.py
+remote/test-quality-roster.sh
 remote/test-gguf-tokenizer-identity.py
 remote/test-promote-llama-build.sh
 remote/verify-llama-patch-series.sh
@@ -261,14 +321,20 @@ and name `QWEN_MMPROJ` as the way to choose, since resolving two projectors by
 sort order is the mismatch the pairing exists to prevent.
 
 `empero-ai/Qwen3.8-4B-Distill` distills into the Qwen3.5-4B architecture, so
-the pinned build loads it unchanged. It is the text default: it reasons in
-43.3% of the base model's tokens, reaches an answer 2.71 times faster across
-the five-prompt suite, and its chat template still gates `<think>` on
+the pinned build loads it unchanged. It reasons in 43.3% of the base model's
+tokens, reaches an answer 2.71 times faster across the five-prompt suite, and
+its chat template still gates `<think>` on
 `chat_template_kwargs.enable_thinking`. It ships text-only, so the vision
 profile selects the base checkpoint with its revision-matched projector.
-Local math accuracy against the base is untested, and the publisher reports a
-gsm8k_cot fall from 0.850 to 0.785 alongside an mmlu CoT rise from 0.354 to
-0.553.
+The publisher reports a gsm8k_cot fall from 0.850 to 0.785 alongside an mmlu CoT
+rise from 0.354 to 0.553.
+
+The distill's advantage over the base is throughput alone.
+`evidence/model-admission/roster-quality-sweep.md` grades both at 47 of 55 with
+thinking off, at the same 0.855 correct-on-completed, and within one row in every
+category. The five-prompt screen that separated them at 5/5 against 4/5 scored
+the base's one failure as an empty answer after 2048 predicted tokens of
+reasoning, which is the termination failure thinking off removes.
 
 `empero-ai/Qwen3.8-2B-Distill` is the same architecture at 24 layers and
 2048/6144, and it decodes above the 4B in every arm that measured both. It
@@ -329,6 +395,20 @@ breaches.
 `evidence/SHA256SUMS` and `ARTIFACTS.md` fix the retention class of every
 surface. Git copies replace the private hostname with `qwen-laptop`, the home
 prefix with `$HOME`, and MAC addresses with `<mac>`.
+
+A graded result is conditioned on the request sequence that produced it. Three
+repeats of the ten arithmetic rows reproduce exactly, so greedy decoding on this
+backend is deterministic within a fixed sequence; prepending the five `screen`
+rows moves both 2B checkpoints up one row, deterministically and in the same
+direction, and `arith-05` answers 37 cold and 23 warm. Content decides it rather
+than count: one unrelated 300-token predecessor leaves the answer at 37, and so
+do five short unrelated ones, which is the screen block's own count. Every
+arithmetic row reports the same `prompt_n` in all three conditions, so the server
+charges the same prompt length warm and cold and what it reuses behind that count
+stays open. The mechanism is unisolated and recorded as an effect. The measurement consequence stands on its
+own: a one-row or two-row difference between two checkpoints reports position in
+a sequence rather than capability, and a quality comparison is read inside one
+sweep for the same reason a rate comparison is.
 
 `evidence/research-claim-methodology.md` defines the article-facing claim
 record, architecture authorities, missing-data semantics, experimental design,

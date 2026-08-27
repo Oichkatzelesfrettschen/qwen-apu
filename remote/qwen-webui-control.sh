@@ -91,7 +91,10 @@ case $action in
                               QWEN_SPEC_BACKEND_SAMPLING QWEN_BACKEND_SAMPLING \
                               QWEN_CACHE_TYPE_K QWEN_CACHE_TYPE_V \
                               QWEN_FLASH_ATTN \
-                              QWEN_CACHE_OVERRIDE_CONTEXT_CEILING; do
+                              QWEN_CACHE_OVERRIDE_CONTEXT_CEILING \
+                              QWEN_ROUTER QWEN_ROUTER_PRESETS \
+                              QWEN_ROUTER_INCLUDE_QUARANTINE \
+                              QWEN_ROUTER_MAX; do
             eval "forwarded_value=\${$forwarded_name:-}"
             if [ -n "$forwarded_value" ]; then
                 forwarded_environment="$forwarded_environment $forwarded_name=$forwarded_value"

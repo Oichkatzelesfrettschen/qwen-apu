@@ -26,7 +26,7 @@ check_rows() {
         /^[[:space:]]*$/ { next }
         {
             rows++
-            if (NF != 14) {
+            if (NF != 19) {
                 printf "row %d holds %d fields\n", NR, NF
                 bad++
                 next
@@ -48,6 +48,31 @@ check_rows() {
                 printf "%s: projector policy %s is not none, required, or optional\n", $1, $11
                 bad++
             }
+            if ($16 + 0 < 1 || $17 + 0 < 1) {
+                printf "%s: batch %s and ubatch %s must both be positive\n", $1, $16, $17
+                bad++
+            }
+            if ($17 + 0 > $16 + 0) {
+                printf "%s: ubatch %s exceeds batch %s\n", $1, $17, $16
+                bad++
+            }
+            # A validated filled depth is a measurement, so it never exceeds the
+            # allocation the policy admits, and it never stands without the
+            # evidence file that carries the arm it came from.
+            if ($18 != "-") {
+                if ($18 + 0 > $6 + 0) {
+                    printf "%s: validated_filled_depth %s exceeds context_ceiling %s\n", $1, $18, $6
+                    bad++
+                }
+                if ($19 == "-") {
+                    printf "%s: validated_filled_depth %s carries no evidence path\n", $1, $18
+                    bad++
+                }
+            }
+            if ($19 != "-" && system("test -r \"" directory "/../" $19 "\"") != 0) {
+                printf "%s: validation evidence is unreadable: %s\n", $1, $19
+                bad++
+            }
             script = directory "/" $4
             if (system("test -x \"" script "\"") != 0) {
                 printf "%s: fetch script is not executable: %s\n", $1, $4
@@ -67,7 +92,8 @@ check_cache_types() {
     while IFS="$tab" read -r model_id _role _model_file _fetch_script \
         _context_default _context_ceiling _context_target cache_type_k \
         cache_type_v _flash_attention _projector _decode_tok_s _prefill_tok_s \
-        _quality; do
+        _quality _tier _batch _ubatch _validated_filled_depth \
+        _validation_evidence; do
         case $model_id in
             '' | \#*) continue ;;
         esac
@@ -100,7 +126,7 @@ else
     report cache_type_vocabulary rejected
 fi
 
-expected_header=$(printf '# id\trole\tmodel_file\tfetch_script\tcontext_default\tcontext_ceiling\tcontext_target\tcache_type_k\tcache_type_v\tflash_attention\tprojector\tdecode_tok_s\tprefill_tok_s\tquality')
+expected_header=$(printf '# id\trole\tmodel_file\tfetch_script\tcontext_default\tcontext_ceiling\tcontext_target\tcache_type_k\tcache_type_v\tflash_attention\tprojector\tdecode_tok_s\tprefill_tok_s\tquality\ttier\tbatch\tubatch\tvalidated_filled_depth\tvalidation_evidence')
 actual_header=$(grep '^# id' "$registry" || true)
 if [ "$actual_header" = "$expected_header" ]; then
     report schema_header accepted

@@ -14,17 +14,83 @@ validate_cache_type() {
     esac
 }
 
+# The tier vocabulary is closed because each value carries a different claim and
+# a typo would otherwise create a sixth tier that no reader handles. production
+# is a serving tuple measured safe and useful; candidate leaves quality or
+# performance unqualified with no device failure under its admitted tuple;
+# quarantine names a device failure or the absence of any validated safe tuple;
+# archive is a valid artifact displaced or too slow to serve; rejected lost
+# admission on measurement without being dangerous.
+validate_tier() {
+    case $1 in
+        production | candidate | quarantine | archive | rejected) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 if [ "$#" -eq 2 ] && [ "$1" = validate-cache-type ]; then
     validate_cache_type "$2"
     exit $?
 fi
 
+if [ "$#" -eq 2 ] && [ "$1" = validate-tier ]; then
+    validate_tier "$2"
+    exit $?
+fi
+
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+quarantine_registry=${QWEN_QUARANTINE_REGISTRY:-$script_directory/quarantine.tsv}
+
+# The quarantine queries read a second file rather than the tier field alone,
+# because a quarantine has two scopes and the model registry has one row per
+# checkpoint. A scope `model` row removes a checkpoint entirely; a scope
+# `profile` row removes one tuple of a checkpoint that otherwise serves.
+if [ "$#" -eq 1 ] && [ "$1" = quarantine-subjects ]; then
+    [ -r "$quarantine_registry" ] || exit 0
+    awk -F'\t' '/^#/ { next } NF < 13 { next } $2 == "model" { print $3 }' \
+        "$quarantine_registry"
+    exit 0
+fi
+
+# The rows the router can load on demand. Router mode serves any of them behind
+# one listener, so a caller sizing the machine reads this list rather than the
+# one checkpoint it happened to name.
+if [ "$#" -eq 1 ] && [ "$1" = servable-files ]; then
+    awk -F'\t' '/^#/ { next } NF < 19 { next }
+        $15 == "production" || $15 == "candidate" { print $3 }' \
+        "${QWEN_MODEL_REGISTRY:-$script_directory/models.tsv}"
+    exit 0
+fi
+
+# The ids of those same rows. The router routes on an id and answers 400 for one
+# it does not hold, so a caller grading every served checkpoint enumerates ids
+# here rather than reading the live endpoint, which would also list a
+# quarantined row exposed by QWEN_ROUTER_INCLUDE_QUARANTINE.
+if [ "$#" -eq 1 ] && [ "$1" = servable-ids ]; then
+    awk -F'\t' '/^#/ { next } NF < 19 { next }
+        $15 == "production" || $15 == "candidate" { print $1 }' \
+        "${QWEN_MODEL_REGISTRY:-$script_directory/models.tsv}"
+    exit 0
+fi
+
+if [ "$#" -eq 1 ] && [ "$1" = quarantine-profiles ]; then
+    [ -r "$quarantine_registry" ] || exit 0
+    awk -F'\t' '/^#/ { next } NF < 13 { next } $2 == "profile" {
+        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", $3, $5, $6, $7, $8, $9, $10
+    }' "$quarantine_registry"
+    exit 0
+fi
+
 if [ "$#" -ne 2 ] && [ "$#" -ne 3 ]; then
     printf 'usage: %s id|path SELECTOR [FIELD]\n' "$0" >&2
     printf '       %s validate-cache-type TYPE\n' "$0" >&2
+    printf '       %s validate-tier TIER\n' "$0" >&2
+    printf '       %s quarantine-subjects | quarantine-profiles\n' "$0" >&2
+    printf '       %s servable-files | servable-ids\n' "$0" >&2
     printf 'fields: id role model_file fetch_script context_default context_ceiling\n' >&2
     printf '        context_target cache_type_k cache_type_v flash_attention\n' >&2
-    printf '        projector decode_tok_s prefill_tok_s quality\n' >&2
+    printf '        projector decode_tok_s prefill_tok_s quality tier batch\n' >&2
+    printf '        ubatch validated_filled_depth validation_evidence\n' >&2
     printf 'omit FIELD to print the whole row as key=value lines\n' >&2
     exit 2
 fi
@@ -32,13 +98,12 @@ fi
 selector_kind=$1
 selector=$2
 field=${3:-}
-script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 registry=${QWEN_MODEL_REGISTRY:-$script_directory/models.tsv}
 
 case $selector_kind in
     id | path) ;;
     *)
-        printf 'selector kind must be id, path, or validate-cache-type: %s\n' \
+        printf 'selector kind must be id, path, validate-cache-type, validate-tier, or a quarantine query: %s\n' \
             "$selector_kind" >&2
         exit 2
         ;;
@@ -51,7 +116,7 @@ fi
 
 awk -F'\t' -v kind="$selector_kind" -v selector="$selector" -v field="$field" '
     /^#/ { next }
-    NF < 14 { next }
+    NF < 19 { next }
     {
         matched = 0
         if (kind == "id" && $1 == selector) {
@@ -67,11 +132,12 @@ awk -F'\t' -v kind="$selector_kind" -v selector="$selector" -v field="$field" '
         matched_any = 1
         split("id role model_file fetch_script context_default context_ceiling " \
               "context_target cache_type_k cache_type_v flash_attention projector " \
-              "decode_tok_s prefill_tok_s quality", names, " ")
+              "decode_tok_s prefill_tok_s quality tier batch ubatch " \
+              "validated_filled_depth validation_evidence", names, " ")
         if (field == "") {
-            for (i = 1; i <= 14; i++) { printf "%s=%s\n", names[i], $i }
+            for (i = 1; i <= 19; i++) { printf "%s=%s\n", names[i], $i }
         } else {
-            for (i = 1; i <= 14; i++) {
+            for (i = 1; i <= 19; i++) {
                 if (names[i] == field) { printf "%s\n", $i; found = 1 }
             }
             if (!found) { exit 3 }

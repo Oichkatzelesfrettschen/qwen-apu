@@ -56,14 +56,20 @@ all
 .*=Vulkan0
 --fit
 off
---ctx-size
-24576
 --parallel
 1
 --threads
 1
 --threads-batch
 1
+--ctx-checkpoints
+0
+--cache-ram
+0
+--no-context-shift
+--offline
+--ctx-size
+24576
 --batch-size
 128
 --ubatch-size
@@ -73,13 +79,7 @@ on
 --cache-type-k
 q8_0
 --cache-type-v
-q4_0
---ctx-checkpoints
-0
---cache-ram
-0
---no-context-shift
---offline'
+q4_0'
 
 actual_arguments=$(sed -n 's/^argument=//p' "$output_path")
 if [ "$actual_arguments" != "$expected_arguments" ]; then
@@ -151,9 +151,9 @@ grep -F 'context size exceeds the admitted ceiling for this cache policy: 4097 >
 # A fabricated registry carries a triple the fallback never produces, so this
 # check separates the registry read from the built-in default.
 fabricated_registry=$temporary_directory/models.tsv
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     fabricated research fabricated.gguf download-qwen38-4b-distill-q4km.sh \
-    4096 8192 8192 q5_1 iq4_nl auto none - - untested \
+    4096 8192 8192 q5_1 iq4_nl auto none - - untested candidate 256 64 4096 - \
     >"$fabricated_registry"
 registry_model=$temporary_directory/fabricated.gguf
 : >"$registry_model"
@@ -162,7 +162,7 @@ QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_RADV_ICD=$fake_icd \
     "$policy" "$fake_server" "$registry_model" 4096 18080
 cache_arguments=$(sed -n 's/^argument=//p' "$cache_output" | tr '\n' ' ')
 case $cache_arguments in
-    *'--flash-attn auto '*'--cache-type-k q5_1 --cache-type-v iq4_nl '*) ;;
+    *'--batch-size 256 --ubatch-size 64 '*'--flash-attn auto '*'--cache-type-k q5_1 --cache-type-v iq4_nl '*) ;;
     *)
         printf 'registry cache row did not reach the argument list: %s\n' \
             "$cache_arguments" >&2
@@ -320,5 +320,140 @@ if QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$output_path \
 fi
 grep -F 'context size exceeds the admitted ceiling for this cache policy: 24577 > 24576' \
     "$temporary_directory/context.stderr" >/dev/null
+
+# Router mode replaces the single model with a preset file and a resident-model
+# limit, and drops the fixed alias because the preset supplies one per
+# checkpoint. Every guard flag stays, because llama-server cascades this argv
+# onto each child it spawns.
+router_presets=$temporary_directory/router-presets.ini
+printf '[fabricated]\nLLAMA_ARG_MODEL = %s\n' "$registry_model" >"$router_presets"
+router_output=$temporary_directory/router.out
+QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$router_output \
+    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$router_presets QWEN_ROUTER_MAX=1 \
+    "$policy" "$fake_server" "$model_path" 4096 18080
+router_arguments=$(sed -n 's/^argument=//p' "$router_output" | tr '\n' ' ')
+case $router_arguments in
+    *"--models-preset $router_presets --models-max 1 "*) ;;
+    *)
+        printf 'router preset arguments did not reach the argument list: %s\n' \
+            "$router_arguments" >&2
+        exit 1
+        ;;
+esac
+case $router_arguments in
+    *'--model '*)
+        printf 'router mode still passed a single model: %s\n' \
+            "$router_arguments" >&2
+        exit 1
+        ;;
+esac
+case $router_arguments in
+    *'--device Vulkan0 '*'--override-tensor .*=Vulkan0 '*'--no-context-shift'*) ;;
+    *)
+        printf 'router mode dropped a guard flag: %s\n' "$router_arguments" >&2
+        exit 1
+        ;;
+esac
+
+# The pinned llama-ui declares exec_shell_command, write_file, and edit_file as
+# ToolSource.SERVER, so llama-server executes them and the UI merely offers
+# them. The server grants them through --tools, and the appliance binds 0.0.0.0,
+# so the flag reaching either argv would put shell execution and file writing on
+# the LAN behind a prompt-injectable model.
+for tool_argv in "$actual_arguments" "$router_arguments"; do
+    case " $tool_argv " in
+        *' --tools '* | *' --tool '*)
+            printf 'a tool grant reached the server argument list: %s\n' \
+                "$tool_argv" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# server-models.cpp overlays the router's own CLI arguments on top of every
+# model preset with common_preset::merge, which overwrites, so any of these six
+# on the router argv silently replaces the same key in every section. Router
+# mode leaves them to the preset file for that reason.
+for overridden_flag in --ctx-size --batch-size --ubatch-size --flash-attn \
+    --cache-type-k --cache-type-v; do
+    case " $router_arguments " in
+        *" $overridden_flag "*)
+            printf 'router argv carries %s, which overwrites every model preset: %s\n' \
+                "$overridden_flag" "$router_arguments" >&2
+            exit 1
+            ;;
+    esac
+done
+
+# An unreadable preset file is refused rather than starting a router with no
+# models, which would serve a picker listing nothing.
+if QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$router_output \
+    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$temporary_directory/absent.ini \
+    "$policy" "$fake_server" "$model_path" 4096 18080 \
+    >"$temporary_directory/router.stdout" \
+    2>"$temporary_directory/router.stderr"; then
+    printf 'policy accepted router mode with an unreadable preset file\n' >&2
+    exit 1
+fi
+grep -F 'router presets are unreadable' "$temporary_directory/router.stderr" >/dev/null
+
+# A quarantined profile names one tuple of an otherwise servable checkpoint, so
+# the policy refuses that tuple and serves every neighbour of it. Reproducing
+# the quarantined geometry resets the amdgpu compute ring on a live desktop,
+# which is why this is a refusal rather than a warning.
+quarantine_registry=$temporary_directory/quarantine-models.tsv
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    quarantined research quarantined.gguf download-qwen38-4b-distill-q4km.sh \
+    4096 16384 16384 q8_0 q4_0 on none - - untested production 2048 512 4096 - \
+    >"$quarantine_registry"
+quarantine_table=$temporary_directory/quarantine.tsv
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    quarantined-tuple profile quarantined ring-timeout-only 16384 2048 512 \
+    q8_0 q4_0 on evidence/x.md evidence/y.md evidence/z.md \
+    >"$quarantine_table"
+quarantine_model=$temporary_directory/quarantined.gguf
+: >"$quarantine_model"
+
+if QWEN_MODEL_REGISTRY=$quarantine_registry \
+    QWEN_QUARANTINE_REGISTRY=$quarantine_table QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$cache_output \
+    "$policy" "$fake_server" "$quarantine_model" 16384 18080 \
+    2>"$temporary_directory/quarantine.stderr"; then
+    printf 'the policy built the quarantined tuple\n' >&2
+    exit 1
+fi
+grep -F 'this tuple is quarantined' "$temporary_directory/quarantine.stderr" \
+    >/dev/null
+
+# The neighbouring depth under the same geometry is not quarantined and serves.
+QWEN_MODEL_REGISTRY=$quarantine_registry \
+    QWEN_QUARANTINE_REGISTRY=$quarantine_table QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$cache_output \
+    "$policy" "$fake_server" "$quarantine_model" 8192 18080
+quarantine_neighbour=$(sed -n 's/^argument=//p' "$cache_output" | tr '\n' ' ')
+case $quarantine_neighbour in
+    *'--ctx-size 8192 '*'--batch-size 2048 --ubatch-size 512 '*) ;;
+    *)
+        printf 'the neighbouring depth did not build: %s\n' \
+            "$quarantine_neighbour" >&2
+        exit 1
+        ;;
+esac
+
+# The same depth at the served geometry is a different tuple and serves.
+QWEN_MODEL_REGISTRY=$quarantine_registry \
+    QWEN_QUARANTINE_REGISTRY=$quarantine_table QWEN_RADV_ICD=$fake_icd \
+    QWEN_BATCH_SIZE=128 QWEN_UBATCH_SIZE=32 \
+    QWEN_POLICY_TEST_OUTPUT=$cache_output \
+    "$policy" "$fake_server" "$quarantine_model" 16384 18080
+quarantine_geometry=$(sed -n 's/^argument=//p' "$cache_output" | tr '\n' ' ')
+case $quarantine_geometry in
+    *'--ctx-size 16384 '*'--batch-size 128 --ubatch-size 32 '*) ;;
+    *)
+        printf 'the served geometry at the quarantined depth did not build: %s\n' \
+            "$quarantine_geometry" >&2
+        exit 1
+        ;;
+esac
 
 printf 'qwen_capacity_policy=accepted\n'

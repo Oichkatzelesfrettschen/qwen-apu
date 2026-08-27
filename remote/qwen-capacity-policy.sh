@@ -126,6 +126,75 @@ if [ "$context_size" -gt "$maximum_context_size" ]; then
     exit 2
 fi
 
+# Submission geometry comes from the row rather than from a constant, because
+# the ceiling and the geometry are one claim. At 16384 the same checkpoint,
+# cache triple, Flash Attention state, and device wedged the amdgpu compute ring
+# at 2048/512 and completed twice at 128/32, so a depth is admitted under a
+# geometry and reading the ceiling without it reads half the measurement.
+registry_batch=$("$script_directory/model-registry.sh" path "$model_path" \
+    batch 2>/dev/null) || registry_batch=''
+registry_ubatch=$("$script_directory/model-registry.sh" path "$model_path" \
+    ubatch 2>/dev/null) || registry_ubatch=''
+case $registry_batch in '' | *[!0-9]*) registry_batch=128 ;; esac
+case $registry_ubatch in '' | *[!0-9]*) registry_ubatch=32 ;; esac
+batch_size=${QWEN_BATCH_SIZE:-$registry_batch}
+ubatch_size=${QWEN_UBATCH_SIZE:-$registry_ubatch}
+for submission_value in "$batch_size" "$ubatch_size"; do
+    case $submission_value in
+        '' | *[!0-9]* | 0)
+            printf 'batch and ubatch must be positive integers: %s\n' \
+                "$submission_value" >&2
+            exit 2
+            ;;
+    esac
+done
+if [ "$ubatch_size" -gt "$batch_size" ]; then
+    printf 'ubatch exceeds batch: %s > %s\n' "$ubatch_size" "$batch_size" >&2
+    exit 2
+fi
+
+# A quarantined profile names a tuple that produced a device failure. The launch
+# refuses to construct it rather than warning about it, because the failure it
+# reproduces resets the compute ring on a live desktop.
+registry_id=$("$script_directory/model-registry.sh" path "$model_path" \
+    id 2>/dev/null) || registry_id=''
+if [ -n "$registry_id" ]; then
+    quarantine_hit=$("$script_directory/model-registry.sh" quarantine-profiles |
+        awk -F'\t' -v id="$registry_id" -v depth="$context_size" \
+            -v batch="$batch_size" -v ubatch="$ubatch_size" \
+            -v cache_k="$cache_type_k" -v cache_v="$cache_type_v" \
+            -v flash="$flash_attention" '
+            $1 == id && $2 == depth && $3 == batch && $4 == ubatch &&
+            $5 == cache_k && $6 == cache_v && $7 == flash { print $1; exit }')
+    if [ -n "$quarantine_hit" ]; then
+        printf 'this tuple is quarantined: %s at depth %s, batch %s, ubatch %s, K %s, V %s, flash attention %s\n' \
+            "$registry_id" "$context_size" "$batch_size" "$ubatch_size" \
+            "$cache_type_k" "$cache_type_v" "$flash_attention" >&2
+        printf 'the reason record is evidence/quarantine/%s-d%s-b%s-ub%s.md\n' \
+            "$registry_id" "$context_size" "$batch_size" "$ubatch_size" >&2
+        exit 2
+    fi
+fi
+
+# The allocation and the validated depth are separate claims and the status line
+# carries both, so a served depth above anything measured to fill and decode is
+# a visible gap rather than an implied guarantee.
+registry_validated_depth=$("$script_directory/model-registry.sh" path \
+    "$model_path" validated_filled_depth 2>/dev/null) || registry_validated_depth=''
+[ -n "$registry_validated_depth" ] || registry_validated_depth=-
+if [ "$registry_validated_depth" = - ]; then
+    printf 'depth_validation admitted=%s validated=none geometry=%s/%s\n' \
+        "$context_size" "$batch_size" "$ubatch_size" >&2
+elif [ "$context_size" -gt "$registry_validated_depth" ]; then
+    printf 'depth_validation admitted=%s validated=%s geometry=%s/%s allocation_beyond_validation=yes\n' \
+        "$context_size" "$registry_validated_depth" "$batch_size" \
+        "$ubatch_size" >&2
+else
+    printf 'depth_validation admitted=%s validated=%s geometry=%s/%s\n' \
+        "$context_size" "$registry_validated_depth" "$batch_size" \
+        "$ubatch_size" >&2
+fi
+
 case $server_port in
     '' | *[!0-9]*)
         printf 'port must be an integer from 1024 through 65535\n' >&2
@@ -153,12 +222,59 @@ if env | awk -F= '$1 ~ /^LLAMA_ARG_/ { found = 1 } END { exit !found }'; then
     exit 2
 fi
 
-set -- "$llama_server" \
-    --model "$model_path" \
-    --host "$bind_host" \
-    --port "$server_port" \
-    --alias qwen-apu \
-    --cors-origins "$cors_origins"
+# Router mode serves every admitted checkpoint behind one listener and lets the
+# picker choose per chat. llama-server builds a base preset from this argv,
+# strips the SSL, API key, and models-* keys from it, and cascades the rest onto
+# each child it spawns, so every guard below reaches the child unchanged and the
+# preset file supplies only what differs per checkpoint.
+#
+# models-max is 1 rather than the upstream default of 4. The 4B alone peaks at
+# 2029 MiB of a 2048 MiB VRAM carve-out with 2700 MiB more in GTT, so a second
+# resident model competes for a pool already saturated by one. Switching models
+# unloads the previous one, which costs a reload and buys a device that fits.
+router_presets=${QWEN_ROUTER_PRESETS:-"${HOME:?}/qwen-webui-state/router-presets.ini"}
+router_max=${QWEN_ROUTER_MAX:-1}
+if [ "${QWEN_ROUTER:-0}" = 1 ]; then
+    if [ ! -r "$router_presets" ]; then
+        printf 'router presets are unreadable: %s\n' "$router_presets" >&2
+        printf 'generate them with remote/build-router-presets.sh\n' >&2
+        exit 2
+    fi
+    case $router_max in
+        '' | *[!0-9]*)
+            printf 'router model limit must be a non-negative integer: %s\n' \
+                "$router_max" >&2
+            exit 2
+            ;;
+    esac
+    # A quarantined checkpoint reaches the picker only through the research
+    # override, and it stays on the loopback while it does. The appliance binds
+    # 0.0.0.0 so the laptop serves the LAN, and a warning alone would leave a
+    # model with a recorded device failure or no validated safe tuple reachable
+    # from every host on that network. The bind host is forced rather than
+    # refused, so the override runs the experiment it exists for and the
+    # exposure it would create does not follow it.
+    if [ "${QWEN_ROUTER_INCLUDE_QUARANTINE:-0}" = 1 ]; then
+        if [ "$bind_host" != 127.0.0.1 ]; then
+            printf 'quarantine override forces the listener to loopback: %s -> 127.0.0.1\n' \
+                "$bind_host" >&2
+            bind_host=127.0.0.1
+        fi
+    fi
+    set -- "$llama_server" \
+        --models-preset "$router_presets" \
+        --models-max "$router_max" \
+        --host "$bind_host" \
+        --port "$server_port" \
+        --cors-origins "$cors_origins"
+else
+    set -- "$llama_server" \
+        --model "$model_path" \
+        --host "$bind_host" \
+        --port "$server_port" \
+        --alias qwen-apu \
+        --cors-origins "$cors_origins"
+fi
 
 if [ -n "$static_path" ]; then
     set -- "$@" --path "$static_path" --ui
@@ -176,7 +292,7 @@ fi
 # repository revision. Offloading it to Vulkan costs about 672 MiB of a heap
 # with over 12 GiB free, and the alternative is running a vision encoder on two
 # CPU cores.
-if [ -n "${QWEN_MMPROJ:-}" ]; then
+if [ -n "${QWEN_MMPROJ:-}" ] && [ "${QWEN_ROUTER:-0}" != 1 ]; then
     if [ ! -f "$QWEN_MMPROJ" ]; then
         printf 'projector is not a regular file: %s\n' "$QWEN_MMPROJ" >&2
         exit 2
@@ -280,18 +396,34 @@ set -- "$@" \
     --n-gpu-layers all \
     --override-tensor '.*=Vulkan0' \
     --fit off \
-    --ctx-size "$context_size" \
     --parallel 1 \
     --threads 1 \
     --threads-batch 1 \
-    --batch-size 128 \
-    --ubatch-size 32 \
-    --flash-attn "$flash_attention" \
-    --cache-type-k "$cache_type_k" \
-    --cache-type-v "$cache_type_v" \
     --ctx-checkpoints 0 \
     --cache-ram 0 \
     --no-context-shift \
     --offline
+
+# The six per-checkpoint flags stay off the router's own argv, because
+# server-models.cpp ends its preset assembly with `preset.merge(base_preset)`
+# and common_preset::merge overwrites, so a router CLI argument replaces the
+# same key in every model preset. Setting --ctx-size here served the vision row
+# at 24576 where its section named 16384. Router mode therefore leaves depth,
+# cache triple, and submission geometry to the preset file, which
+# build-router-presets.sh writes from the registry row for every section, and
+# the single-model path sets them from the row it launches.
+#
+# Every section carrying all six is what makes the omission safe: an absent key
+# falls through to the llama.cpp defaults, and those are batch 2048 and ubatch
+# 512, which is the quarantined geometry.
+if [ "${QWEN_ROUTER:-0}" != 1 ]; then
+    set -- "$@" \
+        --ctx-size "$context_size" \
+        --batch-size "$batch_size" \
+        --ubatch-size "$ubatch_size" \
+        --flash-attn "$flash_attention" \
+        --cache-type-k "$cache_type_k" \
+        --cache-type-v "$cache_type_v"
+fi
 
 exec "$script_directory/radv-low-priority-env.sh" "$@"
