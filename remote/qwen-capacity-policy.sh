@@ -506,6 +506,7 @@ fi
 # unloads the previous one, which costs a reload and buys a device that fits.
 router_presets=${QWEN_ROUTER_PRESETS:-"${HOME:?}/qwen-webui-state/router-presets.ini"}
 router_registry=${QWEN_MODEL_REGISTRY:-"$script_directory/models.tsv"}
+router_quarantine_registry=${QWEN_QUARANTINE_REGISTRY:-$script_directory/quarantine.tsv}
 router_model_root=${QWEN_MODEL_ROOT:-"${HOME:?}/models"}
 router_max=${QWEN_ROUTER_MAX:-1}
 router_preset_expected_sha256=${QWEN_ROUTER_PRESET_SHA256:-}
@@ -535,6 +536,31 @@ verify_router_preset_identity() {
         return 1
     fi
 }
+measure_router_authority_identity() {
+    authority_name=$1
+    authority_path=$2
+    if ! authority_identity=$(sha256sum "$authority_path"); then
+        printf '%s identity cannot be measured: %s\n' \
+            "$authority_name" "$authority_path" >&2
+        return 1
+    fi
+    printf '%s\n' "${authority_identity%% *}"
+}
+validate_current_router_authorities() {
+    if ! router_quarantine_rows=$(
+        "$script_directory/model-registry.sh" quarantine-rows router-child
+    ); then
+        printf 'router quarantine authority is unavailable\n' >&2
+        return 1
+    fi
+    if ! validate_router_preset_tuples "$router_registry" "$router_presets" \
+        "$router_model_root" "$router_quarantine_rows" \
+        "$quarantine_override_from_preset"; then
+        printf 'router presets do not carry complete admitted tuples: %s\n' \
+            "$router_presets" >&2
+        return 1
+    fi
+}
 if [ "$router_enabled" = 1 ]; then
     if [ ! -r "$router_presets" ]; then
         printf 'router presets are unreadable: %s\n' "$router_presets" >&2
@@ -544,6 +570,11 @@ if [ "$router_enabled" = 1 ]; then
     verify_router_preset_identity || exit 2
     if [ ! -r "$router_registry" ]; then
         printf 'router model registry is unreadable: %s\n' "$router_registry" >&2
+        exit 2
+    fi
+    if [ ! -r "$router_quarantine_registry" ]; then
+        printf 'router quarantine authority is unavailable: %s\n' \
+            "$router_quarantine_registry" >&2
         exit 2
     fi
     case $router_max in
@@ -570,19 +601,17 @@ if [ "$router_enabled" = 1 ]; then
             exit 2
             ;;
     esac
-    if ! router_quarantine_rows=$(
-        "$script_directory/model-registry.sh" quarantine-rows router-child
-    ); then
-        printf 'router quarantine authority is unavailable\n' >&2
-        exit 2
+    if [ -n "$router_preset_expected_sha256" ]; then
+        router_preset_guard_sha256=$router_preset_expected_sha256
+    else
+        router_preset_guard_sha256=$(measure_router_authority_identity \
+            'router preset' "$router_presets") || exit 2
     fi
-    if ! validate_router_preset_tuples "$router_registry" "$router_presets" \
-        "$router_model_root" "$router_quarantine_rows" \
-        "$quarantine_override_from_preset"; then
-        printf 'router presets do not carry complete admitted tuples: %s\n' \
-            "$router_presets" >&2
-        exit 2
-    fi
+    router_registry_guard_sha256=$(measure_router_authority_identity \
+        'router model registry' "$router_registry") || exit 2
+    router_quarantine_guard_sha256=$(measure_router_authority_identity \
+        'router quarantine registry' "$router_quarantine_registry") || exit 2
+    validate_current_router_authorities || exit 2
     quarantine_override_from_environment=${QWEN_ROUTER_INCLUDE_QUARANTINE:-0}
     case $quarantine_override_from_environment in
         0 | 1) ;;
@@ -772,11 +801,19 @@ if [ "$router_enabled" != 1 ]; then
         --cache-type-v "$cache_type_v"
 fi
 
-# The launcher hashes its immutable-per-session snapshot before preflight. A
-# second measurement at the exec boundary binds the validated rows and marker
-# to the exact file llama-server opens.
+# The launcher hashes its immutable-per-session snapshot before preflight. The
+# exec boundary revalidates both mutable registry authorities and measures the
+# preset again, so a quarantine or model-registry replacement invalidates the
+# assembled server command before llama-server starts.
 if [ "$router_enabled" = 1 ]; then
     verify_router_preset_identity || exit 2
+    validate_current_router_authorities || exit 2
+    exec "$script_directory/radv-low-priority-env.sh" \
+        "$script_directory/qwen-router-exec-guard.sh" \
+        "$router_presets" "$router_preset_guard_sha256" \
+        "$router_registry" "$router_registry_guard_sha256" \
+        "$router_quarantine_registry" "$router_quarantine_guard_sha256" \
+        "$@"
 fi
 
 exec "$script_directory/radv-low-priority-env.sh" "$@"

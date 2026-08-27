@@ -26,10 +26,23 @@ fi
 
 model_path=${QWEN_MODEL_PATH:-"${HOME:?}/models/Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf"}
 router_snapshot_owned=''
+control_start_entered=0
 cleanup_router_snapshot() {
     if [ -n "$router_snapshot_owned" ]; then
         rm -f -- "$router_snapshot_owned"
+        router_snapshot_owned=''
     fi
+}
+terminate_router_launch() {
+    signal_status=$1
+    if [ "$control_start_entered" = 1 ]; then
+        QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+        QWEN_SERVER_PORT=$server_port \
+            "$script_directory/qwen-teardown.sh" >/dev/null 2>&1 || true
+    fi
+    cleanup_router_snapshot
+    trap - EXIT HUP INT TERM
+    exit "$signal_status"
 }
 
 # Snapshot the exact router preset before deriving the preflight denominator.
@@ -46,7 +59,10 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
     router_presets=$(mktemp \
         "$state_directory/.router-presets.active.XXXXXX")
     router_snapshot_owned=$router_presets
-    trap cleanup_router_snapshot EXIT HUP INT TERM
+    trap cleanup_router_snapshot EXIT
+    trap 'terminate_router_launch 129' HUP
+    trap 'terminate_router_launch 130' INT
+    trap 'terminate_router_launch 143' TERM
     cp -- "$source_router_presets" "$router_presets"
     chmod 600 "$router_presets"
     router_preset_identity=$(sha256sum "$router_presets")
@@ -209,6 +225,7 @@ fi
 [ -n "$mmproj" ] && [ -f "$mmproj" ] || mmproj=''
 [ -n "$mmproj" ] && printf 'projector=%s\n' "$(basename -- "$mmproj")"
 
+control_start_entered=1
 QWEN_BIND_HOST=$bind_host QWEN_SERVER_PORT=$server_port \
 QWEN_MODEL_PATH=$model_path QWEN_MMPROJ=$mmproj \
     "$control" start "$profile"
@@ -240,6 +257,7 @@ fi
 # The running session now owns the unique snapshot and removes it through its
 # EXIT trap. Until this acknowledgement, the launcher trap owns startup errors.
 router_snapshot_owned=''
+control_start_entered=0
 
 sed -n '1p' "$state_directory/session.status"
 if [ "$bind_host" = 127.0.0.1 ] || [ "$bind_host" = localhost ]; then

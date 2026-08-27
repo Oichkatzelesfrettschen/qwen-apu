@@ -189,10 +189,15 @@ snapshot, and selects the largest installed artifact as the load-observation
 subject. Normal and research presets therefore use the exact set they can
 launch rather than separate registry enumerations. The launcher records the
 snapshot SHA-256 and forwards both path and digest across the tmux boundary.
-The capacity policy verifies that identity before tuple validation and again at
-the server exec boundary, so preset or authority changes cannot widen the
-launched set after preflight. The preflight reports artifact bytes and fixed
-host and Vulkan headroom; the subsequent load remains the fit test. Its
+The capacity policy validates the current model and quarantine authorities and
+records their SHA-256 identities. After the Vulkan wrapper configures the final
+environment, `qwen-router-exec-guard.sh` remeasures the preset and both registry
+identities immediately before it replaces itself with llama-server. A
+terminating launch signal tears down a session whose control start has begun,
+removes the launcher-owned snapshot, and exits with the signal status. The
+tmux session applies the same terminating cleanup to its server, watchdogs, and
+owned snapshot. The preflight reports artifact bytes and fixed host and Vulkan
+headroom; the subsequent load remains the fit test. Its
 standalone context ceiling never constrains the listener, because each preset
 section supplies its own complete tuple. The capacity policy resolves the
 section ID and model path to one registry row and requires the section's
@@ -262,7 +267,8 @@ qwen-launch.sh            waits for /health, prints reachable addresses
       run-qwen-capacity-server.sh
         model-memory-preflight.sh   reports headroom
         qwen-capacity-policy.sh     builds the llama-server argv
-          radv-low-priority-env.sh  scrubs env, applies profile, execs
+          radv-low-priority-env.sh  scrubs env, applies profile
+            qwen-router-exec-guard.sh  rechecks authority identities, execs
 ```
 
 Four properties of that chain surprise a reader who meets one file alone.
