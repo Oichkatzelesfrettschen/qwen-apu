@@ -400,10 +400,12 @@ A graded result is conditioned on the request sequence that produced it. Three
 repeats of the ten arithmetic rows reproduce exactly, so greedy decoding on this
 backend is deterministic within a fixed sequence; prepending the five `screen`
 rows moves both 2B checkpoints up one row, deterministically and in the same
-direction, and `arith-05` answers 37 cold and 23 warm. Prefix reuse is excluded,
-because every arithmetic row reports the same `prompt_n` in all three conditions,
-and one unrelated 300-token predecessor does not reproduce it. The mechanism is
-unisolated and recorded as an effect. The measurement consequence stands on its
+direction, and `arith-05` answers 37 cold and 23 warm. Content decides it rather
+than count: one unrelated 300-token predecessor leaves the answer at 37, and so
+do five short unrelated ones, which is the screen block's own count. Every
+arithmetic row reports the same `prompt_n` in all three conditions, so the server
+charges the same prompt length warm and cold and what it reuses behind that count
+stays open. The mechanism is unisolated and recorded as an effect. The measurement consequence stands on its
 own: a one-row or two-row difference between two checkpoints reports position in
 a sequence rather than capability, and a quality comparison is read inside one
 sweep for the same reason a rate comparison is.

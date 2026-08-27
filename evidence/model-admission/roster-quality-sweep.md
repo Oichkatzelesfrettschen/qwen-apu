@@ -128,12 +128,30 @@ tokens against an 8192-token floor, which is the depth it was built to test and
 is far from any admitted ceiling.
 
 `term-02` asks for the largest prime in at most two sentences and grades
-`nonempty`. The 2B distill ran it to the full 1024-token budget and the grader
+`nonempty`, so it credits any reply that exists, including one that never
+stopped. The 2B distill ran it to the full 1024-token budget and the grader
 passed it, which is the termination failure the category exists to detect. The
 per-row `truncated` field makes the correction computable from the retained
 record rather than needing a re-run, and the corrected column above applies it:
 the 2B distill alone moves, 41 to 40, which breaks its tie with Qwen3.5-2B
-against it. The other credited truncation count is zero everywhere.
+against it.
+
+A weak grader on a termination category could flatter every arm, so the retained
+`generated_tokens` decide whether it did. Across the 30 termination rows the
+longest reply outside the 2B distill is 114 tokens against a 1024-token cap:
+
+```text
+LFM2.5-VL-1.6B        65  19  18  42    6
+Qwen3.5-0.8B          57  42  37  18  106
+Qwen3.5-2B            72  41 110  37   57
+Qwen3.5-4B base       81  47 114  68   33
+Qwen3.8-4B Distill    55  47  41  35    6
+Qwen3.8-2B Distill     8 1024 16  37    4
+```
+
+Twenty-nine of thirty rows terminate an order of magnitude short of the budget,
+so the 5/5 column is a real result that separates no pair rather than a grader
+crediting failures. The one exception is the row the correction already removes.
 
 ## The two 4B rows are indistinguishable on quality
 
@@ -148,7 +166,10 @@ reasons in 43.3% of the base's tokens and decodes 3.34 against 3.11 tok/s.
 ## A graded result depends on which rows preceded it in the same session
 
 The gate scored the 2B distill 7/10 on arithmetic and the full sweep scored it
-8/10, so the ten rows were re-run to find the reproducibility floor.
+8/10, so the ten rows were re-run to find the reproducibility floor. The gate ran
+at a 512-token budget and the sweep at 1024, and the repeats below run at 1024
+and land on the gate's figure, so the budget is not the variable and the two
+tables compare.
 
 | run | preceding rows | 2B distill | Qwen3.5-2B |
 | --- | --- | ---: | ---: |
@@ -164,15 +185,22 @@ moves both checkpoints up one row, deterministically and in the same direction,
 and `arith-05` is the row that moves: `Convert 98.6 degrees Fahrenheit to
 Celsius` answers 37 with no predecessors and 23 with the screen rows ahead of it.
 
-**Prefix-cache reuse is excluded.** The arithmetic rows report identical
-`prompt_n` in all three conditions -- 27, 37, 27, 44, 36, 28 for the first six --
-so every request reprocesses its prompt in full and no cached prefix shortens it.
+**The reported prefill count does not move.** The arithmetic rows report
+identical `prompt_n` in all three conditions -- 27, 37, 27, 44, 36, 28 for the
+first six -- so the server charges each request the same prompt length whether it
+runs cold or warm. Whether slot-level prefix state is reused behind that
+unchanged count is a separate question this observation leaves open, and the
+running listener carries `--cache-ram 0` and `--ctx-checkpoints 0`, which govern
+checkpointing rather than that reuse.
 
-**A single predecessor is not enough.** One unrelated 300-token request between a
-fresh model load and `arith-05` leaves the answer at 37, so a stale KV tail
-beyond the current sequence length does not by itself produce the effect.
+**Predecessor content decides it, not predecessor count.** One unrelated
+300-token request between a fresh model load and `arith-05` leaves the answer at
+37. Five unrelated short requests -- the same count as the screen block --
+also leave it at 37. Five screen rows move it to 23. Count is therefore excluded
+by direct measurement and what the screen rows carry is what matters.
 
-The mechanism is not isolated and is recorded as an effect rather than a cause,
+The mechanism beneath that content dependence is not isolated and is recorded as
+an effect rather than a cause,
 on the same terms as the two wedge signatures this tree declines to merge. What
 is established is the measurement consequence: **a suite result is conditioned on
 the request sequence that produced it, so a difference of one or two rows between
