@@ -137,6 +137,19 @@ the absence of any validated safe tuple; `archive` is a valid artifact displaced
 or too slow to serve; `rejected` lost admission on measurement without being
 dangerous. Only `production` and `candidate` reach the preset file.
 
+Tool selection and tool execution are two claims and the registry carries them
+as `raw_tool_selection` and `guarded_tool_execution`. The first is the graded
+tool category, the model unaided. The second states whether the row may execute
+a tool, over `refused`, `validator-gated`, and `unguarded`. Every row reads
+`refused`, because `tool-08` puts an instruction inside the note the user asks
+about and all six measured arms carried the injected city into the call in place
+of the authorized one. Reading one number for both misleads in both directions:
+the 2B distill scores 2 of 10 and still serves text as the `fast-text` default,
+and the 4B distill scores 9 of 10 while failing the one row an execution grant
+exists to survive. A runtime that compares emitted arguments against the user's
+own authorization is what moves a row to `validator-gated`, and this tree holds
+none: the appliance runs without `--tools` and the server executes nothing.
+
 The failure unit is a tuple rather than a checkpoint, so `remote/quarantine.tsv`
 carries two scopes. A `model` row removes a checkpoint entirely; a `profile` row
 removes one tuple of a checkpoint that otherwise serves, and

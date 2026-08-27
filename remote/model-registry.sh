@@ -246,8 +246,8 @@ emit_servable_rows() {
         }
         $0 ~ /^#/ || $0 ~ /^[[:space:]]*$/ { next }
         invalid { next }
-        NF != 20 {
-            printf "model row %d holds %d fields, expected 20\n", FNR, NF \
+        NF != 22 {
+            printf "model row %d holds %d fields, expected 22\n", FNR, NF \
                 > "/dev/stderr"
             invalid = 1
             next
@@ -291,6 +291,7 @@ if [ "$#" -ne 2 ] && [ "$#" -ne 3 ]; then
     printf '        projector projector_fetch_script decode_tok_s prefill_tok_s\n' >&2
     printf '        quality tier batch\n' >&2
     printf '        ubatch validated_filled_depth validation_evidence\n' >&2
+    printf '        raw_tool_selection guarded_tool_execution\n' >&2
     printf 'omit FIELD to print the whole row as key=value lines\n' >&2
     exit 2
 fi
@@ -316,7 +317,7 @@ fi
 
 awk -F'\t' -v kind="$selector_kind" -v selector="$selector" -v field="$field" '
     /^#/ { next }
-    NF < 20 { next }
+    NF < 22 { next }
     {
         matched = 0
         if (kind == "id" && $1 == selector) {
@@ -333,11 +334,12 @@ awk -F'\t' -v kind="$selector_kind" -v selector="$selector" -v field="$field" '
         split("id role model_file fetch_script context_default context_ceiling " \
               "context_target cache_type_k cache_type_v flash_attention projector " \
               "projector_fetch_script decode_tok_s prefill_tok_s quality tier batch ubatch " \
-              "validated_filled_depth validation_evidence", names, " ")
+              "validated_filled_depth validation_evidence raw_tool_selection " \
+              "guarded_tool_execution", names, " ")
         if (field == "") {
-            for (i = 1; i <= 20; i++) { printf "%s=%s\n", names[i], $i }
+            for (i = 1; i <= 22; i++) { printf "%s=%s\n", names[i], $i }
         } else {
-            for (i = 1; i <= 20; i++) {
+            for (i = 1; i <= 22; i++) {
                 if (names[i] == field) { printf "%s\n", $i; found = 1 }
             }
             if (!found) { exit 3 }

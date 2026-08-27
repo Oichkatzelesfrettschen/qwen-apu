@@ -11,8 +11,14 @@ if [ "$#" -ne 0 ]; then
 fi
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-registry=$script_directory/models.tsv
+# The reader resolves QWEN_MODEL_REGISTRY, so the checks resolve it too. A
+# vocabulary gate that only ever sees the committed rows passes because those
+# rows are correct, which proves nothing about the gate; honouring the override
+# lets a fabricated row stand as the positive control.
+registry=${QWEN_MODEL_REGISTRY:-$script_directory/models.tsv}
 reader=$script_directory/model-registry.sh
+QWEN_MODEL_REGISTRY=$registry
+export QWEN_MODEL_REGISTRY
 failures=0
 work_directory=$(mktemp -d)
 trap 'rm -rf "$work_directory"' EXIT INT TERM
@@ -28,7 +34,7 @@ check_rows() {
         /^[[:space:]]*$/ { next }
         {
             rows++
-            if (NF != 20) {
+            if (NF != 22) {
                 printf "row %d holds %d fields\n", NR, NF
                 bad++
                 next
@@ -82,6 +88,18 @@ check_rows() {
             }
             if ($20 != "-" && system("test -r \"" directory "/../" $20 "\"") != 0) {
                 printf "%s: validation evidence is unreadable: %s\n", $1, $20
+                bad++
+            }
+            # The two tool fields carry a fixed vocabulary for the same
+            # reason tier does: a prose value in either one would state a claim
+            # no consumer can act on. A raw score is a fraction or `unmeasured`,
+            # and an execution grant is one of three named states.
+            if ($21 != "unmeasured" && $21 !~ /^[0-9]+\/[0-9]+$/) {
+                printf "%s: raw_tool_selection %s is neither a fraction nor unmeasured\n", $1, $21
+                bad++
+            }
+            if ($22 != "refused" && $22 != "validator-gated" && $22 != "unguarded") {
+                printf "%s: guarded_tool_execution %s is outside the vocabulary\n", $1, $22
                 bad++
             }
             script = directory "/" $4
@@ -138,7 +156,7 @@ else
     report cache_type_vocabulary rejected
 fi
 
-expected_header=$(printf '# id\trole\tmodel_file\tfetch_script\tcontext_default\tcontext_ceiling\tcontext_target\tcache_type_k\tcache_type_v\tflash_attention\tprojector\tprojector_fetch_script\tdecode_tok_s\tprefill_tok_s\tquality\ttier\tbatch\tubatch\tvalidated_filled_depth\tvalidation_evidence')
+expected_header=$(printf '# id\trole\tmodel_file\tfetch_script\tcontext_default\tcontext_ceiling\tcontext_target\tcache_type_k\tcache_type_v\tflash_attention\tprojector\tprojector_fetch_script\tdecode_tok_s\tprefill_tok_s\tquality\ttier\tbatch\tubatch\tvalidated_filled_depth\tvalidation_evidence\traw_tool_selection\tguarded_tool_execution')
 actual_header=$(grep '^# id' "$registry" || true)
 if [ "$actual_header" = "$expected_header" ]; then
     report schema_header accepted
@@ -202,10 +220,10 @@ fi
 fixture_registry=$work_directory/models.tsv
 fixture_quarantine=$work_directory/quarantine.tsv
 printf '%b\n' \
-    'safe\ttext\tmodels/safe.gguf\tfetch.sh\t8192\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\tproduction\t128\t32\t-\t-' \
-    'model-blocked\ttext\tmodels/model-blocked.gguf\tfetch.sh\t8192\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\tproduction\t128\t32\t-\t-' \
-    'profile-blocked\ttext\tmodels/profile-blocked.gguf\tfetch.sh\t8192\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\tcandidate\t128\t32\t-\t-' \
-    'profile-neighbour\ttext\tmodels/profile-neighbour.gguf\tfetch.sh\t4096\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\tcandidate\t128\t32\t-\t-' \
+    'safe\ttext\tmodels/safe.gguf\tfetch.sh\t8192\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\tproduction\t128\t32\t-\t-\tunmeasured\trefused' \
+    'model-blocked\ttext\tmodels/model-blocked.gguf\tfetch.sh\t8192\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\tproduction\t128\t32\t-\t-\tunmeasured\trefused' \
+    'profile-blocked\ttext\tmodels/profile-blocked.gguf\tfetch.sh\t8192\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\tcandidate\t128\t32\t-\t-\tunmeasured\trefused' \
+    'profile-neighbour\ttext\tmodels/profile-neighbour.gguf\tfetch.sh\t4096\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\tcandidate\t128\t32\t-\t-\tunmeasured\trefused' \
     >"$fixture_registry"
 printf '%b\n' \
     'model-record\tmodel\tmodel-blocked\tdevice-lost\t-\t-\t-\t-\t-\t-\t-\t-\tevidence/model.md\tany' \
