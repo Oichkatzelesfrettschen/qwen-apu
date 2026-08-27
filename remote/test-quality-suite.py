@@ -61,6 +61,25 @@ for kind, expectation, reply, expected in CASES:
               file=sys.stderr)
         failures += 1
 
+# Truncation refuses the presence grader and leaves every content grader alone.
+# The roster arm that exposed this credited term-02 for a reply cut at the
+# token budget, which is the termination failure the row exists to catch, while
+# ctx-03 was truncated in the same arm and failed on its numeric terms.
+TRUNCATION_CASES = [
+    ("nonempty", "", "A reply that ran out of budget", True, False),
+    ("nonempty", "", "A reply that finished", False, True),
+    ("numeric", "42", "the answer is 42", True, True),
+    ("contains_all", "canberra", "The capital is Canberra and", True, True),
+]
+for kind, expectation, reply, truncated, expected in TRUNCATION_CASES:
+    row = {"grader": kind, "expectation": expectation}
+    passed, reason = module.grade(row, reply, truncated)
+    if passed != expected:
+        print(f"grader={kind} truncated={truncated} reply={reply!r} "
+              f"expected={expected} got={passed} reason={reason}",
+              file=sys.stderr)
+        failures += 1
+
 suite_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "quality-suite.tsv")
 rows = module.load_suite(suite_path)
@@ -236,4 +255,4 @@ for row in rows:
 if failures:
     print(f"quality_suite_grader=rejected failures={failures}", file=sys.stderr)
     sys.exit(1)
-print(f"quality_suite_grader=accepted cases={len(CASES)} rows={len(rows)}")
+print(f"quality_suite_grader=accepted cases={len(CASES) + len(TRUNCATION_CASES)} rows={len(rows)}")

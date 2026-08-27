@@ -52,15 +52,26 @@ def reject_nonfinite_json_constant(constant):
     raise ValueError(f"non-finite JSON constant: {constant}")
 
 
-def grade(row, reply):
+def grade(row, reply, truncated=False):
     """Return (passed, reason). A grader reports why it refused, because a
     category-level pass rate without reasons hides a formatting failure inside
-    a correctness figure."""
+    a correctness figure.
+
+    Truncation refuses the `nonempty` grader alone. That grader asserts the
+    model reached an answer and stopped, and a reply cut at the token budget was
+    stopped rather than stopping, which is the termination failure the row
+    exists to catch. Every other grader asserts a property of content, and
+    content that is present is present wherever the reply ended: ctx-03 was
+    truncated and failed on its own numeric terms in the same arm. The
+    completion claim stays separate in `truncated` and `correct_on_completed`.
+    """
     kind, expectation = row["grader"], row["expectation"]
     body = reply.strip()
     if not body:
         return False, "empty reply"
     if kind == "nonempty":
+        if truncated:
+            return False, "reply cut at the token budget"
         return True, "answered"
     if kind == "numeric":
         found = last_number(body)
@@ -200,7 +211,8 @@ def main(argv):
         # A reply cut off at the token budget is a completion failure rather
         # than a wrong answer, and the two are reported apart.
         truncated = choice.get("finish_reason") == "length"
-        passed, reason = (False, error) if error else grade(row, content)
+        passed, reason = ((False, error) if error
+                          else grade(row, content, truncated))
 
         records.append({
             "id": row["id"],

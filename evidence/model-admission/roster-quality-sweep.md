@@ -118,7 +118,7 @@ id its arm requested. Records are retained under `evidence/quality-roster/`.
 | 1 | holds -- 33 for the 0.8B, 41 for both 2B rows, 47 for both 4B rows |
 | 2 | holds -- LFM2.5-VL's 9/10 arithmetic lead ends at 43 against 47, four rows behind |
 | 3 | holds -- the lowest completion rate is 0.964 against a 0.95 falsifier |
-| 4 | **falsified** -- Qwen3.5-2B and the 2B distill tie exactly at 41/55 |
+| 4 | **falsified** -- the two land 0 rows apart on the recorded grades and 1 row apart on the corrected ones, inside a 2-row falsifier either way |
 
 ## Two categories resolve nothing and one grader passes its own failure
 
@@ -128,13 +128,29 @@ tokens against an 8192-token floor, which is the depth it was built to test and
 is far from any admitted ceiling.
 
 `term-02` asks for the largest prime in at most two sentences and grades
-`nonempty`, so it credits any reply that exists, including one that never
+`nonempty`, so it credited any reply that existed, including one that never
 stopped. The 2B distill ran it to the full 1024-token budget and the grader
-passed it, which is the termination failure the category exists to detect. The
-per-row `truncated` field makes the correction computable from the retained
-record rather than needing a re-run, and the corrected column above applies it:
-the 2B distill alone moves, 41 to 40, which breaks its tie with Qwen3.5-2B
-against it.
+passed it, which is the termination failure the category exists to detect.
+
+`grade()` now refuses `nonempty` on a truncated reply. That grader asserts the
+model reached an answer and stopped, and a reply cut at the token budget was
+stopped rather than stopping. The refusal is confined to that grader: every
+other one asserts a property of content, and content that is present is present
+wherever the reply ended, which `ctx-03` shows in the same arm by being
+truncated and failing on its own numeric terms.
+
+`remote/regrade-quality-roster.py` re-applies the corrected grader to the reply
+each retained record already holds, so the correction is computed rather than
+asserted and the records stay as the harness wrote them.
+`evidence/quality-roster/regrade-summary.tsv` is that output. Registered before
+running it: only the 2B distill moves, 41 to 40, because it is the only arm with
+a truncated row that the recorded grade passed. The re-grade moves exactly that
+row on exactly that arm, leaves the other five at their recorded totals, and
+reports no unregradable row.
+
+The correction breaks the exact tie with Qwen3.5-2B against the distill and
+leaves prediction 4 falsified either way: its falsifier is a 2-row margin and
+the corrected gap is 1 row.
 
 A weak grader on a termination category could flatter every arm, so the retained
 `generated_tokens` decide whether it did. Across the 30 termination rows the

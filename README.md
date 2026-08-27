@@ -56,7 +56,7 @@ per-category table.
 | Qwen3.8-4B Distill Q4_K_M | 47/55 | 0.855 | measured |
 | LFM2.5-VL-1.6B Q4_K_M | 43/55 | 0.782 | measured |
 | Qwen3.5-2B Q4_K_M | 41/55 | 0.745 | measured |
-| Qwen3.8-2B Distill Q4_K_M | 41/55 | 0.755 | measured |
+| Qwen3.8-2B Distill Q4_K_M | 40/55 | 0.755 | measured |
 | Qwen3.5-0.8B Q8_0 | 33/55 | 0.600 | measured |
 
 A one-row or two-row difference reports position in a request sequence rather
@@ -154,11 +154,14 @@ frames on time with 346 breaches, and slower inference than the compute queue.
 
 ## Model selection
 
-The 4B distill is the text default on measured appliance behavior rather than
-on an accuracy claim.
+Two text profiles carry two different claims. `text` opens on the 2B distill,
+which decodes 9.19 tok/s and grades 40 of 55; `balanced-text` holds the 4B
+distill, which decodes 3.34 tok/s and grades 47 of 55. The picker offers both
+and the selected-configuration table above states which one it opens on.
 
-Five fixed prompts, reasoning enabled, 2,048-token ceiling, through
-`remote/reasoning-span-probe.sh`:
+Inside the 4B pair the distill is selected over the base on measured appliance
+behavior rather than on an accuracy claim. Five fixed prompts, reasoning
+enabled, 2,048-token ceiling, through `remote/reasoning-span-probe.sh`:
 
 | Quantity | base | distill | class |
 | --- | ---: | ---: | --- |
@@ -174,9 +177,11 @@ Matched-length decode differs by 6.2%, so the practical gain comes from
 reasoning efficiency and termination rather than from faster Vulkan kernels.
 On the fourth prompt the base model consumed its entire 2,048-token budget
 inside the reasoning span and returned an empty answer after 830 seconds. That
-result establishes unsuitability under the appliance's configured ceiling; it
-leaves open what the base model does under a different budget, sampling mode,
-or reasoning setting.
+result establishes unsuitability under the appliance's configured ceiling. What
+the base model does under a different reasoning setting is since measured: with
+thinking off across 55 rows the two 4B checkpoints tie at 47, at 0.855
+correct-on-completed, and within one row in every category, so the distill's
+advantage over the base is throughput and termination rather than accuracy.
 
 The distill's published `gsm8k_cot` score falls from 0.850 to 0.785 against the
 base while `mmlu` CoT rises from 0.354 to 0.553. Three arithmetic prompts in
@@ -319,7 +324,8 @@ control.
 GGUF weights stay outside Git and LFS because their sizes exceed the 2 GB
 per-file limit. Each fetch script pins a Hugging Face revision, a byte count,
 and a SHA-256, and verifies an existing file in place:
-`remote/download-qwen38-4b-distill-q4km.sh` for the text default,
+`remote/download-qwen38-2b-distill-q4km.sh` for the text default and
+`remote/download-qwen38-4b-distill-q4km.sh` for the balanced-text profile,
 `remote/download-qwen35-4b-q4km.sh` with
 `remote/download-qwen35-4b-mmproj.sh` for the vision profile, and
 `remote/download-qwen38-9b-distill-q4km.sh` for the deep profile.
