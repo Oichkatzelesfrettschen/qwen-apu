@@ -56,14 +56,20 @@ all
 .*=Vulkan0
 --fit
 off
---ctx-size
-24576
 --parallel
 1
 --threads
 1
 --threads-batch
 1
+--ctx-checkpoints
+0
+--cache-ram
+0
+--no-context-shift
+--offline
+--ctx-size
+24576
 --batch-size
 128
 --ubatch-size
@@ -73,13 +79,7 @@ on
 --cache-type-k
 q8_0
 --cache-type-v
-q4_0
---ctx-checkpoints
-0
---cache-ram
-0
---no-context-shift
---offline'
+q4_0'
 
 actual_arguments=$(sed -n 's/^argument=//p' "$output_path")
 if [ "$actual_arguments" != "$expected_arguments" ]; then
@@ -354,6 +354,21 @@ case $router_arguments in
         exit 1
         ;;
 esac
+
+# server-models.cpp overlays the router's own CLI arguments on top of every
+# model preset with common_preset::merge, which overwrites, so any of these six
+# on the router argv silently replaces the same key in every section. Router
+# mode leaves them to the preset file for that reason.
+for overridden_flag in --ctx-size --batch-size --ubatch-size --flash-attn \
+    --cache-type-k --cache-type-v; do
+    case " $router_arguments " in
+        *" $overridden_flag "*)
+            printf 'router argv carries %s, which overwrites every model preset: %s\n' \
+                "$overridden_flag" "$router_arguments" >&2
+            exit 1
+            ;;
+    esac
+done
 
 # An unreadable preset file is refused rather than starting a router with no
 # models, which would serve a picker listing nothing.

@@ -47,6 +47,13 @@ columns reports queue position rather than the checkpoint.
 | 9 | Qwen3.8-27B UD-Q2_K_XL | archive | - | - | - | untested | host preflight refuses the load |
 | 10 | Qwen3.8-27B UD-IQ3_XXS | archive | - | - | - | untested | host preflight refuses the load |
 
+**Ranks 6 and 7 are tied and their order is nominal.** Nanbeige's 2.38 is a
+single arm and i1-Q6_K's 2.35 is a sweep mean, and 1.3% across two measurement
+classes is inside the drift this tree measures at up to 30.6%. Rank 5 against
+rank 6 is 22%, which clears the same rule by two points and no more. Ranks 1
+through 4 separate by factors rather than by percents and survive the drift
+whole.
+
 ## What each rank rests on
 
 **1. Qwen3.8-2B Distill.** It decodes three times the 4B and streams faster per

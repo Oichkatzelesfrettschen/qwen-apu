@@ -396,18 +396,34 @@ set -- "$@" \
     --n-gpu-layers all \
     --override-tensor '.*=Vulkan0' \
     --fit off \
-    --ctx-size "$context_size" \
     --parallel 1 \
     --threads 1 \
     --threads-batch 1 \
-    --batch-size "$batch_size" \
-    --ubatch-size "$ubatch_size" \
-    --flash-attn "$flash_attention" \
-    --cache-type-k "$cache_type_k" \
-    --cache-type-v "$cache_type_v" \
     --ctx-checkpoints 0 \
     --cache-ram 0 \
     --no-context-shift \
     --offline
+
+# The six per-checkpoint flags stay off the router's own argv, because
+# server-models.cpp ends its preset assembly with `preset.merge(base_preset)`
+# and common_preset::merge overwrites, so a router CLI argument replaces the
+# same key in every model preset. Setting --ctx-size here served the vision row
+# at 24576 where its section named 16384. Router mode therefore leaves depth,
+# cache triple, and submission geometry to the preset file, which
+# build-router-presets.sh writes from the registry row for every section, and
+# the single-model path sets them from the row it launches.
+#
+# Every section carrying all six is what makes the omission safe: an absent key
+# falls through to the llama.cpp defaults, and those are batch 2048 and ubatch
+# 512, which is the quarantined geometry.
+if [ "${QWEN_ROUTER:-0}" != 1 ]; then
+    set -- "$@" \
+        --ctx-size "$context_size" \
+        --batch-size "$batch_size" \
+        --ubatch-size "$ubatch_size" \
+        --flash-attn "$flash_attention" \
+        --cache-type-k "$cache_type_k" \
+        --cache-type-v "$cache_type_v"
+fi
 
 exec "$script_directory/radv-low-priority-env.sh" "$@"

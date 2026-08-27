@@ -137,24 +137,34 @@ for subject in $("$reader" quarantine-subjects); do
         reason_failures=$((reason_failures + 1))
     fi
 done
-# Both evidence pointers of every quarantine row resolve inside the tree, so a
-# quarantine is never carried by prose that names a file nobody retained.
-while IFS='	' read -r _id _scope _subject _class _depth _batch _ubatch \
-    _ctk _ctv _fa first_evidence latest_evidence _record; do
-    case $_id in '#'* | '') continue ;; esac
-    for evidence_path in "$first_evidence" "$latest_evidence"; do
-        [ "$evidence_path" = - ] && continue
-        if [ ! -r "$repository_root/$evidence_path" ]; then
-            printf 'quarantine %s names absent evidence: %s\n' \
-                "$_id" "$evidence_path" >&2
-            reason_failures=$((reason_failures + 1))
-        fi
-    done
-done <"$quarantine"
 if [ "$reason_failures" -eq 0 ]; then
     report quarantine_reasons accepted
 else
     report quarantine_reasons rejected
+fi
+
+# Both evidence pointers of every quarantine row resolve inside the tree, so a
+# quarantine is never carried by prose that names a file nobody retained. The
+# check is unconditional on both machines: the appliance is where a quarantine
+# is enforced, and a reason record there that cites a measurement that host
+# cannot show is the same defect as one in the repository.
+evidence_failures=0
+while IFS='	' read -r quarantine_id _scope _subject _class _depth _batch \
+    _ubatch _ctk _ctv _fa first_evidence latest_evidence _record; do
+    case $quarantine_id in '#'* | '') continue ;; esac
+    for evidence_path in "$first_evidence" "$latest_evidence"; do
+        [ "$evidence_path" = - ] && continue
+        if [ ! -r "$repository_root/$evidence_path" ]; then
+            printf 'quarantine %s names absent evidence: %s\n' \
+                "$quarantine_id" "$evidence_path" >&2
+            evidence_failures=$((evidence_failures + 1))
+        fi
+    done
+done <"$quarantine"
+if [ "$evidence_failures" -eq 0 ]; then
+    report evidence_paths accepted
+else
+    report evidence_paths rejected
 fi
 
 # llama-server refuses a preset key it does not recognise and fails the whole
@@ -181,6 +191,31 @@ if [ "$preset_key_failures" -eq 0 ]; then
     report preset_key_vocabulary accepted
 else
     report preset_key_vocabulary rejected
+fi
+
+# Every section carries all six per-checkpoint keys. The router argv omits them
+# so the preset decides, and a key absent from a section falls through to the
+# llama.cpp defaults, where batch 2048 and ubatch 512 is the quarantined
+# geometry. An incomplete section is therefore how a quarantined tuple would
+# reach a child without any row asking for it.
+section_completeness=0
+for section in $section_ids; do
+    for required_key in LLAMA_ARG_CTX_SIZE LLAMA_ARG_CACHE_TYPE_K \
+        LLAMA_ARG_CACHE_TYPE_V LLAMA_ARG_FLASH_ATTN LLAMA_ARG_BATCH \
+        LLAMA_ARG_UBATCH; do
+        if ! awk -F'[][]' -v want="$section" -v key="$required_key" '
+            /^\[/ { in_section = ($2 == want); next }
+            in_section && index($0, key) == 1 { found = 1 }
+            END { exit found ? 0 : 1 }' "$presets"; then
+            printf 'preset section %s omits %s\n' "$section" "$required_key" >&2
+            section_completeness=$((section_completeness + 1))
+        fi
+    done
+done
+if [ "$section_completeness" -eq 0 ]; then
+    report section_completeness accepted
+else
+    report section_completeness rejected
 fi
 
 # A profile quarantine removes one tuple, so the check is against the geometry

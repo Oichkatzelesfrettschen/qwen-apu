@@ -128,6 +128,22 @@ and forces the listener to `127.0.0.1` while it does, because the appliance
 binds `0.0.0.0` and a warning alone would put a model with a recorded device
 failure on the LAN.
 
+Two mechanisms guard the quarantined tuple because two paths construct one.
+`qwen-capacity-policy.sh` refuses it on the single-model path, where the policy
+builds the argv the server runs. In router mode the children take their geometry
+from the preset file rather than from a second pass through the policy, so
+`build-router-presets.sh` is the guard there and `test-model-tiers.sh` is what
+checks it.
+
+Router mode leaves depth, cache triple, and submission geometry off its own
+argv. `server-models.cpp` ends its preset assembly with
+`preset.merge(base_preset)` and `common_preset::merge` overwrites, so a router
+CLI argument replaces the same key in every model section: passing `--ctx-size
+24576` served the vision row at 24576 where its section named 16384. Every
+section therefore carries all six keys, since an absent one falls through to the
+llama.cpp defaults of batch 2048 and ubatch 512, which is the quarantined
+geometry.
+
 Sequential host read bandwidth measures 7.97 GB/s on one thread and 15.44 GB/s
 on two. Those figures measure the two Zen+ cores through the load/store path,
 which is a different consumer of the one DDR4 controller than the two Vega
