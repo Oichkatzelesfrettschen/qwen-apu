@@ -94,10 +94,17 @@ printf 'presets=%s\nexpected_sha256=%s\nmeasured_sha256=%s\n' \
     >"$FIXTURE_CONTROL_LOG"
 sed -n '1p' "$QWEN_ROUTER_PRESETS" >>"$FIXTURE_CONTROL_LOG"
 printf 'state=running fixture=1\n' >"$QWEN_WEBUI_STATE_DIRECTORY/session.status"
+if [ -n "${QWEN_TEST_CONTROL_WAIT_MARKER:-}" ]; then
+    : >"$QWEN_TEST_CONTROL_WAIT_MARKER"
+    while [ ! -e "$QWEN_TEST_CONTROL_RELEASE" ]; do
+        sleep 0.01
+    done
+fi
 exit 0
 CONTROL
 cat >"$fixture_bin/curl" <<'CURL'
 #!/bin/sh
+[ -z "${QWEN_TEST_CURL_MARKER:-}" ] || : >"$QWEN_TEST_CURL_MARKER"
 exit 0
 CURL
 cat >"$fixture_bin/tmux" <<'TMUX'
@@ -194,6 +201,69 @@ grep -Fx '# qwen_router_include_quarantine=1' \
 grep -Fx '[quarantine]' "$preset_snapshot" >/dev/null
 grep -Fx '# qwen_router_include_quarantine=0' \
     "$source_router_presets" >/dev/null
+
+# A terminating signal transfers control to a handler that removes the owned
+# snapshot and exits with the signal status before readiness polling begins.
+printf '%s\n' \
+    '# qwen_router_include_quarantine=0' \
+    '[normal]' \
+    "LLAMA_ARG_MODEL = $temporary_directory/models/Normal/small.gguf" \
+    >"$source_router_presets"
+cancellation_mutation_marker=$temporary_directory/cancellation-no-mutation
+: >"$cancellation_mutation_marker"
+cancellation_control_log=$temporary_directory/cancellation-control.log
+cancellation_wait_marker=$temporary_directory/cancellation-control-waiting
+cancellation_release=$temporary_directory/cancellation-control-release
+cancellation_curl_marker=$temporary_directory/cancellation-curl-ran
+HOME=$temporary_directory QWEN_ROUTER=1 \
+QWEN_MODEL_PATH=$temporary_directory/models/Normal/small.gguf \
+QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+QWEN_TEST_CONTROL_WAIT_MARKER=$cancellation_wait_marker \
+QWEN_TEST_CONTROL_RELEASE=$cancellation_release \
+QWEN_TEST_CURL_MARKER=$cancellation_curl_marker \
+FIXTURE_SOURCE_PRESET=$source_router_presets \
+FIXTURE_MUTATION_MARKER=$cancellation_mutation_marker \
+FIXTURE_REAL_STAT=$(command -v stat) \
+FIXTURE_CONTROL_LOG=$cancellation_control_log \
+PATH="$fixture_bin:$PATH" \
+    "$fixture_remote/qwen-launch.sh" \
+    >"$temporary_directory/cancellation.stdout" \
+    2>"$temporary_directory/cancellation.stderr" &
+cancellation_pid=$!
+cancellation_attempt=0
+while [ ! -e "$cancellation_wait_marker" ] && \
+      [ "$cancellation_attempt" -lt 100 ]; do
+    cancellation_attempt=$((cancellation_attempt + 1))
+    sleep 0.01
+done
+if [ ! -e "$cancellation_wait_marker" ]; then
+    kill -TERM "$cancellation_pid" 2>/dev/null || true
+    wait "$cancellation_pid" 2>/dev/null || true
+    printf 'launcher did not reach the cancellable control boundary\n' >&2
+    exit 1
+fi
+kill -TERM "$cancellation_pid"
+: >"$cancellation_release"
+set +e
+wait "$cancellation_pid"
+cancellation_status=$?
+set -e
+if [ "$cancellation_status" -ne 143 ]; then
+    printf 'terminated launcher returned %s instead of 143\n' \
+        "$cancellation_status" >&2
+    exit 1
+fi
+cancellation_snapshot=$(sed -n 's/^presets=//p' "$cancellation_control_log")
+if [ -e "$cancellation_snapshot" ] || [ -L "$cancellation_snapshot" ]; then
+    printf 'terminated launcher retained its router snapshot: %s\n' \
+        "$cancellation_snapshot" >&2
+    exit 1
+fi
+if [ -e "$cancellation_curl_marker" ]; then
+    printf 'terminated launcher entered readiness polling\n' >&2
+    exit 1
+fi
+
 dangling_snapshot=$state_directory/.router-presets.active.dangling
 ln -s "$state_directory/absent-snapshot-target" "$dangling_snapshot"
 HOME=$temporary_directory QWEN_WEBUI_STATE_DIRECTORY=$state_directory \

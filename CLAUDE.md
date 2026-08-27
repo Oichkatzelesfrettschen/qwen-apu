@@ -189,9 +189,12 @@ snapshot, and selects the largest installed artifact as the load-observation
 subject. Normal and research presets therefore use the exact set they can
 launch rather than separate registry enumerations. The launcher records the
 snapshot SHA-256 and forwards both path and digest across the tmux boundary.
-The capacity policy verifies that identity before tuple validation and again at
-the server exec boundary, so preset or authority changes cannot widen the
-launched set after preflight. The preflight reports artifact bytes and fixed
+The capacity policy verifies that identity before tuple validation, measures it
+again at the server exec boundary, and then revalidates the current model and
+quarantine authorities as its final operation before `exec`. A terminating
+launch signal removes the launcher-owned snapshot and exits with the signal
+status before startup control flow resumes. The preflight reports artifact
+bytes and fixed
 host and Vulkan headroom; the subsequent load remains the fit test. Its
 standalone context ceiling never constrains the listener, because each preset
 section supplies its own complete tuple. The capacity policy resolves the

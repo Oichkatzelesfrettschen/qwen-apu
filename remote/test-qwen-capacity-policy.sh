@@ -771,6 +771,60 @@ grep -Fx 2 "$identity_count" >/dev/null
 grep -F 'router preset identity changed:' \
     "$temporary_directory/router-identity-race.stderr" >/dev/null
 
+# The policy reads mutable authorities again at the exec boundary. A profile
+# quarantine added after the initial validation therefore rejects the assembled
+# router command before the fake server records any arguments.
+authority_race_tools=$temporary_directory/authority-race-tools
+authority_query_count=$temporary_directory/authority-query-count
+authority_race_quarantine=$temporary_directory/authority-race-quarantine.tsv
+authority_race_output=$temporary_directory/authority-race.out
+mkdir -p "$authority_race_tools"
+cp "$policy" "$authority_race_tools/qwen-capacity-policy.sh"
+cp "$script_directory/radv-low-priority-env.sh" \
+    "$authority_race_tools/radv-low-priority-env.sh"
+: >"$authority_race_quarantine"
+cat >"$authority_race_tools/model-registry.sh" <<'REGISTRY'
+#!/bin/sh
+if [ "${1:-}" = quarantine-rows ]; then
+    query_count=0
+    if [ -r "$QWEN_TEST_AUTHORITY_QUERY_COUNT" ]; then
+        query_count=$(sed -n '1p' "$QWEN_TEST_AUTHORITY_QUERY_COUNT")
+    fi
+    query_count=$((query_count + 1))
+    printf '%s\n' "$query_count" >"$QWEN_TEST_AUTHORITY_QUERY_COUNT"
+    if [ "$query_count" -eq 2 ]; then
+        printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+            authority-race profile fabricated ring-timeout-only \
+            4096 256 64 q5_1 iq4_nl auto \
+            evidence/x.md evidence/y.md evidence/z.md router-child \
+            >"$QWEN_QUARANTINE_REGISTRY"
+    fi
+fi
+exec "$QWEN_TEST_REAL_MODEL_REGISTRY" "$@"
+REGISTRY
+chmod +x "$authority_race_tools"/*.sh
+if QWEN_MODEL_REGISTRY=$fabricated_registry \
+    QWEN_QUARANTINE_REGISTRY=$authority_race_quarantine \
+    QWEN_MODEL_ROOT=$router_model_root QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$authority_race_output QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS=$router_presets \
+    QWEN_TEST_AUTHORITY_QUERY_COUNT=$authority_query_count \
+    QWEN_TEST_REAL_MODEL_REGISTRY=$script_directory/model-registry.sh \
+    "$authority_race_tools/qwen-capacity-policy.sh" \
+        "$fake_server" "$registry_model" 4096 18080 \
+        >"$temporary_directory/authority-race.stdout" \
+        2>"$temporary_directory/authority-race.stderr"; then
+    printf 'policy accepted quarantine authority replaced before exec\n' >&2
+    exit 1
+fi
+grep -Fx 2 "$authority_query_count" >/dev/null
+grep -F 'router preset section fabricated is excluded by profile quarantine' \
+    "$temporary_directory/authority-race.stderr" >/dev/null
+if [ -e "$authority_race_output" ]; then
+    printf 'fake server ran after exec-boundary authority rejection\n' >&2
+    exit 1
+fi
+
 # A generated preset carries its quarantine override after the generation
 # environment is gone. The launch derives loopback isolation from that durable
 # file rather than from an ambient variable that can disappear on a later run.

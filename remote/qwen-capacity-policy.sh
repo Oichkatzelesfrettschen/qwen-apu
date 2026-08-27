@@ -535,6 +535,21 @@ verify_router_preset_identity() {
         return 1
     fi
 }
+validate_current_router_authorities() {
+    if ! router_quarantine_rows=$(
+        "$script_directory/model-registry.sh" quarantine-rows router-child
+    ); then
+        printf 'router quarantine authority is unavailable\n' >&2
+        return 1
+    fi
+    if ! validate_router_preset_tuples "$router_registry" "$router_presets" \
+        "$router_model_root" "$router_quarantine_rows" \
+        "$quarantine_override_from_preset"; then
+        printf 'router presets do not carry complete admitted tuples: %s\n' \
+            "$router_presets" >&2
+        return 1
+    fi
+}
 if [ "$router_enabled" = 1 ]; then
     if [ ! -r "$router_presets" ]; then
         printf 'router presets are unreadable: %s\n' "$router_presets" >&2
@@ -570,19 +585,7 @@ if [ "$router_enabled" = 1 ]; then
             exit 2
             ;;
     esac
-    if ! router_quarantine_rows=$(
-        "$script_directory/model-registry.sh" quarantine-rows router-child
-    ); then
-        printf 'router quarantine authority is unavailable\n' >&2
-        exit 2
-    fi
-    if ! validate_router_preset_tuples "$router_registry" "$router_presets" \
-        "$router_model_root" "$router_quarantine_rows" \
-        "$quarantine_override_from_preset"; then
-        printf 'router presets do not carry complete admitted tuples: %s\n' \
-            "$router_presets" >&2
-        exit 2
-    fi
+    validate_current_router_authorities || exit 2
     quarantine_override_from_environment=${QWEN_ROUTER_INCLUDE_QUARANTINE:-0}
     case $quarantine_override_from_environment in
         0 | 1) ;;
@@ -772,11 +775,13 @@ if [ "$router_enabled" != 1 ]; then
         --cache-type-v "$cache_type_v"
 fi
 
-# The launcher hashes its immutable-per-session snapshot before preflight. A
-# second measurement at the exec boundary binds the validated rows and marker
-# to the exact file llama-server opens.
+# The launcher hashes its immutable-per-session snapshot before preflight. The
+# exec boundary revalidates both mutable registry authorities and measures the
+# preset again, so a quarantine or model-registry replacement invalidates the
+# assembled server command before llama-server starts.
 if [ "$router_enabled" = 1 ]; then
     verify_router_preset_identity || exit 2
+    validate_current_router_authorities || exit 2
 fi
 
 exec "$script_directory/radv-low-priority-env.sh" "$@"
