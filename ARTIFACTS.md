@@ -37,6 +37,17 @@ on the source host.
 | `libggml-vulkan.so` | 43,788,776 | `57675d461a5d15cb7915bc496d1ba37fa7352cb4f4ceb045b73d839a57a7650f` |
 | `Qwen3.5-4B-Q4_K_M.gguf` | 2,740,937,888 | `00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4` |
 | `Qwen3.8-9B-Q4_K_M.gguf` | 5,780,090,176 | `df13d66021cef676f82be74053220fd75af6bf2a6a7fb77f5222ab9e50744a7a` |
+| `Qwen3.8-2B-BF16.gguf` | 3,897,387,392 | `44763f3d83f0a1a3ee63334b60916705dc565d796cb0f2b8c320414c57f4ac48` |
+| `Qwen3.5-0.8B-bf16.gguf` | 1,557,662,528 | `ad1549eedc613064971dcbbbfab6c9b7990984d1c9ab38f792c6f2ec1207bbc2` |
+
+The two F16 checkpoints carry no row above, because neither publisher ships
+one: `remote/download-qwen38-2b-distill-bf16.sh` and
+`remote/download-qwen35-08b-bf16.sh` fetch the BF16 artifacts the rows do carry,
+and `llama-quantize` produces `Qwen3.8-2B-F16.gguf` and `Qwen3.5-0.8B-F16.gguf`
+from them on the appliance. The generator is the replay authority for a derived
+file, so the BF16 digest above plus the conversion reproduces the F16, and the
+census confirms it: the same 1,505,783,040 streamed bytes per token with 99.17%
+of bytes reported as BF16 before and as F16 after.
 
 The vision fixtures under `remote/quality-images/` are committed rather than
 regenerated, because deflate is not reproducible across hosts: zlib 1.3 on the
