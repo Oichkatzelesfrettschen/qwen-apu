@@ -9,7 +9,7 @@ if [ "$#" -ne 2 ] && [ "$#" -ne 3 ]; then
     printf 'usage: %s id|path SELECTOR [FIELD]\n' "$0" >&2
     printf 'fields: id role model_file fetch_script context_default context_ceiling\n' >&2
     printf '        context_target cache_type_k cache_type_v flash_attention\n' >&2
-    printf '        projector decode_tok_s prefill_tok_s quality\n' >&2
+    printf '        projector decode_tok_s prefill_tok_s quality tier\n' >&2
     printf 'omit FIELD to print the whole row as key=value lines\n' >&2
     exit 2
 fi
@@ -35,7 +35,7 @@ fi
 
 awk -F'\t' -v kind="$selector_kind" -v selector="$selector" -v field="$field" '
     /^#/ { next }
-    NF < 14 { next }
+    NF < 15 { next }
     {
         matched = 0
         if (kind == "id" && $1 == selector) {
@@ -51,11 +51,11 @@ awk -F'\t' -v kind="$selector_kind" -v selector="$selector" -v field="$field" '
         matched_any = 1
         split("id role model_file fetch_script context_default context_ceiling " \
               "context_target cache_type_k cache_type_v flash_attention projector " \
-              "decode_tok_s prefill_tok_s quality", names, " ")
+              "decode_tok_s prefill_tok_s quality tier", names, " ")
         if (field == "") {
-            for (i = 1; i <= 14; i++) { printf "%s=%s\n", names[i], $i }
+            for (i = 1; i <= 15; i++) { printf "%s=%s\n", names[i], $i }
         } else {
-            for (i = 1; i <= 14; i++) {
+            for (i = 1; i <= 15; i++) {
                 if (names[i] == field) { printf "%s\n", $i; found = 1 }
             }
             if (!found) { exit 3 }

@@ -115,9 +115,9 @@ esac
 # A fabricated registry carries a triple the fallback never produces, so this
 # check separates the registry read from the built-in default.
 fabricated_registry=$temporary_directory/models.tsv
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     fabricated research fabricated.gguf download-qwen38-4b-distill-q4km.sh \
-    4096 8192 8192 q5_1 iq4_nl auto none - - untested \
+    4096 8192 8192 q5_1 iq4_nl auto none - - untested candidate \
     >"$fabricated_registry"
 registry_model=$temporary_directory/fabricated.gguf
 : >"$registry_model"
@@ -284,5 +284,51 @@ if QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$output_path \
 fi
 grep -F 'context size exceeds the registered ceiling for this model: 24577 > 24576' \
     "$temporary_directory/context.stderr" >/dev/null
+
+# Router mode replaces the single model with a preset file and a resident-model
+# limit, and drops the fixed alias because the preset supplies one per
+# checkpoint. Every guard flag stays, because llama-server cascades this argv
+# onto each child it spawns.
+router_presets=$temporary_directory/router-presets.ini
+printf '[fabricated]\nLLAMA_ARG_MODEL = %s\n' "$registry_model" >"$router_presets"
+router_output=$temporary_directory/router.out
+QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$router_output \
+    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$router_presets QWEN_ROUTER_MAX=1 \
+    "$policy" "$fake_server" "$model_path" 4096 18080
+router_arguments=$(sed -n 's/^argument=//p' "$router_output" | tr '\n' ' ')
+case $router_arguments in
+    *"--models-preset $router_presets --models-max 1 "*) ;;
+    *)
+        printf 'router preset arguments did not reach the argument list: %s\n' \
+            "$router_arguments" >&2
+        exit 1
+        ;;
+esac
+case $router_arguments in
+    *'--model '*)
+        printf 'router mode still passed a single model: %s\n' \
+            "$router_arguments" >&2
+        exit 1
+        ;;
+esac
+case $router_arguments in
+    *'--device Vulkan0 '*'--override-tensor .*=Vulkan0 '*'--no-context-shift'*) ;;
+    *)
+        printf 'router mode dropped a guard flag: %s\n' "$router_arguments" >&2
+        exit 1
+        ;;
+esac
+
+# An unreadable preset file is refused rather than starting a router with no
+# models, which would serve a picker listing nothing.
+if QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$router_output \
+    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$temporary_directory/absent.ini \
+    "$policy" "$fake_server" "$model_path" 4096 18080 \
+    >"$temporary_directory/router.stdout" \
+    2>"$temporary_directory/router.stderr"; then
+    printf 'policy accepted router mode with an unreadable preset file\n' >&2
+    exit 1
+fi
+grep -F 'router presets are unreadable' "$temporary_directory/router.stderr" >/dev/null
 
 printf 'qwen_capacity_policy=accepted\n'

@@ -47,6 +47,13 @@ cache_type_k=${QWEN_CACHE_TYPE_K:-q8_0}
 cache_type_v=${QWEN_CACHE_TYPE_V:-q4_0}
 flash_attention=${QWEN_FLASH_ATTN:-on}
 control_tokens=${QWEN_WEDGE_CONTROL_TOKENS:-16}
+# A depth listed here stops after its geometries have all passed with healthy
+# controls, leaving the remaining ones unrun. At 8192 the harness-default and
+# served geometries bracket the deployed configuration, so a third arm below
+# them validates a depth already validated and discriminates none of the 16384
+# failure mechanisms. A depth absent from this list runs every geometry, which
+# is what the 16384 matrix requires of its reduced-geometry arm.
+conditional_depths=${QWEN_WEDGE_CONDITIONAL_DEPTHS:-8192}
 
 if [ ! -x "$bench" ] || [ ! -f "$model_path" ]; then
     printf 'llama-bench and the model must both exist\n' >&2
@@ -55,8 +62,10 @@ fi
 
 mkdir -p "$output_directory"
 summary=$output_directory/wedge-summary.tsv
-printf 'arm\tdepth\tbatch\tubatch\tcache_k\tcache_v\tflash_attn\tstatus\tring_resets\tgpu_faults\twall_s\tdecode_tok_s\tvram_peak_mib\tgtt_peak_mib\tcontrol_status\tcontrol_tok_s\tmclk_modal\ttemp_c_max\n' \
-    >"$summary"
+if [ ! -s "$summary" ]; then
+    printf 'arm\tdepth\tbatch\tubatch\tcache_k\tcache_v\tflash_attn\tstatus\tring_resets\tgpu_faults\twall_s\tdecode_tok_s\tvram_peak_mib\tgtt_peak_mib\tcontrol_status\tcontrol_tok_s\tmclk_modal\ttemp_c_max\n' \
+        >"$summary"
+fi
 
 # A killed run leaves its sampler writing once a second into a file the next run
 # recreates, which contaminates that run and hides the orphan behind a plausible
@@ -106,7 +115,10 @@ run_bench() {
     bench_batch=$3
     bench_ubatch=$4
     bench_tokens=$5
-    set +e
+    # errexit is the caller's to manage. Restoring it here re-arms it before the
+    # return, and a non-zero return then kills the caller on the very failure
+    # this probe exists to record: the wedge at 16384 aborted llama-bench, the
+    # function returned 134, and the script died without writing the row.
     if [ "$bench_depth" -eq 0 ]; then
         nice -n 19 ionice -c 3 "$bench" -m "$model_path" \
             -ngl 99 -t 2 -r 1 -p 0 -n "$bench_tokens" \
@@ -120,9 +132,6 @@ run_bench() {
             -ctk "$cache_type_k" -ctv "$cache_type_v" -fa "$flash_attention" \
             -o md >"$bench_log" 2>&1
     fi
-    bench_status=$?
-    set -e
-    return "$bench_status"
 }
 
 device_corrupt=0
@@ -229,12 +238,32 @@ run_arm() {
             "$arm_label" >&2
         device_corrupt=1
     fi
+
+    arm_healthy=0
+    if [ "$arm_status" -eq 0 ] && [ "$control_status" -eq 0 ]; then
+        if [ "$resets" = unavailable ] || [ "$resets" -eq 0 ]; then
+            arm_healthy=1
+        fi
+    fi
 }
 
 for depth in $depths; do
+    depth_conditional=0
+    case " $conditional_depths " in
+        *" $depth "*) depth_conditional=1 ;;
+    esac
+    depth_clean=1
     for geometry in $geometries; do
         [ "$device_corrupt" -eq 0 ] || break
+        if [ "$depth_conditional" -eq 1 ] && [ "$depth_clean" -eq 1 ] &&
+            [ "$geometry" != "${geometries%% *}" ] &&
+            [ "$geometry" = "${geometries##* }" ]; then
+            printf 'arm_skipped label=d%s-b%s-ub%s reason=preceding geometries at this depth passed with healthy controls\n' \
+                "$depth" "${geometry%%:*}" "${geometry##*:}"
+            continue
+        fi
         run_arm "$depth" "${geometry%%:*}" "${geometry##*:}"
+        [ "$arm_healthy" -eq 1 ] || depth_clean=0
     done
     [ "$device_corrupt" -eq 0 ] || break
 done

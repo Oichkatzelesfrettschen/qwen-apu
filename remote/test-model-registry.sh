@@ -26,7 +26,7 @@ check_rows() {
         /^[[:space:]]*$/ { next }
         {
             rows++
-            if (NF != 14) {
+            if (NF != 15) {
                 printf "row %d holds %d fields\n", NR, NF
                 bad++
                 next
@@ -67,7 +67,7 @@ else
     report registry_rows rejected
 fi
 
-expected_header=$(printf '# id\trole\tmodel_file\tfetch_script\tcontext_default\tcontext_ceiling\tcontext_target\tcache_type_k\tcache_type_v\tflash_attention\tprojector\tdecode_tok_s\tprefill_tok_s\tquality')
+expected_header=$(printf '# id\trole\tmodel_file\tfetch_script\tcontext_default\tcontext_ceiling\tcontext_target\tcache_type_k\tcache_type_v\tflash_attention\tprojector\tdecode_tok_s\tprefill_tok_s\tquality\ttier')
 actual_header=$(grep '^# id' "$registry" || true)
 if [ "$actual_header" = "$expected_header" ]; then
     report schema_header accepted

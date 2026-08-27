@@ -101,12 +101,45 @@ if env | awk -F= '$1 ~ /^LLAMA_ARG_/ { found = 1 } END { exit !found }'; then
     exit 2
 fi
 
-set -- "$llama_server" \
-    --model "$model_path" \
-    --host "$bind_host" \
-    --port "$server_port" \
-    --alias qwen-apu \
-    --cors-origins "$cors_origins"
+# Router mode serves every admitted checkpoint behind one listener and lets the
+# picker choose per chat. llama-server builds a base preset from this argv,
+# strips the SSL, API key, and models-* keys from it, and cascades the rest onto
+# each child it spawns, so every guard below reaches the child unchanged and the
+# preset file supplies only what differs per checkpoint.
+#
+# models-max is 1 rather than the upstream default of 4. The 4B alone peaks at
+# 2029 MiB of a 2048 MiB VRAM carve-out with 2700 MiB more in GTT, so a second
+# resident model competes for a pool already saturated by one. Switching models
+# unloads the previous one, which costs a reload and buys a device that fits.
+router_presets=${QWEN_ROUTER_PRESETS:-"${HOME:?}/qwen-webui-state/router-presets.ini"}
+router_max=${QWEN_ROUTER_MAX:-1}
+if [ "${QWEN_ROUTER:-0}" = 1 ]; then
+    if [ ! -r "$router_presets" ]; then
+        printf 'router presets are unreadable: %s\n' "$router_presets" >&2
+        printf 'generate them with remote/build-router-presets.sh\n' >&2
+        exit 2
+    fi
+    case $router_max in
+        '' | *[!0-9]*)
+            printf 'router model limit must be a non-negative integer: %s\n' \
+                "$router_max" >&2
+            exit 2
+            ;;
+    esac
+    set -- "$llama_server" \
+        --models-preset "$router_presets" \
+        --models-max "$router_max" \
+        --host "$bind_host" \
+        --port "$server_port" \
+        --cors-origins "$cors_origins"
+else
+    set -- "$llama_server" \
+        --model "$model_path" \
+        --host "$bind_host" \
+        --port "$server_port" \
+        --alias qwen-apu \
+        --cors-origins "$cors_origins"
+fi
 
 if [ -n "$static_path" ]; then
     set -- "$@" --path "$static_path" --ui
@@ -124,7 +157,7 @@ fi
 # repository revision. Offloading it to Vulkan costs about 672 MiB of a heap
 # with over 12 GiB free, and the alternative is running a vision encoder on two
 # CPU cores.
-if [ -n "${QWEN_MMPROJ:-}" ]; then
+if [ -n "${QWEN_MMPROJ:-}" ] && [ "${QWEN_ROUTER:-0}" != 1 ]; then
     if [ ! -f "$QWEN_MMPROJ" ]; then
         printf 'projector is not a regular file: %s\n' "$QWEN_MMPROJ" >&2
         exit 2

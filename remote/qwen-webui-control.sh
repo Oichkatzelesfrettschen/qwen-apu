@@ -90,7 +90,8 @@ case $action in
                               QWEN_SPEC_DRAFT_N_MAX QWEN_SPEC_DRAFT_P_MIN \
                               QWEN_SPEC_BACKEND_SAMPLING QWEN_BACKEND_SAMPLING \
                               QWEN_CACHE_TYPE_K QWEN_CACHE_TYPE_V \
-                              QWEN_FLASH_ATTN; do
+                              QWEN_FLASH_ATTN QWEN_ROUTER QWEN_ROUTER_PRESETS \
+                              QWEN_ROUTER_MAX; do
             eval "forwarded_value=\${$forwarded_name:-}"
             if [ -n "$forwarded_value" ]; then
                 forwarded_environment="$forwarded_environment $forwarded_name=$forwarded_value"
