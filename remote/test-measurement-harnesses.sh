@@ -7,11 +7,25 @@ set -eu
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 temporary_directory=$(mktemp -d)
+active_fixture=initialization
+diagnostic_file=
 cleanup() {
+    cleanup_status=$?
+    if [ "$cleanup_status" -ne 0 ]; then
+        printf 'measurement fixture failed: %s (status %s)\n' \
+            "$active_fixture" "$cleanup_status" >&2
+        if [ -n "$diagnostic_file" ] && [ -f "$diagnostic_file" ]; then
+            printf 'measurement fixture diagnostic: %s\n' \
+                "$diagnostic_file" >&2
+            sed -n '1,160p' "$diagnostic_file" >&2
+        fi
+    fi
     rm -rf -- "$temporary_directory"
+    exit "$cleanup_status"
 }
 trap cleanup EXIT HUP INT TERM
 
+active_fixture=gpu-clock-sampling
 drm_device=$temporary_directory/drm-device
 hwmon_root=$temporary_directory/hwmon
 mkdir -p "$drm_device" "$hwmon_root"
@@ -77,6 +91,8 @@ model_path=$temporary_directory/model.gguf
 
 sampler_pid_file=$temporary_directory/sampler.pid
 successful_output=$temporary_directory/repeatability-success
+active_fixture=bench-repeatability-success
+diagnostic_file=$temporary_directory/success.stderr
 QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
 QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_IDLE_SECONDS=0 \
     "$script_directory/measure-bench-repeatability.sh" "$model_path" \
@@ -90,6 +106,8 @@ if kill -0 "$(cat "$sampler_pid_file")" 2>/dev/null; then
 fi
 
 failed_output=$temporary_directory/repeatability-failure
+active_fixture=bench-repeatability-failure
+diagnostic_file=$temporary_directory/failure.stderr
 if QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
     QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_IDLE_SECONDS=0 \
     QWEN_TEST_BENCH_MODE=failure \
@@ -130,6 +148,8 @@ chmod +x "$fake_teardown"
 teardown_marker=$temporary_directory/teardown-called
 launch_state_marker=$temporary_directory/launch-state
 teardown_state_marker=$temporary_directory/teardown-state
+active_fixture=served-decode-failure
+diagnostic_file=$temporary_directory/served.stderr
 if QWEN_LAUNCH_SCRIPT=$fake_launch QWEN_TEARDOWN_SCRIPT=$fake_teardown \
     QWEN_STATE_DIRECTORY=$fake_state QWEN_RESULT_DIRECTORY=$fake_result \
     QWEN_TEST_LAUNCH_STATE_MARKER=$launch_state_marker \
@@ -163,6 +183,8 @@ while ! pgrep -x llama-bench >/dev/null 2>&1 && \
     contender_attempt=$((contender_attempt + 1))
     sleep 0.05
 done
+active_fixture=depth-wedge-process-contention
+diagnostic_file=$temporary_directory/contended-wedge.stderr
 if QWEN_LLAMA_BENCH=$fake_bench \
     "$script_directory/probe-depth-wedge.sh" "$model_path" \
     "$temporary_directory/contended-wedge" \
@@ -173,6 +195,8 @@ if QWEN_LLAMA_BENCH=$fake_bench \
 fi
 grep -F 'another llama process holds the device' \
     "$temporary_directory/contended-wedge.stderr" >/dev/null
+active_fixture=cache-factorial-process-contention
+diagnostic_file=$temporary_directory/contended-factorial.stderr
 if QWEN_LLAMA_BENCH=$fake_bench \
     "$script_directory/run-kv-cache-factorial.sh" "$model_path" \
     "$temporary_directory/contended-factorial" \
@@ -196,6 +220,8 @@ chmod +x "$fake_bin/dmesg"
 wedge_output=$temporary_directory/wedge
 mkdir -p "$wedge_output"
 printf 'GPU reset from an earlier run\n' >"$wedge_output/d1-b1-ub1.dmesg.txt"
+active_fixture=depth-wedge-unreadable-kernel-log
+diagnostic_file=$temporary_directory/wedge.stderr
 QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
 QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_WEDGE_DEPTHS=1 \
 QWEN_WEDGE_GEOMETRIES=1:1 PATH="$fake_bin:$PATH" \
@@ -212,6 +238,8 @@ awk -F'\t' '$1 == "d1-b1-ub1" && $9 == "unavailable" { found = 1 }
 # Reusing a completed output directory resumes from retained arm identity. The
 # row remains unique and the failing bench mode proves no recorded arm reruns or
 # overwrites the logs that support it.
+active_fixture=depth-wedge-retained-arm-resume
+diagnostic_file=$temporary_directory/wedge-resume.stderr
 QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
 QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_WEDGE_DEPTHS=1 \
 QWEN_WEDGE_GEOMETRIES=1:1 QWEN_TEST_BENCH_MODE=failure PATH="$fake_bin:$PATH" \
@@ -226,6 +254,8 @@ if [ "$(awk -F'\t' '$1 == "d1-b1-ub1" { count++ }
     exit 1
 fi
 
+active_fixture=depth-wedge-cache-policy-identity
+diagnostic_file=$temporary_directory/wedge-cache-mismatch.stderr
 if QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
     QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_WEDGE_DEPTHS=1 \
     QWEN_WEDGE_GEOMETRIES=1:1 QWEN_CACHE_TYPE_K=f16 PATH="$fake_bin:$PATH" \
@@ -240,6 +270,8 @@ grep -F 'recorded arm d1-b1-ub1 belongs to cache policy q8_0/q4_0/on, not f16/q4
 
 different_model_path=$temporary_directory/different-model.gguf
 printf 'different model bytes\n' >"$different_model_path"
+active_fixture=depth-wedge-model-identity
+diagnostic_file=$temporary_directory/wedge-model-mismatch.stderr
 if QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
     QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_WEDGE_DEPTHS=1 \
     QWEN_WEDGE_GEOMETRIES=1:1 PATH="$fake_bin:$PATH" \
@@ -261,6 +293,8 @@ for retained_suffix in log clocks.tsv control.log; do
     cp "$wedge_output/d1-b1-ub1.$retained_suffix" \
         "$kernel_gap_output/d1-b1-ub1.$retained_suffix"
 done
+active_fixture=depth-wedge-kernel-evidence-retention
+diagnostic_file=$temporary_directory/wedge-kernel-gap.stderr
 if QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
     QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_WEDGE_DEPTHS=1 \
     QWEN_WEDGE_GEOMETRIES=1:1 PATH="$fake_bin:$PATH" \
@@ -281,6 +315,8 @@ cp "$wedge_output/wedge-summary.tsv" \
     "$duplicate_wedge_output/wedge-summary.tsv"
 sed -n '2p' "$wedge_output/wedge-summary.tsv" \
     >>"$duplicate_wedge_output/wedge-summary.tsv"
+active_fixture=depth-wedge-unique-arm-identity
+diagnostic_file=$temporary_directory/wedge-duplicate.stderr
 if QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
     QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_WEDGE_DEPTHS=1 \
     QWEN_WEDGE_GEOMETRIES=1:1 PATH="$fake_bin:$PATH" \
@@ -294,6 +330,8 @@ grep -F 'wedge summary carries duplicate arm identity: d1-b1-ub1' \
     "$temporary_directory/wedge-duplicate.stderr" >/dev/null
 
 unparseable_output=$temporary_directory/wedge-unparseable
+active_fixture=depth-wedge-parser-status
+diagnostic_file=$temporary_directory/unparseable.stderr
 if QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
     QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file \
     QWEN_TEST_BENCH_MODE=unparseable QWEN_WEDGE_DEPTHS=1 \
@@ -310,6 +348,8 @@ awk -F'\t' '$1 == "d1-b1-ub1" && $8 == 65 && $15 == 65 { found = 1 }
             END { exit !found }' "$unparseable_output/wedge-summary.tsv"
 
 for invalid_rounds in 0 -1; do
+    active_fixture=dpm-round-validation
+    diagnostic_file=$temporary_directory/dpm-rounds-$invalid_rounds.stderr
     if QWEN_DPM_ROUNDS=$invalid_rounds QWEN_LLAMA_BENCH=$fake_bench \
         "$script_directory/measure-dpm-force.sh" "$model_path" \
         >"$temporary_directory/dpm-rounds-$invalid_rounds.stdout" \
@@ -334,6 +374,8 @@ second_spaced_model=$temporary_directory/'second model.gguf'
 : >"$first_spaced_model"
 : >"$second_spaced_model"
 bandwidth_output=$temporary_directory/bandwidth
+active_fixture=bandwidth-niceness-policy
+diagnostic_file=$temporary_directory/bandwidth-nice.stderr
 if QWEN_BENCH_NICE_LEVELS=0 QWEN_BANDWIDTH_OUTPUT=$bandwidth_output \
     QWEN_LLAMA_BENCH=$fake_bench \
     "$script_directory/run-bandwidth-ladder.sh" \
@@ -345,6 +387,8 @@ if QWEN_BENCH_NICE_LEVELS=0 QWEN_BANDWIDTH_OUTPUT=$bandwidth_output \
 fi
 grep -F 'bandwidth ladder requires nice 19: 0' \
     "$temporary_directory/bandwidth-nice.stderr" >/dev/null
+active_fixture=bandwidth-model-path-order
+diagnostic_file=$temporary_directory/bandwidth.stderr
 if ! env \
     QWEN_BANDWIDTH_OUTPUT=$bandwidth_output QWEN_LLAMA_BENCH=$fake_bench \
     QWEN_TENSOR_CENSUS=$fake_census QWEN_CLOCK_SAMPLER=$fake_sampler \
@@ -372,6 +416,8 @@ done
 # The retained summary keeps the missing value, and the terminal state fails
 # instead of presenting the decode half as a completed paired sweep.
 missing_prefill_output=$temporary_directory/bandwidth-missing-prefill
+active_fixture=bandwidth-required-prefill-output
+diagnostic_file=$temporary_directory/missing-prefill.stderr
 if env \
     QWEN_BANDWIDTH_OUTPUT=$missing_prefill_output QWEN_LLAMA_BENCH=$fake_bench \
     QWEN_TENSOR_CENSUS=$fake_census QWEN_CLOCK_SAMPLER=$fake_sampler \
@@ -397,4 +443,6 @@ awk -F'\t' 'NR > 1 && $6 == "n/a" { missing++ }
             END { exit missing == 2 ? 0 : 1 }' \
     "$missing_prefill_output/bandwidth-summary.tsv"
 
+active_fixture=completed
+diagnostic_file=
 printf 'measurement_harnesses=accepted\n'
