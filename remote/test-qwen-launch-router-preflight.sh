@@ -31,6 +31,15 @@ cat >"$fixture_bin/pgrep" <<'PGREP'
 #!/bin/sh
 exit 1
 PGREP
+cat >"$fixture_bin/signal-reset-exec.py" <<'PYTHON'
+import os
+import signal
+import sys
+
+for signal_number in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+    signal.signal(signal_number, signal.SIG_DFL)
+os.execv(sys.argv[1], sys.argv[1:])
+PYTHON
 
 chmod +x "$fixture_remote"/*.sh "$fixture_bin"/*
 state_directory=$temporary_directory/custom-state
@@ -262,9 +271,7 @@ for cancellation_signal_and_status in HUP:129 INT:130 TERM:143; do
     cancellation_release=$temporary_directory/cancellation-$cancellation_signal-release
     cancellation_curl_marker=$temporary_directory/cancellation-$cancellation_signal-curl-ran
     detached_session_pid_file=$temporary_directory/detached-session.pid
-    (
-        trap - HUP INT TERM
-        HOME=$temporary_directory QWEN_ROUTER=1 \
+    HOME=$temporary_directory QWEN_ROUTER=1 \
         QWEN_MODEL_PATH=$temporary_directory/models/Normal/small.gguf \
         QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
         QWEN_TEST_CONTROL_WAIT_MARKER=$cancellation_wait_marker \
@@ -276,8 +283,9 @@ for cancellation_signal_and_status in HUP:129 INT:130 TERM:143; do
         FIXTURE_REAL_STAT=$(command -v stat) \
         FIXTURE_CONTROL_LOG=$cancellation_control_log \
         PATH="$fixture_bin:$PATH" \
-            exec "$fixture_remote/qwen-launch.sh"
-    ) >"$temporary_directory/cancellation-$cancellation_signal.stdout" \
+        python3 "$fixture_bin/signal-reset-exec.py" \
+            "$fixture_remote/qwen-launch.sh" \
+      >"$temporary_directory/cancellation-$cancellation_signal.stdout" \
       2>"$temporary_directory/cancellation-$cancellation_signal.stderr" &
     cancellation_pid=$!
     cancellation_attempt=0

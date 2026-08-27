@@ -39,6 +39,15 @@ while :; do
     sleep 1
 done
 SERVER
+cat >"$fixture_remote/signal-reset-exec.py" <<'PYTHON'
+import os
+import signal
+import sys
+
+for signal_number in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
+    signal.signal(signal_number, signal.SIG_DFL)
+os.execv(sys.argv[1], sys.argv[1:])
+PYTHON
 chmod +x "$fixture_remote"/*.sh
 
 for signal_and_status in HUP:129 INT:130 TERM:143; do
@@ -49,16 +58,15 @@ for signal_and_status in HUP:129 INT:130 TERM:143; do
     router_snapshot=$state_directory/.router-presets.active.$signal_name
     mkdir -p "$state_directory"
     : >"$router_snapshot"
-    (
-        trap - HUP INT TERM
-        QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$router_snapshot \
+    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$router_snapshot \
         QWEN_TEST_SERVER_PID_MARKER=$server_pid_marker \
-            exec "$fixture_remote/qwen-webui-session.sh" \
+        python3 "$fixture_remote/signal-reset-exec.py" \
+            "$fixture_remote/qwen-webui-session.sh" \
                 "$temporary_directory/fake-server" \
                 "$temporary_directory/fake-model" \
                 "$temporary_directory/fake-static" 4096 4096 18080 \
-                "$state_directory" low-serialized
-    ) >"$temporary_directory/session-$signal_name.stdout" \
+                "$state_directory" low-serialized \
+      >"$temporary_directory/session-$signal_name.stdout" \
       2>"$temporary_directory/session-$signal_name.stderr" &
     session_pid=$!
     attempt=0
