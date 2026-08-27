@@ -209,6 +209,90 @@ fi
 awk -F'\t' '$1 == "d1-b1-ub1" && $9 == "unavailable" { found = 1 }
             END { exit !found }' "$wedge_output/wedge-summary.tsv"
 
+# Reusing a completed output directory resumes from retained arm identity. The
+# row remains unique and the failing bench mode proves no recorded arm reruns or
+# overwrites the logs that support it.
+QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
+QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_WEDGE_DEPTHS=1 \
+QWEN_WEDGE_GEOMETRIES=1:1 QWEN_TEST_BENCH_MODE=failure PATH="$fake_bin:$PATH" \
+    "$script_directory/probe-depth-wedge.sh" "$model_path" "$wedge_output" \
+    >"$temporary_directory/wedge-resume.stdout" \
+    2>"$temporary_directory/wedge-resume.stderr"
+grep -F 'arm_resume_skip label=d1-b1-ub1 status=0' \
+    "$temporary_directory/wedge-resume.stdout" >/dev/null
+if [ "$(awk -F'\t' '$1 == "d1-b1-ub1" { count++ }
+        END { print count + 0 }' "$wedge_output/wedge-summary.tsv")" -ne 1 ]; then
+    printf 'depth wedge duplicated a recorded arm on resume\n' >&2
+    exit 1
+fi
+
+if QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
+    QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_WEDGE_DEPTHS=1 \
+    QWEN_WEDGE_GEOMETRIES=1:1 QWEN_CACHE_TYPE_K=f16 PATH="$fake_bin:$PATH" \
+    "$script_directory/probe-depth-wedge.sh" "$model_path" "$wedge_output" \
+    >"$temporary_directory/wedge-cache-mismatch.stdout" \
+    2>"$temporary_directory/wedge-cache-mismatch.stderr"; then
+    printf 'depth wedge resumed an arm from a different cache policy\n' >&2
+    exit 1
+fi
+grep -F 'recorded arm d1-b1-ub1 belongs to cache policy q8_0/q4_0/on, not f16/q4_0/on' \
+    "$temporary_directory/wedge-cache-mismatch.stderr" >/dev/null
+
+different_model_path=$temporary_directory/different-model.gguf
+printf 'different model bytes\n' >"$different_model_path"
+if QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
+    QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_WEDGE_DEPTHS=1 \
+    QWEN_WEDGE_GEOMETRIES=1:1 PATH="$fake_bin:$PATH" \
+    "$script_directory/probe-depth-wedge.sh" "$different_model_path" \
+    "$wedge_output" >"$temporary_directory/wedge-model-mismatch.stdout" \
+    2>"$temporary_directory/wedge-model-mismatch.stderr"; then
+    printf 'depth wedge resumed an arm from a different model\n' >&2
+    exit 1
+fi
+grep -F 'wedge metadata does not match the model or recovery control:' \
+    "$temporary_directory/wedge-model-mismatch.stderr" >/dev/null
+
+kernel_gap_output=$temporary_directory/wedge-kernel-gap
+mkdir -p "$kernel_gap_output"
+cp "$wedge_output/wedge-metadata.tsv" "$kernel_gap_output/wedge-metadata.tsv"
+sed 's/\tunavailable\tunavailable\t/\t0\t0\t/' \
+    "$wedge_output/wedge-summary.tsv" >"$kernel_gap_output/wedge-summary.tsv"
+for retained_suffix in log clocks.tsv control.log; do
+    cp "$wedge_output/d1-b1-ub1.$retained_suffix" \
+        "$kernel_gap_output/d1-b1-ub1.$retained_suffix"
+done
+if QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
+    QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_WEDGE_DEPTHS=1 \
+    QWEN_WEDGE_GEOMETRIES=1:1 PATH="$fake_bin:$PATH" \
+    "$script_directory/probe-depth-wedge.sh" "$model_path" \
+    "$kernel_gap_output" >"$temporary_directory/wedge-kernel-gap.stdout" \
+    2>"$temporary_directory/wedge-kernel-gap.stderr"; then
+    printf 'depth wedge resumed a numeric kernel row without its delta\n' >&2
+    exit 1
+fi
+grep -F 'recorded arm d1-b1-ub1 is missing retained artifact:' \
+    "$temporary_directory/wedge-kernel-gap.stderr" >/dev/null
+
+duplicate_wedge_output=$temporary_directory/wedge-duplicate
+mkdir -p "$duplicate_wedge_output"
+cp "$wedge_output/wedge-metadata.tsv" \
+    "$duplicate_wedge_output/wedge-metadata.tsv"
+cp "$wedge_output/wedge-summary.tsv" \
+    "$duplicate_wedge_output/wedge-summary.tsv"
+sed -n '2p' "$wedge_output/wedge-summary.tsv" \
+    >>"$duplicate_wedge_output/wedge-summary.tsv"
+if QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
+    QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_WEDGE_DEPTHS=1 \
+    QWEN_WEDGE_GEOMETRIES=1:1 PATH="$fake_bin:$PATH" \
+    "$script_directory/probe-depth-wedge.sh" "$model_path" \
+    "$duplicate_wedge_output" >"$temporary_directory/wedge-duplicate.stdout" \
+    2>"$temporary_directory/wedge-duplicate.stderr"; then
+    printf 'depth wedge accepted duplicate retained arm identities\n' >&2
+    exit 1
+fi
+grep -F 'wedge summary carries duplicate arm identity: d1-b1-ub1' \
+    "$temporary_directory/wedge-duplicate.stderr" >/dev/null
+
 unparseable_output=$temporary_directory/wedge-unparseable
 if QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
     QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file \
@@ -283,5 +367,34 @@ for model_name in 'first model' 'second model'; do
         exit 1
     fi
 done
+
+# A paired prefill/decode arm is incomplete when llama-bench emits no pp row.
+# The retained summary keeps the missing value, and the terminal state fails
+# instead of presenting the decode half as a completed paired sweep.
+missing_prefill_output=$temporary_directory/bandwidth-missing-prefill
+if env \
+    QWEN_BANDWIDTH_OUTPUT=$missing_prefill_output QWEN_LLAMA_BENCH=$fake_bench \
+    QWEN_TENSOR_CENSUS=$fake_census QWEN_CLOCK_SAMPLER=$fake_sampler \
+    QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file \
+    QWEN_TEST_BENCH_MODE=delayed_success QWEN_BENCH_NICE_LEVELS=19 \
+    QWEN_BENCH_PREFILL=32 \
+    "$script_directory/run-bandwidth-ladder.sh" "$first_spaced_model" \
+    >"$temporary_directory/missing-prefill.stdout" \
+    2>"$temporary_directory/missing-prefill.stderr"; then
+    printf 'bandwidth fixture accepted a missing requested prefill row\n' >&2
+    exit 1
+fi
+grep -F 'arm_prefill_missing' \
+    "$temporary_directory/missing-prefill.stderr" >/dev/null
+grep -F 'bandwidth_ladder=failed' \
+    "$temporary_directory/missing-prefill.stderr" >/dev/null
+if grep -F 'bandwidth_ladder=completed' \
+    "$temporary_directory/missing-prefill.stdout" >/dev/null; then
+    printf 'missing prefill printed a completed terminal state\n' >&2
+    exit 1
+fi
+awk -F'\t' 'NR > 1 && $6 == "n/a" { missing++ }
+            END { exit missing == 2 ? 0 : 1 }' \
+    "$missing_prefill_output/bandwidth-summary.tsv"
 
 printf 'measurement_harnesses=accepted\n'

@@ -191,6 +191,13 @@ run_model() {
                              }
                              END { print (rate == "" ? "n/a" : rate) }' "$arm_log")
     fi
+    prefill_complete=1
+    if [ "$arm_status" -eq 0 ] && [ "$prefill_tokens" -gt 0 ] &&
+       [ "$prefill" = n/a ]; then
+        printf 'arm_prefill_missing label=%s requested_tokens=%s\n' \
+            "$arm_label" "$prefill_tokens" >&2
+        prefill_complete=0
+    fi
     achieved=n/a
     case $decode in
         n/a) ;;
@@ -228,7 +235,7 @@ run_model() {
         "$(printf '%s' "$clock_report" | tr '\t' ' ')"
 
     if [ "$arm_status" -ne 0 ] || [ "$decode" = n/a ] || \
-       [ "$priority_matches" -ne 1 ]; then
+       [ "$prefill_complete" -ne 1 ] || [ "$priority_matches" -ne 1 ]; then
         return 1
     fi
     return 0

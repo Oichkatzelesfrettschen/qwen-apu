@@ -116,6 +116,17 @@ claim: at 16384 the same checkpoint, cache, and device wedged the compute ring
 at 2048/512 and completed twice at 128/32, so `batch` and `ubatch` are registry
 fields rather than constants in the argv.
 
+`remote/probe-depth-wedge.sh` treats an output directory as a resumable evidence
+ledger. `wedge-metadata.tsv` binds the ledger to the model SHA-256, model byte
+count, and recovery-control length. A recorded arm resumes only when its summary
+row is structurally complete, unique, and carries the requested depth,
+submission geometry, cache types, and Flash Attention state, with its bench log,
+clock samples, control log, and any claimed kernel delta still present. A
+different model, tuple, incomplete artifact set, duplicate row, or legacy row
+without model identity requires a new output directory. The retained row also
+restores health and device-corruption state, so conditional arms and terminal
+halt behavior remain the same across an interrupted run.
+
 The `tier` field states what is claimed about a row and
 `remote/build-router-presets.sh` turns it into what the picker offers.
 `production` is a serving tuple measured safe and useful; `candidate` leaves
@@ -156,6 +167,22 @@ section therefore carries all six keys, since an absent one falls through to the
 llama.cpp defaults of batch 2048 and ubatch 512, which is the quarantined
 geometry.
 
+Router startup still selects the largest installed servable GGUF as the
+resident-memory preflight subject. That path sizes weight headroom only. Its
+standalone context ceiling never constrains the listener, because each preset
+section supplies its own complete tuple and the capacity policy revalidates the
+six key values before launch. The launcher's positive context argument remains
+a control-path input but never reaches the router argv.
+
+The repository fallback Web UI treats `GET /v1/models` as the request-model
+authority and sends only a returned id for chat completion and attachment
+tokenization. Its picker retains a still-valid choice when browser storage
+permits and continues with live state when storage is denied. `GET /props`
+supplies optional context display metadata; an unavailable or malformed props
+response leaves the selected model routable. A new API-key attempt clears the
+prior selection until the authenticated roster returns, and late responses
+from an older attempt never replace the newer state.
+
 Sequential host read bandwidth measures 7.97 GB/s on one thread and 15.44 GB/s
 on two. Those figures measure the two Zen+ cores through the load/store path,
 which is a different consumer of the one DDR4 controller than the two Vega
@@ -170,6 +197,12 @@ priority is read back from `/proc` rather than asserted. That comparison is
 retained historical evidence. The live bandwidth harness now admits nice 19
 alone and applies it as an absolute child priority, independent of the calling
 shell's niceness.
+
+A positive `QWEN_BENCH_PREFILL` requests a paired prefill/decode arm. A
+successful `llama-bench` process must emit both the requested `pp` row and its
+`tg` row. Missing prefill output remains `n/a` in the retained summary, emits
+`arm_prefill_missing`, and makes the ladder terminal state `failed`; the decode
+half never promotes an incomplete pair to a completed sweep.
 
 Decode scales with checkpoint size, and a linear cost model over it is refuted.
 Two points, the 4B and the 9B, fit 0.1015 s per token plus 0.0869 s per GiB and
