@@ -262,6 +262,36 @@ else
     report absent_quarantine_blocks_queries rejected
 fi
 
+# A structurally complete authority row still fails when its tuple cannot name
+# a runtime profile. Treating invalid semantics as a non-match would re-admit a
+# stale preset and a stale production tier.
+invalid_profile_quarantine=$work_directory/invalid-profile-quarantine.tsv
+printf '%b\n' \
+    'invalid-profile\tprofile\tprofile-blocked\tring-timeout\tnot-a-depth\t128\t32\tq8_0\tq4_0\ton\t-\t-\tevidence/profile.md\trouter-child' \
+    >"$invalid_profile_quarantine"
+set +e
+QWEN_MODEL_REGISTRY=$fixture_registry \
+QWEN_QUARANTINE_REGISTRY=$invalid_profile_quarantine \
+    "$reader" servable-ids >"$work_directory/invalid-profile-servable.out" \
+    2>"$work_directory/invalid-profile-servable.err"
+invalid_profile_servable_status=$?
+QWEN_QUARANTINE_REGISTRY=$invalid_profile_quarantine \
+    "$reader" quarantine-rows router-child \
+    >"$work_directory/invalid-profile-query.out" \
+    2>"$work_directory/invalid-profile-query.err"
+invalid_profile_query_status=$?
+set -e
+if [ "$invalid_profile_servable_status" -ne 0 ] &&
+   [ "$invalid_profile_query_status" -ne 0 ] &&
+   grep -F 'carries invalid depth or geometry' \
+       "$work_directory/invalid-profile-servable.err" >/dev/null &&
+   grep -F 'carries invalid depth or geometry' \
+       "$work_directory/invalid-profile-query.err" >/dev/null; then
+    report invalid_quarantine_profile_refused accepted
+else
+    report invalid_quarantine_profile_refused rejected
+fi
+
 # A misspelled runtime mode is invalid safety data. It cannot mean that the row
 # applies to some other path, because that interpretation would re-admit the
 # model on every known path.

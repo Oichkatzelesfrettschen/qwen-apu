@@ -155,14 +155,14 @@ refuses generated presets that predate the marker and forces an exposed preset
 to `127.0.0.1`, because the appliance binds `0.0.0.0` and a warning alone would
 put a model with a recorded device failure on the LAN.
 
-Two mechanisms guard the quarantined tuple because two paths construct one.
-`qwen-capacity-policy.sh` refuses it on the single-model path, where the policy
-builds the argv the server runs. In router mode the children take their geometry
-from the preset file rather than from a second pass through the policy, so
-`build-router-presets.sh` is the guard there and `test-model-tiers.sh` is what
-checks it. The builder queries `quarantine.tsv` for router-child rows instead of
-trusting the model tier: a model-scope row overrides a stale production tier,
-and a profile-scope row removes the exact section tuple.
+Three mechanisms guard the quarantined tuple because two paths construct one
+and router presets persist across registry changes. `qwen-capacity-policy.sh`
+refuses the tuple on the single-model path, where the policy builds the argv the
+server runs. `build-router-presets.sh` filters router-child rows while generating
+the child geometry, and `test-model-tiers.sh` checks that generation. Router
+startup queries the same quarantine authority and rejects a persisted section
+that a later model- or profile-scope row excludes. The marked research override
+admits that section and forces the listener to loopback.
 
 Router mode leaves depth, cache triple, and submission geometry off its own
 argv. `server-models.cpp` ends its preset assembly with

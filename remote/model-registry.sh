@@ -41,6 +41,67 @@ fi
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 quarantine_registry=${QWEN_QUARANTINE_REGISTRY:-$script_directory/quarantine.tsv}
 
+validate_quarantine_registry() {
+    awk -F'\t' '
+        $0 ~ /^#/ || $0 ~ /^[[:space:]]*$/ { next }
+        NF != 14 {
+            printf "quarantine row %d holds %d fields, expected 14\n", NR, NF \
+                > "/dev/stderr"
+            invalid = 1
+            next
+        }
+        $1 == "" || $3 == "" {
+            printf "quarantine row %d requires non-empty id and subject\n", NR \
+                > "/dev/stderr"
+            invalid = 1
+        }
+        $2 != "model" && $2 != "profile" {
+            printf "quarantine row %d carries invalid scope %s\n", NR, $2 \
+                > "/dev/stderr"
+            invalid = 1
+        }
+        $14 != "any" && $14 != "router-child" && $14 != "standalone" {
+            printf "quarantine row %d carries invalid runtime mode %s\n", \
+                NR, $14 > "/dev/stderr"
+            invalid = 1
+        }
+        $2 == "model" {
+            for (field = 5; field <= 10; field++) {
+                if ($field != "-") {
+                    printf "model quarantine row %d carries tuple field %d: %s\n", \
+                        NR, field, $field > "/dev/stderr"
+                    invalid = 1
+                }
+            }
+        }
+        $2 == "profile" {
+            if ($5 !~ /^[0-9]+$/ || $5 + 0 < 1 ||
+                $6 !~ /^[0-9]+$/ || $6 + 0 < 1 ||
+                $7 !~ /^[0-9]+$/ || $7 + 0 < 1) {
+                printf "profile quarantine row %d carries invalid depth or geometry\n", \
+                    NR > "/dev/stderr"
+                invalid = 1
+            } else if ($7 + 0 > $6 + 0) {
+                printf "profile quarantine row %d carries ubatch above batch\n", \
+                    NR > "/dev/stderr"
+                invalid = 1
+            }
+            if ($8 !~ /^(f32|f16|bf16|q8_0|q5_1|q5_0|q4_1|q4_0|iq4_nl)$/ ||
+                $9 !~ /^(f32|f16|bf16|q8_0|q5_1|q5_0|q4_1|q4_0|iq4_nl)$/) {
+                printf "profile quarantine row %d carries invalid cache type\n", \
+                    NR > "/dev/stderr"
+                invalid = 1
+            }
+            if ($10 !~ /^(on|off|auto)$/) {
+                printf "profile quarantine row %d carries invalid flash attention\n", \
+                    NR > "/dev/stderr"
+                invalid = 1
+            }
+        }
+        END { exit invalid ? 1 : 0 }
+    ' "$1"
+}
+
 # The quarantine queries read a second file rather than the tier field alone,
 # because a quarantine has two scopes and the model registry has one row per
 # checkpoint. A scope `model` row removes a checkpoint entirely; a scope
@@ -67,6 +128,7 @@ if [ "$#" -ge 1 ] && [ "$#" -le 2 ]; then
                 "$quarantine_registry" >&2
             exit 1
         fi
+        validate_quarantine_registry "$quarantine_registry" || exit 1
         awk -F'\t' -v mode="$quarantine_runtime_mode" \
             -v query="$quarantine_query" '
             $0 ~ /^#/ || $0 ~ /^[[:space:]]*$/ { next }
@@ -114,6 +176,7 @@ emit_servable_rows() {
             "$quarantine_registry" >&2
         return 1
     fi
+    validate_quarantine_registry "$quarantine_registry" || return 1
 
     # Read the quarantine authority first, then admit only registry rows whose
     # router-child tuple survives both exclusion scopes. The field selector is

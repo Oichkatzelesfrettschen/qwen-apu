@@ -26,7 +26,8 @@ bind_host=${QWEN_BIND_HOST:-127.0.0.1}
 cors_origins=${QWEN_CORS_ORIGINS:-localhost}
 
 validate_router_preset_tuples() {
-    awk -F'\t' -v model_root="$3" '
+    printf '%s\n' "$4" | awk -F'\t' -v model_root="$3" \
+        -v include_quarantine="$5" '
         function reset_tuple() {
             model_count = 0
             context_count = 0
@@ -128,9 +129,34 @@ validate_router_preset_tuples() {
                 reject_registry_value("LLAMA_ARG_UBATCH", ubatch_value,
                     registry_ubatch[section])
             }
+            if (include_quarantine != 1 && quarantined_models[section]) {
+                printf "router preset section %s is excluded by model quarantine\n", \
+                    section > "/dev/stderr"
+                rejected = 1
+            }
+            profile_key = section SUBSEP context_value SUBSEP batch_value SUBSEP \
+                ubatch_value SUBSEP cache_k_value SUBSEP cache_v_value SUBSEP \
+                flash_value
+            if (include_quarantine != 1 &&
+                quarantined_profiles[profile_key]) {
+                printf "router preset section %s is excluded by profile quarantine\n", \
+                    section > "/dev/stderr"
+                rejected = 1
+            }
         }
         BEGIN { reset_tuple() }
-        FNR == NR {
+        FILENAME == "-" {
+            if ($0 == "") next
+            if ($2 == "model") {
+                quarantined_models[$3] = 1
+            } else if ($2 == "profile") {
+                profile_key = $3 SUBSEP $5 SUBSEP $6 SUBSEP $7 SUBSEP \
+                    $8 SUBSEP $9 SUBSEP $10
+                quarantined_profiles[profile_key] = 1
+            }
+            next
+        }
+        FILENAME == ARGV[2] {
             if ($0 ~ /^[[:space:]]*($|#)/) next
             registry_count[$1]++
             registry_model[$1] = $3
@@ -202,7 +228,7 @@ validate_router_preset_tuples() {
             }
             exit rejected
         }
-    ' "$1" "$2"
+    ' - "$1" "$2"
 }
 
 case $bind_host in
@@ -469,8 +495,15 @@ if [ "$router_enabled" = 1 ]; then
             exit 2
             ;;
     esac
+    if ! router_quarantine_rows=$(
+        "$script_directory/model-registry.sh" quarantine-rows router-child
+    ); then
+        printf 'router quarantine authority is unavailable\n' >&2
+        exit 2
+    fi
     if ! validate_router_preset_tuples "$router_registry" "$router_presets" \
-        "$router_model_root"; then
+        "$router_model_root" "$router_quarantine_rows" \
+        "$quarantine_override_from_preset"; then
         printf 'router presets do not carry complete admitted tuples: %s\n' \
             "$router_presets" >&2
         exit 2
