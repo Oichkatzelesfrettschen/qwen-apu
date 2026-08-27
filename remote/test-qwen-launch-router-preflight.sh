@@ -12,11 +12,11 @@ fi
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 temporary_directory=$(mktemp -d)
+detached_session_pid=''
 cleanup_fixture() {
-    if [ -r "$temporary_directory/detached-session.pid.last" ]; then
-        detached_pid=$(sed -n '1p' \
-            "$temporary_directory/detached-session.pid.last")
-        kill "$detached_pid" 2>/dev/null || true
+    if [ -n "$detached_session_pid" ]; then
+        kill -TERM "$detached_session_pid" 2>/dev/null || true
+        wait "$detached_session_pid" 2>/dev/null || true
     fi
     rm -rf "$temporary_directory"
 }
@@ -39,6 +39,27 @@ import sys
 for signal_number in (signal.SIGHUP, signal.SIGINT, signal.SIGTERM):
     signal.signal(signal_number, signal.SIG_DFL)
 os.execv(sys.argv[1], sys.argv[1:])
+PYTHON
+cat >"$fixture_bin/detached-session-worker.py" <<'PYTHON'
+import os
+import signal
+import sys
+
+termination_marker = sys.argv[1]
+ready_marker = sys.argv[2]
+
+
+def terminate_session(_signal_number, _frame):
+    with open(termination_marker, "w", encoding="utf-8") as marker:
+        marker.write(f"pid={os.getpid()} state=terminated\n")
+    raise SystemExit(0)
+
+
+signal.signal(signal.SIGTERM, terminate_session)
+with open(ready_marker, "w", encoding="utf-8"):
+    pass
+while True:
+    signal.pause()
 PYTHON
 
 chmod +x "$fixture_remote"/*.sh "$fixture_bin"/*
@@ -135,9 +156,10 @@ if [ -z "${QWEN_TEST_TMUX_PID_FILE:-}" ]; then
 fi
 case " $* " in
     *" new-session "*)
-        sh -c 'trap "exit 0" TERM; while :; do sleep 1; done' &
-        printf '%s\n' "$!" >"$QWEN_TEST_TMUX_PID_FILE"
-        printf '%s\n' "$!" >"$QWEN_TEST_TMUX_PID_FILE.last"
+        [ -r "$QWEN_TEST_TMUX_CANDIDATE_PID_FILE" ] || exit 1
+        candidate_pid=$(sed -n '1p' "$QWEN_TEST_TMUX_CANDIDATE_PID_FILE")
+        kill -0 "$candidate_pid" 2>/dev/null || exit 1
+        printf '%s\n' "$candidate_pid" >"$QWEN_TEST_TMUX_PID_FILE"
         ;;
     *" kill-session "*)
         if [ -r "$QWEN_TEST_TMUX_PID_FILE" ]; then
@@ -271,6 +293,27 @@ for cancellation_signal_and_status in HUP:129 INT:130 TERM:143; do
     cancellation_release=$temporary_directory/cancellation-$cancellation_signal-release
     cancellation_curl_marker=$temporary_directory/cancellation-$cancellation_signal-curl-ran
     detached_session_pid_file=$temporary_directory/detached-session.pid
+    detached_session_candidate_pid_file=$temporary_directory/detached-session-candidate.pid
+    detached_session_ready_marker=$temporary_directory/detached-session-ready
+    detached_session_termination_marker=$temporary_directory/detached-session-terminated
+    rm -f "$detached_session_candidate_pid_file" \
+        "$detached_session_ready_marker" "$detached_session_termination_marker"
+    python3 "$fixture_bin/detached-session-worker.py" \
+        "$detached_session_termination_marker" \
+        "$detached_session_ready_marker" &
+    detached_session_pid=$!
+    printf '%s\n' "$detached_session_pid" \
+        >"$detached_session_candidate_pid_file"
+    detached_session_ready_attempt=0
+    while [ ! -e "$detached_session_ready_marker" ] && \
+          [ "$detached_session_ready_attempt" -lt 100 ]; do
+        detached_session_ready_attempt=$((detached_session_ready_attempt + 1))
+        sleep 0.01
+    done
+    if [ ! -e "$detached_session_ready_marker" ]; then
+        printf 'detached session worker did not reach its ready boundary\n' >&2
+        exit 1
+    fi
     HOME=$temporary_directory QWEN_ROUTER=1 \
         QWEN_MODEL_PATH=$temporary_directory/models/Normal/small.gguf \
         QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
@@ -278,6 +321,7 @@ for cancellation_signal_and_status in HUP:129 INT:130 TERM:143; do
         QWEN_TEST_CONTROL_RELEASE=$cancellation_release \
         QWEN_TEST_CURL_MARKER=$cancellation_curl_marker \
         QWEN_TEST_TMUX_PID_FILE=$detached_session_pid_file \
+        QWEN_TEST_TMUX_CANDIDATE_PID_FILE=$detached_session_candidate_pid_file \
         FIXTURE_SOURCE_PRESET=$source_router_presets \
         FIXTURE_MUTATION_MARKER=$cancellation_mutation_marker \
         FIXTURE_REAL_STAT=$(command -v stat) \
@@ -302,7 +346,13 @@ for cancellation_signal_and_status in HUP:129 INT:130 TERM:143; do
             "$cancellation_signal" >&2
         exit 1
     fi
-    detached_session_pid=$(sed -n '1p' "$detached_session_pid_file")
+    promoted_detached_session_pid=$(sed -n '1p' "$detached_session_pid_file")
+    if [ "$promoted_detached_session_pid" -ne "$detached_session_pid" ]; then
+        printf '%s cancellation promoted detached session pid %s instead of %s\n' \
+            "$cancellation_signal" "$promoted_detached_session_pid" \
+            "$detached_session_pid" >&2
+        exit 1
+    fi
     kill -"$cancellation_signal" "$cancellation_pid"
     : >"$cancellation_release"
     set +e
@@ -326,11 +376,30 @@ for cancellation_signal_and_status in HUP:129 INT:130 TERM:143; do
             "$cancellation_signal" >&2
         exit 1
     fi
-    if kill -0 "$detached_session_pid" 2>/dev/null; then
-        printf '%s cancellation retained detached session pid %s\n' \
+    detached_session_termination_attempt=0
+    while [ ! -e "$detached_session_termination_marker" ] && \
+          [ "$detached_session_termination_attempt" -lt 100 ]; do
+        detached_session_termination_attempt=$((detached_session_termination_attempt + 1))
+        sleep 0.01
+    done
+    if [ ! -e "$detached_session_termination_marker" ]; then
+        printf '%s cancellation did not terminate detached session pid %s\n' \
             "$cancellation_signal" "$detached_session_pid" >&2
         exit 1
     fi
+    set +e
+    wait "$detached_session_pid"
+    detached_session_status=$?
+    reaped_detached_session_pid=$detached_session_pid
+    detached_session_pid=''
+    set -e
+    if [ "$detached_session_status" -ne 0 ]; then
+        printf '%s detached session returned status %s\n' \
+            "$cancellation_signal" "$detached_session_status" >&2
+        exit 1
+    fi
+    grep -Fx "pid=$reaped_detached_session_pid state=terminated" \
+        "$detached_session_termination_marker" >/dev/null
     if [ -e "$cancellation_curl_marker" ]; then
         printf '%s cancellation entered readiness polling\n' \
             "$cancellation_signal" >&2
