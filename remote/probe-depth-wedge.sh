@@ -67,9 +67,74 @@ fi
 
 mkdir -p "$output_directory"
 summary=$output_directory/wedge-summary.tsv
-if [ ! -s "$summary" ]; then
-    printf 'arm\tdepth\tbatch\tubatch\tcache_k\tcache_v\tflash_attn\tstatus\tring_resets\tgpu_faults\twall_s\tdecode_tok_s\tvram_peak_mib\tgtt_peak_mib\tcontrol_status\tcontrol_tok_s\tmclk_modal\ttemp_c_max\n' \
-        >"$summary"
+summary_header='arm	depth	batch	ubatch	cache_k	cache_v	flash_attn	status	ring_resets	gpu_faults	wall_s	decode_tok_s	vram_peak_mib	gtt_peak_mib	control_status	control_tok_s	mclk_modal	temp_c_max'
+summary_has_arms=0
+if [ -s "$summary" ]; then
+    if [ "$(sed -n '1p' "$summary")" != "$summary_header" ]; then
+        printf 'wedge summary header is incompatible with this harness: %s\n' \
+            "$summary" >&2
+        exit 2
+    fi
+    malformed_line=$(awk -F'\t' '
+        NR > 1 && (NF != 18 || $1 != "d" $2 "-b" $3 "-ub" $4) {
+            print NR
+            exit
+        }' "$summary")
+    if [ -n "$malformed_line" ]; then
+        printf 'wedge summary carries a malformed arm row at line %s: %s\n' \
+            "$malformed_line" "$summary" >&2
+        exit 2
+    fi
+    duplicate_arm=$(awk -F'\t' 'NR > 1 && seen[$1]++ { print $1; exit }' \
+        "$summary")
+    if [ -n "$duplicate_arm" ]; then
+        printf 'wedge summary carries duplicate arm identity: %s\n' \
+            "$duplicate_arm" >&2
+        exit 2
+    fi
+    if ! awk -F'\t' -v cache_k="$cache_type_k" \
+        -v cache_v="$cache_type_v" -v flash="$flash_attention" '
+        NR > 1 && ($5 != cache_k || $6 != cache_v || $7 != flash) {
+            printf "recorded arm %s belongs to cache policy %s/%s/%s, not %s/%s/%s; use a new output directory\n", \
+                $1, $5, $6, $7, cache_k, cache_v, flash > "/dev/stderr"
+            mismatch = 1
+            exit
+        }
+        END { exit mismatch }
+    ' "$summary"; then
+        exit 2
+    fi
+    if awk 'NR > 1 { found = 1; exit } END { exit !found }' "$summary"; then
+        summary_has_arms=1
+    fi
+else
+    printf '%s\n' "$summary_header" >"$summary"
+fi
+
+# A matching arm label is not a matching measurement when the GGUF or recovery
+# control changes. The digest is computed once per invocation, which is small
+# beside a filled-depth arm and binds every resumed row to immutable input
+# bytes rather than to a reusable path.
+metadata=$output_directory/wedge-metadata.tsv
+metadata_header='model_sha256	model_bytes	control_tokens'
+model_sha256=$(nice -n 19 sha256sum "$model_path")
+model_sha256=${model_sha256%% *}
+model_bytes=$(stat -c %s -- "$model_path")
+metadata_row="$model_sha256	$model_bytes	$control_tokens"
+if [ -s "$metadata" ]; then
+    if [ "$(sed -n '1p' "$metadata")" != "$metadata_header" ] ||
+       [ "$(sed -n '2p' "$metadata")" != "$metadata_row" ] ||
+       [ -n "$(sed -n '3p' "$metadata")" ]; then
+        printf 'wedge metadata does not match the model or recovery control: %s\n' \
+            "$metadata" >&2
+        exit 2
+    fi
+elif [ "$summary_has_arms" -eq 1 ]; then
+    printf 'wedge summary has arms but no model identity metadata: %s\n' \
+        "$metadata" >&2
+    exit 2
+else
+    printf '%s\n%s\n' "$metadata_header" "$metadata_row" >"$metadata"
 fi
 
 # A killed run leaves its sampler writing once a second into a file the next run
@@ -165,6 +230,106 @@ run_arm() {
     arm_samples=$output_directory/$arm_label.clocks.tsv
     arm_kernel=$output_directory/$arm_label.dmesg.txt
     control_log=$output_directory/$arm_label.control.log
+
+    recorded_count=$(awk -F'\t' -v label="$arm_label" \
+        'NR > 1 && $1 == label { count++ } END { print count + 0 }' "$summary")
+    if [ "$recorded_count" -eq 1 ]; then
+        for retained_artifact in "$arm_log" "$arm_samples" "$control_log"; do
+            if [ ! -f "$retained_artifact" ]; then
+                printf 'recorded arm %s is missing retained artifact: %s\n' \
+                    "$arm_label" "$retained_artifact" >&2
+                exit 2
+            fi
+        done
+        recorded_status=$(awk -F'\t' -v label="$arm_label" \
+            '$1 == label { print $8; exit }' "$summary")
+        recorded_resets=$(awk -F'\t' -v label="$arm_label" \
+            '$1 == label { print $9; exit }' "$summary")
+        recorded_faults=$(awk -F'\t' -v label="$arm_label" \
+            '$1 == label { print $10; exit }' "$summary")
+        recorded_control_status=$(awk -F'\t' -v label="$arm_label" \
+            '$1 == label { print $15; exit }' "$summary")
+        recorded_cache_type_k=$(awk -F'\t' -v label="$arm_label" \
+            '$1 == label { print $5; exit }' "$summary")
+        recorded_cache_type_v=$(awk -F'\t' -v label="$arm_label" \
+            '$1 == label { print $6; exit }' "$summary")
+        recorded_flash_attention=$(awk -F'\t' -v label="$arm_label" \
+            '$1 == label { print $7; exit }' "$summary")
+        if [ "$recorded_cache_type_k" != "$cache_type_k" ] ||
+           [ "$recorded_cache_type_v" != "$cache_type_v" ] ||
+           [ "$recorded_flash_attention" != "$flash_attention" ]; then
+            printf 'recorded arm %s belongs to cache policy %s/%s/%s, not %s/%s/%s; use a new output directory\n' \
+                "$arm_label" "$recorded_cache_type_k" "$recorded_cache_type_v" \
+                "$recorded_flash_attention" "$cache_type_k" "$cache_type_v" \
+                "$flash_attention" >&2
+            exit 2
+        fi
+        case $recorded_status in '' | *[!0-9]*)
+            printf 'recorded arm %s carries invalid status: %s\n' \
+                "$arm_label" "$recorded_status" >&2
+            exit 2
+            ;;
+        esac
+        case $recorded_control_status in '' | *[!0-9]*)
+            printf 'recorded arm %s carries invalid control status: %s\n' \
+                "$arm_label" "$recorded_control_status" >&2
+            exit 2
+            ;;
+        esac
+        case $recorded_resets in unavailable | *[!0-9]* | '')
+            [ "$recorded_resets" = unavailable ] || {
+                printf 'recorded arm %s carries invalid reset count: %s\n' \
+                    "$arm_label" "$recorded_resets" >&2
+                exit 2
+            }
+            ;;
+        esac
+        case $recorded_faults in unavailable | *[!0-9]* | '')
+            [ "$recorded_faults" = unavailable ] || {
+                printf 'recorded arm %s carries invalid fault count: %s\n' \
+                    "$arm_label" "$recorded_faults" >&2
+                exit 2
+            }
+            ;;
+        esac
+        if [ "$recorded_resets" = unavailable ] ||
+           [ "$recorded_faults" = unavailable ]; then
+            if [ "$recorded_resets" != unavailable ] ||
+               [ "$recorded_faults" != unavailable ] ||
+               [ -e "$arm_kernel" ]; then
+                printf 'recorded arm %s carries inconsistent kernel-delta evidence\n' \
+                    "$arm_label" >&2
+                exit 2
+            fi
+        elif [ ! -f "$arm_kernel" ]; then
+            printf 'recorded arm %s is missing retained artifact: %s\n' \
+                "$arm_label" "$arm_kernel" >&2
+            exit 2
+        fi
+        arm_healthy=0
+        if [ "$recorded_status" -eq 0 ] &&
+           [ "$recorded_control_status" -eq 0 ]; then
+            if [ "$recorded_resets" = unavailable ] ||
+               [ "$recorded_resets" -eq 0 ]; then
+                arm_healthy=1
+            fi
+        fi
+        if [ "$recorded_control_status" -ne 0 ]; then
+            device_corrupt=1
+        fi
+        printf 'arm_resume_skip label=%s status=%s resets=%s control=%s\n' \
+            "$arm_label" "$recorded_status" "$recorded_resets" \
+            "$recorded_control_status"
+        return 0
+    fi
+    for incomplete_artifact in "$arm_log" "$arm_samples" "$control_log"; do
+        if [ -e "$incomplete_artifact" ]; then
+            printf 'unrecorded arm %s has incomplete artifact; use a new output directory: %s\n' \
+                "$arm_label" "$incomplete_artifact" >&2
+            exit 2
+        fi
+    done
+
     active_arm_label=$arm_label
     kernel_before=$(kernel_line_count)
     arm_started=$(date +%s)

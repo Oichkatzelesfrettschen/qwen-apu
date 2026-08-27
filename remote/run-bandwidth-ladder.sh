@@ -39,6 +39,13 @@ bench=${QWEN_LLAMA_BENCH:-"${HOME:?}/src/llama.cpp-qwen-apu/build-qwen-vulkan/bi
 census=${QWEN_TENSOR_CENSUS:-"$script_directory/gguf-tensor-census.py"}
 clock_sampler=${QWEN_CLOCK_SAMPLER:-"$script_directory/sample-gpu-clocks.sh"}
 generate_tokens=${QWEN_BENCH_GENERATE:-64}
+case $generate_tokens in
+    '' | *[!0-9]* | 0)
+        printf 'decode length must be a positive integer: %s\n' \
+            "$generate_tokens" >&2
+        exit 2
+        ;;
+esac
 # Prefill is off by default so the retained decode series stays comparable: an
 # arm that prefills first meets the device in a different thermal and clock
 # state than one that decodes cold. Setting a positive length adds a pp row to
@@ -97,6 +104,32 @@ trap 'stop_sampler; exit 143' TERM
 
 arm_index=0
 measurement_failed=0
+
+parse_rate_for_label() {
+    rate_log=$1
+    expected_label=$2
+    awk -F'|' -v expected="$expected_label" '
+        {
+            label = $(NF - 2)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", label)
+            label_found = label == expected ||
+                label ~ ("^" expected " @ d[0-9]+$")
+            if (label_found) {
+                matches++
+                split($(NF - 1), parts, /[^0-9.]+/)
+                row_rate = ""
+                for (part = 1; part <= 3; part++) {
+                    if (parts[part] != "") {
+                        row_rate = parts[part]
+                        break
+                    }
+                }
+                if (row_rate != "") rate = row_rate
+            }
+        }
+        END { print (matches == 1 && rate != "" ? rate : "n/a") }
+    ' "$rate_log"
+}
 
 run_model() {
     pass_label=$1
@@ -173,23 +206,18 @@ run_model() {
 
     decode=n/a
     if [ "$arm_status" -eq 0 ]; then
-        decode=$(awk -F'|' '$0 ~ /\| *tg[0-9]+( @ d[0-9]+)? *\|/ {
-                                split($(NF - 1), parts, /[^0-9.]+/)
-                                for (i = 1; i <= 3; i++) {
-                                    if (parts[i] != "") { rate = parts[i]; break }
-                                }
-                            }
-                            END { print (rate == "" ? "n/a" : rate) }' "$arm_log")
+        decode=$(parse_rate_for_label "$arm_log" "tg$generate_tokens")
     fi
     prefill=n/a
     if [ "$arm_status" -eq 0 ] && [ "$prefill_tokens" -gt 0 ]; then
-        prefill=$(awk -F'|' '$0 ~ /\| *pp[0-9]+( @ d[0-9]+)? *\|/ {
-                                 split($(NF - 1), parts, /[^0-9.]+/)
-                                 for (i = 1; i <= 3; i++) {
-                                     if (parts[i] != "") { rate = parts[i]; break }
-                                 }
-                             }
-                             END { print (rate == "" ? "n/a" : rate) }' "$arm_log")
+        prefill=$(parse_rate_for_label "$arm_log" "pp$prefill_tokens")
+    fi
+    prefill_complete=1
+    if [ "$arm_status" -eq 0 ] && [ "$prefill_tokens" -gt 0 ] &&
+       [ "$prefill" = n/a ]; then
+        printf 'arm_prefill_missing label=%s requested_tokens=%s\n' \
+            "$arm_label" "$prefill_tokens" >&2
+        prefill_complete=0
     fi
     achieved=n/a
     case $decode in
@@ -228,7 +256,7 @@ run_model() {
         "$(printf '%s' "$clock_report" | tr '\t' ' ')"
 
     if [ "$arm_status" -ne 0 ] || [ "$decode" = n/a ] || \
-       [ "$priority_matches" -ne 1 ]; then
+       [ "$prefill_complete" -ne 1 ] || [ "$priority_matches" -ne 1 ]; then
         return 1
     fi
     return 0

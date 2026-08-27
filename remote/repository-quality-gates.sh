@@ -15,7 +15,7 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repository_root=$(CDPATH='' cd -- "$script_directory/.." && pwd)
 cd "$repository_root"
 
-for required_command in bash shellcheck ruff python3; do
+for required_command in bash node shellcheck ruff python3; do
     if ! command -v "$required_command" >/dev/null 2>&1; then
         printf 'required quality-gate command is absent: %s\n' \
             "$required_command" >&2
@@ -38,6 +38,8 @@ ruff check remote
 
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-quality-suite.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-gguf-tokenizer-identity.py
+remote/test-fallback-webui-model-selection.sh
+node remote/test-fallback-webui-model-state.mjs
 remote/test-measurement-harnesses.sh
 remote/test-model-registry.sh
 remote/test-model-tiers.sh

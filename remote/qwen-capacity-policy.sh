@@ -12,10 +12,198 @@ context_size=$3
 server_port=${4:-8080}
 static_path=${5:-}
 api_key_file=${6:-}
+router_enabled=${QWEN_ROUTER:-0}
+case $router_enabled in
+    0 | 1) ;;
+    *)
+        printf 'QWEN_ROUTER must be 0 or 1: %s\n' "$router_enabled" >&2
+        exit 2
+        ;;
+esac
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 bind_host=${QWEN_BIND_HOST:-127.0.0.1}
 cors_origins=${QWEN_CORS_ORIGINS:-localhost}
+
+validate_router_preset_tuples() {
+    awk -F'\t' -v model_root="$3" '
+        function reset_tuple() {
+            model_count = 0
+            context_count = 0
+            cache_k_count = 0
+            cache_v_count = 0
+            flash_count = 0
+            batch_count = 0
+            ubatch_count = 0
+            model_value = ""
+            context_value = ""
+            cache_k_value = ""
+            cache_v_value = ""
+            flash_value = ""
+            batch_value = ""
+            ubatch_value = ""
+        }
+        function reject_key(key, count) {
+            printf "router preset section %s requires exactly one %s, found %d\n", \
+                section, key, count > "/dev/stderr"
+            rejected = 1
+        }
+        function reject_value(key, value) {
+            printf "router preset section %s carries invalid %s: %s\n", \
+                section, key, value > "/dev/stderr"
+            rejected = 1
+        }
+        function reject_registry_value(key, value, expected) {
+            printf "router preset section %s carries %s %s, registry admits %s\n", \
+                section, key, value, expected > "/dev/stderr"
+            rejected = 1
+        }
+        function finish_section() {
+            if (section == "" || section == "*") {
+                return
+            }
+            model_sections++
+            if (model_count != 1) reject_key("LLAMA_ARG_MODEL", model_count)
+            if (context_count != 1) reject_key("LLAMA_ARG_CTX_SIZE", context_count)
+            if (cache_k_count != 1) reject_key("LLAMA_ARG_CACHE_TYPE_K", cache_k_count)
+            if (cache_v_count != 1) reject_key("LLAMA_ARG_CACHE_TYPE_V", cache_v_count)
+            if (flash_count != 1) reject_key("LLAMA_ARG_FLASH_ATTN", flash_count)
+            if (batch_count != 1) reject_key("LLAMA_ARG_BATCH", batch_count)
+            if (ubatch_count != 1) reject_key("LLAMA_ARG_UBATCH", ubatch_count)
+            if (context_count == 1 && (context_value !~ /^[0-9]+$/ || context_value + 0 < 1)) {
+                reject_value("LLAMA_ARG_CTX_SIZE", context_value)
+            }
+            if (batch_count == 1 && (batch_value !~ /^[0-9]+$/ || batch_value + 0 < 1)) {
+                reject_value("LLAMA_ARG_BATCH", batch_value)
+            }
+            if (ubatch_count == 1 && (ubatch_value !~ /^[0-9]+$/ || ubatch_value + 0 < 1)) {
+                reject_value("LLAMA_ARG_UBATCH", ubatch_value)
+            }
+            if (batch_count == 1 && ubatch_count == 1 &&
+                batch_value ~ /^[0-9]+$/ && ubatch_value ~ /^[0-9]+$/ &&
+                ubatch_value + 0 > batch_value + 0) {
+                reject_value("LLAMA_ARG_UBATCH", ubatch_value)
+            }
+            if (cache_k_count == 1 && cache_k_value !~ /^(f32|f16|bf16|q8_0|q5_1|q5_0|q4_1|q4_0|iq4_nl)$/) {
+                reject_value("LLAMA_ARG_CACHE_TYPE_K", cache_k_value)
+            }
+            if (cache_v_count == 1 && cache_v_value !~ /^(f32|f16|bf16|q8_0|q5_1|q5_0|q4_1|q4_0|iq4_nl)$/) {
+                reject_value("LLAMA_ARG_CACHE_TYPE_V", cache_v_value)
+            }
+            if (flash_count == 1 && flash_value !~ /^(on|off|auto)$/) {
+                reject_value("LLAMA_ARG_FLASH_ATTN", flash_value)
+            }
+            if (registry_count[section] != 1) {
+                printf "router preset section %s resolves to %d registry rows\n", \
+                    section, registry_count[section] > "/dev/stderr"
+                rejected = 1
+                return
+            }
+            expected_model = model_root "/" registry_model[section]
+            if (model_count == 1 && model_value != expected_model) {
+                reject_registry_value("LLAMA_ARG_MODEL", model_value,
+                    expected_model)
+            }
+            if (context_count == 1 && context_value != registry_context[section]) {
+                reject_registry_value("LLAMA_ARG_CTX_SIZE", context_value,
+                    registry_context[section])
+            }
+            if (cache_k_count == 1 && cache_k_value != registry_cache_k[section]) {
+                reject_registry_value("LLAMA_ARG_CACHE_TYPE_K", cache_k_value,
+                    registry_cache_k[section])
+            }
+            if (cache_v_count == 1 && cache_v_value != registry_cache_v[section]) {
+                reject_registry_value("LLAMA_ARG_CACHE_TYPE_V", cache_v_value,
+                    registry_cache_v[section])
+            }
+            if (flash_count == 1 && flash_value != registry_flash[section]) {
+                reject_registry_value("LLAMA_ARG_FLASH_ATTN", flash_value,
+                    registry_flash[section])
+            }
+            if (batch_count == 1 && batch_value != registry_batch[section]) {
+                reject_registry_value("LLAMA_ARG_BATCH", batch_value,
+                    registry_batch[section])
+            }
+            if (ubatch_count == 1 && ubatch_value != registry_ubatch[section]) {
+                reject_registry_value("LLAMA_ARG_UBATCH", ubatch_value,
+                    registry_ubatch[section])
+            }
+        }
+        BEGIN { reset_tuple() }
+        FNR == NR {
+            if ($0 ~ /^[[:space:]]*($|#)/) next
+            registry_count[$1]++
+            registry_model[$1] = $3
+            registry_context[$1] = $5
+            registry_cache_k[$1] = $8
+            registry_cache_v[$1] = $9
+            registry_flash[$1] = $10
+            registry_batch[$1] = $17
+            registry_ubatch[$1] = $18
+            next
+        }
+        /^[[:space:]]*($|[#;])/ { next }
+        /^[[:space:]]*\[/ {
+            finish_section()
+            section = $0
+            if (section !~ /^[[:space:]]*\[[^]]+\][[:space:]]*$/) {
+                printf "router preset carries malformed section header: %s\n", \
+                    section > "/dev/stderr"
+                rejected = 1
+                section = ""
+                reset_tuple()
+                next
+            }
+            sub(/^[[:space:]]*\[/, "", section)
+            sub(/\][[:space:]]*$/, "", section)
+            if (section != "*" && seen_sections[section]++) {
+                printf "router preset repeats section: %s\n", section > "/dev/stderr"
+                rejected = 1
+            }
+            reset_tuple()
+            next
+        }
+        {
+            if (section == "" || section == "*") next
+            separator = index($0, "=")
+            if (separator == 0) next
+            key = substr($0, 1, separator - 1)
+            value = substr($0, separator + 1)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+            if (key == "LLAMA_ARG_MODEL") {
+                model_count++
+                model_value = value
+            } else if (key == "LLAMA_ARG_CTX_SIZE") {
+                context_count++
+                context_value = value
+            } else if (key == "LLAMA_ARG_CACHE_TYPE_K") {
+                cache_k_count++
+                cache_k_value = value
+            } else if (key == "LLAMA_ARG_CACHE_TYPE_V") {
+                cache_v_count++
+                cache_v_value = value
+            } else if (key == "LLAMA_ARG_FLASH_ATTN") {
+                flash_count++
+                flash_value = value
+            } else if (key == "LLAMA_ARG_BATCH") {
+                batch_count++
+                batch_value = value
+            } else if (key == "LLAMA_ARG_UBATCH") {
+                ubatch_count++
+                ubatch_value = value
+            }
+        }
+        END {
+            finish_section()
+            if (model_sections == 0) {
+                print "router preset carries no model section" > "/dev/stderr"
+                rejected = 1
+            }
+            exit rejected
+        }
+    ' "$1" "$2"
+}
 
 case $bind_host in
     127.0.0.1 | localhost | 0.0.0.0) ;;
@@ -56,6 +244,11 @@ if [ "$context_size" -eq 0 ]; then
     exit 2
 fi
 
+# Router children take their complete tuple from the preset file. The model path
+# supplied to this process is only the largest installed preflight subject, so
+# applying that one row's context ceiling to the router-wide listener rejects a
+# valid preset whose sections each carry their own admitted depth.
+if [ "$router_enabled" != 1 ]; then
 # The admitted depth is a property of the checkpoint rather than of the
 # appliance: KV cost scales with full-attention layer count and key-value head
 # width, so the 9B pays more per token of context than the 2B at the same
@@ -194,6 +387,7 @@ else
         "$context_size" "$registry_validated_depth" "$batch_size" \
         "$ubatch_size" >&2
 fi
+fi
 
 case $server_port in
     '' | *[!0-9]*)
@@ -233,11 +427,17 @@ fi
 # resident model competes for a pool already saturated by one. Switching models
 # unloads the previous one, which costs a reload and buys a device that fits.
 router_presets=${QWEN_ROUTER_PRESETS:-"${HOME:?}/qwen-webui-state/router-presets.ini"}
+router_registry=${QWEN_MODEL_REGISTRY:-"$script_directory/models.tsv"}
+router_model_root=${QWEN_MODEL_ROOT:-"${HOME:?}/models"}
 router_max=${QWEN_ROUTER_MAX:-1}
-if [ "${QWEN_ROUTER:-0}" = 1 ]; then
+if [ "$router_enabled" = 1 ]; then
     if [ ! -r "$router_presets" ]; then
         printf 'router presets are unreadable: %s\n' "$router_presets" >&2
         printf 'generate them with remote/build-router-presets.sh\n' >&2
+        exit 2
+    fi
+    if [ ! -r "$router_registry" ]; then
+        printf 'router model registry is unreadable: %s\n' "$router_registry" >&2
         exit 2
     fi
     case $router_max in
@@ -264,6 +464,12 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
             exit 2
             ;;
     esac
+    if ! validate_router_preset_tuples "$router_registry" "$router_presets" \
+        "$router_model_root"; then
+        printf 'router presets do not carry complete admitted tuples: %s\n' \
+            "$router_presets" >&2
+        exit 2
+    fi
     quarantine_override_from_environment=${QWEN_ROUTER_INCLUDE_QUARANTINE:-0}
     case $quarantine_override_from_environment in
         0 | 1) ;;
@@ -319,7 +525,7 @@ fi
 # repository revision. Offloading it to Vulkan costs about 672 MiB of a heap
 # with over 12 GiB free, and the alternative is running a vision encoder on two
 # CPU cores.
-if [ -n "${QWEN_MMPROJ:-}" ] && [ "${QWEN_ROUTER:-0}" != 1 ]; then
+if [ -n "${QWEN_MMPROJ:-}" ] && [ "$router_enabled" != 1 ]; then
     if [ ! -f "$QWEN_MMPROJ" ]; then
         printf 'projector is not a regular file: %s\n' "$QWEN_MMPROJ" >&2
         exit 2
@@ -443,7 +649,7 @@ set -- "$@" \
 # Every section carrying all six is what makes the omission safe: an absent key
 # falls through to the llama.cpp defaults, and those are batch 2048 and ubatch
 # 512, which is the quarantined geometry.
-if [ "${QWEN_ROUTER:-0}" != 1 ]; then
+if [ "$router_enabled" != 1 ]; then
     set -- "$@" \
         --ctx-size "$context_size" \
         --batch-size "$batch_size" \

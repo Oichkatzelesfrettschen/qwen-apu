@@ -34,8 +34,10 @@ itself protects, so a local model on a trusted network serves the page
 directly. `QWEN_REQUIRE_API_KEY=1` mints one at
 `$HOME/qwen-webui-state/api.key` with mode 0600 and makes llama-server demand
 it; the browser then keeps the entered key in tab-scoped session storage. The
-page requests `/props` before asking for anything, so it reaches a keyless
-server and prompts only when a server answers 401.
+page requests `/v1/models` first, so it reaches a keyless server and prompts
+only when a server answers 401. Each roster selection then requests the encoded
+`/props?model=<id>` endpoint and tokenizes attachments through the same model
+id. A model change marks both values pending until matching responses return.
 
 With `--parallel 1` the slot serves one request at a time. A second person
 waits for the first to finish, which at a 24K prompt is minutes. Raising

@@ -157,7 +157,9 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t
     >"$fabricated_registry"
 registry_model=$temporary_directory/fabricated.gguf
 : >"$registry_model"
+router_model_root=$temporary_directory
 QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_RADV_ICD=$fake_icd \
+    QWEN_MODEL_ROOT=$router_model_root \
     QWEN_POLICY_TEST_OUTPUT=$cache_output \
     "$policy" "$fake_server" "$registry_model" 4096 18080
 cache_arguments=$(sed -n 's/^argument=//p' "$cache_output" | tr '\n' ' ')
@@ -325,10 +327,26 @@ grep -F 'context size exceeds the admitted ceiling for this cache policy: 24577 
 # limit, and drops the fixed alias because the preset supplies one per
 # checkpoint. Every guard flag stays, because llama-server cascades this argv
 # onto each child it spawns.
+append_complete_router_section() {
+    router_section_file=$1
+    {
+        printf '[fabricated]\n'
+        printf 'LLAMA_ARG_MODEL = %s\n' "$registry_model"
+        printf 'LLAMA_ARG_CTX_SIZE = 4096\n'
+        printf 'LLAMA_ARG_CACHE_TYPE_K = q5_1\n'
+        printf 'LLAMA_ARG_CACHE_TYPE_V = iq4_nl\n'
+        printf 'LLAMA_ARG_FLASH_ATTN = auto\n'
+        printf 'LLAMA_ARG_BATCH = 256\n'
+        printf 'LLAMA_ARG_UBATCH = 64\n'
+    } >>"$router_section_file"
+}
 router_presets=$temporary_directory/router-presets.ini
-printf '[fabricated]\nLLAMA_ARG_MODEL = %s\n' "$registry_model" >"$router_presets"
+: >"$router_presets"
+append_complete_router_section "$router_presets"
 router_output=$temporary_directory/router.out
-QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$router_output \
+QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$router_output \
     QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$router_presets QWEN_ROUTER_MAX=1 \
     "$policy" "$fake_server" "$model_path" 4096 18080
 router_arguments=$(sed -n 's/^argument=//p' "$router_output" | tr '\n' ' ')
@@ -340,6 +358,137 @@ case $router_arguments in
         exit 1
         ;;
 esac
+
+# The router preflight subject sizes installed weights only. Its standalone
+# context ceiling does not constrain other preset sections, and the listener
+# carries none of the six per-checkpoint tuple flags.
+QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+QWEN_ROUTER_PRESETS=$router_presets QWEN_ROUTER_MAX=1 \
+    "$policy" "$fake_server" "$registry_model" 24576 18080
+router_candidate_arguments=$(sed -n 's/^argument=//p' "$router_output" |
+    tr '\n' ' ')
+case " $router_candidate_arguments " in
+    *' --models-preset '* ) ;;
+    *)
+        printf 'candidate-only router did not reach the argument list: %s\n' \
+            "$router_candidate_arguments" >&2
+        exit 1
+        ;;
+esac
+for overridden_flag in --ctx-size --batch-size --ubatch-size --flash-attn \
+    --cache-type-k --cache-type-v; do
+    case " $router_candidate_arguments " in
+        *" $overridden_flag "*)
+            printf 'candidate-only router carries tuple flag %s: %s\n' \
+                "$overridden_flag" "$router_candidate_arguments" >&2
+            exit 1
+            ;;
+    esac
+done
+
+incomplete_router_presets=$temporary_directory/incomplete-router-presets.ini
+sed '/^LLAMA_ARG_UBATCH =/d' "$router_presets" >"$incomplete_router_presets"
+if QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS=$incomplete_router_presets QWEN_ROUTER_MAX=1 \
+    "$policy" "$fake_server" "$registry_model" 24576 18080 \
+    >"$temporary_directory/incomplete-router.stdout" \
+    2>"$temporary_directory/incomplete-router.stderr"; then
+    printf 'router accepted a preset section with an incomplete tuple\n' >&2
+    exit 1
+fi
+grep -F 'router preset section fabricated requires exactly one LLAMA_ARG_UBATCH, found 0' \
+    "$temporary_directory/incomplete-router.stderr" >/dev/null
+grep -F 'router presets do not carry complete admitted tuples:' \
+    "$temporary_directory/incomplete-router.stderr" >/dev/null
+
+unsafe_geometry_presets=$temporary_directory/unsafe-geometry-router-presets.ini
+sed -e 's/^LLAMA_ARG_BATCH = 256$/LLAMA_ARG_BATCH = 2048/' \
+    -e 's/^LLAMA_ARG_UBATCH = 64$/LLAMA_ARG_UBATCH = 512/' \
+    "$router_presets" >"$unsafe_geometry_presets"
+if QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS=$unsafe_geometry_presets QWEN_ROUTER_MAX=1 \
+    "$policy" "$fake_server" "$registry_model" 24576 18080 \
+    >"$temporary_directory/unsafe-geometry-router.stdout" \
+    2>"$temporary_directory/unsafe-geometry-router.stderr"; then
+    printf 'router accepted a positive but unadmitted submission geometry\n' >&2
+    exit 1
+fi
+grep -F 'router preset section fabricated carries LLAMA_ARG_BATCH 2048, registry admits 256' \
+    "$temporary_directory/unsafe-geometry-router.stderr" >/dev/null
+
+unknown_cache_presets=$temporary_directory/unknown-cache-router-presets.ini
+sed 's/^LLAMA_ARG_CACHE_TYPE_K = q5_1$/LLAMA_ARG_CACHE_TYPE_K = q3_unknown/' \
+    "$router_presets" >"$unknown_cache_presets"
+if QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS=$unknown_cache_presets QWEN_ROUTER_MAX=1 \
+    "$policy" "$fake_server" "$registry_model" 24576 18080 \
+    >"$temporary_directory/unknown-cache-router.stdout" \
+    2>"$temporary_directory/unknown-cache-router.stderr"; then
+    printf 'router accepted a preset with an unknown cache encoding\n' >&2
+    exit 1
+fi
+grep -F 'router preset section fabricated carries invalid LLAMA_ARG_CACHE_TYPE_K: q3_unknown' \
+    "$temporary_directory/unknown-cache-router.stderr" >/dev/null
+
+supported_cache_presets=$temporary_directory/supported-cache-router-presets.ini
+sed 's/^LLAMA_ARG_CACHE_TYPE_K = q5_1$/LLAMA_ARG_CACHE_TYPE_K = f16/' \
+    "$router_presets" >"$supported_cache_presets"
+if QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS=$supported_cache_presets QWEN_ROUTER_MAX=1 \
+    "$policy" "$fake_server" "$registry_model" 24576 18080 \
+    >"$temporary_directory/supported-cache-router.stdout" \
+    2>"$temporary_directory/supported-cache-router.stderr"; then
+    printf 'router accepted a supported but unadmitted cache encoding\n' >&2
+    exit 1
+fi
+grep -F 'router preset section fabricated carries LLAMA_ARG_CACHE_TYPE_K f16, registry admits q5_1' \
+    "$temporary_directory/supported-cache-router.stderr" >/dev/null
+
+unregistered_router_presets=$temporary_directory/unregistered-router-presets.ini
+sed 's/^\[fabricated\]$/[unregistered]/' \
+    "$router_presets" >"$unregistered_router_presets"
+if QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS=$unregistered_router_presets QWEN_ROUTER_MAX=1 \
+    "$policy" "$fake_server" "$registry_model" 24576 18080 \
+    >"$temporary_directory/unregistered-router.stdout" \
+    2>"$temporary_directory/unregistered-router.stderr"; then
+    printf 'router accepted a preset section absent from the registry\n' >&2
+    exit 1
+fi
+grep -F 'router preset section unregistered resolves to 0 registry rows' \
+    "$temporary_directory/unregistered-router.stderr" >/dev/null
+
+repointed_router_presets=$temporary_directory/repointed-router-presets.ini
+alternate_model_root=$temporary_directory/alternate-model-root
+alternate_model_path=$alternate_model_root/fabricated.gguf
+mkdir -p "$alternate_model_root"
+: >"$alternate_model_path"
+sed "s|^LLAMA_ARG_MODEL = .*|LLAMA_ARG_MODEL = $alternate_model_path|" \
+    "$router_presets" >"$repointed_router_presets"
+if QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS=$repointed_router_presets QWEN_ROUTER_MAX=1 \
+    "$policy" "$fake_server" "$registry_model" 24576 18080 \
+    >"$temporary_directory/repointed-router.stdout" \
+    2>"$temporary_directory/repointed-router.stderr"; then
+    printf 'router accepted a section pointed at another model file\n' >&2
+    exit 1
+fi
+grep -F "router preset section fabricated carries LLAMA_ARG_MODEL $alternate_model_path, registry admits $router_model_root/fabricated.gguf" \
+    "$temporary_directory/repointed-router.stderr" >/dev/null
+
 case $router_arguments in
     *'--model '*)
         printf 'router mode still passed a single model: %s\n' \
@@ -404,11 +553,11 @@ quarantine_router_presets=$temporary_directory/quarantine-router-presets.ini
 printf '%s\n' \
     '# Generated by remote/build-router-presets.sh from the model registry.' \
     '# qwen_router_include_quarantine=1' \
-    '[fabricated]' \
-    "LLAMA_ARG_MODEL = $registry_model" >"$quarantine_router_presets"
-QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$router_output \
-QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$quarantine_router_presets \
-QWEN_BIND_HOST=0.0.0.0 \
+    >"$quarantine_router_presets"
+append_complete_router_section "$quarantine_router_presets"
+QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+QWEN_ROUTER_PRESETS=$quarantine_router_presets QWEN_BIND_HOST=0.0.0.0 \
     "$policy" "$fake_server" "$model_path" 4096 18080 \
     2>"$temporary_directory/quarantine-router.stderr"
 quarantine_router_arguments=$(sed -n 's/^argument=//p' "$router_output" |
@@ -429,10 +578,12 @@ grep -F 'quarantine override forces the listener to loopback' \
 legacy_router_presets=$temporary_directory/legacy-router-presets.ini
 printf '%s\n' \
     '# Generated by remote/build-router-presets.sh from the model registry.' \
-    '[fabricated]' \
-    "LLAMA_ARG_MODEL = $registry_model" >"$legacy_router_presets"
-if QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$router_output \
-    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$legacy_router_presets \
+    >"$legacy_router_presets"
+append_complete_router_section "$legacy_router_presets"
+if QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$router_output \
+    QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS=$legacy_router_presets \
     "$policy" "$fake_server" "$model_path" 4096 18080 \
     >"$temporary_directory/legacy-router.stdout" \
     2>"$temporary_directory/legacy-router.stderr"; then

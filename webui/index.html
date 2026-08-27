@@ -67,7 +67,8 @@
   button.act { font:inherit; padding:.5rem .9rem; border-radius:.5rem; border:1px solid var(--line);
                background:var(--mine); color:var(--fg); cursor:pointer; }
   button.act:disabled { opacity:.5; cursor:default; }
-  input.key { width:13rem; margin-left:auto; font:13px system-ui,sans-serif; padding:.35rem .5rem;
+  input.key { width:13rem; margin-left:auto; }
+  input.key, select.model-picker { font:13px system-ui,sans-serif; padding:.35rem .5rem;
               border:1px solid var(--line); border-radius:.4rem; background:var(--bg); color:var(--fg); }
   label.file { cursor:pointer; }
   input[type=file] { display:none; }
@@ -79,6 +80,7 @@
 <header>
   <b>qwen-apu</b>
   <span id="model">connecting</span>
+  <select class="model-picker" id="model-picker" aria-label="Model" hidden></select>
   <span id="ctx">context pending</span>
   <span>Raven2 UMA | LOW-priority Vulkan | service-latency guarded</span>
   <input class="key" type="password" id="api-key" placeholder="API key (only if the server asks)" autocomplete="off">
@@ -105,22 +107,35 @@
 const $ = s => document.querySelector(s);
 const logEl = $('#log');
 let history = [];
-let attachments = [];   // {name, text, tokens}
+let attachments = [];   // {name, text, tokens, tokenModel}
 let nctx = null;
+let nctxModel = null;
 let busy = false;
-let apiKey = sessionStorage.getItem('qwen-apu-api-key') || '';
+let requestModel = null;
+let modelStateGeneration = 0;
+
+function readBrowserStorage(storageName, key) {
+  try { return window[storageName].getItem(key); } catch { return null; }
+}
+
+function writeBrowserStorage(storageName, key, value) {
+  try {
+    if (value === null) window[storageName].removeItem(key);
+    else window[storageName].setItem(key, value);
+  } catch { /* storage denial leaves the live page state authoritative */ }
+}
+
+let apiKey = readBrowserStorage('sessionStorage', 'qwen-apu-api-key') || '';
 $('#api-key').value = apiKey;
 
 // Reasoning costs decode tokens at about one per second on this APU, so the
 // choice persists across reloads rather than resetting to on each visit.
-try {
-  $('#reasoning').checked = localStorage.getItem('qwen-apu-reasoning') === 'on';
-} catch { $('#reasoning').checked = false; }
+$('#reasoning').checked =
+  readBrowserStorage('localStorage', 'qwen-apu-reasoning') === 'on';
 $('#reasoning').addEventListener('change', () => {
-  try {
-    localStorage.setItem(
-      'qwen-apu-reasoning', $('#reasoning').checked ? 'on' : 'off');
-  } catch { /* a browser refusing storage still honours the live checkbox */ }
+  writeBrowserStorage(
+    'localStorage', 'qwen-apu-reasoning',
+    $('#reasoning').checked ? 'on' : 'off');
 });
 
 function authHeaders(additional = {}) {
@@ -131,8 +146,8 @@ function authHeaders(additional = {}) {
 
 $('#set-key').onclick = () => {
   apiKey = $('#api-key').value.trim();
-  if (apiKey) sessionStorage.setItem('qwen-apu-api-key', apiKey);
-  else sessionStorage.removeItem('qwen-apu-api-key');
+  writeBrowserStorage(
+    'sessionStorage', 'qwen-apu-api-key', apiKey || null);
   $('#model').textContent = apiKey ? 'key set; connecting' : 'connecting';
   void boot();
 };
@@ -140,15 +155,82 @@ $('#api-key').addEventListener('keydown', event => {
   if (event.key === 'Enter') $('#set-key').click();
 });
 
-async function serverTokenCount(text) {
+async function serverTokenCount(text, selectedModel) {
+  if (!selectedModel) throw new Error('no routable model is selected');
   const response = await fetch('./tokenize', {
     method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify({ content: text, add_special: false })
+    body: JSON.stringify({ model: selectedModel, content: text, add_special: false })
   });
   if (!response.ok) throw new Error(`tokenizer returned HTTP ${response.status}`);
   const result = await response.json();
   if (!Array.isArray(result.tokens)) throw new Error('tokenizer returned no token array');
   return result.tokens.length;
+}
+
+function modelStateMatches(selectedModel, generation) {
+  return requestModel === selectedModel && modelStateGeneration === generation;
+}
+
+async function refreshModelContext(selectedModel, generation) {
+  try {
+    const modelUrl = `./props?model=${encodeURIComponent(selectedModel)}`;
+    const propsResponse = await fetch(modelUrl, { headers: authHeaders() });
+    if (!modelStateMatches(selectedModel, generation)) return;
+    if (propsResponse.ok) {
+      const props = await propsResponse.json();
+      if (!modelStateMatches(selectedModel, generation)) return;
+      const reportedContext =
+        props.default_generation_settings?.n_ctx ?? props.n_ctx ?? null;
+      if (Number.isFinite(reportedContext) && reportedContext > 0) {
+        nctx = reportedContext;
+        nctxModel = selectedModel;
+      }
+    }
+  } catch { /* the selected model remains routable without context metadata */ }
+  if (!modelStateMatches(selectedModel, generation)) return;
+  $('#ctx').textContent = nctxModel === selectedModel
+    ? nctx.toLocaleString() + ' token context'
+    : 'context unavailable for selected model';
+  renderAttached();
+}
+
+async function refreshAttachmentTokens(selectedModel, generation) {
+  const retainedAttachments = [...attachments];
+  await Promise.all(retainedAttachments.map(async attachment => {
+    let tokens = null;
+    try { tokens = await serverTokenCount(attachment.text, selectedModel); }
+    catch { /* an explicit unavailable count replaces the prior model's count */ }
+    if (!modelStateMatches(selectedModel, generation)) return;
+    if (!attachments.includes(attachment)) return;
+    attachment.tokens = tokens;
+    attachment.tokenModel = selectedModel;
+  }));
+  if (modelStateMatches(selectedModel, generation)) renderAttached();
+}
+
+function selectRequestModel(selectedModel) {
+  const generation = ++modelStateGeneration;
+  requestModel = selectedModel;
+  nctx = null;
+  nctxModel = null;
+  attachments.forEach(attachment => {
+    attachment.tokens = null;
+    attachment.tokenModel = null;
+  });
+  writeBrowserStorage('localStorage', 'qwen-apu-model-id', selectedModel);
+  $('#ctx').textContent = 'context pending for selected model';
+  renderAttached();
+  void refreshModelContext(selectedModel, generation);
+  void refreshAttachmentTokens(selectedModel, generation);
+}
+
+async function tokenCountForCurrentModel(text) {
+  while (requestModel) {
+    const selectedModel = requestModel;
+    const tokens = await serverTokenCount(text, selectedModel);
+    if (selectedModel === requestModel) return { tokens, tokenModel: selectedModel };
+  }
+  throw new Error('no routable model is selected');
 }
 
 const DEMO_TOOL = [{
@@ -168,35 +250,71 @@ const DEMO_TOOL = [{
 }];
 
 async function boot() {
-  // The server runs without an API key unless one was configured, so the page
-  // asks for /props first and treats 401 as the request for a credential. A
-  // page that demanded a key up front locked readers out of a keyless server.
+  // The router creates no qwen-apu compatibility alias. Its roster is the
+  // authority for request ids, so the fallback page selects only a model that
+  // the listener reports instead of assuming the single-model alias exists.
+  const generation = ++modelStateGeneration;
+  const modelPicker = $('#model-picker');
+  requestModel = null;
+  nctx = null;
+  nctxModel = null;
+  attachments.forEach(attachment => {
+    attachment.tokens = null;
+    attachment.tokenModel = null;
+  });
+  modelPicker.hidden = true;
+  $('#ctx').textContent = 'context pending';
+  renderAttached();
+
   try {
-    const response = await fetch('./props', { headers: authHeaders() });
-    if (response.status === 401) {
+    const rosterResponse = await fetch('./v1/models', { headers: authHeaders() });
+    if (generation !== modelStateGeneration) return;
+    if (rosterResponse.status === 401) {
       $('#model').textContent =
         apiKey ? 'API key rejected' : 'this server wants an API key';
       return;
     }
-    if (!response.ok) {
-      $('#model').textContent = `/props returned HTTP ${response.status}`;
+    if (!rosterResponse.ok) {
+      $('#model').textContent = `/v1/models returned HTTP ${rosterResponse.status}`;
       return;
     }
-    const props = await response.json();
-    nctx = props.default_generation_settings?.n_ctx ?? props.n_ctx ?? null;
-    if (!nctx) {
-      $('#model').textContent = props.message || '/props returned no context';
+    const roster = await rosterResponse.json();
+    if (generation !== modelStateGeneration) return;
+    const rosterModels = Array.isArray(roster.data) ? roster.data : [];
+    const modelIds = [...new Set(rosterModels
+      .map(model => model?.id)
+      .filter(modelId => typeof modelId === 'string' && modelId.length > 0))];
+    if (!modelIds.length) {
+      $('#model').textContent = 'server reports no routable model';
       return;
     }
-    $('#model').textContent =
-      (props.model_path || '').split('/').pop() || 'model';
-    $('#ctx').textContent = nctx.toLocaleString() + ' token context';
-    renderAttached();
-  } catch {
-    $('#model').textContent = 'cannot reach /props';
+
+    const storedModel = readBrowserStorage('localStorage', 'qwen-apu-model-id');
+    const selectedModel = modelIds.includes(storedModel) ? storedModel : modelIds[0];
+    modelPicker.textContent = '';
+    for (const modelId of modelIds) {
+      const option = document.createElement('option');
+      option.value = modelId;
+      option.textContent = modelId;
+      modelPicker.append(option);
+    }
+    modelPicker.value = selectedModel;
+    modelPicker.hidden = false;
+    $('#model').textContent = `${modelIds.length} model${modelIds.length === 1 ? '' : 's'} available`;
+
+    selectRequestModel(selectedModel);
+  } catch (error) {
+    if (generation !== modelStateGeneration) return;
+    requestModel = null;
+    modelPicker.hidden = true;
+    $('#model').textContent = `cannot load model roster: ${error.message || error}`;
   }
 }
 void boot();
+
+$('#model-picker').addEventListener('change', event => {
+  selectRequestModel(event.target.value);
+});
 
 function chip(text, over, onRemove) {
   const c = document.createElement('span');
@@ -213,14 +331,29 @@ function renderAttached() {
   const box = $('#attached');
   box.textContent = '';
   let total = 0;
-  attachments.forEach(a => total += a.tokens);
+  let countsComplete = true;
+  attachments.forEach(attachment => {
+    if (attachment.tokenModel === requestModel &&
+        Number.isInteger(attachment.tokens)) total += attachment.tokens;
+    else countsComplete = false;
+  });
+  const contextReady = nctxModel === requestModel && Number.isFinite(nctx);
   attachments.forEach((a, i) => {
-    const over = nctx && total > nctx * 0.9;
+    const countReady = a.tokenModel === requestModel && Number.isInteger(a.tokens);
+    const countText = countReady
+      ? `${a.tokens.toLocaleString()} tokens`
+      : a.tokenModel === requestModel ? 'token count unavailable' : 'token count pending';
+    const over = countsComplete && contextReady && total > nctx * 0.9;
     box.append(chip(
-      `${a.name} -- ${a.tokens.toLocaleString()} tokens`,
+      `${a.name} -- ${countText}`,
       over, () => { attachments.splice(i, 1); renderAttached(); }));
   });
-  if (attachments.length && nctx && total > nctx * 0.9) {
+  if (attachments.length && !countsComplete) {
+    const w = document.createElement('span');
+    w.className = 'chip over';
+    w.textContent = 'token counts remain unavailable for the selected model; context fit is unknown';
+    box.append(w);
+  } else if (attachments.length && contextReady && total > nctx * 0.9) {
     const w = document.createElement('span');
     w.className = 'chip over';
     w.textContent = `about ${total.toLocaleString()} tokens against a ${nctx.toLocaleString()} context; the server will refuse this with a 400`;
@@ -232,8 +365,8 @@ $('#file').onchange = async e => {
   for (const f of e.target.files) {
     const text = await f.text();
     try {
-      const tokens = await serverTokenCount(text);
-      attachments.push({ name: f.name, text, tokens });
+      const tokenState = await tokenCountForCurrentModel(text);
+      attachments.push({ name: f.name, text, ...tokenState });
     } catch (error) {
       window.alert(`Could not attach ${f.name}: ${error.message || error}`);
     }
@@ -264,6 +397,10 @@ $('#send').onclick = send;
 
 async function send() {
   if (busy) return;
+  if (!requestModel) {
+    $('#model').textContent = 'no routable model is selected';
+    return;
+  }
   const text = $('#input').value.trim();
   if (!text && !attachments.length) return;
 
@@ -295,7 +432,7 @@ async function send() {
   meta.className = 'meta';
   t.root.append(meta);
 
-  const body = { model: 'qwen-apu', stream: true, temperature: 0.7,
+  const body = { model: requestModel, stream: true, temperature: 0.7,
                  stream_options: { include_usage: true },
                  max_tokens: 512, messages: history };
   const reasoningOn = $('#reasoning').checked;
