@@ -26,7 +26,7 @@ check_rows() {
         /^[[:space:]]*$/ { next }
         {
             rows++
-            if (NF != 19) {
+            if (NF != 20) {
                 printf "row %d holds %d fields\n", NR, NF
                 bad++
                 next
@@ -48,29 +48,38 @@ check_rows() {
                 printf "%s: projector policy %s is not none, required, or optional\n", $1, $11
                 bad++
             }
-            if ($16 + 0 < 1 || $17 + 0 < 1) {
-                printf "%s: batch %s and ubatch %s must both be positive\n", $1, $16, $17
+            if ($11 == "required") {
+                if ($12 == "-" || system("test -x \"" directory "/" $12 "\"") != 0) {
+                    printf "%s: required projector fetch script is not executable: %s\n", $1, $12
+                    bad++
+                }
+            } else if ($12 != "-") {
+                printf "%s: projector policy %s carries unexpected fetch script %s\n", $1, $11, $12
                 bad++
             }
-            if ($17 + 0 > $16 + 0) {
-                printf "%s: ubatch %s exceeds batch %s\n", $1, $17, $16
+            if ($17 + 0 < 1 || $18 + 0 < 1) {
+                printf "%s: batch %s and ubatch %s must both be positive\n", $1, $17, $18
+                bad++
+            }
+            if ($18 + 0 > $17 + 0) {
+                printf "%s: ubatch %s exceeds batch %s\n", $1, $18, $17
                 bad++
             }
             # A validated filled depth is a measurement, so it never exceeds the
             # allocation the policy admits, and it never stands without the
             # evidence file that carries the arm it came from.
-            if ($18 != "-") {
-                if ($18 + 0 > $6 + 0) {
-                    printf "%s: validated_filled_depth %s exceeds context_ceiling %s\n", $1, $18, $6
+            if ($19 != "-") {
+                if ($19 + 0 > $6 + 0) {
+                    printf "%s: validated_filled_depth %s exceeds context_ceiling %s\n", $1, $19, $6
                     bad++
                 }
-                if ($19 == "-") {
-                    printf "%s: validated_filled_depth %s carries no evidence path\n", $1, $18
+                if ($20 == "-") {
+                    printf "%s: validated_filled_depth %s carries no evidence path\n", $1, $19
                     bad++
                 }
             }
-            if ($19 != "-" && system("test -r \"" directory "/../" $19 "\"") != 0) {
-                printf "%s: validation evidence is unreadable: %s\n", $1, $19
+            if ($20 != "-" && system("test -r \"" directory "/../" $20 "\"") != 0) {
+                printf "%s: validation evidence is unreadable: %s\n", $1, $20
                 bad++
             }
             script = directory "/" $4
@@ -91,7 +100,8 @@ check_cache_types() {
     tab=$(printf '\t')
     while IFS="$tab" read -r model_id _role _model_file _fetch_script \
         _context_default _context_ceiling _context_target cache_type_k \
-        cache_type_v _flash_attention _projector _decode_tok_s _prefill_tok_s \
+        cache_type_v _flash_attention _projector _projector_fetch_script \
+        _decode_tok_s _prefill_tok_s \
         _quality _tier _batch _ubatch _validated_filled_depth \
         _validation_evidence; do
         case $model_id in
@@ -126,7 +136,7 @@ else
     report cache_type_vocabulary rejected
 fi
 
-expected_header=$(printf '# id\trole\tmodel_file\tfetch_script\tcontext_default\tcontext_ceiling\tcontext_target\tcache_type_k\tcache_type_v\tflash_attention\tprojector\tdecode_tok_s\tprefill_tok_s\tquality\ttier\tbatch\tubatch\tvalidated_filled_depth\tvalidation_evidence')
+expected_header=$(printf '# id\trole\tmodel_file\tfetch_script\tcontext_default\tcontext_ceiling\tcontext_target\tcache_type_k\tcache_type_v\tflash_attention\tprojector\tprojector_fetch_script\tdecode_tok_s\tprefill_tok_s\tquality\ttier\tbatch\tubatch\tvalidated_filled_depth\tvalidation_evidence')
 actual_header=$(grep '^# id' "$registry" || true)
 if [ "$actual_header" = "$expected_header" ]; then
     report schema_header accepted
@@ -139,6 +149,13 @@ if [ "$("$reader" id qwen38-4b-distill role)" = balanced-text ]; then
     report id_lookup accepted
 else
     report id_lookup rejected
+fi
+
+if [ "$("$reader" id qwen35-2b projector_fetch_script)" = \
+    download-qwen35-2b-mmproj.sh ]; then
+    report projector_fetch_lookup accepted
+else
+    report projector_fetch_lookup rejected
 fi
 
 resolved=$("$reader" path \

@@ -56,7 +56,7 @@ section_ids=$(awk -F'[][]' '/^\[/ { print $2 }' "$presets")
 # Every tier value in the registry must be one the readers handle. A sixth tier
 # reaches the builder as an unclaimed row rather than as an error.
 tier_vocabulary=0
-for tier in $(awk -F'\t' '!/^#/ && NF { print $15 }' "$registry" | sort -u); do
+for tier in $(awk -F'\t' '!/^#/ && NF { print $16 }' "$registry" | sort -u); do
     "$reader" validate-tier "$tier" ||
         { printf 'tier outside the vocabulary: %s\n' "$tier" >&2
           tier_vocabulary=$((tier_vocabulary + 1)); }
@@ -150,7 +150,7 @@ fi
 # cannot show is the same defect as one in the repository.
 evidence_failures=0
 while IFS='	' read -r quarantine_id _scope _subject _class _depth _batch \
-    _ubatch _ctk _ctv _fa first_evidence latest_evidence _record; do
+    _ubatch _ctk _ctv _fa first_evidence latest_evidence _record _runtime_mode; do
     case $quarantine_id in '#'* | '') continue ;; esac
     for evidence_path in "$first_evidence" "$latest_evidence"; do
         [ "$evidence_path" = - ] && continue
@@ -326,6 +326,17 @@ else
     report runtime_mode_vocabulary rejected
 fi
 
+# Runtime-mode queries include `any` and the requested execution path. A
+# router-child-only failure must not become a standalone prohibition, while the
+# router builder must still see it.
+if "$reader" quarantine-subjects router-child | grep -qx ministral3-3b &&
+   ! "$reader" quarantine-subjects standalone | grep -qx ministral3-3b &&
+   "$reader" quarantine-subjects standalone | grep -qx nanbeige42-3b; then
+    report quarantine_runtime_filter accepted
+else
+    report quarantine_runtime_filter rejected
+fi
+
 # Reconciliation removes symlinks and must refuse a real directory, because
 # emptying one would delete a checkpoint and skipping one would leave it in a
 # tier no row claims.
@@ -353,6 +364,51 @@ if printf '%s' "$build_override" | grep -q 'quarantine_override=on' &&
     report quarantine_override accepted
 else
     report quarantine_override rejected
+fi
+
+# The quarantine registry overrides a stale tier and rejects an exact profile
+# inside the generator itself. This fixture uses a separate registry to prove
+# that safety does not depend on running this test after generation.
+fixture_registry=$work/quarantine-fixture-models.tsv
+fixture_quarantine=$work/quarantine-fixture.tsv
+fixture_reasons=$work/quarantine-fixture-reasons
+fixture_model_root=$work/quarantine-fixture-models
+fixture_presets=$work/quarantine-fixture.ini
+mkdir -p "$fixture_reasons" "$fixture_model_root/Hidden" "$fixture_model_root/Profile"
+: >"$fixture_model_root/Hidden/model.gguf"
+: >"$fixture_model_root/Profile/model.gguf"
+: >"$fixture_reasons/hidden-record.md"
+: >"$fixture_reasons/profile-record.md"
+printf '%s\n' \
+    'hidden-model	fixture	Hidden/model.gguf	fetch.sh	8192	8192	8192	q8_0	q4_0	on	none	-	-	-	untested	production	128	32	-	-' \
+    'profile-model	fixture	Profile/model.gguf	fetch.sh	8192	8192	8192	q8_0	q4_0	on	none	-	-	-	untested	production	128	32	-	-' \
+    >"$fixture_registry"
+printf '%s\n' \
+    'hidden-record	model	hidden-model	device-lost	-	-	-	-	-	-	-	-	evidence/quarantine/hidden-record.md	any' \
+    'profile-record	profile	profile-model	ring-timeout-only	8192	128	32	q8_0	q4_0	on	-	-	evidence/quarantine/profile-record.md	router-child' \
+    >"$fixture_quarantine"
+QWEN_MODEL_REGISTRY=$fixture_registry QWEN_MODEL_ROOT=$fixture_model_root \
+QWEN_QUARANTINE_REGISTRY=$fixture_quarantine \
+QWEN_QUARANTINE_REASONS=$fixture_reasons \
+    "$builder" "$fixture_presets" >"$work/quarantine-fixture.log"
+if ! grep -q '^\[' "$fixture_presets" &&
+   [ -L "$fixture_model_root/quarantine/Hidden" ] &&
+   [ -L "$fixture_model_root/production/Profile" ]; then
+    report quarantine_registry_enforced accepted
+else
+    report quarantine_registry_enforced rejected
+fi
+
+QWEN_MODEL_REGISTRY=$fixture_registry QWEN_MODEL_ROOT=$fixture_model_root \
+QWEN_QUARANTINE_REGISTRY=$fixture_quarantine \
+QWEN_QUARANTINE_REASONS=$fixture_reasons QWEN_ROUTER_INCLUDE_QUARANTINE=1 \
+    "$builder" "$fixture_presets" >"$work/quarantine-fixture-override.log"
+fixture_sections=$(awk -F'[][]' '/^\[/ { print $2 }' "$fixture_presets" | sort)
+if [ "$fixture_sections" = "$(printf '%s\n' hidden-model profile-model)" ] &&
+   grep -qx '# qwen_router_include_quarantine=1' "$fixture_presets"; then
+    report quarantine_registry_override accepted
+else
+    report quarantine_registry_override rejected
 fi
 
 if [ "$failures" -eq 0 ]; then

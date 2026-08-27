@@ -210,12 +210,14 @@ setting, ceiling, and scoring, is the decision-relevant next measurement.
 
 ## Projectors pair with their checkpoint by directory
 
-`qwen-launch.sh` searches for `mmproj-F16.gguf` beside the model file. A
-projector encodes images into the embedding space of the checkpoint that
-exported it. A foreign projector of matching dimensions loads cleanly and
-places image tokens where the language model reads nothing, so it answers
-wrongly rather than failing. Directory pairing is a correctness requirement:
-it makes a checkpoint published without a projector run text-only.
+`qwen-launch.sh` searches for a projector beside the model file. A projector
+encodes images into the embedding space of the checkpoint that exported it. A
+foreign projector of matching dimensions loads cleanly and places image tokens
+where the language model reads nothing, so it answers wrongly rather than
+failing. Directory pairing is a correctness requirement, and `models.tsv`
+names the exact projector fetch script for every required pairing. A checkpoint
+published without a projector runs text-only unless an explicit fetch uses that
+row's downloader.
 
 The 4B distill ships text-only, and `/props` reports `vision: false` under it.
 Vision therefore selects the base checkpoint, whose projector is pinned to the

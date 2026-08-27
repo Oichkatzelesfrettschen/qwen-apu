@@ -40,9 +40,12 @@ PYTHONDONTWRITEBYTECODE=1 python3 remote/test-quality-suite.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-gguf-tokenizer-identity.py
 remote/test-measurement-harnesses.sh
 remote/test-model-registry.sh
+remote/test-model-tiers.sh
+remote/test-projector-fetch-dispatch.sh
 remote/test-projector-pairing.sh
 remote/test-promote-llama-build.sh
 remote/test-qwen-capacity-policy.sh
+remote/test-quality-roster.sh
 remote/test-qwen-runtime-guards.sh
 remote/refresh-evidence-manifest.sh --check
 PYTHONDONTWRITEBYTECODE=1 python3 remote/check-text-policy.py

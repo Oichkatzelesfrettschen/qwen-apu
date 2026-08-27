@@ -131,17 +131,21 @@ removes one tuple of a checkpoint that otherwise serves, and
 `qwen-capacity-policy.sh` refuses to construct that tuple rather than warning
 about it. `evidence/quarantine/` holds one reason record per row with its kernel
 signature, its validated safe tuples, and its re-entry gate.
-`QWEN_ROUTER_INCLUDE_QUARANTINE=1` exposes a quarantined checkpoint for research
-and forces the listener to `127.0.0.1` while it does, because the appliance
-binds `0.0.0.0` and a warning alone would put a model with a recorded device
-failure on the LAN.
+`QWEN_ROUTER_INCLUDE_QUARANTINE=1` exposes a quarantined checkpoint for research.
+The generated preset records that override, and `qwen-capacity-policy.sh`
+derives the listener restriction from the file on every later launch. It
+refuses generated presets that predate the marker and forces an exposed preset
+to `127.0.0.1`, because the appliance binds `0.0.0.0` and a warning alone would
+put a model with a recorded device failure on the LAN.
 
 Two mechanisms guard the quarantined tuple because two paths construct one.
 `qwen-capacity-policy.sh` refuses it on the single-model path, where the policy
 builds the argv the server runs. In router mode the children take their geometry
 from the preset file rather than from a second pass through the policy, so
 `build-router-presets.sh` is the guard there and `test-model-tiers.sh` is what
-checks it.
+checks it. The builder queries `quarantine.tsv` for router-child rows instead of
+trusting the model tier: a model-scope row overrides a stale production tier,
+and a profile-scope row removes the exact section tuple.
 
 Router mode leaves depth, cache triple, and submission geometry off its own
 argv. `server-models.cpp` ends its preset assembly with

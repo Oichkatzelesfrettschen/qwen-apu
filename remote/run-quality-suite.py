@@ -287,6 +287,31 @@ def pad_prompt(prompt, depth_characters):
     return (filler + fact.strip() + " " + filler + question.strip()).strip()
 
 
+# The drawn fixtures are PNG and the photographic one is the JPEG its upstream
+# publishes. Re-encoding that JPEG to PNG would put a decoder this repository
+# chose between the camera and the projector, which is the thing the
+# photographic row exists to leave out.
+IMAGE_MEDIA_TYPES = {".png": "image/png", ".jpg": "image/jpeg"}
+
+
+def resolve_fixture(directory, name):
+    matches = []
+    for extension, media_type in IMAGE_MEDIA_TYPES.items():
+        path = os.path.join(directory, name + extension)
+        if os.path.isfile(path):
+            matches.append((path, media_type))
+    if len(matches) == 1:
+        return matches[0]
+    fixture_stem = os.path.join(directory, name)
+    if not matches:
+        raise SystemExit(
+            f"fixture is absent: {fixture_stem}"
+            f"{{{','.join(IMAGE_MEDIA_TYPES)}}}")
+    raise SystemExit(
+        f"fixture is ambiguous: {fixture_stem} matches "
+        + ", ".join(path for path, _media_type in matches))
+
+
 def load_image_part(directory, name):
     """One fixture as a data URI content part.
 
@@ -295,11 +320,11 @@ def load_image_part(directory, name):
     harness does not control, and a path that resolves here and not there fails
     as a wrong answer rather than as a missing file.
     """
-    path = os.path.join(directory, name + ".png")
+    path, media_type = resolve_fixture(directory, name)
     with open(path, "rb") as handle:
         encoded = base64.b64encode(handle.read()).decode()
     return {"type": "image_url",
-            "image_url": {"url": "data:image/png;base64," + encoded}}
+            "image_url": {"url": f"data:{media_type};base64," + encoded}}
 
 
 def request(endpoint, api_key, model, prompt, max_tokens, thinking, timeout,
@@ -434,13 +459,26 @@ def main(argv):
         # than a wrong answer, and the two are reported apart.
         truncated = choice.get("finish_reason") == "length"
         tool_calls = read_tool_calls(message)
-        passed, reason = ((False, error) if error
-                          else grade(row, content, truncated, tool_calls))
+        served_model = document.get("model")
+        attribution_error = None
+        if error is None:
+            if not served_model:
+                attribution_error = "response omitted the served model id"
+            elif served_model != arguments.model:
+                attribution_error = (
+                    f"response model {served_model!r} differs from requested "
+                    f"model {arguments.model!r}")
+        if error:
+            passed, reason = False, error
+        elif attribution_error:
+            passed, reason = False, attribution_error
+        else:
+            passed, reason = grade(row, content, truncated, tool_calls)
 
         records.append({
             "id": row["id"],
             "requested_model": arguments.model,
-            "served_model": document.get("model"),
+            "served_model": served_model,
             "category": row["category"],
             "grader": row["grader"],
             "expectation": row["expectation"],
@@ -463,6 +501,7 @@ def main(argv):
             # happened to carry prose.
             "empty_answer": not content.strip() and not tool_calls,
             "error": error,
+            "attribution_error": attribution_error,
             "content": content,
             # The API exposes text for the reasoning span and one generated-token
             # count for the whole response. Word count stays explicitly a word
@@ -474,7 +513,7 @@ def main(argv):
             "wall_seconds": document.get("_wall_seconds"),
         })
         print(f"row={row['id']} category={row['category']} "
-              f"served={document.get('model')} "
+              f"served={served_model} "
               f"passed={bool(passed)} truncated={truncated} reason={reason}",
               flush=True)
 
@@ -490,7 +529,8 @@ def main(argv):
 
     completed = [
         record for record in records
-        if (not record["error"] and not record["empty_answer"]
+        if (not record["error"] and not record["attribution_error"]
+            and not record["empty_answer"]
             and not record["truncated"])
     ]
     # The served id comes from the response rather than from the request, so a
@@ -518,6 +558,8 @@ def main(argv):
         "images_omitted": bool(arguments.omit_images),
         "images_sent": sum(record["images_sent"] for record in records),
         "served_models": served_models,
+        "attribution_failures": sum(
+            bool(record["attribution_error"]) for record in records),
         "passed": sum(r["passed"] for r in records),
         "completion_rate": len(completed) / len(records),
         "empty_answer_rate": sum(r["empty_answer"] for r in records) / len(records),
@@ -547,15 +589,19 @@ def main(argv):
               f"names={tool_stages['names_match']} "
               f"arguments={tool_stages['arguments_match']}")
     transport_errors = sum(bool(record["error"]) for record in records)
+    attribution_failures = summary["attribution_failures"]
     print(f"served_models={','.join(served_models) if served_models else 'none'} "
           f"requested_model={arguments.model}")
-    terminal_state = "completed" if transport_errors == 0 else "failed"
+    terminal_state = (
+        "completed" if transport_errors == 0 and attribution_failures == 0
+        else "failed")
     print(f"quality_suite={terminal_state} passed={summary['passed']}/{summary['rows']} "
           f"completion_rate={summary['completion_rate']:.3f} "
           f"empty_answer_rate={summary['empty_answer_rate']:.3f} "
           f"transport_errors={transport_errors} "
+          f"attribution_failures={attribution_failures} "
           f"wall_seconds={summary['wall_seconds_total']:.1f}")
-    return 0 if transport_errors == 0 else 1
+    return 0 if transport_errors == 0 and attribution_failures == 0 else 1
 
 
 if __name__ == "__main__":
