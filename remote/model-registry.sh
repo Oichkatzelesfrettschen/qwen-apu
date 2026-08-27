@@ -44,20 +44,61 @@ quarantine_registry=${QWEN_QUARANTINE_REGISTRY:-$script_directory/quarantine.tsv
 # The quarantine queries read a second file rather than the tier field alone,
 # because a quarantine has two scopes and the model registry has one row per
 # checkpoint. A scope `model` row removes a checkpoint entirely; a scope
-# `profile` row removes one tuple of a checkpoint that otherwise serves.
-if [ "$#" -eq 1 ] && [ "$1" = quarantine-subjects ]; then
-    [ -r "$quarantine_registry" ] || exit 0
-    awk -F'\t' '/^#/ { next } NF < 13 { next } $2 == "model" { print $3 }' \
-        "$quarantine_registry"
-    exit 0
+# `profile` row removes one tuple of a checkpoint that otherwise serves. An
+# optional runtime mode returns rows that apply to that path, including `any`.
+if [ "$#" -ge 1 ] && [ "$#" -le 2 ]; then
+    quarantine_query=$1
+    quarantine_runtime_mode=${2:-}
+    case $quarantine_query in
+        quarantine-subjects | quarantine-profiles | quarantine-rows) ;;
+        *) quarantine_query='' ;;
+    esac
+    if [ -n "$quarantine_query" ]; then
+        case $quarantine_runtime_mode in
+            '' | router-child | standalone) ;;
+            *)
+                printf 'quarantine runtime mode must be router-child or standalone: %s\n' \
+                    "$quarantine_runtime_mode" >&2
+                exit 2
+                ;;
+        esac
+        [ -r "$quarantine_registry" ] || exit 0
+        case $quarantine_query in
+            quarantine-subjects)
+                awk -F'\t' -v mode="$quarantine_runtime_mode" '
+                    /^#/ { next }
+                    NF < 14 { next }
+                    $2 == "model" && (mode == "" || $14 == "any" || $14 == mode) {
+                        print $3
+                    }' "$quarantine_registry"
+                ;;
+            quarantine-profiles)
+                awk -F'\t' -v mode="$quarantine_runtime_mode" '
+                    /^#/ { next }
+                    NF < 14 { next }
+                    $2 == "profile" && (mode == "" || $14 == "any" || $14 == mode) {
+                        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", \
+                            $3, $5, $6, $7, $8, $9, $10
+                    }' "$quarantine_registry"
+                ;;
+            quarantine-rows)
+                awk -F'\t' -v mode="$quarantine_runtime_mode" '
+                    /^#/ { next }
+                    NF < 14 { next }
+                    mode == "" || $14 == "any" || $14 == mode { print }' \
+                    "$quarantine_registry"
+                ;;
+        esac
+        exit 0
+    fi
 fi
 
 # The rows the router can load on demand. Router mode serves any of them behind
 # one listener, so a caller sizing the machine reads this list rather than the
 # one checkpoint it happened to name.
 if [ "$#" -eq 1 ] && [ "$1" = servable-files ]; then
-    awk -F'\t' '/^#/ { next } NF < 19 { next }
-        $15 == "production" || $15 == "candidate" { print $3 }' \
+    awk -F'\t' '/^#/ { next } NF < 20 { next }
+        $16 == "production" || $16 == "candidate" { print $3 }' \
         "${QWEN_MODEL_REGISTRY:-$script_directory/models.tsv}"
     exit 0
 fi
@@ -67,17 +108,9 @@ fi
 # here rather than reading the live endpoint, which would also list a
 # quarantined row exposed by QWEN_ROUTER_INCLUDE_QUARANTINE.
 if [ "$#" -eq 1 ] && [ "$1" = servable-ids ]; then
-    awk -F'\t' '/^#/ { next } NF < 19 { next }
-        $15 == "production" || $15 == "candidate" { print $1 }' \
+    awk -F'\t' '/^#/ { next } NF < 20 { next }
+        $16 == "production" || $16 == "candidate" { print $1 }' \
         "${QWEN_MODEL_REGISTRY:-$script_directory/models.tsv}"
-    exit 0
-fi
-
-if [ "$#" -eq 1 ] && [ "$1" = quarantine-profiles ]; then
-    [ -r "$quarantine_registry" ] || exit 0
-    awk -F'\t' '/^#/ { next } NF < 13 { next } $2 == "profile" {
-        printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", $3, $5, $6, $7, $8, $9, $10
-    }' "$quarantine_registry"
     exit 0
 fi
 
@@ -85,11 +118,12 @@ if [ "$#" -ne 2 ] && [ "$#" -ne 3 ]; then
     printf 'usage: %s id|path SELECTOR [FIELD]\n' "$0" >&2
     printf '       %s validate-cache-type TYPE\n' "$0" >&2
     printf '       %s validate-tier TIER\n' "$0" >&2
-    printf '       %s quarantine-subjects | quarantine-profiles\n' "$0" >&2
+    printf '       %s quarantine-subjects|quarantine-profiles|quarantine-rows [RUNTIME_MODE]\n' "$0" >&2
     printf '       %s servable-files | servable-ids\n' "$0" >&2
     printf 'fields: id role model_file fetch_script context_default context_ceiling\n' >&2
     printf '        context_target cache_type_k cache_type_v flash_attention\n' >&2
-    printf '        projector decode_tok_s prefill_tok_s quality tier batch\n' >&2
+    printf '        projector projector_fetch_script decode_tok_s prefill_tok_s\n' >&2
+    printf '        quality tier batch\n' >&2
     printf '        ubatch validated_filled_depth validation_evidence\n' >&2
     printf 'omit FIELD to print the whole row as key=value lines\n' >&2
     exit 2
@@ -116,7 +150,7 @@ fi
 
 awk -F'\t' -v kind="$selector_kind" -v selector="$selector" -v field="$field" '
     /^#/ { next }
-    NF < 19 { next }
+    NF < 20 { next }
     {
         matched = 0
         if (kind == "id" && $1 == selector) {
@@ -132,12 +166,12 @@ awk -F'\t' -v kind="$selector_kind" -v selector="$selector" -v field="$field" '
         matched_any = 1
         split("id role model_file fetch_script context_default context_ceiling " \
               "context_target cache_type_k cache_type_v flash_attention projector " \
-              "decode_tok_s prefill_tok_s quality tier batch ubatch " \
+              "projector_fetch_script decode_tok_s prefill_tok_s quality tier batch ubatch " \
               "validated_filled_depth validation_evidence", names, " ")
         if (field == "") {
-            for (i = 1; i <= 19; i++) { printf "%s=%s\n", names[i], $i }
+            for (i = 1; i <= 20; i++) { printf "%s=%s\n", names[i], $i }
         } else {
-            for (i = 1; i <= 19; i++) {
+            for (i = 1; i <= 20; i++) {
                 if (names[i] == field) { printf "%s\n", $i; found = 1 }
             }
             if (!found) { exit 3 }

@@ -80,13 +80,40 @@ fi
 # A mismatched projector loads without error and places image tokens where the
 # language model does not read them, so remote/select-projector.sh binds the
 # search to the checkpoint's own directory and prints nothing where the pairing
-# is absent or ambiguous. remote/test-projector-pairing.sh covers its branches.
+# is absent or ambiguous. remote/test-projector-pairing.sh covers selection and
+# remote/test-projector-fetch-dispatch.sh covers registry-directed fetching.
 model_directory=$(dirname -- "$model_path")
-mmproj=${QWEN_MMPROJ:-$("$script_directory/select-projector.sh" "$model_path")}
-if [ -z "$mmproj" ] && [ "${QWEN_FETCH_MMPROJ:-0}" = 1 ] && \
-   [ -x "$script_directory/download-qwen35-4b-mmproj.sh" ]; then
-    "$script_directory/download-qwen35-4b-mmproj.sh" "$model_directory" || true
-    mmproj=$("$script_directory/select-projector.sh" "$model_path")
+if [ "${QWEN_MMPROJ+x}" = x ]; then
+    mmproj=$QWEN_MMPROJ
+else
+    mmproj=$("$script_directory/select-projector.sh" "$model_path") || mmproj=''
+fi
+if [ -z "$mmproj" ] && [ "${QWEN_FETCH_MMPROJ:-0}" = 1 ]; then
+    projector_fetch_script=$("$script_directory/model-registry.sh" path \
+        "$model_path" projector_fetch_script 2>/dev/null) || projector_fetch_script=''
+    case $projector_fetch_script in
+        '' | -)
+            printf 'model registry holds no projector fetch script for %s\n' \
+                "$model_path" >&2
+            exit 1
+            ;;
+    esac
+    projector_fetch_path=$script_directory/$projector_fetch_script
+    if [ ! -x "$projector_fetch_path" ]; then
+        printf 'projector fetch script is not executable: %s\n' \
+            "$projector_fetch_path" >&2
+        exit 1
+    fi
+    "$projector_fetch_path" "$model_directory" || {
+        printf 'projector fetch failed for %s\n' "$model_path" >&2
+        exit 1
+    }
+    mmproj=$("$script_directory/select-projector.sh" "$model_path") || mmproj=''
+    if [ -z "$mmproj" ]; then
+        printf 'projector fetch produced no unambiguous match for %s\n' \
+            "$model_path" >&2
+        exit 1
+    fi
 fi
 [ -n "$mmproj" ] && [ -f "$mmproj" ] || mmproj=''
 [ -n "$mmproj" ] && printf 'projector=%s\n' "$(basename -- "$mmproj")"

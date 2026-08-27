@@ -37,6 +37,7 @@ cat >"$build_directory/bin/llama-server" <<'SERVER'
 exit 1
 SERVER
 chmod +x "$build_directory/bin/llama-server"
+cp "$build_directory/bin/llama-server" "$build_directory/bin/llama-mtmd-cli"
 printf 'fixture backend\n' >"$build_directory/bin/libggml-vulkan.so"
 
 write_manifest() {
@@ -64,7 +65,8 @@ promotion_output=$("$promoter" "$preset" "$work_directory" 2>&1)
 promotion_status=$?
 set -e
 case $promotion_status:$promotion_output in
-    0:*strict_vulkan=not-run*) report clean_manifest_promotes accepted ;;
+    0:*strict_vulkan=not-run*multimodal=not-run*)
+        report clean_manifest_promotes accepted ;;
     *) report clean_manifest_promotes rejected
        printf '%s\n' "$promotion_output" >&2 ;;
 esac
@@ -140,6 +142,7 @@ second_preset=fixture-preset-second
 second_build_directory=$work_directory/build-$second_preset
 mkdir -p "$second_build_directory/bin"
 cp "$build_directory/bin/llama-server" "$second_build_directory/bin/llama-server"
+cp "$build_directory/bin/llama-server" "$second_build_directory/bin/llama-mtmd-cli"
 printf 'fixture backend, second arm\n' >"$second_build_directory/bin/libggml-vulkan.so"
 {
     printf 'preset\t%s\n' "$second_preset"
@@ -175,6 +178,23 @@ else
     report rollback_restores rejected
     printf '%s\n' "$rollback_output" >&2
 fi
+
+# A preset that produced llama-server and no llama-mtmd-cli must refuse
+# promotion. The vision profile is served by the same tree, so a promotion that
+# accepted the absence would move a build into service whose projector path this
+# gate never exercised.
+mv "$build_directory/bin/llama-mtmd-cli" "$build_directory/bin/llama-mtmd-cli.moved"
+set +e
+multimodal_absent_output=$("$promoter" "$preset" "$work_directory" 2>&1)
+multimodal_absent_status=$?
+set -e
+mv "$build_directory/bin/llama-mtmd-cli.moved" "$build_directory/bin/llama-mtmd-cli"
+case $multimodal_absent_status:$multimodal_absent_output in
+    0:*) report multimodal_cli_required rejected ;;
+    *:*no\ executable\ llama-mtmd-cli*) report multimodal_cli_required accepted ;;
+    *) report multimodal_cli_required rejected
+       printf '%s\n' "$multimodal_absent_output" >&2 ;;
+esac
 
 set +e
 "$promoter" >/dev/null 2>&1

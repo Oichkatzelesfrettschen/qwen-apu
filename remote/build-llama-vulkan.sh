@@ -76,9 +76,21 @@ cmake -S "$source_directory" -B "$build_directory" -G Ninja \
     -DGGML_SYCL=OFF \
     -DGGML_VULKAN=ON
 
-cmake --build "$build_directory" --parallel "$build_jobs" --target llama-server llama-cli
+# llama-mtmd-cli is how a projector is exercised outside the server. The server
+# links libmtmd either way, so a vision failure seen through the HTTP path
+# cannot be attributed between the projector, the chat template, and the
+# request shape without a second consumer of the same library.
+cmake --build "$build_directory" --parallel "$build_jobs" \
+    --target llama-server llama-cli llama-mtmd-cli
 "$script_directory/test-vulkan-pacing-math.sh" "$source_directory"
 "$script_directory/test-vulkan-submit-limit.sh" "$source_directory"
 
-printf 'build_commit=%s build_directory=%s cpu_backend=required vulkan_backend=enabled duty_cycle_test=accepted submit_limit_test=accepted parallel_jobs=%s\n' \
+for required_output in llama-server llama-cli llama-mtmd-cli; do
+    if [ ! -x "$build_directory/bin/$required_output" ]; then
+        printf 'the build produced no %s\n' "$required_output" >&2
+        exit 1
+    fi
+done
+
+printf 'build_commit=%s build_directory=%s cpu_backend=required vulkan_backend=enabled duty_cycle_test=accepted submit_limit_test=accepted multimodal_cli=built parallel_jobs=%s\n' \
     "$actual_commit" "$build_directory" "$build_jobs"

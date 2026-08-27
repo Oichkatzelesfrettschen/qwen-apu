@@ -131,17 +131,21 @@ removes one tuple of a checkpoint that otherwise serves, and
 `qwen-capacity-policy.sh` refuses to construct that tuple rather than warning
 about it. `evidence/quarantine/` holds one reason record per row with its kernel
 signature, its validated safe tuples, and its re-entry gate.
-`QWEN_ROUTER_INCLUDE_QUARANTINE=1` exposes a quarantined checkpoint for research
-and forces the listener to `127.0.0.1` while it does, because the appliance
-binds `0.0.0.0` and a warning alone would put a model with a recorded device
-failure on the LAN.
+`QWEN_ROUTER_INCLUDE_QUARANTINE=1` exposes a quarantined checkpoint for research.
+The generated preset records that override, and `qwen-capacity-policy.sh`
+derives the listener restriction from the file on every later launch. It
+refuses generated presets that predate the marker and forces an exposed preset
+to `127.0.0.1`, because the appliance binds `0.0.0.0` and a warning alone would
+put a model with a recorded device failure on the LAN.
 
 Two mechanisms guard the quarantined tuple because two paths construct one.
 `qwen-capacity-policy.sh` refuses it on the single-model path, where the policy
 builds the argv the server runs. In router mode the children take their geometry
 from the preset file rather than from a second pass through the policy, so
 `build-router-presets.sh` is the guard there and `test-model-tiers.sh` is what
-checks it.
+checks it. The builder queries `quarantine.tsv` for router-child rows instead of
+trusting the model tier: a model-scope row overrides a stale production tier,
+and a profile-scope row removes the exact section tuple.
 
 Router mode leaves depth, cache triple, and submission geometry off its own
 argv. `server-models.cpp` ends its preset assembly with
@@ -243,8 +247,10 @@ remote/run-kv-cache-factorial.sh MODEL [OUT]   # cache type crossed with flash a
 remote/measure-served-decode.sh LABEL MODEL    # served decode at a fixed length
 remote/measure-bench-repeatability.sh MODEL    # what a depth-0 rate repeats to
 remote/run-quality-suite.py ENDPOINT OUT_JSON --long-context-characters 24000
-                                                # the 55-row graded suite at explicit depth
+                                                # the 75-row graded suite at explicit depth
 remote/run-quality-roster.sh [OUTPUT_DIR]      # that suite against every servable row
+remote/generate-quality-images.py [DIR]        # the vision fixtures, and --check
+remote/regrade-quality-roster.py RECORD...     # a grader change over retained replies
 remote/sample-gpu-clocks.sh OUT_TSV [SECONDS]  # the DPM step a rate ran at
 remote/measure-dpm-force.sh MODEL [OUT]         # auto against global high governor
 remote/model-registry.sh id|path SELECTOR [FIELD]
@@ -252,7 +258,7 @@ remote/build-router-presets.sh [OUTPUT_INI]    # the picker, from the tier field
 
 # Rebuild llama.cpp and the static UI
 remote/build-llama-preset.sh PRESET [SOURCE]   # one directory per build arm
-remote/build-llama-vulkan.sh                   # on the laptop, the required path
+remote/build-llama-vulkan.sh                   # llama-server, llama-cli, llama-mtmd-cli
 remote/build-llama-on-workstation.sh           # optional, ships binaries over
 remote/build-llama-ui.sh                       # Node on the workstation
 remote/build-llama-dual.sh                     # Vulkan and HIP in one binary
@@ -275,6 +281,8 @@ remote/test-model-registry.sh
 remote/test-model-tiers.sh
 remote/test-quality-suite.py
 remote/test-quality-roster.sh
+remote/test-promote-llama-build.sh
+remote/generate-quality-images.py --check
 remote/test-gguf-tokenizer-identity.py
 remote/test-promote-llama-build.sh
 remote/verify-llama-patch-series.sh
@@ -409,6 +417,39 @@ stays open. The mechanism is unisolated and recorded as an effect. The measureme
 own: a one-row or two-row difference between two checkpoints reports position in
 a sequence rather than capability, and a quality comparison is read inside one
 sweep for the same reason a rate comparison is.
+
+The graded suite reaches past text through one column. `attachment` is `-` for
+a text row, `image:NAME` for a vision row, and `tools:SET` for a tool row, so a
+row states what its request carries beside the prompt.
+`remote/generate-quality-images.py` draws every fixture from a declaration in
+its own source, which is what makes a vision answer gradeable: `bars.png` holds
+four bars whose tallest is JUN at 150 because the generator's table says so.
+A tool row executes nothing. The appliance runs without `--tools`, so the server
+holds no tool server; the request body's `tools` field asks the model to emit a
+`tool_calls` object and `tool_call` and `no_tool_call` grade that object, which
+measures selection with the read-only boundary intact.
+
+The fixtures are committed and `--check` compares pixels rather than file bytes.
+Deflate is not reproducible across hosts -- zlib 1.3 on the appliance re-encodes
+7 of the 8 fixtures to different bytes than the workstation wrote, with
+identical pixels -- while inflate is fully specified, so decoding both sides
+tests the claim a fixture makes and a digest comparison tests the encoder.
+
+A grader defect is corrected over retained replies rather than by re-running.
+`nonempty` passed a reply cut at the token budget, which is the termination
+failure the row tests, and `remote/regrade-quality-roster.py` re-applies the
+corrected grader to the reply each record already holds. The records stay as the
+harness wrote them and `evidence/quality-roster/regrade-summary.tsv` carries the
+recorded total beside the corrected one.
+
+`llama-mtmd-cli` is built beside `llama-server` because the projector path fails
+by answering rather than by erroring. A projector of matching dimensions loads
+cleanly while writing image tokens the language model reads nothing from, so
+`remote/promote-llama-build.sh` reads an image whose content this repository
+declares and requires the answer to carry it. `tools/mtmd/mtmd-cli.cpp:403` sets
+`is_single_turn` from a non-empty prompt **and** a non-empty image, so
+`--prompt` alone enters the interactive chat loop and a single-shot text run
+through that binary is unavailable at the pinned commit.
 
 `evidence/research-claim-methodology.md` defines the article-facing claim
 record, architecture authorities, missing-data semantics, experimental design,

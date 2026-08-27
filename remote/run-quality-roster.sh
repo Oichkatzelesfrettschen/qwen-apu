@@ -21,6 +21,7 @@ if [ "$#" -gt 1 ]; then
     printf 'environment: QWEN_QUALITY_CATEGORIES QWEN_QUALITY_MAX_TOKENS\n' >&2
     printf '             QWEN_QUALITY_THINKING QWEN_QUALITY_LONG_CONTEXT_CHARACTERS\n' >&2
     printf '             QWEN_QUALITY_MODELS QWEN_QUALITY_SUITE QWEN_SERVER_PORT\n' >&2
+    printf '             QWEN_QUALITY_OMIT_IMAGES\n' >&2
     exit 2
 fi
 
@@ -34,10 +35,22 @@ max_tokens=${QWEN_QUALITY_MAX_TOKENS:-1024}
 thinking=${QWEN_QUALITY_THINKING:-off}
 long_context_characters=${QWEN_QUALITY_LONG_CONTEXT_CHARACTERS:-24000}
 suite_path=${QWEN_QUALITY_SUITE:-$script_directory/quality-suite.tsv}
+# The vision control arm. Withholding the image from rows that name one turns
+# the same suite into the measurement of what the prompt alone answers, so the
+# control differs from its arm in the image and in nothing else.
+omit_images=${QWEN_QUALITY_OMIT_IMAGES:-0}
 
 case $max_tokens in
     '' | *[!0-9]* | 0)
         printf 'token budget must be a positive integer: %s\n' "$max_tokens" >&2
+        exit 2
+        ;;
+esac
+
+case $omit_images in
+    0 | 1) ;;
+    *)
+        printf 'image omission must be 0 or 1: %s\n' "$omit_images" >&2
         exit 2
         ;;
 esac
@@ -105,6 +118,9 @@ for model_id in $model_ids; do
         --long-context-characters "$long_context_characters"
     if [ -n "$categories" ]; then
         set -- "$@" --categories "$categories"
+    fi
+    if [ "$omit_images" = 1 ]; then
+        set -- "$@" --omit-images
     fi
 
     if "$suite_runner" "$@" >"$arm_log" 2>&1; then

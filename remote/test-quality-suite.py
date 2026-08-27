@@ -8,6 +8,7 @@ the wrong field count fails at measurement time rather than here.
 """
 
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -61,6 +62,25 @@ for kind, expectation, reply, expected in CASES:
               file=sys.stderr)
         failures += 1
 
+# Truncation refuses the presence grader and leaves every content grader alone.
+# The roster arm that exposed this credited term-02 for a reply cut at the
+# token budget, which is the termination failure the row exists to catch, while
+# ctx-03 was truncated in the same arm and failed on its numeric terms.
+TRUNCATION_CASES = [
+    ("nonempty", "", "A reply that ran out of budget", True, False),
+    ("nonempty", "", "A reply that finished", False, True),
+    ("numeric", "42", "the answer is 42", True, True),
+    ("contains_all", "canberra", "The capital is Canberra and", True, True),
+]
+for kind, expectation, reply, truncated, expected in TRUNCATION_CASES:
+    row = {"grader": kind, "expectation": expectation}
+    passed, reason = module.grade(row, reply, truncated)
+    if passed != expected:
+        print(f"grader={kind} truncated={truncated} reply={reply!r} "
+              f"expected={expected} got={passed} reason={reason}",
+              file=sys.stderr)
+        failures += 1
+
 suite_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "quality-suite.tsv")
 rows = module.load_suite(suite_path)
@@ -68,17 +88,188 @@ identifiers = [row["id"] for row in rows]
 if len(set(identifiers)) != len(identifiers):
     print("suite holds duplicate identifiers", file=sys.stderr)
     failures += 1
-known = {"numeric", "contains_all", "contains_any", "json_keys", "regex", "nonempty"}
+known = {"numeric", "contains_all", "contains_any", "json_keys", "regex",
+         "nonempty", "tool_call", "no_tool_call"}
 for row in rows:
     if row["grader"] not in known:
         print(f"{row['id']}: unknown grader {row['grader']}", file=sys.stderr)
         failures += 1
-    if row["grader"] != "nonempty" and not row["expectation"]:
+    if row["grader"] not in ("nonempty",) and not row["expectation"]:
         print(f"{row['id']}: grader {row['grader']} carries no expectation",
               file=sys.stderr)
         failures += 1
     if not row["prompt"].strip():
         print(f"{row['id']}: empty prompt", file=sys.stderr)
+        failures += 1
+
+# Every attachment a row names must resolve here. An image absent from the
+# fixture directory or a tool set absent from the declaration reaches the
+# appliance as a wrong answer partway through an arm that already spent device
+# time, which is the failure this check moves forward to a test run.
+remote_directory = os.path.dirname(os.path.abspath(__file__))
+with open(os.path.join(remote_directory, "quality-tools.json")) as handle:
+    declared_tool_sets = json.load(handle)
+attachment_kinds = {}
+for row in rows:
+    kind, names = module.parse_attachment(row.get("attachment"))
+    attachment_kinds[kind] = attachment_kinds.get(kind, 0) + 1
+    for name in names:
+        if kind == "image":
+            try:
+                module.resolve_fixture(
+                    os.path.join(remote_directory, "quality-images"), name)
+            except SystemExit:
+                print(f"{row['id']}: names an absent fixture {name}", file=sys.stderr)
+                failures += 1
+        elif name not in declared_tool_sets:
+            print(f"{row['id']}: names an undeclared tool set {name}",
+                  file=sys.stderr)
+            failures += 1
+
+# A tool grader without a tool set is a row that can only report a refusal, and
+# an image grader without an image grades the prompt.
+for row in rows:
+    kind, _ = module.parse_attachment(row.get("attachment"))
+    if row["grader"] in ("tool_call", "no_tool_call") and kind != "tools":
+        print(f"{row['id']}: tool grader with attachment kind {kind}",
+              file=sys.stderr)
+        failures += 1
+    if row["category"] in ("vision", "photo") and kind != "image":
+        print(f"{row['id']}: {row['category']} row with attachment kind {kind}",
+              file=sys.stderr)
+        failures += 1
+
+# The tool graders separate the stages a single pass rate merges, and each stage
+# is exercised with a call whose verdict is known.
+WEATHER_ROW = {"grader": "tool_call", "expectation": "get_weather:city=Oslo"}
+
+
+def fixture_calls(name, arguments):
+    return module.read_tool_calls(
+        {"tool_calls": [{"function": {"name": name, "arguments": arguments}}]})
+
+
+NUMBER_ROW = {"grader": "tool_call", "expectation": "multiply:left=47|right=89"}
+
+TOOL_CASES = [
+    (WEATHER_ROW, fixture_calls("get_weather", '{"city": "Oslo"}'), True),
+    # A schema declaring {"type": "number"} lets a model emit 47, 47.0, or "47"
+    # for one value, and a string comparison scores two of the three wrong.
+    (NUMBER_ROW, fixture_calls("multiply", '{"left": 47, "right": 89}'), True),
+    (NUMBER_ROW, fixture_calls("multiply", '{"left": 47.0, "right": 89.0}'), True),
+    (NUMBER_ROW, fixture_calls("multiply", '{"left": "47", "right": "89"}'), True),
+    (NUMBER_ROW, fixture_calls("multiply", '{"left": 48, "right": 89}'), False),
+    (WEATHER_ROW, fixture_calls("get_weather", '{"city": "oslo"}'), True),
+    (WEATHER_ROW, fixture_calls("get_weather", '{"city": "Bergen"}'), False),
+    (WEATHER_ROW, fixture_calls("get_local_time", '{"city": "Oslo"}'), False),
+    (WEATHER_ROW, fixture_calls("get_weather", "not json at all"), False),
+    (WEATHER_ROW, [], False),
+    ({"grader": "no_tool_call", "expectation": "paris"}, [], None),
+]
+for row, calls, expected in TOOL_CASES:
+    if expected is None:
+        continue
+    passed, reason = module.grade(row, "", tool_calls=calls)
+    if passed != expected:
+        print(f"tool grader: calls={calls} expected={expected} got={passed} "
+              f"reason={reason}", file=sys.stderr)
+        failures += 1
+
+# An emitted call fails a no_tool_call row whatever the prose says, because the
+# row asks whether the model reached for a tool it did not need.
+passed, _ = module.grade({"grader": "no_tool_call", "expectation": "paris"},
+                         "The capital is Paris.",
+                         tool_calls=fixture_calls("get_weather", '{"city": "Paris"}'))
+if passed:
+    print("no_tool_call accepted a reply that called a tool", file=sys.stderr)
+    failures += 1
+
+# The photographic fixture is pinned rather than drawn, so its bytes are checked
+# against the digest its fetch script names. A fixture replaced upstream, or a
+# thumbnail regenerated by a different encoder, changes what every `photo` row
+# was graded against.
+photo_path = os.path.join(remote_directory, "quality-images", "zebra.jpg")
+fetch_script = os.path.join(remote_directory, "download-quality-photo.sh")
+with open(fetch_script) as handle:
+    fetch_text = handle.read()
+pinned_digest = next(
+    (line.split("=", 1)[1].strip() for line in fetch_text.splitlines()
+     if line.startswith("photo_sha256=")), None)
+try:
+    with open(photo_path, "rb") as handle:
+        actual_digest = hashlib.sha256(handle.read()).hexdigest()
+except OSError as error:
+    print(f"photographic fixture is unreadable: {error}", file=sys.stderr)
+    failures += 1
+else:
+    if pinned_digest != actual_digest:
+        print(f"photographic fixture does not match its fetch script: "
+              f"pinned {pinned_digest}, found {actual_digest}", file=sys.stderr)
+        failures += 1
+
+# One logical fixture name identifies one byte sequence. Choosing the first
+# extension would let a stale PNG shadow a newly pinned JPEG without changing
+# the suite row that names it.
+with tempfile.TemporaryDirectory() as temporary_directory:
+    for extension in (".png", ".jpg"):
+        with open(os.path.join(temporary_directory, "duplicate" + extension), "wb"):
+            pass
+    try:
+        module.resolve_fixture(temporary_directory, "duplicate")
+    except SystemExit as error:
+        if "fixture is ambiguous" not in str(error):
+            print(f"ambiguous fixture reported the wrong failure: {error}",
+                  file=sys.stderr)
+            failures += 1
+    else:
+        print("fixture resolver selected one of two byte sequences", file=sys.stderr)
+        failures += 1
+
+# A tool row answered by its call alone is not an empty answer. Counting it as
+# one made a tool arm report an 0.800 empty-answer rate beside nine of ten rows
+# graded correct, and correct_on_completed was computed over the two rows that
+# happened to carry prose.
+with tempfile.TemporaryDirectory() as temporary_directory:
+    suite = os.path.join(temporary_directory, "suite.tsv")
+    output = os.path.join(temporary_directory, "result.json")
+    with open(suite, "w") as handle:
+        handle.write("call\ttool\ttool_call\tget_weather:city=Oslo\t"
+                     "Weather in Oslo?\ttools:weather\n")
+    tool_document = {
+        "model": "qwen-apu",
+        "choices": [{
+            "message": {
+                "content": "",
+                "tool_calls": [{"function": {"name": "get_weather",
+                                             "arguments": '{"city": "Oslo"}'}}],
+            },
+            "finish_reason": "tool_calls",
+        }],
+        "timings": {"predicted_n": 12, "prompt_n": 200},
+        "_wall_seconds": 1.0,
+    }
+    original_request = module.request
+    module.request = lambda *args, **kwargs: tool_document
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            module.main(("run-quality-suite.py", "http://fixture", output,
+                         "--suite", suite))
+    finally:
+        module.request = original_request
+    with open(output) as handle:
+        tool_result = json.load(handle)
+    tool_summary = tool_result["summary"]
+    if tool_summary["empty_answer_rate"] != 0.0:
+        print(f"a tool call counted as an empty answer: {tool_summary}",
+              file=sys.stderr)
+        failures += 1
+    if tool_summary["correct_on_completed"] != 1.0:
+        print(f"a graded tool call fell outside completed: {tool_summary}",
+              file=sys.stderr)
+        failures += 1
+    if (tool_summary["tool_stages"] or {}).get("arguments_match") != 1:
+        print(f"tool stages did not record the match: {tool_summary}",
+              file=sys.stderr)
         failures += 1
 
 # The fact lands inside the filler and the question lands last, which is what
@@ -112,8 +303,8 @@ for row in rows:
         failures += 1
 
 
-def synthetic_document(content, finish_reason="stop"):
-    return {
+def synthetic_document(content, finish_reason="stop", served_model="qwen-apu"):
+    document = {
         "choices": [{
             "message": {"content": content, "reasoning_content": ""},
             "finish_reason": finish_reason,
@@ -125,6 +316,9 @@ def synthetic_document(content, finish_reason="stop"):
         },
         "_wall_seconds": 1.0,
     }
+    if served_model is not None:
+        document["model"] = served_model
+    return document
 
 
 # The retained reply is the object that the grader reads. Truncating only the
@@ -134,9 +328,9 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     output = os.path.join(temporary_directory, "result.json")
     with open(suite, "w") as handle:
         handle.write(
-            "wrong\tscreen\tnumeric\t1\tFirst prompt\n"
-            "truncated\tscreen\tnumeric\t1\tSecond prompt\n"
-            "long-reply\tscreen\tnonempty\t\tThird prompt\n")
+            "wrong\tscreen\tnumeric\t1\tFirst prompt\t-\n"
+            "truncated\tscreen\tnumeric\t1\tSecond prompt\t-\n"
+            "long-reply\tscreen\tnonempty\t\tThird prompt\t-\n")
     documents = iter((
         synthetic_document("2"),
         synthetic_document("1", finish_reason="length"),
@@ -166,13 +360,51 @@ with tempfile.TemporaryDirectory() as temporary_directory:
         print("truncated reply entered completed-row accuracy", file=sys.stderr)
         failures += 1
 
+# Attribution is a per-row invariant. Reducing only the non-empty model ids to a
+# set lets one unattributed response disappear beside a correctly attributed one.
+with tempfile.TemporaryDirectory() as temporary_directory:
+    suite = os.path.join(temporary_directory, "suite.tsv")
+    output = os.path.join(temporary_directory, "result.json")
+    with open(suite, "w") as handle:
+        handle.write(
+            "missing-model\tscreen\tnonempty\t\tFirst prompt\t-\n"
+            "matched-model\tscreen\tnonempty\t\tSecond prompt\t-\n")
+    documents = iter((
+        synthetic_document("answer", served_model=None),
+        synthetic_document("answer"),
+    ))
+    original_request = module.request
+    module.request = lambda *args, **kwargs: next(documents)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            status = module.main(("run-quality-suite.py", "http://fixture", output,
+                                  "--suite", suite))
+    finally:
+        module.request = original_request
+    with open(output) as handle:
+        result = json.load(handle)
+    if status != 1:
+        print("quality suite accepted an unattributed row", file=sys.stderr)
+        failures += 1
+    if result["summary"]["attribution_failures"] != 1:
+        print("quality summary lost the unattributed row", file=sys.stderr)
+        failures += 1
+    if result["records"][0]["passed"] or not result["records"][0]["attribution_error"]:
+        print("unattributed row did not retain its attribution failure",
+              file=sys.stderr)
+        failures += 1
+    if result["summary"]["served_models"] != ["qwen-apu"]:
+        print("served-model roster changed while checking row attribution",
+              file=sys.stderr)
+        failures += 1
+
 # A reset is one row's transport result, not an exception that prevents the
 # remaining suite and its summary JSON from being retained.
 with tempfile.TemporaryDirectory() as temporary_directory:
     suite = os.path.join(temporary_directory, "suite.tsv")
     output = os.path.join(temporary_directory, "result.json")
     with open(suite, "w") as handle:
-        handle.write("reset\tscreen\tnonempty\t\tPrompt\n")
+        handle.write("reset\tscreen\tnonempty\t\tPrompt\t-\n")
     original_request = module.request
     module.request = lambda *args, **kwargs: (_ for _ in ()).throw(
         ConnectionResetError("fixture reset"))
@@ -197,7 +429,7 @@ with tempfile.TemporaryDirectory() as temporary_directory:
     with open(suite, "w") as handle:
         handle.write(
             "long\tlong_context\tcontains_all\tneedle\t"
-            "needle ||| What is the needle?\n")
+            "needle ||| What is the needle?\t-\n")
     try:
         with contextlib.redirect_stderr(io.StringIO()):
             module.main(("run-quality-suite.py", "http://fixture", output,
@@ -236,4 +468,4 @@ for row in rows:
 if failures:
     print(f"quality_suite_grader=rejected failures={failures}", file=sys.stderr)
     sys.exit(1)
-print(f"quality_suite_grader=accepted cases={len(CASES)} rows={len(rows)}")
+print(f"quality_suite_grader=accepted cases={len(CASES) + len(TRUNCATION_CASES) + len(TOOL_CASES)} rows={len(rows)}")

@@ -45,10 +45,20 @@ time, so the profile above names the default the picker opens on.
 
 ## Graded quality
 
-`remote/run-quality-roster.sh` grades every servable row against the same 55 rows
-in one sweep, thinking off, 1024-token budget.
+`remote/run-quality-roster.sh` grades every servable row against the same 55 text
+rows in one sweep, thinking off, 1024-token budget.
 `evidence/model-admission/roster-quality-sweep.md` holds the method and the
 per-category table.
+
+The suite reaches past text through one column. A row's `attachment` is `-` for
+text, `image:NAME` for a vision row, and `tools:SET` for a tool row.
+`remote/generate-quality-images.py` draws every fixture from a declaration in
+its own source, so a vision answer is graded against a fact this repository
+states rather than against a reader's impression, and `--check` compares pixels
+because deflate is not reproducible across hosts while inflate is. A tool row
+executes nothing: the appliance runs without `--tools`, so the request body's
+`tools` field asks for a `tool_calls` object and the graders read that object.
+`evidence/model-admission/vision-and-tool-sweep.md` holds those results.
 
 | Checkpoint | passed | correct on completed | class |
 | --- | ---: | ---: | --- |
@@ -56,7 +66,7 @@ per-category table.
 | Qwen3.8-4B Distill Q4_K_M | 47/55 | 0.855 | measured |
 | LFM2.5-VL-1.6B Q4_K_M | 43/55 | 0.782 | measured |
 | Qwen3.5-2B Q4_K_M | 41/55 | 0.745 | measured |
-| Qwen3.8-2B Distill Q4_K_M | 41/55 | 0.755 | measured |
+| Qwen3.8-2B Distill Q4_K_M | 40/55 | 0.755 | measured |
 | Qwen3.5-0.8B Q8_0 | 33/55 | 0.600 | measured |
 
 A one-row or two-row difference reports position in a request sequence rather
@@ -154,11 +164,14 @@ frames on time with 346 breaches, and slower inference than the compute queue.
 
 ## Model selection
 
-The 4B distill is the text default on measured appliance behavior rather than
-on an accuracy claim.
+Two text profiles carry two different claims. `text` opens on the 2B distill,
+which decodes 9.19 tok/s and grades 40 of 55; `balanced-text` holds the 4B
+distill, which decodes 3.34 tok/s and grades 47 of 55. The picker offers both
+and the selected-configuration table above states which one it opens on.
 
-Five fixed prompts, reasoning enabled, 2,048-token ceiling, through
-`remote/reasoning-span-probe.sh`:
+Inside the 4B pair the distill is selected over the base on measured appliance
+behavior rather than on an accuracy claim. Five fixed prompts, reasoning
+enabled, 2,048-token ceiling, through `remote/reasoning-span-probe.sh`:
 
 | Quantity | base | distill | class |
 | --- | ---: | ---: | --- |
@@ -174,9 +187,11 @@ Matched-length decode differs by 6.2%, so the practical gain comes from
 reasoning efficiency and termination rather than from faster Vulkan kernels.
 On the fourth prompt the base model consumed its entire 2,048-token budget
 inside the reasoning span and returned an empty answer after 830 seconds. That
-result establishes unsuitability under the appliance's configured ceiling; it
-leaves open what the base model does under a different budget, sampling mode,
-or reasoning setting.
+result establishes unsuitability under the appliance's configured ceiling. What
+the base model does under a different reasoning setting is since measured: with
+thinking off across 55 rows the two 4B checkpoints tie at 47, at 0.855
+correct-on-completed, and within one row in every category, so the distill's
+advantage over the base is throughput and termination rather than accuracy.
 
 The distill's published `gsm8k_cot` score falls from 0.850 to 0.785 against the
 base while `mmlu` CoT rises from 0.354 to 0.553. Three arithmetic prompts in
@@ -195,12 +210,14 @@ setting, ceiling, and scoring, is the decision-relevant next measurement.
 
 ## Projectors pair with their checkpoint by directory
 
-`qwen-launch.sh` searches for `mmproj-F16.gguf` beside the model file. A
-projector encodes images into the embedding space of the checkpoint that
-exported it. A foreign projector of matching dimensions loads cleanly and
-places image tokens where the language model reads nothing, so it answers
-wrongly rather than failing. Directory pairing is a correctness requirement:
-it makes a checkpoint published without a projector run text-only.
+`qwen-launch.sh` searches for a projector beside the model file. A projector
+encodes images into the embedding space of the checkpoint that exported it. A
+foreign projector of matching dimensions loads cleanly and places image tokens
+where the language model reads nothing, so it answers wrongly rather than
+failing. Directory pairing is a correctness requirement, and `models.tsv`
+names the exact projector fetch script for every required pairing. A checkpoint
+published without a projector runs text-only unless an explicit fetch uses that
+row's downloader.
 
 The 4B distill ships text-only, and `/props` reports `vision: false` under it.
 Vision therefore selects the base checkpoint, whose projector is pinned to the
@@ -319,7 +336,8 @@ control.
 GGUF weights stay outside Git and LFS because their sizes exceed the 2 GB
 per-file limit. Each fetch script pins a Hugging Face revision, a byte count,
 and a SHA-256, and verifies an existing file in place:
-`remote/download-qwen38-4b-distill-q4km.sh` for the text default,
+`remote/download-qwen38-2b-distill-q4km.sh` for the text default and
+`remote/download-qwen38-4b-distill-q4km.sh` for the balanced-text profile,
 `remote/download-qwen35-4b-q4km.sh` with
 `remote/download-qwen35-4b-mmproj.sh` for the vision profile, and
 `remote/download-qwen38-9b-distill-q4km.sh` for the deep profile.
