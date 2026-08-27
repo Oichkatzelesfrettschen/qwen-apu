@@ -39,6 +39,19 @@ bench=${QWEN_LLAMA_BENCH:-"${HOME:?}/src/llama.cpp-qwen-apu/build-qwen-vulkan/bi
 census=${QWEN_TENSOR_CENSUS:-"$script_directory/gguf-tensor-census.py"}
 clock_sampler=${QWEN_CLOCK_SAMPLER:-"$script_directory/sample-gpu-clocks.sh"}
 generate_tokens=${QWEN_BENCH_GENERATE:-64}
+# Prefill is off by default so the retained decode series stays comparable: an
+# arm that prefills first meets the device in a different thermal and clock
+# state than one that decodes cold. Setting a positive length adds a pp row to
+# the same arm, which is what makes a cross-checkpoint sweep carry both halves
+# from one queue position instead of two.
+prefill_tokens=${QWEN_BENCH_PREFILL:-0}
+case $prefill_tokens in
+    '' | *[!0-9]*)
+        printf 'prefill length must be a non-negative integer: %s\n' \
+            "$prefill_tokens" >&2
+        exit 2
+        ;;
+esac
 repetitions=${QWEN_BENCH_REPETITIONS:-3}
 nice_levels=${QWEN_BENCH_NICE_LEVELS:-19}
 if [ "$nice_levels" != 19 ]; then
@@ -65,7 +78,7 @@ fi
 
 mkdir -p "$output_directory"
 summary=$output_directory/bandwidth-summary.tsv
-printf 'pass\tnice_observed\tmodel\tstreamed_bytes\tdecode_tok_s\tachieved_gb_s\tmclk_modal\ttemp_c_max\tload_mean\tload_max\n' \
+printf 'pass\tnice_observed\tmodel\tstreamed_bytes\tdecode_tok_s\tprefill_tok_s\tachieved_gb_s\tmclk_modal\ttemp_c_max\tload_mean\tload_max\n' \
     >"$summary"
 
 # A killed run leaves its sampler writing once a second into a file the next run
@@ -120,10 +133,12 @@ run_model() {
     sampler_pid=$!
     set +e
     sh -c '
-        renice -n 19 -p $$ >/dev/null
+        renice -n "$1" -p $$ >/dev/null
+        shift
         exec ionice -c 3 "$@"
-    ' sh "$bench" -m "$model_path" -ngl 99 -t 2 -r "$repetitions" \
-        -p 0 -n "$generate_tokens" -o md >"$arm_log" 2>&1 &
+    ' sh "$arm_nice" "$bench" -m "$model_path" -ngl 99 -t 2 \
+        -r "$repetitions" -p "$prefill_tokens" -n "$generate_tokens" -o md \
+        >"$arm_log" 2>&1 &
     bench_pid=$!
     # Read the priority the kernel gave the child. A column that restates the
     # request survives an invocation that drops it, which is how twenty arms
@@ -166,6 +181,16 @@ run_model() {
                             }
                             END { print (rate == "" ? "n/a" : rate) }' "$arm_log")
     fi
+    prefill=n/a
+    if [ "$arm_status" -eq 0 ] && [ "$prefill_tokens" -gt 0 ]; then
+        prefill=$(awk -F'|' '$0 ~ /\| *pp[0-9]+( @ d[0-9]+)? *\|/ {
+                                 split($(NF - 1), parts, /[^0-9.]+/)
+                                 for (i = 1; i <= 3; i++) {
+                                     if (parts[i] != "") { rate = parts[i]; break }
+                                 }
+                             }
+                             END { print (rate == "" ? "n/a" : rate) }' "$arm_log")
+    fi
     achieved=n/a
     case $decode in
         n/a) ;;
@@ -194,11 +219,12 @@ run_model() {
                 (load_samples ? sprintf("%.2f", load_max) : "unavailable")
         }' "$arm_samples")
 
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$pass_label" "$observed_nice" \
-        "$model_name" "$streamed" "$decode" "$achieved" "$clock_report" \
-        >>"$summary"
-    printf 'arm_stop_utc=%s label=%s nice_observed=%s decode=%s achieved_gb_s=%s clocks_load=%s\n' \
-        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$arm_label" "$observed_nice" "$decode" "$achieved" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$pass_label" "$observed_nice" \
+        "$model_name" "$streamed" "$decode" "$prefill" "$achieved" \
+        "$clock_report" >>"$summary"
+    printf 'arm_stop_utc=%s label=%s nice_observed=%s decode=%s prefill=%s achieved_gb_s=%s clocks_load=%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$arm_label" "$observed_nice" "$decode" \
+        "$prefill" "$achieved" \
         "$(printf '%s' "$clock_report" | tr '\t' ' ')"
 
     if [ "$arm_status" -ne 0 ] || [ "$decode" = n/a ] || \

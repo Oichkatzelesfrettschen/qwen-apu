@@ -24,7 +24,34 @@ if pgrep -x llama-server >/dev/null 2>&1; then
     exit 2
 fi
 
-model_path=${QWEN_MODEL_PATH:-"${HOME:?}/models/Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf"}
+model_path=${QWEN_MODEL_PATH:-"${HOME:?}/models/Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf"}
+
+# Router mode sizes the machine against the largest checkpoint the picker can
+# reach rather than against the one this launch names. `--models-max 1` unloads
+# the resident model before loading the next, so any servable row can be the one
+# holding the device, and a preflight run against the smallest of them reports
+# headroom for a load that never happens. The named path still selects the
+# projector and resolves the fetch, which is why it is replaced here rather than
+# ignored.
+if [ "${QWEN_ROUTER:-0}" = 1 ] && [ -z "${QWEN_MODEL_PATH:-}" ]; then
+    model_root=${QWEN_MODEL_ROOT:-"${HOME:?}/models"}
+    largest_servable=''
+    largest_bytes=0
+    for servable_file in $("$script_directory/model-registry.sh" servable-files); do
+        servable_path=$model_root/$servable_file
+        [ -f "$servable_path" ] || continue
+        servable_bytes=$(stat -c %s "$servable_path" 2>/dev/null) || continue
+        if [ "$servable_bytes" -gt "$largest_bytes" ]; then
+            largest_bytes=$servable_bytes
+            largest_servable=$servable_path
+        fi
+    done
+    if [ -n "$largest_servable" ]; then
+        printf 'router_preflight_subject=%s bytes=%s\n' \
+            "$(basename -- "$largest_servable")" "$largest_bytes"
+        model_path=$largest_servable
+    fi
+fi
 
 # GGUF weights live outside Git because their size exceeds what Git LFS carries
 # on a free account, so the checkpoint arrives from its pinned Hugging Face

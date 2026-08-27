@@ -31,16 +31,26 @@
 # valid artifact displaced by a better one or too slow to serve. `rejected` lost
 # admission on measurement without being dangerous.
 #
+# A candidate enters at 8192 default and ceiling with `-` for
+# validated_filled_depth, because architecture and a depth-0 rate say nothing
+# about what a filled cache executes and the tree has wedged the compute ring at
+# a depth it had only allocated. The depth arm is what moves those two fields.
+#
 # decode_tok_s and prefill_tok_s are measured through llama-bench with full
-# Vulkan offload; a `-` means the row is admitted on a different basis. The
+# Vulkan offload; a `-` means the row is admitted on a different basis. Every
+# servable row carries the forward-and-reverse paired mean from the seven-
+# checkpoint sweep in evidence/model-admission/universal-candidate-ladder.md, so
+# the column is one sweep and readable across rows. That matters because the
+# same checkpoint under identical flags spans up to 30.6% between sweeps, and
+# bands built across sweeps measured the sweep rather than the checkpoint. The
 # three i1 rows carry the four-block mean from evidence/decode-bound-analysis.md
-# rather than a single arm, because the same checkpoint under identical flags
-# spans up to 30.6% across that sweep.
+# and belong to a different sweep, so they compare to each other and not to the
+# rows above them.
 #
 # id	role	model_file	fetch_script	context_default	context_ceiling	context_target	cache_type_k	cache_type_v	flash_attention	projector	decode_tok_s	prefill_tok_s	quality	tier	batch	ubatch	validated_filled_depth	validation_evidence
-qwen38-4b-distill	balanced-text	Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf	download-qwen38-4b-distill-q4km.sh	24576	32768	131072	q8_0	q4_0	on	none	3.07	23.48	5/5	production	128	32	16384	evidence/depth-versus-submission-geometry.md
-qwen38-2b-distill	fast-text	Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf	download-qwen38-2b-distill-q4km.sh	24576	32768	131072	q8_0	q4_0	on	none	9.46	57.15	4/5	production	128	32	-	-
-qwen35-4b-base	vision	Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf	download-qwen35-4b-q4km.sh	16384	24576	32768	q8_0	q4_0	on	required	2.84	20.88	4/5	production	128	32	-	-
+qwen38-4b-distill	balanced-text	Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf	download-qwen38-4b-distill-q4km.sh	24576	32768	131072	q8_0	q4_0	on	none	3.34	22.40	5/5	production	128	32	16384	evidence/depth-versus-submission-geometry.md
+qwen38-2b-distill	fast-text	Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf	download-qwen38-2b-distill-q4km.sh	24576	32768	131072	q8_0	q4_0	on	none	9.19	63.85	4/5	production	128	32	-	-
+qwen35-4b-base	vision	Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf	download-qwen35-4b-q4km.sh	16384	24576	32768	q8_0	q4_0	on	required	3.11	21.88	4/5	production	128	32	-	-
 qwen38-9b-distill	deep-text	Qwen3.8-9B-Distill-GGUF/Qwen3.8-9B-Q4_K_M.gguf	download-qwen38-9b-distill-q4km.sh	16384	24576	65536	q8_0	q4_0	on	none	1.76	11.47	5/5	archive	128	32	-	-
 nanbeige42-3b	research	Nanbeige4.2-3B-GGUF/Nanbeige4.2-3B-Q4_K_M.gguf	download-nanbeige42-3b-q4km.sh	8192	8192	32768	q8_0	q4_0	on	none	2.38	14.06	untested	quarantine	128	32	-	evidence/quarantine/nanbeige42-3b.md
 qwen38-4b-i1-q2k	low-bit-ladder	Qwen3.8-4B-Distill-Q2_K-GGUF/Qwen3.8-4B-i1-Q2_K.gguf	download-qwen38-4b-distill-i1-q2k.sh	24576	32768	131072	q8_0	q4_0	on	none	2.90	-	untested	rejected	128	32	-	evidence/decode-bound-analysis.md
@@ -48,3 +58,7 @@ qwen38-4b-i1-q5km	low-bit-ladder	Qwen3.8-4B-Distill-Q5_K_M-GGUF/Qwen3.8-4B-i1-Q5
 qwen38-4b-i1-q6k	low-bit-ladder	Qwen3.8-4B-Distill-Q6_K-GGUF/Qwen3.8-4B-i1-Q6_K.gguf	download-qwen38-4b-distill-i1-q6k.sh	24576	32768	131072	q8_0	q4_0	on	none	2.35	-	untested	rejected	128	32	-	evidence/decode-bound-analysis.md
 qwen38-27b-q2kxl	capacity-experiment	Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q2_K_XL.gguf	download-qwen38-27b-ladder.sh	4096	4096	8192	q8_0	q4_0	on	none	-	-	untested	archive	128	32	-	evidence/qwen38-27b-4k-admission.md
 qwen38-27b-iq3xxs	capacity-experiment	Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-IQ3_XXS.gguf	download-qwen38-27b-ladder.sh	4096	4096	8192	q8_0	q4_0	on	none	-	-	untested	archive	128	32	-	evidence/qwen38-27b-4k-admission.md
+qwen35-08b	compact-text	Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf	download-qwen35-08b-q80.sh	8192	8192	131072	q8_0	q4_0	on	none	18.53	161.69	untested	candidate	128	32	-	evidence/model-admission/universal-candidate-ladder.md
+qwen35-2b	compact-vision	Qwen3.5-2B-GGUF/Qwen3.5-2B-Q4_K_M.gguf	download-qwen35-2b-q4km.sh	8192	8192	131072	q8_0	q4_0	on	required	9.43	60.72	untested	candidate	128	32	-	evidence/model-admission/universal-candidate-ladder.md
+lfm25-vl-16b	fast-vision	LFM2.5-VL-1.6B-GGUF/LFM2.5-VL-1.6B-Q4_K_M.gguf	download-lfm25-vl-16b-q4km.sh	8192	8192	32768	q8_0	q4_0	on	required	15.87	93.15	untested	candidate	128	32	-	evidence/model-admission/universal-candidate-ladder.md
+ministral3-3b	dense-vision	Ministral-3-3B-Instruct-GGUF/Ministral-3-3B-Instruct-Q4_K_M.gguf	download-ministral3-3b-q4km.sh	8192	8192	16384	q8_0	q4_0	on	required	4.66	31.14	untested	quarantine	128	32	-	evidence/quarantine/ministral3-3b.md

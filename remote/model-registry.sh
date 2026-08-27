@@ -52,6 +52,16 @@ if [ "$#" -eq 1 ] && [ "$1" = quarantine-subjects ]; then
     exit 0
 fi
 
+# The rows the router can load on demand. Router mode serves any of them behind
+# one listener, so a caller sizing the machine reads this list rather than the
+# one checkpoint it happened to name.
+if [ "$#" -eq 1 ] && [ "$1" = servable-files ]; then
+    awk -F'\t' '/^#/ { next } NF < 19 { next }
+        $15 == "production" || $15 == "candidate" { print $3 }' \
+        "${QWEN_MODEL_REGISTRY:-$script_directory/models.tsv}"
+    exit 0
+fi
+
 if [ "$#" -eq 1 ] && [ "$1" = quarantine-profiles ]; then
     [ -r "$quarantine_registry" ] || exit 0
     awk -F'\t' '/^#/ { next } NF < 13 { next } $2 == "profile" {
@@ -65,6 +75,7 @@ if [ "$#" -ne 2 ] && [ "$#" -ne 3 ]; then
     printf '       %s validate-cache-type TYPE\n' "$0" >&2
     printf '       %s validate-tier TIER\n' "$0" >&2
     printf '       %s quarantine-subjects | quarantine-profiles\n' "$0" >&2
+    printf '       %s servable-files\n' "$0" >&2
     printf 'fields: id role model_file fetch_script context_default context_ceiling\n' >&2
     printf '        context_target cache_type_k cache_type_v flash_attention\n' >&2
     printf '        projector decode_tok_s prefill_tok_s quality tier batch\n' >&2

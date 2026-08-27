@@ -85,6 +85,14 @@ opposite sign on Q6_K. A comparison on this machine is therefore read within a
 sweep, where both arms met the same machine minutes apart, and a difference
 below about 20% quoted from single arms reports queue position.
 
+A prediction band on this machine states a ratio against a checkpoint measured
+in the same sweep. Four absolute bands built from the four-block means in
+`evidence/decode-bound-analysis.md` all read low against the seven-checkpoint
+sweep in `evidence/model-admission/universal-candidate-ladder.md`, because that
+sweep ran 11.1 to 11.5% above those means on the two checkpoints common to both.
+No falsifier was met, and the offset was larger than every effect the
+predictions were trying to resolve, so an absolute band measures the sweep.
+
 The registry rather than a constant sets the admitted depth.
 `remote/models.tsv` carries `context_default`, `context_ceiling`, and
 `context_target` per checkpoint along with the KV cache types and the

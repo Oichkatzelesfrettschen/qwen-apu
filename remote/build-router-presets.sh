@@ -48,6 +48,10 @@ model_root=${QWEN_MODEL_ROOT:-"${HOME:?}/models"}
 reason_source=${QWEN_QUARANTINE_REASONS:-$script_directory/../evidence/quarantine}
 output_ini=${1:-"${HOME:?}/qwen-webui-state/router-presets.ini"}
 include_quarantine=${QWEN_ROUTER_INCLUDE_QUARANTINE:-0}
+# The picker offers every servable row and the operator prefers one of them. The
+# tag names that preference; llama-server has no default-model option, so this
+# labels the section rather than preselecting it.
+default_model_id=${QWEN_DEFAULT_MODEL_ID:-qwen38-2b-distill}
 
 if [ ! -r "$registry" ]; then
     printf 'model registry is unreadable: %s\n' "$registry" >&2
@@ -159,7 +163,11 @@ while IFS='	' read -r id role model_file _fetch_script context_default \
         printf '[%s]\n' "$id"
         printf 'LLAMA_ARG_MODEL = %s\n' "$model_path"
         printf 'LLAMA_ARG_ALIAS = %s\n' "$id"
-        printf 'LLAMA_ARG_TAGS = %s,%s\n' "$tier" "$role"
+        if [ "$id" = "$default_model_id" ]; then
+            printf 'LLAMA_ARG_TAGS = %s,%s,default\n' "$tier" "$role"
+        else
+            printf 'LLAMA_ARG_TAGS = %s,%s\n' "$tier" "$role"
+        fi
         printf 'LLAMA_ARG_CTX_SIZE = %s\n' "$context_default"
         printf 'LLAMA_ARG_CACHE_TYPE_K = %s\n' "$cache_type_k"
         printf 'LLAMA_ARG_CACHE_TYPE_V = %s\n' "$cache_type_v"

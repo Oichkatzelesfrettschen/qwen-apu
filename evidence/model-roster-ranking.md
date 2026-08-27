@@ -11,14 +11,16 @@ picker.
 | tier | claim | occupants |
 | --- | --- | --- |
 | `production` | a declared serving tuple is measured safe and useful | Qwen3.8-4B Distill, Qwen3.8-2B Distill, Qwen3.5-4B base |
-| `candidate` | quality or performance unqualified, no reset or fault under its admitted tuple | empty |
-| `quarantine` | a reset, fault, device loss, correctness hazard, or no validated safe tuple | Nanbeige4.2-3B; the Qwen 4B `16384/2048/512` profile |
+| `candidate` | quality or performance unqualified, no reset or fault under its admitted tuple | Qwen3.5-0.8B, Qwen3.5-2B, LFM2.5-VL-1.6B |
+| `quarantine` | a reset, fault, device loss, correctness hazard, or no validated safe tuple | Nanbeige4.2-3B, Ministral-3-3B; the Qwen 4B `16384/2048/512` profile |
 | `archive` | a valid artifact displaced, or too slow to serve | Qwen3.8-9B Distill, both 27B quants |
 | `rejected` | lost admission on measurement without being dangerous | Qwen3.8-4B i1-Q2_K, i1-Q5_K_M, i1-Q6_K |
 
-`candidate` is empty on purpose. It is the tier the four unfetched universal
-candidates enter after basic admission, and using it for a checkpoint that has
-wedged the ring would make the word mean two things at once.
+`candidate` holds the three universal-ladder checkpoints that fetched, loaded
+through the router, and answered. The fourth, Ministral-3-3B, aborts as a router
+child four times out of four and is quarantined rather than admitted, because
+using `candidate` for a checkpoint the serving path kills would make the word
+mean two things at once.
 
 Two tiers of quarantine exist because the failure unit is not the checkpoint.
 Nanbeige is quarantined as a model: no geometry of it has been validated at
@@ -34,29 +36,60 @@ mean from `evidence/decode-bound-analysis.md`, where the same checkpoint under
 identical flags spans up to 30.6%. A difference below about 20% between the two
 columns reports queue position rather than the checkpoint.
 
-| rank | checkpoint | tier | decode single-arm | decode sweep mean | streamed/token | quality | why here |
+| rank | checkpoint | tier | decode | prefill | streamed/token | class | why here |
 | ---: | --- | --- | ---: | ---: | ---: | --- | --- |
-| 1 | Qwen3.8-2B Distill Q4_K_M | production | 9.46 | 8.24 | 1.263 GB | 4/5 | the only checkpoint that decodes faster than a person reads |
-| 2 | Qwen3.8-4B Distill Q4_K_M | production | 3.07 | 3.01 | 2.698 GB | 5/5 | top quality grade at the highest rate that reaches it |
-| 3 | Qwen3.5-4B base Q4_K_M | production | 2.84 | - | 2.540 GB | 4/5 | the only checkpoint on disk that sees |
-| 4 | Qwen3.8-9B Distill Q4_K_M | archive | 1.76 | - | 5.046 GB | 5/5 | same grade as rank 2 at 57% of its rate |
-| 5 | Qwen3.8-4B i1-Q2_K | rejected | - | 2.90 | 1.905 GB | untested | 29.4% fewer bytes buys no tokens |
-| 6 | Nanbeige4.2-3B Q4_K_M | quarantine | 2.38 | - | 4.149 GB | untested | nominally 3B, streams like a 6B |
-| 7 | Qwen3.8-4B i1-Q6_K | rejected | - | 2.35 | 3.453 GB | untested | more bytes, same achieved rate, fewer tokens |
-| 8 | Qwen3.8-4B i1-Q5_K_M | rejected | - | 1.93 | 3.064 GB | untested | the worst achieved rate measured on this machine |
-| 9 | Qwen3.8-27B UD-Q2_K_XL | archive | - | - | - | untested | host preflight refuses the load |
-| 10 | Qwen3.8-27B UD-IQ3_XXS | archive | - | - | - | untested | host preflight refuses the load |
+| 1 | Qwen3.5-0.8B Q8_0 | candidate | **18.53** | **161.69** | 0.801 GB | sweep | the fastest decode this device has produced; wrong on 17 x 24 |
+| 2 | LFM2.5-VL-1.6B Q4_K_M | candidate | 15.87 | 93.15 | 0.729 GB | sweep | 4.75x the 4B distill, sees, emits no reasoning trace |
+| 3 | Qwen3.5-2B Q4_K_M | candidate | 9.43 | 60.72 | 1.321 GB | sweep | indistinguishable from rank 4 on rate, and it sees |
+| 4 | Qwen3.8-2B Distill Q4_K_M | production | 9.19 | 63.85 | 1.263 GB | sweep | the selected default; 4/5 graded |
+| 5 | Ministral-3-3B Q4_K_M | quarantine | 4.66 | 31.14 | 2.139 GB | sweep | 39.5% above the 4B distill, and the router cannot load it |
+| 6 | Qwen3.8-4B Distill Q4_K_M | production | 3.34 | 22.40 | 2.698 GB | sweep | 5/5 graded at the highest rate that reaches it |
+| 7 | Qwen3.5-4B base Q4_K_M | production | 3.11 | 21.88 | 2.730 GB | sweep | the only production row with a revision-matched projector |
+| 8 | Qwen3.8-4B i1-Q2_K | rejected | 2.90 | - | 1.905 GB | other sweep | 29.4% fewer bytes buys no tokens |
+| 9 | Nanbeige4.2-3B Q4_K_M | quarantine | 2.38 | 14.06 | 4.149 GB | single arm | nominally 3B, streams like a 6B, no validated depth |
+| 10 | Qwen3.8-4B i1-Q6_K | rejected | 2.35 | - | 3.453 GB | other sweep | more bytes, same achieved rate, fewer tokens |
+| 11 | Qwen3.8-4B i1-Q5_K_M | rejected | 1.93 | - | 3.064 GB | other sweep | the worst achieved rate measured here |
+| 12 | Qwen3.8-9B Distill Q4_K_M | archive | 1.76 | 11.47 | 5.046 GB | single arm | same 5/5 grade, 1.74x the wall time |
+| 13 | Qwen3.8-27B UD-Q2_K_XL | archive | - | - | - | none | host preflight refuses the load |
+| 14 | Qwen3.8-27B UD-IQ3_XXS | archive | - | - | - | none | host preflight refuses the load |
 
-**Ranks 6 and 7 are tied and their order is nominal.** Nanbeige's 2.38 is a
-single arm and i1-Q6_K's 2.35 is a sweep mean, and 1.3% across two measurement
-classes is inside the drift this tree measures at up to 30.6%. Rank 5 against
-rank 6 is 22%, which clears the same rule by two points and no more. Ranks 1
-through 4 separate by factors rather than by percents and survive the drift
-whole.
+Ranks 1 through 7 come from one seven-checkpoint sweep with forward and reverse
+passes, so they are directly comparable. Ranks 8, 10, and 11 come from the
+four-block quantization sweep and rank 9 and 12 from single arms, so they are
+comparable to each other and not to the block above: the same checkpoint spans
+up to 30.6% between sweeps on this machine, and that offset is larger than most
+of the gaps in the lower half.
 
-## What each rank rests on
+**Rank orders speed, and the top of it is not the recommendation.** Ranks 1
+through 3 are candidates whose quality is unmeasured, and rank 1 already answered
+one elementary multiplication wrong. The selected default sits at rank 4 because
+it is the fastest checkpoint with a graded quality score behind it.
 
-**1. Qwen3.8-2B Distill.** It decodes three times the 4B and streams faster per
+## What the leading ranks rest on
+
+**1. Qwen3.5-0.8B Q8_0.** 18.53 tok/s at 14.84 GB/s achieved, the highest rate
+this device has produced, from the smallest weight stream in the roster after
+LFM2. `Q8_0` reconstructs a weight with one scale multiply where Q4_K walks
+hierarchical super-block scales, and this is the first `Q8_0` trunk measured
+here, so it sits above the Q4_K and Q6_K groups that
+`evidence/decode-bound-analysis.md` establishes near 8.1 GB/s. Size and format
+are not separable from one arm and the mechanism is unattributed. Against all of
+that it answered 48 for 17 x 24.
+
+**2. LFM2.5-VL-1.6B.** 15.87 tok/s, sees, and emits no reasoning trace, so it
+answers inside a small token budget where both Qwen3.5 rows returned an empty
+string at 48 tokens. It is the one row that breaks the size ordering: the
+smallest weight stream in the sweep achieving 11.56 GB/s, below both 2B-class
+checkpoints, which puts its 16 short-convolution blocks rather than its byte
+count in charge of its rate.
+
+**3 and 4. Qwen3.5-2B against the deployed 2B Distill.** Same architecture, same
+3:1 hybrid, same head shape, same 4,992 bytes of KV per token of context, byte
+counts 4.5% apart, rates inside each other's own forward-reverse spread. Nothing
+in this sweep separates them. What separates them is what the distillation did
+to the answers, which has not been measured.
+
+**4. Qwen3.8-2B Distill.** It decodes three times the 4B and streams faster per
 byte doing it, 10.41 GB/s against 8.11 on the mean of four sweeps with the 2B
 ahead in all four pairs. It carries 24 layers against 32 and six full-attention
 layers against eight, which is 4,992 bytes of KV per token of context against
