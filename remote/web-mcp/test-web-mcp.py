@@ -2059,6 +2059,11 @@ class WebMcpServerTest(unittest.TestCase):
         result = session.call_tool("fetch_exa", {"result_id": "a.b"})
         self.assertIn("QWEN_WEB_STATE_DIR", self.result_text(result))
 
+    @unittest.skipIf(
+        os.geteuid() == 0,
+        "mode 0500 bounds every uid but 0, so the sealed directory admits a "
+        "root-run gate and the arm measures the umask rather than the refusal",
+    )
     def test_an_unusable_state_directory_refuses_the_call(self):
         sealed = self.state_directory("sealed-state")
         os.makedirs(sealed, exist_ok=True)
