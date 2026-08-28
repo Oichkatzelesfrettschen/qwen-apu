@@ -159,6 +159,7 @@ if [ "$broker_enabled" = 1 ]; then
         --state-dir "$broker_state_directory" \
         --profile "$QWEN_WEB_PROFILE" \
         --provider "${QWEN_WEB_PROVIDER:-exa}" \
+        --api-key-file "$api_key_file" \
         >"$broker_log" 2>&1 &
     broker_pid=$!
 

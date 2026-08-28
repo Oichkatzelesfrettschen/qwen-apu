@@ -6,9 +6,11 @@ at the shipped geometry, so one arm claims that the cache at that depth both
 allocates and executes and that the device answers afterwards. This campaign
 runs that arm at 8192, 16384, and 32768 tokens on the five checkpoints the web
 policy ledger names, all under the production cache triple and submission
-geometry, and every arm passes. The registry therefore reads a validated
-filled depth of 32768 for each of them and their ceilings move to the measured
-depth.
+geometry, and every text-only arm passes. The registry records 32768 only for
+the three checkpoints whose serving tuple uses no projector. Qwen3.5-2B and
+LFM2.5-VL require a loaded projector in serving, so their text-only arms stay
+in the tuple ledger while their ceilings remain 8192 and
+`validated_filled_depth` remains `-` until a projector-loaded arm passes.
 
 ## Terms
 
@@ -74,13 +76,15 @@ consistent with the dynamic fabric-clock reading in `CLAUDE.md`.
 ## What the rows establish
 
 A context of 32768 tokens allocates, fills, and decodes on every one of the
-five checkpoints at the geometry the appliance serves, on one device, in one
-session, with the device answering its control afterwards. The registry now
-reads 32768 in `validated_filled_depth` for all five, the four compact
-ceilings rise from 8192 to 32768, and `remote/validated-tuples.tsv` carries
-the fourteen arms plus the retained 16384 pair. Each `context_default` stays
-where it was, because the default is a serving choice and this file measures
-capability.
+five text-weight checkpoints at batch 128 and ubatch 32, on one device, in one
+session, with the device answering its control afterwards. The result proves
+the `projector_state=none` rows that the tuple ledger records. The registry
+reads 32768 in `validated_filled_depth` for the three non-vision checkpoints;
+Qwen3.5-2B and LFM2.5-VL remain bounded at 8192 with an unvalidated filled
+depth because their serving policy requires `projector_state=loaded`.
+`remote/validated-tuples.tsv` retains all fourteen arms plus the earlier
+16384 pair instead of reclassifying text-only measurements as vision-serving
+measurements.
 
 The depth-versus-rate slope is the second reading. Decode at 32768 against
 8192 falls to 72% on the 2B distill, 74% on Qwen3.5-2B, 74% on LFM, and 59%
@@ -92,9 +96,10 @@ for it, which is a policy fact for the web ledger rather than a health fact.
 
 The claim is total context. A profile that offers 32K of source material plus
 an answer needs a larger configured allocation, such as 40960, which is a
-later arm. LFM2.5-VL ran without its projector, so `projector_state` reads
-`none` in its tuple rows and a vision-plus-web profile at depth waits on a
-combined arm. The runner ran two threads where the server runs one; a single
+later arm. Qwen3.5-2B and LFM2.5-VL ran without their projectors, so
+`projector_state` reads `none` in their tuple rows and each vision-plus-web
+profile waits on a combined arm. The runner ran two threads where the server
+runs one; a single
 confirmation at one thread on the deepest passing arm is the remaining step
 before that difference is retired. The 0.8B rung beyond the served Q8_0 ran
 in a second chain and the next section carries it.

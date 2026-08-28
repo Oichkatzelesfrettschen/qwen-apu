@@ -10,15 +10,17 @@ set -eu
 # each subject arm with a control arm minutes away, so a monotonic drift in
 # machine state cancels in the paired mean instead of ordering the result.
 #
-# The control is named first because it is the rung already measured. Both files
-# hold the same weights at the same architecture, so a difference in prefill or
-# decode is a difference in what the value format costs to stream and unpack.
+# The first argument names the measured control rung. The runner
+# requires matching architecture dimensions, tokenizer identity, and tensor
+# layout before the value format may vary. Numeric tensor-value equality remains
+# a provenance claim outside the header-only check.
 
 if [ "$#" -lt 3 ] || [ "$#" -gt 4 ]; then
     printf 'usage: %s LABEL CONTROL_MODEL SUBJECT_MODEL [OUTPUT_DIRECTORY]\n' "$0" >&2
     printf 'environment: QWEN_LLAMA_BENCH QWEN_CLOCK_SAMPLER QWEN_ARM_REPEATS\n' >&2
     printf '             QWEN_BENCH_PROMPT QWEN_BENCH_GENERATE QWEN_COOLDOWN_SECONDS\n' >&2
-    printf '             QWEN_SAMPLE_INTERVAL_SECONDS\n' >&2
+    printf '             QWEN_SAMPLE_INTERVAL_SECONDS QWEN_TENSOR_CENSUS\n' >&2
+    printf '             QWEN_REPRESENTATION_PAIR_CHECK\n' >&2
     exit 2
 fi
 
@@ -30,18 +32,22 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 bench=${QWEN_LLAMA_BENCH:-"${HOME:?}/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-bench"}
 cli=${QWEN_LLAMA_CLI:-"${HOME:?}/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-cli"}
 clock_sampler=${QWEN_CLOCK_SAMPLER:-$script_directory/sample-gpu-clocks.sh}
+census=${QWEN_TENSOR_CENSUS:-$script_directory/gguf-tensor-census.py}
+pair_check=${QWEN_REPRESENTATION_PAIR_CHECK:-$script_directory/verify-representation-pair.py}
 arm_repeats=${QWEN_ARM_REPEATS:-3}
 prompt_tokens=${QWEN_BENCH_PROMPT:-512}
 generate_tokens=${QWEN_BENCH_GENERATE:-64}
 cooldown_seconds=${QWEN_COOLDOWN_SECONDS:-90}
 sample_interval_seconds=${QWEN_SAMPLE_INTERVAL_SECONDS:-2}
 
-for required_file in "$bench" "$cli"; do
+for required_file in "$bench" "$cli" "$census" "$pair_check"; do
     if [ ! -x "$required_file" ]; then
         printf 'required executable is absent: %s\n' "$required_file" >&2
         exit 1
     fi
 done
+
+"$pair_check" "$control_model" "$subject_model"
 for required_model in "$control_model" "$subject_model"; do
     if [ ! -f "$required_model" ]; then
         printf 'model does not exist: %s\n' "$required_model" >&2
@@ -74,9 +80,22 @@ trap 'stop_sampler' EXIT INT TERM
 # multi-token-prediction block the loader skips. File size counts that block, so
 # a ratio built from file sizes overstates what the device moves.
 streamed_bytes_of() {
-    GGUF_PY_PATH=${GGUF_PY_PATH:-"${HOME:?}/src/llama.cpp-qwen-apu/gguf-py"} \
-        "$script_directory/gguf-tensor-census.py" "$1" 2>/dev/null |
-        awk -F'\t' '$1 == "streamed_bytes_per_token" { print $2; exit }'
+    census_output=$(GGUF_PY_PATH=${GGUF_PY_PATH:-"${HOME:?}/src/llama.cpp-qwen-apu/gguf-py"} \
+        "$census" --skip-hash "$1") || {
+            printf 'tensor census failed: %s\n' "$1" >&2
+            return 1
+        }
+    streamed_bytes=$(printf '%s\n' "$census_output" |
+        awk -F'\t' '$1 == "streamed_bytes_per_token" { print $2; found = 1; exit }
+                     END { if (!found) exit 1 }') || {
+            printf 'tensor census reported no streamed byte count: %s\n' "$1" >&2
+            return 1
+        }
+    case $streamed_bytes in
+        ''|*[!0-9]*|0) printf 'tensor census reported invalid streamed bytes: %s\n' \
+            "$streamed_bytes" >&2; return 1 ;;
+    esac
+    printf '%s\n' "$streamed_bytes"
 }
 
 # One token with every tensor forced onto the device, so an arm that silently
@@ -137,15 +156,15 @@ run_arm() {
     "$clock_sampler" "$arm_clocks" "$sample_interval_seconds" >/dev/null 2>&1 &
     sampler_pid=$!
     sampler_started=0
-    sampler_deadline=$((sample_interval_seconds * 4 + 8))
-    while [ "$sampler_deadline" -gt 0 ]; do
+    sampler_attempt=0
+    while [ "$sampler_attempt" -lt 40 ]; do
         if [ -s "$arm_clocks" ]; then
             sampler_started=1
             break
         fi
         kill -0 "$sampler_pid" 2>/dev/null || break
-        sleep 1
-        sampler_deadline=$((sampler_deadline - 1))
+        sleep 0.25
+        sampler_attempt=$((sampler_attempt + 1))
     done
     if [ "$sampler_started" -eq 0 ]; then
         printf 'clock sampler wrote no rows: %s\n' "$clock_sampler" >&2
@@ -247,9 +266,13 @@ PYTHON
                 (temp ? temp / 1000 : "-"), (vram ? vram : "-"), (gtt ? gtt : "-")
         }' "$arm_clocks" 2>/dev/null || printf -- '-\t-\t-\t-\t-')
 
+    arm_streamed_bytes=$(streamed_bytes_of "$arm_model") || {
+        stop_sampler
+        return 1
+    }
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$arm_position" "$arm_role" "$(basename "$arm_model")" \
-        "$(streamed_bytes_of "$arm_model")" "$arm_rates" "$arm_wall" \
+        "$arm_streamed_bytes" "$arm_rates" "$arm_wall" \
         "$arm_device_summary" >>"$summary"
     printf 'position=%s role=%s prefill=%s decode=%s wall=%ss\n' \
         "$arm_position" "$arm_role" \

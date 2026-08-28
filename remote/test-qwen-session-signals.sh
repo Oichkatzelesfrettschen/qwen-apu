@@ -173,12 +173,16 @@ import sys
 arguments = sys.argv[1:]
 settings = {"--port": "8571", "--profile": "", "--provider": "exa",
             "--state-dir": os.environ.get("QWEN_WEB_STATE_DIR", ""),
-            "--host": "127.0.0.1"}
+            "--host": "127.0.0.1", "--api-key-file": ""}
 while arguments:
     key = arguments.pop(0)
     if key in settings and arguments:
         settings[key] = arguments.pop(0)
 state_dir = settings["--state-dir"]
+argument_record = os.environ.get("QWEN_TEST_BROKER_API_KEY_RECORD", "")
+if argument_record:
+    with open(argument_record, "w") as handle:
+        handle.write(settings["--api-key-file"] + "\n")
 os.makedirs(state_dir, exist_ok=True)
 secret_file = os.path.join(state_dir, "authorize-session.secret")
 with open(secret_file, "w") as handle:
@@ -251,9 +255,11 @@ start_ready_session() {
         QWEN_WEB_BROKER=$ready_marker \
         QWEN_WEB_BROKER_PROGRAM=$fixture_remote/fake-broker.py \
         QWEN_WEB_BROKER_PORT=18571 \
+        QWEN_REQUIRE_API_KEY=$ready_marker \
         QWEN_WEB_PROFILE=web-fixture \
         QWEN_WEB_TOKEN_KEY_FILE=$temporary_directory/token.key \
         QWEN_WEB_STATE_DIR=$ready_state_directory/web-mcp \
+        QWEN_TEST_BROKER_API_KEY_RECORD=$ready_state_directory/broker-api-key.path \
         "$fixture_remote/qwen-webui-session.sh" \
             "$temporary_directory/fake-server" \
             "$temporary_directory/fake-model" \
@@ -296,6 +302,12 @@ esac
 broker_secret_file=$broker_state_directory/web-mcp/authorize-session.secret
 if [ ! -s "$broker_secret_file" ]; then
     printf 'broker wrote no session secret at %s\n' "$broker_secret_file" >&2
+    exit 1
+fi
+if ! grep -Fqx "$broker_state_directory/api.key" \
+    "$broker_state_directory/broker-api-key.path" ||
+   [ ! -s "$broker_state_directory/api.key" ]; then
+    printf 'session did not forward its API key path to the broker\n' >&2
     exit 1
 fi
 recorded_identity=$(sed -n 's/^broker_identity //p' "$broker_state_directory/session.status")

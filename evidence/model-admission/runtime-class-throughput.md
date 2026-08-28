@@ -156,11 +156,12 @@ re-run, each arm's `llama-bench` log, its clock sample series from
 `remote/sample-gpu-clocks.sh` (fclk, sclk, die temperature, load average, and
 memory counters per interval), the harness summary, and the driver log that
 records the invocation label, the requested and observed priority, the streamed
-byte count, and the start and stop timestamps of every arm. Both sweeps ran
+byte count, and the start and stop timestamps of every arm. The retained bundle
+contains no kernel-hazard capture, so these measurements establish no kernel-log
+absence. Both sweeps ran
 `remote/run-bandwidth-ladder.sh` with `QWEN_BENCH_PREFILL=512` and
 `QWEN_BENCH_GENERATE=64`, and every arm exited zero, so the driver log carries
-the terminal state and the kernel-hazard watcher recorded nothing in either
-window.
+the terminal state.
 
 | checkpoint | streamed/token | decode fwd | decode rev | paired decode | paired prefill | achieved GB/s | span |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -221,16 +222,14 @@ tokens per second while streaming 0.477, 0.547, and 0.801 GB per token. The
 rates span 5.2% where the byte counts span 67.9%, across two value formats and
 two architectures, and every one of those six arms met the span criterion.
 
-Decode at this scale is therefore not bandwidth-bound. The observed token time
-is 63 to 66 ms across the three rows, and that figure is the whole token time
-rather than an isolated fixed component. What bounds the byte-linear part is
-the same-checkpoint pair below: 0.254 GB more per token costs 0.6 ms less, so
-the marginal cost of a streamed byte is indistinguishable from zero inside the
-span criterion, and the weight stream at the 4B's achieved 8.06 GB/s would
-alone take 99 ms on the Q8_0's 0.801 GB, which exceeds its entire measured
-token time. A rate-setting term other than the weight stream is present and its
-magnitude is not separately estimated here. Against the 4B's 314 ms per token
-the 0.8B token time is about one fifth.
+The observed token time is 63 to 66 ms across the three rows. Architecture and
+value format change with byte count, so the arms do not isolate a byte-linear
+term or prove that decode has no bandwidth-bound component. The matched
+structure pair below streams 0.254 GB more per token with a 0.6 ms shorter
+observed token time, inside the declared span criterion. The pair establishes
+no resolved decode advantage for the smaller representation; it does not
+estimate the marginal cost of a streamed byte. Against the 4B's 314 ms per
+token, the 0.8B token time is about one fifth.
 
 ## The format arm refutes both registered accounts
 
@@ -320,10 +319,10 @@ the sweep except the deep-narrow Zero-Coder, and below the 4B distill's 8.58 at
 36% of its byte count.
 
 `evidence/model-admission/universal-candidate-ladder.md` recorded LFM2 breaking
-its size ordering and read it as operator mix. A second architecture breaking it
-in the same direction, with 28 blocks of full attention at 12 heads over 2 KV
-heads against the Qwen3.5 hybrid's 3:1 pattern, supports that reading over a
-byte-count account. This row carries into the anchor re-run below, where its `R`
+its size ordering. Qwen2-VL breaks the same size-only ordering, but architecture,
+block count, attention pattern, head counts, and operator mix all change
+together. Operator mix remains one candidate mechanism rather than an isolated
+attribution. This row carries into the anchor re-run below, where its `R`
 becomes evaluable against an anchor that met the criterion.
 
 The arm runs under `llama-bench`, which loads the language model alone, so this
@@ -394,6 +393,6 @@ falsifier         outside 1.0 to 1.8
 Inside the falsifier and below the band. Qwen2-VL streams 22.4% fewer bytes per
 token than the 2B distill and decodes 9.4% faster, where a bandwidth-bound
 account predicts 28.9% faster. It achieves 8.24 GB/s against the 2B distill's
-9.71 in the same sweep, so the size ordering breaks here on rows that both met
-the span criterion and the reading stands: the operator mix rather than the byte
-count sets achieved rate across architectures.
+9.71 in the same sweep, so the size-only ordering fails on rows that both met
+the span criterion. The arm does not isolate which changed architectural
+mechanism sets the achieved rate.

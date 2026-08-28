@@ -4,11 +4,12 @@ set -eu
 # Verify the identities that the capacity policy validated after the Vulkan
 # environment is configured and immediately before llama-server replaces this
 # process. The server never reads these authorities; their identities bind the
-# assembled argv to the exact preset, model registry, and quarantine registry
-# that admitted it.
+# assembled argv to the exact preset, model registry, quarantine registry, and
+# web profile ledger whose identity admitted the server command. Non-web router launches
+# carry `-` for the web-ledger pair.
 
-if [ "$#" -lt 7 ]; then
-    printf 'usage: %s PRESET PRESET_SHA MODEL_REGISTRY MODEL_SHA QUARANTINE_REGISTRY QUARANTINE_SHA COMMAND [ARG ...]\n' \
+if [ "$#" -lt 9 ]; then
+    printf 'usage: %s PRESET PRESET_SHA MODEL_REGISTRY MODEL_SHA QUARANTINE_REGISTRY QUARANTINE_SHA WEB_PROFILES WEB_PROFILES_SHA COMMAND [ARG ...]\n' \
         "$0" >&2
     exit 2
 fi
@@ -19,7 +20,9 @@ model_registry_path=$3
 model_registry_sha256=$4
 quarantine_registry_path=$5
 quarantine_registry_sha256=$6
-shift 6
+web_profiles_path=$7
+web_profiles_sha256=$8
+shift 8
 
 verify_identity() {
     identity_name=$1
@@ -55,5 +58,14 @@ verify_identity 'router model registry' \
     "$model_registry_path" "$model_registry_sha256"
 verify_identity 'router quarantine registry' \
     "$quarantine_registry_path" "$quarantine_registry_sha256"
+if [ "$web_profiles_path" = - ] || [ "$web_profiles_sha256" = - ]; then
+    if [ "$web_profiles_path" != - ] || [ "$web_profiles_sha256" != - ]; then
+        printf 'router web profile ledger path and SHA-256 must both be `-` or both be present\n' >&2
+        exit 1
+    fi
+else
+    verify_identity 'router web profile ledger' \
+        "$web_profiles_path" "$web_profiles_sha256"
+fi
 
 exec "$@"
