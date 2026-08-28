@@ -153,6 +153,7 @@ class ServerSession:
         self.identifier = 0
         self.stdout_text = ""
         self.stderr_text = ""
+        self.signalled = None
 
     def request(self, method, params=None):
         self.identifier += 1
@@ -221,9 +222,17 @@ class WebMcpServerTest(unittest.TestCase):
                 environment[key] = value
         return environment
 
+    def close_cleanly(self, session):
+        """Close a session and require that end of input alone stopped it."""
+        session.close()
+        self.assertIsNone(
+            session.signalled,
+            f"the server needed {session.signalled} to exit",
+        )
+
     def open_session(self, **overrides):
         session = ServerSession(self.environment(**overrides))
-        self.addCleanup(session.close)
+        self.addCleanup(self.close_cleanly, session)
         session.request("initialize", {"protocolVersion": "2025-06-18"})
         session.notify("notifications/initialized")
         return session
@@ -244,7 +253,7 @@ class WebMcpServerTest(unittest.TestCase):
 
     def test_initialize_echoes_a_known_protocol_version(self):
         session = ServerSession(self.environment())
-        self.addCleanup(session.close)
+        self.addCleanup(self.close_cleanly, session)
         response = session.request("initialize", {"protocolVersion": "2024-11-05"})
         self.assertEqual(response["result"]["protocolVersion"], "2024-11-05")
         self.assertIn("tools", response["result"]["capabilities"])
@@ -285,7 +294,7 @@ class WebMcpServerTest(unittest.TestCase):
         result_id = self.token_for(search_text, "https://broken.example.net/list")
         response = session.call_tool("fetch_exa", {"result_id": result_id})
         self.assertEqual(response["error"]["code"], -32603)
-        session.close()
+        self.close_cleanly(session)
         self.assertIn("web-mcp internal error: AttributeError", session.stderr_text)
         self.assertIn("server.py:", session.stderr_text)
         self.assertNotIn("Traceback", session.stderr_text)
@@ -1043,7 +1052,7 @@ class WebMcpServerTest(unittest.TestCase):
         session.call_tool("search_exa", {"query": "q" * 900})
         session.call_tool("fetch_exa", {"result_id": "not-a-token"})
         session.request("resources/list")
-        session.close()
+        self.close_cleanly(session)
         for stream_name, stream in (
             ("stdout", session.stdout_text),
             ("stderr", session.stderr_text),

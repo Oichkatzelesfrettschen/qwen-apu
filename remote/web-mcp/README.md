@@ -163,4 +163,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 remote/web-mcp/test-web-mcp.py
 
 The test spawns the server the way llama-server spawns it, writes its fixtures
 into a temporary directory, and runs with the fake provider, so it needs no
-network and no key of its own.
+network and no key of its own. Each session ends by closing stdin, which is
+what ends the server's read loop; a child still running five seconds later is
+escalated to SIGTERM and then SIGKILL, and the needed signal fails the test
+rather than letting the kill pass for a clean exit.
