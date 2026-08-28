@@ -338,6 +338,7 @@ remote/run-placement-sweep.sh [OUTPUT]
 remote/reasoning-span-probe.sh OUTPUT_JSON     # against a live server
 remote/summarize-probe.sh ~/qwen-webui-state/graphics-latency.log
 remote/gguf-tensor-census.py MODEL [MODEL...]   # what a Q4_K_M file holds
+remote/admit-candidate-static.py REPO REV      # a header over a range read
 remote/hash-load-closure.sh EXECUTABLE [OUT]    # identity of every loaded object
 remote/run-rocm-vulkan-matrix.sh [OUTPUT]      # HIP against Vulkan, phase by phase
 remote/run-kv-cache-factorial.sh MODEL [OUT]   # cache type crossed with flash attention
@@ -385,7 +386,7 @@ remote/test-quality-roster.sh
 remote/test-promote-llama-build.sh
 remote/generate-quality-images.py --check
 remote/test-gguf-tokenizer-identity.py
-remote/test-promote-llama-build.sh
+remote/test-admit-candidate-static.py
 remote/verify-llama-patch-series.sh
 GGUF_PY_PATH=~/src/llama.cpp-qwen-apu/gguf-py \
     remote/test-gguf-tensor-census.py [MODEL...]
@@ -485,6 +486,37 @@ than a second trunk. `QWEN_SPEC_TYPE`, `QWEN_SPEC_DRAFT_N_MAX`,
 `remote/gguf-tensor-census.py` reports these properties from the file, because
 a Q4_K_M label names a recipe rather than a layout: the 2B is 50.08% Q6_K by
 byte where the 9B is 32.59%.
+
+A candidate declares its architecture and its chat template before it is
+fetched. A GGUF places the metadata block and tensor index at the head of the
+file, so `remote/admit-candidate-static.py` reads them over an HTTP range
+request against a pinned revision and imports the census parser rather than
+writing a second one. Sixteen mebibytes covers a Qwen3.5 metadata block, whose
+248,320 tokens and their merges end the 2B distill's header at 10,962,034
+bytes, and the reader grows the window on a short read so a truncated buffer
+raises rather than reporting the trailing keys absent. The ranged read
+reproduces the appliance's own full-file census on every identity field of the
+served 2B, including the 37,767,168 prediction-block bytes.
+
+The script runs on the workstation, which makes it a third workstation-side
+helper beside the UI build and the container build: it needs the network and
+the appliance's two 2.3 GHz cores are the wrong place to spend it.
+
+Static admission is what makes the throughput stage small. Throughput belongs to
+an architecture and a value format, so grouping candidates by architecture,
+embedding width, feed-forward width, and head counts collapses the fourteen
+GGUF rows of `evidence/model-admission/candidate-ledger.tsv` into four runtime
+classes. Eight rows of the largest class span 0.83% in streamed bytes against
+the 4% this machine carries on a repeated depth-0 rate, so a second arm inside a
+class measures queue position. One class holds a reference at its own format and
+three do not: the served 0.8B is Q8_0 and streams 764 MiB per token where its
+Q4_K_M class members stream 493 to 522, so that class needs an arm of its own
+rather than a cross-format ratio. The same read answers what no rate can: the Jackrong 0.8B Opus
+reasoning distill ends its generation prompt with an unguarded `<think>` and
+names `enable_thinking` nowhere, so the thinking-off request is inert
+against it and its graded arm needs a budget that survives the reasoning span.
+`evidence/model-admission/static-admission.md` carries the classes and the
+template survey.
 
 GGUF weights stay outside Git because their sizes exceed the LFS per-file
 limit. Each download script pins a Hugging Face revision, a byte count, and a

@@ -130,3 +130,18 @@ kernels the quantized matrix path calls rather than which libraries load.
 
 Both backends are built from a worktree carrying the repository patch series on
 top of the pinned commit, which `remote/verify-llama-patch-series.sh` checks.
+
+## Records derived from a remote partial fetch
+
+`evidence/model-admission/static-admission.tsv` records what fourteen candidate
+GGUFs declare, and no local artifact stands behind it. Each row comes from an
+HTTP range read of the first 16 MiB of one file at one pinned revision, so the
+row's provenance is the repository, the revision, and the artifact name it
+carries rather than a file this tree holds. `remote/admit-candidate-static.py`
+reproduces any row against those three fields, and the reproduction is a claim
+about the remote revision staying reachable rather than about a retained file.
+
+The record is checkable against a local artifact at exactly one row. The served
+2B distill is on the appliance, and its full local census agrees with the ranged
+read on chat template hash, template byte count, vocabulary hash, vocabulary
+size, tokenizer pre-tokenizer, and the 37,767,168 prediction-block bytes.
