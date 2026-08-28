@@ -290,7 +290,7 @@ registry_field() {
     printf '%s\n' "$registry_field_row" | sed -n "s/^$registry_field_name=//p"
 }
 
-while IFS='	' read -r profile_id model_id web_mode context \
+while IFS='	' read -r profile_id model_id _web_mode context \
     ledger_validated_filled_depth max_results max_fetches max_chars_per_fetch \
     _multi_source vision_allowed tool_selection execution_policy; do
     case $profile_id in
