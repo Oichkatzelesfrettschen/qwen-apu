@@ -93,6 +93,13 @@ set -eu
 # capacity claim; an execution grant is a security boundary and the ledger is
 # its only authority.
 #
+# A row whose weights are absent from the model root is skipped and named. Router
+# preflight rejects a section whose model file is absent before the single-model
+# fetch path runs, so emitting one unfetched checkpoint would block every web
+# profile on a machine that holds the rest. The skip counts separately from the
+# policy skips, which is what lets the zero-section refusal name absent weights
+# rather than reporting a ledger that withheld every executing policy.
+#
 # A run that emits zero sections fails rather than writing a section-free file.
 # qwen-capacity-policy.sh refuses a preset carrying no model section, so an
 # empty file defers the same refusal to launch time and reports it as a router
@@ -280,6 +287,7 @@ mkdir -p "$mcp_config_directory_temporary"
 } >"$output_ini_temporary"
 
 emitted=0
+skipped_absent_weights=0
 
 # A canonical positive decimal integer carries no leading zero and no sign.
 # require_canonical_integer names the field and the profile on failure, so a
@@ -501,6 +509,19 @@ while IFS='	' read -r profile_id model_id _web_mode context \
         tags_suffix=,experimental
     fi
 
+    # Router preflight rejects a section whose model file is absent before the
+    # single-model fetch path runs, so one unfetched checkpoint would block
+    # every web profile of a machine that holds the rest. The row is skipped and
+    # named here, the shape build-router-presets.sh uses, and the profiles whose
+    # weights are present still serve.
+    model_path=$model_root/$model_file
+    if [ ! -f "$model_path" ]; then
+        printf 'web_preset_skipped profile=%s reason=weights_absent path=%s\n' \
+            "$profile_id" "$model_path" >&2
+        skipped_absent_weights=$((skipped_absent_weights + 1))
+        continue
+    fi
+
     # A ui-mediated row performs its retrieval in the web UI and its section
     # names no configuration, so the run writes none and reads none of the MCP
     # inputs a configuration would carry.
@@ -544,7 +565,7 @@ while IFS='	' read -r profile_id model_id _web_mode context \
         } >"$profile_mcp_config_temporary"
     fi
 
-    model_path=$model_root/$model_file
+
 
     {
         printf '[%s]\n' "$profile_id"
@@ -637,9 +658,15 @@ verify_assembled_sections() {
 }
 
 if [ "$emitted" -eq 0 ]; then
-    printf 'every profile in %s withholds an executing policy, so no section emits\n' \
-        "$web_profiles" >&2
-    printf 'a validator-gated row emits under QWEN_WEB_AUTHORIZER_READY=1; a refused row emits under no setting\n' >&2
+    if [ "$skipped_absent_weights" -gt 0 ]; then
+        printf 'every emitting profile in %s names weights this machine holds no file for, so no section emits\n' \
+            "$web_profiles" >&2
+        printf 'the web_preset_skipped lines above name each path; fetch them with the model_id fetch script\n' >&2
+    else
+        printf 'every profile in %s withholds an executing policy, so no section emits\n' \
+            "$web_profiles" >&2
+        printf 'a validator-gated row emits under QWEN_WEB_AUTHORIZER_READY=1; a refused row emits under no setting\n' >&2
+    fi
     exit 1
 fi
 
@@ -658,5 +685,5 @@ mv -- "$mcp_config_directory_temporary" "$mcp_config_directory"
 mv -- "$output_ini_temporary" "$output_ini"
 trap - EXIT HUP INT TERM
 
-printf 'web_presets=written path=%s profiles=%s mcp_configs=%s\n' \
-    "$output_ini" "$emitted" "$mcp_config_directory"
+printf 'web_presets=written path=%s profiles=%s absent=%s mcp_configs=%s\n' \
+    "$output_ini" "$emitted" "$skipped_absent_weights" "$mcp_config_directory"

@@ -74,6 +74,14 @@ cat >"$web_profiles_archive" <<'EOF'
 web-fixture-archive	fixture-archive	validator-gated	8192	-	5	2	12000	yes	no	9/10	validator-gated
 EOF
 
+# The generator skips a row whose weights are absent, so every arm that measures
+# another rule runs against a model root holding one empty file per fixture row.
+policy_model_root=$work/model-root
+mkdir -p "$policy_model_root/Fixture-GGUF"
+for fixture_weights in production candidate-validated candidate-unknown archive; do
+    : >"$policy_model_root/Fixture-GGUF/$fixture_weights.gguf"
+done
+
 mcp_server_program=$work/web-mcp-server.py
 : >"$mcp_server_program"
 search_key_file=$work/private/exa-api.key
@@ -102,6 +110,7 @@ build() {
     QWEN_MODEL_REGISTRY=$model_registry \
     QWEN_WEB_PROFILES=$build_web_profiles \
     QWEN_WEB_AUTHORIZER_READY=1 \
+    QWEN_MODEL_ROOT=${QWEN_MODEL_ROOT:-$policy_model_root} \
         "$@" "$builder" "$build_output"
 }
 
@@ -300,11 +309,6 @@ policy=$script_directory/qwen-capacity-policy.sh
 fake_server=$script_directory/test-fixtures/fake-llama-server.sh
 fake_icd=$work/radeon_icd.x86_64.json
 : >"$fake_icd"
-policy_model_root=$work/model-root
-mkdir -p "$policy_model_root/Fixture-GGUF"
-for fixture_weights in production candidate-validated candidate-unknown archive; do
-    : >"$policy_model_root/Fixture-GGUF/$fixture_weights.gguf"
-done
 policy_quarantine=$work/quarantine.tsv
 printf '# reason_id\tscope\tsubject\tconsumers\tdepth\tbatch\tubatch\tcache_type_k\tcache_type_v\tflash_attention\n' \
     >"$policy_quarantine"
@@ -489,6 +493,7 @@ fi
 # server's own tool execution, which a ui-mediated section never performs.
 presets_ui_unmarked=$work/presets-ui-unmarked.ini
 if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_ui \
+    QWEN_MODEL_ROOT=$policy_model_root \
     env -u QWEN_WEB_AUTHORIZER_READY QWEN_WEB_MCP_SERVER="$mcp_server_program" QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" QWEN_WEB_STATE_DIR="$web_state_directory" \
     "$builder" "$presets_ui_unmarked" \
     >"$work/ui-unmarked.log" 2>"$work/ui-unmarked.err"; then
@@ -1028,6 +1033,56 @@ elif grep -q 'withholds an executing policy' "$work/checked-in.err"; then
 else
     report checked_in_ledger_matches_registry diverges
     cat "$work/checked-in.err" >&2
+fi
+
+# Router preflight rejects a section whose model file is absent before the
+# single-model fetch path runs, so one unfetched checkpoint would block every
+# web profile of a machine that holds the rest. The absent row is skipped and
+# named, and the present one still emits.
+absent_model_root=$work/absent-model-root
+mkdir -p "$absent_model_root/Fixture-GGUF"
+: >"$absent_model_root/Fixture-GGUF/production.gguf"
+web_profiles_partial=$work/web-profiles-partial.tsv
+{
+    printf 'web-fixture-present\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tui-mediated\n'
+    printf 'web-fixture-absent\tfixture-candidate-validated\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tui-mediated\n'
+} >"$web_profiles_partial"
+mkdir -p "$work/partial-out"
+presets_partial=$work/partial-out/presets.ini
+if QWEN_MODEL_ROOT=$absent_model_root build "$web_profiles_partial" \
+    "$presets_partial" \
+    env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
+    QWEN_WEB_STATE_DIR="$web_state_directory" \
+    >"$work/partial.log" 2>"$work/partial.err"; then
+    partial_outcome=ok
+    grep -q '^\[web-fixture-present\]' "$presets_partial" ||
+        partial_outcome=present_section_absent
+    grep -q '^\[web-fixture-absent\]' "$presets_partial" &&
+        partial_outcome=absent_section_emitted
+    grep -q 'web_preset_skipped profile=web-fixture-absent reason=weights_absent' \
+        "$work/partial.err" || partial_outcome=skip_unreported
+    report absent_weights_skipped_and_named "$partial_outcome"
+else
+    report absent_weights_skipped_and_named build_failed
+    cat "$work/partial.err" >&2
+fi
+
+# A run whose every emitting row names absent weights stops on that cause rather
+# than reporting a ledger that withheld every executing policy.
+empty_model_root=$work/empty-model-root
+mkdir -p "$empty_model_root"
+if QWEN_MODEL_ROOT=$empty_model_root build "$web_profiles_partial" \
+    "$work/presets-all-absent.ini" \
+    env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
+    QWEN_WEB_STATE_DIR="$web_state_directory" \
+    >"$work/all-absent.log" 2>"$work/all-absent.err"; then
+    report all_weights_absent_refused emitted_a_section
+elif grep -q 'names weights this machine holds no file for' "$work/all-absent.err"; then
+    report all_weights_absent_refused ok
+else
+    report all_weights_absent_refused wrong_reason
 fi
 
 if [ "$failures" -ne 0 ]; then
