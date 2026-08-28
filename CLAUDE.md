@@ -132,9 +132,12 @@ as two fields. `context_ceiling` is the depth the policy admits;
 `validated_filled_depth` is the deepest depth measured to fill and decode under
 the row's own cache triple, Flash Attention state, `batch`, and `ubatch`. A
 server that loads a 24576-token allocation has proven it can reserve the memory
-and has not proven a near-full cache executes, so the 4B distill reads 24576 and
-16384 in those two fields and `qwen-capacity-policy.sh` prints the gap on its
-`depth_validation` line at every launch. Submission geometry belongs to the same
+and has not proven a near-full cache executes, so `qwen-capacity-policy.sh`
+prints the gap between the two fields on its `depth_validation` line at every
+launch. The 4B distill carried 24576 and 16384 there until
+`evidence/depth-validation-32k/` filled 24576 and 32768 at 128/32 with zero
+resets, zero faults, and a passing control after each, so its row reads 32768
+in both. Submission geometry belongs to the same
 claim: at 16384 the same checkpoint, cache, and device wedged the compute ring
 at 2048/512 and completed twice at 128/32, so `batch` and `ubatch` are registry
 fields rather than constants in the argv.
