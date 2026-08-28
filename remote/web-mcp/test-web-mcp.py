@@ -225,6 +225,7 @@ class ExaFixtureServer:
         self.requests = []
         self.responses = {}
         self.status_codes = {}
+        self.redirects = {}
         recorder = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -241,6 +242,13 @@ class ExaFixtureServer:
                         "body": json.loads(raw.decode("utf-8")),
                     }
                 )
+                location = recorder.redirects.get(self.path)
+                if location is not None:
+                    self.send_response(302)
+                    self.send_header("location", location)
+                    self.send_header("content-length", "0")
+                    self.end_headers()
+                    return
                 code = recorder.status_codes.get(self.path, 200)
                 payload = json.dumps(
                     recorder.responses.get(self.path, {})
@@ -250,6 +258,27 @@ class ExaFixtureServer:
                 self.send_header("content-length", str(len(payload)))
                 self.end_headers()
                 self.wfile.write(payload)
+
+            def do_GET(self):
+                """Record a redirected request, which urllib rewrites to GET.
+
+                `HTTPRedirectHandler` turns a 302 on a POST into a GET and
+                copies the request headers onto it, so the arm that measures
+                whether the key left the pinned host reads this list.
+                """
+                recorder.requests.append(
+                    {
+                        "path": self.path,
+                        "headers": {
+                            key.lower(): value
+                            for key, value in self.headers.items()
+                        },
+                        "body": None,
+                    }
+                )
+                self.send_response(405)
+                self.send_header("content-length", "0")
+                self.end_headers()
 
             def log_message(self, *arguments):
                 return
@@ -1022,6 +1051,39 @@ class WebMcpServerTest(unittest.TestCase):
                 "numResults": 3,
                 "query": "raven2",
             },
+        )
+
+    def test_a_cross_host_redirect_carries_the_key_to_no_other_host(self):
+        """A 3xx from the provider ends the request rather than following it.
+
+        `urllib`'s default redirect handler copies the request headers onto
+        the redirected request, so a provider-side or compromised redirect
+        would carry `x-api-key` to a host of the redirector's choosing. The
+        opener refuses the redirect, so the second host records no request at
+        all and the key reaches the pinned endpoint alone.
+        """
+        elsewhere = ExaFixtureServer()
+        self.addCleanup(elsewhere.close)
+        elsewhere.responses["/search"] = {"results": []}
+        fixture, provider = self.live_provider()
+        fixture.redirects["/search"] = elsewhere.origin + "/search"
+        with self.assertRaises(server.ProviderHttpError) as raised:
+            provider.search(
+                "raven2",
+                1,
+                {
+                    "published_after": "",
+                    "published_before": "",
+                    "max_age_hours": None,
+                    "include_domains": [],
+                    "exclude_domains": [],
+                },
+            )
+        self.assertIn("302", str(raised.exception))
+        self.assertEqual(
+            elsewhere.requests,
+            [],
+            "the redirected request reached the second host",
         )
 
     def test_an_omitted_cached_age_leaves_the_search_body_without_the_key(self):

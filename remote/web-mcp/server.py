@@ -664,6 +664,26 @@ def failure_tag(status):
     return "unspecified"
 
 
+class RefuseRedirect(urllib.request.HTTPRedirectHandler):
+    """End a provider redirect at the response that requested it.
+
+    `HTTPRedirectHandler.redirect_request` copies the request headers onto the
+    redirected request, so following a cross-host 301, 302, or 303 hands
+    `x-api-key` to a host of the redirector's choosing. Returning None leaves
+    urllib raising the 3xx as an `HTTPError`, which `_post` reports with its
+    status, so the key reaches the pinned Exa endpoint alone.
+    """
+
+    def redirect_request(self, request, fp, code, message, headers, newurl):
+        return None
+
+
+# One opener serves every provider request. `build_opener` replaces the default
+# redirect handler with the subclass instance, which is what removes the
+# following behavior from the whole process rather than from one call site.
+PROVIDER_OPENER = urllib.request.build_opener(RefuseRedirect())
+
+
 class ExaProvider(Provider):
     """Exa's /search and /contents JSON APIs over urllib.
 
@@ -698,7 +718,7 @@ class ExaProvider(Provider):
             method="POST",
         )
         try:
-            with urllib.request.urlopen(
+            with PROVIDER_OPENER.open(
                 request, timeout=REQUEST_TIMEOUT_SECONDS
             ) as response:
                 raw = response.read(HTTP_RESPONSE_BYTE_CAP + 1)

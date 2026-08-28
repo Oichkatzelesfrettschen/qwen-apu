@@ -240,6 +240,10 @@ is refused before any walk over it. `params: []` therefore answers -32602.
 `x-api-key` header. The two endpoints are instance attributes seeded from the
 module constants and no configuration redirects them, since a redirected
 endpoint would carry that header to a host of the redirector's choosing. The
+provider opener carries `RefuseRedirect` in place of urllib's own redirect
+handler, whose `redirect_request` copies the request headers onto the
+redirected request, so a 3xx from the provider is raised with its status and
+the key reaches the pinned host alone. The
 Search API reads `maxAgeHours` inside the `contents` object beside the
 highlight request and the publication window and domain filters at the request
 top level; the Contents API reads `maxAgeHours` at its own top level, so the
