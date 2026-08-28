@@ -2145,6 +2145,37 @@ class WebMcpServerTest(unittest.TestCase):
             [entry[7] for entry in self.audit_rows(state_path)], ["internal_error"]
         )
 
+    def test_a_failed_validation_records_the_provider_bytes_it_read(self):
+        """A response read and then refused keeps its byte count in the trail.
+
+        The budget is spent where the provider answers, so a body that fails
+        the size, encoding, or structure check has already cost the account.
+        The audit row copies the counter in the finalization path, which is
+        what keeps the retained usage evidence equal to what was spent.
+        """
+        state_path = self.state_directory("failed-bytes-state")
+        session = self.open_session(QWEN_WEB_STATE_DIR=state_path)
+        search_text = self.result_text(self.search(session, max_results=10))
+        refused = session.call_tool(
+            "fetch_exa",
+            {"result_id": self.token_for(search_text, "https://big.example.net/huge")},
+        )
+        self.assertTrue(refused["result"]["isError"])
+        connection = sqlite3.connect(
+            os.path.join(state_path, server.LEDGER_FILE_NAME)
+        )
+        try:
+            row = connection.execute(
+                "SELECT provider_bytes, status FROM audit WHERE operation = 'fetch'"
+                " ORDER BY rowid DESC LIMIT 1"
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertEqual(row[1], "provider_content_error")
+        self.assertGreater(
+            row[0], 0, "the refused response recorded no provider bytes"
+        )
+
     def test_the_audit_trail_retains_no_query_secret_or_page_body(self):
         state_path = self.state_directory("secret-audit-state")
         session = self.open_session(

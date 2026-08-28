@@ -214,7 +214,9 @@ write lock for the whole read-modify-write of a bucket, so two children spawned
 for concurrent calls serialize rather than both writing back one count, and an
 exhausted bucket refuses the call. The daily budget counts provider requests
 issued rather than answers used: a request whose body then fails the UTF-8 or
-size check has already reached the provider and keeps its slot. `QWEN_WEB_PROFILE`
+size check has already reached the provider and keeps its slot, and the audit
+row copies the provider byte count in its finalization path, so a refused
+response records the bytes it read. `QWEN_WEB_PROFILE`
 labels the rows and names the profile a grant is issued for, and
 `QWEN_WEB_SEARCH_PER_MINUTE`, `QWEN_WEB_FETCH_PER_MINUTE`,
 `QWEN_WEB_DAILY_PAGE_BUDGET`, and `QWEN_WEB_DAILY_BUDGET` set the four limits,

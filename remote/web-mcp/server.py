@@ -940,14 +940,19 @@ class FakeProvider(Provider):
 
         The domain lists are enforced in `call_search` over whatever a
         provider answers, so this fixture returns its records unfiltered and
-        both providers meet one enforcement point.
+        both providers meet one enforcement point. `response_bytes` counts the
+        served record the way the HTTP provider counts its response, which
+        keeps the audit row comparable across the two.
         """
-        return self.document.get("search", {}).get(query, [])[:max_results]
+        results = self.document.get("search", {}).get(query, [])[:max_results]
+        self.response_bytes += len(json.dumps(results).encode("utf-8"))
+        return results
 
     def contents(self, url, max_characters, provider_result_id="", freshness=None):
         record = self.document.get("contents", {}).get(url)
         if record is None:
             raise ProviderContentError("the provider returned no content for the result")
+        self.response_bytes += len(json.dumps(record).encode("utf-8"))
         return record
 
 
@@ -1750,6 +1755,7 @@ def call_search(settings, arguments):
         "latency_ms": 0,
         "status": "internal_error",
     }
+    provider = None
     try:
         signing_key = read_secret_file(settings["token_key_file"], "token signing")
         provider = select_provider(settings)
@@ -1814,7 +1820,6 @@ def call_search(settings, arguments):
         audit["result_count"] = len(
             [line for line in rendered.splitlines() if line.startswith("URL: ")]
         )
-        audit["provider_bytes"] = provider.response_bytes
         audit["returned_characters"] = len(rendered)
         audit["status"] = "success"
         return rendered
@@ -1825,6 +1830,13 @@ def call_search(settings, arguments):
         audit["status"] = "internal_error"
         raise
     finally:
+        # The budget counts a provider request where it is issued, so a
+        # response read and then refused for its size, encoding, or structure
+        # has already cost the account. The counter is copied here rather than
+        # on the success path, which keeps the retained usage evidence equal
+        # to what was spent.
+        if provider is not None:
+            audit["provider_bytes"] = provider.response_bytes
         audit["latency_ms"] = int((time.monotonic() - started) * 1000)
         if ledger is not None:
             ledger.record(audit)
@@ -1862,6 +1874,7 @@ def call_fetch(settings, arguments):
         "latency_ms": 0,
         "status": "internal_error",
     }
+    provider = None
     try:
         signing_key = read_secret_file(settings["token_key_file"], "token signing")
         claim = redeem_result_id(signing_key, result_id, now)
@@ -1908,7 +1921,6 @@ def call_fetch(settings, arguments):
                 ledger.store_snapshot(
                     extraction, claim["search_id"], url, now, claim["expiry"]
                 )
-            audit["provider_bytes"] = provider.response_bytes
         else:
             # A window past the first reads the stored document, so paging
             # costs one provider request per document and a source that
@@ -1938,6 +1950,13 @@ def call_fetch(settings, arguments):
         audit["status"] = "internal_error"
         raise
     finally:
+        # The budget counts a provider request where it is issued, so a
+        # response read and then refused for its size, encoding, or structure
+        # has already cost the account. The counter is copied here rather than
+        # on the success path, which keeps the retained usage evidence equal
+        # to what was spent.
+        if provider is not None:
+            audit["provider_bytes"] = provider.response_bytes
         audit["latency_ms"] = int((time.monotonic() - started) * 1000)
         if ledger is not None:
             ledger.record(audit)
