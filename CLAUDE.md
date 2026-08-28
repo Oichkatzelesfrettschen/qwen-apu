@@ -311,20 +311,27 @@ routable. A new API-key attempt clears the prior selection until the
 authenticated roster returns, and late responses from an older attempt never
 replace the newer state.
 
-A web search reaches the network through one human approval. The per-turn Web
-toggle decides whether `web_search_exa` and `web_fetch_exa` reach the request's
-tool list at all, so a turn run with it off offers the model no
-network-reaching surface. A proposed `web_search_exa` call opens a dialog
-naming the query, the publication interval, both domain lists, the result
-count, and whether `max_age_hours` of 0 forces a live crawl, and the dialog
-offers one approval and a refusal because the broker signs a single-use grant.
-An approval posts those exact parsed fields to
-`remote/web-mcp/authorize-broker.py` and puts the returned grant into a
-request-scoped copy of the call's arguments; `history` retains the proposal the
-grant was signed over, so the token reaches the server once and stays out of
-the transcript every later request re-sends and out of browser storage. A
-refusal answers the call with a `role: 'tool'` message stating that the search
-did not run.
+A web search reaches the network through one human approval, and the browser is
+the executor. llama-server reads `tools` from the client body alone and runs a
+wrapped MCP tool through the standalone `POST /tools` route, so the page
+composes `body.tools` from `GET /tools` when the per-turn Web toggle is on and
+a turn run with it off offers the model no network-reaching surface. A proposed
+`web_search_exa` call opens a dialog naming the query, the publication
+interval, both domain lists, the result count, and whether `max_age_hours` of 0
+forces a live crawl, and the dialog offers one approval and a refusal because
+the broker signs a single-use grant. An approval posts those exact parsed
+fields to `remote/web-mcp/authorize-broker.py` and posts the returned grant
+inside the `params` object of one `POST /tools` request; `history` retains the
+proposal the grant was signed over and the result text, so the token reaches
+the server once and stays out of the transcript every later request re-sends
+and out of browser storage. A `web_fetch_exa` call runs through the same route
+without a grant, because the wrapper enforces the signed Result ID and its own
+fetch allowance, and the page spends at most two fetches per turn.
+`mcp_result_to_response` maps an MCP `isError` result onto an `error` key at
+HTTP 200, so a refused grant, a spent grant, and an argument outside the claim
+are read from the response body rather than from its status and become a tool
+message naming what refused. A refusal in the dialog answers the call with a
+`role: 'tool'` message stating that the search did not run.
 
 The integer dot product is advertised, functional, and unaccelerated, which
 decides how most of this tree's bytes execute. RADV reports

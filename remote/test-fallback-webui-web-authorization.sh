@@ -50,29 +50,56 @@ grep -F "row('live crawl'" "$fallback_ui" >/dev/null
 grep -F 'id="approve-once"' "$fallback_ui" >/dev/null
 grep -F 'id="approve-deny"' "$fallback_ui" >/dev/null
 
-# The approval posts the parsed proposal and carries the grant in a
-# request-scoped argument copy, so the transcript keeps the proposal alone.
+# The approval posts the parsed proposal and the grant reaches the executor
+# inside the one POST /tools body, so the transcript keeps the proposal alone.
 grep -F "await requestGrant(fields, controller.signal)" "$fallback_ui" >/dev/null
 grep -F 'BROKER_SESSION_HEADER]: secret' "$fallback_ui" >/dev/null
-grep -F 'requestMessages(authorizations)' "$fallback_ui" >/dev/null
-grep -F "content: 'The user refused this web search. It did not run.'" \
-    "$fallback_ui" >/dev/null
-# Both decisions answer the call with a tool message, so the continuation array
-# pairs every tool_calls entry with its result and stays a legal request.
-grep -F "'single-use grant covers them. The search awaits its '" \
+grep -F 'searchRequestParams(fields, outcome.authorization)' "$fallback_ui" >/dev/null
+grep -F "body: JSON.stringify({ tool: toolName, params })" "$fallback_ui" >/dev/null
+grep -F "'The user refused this web search. It did not run.'" \
     "$fallback_ui" >/dev/null
 
-# A fetch, demo, or other advertised call carries no approval path of its own,
-# so it receives a tool message too: every tool_calls entry pairs with a
-# result before the round ends, and none is skipped on the way there.
-grep -F "if (calls[index].name !== WEB_SEARCH_TOOL_NAME) {" "$fallback_ui" >/dev/null
+# The grant enters one request body. A transcript message, a stored value, or a
+# completion body carrying it would present a single-use token twice.
+grep -F 'outcome = await streamCompletion(history, view);' "$fallback_ui" >/dev/null
+if grep -E 'history\.push\([^)]*authorization' "$fallback_ui" >/dev/null; then
+    printf 'fallback Web UI writes a grant into the transcript\n' >&2
+    exit 1
+fi
+if grep -F 'requestMessages' "$fallback_ui" >/dev/null; then
+    printf 'fallback Web UI still splices a grant into a completion request\n' >&2
+    exit 1
+fi
+
+# llama-server answers an MCP refusal with `error` at HTTP 200 and a result
+# with `plain_text_response`, so all three outcomes are read from the body and
+# a refusal names what refused it.
+grep -F "if (payload && typeof payload.error === 'string') {" "$fallback_ui" >/dev/null
+grep -F 'The ${toolName} call was refused: ${payload.error}' "$fallback_ui" >/dev/null
+grep -F 'The ${toolName} call returned HTTP ${response.status} and no result.' \
+    "$fallback_ui" >/dev/null
+grep -F "typeof payload.plain_text_response !== 'string'" "$fallback_ui" >/dev/null
+grep -F 'payload.plain_text_response.slice(0, TOOL_RESULT_CHARACTER_CAP)' \
+    "$fallback_ui" >/dev/null
+grep -F 'const TOOL_RESULT_CHARACTER_CAP = 8000;' "$fallback_ui" >/dev/null
+
+# A fetch runs without a grant, because the wrapper enforces the signed Result
+# ID and its own allowance, and the page bounds the pages one turn reads.
+grep -F 'const WEB_FETCH_BUDGET_PER_TURN = 2;' "$fallback_ui" >/dev/null
+grep -F 'if (fetchBudget.remaining <= 0) {' "$fallback_ui" >/dev/null
+grep -F 'fetchBudget.remaining--;' "$fallback_ui" >/dev/null
+grep -F 'answerCall(callId, toolName, await executeWebTool(toolName, params));' \
+    "$fallback_ui" >/dev/null
+
+# A demo or otherwise advertised call receives a tool message too: every
+# tool_calls entry pairs with a result before the round ends.
+grep -F "if (toolName !== WEB_SEARCH_TOOL_NAME) {" "$fallback_ui" >/dev/null
 grep -F 'The served path executes no tool named' "$fallback_ui" >/dev/null
 grep -F 'if (!outcome.calls.length) return;' "$fallback_ui" >/dev/null
 
-# The final continuation round opens no approval dialog: a grant issued there
-# outlives every remaining request the round budget allows.
-grep -F "if (calls[index].name === WEB_SEARCH_TOOL_NAME && roundBudgetExhausted) {" \
-    "$fallback_ui" >/dev/null
+# The final continuation round opens no approval dialog: results issued there
+# reach no request the round budget still sends.
+grep -F 'if (roundBudgetExhausted) {' "$fallback_ui" >/dev/null
 grep -F 'The round budget is exhausted; the search did not run.' "$fallback_ui" >/dev/null
 grep -F 'round === CONTINUATION_CAP - 1' "$fallback_ui" >/dev/null
 

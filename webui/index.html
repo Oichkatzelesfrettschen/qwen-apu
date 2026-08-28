@@ -150,10 +150,10 @@ let nctxModel = null;
 let busy = false;
 let requestModel = null;
 let modelStateGeneration = 0;
-// requestMessages selects a tool_calls entry by id to splice in an authorized
-// grant, so an id must stay unique across the whole conversation rather than
-// within one round: a per-round counter starting at 0 collides across turns
-// and a later grant would overwrite every earlier call sharing its id.
+// Every tool message names the call it answers by id, so an id stays unique
+// across the whole conversation rather than within one round: a per-round
+// counter starting at 0 collides across turns and pairs a result with the
+// earlier call sharing its id.
 let toolCallSequence = 0;
 
 function readBrowserStorage(storageName, key) {
@@ -375,6 +375,15 @@ function forgetWebTools() {
 const BROKER_ORIGIN_DEFAULT = 'http://127.0.0.1:8571';
 const BROKER_SESSION_HEADER = 'X-Qwen-Web-Session';
 const CONTINUATION_CAP = 4;
+// A tool result enters the context as a message, so its length is prompt the
+// next round pays for at this machine's prefill rate. The cap truncates a
+// long page rather than refusing it, which keeps the reply readable.
+const TOOL_RESULT_CHARACTER_CAP = 8000;
+// The wrapper meters fetches per search in its own ledger row and publishes
+// that allowance neither in `tools/list` nor in `/props`, so the page carries
+// its own per-turn budget. Two fetches read the pages behind one search and
+// leave the round budget for the answer.
+const WEB_FETCH_BUDGET_PER_TURN = 2;
 
 // The session secret and every issued grant live in this closure alone. Both
 // stay out of `history`, which is re-sent whole on every request, and out of
@@ -741,23 +750,6 @@ async function buildRequestBody(messages) {
   return body;
 }
 
-function requestMessages(authorizations) {
-  // `history` holds the proposed arguments and the request carries the
-  // authorized ones. The grant therefore reaches the server inside one
-  // request and stays out of the transcript that every later request re-sends,
-  // so a single-use token is presented once rather than replayed each turn.
-  if (!authorizations.size) return history;
-  return history.map(message => {
-    if (!Array.isArray(message.tool_calls)) return message;
-    return {
-      ...message,
-      tool_calls: message.tool_calls.map(call => authorizations.has(call.id)
-        ? { ...call, function: { ...call.function, arguments: authorizations.get(call.id) } }
-        : call)
-    };
-  });
-}
-
 async function streamCompletion(messages, view) {
   const t0 = performance.now();
   let first = null, streamChunks = 0, completionTokens = null;
@@ -857,37 +849,140 @@ function openTurnView() {
   return { turn: t, think, thinkBody, thinkShown: false, meta };
 }
 
-async function resolveWebApprovals(calls, callIds, view, roundBudgetExhausted) {
-  /* Return the authorized argument strings for this round, or null on refusal.
+async function executeWebTool(toolName, params) {
+  /* Run one tool through llama-server's executor and return the text it gives.
 
-     Each proposed web search is shown to a human with the arguments it would
-     run under, and the broker signs a grant over exactly those fields. A
-     refusal answers the call with a tool message so the model reads that the
-     search did not run, which is the outcome the model would otherwise be
-     free to narrate however it liked. */
-  const authorizations = new Map();
+     `POST /tools` invokes the named tool with the `params` object taken
+     verbatim from the request body (server-tools.cpp:2076-2081) and answers
+     with `plain_text_response` for a result and `error` for a refusal, because
+     `mcp_result_to_response` (server-mcp.cpp:196-212) maps an MCP `isError`
+     result onto the error key at HTTP 200. A refusal is therefore read from
+     the body rather than from the status, which is the shape a spent grant and
+     an argument outside its authorization both arrive in. */
+  let response;
+  try {
+    response = await fetch('./tools', {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ tool: toolName, params })
+    });
+  } catch (error) {
+    return `The ${toolName} call did not reach the server: ${error.message || error}`;
+  }
+  let payload = null;
+  try { payload = await response.json(); } catch { payload = null; }
+  if (payload && typeof payload.error === 'string') {
+    return `The ${toolName} call was refused: ${payload.error}`
+      .slice(0, TOOL_RESULT_CHARACTER_CAP);
+  }
+  if (!response.ok) {
+    return `The ${toolName} call returned HTTP ${response.status} and no result.`;
+  }
+  if (!payload || typeof payload.plain_text_response !== 'string') {
+    return `The ${toolName} call returned HTTP ${response.status} with a body ` +
+           'that carries no result text.';
+  }
+  return payload.plain_text_response.slice(0, TOOL_RESULT_CHARACTER_CAP);
+}
+
+function searchRequestParams(fields, authorization) {
+  /* Return the `params` object one approved search runs under.
+
+     The grant is signed over the parsed fields and `enforce_search_authorization`
+     compares the presented arguments against the claim field by field, so the
+     approved fields travel unchanged. An empty date and an absent
+     `max_age_hours` are omitted rather than sent as an empty string and a
+     null, since `require_iso_date` and `require_optional_integer` read an
+     absent key as the same default the broker signed. */
+  const params = {
+    query: fields.query,
+    max_results: fields.max_results,
+    include_domains: fields.include_domains,
+    exclude_domains: fields.exclude_domains,
+    authorization
+  };
+  if (fields.published_after) params.published_after = fields.published_after;
+  if (fields.published_before) params.published_before = fields.published_before;
+  if (fields.max_age_hours !== null) params.max_age_hours = fields.max_age_hours;
+  return params;
+}
+
+function proposedFetchParams(argumentText) {
+  /* Return the three fetch arguments the wrapper reads, from the proposal.
+
+     `fetch_exa` redeems a Result ID the wrapper itself signed and printed in a
+     prior search reply, so the server enforces the reference and the fetch
+     allowance and the browser sends the proposal through. The whitelist keeps
+     a model-authored `authorization` or `runtime` key out of the body. */
+  const parsed = JSON.parse(argumentText);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('the proposed arguments are not an object');
+  }
+  const params = { result_id: typeof parsed.result_id === 'string' ? parsed.result_id : '' };
+  if (Number.isInteger(parsed.start_index)) params.start_index = parsed.start_index;
+  if (Number.isInteger(parsed.max_chars)) params.max_chars = parsed.max_chars;
+  return params;
+}
+
+function answerCall(callId, toolName, content) {
+  // Every assistant message carrying tool_calls needs one tool message per
+  // call before the array is a legal request, so each branch of the round
+  // answers its own call.
+  history.push({ role: 'tool', tool_call_id: callId, name: toolName, content });
+}
+
+async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetchBudget) {
+  /* Execute this round's proposed calls and answer each one.
+
+     A proposed `web_search_exa` is shown to a human with the arguments it
+     would run under, the broker signs a grant over exactly those fields, and
+     the browser posts them to `POST /tools` with the grant inside `params`.
+     The grant lives in that one request body: `history` keeps the proposal it
+     was signed over, so the transcript the next round re-sends carries the
+     arguments and no token. A refusal answers the call with a tool message so
+     the model reads that the search did not run. */
   let refused = false;
   for (let index = 0; index < calls.length; index++) {
-    if (calls[index].name === WEB_SEARCH_TOOL_NAME && roundBudgetExhausted) {
-      // The continuation cap bounds the rounds left to spend a grant in: the
-      // round that just streamed is the last one send() will send again, so
-      // no approval reaches a request that never goes out. The dialog stays
-      // closed and the model reads the same refusal shape a denial produces.
-      refused = true;
-      history.push({ role: 'tool', tool_call_id: callIds[index], name: calls[index].name,
-                     content: 'The round budget is exhausted; the search did not run.' });
+    const toolName = calls[index].name;
+    const callId = callIds[index];
+    if (toolName === WEB_FETCH_TOOL_NAME) {
+      if (fetchBudget.remaining <= 0) {
+        refused = true;
+        answerCall(callId, toolName,
+          `The per-turn budget of ${WEB_FETCH_BUDGET_PER_TURN} fetches is spent; ` +
+          'this fetch did not run.');
+        continue;
+      }
+      let params;
+      try {
+        params = proposedFetchParams(calls[index].args);
+      } catch (error) {
+        refused = true;
+        answerCall(callId, toolName, `The fetch did not run: ${error.message || error}`);
+        continue;
+      }
+      fetchBudget.remaining--;
+      answerCall(callId, toolName, await executeWebTool(toolName, params));
       continue;
     }
-    if (calls[index].name !== WEB_SEARCH_TOOL_NAME) {
-      // A fetch, demo, or other advertised call carries no approval path of its
-      // own. Answering it here, rather than skipping it, is what keeps every
-      // tool_calls entry paired with a tool message: an unanswered call would
-      // make the next request's message array illegal and the server would
-      // refuse the whole continuation instead of the one call.
+    if (toolName !== WEB_SEARCH_TOOL_NAME) {
+      // A demo or otherwise advertised call carries no executor here. The
+      // page invokes the two web tools it holds an approval path and a budget
+      // for, and answers every other call with a tool message rather than
+      // posting a name it made no boundary for.
       refused = true;
-      history.push({ role: 'tool', tool_call_id: callIds[index], name: calls[index].name,
-                     content: `The served path executes no tool named ${calls[index].name} ` +
-                              'in this turn.' });
+      answerCall(callId, toolName,
+        `The served path executes no tool named ${toolName} in this turn.`);
+      continue;
+    }
+    if (roundBudgetExhausted) {
+      // The continuation cap bounds the rounds left to read a result in: the
+      // round that just streamed is the last one send() will send again, so a
+      // search whose results reach no request stays unrun and the model reads
+      // the same refusal shape a denial produces.
+      refused = true;
+      answerCall(callId, toolName,
+        'The round budget is exhausted; the search did not run.');
       continue;
     }
     let fields;
@@ -895,43 +990,24 @@ async function resolveWebApprovals(calls, callIds, view, roundBudgetExhausted) {
       fields = proposedSearchFields(calls[index].args);
     } catch (error) {
       refused = true;
-      history.push({ role: 'tool', tool_call_id: callIds[index], name: calls[index].name,
-                     content: `The search did not run: ${error.message || error}` });
+      answerCall(callId, toolName, `The search did not run: ${error.message || error}`);
       continue;
     }
     const outcome = await approveWebSearch(fields);
     if (outcome.decision === 'once') {
-      // The grant enters a request-scoped argument string. `history` keeps the
-      // proposal it was signed over, so the transcript records what the model
-      // asked for and holds no token.
-      authorizations.set(callIds[index],
-        JSON.stringify({ ...fields, authorization: outcome.authorization }));
-      // Every assistant message carrying tool_calls needs a tool message per
-      // call before the array is a legal request, so the approval answers its
-      // own call. What answers it is the state of the grant rather than search
-      // results: which process executes an approved web_search_exa is
-      // unresolved between llama-server's own MCP child and this page, and
-      // evidence/web-ui-authorization-design.md names the source that settles
-      // it. The single-use grant is issued and travels in the next request's
-      // arguments; the results reach the model once an executor exists.
-      history.push({ role: 'tool', tool_call_id: callIds[index], name: calls[index].name,
-                     content: 'The user approved these exact search arguments and a ' +
-                              'single-use grant covers them. The search awaits its ' +
-                              'executor, so no results are available in this turn.' });
+      answerCall(callId, toolName, await executeWebTool(
+        toolName, searchRequestParams(fields, outcome.authorization)));
     } else {
       refused = true;
-      history.push({ role: 'tool', tool_call_id: callIds[index], name: calls[index].name,
-                     content: 'The user refused this web search. It did not run.' });
+      answerCall(callId, toolName, 'The user refused this web search. It did not run.');
     }
   }
-  if (!authorizations.size && !refused) return null;
-  if (refused && !authorizations.size) {
+  if (refused) {
     const note = document.createElement('div');
     note.className = 'meta bad';
-    note.textContent = 'the web search was refused; the model continues without it';
+    note.textContent = 'a proposed call went unrun; the model continues without it';
     view.turn.root.append(note);
   }
-  return authorizations;
 }
 
 async function send() {
@@ -960,20 +1036,19 @@ async function send() {
   busy = true; $('#send').disabled = true;
   // The continuation cap bounds one user turn. A model that keeps proposing
   // searches meets a fixed number of approval dialogs rather than an unbounded
-  // sequence of them.
-  let authorizations = new Map();
+  // sequence of them, and the fetch budget bounds the pages one turn reads.
+  const fetchBudget = { remaining: WEB_FETCH_BUDGET_PER_TURN };
   try {
     for (let round = 0; round < CONTINUATION_CAP; round++) {
       const view = openTurnView();
       let outcome;
       try {
-        outcome = await streamCompletion(requestMessages(authorizations), view);
+        outcome = await streamCompletion(history, view);
       } catch (err) {
         view.meta.className = 'meta bad';
         view.meta.textContent = String(err.message || err);
         return;
       }
-      authorizations = new Map();
       const msg = { role: 'assistant', content: outcome.answer };
       let callIds = [];
       if (outcome.calls.length) {
@@ -985,10 +1060,8 @@ async function send() {
       }
       history.push(msg);
       if (!outcome.calls.length) return;
-      const resolved = await resolveWebApprovals(
-        outcome.calls, callIds, view, round === CONTINUATION_CAP - 1);
-      if (resolved === null) return;
-      authorizations = resolved;
+      await runProposedTools(
+        outcome.calls, callIds, view, round === CONTINUATION_CAP - 1, fetchBudget);
     }
   } finally {
     busy = false; $('#send').disabled = false;
