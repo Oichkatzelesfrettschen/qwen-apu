@@ -53,6 +53,13 @@ grep -F "if (calls[index].name !== WEB_SEARCH_TOOL_NAME) {" "$fallback_ui" >/dev
 grep -F 'The served path executes no tool named' "$fallback_ui" >/dev/null
 grep -F 'if (!outcome.calls.length) return;' "$fallback_ui" >/dev/null
 
+# The final continuation round opens no approval dialog: a grant issued there
+# outlives every remaining request the round budget allows.
+grep -F "if (calls[index].name === WEB_SEARCH_TOOL_NAME && roundBudgetExhausted) {" \
+    "$fallback_ui" >/dev/null
+grep -F 'The round budget is exhausted; the search did not run.' "$fallback_ui" >/dev/null
+grep -F 'round === CONTINUATION_CAP - 1' "$fallback_ui" >/dev/null
+
 # The grant admits one search, so a standing grade would promise a permission
 # the serving path refuses on the second call. The pinned llama-ui spells those
 # grades ALWAYS and ALWAYS_SERVER, and the check names the approval region

@@ -774,7 +774,7 @@ function openTurnView() {
   return { turn: t, think, thinkBody, thinkShown: false, meta };
 }
 
-async function resolveWebApprovals(calls, callIds, view) {
+async function resolveWebApprovals(calls, callIds, view, roundBudgetExhausted) {
   /* Return the authorized argument strings for this round, or null on refusal.
 
      Each proposed web search is shown to a human with the arguments it would
@@ -785,6 +785,16 @@ async function resolveWebApprovals(calls, callIds, view) {
   const authorizations = new Map();
   let refused = false;
   for (let index = 0; index < calls.length; index++) {
+    if (calls[index].name === WEB_SEARCH_TOOL_NAME && roundBudgetExhausted) {
+      // The continuation cap bounds the rounds left to spend a grant in: the
+      // round that just streamed is the last one send() will send again, so
+      // no approval reaches a request that never goes out. The dialog stays
+      // closed and the model reads the same refusal shape a denial produces.
+      refused = true;
+      history.push({ role: 'tool', tool_call_id: callIds[index], name: calls[index].name,
+                     content: 'The round budget is exhausted; the search did not run.' });
+      continue;
+    }
     if (calls[index].name !== WEB_SEARCH_TOOL_NAME) {
       // A fetch, demo, or other advertised call carries no approval path of its
       // own. Answering it here, rather than skipping it, is what keeps every
@@ -892,7 +902,8 @@ async function send() {
       }
       history.push(msg);
       if (!outcome.calls.length) return;
-      const resolved = await resolveWebApprovals(outcome.calls, callIds, view);
+      const resolved = await resolveWebApprovals(
+        outcome.calls, callIds, view, round === CONTINUATION_CAP - 1);
       if (resolved === null) return;
       authorizations = resolved;
     }
