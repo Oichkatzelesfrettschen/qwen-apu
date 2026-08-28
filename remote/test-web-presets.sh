@@ -450,6 +450,78 @@ else
     report unknown_execution_policy_refused "$outcome"
 fi
 
+# Every numeric field is validated before it is compared, so a malformed value
+# stops the run naming the field and the profile. The ledger row below is well
+# formed except in the one field each arm rewrites.
+emit_numeric_fixture() {
+    # profile_id model_id web_mode context depth results fetches chars ...
+    printf 'web-fixture-numeric\tfixture-production\tvalidator-gated\t%s\t%s\t%s\t%s\t%s\tyes\tno\t9/10\tvalidator-gated\n' \
+        "$1" "$2" "$3" "$4" "$5"
+}
+
+check_numeric_field_refused() {
+    numeric_case_name=$1
+    shift
+    numeric_profiles=$work/web-profiles-numeric-$numeric_case_name.tsv
+    emit_numeric_fixture "$@" >"$numeric_profiles"
+    numeric_presets=$work/presets-numeric-$numeric_case_name.ini
+    if build "$numeric_profiles" "$numeric_presets" \
+        env QWEN_WEB_MCP_CONFIG="$mcp_config" \
+        >"$work/numeric-$numeric_case_name.log" \
+        2>"$work/numeric-$numeric_case_name.err"; then
+        report "numeric_${numeric_case_name}_refused" emitted_a_section
+        return
+    fi
+    if grep -q 'web-fixture-numeric' "$work/numeric-$numeric_case_name.err"; then
+        report "numeric_${numeric_case_name}_refused" ok
+    else
+        report "numeric_${numeric_case_name}_refused" message_omits_profile
+    fi
+}
+
+check_numeric_field_refused context_text abc 8192 5 2 12000
+check_numeric_field_refused context_leading_zero 08192 8192 5 2 12000
+check_numeric_field_refused context_empty '' 8192 5 2 12000
+check_numeric_field_refused context_sentinel - 8192 5 2 12000
+check_numeric_field_refused ledger_depth_text 8192 later 5 2 12000
+check_numeric_field_refused ledger_depth_leading_zero 8192 08192 5 2 12000
+check_numeric_field_refused max_results_text 8192 8192 many 2 12000
+check_numeric_field_refused max_results_zero 8192 8192 0 2 12000
+check_numeric_field_refused max_fetches_leading_zero 8192 8192 5 02 12000
+check_numeric_field_refused max_chars_negative 8192 8192 5 2 -12000
+
+# The sentinel stands where the registry defines the unmeasured state, so a
+# ledger validated_filled_depth of `-` is admitted rather than refused.
+numeric_sentinel_profiles=$work/web-profiles-numeric-sentinel.tsv
+emit_numeric_fixture 8192 - 5 2 12000 >"$numeric_sentinel_profiles"
+numeric_sentinel_presets=$work/presets-numeric-sentinel.ini
+if build "$numeric_sentinel_profiles" "$numeric_sentinel_presets" \
+    env QWEN_WEB_MCP_CONFIG="$mcp_config" \
+    >"$work/numeric-sentinel.log" 2>"$work/numeric-sentinel.err"; then
+    report ledger_depth_sentinel_admitted ok
+else
+    report ledger_depth_sentinel_admitted refused
+    cat "$work/numeric-sentinel.err" >&2
+fi
+
+# A registry-side numeric field is validated on the same rule, so a malformed
+# batch stops the run rather than reaching the emitted geometry.
+malformed_registry=$work/models-malformed-batch.tsv
+sed 's/^\(fixture-production\t.*untested\tproduction\t\)128\t/\10128\t/' \
+    "$model_registry" >"$malformed_registry"
+malformed_registry_presets=$work/presets-malformed-batch.ini
+if QWEN_MODEL_REGISTRY=$malformed_registry \
+    QWEN_WEB_PROFILES=$web_profiles_ok QWEN_WEB_AUTHORIZER_READY=1 \
+    env QWEN_WEB_MCP_CONFIG="$mcp_config" \
+    "$builder" "$malformed_registry_presets" \
+    >"$work/malformed-batch.log" 2>"$work/malformed-batch.err"; then
+    report registry_batch_leading_zero_refused emitted_a_section
+else
+    outcome=ok
+    grep -q 'batch' "$work/malformed-batch.err" || outcome=message_omits_field
+    report registry_batch_leading_zero_refused "$outcome"
+fi
+
 if [ "$failures" -ne 0 ]; then
     printf 'test-web-presets: %d check(s) failed\n' "$failures" >&2
     exit 1

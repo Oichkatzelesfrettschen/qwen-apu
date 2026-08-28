@@ -58,6 +58,15 @@ set -eu
 # empty file defers the same refusal to launch time and reports it as a router
 # fault instead of naming the ledger rows that withheld every section.
 #
+# Every numeric field is validated before it is compared. A shell numeric
+# comparison against a malformed operand raises an error the surrounding
+# `2>/dev/null` would swallow, leaving the test false and admitting the row, so
+# a depth field holding a typo would read as within bounds. `-` is the one
+# admitted non-numeric value and it stands only where the registry defines it as
+# the unmeasured state, which is validated_filled_depth; every other field
+# requires a canonical positive decimal integer, since a leading zero makes two
+# spellings of one depth and the runtime builds exact string tuple keys.
+#
 # The generator refuses a profile whose model_id is not tiered production or
 # candidate, and refuses a profile whose context exceeds the registry row's
 # context_ceiling: a context above the depth the policy admits requests an
@@ -143,6 +152,35 @@ mkdir -p "$(dirname -- "$output_ini")"
 
 emitted=0
 
+# A canonical positive decimal integer carries no leading zero and no sign.
+# require_canonical_integer names the field and the profile on failure, so a
+# malformed ledger or registry value stops the run where it is read rather than
+# reaching a comparison that would coerce it.
+require_canonical_integer() {
+    require_field_name=$1
+    require_field_value=$2
+    require_sentinel=$3
+    require_profile=$4
+    if [ "$require_sentinel" = sentinel-admitted ] &&
+        [ "$require_field_value" = '-' ]; then
+        return 0
+    fi
+    case $require_field_value in
+        '' | *[!0-9]*)
+            printf 'profile %s carries non-numeric %s: %s\n' \
+                "$require_profile" "$require_field_name" \
+                "$require_field_value" >&2
+            exit 1
+            ;;
+        0*)
+            printf 'profile %s carries %s outside canonical positive decimal form: %s\n' \
+                "$require_profile" "$require_field_name" \
+                "$require_field_value" >&2
+            exit 1
+            ;;
+    esac
+}
+
 registry_field() {
     registry_field_row=$1
     registry_field_name=$2
@@ -150,11 +188,21 @@ registry_field() {
 }
 
 while IFS='	' read -r profile_id model_id web_mode context \
-    _ledger_validated_filled_depth _max_results _max_fetches _max_chars_per_fetch \
+    ledger_validated_filled_depth max_results max_fetches max_chars_per_fetch \
     _multi_source _vision_allowed _tool_selection execution_policy; do
     case $profile_id in
         '#'* | '') continue ;;
     esac
+
+    require_canonical_integer context "$context" sentinel-refused "$profile_id"
+    require_canonical_integer validated_filled_depth \
+        "$ledger_validated_filled_depth" sentinel-admitted "$profile_id"
+    require_canonical_integer max_results "$max_results" sentinel-refused \
+        "$profile_id"
+    require_canonical_integer max_fetches "$max_fetches" sentinel-refused \
+        "$profile_id"
+    require_canonical_integer max_chars_per_fetch "$max_chars_per_fetch" \
+        sentinel-refused "$profile_id"
 
     case $execution_policy in
         refused)
@@ -193,6 +241,13 @@ while IFS='	' read -r profile_id model_id web_mode context \
     ubatch=$(registry_field "$registry_row" ubatch)
     registry_validated_filled_depth=$(registry_field "$registry_row" validated_filled_depth)
 
+    require_canonical_integer context_ceiling "$context_ceiling" \
+        sentinel-refused "$profile_id"
+    require_canonical_integer batch "$batch" sentinel-refused "$profile_id"
+    require_canonical_integer ubatch "$ubatch" sentinel-refused "$profile_id"
+    require_canonical_integer registry_validated_filled_depth \
+        "$registry_validated_filled_depth" sentinel-admitted "$profile_id"
+
     case $tier in
         production | candidate) ;;
         *)
@@ -202,7 +257,7 @@ while IFS='	' read -r profile_id model_id web_mode context \
             ;;
     esac
 
-    if [ "$context" -gt "$context_ceiling" ] 2>/dev/null; then
+    if [ "$context" -gt "$context_ceiling" ]; then
         printf 'profile %s requests context %s above %s ceiling %s\n' \
             "$profile_id" "$context" "$model_id" "$context_ceiling" >&2
         exit 1
@@ -217,7 +272,7 @@ while IFS='	' read -r profile_id model_id web_mode context \
     depth_state=validated
     if [ "$registry_validated_filled_depth" = '-' ]; then
         depth_state=unknown
-    elif [ "$context" -gt "$registry_validated_filled_depth" ] 2>/dev/null; then
+    elif [ "$context" -gt "$registry_validated_filled_depth" ]; then
         depth_state=exceeded
     fi
 
