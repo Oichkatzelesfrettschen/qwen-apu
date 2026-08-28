@@ -96,9 +96,52 @@ later arm. LFM2.5-VL ran without its projector, so `projector_state` reads
 `none` in its tuple rows and a vision-plus-web profile at depth waits on a
 combined arm. The runner ran two threads where the server runs one; a single
 confirmation at one thread on the deepest passing arm is the remaining step
-before that difference is retired. The 0.8B rung beyond the served Q8_0 --
-the Opus reasoning distill, Zero-Coder V2, the bartowski Q4_K_M, and the F16 --
-runs in a second chain and its section follows.
+before that difference is retired. The 0.8B rung beyond the served Q8_0 ran
+in a second chain and the next section carries it.
+
+## The 0.8B rung: two reasoning distills and the regular checkpoint at three formats
+
+`run-chain-2.sh` (sha256 f1fe1c9f...5787, retained as `run-chain-2.sh.txt`)
+waited on the first chain's PID and ran the same ladder on four more
+artifacts. Every arm passes health with empty amdgpu windows.
+
+| checkpoint | depth | wall s | decode tok/s | VRAM peak MiB | control tok/s | temp C |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Qwen3.5-0.8B Opus reasoning distill Q4_K_M | 8192 | 105 | 13.07 | 933 | 17.04 | 86 |
+| | 16384 | 272 | 10.32 | 971 | 17.38 | 89 |
+| | 32768 | 812 | 7.78 | 1051 | 17.36 | 87 |
+| Qwen3-Zero-Coder-Reasoning-V2-0.8B Q4_K_M imatrix | 8192 | 351 | 7.37 | 1387 | 18.79 | 87 |
+| | 16384 | 1210 | 4.62 | 1935 | 18.90 | 85 |
+| | 32768 | 5021 | 2.29 | 1981 | 17.87 | 90 |
+| Qwen3.5-0.8B bartowski Q4_K_M | 8192 | 106 | 13.28 | 899 | 17.10 | 83 |
+| | 16384 | 276 | 10.70 | 1016 | 17.83 | 86 |
+| | 32768 | 818 | 7.87 | 1094 | 17.92 | 89 |
+| Qwen3.5-0.8B F16 | 8192 | 95 | 11.18 | 1882 | 14.72 | 85 |
+| | 16384 | 253 | 9.01 | 1920 | 14.61 | 85 |
+| | 32768 | 771 | 6.88 | 1998 | 13.47 | 88 |
+
+Three Qwen3.5-0.8B artifacts at three value formats and one distill decode
+within a 2% band of each other at every depth relative to their own control,
+reaching 45 to 51% of depth-0 at 32768; the Opus distill's rows lie on the
+regular checkpoint's line. The value format sets the control (13.5 for F16
+against 17.9 for Q4_K_M) and sets nothing about the depth slope, which is the
+same separation `evidence/model-admission/runtime-class-throughput.md`
+measured at depth 0 between bytes and rate on this class.
+
+Zero-Coder V2 separates the health claim from the serving claim. The arm
+passes at every depth and decodes at 39%, 24%, and 13% of its control, a
+32768 arm of 5021 s against 812 for the Opus distill, and a VRAM peak of
+1981 MiB against 1051. The artifact runs the `qwen3` architecture with full
+attention in all 42 blocks over 8 KV heads where Qwen3.5 interleaves linear
+attention, so the KV cache is larger and every decoded token reads all of it.
+A 32K profile on that checkpoint therefore serves at 2.3 tok/s, and its
+admission is a policy decision the web ledger takes with that number rather
+than a capability this file withholds.
+
+The F16 row is the served `qwen35-08b-f16` and enters the registry and the
+tuple ledger at 32768 like the Q8_0. The three candidates enter the evidence
+directory and this file; `remote/validated-tuples.tsv` names registry rows,
+so their tuples follow promotion.
 
 Records live under `evidence/depth-validation-32k/<model-id>/`: bench log,
 clock series, kernel window, control log per arm, `wedge-summary.tsv`,
