@@ -47,9 +47,16 @@ set -eu
 #
 # The generator writes one MCP server configuration per emitting profile at
 # <output-dir>/web-mcp-configs-<version>/<profile_id>.json and points that
-# profile's LLAMA_ARG_MCP_SERVERS_CONFIG at it. The version is a digest of both
-# authorities and every setting a configuration carries, so a regeneration under
-# changed inputs writes a new directory and leaves the old one whole:
+# profile's LLAMA_ARG_MCP_SERVERS_CONFIG at it. The version is a digest of the
+# emitted file names and their contents, so a directory of that name holds
+# exactly those files and any change writes a new directory and leaves the old
+# one whole. The digest reads the written files rather than the inputs that
+# produced them because the emitted set follows the weights and projectors this
+# machine holds as well as the two authorities, and fetching a checkpoint
+# between runs adds a configuration without touching either registry. A section
+# carries a marker where the directory belongs until the land step resolves it,
+# since the name exists only once the last row has emitted. What the versioning
+# buys:
 # qwen-launch.sh snapshots the INI alone, its sections keep naming the paths they
 # were generated with, and llama-server reads an MCP configuration when its child
 # starts, so replacing a stable directory would hand a running session new
@@ -287,25 +294,17 @@ fi
 
 output_directory=$(dirname -- "$output_ini")
 
-# The configuration directory is named for the inputs that decide its contents,
-# so one generation never rewrites a directory an earlier preset points at. The
-# id covers both authorities by digest and every setting that reaches a
-# configuration file, which makes identical inputs resolve to one directory and
-# any changed input resolve to a new one.
-mcp_config_version=$(
-    {
-        sha256sum -- "$registry" "$web_profiles"
-        printf '%s\n' "$model_root" "$mcp_server_program" "$search_key_file" \
-            "$token_key_file" "$web_state_directory" "$web_provider" \
-            "$allow_unvalidated_depth" "$authorizer_ready"
-    } | sha256sum | cut -c1-16
-)
-mcp_config_directory=$output_directory/web-mcp-configs-$mcp_config_version
+# The configuration directory is named for a digest of the files it holds, which
+# the run knows once the last row has emitted. Sections therefore carry
+# QWEN_WEB_MCP_CONFIG_DIRECTORY_MARKER where the directory belongs, and the land
+# step rewrites the marker to the resolved path.
+mcp_config_directory_marker=@QWEN_WEB_MCP_CONFIG_DIRECTORY@
+mcp_config_directory=
 output_ini_temporary=$output_ini.tmp.$$
-mcp_config_directory_temporary=$mcp_config_directory.tmp.$$
+mcp_config_directory_temporary=$output_directory/web-mcp-configs.tmp.$$
 mkdir -p "$output_directory"
-trap 'rm -rf -- "$output_ini_temporary" "$mcp_config_directory_temporary"' \
-    EXIT HUP INT TERM
+trap 'rm -rf -- "$output_ini_temporary" "$output_ini_temporary.resolved" \
+    "$mcp_config_directory_temporary"' EXIT HUP INT TERM
 rm -rf -- "$mcp_config_directory_temporary"
 mkdir -p "$mcp_config_directory_temporary"
 
@@ -586,7 +585,7 @@ while IFS='	' read -r profile_id model_id _web_mode context \
         require_mcp_inputs
     fi
 
-    profile_mcp_config=$mcp_config_directory/$profile_id.json
+    profile_mcp_config=$mcp_config_directory_marker/$profile_id.json
     profile_mcp_config_temporary=$mcp_config_directory_temporary/$profile_id.json
     if [ "$emit_mcp_configuration" = 1 ]; then
         {
@@ -733,18 +732,52 @@ if ! verify_assembled_sections; then
     exit 1
 fi
 
+# The version id is the digest of the emitted file names and their contents, so
+# a directory of that name holds exactly these files and a run that changes any
+# of them resolves to a different name. The emitted set follows the weights and
+# projectors this machine holds as well as the two authorities, which is why the
+# digest reads the files rather than the inputs that produced them: fetching a
+# checkpoint between runs adds a configuration without touching either registry.
+mcp_config_version=$(
+    cd -- "$mcp_config_directory_temporary" &&
+        find . -type f -name '*.json' -print |
+        sort |
+        while IFS= read -r emitted_config; do
+            sha256sum -- "$emitted_config"
+        done |
+        sha256sum |
+        cut -c1-16
+)
+mcp_config_directory=$output_directory/web-mcp-configs-$mcp_config_version
+
 # Both moves happen after every row and the assembled file pass, so a failure
-# above leaves the previous preset tree untouched. A directory that already
-# carries this version id was written from the same inputs and holds the same
-# files, so the run keeps it and discards its own temporary copy; a session
-# whose snapshot names an earlier version keeps reading the directory it
-# started with. Directories of retired versions stay on disk, because removing
-# one asks which sessions still name it and the launcher owns no answer.
+# above leaves the previous preset tree untouched. A directory already carrying
+# this version id holds these files by construction, so the run keeps it and
+# discards its own temporary copy; a session whose snapshot names an earlier
+# version keeps reading the directory it started with. Directories of retired
+# versions stay on disk, because removing one asks which sessions still name it
+# and the launcher owns no answer.
 if [ -d "$mcp_config_directory" ]; then
     rm -rf -- "$mcp_config_directory_temporary"
 else
     mv -- "$mcp_config_directory_temporary" "$mcp_config_directory"
 fi
+
+# The marker each section carries becomes the resolved directory here. The
+# replacement is positional rather than a sed expression, so a path holding a
+# regular-expression or replacement metacharacter reaches the file verbatim.
+awk -v config_directory="$mcp_config_directory" \
+    -v marker="$mcp_config_directory_marker" '
+    {
+        marker_position = index($0, marker)
+        if (marker_position > 0) {
+            $0 = substr($0, 1, marker_position - 1) config_directory \
+                substr($0, marker_position + length(marker))
+        }
+        print
+    }
+' "$output_ini_temporary" >"$output_ini_temporary.resolved"
+mv -- "$output_ini_temporary.resolved" "$output_ini_temporary"
 mv -- "$output_ini_temporary" "$output_ini"
 trap - EXIT HUP INT TERM
 

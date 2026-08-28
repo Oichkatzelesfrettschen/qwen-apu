@@ -738,8 +738,7 @@ done
 report mcp_config_carries_paths_only "$secret_leak_outcome"
 
 # A ui-mediated profile performs its retrieval in the UI, so its section names
-# no configuration while the file still records the profile's budgets for the
-# UI to read.
+# no configuration and the run writes none.
 if grep -q '^LLAMA_ARG_MCP_SERVERS_CONFIG' "$presets_ui"; then
     report ui_mediated_section_names_no_mcp_config key_present
 else
@@ -1225,6 +1224,49 @@ if build "$web_profiles_immutable" "$immutable_presets" \
 else
     report identical_inputs_reuse_one_version failed
     cat "$work/immutable-third.err" >&2
+fi
+
+# The emitted set follows the weights this machine holds, so fetching a
+# checkpoint between two runs adds a configuration without touching either
+# registry. A version id derived from the inputs alone would name the directory
+# the first run wrote, keep it, and leave the second run's section pointing at a
+# file that was discarded with the temporary tree.
+fetch_model_root=$work/fetch-model-root
+mkdir -p "$fetch_model_root/Fixture-GGUF"
+: >"$fetch_model_root/Fixture-GGUF/production.gguf"
+web_profiles_fetch=$work/web-profiles-fetch.tsv
+{
+    printf 'web-fixture-held\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\n'
+    printf 'web-fixture-fetched\tfixture-candidate-validated\tvalidator-gated\t8192\t8192\t7\t3\t9000\tyes\tno\t9/10\tvalidator-gated\n'
+} >"$web_profiles_fetch"
+mkdir -p "$work/fetch-out"
+fetch_presets=$work/fetch-out/presets.ini
+build_fetch_arm() {
+    QWEN_MODEL_ROOT=$fetch_model_root build "$web_profiles_fetch" \
+        "$fetch_presets" \
+        env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+        QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
+        QWEN_WEB_STATE_DIR="$web_state_directory"
+}
+if build_fetch_arm >"$work/fetch-first.log" 2>"$work/fetch-first.err"; then
+    : >"$fetch_model_root/Fixture-GGUF/candidate-validated.gguf"
+    if build_fetch_arm >"$work/fetch-second.log" 2>"$work/fetch-second.err"; then
+        fetch_outcome=ok
+        while IFS= read -r fetched_config; do
+            [ -r "$fetched_config" ] || fetch_outcome=unreadable_config
+        done <<EOF
+$(sed -n 's/^LLAMA_ARG_MCP_SERVERS_CONFIG = //p' "$fetch_presets")
+EOF
+        [ "$(grep -c '^LLAMA_ARG_MCP_SERVERS_CONFIG' "$fetch_presets")" = 2 ] ||
+            fetch_outcome=wrong_config_count
+        report fetched_model_reaches_a_written_config "$fetch_outcome"
+    else
+        report fetched_model_reaches_a_written_config second_build_failed
+        cat "$work/fetch-second.err" >&2
+    fi
+else
+    report fetched_model_reaches_a_written_config first_build_failed
+    cat "$work/fetch-first.err" >&2
 fi
 
 if [ "$failures" -ne 0 ]; then
