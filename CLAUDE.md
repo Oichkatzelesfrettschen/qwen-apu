@@ -231,6 +231,25 @@ routable. A new API-key attempt clears the prior selection until the
 authenticated roster returns, and late responses from an older attempt never
 replace the newer state.
 
+The integer dot product is advertised, functional, and unaccelerated, which
+decides how most of this tree's bytes execute. RADV reports
+`shaderIntegerDotProduct = true` and sets all thirty of its `*Accelerated`
+capability flags false, and `ggml-vulkan.cpp:6492` gates `integer_dot_product`
+on `integerDotProduct4x8BitPackedSignedAccelerated` alone, so every `_q8_1`
+mat-vec and mat-mat pipeline goes unbuilt and the deployed `llama-server`
+contains no `mul_mat_vec_q4_k_q8_1` symbol against seven `mul_mat_vec_q4_k_f16`
+symbols. The instruction set agrees: LLVM's syntax reference lists `V_DOT2`,
+`V_DOT4`, and `V_DOT8` for gfx906 and none for gfx902, which is what this device
+reports. Nothing is emulated -- llama.cpp reads the driver's own report and
+declines the path -- so about 83% of production streamed bytes take the
+FP16-dequantize-then-dot family because the accelerated family does not exist
+here. `evidence/tensor-type-execution-audit.md` carries the type shares and a
+code-level account of the Q5_K trunk: Q5_K is the only one of the three K-quant
+rungs paying both the packed scale-and-minimum decode and an extra bit-plane
+merge, where Q4_K skips the bit-plane and Q6_K skips the complex scale, and the
+three are issued with identical tile parameters so subgroup utilisation does not
+order them.
+
 RADV on this device reports `shaderFloat16 = true` and names no bfloat16
 extension, so F16 is the 16-bit format the hardware advertises and BF16 is a
 separate question about llama.cpp's scalar pipelines. Both publishers of this
