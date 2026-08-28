@@ -46,8 +46,17 @@ set -eu
 # policy over this generator's output for that reason.
 #
 # The generator writes one MCP server configuration per emitting profile at
-# <output-dir>/web-mcp-configs/<profile_id>.json and points that profile's
-# LLAMA_ARG_MCP_SERVERS_CONFIG at it. Per-profile budgets are what make the
+# <output-dir>/web-mcp-configs-<version>/<profile_id>.json and points that
+# profile's LLAMA_ARG_MCP_SERVERS_CONFIG at it. The version is a digest of both
+# authorities and every setting a configuration carries, so a regeneration under
+# changed inputs writes a new directory and leaves the old one whole:
+# qwen-launch.sh snapshots the INI alone, its sections keep naming the paths they
+# were generated with, and llama-server reads an MCP configuration when its child
+# starts, so replacing a stable directory would hand a running session new
+# provider credentials and budgets, or remove a file it still names, without
+# changing the guarded preset hash. Retired directories stay on disk, because
+# removing one asks which sessions still name it and no launcher owns that
+# answer. Per-profile budgets are what make the
 # files differ: max_results, max_fetches, and max_chars_per_fetch are ledger
 # columns, so one shared configuration would serve every profile the widest
 # row's budget. QWEN_WEB_MCP_SERVER names the server program and carries no
@@ -277,7 +286,21 @@ if [ ! -r "$web_profiles" ]; then
 fi
 
 output_directory=$(dirname -- "$output_ini")
-mcp_config_directory=$output_directory/web-mcp-configs
+
+# The configuration directory is named for the inputs that decide its contents,
+# so one generation never rewrites a directory an earlier preset points at. The
+# id covers both authorities by digest and every setting that reaches a
+# configuration file, which makes identical inputs resolve to one directory and
+# any changed input resolve to a new one.
+mcp_config_version=$(
+    {
+        sha256sum -- "$registry" "$web_profiles"
+        printf '%s\n' "$model_root" "$mcp_server_program" "$search_key_file" \
+            "$token_key_file" "$web_state_directory" "$web_provider" \
+            "$allow_unvalidated_depth" "$authorizer_ready"
+    } | sha256sum | cut -c1-16
+)
+mcp_config_directory=$output_directory/web-mcp-configs-$mcp_config_version
 output_ini_temporary=$output_ini.tmp.$$
 mcp_config_directory_temporary=$mcp_config_directory.tmp.$$
 mkdir -p "$output_directory"
@@ -711,11 +734,17 @@ if ! verify_assembled_sections; then
 fi
 
 # Both moves happen after every row and the assembled file pass, so a failure
-# above leaves the previous preset tree untouched. The configuration directory
-# is replaced rather than merged, which removes the files of a profile the
-# ledger no longer carries.
-rm -rf -- "$mcp_config_directory"
-mv -- "$mcp_config_directory_temporary" "$mcp_config_directory"
+# above leaves the previous preset tree untouched. A directory that already
+# carries this version id was written from the same inputs and holds the same
+# files, so the run keeps it and discards its own temporary copy; a session
+# whose snapshot names an earlier version keeps reading the directory it
+# started with. Directories of retired versions stay on disk, because removing
+# one asks which sessions still name it and the launcher owns no answer.
+if [ -d "$mcp_config_directory" ]; then
+    rm -rf -- "$mcp_config_directory_temporary"
+else
+    mv -- "$mcp_config_directory_temporary" "$mcp_config_directory"
+fi
 mv -- "$output_ini_temporary" "$output_ini"
 trap - EXIT HUP INT TERM
 

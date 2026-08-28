@@ -643,8 +643,11 @@ fi
 # One MCP configuration per emitting profile, carrying the profile's own
 # budgets. The gated fixture emits one section, so its configuration is the
 # subject.
-mcp_configs=$work/gated-out/web-mcp-configs
-gated_mcp_config=$mcp_configs/web-fixture-gated.json
+# The configuration directory carries a version id derived from the inputs, so
+# the emitted section rather than a fixed path names the file under test.
+gated_mcp_config=$(sed -n \
+    's/^LLAMA_ARG_MCP_SERVERS_CONFIG = //p' "$presets_gated")
+mcp_configs=$(dirname -- "$gated_mcp_config")
 
 mcp_outcome=ok
 [ -f "$gated_mcp_config" ] || mcp_outcome=config_absent
@@ -666,13 +669,16 @@ if [ "$mcp_outcome" = ok ]; then
 fi
 report mcp_config_carries_profile_budgets "$mcp_outcome"
 
-# The section points at the generated file rather than at a path the caller
-# supplied.
-if grep -q "^LLAMA_ARG_MCP_SERVERS_CONFIG = $gated_mcp_config\$" "$presets_gated"; then
-    report mcp_config_path_reaches_section ok
-else
-    report mcp_config_path_reaches_section wrong_path
-fi
+# The section points at a generated file under the output directory's own
+# versioned configuration tree rather than at a path the caller supplied.
+case $gated_mcp_config in
+    "$work"/gated-out/web-mcp-configs-*/web-fixture-gated.json)
+        report mcp_config_path_reaches_section ok
+        ;;
+    *)
+        report mcp_config_path_reaches_section wrong_path
+        ;;
+esac
 
 # The configuration parses as JSON, so the server reads what the generator
 # meant rather than a file whose commas decide it.
@@ -1159,6 +1165,67 @@ for projector_case in absent ambiguous; do
         report "projector_${projector_case}_skipped" skip_unreported
     fi
 done
+
+# qwen-launch.sh snapshots the INI alone and its sections keep naming the
+# configuration paths they were generated with, and llama-server reads an MCP
+# configuration when its child starts, so a regeneration under changed inputs
+# writes a new versioned directory and leaves every file an earlier preset names
+# byte-identical.
+mkdir -p "$work/immutable-out"
+immutable_presets=$work/immutable-out/presets.ini
+web_profiles_immutable=$work/web-profiles-immutable.tsv
+printf 'web-fixture-immutable\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\n' \
+    >"$web_profiles_immutable"
+if build "$web_profiles_immutable" "$immutable_presets" \
+    env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
+    QWEN_WEB_STATE_DIR="$web_state_directory" \
+    >"$work/immutable-first.log" 2>"$work/immutable-first.err"; then
+    first_config=$(sed -n 's/^LLAMA_ARG_MCP_SERVERS_CONFIG = //p' "$immutable_presets")
+    first_config_digest=$(sha256sum "$first_config" | cut -d' ' -f1)
+    rotated_key_file=$work/private/rotated-exa-api.key
+    printf 'fixture-rotated-secret-value\n' >"$rotated_key_file"
+    if build "$web_profiles_immutable" "$immutable_presets" \
+        env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+        QWEN_WEB_SEARCH_KEY_FILE="$rotated_key_file" \
+        QWEN_WEB_STATE_DIR="$web_state_directory" \
+        >"$work/immutable-second.log" 2>"$work/immutable-second.err"; then
+        second_config=$(sed -n 's/^LLAMA_ARG_MCP_SERVERS_CONFIG = //p' "$immutable_presets")
+        immutable_outcome=ok
+        [ "$second_config" != "$first_config" ] ||
+            immutable_outcome=version_reused
+        [ -f "$first_config" ] || immutable_outcome=earlier_config_removed
+        if [ -f "$first_config" ] &&
+            [ "$(sha256sum "$first_config" | cut -d' ' -f1)" != "$first_config_digest" ]; then
+            immutable_outcome=earlier_config_rewritten
+        fi
+        report earlier_mcp_config_survives_regeneration "$immutable_outcome"
+    else
+        report earlier_mcp_config_survives_regeneration second_build_failed
+        cat "$work/immutable-second.err" >&2
+    fi
+else
+    report earlier_mcp_config_survives_regeneration first_build_failed
+    cat "$work/immutable-first.err" >&2
+fi
+
+# Identical inputs resolve to one version, so a regeneration that changes
+# nothing leaves the running session's own path valid.
+if build "$web_profiles_immutable" "$immutable_presets" \
+    env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    QWEN_WEB_SEARCH_KEY_FILE="$rotated_key_file" \
+    QWEN_WEB_STATE_DIR="$web_state_directory" \
+    >"$work/immutable-third.log" 2>"$work/immutable-third.err"; then
+    third_config=$(sed -n 's/^LLAMA_ARG_MCP_SERVERS_CONFIG = //p' "$immutable_presets")
+    if [ "$third_config" = "$second_config" ]; then
+        report identical_inputs_reuse_one_version ok
+    else
+        report identical_inputs_reuse_one_version version_changed
+    fi
+else
+    report identical_inputs_reuse_one_version failed
+    cat "$work/immutable-third.err" >&2
+fi
 
 if [ "$failures" -ne 0 ]; then
     printf 'test-web-presets: %d check(s) failed\n' "$failures" >&2
