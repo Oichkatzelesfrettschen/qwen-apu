@@ -18,6 +18,7 @@ argument vector, environment value, log line, or error message.
 """
 
 import base64
+import collections
 import datetime
 import hashlib
 import hmac
@@ -95,6 +96,12 @@ AUDIT_RETENTION_SECONDS = 14 * 86400
 GRANT_MAX_USES = 1
 SEARCH_FETCH_ALLOWANCE_DEFAULT = 8
 GRANT_ID_BYTES = 12
+
+
+ExtractedContent = collections.namedtuple(
+    "ExtractedContent",
+    "text provider_may_have_more provider_status content_id",
+)
 
 
 class ToolError(Exception):
@@ -1295,6 +1302,35 @@ def decode_content_text(record):
     return text[:DOCUMENT_CHARACTER_CAP]
 
 
+def content_identity(search_id, url):
+    """Return the key one document takes under the search that issued it."""
+    return hashlib.sha256(f"{search_id}\n{url}".encode("utf-8")).hexdigest()
+
+
+def extract_content(record, requested_characters, content_id):
+    """Return the extraction as a record rather than as a bare string.
+
+    A body whose length equals the requested maximum is the case a character
+    count cannot resolve: the document may end exactly there or the provider
+    may have cut it. Exa marks a complete extraction where it supplies the
+    signal, so a record carrying `textComplete` or `complete` true reports
+    completion and every other exact-cap length reports that more may remain.
+    The reply's `Possibly Truncated:` line reads this field rather than
+    recomputing the comparison, and the snapshot stores it, so page two of a
+    cached document reports what the retrieval observed.
+    """
+    text = decode_content_text(record)
+    complete = any(
+        record.get(key) is True for key in ("textComplete", "complete")
+    )
+    return ExtractedContent(
+        text=text,
+        provider_may_have_more=len(text) >= requested_characters and not complete,
+        provider_status=str(record.get("status", "success"))[:64],
+        content_id=content_id,
+    )
+
+
 def provider_result_id(record):
     """Return the provider's own identifier for a result, or the empty string.
 
@@ -1586,15 +1622,25 @@ def call_fetch(settings, arguments):
         if ledger is not None:
             ledger.consume_fetch(claim["search_id"], url, now)
             spend_budget(ledger, settings, "fetch", now)
+        # The retrieval asks for the whole document the cap admits rather than
+        # this window, so a later window reads text the first call already
+        # holds and the reply's truncation flag describes the document.
         record = provider.contents(
             url,
-            window_end,
+            DOCUMENT_CHARACTER_CAP,
             claim["provider_result_id"],
             claim["freshness"],
         )
-        text = decode_content_text(record)
+        extraction = extract_content(
+            record,
+            DOCUMENT_CHARACTER_CAP,
+            content_identity(claim["search_id"], url),
+        )
+        text = extraction.text
         window = text[start_index:window_end]
-        truncated = len(text) > start_index + len(window)
+        truncated = len(text) > start_index + len(window) or (
+            extraction.provider_may_have_more and start_index + len(window) >= len(text)
+        )
         audit["result_count"] = 1
         audit["provider_bytes"] = provider.response_bytes
         audit["returned_characters"] = len(window)

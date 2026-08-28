@@ -104,6 +104,22 @@ def build_fixture_document():
                     "highlights": ["alpha\n---\nbeta", "---", "  spaced  out  "],
                 }
             ],
+            "exact cap": [
+                {
+                    "title": "Exactly the document cap",
+                    "url": "https://exact.example.net/cap",
+                    "publishedDate": "",
+                    "author": "",
+                    "highlights": [],
+                },
+                {
+                    "title": "Complete at the document cap",
+                    "url": "https://complete.example.net/cap",
+                    "publishedDate": "",
+                    "author": "",
+                    "highlights": [],
+                },
+            ],
             "userinfo url": [
                 {
                     "title": "Credentialed",
@@ -131,6 +147,13 @@ def build_fixture_document():
             "https://hostile.example.net/inject": {"text": INJECTION_TEXT},
             "https://big.example.net/huge": {"text": oversized},
             "https://bad.example.net/bytes": {"text_base64": invalid_utf8},
+            "https://exact.example.net/cap": {
+                "text": "e" * server.DOCUMENT_CHARACTER_CAP
+            },
+            "https://complete.example.net/cap": {
+                "text": "c" * server.DOCUMENT_CHARACTER_CAP,
+                "textComplete": True,
+            },
             "https://broken.example.net/list": [],
             "https://frame.example.net/close": {
                 "text": (
@@ -1603,6 +1626,54 @@ class WebMcpServerTest(unittest.TestCase):
         self.assertNotEqual(
             first.splitlines()[0], second.splitlines()[0]
         )
+
+    def cap_window(self, session, url):
+        """Return the reply lines of the window that ends at the document cap."""
+        search_text = self.result_text(self.search(session, query="exact cap"))
+        text = self.result_text(
+            session.call_tool(
+                "fetch_exa",
+                {
+                    "result_id": self.token_for(search_text, url),
+                    "start_index": server.DOCUMENT_CHARACTER_CAP - 100,
+                    "max_chars": 100,
+                },
+            )
+        )
+        return text.splitlines()
+
+    def test_a_document_at_the_exact_cap_reports_possible_truncation(self):
+        session = self.open_session()
+        lines = self.cap_window(session, "https://exact.example.net/cap")
+        self.assertEqual(lines[5], "Returned Characters: 100")
+        self.assertEqual(
+            lines[6], f"Next Start Index: {server.DOCUMENT_CHARACTER_CAP}"
+        )
+        self.assertEqual(lines[7], "Possibly Truncated: yes")
+
+    def test_a_provider_signal_of_completion_settles_the_exact_cap(self):
+        session = self.open_session()
+        lines = self.cap_window(session, "https://complete.example.net/cap")
+        self.assertEqual(lines[6], "Next Start Index: end")
+        self.assertEqual(lines[7], "Possibly Truncated: no")
+
+    def test_the_extraction_record_names_its_content_and_its_status(self):
+        content_id = server.content_identity("search-1", "https://example.org/x")
+        self.assertEqual(content_id, server.content_identity("search-1", "https://example.org/x"))
+        self.assertNotEqual(
+            content_id, server.content_identity("search-2", "https://example.org/x")
+        )
+        short = server.extract_content({"text": "abc"}, 10, content_id)
+        self.assertEqual(short.text, "abc")
+        self.assertFalse(short.provider_may_have_more)
+        self.assertEqual(short.provider_status, "success")
+        self.assertEqual(short.content_id, content_id)
+        exact = server.extract_content({"text": "abcdefghij"}, 10, content_id)
+        self.assertTrue(exact.provider_may_have_more)
+        settled = server.extract_content(
+            {"text": "abcdefghij", "textComplete": True}, 10, content_id
+        )
+        self.assertFalse(settled.provider_may_have_more)
 
     def test_a_window_beyond_the_document_cap_is_refused(self):
         session = self.open_session()
