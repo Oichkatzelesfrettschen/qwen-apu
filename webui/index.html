@@ -255,6 +255,7 @@ function selectRequestModel(selectedModel) {
   requestModel = selectedModel;
   nctx = null;
   nctxModel = null;
+  forgetWebTools();
   attachments.forEach(attachment => {
     attachment.tokens = null;
     attachment.tokenModel = null;
@@ -291,49 +292,85 @@ const DEMO_TOOL = [{
   }
 }];
 
-// The web tools are declared by name as llama-server composes them: an MCP
-// server configured as `web` produces `web_search_exa` and `web_fetch_exa`.
-// The per-turn toggle decides whether these reach the request at all, so a
-// turn with the toggle off offers the model no web surface to propose.
+// The web tools are named as llama-server composes them: an MCP server
+// configured as `web` produces `web_search_exa` and `web_fetch_exa`. The
+// schemas come from the server rather than from a copy kept here, so the
+// model reads the arguments the running wrapper validates. The per-turn
+// toggle decides whether these reach the request at all, so a turn with the
+// toggle off offers the model no web surface to propose.
 const WEB_SEARCH_TOOL_NAME = 'web_search_exa';
 const WEB_FETCH_TOOL_NAME = 'web_fetch_exa';
-const WEB_TOOLS = [{
-  type: "function",
-  function: {
-    name: WEB_SEARCH_TOOL_NAME,
-    description: "Search the web and return ranked results with titles, URLs, " +
-      "and highlights. Each result carries a Result ID that the fetch tool " +
-      "redeems for the page text.",
-    parameters: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "Search query, at most 512 characters." },
-        max_results: { type: "integer", description: "Result count, 1 to 10. Default 5." },
-        published_after: { type: "string", description: "ISO 8601 date; earlier results are dropped." },
-        published_before: { type: "string", description: "ISO 8601 date; later results are dropped." },
-        max_age_hours: { type: "integer", description: "Cached page age the provider may serve. 0 forces a live crawl." },
-        include_domains: { type: "array", items: { type: "string" }, description: "Admit these domains alone, at most 10." },
-        exclude_domains: { type: "array", items: { type: "string" }, description: "Drop these domains, at most 10." }
-      },
-      required: ["query"]
-    }
+const WEB_TOOL_NAMES = [WEB_SEARCH_TOOL_NAME, WEB_FETCH_TOOL_NAME];
+
+// The composed list belongs to one model selection the way the context length
+// does: a router roster change replaces both, so the cache carries the model
+// id and the selection generation that produced it.
+let webToolDefinitions = null;
+let webToolsModel = null;
+let webToolsGeneration = -1;
+
+function webToolDefinition(entry) {
+  /* Return the request-body tool definition for one `GET /tools` row.
+
+     llama-server renders each tool as `{tool, definition}` where `definition`
+     is the OpenAI function object it builds from the MCP input schema
+     (server-tools.cpp:75-85 and 1823-1834). The definition travels as the
+     server emits it, with one field removed: `search_exa` advertises an
+     `authorization` property, and the broker is the only issuer of a grant,
+     so a model that reads the property can only author a token the served
+     path refuses. */
+  const definition = entry && entry.definition;
+  if (!definition || definition.type !== 'function') return null;
+  const fn = definition.function;
+  if (!fn || typeof fn.name !== 'string') return null;
+  const parameters = fn.parameters && typeof fn.parameters === 'object'
+    ? { ...fn.parameters } : { type: 'object', properties: {} };
+  if (parameters.properties && typeof parameters.properties === 'object') {
+    const { authorization, ...offered } = parameters.properties;
+    parameters.properties = offered;
   }
-}, {
-  type: "function",
-  function: {
-    name: WEB_FETCH_TOOL_NAME,
-    description: "Fetch the text of a page named by a Result ID from a prior search.",
-    parameters: {
-      type: "object",
-      properties: {
-        result_id: { type: "string", description: "Result ID printed by the search tool." },
-        start_index: { type: "integer", description: "Character offset into the page text." },
-        max_chars: { type: "integer", description: "Characters to return, at most 24000." }
-      },
-      required: ["result_id"]
-    }
+  if (Array.isArray(parameters.required)) {
+    parameters.required = parameters.required.filter(name => name !== 'authorization');
   }
-}];
+  return { type: 'function', function: { ...fn, parameters } };
+}
+
+async function resolveWebTools(selectedModel, generation) {
+  /* Return the web tool definitions this server exposes, or an empty list.
+
+     `GET /tools` is the authority for what the browser may later invoke
+     through `POST /tools`, so the same listing that composes `body.tools`
+     decides whether a web surface exists at all. A build without the tool
+     routes answers 404 and a build without the MCP child lists no web tool;
+     both leave the request carrying no web tool rather than advertising a
+     schema nothing executes. */
+  if (webToolsModel === selectedModel && webToolsGeneration === generation) {
+    return webToolDefinitions || [];
+  }
+  let composed = [];
+  try {
+    const response = await fetch('./tools', { headers: authHeaders() });
+    if (response.ok) {
+      const listed = await response.json();
+      composed = (Array.isArray(listed) ? listed : [])
+        .filter(entry => WEB_TOOL_NAMES.includes(entry && entry.tool))
+        .map(webToolDefinition)
+        .filter(Boolean);
+    }
+  } catch { /* an unreachable listing leaves the turn without a web tool */ }
+  if (modelStateMatches(selectedModel, generation)) {
+    webToolDefinitions = composed;
+    webToolsModel = selectedModel;
+    webToolsGeneration = generation;
+  }
+  return composed;
+}
+
+function forgetWebTools() {
+  webToolDefinitions = null;
+  webToolsModel = null;
+  webToolsGeneration = -1;
+}
 
 const BROKER_ORIGIN_DEFAULT = 'http://127.0.0.1:8571';
 const BROKER_SESSION_HEADER = 'X-Qwen-Web-Session';
@@ -542,6 +579,7 @@ async function boot() {
   requestModel = null;
   nctx = null;
   nctxModel = null;
+  forgetWebTools();
   attachments.forEach(attachment => {
     attachment.tokens = null;
     attachment.tokenModel = null;
@@ -679,7 +717,7 @@ $('#input').addEventListener('keydown', e => {
 });
 $('#send').onclick = send;
 
-function buildRequestBody(messages) {
+async function buildRequestBody(messages) {
   const body = { model: requestModel, stream: true, temperature: 0.7,
                  stream_options: { include_usage: true },
                  max_tokens: 512, messages };
@@ -696,7 +734,9 @@ function buildRequestBody(messages) {
   // with it off carries no web tool and the model has no network-reaching
   // surface to propose. Stripping the declaration rather than refusing the
   // proposal is what makes the toggle a boundary instead of a prompt.
-  if ($('#web-tools').checked) tools.push(...WEB_TOOLS);
+  if ($('#web-tools').checked) {
+    tools.push(...await resolveWebTools(requestModel, modelStateGeneration));
+  }
   if (tools.length) body.tools = tools;
   return body;
 }
@@ -725,7 +765,7 @@ async function streamCompletion(messages, view) {
   const toolCalls = {};
   const resp = await fetch('./v1/chat/completions', {
     method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(buildRequestBody(messages))
+    body: JSON.stringify(await buildRequestBody(messages))
   });
   if (!resp.ok) {
     const detail = await resp.text();

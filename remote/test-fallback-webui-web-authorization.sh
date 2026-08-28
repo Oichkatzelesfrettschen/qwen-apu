@@ -18,8 +18,24 @@ fallback_ui=$script_directory/../webui/index.html
 # The per-turn toggle governs the tool list rather than the request text, so a
 # turn run with it off carries no web tool for the model to propose.
 grep -F '<input type="checkbox" id="web-tools">' "$fallback_ui" >/dev/null
-grep -F "if (\$('#web-tools').checked) tools.push(...WEB_TOOLS)" \
+grep -F "if (\$('#web-tools').checked) {" "$fallback_ui" >/dev/null
+grep -F 'tools.push(...await resolveWebTools(requestModel, modelStateGeneration));' \
     "$fallback_ui" >/dev/null
+
+# The schemas come from the running server rather than from a copy kept in the
+# page, so the model reads the arguments the wrapper validates. A build without
+# the tool routes answers 404 and the turn carries no web tool.
+grep -F "const response = await fetch('./tools', { headers: authHeaders() });" \
+    "$fallback_ui" >/dev/null
+grep -F 'WEB_TOOL_NAMES.includes(entry && entry.tool)' "$fallback_ui" >/dev/null
+grep -F 'const { authorization, ...offered } = parameters.properties;' \
+    "$fallback_ui" >/dev/null
+grep -F "parameters.required.filter(name => name !== 'authorization')" \
+    "$fallback_ui" >/dev/null
+# The composed list belongs to one selection, so a roster change clears it
+# beside the context length.
+grep -F 'function forgetWebTools()' "$fallback_ui" >/dev/null
+grep -F 'webToolsGeneration === generation' "$fallback_ui" >/dev/null
 grep -F "const WEB_SEARCH_TOOL_NAME = 'web_search_exa'" "$fallback_ui" >/dev/null
 grep -F "const WEB_FETCH_TOOL_NAME = 'web_fetch_exa'" "$fallback_ui" >/dev/null
 
