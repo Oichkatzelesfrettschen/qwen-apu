@@ -74,8 +74,9 @@ HOSTNAME_PATTERN = re.compile(
 EXA_SEARCH_ENDPOINT = "https://api.exa.ai/search"
 EXA_CONTENTS_ENDPOINT = "https://api.exa.ai/contents"
 
-UNTRUSTED_HEADER = "UNTRUSTED WEB CONTENT"
+UNTRUSTED_HEADER = "BEGIN UNTRUSTED WEB CONTENT"
 UNTRUSTED_FOOTER = "END UNTRUSTED WEB CONTENT"
+NONCE_BYTES = 12
 
 
 class ToolError(Exception):
@@ -794,16 +795,24 @@ def clip(value, cap):
 def wrap_untrusted(url, retrieved_at, window, start_index, truncated):
     """Frame one window of page text with the state a next call needs.
 
+    The frame carries a nonce drawn after retrieval and absent from the window,
+    so page text cannot write the line that closes the frame: a body holding
+    the literal footer meets a delimiter whose nonce it could not have
+    predicted, and the enclosing turn still reads one frame.
+
     `Next Start Index` names the offset that continues the document and reads
     `end` where the window reached the last character the document holds, so
     paging is decided by the server's own count rather than by the model's
     arithmetic over a body it cannot measure.
     """
+    nonce = base64url_encode(os.urandom(NONCE_BYTES))
+    while nonce in window:
+        nonce = base64url_encode(os.urandom(NONCE_BYTES))
     digest = hashlib.sha256(window.encode("utf-8")).hexdigest()
     next_index = start_index + len(window)
     return "\n".join(
         [
-            UNTRUSTED_HEADER,
+            f"{UNTRUSTED_HEADER} [{nonce}]",
             f"Source: {url}",
             f"Retrieved: {retrieved_at}",
             f"Content SHA-256: {digest}",
@@ -812,7 +821,7 @@ def wrap_untrusted(url, retrieved_at, window, start_index, truncated):
             f"Next Start Index: {next_index if truncated else 'end'}",
             f"Possibly Truncated: {'yes' if truncated else 'no'}",
             window,
-            UNTRUSTED_FOOTER,
+            f"{UNTRUSTED_FOOTER} [{nonce}]",
         ]
     )
 

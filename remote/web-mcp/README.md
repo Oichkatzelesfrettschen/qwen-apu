@@ -103,7 +103,7 @@ refused rather than substituted.
 `fetch_exa` returns the page text inside a fixed frame:
 
 ```text
-UNTRUSTED WEB CONTENT
+BEGIN UNTRUSTED WEB CONTENT [nonce]
 Source: <url>
 Retrieved: <utc>
 Content SHA-256: <hex>
@@ -112,10 +112,13 @@ Returned Characters: <int>
 Next Start Index: <int or end>
 Possibly Truncated: <yes or no>
 <text>
-END UNTRUSTED WEB CONTENT
+END UNTRUSTED WEB CONTENT [nonce]
 ```
 
-The digest identifies the exact returned window, and the frame marks where
+The nonce is drawn after retrieval and redrawn while it occurs in the window,
+so page text cannot write the line that closes the frame: a body holding the
+literal footer meets a delimiter whose nonce it could not predict. The digest
+identifies the exact returned window, and the frame marks where
 attacker-controlled text begins and ends. `Next Start Index` names the offset
 that continues the document and reads `end` where the window reached the last
 character, so paging follows the server's count rather than the model's
