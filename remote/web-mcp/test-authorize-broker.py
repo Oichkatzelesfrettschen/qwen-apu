@@ -15,12 +15,14 @@ import http.client
 import importlib.util
 import json
 import os
+import socket
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 
 BROKER_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 BROKER_PATH = os.path.join(BROKER_DIRECTORY, "authorize-broker.py")
@@ -45,6 +47,7 @@ SESSION_HEADER = broker_module.SESSION_HEADER
 SESSION_SECRET_FILE_NAME = broker_module.SESSION_SECRET_FILE_NAME
 
 TOKEN_SECRET = "broker-token-secret-QJ4LZP"
+API_KEY = "web-ui-api-key-V8N2QK"
 ORIGIN = "http://127.0.0.1:8080"
 START_WAIT_SECONDS = 15.0
 STOP_WAIT_SECONDS = 5.0
@@ -75,6 +78,7 @@ class BrokerProcess:
         arguments = {
             "--state-dir": test.state_directory,
             "--token-key-file": test.token_key_path,
+            "--api-key-file": test.api_key_path,
             "--provider": "fake",
             "--profile": "default",
             "--origin": ORIGIN,
@@ -129,6 +133,10 @@ class BrokerTest(unittest.TestCase):
         with open(self.token_key_path, "w", encoding="utf-8") as handle:
             handle.write(TOKEN_SECRET + "\n")
         os.chmod(self.token_key_path, 0o600)
+        self.api_key_path = os.path.join(root, "api.key")
+        with open(self.api_key_path, "w", encoding="utf-8") as handle:
+            handle.write(API_KEY + "\n")
+        os.chmod(self.api_key_path, 0o600)
         self.fixture_path = os.path.join(root, "fixtures.json")
         with open(self.fixture_path, "w", encoding="utf-8") as handle:
             json.dump(FIXTURES, handle)
@@ -170,6 +178,12 @@ class BrokerTest(unittest.TestCase):
             SESSION_HEADER: (
                 self.session_secret() if secret is None else secret
             ),
+        }
+
+    def session_headers(self, api_key=API_KEY):
+        return {
+            "Origin": ORIGIN,
+            "Authorization": f"Bearer {api_key}",
         }
 
     def post_grant(self, broker, payload, headers=None):
@@ -326,6 +340,25 @@ class BrokerTest(unittest.TestCase):
                 self.assertEqual(completed.returncode, 2)
                 self.assertIn(expected, completed.stderr)
 
+    def test_the_broker_requires_the_web_ui_api_key_at_startup(self):
+        completed = subprocess.run(
+            [
+                sys.executable,
+                BROKER_PATH,
+                "--state-dir",
+                self.state_directory,
+                "--token-key-file",
+                self.token_key_path,
+                "--origin",
+                ORIGIN,
+            ],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "QWEN_WEBUI_API_KEY_FILE": ""},
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("Web UI API key", completed.stderr)
+
     def test_a_grant_request_without_the_session_secret_is_refused(self):
         broker = self.launch()
         headers = self.grant_headers()
@@ -369,19 +402,21 @@ class BrokerTest(unittest.TestCase):
                 self.assertIn("Origin", payload["error"])
                 self.assertNotIn("authorization", payload)
 
-    def test_the_session_endpoint_gates_on_an_admitted_origin(self):
+    def test_the_session_endpoint_requires_origin_and_the_web_ui_bearer_key(self):
         broker = self.launch()
         secret = self.session_secret()
         for description, headers in (
             ("absent", {}),
             ("foreign", {"Origin": "https://evil.example.net"}),
+            ("missing bearer", {"Origin": ORIGIN}),
+            ("wrong bearer", self.session_headers("not-the-api-key")),
         ):
             with self.subTest(origin=description):
                 status, _, body = broker.request("GET", "/session", None, headers)
                 self.assertEqual(status, 403)
                 self.assertNotIn(secret, body)
         status, response_headers, body = broker.request(
-            "GET", "/session", None, {"Origin": ORIGIN}
+            "GET", "/session", None, self.session_headers()
         )
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(body)["session_secret"], secret)
@@ -405,6 +440,9 @@ class BrokerTest(unittest.TestCase):
         self.assertEqual(headers["Access-Control-Allow-Origin"], ORIGIN)
         self.assertIn(
             SESSION_HEADER, headers["Access-Control-Allow-Headers"]
+        )
+        self.assertIn(
+            "Authorization", headers["Access-Control-Allow-Headers"]
         )
         status, headers, _ = broker.request(
             "OPTIONS", "/grant", None, {"Origin": "https://evil.example.net"}
@@ -522,11 +560,26 @@ class BrokerTest(unittest.TestCase):
             broker,
             {"query": "raven2 vulkan decode", "profile_id": "vision"},
         )
-        self.assertEqual(status, 403)
+        self.assertEqual(status, 400)
         self.assertIn("fast-text", body["error"])
         self.assertIn("vision", body["error"])
         self.assertNotIn("authorization", body)
-        self.assertIn("authorization_denied", [row[8] for row in self.audit_rows()])
+        self.assertIn("invalid_argument", [row[8] for row in self.audit_rows()])
+
+    def test_an_inverted_publication_window_is_refused_before_signing(self):
+        broker = self.launch()
+        status, _, body = self.post_grant(
+            broker,
+            {
+                "query": "raven2 vulkan decode",
+                "profile_id": "default",
+                "published_after": "2026-08-01",
+                "published_before": "2026-07-31",
+            },
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("published_after falls after published_before", body["error"])
+        self.assertNotIn("authorization", body)
 
     def test_the_rate_bucket_bounds_the_approval_endpoint(self):
         broker = self.launch(**{"--per-minute": 2})
@@ -535,12 +588,29 @@ class BrokerTest(unittest.TestCase):
                 broker, {"query": "raven2 vulkan decode", "profile_id": "default"}
             )
             self.assertEqual(status, 200)
+        def exhaust(_index):
+            return self.post_grant(
+                broker, {"query": "raven2 vulkan decode"}
+            )
+
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            refusals = list(executor.map(exhaust, range(5)))
+        for status, _, payload in refusals:
+            self.assertEqual(status, 429)
+            self.assertIn("authorize-minute", payload["error"])
+        statuses = [row[8] for row in self.audit_rows()]
+        self.assertEqual(statuses.count("rate_limited"), 1)
+
+    def test_a_stale_session_refusal_has_an_explicit_retry_code(self):
+        broker = self.launch()
+        headers = self.grant_headers("a-secret-this-launch-never-wrote")
         status, _, payload = self.post_grant(
-            broker, {"query": "raven2 vulkan decode"}
+            broker,
+            {"query": "raven2 vulkan decode", "profile_id": "default"},
+            headers,
         )
-        self.assertEqual(status, 429)
-        self.assertIn("authorize-minute", payload["error"])
-        self.assertIn("rate_limited", [row[8] for row in self.audit_rows()])
+        self.assertEqual(status, 403)
+        self.assertEqual(payload["code"], "stale_session_secret")
 
     def test_a_bad_session_header_spends_the_same_bucket(self):
         broker = self.launch(**{"--per-minute": 2})
@@ -564,6 +634,55 @@ class BrokerTest(unittest.TestCase):
         # never presents a real session cannot outrun the meter by failing.
         status, _, payload = self.post_grant(broker, {"query": "raven2 vulkan decode"})
         self.assertEqual(status, 429)
+
+    def test_concurrent_grants_use_independent_ledger_connections(self):
+        request_count = 4
+        broker = self.launch(**{"--per-minute": request_count})
+
+        def issue(index):
+            return self.post_grant(
+                broker,
+                {
+                    "query": f"raven2 vulkan decode {index}",
+                    "profile_id": "default",
+                },
+            )[0]
+
+        with ThreadPoolExecutor(max_workers=request_count) as executor:
+            statuses = list(executor.map(issue, range(request_count)))
+        self.assertEqual(statuses, [200] * request_count)
+        self.assertEqual(
+            [row[8] for row in self.audit_rows()].count("success"),
+            request_count,
+        )
+
+    def test_a_slow_request_has_a_total_deadline_and_blocks_no_peer(self):
+        timeout_seconds = 0.4
+        broker = self.launch(
+            **{"--request-read-timeout": timeout_seconds}
+        )
+        slow_client = socket.create_connection((broker.host, broker.port), timeout=2)
+        self.addCleanup(slow_client.close)
+        partial_request = (
+            f"POST /grant HTTP/1.1\r\n"
+            f"Host: {broker.host}:{broker.port}\r\n"
+            f"Origin: {ORIGIN}\r\n"
+            f"{SESSION_HEADER}: {self.session_secret()}\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: 128\r\n\r\n"
+            "{"
+        )
+        slow_client.sendall(partial_request.encode("ascii"))
+        peer_started = time.monotonic()
+        status, _, _ = broker.request("GET", "/health")
+        peer_elapsed = time.monotonic() - peer_started
+        self.assertEqual(status, 200)
+        self.assertLess(peer_elapsed, timeout_seconds / 2)
+
+        slow_client.settimeout(timeout_seconds * 3)
+        deadline_started = time.monotonic()
+        self.assertEqual(slow_client.recv(1), b"")
+        self.assertLess(time.monotonic() - deadline_started, timeout_seconds * 3)
 
     def test_the_audit_trail_carries_the_digest_and_no_secret(self):
         broker = self.launch()

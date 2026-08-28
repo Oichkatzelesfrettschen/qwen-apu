@@ -16,11 +16,11 @@ The service holds three boundaries. It binds a loopback literal alone and
 refuses any other host before the socket exists, so the grant endpoint reaches
 the machine that runs the router and nothing on the network; a browser on the
 SSH client machine reaches it through `ssh -L PORT:127.0.0.1:PORT` rather than
-through a wider bind. Every request carries a per-launch session secret in a
-header, delivered through a file at mode 0600 under the state directory and
-compared with `hmac.compare_digest`, so a page the operator did not open
-issues nothing. The signing key travels from its file into `sign_claim` and
-into no response, no log line, and no audit row.
+through a wider bind. Every grant request carries a per-launch session secret
+in a header and the broker compares the value with `hmac.compare_digest`.
+`GET /session` releases the secret only to an admitted Origin presenting the
+existing Web UI bearer API key. The signing key travels from its file into
+`sign_claim` and into no response, log line, or audit row.
 
 One approval issues one grant. The claim carries `max_uses` of one and the
 serving path spends it under the ledger's primary key, so this service offers
@@ -36,8 +36,10 @@ import os
 import secrets
 import signal
 import socket
+import socketserver
 import stat
 import sys
+import threading
 import time
 
 BROKER_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
@@ -51,11 +53,14 @@ SESSION_SECRET_FILE_NAME = "authorize-session.secret"
 SESSION_SECRET_BYTES = 32
 SESSION_HEADER = "X-Qwen-Web-Session"
 REQUEST_BODY_BYTE_CAP = 16384
+REQUEST_READ_TIMEOUT_DEFAULT_SECONDS = 5.0
+REQUEST_READ_TIMEOUT_MAX_SECONDS = 30.0
 AUTHORIZE_PER_MINUTE_DEFAULT = 6
 GRANT_PATH = "/grant"
 SESSION_PATH = "/session"
 HEALTH_PATH = "/health"
 KEY_MODE_FORBIDDEN_BITS = 0o077
+STALE_SESSION_SECRET_CODE = "stale_session_secret"
 
 
 def loopback_host(value):
@@ -98,11 +103,11 @@ def host_header_is_loopback(header):
 def write_session_secret(state_directory):
     """Return the per-launch secret after placing it in a file the owner reads.
 
-    The value in memory is the authority and the file is the delivery channel
-    the user interface reads once at load, so a stale file left by a killed
-    broker authorizes nothing against the next launch's secret. The file is
-    created with O_EXCL at mode 0600 after any predecessor is removed, which
-    keeps a pre-planted symlink from redirecting the write.
+    The value in memory is the authority and `GET /session` is the browser
+    delivery channel. The private file gives the process supervisor a precise
+    cleanup target; stale file bytes left by a killed broker authorize nothing
+    against the next launch's in-memory secret. O_EXCL creates the file at
+    mode 0600 after predecessor removal and refuses a pre-planted symlink.
     """
     path = os.path.join(state_directory, SESSION_SECRET_FILE_NAME)
     secret = secrets.token_urlsafe(SESSION_SECRET_BYTES)
@@ -198,12 +203,14 @@ class BrokerSettings:
 
     def __init__(self, arguments):
         self.token_key_file = arguments.token_key_file
+        self.api_key = ""
         self.state_directory = arguments.state_dir
         self.provider = arguments.provider
         self.profile = arguments.profile
         self.lifetime = arguments.lifetime
         self.origins = tuple(arguments.origin)
         self.per_minute = arguments.per_minute
+        self.request_read_timeout = arguments.request_read_timeout
         self.session_secret = ""
         self.signing_key_sha256 = ""
         self.start_time = 0
@@ -241,7 +248,15 @@ def parse_request_arguments(payload):
         value = payload.get(key) or ""
         if not isinstance(value, str):
             raise server.InvalidArgument(f"{key} must be a string")
-        fields[key] = value
+        fields[key] = server.require_iso_date(payload, key)
+    if (
+        fields["published_after"]
+        and fields["published_before"]
+        and fields["published_after"] > fields["published_before"]
+    ):
+        raise server.InvalidArgument(
+            "published_after falls after published_before"
+        )
     max_age_hours = payload.get("max_age_hours")
     if max_age_hours is not None and (
         not isinstance(max_age_hours, int) or isinstance(max_age_hours, bool)
@@ -311,8 +326,8 @@ def issue_for_request(settings, fields):
     the same name the grant is actually signed with.
     """
     if fields["profile_id"] != settings.profile:
-        raise server.AuthorizationDenied(
-            f"this broker serves profile {settings.profile!r}; "
+        raise server.InvalidArgument(
+            f"the broker process serves profile {settings.profile!r}; "
             f"the request named {fields['profile_id']!r}"
         )
     return server.issue_grant(
@@ -338,12 +353,111 @@ HTTP_STATUS_FOR_TERM = {
 }
 
 
+class StaleSessionSecret(server.AuthorizationDenied):
+    """A grant request presents authority from another broker launch."""
+
+
+def record_audit(
+    ledger, row, coalesce_window_seconds=None, coalesce_epoch=None
+):
+    """Record an outcome, coalescing repeated bucket refusals atomically.
+
+    An exhausted caller can continue opening connections without consuming a
+    bucket unit. Recording every refusal would make the audit table grow at
+    the caller's connection rate after the limiter has already stopped useful
+    work. The immediate transaction makes the presence check and insert one
+    state transition across independently connected request handlers.
+    """
+    if coalesce_window_seconds is None:
+        ledger.record(row)
+        return
+    recorded_epoch = int(row["recorded_epoch"])
+    bucket_epoch = int(
+        recorded_epoch if coalesce_epoch is None else coalesce_epoch
+    )
+    window_start = bucket_epoch - bucket_epoch % coalesce_window_seconds
+    window_end = window_start + coalesce_window_seconds
+    connection = ledger.connection
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        existing = connection.execute(
+            "SELECT 1 FROM audit WHERE operation = ? AND status = ?"
+            " AND recorded_epoch >= ? AND recorded_epoch < ? LIMIT 1",
+            (row["operation"], row["status"], window_start, window_end),
+        ).fetchone()
+        if existing is None:
+            connection.execute(
+                "INSERT INTO audit VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    row["recorded_at"],
+                    row["profile"],
+                    row["operation"],
+                    row["query_sha256"],
+                    row["domains"],
+                    row["result_count"],
+                    row["fetched_host"],
+                    row["provider_bytes"],
+                    row["returned_characters"],
+                    row["latency_ms"],
+                    row["status"],
+                    recorded_epoch,
+                ),
+            )
+        connection.execute("COMMIT")
+    except BaseException:
+        connection.execute("ROLLBACK")
+        raise
+
+
 class BrokerHandler(http.server.BaseHTTPRequestHandler):
-    """The two endpoints a user interface calls around one human approval."""
+    """Serve health, session-capability, and one-search grant requests."""
 
     protocol_version = "HTTP/1.1"
     server_version = "qwen-web-authorize-broker/1.0"
     sys_version = ""
+
+    def setup(self):
+        super().setup()
+        self.request_read_lock = threading.Lock()
+        self.request_read_timer = None
+        self.request_read_token = None
+
+    def handle_one_request(self):
+        """Bound the complete header and body read by one wall-clock timer."""
+        deadline_token = object()
+        self.request_read_timer = threading.Timer(
+            self.settings.request_read_timeout,
+            self.expire_request_read,
+            args=(deadline_token,),
+        )
+        self.request_read_token = deadline_token
+        self.request_read_timer.daemon = True
+        self.request_read_timer.start()
+        try:
+            super().handle_one_request()
+        finally:
+            self.finish_request_read()
+
+    def expire_request_read(self, deadline_token):
+        """End a connection whose request has not arrived by its deadline."""
+        with self.request_read_lock:
+            if self.request_read_token is not deadline_token:
+                return
+            self.request_read_token = None
+            self.request_read_timer = None
+        try:
+            self.connection.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
+
+    def finish_request_read(self):
+        """Cancel the active request-read deadline after parsing completes."""
+        with self.request_read_lock:
+            timer = self.request_read_timer
+            self.request_read_timer = None
+            self.request_read_token = None
+        if timer is not None:
+            timer.cancel()
 
     def log_message(self, fmt, *args):
         """Drop the default access log.
@@ -363,6 +477,7 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
         return origin if origin and origin in self.settings.origins else ""
 
     def send_json(self, http_status, payload, origin=""):
+        self.finish_request_read()
         body = json.dumps(payload).encode("utf-8")
         self.send_response(http_status)
         self.send_header("Content-Type", "application/json")
@@ -390,8 +505,16 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
         if not presented or not hmac.compare_digest(
             presented, self.settings.session_secret
         ):
-            raise server.AuthorizationDenied(
+            raise StaleSessionSecret(
                 f"the request carries no valid {SESSION_HEADER} header"
+            )
+
+    def require_api_key(self):
+        authorization = self.headers.get("Authorization", "")
+        expected = f"Bearer {self.settings.api_key}"
+        if not authorization or not hmac.compare_digest(authorization, expected):
+            raise server.AuthorizationDenied(
+                "the session request carries no valid bearer API key"
             )
 
     def read_body(self):
@@ -406,11 +529,16 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
                 f"the request body exceeds the {REQUEST_BODY_BYTE_CAP} byte cap"
             )
         try:
-            return json.loads(self.rfile.read(length).decode("utf-8"))
+            body = self.rfile.read(length)
+            if len(body) != length:
+                raise ValueError
+            payload = json.loads(body.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             raise server.InvalidArgument(
                 "the request body is not UTF-8 JSON"
             ) from None
+        self.finish_request_read()
+        return payload
 
     def do_OPTIONS(self):  # noqa: N802 -- BaseHTTPRequestHandler names the verb
         """Answer the preflight a custom header and a JSON body force.
@@ -421,26 +549,27 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
         passes.
         """
         origin = self.allowed_origin()
+        self.finish_request_read()
         self.send_response(204 if origin else 403)
         self.send_header("Content-Length", "0")
         if origin:
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
             self.send_header(
-                "Access-Control-Allow-Headers", f"Content-Type, {SESSION_HEADER}"
+                "Access-Control-Allow-Headers",
+                f"Authorization, Content-Type, {SESSION_HEADER}",
             )
             self.send_header("Access-Control-Max-Age", "60")
             self.send_header("Vary", "Origin")
         self.end_headers()
 
     def do_GET(self):  # noqa: N802 -- BaseHTTPRequestHandler names the verb
-        """Hand the per-launch session secret to a page the launch admits.
+        """Hand the per-launch secret to an admitted page with the API key.
 
         The secret travels in a response body rather than a URL, so it stays
         out of the browser history, the Referer header, and any intermediary
-        log. The Origin allowlist is the gate and an absent Origin is refused,
-        which leaves no fallback a cross-origin caller reaches by omitting the
-        header.
+        log. The Origin allowlist and Web UI bearer API key form the gate; an
+        absent Origin or bearer value releases no secret.
         """
         origin = self.allowed_origin()
         path = self.path.split("?", 1)[0]
@@ -456,6 +585,7 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
                 raise server.AuthorizationDenied(
                     "the request Origin is absent or outside the admitted set"
                 )
+            self.require_api_key()
         except server.ToolError as error:
             self.send_json(
                 HTTP_STATUS_FOR_TERM.get(error.status, 400),
@@ -501,25 +631,25 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):  # noqa: N802 -- BaseHTTPRequestHandler names the verb
         """Sign the grant for the exact arguments a human has just approved.
 
-        Each outcome writes one audit row under the nine-term vocabulary, so
-        the trail separates a request refused for its session header from one
-        refused for a malformed field, from one that exhausted the bucket,
-        from a grant that issued -- while the grant itself stays in the
-        response alone. The `authorize-minute` bucket is charged before the
+        Each admitted outcome writes one audit row under the nine-term
+        vocabulary. The trail separates invalid session headers, malformed
+        fields, exhausted buckets, and issued grants while every grant stays in
+        the response alone. The `authorize-minute` bucket is charged before the
         loopback-host and session-header checks run, so a caller that holds
         neither cannot reach `ledger.record` faster than the bucket admits;
         without that ordering an unauthenticated loopback process floods the
-        session check alone and grows the audit table at whatever rate it
-        can open connections, since every refusal still writes a row.
+        session check alone. Exhausted refusals coalesce to one row per bucket
+        window, so post-limit connections cannot grow the audit trail.
         """
         started_at = time.time()
         origin = self.allowed_origin()
         if self.path.split("?", 1)[0] != GRANT_PATH:
             self.send_json(404, {"error": "no such endpoint"}, origin)
             return
-        ledger = self.server.broker_ledger
+        ledger = None
         fields = None
         try:
+            ledger = server.Ledger(self.settings.state_directory)
             ledger.consume("authorize-minute", 60, self.settings.per_minute, started_at)
             self.require_loopback_host()
             # The session secret reaches a page through /session, which the
@@ -534,34 +664,55 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
             self.require_session_secret()
             fields = parse_request_arguments(self.read_body())
             token = issue_for_request(self.settings, fields)
+            ledger.record(audit_row(self.settings, fields, "success", started_at))
         except server.ToolError as error:
-            ledger.record(audit_row(self.settings, fields, error.status, started_at))
+            if ledger is not None:
+                record_audit(
+                    ledger,
+                    audit_row(self.settings, fields, error.status, started_at),
+                    60 if error.status == "rate_limited" else None,
+                    started_at,
+                )
+            payload = {"error": str(error)}
+            if isinstance(error, StaleSessionSecret):
+                payload["code"] = STALE_SESSION_SECRET_CODE
             self.send_json(
                 HTTP_STATUS_FOR_TERM.get(error.status, 400),
-                {"error": str(error)},
+                payload,
                 origin,
             )
             return
-        ledger.record(audit_row(self.settings, fields, "success", started_at))
+        finally:
+            if ledger is not None:
+                ledger.close()
         self.send_json(200, {"authorization": token}, origin)
 
 
-class BrokerServer(http.server.HTTPServer):
-    """One approval at a time over one ledger connection.
-
-    The single-threaded server is the choice the SQLite connection makes: a
-    threading server would hand one connection to several threads, and the
-    approval this endpoint serves is a human action that arrives one at a
-    time.
-    """
+class BrokerServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    """Serve independent requests concurrently over per-handler ledgers."""
 
     allow_reuse_address = False
+    daemon_threads = False
+    block_on_close = True
 
-    def __init__(self, address, settings, ledger):
+    def __init__(self, address, settings):
         self.address_family = socket.AF_INET6 if ":" in address[0] else socket.AF_INET
         self.broker_settings = settings
-        self.broker_ledger = ledger
         super().__init__(address, BrokerHandler)
+
+
+def positive_seconds(value):
+    """Return a finite positive timeout from an argparse value."""
+    try:
+        parsed = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("timeout must be a number") from None
+    if not 0 < parsed <= REQUEST_READ_TIMEOUT_MAX_SECONDS:
+        raise argparse.ArgumentTypeError(
+            "timeout must lie between 0 and "
+            f"{REQUEST_READ_TIMEOUT_MAX_SECONDS:g} seconds"
+        )
+    return parsed
 
 
 def build_parser():
@@ -576,6 +727,9 @@ def build_parser():
     parser.add_argument(
         "--token-key-file", default=os.environ.get("QWEN_WEB_TOKEN_KEY_FILE", "")
     )
+    parser.add_argument(
+        "--api-key-file", default=os.environ.get("QWEN_WEBUI_API_KEY_FILE", "")
+    )
     parser.add_argument("--state-dir", default=os.environ.get("QWEN_WEB_STATE_DIR", ""))
     parser.add_argument("--provider", default=os.environ.get("QWEN_WEB_PROVIDER", "exa"))
     parser.add_argument(
@@ -587,6 +741,11 @@ def build_parser():
         "--lifetime", type=int, default=server.TOKEN_LIFETIME_DEFAULT_SECONDS
     )
     parser.add_argument("--per-minute", type=int, default=AUTHORIZE_PER_MINUTE_DEFAULT)
+    parser.add_argument(
+        "--request-read-timeout",
+        type=positive_seconds,
+        default=REQUEST_READ_TIMEOUT_DEFAULT_SECONDS,
+    )
     parser.add_argument("--origin", action="append", default=None)
     return parser
 
@@ -613,7 +772,13 @@ def run(argv):
     signing_key_sha256 = validate_signing_key(arguments.token_key_file)
     if signing_key_sha256 is None:
         return 2
+    try:
+        api_key = server.read_secret_file(arguments.api_key_file, "Web UI API")
+    except server.ToolError as error:
+        sys.stderr.write(f"the broker cannot read the Web UI API key: {error}\n")
+        return 2
     settings = BrokerSettings(arguments)
+    settings.api_key = api_key
     settings.signing_key_sha256 = signing_key_sha256
     settings.start_time = process_start_time(entry_time)
     try:
@@ -621,8 +786,9 @@ def run(argv):
     except (OSError, server.ToolError) as error:
         sys.stderr.write(f"the broker cannot open the ledger: {error}\n")
         return 2
+    ledger.close()
     settings.session_secret, secret_path = write_session_secret(arguments.state_dir)
-    service = BrokerServer((arguments.host, arguments.port), settings, ledger)
+    service = BrokerServer((arguments.host, arguments.port), settings)
     # The port reaches the caller on stdout because an ephemeral bind is the
     # default: a launcher reads the line rather than guessing the number.
     sys.stdout.write(f"listening {arguments.host} {service.server_address[1]}\n")
@@ -639,7 +805,6 @@ def run(argv):
         pass
     finally:
         service.server_close()
-        ledger.close()
         if os.path.lexists(secret_path):
             os.unlink(secret_path)
     return 0

@@ -449,11 +449,26 @@ function configuredBrokerOrigin() {
 }
 const BROKER_ORIGIN_DEFAULT = configuredBrokerOrigin();
 const BROKER_SESSION_HEADER = 'X-Qwen-Web-Session';
+const STALE_SESSION_SECRET_CODE = 'stale_session_secret';
 const CONTINUATION_CAP = 4;
 // A tool result enters the context as a message, so its length is prompt the
 // next round pays for at this machine's prefill rate. The cap truncates a
 // long page rather than refusing it, which keeps the reply readable.
 const TOOL_RESULT_CHARACTER_CAP = 8000;
+
+function prefixAtWholeCodePoint(text, maximumUnits) {
+  // JavaScript slices UTF-16 units, so an offset can split an astral code
+  // point into an unpaired surrogate. Build the largest prefix whose complete
+  // code points fit under the same rendered-unit budget.
+  let units = 0;
+  const points = [];
+  for (const point of text) {
+    if (units + point.length > maximumUnits) break;
+    points.push(point);
+    units += point.length;
+  }
+  return points.join('');
+}
 
 function truncateToolResult(text) {
   /* Cap a tool result without cutting off an untrusted-content frame's own
@@ -481,7 +496,7 @@ function truncateToolResult(text) {
   }
   const searchTruncated = truncateSearchResult(text);
   if (searchTruncated !== null) return searchTruncated;
-  return text.slice(0, TOOL_RESULT_CHARACTER_CAP);
+  return prefixAtWholeCodePoint(text, TOOL_RESULT_CHARACTER_CAP);
 }
 
 function truncateFetchResult(text, footerMatch) {
@@ -513,8 +528,8 @@ function truncateFetchResult(text, footerMatch) {
   const window = text.slice(windowStart, windowEnd);
   const footerLine = footerMatch[1];
   const prefix = headerMatch[1].replace(
-    /\nContent SHA-256: [0-9a-f]+$/,
-    '\nContent SHA-256: not recomputed; the client truncated this window.'
+    /\nContent SHA-256: [0-9a-f]{64}\n/,
+    '\nContent SHA-256: not recomputed; the client truncated this window.\n'
   );
   // `wrap_untrusted` (remote/web-mcp/server.py) computes `Start Index` and
   // `Next Start Index` over Python `len`, which counts Unicode code points; a
@@ -588,7 +603,7 @@ function truncateSearchResult(text) {
     const omittedLine = additionalOmitted ? `\nResults Omitted: ${additionalOmitted}` : '';
     const suffix = `\n---\n${notice}${omittedLine}`;
     const blockBudget = Math.max(0, TOOL_RESULT_CHARACTER_CAP - suffix.length);
-    return blocks[0].slice(0, blockBudget) + suffix;
+    return prefixAtWholeCodePoint(blocks[0], blockBudget) + suffix;
   }
   const totalOmitted = serverOmitted + (blocks.length - kept.length);
   let rendered = kept.join('\n---\n') + '\n---';
@@ -643,7 +658,9 @@ async function brokerSession(signal) {
   // per origin and held in memory for the life of the page.
   const origin = brokerOrigin();
   if (brokerSessionSecret && brokerSessionOrigin === origin) return brokerSessionSecret;
-  const response = await fetch(`${origin}/session`, { method: 'GET', mode: 'cors', signal });
+  const response = await fetch(`${origin}/session`, {
+    method: 'GET', mode: 'cors', headers: authHeaders(), signal
+  });
   if (!response.ok) {
     throw new Error(`the approval broker refused the session request: HTTP ${response.status}`);
   }
@@ -676,7 +693,7 @@ async function requestGrant(fields, signal) {
   // dialog closed cannot still land a grant after it.
   const secret = await brokerSession(signal);
   let { response, payload } = await postGrant(fields, secret, signal);
-  if (response.status === 403) {
+  if (response.status === 403 && payload.code === STALE_SESSION_SECRET_CODE) {
     // A broker restarted on the same host and port signs a new per-launch
     // secret, so the cached one this page still holds is stale rather than
     // wrong. One retry against a freshly fetched secret recovers that case
@@ -977,7 +994,7 @@ $('#input').addEventListener('keydown', e => {
 });
 $('#send').onclick = send;
 
-async function buildRequestBody(messages) {
+async function buildRequestBody(messages, webPermission) {
   const body = { model: requestModel, stream: true, temperature: 0.7,
                  stream_options: { include_usage: true },
                  max_tokens: 512, messages };
@@ -990,25 +1007,24 @@ async function buildRequestBody(messages) {
   if (!reasoningOn) body.reasoning_budget = 0;
   const tools = [];
   if ($('#tools').checked) tools.push(...DEMO_TOOL);
-  // The Web toggle is read at the moment the request is built, so a turn run
-  // with it off carries no web tool and the model has no network-reaching
-  // surface to propose. Stripping the declaration rather than refusing the
-  // proposal is what makes the toggle a boundary instead of a prompt.
-  if ($('#web-tools').checked) {
+  // `send` snapshots and resets the Web toggle at the turn boundary. A
+  // permission snapshot carries the tool through continuation rounds;
+  // the next user turn starts denied until the user selects Web again.
+  if (webPermission) {
     tools.push(...await resolveWebTools(requestModel, modelStateGeneration));
   }
   if (tools.length) body.tools = tools;
   return body;
 }
 
-async function streamCompletion(messages, view) {
+async function streamCompletion(messages, view, webPermission) {
   const t0 = performance.now();
   let first = null, streamChunks = 0, completionTokens = null;
   let serverTimings = null, answer = '', reasoning = '', finish = null;
   const toolCalls = {};
   const resp = await fetch('./v1/chat/completions', {
     method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(await buildRequestBody(messages))
+    body: JSON.stringify(await buildRequestBody(messages, webPermission))
   });
   if (!resp.ok) {
     const detail = await resp.text();
@@ -1197,7 +1213,8 @@ function answerCall(callId, toolName, content, turnGeneration) {
 }
 
 async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetchBudget,
-                                 searchBudget, turnGeneration, proposalModel) {
+                                 searchBudget, turnGeneration, proposalModel,
+                                 webPermission) {
   /* Execute this round's proposed calls and answer each one.
 
      A proposed `web_search_exa` is shown to a human with the arguments it
@@ -1211,10 +1228,9 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
   for (let index = 0; index < calls.length; index++) {
     const toolName = calls[index].name;
     const callId = callIds[index];
-    if (!$('#web-tools').checked && WEB_TOOL_NAMES.includes(toolName)) {
-      // The toggle is read again at execution time, so a proposal carried over
-      // from a turn that offered the web tools reaches no network once the
-      // toggle is off. The boundary is the state at the moment of the call.
+    if (!webPermission && WEB_TOOL_NAMES.includes(toolName)) {
+      // The permission snapshot governs both advertisement and execution. The
+      // visible toggle already names the next turn.
       refused = true;
       answerCall(callId, toolName,
         `The web surface is off for this turn; ${toolName} did not run.`, turnGeneration);
@@ -1229,6 +1245,16 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
       refused = true;
       answerCall(callId, toolName,
         `The round budget is exhausted; ${toolName} did not run.`, turnGeneration);
+      continue;
+    }
+    if (requestModel !== proposalModel && WEB_TOOL_NAMES.includes(toolName)) {
+      // A model switch invalidates every network-reaching proposal before a
+      // fetch allowance, search allowance, approval, or provider budget can
+      // move. Both web tools use the same proposal-model snapshot.
+      refused = true;
+      answerCall(callId, toolName,
+        `The ${toolName} call did not run: it was proposed by model ${proposalModel}, ` +
+        `the current model is ${requestModel}.`, turnGeneration);
       continue;
     }
     if (toolName === WEB_FETCH_TOOL_NAME) {
@@ -1278,20 +1304,6 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
       answerCall(callId, toolName, `The search did not run: ${error.message || error}`, turnGeneration);
       continue;
     }
-    if (requestModel !== proposalModel) {
-      // The dialog signs the grant's profile_id from `requestModel` read at
-      // click time, so a model-picker change between this call's proposal and
-      // its approval would sign a grant for the wrong profile: the broker
-      // serving the proposing model's profile refuses it, or the newly
-      // selected profile's MCP child refuses a grant signed for the old one.
-      // Either failure reaches the model as an opaque refusal, so the
-      // mismatch is caught and named here instead, before a dialog opens.
-      refused = true;
-      answerCall(callId, toolName,
-        `The search did not run: it was proposed by model ${proposalModel}, ` +
-        `the current model is ${requestModel}.`, turnGeneration);
-      continue;
-    }
     searchBudget.remaining--;
     const outcome = await approveWebSearch(fields, proposalModel);
     if (outcome.decision === 'once') {
@@ -1326,6 +1338,11 @@ async function send() {
     prompt = `--- ${f.name} ---\n${f.text}\n--- end ${f.name} ---\n\n` + prompt;
   }
   const content = prompt;
+  // One user turn owns each Web permission snapshot. Reset the control at the
+  // boundary; the captured value continues to govern every continuation round
+  // and tool call produced by the active turn.
+  const webPermission = $('#web-tools').checked;
+  $('#web-tools').checked = false;
 
   const shown = text + (attachments.length
     ? '\n' + attachments.map(a => `[${a.name}]`).join(' ') : '');
@@ -1357,7 +1374,7 @@ async function send() {
       const proposalModel = requestModel;
       let outcome;
       try {
-        outcome = await streamCompletion(history, view);
+        outcome = await streamCompletion(history, view, webPermission);
       } catch (err) {
         view.meta.className = 'meta bad';
         view.meta.textContent = String(err.message || err);
@@ -1381,7 +1398,7 @@ async function send() {
       if (!outcome.calls.length) return;
       await runProposedTools(
         outcome.calls, callIds, view, round === CONTINUATION_CAP - 1, fetchBudget,
-        searchBudget, turnGeneration, proposalModel);
+        searchBudget, turnGeneration, proposalModel, webPermission);
       if (turnGeneration !== conversationGeneration) return;
     }
   } finally {

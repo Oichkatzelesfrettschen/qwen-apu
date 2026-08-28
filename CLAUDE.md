@@ -360,8 +360,10 @@ separate question about llama.cpp's scalar pipelines. Both publishers of this
 tree's small checkpoints ship BF16 as their only 16-bit artifact, so
 `remote/build-llama-vulkan.sh` builds `llama-quantize` and the appliance
 produces F16 from BF16 itself. `remote/run-representation-arm.sh` measures one
-value format against another on the same weights in the order control, subject,
-subject, control, and reports the ratio of paired means, because this tree has
+value format against another after matching architecture dimensions, tokenizer
+identity, and tensor layout, in the order control, subject, subject, control.
+The header check does not prove numeric tensor-value equality. The runner
+reports the ratio of paired means because this tree has
 measured one checkpoint under identical flags spanning 30.6% between sweeps.
 The census figure rather than the file size sets the streamed bytes a ratio
 rests on, since an ordinary load skips the multi-token-prediction block the file
@@ -639,16 +641,16 @@ route upward. Achieved streaming forms two observed groups rather than ordering
 by bit width: a Q4_K trunk and a Q6_K trunk both reach about 8.1 GB/s where a
 Q5_K trunk reaches 5.9. IQ and other reconstruction kernels remain unmeasured.
 
-The low-bit route closes at 0.8B for a different reason, and the reason removes
-the byte count from the account entirely. The three 0.8B-class checkpoints of
+The low-bit route closes at 0.8B on the measured rows. The three 0.8B-class checkpoints of
 `evidence/model-admission/runtime-class-throughput.md` decode at 15.96, 15.17,
 and 15.31 tok/s while streaming 0.477, 0.547, and 0.801 GB per token: 5.2% of
 rate across 67.9% of bytes, over two value formats and two architectures, with
 every arm inside the sweep's span criterion. The whole token time there is 63
-to 66 ms, about a fifth of the 4B's 314 ms, and the same-checkpoint pair bounds
-the byte-linear part: 0.254 GB more per token costs 0.6 ms less, so the
-marginal cost of a streamed byte is indistinguishable from zero and the term
-that sets the rate is not separately estimated.
+to 66 ms, about a fifth of the 4B's 314 ms. The matched-structure pair streams
+0.254 GB more per token with a 0.6 ms shorter observed token time, inside the
+declared span. Architecture and format change with bytes across the wider set,
+so the measurements isolate neither a marginal byte cost nor the mechanism that
+sets the rate.
 
 The consequence is a serving decision. Qwen3.5-0.8B at Q8_0 streams 46.4% more
 bytes per token than the same checkpoint at Q4_K_M and the two decode rates

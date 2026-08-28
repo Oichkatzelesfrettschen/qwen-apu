@@ -3,10 +3,10 @@ set -eu
 
 # Every models.tsv row that claims a numeric validated_filled_depth must own a
 # validated row in remote/validated-tuples.tsv naming the same model, depth,
-# and geometry. models.tsv holds one validated_filled_depth/batch/ubatch/cache
-# triple per row and the ledger holds every measured arm, so the two files
-# drift apart unless this check derives the tuple models.tsv already claims
-# and requires the ledger to carry it.
+# geometry, cache policy, and projector state. models.tsv holds one
+# validated_filled_depth tuple per row and the ledger holds every measured arm,
+# so the cross-ledger check derives the complete tuple models.tsv already
+# claims and requires the ledger to carry the same tuple.
 
 if [ "$#" -ne 0 ]; then
     printf 'usage: %s\n' "$0" >&2
@@ -29,31 +29,95 @@ fi
 awk -F'\t' '
     FILENAME == ARGV[1] {
         if ($0 ~ /^#/ || $0 ~ /^[[:space:]]*$/) { next }
-        if (NF != 21) { next }
+        tuple_rows++
+        if (NF != 21) {
+            printf "validated tuple row %d holds %d fields, expected 21\n", \
+                FNR, NF > "/dev/stderr"
+            malformed++
+            next
+        }
+        if ($1 == "" || $2 == "") {
+            printf "validated tuple row %d requires tuple_id and model_id\n", \
+                FNR > "/dev/stderr"
+            malformed++
+        }
+        for (field_index = 4; field_index <= 6; field_index++) {
+            if ($field_index !~ /^[1-9][0-9]*$/) {
+                printf "%s: tuple geometry field %d is not a canonical positive integer: %s\n", \
+                    $1, field_index, $field_index > "/dev/stderr"
+                malformed++
+            }
+        }
+        if ($7 !~ /^(f32|f16|bf16|q8_0|q5_1|q5_0|q4_1|q4_0|iq4_nl)$/ ||
+            $8 !~ /^(f32|f16|bf16|q8_0|q5_1|q5_0|q4_1|q4_0|iq4_nl)$/) {
+            printf "%s: tuple carries an invalid cache type\n", $1 > "/dev/stderr"
+            malformed++
+        }
+        if ($9 !~ /^(on|off|auto)$/ || $10 !~ /^[1-9][0-9]*$/ ||
+            $11 !~ /^[1-9][0-9]*$/ || $12 !~ /^(none|loaded)$/ ||
+            $13 !~ /^(vulkan|cpu|hip)$/ ||
+            $14 !~ /^(validated|failed|unverified)$/) {
+            printf "%s: tuple carries an invalid policy or status field\n", \
+                $1 > "/dev/stderr"
+            malformed++
+        }
+        if ($6 ~ /^[1-9][0-9]*$/ && $5 ~ /^[1-9][0-9]*$/ &&
+            $6 + 0 > $5 + 0) {
+            printf "%s: tuple ubatch %s exceeds batch %s\n", \
+                $1, $6, $5 > "/dev/stderr"
+            malformed++
+        }
+        if ($14 == "validated" && $15 == "-") {
+            printf "%s: validated tuple carries no evidence path\n", \
+                $1 > "/dev/stderr"
+            malformed++
+        }
         if ($14 != "validated") { next }
-        # model_id, context, batch, ubatch, cache_k, cache_v, flash_attention
-        key = $2 SUBSEP $4 SUBSEP $5 SUBSEP $6 SUBSEP $7 SUBSEP $8 SUBSEP $9
+        # model_id, context, batch, ubatch, cache_k, cache_v, flash_attention,
+        # projector_state
+        key = $2 SUBSEP $4 SUBSEP $5 SUBSEP $6 SUBSEP $7 SUBSEP $8 SUBSEP \
+            $9 SUBSEP $12
         validated_tuples[key] = 1
         next
     }
     $0 ~ /^#/ || $0 ~ /^[[:space:]]*$/ { next }
     {
-        if (NF != 22) { next }
+        model_rows++
+        if (NF != 22) {
+            printf "model row %d holds %d fields, expected 22\n", \
+                FNR, NF > "/dev/stderr"
+            malformed++
+            next
+        }
         # id, context_default..., batch, ubatch, validated_filled_depth,
         # validation_evidence, cache_type_k, cache_type_v, flash_attention.
         if ($19 == "-") { next }
+        if ($19 !~ /^[1-9][0-9]*$/) {
+            printf "%s: validated_filled_depth is malformed: %s\n", \
+                $1, $19 > "/dev/stderr"
+            malformed++
+            next
+        }
+        expected_projector_state = ($11 == "required" ? "loaded" : "none")
         checked++
-        key = $1 SUBSEP $19 SUBSEP $17 SUBSEP $18 SUBSEP $8 SUBSEP $9 SUBSEP $10
+        key = $1 SUBSEP $19 SUBSEP $17 SUBSEP $18 SUBSEP $8 SUBSEP $9 SUBSEP \
+            $10 SUBSEP expected_projector_state
         if (!(key in validated_tuples)) {
-            printf "%s: models.tsv claims validated_filled_depth %s at batch %s, ubatch %s, cache %s/%s, flash attention %s, and no validated row in %s matches\n", \
-                $1, $19, $17, $18, $8, $9, $10, "'"$tuple_ledger"'" > "/dev/stderr"
+            printf "%s: models.tsv claims validated_filled_depth %s at batch %s, ubatch %s, cache %s/%s, flash attention %s, projector state %s, and no validated row in %s matches\n", \
+                $1, $19, $17, $18, $8, $9, $10, \
+                expected_projector_state, "'"$tuple_ledger"'" > "/dev/stderr"
             gaps++
         }
     }
     END {
-        if (gaps + 0 > 0) {
-            printf "check_validated_tuples=rejected gaps=%d checked=%d\n", \
-                gaps, checked > "/dev/stderr"
+        if (!tuple_rows || !model_rows) {
+            printf "check_validated_tuples=rejected empty_ledger=1 tuple_rows=%d model_rows=%d\n", \
+                tuple_rows, model_rows > "/dev/stderr"
+            exit 1
+        }
+        if (gaps + malformed > 0) {
+            printf "check_validated_tuples=rejected gaps=%d malformed=%d checked=%d\n", \
+                gaps, malformed, checked > "/dev/stderr"
             exit 1
         }
         printf "check_validated_tuples=accepted checked=%d\n", checked

@@ -582,7 +582,10 @@ router_presets=${QWEN_ROUTER_PRESETS:-"${HOME:?}/qwen-webui-state/router-presets
 router_registry=${QWEN_MODEL_REGISTRY:-"$script_directory/models.tsv"}
 router_quarantine_registry=${QWEN_QUARANTINE_REGISTRY:-$script_directory/quarantine.tsv}
 router_model_root=${QWEN_MODEL_ROOT:-"${HOME:?}/models"}
-router_web_profiles=${QWEN_WEB_PROFILES:-$script_directory/web-profiles.tsv}
+router_web_profiles_environment=${QWEN_WEB_PROFILES:-}
+router_web_profiles=$script_directory/web-profiles.tsv
+router_web_profiles_guard_path=-
+router_web_profiles_guard_sha256=-
 router_max=${QWEN_ROUTER_MAX:-1}
 router_preset_expected_sha256=${QWEN_ROUTER_PRESET_SHA256:-}
 verify_router_preset_identity() {
@@ -638,7 +641,7 @@ measure_router_authority_identity() {
 # registries, whose digests qwen-router-exec-guard.sh remeasures after the
 # Vulkan wrapper configures the environment.
 validate_web_preset_execution_policies() {
-    awk -F'\t' -v ledger="$1" '
+    awk -F'\t' -v ledger="$1" -v authorizer_ready="$3" '
         function policy_from_tags(tags,   tag_count, tags_parts, tag_index) {
             tag_count = split(tags, tags_parts, ",")
             for (tag_index = 1; tag_index <= tag_count; tag_index++) {
@@ -664,6 +667,11 @@ validate_web_preset_execution_policies() {
                     section, ledger_policy > "/dev/stderr"
                 rejected = 1
                 return
+            }
+            if (ledger_policy == "validator-gated" && authorizer_ready != 1) {
+                printf "web preset section %s requires QWEN_WEB_AUTHORIZER_READY=1\n", \
+                    section > "/dev/stderr"
+                rejected = 1
             }
             section_policy = policy_from_tags(tags_value)
             if (section_policy != ledger_policy) {
@@ -703,6 +711,24 @@ validate_web_preset_execution_policies() {
     ' "$1" "$2"
 }
 
+verify_web_profiles_identity() {
+    if [ "$web_presets_from_preset" != 1 ]; then
+        return 0
+    fi
+    if ! web_profiles_identity=$(sha256sum -- "$router_web_profiles"); then
+        printf 'web profile ledger identity cannot be measured: %s\n' \
+            "$router_web_profiles" >&2
+        return 1
+    fi
+    web_profiles_actual_sha256=${web_profiles_identity%% *}
+    if [ "$web_profiles_actual_sha256" != "$router_web_profiles_guard_sha256" ]; then
+        printf 'web profile ledger identity changed: expected %s, measured %s\n' \
+            "$router_web_profiles_guard_sha256" \
+            "$web_profiles_actual_sha256" >&2
+        return 1
+    fi
+}
+
 validate_current_router_authorities() {
     if ! router_quarantine_rows=$(
         "$script_directory/model-registry.sh" quarantine-rows router-child
@@ -719,13 +745,14 @@ validate_current_router_authorities() {
         return 1
     fi
     if [ "$web_presets_from_preset" = 1 ]; then
+        verify_web_profiles_identity || return 1
         if [ ! -r "$router_web_profiles" ]; then
             printf 'web profile ledger is unreadable: %s\n' \
                 "$router_web_profiles" >&2
             return 1
         fi
         if ! validate_web_preset_execution_policies "$router_web_profiles" \
-            "$router_presets"; then
+            "$router_presets" "$router_web_authorizer_ready"; then
             printf 'web preset sections lost their ledger execution grant: %s\n' \
                 "$router_presets" >&2
             printf 'regenerate the preset tree with remote/build-web-presets.sh\n' >&2
@@ -772,6 +799,53 @@ if [ "$router_enabled" = 1 ]; then
             exit 2
             ;;
     esac
+    web_profiles_path_from_preset=$(sed -n \
+        's/^# qwen_web_profiles_path=//p' "$router_presets")
+    web_profiles_sha256_from_preset=$(sed -n \
+        's/^# qwen_web_profiles_sha256=//p' "$router_presets")
+    if [ "$web_presets_from_preset" = 1 ]; then
+        case $web_profiles_path_from_preset in
+            /*) ;;
+            *)
+                printf 'web presets omit an absolute web profile ledger path: %s\n' \
+                    "$router_presets" >&2
+                exit 2
+                ;;
+        esac
+        if [ "${#web_profiles_sha256_from_preset}" -ne 64 ]; then
+            printf 'web preset ledger SHA-256 must hold 64 lowercase hexadecimal characters\n' >&2
+            exit 2
+        fi
+        case $web_profiles_sha256_from_preset in
+            *[!0-9a-f]*)
+                printf 'web preset ledger SHA-256 must hold 64 lowercase hexadecimal characters\n' >&2
+                exit 2
+                ;;
+        esac
+        if [ -n "$router_web_profiles_environment" ] &&
+            [ "$router_web_profiles_environment" != "$web_profiles_path_from_preset" ]; then
+            printf 'QWEN_WEB_PROFILES names %s where the preset binds %s\n' \
+                "$router_web_profiles_environment" \
+                "$web_profiles_path_from_preset" >&2
+            exit 2
+        fi
+        router_web_profiles=$web_profiles_path_from_preset
+        router_web_profiles_guard_path=$web_profiles_path_from_preset
+        router_web_profiles_guard_sha256=$web_profiles_sha256_from_preset
+        router_web_authorizer_ready=${QWEN_WEB_AUTHORIZER_READY:-0}
+        case $router_web_authorizer_ready in
+            0 | 1) ;;
+            *)
+                printf 'QWEN_WEB_AUTHORIZER_READY must be 0 or 1: %s\n' \
+                    "$router_web_authorizer_ready" >&2
+                exit 2
+                ;;
+        esac
+    elif [ -n "$web_profiles_path_from_preset$web_profiles_sha256_from_preset" ]; then
+        printf 'non-web router presets carry web profile ledger identity markers: %s\n' \
+            "$router_presets" >&2
+        exit 2
+    fi
     # build-web-presets.sh writes this marker when
     # QWEN_WEB_ALLOW_UNVALIDATED_DEPTH admitted a profile whose context exceeds
     # its row's validated_filled_depth or whose depth reads `-`. The preset file
@@ -1024,6 +1098,8 @@ if [ "$router_enabled" = 1 ]; then
         "$router_presets" "$router_preset_guard_sha256" \
         "$router_registry" "$router_registry_guard_sha256" \
         "$router_quarantine_registry" "$router_quarantine_guard_sha256" \
+        "$router_web_profiles_guard_path" \
+        "$router_web_profiles_guard_sha256" \
         "$@"
 fi
 

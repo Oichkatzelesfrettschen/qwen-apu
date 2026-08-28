@@ -71,6 +71,65 @@ if ! grep -qx '# qwen_web_presets=1' "$web_presets"; then
     exit 2
 fi
 
+# The preset binds the complete web-policy ledger used to generate its
+# sections. The ledger identity markers define the launch authority and reject
+# callers naming a different ledger.
+preset_web_profiles=$(sed -n 's/^# qwen_web_profiles_path=//p' "$web_presets")
+preset_web_profiles_sha256=$(sed -n \
+    's/^# qwen_web_profiles_sha256=//p' "$web_presets")
+case $preset_web_profiles in
+    /*) ;;
+    *)
+        printf 'web presets omit an absolute web profile ledger path: %s\n' \
+            "$web_presets" >&2
+        exit 2
+        ;;
+esac
+if [ "${#preset_web_profiles_sha256}" -ne 64 ]; then
+    printf 'web preset ledger SHA-256 must hold 64 lowercase hexadecimal characters\n' >&2
+    exit 2
+fi
+case $preset_web_profiles_sha256 in
+    *[!0-9a-f]*)
+        printf 'web preset ledger SHA-256 must hold 64 lowercase hexadecimal characters\n' >&2
+        exit 2
+        ;;
+esac
+if [ -n "${QWEN_WEB_PROFILES:-}" ] &&
+    [ "$QWEN_WEB_PROFILES" != "$preset_web_profiles" ]; then
+    printf 'QWEN_WEB_PROFILES names %s where the preset binds %s\n' \
+        "$QWEN_WEB_PROFILES" "$preset_web_profiles" >&2
+    exit 2
+fi
+if ! preset_web_profiles_identity=$(sha256sum -- "$preset_web_profiles"); then
+    printf 'web profile ledger identity cannot be measured: %s\n' \
+        "$preset_web_profiles" >&2
+    exit 2
+fi
+preset_web_profiles_actual_sha256=${preset_web_profiles_identity%% *}
+if [ "$preset_web_profiles_actual_sha256" != "$preset_web_profiles_sha256" ]; then
+    printf 'web profile ledger identity changed: expected %s, measured %s\n' \
+        "$preset_web_profiles_sha256" "$preset_web_profiles_actual_sha256" >&2
+    exit 2
+fi
+QWEN_WEB_PROFILES=$preset_web_profiles
+export QWEN_WEB_PROFILES
+
+authorizer_ready=${QWEN_WEB_AUTHORIZER_READY:-0}
+case $authorizer_ready in
+    0 | 1) ;;
+    *)
+        printf 'QWEN_WEB_AUTHORIZER_READY must be 0 or 1: %s\n' \
+            "$authorizer_ready" >&2
+        exit 2
+        ;;
+esac
+if grep -E '^[[:space:]]*LLAMA_ARG_TAGS[[:space:]]*=([[:space:]]*[^,]+,)*[[:space:]]*validator-gated([[:space:]]*,|[[:space:]]*$)' \
+    "$web_presets" >/dev/null && [ "$authorizer_ready" != 1 ]; then
+    printf 'validator-gated web presets require QWEN_WEB_AUTHORIZER_READY=1\n' >&2
+    exit 2
+fi
+
 # Every artifact a section names is read here, because llama-server reports an
 # unreadable mcp-servers-config as a child startup failure well after the
 # listener is up, and reads a section's projector only when a request selects
@@ -137,6 +196,10 @@ printf 'web_launch presets=%s unvalidated_depth_marker=%s authorizer_ready=%s bi
 # the refusal names the rule. The path alone crosses into the child; the
 # contents stay in the broker's address space.
 QWEN_WEB_BROKER=1
+# Browser calls and broker approvals share the server API key. Web mode always
+# creates or reuses the API key; callers cannot downgrade the session to the
+# unauthenticated default used by ordinary local serving.
+QWEN_REQUIRE_API_KEY=1
 QWEN_WEB_BROKER_PORT=${QWEN_WEB_BROKER_PORT:-8571}
 QWEN_WEB_STATE_DIR=${QWEN_WEB_STATE_DIR:-$state_directory/web-mcp}
 signing_key_file=${QWEN_WEB_TOKEN_KEY_FILE:-}
@@ -216,8 +279,6 @@ QWEN_ROUTER_MAX=1
 QWEN_BIND_HOST=127.0.0.1
 export QWEN_ROUTER QWEN_ROUTER_PRESETS QWEN_ROUTER_MAX QWEN_BIND_HOST
 export QWEN_WEB_BROKER QWEN_WEB_BROKER_PORT QWEN_WEB_STATE_DIR
-if [ -n "${QWEN_WEB_PROFILES:-}" ]; then
-    export QWEN_WEB_PROFILES
-fi
+export QWEN_REQUIRE_API_KEY
 
 exec "$launcher" "$profile"

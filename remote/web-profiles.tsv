@@ -28,12 +28,12 @@
 # naming the unknown state or the numeric gap, and the output file's
 # unvalidated-depth-override head marker. These rows set a policy starting
 # point rather than a measured optimum: no web-research arm has run against
-# any of them. Against the registry that evidence/depth-validation-32k/ moved
-# to 32768, five rows request a depth that row has filled and decoded and
-# emit under the default rule with no experimental tag. web-vision alone
-# requests 24576 against a `-`, so it emits under
-# QWEN_WEB_ALLOW_UNVALIDATED_DEPTH=1 and carries the marker and the tag when
-# it does.
+# any of them. The three text profiles request depths their registry rows have
+# filled and decoded. The Qwen3.5-2B and LFM projector-required profiles request
+# 8192 against `-`, because the retained depth arms loaded text weights alone.
+# QWEN_WEB_ALLOW_UNVALIDATED_DEPTH=1 remains required when a profile requests
+# a depth beyond its validated surface, and the generated section carries the
+# experimental marker and tag.
 #
 # web_mode is `validator-gated` where a later validator is expected to compare
 # emitted tool arguments against the user's own authorization before a fetch
@@ -57,8 +57,8 @@
 #
 # profile_id	model_id	web_mode	context	validated_filled_depth	max_results	max_fetches	max_chars_per_fetch	multi_source	vision_allowed	tool_selection	execution_policy
 web-balanced	qwen38-4b-distill	validator-gated	32768	32768	8	3	12000	yes	no	9/10	refused
-web-compact	qwen35-2b	validator-gated	8192	32768	5	2	12000	yes	yes	9/10	refused
-web-fast-vl	lfm25-vl-16b	validator-gated	8192	32768	5	2	12000	yes	yes	8/10	refused
+web-compact	qwen35-2b	validator-gated	8192	-	5	2	12000	yes	yes	9/10	refused
+web-fast-vl	lfm25-vl-16b	validator-gated	8192	-	5	2	12000	yes	yes	8/10	refused
 web-lookup	qwen35-08b	ui-mediated	8192	32768	3	1	12000	no	no	9/10	refused
 web-reader	qwen38-2b-distill	ui-mediated	32768	32768	5	2	12000	yes	no	2/10	refused
 web-vision	qwen35-4b-base	ui-mediated	24576	-	5	2	12000	yes	yes	8/10	refused

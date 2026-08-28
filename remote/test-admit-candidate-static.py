@@ -14,6 +14,7 @@ import importlib.util
 import pathlib
 import struct
 import sys
+from unittest import mock
 
 SCRIPT_DIRECTORY = pathlib.Path(__file__).resolve().parent
 
@@ -140,17 +141,56 @@ def check_short_read_is_not_an_absent_key():
 
 
 def check_streamed_bytes_excludes_the_prediction_block():
-    """The prediction block is counted separately from what a load streams."""
-    header = {"tensors": [
-        {"family": "ffn", "bytes": 100},
-        {"family": "mtp", "bytes": 30},
-        {"family": "attention", "bytes": 70},
+    """Static admission uses the census's loop and tied-embedding accounting."""
+    header = {"metadata": {"general.architecture": "test"}, "num_loops": 2,
+              "nextn_layers": 1, "tensors": [
+        {"name": "token_embd.weight", "family": "embedding", "layer": None,
+         "type_name": "F16", "bytes": 40},
+        {"name": "blk.0.ffn.weight", "family": "ffn", "layer": 0,
+         "type_name": "F16", "bytes": 100},
+        {"name": "blk.1.ffn.weight", "family": "mtp", "layer": 1,
+         "type_name": "F16", "bytes": 30},
+        {"name": "output_norm.weight", "family": "norm", "layer": None,
+         "type_name": "F32", "bytes": 70},
     ]}
     loaded, skipped = ADMIT.streamed_bytes(header)
-    if (loaded, skipped) != (170, 30):
+    if (loaded, skipped) != (310, 30):
         print(f"streamed bytes read {loaded} loaded and {skipped} skipped")
         return 1
     return 0
+
+
+def check_tree_shape_validation():
+    """Malformed tree shapes fail before they can become plausible artifacts."""
+    failures = 0
+    malformed_trees = (
+        {},
+        [None],
+        [{"type": "file", "path": 7, "size": 10}],
+        [{"type": "file", "path": "model.gguf", "size": "10"}],
+        [{"type": "file", "path": "model.gguf", "lfs": []}],
+        [{"type": "file", "path": "model.gguf", "lfs": {"size": 0}}],
+    )
+    for tree in malformed_trees:
+        with mock.patch.object(ADMIT, "fetch_json", return_value=tree):
+            try:
+                ADMIT.list_artifacts("owner/model", "revision")
+                print(f"malformed tree was admitted: {tree!r}")
+                failures += 1
+            except ADMIT.AdmissionError:
+                pass
+
+    valid_tree = [
+        {"type": "directory", "path": "weights"},
+        {"type": "file", "path": "weights/model.gguf", "size": 10,
+         "lfs": {"size": 12}},
+    ]
+    with mock.patch.object(ADMIT, "fetch_json", return_value=valid_tree):
+        if ADMIT.list_artifacts("owner/model", "revision") != [
+                {"path": "weights/model.gguf", "bytes": 12}]:
+            print("a valid tree did not preserve its LFS artifact bytes")
+            failures += 1
+    return failures
 
 
 def check_range_bound():
@@ -194,6 +234,9 @@ def check_split_shard_set():
         {"path": "model-00002-of-00003.gguf", "bytes": 20},
         {"path": "model-00003-of-00003.gguf", "bytes": 30},
         {"path": "other-00001-of-00002.gguf", "bytes": 5},
+        {"path": "model-extra-00001-of-00002.gguf", "bytes": 100},
+        {"path": "model-extra-00002-of-00002.gguf", "bytes": 200},
+        {"path": "model-00001-of-00030.gguf", "bytes": 300},
         {"path": "plain-Q4_K_M.gguf", "bytes": 7},
     ]
     shards = ADMIT.shard_set(entries, "model-00001-of-00003.gguf")
@@ -209,6 +252,15 @@ def check_split_shard_set():
     if [entry["path"] for entry in alone] != ["plain-Q4_K_M.gguf"]:
         print(f"a plain file resolved to {[e['path'] for e in alone]}")
         failures += 1
+    try:
+        ADMIT.shard_set([
+            {"path": "model-00001-of-00003.gguf", "bytes": 10},
+            {"path": "model-00003-of-00003.gguf", "bytes": 30},
+        ], "model-00001-of-00003.gguf")
+        print("an incomplete split set was admitted")
+        failures += 1
+    except ADMIT.AdmissionError:
+        pass
     return failures
 
 
@@ -221,6 +273,7 @@ def main(argv):
         ("artifact_selection", check_selection),
         ("short_read", check_short_read_is_not_an_absent_key),
         ("streamed_bytes", check_streamed_bytes_excludes_the_prediction_block),
+        ("tree_shape", check_tree_shape_validation),
         ("range_bound", check_range_bound),
         ("split_shard_set", check_split_shard_set),
     ):

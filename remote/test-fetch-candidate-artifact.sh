@@ -37,6 +37,15 @@ import sys
 with open(sys.argv[1], "wb") as handle:
     handle.write(bytes((index * 7 + 13) % 256 for index in range(1000003)))
 ' "$document_root/model.gguf"
+mkdir -p "$document_root/owner/repo/resolve/revision" \
+    "$document_root/api/models/owner/repo/tree"
+cp "$document_root/model.gguf" \
+    "$document_root/owner/repo/resolve/revision/model.gguf"
+origin_digest=$(sha256sum "$document_root/model.gguf" | awk '{ print $1 }')
+origin_bytes=$(wc -c <"$document_root/model.gguf")
+printf '[{"type":"file","path":"model.gguf","size":%s,"lfs":{"oid":"%s","size":%s}}]\n' \
+    "$origin_bytes" "$origin_digest" "$origin_bytes" \
+    >"$document_root/api/models/owner/repo/tree/revision"
 
 server_script=$temporary_directory/range-server.py
 cat >"$server_script" <<'PYTHON'
@@ -108,19 +117,14 @@ if [ ! -s "$port_file" ]; then
 fi
 port=$(cat "$port_file")
 
-# The fetcher builds its URL from the publisher's host, so the test substitutes
-# the local one and changes nothing else.
-fetcher=$temporary_directory/fetch-candidate-artifact.sh
-sed "s|^source_url=https://huggingface.co/.*|source_url=http://127.0.0.1:$port/\$artifact_name|" \
-    "$script_directory/fetch-candidate-artifact.sh" >"$fetcher"
-chmod +x "$fetcher"
-
-origin_digest=$(sha256sum "$document_root/model.gguf" | awk '{ print $1 }')
+fetcher=$script_directory/fetch-candidate-artifact.sh
+endpoint=http://127.0.0.1:$port
 
 for connections in 1 2 4 7; do
     rm -rf "$temporary_directory/dest"
     mkdir -p "$temporary_directory/dest"
-    line=$(QWEN_FETCH_CONNECTIONS=$connections "$fetcher" owner/repo revision \
+    line=$(QWEN_HUGGINGFACE_ENDPOINT=$endpoint QWEN_FETCH_CONNECTIONS=$connections \
+        "$fetcher" owner/repo revision \
         model.gguf "$temporary_directory/dest" 2>&1) || {
             report "connections_$connections" rejected
             printf '%s\n' "$line" >&2
@@ -128,9 +132,9 @@ for connections in 1 2 4 7; do
         }
     assembled=$(sha256sum "$temporary_directory/dest/model.gguf" | awk '{ print $1 }')
     mode=$(printf '%s' "$line" | sed -n 's/.*mode=\([a-z]*\).*/\1/p')
-    if ! printf '%s' "$line" | grep -q 'observed_sha256='; then
+    if ! printf '%s' "$line" | grep -q 'verified_sha256='; then
         report "digest_state_$connections" rejected
-        printf 'a source with no LFS tree did not fall back to observed: %s\n' \
+        printf 'the local LFS tree did not verify its published digest: %s\n' \
             "$line" >&2
     fi
     expected_mode=parallel
@@ -146,7 +150,8 @@ done
 
 # A retained artifact is re-observed rather than refetched, and a file that has
 # changed under a recorded digest is refused rather than served.
-line=$(QWEN_FETCH_CONNECTIONS=4 "$fetcher" owner/repo revision model.gguf \
+line=$(QWEN_HUGGINGFACE_ENDPOINT=$endpoint QWEN_FETCH_CONNECTIONS=4 \
+    "$fetcher" owner/repo revision model.gguf \
     "$temporary_directory/dest" 2>&1)
 case $line in
     *artifact_status=retained*) report retained_artifact_reobserved accepted ;;
@@ -154,7 +159,8 @@ case $line in
 esac
 
 printf 'tampered\n' >>"$temporary_directory/dest/model.gguf"
-if QWEN_FETCH_CONNECTIONS=4 "$fetcher" owner/repo revision model.gguf \
+if QWEN_HUGGINGFACE_ENDPOINT=$endpoint QWEN_FETCH_CONNECTIONS=4 \
+        "$fetcher" owner/repo revision model.gguf \
         "$temporary_directory/dest" >/dev/null 2>&1; then
     report tampered_artifact_refused rejected
 else
