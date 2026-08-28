@@ -46,6 +46,13 @@ grep -F "content: 'The user refused this web search. It did not run.'" \
 grep -F "'single-use grant covers them. The search awaits its '" \
     "$fallback_ui" >/dev/null
 
+# A fetch, demo, or other advertised call carries no approval path of its own,
+# so it receives a tool message too: every tool_calls entry pairs with a
+# result before the round ends, and none is skipped on the way there.
+grep -F "if (calls[index].name !== WEB_SEARCH_TOOL_NAME) {" "$fallback_ui" >/dev/null
+grep -F 'The served path executes no tool named' "$fallback_ui" >/dev/null
+grep -F 'if (!outcome.calls.length) return;' "$fallback_ui" >/dev/null
+
 # The grant admits one search, so a standing grade would promise a permission
 # the serving path refuses on the second call. The pinned llama-ui spells those
 # grades ALWAYS and ALWAYS_SERVER, and the check names the approval region

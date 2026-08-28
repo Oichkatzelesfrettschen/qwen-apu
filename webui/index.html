@@ -785,7 +785,18 @@ async function resolveWebApprovals(calls, callIds, view) {
   const authorizations = new Map();
   let refused = false;
   for (let index = 0; index < calls.length; index++) {
-    if (calls[index].name !== WEB_SEARCH_TOOL_NAME) continue;
+    if (calls[index].name !== WEB_SEARCH_TOOL_NAME) {
+      // A fetch, demo, or other advertised call carries no approval path of its
+      // own. Answering it here, rather than skipping it, is what keeps every
+      // tool_calls entry paired with a tool message: an unanswered call would
+      // make the next request's message array illegal and the server would
+      // refuse the whole continuation instead of the one call.
+      refused = true;
+      history.push({ role: 'tool', tool_call_id: callIds[index], name: calls[index].name,
+                     content: `The served path executes no tool named ${calls[index].name} ` +
+                              'in this turn.' });
+      continue;
+    }
     let fields;
     try {
       fields = proposedSearchFields(calls[index].args);
@@ -880,7 +891,7 @@ async function send() {
         }));
       }
       history.push(msg);
-      if (!outcome.calls.some(call => call.name === WEB_SEARCH_TOOL_NAME)) return;
+      if (!outcome.calls.length) return;
       const resolved = await resolveWebApprovals(outcome.calls, callIds, view);
       if (resolved === null) return;
       authorizations = resolved;
