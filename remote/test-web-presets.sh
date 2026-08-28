@@ -414,7 +414,8 @@ else
     report validator_gated_withheld_without_authorizer "$outcome"
 fi
 
-presets_gated=$work/presets-gated.ini
+mkdir -p "$work/gated-out"
+presets_gated=$work/gated-out/presets-gated.ini
 if build "$web_profiles_gated" "$presets_gated" \
     env QWEN_WEB_MCP_SERVER="$mcp_server_program" QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" QWEN_WEB_STATE_DIR="$web_state_directory" \
     >"$work/gated.log" 2>"$work/gated.err"; then
@@ -593,7 +594,7 @@ fi
 # One MCP configuration per emitting profile, carrying the profile's own
 # budgets. The gated fixture emits one section, so its configuration is the
 # subject.
-mcp_configs=$work/web-mcp-configs
+mcp_configs=$work/gated-out/web-mcp-configs
 gated_mcp_config=$mcp_configs/web-fixture-gated.json
 
 mcp_outcome=ok
@@ -702,6 +703,87 @@ if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_gated \
     report json_unsafe_key_path_refused accepted
 else
     report json_unsafe_key_path_refused ok
+fi
+
+# Output is atomic. A run that fails on a late row leaves a previously generated
+# preset file byte-identical and leaves no temporary behind.
+mkdir -p "$work/atomic-out"
+atomic_presets=$work/atomic-out/presets.ini
+printf 'seeded preset content that a failing run leaves alone\n' >"$atomic_presets"
+atomic_digest_before=$(sha256sum "$atomic_presets" | cut -d' ' -f1)
+
+# The first row emits and the second fails, so the failure arrives after the
+# temporary file already carries a section.
+web_profiles_late_failure=$work/web-profiles-late-failure.tsv
+{
+    printf 'web-fixture-first\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\n'
+    printf 'web-fixture-second\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tunguarded\n'
+} >"$web_profiles_late_failure"
+
+if build "$web_profiles_late_failure" "$atomic_presets" \
+    env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
+    QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" \
+    QWEN_WEB_STATE_DIR="$web_state_directory" \
+    >"$work/late-failure.log" 2>"$work/late-failure.err"; then
+    report late_row_failure_refused emitted_a_file
+else
+    report late_row_failure_refused ok
+fi
+
+atomic_digest_after=$(sha256sum "$atomic_presets" | cut -d' ' -f1)
+if [ "$atomic_digest_before" = "$atomic_digest_after" ]; then
+    report existing_output_survives_late_failure ok
+else
+    report existing_output_survives_late_failure overwritten
+fi
+
+residue=$(find "$work/atomic-out" -name 'presets.ini.tmp.*' -o \
+    -name 'web-mcp-configs.tmp.*' 2>/dev/null)
+if [ -z "$residue" ]; then
+    report temporary_output_removed_after_failure ok
+else
+    report temporary_output_removed_after_failure "$residue"
+fi
+
+# A ledger whose every row withholds an executing policy leaves the previous
+# file alone for the same reason.
+web_profiles_all_refused=$work/web-profiles-all-refused.tsv
+printf 'web-fixture-all-refused\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\trefused\n' \
+    >"$web_profiles_all_refused"
+if build "$web_profiles_all_refused" "$atomic_presets" \
+    env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
+    QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" \
+    QWEN_WEB_STATE_DIR="$web_state_directory" \
+    >"$work/all-refused.log" 2>"$work/all-refused.err"; then
+    report empty_emission_refused emitted_a_file
+else
+    report empty_emission_refused ok
+fi
+
+if [ "$(sha256sum "$atomic_presets" | cut -d' ' -f1)" = "$atomic_digest_before" ]; then
+    report existing_output_survives_empty_emission ok
+else
+    report existing_output_survives_empty_emission overwritten
+fi
+
+# A successful run replaces the file, so the atomicity arms above measure the
+# refusal rather than a generator that never writes.
+if build "$web_profiles_gated" "$atomic_presets" \
+    env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
+    QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" \
+    QWEN_WEB_STATE_DIR="$web_state_directory" \
+    >"$work/atomic-success.log" 2>"$work/atomic-success.err"; then
+    if [ "$(sha256sum "$atomic_presets" | cut -d' ' -f1)" = "$atomic_digest_before" ]; then
+        report successful_run_replaces_output unchanged
+    else
+        report successful_run_replaces_output ok
+    fi
+else
+    report successful_run_replaces_output failed
+    cat "$work/atomic-success.err" >&2
 fi
 
 if [ "$failures" -ne 0 ]; then
