@@ -857,7 +857,19 @@ class ExaProvider(Provider):
             body["excludeDomains"] = constraints["exclude_domains"]
         document = self._post(self.search_endpoint, body)
         results = document.get("results")
-        return results if isinstance(results, list) else []
+        # An answer whose `results` is absent or holds an entry that is not an
+        # object is malformed provider content rather than an empty search: a
+        # string in that position rendered as `No results.` and a null reached
+        # `record.get` in the renderer.
+        if not isinstance(results, list):
+            raise ProviderContentError(
+                "the provider response carries no result list"
+            )
+        if any(not isinstance(record, dict) for record in results):
+            raise ProviderContentError(
+                "the provider response carries a result that is not an object"
+            )
+        return results
 
     def contents(self, url, max_characters, provider_result_id="", freshness=None):
         """Return the content record Exa reports as retrieved for this result.

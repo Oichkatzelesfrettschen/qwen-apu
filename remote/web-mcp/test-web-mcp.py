@@ -1308,6 +1308,37 @@ class WebMcpServerTest(unittest.TestCase):
             },
         )
 
+    def test_a_malformed_result_array_is_a_provider_content_error(self):
+        """A `results` field that is not a list of objects refuses the call.
+
+        A 200 answer whose `results` is a string became a successful `No
+        results.` reply, and a list holding a null reached `record.get` and
+        broke the call with an internal error. Both are malformed provider
+        content rather than an empty search or a server fault, so both carry
+        `provider_content_error`.
+        """
+        for payload in (
+            {"results": "nope"},
+            {"results": [None]},
+            {"results": ["https://example.org/raven2"]},
+            {},
+        ):
+            with self.subTest(payload=json.dumps(payload)):
+                fixture, provider = self.live_provider()
+                fixture.responses["/search"] = payload
+                with self.assertRaises(server.ProviderContentError):
+                    provider.search(
+                        "raven2",
+                        1,
+                        {
+                            "published_after": "",
+                            "published_before": "",
+                            "max_age_hours": None,
+                            "include_domains": [],
+                            "exclude_domains": [],
+                        },
+                    )
+
     def test_a_per_url_status_failure_is_reported_with_its_tag(self):
         fixture, provider = self.live_provider()
         url = "https://example.org/raven2"
