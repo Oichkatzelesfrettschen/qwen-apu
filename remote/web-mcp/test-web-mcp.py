@@ -1406,6 +1406,44 @@ class WebMcpServerTest(unittest.TestCase):
             text.splitlines()[-1], f"Results Omitted: {10 - rendered_results}"
         )
 
+    def test_the_omission_marker_fits_inside_the_output_cap(self):
+        """The rendered search holds its cap with the marker appended.
+
+        Title, author, URL, and highlight lengths are provider-chosen, so a
+        block set can land just under the cap and `Results Omitted:` then
+        pushes the reply past it. The admission loop reserves the marker and
+        counts the separators the join writes, so every padding in the sweep
+        that omits a result stays inside the cap.
+        """
+        omitted_seen = False
+        for padding in range(890, 900):
+            results = [
+                {
+                    "title": "T" * server.TITLE_CHARACTER_CAP,
+                    "url": f"https://bulk.example.org/{index}" + "a" * 1900,
+                    "author": "A" * server.AUTHOR_CHARACTER_CAP,
+                    "publishedDate": "2026-01-01",
+                    "highlights": ["x" * padding] * server.HIGHLIGHT_COUNT_CAP,
+                }
+                for index in range(10)
+            ]
+            rendered, issued = server.render_search_results(
+                results, "fake", TOKEN_SECRET, "sid", {}, 0, 900
+            )
+            with self.subTest(padding=padding):
+                self.assertLessEqual(
+                    len(rendered), server.SEARCH_OUTPUT_CHARACTER_CAP
+                )
+            if "Results Omitted:" in rendered:
+                omitted_seen = True
+                self.assertEqual(
+                    rendered.splitlines()[-1],
+                    f"Results Omitted: {10 - len(issued)}",
+                )
+        self.assertTrue(
+            omitted_seen, "the sweep omitted no result and tests no marker"
+        )
+
     def test_provider_fields_collapse_to_one_line_each(self):
         session = self.open_session()
         text = self.result_text(self.search(session, query="ragged fields"))

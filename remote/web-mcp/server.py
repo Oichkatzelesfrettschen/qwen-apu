@@ -1583,7 +1583,15 @@ def render_search_results(
     """
     blocks = []
     issued = []
-    rendered_characters = 0
+    block_characters = 0
+    # The marker sits outside every block and the join writes five characters
+    # between two blocks and four after the last, so admission counts the
+    # exact length the reply will carry and reserves the widest marker the
+    # result count can produce. Provider-chosen field lengths would otherwise
+    # leave the blocks just under the cap and the marker past it.
+    admitted_characters = SEARCH_OUTPUT_CHARACTER_CAP - len(
+        f"\nResults Omitted: {len(results)}"
+    )
     for record in results:
         url = canonical_url(str(record.get("url", "")))
         highlights = record.get("highlights") or []
@@ -1612,10 +1620,11 @@ def render_search_results(
         for highlight in highlights[:HIGHLIGHT_COUNT_CAP]:
             lines.append(f"- {clip(highlight, HIGHLIGHT_CHARACTER_CAP)}")
         block = "\n".join(lines)
-        rendered_characters += len(block) + 4
-        if rendered_characters > SEARCH_OUTPUT_CHARACTER_CAP:
+        projected = block_characters + len(block) + 5 * (len(blocks) + 1) - 1
+        if projected > admitted_characters:
             break
         blocks.append(block)
+        block_characters += len(block)
         issued.append((url, provider_result_id(record)))
     if not blocks:
         return "No results.", issued
