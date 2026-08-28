@@ -113,12 +113,22 @@ grep -F 'const totalOmitted = serverOmitted + (blocks.length - kept.length);' \
     "$fallback_ui" >/dev/null
 grep -F 'const searchTruncated = truncateSearchResult(text);' "$fallback_ui" >/dev/null
 
+# Clear can land while a stream, an approval dialog, or a fetch is still
+# awaited, so every later write to `history` for that turn checks the
+# conversation generation Clear increments and discards the result rather
+# than appending it to the conversation Clear just replaced.
+grep -F 'let conversationGeneration = 0;' "$fallback_ui" >/dev/null
+grep -F 'conversationGeneration++;' "$fallback_ui" >/dev/null
+grep -F 'const turnGeneration = conversationGeneration;' "$fallback_ui" >/dev/null
+grep -F 'function answerCall(callId, toolName, content, turnGeneration) {' "$fallback_ui" >/dev/null
+grep -F 'if (turnGeneration !== conversationGeneration) return;' "$fallback_ui" >/dev/null
+
 # A fetch runs without a grant, because the wrapper enforces the signed Result
 # ID and its own allowance, and the page bounds the pages one turn reads.
 grep -F 'const WEB_FETCH_BUDGET_PER_TURN = 2;' "$fallback_ui" >/dev/null
 grep -F 'if (fetchBudget.remaining <= 0) {' "$fallback_ui" >/dev/null
 grep -F 'fetchBudget.remaining--;' "$fallback_ui" >/dev/null
-grep -F 'answerCall(callId, toolName, await executeWebTool(toolName, params));' \
+grep -F 'answerCall(callId, toolName, await executeWebTool(toolName, params), turnGeneration);' \
     "$fallback_ui" >/dev/null
 
 # A demo or otherwise advertised call receives a tool message too: every

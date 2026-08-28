@@ -144,6 +144,12 @@
 const $ = s => document.querySelector(s);
 const logEl = $('#log');
 let history = [];
+// Clear increments this so an in-flight turn can tell the conversation it was
+// answering is gone. A tool result that streams or executes across an await
+// boundary carries the generation it was proposed under, and a mismatch at
+// the point history would be mutated discards the result instead of
+// appending it to whatever `history` the Clear button just replaced.
+let conversationGeneration = 0;
 let attachments = [];   // {name, text, tokens, tokenModel}
 let nctx = null;
 let nctxModel = null;
@@ -822,7 +828,10 @@ function turn(who, cls) {
   return { root: d, body: b };
 }
 
-$('#clear').onclick = () => { history = []; toolCallSequence = 0; logEl.textContent = ''; };
+$('#clear').onclick = () => {
+  conversationGeneration++;
+  history = []; toolCallSequence = 0; logEl.textContent = '';
+};
 
 $('#input').addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
@@ -1026,14 +1035,17 @@ function proposedFetchParams(argumentText) {
   return params;
 }
 
-function answerCall(callId, toolName, content) {
+function answerCall(callId, toolName, content, turnGeneration) {
   // Every assistant message carrying tool_calls needs one tool message per
   // call before the array is a legal request, so each branch of the round
-  // answers its own call.
+  // answers its own call. A result whose turnGeneration no longer matches
+  // conversationGeneration was proposed against a conversation Clear already
+  // replaced, and appending it here would land in the wrong transcript.
+  if (turnGeneration !== conversationGeneration) return;
   history.push({ role: 'tool', tool_call_id: callId, name: toolName, content });
 }
 
-async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetchBudget) {
+async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetchBudget, turnGeneration) {
   /* Execute this round's proposed calls and answer each one.
 
      A proposed `web_search_exa` is shown to a human with the arguments it
@@ -1053,7 +1065,7 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
       // toggle is off. The boundary is the state at the moment of the call.
       refused = true;
       answerCall(callId, toolName,
-        `The web surface is off for this turn; ${toolName} did not run.`);
+        `The web surface is off for this turn; ${toolName} did not run.`, turnGeneration);
       continue;
     }
     if (roundBudgetExhausted && WEB_TOOL_NAMES.includes(toolName)) {
@@ -1064,7 +1076,7 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
       // reads. The model reads the same refusal shape a denial produces.
       refused = true;
       answerCall(callId, toolName,
-        `The round budget is exhausted; ${toolName} did not run.`);
+        `The round budget is exhausted; ${toolName} did not run.`, turnGeneration);
       continue;
     }
     if (toolName === WEB_FETCH_TOOL_NAME) {
@@ -1072,7 +1084,7 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
         refused = true;
         answerCall(callId, toolName,
           `The per-turn budget of ${WEB_FETCH_BUDGET_PER_TURN} fetches is spent; ` +
-          'this fetch did not run.');
+          'this fetch did not run.', turnGeneration);
         continue;
       }
       let params;
@@ -1080,11 +1092,11 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
         params = proposedFetchParams(calls[index].args);
       } catch (error) {
         refused = true;
-        answerCall(callId, toolName, `The fetch did not run: ${error.message || error}`);
+        answerCall(callId, toolName, `The fetch did not run: ${error.message || error}`, turnGeneration);
         continue;
       }
       fetchBudget.remaining--;
-      answerCall(callId, toolName, await executeWebTool(toolName, params));
+      answerCall(callId, toolName, await executeWebTool(toolName, params), turnGeneration);
       continue;
     }
     if (toolName !== WEB_SEARCH_TOOL_NAME) {
@@ -1094,7 +1106,7 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
       // posting a name it made no boundary for.
       refused = true;
       answerCall(callId, toolName,
-        `The served path executes no tool named ${toolName} in this turn.`);
+        `The served path executes no tool named ${toolName} in this turn.`, turnGeneration);
       continue;
     }
     let fields;
@@ -1102,16 +1114,16 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
       fields = proposedSearchFields(calls[index].args);
     } catch (error) {
       refused = true;
-      answerCall(callId, toolName, `The search did not run: ${error.message || error}`);
+      answerCall(callId, toolName, `The search did not run: ${error.message || error}`, turnGeneration);
       continue;
     }
     const outcome = await approveWebSearch(fields);
     if (outcome.decision === 'once') {
       answerCall(callId, toolName, await executeWebTool(
-        toolName, searchRequestParams(fields, outcome.authorization)));
+        toolName, searchRequestParams(fields, outcome.authorization)), turnGeneration);
     } else {
       refused = true;
-      answerCall(callId, toolName, 'The user refused this web search. It did not run.');
+      answerCall(callId, toolName, 'The user refused this web search. It did not run.', turnGeneration);
     }
   }
   if (refused) {
@@ -1141,6 +1153,11 @@ async function send() {
     ? '\n' + attachments.map(a => `[${a.name}]`).join(' ') : '');
   turn('you', 'me').body.textContent = shown;
   history.push({ role: 'user', content });
+  // Every later mutation of `history` in this turn checks against this
+  // snapshot, so a Clear during an awaited stream, approval, or fetch
+  // discards the turn's result instead of writing it into the conversation
+  // Clear just replaced.
+  const turnGeneration = conversationGeneration;
   $('#input').value = '';
   attachments = [];
   renderAttached();
@@ -1161,6 +1178,11 @@ async function send() {
         view.meta.textContent = String(err.message || err);
         return;
       }
+      // The stream awaited network time a Clear can land inside; a stale
+      // generation here means the assistant turn belongs to a conversation
+      // this page no longer holds, so it stops rather than appending to a
+      // fresh one.
+      if (turnGeneration !== conversationGeneration) return;
       const msg = { role: 'assistant', content: outcome.answer };
       let callIds = [];
       if (outcome.calls.length) {
@@ -1173,7 +1195,9 @@ async function send() {
       history.push(msg);
       if (!outcome.calls.length) return;
       await runProposedTools(
-        outcome.calls, callIds, view, round === CONTINUATION_CAP - 1, fetchBudget);
+        outcome.calls, callIds, view, round === CONTINUATION_CAP - 1, fetchBudget,
+        turnGeneration);
+      if (turnGeneration !== conversationGeneration) return;
     }
   } finally {
     busy = false; $('#send').disabled = false;
