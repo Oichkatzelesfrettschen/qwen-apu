@@ -10,12 +10,14 @@ and keeps hostile bytes out of the tracked tree.
 
 import base64
 import hashlib
+import http.server
 import json
 import os
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
@@ -138,6 +140,64 @@ def build_fixture_document():
             },
         },
     }
+
+
+class ExaFixtureServer:
+    """An Exa-shaped endpoint on loopback that records what reached it.
+
+    `ExaProvider` builds the request body and reads the response, and a
+    provider subclass that replaces `_post` measures neither, so the arms that
+    decide where `maxAgeHours` sits and which header carries the key run
+    against a socket. The server binds an ephemeral port on 127.0.0.1 and holds
+    every request line, header set, and body for the assertions.
+    """
+
+    def __init__(self):
+        self.requests = []
+        self.responses = {}
+        self.status_codes = {}
+        recorder = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers.get("content-length", "0"))
+                raw = self.rfile.read(length)
+                recorder.requests.append(
+                    {
+                        "path": self.path,
+                        "headers": {
+                            key.lower(): value
+                            for key, value in self.headers.items()
+                        },
+                        "body": json.loads(raw.decode("utf-8")),
+                    }
+                )
+                code = recorder.status_codes.get(self.path, 200)
+                payload = json.dumps(
+                    recorder.responses.get(self.path, {})
+                ).encode("utf-8")
+                self.send_response(code)
+                self.send_header("content-type", "application/json")
+                self.send_header("content-length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *arguments):
+                return
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    @property
+    def origin(self):
+        host, port = self.server.server_address[:2]
+        return f"http://{host}:{port}"
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=SIGNAL_WAIT_SECONDS)
 
 
 class ServerSession:
@@ -749,16 +809,21 @@ class WebMcpServerTest(unittest.TestCase):
                 self.assertTrue(response["result"]["isError"])
                 self.assertIn(expected, self.result_text(response))
 
-    def test_exa_search_body_carries_the_publication_window(self):
-        captured = {}
+    def live_provider(self):
+        """Return an ExaProvider posting to a fixture server on loopback."""
+        fixture = ExaFixtureServer()
+        self.addCleanup(fixture.close)
+        provider = server.ExaProvider(self.exa_key_path)
+        provider.search_endpoint = fixture.origin + "/search"
+        provider.contents_endpoint = fixture.origin + "/contents"
+        return fixture, provider
 
-        class RecordingProvider(server.ExaProvider):
-            def _post(self, endpoint, body):
-                captured["endpoint"] = endpoint
-                captured["body"] = body
-                return {"results": []}
-
-        RecordingProvider("unused").search(
+    def test_the_search_request_reaches_exa_with_its_key_and_its_filters(self):
+        fixture, provider = self.live_provider()
+        fixture.responses["/search"] = {
+            "results": [{"id": "exa-1", "url": "https://example.org/raven2"}]
+        }
+        results = provider.search(
             "raven2",
             3,
             {
@@ -769,37 +834,162 @@ class WebMcpServerTest(unittest.TestCase):
                 "exclude_domains": ["spam.test"],
             },
         )
-        self.assertEqual(captured["endpoint"], server.EXA_SEARCH_ENDPOINT)
+        self.assertEqual(results[0]["id"], "exa-1")
+        request = fixture.requests[0]
+        self.assertEqual(request["path"], "/search")
+        self.assertEqual(request["headers"]["x-api-key"], EXA_SECRET)
+        self.assertEqual(request["headers"]["content-type"], "application/json")
         self.assertEqual(
-            captured["body"]["contents"],
+            request["body"]["contents"],
             {
                 "highlights": {
                     "query": "raven2",
                     "maxCharacters": server.HIGHLIGHT_CHARACTER_CAP,
-                }
+                },
+                "maxAgeHours": 0,
             },
         )
+        self.assertNotIn("maxAgeHours", set(request["body"]) - {"contents"})
         self.assertEqual(
             {
-                key: captured["body"][key]
+                key: request["body"][key]
                 for key in (
                     "startPublishedDate",
                     "endPublishedDate",
-                    "maxAgeHours",
                     "includeDomains",
                     "excludeDomains",
                     "numResults",
+                    "query",
                 )
             },
             {
                 "startPublishedDate": "2026-01-01",
                 "endPublishedDate": "2026-12-31",
-                "maxAgeHours": 0,
                 "includeDomains": ["example.org"],
                 "excludeDomains": ["spam.test"],
                 "numResults": 3,
+                "query": "raven2",
             },
         )
+
+    def test_an_omitted_cached_age_leaves_the_search_body_without_the_key(self):
+        fixture, provider = self.live_provider()
+        fixture.responses["/search"] = {"results": []}
+        provider.search(
+            "raven2",
+            1,
+            {
+                "published_after": "",
+                "published_before": "",
+                "max_age_hours": None,
+                "include_domains": [],
+                "exclude_domains": [],
+            },
+        )
+        body = fixture.requests[0]["body"]
+        self.assertEqual(set(body), {"query", "numResults", "contents"})
+        self.assertEqual(set(body["contents"]), {"highlights"})
+
+    def test_the_contents_request_carries_the_cached_age_at_its_top_level(self):
+        fixture, provider = self.live_provider()
+        url = "https://example.org/raven2"
+        fixture.responses["/contents"] = {
+            "statuses": [{"id": "exa-1", "status": "success"}],
+            "results": [{"id": "exa-1", "url": url, "text": "page body"}],
+        }
+        record = provider.contents(
+            url,
+            4321,
+            "exa-1",
+            {
+                "max_age_hours": 12,
+                "published_after": "2026-01-01",
+                "published_before": "",
+            },
+        )
+        self.assertEqual(record["text"], "page body")
+        request = fixture.requests[0]
+        self.assertEqual(request["path"], "/contents")
+        self.assertEqual(request["headers"]["x-api-key"], EXA_SECRET)
+        self.assertEqual(
+            request["body"],
+            {
+                "urls": [url],
+                "text": {"maxCharacters": 4321},
+                "maxAgeHours": 12,
+            },
+        )
+
+    def test_a_per_url_status_failure_is_reported_with_its_tag(self):
+        fixture, provider = self.live_provider()
+        url = "https://example.org/raven2"
+        fixture.responses["/contents"] = {
+            "statuses": [
+                {
+                    "id": "exa-1",
+                    "status": "error",
+                    "error": {"tag": "CRAWL_TIMEOUT"},
+                }
+            ],
+            "results": [{"id": "exa-other", "url": "https://other.test/x", "text": "x"}],
+        }
+        with self.assertRaises(server.ProviderContentError) as raised:
+            provider.contents(url, 100, "exa-1", None)
+        self.assertIn("CRAWL_TIMEOUT", str(raised.exception))
+
+    def test_an_http_status_from_exa_is_a_provider_http_error(self):
+        fixture, provider = self.live_provider()
+        fixture.status_codes["/search"] = 429
+        fixture.responses["/search"] = {"error": "slow down"}
+        with self.assertRaises(server.ProviderHttpError) as raised:
+            provider.search(
+                "raven2",
+                1,
+                {
+                    "published_after": "",
+                    "published_before": "",
+                    "max_age_hours": None,
+                    "include_domains": [],
+                    "exclude_domains": [],
+                },
+            )
+        self.assertIn("429", str(raised.exception))
+
+    def test_an_oversized_provider_response_is_refused_during_the_read(self):
+        fixture, provider = self.live_provider()
+        fixture.responses["/search"] = {
+            "results": [{"url": "https://example.org/x", "title": "t" * 5000000}]
+        }
+        with self.assertRaises(server.ProviderContentError) as raised:
+            provider.search(
+                "raven2",
+                1,
+                {
+                    "published_after": "",
+                    "published_before": "",
+                    "max_age_hours": None,
+                    "include_domains": [],
+                    "exclude_domains": [],
+                },
+            )
+        self.assertIn("byte cap", str(raised.exception))
+
+    def test_a_malformed_provider_response_is_a_content_error(self):
+        fixture, provider = self.live_provider()
+
+        fixture.responses["/search"] = None
+        with self.assertRaises(server.ProviderContentError):
+            provider.search(
+                "raven2",
+                1,
+                {
+                    "published_after": "",
+                    "published_before": "",
+                    "max_age_hours": None,
+                    "include_domains": [],
+                    "exclude_domains": [],
+                },
+            )
 
     def test_provider_string_fields_are_clipped_to_their_caps(self):
         session = self.open_session()
@@ -1295,7 +1485,8 @@ class WebMcpServerTest(unittest.TestCase):
         RecordingProvider("unused").contents("https://example.org/x", 4321)
         self.assertEqual(captured["endpoint"], server.EXA_CONTENTS_ENDPOINT)
         self.assertEqual(
-            captured["body"], {"urls": ["https://example.org/x"], "text": {"maxCharacters": 4321}}
+            captured["body"],
+            {"urls": ["https://example.org/x"], "text": {"maxCharacters": 4321}},
         )
 
     def test_contents_requires_a_success_status_for_the_signed_url(self):

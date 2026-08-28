@@ -607,6 +607,13 @@ class ExaProvider(Provider):
     def __init__(self, key_file_path):
         self.key_file_path = key_file_path
         self.response_bytes = 0
+        # The endpoints are instance attributes seeded from the module
+        # constants, which lets a test point one instance at a local fixture
+        # server. The configuration reads no endpoint, because a redirected
+        # endpoint would carry the `x-api-key` header to a host of the
+        # redirector's choosing.
+        self.search_endpoint = EXA_SEARCH_ENDPOINT
+        self.contents_endpoint = EXA_CONTENTS_ENDPOINT
 
     def _post(self, endpoint, body):
         api_key = read_secret_file(self.key_file_path, "Exa API")
@@ -645,27 +652,37 @@ class ExaProvider(Provider):
         return document
 
     def search(self, query, max_results, constraints):
+        """Ask /search for ranked results with highlights inside one request.
+
+        Exa's Search API reads `maxAgeHours` inside the `contents` object,
+        beside the highlight request that decides what text is returned, and
+        reads the publication window and the domain filters at the request top
+        level. A cached-age bound written at the top level of a /search body is
+        a key the endpoint ignores, which serves a cached page under a policy
+        the operator granted for a live crawl.
+        """
+        contents = {
+            "highlights": {
+                "query": query,
+                "maxCharacters": HIGHLIGHT_CHARACTER_CAP,
+            }
+        }
+        if constraints["max_age_hours"] is not None:
+            contents["maxAgeHours"] = constraints["max_age_hours"]
         body = {
             "query": query,
             "numResults": max_results,
-            "contents": {
-                "highlights": {
-                    "query": query,
-                    "maxCharacters": HIGHLIGHT_CHARACTER_CAP,
-                }
-            },
+            "contents": contents,
         }
         if constraints["published_after"]:
             body["startPublishedDate"] = constraints["published_after"]
         if constraints["published_before"]:
             body["endPublishedDate"] = constraints["published_before"]
-        if constraints["max_age_hours"] is not None:
-            body["maxAgeHours"] = constraints["max_age_hours"]
         if constraints["include_domains"]:
             body["includeDomains"] = constraints["include_domains"]
         if constraints["exclude_domains"]:
             body["excludeDomains"] = constraints["exclude_domains"]
-        document = self._post(EXA_SEARCH_ENDPOINT, body)
+        document = self._post(self.search_endpoint, body)
         results = document.get("results")
         return results if isinstance(results, list) else []
 
@@ -680,10 +697,14 @@ class ExaProvider(Provider):
         any text is returned, matched on the opaque result identifier or the
         canonical URL, since Exa keys an entry by either.
         """
-        document = self._post(
-            EXA_CONTENTS_ENDPOINT,
-            {"urls": [url], "text": {"maxCharacters": max_characters}},
-        )
+        body = {"urls": [url], "text": {"maxCharacters": max_characters}}
+        # The Contents API reads `maxAgeHours` at the request top level, where
+        # the Search API reads it inside `contents`, so the same policy takes
+        # two positions and the fetch spends the age the search was granted.
+        policy = freshness_policy(freshness or {})
+        if policy["max_age_hours"] is not None:
+            body["maxAgeHours"] = policy["max_age_hours"]
+        document = self._post(self.contents_endpoint, body)
         status = select_by_reference(
             document.get("statuses"), url, provider_result_id
         )
