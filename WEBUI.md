@@ -129,11 +129,24 @@ ssh TARGET '$HOME/qwen-laptop-setup/remote/qwen-webui-control.sh key'
 
 A LAN reader opens `http://qwen-laptop:8080` directly. A loopback
 deployment instead keeps a tunnel running on the client workstation and opens
-`http://127.0.0.1:8080`:
+`http://127.0.0.1:8080`. The helper forwards the approval broker on port 8571
+beside the server:
 
 ```sh
 ./remote/connect-qwen-webui.sh TARGET 8080 8080
 ```
+
+When the browser-facing server port differs from the remote server port, bind
+the broker to that exact browser origin before starting the remote session:
+
+```sh
+ssh TARGET 'QWEN_WEB_BROKER_ORIGIN=http://127.0.0.1:18080 $HOME/qwen-laptop-setup/remote/qwen-webui-control.sh start'
+./remote/connect-qwen-webui.sh TARGET 18080 8080
+```
+
+`QWEN_WEB_BROKER_LOCAL_PORT` and `QWEN_WEB_BROKER_PORT` override the local and
+remote broker tunnel endpoints together with the matching Web UI broker
+configuration.
 
 Inspect status and retained log tails:
 

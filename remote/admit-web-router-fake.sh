@@ -62,11 +62,14 @@ for tool in python3 curl jq sha256sum ss pgrep; do
     fi
 done
 
+umask 077
 mkdir -p "$output_directory"
 output_directory=$(CDPATH='' cd -- "$output_directory" && pwd)
 summary=$output_directory/summary.tsv
 : >"$summary"
 failures=0
+restoration_required=0
+restoration_finished=0
 record() {
     printf '%s\t%s\t%s\n' "$1" "$2" "$3" >>"$summary"
     printf '%s=%s %s\n' "$1" "$2" "$3"
@@ -111,7 +114,7 @@ mkdir -p "$output_directory/http"
 # An early exit under set -e names itself in run.log rather than leaving an
 # empty summary as the only trace.
 note_exit() {
-    exit_status=$?
+    exit_status=${1:-$?}
     if [ "$exit_status" -ne 0 ]; then
         printf 'admission_aborted status=%s utc=%s\n' "$exit_status" "$(utc)" >>"$output_directory/run.log"
     fi
@@ -139,6 +142,56 @@ if [ -x "$script_directory/hash-load-closure.sh" ]; then
 fi
 record ordinary_router_recorded pass "running=$ordinary_running server=$(cut -c1-16 "$output_directory/ordinary-llama-server.sha256")"
 
+restore_ordinary() {
+    if [ "$restoration_finished" = 1 ]; then
+        return 0
+    fi
+    restoration_finished=1
+    if [ "$restore" != 1 ]; then
+        record ordinary_restore skipped 'QWEN_ADMISSION_RESTORE=0'
+        return 0
+    fi
+    if pgrep -x llama-server >/dev/null 2>&1; then
+        "$script_directory/qwen-teardown.sh" >"$output_directory/pre-restore-teardown.log" 2>&1 || true
+    fi
+    if QWEN_LLAMA_SERVER=$ordinary_server QWEN_ROUTER=1 QWEN_BIND_HOST=127.0.0.1 \
+        "$script_directory/qwen-launch.sh" low-async \
+        >"$output_directory/ordinary-restore.log" 2>&1; then
+        restored_server=$(readlink -f "/proc/$(pgrep -x llama-server | head -1)/exe" 2>/dev/null || true)
+        call restored-models GET "$router_origin/v1/models"
+        jq -r '.data[].id' "$call_out" 2>/dev/null | sort >"$output_directory/restored-model-ids.txt" || true
+        if [ "$restored_server" != "$ordinary_server" ]; then
+            record ordinary_restore fail \
+                "server differs expected=$ordinary_server actual=${restored_server:-absent}"
+            return 1
+        elif [ -s "$output_directory/ordinary-model-ids.txt" ] && \
+           ! cmp -s "$output_directory/ordinary-model-ids.txt" "$output_directory/restored-model-ids.txt"; then
+            record ordinary_restore fail 'model roster differs from the one found'
+            return 1
+        else
+            record ordinary_restore pass "models=$(tr '\n' ',' <"$output_directory/restored-model-ids.txt")"
+        fi
+    else
+        record ordinary_restore fail "$(tail -1 "$output_directory/ordinary-restore.log")"
+        return 1
+    fi
+}
+
+finish_run() {
+    exit_status=$?
+    trap - EXIT HUP INT TERM
+    if [ "$restoration_required" = 1 ] && [ "$restoration_finished" != 1 ]; then
+        restore_ordinary || exit_status=1
+    fi
+    note_exit "$exit_status"
+    exit "$exit_status"
+}
+trap finish_run EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+restoration_required=1
 if [ "$ordinary_running" = 1 ]; then
     if "$script_directory/qwen-teardown.sh" >"$output_directory/ordinary-teardown.log" 2>&1; then
         record ordinary_teardown pass 'no residue'
@@ -148,31 +201,7 @@ if [ "$ordinary_running" = 1 ]; then
     fi
 fi
 
-restore_ordinary() {
-    if [ "$restore" != 1 ]; then
-        record ordinary_restore skipped 'QWEN_ADMISSION_RESTORE=0'
-        return 0
-    fi
-    if pgrep -x llama-server >/dev/null 2>&1; then
-        "$script_directory/qwen-teardown.sh" >"$output_directory/pre-restore-teardown.log" 2>&1 || true
-    fi
-    if QWEN_ROUTER=1 QWEN_BIND_HOST=127.0.0.1 "$script_directory/qwen-launch.sh" low-async \
-        >"$output_directory/ordinary-restore.log" 2>&1; then
-        call restored-models GET "$router_origin/v1/models"
-        jq -r '.data[].id' "$call_out" 2>/dev/null | sort >"$output_directory/restored-model-ids.txt" || true
-        if [ -s "$output_directory/ordinary-model-ids.txt" ] && \
-           ! cmp -s "$output_directory/ordinary-model-ids.txt" "$output_directory/restored-model-ids.txt"; then
-            record ordinary_restore fail 'model roster differs from the one found'
-        else
-            record ordinary_restore pass "models=$(tr '\n' ',' <"$output_directory/restored-model-ids.txt")"
-        fi
-    else
-        record ordinary_restore fail "$(tail -1 "$output_directory/ordinary-restore.log")"
-    fi
-}
-
 # 2. Test inputs: signing key, state directory, one-row ledger, preset.
-umask 077
 mkdir -p "$output_directory/keys" "$output_directory/web-mcp"
 chmod 700 "$output_directory/keys" "$output_directory/web-mcp"
 token_key_file=$output_directory/keys/token.key
@@ -180,7 +209,6 @@ if [ ! -s "$token_key_file" ]; then
     python3 -c 'import secrets; print(secrets.token_hex(32))' >"$token_key_file"
 fi
 chmod 600 "$token_key_file"
-umask 022
 
 registry_row=$(grep -v '^#' "$registry" | awk -F'\t' -v id="$model_id" '$1 == id')
 if [ -z "$registry_row" ]; then

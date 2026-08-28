@@ -38,6 +38,7 @@ broker_program=${QWEN_WEB_BROKER_PROGRAM:-"$script_directory/web-mcp/authorize-b
 broker_port=${QWEN_WEB_BROKER_PORT:-8571}
 broker_state_directory=${QWEN_WEB_STATE_DIR:-"$state_directory/web-mcp"}
 broker_log=$state_directory/authorize-broker.log
+broker_origin=${QWEN_WEB_BROKER_ORIGIN:-"http://${QWEN_BIND_HOST:-127.0.0.1}:$server_port"}
 case ${QWEN_ROUTER_PRESETS:-} in
     "$state_directory"/.router-presets.active.*)
         router_preset_snapshot=$QWEN_ROUTER_PRESETS
@@ -83,6 +84,23 @@ trap cleanup EXIT
 trap 'terminate_session 129' HUP
 trap 'terminate_session 130' INT
 trap 'terminate_session 143' TERM
+
+process_running() {
+    process_pid=$1
+    [ -n "$process_pid" ] || return 1
+    kill -0 "$process_pid" 2>/dev/null || return 1
+    [ -r "/proc/$process_pid/stat" ] || return 1
+    process_state=$(sed 's/^.*) //' "/proc/$process_pid/stat" | awk '{ print $1 }')
+    [ "$process_state" != Z ] && [ "$process_state" != X ]
+}
+
+require_broker_running() {
+    if [ "$broker_enabled" = 1 ] && ! process_running "$broker_pid"; then
+        printf 'state=failed reason=authorization_broker_exited broker_pid=%s utc=%s\n' \
+            "$broker_pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
+        exit 1
+    fi
+}
 
 if [ -s "$pid_file" ]; then
     prior_pid=$(sed -n '1p' "$pid_file")
@@ -154,7 +172,7 @@ if [ "$broker_enabled" = 1 ]; then
     : >"$broker_log"
     chmod 600 "$broker_log"
     QWEN_WEB_STATE_DIR=$broker_state_directory \
-    QWEN_WEB_BROKER_ORIGIN="http://${QWEN_BIND_HOST:-127.0.0.1}:$server_port" \
+    QWEN_WEB_BROKER_ORIGIN=$broker_origin \
         "$broker_program" --host 127.0.0.1 --port "$broker_port" \
         --state-dir "$broker_state_directory" \
         --profile "$QWEN_WEB_PROFILE" \
@@ -162,6 +180,21 @@ if [ "$broker_enabled" = 1 ]; then
         --api-key-file "$api_key_file" \
         >"$broker_log" 2>&1 &
     broker_pid=$!
+    if ! process_running "$broker_pid"; then
+        printf 'state=failed reason=authorization_broker_exited broker_pid=%s utc=%s\n' \
+            "$broker_pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
+        exit 1
+    fi
+    broker_start_time=$(sed 's/^.*) //' "/proc/$broker_pid/stat" | awk '{ print $20 }')
+    {
+        printf 'state=starting broker_pid=%s utc=%s\n' \
+            "$broker_pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf 'broker secret_file=%s\n' \
+            "$broker_state_directory/authorize-session.secret"
+        printf 'broker_identity pid=%s start_time=%s profile=%s provider=%s signing_key_sha256=%s\n' \
+            "$broker_pid" "$broker_start_time" "$QWEN_WEB_PROFILE" \
+            "${QWEN_WEB_PROVIDER:-exa}" "$broker_signing_key_sha256"
+    } >"$status_file"
 
     broker_ready=0
     attempt=0
@@ -196,7 +229,7 @@ if [ "$broker_enabled" = 1 ]; then
     health_profile=$(health_field profile)
     health_provider=$(health_field provider)
     health_key=$(health_field signing_key_sha256)
-    broker_start_time=$(health_field start_time)
+    health_start_time=$(health_field start_time)
     health_mismatch=''
     [ "$health_pid" = "$broker_pid" ] || health_mismatch="pid=$health_pid"
     [ "$health_profile" = "$QWEN_WEB_PROFILE" ] || \
@@ -205,8 +238,10 @@ if [ "$broker_enabled" = 1 ]; then
         health_mismatch="$health_mismatch provider=$health_provider"
     [ "$health_key" = "$broker_signing_key_sha256" ] || \
         health_mismatch="$health_mismatch signing_key=mismatch"
-    case $broker_start_time in
+    case $health_start_time in
         '' | *[!0-9]*) health_mismatch="$health_mismatch start_time=absent" ;;
+        "$broker_start_time") ;;
+        *) health_mismatch="$health_mismatch start_time=$health_start_time" ;;
     esac
     if [ -n "$health_mismatch" ]; then
         printf 'state=failed reason=authorization_broker_identity_mismatch port=%s mismatch=%s utc=%s\n' \
@@ -240,6 +275,7 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
     readiness_marker='starting server in router mode'
 fi
 while [ "$attempt" -lt 1200 ]; do
+    require_broker_running
     if ! kill -0 "$server_pid" 2>/dev/null; then
         break
     fi
@@ -301,6 +337,7 @@ latency_watchdog_pid=$!
 latency_ready=0
 attempt=0
 while [ "$attempt" -lt 100 ]; do
+    require_broker_running
     if grep -F 'probe_start ' "$graphics_latency_log" >/dev/null 2>&1; then
         latency_ready=1
         break
@@ -324,6 +361,7 @@ kernel_hazard_watchdog_pid=$!
 kernel_watch_ready=0
 attempt=0
 while [ "$attempt" -lt 100 ]; do
+    require_broker_running
     if grep -F 'watch_ready_utc=' "$kernel_hazard_log" >/dev/null 2>&1; then
         kernel_watch_ready=1
         break
@@ -344,6 +382,7 @@ fi
     "$vulkan_profile" "$latency_watchdog_pid" \
     "$kernel_hazard_watchdog_pid" &
 monitor_pid=$!
+require_broker_running
 # The paced profile uses the aggregate busy ceiling. The serialized LOW
 # profile uses the MEDIUM graphics-family deadline as its responsiveness gate.
 #
@@ -400,6 +439,35 @@ if [ -n "$broker_pid" ]; then
         "${QWEN_WEB_PROVIDER:-exa}" "$broker_signing_key_sha256" >>"$status_file"
 fi
 
+supervised_component=server
+while process_running "$server_pid"; do
+    if ! process_running "$monitor_pid"; then
+        supervised_component=monitor
+        break
+    fi
+    if ! process_running "$latency_watchdog_pid"; then
+        supervised_component=latency_watchdog
+        break
+    fi
+    if ! process_running "$kernel_hazard_watchdog_pid"; then
+        supervised_component=kernel_hazard_watchdog
+        break
+    fi
+    if [ -n "$broker_pid" ] && ! process_running "$broker_pid"; then
+        supervised_component=authorization_broker
+        break
+    fi
+    sleep 0.1
+done
+if [ "$supervised_component" != server ]; then
+    printf 'state=failed reason=%s_exited utc=%s\n' \
+        "$supervised_component" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
+fi
+for supervised_pid in "$server_pid" "$monitor_pid" "$latency_watchdog_pid" \
+        "$kernel_hazard_watchdog_pid" "$broker_pid"; do
+    [ -n "$supervised_pid" ] || continue
+    kill "$supervised_pid" 2>/dev/null || true
+done
 set +e
 wait "$server_pid"
 server_status=$?
@@ -409,14 +477,25 @@ wait "$latency_watchdog_pid"
 latency_status=$?
 wait "$kernel_hazard_watchdog_pid"
 kernel_hazard_status=$?
+broker_status=0
+if [ -n "$broker_pid" ]; then
+    wait "$broker_pid"
+    broker_status=$?
+fi
 set -e
 server_pid=""
 monitor_pid=""
 latency_watchdog_pid=""
 kernel_hazard_watchdog_pid=""
-printf 'state=stopped server_status=%s monitor_status=%s latency_status=%s kernel_hazard_status=%s profile=%s utc=%s\n' \
+broker_pid=""
+session_status=$server_status
+if [ "$supervised_component" != server ]; then
+    session_status=1
+fi
+printf 'state=stopped server_status=%s monitor_status=%s latency_status=%s kernel_hazard_status=%s broker_status=%s stopped_component=%s profile=%s utc=%s\n' \
     "$server_status" "$monitor_status" "$latency_status" \
-    "$kernel_hazard_status" "$vulkan_profile" \
+    "$kernel_hazard_status" "$broker_status" "$supervised_component" \
+    "$vulkan_profile" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     >"$status_file"
-exit "$server_status"
+exit "$session_status"
