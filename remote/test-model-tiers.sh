@@ -383,9 +383,9 @@ mkdir -p "$fixture_reasons" "$fixture_model_root/Hidden" \
 : >"$fixture_reasons/profile-record.md"
 : >"$fixture_reasons/archived-record.md"
 printf '%s\n' \
-    'hidden-model	fixture	Hidden/model.gguf	fetch.sh	8192	8192	8192	q8_0	q4_0	on	none	-	-	-	untested	production	128	32	-	-' \
-    'profile-model	fixture	Profile/model.gguf	fetch.sh	8192	8192	8192	q8_0	q4_0	on	none	-	-	-	untested	production	128	32	-	-' \
-    'archived-model	fixture	Archived/model.gguf	fetch.sh	8192	8192	8192	q8_0	q4_0	on	none	-	-	-	untested	archive	128	32	-	-' \
+    'hidden-model	fixture	Hidden/model.gguf	fetch.sh	8192	8192	8192	q8_0	q4_0	on	none	-	-	-	untested	production	128	32	-	-	unmeasured	refused' \
+    'profile-model	fixture	Profile/model.gguf	fetch.sh	8192	8192	8192	q8_0	q4_0	on	none	-	-	-	untested	production	128	32	-	-	unmeasured	refused' \
+    'archived-model	fixture	Archived/model.gguf	fetch.sh	8192	8192	8192	q8_0	q4_0	on	none	-	-	-	untested	archive	128	32	-	-	unmeasured	refused' \
     >"$fixture_registry"
 printf '%s\n' \
     'hidden-record	model	hidden-model	device-lost	-	-	-	-	-	-	-	-	evidence/quarantine/hidden-record.md	any' \

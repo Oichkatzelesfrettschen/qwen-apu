@@ -151,9 +151,10 @@ grep -F 'context size exceeds the admitted ceiling for this cache policy: 4097 >
 # A fabricated registry carries a triple the fallback never produces, so this
 # check separates the registry read from the built-in default.
 fabricated_registry=$temporary_directory/models.tsv
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     fabricated research fabricated.gguf download-qwen38-4b-distill-q4km.sh \
     4096 8192 8192 q5_1 iq4_nl auto none - - - untested candidate 256 64 4096 - \
+    unmeasured refused \
     >"$fabricated_registry"
 registry_model=$temporary_directory/fabricated.gguf
 : >"$registry_model"
@@ -621,9 +622,9 @@ grep -F "router preset section fabricated carries LLAMA_ARG_MODEL $alternate_mod
 # tuple field still matches. Archive and rejected rows never reach a generated
 # router preset.
 archived_registry=$temporary_directory/archived-models.tsv
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     fabricated research fabricated.gguf download-qwen38-4b-distill-q4km.sh \
-    4096 8192 8192 q5_1 iq4_nl auto none - - - untested archive 256 64 4096 - \
+    4096 8192 8192 q5_1 iq4_nl auto none - - - untested archive 256 64 4096 - unmeasured refused \
     >"$archived_registry"
 if QWEN_MODEL_REGISTRY=$archived_registry QWEN_MODEL_ROOT=$router_model_root \
     QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$router_output \
@@ -640,9 +641,9 @@ grep -F 'router preset section fabricated has non-servable registry tier archive
 # A quarantine tier requires both the durable override and model-scope
 # router-child authority. The marker alone cannot manufacture that authority.
 quarantine_tier_registry=$temporary_directory/quarantine-tier-models.tsv
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     fabricated research fabricated.gguf download-qwen38-4b-distill-q4km.sh \
-    4096 8192 8192 q5_1 iq4_nl auto none - - - untested quarantine 256 64 4096 - \
+    4096 8192 8192 q5_1 iq4_nl auto none - - - untested quarantine 256 64 4096 - unmeasured refused \
     >"$quarantine_tier_registry"
 unowned_quarantine_preset=$temporary_directory/unowned-quarantine-tier.ini
 printf '%s\n' '# qwen_router_include_quarantine=1' \
@@ -926,9 +927,10 @@ grep -F 'generated router presets omit quarantine provenance' \
 # the quarantined geometry resets the amdgpu compute ring on a live desktop,
 # which is why this is a refusal rather than a warning.
 quarantine_registry=$temporary_directory/quarantine-models.tsv
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     quarantined research quarantined.gguf download-qwen38-4b-distill-q4km.sh \
     4096 16384 16384 q8_0 q4_0 on none - - - untested production 2048 512 4096 - \
+    unmeasured refused \
     >"$quarantine_registry"
 quarantine_table=$temporary_directory/quarantine.tsv
 printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \

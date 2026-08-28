@@ -77,6 +77,15 @@ printf '%s\n' '#!/bin/sh' 'set -eu' \
 cp "$apply_fake_sampler" "$fake_sampler"
 chmod +x "$fake_sampler"
 
+# A sampler that exits without writing reproduces what a loaded scheduler does to
+# the real one: the probe kills it as soon as the arm ends, so a fast arm can
+# reach the summary before the first row is written and the file never exists.
+silent_sampler=$temporary_directory/silent-clock-sampler.sh
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    'printf "%s\\n" "$$" >"${QWEN_TEST_SAMPLER_PID_FILE:?}"' \
+    'exit 0' >"$silent_sampler"
+chmod +x "$silent_sampler"
+
 fake_bench=$temporary_directory/llama-bench
 printf '%s\n' '#!/bin/sh' 'set -eu' \
     'case ${QWEN_TEST_BENCH_MODE:-success} in' \
@@ -238,6 +247,30 @@ if [ -e "$wedge_output/d1-b1-ub1.dmesg.txt" ]; then
 fi
 awk -F'\t' '$1 == "d1-b1-ub1" && $9 == "unavailable" { found = 1 }
             END { exit !found }' "$wedge_output/wedge-summary.tsv"
+
+# A sampler that writes nothing leaves the arm without device covariates, which
+# this probe records as `unavailable` alongside every other absent device
+# reading rather than ending the sweep. It exists to find a wedge, not to
+# compare rates, so a missing covariate names itself.
+silent_output=$temporary_directory/wedge-silent-sampler
+active_fixture=depth-wedge-silent-clock-sampler
+diagnostic_file=$temporary_directory/wedge-silent.stderr
+QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$silent_sampler \
+QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_WEDGE_DEPTHS=1 \
+QWEN_WEDGE_GEOMETRIES=1:1 PATH="$fake_bin:$PATH" \
+    "$script_directory/probe-depth-wedge.sh" "$model_path" "$silent_output" \
+    >"$temporary_directory/wedge-silent.stdout" \
+    2>"$temporary_directory/wedge-silent.stderr"
+# Columns 13 and 14 are the memory peaks and 17 and 18 the clock and
+# temperature, so naming all four checks both readers of the sampler file.
+if ! awk -F'\t' '$1 == "d1-b1-ub1" && $13 == "unavailable" && $14 == "unavailable" &&
+        $17 == "unavailable" && $18 == "unavailable" {
+        found = 1 } END { exit !found }' \
+        "$silent_output/wedge-summary.tsv"; then
+    printf 'depth wedge did not record unavailable clocks for a silent sampler\n' >&2
+    cat "$silent_output/wedge-summary.tsv" >&2
+    exit 1
+fi
 
 # Reusing a completed output directory resumes from retained arm identity. The
 # row remains unique and the failing bench mode proves no recorded arm reruns or

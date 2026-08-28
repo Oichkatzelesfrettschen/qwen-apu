@@ -37,6 +37,33 @@ on the source host.
 | `libggml-vulkan.so` | 43,788,776 | `57675d461a5d15cb7915bc496d1ba37fa7352cb4f4ceb045b73d839a57a7650f` |
 | `Qwen3.5-4B-Q4_K_M.gguf` | 2,740,937,888 | `00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4` |
 | `Qwen3.8-9B-Q4_K_M.gguf` | 5,780,090,176 | `df13d66021cef676f82be74053220fd75af6bf2a6a7fb77f5222ab9e50744a7a` |
+| `Qwen3.8-2B-BF16.gguf` | 3,897,387,392 | `44763f3d83f0a1a3ee63334b60916705dc565d796cb0f2b8c320414c57f4ac48` |
+| `Qwen3.5-0.8B-bf16.gguf` | 1,557,662,528 | `ad1549eedc613064971dcbbbfab6c9b7990984d1c9ab38f792c6f2ec1207bbc2` |
+
+The two F16 checkpoints carry no row above, because neither publisher ships
+one. The generator is the replay authority for a derived file, and each has a
+named one:
+
+```sh
+remote/derive-qwen38-2b-distill-f16.sh   # Qwen3.8-2B-F16.gguf
+remote/derive-qwen35-08b-f16.sh          # Qwen3.5-0.8B-F16.gguf
+```
+
+Both call `remote/derive-f16-artifact.sh`, which runs the pinned BF16 fetch,
+converts with `llama-quantize` at type F16, and admits the result on two
+properties measured against the just-verified source: the streamed byte count
+per token is unchanged, since the value type is the only thing the conversion
+may change, and no tensor remains BF16. The 0.8B streams 1,505,783,040 bytes
+per token and the 2B streams 3,764,747,520, each identical to its source. Of
+each file's bytes, 99.17% and 99.66% are reported as BF16 before the conversion
+and as F16 after; the remainder is the F32 tensors the recipe keeps and the
+metadata block.
+
+A derived artifact carries no digest row because its bytes depend on the
+converter rather than on a publisher's revision, so the same two checks run on
+an artifact already in place. A stale, truncated, or hand-converted file under
+the artifact name is refused and left where it is rather than served on its
+existence alone; removing it is what authorizes a fresh derivation.
 
 The vision fixtures under `remote/quality-images/` are committed rather than
 regenerated, because deflate is not reproducible across hosts: zlib 1.3 on the
@@ -119,3 +146,18 @@ kernels the quantized matrix path calls rather than which libraries load.
 
 Both backends are built from a worktree carrying the repository patch series on
 top of the pinned commit, which `remote/verify-llama-patch-series.sh` checks.
+
+## Records derived from a remote partial fetch
+
+`evidence/model-admission/static-admission.tsv` records what fourteen candidate
+GGUFs declare, and no local artifact stands behind it. Each row comes from an
+HTTP range read of the first 16 MiB of one file at one pinned revision, so the
+row's provenance is the repository, the revision, and the artifact name it
+carries rather than a file this tree holds. `remote/admit-candidate-static.py`
+reproduces any row against those three fields, and the reproduction is a claim
+about the remote revision staying reachable rather than about a retained file.
+
+The record is checkable against a local artifact at exactly one row. The served
+2B distill is on the appliance, and its full local census agrees with the ranged
+read on chat template hash, template byte count, vocabulary hash, vocabulary
+size, tokenizer pre-tokenizer, and the 37,767,168 prediction-block bytes.

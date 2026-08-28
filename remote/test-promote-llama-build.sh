@@ -37,9 +37,15 @@ cat >"$build_directory/bin/llama-server" <<'SERVER'
 exit 1
 SERVER
 chmod +x "$build_directory/bin/llama-server"
+# The placement gate reads the owner of the model buffer line rather than the
+# word CPU, so the fixture emits the line a strict Vulkan load prints.
+# QWEN_TEST_STRICT_PLACEMENT_OWNER moves the weights to another owner, which is
+# what lets the gate be shown to fire rather than merely to stay silent.
 cat >"$build_directory/bin/llama-cli" <<'CLIENT'
 #!/bin/sh
 : >"${QWEN_TEST_STRICT_SMOKE_MARKER:?}"
+printf 'load_tensors: %s model buffer size = 1205.21 MiB\n' \
+    "${QWEN_TEST_STRICT_PLACEMENT_OWNER:-Vulkan0}"
 printf 'fixture Vulkan output\n'
 CLIENT
 cat >"$build_directory/bin/llama-mtmd-cli" <<'MULTIMODAL'
@@ -132,6 +138,24 @@ if [ "$(readlink "$work_directory/build-appliance-current")" = "$build_directory
 else
     report current_link_points_at_preset rejected
 fi
+
+# The placement gate is only evidence if it can fail. Moving the model buffer to
+# another owner is the failure the gate exists to catch, and a run printing no
+# loader line at all leaves placement unproven rather than proven.
+QWEN_TEST_STRICT_PLACEMENT_OWNER=Vulkan_Host
+export QWEN_TEST_STRICT_PLACEMENT_OWNER
+set +e
+misplaced_output=$("$promoter" "$preset" "$work_directory" 2>&1)
+misplaced_status=$?
+set -e
+unset QWEN_TEST_STRICT_PLACEMENT_OWNER
+case $misplaced_status:$misplaced_output in
+    0:*) report strict_placement_gate_fires rejected ;;
+    *:*placed\ weights\ off\ the\ device*)
+        report strict_placement_gate_fires accepted ;;
+    *) report strict_placement_gate_fires rejected
+       printf '%s\n' "$misplaced_output" >&2 ;;
+esac
 
 # Both smoke stages are mandatory promotion evidence. The symlink retains its
 # accepted target when either stage lacks the input needed to run.

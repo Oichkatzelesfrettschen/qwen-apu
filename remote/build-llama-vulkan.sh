@@ -80,17 +80,22 @@ cmake -S "$source_directory" -B "$build_directory" -G Ninja \
 # links libmtmd either way, so a vision failure seen through the HTTP path
 # cannot be attributed between the projector, the chat template, and the
 # request shape without a second consumer of the same library.
+# llama-quantize converts between GGUF value formats without a Python
+# toolchain. The publishers of this tree's small checkpoints ship BF16 as their
+# only 16-bit artifact, and RADV on Raven2 reports shaderFloat16 true while
+# exposing no bfloat16 extension, so measuring what the device advertises means
+# producing F16 from BF16 on the appliance itself.
 cmake --build "$build_directory" --parallel "$build_jobs" \
-    --target llama-server llama-cli llama-mtmd-cli
+    --target llama-server llama-cli llama-mtmd-cli llama-quantize
 "$script_directory/test-vulkan-pacing-math.sh" "$source_directory"
 "$script_directory/test-vulkan-submit-limit.sh" "$source_directory"
 
-for required_output in llama-server llama-cli llama-mtmd-cli; do
+for required_output in llama-server llama-cli llama-mtmd-cli llama-quantize; do
     if [ ! -x "$build_directory/bin/$required_output" ]; then
         printf 'the build produced no %s\n' "$required_output" >&2
         exit 1
     fi
 done
 
-printf 'build_commit=%s build_directory=%s cpu_backend=required vulkan_backend=enabled duty_cycle_test=accepted submit_limit_test=accepted multimodal_cli=built parallel_jobs=%s\n' \
+printf 'build_commit=%s build_directory=%s cpu_backend=required vulkan_backend=enabled duty_cycle_test=accepted submit_limit_test=accepted multimodal_cli=built quantize_tool=built parallel_jobs=%s\n' \
     "$actual_commit" "$build_directory" "$build_jobs"

@@ -499,6 +499,43 @@ for row in rows:
               f"answer ({reason})", file=sys.stderr)
         failures += 1
 
+# A row that asks which of two alternatives holds is graded by a substring in
+# the wrong answer's own denial: "not bare; in full leaf" carries the word the
+# correct answer needs. Each contrast row therefore names the reply it must
+# reject beside the ones it must accept, because a grader that only ever sees
+# correct answers proves nothing about the ones it would award.
+CONTRAST_CASES = (
+    ("photo-06", "left", True),
+    ("photo-06", "not left; right", False),
+    ("photo-06", "Right.", False),
+    ("photo-07", "Bare.", True),
+    ("photo-07", "leafless", True),
+    ("photo-07", "not bare; in full leaf", False),
+    ("photo-07", "They are in full leaf.", False),
+    ("photo-08", "Dry.", True),
+    ("photo-08", "dry and golden brown", True),
+    ("photo-08", "not dry; green", False),
+    ("photo-08", "The grass is green and lush.", False),
+    ("photo-09", "Side.", True),
+    ("photo-09", "in profile", True),
+    ("photo-09", "not side-on; head-on", False),
+    ("photo-09", "Head-on.", False),
+    ("photo-09", "photographed from the front", False),
+)
+
+rows_by_id = {row["id"]: row for row in rows}
+for row_id, reply, expected in CONTRAST_CASES:
+    row = rows_by_id.get(row_id)
+    if row is None:
+        print(f"{row_id}: contrast case names an absent row", file=sys.stderr)
+        failures += 1
+        continue
+    passed, reason = module.grade(row, reply)
+    if passed != expected:
+        verdict = "accepted" if passed else "rejected"
+        print(f"{row_id}: grader {verdict} {reply!r} ({reason})", file=sys.stderr)
+        failures += 1
+
 # `$` under re.MULTILINE matches at every line end, so an unanchored pattern
 # accepts a compliant line inside a reply that violated the instruction.
 for row in rows:
@@ -510,4 +547,4 @@ for row in rows:
 if failures:
     print(f"quality_suite_grader=rejected failures={failures}", file=sys.stderr)
     sys.exit(1)
-print(f"quality_suite_grader=accepted cases={len(CASES) + len(TRUNCATION_CASES) + len(TOOL_CASES)} rows={len(rows)}")
+print(f"quality_suite_grader=accepted cases={len(CASES) + len(TRUNCATION_CASES) + len(TOOL_CASES) + len(CONTRAST_CASES)} rows={len(rows)}")

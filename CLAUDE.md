@@ -137,6 +137,19 @@ the absence of any validated safe tuple; `archive` is a valid artifact displaced
 or too slow to serve; `rejected` lost admission on measurement without being
 dangerous. Only `production` and `candidate` reach the preset file.
 
+Tool selection and tool execution are two claims and the registry carries them
+as `raw_tool_selection` and `guarded_tool_execution`. The first is the graded
+tool category, the model unaided. The second states whether the row may execute
+a tool, over `refused`, `validator-gated`, and `unguarded`. Every row reads
+`refused`, because `tool-08` puts an instruction inside the note the user asks
+about and all six measured arms carried the injected city into the call in place
+of the authorized one. Reading one number for both misleads in both directions:
+the 2B distill scores 2 of 10 and still serves text as the `fast-text` default,
+and the 4B distill scores 9 of 10 while failing the one row an execution grant
+exists to survive. A runtime that compares emitted arguments against the user's
+own authorization is what moves a row to `validator-gated`, and this tree holds
+none: the appliance runs without `--tools` and the server executes nothing.
+
 The failure unit is a tuple rather than a checkpoint, so `remote/quarantine.tsv`
 carries two scopes. A `model` row removes a checkpoint entirely; a `profile` row
 removes one tuple of a checkpoint that otherwise serves, and
@@ -217,6 +230,19 @@ response leaves an explicit unknown value while the selected model remains
 routable. A new API-key attempt clears the prior selection until the
 authenticated roster returns, and late responses from an older attempt never
 replace the newer state.
+
+RADV on this device reports `shaderFloat16 = true` and names no bfloat16
+extension, so F16 is the 16-bit format the hardware advertises and BF16 is a
+separate question about llama.cpp's scalar pipelines. Both publishers of this
+tree's small checkpoints ship BF16 as their only 16-bit artifact, so
+`remote/build-llama-vulkan.sh` builds `llama-quantize` and the appliance
+produces F16 from BF16 itself. `remote/run-representation-arm.sh` measures one
+value format against another on the same weights in the order control, subject,
+subject, control, and reports the ratio of paired means, because this tree has
+measured one checkpoint under identical flags spanning 30.6% between sweeps.
+The census figure rather than the file size sets the streamed bytes a ratio
+rests on, since an ordinary load skips the multi-token-prediction block the file
+carries. `evidence/representation-gate-16-bit.md` registers the predictions.
 
 Sequential host read bandwidth measures 7.97 GB/s on one thread and 15.44 GB/s
 on two. Those figures measure the two Zen+ cores through the load/store path,
@@ -312,6 +338,7 @@ remote/run-placement-sweep.sh [OUTPUT]
 remote/reasoning-span-probe.sh OUTPUT_JSON     # against a live server
 remote/summarize-probe.sh ~/qwen-webui-state/graphics-latency.log
 remote/gguf-tensor-census.py MODEL [MODEL...]   # what a Q4_K_M file holds
+remote/admit-candidate-static.py REPO REV      # a header over a range read
 remote/hash-load-closure.sh EXECUTABLE [OUT]    # identity of every loaded object
 remote/run-rocm-vulkan-matrix.sh [OUTPUT]      # HIP against Vulkan, phase by phase
 remote/run-kv-cache-factorial.sh MODEL [OUT]   # cache type crossed with flash attention
@@ -326,6 +353,8 @@ remote/sample-gpu-clocks.sh OUT_TSV [SECONDS]  # the DPM step a rate ran at
 remote/measure-dpm-force.sh MODEL [OUT]         # auto against global high governor
 remote/model-registry.sh id|path SELECTOR [FIELD]
 remote/build-router-presets.sh [OUTPUT_INI]    # the picker, from the tier field
+remote/run-representation-arm.sh LABEL CONTROL SUBJECT
+                                                # one value format against another, ABBA
 
 # Rebuild llama.cpp and the static UI
 remote/build-llama-preset.sh PRESET [SOURCE]   # one directory per build arm
@@ -340,6 +369,10 @@ remote/download-qwen35-4b-q4km.sh
 remote/download-qwen35-4b-mmproj.sh
 remote/download-qwen38-4b-distill-q4km.sh
 remote/download-nanbeige42-3b-q4km.sh            # community conversion
+remote/download-qwen38-2b-distill-bf16.sh       # the 16-bit rung, and the F16 source
+remote/download-qwen35-08b-bf16.sh
+remote/derive-qwen38-2b-distill-f16.sh         # F16 from BF16, validated
+remote/derive-qwen35-08b-f16.sh
 ```
 
 Tests are standalone POSIX shell scripts that exit non-zero on failure. Run one
@@ -355,7 +388,7 @@ remote/test-quality-roster.sh
 remote/test-promote-llama-build.sh
 remote/generate-quality-images.py --check
 remote/test-gguf-tokenizer-identity.py
-remote/test-promote-llama-build.sh
+remote/test-admit-candidate-static.py
 remote/verify-llama-patch-series.sh
 GGUF_PY_PATH=~/src/llama.cpp-qwen-apu/gguf-py \
     remote/test-gguf-tensor-census.py [MODEL...]
@@ -455,6 +488,37 @@ than a second trunk. `QWEN_SPEC_TYPE`, `QWEN_SPEC_DRAFT_N_MAX`,
 `remote/gguf-tensor-census.py` reports these properties from the file, because
 a Q4_K_M label names a recipe rather than a layout: the 2B is 50.08% Q6_K by
 byte where the 9B is 32.59%.
+
+A candidate declares its architecture and its chat template before it is
+fetched. A GGUF places the metadata block and tensor index at the head of the
+file, so `remote/admit-candidate-static.py` reads them over an HTTP range
+request against a pinned revision and imports the census parser rather than
+writing a second one. Sixteen mebibytes covers a Qwen3.5 metadata block, whose
+248,320 tokens and their merges end the 2B distill's header at 10,962,034
+bytes, and the reader grows the window on a short read so a truncated buffer
+raises rather than reporting the trailing keys absent. The ranged read
+reproduces the appliance's own full-file census on every identity field of the
+served 2B, including the 37,767,168 prediction-block bytes.
+
+The script runs on the workstation, which makes it a third workstation-side
+helper beside the UI build and the container build: it needs the network and
+the appliance's two 2.3 GHz cores are the wrong place to spend it.
+
+Static admission is what makes the throughput stage small. Throughput belongs to
+an architecture and a value format, so grouping candidates by architecture,
+embedding width, feed-forward width, and head counts collapses the fourteen
+GGUF rows of `evidence/model-admission/candidate-ledger.tsv` into four runtime
+classes. Eight rows of the largest class span 0.83% in streamed bytes against
+the 4% this machine carries on a repeated depth-0 rate, so a second arm inside a
+class measures queue position. One class holds a reference at its own format and
+three do not: the served 0.8B is Q8_0 and streams 764 MiB per token where its
+Q4_K_M class members stream 493 to 522, so that class needs an arm of its own
+rather than a cross-format ratio. The same read answers what no rate can: the Jackrong 0.8B Opus
+reasoning distill ends its generation prompt with an unguarded `<think>` and
+names `enable_thinking` nowhere, so the thinking-off request is inert
+against it and its graded arm needs a budget that survives the reasoning span.
+`evidence/model-admission/static-admission.md` carries the classes and the
+template survey.
 
 GGUF weights stay outside Git because their sizes exceed the LFS per-file
 limit. Each download script pins a Hugging Face revision, a byte count, and a
