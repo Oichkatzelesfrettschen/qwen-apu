@@ -158,6 +158,35 @@ grep -F 'fetchBudget.remaining--;' "$fallback_ui" >/dev/null
 grep -F 'answerCall(callId, toolName, await executeWebTool(toolName, params), turnGeneration);' \
     "$fallback_ui" >/dev/null
 
+# One completion can emit several web_search_exa calls in one round, and
+# CONTINUATION_CAP bounds only the round count, so a per-turn search budget
+# bounds the calls inside a round too: only the first reaches an approval
+# dialog and an execution, and every later one in the same turn is refused
+# with a tool message naming the cap before any dialog opens.
+grep -F 'const WEB_SEARCH_BUDGET_PER_TURN = 1;' "$fallback_ui" >/dev/null
+grep -F 'if (searchBudget.remaining <= 0) {' "$fallback_ui" >/dev/null
+grep -F "The per-turn budget of \${WEB_SEARCH_BUDGET_PER_TURN} search approvals is spent;" \
+    "$fallback_ui" >/dev/null
+grep -F 'searchBudget.remaining--;' "$fallback_ui" >/dev/null
+grep -F 'const searchBudget = { remaining: WEB_SEARCH_BUDGET_PER_TURN };' "$fallback_ui" >/dev/null
+grep -F \
+    'async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetchBudget,
+                                 searchBudget, turnGeneration, proposalModel) {' \
+    "$fallback_ui" >/dev/null
+grep -F \
+    'outcome.calls, callIds, view, round === CONTINUATION_CAP - 1, fetchBudget,
+        searchBudget, turnGeneration, proposalModel);' \
+    "$fallback_ui" >/dev/null
+# The decrement precedes the approval dialog: the budget is spent by opening
+# the dialog and executing on approval, not by a later decision inside it.
+decrement_line=$(grep -n 'searchBudget.remaining--;' "$fallback_ui" | cut -d: -f1)
+approve_line=$(grep -n 'const outcome = await approveWebSearch(fields, proposalModel);' \
+    "$fallback_ui" | cut -d: -f1)
+if [ -z "$decrement_line" ] || [ -z "$approve_line" ] || [ "$decrement_line" -ge "$approve_line" ]; then
+    printf 'fallback Web UI spends the search budget after opening the approval dialog\n' >&2
+    exit 1
+fi
+
 # A model-picker change between the round that proposed a search and its
 # approval must refuse rather than sign or execute against the wrong profile:
 # runProposedTools snapshots the proposing model and compares it against

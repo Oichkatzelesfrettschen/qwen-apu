@@ -568,6 +568,16 @@ function truncateSearchResult(text) {
 // leave the round budget for the answer.
 const WEB_FETCH_BUDGET_PER_TURN = 2;
 
+// One completion can emit several `web_search_exa` calls in the same
+// assistant response, and CONTINUATION_CAP bounds only the round count, not
+// the calls inside one round: an unbounded inner loop would open one
+// approval dialog per proposed call and, on approval, spend one broker grant
+// and one provider search per call, consuming as many searches as fit in the
+// model's output before the round budget is even reached. This bounds that
+// inner loop to one approval-and-execution per turn, the way the fetch
+// budget bounds pages read rather than rounds run.
+const WEB_SEARCH_BUDGET_PER_TURN = 1;
+
 // The session secret and every issued grant live in this closure alone. Both
 // stay out of `history`, which is re-sent whole on every request, and out of
 // browser storage, which outlives the launch that signed them: a retained
@@ -1154,7 +1164,7 @@ function answerCall(callId, toolName, content, turnGeneration) {
 }
 
 async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetchBudget,
-                                 turnGeneration, proposalModel) {
+                                 searchBudget, turnGeneration, proposalModel) {
   /* Execute this round's proposed calls and answer each one.
 
      A proposed `web_search_exa` is shown to a human with the arguments it
@@ -1218,6 +1228,15 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
         `The served path executes no tool named ${toolName} in this turn.`, turnGeneration);
       continue;
     }
+    if (searchBudget.remaining <= 0) {
+      // The cap bounds approval-and-execution rather than proposals, so a
+      // call refused here opened no dialog and spent no grant.
+      refused = true;
+      answerCall(callId, toolName,
+        `The per-turn budget of ${WEB_SEARCH_BUDGET_PER_TURN} search approvals is spent; ` +
+        'this search did not run.', turnGeneration);
+      continue;
+    }
     let fields;
     try {
       fields = proposedSearchFields(calls[index].args);
@@ -1240,6 +1259,7 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
         `the current model is ${requestModel}.`, turnGeneration);
       continue;
     }
+    searchBudget.remaining--;
     const outcome = await approveWebSearch(fields, proposalModel);
     if (outcome.decision === 'once') {
       answerCall(callId, toolName, await executeWebTool(
@@ -1292,6 +1312,7 @@ async function send() {
   // searches meets a fixed number of approval dialogs rather than an unbounded
   // sequence of them, and the fetch budget bounds the pages one turn reads.
   const fetchBudget = { remaining: WEB_FETCH_BUDGET_PER_TURN };
+  const searchBudget = { remaining: WEB_SEARCH_BUDGET_PER_TURN };
   try {
     for (let round = 0; round < CONTINUATION_CAP; round++) {
       const view = openTurnView();
@@ -1327,7 +1348,7 @@ async function send() {
       if (!outcome.calls.length) return;
       await runProposedTools(
         outcome.calls, callIds, view, round === CONTINUATION_CAP - 1, fetchBudget,
-        turnGeneration, proposalModel);
+        searchBudget, turnGeneration, proposalModel);
       if (turnGeneration !== conversationGeneration) return;
     }
   } finally {
