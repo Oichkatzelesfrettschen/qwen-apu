@@ -27,17 +27,16 @@ set -eu
 # validated_filled_depth, so a `-` field, which states that no depth has been
 # filled and decoded on that row, refuses the profile exactly as an
 # over-numeric context does. QWEN_WEB_ALLOW_UNVALIDATED_DEPTH=1 admits a
-# profile that fails that rule, and only that profile: it prints a stderr line
-# naming the unknown state or the numeric gap, tags the section
-# `experimental` in `tags`, and writes the file-head marker
-# `# qwen-web-presets: unvalidated-depth-override`, mirroring how
+# profile that fails that rule regardless of the model_id's own tier -- a
+# production-tiered model is exactly the one an experimental web profile
+# should be able to run. What the override withholds is the emitted
+# profile's own claim to that tier: the section carries no `default` tag,
+# carries `experimental` in `tags`, the run prints a stderr line naming the
+# unknown state or the numeric gap, and the output file's head carries the
+# marker `# qwen-web-presets: unvalidated-depth-override`, mirroring how
 # build-router-presets.sh records QWEN_ROUTER_INCLUDE_QUARANTINE in its own
 # preamble so a later reader can force the listener to loopback the same way
-# qwen-capacity-policy.sh does for an exposed quarantine section. The override
-# never reaches a production-tier profile: `production` claims a tuple
-# measured safe and useful, and admitting one at an unvalidated depth would
-# misstate that claim, so a production row still refuses regardless of the
-# override.
+# qwen-capacity-policy.sh does for an exposed quarantine section.
 
 if [ "$#" -ne 1 ]; then
     printf 'usage: %s OUTPUT_INI\n' "$0" >&2
@@ -45,7 +44,7 @@ if [ "$#" -ne 1 ]; then
     printf 'web profile ledger comes from QWEN_WEB_PROFILES, default remote/web-profiles.tsv\n' >&2
     printf 'model root comes from QWEN_MODEL_ROOT, default $HOME/models\n' >&2
     printf 'mcp config path is required in QWEN_WEB_MCP_CONFIG\n' >&2
-    printf 'QWEN_WEB_ALLOW_UNVALIDATED_DEPTH=1 admits an unknown or over-depth candidate-tier profile as experimental\n' >&2
+    printf 'QWEN_WEB_ALLOW_UNVALIDATED_DEPTH=1 admits an unknown or over-depth profile as experimental\n' >&2
     exit 2
 fi
 
@@ -136,8 +135,11 @@ while IFS='	' read -r profile_id model_id web_mode context \
     fi
 
     # Unknown is not permission: a `-` field and a numeric field the context
-    # exceeds both fail the default rule, and only the override's own
-    # production-tier exclusion tells them apart below.
+    # exceeds both fail the default rule. The override admits either state
+    # from a model_id at any admitted tier; what it withholds is the
+    # emitted section's own claim to that tier, via the experimental tag,
+    # the withheld default tag, the stderr line, and the file-head marker
+    # below.
     depth_state=validated
     if [ "$registry_validated_filled_depth" = '-' ]; then
         depth_state=unknown
@@ -155,11 +157,6 @@ while IFS='	' read -r profile_id model_id web_mode context \
                 printf 'profile %s requests context %s above %s validated_filled_depth %s\n' \
                     "$profile_id" "$context" "$model_id" "$registry_validated_filled_depth" >&2
             fi
-            exit 1
-        fi
-        if [ "$tier" = production ]; then
-            printf 'profile %s names production-tier model %s at an unvalidated depth; production refuses the override\n' \
-                "$profile_id" "$model_id" >&2
             exit 1
         fi
         if [ "$depth_state" = unknown ]; then

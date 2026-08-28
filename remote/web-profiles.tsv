@@ -9,19 +9,18 @@
 # whose context exceeds a numeric validated_filled_depth or whose
 # validated_filled_depth reads `-`, treating the unmeasured case the same as
 # the measured-too-shallow case rather than as an unbounded allowance.
-# QWEN_WEB_ALLOW_UNVALIDATED_DEPTH=1 admits a candidate-tier profile that
-# fails that rule and tags its section `experimental`; a production-tier
-# profile never receives that admission, because `production` claims a tuple
-# measured safe and useful and an unvalidated depth would misstate it. These
-# rows set a policy starting point rather than a measured optimum: no
-# web-research arm has run against any of them, and under the current
-# registry every row here fails the default rule -- five carry `-` and
-# web-balanced requests 32768 against a numeric 16384 -- so none emits
-# without the override. Under the override, web-balanced, web-reader, and
-# web-vision still never emit, because their model_id (qwen38-4b-distill,
-# qwen38-2b-distill, qwen35-4b-base) is tiered production; web-compact,
-# web-fast-vl, and web-lookup name candidate-tier models and emit tagged
-# experimental.
+# QWEN_WEB_ALLOW_UNVALIDATED_DEPTH=1 admits a profile that fails that rule
+# regardless of the model_id's own tier in models.tsv -- a production-tiered
+# model is exactly the one an experimental web profile should be able to
+# run. What the override withholds is the emitted section's own claim to
+# that tier: no `default` tag, `experimental` in `tags`, a stderr line
+# naming the unknown state or the numeric gap, and the output file's
+# unvalidated-depth-override head marker. These rows set a policy starting
+# point rather than a measured optimum: no web-research arm has run against
+# any of them, and under the current registry every row here fails the
+# default rule -- five carry `-` and web-balanced requests 32768 against a
+# numeric 16384 -- so none emits without the override. Under the override,
+# all six emit, each tagged experimental.
 #
 # web_mode is `validator-gated` where a later validator is expected to compare
 # emitted tool arguments against the user's own authorization before a fetch

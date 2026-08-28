@@ -60,8 +60,10 @@ cat >"$web_profiles_unknown_depth" <<'EOF'
 web-fixture-unknown-depth	fixture-candidate-unknown	validator-gated	8192	-	5	2	12000	yes	no	9/10	refused
 EOF
 
-# Production tier at an unvalidated depth: the override never admits this
-# one, regardless of QWEN_WEB_ALLOW_UNVALIDATED_DEPTH.
+# Production tier at an unvalidated depth: the override admits this one as
+# experimental, since production names the model_id's own tier and the
+# override withholds the emitted section's claim to it rather than
+# refusing the model_id.
 web_profiles_production_unvalidated=$work/web-profiles-production-unvalidated.tsv
 cat >"$web_profiles_production_unvalidated" <<'EOF'
 web-fixture-production-unvalidated	fixture-production	validator-gated	16384	8192	5	2	12000	yes	no	9/10	refused
@@ -208,16 +210,32 @@ else
     cat "$work/unknown-depth-allowed.err" >&2
 fi
 
-# A production-tier profile at an unvalidated depth refuses even under the
-# override, because production claims a measured-safe tuple.
+# A production-tier profile at an unvalidated depth is admitted under the
+# override: a production-tiered model_id is exactly the one an experimental
+# web profile should be able to run. What the override withholds is the
+# emitted section's own claim to that tier.
 presets_production_unvalidated=$work/presets-production-unvalidated.ini
 if build "$web_profiles_production_unvalidated" "$presets_production_unvalidated" \
     env QWEN_WEB_MCP_CONFIG="$mcp_config" QWEN_WEB_ALLOW_UNVALIDATED_DEPTH=1 \
     >"$work/production-unvalidated.log" 2>"$work/production-unvalidated.err"; then
-    report production_tier_refuses_override failed
+    outcome=ok
+    grep -q ',experimental' "$presets_production_unvalidated" ||
+        outcome=missing_experimental_tag
+    grep -q 'unvalidated-depth-override' "$presets_production_unvalidated" ||
+        outcome=missing_override_marker
+    report production_model_admitted_as_experimental_under_override "$outcome"
 else
-    report production_tier_refuses_override ok
+    report production_model_admitted_as_experimental_under_override failed
+    cat "$work/production-unvalidated.err" >&2
 fi
+
+# The emitted section never carries a default tag: the override withholds
+# the emitted profile's own claim to a tier it did not earn.
+no_default_tag=ok
+if grep -q 'default' "$presets_production_unvalidated"; then
+    no_default_tag=default_tag_present
+fi
+report no_default_tag_under_override "$no_default_tag"
 
 # A profile naming an archive-tiered model is refused.
 presets_archive=$work/presets-archive.ini
