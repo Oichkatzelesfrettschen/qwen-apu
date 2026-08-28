@@ -18,6 +18,7 @@ argument vector, environment value, log line, or error message.
 """
 
 import base64
+import datetime
 import hashlib
 import hmac
 import json
@@ -44,6 +45,7 @@ FETCH_CHARACTER_DEFAULT = 12000
 HIGHLIGHT_COUNT_CAP = 3
 REQUEST_TIMEOUT_SECONDS = 20.0
 RESPONSE_BYTE_CAP = 4 * 1024 * 1024
+MAX_AGE_HOURS_CAP = 24 * 365
 TOKEN_LIFETIME_DEFAULT_SECONDS = 900
 TOKEN_LIFETIME_MINIMUM_SECONDS = 60
 TOKEN_LIFETIME_MAXIMUM_SECONDS = 3600
@@ -278,7 +280,7 @@ class Provider:
 
     name = "provider"
 
-    def search(self, query, max_results, freshness, include_domains, exclude_domains):
+    def search(self, query, max_results, constraints):
         raise NotImplementedError
 
     def contents(self, url):
@@ -333,14 +335,18 @@ class ExaProvider(Provider):
             raise ToolError("the provider response is not a JSON object")
         return document
 
-    def search(self, query, max_results, freshness, include_domains, exclude_domains):
+    def search(self, query, max_results, constraints):
         body = {"query": query, "numResults": max_results}
-        if freshness:
-            body["startPublishedDate"] = freshness
-        if include_domains:
-            body["includeDomains"] = include_domains
-        if exclude_domains:
-            body["excludeDomains"] = exclude_domains
+        if constraints["published_after"]:
+            body["startPublishedDate"] = constraints["published_after"]
+        if constraints["published_before"]:
+            body["endPublishedDate"] = constraints["published_before"]
+        if constraints["max_age_hours"] is not None:
+            body["maxAgeHours"] = constraints["max_age_hours"]
+        if constraints["include_domains"]:
+            body["includeDomains"] = constraints["include_domains"]
+        if constraints["exclude_domains"]:
+            body["excludeDomains"] = constraints["exclude_domains"]
         document = self._post(EXA_SEARCH_ENDPOINT, body)
         results = document.get("results")
         return results if isinstance(results, list) else []
@@ -381,7 +387,9 @@ class FakeProvider(Provider):
                 f"the fixture document is unreadable: {fixture_path}"
             ) from None
 
-    def search(self, query, max_results, freshness, include_domains, exclude_domains):
+    def search(self, query, max_results, constraints):
+        include_domains = constraints["include_domains"]
+        exclude_domains = constraints["exclude_domains"]
         results = self.document.get("search", {}).get(query, [])
         selected = []
         for record in results:
@@ -436,6 +444,32 @@ def require_integer(arguments, key, default, minimum, maximum):
     if value < minimum or value > maximum:
         raise ToolError(f"{key} must lie between {minimum} and {maximum}")
     return value
+
+
+def require_iso_date(arguments, key):
+    """Return an ISO 8601 calendar date, or the empty string when absent.
+
+    `datetime.date.fromisoformat` accepts the extended forms Python admits, so
+    the value is reformatted to YYYY-MM-DD; the reformatted string is what the
+    provider body and the authorization claim both carry, which keeps one
+    spelling of a date on both sides of the comparison.
+    """
+    value = arguments.get(key)
+    if value in (None, ""):
+        return ""
+    if not isinstance(value, str):
+        raise ToolError(f"{key} must be an ISO 8601 date string")
+    try:
+        parsed = datetime.date.fromisoformat(value.strip())
+    except ValueError:
+        raise ToolError(f"{key} is not an ISO 8601 date") from None
+    return parsed.isoformat()
+
+
+def require_optional_integer(arguments, key, minimum, maximum):
+    if arguments.get(key) is None:
+        return None
+    return require_integer(arguments, key, minimum, minimum, maximum)
 
 
 def require_domain_list(arguments, key):
@@ -549,16 +583,24 @@ def utc_timestamp(now):
 def call_search(settings, arguments):
     query = require_string(arguments, "query", QUERY_CHARACTER_CAP)
     max_results = require_integer(arguments, "max_results", 5, 1, RESULT_COUNT_CAP)
-    freshness = require_string(
-        arguments, "freshness", 64, required=False, default=""
-    )
-    include_domains = require_domain_list(arguments, "include_domains")
-    exclude_domains = require_domain_list(arguments, "exclude_domains")
+    constraints = {
+        "published_after": require_iso_date(arguments, "published_after"),
+        "published_before": require_iso_date(arguments, "published_before"),
+        "max_age_hours": require_optional_integer(
+            arguments, "max_age_hours", 0, MAX_AGE_HOURS_CAP
+        ),
+        "include_domains": require_domain_list(arguments, "include_domains"),
+        "exclude_domains": require_domain_list(arguments, "exclude_domains"),
+    }
+    if (
+        constraints["published_after"]
+        and constraints["published_before"]
+        and constraints["published_after"] > constraints["published_before"]
+    ):
+        raise ToolError("published_after falls after published_before")
     signing_key = read_secret_file(settings["token_key_file"], "token signing")
     provider = select_provider(settings)
-    results = provider.search(
-        query, max_results, freshness, include_domains, exclude_domains
-    )
+    results = provider.search(query, max_results, constraints)
     issued_at = int(time.time())
     search_id = base64url_encode(os.urandom(9))
     return render_search_results(
@@ -613,10 +655,23 @@ TOOL_DEFINITIONS = [
                     "type": "integer",
                     "description": "Result count, 1 to 10. Default 5.",
                 },
-                "freshness": {
+                "published_after": {
                     "type": "string",
                     "description": (
                         "ISO 8601 date; results published before it are dropped."
+                    ),
+                },
+                "published_before": {
+                    "type": "string",
+                    "description": (
+                        "ISO 8601 date; results published after it are dropped."
+                    ),
+                },
+                "max_age_hours": {
+                    "type": "integer",
+                    "description": (
+                        "Cached page age the provider may serve. 0 forces a "
+                        "live crawl. Omitted leaves the provider default."
                     ),
                 },
                 "include_domains": {

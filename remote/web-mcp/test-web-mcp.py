@@ -362,6 +362,77 @@ class WebMcpServerTest(unittest.TestCase):
         )
         self.assertIn("must lie between", self.result_text(response))
 
+    def test_publication_window_arguments_are_validated(self):
+        session = self.open_session()
+        accepted = self.search(
+            session,
+            published_after="2026-01-01",
+            published_before="2026-12-31",
+            max_age_hours=0,
+        )
+        self.assertFalse(accepted["result"]["isError"])
+        cases = (
+            ({"published_after": "yesterday"}, "not an ISO 8601 date"),
+            ({"published_before": "2026-13-40"}, "not an ISO 8601 date"),
+            ({"max_age_hours": -1}, "must lie between"),
+            (
+                {"max_age_hours": server.MAX_AGE_HOURS_CAP + 1},
+                "must lie between",
+            ),
+            (
+                {"published_after": "2026-06-01", "published_before": "2026-05-01"},
+                "falls after",
+            ),
+        )
+        for arguments, expected in cases:
+            with self.subTest(arguments=sorted(arguments)):
+                response = self.search(session, **arguments)
+                self.assertTrue(response["result"]["isError"])
+                self.assertIn(expected, self.result_text(response))
+
+    def test_exa_search_body_carries_the_publication_window(self):
+        captured = {}
+
+        class RecordingProvider(server.ExaProvider):
+            def _post(self, endpoint, body):
+                captured["endpoint"] = endpoint
+                captured["body"] = body
+                return {"results": []}
+
+        RecordingProvider("unused").search(
+            "raven2",
+            3,
+            {
+                "published_after": "2026-01-01",
+                "published_before": "2026-12-31",
+                "max_age_hours": 0,
+                "include_domains": ["example.org"],
+                "exclude_domains": ["spam.test"],
+            },
+        )
+        self.assertEqual(captured["endpoint"], server.EXA_SEARCH_ENDPOINT)
+        self.assertEqual(
+            {
+                key: captured["body"][key]
+                for key in (
+                    "startPublishedDate",
+                    "endPublishedDate",
+                    "maxAgeHours",
+                    "includeDomains",
+                    "excludeDomains",
+                    "numResults",
+                )
+            },
+            {
+                "startPublishedDate": "2026-01-01",
+                "endPublishedDate": "2026-12-31",
+                "maxAgeHours": 0,
+                "includeDomains": ["example.org"],
+                "excludeDomains": ["spam.test"],
+                "numResults": 3,
+            },
+        )
+
     def test_domain_filters_select_results(self):
         session = self.open_session()
         text = self.result_text(
