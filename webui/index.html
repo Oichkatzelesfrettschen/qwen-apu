@@ -556,7 +556,16 @@ function approveWebSearch(fields) {
     once.onclick = async () => {
       once.disabled = true;
       try {
-        const authorization = await requestGrant(fields, controller.signal);
+        // `LLAMA_ARG_ALIAS` carries the web profile's own profile_id
+        // (`remote/build-web-presets.sh`), and llama-server reports that
+        // alias as the model id `GET /v1/models` returns, so `requestModel`
+        // already names the profile the selected router child serves. The
+        // broker signs the grant's `profile_id` from this value and
+        // `enforce_search_authorization` on the MCP child rejects a grant
+        // naming any other profile, so sending the wrong one here is caught
+        // at approval time rather than surfacing as an opaque refusal later.
+        const authorization =
+          await requestGrant({ ...fields, profile_id: requestModel }, controller.signal);
         finish({ decision: 'once', authorization });
       } catch (error) {
         if (settled) return;

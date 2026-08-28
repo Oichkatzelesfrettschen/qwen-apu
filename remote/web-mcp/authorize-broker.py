@@ -141,10 +141,15 @@ def parse_request_arguments(payload):
     """
     if not isinstance(payload, dict):
         raise server.InvalidArgument("the request body is not an object")
+    profile_id = payload.get("profile_id")
+    if not isinstance(profile_id, str) or not profile_id:
+        raise server.InvalidArgument(
+            "profile_id must name the web profile the grant is signed for"
+        )
     query = payload.get("query")
     if not isinstance(query, str):
         raise server.InvalidArgument("query must be a string")
-    fields = {"query": query}
+    fields = {"query": query, "profile_id": profile_id}
     for key in ("include_domains", "exclude_domains"):
         value = payload.get(key) or []
         if not isinstance(value, list) or not all(
@@ -216,7 +221,20 @@ def issue_for_request(settings, fields):
     `do_POST` charges the `authorize-minute` bucket ahead of every other check,
     including the session-header and body validation this function assumes
     already passed, so the meter here would double-charge one request.
+
+    The requested `profile_id` names the web profile the browser selected;
+    `settings.profile` names the profile this broker process was launched
+    for and is what `enforce_search_authorization` on the MCP child compares
+    a spent grant's `profile_id` against. Signing the requested name instead
+    of the launch name would issue a grant that reads as authorized here and
+    is refused at the child, so a mismatch is refused here instead, against
+    the same name the grant is actually signed with.
     """
+    if fields["profile_id"] != settings.profile:
+        raise server.AuthorizationDenied(
+            f"this broker serves profile {settings.profile!r}; "
+            f"the request named {fields['profile_id']!r}"
+        )
     return server.issue_grant(
         settings.token_key_file,
         fields["query"],

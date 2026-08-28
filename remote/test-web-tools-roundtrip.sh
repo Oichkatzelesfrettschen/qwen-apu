@@ -137,10 +137,58 @@ grep -F '"tool": "web_search_exa"' "$workspace/listing.json" >/dev/null
 grep -F '"tool": "web_fetch_exa"' "$workspace/listing.json" >/dev/null
 
 # The approval dialog posts the parsed proposal; the broker signs the grant.
+# `profile_id` is `requestModel`, the alias `GET /v1/models` reports for the
+# selected router child, and `remote/build-web-presets.sh` sets that alias
+# from the profile's own row (`LLAMA_ARG_ALIAS`), so the browser sends the
+# same name the broker and the MCP child were both launched with.
 cat > "$workspace/grant-request.json" <<'GRANT'
+{"query": "raven2 vulkan decode", "max_results": 1,
+ "include_domains": [], "exclude_domains": [], "profile_id": "default"}
+GRANT
+
+# A request naming another profile is refused before a token is signed: the
+# broker's `--profile` is the name `enforce_search_authorization` on the MCP
+# child compares a spent grant against, and a page that sent the wrong
+# selected model's alias must fail here rather than mint a grant the child
+# would refuse anyway.
+cat > "$workspace/grant-request-wrong-profile.json" <<'GRANT'
+{"query": "raven2 vulkan decode", "max_results": 1,
+ "include_domains": [], "exclude_domains": [], "profile_id": "vision"}
+GRANT
+wrong_profile_status=$(curl -sS -o "$workspace/grant-wrong-profile.json" \
+    -w '%{http_code}' -X POST "http://127.0.0.1:$broker_port/grant" \
+    -H 'Content-Type: application/json' \
+    -H "Origin: $browser_origin" \
+    -H "X-Qwen-Web-Session: $session_secret" \
+    --data-binary "@$workspace/grant-request-wrong-profile.json")
+if [ "$wrong_profile_status" != "403" ]; then
+    printf 'a grant request naming another profile returned HTTP %s rather than 403: %s\n' \
+        "$wrong_profile_status" "$(cat "$workspace/grant-wrong-profile.json")" >&2
+    exit 1
+fi
+if grep -F 'authorization' "$workspace/grant-wrong-profile.json" >/dev/null; then
+    printf 'a grant request naming another profile issued a token: %s\n' \
+        "$(cat "$workspace/grant-wrong-profile.json")" >&2
+    exit 1
+fi
+
+# A request naming no profile at all is refused the same way, before the
+# rest of the body is even validated for shape.
+cat > "$workspace/grant-request-no-profile.json" <<'GRANT'
 {"query": "raven2 vulkan decode", "max_results": 1,
  "include_domains": [], "exclude_domains": []}
 GRANT
+no_profile_status=$(curl -sS -o "$workspace/grant-no-profile.json" \
+    -w '%{http_code}' -X POST "http://127.0.0.1:$broker_port/grant" \
+    -H 'Content-Type: application/json' \
+    -H "Origin: $browser_origin" \
+    -H "X-Qwen-Web-Session: $session_secret" \
+    --data-binary "@$workspace/grant-request-no-profile.json")
+if [ "$no_profile_status" != "400" ]; then
+    printf 'a grant request naming no profile returned HTTP %s rather than 400: %s\n' \
+        "$no_profile_status" "$(cat "$workspace/grant-no-profile.json")" >&2
+    exit 1
+fi
 curl -sS -X POST "http://127.0.0.1:$broker_port/grant" \
     -H 'Content-Type: application/json' \
     -H "Origin: $browser_origin" \

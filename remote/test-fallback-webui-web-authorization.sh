@@ -52,7 +52,9 @@ grep -F 'id="approve-deny"' "$fallback_ui" >/dev/null
 
 # The approval posts the parsed proposal and the grant reaches the executor
 # inside the one POST /tools body, so the transcript keeps the proposal alone.
-grep -F "await requestGrant(fields, controller.signal)" "$fallback_ui" >/dev/null
+grep -F \
+    "await requestGrant({ ...fields, profile_id: requestModel }, controller.signal)" \
+    "$fallback_ui" >/dev/null
 grep -F 'BROKER_SESSION_HEADER]: secret' "$fallback_ui" >/dev/null
 grep -F 'searchRequestParams(fields, outcome.authorization)' "$fallback_ui" >/dev/null
 grep -F "body: JSON.stringify({ tool: toolName, params })" "$fallback_ui" >/dev/null
