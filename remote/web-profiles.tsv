@@ -1,0 +1,36 @@
+# The policy ledger for web-enabled router presets. One row per profile;
+# remote/build-web-presets.sh reads this file alongside remote/models.tsv and
+# emits one INI section per row.
+#
+# context and validated_filled_depth are copied verbatim from the named
+# model_id's context_ceiling and validated_filled_depth columns in
+# remote/models.tsv; a `-` here means the registry row carries no validated
+# depth, and the generator refuses a profile whose context exceeds either
+# field except under an explicit override. These rows set a policy starting
+# point rather than a measured optimum: no web-research arm has run against
+# any of them.
+#
+# web_mode is `validator-gated` where a later validator is expected to compare
+# emitted tool arguments against the user's own authorization before a fetch
+# executes, and `ui-mediated` where the web-UI surfaces the model's proposed
+# query or URL for the operator to run by hand. execution_policy is `refused`
+# on every row because tool-08 in evidence/model-admission/vision-and-tool-sweep.md
+# carried an injected instruction into the tool call on all six measured
+# checkpoints, and this tree holds no validator that would justify a
+# validator-gated or unguarded execution_policy yet; web_mode names the
+# intended future path and execution_policy names what is authorized now.
+#
+# multi_source is yes only where max_fetches exceeds 1, since a single fetch
+# has no second source to combine with the first. vision_allowed is copied
+# from the model_id's projector column in models.tsv: `required` becomes yes
+# and `none` becomes no. tool_selection is copied from the model_id's
+# raw_tool_selection column, the graded tool-selection score unaided by any
+# execution guard.
+#
+# profile_id	model_id	web_mode	context	validated_filled_depth	max_results	max_fetches	max_chars_per_fetch	multi_source	vision_allowed	tool_selection	execution_policy
+web-balanced	qwen38-4b-distill	validator-gated	32768	16384	8	3	12000	yes	no	9/10	refused
+web-compact	qwen35-2b	validator-gated	8192	-	5	2	12000	yes	yes	9/10	refused
+web-fast-vl	lfm25-vl-16b	validator-gated	8192	-	5	2	12000	yes	yes	8/10	refused
+web-lookup	qwen35-08b	ui-mediated	8192	-	3	1	12000	no	no	9/10	refused
+web-reader	qwen38-2b-distill	ui-mediated	32768	-	5	2	12000	yes	no	2/10	refused
+web-vision	qwen35-4b-base	ui-mediated	24576	-	5	2	12000	yes	yes	8/10	refused
