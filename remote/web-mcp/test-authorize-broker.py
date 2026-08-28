@@ -559,6 +559,28 @@ class BrokerTest(unittest.TestCase):
     def text(self, message):
         return message["result"]["content"][0]["text"]
 
+    def test_the_usage_text_states_profile_id_is_required(self):
+        # `parse_request_arguments` refuses a `POST /grant` naming no
+        # `profile_id` (test_a_request_naming_no_profile_id_is_refused), so
+        # the broker's own --help and the module docstring it is built from
+        # must say so rather than leaving a caller to infer the requirement
+        # from a 400 response.
+        help_text = subprocess.run(
+            [sys.executable, BROKER_PATH, "--help"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=True,
+        ).stdout.decode("utf-8")
+        self.assertIn("profile_id", help_text)
+        self.assertIn("--profile", help_text)
+
+    def test_the_readme_states_profile_id_is_required(self):
+        readme_path = os.path.join(BROKER_DIRECTORY, "README.md")
+        with open(readme_path, encoding="utf-8") as readme_file:
+            readme_text = readme_file.read()
+        self.assertIn("profile_id", readme_text)
+        self.assertIn("requires `profile_id`", readme_text)
+
 
 def query_digest(query):
     return hashlib.sha256(query.strip().encode("utf-8")).hexdigest()

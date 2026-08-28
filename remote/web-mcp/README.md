@@ -70,8 +70,13 @@ requires `QWEN_WEB_STATE_DIR` because the count lives in that database.
 `server.py authorize` signs from a command line, which serves an operator
 ahead of a session and serves nothing while one runs. `authorize-broker.py`
 gives the same signing path a request interface: a front end that has shown a
-human the exact proposed `search_exa` arguments posts those arguments and
-receives the grant that admits them.
+human the exact proposed `search_exa` arguments posts those arguments, plus a
+required `profile_id` naming the web profile the human selected, and receives
+the grant that admits them. `POST /grant` requires `profile_id` on every
+request and refuses one that names no profile, or a profile other than the
+one this broker's own `--profile` serves, with HTTP 400 before it signs
+anything -- a caller sending the `search_exa` arguments alone gets that
+refusal rather than a grant issued against an assumed profile.
 
 ```sh
 remote/web-mcp/authorize-broker.py --origin http://127.0.0.1:8080 \
