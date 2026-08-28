@@ -3,17 +3,21 @@ set -eu
 
 # Fetch one candidate artifact by repository, revision, and file name.
 #
-# This differs from every download-*.sh in one way that decides how its output
-# may be used. A pinned fetch script carries a byte count and a SHA-256 written
-# into the repository before the file is fetched, so it verifies. A candidate
-# has neither: the digest recorded here is what this download observed, and an
-# observation cannot detect the substitution a pin exists to detect. Promotion
-# to remote/models.tsv therefore means writing a pinned fetch script that
-# carries the observed digest as its expectation, which is a separate act.
+# The publisher declares a digest and this script verifies against it. Hugging
+# Face stores a GGUF as a Git LFS object and its tree API returns that object's
+# `lfs.oid`, which is the SHA-256 of the file, so a candidate fetched at a
+# pinned revision is verifiable at fetch time without a hand-written expectation
+# in this repository. That is what an observation alone cannot do: a recorded
+# digest describes whatever arrived, so it detects a later change to the file
+# and never detects a wrong file arriving in the first place.
 #
-# A retained file is re-observed rather than re-fetched, and a recorded digest
-# from an earlier run is compared against it, so a candidate directory that has
-# already been admitted stays stable across sweeps.
+# A repository that publishes a GGUF outside LFS returns no oid. That case falls
+# back to recording what arrived and says so in its output, because an
+# unverifiable fetch stated as unverified is a different claim from one that
+# passed a check.
+#
+# A retained file is re-verified rather than re-fetched, against the publisher
+# where an oid exists and against the digest recorded earlier where none does.
 
 renice -n 19 -p $$ >/dev/null 2>&1 || true
 ionice -c 3 -p $$ >/dev/null 2>&1 || true
@@ -42,24 +46,85 @@ observe() {
     printf '%s %s\n' "$(sha256sum "$1" | awk '{ print $1 }')" "$(wc -c <"$1")"
 }
 
+# The tree API reports every file of one revision with its LFS object. A
+# transport failure and a repository without LFS are the same absence here, so
+# both fall through to the observed path rather than failing the fetch.
+publisher_digest=''
+publisher_bytes=''
+tree_url="https://huggingface.co/api/models/$source_repository/tree/$source_revision?recursive=1"
+tree_response=$(curl --location --fail --silent --show-error "$tree_url" 2>/dev/null || true)
+if [ -n "$tree_response" ]; then
+    publisher_facts=$(printf '%s' "$tree_response" | python3 -c '
+import json
+import sys
+
+wanted = sys.argv[1]
+try:
+    entries = json.load(sys.stdin)
+except ValueError:
+    raise SystemExit(0)
+for entry in entries:
+    if entry.get("path") != wanted:
+        continue
+    lfs = entry.get("lfs") or {}
+    oid = lfs.get("oid")
+    if oid:
+        print(oid, lfs.get("size", entry.get("size", "")))
+    break
+' "$artifact_name" 2>/dev/null || true)
+    publisher_digest=${publisher_facts%% *}
+    publisher_bytes=${publisher_facts##* }
+fi
+
+# A verdict is one of three states rather than a boolean, because "verified
+# against the publisher" and "recorded because the publisher declares nothing"
+# are different claims and a reader acts on them differently.
+verify_artifact() {
+    verify_path=$1
+    verify_sha256=$2
+    verify_bytes=$3
+    if [ -z "$publisher_digest" ]; then
+        digest_state=observed
+        return 0
+    fi
+    if [ "$verify_sha256" != "$publisher_digest" ]; then
+        printf 'artifact digest disagrees with the publisher: %s\n' "$verify_path" >&2
+        printf 'publisher %s observed %s\n' "$publisher_digest" "$verify_sha256" >&2
+        return 1
+    fi
+    if [ -n "$publisher_bytes" ] && [ "$publisher_bytes" != "$verify_bytes" ]; then
+        printf 'artifact byte count disagrees with the publisher: %s against %s\n' \
+            "$publisher_bytes" "$verify_bytes" >&2
+        return 1
+    fi
+    digest_state=verified
+    return 0
+}
+digest_state=observed
+
 if [ -f "$artifact_path" ]; then
     observed=$(observe "$artifact_path")
-    observed_sha256=${observed% *}
-    observed_bytes=${observed#* }
-    if [ -f "$digest_path" ]; then
+    observed_sha256=${observed%% *}
+    observed_bytes=${observed##* }
+    if ! verify_artifact "$artifact_path" "$observed_sha256" "$observed_bytes"; then
+        exit 1
+    fi
+    # The publisher is the authority where it speaks. A recorded digest that
+    # disagrees with a file the publisher vouches for is a stale record rather
+    # than a bad artifact, so it is rewritten rather than treated as a refusal.
+    if [ "$digest_state" = observed ] && [ -f "$digest_path" ]; then
         recorded=$(cat "$digest_path")
-        recorded_sha256=${recorded% *}
+        recorded_sha256=${recorded%% *}
         if [ "$recorded_sha256" != "$observed_sha256" ]; then
             printf 'retained artifact no longer matches its recorded digest: %s\n' \
                 "$artifact_path" >&2
             printf 'recorded %s observed %s\n' "$recorded_sha256" "$observed_sha256" >&2
             exit 1
         fi
-    else
-        printf '%s %s\n' "$observed_sha256" "$observed_bytes" >"$digest_path"
     fi
-    printf 'artifact_status=retained path=%s bytes=%s observed_sha256=%s repository=%s revision=%s\n' \
-        "$artifact_path" "$observed_bytes" "$observed_sha256" \
+    printf '%s %s %s\n' "$observed_sha256" "$observed_bytes" "$digest_state" >"$digest_path"
+    printf 'artifact_status=retained path=%s bytes=%s %s_sha256=%s repository=%s revision=%s\n' \
+        "$artifact_path" "$observed_bytes" "$digest_state" "$observed_sha256" \
         "$source_repository" "$source_revision"
     exit 0
 fi
@@ -178,16 +243,21 @@ if [ "$fetch_mode" = single ] && ! fetch_single_stream; then
 fi
 
 observed=$(observe "$partial_path")
-observed_sha256=${observed% *}
-observed_bytes=${observed#* }
+observed_sha256=${observed%% *}
+observed_bytes=${observed##* }
 if [ "$observed_bytes" -le 0 ]; then
     printf 'fetch produced an empty artifact: %s\n' "$source_url" >&2
     rm -f "$partial_path"
     exit 1
 fi
 
+if ! verify_artifact "$partial_path" "$observed_sha256" "$observed_bytes"; then
+    rm -f "$partial_path"
+    exit 1
+fi
+
 mv "$partial_path" "$artifact_path"
-printf '%s %s\n' "$observed_sha256" "$observed_bytes" >"$digest_path"
-printf 'artifact_status=fetched path=%s bytes=%s observed_sha256=%s mode=%s repository=%s revision=%s\n' \
-    "$artifact_path" "$observed_bytes" "$observed_sha256" "$fetch_mode" \
+printf '%s %s %s\n' "$observed_sha256" "$observed_bytes" "$digest_state" >"$digest_path"
+printf 'artifact_status=fetched path=%s bytes=%s %s_sha256=%s mode=%s repository=%s revision=%s\n' \
+    "$artifact_path" "$observed_bytes" "$digest_state" "$observed_sha256" "$fetch_mode" \
     "$source_repository" "$source_revision"

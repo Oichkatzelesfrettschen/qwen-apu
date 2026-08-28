@@ -128,6 +128,11 @@ for connections in 1 2 4 7; do
         }
     assembled=$(sha256sum "$temporary_directory/dest/model.gguf" | awk '{ print $1 }')
     mode=$(printf '%s' "$line" | sed -n 's/.*mode=\([a-z]*\).*/\1/p')
+    if ! printf '%s' "$line" | grep -q 'observed_sha256='; then
+        report "digest_state_$connections" rejected
+        printf 'a source with no LFS tree did not fall back to observed: %s\n' \
+            "$line" >&2
+    fi
     expected_mode=parallel
     [ "$connections" = 1 ] && expected_mode=single
     if [ "$assembled" = "$origin_digest" ] && [ "$mode" = "$expected_mode" ]; then

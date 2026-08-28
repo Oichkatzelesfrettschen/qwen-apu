@@ -364,7 +364,7 @@ def main(argv):
     arguments = parser.parse_args(argv)
 
     if arguments.ledger and arguments.file:
-        parser.error("--file names one artifact and cannot apply to a ledger")
+        parser.error("--file names one artifact; a ledger row names its own")
 
     requests = []
     if arguments.ledger:
@@ -380,18 +380,25 @@ def main(argv):
                 row = dict(zip(header_fields, fields))
                 if row.get("artifact_kind") != "gguf":
                     continue
+                # A row may name the file its fingerprint speaks for. The
+                # Q4_K_M preference is the right default across a roster and
+                # the wrong one where a row exists for a specific rung, such as
+                # a two-bit IQ artifact or the multi-token-prediction variant of
+                # a checkpoint published in both forms.
+                preferred = row.get("preferred_artifact", "-")
                 requests.append((row["candidate_id"], row["artifact_repository"],
-                                 row["artifact_revision"]))
+                                 row["artifact_revision"],
+                                 None if preferred in ("-", "") else preferred))
     elif arguments.repository and arguments.revision:
         requests.append((arguments.repository, arguments.repository,
-                         arguments.revision))
+                         arguments.revision, arguments.file))
     else:
         parser.error("name a repository and revision, or a ledger")
 
     records = []
-    for candidate_id, repository, revision in requests:
+    for candidate_id, repository, revision, requested_file in requests:
         try:
-            record = admit(repository, revision, arguments.file)
+            record = admit(repository, revision, requested_file)
             record["admission"] = "parsed"
         except AdmissionError as error:
             record = {"repository": repository, "revision": revision,

@@ -193,3 +193,43 @@ the wrong throughput class. Every row of this sweep reads `split_shards=1`, so
 no figure above rests on that path.
 
 Records are retained as `evidence/model-admission/static-admission.tsv`.
+
+## A published artifact whose header is a hole
+
+`DavidAU/Qwen3.5-9B-The-Defiant-Fable-Uncensored-Heretic-NEO-IMATRIX-MAX-MTP-GGUF`
+publishes two IQ2_M artifacts of one fine-tune, one naming the multi-token
+prediction block and one not. The MTP artifact does not parse:
+
+```text
+file does not begin with the GGUF magic: b'\x00\x00\x00\x00'
+```
+
+Sampling the object over ranges places the boundary. Every probe from offset 0
+through 10,953,381 returns zeros, and every probe from 11,001,697 onward returns
+tensor data, so the leading 10.5 MiB of a 4,942,442,720-byte file is a hole. A
+Qwen3.5 metadata block runs to about that size, because it carries 248,320
+tokens and their merges: the 2B distill's header ends at 10,962,034 bytes. The
+magic, the metadata, and the tensor index are therefore absent while the tensor
+payload beyond them is intact.
+
+Three controls separate the object from the transport. The non-MTP sibling in
+the same repository at the same revision returns `GGUF` at offset 0, as does the
+repository's `mmproj-F16.gguf`, and both this repository and the
+`empero-ai/Qwen3.8-9B-Distill-GGUF` control resolve through the same Xet bridge.
+The defect is the artifact.
+
+The two files differ by 960 bytes against a 4.9 GB payload, where a ninth-block
+prediction head at IQ2_M on a 4096-wide model would add over a hundred
+megabytes. The MTP artifact is therefore a header-level variation of the same
+tensor data rather than a different quantisation, which is consistent with a
+rewrite that produced the hole in the only region the two files do not share.
+
+The weights stay admissible: `qwen35-9b-defiant-fable` reads the intact sibling
+at 32 blocks with `nextn_predict_layers` absent, an embedding width of 4096 and
+a feed-forward width of 12288, which is a fourth runtime class in the ledger. The
+MTP capability is unavailable from this publisher until the artifact is
+reuploaded, and `qwen35-9b-defiant-fable-mtp` carries `artifact-defective` rather
+than a rejection of the model.
+
+Static admission cost 16 MiB and no device time to establish this. A fetch would
+have moved 4.9 GB before the loader refused it.
