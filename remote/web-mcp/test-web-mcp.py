@@ -495,8 +495,10 @@ class WebMcpServerTest(unittest.TestCase):
         forged = server.issue_result_id(
             "another-signing-key",
             "https://attacker.example.com/payload",
+            "",
             "fake",
             "forged",
+            {"max_age_hours": None, "published_after": "", "published_before": ""},
             int(time.time()),
             server.TOKEN_LIFETIME_DEFAULT_SECONDS,
         )
@@ -509,8 +511,10 @@ class WebMcpServerTest(unittest.TestCase):
         expired = server.issue_result_id(
             TOKEN_SECRET,
             "https://example.org/raven2",
+            "",
             "fake",
             "aged",
+            {"max_age_hours": None, "published_after": "", "published_before": ""},
             int(time.time()) - server.TOKEN_LIFETIME_DEFAULT_SECONDS - 10,
             server.TOKEN_LIFETIME_DEFAULT_SECONDS,
         )
@@ -1086,8 +1090,10 @@ class WebMcpServerTest(unittest.TestCase):
         expired = server.issue_result_id(
             TOKEN_SECRET,
             "https://example.org/raven2",
+            "",
             "fake",
             "aged",
+            {"max_age_hours": None, "published_after": "", "published_before": ""},
             int(time.time()) - 4000,
             server.TOKEN_LIFETIME_DEFAULT_SECONDS,
         )
@@ -1369,6 +1375,58 @@ class WebMcpServerTest(unittest.TestCase):
 
         record = RecordingProvider("unused").contents(url, 100)
         self.assertEqual(record["text"], "right page")
+
+    def test_the_result_reference_signs_both_keys_and_the_freshness_policy(self):
+        session = self.open_session()
+        text = self.result_text(
+            self.search(
+                session,
+                max_results=1,
+                max_age_hours=48,
+                published_after="2026-01-01",
+                published_before="2026-12-31",
+            )
+        )
+        claim = json.loads(
+            server.base64url_decode(
+                self.first_result_id(text).split(".")[0]
+            ).decode("utf-8")
+        )
+        self.assertEqual(claim["canonical_url"], "https://example.org/raven2")
+        self.assertEqual(claim["provider"], "fake")
+        self.assertIn("provider_result_id", claim)
+        self.assertTrue(claim["search_id"])
+        self.assertEqual(
+            claim["freshness"],
+            {
+                "max_age_hours": 48,
+                "published_after": "2026-01-01",
+                "published_before": "2026-12-31",
+            },
+        )
+
+    def test_contents_matches_the_signed_identifier_when_the_url_moved(self):
+        class RecordingProvider(server.ExaProvider):
+            def _post(self, endpoint, body):
+                return {
+                    "statuses": [{"id": "exa-abc123", "status": "success"}],
+                    "results": [
+                        {
+                            "id": "exa-abc123",
+                            "url": "https://example.org/moved-elsewhere",
+                            "text": "right page",
+                        }
+                    ],
+                }
+
+        record = RecordingProvider("unused").contents(
+            "https://example.org/x", 100, "exa-abc123"
+        )
+        self.assertEqual(record["text"], "right page")
+        with self.assertRaises(server.ProviderContentError):
+            RecordingProvider("unused").contents(
+                "https://example.org/x", 100, "exa-other"
+            )
 
     def test_oversized_body_is_refused(self):
         session = self.open_session()

@@ -364,24 +364,51 @@ def verify_claim(signing_key, context, token, now, label):
     return claim
 
 
+def freshness_policy(constraints):
+    """Return the three fields that decide which copy of a page a call reads.
+
+    A fetch spends provider budget under the same publication window and cached
+    age the search was approved for, so the policy travels inside the signed
+    result reference rather than being re-derived from arguments the model
+    writes on the second call.
+    """
+    return {
+        "max_age_hours": constraints.get("max_age_hours"),
+        "published_after": constraints.get("published_after") or "",
+        "published_before": constraints.get("published_before") or "",
+    }
+
+
 def issue_result_id(
-    signing_key, url, provider_name, search_id, issued_at, lifetime_seconds
+    signing_key,
+    url,
+    provider_result_id,
+    provider_name,
+    search_id,
+    freshness,
+    issued_at,
+    lifetime_seconds,
 ):
     """Sign a result reference into an opaque token.
 
-    `search_id` records which search issued the token and is provenance rather
-    than an enforced check, since the process holds no registry to check it
-    against.
+    The reference names both keys a provider answers on: `canonical_url` is
+    what a URL-keyed contents response matches, and `provider_result_id` is the
+    opaque identifier Exa returns beside it, which survives a redirect or a
+    trailing-slash difference that would break URL equality. `search_id` binds
+    the reference to the search that issued it, and `freshness` carries the
+    approved publication window and cached age into the fetch.
     """
     return sign_claim(
         signing_key,
         RESULT_CLAIM_CONTEXT,
         {
             "canonical_url": url,
+            "provider_result_id": provider_result_id,
             "provider": provider_name,
             "issued_at": issued_at,
             "expiry": issued_at + lifetime_seconds,
             "search_id": search_id,
+            "freshness": freshness,
         },
     )
 
@@ -399,6 +426,19 @@ def redeem_result_id(signing_key, result_id, now):
     if "canonical_url" not in claim:
         raise AuthorizationDenied("the result_id payload is malformed")
     claim["canonical_url"] = canonical_url(str(claim["canonical_url"]))
+    provider_result_id = claim.get("provider_result_id")
+    claim["provider_result_id"] = (
+        provider_result_id
+        if isinstance(provider_result_id, str)
+        and len(provider_result_id) <= RESULT_ID_CHARACTER_CAP
+        else ""
+    )
+    freshness = claim.get("freshness")
+    claim["freshness"] = freshness_policy(
+        freshness if isinstance(freshness, dict) else {}
+    )
+    search_id = claim.get("search_id")
+    claim["search_id"] = search_id if isinstance(search_id, str) else ""
     return claim
 
 
@@ -508,16 +548,19 @@ class Provider:
     def search(self, query, max_results, constraints):
         raise NotImplementedError
 
-    def contents(self, url, max_characters):
+    def contents(self, url, max_characters, provider_result_id="", freshness=None):
         raise NotImplementedError
 
 
-def select_by_url(entries, url):
-    """Return the entry whose `url` or `id` canonicalizes to `url`.
+def select_by_reference(entries, url, provider_result_id=""):
+    """Return the entry the signed reference names, by either key.
 
     A provider response is attacker-influenced through the page it describes,
-    so the entry is selected by the URL the signed claim carries rather than by
-    position in the array.
+    so the entry is selected by what the claim carries rather than by position
+    in the array. Exa keys a contents entry by its opaque result identifier or
+    by the URL, and a redirect moves the second while leaving the first, so a
+    match on either key resolves the entry and a match on neither returns
+    nothing.
     """
     if not isinstance(entries, list):
         return None
@@ -528,6 +571,8 @@ def select_by_url(entries, url):
             candidate = entry.get(key)
             if not isinstance(candidate, str):
                 continue
+            if provider_result_id and candidate == provider_result_id:
+                return entry
             try:
                 if canonical_url(candidate) == url:
                     return entry
@@ -624,21 +669,24 @@ class ExaProvider(Provider):
         results = document.get("results")
         return results if isinstance(results, list) else []
 
-    def contents(self, url, max_characters):
-        """Return the content record Exa reports as retrieved for this URL.
+    def contents(self, url, max_characters, provider_result_id="", freshness=None):
+        """Return the content record Exa reports as retrieved for this result.
 
         Exa answers a contents request with a `statuses` array beside
         `results`, and a failed URL still occupies a position in the response,
         so taking `results[0]` returns another URL's page whenever the
         requested one failed or the provider reordered the array. The status
-        for this URL must read success and a result must name this URL before
-        any text is returned.
+        for this reference must read success and a result must name it before
+        any text is returned, matched on the opaque result identifier or the
+        canonical URL, since Exa keys an entry by either.
         """
         document = self._post(
             EXA_CONTENTS_ENDPOINT,
             {"urls": [url], "text": {"maxCharacters": max_characters}},
         )
-        status = select_by_url(document.get("statuses"), url)
+        status = select_by_reference(
+            document.get("statuses"), url, provider_result_id
+        )
         if status is None:
             raise ProviderContentError("the provider reported no status for the result")
         if str(status.get("status", "")).lower() != "success":
@@ -646,7 +694,9 @@ class ExaProvider(Provider):
                 "the provider could not retrieve the result: "
                 + failure_tag(status)
             )
-        record = select_by_url(document.get("results"), url)
+        record = select_by_reference(
+            document.get("results"), url, provider_result_id
+        )
         if record is None:
             raise ProviderContentError("the provider returned no content for the result")
         return record
@@ -700,7 +750,7 @@ class FakeProvider(Provider):
             selected.append(record)
         return selected[:max_results]
 
-    def contents(self, url, max_characters):
+    def contents(self, url, max_characters, provider_result_id="", freshness=None):
         record = self.document.get("contents", {}).get(url)
         if record is None:
             raise ProviderContentError("the provider returned no content for the result")
@@ -1059,8 +1109,28 @@ def decode_content_text(record):
     return text[:DOCUMENT_CHARACTER_CAP]
 
 
+def provider_result_id(record):
+    """Return the provider's own identifier for a result, or the empty string.
+
+    Exa returns an opaque `id` beside the URL and answers a contents request on
+    either key, so the identifier is signed into the reference and a redirect
+    or a trailing-slash difference still resolves the entry. A record without
+    one leaves the field empty and the URL carries the match alone.
+    """
+    candidate = record.get("id")
+    if isinstance(candidate, str) and 0 < len(candidate) <= RESULT_ID_CHARACTER_CAP:
+        return candidate
+    return ""
+
+
 def render_search_results(
-    results, provider_name, signing_key, search_id, issued_at, lifetime_seconds
+    results,
+    provider_name,
+    signing_key,
+    search_id,
+    freshness,
+    issued_at,
+    lifetime_seconds,
 ):
     """Render one block per result in the layout the pinned llama-ui parses.
 
@@ -1091,8 +1161,10 @@ def render_search_results(
             + issue_result_id(
                 signing_key,
                 url,
+                provider_result_id(record),
                 provider_name,
                 search_id,
+                freshness,
                 issued_at,
                 lifetime_seconds,
             ),
@@ -1223,11 +1295,13 @@ def call_search(settings, arguments):
             spend_budget(ledger, settings, "search", now, pages=max_results)
         provider = select_provider(settings)
         results = provider.search(query, max_results, constraints)[:max_results]
+        search_id = search_id_for()
         rendered = render_search_results(
             results,
             provider.name,
             signing_key,
-            search_id_for(),
+            search_id,
+            freshness_policy(constraints),
             int(now),
             resolve_token_lifetime(settings),
         )
@@ -1295,7 +1369,12 @@ def call_fetch(settings, arguments):
             )
         if ledger is not None:
             spend_budget(ledger, settings, "fetch", now)
-        record = provider.contents(url, window_end)
+        record = provider.contents(
+            url,
+            window_end,
+            claim["provider_result_id"],
+            claim["freshness"],
+        )
         text = decode_content_text(record)
         window = text[start_index:window_end]
         truncated = len(text) > start_index + len(window)
