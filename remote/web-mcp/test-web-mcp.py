@@ -263,10 +263,16 @@ class WebMcpServerTest(unittest.TestCase):
         self.assertEqual(lines[1], "URL: https://example.org/raven2")
         self.assertEqual(lines[2], "Published: 2026-01-05")
         self.assertEqual(lines[3], "Author: A. Measurer")
-        self.assertEqual(lines[4], "Highlights:")
-        self.assertEqual(lines[5], "- decode reaches 3.07 tok/s")
-        self.assertTrue(lines[7].startswith("Result ID: "))
+        self.assertTrue(lines[4].startswith("Result ID: "))
+        self.assertEqual(lines[5], "Trust: untrusted-web-result")
+        self.assertEqual(lines[6], "Highlights:")
+        self.assertEqual(lines[7], "- decode reaches 3.07 tok/s")
+        self.assertEqual(lines[8], "- second highlight")
         self.assertEqual(lines[-1], "---")
+        highlight_index = lines.index("Highlights:")
+        self.assertTrue(
+            all(line.startswith("- ") for line in lines[highlight_index + 1 : -1])
+        )
 
     def test_token_round_trip_returns_wrapped_content(self):
         session = self.open_session()

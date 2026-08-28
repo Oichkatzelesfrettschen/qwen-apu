@@ -666,9 +666,12 @@ def render_search_results(
 ):
     """Render one block per result in the layout the pinned llama-ui parses.
 
-    The renderer reads `Title:`, `URL:`, `Published:`, `Author:`, `Highlights:`
-    and the `---` separator, so every block writes those keys in that order and
-    appends the result identifier the fetch tool redeems.
+    The renderer treats everything after `Highlights:` up to the `---`
+    separator as highlight text, so the result identifier and the trust label
+    precede that key and the highlight lines are the last content in a block.
+    `Trust: untrusted-web-result` states in the rendered surface what the
+    wrapper enforces: the title, author, and highlight text below it are
+    attacker-chosen.
     """
     blocks = []
     rendered_characters = 0
@@ -683,11 +686,6 @@ def render_search_results(
             f"URL: {url}",
             f"Published: {clip(published, 64)}",
             f"Author: {clip(record.get('author') or '', AUTHOR_CHARACTER_CAP)}",
-            "Highlights:",
-        ]
-        for highlight in highlights[:HIGHLIGHT_COUNT_CAP]:
-            lines.append(f"- {clip(highlight, HIGHLIGHT_CHARACTER_CAP)}")
-        lines.append(
             "Result ID: "
             + issue_result_id(
                 signing_key,
@@ -696,8 +694,12 @@ def render_search_results(
                 search_id,
                 issued_at,
                 lifetime_seconds,
-            )
-        )
+            ),
+            "Trust: untrusted-web-result",
+            "Highlights:",
+        ]
+        for highlight in highlights[:HIGHLIGHT_COUNT_CAP]:
+            lines.append(f"- {clip(highlight, HIGHLIGHT_CHARACTER_CAP)}")
         block = "\n".join(lines)
         rendered_characters += len(block) + 4
         if rendered_characters > SEARCH_OUTPUT_CHARACTER_CAP:
