@@ -756,7 +756,7 @@ if [ "$mcp_outcome" = ok ]; then
         mcp_outcome=missing_profile
     grep -q '"QWEN_WEB_MAX_RESULTS": "5"' "$gated_mcp_config" ||
         mcp_outcome=missing_max_results
-    grep -q '"QWEN_WEB_MAX_FETCHES": "2"' "$gated_mcp_config" ||
+    grep -q '"QWEN_WEB_MAX_FETCHES_PER_SEARCH": "2"' "$gated_mcp_config" ||
         mcp_outcome=missing_max_fetches
     grep -q '"QWEN_WEB_MAX_CHARS_PER_FETCH": "12000"' "$gated_mcp_config" ||
         mcp_outcome=missing_max_chars
@@ -764,7 +764,7 @@ if [ "$mcp_outcome" = ok ]; then
         mcp_outcome=missing_search_auth
     grep -q '"QWEN_WEB_STATE_DIR"' "$gated_mcp_config" ||
         mcp_outcome=missing_state_dir
-    grep -q '"QWEN_WEB_SEARCH_KEY_FILE"' "$gated_mcp_config" ||
+    grep -q '"QWEN_WEB_EXA_KEY_FILE"' "$gated_mcp_config" ||
         mcp_outcome=missing_key_file_path
 fi
 report mcp_config_carries_profile_budgets "$mcp_outcome"
@@ -814,10 +814,11 @@ admitted = {
     "QWEN_WEB_PROFILE",
     "QWEN_WEB_PROVIDER",
     "QWEN_WEB_MAX_RESULTS",
-    "QWEN_WEB_MAX_FETCHES",
+    "QWEN_WEB_MAX_FETCHES_PER_SEARCH",
     "QWEN_WEB_MAX_CHARS_PER_FETCH",
     "QWEN_WEB_SEARCH_AUTH",
-    "QWEN_WEB_SEARCH_KEY_FILE",
+    "QWEN_WEB_EXA_KEY_FILE",
+    "QWEN_WEB_FAKE_FIXTURES",
     "QWEN_WEB_TOKEN_KEY_FILE",
     "QWEN_WEB_STATE_DIR",
 }
@@ -843,6 +844,58 @@ if grep -q '^LLAMA_ARG_MCP_SERVERS_CONFIG' "$presets_ui"; then
     report ui_mediated_section_names_no_mcp_config key_present
 else
     report ui_mediated_section_names_no_mcp_config ok
+fi
+
+# QWEN_WEB_PROVIDER fake reaches no network, so it requires
+# QWEN_WEB_FAKE_FIXTURES rather than a search key file: the generated section
+# carries the fixture path under QWEN_WEB_FAKE_FIXTURES and names no
+# QWEN_WEB_EXA_KEY_FILE, and the build succeeds with no search key file set.
+fake_fixtures_file=$work/private/fake-fixtures.json
+printf '{"search": {}, "contents": {}}\n' >"$fake_fixtures_file"
+web_profiles_fake=$work/web-profiles-fake.tsv
+cat >"$web_profiles_fake" <<'EOF'
+web-fixture-fake	fixture-production	validator-gated	8192	8192	5	2	12000	yes	no	9/10	validator-gated
+EOF
+
+presets_fake=$work/presets-fake.ini
+if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_fake \
+    QWEN_MODEL_ROOT=$policy_model_root QWEN_WEB_AUTHORIZER_READY=1 \
+    env -u QWEN_WEB_SEARCH_KEY_FILE QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    QWEN_WEB_PROVIDER=fake QWEN_WEB_FAKE_FIXTURES="$fake_fixtures_file" \
+    QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" QWEN_WEB_STATE_DIR="$web_state_directory" \
+    "$builder" "$presets_fake" \
+    >"$work/fake-provider.log" 2>"$work/fake-provider.err"; then
+    fake_mcp_config=$(sed -n \
+        's/^LLAMA_ARG_MCP_SERVERS_CONFIG = //p' "$presets_fake")
+    fake_outcome=ok
+    [ -f "$fake_mcp_config" ] || fake_outcome=config_absent
+    if [ "$fake_outcome" = ok ]; then
+        grep -q "\"QWEN_WEB_FAKE_FIXTURES\": \"$fake_fixtures_file\"" \
+            "$fake_mcp_config" || fake_outcome=missing_fixtures_path
+        if grep -q '"QWEN_WEB_EXA_KEY_FILE"' "$fake_mcp_config"; then
+            fake_outcome=key_file_present
+        fi
+    fi
+    report fake_provider_emits_fixtures_without_key_file "$fake_outcome"
+else
+    cat "$work/fake-provider.err" >&2
+    report fake_provider_emits_fixtures_without_key_file build_failed
+fi
+
+# QWEN_WEB_PROVIDER fake with QWEN_WEB_FAKE_FIXTURES unset names no fixture
+# file, so the build refuses the row rather than emitting a section the fake
+# provider cannot serve.
+presets_fake_missing=$work/presets-fake-missing.ini
+if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_fake \
+    QWEN_MODEL_ROOT=$policy_model_root QWEN_WEB_AUTHORIZER_READY=1 \
+    env -u QWEN_WEB_SEARCH_KEY_FILE -u QWEN_WEB_FAKE_FIXTURES \
+    QWEN_WEB_MCP_SERVER="$mcp_server_program" QWEN_WEB_PROVIDER=fake \
+    QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" QWEN_WEB_STATE_DIR="$web_state_directory" \
+    "$builder" "$presets_fake_missing" \
+    >"$work/fake-provider-missing.log" 2>"$work/fake-provider-missing.err"; then
+    report fake_provider_without_fixtures_refused accepted
+else
+    report fake_provider_without_fixtures_refused ok
 fi
 
 # A path holding a double quote would change the parsed JSON value, so the run

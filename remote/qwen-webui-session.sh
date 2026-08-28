@@ -124,12 +124,31 @@ printf 'state=starting utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file
 # setting: the served page is the one this session binds, so its origin comes
 # from QWEN_BIND_HOST and the served port. The signing key travels as a path in
 # the environment and its contents stay in the broker's own address space.
+broker_start_time=''
+broker_signing_key_sha256=''
 if [ "$broker_enabled" = 1 ]; then
     if [ ! -x "$broker_program" ]; then
         printf 'state=failed reason=authorization_broker_unavailable path=%s utc=%s\n' \
             "$broker_program" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
         exit 1
     fi
+    # One broker signs for one profile, and a grant it signs names that
+    # profile, so the session refuses to start a broker for no profile rather
+    # than for `default`, a name no preset section carries. The signing key is
+    # read here as a digest alone: the broker reports the digest of the key it
+    # loaded on /health, and the comparison below proves the child signs with
+    # the file this launch named.
+    if [ -z "${QWEN_WEB_PROFILE:-}" ]; then
+        printf 'state=failed reason=authorization_broker_profile_unset utc=%s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
+        exit 1
+    fi
+    if [ ! -f "${QWEN_WEB_TOKEN_KEY_FILE:-}" ] || [ ! -r "$QWEN_WEB_TOKEN_KEY_FILE" ]; then
+        printf 'state=failed reason=authorization_broker_signing_key_unreadable utc=%s\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
+        exit 1
+    fi
+    broker_signing_key_sha256=$(sha256sum "$QWEN_WEB_TOKEN_KEY_FILE" | cut -c1-64)
     mkdir -p "$broker_state_directory"
     chmod 700 "$broker_state_directory"
     : >"$broker_log"
@@ -138,6 +157,8 @@ if [ "$broker_enabled" = 1 ]; then
     QWEN_WEB_BROKER_ORIGIN="http://${QWEN_BIND_HOST:-127.0.0.1}:$server_port" \
         "$broker_program" --host 127.0.0.1 --port "$broker_port" \
         --state-dir "$broker_state_directory" \
+        --profile "$QWEN_WEB_PROFILE" \
+        --provider "${QWEN_WEB_PROVIDER:-exa}" \
         >"$broker_log" 2>&1 &
     broker_pid=$!
 
@@ -158,6 +179,38 @@ if [ "$broker_enabled" = 1 ]; then
     if [ "$broker_ready" -ne 1 ]; then
         printf 'state=failed reason=authorization_broker_not_listening port=%s utc=%s\n' \
             "$broker_port" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
+        exit 1
+    fi
+    # The `listening` line proves a socket; `GET /health` proves the process
+    # behind it is this launch's broker, serving this profile and provider and
+    # signing with this key. A stale broker on the same port from an earlier
+    # launch answers the line's grep and fails the pid comparison here.
+    broker_health=$(curl -sS --max-time 5 -H 'Host: 127.0.0.1' \
+        "http://127.0.0.1:$broker_port/health" 2>>"$broker_log" || true)
+    health_field() {
+        printf '%s' "$broker_health" | tr -d '\n' |
+            sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\{0,1\}\([^\",}]*\)\"\{0,1\}.*/\1/p"
+    }
+    health_pid=$(health_field pid)
+    health_profile=$(health_field profile)
+    health_provider=$(health_field provider)
+    health_key=$(health_field signing_key_sha256)
+    broker_start_time=$(health_field start_time)
+    health_mismatch=''
+    [ "$health_pid" = "$broker_pid" ] || health_mismatch="pid=$health_pid"
+    [ "$health_profile" = "$QWEN_WEB_PROFILE" ] || \
+        health_mismatch="$health_mismatch profile=$health_profile"
+    [ "$health_provider" = "${QWEN_WEB_PROVIDER:-exa}" ] || \
+        health_mismatch="$health_mismatch provider=$health_provider"
+    [ "$health_key" = "$broker_signing_key_sha256" ] || \
+        health_mismatch="$health_mismatch signing_key=mismatch"
+    case $broker_start_time in
+        '' | *[!0-9]*) health_mismatch="$health_mismatch start_time=absent" ;;
+    esac
+    if [ -n "$health_mismatch" ]; then
+        printf 'state=failed reason=authorization_broker_identity_mismatch port=%s mismatch=%s utc=%s\n' \
+            "$broker_port" "$(printf '%s' "$health_mismatch" | sed 's/^ //; s/ /,/g')" \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
         exit 1
     fi
 fi
@@ -337,6 +390,13 @@ printf 'router enabled=%s presets=%s preset_sha256=%s models_max=%s\n' \
 if [ -n "$broker_pid" ]; then
     printf 'broker secret_file=%s\n' \
         "$broker_state_directory/authorize-session.secret" >>"$status_file"
+    # The broker's process start time lands on a sixth line, so a teardown
+    # signals the process that /health identified rather than whatever
+    # process later holds the same number: a PID is reused after the broker
+    # exits, and its start time in /proc/PID/stat is what tells the two apart.
+    printf 'broker_identity pid=%s start_time=%s profile=%s provider=%s signing_key_sha256=%s\n' \
+        "$broker_pid" "$broker_start_time" "$QWEN_WEB_PROFILE" \
+        "${QWEN_WEB_PROVIDER:-exa}" "$broker_signing_key_sha256" >>"$status_file"
 fi
 
 set +e

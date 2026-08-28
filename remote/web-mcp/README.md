@@ -95,6 +95,18 @@ token the search argument would refuse before signature verification is refused
 where it is issued, and the operator's command and the broker's request meet
 that refusal alike.
 
+The broker validates its signing key before it prints `listening`: the path
+is required, the file is a regular file rather than a symlink, owned by the
+serving user, at mode 0600 or tighter, readable, and nonempty, and a failure
+names the rule on stderr with exit 2. `GET /health` then reports what the
+process is without requiring an Origin or the session header: `protocol`,
+`profile`, `provider`, `pid`, `start_time` (field 22 of `/proc/self/stat`,
+in clock ticks), `signing_key_sha256`, `state_dir` as device and inode, and
+the admitted `origins`. `qwen-webui-session.sh` compares pid, profile,
+provider, and key digest against what it launched and records pid and start
+time, so a teardown signals the process the launch identified rather than a
+later holder of the same number.
+
 The service admits `127.0.0.1` and `::1` and refuses every other `--host` with
 exit 2 before the socket exists, so a browser on another machine reaches it
 through `ssh -L PORT:127.0.0.1:PORT` rather than through a wider bind. The
@@ -227,6 +239,18 @@ truncates a longer document. The window cap of 24000 characters, 12000 by
 default, bounds one reply, and a window whose end passes the document cap
 refuses the call. A fetched body decodes as strict UTF-8; anything else is
 refused rather than substituted.
+
+Two of these caps narrow further from the environment, which is what lets a
+profile spend a smaller per-call budget than the compiled-in ceiling admits.
+`QWEN_WEB_MAX_RESULTS` bounds `search_exa`'s `max_results` argument, an
+integer in [1, 10] that defaults to `RESULT_COUNT_CAP` (10) when unset;
+`QWEN_WEB_MAX_CHARS_PER_FETCH` bounds `fetch_exa`'s `max_chars` argument, an
+integer in [1, 24000] that defaults to `WINDOW_CHARACTER_CAP` (24000) when
+unset. Both resolve once in `main`, ahead of the request loop, so a malformed
+or out-of-range value refuses the child at startup rather than on the first
+call, and both narrow the `tools/list` schema's advertised `maximum` and
+default to match what the call enforces. A request above either cap is
+refused with a `ToolError` naming the cap it exceeded.
 
 ## Fetched text is quarantined in its wrapper
 

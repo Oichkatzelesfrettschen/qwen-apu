@@ -261,6 +261,50 @@ class BrokerTest(unittest.TestCase):
                 self.assertIn("loopback literal alone", completed.stderr)
                 self.assertEqual(completed.stdout, "")
 
+    def run_broker_expecting_refusal(self, token_key_file, expected_message):
+        completed = subprocess.run(
+            [
+                sys.executable,
+                BROKER_PATH,
+                "--state-dir",
+                self.state_directory,
+                "--token-key-file",
+                token_key_file,
+                "--origin",
+                ORIGIN,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn(expected_message, completed.stderr)
+        self.assertEqual(completed.stdout, "")
+        return completed
+
+    def test_an_absent_signing_key_path_is_refused_at_startup(self):
+        self.run_broker_expecting_refusal(
+            os.path.join(self.workspace.name, "no-such-key"),
+            "unreadable",
+        )
+
+    def test_a_signing_key_readable_outside_its_owner_is_refused(self):
+        loose_path = os.path.join(self.workspace.name, "loose.key")
+        with open(loose_path, "w", encoding="utf-8") as handle:
+            handle.write(TOKEN_SECRET + "\n")
+        os.chmod(loose_path, 0o644)
+        self.run_broker_expecting_refusal(loose_path, "chmod 0600")
+
+    def test_a_signing_key_that_is_a_symlink_is_refused(self):
+        link_path = os.path.join(self.workspace.name, "key.link")
+        os.symlink(self.token_key_path, link_path)
+        self.run_broker_expecting_refusal(link_path, "symlink")
+
+    def test_an_empty_signing_key_is_refused(self):
+        empty_path = os.path.join(self.workspace.name, "empty.key")
+        open(empty_path, "wb").close()
+        os.chmod(empty_path, 0o600)
+        self.run_broker_expecting_refusal(empty_path, "empty")
+
     def test_the_broker_requires_a_state_directory_and_an_origin(self):
         for argv, expected in (
             (["--token-key-file", self.token_key_path, "--origin", ORIGIN],
@@ -301,6 +345,28 @@ class BrokerTest(unittest.TestCase):
                 )
                 self.assertEqual(status, 403)
                 self.assertIn(SESSION_HEADER, payload["error"])
+                self.assertNotIn("authorization", payload)
+
+    def test_a_grant_request_from_a_foreign_origin_is_refused(self):
+        """The secret alone buys nothing from a page the launch did not name."""
+        broker = self.launch()
+        for description, origin in (
+            ("foreign", "http://localhost:8080"),
+            ("absent", None),
+        ):
+            with self.subTest(origin=description):
+                sent = self.grant_headers()
+                if origin is None:
+                    sent.pop("Origin")
+                else:
+                    sent["Origin"] = origin
+                status, _, payload = self.post_grant(
+                    broker,
+                    {"query": "raven2 vulkan decode", "profile_id": "default"},
+                    sent,
+                )
+                self.assertEqual(status, 403)
+                self.assertIn("Origin", payload["error"])
                 self.assertNotIn("authorization", payload)
 
     def test_the_session_endpoint_gates_on_an_admitted_origin(self):
@@ -412,7 +478,12 @@ class BrokerTest(unittest.TestCase):
         self.assertFalse(admitted["result"]["isError"])
 
     def test_a_malformed_field_is_refused_before_the_key_is_read(self):
-        broker = self.launch(**{"--token-key-file": "/nonexistent/token.key"})
+        # Startup validates the key file's own bytes
+        # (test_an_absent_signing_key_path_is_refused_at_startup and its
+        # siblings), so a launched broker always names a readable key; this
+        # arm proves `parse_request_arguments` still refuses a malformed
+        # field ahead of `issue_grant`'s own read of that file.
+        broker = self.launch()
         for payload in (
             {"query": 5},
             {"query": "q", "max_results": "many"},
@@ -429,7 +500,7 @@ class BrokerTest(unittest.TestCase):
         # (`enforce_search_authorization` in server.py), so a request that
         # names no profile at all is refused before a token is signed rather
         # than signed against the broker's own launch profile silently.
-        broker = self.launch(**{"--token-key-file": "/nonexistent/token.key"})
+        broker = self.launch()
         for payload in (
             {"query": "raven2 vulkan decode"},
             {"query": "raven2 vulkan decode", "profile_id": ""},
@@ -555,6 +626,53 @@ class BrokerTest(unittest.TestCase):
         self.assertNotIn(TOKEN_SECRET, stderr)
         self.assertNotIn("raven2 vulkan decode", stderr)
         self.assertNotIn(secret, stderr)
+
+    def test_health_reports_process_identity_and_needs_no_origin(self):
+        broker = self.launch()
+        status, _, body = broker.request("GET", "/health")
+        self.assertEqual(status, 200)
+        payload = json.loads(body)
+        self.assertEqual(
+            set(payload),
+            {
+                "protocol",
+                "profile",
+                "provider",
+                "pid",
+                "start_time",
+                "signing_key_sha256",
+                "state_dir",
+                "origins",
+            },
+        )
+        self.assertEqual(payload["protocol"], "qwen-web-broker/1")
+        self.assertEqual(payload["profile"], "default")
+        self.assertEqual(payload["provider"], "fake")
+        self.assertEqual(payload["pid"], broker.process.pid)
+        self.assertEqual(
+            payload["signing_key_sha256"],
+            hashlib.sha256((TOKEN_SECRET + "\n").encode("utf-8")).hexdigest(),
+        )
+        self.assertEqual(payload["origins"], [ORIGIN])
+        self.assertIsInstance(payload["start_time"], int)
+        state_status = os.stat(self.state_directory)
+        self.assertEqual(
+            payload["state_dir"], f"{state_status.st_dev}:{state_status.st_ino}"
+        )
+
+    def test_health_refuses_a_non_loopback_host_header(self):
+        broker = self.launch()
+        status, _, body = broker.request(
+            "GET", "/health", None, {"Host": "evil.example"}
+        )
+        self.assertEqual(status, 403)
+        self.assertNotIn(TOKEN_SECRET, body)
+
+    def test_health_never_carries_the_signing_key_bytes(self):
+        broker = self.launch()
+        status, _, body = broker.request("GET", "/health")
+        self.assertEqual(status, 200)
+        self.assertNotIn(TOKEN_SECRET, body)
 
     def text(self, message):
         return message["result"]["content"][0]["text"]

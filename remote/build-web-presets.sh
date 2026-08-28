@@ -198,8 +198,9 @@ if [ "$#" -ne 1 ]; then
     printf 'web profile ledger comes from QWEN_WEB_PROFILES, default remote/web-profiles.tsv\n' >&2
     printf 'model root comes from QWEN_MODEL_ROOT, default $HOME/models\n' >&2
     printf 'MCP server program path is required in QWEN_WEB_MCP_SERVER\n' >&2
-    printf 'search key file path is required in QWEN_WEB_SEARCH_KEY_FILE\n' >&2
-    printf 'optional QWEN_WEB_TOKEN_KEY_FILE, QWEN_WEB_STATE_DIR, QWEN_WEB_PROVIDER\n' >&2
+    printf 'QWEN_WEB_PROVIDER exa (default) requires a search key file path in QWEN_WEB_SEARCH_KEY_FILE, emitted as QWEN_WEB_EXA_KEY_FILE\n' >&2
+    printf 'QWEN_WEB_PROVIDER fake requires a fixture file path in QWEN_WEB_FAKE_FIXTURES, emitted unchanged, and reads no search key file\n' >&2
+    printf 'optional QWEN_WEB_TOKEN_KEY_FILE, QWEN_WEB_STATE_DIR\n' >&2
     printf 'QWEN_WEB_ALLOW_UNVALIDATED_DEPTH=1 admits an unknown or over-depth profile as experimental\n' >&2
     printf 'QWEN_WEB_AUTHORIZER_READY=1 asserts the argument-authorization validator runs, admitting validator-gated rows\n' >&2
     exit 2
@@ -232,6 +233,7 @@ esac
 
 mcp_server_program=${QWEN_WEB_MCP_SERVER:-}
 search_key_file=${QWEN_WEB_SEARCH_KEY_FILE:-}
+fake_fixtures=${QWEN_WEB_FAKE_FIXTURES:-}
 token_key_file=${QWEN_WEB_TOKEN_KEY_FILE:-}
 web_state_directory=${QWEN_WEB_STATE_DIR:-"${HOME:?}/qwen-webui-state/web-mcp"}
 web_provider=${QWEN_WEB_PROVIDER:-exa}
@@ -263,22 +265,46 @@ require_json_safe_path() {
 # first row that writes one, which keeps an offline or manual ledger generating
 # without a server program and a provider key it never reaches, and keeps the
 # refusal on the row that would have been misconfigured by omission.
+#
+# The provider decides which secret backs the emitted section: `exa` reaches
+# the network and requires QWEN_WEB_SEARCH_KEY_FILE, a readable key file the
+# generator's own input keeps its name for since every caller of this script
+# already spells it that way; `fake` reaches no network and requires
+# QWEN_WEB_FAKE_FIXTURES instead, a readable regular file of recorded
+# responses, and reads no search key file. server.py's settings_from_environment
+# reads QWEN_WEB_EXA_KEY_FILE rather than QWEN_WEB_SEARCH_KEY_FILE, so the
+# emitted section renames the value at the JSON boundary while the shell
+# variable that carries it into this script keeps its established name.
 require_mcp_inputs() {
     if [ -z "$mcp_server_program" ]; then
         printf 'profile %s emits an MCP configuration and QWEN_WEB_MCP_SERVER names no server program\n' \
             "$profile_id" >&2
         exit 1
     fi
-    if [ -z "$search_key_file" ]; then
-        printf 'profile %s emits an MCP configuration and QWEN_WEB_SEARCH_KEY_FILE names no provider key file\n' \
-            "$profile_id" >&2
-        exit 1
-    fi
     require_json_safe_path QWEN_WEB_MCP_SERVER "$mcp_server_program"
-    require_json_safe_path QWEN_WEB_SEARCH_KEY_FILE "$search_key_file"
     require_json_safe_path QWEN_WEB_STATE_DIR "$web_state_directory"
     if [ -n "$token_key_file" ]; then
         require_json_safe_path QWEN_WEB_TOKEN_KEY_FILE "$token_key_file"
+    fi
+    if [ "$web_provider" = fake ]; then
+        if [ -z "$fake_fixtures" ]; then
+            printf 'profile %s emits an MCP configuration under provider fake and QWEN_WEB_FAKE_FIXTURES names no fixture file\n' \
+                "$profile_id" >&2
+            exit 1
+        fi
+        if [ ! -f "$fake_fixtures" ] || [ ! -r "$fake_fixtures" ]; then
+            printf 'QWEN_WEB_FAKE_FIXTURES names an unreadable regular file: %s\n' \
+                "$fake_fixtures" >&2
+            exit 1
+        fi
+        require_json_safe_path QWEN_WEB_FAKE_FIXTURES "$fake_fixtures"
+    else
+        if [ -z "$search_key_file" ]; then
+            printf 'profile %s emits an MCP configuration and QWEN_WEB_SEARCH_KEY_FILE names no provider key file\n' \
+                "$profile_id" >&2
+            exit 1
+        fi
+        require_json_safe_path QWEN_WEB_SEARCH_KEY_FILE "$search_key_file"
     fi
 }
 case $web_provider in
@@ -652,11 +678,15 @@ while IFS='	' read -r profile_id model_id _web_mode context \
             printf '        "QWEN_WEB_PROFILE": "%s",\n' "$profile_id"
             printf '        "QWEN_WEB_PROVIDER": "%s",\n' "$web_provider"
             printf '        "QWEN_WEB_MAX_RESULTS": "%s",\n' "$max_results"
-            printf '        "QWEN_WEB_MAX_FETCHES": "%s",\n' "$max_fetches"
+            printf '        "QWEN_WEB_MAX_FETCHES_PER_SEARCH": "%s",\n' "$max_fetches"
             printf '        "QWEN_WEB_MAX_CHARS_PER_FETCH": "%s",\n' \
                 "$max_chars_per_fetch"
             printf '        "QWEN_WEB_SEARCH_AUTH": "required",\n'
-            printf '        "QWEN_WEB_SEARCH_KEY_FILE": "%s",\n' "$search_key_file"
+            if [ "$web_provider" = fake ]; then
+                printf '        "QWEN_WEB_FAKE_FIXTURES": "%s",\n' "$fake_fixtures"
+            else
+                printf '        "QWEN_WEB_EXA_KEY_FILE": "%s",\n' "$search_key_file"
+            fi
             if [ -n "$token_key_file" ]; then
                 printf '        "QWEN_WEB_TOKEN_KEY_FILE": "%s",\n' "$token_key_file"
             fi

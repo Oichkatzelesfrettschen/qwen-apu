@@ -157,34 +157,88 @@ while :; do
 done
 PROBE
 # One fake broker honours SIGTERM and removes its session secret, and one
-# retains the signal so the teardown meets a survivor and reports residue.
-cat >"$fixture_remote/fake-broker.sh" <<'BROKER'
-#!/bin/sh
-set -eu
-broker_port=8571
-while [ "$#" -gt 0 ]; do
-    case $1 in
-        --port)
-            broker_port=$2
-            shift
-            ;;
-    esac
-    shift
-done
-mkdir -p "${QWEN_WEB_STATE_DIR:?}"
-secret_file=$QWEN_WEB_STATE_DIR/authorize-session.secret
-printf 'fixture-session-secret\n' >"$secret_file"
-if [ "${QWEN_TEST_BROKER_IGNORES_TERM:-0}" = 1 ]; then
-    trap '' TERM
-else
-    trap 'rm -f -- "$secret_file"; exit 0' HUP INT TERM
-fi
-printf 'listening 127.0.0.1 %s\n' "$broker_port"
-while :; do
-    sleep 1
-done
+# retains the signal so the teardown meets a survivor and reports residue. It
+# answers GET /health with the identity the session compares, so the arm
+# exercises the handshake the real broker serves; QWEN_TEST_BROKER_HEALTH_PID
+# substitutes a wrong pid to make the comparison fail.
+cat >"$fixture_remote/fake-broker.py" <<'BROKER'
+#!/usr/bin/env python3
+import hashlib
+import http.server
+import json
+import os
+import signal
+import sys
+
+arguments = sys.argv[1:]
+settings = {"--port": "8571", "--profile": "", "--provider": "exa",
+            "--state-dir": os.environ.get("QWEN_WEB_STATE_DIR", ""),
+            "--host": "127.0.0.1"}
+while arguments:
+    key = arguments.pop(0)
+    if key in settings and arguments:
+        settings[key] = arguments.pop(0)
+state_dir = settings["--state-dir"]
+os.makedirs(state_dir, exist_ok=True)
+secret_file = os.path.join(state_dir, "authorize-session.secret")
+with open(secret_file, "w") as handle:
+    handle.write("fixture-session-secret\n")
+key_file = os.environ.get("QWEN_WEB_TOKEN_KEY_FILE", "")
+key_digest = ""
+if key_file:
+    with open(key_file, "rb") as handle:
+        key_digest = hashlib.sha256(handle.read()).hexdigest()
+with open("/proc/self/stat") as handle:
+    start_time = int(handle.read().rsplit(")", 1)[1].split()[19])
+health = {
+    "protocol": "qwen-web-broker/1",
+    "profile": settings["--profile"],
+    "provider": settings["--provider"],
+    "pid": int(os.environ.get("QWEN_TEST_BROKER_HEALTH_PID", os.getpid())),
+    "start_time": start_time,
+    "signing_key_sha256": key_digest,
+    "state_dir": "0:0",
+    "origins": [],
+}
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def do_GET(self):
+        body = json.dumps(health).encode()
+        self.send_response(200 if self.path == "/health" else 404)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+def leave(number, frame):
+    raise KeyboardInterrupt
+
+
+if os.environ.get("QWEN_TEST_BROKER_IGNORES_TERM", "0") == "1":
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+else:
+    signal.signal(signal.SIGTERM, leave)
+service = http.server.HTTPServer((settings["--host"], int(settings["--port"])), Handler)
+sys.stdout.write("listening %s %s\n" % (settings["--host"], settings["--port"]))
+sys.stdout.flush()
+try:
+    service.serve_forever()
+except KeyboardInterrupt:
+    pass
+finally:
+    if os.path.exists(secret_file):
+        os.unlink(secret_file)
 BROKER
+chmod +x "$fixture_remote/fake-broker.py"
 chmod +x "$fixture_remote"/*.sh
+
+printf 'fixture-signing-key\n' >"$temporary_directory/token.key"
+chmod 600 "$temporary_directory/token.key"
 
 start_ready_session() {
     ready_state_directory=$1
@@ -195,8 +249,10 @@ start_ready_session() {
     QWEN_TEST_SERVER_PID_MARKER=$ready_state_directory/server.marker \
         QWEN_VULKAN_LATENCY_PROBE=$fixture_remote/latency-probe.sh \
         QWEN_WEB_BROKER=$ready_marker \
-        QWEN_WEB_BROKER_PROGRAM=$fixture_remote/fake-broker.sh \
+        QWEN_WEB_BROKER_PROGRAM=$fixture_remote/fake-broker.py \
         QWEN_WEB_BROKER_PORT=18571 \
+        QWEN_WEB_PROFILE=web-fixture \
+        QWEN_WEB_TOKEN_KEY_FILE=$temporary_directory/token.key \
         QWEN_WEB_STATE_DIR=$ready_state_directory/web-mcp \
         "$fixture_remote/qwen-webui-session.sh" \
             "$temporary_directory/fake-server" \
@@ -242,6 +298,14 @@ if [ ! -s "$broker_secret_file" ]; then
     printf 'broker wrote no session secret at %s\n' "$broker_secret_file" >&2
     exit 1
 fi
+recorded_identity=$(sed -n 's/^broker_identity //p' "$broker_state_directory/session.status")
+case $recorded_identity in
+    "pid=$recorded_broker_pid start_time="[0-9]*" profile=web-fixture provider=exa signing_key_sha256="????????????????????????????????????????????????????????????????) ;;
+    *)
+        printf 'session recorded no broker identity line: %s\n' "$recorded_identity" >&2
+        exit 1
+        ;;
+esac
 kill -TERM "$session_pid"
 set +e
 wait "$session_pid"
@@ -278,6 +342,43 @@ kill -TERM "$session_pid"
 wait "$session_pid" 2>/dev/null || true
 session_pid=''
 
+# A broker whose /health names another pid is a process this launch did not
+# start on the port it expected, so the session fails rather than serving.
+mismatch_state_directory=$temporary_directory/state-mismatch
+mkdir -p "$mismatch_state_directory"
+cp "$fixture_remote/ready-capacity-server.sh" \
+    "$fixture_remote/run-qwen-capacity-server.sh"
+set +e
+QWEN_TEST_SERVER_PID_MARKER=$mismatch_state_directory/server.marker \
+    QWEN_VULKAN_LATENCY_PROBE=$fixture_remote/latency-probe.sh \
+    QWEN_WEB_BROKER=1 \
+    QWEN_WEB_BROKER_PROGRAM=$fixture_remote/fake-broker.py \
+    QWEN_WEB_BROKER_PORT=18571 \
+    QWEN_WEB_PROFILE=web-fixture \
+    QWEN_WEB_TOKEN_KEY_FILE=$temporary_directory/token.key \
+    QWEN_WEB_STATE_DIR=$mismatch_state_directory/web-mcp \
+    QWEN_TEST_BROKER_HEALTH_PID=1 \
+    "$fixture_remote/qwen-webui-session.sh" \
+        "$temporary_directory/fake-server" \
+        "$temporary_directory/fake-model" \
+        "$temporary_directory/fake-static" 4096 4096 18080 \
+        "$mismatch_state_directory" low-serialized \
+    >"$mismatch_state_directory/session.stdout" \
+    2>"$mismatch_state_directory/session.stderr"
+mismatch_status=$?
+set -e
+if [ "$mismatch_status" -eq 0 ] || \
+   ! grep -q 'reason=authorization_broker_identity_mismatch .*mismatch=pid=1' \
+        "$mismatch_state_directory/session.status"; then
+    printf 'session accepted a broker whose /health named another pid\n' >&2
+    cat "$mismatch_state_directory/session.status" >&2
+    exit 1
+fi
+if [ -e "$mismatch_state_directory/web-mcp/authorize-session.secret" ]; then
+    printf 'identity mismatch left the session secret behind\n' >&2
+    exit 1
+fi
+
 # The teardown reads broker_pid before `stop` rewrites the status file, signals
 # the process with the other guards, and proves both the process and its secret
 # gone. Its control script is a fixture, so the arm leaves any tmux session on
@@ -293,12 +394,17 @@ chmod +x "$fixture_remote/qwen-teardown.sh" "$fixture_remote/qwen-webui-control.
 run_teardown_arm() {
     teardown_state_directory=$temporary_directory/state-teardown-$1
     teardown_ignores_term=$2
+    teardown_start_time=${3:-live}
     mkdir -p "$teardown_state_directory/web-mcp"
     QWEN_WEB_STATE_DIR=$teardown_state_directory/web-mcp \
         QWEN_TEST_BROKER_IGNORES_TERM=$teardown_ignores_term \
-        "$fixture_remote/fake-broker.sh" --port 18571 \
+        "$fixture_remote/fake-broker.py" --port 18571 \
         >"$teardown_state_directory/broker.log" 2>&1 &
     teardown_broker_pid=$!
+    if [ "$teardown_start_time" = live ]; then
+        teardown_start_time=$(sed 's/^.*) //' "/proc/$teardown_broker_pid/stat" |
+            awk '{ print $20 }')
+    fi
     attempt=0
     while [ "$attempt" -lt 300 ] && \
           [ ! -s "$teardown_state_directory/web-mcp/authorize-session.secret" ]; do
@@ -310,6 +416,8 @@ run_teardown_arm() {
             "$teardown_broker_pid"
         printf 'broker secret_file=%s\n' \
             "$teardown_state_directory/web-mcp/authorize-session.secret"
+        printf 'broker_identity pid=%s start_time=%s profile=web-fixture provider=exa signing_key_sha256=0\n' \
+            "$teardown_broker_pid" "$teardown_start_time"
     } >"$teardown_state_directory/session.status"
     set +e
     QWEN_WEBUI_STATE_DIRECTORY=$teardown_state_directory \
@@ -355,6 +463,49 @@ if ! grep -q 'approval broker still running' \
     "$temporary_directory/state-teardown-survivor/teardown.stderr"; then
     printf 'teardown reported residue without naming the broker\n' >&2
     cat "$temporary_directory/state-teardown-survivor/teardown.stderr" >&2
+    exit 1
+fi
+
+# A recorded start time that differs from the live one names a reused pid, so
+# the teardown leaves that process alone and still proves the secret path.
+run_teardown_arm reused 0 1
+reused_pid=$teardown_broker_pid
+if ! kill -0 "$reused_pid" 2>/dev/null; then
+    printf 'teardown signalled a pid whose start time did not match\n' >&2
+    exit 1
+fi
+kill -TERM "$reused_pid" 2>/dev/null || true
+wait "$reused_pid" 2>/dev/null || true
+if ! grep -q 'now belongs to another process' \
+    "$temporary_directory/state-teardown-reused/teardown.stderr"; then
+    printf 'teardown did not report the reused pid\n' >&2
+    cat "$temporary_directory/state-teardown-reused/teardown.stderr" >&2
+    exit 1
+fi
+if ! grep -q 'session secret survives' \
+    "$temporary_directory/state-teardown-reused/teardown.stderr"; then
+    printf 'teardown skipped the secret proof after the pid check\n' >&2
+    cat "$temporary_directory/state-teardown-reused/teardown.stderr" >&2
+    exit 1
+fi
+
+# A status file naming the secret path with no broker_pid still proves the
+# path absent.
+orphan_state_directory=$temporary_directory/state-teardown-orphan
+mkdir -p "$orphan_state_directory/web-mcp"
+printf 'stale\n' >"$orphan_state_directory/web-mcp/authorize-session.secret"
+{
+    printf 'state=running server_pid=1 monitor_pid=1 latency_watchdog_pid=1 kernel_hazard_watchdog_pid=1 profile=low-serialized\n'
+    printf 'broker secret_file=%s\n' "$orphan_state_directory/web-mcp/authorize-session.secret"
+} >"$orphan_state_directory/session.status"
+set +e
+QWEN_WEBUI_STATE_DIRECTORY=$orphan_state_directory QWEN_SERVER_PORT=18571 \
+    "$fixture_remote/qwen-teardown.sh" >/dev/null 2>"$orphan_state_directory/teardown.stderr"
+orphan_status=$?
+set -e
+if [ "$orphan_status" -eq 0 ] || \
+   ! grep -q 'session secret survives' "$orphan_state_directory/teardown.stderr"; then
+    printf 'teardown ignored a surviving secret with no broker_pid recorded\n' >&2
     exit 1
 fi
 

@@ -1368,6 +1368,63 @@ def integer_setting(settings, key, default):
     return value
 
 
+def resolve_max_results_cap(settings):
+    """Return the per-call result-count ceiling, bounded by RESULT_COUNT_CAP.
+
+    `QWEN_WEB_MAX_RESULTS` narrows `search_exa`'s `max_results` for a profile
+    that spends a smaller per-call page budget; the value can lower the
+    ceiling `call_search` enforces but never raise it past the provider
+    rendering cap `RESULT_COUNT_CAP` names.
+    """
+    raw = settings.get("max_results_cap") or ""
+    if not raw:
+        return RESULT_COUNT_CAP
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ToolError("QWEN_WEB_MAX_RESULTS is not an integer") from None
+    if not (1 <= value <= RESULT_COUNT_CAP):
+        raise ToolError(
+            f"QWEN_WEB_MAX_RESULTS lies outside [1, {RESULT_COUNT_CAP}]: {value}"
+        )
+    return value
+
+
+def resolve_max_chars_per_fetch_cap(settings):
+    """Return the per-call fetch-window ceiling, bounded by WINDOW_CHARACTER_CAP.
+
+    `QWEN_WEB_MAX_CHARS_PER_FETCH` narrows `fetch_exa`'s `max_chars` the same
+    way `resolve_max_results_cap` narrows `max_results`, and the bound never
+    exceeds `WINDOW_CHARACTER_CAP`, which is what one reply admits.
+    """
+    raw = settings.get("max_chars_per_fetch_cap") or ""
+    if not raw:
+        return WINDOW_CHARACTER_CAP
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ToolError(
+            "QWEN_WEB_MAX_CHARS_PER_FETCH is not an integer"
+        ) from None
+    if not (1 <= value <= WINDOW_CHARACTER_CAP):
+        raise ToolError(
+            "QWEN_WEB_MAX_CHARS_PER_FETCH lies outside "
+            f"[1, {WINDOW_CHARACTER_CAP}]: {value}"
+        )
+    return value
+
+
+def resolve_environment_caps(settings):
+    """Replace the two raw cap strings in `settings` with validated integers.
+
+    Both caps gate every later call, so a malformed value fails once here
+    rather than on the first `search_exa` or `fetch_exa` invocation the
+    respawned child receives.
+    """
+    settings["max_results_cap"] = resolve_max_results_cap(settings)
+    settings["max_chars_per_fetch_cap"] = resolve_max_chars_per_fetch_cap(settings)
+
+
 def open_ledger(settings):
     """Return the ledger for this call.
 
@@ -1738,7 +1795,10 @@ def search_id_for():
 
 def call_search(settings, arguments):
     query = require_string(arguments, "query", QUERY_CHARACTER_CAP)
-    max_results = require_integer(arguments, "max_results", 5, 1, RESULT_COUNT_CAP)
+    max_results_cap = settings.get("max_results_cap", RESULT_COUNT_CAP)
+    max_results = require_integer(
+        arguments, "max_results", min(5, max_results_cap), 1, max_results_cap
+    )
     constraints = {
         "published_after": require_iso_date(arguments, "published_after"),
         "published_before": require_iso_date(arguments, "published_before"),
@@ -1875,8 +1935,13 @@ def call_fetch(settings, arguments):
     start_index = require_integer(
         arguments, "start_index", 0, 0, DOCUMENT_CHARACTER_CAP
     )
+    max_chars_cap = settings.get("max_chars_per_fetch_cap", WINDOW_CHARACTER_CAP)
     max_chars = require_integer(
-        arguments, "max_chars", WINDOW_CHARACTER_DEFAULT, 1, WINDOW_CHARACTER_CAP
+        arguments,
+        "max_chars",
+        min(WINDOW_CHARACTER_DEFAULT, max_chars_cap),
+        1,
+        max_chars_cap,
     )
     window_end = start_index + max_chars
     if window_end > DOCUMENT_CHARACTER_CAP:
@@ -1996,95 +2061,115 @@ def call_fetch(settings, arguments):
             ledger.close()
 
 
-TOOL_DEFINITIONS = [
-    {
-        "name": "search_exa",
-        "description": (
-            "Search the web and return ranked results with titles, URLs, and "
-            "highlights. Each result carries a Result ID that fetch_exa "
-            "redeems for the page text."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Search query, at most 512 characters.",
+def tool_definitions(settings):
+    """Return the two tool schemas, their numeric bounds drawn from settings.
+
+    `tools/list` runs after `main` resolves `max_results_cap` and
+    `max_chars_per_fetch_cap` from the environment, so the advertised maximum
+    and default match what `call_search` and `call_fetch` enforce rather than
+    the compiled-in ceiling a profile has narrowed.
+    """
+    max_results_cap = settings.get("max_results_cap", RESULT_COUNT_CAP)
+    max_results_default = min(5, max_results_cap)
+    max_chars_cap = settings.get("max_chars_per_fetch_cap", WINDOW_CHARACTER_CAP)
+    return [
+        {
+            "name": "search_exa",
+            "description": (
+                "Search the web and return ranked results with titles, URLs, and "
+                "highlights. Each result carries a Result ID that fetch_exa "
+                "redeems for the page text."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query, at most 512 characters.",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "maximum": max_results_cap,
+                        "description": (
+                            f"Result count, 1 to {max_results_cap}. Default "
+                            f"{max_results_default}."
+                        ),
+                    },
+                    "published_after": {
+                        "type": "string",
+                        "description": (
+                            "ISO 8601 date; results published before it are "
+                            "dropped."
+                        ),
+                    },
+                    "published_before": {
+                        "type": "string",
+                        "description": (
+                            "ISO 8601 date; results published after it are "
+                            "dropped."
+                        ),
+                    },
+                    "max_age_hours": {
+                        "type": "integer",
+                        "description": (
+                            "Cached page age the provider may serve. 0 forces a "
+                            "live crawl. Omitted leaves the provider default."
+                        ),
+                    },
+                    "include_domains": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Admit these domains alone, at most 10.",
+                    },
+                    "exclude_domains": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Drop these domains, at most 10.",
+                    },
+                    "authorization": {
+                        "type": "string",
+                        "description": (
+                            "Operator-issued grant covering these exact search "
+                            "arguments. Supply the token the user provided."
+                        ),
+                    },
                 },
-                "max_results": {
-                    "type": "integer",
-                    "description": "Result count, 1 to 10. Default 5.",
-                },
-                "published_after": {
-                    "type": "string",
-                    "description": (
-                        "ISO 8601 date; results published before it are dropped."
-                    ),
-                },
-                "published_before": {
-                    "type": "string",
-                    "description": (
-                        "ISO 8601 date; results published after it are dropped."
-                    ),
-                },
-                "max_age_hours": {
-                    "type": "integer",
-                    "description": (
-                        "Cached page age the provider may serve. 0 forces a "
-                        "live crawl. Omitted leaves the provider default."
-                    ),
-                },
-                "include_domains": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Admit these domains alone, at most 10.",
-                },
-                "exclude_domains": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Drop these domains, at most 10.",
-                },
-                "authorization": {
-                    "type": "string",
-                    "description": (
-                        "Operator-issued grant covering these exact search "
-                        "arguments. Supply the token the user provided."
-                    ),
-                },
+                "required": ["query"],
             },
-            "required": ["query"],
         },
-    },
-    {
-        "name": "fetch_exa",
-        "description": (
-            "Fetch the text of a page named by a Result ID from a prior "
-            "search_exa call. The Result ID is the only accepted reference; a "
-            "URL is refused."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "result_id": {
-                    "type": "string",
-                    "description": "Result ID printed by search_exa.",
+        {
+            "name": "fetch_exa",
+            "description": (
+                "Fetch the text of a page named by a Result ID from a prior "
+                "search_exa call. The Result ID is the only accepted reference; "
+                "a URL is refused."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "result_id": {
+                        "type": "string",
+                        "description": "Result ID printed by search_exa.",
+                    },
+                    "start_index": {
+                        "type": "integer",
+                        "description": "Character offset into the page text.",
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "maximum": max_chars_cap,
+                        "description": (
+                            f"Characters to return, at most {max_chars_cap}. "
+                            "The reply names the next start index when more "
+                            "text remains."
+                        ),
+                    },
                 },
-                "start_index": {
-                    "type": "integer",
-                    "description": "Character offset into the page text.",
-                },
-                "max_chars": {
-                    "type": "integer",
-                    "description": (
-                        "Characters to return, at most 24000. The reply names "
-                        "the next start index when more text remains."
-                    ),
-                },
+                "required": ["result_id"],
             },
-            "required": ["result_id"],
         },
-    },
-]
+    ]
+
 
 TOOL_HANDLERS = {"search_exa": call_search, "fetch_exa": call_fetch}
 
@@ -2104,6 +2189,10 @@ def settings_from_environment(argv):
         "daily_budget": os.environ.get("QWEN_WEB_DAILY_BUDGET", ""),
         "page_budget": os.environ.get("QWEN_WEB_DAILY_PAGE_BUDGET", ""),
         "max_fetches": os.environ.get("QWEN_WEB_MAX_FETCHES_PER_SEARCH", ""),
+        "max_results_cap": os.environ.get("QWEN_WEB_MAX_RESULTS", ""),
+        "max_chars_per_fetch_cap": os.environ.get(
+            "QWEN_WEB_MAX_CHARS_PER_FETCH", ""
+        ),
     }
     option_keys = {
         "--provider": "provider",
@@ -2321,7 +2410,7 @@ def handle_request(settings, message):
         return {
             "jsonrpc": "2.0",
             "id": identifier,
-            "result": {"tools": TOOL_DEFINITIONS},
+            "result": {"tools": tool_definitions(settings)},
         }
     if method == "tools/call":
         handler = TOOL_HANDLERS.get(params.get("name"))
@@ -2421,6 +2510,11 @@ def main(argv):
     if argv and argv[0] == "authorize":
         return run_authorize(argv[1:])
     settings = settings_from_environment(argv)
+    try:
+        resolve_environment_caps(settings)
+    except ToolError as error:
+        sys.stderr.write(f"{error}\n")
+        return 2
     while True:
         line = read_request_line(sys.stdin)
         if line is None:

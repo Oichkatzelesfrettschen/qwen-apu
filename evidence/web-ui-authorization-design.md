@@ -167,41 +167,64 @@ handler, which is a new channel rather than an interception.
 ## The broker's lifetime is the web launch's
 
 `qwen-web-launch.sh` exports `QWEN_WEB_BROKER=1` beside the broker port, its
-state directory, and the signing key path, and `qwen-webui-control.sh` forwards
-all five inside the tmux command string the way it forwards the projector and
-speculation settings. `qwen-webui-session.sh` reads the marker and starts
-`authorize-broker.py` on 127.0.0.1 as a guarded child beside the probe, the
-monitor, and the kernel-hazard watcher: it starts ahead of the capacity server
-because model loading holds the readiness loop for up to 120 seconds and the
-broker allocates nothing on the device, it waits for the broker's own
-`listening HOST PORT` line under a 30 second bound, and it records the process
-as `broker_pid=` on the `state=running` line. `cleanup` signals it with the
-other guards, so every terminating signal and every startup failure below it
-stops the broker.
+state directory, the signing key path, the provider, and the profile it reads
+from the preset, and `qwen-webui-control.sh` forwards them inside the tmux
+command string the way it forwards the projector and speculation settings.
+The signing key is required whole at the launcher: `QWEN_WEB_TOKEN_KEY_FILE`
+names a regular file rather than a symlink, owned by the serving user, at
+mode 0600 or 0400, readable and nonempty, and each rule refuses with its own
+message. One broker signs for one profile because `POST /grant` refuses any
+other `profile_id`, so the launcher requires exactly one preset section,
+names it `QWEN_WEB_PROFILE`, and refuses a caller whose own value differs.
 
-`qwen-teardown.sh` reads `broker_pid` from that line before `stop` rewrites the
-file, signals it with the other guards, waits for the process to leave, and
-then requires `authorize-session.secret` to be gone: the broker unlinks that
-file while unwinding from SIGTERM, so a secret outliving the teardown is a
-credential the next launch's page would present. A surviving broker and a
-surviving secret are both residue and the script exits non-zero on either. The
-field appears only where a broker ran, so an ordinary `qwen-launch.sh` session
-records nothing there and the teardown proves nothing about a file a manual
-broker run left behind.
+`qwen-webui-session.sh` reads the marker and starts `authorize-broker.py` on
+127.0.0.1 as a guarded child beside the probe, the monitor, and the
+kernel-hazard watcher, with `--profile` and `--provider` on its argv and the
+key as a path in its environment. It starts ahead of the capacity server
+because model loading holds the readiness loop for up to 120 seconds and the
+broker allocates nothing on the device. The broker validates the key under the
+same rules before it prints `listening HOST PORT`, and the session waits for
+that line under a 30 second bound. The line proves a socket; `GET /health`
+proves the process. The session reads `pid`, `profile`, `provider`,
+`signing_key_sha256`, and `start_time` from that route, compares the first
+four against what it launched and the digest of the key file it named, and
+fails the launch with `reason=authorization_broker_identity_mismatch` on any
+difference, so a stale broker holding the port from an earlier launch answers
+the grep and fails the pid comparison. It records `broker_pid=` on the
+`state=running` line and `broker_identity pid= start_time= profile= provider=
+signing_key_sha256=` on a line of its own. `cleanup` signals the broker with
+the other guards, so every terminating signal and every startup failure below
+it stops the broker.
+
+`qwen-teardown.sh` reads `broker_pid`, the secret path, and the recorded start
+time before `stop` rewrites the file. It compares the start time with field
+22 of the live `/proc/PID/stat` and signals only a match, since a pid is
+reused once its process exits; a mismatch is reported and the number is left
+alone. It waits for the broker to leave and then requires
+`authorize-session.secret` to be gone whether or not a pid was recorded: the
+broker unlinks that file while unwinding from SIGTERM, so a secret outliving
+the teardown is a credential the next launch's page would present. A
+surviving broker and a surviving secret are both residue and the script exits
+non-zero on either.
 
 `qwen-launch.sh` prints the broker's loopback origin beside the server's
 reachable addresses under the same marker. The broker binds the loopback
 literal whatever the server's listener is, so a LAN launch reaches it through
-an SSH forward rather than through those addresses.
-
-The served page reads that origin rather than assuming it: a `?broker=` query
-parameter wins, then the `qwen-web-broker` meta tag, then the loopback port the
-session binds by default.
+an SSH forward rather than through those addresses. The served page reads that
+origin rather than assuming it: a `?broker=` query parameter wins, then the
+`qwen-web-broker` meta tag, then the loopback port the session binds by
+default. The meta tag names port 8571, so a launch on another port reaches the
+page through the query parameter alone.
 
 `remote/test-qwen-web-launch.sh` measures the exported marker, port, state
-directory, and key path, and requires an unreadable key file to refuse the
-launch. `remote/test-qwen-session-signals.sh` drives a complete startup against
-fake guards and a fake broker and requires the recorded `broker_pid`, its
-death under SIGTERM, the secret's removal, an ordinary session that records no
-`broker_pid`, and a teardown that reports residue against a broker retaining
-SIGTERM.
+directory, key path, derived profile, and provider, and requires an unset,
+absent, symlinked, group-readable, or empty key, a two-section preset, a
+contradicting `QWEN_WEB_PROFILE`, and an unknown provider each to refuse the
+launch. `remote/test-qwen-session-signals.sh` drives a complete startup
+against fake guards and a fake broker serving `/health`, and requires the
+recorded `broker_pid` and identity line, a launch failure when `/health`
+names another pid, the broker's death under SIGTERM, the secret's removal, an
+ordinary session that records no `broker_pid`, a teardown that reports
+residue against a broker retaining SIGTERM, a teardown that leaves a reused
+pid alone while still proving the secret path, and a teardown that proves a
+secret absent with no pid recorded.

@@ -444,15 +444,46 @@ non-zero on residue.
 launch. A load that exceeds the machine fails at once and names its reason.
 
 `qwen-web-launch.sh` exports `QWEN_WEB_BROKER=1` with the broker port, state
-directory, and signing key path, so the session starts `authorize-broker.py` on
-127.0.0.1 as a guarded child and records it as `broker_pid=` on the
-`state=running` line. The broker starts ahead of the capacity server because it
-allocates nothing on the device and model loading holds the readiness loop for
-up to 120 seconds. `qwen-teardown.sh` signals that PID with the other guards,
-waits for it to leave, and requires `authorize-session.secret` to be gone,
-since the broker unlinks that file while unwinding from SIGTERM and a surviving
-secret authorizes a page against the next launch. The ordinary `qwen-launch.sh`
-path leaves the marker unset, records no `broker_pid`, and starts no broker.
+directory, signing key path, and the profile it reads from the preset, so the
+session starts `authorize-broker.py` on 127.0.0.1 as a guarded child and
+records it as `broker_pid=` on the `state=running` line. The broker starts
+ahead of the capacity server because it allocates nothing on the device and
+model loading holds the readiness loop for up to 120 seconds. The signing key
+is required whole before anything launches: `QWEN_WEB_TOKEN_KEY_FILE` names a
+regular file at mode 0600 owned by the serving user with nonempty content, the
+launcher applies those rules and the broker applies them again before it
+prints `listening`, and only the path crosses into the child. One broker signs
+for one profile, since `POST /grant` refuses a `profile_id` other than its
+`--profile`, so the launcher requires exactly one preset section and names it
+`QWEN_WEB_PROFILE`; a caller whose own value differs is refused. The
+`listening` line proves a socket and `GET /health` proves the process: the
+session reads the broker's pid, profile, provider, signing-key SHA-256, and
+`/proc/self/stat` start time from that route and fails the launch on any
+mismatch, then records pid and start time on a `broker_identity` line.
+`qwen-teardown.sh` compares that start time with the live `/proc/PID/stat`
+before it signals, so a reused pid is left alone, waits for the broker to
+leave, and requires `authorize-session.secret` to be gone whether or not a pid
+was recorded, since the broker unlinks that file while unwinding from SIGTERM
+and a surviving secret authorizes a page against the next launch. The ordinary
+`qwen-launch.sh` path leaves the marker unset, records no `broker_pid`, and
+starts no broker.
+
+`remote/admit-web-router-fake.sh` runs that chain on the appliance against
+the fake provider: the production `llama-server`, a real router child, the
+broker, and the MCP child all execute, and every request the page would make
+runs with curl in its place, from `GET /tools` through one grant, one search,
+one fetch by Result ID, and each refusal the design relies on. The generated
+MCP configuration carries the names `server.py` reads --
+`QWEN_WEB_EXA_KEY_FILE`, `QWEN_WEB_FAKE_FIXTURES`,
+`QWEN_WEB_MAX_FETCHES_PER_SEARCH`, `QWEN_WEB_MAX_RESULTS`,
+`QWEN_WEB_MAX_CHARS_PER_FETCH` -- so the ledger's per-profile budgets bound
+the child rather than describing it. `evidence/web-admission-fake.md` records
+the run and its finding: `server.cpp:347-360` registers `/tools` in the
+process whose own MCP manager holds a server and the router branch proxies no
+`/tools`, so the router port answers `feature_disabled` and the child serves
+the route on its internal loopback port. The harness measures the executor
+there; the page targets its own origin and reaches no executor on this
+closure until `/tools` is proxied, placed on the router, or served standalone.
 
 ## Commands
 
@@ -494,6 +525,7 @@ remote/fetch-candidate-artifact.sh REPO REV FILE DIR  # observed, not pinned
 remote/run-one-token-admission.sh RECORD [OUT]  # load every candidate once
 remote/run-representation-arm.sh LABEL CONTROL SUBJECT
                                                 # one value format against another, ABBA
+remote/admit-web-router-fake.sh OUTPUT_DIR      # the web router against the fake provider
 
 # Rebuild llama.cpp and the static UI
 remote/build-llama-preset.sh PRESET [SOURCE]   # one directory per build arm
