@@ -1,0 +1,155 @@
+#!/bin/sh
+set -eu
+
+# The sweep decides which rows reach the device and what a refusal is recorded
+# against, so its failure modes are silent ones: a row skipped without a line, a
+# refusal recorded as a pass, or a control that never runs and leaves every
+# later refusal unattributable. These checks drive it with a fetch and a
+# placement check that answer on command.
+
+if [ "$#" -ne 0 ]; then
+    printf 'usage: %s\n' "$0" >&2
+    exit 2
+fi
+
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+temporary_directory=$(mktemp -d)
+trap 'rm -rf "$temporary_directory"' EXIT HUP INT TERM
+failures=0
+
+report() {
+    printf '%s=%s\n' "$1" "$2"
+    [ "$2" = accepted ] || failures=$((failures + 1))
+}
+
+fake_fetch=$temporary_directory/fake-fetch.sh
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    'case $3 in' \
+    '    *unfetchable*) printf "fetch failed\\n" >&2; exit 1 ;;' \
+    'esac' \
+    'mkdir -p "$4"' \
+    ': >"$4/$3"' \
+    'printf "artifact_status=fetched path=%s/%s bytes=1 observed_sha256=%s repository=%s revision=%s\\n" \' \
+    '    "$4" "$3" "0000000000000000000000000000000000000000000000000000000000000000" "$1" "$2"' \
+    >"$fake_fetch"
+chmod +x "$fake_fetch"
+
+fake_placement=$temporary_directory/fake-placement.sh
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    'model=""' \
+    'while [ "$#" -gt 0 ]; do' \
+    '    case $1 in --model) model=$2; shift 2 ;; *) shift ;; esac' \
+    'done' \
+    'case $model in' \
+    '    *rejects*) printf "strict Vulkan completion returned HTTP 500\\n" >&2; exit 1 ;; ' \
+    'esac' \
+    'printf "strict_vulkan_completion=accepted\\n"' \
+    >"$fake_placement"
+chmod +x "$fake_placement"
+
+control_model=$temporary_directory/control.gguf
+: >"$control_model"
+fake_server=$temporary_directory/llama-server
+printf '#!/bin/sh\nexit 0\n' >"$fake_server"
+chmod +x "$fake_server"
+
+# Two rows of one architecture, one of another, one that fails to parse
+# statically, one whose artifact cannot be fetched, and one the device refuses.
+record=$temporary_directory/static-admission.tsv
+{
+    printf 'candidate_id\trepository\trevision\tadmission\tarchitecture\tblock_count\tnextn_layers\tvocabulary_size\ttokenizer_pre\tchat_template_sha256\tchat_template_bytes\ttokens_sha256\tartifact\tartifact_bytes\tloaded_tensor_bytes\tskipped_mtp_bytes\tsplit_shards\tgguf_file_count\tselection_rule\theader_window_bytes\tenable_thinking\tthinking_block\ttools\ttool_calls\tarchitecture_fingerprint\n'
+    printf 'alpha\towner/alpha\taaa\tparsed\tqwen35\t24\t0\t1\tq\th\t1\tt\talpha-Q4_K_M.gguf\t1\t1\t0\t1\t1\tpreference:q4_k_m\t16\tTrue\tTrue\tTrue\tTrue\tqwen35/embedding_length=2048/feed_forward_length=6144/attention.head_count=8\n'
+    printf 'beta\towner/beta\tbbb\tparsed\tqwen35\t24\t0\t1\tq\th\t1\tt\tbeta-Q4_K_M.gguf\t1\t1\t0\t1\t1\tpreference:q4_k_m\t16\tTrue\tTrue\tTrue\tTrue\tqwen35/embedding_length=2048/feed_forward_length=6144/attention.head_count=8\n'
+    printf 'gamma\towner/gamma\tccc\tparsed\tqwen2vl\t28\t0\t1\tq\th\t1\tt\tgamma-Q4_K_M.gguf\t1\t1\t0\t1\t1\tpreference:q4_k_m\t16\tFalse\tFalse\tFalse\tFalse\tqwen2vl/embedding_length=1536/feed_forward_length=8960/attention.head_count=12\n'
+    printf 'delta\towner/delta\tddd\tfailed\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n'
+    printf 'epsilon\towner/epsilon\teee\tparsed\tqwen35\t24\t0\t1\tq\th\t1\tt\tunfetchable-Q4_K_M.gguf\t1\t1\t0\t1\t1\tpreference:q4_k_m\t16\tTrue\tTrue\tTrue\tTrue\tqwen35/embedding_length=2048/feed_forward_length=6144/attention.head_count=8\n'
+    printf 'zeta\towner/zeta\tfff\tparsed\tqwen35\t24\t0\t1\tq\th\t1\tt\tzeta-rejects-Q4_K_M.gguf\t1\t1\t0\t1\t1\tpreference:q4_k_m\t16\tTrue\tTrue\tTrue\tTrue\tqwen35/embedding_length=2048/feed_forward_length=6144/attention.head_count=8\n'
+} >"$record"
+
+output_directory=$temporary_directory/out
+QWEN_LLAMA_SERVER=$fake_server QWEN_CONTROL_MODEL=$control_model \
+QWEN_CANDIDATE_ROOT=$temporary_directory/candidates \
+QWEN_PLACEMENT_CHECK=$fake_placement QWEN_CANDIDATE_FETCH=$fake_fetch \
+    "$script_directory/run-one-token-admission.sh" "$record" "$output_directory" \
+    >"$temporary_directory/sweep.stdout" 2>"$temporary_directory/sweep.stderr" || true
+
+summary=$output_directory/admission-summary.tsv
+column() { awk -F'\t' -v id="$1" -v n="$2" '$1 == id { print $n }' "$summary"; }
+
+# Every parsed row appears exactly once and the unparsed row appears not at all.
+if [ "$(awk 'NR > 1' "$summary" | wc -l | tr -d ' ')" = 5 ] &&
+   [ -z "$(column delta 1)" ]; then
+    report row_coverage accepted
+else
+    report row_coverage rejected
+    cat "$summary" >&2
+fi
+
+if [ "$(column alpha 6)" = accepted ] && [ "$(column beta 6)" = accepted ] &&
+   [ "$(column gamma 6)" = accepted ]; then
+    report loads_recorded accepted
+else
+    report loads_recorded rejected
+fi
+
+# A refused load is recorded as rejected rather than folded into a pass, and it
+# carries a detail a reader can act on.
+if [ "$(column zeta 6)" = rejected ] && [ "$(column zeta 8)" != '-' ]; then
+    report refusal_recorded accepted
+else
+    report refusal_recorded rejected
+fi
+
+# A row whose artifact never arrives never reaches the device.
+if [ "$(column epsilon 5)" = failed ] && [ "$(column epsilon 6)" = not-run ]; then
+    report unfetchable_row_skips_the_device accepted
+else
+    report unfetchable_row_skips_the_device rejected
+fi
+
+# One control per new runtime class, plus one after the refusal.
+control_logs=$(find "$output_directory" -name 'control-*.log' | wc -l | tr -d ' ')
+if [ "$control_logs" = 3 ] && [ -f "$output_directory/control-after-zeta.log" ]; then
+    report control_per_class_and_failure accepted
+else
+    report control_per_class_and_failure rejected
+    find "$output_directory" -name 'control-*.log' >&2
+fi
+
+# Selecting rows restricts the sweep rather than reordering it.
+selected_output=$temporary_directory/selected
+QWEN_LLAMA_SERVER=$fake_server QWEN_CONTROL_MODEL=$control_model \
+QWEN_CANDIDATE_ROOT=$temporary_directory/candidates \
+QWEN_PLACEMENT_CHECK=$fake_placement QWEN_CANDIDATE_FETCH=$fake_fetch \
+QWEN_ADMISSION_ROWS=beta \
+    "$script_directory/run-one-token-admission.sh" "$record" "$selected_output" \
+    >/dev/null 2>&1 || true
+if [ "$(awk 'NR > 1 { print $1 }' "$selected_output/admission-summary.tsv" |
+        tr '\n' ' ')" = "beta " ]; then
+    report row_selection accepted
+else
+    report row_selection rejected
+fi
+
+# The fetch stage alone leaves the device untouched, which is what lets the
+# transfers run while the appliance is still serving.
+fetch_only=$temporary_directory/fetch-only
+QWEN_CANDIDATE_ROOT=$temporary_directory/candidates-fetch-only \
+QWEN_PLACEMENT_CHECK=$fake_placement QWEN_CANDIDATE_FETCH=$fake_fetch \
+QWEN_ADMISSION_STAGES=fetch \
+    "$script_directory/run-one-token-admission.sh" "$record" "$fetch_only" \
+    >/dev/null 2>&1 || true
+if [ "$(awk -F'\t' 'NR > 1 && $6 != "not-run" { print }' \
+        "$fetch_only/admission-summary.tsv" | wc -l | tr -d ' ')" = 0 ] &&
+   [ -z "$(find "$fetch_only" -name 'control-*.log')" ]; then
+    report fetch_stage_touches_no_device accepted
+else
+    report fetch_stage_touches_no_device rejected
+fi
+
+if [ "$failures" -eq 0 ]; then
+    printf 'one_token_admission_driver=accepted\n'
+    exit 0
+fi
+printf 'one_token_admission_driver=rejected failures=%s\n' "$failures" >&2
+exit 1

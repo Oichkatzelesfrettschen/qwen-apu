@@ -353,6 +353,8 @@ remote/sample-gpu-clocks.sh OUT_TSV [SECONDS]  # the DPM step a rate ran at
 remote/measure-dpm-force.sh MODEL [OUT]         # auto against global high governor
 remote/model-registry.sh id|path SELECTOR [FIELD]
 remote/build-router-presets.sh [OUTPUT_INI]    # the picker, from the tier field
+remote/fetch-candidate-artifact.sh REPO REV FILE DIR  # observed, not pinned
+remote/run-one-token-admission.sh RECORD [OUT]  # load every candidate once
 remote/run-representation-arm.sh LABEL CONTROL SUBJECT
                                                 # one value format against another, ABBA
 
@@ -389,6 +391,7 @@ remote/test-promote-llama-build.sh
 remote/generate-quality-images.py --check
 remote/test-gguf-tokenizer-identity.py
 remote/test-admit-candidate-static.py
+remote/test-one-token-admission.sh
 remote/verify-llama-patch-series.sh
 GGUF_PY_PATH=~/src/llama.cpp-qwen-apu/gguf-py \
     remote/test-gguf-tensor-census.py [MODEL...]
@@ -519,6 +522,25 @@ names `enable_thinking` nowhere, so the thinking-off request is inert
 against it and its graded arm needs a budget that survives the reasoning span.
 `evidence/model-admission/static-admission.md` carries the classes and the
 template survey.
+
+A runtime class establishes a shared throughput expectation and nothing about a
+particular artifact, so admission by load runs every row rather than one
+representative per class. `remote/run-one-token-admission.sh` fetches each
+candidate and calls `remote/test-strict-vulkan-placement.sh`, which requires CPU
+tensor placement and CPU graph placement to be rejected, brings a strict Vulkan
+server up, drives a two-token completion, and requires the model, KV, and
+compute buffers to name Vulkan0 with no CPU fallback reached. Its `fetch` stage
+runs without the device, so eleven gigabytes of transfer happen while the
+appliance still serves and the outage covers the loads alone. A control arm runs
+the same check against a served checkpoint after each new runtime class and
+after any refusal, so a later refusal reads against a device that had just
+answered.
+
+A candidate digest is an observation rather than a pin.
+`remote/fetch-candidate-artifact.sh` records the SHA-256 the download produced,
+which cannot detect the substitution a hardcoded expectation exists to detect,
+so promotion into `remote/models.tsv` means writing a `download-*.sh` that
+carries that digest as its expectation.
 
 GGUF weights stay outside Git because their sizes exceed the LFS per-file
 limit. Each download script pins a Hugging Face revision, a byte count, and a

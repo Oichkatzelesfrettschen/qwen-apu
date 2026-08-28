@@ -423,7 +423,8 @@ def main(argv):
         # The provenance columns travel with the fingerprint because a
         # fingerprint speaks for one file of a repository that publishes many,
         # and a reader comparing two rows needs to know which files were read.
-        columns = ("candidate_id", "admission", "architecture", "block_count",
+        columns = ("candidate_id", "repository", "revision",
+                   "admission", "architecture", "block_count",
                    "nextn_layers", "vocabulary_size", "tokenizer_pre",
                    "chat_template_sha256", "chat_template_bytes",
                    "tokens_sha256", "artifact", "artifact_bytes",

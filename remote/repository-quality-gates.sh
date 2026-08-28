@@ -42,6 +42,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 remote/test-gguf-tokenizer-identity.py
 remote/test-fallback-webui-model-selection.sh
 node remote/test-fallback-webui-model-state.mjs
 remote/test-measurement-harnesses.sh
+remote/test-one-token-admission.sh
 remote/test-model-registry.sh
 remote/test-model-tiers.sh
 remote/test-projector-fetch-dispatch.sh
