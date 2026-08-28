@@ -25,9 +25,19 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 bind_host=${QWEN_BIND_HOST:-127.0.0.1}
 cors_origins=${QWEN_CORS_ORIGINS:-localhost}
 
+# A router preset section normally names a registry id. A web preset section
+# names a profile_id instead, because several profiles serve one checkpoint at
+# depths the profile chooses, so $6 switches the resolution: the section's
+# LLAMA_ARG_MODEL path resolves the registry row through the model_file column,
+# which is unique across the registry, and LLAMA_ARG_CTX_SIZE is bounded by that
+# row's context_ceiling rather than pinned to its context_default, and bounded
+# again by that row's validated_filled_depth unless $7 carries the preset's
+# unvalidated-depth marker. Every other tuple key, tier rule, and quarantine
+# rule stays identical.
 validate_router_preset_tuples() {
     printf '%s\n' "$4" | awk -F'\t' -v model_root="$3" \
-        -v include_quarantine="$5" '
+        -v include_quarantine="$5" -v web_profile_sections="${6:-0}" \
+        -v web_depth_override="${7:-0}" '
         function reset_tuple() {
             model_count = 0
             context_count = 0
@@ -96,65 +106,125 @@ validate_router_preset_tuples() {
             if (flash_count == 1 && flash_value !~ /^(on|off|auto)$/) {
                 reject_value("LLAMA_ARG_FLASH_ATTN", flash_value)
             }
-            if (registry_count[section] != 1) {
+            registry_key = section
+            if (web_profile_sections == 1) {
+                model_root_prefix = model_root "/"
+                if (model_count == 1 &&
+                    substr(model_value, 1, length(model_root_prefix)) == model_root_prefix) {
+                    registry_key = registry_id_by_model_file[substr(model_value,
+                        length(model_root_prefix) + 1)]
+                } else {
+                    registry_key = ""
+                }
+                if (registry_key == "") {
+                    printf "web preset section %s carries a LLAMA_ARG_MODEL outside the registry: %s\n", \
+                        section, model_value > "/dev/stderr"
+                    rejected = 1
+                    return
+                }
+                # Resolution by weights file requires the registry to name each
+                # file once. Two rows sharing one model_file would resolve to
+                # whichever row was read last, which picks a tier and a tuple
+                # by file order, so the ambiguity is refused instead.
+                section_model_file = substr(model_value, length(model_root_prefix) + 1)
+                if (registry_rows_by_model_file[section_model_file] != 1) {
+                    printf "web preset section %s resolves to %d registry rows through model file %s\n", \
+                        section, registry_rows_by_model_file[section_model_file], \
+                        section_model_file > "/dev/stderr"
+                    rejected = 1
+                    return
+                }
+            }
+            if (registry_count[registry_key] != 1) {
                 printf "router preset section %s resolves to %d registry rows\n", \
-                    section, registry_count[section] > "/dev/stderr"
+                    section, registry_count[registry_key] > "/dev/stderr"
                 rejected = 1
                 return
             }
-            if (registry_tier[section] != "production" &&
-                registry_tier[section] != "candidate" &&
-                registry_tier[section] != "quarantine") {
+            if (registry_tier[registry_key] != "production" &&
+                registry_tier[registry_key] != "candidate" &&
+                registry_tier[registry_key] != "quarantine") {
                 printf "router preset section %s has non-servable registry tier %s\n", \
-                    section, registry_tier[section] > "/dev/stderr"
+                    section, registry_tier[registry_key] > "/dev/stderr"
                 rejected = 1
             }
-            if (registry_tier[section] == "quarantine" &&
-                (include_quarantine != 1 || !quarantined_models[section])) {
+            if (registry_tier[registry_key] == "quarantine" &&
+                (include_quarantine != 1 || !quarantined_models[registry_key])) {
                 printf "router preset section %s lacks an admitted model quarantine override\n", \
                     section > "/dev/stderr"
                 rejected = 1
             }
-            expected_model = model_root "/" registry_model[section]
+            expected_model = model_root "/" registry_model[registry_key]
             if (model_count == 1 && model_value != expected_model) {
                 reject_registry_value("LLAMA_ARG_MODEL", model_value,
                     expected_model)
             }
-            if (context_count == 1 && context_value != registry_context[section]) {
-                reject_registry_value("LLAMA_ARG_CTX_SIZE", context_value,
-                    registry_context[section])
+            if (context_count == 1) {
+                if (web_profile_sections == 1) {
+                    if (context_value + 0 > registry_ceiling[registry_key] + 0) {
+                        reject_registry_value("LLAMA_ARG_CTX_SIZE", context_value,
+                            "at most " registry_ceiling[registry_key])
+                    }
+                    # A preset persists across a registry edit, so the depth the
+                    # generator validated is rechecked against the registry this
+                    # launch reads. build-web-presets.sh admits a context above
+                    # validated_filled_depth, or against an unmeasured `-`, only
+                    # under QWEN_WEB_ALLOW_UNVALIDATED_DEPTH, whose marker forces
+                    # the listener to loopback; a registry that later lowers that
+                    # field, or sets it to `-`, leaves an unmarked section serving
+                    # a depth no run has filled and decoded and reaching the LAN
+                    # through a launch outside the web wrapper. `-` is refused by
+                    # its literal spelling, since it reads as 0 in a numeric
+                    # comparison and would name a nonsense expectation.
+                    if (web_depth_override != 1) {
+                        if (registry_filled_depth[registry_key] == "-") {
+                            printf "web preset section %s serves context %s where the registry records no filled depth for %s\n", \
+                                section, context_value, registry_key > "/dev/stderr"
+                            rejected = 1
+                        } else if (context_value + 0 > \
+                            registry_filled_depth[registry_key] + 0) {
+                            reject_registry_value("LLAMA_ARG_CTX_SIZE",
+                                context_value,
+                                "at most validated_filled_depth " \
+                                    registry_filled_depth[registry_key])
+                        }
+                    }
+                } else if (context_value != registry_context[registry_key]) {
+                    reject_registry_value("LLAMA_ARG_CTX_SIZE", context_value,
+                        registry_context[registry_key])
+                }
             }
-            if (cache_k_count == 1 && cache_k_value != registry_cache_k[section]) {
+            if (cache_k_count == 1 && cache_k_value != registry_cache_k[registry_key]) {
                 reject_registry_value("LLAMA_ARG_CACHE_TYPE_K", cache_k_value,
-                    registry_cache_k[section])
+                    registry_cache_k[registry_key])
             }
-            if (cache_v_count == 1 && cache_v_value != registry_cache_v[section]) {
+            if (cache_v_count == 1 && cache_v_value != registry_cache_v[registry_key]) {
                 reject_registry_value("LLAMA_ARG_CACHE_TYPE_V", cache_v_value,
-                    registry_cache_v[section])
+                    registry_cache_v[registry_key])
             }
-            if (flash_count == 1 && flash_value != registry_flash[section]) {
+            if (flash_count == 1 && flash_value != registry_flash[registry_key]) {
                 reject_registry_value("LLAMA_ARG_FLASH_ATTN", flash_value,
-                    registry_flash[section])
+                    registry_flash[registry_key])
             }
-            if (batch_count == 1 && batch_value != registry_batch[section]) {
+            if (batch_count == 1 && batch_value != registry_batch[registry_key]) {
                 reject_registry_value("LLAMA_ARG_BATCH", batch_value,
-                    registry_batch[section])
+                    registry_batch[registry_key])
             }
-            if (ubatch_count == 1 && ubatch_value != registry_ubatch[section]) {
+            if (ubatch_count == 1 && ubatch_value != registry_ubatch[registry_key]) {
                 reject_registry_value("LLAMA_ARG_UBATCH", ubatch_value,
-                    registry_ubatch[section])
+                    registry_ubatch[registry_key])
             }
-            if (include_quarantine != 1 && quarantined_models[section]) {
+            if (include_quarantine != 1 && quarantined_models[registry_key]) {
                 printf "router preset section %s is excluded by model quarantine\n", \
                     section > "/dev/stderr"
                 rejected = 1
             }
-            profile_key = section SUBSEP context_value SUBSEP batch_value SUBSEP \
+            profile_key = registry_key SUBSEP context_value SUBSEP batch_value SUBSEP \
                 ubatch_value SUBSEP cache_k_value SUBSEP cache_v_value SUBSEP \
                 flash_value
-            quarantined_section = quarantined_models[section] ||
+            quarantined_section = quarantined_models[registry_key] ||
                 quarantined_profiles[profile_key] ||
-                registry_tier[section] == "quarantine"
+                registry_tier[registry_key] == "quarantine"
             if (include_quarantine == 1 && quarantined_section) {
                 if (tags_count != 1) {
                     reject_key("LLAMA_ARG_TAGS", tags_count)
@@ -204,12 +274,16 @@ validate_router_preset_tuples() {
             registry_count[$1]++
             registry_model[$1] = $3
             registry_context[$1] = $5
+            registry_ceiling[$1] = $6
+            registry_id_by_model_file[$3] = $1
+            registry_rows_by_model_file[$3]++
             registry_cache_k[$1] = $8
             registry_cache_v[$1] = $9
             registry_flash[$1] = $10
             registry_tier[$1] = $16
             registry_batch[$1] = $17
             registry_ubatch[$1] = $18
+            registry_filled_depth[$1] = $19
             next
         }
         /^[[:space:]]*($|[#;])/ { next }
@@ -508,6 +582,7 @@ router_presets=${QWEN_ROUTER_PRESETS:-"${HOME:?}/qwen-webui-state/router-presets
 router_registry=${QWEN_MODEL_REGISTRY:-"$script_directory/models.tsv"}
 router_quarantine_registry=${QWEN_QUARANTINE_REGISTRY:-$script_directory/quarantine.tsv}
 router_model_root=${QWEN_MODEL_ROOT:-"${HOME:?}/models"}
+router_web_profiles=${QWEN_WEB_PROFILES:-$script_directory/web-profiles.tsv}
 router_max=${QWEN_ROUTER_MAX:-1}
 router_preset_expected_sha256=${QWEN_ROUTER_PRESET_SHA256:-}
 verify_router_preset_identity() {
@@ -546,6 +621,88 @@ measure_router_authority_identity() {
     fi
     printf '%s\n' "${authority_identity%% *}"
 }
+# execution_policy is the security boundary the web ledger states, and a preset
+# persists across an edit to it. build-web-presets.sh emits a section only for a
+# validator-gated or ui-mediated row and writes that word into LLAMA_ARG_TAGS, so
+# a row moved to refused, or removed from the ledger, leaves a persisted section
+# launching an MCP configuration the ledger no longer authorizes. The launch
+# rejoins each section to the current ledger by its profile_id, which is the
+# section name build-web-presets.sh writes, and requires the row to exist, to
+# carry an emitting policy, and to carry the same policy the section's tags
+# claim: a row moved from validator-gated to ui-mediated leaves a persisted
+# LLAMA_ARG_MCP_SERVERS_CONFIG in a section the ledger now says reaches no
+# network.
+#
+# validate_current_router_authorities runs this immediately before the exec, so
+# the ledger's last read is one link earlier than the preset and the two
+# registries, whose digests qwen-router-exec-guard.sh remeasures after the
+# Vulkan wrapper configures the environment.
+validate_web_preset_execution_policies() {
+    awk -F'\t' -v ledger="$1" '
+        function policy_from_tags(tags,   tag_count, tags_parts, tag_index) {
+            tag_count = split(tags, tags_parts, ",")
+            for (tag_index = 1; tag_index <= tag_count; tag_index++) {
+                if (tags_parts[tag_index] == "validator-gated" ||
+                    tags_parts[tag_index] == "ui-mediated" ||
+                    tags_parts[tag_index] == "refused") {
+                    return tags_parts[tag_index]
+                }
+            }
+            return ""
+        }
+        function finish_section(   ledger_policy, section_policy) {
+            if (section == "" || section == "*") return
+            if (!(section in ledger_execution_policy)) {
+                printf "web preset section %s names a profile the ledger %s no longer carries\n", \
+                    section, ledger > "/dev/stderr"
+                rejected = 1
+                return
+            }
+            ledger_policy = ledger_execution_policy[section]
+            if (ledger_policy != "validator-gated" && ledger_policy != "ui-mediated") {
+                printf "web preset section %s carries ledger execution_policy %s, which emits no section\n", \
+                    section, ledger_policy > "/dev/stderr"
+                rejected = 1
+                return
+            }
+            section_policy = policy_from_tags(tags_value)
+            if (section_policy != ledger_policy) {
+                printf "web preset section %s claims execution_policy %s where the ledger carries %s\n", \
+                    section, section_policy, ledger_policy > "/dev/stderr"
+                rejected = 1
+            }
+        }
+        FILENAME == ledger {
+            if ($0 ~ /^[[:space:]]*($|#)/) next
+            ledger_execution_policy[$1] = $12
+            next
+        }
+        /^[[:space:]]*($|[#;])/ { next }
+        /^[[:space:]]*\[/ {
+            finish_section()
+            section = $0
+            sub(/^[[:space:]]*\[/, "", section)
+            sub(/\][[:space:]]*$/, "", section)
+            tags_value = ""
+            next
+        }
+        {
+            if (section == "" || section == "*") next
+            separator = index($0, "=")
+            if (separator == 0) next
+            key = substr($0, 1, separator - 1)
+            value = substr($0, separator + 1)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+            if (key == "LLAMA_ARG_TAGS") tags_value = value
+        }
+        END {
+            finish_section()
+            exit rejected
+        }
+    ' "$1" "$2"
+}
+
 validate_current_router_authorities() {
     if ! router_quarantine_rows=$(
         "$script_directory/model-registry.sh" quarantine-rows router-child
@@ -555,10 +712,25 @@ validate_current_router_authorities() {
     fi
     if ! validate_router_preset_tuples "$router_registry" "$router_presets" \
         "$router_model_root" "$router_quarantine_rows" \
-        "$quarantine_override_from_preset"; then
+        "$quarantine_override_from_preset" "$web_presets_from_preset" \
+        "$web_depth_override_from_preset"; then
         printf 'router presets do not carry complete admitted tuples: %s\n' \
             "$router_presets" >&2
         return 1
+    fi
+    if [ "$web_presets_from_preset" = 1 ]; then
+        if [ ! -r "$router_web_profiles" ]; then
+            printf 'web profile ledger is unreadable: %s\n' \
+                "$router_web_profiles" >&2
+            return 1
+        fi
+        if ! validate_web_preset_execution_policies "$router_web_profiles" \
+            "$router_presets"; then
+            printf 'web preset sections lost their ledger execution grant: %s\n' \
+                "$router_presets" >&2
+            printf 'regenerate the preset tree with remote/build-web-presets.sh\n' >&2
+            return 1
+        fi
     fi
 }
 if [ "$router_enabled" = 1 ]; then
@@ -584,10 +756,37 @@ if [ "$router_enabled" = 1 ]; then
             exit 2
             ;;
     esac
+    # build-web-presets.sh names its sections for profile ids and chooses a
+    # depth inside context_ceiling, so its head marker selects the section
+    # resolution the tuple validator applies. The marker is the file's own
+    # provenance, which is what makes the resolution survive a preset that
+    # persists across a later launch.
+    web_presets_from_preset=$(sed -n 's/^# qwen_web_presets=\([01]\)$/\1/p' \
+        "$router_presets")
+    case $web_presets_from_preset in
+        '') web_presets_from_preset=0 ;;
+        0 | 1) ;;
+        *)
+            printf 'router presets carry ambiguous web provenance: %s\n' \
+                "$router_presets" >&2
+            exit 2
+            ;;
+    esac
+    # build-web-presets.sh writes this marker when
+    # QWEN_WEB_ALLOW_UNVALIDATED_DEPTH admitted a profile whose context exceeds
+    # its row's validated_filled_depth or whose depth reads `-`. The preset file
+    # carries the marker, so the restriction follows the file across every later
+    # launch the way the quarantine provenance does.
+    web_depth_override_from_preset=0
+    if grep -qx '# qwen-web-presets: unvalidated-depth-override' \
+        "$router_presets"; then
+        web_depth_override_from_preset=1
+    fi
     quarantine_override_from_preset=$(sed -n \
         's/^# qwen_router_include_quarantine=\([01]\)$/\1/p' \
         "$router_presets")
-    if grep -qx '# Generated by remote/build-router-presets.sh from the model registry.' \
+    if [ "$web_presets_from_preset" = 0 ] &&
+        grep -qx '# Generated by remote/build-router-presets.sh from the model registry.' \
         "$router_presets" && [ -z "$quarantine_override_from_preset" ]; then
         printf 'generated router presets omit quarantine provenance; regenerate %s\n' \
             "$router_presets" >&2
@@ -632,6 +831,18 @@ if [ "$router_enabled" = 1 ]; then
        [ "$quarantine_override_from_preset" = 1 ]; then
         if [ "$bind_host" != 127.0.0.1 ]; then
             printf 'quarantine override forces the listener to loopback: %s -> 127.0.0.1\n' \
+                "$bind_host" >&2
+            bind_host=127.0.0.1
+        fi
+    fi
+    # A section admitted past its validated_filled_depth serves a depth no run
+    # has filled and decoded, so the same restriction applies for the same
+    # reason: the appliance binds 0.0.0.0 and a depth that wedged the compute
+    # ring reaches every host on the network from there. The bind host is forced
+    # rather than refused, so the experiment the override exists for still runs.
+    if [ "$web_depth_override_from_preset" = 1 ]; then
+        if [ "$bind_host" != 127.0.0.1 ]; then
+            printf 'web preset unvalidated-depth override forces the listener to loopback: %s -> 127.0.0.1\n' \
                 "$bind_host" >&2
             bind_host=127.0.0.1
         fi

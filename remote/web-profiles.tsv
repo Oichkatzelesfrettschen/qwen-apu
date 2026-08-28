@@ -1,0 +1,64 @@
+# The policy ledger for web-enabled router presets. One row per profile;
+# remote/build-web-presets.sh reads this file alongside remote/models.tsv and
+# emits one INI section per row.
+#
+# remote/models.tsv is the authority for validated_filled_depth, vision_allowed,
+# and tool_selection. This file repeats all three so a profile row reads whole,
+# and remote/build-web-presets.sh compares each against the named model_id's
+# registry row and stops the run on divergence, naming the profile, the field,
+# and both values. A copy that drifts states a depth or a vision grant the
+# runtime never honours, so correcting this file rather than the registry is
+# what the refusal asks for. Every row meets that comparison, the tier rule, and
+# the ceiling rule whatever its execution_policy, so the ledger is validated
+# whole and an edit that turns one row into an emitting policy changes what
+# emits rather than what passes.
+#
+# context and validated_filled_depth are copied verbatim from the named
+# model_id's context_ceiling and validated_filled_depth columns in
+# remote/models.tsv. Unknown is not permission: remote/build-web-presets.sh
+# refuses a profile whose context exceeds context_ceiling, and refuses one
+# whose context exceeds a numeric validated_filled_depth or whose
+# validated_filled_depth reads `-`, treating the unmeasured case the same as
+# the measured-too-shallow case rather than as an unbounded allowance.
+# QWEN_WEB_ALLOW_UNVALIDATED_DEPTH=1 admits a profile that fails that rule
+# regardless of the model_id's own tier in models.tsv -- a production-tiered
+# model is exactly the one an experimental web profile should be able to
+# run. What the override withholds is the emitted section's own claim to
+# that tier: no `default` tag, `experimental` in `tags`, a stderr line
+# naming the unknown state or the numeric gap, and the output file's
+# unvalidated-depth-override head marker. These rows set a policy starting
+# point rather than a measured optimum: no web-research arm has run against
+# any of them. Against the registry that evidence/depth-validation-32k/ moved
+# to 32768, five rows request a depth that row has filled and decoded and
+# emit under the default rule with no experimental tag. web-vision alone
+# requests 24576 against a `-`, so it emits under
+# QWEN_WEB_ALLOW_UNVALIDATED_DEPTH=1 and carries the marker and the tag when
+# it does.
+#
+# web_mode is `validator-gated` where a later validator is expected to compare
+# emitted tool arguments against the user's own authorization before a fetch
+# executes, and `ui-mediated` where the web-UI surfaces the model's proposed
+# query or URL for the operator to run by hand. execution_policy is `refused`
+# on every row because tool-08 in evidence/model-admission/vision-and-tool-sweep.md
+# carried an injected instruction into the tool call on all six measured
+# checkpoints, and this tree holds no validator that would justify a
+# validator-gated or unguarded execution_policy yet; web_mode names the
+# intended future path and execution_policy names what is authorized now.
+#
+# multi_source reads yes exactly where max_fetches exceeds 1, and
+# remote/build-web-presets.sh refuses a row that breaks either direction: the
+# emitted MCP configuration carries the fetch budget alone, so a no row above one
+# fetch grants retrieval this ledger denies, and a single fetch reaches one
+# source. vision_allowed is copied
+# from the model_id's projector column in models.tsv: `required` becomes yes
+# and `none` becomes no. tool_selection is copied from the model_id's
+# raw_tool_selection column, the graded tool-selection score unaided by any
+# execution guard.
+#
+# profile_id	model_id	web_mode	context	validated_filled_depth	max_results	max_fetches	max_chars_per_fetch	multi_source	vision_allowed	tool_selection	execution_policy
+web-balanced	qwen38-4b-distill	validator-gated	32768	32768	8	3	12000	yes	no	9/10	refused
+web-compact	qwen35-2b	validator-gated	8192	32768	5	2	12000	yes	yes	9/10	refused
+web-fast-vl	lfm25-vl-16b	validator-gated	8192	32768	5	2	12000	yes	yes	8/10	refused
+web-lookup	qwen35-08b	ui-mediated	8192	32768	3	1	12000	no	no	9/10	refused
+web-reader	qwen38-2b-distill	ui-mediated	32768	32768	5	2	12000	yes	no	2/10	refused
+web-vision	qwen35-4b-base	ui-mediated	24576	-	5	2	12000	yes	yes	8/10	refused
