@@ -30,11 +30,14 @@ cors_origins=${QWEN_CORS_ORIGINS:-localhost}
 # depths the profile chooses, so $6 switches the resolution: the section's
 # LLAMA_ARG_MODEL path resolves the registry row through the model_file column,
 # which is unique across the registry, and LLAMA_ARG_CTX_SIZE is bounded by that
-# row's context_ceiling rather than pinned to its context_default. Every other
-# tuple key, tier rule, and quarantine rule stays identical.
+# row's context_ceiling rather than pinned to its context_default, and bounded
+# again by that row's validated_filled_depth unless $7 carries the preset's
+# unvalidated-depth marker. Every other tuple key, tier rule, and quarantine
+# rule stays identical.
 validate_router_preset_tuples() {
     printf '%s\n' "$4" | awk -F'\t' -v model_root="$3" \
-        -v include_quarantine="$5" -v web_profile_sections="${6:-0}" '
+        -v include_quarantine="$5" -v web_profile_sections="${6:-0}" \
+        -v web_depth_override="${7:-0}" '
         function reset_tuple() {
             model_count = 0
             context_count = 0
@@ -162,6 +165,30 @@ validate_router_preset_tuples() {
                         reject_registry_value("LLAMA_ARG_CTX_SIZE", context_value,
                             "at most " registry_ceiling[registry_key])
                     }
+                    # A preset persists across a registry edit, so the depth the
+                    # generator validated is rechecked against the registry this
+                    # launch reads. build-web-presets.sh admits a context above
+                    # validated_filled_depth, or against an unmeasured `-`, only
+                    # under QWEN_WEB_ALLOW_UNVALIDATED_DEPTH, whose marker forces
+                    # the listener to loopback; a registry that later lowers that
+                    # field, or sets it to `-`, leaves an unmarked section serving
+                    # a depth no run has filled and decoded and reaching the LAN
+                    # through a launch outside the web wrapper. `-` is refused by
+                    # its literal spelling, since it reads as 0 in a numeric
+                    # comparison and would name a nonsense expectation.
+                    if (web_depth_override != 1) {
+                        if (registry_filled_depth[registry_key] == "-") {
+                            printf "web preset section %s serves context %s where the registry records no filled depth for %s\n", \
+                                section, context_value, registry_key > "/dev/stderr"
+                            rejected = 1
+                        } else if (context_value + 0 > \
+                            registry_filled_depth[registry_key] + 0) {
+                            reject_registry_value("LLAMA_ARG_CTX_SIZE",
+                                context_value,
+                                "at most validated_filled_depth " \
+                                    registry_filled_depth[registry_key])
+                        }
+                    }
                 } else if (context_value != registry_context[registry_key]) {
                     reject_registry_value("LLAMA_ARG_CTX_SIZE", context_value,
                         registry_context[registry_key])
@@ -256,6 +283,7 @@ validate_router_preset_tuples() {
             registry_tier[$1] = $16
             registry_batch[$1] = $17
             registry_ubatch[$1] = $18
+            registry_filled_depth[$1] = $19
             next
         }
         /^[[:space:]]*($|[#;])/ { next }
@@ -601,7 +629,8 @@ validate_current_router_authorities() {
     fi
     if ! validate_router_preset_tuples "$router_registry" "$router_presets" \
         "$router_model_root" "$router_quarantine_rows" \
-        "$quarantine_override_from_preset" "$web_presets_from_preset"; then
+        "$quarantine_override_from_preset" "$web_presets_from_preset" \
+        "$web_depth_override_from_preset"; then
         printf 'router presets do not carry complete admitted tuples: %s\n' \
             "$router_presets" >&2
         return 1

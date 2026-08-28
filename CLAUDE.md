@@ -238,7 +238,12 @@ checkpoint and several profiles serve one checkpoint at depths the profile
 chooses. Its head marker `# qwen_web_presets=1` switches
 `qwen-capacity-policy.sh` to resolve each section through its `LLAMA_ARG_MODEL`
 path against the unique `model_file` column and to bound `LLAMA_ARG_CTX_SIZE` by
-`context_ceiling` rather than pin it to `context_default`. `execution_policy`
+`context_ceiling` rather than pin it to `context_default`. A preset persists
+across a registry edit, so the launch bounds that depth again by the row's
+current `validated_filled_depth` and refuses a `-` outright unless the preset
+carries the unvalidated-depth marker; a registry that lowers the field would
+otherwise leave an unmarked section serving a depth no run has filled and
+decoded. `execution_policy`
 decides emission: `refused` emits nothing under every setting, `validator-gated`
 emits a section carrying `LLAMA_ARG_MCP_SERVERS_CONFIG` only under
 `QWEN_WEB_AUTHORIZER_READY=1`, and `ui-mediated` emits a section naming no
