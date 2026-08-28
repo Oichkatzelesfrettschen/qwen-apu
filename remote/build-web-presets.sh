@@ -58,6 +58,15 @@ set -eu
 # empty file defers the same refusal to launch time and reports it as a router
 # fault instead of naming the ledger rows that withheld every section.
 #
+# remote/models.tsv is the authority for validated_filled_depth,
+# vision_allowed, and tool_selection, and the ledger repeats all three so a
+# reader sees one row whole. A copy that drifts from its authority is worse than
+# an absent field, because the ledger would state a depth or a vision grant the
+# runtime never honours, so the generator compares each against the registry row
+# and stops on divergence. vision_allowed reads the projector column, where
+# `required` is yes and `none` is no; tool_selection reads raw_tool_selection,
+# the graded score unaided by any execution guard.
+#
 # Every numeric field is validated before it is compared. A shell numeric
 # comparison against a malformed operand raises an error the surrounding
 # `2>/dev/null` would swallow, leaving the test false and admitting the row, so
@@ -181,6 +190,22 @@ require_canonical_integer() {
     esac
 }
 
+# The ledger repeats three registry fields so a profile row reads whole, and the
+# registry stays their authority. A divergence names the profile, the field, and
+# both values, because either side may be the stale one and the reader decides.
+require_ledger_matches_registry() {
+    compare_field_name=$1
+    compare_ledger_value=$2
+    compare_registry_value=$3
+    if [ "$compare_ledger_value" != "$compare_registry_value" ]; then
+        printf 'profile %s carries %s %s where model %s carries %s\n' \
+            "$profile_id" "$compare_field_name" "$compare_ledger_value" \
+            "$model_id" "$compare_registry_value" >&2
+        printf 'remote/models.tsv is the authority for this field; correct remote/web-profiles.tsv\n' >&2
+        exit 1
+    fi
+}
+
 registry_field() {
     registry_field_row=$1
     registry_field_name=$2
@@ -189,7 +214,7 @@ registry_field() {
 
 while IFS='	' read -r profile_id model_id web_mode context \
     ledger_validated_filled_depth max_results max_fetches max_chars_per_fetch \
-    _multi_source _vision_allowed _tool_selection execution_policy; do
+    _multi_source vision_allowed tool_selection execution_policy; do
     case $profile_id in
         '#'* | '') continue ;;
     esac
@@ -247,6 +272,25 @@ while IFS='	' read -r profile_id model_id web_mode context \
     require_canonical_integer ubatch "$ubatch" sentinel-refused "$profile_id"
     require_canonical_integer registry_validated_filled_depth \
         "$registry_validated_filled_depth" sentinel-admitted "$profile_id"
+
+    projector=$(registry_field "$registry_row" projector)
+    raw_tool_selection=$(registry_field "$registry_row" raw_tool_selection)
+    case $projector in
+        required) registry_vision_allowed=yes ;;
+        none) registry_vision_allowed=no ;;
+        *)
+            printf 'profile %s names model %s whose projector column reads %s, which is outside the vocabulary\n' \
+                "$profile_id" "$model_id" "$projector" >&2
+            exit 1
+            ;;
+    esac
+
+    require_ledger_matches_registry validated_filled_depth \
+        "$ledger_validated_filled_depth" "$registry_validated_filled_depth"
+    require_ledger_matches_registry vision_allowed \
+        "$vision_allowed" "$registry_vision_allowed"
+    require_ledger_matches_registry tool_selection \
+        "$tool_selection" "$raw_tool_selection"
 
     case $tier in
         production | candidate) ;;

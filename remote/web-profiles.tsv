@@ -2,6 +2,14 @@
 # remote/build-web-presets.sh reads this file alongside remote/models.tsv and
 # emits one INI section per row.
 #
+# remote/models.tsv is the authority for validated_filled_depth, vision_allowed,
+# and tool_selection. This file repeats all three so a profile row reads whole,
+# and remote/build-web-presets.sh compares each against the named model_id's
+# registry row and stops the run on divergence, naming the profile, the field,
+# and both values. A copy that drifts states a depth or a vision grant the
+# runtime never honours, so correcting this file rather than the registry is
+# what the refusal asks for.
+#
 # context and validated_filled_depth are copied verbatim from the named
 # model_id's context_ceiling and validated_filled_depth columns in
 # remote/models.tsv. Unknown is not permission: remote/build-web-presets.sh

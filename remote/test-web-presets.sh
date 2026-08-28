@@ -491,18 +491,58 @@ check_numeric_field_refused max_fetches_leading_zero 8192 8192 5 02 12000
 check_numeric_field_refused max_chars_negative 8192 8192 5 2 -12000
 
 # The sentinel stands where the registry defines the unmeasured state, so a
-# ledger validated_filled_depth of `-` is admitted rather than refused.
+# ledger validated_filled_depth of `-` matching its registry row is admitted by
+# the numeric rule. The depth override carries it past the unmeasured-depth
+# refusal, which is a separate rule with its own arms above.
 numeric_sentinel_profiles=$work/web-profiles-numeric-sentinel.tsv
-emit_numeric_fixture 8192 - 5 2 12000 >"$numeric_sentinel_profiles"
+printf 'web-fixture-sentinel\tfixture-candidate-unknown\tvalidator-gated\t8192\t-\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\n' \
+    >"$numeric_sentinel_profiles"
 numeric_sentinel_presets=$work/presets-numeric-sentinel.ini
 if build "$numeric_sentinel_profiles" "$numeric_sentinel_presets" \
-    env QWEN_WEB_MCP_CONFIG="$mcp_config" \
+    env QWEN_WEB_MCP_CONFIG="$mcp_config" QWEN_WEB_ALLOW_UNVALIDATED_DEPTH=1 \
     >"$work/numeric-sentinel.log" 2>"$work/numeric-sentinel.err"; then
     report ledger_depth_sentinel_admitted ok
 else
     report ledger_depth_sentinel_admitted refused
     cat "$work/numeric-sentinel.err" >&2
 fi
+
+# remote/models.tsv is the authority for validated_filled_depth,
+# vision_allowed, and tool_selection, so a ledger copy that diverges stops the
+# run naming the profile, the field, and both values.
+check_divergent_field_refused() {
+    divergent_case_name=$1
+    divergent_row=$2
+    divergent_needle=$3
+    divergent_profiles=$work/web-profiles-divergent-$divergent_case_name.tsv
+    printf '%s\n' "$divergent_row" >"$divergent_profiles"
+    divergent_presets=$work/presets-divergent-$divergent_case_name.ini
+    if build "$divergent_profiles" "$divergent_presets" \
+        env QWEN_WEB_MCP_CONFIG="$mcp_config" \
+        >"$work/divergent-$divergent_case_name.log" \
+        2>"$work/divergent-$divergent_case_name.err"; then
+        report "divergent_${divergent_case_name}_refused" emitted_a_section
+        return
+    fi
+    divergent_outcome=ok
+    grep -q "$divergent_needle" "$work/divergent-$divergent_case_name.err" ||
+        divergent_outcome=message_omits_values
+    grep -q 'web-fixture-divergent' "$work/divergent-$divergent_case_name.err" ||
+        divergent_outcome=message_omits_profile
+    report "divergent_${divergent_case_name}_refused" "$divergent_outcome"
+}
+
+# fixture-production reads validated_filled_depth 8192, projector none, and
+# raw_tool_selection 9/10; each row below diverges in one of the three.
+check_divergent_field_refused validated_filled_depth \
+    "$(printf 'web-fixture-divergent\tfixture-production\tvalidator-gated\t8192\t16384\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated')" \
+    'validated_filled_depth 16384 where model fixture-production carries 8192'
+check_divergent_field_refused vision_allowed \
+    "$(printf 'web-fixture-divergent\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tyes\t9/10\tvalidator-gated')" \
+    'vision_allowed yes where model fixture-production carries no'
+check_divergent_field_refused tool_selection \
+    "$(printf 'web-fixture-divergent\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t2/10\tvalidator-gated')" \
+    'tool_selection 2/10 where model fixture-production carries 9/10'
 
 # A registry-side numeric field is validated on the same rule, so a malformed
 # batch stops the run rather than reaching the emitted geometry.
