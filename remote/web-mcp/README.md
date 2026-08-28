@@ -252,7 +252,11 @@ Search API reads `maxAgeHours` inside the `contents` object beside the
 highlight request and the publication window and domain filters at the request
 top level; the Contents API reads `maxAgeHours` at its own top level, so the
 same policy takes two positions and a bound written in the wrong one is a key
-the endpoint ignores. `QWEN_WEB_PROVIDER=fake` selects `FakeProvider`, which
+the endpoint ignores. The granted include and exclude lists reach the provider as request
+fields and bound what it returns: `filter_by_domains` drops an off-domain
+record before the renderer signs it into a fetchable Result ID, reading the
+URL's hostname so a port on the netloc leaves the exclusion in force.
+`QWEN_WEB_PROVIDER=fake` selects `FakeProvider`, which
 serves a fixture document named by `QWEN_WEB_FAKE_FIXTURES`, mapping a query to
 a result list and a canonical URL to a content record. A content record supplies
 `text`, or `text_base64` for a fixture that carries bytes which are invalid

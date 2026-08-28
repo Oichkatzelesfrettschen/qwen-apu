@@ -665,6 +665,41 @@ def select_by_reference(entries, url, provider_result_id=""):
     return None
 
 
+def host_within_domain(host, domain):
+    """Return whether a host is the domain itself or a subdomain of it."""
+    return host == domain or host.endswith("." + domain)
+
+
+def filter_by_domains(results, include_domains, exclude_domains):
+    """Return the records the granted domain lists admit.
+
+    The lists reach the provider as request fields, and a provider defect or a
+    compromised response can still answer with an off-domain record that the
+    renderer would sign into a fetchable Result ID, so the wrapper enforces
+    the operator's scope over what came back. The comparison reads the URL's
+    hostname rather than its netloc, which leaves the exclusion in force where
+    the record carries a port.
+    """
+    if not include_domains and not exclude_domains:
+        return results
+    admitted = []
+    for record in results:
+        if not isinstance(record, dict):
+            continue
+        parts = urllib.parse.urlsplit(str(record.get("url", "")))
+        host = (parts.hostname or "").lower()
+        if include_domains and not any(
+            host_within_domain(host, domain) for domain in include_domains
+        ):
+            continue
+        if any(
+            host_within_domain(host, domain) for domain in exclude_domains
+        ):
+            continue
+        admitted.append(record)
+    return admitted
+
+
 def failure_tag(status):
     """Return the provider's failure tag reduced to a safe short token.
 
@@ -855,25 +890,13 @@ class FakeProvider(Provider):
             ) from None
 
     def search(self, query, max_results, constraints):
-        include_domains = constraints["include_domains"]
-        exclude_domains = constraints["exclude_domains"]
-        results = self.document.get("search", {}).get(query, [])
-        selected = []
-        for record in results:
-            url = record.get("url", "")
-            host = urllib.parse.urlsplit(url).netloc.lower()
-            if include_domains and not any(
-                host == domain or host.endswith("." + domain)
-                for domain in include_domains
-            ):
-                continue
-            if any(
-                host == domain or host.endswith("." + domain)
-                for domain in exclude_domains
-            ):
-                continue
-            selected.append(record)
-        return selected[:max_results]
+        """Return the fixture's result list for one query.
+
+        The domain lists are enforced in `call_search` over whatever a
+        provider answers, so this fixture returns its records unfiltered and
+        both providers meet one enforcement point.
+        """
+        return self.document.get("search", {}).get(query, [])[:max_results]
 
     def contents(self, url, max_characters, provider_result_id="", freshness=None):
         record = self.document.get("contents", {}).get(url)
@@ -1694,7 +1717,14 @@ def call_search(settings, arguments):
                 granted["expiry"],
                 now,
             )
-        results = provider.search(query, max_results, constraints)[:max_results]
+        # The domain lists reach the provider as request fields and bound
+        # what it returns here, so an off-domain record is dropped before the
+        # renderer signs it into a fetchable Result ID.
+        results = filter_by_domains(
+            provider.search(query, max_results, constraints),
+            constraints["include_domains"],
+            constraints["exclude_domains"],
+        )[:max_results]
         search_id = search_id_for()
         rendered, issued = render_search_results(
             results,

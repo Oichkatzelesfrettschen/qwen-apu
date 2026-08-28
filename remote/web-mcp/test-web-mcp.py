@@ -201,6 +201,22 @@ def build_fixture_document():
                     "highlights": [],
                 }
             ],
+            "ported domains": [
+                {
+                    "title": "Excluded host on a port",
+                    "url": "https://sub.hostile.example.net:8443/leak",
+                    "publishedDate": "",
+                    "author": "",
+                    "highlights": [],
+                },
+                {
+                    "title": "Admitted host",
+                    "url": "https://example.org/raven2",
+                    "publishedDate": "",
+                    "author": "",
+                    "highlights": [],
+                },
+            ],
             "userinfo url": [
                 {
                     "title": "Credentialed",
@@ -1297,6 +1313,37 @@ class WebMcpServerTest(unittest.TestCase):
                 response = self.search(session, query=query)
                 self.assertTrue(response["result"]["isError"])
                 self.assertIn(expected, self.result_text(response))
+
+    def test_the_granted_domain_filters_bound_the_returned_results(self):
+        """The wrapper enforces the domain lists the grant covers.
+
+        The include and exclude lists reach the provider as request fields,
+        and a provider defect or a compromised response can still answer with
+        an off-domain record that would be signed into a fetchable Result ID.
+        `filter_by_domains` reads the URL's hostname, so a port on the netloc
+        leaves the exclusion in force.
+        """
+        self.assertEqual(
+            server.filter_by_domains(
+                [
+                    {"url": "https://sub.hostile.example.net:8443/leak"},
+                    {"url": "https://example.org/raven2"},
+                ],
+                [],
+                ["hostile.example.net"],
+            ),
+            [{"url": "https://example.org/raven2"}],
+        )
+        session = self.open_session()
+        text = self.result_text(
+            self.search(
+                session,
+                query="ported domains",
+                exclude_domains=["hostile.example.net"],
+            )
+        )
+        self.assertNotIn("hostile.example.net", text)
+        self.assertIn("https://example.org/raven2", text)
 
     def test_a_noncanonical_numeric_host_is_refused(self):
         """A legacy numeric spelling of an address is refused as a host.
