@@ -135,3 +135,138 @@ A rate admits a row to the throughput stage and promotes nothing.
 `remote/models.tsv` carries twenty-two fields per row, including a validated
 filled depth, a submission geometry, a tier, and the two tool columns, and a
 promotion also needs a `download-*.sh` carrying the publisher digest.
+
+## Results
+
+Twelve arms, six checkpoints, forward and reverse, `nice 19` read back from
+`/proc` on every arm, `mclk` at 1067 throughout, die temperature 84 to 89 C,
+one-minute load average 3.97 to 4.88 with peaks to 5.45.
+
+| checkpoint | streamed/token | decode fwd | decode rev | paired decode | paired prefill | achieved GB/s | span |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Qwen3-Zero-Coder-0.8B Q4_K_M | 0.477 GB | 15.75 | 16.17 | 15.96 | 102.18 | 7.62 | 2.6% |
+| Qwen3.5-0.8B Q4_K_M | 0.547 GB | 15.21 | 15.12 | 15.17 | 134.91 | 8.30 | 0.6% |
+| Qwen3.5-0.8B Q8_0 | 0.801 GB | 15.24 | 15.38 | 15.31 | 146.22 | 12.27 | 0.9% |
+| Qwen2-VL-2B Platinum Q4_K_M | 0.980 GB | 8.52 | 8.49 | 8.51 | 63.09 | 8.34 | 0.4% |
+| Qwen3.8-2B Distill Q4_K_M | 1.263 GB | 8.46 | 7.72 | 8.09 | 54.28 | 10.22 | **9.2%** |
+| Qwen3.8-4B Distill Q4_K_M | 2.698 GB | 3.41 | 2.95 | 3.18 | 21.05 | 8.58 | **14.5%** |
+
+## The acceptance criterion fires on both anchors and on neither subject
+
+The criterion registered before the run admits a span of 8%. The four subject
+rows span 0.4 to 2.6%. Both anchors exceed it, the 4B by nearly double, so the
+4B-against-2B control and every ratio that divides by the 2B distill wait on a
+re-run and the comparisons between rows that each met the criterion stand.
+
+## The spread lives between arms rather than inside them
+
+`llama-bench` reports a standard deviation over the three repetitions of an arm,
+and those deviations are an order of magnitude smaller than the disagreement
+between an arm and its own reverse:
+
+| checkpoint | forward | reverse | widest within-arm | between-arm |
+| --- | --- | --- | ---: | ---: |
+| Qwen3.8-4B Distill | 3.41 +/- 0.01 | 2.95 +/- 0.01 | 0.3% | 14.5% |
+| Qwen3.8-2B Distill | 8.46 +/- 0.36 | 7.72 +/- 0.04 | 4.3% | 9.2% |
+| Qwen2-VL-2B | 8.52 +/- 0.09 | 8.49 +/- 0.04 | 1.1% | 0.4% |
+| Qwen3.5-0.8B Q8_0 | 15.24 +/- 0.20 | 15.38 +/- 0.15 | 1.3% | 0.9% |
+
+The 4B's two arms are each internally reproducible to 0.3% over three
+repetitions and disagree with each other by 14.5%, so raising the repetition
+count cannot narrow it: what varies is the machine's state between arms, and
+three more repetitions inside one state measure that state better. The
+consequence for this tree is that `llama-bench`'s reported deviation is not the
+uncertainty of a rate here, and a rate quoted with it understates its own
+spread fiftyfold on the 4B row.
+
+Load does not order the effect. The 0.8B Q8_0 reverse arm ran at the sweep's
+highest load peak, 5.45, and landed 0.9% from its forward pass, while the 4B
+reverse arm at 5.29 landed 14.5% from its own. The instability instead tracks
+checkpoint size, which is what the 0.8B rows below explain: where a per-token
+cost the desktop does not contend for sets the rate, the rate is stable.
+
+## Three checkpoints at one rate across a 68% spread in bytes
+
+The three members of the 0.8B runtime classes decode at 15.96, 15.17, and 15.31
+tokens per second while streaming 0.477, 0.547, and 0.801 GB per token. The
+rates span 5.2% where the byte counts span 67.9%, across two value formats and
+two architectures, and every one of those six arms met the span criterion.
+
+Decode at this scale is therefore not bandwidth-bound. A per-token cost near 63
+to 66 ms sets the rate and the weight stream is not the term that resolves. The
+same device streams 2.698 GB per token at 3.18 tok/s on the 4B, which is 314 ms
+per token, so the fixed term is a fifth of the small-model budget and a
+fiftieth of the large one.
+
+## The format arm refutes both registered accounts
+
+Qwen3.5-0.8B at Q8_0 and at Q4_K_M is one checkpoint, one trunk, and one
+25-block shape in two value formats, measured in adjacent slots of one sweep.
+This is the arm `universal-candidate-ladder.md` names as missing.
+
+```text
+Q8_0     0.801 GB/token   15.31 tok/s   12.27 GB/s
+Q4_K_M   0.547 GB/token   15.17 tok/s    8.30 GB/s
+```
+
+The Q8_0 streams 46.4% more bytes and decodes 0.9% faster. `R` against the 2B
+distill is 1.88 on the paired means, below the 2.0 falsifier floor, so the size
+account and the format account are both refuted in the same direction and the
+deviation is the finding. Fitting a fixed cost plus a bandwidth term across the
+pair gives a negative bandwidth term: more bytes, marginally less time.
+
+Q4_K_M buys nothing over Q8_0 on this checkpoint. That extends a result this
+tree already holds at 4B, where i1-Q2_K streams 29.4% fewer bytes than Q4_K_M
+and decodes no faster, down to the 0.8B class, and it means the served
+`qwen35-08b` Q8_0 row already occupies the better position of the two. A
+promotion of any Q4_K_M rung of this class competes on quality rather than on
+throughput.
+
+The prefill halves separate where the decode halves do not: 146.22 against
+134.91 tokens per second, an 8.4% advantage to Q8_0 at 46.4% more bytes.
+Prefill processes 512 tokens against one weight read, so it is the half where
+arithmetic rather than a per-token cost dominates, and Q4_K's super-block scale
+decode shows up there.
+
+## The per-dispatch prediction holds
+
+Qwen3-Zero-Coder-Reasoning-0.8B runs 42 blocks at 1024 embedding width against
+the Qwen3.5-0.8B's 24, at 87.3% of its streamed bytes. The registered prediction
+was that it achieves below the Qwen3.5-0.8B Q4_K_M in this sweep.
+
+```text
+Qwen3-Zero-Coder   0.477 GB/token   7.62 GB/s achieved
+Qwen3.5-0.8B       0.547 GB/token   8.30 GB/s achieved
+```
+
+Confirmed at 8.2% below. The prefill halves separate it much harder than the
+decode halves -- 102.18 against 134.91, a 24.3% deficit -- which is the sign the
+per-dispatch account predicts, since prefill issues the same 42-block graph over
+a 512-token batch where decode amortizes it against the fixed per-token cost.
+Its decode rate is nonetheless the highest in the sweep at 15.96 tok/s, so the
+deep-narrow shape costs achieved bandwidth and buys tokens.
+
+`R` is 1.97 on the paired means against a registered band of 2.0 to 2.6 and a
+falsifier at 1.6 to 3.1, so the magnitude read high while the direction held.
+Both subject `R` values sit just under 2.0, which is the anchor rather than the
+subjects: the 2B distill arm that divides them is the row that failed its own
+span criterion.
+
+## Qwen2-VL is the second architecture to break the size ordering
+
+The first `qwen2vl` measurement on this device is also the sweep's steadiest row
+at a 0.4% span. It streams 0.980 GB per token, 22.4% below the 2B distill, and
+achieves 8.34 GB/s against that checkpoint's 10.22 -- below every Qwen3.5 row in
+the sweep except the deep-narrow Zero-Coder, and below the 4B distill's 8.58 at
+36% of its byte count.
+
+`evidence/model-admission/universal-candidate-ladder.md` recorded LFM2 breaking
+its size ordering and read it as operator mix. A second architecture breaking it
+in the same direction, with 28 blocks of full attention at 12 heads over 2 KV
+heads against the Qwen3.5 hybrid's 3:1 pattern, supports that reading over a
+byte-count account. The registered band was `R` 1.22 to 1.48 with a falsifier
+outside 1.0 to 1.8; the paired means give 1.05, inside the falsifier and below
+the band, and this figure divides by the anchor that failed its span criterion.
+
+The arm runs under `llama-bench`, which loads the language model alone, so this
+is text-trunk throughput and carries nothing about image encoding.
