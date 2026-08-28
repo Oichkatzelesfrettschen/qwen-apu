@@ -45,10 +45,22 @@ set -eu
     printf 'QWEN_WEB_BROKER_PORT=%s\n' "${QWEN_WEB_BROKER_PORT:-unset}"
     printf 'QWEN_WEB_STATE_DIR=%s\n' "${QWEN_WEB_STATE_DIR:-unset}"
     printf 'QWEN_WEB_TOKEN_KEY_FILE=%s\n' "${QWEN_WEB_TOKEN_KEY_FILE:-unset}"
+    printf 'QWEN_WEB_PROFILE=%s\n' "${QWEN_WEB_PROFILE:-unset}"
+    printf 'QWEN_WEB_PROVIDER=%s\n' "${QWEN_WEB_PROVIDER:-unset}"
+    printf 'QWEN_WEB_PROFILES=%s\n' "${QWEN_WEB_PROFILES:-unset}"
 } >"$QWEN_WEB_LAUNCH_RECORD"
 EOF
 chmod +x "$harness/qwen-launch.sh"
 launcher=$harness/qwen-web-launch.sh
+
+# Every launch below carries a usable signing key, because the wrapper requires
+# one before it forwards anything; the arms that test the key rules override
+# this path with their own.
+token_key_file=$work/token.key
+printf 'fixture-signing-key\n' >"$token_key_file"
+chmod 600 "$token_key_file"
+QWEN_WEB_TOKEN_KEY_FILE=$token_key_file
+export QWEN_WEB_TOKEN_KEY_FILE
 
 state_directory=$work/state
 mkdir -p "$state_directory/web-mcp-configs"
@@ -125,17 +137,13 @@ if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
     report unreadable_signing_key_refused accepted
 else
     outcome=ok
-    grep -q 'grant signing key is unreadable' "$work/absent-key.err" ||
+    grep -q 'grant signing key is not a regular file' "$work/absent-key.err" ||
         outcome=missing_message
     report unreadable_signing_key_refused "$outcome"
 fi
 
-token_key_file=$work/token.key
-printf 'fixture-signing-key\n' >"$token_key_file"
-chmod 600 "$token_key_file"
 if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
     QWEN_WEB_LAUNCH_RECORD=$record \
-    QWEN_WEB_TOKEN_KEY_FILE=$token_key_file \
     QWEN_WEB_BROKER_PORT=18571 \
     env -u QWEN_BIND_HOST "$launcher" \
     >"$work/key.log" 2>"$work/key.err"; then
@@ -147,10 +155,108 @@ if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
     if grep -q 'fixture-signing-key' "$work/key.log" "$work/key.err"; then
         outcome=key_contents_printed
     fi
+    grep -qx 'QWEN_WEB_PROFILE=web-fixture' "$record" || outcome=profile_underived
+    grep -qx 'QWEN_WEB_PROVIDER=exa' "$record" || outcome=provider_default_dropped
+    grep -q 'profile=web-fixture provider=exa' "$work/key.log" ||
+        outcome=profile_unreported
     report signing_key_path_forwarded "$outcome"
 else
     report signing_key_path_forwarded refused
     cat "$work/key.err" >&2
+fi
+
+# The key rules the broker applies at its own startup refuse here first, where
+# the message names the rule; the key contents stay out of every line.
+signing_key_arm() {
+    arm_name=$1
+    arm_key=$2
+    arm_message=$3
+    if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+        QWEN_WEB_LAUNCH_RECORD=$record \
+        QWEN_WEB_TOKEN_KEY_FILE=$arm_key \
+        env -u QWEN_BIND_HOST "$launcher" \
+        >"$work/$arm_name.log" 2>"$work/$arm_name.err"; then
+        report "$arm_name" accepted
+    else
+        outcome=ok
+        grep -q "grant signing key $arm_message" "$work/$arm_name.err" ||
+            outcome=missing_message
+        report "$arm_name" "$outcome"
+    fi
+}
+if env -u QWEN_WEB_TOKEN_KEY_FILE QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/unset-key.log" 2>"$work/unset-key.err"; then
+    report unset_signing_key_refused accepted
+else
+    outcome=ok
+    grep -q 'grant signing key is unset' "$work/unset-key.err" || outcome=missing_message
+    report unset_signing_key_refused "$outcome"
+fi
+open_key=$work/open.key
+printf 'open-signing-key\n' >"$open_key"
+chmod 644 "$open_key"
+signing_key_arm group_readable_signing_key_refused "$open_key" 'carries mode 644'
+linked_key=$work/linked.key
+ln -s "$token_key_file" "$linked_key"
+signing_key_arm symlinked_signing_key_refused "$linked_key" 'is a symbolic link'
+empty_key=$work/empty.key
+: >"$empty_key"
+chmod 600 "$empty_key"
+signing_key_arm empty_signing_key_refused "$empty_key" 'is empty'
+
+# One broker signs for one profile, so the preset supplies the profile and a
+# second section or a contradicting QWEN_WEB_PROFILE refuses the launch.
+two_section_presets=$state_directory/web-presets-two.ini
+write_web_preset "$two_section_presets" unmarked
+sed 's/^\[web-fixture\]$/[web-second]/; s/^LLAMA_ARG_ALIAS = web-fixture$/LLAMA_ARG_ALIAS = web-second/' \
+    "$web_presets" | grep -v '^#' >>"$two_section_presets"
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_PRESETS=$two_section_presets QWEN_WEB_LAUNCH_RECORD=$record \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/two.log" 2>"$work/two.err"; then
+    report two_section_preset_refused accepted
+else
+    outcome=ok
+    grep -q 'carries 2 sections' "$work/two.err" || outcome=missing_message
+    report two_section_preset_refused "$outcome"
+fi
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_PROFILE=web-other \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/mismatch.log" 2>"$work/mismatch.err"; then
+    report profile_mismatch_refused accepted
+else
+    outcome=ok
+    grep -q 'QWEN_WEB_PROFILE names web-other where the preset serves web-fixture' \
+        "$work/mismatch.err" || outcome=missing_message
+    report profile_mismatch_refused "$outcome"
+fi
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_PROVIDER=other \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/provider.log" 2>"$work/provider.err"; then
+    report unknown_provider_refused accepted
+else
+    outcome=ok
+    grep -q 'QWEN_WEB_PROVIDER must be exa or fake' "$work/provider.err" ||
+        outcome=missing_message
+    report unknown_provider_refused "$outcome"
+fi
+ledger_copy=$work/profiles.tsv
+printf 'profile_id\n' >"$ledger_copy"
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_PROFILES=$ledger_copy \
+    QWEN_WEB_PROVIDER=fake \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/ledger.log" 2>"$work/ledger.err"; then
+    outcome=ok
+    grep -qx "QWEN_WEB_PROFILES=$ledger_copy" "$record" || outcome=ledger_dropped
+    grep -qx 'QWEN_WEB_PROVIDER=fake' "$record" || outcome=provider_dropped
+    report ledger_and_provider_forwarded "$outcome"
+else
+    report ledger_and_provider_forwarded refused
+    cat "$work/ledger.err" >&2
 fi
 
 # The marker state and the authorizer setting are reported before the launch.

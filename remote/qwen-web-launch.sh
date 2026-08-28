@@ -129,25 +129,86 @@ printf 'web_launch presets=%s unvalidated_depth_marker=%s authorizer_ready=%s bi
 # starts the broker as a guarded child; the ordinary qwen-launch.sh path leaves
 # the marker unset and starts no broker.
 #
-# The signing key reaches the broker as a path in the environment and its
-# contents stay in the broker's own address space. A launch that names a key
-# file the broker cannot read is refused here, where the reason is legible,
-# rather than at the first approval a human has already given.
+# The signing key is required whole before the launch: nonempty path, regular
+# file rather than a symlink, owned by the serving user, mode 0600 or tighter,
+# readable, and nonempty. A broker that starts without a usable key answers
+# `listening` and then refuses the first approval a human has already given, so
+# every rule the broker applies at its own startup is applied here first, where
+# the refusal names the rule. The path alone crosses into the child; the
+# contents stay in the broker's address space.
 QWEN_WEB_BROKER=1
 QWEN_WEB_BROKER_PORT=${QWEN_WEB_BROKER_PORT:-8571}
 QWEN_WEB_STATE_DIR=${QWEN_WEB_STATE_DIR:-$state_directory/web-mcp}
-if [ -n "${QWEN_WEB_TOKEN_KEY_FILE:-}" ] && [ ! -r "$QWEN_WEB_TOKEN_KEY_FILE" ]; then
-    printf 'the grant signing key is unreadable: %s\n' \
-        "$QWEN_WEB_TOKEN_KEY_FILE" >&2
+signing_key_file=${QWEN_WEB_TOKEN_KEY_FILE:-}
+refuse_signing_key() {
+    printf 'the grant signing key %s: %s\n' "$1" "${signing_key_file:-<unset>}" >&2
+    printf 'QWEN_WEB_TOKEN_KEY_FILE names a regular file at mode 0600, owned by this user, holding the HMAC key\n' >&2
+    exit 2
+}
+if [ -z "$signing_key_file" ]; then
+    refuse_signing_key 'is unset'
+fi
+if [ -L "$signing_key_file" ]; then
+    refuse_signing_key 'is a symbolic link'
+fi
+if [ ! -f "$signing_key_file" ]; then
+    refuse_signing_key 'is not a regular file'
+fi
+signing_key_owner=$(stat -c %u "$signing_key_file" 2>/dev/null || echo unknown)
+if [ "$signing_key_owner" != "$(id -u)" ]; then
+    refuse_signing_key "is owned by uid $signing_key_owner rather than $(id -u)"
+fi
+if [ ! -r "$signing_key_file" ]; then
+    refuse_signing_key 'is unreadable'
+fi
+if [ ! -s "$signing_key_file" ]; then
+    refuse_signing_key 'is empty'
+fi
+signing_key_mode=$(stat -c %a "$signing_key_file" 2>/dev/null || echo unknown)
+case $signing_key_mode in
+    400 | 600) ;;
+    *) refuse_signing_key "carries mode $signing_key_mode rather than 0600" ;;
+esac
+export QWEN_WEB_TOKEN_KEY_FILE
+
+# One broker signs for one profile: `POST /grant` refuses a `profile_id` other
+# than the `--profile` the broker started with, so a preset holding several
+# sections would leave every section but one with a broker that refuses it,
+# and the browser would learn that after a human approved the search. The
+# profile is therefore read from the preset rather than typed: the launch
+# requires exactly one section, names it QWEN_WEB_PROFILE, and refuses a
+# caller whose own QWEN_WEB_PROFILE names anything else.
+preset_section_count=$(grep -c '^\[[^]]*\]$' "$web_presets" || true)
+if [ "$preset_section_count" -ne 1 ]; then
+    printf 'web router mode starts one broker for one profile, and %s carries %s sections\n' \
+        "$web_presets" "$preset_section_count" >&2
+    printf 'generate a preset holding exactly one section, or launch each profile from its own preset file\n' >&2
     exit 2
 fi
-signing_key_state=absent
-if [ -n "${QWEN_WEB_TOKEN_KEY_FILE:-}" ]; then
-    signing_key_state=configured
-    export QWEN_WEB_TOKEN_KEY_FILE
+preset_profile=$(sed -n 's/^\[\([^]]*\)\]$/\1/p' "$web_presets")
+case $preset_profile in
+    '' | *[!A-Za-z0-9._-]*)
+        printf 'web preset section name is not a profile id: %s\n' "$preset_profile" >&2
+        exit 2
+        ;;
+esac
+if [ -n "${QWEN_WEB_PROFILE:-}" ] && [ "$QWEN_WEB_PROFILE" != "$preset_profile" ]; then
+    printf 'QWEN_WEB_PROFILE names %s where the preset serves %s\n' \
+        "$QWEN_WEB_PROFILE" "$preset_profile" >&2
+    exit 2
 fi
-printf 'web_launch broker_port=%s broker_state_dir=%s signing_key=%s\n' \
-    "$QWEN_WEB_BROKER_PORT" "$QWEN_WEB_STATE_DIR" "$signing_key_state"
+QWEN_WEB_PROFILE=$preset_profile
+QWEN_WEB_PROVIDER=${QWEN_WEB_PROVIDER:-exa}
+case $QWEN_WEB_PROVIDER in
+    exa | fake) ;;
+    *)
+        printf 'QWEN_WEB_PROVIDER must be exa or fake: %s\n' "$QWEN_WEB_PROVIDER" >&2
+        exit 2
+        ;;
+esac
+export QWEN_WEB_PROFILE QWEN_WEB_PROVIDER
+printf 'web_launch broker_port=%s broker_state_dir=%s signing_key=configured profile=%s provider=%s\n' \
+    "$QWEN_WEB_BROKER_PORT" "$QWEN_WEB_STATE_DIR" "$QWEN_WEB_PROFILE" "$QWEN_WEB_PROVIDER"
 
 QWEN_ROUTER=1
 QWEN_ROUTER_PRESETS=$web_presets
@@ -155,5 +216,8 @@ QWEN_ROUTER_MAX=1
 QWEN_BIND_HOST=127.0.0.1
 export QWEN_ROUTER QWEN_ROUTER_PRESETS QWEN_ROUTER_MAX QWEN_BIND_HOST
 export QWEN_WEB_BROKER QWEN_WEB_BROKER_PORT QWEN_WEB_STATE_DIR
+if [ -n "${QWEN_WEB_PROFILES:-}" ]; then
+    export QWEN_WEB_PROFILES
+fi
 
 exec "$launcher" "$profile"

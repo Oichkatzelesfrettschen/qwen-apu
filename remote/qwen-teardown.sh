@@ -23,7 +23,7 @@ broker_pid=''
 broker_secret_file=''
 if [ -r "$status_file" ]; then
     guard_pids=$(sed -n '1p' "$status_file" | tr ' ' '\n' |
-        sed -n 's/^\(monitor_pid\|latency_watchdog_pid\|kernel_hazard_watchdog_pid\|broker_pid\)=//p')
+        sed -n 's/^\(monitor_pid\|latency_watchdog_pid\|kernel_hazard_watchdog_pid\)=//p')
     # The broker is read a second time on its own, because its absence proof
     # covers a file as well as a process: it unlinks its per-launch session
     # secret while unwinding from SIGTERM, and a secret surviving the teardown
@@ -37,7 +37,13 @@ if [ -r "$status_file" ]; then
     # session alone, and re-deriving the default here would prove the absence
     # of a file a configured launch placed elsewhere.
     broker_secret_file=$(sed -n 's/^broker secret_file=//p' "$status_file")
+    # The recorded start time binds the PID to the process /health identified
+    # at launch. A PID is reused once its process exits, so a number alone
+    # would signal whatever now holds it.
+    broker_start_time=$(sed -n 's/^broker_identity .*start_time=\([0-9]*\).*/\1/p' \
+        "$status_file")
 fi
+broker_start_time=${broker_start_time:-}
 
 "$script_directory/qwen-webui-control.sh" stop || true
 
@@ -106,7 +112,26 @@ broker_residue=0
 case $broker_pid in
     '' | *[!0-9]*) broker_pid='' ;;
 esac
+if [ -n "$broker_pid" ] && [ -n "$broker_start_time" ] && \
+   [ -r "/proc/$broker_pid/stat" ]; then
+    # Field 22 of /proc/PID/stat is the start time in clock ticks. The comm
+    # field before it may hold spaces, so the fields are counted from the
+    # closing parenthesis rather than from the line start.
+    live_start_time=$(sed 's/^.*) //' "/proc/$broker_pid/stat" |
+        awk '{ print $20 }')
+    if [ "$live_start_time" != "$broker_start_time" ]; then
+        printf 'pid %s now belongs to another process (start %s recorded, %s live); the broker is gone\n' \
+            "$broker_pid" "$broker_start_time" "$live_start_time" >&2
+        broker_pid=''
+    fi
+fi
 if [ -n "$broker_pid" ]; then
+    # The broker is signalled here rather than with the guards above, after
+    # the start-time comparison has bound the number to the process.
+    if kill -0 "$broker_pid" 2>/dev/null; then
+        printf 'stopping approval broker pid %s\n' "$broker_pid"
+        kill -TERM "$broker_pid" 2>/dev/null || true
+    fi
     attempt=0
     while [ "$attempt" -lt 100 ] && kill -0 "$broker_pid" 2>/dev/null; do
         attempt=$((attempt + 1))
@@ -115,12 +140,16 @@ if [ -n "$broker_pid" ]; then
     if kill -0 "$broker_pid" 2>/dev/null; then
         printf 'approval broker still running: %s\n' "$broker_pid" >&2
         broker_residue=1
-    elif [ -n "$broker_secret_file" ] && \
-         { [ -e "$broker_secret_file" ] || [ -L "$broker_secret_file" ]; }; then
-        printf 'approval broker session secret survives: %s\n' \
-            "$broker_secret_file" >&2
-        broker_residue=1
     fi
+fi
+# The secret file is proved absent on its own: a status file whose PID field
+# is missing or malformed still names the path, and a surviving secret
+# authorizes a page against the next launch whatever became of the process.
+if [ -n "$broker_secret_file" ] && \
+   { [ -e "$broker_secret_file" ] || [ -L "$broker_secret_file" ]; }; then
+    printf 'approval broker session secret survives: %s\n' \
+        "$broker_secret_file" >&2
+    broker_residue=1
 fi
 
 residue=$snapshot_residue

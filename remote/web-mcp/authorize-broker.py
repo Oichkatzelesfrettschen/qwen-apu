@@ -36,6 +36,7 @@ import os
 import secrets
 import signal
 import socket
+import stat
 import sys
 import time
 
@@ -53,6 +54,8 @@ REQUEST_BODY_BYTE_CAP = 16384
 AUTHORIZE_PER_MINUTE_DEFAULT = 6
 GRANT_PATH = "/grant"
 SESSION_PATH = "/session"
+HEALTH_PATH = "/health"
+KEY_MODE_FORBIDDEN_BITS = 0o077
 
 
 def loopback_host(value):
@@ -113,6 +116,78 @@ def write_session_secret(state_directory):
     return secret, path
 
 
+def validate_signing_key(path):
+    """Return the SHA-256 of the signing key file after checking every rule.
+
+    The signing path (`server.issue_grant`) reads this file itself, so this
+    function never opens it for signing; it opens it once to compute a
+    digest the broker can report without exposing the key. Each rule names
+    the failure it refuses on stderr and never echoes the path's contents:
+    an absent or blank `--token-key-file`, a missing file, a symlink (the
+    `lstat` mode bit `S_IFLNK` rather than the resolved target), an owner
+    other than this process's own `os.getuid()`, a mode carrying any of the
+    group or other bits `0o077`, an unreadable file, or a file of zero
+    bytes.
+    """
+    if not path:
+        sys.stderr.write(
+            "the broker signs every grant from a key file, so "
+            "QWEN_WEB_TOKEN_KEY_FILE or --token-key-file names it\n"
+        )
+        return None
+    try:
+        status = os.lstat(path)
+    except OSError as error:
+        sys.stderr.write(f"the signing key file is unreadable: {error}\n")
+        return None
+    if not stat.S_ISREG(status.st_mode):
+        sys.stderr.write(
+            "the signing key path names a symlink or another non-regular "
+            "file, and the broker refuses to follow it\n"
+        )
+        return None
+    if status.st_uid != os.getuid():
+        sys.stderr.write(
+            "the signing key file belongs to another user, and the broker "
+            "refuses a key it does not own\n"
+        )
+        return None
+    if status.st_mode & KEY_MODE_FORBIDDEN_BITS:
+        sys.stderr.write(
+            "the signing key file is readable or writable outside its "
+            "owner; chmod 0600 or stricter before the broker will start\n"
+        )
+        return None
+    try:
+        with open(path, "rb") as handle:
+            content = handle.read()
+    except OSError as error:
+        sys.stderr.write(f"the signing key file is unreadable: {error}\n")
+        return None
+    if not content:
+        sys.stderr.write("the signing key file is empty\n")
+        return None
+    return hashlib.sha256(content).hexdigest()
+
+
+def process_start_time(fallback):
+    """Return field 22 of `/proc/self/stat`, the start time in clock ticks.
+
+    The value identifies this process against a later holder of the same
+    pid: qwen-webui-session.sh records it beside the pid and
+    qwen-teardown.sh compares it with the live field before signalling. Ticks
+    since boot are what the kernel exposes, so the raw integer is served and
+    both sides compare the same number. A kernel without `/proc` leaves the
+    file unreadable and the caller's own clock sample stands in.
+    """
+    try:
+        with open("/proc/self/stat", encoding="ascii") as handle:
+            fields = handle.read().rsplit(")", 1)[1].split()
+        return int(fields[19])
+    except (OSError, IndexError, ValueError):
+        return int(fallback)
+
+
 def raise_interrupt(number, frame):
     """Turn a terminating signal into the exception the accept loop unwinds on."""
     raise KeyboardInterrupt(f"signal {number}")
@@ -130,6 +205,8 @@ class BrokerSettings:
         self.origins = tuple(arguments.origin)
         self.per_minute = arguments.per_minute
         self.session_secret = ""
+        self.signing_key_sha256 = ""
+        self.start_time = 0
 
 
 def parse_request_arguments(payload):
@@ -366,7 +443,11 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
         header.
         """
         origin = self.allowed_origin()
-        if self.path.split("?", 1)[0] != SESSION_PATH:
+        path = self.path.split("?", 1)[0]
+        if path == HEALTH_PATH:
+            self.handle_health()
+            return
+        if path != SESSION_PATH:
             self.send_json(404, {"error": "no such endpoint"}, origin)
             return
         try:
@@ -383,6 +464,39 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
             )
             return
         self.send_json(200, {"session_secret": self.settings.session_secret}, origin)
+
+    def handle_health(self):
+        """Answer the launcher's own liveness probe, ahead of the router.
+
+        `qwen-webui-session.sh` reads this with `curl` before the router
+        starts, so the check here is the loopback Host guard alone: neither
+        an Origin nor the per-launch session header is available to a shell
+        probe that never loads a page. Every field in the response is a
+        process or configuration identity; the signing key contributes its
+        digest and never its bytes.
+        """
+        try:
+            self.require_loopback_host()
+        except server.ToolError as error:
+            self.send_json(
+                HTTP_STATUS_FOR_TERM.get(error.status, 400),
+                {"error": str(error)},
+            )
+            return
+        state_status = os.stat(self.settings.state_directory)
+        self.send_json(
+            200,
+            {
+                "protocol": "qwen-web-broker/1",
+                "profile": self.settings.profile,
+                "provider": self.settings.provider,
+                "pid": os.getpid(),
+                "start_time": self.settings.start_time,
+                "signing_key_sha256": self.settings.signing_key_sha256,
+                "state_dir": f"{state_status.st_dev}:{state_status.st_ino}",
+                "origins": list(self.settings.origins),
+            },
+        )
 
     def do_POST(self):  # noqa: N802 -- BaseHTTPRequestHandler names the verb
         """Sign the grant for the exact arguments a human has just approved.
@@ -408,6 +522,15 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
         try:
             ledger.consume("authorize-minute", 60, self.settings.per_minute, started_at)
             self.require_loopback_host()
+            # The session secret reaches a page through /session, which the
+            # Origin allowlist gates, so a grant request from another origin
+            # carries a secret that left the admitted page. The same allowlist
+            # gates the signing route, so the secret alone buys nothing from a
+            # page the launch did not name.
+            if not origin:
+                raise server.AuthorizationDenied(
+                    "the request Origin is absent or outside the admitted set"
+                )
             self.require_session_secret()
             fields = parse_request_arguments(self.read_body())
             token = issue_for_request(self.settings, fields)
@@ -470,6 +593,7 @@ def build_parser():
 
 def run(argv):
     """Serve until the caller ends the process, then remove the secret file."""
+    entry_time = time.time()
     arguments = build_parser().parse_args(argv)
     if arguments.origin is None:
         configured = os.environ.get("QWEN_WEB_BROKER_ORIGIN", "")
@@ -486,7 +610,12 @@ def run(argv):
             "QWEN_WEB_BROKER_ORIGIN or --origin names the page that reads it\n"
         )
         return 2
+    signing_key_sha256 = validate_signing_key(arguments.token_key_file)
+    if signing_key_sha256 is None:
+        return 2
     settings = BrokerSettings(arguments)
+    settings.signing_key_sha256 = signing_key_sha256
+    settings.start_time = process_start_time(entry_time)
     try:
         ledger = server.Ledger(arguments.state_dir)
     except (OSError, server.ToolError) as error:

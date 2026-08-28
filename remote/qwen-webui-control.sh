@@ -102,7 +102,8 @@ case $action in
                               QWEN_ROUTER_MAX \
                               QWEN_WEB_BROKER QWEN_WEB_BROKER_PORT \
                               QWEN_WEB_BROKER_PROGRAM QWEN_WEB_STATE_DIR \
-                              QWEN_WEB_TOKEN_KEY_FILE QWEN_WEB_PROFILE; do
+                              QWEN_WEB_TOKEN_KEY_FILE QWEN_WEB_PROFILE \
+                              QWEN_WEB_PROVIDER QWEN_WEB_PROFILES; do
             eval "forwarded_value=\${$forwarded_name:-}"
             if [ -n "$forwarded_value" ]; then
                 forwarded_environment="$forwarded_environment $forwarded_name=$forwarded_value"

@@ -2363,6 +2363,71 @@ class WebMcpServerTest(unittest.TestCase):
                     "QWEN_WEB_TOKEN_LIFETIME_SECONDS", self.result_text(response)
                 )
 
+    def test_max_results_cap_bounds_the_search_argument(self):
+        session = self.open_session(QWEN_WEB_MAX_RESULTS="3")
+        names = [
+            tool["name"]
+            for tool in session.request("tools/list")["result"]["tools"]
+        ]
+        self.assertEqual(names, ["search_exa", "fetch_exa"])
+        listed = session.request("tools/list")["result"]["tools"]
+        search_schema = listed[0]["inputSchema"]["properties"]["max_results"]
+        self.assertEqual(search_schema["maximum"], 3)
+        at_cap = self.search(session, max_results=3)
+        self.assertFalse(at_cap["result"]["isError"], self.result_text(at_cap))
+        above_cap = self.search(session, max_results=4)
+        self.assertTrue(above_cap["result"]["isError"])
+        self.assertIn(
+            "must lie between 1 and 3", self.result_text(above_cap)
+        )
+
+    def test_max_results_env_malformed_refuses_at_startup(self):
+        for value in ("0", "11", "many"):
+            with self.subTest(value=value):
+                completed = subprocess.run(
+                    [sys.executable, SERVER_PATH],
+                    input="",
+                    capture_output=True,
+                    text=True,
+                    env=self.environment(QWEN_WEB_MAX_RESULTS=value),
+                )
+                self.assertEqual(completed.returncode, 2)
+                self.assertIn("QWEN_WEB_MAX_RESULTS", completed.stderr)
+
+    def test_max_chars_per_fetch_cap_bounds_the_fetch_argument(self):
+        session = self.open_session(QWEN_WEB_MAX_CHARS_PER_FETCH="500")
+        listed = session.request("tools/list")["result"]["tools"]
+        fetch_schema = listed[1]["inputSchema"]["properties"]["max_chars"]
+        self.assertEqual(fetch_schema["maximum"], 500)
+        text = self.result_text(self.search(session, max_results=1))
+        result_id = self.first_result_id(text)
+        at_cap = session.call_tool(
+            "fetch_exa", {"result_id": result_id, "max_chars": 500}
+        )
+        self.assertFalse(at_cap["result"]["isError"], self.result_text(at_cap))
+        above_cap = session.call_tool(
+            "fetch_exa", {"result_id": result_id, "max_chars": 501}
+        )
+        self.assertTrue(above_cap["result"]["isError"])
+        self.assertIn(
+            "must lie between 1 and 500", self.result_text(above_cap)
+        )
+
+    def test_max_chars_per_fetch_env_malformed_refuses_at_startup(self):
+        for value in ("0", "24001", "soon"):
+            with self.subTest(value=value):
+                completed = subprocess.run(
+                    [sys.executable, SERVER_PATH],
+                    input="",
+                    capture_output=True,
+                    text=True,
+                    env=self.environment(QWEN_WEB_MAX_CHARS_PER_FETCH=value),
+                )
+                self.assertEqual(completed.returncode, 2)
+                self.assertIn(
+                    "QWEN_WEB_MAX_CHARS_PER_FETCH", completed.stderr
+                )
+
     def test_page_text_cannot_close_the_frame(self):
         session = self.open_session()
         search_text = self.result_text(self.search(session, max_results=10))
