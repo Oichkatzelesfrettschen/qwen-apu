@@ -945,6 +945,17 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
   for (let index = 0; index < calls.length; index++) {
     const toolName = calls[index].name;
     const callId = callIds[index];
+    if (roundBudgetExhausted && WEB_TOOL_NAMES.includes(toolName)) {
+      // The continuation cap bounds the rounds left to read a result in: the
+      // round that just streamed is the last one send() will send again, so a
+      // call whose result reaches no request stays unrun rather than spending
+      // a grant, a provider budget, and a fetch allowance for a reply nobody
+      // reads. The model reads the same refusal shape a denial produces.
+      refused = true;
+      answerCall(callId, toolName,
+        `The round budget is exhausted; ${toolName} did not run.`);
+      continue;
+    }
     if (toolName === WEB_FETCH_TOOL_NAME) {
       if (fetchBudget.remaining <= 0) {
         refused = true;
@@ -973,16 +984,6 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
       refused = true;
       answerCall(callId, toolName,
         `The served path executes no tool named ${toolName} in this turn.`);
-      continue;
-    }
-    if (roundBudgetExhausted) {
-      // The continuation cap bounds the rounds left to read a result in: the
-      // round that just streamed is the last one send() will send again, so a
-      // search whose results reach no request stays unrun and the model reads
-      // the same refusal shape a denial produces.
-      refused = true;
-      answerCall(callId, toolName,
-        'The round budget is exhausted; the search did not run.');
       continue;
     }
     let fields;

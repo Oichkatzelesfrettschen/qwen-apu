@@ -62,8 +62,14 @@ grep -F "'The user refused this web search. It did not run.'" \
 # The grant enters one request body. A transcript message, a stored value, or a
 # completion body carrying it would present a single-use token twice.
 grep -F 'outcome = await streamCompletion(history, view);' "$fallback_ui" >/dev/null
-if grep -E 'history\.push\([^)]*authorization' "$fallback_ui" >/dev/null; then
+if grep -E 'answerCall\([^)]*authorization' "$fallback_ui" >/dev/null; then
     printf 'fallback Web UI writes a grant into the transcript\n' >&2
+    exit 1
+fi
+# The signed grant reaches exactly one call site, which is the params object of
+# the POST /tools body.
+if [ "$(grep -c 'outcome.authorization' "$fallback_ui")" -ne 1 ]; then
+    printf 'fallback Web UI reads the issued grant at more than one site\n' >&2
     exit 1
 fi
 if grep -F 'requestMessages' "$fallback_ui" >/dev/null; then
@@ -97,10 +103,12 @@ grep -F "if (toolName !== WEB_SEARCH_TOOL_NAME) {" "$fallback_ui" >/dev/null
 grep -F 'The served path executes no tool named' "$fallback_ui" >/dev/null
 grep -F 'if (!outcome.calls.length) return;' "$fallback_ui" >/dev/null
 
-# The final continuation round opens no approval dialog: results issued there
-# reach no request the round budget still sends.
-grep -F 'if (roundBudgetExhausted) {' "$fallback_ui" >/dev/null
-grep -F 'The round budget is exhausted; the search did not run.' "$fallback_ui" >/dev/null
+# The final continuation round runs neither web tool: a result issued there
+# reaches no request the round budget still sends, so the guard precedes the
+# tool-name dispatch and covers the fetch beside the search.
+grep -F 'if (roundBudgetExhausted && WEB_TOOL_NAMES.includes(toolName)) {' \
+    "$fallback_ui" >/dev/null
+grep -F 'The round budget is exhausted; ${toolName} did not run.' "$fallback_ui" >/dev/null
 grep -F 'round === CONTINUATION_CAP - 1' "$fallback_ui" >/dev/null
 
 # Tool-call ids come from a conversation-wide counter rather than a per-round
