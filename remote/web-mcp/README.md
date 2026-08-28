@@ -30,19 +30,18 @@ model, and `evidence/model-admission` records `tool-08` carrying an injected
 city into a tool call in place of the authorized one in all six measured arms,
 so a note the model reads can rewrite the query it searches for. `search_exa`
 therefore takes an `authorization` argument: an HMAC-signed grant over the
-query, both domain lists, the publication window, the result count, and an
-expiry, issued outside the session by
+query, both domain lists, the publication window, the cached age, the result
+count, and an expiry, issued outside the session by
 
 ```sh
 remote/web-mcp/server.py authorize --token-key-file PATH --query TEXT \
     [--include-domain D]... [--exclude-domain D]... \
     [--published-after DATE] [--published-before DATE] \
-    [--max-results N] [--lifetime SECONDS]
+    [--max-age-hours N] [--max-results N] [--lifetime SECONDS]
 ```
 
-`max_age_hours` stays outside the grant, so the model chooses how fresh a copy
-the provider serves while the operator chooses the query; a grant that must
-also bind cache freshness needs that field added to the claim.
+`max_age_hours` is covered because 0 forces a live crawl, which is the one
+search parameter that spends provider budget on the model's word.
 
 The serving path rebuilds the same canonical claim from the arguments it
 received and compares field by field, admitting a smaller `max_results` as a

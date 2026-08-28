@@ -334,13 +334,16 @@ def authorization_claim(
     exclude_domains,
     published_after,
     published_before,
+    max_age_hours,
     max_results,
     expiry,
 ):
     """Return the canonical form of a search grant.
 
-    Both the issuing subcommand and the serving path build the grant through
-    this function, so the comparison runs over one spelling of every field:
+    `max_age_hours` is covered because 0 forces a live crawl, which is the one
+    search parameter that spends provider budget on the model's word. Both the
+    issuing subcommand and the serving path build the grant through this
+    function, so the comparison runs over one spelling of every field:
     the query stripped, the domain lists normalized and sorted, and the dates
     in the calendar form `require_iso_date` produces.
     """
@@ -350,6 +353,7 @@ def authorization_claim(
         "exclude_domains": sorted(exclude_domains),
         "published_after": published_after,
         "published_before": published_before,
+        "max_age_hours": max_age_hours,
         "max_results": max_results,
         "expiry": expiry,
     }
@@ -393,6 +397,7 @@ def enforce_search_authorization(
         constraints["exclude_domains"],
         constraints["published_after"],
         constraints["published_before"],
+        constraints["max_age_hours"],
         max_results,
         granted.get("expiry"),
     )
@@ -402,6 +407,7 @@ def enforce_search_authorization(
         "exclude_domains",
         "published_after",
         "published_before",
+        "max_age_hours",
     ):
         if granted.get(field) != requested[field]:
             raise ToolError(
@@ -1259,6 +1265,7 @@ def usage():
         "       server.py authorize --token-key-file PATH --query TEXT"
         " [--include-domain D]... [--exclude-domain D]..."
         " [--published-after DATE] [--published-before DATE]"
+        " [--max-age-hours N]"
         " [--max-results N] [--lifetime SECONDS]\n"
     )
     raise SystemExit(2)
@@ -1277,6 +1284,7 @@ def run_authorize(argv):
         "query": None,
         "published_after": "",
         "published_before": "",
+        "max_age_hours": None,
         "max_results": 5,
         "lifetime": TOKEN_LIFETIME_DEFAULT_SECONDS,
     }
@@ -1300,7 +1308,7 @@ def run_authorize(argv):
             fields["published_after"] = value
         elif option == "--published-before":
             fields["published_before"] = value
-        elif option in ("--max-results", "--lifetime"):
+        elif option in ("--max-results", "--lifetime", "--max-age-hours"):
             try:
                 fields[option[2:].replace("-", "_")] = int(value)
             except ValueError:
@@ -1314,6 +1322,7 @@ def run_authorize(argv):
         "query": fields["query"],
         "published_after": fields["published_after"],
         "published_before": fields["published_before"],
+        "max_age_hours": fields["max_age_hours"],
         "include_domains": include_domains,
         "exclude_domains": exclude_domains,
         "max_results": fields["max_results"],
@@ -1325,6 +1334,9 @@ def run_authorize(argv):
             require_domain_list(arguments, "exclude_domains"),
             require_iso_date(arguments, "published_after"),
             require_iso_date(arguments, "published_before"),
+            require_optional_integer(
+                arguments, "max_age_hours", 0, MAX_AGE_HOURS_CAP
+            ),
             require_integer(arguments, "max_results", 5, 1, RESULT_COUNT_CAP),
             int(time.time())
             + resolve_token_lifetime({"token_lifetime": str(fields["lifetime"])}),

@@ -450,6 +450,7 @@ class WebMcpServerTest(unittest.TestCase):
             "exclude_domains": [],
             "published_after": "",
             "published_before": "",
+            "max_age_hours": None,
             "max_results": 5,
             "expiry": int(time.time()) + 900,
         }
@@ -482,6 +483,7 @@ class WebMcpServerTest(unittest.TestCase):
             ({"exclude_domains": ["evil.test"]}, "exclude_domains differs"),
             ({"published_after": "2026-01-01"}, "published_after differs"),
             ({"published_before": "2026-01-01"}, "published_before differs"),
+            ({"max_age_hours": 0}, "max_age_hours differs"),
             ({"max_results": 6}, "max_results exceeds"),
         )
         for arguments, expected in cases:
@@ -491,6 +493,39 @@ class WebMcpServerTest(unittest.TestCase):
                 )
                 self.assertTrue(response["result"]["isError"])
                 self.assertIn(expected, self.result_text(response))
+
+    def test_a_grant_binds_the_cached_age_it_names(self):
+        session = self.open_session(QWEN_WEB_SEARCH_AUTH="required")
+        live_crawl = self.grant(max_age_hours=0)
+        admitted = self.search(session, authorization=live_crawl, max_age_hours=0)
+        self.assertFalse(admitted["result"]["isError"])
+        refused = self.search(session, authorization=live_crawl)
+        self.assertTrue(refused["result"]["isError"])
+        self.assertIn("max_age_hours differs", self.result_text(refused))
+
+    def test_the_authorize_subcommand_binds_the_cached_age(self):
+        completed = subprocess.run(
+            [
+                sys.executable,
+                SERVER_PATH,
+                "authorize",
+                "--token-key-file",
+                self.token_key_path,
+                "--query",
+                "raven2 vulkan decode",
+                "--max-age-hours",
+                "24",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        token = completed.stdout.strip()
+        session = self.open_session(QWEN_WEB_SEARCH_AUTH="required")
+        admitted = self.search(session, authorization=token, max_age_hours=24)
+        self.assertFalse(admitted["result"]["isError"])
+        refused = self.search(session, authorization=token, max_age_hours=0)
+        self.assertIn("max_age_hours differs", self.result_text(refused))
 
     def test_a_forged_or_expired_grant_is_refused(self):
         session = self.open_session(QWEN_WEB_SEARCH_AUTH="required")
