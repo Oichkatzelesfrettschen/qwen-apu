@@ -770,11 +770,13 @@ the same check against a served checkpoint after each new runtime class and
 after any refusal, so a later refusal reads against a device that had just
 answered.
 
-A candidate digest is an observation rather than a pin.
-`remote/fetch-candidate-artifact.sh` records the SHA-256 the download produced,
-which cannot detect the substitution a hardcoded expectation exists to detect,
-so promotion into `remote/models.tsv` means writing a `download-*.sh` that
-carries that digest as its expectation.
+A candidate fetched from Hugging Face LFS is verified against the publisher.
+`remote/fetch-candidate-artifact.sh` reads the pinned revision's LFS object ID,
+requires the downloaded SHA-256 and byte count to match it, and reports the
+digest as `verified_sha256`. A repository artifact published outside LFS has no
+publisher digest; the fetcher reports that fallback as `observed_sha256`, and
+promotion into `remote/models.tsv` requires a `download-*.sh` that pins the
+observed digest as its expectation.
 
 GGUF weights stay outside Git because their sizes exceed the LFS per-file
 limit. Each download script pins a Hugging Face revision, a byte count, and a

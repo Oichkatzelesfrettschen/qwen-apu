@@ -319,6 +319,20 @@ class BrokerTest(unittest.TestCase):
         os.chmod(empty_path, 0o600)
         self.run_broker_expecting_refusal(empty_path, "empty")
 
+    def test_a_whitespace_signing_key_is_refused(self):
+        whitespace_path = os.path.join(self.workspace.name, "whitespace.key")
+        with open(whitespace_path, "w", encoding="utf-8") as handle:
+            handle.write(" \t\n")
+        os.chmod(whitespace_path, 0o600)
+        self.run_broker_expecting_refusal(whitespace_path, "empty")
+
+    def test_a_non_utf8_signing_key_is_refused(self):
+        invalid_path = os.path.join(self.workspace.name, "invalid-utf8.key")
+        with open(invalid_path, "wb") as handle:
+            handle.write(b"\xff\xfe")
+        os.chmod(invalid_path, 0o600)
+        self.run_broker_expecting_refusal(invalid_path, "not UTF-8 text")
+
     def test_the_broker_requires_a_state_directory_and_an_origin(self):
         for argv, expected in (
             (["--token-key-file", self.token_key_path, "--origin", ORIGIN],

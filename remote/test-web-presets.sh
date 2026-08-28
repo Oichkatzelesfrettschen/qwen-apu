@@ -1447,7 +1447,8 @@ expected_ledger_sha256=$(sha256sum "$unterminated_profiles" | cut -d' ' -f1)
 if grep -Fqx "# qwen_web_profiles_path=$expected_ledger_path" \
        "$unterminated_presets" &&
    grep -Fqx "# qwen_web_profiles_sha256=$expected_ledger_sha256" \
-       "$unterminated_presets"; then
+       "$unterminated_presets" &&
+   grep -Fqx '# qwen_web_provider=exa' "$unterminated_presets"; then
     report preset_binds_complete_ledger_identity ok
 else
     report preset_binds_complete_ledger_identity missing_identity

@@ -7,7 +7,7 @@
 | `llama-server`, `llama-cli`, and `llama-mtmd-cli` | derived regenerable | excluded from Git and LFS | byte size and SHA-256 below, against a rebuild |
 | Dual-backend `llama-bench` and its ggml backends | derived regenerable | excluded from Git and LFS | `remote/build-llama-dual.sh`, byte sizes and SHA-256 values below |
 | Qwen3.5-4B, Qwen3.8-9B Distill, and Qwen3.8-27B GGUFs | external reproducible dependencies | excluded from Git and LFS | pinned Hugging Face revisions, byte sizes, and SHA-256 values |
-| llama.cpp source | external canonical source plus local patch series | pinned commit and four replay patches | `remote/verify-llama-patch-series.sh` |
+| llama.cpp source | external canonical source plus local patch series | pinned commit, five production replay patches, and one diagnostic trace patch | `remote/verify-llama-patch-series.sh` |
 | llama.cpp build tree | derived regenerable | excluded | `remote/build-llama-vulkan.sh` |
 | View-metadata incremental patch | superseded retain | `patches/superseded/` | folded into `llama-no-cpu-fallback.patch` |
 | Raven2 diagnostic Web UI | adapted source asset | ordinary Git under `webui/` | qwen-lab 1.5.0 source plus APU-specific policy tests |
@@ -98,7 +98,10 @@ The llama.cpp source commit is
 router that holds no tools of its own as a proxy to the child the request
 selects, so the fixed router port serves the route the fallback UI targets.
 The replay verifier checks the resulting six modified source files byte for
-byte against their admitted hashes.
+byte against their admitted hashes, then applies
+`patches/llama-vulkan-submit-trace.patch` as the diagnostic closure's sixth
+patch and checks the traced `ggml-vulkan.cpp` as well; the production
+preparation and every promoted build stop at the five.
 
 The four rows above are the `raven2-vulkan-production` preset built from that
 five-patch production source and promoted to `build-appliance-current` by

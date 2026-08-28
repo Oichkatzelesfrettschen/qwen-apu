@@ -386,6 +386,7 @@ mkdir -p "$mcp_config_directory_temporary"
     printf '# qwen_web_presets=1\n'
     printf '# qwen_web_profiles_path=%s\n' "$web_profiles"
     printf '# qwen_web_profiles_sha256=%s\n' "$web_profiles_sha256"
+    printf '# qwen_web_provider=%s\n' "$web_provider"
     if [ "$allow_unvalidated_depth" = 1 ]; then
         printf '# qwen-web-presets: unvalidated-depth-override\n'
     fi

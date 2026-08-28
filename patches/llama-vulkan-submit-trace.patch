@@ -163,7 +163,7 @@ index 000000000..8d62ac3ce
 +    }
 +};
 diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
-index 19ccb7723..b01597e72 100644
+index 19ccb7723..95ec74a0f 100644
 --- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
 +++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
 @@ -1,6 +1,7 @@
@@ -252,7 +252,17 @@ index 19ccb7723..b01597e72 100644
          const bool force_disable_f16 = getenv("GGML_VK_DISABLE_F16") != nullptr;
  
          device->fp16 = !force_disable_f16 && fp16_storage && fp16_compute;
-@@ -8297,6 +8353,15 @@ static void ggml_vk_dispatch_pipeline(ggml_backend_vk_context* ctx, vk_context&
+@@ -7179,6 +7235,9 @@ static vk_device ggml_vk_get_device(size_t idx) {
+         device->idx = idx;
+ 
+         device->serialize_submissions = getenv("GGML_VK_SERIALIZE_SUBMISSIONS") != nullptr;
++        if (device->submit_trace.enabled && !device->serialize_submissions) {
++            throw std::runtime_error("GGML_VK_SUBMIT_TRACE requires GGML_VK_SERIALIZE_SUBMISSIONS");
++        }
+ 
+         device->disable_fusion = getenv("GGML_VK_DISABLE_FUSION") != nullptr;
+ 
+@@ -8297,6 +8356,15 @@ static void ggml_vk_dispatch_pipeline(ggml_backend_vk_context* ctx, vk_context&
                                  0,
                                  { descriptor_set },
                                  {});
@@ -268,7 +278,7 @@ index 19ccb7723..b01597e72 100644
      subctx->s->buffer->buf.dispatch(wg0, wg1, wg2);
  }
  
-@@ -15418,6 +15483,13 @@ static bool ggml_vk_build_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgr
+@@ -15418,6 +15486,13 @@ static bool ggml_vk_build_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgr
      VK_LOG_DEBUG("ggml_vk_build_graph(" << node << ", " << ggml_op_name(node->op) << ")");
      ctx->semaphore_idx = 0;
  
@@ -282,15 +292,23 @@ index 19ccb7723..b01597e72 100644
      ggml_tensor * src0 = node->src[0];
      ggml_tensor * src1 = node->src[1];
      ggml_tensor * src2 = node->src[2];
-@@ -16575,9 +16647,15 @@ static void ggml_vk_synchronize(ggml_backend_vk_context * ctx) {
-             memcpy(cpy.dst, cpy.src, cpy.n);
+@@ -15970,6 +16045,9 @@ static void ggml_vk_compute_forward(ggml_backend_vk_context * ctx, ggml_cgraph *
+         } else {
+             ggml_vk_submit(subctx, {});
          }
- 
 +        if (ctx->device->submit_trace.enabled) {
 +            ctx->device->submit_trace.mark_submitted();
 +        }
+         ctx->submit_pending = true;
+ 
+ #ifdef GGML_VULKAN_CHECK_RESULTS
+@@ -16577,10 +16655,19 @@ static void ggml_vk_synchronize(ggml_backend_vk_context * ctx) {
+ 
          if (ctx->device->serialize_submissions) {
              ggml_vk_submit(compute_ctx, ctx->fence);
++            if (ctx->device->submit_trace.enabled) {
++                ctx->device->submit_trace.mark_submitted();
++            }
              VK_CHECK(ctx->device->device.waitForFences({ ctx->fence }, true, UINT64_MAX), "synchronize waitForFences", ctx->device);
 +            if (ctx->device->submit_trace.enabled) {
 +                ctx->device->submit_trace.mark_completed();
@@ -298,17 +316,13 @@ index 19ccb7723..b01597e72 100644
              ctx->device->device.resetFences({ ctx->fence });
          } else {
              ggml_vk_submit(compute_ctx, {});
-@@ -17276,6 +17354,9 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
-     uint64_t flops_per_submit = std::min(flops_cap, ctx->last_total_flops / 40u);
- 
-     auto const submit_after = [&](int start, int end) {
-+        if (ctx->device->submit_trace.enabled) {
-+            ctx->device->submit_trace.mark_submitted();
-+        }
-         if (ctx->device->serialize_submissions) {
-             try {
-                 auto res = ctx->device->device.waitForFences({ ctx->fence }, true, UINT64_MAX);
-@@ -17290,6 +17371,9 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
++            if (ctx->device->submit_trace.enabled) {
++                ctx->device->submit_trace.mark_submitted();
++            }
+         }
+         ctx->submit_pending = true;
+     }
+@@ -17290,6 +17377,9 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
                  ggml_vk_print_node_list(cgraph, start, end);
                  throw;
              }

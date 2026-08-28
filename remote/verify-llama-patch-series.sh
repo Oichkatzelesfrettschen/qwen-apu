@@ -53,7 +53,7 @@ verify_source() {
     printf 'patch_replay_match=%s sha256=%s\n' "$relative_path" "$actual_sha256"
 }
 
-verify_source 3c39e13043f1c949d3a75bbb198285e943bc832810232b25883c82cfcc7e43a4 \
+verify_source d81e9093b4a3d98bf5cde8dc710ec187ddbaffca84540369cec72ecd132e575c \
     ggml/src/ggml-vulkan/ggml-vulkan.cpp
 verify_source 16abd2face079cad962bb722026d7418e65de67c18c1e1f954df733c1598a70a \
     ggml/src/ggml-vulkan/ggml-vulkan-pacing.h

@@ -261,14 +261,22 @@ if [ -n "${QWEN_WEB_PROFILE:-}" ] && [ "$QWEN_WEB_PROFILE" != "$preset_profile" 
     exit 2
 fi
 QWEN_WEB_PROFILE=$preset_profile
-QWEN_WEB_PROVIDER=${QWEN_WEB_PROVIDER:-exa}
-case $QWEN_WEB_PROVIDER in
+preset_provider=$(sed -n 's/^# qwen_web_provider=//p' "$web_presets")
+case $preset_provider in
     exa | fake) ;;
     *)
-        printf 'QWEN_WEB_PROVIDER must be exa or fake: %s\n' "$QWEN_WEB_PROVIDER" >&2
+        printf 'web preset provider must be exa or fake: %s\n' \
+            "${preset_provider:-<absent>}" >&2
         exit 2
         ;;
 esac
+if [ -n "${QWEN_WEB_PROVIDER:-}" ] && \
+   [ "$QWEN_WEB_PROVIDER" != "$preset_provider" ]; then
+    printf 'QWEN_WEB_PROVIDER names %s where the preset serves %s\n' \
+        "$QWEN_WEB_PROVIDER" "$preset_provider" >&2
+    exit 2
+fi
+QWEN_WEB_PROVIDER=$preset_provider
 export QWEN_WEB_PROFILE QWEN_WEB_PROVIDER
 printf 'web_launch broker_port=%s broker_state_dir=%s signing_key=configured profile=%s provider=%s\n' \
     "$QWEN_WEB_BROKER_PORT" "$QWEN_WEB_STATE_DIR" "$QWEN_WEB_PROFILE" "$QWEN_WEB_PROVIDER"

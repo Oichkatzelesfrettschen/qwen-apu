@@ -60,6 +60,10 @@ fi
 pid_file=$state_directory/server.pid
 status_file=$state_directory/session.status
 
+shell_quote() {
+    printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
 case $action in
     start)
         case $profile in
@@ -104,11 +108,12 @@ case $action in
                               QWEN_WEB_BROKER_PROGRAM QWEN_WEB_STATE_DIR \
                               QWEN_WEB_TOKEN_KEY_FILE QWEN_WEB_PROFILE \
                               QWEN_WEB_PROVIDER QWEN_WEB_PROFILES \
+                              QWEN_WEB_BROKER_ORIGIN \
                               QWEN_REQUIRE_API_KEY \
                               QWEN_WEB_AUTHORIZER_READY; do
             eval "forwarded_value=\${$forwarded_name:-}"
             if [ -n "$forwarded_value" ]; then
-                forwarded_environment="$forwarded_environment $forwarded_name=$forwarded_value"
+                forwarded_environment="$forwarded_environment $forwarded_name=$(shell_quote "$forwarded_value")"
             fi
         done
         for forwarded_name in GGML_VK_MAX_NODES_PER_SUBMIT \
@@ -117,11 +122,21 @@ case $action in
                               GGML_VK_DUTY_CYCLE_PERCENT; do
             eval "forwarded_value=\${$forwarded_name:-}"
             if [ -n "$forwarded_value" ]; then
-                forwarded_environment="$forwarded_environment $forwarded_name=$forwarded_value"
+                forwarded_environment="$forwarded_environment $forwarded_name=$(shell_quote "$forwarded_value")"
             fi
         done
+        session_command="env$forwarded_environment"
+        session_command="$session_command QWEN_BIND_HOST=$(shell_quote "$bind_host")"
+        session_command="$session_command QWEN_LATENCY_MODE=$(shell_quote "$latency_mode")"
+        for session_argument in \
+            "$script_directory/qwen-webui-session.sh" \
+            "$llama_server" "$model_path" "$static_path" \
+            "$context_size" "$required_vulkan_mib" "$server_port" \
+            "$state_directory" "$profile"; do
+            session_command="$session_command $(shell_quote "$session_argument")"
+        done
         tmux -L "$tmux_socket" new-session -d -s "$tmux_session" \
-            "env $forwarded_environment QWEN_BIND_HOST=\"$bind_host\" QWEN_LATENCY_MODE=\"$latency_mode\" $script_directory/qwen-webui-session.sh \"$llama_server\" \"$model_path\" \"$static_path\" $context_size $required_vulkan_mib $server_port \"$state_directory\" \"$profile\""
+            "$session_command"
         printf 'started tmux_socket=%s tmux_session=%s profile=%s host=%s port=%s context=%s latency_mode=%s model=%s server=%s\n' \
             "$tmux_socket" "$tmux_session" "$profile" "$bind_host" \
             "$server_port" "$context_size" "$latency_mode" "$model_path" \
