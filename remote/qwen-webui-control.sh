@@ -86,9 +86,9 @@ case $action in
         # script reads from the environment, so they cross this boundary with
         # the projector settings rather than reaching the tmux server's own.
         # The approval broker's marker, port, program, state directory, signing
-        # key path, and profile cross with them, because qwen-web-launch.sh
-        # exports them into this shell and the session script starts the broker
-        # on the far side of the boundary.
+        # key path, profile, API-key requirement, and readiness decision cross
+        # with them. qwen-web-launch.sh exports the values into the control
+        # shell, and the session script starts the broker beyond the boundary.
         for forwarded_name in QWEN_MMPROJ QWEN_MMPROJ_OFFLOAD QWEN_IMAGE_MAX_TOKENS \
                               QWEN_INFERENCE_CPU QWEN_SPEC_TYPE \
                               QWEN_SPEC_DRAFT_N_MAX QWEN_SPEC_DRAFT_P_MIN \
@@ -103,7 +103,9 @@ case $action in
                               QWEN_WEB_BROKER QWEN_WEB_BROKER_PORT \
                               QWEN_WEB_BROKER_PROGRAM QWEN_WEB_STATE_DIR \
                               QWEN_WEB_TOKEN_KEY_FILE QWEN_WEB_PROFILE \
-                              QWEN_WEB_PROVIDER QWEN_WEB_PROFILES; do
+                              QWEN_WEB_PROVIDER QWEN_WEB_PROFILES \
+                              QWEN_REQUIRE_API_KEY \
+                              QWEN_WEB_AUTHORIZER_READY; do
             eval "forwarded_value=\${$forwarded_name:-}"
             if [ -n "$forwarded_value" ]; then
                 forwarded_environment="$forwarded_environment $forwarded_name=$forwarded_value"

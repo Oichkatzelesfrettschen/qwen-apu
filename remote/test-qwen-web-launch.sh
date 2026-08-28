@@ -54,6 +54,42 @@ EOF
 chmod +x "$harness/qwen-launch.sh"
 launcher=$harness/qwen-web-launch.sh
 
+# The control process crosses a separate tmux server before the session starts.
+# A fake tmux records the new-session command and proves the API-key requirement
+# and authorizer-readiness decision survive that boundary.
+control_harness=$work/control-harness
+control_bin=$work/control-bin
+mkdir -p "$control_harness" "$control_bin"
+cp "$script_directory/qwen-webui-control.sh" \
+    "$control_harness/qwen-webui-control.sh"
+cat >"$control_bin/tmux" <<'EOF'
+#!/bin/sh
+set -eu
+case " $* " in
+    *" has-session "*) exit 1 ;;
+    *" new-session "*) printf '%s\n' "$*" >"$QWEN_TMUX_RECORD" ;;
+    *) exit 2 ;;
+esac
+EOF
+chmod +x "$control_bin/tmux"
+control_record=$work/control-tmux.record
+if PATH="$control_bin:$PATH" QWEN_TMUX_RECORD=$control_record \
+    QWEN_WEBUI_STATE_DIRECTORY=$work/control-state \
+    QWEN_LLAMA_SERVER=$work/fake-server QWEN_MODEL_PATH=$work/fake-model \
+    QWEN_REQUIRE_API_KEY=1 QWEN_WEB_AUTHORIZER_READY=1 \
+    "$control_harness/qwen-webui-control.sh" start custom \
+    >"$work/control.log" 2>"$work/control.err"; then
+    outcome=ok
+    grep -q 'QWEN_REQUIRE_API_KEY=1' "$control_record" ||
+        outcome=api_key_requirement_dropped
+    grep -q 'QWEN_WEB_AUTHORIZER_READY=1' "$control_record" ||
+        outcome=authorizer_readiness_dropped
+    report control_forwards_web_authority "$outcome"
+else
+    report control_forwards_web_authority failed
+    cat "$work/control.err" >&2
+fi
+
 # Every launch below carries a usable signing key, because the wrapper requires
 # one before it forwards anything; the arms that test the key rules override
 # this path with their own.
