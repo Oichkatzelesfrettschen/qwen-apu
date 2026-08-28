@@ -69,6 +69,7 @@ RESULT_CLAIM_CONTEXT = "result-id"
 AUTHORIZATION_CLAIM_CONTEXT = "search-authorization"
 
 SEPARATOR_PATTERN = re.compile(r"^-{3,}$")
+GRANT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 FAILURE_TAG_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 HOSTNAME_PATTERN = re.compile(
     r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?"
@@ -91,6 +92,8 @@ STATE_DIRECTORY_MODE = 0o700
 LEDGER_BUSY_TIMEOUT_SECONDS = 10.0
 LEDGER_BUSY_TIMEOUT_MS = 10000
 AUDIT_RETENTION_SECONDS = 14 * 86400
+GRANT_MAX_USES = 1
+GRANT_ID_BYTES = 12
 
 
 class ToolError(Exception):
@@ -148,6 +151,10 @@ class ExpiredResult(ToolError):
     """A signed claim verifies and its term has run out."""
 
     status = "expired_result"
+
+
+class GrantReplayed(AuthorizationDenied):
+    """A grant whose single use the ledger already recorded."""
 
 
 class InternalError(ToolError):
@@ -474,15 +481,21 @@ def authorization_claim(
 
 
 def enforce_search_authorization(
-    settings, signing_key, query, max_results, constraints
+    settings, signing_key, query, max_results, constraints, provider_name, ledger
 ):
-    """Admit a search that an operator grant covers.
+    """Return the grant a search runs under, or None for an unauthorized one.
 
     A search query is model-authored, and a note the model reads can rewrite it
     the way `tool-08` rewrote a tool argument in every measured arm, so the
     signed grant rather than the model decides which query reaches the
     provider. `QWEN_WEB_SEARCH_AUTH=optional` admits an unauthorized search for
     an operator who accepts that exposure; the default refuses it.
+
+    A grant names one provider, one profile, and one use, so a token issued for
+    the metered production profile buys nothing against another profile or
+    another provider. The single use is spent in the ledger, which is what
+    makes the count survive the respawn, so a presented grant requires a state
+    directory rather than falling back to an unenforced count.
     """
     mode = settings.get("search_auth") or "required"
     if mode not in ("required", "optional"):
@@ -497,7 +510,12 @@ def enforce_search_authorization(
                 "`server.py authorize`; the operator grants the query rather "
                 "than the model"
             )
-        return
+        return None
+    if ledger is None:
+        raise AuthorizationDenied(
+            "a search authorization spends a single use that lives in the "
+            "ledger, so QWEN_WEB_STATE_DIR names the directory that holds it"
+        )
     granted = verify_claim(
         signing_key,
         AUTHORIZATION_CLAIM_CONTEXT,
@@ -533,6 +551,22 @@ def enforce_search_authorization(
             "the search arguments leave the authorization: max_results exceeds "
             "the granted count"
         )
+    if granted.get("provider") != provider_name:
+        raise AuthorizationDenied(
+            "the authorization names another provider than the configured one"
+        )
+    if granted.get("profile_id") != (settings.get("profile") or "default"):
+        raise AuthorizationDenied(
+            "the authorization names another profile than the serving one"
+        )
+    if granted.get("max_uses") != GRANT_MAX_USES:
+        raise AuthorizationDenied(
+            f"the authorization admits a use count other than {GRANT_MAX_USES}"
+        )
+    grant_id = granted.get("grant_id")
+    if not isinstance(grant_id, str) or not GRANT_ID_PATTERN.match(grant_id):
+        raise AuthorizationDenied("the authorization carries no usable grant_id")
+    return granted
 
 
 class Provider:
@@ -857,13 +891,19 @@ class Ledger:
             " provider_bytes INTEGER, returned_characters INTEGER,"
             " latency_ms INTEGER, status TEXT, recorded_epoch INTEGER)"
         )
+        self.connection.execute(
+            "CREATE TABLE IF NOT EXISTS grants ("
+            "grant_id TEXT PRIMARY KEY, profile TEXT, provider TEXT,"
+            " consumed_at INTEGER, expiry INTEGER)"
+        )
         self.prune(time.time() if now is None else now)
 
     def prune(self, now):
-        """Drop audit rows past the retention window on every open.
+        """Drop audit and grant rows past their retention on every open.
 
-        The trail answers what ran over a bounded recent period, so retention
-        runs where the database is already open rather than through a separate
+        The trail answers what ran over a bounded recent period and a spent
+        grant is evidence only until its own expiry passes, so retention runs
+        where the database is already open rather than through a separate
         maintenance path that a respawned child would never execute.
         """
         self.connection.execute(
@@ -871,7 +911,38 @@ class Ledger:
             " AND recorded_epoch < ?",
             (int(now) - AUDIT_RETENTION_SECONDS,),
         )
+        self.connection.execute(
+            "DELETE FROM grants WHERE expiry < ?", (int(now),)
+        )
         self.connection.commit()
+
+    def consume_grant(self, grant_id, profile, provider, expiry, now):
+        """Spend the single use of one grant, or refuse a replay.
+
+        The primary key is the grant identifier, so the insert is the
+        enforcement: BEGIN IMMEDIATE holds the write lock across the read and
+        the write, and a second search presenting the same token meets a
+        constraint violation rather than a count two children both read as
+        zero. `prune` drops the row once the grant's own expiry passes, which
+        keeps the table bounded by the lifetime rather than by the traffic.
+        """
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            self.connection.execute(
+                "INSERT INTO grants(grant_id, profile, provider, consumed_at,"
+                " expiry) VALUES(?, ?, ?, ?, ?)",
+                (grant_id, profile, provider, int(now), int(expiry)),
+            )
+            self.connection.execute("COMMIT")
+        except sqlite3.IntegrityError:
+            self.connection.execute("ROLLBACK")
+            raise GrantReplayed(
+                "the authorization is spent; a grant admits one search and "
+                "the operator issues another"
+            ) from None
+        except BaseException:
+            self.connection.execute("ROLLBACK")
+            raise
 
     def consume(
         self, name, window_seconds, limit, now, exhausted=RateLimited, units=1
@@ -1309,12 +1380,29 @@ def call_search(settings, arguments):
     }
     try:
         signing_key = read_secret_file(settings["token_key_file"], "token signing")
-        enforce_search_authorization(
-            settings, signing_key, query, max_results, constraints
+        provider = select_provider(settings)
+        granted = enforce_search_authorization(
+            settings,
+            signing_key,
+            query,
+            max_results,
+            constraints,
+            provider.name,
+            ledger,
         )
         if ledger is not None:
             spend_budget(ledger, settings, "search", now, pages=max_results)
-        provider = select_provider(settings)
+        # The grant is spent immediately ahead of the provider request, so a
+        # rate or budget refusal that reaches no provider leaves the single use
+        # intact and a spent grant means a request was issued.
+        if granted is not None:
+            ledger.consume_grant(
+                granted["grant_id"],
+                settings.get("profile") or "default",
+                provider.name,
+                granted["expiry"],
+                now,
+            )
         results = provider.search(query, max_results, constraints)[:max_results]
         search_id = search_id_for()
         rendered = render_search_results(
@@ -1552,7 +1640,7 @@ def usage():
         "       server.py authorize --token-key-file PATH --query TEXT"
         " [--include-domain D]... [--exclude-domain D]..."
         " [--published-after DATE] [--published-before DATE]"
-        " [--max-age-hours N]"
+        " [--max-age-hours N] [--provider exa|fake] [--profile NAME]"
         " [--max-results N] [--lifetime SECONDS]\n"
     )
     raise SystemExit(2)
@@ -1568,6 +1656,8 @@ def run_authorize(argv):
     """
     fields = {
         "token_key_file": os.environ.get("QWEN_WEB_TOKEN_KEY_FILE", ""),
+        "provider": os.environ.get("QWEN_WEB_PROVIDER", "exa"),
+        "profile": os.environ.get("QWEN_WEB_PROFILE", "default"),
         "query": None,
         "published_after": "",
         "published_before": "",
@@ -1595,6 +1685,10 @@ def run_authorize(argv):
             fields["published_after"] = value
         elif option == "--published-before":
             fields["published_before"] = value
+        elif option == "--provider":
+            fields["provider"] = value
+        elif option == "--profile":
+            fields["profile"] = value
         elif option in ("--max-results", "--lifetime", "--max-age-hours"):
             try:
                 fields[option[2:].replace("-", "_")] = int(value)
@@ -1614,6 +1708,9 @@ def run_authorize(argv):
         "exclude_domains": exclude_domains,
         "max_results": fields["max_results"],
     }
+    if fields["provider"] not in ("exa", "fake"):
+        usage()
+    issued_at = int(time.time())
     try:
         claim = authorization_claim(
             require_string(arguments, "query", QUERY_CHARACTER_CAP),
@@ -1625,8 +1722,21 @@ def run_authorize(argv):
                 arguments, "max_age_hours", 0, MAX_AGE_HOURS_CAP
             ),
             require_integer(arguments, "max_results", 5, 1, RESULT_COUNT_CAP),
-            int(time.time())
+            issued_at
             + resolve_token_lifetime({"token_lifetime": str(fields["lifetime"])}),
+        )
+        # The identity fields bind the grant to one ledger row, one provider,
+        # and one profile: `grant_id` is the primary key the single use is
+        # recorded under, and the serving path refuses a grant whose provider
+        # or profile differs from the one it runs as.
+        claim.update(
+            {
+                "grant_id": base64url_encode(os.urandom(GRANT_ID_BYTES)),
+                "provider": fields["provider"],
+                "profile_id": fields["profile"],
+                "issued_at": issued_at,
+                "max_uses": GRANT_MAX_USES,
+            }
         )
         signing_key = read_secret_file(fields["token_key_file"], "token signing")
     except ToolError as error:

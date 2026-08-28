@@ -619,6 +619,7 @@ class WebMcpServerTest(unittest.TestCase):
         self.assertIn("must lie between", self.result_text(response))
 
     def grant(self, **overrides):
+        """Sign one grant, with a fresh identifier unless a case names one."""
         claim = {
             "query": "raven2 vulkan decode",
             "include_domains": [],
@@ -628,10 +629,23 @@ class WebMcpServerTest(unittest.TestCase):
             "max_age_hours": None,
             "max_results": 5,
             "expiry": int(time.time()) + 900,
+            "grant_id": server.base64url_encode(os.urandom(12)),
+            "provider": "fake",
+            "profile_id": "default",
+            "issued_at": int(time.time()),
+            "max_uses": 1,
         }
         claim.update(overrides)
         return server.sign_claim(
             TOKEN_SECRET, server.AUTHORIZATION_CLAIM_CONTEXT, claim
+        )
+
+    def authorized_session(self, name, **overrides):
+        """Open a session that requires a grant and holds its own ledger."""
+        return self.open_session(
+            QWEN_WEB_SEARCH_AUTH="required",
+            QWEN_WEB_STATE_DIR=self.state_directory(name),
+            **overrides,
         )
 
     def test_authorization_is_required_by_default(self):
@@ -641,7 +655,7 @@ class WebMcpServerTest(unittest.TestCase):
         self.assertIn("authorization token", self.result_text(response))
 
     def test_a_matching_grant_admits_the_search(self):
-        session = self.open_session(QWEN_WEB_SEARCH_AUTH="required")
+        session = self.authorized_session("matching-grant-state")
         response = self.search(session, authorization=self.grant(), max_results=5)
         self.assertFalse(response["result"]["isError"])
         narrowed = self.search(
@@ -650,8 +664,73 @@ class WebMcpServerTest(unittest.TestCase):
         self.assertFalse(narrowed["result"]["isError"])
         self.assertEqual(self.result_text(narrowed).count("URL: "), 2)
 
-    def test_a_grant_admits_its_own_arguments_alone(self):
+    def test_a_grant_admits_one_search_and_a_replay_is_refused(self):
+        session = self.authorized_session("replay-state")
+        token = self.grant()
+        first = self.search(session, authorization=token, max_results=1)
+        self.assertFalse(first["result"]["isError"])
+        replay = self.search(session, authorization=token, max_results=1)
+        self.assertTrue(replay["result"]["isError"])
+        self.assertIn("spent", self.result_text(replay))
+        respawned = self.open_session(
+            QWEN_WEB_SEARCH_AUTH="required",
+            QWEN_WEB_STATE_DIR=self.state_directory("replay-state"),
+        )
+        across = self.search(respawned, authorization=token, max_results=1)
+        self.assertTrue(across["result"]["isError"])
+        self.assertIn("spent", self.result_text(across))
+        self.assertEqual(
+            [row[7] for row in self.audit_rows(self.state_directory("replay-state"))],
+            ["success", "authorization_denied", "authorization_denied"],
+        )
+
+    def test_a_grant_names_one_provider_one_profile_and_one_use(self):
+        cases = (
+            ({"provider": "exa"}, "another provider"),
+            ({"profile_id": "other"}, "another profile"),
+            ({"max_uses": 4}, "use count"),
+            ({"grant_id": "!"}, "usable grant_id"),
+        )
+        for index, (overrides, expected) in enumerate(cases):
+            with self.subTest(overrides=sorted(overrides)):
+                session = self.authorized_session(f"identity-grant-{index}-state")
+                response = self.search(
+                    session, authorization=self.grant(**overrides), max_results=1
+                )
+                self.assertTrue(response["result"]["isError"])
+                self.assertIn(expected, self.result_text(response))
+
+    def test_a_grant_presented_without_a_ledger_is_refused(self):
         session = self.open_session(QWEN_WEB_SEARCH_AUTH="required")
+        response = self.search(session, authorization=self.grant(), max_results=1)
+        self.assertTrue(response["result"]["isError"])
+        self.assertIn("QWEN_WEB_STATE_DIR", self.result_text(response))
+
+    def test_a_refusal_before_the_provider_leaves_the_grant_unspent(self):
+        state_path = self.state_directory("unspent-grant-state")
+        token = self.grant()
+        refused = self.search(
+            self.open_session(
+                QWEN_WEB_SEARCH_AUTH="required",
+                QWEN_WEB_STATE_DIR=state_path,
+                QWEN_WEB_DAILY_PAGE_BUDGET="1",
+            ),
+            authorization=token,
+            max_results=5,
+        )
+        self.assertTrue(refused["result"]["isError"])
+        self.assertIn("pages-day", self.result_text(refused))
+        admitted = self.search(
+            self.open_session(
+                QWEN_WEB_SEARCH_AUTH="required", QWEN_WEB_STATE_DIR=state_path
+            ),
+            authorization=token,
+            max_results=5,
+        )
+        self.assertFalse(admitted["result"]["isError"])
+
+    def test_a_grant_admits_its_own_arguments_alone(self):
+        session = self.authorized_session("argument-grant-state")
         cases = (
             ({"query": "attacker chosen query"}, "query differs"),
             ({"include_domains": ["evil.test"]}, "include_domains differs"),
@@ -670,7 +749,7 @@ class WebMcpServerTest(unittest.TestCase):
                 self.assertIn(expected, self.result_text(response))
 
     def test_a_grant_binds_the_cached_age_it_names(self):
-        session = self.open_session(QWEN_WEB_SEARCH_AUTH="required")
+        session = self.authorized_session("cached-age-grant-state")
         live_crawl = self.grant(max_age_hours=0)
         admitted = self.search(session, authorization=live_crawl, max_age_hours=0)
         self.assertFalse(admitted["result"]["isError"])
@@ -690,20 +769,22 @@ class WebMcpServerTest(unittest.TestCase):
                 "raven2 vulkan decode",
                 "--max-age-hours",
                 "24",
+                "--provider",
+                "fake",
             ],
             capture_output=True,
             text=True,
             check=True,
         )
         token = completed.stdout.strip()
-        session = self.open_session(QWEN_WEB_SEARCH_AUTH="required")
+        session = self.authorized_session("subcommand-age-state")
         admitted = self.search(session, authorization=token, max_age_hours=24)
         self.assertFalse(admitted["result"]["isError"])
         refused = self.search(session, authorization=token, max_age_hours=0)
         self.assertIn("max_age_hours differs", self.result_text(refused))
 
     def test_a_forged_or_expired_grant_is_refused(self):
-        session = self.open_session(QWEN_WEB_SEARCH_AUTH="required")
+        session = self.authorized_session("forged-grant-state")
         foreign = server.sign_claim(
             "another-signing-key",
             server.AUTHORIZATION_CLAIM_CONTEXT,
@@ -725,7 +806,7 @@ class WebMcpServerTest(unittest.TestCase):
         self.assertIn("authorization has expired", self.result_text(response))
 
     def test_a_result_id_never_verifies_as_a_grant(self):
-        session = self.open_session(QWEN_WEB_SEARCH_AUTH="required")
+        session = self.authorized_session("crossed-context-state")
         permissive = self.open_session()
         result_id = self.first_result_id(
             self.result_text(self.search(permissive, max_results=1))
@@ -747,6 +828,8 @@ class WebMcpServerTest(unittest.TestCase):
                 "3",
                 "--include-domain",
                 "Example.ORG",
+                "--provider",
+                "fake",
             ],
             capture_output=True,
             text=True,
@@ -754,7 +837,7 @@ class WebMcpServerTest(unittest.TestCase):
         )
         token = completed.stdout.strip()
         self.assertNotIn(TOKEN_SECRET, completed.stdout + completed.stderr)
-        session = self.open_session(QWEN_WEB_SEARCH_AUTH="required")
+        session = self.authorized_session("spendable-grant-state")
         response = self.search(
             session,
             authorization=token,
