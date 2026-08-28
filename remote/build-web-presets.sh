@@ -33,6 +33,31 @@ set -eu
 # section, so QWEN_WEB_MCP_CONFIG is required and its absence refuses the run
 # rather than emitting a section with tool access misconfigured by omission.
 #
+# execution_policy decides whether a row emits at all and what it emits, because
+# it names what is authorized now where web_mode names the intended path.
+# `refused` emits nothing and prints the skipped profile, which is the state
+# every checked-in row carries: tool-08 in
+# evidence/model-admission/vision-and-tool-sweep.md carried an injected
+# instruction into the tool call on all six measured checkpoints.
+# `validator-gated` emits a tool-bearing section only under
+# QWEN_WEB_AUTHORIZER_READY=1, the marker asserting that a runtime comparing
+# emitted tool arguments against the user's own authorization exists and runs;
+# absent that marker the row is skipped exactly as a refused row is.
+# `ui-mediated` emits a section carrying no LLAMA_ARG_MCP_SERVERS_CONFIG,
+# because the web UI performs the retrieval and the server reaches no network.
+# Any other value stops the run: the ledger states a policy the generator has
+# no rule for, which is a data error rather than a row to skip.
+#
+# No environment variable converts a `refused` row into a network-capable
+# profile. The override that exists admits an unvalidated depth, which is a
+# capacity claim; an execution grant is a security boundary and the ledger is
+# its only authority.
+#
+# A run that emits zero sections fails rather than writing a section-free file.
+# qwen-capacity-policy.sh refuses a preset carrying no model section, so an
+# empty file defers the same refusal to launch time and reports it as a router
+# fault instead of naming the ledger rows that withheld every section.
+#
 # The generator refuses a profile whose model_id is not tiered production or
 # candidate, and refuses a profile whose context exceeds the registry row's
 # context_ceiling: a context above the depth the policy admits requests an
@@ -60,6 +85,7 @@ if [ "$#" -ne 1 ]; then
     printf 'model root comes from QWEN_MODEL_ROOT, default $HOME/models\n' >&2
     printf 'mcp config path is required in QWEN_WEB_MCP_CONFIG\n' >&2
     printf 'QWEN_WEB_ALLOW_UNVALIDATED_DEPTH=1 admits an unknown or over-depth profile as experimental\n' >&2
+    printf 'QWEN_WEB_AUTHORIZER_READY=1 asserts the argument-authorization validator runs, admitting validator-gated rows\n' >&2
     exit 2
 fi
 
@@ -74,6 +100,16 @@ case $allow_unvalidated_depth in
     *)
         printf 'QWEN_WEB_ALLOW_UNVALIDATED_DEPTH must be 0 or 1: %s\n' \
             "$allow_unvalidated_depth" >&2
+        exit 2
+        ;;
+esac
+
+authorizer_ready=${QWEN_WEB_AUTHORIZER_READY:-0}
+case $authorizer_ready in
+    0 | 1) ;;
+    *)
+        printf 'QWEN_WEB_AUTHORIZER_READY must be 0 or 1: %s\n' \
+            "$authorizer_ready" >&2
         exit 2
         ;;
 esac
@@ -115,9 +151,31 @@ registry_field() {
 
 while IFS='	' read -r profile_id model_id web_mode context \
     _ledger_validated_filled_depth _max_results _max_fetches _max_chars_per_fetch \
-    _multi_source _vision_allowed _tool_selection _execution_policy; do
+    _multi_source _vision_allowed _tool_selection execution_policy; do
     case $profile_id in
         '#'* | '') continue ;;
+    esac
+
+    case $execution_policy in
+        refused)
+            printf 'web_preset_skipped profile=%s execution_policy=refused\n' \
+                "$profile_id" >&2
+            continue
+            ;;
+        validator-gated)
+            if [ "$authorizer_ready" != 1 ]; then
+                printf 'web_preset_skipped profile=%s execution_policy=validator-gated authorizer=absent\n' \
+                    "$profile_id" >&2
+                continue
+            fi
+            ;;
+        ui-mediated) ;;
+        *)
+            printf 'profile %s carries execution_policy %s, which is outside the vocabulary\n' \
+                "$profile_id" "$execution_policy" >&2
+            printf 'admitted values are refused, validator-gated, and ui-mediated\n' >&2
+            exit 1
+            ;;
     esac
 
     if ! registry_row=$("$script_directory/model-registry.sh" id "$model_id"); then
@@ -198,12 +256,22 @@ while IFS='	' read -r profile_id model_id web_mode context \
         printf 'LLAMA_ARG_FLASH_ATTN = %s\n' "$flash_attention"
         printf 'LLAMA_ARG_BATCH = %s\n' "$batch"
         printf 'LLAMA_ARG_UBATCH = %s\n' "$ubatch"
-        printf 'LLAMA_ARG_MCP_SERVERS_CONFIG = %s\n' "$mcp_servers_config"
-        printf 'LLAMA_ARG_TAGS = web-research,%s%s\n' "$web_mode" "$tags_suffix"
+        if [ "$execution_policy" != ui-mediated ]; then
+            printf 'LLAMA_ARG_MCP_SERVERS_CONFIG = %s\n' "$mcp_servers_config"
+        fi
+        printf 'LLAMA_ARG_TAGS = web-research,%s%s\n' \
+            "$execution_policy" "$tags_suffix"
         printf '\n'
     } >>"$output_ini"
 
     emitted=$((emitted + 1))
 done <"$web_profiles"
+
+if [ "$emitted" -eq 0 ]; then
+    printf 'every profile in %s withholds an executing policy, so no section emits\n' \
+        "$web_profiles" >&2
+    printf 'a validator-gated row emits under QWEN_WEB_AUTHORIZER_READY=1; a refused row emits under no setting\n' >&2
+    exit 1
+fi
 
 printf 'web_presets=written path=%s profiles=%s\n' "$output_ini" "$emitted"

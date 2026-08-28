@@ -39,25 +39,25 @@ EOF
 web_profiles_ok=$work/web-profiles-ok.tsv
 cat >"$web_profiles_ok" <<'EOF'
 # profile_id	model_id	web_mode	context	validated_filled_depth	max_results	max_fetches	max_chars_per_fetch	multi_source	vision_allowed	tool_selection	execution_policy
-web-fixture-ok	fixture-production	validator-gated	8192	8192	5	2	12000	yes	no	9/10	refused
+web-fixture-ok	fixture-production	validator-gated	8192	8192	5	2	12000	yes	no	9/10	validator-gated
 EOF
 
 web_profiles_over_ceiling=$work/web-profiles-over-ceiling.tsv
 cat >"$web_profiles_over_ceiling" <<'EOF'
-web-fixture-over-ceiling	fixture-production	validator-gated	32768	8192	5	2	12000	yes	no	9/10	refused
+web-fixture-over-ceiling	fixture-production	validator-gated	32768	8192	5	2	12000	yes	no	9/10	validator-gated
 EOF
 
 # Candidate tier, numeric validated_filled_depth of 8192, context 16384: the
 # exceeded-numeric-depth case.
 web_profiles_over_depth=$work/web-profiles-over-depth.tsv
 cat >"$web_profiles_over_depth" <<'EOF'
-web-fixture-over-depth	fixture-candidate-validated	validator-gated	16384	8192	5	2	12000	yes	no	9/10	refused
+web-fixture-over-depth	fixture-candidate-validated	validator-gated	16384	8192	5	2	12000	yes	no	9/10	validator-gated
 EOF
 
 # Candidate tier, validated_filled_depth `-`: the unknown-depth case.
 web_profiles_unknown_depth=$work/web-profiles-unknown-depth.tsv
 cat >"$web_profiles_unknown_depth" <<'EOF'
-web-fixture-unknown-depth	fixture-candidate-unknown	validator-gated	8192	-	5	2	12000	yes	no	9/10	refused
+web-fixture-unknown-depth	fixture-candidate-unknown	validator-gated	8192	-	5	2	12000	yes	no	9/10	validator-gated
 EOF
 
 # Production tier at an unvalidated depth: the override admits this one as
@@ -66,23 +66,27 @@ EOF
 # refusing the model_id.
 web_profiles_production_unvalidated=$work/web-profiles-production-unvalidated.tsv
 cat >"$web_profiles_production_unvalidated" <<'EOF'
-web-fixture-production-unvalidated	fixture-production	validator-gated	16384	8192	5	2	12000	yes	no	9/10	refused
+web-fixture-production-unvalidated	fixture-production	validator-gated	16384	8192	5	2	12000	yes	no	9/10	validator-gated
 EOF
 
 web_profiles_archive=$work/web-profiles-archive.tsv
 cat >"$web_profiles_archive" <<'EOF'
-web-fixture-archive	fixture-archive	validator-gated	8192	-	5	2	12000	yes	no	9/10	refused
+web-fixture-archive	fixture-archive	validator-gated	8192	-	5	2	12000	yes	no	9/10	validator-gated
 EOF
 
 mcp_config=$work/mcp.json
 : >"$mcp_config"
 
+# Every fixture row below states execution_policy validator-gated, so the build
+# helper supplies the authorizer marker and each arm measures the rule it names
+# rather than the execution gate. The gate has its own arms at the end.
 build() {
     build_web_profiles=$1
     build_output=$2
     shift 2
     QWEN_MODEL_REGISTRY=$model_registry \
     QWEN_WEB_PROFILES=$build_web_profiles \
+    QWEN_WEB_AUTHORIZER_READY=1 \
         "$@" "$builder" "$build_output"
 }
 
@@ -250,6 +254,7 @@ fi
 # A missing QWEN_WEB_MCP_CONFIG refuses the run.
 presets_no_mcp=$work/presets-no-mcp.ini
 if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_ok \
+    QWEN_WEB_AUTHORIZER_READY=1 \
     env -u QWEN_WEB_MCP_CONFIG "$builder" "$presets_no_mcp" \
     >"$work/no-mcp.log" 2>"$work/no-mcp.err"; then
     report missing_mcp_config_refused failed
@@ -329,6 +334,120 @@ if run_policy_over_presets "$cli_style_presets" \
     report policy_rejects_cli_style_key accepted
 else
     report policy_rejects_cli_style_key ok
+fi
+
+# execution_policy decides emission. A refused row emits nothing under every
+# setting, which is the boundary no override crosses.
+web_profiles_refused=$work/web-profiles-refused.tsv
+printf 'web-fixture-refused\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\trefused\n' \
+    >"$web_profiles_refused"
+presets_refused=$work/presets-refused.ini
+if build "$web_profiles_refused" "$presets_refused" \
+    env QWEN_WEB_MCP_CONFIG="$mcp_config" \
+    >"$work/refused.log" 2>"$work/refused.err"; then
+    report refused_policy_emits_nothing emitted_a_section
+else
+    outcome=ok
+    grep -q 'web_preset_skipped profile=web-fixture-refused execution_policy=refused' \
+        "$work/refused.err" || outcome=missing_skip_line
+    [ -f "$presets_refused" ] && grep -q '^\[web-fixture-refused\]' "$presets_refused" &&
+        outcome=section_present
+    report refused_policy_emits_nothing "$outcome"
+fi
+
+# The authorizer marker admits no refused row, so the same ledger emits nothing
+# with the marker set.
+presets_refused_marked=$work/presets-refused-marked.ini
+if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_refused \
+    QWEN_WEB_AUTHORIZER_READY=1 QWEN_WEB_ALLOW_UNVALIDATED_DEPTH=1 \
+    env QWEN_WEB_MCP_CONFIG="$mcp_config" \
+    "$builder" "$presets_refused_marked" \
+    >"$work/refused-marked.log" 2>"$work/refused-marked.err"; then
+    report refused_policy_survives_every_override emitted_a_section
+else
+    report refused_policy_survives_every_override ok
+fi
+
+# A validator-gated row emits only where the authorizer marker asserts the
+# argument-authorization path runs.
+web_profiles_gated=$work/web-profiles-gated.tsv
+printf 'web-fixture-gated\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\n' \
+    >"$web_profiles_gated"
+presets_gated_absent=$work/presets-gated-absent.ini
+if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_gated \
+    env -u QWEN_WEB_AUTHORIZER_READY QWEN_WEB_MCP_CONFIG="$mcp_config" \
+    "$builder" "$presets_gated_absent" \
+    >"$work/gated-absent.log" 2>"$work/gated-absent.err"; then
+    report validator_gated_withheld_without_authorizer emitted_a_section
+else
+    outcome=ok
+    grep -q 'execution_policy=validator-gated authorizer=absent' \
+        "$work/gated-absent.err" || outcome=missing_skip_line
+    report validator_gated_withheld_without_authorizer "$outcome"
+fi
+
+presets_gated=$work/presets-gated.ini
+if build "$web_profiles_gated" "$presets_gated" \
+    env QWEN_WEB_MCP_CONFIG="$mcp_config" \
+    >"$work/gated.log" 2>"$work/gated.err"; then
+    outcome=ok
+    grep -q '^LLAMA_ARG_MCP_SERVERS_CONFIG = ' "$presets_gated" ||
+        outcome=missing_mcp_key
+    grep -q '^LLAMA_ARG_TAGS = web-research,validator-gated$' "$presets_gated" ||
+        outcome=wrong_tags
+    report validator_gated_emits_with_authorizer "$outcome"
+else
+    report validator_gated_emits_with_authorizer failed
+    cat "$work/gated.err" >&2
+fi
+
+# A ui-mediated row emits a section the server runs no MCP client from, so the
+# retrieval stays in the web UI.
+web_profiles_ui=$work/web-profiles-ui.tsv
+printf 'web-fixture-ui\tfixture-production\tui-mediated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tui-mediated\n' \
+    >"$web_profiles_ui"
+presets_ui=$work/presets-ui.ini
+if build "$web_profiles_ui" "$presets_ui" \
+    env QWEN_WEB_MCP_CONFIG="$mcp_config" \
+    >"$work/ui.log" 2>"$work/ui.err"; then
+    outcome=ok
+    grep -q '^LLAMA_ARG_MCP_SERVERS_CONFIG' "$presets_ui" && outcome=mcp_key_present
+    grep -q '^LLAMA_ARG_TAGS = web-research,ui-mediated$' "$presets_ui" ||
+        outcome=wrong_tags
+    report ui_mediated_emits_without_mcp_config "$outcome"
+else
+    report ui_mediated_emits_without_mcp_config failed
+    cat "$work/ui.err" >&2
+fi
+
+# A ui-mediated row emits without the authorizer marker: the marker gates the
+# server's own tool execution, which a ui-mediated section never performs.
+presets_ui_unmarked=$work/presets-ui-unmarked.ini
+if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_ui \
+    env -u QWEN_WEB_AUTHORIZER_READY QWEN_WEB_MCP_CONFIG="$mcp_config" \
+    "$builder" "$presets_ui_unmarked" \
+    >"$work/ui-unmarked.log" 2>"$work/ui-unmarked.err"; then
+    report ui_mediated_emits_without_authorizer ok
+else
+    report ui_mediated_emits_without_authorizer failed
+    cat "$work/ui-unmarked.err" >&2
+fi
+
+# An execution_policy outside the vocabulary stops the run: the ledger states a
+# policy the generator has no rule for.
+web_profiles_unknown_policy=$work/web-profiles-unknown-policy.tsv
+printf 'web-fixture-unknown-policy\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tunguarded\n' \
+    >"$web_profiles_unknown_policy"
+presets_unknown_policy=$work/presets-unknown-policy.ini
+if build "$web_profiles_unknown_policy" "$presets_unknown_policy" \
+    env QWEN_WEB_MCP_CONFIG="$mcp_config" \
+    >"$work/unknown-policy.log" 2>"$work/unknown-policy.err"; then
+    report unknown_execution_policy_refused emitted_a_section
+else
+    outcome=ok
+    grep -q 'outside the vocabulary' "$work/unknown-policy.err" ||
+        outcome=missing_vocabulary_message
+    report unknown_execution_policy_refused "$outcome"
 fi
 
 if [ "$failures" -ne 0 ]; then
