@@ -44,7 +44,10 @@ FETCH_CHARACTER_DEFAULT = 12000
 HIGHLIGHT_COUNT_CAP = 3
 REQUEST_TIMEOUT_SECONDS = 20.0
 RESPONSE_BYTE_CAP = 4 * 1024 * 1024
-TOKEN_LIFETIME_SECONDS = 900
+TOKEN_LIFETIME_DEFAULT_SECONDS = 900
+TOKEN_LIFETIME_MINIMUM_SECONDS = 60
+TOKEN_LIFETIME_MAXIMUM_SECONDS = 3600
+SECRET_BYTE_CAP = 4096
 
 EXA_SEARCH_ENDPOINT = "https://api.exa.ai/search"
 EXA_CONTENTS_ENDPOINT = "https://api.exa.ai/contents"
@@ -98,12 +101,14 @@ def tool_result(identifier, text, is_error):
 
 
 def read_secret_file(path, purpose):
-    """Return the stripped contents of a key file that only its owner reads.
+    """Return the contents of a key file that only its owner reads.
 
-    The mode check runs at call time rather than at startup because the child
-    is spawned per invocation and the file may have been replaced since the
-    last one. A group- or world-readable key is refused with its octal mode,
-    which names the defect without disclosing the key.
+    The descriptor opens with O_NOFOLLOW and O_CLOEXEC, so a symlink planted at
+    the configured path fails the open rather than redirecting the read, and no
+    child of this process inherits the descriptor. The regular-file and mode
+    checks run against fstat of that same descriptor, which leaves no window
+    between the check and the read for a replacement. Every check runs per call
+    because llama-server respawns the child for each invocation.
     """
     if not path:
         raise ToolError(
@@ -111,23 +116,63 @@ def read_secret_file(path, purpose):
             "network path"
         )
     try:
-        file_status = os.stat(path)
+        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
     except OSError:
         raise ToolError(f"the {purpose} key file is unreadable: {path}") from None
-    mode = stat.S_IMODE(file_status.st_mode)
-    if mode & 0o077:
-        raise ToolError(
-            f"the {purpose} key file {path} is mode {mode:04o}; "
-            "0600 is required before a call runs"
-        )
     try:
-        with open(path, "rb") as handle:
-            secret = handle.read(RESPONSE_BYTE_CAP).decode("utf-8").strip()
-    except (OSError, UnicodeDecodeError):
-        raise ToolError(f"the {purpose} key file is unreadable: {path}") from None
+        file_status = os.fstat(descriptor)
+        if not stat.S_ISREG(file_status.st_mode):
+            raise ToolError(f"the {purpose} key file is not a regular file: {path}")
+        mode = stat.S_IMODE(file_status.st_mode)
+        if mode & 0o077:
+            raise ToolError(
+                f"the {purpose} key file {path} is mode {mode:04o}; "
+                "0600 is required before a call runs"
+            )
+        try:
+            raw = os.read(descriptor, SECRET_BYTE_CAP)
+        except OSError:
+            raise ToolError(
+                f"the {purpose} key file is unreadable: {path}"
+            ) from None
+    finally:
+        os.close(descriptor)
+    try:
+        secret = raw.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        raise ToolError(f"the {purpose} key file is not UTF-8 text: {path}") from None
     if not secret:
         raise ToolError(f"the {purpose} key file is empty: {path}")
     return secret
+
+
+def resolve_token_lifetime(settings):
+    """Return the configured token lifetime in seconds.
+
+    The lifetime bounds replay of a leaked result identifier, so the admitted
+    range runs from 60 seconds, below which a reasoning turn outlives its own
+    search, to 3600, beyond which a transcript outlives the appliance session.
+    A value outside the range refuses the call rather than being clamped, since
+    a clamp hides an operator's mistake behind a working search.
+    """
+    raw = settings.get("token_lifetime") or ""
+    if not raw:
+        return TOKEN_LIFETIME_DEFAULT_SECONDS
+    try:
+        lifetime = int(raw)
+    except ValueError:
+        raise ToolError(
+            "QWEN_WEB_TOKEN_LIFETIME_SECONDS is not an integer"
+        ) from None
+    if not (
+        TOKEN_LIFETIME_MINIMUM_SECONDS <= lifetime <= TOKEN_LIFETIME_MAXIMUM_SECONDS
+    ):
+        raise ToolError(
+            "QWEN_WEB_TOKEN_LIFETIME_SECONDS lies outside "
+            f"[{TOKEN_LIFETIME_MINIMUM_SECONDS}, "
+            f"{TOKEN_LIFETIME_MAXIMUM_SECONDS}]: {lifetime}"
+        )
+    return lifetime
 
 
 def base64url_encode(payload):
@@ -161,7 +206,9 @@ def canonical_url(url):
     )
 
 
-def issue_result_id(signing_key, url, provider_name, search_id, issued_at):
+def issue_result_id(
+    signing_key, url, provider_name, search_id, issued_at, lifetime_seconds
+):
     """Sign a result reference into an opaque token.
 
     The signature covers the base64url payload string rather than the decoded
@@ -174,7 +221,7 @@ def issue_result_id(signing_key, url, provider_name, search_id, issued_at):
         "canonical_url": url,
         "provider": provider_name,
         "issued_at": issued_at,
-        "expiry": issued_at + TOKEN_LIFETIME_SECONDS,
+        "expiry": issued_at + lifetime_seconds,
         "search_id": search_id,
     }
     payload = base64url_encode(
@@ -440,7 +487,9 @@ def decode_content_text(record):
     return text
 
 
-def render_search_results(results, provider_name, signing_key, search_id, issued_at):
+def render_search_results(
+    results, provider_name, signing_key, search_id, issued_at, lifetime_seconds
+):
     """Render one block per result in the layout the pinned llama-ui parses.
 
     The renderer reads `Title:`, `URL:`, `Published:`, `Author:`, `Highlights:`
@@ -464,7 +513,14 @@ def render_search_results(results, provider_name, signing_key, search_id, issued
             lines.append(f"- {str(highlight).strip()}")
         lines.append(
             "Result ID: "
-            + issue_result_id(signing_key, url, provider_name, search_id, issued_at)
+            + issue_result_id(
+                signing_key,
+                url,
+                provider_name,
+                search_id,
+                issued_at,
+                lifetime_seconds,
+            )
         )
         blocks.append("\n".join(lines))
     if not blocks:
@@ -506,7 +562,12 @@ def call_search(settings, arguments):
     issued_at = int(time.time())
     search_id = base64url_encode(os.urandom(9))
     return render_search_results(
-        results[:max_results], provider.name, signing_key, search_id, issued_at
+        results[:max_results],
+        provider.name,
+        signing_key,
+        search_id,
+        issued_at,
+        resolve_token_lifetime(settings),
     )
 
 
@@ -609,6 +670,7 @@ def settings_from_environment(argv):
         "exa_key_file": os.environ.get("QWEN_WEB_EXA_KEY_FILE", ""),
         "token_key_file": os.environ.get("QWEN_WEB_TOKEN_KEY_FILE", ""),
         "fixtures": os.environ.get("QWEN_WEB_FAKE_FIXTURES", ""),
+        "token_lifetime": os.environ.get("QWEN_WEB_TOKEN_LIFETIME_SECONDS", ""),
     }
     option_keys = {
         "--provider": "provider",

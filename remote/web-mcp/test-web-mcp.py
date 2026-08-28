@@ -301,8 +301,12 @@ class WebMcpServerTest(unittest.TestCase):
     def test_foreign_url_needs_a_foreign_key_and_is_refused(self):
         session = self.open_session()
         forged = server.issue_result_id(
-            "another-signing-key", "https://attacker.example.com/payload",
-            "fake", "forged", int(time.time()),
+            "another-signing-key",
+            "https://attacker.example.com/payload",
+            "fake",
+            "forged",
+            int(time.time()),
+            server.TOKEN_LIFETIME_DEFAULT_SECONDS,
         )
         response = session.call_tool("fetch_exa", {"result_id": forged})
         self.assertTrue(response["result"]["isError"])
@@ -315,7 +319,8 @@ class WebMcpServerTest(unittest.TestCase):
             "https://example.org/raven2",
             "fake",
             "aged",
-            int(time.time()) - server.TOKEN_LIFETIME_SECONDS - 10,
+            int(time.time()) - server.TOKEN_LIFETIME_DEFAULT_SECONDS - 10,
+            server.TOKEN_LIFETIME_DEFAULT_SECONDS,
         )
         response = session.call_tool("fetch_exa", {"result_id": expired})
         self.assertTrue(response["result"]["isError"])
@@ -376,6 +381,40 @@ class WebMcpServerTest(unittest.TestCase):
         message = self.result_text(response)
         self.assertIn("0644", message)
         self.assertNotIn(TOKEN_SECRET, message)
+
+    def test_symlinked_key_file_refuses_the_call(self):
+        link_path = os.path.join(self.directory.name, "token-link.key")
+        if not os.path.exists(link_path):
+            os.symlink(self.token_key_path, link_path)
+        session = self.open_session(QWEN_WEB_TOKEN_KEY_FILE=link_path)
+        response = self.search(session)
+        self.assertTrue(response["result"]["isError"])
+        self.assertIn("unreadable", self.result_text(response))
+
+    def test_directory_in_place_of_a_key_file_refuses_the_call(self):
+        session = self.open_session(QWEN_WEB_TOKEN_KEY_FILE=self.directory.name)
+        response = self.search(session)
+        self.assertTrue(response["result"]["isError"])
+        self.assertIn("regular file", self.result_text(response))
+
+    def test_token_lifetime_is_configurable_within_its_range(self):
+        session = self.open_session(QWEN_WEB_TOKEN_LIFETIME_SECONDS="60")
+        result_id = self.first_result_id(
+            self.result_text(self.search(session, max_results=1))
+        )
+        payload = result_id.split(".")[0]
+        claim = json.loads(server.base64url_decode(payload).decode("utf-8"))
+        self.assertEqual(claim["expiry"] - claim["issued_at"], 60)
+        for value in ("59", "3601", "soon"):
+            with self.subTest(lifetime=value):
+                refused = self.open_session(
+                    QWEN_WEB_TOKEN_LIFETIME_SECONDS=value
+                )
+                response = self.search(refused, max_results=1)
+                self.assertTrue(response["result"]["isError"])
+                self.assertIn(
+                    "QWEN_WEB_TOKEN_LIFETIME_SECONDS", self.result_text(response)
+                )
 
     def test_oversized_body_is_refused(self):
         session = self.open_session()
