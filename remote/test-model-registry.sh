@@ -373,6 +373,172 @@ else
     report invalid_quarantine_runtime_mode_refused rejected
 fi
 
+# The tuple ledger reads and validates a second file, so its positive and
+# negative fixtures mirror the quarantine registry ones above: a matching
+# model registry, a valid ledger, and one broken ledger per failure mode the
+# validator names.
+tuple_fixture_models=$work_directory/tuple-models.tsv
+printf '%b\n' \
+    'tuple-model\ttext\tmodels/tuple-model.gguf\tfetch.sh\t8192\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\tproduction\t128\t32\t-\t-\tunmeasured\trefused' \
+    >"$tuple_fixture_models"
+
+# The validator resolves an evidence path against the repository root, the
+# same way check_rows resolves validation_evidence for a model row, so the
+# fixture reuses a path already present in the tree rather than one under the
+# work directory the two roots cannot reach by relative arithmetic.
+evidence_present_relative=evidence/depth-versus-submission-geometry.md
+QWEN_MODEL_REGISTRY=$tuple_fixture_models \
+    "$reader" id tuple-model role >/dev/null
+
+valid_tuple_ledger=$work_directory/valid-tuples.tsv
+printf '%b\n' \
+    "tuple-model-d8192-b128-ub32\ttuple-model\tstandalone\t8192\t128\t32\tq8_0\tq4_0\ton\t2\t1\tnone\tvulkan\tvalidated\t$evidence_present_relative\t-\t-\t-\t-\t-\t-" \
+    >"$valid_tuple_ledger"
+if QWEN_MODEL_REGISTRY=$tuple_fixture_models \
+    QWEN_VALIDATED_TUPLES=$valid_tuple_ledger \
+    "$reader" tuples tuple-model >"$work_directory/valid-tuples.out"; then
+    report tuple_ledger_valid_row accepted
+else
+    report tuple_ledger_valid_row rejected
+fi
+
+if [ "$(QWEN_MODEL_REGISTRY=$tuple_fixture_models \
+    QWEN_VALIDATED_TUPLES=$valid_tuple_ledger \
+    "$reader" tuple tuple-model-d8192-b128-ub32 status)" = validated ]; then
+    report tuple_field_lookup accepted
+else
+    report tuple_field_lookup rejected
+fi
+
+set +e
+QWEN_MODEL_REGISTRY=$tuple_fixture_models \
+QWEN_VALIDATED_TUPLES=$valid_tuple_ledger \
+    "$reader" tuples no-such-model >/dev/null 2>&1
+tuple_absent_model_query_status=$?
+set -e
+if [ "$tuple_absent_model_query_status" -ne 0 ]; then
+    report tuple_absent_model_query_refused accepted
+else
+    report tuple_absent_model_query_refused rejected
+fi
+
+duplicate_tuple_ledger=$work_directory/duplicate-tuples.tsv
+printf '%b\n' \
+    "dupe\ttuple-model\tstandalone\t8192\t128\t32\tq8_0\tq4_0\ton\t2\t1\tnone\tvulkan\tvalidated\t$evidence_present_relative\t-\t-\t-\t-\t-\t-" \
+    "dupe\ttuple-model\tstandalone\t4096\t128\t32\tq8_0\tq4_0\ton\t2\t1\tnone\tvulkan\tfailed\t-\t-\t-\t-\t-\t-\t-" \
+    >"$duplicate_tuple_ledger"
+set +e
+QWEN_MODEL_REGISTRY=$tuple_fixture_models \
+QWEN_VALIDATED_TUPLES=$duplicate_tuple_ledger \
+    "$reader" tuples tuple-model >"$work_directory/duplicate-tuples.out" \
+    2>"$work_directory/duplicate-tuples.err"
+duplicate_tuple_status=$?
+set -e
+if [ "$duplicate_tuple_status" -ne 0 ] &&
+   grep -F 'duplicate tuple_id dupe' \
+       "$work_directory/duplicate-tuples.err" >/dev/null; then
+    report tuple_duplicate_id_refused accepted
+else
+    report tuple_duplicate_id_refused rejected
+fi
+
+unknown_model_tuple_ledger=$work_directory/unknown-model-tuples.tsv
+printf '%b\n' \
+    "orphan\tno-such-model\tstandalone\t8192\t128\t32\tq8_0\tq4_0\ton\t2\t1\tnone\tvulkan\tfailed\t-\t-\t-\t-\t-\t-\t-" \
+    >"$unknown_model_tuple_ledger"
+set +e
+QWEN_MODEL_REGISTRY=$tuple_fixture_models \
+QWEN_VALIDATED_TUPLES=$unknown_model_tuple_ledger \
+    "$reader" tuples orphan >"$work_directory/unknown-model-tuples.out" \
+    2>"$work_directory/unknown-model-tuples.err"
+unknown_model_tuple_status=$?
+set -e
+if [ "$unknown_model_tuple_status" -ne 0 ] &&
+   grep -F 'model_id no-such-model is absent from the model registry' \
+       "$work_directory/unknown-model-tuples.err" >/dev/null; then
+    report tuple_unknown_model_refused accepted
+else
+    report tuple_unknown_model_refused rejected
+fi
+
+malformed_integer_tuple_ledger=$work_directory/malformed-integer-tuples.tsv
+printf '%b\n' \
+    "malformed\ttuple-model\tstandalone\t08192\t128\t32\tq8_0\tq4_0\ton\t2\t1\tnone\tvulkan\tfailed\t-\t-\t-\t-\t-\t-\t-" \
+    >"$malformed_integer_tuple_ledger"
+set +e
+QWEN_MODEL_REGISTRY=$tuple_fixture_models \
+QWEN_VALIDATED_TUPLES=$malformed_integer_tuple_ledger \
+    "$reader" tuples tuple-model \
+    >"$work_directory/malformed-integer-tuples.out" \
+    2>"$work_directory/malformed-integer-tuples.err"
+malformed_integer_tuple_status=$?
+set -e
+if [ "$malformed_integer_tuple_status" -ne 0 ] &&
+   grep -F 'context is not a canonical positive integer: 08192' \
+       "$work_directory/malformed-integer-tuples.err" >/dev/null; then
+    report tuple_malformed_integer_refused accepted
+else
+    report tuple_malformed_integer_refused rejected
+fi
+
+absent_evidence_tuple_ledger=$work_directory/absent-evidence-tuples.tsv
+printf '%b\n' \
+    "no-evidence\ttuple-model\tstandalone\t8192\t128\t32\tq8_0\tq4_0\ton\t2\t1\tnone\tvulkan\tvalidated\tevidence/no-such-path.md\t-\t-\t-\t-\t-\t-" \
+    >"$absent_evidence_tuple_ledger"
+set +e
+QWEN_MODEL_REGISTRY=$tuple_fixture_models \
+QWEN_VALIDATED_TUPLES=$absent_evidence_tuple_ledger \
+    "$reader" tuples tuple-model \
+    >"$work_directory/absent-evidence-tuples.out" \
+    2>"$work_directory/absent-evidence-tuples.err"
+absent_evidence_tuple_status=$?
+set -e
+if [ "$absent_evidence_tuple_status" -ne 0 ] &&
+   grep -F 'validation evidence is absent from the tree' \
+       "$work_directory/absent-evidence-tuples.err" >/dev/null; then
+    report tuple_absent_evidence_refused accepted
+else
+    report tuple_absent_evidence_refused rejected
+fi
+
+# check-validated-tuples.sh derives the expected tuple from models.tsv and
+# requires the ledger to carry a matching validated row.
+check_validated_tuples=$script_directory/check-validated-tuples.sh
+check_tuple_models=$work_directory/check-tuple-models.tsv
+printf '%b\n' \
+    'check-model\ttext\tmodels/check-model.gguf\tfetch.sh\t8192\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\tproduction\t128\t32\t4096\tevidence/check-model.md\tunmeasured\trefused' \
+    >"$check_tuple_models"
+matching_check_tuples=$work_directory/matching-check-tuples.tsv
+printf '%b\n' \
+    "check-model-d4096-b128-ub32\tcheck-model\tstandalone\t4096\t128\t32\tq8_0\tq4_0\ton\t2\t1\tnone\tvulkan\tvalidated\t$evidence_present_relative\t-\t-\t-\t-\t-\t-" \
+    >"$matching_check_tuples"
+if QWEN_MODEL_REGISTRY=$check_tuple_models \
+    QWEN_VALIDATED_TUPLES=$matching_check_tuples \
+    "$check_validated_tuples" >"$work_directory/matching-check.out"; then
+    report check_validated_tuples_matching accepted
+else
+    report check_validated_tuples_matching rejected
+fi
+
+gap_check_tuples=$work_directory/gap-check-tuples.tsv
+printf '%b\n' \
+    "check-model-d2048-b128-ub32\tcheck-model\tstandalone\t2048\t128\t32\tq8_0\tq4_0\ton\t2\t1\tnone\tvulkan\tvalidated\t$evidence_present_relative\t-\t-\t-\t-\t-\t-" \
+    >"$gap_check_tuples"
+set +e
+QWEN_MODEL_REGISTRY=$check_tuple_models \
+QWEN_VALIDATED_TUPLES=$gap_check_tuples \
+    "$check_validated_tuples" >"$work_directory/gap-check.out" \
+    2>"$work_directory/gap-check.err"
+gap_check_status=$?
+set -e
+if [ "$gap_check_status" -ne 0 ] &&
+   grep -F 'check-model: models.tsv claims validated_filled_depth 4096' \
+       "$work_directory/gap-check.err" >/dev/null; then
+    report check_validated_tuples_gap_refused accepted
+else
+    report check_validated_tuples_gap_refused rejected
+fi
+
 if [ "$failures" -eq 0 ]; then
     printf 'model_registry=accepted\n'
     exit 0

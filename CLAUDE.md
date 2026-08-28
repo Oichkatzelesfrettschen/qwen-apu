@@ -142,6 +142,26 @@ claim: at 16384 the same checkpoint, cache, and device wedged the compute ring
 at 2048/512 and completed twice at 128/32, so `batch` and `ubatch` are registry
 fields rather than constants in the argv.
 
+`models.tsv` carries one `validated_filled_depth`/`batch`/`ubatch`/cache/Flash
+Attention tuple per row, which cannot state that 16384 passes at batch 128 and
+wedges at batch 2048 for the same model and cache triple.
+`remote/validated-tuples.tsv` carries every measured arm instead, keyed by
+`tuple_id`, with `model_id`, `runtime_mode`, the submission geometry, the cache
+triple, `threads`, `parallel`, `projector_state`, `backend`, and `status` over
+`validated`, `failed`, or `unverified`. A `validated` row requires its
+`evidence` path to exist in the tree; a `failed` row carries the same fields
+and belongs in the ledger because a rejected geometry is what steers a later
+choice away from it. `remote/model-registry.sh tuples MODEL_ID` and
+`tuple TUPLE_ID [FIELD]` read the ledger after validating every row in it, the
+same discipline `emit_servable_rows` applies to the quarantine authority.
+`remote/check-validated-tuples.sh` derives the tuple each `models.tsv` row with
+a numeric `validated_filled_depth` already claims and requires a `validated`
+ledger row matching model, depth, batch, ubatch, and cache triple; a gap
+between the two files fails the gate rather than serving silently. The seeded
+16384 rows carry `evidence/depth-versus-submission-geometry.md`: batch 128 at
+depth 16384 passes and batch 2048 wedges the compute ring under the same
+cache triple, both at the probe's own `-t 2`.
+
 `remote/probe-depth-wedge.sh` treats an output directory as a resumable evidence
 ledger. `wedge-metadata.tsv` binds the ledger to the model SHA-256, model byte
 count, and recovery-control length. Startup validates every retained row against
