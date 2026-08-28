@@ -121,6 +121,15 @@ grant to compare against, so argument authorization happens before the browser
 sends that request or not at all. And the fallback UI's design is therefore the
 reachable one.
 
+In router mode the process the browser reaches is the router, and at
+f280b269 the router registered `/tools` only when its own MCP manager held a
+server, so the child that owned the tools served the route on an internal
+port the page could not name. `patches/llama-router-tools-proxy.patch`
+registers `/tools` on a tool-free router as `proxy_get` and `proxy_post`, the
+handlers that already resolve `?model=` for `GET` and the body's `model` key
+for `POST`, so the page sends the served alias in both directions and the
+child's executor receives `tool`, `params`, and `stream` unchanged.
+
 ## The fallback UI executes the approved call
 
 `webui/index.html` runs that executor. The Web toggle fetches `GET /tools` and

@@ -12,15 +12,22 @@ set -eu
 # OUTPUT_DIR and names one profile.
 #
 # The run exercises what the browser page does, in the order the page does
-# it, with curl in the page's place: GET /tools composes the tool list, the
-# broker's /session and /grant sign one exact-argument grant, POST /tools spends
-# it, a Result ID from the search reply is redeemed by fetch, and the refusals
-# the design relies on are each provoked once -- a replayed grant, a fetch past
-# the profile's allowance, a fetch naming a URL rather than a Result ID, a
-# grant request from a foreign Origin, a wrong session header, and a wrong
-# profile_id. A chat completion then offers the model the composed tools and
-# the search result, so the continuation the page performs is observed against
-# the served model rather than assumed.
+# it, with curl in the page's place and every tool request on the router port:
+# GET /tools?model= composes the tool list, the broker's /session and /grant
+# sign one exact-argument grant, POST /tools with the top-level model key
+# spends it, a Result ID from the search reply is redeemed by fetch, and the
+# refusals the design relies on are each provoked once -- a replayed grant, a
+# fetch past the profile's allowance, a fetch naming a URL rather than a Result
+# ID, a grant request from a foreign Origin, a wrong session header, a wrong
+# profile_id, a tool request naming no model or an unknown one, and a routing
+# key placed inside the tool arguments. Two fixture queries hold the fake
+# provider for 5 and 40 seconds, so the run observes that a slow call completes
+# through the router and that the child's per-call MCP deadline answers a
+# stalled one before the router's proxy read timeout. A chat completion then
+# offers the model the composed tools and the search result, so the
+# continuation the page performs is observed against the served model rather
+# than assumed. The child's internal port is read once as a diagnostic control
+# and no admission check runs against it.
 #
 # Every check lands in OUTPUT_DIR/summary.tsv as `check<TAB>result<TAB>detail`.
 # The run exits non-zero when a required check fails, and the restoration of
@@ -50,6 +57,31 @@ restore=${QWEN_ADMISSION_RESTORE:-1}
 registry=${QWEN_MODEL_REGISTRY:-$script_directory/models.tsv}
 model_root=${QWEN_MODEL_ROOT:-"${HOME:?}/models"}
 state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"$HOME/qwen-webui-state"}
+
+# One admission owns the appliance at a time: the run tears the ordinary
+# router down, launches the web router, and restores the roster, and a second
+# run started meanwhile tears down the first's web session as if it were its
+# own. The script re-executes itself under flock(1), which holds an
+# exclusive lock on a file in the state directory for as long as the run
+# lives and releases it with the process on every exit path, so no stale
+# claim can exist and the takeover needs no check of its own. --close drops
+# the locked descriptor before the run starts, so the servers the run
+# launches inherit no lock and cannot hold it past the run's end.
+admission_lock=$state_directory/web-admission.lock
+if [ "${QWEN_ADMISSION_LOCKED:-}" != "$admission_lock" ]; then
+    mkdir -p "$state_directory"
+    QWEN_ADMISSION_LOCKED=$admission_lock
+    export QWEN_ADMISSION_LOCKED
+    if flock -n --close -E 75 "$admission_lock" "$0" "$@"; then
+        exit 0
+    else
+        lock_status=$?
+        if [ "$lock_status" -eq 75 ]; then
+            printf 'another admission run holds %s\n' "$admission_lock" >&2
+        fi
+        exit "$lock_status"
+    fi
+fi
 fixture=${QWEN_WEB_FAKE_FIXTURES:-$script_directory/test-fixtures/web-fake-provider.json}
 router_origin=http://127.0.0.1:$server_port
 broker_origin=http://127.0.0.1:$broker_port
@@ -97,6 +129,14 @@ call() {
     else
         shift "$#"
     fi
+    # Web mode mints a bearer API key that the router and the broker's
+    # /session route both demand, so every request to either carries it the
+    # way the page's authHeaders() does. The key reaches curl through a
+    # config file rather than argv, and the file lives beside the run's own
+    # keys at 0600 and is removed with them.
+    if [ -s "$api_key_curl_config" ] && [ "${call_without_key:-0}" != 1 ]; then
+        set -- "$@" --config "$api_key_curl_config"
+    fi
     if [ -n "$call_body" ]; then
         printf '%s' "$call_body" >"$output_directory/http/$exchange-$call_label.request"
         curl -sS --max-time 600 -o "$call_out" -D "$call_headers_file" \
@@ -111,6 +151,8 @@ call() {
     call_status=${call_status:-000}
 }
 mkdir -p "$output_directory/http"
+api_key_curl_config=$output_directory/keys/api-key.curl
+api_key_bytes=''
 # An early exit under set -e names itself in run.log rather than leaving an
 # empty summary as the only trace.
 note_exit() {
@@ -171,11 +213,80 @@ restore_ordinary() {
         else
             record ordinary_restore pass "models=$(tr '\n' ',' <"$output_directory/restored-model-ids.txt")"
         fi
+        # The ordinary preset carries no MCP configuration, so the proxied
+        # route reaches a child that registered /tools as feature_disabled:
+        # the binary carries the route and the ordinary roster exposes no tool.
+        ordinary_id=$(head -1 "$output_directory/restored-model-ids.txt")
+        if [ -n "$ordinary_id" ]; then
+            call ordinary-tools GET "$router_origin/tools?model=$ordinary_id&autoload=true"
+            if [ "$call_status" = 403 ] && jq -e '.error.type == "feature_disabled"' "$call_out" >/dev/null 2>&1; then
+                record ordinary_tools_disabled pass "model=$ordinary_id status=403 feature_disabled"
+            else
+                record ordinary_tools_disabled fail "model=$ordinary_id status=$call_status $(head -c 120 "$call_out")"
+            fi
+        fi
+        # models-max is 1 on every launch this tree performs, so loading a
+        # second model evicts the first; the roster's status field is read
+        # after each load rather than inferred from the setting.
+        first_id=$(grep -x -m1 -e qwen35-08b -e qwen38-2b-distill "$output_directory/restored-model-ids.txt" || true)
+        second_id=$(grep -x -e qwen35-08b -e qwen38-2b-distill "$output_directory/restored-model-ids.txt" | grep -v -x "$first_id" | head -1 || true)
+        # POST /models/load returns before the child is resident, so the
+        # roster is polled until the requested model reads loaded (or 120 s
+        # pass) before the next step reads any status.
+        model_status() {
+            jq -r --arg m "$1" '.data[] | select(.id == $m) | .status.value // empty' "$call_out" 2>/dev/null
+        }
+        wait_loaded() {
+            wait_deadline=$(( $(date +%s) + 120 ))
+            while :; do
+                call "models-poll-$1" GET "$router_origin/models"
+                [ "$(model_status "$1")" = loaded ] && return 0
+                [ "$(date +%s)" -lt "$wait_deadline" ] || return 1
+                sleep 2
+            done
+        }
+        if [ -n "$first_id" ] && [ -n "$second_id" ]; then
+            # The check loads and evicts, so the roster's resident set before
+            # it is captured and put back after it: each model the check
+            # loaded is unloaded again and each model resident beforehand is
+            # loaded again, and the statuses are compared whole.
+            call models-before-eviction GET "$router_origin/models"
+            jq -r '.data[] | .id + "\t" + (.status.value // "")' "$call_out" | sort >"$output_directory/resident-before-eviction.tsv"
+            call load-first POST "$router_origin/models/load" "$(jq -cn --arg m "$first_id" '{model: $m}')"
+            wait_loaded "$first_id" || true
+            first_status=$(model_status "$first_id")
+            call load-second POST "$router_origin/models/load" "$(jq -cn --arg m "$second_id" '{model: $m}')"
+            wait_loaded "$second_id" || true
+            first_after=$(model_status "$first_id")
+            second_after=$(model_status "$second_id")
+            if [ "$first_status" = loaded ] && [ "$second_after" = loaded ] && [ "$first_after" != loaded ]; then
+                record models_max_evicts_previous pass "$first_id=$first_status then $first_id=$first_after $second_id=$second_after"
+            else
+                record models_max_evicts_previous fail "$first_id=$first_status then $first_id=$first_after $second_id=$second_after"
+            fi
+            for loaded_id in $first_id $second_id; do
+                call "unload-$loaded_id" POST "$router_origin/models/unload" "$(jq -cn --arg m "$loaded_id" '{model: $m}')"
+            done
+            for resident_id in $(awk -F'\t' '$2 == "loaded" { print $1 }' "$output_directory/resident-before-eviction.tsv"); do
+                call "reload-$resident_id" POST "$router_origin/models/load" "$(jq -cn --arg m "$resident_id" '{model: $m}')"
+                wait_loaded "$resident_id" || true
+            done
+            call models-after-eviction GET "$router_origin/models"
+            jq -r '.data[] | .id + "\t" + (.status.value // "")' "$call_out" | sort >"$output_directory/resident-after-eviction.tsv"
+            if cmp -s "$output_directory/resident-before-eviction.tsv" "$output_directory/resident-after-eviction.tsv"; then
+                record resident_state_restored pass "$(awk -F'\t' '{ printf "%s=%s ", $1, $2 }' "$output_directory/resident-after-eviction.tsv")"
+            else
+                record resident_state_restored fail "before: $(awk -F'\t' '{ printf "%s=%s ", $1, $2 }' "$output_directory/resident-before-eviction.tsv") after: $(awk -F'\t' '{ printf "%s=%s ", $1, $2 }' "$output_directory/resident-after-eviction.tsv")"
+            fi
+        else
+            record models_max_evicts_previous skipped 'fewer than two of the small ordinary rows are served'
+        fi
     else
         record ordinary_restore fail "$(tail -1 "$output_directory/ordinary-restore.log")"
         return 1
     fi
 }
+
 
 finish_run() {
     exit_status=$?
@@ -248,6 +359,19 @@ if QWEN_WEB_PRESETS=$web_presets QWEN_WEB_PROFILES=$ledger QWEN_WEB_PROVIDER=fak
     QWEN_MODEL_REGISTRY=$registry \
     "$script_directory/qwen-web-launch.sh" low-async >"$output_directory/web-launch.log" 2>&1; then
     record web_launch pass "$(grep '^web_launch' "$output_directory/web-launch.log" | tr '\n' ';')"
+    # The session minted or reused the API key at 0600 in the state
+    # directory; its first line is the bearer value the page's set-key field
+    # takes, and only a curl config file and the driver's file argument
+    # carry it from here.
+    api_key_file=$state_directory/api.key
+    if [ -s "$api_key_file" ] && [ "$(stat -c %a "$api_key_file")" = 600 ]; then
+        api_key_bytes=$(sed -n '1p' "$api_key_file")
+        printf 'header = "Authorization: Bearer %s"\n' "$api_key_bytes" >"$api_key_curl_config"
+        chmod 600 "$api_key_curl_config"
+        record api_key_minted pass "mode=600 path=$api_key_file"
+    else
+        record api_key_minted fail "absent, empty, or not 0600: $api_key_file"
+    fi
 else
     record web_launch fail "$(tail -2 "$output_directory/web-launch.log" | tr '\n' ';')"
     cp "$state_directory/session.status" "$output_directory/failed-session.status" 2>/dev/null || true
@@ -280,7 +404,11 @@ else
     record broker_secret_mode fail "secret_file=$secret_file"
 fi
 
-# 4. Router identity: one alias, the test tuple, the two web tools.
+# 4. Router identity: one alias, the test tuple, the two web tools, all read
+# on the router port. The router resolves the model of GET /tools from the
+# query string and of POST /tools from the body's top-level model key, the
+# way it resolves /props and /v1/chat/completions, and forwards the request to
+# the child that read the section's MCP configuration.
 call models GET "$router_origin/v1/models"
 model_ids=$(jq -r '.data[].id' "$call_out" 2>/dev/null | tr '\n' ',')
 if [ "$model_ids" = "$profile_id," ]; then
@@ -291,37 +419,51 @@ fi
 call props GET "$router_origin/props?model=$profile_id"
 served_context=$(jq -r '.default_generation_settings.n_ctx // empty' "$call_out" 2>/dev/null)
 record served_context observed "n_ctx=$served_context requested=$context"
-# llama-server at f280b269 registers /tools in the process whose own MCP
-# manager holds a server, and the router branch proxies chat, props, and
-# slots without /tools, so the router port answers feature_disabled while
-# the child that read the section's configuration serves the route on the
-# internal loopback port the router assigned it. The router's answer is
-# recorded, and the executor checks run against the child port, which is
-# read from the listening sockets llama-server processes hold beside the
-# router's own.
-call router-tools GET "$router_origin/tools"
-record router_tools_route observed "status=$call_status $(head -c 120 "$call_out" | tr '\n' ' ')"
-call warm-child POST "$router_origin/v1/chat/completions" "$(jq -cn --arg m "$profile_id" '{model: $m, messages: [{role: "user", content: "Reply with the word ready."}], max_tokens: 4, chat_template_kwargs: {enable_thinking: false}}')"
+call tools-no-model GET "$router_origin/tools"
+if [ "$call_status" != 200 ] && jq -e '.error' "$call_out" >/dev/null 2>&1; then
+    record tools_without_model_refused pass "status=$call_status $(jq -r '.error.message // .error' "$call_out" | head -c 80)"
+else
+    record tools_without_model_refused fail "status=$call_status $(head -c 120 "$call_out")"
+fi
+call tools-unknown-model GET "$router_origin/tools?model=no-such-model&autoload=true"
+if [ "$call_status" != 200 ] && jq -e '.error' "$call_out" >/dev/null 2>&1; then
+    record tools_unknown_model_refused pass "status=$call_status $(jq -r '.error.message // .error' "$call_out" | head -c 80)"
+else
+    record tools_unknown_model_refused fail "status=$call_status $(head -c 120 "$call_out")"
+fi
+call tools GET "$router_origin/tools?model=$profile_id&autoload=true"
+tool_names=$(jq -r '.[].tool' "$call_out" 2>/dev/null | sort | tr '\n' ',')
+if [ "$tool_names" = "web_fetch_exa,web_search_exa," ]; then
+    record tool_enumeration pass "$tool_names via $router_origin"
+else
+    record tool_enumeration fail "$tool_names status=$call_status"
+fi
+cp "$call_out" "$output_directory/tools.json"
+# The child's own port is a diagnostic control: it separates a router proxy
+# defect from a child tool defect when one appears, and no admission check
+# reads it.
 child_port=''
 for candidate in $(ss -ltnp 2>/dev/null | grep '"llama-server"' | grep -o '127\.0\.0\.1:[0-9]*' | sed 's/.*://' | sort -u); do
     [ "$candidate" != "$server_port" ] || continue
     child_port=$candidate
 done
 if [ -n "$child_port" ]; then
-    record child_port_discovered pass "port=$child_port"
+    call child-tools-control GET "http://127.0.0.1:$child_port/tools"
+    record child_port_control observed "port=$child_port status=$call_status tools=$(jq -r '.[].tool' "$call_out" 2>/dev/null | sort | tr '\n' ',')"
 else
-    record child_port_discovered fail 'no llama-server listener beside the router'
-    child_port=$server_port
+    record child_port_control observed 'no child listener beside the router'
 fi
-tools_origin=http://127.0.0.1:$child_port
-call tools GET "$tools_origin/tools"
-tool_names=$(jq -r '.[].tool' "$call_out" 2>/dev/null | sort | tr '\n' ',')
-if [ "$tool_names" = "web_fetch_exa,web_search_exa," ]; then
-    record tool_enumeration pass "$tool_names via $tools_origin"
+# The page the router serves is the executor the browser runs, so its own
+# source is read for the route shape: GET /tools carrying ?model= and the
+# POST body carrying the model key beside tool and params. The web launcher
+# serves webui/index.html, and a router serving any other page fails here
+# because the browser arm below would then run a page with no executor.
+call page GET "$router_origin/"
+if grep -q 'tools?model=' "$call_out" && grep -q 'model, tool: toolName, params' "$call_out"; then
+    record ui_executor_targets_router pass 'served page composes ./tools?model= and posts {model, tool, params}'
 else
-    record tool_enumeration fail "$tool_names status=$call_status"
+    record ui_executor_targets_router fail "served page is not the fallback UI or lacks the model-scoped routes (status=$call_status)"
 fi
-cp "$call_out" "$output_directory/tools.json"
 
 # 5. Broker identity and the session secret's gates.
 call broker-health GET "$broker_origin/health" '' -H "Host: 127.0.0.1:$broker_port"
@@ -332,6 +474,21 @@ if [ "$health_profile" = "$profile_id" ] && [ "$health_provider" = fake ] && [ "
     record broker_health_identity pass "profile=$health_profile provider=$health_provider pid=$health_pid"
 else
     record broker_health_identity fail "profile=$health_profile provider=$health_provider pid=$health_pid"
+fi
+# Both listeners refuse a request without the key: the router at 401 and
+# the broker's session route at 403, so an unauthenticated page reaches
+# neither a model nor a grant.
+call_without_key=1 call tools-no-api-key GET "$router_origin/tools?model=$profile_id&autoload=true"
+if [ "$call_status" = 401 ]; then
+    record router_without_api_key_refused pass "status=401"
+else
+    record router_without_api_key_refused fail "status=$call_status $(head -c 120 "$call_out")"
+fi
+call_without_key=1 call session-no-api-key GET "$broker_origin/session" '' -H "Origin: $router_origin" -H "Host: 127.0.0.1:$broker_port"
+if [ "$call_status" = 403 ]; then
+    record session_without_api_key_refused pass "status=403"
+else
+    record session_without_api_key_refused fail "status=$call_status $(head -c 120 "$call_out")"
 fi
 call session GET "$broker_origin/session" '' -H "Origin: $router_origin" -H "Host: 127.0.0.1:$broker_port"
 session_secret=$(jq -r '.session_secret // empty' "$call_out" 2>/dev/null)
@@ -359,17 +516,37 @@ else
     record session_name_host_refused fail "status=$call_status"
 fi
 
-# 6. One grant, signed over the exact fields the page shows.
-grant_body=$(jq -cn --arg q "$query" --arg p "$profile_id" \
-    '{query: $q, profile_id: $p, max_results: 3, include_domains: [], exclude_domains: []}')
-call grant POST "$broker_origin/grant" "$grant_body" -H "Origin: $router_origin" \
-    -H "Host: 127.0.0.1:$broker_port" -H "X-Qwen-Web-Session: $session_secret"
-authorization=$(jq -r '.authorization // empty' "$call_out" 2>/dev/null)
+# 6. Grants, signed over the exact fields the page shows. One per search the
+# run performs, since the broker signs single-use.
+issue_grant() {
+    grant_label=$1
+    grant_query=$2
+    grant_body=$(jq -cn --arg q "$grant_query" --arg p "$profile_id" \
+        '{query: $q, profile_id: $p, max_results: 3, include_domains: [], exclude_domains: []}')
+    call "$grant_label" POST "$broker_origin/grant" "$grant_body" -H "Origin: $router_origin" \
+        -H "Host: 127.0.0.1:$broker_port" -H "X-Qwen-Web-Session: $session_secret"
+    if [ "$call_status" = 429 ]; then
+        # The broker charges its authorize-minute bucket (6 per 60 s) ahead of
+        # every other check, and this run issues grants faster than an
+        # operator clicks, so the seventh inside a minute is refused. That
+        # refusal is the limit working and is recorded as such; the run then
+        # waits out the window once and asks again.
+        record broker_rate_limit_enforced observed "$grant_label: $(jq -r '.error // empty' "$call_out" | head -c 100)"
+        sleep 61
+        call "$grant_label-retry" POST "$broker_origin/grant" "$grant_body" -H "Origin: $router_origin" \
+            -H "Host: 127.0.0.1:$broker_port" -H "X-Qwen-Web-Session: $session_secret"
+    fi
+    issued_authorization=$(jq -r '.authorization // empty' "$call_out" 2>/dev/null)
+}
+issue_grant grant "$query"
+authorization=$issued_authorization
 if [ "$call_status" = 200 ] && [ -n "$authorization" ]; then
     record grant_issued pass "status=$call_status bytes=${#authorization}"
 else
     record grant_issued fail "status=$call_status"
 fi
+grant_body=$(jq -cn --arg q "$query" --arg p "$profile_id" \
+    '{query: $q, profile_id: $p, max_results: 3, include_domains: [], exclude_domains: []}')
 wrong_profile_body=$(jq -cn --arg q "$query" '{query: $q, profile_id: "web-other", max_results: 3, include_domains: [], exclude_domains: []}')
 call grant-wrong-profile POST "$broker_origin/grant" "$wrong_profile_body" -H "Origin: $router_origin" \
     -H "Host: 127.0.0.1:$broker_port" -H "X-Qwen-Web-Session: $session_secret"
@@ -393,59 +570,137 @@ else
     record grant_foreign_origin_refused fail "status=$call_status"
 fi
 
-# 7. The search runs through the real llama-server and its MCP child.
+# 7. The search runs through the router, the child, and its MCP process. The
+# body carries the model key the router reads and stream=false, and the
+# child's executor forwards params alone.
+tool_body() {
+    jq -cn --arg m "$profile_id" --arg t "$1" --argjson p "$2" \
+        '{model: $m, tool: $t, params: $p, stream: false}'
+}
 search_params=$(jq -cn --arg q "$query" --arg a "$authorization" \
-    '{tool: "web_search_exa", params: {query: $q, max_results: 3, include_domains: [], exclude_domains: [], authorization: $a}}')
-call search POST "$tools_origin/tools" "$search_params"
+    '{query: $q, max_results: 3, include_domains: [], exclude_domains: [], authorization: $a}')
+call search-no-model POST "$router_origin/tools" "$(jq -cn --argjson p "$search_params" '{tool: "web_search_exa", params: $p, stream: false}')"
+if [ "$call_status" != 200 ] && jq -e '.error' "$call_out" >/dev/null 2>&1; then
+    record post_without_model_refused pass "status=$call_status $(jq -r '.error.message // .error' "$call_out" | head -c 80)"
+else
+    record post_without_model_refused fail "status=$call_status $(head -c 120 "$call_out")"
+fi
+call search-unknown-model POST "$router_origin/tools" "$(jq -cn --argjson p "$search_params" '{model: "no-such-model", tool: "web_search_exa", params: $p, stream: false}')"
+if [ "$call_status" != 200 ] && jq -e '.error' "$call_out" >/dev/null 2>&1; then
+    record post_unknown_model_refused pass "status=$call_status $(jq -r '.error.message // .error' "$call_out" | head -c 80)"
+else
+    record post_unknown_model_refused fail "status=$call_status $(head -c 120 "$call_out")"
+fi
+call search POST "$router_origin/tools" "$(tool_body web_search_exa "$search_params")"
 search_text=$(jq -r 'if type == "object" then (.error // .plain_text_response // tostring) else tostring end' "$call_out" 2>/dev/null)
 cp "$call_out" "$output_directory/search-response.json"
 result_id=$(printf '%s\n' "$search_text" | sed -n 's/^Result ID: //p' | head -1)
 if [ "$call_status" = 200 ] && [ -n "$result_id" ] && ! jq -e '.error' "$call_out" >/dev/null 2>&1; then
-    record search_executed pass "results=$(printf '%s\n' "$search_text" | grep -c '^Result ID: ')"
+    record search_executed pass "results=$(printf '%s\n' "$search_text" | grep -c '^Result ID: ') via $router_origin"
 else
     record search_executed fail "status=$call_status $(printf '%s' "$search_text" | head -c 160)"
 fi
-call search-replay POST "$tools_origin/tools" "$search_params"
+call search-replay POST "$router_origin/tools" "$(tool_body web_search_exa "$search_params")"
 if [ "$call_status" = 200 ] && jq -e '.error' "$call_out" >/dev/null 2>&1; then
     record grant_replay_refused pass "$(jq -r '.error' "$call_out" | head -c 120)"
 else
     record grant_replay_refused fail "status=$call_status $(head -c 120 "$call_out")"
 fi
 unauthorized_params=$(jq -cn --arg q "$query" \
-    '{tool: "web_search_exa", params: {query: $q, max_results: 3, include_domains: [], exclude_domains: []}}')
-call search-no-grant POST "$tools_origin/tools" "$unauthorized_params"
+    '{query: $q, max_results: 3, include_domains: [], exclude_domains: []}')
+call search-no-grant POST "$router_origin/tools" "$(tool_body web_search_exa "$unauthorized_params")"
 if [ "$call_status" = 200 ] && jq -e '.error' "$call_out" >/dev/null 2>&1; then
     record search_without_grant_refused pass "$(jq -r '.error' "$call_out" | head -c 120)"
 else
     record search_without_grant_refused fail "status=$call_status $(head -c 120 "$call_out")"
 fi
+# The MCP server refuses an argument outside a tool's schema by name, so the
+# search above, which carried model at the top level, proves the router's
+# routing key stayed out of the arguments; the control places the same key
+# inside params and is refused naming it.
+call search-model-in-params POST "$router_origin/tools" "$(tool_body web_search_exa "$(jq -cn --argjson p "$unauthorized_params" --arg m "$profile_id" '$p + {model: $m}')")"
+if [ "$call_status" = 200 ] && jq -e '.error' "$call_out" >/dev/null 2>&1 && jq -r '.error' "$call_out" | grep -q 'model'; then
+    record routing_key_outside_arguments pass "top-level model executed the search; params.model refused: $(jq -r '.error' "$call_out" | head -c 100)"
+else
+    record routing_key_outside_arguments fail "status=$call_status $(head -c 120 "$call_out")"
+fi
 
 # 8. Fetch by Result ID, then the allowance and the URL refusal.
-fetch_params=$(jq -cn --arg r "$result_id" '{tool: "web_fetch_exa", params: {result_id: $r}}')
-call fetch POST "$tools_origin/tools" "$fetch_params"
+fetch_params=$(jq -cn --arg r "$result_id" '{result_id: $r}')
+call fetch POST "$router_origin/tools" "$(tool_body web_fetch_exa "$fetch_params")"
 fetch_text=$(jq -r 'if type == "object" then (.error // .plain_text_response // tostring) else tostring end' "$call_out" 2>/dev/null)
 if [ "$call_status" = 200 ] && printf '%s' "$fetch_text" | grep -q 'FIXTURE-PAGE-' && ! jq -e '.error' "$call_out" >/dev/null 2>&1; then
-    record fetch_by_result_id pass "chars=${#fetch_text}"
+    record fetch_by_result_id pass "chars=${#fetch_text} via $router_origin"
 else
     record fetch_by_result_id fail "status=$call_status $(printf '%s' "$fetch_text" | head -c 160)"
 fi
 cp "$call_out" "$output_directory/fetch-response.json"
-second_id=$(printf '%s\n' "$search_text" | sed -n 's/^Result ID: //p' | sed -n '2p')
-call fetch-past-allowance POST "$tools_origin/tools" "$(jq -cn --arg r "${second_id:-$result_id}" '{tool: "web_fetch_exa", params: {result_id: $r}}')"
+second_result=$(printf '%s\n' "$search_text" | sed -n 's/^Result ID: //p' | sed -n '2p')
+call fetch-past-allowance POST "$router_origin/tools" "$(tool_body web_fetch_exa "$(jq -cn --arg r "${second_result:-$result_id}" '{result_id: $r}')")"
 if [ "$call_status" = 200 ] && jq -e '.error' "$call_out" >/dev/null 2>&1; then
     record fetch_allowance_enforced pass "$(jq -r '.error' "$call_out" | head -c 120)"
 else
     record fetch_allowance_enforced fail "status=$call_status $(head -c 120 "$call_out")"
 fi
-call fetch-url POST "$tools_origin/tools" "$(jq -cn '{tool: "web_fetch_exa", params: {result_id: "https://example.org/raven2"}}')"
+call fetch-url POST "$router_origin/tools" "$(tool_body web_fetch_exa "$(jq -cn '{result_id: "https://example.org/raven2"}')")"
 if [ "$call_status" = 200 ] && jq -e '.error' "$call_out" >/dev/null 2>&1; then
     record fetch_url_refused pass "$(jq -r '.error' "$call_out" | head -c 120)"
 else
     record fetch_url_refused fail "status=$call_status $(head -c 120 "$call_out")"
 fi
 
-# 9. The model meets the composed tools and the search result. The proposal
-# is the model's own, so both halves are recorded as observations.
+# 9. Deadlines. The fixture holds one query for 5 seconds and one for 40. The
+# generated configuration names timeout_ms 30000 for the child's MCP call and
+# the router proxies with llama-server's 3600 second read timeout, so the slow
+# call completes through the router and the stalled one is answered by the
+# child's own deadline, as an error body, before the router gives up on it.
+timed_search() {
+    timed_label=$1
+    timed_query=$2
+    issue_grant "$timed_label-grant" "$timed_query"
+    timed_params=$(jq -cn --arg q "$timed_query" --arg a "$issued_authorization" \
+        '{query: $q, max_results: 3, include_domains: [], exclude_domains: [], authorization: $a}')
+    timed_start=$(date +%s)
+    call "$timed_label" POST "$router_origin/tools" "$(tool_body web_search_exa "$timed_params")"
+    timed_elapsed=$(( $(date +%s) - timed_start ))
+}
+timed_search search-slow 'raven2 vulkan decode slow'
+if [ "$call_status" = 200 ] && ! jq -e '.error' "$call_out" >/dev/null 2>&1 && \
+   jq -r '.plain_text_response' "$call_out" | grep -q '^Result ID: ' && [ "$timed_elapsed" -ge 5 ]; then
+    record delayed_provider_completes pass "elapsed=${timed_elapsed}s status=$call_status"
+else
+    record delayed_provider_completes fail "elapsed=${timed_elapsed}s status=$call_status $(head -c 120 "$call_out")"
+fi
+timed_search search-stalled 'raven2 vulkan decode stalled'
+# The child's deadline answers as HTTP 200 with its own message, the shape
+# mcp_result_to_response gives a refusal; a router-side 5xx or a proxy
+# failure inside the same window is a different mechanism and fails here.
+stall_message=$(jq -r '.error | if type == "object" then .message else . end' "$call_out" 2>/dev/null)
+if [ "$call_status" = 200 ] && [ "$stall_message" = 'request timed out' ] && \
+   [ "$timed_elapsed" -ge 25 ] && [ "$timed_elapsed" -lt 40 ]; then
+    record mcp_deadline_precedes_router pass "elapsed=${timed_elapsed}s status=$call_status $(jq -r '.error | if type == "object" then .message else . end' "$call_out" | head -c 100)"
+else
+    record mcp_deadline_precedes_router fail "elapsed=${timed_elapsed}s status=$call_status $(head -c 120 "$call_out")"
+fi
+# A call after the stalled one proves the child and its MCP process serve
+# on. The listing alone comes from the child's cached tool definitions, so a
+# granted search runs as well, after the provider's own 40 s sleep has ended
+# and the stalled call has fully unwound inside the MCP process.
+call tools-after-stall GET "$router_origin/tools?model=$profile_id&autoload=true"
+listing_after_stall=$(jq -r '.[].tool' "$call_out" 2>/dev/null | sort | tr '\n' ',')
+stall_remaining=$(( 40 - timed_elapsed + 2 ))
+[ "$stall_remaining" -gt 0 ] && sleep "$stall_remaining"
+timed_search search-after-stall 'raven2 vulkan decode'
+if [ "$listing_after_stall" = "web_fetch_exa,web_search_exa," ] && [ "$call_status" = 200 ] && \
+   ! jq -e '.error' "$call_out" >/dev/null 2>&1 && \
+   jq -r '.plain_text_response' "$call_out" | grep -q '^Result ID: '; then
+    record child_serves_after_stall pass "listing intact; granted search executed after the stall, elapsed=${timed_elapsed}s"
+else
+    record child_serves_after_stall fail "listing=$listing_after_stall status=$call_status $(head -c 120 "$call_out")"
+fi
+
+# The model meets the composed tools and the search result. The proposal is
+# the model's own, so both halves are recorded as observations.
 tools_for_chat=$(jq -c '[.[] | .definition | select(.type == "function") | .function.parameters.properties |= (del(.authorization) // {}) | .function.parameters.required |= ((. // []) | map(select(. != "authorization")))]' "$output_directory/tools.json" 2>/dev/null || printf '[]')
 chat_body=$(jq -cn --arg m "$profile_id" --arg q "$query" --argjson tools "$tools_for_chat" \
     '{model: $m, messages: [{role: "user", content: ("Search the web with the query " + $q + " and report the decode rate the result states.")}], tools: $tools, tool_choice: "auto", max_tokens: 512, temperature: 0, chat_template_kwargs: {enable_thinking: false}}')
@@ -473,13 +728,93 @@ else
     record model_reads_tool_result observed "status=$call_status $(printf '%s' "$final_answer" | tr '\n' ' ' | head -c 200)"
 fi
 
+# 9b. The browser runs the served page through the same turn: a headless
+# Chromium on the appliance loads the page at the router origin, sends the
+# prompt, approves the one dialog, and reports every request the page's own
+# fetch made. The checks read that log rather than the page source, so they
+# fail when the page posts to the child port, omits the routing key, or runs
+# the search without a grant, whatever its source says.
+browser_report=$output_directory/browser-turn.json
+if command -v chromium >/dev/null 2>&1; then
+    browser_prompt="Search the web with the query $query and report the decode rate the result states."
+    if python3 "$script_directory/web-mcp/drive-fallback-page.py" --origin "$router_origin" \
+            --api-key-file "$api_key_file" --broker "$broker_origin" \
+            --prompt "$browser_prompt" >"$browser_report" 2>"$output_directory/browser-turn.err"; then
+        browser_origin=$(jq -r '.origin // empty' "$browser_report")
+        if [ "$browser_origin" = "$router_origin" ]; then
+            record browser_page_origin pass "origin=$browser_origin model=$(jq -r '.model' "$browser_report")"
+        else
+            record browser_page_origin fail "origin=$browser_origin"
+        fi
+        listing_request=$(jq -r --arg u "$router_origin/tools?model=$profile_id&autoload=true" \
+            '[.requests[] | select(.method == "GET" and .url == $u)] | length' "$browser_report")
+        if [ "$listing_request" -ge 1 ]; then
+            record browser_lists_tools_via_router pass "GET /tools?model=$profile_id&autoload=true count=$listing_request"
+        else
+            record browser_lists_tools_via_router fail "requests=$(jq -c '[.requests[].url]' "$browser_report" | head -c 300)"
+        fi
+        grant_request=$(jq -r --arg u "$broker_origin/grant" \
+            '[.requests[] | select(.method == "POST" and .url == $u)] | length' "$browser_report")
+        if [ "$grant_request" -ge 1 ]; then
+            record browser_grant_from_broker pass "POST $broker_origin/grant count=$grant_request"
+        else
+            record browser_grant_from_broker fail "no grant request in the page log"
+        fi
+        search_post=$(jq -c --arg u "$router_origin/tools" \
+            '[.requests[] | select(.method == "POST" and .url == $u) | (.body | fromjson? // {}) | select(.tool == "web_search_exa")] | first // empty' "$browser_report")
+        if [ -n "$search_post" ] && \
+           [ "$(printf '%s' "$search_post" | jq -r '.model')" = "$profile_id" ] && \
+           [ "$(printf '%s' "$search_post" | jq -r '.stream')" = false ] && \
+           [ "$(printf '%s' "$search_post" | jq -r '.params.authorization // empty | length')" -gt 0 ] && \
+           [ "$(printf '%s' "$search_post" | jq -r '.params.query')" = "$(jq -r '.dialog.args.query // empty' "$browser_report")" ]; then
+            record browser_search_via_router pass "POST /tools model=$profile_id tool=web_search_exa stream=false grant=present query=$(printf '%s' "$search_post" | jq -r '.params.query')"
+        else
+            record browser_search_via_router fail "$(printf '%s' "$search_post" | jq -c 'del(.params.authorization)' 2>/dev/null | head -c 300)"
+        fi
+        off_router=$(jq -r --arg r "$router_origin/" --arg b "$broker_origin/" \
+            '[.requests[] | select((.url | startswith($r) | not) and (.url | startswith($b) | not))] | length' "$browser_report")
+        if [ "$off_router" -eq 0 ]; then
+            record browser_requests_stay_on_router_and_broker pass "every page request names $router_origin or $broker_origin"
+        else
+            record browser_requests_stay_on_router_and_broker fail "$(jq -c --arg r "$router_origin/" --arg b "$broker_origin/" '[.requests[] | select((.url | startswith($r) | not) and (.url | startswith($b) | not)) | .url]' "$browser_report" | head -c 300)"
+        fi
+        tool_message=$(jq -r '[.history[] | select(.role == "tool")] | first | .content // empty' "$browser_report")
+        if printf '%s' "$tool_message" | grep -q '^Result ID: '; then
+            record browser_tool_result_in_transcript pass "$(printf '%s' "$tool_message" | head -c 120 | tr '\n' ' ')"
+        else
+            record browser_tool_result_in_transcript fail "$(printf '%s' "$tool_message" | head -c 200 | tr '\n' ' ')"
+        fi
+        fetch_post=$(jq -c --arg u "$router_origin/tools" \
+            '[.requests[] | select(.method == "POST" and .url == $u) | (.body | fromjson? // {}) | select(.tool == "web_fetch_exa")] | first // empty' "$browser_report")
+        if [ -n "$fetch_post" ]; then
+            record browser_fetch_via_router observed "model=$(printf '%s' "$fetch_post" | jq -r '.model') result_id=$(printf '%s' "$fetch_post" | jq -r '.params.result_id // empty' | head -c 40)"
+        else
+            record browser_fetch_via_router observed 'the model proposed no fetch in this turn'
+        fi
+        browser_answer=$(jq -r '[.history[] | select(.role == "assistant")] | last | .content // empty' "$browser_report")
+        if [ -n "$browser_answer" ]; then
+            record browser_final_answer pass "$(printf '%s' "$browser_answer" | tr '\n' ' ' | head -c 200)"
+        else
+            record browser_final_answer fail 'the transcript ends without an assistant answer'
+        fi
+        # The grant is spent inside the request the browser sent, so the
+        # retained page log keeps the fields and drops the token.
+        jq '.requests |= map(.body |= (if . == null then null else (fromjson? // .) end) | .body |= (if type == "object" and .params? then .params |= del(.authorization) else . end))' \
+            "$browser_report" >"$browser_report.tmp" && mv "$browser_report.tmp" "$browser_report"
+    else
+        record browser_turn_completed fail "$(tail -c 300 "$output_directory/browser-turn.err" | tr '\n' ' ')"
+    fi
+else
+    record browser_turn_completed fail 'chromium is absent, so the served page was not run'
+fi
+
 # 10. Secret hygiene: key bytes, grant, session secret, and query text stay out
 # of every process image and every retained file.
 key_bytes=$(cat "$token_key_file")
 hygiene_failures=''
 for pid in $(pgrep -x llama-server) $(pgrep -f 'web-mcp/server.py') $broker_pid; do
     [ -r "/proc/$pid/environ" ] || continue
-    for needle in "$key_bytes" "$authorization" "$session_secret"; do
+    for needle in "$key_bytes" "$api_key_bytes" "$authorization" "$session_secret"; do
         [ -n "$needle" ] || continue
         if tr '\0' '\n' <"/proc/$pid/environ" | grep -qF -- "$needle" || \
            tr '\0' '\n' <"/proc/$pid/cmdline" | grep -qF -- "$needle"; then
@@ -509,7 +844,7 @@ PY
 for retained in "$state_directory/server.log" "$state_directory/authorize-broker.log" \
     "$state_directory/session.status" "$output_directory/audit-rows.tsv"; do
     [ -r "$retained" ] || continue
-    for needle in "$key_bytes" "$authorization" "$session_secret"; do
+    for needle in "$key_bytes" "$api_key_bytes" "$authorization" "$session_secret"; do
         [ -n "$needle" ] || continue
         if grep -qF -- "$needle" "$retained"; then
             hygiene_failures="$hygiene_failures file=$(basename "$retained")"

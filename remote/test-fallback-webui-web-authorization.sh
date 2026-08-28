@@ -27,7 +27,8 @@ grep -F 'tools.push(...await resolveWebTools(requestModel, modelStateGeneration)
 # The schemas come from the running server rather than from a copy kept in the
 # page, so the model reads the arguments the wrapper validates. A build without
 # the tool routes answers 404 and the turn carries no web tool.
-grep -F "const response = await fetch('./tools', { headers: authHeaders() });" \
+# shellcheck disable=SC2016
+grep -F 'tools?model=${encodeURIComponent(selectedModel)}&autoload=true`,' \
     "$fallback_ui" >/dev/null
 grep -F 'WEB_TOOL_NAMES.includes(entry && entry.tool)' "$fallback_ui" >/dev/null
 grep -F 'const { authorization, ...offered } = parameters.properties;' \
@@ -59,7 +60,7 @@ grep -F \
     "$fallback_ui" >/dev/null
 grep -F 'BROKER_SESSION_HEADER]: secret' "$fallback_ui" >/dev/null
 grep -F 'searchRequestParams(fields, outcome.authorization)' "$fallback_ui" >/dev/null
-grep -F "body: JSON.stringify({ tool: toolName, params })" "$fallback_ui" >/dev/null
+grep -F "body: JSON.stringify({ model, tool: toolName, params, stream: false })" "$fallback_ui" >/dev/null
 grep -F "'The user refused this web search. It did not run.'" \
     "$fallback_ui" >/dev/null
 
@@ -158,8 +159,19 @@ grep -F 'if (turnGeneration !== conversationGeneration) return;' "$fallback_ui" 
 grep -F 'const WEB_FETCH_BUDGET_PER_TURN = 2;' "$fallback_ui" >/dev/null
 grep -F 'if (fetchBudget.remaining <= 0) {' "$fallback_ui" >/dev/null
 grep -F 'fetchBudget.remaining--;' "$fallback_ui" >/dev/null
-grep -F 'answerCall(callId, toolName, await executeWebTool(toolName, params), turnGeneration);' \
+# The MCP child of the profile that ran the search signed the Result ID, so
+# the fetch posts under the proposing model and a picker moved mid-stream
+# refuses by name instead of routing the ID into another child.
+grep -F 'answerCall(callId, toolName, await executeWebTool(toolName, params, proposalModel), turnGeneration);' \
     "$fallback_ui" >/dev/null
+grep -F 'The fetch did not run: it was proposed by model ${proposalModel}, ' \
+    "$fallback_ui" >/dev/null
+grep -F 'toolName, searchRequestParams(fields, outcome.authorization), proposalModel), turnGeneration);' \
+    "$fallback_ui" >/dev/null
+if grep -F 'executeWebTool(toolName, params, requestModel)' "$fallback_ui" >/dev/null; then
+    printf 'a fetch still executes under the picker value rather than the proposing model\n' >&2
+    exit 1
+fi
 
 # One completion can emit several web_search_exa calls in one round, and
 # CONTINUATION_CAP bounds only the round count, so a per-turn search budget
@@ -199,6 +211,12 @@ grep -F 'if (requestModel !== proposalModel && WEB_TOOL_NAMES.includes(toolName)
     "$fallback_ui" >/dev/null
 grep -F 'function approveWebSearch(fields, proposalModel) {' "$fallback_ui" >/dev/null
 grep -F 'const outcome = await approveWebSearch(fields, proposalModel);' "$fallback_ui" >/dev/null
+# The grant request is awaited with the picker enabled, so the model is read
+# again after approval and before the grant is spent.
+grep -F "if (outcome.decision === 'once' && requestModel !== proposalModel) {" "$fallback_ui" >/dev/null
+# The picker can move while a tool request is awaited, so the turn ends
+# rather than sending the proposing model's call and result to another model.
+grep -F 'during the tool call; the turn ends without a continuation' "$fallback_ui" >/dev/null
 
 # A present-but-malformed start_index or max_chars refuses the fetch rather
 # than falling back to require_integer's default (remote/web-mcp/server.py):
@@ -432,7 +450,7 @@ fi
 # tool. A listing this loop never parsed must not reach the cache: a cached
 # empty result would leave every later turn on this model and generation
 # silently offering no web tool until a reselect or a reload.
-grep -F 'async function fetchWebToolListing() {' "$fallback_ui" >/dev/null
+grep -F 'async function fetchWebToolListing(selectedModel) {' "$fallback_ui" >/dev/null
 grep -F "throw new Error(\`GET /tools returned HTTP \${response.status}\`);" \
     "$fallback_ui" >/dev/null
 grep -F "throw new Error('GET /tools returned a body that is not an array');" \

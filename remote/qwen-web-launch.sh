@@ -281,6 +281,28 @@ export QWEN_WEB_PROFILE QWEN_WEB_PROVIDER
 printf 'web_launch broker_port=%s broker_state_dir=%s signing_key=configured profile=%s provider=%s\n' \
     "$QWEN_WEB_BROKER_PORT" "$QWEN_WEB_STATE_DIR" "$QWEN_WEB_PROFILE" "$QWEN_WEB_PROVIDER"
 
+# The page the router serves is the executor the browser runs, and the pinned
+# llama UI build neither scopes GET /tools by model nor posts the routing key
+# beside the tool, so web mode serves the repository fallback page.
+# qwen-webui-control.sh reads QWEN_STATIC_PATH before its own default, and
+# the page is read here for the two route shapes the broker path depends on,
+# so a directory holding some other index.html refuses before the listener
+# exists.
+QWEN_STATIC_PATH=${QWEN_STATIC_PATH:-"$script_directory/../webui"}
+if [ ! -f "$QWEN_STATIC_PATH/index.html" ]; then
+    printf 'web mode serves the fallback page and finds no index.html under %s\n' \
+        "$QWEN_STATIC_PATH" >&2
+    exit 2
+fi
+if ! grep -qF 'tools?model=' "$QWEN_STATIC_PATH/index.html" || \
+   ! grep -qF 'model, tool: toolName, params' "$QWEN_STATIC_PATH/index.html"; then
+    printf 'the page under %s composes no model-scoped /tools request; web mode serves webui/index.html\n' \
+        "$QWEN_STATIC_PATH" >&2
+    exit 2
+fi
+export QWEN_STATIC_PATH
+printf 'web_launch static_path=%s\n' "$QWEN_STATIC_PATH"
+
 QWEN_ROUTER=1
 QWEN_ROUTER_PRESETS=$web_presets
 QWEN_ROUTER_MAX=1

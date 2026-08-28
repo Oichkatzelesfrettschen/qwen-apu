@@ -1,4 +1,10 @@
 #!/bin/sh
+# Prove the five-to-six-patch transition of prepare-llama-vulkan-source.sh:
+# a tree prepared by the four-patch series upgrades by the router patch alone,
+# the upgraded tree is then reported already verified, and a tree carrying an
+# unrelated edit refuses. The script pins commit f280b269 of llama.cpp, so the
+# fixture is a local clone of a checkout holding that commit; a workstation
+# without one reports the test as not run rather than as passed.
 set -eu
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -8,33 +14,34 @@ pinned_commit=f280b26983ad0fdb705a0d9ebf0503e76f2899b0
 
 if [ ! -d "$base_source/.git" ] || \
    ! git -C "$base_source" cat-file -e "$pinned_commit^{commit}" 2>/dev/null; then
-    printf 'prepare_llama_vulkan_source=not_run reason=no_checkout path=%s commit=%s\n' \
-        "$base_source" "$pinned_commit"
+    printf 'prepare_llama_vulkan_source=not_run reason=no checkout of %s at %s\n' \
+        "$pinned_commit" "$base_source"
     exit 0
 fi
 
 fixture_root=$(mktemp -d "${TMPDIR:-/tmp}/qwen-prepare-source.XXXXXX")
-trap 'rm -rf "$fixture_root"' EXIT HUP INT TERM
+trap 'rm -rf "$fixture_root"' EXIT INT TERM
 patched_source=$fixture_root/llama.cpp-qwen-apu
 
 expect_output() {
-    expected_output=$1
+    expected=$1
     shift
-    command_output=$("$@" 2>&1) || {
-        printf 'command failed: %s\n%s\n' "$*" "$command_output" >&2
+    output=$("$@" 2>&1) || {
+        printf 'command failed: %s\n%s\n' "$*" "$output" >&2
         exit 1
     }
-    case $command_output in
-        *"$expected_output"*) ;;
+    case $output in
+        *"$expected"*) ;;
         *)
-            printf 'expected %s in:\n%s\n' "$expected_output" "$command_output" >&2
+            printf 'expected %s in:\n%s\n' "$expected" "$output" >&2
             exit 1
             ;;
     esac
 }
 
-git clone --quiet --local --no-hardlinks --no-checkout \
-    "$base_source" "$patched_source"
+# Stage one: the tree a workstation prepared under the prior revision, which
+# applied four patches and left tools/server/server.cpp upstream.
+git clone --quiet --local --no-hardlinks --no-checkout "$base_source" "$patched_source"
 git -C "$patched_source" checkout --quiet --detach "$pinned_commit"
 for patch_name in \
     llama-vulkan-low-priority.patch \
@@ -45,31 +52,31 @@ for patch_name in \
 done
 
 expect_output 'patched_source=upgraded' \
-    "$script_directory/prepare-llama-vulkan-source.sh" \
-    "$base_source" "$patched_source"
+    sh "$script_directory/prepare-llama-vulkan-source.sh" "$base_source" "$patched_source"
 expect_output 'patched_source=already_verified' \
-    "$script_directory/prepare-llama-vulkan-source.sh" \
-    "$base_source" "$patched_source"
+    sh "$script_directory/prepare-llama-vulkan-source.sh" "$base_source" "$patched_source"
 
-printf '\nfixture edit\n' >>"$patched_source/README.md"
-if command_output=$("$script_directory/prepare-llama-vulkan-source.sh" \
+# Stage two: an unrelated edit beside the recognized prefix still refuses.
+git -C "$patched_source" checkout --quiet -- tools/server/server.cpp
+printf '\n' >> "$patched_source/README.md"
+if output=$(sh "$script_directory/prepare-llama-vulkan-source.sh" \
         "$base_source" "$patched_source" 2>&1); then
-    printf 'a tree with an unrecognized edit was accepted:\n%s\n' \
-        "$command_output" >&2
+    printf 'a tree with an unrecognized edit was accepted:\n%s\n' "$output" >&2
     exit 1
 fi
-case $command_output in
+case $output in
     *'unrecognized changes'*) ;;
     *)
-        printf 'the refusal names the wrong reason:\n%s\n' \
-            "$command_output" >&2
+        printf 'the refusal names the wrong reason:\n%s\n' "$output" >&2
         exit 1
         ;;
 esac
 
+# Stage three: a clean pinned checkout receives the whole series.
 rm -rf "$patched_source"
+git clone --quiet --local --no-hardlinks --no-checkout "$base_source" "$patched_source"
+git -C "$patched_source" checkout --quiet --detach "$pinned_commit"
 expect_output 'patched_source=prepared' \
-    "$script_directory/prepare-llama-vulkan-source.sh" \
-    "$base_source" "$patched_source"
+    sh "$script_directory/prepare-llama-vulkan-source.sh" "$base_source" "$patched_source"
 
 printf 'prepare_llama_vulkan_source=accepted transitions=upgraded,already_verified,refused,prepared\n'

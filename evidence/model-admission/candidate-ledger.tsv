@@ -36,6 +36,11 @@
 # visual-document-retrieval name repositories with no chat path this suite can
 # grade. `superseded-by-gguf` names a safetensors repository whose own GGUF
 # twin is a separate row, which is redundancy rather than a defect.
+# `artifact-absent` names a repository whose pinned revision holds no model
+# file at all: the Damien420 0.8B max-distillation pair carries a
+# `.gitattributes` alone in both its GGUF and its source repository at the
+# revisions read on 2026-08-28, so there is nothing to fingerprint or fetch,
+# and the row re-enters admission when a later revision publishes a file.
 #
 # preferred_artifact names the file a row's fingerprint speaks for. `-` leaves
 # the Q4_K_M preference to choose, which is right across a roster and wrong where
@@ -78,3 +83,6 @@ qwen35-9b-defiant-fable-mtp	Qwen3.5-9B-The-Defiant-Fable-Uncensored-Heretic-NEO-
 qwen35-9b-defiant-fable	Qwen3.5-9B-The-Defiant-Fable-Uncensored-Heretic-NEO-IMATRIX-MAX	unverified	DavidAU/Qwen3.5-9B-The-Defiant-Fable-Uncensored-Heretic-NEO-IMATRIX-MAX-MTP-GGUF	239d236baf9172e5a4663add74bd34fd297b1c08	gguf	23	3	image-text-to-text	apache-2.0	DavidAU/Qwen3.5-9B-The-Defiant-Fable-Uncensored-Heretic-NEO-IMATRIX-MAX-MTP	Qwen3.5-9B-The-Defiant-Fable-Uncnr-Heretic-NEO-MAX-IQ2_M.gguf	-	-	creative-uncensored	no	phase-1
 qwen38-9b-distill	Qwen3.8-9B-Distill	qwen3.8-distill	empero-ai/Qwen3.8-9B-Distill-GGUF	760121cd70bb4c36b2b5ec58eb765e0df5987efe	gguf	5	0	text-generation	apache-2.0	empero-ai/Qwen3.8-9B	Qwen3.8-9B-Q4_K_M.gguf	-	-	quality-text	no	phase-1
 
+qwen35-08b-max-distill-gguf	Qwen3.5-0.8b-Qwen3.8-max-distillation-50k	unverified	Damien420/Qwen3.5-0.8b-Qwen3.8-max-distillation-50k-checkpoint-gguf	606fd2ab311e7212afacee89149196adef1ae9f6	gguf	0	0	-	-	Damien420/Qwen3.5-0.8b-Qwen3.8-max-distillation-50k	-	-	-	compact-text	no	artifact-absent
+qwen35-08b-max-distill-src	Qwen3.5-0.8b-Qwen3.8-max-distillation-50k	unverified	Damien420/Qwen3.5-0.8b-Qwen3.8-max-distillation-50k	a529f4f7148115c77e057227831550ddd172c0fd	safetensors	0	0	-	-	-	-	-	-	compact-text	yes	artifact-absent
+minicpm5-1b-fable5-v2	MiniCPM5-1B-Claude-Opus-Fable5-V2-Thinking	minicpm5-1b	GnLOLot/MiniCPM5-1B-Claude-Opus-Fable5-V2-Thinking-GGUF	1c5821260e77c42e0b350f0248fabcf3c90ecade	gguf	2	0	text-generation	apache-2.0	GnLOLot/MiniCPM5-1B-Claude-Opus-Fable5-V2-Thinking	MiniCPM5-1B-Claude-Opus-Fable5-V2-Thinking-Q8_0.gguf	llama/block_count=24/embedding_length=1536/feed_forward_length=4608/attention.head_count=16/attention.head_count_kv=2/context_length=131072	7451a05cf1e28a79d97d7c0bc951028c0b1915119bf9046acd06a0e3d931f47c	reasoning	no	static-admitted

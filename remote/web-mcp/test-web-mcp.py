@@ -2903,6 +2903,52 @@ class WebMcpServerTest(unittest.TestCase):
         self.assertIn("QWEN_WEB_STATE_DIR", self.result_text(response))
         self.assertIn("cannot open", self.result_text(response))
 
+    def test_the_fake_provider_holds_a_delayed_query_for_the_fixture_seconds(self):
+        with open(self.fixture_path, "rb") as handle:
+            document = json.loads(handle.read().decode("utf-8"))
+        document["delays"] = {"raven2 vulkan decode": 1.5}
+        delayed = os.path.join(self.directory.name, "delayed-fixtures.json")
+        with open(delayed, "w", encoding="utf-8") as handle:
+            json.dump(document, handle)
+        session = self.open_session(QWEN_WEB_FAKE_FIXTURES=delayed)
+        started = time.monotonic()
+        response = self.search(session, max_results=1)
+        elapsed = time.monotonic() - started
+        self.assertFalse(response["result"]["isError"])
+        self.assertGreaterEqual(elapsed, 1.5)
+
+    def test_the_fake_provider_matches_a_fixture_key_by_its_words(self):
+        session = self.open_session()
+        for query in ("Raven2 Vulkan decode rate", "the raven2 vulkan decode figure", "decode vulkan raven2"):
+            response = self.search(session, query=query, max_results=1)
+            self.assertFalse(response["result"]["isError"], query)
+            self.assertIn("Result ID: ", self.result_text(response), query)
+        response = self.search(session, query="raven2 decode", max_results=1)
+        self.assertFalse(response["result"]["isError"])
+        self.assertNotIn("Result ID: ", self.result_text(response))
+        words_fixture = os.path.join(self.directory.name, "words-fixtures.json")
+        with open(words_fixture, "w", encoding="utf-8") as handle:
+            json.dump({"search": {"a b": [], "a b c": []}, "delays": {"a b c d": 1}}, handle)
+        provider = server.FakeProvider(words_fixture)
+        self.assertEqual(provider.fixture_key("c B a"), "a b c")
+        self.assertEqual(provider.fixture_key("x d c b a"), "a b c d")
+        self.assertIsNone(provider.fixture_key("a"))
+
+    def test_an_argument_outside_the_schema_is_refused_by_name(self):
+        session = self.open_session()
+        # The advertised schemas are closed, so a client validating against
+        # tools/list refuses the same call the server refuses at execution.
+        for tool in session.request("tools/list")["result"]["tools"]:
+            self.assertIs(tool["inputSchema"]["additionalProperties"], False, tool["name"])
+        response = self.search(session, model="web-balanced-admission")
+        self.assertTrue(response["result"]["isError"])
+        self.assertIn("model", self.result_text(response))
+        response = session.call_tool(
+            "fetch_exa", {"result_id": "not-a-token", "stream": False}
+        )
+        self.assertTrue(response["result"]["isError"])
+        self.assertIn("stream", self.result_text(response))
+
     def test_the_fake_provider_runs_without_a_state_directory(self):
         session = self.open_session()
         response = self.search(session, max_results=1)

@@ -61,6 +61,7 @@ remote/test-qwen-launch-router-preflight.sh
 remote/test-qwen-capacity-policy.sh
 remote/test-web-presets.sh
 remote/test-qwen-web-launch.sh
+remote/test-prepare-llama-vulkan-source.sh
 remote/test-qwen-session-signals.sh
 remote/test-admit-web-router-fake.sh
 remote/test-quality-roster.sh
