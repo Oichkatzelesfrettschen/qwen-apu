@@ -96,6 +96,7 @@ printf '%s\n' '#!/bin/sh' 'set -eu' \
     '  wrong_decode) sleep 2; printf "| fake | tg128 | 99.00 +/- 0.10 |\\n"; exit 0 ;;' \
     '  misleading_columns) sleep 2; printf "| pp32 | pp512 | 99.00 +/- 0.10 |\\n| tg64 | tg128 | 99.00 +/- 0.10 |\\n"; exit 0 ;;' \
     '  exact_depth_labels) sleep 2; printf "| fake | pp32 @ d32 | 12.00 +/- 0.10 |\\n| fake | tg64 @ d32 | 3.00 +/- 0.10 |\\n"; exit 0 ;;' \
+    '  device_banner) sleep 2; printf "ggml_vulkan: Found 1 Vulkan devices:\\n| fake | pp32 | 12.00 +/- 0.10 |\\n| fake | tg64 | 3.00 +/- 0.10 |\\n\\nbuild: f280b26 (1)\\n"; exit 0 ;;' \
     'esac' \
     'printf "| fake | tg64 | 3.00 +/- 0.10 |\\n"' >"$fake_bench"
 chmod +x "$fake_bench"
@@ -596,6 +597,32 @@ env QWEN_BANDWIDTH_OUTPUT=$exact_label_output QWEN_LLAMA_BENCH=$fake_bench \
 awk -F'\t' 'NR > 1 && $5 == "3.00" && $6 == "12.00" { found++ }
             END { exit found == 2 ? 0 : 1 }' \
     "$exact_label_output/bandwidth-summary.tsv"
+
+# The real llama-bench frames its table with lines that carry no pipe at all --
+# a device banner above it, a blank line and a build line below -- while every
+# fixture above emits pipe-bearing lines alone. mawk makes a negative field
+# index a fatal run-time error, so an unguarded $(NF - 2) aborts on the banner,
+# the extractor's END never runs, and the arm records an empty rate rather than
+# the n/a a genuine miss produces. This fixture reproduces the real frame and
+# requires both rates to survive it.
+banner_output=$temporary_directory/bandwidth-device-banner
+active_fixture=bandwidth-unpiped-frame-lines
+diagnostic_file=$temporary_directory/device-banner.stderr
+env QWEN_BANDWIDTH_OUTPUT=$banner_output QWEN_LLAMA_BENCH=$fake_bench \
+    QWEN_TENSOR_CENSUS=$fake_census QWEN_CLOCK_SAMPLER=$fake_sampler \
+    QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file \
+    QWEN_TEST_BENCH_MODE=device_banner QWEN_BENCH_NICE_LEVELS=19 \
+    QWEN_BENCH_PREFILL=32 \
+    "$script_directory/run-bandwidth-ladder.sh" "$first_spaced_model" \
+    >"$temporary_directory/device-banner.stdout" \
+    2>"$temporary_directory/device-banner.stderr"
+awk -F'\t' 'NR > 1 && $5 == "3.00" && $6 == "12.00" { found++ }
+            END { exit found == 2 ? 0 : 1 }' \
+    "$banner_output/bandwidth-summary.tsv"
+if grep -q 'negative field index' "$temporary_directory/device-banner.stderr"; then
+    printf 'bandwidth extractor aborted on a line without pipes\n' >&2
+    exit 1
+fi
 
 active_fixture=completed
 diagnostic_file=
