@@ -413,6 +413,7 @@ matters because each link adds policy the next link assumes:
 qwen-launch.sh            waits for /health, prints reachable addresses
   qwen-webui-control.sh   owns the tmux session, forwards environment
     qwen-webui-session.sh arms probe, monitor, kernel-hazard watcher
+                          and, under QWEN_WEB_BROKER=1, the approval broker
       run-qwen-capacity-server.sh
         model-memory-preflight.sh   reports headroom
         qwen-capacity-policy.sh     builds the llama-server argv
@@ -420,7 +421,7 @@ qwen-launch.sh            waits for /health, prints reachable addresses
             qwen-router-exec-guard.sh  rechecks authority identities, execs
 ```
 
-Four properties of that chain surprise a reader who meets one file alone.
+Five properties of that chain surprise a reader who meets one file alone.
 
 `radv-low-priority-env.sh` unsets every `GGML_VK_*` variable before its profile
 case runs, so an ambient submission setting reaches the server only when the
@@ -441,6 +442,17 @@ non-zero on residue.
 
 `model-memory-preflight.sh` reports host and Vulkan headroom and admits every
 launch. A load that exceeds the machine fails at once and names its reason.
+
+`qwen-web-launch.sh` exports `QWEN_WEB_BROKER=1` with the broker port, state
+directory, and signing key path, so the session starts `authorize-broker.py` on
+127.0.0.1 as a guarded child and records it as `broker_pid=` on the
+`state=running` line. The broker starts ahead of the capacity server because it
+allocates nothing on the device and model loading holds the readiness loop for
+up to 120 seconds. `qwen-teardown.sh` signals that PID with the other guards,
+waits for it to leave, and requires `authorize-session.secret` to be gone,
+since the broker unlinks that file while unwinding from SIGTERM and a surviving
+secret authorizes a page against the next launch. The ordinary `qwen-launch.sh`
+path leaves the marker unset, records no `broker_pid`, and starts no broker.
 
 ## Commands
 

@@ -41,6 +41,10 @@ set -eu
     printf 'QWEN_ROUTER_PRESETS=%s\n' "${QWEN_ROUTER_PRESETS:-unset}"
     printf 'QWEN_ROUTER_MAX=%s\n' "${QWEN_ROUTER_MAX:-unset}"
     printf 'QWEN_BIND_HOST=%s\n' "${QWEN_BIND_HOST:-unset}"
+    printf 'QWEN_WEB_BROKER=%s\n' "${QWEN_WEB_BROKER:-unset}"
+    printf 'QWEN_WEB_BROKER_PORT=%s\n' "${QWEN_WEB_BROKER_PORT:-unset}"
+    printf 'QWEN_WEB_STATE_DIR=%s\n' "${QWEN_WEB_STATE_DIR:-unset}"
+    printf 'QWEN_WEB_TOKEN_KEY_FILE=%s\n' "${QWEN_WEB_TOKEN_KEY_FILE:-unset}"
 } >"$QWEN_WEB_LAUNCH_RECORD"
 EOF
 chmod +x "$harness/qwen-launch.sh"
@@ -98,9 +102,55 @@ if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
     grep -qx 'QWEN_BIND_HOST=127.0.0.1' "$record" || outcome=wrong_bind_host
     grep -qx 'profile=low-async' "$record" || outcome=profile_dropped
     report wrapper_forwards_web_router_environment "$outcome"
+    broker_outcome=ok
+    grep -qx 'QWEN_WEB_BROKER=1' "$record" || broker_outcome=marker_unset
+    grep -qx 'QWEN_WEB_BROKER_PORT=8571' "$record" ||
+        broker_outcome=wrong_broker_port
+    grep -qx "QWEN_WEB_STATE_DIR=$state_directory/web-mcp" "$record" ||
+        broker_outcome=wrong_broker_state_dir
+    report wrapper_exports_broker_marker "$broker_outcome"
 else
     report wrapper_forwards_web_router_environment failed
     cat "$work/launch.err" >&2
+fi
+
+# The signing key travels as a path the wrapper reads before the launch, and a
+# key file the broker cannot read refuses here rather than at the first
+# approval a human has already given.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record \
+    QWEN_WEB_TOKEN_KEY_FILE=$work/absent-token.key \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/absent-key.log" 2>"$work/absent-key.err"; then
+    report unreadable_signing_key_refused accepted
+else
+    outcome=ok
+    grep -q 'grant signing key is unreadable' "$work/absent-key.err" ||
+        outcome=missing_message
+    report unreadable_signing_key_refused "$outcome"
+fi
+
+token_key_file=$work/token.key
+printf 'fixture-signing-key\n' >"$token_key_file"
+chmod 600 "$token_key_file"
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record \
+    QWEN_WEB_TOKEN_KEY_FILE=$token_key_file \
+    QWEN_WEB_BROKER_PORT=18571 \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/key.log" 2>"$work/key.err"; then
+    outcome=ok
+    grep -qx "QWEN_WEB_TOKEN_KEY_FILE=$token_key_file" "$record" ||
+        outcome=key_path_dropped
+    grep -qx 'QWEN_WEB_BROKER_PORT=18571' "$record" || outcome=port_override_dropped
+    grep -q 'signing_key=configured' "$work/key.log" || outcome=key_state_unreported
+    if grep -q 'fixture-signing-key' "$work/key.log" "$work/key.err"; then
+        outcome=key_contents_printed
+    fi
+    report signing_key_path_forwarded "$outcome"
+else
+    report signing_key_path_forwarded refused
+    cat "$work/key.err" >&2
 fi
 
 # The marker state and the authorizer setting are reported before the launch.

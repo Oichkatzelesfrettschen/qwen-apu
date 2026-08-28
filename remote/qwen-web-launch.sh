@@ -121,10 +121,39 @@ fi
 printf 'web_launch presets=%s unvalidated_depth_marker=%s authorizer_ready=%s bind=127.0.0.1 models_max=1\n' \
     "$web_presets" "$depth_marker_state" "${QWEN_WEB_AUTHORIZER_READY:-0}"
 
+# The approval broker's lifetime is this launch's. A section reaching the
+# network through its MCP server signs each search from one human approval, and
+# `authorize-broker.py` is the only issuer of that signature, so a web router
+# running while nothing issues grants serves a tool every call is refused. This
+# marker travels to qwen-webui-session.sh through qwen-webui-control.sh, which
+# starts the broker as a guarded child; the ordinary qwen-launch.sh path leaves
+# the marker unset and starts no broker.
+#
+# The signing key reaches the broker as a path in the environment and its
+# contents stay in the broker's own address space. A launch that names a key
+# file the broker cannot read is refused here, where the reason is legible,
+# rather than at the first approval a human has already given.
+QWEN_WEB_BROKER=1
+QWEN_WEB_BROKER_PORT=${QWEN_WEB_BROKER_PORT:-8571}
+QWEN_WEB_STATE_DIR=${QWEN_WEB_STATE_DIR:-$state_directory/web-mcp}
+if [ -n "${QWEN_WEB_TOKEN_KEY_FILE:-}" ] && [ ! -r "$QWEN_WEB_TOKEN_KEY_FILE" ]; then
+    printf 'the grant signing key is unreadable: %s\n' \
+        "$QWEN_WEB_TOKEN_KEY_FILE" >&2
+    exit 2
+fi
+signing_key_state=absent
+if [ -n "${QWEN_WEB_TOKEN_KEY_FILE:-}" ]; then
+    signing_key_state=configured
+    export QWEN_WEB_TOKEN_KEY_FILE
+fi
+printf 'web_launch broker_port=%s broker_state_dir=%s signing_key=%s\n' \
+    "$QWEN_WEB_BROKER_PORT" "$QWEN_WEB_STATE_DIR" "$signing_key_state"
+
 QWEN_ROUTER=1
 QWEN_ROUTER_PRESETS=$web_presets
 QWEN_ROUTER_MAX=1
 QWEN_BIND_HOST=127.0.0.1
 export QWEN_ROUTER QWEN_ROUTER_PRESETS QWEN_ROUTER_MAX QWEN_BIND_HOST
+export QWEN_WEB_BROKER QWEN_WEB_BROKER_PORT QWEN_WEB_STATE_DIR
 
 exec "$launcher" "$profile"

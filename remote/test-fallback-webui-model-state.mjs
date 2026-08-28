@@ -17,6 +17,14 @@ class FakeElement {
     this.value = '';
   }
 
+  // A DOM element returns null for an attribute it carries no value for, and
+  // the page reads the broker origin through this call, so the double answers
+  // the way an element without that attribute does: the page falls through to
+  // its stated default rather than reading a value this harness invented.
+  getAttribute() {
+    return null;
+  }
+
   get textContent() {
     return this._textContent;
   }

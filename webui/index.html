@@ -5,6 +5,16 @@
 <title>qwen-apu</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <!--
+  The approval broker binds a loopback port of its own, so its origin is a
+  deployment fact this page reads rather than a value it can derive from its
+  own location: the browser runs on the SSH client machine and reaches the
+  broker through a forward whose local port the operator chooses.
+  QWEN_WEB_BROKER_PORT sets the served port and this tag states the same
+  number, so an operator who moves the port edits one file the served page
+  carries. A `?broker=` query parameter overrides it for one visit.
+-->
+<meta name="qwen-web-broker" content="http://127.0.0.1:8571">
+<!--
   llama-server serves this front end from --path, so the laptop runs no second
   web service or graphical process. The browser runs on the SSH client machine;
   the Raven2 APU keeps its shared DDR4 and graphics queues for inference and the
@@ -414,7 +424,30 @@ function forgetWebTools() {
   webToolsGeneration = -1;
 }
 
-const BROKER_ORIGIN_DEFAULT = 'http://127.0.0.1:8571';
+// The broker origin resolves in one order: a `?broker=` query parameter, then
+// the `qwen-web-broker` meta tag the served page carries, then the loopback
+// port qwen-webui-session.sh binds by default. Each source is read as an
+// origin and any trailing slash is dropped, so `brokerOrigin` concatenates a
+// path onto it without producing a doubled separator. A source present and
+// empty falls through to the next, which leaves a stripped meta tag serving
+// the stated default rather than an empty origin the fetch resolves against
+// this page.
+const BROKER_ORIGIN_FALLBACK = 'http://127.0.0.1:8571';
+function configuredBrokerOrigin() {
+  let configured = '';
+  try {
+    configured = (new URL(window.location.href)).searchParams.get('broker') || '';
+  } catch (error) {
+    configured = '';
+  }
+  if (!configured.trim()) {
+    const tag = document.querySelector('meta[name="qwen-web-broker"]');
+    configured = (tag && tag.getAttribute('content')) || '';
+  }
+  if (!configured.trim()) configured = BROKER_ORIGIN_FALLBACK;
+  return configured.trim().replace(/\/+$/, '');
+}
+const BROKER_ORIGIN_DEFAULT = configuredBrokerOrigin();
 const BROKER_SESSION_HEADER = 'X-Qwen-Web-Session';
 const CONTINUATION_CAP = 4;
 // A tool result enters the context as a message, so its length is prompt the

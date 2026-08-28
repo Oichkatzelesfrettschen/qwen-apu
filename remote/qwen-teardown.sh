@@ -19,9 +19,24 @@ status_file=$state_directory/session.status
 # The session script rewrites session.status to state=stopped as it exits,
 # which drops the guard PIDs, so read them before asking it to stop.
 guard_pids=''
+broker_pid=''
+broker_secret_file=''
 if [ -r "$status_file" ]; then
     guard_pids=$(sed -n '1p' "$status_file" | tr ' ' '\n' |
-        sed -n 's/^\(monitor_pid\|latency_watchdog_pid\|kernel_hazard_watchdog_pid\)=//p')
+        sed -n 's/^\(monitor_pid\|latency_watchdog_pid\|kernel_hazard_watchdog_pid\|broker_pid\)=//p')
+    # The broker is read a second time on its own, because its absence proof
+    # covers a file as well as a process: it unlinks its per-launch session
+    # secret while unwinding from SIGTERM, and a secret surviving the teardown
+    # authorizes a page against the next launch. A session that ran no broker
+    # records no field here, so an ordinary teardown proves nothing about a
+    # secret file a manual broker run left behind.
+    broker_pid=$(sed -n '1p' "$status_file" | tr ' ' '\n' |
+        sed -n 's/^broker_pid=//p')
+    # The session records the secret's path whole on its own line, so the proof
+    # reads the file the broker actually wrote: QWEN_WEB_STATE_DIR reaches that
+    # session alone, and re-deriving the default here would prove the absence
+    # of a file a configured launch placed elsewhere.
+    broker_secret_file=$(sed -n 's/^broker secret_file=//p' "$status_file")
 fi
 
 "$script_directory/qwen-webui-control.sh" stop || true
@@ -82,7 +97,36 @@ for probe_pid in $(pgrep -x vulkan-graphics-service-probe 2>/dev/null || true); 
     kill -KILL "$probe_pid" 2>/dev/null || true
 done
 
+# The broker unlinks its session secret in the cleanup that runs after the
+# accept loop unwinds, so the file check waits for the process to leave rather
+# than reading the directory while it is still writing. A broker that survives
+# the signal is residue, and so is a secret file outliving the broker that
+# wrote it.
+broker_residue=0
+case $broker_pid in
+    '' | *[!0-9]*) broker_pid='' ;;
+esac
+if [ -n "$broker_pid" ]; then
+    attempt=0
+    while [ "$attempt" -lt 100 ] && kill -0 "$broker_pid" 2>/dev/null; do
+        attempt=$((attempt + 1))
+        sleep 0.1
+    done
+    if kill -0 "$broker_pid" 2>/dev/null; then
+        printf 'approval broker still running: %s\n' "$broker_pid" >&2
+        broker_residue=1
+    elif [ -n "$broker_secret_file" ] && \
+         { [ -e "$broker_secret_file" ] || [ -L "$broker_secret_file" ]; }; then
+        printf 'approval broker session secret survives: %s\n' \
+            "$broker_secret_file" >&2
+        broker_residue=1
+    fi
+fi
+
 residue=$snapshot_residue
+if [ "$broker_residue" -ne 0 ]; then
+    residue=1
+fi
 if pgrep -x llama-server >/dev/null 2>&1; then
     printf 'llama-server still running: %s\n' \
         "$(pgrep -x llama-server | tr '\n' ' ')" >&2
@@ -105,7 +149,7 @@ fi
 
 rm -f "$state_directory/server.pid"
 if [ "$residue" -eq 0 ]; then
-    printf 'torn down: no server, tmux session, probe, or router snapshot; port %s free\n' \
+    printf 'torn down: no server, tmux session, probe, approval broker, or router snapshot; port %s free\n' \
         "$server_port"
 else
     printf 'teardown incomplete\n' >&2

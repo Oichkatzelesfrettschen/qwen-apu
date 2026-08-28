@@ -261,9 +261,20 @@ if grep -E "(readBrowserStorage|writeBrowserStorage)\([^)]*brokerSession" \
     exit 1
 fi
 
-# The broker is reached over loopback by construction, so a default naming any
+# The broker is reached over loopback by construction, so a fallback naming any
 # other host would send the approval to a listener the broker refuses to be.
-grep -F "const BROKER_ORIGIN_DEFAULT = 'http://127.0.0.1:" "$fallback_ui" >/dev/null
+# The served page states the deployed origin in its own meta tag, a `?broker=`
+# query parameter overrides it for one visit, and the fallback holds the port
+# qwen-webui-session.sh binds by default, so a page that lost both sources
+# still reaches the launched broker.
+grep -F "const BROKER_ORIGIN_FALLBACK = 'http://127.0.0.1:8571'" \
+    "$fallback_ui" >/dev/null
+grep -F '<meta name="qwen-web-broker" content="http://127.0.0.1:8571">' \
+    "$fallback_ui" >/dev/null
+grep -F "searchParams.get('broker')" "$fallback_ui" >/dev/null
+grep -F 'meta[name="qwen-web-broker"]' "$fallback_ui" >/dev/null
+grep -F "const BROKER_ORIGIN_DEFAULT = configuredBrokerOrigin();" \
+    "$fallback_ui" >/dev/null
 
 # A broker restart on the same port signs a new per-launch secret, so a 403
 # against the cached one is a stale-cache signal rather than a standing

@@ -271,4 +271,11 @@ else
         printf 'reachable at http://%s:%s\n' "$address" "$server_port"
     done
 fi
+# The approval broker binds the loopback literal whatever the server's listener
+# is, so a LAN launch reaches it through an SSH forward rather than through the
+# addresses above. It is reported where the marker set it running.
+if [ "${QWEN_WEB_BROKER:-0}" = 1 ]; then
+    printf 'approval broker at http://127.0.0.1:%s (loopback only)\n' \
+        "${QWEN_WEB_BROKER_PORT:-8571}"
+fi
 printf 'stop it with %s/qwen-teardown.sh\n' "$script_directory"

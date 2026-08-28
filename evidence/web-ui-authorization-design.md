@@ -164,12 +164,44 @@ rather than unimplemented; patching one in would thread a grant through
 `server_mcp_tool::invoke` at `server-tools.cpp:1837-1839` or gate the `/tools`
 handler, which is a new channel rather than an interception.
 
-## Scope cut: the broker's lifetime is manual
+## The broker's lifetime is the web launch's
 
-`authorize-broker.py` runs for as long as a caller runs it. The launch chain
-starts it nowhere: `qwen-webui-session.sh` arms the probe, the monitor, and the
-kernel-hazard watcher, and `qwen-teardown.sh` proves guard absence on exit,
-which are the two files an automatic lifetime would change. The chain also
-wires `--mcp-servers-config` into no launch, so the broker would presently
-outlive and underlie a web router that the appliance never starts; binding the
-two lifetimes belongs with the change that starts the router.
+`qwen-web-launch.sh` exports `QWEN_WEB_BROKER=1` beside the broker port, its
+state directory, and the signing key path, and `qwen-webui-control.sh` forwards
+all five inside the tmux command string the way it forwards the projector and
+speculation settings. `qwen-webui-session.sh` reads the marker and starts
+`authorize-broker.py` on 127.0.0.1 as a guarded child beside the probe, the
+monitor, and the kernel-hazard watcher: it starts ahead of the capacity server
+because model loading holds the readiness loop for up to 120 seconds and the
+broker allocates nothing on the device, it waits for the broker's own
+`listening HOST PORT` line under a 30 second bound, and it records the process
+as `broker_pid=` on the `state=running` line. `cleanup` signals it with the
+other guards, so every terminating signal and every startup failure below it
+stops the broker.
+
+`qwen-teardown.sh` reads `broker_pid` from that line before `stop` rewrites the
+file, signals it with the other guards, waits for the process to leave, and
+then requires `authorize-session.secret` to be gone: the broker unlinks that
+file while unwinding from SIGTERM, so a secret outliving the teardown is a
+credential the next launch's page would present. A surviving broker and a
+surviving secret are both residue and the script exits non-zero on either. The
+field appears only where a broker ran, so an ordinary `qwen-launch.sh` session
+records nothing there and the teardown proves nothing about a file a manual
+broker run left behind.
+
+`qwen-launch.sh` prints the broker's loopback origin beside the server's
+reachable addresses under the same marker. The broker binds the loopback
+literal whatever the server's listener is, so a LAN launch reaches it through
+an SSH forward rather than through those addresses.
+
+The served page reads that origin rather than assuming it: a `?broker=` query
+parameter wins, then the `qwen-web-broker` meta tag, then the loopback port the
+session binds by default.
+
+`remote/test-qwen-web-launch.sh` measures the exported marker, port, state
+directory, and key path, and requires an unreadable key file to refuse the
+launch. `remote/test-qwen-session-signals.sh` drives a complete startup against
+fake guards and a fake broker and requires the recorded `broker_pid`, its
+death under SIGTERM, the secret's removal, an ordinary session that records no
+`broker_pid`, and a teardown that reports residue against a broker retaining
+SIGTERM.

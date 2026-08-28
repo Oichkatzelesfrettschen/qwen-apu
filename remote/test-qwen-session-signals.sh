@@ -104,4 +104,258 @@ for signal_and_status in HUP:129 INT:130 TERM:143; do
     fi
 done
 
+# The approval broker is a guarded child of the same session, so the arms below
+# drive a complete startup rather than the readiness loop the signal arms stop
+# inside: session.status carries broker_pid only after state=running, and the
+# secret file's fate is what the teardown proves. Every collaborator the
+# startup reaches is a fixture, so the arm runs without a device.
+cat >"$fixture_remote/monitor-qwen-runtime.sh" <<'MONITOR'
+#!/bin/sh
+trap 'exit 0' HUP INT TERM
+while :; do
+    sleep 1
+done
+MONITOR
+cat >"$fixture_remote/watch-qwen-kernel-hazards.sh" <<'HAZARD'
+#!/bin/sh
+printf 'watch_ready_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$2"
+trap 'exit 0' HUP INT TERM
+while :; do
+    sleep 1
+done
+HAZARD
+# The session admits the server only once its affinity equals
+# QWEN_INFERENCE_CPU, its nice value reads 19, and the readiness marker reaches
+# the log, so the fixture applies each of the three to itself.
+cat >"$fixture_remote/ready-capacity-server.sh" <<'READY'
+#!/bin/sh
+renice -n 19 -p $$ >/dev/null 2>&1
+taskset -cp "${QWEN_INFERENCE_CPU:-0}" $$ >/dev/null 2>&1
+printf '%s\n' "$$" >"$QWEN_TEST_SERVER_PID_MARKER"
+printf 'model loaded\n'
+trap 'exit 0' HUP INT TERM
+while :; do
+    sleep 1
+done
+READY
+cat >"$fixture_remote/latency-probe.sh" <<'PROBE'
+#!/bin/sh
+probe_log=''
+while [ "$#" -gt 0 ]; do
+    case $1 in
+        --log)
+            probe_log=$2
+            shift
+            ;;
+    esac
+    shift
+done
+printf 'probe_start ok\n' >"$probe_log"
+trap 'exit 0' HUP INT TERM
+while :; do
+    sleep 1
+done
+PROBE
+# One fake broker honours SIGTERM and removes its session secret, and one
+# retains the signal so the teardown meets a survivor and reports residue.
+cat >"$fixture_remote/fake-broker.sh" <<'BROKER'
+#!/bin/sh
+set -eu
+broker_port=8571
+while [ "$#" -gt 0 ]; do
+    case $1 in
+        --port)
+            broker_port=$2
+            shift
+            ;;
+    esac
+    shift
+done
+mkdir -p "${QWEN_WEB_STATE_DIR:?}"
+secret_file=$QWEN_WEB_STATE_DIR/authorize-session.secret
+printf 'fixture-session-secret\n' >"$secret_file"
+if [ "${QWEN_TEST_BROKER_IGNORES_TERM:-0}" = 1 ]; then
+    trap '' TERM
+else
+    trap 'rm -f -- "$secret_file"; exit 0' HUP INT TERM
+fi
+printf 'listening 127.0.0.1 %s\n' "$broker_port"
+while :; do
+    sleep 1
+done
+BROKER
+chmod +x "$fixture_remote"/*.sh
+
+start_ready_session() {
+    ready_state_directory=$1
+    ready_marker=$2
+    mkdir -p "$ready_state_directory"
+    cp "$fixture_remote/ready-capacity-server.sh" \
+        "$fixture_remote/run-qwen-capacity-server.sh"
+    QWEN_TEST_SERVER_PID_MARKER=$ready_state_directory/server.marker \
+        QWEN_VULKAN_LATENCY_PROBE=$fixture_remote/latency-probe.sh \
+        QWEN_WEB_BROKER=$ready_marker \
+        QWEN_WEB_BROKER_PROGRAM=$fixture_remote/fake-broker.sh \
+        QWEN_WEB_BROKER_PORT=18571 \
+        QWEN_WEB_STATE_DIR=$ready_state_directory/web-mcp \
+        "$fixture_remote/qwen-webui-session.sh" \
+            "$temporary_directory/fake-server" \
+            "$temporary_directory/fake-model" \
+            "$temporary_directory/fake-static" 4096 4096 18080 \
+            "$ready_state_directory" low-serialized \
+      >"$ready_state_directory/session.stdout" \
+      2>"$ready_state_directory/session.stderr" &
+    session_pid=$!
+    attempt=0
+    while [ "$attempt" -lt 600 ]; do
+        if grep -q 'state=running ' \
+            "$ready_state_directory/session.status" 2>/dev/null; then
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        sleep 0.1
+    done
+    printf 'session did not reach state=running under marker %s\n' \
+        "$ready_marker" >&2
+    cat "$ready_state_directory/session.stderr" >&2
+    exit 1
+}
+
+read_status_field() {
+    sed -n '1p' "$1/session.status" | tr ' ' '\n' |
+        sed -n "s/^$2=//p"
+}
+
+# The marker starts the broker, the status file records its PID, and the
+# terminating-signal path stops it and takes the session secret with it.
+broker_state_directory=$temporary_directory/state-broker
+start_ready_session "$broker_state_directory" 1
+recorded_broker_pid=$(read_status_field "$broker_state_directory" broker_pid)
+case $recorded_broker_pid in
+    '' | *[!0-9]*)
+        printf 'session recorded no broker_pid under the marker\n' >&2
+        exit 1
+        ;;
+esac
+broker_secret_file=$broker_state_directory/web-mcp/authorize-session.secret
+if [ ! -s "$broker_secret_file" ]; then
+    printf 'broker wrote no session secret at %s\n' "$broker_secret_file" >&2
+    exit 1
+fi
+kill -TERM "$session_pid"
+set +e
+wait "$session_pid"
+session_status=$?
+set -e
+session_pid=''
+if [ "$session_status" -ne 143 ]; then
+    printf 'broker session returned %s instead of 143\n' "$session_status" >&2
+    exit 1
+fi
+if kill -0 "$recorded_broker_pid" 2>/dev/null; then
+    printf 'session retained broker pid %s\n' "$recorded_broker_pid" >&2
+    kill -KILL "$recorded_broker_pid" 2>/dev/null || true
+    exit 1
+fi
+if [ -e "$broker_secret_file" ]; then
+    printf 'session secret survives the broker: %s\n' "$broker_secret_file" >&2
+    exit 1
+fi
+
+# The ordinary launch leaves the marker unset, so its session runs no broker and
+# records no broker_pid for a teardown to act on.
+plain_state_directory=$temporary_directory/state-plain
+start_ready_session "$plain_state_directory" 0
+if [ -n "$(read_status_field "$plain_state_directory" broker_pid)" ]; then
+    printf 'session recorded broker_pid without the marker\n' >&2
+    exit 1
+fi
+if [ -d "$plain_state_directory/web-mcp" ]; then
+    printf 'session created a broker state directory without the marker\n' >&2
+    exit 1
+fi
+kill -TERM "$session_pid"
+wait "$session_pid" 2>/dev/null || true
+session_pid=''
+
+# The teardown reads broker_pid before `stop` rewrites the status file, signals
+# the process with the other guards, and proves both the process and its secret
+# gone. Its control script is a fixture, so the arm leaves any tmux session on
+# this machine alone.
+cp "$script_directory/qwen-teardown.sh" "$fixture_remote/qwen-teardown.sh"
+cat >"$fixture_remote/qwen-webui-control.sh" <<'CONTROL'
+#!/bin/sh
+set -eu
+printf 'stopped tmux_socket=fixture tmux_session=fixture\n'
+CONTROL
+chmod +x "$fixture_remote/qwen-teardown.sh" "$fixture_remote/qwen-webui-control.sh"
+
+run_teardown_arm() {
+    teardown_state_directory=$temporary_directory/state-teardown-$1
+    teardown_ignores_term=$2
+    mkdir -p "$teardown_state_directory/web-mcp"
+    QWEN_WEB_STATE_DIR=$teardown_state_directory/web-mcp \
+        QWEN_TEST_BROKER_IGNORES_TERM=$teardown_ignores_term \
+        "$fixture_remote/fake-broker.sh" --port 18571 \
+        >"$teardown_state_directory/broker.log" 2>&1 &
+    teardown_broker_pid=$!
+    attempt=0
+    while [ "$attempt" -lt 300 ] && \
+          [ ! -s "$teardown_state_directory/web-mcp/authorize-session.secret" ]; do
+        attempt=$((attempt + 1))
+        sleep 0.01
+    done
+    {
+        printf 'state=running server_pid=1 monitor_pid=1 latency_watchdog_pid=1 kernel_hazard_watchdog_pid=1 broker_pid=%s profile=low-serialized\n' \
+            "$teardown_broker_pid"
+        printf 'broker secret_file=%s\n' \
+            "$teardown_state_directory/web-mcp/authorize-session.secret"
+    } >"$teardown_state_directory/session.status"
+    set +e
+    QWEN_WEBUI_STATE_DIRECTORY=$teardown_state_directory \
+        QWEN_WEB_STATE_DIR=$teardown_state_directory/web-mcp \
+        QWEN_SERVER_PORT=18571 \
+        "$fixture_remote/qwen-teardown.sh" \
+        >"$teardown_state_directory/teardown.stdout" \
+        2>"$teardown_state_directory/teardown.stderr"
+    teardown_status=$?
+    set -e
+}
+
+# The arm reads the broker's own residue lines rather than the exit status,
+# because llama-server, the probe, and the tmux session the teardown also proves
+# absent are named globally: an appliance serving while the gates run would fail
+# an aggregate status for a reason the broker has no part in.
+run_teardown_arm clean 0
+if grep -q 'approval broker' \
+    "$temporary_directory/state-teardown-clean/teardown.stderr"; then
+    printf 'teardown reported broker residue against a broker that honours TERM\n' >&2
+    cat "$temporary_directory/state-teardown-clean/teardown.stderr" >&2
+    exit 1
+fi
+if kill -0 "$teardown_broker_pid" 2>/dev/null; then
+    printf 'teardown left broker pid %s running\n' "$teardown_broker_pid" >&2
+    kill -KILL "$teardown_broker_pid" 2>/dev/null || true
+    exit 1
+fi
+if [ -e "$temporary_directory/state-teardown-clean/web-mcp/authorize-session.secret" ]; then
+    printf 'teardown left the session secret in place\n' >&2
+    exit 1
+fi
+
+run_teardown_arm survivor 1
+survivor_pid=$teardown_broker_pid
+kill -KILL "$survivor_pid" 2>/dev/null || true
+wait "$survivor_pid" 2>/dev/null || true
+if [ "$teardown_status" -eq 0 ]; then
+    printf 'teardown accepted a broker that survived TERM\n' >&2
+    exit 1
+fi
+if ! grep -q 'approval broker still running' \
+    "$temporary_directory/state-teardown-survivor/teardown.stderr"; then
+    printf 'teardown reported residue without naming the broker\n' >&2
+    cat "$temporary_directory/state-teardown-survivor/teardown.stderr" >&2
+    exit 1
+fi
+
 printf 'qwen_session_signals=accepted\n'
