@@ -519,7 +519,20 @@ function truncateSearchResult(text) {
     if (rendered.length > budget) break;
     kept.push(block);
   }
-  if (!kept.length) return null;
+  if (!kept.length) {
+    // The first block alone exceeds `budget`: no whole block fits, so the
+    // fallback to a raw `.slice(0, cap)` would cut inside the block and drop
+    // its Result ID with no omission count. This truncates that one block
+    // inside its own closed frame instead, carrying the client notice and the
+    // count of blocks this cap additionally drops, rather than returning null
+    // and emitting an empty result set.
+    const notice = `Truncated by the client at ${TOOL_RESULT_CHARACTER_CAP} characters.`;
+    const additionalOmitted = serverOmitted + (blocks.length - 1);
+    const omittedLine = additionalOmitted ? `\nResults Omitted: ${additionalOmitted}` : '';
+    const suffix = `\n---\n${notice}${omittedLine}`;
+    const blockBudget = Math.max(0, TOOL_RESULT_CHARACTER_CAP - suffix.length);
+    return blocks[0].slice(0, blockBudget) + suffix;
+  }
   const totalOmitted = serverOmitted + (blocks.length - kept.length);
   let rendered = kept.join('\n---\n') + '\n---';
   if (totalOmitted) rendered += `\nResults Omitted: ${totalOmitted}`;

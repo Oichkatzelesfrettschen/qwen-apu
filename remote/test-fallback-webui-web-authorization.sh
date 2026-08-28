@@ -113,6 +113,15 @@ grep -F 'const totalOmitted = serverOmitted + (blocks.length - kept.length);' \
     "$fallback_ui" >/dev/null
 grep -F 'const searchTruncated = truncateSearchResult(text);' "$fallback_ui" >/dev/null
 
+# When the first block alone exceeds the cap, no whole block fits and `kept`
+# stays empty; `truncateSearchResult` truncates that one block inside its own
+# closed frame with the client notice instead of returning null and falling
+# back to `truncateToolResult`'s raw `.slice(0, cap)`, which would cut inside
+# the block and drop its Result ID with no omission count.
+grep -F 'if (!kept.length) {' "$fallback_ui" >/dev/null
+grep -F 'const additionalOmitted = serverOmitted + (blocks.length - 1);' \
+    "$fallback_ui" >/dev/null
+
 # A capped fetch frame rewrites its own navigation lines rather than leaving
 # them to describe the server's uncapped window: Returned Characters and Next
 # Start Index are recomputed from the window the client actually kept, and
@@ -298,6 +307,49 @@ const keptOmittedMatch = cappedSearch.match(/\nResults Omitted: (\d+)$/);
 if (!keptOmittedMatch) throw new Error("a capped search reply lost its Results Omitted line");
 if (Number(keptOmittedMatch[1]) <= 3) {
     throw new Error("a capped search reply did not add the newly dropped blocks to the omitted count");
+}
+' "$fallback_ui"
+fi
+
+# node exercises the single-oversized-block branch: a search reply whose
+# first (and only) block alone exceeds the cap must still return a truncated
+# frame carrying the client notice rather than an empty result set.
+if command -v node >/dev/null 2>&1; then
+    node -e '
+const fs = require("fs");
+const source = fs.readFileSync(process.argv[1], "utf8");
+const match = source.match(
+    /const TOOL_RESULT_CHARACTER_CAP[\s\S]*?\nfunction truncateSearchResult[\s\S]*?\n}\n/
+);
+if (!match) throw new Error("truncateToolResult was not found in the served file");
+eval(match[0]);
+
+const oversizedBlock = [
+    `Title: Result 0`,
+    `URL: https://example.org/r0?${"q".repeat(2048)}`,
+    "Published: 2026-01-05",
+    "Author: A. Measurer",
+    "Result ID: rid-0",
+    "Trust: untrusted-web-result",
+    "Highlights:",
+    `- ${"highlight text ".repeat(400)}`
+].join("\n");
+const searchReply = oversizedBlock + "\n---";
+if (searchReply.length <= 8000) {
+    throw new Error("the fixture single-block reply fits under the cap already");
+}
+const cappedSearch = truncateToolResult(searchReply);
+if (cappedSearch === null || cappedSearch.length === 0) {
+    throw new Error("an oversized single block produced an empty result set");
+}
+if (cappedSearch.length > 8000) {
+    throw new Error(`a capped single-block reply still measures ${cappedSearch.length} characters`);
+}
+if (!cappedSearch.includes("Truncated by the client at")) {
+    throw new Error("a capped single-block reply carries no client-truncation notice");
+}
+if (!oversizedBlock.startsWith(cappedSearch.split("\n---\n")[0])) {
+    throw new Error("a capped single-block reply does not keep a prefix of the oversized block");
 }
 ' "$fallback_ui"
 fi
