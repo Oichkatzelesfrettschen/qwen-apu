@@ -52,9 +52,12 @@ values, stderr, and every error message.
 ## Caps
 
 Query 512 characters, results 1 to 10, each domain list 10 entries, fetch window
-24000 characters with 12000 the default, request timeout 20 seconds, and a
-4 MiB response cap enforced during the read rather than after it. A fetched body
-decodes as strict UTF-8; anything else is refused rather than substituted.
+24000 characters with 12000 the default, and a request timeout of 20 seconds.
+The 4 MiB cap is a document-size limit: the HTTP body is read to one byte past
+it so an oversized response is refused during the read, and a content record
+above it is refused rather than truncated, which puts a document larger than the
+cap out of reach of `start_index` paging as well. A fetched body decodes as
+strict UTF-8; anything else is refused rather than substituted.
 
 ## Fetched text is quarantined in its wrapper
 

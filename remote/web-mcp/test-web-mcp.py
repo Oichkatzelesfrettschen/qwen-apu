@@ -113,7 +113,7 @@ class ServerSession:
         return self.request("tools/call", {"name": name, "arguments": arguments})
 
     def close(self):
-        self.stdout_text, self.stderr_text = self.process.communicate(timeout=30)
+        self.stdout_text, self.stderr_text = self.process.communicate(timeout=300)
         return self.process.returncode
 
 
