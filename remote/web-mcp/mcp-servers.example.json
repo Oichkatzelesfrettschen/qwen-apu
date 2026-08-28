@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "web": {
+      "command": "python3",
+      "args": [
+        "remote/web-mcp/server.py",
+        "--provider",
+        "exa"
+      ],
+      "env": {
+        "QWEN_WEB_PROVIDER": "exa",
+        "QWEN_WEB_EXA_KEY_FILE": "/path/to/private/exa-api.key",
+        "QWEN_WEB_TOKEN_KEY_FILE": "/path/to/private/web-mcp-token.key"
+      },
+      "cwd": "/path/to/qwen-laptop-setup",
+      "timeout_ms": 30000
+    }
+  }
+}
