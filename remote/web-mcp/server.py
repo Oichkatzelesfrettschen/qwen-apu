@@ -632,9 +632,10 @@ class Ledger:
 
     llama-server kills the child after every call, so a counter in memory
     resets between two invocations and bounds nothing. SQLite in the state
-    directory carries the counters across spawns, and a BEGIN IMMEDIATE
-    transaction makes the read-modify-write of one bucket atomic against a
-    concurrently spawned sibling.
+    directory carries the counters across spawns, and BEGIN IMMEDIATE takes the
+    database write lock for the whole read-modify-write of a bucket, so two
+    children spawned for concurrent calls serialize rather than reading one
+    count and both writing it back.
     """
 
     def __init__(self, directory):
@@ -880,7 +881,10 @@ def render_search_results(
     precede that key and the highlight lines are the last content in a block.
     `Trust: untrusted-web-result` states in the rendered surface what the
     wrapper enforces: the title, author, and highlight text below it are
-    attacker-chosen.
+    attacker-chosen. A `Results Omitted:` count follows the final separator
+    where the output cap dropped results, so a short list is distinguishable
+    from a short answer; the line sits outside every block, which keeps it
+    clear of the highlight region.
     """
     blocks = []
     rendered_characters = 0
@@ -916,7 +920,11 @@ def render_search_results(
         blocks.append(block)
     if not blocks:
         return "No results."
-    return "\n---\n".join(blocks) + "\n---"
+    rendered = "\n---\n".join(blocks) + "\n---"
+    omitted = len(results) - len(blocks)
+    if omitted:
+        rendered += f"\nResults Omitted: {omitted}"
+    return rendered
 
 
 def clip(value, cap):

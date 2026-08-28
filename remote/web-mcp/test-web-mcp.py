@@ -671,8 +671,12 @@ class WebMcpServerTest(unittest.TestCase):
             self.search(session, query="many results", max_results=10)
         )
         self.assertLessEqual(len(text), server.SEARCH_OUTPUT_CHARACTER_CAP)
-        self.assertLess(text.count("URL: "), 10)
-        self.assertGreater(text.count("URL: "), 0)
+        rendered_results = text.count("URL: ")
+        self.assertLess(rendered_results, 10)
+        self.assertGreater(rendered_results, 0)
+        self.assertEqual(
+            text.splitlines()[-1], f"Results Omitted: {10 - rendered_results}"
+        )
 
     def test_provider_fields_collapse_to_one_line_each(self):
         session = self.open_session()
@@ -748,6 +752,45 @@ class WebMcpServerTest(unittest.TestCase):
                     self.assertIn(
                         "rate limit", self.result_text(response)
                     )
+
+    def test_concurrent_children_serialize_on_the_rate_bucket(self):
+        state_path = self.state_directory("concurrent-state")
+        sessions = [
+            ServerSession(
+                self.environment(
+                    QWEN_WEB_STATE_DIR=state_path,
+                    QWEN_WEB_SEARCH_PER_MINUTE="3",
+                )
+            )
+            for _ in range(6)
+        ]
+        for session in sessions:
+            self.addCleanup(self.close_cleanly, session)
+            session.request("initialize", {"protocolVersion": "2025-06-18"})
+        for session in sessions:
+            session.process.stdin.write(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 99,
+                        "method": "tools/call",
+                        "params": {
+                            "name": "search_exa",
+                            "arguments": {
+                                "query": "raven2 vulkan decode",
+                                "max_results": 1,
+                            },
+                        },
+                    }
+                )
+                + "\n"
+            )
+            session.process.stdin.flush()
+        admitted = 0
+        for session in sessions:
+            response = json.loads(session.process.stdout.readline())
+            admitted += 0 if response["result"]["isError"] else 1
+        self.assertEqual(admitted, 3)
 
     def test_the_daily_budget_covers_both_operations(self):
         state_path = self.state_directory("budget-state")

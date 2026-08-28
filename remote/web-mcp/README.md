@@ -40,13 +40,15 @@ remote/web-mcp/server.py authorize --token-key-file PATH --query TEXT \
     [--max-results N] [--lifetime SECONDS]
 ```
 
+`max_age_hours` stays outside the grant, so the model chooses how fresh a copy
+the provider serves while the operator chooses the query; a grant that must
+also bind cache freshness needs that field added to the claim.
+
 The serving path rebuilds the same canonical claim from the arguments it
 received and compares field by field, admitting a smaller `max_results` as a
 narrowing of the grant and refusing every other difference.
 `QWEN_WEB_SEARCH_AUTH` selects `required`, the default, or `optional` for an
-operator who accepts an unauthorized query. `max_age_hours` stays outside the
-signature, so a grant covers which query runs rather than how fresh a copy the
-provider serves.
+operator who accepts an unauthorized query.
 
 The grant and the result identifier are signed under the same key with
 different context strings, so neither verifies in the other's position. Both
@@ -131,9 +133,12 @@ llama-server kills the child after each call, so a counter held in memory
 resets between invocations and bounds nothing. `QWEN_WEB_STATE_DIR` names a
 directory holding one SQLite file with two tables: token buckets for
 searches per minute, fetches per minute, and a daily provider budget covering
-both operations, and an audit row per call. A BEGIN IMMEDIATE transaction makes
-the read-modify-write of a bucket atomic against a sibling child spawned for a
-concurrent call, and an exhausted bucket refuses the call. `QWEN_WEB_PROFILE`
+both operations, and an audit row per call. BEGIN IMMEDIATE takes the database
+write lock for the whole read-modify-write of a bucket, so two children spawned
+for concurrent calls serialize rather than both writing back one count, and an
+exhausted bucket refuses the call. The daily budget counts provider requests
+issued rather than answers used: a request whose body then fails the UTF-8 or
+size check has already reached the provider and keeps its slot. `QWEN_WEB_PROFILE`
 labels the rows, and `QWEN_WEB_SEARCH_PER_MINUTE`,
 `QWEN_WEB_FETCH_PER_MINUTE`, and `QWEN_WEB_DAILY_BUDGET` set the three limits,
 which default to 10, 20, and 500. An unset state directory leaves the tools
