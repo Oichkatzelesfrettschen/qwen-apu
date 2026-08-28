@@ -72,7 +72,26 @@ def build_fixture_document():
                     "author": "",
                     "highlights": [],
                 },
-            ]
+            ],
+            "hostile lengths": [
+                {
+                    "title": "T" * 1000,
+                    "url": "https://example.org/long",
+                    "publishedDate": "2026-03-03",
+                    "author": "A" * 900,
+                    "highlights": ["H" * 5000, "second", "third", "fourth"],
+                }
+            ],
+            "many results": [
+                {
+                    "title": f"Result {index}",
+                    "url": f"https://bulk.example.org/{index}",
+                    "publishedDate": "2026-04-04",
+                    "author": "Bulk",
+                    "highlights": ["B" * 1200, "C" * 1200, "D" * 1200],
+                }
+                for index in range(10)
+            ],
         },
         "contents": {
             "https://example.org/raven2": {
@@ -541,6 +560,15 @@ class WebMcpServerTest(unittest.TestCase):
         )
         self.assertEqual(captured["endpoint"], server.EXA_SEARCH_ENDPOINT)
         self.assertEqual(
+            captured["body"]["contents"],
+            {
+                "highlights": {
+                    "query": "raven2",
+                    "maxCharacters": server.HIGHLIGHT_CHARACTER_CAP,
+                }
+            },
+        )
+        self.assertEqual(
             {
                 key: captured["body"][key]
                 for key in (
@@ -561,6 +589,52 @@ class WebMcpServerTest(unittest.TestCase):
                 "numResults": 3,
             },
         )
+
+    def test_provider_string_fields_are_clipped_to_their_caps(self):
+        session = self.open_session()
+        text = self.result_text(self.search(session, query="hostile lengths"))
+        lines = text.splitlines()
+        self.assertEqual(len(lines[0]) - len("Title: "), server.TITLE_CHARACTER_CAP)
+        self.assertEqual(
+            len(lines[3]) - len("Author: "), server.AUTHOR_CHARACTER_CAP
+        )
+        highlight_lines = [line for line in lines if line.startswith("- ")]
+        self.assertEqual(len(highlight_lines), server.HIGHLIGHT_COUNT_CAP)
+        self.assertEqual(
+            len(highlight_lines[0]) - 2, server.HIGHLIGHT_CHARACTER_CAP
+        )
+
+    def test_the_whole_rendering_stays_within_its_cap(self):
+        session = self.open_session()
+        text = self.result_text(
+            self.search(session, query="many results", max_results=10)
+        )
+        self.assertLessEqual(len(text), server.SEARCH_OUTPUT_CHARACTER_CAP)
+        self.assertLess(text.count("URL: "), 10)
+        self.assertGreater(text.count("URL: "), 0)
+
+    def test_domain_entries_must_be_hostnames(self):
+        session = self.open_session()
+        for entry in ("not a host", "http://example.org", "example", "-bad.test"):
+            with self.subTest(entry=entry):
+                response = self.search(session, include_domains=[entry])
+                self.assertTrue(response["result"]["isError"])
+                self.assertIn("not a hostname", self.result_text(response))
+
+    def test_fetch_argument_lengths_are_capped(self):
+        session = self.open_session()
+        response = session.call_tool(
+            "fetch_exa", {"result_id": "x" * (server.RESULT_ID_CHARACTER_CAP + 1)}
+        )
+        self.assertIn("character cap", self.result_text(response))
+        response = session.call_tool(
+            "fetch_exa",
+            {
+                "result_id": "a.b",
+                "start_index": server.DOCUMENT_CHARACTER_CAP + 1,
+            },
+        )
+        self.assertIn("must lie between", self.result_text(response))
 
     def test_domain_filters_select_results(self):
         session = self.open_session()

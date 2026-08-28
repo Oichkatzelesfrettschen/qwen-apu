@@ -23,6 +23,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import stat
 import sys
 import time
@@ -43,6 +44,13 @@ DOMAIN_CHARACTER_CAP = 253
 FETCH_CHARACTER_CAP = 24000
 FETCH_CHARACTER_DEFAULT = 12000
 HIGHLIGHT_COUNT_CAP = 3
+TITLE_CHARACTER_CAP = 300
+AUTHOR_CHARACTER_CAP = 200
+HIGHLIGHT_CHARACTER_CAP = 1200
+SEARCH_OUTPUT_CHARACTER_CAP = 16000
+RESULT_ID_CHARACTER_CAP = 4096
+URL_CHARACTER_CAP = 2048
+DOCUMENT_CHARACTER_CAP = 131072
 REQUEST_TIMEOUT_SECONDS = 20.0
 RESPONSE_BYTE_CAP = 4 * 1024 * 1024
 MAX_AGE_HOURS_CAP = 24 * 365
@@ -52,6 +60,11 @@ TOKEN_LIFETIME_MAXIMUM_SECONDS = 3600
 SECRET_BYTE_CAP = 4096
 RESULT_CLAIM_CONTEXT = "result-id"
 AUTHORIZATION_CLAIM_CONTEXT = "search-authorization"
+
+HOSTNAME_PATTERN = re.compile(
+    r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?"
+    r"(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$"
+)
 
 EXA_SEARCH_ENDPOINT = "https://api.exa.ai/search"
 EXA_CONTENTS_ENDPOINT = "https://api.exa.ai/contents"
@@ -194,6 +207,10 @@ def canonical_url(url):
     Token issue and token redemption both run through this function, so a
     fetch matches its search on the same string the signature covers.
     """
+    if len(url) > URL_CHARACTER_CAP:
+        raise ToolError(
+            f"the result URL exceeds the {URL_CHARACTER_CAP} character cap"
+        )
     parts = urllib.parse.urlsplit(url)
     if parts.scheme.lower() not in ("http", "https"):
         raise ToolError(f"the result URL carries an unsupported scheme: {url}")
@@ -448,7 +465,16 @@ class ExaProvider(Provider):
         return document
 
     def search(self, query, max_results, constraints):
-        body = {"query": query, "numResults": max_results}
+        body = {
+            "query": query,
+            "numResults": max_results,
+            "contents": {
+                "highlights": {
+                    "query": query,
+                    "maxCharacters": HIGHLIGHT_CHARACTER_CAP,
+                }
+            },
+        }
         if constraints["published_after"]:
             body["startPublishedDate"] = constraints["published_after"]
         if constraints["published_before"]:
@@ -594,11 +620,13 @@ def require_domain_list(arguments, key):
     for entry in value:
         if not isinstance(entry, str) or not entry.strip():
             raise ToolError(f"{key} entries must be non-empty domain names")
-        entry = entry.strip().lower()
+        entry = entry.strip().lower().rstrip(".")
         if len(entry) > DOMAIN_CHARACTER_CAP:
             raise ToolError(
                 f"{key} entries exceed the {DOMAIN_CHARACTER_CAP} character cap"
             )
+        if not HOSTNAME_PATTERN.match(entry):
+            raise ToolError(f"{key} carries an entry that is not a hostname")
         domains.append(entry)
     return domains
 
@@ -643,20 +671,22 @@ def render_search_results(
     appends the result identifier the fetch tool redeems.
     """
     blocks = []
+    rendered_characters = 0
     for record in results:
         url = canonical_url(str(record.get("url", "")))
         highlights = record.get("highlights") or []
         if not isinstance(highlights, list):
             highlights = []
+        published = record.get("publishedDate") or record.get("published") or ""
         lines = [
-            f"Title: {record.get('title') or url}",
+            f"Title: {clip(record.get('title') or url, TITLE_CHARACTER_CAP)}",
             f"URL: {url}",
-            f"Published: {record.get('publishedDate') or record.get('published') or ''}",
-            f"Author: {record.get('author') or ''}",
+            f"Published: {clip(published, 64)}",
+            f"Author: {clip(record.get('author') or '', AUTHOR_CHARACTER_CAP)}",
             "Highlights:",
         ]
         for highlight in highlights[:HIGHLIGHT_COUNT_CAP]:
-            lines.append(f"- {str(highlight).strip()}")
+            lines.append(f"- {clip(highlight, HIGHLIGHT_CHARACTER_CAP)}")
         lines.append(
             "Result ID: "
             + issue_result_id(
@@ -668,10 +698,26 @@ def render_search_results(
                 lifetime_seconds,
             )
         )
-        blocks.append("\n".join(lines))
+        block = "\n".join(lines)
+        rendered_characters += len(block) + 4
+        if rendered_characters > SEARCH_OUTPUT_CHARACTER_CAP:
+            break
+        blocks.append(block)
     if not blocks:
         return "No results."
     return "\n---\n".join(blocks) + "\n---"
+
+
+def clip(value, cap):
+    """Return a provider string bounded at its cap.
+
+    Title, author, and highlight text come from the page, so their length is
+    attacker-chosen; each field is bounded on its own and the assembled
+    rendering is bounded again, which keeps one long result from consuming the
+    context the answer needs.
+    """
+    text = str(value).strip()
+    return text[:cap]
 
 
 def wrap_untrusted(url, retrieved_at, text):
@@ -733,8 +779,10 @@ def call_search(settings, arguments):
 
 
 def call_fetch(settings, arguments):
-    result_id = arguments.get("result_id")
-    start_index = require_integer(arguments, "start_index", 0, 0, 1 << 30)
+    result_id = require_string(arguments, "result_id", RESULT_ID_CHARACTER_CAP)
+    start_index = require_integer(
+        arguments, "start_index", 0, 0, DOCUMENT_CHARACTER_CAP
+    )
     max_chars = require_integer(
         arguments, "max_chars", FETCH_CHARACTER_DEFAULT, 1, FETCH_CHARACTER_CAP
     )
