@@ -9,8 +9,10 @@ and keeps hostile bytes out of the tracked tree.
 """
 
 import base64
+import hashlib
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -702,6 +704,95 @@ class WebMcpServerTest(unittest.TestCase):
             },
         )
         self.assertIn("must lie between", self.result_text(response))
+
+    def state_directory(self, name):
+        path = os.path.join(self.directory.name, name)
+        return path
+
+    def audit_rows(self, state_path):
+        connection = sqlite3.connect(
+            os.path.join(state_path, server.LEDGER_FILE_NAME)
+        )
+        try:
+            return connection.execute(
+                "SELECT profile, operation, query_sha256, domains, result_count,"
+                " fetched_host, returned_characters, status FROM audit"
+                " ORDER BY rowid"
+            ).fetchall()
+        finally:
+            connection.close()
+
+    def test_the_rate_ledger_survives_the_respawn(self):
+        state_path = self.state_directory("rate-state")
+        for index in range(3):
+            session = self.open_session(
+                QWEN_WEB_STATE_DIR=state_path,
+                QWEN_WEB_SEARCH_PER_MINUTE="2",
+                QWEN_WEB_PROFILE="paced",
+            )
+            response = self.search(session, max_results=1)
+            with self.subTest(call=index):
+                if index < 2:
+                    self.assertFalse(response["result"]["isError"])
+                else:
+                    self.assertTrue(response["result"]["isError"])
+                    self.assertIn(
+                        "rate limit", self.result_text(response)
+                    )
+
+    def test_the_daily_budget_covers_both_operations(self):
+        state_path = self.state_directory("budget-state")
+        session = self.open_session(
+            QWEN_WEB_STATE_DIR=state_path, QWEN_WEB_DAILY_BUDGET="1"
+        )
+        first = self.search(session, max_results=1)
+        self.assertFalse(first["result"]["isError"])
+        result_id = self.first_result_id(self.result_text(first))
+        refused = session.call_tool("fetch_exa", {"result_id": result_id})
+        self.assertTrue(refused["result"]["isError"])
+        self.assertIn("provider-day", self.result_text(refused))
+
+    def test_the_audit_trail_records_the_call_without_its_content(self):
+        state_path = self.state_directory("audit-state")
+        session = self.open_session(
+            QWEN_WEB_STATE_DIR=state_path, QWEN_WEB_PROFILE="paced"
+        )
+        search_text = self.result_text(
+            self.search(session, max_results=2, exclude_domains=["spam.test"])
+        )
+        result_id = self.first_result_id(search_text)
+        session.call_tool("fetch_exa", {"result_id": result_id})
+        rows = self.audit_rows(state_path)
+        self.assertEqual(len(rows), 2)
+        search_row, fetch_row = rows
+        self.assertEqual(search_row[0], "paced")
+        self.assertEqual(search_row[1], "search")
+        self.assertEqual(
+            search_row[2],
+            hashlib.sha256(b"raven2 vulkan decode").hexdigest(),
+        )
+        self.assertEqual(search_row[3], "-spam.test")
+        self.assertEqual(search_row[4], 2)
+        self.assertEqual(search_row[7], "success")
+        self.assertEqual(fetch_row[1], "fetch")
+        self.assertEqual(fetch_row[5], "example.org")
+        self.assertEqual(fetch_row[6], 20)
+        self.assertEqual(fetch_row[7], "success")
+        recorded = " ".join(str(field) for row in rows for field in row)
+        self.assertNotIn("raven2 vulkan decode", recorded)
+        self.assertNotIn(TOKEN_SECRET, recorded)
+        self.assertNotIn("0123456789abcdefghij", recorded)
+
+    def test_a_refused_call_is_recorded_as_refused(self):
+        state_path = self.state_directory("refusal-state")
+        session = self.open_session(
+            QWEN_WEB_STATE_DIR=state_path, QWEN_WEB_SEARCH_AUTH="required"
+        )
+        session.call_tool("fetch_exa", {"result_id": "not.atoken"})
+        self.search(session)
+        rows = self.audit_rows(state_path)
+        self.assertEqual([row[1] for row in rows], ["fetch", "search"])
+        self.assertEqual([row[7] for row in rows], ["refused", "refused"])
 
     def test_domain_filters_select_results(self):
         session = self.open_session()

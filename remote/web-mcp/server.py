@@ -24,6 +24,7 @@ import hmac
 import json
 import os
 import re
+import sqlite3
 import stat
 import sys
 import time
@@ -77,6 +78,11 @@ EXA_CONTENTS_ENDPOINT = "https://api.exa.ai/contents"
 UNTRUSTED_HEADER = "BEGIN UNTRUSTED WEB CONTENT"
 UNTRUSTED_FOOTER = "END UNTRUSTED WEB CONTENT"
 NONCE_BYTES = 12
+
+SEARCH_PER_MINUTE_DEFAULT = 10
+FETCH_PER_MINUTE_DEFAULT = 20
+PROVIDER_DAILY_BUDGET_DEFAULT = 500
+LEDGER_FILE_NAME = "web-mcp-state.sqlite3"
 
 
 class ToolError(Exception):
@@ -475,6 +481,7 @@ class ExaProvider(Provider):
 
     def __init__(self, key_file_path):
         self.key_file_path = key_file_path
+        self.response_bytes = 0
 
     def _post(self, endpoint, body):
         api_key = read_secret_file(self.key_file_path, "Exa API")
@@ -493,6 +500,7 @@ class ExaProvider(Provider):
                 request, timeout=REQUEST_TIMEOUT_SECONDS
             ) as response:
                 raw = response.read(HTTP_RESPONSE_BYTE_CAP + 1)
+            self.response_bytes += len(raw)
         except urllib.error.HTTPError as error:
             raise ToolError(
                 f"the provider rejected the request with status {error.code}"
@@ -577,6 +585,7 @@ class FakeProvider(Provider):
     name = "fake"
 
     def __init__(self, fixture_path):
+        self.response_bytes = 0
         if not fixture_path:
             raise ToolError(
                 "the fake provider requires QWEN_WEB_FAKE_FIXTURES to name a "
@@ -616,6 +625,139 @@ class FakeProvider(Provider):
         if record is None:
             raise ToolError("the provider returned no content for the result")
         return record
+
+
+class Ledger:
+    """A rate ledger and audit trail that outlive the process.
+
+    llama-server kills the child after every call, so a counter in memory
+    resets between two invocations and bounds nothing. SQLite in the state
+    directory carries the counters across spawns, and a BEGIN IMMEDIATE
+    transaction makes the read-modify-write of one bucket atomic against a
+    concurrently spawned sibling.
+    """
+
+    def __init__(self, directory):
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        self.connection = sqlite3.connect(
+            os.path.join(directory, LEDGER_FILE_NAME),
+            timeout=10.0,
+            isolation_level=None,
+        )
+        self.connection.execute(
+            "CREATE TABLE IF NOT EXISTS buckets ("
+            "name TEXT PRIMARY KEY, window_start INTEGER, used INTEGER)"
+        )
+        self.connection.execute(
+            "CREATE TABLE IF NOT EXISTS audit ("
+            "recorded_at TEXT, profile TEXT, operation TEXT, query_sha256 TEXT,"
+            " domains TEXT, result_count INTEGER, fetched_host TEXT,"
+            " provider_bytes INTEGER, returned_characters INTEGER,"
+            " latency_ms INTEGER, status TEXT)"
+        )
+
+    def consume(self, name, window_seconds, limit, now):
+        window_start = int(now) - int(now) % window_seconds
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.connection.execute(
+                "SELECT window_start, used FROM buckets WHERE name = ?", (name,)
+            ).fetchone()
+            used = row[1] if row and row[0] == window_start else 0
+            if used >= limit:
+                raise ToolError(
+                    f"the {name} rate limit of {limit} per "
+                    f"{window_seconds} seconds is exhausted"
+                )
+            self.connection.execute(
+                "INSERT INTO buckets(name, window_start, used) VALUES(?, ?, ?) "
+                "ON CONFLICT(name) DO UPDATE SET window_start = excluded.window_start,"
+                " used = excluded.used",
+                (name, window_start, used + 1),
+            )
+            self.connection.execute("COMMIT")
+        except BaseException:
+            self.connection.execute("ROLLBACK")
+            raise
+
+    def record(self, row):
+        """Append one audit row.
+
+        The row carries the SHA-256 of the query rather than the query, the
+        host rather than the URL, and byte and character counts rather than any
+        text, so the trail states what ran without retaining a secret, a token,
+        or a page body.
+        """
+        self.connection.execute(
+            "INSERT INTO audit VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                row["recorded_at"],
+                row["profile"],
+                row["operation"],
+                row["query_sha256"],
+                row["domains"],
+                row["result_count"],
+                row["fetched_host"],
+                row["provider_bytes"],
+                row["returned_characters"],
+                row["latency_ms"],
+                row["status"],
+            ),
+        )
+        self.connection.commit()
+
+    def close(self):
+        self.connection.close()
+
+
+def integer_setting(settings, key, default):
+    raw = settings.get(key) or ""
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ToolError(f"{key} is not an integer") from None
+    if value < 1:
+        raise ToolError(f"{key} must be positive")
+    return value
+
+
+def open_ledger(settings):
+    """Return the ledger for this call, or None where no state directory is set.
+
+    A state directory is what makes a limit persist, so an unset
+    QWEN_WEB_STATE_DIR leaves the tools unmetered and unaudited; the launch
+    configuration sets it.
+    """
+    directory = settings.get("state_dir") or ""
+    if not directory:
+        return None
+    try:
+        return Ledger(directory)
+    except (OSError, sqlite3.Error):
+        raise ToolError(
+            f"the web state directory is unusable: {directory}"
+        ) from None
+
+
+def spend_budget(ledger, settings, operation, now):
+    per_minute = (
+        integer_setting(settings, "search_per_minute", SEARCH_PER_MINUTE_DEFAULT)
+        if operation == "search"
+        else integer_setting(
+            settings, "fetch_per_minute", FETCH_PER_MINUTE_DEFAULT
+        )
+    )
+    ledger.consume(f"{operation}-minute", 60, per_minute, now)
+    ledger.consume(
+        "provider-day",
+        86400,
+        integer_setting(
+            settings, "daily_budget", PROVIDER_DAILY_BUDGET_DEFAULT
+        ),
+        now,
+    )
 
 
 def select_provider(settings):
@@ -830,6 +972,10 @@ def utc_timestamp(now):
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now))
 
 
+def search_id_for():
+    return base64url_encode(os.urandom(9))
+
+
 def call_search(settings, arguments):
     query = require_string(arguments, "query", QUERY_CHARACTER_CAP)
     max_results = require_integer(arguments, "max_results", 5, 1, RESULT_COUNT_CAP)
@@ -852,22 +998,59 @@ def call_search(settings, arguments):
     settings["_authorization"] = require_string(
         arguments, "authorization", 4096, required=False, default=""
     )
-    signing_key = read_secret_file(settings["token_key_file"], "token signing")
-    enforce_search_authorization(
-        settings, signing_key, query, max_results, constraints
-    )
-    provider = select_provider(settings)
-    results = provider.search(query, max_results, constraints)
-    issued_at = int(time.time())
-    search_id = base64url_encode(os.urandom(9))
-    return render_search_results(
-        results[:max_results],
-        provider.name,
-        signing_key,
-        search_id,
-        issued_at,
-        resolve_token_lifetime(settings),
-    )
+    ledger = open_ledger(settings)
+    started = time.monotonic()
+    now = time.time()
+    audit = {
+        "recorded_at": utc_timestamp(now),
+        "profile": settings.get("profile") or "default",
+        "operation": "search",
+        "query_sha256": hashlib.sha256(query.encode("utf-8")).hexdigest(),
+        "domains": ",".join(
+            [f"+{domain}" for domain in constraints["include_domains"]]
+            + [f"-{domain}" for domain in constraints["exclude_domains"]]
+        ),
+        "result_count": 0,
+        "fetched_host": "",
+        "provider_bytes": 0,
+        "returned_characters": 0,
+        "latency_ms": 0,
+        "status": "refused",
+    }
+    try:
+        signing_key = read_secret_file(settings["token_key_file"], "token signing")
+        enforce_search_authorization(
+            settings, signing_key, query, max_results, constraints
+        )
+        if ledger is not None:
+            spend_budget(ledger, settings, "search", now)
+        provider = select_provider(settings)
+        results = provider.search(query, max_results, constraints)[:max_results]
+        rendered = render_search_results(
+            results,
+            provider.name,
+            signing_key,
+            search_id_for(),
+            int(now),
+            resolve_token_lifetime(settings),
+        )
+        audit["result_count"] = len(
+            [line for line in rendered.splitlines() if line.startswith("URL: ")]
+        )
+        audit["provider_bytes"] = provider.response_bytes
+        audit["returned_characters"] = len(rendered)
+        audit["status"] = "success"
+        return rendered
+    except ToolError:
+        raise
+    except Exception:
+        audit["status"] = "error"
+        raise
+    finally:
+        audit["latency_ms"] = int((time.monotonic() - started) * 1000)
+        if ledger is not None:
+            ledger.record(audit)
+            ledger.close()
 
 
 def call_fetch(settings, arguments):
@@ -878,28 +1061,62 @@ def call_fetch(settings, arguments):
     max_chars = require_integer(
         arguments, "max_chars", WINDOW_CHARACTER_DEFAULT, 1, WINDOW_CHARACTER_CAP
     )
-    signing_key = read_secret_file(settings["token_key_file"], "token signing")
-    now = time.time()
-    claim = redeem_result_id(signing_key, result_id, now)
-    url = claim["canonical_url"]
-    provider = select_provider(settings)
-    if claim.get("provider") != provider.name:
-        raise ToolError(
-            "the result_id was issued by another provider than the configured one"
-        )
     window_end = start_index + max_chars
     if window_end > DOCUMENT_CHARACTER_CAP:
         raise ToolError(
             "start_index plus max_chars exceeds the "
             f"{DOCUMENT_CHARACTER_CAP} character document cap"
         )
-    record = provider.contents(url, window_end)
-    text = decode_content_text(record)
-    window = text[start_index:window_end]
-    truncated = len(text) > start_index + len(window)
-    return wrap_untrusted(
-        url, utc_timestamp(now), window, start_index, truncated
-    )
+    now = time.time()
+    ledger = open_ledger(settings)
+    started = time.monotonic()
+    audit = {
+        "recorded_at": utc_timestamp(now),
+        "profile": settings.get("profile") or "default",
+        "operation": "fetch",
+        "query_sha256": "",
+        "domains": "",
+        "result_count": 0,
+        "fetched_host": "",
+        "provider_bytes": 0,
+        "returned_characters": 0,
+        "latency_ms": 0,
+        "status": "refused",
+    }
+    try:
+        signing_key = read_secret_file(settings["token_key_file"], "token signing")
+        claim = redeem_result_id(signing_key, result_id, now)
+        url = claim["canonical_url"]
+        audit["fetched_host"] = urllib.parse.urlsplit(url).netloc
+        provider = select_provider(settings)
+        if claim.get("provider") != provider.name:
+            raise ToolError(
+                "the result_id was issued by another provider than the "
+                "configured one"
+            )
+        if ledger is not None:
+            spend_budget(ledger, settings, "fetch", now)
+        record = provider.contents(url, window_end)
+        text = decode_content_text(record)
+        window = text[start_index:window_end]
+        truncated = len(text) > start_index + len(window)
+        audit["result_count"] = 1
+        audit["provider_bytes"] = provider.response_bytes
+        audit["returned_characters"] = len(window)
+        audit["status"] = "success"
+        return wrap_untrusted(
+            url, utc_timestamp(now), window, start_index, truncated
+        )
+    except ToolError:
+        raise
+    except Exception:
+        audit["status"] = "error"
+        raise
+    finally:
+        audit["latency_ms"] = int((time.monotonic() - started) * 1000)
+        if ledger is not None:
+            ledger.record(audit)
+            ledger.close()
 
 
 TOOL_DEFINITIONS = [
@@ -1003,6 +1220,11 @@ def settings_from_environment(argv):
         "fixtures": os.environ.get("QWEN_WEB_FAKE_FIXTURES", ""),
         "token_lifetime": os.environ.get("QWEN_WEB_TOKEN_LIFETIME_SECONDS", ""),
         "search_auth": os.environ.get("QWEN_WEB_SEARCH_AUTH", "required"),
+        "state_dir": os.environ.get("QWEN_WEB_STATE_DIR", ""),
+        "profile": os.environ.get("QWEN_WEB_PROFILE", "default"),
+        "search_per_minute": os.environ.get("QWEN_WEB_SEARCH_PER_MINUTE", ""),
+        "fetch_per_minute": os.environ.get("QWEN_WEB_FETCH_PER_MINUTE", ""),
+        "daily_budget": os.environ.get("QWEN_WEB_DAILY_BUDGET", ""),
     }
     option_keys = {
         "--provider": "provider",

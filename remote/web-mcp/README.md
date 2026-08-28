@@ -125,6 +125,26 @@ character, so paging follows the server's count rather than the model's
 arithmetic over a body it cannot measure. `search_exa` returns titles, URLs,
 and highlights, and the page body reaches the model through the wrapper alone.
 
+## The rate ledger and the audit trail persist in the state directory
+
+llama-server kills the child after each call, so a counter held in memory
+resets between invocations and bounds nothing. `QWEN_WEB_STATE_DIR` names a
+directory holding one SQLite file with two tables: token buckets for
+searches per minute, fetches per minute, and a daily provider budget covering
+both operations, and an audit row per call. A BEGIN IMMEDIATE transaction makes
+the read-modify-write of a bucket atomic against a sibling child spawned for a
+concurrent call, and an exhausted bucket refuses the call. `QWEN_WEB_PROFILE`
+labels the rows, and `QWEN_WEB_SEARCH_PER_MINUTE`,
+`QWEN_WEB_FETCH_PER_MINUTE`, and `QWEN_WEB_DAILY_BUDGET` set the three limits,
+which default to 10, 20, and 500. An unset state directory leaves the tools
+unmetered and unaudited, so the launch configuration sets it.
+
+An audit row carries the timestamp, profile, operation, SHA-256 of the query,
+the domain filters, the result count, the fetched host, the provider bytes, the
+returned characters, the latency in milliseconds, and the status. It carries
+the digest rather than the query and the host rather than the URL, so the trail
+states what ran while retaining no secret, no token, and no page body.
+
 ## Providers
 
 `Provider` declares `search()` and `contents()`. `ExaProvider` posts to Exa's
