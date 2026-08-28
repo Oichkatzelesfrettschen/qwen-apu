@@ -483,9 +483,17 @@ class BrokerTest(unittest.TestCase):
         )
         self.assertEqual(status, 200)
         self.assertNotIn(TOKEN_SECRET, json.dumps(payload))
-        broker.close()
-        streams = broker.process.stdout, broker.process.stderr
-        self.assertTrue(all(stream.closed for stream in streams))
+        # A refusal path is what would raise, so the malformed request runs
+        # before stderr is read: a traceback carrying the key would arrive
+        # there rather than in the response the client already checked.
+        self.post_grant(broker, {"query": 5})
+        secret = self.session_secret()
+        broker.process.terminate()
+        broker.process.wait(timeout=STOP_WAIT_SECONDS)
+        stderr = broker.process.stderr.read()
+        self.assertNotIn(TOKEN_SECRET, stderr)
+        self.assertNotIn("raven2 vulkan decode", stderr)
+        self.assertNotIn(secret, stderr)
 
     def text(self, message):
         return message["result"]["content"][0]["text"]

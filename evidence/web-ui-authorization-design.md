@@ -108,3 +108,28 @@ tool schemas in `body.tools` itself, which is also what makes the per-turn Web
 toggle a boundary rather than a request. A server-side dispatch would move the
 injection point into llama-server and leave the dialog, the broker, and the
 grant unchanged.
+
+An executed search is out of reach from the fallback UI under either account,
+which is a stronger statement than the ambiguity alone. Client-declared tools
+in `body.tools` are function definitions llama-server exposes to the model and
+executes none of, so re-sending a turn with the grant injected reaches no
+executor. Server-side MCP holds `search_exa` in the server's own list and runs
+the tool loop inside one completion, so the proposal never reaches the browser
+for a dialog to open over and the server's own call carries no `authorization`,
+which `QWEN_WEB_SEARCH_AUTH=required` refuses. The approval path is therefore
+implemented and measured through the grant it issues: both decisions answer the
+call with a `role: 'tool'` message so the continuation array pairs every
+`tool_calls` entry with a result and stays a legal request, and the approval's
+message states that a single-use grant covers the read arguments while the
+search awaits its executor. Wiring that executor is the work
+`src/llama.cpp-qwen-apu/tools/server/` decides the shape of.
+
+## Scope cut: the broker's lifetime is manual
+
+`authorize-broker.py` runs for as long as a caller runs it. The launch chain
+starts it nowhere: `qwen-webui-session.sh` arms the probe, the monitor, and the
+kernel-hazard watcher, and `qwen-teardown.sh` proves guard absence on exit,
+which are the two files an automatic lifetime would change. The chain also
+wires `--mcp-servers-config` into no launch, so the broker would presently
+outlive and underlie a web router that the appliance never starts; binding the
+two lifetimes belongs with the change that starts the router.

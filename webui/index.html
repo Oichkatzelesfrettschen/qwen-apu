@@ -802,6 +802,18 @@ async function resolveWebApprovals(calls, callIds, view) {
       // asked for and holds no token.
       authorizations.set(callIds[index],
         JSON.stringify({ ...fields, authorization: outcome.authorization }));
+      // Every assistant message carrying tool_calls needs a tool message per
+      // call before the array is a legal request, so the approval answers its
+      // own call. What answers it is the state of the grant rather than search
+      // results: which process executes an approved web_search_exa is
+      // unresolved between llama-server's own MCP child and this page, and
+      // evidence/web-ui-authorization-design.md names the source that settles
+      // it. The single-use grant is issued and travels in the next request's
+      // arguments; the results reach the model once an executor exists.
+      history.push({ role: 'tool', tool_call_id: callIds[index], name: calls[index].name,
+                     content: 'The user approved these exact search arguments and a ' +
+                              'single-use grant covers them. The search awaits its ' +
+                              'executor, so no results are available in this turn.' });
     } else {
       refused = true;
       history.push({ role: 'tool', tool_call_id: callIds[index], name: calls[index].name,

@@ -41,11 +41,22 @@ grep -F 'BROKER_SESSION_HEADER]: secret' "$fallback_ui" >/dev/null
 grep -F 'requestMessages(authorizations)' "$fallback_ui" >/dev/null
 grep -F "content: 'The user refused this web search. It did not run.'" \
     "$fallback_ui" >/dev/null
+# Both decisions answer the call with a tool message, so the continuation array
+# pairs every tool_calls entry with its result and stays a legal request.
+grep -F "'single-use grant covers them. The search awaits its '" \
+    "$fallback_ui" >/dev/null
 
 # The grant admits one search, so a standing grade would promise a permission
-# the serving path refuses on the second call.
-if grep -iE 'always' "$fallback_ui" >/dev/null; then
+# the serving path refuses on the second call. The pinned llama-ui spells those
+# grades ALWAYS and ALWAYS_SERVER, and the check names the approval region
+# rather than the file, so ordinary prose elsewhere carries no verdict.
+if sed -n '/dialog class="approval"/,/<\/dialog>/p;/^function approveWebSearch/,/^}/p' \
+        "$fallback_ui" | grep -iE 'always' >/dev/null; then
     printf 'fallback Web UI offers a standing tool permission grade\n' >&2
+    exit 1
+fi
+if grep -F 'ALWAYS_SERVER' "$fallback_ui" >/dev/null; then
+    printf 'fallback Web UI carries a server-wide permission grade\n' >&2
     exit 1
 fi
 
