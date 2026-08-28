@@ -243,7 +243,12 @@ across a registry edit, so the launch bounds that depth again by the row's
 current `validated_filled_depth` and refuses a `-` outright unless the preset
 carries the unvalidated-depth marker; a registry that lowers the field would
 otherwise leave an unmarked section serving a depth no run has filled and
-decoded. `execution_policy`
+decoded. A preset also persists across an edit to the ledger, so the launch rejoins each
+section to `remote/web-profiles.tsv` by its `profile_id` and requires the row to
+exist, to carry an emitting `execution_policy`, and to carry the same policy the
+section's `LLAMA_ARG_TAGS` claims; a row moved to `refused` or removed outright
+refuses the launch rather than serving the persisted MCP configuration.
+`execution_policy`
 decides emission: `refused` emits nothing under every setting, `validator-gated`
 emits a section carrying `LLAMA_ARG_MCP_SERVERS_CONFIG` only under
 `QWEN_WEB_AUTHORIZER_READY=1`, and `ui-mediated` emits a section naming no
@@ -254,8 +259,12 @@ tier rule, and the ceiling rule before that gate, so the ledger is validated
 whole and an edit to one row's `execution_policy` changes what emits rather
 than turning a previously successful ledger into an error. The `# qwen-web-presets: unvalidated-depth-override` marker forces the
 listener to loopback the way the quarantine marker does, and
-`remote/qwen-web-launch.sh` binds 127.0.0.1 with `QWEN_ROUTER_MAX=1` and refuses
-a caller who asked for any other listener.
+`remote/qwen-web-launch.sh` binds 127.0.0.1 with `QWEN_ROUTER_MAX=1`, refuses
+a caller who asked for any other listener, and reads every
+`LLAMA_ARG_MCP_SERVERS_CONFIG` and `LLAMA_ARG_MMPROJ` path its sections name,
+since router mode reads a projector only when a request selects that child.
+`multi_source` reads `yes` exactly where `max_fetches` exceeds one, because the
+emitted configuration carries the fetch budget alone.
 
 Router mode leaves depth, cache triple, and submission geometry off its own
 argv. `server-models.cpp` ends its preset assembly with

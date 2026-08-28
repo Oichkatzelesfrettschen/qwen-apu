@@ -352,10 +352,14 @@ printf '# reason_id\tscope\tsubject\tconsumers\tdepth\tbatch\tubatch\tcache_type
     >"$policy_quarantine"
 policy_output=$work/policy.out
 
+# The policy rejoins each web section to the current ledger by its profile_id,
+# so the arm names the ledger the preset was generated from. A second argument
+# names another ledger, which is what the revocation arms below measure.
 run_policy_over_presets() {
     QWEN_MODEL_REGISTRY=$model_registry \
     QWEN_MODEL_ROOT=$policy_model_root \
     QWEN_QUARANTINE_REGISTRY=$policy_quarantine \
+    QWEN_WEB_PROFILES=${2:-$web_profiles_ok} \
     QWEN_RADV_ICD=$fake_icd \
     QWEN_POLICY_TEST_OUTPUT=$policy_output \
     QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$1 QWEN_ROUTER_MAX=1 \
@@ -396,7 +400,7 @@ if QWEN_MODEL_ROOT=$policy_model_root build "$web_profiles_mixed" \
     QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" \
     QWEN_WEB_STATE_DIR="$web_state_directory" \
     >"$work/mixed-build.log" 2>"$work/mixed-build.err"; then
-    if run_policy_over_presets "$presets_mixed" \
+    if run_policy_over_presets "$presets_mixed" "$web_profiles_mixed" \
         >"$work/mixed-policy.log" 2>"$work/mixed-policy.err"; then
         mixed_outcome=ok
         grep -q '^\[web-fixture-gated\]' "$presets_mixed" ||
@@ -413,6 +417,22 @@ if QWEN_MODEL_ROOT=$policy_model_root build "$web_profiles_mixed" \
 else
     report mixed_policy_preset_passes_capacity_policy build_failed
     cat "$work/mixed-build.err" >&2
+fi
+
+# execution_policy is the security boundary the ledger states and the preset
+# persists across an edit to it, so the launch reads the ledger again. The
+# generated preset that just passed refuses once its row reads refused.
+revoked_profiles=$work/web-profiles-revoked.tsv
+printf 'web-fixture-ok\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\trefused\n' \
+    >"$revoked_profiles"
+if run_policy_over_presets "$presets_policy" "$revoked_profiles" \
+    >"$work/revoked-policy.log" 2>"$work/revoked-policy.err"; then
+    report policy_refuses_revoked_web_profile accepted
+else
+    outcome=ok
+    grep -q 'ledger execution_policy refused' "$work/revoked-policy.err" ||
+        outcome=missing_message
+    report policy_refuses_revoked_web_profile "$outcome"
 fi
 
 # A misspelled or absent tuple key fails that same validation. Each key is
@@ -1197,7 +1217,7 @@ if build "$web_profiles_vision" "$presets_vision" \
     else
         report vision_section_carries_projector key_absent
     fi
-    if run_policy_over_presets "$presets_vision" \
+    if run_policy_over_presets "$presets_vision" "$web_profiles_vision" \
         >"$work/vision-policy.log" 2>"$work/vision-policy.err"; then
         report vision_section_passes_capacity_policy ok
     else

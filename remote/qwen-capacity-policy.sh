@@ -582,6 +582,7 @@ router_presets=${QWEN_ROUTER_PRESETS:-"${HOME:?}/qwen-webui-state/router-presets
 router_registry=${QWEN_MODEL_REGISTRY:-"$script_directory/models.tsv"}
 router_quarantine_registry=${QWEN_QUARANTINE_REGISTRY:-$script_directory/quarantine.tsv}
 router_model_root=${QWEN_MODEL_ROOT:-"${HOME:?}/models"}
+router_web_profiles=${QWEN_WEB_PROFILES:-$script_directory/web-profiles.tsv}
 router_max=${QWEN_ROUTER_MAX:-1}
 router_preset_expected_sha256=${QWEN_ROUTER_PRESET_SHA256:-}
 verify_router_preset_identity() {
@@ -620,6 +621,88 @@ measure_router_authority_identity() {
     fi
     printf '%s\n' "${authority_identity%% *}"
 }
+# execution_policy is the security boundary the web ledger states, and a preset
+# persists across an edit to it. build-web-presets.sh emits a section only for a
+# validator-gated or ui-mediated row and writes that word into LLAMA_ARG_TAGS, so
+# a row moved to refused, or removed from the ledger, leaves a persisted section
+# launching an MCP configuration the ledger no longer authorizes. The launch
+# rejoins each section to the current ledger by its profile_id, which is the
+# section name build-web-presets.sh writes, and requires the row to exist, to
+# carry an emitting policy, and to carry the same policy the section's tags
+# claim: a row moved from validator-gated to ui-mediated leaves a persisted
+# LLAMA_ARG_MCP_SERVERS_CONFIG in a section the ledger now says reaches no
+# network.
+#
+# validate_current_router_authorities runs this immediately before the exec, so
+# the ledger's last read is one link earlier than the preset and the two
+# registries, whose digests qwen-router-exec-guard.sh remeasures after the
+# Vulkan wrapper configures the environment.
+validate_web_preset_execution_policies() {
+    awk -F'\t' -v ledger="$1" '
+        function policy_from_tags(tags,   tag_count, tags_parts, tag_index) {
+            tag_count = split(tags, tags_parts, ",")
+            for (tag_index = 1; tag_index <= tag_count; tag_index++) {
+                if (tags_parts[tag_index] == "validator-gated" ||
+                    tags_parts[tag_index] == "ui-mediated" ||
+                    tags_parts[tag_index] == "refused") {
+                    return tags_parts[tag_index]
+                }
+            }
+            return ""
+        }
+        function finish_section(   ledger_policy, section_policy) {
+            if (section == "" || section == "*") return
+            if (!(section in ledger_execution_policy)) {
+                printf "web preset section %s names a profile the ledger %s no longer carries\n", \
+                    section, ledger > "/dev/stderr"
+                rejected = 1
+                return
+            }
+            ledger_policy = ledger_execution_policy[section]
+            if (ledger_policy != "validator-gated" && ledger_policy != "ui-mediated") {
+                printf "web preset section %s carries ledger execution_policy %s, which emits no section\n", \
+                    section, ledger_policy > "/dev/stderr"
+                rejected = 1
+                return
+            }
+            section_policy = policy_from_tags(tags_value)
+            if (section_policy != ledger_policy) {
+                printf "web preset section %s claims execution_policy %s where the ledger carries %s\n", \
+                    section, section_policy, ledger_policy > "/dev/stderr"
+                rejected = 1
+            }
+        }
+        FILENAME == ledger {
+            if ($0 ~ /^[[:space:]]*($|#)/) next
+            ledger_execution_policy[$1] = $12
+            next
+        }
+        /^[[:space:]]*($|[#;])/ { next }
+        /^[[:space:]]*\[/ {
+            finish_section()
+            section = $0
+            sub(/^[[:space:]]*\[/, "", section)
+            sub(/\][[:space:]]*$/, "", section)
+            tags_value = ""
+            next
+        }
+        {
+            if (section == "" || section == "*") next
+            separator = index($0, "=")
+            if (separator == 0) next
+            key = substr($0, 1, separator - 1)
+            value = substr($0, separator + 1)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+            if (key == "LLAMA_ARG_TAGS") tags_value = value
+        }
+        END {
+            finish_section()
+            exit rejected
+        }
+    ' "$1" "$2"
+}
+
 validate_current_router_authorities() {
     if ! router_quarantine_rows=$(
         "$script_directory/model-registry.sh" quarantine-rows router-child
@@ -634,6 +717,20 @@ validate_current_router_authorities() {
         printf 'router presets do not carry complete admitted tuples: %s\n' \
             "$router_presets" >&2
         return 1
+    fi
+    if [ "$web_presets_from_preset" = 1 ]; then
+        if [ ! -r "$router_web_profiles" ]; then
+            printf 'web profile ledger is unreadable: %s\n' \
+                "$router_web_profiles" >&2
+            return 1
+        fi
+        if ! validate_web_preset_execution_policies "$router_web_profiles" \
+            "$router_presets"; then
+            printf 'web preset sections lost their ledger execution grant: %s\n' \
+                "$router_presets" >&2
+            printf 'regenerate the preset tree with remote/build-web-presets.sh\n' >&2
+            return 1
+        fi
     fi
 }
 if [ "$router_enabled" = 1 ]; then

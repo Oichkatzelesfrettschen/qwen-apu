@@ -252,6 +252,18 @@ quarantine_registry=$work/quarantine.tsv
 printf '# reason_id\tscope\tsubject\tconsumers\tdepth\tbatch\tubatch\tcache_type_k\tcache_type_v\tflash_attention\n' \
     >"$quarantine_registry"
 
+# The launch rejoins each web section to the current ledger by its profile_id,
+# so every policy arm supplies a ledger carrying the fixture profile at the
+# execution_policy its section's tags claim.
+web_profiles=$work/web-profiles.tsv
+write_web_profiles() {
+    printf '# profile_id\tmodel_id\tweb_mode\tcontext\tvalidated_filled_depth\tmax_results\tmax_fetches\tmax_chars_per_fetch\tmulti_source\tvision_allowed\ttool_selection\texecution_policy\n' \
+        >"$2"
+    printf 'web-fixture\tfixture-production\tvalidator-gated\t8192\t16384\t5\t2\t12000\tyes\tno\t9/10\t%s\n' \
+        "$1" >>"$2"
+}
+write_web_profiles validator-gated "$web_profiles"
+
 fake_icd=$work/radeon_icd.x86_64.json
 : >"$fake_icd"
 policy_output=$work/policy.out
@@ -259,6 +271,7 @@ policy_output=$work/policy.out
 run_policy() {
     QWEN_MODEL_REGISTRY=$model_registry QWEN_MODEL_ROOT=$policy_model_root \
     QWEN_QUARANTINE_REGISTRY=$quarantine_registry QWEN_RADV_ICD=$fake_icd \
+    QWEN_WEB_PROFILES=${QWEN_WEB_PROFILES:-$web_profiles} \
     QWEN_POLICY_TEST_OUTPUT=$policy_output QWEN_ROUTER=1 \
     QWEN_ROUTER_PRESETS=$1 QWEN_ROUTER_MAX=1 QWEN_BIND_HOST=$2 \
         "$policy" "$fake_server" \
@@ -412,6 +425,7 @@ write_lowered_registry() {
 run_policy_with_registry() {
     QWEN_MODEL_REGISTRY=$1 QWEN_MODEL_ROOT=$policy_model_root \
     QWEN_QUARANTINE_REGISTRY=$quarantine_registry QWEN_RADV_ICD=$fake_icd \
+    QWEN_WEB_PROFILES=${QWEN_WEB_PROFILES:-$web_profiles} \
     QWEN_POLICY_TEST_OUTPUT=$policy_output QWEN_ROUTER=1 \
     QWEN_ROUTER_PRESETS=$2 QWEN_ROUTER_MAX=1 QWEN_BIND_HOST=127.0.0.1 \
         "$policy" "$fake_server" \
@@ -483,6 +497,72 @@ if run_policy_with_registry "$unmeasured_registry" "$router_presets_plain" \
 else
     report router_preset_keeps_context_default_rule refused
     cat "$work/router-plain.err" >&2
+fi
+
+
+# execution_policy is the security boundary the ledger states and a preset
+# persists across an edit to it, so the launch rejoins each section to the
+# current ledger. A row moved to refused, removed outright, or moved to another
+# emitting policy than the section's tags claim refuses the launch; an
+# unreadable ledger refuses it the way an unreadable quarantine authority does.
+revoked_profiles=$work/web-profiles-revoked.tsv
+write_web_profiles refused "$revoked_profiles"
+if QWEN_WEB_PROFILES=$revoked_profiles run_policy "$web_presets" 127.0.0.1 \
+    >"$work/revoked.log" 2>"$work/revoked.err"; then
+    report policy_refuses_revoked_execution_policy accepted
+else
+    outcome=ok
+    grep -q 'ledger execution_policy refused' "$work/revoked.err" ||
+        outcome=missing_message
+    report policy_refuses_revoked_execution_policy "$outcome"
+fi
+
+vanished_profiles=$work/web-profiles-vanished.tsv
+write_web_profiles validator-gated "$vanished_profiles"
+sed -i '/^web-fixture\t/d' "$vanished_profiles"
+if QWEN_WEB_PROFILES=$vanished_profiles run_policy "$web_presets" 127.0.0.1 \
+    >"$work/vanished.log" 2>"$work/vanished.err"; then
+    report policy_refuses_vanished_profile accepted
+else
+    outcome=ok
+    grep -q 'no longer carries' "$work/vanished.err" || outcome=missing_message
+    report policy_refuses_vanished_profile "$outcome"
+fi
+
+# A row moved between two emitting policies leaves the persisted
+# LLAMA_ARG_MCP_SERVERS_CONFIG in a section the ledger now says reaches no
+# network, so the section's claimed policy is compared against the ledger's.
+moved_profiles=$work/web-profiles-moved.tsv
+write_web_profiles ui-mediated "$moved_profiles"
+if QWEN_WEB_PROFILES=$moved_profiles run_policy "$web_presets" 127.0.0.1 \
+    >"$work/moved.log" 2>"$work/moved.err"; then
+    report policy_refuses_moved_execution_policy accepted
+else
+    outcome=ok
+    grep -q 'claims execution_policy validator-gated' "$work/moved.err" ||
+        outcome=missing_message
+    report policy_refuses_moved_execution_policy "$outcome"
+fi
+
+if QWEN_WEB_PROFILES=$work/web-profiles-absent.tsv \
+    run_policy "$web_presets" 127.0.0.1 \
+    >"$work/ledger-absent.log" 2>"$work/ledger-absent.err"; then
+    report policy_refuses_unreadable_ledger accepted
+else
+    outcome=ok
+    grep -q 'web profile ledger is unreadable' "$work/ledger-absent.err" ||
+        outcome=missing_message
+    report policy_refuses_unreadable_ledger "$outcome"
+fi
+
+# The unchanged ledger is the control: the same preset launches where the row
+# still carries the policy its section claims.
+if run_policy "$web_presets" 127.0.0.1 \
+    >"$work/ledger-control.log" 2>"$work/ledger-control.err"; then
+    report policy_admits_unchanged_ledger ok
+else
+    report policy_admits_unchanged_ledger refused
+    cat "$work/ledger-control.err" >&2
 fi
 
 if [ "$failures" -ne 0 ]; then
