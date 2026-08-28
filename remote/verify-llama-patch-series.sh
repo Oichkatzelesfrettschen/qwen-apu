@@ -31,7 +31,8 @@ for patch_name in \
     llama-vulkan-low-priority.patch \
     llama-no-cpu-fallback.patch \
     llama-vulkan-duty-cycle.patch \
-    llama-vulkan-runtime-submit-limit.patch; do
+    llama-vulkan-runtime-submit-limit.patch \
+    llama-vulkan-submit-trace.patch; do
     git -C "$temporary_directory/llama.cpp" apply --check \
         "$patch_directory/$patch_name"
     git -C "$temporary_directory/llama.cpp" apply \
@@ -51,12 +52,14 @@ verify_source() {
     printf 'patch_replay_match=%s sha256=%s\n' "$relative_path" "$actual_sha256"
 }
 
-verify_source db34fbfc5ee5368ccc5999dc5a37c90dd3198ae0aff8138440cd7f5f0532eca4 \
+verify_source dc7dde3632a85deff3767f96bad9cd6931c9046c40ed20cbe8ef3bb7df222070 \
     ggml/src/ggml-vulkan/ggml-vulkan.cpp
 verify_source 16abd2face079cad962bb722026d7418e65de67c18c1e1f954df733c1598a70a \
     ggml/src/ggml-vulkan/ggml-vulkan-pacing.h
 verify_source 4b8befd927e9b0c83cfc7cfe843d2f853a9a9db7f6a55c147ffcd4129afd95f8 \
     ggml/src/ggml-vulkan/ggml-vulkan-submit-limit.h
+verify_source f913c8e7d8e1e96a1e247ce68bf08c3aa36ad37438d092bfc63c84e950fdc888 \
+    ggml/src/ggml-vulkan/ggml-vulkan-submit-trace.h
 verify_source ecc818cdce4a7265f6f932962c325a582f42b91cb2661916fa28b5a79a49d1ad \
     src/llama-context.cpp
 verify_source d0d6c8725891ac4baf68fd947ab4be75cc93ba37b1e988ca1c556881a49d0abc \
