@@ -28,6 +28,7 @@ fi
 requested_max_nodes_per_submit=${GGML_VK_MAX_NODES_PER_SUBMIT:-}
 requested_serialize_submissions=${GGML_VK_SERIALIZE_SUBMISSIONS:-}
 requested_allow_graphics_queue=${GGML_VK_ALLOW_GRAPHICS_QUEUE:-}
+requested_submit_trace=${GGML_VK_SUBMIT_TRACE:-}
 
 unset DISPLAY
 unset WAYLAND_DISPLAY
@@ -75,6 +76,7 @@ unset GGML_VK_PERF_LOGGER_FREQUENCY
 unset GGML_VK_PIPELINE_STATS
 unset GGML_VK_PREFER_HOST_MEMORY
 unset GGML_VK_SUBALLOCATION_BLOCK_SIZE
+unset GGML_VK_SUBMIT_TRACE
 unset GGML_VK_SYNC_LOGGER
 unset GGML_VK_VISIBLE_DEVICES
 
@@ -110,6 +112,9 @@ case $vulkan_profile in
         fi
         if [ -n "$requested_allow_graphics_queue" ]; then
             export GGML_VK_ALLOW_GRAPHICS_QUEUE=$requested_allow_graphics_queue
+        fi
+        if [ -n "$requested_submit_trace" ]; then
+            export GGML_VK_SUBMIT_TRACE=$requested_submit_trace
         fi
         ;;
     *)
