@@ -489,6 +489,33 @@ grep -F 'control_failed label=d1-b1-ub1' \
 awk -F'\t' '$1 == "d1-b1-ub1" && $8 == 65 && $15 == 65 { found = 1 }
             END { exit !found }' "$unparseable_output/wedge-summary.tsv"
 
+# A bench that ignores SIGTERM reproduces a wedge parked in the driver: only
+# the SIGKILL escalation after the kill-after grace period ends it, and the
+# arm is recorded as a failure carrying that escalation's distinct status
+# (128 + SIGKILL) rather than hanging the probe.
+hanging_bench=$temporary_directory/hanging-llama-bench
+printf '%s\n' '#!/bin/sh' "trap '' TERM" 'sleep 30' >"$hanging_bench"
+chmod +x "$hanging_bench"
+timeout_output=$temporary_directory/wedge-timeout
+active_fixture=depth-wedge-timeout-kill-after
+diagnostic_file=$temporary_directory/wedge-timeout.stderr
+if QWEN_LLAMA_BENCH=$hanging_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
+    QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_WEDGE_DEPTHS=1 \
+    QWEN_WEDGE_GEOMETRIES=1:1 QWEN_WEDGE_ARM_TIMEOUT_S=1 \
+    QWEN_WEDGE_ARM_KILL_AFTER_S=1 PATH="$fake_bin:$PATH" \
+    "$script_directory/probe-depth-wedge.sh" "$model_path" \
+    "$timeout_output" >"$temporary_directory/wedge-timeout.stdout" \
+    2>"$temporary_directory/wedge-timeout.stderr"; then
+    printf 'depth wedge accepted a timed-out arm as successful\n' >&2
+    exit 1
+fi
+if ! awk -F'\t' '$1 == "d1-b1-ub1" && $8 == 137 { found = 1 }
+                 END { exit !found }' "$timeout_output/wedge-summary.tsv"; then
+    printf 'depth wedge did not record the kill-after escalation status\n' >&2
+    cat "$timeout_output/wedge-summary.tsv" >&2
+    exit 1
+fi
+
 for invalid_rounds in 0 -1; do
     active_fixture=dpm-round-validation
     diagnostic_file=$temporary_directory/dpm-rounds-$invalid_rounds.stderr

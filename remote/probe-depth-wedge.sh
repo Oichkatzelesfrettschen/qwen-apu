@@ -33,6 +33,9 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
     printf 'depths from QWEN_WEDGE_DEPTHS, default "8192 16384"\n' >&2
     printf 'geometries from QWEN_WEDGE_GEOMETRIES as batch:ubatch pairs,\n' >&2
     printf 'default "2048:512 128:32 32:8"\n' >&2
+    printf 'QWEN_WEDGE_ARM_TIMEOUT_S overrides the per-invocation SIGTERM\n' >&2
+    printf 'limit, default 120 + depth/4 seconds; QWEN_WEDGE_ARM_KILL_AFTER_S\n' >&2
+    printf 'overrides the SIGKILL grace period after it, default 30\n' >&2
     exit 2
 fi
 
@@ -54,6 +57,18 @@ control_tokens=${QWEN_WEDGE_CONTROL_TOKENS:-16}
 # failure mechanisms. A depth absent from this list runs every geometry, which
 # is what the 16384 matrix requires of its reduced-geometry arm.
 conditional_depths=${QWEN_WEDGE_CONDITIONAL_DEPTHS:-8192}
+# A wedge parks llama-bench in the driver rather than returning an error, so
+# nothing but an external timeout ends it. QWEN_WEDGE_ARM_TIMEOUT_S overrides
+# the per-invocation limit; its default scales with the prefill depth passed
+# to that invocation, 120 seconds plus one second per four depth tokens, which
+# covers this device's measured prefill and the fixed-length decode with
+# margin while still bounding a hang. QWEN_WEDGE_ARM_KILL_AFTER_S is the grace
+# period between the SIGTERM `timeout` sends at the limit and the SIGKILL it
+# escalates to if the process ignores it; `timeout` reports its own exit
+# status (124 on a plain timeout, 128+signal after a kill-after escalation),
+# so a timed-out arm reads as a failure distinguishable from a bench failure
+# by that status alone.
+arm_timeout_kill_after_s=${QWEN_WEDGE_ARM_KILL_AFTER_S:-30}
 
 if [ ! -x "$bench" ] || [ ! -f "$model_path" ]; then
     printf 'llama-bench and the model must both exist\n' >&2
@@ -209,18 +224,23 @@ run_bench() {
     bench_batch=$3
     bench_ubatch=$4
     bench_tokens=$5
+    bench_timeout_s=${QWEN_WEDGE_ARM_TIMEOUT_S:-$((120 + bench_depth / 4))}
     # errexit is the caller's to manage. Restoring it here re-arms it before the
     # return, and a non-zero return then kills the caller on the very failure
     # this probe exists to record: the wedge at 16384 aborted llama-bench, the
     # function returned 134, and the script died without writing the row.
     if [ "$bench_depth" -eq 0 ]; then
-        nice -n 19 ionice -c 3 "$bench" -m "$model_path" \
+        nice -n 19 ionice -c 3 timeout \
+            --kill-after="${arm_timeout_kill_after_s}s" "${bench_timeout_s}s" \
+            "$bench" -m "$model_path" \
             -ngl 99 -t 2 -r 1 -p 0 -n "$bench_tokens" \
             -b "$bench_batch" -ub "$bench_ubatch" \
             -ctk "$cache_type_k" -ctv "$cache_type_v" -fa "$flash_attention" \
             -o md >"$bench_log" 2>&1
     else
-        nice -n 19 ionice -c 3 "$bench" -m "$model_path" \
+        nice -n 19 ionice -c 3 timeout \
+            --kill-after="${arm_timeout_kill_after_s}s" "${bench_timeout_s}s" \
+            "$bench" -m "$model_path" \
             -ngl 99 -t 2 -r 1 -p 0 -n "$bench_tokens" -d "$bench_depth" \
             -b "$bench_batch" -ub "$bench_ubatch" \
             -ctk "$cache_type_k" -ctv "$cache_type_v" -fa "$flash_attention" \
