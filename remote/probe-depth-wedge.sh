@@ -309,8 +309,10 @@ run_arm() {
         arm_healthy=0
         if [ "$recorded_status" -eq 0 ] &&
            [ "$recorded_control_status" -eq 0 ]; then
-            if [ "$recorded_resets" = unavailable ] ||
-               [ "$recorded_resets" -eq 0 ]; then
+            if { [ "$recorded_resets" = unavailable ] ||
+                 [ "$recorded_resets" -eq 0 ]; } &&
+               { [ "$recorded_faults" = unavailable ] ||
+                 [ "$recorded_faults" -eq 0 ]; }; then
                 arm_healthy=1
             fi
         fi
@@ -449,9 +451,17 @@ run_arm() {
         device_corrupt=1
     fi
 
+    # A fault line without a matching reset line names a hazard the ring never
+    # recovered from on its own: the driver logged the fault and nothing else
+    # moved the ring back to a serviceable state. arm_healthy gates the
+    # conditional-depth rescue skip below, so a fault without a counted reset
+    # leaves the arm unhealthy, runs every remaining geometry at this depth,
+    # and withholds the health signal any promotion decision reads from this
+    # ledger.
     arm_healthy=0
     if [ "$arm_status" -eq 0 ] && [ "$control_status" -eq 0 ]; then
-        if [ "$resets" = unavailable ] || [ "$resets" -eq 0 ]; then
+        if { [ "$resets" = unavailable ] || [ "$resets" -eq 0 ]; } &&
+           { [ "$faults" = unavailable ] || [ "$faults" -eq 0 ]; }; then
             arm_healthy=1
         fi
     fi

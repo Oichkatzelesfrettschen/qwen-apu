@@ -249,6 +249,59 @@ fi
 awk -F'\t' '$1 == "d1-b1-ub1" && $9 == "unavailable" { found = 1 }
             END { exit !found }' "$wedge_output/wedge-summary.tsv"
 
+# A fault line with no reset line names a hazard the ring never recovered from
+# on its own. arm_healthy must read gpu_faults as well as ring_resets, so this
+# arm stays unhealthy even though status, control status, and reset count are
+# all clean.
+# kernel_line_count calls dmesg twice (an existence probe, then the count), so
+# the fault must not appear until the third call: the delta read after the
+# arm ends. A counter file tracks the call ordinal across both the health
+# probe and the count read that precede every arm.
+fault_bin=$temporary_directory/fault-bin
+fault_counter=$temporary_directory/fault-dmesg-counter
+fault_log=$temporary_directory/fault-dmesg-log
+: >"$fault_log"
+mkdir -p "$fault_bin"
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    "counter=$fault_counter" \
+    "log=$fault_log" \
+    'printf x >>"$counter"' \
+    'count=$(wc -c <"$counter")' \
+    'if [ "$count" -eq 3 ]; then' \
+    '    printf "amdgpu: VM_L2_PROTECTION_FAULT detected\\n" >>"$log"' \
+    'fi' \
+    'cat "$log"' \
+    >"$fault_bin/dmesg"
+chmod +x "$fault_bin/dmesg"
+fault_output=$temporary_directory/wedge-fault-no-reset
+active_fixture=depth-wedge-fault-without-reset
+diagnostic_file=$temporary_directory/wedge-fault.stderr
+QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
+QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_WEDGE_DEPTHS=1 \
+QWEN_WEDGE_CONDITIONAL_DEPTHS=1 QWEN_WEDGE_GEOMETRIES='1:1 2:2' \
+PATH="$fault_bin:$PATH" \
+    "$script_directory/probe-depth-wedge.sh" "$model_path" "$fault_output" \
+    >"$temporary_directory/wedge-fault.stdout" \
+    2>"$temporary_directory/wedge-fault.stderr"
+if ! awk -F'\t' '$1 == "d1-b1-ub1" && $8 == 0 && $9 == 0 && $10 > 0 {
+                     found = 1
+                 }
+                 END { exit !found }' "$fault_output/wedge-summary.tsv"; then
+    printf 'depth wedge did not record a clean-reset fault as a fault row\n' >&2
+    cat "$fault_output/wedge-summary.tsv" >&2
+    exit 1
+fi
+if [ "$(awk -F'\t' 'NR > 1' "$fault_output/wedge-summary.tsv" | wc -l)" -ne 2 ]; then
+    printf 'depth wedge suppressed rescue geometry despite an unhealthy fault arm\n' >&2
+    cat "$fault_output/wedge-summary.tsv" >&2
+    exit 1
+fi
+if grep -F 'arm_skipped label=d1-b2-ub2' \
+    "$temporary_directory/wedge-fault.stdout" >/dev/null; then
+    printf 'depth wedge skipped the second geometry despite an unhealthy fault arm\n' >&2
+    exit 1
+fi
+
 # A sampler that writes nothing leaves the arm without device covariates, which
 # this probe records as `unavailable` alongside every other absent device
 # reading rather than ending the sweep. It exists to find a wedge, not to
