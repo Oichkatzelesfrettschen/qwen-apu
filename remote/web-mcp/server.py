@@ -61,6 +61,7 @@ SECRET_BYTE_CAP = 4096
 RESULT_CLAIM_CONTEXT = "result-id"
 AUTHORIZATION_CLAIM_CONTEXT = "search-authorization"
 
+SEPARATOR_PATTERN = re.compile(r"^-{3,}$")
 HOSTNAME_PATTERN = re.compile(
     r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?"
     r"(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$"
@@ -216,6 +217,10 @@ def canonical_url(url):
         raise ToolError(f"the result URL carries an unsupported scheme: {url}")
     if not parts.netloc:
         raise ToolError(f"the result URL names no host: {url}")
+    if "@" in parts.netloc:
+        raise ToolError("the result URL carries userinfo, which is refused")
+    if any(character in url for character in ("\n", "\r", "\t", " ")):
+        raise ToolError("the result URL carries whitespace, which is refused")
     return urllib.parse.urlunsplit(
         (
             parts.scheme.lower(),
@@ -711,14 +716,17 @@ def render_search_results(
 
 
 def clip(value, cap):
-    """Return a provider string bounded at its cap.
+    """Return a provider string as one bounded line.
 
-    Title, author, and highlight text come from the page, so their length is
-    attacker-chosen; each field is bounded on its own and the assembled
-    rendering is bounded again, which keeps one long result from consuming the
-    context the answer needs.
+    Title, author, and highlight text come from the page, so both their length
+    and their line structure are attacker-chosen. Collapsing every whitespace
+    run to one space keeps a field inside the single line its key claims, and a
+    value that is a run of dashes alone becomes a placeholder, so page text
+    cannot write the `---` line that closes a result block.
     """
-    text = str(value).strip()
+    text = " ".join(str(value).split())
+    if SEPARATOR_PATTERN.match(text):
+        text = "[separator]"
     return text[:cap]
 
 

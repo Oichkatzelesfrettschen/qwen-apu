@@ -82,6 +82,24 @@ def build_fixture_document():
                     "highlights": ["H" * 5000, "second", "third", "fourth"],
                 }
             ],
+            "ragged fields": [
+                {
+                    "title": "First line\nsecond line",
+                    "url": "https://example.org/ragged",
+                    "publishedDate": "2026-05-05",
+                    "author": "Given\tSurname",
+                    "highlights": ["alpha\n---\nbeta", "---", "  spaced  out  "],
+                }
+            ],
+            "userinfo url": [
+                {
+                    "title": "Credentialed",
+                    "url": "https://user:secret@example.org/private",
+                    "publishedDate": "",
+                    "author": "",
+                    "highlights": [],
+                }
+            ],
             "many results": [
                 {
                     "title": f"Result {index}",
@@ -618,6 +636,23 @@ class WebMcpServerTest(unittest.TestCase):
         self.assertLessEqual(len(text), server.SEARCH_OUTPUT_CHARACTER_CAP)
         self.assertLess(text.count("URL: "), 10)
         self.assertGreater(text.count("URL: "), 0)
+
+    def test_provider_fields_collapse_to_one_line_each(self):
+        session = self.open_session()
+        text = self.result_text(self.search(session, query="ragged fields"))
+        lines = text.splitlines()
+        self.assertEqual(lines[0], "Title: First line second line")
+        self.assertEqual(lines[3], "Author: Given Surname")
+        self.assertEqual(lines[7], "- alpha --- beta")
+        self.assertEqual(lines[8], "- [separator]")
+        self.assertEqual(lines[9], "- spaced out")
+        self.assertEqual([line for line in lines if line == "---"], ["---"])
+
+    def test_a_url_carrying_userinfo_is_refused(self):
+        session = self.open_session()
+        response = self.search(session, query="userinfo url")
+        self.assertTrue(response["result"]["isError"])
+        self.assertIn("userinfo", self.result_text(response))
 
     def test_domain_entries_must_be_hostnames(self):
         session = self.open_session()
