@@ -209,11 +209,18 @@ Q8_0     0.801 GB/token   15.31 tok/s   12.27 GB/s
 Q4_K_M   0.547 GB/token   15.17 tok/s    8.30 GB/s
 ```
 
-The Q8_0 streams 46.4% more bytes and decodes 0.9% faster. `R` against the 2B
-distill is 1.88 on the paired means, below the 2.0 falsifier floor, so the size
-account and the format account are both refuted in the same direction and the
-deviation is the finding. Fitting a fixed cost plus a bandwidth term across the
-pair gives a negative bandwidth term: more bytes, marginally less time.
+The Q8_0 streams 46.4% more bytes and decodes 0.9% faster.
+
+The registered discriminator was expressed as `R` against the 2B distill, and
+that anchor failed its own span criterion in this sweep, so `R` is unevaluable
+here. The direct pair answers the question without it, because both accounts
+predicted the same direction and the measurement runs the other way. The size
+account put the Q4_K_M above the Q8_0's achieved rate, which is 22.4 tok/s at
+0.547 GB per token; the format account put it at the Q4_K trunk's rate, which is
+18.7 to 20.6 tok/s. Both therefore predicted the Q4_K_M decodes faster than the
+Q8_0, and it decodes 0.9% slower. Fitting a fixed cost plus a bandwidth term
+across the pair gives a negative bandwidth term: more bytes, marginally less
+time.
 
 Q4_K_M buys nothing over Q8_0 on this checkpoint. That extends a result this
 tree already holds at 4B, where i1-Q2_K streams 29.4% fewer bytes than Q4_K_M
@@ -246,11 +253,9 @@ a 512-token batch where decode amortizes it against the fixed per-token cost.
 Its decode rate is nonetheless the highest in the sweep at 15.96 tok/s, so the
 deep-narrow shape costs achieved bandwidth and buys tokens.
 
-`R` is 1.97 on the paired means against a registered band of 2.0 to 2.6 and a
-falsifier at 1.6 to 3.1, so the magnitude read high while the direction held.
-Both subject `R` values sit just under 2.0, which is the anchor rather than the
-subjects: the 2B distill arm that divides them is the row that failed its own
-span criterion.
+The registered `R` band of 2.0 to 2.6 divides by the 2B distill arm that failed
+its span criterion, so the magnitude is unevaluable in this sweep while the
+directional claim, which compares two rows that each met it, is confirmed.
 
 ## Qwen2-VL is the second architecture to break the size ordering
 
@@ -264,9 +269,76 @@ the sweep except the deep-narrow Zero-Coder, and below the 4B distill's 8.58 at
 its size ordering and read it as operator mix. A second architecture breaking it
 in the same direction, with 28 blocks of full attention at 12 heads over 2 KV
 heads against the Qwen3.5 hybrid's 3:1 pattern, supports that reading over a
-byte-count account. The registered band was `R` 1.22 to 1.48 with a falsifier
-outside 1.0 to 1.8; the paired means give 1.05, inside the falsifier and below
-the band, and this figure divides by the anchor that failed its span criterion.
+byte-count account. This row carries into the anchor re-run below, where its `R`
+becomes evaluable against an anchor that met the criterion.
 
 The arm runs under `llama-bench`, which loads the language model alone, so this
 is text-trunk throughput and carries nothing about image encoding.
+
+## The anchor re-run
+
+The criterion required a re-run of the two anchors, and a re-run in a separate
+invocation is a separate queue position, which is the term the within-sweep rule
+exists to remove. Both anchors and the one subject whose ratio depends on them
+therefore ran again as a single sweep with each checkpoint listed twice, so
+every one took four well-separated slots of twelve rather than two of twelve.
+
+| checkpoint | slots | decode mean | span | prefill mean | achieved GB/s |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Qwen3.8-4B Distill Q4_K_M | 4 | 2.985 | 4.4% | 20.45 | 8.06 |
+| Qwen3.8-2B Distill Q4_K_M | 4 | 7.685 | 1.2% | 50.90 | 9.71 |
+| Qwen2-VL-2B Platinum Q4_K_M | 4 | 8.407 | 2.4% | 62.40 | 8.24 |
+
+Every row meets the 8% criterion on decode. The 4B's four slots read 3.08, 2.96,
+2.95, and 2.95, which places the first sweep's 3.41 outside the other five
+measurements of that checkpoint, and the 2B's read 7.66, 7.73, 7.64, and 7.71
+against a first-sweep pair of 8.46 and 7.72. In both anchors the high value came
+from an early forward slot of the first sweep, and the settled value is the
+lower one.
+
+The 4B's prefill still spans 12.5% while its decode spans 4.4%, so the prefill
+half of that row remains unresolved at four slots and no prefill claim rests on
+it.
+
+### The anchor control fails, and the way it fails is the finding
+
+```text
+retained seven-checkpoint sweep    4B/2B decode ratio 0.3634
+this re-run, four slots each       4B/2B decode ratio 0.3884
+nominal 95% interval               0.3801 to 0.3968
+registered band                    0.345 to 0.382
+```
+
+The interval's lower edge touches the band's upper bound, so the control is
+violated narrowly rather than decisively. What it exposes is larger than the
+margin. Against the retained sweep the 4B fell 10.6% and the 2B fell 16.4%, so
+the sweep-level term is not one scalar per sweep: it acts more strongly on the
+smaller checkpoint and moves the ratio between two checkpoints by 6.9%.
+
+`universal-candidate-ladder.md` proposed exactly that scalar as the remedy for
+its bands reading low, applying one 11.1 to 11.5% offset across four
+predictions. This sweep refutes the remedy while leaving the diagnosis intact.
+The rule it produced still holds and now holds more narrowly: a ratio against an
+in-sweep checkpoint is more stable than an absolute rate and is not invariant
+either, so a cross-sweep ratio carries about 7% of uncontrolled term on this
+pair and a difference below that reports the sweep.
+
+The same ordering appears inside the pair of sweeps run minutes apart. Against
+its own first-sweep paired mean the 4B fell 6.1%, the 2B fell 5.0%, and
+Qwen2-VL fell 1.2%, which is the size dependence again at a tenth of the
+magnitude.
+
+### Qwen2-VL against an anchor that met the criterion
+
+```text
+Qwen2-VL 8.407 tok/s / 2B distill 7.685 tok/s = R 1.094
+registered band   1.22 to 1.48
+falsifier         outside 1.0 to 1.8
+```
+
+Inside the falsifier and below the band. Qwen2-VL streams 22.4% fewer bytes per
+token than the 2B distill and decodes 9.4% faster, where a bandwidth-bound
+account predicts 28.9% faster. It achieves 8.24 GB/s against the 2B distill's
+9.71 in the same sweep, so the size ordering breaks here on rows that both met
+the span criterion and the reading stands: the operator mix rather than the byte
+count sets achieved rate across architectures.
