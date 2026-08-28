@@ -83,6 +83,12 @@ payload string under the signing key. `fetch_exa` verifies the signature with
 names. A URL the model writes carries no signature and is refused, so the tool
 surface reaches pages a prior search returned and nothing else.
 
+One canonical URL issues one result identifier. The snapshot and the ledger row
+key a document by the search and that URL, so two records canonicalizing alike
+would map to one stored document and the second token would return the first's
+text without reaching the provider; the renderer issues the first and drops the
+duplicate.
+
 Both provider keys are signed because Exa keys a contents entry by either, and
 a redirect or a trailing-slash difference moves the URL while leaving the
 opaque identifier, so `select_by_reference` resolves the statuses and results

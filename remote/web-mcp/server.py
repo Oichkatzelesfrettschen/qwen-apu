@@ -1627,8 +1627,17 @@ def render_search_results(
     admitted_characters = SEARCH_OUTPUT_CHARACTER_CAP - len(
         f"\nResults Omitted: {len(results)}"
     )
+    issued_urls = set()
     for record in results:
         url = canonical_url(str(record.get("url", "")))
+        # The snapshot and the `search_results` row key a document by the
+        # search and the canonical URL, so two records that canonicalize alike
+        # would map to one stored document and the second token would return
+        # the first's text without reaching the provider. The first record
+        # wins and the duplicate renders nothing.
+        if url in issued_urls:
+            continue
+        issued_urls.add(url)
         highlights = record.get("highlights") or []
         if not isinstance(highlights, list):
             highlights = []

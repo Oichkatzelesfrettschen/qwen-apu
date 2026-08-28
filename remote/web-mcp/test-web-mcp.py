@@ -227,6 +227,24 @@ def build_fixture_document():
                     "highlights": [],
                 }
             ],
+            "duplicate urls": [
+                {
+                    "title": "First identifier",
+                    "id": "provider-id-a",
+                    "url": "https://Example.ORG/raven2",
+                    "publishedDate": "",
+                    "author": "",
+                    "highlights": [],
+                },
+                {
+                    "title": "Second identifier for one URL",
+                    "id": "provider-id-b",
+                    "url": "https://example.org/raven2",
+                    "publishedDate": "",
+                    "author": "",
+                    "highlights": [],
+                },
+            ],
             "userinfo url": [
                 {
                     "title": "Credentialed",
@@ -1535,6 +1553,25 @@ class WebMcpServerTest(unittest.TestCase):
         )
         self.assertNotIn("hostile.example.net", text)
         self.assertIn("https://example.org/raven2", text)
+
+    def test_one_canonical_url_issues_one_result_identifier(self):
+        """Two records that canonicalize alike render one fetchable result.
+
+        The snapshot and the ledger key a document by the search and the
+        canonical URL, so two identifiers over one URL would map to one stored
+        document and the second token would return the first's text without
+        reaching the provider, making the content depend on fetch order. The
+        renderer issues the first record and drops the duplicate.
+        """
+        session = self.open_session()
+        text = self.result_text(self.search(session, query="duplicate urls"))
+        self.assertEqual(text.count("URL: "), 1)
+        self.assertEqual(text.count("Result ID: "), 1)
+        self.assertIn("https://example.org/raven2", text)
+        fetched = session.call_tool(
+            "fetch_exa", {"result_id": self.first_result_id(text)}
+        )
+        self.assertFalse(fetched["result"]["isError"])
 
     def test_a_noncanonical_numeric_host_is_refused(self):
         """A legacy numeric spelling of an address is refused as a host.
