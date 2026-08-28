@@ -41,13 +41,29 @@ on the source host.
 | `Qwen3.5-0.8B-bf16.gguf` | 1,557,662,528 | `ad1549eedc613064971dcbbbfab6c9b7990984d1c9ab38f792c6f2ec1207bbc2` |
 
 The two F16 checkpoints carry no row above, because neither publisher ships
-one: `remote/download-qwen38-2b-distill-bf16.sh` and
-`remote/download-qwen35-08b-bf16.sh` fetch the BF16 artifacts the rows do carry,
-and `llama-quantize` produces `Qwen3.8-2B-F16.gguf` and `Qwen3.5-0.8B-F16.gguf`
-from them on the appliance. The generator is the replay authority for a derived
-file, so the BF16 digest above plus the conversion reproduces the F16, and the
-census confirms it: the same 1,505,783,040 streamed bytes per token with 99.17%
-of bytes reported as BF16 before and as F16 after.
+one. The generator is the replay authority for a derived file, and each has a
+named one:
+
+```sh
+remote/derive-qwen38-2b-distill-f16.sh   # Qwen3.8-2B-F16.gguf
+remote/derive-qwen35-08b-f16.sh          # Qwen3.5-0.8B-F16.gguf
+```
+
+Both call `remote/derive-f16-artifact.sh`, which runs the pinned BF16 fetch,
+converts with `llama-quantize` at type F16, and admits the result on two
+properties measured against the just-verified source: the streamed byte count
+per token is unchanged, since the value type is the only thing the conversion
+may change, and no tensor remains BF16. The 0.8B streams 1,505,783,040 bytes
+per token and the 2B streams 3,764,747,520, each identical to its source. Of
+each file's bytes, 99.17% and 99.66% are reported as BF16 before the conversion
+and as F16 after; the remainder is the F32 tensors the recipe keeps and the
+metadata block.
+
+A derived artifact carries no digest row because its bytes depend on the
+converter rather than on a publisher's revision, so the same two checks run on
+an artifact already in place. A stale, truncated, or hand-converted file under
+the artifact name is refused and left where it is rather than served on its
+existence alone; removing it is what authorizes a fresh derivation.
 
 The vision fixtures under `remote/quality-images/` are committed rather than
 regenerated, because deflate is not reproducible across hosts: zlib 1.3 on the

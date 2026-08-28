@@ -30,6 +30,17 @@ seventh byte from the magic to the end and requires `GgufReadError` at each cut,
 so no partial parse returns a dictionary. The reader then grows its window and
 reports `short-read` only when the largest window still fails.
 
+The bound holds only if the server honours the range. HTTP permits a server that
+does not implement ranges to answer 200 with the whole representation, and the
+resolve URL redirects to a CDN, so the hop that decides is the last one. The
+body goes to a file rather than a pipe, `--max-filesize` refuses a declared
+length over the window before any body transfers, and a response is admitted on
+three facts: a zero curl status, and either 206 with a `Content-Range` that
+starts at zero and ends inside the window, or 200 whose transferred size fits
+the window, which means the whole object fits. `validate_range_response` is a
+pure function of those facts and eleven cases exercise it, including the 200
+that ignored the range and the 206 that named no range at all.
+
 The end-to-end control is the appliance's own copy of the served 2B distill.
 Its full local census and this ranged read agree on every identity field:
 
@@ -173,5 +184,12 @@ conversion, which is a scheduling fact rather than a rejection.
 The selection rule reads one file per repository and the record names it, which
 matters where a repository publishes many: the two Qwen3-Zero-Coder rows hold 78
 and 81 GGUF files and the fingerprints above speak for their Q4_K_M rungs alone.
+
+A split GGUF carries one tensor index per shard, so a header read of the first
+shard describes that shard rather than the checkpoint. The record therefore sums
+`artifact_bytes` across the set, which the tree reports for free, and writes `-`
+for the tensor byte fields, since an understated figure would place the row in
+the wrong throughput class. Every row of this sweep reads `split_shards=1`, so
+no figure above rests on that path.
 
 Records are retained as `evidence/model-admission/static-admission.tsv`.

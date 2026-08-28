@@ -129,6 +129,6 @@ photo-03	photo	contains_any	stripe	Describe the pattern on this animal's coat in
 photo-04	photo	contains_all	black|white	Name the two main colours of this animal's coat.	image:zebra
 photo-05	photo	contains_any	grass|savanna|savannah|grassland|field	What is the animal standing in? Answer in one or two words.	image:zebra
 photo-06	photo	regex	\A(?![\s\S]*\bright\b)[\s\S]*\bleft\b	Is the animal facing left or right? Answer with one word.	image:zebra
-photo-07	photo	contains_any	bare|leafless|no leaves|without leaves|dead	Are the bushes and trees behind the animal bare or in full leaf?	image:zebra
-photo-08	photo	contains_any	dry|dried|brown|golden|yellow|dead	Is the grass the animal stands in dry or green? Describe its condition and colour.	image:zebra
-photo-09	photo	contains_any	side|profile|lateral|flank	Is the animal photographed from the side or head-on? Answer in one or two words.	image:zebra
+photo-07	photo	regex	\A(?![\s\S]*\b(?:full leaf|in leaf|leafy|foliage|verdant)\b)[\s\S]*\b(?:bare|leafless|no leaves|without leaves|dead)\b	Are the bushes and trees behind the animal bare or in full leaf? Answer with one word.	image:zebra
+photo-08	photo	regex	\A(?![\s\S]*\b(?:green|lush|verdant)\b)[\s\S]*\b(?:dry|dried|brown|golden|yellow|dead|parched)\b	Is the grass the animal stands in dry or green? Answer with one word.	image:zebra
+photo-09	photo	regex	\A(?![\s\S]*(?:\bhead[- ]?on\b|\bfrontal\b|\bfrom the front\b))[\s\S]*\b(?:side|profile|lateral|flank)\b	Is the animal photographed from the side or head-on? Answer with one word.	image:zebra

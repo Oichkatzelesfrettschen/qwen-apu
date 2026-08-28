@@ -153,6 +153,65 @@ def check_streamed_bytes_excludes_the_prediction_block():
     return 0
 
 
+def check_range_bound():
+    """A server that ignores the range must be refused rather than buffered."""
+    failures = 0
+    window = 16 << 20
+    cases = (
+        # status, size_download, Content-Range, admitted, what the case is
+        ("206", window, f"bytes 0-{window - 1}/1312164224", True,
+         "a served range"),
+        ("206", 4096, "bytes 0-4095/4096", True, "a file shorter than the window"),
+        ("200", 4096, None, True, "a whole object smaller than the window"),
+        ("200", window + 1, None, False, "a whole object over the window"),
+        ("206", window, None, False, "206 without a Content-Range"),
+        ("206", window, "bytes */1312164224", False, "an unsatisfied range"),
+        ("206", window, f"bytes 4096-{window + 4095}/1312164224", False,
+         "a range that does not start at zero"),
+        ("206", window, f"bytes 0-{window}/1312164224", False,
+         "a range past the window"),
+        ("206", window + 1, f"bytes 0-{window - 1}/1312164224", False,
+         "more bytes than the window"),
+        ("416", 0, None, False, "an unsatisfiable range"),
+        ("", 0, None, False, "no status at all"),
+    )
+    for status, size, content_range, admitted, description in cases:
+        reason = ADMIT.validate_range_response(status, size, content_range, window)
+        if admitted and reason is not None:
+            print(f"{description} was refused: {reason}")
+            failures += 1
+        if not admitted and reason is None:
+            print(f"{description} was admitted")
+            failures += 1
+    return failures
+
+
+def check_split_shard_set():
+    """A split set is recognised by stem, and a plain file stands alone."""
+    failures = 0
+    entries = [
+        {"path": "model-00001-of-00003.gguf", "bytes": 10},
+        {"path": "model-00002-of-00003.gguf", "bytes": 20},
+        {"path": "model-00003-of-00003.gguf", "bytes": 30},
+        {"path": "other-00001-of-00002.gguf", "bytes": 5},
+        {"path": "plain-Q4_K_M.gguf", "bytes": 7},
+    ]
+    shards = ADMIT.shard_set(entries, "model-00001-of-00003.gguf")
+    if [shard["path"] for shard in shards] != [
+            "model-00001-of-00003.gguf", "model-00002-of-00003.gguf",
+            "model-00003-of-00003.gguf"]:
+        print(f"shard set resolved to {[s['path'] for s in shards]}")
+        failures += 1
+    if sum(shard["bytes"] for shard in shards) != 60:
+        print("shard set bytes do not sum across the set")
+        failures += 1
+    alone = ADMIT.shard_set(entries, "plain-Q4_K_M.gguf")
+    if [entry["path"] for entry in alone] != ["plain-Q4_K_M.gguf"]:
+        print(f"a plain file resolved to {[e['path'] for e in alone]}")
+        failures += 1
+    return failures
+
+
 def main(argv):
     if argv:
         print(f"usage: {sys.argv[0]}", file=sys.stderr)
@@ -162,6 +221,8 @@ def main(argv):
         ("artifact_selection", check_selection),
         ("short_read", check_short_read_is_not_an_absent_key),
         ("streamed_bytes", check_streamed_bytes_excludes_the_prediction_block),
+        ("range_bound", check_range_bound),
+        ("split_shard_set", check_split_shard_set),
     ):
         count = check()
         print(f"{name}={'accepted' if count == 0 else 'rejected'}")

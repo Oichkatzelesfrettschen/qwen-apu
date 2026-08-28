@@ -26,6 +26,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import tempfile
 
 SCRIPT_DIRECTORY = pathlib.Path(__file__).resolve().parent
 HUGGINGFACE_ENDPOINT = "https://huggingface.co"
@@ -80,21 +81,91 @@ def fetch_json(url):
     if result.returncode != 0 or status.strip() != "200":
         raise AdmissionError(
             f"tree query returned {status.strip() or 'no status'}: {url}")
-    return json.loads(body)
+    # A proxy or an error page answers 200 with a body that is not the tree, and
+    # a decode error raised here would abort a whole ledger sweep on one bad
+    # candidate. Ledger mode records a failed row and continues, so the parse
+    # failure joins the admission vocabulary rather than escaping it.
+    try:
+        return json.loads(body)
+    except ValueError as error:
+        raise AdmissionError(f"tree query returned unparseable JSON: {error}") from error
+
+
+CONTENT_RANGE_PATTERN = re.compile(
+    r"^\s*bytes\s+(\d+)-(\d+)/(\d+|\*)\s*$", re.IGNORECASE)
+
+
+def validate_range_response(status, size_download, content_range, window):
+    """Say why a range response fails to honour its bound, or None if it holds.
+
+    HTTP permits a server that does not implement ranges to answer 200 with the
+    whole representation, and the resolve URL redirects to a CDN, so the hop
+    that decides is the last one. A 200 is admissible only when the complete
+    object is demonstrably no larger than the window that was asked for; curl
+    exits zero on a complete transfer alone, so a 200 whose byte count fits
+    means the object itself fits. A 206 must name the range it returned.
+    """
+    if status == "206":
+        if content_range is None:
+            return "206 without a Content-Range header"
+        matched = CONTENT_RANGE_PATTERN.match(content_range)
+        if matched is None:
+            return f"206 with an unparseable Content-Range: {content_range}"
+        first, last = int(matched.group(1)), int(matched.group(2))
+        if first != 0:
+            return f"206 starting at byte {first} rather than zero"
+        if last > window - 1:
+            return f"206 ending at byte {last} beyond the {window}-byte window"
+        if size_download > window:
+            return f"206 delivered {size_download} bytes for a {window}-byte window"
+        return None
+    if status == "200":
+        if size_download > window:
+            return (f"200 ignored the range request and delivered "
+                    f"{size_download} bytes")
+        return None
+    return f"range read returned {status or 'no status'}"
 
 
 def fetch_range(url, length):
-    """Read the first `length` bytes, and report what the server actually sent."""
-    result = subprocess.run(
-        ["curl", "-sSL", "--fail-with-body", "-H", f"Range: bytes=0-{length - 1}",
-         "-w", "%{http_code}", "-o", "/dev/stdout", url],
-        capture_output=True)
-    payload = result.stdout
-    status = payload[-3:].decode("ascii", errors="replace")
-    payload = payload[:-3]
-    if result.returncode != 0 or status not in ("200", "206"):
-        raise AdmissionError(f"range read returned {status or 'no status'}: {url}")
-    return payload
+    """Read at most `length` bytes, refusing a server that ignores the range.
+
+    The body goes to a file rather than a pipe because an ignored range would
+    otherwise buffer a multi-gigabyte artifact in memory, which is the bound
+    static admission exists to hold. --max-filesize refuses a declared length
+    over the window before any body is transferred.
+    """
+    with tempfile.TemporaryDirectory(prefix="qwen-static-admission-") as scratch:
+        body_path = pathlib.Path(scratch) / "head.bin"
+        header_path = pathlib.Path(scratch) / "headers.txt"
+        result = subprocess.run(
+            ["curl", "-sS", "-L", "--fail-with-body",
+             "--max-filesize", str(length),
+             "--range", f"0-{length - 1}",
+             "-D", str(header_path), "-o", str(body_path),
+             "-w", "%{http_code} %{size_download}", url],
+            capture_output=True, text=True)
+        if result.returncode != 0:
+            raise AdmissionError(
+                f"range read failed with curl status {result.returncode}: "
+                f"{result.stdout.strip() or result.stderr.strip()}")
+        fields = result.stdout.split()
+        if len(fields) != 2:
+            raise AdmissionError(f"range read reported no status: {result.stdout!r}")
+        status, size_download = fields[0], int(fields[1])
+        # -L follows the resolve redirect, so the last response block is the one
+        # that decided whether the range was honoured.
+        content_range = None
+        for line in header_path.read_text(errors="replace").splitlines():
+            name, separator, value = line.partition(":")
+            if separator and name.strip().lower() == "content-range":
+                content_range = value.strip()
+            elif line.upper().startswith("HTTP/"):
+                content_range = None
+        reason = validate_range_response(status, size_download, content_range, length)
+        if reason is not None:
+            raise AdmissionError(f"{reason}: {url}")
+        return body_path.read_bytes()
 
 
 def list_artifacts(repository, revision):
@@ -111,6 +182,17 @@ def list_artifacts(repository, revision):
         lfs = entry.get("lfs") or {}
         entries.append({"path": path, "bytes": lfs.get("size", size)})
     return entries
+
+
+def shard_set(entries, path):
+    """Return every shard of the split set `path` belongs to, `path` included."""
+    matched = SHARD_PATTERN.search(path)
+    if matched is None:
+        return [entry for entry in entries if entry["path"] == path]
+    stem = path[:matched.start()]
+    return [entry for entry in entries
+            if entry["path"].startswith(stem)
+            and SHARD_PATTERN.search(entry["path"]) is not None]
 
 
 def select_artifact(entries, requested_file=None):
@@ -242,11 +324,22 @@ def admit(repository, revision, requested_file=None):
     record["chat_template"] = header["metadata"].get("tokenizer.chat_template")
     record.update(template_capabilities(record["chat_template"]))
     loaded, skipped = streamed_bytes(header)
+    # A split GGUF carries one tensor index per shard, so the header read here
+    # describes the first shard rather than the checkpoint. The file bytes still
+    # sum across the set because the tree reports every shard's size, but the
+    # tensor byte claim has no basis without reading every shard, and an
+    # understated figure would place the row in the wrong throughput class.
+    shards = shard_set(entries, entry["path"])
+    shard_count = len(shards) if SHARD_PATTERN.search(entry["path"]) else 1
+    artifact_bytes = sum(shard["bytes"] or 0 for shard in shards) or entry["bytes"]
+    if shard_count > 1:
+        loaded = skipped = "-"
     record.update({
         "repository": repository,
         "revision": revision,
         "artifact": entry["path"],
-        "artifact_bytes": entry["bytes"],
+        "artifact_bytes": artifact_bytes,
+        "split_shards": shard_count,
         "selection_rule": selection_rule,
         "header_window_bytes": window,
         "gguf_version": header["version"],
@@ -334,7 +427,7 @@ def main(argv):
                    "nextn_layers", "vocabulary_size", "tokenizer_pre",
                    "chat_template_sha256", "chat_template_bytes",
                    "tokens_sha256", "artifact", "artifact_bytes",
-                   "loaded_tensor_bytes", "skipped_mtp_bytes",
+                   "loaded_tensor_bytes", "skipped_mtp_bytes", "split_shards",
                    "gguf_file_count", "selection_rule", "header_window_bytes",
                    "enable_thinking", "thinking_block", "tools", "tool_calls",
                    "architecture_fingerprint")

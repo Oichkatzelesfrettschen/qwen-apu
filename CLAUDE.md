@@ -371,6 +371,8 @@ remote/download-qwen38-4b-distill-q4km.sh
 remote/download-nanbeige42-3b-q4km.sh            # community conversion
 remote/download-qwen38-2b-distill-bf16.sh       # the 16-bit rung, and the F16 source
 remote/download-qwen35-08b-bf16.sh
+remote/derive-qwen38-2b-distill-f16.sh         # F16 from BF16, validated
+remote/derive-qwen35-08b-f16.sh
 ```
 
 Tests are standalone POSIX shell scripts that exit non-zero on failure. Run one

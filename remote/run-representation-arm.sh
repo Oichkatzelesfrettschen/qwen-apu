@@ -128,8 +128,30 @@ run_arm() {
 
     # The sampler's second argument is the interval between rows, so a large
     # value writes one row and sleeps rather than running for that long.
+    #
+    # A background job that exits at once leaves the shell running and the wait
+    # status discarded, so the arm would record dashes for every device
+    # covariate and still report completion. The covariates are what separate a
+    # representation effect from machine-state drift, so a sampler that fails to
+    # start ends the arm rather than emptying it.
     "$clock_sampler" "$arm_clocks" "$sample_interval_seconds" >/dev/null 2>&1 &
     sampler_pid=$!
+    sampler_started=0
+    sampler_deadline=$((sample_interval_seconds * 4 + 8))
+    while [ "$sampler_deadline" -gt 0 ]; do
+        if [ -s "$arm_clocks" ]; then
+            sampler_started=1
+            break
+        fi
+        kill -0 "$sampler_pid" 2>/dev/null || break
+        sleep 1
+        sampler_deadline=$((sampler_deadline - 1))
+    done
+    if [ "$sampler_started" -eq 0 ]; then
+        printf 'clock sampler wrote no rows: %s\n' "$clock_sampler" >&2
+        stop_sampler
+        exit 1
+    fi
 
     arm_started=$(date +%s)
     # The CSV goes to its own file. llama-bench writes the loader's key-value
@@ -176,8 +198,8 @@ with open(sys.argv[1]) as handle:
     lines = handle.read().splitlines()
 start = next((i for i, line in enumerate(lines) if "avg_ts" in line), None)
 if start is None:
-    print("-\t-")
-    raise SystemExit(0)
+    print("llama-bench emitted no avg_ts column", file=sys.stderr)
+    raise SystemExit(1)
 
 prefill = decode = "-"
 for row in csv.DictReader(lines[start:]):
@@ -190,9 +212,23 @@ for row in csv.DictReader(lines[start:]):
         prefill = f"{float(rate):.2f}"
     elif n_gen != "0":
         decode = f"{float(rate):.2f}"
+# Both rates are the arm. A pair with one side missing supports no ratio, and
+# recording it as a dash would carry a failed measurement into the paired means.
+missing = [name for name, value in (("prefill", prefill), ("decode", decode))
+           if value == "-"]
+if missing:
+    print(f"llama-bench reported no {' and no '.join(missing)} rate",
+          file=sys.stderr)
+    raise SystemExit(1)
 print(f"{prefill}\t{decode}")
 PYTHON
-)
+) || {
+        printf 'bench arm produced no usable rates: position %s role %s\n' \
+            "$arm_position" "$arm_role" >&2
+        tail -20 "$arm_diagnostics" >&2
+        stop_sampler
+        exit 1
+    }
 
     # sample-gpu-clocks.sh writes no header and six columns: memory clock,
     # shader clock, temperature in millidegrees, load average, VRAM bytes, and
