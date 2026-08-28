@@ -448,9 +448,7 @@ fi
 delayed_sampler=$temporary_directory/delayed-clock-sampler.sh
 printf '%s\n' '#!/bin/sh' 'set -eu' \
     'printf "%s\\n" "$$" >"${QWEN_TEST_SAMPLER_PID_FILE:?}"' \
-    'trap "exit 0" HUP INT TERM' \
-    'sleep 30' \
-    'printf "933\\t1100\\t88000\\t5.00\\t1024\\t2048\\n" >"$1"' >"$delayed_sampler"
+    'exec sleep 30' >"$delayed_sampler"
 chmod +x "$delayed_sampler"
 delayed_output=$temporary_directory/wedge-delayed-sampler
 active_fixture=depth-wedge-delayed-clock-sampler

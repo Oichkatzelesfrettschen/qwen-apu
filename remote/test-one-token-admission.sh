@@ -54,7 +54,8 @@ printf '#!/bin/sh\nexit 0\n' >"$fake_server"
 chmod +x "$fake_server"
 
 # Two rows of one architecture, one of another, one that fails to parse
-# statically, one whose artifact cannot be fetched, and one the device refuses.
+# statically, one whose artifact cannot be fetched, one the device refuses, and
+# one parsed row outside the candidate ledger's runtime-admission scope.
 record=$temporary_directory/static-admission.tsv
 {
     printf 'candidate_id\trepository\trevision\tadmission\tarchitecture\tblock_count\tnextn_layers\tvocabulary_size\ttokenizer_pre\tchat_template_sha256\tchat_template_bytes\ttokens_sha256\tartifact\tartifact_bytes\tloaded_tensor_bytes\tskipped_mtp_bytes\tsplit_shards\tgguf_file_count\tselection_rule\theader_window_bytes\tenable_thinking\tthinking_block\ttools\ttool_calls\tarchitecture_fingerprint\n'
@@ -64,21 +65,36 @@ record=$temporary_directory/static-admission.tsv
     printf 'delta\towner/delta\tddd\tfailed\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\n'
     printf 'epsilon\towner/epsilon\teee\tparsed\tqwen35\t24\t0\t1\tq\th\t1\tt\tunfetchable-Q4_K_M.gguf\t1\t1\t0\t1\t1\tpreference:q4_k_m\t16\tTrue\tTrue\tTrue\tTrue\tqwen35/embedding_length=2048/feed_forward_length=6144/attention.head_count=8\n'
     printf 'zeta\towner/zeta\tfff\tparsed\tqwen35\t24\t0\t1\tq\th\t1\tt\tzeta-rejects-Q4_K_M.gguf\t1\t1\t0\t1\t1\tpreference:q4_k_m\t16\tTrue\tTrue\tTrue\tTrue\tqwen35/embedding_length=2048/feed_forward_length=6144/attention.head_count=8\n'
+    printf 'eta\towner/eta\tggg\tparsed\tqwen35\t24\t0\t1\tq\th\t1\tt\teta-Q4_K_M.gguf\t1\t1\t0\t1\t1\tpreference:q4_k_m\t16\tTrue\tTrue\tTrue\tTrue\tqwen35/embedding_length=2048/feed_forward_length=6144/attention.head_count=8\n'
 } >"$record"
+
+candidate_ledger=$temporary_directory/candidate-ledger.tsv
+{
+    printf 'candidate_id\tadmission_stage\n'
+    printf 'alpha\tserved\n'
+    printf 'beta\tstatic-admitted\n'
+    printf 'gamma\tstatic-admitted\n'
+    printf 'delta\tstatic-admitted\n'
+    printf 'epsilon\tstatic-admitted\n'
+    printf 'zeta\tstatic-admitted\n'
+    printf 'eta\tphase-1\n'
+} >"$candidate_ledger"
 
 output_directory=$temporary_directory/out
 QWEN_LLAMA_SERVER=$fake_server QWEN_CONTROL_MODEL=$control_model \
 QWEN_CANDIDATE_ROOT=$temporary_directory/candidates \
 QWEN_PLACEMENT_CHECK=$fake_placement QWEN_CANDIDATE_FETCH=$fake_fetch \
+QWEN_CANDIDATE_LEDGER=$candidate_ledger \
     "$script_directory/run-one-token-admission.sh" "$record" "$output_directory" \
     >"$temporary_directory/sweep.stdout" 2>"$temporary_directory/sweep.stderr" || true
 
 summary=$output_directory/admission-summary.tsv
 column() { awk -F'\t' -v id="$1" -v n="$2" '$1 == id { print $n }' "$summary"; }
 
-# Every parsed row appears exactly once and the unparsed row appears not at all.
+# Every in-scope parsed row appears exactly once. The unparsed row and the
+# rows outside served and static-admitted stay outside the runtime sweep.
 if [ "$(awk 'NR > 1' "$summary" | wc -l | tr -d ' ')" = 5 ] &&
-   [ -z "$(column delta 1)" ]; then
+   [ -z "$(column delta 1)" ] && [ -z "$(column eta 1)" ]; then
     report row_coverage accepted
 else
     report row_coverage rejected
@@ -121,6 +137,7 @@ selected_output=$temporary_directory/selected
 QWEN_LLAMA_SERVER=$fake_server QWEN_CONTROL_MODEL=$control_model \
 QWEN_CANDIDATE_ROOT=$temporary_directory/candidates \
 QWEN_PLACEMENT_CHECK=$fake_placement QWEN_CANDIDATE_FETCH=$fake_fetch \
+QWEN_CANDIDATE_LEDGER=$candidate_ledger \
 QWEN_ADMISSION_ROWS=beta \
     "$script_directory/run-one-token-admission.sh" "$record" "$selected_output" \
     >/dev/null 2>&1 || true
@@ -136,6 +153,7 @@ fi
 fetch_only=$temporary_directory/fetch-only
 QWEN_CANDIDATE_ROOT=$temporary_directory/candidates-fetch-only \
 QWEN_PLACEMENT_CHECK=$fake_placement QWEN_CANDIDATE_FETCH=$fake_fetch \
+QWEN_CANDIDATE_LEDGER=$candidate_ledger \
 QWEN_ADMISSION_STAGES=fetch \
     "$script_directory/run-one-token-admission.sh" "$record" "$fetch_only" \
     >/dev/null 2>&1 || true

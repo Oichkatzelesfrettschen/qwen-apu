@@ -360,6 +360,7 @@ run_policy_over_presets() {
     QWEN_MODEL_ROOT=$policy_model_root \
     QWEN_QUARANTINE_REGISTRY=$policy_quarantine \
     QWEN_WEB_PROFILES=${2:-$web_profiles_ok} \
+    QWEN_WEB_AUTHORIZER_READY=1 \
     QWEN_RADV_ICD=$fake_icd \
     QWEN_POLICY_TEST_OUTPUT=$policy_output \
     QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$1 QWEN_ROUTER_MAX=1 \
@@ -419,9 +420,8 @@ else
     cat "$work/mixed-build.err" >&2
 fi
 
-# execution_policy is the security boundary the ledger states and the preset
-# persists across an edit to it, so the launch reads the ledger again. The
-# generated preset that just passed refuses once its row reads refused.
+# The generated preset binds the path and complete digest of the source ledger,
+# so substituting a revoked ledger refuses before any subset join.
 revoked_profiles=$work/web-profiles-revoked.tsv
 printf 'web-fixture-ok\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\trefused\n' \
     >"$revoked_profiles"
@@ -430,7 +430,8 @@ if run_policy_over_presets "$presets_policy" "$revoked_profiles" \
     report policy_refuses_revoked_web_profile accepted
 else
     outcome=ok
-    grep -q 'ledger execution_policy refused' "$work/revoked-policy.err" ||
+    grep -q 'QWEN_WEB_PROFILES names .* where the preset binds' \
+        "$work/revoked-policy.err" ||
         outcome=missing_message
     report policy_refuses_revoked_web_profile "$outcome"
 fi
@@ -1420,6 +1421,36 @@ EOF
 else
     report fetched_model_reaches_a_written_config first_build_failed
     cat "$work/fetch-first.err" >&2
+fi
+
+# A final ledger record remains a record even when the file lacks a trailing
+# newline. POSIX read reports a nonzero status after returning those bytes, so
+# the generator must process the populated fields before ending the loop.
+unterminated_profiles=$work/web-profiles-unterminated.tsv
+printf 'web-fixture-unterminated\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated' \
+    >"$unterminated_profiles"
+unterminated_presets=$work/presets-unterminated.ini
+if build "$unterminated_profiles" "$unterminated_presets" \
+    env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
+    QWEN_WEB_STATE_DIR="$web_state_directory" \
+    >"$work/unterminated.log" 2>"$work/unterminated.err" &&
+   grep -Fqx '[web-fixture-unterminated]' "$unterminated_presets"; then
+    report final_unterminated_profile_emits_section ok
+else
+    report final_unterminated_profile_emits_section failed
+    cat "$work/unterminated.err" >&2
+fi
+
+expected_ledger_path=$(CDPATH='' cd -- "$(dirname -- "$unterminated_profiles")" && pwd)/$(basename -- "$unterminated_profiles")
+expected_ledger_sha256=$(sha256sum "$unterminated_profiles" | cut -d' ' -f1)
+if grep -Fqx "# qwen_web_profiles_path=$expected_ledger_path" \
+       "$unterminated_presets" &&
+   grep -Fqx "# qwen_web_profiles_sha256=$expected_ledger_sha256" \
+       "$unterminated_presets"; then
+    report preset_binds_complete_ledger_identity ok
+else
+    report preset_binds_complete_ledger_identity missing_identity
 fi
 
 if [ "$failures" -ne 0 ]; then

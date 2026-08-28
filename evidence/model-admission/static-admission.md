@@ -89,12 +89,13 @@ needs three arms rather than fourteen: `qwen3` at 42 blocks, `qwen2vl`, and a
 0.8B Q4_K_M reference for a class whose three members have no measured rate at
 the format they publish.
 
-Those three arms ran beside three anchors in one sweep and
-`evidence/model-admission/runtime-class-throughput.md` carries them. The
-grouping held where it predicted a shared rate and the reference arms answered
-more than throughput: the 0.8B class decodes at one rate across 67.9% of byte
-spread, so a Q4_K_M rung of it competes against the served Q8_0 on quality
-rather than on speed.
+Those three representative arms ran beside three anchors in one sweep and
+`evidence/model-admission/runtime-class-throughput.md` carries them. The sweep
+measures the selected checkpoints; it does not validate substitution of every
+member inside a structural class. The three measured 0.8B checkpoints decode
+within 5.2% across 67.9% of byte spread, so the selected Q4_K_M rung supplies no
+resolved speed advantage over the served Q8_0. Other class members still need
+their own arm before the same throughput claim transfers to them.
 
 ## Six chat templates over fourteen artifacts
 

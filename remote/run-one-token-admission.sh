@@ -35,7 +35,7 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
     printf 'usage: %s STATIC_ADMISSION_TSV [OUTPUT_DIRECTORY]\n' "$0" >&2
     printf 'environment: QWEN_LLAMA_SERVER QWEN_CANDIDATE_ROOT QWEN_CONTROL_MODEL\n' >&2
     printf '             QWEN_ADMISSION_STAGES QWEN_ADMISSION_ROWS\n' >&2
-    printf '             QWEN_PLACEMENT_CHECK QWEN_CANDIDATE_FETCH\n' >&2
+    printf '             QWEN_PLACEMENT_CHECK QWEN_CANDIDATE_FETCH QWEN_CANDIDATE_LEDGER\n' >&2
     exit 2
 fi
 
@@ -51,8 +51,9 @@ fetch=${QWEN_CANDIDATE_FETCH:-$script_directory/fetch-candidate-artifact.sh}
 # transfers run while the appliance is still serving.
 stages=${QWEN_ADMISSION_STAGES:-fetch,load}
 selected_rows=${QWEN_ADMISSION_ROWS:-}
+candidate_ledger=${QWEN_CANDIDATE_LEDGER:-$script_directory/../evidence/model-admission/candidate-ledger.tsv}
 
-for required in "$record" "$placement" "$fetch"; do
+for required in "$record" "$placement" "$fetch" "$candidate_ledger"; do
     [ -r "$required" ] || { printf 'unreadable: %s\n' "$required" >&2; exit 2; }
 done
 case $stages in
@@ -70,6 +71,28 @@ esac
 
 mkdir -p "$output_directory"
 summary=$output_directory/admission-summary.tsv
+ledger_scope=$output_directory/candidate-ledger-scope.txt
+python3 - "$candidate_ledger" >"$ledger_scope" <<'PYTHON'
+import csv
+import sys
+
+with open(sys.argv[1], encoding="utf-8", newline="") as handle:
+    rows = (line for line in handle if not line.startswith("#") and line.strip())
+    reader = csv.DictReader(rows, delimiter="\t")
+    required = {"candidate_id", "admission_stage"}
+    if reader.fieldnames is None or not required.issubset(reader.fieldnames):
+        raise SystemExit("candidate ledger lacks candidate_id or admission_stage")
+    seen = set()
+    for row in reader:
+        if None in row or any(value is None for value in row.values()):
+            raise SystemExit("candidate ledger carries a malformed row")
+        candidate_id = row["candidate_id"]
+        if not candidate_id or candidate_id in seen:
+            raise SystemExit(f"candidate ledger carries an invalid duplicate id: {candidate_id}")
+        seen.add(candidate_id)
+        if row["admission_stage"] in {"served", "static-admitted"}:
+            print(candidate_id)
+PYTHON
 if [ ! -s "$summary" ]; then
     printf 'candidate_id\tarchitecture\tartifact\tobserved_sha256\tfetch\tload\tprojector\tcontrol\tdetail\n' \
         >"$summary"
@@ -96,6 +119,10 @@ selected() {
     return 1
 }
 
+in_ledger_scope() {
+    grep -Fx "$1" "$ledger_scope" >/dev/null
+}
+
 seen_classes=''
 control_state=not-run
 tab=$(printf '\t')
@@ -109,6 +136,7 @@ while IFS="$tab" read -r candidate_id repository revision admission architecture
         fingerprint; do
     [ "$candidate_id" = "candidate_id" ] && continue
     [ "$admission" = "parsed" ] || continue
+    in_ledger_scope "$candidate_id" || continue
     selected "$candidate_id" || continue
 
     candidate_directory=$candidate_root/$candidate_id

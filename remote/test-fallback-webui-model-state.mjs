@@ -125,6 +125,31 @@ globalThis.webuiModelStateTest = {
       attachmentText: $('#attached').children.map(child => child.textContent),
     };
   },
+  async runStaleProposalCheck(proposalModel) {
+    const fetchBudget = { remaining: WEB_FETCH_BUDGET_PER_TURN };
+    const searchBudget = { remaining: WEB_SEARCH_BUDGET_PER_TURN };
+    const historyStart = history.length;
+    const view = { turn: { root: document.createElement('div') } };
+    await runProposedTools(
+      [
+        { name: WEB_FETCH_TOOL_NAME, args: JSON.stringify({ result_id: 'rid' }) },
+        { name: WEB_SEARCH_TOOL_NAME, args: JSON.stringify({ query: 'query' }) },
+      ],
+      ['stale-fetch', 'stale-search'],
+      view,
+      false,
+      fetchBudget,
+      searchBudget,
+      conversationGeneration,
+      proposalModel,
+      true,
+    );
+    return {
+      fetchRemaining: fetchBudget.remaining,
+      searchRemaining: searchBudget.remaining,
+      messages: history.slice(historyStart).map(message => ({ ...message })),
+    };
+  },
 };
 `;
 
@@ -260,6 +285,14 @@ removalProps.resolve(jsonResponse({ n_ctx: 24576 }));
 removalTokenize.resolve(jsonResponse({ tokens: [1, 2] }));
 await flushPromises();
 assert.deepEqual(testApi.state().attachments, []);
+const requestCountBeforeStaleProposals = pendingRequests.length;
+const staleProposalResult = await testApi.runStaleProposalCheck(modelB);
+assert.equal(staleProposalResult.fetchRemaining, 2);
+assert.equal(staleProposalResult.searchRemaining, 1);
+assert.equal(staleProposalResult.messages.length, 2);
+assert.ok(staleProposalResult.messages.every(message =>
+  message.content.includes('proposed by model model B/8k')));
+assert.equal(pendingRequests.length, requestCountBeforeStaleProposals);
 assert.ok(storageWriteAttempts > 0);
 assert.equal(pendingRequests.length, 0);
 

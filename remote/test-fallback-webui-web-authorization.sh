@@ -18,7 +18,9 @@ fallback_ui=$script_directory/../webui/index.html
 # The per-turn toggle governs the tool list rather than the request text, so a
 # turn run with it off carries no web tool for the model to propose.
 grep -F '<input type="checkbox" id="web-tools">' "$fallback_ui" >/dev/null
-grep -F "if (\$('#web-tools').checked) {" "$fallback_ui" >/dev/null
+grep -F "const webPermission = \$('#web-tools').checked;" "$fallback_ui" >/dev/null
+grep -F "\$('#web-tools').checked = false;" "$fallback_ui" >/dev/null
+grep -F 'if (webPermission) {' "$fallback_ui" >/dev/null
 grep -F 'tools.push(...await resolveWebTools(requestModel, modelStateGeneration));' \
     "$fallback_ui" >/dev/null
 
@@ -64,7 +66,8 @@ grep -F "'The user refused this web search. It did not run.'" \
 
 # The grant enters one request body. A transcript message, a stored value, or a
 # completion body carrying it would present a single-use token twice.
-grep -F 'outcome = await streamCompletion(history, view);' "$fallback_ui" >/dev/null
+grep -F 'outcome = await streamCompletion(history, view, webPermission);' \
+    "$fallback_ui" >/dev/null
 if grep -E 'answerCall\([^)]*authorization' "$fallback_ui" >/dev/null; then
     printf 'fallback Web UI writes a grant into the transcript\n' >&2
     exit 1
@@ -183,11 +186,12 @@ grep -F 'searchBudget.remaining--;' "$fallback_ui" >/dev/null
 grep -F 'const searchBudget = { remaining: WEB_SEARCH_BUDGET_PER_TURN };' "$fallback_ui" >/dev/null
 grep -F \
     'async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetchBudget,
-                                 searchBudget, turnGeneration, proposalModel) {' \
+                                 searchBudget, turnGeneration, proposalModel,
+                                 webPermission) {' \
     "$fallback_ui" >/dev/null
 grep -F \
     'outcome.calls, callIds, view, round === CONTINUATION_CAP - 1, fetchBudget,
-        searchBudget, turnGeneration, proposalModel);' \
+        searchBudget, turnGeneration, proposalModel, webPermission);' \
     "$fallback_ui" >/dev/null
 # The decrement precedes the approval dialog: the budget is spent by opening
 # the dialog and executing on approval, not by a later decision inside it.
@@ -199,13 +203,12 @@ if [ -z "$decrement_line" ] || [ -z "$approve_line" ] || [ "$decrement_line" -ge
     exit 1
 fi
 
-# A model-picker change between the round that proposed a search and its
-# approval must refuse rather than sign or execute against the wrong profile:
-# runProposedTools snapshots the proposing model and compares it against
-# `requestModel` both before the dialog opens and again inside its own click
-# handler, since the picker stays enabled while the dialog is showing.
+# A model-picker change between a web proposal and execution refuses both
+# tools before either per-turn allowance moves. The approval handler repeats
+# the check because the picker stays enabled while the dialog is showing.
 grep -F 'const proposalModel = requestModel;' "$fallback_ui" >/dev/null
-grep -F 'if (requestModel !== proposalModel) {' "$fallback_ui" >/dev/null
+grep -F 'if (requestModel !== proposalModel && WEB_TOOL_NAMES.includes(toolName)) {' \
+    "$fallback_ui" >/dev/null
 grep -F 'function approveWebSearch(fields, proposalModel) {' "$fallback_ui" >/dev/null
 grep -F 'const outcome = await approveWebSearch(fields, proposalModel);' "$fallback_ui" >/dev/null
 # The picker can move while a tool request is awaited, so the turn ends
@@ -226,9 +229,9 @@ grep -F "if (toolName !== WEB_SEARCH_TOOL_NAME) {" "$fallback_ui" >/dev/null
 grep -F 'The served path executes no tool named' "$fallback_ui" >/dev/null
 grep -F 'if (!outcome.calls.length) return;' "$fallback_ui" >/dev/null
 
-# The toggle is read again where the call runs, so a proposal carried over
-# from a turn that offered the web tools reaches no network once it is off.
-grep -F "if (!\$('#web-tools').checked && WEB_TOOL_NAMES.includes(toolName)) {" \
+# The turn snapshot governs execution after the visible control resets for
+# the next turn.
+grep -F 'if (!webPermission && WEB_TOOL_NAMES.includes(toolName)) {' \
     "$fallback_ui" >/dev/null
 grep -F 'The web surface is off for this turn; ${toolName} did not run.' \
     "$fallback_ui" >/dev/null
@@ -291,11 +294,14 @@ grep -F 'meta[name="qwen-web-broker"]' "$fallback_ui" >/dev/null
 grep -F "const BROKER_ORIGIN_DEFAULT = configuredBrokerOrigin();" \
     "$fallback_ui" >/dev/null
 
-# A broker restart on the same port signs a new per-launch secret, so a 403
-# against the cached one is a stale-cache signal rather than a standing
-# refusal. requestGrant clears the cache and re-fetches /session once before
-# it retries the same /grant body, and a second refusal still surfaces.
-grep -F "if (response.status === 403) {" "$fallback_ui" >/dev/null
+# The Web UI API bearer capability protects /session. Only the broker's
+# explicit stale-session-secret code refreshes the cache; another 403 stays a
+# standing refusal and does not spend a second authorization request.
+grep -F "headers: authHeaders(), signal" "$fallback_ui" >/dev/null
+grep -F "const STALE_SESSION_SECRET_CODE = 'stale_session_secret';" \
+    "$fallback_ui" >/dev/null
+grep -F 'if (response.status === 403 && payload.code === STALE_SESSION_SECRET_CODE) {' \
+    "$fallback_ui" >/dev/null
 grep -F "brokerSessionSecret = null;" "$fallback_ui" >/dev/null
 grep -F "const refreshed = await brokerSession(signal);" "$fallback_ui" >/dev/null
 grep -F "await postGrant(fields, refreshed, signal)" "$fallback_ui" >/dev/null
@@ -413,6 +419,24 @@ if (!cappedSearch.includes("Truncated by the client at")) {
 }
 if (!oversizedBlock.startsWith(cappedSearch.split("\n---\n")[0])) {
     throw new Error("a capped single-block reply does not keep a prefix of the oversized block");
+}
+
+const notice = "Truncated by the client at 8000 characters.";
+const suffix = `\n---\n${notice}`;
+const blockBudget = 8000 - suffix.length;
+const astralHeader = [
+    "Title: Astral result",
+    "URL: https://example.org/astral",
+    "Result ID: rid-astral",
+    "Trust: untrusted-web-result",
+    "Highlights:",
+].join("\n") + "\n- ";
+const padding = "x".repeat((blockBudget - astralHeader.length) % 2 === 0 ? 1 : 0);
+const astralBlock = astralHeader + padding + "\u{1F600}".repeat(5000);
+const astralCapped = truncateSearchResult(astralBlock + "\n---");
+const keptAstralBlock = astralCapped.slice(0, -suffix.length);
+if (/\uD83D(?!\uDE00)|(?<!\uD83D)\uDE00/.test(keptAstralBlock)) {
+    throw new Error("a capped search-result block split a Unicode code point");
 }
 ' "$fallback_ui"
 fi
@@ -548,11 +572,12 @@ eval(match[0]);
 const nonce = "fetchNonce9";
 const startIndex = 4000;
 const window = "y".repeat(9000);
+const originalDigest = "0".repeat(64);
 const frame = [
     `BEGIN UNTRUSTED WEB CONTENT [${nonce}]`,
     "Source: https://example.org/raven2",
     "Retrieved: 2026-01-05T00:00:00Z",
-    "Content SHA-256: " + "0".repeat(64),
+    "Content SHA-256: " + originalDigest,
     `Start Index: ${startIndex}`,
     `Returned Characters: ${window.length}`,
     "Next Start Index: end",
@@ -568,6 +593,12 @@ if (capped.length > 8000) {
 }
 if (!capped.endsWith(`END UNTRUSTED WEB CONTENT [${nonce}]`)) {
     throw new Error("a capped fetch frame lost its footer");
+}
+if (!capped.includes("Content SHA-256: not recomputed; the client truncated this window.")) {
+    throw new Error("a capped fetch frame retained no digest-invalidated marker");
+}
+if (capped.includes(`Content SHA-256: ${originalDigest}`)) {
+    throw new Error("a capped fetch frame retained the digest of the dropped window");
 }
 const returnedMatch = capped.match(/\nReturned Characters: (\d+)\n/);
 const nextMatch = capped.match(/\nNext Start Index: (\d+)\n/);

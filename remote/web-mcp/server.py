@@ -19,13 +19,16 @@ argument vector, environment value, log line, or error message.
 
 import base64
 import collections
+import contextlib
 import datetime
 import hashlib
 import hmac
 import ipaddress
 import json
+import math
 import os
 import re
+import signal
 import sqlite3
 import stat
 import sys
@@ -170,6 +173,54 @@ class ExpiredResult(ToolError):
 
 class GrantReplayed(AuthorizationDenied):
     """A grant whose single use the ledger already recorded."""
+
+
+class ProviderDeadlineExpired(TimeoutError):
+    """The provider call exceeded its complete wall-clock deadline."""
+
+
+@contextlib.contextmanager
+def provider_deadline(seconds):
+    """Bound DNS, connect, headers, and body reads by one POSIX timer."""
+    previous_handler = signal.getsignal(signal.SIGALRM)
+    started = time.monotonic()
+
+    def expire(_signal_number, _frame):
+        raise ProviderDeadlineExpired
+
+    signal.signal(signal.SIGALRM, expire)
+    previous_delay, previous_interval = signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_delay > 0:
+            elapsed = time.monotonic() - started
+            signal.setitimer(
+                signal.ITIMER_REAL,
+                max(0.000001, previous_delay - elapsed),
+                previous_interval,
+            )
+
+
+def strict_json_loads(text):
+    """Decode standards-compliant JSON and reject non-finite numbers."""
+
+    def reject_constant(value):
+        raise ValueError(f"non-finite JSON constant: {value}")
+
+    def parse_finite_float(value):
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            raise ValueError(f"non-finite JSON number: {value}")
+        return parsed
+
+    return json.loads(
+        text,
+        parse_constant=reject_constant,
+        parse_float=parse_finite_float,
+    )
 
 
 AUDIT_STATUSES = (
@@ -810,14 +861,21 @@ class ExaProvider(Provider):
             method="POST",
         )
         try:
-            with PROVIDER_OPENER.open(
-                request, timeout=REQUEST_TIMEOUT_SECONDS
-            ) as response:
-                raw = response.read(HTTP_RESPONSE_BYTE_CAP + 1)
+            with provider_deadline(REQUEST_TIMEOUT_SECONDS):
+                with PROVIDER_OPENER.open(
+                    request, timeout=REQUEST_TIMEOUT_SECONDS
+                ) as response:
+                    raw = response.read(HTTP_RESPONSE_BYTE_CAP + 1)
             self.response_bytes += len(raw)
-        except urllib.error.HTTPError as error:
+        except ProviderDeadlineExpired:
             raise ProviderHttpError(
-                f"the provider rejected the request with status {error.code}"
+                f"the provider request exceeded {REQUEST_TIMEOUT_SECONDS:g} seconds"
+            ) from None
+        except urllib.error.HTTPError as error:
+            status_code = error.code
+            error.close()
+            raise ProviderHttpError(
+                f"the provider rejected the request with status {status_code}"
             ) from None
         except Exception:
             raise ProviderHttpError("the provider request failed") from None
@@ -826,7 +884,7 @@ class ExaProvider(Provider):
                 f"the provider response exceeds the {HTTP_RESPONSE_BYTE_CAP} byte cap"
             )
         try:
-            document = json.loads(raw.decode("utf-8"))
+            document = strict_json_loads(raw.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             raise ProviderContentError("the provider response is not valid UTF-8 JSON") from None
         if not isinstance(document, dict):
@@ -1295,6 +1353,72 @@ class Ledger:
             self.connection.execute("ROLLBACK")
             raise
 
+    def _consume_bucket(
+        self, name, window_seconds, limit, now, exhausted=RateLimited, units=1
+    ):
+        """Consume one bucket inside the caller's active transaction."""
+        window_start = int(now) - int(now) % window_seconds
+        row = self.connection.execute(
+            "SELECT window_start, used FROM buckets WHERE name = ?", (name,)
+        ).fetchone()
+        used = row[1] if row and row[0] == window_start else 0
+        if used + units > limit:
+            raise exhausted(
+                f"the {name} rate limit of {limit} per "
+                f"{window_seconds} seconds is exhausted"
+            )
+        self.connection.execute(
+            "INSERT INTO buckets(name, window_start, used) VALUES(?, ?, ?) "
+            "ON CONFLICT(name) DO UPDATE SET window_start = excluded.window_start,"
+            " used = excluded.used",
+            (name, window_start, used + units),
+        )
+
+    def consume_search(self, grant, profile, provider, now, limits, pages):
+        """Atomically spend one grant and every search budget bucket."""
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            if grant is not None:
+                self.connection.execute(
+                    "INSERT INTO grants(grant_id, profile, provider, consumed_at,"
+                    " expiry) VALUES(?, ?, ?, ?, ?)",
+                    (
+                        grant["grant_id"],
+                        profile,
+                        provider,
+                        int(now),
+                        int(grant["expiry"]),
+                    ),
+                )
+            self._consume_bucket(
+                "search-minute", 60, limits["search_per_minute"], now
+            )
+            self._consume_bucket(
+                "pages-day",
+                86400,
+                limits["page_budget"],
+                now,
+                BudgetExhausted,
+                units=pages,
+            )
+            self._consume_bucket(
+                "provider-day",
+                86400,
+                limits["provider_budget"],
+                now,
+                BudgetExhausted,
+            )
+            self.connection.execute("COMMIT")
+        except sqlite3.IntegrityError:
+            self.connection.execute("ROLLBACK")
+            raise GrantReplayed(
+                "the authorization is spent; a grant admits one search and "
+                "the operator issues another"
+            ) from None
+        except BaseException:
+            self.connection.execute("ROLLBACK")
+            raise
+
     def consume(
         self, name, window_seconds, limit, now, exhausted=RateLimited, units=1
     ):
@@ -1307,23 +1431,10 @@ class Ledger:
         charges a search for the pages it asks for, which is what separates the
         page budget from the count of calls.
         """
-        window_start = int(now) - int(now) % window_seconds
         self.connection.execute("BEGIN IMMEDIATE")
         try:
-            row = self.connection.execute(
-                "SELECT window_start, used FROM buckets WHERE name = ?", (name,)
-            ).fetchone()
-            used = row[1] if row and row[0] == window_start else 0
-            if used + units > limit:
-                raise exhausted(
-                    f"the {name} rate limit of {limit} per "
-                    f"{window_seconds} seconds is exhausted"
-                )
-            self.connection.execute(
-                "INSERT INTO buckets(name, window_start, used) VALUES(?, ?, ?) "
-                "ON CONFLICT(name) DO UPDATE SET window_start = excluded.window_start,"
-                " used = excluded.used",
-                (name, window_start, used + units),
+            self._consume_bucket(
+                name, window_seconds, limit, now, exhausted, units
             )
             self.connection.execute("COMMIT")
         except BaseException:
@@ -1423,8 +1534,27 @@ def resolve_max_chars_per_fetch_cap(settings):
     return value
 
 
+def resolve_max_fetches(settings):
+    """Return the per-search document allowance after startup validation."""
+    raw = settings.get("max_fetches") or ""
+    if not raw:
+        return SEARCH_FETCH_ALLOWANCE_DEFAULT
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ToolError(
+            "QWEN_WEB_MAX_FETCHES_PER_SEARCH is not an integer"
+        ) from None
+    if not (1 <= value <= RESULT_COUNT_CAP):
+        raise ToolError(
+            "QWEN_WEB_MAX_FETCHES_PER_SEARCH lies outside "
+            f"[1, {RESULT_COUNT_CAP}]: {value}"
+        )
+    return value
+
+
 def resolve_environment_caps(settings):
-    """Replace the two raw cap strings in `settings` with validated integers.
+    """Replace raw cap strings in `settings` with validated integers.
 
     Both caps gate every later call, so a malformed value fails once here
     rather than on the first `search_exa` or `fetch_exa` invocation the
@@ -1432,6 +1562,7 @@ def resolve_environment_caps(settings):
     """
     settings["max_results_cap"] = resolve_max_results_cap(settings)
     settings["max_chars_per_fetch_cap"] = resolve_max_chars_per_fetch_cap(settings)
+    settings["max_fetches"] = resolve_max_fetches(settings)
 
 
 def open_ledger(settings):
@@ -1506,6 +1637,21 @@ def spend_provider_budget(ledger, settings, now):
         now,
         BudgetExhausted,
     )
+
+
+def search_budget_limits(settings):
+    """Resolve every search bucket limit before a transaction begins."""
+    return {
+        "search_per_minute": integer_setting(
+            settings, "search_per_minute", SEARCH_PER_MINUTE_DEFAULT
+        ),
+        "page_budget": integer_setting(
+            settings, "page_budget", PAGE_DAILY_BUDGET_DEFAULT
+        ),
+        "provider_budget": integer_setting(
+            settings, "daily_budget", PROVIDER_DAILY_BUDGET_DEFAULT
+        ),
+    }
 
 
 def select_provider(settings):
@@ -1861,6 +2007,7 @@ def call_search(settings, arguments):
         # stays available to the operator who corrects the configuration.
         lifetime_seconds = resolve_token_lifetime(settings)
         provider.preflight()
+        limits = search_budget_limits(settings)
         granted = enforce_search_authorization(
             settings,
             signing_key,
@@ -1871,18 +2018,16 @@ def call_search(settings, arguments):
             ledger,
         )
         if ledger is not None:
-            spend_call_budget(ledger, settings, "search", now, pages=max_results)
-            spend_provider_budget(ledger, settings, now)
-        # The grant is spent immediately ahead of the provider request, so a
-        # rate or budget refusal that reaches no provider leaves the single use
-        # intact and a spent grant means a request was issued.
-        if granted is not None:
-            ledger.consume_grant(
-                granted["grant_id"],
+            # The grant and all three search costs form one state transition.
+            # A replay fails before charging a bucket, while a bucket refusal
+            # rolls the grant insertion back for a corrected retry.
+            ledger.consume_search(
+                granted,
                 settings.get("profile") or "default",
                 provider.name,
-                granted["expiry"],
                 now,
+                limits,
+                max_results,
             )
         # The domain lists reach the provider as request fields and bound
         # what it returns here, so an off-domain record is dropped before the
@@ -1907,9 +2052,7 @@ def call_search(settings, arguments):
                 search_id,
                 settings.get("profile") or "default",
                 provider.name,
-                integer_setting(
-                    settings, "max_fetches", SEARCH_FETCH_ALLOWANCE_DEFAULT
-                ),
+                settings["max_fetches"],
                 int(now) + lifetime_seconds,
                 issued,
             )
@@ -1987,6 +2130,9 @@ def call_fetch(settings, arguments):
                 "the result_id was issued by another provider than the "
                 "configured one"
             )
+        # Credential validation precedes call budgets and the per-search
+        # reservation. A local key-file defect reaches no paid state transition.
+        provider.preflight()
         content_id = content_identity(claim["search_id"], url)
         # The call and page buckets charge every invocation, so a window read
         # from the snapshot spends them; the snapshot spares the provider
@@ -2527,6 +2673,8 @@ def validate_message(message):
         return jsonrpc_error(None, -32600, "id must be a string, a number, or null")
     if isinstance(identifier, bool):
         return jsonrpc_error(None, -32600, "id must be a string, a number, or null")
+    if isinstance(identifier, float) and not math.isfinite(identifier):
+        return jsonrpc_error(None, -32600, "id must be a finite number")
     if not isinstance(message.get("method"), str):
         return jsonrpc_error(identifier, -32600, "method must be a string")
     params = message.get("params")
@@ -2560,15 +2708,20 @@ def main(argv):
             if not line:
                 continue
             try:
-                message = json.loads(line)
+                message = strict_json_loads(line)
             except (ValueError, RecursionError):
                 response = jsonrpc_error(None, -32700, "parse error")
             else:
                 response = validate_message(message)
-                if response is None:
+                if isinstance(message, dict) and "id" not in message:
+                    # JSON-RPC notifications never receive a response, including
+                    # malformed notifications. Silence prevents an unsolicited
+                    # id:null error from being mistaken for a request reply.
+                    response = None
+                elif response is None:
                     response = handle_request(settings, message)
         if response is not None:
-            sys.stdout.write(json.dumps(response) + "\n")
+            sys.stdout.write(json.dumps(response, allow_nan=False) + "\n")
             sys.stdout.flush()
     return 0
 

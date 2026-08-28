@@ -820,6 +820,42 @@ if [ -e "$authority_race_output" ]; then
     exit 1
 fi
 
+# The final guard verifies the complete web-ledger identity as a fourth
+# authority pair. A replacement after policy validation stops before the
+# command records execution.
+exec_guard=$script_directory/qwen-router-exec-guard.sh
+guard_web_profiles=$temporary_directory/guard-web-profiles.tsv
+guard_command=$temporary_directory/guard-command.sh
+guard_command_output=$temporary_directory/guard-command.out
+printf 'web-fixture\tfixture\tvalidator-gated\t4096\t4096\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\n' \
+    >"$guard_web_profiles"
+cat >"$guard_command" <<'GUARD_COMMAND'
+#!/bin/sh
+printf 'executed\n' >"$QWEN_TEST_GUARD_COMMAND_OUTPUT"
+GUARD_COMMAND
+chmod +x "$guard_command"
+guard_preset_sha256=$(sha256sum "$router_presets" | cut -d' ' -f1)
+guard_model_sha256=$(sha256sum "$fabricated_registry" | cut -d' ' -f1)
+guard_quarantine_sha256=$(sha256sum "$authority_race_quarantine" | cut -d' ' -f1)
+guard_web_profiles_sha256=$(sha256sum "$guard_web_profiles" | cut -d' ' -f1)
+printf 'changed\n' >>"$guard_web_profiles"
+if QWEN_TEST_GUARD_COMMAND_OUTPUT=$guard_command_output \
+    "$exec_guard" "$router_presets" "$guard_preset_sha256" \
+    "$fabricated_registry" "$guard_model_sha256" \
+    "$authority_race_quarantine" "$guard_quarantine_sha256" \
+    "$guard_web_profiles" "$guard_web_profiles_sha256" "$guard_command" \
+    >"$temporary_directory/web-ledger-guard.stdout" \
+    2>"$temporary_directory/web-ledger-guard.stderr"; then
+    printf 'exec guard accepted a replaced web profile ledger\n' >&2
+    exit 1
+fi
+grep -F 'router web profile ledger identity changed:' \
+    "$temporary_directory/web-ledger-guard.stderr" >/dev/null
+if [ -e "$guard_command_output" ]; then
+    printf 'guarded command ran after web-ledger identity rejection\n' >&2
+    exit 1
+fi
+
 # A generated preset carries its quarantine override after the generation
 # environment is gone. The launch derives loopback isolation from that durable
 # file rather than from an ambient variable that can disappear on a later run.

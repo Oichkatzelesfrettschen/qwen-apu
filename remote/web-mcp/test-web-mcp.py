@@ -306,6 +306,7 @@ class ExaFixtureServer:
         self.responses = {}
         self.status_codes = {}
         self.redirects = {}
+        self.response_chunk_delays = {}
         recorder = self
 
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -337,7 +338,17 @@ class ExaFixtureServer:
                 self.send_header("content-type", "application/json")
                 self.send_header("content-length", str(len(payload)))
                 self.end_headers()
-                self.wfile.write(payload)
+                delay = recorder.response_chunk_delays.get(self.path)
+                if delay is None:
+                    self.wfile.write(payload)
+                else:
+                    try:
+                        for byte in payload:
+                            self.wfile.write(bytes((byte,)))
+                            self.wfile.flush()
+                            time.sleep(delay)
+                    except (BrokenPipeError, ConnectionResetError):
+                        return
 
             def do_GET(self):
                 """Record a redirected request, which urllib rewrites to GET.
@@ -600,6 +611,35 @@ class WebMcpServerTest(unittest.TestCase):
         session.notify("notifications/initialized")
         self.assertEqual(self.send_raw(session, '{"jsonrpc":"2.0","id":6,"method":"ping"}')["id"], 6)
 
+    def test_invalid_notifications_are_silent(self):
+        session = self.open_session()
+        for notification in (
+            '{"jsonrpc":"2.0","method":7}',
+            '{"jsonrpc":"2.0","method":"ping","params":[]}',
+            '{"jsonrpc":"2.0"}',
+        ):
+            session.process.stdin.write(notification + "\n")
+        session.process.stdin.write(
+            '{"jsonrpc":"2.0","id":61,"method":"ping"}\n'
+        )
+        session.process.stdin.flush()
+        response = json.loads(session.process.stdout.readline())
+        self.assertEqual(response["id"], 61)
+        self.assertEqual(response["result"], {})
+
+    def test_non_finite_json_numbers_are_parse_errors(self):
+        session = self.open_session()
+        for number in ("NaN", "Infinity", "-Infinity", "1e400", "-1e400"):
+            with self.subTest(number=number):
+                response = self.send_raw(
+                    session,
+                    '{"jsonrpc":"2.0","id":'
+                    + number
+                    + ',"method":"ping"}',
+                )
+                self.assertEqual(response["error"]["code"], -32700)
+                self.assertIsNone(response["id"])
+
     def test_a_line_beyond_the_cap_is_refused_and_the_next_line_parses(self):
         session = self.open_session()
         oversized = json.dumps(
@@ -843,23 +883,69 @@ class WebMcpServerTest(unittest.TestCase):
         self.assertEqual(self.result_text(narrowed).count("URL: "), 2)
 
     def test_a_grant_admits_one_search_and_a_replay_is_refused(self):
+        state_path = self.state_directory("replay-state")
         session = self.authorized_session("replay-state")
         token = self.grant()
         first = self.search(session, authorization=token, max_results=1)
         self.assertFalse(first["result"]["isError"])
+        charged = self.bucket_rows(state_path)
         replay = self.search(session, authorization=token, max_results=1)
         self.assertTrue(replay["result"]["isError"])
         self.assertIn("spent", self.result_text(replay))
+        self.assertEqual(self.bucket_rows(state_path), charged)
         respawned = self.open_session(
             QWEN_WEB_SEARCH_AUTH="required",
-            QWEN_WEB_STATE_DIR=self.state_directory("replay-state"),
+            QWEN_WEB_STATE_DIR=state_path,
         )
         across = self.search(respawned, authorization=token, max_results=1)
         self.assertTrue(across["result"]["isError"])
         self.assertIn("spent", self.result_text(across))
+        self.assertEqual(self.bucket_rows(state_path), charged)
         self.assertEqual(
-            [row[7] for row in self.audit_rows(self.state_directory("replay-state"))],
+            [row[7] for row in self.audit_rows(state_path)],
             ["success", "authorization_denied", "authorization_denied"],
+        )
+
+    def test_concurrent_grant_reuse_charges_exactly_one_search(self):
+        state_path = self.state_directory("concurrent-replay-state")
+        token = self.grant()
+        sessions = [
+            ServerSession(
+                self.environment(
+                    QWEN_WEB_SEARCH_AUTH="required",
+                    QWEN_WEB_STATE_DIR=state_path,
+                )
+            )
+            for _ in range(4)
+        ]
+        for session in sessions:
+            self.addCleanup(self.close_cleanly, session)
+            session.request("initialize", {"protocolVersion": "2025-06-18"})
+            request = {
+                "jsonrpc": "2.0",
+                "id": 71,
+                "method": "tools/call",
+                "params": {
+                    "name": "search_exa",
+                    "arguments": {
+                        "query": "raven2 vulkan decode",
+                        "max_results": 1,
+                        "authorization": token,
+                    },
+                },
+            }
+            session.process.stdin.write(json.dumps(request) + "\n")
+            session.process.stdin.flush()
+        responses = [
+            json.loads(session.process.stdout.readline()) for session in sessions
+        ]
+        self.assertEqual(
+            sum(not response["result"]["isError"] for response in responses),
+            1,
+        )
+        self.assertEqual(
+            self.bucket_rows(state_path),
+            [("pages-day", 1), ("provider-day", 1), ("search-minute", 1)],
         )
 
     def test_a_grant_names_one_provider_one_profile_and_one_use(self):
@@ -1392,6 +1478,30 @@ class WebMcpServerTest(unittest.TestCase):
             )
         self.assertIn("429", str(raised.exception))
 
+    def test_provider_body_read_obeys_the_total_request_deadline(self):
+        fixture, provider = self.live_provider()
+        fixture.responses["/search"] = {"results": []}
+        fixture.response_chunk_delays["/search"] = 0.03
+        original_timeout = server.REQUEST_TIMEOUT_SECONDS
+        server.REQUEST_TIMEOUT_SECONDS = 0.1
+        self.addCleanup(setattr, server, "REQUEST_TIMEOUT_SECONDS", original_timeout)
+        started = time.monotonic()
+        with self.assertRaises(server.ProviderHttpError) as raised:
+            provider.search(
+                "raven2",
+                1,
+                {
+                    "published_after": "",
+                    "published_before": "",
+                    "max_age_hours": None,
+                    "include_domains": [],
+                    "exclude_domains": [],
+                },
+            )
+        elapsed = time.monotonic() - started
+        self.assertIn("exceeded 0.1 seconds", str(raised.exception))
+        self.assertLess(elapsed, 0.5)
+
     def test_an_oversized_provider_response_is_refused_during_the_read(self):
         fixture, provider = self.live_provider()
         fixture.responses["/search"] = {
@@ -1620,6 +1730,17 @@ class WebMcpServerTest(unittest.TestCase):
         path = os.path.join(self.directory.name, name)
         return path
 
+    def bucket_rows(self, state_path):
+        connection = sqlite3.connect(
+            os.path.join(state_path, server.LEDGER_FILE_NAME)
+        )
+        try:
+            return connection.execute(
+                "SELECT name, used FROM buckets ORDER BY name"
+            ).fetchall()
+        finally:
+            connection.close()
+
     def audit_rows(self, state_path):
         connection = sqlite3.connect(
             os.path.join(state_path, server.LEDGER_FILE_NAME)
@@ -1828,6 +1949,12 @@ class WebMcpServerTest(unittest.TestCase):
         and pages-day buckets charge every invocation and the third call in a
         minute meets a limit of two whether or not its document was stored.
         """
+        # Keep the three calls inside one fixed-wall-clock rate window. A start
+        # during a minute's final two seconds would test a legitimate bucket
+        # reset instead of cached-window charging.
+        seconds_until_boundary = 60 - (time.time() % 60)
+        if seconds_until_boundary < 2:
+            time.sleep(seconds_until_boundary + 0.1)
         state_path = self.state_directory("cached-charge-state")
         session = self.open_session(
             QWEN_WEB_STATE_DIR=state_path, QWEN_WEB_FETCH_PER_MINUTE="2"
@@ -1868,6 +1995,35 @@ class WebMcpServerTest(unittest.TestCase):
             [0],
             "a fetch that reached no provider spent a document",
         )
+
+    def test_fetch_credential_refusal_preserves_buckets_and_allowance(self):
+        state_path = self.state_directory("fetch-credential-first-state")
+        search_id = "credential-search"
+        url = "https://example.org/raven2"
+        expiry = int(time.time()) + 600
+        ledger = server.Ledger(state_path)
+        ledger.open_search(search_id, "default", "exa", 1, expiry, [(url, "exa-1")])
+        ledger.close()
+        result_id = server.issue_result_id(
+            TOKEN_SECRET,
+            url,
+            "exa-1",
+            "exa",
+            search_id,
+            {"max_age_hours": None, "published_after": "", "published_before": ""},
+            int(time.time()),
+            600,
+        )
+        session = self.open_session(
+            QWEN_WEB_PROVIDER="exa",
+            QWEN_WEB_EXA_KEY_FILE=self.loose_key_path,
+            QWEN_WEB_STATE_DIR=state_path,
+        )
+        response = session.call_tool("fetch_exa", {"result_id": result_id})
+        self.assertTrue(response["result"]["isError"])
+        self.assertIn("0644", self.result_text(response))
+        self.assertEqual(self.bucket_rows(state_path), [])
+        self.assertEqual(self.search_row(state_path), [(search_id, 0, 1)])
 
     def test_the_snapshot_recheck_and_the_reservation_are_one_transaction(self):
         """A snapshot stored between two children charges one document.
@@ -2426,6 +2582,21 @@ class WebMcpServerTest(unittest.TestCase):
                 self.assertEqual(completed.returncode, 2)
                 self.assertIn(
                     "QWEN_WEB_MAX_CHARS_PER_FETCH", completed.stderr
+                )
+
+    def test_max_fetches_env_malformed_refuses_at_startup(self):
+        for value in ("0", "11", "many"):
+            with self.subTest(value=value):
+                completed = subprocess.run(
+                    [sys.executable, SERVER_PATH],
+                    input="",
+                    capture_output=True,
+                    text=True,
+                    env=self.environment(QWEN_WEB_MAX_FETCHES_PER_SEARCH=value),
+                )
+                self.assertEqual(completed.returncode, 2)
+                self.assertIn(
+                    "QWEN_WEB_MAX_FETCHES_PER_SEARCH", completed.stderr
                 )
 
     def test_page_text_cannot_close_the_frame(self):

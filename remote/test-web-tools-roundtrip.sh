@@ -49,6 +49,9 @@ chmod 700 "$state_directory"
 token_key_file=$workspace/token.key
 printf 'roundtrip-token-secret-8XQ2ZK\n' > "$token_key_file"
 chmod 600 "$token_key_file"
+api_key_file=$workspace/api.key
+printf 'roundtrip-web-ui-key-4V8Q2N\n' >"$api_key_file"
+chmod 600 "$api_key_file"
 fixture_file=$workspace/fixtures.json
 cat > "$fixture_file" <<'FIXTURES'
 {
@@ -79,6 +82,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 "$broker_script" \
     --host 127.0.0.1 --port 0 \
     --state-dir "$state_directory" \
     --token-key-file "$token_key_file" \
+    --api-key-file "$api_key_file" \
     --provider fake --profile default \
     --origin "$browser_origin" > "$workspace/broker.out" 2>"$workspace/broker.err" &
 broker_pid=$!
@@ -116,9 +120,10 @@ read_listening_port() {
 broker_port=$(read_listening_port "$workspace/broker.out")
 tools_port=$(read_listening_port "$workspace/tools.out")
 
-# The page reads the per-launch secret through the broker's own endpoint; the
-# test reads the file the broker writes at mode 0600, which carries the same
-# authority and leaves the CORS arm to the broker's own suite.
+# The page reads the per-launch secret through the broker's own endpoint. The
+# existing Web UI API key is the bearer capability for the /session read. An
+# Origin alone receives nothing; llama-server and the broker validate the same
+# key bytes.
 session_secret_file=$state_directory/authorize-session.secret
 attempt=0
 while [ ! -s "$session_secret_file" ] && [ "$attempt" -lt 100 ]; do
@@ -129,7 +134,25 @@ if [ ! -s "$session_secret_file" ]; then
     printf 'the broker wrote no session secret file\n' >&2
     exit 1
 fi
-session_secret=$(cat "$session_secret_file")
+unauthorized_session_status=$(curl -sS -o "$workspace/session-unauthorized.json" \
+    -w '%{http_code}' "http://127.0.0.1:$broker_port/session" \
+    -H "Origin: $browser_origin")
+if [ "$unauthorized_session_status" != 403 ]; then
+    printf 'the session endpoint admitted a request without the Web UI API key: %s\n' \
+        "$(cat "$workspace/session-unauthorized.json")" >&2
+    exit 1
+fi
+curl -sS "http://127.0.0.1:$broker_port/session" \
+    -H "Origin: $browser_origin" \
+    -H "Authorization: Bearer $(sed -n '1p' "$api_key_file")" \
+    >"$workspace/session.json"
+session_secret=$(python3 -c \
+    'import json,sys; print(json.load(open(sys.argv[1]))["session_secret"])' \
+    "$workspace/session.json")
+if [ "$session_secret" != "$(cat "$session_secret_file")" ]; then
+    printf 'the authenticated session endpoint returned another launch authority\n' >&2
+    exit 1
+fi
 
 # The listing composes the tool names the page filters on.
 curl -sS "http://127.0.0.1:$tools_port/tools" > "$workspace/listing.json"
@@ -161,8 +184,8 @@ wrong_profile_status=$(curl -sS -o "$workspace/grant-wrong-profile.json" \
     -H "Origin: $browser_origin" \
     -H "X-Qwen-Web-Session: $session_secret" \
     --data-binary "@$workspace/grant-request-wrong-profile.json")
-if [ "$wrong_profile_status" != "403" ]; then
-    printf 'a grant request naming another profile returned HTTP %s rather than 403: %s\n' \
+if [ "$wrong_profile_status" != "400" ]; then
+    printf 'a grant request naming another profile returned HTTP %s rather than 400: %s\n' \
         "$wrong_profile_status" "$(cat "$workspace/grant-wrong-profile.json")" >&2
     exit 1
 fi

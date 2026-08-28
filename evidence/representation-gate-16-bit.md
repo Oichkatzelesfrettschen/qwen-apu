@@ -77,6 +77,15 @@ serves, and the conversion strategy is what this outcome selects.
 
 ## Results: Qwen3.8-2B Distill, F16 against Q4_K_M
 
+The repository retains the reported tables and derived conclusions but lacks
+the per-arm bench CSV, placement log, clock series, and generated representation
+summary for both historical sweeps. The values below remain historical reported
+observations. The absent raw bundle prevents an independent replay audit of the
+arm-level figures. Future runs use `remote/run-representation-arm.sh`, which
+requires matching architecture dimensions, tokenizer identity, and tensor
+layout before measuring different tensor types; the header check does not prove
+numeric tensor-value equality.
+
 | position | role | artifact | prefill tok/s | decode tok/s | mclk | sclk max | temp C | VRAM | GTT |
 | ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 1 | control | Q4_K_M | 53.12 | 10.03 | 1067 | 1100 | 76 | 1.73 GB | 0.63 GB |
@@ -101,7 +110,9 @@ in the 0.8B section invert the harness's own paired-mean ratio rather than a
 hand-recomputed one: 1 / 0.496 and 1 / 0.778.
 
 Achieved streaming names where it comes from: 17.41 GiB tok/s against 11.78, a
-47.8% difference on the same weights, the same device, and the same flags. That
+47.8% difference on matched reported checkpoint variants, the same device, and
+the same flags. The retained repository lacks the raw arms and a weight-level
+identity witness. That
 difference is the cost of unpacking a K-quant, measured directly rather than
 inferred from the trunk groupings this tree had recorded, and it is larger than
 those groupings implied. `evidence/decode-bound-analysis.md` reads a Q4_K trunk
@@ -211,7 +222,8 @@ them.
 
 ## What F16 buys in quality on the 0.8B: nothing this suite resolves
 
-Both precisions of the same weights were graded in one sweep, thinking off, a
+Both reported representations of the matched checkpoint were graded in one
+sweep, thinking off, a
 1024-token budget, the 55 text rows the `NN/55` scale names.
 
 | arm | total | arithmetic | code | format | long_context | screen | termination | word_problem |

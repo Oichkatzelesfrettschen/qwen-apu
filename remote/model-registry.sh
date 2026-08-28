@@ -300,7 +300,7 @@ validate_tuple_ledger() {
         printf 'model registry is unreadable: %s\n' "$tuple_model_registry" >&2
         return 1
     fi
-    awk -F'\t' -v directory="$script_directory" '
+    tuple_ledger_rows=$(awk -F'\t' '
         FILENAME == ARGV[1] {
             if ($0 ~ /^#/ || $0 ~ /^[[:space:]]*$/) { next }
             if (NF >= 1) { known_model_ids[$1] = 1 }
@@ -395,10 +395,6 @@ validate_tuple_ledger() {
                     printf "%s: validated status carries no evidence path\n", \
                         $1 > "/dev/stderr"
                     bad++
-                } else if (system("test -e \"" directory "/../" $15 "\"") != 0) {
-                    printf "%s: validation evidence is absent from the tree: %s\n", \
-                        $1, $15 > "/dev/stderr"
-                    bad++
                 }
             }
             if ($21 != "-" && $21 !~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/) {
@@ -412,7 +408,39 @@ validate_tuple_ledger() {
             if (!rows) { print "tuple ledger holds no rows" > "/dev/stderr"; bad++ }
             exit bad ? 1 : 0
         }
-    ' "$tuple_model_registry" "$tuple_ledger_registry"
+    ' "$tuple_model_registry" "$tuple_ledger_registry") || return 1
+
+    # Ledger text never becomes shell source. Validate each retained evidence
+    # path as one shell word after AWK has established the 21-field row shape,
+    # then test the quoted path with the shell's pathname primitive. The shell
+    # pathname test keeps quotes, semicolons, and command substitutions in a
+    # ledger outside executable input.
+    tuple_tab=$(printf '\t')
+    tuple_evidence_failures=0
+    while IFS="$tuple_tab" read -r tuple_id _model_id _runtime_mode \
+        _context _batch _ubatch _cache_k _cache_v _flash_attention \
+        _threads _parallel _projector_state _backend tuple_status \
+        tuple_evidence _llama_commit _runner_sha256 _kernel _mesa _amdgpu \
+        _measured_at; do
+        [ "$tuple_status" = validated ] || continue
+        case $tuple_evidence in
+            '' | - | /* | ../* | */../* | */..)
+                printf '%s: validation evidence is not a repository-relative path: %s\n' \
+                    "$tuple_id" "$tuple_evidence" >&2
+                tuple_evidence_failures=$((tuple_evidence_failures + 1))
+                continue
+                ;;
+        esac
+        if [ ! -e "$script_directory/../$tuple_evidence" ]; then
+            printf '%s: validation evidence is absent from the tree: %s\n' \
+                "$tuple_id" "$tuple_evidence" >&2
+            tuple_evidence_failures=$((tuple_evidence_failures + 1))
+        fi
+    done <<EOF
+$tuple_ledger_rows
+EOF
+    [ "$tuple_evidence_failures" -eq 0 ] || return 1
+    printf '%s\n' "$tuple_ledger_rows"
 }
 
 # All validated and failed arms measured for one model, in ledger order. A
@@ -440,9 +468,10 @@ if [ "$#" -eq 2 ] && [ "$1" = tuple ]; then
                   "backend status evidence llama_commit runner_sha256 kernel " \
                   "mesa amdgpu measured_at", names, " ")
             for (i = 1; i <= 21; i++) { printf "%s=%s\n", names[i], $i }
-            exit 0
+            matched = 1
+            next
         }
-        END { exit 3 }
+        END { exit matched ? 0 : 3 }
     '
     exit $?
 fi
@@ -461,10 +490,10 @@ if [ "$#" -eq 3 ] && [ "$1" = tuple ]; then
             for (i = 1; i <= 21; i++) {
                 if (names[i] == field) { printf "%s\n", $i; found = 1 }
             }
-            if (!found) { exit 3 }
-            exit 0
+            matched = 1
+            next
         }
-        END { exit 3 }
+        END { exit matched && found ? 0 : 3 }
     '
     exit $?
 fi

@@ -171,16 +171,35 @@ def fetch_range(url, length):
 def list_artifacts(repository, revision):
     url = (f"{HUGGINGFACE_ENDPOINT}/api/models/{repository}/tree/{revision}"
            "?recursive=1")
+    tree = fetch_json(url)
+    if not isinstance(tree, list):
+        raise AdmissionError(
+            f"tree query returned {type(tree).__name__} instead of a list: {url}")
     entries = []
-    for entry in fetch_json(url):
-        if entry.get("type") != "file":
+    for index, entry in enumerate(tree):
+        if not isinstance(entry, dict):
+            raise AdmissionError(
+                f"tree entry {index} is {type(entry).__name__} instead of an object")
+        entry_type = entry.get("type")
+        path = entry.get("path")
+        if not isinstance(entry_type, str) or not isinstance(path, str) or not path:
+            raise AdmissionError(
+                f"tree entry {index} has an invalid type or path")
+        if entry_type != "file":
             continue
-        path = entry.get("path", "")
         if not path.lower().endswith(".gguf"):
             continue
         size = entry.get("size")
-        lfs = entry.get("lfs") or {}
-        entries.append({"path": path, "bytes": lfs.get("size", size)})
+        lfs = entry.get("lfs")
+        if lfs is not None and not isinstance(lfs, dict):
+            raise AdmissionError(f"tree entry {index} has a non-object lfs field")
+        artifact_bytes = lfs.get("size", size) if lfs is not None else size
+        if (isinstance(artifact_bytes, bool)
+                or not isinstance(artifact_bytes, int)
+                or artifact_bytes <= 0):
+            raise AdmissionError(
+                f"tree entry {index} has invalid artifact bytes: {artifact_bytes!r}")
+        entries.append({"path": path, "bytes": artifact_bytes})
     return entries
 
 
@@ -190,9 +209,21 @@ def shard_set(entries, path):
     if matched is None:
         return [entry for entry in entries if entry["path"] == path]
     stem = path[:matched.start()]
-    return [entry for entry in entries
-            if entry["path"].startswith(stem)
-            and SHARD_PATTERN.search(entry["path"]) is not None]
+    shard_total = int(matched.group(2))
+    candidates = []
+    for entry in entries:
+        candidate_match = SHARD_PATTERN.search(entry["path"])
+        if (candidate_match is None
+                or entry["path"][:candidate_match.start()] != stem
+                or int(candidate_match.group(2)) != shard_total):
+            continue
+        candidates.append((int(candidate_match.group(1)), entry))
+    indices = [index for index, _entry in candidates]
+    if sorted(indices) != list(range(1, shard_total + 1)):
+        raise AdmissionError(
+            f"split set {stem} declares {shard_total} shards but carries "
+            f"indices {sorted(indices)}")
+    return [entry for _index, entry in sorted(candidates)]
 
 
 def select_artifact(entries, requested_file=None):
@@ -278,20 +309,9 @@ def fingerprint(header):
 
 
 def streamed_bytes(header):
-    """Sum what an ordinary load streams, which excludes the prediction block.
-
-    llama_hparams::n_layer_effective subtracts the multi-token-prediction
-    layers from the trunk and an ordinary load reports each of their tensors as
-    unused, so the file size overstates per-token traffic by that block.
-    """
-    total = 0
-    skipped = 0
-    for tensor in header["tensors"]:
-        if tensor["family"] == "mtp":
-            skipped += tensor["bytes"]
-            continue
-        total += tensor["bytes"]
-    return total, skipped
+    """Use the canonical census summary for decode traffic and skipped MTP."""
+    summary = CENSUS.summarize(header)
+    return summary["streamed_bytes"], summary["mtp_bytes"]
 
 
 # Capabilities a serving path depends on and a template either implements or

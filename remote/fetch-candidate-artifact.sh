@@ -26,6 +26,7 @@ if [ "$#" -ne 4 ]; then
     printf 'usage: %s REPOSITORY REVISION ARTIFACT_NAME DESTINATION_DIRECTORY\n' "$0" >&2
     printf 'writes DESTINATION_DIRECTORY/ARTIFACT_NAME and its observed digest\n' >&2
     printf 'environment: QWEN_FETCH_CONNECTIONS (default 4, 1 for one stream)\n' >&2
+    printf '             QWEN_HUGGINGFACE_ENDPOINT (default https://huggingface.co)\n' >&2
     exit 2
 fi
 
@@ -36,7 +37,9 @@ destination_directory=$4
 artifact_path=$destination_directory/$artifact_name
 partial_path=$artifact_path.part
 digest_path=$artifact_path.observed-sha256
-source_url=https://huggingface.co/$source_repository/resolve/$source_revision/$artifact_name
+huggingface_endpoint=${QWEN_HUGGINGFACE_ENDPOINT:-https://huggingface.co}
+huggingface_endpoint=${huggingface_endpoint%/}
+source_url=$huggingface_endpoint/$source_repository/resolve/$source_revision/$artifact_name
 fetch_connections=${QWEN_FETCH_CONNECTIONS:-4}
 
 umask 077
@@ -51,7 +54,7 @@ observe() {
 # both fall through to the observed path rather than failing the fetch.
 publisher_digest=''
 publisher_bytes=''
-tree_url="https://huggingface.co/api/models/$source_repository/tree/$source_revision?recursive=1"
+tree_url="$huggingface_endpoint/api/models/$source_repository/tree/$source_revision?recursive=1"
 tree_response=$(curl --location --fail --silent --show-error "$tree_url" 2>/dev/null || true)
 if [ -n "$tree_response" ]; then
     publisher_facts=$(printf '%s' "$tree_response" | python3 -c '

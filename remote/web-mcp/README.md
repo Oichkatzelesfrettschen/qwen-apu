@@ -54,16 +54,17 @@ A grant admits one search. Beside the policy the claim carries `grant_id`,
 `provider`, `profile_id`, `issued_at`, `expiry`, and `max_uses`, and the
 serving path requires the provider and the profile it runs as before it
 proceeds, so a token issued for the metered production profile buys nothing
-against another profile or another provider. The single use is spent by
-inserting `grant_id` under the ledger's primary key inside BEGIN IMMEDIATE, so
-a second search presenting the same token meets a constraint violation and
-answers `authorization_denied` where the first answered results. The insert
-sits immediately ahead of the provider request, which leaves the use intact
-when a rate or budget refusal reaches no provider. Every local configuration
-the reply depends on resolves first -- the token lifetime and the provider
-credential, which `Provider.preflight` reads from the same file the request
-does -- so a refusal from either leaves the grant spendable, and a presented grant
-requires `QWEN_WEB_STATE_DIR` because the count lives in that database.
+against another profile or another provider. The ledger inserts `grant_id` and
+consumes the search call, page, and provider buckets in one `BEGIN IMMEDIATE`
+transaction. A replay meets the primary-key constraint before any bucket
+changes, while a rate or budget refusal rolls the grant insertion and every
+bucket update back. The transaction commits immediately ahead of the provider
+request. Every local configuration the reply depends on resolves first -- the
+result and fetch caps, token lifetime, all search budget limits, and the
+provider credential, which `Provider.preflight` reads from the same file the
+request does -- so a local refusal leaves the grant and buckets available. A
+presented grant requires `QWEN_WEB_STATE_DIR` because the single-use record
+lives in that database.
 
 ## The broker turns one human approval into one grant
 
@@ -199,7 +200,8 @@ values, stderr, and every error message.
 Query 512 characters, results 1 to 10, each domain list 10 entries of validated
 hostname, title 300 characters, author 200, each highlight 1200, a whole
 rendered search 16000, a result identifier 4096, a grant 12288, a URL 2048, and
-a request timeout of 20 seconds.
+a 20-second wall-clock deadline over DNS, connection, headers, and the complete
+response body.
 
 A signed token fits the argument that redeems it. The grant cap is sized to the
 largest one `authorize` can emit -- a 512-character query beside twenty
@@ -334,7 +336,10 @@ as `internal_error`.
 
 A request frame is validated before a handler reads a field: the message is
 an object, `method` is a string, `params` is an object where it appears, `id`
-is a string, a number, or null, and an absent `id` alone marks a notification.
+is a string, a finite number, or null, and an absent `id` alone marks a
+notification. The decoder rejects non-finite constants and floating-point
+overflow, the encoder refuses non-finite output, and every parsed object
+without an `id` remains silent even when its notification is malformed.
 A line runs to at most a million characters and the remainder of a longer one
 is drained so the next line still parses, and a document nesting past 32 levels
 is refused before any walk over it. `params: []` therefore answers -32602.

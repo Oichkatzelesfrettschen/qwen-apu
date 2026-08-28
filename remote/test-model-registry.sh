@@ -410,6 +410,17 @@ else
     report tuple_field_lookup rejected
 fi
 
+if QWEN_MODEL_REGISTRY=$tuple_fixture_models \
+    QWEN_VALIDATED_TUPLES=$valid_tuple_ledger \
+    "$reader" tuple tuple-model-d8192-b128-ub32 \
+    >"$work_directory/tuple-whole-row.out" &&
+   grep -Fx 'tuple_id=tuple-model-d8192-b128-ub32' \
+       "$work_directory/tuple-whole-row.out" >/dev/null; then
+    report tuple_whole_row_lookup_exit accepted
+else
+    report tuple_whole_row_lookup_exit rejected
+fi
+
 set +e
 QWEN_MODEL_REGISTRY=$tuple_fixture_models \
 QWEN_VALIDATED_TUPLES=$valid_tuple_ledger \
@@ -501,6 +512,26 @@ else
     report tuple_absent_evidence_refused rejected
 fi
 
+evidence_execution_marker=$work_directory/evidence-path-executed
+executable_evidence_tuple_ledger=$work_directory/executable-evidence-tuples.tsv
+printf '%b\n' \
+    "executable-evidence\ttuple-model\tstandalone\t8192\t128\t32\tq8_0\tq4_0\ton\t2\t1\tnone\tvulkan\tvalidated\tevidence/missing\"; touch $evidence_execution_marker; #\t-\t-\t-\t-\t-\t-" \
+    >"$executable_evidence_tuple_ledger"
+set +e
+QWEN_MODEL_REGISTRY=$tuple_fixture_models \
+QWEN_VALIDATED_TUPLES=$executable_evidence_tuple_ledger \
+    "$reader" tuples tuple-model \
+    >"$work_directory/executable-evidence-tuples.out" \
+    2>"$work_directory/executable-evidence-tuples.err"
+executable_evidence_tuple_status=$?
+set -e
+if [ "$executable_evidence_tuple_status" -ne 0 ] &&
+   [ ! -e "$evidence_execution_marker" ]; then
+    report tuple_evidence_path_is_data accepted
+else
+    report tuple_evidence_path_is_data rejected
+fi
+
 # check-validated-tuples.sh derives the expected tuple from models.tsv and
 # requires the ledger to carry a matching validated row.
 check_validated_tuples=$script_directory/check-validated-tuples.sh
@@ -537,6 +568,58 @@ if [ "$gap_check_status" -ne 0 ] &&
     report check_validated_tuples_gap_refused accepted
 else
     report check_validated_tuples_gap_refused rejected
+fi
+
+malformed_check_tuples=$work_directory/malformed-check-tuples.tsv
+printf '%b\n' \
+    'malformed-row\tcheck-model\tstandalone\t4096\t128' \
+    >"$malformed_check_tuples"
+set +e
+QWEN_MODEL_REGISTRY=$check_tuple_models \
+QWEN_VALIDATED_TUPLES=$malformed_check_tuples \
+    "$check_validated_tuples" >"$work_directory/malformed-check.out" \
+    2>"$work_directory/malformed-check.err"
+malformed_check_status=$?
+set -e
+if [ "$malformed_check_status" -ne 0 ] &&
+   grep -F 'holds 5 fields, expected 21' \
+       "$work_directory/malformed-check.err" >/dev/null; then
+    report check_validated_tuples_malformed_row_refused accepted
+else
+    report check_validated_tuples_malformed_row_refused rejected
+fi
+
+projector_check_models=$work_directory/projector-check-models.tsv
+printf '%b\n' \
+    'vision-model\tvision\tmodels/vision-model.gguf\tfetch.sh\t4096\t4096\t4096\tq8_0\tq4_0\ton\trequired\tfetch-projector.sh\t-\t-\tuntested\tproduction\t128\t32\t4096\tevidence/vision.md\tunmeasured\trefused' \
+    >"$projector_check_models"
+projector_none_tuples=$work_directory/projector-none-tuples.tsv
+printf '%b\n' \
+    "vision-none\tvision-model\tstandalone\t4096\t128\t32\tq8_0\tq4_0\ton\t2\t1\tnone\tvulkan\tvalidated\t$evidence_present_relative\t-\t-\t-\t-\t-\t-" \
+    >"$projector_none_tuples"
+set +e
+QWEN_MODEL_REGISTRY=$projector_check_models \
+QWEN_VALIDATED_TUPLES=$projector_none_tuples \
+    "$check_validated_tuples" >"$work_directory/projector-none.out" \
+    2>"$work_directory/projector-none.err"
+projector_none_status=$?
+set -e
+if [ "$projector_none_status" -ne 0 ] &&
+   grep -F 'projector state loaded' "$work_directory/projector-none.err" >/dev/null; then
+    report check_validated_tuples_requires_loaded_projector accepted
+else
+    report check_validated_tuples_requires_loaded_projector rejected
+fi
+
+projector_loaded_tuples=$work_directory/projector-loaded-tuples.tsv
+sed 's/\tnone\tvulkan\t/\tloaded\tvulkan\t/' \
+    "$projector_none_tuples" >"$projector_loaded_tuples"
+if QWEN_MODEL_REGISTRY=$projector_check_models \
+    QWEN_VALIDATED_TUPLES=$projector_loaded_tuples \
+    "$check_validated_tuples" >"$work_directory/projector-loaded.out"; then
+    report check_validated_tuples_accepts_loaded_projector accepted
+else
+    report check_validated_tuples_accepts_loaded_projector rejected
 fi
 
 if [ "$failures" -eq 0 ]; then
