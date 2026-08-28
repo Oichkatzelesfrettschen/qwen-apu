@@ -900,7 +900,7 @@ class WebMcpServerTest(unittest.TestCase):
         self.assertNotIn(TOKEN_SECRET, recorded)
         self.assertNotIn("0123456789abcdefghij", recorded)
 
-    def test_a_refused_call_is_recorded_as_refused(self):
+    def test_a_refused_call_records_the_term_of_its_failure(self):
         state_path = self.state_directory("refusal-state")
         session = self.open_session(
             QWEN_WEB_STATE_DIR=state_path, QWEN_WEB_SEARCH_AUTH="required"
@@ -909,7 +909,107 @@ class WebMcpServerTest(unittest.TestCase):
         self.search(session)
         rows = self.audit_rows(state_path)
         self.assertEqual([row[1] for row in rows], ["fetch", "search"])
-        self.assertEqual([row[7] for row in rows], ["refused", "refused"])
+        self.assertEqual(
+            [row[7] for row in rows],
+            ["authorization_denied", "authorization_denied"],
+        )
+
+    def test_every_audit_status_comes_from_the_fixed_vocabulary(self):
+        state_path = self.state_directory("taxonomy-state")
+        expired = server.issue_result_id(
+            TOKEN_SECRET,
+            "https://example.org/raven2",
+            "fake",
+            "aged",
+            int(time.time()) - 4000,
+            server.TOKEN_LIFETIME_DEFAULT_SECONDS,
+        )
+        session = self.open_session(
+            QWEN_WEB_STATE_DIR=state_path, QWEN_WEB_SEARCH_PER_MINUTE="3"
+        )
+        self.search(session, max_results=1)
+        self.search(
+            self.open_session(
+                QWEN_WEB_STATE_DIR=state_path,
+                QWEN_WEB_SEARCH_PER_MINUTE="3",
+                QWEN_WEB_TOKEN_LIFETIME_SECONDS="59",
+            ),
+            max_results=1,
+        )
+        session.call_tool("fetch_exa", {"result_id": expired})
+        oversized = self.token_for(
+            self.result_text(self.search(session, max_results=10)),
+            "https://big.example.net/huge",
+        )
+        session.call_tool("fetch_exa", {"result_id": oversized})
+        self.search(session, max_results=1)
+        statuses = [row[7] for row in self.audit_rows(state_path)]
+        self.assertEqual(
+            statuses,
+            [
+                "success",
+                "invalid_argument",
+                "expired_result",
+                "success",
+                "provider_content_error",
+                "rate_limited",
+            ],
+        )
+        for status in statuses:
+            self.assertIn(status, server.AUDIT_STATUSES)
+
+    def test_an_unknown_status_is_recorded_as_an_internal_error(self):
+        state_path = self.state_directory("vocabulary-state")
+        ledger = server.Ledger(state_path)
+        self.addCleanup(ledger.close)
+        row = {
+            "recorded_at": "2026-01-01T00:00:00Z",
+            "profile": "default",
+            "operation": "search",
+            "query_sha256": "",
+            "domains": "",
+            "result_count": 0,
+            "fetched_host": "",
+            "provider_bytes": 0,
+            "returned_characters": 0,
+            "latency_ms": 0,
+            "status": "the provider said no: https://attacker.test/note",
+        }
+        ledger.record(row)
+        self.assertEqual(
+            [entry[7] for entry in self.audit_rows(state_path)], ["internal_error"]
+        )
+
+    def test_the_audit_trail_retains_no_query_secret_or_page_body(self):
+        state_path = self.state_directory("secret-audit-state")
+        session = self.open_session(
+            QWEN_WEB_STATE_DIR=state_path, QWEN_WEB_SEARCH_AUTH="required"
+        )
+        search_text = self.result_text(
+            self.search(session, authorization=self.grant(), max_results=1)
+        )
+        result_id = self.first_result_id(search_text)
+        session.call_tool("fetch_exa", {"result_id": result_id})
+        rows = " ".join(
+            str(field) for row in self.audit_rows(state_path) for field in row
+        )
+        for secret in (
+            "raven2 vulkan decode",
+            "0123456789abcdefghij",
+            TOKEN_SECRET,
+            EXA_SECRET,
+            result_id,
+        ):
+            with self.subTest(secret=secret[:24]):
+                self.assertNotIn(secret, rows)
+        self.close_cleanly(session)
+        raw = b""
+        for name in os.listdir(state_path):
+            with open(os.path.join(state_path, name), "rb") as handle:
+                raw += handle.read()
+        for secret in (TOKEN_SECRET, EXA_SECRET, result_id):
+            with self.subTest(raw=secret[:24]):
+                self.assertNotIn(secret.encode("utf-8"), raw)
 
     def test_domain_filters_select_results(self):
         session = self.open_session()

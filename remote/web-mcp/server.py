@@ -92,7 +92,73 @@ class ToolError(Exception):
     lets the model correct its own call. A malformed request and an unexpected
     exception take JSON-RPC error codes instead, so the client distinguishes a
     tool that refused from a tool that broke.
+
+    `status` names the audit vocabulary entry the failure is recorded under.
+    The message varies with the argument that produced it and the audit trail
+    is queried across calls, so the row carries the fixed term and the model
+    receives the prose.
     """
+
+    status = "invalid_argument"
+
+
+class InvalidArgument(ToolError):
+    """An argument, a configuration value, or a key file refuses the call."""
+
+
+class AuthorizationDenied(ToolError):
+    """A grant or a result identifier fails verification against the key."""
+
+    status = "authorization_denied"
+
+
+class RateLimited(ToolError):
+    """A per-minute call bucket is exhausted."""
+
+    status = "rate_limited"
+
+
+class BudgetExhausted(ToolError):
+    """A daily page or provider-cost budget is exhausted."""
+
+    status = "budget_exhausted"
+
+
+class ProviderHttpError(ToolError):
+    """The provider answered with a transport or HTTP status failure."""
+
+    status = "provider_http_error"
+
+
+class ProviderContentError(ToolError):
+    """The provider answered, and the body fails a structure or encoding rule."""
+
+    status = "provider_content_error"
+
+
+class ExpiredResult(ToolError):
+    """A signed claim verifies and its term has run out."""
+
+    status = "expired_result"
+
+
+class InternalError(ToolError):
+    """An unexpected exception reached the audit path."""
+
+    status = "internal_error"
+
+
+AUDIT_STATUSES = (
+    "success",
+    "authorization_denied",
+    "invalid_argument",
+    "rate_limited",
+    "budget_exhausted",
+    "provider_http_error",
+    "provider_content_error",
+    "expired_result",
+    "internal_error",
+)
 
 
 def sanitized_traceback(error):
@@ -220,18 +286,18 @@ def canonical_url(url):
     fetch matches its search on the same string the signature covers.
     """
     if len(url) > URL_CHARACTER_CAP:
-        raise ToolError(
+        raise ProviderContentError(
             f"the result URL exceeds the {URL_CHARACTER_CAP} character cap"
         )
     parts = urllib.parse.urlsplit(url)
     if parts.scheme.lower() not in ("http", "https"):
-        raise ToolError(f"the result URL carries an unsupported scheme: {url}")
+        raise ProviderContentError(f"the result URL carries an unsupported scheme: {url}")
     if not parts.netloc:
-        raise ToolError(f"the result URL names no host: {url}")
+        raise ProviderContentError(f"the result URL names no host: {url}")
     if "@" in parts.netloc:
-        raise ToolError("the result URL carries userinfo, which is refused")
+        raise ProviderContentError("the result URL carries userinfo, which is refused")
     if any(character in url for character in ("\n", "\r", "\t", " ")):
-        raise ToolError("the result URL carries whitespace, which is refused")
+        raise ProviderContentError("the result URL carries whitespace, which is refused")
     return urllib.parse.urlunsplit(
         (
             parts.scheme.lower(),
@@ -267,7 +333,7 @@ def sign_claim(signing_key, context, claim):
 def verify_claim(signing_key, context, token, now, label):
     """Return the claim of a token whose signature verifies and whose term runs."""
     if not isinstance(token, str) or token.count(".") != 1:
-        raise ToolError(f"the {label} is malformed")
+        raise AuthorizationDenied(f"the {label} is malformed")
     payload, signature = token.split(".")
     expected = base64url_encode(
         hmac.new(
@@ -277,16 +343,16 @@ def verify_claim(signing_key, context, token, now, label):
         ).digest()
     )
     if not hmac.compare_digest(signature, expected):
-        raise ToolError(f"the {label} signature fails verification")
+        raise AuthorizationDenied(f"the {label} signature fails verification")
     try:
         claim = json.loads(base64url_decode(payload).decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
-        raise ToolError(f"the {label} payload is malformed") from None
+        raise AuthorizationDenied(f"the {label} payload is malformed") from None
     if not isinstance(claim, dict):
-        raise ToolError(f"the {label} payload is malformed")
+        raise AuthorizationDenied(f"the {label} payload is malformed")
     expiry = claim.get("expiry")
     if not isinstance(expiry, (int, float)) or now >= expiry:
-        raise ToolError(f"the {label} has expired")
+        raise ExpiredResult(f"the {label} has expired")
     return claim
 
 
@@ -323,7 +389,7 @@ def redeem_result_id(signing_key, result_id, now):
         signing_key, RESULT_CLAIM_CONTEXT, result_id, now, "result_id"
     )
     if "canonical_url" not in claim:
-        raise ToolError("the result_id payload is malformed")
+        raise AuthorizationDenied("the result_id payload is malformed")
     claim["canonical_url"] = canonical_url(str(claim["canonical_url"]))
     return claim
 
@@ -378,7 +444,7 @@ def enforce_search_authorization(
     token = settings.get("_authorization")
     if not token:
         if mode == "required":
-            raise ToolError(
+            raise AuthorizationDenied(
                 "search_exa requires an authorization token issued by "
                 "`server.py authorize`; the operator grants the query rather "
                 "than the model"
@@ -410,12 +476,12 @@ def enforce_search_authorization(
         "max_age_hours",
     ):
         if granted.get(field) != requested[field]:
-            raise ToolError(
+            raise AuthorizationDenied(
                 f"the search arguments leave the authorization: {field} differs"
             )
     granted_results = granted.get("max_results")
     if not isinstance(granted_results, int) or max_results > granted_results:
-        raise ToolError(
+        raise AuthorizationDenied(
             "the search arguments leave the authorization: max_results exceeds "
             "the granted count"
         )
@@ -508,21 +574,21 @@ class ExaProvider(Provider):
                 raw = response.read(HTTP_RESPONSE_BYTE_CAP + 1)
             self.response_bytes += len(raw)
         except urllib.error.HTTPError as error:
-            raise ToolError(
+            raise ProviderHttpError(
                 f"the provider rejected the request with status {error.code}"
             ) from None
         except Exception:
-            raise ToolError("the provider request failed") from None
+            raise ProviderHttpError("the provider request failed") from None
         if len(raw) > HTTP_RESPONSE_BYTE_CAP:
-            raise ToolError(
+            raise ProviderContentError(
                 f"the provider response exceeds the {HTTP_RESPONSE_BYTE_CAP} byte cap"
             )
         try:
             document = json.loads(raw.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
-            raise ToolError("the provider response is not valid UTF-8 JSON") from None
+            raise ProviderContentError("the provider response is not valid UTF-8 JSON") from None
         if not isinstance(document, dict):
-            raise ToolError("the provider response is not a JSON object")
+            raise ProviderContentError("the provider response is not a JSON object")
         return document
 
     def search(self, query, max_results, constraints):
@@ -566,15 +632,15 @@ class ExaProvider(Provider):
         )
         status = select_by_url(document.get("statuses"), url)
         if status is None:
-            raise ToolError("the provider reported no status for the result")
+            raise ProviderContentError("the provider reported no status for the result")
         if str(status.get("status", "")).lower() != "success":
-            raise ToolError(
+            raise ProviderContentError(
                 "the provider could not retrieve the result: "
                 + failure_tag(status)
             )
         record = select_by_url(document.get("results"), url)
         if record is None:
-            raise ToolError("the provider returned no content for the result")
+            raise ProviderContentError("the provider returned no content for the result")
         return record
 
 
@@ -629,7 +695,7 @@ class FakeProvider(Provider):
     def contents(self, url, max_characters):
         record = self.document.get("contents", {}).get(url)
         if record is None:
-            raise ToolError("the provider returned no content for the result")
+            raise ProviderContentError("the provider returned no content for the result")
         return record
 
 
@@ -663,7 +729,14 @@ class Ledger:
             " latency_ms INTEGER, status TEXT)"
         )
 
-    def consume(self, name, window_seconds, limit, now):
+    def consume(self, name, window_seconds, limit, now, exhausted=RateLimited):
+        """Take one unit of a bucket, or refuse with the caller's failure class.
+
+        `exhausted` states which audit term the refusal carries: a per-minute
+        call bucket records `rate_limited` and a daily page or provider-cost
+        budget records `budget_exhausted`, so the trail separates a call that
+        arrived too fast from one that spent an exhausted allowance.
+        """
         window_start = int(now) - int(now) % window_seconds
         self.connection.execute("BEGIN IMMEDIATE")
         try:
@@ -672,7 +745,7 @@ class Ledger:
             ).fetchone()
             used = row[1] if row and row[0] == window_start else 0
             if used >= limit:
-                raise ToolError(
+                raise exhausted(
                     f"the {name} rate limit of {limit} per "
                     f"{window_seconds} seconds is exhausted"
                 )
@@ -693,8 +766,11 @@ class Ledger:
         The row carries the SHA-256 of the query rather than the query, the
         host rather than the URL, and byte and character counts rather than any
         text, so the trail states what ran without retaining a secret, a token,
-        or a page body.
+        or a page body. `status` is written from `AUDIT_STATUSES` alone, so a
+        term the trail admits is one of nine and a caller that offers another
+        writes `internal_error`.
         """
+        status = row["status"] if row["status"] in AUDIT_STATUSES else "internal_error"
         self.connection.execute(
             "INSERT INTO audit VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
@@ -708,7 +784,7 @@ class Ledger:
                 row["provider_bytes"],
                 row["returned_characters"],
                 row["latency_ms"],
-                row["status"],
+                status,
             ),
         )
         self.connection.commit()
@@ -774,6 +850,7 @@ def spend_budget(ledger, settings, operation, now):
             settings, "daily_budget", PROVIDER_DAILY_BUDGET_DEFAULT
         ),
         now,
+        BudgetExhausted,
     )
 
 
@@ -868,20 +945,20 @@ def decode_content_text(record):
         try:
             raw = base64.b64decode(record["text_base64"], validate=True)
         except (ValueError, TypeError):
-            raise ToolError("the provider content is not valid base64") from None
+            raise ProviderContentError("the provider content is not valid base64") from None
         if len(raw) > HTTP_RESPONSE_BYTE_CAP:
-            raise ToolError(
+            raise ProviderContentError(
                 f"the provider content exceeds the {HTTP_RESPONSE_BYTE_CAP} byte cap"
             )
         try:
             return raw.decode("utf-8")[:DOCUMENT_CHARACTER_CAP]
         except UnicodeDecodeError:
-            raise ToolError("the provider content is not valid UTF-8") from None
+            raise ProviderContentError("the provider content is not valid UTF-8") from None
     text = record.get("text", "")
     if not isinstance(text, str):
-        raise ToolError("the provider content is not text")
+        raise ProviderContentError("the provider content is not text")
     if len(text.encode("utf-8")) > HTTP_RESPONSE_BYTE_CAP:
-        raise ToolError(
+        raise ProviderContentError(
             f"the provider content exceeds the {HTTP_RESPONSE_BYTE_CAP} byte cap"
         )
     return text[:DOCUMENT_CHARACTER_CAP]
@@ -1039,7 +1116,7 @@ def call_search(settings, arguments):
         "provider_bytes": 0,
         "returned_characters": 0,
         "latency_ms": 0,
-        "status": "refused",
+        "status": "internal_error",
     }
     try:
         signing_key = read_secret_file(settings["token_key_file"], "token signing")
@@ -1065,10 +1142,11 @@ def call_search(settings, arguments):
         audit["returned_characters"] = len(rendered)
         audit["status"] = "success"
         return rendered
-    except ToolError:
+    except ToolError as error:
+        audit["status"] = error.status
         raise
     except Exception:
-        audit["status"] = "error"
+        audit["status"] = "internal_error"
         raise
     finally:
         audit["latency_ms"] = int((time.monotonic() - started) * 1000)
@@ -1105,7 +1183,7 @@ def call_fetch(settings, arguments):
         "provider_bytes": 0,
         "returned_characters": 0,
         "latency_ms": 0,
-        "status": "refused",
+        "status": "internal_error",
     }
     try:
         signing_key = read_secret_file(settings["token_key_file"], "token signing")
@@ -1114,7 +1192,7 @@ def call_fetch(settings, arguments):
         audit["fetched_host"] = urllib.parse.urlsplit(url).netloc
         provider = select_provider(settings)
         if claim.get("provider") != provider.name:
-            raise ToolError(
+            raise AuthorizationDenied(
                 "the result_id was issued by another provider than the "
                 "configured one"
             )
@@ -1131,10 +1209,11 @@ def call_fetch(settings, arguments):
         return wrap_untrusted(
             url, utc_timestamp(now), window, start_index, truncated
         )
-    except ToolError:
+    except ToolError as error:
+        audit["status"] = error.status
         raise
     except Exception:
-        audit["status"] = "error"
+        audit["status"] = "internal_error"
         raise
     finally:
         audit["latency_ms"] = int((time.monotonic() - started) * 1000)
