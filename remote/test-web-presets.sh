@@ -30,10 +30,10 @@ report() {
 model_registry=$work/models.tsv
 cat >"$model_registry" <<'EOF'
 # id	role	model_file	fetch_script	context_default	context_ceiling	context_target	cache_type_k	cache_type_v	flash_attention	projector	projector_fetch_script	decode_tok_s	prefill_tok_s	quality	tier	batch	ubatch	validated_filled_depth	validation_evidence	raw_tool_selection	guarded_tool_execution
-fixture-production	fixture-role	Fixture-GGUF/fixture.gguf	download-fixture.sh	8192	16384	32768	q8_0	q4_0	on	none	-	1.00	1.00	untested	production	128	32	8192	evidence/fixture.md	9/10	refused
-fixture-candidate-validated	fixture-role	Fixture-GGUF/fixture.gguf	download-fixture.sh	8192	16384	32768	q8_0	q4_0	on	none	-	1.00	1.00	untested	candidate	128	32	8192	evidence/fixture.md	9/10	refused
-fixture-candidate-unknown	fixture-role	Fixture-GGUF/fixture.gguf	download-fixture.sh	8192	16384	32768	q8_0	q4_0	on	none	-	1.00	1.00	untested	candidate	128	32	-	-	9/10	refused
-fixture-archive	fixture-role	Fixture-GGUF/fixture.gguf	download-fixture.sh	8192	16384	32768	q8_0	q4_0	on	none	-	1.00	1.00	untested	archive	128	32	-	-	9/10	refused
+fixture-production	fixture-role	Fixture-GGUF/production.gguf	download-fixture.sh	8192	16384	32768	q8_0	q4_0	on	none	-	1.00	1.00	untested	production	128	32	8192	evidence/fixture.md	9/10	refused
+fixture-candidate-validated	fixture-role	Fixture-GGUF/candidate-validated.gguf	download-fixture.sh	8192	16384	32768	q8_0	q4_0	on	none	-	1.00	1.00	untested	candidate	128	32	8192	evidence/fixture.md	9/10	refused
+fixture-candidate-unknown	fixture-role	Fixture-GGUF/candidate-unknown.gguf	download-fixture.sh	8192	16384	32768	q8_0	q4_0	on	none	-	1.00	1.00	untested	candidate	128	32	-	-	9/10	refused
+fixture-archive	fixture-role	Fixture-GGUF/archive.gguf	download-fixture.sh	8192	16384	32768	q8_0	q4_0	on	none	-	1.00	1.00	untested	archive	128	32	-	-	9/10	refused
 EOF
 
 web_profiles_ok=$work/web-profiles-ok.tsv
@@ -99,7 +99,7 @@ else
     cat "$work/ok.err" >&2
 fi
 
-required_keys='model ctx-size batch-size ubatch-size cache-type-k cache-type-v flash-attn mcp-servers-config tags'
+required_keys='LLAMA_ARG_MODEL LLAMA_ARG_ALIAS LLAMA_ARG_CTX_SIZE LLAMA_ARG_BATCH LLAMA_ARG_UBATCH LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V LLAMA_ARG_FLASH_ATTN LLAMA_ARG_MCP_SERVERS_CONFIG LLAMA_ARG_TAGS'
 geometry_ok=ok
 for key in $required_keys; do
     if ! awk -v key="$key" '
@@ -112,13 +112,13 @@ for key in $required_keys; do
 done
 report section_carries_required_keys "$geometry_ok"
 
-# mcp-servers-config never appears before the first section header, which
-# would place it outside every [profile_id] block.
+# LLAMA_ARG_MCP_SERVERS_CONFIG never appears before the first section header,
+# which would place it outside every [profile_id] block.
 preamble_clean=ok
 if [ -f "$presets_ok" ] &&
     awk '
         /^\[/ { exit }
-        /^mcp-servers-config/ { found = 1 }
+        /^LLAMA_ARG_MCP_SERVERS_CONFIG/ { found = 1 }
         END { exit found ? 0 : 1 }
     ' "$presets_ok"; then
     preamble_clean=mcp_key_before_first_section
@@ -255,6 +255,80 @@ if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_ok \
     report missing_mcp_config_refused failed
 else
     report missing_mcp_config_refused ok
+fi
+
+# The generated file reaches llama-server through qwen-capacity-policy.sh, whose
+# validate_router_preset_tuples is the authority on a complete section tuple.
+# Running the generator's own output through that validator is what makes a
+# misspelled key a test failure here rather than a launch failure on the
+# appliance; a key-name check inside this script would only restate the
+# generator's printf list.
+policy=$script_directory/qwen-capacity-policy.sh
+fake_server=$script_directory/test-fixtures/fake-llama-server.sh
+fake_icd=$work/radeon_icd.x86_64.json
+: >"$fake_icd"
+policy_model_root=$work/model-root
+mkdir -p "$policy_model_root/Fixture-GGUF"
+for fixture_weights in production candidate-validated candidate-unknown archive; do
+    : >"$policy_model_root/Fixture-GGUF/$fixture_weights.gguf"
+done
+policy_quarantine=$work/quarantine.tsv
+printf '# reason_id\tscope\tsubject\tconsumers\tdepth\tbatch\tubatch\tcache_type_k\tcache_type_v\tflash_attention\n' \
+    >"$policy_quarantine"
+policy_output=$work/policy.out
+
+run_policy_over_presets() {
+    QWEN_MODEL_REGISTRY=$model_registry \
+    QWEN_MODEL_ROOT=$policy_model_root \
+    QWEN_QUARANTINE_REGISTRY=$policy_quarantine \
+    QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$policy_output \
+    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$1 QWEN_ROUTER_MAX=1 \
+        "$policy" "$fake_server" \
+        "$policy_model_root/Fixture-GGUF/production.gguf" 8192 18080
+}
+
+presets_policy=$work/presets-policy.ini
+if QWEN_MODEL_ROOT=$policy_model_root build "$web_profiles_ok" "$presets_policy" \
+    env QWEN_WEB_MCP_CONFIG="$mcp_config" \
+    >"$work/policy-build.log" 2>"$work/policy-build.err"; then
+    if run_policy_over_presets "$presets_policy" \
+        >"$work/policy.log" 2>"$work/policy.err"; then
+        report generated_preset_passes_capacity_policy ok
+    else
+        report generated_preset_passes_capacity_policy failed
+        cat "$work/policy.err" >&2
+    fi
+else
+    report generated_preset_passes_capacity_policy build_failed
+    cat "$work/policy-build.err" >&2
+fi
+
+# A misspelled or absent tuple key fails that same validation. Each key is
+# removed in turn, so the arm proves the validator reads every one rather than
+# reading the file's first line.
+for required_key in LLAMA_ARG_MODEL LLAMA_ARG_CTX_SIZE LLAMA_ARG_BATCH \
+    LLAMA_ARG_UBATCH LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V \
+    LLAMA_ARG_FLASH_ATTN; do
+    broken_presets=$work/presets-without-$required_key.ini
+    sed "/^$required_key =/d" "$presets_policy" >"$broken_presets"
+    if run_policy_over_presets "$broken_presets" \
+        >"$work/broken.log" 2>"$work/broken.err"; then
+        report "policy_rejects_missing_$required_key" accepted
+    else
+        report "policy_rejects_missing_$required_key" ok
+    fi
+done
+
+# A key spelled in the CLI style the deployed router format leaves unread is a
+# missing key, which is the defect this generator carried.
+cli_style_presets=$work/presets-cli-style.ini
+sed 's/^LLAMA_ARG_UBATCH =/ubatch-size =/' "$presets_policy" >"$cli_style_presets"
+if run_policy_over_presets "$cli_style_presets" \
+    >"$work/cli-style.log" 2>"$work/cli-style.err"; then
+    report policy_rejects_cli_style_key accepted
+else
+    report policy_rejects_cli_style_key ok
 fi
 
 if [ "$failures" -ne 0 ]; then

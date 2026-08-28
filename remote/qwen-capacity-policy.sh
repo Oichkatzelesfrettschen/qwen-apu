@@ -25,9 +25,16 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 bind_host=${QWEN_BIND_HOST:-127.0.0.1}
 cors_origins=${QWEN_CORS_ORIGINS:-localhost}
 
+# A router preset section normally names a registry id. A web preset section
+# names a profile_id instead, because several profiles serve one checkpoint at
+# depths the profile chooses, so $6 switches the resolution: the section's
+# LLAMA_ARG_MODEL path resolves the registry row through the model_file column,
+# which is unique across the registry, and LLAMA_ARG_CTX_SIZE is bounded by that
+# row's context_ceiling rather than pinned to its context_default. Every other
+# tuple key, tier rule, and quarantine rule stays identical.
 validate_router_preset_tuples() {
     printf '%s\n' "$4" | awk -F'\t' -v model_root="$3" \
-        -v include_quarantine="$5" '
+        -v include_quarantine="$5" -v web_profile_sections="${6:-0}" '
         function reset_tuple() {
             model_count = 0
             context_count = 0
@@ -96,65 +103,101 @@ validate_router_preset_tuples() {
             if (flash_count == 1 && flash_value !~ /^(on|off|auto)$/) {
                 reject_value("LLAMA_ARG_FLASH_ATTN", flash_value)
             }
-            if (registry_count[section] != 1) {
+            registry_key = section
+            if (web_profile_sections == 1) {
+                model_root_prefix = model_root "/"
+                if (model_count == 1 &&
+                    substr(model_value, 1, length(model_root_prefix)) == model_root_prefix) {
+                    registry_key = registry_id_by_model_file[substr(model_value,
+                        length(model_root_prefix) + 1)]
+                } else {
+                    registry_key = ""
+                }
+                if (registry_key == "") {
+                    printf "web preset section %s carries a LLAMA_ARG_MODEL outside the registry: %s\n", \
+                        section, model_value > "/dev/stderr"
+                    rejected = 1
+                    return
+                }
+                # Resolution by weights file requires the registry to name each
+                # file once. Two rows sharing one model_file would resolve to
+                # whichever row was read last, which picks a tier and a tuple
+                # by file order, so the ambiguity is refused instead.
+                section_model_file = substr(model_value, length(model_root_prefix) + 1)
+                if (registry_rows_by_model_file[section_model_file] != 1) {
+                    printf "web preset section %s resolves to %d registry rows through model file %s\n", \
+                        section, registry_rows_by_model_file[section_model_file], \
+                        section_model_file > "/dev/stderr"
+                    rejected = 1
+                    return
+                }
+            }
+            if (registry_count[registry_key] != 1) {
                 printf "router preset section %s resolves to %d registry rows\n", \
-                    section, registry_count[section] > "/dev/stderr"
+                    section, registry_count[registry_key] > "/dev/stderr"
                 rejected = 1
                 return
             }
-            if (registry_tier[section] != "production" &&
-                registry_tier[section] != "candidate" &&
-                registry_tier[section] != "quarantine") {
+            if (registry_tier[registry_key] != "production" &&
+                registry_tier[registry_key] != "candidate" &&
+                registry_tier[registry_key] != "quarantine") {
                 printf "router preset section %s has non-servable registry tier %s\n", \
-                    section, registry_tier[section] > "/dev/stderr"
+                    section, registry_tier[registry_key] > "/dev/stderr"
                 rejected = 1
             }
-            if (registry_tier[section] == "quarantine" &&
-                (include_quarantine != 1 || !quarantined_models[section])) {
+            if (registry_tier[registry_key] == "quarantine" &&
+                (include_quarantine != 1 || !quarantined_models[registry_key])) {
                 printf "router preset section %s lacks an admitted model quarantine override\n", \
                     section > "/dev/stderr"
                 rejected = 1
             }
-            expected_model = model_root "/" registry_model[section]
+            expected_model = model_root "/" registry_model[registry_key]
             if (model_count == 1 && model_value != expected_model) {
                 reject_registry_value("LLAMA_ARG_MODEL", model_value,
                     expected_model)
             }
-            if (context_count == 1 && context_value != registry_context[section]) {
-                reject_registry_value("LLAMA_ARG_CTX_SIZE", context_value,
-                    registry_context[section])
+            if (context_count == 1) {
+                if (web_profile_sections == 1) {
+                    if (context_value + 0 > registry_ceiling[registry_key] + 0) {
+                        reject_registry_value("LLAMA_ARG_CTX_SIZE", context_value,
+                            "at most " registry_ceiling[registry_key])
+                    }
+                } else if (context_value != registry_context[registry_key]) {
+                    reject_registry_value("LLAMA_ARG_CTX_SIZE", context_value,
+                        registry_context[registry_key])
+                }
             }
-            if (cache_k_count == 1 && cache_k_value != registry_cache_k[section]) {
+            if (cache_k_count == 1 && cache_k_value != registry_cache_k[registry_key]) {
                 reject_registry_value("LLAMA_ARG_CACHE_TYPE_K", cache_k_value,
-                    registry_cache_k[section])
+                    registry_cache_k[registry_key])
             }
-            if (cache_v_count == 1 && cache_v_value != registry_cache_v[section]) {
+            if (cache_v_count == 1 && cache_v_value != registry_cache_v[registry_key]) {
                 reject_registry_value("LLAMA_ARG_CACHE_TYPE_V", cache_v_value,
-                    registry_cache_v[section])
+                    registry_cache_v[registry_key])
             }
-            if (flash_count == 1 && flash_value != registry_flash[section]) {
+            if (flash_count == 1 && flash_value != registry_flash[registry_key]) {
                 reject_registry_value("LLAMA_ARG_FLASH_ATTN", flash_value,
-                    registry_flash[section])
+                    registry_flash[registry_key])
             }
-            if (batch_count == 1 && batch_value != registry_batch[section]) {
+            if (batch_count == 1 && batch_value != registry_batch[registry_key]) {
                 reject_registry_value("LLAMA_ARG_BATCH", batch_value,
-                    registry_batch[section])
+                    registry_batch[registry_key])
             }
-            if (ubatch_count == 1 && ubatch_value != registry_ubatch[section]) {
+            if (ubatch_count == 1 && ubatch_value != registry_ubatch[registry_key]) {
                 reject_registry_value("LLAMA_ARG_UBATCH", ubatch_value,
-                    registry_ubatch[section])
+                    registry_ubatch[registry_key])
             }
-            if (include_quarantine != 1 && quarantined_models[section]) {
+            if (include_quarantine != 1 && quarantined_models[registry_key]) {
                 printf "router preset section %s is excluded by model quarantine\n", \
                     section > "/dev/stderr"
                 rejected = 1
             }
-            profile_key = section SUBSEP context_value SUBSEP batch_value SUBSEP \
+            profile_key = registry_key SUBSEP context_value SUBSEP batch_value SUBSEP \
                 ubatch_value SUBSEP cache_k_value SUBSEP cache_v_value SUBSEP \
                 flash_value
-            quarantined_section = quarantined_models[section] ||
+            quarantined_section = quarantined_models[registry_key] ||
                 quarantined_profiles[profile_key] ||
-                registry_tier[section] == "quarantine"
+                registry_tier[registry_key] == "quarantine"
             if (include_quarantine == 1 && quarantined_section) {
                 if (tags_count != 1) {
                     reject_key("LLAMA_ARG_TAGS", tags_count)
@@ -204,6 +247,9 @@ validate_router_preset_tuples() {
             registry_count[$1]++
             registry_model[$1] = $3
             registry_context[$1] = $5
+            registry_ceiling[$1] = $6
+            registry_id_by_model_file[$3] = $1
+            registry_rows_by_model_file[$3]++
             registry_cache_k[$1] = $8
             registry_cache_v[$1] = $9
             registry_flash[$1] = $10
@@ -555,7 +601,7 @@ validate_current_router_authorities() {
     fi
     if ! validate_router_preset_tuples "$router_registry" "$router_presets" \
         "$router_model_root" "$router_quarantine_rows" \
-        "$quarantine_override_from_preset"; then
+        "$quarantine_override_from_preset" "$web_presets_from_preset"; then
         printf 'router presets do not carry complete admitted tuples: %s\n' \
             "$router_presets" >&2
         return 1
@@ -584,10 +630,27 @@ if [ "$router_enabled" = 1 ]; then
             exit 2
             ;;
     esac
+    # build-web-presets.sh names its sections for profile ids and chooses a
+    # depth inside context_ceiling, so its head marker selects the section
+    # resolution the tuple validator applies. The marker is the file's own
+    # provenance, which is what makes the resolution survive a preset that
+    # persists across a later launch.
+    web_presets_from_preset=$(sed -n 's/^# qwen_web_presets=\([01]\)$/\1/p' \
+        "$router_presets")
+    case $web_presets_from_preset in
+        '') web_presets_from_preset=0 ;;
+        0 | 1) ;;
+        *)
+            printf 'router presets carry ambiguous web provenance: %s\n' \
+                "$router_presets" >&2
+            exit 2
+            ;;
+    esac
     quarantine_override_from_preset=$(sed -n \
         's/^# qwen_router_include_quarantine=\([01]\)$/\1/p' \
         "$router_presets")
-    if grep -qx '# Generated by remote/build-router-presets.sh from the model registry.' \
+    if [ "$web_presets_from_preset" = 0 ] &&
+        grep -qx '# Generated by remote/build-router-presets.sh from the model registry.' \
         "$router_presets" && [ -z "$quarantine_override_from_preset" ]; then
         printf 'generated router presets omit quarantine provenance; regenerate %s\n' \
             "$router_presets" >&2
