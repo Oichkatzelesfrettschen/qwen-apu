@@ -235,6 +235,11 @@ Prefill processes 512 tokens against one weight read, so it is the half where
 arithmetic rather than a per-token cost dominates, and Q4_K's super-block scale
 decode shows up there.
 
+The span criterion is stated for decode and this claim rests on prefill, so it
+is applied to prefill here as well. The Q8_0 arms read 145.69 and 146.75, a 0.7%
+span, and the Q4_K_M arms read 134.49 and 135.32, a 0.6% span. Both pass, and
+the 8.4% separation is an order of magnitude above either.
+
 ## The per-dispatch prediction holds
 
 Qwen3-Zero-Coder-Reasoning-0.8B runs 42 blocks at 1024 embedding width against
