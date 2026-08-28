@@ -298,7 +298,16 @@ if [ ! -r "$web_profiles" ]; then
     exit 1
 fi
 
+# A section's MCP configuration path is read by qwen-web-launch.sh and by the
+# llama-server child, each from its own working directory, so the generator
+# resolves the output directory absolutely before it embeds the name. A relative
+# OUTPUT_INI such as the documented `web-presets.ini` otherwise names
+# `./web-mcp-configs-<version>/<profile_id>.json`, which resolves elsewhere or
+# not at all for every later reader.
 output_directory=$(dirname -- "$output_ini")
+mkdir -p "$output_directory"
+output_directory=$(CDPATH='' cd -- "$output_directory" && pwd)
+output_ini=$output_directory/$(basename -- "$output_ini")
 
 # The configuration directory is named for a digest of the files it holds, which
 # the run knows once the last row has emitted. Sections therefore carry
@@ -308,7 +317,6 @@ mcp_config_directory_marker=@QWEN_WEB_MCP_CONFIG_DIRECTORY@
 mcp_config_directory=
 output_ini_temporary=$output_ini.tmp.$$
 mcp_config_directory_temporary=$output_directory/web-mcp-configs.tmp.$$
-mkdir -p "$output_directory"
 trap 'rm -rf -- "$output_ini_temporary" "$output_ini_temporary.resolved" \
     "$mcp_config_directory_temporary"' EXIT HUP INT TERM
 rm -rf -- "$mcp_config_directory_temporary"

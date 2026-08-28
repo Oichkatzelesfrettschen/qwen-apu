@@ -174,6 +174,37 @@ if grep -q 'experimental' "$presets_ok"; then
 fi
 report validated_profile_carries_no_experimental_tag "$no_experimental_tag"
 
+# The generated MCP configuration path is read by qwen-web-launch.sh and by the
+# llama-server child from their own working directories, so a relative
+# OUTPUT_INI still resolves absolutely. The builder runs from a scratch
+# directory with a bare relative argument, which is the documented
+# `web-presets.ini` form.
+relative_output_directory=$work/relative-out
+mkdir -p "$relative_output_directory"
+if (
+    cd "$relative_output_directory" &&
+    QWEN_MODEL_REGISTRY=$model_registry \
+    QWEN_WEB_PROFILES=$web_profiles_ok \
+    QWEN_WEB_AUTHORIZER_READY=1 \
+    QWEN_MODEL_ROOT=$policy_model_root \
+    env QWEN_WEB_MCP_SERVER="$mcp_server_program" QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" QWEN_WEB_STATE_DIR="$web_state_directory" \
+        "$builder" web-presets.ini
+) >"$work/relative.log" 2>"$work/relative.err"; then
+    outcome=ok
+    grep -q '^LLAMA_ARG_MCP_SERVERS_CONFIG = /' \
+        "$relative_output_directory/web-presets.ini" ||
+        outcome=mcp_path_relative
+    grep -q '^web_presets=written path=/' "$work/relative.log" ||
+        outcome=reported_path_relative
+    named_relative_config=$(sed -n 's/^LLAMA_ARG_MCP_SERVERS_CONFIG = //p' \
+        "$relative_output_directory/web-presets.ini")
+    [ -r "$named_relative_config" ] || outcome=named_config_unreadable
+    report relative_output_resolves_absolutely "$outcome"
+else
+    report relative_output_resolves_absolutely build_failed
+    cat "$work/relative.err" >&2
+fi
+
 # A profile whose context exceeds the registry context_ceiling is refused.
 presets_over_ceiling=$work/presets-over-ceiling.ini
 if build "$web_profiles_over_ceiling" "$presets_over_ceiling" \
