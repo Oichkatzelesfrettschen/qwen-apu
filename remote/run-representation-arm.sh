@@ -17,8 +17,7 @@ set -eu
 if [ "$#" -lt 3 ] || [ "$#" -gt 4 ]; then
     printf 'usage: %s LABEL CONTROL_MODEL SUBJECT_MODEL [OUTPUT_DIRECTORY]\n' "$0" >&2
     printf 'environment: QWEN_LLAMA_BENCH QWEN_CLOCK_SAMPLER QWEN_ARM_REPEATS\n' >&2
-    printf '             QWEN_BENCH_PROMPT QWEN_BENCH_GENERATE QWEN_COOLDOWN_SECONDS
-' >&2
+    printf '             QWEN_BENCH_PROMPT QWEN_BENCH_GENERATE QWEN_COOLDOWN_SECONDS\n' >&2
     printf '             QWEN_SAMPLE_INTERVAL_SECONDS\n' >&2
     exit 2
 fi

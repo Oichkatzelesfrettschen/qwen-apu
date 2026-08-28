@@ -191,9 +191,7 @@ strict_output=$(nice -n 19 "$client_path" \
     --model "$promotion_model" --device Vulkan0 --n-gpu-layers all \
     --override-tensor '.*=Vulkan0' --no-warmup --ctx-size 256 \
     --n-predict 1 --temp 0 --prompt 'ok' --single-turn -v 2>&1) || {
-        printf 'strict Vulkan one-token check failed:
-%s
-' "$strict_output" >&2
+        printf 'strict Vulkan one-token check failed:\n%s\n' "$strict_output" >&2
         exit 1
     }
 # The owner of the model buffer is the discriminating fact. At -ngl 0 this build
@@ -203,13 +201,11 @@ strict_output=$(nice -n 19 "$client_path" \
 case $strict_output in
     *"load_tensors:"*"model buffer size"*) ;;
     *)
-        printf 'strict Vulkan check produced no model buffer line, so placement is unproven
-' >&2
+        printf 'strict Vulkan check produced no model buffer line: placement is unproven\n' >&2
         exit 1
         ;;
 esac
-misplaced_weights=$(printf '%s
-' "$strict_output" |
+misplaced_weights=$(printf '%s\n' "$strict_output" |
     awk '/load_tensors:.*model buffer size/ {
             size = $(NF - 1) + 0
             if (size <= 0) { next }
@@ -217,13 +213,12 @@ misplaced_weights=$(printf '%s
             for (field = 1; field <= NF; field++) {
                 if ($field == "model") { owner = $(field - 1) }
             }
-            if (owner != "Vulkan0") { printf "%s holds %s MiB of weights
-", owner, size }
+            if (owner != "Vulkan0") {
+                printf "%s holds %s MiB of weights\n", owner, size
+            }
         }')
 if [ -n "$misplaced_weights" ]; then
-    printf 'strict Vulkan check placed weights off the device:
-%s
-' \
+    printf 'strict Vulkan check placed weights off the device:\n%s\n' \
         "$misplaced_weights" >&2
     exit 1
 fi
