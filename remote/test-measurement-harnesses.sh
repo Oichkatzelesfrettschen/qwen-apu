@@ -906,6 +906,93 @@ if grep -q 'negative field index' "$temporary_directory/device-banner.stderr"; t
     exit 1
 fi
 
+# run-depth-chain.sh waits between checkpoints for the previous summary to
+# carry a complete row, its control to have passed, no llama process to be
+# running, and the device's gpu_busy_percent sysfs node to read idle for
+# several consecutive samples, rather than for the previous PID alone to
+# exit.
+active_fixture=depth-chain-usage
+diagnostic_file=$temporary_directory/chain-usage.stderr
+if "$script_directory/run-depth-chain.sh" \
+    >"$temporary_directory/chain-usage.stdout" \
+    2>"$temporary_directory/chain-usage.stderr"; then
+    printf 'depth chain accepted zero checkpoint arguments\n' >&2
+    exit 1
+fi
+grep -F 'usage:' "$temporary_directory/chain-usage.stderr" >/dev/null
+
+chain_fake_probe=$temporary_directory/chain-fake-probe.sh
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    'chain_model_path=$1' \
+    'chain_output_directory=$2' \
+    'mkdir -p "$chain_output_directory"' \
+    'printf "%s\\n" "$chain_model_path" >>"'"$temporary_directory"'/chain-probe-calls"' \
+    'header="arm\tdepth\tbatch\tubatch\tcache_k\tcache_v\tflash_attn\tstatus\tring_resets\tgpu_faults\twall_s\tdecode_tok_s\tvram_peak_mib\tgtt_peak_mib\tcontrol_status\tcontrol_tok_s\tmclk_modal\ttemp_c_max\thealth\thazard_class"' \
+    'row="d1-b1-ub1\t1\t1\t1\tq8_0\tq4_0\ton\t0\t0\t0\t1\t3.00\t0\t0\t0\t3.00\t933\t88.0\thealthy\tnone"' \
+    'printf "%b\\n%b\\n" "$header" "$row" \
+        >"$chain_output_directory/wedge-summary.tsv"' \
+    >"$chain_fake_probe"
+chmod +x "$chain_fake_probe"
+
+chain_drm_device=$temporary_directory/chain-drm-device
+mkdir -p "$chain_drm_device"
+printf '0\n' >"$chain_drm_device/gpu_busy_percent"
+
+chain_output_root=$temporary_directory/depth-chain
+chain_home=$temporary_directory/chain-home
+mkdir -p "$chain_home"
+printf 'fake model bytes\n' >"$chain_home/second.gguf"
+active_fixture=depth-chain-success
+diagnostic_file=$temporary_directory/chain-success.stderr
+HOME=$chain_home QWEN_DEPTH_CHAIN_PROBE=$chain_fake_probe \
+QWEN_DEPTH_CHAIN_OUTPUT_ROOT=$chain_output_root \
+QWEN_DRM_DEVICE=$chain_drm_device QWEN_DEPTH_CHAIN_IDLE_INTERVAL_S=1 \
+    "$script_directory/run-depth-chain.sh" "first:/first.gguf" \
+    "second:second.gguf" \
+    >"$temporary_directory/chain-success.stdout" \
+    2>"$temporary_directory/chain-success.stderr"
+if [ "$(wc -l <"$temporary_directory/chain-probe-calls")" -ne 2 ]; then
+    printf 'depth chain did not run both checkpoints\n' >&2
+    cat "$temporary_directory/chain-success.stderr" >&2
+    exit 1
+fi
+grep -Fx '/first.gguf' "$temporary_directory/chain-probe-calls" >/dev/null
+grep -Fx "$chain_home/second.gguf" "$temporary_directory/chain-probe-calls" \
+    >/dev/null
+if grep -F 'chain_gpu_idle=unavailable' \
+    "$temporary_directory/chain-success.stderr" >/dev/null; then
+    printf 'depth chain reported the fake sysfs busy node unavailable\n' >&2
+    exit 1
+fi
+grep -F 'depth_chain=completed' \
+    "$temporary_directory/chain-success.stdout" >/dev/null
+
+chain_failed_probe=$temporary_directory/chain-failed-probe.sh
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    'chain_output_directory=$2' \
+    'mkdir -p "$chain_output_directory"' \
+    'header="arm\tdepth\tbatch\tubatch\tcache_k\tcache_v\tflash_attn\tstatus\tring_resets\tgpu_faults\twall_s\tdecode_tok_s\tvram_peak_mib\tgtt_peak_mib\tcontrol_status\tcontrol_tok_s\tmclk_modal\ttemp_c_max\thealth\thazard_class"' \
+    'row="d1-b1-ub1\t1\t1\t1\tq8_0\tq4_0\ton\t0\t0\t0\t1\t3.00\t0\t0\t7\t3.00\t933\t88.0\tunhealthy\tnone"' \
+    'printf "%b\\n%b\\n" "$header" "$row" \
+        >"$chain_output_directory/wedge-summary.tsv"' \
+    >"$chain_failed_probe"
+chmod +x "$chain_failed_probe"
+chain_failed_output_root=$temporary_directory/depth-chain-failed-control
+active_fixture=depth-chain-failed-control
+diagnostic_file=$temporary_directory/chain-failed.stderr
+if HOME=$chain_home QWEN_DEPTH_CHAIN_PROBE=$chain_failed_probe \
+    QWEN_DEPTH_CHAIN_OUTPUT_ROOT=$chain_failed_output_root \
+    QWEN_DRM_DEVICE=$chain_drm_device QWEN_DEPTH_CHAIN_IDLE_INTERVAL_S=1 \
+    "$script_directory/run-depth-chain.sh" "first:/first.gguf" \
+    "second:second.gguf" \
+    >"$temporary_directory/chain-failed.stdout" \
+    2>"$temporary_directory/chain-failed.stderr"; then
+    printf 'depth chain started a checkpoint after a failed recovery control\n' >&2
+    exit 1
+fi
+grep -F 'the previous checkpoint left a failed recovery control' \
+    "$temporary_directory/chain-failed.stderr" >/dev/null
+
 active_fixture=completed
 diagnostic_file=
 printf 'measurement_harnesses=accepted\n'
