@@ -921,6 +921,59 @@ else
     report json_control_state_directory_refused ok
 fi
 
+# A ui-mediated ledger names no MCP configuration and reaches no network, so it
+# generates from the ledger alone rather than requiring a server program and a
+# provider key its sections never reach.
+presets_ui_no_mcp=$work/presets-ui-no-mcp.ini
+if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_ui \
+    QWEN_MODEL_ROOT=$policy_model_root \
+    env -u QWEN_WEB_MCP_SERVER -u QWEN_WEB_SEARCH_KEY_FILE \
+    -u QWEN_WEB_TOKEN_KEY_FILE -u QWEN_WEB_STATE_DIR \
+    "$builder" "$presets_ui_no_mcp" \
+    >"$work/ui-no-mcp.log" 2>"$work/ui-no-mcp.err"; then
+    report ui_mediated_generates_without_mcp_inputs ok
+else
+    report ui_mediated_generates_without_mcp_inputs failed
+    cat "$work/ui-no-mcp.err" >&2
+fi
+
+# A ui-mediated row writes no configuration file, so the emitted directory holds
+# nothing an unreferenced section could point at.
+ui_no_mcp_configs=$(dirname -- "$presets_ui_no_mcp")/web-mcp-configs
+if [ -e "$ui_no_mcp_configs/web-fixture-ui.json" ]; then
+    report ui_mediated_writes_no_mcp_config file_present
+else
+    report ui_mediated_writes_no_mcp_config ok
+fi
+
+# A validator-gated row that reaches emission still requires both inputs, and
+# the refusal names the profile whose section would have carried the omission.
+if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_gated \
+    QWEN_WEB_AUTHORIZER_READY=1 QWEN_MODEL_ROOT=$policy_model_root \
+    env -u QWEN_WEB_MCP_SERVER QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
+    QWEN_WEB_STATE_DIR="$web_state_directory" \
+    "$builder" "$work/presets-absent-server.ini" \
+    >"$work/absent-server.log" 2>"$work/absent-server.err"; then
+    report gated_requires_mcp_server accepted
+elif grep -q 'profile web-fixture-gated' "$work/absent-server.err"; then
+    report gated_requires_mcp_server ok
+else
+    report gated_requires_mcp_server message_omits_profile
+fi
+
+if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_gated \
+    QWEN_WEB_AUTHORIZER_READY=1 QWEN_MODEL_ROOT=$policy_model_root \
+    env -u QWEN_WEB_SEARCH_KEY_FILE QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    QWEN_WEB_STATE_DIR="$web_state_directory" \
+    "$builder" "$work/presets-absent-key.ini" \
+    >"$work/absent-key.log" 2>"$work/absent-key.err"; then
+    report gated_requires_search_key_file accepted
+elif grep -q 'profile web-fixture-gated' "$work/absent-key.err"; then
+    report gated_requires_search_key_file ok
+else
+    report gated_requires_search_key_file message_omits_profile
+fi
+
 if [ "$failures" -ne 0 ]; then
     printf 'test-web-presets: %d check(s) failed\n' "$failures" >&2
     exit 1

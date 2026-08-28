@@ -51,8 +51,12 @@ set -eu
 # files differ: max_results, max_fetches, and max_chars_per_fetch are ledger
 # columns, so one shared configuration would serve every profile the widest
 # row's budget. QWEN_WEB_MCP_SERVER names the server program and carries no
-# default, because a tool-bearing section misconfigured by omission is the
-# state the requirement exists to prevent.
+# default, because a tool-bearing section misconfigured by omission is the state
+# the requirement exists to prevent. The requirement runs at the first row that
+# writes a configuration rather than at startup, so a ledger of refused and
+# ui-mediated rows -- which name no configuration and reach no network --
+# generates from the ledger alone, and the refusal still names the profile whose
+# section would have carried the omission.
 #
 # A generated configuration carries key-file paths and never key contents. The
 # MCP server reads the file itself, so the path is the whole grant the
@@ -181,15 +185,7 @@ case $authorizer_ready in
 esac
 
 mcp_server_program=${QWEN_WEB_MCP_SERVER:-}
-if [ -z "$mcp_server_program" ]; then
-    printf 'QWEN_WEB_MCP_SERVER must name the MCP server program\n' >&2
-    exit 1
-fi
 search_key_file=${QWEN_WEB_SEARCH_KEY_FILE:-}
-if [ -z "$search_key_file" ]; then
-    printf 'QWEN_WEB_SEARCH_KEY_FILE must name the provider key file path\n' >&2
-    exit 1
-fi
 token_key_file=${QWEN_WEB_TOKEN_KEY_FILE:-}
 web_state_directory=${QWEN_WEB_STATE_DIR:-"${HOME:?}/qwen-webui-state/web-mcp"}
 web_provider=${QWEN_WEB_PROVIDER:-exa}
@@ -215,12 +211,30 @@ require_json_safe_path() {
             ;;
     esac
 }
-require_json_safe_path QWEN_WEB_MCP_SERVER "$mcp_server_program"
-require_json_safe_path QWEN_WEB_SEARCH_KEY_FILE "$search_key_file"
-require_json_safe_path QWEN_WEB_STATE_DIR "$web_state_directory"
-if [ -n "$token_key_file" ]; then
-    require_json_safe_path QWEN_WEB_TOKEN_KEY_FILE "$token_key_file"
-fi
+
+# The MCP inputs describe a configuration file, so a ledger whose every row is
+# refused or ui-mediated writes none and needs none. The requirement runs at the
+# first row that writes one, which keeps an offline or manual ledger generating
+# without a server program and a provider key it never reaches, and keeps the
+# refusal on the row that would have been misconfigured by omission.
+require_mcp_inputs() {
+    if [ -z "$mcp_server_program" ]; then
+        printf 'profile %s emits an MCP configuration and QWEN_WEB_MCP_SERVER names no server program\n' \
+            "$profile_id" >&2
+        exit 1
+    fi
+    if [ -z "$search_key_file" ]; then
+        printf 'profile %s emits an MCP configuration and QWEN_WEB_SEARCH_KEY_FILE names no provider key file\n' \
+            "$profile_id" >&2
+        exit 1
+    fi
+    require_json_safe_path QWEN_WEB_MCP_SERVER "$mcp_server_program"
+    require_json_safe_path QWEN_WEB_SEARCH_KEY_FILE "$search_key_file"
+    require_json_safe_path QWEN_WEB_STATE_DIR "$web_state_directory"
+    if [ -n "$token_key_file" ]; then
+        require_json_safe_path QWEN_WEB_TOKEN_KEY_FILE "$token_key_file"
+    fi
+}
 case $web_provider in
     '' | *[!a-z0-9-]*)
         printf 'QWEN_WEB_PROVIDER must hold lowercase letters, digits, and hyphens: %s\n' \
@@ -471,36 +485,48 @@ while IFS='	' read -r profile_id model_id _web_mode context \
         tags_suffix=,experimental
     fi
 
+    # A ui-mediated row performs its retrieval in the web UI and its section
+    # names no configuration, so the run writes none and reads none of the MCP
+    # inputs a configuration would carry.
+    if [ "$execution_policy" = ui-mediated ]; then
+        emit_mcp_configuration=0
+    else
+        emit_mcp_configuration=1
+        require_mcp_inputs
+    fi
+
     profile_mcp_config=$mcp_config_directory/$profile_id.json
     profile_mcp_config_temporary=$mcp_config_directory_temporary/$profile_id.json
-    {
-        printf '{\n'
-        printf '  "mcpServers": {\n'
-        printf '    "web": {\n'
-        printf '      "command": "python3",\n'
-        printf '      "args": [\n'
-        printf '        "%s",\n' "$mcp_server_program"
-        printf '        "--provider",\n'
-        printf '        "%s"\n' "$web_provider"
-        printf '      ],\n'
-        printf '      "env": {\n'
-        printf '        "QWEN_WEB_PROFILE": "%s",\n' "$profile_id"
-        printf '        "QWEN_WEB_PROVIDER": "%s",\n' "$web_provider"
-        printf '        "QWEN_WEB_MAX_RESULTS": "%s",\n' "$max_results"
-        printf '        "QWEN_WEB_MAX_FETCHES": "%s",\n' "$max_fetches"
-        printf '        "QWEN_WEB_MAX_CHARS_PER_FETCH": "%s",\n' \
-            "$max_chars_per_fetch"
-        printf '        "QWEN_WEB_SEARCH_AUTH": "required",\n'
-        printf '        "QWEN_WEB_SEARCH_KEY_FILE": "%s",\n' "$search_key_file"
-        if [ -n "$token_key_file" ]; then
-            printf '        "QWEN_WEB_TOKEN_KEY_FILE": "%s",\n' "$token_key_file"
-        fi
-        printf '        "QWEN_WEB_STATE_DIR": "%s"\n' "$web_state_directory"
-        printf '      }\n'
-        printf '    }\n'
-        printf '  }\n'
-        printf '}\n'
-    } >"$profile_mcp_config_temporary"
+    if [ "$emit_mcp_configuration" = 1 ]; then
+        {
+            printf '{\n'
+            printf '  "mcpServers": {\n'
+            printf '    "web": {\n'
+            printf '      "command": "python3",\n'
+            printf '      "args": [\n'
+            printf '        "%s",\n' "$mcp_server_program"
+            printf '        "--provider",\n'
+            printf '        "%s"\n' "$web_provider"
+            printf '      ],\n'
+            printf '      "env": {\n'
+            printf '        "QWEN_WEB_PROFILE": "%s",\n' "$profile_id"
+            printf '        "QWEN_WEB_PROVIDER": "%s",\n' "$web_provider"
+            printf '        "QWEN_WEB_MAX_RESULTS": "%s",\n' "$max_results"
+            printf '        "QWEN_WEB_MAX_FETCHES": "%s",\n' "$max_fetches"
+            printf '        "QWEN_WEB_MAX_CHARS_PER_FETCH": "%s",\n' \
+                "$max_chars_per_fetch"
+            printf '        "QWEN_WEB_SEARCH_AUTH": "required",\n'
+            printf '        "QWEN_WEB_SEARCH_KEY_FILE": "%s",\n' "$search_key_file"
+            if [ -n "$token_key_file" ]; then
+                printf '        "QWEN_WEB_TOKEN_KEY_FILE": "%s",\n' "$token_key_file"
+            fi
+            printf '        "QWEN_WEB_STATE_DIR": "%s"\n' "$web_state_directory"
+            printf '      }\n'
+            printf '    }\n'
+            printf '  }\n'
+            printf '}\n'
+        } >"$profile_mcp_config_temporary"
+    fi
 
     model_path=$model_root/$model_file
 
