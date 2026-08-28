@@ -210,15 +210,13 @@ def audit_row(settings, fields, status, started_at):
     }
 
 
-def issue_for_request(settings, fields, ledger):
-    """Meter the request and sign the grant for exactly these arguments.
+def issue_for_request(settings, fields):
+    """Sign the grant for exactly these arguments.
 
-    The rate bucket is charged ahead of the signature so a caller that floods
-    the endpoint spends the bucket rather than the key, and the bucket name
-    sits beside `search-minute` and `fetch-minute` in the same table under the
-    same `rate_limited` term.
+    `do_POST` charges the `authorize-minute` bucket ahead of every other check,
+    including the session-header and body validation this function assumes
+    already passed, so the meter here would double-charge one request.
     """
-    ledger.consume("authorize-minute", 60, settings.per_minute, time.time())
     return server.issue_grant(
         settings.token_key_file,
         fields["query"],
@@ -372,7 +370,12 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
         the trail separates a request refused for its session header from one
         refused for a malformed field, from one that exhausted the bucket,
         from a grant that issued -- while the grant itself stays in the
-        response alone.
+        response alone. The `authorize-minute` bucket is charged before the
+        loopback-host and session-header checks run, so a caller that holds
+        neither cannot reach `ledger.record` faster than the bucket admits;
+        without that ordering an unauthenticated loopback process floods the
+        session check alone and grows the audit table at whatever rate it
+        can open connections, since every refusal still writes a row.
         """
         started_at = time.time()
         origin = self.allowed_origin()
@@ -382,10 +385,11 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
         ledger = self.server.broker_ledger
         fields = None
         try:
+            ledger.consume("authorize-minute", 60, self.settings.per_minute, started_at)
             self.require_loopback_host()
             self.require_session_secret()
             fields = parse_request_arguments(self.read_body())
-            token = issue_for_request(self.settings, fields, ledger)
+            token = issue_for_request(self.settings, fields)
         except server.ToolError as error:
             ledger.record(audit_row(self.settings, fields, error.status, started_at))
             self.send_json(

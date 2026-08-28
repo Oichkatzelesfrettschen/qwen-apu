@@ -434,6 +434,29 @@ class BrokerTest(unittest.TestCase):
         self.assertIn("authorize-minute", payload["error"])
         self.assertIn("rate_limited", [row[8] for row in self.audit_rows()])
 
+    def test_a_bad_session_header_spends_the_same_bucket(self):
+        broker = self.launch(**{"--per-minute": 2})
+        headers = self.grant_headers()
+        headers[SESSION_HEADER] = "a-secret-this-launch-never-wrote"
+        for _ in range(2):
+            status, _, payload = self.post_grant(
+                broker, {"query": "raven2 vulkan decode"}, headers
+            )
+            self.assertEqual(status, 403)
+            self.assertIn(SESSION_HEADER, payload["error"])
+        status, _, payload = self.post_grant(
+            broker, {"query": "raven2 vulkan decode"}, headers
+        )
+        self.assertEqual(status, 429)
+        self.assertIn("authorize-minute", payload["error"])
+        statuses = [row[8] for row in self.audit_rows()]
+        self.assertEqual(statuses.count("authorization_denied"), 2)
+        self.assertEqual(statuses.count("rate_limited"), 1)
+        # The bucket admitted no valid grant in this arm, so a caller that
+        # never presents a real session cannot outrun the meter by failing.
+        status, _, payload = self.post_grant(broker, {"query": "raven2 vulkan decode"})
+        self.assertEqual(status, 429)
+
     def test_the_audit_trail_carries_the_digest_and_no_secret(self):
         broker = self.launch()
         status, _, payload = self.post_grant(
