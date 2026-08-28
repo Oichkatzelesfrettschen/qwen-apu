@@ -13,6 +13,12 @@ set -eu
 # other listener, rather than forcing the value silently: the operator who typed
 # 0.0.0.0 wants an exposure this launch declines to provide, and a refusal says
 # so where a rewrite would leave the request looking honoured.
+#
+# The wrapper reads every path its sections name, because a preset persists
+# across the generation that resolved it: an MCP configuration llama-server
+# cannot read fails the child at startup, and a projector that has moved since
+# generation leaves the vision child answering an image request from nothing.
+#
 # qwen-capacity-policy.sh forces the same loopback for a preset carrying the
 # unvalidated-depth marker, so the restriction survives a launch that reaches
 # the policy another way.
@@ -65,9 +71,13 @@ if ! grep -qx '# qwen_web_presets=1' "$web_presets"; then
     exit 2
 fi
 
-# Every configuration a section names is read here, because llama-server reports
-# an unreadable mcp-servers-config as a child startup failure well after the
-# listener is up, where the operator reads it as a model fault.
+# Every artifact a section names is read here, because llama-server reports an
+# unreadable mcp-servers-config as a child startup failure well after the
+# listener is up, and reads a section's projector only when a request selects
+# that child, so an absent projector answers an image request from nothing while
+# the listener has already reported ready. A preset persists across the
+# generation that resolved both paths, so a file deleted or moved since then is
+# found before the launch rather than by the request that needs it.
 #
 # The named paths reach the loop one line at a time through a file rather than
 # through command substitution, which field-splits a path holding a space into
@@ -75,22 +85,30 @@ fi
 # QWEN_WEB_PRESETS each place one in the generated tree. The loop reads from a
 # redirection rather than a pipeline so its count survives the loop, since a
 # pipeline runs the body in a subshell and leaves the count at zero.
-named_mcp_config_list=$(mktemp)
-trap 'rm -f -- "$named_mcp_config_list"' EXIT HUP INT TERM
-sed -n 's/^[[:space:]]*LLAMA_ARG_MCP_SERVERS_CONFIG[[:space:]]*=[[:space:]]*//p' \
-    "$web_presets" >"$named_mcp_config_list"
-missing_mcp_configs=0
-while IFS= read -r named_mcp_config; do
-    [ -n "$named_mcp_config" ] || continue
-    if [ ! -r "$named_mcp_config" ]; then
-        printf 'preset names an unreadable MCP configuration: %s\n' \
-            "$named_mcp_config" >&2
-        missing_mcp_configs=$((missing_mcp_configs + 1))
-    fi
-done <"$named_mcp_config_list"
-rm -f -- "$named_mcp_config_list"
+named_artifact_list=$(mktemp)
+trap 'rm -f -- "$named_artifact_list"' EXIT HUP INT TERM
+missing_named_artifacts=0
+count_missing_named_artifacts() {
+    artifact_key=$1
+    artifact_description=$2
+    sed -n "s/^[[:space:]]*${artifact_key}[[:space:]]*=[[:space:]]*//p" \
+        "$web_presets" >"$named_artifact_list"
+    while IFS= read -r named_artifact; do
+        [ -n "$named_artifact" ] || continue
+        if [ ! -f "$named_artifact" ]; then
+            printf 'preset names %s: %s\n' \
+                "$artifact_description" "$named_artifact" >&2
+            missing_named_artifacts=$((missing_named_artifacts + 1))
+        fi
+    done <"$named_artifact_list"
+}
+count_missing_named_artifacts LLAMA_ARG_MCP_SERVERS_CONFIG \
+    'an unreadable MCP configuration'
+count_missing_named_artifacts LLAMA_ARG_MMPROJ \
+    'a projector that is not a regular file'
+rm -f -- "$named_artifact_list"
 trap - EXIT HUP INT TERM
-if [ "$missing_mcp_configs" -ne 0 ]; then
+if [ "$missing_named_artifacts" -ne 0 ]; then
     printf 'regenerate the preset tree with remote/build-web-presets.sh\n' >&2
     exit 2
 fi

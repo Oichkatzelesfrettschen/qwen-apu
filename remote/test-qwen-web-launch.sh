@@ -172,6 +172,61 @@ else
     report absent_mcp_config_refused "$outcome"
 fi
 
+# A vision section names its projector in LLAMA_ARG_MMPROJ, which router mode
+# reads when the request selects that child. A preset persists across the
+# generation that resolved the file, so a projector deleted or moved since then
+# refuses the launch rather than leaving the listener ready and the image
+# request answered from nothing.
+projector_path=$policy_model_root/Fixture-GGUF/mmproj-F16.gguf
+: >"$projector_path"
+present_projector_presets=$state_directory/web-presets-projector.ini
+write_web_preset "$present_projector_presets" unmarked
+printf 'LLAMA_ARG_MMPROJ = %s\n' "$projector_path" >>"$present_projector_presets"
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_PRESETS=$present_projector_presets QWEN_WEB_LAUNCH_RECORD=$record \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/projector-present.log" 2>"$work/projector-present.err"; then
+    report present_projector_admitted ok
+else
+    report present_projector_admitted refused
+    cat "$work/projector-present.err" >&2
+fi
+
+absent_projector_presets=$state_directory/web-presets-absent-projector.ini
+write_web_preset "$absent_projector_presets" unmarked
+printf 'LLAMA_ARG_MMPROJ = %s\n' "$policy_model_root/Fixture-GGUF/absent-mmproj.gguf" \
+    >>"$absent_projector_presets"
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_PRESETS=$absent_projector_presets QWEN_WEB_LAUNCH_RECORD=$record \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/absent-projector.log" 2>"$work/absent-projector.err"; then
+    report absent_projector_refused accepted
+else
+    outcome=ok
+    grep -q 'projector that is not a regular file' \
+        "$work/absent-projector.err" || outcome=missing_message
+    report absent_projector_refused "$outcome"
+fi
+
+# A projector path holding a space reaches the check whole, the way the MCP
+# configuration path does.
+mkdir -p "$policy_model_root/Fixture Vision GGUF"
+spaced_projector_path="$policy_model_root/Fixture Vision GGUF/mmproj-F16.gguf"
+: >"$spaced_projector_path"
+spaced_projector_presets=$state_directory/web-presets-spaced-projector.ini
+write_web_preset "$spaced_projector_presets" unmarked
+printf 'LLAMA_ARG_MMPROJ = %s\n' "$spaced_projector_path" \
+    >>"$spaced_projector_presets"
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_PRESETS=$spaced_projector_presets QWEN_WEB_LAUNCH_RECORD=$record \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/spaced-projector.log" 2>"$work/spaced-projector.err"; then
+    report spaced_projector_path_admitted ok
+else
+    report spaced_projector_path_admitted refused
+    cat "$work/spaced-projector.err" >&2
+fi
+
 # A preset file carrying no web provenance marker refuses, since the policy
 # would resolve its sections as registry ids.
 plain_presets=$state_directory/plain-presets.ini
