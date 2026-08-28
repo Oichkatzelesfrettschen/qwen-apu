@@ -88,6 +88,13 @@ fi
 
 mkdir -p "$output_directory"
 summary=$output_directory/wedge-summary.tsv
+# vram_peak_mib and gtt_peak_mib read amdgpu's whole-device VRAM and GTT
+# accounting, sampled by sample-gpu-clocks.sh from the same sysfs and hwmon
+# nodes every process on the device shares. They are the device's total
+# allocation during the arm, not bytes this arm's own model or KV cache
+# holds exclusively: a resident model, another process's allocation, and this
+# arm's own buffers all sum into the one peak, and the peak is read as a
+# device-occupancy ceiling rather than as this arm's private footprint.
 # health carries the promotion signal a downstream consumer reads instead of
 # recomputing arm_status, control_status, ring_resets, and gpu_faults itself.
 # `healthy` is a clean arm with a passing control and a kernel delta that
@@ -599,10 +606,14 @@ run_arm() {
         arm_status=65
     fi
 
-    # The memory the arm actually held, read from amdgpu's accounting during the
-    # arm rather than parsed from the log: llama-bench prints no buffer sizes at
-    # default verbosity, and an arm that wedges prints nothing at all. The peak
-    # of each is reported because the KV cache grows through the prefill.
+    # The device's VRAM and GTT occupancy during the arm, read from amdgpu's
+    # whole-device accounting rather than parsed from the log: llama-bench
+    # prints no buffer sizes at default verbosity, and an arm that wedges
+    # prints nothing at all. amdgpu's accounting is device-global -- it sums
+    # every process's allocation, not this arm's model and KV cache alone --
+    # so the peak names how full the device got, not what this arm privately
+    # holds. The peak of each is reported because the KV cache grows through
+    # the prefill.
     # The sampler is killed as soon as the arm ends, so an arm that completes
     # before the sampler writes its first row leaves no file at all and awk
     # exits fatal under set -e. This probe reports `unavailable` for every other
