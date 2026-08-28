@@ -60,6 +60,14 @@ grep -F "if (calls[index].name === WEB_SEARCH_TOOL_NAME && roundBudgetExhausted)
 grep -F 'The round budget is exhausted; the search did not run.' "$fallback_ui" >/dev/null
 grep -F 'round === CONTINUATION_CAP - 1' "$fallback_ui" >/dev/null
 
+# Tool-call ids come from a conversation-wide counter rather than a per-round
+# index, so a later approved search cannot collide with an earlier call and
+# overwrite its arguments through requestMessages' id lookup.
+grep -F 'let toolCallSequence = 0;' "$fallback_ui" >/dev/null
+grep -F 'callIds = outcome.calls.map(() => `call_${toolCallSequence++}`);' \
+    "$fallback_ui" >/dev/null
+grep -F "history = []; toolCallSequence = 0;" "$fallback_ui" >/dev/null
+
 # The grant admits one search, so a standing grade would promise a permission
 # the serving path refuses on the second call. The pinned llama-ui spells those
 # grades ALWAYS and ALWAYS_SERVER, and the check names the approval region

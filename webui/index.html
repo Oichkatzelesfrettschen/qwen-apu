@@ -150,6 +150,11 @@ let nctxModel = null;
 let busy = false;
 let requestModel = null;
 let modelStateGeneration = 0;
+// requestMessages selects a tool_calls entry by id to splice in an authorized
+// grant, so an id must stay unique across the whole conversation rather than
+// within one round: a per-round counter starting at 0 collides across turns
+// and a later grant would overwrite every earlier call sharing its id.
+let toolCallSequence = 0;
 
 function readBrowserStorage(storageName, key) {
   try { return window[storageName].getItem(key); } catch { return null; }
@@ -629,7 +634,7 @@ function turn(who, cls) {
   return { root: d, body: b };
 }
 
-$('#clear').onclick = () => { history = []; logEl.textContent = ''; };
+$('#clear').onclick = () => { history = []; toolCallSequence = 0; logEl.textContent = ''; };
 
 $('#input').addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
@@ -894,7 +899,7 @@ async function send() {
       const msg = { role: 'assistant', content: outcome.answer };
       let callIds = [];
       if (outcome.calls.length) {
-        callIds = outcome.calls.map((c, i) => `call_${round}_${i}`);
+        callIds = outcome.calls.map(() => `call_${toolCallSequence++}`);
         msg.tool_calls = outcome.calls.map((c, i) => ({
           id: callIds[i], type: 'function',
           function: { name: c.name, arguments: c.args }
