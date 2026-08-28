@@ -217,6 +217,16 @@ def build_fixture_document():
                     "highlights": [],
                 },
             ],
+            "long identifier": [
+                {
+                    "title": "A result carrying a maximal provider id",
+                    "id": "i" * server.RESULT_ID_CHARACTER_CAP,
+                    "url": "https://example.org/raven2",
+                    "publishedDate": "",
+                    "author": "",
+                    "highlights": [],
+                }
+            ],
             "userinfo url": [
                 {
                     "title": "Credentialed",
@@ -1042,6 +1052,72 @@ class WebMcpServerTest(unittest.TestCase):
         )
         self.assertFalse(response["result"]["isError"])
         self.assertIn("URL: https://example.org/raven2", self.result_text(response))
+
+    @staticmethod
+    def maximal_domain(index):
+        """Return a 253-character hostname that `HOSTNAME_PATTERN` admits."""
+        labels = [
+            f"{letter}{index}" + "x" * (63 - len(f"{letter}{index}"))
+            for letter in "abc"
+        ]
+        labels.append("d" * 61)
+        return ".".join(labels)
+
+    def test_a_maximal_grant_fits_the_argument_that_presents_it(self):
+        """Every grant the caps admit is one a search can present.
+
+        Ten include and ten exclude domains of 253 characters each, beside a
+        512-character query, sign into a token past 4096 characters, so the
+        accepted `authorization` argument is sized to the grant the issuing
+        subcommand can emit rather than to a shorter constant.
+        """
+        query = "q" * server.QUERY_CHARACTER_CAP
+        include = [self.maximal_domain(index) for index in range(10)]
+        exclude = [self.maximal_domain(index + 10) for index in range(10)]
+        arguments = ["--token-key-file", self.token_key_path, "--query", query,
+                     "--provider", "fake", "--max-results", "1"]
+        for domain in include:
+            arguments += ["--include-domain", domain]
+        for domain in exclude:
+            arguments += ["--exclude-domain", domain]
+        issued = subprocess.run(
+            [sys.executable, SERVER_PATH, "authorize", *arguments],
+            capture_output=True,
+            text=True,
+            env=self.environment(),
+            check=True,
+        )
+        token = issued.stdout.strip()
+        self.assertGreater(len(token), 4096)
+        session = self.authorized_session("maximal-grant-state")
+        response = session.call_tool(
+            "search_exa",
+            {
+                "query": query,
+                "max_results": 1,
+                "include_domains": include,
+                "exclude_domains": exclude,
+                "authorization": token,
+            },
+        )
+        self.assertFalse(
+            response["result"]["isError"], self.result_text(response)
+        )
+
+    def test_a_maximal_provider_identifier_stays_fetchable(self):
+        """A rendered Result ID fits the argument `fetch_exa` accepts.
+
+        A provider identifier of 4096 characters signs into a token past the
+        cap `fetch_exa` enforces, so the search would display a result no
+        fetch could redeem. The identifier is dropped from the claim, which
+        leaves the canonical URL carrying the match.
+        """
+        session = self.open_session()
+        text = self.result_text(self.search(session, query="long identifier"))
+        token = self.first_result_id(text)
+        self.assertLessEqual(len(token), server.RESULT_ID_CHARACTER_CAP)
+        fetched = session.call_tool("fetch_exa", {"result_id": token})
+        self.assertFalse(fetched["result"]["isError"], self.result_text(fetched))
 
     def test_the_authorize_subcommand_refuses_a_bad_invocation(self):
         for arguments in (

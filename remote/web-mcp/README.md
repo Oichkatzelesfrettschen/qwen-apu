@@ -122,8 +122,15 @@ values, stderr, and every error message.
 
 Query 512 characters, results 1 to 10, each domain list 10 entries of validated
 hostname, title 300 characters, author 200, each highlight 1200, a whole
-rendered search 16000, a result identifier 4096, a URL 2048, and a request
-timeout of 20 seconds.
+rendered search 16000, a result identifier 4096, a grant 12288, a URL 2048, and
+a request timeout of 20 seconds.
+
+A signed token fits the argument that redeems it. The grant cap is sized to the
+largest one `authorize` can emit -- a 512-character query beside twenty
+253-character domains signs into roughly 7 KiB -- and the subcommand refuses to
+print a longer one. A result identifier past its own cap is reissued without the
+opaque provider identifier, which is what a long claim carries, and the
+canonical URL still resolves the contents entry.
 
 The first fetch of one (search, URL) pair retrieves the whole document the
 character cap admits and stores its exact text, digest, observed truncation,

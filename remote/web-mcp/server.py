@@ -52,6 +52,11 @@ AUTHOR_CHARACTER_CAP = 200
 HIGHLIGHT_CHARACTER_CAP = 1200
 SEARCH_OUTPUT_CHARACTER_CAP = 16000
 RESULT_ID_CHARACTER_CAP = 4096
+# The accepted grant is sized to the largest one `authorize` can emit: a
+# 512-character query beside twenty domains of 253 characters signs into
+# roughly 7 KiB of base64url, so a shorter constant would print grants the
+# serving path refuses before it verifies their signature.
+AUTHORIZATION_CHARACTER_CAP = 12288
 URL_CHARACTER_CAP = 2048
 DOCUMENT_CHARACTER_CAP = 131072
 REQUEST_TIMEOUT_SECONDS = 20.0
@@ -455,19 +460,34 @@ def issue_result_id(
     the reference to the search that issued it, and `freshness` carries the
     approved publication window and cached age into the fetch.
     """
-    return sign_claim(
-        signing_key,
-        RESULT_CLAIM_CONTEXT,
-        {
-            "canonical_url": url,
-            "provider_result_id": provider_result_id,
-            "provider": provider_name,
-            "issued_at": issued_at,
-            "expiry": issued_at + lifetime_seconds,
-            "search_id": search_id,
-            "freshness": freshness,
-        },
-    )
+    def signed(identifier):
+        return sign_claim(
+            signing_key,
+            RESULT_CLAIM_CONTEXT,
+            {
+                "canonical_url": url,
+                "provider_result_id": identifier,
+                "provider": provider_name,
+                "issued_at": issued_at,
+                "expiry": issued_at + lifetime_seconds,
+                "search_id": search_id,
+                "freshness": freshness,
+            },
+        )
+
+    token = signed(provider_result_id)
+    if len(token) > RESULT_ID_CHARACTER_CAP:
+        # `fetch_exa` caps the `result_id` argument, so a token past that cap
+        # renders a result no fetch can redeem. The opaque identifier is what
+        # a long claim carries, and the canonical URL still resolves the
+        # contents entry, so the identifier is dropped rather than the result.
+        token = signed("")
+    if len(token) > RESULT_ID_CHARACTER_CAP:
+        raise ProviderContentError(
+            f"the result reference exceeds the {RESULT_ID_CHARACTER_CAP} "
+            "character cap that redeems it"
+        )
+    return token
 
 
 def redeem_result_id(signing_key, result_id, now):
@@ -1683,7 +1703,11 @@ def call_search(settings, arguments):
         raise ToolError("published_after falls after published_before")
     settings = dict(settings)
     settings["_authorization"] = require_string(
-        arguments, "authorization", 4096, required=False, default=""
+        arguments,
+        "authorization",
+        AUTHORIZATION_CHARACTER_CAP,
+        required=False,
+        default="",
     )
     ledger = open_ledger(settings)
     started = time.monotonic()
@@ -2135,9 +2159,17 @@ def run_authorize(argv):
     except ToolError as error:
         sys.stderr.write(f"{error}\n")
         return 2
-    sys.stdout.write(
-        sign_claim(signing_key, AUTHORIZATION_CLAIM_CONTEXT, claim) + "\n"
-    )
+    token = sign_claim(signing_key, AUTHORIZATION_CLAIM_CONTEXT, claim)
+    if len(token) > AUTHORIZATION_CHARACTER_CAP:
+        # A printed grant the serving path refuses before signature
+        # verification is a token that buys nothing, so the cap is enforced
+        # where the grant is issued rather than where it is presented.
+        sys.stderr.write(
+            f"the grant exceeds the {AUTHORIZATION_CHARACTER_CAP} character "
+            "cap the search argument admits\n"
+        )
+        return 2
+    sys.stdout.write(token + "\n")
     return 0
 
 
