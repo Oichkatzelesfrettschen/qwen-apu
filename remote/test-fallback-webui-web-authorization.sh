@@ -83,13 +83,24 @@ fi
 # with `plain_text_response`, so all three outcomes are read from the body and
 # a refusal names what refused it.
 grep -F "if (payload && typeof payload.error === 'string') {" "$fallback_ui" >/dev/null
-grep -F 'The ${toolName} call was refused: ${payload.error}' "$fallback_ui" >/dev/null
+grep -F "return truncateToolResult(\`The \${toolName} call was refused: \${payload.error}\`);" \
+    "$fallback_ui" >/dev/null
 grep -F 'The ${toolName} call returned HTTP ${response.status} and no result.' \
     "$fallback_ui" >/dev/null
 grep -F "typeof payload.plain_text_response !== 'string'" "$fallback_ui" >/dev/null
-grep -F 'payload.plain_text_response.slice(0, TOOL_RESULT_CHARACTER_CAP)' \
-    "$fallback_ui" >/dev/null
+grep -F 'return truncateToolResult(payload.plain_text_response);' "$fallback_ui" >/dev/null
 grep -F 'const TOOL_RESULT_CHARACTER_CAP = 8000;' "$fallback_ui" >/dev/null
+
+# A truncated tool result still ends its frame: a `.slice()` alone could cut
+# the `END UNTRUSTED WEB CONTENT [nonce]` footer `wrap_untrusted`
+# (remote/web-mcp/server.py) closes an untrusted page's text with, leaving
+# the model no way to tell where attacker-controlled content ends.
+# `truncateToolResult` finds that footer and truncates the frame body ahead
+# of it instead, so the cap and the footer both survive in the model's turn.
+grep -F 'function truncateToolResult(text) {' "$fallback_ui" >/dev/null
+grep -F 'END UNTRUSTED WEB CONTENT \[[^\]\n]*\]' "$fallback_ui" >/dev/null
+grep -F 'Truncated by the client at ${TOOL_RESULT_CHARACTER_CAP} characters.' \
+    "$fallback_ui" >/dev/null
 
 # A fetch runs without a grant, because the wrapper enforces the signed Result
 # ID and its own allowance, and the page bounds the pages one turn reads.
@@ -176,5 +187,37 @@ grep -F "let settled = false;" "$fallback_ui" >/dev/null
 grep -F "const controller = new AbortController();" "$fallback_ui" >/dev/null
 grep -F "if (settled) return;" "$fallback_ui" >/dev/null
 grep -F "controller.abort();" "$fallback_ui" >/dev/null
+
+# The grep checks above prove the frame-preserving code is present; this arm
+# proves it does what it claims against a wrap_untrusted-shaped string, when
+# node is on the path. `truncateToolResult` is extracted verbatim from the
+# served file rather than reimplemented, so the check exercises the exact
+# function a browser runs.
+if command -v node >/dev/null 2>&1; then
+    node -e '
+const fs = require("fs");
+const source = fs.readFileSync(process.argv[1], "utf8");
+const match = source.match(
+    /const TOOL_RESULT_CHARACTER_CAP[\s\S]*?\nfunction truncateToolResult[\s\S]*?\n}\n/
+);
+if (!match) throw new Error("truncateToolResult was not found in the served file");
+eval(match[0]);
+const nonce = "abc123XYZ";
+const header = `BEGIN UNTRUSTED WEB CONTENT [${nonce}]`;
+const footer = `END UNTRUSTED WEB CONTENT [${nonce}]`;
+const window = "x".repeat(9000);
+const framed = [header, "Source: https://example.org/raven2", window, footer].join("\n");
+const truncated = truncateToolResult(framed);
+if (!truncated.endsWith(footer)) {
+    throw new Error("a truncated frame lost its END UNTRUSTED WEB CONTENT footer");
+}
+if (!truncated.includes("Truncated by the client at")) {
+    throw new Error("a truncated frame carries no client-truncation notice");
+}
+if (truncated.length > 8000) {
+    throw new Error(`a truncated frame still measures ${truncated.length} characters`);
+}
+' "$fallback_ui"
+fi
 
 printf 'fallback_webui_web_authorization=accepted\n'

@@ -379,6 +379,29 @@ const CONTINUATION_CAP = 4;
 // next round pays for at this machine's prefill rate. The cap truncates a
 // long page rather than refusing it, which keeps the reply readable.
 const TOOL_RESULT_CHARACTER_CAP = 8000;
+
+function truncateToolResult(text) {
+  /* Cap a tool result without cutting off an untrusted-content frame's own
+     end marker.
+
+     `wrap_untrusted` (remote/web-mcp/server.py) closes a fetched page's text
+     with `END UNTRUSTED WEB CONTENT [nonce]` so the model can tell where
+     attacker-controlled text ends, and a plain `.slice(0, cap)` can land
+     inside the window or drop the footer line outright, handing the model an
+     unterminated untrusted block. When the result carries that footer, the
+     cap truncates the frame body instead and keeps the footer line, with a
+     notice between them naming the cut so the model reads it as a harness
+     limit rather than as the page's own content. A result without the
+     footer -- a refusal message, a plain fetch error -- is sliced as before. */
+  if (text.length <= TOOL_RESULT_CHARACTER_CAP) return text;
+  const footerMatch = text.match(/\n(END UNTRUSTED WEB CONTENT \[[^\]\n]*\])\s*$/);
+  if (!footerMatch) return text.slice(0, TOOL_RESULT_CHARACTER_CAP);
+  const footerLine = footerMatch[1];
+  const noticeLine = `Truncated by the client at ${TOOL_RESULT_CHARACTER_CAP} characters.`;
+  const suffix = `\n${noticeLine}\n${footerLine}`;
+  const bodyCap = Math.max(0, TOOL_RESULT_CHARACTER_CAP - suffix.length);
+  return text.slice(0, bodyCap) + suffix;
+}
 // The wrapper meters fetches per search in its own ledger row and publishes
 // that allowance neither in `tools/list` nor in `/props`, so the page carries
 // its own per-turn budget. Two fetches read the pages behind one search and
@@ -881,8 +904,7 @@ async function executeWebTool(toolName, params) {
   let payload = null;
   try { payload = await response.json(); } catch { payload = null; }
   if (payload && typeof payload.error === 'string') {
-    return `The ${toolName} call was refused: ${payload.error}`
-      .slice(0, TOOL_RESULT_CHARACTER_CAP);
+    return truncateToolResult(`The ${toolName} call was refused: ${payload.error}`);
   }
   if (!response.ok) {
     return `The ${toolName} call returned HTTP ${response.status} and no result.`;
@@ -891,7 +913,7 @@ async function executeWebTool(toolName, params) {
     return `The ${toolName} call returned HTTP ${response.status} with a body ` +
            'that carries no result text.';
   }
-  return payload.plain_text_response.slice(0, TOOL_RESULT_CHARACTER_CAP);
+  return truncateToolResult(payload.plain_text_response);
 }
 
 function searchRequestParams(fields, authorization) {
