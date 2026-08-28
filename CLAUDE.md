@@ -231,6 +231,25 @@ routable. A new API-key attempt clears the prior selection until the
 authenticated roster returns, and late responses from an older attempt never
 replace the newer state.
 
+The integer dot product is advertised, functional, and unaccelerated, which
+decides how most of this tree's bytes execute. RADV reports
+`shaderIntegerDotProduct = true` and sets all thirty of its `*Accelerated`
+capability flags false, and `ggml-vulkan.cpp:6492` gates `integer_dot_product`
+on `integerDotProduct4x8BitPackedSignedAccelerated` alone, so every `_q8_1`
+mat-vec and mat-mat pipeline goes unbuilt and the deployed `llama-server`
+contains no `mul_mat_vec_q4_k_q8_1` symbol against seven `mul_mat_vec_q4_k_f16`
+symbols. The instruction set agrees: LLVM's syntax reference lists `V_DOT2`,
+`V_DOT4`, and `V_DOT8` for gfx906 and none for gfx902, which is what this device
+reports. Nothing is emulated -- llama.cpp reads the driver's own report and
+declines the path -- so about 83% of production streamed bytes take the
+FP16-dequantize-then-dot family because the accelerated family does not exist
+here. `evidence/tensor-type-execution-audit.md` carries the type shares and a
+code-level account of the Q5_K trunk: Q5_K is the only one of the three K-quant
+rungs paying both the packed scale-and-minimum decode and an extra bit-plane
+merge, where Q4_K skips the bit-plane and Q6_K skips the complex scale, and the
+three are issued with identical tile parameters so subgroup utilisation does not
+order them.
+
 RADV on this device reports `shaderFloat16 = true` and names no bfloat16
 extension, so F16 is the 16-bit format the hardware advertises and BF16 is a
 separate question about llama.cpp's scalar pipelines. Both publishers of this
@@ -353,6 +372,8 @@ remote/sample-gpu-clocks.sh OUT_TSV [SECONDS]  # the DPM step a rate ran at
 remote/measure-dpm-force.sh MODEL [OUT]         # auto against global high governor
 remote/model-registry.sh id|path SELECTOR [FIELD]
 remote/build-router-presets.sh [OUTPUT_INI]    # the picker, from the tier field
+remote/fetch-candidate-artifact.sh REPO REV FILE DIR  # observed, not pinned
+remote/run-one-token-admission.sh RECORD [OUT]  # load every candidate once
 remote/run-representation-arm.sh LABEL CONTROL SUBJECT
                                                 # one value format against another, ABBA
 
@@ -389,6 +410,8 @@ remote/test-promote-llama-build.sh
 remote/generate-quality-images.py --check
 remote/test-gguf-tokenizer-identity.py
 remote/test-admit-candidate-static.py
+remote/test-one-token-admission.sh
+remote/test-fetch-candidate-artifact.sh
 remote/verify-llama-patch-series.sh
 GGUF_PY_PATH=~/src/llama.cpp-qwen-apu/gguf-py \
     remote/test-gguf-tensor-census.py [MODEL...]
@@ -519,6 +542,25 @@ names `enable_thinking` nowhere, so the thinking-off request is inert
 against it and its graded arm needs a budget that survives the reasoning span.
 `evidence/model-admission/static-admission.md` carries the classes and the
 template survey.
+
+A runtime class establishes a shared throughput expectation and nothing about a
+particular artifact, so admission by load runs every row rather than one
+representative per class. `remote/run-one-token-admission.sh` fetches each
+candidate and calls `remote/test-strict-vulkan-placement.sh`, which requires CPU
+tensor placement and CPU graph placement to be rejected, brings a strict Vulkan
+server up, drives a two-token completion, and requires the model, KV, and
+compute buffers to name Vulkan0 with no CPU fallback reached. Its `fetch` stage
+runs without the device, so eleven gigabytes of transfer happen while the
+appliance still serves and the outage covers the loads alone. A control arm runs
+the same check against a served checkpoint after each new runtime class and
+after any refusal, so a later refusal reads against a device that had just
+answered.
+
+A candidate digest is an observation rather than a pin.
+`remote/fetch-candidate-artifact.sh` records the SHA-256 the download produced,
+which cannot detect the substitution a hardcoded expectation exists to detect,
+so promotion into `remote/models.tsv` means writing a `download-*.sh` that
+carries that digest as its expectation.
 
 GGUF weights stay outside Git because their sizes exceed the LFS per-file
 limit. Each download script pins a Hugging Face revision, a byte count, and a
