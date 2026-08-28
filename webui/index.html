@@ -1030,8 +1030,20 @@ function proposedFetchParams(argumentText) {
     throw new Error('the proposed arguments are not an object');
   }
   const params = { result_id: typeof parsed.result_id === 'string' ? parsed.result_id : '' };
-  if (Number.isInteger(parsed.start_index)) params.start_index = parsed.start_index;
-  if (Number.isInteger(parsed.max_chars)) params.max_chars = parsed.max_chars;
+  for (const key of ['start_index', 'max_chars']) {
+    // `require_integer` (remote/web-mcp/server.py) reads an absent key as its
+    // own default, so an absent field is left out here to take that default.
+    // A present-but-malformed value -- a float, a negative number, a numeric
+    // string -- is silently different from absent: passing it through would
+    // fetch a different, potentially much larger window than the model
+    // proposed with no error and no approval dialog to catch it, so it fails
+    // the proposal instead.
+    if (!(key in parsed)) continue;
+    if (!Number.isInteger(parsed[key]) || parsed[key] < 0) {
+      throw new Error(`${key} must be a non-negative integer`);
+    }
+    params[key] = parsed[key];
+  }
   return params;
 }
 

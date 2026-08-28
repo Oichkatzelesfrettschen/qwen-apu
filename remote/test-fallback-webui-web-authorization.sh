@@ -131,6 +131,14 @@ grep -F 'fetchBudget.remaining--;' "$fallback_ui" >/dev/null
 grep -F 'answerCall(callId, toolName, await executeWebTool(toolName, params), turnGeneration);' \
     "$fallback_ui" >/dev/null
 
+# A present-but-malformed start_index or max_chars refuses the fetch rather
+# than falling back to require_integer's default (remote/web-mcp/server.py):
+# an absent field takes the default, a malformed one fails the proposal, and
+# fetches run without an approval dialog to catch the difference otherwise.
+grep -F "for (const key of ['start_index', 'max_chars']) {" "$fallback_ui" >/dev/null
+grep -F 'if (!(key in parsed)) continue;' "$fallback_ui" >/dev/null
+grep -F "throw new Error(\`\${key} must be a non-negative integer\`);" "$fallback_ui" >/dev/null
+
 # A demo or otherwise advertised call receives a tool message too: every
 # tool_calls entry pairs with a result before the round ends.
 grep -F "if (toolName !== WEB_SEARCH_TOOL_NAME) {" "$fallback_ui" >/dev/null
@@ -342,6 +350,48 @@ async function run() {
   if (webToolsModel !== "m") throw new Error("a recovered listing did not write the cache");
 }
 run().catch(error => { console.error(error.message); process.exit(1); });
+' "$fallback_ui"
+fi
+
+# node exercises proposedFetchParams directly, when node is on the path: an
+# absent start_index or max_chars is left out to take the wrapper's own
+# default, and a present-but-malformed one -- a float, a negative number, a
+# numeric string -- throws rather than being silently dropped the same way.
+if command -v node >/dev/null 2>&1; then
+    node -e '
+const fs = require("fs");
+const source = fs.readFileSync(process.argv[1], "utf8");
+const match = source.match(
+    /function proposedFetchParams[\s\S]*?\n}\n/
+);
+if (!match) throw new Error("proposedFetchParams was not found in the served file");
+eval(match[0]);
+
+const absent = proposedFetchParams(JSON.stringify({ result_id: "r1" }));
+if ("start_index" in absent || "max_chars" in absent) {
+    throw new Error("an absent optional field reached params");
+}
+
+const valid = proposedFetchParams(
+    JSON.stringify({ result_id: "r1", start_index: 8000, max_chars: 1000 }));
+if (valid.start_index !== 8000 || valid.max_chars !== 1000) {
+    throw new Error("a valid integer field was not carried through");
+}
+
+for (const malformed of [
+    { result_id: "r1", max_chars: "1000" },
+    { result_id: "r1", start_index: "8000" },
+    { result_id: "r1", start_index: 8000.5 },
+    { result_id: "r1", start_index: -1 },
+]) {
+    let threw = false;
+    try { proposedFetchParams(JSON.stringify(malformed)); }
+    catch { threw = true; }
+    if (!threw) {
+        throw new Error(
+            `a malformed field was not refused: ${JSON.stringify(malformed)}`);
+    }
+}
 ' "$fallback_ui"
 fi
 
