@@ -442,6 +442,38 @@ fi
 # this probe records as `unavailable` alongside every other absent device
 # reading rather than ending the sweep. It exists to find a wedge, not to
 # compare rates, so a missing covariate names itself.
+# A sampler that sleeps past the arm reproduces a loaded scheduler on a fast
+# arm: the probe kills it before its first row, and the retained-artifact
+# check on resume must still find the file the probe created ahead of it.
+delayed_sampler=$temporary_directory/delayed-clock-sampler.sh
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    'printf "%s\\n" "$$" >"${QWEN_TEST_SAMPLER_PID_FILE:?}"' \
+    'trap "exit 0" HUP INT TERM' \
+    'sleep 30' \
+    'printf "933\\t1100\\t88000\\t5.00\\t1024\\t2048\\n" >"$1"' >"$delayed_sampler"
+chmod +x "$delayed_sampler"
+delayed_output=$temporary_directory/wedge-delayed-sampler
+active_fixture=depth-wedge-delayed-clock-sampler
+diagnostic_file=$temporary_directory/wedge-delayed.stderr
+QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$delayed_sampler \
+QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_WEDGE_DEPTHS=1 \
+QWEN_WEDGE_GEOMETRIES=1:1 PATH="$fake_bin:$PATH" \
+    "$script_directory/probe-depth-wedge.sh" "$model_path" "$delayed_output" \
+    >"$temporary_directory/wedge-delayed.stdout" \
+    2>"$temporary_directory/wedge-delayed.stderr"
+if [ ! -f "$delayed_output/d1-b1-ub1.clocks.tsv" ]; then
+    printf 'depth wedge left no clock file for a sampler killed before its first row\n' >&2
+    exit 1
+fi
+QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$delayed_sampler \
+QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_WEDGE_DEPTHS=1 \
+QWEN_WEDGE_GEOMETRIES=1:1 QWEN_TEST_BENCH_MODE=failure PATH="$fake_bin:$PATH" \
+    "$script_directory/probe-depth-wedge.sh" "$model_path" "$delayed_output" \
+    >"$temporary_directory/wedge-delayed-resume.stdout" \
+    2>"$temporary_directory/wedge-delayed-resume.stderr"
+grep -F 'arm_resume_skip label=d1-b1-ub1 status=0' \
+    "$temporary_directory/wedge-delayed-resume.stdout" >/dev/null
+
 silent_output=$temporary_directory/wedge-silent-sampler
 active_fixture=depth-wedge-silent-clock-sampler
 diagnostic_file=$temporary_directory/wedge-silent.stderr
