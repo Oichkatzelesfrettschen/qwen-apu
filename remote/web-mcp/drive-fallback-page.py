@@ -30,6 +30,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.parse
 import urllib.request
 
 
@@ -166,6 +167,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--origin", required=True, help="router origin the page is served from")
     parser.add_argument("--prompt", required=True, help="the user turn to send")
+    parser.add_argument("--broker", default="",
+                        help="approval broker origin; passed to the page as its ?broker= query parameter")
     parser.add_argument("--api-key-file", default="",
                         help="file whose first line is the bearer key the page sets before connecting")
     parser.add_argument("--chromium", default="chromium")
@@ -202,8 +205,14 @@ def main():
         if devtools is None:
             raise RuntimeError("Chromium printed no DevTools address")
         http_origin = re.match(r"ws://([^/]+)/", devtools).group(1)
+        # The page resolves the broker from ?broker= ahead of its meta tag,
+        # so a launch on another broker port reaches the page the way an
+        # operator's own visit would.
+        page_url = arguments.origin + "/"
+        if arguments.broker:
+            page_url += "?broker=" + urllib.parse.quote(arguments.broker, safe="")
         request = urllib.request.Request(
-            "http://{}/json/new?{}".format(http_origin, arguments.origin + "/"), method="PUT"
+            "http://{}/json/new?{}".format(http_origin, page_url), method="PUT"
         )
         with urllib.request.urlopen(request, timeout=30) as response:
             target = json.load(response)

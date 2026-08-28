@@ -211,6 +211,9 @@ grep -F 'if (requestModel !== proposalModel && WEB_TOOL_NAMES.includes(toolName)
     "$fallback_ui" >/dev/null
 grep -F 'function approveWebSearch(fields, proposalModel) {' "$fallback_ui" >/dev/null
 grep -F 'const outcome = await approveWebSearch(fields, proposalModel);' "$fallback_ui" >/dev/null
+# The grant request is awaited with the picker enabled, so the model is read
+# again after approval and before the grant is spent.
+grep -F "if (outcome.decision === 'once' && requestModel !== proposalModel) {" "$fallback_ui" >/dev/null
 # The picker can move while a tool request is awaited, so the turn ends
 # rather than sending the proposing model's call and result to another model.
 grep -F 'during the tool call; the turn ends without a continuation' "$fallback_ui" >/dev/null

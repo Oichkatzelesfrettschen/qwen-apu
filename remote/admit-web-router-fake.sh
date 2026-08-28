@@ -57,6 +57,31 @@ restore=${QWEN_ADMISSION_RESTORE:-1}
 registry=${QWEN_MODEL_REGISTRY:-$script_directory/models.tsv}
 model_root=${QWEN_MODEL_ROOT:-"${HOME:?}/models"}
 state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"$HOME/qwen-webui-state"}
+
+# One admission owns the appliance at a time: the run tears the ordinary
+# router down, launches the web router, and restores the roster, and a second
+# run started meanwhile tears down the first's web session as if it were its
+# own. The script re-executes itself under flock(1), which holds an
+# exclusive lock on a file in the state directory for as long as the run
+# lives and releases it with the process on every exit path, so no stale
+# claim can exist and the takeover needs no check of its own. --close drops
+# the locked descriptor before the run starts, so the servers the run
+# launches inherit no lock and cannot hold it past the run's end.
+admission_lock=$state_directory/web-admission.lock
+if [ "${QWEN_ADMISSION_LOCKED:-}" != "$admission_lock" ]; then
+    mkdir -p "$state_directory"
+    QWEN_ADMISSION_LOCKED=$admission_lock
+    export QWEN_ADMISSION_LOCKED
+    if flock -n --close -E 75 "$admission_lock" "$0" "$@"; then
+        exit 0
+    else
+        lock_status=$?
+        if [ "$lock_status" -eq 75 ]; then
+            printf 'another admission run holds %s\n' "$admission_lock" >&2
+        fi
+        exit "$lock_status"
+    fi
+fi
 fixture=${QWEN_WEB_FAKE_FIXTURES:-$script_directory/test-fixtures/web-fake-provider.json}
 router_origin=http://127.0.0.1:$server_port
 broker_origin=http://127.0.0.1:$broker_port
@@ -262,37 +287,12 @@ restore_ordinary() {
     fi
 }
 
-# One admission owns the appliance at a time: the run tears the ordinary
-# router down, launches the web router, and restores the roster, and a second
-# run started meanwhile tears down the first's web session as if it were its
-# own. mkdir is the atomic claim; the directory names the holder's pid and
-# is released by the same exit path that restores the router. A holder that
-# left no live process is a stale claim and is taken over.
-admission_lock=$state_directory/web-admission.lock
-claim_admission_lock() {
-    mkdir -p "$state_directory"
-    if mkdir "$admission_lock" 2>/dev/null; then
-        printf '%s\n' "$$" >"$admission_lock/pid"
-        return 0
-    fi
-    holder_pid=$(cat "$admission_lock/pid" 2>/dev/null || true)
-    if [ -n "$holder_pid" ] && kill -0 "$holder_pid" 2>/dev/null; then
-        printf 'another admission run holds %s: pid %s\n' "$admission_lock" "$holder_pid" >&2
-        return 1
-    fi
-    rm -rf "$admission_lock"
-    mkdir "$admission_lock" && printf '%s\n' "$$" >"$admission_lock/pid"
-}
-claim_admission_lock || exit 1
 
 finish_run() {
     exit_status=$?
     trap - EXIT HUP INT TERM
     if [ "$restoration_required" = 1 ] && [ "$restoration_finished" != 1 ]; then
         restore_ordinary || exit_status=1
-    fi
-    if [ "$(cat "$admission_lock/pid" 2>/dev/null)" = "$$" ]; then
-        rm -rf "$admission_lock"
     fi
     note_exit "$exit_status"
     exit "$exit_status"
@@ -525,6 +525,17 @@ issue_grant() {
         '{query: $q, profile_id: $p, max_results: 3, include_domains: [], exclude_domains: []}')
     call "$grant_label" POST "$broker_origin/grant" "$grant_body" -H "Origin: $router_origin" \
         -H "Host: 127.0.0.1:$broker_port" -H "X-Qwen-Web-Session: $session_secret"
+    if [ "$call_status" = 429 ]; then
+        # The broker charges its authorize-minute bucket (6 per 60 s) ahead of
+        # every other check, and this run issues grants faster than an
+        # operator clicks, so the seventh inside a minute is refused. That
+        # refusal is the limit working and is recorded as such; the run then
+        # waits out the window once and asks again.
+        record broker_rate_limit_enforced observed "$grant_label: $(jq -r '.error // empty' "$call_out" | head -c 100)"
+        sleep 61
+        call "$grant_label-retry" POST "$broker_origin/grant" "$grant_body" -H "Origin: $router_origin" \
+            -H "Host: 127.0.0.1:$broker_port" -H "X-Qwen-Web-Session: $session_secret"
+    fi
     issued_authorization=$(jq -r '.authorization // empty' "$call_out" 2>/dev/null)
 }
 issue_grant grant "$query"
@@ -661,17 +672,31 @@ else
     record delayed_provider_completes fail "elapsed=${timed_elapsed}s status=$call_status $(head -c 120 "$call_out")"
 fi
 timed_search search-stalled 'raven2 vulkan decode stalled'
-if jq -e '.error' "$call_out" >/dev/null 2>&1 && [ "$timed_elapsed" -ge 25 ] && [ "$timed_elapsed" -lt 40 ]; then
+# The child's deadline answers as HTTP 200 with its own message, the shape
+# mcp_result_to_response gives a refusal; a router-side 5xx or a proxy
+# failure inside the same window is a different mechanism and fails here.
+stall_message=$(jq -r '.error | if type == "object" then .message else . end' "$call_out" 2>/dev/null)
+if [ "$call_status" = 200 ] && [ "$stall_message" = 'request timed out' ] && \
+   [ "$timed_elapsed" -ge 25 ] && [ "$timed_elapsed" -lt 40 ]; then
     record mcp_deadline_precedes_router pass "elapsed=${timed_elapsed}s status=$call_status $(jq -r '.error | if type == "object" then .message else . end' "$call_out" | head -c 100)"
 else
     record mcp_deadline_precedes_router fail "elapsed=${timed_elapsed}s status=$call_status $(head -c 120 "$call_out")"
 fi
-# A call after the stalled one proves the child and its MCP process serve on.
+# A call after the stalled one proves the child and its MCP process serve
+# on. The listing alone comes from the child's cached tool definitions, so a
+# granted search runs as well, after the provider's own 40 s sleep has ended
+# and the stalled call has fully unwound inside the MCP process.
 call tools-after-stall GET "$router_origin/tools?model=$profile_id&autoload=true"
-if [ "$(jq -r '.[].tool' "$call_out" 2>/dev/null | sort | tr '\n' ',')" = "web_fetch_exa,web_search_exa," ]; then
-    record child_serves_after_stall pass "status=$call_status"
+listing_after_stall=$(jq -r '.[].tool' "$call_out" 2>/dev/null | sort | tr '\n' ',')
+stall_remaining=$(( 40 - timed_elapsed + 2 ))
+[ "$stall_remaining" -gt 0 ] && sleep "$stall_remaining"
+timed_search search-after-stall 'raven2 vulkan decode'
+if [ "$listing_after_stall" = "web_fetch_exa,web_search_exa," ] && [ "$call_status" = 200 ] && \
+   ! jq -e '.error' "$call_out" >/dev/null 2>&1 && \
+   jq -r '.plain_text_response' "$call_out" | grep -q '^Result ID: '; then
+    record child_serves_after_stall pass "listing intact; granted search executed after the stall, elapsed=${timed_elapsed}s"
 else
-    record child_serves_after_stall fail "status=$call_status $(head -c 120 "$call_out")"
+    record child_serves_after_stall fail "listing=$listing_after_stall status=$call_status $(head -c 120 "$call_out")"
 fi
 
 # The model meets the composed tools and the search result. The proposal is
@@ -713,7 +738,7 @@ browser_report=$output_directory/browser-turn.json
 if command -v chromium >/dev/null 2>&1; then
     browser_prompt="Search the web with the query $query and report the decode rate the result states."
     if python3 "$script_directory/web-mcp/drive-fallback-page.py" --origin "$router_origin" \
-            --api-key-file "$api_key_file" \
+            --api-key-file "$api_key_file" --broker "$broker_origin" \
             --prompt "$browser_prompt" >"$browser_report" 2>"$output_directory/browser-turn.err"; then
         browser_origin=$(jq -r '.origin // empty' "$browser_report")
         if [ "$browser_origin" = "$router_origin" ]; then

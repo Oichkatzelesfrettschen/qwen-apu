@@ -2260,6 +2260,7 @@ def tool_definitions(settings):
             ),
             "inputSchema": {
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {
                     "query": {
                         "type": "string",
@@ -2324,6 +2325,7 @@ def tool_definitions(settings):
             ),
             "inputSchema": {
                 "type": "object",
+                "additionalProperties": False,
                 "properties": {
                     "result_id": {
                         "type": "string",

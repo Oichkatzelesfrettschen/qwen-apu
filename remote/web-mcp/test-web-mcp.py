@@ -2936,6 +2936,10 @@ class WebMcpServerTest(unittest.TestCase):
 
     def test_an_argument_outside_the_schema_is_refused_by_name(self):
         session = self.open_session()
+        # The advertised schemas are closed, so a client validating against
+        # tools/list refuses the same call the server refuses at execution.
+        for tool in session.request("tools/list")["result"]["tools"]:
+            self.assertIs(tool["inputSchema"]["additionalProperties"], False, tool["name"])
         response = self.search(session, model="web-balanced-admission")
         self.assertTrue(response["result"]["isError"])
         self.assertIn("model", self.result_text(response))

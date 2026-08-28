@@ -34,6 +34,7 @@ QWEN_BIND_HOST=<value>
 TERM_PROGRAM=<value>
 QWEN_VULKAN_PROFILE=<value>
 SHELL=<value>
+QWEN_ADMISSION_LOCKED=<value>
 QWEN_MMPROJ=<value>
 GGML_VK_LOW_PRIORITY=<value>
 PWD=<value>

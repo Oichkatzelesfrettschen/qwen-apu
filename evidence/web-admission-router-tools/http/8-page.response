@@ -1334,6 +1334,18 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
     }
     searchBudget.remaining--;
     const outcome = await approveWebSearch(fields, proposalModel);
+    if (outcome.decision === 'once' && requestModel !== proposalModel) {
+      // The picker stays enabled while the grant request is awaited, so a
+      // change landing between the click and the broker's reply would spend
+      // the single-use grant and the provider budget on a search whose
+      // continuation the turn then refuses. The grant is left unspent; it
+      // expires on the broker's own clock.
+      refused = true;
+      answerCall(callId, toolName,
+        `The search did not run: it was proposed by model ${proposalModel}, ` +
+        `the current model is ${requestModel}.`, turnGeneration);
+      continue;
+    }
     if (outcome.decision === 'once') {
       answerCall(callId, toolName, await executeWebTool(
         toolName, searchRequestParams(fields, outcome.authorization), proposalModel), turnGeneration);

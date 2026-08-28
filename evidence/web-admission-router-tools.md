@@ -38,7 +38,7 @@ api key:        minted by the session at $HOME/qwen-webui-state/api.key,
                 0600; the router answers 401 and the broker's /session 403
                 without it, and the harness and the driven page carry it
                 the way the page's authHeaders() does
-outage:         22:35:05Z to 22:41:00Z, ordinary router restored
+outage:         23:11:49Z to 23:17:28Z, ordinary router restored
 ```
 
 The promotion ran the tree's own gate first (`promotion-chain.log`): one token
@@ -59,8 +59,10 @@ unknown alias answers anything but a refusal; the listing on the router port
 names anything but `web_search_exa` and `web_fetch_exa`; `POST /tools`
 without `model` or with an unknown alias executes; a `params.model` reaches
 the tool unrefused; the 5 s query fails to complete through the router; the
-40 s query is answered by anything other than the child's own deadline
-inside the 25 to 40 s window, or the child stops serving after it; the
+40 s query is answered by anything other than HTTP 200 carrying the child's
+own `request timed out` inside the 25 to 40 s window, or a granted search
+after the provider's sleep has ended fails to execute; the router or the
+broker's `/session` answers a request without the API key; the
 restored ordinary router serves a tool for any of its models; loading a
 second model under `models-max=1` leaves the first loaded. The first run's
 falsifiers all remain: loopback listeners, sole profile, broker identity,
@@ -92,6 +94,13 @@ provider now matches a key by its words. That run also exposed a harness
 edit that had dropped the eviction check's first load. The final run is
 retained whole here with the grants, session secret, and key digest
 redacted; the API key stays in the state directory and in no retained file.
+A review of that run tightened three checks and two more runs followed: the
+stall check now requires HTTP 200 with the child's own message, the
+after-stall check runs a granted search once the provider's sleep has
+ended, and the driven page receives the broker origin as `?broker=`. The
+first of those runs met the broker's authorize-minute limit on the
+after-stall grant, 6 per 60 s, which the harness now records as the limit
+working and waits out; the run retained here is the second.
 
 | check | result |
 | --- | --- |
@@ -121,8 +130,8 @@ redacted; the API key stays in the state directory and in no retained file.
 | second fetch under allowance 1 | refused, `fetch budget of 1 is exhausted` |
 | fetch naming a URL | refused, `signature fails verification` |
 | 5 s provider delay | completes, elapsed 5 s, HTTP 200 with results |
-| 40 s provider stall | HTTP 200 `{"error":"request timed out"}` at 30 s |
-| listing after the stall | pass, both tools |
+| 40 s provider stall | HTTP 200 with the child's own `request timed out` at 30 s; a 5xx or proxy failure in the window fails the check |
+| after the stall | listing intact, and a granted search executed once the provider's own 40 s sleep had ended |
 | model proposes the search | observed, `web_search_exa` with the query |
 | model reads the tool result | pass, answer states `3.07 tok/s` |
 | secret hygiene | pass |

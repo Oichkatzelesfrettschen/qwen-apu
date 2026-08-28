@@ -119,13 +119,13 @@ for capture_file in "$output_directory"/http/*; do
     fi
 done
 
-# A second run against the same state directory refuses while the holder's
-# pid is alive, and takes over a claim whose holder has left no process.
-lock_directory=$temporary_directory/state/web-admission.lock
-mkdir -p "$lock_directory"
-sleep 300 &
+# A second run against the same state directory refuses while another
+# process holds the flock, and runs once the holder has gone; the kernel
+# releases the lock with the holder, so no stale claim can remain.
+lock_file=$temporary_directory/state/web-admission.lock
+flock --close "$lock_file" sleep 300 &
 holder_pid=$!
-printf '%s\n' "$holder_pid" >"$lock_directory/pid"
+sleep 0.5
 set +e
 PATH="$fixture_bin:$PATH" \
 QWEN_WEBUI_STATE_DIRECTORY=$temporary_directory/state \
@@ -139,19 +139,17 @@ QWEN_ADMISSION_MODEL_ID=absent-model \
     2>"$temporary_directory/locked.stderr"
 locked_status=$?
 set -e
+# flock(1) forks the command, so the sleep is its child and outlives a
+# signal to the parent unless it is signalled too.
+pkill -P "$holder_pid" 2>/dev/null || true
 kill "$holder_pid" 2>/dev/null || true
 wait "$holder_pid" 2>/dev/null || true
 if [ "$locked_status" -eq 0 ] || \
-   ! grep -q "another admission run holds .* pid $holder_pid" "$temporary_directory/locked.stderr"; then
+   ! grep -q 'another admission run holds' "$temporary_directory/locked.stderr"; then
     printf 'a live lock holder did not refuse the second run\n' >&2
     cat "$temporary_directory/locked.stderr" >&2
     exit 1
 fi
-if [ ! -d "$lock_directory" ] || [ "$(cat "$lock_directory/pid")" != "$holder_pid" ]; then
-    printf 'the refused run disturbed the live holder claim\n' >&2
-    exit 1
-fi
-# The holder is gone now, so the stale claim is taken over and released.
 set +e
 PATH="$fixture_bin:$PATH" \
 QWEN_WEBUI_STATE_DIRECTORY=$temporary_directory/state \
@@ -160,17 +158,13 @@ QWEN_TEST_RESTORE_SERVER_RECORD=$temporary_directory/restored-server.path \
 QWEN_MODEL_REGISTRY=$registry \
 QWEN_LLAMA_SERVER=$temporary_directory/llama-server \
 QWEN_ADMISSION_MODEL_ID=absent-model \
-    "$harness/admit-web-router-fake.sh" "$temporary_directory/stale-output" \
-    >"$temporary_directory/stale.stdout" \
-    2>"$temporary_directory/stale.stderr"
+    "$harness/admit-web-router-fake.sh" "$temporary_directory/released-output" \
+    >"$temporary_directory/released.stdout" \
+    2>"$temporary_directory/released.stderr"
 set -e
-if grep -q 'another admission run holds' "$temporary_directory/stale.stderr"; then
-    printf 'a stale claim was not taken over\n' >&2
-    exit 1
-fi
-if [ -d "$lock_directory" ]; then
-    printf 'the lock survived the run that claimed it\n' >&2
+if grep -q 'another admission run holds' "$temporary_directory/released.stderr"; then
+    printf 'the lock outlived its holder\n' >&2
     exit 1
 fi
 
-printf 'admit_web_router_fake=accepted restoration=exit-trap,captured-server private_http=accepted lock=live-refused,stale-taken\n'
+printf 'admit_web_router_fake=accepted restoration=exit-trap,captured-server private_http=accepted lock=flock-live-refused,released-with-holder\n'
