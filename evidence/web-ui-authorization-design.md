@@ -94,35 +94,43 @@ patches do.
 approval path against the same broker, so the mechanism is exercised and the
 pinned UI carries the outline alone.
 
-## Unverified: which side dispatches the tool call
+## The client dispatches the tool call
 
-Which process executes an approved `web_search_exa` is unestablished from this
-tree. llama-server spawns the MCP child itself under `--mcp-servers-config`,
-which would execute the call server-side and leave the browser no seam to
-inject an argument into; a client-declared tool in the request body reaches the
-client for dispatch instead. Nothing in this repository wires
-`--mcp-servers-config` into the launch chain, and the server source is on the
-appliance, so both accounts stay open. `src/llama.cpp-qwen-apu/tools/server/`
-settles it, and the fallback UI takes the client-declared path: it puts the web
-tool schemas in `body.tools` itself, which is also what makes the per-turn Web
-toggle a boundary rather than a request. A server-side dispatch would move the
-injection point into llama-server and leave the dialog, the broker, and the
-grant unchanged.
+At the pinned commit f280b269, llama-server executes no tool call of its own.
+`server_mcp` (`tools/server/server-mcp.h:132-176`) spawns each configured
+child and forwards one RPC per `call_tool`; nothing in `server-mcp.cpp` or
+`server.cpp` reads a completion's `tool_calls` and calls it. The wrapped MCP
+tools (`server-tools.cpp:1802-1839`) are reachable through two standalone
+routes registered at `server.cpp:347-348`: `GET /tools` lists them and
+`POST /tools` (`server-tools.cpp:2076-2081`) invokes the named tool with the
+`params` object taken verbatim from the caller's request body. The chat path
+never touches that registry: `oaicompat_chat_params_parse`
+(`server-common.cpp:1127-1136`) reads `tools` from the client body alone, so a
+completion streams the proposal and stops. The pinned UI's own
+`ToolsService.executeTool` (`tools/ui/src/lib/services/tools.service.ts:22-45`)
+is the executor: after the proposal it posts `{tool, params}` to `/tools`
+behind its permission dialog.
 
-An executed search is out of reach from the fallback UI under either account,
-which is a stronger statement than the ambiguity alone. Client-declared tools
-in `body.tools` are function definitions llama-server exposes to the model and
-executes none of, so re-sending a turn with the grant injected reaches no
-executor. Server-side MCP holds `search_exa` in the server's own list and runs
-the tool loop inside one completion, so the proposal never reaches the browser
-for a dialog to open over and the server's own call carries no `authorization`,
-which `QWEN_WEB_SEARCH_AUTH=required` refuses. The approval path is therefore
-implemented and measured through the grant it issues: both decisions answer the
-call with a `role: 'tool'` message so the continuation array pairs every
-`tool_calls` entry with a result and stays a legal request, and the approval's
-message states that a single-use grant covers the read arguments while the
-search awaits its executor. Wiring that executor is the work
-`src/llama.cpp-qwen-apu/tools/server/` decides the shape of.
+Three consequences follow. The client composes the tool list: MCP schemas
+reach the model only when the client fetches `GET /tools` and places them in
+its own `body.tools`, which is what makes the per-turn Web toggle a boundary.
+The server holds no pre-execution seam: `POST /tools` strips `cwd`, `runtime`,
+and `resp_type` from headers (`server-tools.cpp:2085-2107`) and calls
+`tool.invoke(params)` at once, with no callback, signature check, or stored
+grant to compare against, so argument authorization happens before the browser
+sends that request or not at all. And the fallback UI's design is therefore the
+reachable one: the approved fields go to the broker, the grant returns, and the
+browser posts `{tool: "web_search_exa", params: {..., authorization}}` to
+`/tools`, where `server.py` under `QWEN_WEB_SEARCH_AUTH=required` verifies the
+grant and the profile ledger before any provider request. The result becomes
+the `role: 'tool'` message that pairs the `tool_calls` entry.
+
+The executor step is the remaining work in `webui/index.html`: compose
+`body.tools` from `GET /tools` when the Web toggle is on, and replace the
+approval's placeholder tool message with the `POST /tools` result. A server-side
+hook is architecturally absent rather than unimplemented; patching one in would
+thread a grant through `server_mcp_tool::invoke` at `server-tools.cpp:1837-1839`
+or gate the `/tools` handler, a new channel rather than an interception.
 
 ## Scope cut: the broker's lifetime is manual
 
