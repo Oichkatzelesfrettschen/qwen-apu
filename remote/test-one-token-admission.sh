@@ -94,7 +94,7 @@ fi
 
 # A refused load is recorded as rejected rather than folded into a pass, and it
 # carries a detail a reader can act on.
-if [ "$(column zeta 6)" = rejected ] && [ "$(column zeta 8)" != '-' ]; then
+if [ "$(column zeta 6)" = rejected ] && [ "$(column zeta 9)" != '-' ]; then
     report refusal_recorded accepted
 else
     report refusal_recorded rejected
@@ -139,6 +139,13 @@ QWEN_PLACEMENT_CHECK=$fake_placement QWEN_CANDIDATE_FETCH=$fake_fetch \
 QWEN_ADMISSION_STAGES=fetch \
     "$script_directory/run-one-token-admission.sh" "$record" "$fetch_only" \
     >/dev/null 2>&1 || true
+# Every row records the vision path as not run until a projector arm exists.
+if [ "$(awk -F'\t' 'NR > 1 && $7 != "not-run" { print }' "$summary" | wc -l | tr -d ' ')" = 0 ]; then
+    report projector_recorded_not_run accepted
+else
+    report projector_recorded_not_run rejected
+fi
+
 if [ "$(awk -F'\t' 'NR > 1 && $6 != "not-run" { print }' \
         "$fetch_only/admission-summary.tsv" | wc -l | tr -d ' ')" = 0 ] &&
    [ -z "$(find "$fetch_only" -name 'control-*.log')" ]; then

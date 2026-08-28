@@ -392,6 +392,7 @@ remote/generate-quality-images.py --check
 remote/test-gguf-tokenizer-identity.py
 remote/test-admit-candidate-static.py
 remote/test-one-token-admission.sh
+remote/test-fetch-candidate-artifact.sh
 remote/verify-llama-patch-series.sh
 GGUF_PY_PATH=~/src/llama.cpp-qwen-apu/gguf-py \
     remote/test-gguf-tensor-census.py [MODEL...]

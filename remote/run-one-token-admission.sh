@@ -18,6 +18,13 @@ set -eu
 # each new runtime class and after any failure, so a later refusal is read
 # against a device that was working rather than against an unknown one.
 #
+# The load is text-only. A projector is a separate artifact that encodes images
+# into one checkpoint's embedding space, so admitting it is a separate arm, and
+# a row that loads and decodes without one is admitted for text rather than
+# refused for vision. Those rows stay in the ledger as throughput and quality
+# subjects; `projector` in the summary states whether the vision path was
+# exercised, and `not-run` is what every row reads until that arm exists.
+#
 # The device is exclusive for the duration. The appliance listener holds the
 # GPU, so it comes down before this runs and back up after.
 
@@ -64,7 +71,7 @@ esac
 mkdir -p "$output_directory"
 summary=$output_directory/admission-summary.tsv
 if [ ! -s "$summary" ]; then
-    printf 'candidate_id\tarchitecture\tartifact\tobserved_sha256\tfetch\tload\tcontrol\tdetail\n' \
+    printf 'candidate_id\tarchitecture\tartifact\tobserved_sha256\tfetch\tload\tprojector\tcontrol\tdetail\n' \
         >"$summary"
 fi
 
@@ -108,6 +115,7 @@ while IFS="$tab" read -r candidate_id repository revision admission architecture
     artifact_path=$candidate_directory/$artifact
     fetch_state=skipped
     load_state=not-run
+    projector_state=not-run
     detail='-'
     observed_sha256='-'
 
@@ -155,9 +163,10 @@ while IFS="$tab" read -r candidate_id repository revision admission architecture
             ;;
     esac
 
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$candidate_id" "$architecture" "$artifact" "$observed_sha256" \
-        "$fetch_state" "$load_state" "$control_state" "$detail" >>"$summary"
+        "$fetch_state" "$load_state" "$projector_state" "$control_state" \
+        "$detail" >>"$summary"
     printf 'row=%s fetch=%s load=%s control=%s\n' \
         "$candidate_id" "$fetch_state" "$load_state" "$control_state"
 done <"$record"

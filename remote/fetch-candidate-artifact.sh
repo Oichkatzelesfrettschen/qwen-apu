@@ -21,6 +21,7 @@ ionice -c 3 -p $$ >/dev/null 2>&1 || true
 if [ "$#" -ne 4 ]; then
     printf 'usage: %s REPOSITORY REVISION ARTIFACT_NAME DESTINATION_DIRECTORY\n' "$0" >&2
     printf 'writes DESTINATION_DIRECTORY/ARTIFACT_NAME and its observed digest\n' >&2
+    printf 'environment: QWEN_FETCH_CONNECTIONS (default 4, 1 for one stream)\n' >&2
     exit 2
 fi
 
@@ -32,6 +33,7 @@ artifact_path=$destination_directory/$artifact_name
 partial_path=$artifact_path.part
 digest_path=$artifact_path.observed-sha256
 source_url=https://huggingface.co/$source_repository/resolve/$source_revision/$artifact_name
+fetch_connections=${QWEN_FETCH_CONNECTIONS:-4}
 
 umask 077
 mkdir -p "$destination_directory"
@@ -62,10 +64,115 @@ if [ -f "$artifact_path" ]; then
     exit 0
 fi
 
-# --continue-at - resumes a partial transfer, so an interrupted sweep does not
-# refetch a gigabyte it already holds.
-if ! curl --location --fail --silent --show-error --continue-at - \
-        --output "$partial_path" "$source_url"; then
+# The publisher's CDN throttles per connection rather than per object, and the
+# rate differs by repository: measured from the appliance in one minute, one
+# stream reached 22.6 MB/s from one repository and 3.3 MB/s from another, while
+# four streams against that slower repository reached 12.6 MB/s and eight
+# reached 16.0. Concurrency therefore recovers a throttled object and costs
+# about a fifth on an unthrottled one, which is why the default is four rather
+# than eight or one.
+#
+# Ranges are what make this safe: each part states the bytes it must contain,
+# every part is checked against that length before assembly, and the assembled
+# file is checked against the length the server declared. A part short by one
+# byte would otherwise concatenate into a plausible file with no error.
+fetch_single_stream() {
+    # --continue-at - resumes a partial transfer, so an interrupted sweep does
+    # not refetch a gigabyte it already holds.
+    curl --location --fail --silent --show-error --continue-at - \
+        --output "$partial_path" "$source_url"
+}
+
+fetch_parallel_ranges() {
+    parallel_total=$1
+    parallel_directory=$partial_path.parts
+    rm -rf "$parallel_directory"
+    mkdir -p "$parallel_directory"
+    parallel_chunk=$(( (parallel_total + fetch_connections - 1) / fetch_connections ))
+    parallel_index=0
+    while [ "$parallel_index" -lt "$fetch_connections" ]; do
+        parallel_first=$(( parallel_index * parallel_chunk ))
+        [ "$parallel_first" -ge "$parallel_total" ] && break
+        parallel_last=$(( parallel_first + parallel_chunk - 1 ))
+        [ "$parallel_last" -ge "$parallel_total" ] && parallel_last=$(( parallel_total - 1 ))
+        curl --location --fail --silent --show-error \
+            --range "$parallel_first-$parallel_last" \
+            --output "$parallel_directory/$(printf '%04d' "$parallel_index")" \
+            "$source_url" &
+        parallel_index=$(( parallel_index + 1 ))
+    done
+    wait || return 1
+
+    # Assemble in index order and require every part to hold exactly the bytes
+    # its range named.
+    : >"$partial_path"
+    parallel_index=0
+    while [ "$parallel_index" -lt "$fetch_connections" ]; do
+        parallel_first=$(( parallel_index * parallel_chunk ))
+        [ "$parallel_first" -ge "$parallel_total" ] && break
+        parallel_last=$(( parallel_first + parallel_chunk - 1 ))
+        [ "$parallel_last" -ge "$parallel_total" ] && parallel_last=$(( parallel_total - 1 ))
+        parallel_part=$parallel_directory/$(printf '%04d' "$parallel_index")
+        parallel_expected=$(( parallel_last - parallel_first + 1 ))
+        if [ ! -f "$parallel_part" ]; then
+            printf 'range part %s is absent\n' "$parallel_index" >&2
+            return 1
+        fi
+        parallel_actual=$(wc -c <"$parallel_part")
+        if [ "$parallel_actual" != "$parallel_expected" ]; then
+            printf 'range part %s holds %s bytes for a %s-byte range\n' \
+                "$parallel_index" "$parallel_actual" "$parallel_expected" >&2
+            return 1
+        fi
+        cat "$parallel_part" >>"$partial_path"
+        parallel_index=$(( parallel_index + 1 ))
+    done
+    rm -rf "$parallel_directory"
+
+    parallel_assembled=$(wc -c <"$partial_path")
+    if [ "$parallel_assembled" != "$parallel_total" ]; then
+        printf 'assembled %s bytes against the declared %s\n' \
+            "$parallel_assembled" "$parallel_total" >&2
+        return 1
+    fi
+    return 0
+}
+
+# A server that declares neither a length nor range support leaves nothing to
+# split, so the single stream is the fallback rather than an error.
+declared_bytes=''
+accepts_ranges=no
+if [ "$fetch_connections" -gt 1 ]; then
+    header_dump=$(curl --location --fail --silent --show-error --head \
+        "$source_url" 2>/dev/null || true)
+    declared_bytes=$(printf '%s\n' "$header_dump" |
+        awk 'tolower($1) == "content-length:" { value = $2 }
+             END { gsub(/\r/, "", value); print value }')
+    printf '%s\n' "$header_dump" |
+        grep -qi '^accept-ranges:[[:space:]]*bytes' && accepts_ranges=yes
+fi
+
+fetch_mode=single
+case $declared_bytes in
+    ''|*[!0-9]*) ;;
+    *)
+        if [ "$accepts_ranges" = yes ] && [ "$declared_bytes" -gt 0 ]; then
+            fetch_mode=parallel
+        fi
+        ;;
+esac
+
+rm -f "$partial_path"
+if [ "$fetch_mode" = parallel ]; then
+    if ! fetch_parallel_ranges "$declared_bytes"; then
+        printf 'parallel range fetch failed, falling back to one stream: %s\n' \
+            "$source_url" >&2
+        rm -rf "$partial_path.parts"
+        rm -f "$partial_path"
+        fetch_mode=single
+    fi
+fi
+if [ "$fetch_mode" = single ] && ! fetch_single_stream; then
     printf 'fetch failed: %s\n' "$source_url" >&2
     exit 1
 fi
@@ -81,6 +188,6 @@ fi
 
 mv "$partial_path" "$artifact_path"
 printf '%s %s\n' "$observed_sha256" "$observed_bytes" >"$digest_path"
-printf 'artifact_status=fetched path=%s bytes=%s observed_sha256=%s repository=%s revision=%s\n' \
-    "$artifact_path" "$observed_bytes" "$observed_sha256" \
+printf 'artifact_status=fetched path=%s bytes=%s observed_sha256=%s mode=%s repository=%s revision=%s\n' \
+    "$artifact_path" "$observed_bytes" "$observed_sha256" "$fetch_mode" \
     "$source_repository" "$source_revision"
