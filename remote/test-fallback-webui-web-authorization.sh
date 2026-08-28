@@ -141,6 +141,16 @@ grep -F 'fetchBudget.remaining--;' "$fallback_ui" >/dev/null
 grep -F 'answerCall(callId, toolName, await executeWebTool(toolName, params), turnGeneration);' \
     "$fallback_ui" >/dev/null
 
+# A model-picker change between the round that proposed a search and its
+# approval must refuse rather than sign or execute against the wrong profile:
+# runProposedTools snapshots the proposing model and compares it against
+# `requestModel` both before the dialog opens and again inside its own click
+# handler, since the picker stays enabled while the dialog is showing.
+grep -F 'const proposalModel = requestModel;' "$fallback_ui" >/dev/null
+grep -F 'if (requestModel !== proposalModel) {' "$fallback_ui" >/dev/null
+grep -F 'function approveWebSearch(fields, proposalModel) {' "$fallback_ui" >/dev/null
+grep -F 'const outcome = await approveWebSearch(fields, proposalModel);' "$fallback_ui" >/dev/null
+
 # A present-but-malformed start_index or max_chars refuses the fetch rather
 # than falling back to require_integer's default (remote/web-mcp/server.py):
 # an absent field takes the default, a malformed one fails the proposal, and

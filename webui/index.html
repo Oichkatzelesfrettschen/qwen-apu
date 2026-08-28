@@ -668,7 +668,7 @@ function renderApprovalFields(fields) {
     fields.max_age_hours === 0);
 }
 
-function approveWebSearch(fields) {
+function approveWebSearch(fields, proposalModel) {
   // The dialog resolves to one approval or a refusal. A standing grade is
   // absent by construction: the broker signs a single-use grant, so admitting
   // one search is the widest outcome this control offers.
@@ -702,6 +702,19 @@ function approveWebSearch(fields) {
     once.onclick = async () => {
       once.disabled = true;
       try {
+        // The model picker stays enabled while this dialog is open, so a
+        // change between the round that proposed this call and this click
+        // must be caught here too, not only before the dialog opened: signing
+        // against the newly selected model's profile would grant a search the
+        // proposing model never gets to read a result for.
+        if (requestModel !== proposalModel) {
+          finish({
+            decision: 'deny',
+            reason: `it was proposed by model ${proposalModel}, ` +
+                    `the current model is ${requestModel}`
+          });
+          return;
+        }
         // `LLAMA_ARG_ALIAS` carries the web profile's own profile_id
         // (`remote/build-web-presets.sh`), and llama-server reports that
         // alias as the model id `GET /v1/models` returns, so `requestModel`
@@ -1103,7 +1116,8 @@ function answerCall(callId, toolName, content, turnGeneration) {
   history.push({ role: 'tool', tool_call_id: callId, name: toolName, content });
 }
 
-async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetchBudget, turnGeneration) {
+async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetchBudget,
+                                 turnGeneration, proposalModel) {
   /* Execute this round's proposed calls and answer each one.
 
      A proposed `web_search_exa` is shown to a human with the arguments it
@@ -1175,13 +1189,29 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
       answerCall(callId, toolName, `The search did not run: ${error.message || error}`, turnGeneration);
       continue;
     }
-    const outcome = await approveWebSearch(fields);
+    if (requestModel !== proposalModel) {
+      // The dialog signs the grant's profile_id from `requestModel` read at
+      // click time, so a model-picker change between this call's proposal and
+      // its approval would sign a grant for the wrong profile: the broker
+      // serving the proposing model's profile refuses it, or the newly
+      // selected profile's MCP child refuses a grant signed for the old one.
+      // Either failure reaches the model as an opaque refusal, so the
+      // mismatch is caught and named here instead, before a dialog opens.
+      refused = true;
+      answerCall(callId, toolName,
+        `The search did not run: it was proposed by model ${proposalModel}, ` +
+        `the current model is ${requestModel}.`, turnGeneration);
+      continue;
+    }
+    const outcome = await approveWebSearch(fields, proposalModel);
     if (outcome.decision === 'once') {
       answerCall(callId, toolName, await executeWebTool(
         toolName, searchRequestParams(fields, outcome.authorization)), turnGeneration);
     } else {
       refused = true;
-      answerCall(callId, toolName, 'The user refused this web search. It did not run.', turnGeneration);
+      answerCall(callId, toolName, outcome.reason
+        ? `The search did not run: ${outcome.reason}.`
+        : 'The user refused this web search. It did not run.', turnGeneration);
     }
   }
   if (refused) {
@@ -1228,6 +1258,12 @@ async function send() {
   try {
     for (let round = 0; round < CONTINUATION_CAP; round++) {
       const view = openTurnView();
+      // buildRequestBody reads `requestModel` at request time, so this
+      // snapshot names the model that proposed whatever tool_calls the
+      // stream returns; the approval and the executor both compare the
+      // picker's current value against it rather than against a value read
+      // fresh at approval time, which the picker may have already moved past.
+      const proposalModel = requestModel;
       let outcome;
       try {
         outcome = await streamCompletion(history, view);
@@ -1254,7 +1290,7 @@ async function send() {
       if (!outcome.calls.length) return;
       await runProposedTools(
         outcome.calls, callIds, view, round === CONTINUATION_CAP - 1, fetchBudget,
-        turnGeneration);
+        turnGeneration, proposalModel);
       if (turnGeneration !== conversationGeneration) return;
     }
   } finally {
