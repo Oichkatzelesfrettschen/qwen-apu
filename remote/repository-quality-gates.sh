@@ -15,7 +15,7 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repository_root=$(CDPATH='' cd -- "$script_directory/.." && pwd)
 cd "$repository_root"
 
-for required_command in bash node shellcheck ruff python3; do
+for required_command in bash node shellcheck ruff python3 curl; do
     if ! command -v "$required_command" >/dev/null 2>&1; then
         printf 'required quality-gate command is absent: %s\n' \
             "$required_command" >&2
@@ -43,6 +43,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 remote/web-mcp/test-web-mcp.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/web-mcp/test-authorize-broker.py
 remote/test-fallback-webui-model-selection.sh
 remote/test-fallback-webui-web-authorization.sh
+remote/test-web-tools-roundtrip.sh
 node remote/test-fallback-webui-model-state.mjs
 remote/test-measurement-harnesses.sh
 remote/test-one-token-admission.sh

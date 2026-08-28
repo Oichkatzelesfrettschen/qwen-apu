@@ -359,7 +359,8 @@ class BrokerTest(unittest.TestCase):
     def test_the_issued_grant_admits_the_search_exactly_once(self):
         broker = self.launch()
         status, _, payload = self.post_grant(
-            broker, {"query": "  raven2 vulkan decode  ", "max_results": 1}
+            broker,
+            {"query": "  raven2 vulkan decode  ", "max_results": 1, "profile_id": "default"},
         )
         self.assertEqual(status, 200)
         token = payload["authorization"]
@@ -379,6 +380,7 @@ class BrokerTest(unittest.TestCase):
                 "max_results": 3,
                 "include_domains": ["Example.ORG"],
                 "max_age_hours": 24,
+                "profile_id": "default",
             },
         )
         self.assertEqual(status, 200)
@@ -422,10 +424,45 @@ class BrokerTest(unittest.TestCase):
                 self.assertEqual(status, 400)
                 self.assertNotIn("authorization", body)
 
+    def test_a_request_naming_no_profile_id_is_refused(self):
+        # The grant is bound to the profile whose MCP child will verify it
+        # (`enforce_search_authorization` in server.py), so a request that
+        # names no profile at all is refused before a token is signed rather
+        # than signed against the broker's own launch profile silently.
+        broker = self.launch(**{"--token-key-file": "/nonexistent/token.key"})
+        for payload in (
+            {"query": "raven2 vulkan decode"},
+            {"query": "raven2 vulkan decode", "profile_id": ""},
+            {"query": "raven2 vulkan decode", "profile_id": 7},
+        ):
+            with self.subTest(payload=sorted(payload)):
+                status, _, body = self.post_grant(broker, payload)
+                self.assertEqual(status, 400)
+                self.assertIn("profile_id", body["error"])
+                self.assertNotIn("authorization", body)
+
+    def test_a_request_naming_another_profile_is_refused(self):
+        # A grant signed for the wrong profile reads as authorized to this
+        # broker and is rejected downstream by the child serving the
+        # requested profile; refusing it here reports the mismatch where the
+        # human approval happened instead of at the MCP boundary.
+        broker = self.launch(**{"--profile": "fast-text"})
+        status, _, body = self.post_grant(
+            broker,
+            {"query": "raven2 vulkan decode", "profile_id": "vision"},
+        )
+        self.assertEqual(status, 403)
+        self.assertIn("fast-text", body["error"])
+        self.assertIn("vision", body["error"])
+        self.assertNotIn("authorization", body)
+        self.assertIn("authorization_denied", [row[8] for row in self.audit_rows()])
+
     def test_the_rate_bucket_bounds_the_approval_endpoint(self):
         broker = self.launch(**{"--per-minute": 2})
         for _ in range(2):
-            status, _, _ = self.post_grant(broker, {"query": "raven2 vulkan decode"})
+            status, _, _ = self.post_grant(
+                broker, {"query": "raven2 vulkan decode", "profile_id": "default"}
+            )
             self.assertEqual(status, 200)
         status, _, payload = self.post_grant(
             broker, {"query": "raven2 vulkan decode"}
@@ -466,6 +503,7 @@ class BrokerTest(unittest.TestCase):
                 "max_results": 4,
                 "include_domains": ["example.org"],
                 "exclude_domains": ["evil.example.net"],
+                "profile_id": "default",
             },
         )
         self.assertEqual(status, 200)
@@ -502,7 +540,7 @@ class BrokerTest(unittest.TestCase):
     def test_no_response_or_stream_carries_the_signing_key(self):
         broker = self.launch()
         status, _, payload = self.post_grant(
-            broker, {"query": "raven2 vulkan decode"}
+            broker, {"query": "raven2 vulkan decode", "profile_id": "default"}
         )
         self.assertEqual(status, 200)
         self.assertNotIn(TOKEN_SECRET, json.dumps(payload))
@@ -520,6 +558,28 @@ class BrokerTest(unittest.TestCase):
 
     def text(self, message):
         return message["result"]["content"][0]["text"]
+
+    def test_the_usage_text_states_profile_id_is_required(self):
+        # `parse_request_arguments` refuses a `POST /grant` naming no
+        # `profile_id` (test_a_request_naming_no_profile_id_is_refused), so
+        # the broker's own --help and the module docstring it is built from
+        # must say so rather than leaving a caller to infer the requirement
+        # from a 400 response.
+        help_text = subprocess.run(
+            [sys.executable, BROKER_PATH, "--help"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=True,
+        ).stdout.decode("utf-8")
+        self.assertIn("profile_id", help_text)
+        self.assertIn("--profile", help_text)
+
+    def test_the_readme_states_profile_id_is_required(self):
+        readme_path = os.path.join(BROKER_DIRECTORY, "README.md")
+        with open(readme_path, encoding="utf-8") as readme_file:
+            readme_text = readme_file.read()
+        self.assertIn("profile_id", readme_text)
+        self.assertIn("requires `profile_id`", readme_text)
 
 
 def query_digest(query):

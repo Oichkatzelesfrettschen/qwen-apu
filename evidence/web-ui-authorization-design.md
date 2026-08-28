@@ -91,8 +91,8 @@ this repository through a patch under `patches/` the way the four Vulkan
 patches do.
 
 `webui/index.html`, the fallback UI this tree does control, implements the same
-approval path against the same broker, so the mechanism is exercised and the
-pinned UI carries the outline alone.
+approval path against the same broker and executes the approved call, so the
+mechanism runs end to end and the pinned UI carries the outline alone.
 
 ## The client dispatches the tool call
 
@@ -119,18 +119,50 @@ and `resp_type` from headers (`server-tools.cpp:2085-2107`) and calls
 `tool.invoke(params)` at once, with no callback, signature check, or stored
 grant to compare against, so argument authorization happens before the browser
 sends that request or not at all. And the fallback UI's design is therefore the
-reachable one: the approved fields go to the broker, the grant returns, and the
-browser posts `{tool: "web_search_exa", params: {..., authorization}}` to
-`/tools`, where `server.py` under `QWEN_WEB_SEARCH_AUTH=required` verifies the
-grant and the profile ledger before any provider request. The result becomes
-the `role: 'tool'` message that pairs the `tool_calls` entry.
+reachable one.
 
-The executor step is the remaining work in `webui/index.html`: compose
-`body.tools` from `GET /tools` when the Web toggle is on, and replace the
-approval's placeholder tool message with the `POST /tools` result. A server-side
-hook is architecturally absent rather than unimplemented; patching one in would
-thread a grant through `server_mcp_tool::invoke` at `server-tools.cpp:1837-1839`
-or gate the `/tools` handler, a new channel rather than an interception.
+## The fallback UI executes the approved call
+
+`webui/index.html` runs that executor. The Web toggle fetches `GET /tools` and
+composes `body.tools` from the returned `web_search_exa` and `web_fetch_exa`
+definitions, cached against the model id and selection generation the way the
+context length is, and strips the `authorization` property the wrapper
+advertises so the model reads a schema it holds no field of. An approved search
+posts the parsed fields to the broker, receives the signed grant, and posts
+`{tool: "web_search_exa", params: {...approved fields, authorization}}` to
+`POST /tools`; the reply text becomes the `role: 'tool'` message that pairs the
+`tool_calls` entry, truncated at 8000 characters. The grant lives in that one
+request body: `history` retains the proposal and the result, so the transcript
+every later request re-sends presents no token, and browser storage holds
+neither the grant nor the session secret. A `web_fetch_exa` call runs through
+the same route without a grant, because the wrapper enforces the signed Result
+ID and its own fetch allowance; the page bounds it by the continuation cap and
+by two fetches per turn, the wrapper publishing its per-search allowance in the
+ledger row `open_search` writes rather than in `tools/list` or `/props`.
+
+The response shape decides how a refusal reads. `mcp_result_to_response`
+(`server-mcp.cpp:196-212`) maps an MCP `isError` result onto an `error` key and
+the handler sends it at HTTP 200, so a spent grant, a refused grant, and an
+argument outside the claim all arrive as successful HTTP. The page therefore
+reads the body before the status: an `error` at any status becomes a tool
+message naming what refused, a non-2xx or an unreadable body becomes one naming
+the status, and `plain_text_response` is the only success.
+
+`remote/test-web-tools-roundtrip.sh` measures that path end to end without the
+appliance. `remote/test-fixtures/fake-llama-tools-server.py` serves both routes
+over one `server.py` child on stdio and reproduces the `error`-at-200 mapping;
+the broker signs one grant over the approved fields, the exact `{tool, params}`
+body the page builds returns the fixture result, and the replay of the same
+token comes back as an HTTP 200 whose `error` names the spent grant.
+
+Two claims remain unmeasured. The executor is exercised against the fixture
+rather than against llama-server itself: a real child under
+`--mcp-servers-config` with the fake provider would measure the composition and
+the verbatim `params` forwarding in the binary that serves, and building that
+binary needs the appliance. And a server-side hook stays architecturally absent
+rather than unimplemented; patching one in would thread a grant through
+`server_mcp_tool::invoke` at `server-tools.cpp:1837-1839` or gate the `/tools`
+handler, which is a new channel rather than an interception.
 
 ## Scope cut: the broker's lifetime is manual
 

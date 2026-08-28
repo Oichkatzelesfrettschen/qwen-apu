@@ -144,16 +144,22 @@
 const $ = s => document.querySelector(s);
 const logEl = $('#log');
 let history = [];
+// Clear increments this so an in-flight turn can tell the conversation it was
+// answering is gone. A tool result that streams or executes across an await
+// boundary carries the generation it was proposed under, and a mismatch at
+// the point history would be mutated discards the result instead of
+// appending it to whatever `history` the Clear button just replaced.
+let conversationGeneration = 0;
 let attachments = [];   // {name, text, tokens, tokenModel}
 let nctx = null;
 let nctxModel = null;
 let busy = false;
 let requestModel = null;
 let modelStateGeneration = 0;
-// requestMessages selects a tool_calls entry by id to splice in an authorized
-// grant, so an id must stay unique across the whole conversation rather than
-// within one round: a per-round counter starting at 0 collides across turns
-// and a later grant would overwrite every earlier call sharing its id.
+// Every tool message names the call it answers by id, so an id stays unique
+// across the whole conversation rather than within one round: a per-round
+// counter starting at 0 collides across turns and pairs a result with the
+// earlier call sharing its id.
 let toolCallSequence = 0;
 
 function readBrowserStorage(storageName, key) {
@@ -255,6 +261,7 @@ function selectRequestModel(selectedModel) {
   requestModel = selectedModel;
   nctx = null;
   nctxModel = null;
+  forgetWebTools();
   attachments.forEach(attachment => {
     attachment.tokens = null;
     attachment.tokenModel = null;
@@ -291,53 +298,285 @@ const DEMO_TOOL = [{
   }
 }];
 
-// The web tools are declared by name as llama-server composes them: an MCP
-// server configured as `web` produces `web_search_exa` and `web_fetch_exa`.
-// The per-turn toggle decides whether these reach the request at all, so a
-// turn with the toggle off offers the model no web surface to propose.
+// The web tools are named as llama-server composes them: an MCP server
+// configured as `web` produces `web_search_exa` and `web_fetch_exa`. The
+// schemas come from the server rather than from a copy kept here, so the
+// model reads the arguments the running wrapper validates. The per-turn
+// toggle decides whether these reach the request at all, so a turn with the
+// toggle off offers the model no web surface to propose.
 const WEB_SEARCH_TOOL_NAME = 'web_search_exa';
 const WEB_FETCH_TOOL_NAME = 'web_fetch_exa';
-const WEB_TOOLS = [{
-  type: "function",
-  function: {
-    name: WEB_SEARCH_TOOL_NAME,
-    description: "Search the web and return ranked results with titles, URLs, " +
-      "and highlights. Each result carries a Result ID that the fetch tool " +
-      "redeems for the page text.",
-    parameters: {
-      type: "object",
-      properties: {
-        query: { type: "string", description: "Search query, at most 512 characters." },
-        max_results: { type: "integer", description: "Result count, 1 to 10. Default 5." },
-        published_after: { type: "string", description: "ISO 8601 date; earlier results are dropped." },
-        published_before: { type: "string", description: "ISO 8601 date; later results are dropped." },
-        max_age_hours: { type: "integer", description: "Cached page age the provider may serve. 0 forces a live crawl." },
-        include_domains: { type: "array", items: { type: "string" }, description: "Admit these domains alone, at most 10." },
-        exclude_domains: { type: "array", items: { type: "string" }, description: "Drop these domains, at most 10." }
-      },
-      required: ["query"]
+const WEB_TOOL_NAMES = [WEB_SEARCH_TOOL_NAME, WEB_FETCH_TOOL_NAME];
+
+// The composed list belongs to one model selection the way the context length
+// does: a router roster change replaces both, so the cache carries the model
+// id and the selection generation that produced it.
+let webToolDefinitions = null;
+let webToolsModel = null;
+let webToolsGeneration = -1;
+
+function webToolDefinition(entry) {
+  /* Return the request-body tool definition for one `GET /tools` row.
+
+     llama-server renders each tool as `{tool, definition}` where `definition`
+     is the OpenAI function object it builds from the MCP input schema
+     (server-tools.cpp:75-85 and 1823-1834). The definition travels as the
+     server emits it, with one field removed: `search_exa` advertises an
+     `authorization` property, and the broker is the only issuer of a grant,
+     so a model that reads the property can only author a token the served
+     path refuses. */
+  const definition = entry && entry.definition;
+  if (!definition || definition.type !== 'function') return null;
+  const fn = definition.function;
+  if (!fn || typeof fn.name !== 'string') return null;
+  const parameters = fn.parameters && typeof fn.parameters === 'object'
+    ? { ...fn.parameters } : { type: 'object', properties: {} };
+  if (parameters.properties && typeof parameters.properties === 'object') {
+    const { authorization, ...offered } = parameters.properties;
+    parameters.properties = offered;
+  }
+  if (Array.isArray(parameters.required)) {
+    parameters.required = parameters.required.filter(name => name !== 'authorization');
+  }
+  return { type: 'function', function: { ...fn, parameters } };
+}
+
+const TOOLS_LISTING_RETRY_DELAY_MS = 300;
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchWebToolListing() {
+  /* Return the parsed `GET /tools` array for one request, or throw.
+
+     A non-2xx status and a body that is not a JSON array both leave the
+     caller unable to read a web tool from the response, so both raise here
+     rather than one being read as "no tools" and the other as a crash;
+     `resolveWebTools` treats every throw from this function the same way. */
+  const response = await fetch('./tools', { headers: authHeaders() });
+  if (!response.ok) {
+    throw new Error(`GET /tools returned HTTP ${response.status}`);
+  }
+  const listed = await response.json();
+  if (!Array.isArray(listed)) {
+    throw new Error('GET /tools returned a body that is not an array');
+  }
+  return listed;
+}
+
+async function resolveWebTools(selectedModel, generation) {
+  /* Return the web tool definitions this server exposes, or an empty list.
+
+     `GET /tools` is the authority for what the browser may later invoke
+     through `POST /tools`, so the same listing that composes `body.tools`
+     decides whether a web surface exists at all. A build without the tool
+     routes answers 404 and a build without the MCP child lists no web tool;
+     both leave the request carrying no web tool rather than advertising a
+     schema nothing executes.
+
+     A transient failure -- a dropped connection, a 5xx during restart, a
+     response cut short mid-body -- retries once after a short delay rather
+     than being read the same as a build that serves no tool route at all.
+     Only a listing this loop actually parsed reaches the cache: caching an
+     empty result on failure would leave every later turn on this model and
+     generation silently offering no web tool until a reselect or a reload,
+     even once the endpoint recovers, so a failure after the retry returns
+     the turn's tools empty without writing the cache. */
+  if (webToolsModel === selectedModel && webToolsGeneration === generation) {
+    return webToolDefinitions || [];
+  }
+  let listed = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      listed = await fetchWebToolListing();
+      break;
+    } catch {
+      if (attempt === 0) await sleep(TOOLS_LISTING_RETRY_DELAY_MS);
     }
   }
-}, {
-  type: "function",
-  function: {
-    name: WEB_FETCH_TOOL_NAME,
-    description: "Fetch the text of a page named by a Result ID from a prior search.",
-    parameters: {
-      type: "object",
-      properties: {
-        result_id: { type: "string", description: "Result ID printed by the search tool." },
-        start_index: { type: "integer", description: "Character offset into the page text." },
-        max_chars: { type: "integer", description: "Characters to return, at most 24000." }
-      },
-      required: ["result_id"]
-    }
+  if (listed === null) return [];
+  const composed = listed
+    .filter(entry => WEB_TOOL_NAMES.includes(entry && entry.tool))
+    .map(webToolDefinition)
+    .filter(Boolean);
+  if (modelStateMatches(selectedModel, generation)) {
+    webToolDefinitions = composed;
+    webToolsModel = selectedModel;
+    webToolsGeneration = generation;
   }
-}];
+  return composed;
+}
+
+function forgetWebTools() {
+  webToolDefinitions = null;
+  webToolsModel = null;
+  webToolsGeneration = -1;
+}
 
 const BROKER_ORIGIN_DEFAULT = 'http://127.0.0.1:8571';
 const BROKER_SESSION_HEADER = 'X-Qwen-Web-Session';
 const CONTINUATION_CAP = 4;
+// A tool result enters the context as a message, so its length is prompt the
+// next round pays for at this machine's prefill rate. The cap truncates a
+// long page rather than refusing it, which keeps the reply readable.
+const TOOL_RESULT_CHARACTER_CAP = 8000;
+
+function truncateToolResult(text) {
+  /* Cap a tool result without cutting off an untrusted-content frame's own
+     end marker.
+
+     `wrap_untrusted` (remote/web-mcp/server.py) closes a fetched page's text
+     with `END UNTRUSTED WEB CONTENT [nonce]` so the model can tell where
+     attacker-controlled text ends, and a plain `.slice(0, cap)` can land
+     inside the window or drop the footer line outright, handing the model an
+     unterminated untrusted block. When the result carries that footer, the
+     cap truncates the frame body instead and keeps the footer line, with a
+     notice between them naming the cut so the model reads it as a harness
+     limit rather than as the page's own content. A result without the
+     footer -- a refusal message, a plain fetch error -- is sliced as before. */
+  if (text.length <= TOOL_RESULT_CHARACTER_CAP) return text;
+  const footerMatch = text.match(/\n(END UNTRUSTED WEB CONTENT \[[^\]\n]*\])\s*$/);
+  if (footerMatch) {
+    const fetchTruncated = truncateFetchResult(text, footerMatch);
+    if (fetchTruncated !== null) return fetchTruncated;
+    const footerLine = footerMatch[1];
+    const noticeLine = `Truncated by the client at ${TOOL_RESULT_CHARACTER_CAP} characters.`;
+    const suffix = `\n${noticeLine}\n${footerLine}`;
+    const bodyCap = Math.max(0, TOOL_RESULT_CHARACTER_CAP - suffix.length);
+    return text.slice(0, bodyCap) + suffix;
+  }
+  const searchTruncated = truncateSearchResult(text);
+  if (searchTruncated !== null) return searchTruncated;
+  return text.slice(0, TOOL_RESULT_CHARACTER_CAP);
+}
+
+function truncateFetchResult(text, footerMatch) {
+  /* Recompute a fetched page's navigation lines after the cap trims its
+     window, or return null when the frame carries no such lines to rewrite.
+
+     `wrap_untrusted` (remote/web-mcp/server.py) writes `Start Index`,
+     `Returned Characters`, `Next Start Index`, and `Possibly Truncated` ahead
+     of the window it frames, so a paging model reads where to resume from
+     those lines rather than from arithmetic over a body it cannot measure.
+     Slicing the whole frame at a raw character offset left those lines
+     describing the server's own window instead of the shorter one this cap
+     actually kept, so `Next Start Index` told the model to resume past text
+     the cap had already dropped. This finds the window between `Possibly
+     Truncated: ...` and the footer, trims it to fit, and rewrites the three
+     lines -- with `Possibly Truncated` forced to `yes`, since a window this
+     client cut is truncated regardless of what the server reported -- to
+     describe the window the model actually receives. The `Content SHA-256`
+     line names a digest over the server's window, which a client-side cut
+     invalidates the same way, so that line is replaced with a notice rather
+     than left to claim a match that no longer holds. */
+  const headerMatch = text.match(
+    /^([\s\S]*?\nStart Index: )(\d+)\nReturned Characters: \d+\nNext Start Index: [^\n]+\nPossibly Truncated: (?:yes|no)\n/
+  );
+  if (!headerMatch) return null;
+  const startIndex = Number(headerMatch[2]);
+  const windowStart = headerMatch[0].length;
+  const windowEnd = text.length - footerMatch[0].length;
+  const window = text.slice(windowStart, windowEnd);
+  const footerLine = footerMatch[1];
+  const prefix = headerMatch[1].replace(
+    /\nContent SHA-256: [0-9a-f]+$/,
+    '\nContent SHA-256: not recomputed; the client truncated this window.'
+  );
+  // `wrap_untrusted` (remote/web-mcp/server.py) computes `Start Index` and
+  // `Next Start Index` over Python `len`, which counts Unicode code points; a
+  // JavaScript `.length` counts UTF-16 code units and reports one extra unit
+  // per astral character (an emoji, for instance), and a raw `.slice` can
+  // split the surrogate pair such a character is stored as. `codePoints`
+  // iterates by code point so both the counts and the cut this function makes
+  // agree with the wrapper's own arithmetic for every character, BMP or not.
+  const codePoints = str => Array.from(str);
+  const buildFrame = keptWindowPoints => {
+    const keptWindow = keptWindowPoints.join('');
+    return `${prefix}${startIndex}` +
+      `\nReturned Characters: ${keptWindowPoints.length}` +
+      `\nNext Start Index: ${startIndex + keptWindowPoints.length}` +
+      `\nPossibly Truncated: yes\n${keptWindow}\n${footerLine}`;
+  };
+  const windowPoints = codePoints(window);
+  // Reserved against the original window's own digit counts, which are at
+  // least as wide as whatever the trimmed window produces, so the assembled
+  // frame never exceeds the cap once the actual (shorter) digits are used.
+  const overhead = buildFrame(windowPoints).length - window.length;
+  const budget = Math.max(0, TOOL_RESULT_CHARACTER_CAP - overhead);
+  // A code point spends one UTF-16 unit inside the BMP and two outside it, so
+  // a slice count against `budget` (a unit count) keeps points one at a time
+  // until the next one would spend more units than remain, rather than
+  // assuming every point is one unit wide and overrunning the cap on an
+  // astral window.
+  let unitsKept = 0;
+  let pointsKept = 0;
+  for (const point of windowPoints) {
+    if (unitsKept + point.length > budget) break;
+    unitsKept += point.length;
+    pointsKept++;
+  }
+  return buildFrame(windowPoints.slice(0, pointsKept));
+}
+
+function truncateSearchResult(text) {
+  /* Cap a search-result reply at a whole result block, or return null.
+
+     `render_search_results` (remote/web-mcp/server.py) joins each result as
+     one block on `\n---\n`, closes the reply with a trailing `\n---`, and
+     appends `\nResults Omitted: N` outside every block when its own cap
+     dropped results. A plain `.slice(0, cap)` can land inside a block,
+     discarding a Result ID a later fetch needs, and leaves no omission count
+     for what the slice itself dropped. This keeps only the blocks that fit
+     whole under the cap and rewrites the omission line to add whatever this
+     cap newly drops to the count the server already reported. */
+  const omittedMatch = text.match(/\nResults Omitted: (\d+)$/);
+  const withoutOmitted = omittedMatch ? text.slice(0, -omittedMatch[0].length) : text;
+  const serverOmitted = omittedMatch ? Number(omittedMatch[1]) : 0;
+  if (!withoutOmitted.endsWith('\n---') || !withoutOmitted.includes('\nResult ID: ')) return null;
+  const blocks = withoutOmitted.slice(0, -4).split('\n---\n');
+  const maxOmitted = serverOmitted + blocks.length;
+  const budget = TOOL_RESULT_CHARACTER_CAP - `\nResults Omitted: ${maxOmitted}`.length;
+  const kept = [];
+  for (const block of blocks) {
+    const rendered = [...kept, block].join('\n---\n') + '\n---';
+    if (rendered.length > budget) break;
+    kept.push(block);
+  }
+  if (!kept.length) {
+    // The first block alone exceeds `budget`: no whole block fits, so the
+    // fallback to a raw `.slice(0, cap)` would cut inside the block and drop
+    // its Result ID with no omission count. This truncates that one block
+    // inside its own closed frame instead, carrying the client notice and the
+    // count of blocks this cap additionally drops, rather than returning null
+    // and emitting an empty result set.
+    const notice = `Truncated by the client at ${TOOL_RESULT_CHARACTER_CAP} characters.`;
+    const additionalOmitted = serverOmitted + (blocks.length - 1);
+    const omittedLine = additionalOmitted ? `\nResults Omitted: ${additionalOmitted}` : '';
+    const suffix = `\n---\n${notice}${omittedLine}`;
+    const blockBudget = Math.max(0, TOOL_RESULT_CHARACTER_CAP - suffix.length);
+    return blocks[0].slice(0, blockBudget) + suffix;
+  }
+  const totalOmitted = serverOmitted + (blocks.length - kept.length);
+  let rendered = kept.join('\n---\n') + '\n---';
+  if (totalOmitted) rendered += `\nResults Omitted: ${totalOmitted}`;
+  return rendered;
+}
+// The wrapper meters fetches per search in its own ledger row and publishes
+// that allowance neither in `tools/list` nor in `/props`, so the page carries
+// its own per-turn budget. Two fetches read the pages behind one search and
+// leave the round budget for the answer.
+const WEB_FETCH_BUDGET_PER_TURN = 2;
+
+// One completion can emit several `web_search_exa` calls in the same
+// assistant response, and CONTINUATION_CAP bounds only the round count, not
+// the calls inside one round: an unbounded inner loop would open one
+// approval dialog per proposed call and, on approval, spend one broker grant
+// and one provider search per call, consuming as many searches as fit in the
+// model's output before the round budget is even reached. This bounds that
+// inner loop to one approval-and-execution per turn, the way the fetch
+// budget bounds pages read rather than rounds run.
+const WEB_SEARCH_BUDGET_PER_TURN = 1;
 
 // The session secret and every issued grant live in this closure alone. Both
 // stay out of `history`, which is re-sent whole on every request, and out of
@@ -476,7 +715,7 @@ function renderApprovalFields(fields) {
     fields.max_age_hours === 0);
 }
 
-function approveWebSearch(fields) {
+function approveWebSearch(fields, proposalModel) {
   // The dialog resolves to one approval or a refusal. A standing grade is
   // absent by construction: the broker signs a single-use grant, so admitting
   // one search is the widest outcome this control offers.
@@ -510,7 +749,29 @@ function approveWebSearch(fields) {
     once.onclick = async () => {
       once.disabled = true;
       try {
-        const authorization = await requestGrant(fields, controller.signal);
+        // The model picker stays enabled while this dialog is open, so a
+        // change between the round that proposed this call and this click
+        // must be caught here too, not only before the dialog opened: signing
+        // against the newly selected model's profile would grant a search the
+        // proposing model never gets to read a result for.
+        if (requestModel !== proposalModel) {
+          finish({
+            decision: 'deny',
+            reason: `it was proposed by model ${proposalModel}, ` +
+                    `the current model is ${requestModel}`
+          });
+          return;
+        }
+        // `LLAMA_ARG_ALIAS` carries the web profile's own profile_id
+        // (`remote/build-web-presets.sh`), and llama-server reports that
+        // alias as the model id `GET /v1/models` returns, so `requestModel`
+        // already names the profile the selected router child serves. The
+        // broker signs the grant's `profile_id` from this value and
+        // `enforce_search_authorization` on the MCP child rejects a grant
+        // naming any other profile, so sending the wrong one here is caught
+        // at approval time rather than surfacing as an opaque refusal later.
+        const authorization =
+          await requestGrant({ ...fields, profile_id: requestModel }, controller.signal);
         finish({ decision: 'once', authorization });
       } catch (error) {
         if (settled) return;
@@ -542,6 +803,7 @@ async function boot() {
   requestModel = null;
   nctx = null;
   nctxModel = null;
+  forgetWebTools();
   attachments.forEach(attachment => {
     attachment.tokens = null;
     attachment.tokenModel = null;
@@ -672,14 +934,17 @@ function turn(who, cls) {
   return { root: d, body: b };
 }
 
-$('#clear').onclick = () => { history = []; toolCallSequence = 0; logEl.textContent = ''; };
+$('#clear').onclick = () => {
+  conversationGeneration++;
+  history = []; toolCallSequence = 0; logEl.textContent = '';
+};
 
 $('#input').addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
 });
 $('#send').onclick = send;
 
-function buildRequestBody(messages) {
+async function buildRequestBody(messages) {
   const body = { model: requestModel, stream: true, temperature: 0.7,
                  stream_options: { include_usage: true },
                  max_tokens: 512, messages };
@@ -696,26 +961,11 @@ function buildRequestBody(messages) {
   // with it off carries no web tool and the model has no network-reaching
   // surface to propose. Stripping the declaration rather than refusing the
   // proposal is what makes the toggle a boundary instead of a prompt.
-  if ($('#web-tools').checked) tools.push(...WEB_TOOLS);
+  if ($('#web-tools').checked) {
+    tools.push(...await resolveWebTools(requestModel, modelStateGeneration));
+  }
   if (tools.length) body.tools = tools;
   return body;
-}
-
-function requestMessages(authorizations) {
-  // `history` holds the proposed arguments and the request carries the
-  // authorized ones. The grant therefore reaches the server inside one
-  // request and stays out of the transcript that every later request re-sends,
-  // so a single-use token is presented once rather than replayed each turn.
-  if (!authorizations.size) return history;
-  return history.map(message => {
-    if (!Array.isArray(message.tool_calls)) return message;
-    return {
-      ...message,
-      tool_calls: message.tool_calls.map(call => authorizations.has(call.id)
-        ? { ...call, function: { ...call.function, arguments: authorizations.get(call.id) } }
-        : call)
-    };
-  });
 }
 
 async function streamCompletion(messages, view) {
@@ -725,7 +975,7 @@ async function streamCompletion(messages, view) {
   const toolCalls = {};
   const resp = await fetch('./v1/chat/completions', {
     method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(buildRequestBody(messages))
+    body: JSON.stringify(await buildRequestBody(messages))
   });
   if (!resp.ok) {
     const detail = await resp.text();
@@ -817,37 +1067,174 @@ function openTurnView() {
   return { turn: t, think, thinkBody, thinkShown: false, meta };
 }
 
-async function resolveWebApprovals(calls, callIds, view, roundBudgetExhausted) {
-  /* Return the authorized argument strings for this round, or null on refusal.
+async function executeWebTool(toolName, params) {
+  /* Run one tool through llama-server's executor and return the text it gives.
 
-     Each proposed web search is shown to a human with the arguments it would
-     run under, and the broker signs a grant over exactly those fields. A
-     refusal answers the call with a tool message so the model reads that the
-     search did not run, which is the outcome the model would otherwise be
-     free to narrate however it liked. */
-  const authorizations = new Map();
+     `POST /tools` invokes the named tool with the `params` object taken
+     verbatim from the request body (server-tools.cpp:2076-2081) and answers
+     with `plain_text_response` for a result and `error` for a refusal, because
+     `mcp_result_to_response` (server-mcp.cpp:196-212) maps an MCP `isError`
+     result onto the error key at HTTP 200. A refusal is therefore read from
+     the body rather than from the status, which is the shape a spent grant and
+     an argument outside its authorization both arrive in. */
+  let response;
+  try {
+    response = await fetch('./tools', {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ tool: toolName, params })
+    });
+  } catch (error) {
+    return `The ${toolName} call did not reach the server: ${error.message || error}`;
+  }
+  let payload = null;
+  try { payload = await response.json(); } catch { payload = null; }
+  if (payload && typeof payload.error === 'string') {
+    return truncateToolResult(`The ${toolName} call was refused: ${payload.error}`);
+  }
+  if (!response.ok) {
+    return `The ${toolName} call returned HTTP ${response.status} and no result.`;
+  }
+  if (!payload || typeof payload.plain_text_response !== 'string') {
+    return `The ${toolName} call returned HTTP ${response.status} with a body ` +
+           'that carries no result text.';
+  }
+  return truncateToolResult(payload.plain_text_response);
+}
+
+function searchRequestParams(fields, authorization) {
+  /* Return the `params` object one approved search runs under.
+
+     The grant is signed over the parsed fields and `enforce_search_authorization`
+     compares the presented arguments against the claim field by field, so the
+     approved fields travel unchanged. An empty date and an absent
+     `max_age_hours` are omitted rather than sent as an empty string and a
+     null, since `require_iso_date` and `require_optional_integer` read an
+     absent key as the same default the broker signed. */
+  const params = {
+    query: fields.query,
+    max_results: fields.max_results,
+    include_domains: fields.include_domains,
+    exclude_domains: fields.exclude_domains,
+    authorization
+  };
+  if (fields.published_after) params.published_after = fields.published_after;
+  if (fields.published_before) params.published_before = fields.published_before;
+  if (fields.max_age_hours !== null) params.max_age_hours = fields.max_age_hours;
+  return params;
+}
+
+function proposedFetchParams(argumentText) {
+  /* Return the three fetch arguments the wrapper reads, from the proposal.
+
+     `fetch_exa` redeems a Result ID the wrapper itself signed and printed in a
+     prior search reply, so the server enforces the reference and the fetch
+     allowance and the browser sends the proposal through. The whitelist keeps
+     a model-authored `authorization` or `runtime` key out of the body. */
+  const parsed = JSON.parse(argumentText);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('the proposed arguments are not an object');
+  }
+  const params = { result_id: typeof parsed.result_id === 'string' ? parsed.result_id : '' };
+  for (const key of ['start_index', 'max_chars']) {
+    // `require_integer` (remote/web-mcp/server.py) reads an absent key as its
+    // own default, so an absent field is left out here to take that default.
+    // A present-but-malformed value -- a float, a negative number, a numeric
+    // string -- is silently different from absent: passing it through would
+    // fetch a different, potentially much larger window than the model
+    // proposed with no error and no approval dialog to catch it, so it fails
+    // the proposal instead.
+    if (!(key in parsed)) continue;
+    if (!Number.isInteger(parsed[key]) || parsed[key] < 0) {
+      throw new Error(`${key} must be a non-negative integer`);
+    }
+    params[key] = parsed[key];
+  }
+  return params;
+}
+
+function answerCall(callId, toolName, content, turnGeneration) {
+  // Every assistant message carrying tool_calls needs one tool message per
+  // call before the array is a legal request, so each branch of the round
+  // answers its own call. A result whose turnGeneration no longer matches
+  // conversationGeneration was proposed against a conversation Clear already
+  // replaced, and appending it here would land in the wrong transcript.
+  if (turnGeneration !== conversationGeneration) return;
+  history.push({ role: 'tool', tool_call_id: callId, name: toolName, content });
+}
+
+async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetchBudget,
+                                 searchBudget, turnGeneration, proposalModel) {
+  /* Execute this round's proposed calls and answer each one.
+
+     A proposed `web_search_exa` is shown to a human with the arguments it
+     would run under, the broker signs a grant over exactly those fields, and
+     the browser posts them to `POST /tools` with the grant inside `params`.
+     The grant lives in that one request body: `history` keeps the proposal it
+     was signed over, so the transcript the next round re-sends carries the
+     arguments and no token. A refusal answers the call with a tool message so
+     the model reads that the search did not run. */
   let refused = false;
   for (let index = 0; index < calls.length; index++) {
-    if (calls[index].name === WEB_SEARCH_TOOL_NAME && roundBudgetExhausted) {
-      // The continuation cap bounds the rounds left to spend a grant in: the
-      // round that just streamed is the last one send() will send again, so
-      // no approval reaches a request that never goes out. The dialog stays
-      // closed and the model reads the same refusal shape a denial produces.
+    const toolName = calls[index].name;
+    const callId = callIds[index];
+    if (!$('#web-tools').checked && WEB_TOOL_NAMES.includes(toolName)) {
+      // The toggle is read again at execution time, so a proposal carried over
+      // from a turn that offered the web tools reaches no network once the
+      // toggle is off. The boundary is the state at the moment of the call.
       refused = true;
-      history.push({ role: 'tool', tool_call_id: callIds[index], name: calls[index].name,
-                     content: 'The round budget is exhausted; the search did not run.' });
+      answerCall(callId, toolName,
+        `The web surface is off for this turn; ${toolName} did not run.`, turnGeneration);
       continue;
     }
-    if (calls[index].name !== WEB_SEARCH_TOOL_NAME) {
-      // A fetch, demo, or other advertised call carries no approval path of its
-      // own. Answering it here, rather than skipping it, is what keeps every
-      // tool_calls entry paired with a tool message: an unanswered call would
-      // make the next request's message array illegal and the server would
-      // refuse the whole continuation instead of the one call.
+    if (roundBudgetExhausted && WEB_TOOL_NAMES.includes(toolName)) {
+      // The continuation cap bounds the rounds left to read a result in: the
+      // round that just streamed is the last one send() will send again, so a
+      // call whose result reaches no request stays unrun rather than spending
+      // a grant, a provider budget, and a fetch allowance for a reply nobody
+      // reads. The model reads the same refusal shape a denial produces.
       refused = true;
-      history.push({ role: 'tool', tool_call_id: callIds[index], name: calls[index].name,
-                     content: `The served path executes no tool named ${calls[index].name} ` +
-                              'in this turn.' });
+      answerCall(callId, toolName,
+        `The round budget is exhausted; ${toolName} did not run.`, turnGeneration);
+      continue;
+    }
+    if (toolName === WEB_FETCH_TOOL_NAME) {
+      if (fetchBudget.remaining <= 0) {
+        refused = true;
+        answerCall(callId, toolName,
+          `The per-turn budget of ${WEB_FETCH_BUDGET_PER_TURN} fetches is spent; ` +
+          'this fetch did not run.', turnGeneration);
+        continue;
+      }
+      let params;
+      try {
+        params = proposedFetchParams(calls[index].args);
+      } catch (error) {
+        refused = true;
+        answerCall(callId, toolName, `The fetch did not run: ${error.message || error}`, turnGeneration);
+        continue;
+      }
+      fetchBudget.remaining--;
+      answerCall(callId, toolName, await executeWebTool(toolName, params), turnGeneration);
+      continue;
+    }
+    if (toolName !== WEB_SEARCH_TOOL_NAME) {
+      // A demo or otherwise advertised call carries no executor here. The
+      // page invokes the two web tools it holds an approval path and a budget
+      // for, and answers every other call with a tool message rather than
+      // posting a name it made no boundary for.
+      refused = true;
+      answerCall(callId, toolName,
+        `The served path executes no tool named ${toolName} in this turn.`, turnGeneration);
+      continue;
+    }
+    if (searchBudget.remaining <= 0) {
+      // The cap bounds approval-and-execution rather than proposals, so a
+      // call refused here opened no dialog and spent no grant.
+      refused = true;
+      answerCall(callId, toolName,
+        `The per-turn budget of ${WEB_SEARCH_BUDGET_PER_TURN} search approvals is spent; ` +
+        'this search did not run.', turnGeneration);
       continue;
     }
     let fields;
@@ -855,43 +1242,41 @@ async function resolveWebApprovals(calls, callIds, view, roundBudgetExhausted) {
       fields = proposedSearchFields(calls[index].args);
     } catch (error) {
       refused = true;
-      history.push({ role: 'tool', tool_call_id: callIds[index], name: calls[index].name,
-                     content: `The search did not run: ${error.message || error}` });
+      answerCall(callId, toolName, `The search did not run: ${error.message || error}`, turnGeneration);
       continue;
     }
-    const outcome = await approveWebSearch(fields);
+    if (requestModel !== proposalModel) {
+      // The dialog signs the grant's profile_id from `requestModel` read at
+      // click time, so a model-picker change between this call's proposal and
+      // its approval would sign a grant for the wrong profile: the broker
+      // serving the proposing model's profile refuses it, or the newly
+      // selected profile's MCP child refuses a grant signed for the old one.
+      // Either failure reaches the model as an opaque refusal, so the
+      // mismatch is caught and named here instead, before a dialog opens.
+      refused = true;
+      answerCall(callId, toolName,
+        `The search did not run: it was proposed by model ${proposalModel}, ` +
+        `the current model is ${requestModel}.`, turnGeneration);
+      continue;
+    }
+    searchBudget.remaining--;
+    const outcome = await approveWebSearch(fields, proposalModel);
     if (outcome.decision === 'once') {
-      // The grant enters a request-scoped argument string. `history` keeps the
-      // proposal it was signed over, so the transcript records what the model
-      // asked for and holds no token.
-      authorizations.set(callIds[index],
-        JSON.stringify({ ...fields, authorization: outcome.authorization }));
-      // Every assistant message carrying tool_calls needs a tool message per
-      // call before the array is a legal request, so the approval answers its
-      // own call. What answers it is the state of the grant rather than search
-      // results: which process executes an approved web_search_exa is
-      // unresolved between llama-server's own MCP child and this page, and
-      // evidence/web-ui-authorization-design.md names the source that settles
-      // it. The single-use grant is issued and travels in the next request's
-      // arguments; the results reach the model once an executor exists.
-      history.push({ role: 'tool', tool_call_id: callIds[index], name: calls[index].name,
-                     content: 'The user approved these exact search arguments and a ' +
-                              'single-use grant covers them. The search awaits its ' +
-                              'executor, so no results are available in this turn.' });
+      answerCall(callId, toolName, await executeWebTool(
+        toolName, searchRequestParams(fields, outcome.authorization)), turnGeneration);
     } else {
       refused = true;
-      history.push({ role: 'tool', tool_call_id: callIds[index], name: calls[index].name,
-                     content: 'The user refused this web search. It did not run.' });
+      answerCall(callId, toolName, outcome.reason
+        ? `The search did not run: ${outcome.reason}.`
+        : 'The user refused this web search. It did not run.', turnGeneration);
     }
   }
-  if (!authorizations.size && !refused) return null;
-  if (refused && !authorizations.size) {
+  if (refused) {
     const note = document.createElement('div');
     note.className = 'meta bad';
-    note.textContent = 'the web search was refused; the model continues without it';
+    note.textContent = 'a proposed call went unrun; the model continues without it';
     view.turn.root.append(note);
   }
-  return authorizations;
 }
 
 async function send() {
@@ -913,6 +1298,11 @@ async function send() {
     ? '\n' + attachments.map(a => `[${a.name}]`).join(' ') : '');
   turn('you', 'me').body.textContent = shown;
   history.push({ role: 'user', content });
+  // Every later mutation of `history` in this turn checks against this
+  // snapshot, so a Clear during an awaited stream, approval, or fetch
+  // discards the turn's result instead of writing it into the conversation
+  // Clear just replaced.
+  const turnGeneration = conversationGeneration;
   $('#input').value = '';
   attachments = [];
   renderAttached();
@@ -920,20 +1310,31 @@ async function send() {
   busy = true; $('#send').disabled = true;
   // The continuation cap bounds one user turn. A model that keeps proposing
   // searches meets a fixed number of approval dialogs rather than an unbounded
-  // sequence of them.
-  let authorizations = new Map();
+  // sequence of them, and the fetch budget bounds the pages one turn reads.
+  const fetchBudget = { remaining: WEB_FETCH_BUDGET_PER_TURN };
+  const searchBudget = { remaining: WEB_SEARCH_BUDGET_PER_TURN };
   try {
     for (let round = 0; round < CONTINUATION_CAP; round++) {
       const view = openTurnView();
+      // buildRequestBody reads `requestModel` at request time, so this
+      // snapshot names the model that proposed whatever tool_calls the
+      // stream returns; the approval and the executor both compare the
+      // picker's current value against it rather than against a value read
+      // fresh at approval time, which the picker may have already moved past.
+      const proposalModel = requestModel;
       let outcome;
       try {
-        outcome = await streamCompletion(requestMessages(authorizations), view);
+        outcome = await streamCompletion(history, view);
       } catch (err) {
         view.meta.className = 'meta bad';
         view.meta.textContent = String(err.message || err);
         return;
       }
-      authorizations = new Map();
+      // The stream awaited network time a Clear can land inside; a stale
+      // generation here means the assistant turn belongs to a conversation
+      // this page no longer holds, so it stops rather than appending to a
+      // fresh one.
+      if (turnGeneration !== conversationGeneration) return;
       const msg = { role: 'assistant', content: outcome.answer };
       let callIds = [];
       if (outcome.calls.length) {
@@ -945,10 +1346,10 @@ async function send() {
       }
       history.push(msg);
       if (!outcome.calls.length) return;
-      const resolved = await resolveWebApprovals(
-        outcome.calls, callIds, view, round === CONTINUATION_CAP - 1);
-      if (resolved === null) return;
-      authorizations = resolved;
+      await runProposedTools(
+        outcome.calls, callIds, view, round === CONTINUATION_CAP - 1, fetchBudget,
+        searchBudget, turnGeneration, proposalModel);
+      if (turnGeneration !== conversationGeneration) return;
     }
   } finally {
     busy = false; $('#send').disabled = false;

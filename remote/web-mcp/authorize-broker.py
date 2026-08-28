@@ -5,9 +5,12 @@
 operator and suits nothing that runs while a session is open. This broker
 gives the same signing path a request interface for the browser front end: a
 user interface that has just shown a human the exact proposed `search_exa`
-arguments posts those arguments here and receives the signed grant that admits
+arguments posts those arguments here, plus a required `profile_id` naming the
+web profile the human selected, and receives the signed grant that admits
 them, so the model receives a token bound to the query the human read rather
-than the query a note in the context rewrote.
+than the query a note in the context rewrote. `POST /grant` refuses a request
+naming no `profile_id`, or one that does not match this process's own
+`--profile`, with HTTP 400 before it signs anything.
 
 The service holds three boundaries. It binds a loopback literal alone and
 refuses any other host before the socket exists, so the grant endpoint reaches
@@ -141,10 +144,15 @@ def parse_request_arguments(payload):
     """
     if not isinstance(payload, dict):
         raise server.InvalidArgument("the request body is not an object")
+    profile_id = payload.get("profile_id")
+    if not isinstance(profile_id, str) or not profile_id:
+        raise server.InvalidArgument(
+            "profile_id must name the web profile the grant is signed for"
+        )
     query = payload.get("query")
     if not isinstance(query, str):
         raise server.InvalidArgument("query must be a string")
-    fields = {"query": query}
+    fields = {"query": query, "profile_id": profile_id}
     for key in ("include_domains", "exclude_domains"):
         value = payload.get(key) or []
         if not isinstance(value, list) or not all(
@@ -216,7 +224,20 @@ def issue_for_request(settings, fields):
     `do_POST` charges the `authorize-minute` bucket ahead of every other check,
     including the session-header and body validation this function assumes
     already passed, so the meter here would double-charge one request.
+
+    The requested `profile_id` names the web profile the browser selected;
+    `settings.profile` names the profile this broker process was launched
+    for and is what `enforce_search_authorization` on the MCP child compares
+    a spent grant's `profile_id` against. Signing the requested name instead
+    of the launch name would issue a grant that reads as authorized here and
+    is refused at the child, so a mismatch is refused here instead, against
+    the same name the grant is actually signed with.
     """
+    if fields["profile_id"] != settings.profile:
+        raise server.AuthorizationDenied(
+            f"this broker serves profile {settings.profile!r}; "
+            f"the request named {fields['profile_id']!r}"
+        )
     return server.issue_grant(
         settings.token_key_file,
         fields["query"],
@@ -423,7 +444,9 @@ class BrokerServer(http.server.HTTPServer):
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="authorize-broker.py",
-        description="issue one search grant per human approval over loopback",
+        description="issue one search grant per human approval over loopback; "
+        "POST /grant requires profile_id in the request body, matching "
+        "--profile below, beside the search_exa fields it approves",
     )
     parser.add_argument("--host", type=loopback_host, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=0)
@@ -433,7 +456,9 @@ def build_parser():
     parser.add_argument("--state-dir", default=os.environ.get("QWEN_WEB_STATE_DIR", ""))
     parser.add_argument("--provider", default=os.environ.get("QWEN_WEB_PROVIDER", "exa"))
     parser.add_argument(
-        "--profile", default=os.environ.get("QWEN_WEB_PROFILE", "default")
+        "--profile", default=os.environ.get("QWEN_WEB_PROFILE", "default"),
+        help="the profile this broker serves; POST /grant requires the "
+        "request body's profile_id to equal this value",
     )
     parser.add_argument(
         "--lifetime", type=int, default=server.TOKEN_LIFETIME_DEFAULT_SECONDS
