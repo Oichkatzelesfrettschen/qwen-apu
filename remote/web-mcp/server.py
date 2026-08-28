@@ -65,6 +65,7 @@ RESULT_CLAIM_CONTEXT = "result-id"
 AUTHORIZATION_CLAIM_CONTEXT = "search-authorization"
 
 SEPARATOR_PATTERN = re.compile(r"^-{3,}$")
+FAILURE_TAG_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 HOSTNAME_PATTERN = re.compile(
     r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?"
     r"(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$"
@@ -424,6 +425,43 @@ class Provider:
         raise NotImplementedError
 
 
+def select_by_url(entries, url):
+    """Return the entry whose `url` or `id` canonicalizes to `url`.
+
+    A provider response is attacker-influenced through the page it describes,
+    so the entry is selected by the URL the signed claim carries rather than by
+    position in the array.
+    """
+    if not isinstance(entries, list):
+        return None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        for key in ("url", "id"):
+            candidate = entry.get(key)
+            if not isinstance(candidate, str):
+                continue
+            try:
+                if canonical_url(candidate) == url:
+                    return entry
+            except ToolError:
+                continue
+    return None
+
+
+def failure_tag(status):
+    """Return the provider's failure tag reduced to a safe short token.
+
+    The tag reaches the model inside an error message, so a value that is not a
+    short identifier is replaced rather than forwarded.
+    """
+    error = status.get("error")
+    tag = error.get("tag") if isinstance(error, dict) else None
+    if isinstance(tag, str) and FAILURE_TAG_PATTERN.match(tag.strip()):
+        return tag.strip()
+    return "unspecified"
+
+
 class ExaProvider(Provider):
     """Exa's /search and /contents JSON APIs over urllib.
 
@@ -498,14 +536,31 @@ class ExaProvider(Provider):
         return results if isinstance(results, list) else []
 
     def contents(self, url, max_characters):
+        """Return the content record Exa reports as retrieved for this URL.
+
+        Exa answers a contents request with a `statuses` array beside
+        `results`, and a failed URL still occupies a position in the response,
+        so taking `results[0]` returns another URL's page whenever the
+        requested one failed or the provider reordered the array. The status
+        for this URL must read success and a result must name this URL before
+        any text is returned.
+        """
         document = self._post(
             EXA_CONTENTS_ENDPOINT,
             {"urls": [url], "text": {"maxCharacters": max_characters}},
         )
-        results = document.get("results")
-        if not isinstance(results, list) or not results:
+        status = select_by_url(document.get("statuses"), url)
+        if status is None:
+            raise ToolError("the provider reported no status for the result")
+        if str(status.get("status", "")).lower() != "success":
+            raise ToolError(
+                "the provider could not retrieve the result: "
+                + failure_tag(status)
+            )
+        record = select_by_url(document.get("results"), url)
+        if record is None:
             raise ToolError("the provider returned no content for the result")
-        return results[0]
+        return record
 
 
 class FakeProvider(Provider):
