@@ -108,8 +108,15 @@ measurement_failed=0
 parse_rate_for_label() {
     rate_log=$1
     expected_label=$2
+    # A bench log carries lines that hold no pipe at all -- the Vulkan device
+    # banner's first line and the trailing build line -- and mawk treats a
+    # negative field index as a fatal run-time error rather than an empty
+    # string. Without the guard awk aborts on line 1, END never runs, and the
+    # arm records an empty rate instead of the n/a a genuine miss produces.
+    # The table rows split into nine fields, so NF >= 3 is exactly what the
+    # $(NF - 2) and $(NF - 1) references require.
     awk -F'|' -v expected="$expected_label" '
-        {
+        NF >= 3 {
             label = $(NF - 2)
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", label)
             label_found = label == expected ||

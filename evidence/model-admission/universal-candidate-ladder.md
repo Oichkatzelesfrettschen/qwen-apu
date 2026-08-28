@@ -175,9 +175,23 @@ rather than at a comparable one.
 The two terms are not separable from one arm. Achieved rate rises as the
 checkpoint shrinks across this whole sweep, so part of the 0.8B's lead is size
 and part is format. Separating them needs a Q8_0 and a Q4_K_M of the same
-checkpoint in one sweep, which `Qwen3.5-2B` could supply if its Q8_0 rung is
-fetched. Until then the recorded fact is that Q8_0 at 0.8B reaches 14.84 GB/s
-and the mechanism is unattributed.
+checkpoint in one sweep.
+
+`evidence/model-admission/runtime-class-throughput.md` supplies that arm from
+this checkpoint rather than from `Qwen3.5-2B`, because `bartowski` publishes a
+Q4_K_M rung of Qwen3.5-0.8B and the two formats then share a trunk, a block
+count, and a chat template. They decode at 15.31 and 15.17 tok/s at 0.801 and
+0.547 GB per token, so the Q8_0 streams 46.4% more bytes at a decode rate
+0.9% apart, inside the within-arm deviations, which leaves the direction
+unresolved and refutes the 23 to 48% Q4_K_M advantage both accounts predicted.
+
+That sweep reads the Q8_0 at 12.27 GB/s where this one reads 14.84, and the
+difference is the sweep rather than the checkpoint. The same re-run measured the
+4B distill 10.6% below this sweep and the 2B distill 16.4% below it, which is
+the direction a size-dependent term would take and, at two sweeps, is not
+separable from their own scatter, so the single scalar offset proposed below
+stands unconfirmed. Both figures stand as within-sweep measurements and neither
+transfers.
 
 ## Size orders achieved rate, and one row breaks it
 

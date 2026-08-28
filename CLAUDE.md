@@ -93,6 +93,29 @@ sweep ran 11.1 to 11.5% above those means on the two checkpoints common to both.
 No falsifier was met, and the offset was larger than every effect the
 predictions were trying to resolve, so an absolute band measures the sweep.
 
+That sweep proposed one scalar offset per sweep as the remedy, and
+`evidence/model-admission/runtime-class-throughput.md` leaves the remedy
+unconfirmed. Against the seven-checkpoint sweep the 4B distill fell 10.6% where
+the 2B distill fell 16.4% in the same twelve-arm re-run, moving the pair's ratio
+from 0.3634 to 0.3884, whose nominal 95% interval overlaps the registered 0.345
+to 0.382 band by 0.002. Two sweeps cannot separate a size-dependent term from
+their own scatter, so the anchor control fails narrowly and inconclusively. A
+ratio against an in-sweep checkpoint is more stable than an absolute rate and
+is not invariant; the cross-sweep term on this pair was observed at 6.9% once
+and its expected size is unmeasured.
+
+The reported deviation of a rate is not its uncertainty. `llama-bench` prints a
+standard deviation over the repetitions inside one arm, and those repetitions
+agree far more closely than an arm agrees with its own reverse: the 4B distill
+measured 3.41 +/- 0.01 and 2.95 +/- 0.01 in one sweep, 0.3% within each arm
+against 14.5% between them. Raising the repetition count measures one machine
+state better rather than narrowing the spread, and four slots per checkpoint
+brought that row to a 4.4% span where two slots gave 14.5%. Load peak does not
+order the instability: the 0.8B Q8_0 arm at the sweep's highest load peak
+landed 0.9% from its pair. Checkpoint size and queue distance remain
+confounded, because the mirrored order put the large pairs nine to eleven slots
+apart and the small pairs one to five, so neither is credited.
+
 The registry rather than a constant sets the admitted depth.
 `remote/models.tsv` carries `context_default`, `context_ceiling`, and
 `context_target` per checkpoint along with the KV cache types and the
@@ -486,6 +509,42 @@ no faster, which closes that low-bit route, and Q6_K and Q5_K_M close the tested
 route upward. Achieved streaming forms two observed groups rather than ordering
 by bit width: a Q4_K trunk and a Q6_K trunk both reach about 8.1 GB/s where a
 Q5_K trunk reaches 5.9. IQ and other reconstruction kernels remain unmeasured.
+
+The low-bit route closes at 0.8B for a different reason, and the reason removes
+the byte count from the account entirely. The three 0.8B-class checkpoints of
+`evidence/model-admission/runtime-class-throughput.md` decode at 15.96, 15.17,
+and 15.31 tok/s while streaming 0.477, 0.547, and 0.801 GB per token: 5.2% of
+rate across 67.9% of bytes, over two value formats and two architectures, with
+every arm inside the sweep's span criterion. The whole token time there is 63
+to 66 ms, about a fifth of the 4B's 314 ms, and the same-checkpoint pair bounds
+the byte-linear part: 0.254 GB more per token costs 0.6 ms less, so the
+marginal cost of a streamed byte is indistinguishable from zero and the term
+that sets the rate is not separately estimated.
+
+The consequence is a serving decision. Qwen3.5-0.8B at Q8_0 streams 46.4% more
+bytes per token than the same checkpoint at Q4_K_M and the two decode rates
+differ by 0.9%, inside the within-arm deviations, so the direction is
+unresolved. Both registered accounts predicted the Q4_K_M 23 to 48% faster and
+are refuted on magnitude; the served `qwen35-08b` Q8_0 row keeps its position
+and a Q4_K_M rung of that class competes on quality rather than on throughput.
+The prefill halves separate where the decode halves do not, 146.22 against
+134.91 tok/s, which places Q4_K's super-block scale decode in the half where
+arithmetic rather than a per-token cost dominates.
+
+Qwen3-Zero-Coder-Reasoning-0.8B runs 42 blocks at 1024 embedding width against
+the Qwen3.5-0.8B's 24 and achieves 7.62 GB/s against 8.30 at 87.3% of the bytes,
+with a 24.3% prefill deficit against a 5.2% decode advantage. Achieved GB/s is
+bytes times rate, so that 8.2% deficit restates the two inputs, and the rows
+differ in architecture, feed-forward width, and head counts beside block count,
+so a per-dispatch cost stays a correlated observation until one trunk is
+measured at two depths.
+
+Two architectures now break the size ordering of achieved rate in the same
+direction. `evidence/model-admission/universal-candidate-ladder.md` recorded
+LFM2's short-convolution blocks doing it, and Qwen2-VL-2B at 28 blocks of full
+attention over 12 heads and 2 KV heads achieves 8.24 GB/s against the 2B
+distill's 9.71 in one sweep while streaming 22.4% fewer bytes. The operator mix
+rather than the byte count orders achieved rate across architectures.
 
 Every distill ships a multi-token-prediction block that the speculation setting
 decides the fate of. `qwen35.nextn_predict_layers` is 1 and `block_count` counts
