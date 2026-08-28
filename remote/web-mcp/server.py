@@ -914,6 +914,12 @@ class Ledger:
             "search_id TEXT, canonical_url TEXT, provider_result_id TEXT,"
             " PRIMARY KEY(search_id, canonical_url))"
         )
+        self.connection.execute(
+            "CREATE TABLE IF NOT EXISTS content ("
+            "content_id TEXT PRIMARY KEY, search_id TEXT, canonical_url TEXT,"
+            " text TEXT, content_sha256 TEXT, may_have_more INTEGER,"
+            " provider_status TEXT, retrieved_at INTEGER, expiry INTEGER)"
+        )
         self.prune(time.time() if now is None else now)
 
     def prune(self, now):
@@ -938,6 +944,59 @@ class Ledger:
         self.connection.execute(
             "DELETE FROM search_results WHERE search_id NOT IN"
             " (SELECT search_id FROM searches)"
+        )
+        self.connection.execute(
+            "DELETE FROM content WHERE expiry < ?", (int(now),)
+        )
+        self.connection.commit()
+
+    def snapshot(self, content_id, now):
+        """Return the stored document of one (search, URL) pair, or None.
+
+        The window a fetch returns comes from this row on every call after the
+        first, so what the model reads on page two is the text page one was
+        cut from: a source that changes between two pages changes nothing the
+        reply carries, and the digest on each page describes the same
+        document.
+        """
+        row = self.connection.execute(
+            "SELECT text, may_have_more, provider_status, retrieved_at, expiry"
+            " FROM content WHERE content_id = ?",
+            (content_id,),
+        ).fetchone()
+        if row is None or now >= row[4]:
+            return None
+        return {
+            "text": row[0],
+            "may_have_more": bool(row[1]),
+            "provider_status": row[2],
+            "retrieved_at": row[3],
+        }
+
+    def store_snapshot(self, extraction, search_id, url, retrieved_at, expiry):
+        """Store one retrieved document under its content identity.
+
+        The row is written after extraction succeeds, so a body refused for its
+        size or its encoding leaves nothing behind and the next attempt charges
+        the provider again rather than serving a half-written snapshot. The
+        expiry equals the result identifier's own, so the snapshot and the
+        reference that reaches it end together and `prune` removes the text.
+        """
+        self.connection.execute(
+            "INSERT OR REPLACE INTO content(content_id, search_id, canonical_url,"
+            " text, content_sha256, may_have_more, provider_status, retrieved_at,"
+            " expiry) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                extraction.content_id,
+                search_id,
+                url,
+                extraction.text,
+                hashlib.sha256(extraction.text.encode("utf-8")).hexdigest(),
+                1 if extraction.provider_may_have_more else 0,
+                extraction.provider_status,
+                int(retrieved_at),
+                int(expiry),
+            ),
         )
         self.connection.commit()
 
@@ -1619,34 +1678,49 @@ def call_fetch(settings, arguments):
                 "the result_id was issued by another provider than the "
                 "configured one"
             )
-        if ledger is not None:
-            ledger.consume_fetch(claim["search_id"], url, now)
-            spend_budget(ledger, settings, "fetch", now)
-        # The retrieval asks for the whole document the cap admits rather than
-        # this window, so a later window reads text the first call already
-        # holds and the reply's truncation flag describes the document.
-        record = provider.contents(
-            url,
-            DOCUMENT_CHARACTER_CAP,
-            claim["provider_result_id"],
-            claim["freshness"],
-        )
-        extraction = extract_content(
-            record,
-            DOCUMENT_CHARACTER_CAP,
-            content_identity(claim["search_id"], url),
-        )
+        content_id = content_identity(claim["search_id"], url)
+        stored = ledger.snapshot(content_id, now) if ledger is not None else None
+        retrieved_at = now
+        if stored is None:
+            if ledger is not None:
+                ledger.consume_fetch(claim["search_id"], url, now)
+                spend_budget(ledger, settings, "fetch", now)
+            # The retrieval asks for the whole document the cap admits rather
+            # than this window, so the snapshot holds every character a later
+            # window can name and the truncation flag describes the document.
+            record = provider.contents(
+                url,
+                DOCUMENT_CHARACTER_CAP,
+                claim["provider_result_id"],
+                claim["freshness"],
+            )
+            extraction = extract_content(record, DOCUMENT_CHARACTER_CAP, content_id)
+            if ledger is not None:
+                ledger.store_snapshot(
+                    extraction, claim["search_id"], url, now, claim["expiry"]
+                )
+            audit["provider_bytes"] = provider.response_bytes
+        else:
+            # A window past the first reads the stored document, so paging
+            # costs one provider request per document and a source that
+            # changes between two pages leaves both pages as retrieved.
+            extraction = ExtractedContent(
+                text=stored["text"],
+                provider_may_have_more=stored["may_have_more"],
+                provider_status=stored["provider_status"],
+                content_id=content_id,
+            )
+            retrieved_at = stored["retrieved_at"]
         text = extraction.text
         window = text[start_index:window_end]
         truncated = len(text) > start_index + len(window) or (
             extraction.provider_may_have_more and start_index + len(window) >= len(text)
         )
         audit["result_count"] = 1
-        audit["provider_bytes"] = provider.response_bytes
         audit["returned_characters"] = len(window)
         audit["status"] = "success"
         return wrap_untrusted(
-            url, utc_timestamp(now), window, start_index, truncated
+            url, utc_timestamp(retrieved_at), window, start_index, truncated
         )
     except ToolError as error:
         audit["status"] = error.status

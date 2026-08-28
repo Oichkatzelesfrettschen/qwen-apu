@@ -104,6 +104,15 @@ def build_fixture_document():
                     "highlights": ["alpha\n---\nbeta", "---", "  spaced  out  "],
                 }
             ],
+            "paged doc": [
+                {
+                    "title": "A document read in two windows",
+                    "url": "https://paged.example.net/doc",
+                    "publishedDate": "",
+                    "author": "",
+                    "highlights": [],
+                }
+            ],
             "exact cap": [
                 {
                     "title": "Exactly the document cap",
@@ -147,6 +156,7 @@ def build_fixture_document():
             "https://hostile.example.net/inject": {"text": INJECTION_TEXT},
             "https://big.example.net/huge": {"text": oversized},
             "https://bad.example.net/bytes": {"text_base64": invalid_utf8},
+            "https://paged.example.net/doc": {"text": "0123456789abcdefghij"},
             "https://exact.example.net/cap": {
                 "text": "e" * server.DOCUMENT_CHARACTER_CAP
             },
@@ -1357,6 +1367,114 @@ class WebMcpServerTest(unittest.TestCase):
             {"result_id": self.token_for(second_search, "https://frame.example.net/close")},
         )
         self.assertFalse(renewed["result"]["isError"])
+
+    def rewrite_fixture_text(self, url, text):
+        """Change one document in the fixture file the next call reads."""
+        document = build_fixture_document()
+        document["contents"][url] = {"text": text}
+        with open(self.fixture_path, "w", encoding="utf-8") as handle:
+            json.dump(document, handle)
+        self.addCleanup(self.restore_fixture)
+
+    def restore_fixture(self):
+        with open(self.fixture_path, "w", encoding="utf-8") as handle:
+            json.dump(build_fixture_document(), handle)
+
+    def test_a_second_window_reads_the_snapshot_the_first_retrieval_stored(self):
+        state_path = self.state_directory("snapshot-state")
+        session = self.open_session(
+            QWEN_WEB_STATE_DIR=state_path, QWEN_WEB_MAX_FETCHES_PER_SEARCH="1"
+        )
+        url = "https://paged.example.net/doc"
+        result_id = self.token_for(
+            self.result_text(self.search(session, query="paged doc")), url
+        )
+        first = self.result_text(
+            session.call_tool(
+                "fetch_exa",
+                {"result_id": result_id, "start_index": 0, "max_chars": 10},
+            )
+        ).splitlines()
+        self.assertEqual(first[8], "0123456789")
+        self.assertEqual(first[6], "Next Start Index: 10")
+        self.rewrite_fixture_text(url, "ZZZZZZZZZZZZZZZZZZZZ")
+        second = self.result_text(
+            session.call_tool(
+                "fetch_exa",
+                {"result_id": result_id, "start_index": 10, "max_chars": 10},
+            )
+        ).splitlines()
+        self.assertEqual(second[8], "abcdefghij")
+        self.assertEqual(second[1], first[1])
+        self.assertEqual(second[2], first[2])
+        rows = self.audit_rows(state_path)
+        self.assertEqual([row[7] for row in rows], ["success", "success", "success"])
+        self.close_cleanly(session)
+        connection = sqlite3.connect(
+            os.path.join(state_path, server.LEDGER_FILE_NAME)
+        )
+        try:
+            stored = connection.execute(
+                "SELECT canonical_url, text, content_sha256, may_have_more"
+                " FROM content"
+            ).fetchall()
+            fetches = connection.execute(
+                "SELECT fetches_used FROM searches"
+            ).fetchone()
+        finally:
+            connection.close()
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0][0], url)
+        self.assertEqual(stored[0][1], "0123456789abcdefghij")
+        self.assertEqual(
+            stored[0][2], hashlib.sha256(b"0123456789abcdefghij").hexdigest()
+        )
+        self.assertEqual(stored[0][3], 0)
+        self.assertEqual(fetches[0], 1)
+
+    def test_an_expired_snapshot_is_dropped_on_the_next_open(self):
+        state_path = self.state_directory("snapshot-retention-state")
+        session = self.open_session(QWEN_WEB_STATE_DIR=state_path)
+        result_id = self.first_result_id(
+            self.result_text(self.search(session, max_results=1))
+        )
+        session.call_tool("fetch_exa", {"result_id": result_id})
+        self.close_cleanly(session)
+        database = os.path.join(state_path, server.LEDGER_FILE_NAME)
+        connection = sqlite3.connect(database)
+        connection.execute("UPDATE content SET expiry = 1")
+        connection.commit()
+        connection.close()
+        ledger = server.Ledger(state_path)
+        try:
+            self.assertEqual(
+                ledger.connection.execute(
+                    "SELECT count(*) FROM content"
+                ).fetchone()[0],
+                0,
+            )
+        finally:
+            ledger.close()
+
+    def test_a_refused_body_leaves_no_snapshot(self):
+        state_path = self.state_directory("refused-body-state")
+        session = self.open_session(QWEN_WEB_STATE_DIR=state_path)
+        search_text = self.result_text(self.search(session, max_results=10))
+        response = session.call_tool(
+            "fetch_exa",
+            {"result_id": self.token_for(search_text, "https://bad.example.net/bytes")},
+        )
+        self.assertTrue(response["result"]["isError"])
+        self.close_cleanly(session)
+        connection = sqlite3.connect(
+            os.path.join(state_path, server.LEDGER_FILE_NAME)
+        )
+        try:
+            self.assertEqual(
+                connection.execute("SELECT count(*) FROM content").fetchone()[0], 0
+            )
+        finally:
+            connection.close()
 
     def test_a_result_the_ledger_never_issued_reaches_no_provider(self):
         state_path = self.state_directory("unissued-result-state")
