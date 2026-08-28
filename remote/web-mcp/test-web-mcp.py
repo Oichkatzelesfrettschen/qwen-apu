@@ -32,7 +32,7 @@ INJECTION_TEXT = (
 
 
 def build_fixture_document():
-    oversized = "z" * (server.RESPONSE_BYTE_CAP + 64)
+    oversized = "z" * (server.HTTP_RESPONSE_BYTE_CAP + 64)
     invalid_utf8 = base64.b64encode(b"head \xff\xfe tail").decode("ascii")
     return {
         "search": {
@@ -305,8 +305,12 @@ class WebMcpServerTest(unittest.TestCase):
         self.assertEqual(lines[1], "Source: https://example.org/raven2")
         self.assertTrue(lines[2].startswith("Retrieved: "))
         self.assertTrue(lines[3].startswith("Content SHA-256: "))
-        self.assertEqual(lines[4], "0123456789abcdefghij")
-        self.assertEqual(lines[5], "END UNTRUSTED WEB CONTENT")
+        self.assertEqual(lines[4], "Start Index: 0")
+        self.assertEqual(lines[5], "Returned Characters: 20")
+        self.assertEqual(lines[6], "Next Start Index: end")
+        self.assertEqual(lines[7], "Possibly Truncated: no")
+        self.assertEqual(lines[8], "0123456789abcdefghij")
+        self.assertEqual(lines[9], "END UNTRUSTED WEB CONTENT")
 
     def test_window_arguments_select_a_substring(self):
         session = self.open_session()
@@ -319,7 +323,12 @@ class WebMcpServerTest(unittest.TestCase):
                 {"result_id": result_id, "start_index": 4, "max_chars": 6},
             )
         )
-        self.assertEqual(text.splitlines()[4], "456789")
+        lines = text.splitlines()
+        self.assertEqual(lines[4], "Start Index: 4")
+        self.assertEqual(lines[5], "Returned Characters: 6")
+        self.assertEqual(lines[6], "Next Start Index: 10")
+        self.assertEqual(lines[7], "Possibly Truncated: yes")
+        self.assertEqual(lines[8], "456789")
 
     def test_tampered_token_is_refused(self):
         session = self.open_session()
@@ -402,7 +411,7 @@ class WebMcpServerTest(unittest.TestCase):
                 self.assertIn(expected, self.result_text(response))
         response = session.call_tool(
             "fetch_exa",
-            {"result_id": "a.b", "max_chars": server.FETCH_CHARACTER_CAP + 1},
+            {"result_id": "a.b", "max_chars": server.WINDOW_CHARACTER_CAP + 1},
         )
         self.assertIn("must lie between", self.result_text(response))
 
@@ -731,6 +740,37 @@ class WebMcpServerTest(unittest.TestCase):
                     "QWEN_WEB_TOKEN_LIFETIME_SECONDS", self.result_text(response)
                 )
 
+    def test_a_window_beyond_the_document_cap_is_refused(self):
+        session = self.open_session()
+        result_id = self.first_result_id(
+            self.result_text(self.search(session, max_results=1))
+        )
+        response = session.call_tool(
+            "fetch_exa",
+            {
+                "result_id": result_id,
+                "start_index": server.DOCUMENT_CHARACTER_CAP - 10,
+                "max_chars": 100,
+            },
+        )
+        self.assertTrue(response["result"]["isError"])
+        self.assertIn("document cap", self.result_text(response))
+
+    def test_exa_contents_body_bounds_the_document_request(self):
+        captured = {}
+
+        class RecordingProvider(server.ExaProvider):
+            def _post(self, endpoint, body):
+                captured["endpoint"] = endpoint
+                captured["body"] = body
+                return {"results": [{"url": "https://example.org/x", "text": ""}]}
+
+        RecordingProvider("unused").contents("https://example.org/x", 4321)
+        self.assertEqual(captured["endpoint"], server.EXA_CONTENTS_ENDPOINT)
+        self.assertEqual(
+            captured["body"], {"urls": ["https://example.org/x"], "text": {"maxCharacters": 4321}}
+        )
+
     def test_oversized_body_is_refused(self):
         session = self.open_session()
         text = self.result_text(self.search(session))
@@ -758,7 +798,7 @@ class WebMcpServerTest(unittest.TestCase):
         lines = text.splitlines()
         self.assertEqual(lines[0], "UNTRUSTED WEB CONTENT")
         self.assertEqual(lines[-1], "END UNTRUSTED WEB CONTENT")
-        body = "\n".join(lines[4:-1])
+        body = "\n".join(lines[8:-1])
         self.assertEqual(body, INJECTION_TEXT)
 
     def token_for(self, search_text, url):

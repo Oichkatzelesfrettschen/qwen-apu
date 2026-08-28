@@ -41,8 +41,8 @@ QUERY_CHARACTER_CAP = 512
 RESULT_COUNT_CAP = 10
 DOMAIN_LIST_CAP = 10
 DOMAIN_CHARACTER_CAP = 253
-FETCH_CHARACTER_CAP = 24000
-FETCH_CHARACTER_DEFAULT = 12000
+WINDOW_CHARACTER_CAP = 24000
+WINDOW_CHARACTER_DEFAULT = 12000
 HIGHLIGHT_COUNT_CAP = 3
 TITLE_CHARACTER_CAP = 300
 AUTHOR_CHARACTER_CAP = 200
@@ -52,7 +52,10 @@ RESULT_ID_CHARACTER_CAP = 4096
 URL_CHARACTER_CAP = 2048
 DOCUMENT_CHARACTER_CAP = 131072
 REQUEST_TIMEOUT_SECONDS = 20.0
-RESPONSE_BYTE_CAP = 4 * 1024 * 1024
+# The HTTP cap defends this process against a provider response of any size;
+# the document cap bounds how much page text one fetched result may hold; the
+# window cap bounds one reply. Three separate limits, three separate failures.
+HTTP_RESPONSE_BYTE_CAP = 4 * 1024 * 1024
 MAX_AGE_HOURS_CAP = 24 * 365
 TOKEN_LIFETIME_DEFAULT_SECONDS = 900
 TOKEN_LIFETIME_MINIMUM_SECONDS = 60
@@ -417,7 +420,7 @@ class Provider:
     def search(self, query, max_results, constraints):
         raise NotImplementedError
 
-    def contents(self, url):
+    def contents(self, url, max_characters):
         raise NotImplementedError
 
 
@@ -450,16 +453,16 @@ class ExaProvider(Provider):
             with urllib.request.urlopen(
                 request, timeout=REQUEST_TIMEOUT_SECONDS
             ) as response:
-                raw = response.read(RESPONSE_BYTE_CAP + 1)
+                raw = response.read(HTTP_RESPONSE_BYTE_CAP + 1)
         except urllib.error.HTTPError as error:
             raise ToolError(
                 f"the provider rejected the request with status {error.code}"
             ) from None
         except Exception:
             raise ToolError("the provider request failed") from None
-        if len(raw) > RESPONSE_BYTE_CAP:
+        if len(raw) > HTTP_RESPONSE_BYTE_CAP:
             raise ToolError(
-                f"the provider response exceeds the {RESPONSE_BYTE_CAP} byte cap"
+                f"the provider response exceeds the {HTTP_RESPONSE_BYTE_CAP} byte cap"
             )
         try:
             document = json.loads(raw.decode("utf-8"))
@@ -494,9 +497,10 @@ class ExaProvider(Provider):
         results = document.get("results")
         return results if isinstance(results, list) else []
 
-    def contents(self, url):
+    def contents(self, url, max_characters):
         document = self._post(
-            EXA_CONTENTS_ENDPOINT, {"urls": [url], "text": True}
+            EXA_CONTENTS_ENDPOINT,
+            {"urls": [url], "text": {"maxCharacters": max_characters}},
         )
         results = document.get("results")
         if not isinstance(results, list) or not results:
@@ -551,7 +555,7 @@ class FakeProvider(Provider):
             selected.append(record)
         return selected[:max_results]
 
-    def contents(self, url):
+    def contents(self, url, max_characters):
         record = self.document.get("contents", {}).get(url)
         if record is None:
             raise ToolError("the provider returned no content for the result")
@@ -637,33 +641,35 @@ def require_domain_list(arguments, key):
 
 
 def decode_content_text(record):
-    """Return the UTF-8 text of a content record, refusing anything else.
+    """Return the UTF-8 text of a content record, bounded at the document cap.
 
     A `text_base64` field decodes through a strict UTF-8 decode, so a body that
     is not valid UTF-8 is refused here rather than reaching the model as
-    replacement characters.
+    replacement characters. A record above the HTTP byte cap is refused as a
+    provider defect, and a document above the character cap is truncated, which
+    the reply reports on its `Possibly Truncated:` line.
     """
     if "text_base64" in record:
         try:
             raw = base64.b64decode(record["text_base64"], validate=True)
         except (ValueError, TypeError):
             raise ToolError("the provider content is not valid base64") from None
-        if len(raw) > RESPONSE_BYTE_CAP:
+        if len(raw) > HTTP_RESPONSE_BYTE_CAP:
             raise ToolError(
-                f"the provider content exceeds the {RESPONSE_BYTE_CAP} byte cap"
+                f"the provider content exceeds the {HTTP_RESPONSE_BYTE_CAP} byte cap"
             )
         try:
-            return raw.decode("utf-8")
+            return raw.decode("utf-8")[:DOCUMENT_CHARACTER_CAP]
         except UnicodeDecodeError:
             raise ToolError("the provider content is not valid UTF-8") from None
     text = record.get("text", "")
     if not isinstance(text, str):
         raise ToolError("the provider content is not text")
-    if len(text.encode("utf-8")) > RESPONSE_BYTE_CAP:
+    if len(text.encode("utf-8")) > HTTP_RESPONSE_BYTE_CAP:
         raise ToolError(
-            f"the provider content exceeds the {RESPONSE_BYTE_CAP} byte cap"
+            f"the provider content exceeds the {HTTP_RESPONSE_BYTE_CAP} byte cap"
         )
-    return text
+    return text[:DOCUMENT_CHARACTER_CAP]
 
 
 def render_search_results(
@@ -730,15 +736,27 @@ def clip(value, cap):
     return text[:cap]
 
 
-def wrap_untrusted(url, retrieved_at, text):
-    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+def wrap_untrusted(url, retrieved_at, window, start_index, truncated):
+    """Frame one window of page text with the state a next call needs.
+
+    `Next Start Index` names the offset that continues the document and reads
+    `end` where the window reached the last character the document holds, so
+    paging is decided by the server's own count rather than by the model's
+    arithmetic over a body it cannot measure.
+    """
+    digest = hashlib.sha256(window.encode("utf-8")).hexdigest()
+    next_index = start_index + len(window)
     return "\n".join(
         [
             UNTRUSTED_HEADER,
             f"Source: {url}",
             f"Retrieved: {retrieved_at}",
             f"Content SHA-256: {digest}",
-            text,
+            f"Start Index: {start_index}",
+            f"Returned Characters: {len(window)}",
+            f"Next Start Index: {next_index if truncated else 'end'}",
+            f"Possibly Truncated: {'yes' if truncated else 'no'}",
+            window,
             UNTRUSTED_FOOTER,
         ]
     )
@@ -794,7 +812,7 @@ def call_fetch(settings, arguments):
         arguments, "start_index", 0, 0, DOCUMENT_CHARACTER_CAP
     )
     max_chars = require_integer(
-        arguments, "max_chars", FETCH_CHARACTER_DEFAULT, 1, FETCH_CHARACTER_CAP
+        arguments, "max_chars", WINDOW_CHARACTER_DEFAULT, 1, WINDOW_CHARACTER_CAP
     )
     signing_key = read_secret_file(settings["token_key_file"], "token signing")
     now = time.time()
@@ -805,12 +823,19 @@ def call_fetch(settings, arguments):
         raise ToolError(
             "the result_id was issued by another provider than the configured one"
         )
-    record = provider.contents(url)
+    window_end = start_index + max_chars
+    if window_end > DOCUMENT_CHARACTER_CAP:
+        raise ToolError(
+            "start_index plus max_chars exceeds the "
+            f"{DOCUMENT_CHARACTER_CAP} character document cap"
+        )
+    record = provider.contents(url, window_end)
     text = decode_content_text(record)
-    window = text[start_index : start_index + max_chars]
-    if not window:
-        window = ""
-    return wrap_untrusted(url, utc_timestamp(now), window)
+    window = text[start_index:window_end]
+    truncated = len(text) > start_index + len(window)
+    return wrap_untrusted(
+        url, utc_timestamp(now), window, start_index, truncated
+    )
 
 
 TOOL_DEFINITIONS = [
@@ -892,7 +917,10 @@ TOOL_DEFINITIONS = [
                 },
                 "max_chars": {
                     "type": "integer",
-                    "description": "Characters to return, at most 24000.",
+                    "description": (
+                        "Characters to return, at most 24000. The reply names "
+                        "the next start index when more text remains."
+                    ),
                 },
             },
             "required": ["result_id"],

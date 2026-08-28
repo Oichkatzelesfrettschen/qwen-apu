@@ -84,13 +84,19 @@ values, stderr, and every error message.
 
 ## Caps
 
-Query 512 characters, results 1 to 10, each domain list 10 entries, fetch window
-24000 characters with 12000 the default, and a request timeout of 20 seconds.
-The 4 MiB cap is a document-size limit: the HTTP body is read to one byte past
-it so an oversized response is refused during the read, and a content record
-above it is refused rather than truncated, which puts a document larger than the
-cap out of reach of `start_index` paging as well. A fetched body decodes as
-strict UTF-8; anything else is refused rather than substituted.
+Query 512 characters, results 1 to 10, each domain list 10 entries of validated
+hostname, title 300 characters, author 200, each highlight 1200, a whole
+rendered search 16000, a result identifier 4096, a URL 2048, and a request
+timeout of 20 seconds.
+
+Three separate limits bound a fetch. The HTTP response cap of 4 MiB defends
+this process against a provider response of any size and is applied during the
+read, one byte past the limit. The document cap of 131072 characters bounds how
+much page text one result may hold, reaches Exa as `text.maxCharacters`, and
+truncates a longer document. The window cap of 24000 characters, 12000 by
+default, bounds one reply, and a window whose end passes the document cap
+refuses the call. A fetched body decodes as strict UTF-8; anything else is
+refused rather than substituted.
 
 ## Fetched text is quarantined in its wrapper
 
@@ -101,12 +107,19 @@ UNTRUSTED WEB CONTENT
 Source: <url>
 Retrieved: <utc>
 Content SHA-256: <hex>
+Start Index: <int>
+Returned Characters: <int>
+Next Start Index: <int or end>
+Possibly Truncated: <yes or no>
 <text>
 END UNTRUSTED WEB CONTENT
 ```
 
 The digest identifies the exact returned window, and the frame marks where
-attacker-controlled text begins and ends. `search_exa` returns titles, URLs,
+attacker-controlled text begins and ends. `Next Start Index` names the offset
+that continues the document and reads `end` where the window reached the last
+character, so paging follows the server's count rather than the model's
+arithmetic over a body it cannot measure. `search_exa` returns titles, URLs,
 and highlights, and the page body reaches the model through the wrapper alone.
 
 ## Providers
