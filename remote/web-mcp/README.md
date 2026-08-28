@@ -88,7 +88,11 @@ the same claim, so a fetch spends the publication window and cached age the
 operator approved rather than a value the model writes on the second call. A
 result URL naming a loopback, RFC 1918, link-local, or reserved literal, the
 `localhost` name, or userinfo credentials is refused where the search renders
-it.
+it. A legacy numeric spelling is refused on the spelling: `ipaddress` rejects
+`2130706433`, `0x7f000001`, and `0177.0.0.1` while common resolvers read all
+three as 127.0.0.1, so a host whose every label is a decimal or hexadecimal
+integer and which fails canonical parsing meets that refusal and a canonical
+public literal stays admitted.
 
 The token lifetime is 900 seconds by default and
 `QWEN_WEB_TOKEN_LIFETIME_SECONDS` sets it anywhere in [60, 3600]. The child holds no registry, so the expiry is what

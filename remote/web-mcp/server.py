@@ -73,6 +73,7 @@ AUTHORIZATION_CLAIM_CONTEXT = "search-authorization"
 SEPARATOR_PATTERN = re.compile(r"^-{3,}$")
 GRANT_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
 FAILURE_TAG_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+NUMERIC_LABEL_PATTERN = re.compile(r"^(0[xX][0-9a-fA-F]+|[0-9]+)$")
 HOSTNAME_PATTERN = re.compile(
     r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?"
     r"(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$"
@@ -315,6 +316,19 @@ def require_public_host(parts):
     try:
         address = ipaddress.ip_address(host)
     except ValueError:
+        # A host whose every label is a decimal or hexadecimal integer and
+        # which fails canonical parsing is a legacy numeric spelling:
+        # `2130706433`, `0x7f000001`, and `0177.0.0.1` all reach 127.0.0.1
+        # through common resolvers while `ip_address` rejects them, so the
+        # private-address branch below would never see them. The spelling is
+        # refused rather than converted, which keeps one address form in the
+        # signed reference and leaves a canonical public literal admitted.
+        labels = host.split(".")
+        if host and all(NUMERIC_LABEL_PATTERN.match(label) for label in labels):
+            raise ProviderContentError(
+                "the result URL names a noncanonical numeric host, which is "
+                "refused"
+            )
         return
     if (
         address.is_private

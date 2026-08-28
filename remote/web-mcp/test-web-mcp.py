@@ -165,6 +165,42 @@ def build_fixture_document():
                     "highlights": [],
                 }
             ],
+            "numeric hosts": [
+                {
+                    "title": "Decimal loopback",
+                    "url": "http://2130706433/status",
+                    "publishedDate": "",
+                    "author": "",
+                    "highlights": [],
+                }
+            ],
+            "hex hosts": [
+                {
+                    "title": "Hex loopback",
+                    "url": "http://0x7f000001/status",
+                    "publishedDate": "",
+                    "author": "",
+                    "highlights": [],
+                }
+            ],
+            "octal hosts": [
+                {
+                    "title": "Octal loopback",
+                    "url": "http://0177.0.0.1/status",
+                    "publishedDate": "",
+                    "author": "",
+                    "highlights": [],
+                }
+            ],
+            "public address": [
+                {
+                    "title": "Canonical public literal",
+                    "url": "http://93.184.216.34/page",
+                    "publishedDate": "",
+                    "author": "",
+                    "highlights": [],
+                }
+            ],
             "userinfo url": [
                 {
                     "title": "Credentialed",
@@ -1261,6 +1297,26 @@ class WebMcpServerTest(unittest.TestCase):
                 response = self.search(session, query=query)
                 self.assertTrue(response["result"]["isError"])
                 self.assertIn(expected, self.result_text(response))
+
+    def test_a_noncanonical_numeric_host_is_refused(self):
+        """A legacy numeric spelling of an address is refused as a host.
+
+        `ipaddress.ip_address` rejects `2130706433`, `0x7f000001`, and
+        `0177.0.0.1`, which common resolvers read as 127.0.0.1, so the
+        private-address branch never sees them and the URL would be signed
+        and crawled. A host whose every label is a decimal or hexadecimal
+        integer and which fails canonical parsing is refused on its spelling,
+        which leaves a canonical public literal admitted.
+        """
+        session = self.open_session()
+        for query in ("numeric hosts", "hex hosts", "octal hosts"):
+            with self.subTest(query=query):
+                response = self.search(session, query=query)
+                self.assertTrue(response["result"]["isError"])
+                self.assertIn("numeric host", self.result_text(response))
+        admitted = self.search(session, query="public address")
+        self.assertFalse(admitted["result"]["isError"])
+        self.assertIn("http://93.184.216.34/page", self.result_text(admitted))
 
     def test_domain_entries_must_be_hostnames(self):
         session = self.open_session()
