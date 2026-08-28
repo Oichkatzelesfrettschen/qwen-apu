@@ -2269,6 +2269,38 @@ class WebMcpServerTest(unittest.TestCase):
         self.assertTrue(response["result"]["isError"])
         self.assertIn("unreadable", self.result_text(response))
 
+    def test_a_fifo_in_place_of_a_key_file_refuses_the_call(self):
+        """A key path that is a FIFO answers rather than waiting for a writer.
+
+        `os.open` on a FIFO without `O_NONBLOCK` blocks until a writer
+        arrives, so the `fstat` that rejects a non-regular file never runs and
+        a misconfigured path hangs the call. The check runs in a child with a
+        timeout, which is what distinguishes the refusal from the wait.
+        """
+        fifo_path = os.path.join(self.directory.name, "key.fifo")
+        if os.path.lexists(fifo_path):
+            os.unlink(fifo_path)
+        os.mkfifo(fifo_path, 0o600)
+        self.addCleanup(os.unlink, fifo_path)
+        probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import sys, server\n"
+                "try:\n"
+                "    server.read_secret_file(sys.argv[1], 'token signing')\n"
+                "except server.ToolError as error:\n"
+                "    sys.stdout.write(str(error))\n",
+                fifo_path,
+            ],
+            capture_output=True,
+            text=True,
+            cwd=SERVER_DIRECTORY,
+            env=self.environment(),
+            timeout=10,
+        )
+        self.assertIn("regular file", probe.stdout)
+
     def test_directory_in_place_of_a_key_file_refuses_the_call(self):
         session = self.open_session(QWEN_WEB_TOKEN_KEY_FILE=self.directory.name)
         response = self.search(session)

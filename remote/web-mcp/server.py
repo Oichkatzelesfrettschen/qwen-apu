@@ -222,9 +222,11 @@ def tool_result(identifier, text, is_error):
 def read_secret_file(path, purpose):
     """Return the contents of a key file that only its owner reads.
 
-    The descriptor opens with O_NOFOLLOW and O_CLOEXEC, so a symlink planted at
-    the configured path fails the open rather than redirecting the read, and no
-    child of this process inherits the descriptor. The regular-file and mode
+    The descriptor opens with O_NOFOLLOW, O_CLOEXEC, and O_NONBLOCK, so a
+    symlink planted at the configured path fails the open rather than
+    redirecting the read, no child of this process inherits the descriptor,
+    and a FIFO returns at once for the regular-file check rather than waiting
+    for a writer. The regular-file and mode
     checks run against fstat of that same descriptor, which leaves no window
     between the check and the read for a replacement. Every check runs per call
     because llama-server respawns the child for each invocation.
@@ -235,7 +237,14 @@ def read_secret_file(path, purpose):
             "network path"
         )
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        # O_NONBLOCK returns the descriptor of a FIFO with no writer rather
+        # than waiting for one, so the fstat below rejects a special file
+        # planted at the configured path instead of hanging the call. A
+        # regular file reads whole under the flag.
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK,
+        )
     except OSError:
         raise ToolError(f"the {purpose} key file is unreadable: {path}") from None
     try:
