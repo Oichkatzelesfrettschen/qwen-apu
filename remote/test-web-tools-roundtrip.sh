@@ -96,9 +96,14 @@ tools_pid=$!
 read_listening_port() {
     listening_file=$1
     attempt=0
+    # The complete line rather than the first byte ends the wait: a partially
+    # flushed file would otherwise yield an empty port and send the next
+    # request to a hostless URL.
     while [ "$attempt" -lt 100 ]; do
-        if [ -s "$listening_file" ]; then
-            awk '/^listening / { print $3; exit }' "$listening_file"
+        listening_port=$(awk '/^listening / { print $3; exit }' "$listening_file" \
+            2>/dev/null || true)
+        if [ -n "$listening_port" ]; then
+            printf '%s\n' "$listening_port"
             return 0
         fi
         attempt=$((attempt + 1))

@@ -315,7 +315,9 @@ A web search reaches the network through one human approval, and the browser is
 the executor. llama-server reads `tools` from the client body alone and runs a
 wrapped MCP tool through the standalone `POST /tools` route, so the page
 composes `body.tools` from `GET /tools` when the per-turn Web toggle is on and
-a turn run with it off offers the model no network-reaching surface. A proposed
+a turn run with it off offers the model no network-reaching surface. The
+executor reads the toggle again where the call runs, so a proposal carried over
+from a turn that offered the web tools reaches no network once it is off. A proposed
 `web_search_exa` call opens a dialog naming the query, the publication
 interval, both domain lists, the result count, and whether `max_age_hours` of 0
 forces a live crawl, and the dialog offers one approval and a refusal because

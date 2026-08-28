@@ -103,6 +103,13 @@ grep -F "if (toolName !== WEB_SEARCH_TOOL_NAME) {" "$fallback_ui" >/dev/null
 grep -F 'The served path executes no tool named' "$fallback_ui" >/dev/null
 grep -F 'if (!outcome.calls.length) return;' "$fallback_ui" >/dev/null
 
+# The toggle is read again where the call runs, so a proposal carried over
+# from a turn that offered the web tools reaches no network once it is off.
+grep -F "if (!\$('#web-tools').checked && WEB_TOOL_NAMES.includes(toolName)) {" \
+    "$fallback_ui" >/dev/null
+grep -F 'The web surface is off for this turn; ${toolName} did not run.' \
+    "$fallback_ui" >/dev/null
+
 # The final continuation round runs neither web tool: a result issued there
 # reaches no request the round budget still sends, so the guard precedes the
 # tool-name dispatch and covers the fetch beside the search.
