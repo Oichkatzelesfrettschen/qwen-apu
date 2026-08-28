@@ -885,6 +885,42 @@ else
     report duplicate_profile_id_refused message_omits_profile
 fi
 
+# RFC 8259 section 7 admits an unescaped character above U+001F apart from the
+# quotation mark and the reverse solidus, so a path holding a newline or a tab
+# emits a file no parser reads while the INI check still passes. The generator
+# refuses the character instead.
+for control_path_case in newline tab; do
+    case $control_path_case in
+        newline) control_key_file=$(printf '/private/exa\nkey') ;;
+        tab) control_key_file=$(printf '/private/exa\tkey') ;;
+    esac
+    if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_gated \
+        QWEN_WEB_AUTHORIZER_READY=1 \
+        env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+        QWEN_WEB_SEARCH_KEY_FILE="$control_key_file" \
+        "$builder" "$work/presets-control-path.ini" \
+        >"$work/control-path.log" 2>"$work/control-path.err"; then
+        report "json_control_${control_path_case}_path_refused" accepted
+    else
+        report "json_control_${control_path_case}_path_refused" ok
+    fi
+done
+
+# The state directory reaches the same JSON string, so the rule covers every
+# configured path rather than the key file alone.
+control_state_directory=$(printf '%s/state\nweb' "$work")
+if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_gated \
+    QWEN_WEB_AUTHORIZER_READY=1 \
+    env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
+    QWEN_WEB_STATE_DIR="$control_state_directory" \
+    "$builder" "$work/presets-control-state.ini" \
+    >"$work/control-state.log" 2>"$work/control-state.err"; then
+    report json_control_state_directory_refused accepted
+else
+    report json_control_state_directory_refused ok
+fi
+
 if [ "$failures" -ne 0 ]; then
     printf 'test-web-presets: %d check(s) failed\n' "$failures" >&2
     exit 1

@@ -61,9 +61,13 @@ set -eu
 # is written as `required` rather than read from the environment, since the
 # configuration a guarded generator emits is the one that authenticates.
 #
-# Paths reach the configuration as JSON string values, so a path holding a
-# double quote or a backslash refuses the run rather than emitting a file whose
-# escaping decides what the server reads.
+# Paths reach the configuration as JSON string values, so the run refuses a path
+# holding any character JSON leaves outside a raw string. RFC 8259 section 7
+# admits unescaped characters above U+001F apart from the quotation mark and the
+# reverse solidus, so a POSIX path carrying a newline, a tab, or another control
+# character would emit a file no JSON parser accepts, which llama-server reports
+# as an MCP child startup failure long after the listener is up and the
+# generator's own INI check never sees.
 #
 # execution_policy decides whether a row emits at all and what it emits, because
 # it names what is authorized now where web_mode names the intended path.
@@ -191,14 +195,21 @@ web_state_directory=${QWEN_WEB_STATE_DIR:-"${HOME:?}/qwen-webui-state/web-mcp"}
 web_provider=${QWEN_WEB_PROVIDER:-exa}
 
 # A JSON string value carries the path verbatim, so a quote or a backslash in it
-# would change the parsed value. Refusing the character keeps the emitted file
-# a faithful record of the path the operator named.
+# would change the parsed value and a control character would place a byte in
+# the string that RFC 8259 section 7 admits only as an escape. Refusing the
+# character keeps the emitted file parseable and a faithful record of the path
+# the operator named.
 require_json_safe_path() {
     json_path_name=$1
     json_path_value=$2
     case $json_path_value in
         *'"'* | *'\'*)
             printf '%s holds a double quote or backslash, which JSON escaping would reinterpret: %s\n' \
+                "$json_path_name" "$json_path_value" >&2
+            exit 1
+            ;;
+        *[[:cntrl:]]*)
+            printf '%s holds a control character, which JSON admits only as an escape: %s\n' \
                 "$json_path_name" "$json_path_value" >&2
             exit 1
             ;;
