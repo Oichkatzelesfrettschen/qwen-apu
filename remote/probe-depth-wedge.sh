@@ -43,7 +43,7 @@ fi
 # no ledger_version field predates this field and is refused rather than
 # read as if version 1 were compatible with an unmarked format: nothing in
 # an unmarked file states which reader wrote it.
-ledger_version=2
+ledger_version=3
 
 model_path=$1
 output_directory=${2:-"${HOME:?}/qwen-depth-wedge"}
@@ -75,6 +75,22 @@ conditional_depths=${QWEN_WEDGE_CONDITIONAL_DEPTHS:-8192}
 # so a timed-out arm reads as a failure distinguishable from a bench failure
 # by that status alone.
 arm_timeout_kill_after_s=${QWEN_WEDGE_ARM_KILL_AFTER_S:-30}
+
+case ${QWEN_WEDGE_ARM_TIMEOUT_S:-} in
+    '') ;;
+    *[!0-9]* | 0)
+        printf 'QWEN_WEDGE_ARM_TIMEOUT_S must be a positive integer: %s\n' \
+            "$QWEN_WEDGE_ARM_TIMEOUT_S" >&2
+        exit 2
+        ;;
+esac
+case $arm_timeout_kill_after_s in
+    *[!0-9]* | 0)
+        printf 'QWEN_WEDGE_ARM_KILL_AFTER_S must be a positive integer: %s\n' \
+            "$arm_timeout_kill_after_s" >&2
+        exit 2
+        ;;
+esac
 
 if [ ! -x "$bench" ] || [ ! -f "$model_path" ]; then
     printf 'llama-bench and the model must both exist\n' >&2
@@ -231,7 +247,7 @@ fi
 kernel_release=$(uname -r)
 mesa_radv_version=-
 if command -v vulkaninfo >/dev/null 2>&1; then
-    parsed_driver=$(vulkaninfo --summary 2>/dev/null |
+    parsed_driver=$(timeout 5s vulkaninfo --summary 2>/dev/null |
         awk -F': *' '/driverInfo/ { print $2; exit }')
     [ -z "$parsed_driver" ] || mesa_radv_version=$parsed_driver
 fi
@@ -318,7 +334,7 @@ kernel_delta_lines() {
     dmesg | tail -n "+$((delta_before + 1))" >"$delta_file" 2>/dev/null || true
 }
 
-# `dmesg --follow` streams new kernel lines into the arm's kernel file as they
+# `dmesg --follow-new` streams new kernel lines into the arm's kernel file as they
 # arrive, which survives a ring-buffer wrap the offset method cannot: the
 # offset method reads a before count and an after snapshot and subtracts, so a
 # wrap between those two reads loses the earliest lines of the delta, where
@@ -333,7 +349,7 @@ kernel_capture_method=offset
 start_kernel_capture() {
     capture_file=$1
     kernel_capture_method=offset
-    dmesg --follow >"$capture_file" 2>/dev/null &
+    dmesg --follow-new >"$capture_file" 2>/dev/null &
     kernel_follow_pid=$!
     sleep 0.2
     if kill -0 "$kernel_follow_pid" 2>/dev/null; then
@@ -363,38 +379,58 @@ parse_decode_rate() {
 # arm reads `none`.
 classify_hazard() {
     hazard_bench_log=$1
-    hazard_kernel_file=$2
+    hazard_arm_kernel_file=$2
     hazard_control_log=$3
-    hazard_resets=$4
-    hazard_faults=$5
-    hazard_control_status=$6
+    hazard_control_kernel_file=$4
+    hazard_arm_resets=$5
+    hazard_arm_faults=$6
+    hazard_control_resets=$7
+    hazard_control_faults=$8
+    hazard_control_status=$9
     hazard_classes=''
     hazard_has_page_fault=0
-    if [ -f "$hazard_kernel_file" ]; then
+    for hazard_kernel_file in "$hazard_arm_kernel_file" \
+        "$hazard_control_kernel_file"; do
+        [ -f "$hazard_kernel_file" ] || continue
         grep -qi 'page fault' "$hazard_kernel_file" 2>/dev/null &&
             hazard_has_page_fault=1
-        if [ "$hazard_has_page_fault" -eq 1 ] &&
-           grep -qi 'gfxhub' "$hazard_kernel_file" 2>/dev/null; then
+        if grep -qiE 'gfxhub.*page fault|page fault.*gfxhub' \
+            "$hazard_kernel_file" 2>/dev/null; then
             hazard_classes=${hazard_classes:+$hazard_classes,}gfxhub-page-fault
         fi
         if grep -qE 'VM_L2_PROTECTION_FAULT|PROTECTION_FAULT' \
             "$hazard_kernel_file" 2>/dev/null; then
             hazard_classes=${hazard_classes:+$hazard_classes,}VM-protection-fault
         fi
-        if [ "$hazard_has_page_fault" -eq 0 ] &&
-           grep -qE 'ring reset|Ring .* reset|device wedged|GPU reset' \
-               "$hazard_kernel_file" 2>/dev/null; then
-            hazard_classes=${hazard_classes:+$hazard_classes,}ring-timeout-only
-        fi
+    done
+    if [ "$hazard_has_page_fault" -eq 0 ] &&
+       grep -qE 'ring reset|Ring .* reset|device wedged|GPU reset' \
+           "$hazard_arm_kernel_file" "$hazard_control_kernel_file" 2>/dev/null; then
+        hazard_classes=${hazard_classes:+$hazard_classes,}ring-timeout-only
     fi
-    if grep -qiE 'device lost|VK_ERROR_DEVICE_LOST' \
-        "$hazard_bench_log" "$hazard_control_log" 2>/dev/null; then
-        if { [ "$hazard_resets" = unavailable ] || [ "$hazard_resets" -eq 0 ]; } &&
-           { [ "$hazard_faults" = unavailable ] || [ "$hazard_faults" -eq 0 ]; }; then
+    if grep -qiE 'device lost|VK_ERROR_DEVICE_LOST' "$hazard_bench_log" \
+        2>/dev/null; then
+        if { [ "$hazard_arm_resets" = unavailable ] || [ "$hazard_arm_resets" -eq 0 ]; } &&
+           { [ "$hazard_arm_faults" = unavailable ] || [ "$hazard_arm_faults" -eq 0 ]; }; then
             hazard_classes=${hazard_classes:+$hazard_classes,}device-lost-without-kernel-record
         fi
     fi
-    if [ "$hazard_resets" != unavailable ] && [ "$hazard_resets" -gt 0 ] &&
+    if grep -qiE 'device lost|VK_ERROR_DEVICE_LOST' "$hazard_control_log" \
+        2>/dev/null; then
+        if { [ "$hazard_control_resets" = unavailable ] || [ "$hazard_control_resets" -eq 0 ]; } &&
+           { [ "$hazard_control_faults" = unavailable ] || [ "$hazard_control_faults" -eq 0 ]; }; then
+            case ,$hazard_classes, in
+                *,device-lost-without-kernel-record,*) ;;
+                *) hazard_classes=${hazard_classes:+$hazard_classes,}device-lost-without-kernel-record ;;
+            esac
+        fi
+    fi
+    combined_resets=unavailable
+    if [ "$hazard_arm_resets" != unavailable ] && \
+       [ "$hazard_control_resets" != unavailable ]; then
+        combined_resets=$((hazard_arm_resets + hazard_control_resets))
+    fi
+    if [ "$combined_resets" != unavailable ] && [ "$combined_resets" -gt 0 ] &&
        [ "$hazard_control_status" -ne 0 ]; then
         hazard_classes=${hazard_classes:+$hazard_classes,}post-reset-control-failure
     fi
@@ -442,6 +478,7 @@ run_arm() {
     arm_samples=$output_directory/$arm_label.clocks.tsv
     arm_kernel=$output_directory/$arm_label.dmesg.txt
     control_log=$output_directory/$arm_label.control.log
+    control_kernel=$output_directory/$arm_label.control.dmesg.txt
 
     recorded_count=$(awk -F'\t' -v label="$arm_label" \
         'NR > 1 && $1 == label { count++ } END { print count + 0 }' "$summary")
@@ -517,15 +554,19 @@ run_arm() {
            [ "$recorded_faults" = unavailable ]; then
             if [ "$recorded_resets" != unavailable ] ||
                [ "$recorded_faults" != unavailable ] ||
-               [ -e "$arm_kernel" ]; then
+               [ -e "$arm_kernel" ] || [ -e "$control_kernel" ]; then
                 printf 'recorded arm %s carries inconsistent kernel-delta evidence\n' \
                     "$arm_label" >&2
                 exit 2
             fi
-        elif [ ! -f "$arm_kernel" ]; then
-            printf 'recorded arm %s is missing retained artifact: %s\n' \
-                "$arm_label" "$arm_kernel" >&2
-            exit 2
+        else
+            for retained_kernel in "$arm_kernel" "$control_kernel"; do
+                if [ ! -f "$retained_kernel" ]; then
+                    printf 'recorded arm %s is missing retained artifact: %s\n' \
+                        "$arm_label" "$retained_kernel" >&2
+                    exit 2
+                fi
+            done
         fi
         case $recorded_health in
             healthy | unhealthy | unverified) ;;
@@ -597,12 +638,12 @@ run_arm() {
     fi
     printf '%s\n' "$kernel_capture_method" >"$output_directory/$arm_label.dmesg-method.txt"
 
-    resets=unavailable
-    faults=unavailable
+    arm_resets=unavailable
+    arm_faults=unavailable
     if [ -f "$arm_kernel" ]; then
-        resets=$(grep -c 'ring reset\|Ring .* reset\|device wedged\|GPU reset' \
+        arm_resets=$(grep -c 'ring reset\|Ring .* reset\|device wedged\|GPU reset' \
             "$arm_kernel" || true)
-        faults=$(grep -c 'page fault\|VM_L2_PROTECTION_FAULT\|PROTECTION_FAULT' \
+        arm_faults=$(grep -c 'page fault\|VM_L2_PROTECTION_FAULT\|PROTECTION_FAULT' \
             "$arm_kernel" || true)
     fi
 
@@ -651,16 +692,44 @@ run_arm() {
     # A ring reset needs the device quiet to finish recovering; the control
     # starting into a recovering device measures the recovery rather than the
     # device.
-    if [ "$resets" != unavailable ] && [ "$resets" -gt 0 ]; then
+    if [ "$arm_resets" != unavailable ] && [ "$arm_resets" -gt 0 ]; then
         printf 'recovery_pause_utc=%s seconds=60 resets=%s\n' \
-            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$resets"
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$arm_resets"
         sleep 60
     fi
 
+    start_kernel_capture "$control_kernel"
+    control_kernel_before=unavailable
+    [ "$kernel_capture_method" = follow ] || \
+        control_kernel_before=$(kernel_line_count)
+    control_kernel_capture_method=$kernel_capture_method
     set +e
     run_bench "$control_log" 0 128 32 "$control_tokens"
     control_status=$?
     set -e
+    if [ "$control_kernel_capture_method" = follow ]; then
+        stop_kernel_follow
+    else
+        kernel_delta_lines "$control_kernel_before" "$control_kernel"
+    fi
+    printf '%s\n' "$control_kernel_capture_method" \
+        >"$output_directory/$arm_label.control.dmesg-method.txt"
+    control_resets=unavailable
+    control_faults=unavailable
+    if [ -f "$control_kernel" ]; then
+        control_resets=$(grep -c 'ring reset\|Ring .* reset\|device wedged\|GPU reset' \
+            "$control_kernel" || true)
+        control_faults=$(grep -c 'page fault\|VM_L2_PROTECTION_FAULT\|PROTECTION_FAULT' \
+            "$control_kernel" || true)
+    fi
+    resets=unavailable
+    faults=unavailable
+    if [ "$arm_resets" != unavailable ] && [ "$control_resets" != unavailable ]; then
+        resets=$((arm_resets + control_resets))
+    fi
+    if [ "$arm_faults" != unavailable ] && [ "$control_faults" != unavailable ]; then
+        faults=$((arm_faults + control_faults))
+    fi
     control_decode=n/a
     [ "$control_status" -ne 0 ] || control_decode=$(parse_decode_rate "$control_log")
     if [ "$control_status" -eq 0 ] && [ "$control_decode" = n/a ]; then
@@ -703,7 +772,8 @@ run_arm() {
     fi
 
     hazard_class=$(classify_hazard "$arm_log" "$arm_kernel" "$control_log" \
-        "$resets" "$faults" "$control_status")
+        "$control_kernel" "$arm_resets" "$arm_faults" "$control_resets" \
+        "$control_faults" "$control_status")
 
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$arm_label" "$arm_depth" "$arm_batch" "$arm_ubatch" "$cache_type_k" \

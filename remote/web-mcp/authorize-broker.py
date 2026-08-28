@@ -172,6 +172,11 @@ def validate_signing_key(path):
     if not content:
         sys.stderr.write("the signing key file is empty\n")
         return None
+    try:
+        server.read_secret_file(path, "token signing")
+    except server.ToolError as error:
+        sys.stderr.write(f"{error}\n")
+        return None
     return hashlib.sha256(content).hexdigest()
 
 

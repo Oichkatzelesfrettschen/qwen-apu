@@ -53,8 +53,14 @@ stages=${QWEN_ADMISSION_STAGES:-fetch,load}
 selected_rows=${QWEN_ADMISSION_ROWS:-}
 candidate_ledger=${QWEN_CANDIDATE_LEDGER:-$script_directory/../evidence/model-admission/candidate-ledger.tsv}
 
-for required in "$record" "$placement" "$fetch" "$candidate_ledger"; do
+for required in "$record" "$candidate_ledger"; do
     [ -r "$required" ] || { printf 'unreadable: %s\n' "$required" >&2; exit 2; }
+done
+for required in "$placement" "$fetch"; do
+    [ -x "$required" ] || {
+        printf 'admission helper is not executable: %s\n' "$required" >&2
+        exit 2
+    }
 done
 case $stages in
     *load*)
@@ -123,6 +129,60 @@ in_ledger_scope() {
     grep -Fx "$1" "$ledger_scope" >/dev/null
 }
 
+fetch_digest() {
+    printf '%s\n' "$1" |
+        sed -n 's/.*observed_sha256=\([0-9a-f][0-9a-f]*\).*/\1/p;
+                s/.*verified_sha256=\([0-9a-f][0-9a-f]*\).*/\1/p' |
+        sed -n '1p'
+}
+
+runtime_class_of() {
+    printf '%s\n' "$1" | awk -F/ '
+        {
+            runtime_class = $1
+            for (field_index = 2; field_index <= NF; field_index++) {
+                if ($field_index ~ /^(embedding_length|feed_forward_length|attention[.]head_count|attention[.]head_count_kv)=/) {
+                    runtime_class = runtime_class "/" $field_index
+                }
+            }
+            print runtime_class
+        }
+    '
+}
+
+artifact_set_of() {
+    python3 - "$1" "$2" <<'PYTHON'
+import re
+import sys
+
+artifact = sys.argv[1]
+try:
+    shard_count = int(sys.argv[2])
+except ValueError:
+    raise SystemExit("split_shards is not an integer") from None
+if shard_count < 1:
+    raise SystemExit("split_shards must be positive")
+if shard_count == 1:
+    print(artifact)
+    raise SystemExit(0)
+matched = re.fullmatch(r"(.+)-([0-9]{5})-of-([0-9]{5})([.]gguf)", artifact, re.I)
+if matched is None:
+    raise SystemExit("split artifact does not carry a canonical shard suffix")
+selected_index = int(matched.group(2))
+declared_count = int(matched.group(3))
+if selected_index != 1 or declared_count != shard_count:
+    raise SystemExit(
+        f"split artifact selects shard {selected_index} of {declared_count}, "
+        f"but the admission row declares {shard_count} shards"
+    )
+for shard_index in range(1, shard_count + 1):
+    print(
+        f"{matched.group(1)}-{shard_index:05d}-of-{shard_count:05d}"
+        f"{matched.group(4)}"
+    )
+PYTHON
+}
+
 seen_classes=''
 control_state=not-run
 tab=$(printf '\t')
@@ -149,15 +209,28 @@ while IFS="$tab" read -r candidate_id repository revision admission architecture
 
     case $stages in
         *fetch*)
-            if fetch_line=$("$fetch" "$repository" "$revision" "$artifact" \
-                    "$candidate_directory" 2>&1); then
-                fetch_state=$(printf '%s' "$fetch_line" |
-                    sed -n 's/.*artifact_status=\([a-z]*\).*/\1/p')
-                observed_sha256=$(printf '%s' "$fetch_line" |
-                    sed -n 's/.*observed_sha256=\([0-9a-f]*\).*/\1/p')
-            else
+            if ! artifact_set=$(artifact_set_of "$artifact" "$_shards" 2>&1); then
                 fetch_state=failed
-                detail=$(printf '%s' "$fetch_line" | tr '\n' ' ' | cut -c1-160)
+                detail=$(printf '%s' "$artifact_set" | tr '\n' ' ' | cut -c1-160)
+            else
+                fetch_state=retained
+                while IFS= read -r shard_artifact; do
+                    if fetch_line=$("$fetch" "$repository" "$revision" \
+                            "$shard_artifact" "$candidate_directory" 2>&1); then
+                        shard_fetch_state=$(printf '%s' "$fetch_line" |
+                            sed -n 's/.*artifact_status=\([a-z]*\).*/\1/p')
+                        [ "$shard_fetch_state" != fetched ] || fetch_state=fetched
+                        if [ "$shard_artifact" = "$artifact" ]; then
+                            observed_sha256=$(fetch_digest "$fetch_line")
+                        fi
+                    else
+                        fetch_state=failed
+                        detail=$(printf '%s' "$fetch_line" | tr '\n' ' ' | cut -c1-160)
+                        break
+                    fi
+                done <<EOF
+$artifact_set
+EOF
             fi
             ;;
     esac
@@ -170,7 +243,7 @@ while IFS="$tab" read -r candidate_id repository revision admission architecture
                 # A class is a shared throughput expectation, so the control
                 # runs when one is met for the first time: a refusal then reads
                 # against a device that had just answered.
-                class=$(printf '%s' "$fingerprint" | cut -d/ -f1-4)
+                class=$(runtime_class_of "$fingerprint")
                 case " $seen_classes " in
                     *" $class "*) ;;
                     *)

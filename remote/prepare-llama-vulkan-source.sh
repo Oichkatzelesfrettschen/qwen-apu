@@ -44,12 +44,23 @@ source_matches() {
     [ "$actual_sha256" = "$expected_sha256" ]
 }
 
-if source_matches db34fbfc5ee5368ccc5999dc5a37c90dd3198ae0aff8138440cd7f5f0532eca4 \
+current_series_status=' M ggml/src/ggml-vulkan/ggml-vulkan.cpp
+ M src/llama-context.cpp
+ M src/llama-model-loader.cpp
+?? ggml/src/ggml-vulkan/ggml-vulkan-pacing.h
+?? ggml/src/ggml-vulkan/ggml-vulkan-submit-limit.h
+?? ggml/src/ggml-vulkan/ggml-vulkan-submit-trace.h'
+current_status=$(git -C "$patched_source" status --porcelain | LC_ALL=C sort)
+
+if [ "$current_status" = "$current_series_status" ] && \
+   source_matches d81e9093b4a3d98bf5cde8dc710ec187ddbaffca84540369cec72ecd132e575c \
         ggml/src/ggml-vulkan/ggml-vulkan.cpp && \
    source_matches 16abd2face079cad962bb722026d7418e65de67c18c1e1f954df733c1598a70a \
         ggml/src/ggml-vulkan/ggml-vulkan-pacing.h && \
    source_matches 4b8befd927e9b0c83cfc7cfe843d2f853a9a9db7f6a55c147ffcd4129afd95f8 \
         ggml/src/ggml-vulkan/ggml-vulkan-submit-limit.h && \
+   source_matches ac957254c09afda811983801e7dd59d7e4829d40e572804ea7e23dadba521867 \
+        ggml/src/ggml-vulkan/ggml-vulkan-submit-trace.h && \
    source_matches ecc818cdce4a7265f6f932962c325a582f42b91cb2661916fa28b5a79a49d1ad \
         src/llama-context.cpp && \
    source_matches d0d6c8725891ac4baf68fd947ab4be75cc93ba37b1e988ca1c556881a49d0abc \
@@ -59,31 +70,57 @@ if source_matches db34fbfc5ee5368ccc5999dc5a37c90dd3198ae0aff8138440cd7f5f0532ec
     exit 0
 fi
 
-if [ -n "$(git -C "$patched_source" status --porcelain)" ]; then
+apply_patches() {
+    for patch_name in "$@"; do
+        git -C "$patched_source" apply --check \
+            "$repository_directory/patches/$patch_name"
+        git -C "$patched_source" apply \
+            "$repository_directory/patches/$patch_name"
+    done
+    git -C "$patched_source" diff --check
+}
+
+prior_series_status=' M ggml/src/ggml-vulkan/ggml-vulkan.cpp
+ M src/llama-context.cpp
+ M src/llama-model-loader.cpp
+?? ggml/src/ggml-vulkan/ggml-vulkan-pacing.h
+?? ggml/src/ggml-vulkan/ggml-vulkan-submit-limit.h'
+if [ "$current_status" = "$prior_series_status" ] && \
+   source_matches db34fbfc5ee5368ccc5999dc5a37c90dd3198ae0aff8138440cd7f5f0532eca4 \
+        ggml/src/ggml-vulkan/ggml-vulkan.cpp && \
+   source_matches 16abd2face079cad962bb722026d7418e65de67c18c1e1f954df733c1598a70a \
+        ggml/src/ggml-vulkan/ggml-vulkan-pacing.h && \
+   source_matches 4b8befd927e9b0c83cfc7cfe843d2f853a9a9db7f6a55c147ffcd4129afd95f8 \
+        ggml/src/ggml-vulkan/ggml-vulkan-submit-limit.h && \
+   source_matches ecc818cdce4a7265f6f932962c325a582f42b91cb2661916fa28b5a79a49d1ad \
+        src/llama-context.cpp && \
+   source_matches d0d6c8725891ac4baf68fd947ab4be75cc93ba37b1e988ca1c556881a49d0abc \
+        src/llama-model-loader.cpp; then
+    apply_patches llama-vulkan-submit-trace.patch
+    prepared_state=upgraded
+elif [ -n "$current_status" ]; then
     printf 'patched source has unrecognized changes; refusing to overwrite %s\n' \
         "$patched_source" >&2
     git -C "$patched_source" status --short >&2
     exit 1
+else
+    apply_patches \
+        llama-vulkan-low-priority.patch \
+        llama-no-cpu-fallback.patch \
+        llama-vulkan-duty-cycle.patch \
+        llama-vulkan-runtime-submit-limit.patch \
+        llama-vulkan-submit-trace.patch
+    prepared_state=prepared
 fi
 
-for patch_name in \
-    llama-vulkan-low-priority.patch \
-    llama-no-cpu-fallback.patch \
-    llama-vulkan-duty-cycle.patch \
-    llama-vulkan-runtime-submit-limit.patch; do
-    git -C "$patched_source" apply --check \
-        "$repository_directory/patches/$patch_name"
-    git -C "$patched_source" apply \
-        "$repository_directory/patches/$patch_name"
-done
-git -C "$patched_source" diff --check
-
-if ! source_matches db34fbfc5ee5368ccc5999dc5a37c90dd3198ae0aff8138440cd7f5f0532eca4 \
+if ! source_matches d81e9093b4a3d98bf5cde8dc710ec187ddbaffca84540369cec72ecd132e575c \
         ggml/src/ggml-vulkan/ggml-vulkan.cpp || \
    ! source_matches 16abd2face079cad962bb722026d7418e65de67c18c1e1f954df733c1598a70a \
         ggml/src/ggml-vulkan/ggml-vulkan-pacing.h || \
    ! source_matches 4b8befd927e9b0c83cfc7cfe843d2f853a9a9db7f6a55c147ffcd4129afd95f8 \
         ggml/src/ggml-vulkan/ggml-vulkan-submit-limit.h || \
+   ! source_matches ac957254c09afda811983801e7dd59d7e4829d40e572804ea7e23dadba521867 \
+        ggml/src/ggml-vulkan/ggml-vulkan-submit-trace.h || \
    ! source_matches ecc818cdce4a7265f6f932962c325a582f42b91cb2661916fa28b5a79a49d1ad \
         src/llama-context.cpp || \
    ! source_matches d0d6c8725891ac4baf68fd947ab4be75cc93ba37b1e988ca1c556881a49d0abc \
@@ -92,5 +129,5 @@ if ! source_matches db34fbfc5ee5368ccc5999dc5a37c90dd3198ae0aff8138440cd7f5f0532
     exit 1
 fi
 
-printf 'patched_source=prepared path=%s commit=%s patch_count=4\n' \
-    "$patched_source" "$actual_commit"
+printf 'patched_source=%s path=%s commit=%s patch_count=5\n' \
+    "$prepared_state" "$patched_source" "$actual_commit"

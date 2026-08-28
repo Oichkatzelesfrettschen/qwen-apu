@@ -37,13 +37,14 @@ destination_directory=$4
 artifact_path=$destination_directory/$artifact_name
 partial_path=$artifact_path.part
 digest_path=$artifact_path.observed-sha256
+artifact_directory=$(dirname -- "$artifact_path")
 huggingface_endpoint=${QWEN_HUGGINGFACE_ENDPOINT:-https://huggingface.co}
 huggingface_endpoint=${huggingface_endpoint%/}
 source_url=$huggingface_endpoint/$source_repository/resolve/$source_revision/$artifact_name
 fetch_connections=${QWEN_FETCH_CONNECTIONS:-4}
 
 umask 077
-mkdir -p "$destination_directory"
+mkdir -p "$artifact_directory"
 
 observe() {
     printf '%s %s\n' "$(sha256sum "$1" | awk '{ print $1 }')" "$(wc -c <"$1")"
@@ -230,8 +231,11 @@ case $declared_bytes in
         ;;
 esac
 
-rm -f "$partial_path"
 if [ "$fetch_mode" = parallel ]; then
+    # A parallel assembly owns the whole partial path and cannot extend a
+    # single-stream prefix safely. The one-stream path keeps its prefix so
+    # curl --continue-at can resume it on the next invocation.
+    rm -f "$partial_path"
     if ! fetch_parallel_ranges "$declared_bytes"; then
         printf 'parallel range fetch failed, falling back to one stream: %s\n' \
             "$source_url" >&2

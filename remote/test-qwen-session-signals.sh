@@ -169,6 +169,7 @@ import json
 import os
 import signal
 import sys
+import time
 
 arguments = sys.argv[1:]
 settings = {"--port": "8571", "--profile": "", "--provider": "exa",
@@ -228,6 +229,7 @@ if os.environ.get("QWEN_TEST_BROKER_IGNORES_TERM", "0") == "1":
 else:
     signal.signal(signal.SIGTERM, leave)
 service = http.server.HTTPServer((settings["--host"], int(settings["--port"])), Handler)
+time.sleep(float(os.environ.get("QWEN_TEST_BROKER_LISTEN_DELAY", "0")))
 sys.stdout.write("listening %s %s\n" % (settings["--host"], settings["--port"]))
 sys.stdout.flush()
 try:
@@ -244,9 +246,10 @@ chmod +x "$fixture_remote"/*.sh
 printf 'fixture-signing-key\n' >"$temporary_directory/token.key"
 chmod 600 "$temporary_directory/token.key"
 
-start_ready_session() {
+start_session() {
     ready_state_directory=$1
     ready_marker=$2
+    broker_listen_delay=${3:-0}
     mkdir -p "$ready_state_directory"
     cp "$fixture_remote/ready-capacity-server.sh" \
         "$fixture_remote/run-qwen-capacity-server.sh"
@@ -260,6 +263,7 @@ start_ready_session() {
         QWEN_WEB_TOKEN_KEY_FILE=$temporary_directory/token.key \
         QWEN_WEB_STATE_DIR=$ready_state_directory/web-mcp \
         QWEN_TEST_BROKER_API_KEY_RECORD=$ready_state_directory/broker-api-key.path \
+        QWEN_TEST_BROKER_LISTEN_DELAY=$broker_listen_delay \
         "$fixture_remote/qwen-webui-session.sh" \
             "$temporary_directory/fake-server" \
             "$temporary_directory/fake-model" \
@@ -268,6 +272,12 @@ start_ready_session() {
       >"$ready_state_directory/session.stdout" \
       2>"$ready_state_directory/session.stderr" &
     session_pid=$!
+}
+
+start_ready_session() {
+    ready_state_directory=$1
+    ready_marker=$2
+    start_session "$ready_state_directory" "$ready_marker"
     attempt=0
     while [ "$attempt" -lt 600 ]; do
         if grep -q 'state=running ' \
@@ -279,6 +289,9 @@ start_ready_session() {
     done
     printf 'session did not reach state=running under marker %s\n' \
         "$ready_marker" >&2
+    cat "$ready_state_directory/session.status" >&2 2>/dev/null || true
+    cat "$ready_state_directory/server.log" >&2 2>/dev/null || true
+    cat "$ready_state_directory/authorize-broker.log" >&2 2>/dev/null || true
     cat "$ready_state_directory/session.stderr" >&2
     exit 1
 }
@@ -287,6 +300,39 @@ read_status_field() {
     sed -n '1p' "$1/session.status" | tr ' ' '\n' |
         sed -n "s/^$2=//p"
 }
+
+starting_state_directory=$temporary_directory/state-broker-starting
+start_session "$starting_state_directory" 1 5
+attempt=0
+while [ "$attempt" -lt 300 ] && \
+      ! grep -q '^state=starting broker_pid=[0-9]' \
+        "$starting_state_directory/session.status" 2>/dev/null; do
+    attempt=$((attempt + 1))
+    sleep 0.01
+done
+starting_broker_pid=$(read_status_field "$starting_state_directory" broker_pid)
+case $starting_broker_pid in
+    '' | *[!0-9]*)
+        printf 'starting session did not persist its broker pid\n' >&2
+        exit 1
+        ;;
+esac
+kill -TERM "$session_pid"
+set +e
+wait "$session_pid"
+session_status=$?
+set -e
+session_pid=''
+if [ "$session_status" -ne 143 ]; then
+    printf 'interrupted broker startup returned %s instead of 143\n' \
+        "$session_status" >&2
+    exit 1
+fi
+if kill -0 "$starting_broker_pid" 2>/dev/null; then
+    printf 'interrupted startup retained broker pid %s\n' \
+        "$starting_broker_pid" >&2
+    exit 1
+fi
 
 # The marker starts the broker, the status file records its PID, and the
 # terminating-signal path stops it and takes the session secret with it.
@@ -335,6 +381,40 @@ if kill -0 "$recorded_broker_pid" 2>/dev/null; then
 fi
 if [ -e "$broker_secret_file" ]; then
     printf 'session secret survives the broker: %s\n' "$broker_secret_file" >&2
+    exit 1
+fi
+
+supervision_state_directory=$temporary_directory/state-broker-supervision
+start_ready_session "$supervision_state_directory" 1
+supervised_broker_pid=$(read_status_field "$supervision_state_directory" broker_pid)
+supervised_server_pid=$(read_status_field "$supervision_state_directory" server_pid)
+kill -TERM "$supervised_broker_pid"
+attempt=0
+while [ "$attempt" -lt 300 ] && \
+      ! grep -q 'stopped_component=authorization_broker' \
+        "$supervision_state_directory/session.status" 2>/dev/null; do
+    attempt=$((attempt + 1))
+    sleep 0.1
+done
+set +e
+wait "$session_pid"
+session_status=$?
+set -e
+session_pid=''
+if [ "$session_status" -eq 0 ] || \
+   ! grep -q 'stopped_component=authorization_broker' \
+        "$supervision_state_directory/session.status"; then
+    printf 'session accepted an approval broker that exited while serving\n' >&2
+    cat "$supervision_state_directory/session.status" >&2
+    exit 1
+fi
+if kill -0 "$supervised_server_pid" 2>/dev/null; then
+    printf 'broker exit left server pid %s running\n' \
+        "$supervised_server_pid" >&2
+    exit 1
+fi
+if [ -e "$supervision_state_directory/web-mcp/authorize-session.secret" ]; then
+    printf 'broker exit left its session secret behind\n' >&2
     exit 1
 fi
 
@@ -424,7 +504,7 @@ run_teardown_arm() {
         sleep 0.01
     done
     {
-        printf 'state=running server_pid=1 monitor_pid=1 latency_watchdog_pid=1 kernel_hazard_watchdog_pid=1 broker_pid=%s profile=low-serialized\n' \
+        printf 'state=running server_pid=99999999 monitor_pid=99999999 latency_watchdog_pid=99999999 kernel_hazard_watchdog_pid=99999999 broker_pid=%s profile=low-serialized\n' \
             "$teardown_broker_pid"
         printf 'broker secret_file=%s\n' \
             "$teardown_state_directory/web-mcp/authorize-session.secret"
@@ -507,7 +587,7 @@ orphan_state_directory=$temporary_directory/state-teardown-orphan
 mkdir -p "$orphan_state_directory/web-mcp"
 printf 'stale\n' >"$orphan_state_directory/web-mcp/authorize-session.secret"
 {
-    printf 'state=running server_pid=1 monitor_pid=1 latency_watchdog_pid=1 kernel_hazard_watchdog_pid=1 profile=low-serialized\n'
+    printf 'state=running server_pid=99999999 monitor_pid=99999999 latency_watchdog_pid=99999999 kernel_hazard_watchdog_pid=99999999 profile=low-serialized\n'
     printf 'broker secret_file=%s\n' "$orphan_state_directory/web-mcp/authorize-session.secret"
 } >"$orphan_state_directory/session.status"
 set +e

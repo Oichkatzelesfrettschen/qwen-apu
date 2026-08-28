@@ -99,7 +99,7 @@ wait_for_gpu_idle() {
     busy_file=$drm_device/gpu_busy_percent
     if [ ! -r "$busy_file" ]; then
         printf 'chain_gpu_idle=unavailable file=%s\n' "$busy_file" >&2
-        return 0
+        return 1
     fi
     consecutive_idle=0
     waited=0
@@ -159,6 +159,9 @@ require_previous_checkpoint_complete() {
 
 previous_output=''
 checkpoint_index=0
+# Validate the complete argument set before the first checkpoint can allocate
+# memory or submit work. A malformed or absent later model therefore refuses
+# the chain while the device remains untouched.
 for entry in "$@"; do
     checkpoint_index=$((checkpoint_index + 1))
     case $entry in
@@ -176,6 +179,21 @@ for entry in "$@"; do
             "$0" "$checkpoint_index" "$entry" >&2
         exit 2
     fi
+    case $rel_path in
+        /*) model_path=$rel_path ;;
+        *) model_path=${HOME:?}/$rel_path ;;
+    esac
+    if [ ! -f "$model_path" ]; then
+        printf '%s: checkpoint %s model is absent: %s\n' \
+            "$0" "$checkpoint_index" "$model_path" >&2
+        exit 2
+    fi
+done
+
+previous_output=''
+for entry in "$@"; do
+    model_id=${entry%%:*}
+    rel_path=${entry#*:}
     case $rel_path in
         /*) model_path=$rel_path ;;
         *) model_path=${HOME:?}/$rel_path ;;

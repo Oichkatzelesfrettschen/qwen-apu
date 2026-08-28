@@ -37,13 +37,16 @@ import sys
 with open(sys.argv[1], "wb") as handle:
     handle.write(bytes((index * 7 + 13) % 256 for index in range(1000003)))
 ' "$document_root/model.gguf"
-mkdir -p "$document_root/owner/repo/resolve/revision" \
+mkdir -p "$document_root/owner/repo/resolve/revision/nested" \
     "$document_root/api/models/owner/repo/tree"
 cp "$document_root/model.gguf" \
     "$document_root/owner/repo/resolve/revision/model.gguf"
+cp "$document_root/model.gguf" \
+    "$document_root/owner/repo/resolve/revision/nested/model.gguf"
 origin_digest=$(sha256sum "$document_root/model.gguf" | awk '{ print $1 }')
 origin_bytes=$(wc -c <"$document_root/model.gguf")
-printf '[{"type":"file","path":"model.gguf","size":%s,"lfs":{"oid":"%s","size":%s}}]\n' \
+printf '[{"type":"file","path":"model.gguf","size":%s,"lfs":{"oid":"%s","size":%s}},{"type":"file","path":"nested/model.gguf","size":%s,"lfs":{"oid":"%s","size":%s}}]\n' \
+    "$origin_bytes" "$origin_digest" "$origin_bytes" \
     "$origin_bytes" "$origin_digest" "$origin_bytes" \
     >"$document_root/api/models/owner/repo/tree/revision"
 
@@ -53,7 +56,7 @@ import http.server
 import os
 import sys
 
-root, port_file = sys.argv[1], sys.argv[2]
+root, port_file, request_log = sys.argv[1], sys.argv[2], sys.argv[3]
 
 
 class RangeHandler(http.server.SimpleHTTPRequestHandler):
@@ -66,6 +69,8 @@ class RangeHandler(http.server.SimpleHTTPRequestHandler):
         if not requested or not os.path.isfile(path):
             self._limit = None
             return super().send_head()
+        with open(request_log, "a", encoding="utf-8") as handle:
+            handle.write(requested + "\n")
         size = os.path.getsize(path)
         first, _, last = requested.partition("=")[2].partition("-")
         first = int(first)
@@ -103,7 +108,8 @@ server.serve_forever()
 PYTHON
 
 port_file=$temporary_directory/port
-python3 "$server_script" "$document_root" "$port_file" &
+request_log=$temporary_directory/ranges.log
+python3 "$server_script" "$document_root" "$port_file" "$request_log" &
 server_pid=$!
 attempt=0
 while [ "$attempt" -lt 100 ]; do
@@ -147,6 +153,47 @@ for connections in 1 2 4 7; do
             "$assembled" "$origin_digest" "$mode" "$expected_mode" >&2
     fi
 done
+
+# One-stream mode must keep a prior partial and ask the origin only for the
+# remaining suffix. The range log distinguishes a resumed transfer from a
+# byte-zero restart that happens to produce the same final digest.
+rm -rf "$temporary_directory/dest"
+mkdir -p "$temporary_directory/dest"
+head -c 12345 "$document_root/model.gguf" \
+    >"$temporary_directory/dest/model.gguf.part"
+: >"$request_log"
+line=$(QWEN_HUGGINGFACE_ENDPOINT=$endpoint QWEN_FETCH_CONNECTIONS=1 \
+    "$fetcher" owner/repo revision model.gguf \
+    "$temporary_directory/dest" 2>&1) || {
+        report single_stream_resume rejected
+        printf '%s\n' "$line" >&2
+        line=''
+    }
+resumed_digest=$(sha256sum "$temporary_directory/dest/model.gguf" | awk '{ print $1 }')
+if [ "$resumed_digest" = "$origin_digest" ] && \
+   grep -Fx 'bytes=12345-' "$request_log" >/dev/null; then
+    report single_stream_resume accepted
+else
+    report single_stream_resume rejected
+fi
+
+# Artifact names retain their repository-relative path. The fetcher creates the
+# nested parent before curl opens either its partial or final output.
+nested_destination=$temporary_directory/nested-dest
+line=$(QWEN_HUGGINGFACE_ENDPOINT=$endpoint QWEN_FETCH_CONNECTIONS=1 \
+    "$fetcher" owner/repo revision nested/model.gguf \
+    "$nested_destination" 2>&1) || {
+        report nested_artifact_parent rejected
+        printf '%s\n' "$line" >&2
+        line=''
+    }
+nested_digest=$(sha256sum "$nested_destination/nested/model.gguf" | awk '{ print $1 }')
+if [ "$nested_digest" = "$origin_digest" ] && \
+   printf '%s' "$line" | grep -q 'verified_sha256='; then
+    report nested_artifact_parent accepted
+else
+    report nested_artifact_parent rejected
+fi
 
 # A retained artifact is re-observed rather than refetched, and a file that has
 # changed under a recorded digest is refused rather than served.
