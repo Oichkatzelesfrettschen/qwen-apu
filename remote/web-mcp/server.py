@@ -731,20 +731,30 @@ def integer_setting(settings, key, default):
 
 
 def open_ledger(settings):
-    """Return the ledger for this call, or None where no state directory is set.
+    """Return the ledger for this call.
 
-    A state directory is what makes a limit persist, so an unset
-    QWEN_WEB_STATE_DIR leaves the tools unmetered and unaudited; the launch
-    configuration sets it.
+    A state directory is what makes a limit persist across the respawn, so a
+    provider that spends money and reaches the network refuses to run without
+    one: an unset or unusable QWEN_WEB_STATE_DIR fails the call rather than
+    serving it unmetered and unaudited. The fake provider reaches no network and
+    spends nothing, so it runs unmetered and a fixture-driven test needs no
+    directory.
     """
     directory = settings.get("state_dir") or ""
     if not directory:
-        return None
+        if settings.get("provider") == "fake":
+            return None
+        raise ToolError(
+            "QWEN_WEB_STATE_DIR names no directory, so the rate ledger cannot "
+            "persist across the respawn and the call is refused rather than "
+            "served unmetered"
+        )
     try:
         return Ledger(directory)
     except (OSError, sqlite3.Error):
         raise ToolError(
-            f"the web state directory is unusable: {directory}"
+            "QWEN_WEB_STATE_DIR names a directory the ledger cannot open: "
+            f"{directory}"
         ) from None
 
 

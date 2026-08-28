@@ -140,8 +140,11 @@ issued rather than answers used: a request whose body then fails the UTF-8 or
 size check has already reached the provider and keeps its slot. `QWEN_WEB_PROFILE`
 labels the rows, and `QWEN_WEB_SEARCH_PER_MINUTE`,
 `QWEN_WEB_FETCH_PER_MINUTE`, and `QWEN_WEB_DAILY_BUDGET` set the three limits,
-which default to 10, 20, and 500. An unset state directory leaves the tools
-unmetered and unaudited, so the launch configuration sets it.
+which default to 10, 20, and 500. A provider that spends money and reaches the network
+refuses to run without a ledger, so with `--provider exa` an unset or unopenable
+`QWEN_WEB_STATE_DIR` fails every tool call and names the variable. The fake
+provider reaches no network and spends nothing, so it runs unmetered and a
+fixture-driven test needs no directory.
 
 An audit row carries the timestamp, profile, operation, SHA-256 of the query,
 the domain filters, the result count, the fetched host, the provider bytes, the

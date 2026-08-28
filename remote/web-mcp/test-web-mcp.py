@@ -1112,9 +1112,37 @@ class WebMcpServerTest(unittest.TestCase):
                 return line[len("Result ID: ") :]
         self.fail(f"the search rendering carries no Result ID for {url}")
 
+    def test_the_exa_provider_refuses_to_run_unmetered(self):
+        session = self.open_session(QWEN_WEB_PROVIDER="exa")
+        response = self.search(session)
+        self.assertTrue(response["result"]["isError"])
+        self.assertIn("QWEN_WEB_STATE_DIR", self.result_text(response))
+        result = session.call_tool("fetch_exa", {"result_id": "a.b"})
+        self.assertIn("QWEN_WEB_STATE_DIR", self.result_text(result))
+
+    def test_an_unusable_state_directory_refuses_the_call(self):
+        sealed = self.state_directory("sealed-state")
+        os.makedirs(sealed, exist_ok=True)
+        os.chmod(sealed, 0o500)
+        self.addCleanup(os.chmod, sealed, 0o700)
+        session = self.open_session(
+            QWEN_WEB_PROVIDER="exa", QWEN_WEB_STATE_DIR=sealed
+        )
+        response = self.search(session)
+        self.assertTrue(response["result"]["isError"])
+        self.assertIn("QWEN_WEB_STATE_DIR", self.result_text(response))
+        self.assertIn("cannot open", self.result_text(response))
+
+    def test_the_fake_provider_runs_without_a_state_directory(self):
+        session = self.open_session()
+        response = self.search(session, max_results=1)
+        self.assertFalse(response["result"]["isError"])
+
     def test_exa_provider_without_a_key_file_fails_before_the_network(self):
         session = self.open_session(
-            QWEN_WEB_PROVIDER="exa", QWEN_WEB_EXA_KEY_FILE=None
+            QWEN_WEB_PROVIDER="exa",
+            QWEN_WEB_EXA_KEY_FILE=None,
+            QWEN_WEB_STATE_DIR=self.state_directory("offline-state"),
         )
         response = self.search(session)
         self.assertTrue(response["result"]["isError"])
