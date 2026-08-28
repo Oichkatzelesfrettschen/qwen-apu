@@ -1164,7 +1164,7 @@ class Ledger:
             self.connection.execute("ROLLBACK")
             raise
 
-    def reserve_fetch(self, search_id, url, content_id, now):
+    def reserve_fetch(self, search_id, url, content_id, now, profile):
         """Return the stored document, or reserve one against the search.
 
         The snapshot lookup and the allowance reservation run inside one
@@ -1178,20 +1178,25 @@ class Ledger:
         """
         self.connection.execute("BEGIN IMMEDIATE")
         try:
-            stored = self.snapshot(content_id, now)
-            if stored is not None:
-                self.connection.execute("COMMIT")
-                return stored
+            # The search row rather than the claim carries the profile, so the
+            # admission runs ahead of the snapshot: a second configuration
+            # sharing the signing key and this directory would otherwise read
+            # a stored document the first profile paid for.
             row = self.connection.execute(
-                "SELECT fetches_used, fetches_allowed, expiry FROM searches"
-                " WHERE search_id = ?",
+                "SELECT fetches_used, fetches_allowed, expiry, profile FROM"
+                " searches WHERE search_id = ?",
                 (search_id,),
             ).fetchone()
             if row is None:
                 raise AuthorizationDenied(
                     "the search that issued this result is unknown to the ledger"
                 )
-            used, allowed, expiry = row
+            used, allowed, expiry, issuing_profile = row
+            if issuing_profile != profile:
+                raise AuthorizationDenied(
+                    "the search that issued this result ran under another "
+                    "profile"
+                )
             if now >= expiry:
                 raise ExpiredResult(
                     "the search that issued this result has expired"
@@ -1205,6 +1210,10 @@ class Ledger:
                 raise AuthorizationDenied(
                     "the search that issued this result returned another URL"
                 )
+            stored = self.snapshot(content_id, now)
+            if stored is not None:
+                self.connection.execute("COMMIT")
+                return stored
             if used >= allowed:
                 raise BudgetExhausted(
                     f"the per-search fetch budget of {allowed} is exhausted; "
@@ -1893,7 +1902,13 @@ def call_fetch(settings, arguments):
         if ledger is not None:
             spend_call_budget(ledger, settings, "fetch", now)
         stored = (
-            ledger.reserve_fetch(claim["search_id"], url, content_id, now)
+            ledger.reserve_fetch(
+                claim["search_id"],
+                url,
+                content_id,
+                now,
+                settings.get("profile") or "default",
+            )
             if ledger is not None
             else None
         )

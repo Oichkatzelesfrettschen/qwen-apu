@@ -104,7 +104,10 @@ staying short against a transcript that outlives the session. `search_id` is
 enforced rather than provenance where a ledger exists: each search writes its
 identifier, its profile's fetch allowance, and one row per issued URL, and a
 fetch charges that row before it reaches the provider, so a result the ledger
-never issued and a search identifier it never recorded both refuse.
+never issued and a search identifier it never recorded both refuse. The
+`searches` row carries the profile and the admission reads it ahead of the
+snapshot, so a second configuration sharing the signing key and the state
+directory reaches neither the allowance nor the stored document of the first.
 `QWEN_WEB_MAX_FETCHES_PER_SEARCH` sets the allowance, which defaults to eight
 documents per search.
 

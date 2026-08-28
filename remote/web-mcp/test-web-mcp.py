@@ -1848,7 +1848,9 @@ class WebMcpServerTest(unittest.TestCase):
         ledger.open_search("search-1", "default", "fake", 4, expiry, [(url, "")])
         content_id = server.content_identity("search-1", url)
         self.assertIsNone(
-            ledger.reserve_fetch("search-1", url, content_id, time.time())
+            ledger.reserve_fetch(
+                "search-1", url, content_id, time.time(), "default"
+            )
         )
         ledger.store_snapshot(
             server.ExtractedContent(
@@ -1862,7 +1864,9 @@ class WebMcpServerTest(unittest.TestCase):
             time.time(),
             expiry,
         )
-        stored = ledger.reserve_fetch("search-1", url, content_id, time.time())
+        stored = ledger.reserve_fetch(
+            "search-1", url, content_id, time.time(), "default"
+        )
         self.assertIsNotNone(stored)
         self.assertEqual(stored["text"], "stored body")
         self.assertEqual(
@@ -1998,6 +2002,35 @@ class WebMcpServerTest(unittest.TestCase):
         response = session.call_tool("fetch_exa", {"result_id": forged})
         self.assertTrue(response["result"]["isError"])
         self.assertIn("returned another URL", self.result_text(response))
+
+    def test_a_result_issued_under_one_profile_refuses_another(self):
+        """A Result ID buys documents against the profile that issued it.
+
+        Two configurations sharing the signing key and the state directory
+        differ by `QWEN_WEB_PROFILE` alone, and grants are profile-scoped, so
+        the fetch reads the profile the `searches` row records rather than
+        the claim, which carries none.
+        """
+        state_path = self.state_directory("profile-binding-state")
+        issuing = self.open_session(
+            QWEN_WEB_STATE_DIR=state_path, QWEN_WEB_PROFILE="metered"
+        )
+        token = self.first_result_id(
+            self.result_text(self.search(issuing, max_results=1))
+        )
+        other = self.open_session(
+            QWEN_WEB_STATE_DIR=state_path, QWEN_WEB_PROFILE="research"
+        )
+        refused = other.call_tool("fetch_exa", {"result_id": token})
+        self.assertTrue(refused["result"]["isError"])
+        self.assertIn("profile", self.result_text(refused))
+        admitted = issuing.call_tool("fetch_exa", {"result_id": token})
+        self.assertFalse(admitted["result"]["isError"])
+        cached = other.call_tool("fetch_exa", {"result_id": token})
+        self.assertTrue(
+            cached["result"]["isError"],
+            "the stored snapshot reached the other profile",
+        )
 
     def test_a_result_from_an_unknown_search_is_refused(self):
         state_path = self.state_directory("unknown-search-state")
