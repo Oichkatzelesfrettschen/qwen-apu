@@ -248,6 +248,12 @@ if [ -e "$wedge_output/d1-b1-ub1.dmesg.txt" ]; then
 fi
 awk -F'\t' '$1 == "d1-b1-ub1" && $9 == "unavailable" { found = 1 }
             END { exit !found }' "$wedge_output/wedge-summary.tsv"
+if ! awk -F'\t' '$1 == "d1-b1-ub1" && $19 == "unverified" { found = 1 }
+                 END { exit !found }' "$wedge_output/wedge-summary.tsv"; then
+    printf 'depth wedge did not mark unavailable kernel telemetry non-promotable\n' >&2
+    cat "$wedge_output/wedge-summary.tsv" >&2
+    exit 1
+fi
 
 # A fault line with no reset line names a hazard the ring never recovered from
 # on its own. arm_healthy must read gpu_faults as well as ring_resets, so this

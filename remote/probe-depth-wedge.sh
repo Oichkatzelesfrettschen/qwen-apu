@@ -67,7 +67,16 @@ fi
 
 mkdir -p "$output_directory"
 summary=$output_directory/wedge-summary.tsv
-summary_header='arm	depth	batch	ubatch	cache_k	cache_v	flash_attn	status	ring_resets	gpu_faults	wall_s	decode_tok_s	vram_peak_mib	gtt_peak_mib	control_status	control_tok_s	mclk_modal	temp_c_max'
+# health carries the promotion signal a downstream consumer reads instead of
+# recomputing arm_status, control_status, ring_resets, and gpu_faults itself.
+# `healthy` is a clean arm with a passing control and a kernel delta that
+# confirms zero resets and zero faults; `unhealthy` is a failed status, a
+# failed control, or a confirmed reset or fault; `unverified` is every other
+# case, where dmesg was unavailable or unreadable so the arm's reset and fault
+# counts are `unavailable` and a clean run cannot be told apart from a
+# recovery this probe did not see. A promotion rule that treats `unverified`
+# as `healthy` promotes an arm this probe never confirmed clean.
+summary_header='arm	depth	batch	ubatch	cache_k	cache_v	flash_attn	status	ring_resets	gpu_faults	wall_s	decode_tok_s	vram_peak_mib	gtt_peak_mib	control_status	control_tok_s	mclk_modal	temp_c_max	health'
 summary_has_arms=0
 if [ -s "$summary" ]; then
     if [ "$(sed -n '1p' "$summary")" != "$summary_header" ]; then
@@ -76,7 +85,7 @@ if [ -s "$summary" ]; then
         exit 2
     fi
     malformed_line=$(awk -F'\t' '
-        NR > 1 && (NF != 18 || $1 != "d" $2 "-b" $3 "-ub" $4) {
+        NR > 1 && (NF != 19 || $1 != "d" $2 "-b" $3 "-ub" $4) {
             print NR
             exit
         }' "$summary")
@@ -249,6 +258,8 @@ run_arm() {
             '$1 == label { print $10; exit }' "$summary")
         recorded_control_status=$(awk -F'\t' -v label="$arm_label" \
             '$1 == label { print $15; exit }' "$summary")
+        recorded_health=$(awk -F'\t' -v label="$arm_label" \
+            '$1 == label { print $19; exit }' "$summary")
         recorded_cache_type_k=$(awk -F'\t' -v label="$arm_label" \
             '$1 == label { print $5; exit }' "$summary")
         recorded_cache_type_v=$(awk -F'\t' -v label="$arm_label" \
@@ -306,22 +317,36 @@ run_arm() {
                 "$arm_label" "$arm_kernel" >&2
             exit 2
         fi
-        arm_healthy=0
-        if [ "$recorded_status" -eq 0 ] &&
-           [ "$recorded_control_status" -eq 0 ]; then
-            if { [ "$recorded_resets" = unavailable ] ||
-                 [ "$recorded_resets" -eq 0 ]; } &&
-               { [ "$recorded_faults" = unavailable ] ||
-                 [ "$recorded_faults" -eq 0 ]; }; then
-                arm_healthy=1
+        case $recorded_health in
+            healthy | unhealthy | unverified) ;;
+            *)
+                printf 'recorded arm %s carries invalid health: %s\n' \
+                    "$arm_label" "$recorded_health" >&2
+                exit 2
+                ;;
+        esac
+        expected_health=unhealthy
+        if [ "$recorded_status" -eq 0 ] && [ "$recorded_control_status" -eq 0 ]; then
+            if [ "$recorded_resets" = unavailable ] ||
+               [ "$recorded_faults" = unavailable ]; then
+                expected_health=unverified
+            elif [ "$recorded_resets" -eq 0 ] && [ "$recorded_faults" -eq 0 ]; then
+                expected_health=healthy
             fi
         fi
+        if [ "$recorded_health" != "$expected_health" ]; then
+            printf 'recorded arm %s carries health %s inconsistent with its status, control, resets, and faults (expected %s)\n' \
+                "$arm_label" "$recorded_health" "$expected_health" >&2
+            exit 2
+        fi
+        arm_healthy=0
+        [ "$recorded_health" != healthy ] || arm_healthy=1
         if [ "$recorded_control_status" -ne 0 ]; then
             device_corrupt=1
         fi
-        printf 'arm_resume_skip label=%s status=%s resets=%s control=%s\n' \
+        printf 'arm_resume_skip label=%s status=%s resets=%s control=%s health=%s\n' \
             "$arm_label" "$recorded_status" "$recorded_resets" \
-            "$recorded_control_status"
+            "$recorded_control_status" "$recorded_health"
         return 0
     fi
     for incomplete_artifact in "$arm_log" "$arm_samples" "$control_log"; do
@@ -433,16 +458,33 @@ run_arm() {
             }' "$arm_samples")
     fi
 
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    # health carries the promotion signal. A fault or reset line without
+    # recovery leaves the arm unhealthy regardless of dmesg availability. A
+    # clean status and control with dmesg unavailable or unreadable cannot be
+    # told apart from a hazard this probe did not see, so it reads
+    # `unverified` rather than `healthy`: kernel telemetry unavailable keeps
+    # the arm's decode and control results as an exploratory measurement
+    # without certifying it clean, and a promotion rule that treats
+    # `unverified` as `healthy` promotes an arm this probe never confirmed.
+    health=unhealthy
+    if [ "$arm_status" -eq 0 ] && [ "$control_status" -eq 0 ]; then
+        if [ "$resets" = unavailable ] || [ "$faults" = unavailable ]; then
+            health=unverified
+        elif [ "$resets" -eq 0 ] && [ "$faults" -eq 0 ]; then
+            health=healthy
+        fi
+    fi
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$arm_label" "$arm_depth" "$arm_batch" "$arm_ubatch" "$cache_type_k" \
         "$cache_type_v" "$flash_attention" "$arm_status" "$resets" "$faults" \
         "$arm_wall" "$decode" "$memory_report" "$control_status" \
-        "$control_decode" "$clock_report" >>"$summary"
-    printf 'arm_stop_utc=%s label=%s status=%s decode=%s resets=%s faults=%s wall_s=%s peak_vram_gtt_mib=%s control=%s control_tok_s=%s\n' \
+        "$control_decode" "$clock_report" "$health" >>"$summary"
+    printf 'arm_stop_utc=%s label=%s status=%s decode=%s resets=%s faults=%s wall_s=%s peak_vram_gtt_mib=%s control=%s control_tok_s=%s health=%s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$arm_label" "$arm_status" "$decode" \
         "$resets" "$faults" "$arm_wall" \
         "$(printf '%s' "$memory_report" | tr '\t' '/')" "$control_status" \
-        "$control_decode"
+        "$control_decode" "$health"
     active_arm_label=''
 
     if [ "$control_status" -ne 0 ]; then
@@ -451,20 +493,12 @@ run_arm() {
         device_corrupt=1
     fi
 
-    # A fault line without a matching reset line names a hazard the ring never
-    # recovered from on its own: the driver logged the fault and nothing else
-    # moved the ring back to a serviceable state. arm_healthy gates the
-    # conditional-depth rescue skip below, so a fault without a counted reset
-    # leaves the arm unhealthy, runs every remaining geometry at this depth,
-    # and withholds the health signal any promotion decision reads from this
-    # ledger.
+    # arm_healthy gates the conditional-depth rescue skip below, and only
+    # `healthy` promotes it: `unverified` runs every remaining geometry at
+    # this depth exactly as `unhealthy` does, because a confirmed-clean depth
+    # is what the rescue skip requires.
     arm_healthy=0
-    if [ "$arm_status" -eq 0 ] && [ "$control_status" -eq 0 ]; then
-        if { [ "$resets" = unavailable ] || [ "$resets" -eq 0 ]; } &&
-           { [ "$faults" = unavailable ] || [ "$faults" -eq 0 ]; }; then
-            arm_healthy=1
-        fi
-    fi
+    [ "$health" != healthy ] || arm_healthy=1
 }
 
 for depth in $depths; do
