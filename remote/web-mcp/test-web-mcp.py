@@ -2917,6 +2917,23 @@ class WebMcpServerTest(unittest.TestCase):
         self.assertFalse(response["result"]["isError"])
         self.assertGreaterEqual(elapsed, 1.5)
 
+    def test_the_fake_provider_matches_a_fixture_key_by_its_words(self):
+        session = self.open_session()
+        for query in ("Raven2 Vulkan decode rate", "the raven2 vulkan decode figure", "decode vulkan raven2"):
+            response = self.search(session, query=query, max_results=1)
+            self.assertFalse(response["result"]["isError"], query)
+            self.assertIn("Result ID: ", self.result_text(response), query)
+        response = self.search(session, query="raven2 decode", max_results=1)
+        self.assertFalse(response["result"]["isError"])
+        self.assertNotIn("Result ID: ", self.result_text(response))
+        words_fixture = os.path.join(self.directory.name, "words-fixtures.json")
+        with open(words_fixture, "w", encoding="utf-8") as handle:
+            json.dump({"search": {"a b": [], "a b c": []}, "delays": {"a b c d": 1}}, handle)
+        provider = server.FakeProvider(words_fixture)
+        self.assertEqual(provider.fixture_key("c B a"), "a b c")
+        self.assertEqual(provider.fixture_key("x d c b a"), "a b c d")
+        self.assertIsNone(provider.fixture_key("a"))
+
     def test_an_argument_outside_the_schema_is_refused_by_name(self):
         session = self.open_session()
         response = self.search(session, model="web-balanced-admission")

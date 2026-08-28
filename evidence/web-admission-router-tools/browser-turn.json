@@ -15,7 +15,7 @@
           "type": "function",
           "function": {
             "name": "web_search_exa",
-            "arguments": "{\"query\":\"raven2 vulkan decode rate\",\"max_results\":3}"
+            "arguments": "{\"query\":\"raven2 vulkan decode decode rate\",\"max_results\":3}"
           }
         }
       ]
@@ -24,11 +24,11 @@
       "role": "tool",
       "tool_call_id": "call_0",
       "name": "web_search_exa",
-      "content": "Title: Vulkan decode on Raven2\nURL: https://example.org/raven2\nPublished: 2026-01-05\nAuthor: A. Measurer\nResult ID: eyJjYW5vbmljYWxfdXJsIjoiaHR0cHM6Ly9leGFtcGxlLm9yZy9yYXZlbjIiLCJleHBpcnkiOjE3ODc5NTMzNjIsImZyZXNobmVzcyI6eyJtYXhfYWdlX2hvdXJzIjpudWxsLCJwdWJsaXNoZWRfYWZ0ZXIiOiIiLCJwdWJsaXNoZWRfYmVmb3JlIjoiIn0sImlzc3VlZF9hdCI6MTc4Nzk1MjQ2MiwicHJvdmlkZXIiOiJmYWtlIiwicHJvdmlkZXJfcmVzdWx0X2lkIjoiIiwic2VhcmNoX2lkIjoieWtnOGg4MGo4NUtUIn0.46JVZ0nwjXdqRo1yTq2ZheGldnLpJsha-qbkzat5tAg\nTrust: untrusted-web-result\nHighlights:\n- decode reaches 3.07 tok/s on the 4B distill\n- two Vega compute units share one DDR4 controller\n---\nTitle: MCP tool routes in llama-server\nURL: https://docs.example.net/llama-server-tools\nPublished: 2026-03-03\nAuthor: \nResult ID: eyJjYW5vbmljYWxfdXJsIjoiaHR0cHM6Ly9kb2NzLmV4YW1wbGUubmV0L2xsYW1hLXNlcnZlci10b29scyIsImV4cGlyeSI6MTc4Nzk1MzM2MiwiZnJlc2huZXNzIjp7Im1heF9hZ2VfaG91cnMiOm51bGwsInB1Ymxpc2hlZF9hZnRlciI6IiIsInB1Ymxpc2hlZF9iZWZvcmUiOiIifSwiaXNzdWVkX2F0IjoxNzg3OTUyNDYyLCJwcm92aWRlciI6ImZha2UiLCJwcm92aWRlcl9yZXN1bHRfaWQiOiIiLCJzZWFyY2hfaWQiOiJ5a2c4aDgwajg1S1QifQ.YurHoX95K1q72K3Qv_cBcWpmxrWnXj27hLXuTX-FYrk\nTrust: untrusted-web-result\nHighlights:\n- GET /tools lists the wrapped MCP tools\n- POST /tools runs one named tool with the caller's params\n---"
+      "content": "Title: Vulkan decode on Raven2\nURL: https://example.org/raven2\nPublished: 2026-01-05\nAuthor: A. Measurer\nResult ID: eyJjYW5vbmljYWxfdXJsIjoiaHR0cHM6Ly9leGFtcGxlLm9yZy9yYXZlbjIiLCJleHBpcnkiOjE3ODc5NTc2NjksImZyZXNobmVzcyI6eyJtYXhfYWdlX2hvdXJzIjpudWxsLCJwdWJsaXNoZWRfYWZ0ZXIiOiIiLCJwdWJsaXNoZWRfYmVmb3JlIjoiIn0sImlzc3VlZF9hdCI6MTc4Nzk1Njc2OSwicHJvdmlkZXIiOiJmYWtlIiwicHJvdmlkZXJfcmVzdWx0X2lkIjoiIiwic2VhcmNoX2lkIjoiRkEzSDB2N0xWZVNaIn0.WZX1xMGw7I-EvRZS7o4FUb3Jx4DovJOBU84kGETVnLs\nTrust: untrusted-web-result\nHighlights:\n- decode reaches 3.07 tok/s on the 4B distill\n- two Vega compute units share one DDR4 controller\n---\nTitle: MCP tool routes in llama-server\nURL: https://docs.example.net/llama-server-tools\nPublished: 2026-03-03\nAuthor: \nResult ID: eyJjYW5vbmljYWxfdXJsIjoiaHR0cHM6Ly9kb2NzLmV4YW1wbGUubmV0L2xsYW1hLXNlcnZlci10b29scyIsImV4cGlyeSI6MTc4Nzk1NzY2OSwiZnJlc2huZXNzIjp7Im1heF9hZ2VfaG91cnMiOm51bGwsInB1Ymxpc2hlZF9hZnRlciI6IiIsInB1Ymxpc2hlZF9iZWZvcmUiOiIifSwiaXNzdWVkX2F0IjoxNzg3OTU2NzY5LCJwcm92aWRlciI6ImZha2UiLCJwcm92aWRlcl9yZXN1bHRfaWQiOiIiLCJzZWFyY2hfaWQiOiJGQTNIMHY3TFZlU1oifQ.44aMVGh_jkglJG6Sdw6eQcmBYULNUXuYQ_BrOyaOiNE\nTrust: untrusted-web-result\nHighlights:\n- GET /tools lists the wrapped MCP tools\n- POST /tools runs one named tool with the caller's params\n---"
     },
     {
       "role": "assistant",
-      "content": "Based on the search results, the **Raven2** decoder achieves a decode rate of **3.07 tokens/second (tok/s)** on the 4B distill model using Vulkan.\n\nThe result specifically notes that the Vulkan decoder reaches **3.07 tok/s** on the 4B distill model, and there's an additional note about two Vega compute units sharing one DDR4 controller."
+      "content": "Based on the search result, the decode rate stated is **3.07 tok/s** on the 4B distill model using Vulkan decoding on Raven2."
     }
   ],
   "requests": [
@@ -149,7 +149,7 @@
       "url": "http://127.0.0.1:8571/grant",
       "method": "POST",
       "body": {
-        "query": "raven2 vulkan decode rate",
+        "query": "raven2 vulkan decode decode rate",
         "include_domains": [],
         "exclude_domains": [],
         "published_after": "",
@@ -166,7 +166,7 @@
         "model": "web-balanced-admission",
         "tool": "web_search_exa",
         "params": {
-          "query": "raven2 vulkan decode rate",
+          "query": "raven2 vulkan decode decode rate",
           "max_results": 3,
           "include_domains": [],
           "exclude_domains": []
@@ -199,7 +199,7 @@
                 "type": "function",
                 "function": {
                   "name": "web_search_exa",
-                  "arguments": "{\"query\":\"raven2 vulkan decode rate\",\"max_results\":3}"
+                  "arguments": "{\"query\":\"raven2 vulkan decode decode rate\",\"max_results\":3}"
                 }
               }
             ]
@@ -208,7 +208,7 @@
             "role": "tool",
             "tool_call_id": "call_0",
             "name": "web_search_exa",
-            "content": "Title: Vulkan decode on Raven2\nURL: https://example.org/raven2\nPublished: 2026-01-05\nAuthor: A. Measurer\nResult ID: eyJjYW5vbmljYWxfdXJsIjoiaHR0cHM6Ly9leGFtcGxlLm9yZy9yYXZlbjIiLCJleHBpcnkiOjE3ODc5NTMzNjIsImZyZXNobmVzcyI6eyJtYXhfYWdlX2hvdXJzIjpudWxsLCJwdWJsaXNoZWRfYWZ0ZXIiOiIiLCJwdWJsaXNoZWRfYmVmb3JlIjoiIn0sImlzc3VlZF9hdCI6MTc4Nzk1MjQ2MiwicHJvdmlkZXIiOiJmYWtlIiwicHJvdmlkZXJfcmVzdWx0X2lkIjoiIiwic2VhcmNoX2lkIjoieWtnOGg4MGo4NUtUIn0.46JVZ0nwjXdqRo1yTq2ZheGldnLpJsha-qbkzat5tAg\nTrust: untrusted-web-result\nHighlights:\n- decode reaches 3.07 tok/s on the 4B distill\n- two Vega compute units share one DDR4 controller\n---\nTitle: MCP tool routes in llama-server\nURL: https://docs.example.net/llama-server-tools\nPublished: 2026-03-03\nAuthor: \nResult ID: eyJjYW5vbmljYWxfdXJsIjoiaHR0cHM6Ly9kb2NzLmV4YW1wbGUubmV0L2xsYW1hLXNlcnZlci10b29scyIsImV4cGlyeSI6MTc4Nzk1MzM2MiwiZnJlc2huZXNzIjp7Im1heF9hZ2VfaG91cnMiOm51bGwsInB1Ymxpc2hlZF9hZnRlciI6IiIsInB1Ymxpc2hlZF9iZWZvcmUiOiIifSwiaXNzdWVkX2F0IjoxNzg3OTUyNDYyLCJwcm92aWRlciI6ImZha2UiLCJwcm92aWRlcl9yZXN1bHRfaWQiOiIiLCJzZWFyY2hfaWQiOiJ5a2c4aDgwajg1S1QifQ.YurHoX95K1q72K3Qv_cBcWpmxrWnXj27hLXuTX-FYrk\nTrust: untrusted-web-result\nHighlights:\n- GET /tools lists the wrapped MCP tools\n- POST /tools runs one named tool with the caller's params\n---"
+            "content": "Title: Vulkan decode on Raven2\nURL: https://example.org/raven2\nPublished: 2026-01-05\nAuthor: A. Measurer\nResult ID: eyJjYW5vbmljYWxfdXJsIjoiaHR0cHM6Ly9leGFtcGxlLm9yZy9yYXZlbjIiLCJleHBpcnkiOjE3ODc5NTc2NjksImZyZXNobmVzcyI6eyJtYXhfYWdlX2hvdXJzIjpudWxsLCJwdWJsaXNoZWRfYWZ0ZXIiOiIiLCJwdWJsaXNoZWRfYmVmb3JlIjoiIn0sImlzc3VlZF9hdCI6MTc4Nzk1Njc2OSwicHJvdmlkZXIiOiJmYWtlIiwicHJvdmlkZXJfcmVzdWx0X2lkIjoiIiwic2VhcmNoX2lkIjoiRkEzSDB2N0xWZVNaIn0.WZX1xMGw7I-EvRZS7o4FUb3Jx4DovJOBU84kGETVnLs\nTrust: untrusted-web-result\nHighlights:\n- decode reaches 3.07 tok/s on the 4B distill\n- two Vega compute units share one DDR4 controller\n---\nTitle: MCP tool routes in llama-server\nURL: https://docs.example.net/llama-server-tools\nPublished: 2026-03-03\nAuthor: \nResult ID: eyJjYW5vbmljYWxfdXJsIjoiaHR0cHM6Ly9kb2NzLmV4YW1wbGUubmV0L2xsYW1hLXNlcnZlci10b29scyIsImV4cGlyeSI6MTc4Nzk1NzY2OSwiZnJlc2huZXNzIjp7Im1heF9hZ2VfaG91cnMiOm51bGwsInB1Ymxpc2hlZF9hZnRlciI6IiIsInB1Ymxpc2hlZF9iZWZvcmUiOiIifSwiaXNzdWVkX2F0IjoxNzg3OTU2NzY5LCJwcm92aWRlciI6ImZha2UiLCJwcm92aWRlcl9yZXN1bHRfaWQiOiIiLCJzZWFyY2hfaWQiOiJGQTNIMHY3TFZlU1oifQ.44aMVGh_jkglJG6Sdw6eQcmBYULNUXuYQ_BrOyaOiNE\nTrust: untrusted-web-result\nHighlights:\n- GET /tools lists the wrapped MCP tools\n- POST /tools runs one named tool with the caller's params\n---"
           }
         ],
         "chat_template_kwargs": {
@@ -298,13 +298,13 @@
       }
     }
   ],
-  "log": "you\nSearch the web with the query raven2 vulkan decode and report the decode rate the result states.\nqwen\nweb_search_exa({\"query\":\"raven2 vulkan decode rate\",\"max_results\":3})\n18.9 tok/s prefill | 2.9 tok/s decode | 45 generated tokens in 52.5s | ended on tool_calls\nqwen\nBased on the search results, the **Raven2** decoder achieves a decode rate of **3.07 tokens/second (tok/s)** on the 4B distill model using Vulkan.\n\nThe result specifically notes that the Vulkan decoder reaches **3.07 tok/s** on the 4B distill model, and there's an additional note about two Vega compute units sharing one DDR4 controller.\n15.1 tok/s prefill | 2.7 tok/s decode | 86 generated tokens in 78.4s",
+  "log": "you\nSearch the web with the query raven2 vulkan decode and report the decode rate the result states.\nqwen\nweb_search_exa({\"query\":\"raven2 vulkan decode decode rate\",\"max_results\":3})\n13.4 tok/s prefill | 2.2 tok/s decode | 46 generated tokens in 73.5s | ended on tool_calls\nqwen\nBased on the search result, the decode rate stated is **3.07 tok/s** on the 4B distill model using Vulkan decoding on Raven2.\n12.1 tok/s prefill | 2.2 tok/s decode | 35 generated tokens in 74.6s",
   "selected_model_at_load": "web-balanced-admission",
   "dialog": {
     "heading": "Authorize one web search",
     "note": "",
     "args": {
-      "query": "raven2 vulkan decode rate",
+      "query": "raven2 vulkan decode decode rate",
       "publication interval": "any publication date",
       "included domains": "every domain",
       "excluded domains": "none",

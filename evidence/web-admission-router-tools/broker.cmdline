@@ -5,8 +5,10 @@ $HOME/qwen-laptop-setup/remote/web-mcp/authorize-broker.py
 --port
 8571
 --state-dir
-$HOME/qwen-webui-state/web-admission-router-c/web-mcp
+$HOME/qwen-webui-state/web-admission-router-g/web-mcp
 --profile
 web-balanced-admission
 --provider
 fake
+--api-key-file
+$HOME/qwen-webui-state/api.key

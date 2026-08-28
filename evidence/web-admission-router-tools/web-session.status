@@ -1,6 +1,6 @@
-state=running server_pid=164874 monitor_pid=164998 latency_watchdog_pid=164987 kernel_hazard_watchdog_pid=164996 broker_pid=164835 profile=low-async host=127.0.0.1 port=8080 context=24576 latency_mode=observe utc=2026-08-28T21:23:14Z
+state=running server_pid=441511 monitor_pid=441657 latency_watchdog_pid=441634 kernel_hazard_watchdog_pid=441649 broker_pid=441457 profile=low-async host=127.0.0.1 port=8080 context=24576 latency_mode=observe utc=2026-08-28T22:35:07Z
 speculation spec_type=off draft_n_max=default draft_p_min=default draft_backend_sampling=0 backend_sampling=0
 cache cache_type_k=registry cache_type_v=registry flash_attention=registry override_context_ceiling=registry
-router enabled=1 presets=$HOME/qwen-webui-state/.router-presets.active.CNNWyT preset_sha256=83fdb3c864ff7cb67264bd94a077cae81a25e9bcfee33fa480da7ee5aeaffe78 models_max=1
-broker secret_file=$HOME/qwen-webui-state/web-admission-router-c/web-mcp/authorize-session.secret
-broker_identity pid=164835 start_time=443323 profile=web-balanced-admission provider=fake signing_key_sha256=<sha256>
+router enabled=1 presets=$HOME/qwen-webui-state/.router-presets.active.C0aCmH preset_sha256=7dc1d79e1daf53b6d7c9ef3507547a18712d251f5a5198a9eeb346b64918bb47 models_max=1
+broker secret_file=$HOME/qwen-webui-state/web-admission-router-g/web-mcp/authorize-session.secret
+broker_identity pid=441457 start_time=874630 profile=web-balanced-admission provider=fake signing_key_sha256=<sha256>

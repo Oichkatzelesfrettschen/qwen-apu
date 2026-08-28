@@ -1,38 +1,38 @@
-buckets	authorize-minute	1787952420	1
-buckets	search-minute	1787952420	1
-buckets	pages-day	1787875200	17
-buckets	provider-day	1787875200	6
-buckets	fetch-minute	1787952180	2
-audit	2026-08-28T21:23:22Z	web-balanced-admission	authorize	da75328d535f17ac9245c361fd500f11f374b3c5af229516d69bb3a174c3d37c		3		0	0	45	success	1787952202
-audit	2026-08-28T21:23:22Z	web-balanced-admission	authorize	da75328d535f17ac9245c361fd500f11f374b3c5af229516d69bb3a174c3d37c		3		0	0	39	authorization_denied	1787952202
-audit	2026-08-28T21:23:22Z	web-balanced-admission	authorize			0		0	0	33	authorization_denied	1787952202
-audit	2026-08-28T21:23:22Z	web-balanced-admission	authorize			0		0	0	25	authorization_denied	1787952202
-audit	2026-08-28T21:23:23Z	web-balanced-admission	search	da75328d535f17ac9245c361fd500f11f374b3c5af229516d69bb3a174c3d37c		2		509	1273	180	success	1787952203
-audit	2026-08-28T21:23:23Z	web-balanced-admission	search	da75328d535f17ac9245c361fd500f11f374b3c5af229516d69bb3a174c3d37c		0		0	0	115	authorization_denied	1787952203
-audit	2026-08-28T21:23:23Z	web-balanced-admission	search	da75328d535f17ac9245c361fd500f11f374b3c5af229516d69bb3a174c3d37c		0		0	0	0	authorization_denied	1787952203
-audit	2026-08-28T21:23:23Z	web-balanced-admission	fetch			1	example.org	318	306	83	success	1787952203
-audit	2026-08-28T21:23:23Z	web-balanced-admission	fetch			0	docs.example.net	0	0	42	budget_exhausted	1787952203
-audit	2026-08-28T21:23:23Z	web-balanced-admission	fetch			0		0	0	0	authorization_denied	1787952203
-audit	2026-08-28T21:23:23Z	web-balanced-admission	authorize	031a264a26fd0c170909cce5749194375954b01b3e4b9e432b757b30d5423389		3		0	0	21	success	1787952203
-audit	2026-08-28T21:23:23Z	web-balanced-admission	search	031a264a26fd0c170909cce5749194375954b01b3e4b9e432b757b30d5423389		2		509	1273	5096	success	1787952203
-audit	2026-08-28T21:23:29Z	web-balanced-admission	authorize	3c008d019e534d89a6f219b4322be530512fd5211fdc593aab06490e9abb5b6b		3		0	0	21	success	1787952209
-audit	2026-08-28T21:23:29Z	web-balanced-admission	search	3c008d019e534d89a6f219b4322be530512fd5211fdc593aab06490e9abb5b6b		2		509	1273	40099	success	1787952209
-audit	2026-08-28T21:27:42Z	web-balanced-admission	authorize	1e5fc82185422e9657d8a10d6f41eac36135f623663b0a9868ba298b5929250b		3		0	0	36	success	1787952462
-audit	2026-08-28T21:27:42Z	web-balanced-admission	search	1e5fc82185422e9657d8a10d6f41eac36135f623663b0a9868ba298b5929250b		2		509	1273	84	success	1787952462
-grants	VN71NOJLUTzMe8tr	web-balanced-admission	fake	1787952203	1787953102
-grants	YWxYuhDRmymKJ1BY	web-balanced-admission	fake	1787952203	1787953103
-grants	bu1ZjBylCmq9vGuB	web-balanced-admission	fake	1787952209	1787953109
-grants	QLD3S0QcplW-wkPJ	web-balanced-admission	fake	1787952462	1787953362
-searches	HaRkRssE_LDM	web-balanced-admission	fake	1	1	1787953103
-searches	IyNbv0kWf1p6	web-balanced-admission	fake	0	1	1787953103
-searches	ro0zlBP1p-8c	web-balanced-admission	fake	0	1	1787953109
-searches	ykg8h80j85KT	web-balanced-admission	fake	0	1	1787953362
-search_results	HaRkRssE_LDM	https://example.org/raven2	
-search_results	HaRkRssE_LDM	https://docs.example.net/llama-server-tools	
-search_results	IyNbv0kWf1p6	https://example.org/raven2	
-search_results	IyNbv0kWf1p6	https://docs.example.net/llama-server-tools	
-search_results	ro0zlBP1p-8c	https://example.org/raven2	
-search_results	ro0zlBP1p-8c	https://docs.example.net/llama-server-tools	
-search_results	ykg8h80j85KT	https://example.org/raven2	
-search_results	ykg8h80j85KT	https://docs.example.net/llama-server-tools	
-content	f3c9c9c6d485801c47325067bf4490c37796ca1f2c3bc873baa3a70f892f3404	HaRkRssE_LDM	https://example.org/raven2	Vulkan decode on Raven2. The Qwen3.8-4B distill at Q4_K_M decodes at 3.07 tokens per second with every layer on the Vulkan device. The two Vega compute units and the two Zen+ cores draw on one DDR4-2133 controller, so a split placement adds synchronization without adding bandwidth. FIXTURE-PAGE-RAVEN2-END	3907c877bd28540d0a130f54619803be02673c0550fa642b4b17d5a8347a8f5d	0	success	1787952203	1787953103
+buckets	authorize-minute	1787956740	1
+buckets	search-minute	1787956740	1
+buckets	pages-day	1787875200	14
+buckets	provider-day	1787875200	5
+buckets	fetch-minute	1787956500	2
+audit	2026-08-28T22:35:14Z	web-balanced-admission	authorize	da75328d535f17ac9245c361fd500f11f374b3c5af229516d69bb3a174c3d37c		3		0	0	33	success	1787956514
+audit	2026-08-28T22:35:14Z	web-balanced-admission	authorize	da75328d535f17ac9245c361fd500f11f374b3c5af229516d69bb3a174c3d37c		3		0	0	12	invalid_argument	1787956514
+audit	2026-08-28T22:35:14Z	web-balanced-admission	authorize			0		0	0	11	authorization_denied	1787956514
+audit	2026-08-28T22:35:14Z	web-balanced-admission	authorize			0		0	0	15	authorization_denied	1787956514
+audit	2026-08-28T22:35:14Z	web-balanced-admission	search	da75328d535f17ac9245c361fd500f11f374b3c5af229516d69bb3a174c3d37c		2		509	1273	33	success	1787956514
+audit	2026-08-28T22:35:14Z	web-balanced-admission	search	da75328d535f17ac9245c361fd500f11f374b3c5af229516d69bb3a174c3d37c		0		0	0	0	authorization_denied	1787956514
+audit	2026-08-28T22:35:14Z	web-balanced-admission	search	da75328d535f17ac9245c361fd500f11f374b3c5af229516d69bb3a174c3d37c		0		0	0	0	authorization_denied	1787956514
+audit	2026-08-28T22:35:14Z	web-balanced-admission	fetch			1	example.org	318	306	79	success	1787956514
+audit	2026-08-28T22:35:15Z	web-balanced-admission	fetch			0	docs.example.net	0	0	34	budget_exhausted	1787956515
+audit	2026-08-28T22:35:15Z	web-balanced-admission	fetch			0		0	0	0	authorization_denied	1787956515
+audit	2026-08-28T22:35:15Z	web-balanced-admission	authorize	031a264a26fd0c170909cce5749194375954b01b3e4b9e432b757b30d5423389		3		0	0	13	success	1787956515
+audit	2026-08-28T22:35:15Z	web-balanced-admission	search	031a264a26fd0c170909cce5749194375954b01b3e4b9e432b757b30d5423389		2		509	1273	5040	success	1787956515
+audit	2026-08-28T22:35:20Z	web-balanced-admission	authorize	3c008d019e534d89a6f219b4322be530512fd5211fdc593aab06490e9abb5b6b		3		0	0	17	success	1787956520
+audit	2026-08-28T22:35:20Z	web-balanced-admission	search	3c008d019e534d89a6f219b4322be530512fd5211fdc593aab06490e9abb5b6b		2		509	1273	40037	success	1787956520
+audit	2026-08-28T22:39:29Z	web-balanced-admission	authorize	4732610afe00de063b9433a5e6983b73007101282c927916129f409f68b8e8a3		3		0	0	44	success	1787956769
+audit	2026-08-28T22:39:29Z	web-balanced-admission	search	4732610afe00de063b9433a5e6983b73007101282c927916129f409f68b8e8a3		2		509	1273	55	success	1787956769
+grants	WS23Yt4YPUlf9WxW	web-balanced-admission	fake	1787956514	1787957414
+grants	YcOZ67rC-63QV-am	web-balanced-admission	fake	1787956515	1787957415
+grants	8FRt2tltSQ349hDZ	web-balanced-admission	fake	1787956520	1787957420
+grants	0V40LchYeDgGsGAT	web-balanced-admission	fake	1787956769	1787957669
+searches	Yo1By0u3u1OA	web-balanced-admission	fake	1	1	1787957414
+searches	CSmNgGLMteNj	web-balanced-admission	fake	0	1	1787957415
+searches	nFlqy-0Oq-ar	web-balanced-admission	fake	0	1	1787957420
+searches	FA3H0v7LVeSZ	web-balanced-admission	fake	0	1	1787957669
+search_results	Yo1By0u3u1OA	https://example.org/raven2	
+search_results	Yo1By0u3u1OA	https://docs.example.net/llama-server-tools	
+search_results	CSmNgGLMteNj	https://example.org/raven2	
+search_results	CSmNgGLMteNj	https://docs.example.net/llama-server-tools	
+search_results	nFlqy-0Oq-ar	https://example.org/raven2	
+search_results	nFlqy-0Oq-ar	https://docs.example.net/llama-server-tools	
+search_results	FA3H0v7LVeSZ	https://example.org/raven2	
+search_results	FA3H0v7LVeSZ	https://docs.example.net/llama-server-tools	
+content	015b8703eda44deb9bbdadaff4f31298c13dd551dfa8055f96b8bc8cc6674bd4	Yo1By0u3u1OA	https://example.org/raven2	Vulkan decode on Raven2. The Qwen3.8-4B distill at Q4_K_M decodes at 3.07 tokens per second with every layer on the Vulkan device. The two Vega compute units and the two Zen+ cores draw on one DDR4-2133 controller, so a split placement adds synchronization without adding bandwidth. FIXTURE-PAGE-RAVEN2-END	3907c877bd28540d0a130f54619803be02673c0550fa642b4b17d5a8347a8f5d	0	success	1787956514	1787957414

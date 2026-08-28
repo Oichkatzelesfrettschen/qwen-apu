@@ -104,6 +104,14 @@ call() {
     else
         shift "$#"
     fi
+    # Web mode mints a bearer API key that the router and the broker's
+    # /session route both demand, so every request to either carries it the
+    # way the page's authHeaders() does. The key reaches curl through a
+    # config file rather than argv, and the file lives beside the run's own
+    # keys at 0600 and is removed with them.
+    if [ -s "$api_key_curl_config" ] && [ "${call_without_key:-0}" != 1 ]; then
+        set -- "$@" --config "$api_key_curl_config"
+    fi
     if [ -n "$call_body" ]; then
         printf '%s' "$call_body" >"$output_directory/http/$exchange-$call_label.request"
         curl -sS --max-time 600 -o "$call_out" -D "$call_headers_file" \
@@ -118,6 +126,8 @@ call() {
     call_status=${call_status:-000}
 }
 mkdir -p "$output_directory/http"
+api_key_curl_config=$output_directory/keys/api-key.curl
+api_key_bytes=''
 # An early exit under set -e names itself in run.log rather than leaving an
 # empty summary as the only trace.
 note_exit() {
@@ -211,6 +221,12 @@ restore_ordinary() {
             done
         }
         if [ -n "$first_id" ] && [ -n "$second_id" ]; then
+            # The check loads and evicts, so the roster's resident set before
+            # it is captured and put back after it: each model the check
+            # loaded is unloaded again and each model resident beforehand is
+            # loaded again, and the statuses are compared whole.
+            call models-before-eviction GET "$router_origin/models"
+            jq -r '.data[] | .id + "\t" + (.status.value // "")' "$call_out" | sort >"$output_directory/resident-before-eviction.tsv"
             call load-first POST "$router_origin/models/load" "$(jq -cn --arg m "$first_id" '{model: $m}')"
             wait_loaded "$first_id" || true
             first_status=$(model_status "$first_id")
@@ -223,6 +239,20 @@ restore_ordinary() {
             else
                 record models_max_evicts_previous fail "$first_id=$first_status then $first_id=$first_after $second_id=$second_after"
             fi
+            for loaded_id in $first_id $second_id; do
+                call "unload-$loaded_id" POST "$router_origin/models/unload" "$(jq -cn --arg m "$loaded_id" '{model: $m}')"
+            done
+            for resident_id in $(awk -F'\t' '$2 == "loaded" { print $1 }' "$output_directory/resident-before-eviction.tsv"); do
+                call "reload-$resident_id" POST "$router_origin/models/load" "$(jq -cn --arg m "$resident_id" '{model: $m}')"
+                wait_loaded "$resident_id" || true
+            done
+            call models-after-eviction GET "$router_origin/models"
+            jq -r '.data[] | .id + "\t" + (.status.value // "")' "$call_out" | sort >"$output_directory/resident-after-eviction.tsv"
+            if cmp -s "$output_directory/resident-before-eviction.tsv" "$output_directory/resident-after-eviction.tsv"; then
+                record resident_state_restored pass "$(awk -F'\t' '{ printf "%s=%s ", $1, $2 }' "$output_directory/resident-after-eviction.tsv")"
+            else
+                record resident_state_restored fail "before: $(awk -F'\t' '{ printf "%s=%s ", $1, $2 }' "$output_directory/resident-before-eviction.tsv") after: $(awk -F'\t' '{ printf "%s=%s ", $1, $2 }' "$output_directory/resident-after-eviction.tsv")"
+            fi
         else
             record models_max_evicts_previous skipped 'fewer than two of the small ordinary rows are served'
         fi
@@ -232,11 +262,37 @@ restore_ordinary() {
     fi
 }
 
+# One admission owns the appliance at a time: the run tears the ordinary
+# router down, launches the web router, and restores the roster, and a second
+# run started meanwhile tears down the first's web session as if it were its
+# own. mkdir is the atomic claim; the directory names the holder's pid and
+# is released by the same exit path that restores the router. A holder that
+# left no live process is a stale claim and is taken over.
+admission_lock=$state_directory/web-admission.lock
+claim_admission_lock() {
+    mkdir -p "$state_directory"
+    if mkdir "$admission_lock" 2>/dev/null; then
+        printf '%s\n' "$$" >"$admission_lock/pid"
+        return 0
+    fi
+    holder_pid=$(cat "$admission_lock/pid" 2>/dev/null || true)
+    if [ -n "$holder_pid" ] && kill -0 "$holder_pid" 2>/dev/null; then
+        printf 'another admission run holds %s: pid %s\n' "$admission_lock" "$holder_pid" >&2
+        return 1
+    fi
+    rm -rf "$admission_lock"
+    mkdir "$admission_lock" && printf '%s\n' "$$" >"$admission_lock/pid"
+}
+claim_admission_lock || exit 1
+
 finish_run() {
     exit_status=$?
     trap - EXIT HUP INT TERM
     if [ "$restoration_required" = 1 ] && [ "$restoration_finished" != 1 ]; then
         restore_ordinary || exit_status=1
+    fi
+    if [ "$(cat "$admission_lock/pid" 2>/dev/null)" = "$$" ]; then
+        rm -rf "$admission_lock"
     fi
     note_exit "$exit_status"
     exit "$exit_status"
@@ -303,6 +359,19 @@ if QWEN_WEB_PRESETS=$web_presets QWEN_WEB_PROFILES=$ledger QWEN_WEB_PROVIDER=fak
     QWEN_MODEL_REGISTRY=$registry \
     "$script_directory/qwen-web-launch.sh" low-async >"$output_directory/web-launch.log" 2>&1; then
     record web_launch pass "$(grep '^web_launch' "$output_directory/web-launch.log" | tr '\n' ';')"
+    # The session minted or reused the API key at 0600 in the state
+    # directory; its first line is the bearer value the page's set-key field
+    # takes, and only a curl config file and the driver's file argument
+    # carry it from here.
+    api_key_file=$state_directory/api.key
+    if [ -s "$api_key_file" ] && [ "$(stat -c %a "$api_key_file")" = 600 ]; then
+        api_key_bytes=$(sed -n '1p' "$api_key_file")
+        printf 'header = "Authorization: Bearer %s"\n' "$api_key_bytes" >"$api_key_curl_config"
+        chmod 600 "$api_key_curl_config"
+        record api_key_minted pass "mode=600 path=$api_key_file"
+    else
+        record api_key_minted fail "absent, empty, or not 0600: $api_key_file"
+    fi
 else
     record web_launch fail "$(tail -2 "$output_directory/web-launch.log" | tr '\n' ';')"
     cp "$state_directory/session.status" "$output_directory/failed-session.status" 2>/dev/null || true
@@ -405,6 +474,21 @@ if [ "$health_profile" = "$profile_id" ] && [ "$health_provider" = fake ] && [ "
     record broker_health_identity pass "profile=$health_profile provider=$health_provider pid=$health_pid"
 else
     record broker_health_identity fail "profile=$health_profile provider=$health_provider pid=$health_pid"
+fi
+# Both listeners refuse a request without the key: the router at 401 and
+# the broker's session route at 403, so an unauthenticated page reaches
+# neither a model nor a grant.
+call_without_key=1 call tools-no-api-key GET "$router_origin/tools?model=$profile_id&autoload=true"
+if [ "$call_status" = 401 ]; then
+    record router_without_api_key_refused pass "status=401"
+else
+    record router_without_api_key_refused fail "status=$call_status $(head -c 120 "$call_out")"
+fi
+call_without_key=1 call session-no-api-key GET "$broker_origin/session" '' -H "Origin: $router_origin" -H "Host: 127.0.0.1:$broker_port"
+if [ "$call_status" = 403 ]; then
+    record session_without_api_key_refused pass "status=403"
+else
+    record session_without_api_key_refused fail "status=$call_status $(head -c 120 "$call_out")"
 fi
 call session GET "$broker_origin/session" '' -H "Origin: $router_origin" -H "Host: 127.0.0.1:$broker_port"
 session_secret=$(jq -r '.session_secret // empty' "$call_out" 2>/dev/null)
@@ -629,6 +713,7 @@ browser_report=$output_directory/browser-turn.json
 if command -v chromium >/dev/null 2>&1; then
     browser_prompt="Search the web with the query $query and report the decode rate the result states."
     if python3 "$script_directory/web-mcp/drive-fallback-page.py" --origin "$router_origin" \
+            --api-key-file "$api_key_file" \
             --prompt "$browser_prompt" >"$browser_report" 2>"$output_directory/browser-turn.err"; then
         browser_origin=$(jq -r '.origin // empty' "$browser_report")
         if [ "$browser_origin" = "$router_origin" ]; then
@@ -704,7 +789,7 @@ key_bytes=$(cat "$token_key_file")
 hygiene_failures=''
 for pid in $(pgrep -x llama-server) $(pgrep -f 'web-mcp/server.py') $broker_pid; do
     [ -r "/proc/$pid/environ" ] || continue
-    for needle in "$key_bytes" "$authorization" "$session_secret"; do
+    for needle in "$key_bytes" "$api_key_bytes" "$authorization" "$session_secret"; do
         [ -n "$needle" ] || continue
         if tr '\0' '\n' <"/proc/$pid/environ" | grep -qF -- "$needle" || \
            tr '\0' '\n' <"/proc/$pid/cmdline" | grep -qF -- "$needle"; then
@@ -734,7 +819,7 @@ PY
 for retained in "$state_directory/server.log" "$state_directory/authorize-broker.log" \
     "$state_directory/session.status" "$output_directory/audit-rows.tsv"; do
     [ -r "$retained" ] || continue
-    for needle in "$key_bytes" "$authorization" "$session_secret"; do
+    for needle in "$key_bytes" "$api_key_bytes" "$authorization" "$session_secret"; do
         [ -n "$needle" ] || continue
         if grep -qF -- "$needle" "$retained"; then
             hygiene_failures="$hygiene_failures file=$(basename "$retained")"

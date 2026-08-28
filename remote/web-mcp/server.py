@@ -1011,7 +1011,8 @@ class FakeProvider(Provider):
         served record the way the HTTP provider counts its response, which
         keeps the audit row comparable across the two.
         """
-        delay = self.document.get("delays", {}).get(query, 0)
+        key = self.fixture_key(query)
+        delay = self.document.get("delays", {}).get(key, 0) if key else 0
         if delay:
             # A fixture names the seconds a query holds the call, so a run
             # observes where the deadlines sit: the provider's own timeout,
@@ -1020,9 +1021,31 @@ class FakeProvider(Provider):
             # different clocks, and only a call that outlasts one of them
             # shows which fires first.
             time.sleep(float(delay))
-        results = self.document.get("search", {}).get(query, [])[:max_results]
+        results = self.document.get("search", {}).get(key, [])[:max_results] if key else []
         self.response_bytes += len(json.dumps(results).encode("utf-8"))
         return results
+
+    def fixture_key(self, query):
+        """Return the fixture search key the query satisfies, or None.
+
+        A model composes the query it proposes, and the same prompt has
+        produced `raven2 vulkan decode`, `raven2 vulkan decode rate`, and
+        `Raven2 Vulkan decode rate` on one checkpoint at temperature 0, so an
+        exact-string lookup measures the model's phrasing rather than the
+        path. A key matches when every one of its words appears in the query,
+        case-insensitively, and the key with the most words wins, so a delay
+        key such as `raven2 vulkan decode stalled` is chosen over its prefix
+        only when the query names the stall.
+        """
+        query_words = set(query.lower().split())
+        candidates = set(self.document.get("search", {})) | set(self.document.get("delays", {}))
+        matching = [
+            key for key in candidates
+            if key.lower().split() and set(key.lower().split()) <= query_words
+        ]
+        if not matching:
+            return None
+        return max(matching, key=lambda key: (len(key.split()), key))
 
     def contents(self, url, max_characters, provider_result_id="", freshness=None):
         record = self.document.get("contents", {}).get(url)

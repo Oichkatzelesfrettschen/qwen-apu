@@ -166,6 +166,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--origin", required=True, help="router origin the page is served from")
     parser.add_argument("--prompt", required=True, help="the user turn to send")
+    parser.add_argument("--api-key-file", default="",
+                        help="file whose first line is the bearer key the page sets before connecting")
     parser.add_argument("--chromium", default="chromium")
     parser.add_argument("--load-timeout", type=int, default=180)
     parser.add_argument("--dialog-timeout", type=int, default=600)
@@ -211,6 +213,17 @@ def main():
 
         wait_for(page, "document.readyState === 'complete' && typeof requestModel !== 'undefined'",
                  arguments.load_timeout, "the page to load")
+        if arguments.api_key_file:
+            # The key enters the page through its own field and set-key
+            # click, which is the path a user takes; it stays in the
+            # throwaway profile's sessionStorage and in no report field.
+            with open(arguments.api_key_file, encoding="utf-8") as handle:
+                api_key = handle.readline().strip()
+            page.evaluate(
+                "(() => { document.querySelector('#api-key').value = "
+                + json.dumps(api_key)
+                + "; document.querySelector('#set-key').click(); return true; })()"
+            )
         selected_model = wait_for(page, "requestModel", arguments.load_timeout, "the page to select a model")
         page.evaluate(FETCH_RECORDER)
         page.evaluate("(() => { document.querySelector('#web-tools').checked = true; return true; })()")

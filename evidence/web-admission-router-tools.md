@@ -34,7 +34,11 @@ page:           webui/index.html, served by qwen-web-launch.sh through
                 QWEN_STATIC_PATH; the ordinary router keeps the pinned llama UI
 browser:        Chromium 151 headless on the appliance, driven over the
                 DevTools protocol by remote/web-mcp/drive-fallback-page.py
-outage:         21:23:11Z to 21:29:13Z, ordinary router restored
+api key:        minted by the session at $HOME/qwen-webui-state/api.key,
+                0600; the router answers 401 and the broker's /session 403
+                without it, and the harness and the driven page carry it
+                the way the page's authHeaders() does
+outage:         22:35:05Z to 22:41:00Z, ordinary router restored
 ```
 
 The promotion ran the tree's own gate first (`promotion-chain.log`): one token
@@ -76,9 +80,18 @@ failed `browser_tool_result_in_transcript`: the fake provider keys results on
 the exact query, the fixture held `raven2 vulkan decode`, and the model
 composed `raven2 vulkan decode rate` in the dialog, so the search executed
 through the router with a grant and returned `No results.`;
-`browser-turn-fixture-miss.json` retains that turn. The fixture now carries
-the query the model composes, and the fourth run is retained whole here with
-the grants, session secret, and key digest redacted.
+`browser-turn-fixture-miss.json` retains that turn. Three more runs followed the merge of `origin/main`, which made web mode
+mint a bearer API key that the router and the broker's `/session` route both
+demand: the first failed every router request at 401 until the harness and
+the driven page carried the key; the next two collided, because the second
+was started while the first was still running and its teardown removed the
+first's web session, which is what the admission lock now refuses; and one
+run of the harness alone missed the fixture again on `Raven2 Vulkan decode
+rate`, a capitalization the exact-string lookup could not see, so the fake
+provider now matches a key by its words. That run also exposed a harness
+edit that had dropped the eviction check's first load. The final run is
+retained whole here with the grants, session secret, and key digest
+redacted; the API key stays in the state directory and in no retained file.
 
 | check | result |
 | --- | --- |
@@ -87,6 +100,9 @@ the grants, session secret, and key digest redacted.
 | router and broker listeners | pass, `127.0.0.1` alone |
 | `broker_pid` recorded, secret at 0600 | pass |
 | roster and served depth | `web-balanced-admission`, `n_ctx` 8192 |
+| API key minted at 0600 | pass |
+| `GET /tools` without the key | 401 |
+| broker `/session` without the key | 403 |
 | `GET /tools` without `model` | 400, `model name is missing from the request` |
 | `GET /tools?model=no-such-model` | 400, `model 'no-such-model' not found` |
 | `GET /tools?model=web-balanced-admission&autoload=true` | both tools, on the router port |
@@ -113,7 +129,8 @@ the grants, session secret, and key digest redacted.
 | teardown and absence | pass, router, child, broker, secret, both ports |
 | ordinary router restored | pass, seven-model roster |
 | `GET /tools?model=lfm25-vl-16b` on the ordinary router | 403 `feature_disabled` |
-| load `qwen35-08b` then `qwen38-2b-distill` under `models-max=1` | first `loaded`, then `unloaded`; second `loaded` |
+| load `qwen35-08b` then `qwen38-2b-distill` under `models-max=1` | `lfm25-vl-16b` resident at restore; first `loaded`, then `unloaded`; second `loaded` |
+| resident set after the eviction check | pass: both loaded models unloaded, `lfm25-vl-16b` reloaded, statuses equal before and after |
 
 The browser arm's checks read the request log the page's own `fetch` wrote:
 

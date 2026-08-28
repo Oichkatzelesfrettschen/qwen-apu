@@ -369,6 +369,11 @@ UTF-8 while the fixture file stays a legal UTF-8 JSON document. An optional
 `delays` object maps a query to the seconds the fake provider sleeps before
 answering it, which is how an admission run places a call against the
 per-call `timeout_ms` llama-server reads from the MCP configuration.
+A search or delay key matches a query when every word of the key appears in
+the query, case-insensitively, and the key with the most words wins; a model
+composes the query it proposes, and one checkpoint at temperature 0 has
+phrased the same request three ways, so an exact-string key would measure
+the phrasing rather than the path.
 
 A `tools/call` whose arguments name a key outside the tool's `inputSchema` is
 refused naming that key. llama-server forwards the `params` object of
