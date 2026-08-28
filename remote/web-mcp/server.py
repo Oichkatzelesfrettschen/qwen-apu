@@ -85,7 +85,12 @@ NONCE_BYTES = 12
 SEARCH_PER_MINUTE_DEFAULT = 10
 FETCH_PER_MINUTE_DEFAULT = 20
 PROVIDER_DAILY_BUDGET_DEFAULT = 500
+PAGE_DAILY_BUDGET_DEFAULT = 2000
 LEDGER_FILE_NAME = "web-mcp-state.sqlite3"
+STATE_DIRECTORY_MODE = 0o700
+LEDGER_BUSY_TIMEOUT_SECONDS = 10.0
+LEDGER_BUSY_TIMEOUT_MS = 10000
+AUDIT_RETENTION_SECONDS = 14 * 86400
 
 
 class ToolError(Exception):
@@ -713,13 +718,63 @@ class Ledger:
     count and both writing it back.
     """
 
-    def __init__(self, directory):
-        os.makedirs(directory, mode=0o700, exist_ok=True)
+    def __init__(self, directory, now=None):
+        """Open the state database inside a directory this user alone reaches.
+
+        The directory holds the audit trail, the grant and search state, and
+        the content snapshots, so its ownership and mode are checked rather
+        than assumed: a symlink, another uid, or any group or world bit refuses
+        the call. The umask is set to 0o077 first, which is what gives the
+        database and the journal SQLite creates their private modes.
+        """
+        os.umask(0o077)
+        os.makedirs(directory, mode=STATE_DIRECTORY_MODE, exist_ok=True)
+        directory_status = os.lstat(directory)
+        if stat.S_ISLNK(directory_status.st_mode):
+            raise InvalidArgument(
+                f"the state directory is a symlink, which is refused: {directory}"
+            )
+        if not stat.S_ISDIR(directory_status.st_mode):
+            raise InvalidArgument(
+                f"the state path is not a directory: {directory}"
+            )
+        if directory_status.st_uid != os.getuid():
+            raise InvalidArgument(
+                f"the state directory belongs to another user: {directory}"
+            )
+        directory_mode = stat.S_IMODE(directory_status.st_mode)
+        if directory_mode & 0o077:
+            raise InvalidArgument(
+                f"the state directory {directory} is mode {directory_mode:04o}; "
+                f"{STATE_DIRECTORY_MODE:04o} is required before a call runs"
+            )
+        database_path = os.path.join(directory, LEDGER_FILE_NAME)
+        if os.path.lexists(database_path):
+            database_status = os.lstat(database_path)
+            if not stat.S_ISREG(database_status.st_mode):
+                raise InvalidArgument(
+                    f"the state database is not a regular file: {database_path}"
+                )
+            if database_status.st_uid != os.getuid():
+                raise InvalidArgument(
+                    f"the state database belongs to another user: {database_path}"
+                )
+            os.chmod(database_path, 0o600)
         self.connection = sqlite3.connect(
-            os.path.join(directory, LEDGER_FILE_NAME),
-            timeout=10.0,
+            database_path,
+            timeout=LEDGER_BUSY_TIMEOUT_SECONDS,
             isolation_level=None,
         )
+        os.chmod(database_path, 0o600)
+        # The rollback journal is a file inside this directory that SQLite
+        # removes at commit, where a WAL leaves page images in a sidecar until
+        # a checkpoint runs; snapshots hold page text, so the journal mode that
+        # bounds a body's lifetime by its row is the one this ledger takes.
+        # `secure_delete` overwrites a freed page rather than releasing it with
+        # its content intact.
+        self.connection.execute(f"PRAGMA busy_timeout = {LEDGER_BUSY_TIMEOUT_MS}")
+        self.connection.execute("PRAGMA journal_mode = DELETE")
+        self.connection.execute("PRAGMA secure_delete = ON")
         self.connection.execute(
             "CREATE TABLE IF NOT EXISTS buckets ("
             "name TEXT PRIMARY KEY, window_start INTEGER, used INTEGER)"
@@ -729,16 +784,35 @@ class Ledger:
             "recorded_at TEXT, profile TEXT, operation TEXT, query_sha256 TEXT,"
             " domains TEXT, result_count INTEGER, fetched_host TEXT,"
             " provider_bytes INTEGER, returned_characters INTEGER,"
-            " latency_ms INTEGER, status TEXT)"
+            " latency_ms INTEGER, status TEXT, recorded_epoch INTEGER)"
         )
+        self.prune(time.time() if now is None else now)
 
-    def consume(self, name, window_seconds, limit, now, exhausted=RateLimited):
-        """Take one unit of a bucket, or refuse with the caller's failure class.
+    def prune(self, now):
+        """Drop audit rows past the retention window on every open.
+
+        The trail answers what ran over a bounded recent period, so retention
+        runs where the database is already open rather than through a separate
+        maintenance path that a respawned child would never execute.
+        """
+        self.connection.execute(
+            "DELETE FROM audit WHERE recorded_epoch IS NOT NULL"
+            " AND recorded_epoch < ?",
+            (int(now) - AUDIT_RETENTION_SECONDS,),
+        )
+        self.connection.commit()
+
+    def consume(
+        self, name, window_seconds, limit, now, exhausted=RateLimited, units=1
+    ):
+        """Take `units` of a bucket, or refuse with the caller's failure class.
 
         `exhausted` states which audit term the refusal carries: a per-minute
         call bucket records `rate_limited` and a daily page or provider-cost
         budget records `budget_exhausted`, so the trail separates a call that
-        arrived too fast from one that spent an exhausted allowance.
+        arrived too fast from one that spent an exhausted allowance. `units`
+        charges a search for the pages it asks for, which is what separates the
+        page budget from the count of calls.
         """
         window_start = int(now) - int(now) % window_seconds
         self.connection.execute("BEGIN IMMEDIATE")
@@ -747,7 +821,7 @@ class Ledger:
                 "SELECT window_start, used FROM buckets WHERE name = ?", (name,)
             ).fetchone()
             used = row[1] if row and row[0] == window_start else 0
-            if used >= limit:
+            if used + units > limit:
                 raise exhausted(
                     f"the {name} rate limit of {limit} per "
                     f"{window_seconds} seconds is exhausted"
@@ -756,7 +830,7 @@ class Ledger:
                 "INSERT INTO buckets(name, window_start, used) VALUES(?, ?, ?) "
                 "ON CONFLICT(name) DO UPDATE SET window_start = excluded.window_start,"
                 " used = excluded.used",
-                (name, window_start, used + 1),
+                (name, window_start, used + units),
             )
             self.connection.execute("COMMIT")
         except BaseException:
@@ -775,7 +849,7 @@ class Ledger:
         """
         status = row["status"] if row["status"] in AUDIT_STATUSES else "internal_error"
         self.connection.execute(
-            "INSERT INTO audit VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO audit VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 row["recorded_at"],
                 row["profile"],
@@ -788,6 +862,7 @@ class Ledger:
                 row["returned_characters"],
                 row["latency_ms"],
                 status,
+                int(row["recorded_epoch"]),
             ),
         )
         self.connection.commit()
@@ -837,7 +912,16 @@ def open_ledger(settings):
         ) from None
 
 
-def spend_budget(ledger, settings, operation, now):
+def spend_budget(ledger, settings, operation, now, pages=1):
+    """Charge the three counters one call spends.
+
+    A call, a page, and a provider request are three costs and the ledger
+    keeps three buckets: the per-minute bucket bounds how fast calls arrive,
+    the daily page bucket bounds how many results and windows reach the model,
+    and the daily provider bucket bounds what the account is billed for. A
+    search that asks for ten results charges ten pages against one call and one
+    provider request.
+    """
     per_minute = (
         integer_setting(settings, "search_per_minute", SEARCH_PER_MINUTE_DEFAULT)
         if operation == "search"
@@ -846,6 +930,14 @@ def spend_budget(ledger, settings, operation, now):
         )
     )
     ledger.consume(f"{operation}-minute", 60, per_minute, now)
+    ledger.consume(
+        "pages-day",
+        86400,
+        integer_setting(settings, "page_budget", PAGE_DAILY_BUDGET_DEFAULT),
+        now,
+        BudgetExhausted,
+        units=pages,
+    )
     ledger.consume(
         "provider-day",
         86400,
@@ -1107,6 +1199,7 @@ def call_search(settings, arguments):
     now = time.time()
     audit = {
         "recorded_at": utc_timestamp(now),
+        "recorded_epoch": int(now),
         "profile": settings.get("profile") or "default",
         "operation": "search",
         "query_sha256": hashlib.sha256(query.encode("utf-8")).hexdigest(),
@@ -1127,7 +1220,7 @@ def call_search(settings, arguments):
             settings, signing_key, query, max_results, constraints
         )
         if ledger is not None:
-            spend_budget(ledger, settings, "search", now)
+            spend_budget(ledger, settings, "search", now, pages=max_results)
         provider = select_provider(settings)
         results = provider.search(query, max_results, constraints)[:max_results]
         rendered = render_search_results(
@@ -1177,6 +1270,7 @@ def call_fetch(settings, arguments):
     started = time.monotonic()
     audit = {
         "recorded_at": utc_timestamp(now),
+        "recorded_epoch": int(now),
         "profile": settings.get("profile") or "default",
         "operation": "fetch",
         "query_sha256": "",
@@ -1331,6 +1425,7 @@ def settings_from_environment(argv):
         "search_per_minute": os.environ.get("QWEN_WEB_SEARCH_PER_MINUTE", ""),
         "fetch_per_minute": os.environ.get("QWEN_WEB_FETCH_PER_MINUTE", ""),
         "daily_budget": os.environ.get("QWEN_WEB_DAILY_BUDGET", ""),
+        "page_budget": os.environ.get("QWEN_WEB_DAILY_PAGE_BUDGET", ""),
     }
     option_keys = {
         "--provider": "provider",

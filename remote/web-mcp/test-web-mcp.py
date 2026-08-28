@@ -938,6 +938,92 @@ class WebMcpServerTest(unittest.TestCase):
             admitted += 0 if response["result"]["isError"] else 1
         self.assertEqual(admitted, 3)
 
+    def test_the_state_directory_and_database_are_private(self):
+        state_path = self.state_directory("private-state")
+        session = self.open_session(QWEN_WEB_STATE_DIR=state_path)
+        self.search(session, max_results=1)
+        self.assertEqual(
+            server.stat.S_IMODE(os.stat(state_path).st_mode),
+            server.STATE_DIRECTORY_MODE,
+        )
+        database = os.path.join(state_path, server.LEDGER_FILE_NAME)
+        status = os.lstat(database)
+        self.assertTrue(server.stat.S_ISREG(status.st_mode))
+        self.assertEqual(server.stat.S_IMODE(status.st_mode), 0o600)
+        self.assertEqual(status.st_uid, os.getuid())
+        self.assertEqual(
+            [name for name in os.listdir(state_path) if name.endswith("-wal")], []
+        )
+
+    def test_a_group_readable_state_directory_refuses_the_call(self):
+        state_path = self.state_directory("loose-state")
+        os.makedirs(state_path, exist_ok=True)
+        os.chmod(state_path, 0o755)
+        self.addCleanup(os.chmod, state_path, 0o700)
+        session = self.open_session(QWEN_WEB_STATE_DIR=state_path)
+        response = self.search(session)
+        self.assertTrue(response["result"]["isError"])
+        self.assertIn("0755", self.result_text(response))
+
+    def test_a_symlinked_state_directory_refuses_the_call(self):
+        target = self.state_directory("symlink-target-state")
+        os.makedirs(target, mode=0o700, exist_ok=True)
+        link = self.state_directory("symlink-state")
+        if not os.path.lexists(link):
+            os.symlink(target, link)
+        session = self.open_session(QWEN_WEB_STATE_DIR=link)
+        response = self.search(session)
+        self.assertTrue(response["result"]["isError"])
+        self.assertIn("symlink", self.result_text(response))
+
+    def test_a_state_database_that_is_not_a_regular_file_refuses_the_call(self):
+        state_path = self.state_directory("irregular-state")
+        os.makedirs(state_path, mode=0o700, exist_ok=True)
+        os.makedirs(
+            os.path.join(state_path, server.LEDGER_FILE_NAME), exist_ok=True
+        )
+        session = self.open_session(QWEN_WEB_STATE_DIR=state_path)
+        response = self.search(session)
+        self.assertTrue(response["result"]["isError"])
+        self.assertIn("regular file", self.result_text(response))
+
+    def test_audit_retention_drops_a_row_past_the_window(self):
+        state_path = self.state_directory("retention-state")
+        session = self.open_session(QWEN_WEB_STATE_DIR=state_path)
+        self.search(session, max_results=1)
+        self.close_cleanly(session)
+        connection = sqlite3.connect(
+            os.path.join(state_path, server.LEDGER_FILE_NAME)
+        )
+        connection.execute(
+            "INSERT INTO audit VALUES('2020-01-01T00:00:00Z','aged','search',"
+            "'','',0,'',0,0,0,'success',?)",
+            (int(time.time()) - server.AUDIT_RETENTION_SECONDS - 60,),
+        )
+        connection.commit()
+        connection.close()
+        self.assertEqual(len(self.audit_rows(state_path)), 2)
+        ledger = server.Ledger(state_path)
+        ledger.close()
+        self.assertEqual([row[0] for row in self.audit_rows(state_path)], ["default"])
+
+    def test_the_page_budget_counts_results_rather_than_calls(self):
+        state_path = self.state_directory("page-budget-state")
+        session = self.open_session(
+            QWEN_WEB_STATE_DIR=state_path, QWEN_WEB_DAILY_PAGE_BUDGET="3"
+        )
+        first = self.search(session, max_results=2)
+        self.assertFalse(first["result"]["isError"])
+        second = self.search(session, max_results=2)
+        self.assertTrue(second["result"]["isError"])
+        self.assertIn("pages-day", self.result_text(second))
+        third = self.search(session, max_results=1)
+        self.assertFalse(third["result"]["isError"])
+        self.assertEqual(
+            [row[7] for row in self.audit_rows(state_path)],
+            ["success", "budget_exhausted", "success"],
+        )
+
     def test_the_daily_budget_covers_both_operations(self):
         state_path = self.state_directory("budget-state")
         session = self.open_session(
@@ -1045,6 +1131,7 @@ class WebMcpServerTest(unittest.TestCase):
         self.addCleanup(ledger.close)
         row = {
             "recorded_at": "2026-01-01T00:00:00Z",
+            "recorded_epoch": int(time.time()),
             "profile": "default",
             "operation": "search",
             "query_sha256": "",
