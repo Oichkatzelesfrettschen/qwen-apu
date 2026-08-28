@@ -36,7 +36,7 @@ grep -F 'id="approve-deny"' "$fallback_ui" >/dev/null
 
 # The approval posts the parsed proposal and carries the grant in a
 # request-scoped argument copy, so the transcript keeps the proposal alone.
-grep -F "await requestGrant(fields)" "$fallback_ui" >/dev/null
+grep -F "await requestGrant(fields, controller.signal)" "$fallback_ui" >/dev/null
 grep -F 'BROKER_SESSION_HEADER]: secret' "$fallback_ui" >/dev/null
 grep -F 'requestMessages(authorizations)' "$fallback_ui" >/dev/null
 grep -F "content: 'The user refused this web search. It did not run.'" \
@@ -105,7 +105,16 @@ grep -F "const BROKER_ORIGIN_DEFAULT = 'http://127.0.0.1:" "$fallback_ui" >/dev/
 # it retries the same /grant body, and a second refusal still surfaces.
 grep -F "if (response.status === 403) {" "$fallback_ui" >/dev/null
 grep -F "brokerSessionSecret = null;" "$fallback_ui" >/dev/null
-grep -F "const refreshed = await brokerSession();" "$fallback_ui" >/dev/null
-grep -F "await postGrant(fields, refreshed)" "$fallback_ui" >/dev/null
+grep -F "const refreshed = await brokerSession(signal);" "$fallback_ui" >/dev/null
+grep -F "await postGrant(fields, refreshed, signal)" "$fallback_ui" >/dev/null
+
+# A denial or dismissal while requestGrant(fields) is pending must not let
+# that request still land: `settled` makes completion one-shot and
+# `controller.abort()` cancels the in-flight fetch so a late grant is never
+# injected and a stale finish() cannot close a dialog it no longer owns.
+grep -F "let settled = false;" "$fallback_ui" >/dev/null
+grep -F "const controller = new AbortController();" "$fallback_ui" >/dev/null
+grep -F "if (settled) return;" "$fallback_ui" >/dev/null
+grep -F "controller.abort();" "$fallback_ui" >/dev/null
 
 printf 'fallback_webui_web_authorization=accepted\n'

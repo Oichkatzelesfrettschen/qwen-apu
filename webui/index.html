@@ -365,13 +365,13 @@ function brokerOrigin() {
   return ($('#broker-origin').value.trim() || BROKER_ORIGIN_DEFAULT).replace(/\/+$/, '');
 }
 
-async function brokerSession() {
+async function brokerSession(signal) {
   // The secret reaches the page in a response body rather than a URL, so it
   // stays out of the browser history and the Referer header. It is read once
   // per origin and held in memory for the life of the page.
   const origin = brokerOrigin();
   if (brokerSessionSecret && brokerSessionOrigin === origin) return brokerSessionSecret;
-  const response = await fetch(`${origin}/session`, { method: 'GET', mode: 'cors' });
+  const response = await fetch(`${origin}/session`, { method: 'GET', mode: 'cors', signal });
   if (!response.ok) {
     throw new Error(`the approval broker refused the session request: HTTP ${response.status}`);
   }
@@ -384,23 +384,26 @@ async function brokerSession() {
   return brokerSessionSecret;
 }
 
-async function postGrant(fields, secret) {
+async function postGrant(fields, secret, signal) {
   const response = await fetch(`${brokerOrigin()}/grant`, {
     method: 'POST',
     mode: 'cors',
     headers: { 'Content-Type': 'application/json', [BROKER_SESSION_HEADER]: secret },
-    body: JSON.stringify(fields)
+    body: JSON.stringify(fields),
+    signal
   });
   const payload = await response.json().catch(() => ({}));
   return { response, payload };
 }
 
-async function requestGrant(fields) {
+async function requestGrant(fields, signal) {
   // The posted object is the parsed proposal itself, so the fields the human
   // read in the dialog are the fields the grant covers and the served path
-  // compares against.
-  const secret = await brokerSession();
-  let { response, payload } = await postGrant(fields, secret);
+  // compares against. `signal` aborts every fetch this call makes when a
+  // later denial or dismissal outruns it, so a click that landed before the
+  // dialog closed cannot still land a grant after it.
+  const secret = await brokerSession(signal);
+  let { response, payload } = await postGrant(fields, secret, signal);
   if (response.status === 403) {
     // A broker restarted on the same host and port signs a new per-launch
     // secret, so the cached one this page still holds is stale rather than
@@ -409,8 +412,8 @@ async function requestGrant(fields) {
     // and surfaces as one.
     brokerSessionSecret = null;
     brokerSessionOrigin = null;
-    const refreshed = await brokerSession();
-    ({ response, payload } = await postGrant(fields, refreshed));
+    const refreshed = await brokerSession(signal);
+    ({ response, payload } = await postGrant(fields, refreshed, signal));
   }
   if (!response.ok || typeof payload.authorization !== 'string') {
     throw new Error(payload.error || `the approval broker refused: HTTP ${response.status}`);
@@ -485,7 +488,18 @@ function approveWebSearch(fields) {
     renderApprovalFields(fields);
     const once = $('#approve-once');
     const deny = $('#approve-deny');
+    // A denial or dismissal can land while requestGrant(fields) is still
+    // in flight, and the fetches it issued are otherwise still able to
+    // complete: a late grant would spend the rate bucket and issue a token
+    // nobody reads, and its stale `finish` callback would resolve a second
+    // time and clear buttons a newer dialog now owns. `settled` makes
+    // completion one-shot and `controller` aborts the pending request the
+    // instant denial wins the race.
+    let settled = false;
+    const controller = new AbortController();
     const finish = outcome => {
+      if (settled) return;
+      settled = true;
       once.onclick = null;
       deny.onclick = null;
       dialog.onclose = null;
@@ -496,17 +510,25 @@ function approveWebSearch(fields) {
     once.onclick = async () => {
       once.disabled = true;
       try {
-        finish({ decision: 'once', authorization: await requestGrant(fields) });
+        const authorization = await requestGrant(fields, controller.signal);
+        finish({ decision: 'once', authorization });
       } catch (error) {
+        if (settled) return;
         once.disabled = false;
         note.hidden = false;
         note.textContent = String(error.message || error);
       }
     };
-    deny.onclick = () => finish({ decision: 'deny' });
+    deny.onclick = () => {
+      controller.abort();
+      finish({ decision: 'deny' });
+    };
     // A dismissal is a refusal. Treating it as an approval would let a stray
     // keystroke sign a grant over arguments nobody accepted.
-    dialog.onclose = () => finish({ decision: 'deny' });
+    dialog.onclose = () => {
+      controller.abort();
+      finish({ decision: 'deny' });
+    };
     dialog.showModal();
   });
 }
