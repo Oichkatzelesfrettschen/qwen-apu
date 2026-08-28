@@ -46,6 +46,7 @@ remote/test-one-token-admission.sh
 remote/test-fetch-candidate-artifact.sh
 remote/test-model-registry.sh
 remote/test-model-tiers.sh
+remote/check-validated-tuples.sh
 remote/test-projector-fetch-dispatch.sh
 remote/test-projector-pairing.sh
 remote/test-promote-llama-build.sh
