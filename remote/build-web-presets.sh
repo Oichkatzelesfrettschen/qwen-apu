@@ -93,6 +93,16 @@ set -eu
 # capacity claim; an execution grant is a security boundary and the ledger is
 # its only authority.
 #
+# A row whose registry projector reads `required` carries LLAMA_ARG_MMPROJ in its
+# own section, because router mode reads each section's key and leaves the
+# standalone QWEN_MMPROJ path unread; a vision profile emitted without it loads
+# its text GGUF alone and answers an image request from nothing while the ledger
+# grants it vision. remote/select-projector.sh resolves the file inside the model
+# file's own directory, where a foreign projector of matching dimensions would
+# load cleanly and place image tokens the language model reads nothing from, and
+# it prints nothing for both the absent and the ambiguous case, so an empty
+# result is the discriminator and the profile is skipped and named.
+#
 # A row whose weights are absent from the model root is skipped and named. Router
 # preflight rejects a section whose model file is absent before the single-model
 # fetch path runs, so emitting one unfetched checkpoint would block every web
@@ -288,6 +298,7 @@ mkdir -p "$mcp_config_directory_temporary"
 
 emitted=0
 skipped_absent_weights=0
+skipped_unresolved_projector=0
 
 # A canonical positive decimal integer carries no leading zero and no sign.
 # require_canonical_integer names the field and the profile on failure, so a
@@ -522,6 +533,26 @@ while IFS='	' read -r profile_id model_id _web_mode context \
         continue
     fi
 
+    # Router mode reads a section's own LLAMA_ARG_MMPROJ and leaves the
+    # standalone QWEN_MMPROJ path unread, so a vision profile whose section
+    # omits the key loads its text GGUF alone and answers an image request from
+    # nothing. select-projector.sh resolves the projector inside the model
+    # file's own directory and prints nothing for both the absent and the
+    # ambiguous case, so an empty result rather than its exit status is what
+    # discriminates, and the profile is skipped and named rather than emitted
+    # text-only against a ledger that grants it vision.
+    profile_projector_path=
+    if [ "$projector" = required ]; then
+        profile_projector_path=$("$script_directory/select-projector.sh" \
+            "$model_path" 2>/dev/null) || profile_projector_path=''
+        if [ -z "$profile_projector_path" ]; then
+            printf 'web_preset_skipped profile=%s reason=projector_unresolved directory=%s\n' \
+                "$profile_id" "$(dirname -- "$model_path")" >&2
+            skipped_unresolved_projector=$((skipped_unresolved_projector + 1))
+            continue
+        fi
+    fi
+
     # A ui-mediated row performs its retrieval in the web UI and its section
     # names no configuration, so the run writes none and reads none of the MCP
     # inputs a configuration would carry.
@@ -577,6 +608,9 @@ while IFS='	' read -r profile_id model_id _web_mode context \
         printf 'LLAMA_ARG_FLASH_ATTN = %s\n' "$flash_attention"
         printf 'LLAMA_ARG_BATCH = %s\n' "$batch"
         printf 'LLAMA_ARG_UBATCH = %s\n' "$ubatch"
+        if [ -n "$profile_projector_path" ]; then
+            printf 'LLAMA_ARG_MMPROJ = %s\n' "$profile_projector_path"
+        fi
         if [ "$execution_policy" != ui-mediated ]; then
             printf 'LLAMA_ARG_MCP_SERVERS_CONFIG = %s\n' "$profile_mcp_config"
         fi
@@ -658,10 +692,10 @@ verify_assembled_sections() {
 }
 
 if [ "$emitted" -eq 0 ]; then
-    if [ "$skipped_absent_weights" -gt 0 ]; then
-        printf 'every emitting profile in %s names weights this machine holds no file for, so no section emits\n' \
+    if [ "$((skipped_absent_weights + skipped_unresolved_projector))" -gt 0 ]; then
+        printf 'every emitting profile in %s names an artifact this machine holds no file for, so no section emits\n' \
             "$web_profiles" >&2
-        printf 'the web_preset_skipped lines above name each path; fetch them with the model_id fetch script\n' >&2
+        printf 'the web_preset_skipped lines above name each path; fetch them with the model_id fetch script and its projector_fetch_script\n' >&2
     else
         printf 'every profile in %s withholds an executing policy, so no section emits\n' \
             "$web_profiles" >&2
@@ -685,5 +719,6 @@ mv -- "$mcp_config_directory_temporary" "$mcp_config_directory"
 mv -- "$output_ini_temporary" "$output_ini"
 trap - EXIT HUP INT TERM
 
-printf 'web_presets=written path=%s profiles=%s absent=%s mcp_configs=%s\n' \
-    "$output_ini" "$emitted" "$skipped_absent_weights" "$mcp_config_directory"
+printf 'web_presets=written path=%s profiles=%s absent=%s projector_unresolved=%s mcp_configs=%s\n' \
+    "$output_ini" "$emitted" "$skipped_absent_weights" \
+    "$skipped_unresolved_projector" "$mcp_config_directory"

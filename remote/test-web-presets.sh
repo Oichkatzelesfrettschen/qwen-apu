@@ -34,6 +34,7 @@ fixture-production	fixture-role	Fixture-GGUF/production.gguf	download-fixture.sh
 fixture-candidate-validated	fixture-role	Fixture-GGUF/candidate-validated.gguf	download-fixture.sh	8192	16384	32768	q8_0	q4_0	on	none	-	1.00	1.00	untested	candidate	128	32	8192	evidence/fixture.md	9/10	refused
 fixture-candidate-unknown	fixture-role	Fixture-GGUF/candidate-unknown.gguf	download-fixture.sh	8192	16384	32768	q8_0	q4_0	on	none	-	1.00	1.00	untested	candidate	128	32	-	-	9/10	refused
 fixture-archive	fixture-role	Fixture-GGUF/archive.gguf	download-fixture.sh	8192	16384	32768	q8_0	q4_0	on	none	-	1.00	1.00	untested	archive	128	32	-	-	9/10	refused
+fixture-vision	fixture-role	Fixture-Vision-GGUF/vision.gguf	download-fixture.sh	8192	16384	32768	q8_0	q4_0	on	required	download-fixture-mmproj.sh	1.00	1.00	untested	production	128	32	8192	evidence/fixture.md	9/10	refused
 EOF
 
 web_profiles_ok=$work/web-profiles-ok.tsv
@@ -81,6 +82,12 @@ mkdir -p "$policy_model_root/Fixture-GGUF"
 for fixture_weights in production candidate-validated candidate-unknown archive; do
     : >"$policy_model_root/Fixture-GGUF/$fixture_weights.gguf"
 done
+# The vision row sits in its own directory, because select-projector.sh searches
+# the model file's own directory and a projector beside a text checkpoint would
+# pair with it.
+mkdir -p "$policy_model_root/Fixture-Vision-GGUF"
+: >"$policy_model_root/Fixture-Vision-GGUF/vision.gguf"
+: >"$policy_model_root/Fixture-Vision-GGUF/mmproj-F16.gguf"
 
 mcp_server_program=$work/web-mcp-server.py
 : >"$mcp_server_program"
@@ -1079,11 +1086,79 @@ if QWEN_MODEL_ROOT=$empty_model_root build "$web_profiles_partial" \
     QWEN_WEB_STATE_DIR="$web_state_directory" \
     >"$work/all-absent.log" 2>"$work/all-absent.err"; then
     report all_weights_absent_refused emitted_a_section
-elif grep -q 'names weights this machine holds no file for' "$work/all-absent.err"; then
+elif grep -q 'names an artifact this machine holds no file for' "$work/all-absent.err"; then
     report all_weights_absent_refused ok
 else
     report all_weights_absent_refused wrong_reason
 fi
+
+# Router mode reads a section's own LLAMA_ARG_MMPROJ and leaves the standalone
+# QWEN_MMPROJ path unread, so a profile whose registry row requires a projector
+# carries the resolved path in its section and the capacity policy still admits
+# the tuple.
+web_profiles_vision=$work/web-profiles-vision.tsv
+printf 'web-fixture-vision\tfixture-vision\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tyes\t9/10\tui-mediated\n' \
+    >"$web_profiles_vision"
+mkdir -p "$work/vision-out"
+presets_vision=$work/vision-out/presets.ini
+if build "$web_profiles_vision" "$presets_vision" \
+    env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
+    QWEN_WEB_STATE_DIR="$web_state_directory" \
+    >"$work/vision.log" 2>"$work/vision.err"; then
+    if grep -qx "LLAMA_ARG_MMPROJ = $policy_model_root/Fixture-Vision-GGUF/mmproj-F16.gguf" \
+        "$presets_vision"; then
+        report vision_section_carries_projector ok
+    else
+        report vision_section_carries_projector key_absent
+    fi
+    if run_policy_over_presets "$presets_vision" \
+        >"$work/vision-policy.log" 2>"$work/vision-policy.err"; then
+        report vision_section_passes_capacity_policy ok
+    else
+        report vision_section_passes_capacity_policy failed
+        cat "$work/vision-policy.err" >&2
+    fi
+else
+    report vision_section_carries_projector build_failed
+    report vision_section_passes_capacity_policy build_failed
+    cat "$work/vision.err" >&2
+fi
+
+# A text row keeps its section free of the key, so the projector follows the
+# registry's projector column rather than every emitted section.
+if grep -q '^LLAMA_ARG_MMPROJ' "$presets_ok"; then
+    report text_section_carries_no_projector key_present
+else
+    report text_section_carries_no_projector ok
+fi
+
+# select-projector.sh prints nothing for both the absent and the ambiguous case,
+# and either leaves the ledger's vision grant unserved, so the profile is
+# skipped and named rather than emitted text-only.
+for projector_case in absent ambiguous; do
+    projector_model_root=$work/projector-$projector_case
+    mkdir -p "$projector_model_root/Fixture-Vision-GGUF"
+    : >"$projector_model_root/Fixture-Vision-GGUF/vision.gguf"
+    if [ "$projector_case" = ambiguous ]; then
+        : >"$projector_model_root/Fixture-Vision-GGUF/mmproj-one-BF16.gguf"
+        : >"$projector_model_root/Fixture-Vision-GGUF/mmproj-two-BF16.gguf"
+    fi
+    if QWEN_MODEL_ROOT=$projector_model_root build "$web_profiles_vision" \
+        "$work/presets-projector-$projector_case.ini" \
+        env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+        QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
+        QWEN_WEB_STATE_DIR="$web_state_directory" \
+        >"$work/projector-$projector_case.log" \
+        2>"$work/projector-$projector_case.err"; then
+        report "projector_${projector_case}_skipped" emitted_a_section
+    elif grep -q 'web_preset_skipped profile=web-fixture-vision reason=projector_unresolved' \
+        "$work/projector-$projector_case.err"; then
+        report "projector_${projector_case}_skipped" ok
+    else
+        report "projector_${projector_case}_skipped" skip_unreported
+    fi
+done
 
 if [ "$failures" -ne 0 ]; then
     printf 'test-web-presets: %d check(s) failed\n' "$failures" >&2
