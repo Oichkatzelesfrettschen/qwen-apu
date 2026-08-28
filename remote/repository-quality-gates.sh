@@ -52,6 +52,8 @@ remote/test-projector-pairing.sh
 remote/test-promote-llama-build.sh
 remote/test-qwen-launch-router-preflight.sh
 remote/test-qwen-capacity-policy.sh
+remote/test-web-presets.sh
+remote/test-qwen-web-launch.sh
 remote/test-qwen-session-signals.sh
 remote/test-quality-roster.sh
 remote/test-qwen-runtime-guards.sh
