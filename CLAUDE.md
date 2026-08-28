@@ -132,12 +132,35 @@ as two fields. `context_ceiling` is the depth the policy admits;
 `validated_filled_depth` is the deepest depth measured to fill and decode under
 the row's own cache triple, Flash Attention state, `batch`, and `ubatch`. A
 server that loads a 24576-token allocation has proven it can reserve the memory
-and has not proven a near-full cache executes, so the 4B distill reads 24576 and
-16384 in those two fields and `qwen-capacity-policy.sh` prints the gap on its
-`depth_validation` line at every launch. Submission geometry belongs to the same
+and has not proven a near-full cache executes, so `qwen-capacity-policy.sh`
+prints the gap between the two fields on its `depth_validation` line at every
+launch. The 4B distill carried 24576 and 16384 there until
+`evidence/depth-validation-32k/` filled 24576 and 32768 at 128/32 with zero
+resets, zero faults, and a passing control after each, so its row reads 32768
+in both. Submission geometry belongs to the same
 claim: at 16384 the same checkpoint, cache, and device wedged the compute ring
 at 2048/512 and completed twice at 128/32, so `batch` and `ubatch` are registry
 fields rather than constants in the argv.
+
+`models.tsv` carries one `validated_filled_depth`/`batch`/`ubatch`/cache/Flash
+Attention tuple per row, which cannot state that 16384 passes at batch 128 and
+wedges at batch 2048 for the same model and cache triple.
+`remote/validated-tuples.tsv` carries every measured arm instead, keyed by
+`tuple_id`, with `model_id`, `runtime_mode`, the submission geometry, the cache
+triple, `threads`, `parallel`, `projector_state`, `backend`, and `status` over
+`validated`, `failed`, or `unverified`. A `validated` row requires its
+`evidence` path to exist in the tree; a `failed` row carries the same fields
+and belongs in the ledger because a rejected geometry is what steers a later
+choice away from it. `remote/model-registry.sh tuples MODEL_ID` and
+`tuple TUPLE_ID [FIELD]` read the ledger after validating every row in it, the
+same discipline `emit_servable_rows` applies to the quarantine authority.
+`remote/check-validated-tuples.sh` derives the tuple each `models.tsv` row with
+a numeric `validated_filled_depth` already claims and requires a `validated`
+ledger row matching model, depth, batch, ubatch, and cache triple; a gap
+between the two files fails the gate rather than serving silently. The seeded
+16384 rows carry `evidence/depth-versus-submission-geometry.md`: batch 128 at
+depth 16384 passes and batch 2048 wedges the compute ring under the same
+cache triple, both at the probe's own `-t 2`.
 
 `remote/probe-depth-wedge.sh` treats an output directory as a resumable evidence
 ledger. `wedge-metadata.tsv` binds the ledger to the model SHA-256, model byte

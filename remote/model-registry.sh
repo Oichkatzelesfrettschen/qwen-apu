@@ -280,12 +280,203 @@ if [ "$#" -eq 1 ] && [ "$1" = servable-ids ]; then
     exit 0
 fi
 
+# The tuple ledger carries every measured (context, batch, ubatch, cache,
+# Flash Attention) arm rather than the single validated_filled_depth field
+# models.tsv holds per row, because the served checkpoint fills and decodes
+# 16384 tokens at batch 128 and wedges the ring at the harness-default 2048,
+# and one scalar per model cannot carry both arms. Both subcommands validate
+# the whole ledger before reading it, the same discipline emit_servable_rows
+# applies to the quarantine authority, because a caller reading one row must
+# not trust a ledger a sibling row has made unsafe to read.
+validate_tuple_ledger() {
+    tuple_ledger_registry=${QWEN_VALIDATED_TUPLES:-$script_directory/validated-tuples.tsv}
+    tuple_model_registry=${QWEN_MODEL_REGISTRY:-$script_directory/models.tsv}
+    if [ ! -r "$tuple_ledger_registry" ]; then
+        printf 'validated tuple ledger is unreadable: %s\n' \
+            "$tuple_ledger_registry" >&2
+        return 1
+    fi
+    if [ ! -r "$tuple_model_registry" ]; then
+        printf 'model registry is unreadable: %s\n' "$tuple_model_registry" >&2
+        return 1
+    fi
+    awk -F'\t' -v directory="$script_directory" '
+        FILENAME == ARGV[1] {
+            if ($0 ~ /^#/ || $0 ~ /^[[:space:]]*$/) { next }
+            if (NF >= 1) { known_model_ids[$1] = 1 }
+            next
+        }
+        $0 ~ /^#/ || $0 ~ /^[[:space:]]*$/ { next }
+        {
+            rows++
+            if (NF != 21) {
+                printf "tuple row %d holds %d fields, expected 21\n", FNR, NF \
+                    > "/dev/stderr"
+                bad++
+                next
+            }
+            if ($1 == "") {
+                printf "tuple row %d carries an empty tuple_id\n", FNR \
+                    > "/dev/stderr"
+                bad++
+                next
+            }
+            if (seen_id[$1]++) {
+                printf "duplicate tuple_id %s at row %d\n", $1, FNR \
+                    > "/dev/stderr"
+                bad++
+            }
+            if (!($2 in known_model_ids)) {
+                printf "%s: model_id %s is absent from the model registry\n", \
+                    $1, $2 > "/dev/stderr"
+                bad++
+            }
+            if ($3 != "standalone" && $3 != "router-child") {
+                printf "%s: runtime_mode %s is not standalone or router-child\n", \
+                    $1, $3 > "/dev/stderr"
+                bad++
+            }
+            split("context batch ubatch", geometry_names, " ")
+            for (i = 4; i <= 6; i++) {
+                if ($i !~ /^[1-9][0-9]*$/) {
+                    printf "%s: %s is not a canonical positive integer: %s\n", \
+                        $1, geometry_names[i - 3], $i > "/dev/stderr"
+                    bad++
+                }
+            }
+            if ($5 ~ /^[1-9][0-9]*$/ && $6 ~ /^[1-9][0-9]*$/ &&
+                $6 + 0 > $5 + 0) {
+                printf "%s: ubatch %s exceeds batch %s\n", $1, $6, $5 \
+                    > "/dev/stderr"
+                bad++
+            }
+            if ($7 !~ /^(f32|f16|bf16|q8_0|q5_1|q5_0|q4_1|q4_0|iq4_nl)$/) {
+                printf "%s: cache_k %s is outside the runtime vocabulary\n", \
+                    $1, $7 > "/dev/stderr"
+                bad++
+            }
+            if ($8 !~ /^(f32|f16|bf16|q8_0|q5_1|q5_0|q4_1|q4_0|iq4_nl)$/) {
+                printf "%s: cache_v %s is outside the runtime vocabulary\n", \
+                    $1, $8 > "/dev/stderr"
+                bad++
+            }
+            if ($9 != "on" && $9 != "off" && $9 != "auto") {
+                printf "%s: flash_attention %s is not on, off, or auto\n", \
+                    $1, $9 > "/dev/stderr"
+                bad++
+            }
+            if ($10 !~ /^[1-9][0-9]*$/) {
+                printf "%s: threads %s is not a canonical positive integer\n", \
+                    $1, $10 > "/dev/stderr"
+                bad++
+            }
+            if ($11 !~ /^[1-9][0-9]*$/) {
+                printf "%s: parallel %s is not a canonical positive integer\n", \
+                    $1, $11 > "/dev/stderr"
+                bad++
+            }
+            if ($12 != "none" && $12 != "loaded") {
+                printf "%s: projector_state %s is not none or loaded\n", \
+                    $1, $12 > "/dev/stderr"
+                bad++
+            }
+            if ($13 != "vulkan" && $13 != "cpu" && $13 != "hip") {
+                printf "%s: backend %s is not vulkan, cpu, or hip\n", \
+                    $1, $13 > "/dev/stderr"
+                bad++
+            }
+            if ($14 != "validated" && $14 != "failed" && $14 != "unverified") {
+                printf "%s: status %s is not validated, failed, or unverified\n", \
+                    $1, $14 > "/dev/stderr"
+                bad++
+            }
+            if ($14 == "validated") {
+                if ($15 == "-") {
+                    printf "%s: validated status carries no evidence path\n", \
+                        $1 > "/dev/stderr"
+                    bad++
+                } else if (system("test -e \"" directory "/../" $15 "\"") != 0) {
+                    printf "%s: validation evidence is absent from the tree: %s\n", \
+                        $1, $15 > "/dev/stderr"
+                    bad++
+                }
+            }
+            if ($21 != "-" && $21 !~ /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/) {
+                printf "%s: measured_at %s is not an ISO date or -\n", \
+                    $1, $21 > "/dev/stderr"
+                bad++
+            }
+            print $0
+        }
+        END {
+            if (!rows) { print "tuple ledger holds no rows" > "/dev/stderr"; bad++ }
+            exit bad ? 1 : 0
+        }
+    ' "$tuple_model_registry" "$tuple_ledger_registry"
+}
+
+# All validated and failed arms measured for one model, in ledger order. A
+# caller choosing a serving geometry reads every row rather than the single
+# field models.tsv carries, because two geometries at the same depth can
+# disagree.
+if [ "$#" -eq 2 ] && [ "$1" = tuples ]; then
+    tuples_model_id=$2
+    validated_tuples_rows=$(validate_tuple_ledger) || exit 1
+    printf '%s\n' "$validated_tuples_rows" | awk -F'\t' -v model_id="$tuples_model_id" \
+        '$2 == model_id { print; matched = 1 } END { exit matched ? 0 : 1 }'
+    exit $?
+fi
+
+# One tuple row by its id, either the whole row as key=value lines or a single
+# named field, the same interface the id and path selectors give the model
+# registry.
+if [ "$#" -eq 2 ] && [ "$1" = tuple ]; then
+    tuple_selector=$2
+    validated_tuples_rows=$(validate_tuple_ledger) || exit 1
+    printf '%s\n' "$validated_tuples_rows" | awk -F'\t' -v selector="$tuple_selector" '
+        $1 == selector {
+            split("tuple_id model_id runtime_mode context batch ubatch cache_k " \
+                  "cache_v flash_attention threads parallel projector_state " \
+                  "backend status evidence llama_commit runner_sha256 kernel " \
+                  "mesa amdgpu measured_at", names, " ")
+            for (i = 1; i <= 21; i++) { printf "%s=%s\n", names[i], $i }
+            exit 0
+        }
+        END { exit 3 }
+    '
+    exit $?
+fi
+
+if [ "$#" -eq 3 ] && [ "$1" = tuple ]; then
+    tuple_selector=$2
+    tuple_field=$3
+    validated_tuples_rows=$(validate_tuple_ledger) || exit 1
+    printf '%s\n' "$validated_tuples_rows" | awk -F'\t' \
+        -v selector="$tuple_selector" -v field="$tuple_field" '
+        $1 == selector {
+            split("tuple_id model_id runtime_mode context batch ubatch cache_k " \
+                  "cache_v flash_attention threads parallel projector_state " \
+                  "backend status evidence llama_commit runner_sha256 kernel " \
+                  "mesa amdgpu measured_at", names, " ")
+            for (i = 1; i <= 21; i++) {
+                if (names[i] == field) { printf "%s\n", $i; found = 1 }
+            }
+            if (!found) { exit 3 }
+            exit 0
+        }
+        END { exit 3 }
+    '
+    exit $?
+fi
+
 if [ "$#" -ne 2 ] && [ "$#" -ne 3 ]; then
     printf 'usage: %s id|path SELECTOR [FIELD]\n' "$0" >&2
     printf '       %s validate-cache-type TYPE\n' "$0" >&2
     printf '       %s validate-tier TIER\n' "$0" >&2
     printf '       %s quarantine-subjects|quarantine-profiles|quarantine-rows [RUNTIME_MODE]\n' "$0" >&2
     printf '       %s servable-files | servable-ids\n' "$0" >&2
+    printf '       %s tuples MODEL_ID\n' "$0" >&2
+    printf '       %s tuple TUPLE_ID [FIELD]\n' "$0" >&2
     printf 'fields: id role model_file fetch_script context_default context_ceiling\n' >&2
     printf '        context_target cache_type_k cache_type_v flash_attention\n' >&2
     printf '        projector projector_fetch_script decode_tok_s prefill_tok_s\n' >&2

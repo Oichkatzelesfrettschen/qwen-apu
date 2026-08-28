@@ -168,7 +168,7 @@ window.
 | Qwen3.5-0.8B Q4_K_M | 0.547 GB | 15.21 | 15.12 | 15.17 | 134.91 | 8.30 | 0.6% |
 | Qwen3.5-0.8B Q8_0 | 0.801 GB | 15.24 | 15.38 | 15.31 | 146.22 | 12.27 | 0.9% |
 | Qwen2-VL-2B Platinum Q4_K_M | 0.980 GB | 8.52 | 8.49 | 8.51 | 63.09 | 8.34 | 0.4% |
-| Qwen3.8-2B Distill Q4_K_M | 1.263 GB | 8.46 | 7.72 | 8.09 | 54.28 | 10.22 | **9.2%** |
+| Qwen3.8-2B Distill Q4_K_M | 1.263 GB | 8.46 | 7.72 | 8.09 | 54.28 | 10.22 | **9.1%** |
 | Qwen3.8-4B Distill Q4_K_M | 2.698 GB | 3.41 | 2.95 | 3.18 | 21.05 | 8.58 | **14.5%** |
 
 ## The acceptance criterion fires on both anchors and on neither subject
@@ -187,7 +187,7 @@ between an arm and its own reverse:
 | checkpoint | forward | reverse | widest within-arm | between-arm |
 | --- | --- | --- | ---: | ---: |
 | Qwen3.8-4B Distill | 3.41 +/- 0.01 | 2.95 +/- 0.01 | 0.3% | 14.5% |
-| Qwen3.8-2B Distill | 8.46 +/- 0.36 | 7.72 +/- 0.04 | 4.3% | 9.2% |
+| Qwen3.8-2B Distill | 8.46 +/- 0.36 | 7.72 +/- 0.04 | 4.3% | 9.1% |
 | Qwen2-VL-2B | 8.52 +/- 0.09 | 8.49 +/- 0.04 | 1.1% | 0.4% |
 | Qwen3.5-0.8B Q8_0 | 15.24 +/- 0.20 | 15.38 +/- 0.15 | 1.3% | 0.9% |
 
