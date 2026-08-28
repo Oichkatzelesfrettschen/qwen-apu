@@ -431,12 +431,47 @@ function truncateToolResult(text) {
      footer -- a refusal message, a plain fetch error -- is sliced as before. */
   if (text.length <= TOOL_RESULT_CHARACTER_CAP) return text;
   const footerMatch = text.match(/\n(END UNTRUSTED WEB CONTENT \[[^\]\n]*\])\s*$/);
-  if (!footerMatch) return text.slice(0, TOOL_RESULT_CHARACTER_CAP);
-  const footerLine = footerMatch[1];
-  const noticeLine = `Truncated by the client at ${TOOL_RESULT_CHARACTER_CAP} characters.`;
-  const suffix = `\n${noticeLine}\n${footerLine}`;
-  const bodyCap = Math.max(0, TOOL_RESULT_CHARACTER_CAP - suffix.length);
-  return text.slice(0, bodyCap) + suffix;
+  if (footerMatch) {
+    const footerLine = footerMatch[1];
+    const noticeLine = `Truncated by the client at ${TOOL_RESULT_CHARACTER_CAP} characters.`;
+    const suffix = `\n${noticeLine}\n${footerLine}`;
+    const bodyCap = Math.max(0, TOOL_RESULT_CHARACTER_CAP - suffix.length);
+    return text.slice(0, bodyCap) + suffix;
+  }
+  const searchTruncated = truncateSearchResult(text);
+  if (searchTruncated !== null) return searchTruncated;
+  return text.slice(0, TOOL_RESULT_CHARACTER_CAP);
+}
+
+function truncateSearchResult(text) {
+  /* Cap a search-result reply at a whole result block, or return null.
+
+     `render_search_results` (remote/web-mcp/server.py) joins each result as
+     one block on `\n---\n`, closes the reply with a trailing `\n---`, and
+     appends `\nResults Omitted: N` outside every block when its own cap
+     dropped results. A plain `.slice(0, cap)` can land inside a block,
+     discarding a Result ID a later fetch needs, and leaves no omission count
+     for what the slice itself dropped. This keeps only the blocks that fit
+     whole under the cap and rewrites the omission line to add whatever this
+     cap newly drops to the count the server already reported. */
+  const omittedMatch = text.match(/\nResults Omitted: (\d+)$/);
+  const withoutOmitted = omittedMatch ? text.slice(0, -omittedMatch[0].length) : text;
+  const serverOmitted = omittedMatch ? Number(omittedMatch[1]) : 0;
+  if (!withoutOmitted.endsWith('\n---') || !withoutOmitted.includes('\nResult ID: ')) return null;
+  const blocks = withoutOmitted.slice(0, -4).split('\n---\n');
+  const maxOmitted = serverOmitted + blocks.length;
+  const budget = TOOL_RESULT_CHARACTER_CAP - `\nResults Omitted: ${maxOmitted}`.length;
+  const kept = [];
+  for (const block of blocks) {
+    const rendered = [...kept, block].join('\n---\n') + '\n---';
+    if (rendered.length > budget) break;
+    kept.push(block);
+  }
+  if (!kept.length) return null;
+  const totalOmitted = serverOmitted + (blocks.length - kept.length);
+  let rendered = kept.join('\n---\n') + '\n---';
+  if (totalOmitted) rendered += `\nResults Omitted: ${totalOmitted}`;
+  return rendered;
 }
 // The wrapper meters fetches per search in its own ledger row and publishes
 // that allowance neither in `tools/list` nor in `/props`, so the page carries

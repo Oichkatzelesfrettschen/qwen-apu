@@ -102,6 +102,17 @@ grep -F 'END UNTRUSTED WEB CONTENT \[[^\]\n]*\]' "$fallback_ui" >/dev/null
 grep -F 'Truncated by the client at ${TOOL_RESULT_CHARACTER_CAP} characters.' \
     "$fallback_ui" >/dev/null
 
+# A capped search-result reply keeps whole result blocks: `truncateSearchResult`
+# splits on the server's own `\n---\n` block separator, keeps only the blocks
+# that fit whole under the cap, and rewrites `Results Omitted:` to add what this
+# cap newly drops to whatever the server already reported, rather than slicing
+# through a block and losing a Result ID or the omission count with it.
+grep -F 'function truncateSearchResult(text) {' "$fallback_ui" >/dev/null
+grep -F 'const blocks = withoutOmitted.slice(0, -4).split(' "$fallback_ui" >/dev/null
+grep -F 'const totalOmitted = serverOmitted + (blocks.length - kept.length);' \
+    "$fallback_ui" >/dev/null
+grep -F 'const searchTruncated = truncateSearchResult(text);' "$fallback_ui" >/dev/null
+
 # A fetch runs without a grant, because the wrapper enforces the signed Result
 # ID and its own allowance, and the page bounds the pages one turn reads.
 grep -F 'const WEB_FETCH_BUDGET_PER_TURN = 2;' "$fallback_ui" >/dev/null
@@ -198,7 +209,7 @@ if command -v node >/dev/null 2>&1; then
 const fs = require("fs");
 const source = fs.readFileSync(process.argv[1], "utf8");
 const match = source.match(
-    /const TOOL_RESULT_CHARACTER_CAP[\s\S]*?\nfunction truncateToolResult[\s\S]*?\n}\n/
+    /const TOOL_RESULT_CHARACTER_CAP[\s\S]*?\nfunction truncateSearchResult[\s\S]*?\n}\n/
 );
 if (!match) throw new Error("truncateToolResult was not found in the served file");
 eval(match[0]);
@@ -216,6 +227,39 @@ if (!truncated.includes("Truncated by the client at")) {
 }
 if (truncated.length > 8000) {
     throw new Error(`a truncated frame still measures ${truncated.length} characters`);
+}
+
+function searchBlock(n) {
+    return [
+        `Title: Result ${n}`,
+        `URL: https://example.org/r${n}`,
+        "Published: 2026-01-05",
+        "Author: A. Measurer",
+        `Result ID: rid-${"x".repeat(200)}-${n}`,
+        "Trust: untrusted-web-result",
+        "Highlights:",
+        `- ${"highlight text ".repeat(20)}${n}`
+    ].join("\n");
+}
+const searchBlocks = [];
+for (let i = 0; i < 30; i++) searchBlocks.push(searchBlock(i));
+const searchReply = searchBlocks.join("\n---\n") + "\n---\nResults Omitted: 3";
+if (searchReply.length <= 8000) throw new Error("the fixture search reply fits under the cap already");
+const cappedSearch = truncateToolResult(searchReply);
+if (cappedSearch.length > 8000) {
+    throw new Error(`a capped search reply still measures ${cappedSearch.length} characters`);
+}
+const keptBlocks = cappedSearch.replace(/\nResults Omitted: \d+$/, "")
+    .replace(/\n---$/, "").split("\n---\n");
+for (const keptBlock of keptBlocks) {
+    if (!searchBlocks.includes(keptBlock)) {
+        throw new Error("a capped search reply carries a block that was cut mid-block");
+    }
+}
+const keptOmittedMatch = cappedSearch.match(/\nResults Omitted: (\d+)$/);
+if (!keptOmittedMatch) throw new Error("a capped search reply lost its Results Omitted line");
+if (Number(keptOmittedMatch[1]) <= 3) {
+    throw new Error("a capped search reply did not add the newly dropped blocks to the omitted count");
 }
 ' "$fallback_ui"
 fi
