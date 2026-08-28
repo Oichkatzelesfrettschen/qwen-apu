@@ -220,4 +220,75 @@ if (truncated.length > 8000) {
 ' "$fallback_ui"
 fi
 
+# `GET /tools` failing, answering non-2xx, or returning a body that is not an
+# array all raise from fetchWebToolListing the same way, and resolveWebTools
+# retries once after a short delay before leaving the turn without a web
+# tool. A listing this loop never parsed must not reach the cache: a cached
+# empty result would leave every later turn on this model and generation
+# silently offering no web tool until a reselect or a reload.
+grep -F 'async function fetchWebToolListing() {' "$fallback_ui" >/dev/null
+grep -F "throw new Error(\`GET /tools returned HTTP \${response.status}\`);" \
+    "$fallback_ui" >/dev/null
+grep -F "throw new Error('GET /tools returned a body that is not an array');" \
+    "$fallback_ui" >/dev/null
+grep -F 'const TOOLS_LISTING_RETRY_DELAY_MS = 300;' "$fallback_ui" >/dev/null
+grep -F 'for (let attempt = 0; attempt < 2; attempt++) {' "$fallback_ui" >/dev/null
+grep -F 'if (attempt === 0) await sleep(TOOLS_LISTING_RETRY_DELAY_MS);' \
+    "$fallback_ui" >/dev/null
+grep -F 'if (listed === null) return [];' "$fallback_ui" >/dev/null
+# The early return above must precede the cache write below it, so a listing
+# this loop never parsed cannot reach webToolDefinitions.
+cache_write_line=$(grep -n 'webToolDefinitions = composed;' "$fallback_ui" | cut -d: -f1)
+early_return_line=$(grep -n 'if (listed === null) return \[\];' "$fallback_ui" | cut -d: -f1)
+if [ -z "$cache_write_line" ] || [ -z "$early_return_line" ] \
+    || [ "$early_return_line" -ge "$cache_write_line" ]; then
+    printf 'fallback Web UI can cache a listing it never parsed\n' >&2
+    exit 1
+fi
+
+# node exercises the actual retry-then-give-up behavior against a stubbed
+# fetch, when node is on the path: two failures leave the turn without a web
+# tool and write no cache, and a listing that recovers after one failure is
+# read and cached.
+if command -v node >/dev/null 2>&1; then
+    node -e '
+const fs = require("fs");
+const source = fs.readFileSync(process.argv[1], "utf8");
+const match = source.match(
+    /const TOOLS_LISTING_RETRY_DELAY_MS[\s\S]*?async function resolveWebTools[\s\S]*?\n}\n/
+);
+if (!match) throw new Error("resolveWebTools was not found in the served file");
+const WEB_SEARCH_TOOL_NAME = "web_search_exa";
+const WEB_FETCH_TOOL_NAME = "web_fetch_exa";
+const WEB_TOOL_NAMES = [WEB_SEARCH_TOOL_NAME, WEB_FETCH_TOOL_NAME];
+function authHeaders(extra) { return extra || {}; }
+function webToolDefinition(entry) { return entry; }
+let webToolDefinitions = null, webToolsModel = null, webToolsGeneration = -1;
+function modelStateMatches(model, generation) {
+  return model === "m" && generation === 1;
+}
+eval(match[0]);
+
+async function run() {
+  let calls = 0;
+  global.fetch = async () => { calls++; return { ok: false, status: 503 }; };
+  const failed = await resolveWebTools("m", 1);
+  if (failed.length !== 0) throw new Error("a listing that never parsed returned tools");
+  if (calls !== 2) throw new Error(`expected one retry (2 calls), got ${calls}`);
+  if (webToolsModel !== null) throw new Error("a failed listing wrote the cache");
+
+  calls = 0;
+  global.fetch = async () => {
+    calls++;
+    if (calls === 1) return { ok: false, status: 503 };
+    return { ok: true, status: 200, json: async () => [{ tool: "web_search_exa" }] };
+  };
+  const recovered = await resolveWebTools("m", 1);
+  if (recovered.length !== 1) throw new Error("a listing that recovered was not read");
+  if (webToolsModel !== "m") throw new Error("a recovered listing did not write the cache");
+}
+run().catch(error => { console.error(error.message); process.exit(1); });
+' "$fallback_ui"
+fi
+
 printf 'fallback_webui_web_authorization=accepted\n'

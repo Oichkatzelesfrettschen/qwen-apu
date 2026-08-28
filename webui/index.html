@@ -335,6 +335,30 @@ function webToolDefinition(entry) {
   return { type: 'function', function: { ...fn, parameters } };
 }
 
+const TOOLS_LISTING_RETRY_DELAY_MS = 300;
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function fetchWebToolListing() {
+  /* Return the parsed `GET /tools` array for one request, or throw.
+
+     A non-2xx status and a body that is not a JSON array both leave the
+     caller unable to read a web tool from the response, so both raise here
+     rather than one being read as "no tools" and the other as a crash;
+     `resolveWebTools` treats every throw from this function the same way. */
+  const response = await fetch('./tools', { headers: authHeaders() });
+  if (!response.ok) {
+    throw new Error(`GET /tools returned HTTP ${response.status}`);
+  }
+  const listed = await response.json();
+  if (!Array.isArray(listed)) {
+    throw new Error('GET /tools returned a body that is not an array');
+  }
+  return listed;
+}
+
 async function resolveWebTools(selectedModel, generation) {
   /* Return the web tool definitions this server exposes, or an empty list.
 
@@ -343,21 +367,33 @@ async function resolveWebTools(selectedModel, generation) {
      decides whether a web surface exists at all. A build without the tool
      routes answers 404 and a build without the MCP child lists no web tool;
      both leave the request carrying no web tool rather than advertising a
-     schema nothing executes. */
+     schema nothing executes.
+
+     A transient failure -- a dropped connection, a 5xx during restart, a
+     response cut short mid-body -- retries once after a short delay rather
+     than being read the same as a build that serves no tool route at all.
+     Only a listing this loop actually parsed reaches the cache: caching an
+     empty result on failure would leave every later turn on this model and
+     generation silently offering no web tool until a reselect or a reload,
+     even once the endpoint recovers, so a failure after the retry returns
+     the turn's tools empty without writing the cache. */
   if (webToolsModel === selectedModel && webToolsGeneration === generation) {
     return webToolDefinitions || [];
   }
-  let composed = [];
-  try {
-    const response = await fetch('./tools', { headers: authHeaders() });
-    if (response.ok) {
-      const listed = await response.json();
-      composed = (Array.isArray(listed) ? listed : [])
-        .filter(entry => WEB_TOOL_NAMES.includes(entry && entry.tool))
-        .map(webToolDefinition)
-        .filter(Boolean);
+  let listed = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      listed = await fetchWebToolListing();
+      break;
+    } catch {
+      if (attempt === 0) await sleep(TOOLS_LISTING_RETRY_DELAY_MS);
     }
-  } catch { /* an unreachable listing leaves the turn without a web tool */ }
+  }
+  if (listed === null) return [];
+  const composed = listed
+    .filter(entry => WEB_TOOL_NAMES.includes(entry && entry.tool))
+    .map(webToolDefinition)
+    .filter(Boolean);
   if (modelStateMatches(selectedModel, generation)) {
     webToolDefinitions = composed;
     webToolsModel = selectedModel;
