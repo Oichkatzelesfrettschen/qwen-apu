@@ -62,6 +62,9 @@ TOKEN_LIFETIME_DEFAULT_SECONDS = 900
 TOKEN_LIFETIME_MINIMUM_SECONDS = 60
 TOKEN_LIFETIME_MAXIMUM_SECONDS = 3600
 SECRET_BYTE_CAP = 4096
+REQUEST_LINE_CHARACTER_CAP = 1024 * 1024
+JSON_DEPTH_CAP = 32
+OVERSIZED_LINE = object()
 RESULT_CLAIM_CONTEXT = "result-id"
 AUTHORIZATION_CLAIM_CONTEXT = "search-authorization"
 
@@ -1447,12 +1450,13 @@ def handle_request(settings, message):
     arguments answers with a successful result carrying `isError`, which is
     what the MCP client surfaces to the model.
     """
-    method = message.get("method")
+    method = message["method"]
     identifier = message.get("id")
-    if method == "notifications/initialized" or identifier is None:
+    if "id" not in message:
         return None
+    params = message.get("params") or {}
     if method == "initialize":
-        requested = (message.get("params") or {}).get("protocolVersion")
+        requested = params.get("protocolVersion")
         version = (
             requested if requested in SUPPORTED_PROTOCOL_VERSIONS else PROTOCOL_VERSION
         )
@@ -1474,7 +1478,6 @@ def handle_request(settings, message):
             "result": {"tools": TOOL_DEFINITIONS},
         }
     if method == "tools/call":
-        params = message.get("params") or {}
         handler = TOOL_HANDLERS.get(params.get("name"))
         if handler is None:
             return jsonrpc_error(
@@ -1501,23 +1504,100 @@ def handle_request(settings, message):
     return jsonrpc_error(identifier, -32601, f"unknown method: {method}")
 
 
+def read_request_line(stream):
+    """Return one request line, `OVERSIZED_LINE`, or None at end of input.
+
+    A peer that writes bytes and no newline would otherwise grow one string
+    until the process dies, so the reader takes the cap plus one character and
+    drains the rest of an oversized line. Draining rather than closing keeps
+    the next line parseable, and the caller answers the oversized one with an
+    invalid-request error.
+    """
+    line = stream.readline(REQUEST_LINE_CHARACTER_CAP + 1)
+    if not line:
+        return None
+    if len(line) > REQUEST_LINE_CHARACTER_CAP:
+        while not line.endswith("\n"):
+            line = stream.readline(REQUEST_LINE_CHARACTER_CAP)
+            if not line:
+                break
+        return OVERSIZED_LINE
+    return line
+
+
+def within_depth(value, remaining):
+    """Return whether a decoded document nests inside the admitted depth.
+
+    The decoder builds the whole document before any handler runs, so the cap
+    bounds what the handlers walk rather than what the parser allocates: a
+    deeply nested `arguments` object reaches `require_domain_list` and its
+    kin, and the bound keeps that walk finite.
+    """
+    if remaining <= 0:
+        return False
+    if isinstance(value, dict):
+        return all(within_depth(entry, remaining - 1) for entry in value.values())
+    if isinstance(value, list):
+        return all(within_depth(entry, remaining - 1) for entry in value)
+    return True
+
+
+def validate_message(message):
+    """Return a JSON-RPC error for a structurally invalid request, or None.
+
+    The checks run before any handler reads a field, so `params: []` answers
+    with -32602 rather than reaching `.get` on a list. An `id` of string,
+    number, or null is a request; an absent `id` is a notification, which the
+    caller answers with silence.
+    """
+    if not isinstance(message, dict):
+        return jsonrpc_error(None, -32600, "the request must be a JSON object")
+    if not within_depth(message, JSON_DEPTH_CAP):
+        return jsonrpc_error(
+            None, -32600, f"the request nests deeper than {JSON_DEPTH_CAP} levels"
+        )
+    identifier = message.get("id")
+    if "id" in message and not isinstance(
+        identifier, (str, int, float, type(None))
+    ):
+        return jsonrpc_error(None, -32600, "id must be a string, a number, or null")
+    if isinstance(identifier, bool):
+        return jsonrpc_error(None, -32600, "id must be a string, a number, or null")
+    if not isinstance(message.get("method"), str):
+        return jsonrpc_error(identifier, -32600, "method must be a string")
+    params = message.get("params")
+    if params is not None and not isinstance(params, dict):
+        return jsonrpc_error(identifier, -32602, "params must be a JSON object")
+    return None
+
+
 def main(argv):
     if argv and argv[0] == "authorize":
         return run_authorize(argv[1:])
     settings = settings_from_environment(argv)
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            message = json.loads(line)
-        except ValueError:
-            response = jsonrpc_error(None, -32700, "parse error")
+    while True:
+        line = read_request_line(sys.stdin)
+        if line is None:
+            break
+        if line is OVERSIZED_LINE:
+            response = jsonrpc_error(
+                None,
+                -32600,
+                f"the request exceeds the {REQUEST_LINE_CHARACTER_CAP} "
+                "character line cap",
+            )
         else:
-            if not isinstance(message, dict):
-                response = jsonrpc_error(None, -32600, "invalid request")
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                message = json.loads(line)
+            except (ValueError, RecursionError):
+                response = jsonrpc_error(None, -32700, "parse error")
             else:
-                response = handle_request(settings, message)
+                response = validate_message(message)
+                if response is None:
+                    response = handle_request(settings, message)
         if response is not None:
             sys.stdout.write(json.dumps(response) + "\n")
             sys.stdout.flush()

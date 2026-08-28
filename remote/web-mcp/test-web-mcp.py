@@ -312,6 +312,87 @@ class WebMcpServerTest(unittest.TestCase):
                 )
                 self.assertEqual(response["error"]["code"], -32602)
 
+    def send_raw(self, session, text):
+        """Write one raw line and read the response the server writes back."""
+        session.process.stdin.write(text + "\n")
+        session.process.stdin.flush()
+        return json.loads(session.process.stdout.readline())
+
+    def test_a_structurally_invalid_request_answers_with_an_error_code(self):
+        session = self.open_session()
+        cases = (
+            ('{"jsonrpc": "2.0", "id": 1, "method": "ping", "params": []}', -32602),
+            ('{"jsonrpc": "2.0", "id": 1, "method": "ping", "params": 7}', -32602),
+            ('{"jsonrpc": "2.0", "id": 1, "method": "ping", "params": "x"}', -32602),
+            ('{"jsonrpc": "2.0", "id": 1, "method": 7}', -32600),
+            ('{"jsonrpc": "2.0", "id": 1}', -32600),
+            ('{"jsonrpc": "2.0", "id": {"a": 1}, "method": "ping"}', -32600),
+            ('{"jsonrpc": "2.0", "id": [1], "method": "ping"}', -32600),
+            ('{"jsonrpc": "2.0", "id": true, "method": "ping"}', -32600),
+            ("[1, 2, 3]", -32600),
+            ('"a string"', -32600),
+            ("{not json", -32700),
+        )
+        for text, code in cases:
+            with self.subTest(request=text[:40]):
+                response = self.send_raw(session, text)
+                self.assertEqual(response["error"]["code"], code)
+                self.assertNotIn("Traceback", response["error"]["message"])
+
+    def test_initialize_validates_its_params_before_reading_them(self):
+        session = self.open_session()
+        response = self.send_raw(
+            session, '{"jsonrpc": "2.0", "id": 4, "method": "initialize", "params": []}'
+        )
+        self.assertEqual(response["error"]["code"], -32602)
+        response = self.send_raw(
+            session, '{"jsonrpc": "2.0", "id": 5, "method": "initialize"}'
+        )
+        self.assertEqual(
+            response["result"]["protocolVersion"], server.PROTOCOL_VERSION
+        )
+
+    def test_a_null_id_is_a_request_and_an_absent_id_is_a_notification(self):
+        session = self.open_session()
+        response = self.send_raw(
+            session, '{"jsonrpc": "2.0", "id": null, "method": "ping"}'
+        )
+        self.assertIsNone(response["id"])
+        self.assertEqual(response["result"], {})
+        session.notify("notifications/initialized")
+        self.assertEqual(self.send_raw(session, '{"jsonrpc":"2.0","id":6,"method":"ping"}')["id"], 6)
+
+    def test_a_line_beyond_the_cap_is_refused_and_the_next_line_parses(self):
+        session = self.open_session()
+        oversized = json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "tools/call",
+                "params": {
+                    "name": "search_exa",
+                    "arguments": {
+                        "query": "x" * (server.REQUEST_LINE_CHARACTER_CAP + 64)
+                    },
+                },
+            }
+        )
+        response = self.send_raw(session, oversized)
+        self.assertEqual(response["error"]["code"], -32600)
+        self.assertIn("line cap", response["error"]["message"])
+        self.assertEqual(self.send_raw(session, '{"jsonrpc":"2.0","id":8,"method":"ping"}')["id"], 8)
+
+    def test_a_document_beyond_the_depth_cap_is_refused(self):
+        session = self.open_session()
+        nested = "[" * (server.JSON_DEPTH_CAP + 4) + "]" * (server.JSON_DEPTH_CAP + 4)
+        response = self.send_raw(
+            session,
+            '{"jsonrpc": "2.0", "id": 9, "method": "ping", "params": '
+            '{"deep": ' + nested + "}}",
+        )
+        self.assertEqual(response["error"]["code"], -32600)
+        self.assertIn("nests deeper", response["error"]["message"])
+
     def test_unexpected_exception_answers_with_a_sanitized_internal_error(self):
         session = ServerSession(self.environment())
         session.request("initialize", {"protocolVersion": "2025-06-18"})
