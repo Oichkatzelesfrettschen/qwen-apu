@@ -94,13 +94,15 @@ No falsifier was met, and the offset was larger than every effect the
 predictions were trying to resolve, so an absolute band measures the sweep.
 
 That sweep proposed one scalar offset per sweep as the remedy, and
-`evidence/model-admission/runtime-class-throughput.md` refutes the remedy while
-leaving the diagnosis intact. Against the seven-checkpoint sweep the 4B distill
-fell 10.6% where the 2B distill fell 16.4% in the same twelve-arm re-run, so the
-term acts more strongly on the smaller checkpoint and moves the ratio between
-the two by 6.9%, from 0.3634 to 0.3884. A ratio against an in-sweep checkpoint
-is therefore more stable than an absolute rate and is not invariant, and a
-cross-sweep ratio on this pair carries about 7% of uncontrolled term.
+`evidence/model-admission/runtime-class-throughput.md` leaves the remedy
+unconfirmed. Against the seven-checkpoint sweep the 4B distill fell 10.6% where
+the 2B distill fell 16.4% in the same twelve-arm re-run, moving the pair's ratio
+from 0.3634 to 0.3884, whose nominal 95% interval overlaps the registered 0.345
+to 0.382 band by 0.002. Two sweeps cannot separate a size-dependent term from
+their own scatter, so the anchor control fails narrowly and inconclusively. A
+ratio against an in-sweep checkpoint is more stable than an absolute rate and
+is not invariant; the cross-sweep term on this pair was observed at 6.9% once
+and its expected size is unmeasured.
 
 The reported deviation of a rate is not its uncertainty. `llama-bench` prints a
 standard deviation over the repetitions inside one arm, and those repetitions
@@ -108,9 +110,11 @@ agree far more closely than an arm agrees with its own reverse: the 4B distill
 measured 3.41 +/- 0.01 and 2.95 +/- 0.01 in one sweep, 0.3% within each arm
 against 14.5% between them. Raising the repetition count measures one machine
 state better rather than narrowing the spread, and four slots per checkpoint
-brought that row to a 4.4% span where two slots gave 14.5%. The instability
-tracks checkpoint size rather than load: the 0.8B Q8_0 arm at the sweep's
-highest load peak landed 0.9% from its pair.
+brought that row to a 4.4% span where two slots gave 14.5%. Load peak does not
+order the instability: the 0.8B Q8_0 arm at the sweep's highest load peak
+landed 0.9% from its pair. Checkpoint size and queue distance remain
+confounded, because the mirrored order put the large pairs nine to eleven slots
+apart and the small pairs one to five, so neither is credited.
 
 The registry rather than a constant sets the admitted depth.
 `remote/models.tsv` carries `context_default`, `context_ceiling`, and
@@ -511,24 +515,29 @@ the byte count from the account entirely. The three 0.8B-class checkpoints of
 `evidence/model-admission/runtime-class-throughput.md` decode at 15.96, 15.17,
 and 15.31 tok/s while streaming 0.477, 0.547, and 0.801 GB per token: 5.2% of
 rate across 67.9% of bytes, over two value formats and two architectures, with
-every arm inside the sweep's span criterion. A per-token cost near 63 to 66 ms
-sets the rate there, against 314 ms per token on the 4B, so the fixed term is a
-fifth of the small-model budget and a fiftieth of the large one.
+every arm inside the sweep's span criterion. The whole token time there is 63
+to 66 ms, about a fifth of the 4B's 314 ms, and the same-checkpoint pair bounds
+the byte-linear part: 0.254 GB more per token costs 0.6 ms less, so the
+marginal cost of a streamed byte is indistinguishable from zero and the term
+that sets the rate is not separately estimated.
 
 The consequence is a serving decision. Qwen3.5-0.8B at Q8_0 streams 46.4% more
-bytes per token than the same checkpoint at Q4_K_M and decodes 0.9% faster, so
-the served `qwen35-08b` Q8_0 row already holds the better of the two positions
+bytes per token than the same checkpoint at Q4_K_M and the two decode rates
+differ by 0.9%, inside the within-arm deviations, so the direction is
+unresolved. Both registered accounts predicted the Q4_K_M 23 to 48% faster and
+are refuted on magnitude; the served `qwen35-08b` Q8_0 row keeps its position
 and a Q4_K_M rung of that class competes on quality rather than on throughput.
 The prefill halves separate where the decode halves do not, 146.22 against
 134.91 tok/s, which places Q4_K's super-block scale decode in the half where
 arithmetic rather than a per-token cost dominates.
 
-Depth and width cost achieved bandwidth where they buy tokens.
 Qwen3-Zero-Coder-Reasoning-0.8B runs 42 blocks at 1024 embedding width against
 the Qwen3.5-0.8B's 24 and achieves 7.62 GB/s against 8.30 at 87.3% of the bytes,
-with a 24.3% prefill deficit against a 5.2% decode advantage, since prefill
-issues the whole graph over a 512-token batch where decode amortizes it against
-the fixed per-token cost.
+with a 24.3% prefill deficit against a 5.2% decode advantage. Achieved GB/s is
+bytes times rate, so that 8.2% deficit restates the two inputs, and the rows
+differ in architecture, feed-forward width, and head counts beside block count,
+so a per-dispatch cost stays a correlated observation until one trunk is
+measured at two depths.
 
 Two architectures now break the size ordering of achieved rate in the same
 direction. `evidence/model-admission/universal-candidate-ladder.md` recorded

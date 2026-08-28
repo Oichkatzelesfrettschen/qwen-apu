@@ -43,6 +43,14 @@ closes a registered open question as a by-product of the class work.
 
 ## Registered before the sweep runs
 
+The bands below were committed before any device time was spent, and the
+history alone does not carry that ordering into every clone, since a squash or
+a rebase can fold the registration into the results. The file as it stood at
+that commit is therefore frozen at
+`evidence/runtime-class-throughput/preregistration-7c0ccd4.md` and listed in
+`evidence/SHA256SUMS`, so the registered bands are checkable against that copy
+rather than against a Git object a later history may lack.
+
 A prediction band on this machine states a ratio against a checkpoint measured
 in the same sweep. Every band below is a decode ratio `R` against the Qwen3.8-2B
 Distill arm of this sweep, and the achieved-rate ratio it implies follows from
@@ -142,6 +150,18 @@ Twelve arms, six checkpoints, forward and reverse, `nice 19` read back from
 `/proc` on every arm, `mclk` at 1067 throughout, die temperature 84 to 89 C,
 one-minute load average 3.97 to 4.88 with peaks to 5.45.
 
+The raw records behind every figure are retained under
+`evidence/runtime-class-throughput/raw/`: for the class sweep and the anchor
+re-run, each arm's `llama-bench` log, its clock sample series from
+`remote/sample-gpu-clocks.sh` (fclk, sclk, die temperature, load average, and
+memory counters per interval), the harness summary, and the driver log that
+records the invocation label, the requested and observed priority, the streamed
+byte count, and the start and stop timestamps of every arm. Both sweeps ran
+`remote/run-bandwidth-ladder.sh` with `QWEN_BENCH_PREFILL=512` and
+`QWEN_BENCH_GENERATE=64`, and every arm exited zero, so the driver log carries
+the terminal state and the kernel-hazard watcher recorded nothing in either
+window.
+
 | checkpoint | streamed/token | decode fwd | decode rev | paired decode | paired prefill | achieved GB/s | span |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | Qwen3-Zero-Coder-0.8B Q4_K_M | 0.477 GB | 15.75 | 16.17 | 15.96 | 102.18 | 7.62 | 2.6% |
@@ -179,11 +199,20 @@ consequence for this tree is that `llama-bench`'s reported deviation is not the
 uncertainty of a rate here, and a rate quoted with it understates its own
 spread fiftyfold on the 4B row.
 
-Load does not order the effect. The 0.8B Q8_0 reverse arm ran at the sweep's
-highest load peak, 5.45, and landed 0.9% from its forward pass, while the 4B
-reverse arm at 5.29 landed 14.5% from its own. The instability instead tracks
-checkpoint size, which is what the 0.8B rows below explain: where a per-token
-cost the desktop does not contend for sets the rate, the rate is stable.
+Load peak does not order the effect. The 0.8B Q8_0 reverse arm ran at the
+sweep's highest load peak, 5.45, and landed 0.9% from its forward pass, while
+the 4B reverse arm at 5.29 landed 14.5% from its own.
+
+Checkpoint size and queue distance are confounded here, so neither is
+credited. The forward order runs from the 4B down to the 0.8B subjects and the
+reverse order mirrors it, which places the 4B pair eleven slots apart and the 2B
+pair nine, while the three 0.8B pairs sit one, three, and five slots apart. The
+observed spans therefore rise with elapsed queue position by construction, and
+the anchor re-run below, where the high anchor values all came from early
+forward slots, reads the same way. Separating the two needs matched slot
+separation or a randomized order, which this sweep did not run. What stands is
+the operational rule: a large checkpoint's two slots can disagree by 14.5% on
+this machine, and four slots narrow that to 4.4%.
 
 ## Three checkpoints at one rate across a 68% spread in bytes
 
@@ -192,11 +221,16 @@ tokens per second while streaming 0.477, 0.547, and 0.801 GB per token. The
 rates span 5.2% where the byte counts span 67.9%, across two value formats and
 two architectures, and every one of those six arms met the span criterion.
 
-Decode at this scale is therefore not bandwidth-bound. A per-token cost near 63
-to 66 ms sets the rate and the weight stream is not the term that resolves. The
-same device streams 2.698 GB per token at 3.18 tok/s on the 4B, which is 314 ms
-per token, so the fixed term is a fifth of the small-model budget and a
-fiftieth of the large one.
+Decode at this scale is therefore not bandwidth-bound. The observed token time
+is 63 to 66 ms across the three rows, and that figure is the whole token time
+rather than an isolated fixed component. What bounds the byte-linear part is
+the same-checkpoint pair below: 0.254 GB more per token costs 0.6 ms less, so
+the marginal cost of a streamed byte is indistinguishable from zero inside the
+span criterion, and the weight stream at the 4B's achieved 8.06 GB/s would
+alone take 99 ms on the Q8_0's 0.801 GB, which exceeds its entire measured
+token time. A rate-setting term other than the weight stream is present and its
+magnitude is not separately estimated here. Against the 4B's 314 ms per token
+the 0.8B token time is about one fifth.
 
 ## The format arm refutes both registered accounts
 
@@ -209,7 +243,10 @@ Q8_0     0.801 GB/token   15.31 tok/s   12.27 GB/s
 Q4_K_M   0.547 GB/token   15.17 tok/s    8.30 GB/s
 ```
 
-The Q8_0 streams 46.4% more bytes and decodes 0.9% faster.
+The Q8_0 streams 46.4% more bytes, and the two decode rates differ by 0.9%
+in the Q8_0's favour, which is inside the within-arm deviations of 0.15 to
+0.55 tok/s at two slots per format. The direction of that 0.9% is unresolved
+and no claim below rests on it.
 
 The registered discriminator was expressed as `R` against the 2B distill, and
 that anchor failed its own span criterion in this sweep, so `R` is unevaluable
@@ -217,17 +254,20 @@ here. The direct pair answers the question without it, because both accounts
 predicted the same direction and the measurement runs the other way. The size
 account put the Q4_K_M above the Q8_0's achieved rate, which is 22.4 tok/s at
 0.547 GB per token; the format account put it at the Q4_K trunk's rate, which is
-18.7 to 20.6 tok/s. Both therefore predicted the Q4_K_M decodes faster than the
-Q8_0, and it decodes 0.9% slower. Fitting a fixed cost plus a bandwidth term
-across the pair gives a negative bandwidth term: more bytes, marginally less
-time.
+18.7 to 20.6 tok/s. Both therefore predicted the Q4_K_M decodes 23 to 48% faster than the
+Q8_0, and it measured 15.17 against 15.31, which is at least 19% below the
+nearer prediction and far outside the span either arm showed. The two accounts
+are refuted on magnitude; the sign of the residual 0.9% is what the pair
+cannot resolve.
 
-Q4_K_M buys nothing over Q8_0 on this checkpoint. That extends a result this
-tree already holds at 4B, where i1-Q2_K streams 29.4% fewer bytes than Q4_K_M
-and decodes no faster, down to the 0.8B class, and it means the served
-`qwen35-08b` Q8_0 row already occupies the better position of the two. A
-promotion of any Q4_K_M rung of this class competes on quality rather than on
-throughput.
+Q4_K_M demonstrates no throughput advantage over Q8_0 on this checkpoint. That
+extends a result this tree already holds at 4B, where i1-Q2_K streams 29.4%
+fewer bytes than Q4_K_M and decodes no faster, down to the 0.8B class. The
+served `qwen35-08b` Q8_0 row therefore keeps its position, since the only
+throughput case for replacing it was the one this arm refuted, and a promotion
+of any Q4_K_M rung of this class competes on quality rather than on throughput.
+Whether Q8_0 is faster remains open, and resolving it needs a declared margin
+and enough slots per format for two one-sided bounds inside it.
 
 The prefill halves separate where the decode halves do not: 146.22 against
 134.91 tokens per second, an 8.4% advantage to Q8_0 at 46.4% more bytes.
@@ -240,7 +280,7 @@ is applied to prefill here as well. The Q8_0 arms read 145.69 and 146.75, a 0.7%
 span, and the Q4_K_M arms read 134.49 and 135.32, a 0.6% span. Both pass, and
 the 8.4% separation is an order of magnitude above either.
 
-## The per-dispatch prediction holds
+## The per-dispatch direction holds and its mechanism stays open
 
 Qwen3-Zero-Coder-Reasoning-0.8B runs 42 blocks at 1024 embedding width against
 the Qwen3.5-0.8B's 24, at 87.3% of its streamed bytes. The registered prediction
@@ -251,12 +291,21 @@ Qwen3-Zero-Coder   0.477 GB/token   7.62 GB/s achieved
 Qwen3.5-0.8B       0.547 GB/token   8.30 GB/s achieved
 ```
 
-Confirmed at 8.2% below. The prefill halves separate it much harder than the
-decode halves -- 102.18 against 134.91, a 24.3% deficit -- which is the sign the
-per-dispatch account predicts, since prefill issues the same 42-block graph over
-a 512-token batch where decode amortizes it against the fixed per-token cost.
-Its decode rate is nonetheless the highest in the sweep at 15.96 tok/s, so the
-deep-narrow shape costs achieved bandwidth and buys tokens.
+The direction holds at 8.2% below, and what it establishes is narrower than
+the account. Achieved GB/s is streamed bytes times decode rate, so a row that
+streams 12.7% fewer bytes and decodes 5.2% faster lands at 0.873 x 1.052 =
+0.918 of the reference by identity, and the deficit restates the two inputs
+rather than isolating a cost per block. The two rows also differ in
+architecture, feed-forward width, and head counts, so block count is one of
+several changed variables. The prefill halves separate harder -- 102.18 against
+134.91, a 24.3% deficit -- and that sign is what a per-dispatch cost would
+produce, since prefill issues the whole graph over a 512-token batch where
+decode amortizes it, but it is consistent with the account rather than a test
+of it. The per-dispatch reading stays a correlated observation until block
+count is varied with the other shape parameters held, which one Qwen3.5 trunk
+at two depths would supply. Its decode rate is nonetheless the highest in the
+sweep at 15.96 tok/s, so the deep-narrow shape costs achieved bandwidth and
+buys tokens.
 
 The registered `R` band of 2.0 to 2.6 divides by the 2B distill arm that failed
 its span criterion, so the magnitude is unevaluable in this sweep while the
@@ -305,7 +354,7 @@ The 4B's prefill still spans 12.5% while its decode spans 4.4%, so the prefill
 half of that row remains unresolved at four slots and no prefill claim rests on
 it.
 
-### The anchor control fails, and the way it fails is the finding
+### The anchor control fails narrowly and settles nothing about the scalar
 
 ```text
 retained seven-checkpoint sweep    4B/2B decode ratio 0.3634
@@ -314,24 +363,25 @@ nominal 95% interval               0.3801 to 0.3968
 registered band                    0.345 to 0.382
 ```
 
-The interval's lower edge touches the band's upper bound, so the control is
-violated narrowly rather than decisively. What it exposes is larger than the
-margin. Against the retained sweep the 4B fell 10.6% and the 2B fell 16.4%, so
-the sweep-level term is not one scalar per sweep: it acts more strongly on the
-smaller checkpoint and moves the ratio between two checkpoints by 6.9%.
+The interval overlaps the registered band by 0.002 at its lower edge, and it
+carries the re-run's own scatter alone: the retained sweep's 0.3634 came from
+two slots per checkpoint with no interval of its own. The control therefore
+fails narrowly and inconclusively, and it neither confirms nor refutes a
+single-scalar sweep term.
 
-`universal-candidate-ladder.md` proposed exactly that scalar as the remedy for
-its bands reading low, applying one 11.1 to 11.5% offset across four
-predictions. This sweep refutes the remedy while leaving the diagnosis intact.
-The rule it produced still holds and now holds more narrowly: a ratio against an
-in-sweep checkpoint is more stable than an absolute rate and is not invariant
-either, so a cross-sweep ratio carries about 7% of uncontrolled term on this
-pair and a difference below that reports the sweep.
-
-The same ordering appears inside the pair of sweeps run minutes apart. Against
-its own first-sweep paired mean the 4B fell 6.1%, the 2B fell 5.0%, and
-Qwen2-VL fell 1.2%, which is the size dependence again at a tenth of the
-magnitude.
+What the two sweeps do show is the direction a size-dependent term would take.
+Against the retained sweep the 4B fell 10.6% and the 2B fell 16.4%, which moves
+the pair's ratio by 6.9%, and against their own first-sweep paired means the 4B
+fell 6.1%, the 2B 5.0%, and Qwen2-VL 1.2%. Two sweeps of two checkpoints
+cannot separate a size-dependent term from the two sweeps' own scatter, so the
+remedy `universal-candidate-ladder.md` proposed, one 11.1 to 11.5% offset
+across four predictions, stands unconfirmed rather than refuted. The
+hypothesis and its falsifier are recorded here: if the term is size-dependent,
+a third sweep carrying both anchors at four slots each lands the 4B/2B ratio
+above 0.382 again; if the term is one scalar, that ratio returns inside 0.345
+to 0.382. Until that arm runs, a cross-sweep ratio on this pair carries an
+uncontrolled term whose observed size is 6.9% and whose expected size is
+unknown, and a cross-sweep difference below that reports the sweeps.
 
 ### Qwen2-VL against an anchor that met the criterion
 
