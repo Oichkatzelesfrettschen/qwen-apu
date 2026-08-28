@@ -576,6 +576,12 @@ run_arm() {
     printf 'arm_start_utc=%s label=%s cache=%s/%s fa=%s kernel_capture=%s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$arm_label" "$cache_type_k" \
         "$cache_type_v" "$flash_attention" "$kernel_capture_method"
+    # The sampler is killed the moment the arm ends, so an arm shorter than
+    # its first sampling interval would leave no file and a later resume would
+    # refuse the recorded arm for a missing artifact. The empty file is
+    # created first; the summary reads it with -s, so an unwritten file still
+    # reports unavailable clocks.
+    : >"$arm_samples"
     "$clock_sampler" "$arm_samples" &
     sampler_pid=$!
     set +e
