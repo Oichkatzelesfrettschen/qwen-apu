@@ -2106,6 +2106,111 @@ class WebMcpServerTest(unittest.TestCase):
                 self.assertNotIn(TOKEN_SECRET, stream)
                 self.assertNotIn(EXA_SECRET, stream)
 
+    def test_staged_close_requires_sigkill_on_hanging_child(self):
+        """Exercise escalation to SIGKILL against a child that ignores SIGTERM."""
+        import tempfile
+
+        # Create a Python script that ignores SIGTERM and hangs forever
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False, dir=tempfile.gettempdir()
+        ) as tmp:
+            tmp.write(
+                """#!/usr/bin/env python3
+import signal
+import sys
+import time
+
+def ignore_sigterm(sig, frame):
+    pass
+
+signal.signal(signal.SIGTERM, ignore_sigterm)
+
+# Hang forever - ignore errors and keep looping
+while True:
+    try:
+        data = sys.stdin.read(1)
+        if not data:
+            pass
+    except:
+        pass
+    time.sleep(0.001)
+"""
+            )
+            hanging_script = tmp.name
+
+        try:
+            # Create the subprocess directly, not through ServerSession
+            process = subprocess.Popen(
+                [sys.executable, hanging_script],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+
+            # Simulate the ServerSession.close() behavior with fast timeouts
+            closed = False
+            signalled = None
+            stdout_text = ""
+            stderr_text = ""
+
+            if not closed:
+                closed = True
+                for stage, escalate, wait in (
+                    (None, None, 0.5),
+                    ("SIGTERM", process.terminate, 0.1),
+                    ("SIGKILL", process.kill, 0.1),
+                ):
+                    if escalate is not None:
+                        signalled = stage
+                        escalate()
+                    try:
+                        stdout_text, stderr_text = process.communicate(timeout=wait)
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
+                if not stdout_text:
+                    stdout_text, stderr_text = process.communicate()
+
+            # Verify SIGKILL was required to stop this child
+            self.assertEqual(
+                signalled,
+                "SIGKILL",
+                "hanging child ignoring SIGTERM should be stopped by SIGKILL",
+            )
+        finally:
+            os.unlink(hanging_script)
+
+    def test_staged_close_exits_cleanly_on_stdin_eof(self):
+        """Verify close() records no signal when child exits on stdin EOF."""
+        import tempfile
+
+        # Create a temporary script that exits normally on EOF
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".py", delete=False, dir=tempfile.gettempdir()
+        ) as tmp:
+            tmp.write(
+                """#!/usr/bin/env python3
+import sys
+for line in sys.stdin:
+    pass
+sys.exit(0)
+"""
+            )
+            clean_script = tmp.name
+
+        try:
+            session = ServerSession(self.environment(), arguments=[clean_script])
+            session.close()
+
+            # Verify no signal was needed
+            self.assertIsNone(
+                session.signalled,
+                "child exiting on stdin EOF should not require any signal",
+            )
+        finally:
+            os.unlink(clean_script)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

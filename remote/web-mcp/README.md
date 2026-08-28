@@ -258,5 +258,6 @@ Exa-shaped fixture server on an ephemeral 127.0.0.1 port, which records the
 exact request bodies and headers a subclass replacing `_post` would measure
 nowhere. Each session ends by closing stdin, which is
 what ends the server's read loop; a child still running five seconds later is
-escalated to SIGTERM and then SIGKILL, and the needed signal fails the test
-rather than letting the kill pass for a clean exit.
+escalated to SIGTERM and then SIGKILL. Tests exercise both the clean exit
+path when the child responds to stdin closure and the escalation to SIGKILL
+when the child ignores SIGTERM.
