@@ -307,6 +307,102 @@ if grep -F 'arm_skipped label=d1-b2-ub2' \
     printf 'depth wedge skipped the second geometry despite an unhealthy fault arm\n' >&2
     exit 1
 fi
+if ! awk -F'\t' '$1 == "d1-b1-ub1" && $20 == "VM-protection-fault" {
+                     found = 1
+                 }
+                 END { exit !found }' "$fault_output/wedge-summary.tsv"; then
+    printf 'depth wedge did not classify the protection fault by name\n' >&2
+    cat "$fault_output/wedge-summary.tsv" >&2
+    exit 1
+fi
+
+# A GFXHUB-tagged page fault is a distinct class from the generic protection
+# fault above, named by the same line carrying both "gfxhub" and "page fault".
+gfxhub_bin=$temporary_directory/gfxhub-bin
+gfxhub_counter=$temporary_directory/gfxhub-dmesg-counter
+gfxhub_log=$temporary_directory/gfxhub-dmesg-log
+: >"$gfxhub_log"
+mkdir -p "$gfxhub_bin"
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    "counter=$gfxhub_counter" \
+    "log=$gfxhub_log" \
+    'printf x >>"$counter"' \
+    'count=$(wc -c <"$counter")' \
+    'if [ "$count" -eq 3 ]; then' \
+    '    printf "amdgpu: [gfxhub0] page fault detected\\n" >>"$log"' \
+    'fi' \
+    'cat "$log"' \
+    >"$gfxhub_bin/dmesg"
+chmod +x "$gfxhub_bin/dmesg"
+gfxhub_output=$temporary_directory/wedge-gfxhub
+active_fixture=depth-wedge-gfxhub-page-fault
+diagnostic_file=$temporary_directory/wedge-gfxhub.stderr
+QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
+QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_WEDGE_DEPTHS=1 \
+QWEN_WEDGE_GEOMETRIES=1:1 PATH="$gfxhub_bin:$PATH" \
+    "$script_directory/probe-depth-wedge.sh" "$model_path" "$gfxhub_output" \
+    >"$temporary_directory/wedge-gfxhub.stdout" \
+    2>"$temporary_directory/wedge-gfxhub.stderr"
+if ! awk -F'\t' '$1 == "d1-b1-ub1" && $20 == "gfxhub-page-fault" {
+                     found = 1
+                 }
+                 END { exit !found }' "$gfxhub_output/wedge-summary.tsv"; then
+    printf 'depth wedge did not classify the GFXHUB page fault by name\n' >&2
+    cat "$gfxhub_output/wedge-summary.tsv" >&2
+    exit 1
+fi
+
+# A reset line with no page-fault line is ring-timeout-only. Its control then
+# fails, which is what post-reset-control-failure names: a confirmed reset
+# whose recovery control did not pass. A call-counting bench succeeds on the
+# arm and fails on the control that follows it.
+reset_bin=$temporary_directory/reset-bin
+reset_counter=$temporary_directory/reset-dmesg-counter
+reset_log=$temporary_directory/reset-dmesg-log
+: >"$reset_log"
+mkdir -p "$reset_bin"
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    "counter=$reset_counter" \
+    "log=$reset_log" \
+    'printf x >>"$counter"' \
+    'count=$(wc -c <"$counter")' \
+    'if [ "$count" -eq 3 ]; then' \
+    '    printf "amdgpu: GPU reset begin\\n" >>"$log"' \
+    'fi' \
+    'cat "$log"' \
+    >"$reset_bin/dmesg"
+chmod +x "$reset_bin/dmesg"
+reset_control_bench=$temporary_directory/reset-control-bench
+reset_control_counter=$temporary_directory/reset-control-counter
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    "counter=$reset_control_counter" \
+    'printf x >>"$counter"' \
+    'count=$(wc -c <"$counter")' \
+    'if [ "$count" -ge 2 ]; then exit 7; fi' \
+    'printf "| fake | tg64 | 3.00 +/- 0.10 |\\n"' >"$reset_control_bench"
+chmod +x "$reset_control_bench"
+reset_output=$temporary_directory/wedge-post-reset-control-failure
+active_fixture=depth-wedge-post-reset-control-failure
+diagnostic_file=$temporary_directory/wedge-post-reset.stderr
+if QWEN_LLAMA_BENCH=$reset_control_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
+    QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_WEDGE_DEPTHS=1 \
+    QWEN_WEDGE_GEOMETRIES=1:1 PATH="$reset_bin:$PATH" \
+    "$script_directory/probe-depth-wedge.sh" "$model_path" "$reset_output" \
+    >"$temporary_directory/wedge-post-reset.stdout" \
+    2>"$temporary_directory/wedge-post-reset.stderr"; then
+    printf 'depth wedge accepted a post-reset control failure as recoverable\n' >&2
+    exit 1
+fi
+if ! awk -F'\t' '$1 == "d1-b1-ub1" &&
+                 $20 ~ /ring-timeout-only/ &&
+                 $20 ~ /post-reset-control-failure/ {
+                     found = 1
+                 }
+                 END { exit !found }' "$reset_output/wedge-summary.tsv"; then
+    printf 'depth wedge did not record both the reset and the post-reset control-failure class\n' >&2
+    cat "$reset_output/wedge-summary.tsv" >&2
+    exit 1
+fi
 
 # A sampler that writes nothing leaves the arm without device covariates, which
 # this probe records as `unavailable` alongside every other absent device
@@ -425,6 +521,25 @@ if QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
 fi
 grep -F 'wedge metadata does not match the model or recovery control:' \
     "$temporary_directory/wedge-model-mismatch.stderr" >/dev/null
+
+legacy_metadata_output=$temporary_directory/wedge-legacy-metadata
+mkdir -p "$legacy_metadata_output"
+printf 'model_sha256\tmodel_bytes\tcontrol_tokens\n' \
+    >"$legacy_metadata_output/wedge-metadata.tsv"
+active_fixture=depth-wedge-legacy-metadata
+diagnostic_file=$temporary_directory/wedge-legacy-metadata.stderr
+if QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
+    QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_WEDGE_DEPTHS=1 \
+    QWEN_WEDGE_GEOMETRIES=1:1 PATH="$fake_bin:$PATH" \
+    "$script_directory/probe-depth-wedge.sh" "$model_path" \
+    "$legacy_metadata_output" \
+    >"$temporary_directory/wedge-legacy-metadata.stdout" \
+    2>"$temporary_directory/wedge-legacy-metadata.stderr"; then
+    printf 'depth wedge accepted a pre-versioning legacy metadata ledger\n' >&2
+    exit 1
+fi
+grep -F 'wedge metadata predates ledger versioning (legacy ledger, no ledger_version field):' \
+    "$temporary_directory/wedge-legacy-metadata.stderr" >/dev/null
 
 kernel_gap_output=$temporary_directory/wedge-kernel-gap
 mkdir -p "$kernel_gap_output"

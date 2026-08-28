@@ -39,6 +39,12 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
     exit 2
 fi
 
+# The wedge-metadata.tsv schema version. A metadata file whose header carries
+# no ledger_version field predates this field and is refused rather than
+# read as if version 1 were compatible with an unmarked format: nothing in
+# an unmarked file states which reader wrote it.
+ledger_version=2
+
 model_path=$1
 output_directory=${2:-"${HOME:?}/qwen-depth-wedge"}
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -91,7 +97,17 @@ summary=$output_directory/wedge-summary.tsv
 # counts are `unavailable` and a clean run cannot be told apart from a
 # recovery this probe did not see. A promotion rule that treats `unverified`
 # as `healthy` promotes an arm this probe never confirmed clean.
-summary_header='arm	depth	batch	ubatch	cache_k	cache_v	flash_attn	status	ring_resets	gpu_faults	wall_s	decode_tok_s	vram_peak_mib	gtt_peak_mib	control_status	control_tok_s	mclk_modal	temp_c_max	health'
+# hazard_class names what the kernel and the bench logs together say happened,
+# beside the ring_resets and gpu_faults line counts: `ring-timeout-only` is a
+# reset or wedge line with no page-fault line in the same delta;
+# `gfxhub-page-fault` is a GFXHUB-tagged page fault; `VM-protection-fault` is
+# an L2 protection fault; `device-lost-without-kernel-record` is a Vulkan
+# device-lost error from the bench or control process with a zero or
+# unavailable reset and fault count, naming a hazard the kernel log never
+# recorded; `post-reset-control-failure` is a confirmed reset (resets > 0)
+# whose recovery control then failed. A clean arm reads `none`; several
+# classes join with a comma when more than one line matches.
+summary_header='arm	depth	batch	ubatch	cache_k	cache_v	flash_attn	status	ring_resets	gpu_faults	wall_s	decode_tok_s	vram_peak_mib	gtt_peak_mib	control_status	control_tok_s	mclk_modal	temp_c_max	health	hazard_class'
 summary_has_arms=0
 if [ -s "$summary" ]; then
     if [ "$(sed -n '1p' "$summary")" != "$summary_header" ]; then
@@ -100,7 +116,7 @@ if [ -s "$summary" ]; then
         exit 2
     fi
     malformed_line=$(awk -F'\t' '
-        NR > 1 && (NF != 19 || $1 != "d" $2 "-b" $3 "-ub" $4) {
+        NR > 1 && (NF != 20 || $1 != "d" $2 "-b" $3 "-ub" $4) {
             print NR
             exit
         }' "$summary")
@@ -140,12 +156,18 @@ fi
 # beside a filled-depth arm and binds every resumed row to immutable input
 # bytes rather than to a reusable path.
 metadata=$output_directory/wedge-metadata.tsv
-metadata_header='model_sha256	model_bytes	control_tokens'
+metadata_header='ledger_version	model_sha256	model_bytes	control_tokens'
+legacy_metadata_header='model_sha256	model_bytes	control_tokens'
 model_sha256=$(nice -n 19 sha256sum "$model_path")
 model_sha256=${model_sha256%% *}
 model_bytes=$(stat -c %s -- "$model_path")
-metadata_row="$model_sha256	$model_bytes	$control_tokens"
+metadata_row="$ledger_version	$model_sha256	$model_bytes	$control_tokens"
 if [ -s "$metadata" ]; then
+    if [ "$(sed -n '1p' "$metadata")" = "$legacy_metadata_header" ]; then
+        printf 'wedge metadata predates ledger versioning (legacy ledger, no ledger_version field): %s\n' \
+            "$metadata" >&2
+        exit 2
+    fi
     if [ "$(sed -n '1p' "$metadata")" != "$metadata_header" ] ||
        [ "$(sed -n '2p' "$metadata")" != "$metadata_row" ] ||
        [ -n "$(sed -n '3p' "$metadata")" ]; then
@@ -218,6 +240,53 @@ parse_decode_rate() {
                END { print (rate == "" ? "n/a" : rate) }' "$1"
 }
 
+# classify_hazard names what happened rather than how many lines matched.
+# ring-timeout-only and the two fault classes read the kernel delta alone;
+# device-lost-without-kernel-record reads the bench and control logs for a
+# Vulkan device-lost error the kernel delta never recorded a matching reset or
+# fault for; post-reset-control-failure reads the confirmed reset count
+# against the control's own status. Classes join with a comma, and a clean
+# arm reads `none`.
+classify_hazard() {
+    hazard_bench_log=$1
+    hazard_kernel_file=$2
+    hazard_control_log=$3
+    hazard_resets=$4
+    hazard_faults=$5
+    hazard_control_status=$6
+    hazard_classes=''
+    hazard_has_page_fault=0
+    if [ -f "$hazard_kernel_file" ]; then
+        grep -qi 'page fault' "$hazard_kernel_file" 2>/dev/null &&
+            hazard_has_page_fault=1
+        if [ "$hazard_has_page_fault" -eq 1 ] &&
+           grep -qi 'gfxhub' "$hazard_kernel_file" 2>/dev/null; then
+            hazard_classes=${hazard_classes:+$hazard_classes,}gfxhub-page-fault
+        fi
+        if grep -qE 'VM_L2_PROTECTION_FAULT|PROTECTION_FAULT' \
+            "$hazard_kernel_file" 2>/dev/null; then
+            hazard_classes=${hazard_classes:+$hazard_classes,}VM-protection-fault
+        fi
+        if [ "$hazard_has_page_fault" -eq 0 ] &&
+           grep -qE 'ring reset|Ring .* reset|device wedged|GPU reset' \
+               "$hazard_kernel_file" 2>/dev/null; then
+            hazard_classes=${hazard_classes:+$hazard_classes,}ring-timeout-only
+        fi
+    fi
+    if grep -qiE 'device lost|VK_ERROR_DEVICE_LOST' \
+        "$hazard_bench_log" "$hazard_control_log" 2>/dev/null; then
+        if { [ "$hazard_resets" = unavailable ] || [ "$hazard_resets" -eq 0 ]; } &&
+           { [ "$hazard_faults" = unavailable ] || [ "$hazard_faults" -eq 0 ]; }; then
+            hazard_classes=${hazard_classes:+$hazard_classes,}device-lost-without-kernel-record
+        fi
+    fi
+    if [ "$hazard_resets" != unavailable ] && [ "$hazard_resets" -gt 0 ] &&
+       [ "$hazard_control_status" -ne 0 ]; then
+        hazard_classes=${hazard_classes:+$hazard_classes,}post-reset-control-failure
+    fi
+    printf '%s' "${hazard_classes:-none}"
+}
+
 run_bench() {
     bench_log=$1
     bench_depth=$2
@@ -280,6 +349,13 @@ run_arm() {
             '$1 == label { print $15; exit }' "$summary")
         recorded_health=$(awk -F'\t' -v label="$arm_label" \
             '$1 == label { print $19; exit }' "$summary")
+        recorded_hazard_class=$(awk -F'\t' -v label="$arm_label" \
+            '$1 == label { print $20; exit }' "$summary")
+        if [ -z "$recorded_hazard_class" ]; then
+            printf 'recorded arm %s carries an empty hazard class\n' \
+                "$arm_label" >&2
+            exit 2
+        fi
         recorded_cache_type_k=$(awk -F'\t' -v label="$arm_label" \
             '$1 == label { print $5; exit }' "$summary")
         recorded_cache_type_v=$(awk -F'\t' -v label="$arm_label" \
@@ -495,16 +571,19 @@ run_arm() {
         fi
     fi
 
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    hazard_class=$(classify_hazard "$arm_log" "$arm_kernel" "$control_log" \
+        "$resets" "$faults" "$control_status")
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$arm_label" "$arm_depth" "$arm_batch" "$arm_ubatch" "$cache_type_k" \
         "$cache_type_v" "$flash_attention" "$arm_status" "$resets" "$faults" \
         "$arm_wall" "$decode" "$memory_report" "$control_status" \
-        "$control_decode" "$clock_report" "$health" >>"$summary"
-    printf 'arm_stop_utc=%s label=%s status=%s decode=%s resets=%s faults=%s wall_s=%s peak_vram_gtt_mib=%s control=%s control_tok_s=%s health=%s\n' \
+        "$control_decode" "$clock_report" "$health" "$hazard_class" >>"$summary"
+    printf 'arm_stop_utc=%s label=%s status=%s decode=%s resets=%s faults=%s wall_s=%s peak_vram_gtt_mib=%s control=%s control_tok_s=%s health=%s hazard_class=%s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$arm_label" "$arm_status" "$decode" \
         "$resets" "$faults" "$arm_wall" \
         "$(printf '%s' "$memory_report" | tr '\t' '/')" "$control_status" \
-        "$control_decode" "$health"
+        "$control_decode" "$health" "$hazard_class"
     active_arm_label=''
 
     if [ "$control_status" -ne 0 ]; then
