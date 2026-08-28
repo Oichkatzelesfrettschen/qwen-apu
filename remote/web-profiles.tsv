@@ -45,8 +45,11 @@
 # validator-gated or unguarded execution_policy yet; web_mode names the
 # intended future path and execution_policy names what is authorized now.
 #
-# multi_source is yes only where max_fetches exceeds 1, since a single fetch
-# has no second source to combine with the first. vision_allowed is copied
+# multi_source reads yes exactly where max_fetches exceeds 1, and
+# remote/build-web-presets.sh refuses a row that breaks either direction: the
+# emitted MCP configuration carries the fetch budget alone, so a no row above one
+# fetch grants retrieval this ledger denies, and a single fetch reaches one
+# source. vision_allowed is copied
 # from the model_id's projector column in models.tsv: `required` becomes yes
 # and `none` becomes no. tool_selection is copied from the model_id's
 # raw_tool_selection column, the graded tool-selection score unaided by any

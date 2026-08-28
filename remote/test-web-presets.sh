@@ -567,6 +567,55 @@ check_numeric_field_refused max_results_zero 8192 8192 0 2 12000
 check_numeric_field_refused max_fetches_leading_zero 8192 8192 5 02 12000
 check_numeric_field_refused max_chars_negative 8192 8192 5 2 -12000
 
+# multi_source and max_fetches state one retrieval budget twice, so the ledger
+# holds them as a biconditional and the generator refuses both directions. A
+# `no` row above one fetch emits a configuration granting every fetch while the
+# ledger denies the combination, and a `yes` row at one fetch claims a
+# combination one fetch cannot make.
+check_multi_source_refused() {
+    multi_case_name=$1
+    multi_source_value=$2
+    multi_fetches=$3
+    multi_policy=${4:-validator-gated}
+    multi_profiles=$work/web-profiles-multi-$multi_case_name.tsv
+    printf 'web-fixture-multi\tfixture-production\tvalidator-gated\t8192\t8192\t5\t%s\t12000\t%s\tno\t9/10\t%s\n' \
+        "$multi_fetches" "$multi_source_value" "$multi_policy" >"$multi_profiles"
+    multi_presets=$work/presets-multi-$multi_case_name.ini
+    if build "$multi_profiles" "$multi_presets" \
+        env QWEN_WEB_MCP_SERVER="$mcp_server_program" QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" QWEN_WEB_STATE_DIR="$web_state_directory" \
+        >"$work/multi-$multi_case_name.log" \
+        2>"$work/multi-$multi_case_name.err"; then
+        report "multi_source_${multi_case_name}_refused" emitted_a_section
+        return
+    fi
+    if grep -q 'multi_source' "$work/multi-$multi_case_name.err"; then
+        report "multi_source_${multi_case_name}_refused" ok
+    else
+        report "multi_source_${multi_case_name}_refused" message_omits_field
+    fi
+}
+
+check_multi_source_refused no_above_one_fetch no 3
+check_multi_source_refused yes_at_one_fetch yes 1
+check_multi_source_refused outside_vocabulary maybe 2
+# The ledger is one claimed policy document, so a refused row meets the
+# invariant an emitting row meets.
+check_multi_source_refused refused_row no 3 refused
+
+# The two admitted spellings pass: one fetch reads `no` and several read `yes`.
+multi_source_ok_profiles=$work/web-profiles-multi-ok.tsv
+printf 'web-fixture-multi-single\tfixture-production\tui-mediated\t8192\t8192\t5\t1\t12000\tno\tno\t9/10\tui-mediated\n' \
+    >"$multi_source_ok_profiles"
+multi_source_ok_presets=$work/presets-multi-ok.ini
+if build "$multi_source_ok_profiles" "$multi_source_ok_presets" \
+    env QWEN_WEB_MCP_SERVER="$mcp_server_program" QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" QWEN_WEB_STATE_DIR="$web_state_directory" \
+    >"$work/multi-ok.log" 2>"$work/multi-ok.err"; then
+    report single_fetch_reads_multi_source_no ok
+else
+    report single_fetch_reads_multi_source_no failed
+    cat "$work/multi-ok.err" >&2
+fi
+
 # The sentinel stands where the registry defines the unmeasured state, so a
 # ledger validated_filled_depth of `-` matching its registry row is admitted by
 # the numeric rule. The depth override carries it past the unmeasured-depth

@@ -147,6 +147,12 @@ set -eu
 # drift standing until a later edit to one row's execution_policy turned a
 # previously successful ledger into an error.
 #
+# multi_source and max_fetches state one retrieval budget twice, and the
+# generator holds them as a biconditional: multi_source reads yes exactly where
+# max_fetches exceeds one. The emitted MCP configuration carries max_fetches
+# alone, so a `no` row above one fetch grants multi-source retrieval the ledger
+# denies while the ledger still reads as the policy authority.
+#
 # A profile_id names an INI section, an MCP configuration file, and a served
 # alias, so it is restricted to a leading alphanumeric followed by
 # alphanumerics, underscores, and hyphens. A path separator or a `..` component
@@ -394,6 +400,40 @@ require_ledger_matches_registry() {
     fi
 }
 
+# multi_source and max_fetches state one retrieval budget twice, so the ledger
+# holds them as a biconditional: a second source exists exactly where a second
+# fetch does. The emitted MCP configuration carries max_fetches alone, so a
+# `no` row above one fetch would grant multi-source retrieval the ledger denies
+# and a `yes` row at one fetch would claim a combination one fetch cannot make.
+# The check runs for every row, whatever its execution_policy, because the
+# ledger is one claimed policy document and a refused row states a budget a
+# reader trusts.
+require_multi_source_matches_fetches() {
+    multi_source_value=$1
+    multi_source_fetches=$2
+    case $multi_source_value in
+        yes | no) ;;
+        *)
+            printf 'profile %s carries multi_source %s, which is outside the vocabulary\n' \
+                "$profile_id" "$multi_source_value" >&2
+            printf 'admitted values are yes and no\n' >&2
+            exit 1
+            ;;
+    esac
+    if [ "$multi_source_fetches" -gt 1 ] && [ "$multi_source_value" != yes ]; then
+        printf 'profile %s carries multi_source %s with max_fetches %s\n' \
+            "$profile_id" "$multi_source_value" "$multi_source_fetches" >&2
+        printf 'the emitted configuration grants every fetch, so a budget above one fetch reads multi_source yes\n' >&2
+        exit 1
+    fi
+    if [ "$multi_source_fetches" -le 1 ] && [ "$multi_source_value" != no ]; then
+        printf 'profile %s carries multi_source %s with max_fetches %s\n' \
+            "$profile_id" "$multi_source_value" "$multi_source_fetches" >&2
+        printf 'one fetch reaches one source, so a single-fetch budget reads multi_source no\n' >&2
+        exit 1
+    fi
+}
+
 registry_field() {
     registry_field_row=$1
     registry_field_name=$2
@@ -402,7 +442,7 @@ registry_field() {
 
 while IFS='	' read -r profile_id model_id _web_mode context \
     ledger_validated_filled_depth max_results max_fetches max_chars_per_fetch \
-    _multi_source vision_allowed tool_selection execution_policy; do
+    multi_source vision_allowed tool_selection execution_policy; do
     case $profile_id in
         '#'* | '') continue ;;
     esac
@@ -418,6 +458,8 @@ while IFS='	' read -r profile_id model_id _web_mode context \
         "$profile_id"
     require_canonical_integer max_chars_per_fetch "$max_chars_per_fetch" \
         sentinel-refused "$profile_id"
+
+    require_multi_source_matches_fetches "$multi_source" "$max_fetches"
 
     case $execution_policy in
         refused | validator-gated | ui-mediated) ;;
