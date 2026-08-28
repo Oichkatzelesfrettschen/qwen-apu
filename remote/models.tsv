@@ -84,6 +84,21 @@
 # execution moves a row to `validator-gated`, and this tree holds no such
 # validator: the appliance runs without --tools, the server executes nothing,
 # and the request body's tools field asks for a tool_calls object alone.
+# Two rows can hold one checkpoint's weights at two precisions, and role rather
+# than tier separates them. `qwen35-08b` is Q8_0 at `compact-text` and
+# `qwen35-08b-f16` is F16 at `compact-precision`: the same weights, the second
+# at the highest precision its publisher ships, so it is the quality ceiling
+# every quantized rung of those weights is measured against. It decodes slower
+# rather than faster, at 15.68 against 18.53, which is what buying precision
+# costs here.
+#
+# Both 0.8B rows read `projector: none` and run text-only, because
+# select-projector.sh searches the model file's own directory and no projector
+# sits beside either file. The publisher does ship one --
+# `mmproj-Qwen_Qwen3.5-0.8B-f16.gguf` at 0.191 GiB -- so the vision path is
+# unfetched rather than unavailable, and admitting it means fetching that file
+# and running the vision rows against it.
+#
 # id	role	model_file	fetch_script	context_default	context_ceiling	context_target	cache_type_k	cache_type_v	flash_attention	projector	projector_fetch_script	decode_tok_s	prefill_tok_s	quality	tier	batch	ubatch	validated_filled_depth	validation_evidence	raw_tool_selection	guarded_tool_execution
 qwen38-4b-distill	balanced-text	Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf	download-qwen38-4b-distill-q4km.sh	24576	32768	131072	q8_0	q4_0	on	none	-	3.34	22.40	47/55	production	128	32	16384	evidence/depth-versus-submission-geometry.md	9/10	refused
 qwen38-2b-distill	fast-text	Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf	download-qwen38-2b-distill-q4km.sh	24576	32768	131072	q8_0	q4_0	on	none	-	9.19	63.85	40/55	production	128	32	-	-	2/10	refused

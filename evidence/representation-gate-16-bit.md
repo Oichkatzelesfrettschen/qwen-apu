@@ -95,8 +95,10 @@ memory and peaked at 1100 MHz shader, so no clock state orders these rows.
 
 The registered band was 0.30 to 0.38, taken from the streamed-byte ratio of
 0.336 on the assumption that a value format costs what it moves. The measured
-ratio is 0.496. F16 streams 2.980 times the bytes and costs 2.016 times the
-decode, so a third of the byte penalty is returned.
+ratio is 0.496. F16 streams 2.980 times the bytes and costs 2.020 times the
+decode, so a third of the byte penalty is returned. Both decode figures here and
+in the 0.8B section invert the harness's own paired-mean ratio rather than a
+hand-recomputed one: 1 / 0.496 and 1 / 0.778.
 
 Achieved streaming names where it comes from: 17.41 GiB tok/s against 11.78, a
 47.8% difference on the same weights, the same device, and the same flags. That
