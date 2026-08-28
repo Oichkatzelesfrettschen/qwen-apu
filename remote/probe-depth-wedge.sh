@@ -366,6 +366,18 @@ run_arm() {
     # arm rather than parsed from the log: llama-bench prints no buffer sizes at
     # default verbosity, and an arm that wedges prints nothing at all. The peak
     # of each is reported because the KV cache grows through the prefill.
+    # The sampler is killed as soon as the arm ends, so an arm that completes
+    # before the sampler writes its first row leaves no file at all and awk
+    # exits fatal under set -e. This probe reports `unavailable` for every other
+    # absent device reading, and an absent sampler file is the same fact: it
+    # exists to find a wedge rather than to compare rates, so a missing covariate
+    # names itself instead of ending the sweep.
+    arm_samples_present=1
+    [ -s "$arm_samples" ] || arm_samples_present=0
+
+    if [ "$arm_samples_present" -eq 0 ]; then
+        memory_report=$(printf 'unavailable\tunavailable')
+    else
     memory_report=$(awk -F'\t' '
         $5 ~ /^[0-9]+$/ {
           if ($5 + 0 > vram_peak) { vram_peak = $5 + 0 }
@@ -380,6 +392,7 @@ run_arm() {
                 (vram_samples ? sprintf("%.0f", vram_peak / 1048576) : "unavailable"),
                 (gtt_samples ? sprintf("%.0f", gtt_peak / 1048576) : "unavailable")
         }' "$arm_samples")
+    fi
 
     # A ring reset needs the device quiet to finish recovering; the control
     # starting into a recovering device measures the recovery rather than the
@@ -400,19 +413,23 @@ run_arm() {
         control_status=65
     fi
 
-    clock_report=$(awk -F'\t' '
-        $1 ~ /^[0-9]+([.][0-9]+)?$/ { count[$1]++; clock_samples++ }
-        $3 ~ /^[0-9]+([.][0-9]+)?$/ {
-          if ($3 + 0 > temp_max) { temp_max = $3 + 0 }
-          temperature_samples++
-        }
-        END {
-            for (step in count) {
-                if (count[step] > best) { best = count[step]; modal = step }
+    if [ "$arm_samples_present" -eq 0 ]; then
+        clock_report=$(printf 'unavailable\tunavailable')
+    else
+        clock_report=$(awk -F'\t' '
+            $1 ~ /^[0-9]+([.][0-9]+)?$/ { count[$1]++; clock_samples++ }
+            $3 ~ /^[0-9]+([.][0-9]+)?$/ {
+              if ($3 + 0 > temp_max) { temp_max = $3 + 0 }
+              temperature_samples++
             }
-            printf "%s\t%s", (clock_samples ? modal : "unavailable"),
-                (temperature_samples ? sprintf("%.1f", temp_max / 1000) : "unavailable")
-        }' "$arm_samples")
+            END {
+                for (step in count) {
+                    if (count[step] > best) { best = count[step]; modal = step }
+                }
+                printf "%s\t%s", (clock_samples ? modal : "unavailable"),
+                    (temperature_samples ? sprintf("%.1f", temp_max / 1000) : "unavailable")
+            }' "$arm_samples")
+    fi
 
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$arm_label" "$arm_depth" "$arm_batch" "$arm_ubatch" "$cache_type_k" \
