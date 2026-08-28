@@ -384,11 +384,7 @@ async function brokerSession() {
   return brokerSessionSecret;
 }
 
-async function requestGrant(fields) {
-  // The posted object is the parsed proposal itself, so the fields the human
-  // read in the dialog are the fields the grant covers and the served path
-  // compares against.
-  const secret = await brokerSession();
+async function postGrant(fields, secret) {
   const response = await fetch(`${brokerOrigin()}/grant`, {
     method: 'POST',
     mode: 'cors',
@@ -396,6 +392,26 @@ async function requestGrant(fields) {
     body: JSON.stringify(fields)
   });
   const payload = await response.json().catch(() => ({}));
+  return { response, payload };
+}
+
+async function requestGrant(fields) {
+  // The posted object is the parsed proposal itself, so the fields the human
+  // read in the dialog are the fields the grant covers and the served path
+  // compares against.
+  const secret = await brokerSession();
+  let { response, payload } = await postGrant(fields, secret);
+  if (response.status === 403) {
+    // A broker restarted on the same host and port signs a new per-launch
+    // secret, so the cached one this page still holds is stale rather than
+    // wrong. One retry against a freshly fetched secret recovers that case
+    // without the user reloading the page; a second 403 is a genuine refusal
+    // and surfaces as one.
+    brokerSessionSecret = null;
+    brokerSessionOrigin = null;
+    const refreshed = await brokerSession();
+    ({ response, payload } = await postGrant(fields, refreshed));
+  }
   if (!response.ok || typeof payload.authorization !== 'string') {
     throw new Error(payload.error || `the approval broker refused: HTTP ${response.status}`);
   }

@@ -99,4 +99,13 @@ fi
 # other host would send the approval to a listener the broker refuses to be.
 grep -F "const BROKER_ORIGIN_DEFAULT = 'http://127.0.0.1:" "$fallback_ui" >/dev/null
 
+# A broker restart on the same port signs a new per-launch secret, so a 403
+# against the cached one is a stale-cache signal rather than a standing
+# refusal. requestGrant clears the cache and re-fetches /session once before
+# it retries the same /grant body, and a second refusal still surfaces.
+grep -F "if (response.status === 403) {" "$fallback_ui" >/dev/null
+grep -F "brokerSessionSecret = null;" "$fallback_ui" >/dev/null
+grep -F "const refreshed = await brokerSession();" "$fallback_ui" >/dev/null
+grep -F "await postGrant(fields, refreshed)" "$fallback_ui" >/dev/null
+
 printf 'fallback_webui_web_authorization=accepted\n'
