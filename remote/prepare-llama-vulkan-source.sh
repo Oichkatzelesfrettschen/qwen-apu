@@ -53,7 +53,9 @@ if source_matches db34fbfc5ee5368ccc5999dc5a37c90dd3198ae0aff8138440cd7f5f0532ec
    source_matches ecc818cdce4a7265f6f932962c325a582f42b91cb2661916fa28b5a79a49d1ad \
         src/llama-context.cpp && \
    source_matches d0d6c8725891ac4baf68fd947ab4be75cc93ba37b1e988ca1c556881a49d0abc \
-        src/llama-model-loader.cpp; then
+        src/llama-model-loader.cpp && \
+   source_matches d2d5cb43a83c6b2b459b85f2df181a3d976efcaef351e5cbc6b418ba839390e3 \
+        tools/server/server.cpp; then
     printf 'patched_source=already_verified path=%s commit=%s\n' \
         "$patched_source" "$actual_commit"
     exit 0
@@ -70,7 +72,8 @@ for patch_name in \
     llama-vulkan-low-priority.patch \
     llama-no-cpu-fallback.patch \
     llama-vulkan-duty-cycle.patch \
-    llama-vulkan-runtime-submit-limit.patch; do
+    llama-vulkan-runtime-submit-limit.patch \
+    llama-router-tools-proxy.patch; do
     git -C "$patched_source" apply --check \
         "$repository_directory/patches/$patch_name"
     git -C "$patched_source" apply \
@@ -87,10 +90,12 @@ if ! source_matches db34fbfc5ee5368ccc5999dc5a37c90dd3198ae0aff8138440cd7f5f0532
    ! source_matches ecc818cdce4a7265f6f932962c325a582f42b91cb2661916fa28b5a79a49d1ad \
         src/llama-context.cpp || \
    ! source_matches d0d6c8725891ac4baf68fd947ab4be75cc93ba37b1e988ca1c556881a49d0abc \
-        src/llama-model-loader.cpp; then
+        src/llama-model-loader.cpp || \
+   ! source_matches d2d5cb43a83c6b2b459b85f2df181a3d976efcaef351e5cbc6b418ba839390e3 \
+        tools/server/server.cpp; then
     printf 'patched source does not match the replayed source hashes\n' >&2
     exit 1
 fi
 
-printf 'patched_source=prepared path=%s commit=%s patch_count=4\n' \
+printf 'patched_source=prepared path=%s commit=%s patch_count=5\n' \
     "$patched_source" "$actual_commit"

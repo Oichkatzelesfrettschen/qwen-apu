@@ -357,14 +357,24 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function fetchWebToolListing() {
-  /* Return the parsed `GET /tools` array for one request, or throw.
+async function fetchWebToolListing(selectedModel) {
+  /* Return the parsed `GET /tools` array for one model, or throw.
+
+     The router resolves `?model=` the way it does for `/props` and forwards
+     the request to that child, and the child that read the section's MCP
+     configuration is the process that holds the tool set, so the listing is
+     a property of the selected model rather than of the server. `autoload`
+     is stated because discovery is a selection action: the child loads if it
+     is not resident rather than the answer depending on the router's
+     default.
 
      A non-2xx status and a body that is not a JSON array both leave the
      caller unable to read a web tool from the response, so both raise here
      rather than one being read as "no tools" and the other as a crash;
      `resolveWebTools` treats every throw from this function the same way. */
-  const response = await fetch('./tools', { headers: authHeaders() });
+  const response = await fetch(
+    `./tools?model=${encodeURIComponent(selectedModel)}&autoload=true`,
+    { headers: authHeaders() });
   if (!response.ok) {
     throw new Error(`GET /tools returned HTTP ${response.status}`);
   }
@@ -399,7 +409,7 @@ async function resolveWebTools(selectedModel, generation) {
   let listed = null;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      listed = await fetchWebToolListing();
+      listed = await fetchWebToolListing(selectedModel);
       break;
     } catch {
       if (attempt === 0) await sleep(TOOLS_LISTING_RETRY_DELAY_MS);
@@ -1100,8 +1110,13 @@ function openTurnView() {
   return { turn: t, think, thinkBody, thinkShown: false, meta };
 }
 
-async function executeWebTool(toolName, params) {
+async function executeWebTool(toolName, params, model) {
   /* Run one tool through llama-server's executor and return the text it gives.
+
+     The top-level `model` key is what the router reads to select the child,
+     as it does for every model-scoped POST, and the child's executor reads
+     `tool`, `params`, and `stream` alone, so the key routes the call and
+     stays out of the tool's arguments.
 
      `POST /tools` invokes the named tool with the `params` object taken
      verbatim from the request body (server-tools.cpp:2076-2081) and answers
@@ -1115,7 +1130,7 @@ async function executeWebTool(toolName, params) {
     response = await fetch('./tools', {
       method: 'POST',
       headers: authHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify({ tool: toolName, params })
+      body: JSON.stringify({ model, tool: toolName, params, stream: false })
     });
   } catch (error) {
     return `The ${toolName} call did not reach the server: ${error.message || error}`;
@@ -1248,7 +1263,7 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
         continue;
       }
       fetchBudget.remaining--;
-      answerCall(callId, toolName, await executeWebTool(toolName, params), turnGeneration);
+      answerCall(callId, toolName, await executeWebTool(toolName, params, requestModel), turnGeneration);
       continue;
     }
     if (toolName !== WEB_SEARCH_TOOL_NAME) {
@@ -1296,7 +1311,7 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
     const outcome = await approveWebSearch(fields, proposalModel);
     if (outcome.decision === 'once') {
       answerCall(callId, toolName, await executeWebTool(
-        toolName, searchRequestParams(fields, outcome.authorization)), turnGeneration);
+        toolName, searchRequestParams(fields, outcome.authorization), requestModel), turnGeneration);
     } else {
       refused = true;
       answerCall(callId, toolName, outcome.reason

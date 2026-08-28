@@ -953,6 +953,15 @@ class FakeProvider(Provider):
         served record the way the HTTP provider counts its response, which
         keeps the audit row comparable across the two.
         """
+        delay = self.document.get("delays", {}).get(query, 0)
+        if delay:
+            # A fixture names the seconds a query holds the call, so a run
+            # observes where the deadlines sit: the provider's own timeout,
+            # the per-call timeout_ms llama-server reads from the MCP
+            # configuration, and the router's proxy read timeout are three
+            # different clocks, and only a call that outlasts one of them
+            # shows which fires first.
+            time.sleep(float(delay))
         results = self.document.get("search", {}).get(query, [])[:max_results]
         self.response_bytes += len(json.dumps(results).encode("utf-8"))
         return results
@@ -2424,6 +2433,26 @@ def handle_request(settings, message):
         if not isinstance(arguments, dict):
             return jsonrpc_error(
                 identifier, -32602, "arguments must be a JSON object"
+            )
+        # The schema names every argument a tool reads, so a name outside it
+        # is a request the tool would silently drop. Refusing it makes the
+        # executor's boundary observable: llama-server forwards the `params`
+        # object of POST /tools and keeps its own routing keys out of it, and
+        # a parser that started forwarding one would surface here as a
+        # refusal naming the key rather than as a search that ran anyway.
+        admitted = {
+            name
+            for tool in tool_definitions(settings)
+            if tool["name"] == params.get("name")
+            for name in tool["inputSchema"]["properties"]
+        }
+        unknown = sorted(name for name in arguments if name not in admitted)
+        if unknown:
+            return tool_result(
+                identifier,
+                "the call carries an argument the tool does not read: "
+                + ", ".join(unknown),
+                True,
             )
         try:
             text = handler(settings, arguments)

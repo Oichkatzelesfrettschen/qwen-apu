@@ -237,6 +237,21 @@ fake_fixtures=${QWEN_WEB_FAKE_FIXTURES:-}
 token_key_file=${QWEN_WEB_TOKEN_KEY_FILE:-}
 web_state_directory=${QWEN_WEB_STATE_DIR:-"${HOME:?}/qwen-webui-state/web-mcp"}
 web_provider=${QWEN_WEB_PROVIDER:-exa}
+# llama-server reads timeout_ms from the MCP configuration as the per-call
+# deadline for the child (server-mcp.cpp, server_mcp_server_config). The
+# three deadlines on a call are ordered so the innermost fires first: the
+# provider request times out at 20 s inside server.py, this per-call limit
+# at 30 s, and the router's proxy read timeout at the 3600 s llama-server
+# default, so a slow provider answers with the child's own error text rather
+# than the router abandoning a call the child is still executing.
+mcp_timeout_ms=${QWEN_WEB_MCP_TIMEOUT_MS:-30000}
+case $mcp_timeout_ms in
+    '' | 0* | *[!0-9]*)
+        printf 'QWEN_WEB_MCP_TIMEOUT_MS must be a positive decimal integer: %s\n' \
+            "$mcp_timeout_ms" >&2
+        exit 2
+        ;;
+esac
 
 # A JSON string value carries the path verbatim, so a quote or a backslash in it
 # would change the parsed value and a control character would place a byte in
@@ -669,6 +684,7 @@ while IFS='	' read -r profile_id model_id _web_mode context \
             printf '  "mcpServers": {\n'
             printf '    "web": {\n'
             printf '      "command": "python3",\n'
+            printf '      "timeout_ms": %s,\n' "$mcp_timeout_ms"
             printf '      "args": [\n'
             printf '        "%s",\n' "$mcp_server_program"
             printf '        "--provider",\n'

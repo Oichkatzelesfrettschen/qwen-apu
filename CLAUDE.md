@@ -314,7 +314,7 @@ replace the newer state.
 A web search reaches the network through one human approval, and the browser is
 the executor. llama-server reads `tools` from the client body alone and runs a
 wrapped MCP tool through the standalone `POST /tools` route, so the page
-composes `body.tools` from `GET /tools` when the per-turn Web toggle is on and
+composes `body.tools` from `GET /tools?model=<id>&autoload=true` when the per-turn Web toggle is on and
 a turn run with it off offers the model no network-reaching surface. The
 executor reads the toggle again where the call runs, so a proposal carried over
 from a turn that offered the web tools reaches no network once it is off. A proposed
@@ -469,21 +469,35 @@ and a surviving secret authorizes a page against the next launch. The ordinary
 starts no broker.
 
 `remote/admit-web-router-fake.sh` runs that chain on the appliance against
-the fake provider: the production `llama-server`, a real router child, the
+the fake provider: the promoted `llama-server`, a real router child, the
 broker, and the MCP child all execute, and every request the page would make
-runs with curl in its place, from `GET /tools` through one grant, one search,
-one fetch by Result ID, and each refusal the design relies on. The generated
-MCP configuration carries the names `server.py` reads --
-`QWEN_WEB_EXA_KEY_FILE`, `QWEN_WEB_FAKE_FIXTURES`,
-`QWEN_WEB_MAX_FETCHES_PER_SEARCH`, `QWEN_WEB_MAX_RESULTS`,
-`QWEN_WEB_MAX_CHARS_PER_FETCH` -- so the ledger's per-profile budgets bound
-the child rather than describing it. `evidence/web-admission-fake.md` records
-the run and its finding: `server.cpp:347-360` registers `/tools` in the
-process whose own MCP manager holds a server and the router branch proxies no
-`/tools`, so the router port answers `feature_disabled` and the child serves
-the route on its internal loopback port. The harness measures the executor
-there; the page targets its own origin and reaches no executor on this
-closure until `/tools` is proxied, placed on the router, or served standalone.
+runs with curl in its place on the router port alone, from
+`GET /tools?model=` through one grant, one search, one fetch by Result ID,
+and each refusal the design relies on. The generated MCP configuration
+carries the names `server.py` reads -- `QWEN_WEB_EXA_KEY_FILE`,
+`QWEN_WEB_FAKE_FIXTURES`, `QWEN_WEB_MAX_FETCHES_PER_SEARCH`,
+`QWEN_WEB_MAX_RESULTS`, `QWEN_WEB_MAX_CHARS_PER_FETCH` -- so the ledger's
+per-profile budgets bound the child rather than describing it, and its
+`timeout_ms` of 30000 sits between the provider's 20 s request timeout inside
+`server.py` and the router's 3600 s proxy read timeout, so a stalled provider
+is answered by the child's own deadline rather than abandoned by the router.
+
+`patches/llama-router-tools-proxy.patch` is what puts the route on the router
+port. At f280b269 `server.cpp` registers `/tools` only in a process whose own
+MCP manager holds a server, and the router branch proxies chat, props, and
+slots without it, so an unpatched router answers `403 feature_disabled` while
+the child serves the route on an internal loopback port
+(`evidence/web-admission-fake.md`). The patch registers `/tools` on a router
+that holds no tools of its own as `proxy_get` and `proxy_post`, so `GET`
+resolves `?model=` and `POST` resolves the body's top-level `model` key the
+way `/props` and `/v1/chat/completions` do, and the child that read the
+section's configuration executes the call. The child's `handle_post` reads
+`tool`, `params`, and `stream` alone, and `server.py` refuses any argument
+outside a tool's schema by name, so the routing key provably stays out of the
+tool arguments. The ordinary preset carries no MCP configuration, so the same
+binary answers `403 feature_disabled` for every ordinary model: the route is
+in the binary and the tool set belongs to the section.
+`evidence/web-admission-router-tools.md` records the run on that closure.
 
 ## Commands
 

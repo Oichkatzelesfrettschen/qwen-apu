@@ -12,15 +12,22 @@ set -eu
 # OUTPUT_DIR and names one profile.
 #
 # The run exercises what the browser page does, in the order the page does
-# it, with curl in the page's place: GET /tools composes the tool list, the
-# broker's /session and /grant sign one exact-argument grant, POST /tools spends
-# it, a Result ID from the search reply is redeemed by fetch, and the refusals
-# the design relies on are each provoked once -- a replayed grant, a fetch past
-# the profile's allowance, a fetch naming a URL rather than a Result ID, a
-# grant request from a foreign Origin, a wrong session header, and a wrong
-# profile_id. A chat completion then offers the model the composed tools and
-# the search result, so the continuation the page performs is observed against
-# the served model rather than assumed.
+# it, with curl in the page's place and every tool request on the router port:
+# GET /tools?model= composes the tool list, the broker's /session and /grant
+# sign one exact-argument grant, POST /tools with the top-level model key
+# spends it, a Result ID from the search reply is redeemed by fetch, and the
+# refusals the design relies on are each provoked once -- a replayed grant, a
+# fetch past the profile's allowance, a fetch naming a URL rather than a Result
+# ID, a grant request from a foreign Origin, a wrong session header, a wrong
+# profile_id, a tool request naming no model or an unknown one, and a routing
+# key placed inside the tool arguments. Two fixture queries hold the fake
+# provider for 5 and 40 seconds, so the run observes that a slow call completes
+# through the router and that the child's per-call MCP deadline answers a
+# stalled one before the router's proxy read timeout. A chat completion then
+# offers the model the composed tools and the search result, so the
+# continuation the page performs is observed against the served model rather
+# than assumed. The child's internal port is read once as a diagnostic control
+# and no admission check runs against it.
 #
 # Every check lands in OUTPUT_DIR/summary.tsv as `check<TAB>result<TAB>detail`.
 # The run exits non-zero when a required check fails, and the restoration of
@@ -166,6 +173,54 @@ restore_ordinary() {
         else
             record ordinary_restore pass "models=$(tr '\n' ',' <"$output_directory/restored-model-ids.txt")"
         fi
+        # The ordinary preset carries no MCP configuration, so the proxied
+        # route reaches a child that registered /tools as feature_disabled:
+        # the binary carries the route and the ordinary roster exposes no tool.
+        ordinary_id=$(head -1 "$output_directory/restored-model-ids.txt")
+        if [ -n "$ordinary_id" ]; then
+            call ordinary-tools GET "$router_origin/tools?model=$ordinary_id&autoload=true"
+            if [ "$call_status" = 403 ] && jq -e '.error.type == "feature_disabled"' "$call_out" >/dev/null 2>&1; then
+                record ordinary_tools_disabled pass "model=$ordinary_id status=403 feature_disabled"
+            else
+                record ordinary_tools_disabled fail "model=$ordinary_id status=$call_status $(head -c 120 "$call_out")"
+            fi
+        fi
+        # models-max is 1 on every launch this tree performs, so loading a
+        # second model evicts the first; the roster's status field is read
+        # after each load rather than inferred from the setting.
+        first_id=$(grep -x -m1 -e qwen35-08b -e qwen38-2b-distill "$output_directory/restored-model-ids.txt" || true)
+        second_id=$(grep -x -e qwen35-08b -e qwen38-2b-distill "$output_directory/restored-model-ids.txt" | grep -v -x "$first_id" | head -1 || true)
+        # POST /models/load returns before the child is resident, so the
+        # roster is polled until the requested model reads loaded (or 120 s
+        # pass) before the next step reads any status.
+        model_status() {
+            jq -r --arg m "$1" '.data[] | select(.id == $m) | .status.value // empty' "$call_out" 2>/dev/null
+        }
+        wait_loaded() {
+            wait_deadline=$(( $(date +%s) + 120 ))
+            while :; do
+                call "models-poll-$1" GET "$router_origin/models"
+                [ "$(model_status "$1")" = loaded ] && return 0
+                [ "$(date +%s)" -lt "$wait_deadline" ] || return 1
+                sleep 2
+            done
+        }
+        if [ -n "$first_id" ] && [ -n "$second_id" ]; then
+            call load-first POST "$router_origin/models/load" "$(jq -cn --arg m "$first_id" '{model: $m}')"
+            wait_loaded "$first_id" || true
+            first_status=$(model_status "$first_id")
+            call load-second POST "$router_origin/models/load" "$(jq -cn --arg m "$second_id" '{model: $m}')"
+            wait_loaded "$second_id" || true
+            first_after=$(model_status "$first_id")
+            second_after=$(model_status "$second_id")
+            if [ "$first_status" = loaded ] && [ "$second_after" = loaded ] && [ "$first_after" != loaded ]; then
+                record models_max_evicts_previous pass "$first_id=$first_status then $first_id=$first_after $second_id=$second_after"
+            else
+                record models_max_evicts_previous fail "$first_id=$first_status then $first_id=$first_after $second_id=$second_after"
+            fi
+        else
+            record models_max_evicts_previous skipped 'fewer than two of the small ordinary rows are served'
+        fi
     else
         record ordinary_restore fail "$(tail -1 "$output_directory/ordinary-restore.log")"
     fi
@@ -252,7 +307,11 @@ else
     record broker_secret_mode fail "secret_file=$secret_file"
 fi
 
-# 4. Router identity: one alias, the test tuple, the two web tools.
+# 4. Router identity: one alias, the test tuple, the two web tools, all read
+# on the router port. The router resolves the model of GET /tools from the
+# query string and of POST /tools from the body's top-level model key, the
+# way it resolves /props and /v1/chat/completions, and forwards the request to
+# the child that read the section's MCP configuration.
 call models GET "$router_origin/v1/models"
 model_ids=$(jq -r '.data[].id' "$call_out" 2>/dev/null | tr '\n' ',')
 if [ "$model_ids" = "$profile_id," ]; then
@@ -263,37 +322,49 @@ fi
 call props GET "$router_origin/props?model=$profile_id"
 served_context=$(jq -r '.default_generation_settings.n_ctx // empty' "$call_out" 2>/dev/null)
 record served_context observed "n_ctx=$served_context requested=$context"
-# llama-server at f280b269 registers /tools in the process whose own MCP
-# manager holds a server, and the router branch proxies chat, props, and
-# slots without /tools, so the router port answers feature_disabled while
-# the child that read the section's configuration serves the route on the
-# internal loopback port the router assigned it. The router's answer is
-# recorded, and the executor checks run against the child port, which is
-# read from the listening sockets llama-server processes hold beside the
-# router's own.
-call router-tools GET "$router_origin/tools"
-record router_tools_route observed "status=$call_status $(head -c 120 "$call_out" | tr '\n' ' ')"
-call warm-child POST "$router_origin/v1/chat/completions" "$(jq -cn --arg m "$profile_id" '{model: $m, messages: [{role: "user", content: "Reply with the word ready."}], max_tokens: 4, chat_template_kwargs: {enable_thinking: false}}')"
+call tools-no-model GET "$router_origin/tools"
+if [ "$call_status" != 200 ] && jq -e '.error' "$call_out" >/dev/null 2>&1; then
+    record tools_without_model_refused pass "status=$call_status $(jq -r '.error.message // .error' "$call_out" | head -c 80)"
+else
+    record tools_without_model_refused fail "status=$call_status $(head -c 120 "$call_out")"
+fi
+call tools-unknown-model GET "$router_origin/tools?model=no-such-model&autoload=true"
+if [ "$call_status" != 200 ] && jq -e '.error' "$call_out" >/dev/null 2>&1; then
+    record tools_unknown_model_refused pass "status=$call_status $(jq -r '.error.message // .error' "$call_out" | head -c 80)"
+else
+    record tools_unknown_model_refused fail "status=$call_status $(head -c 120 "$call_out")"
+fi
+call tools GET "$router_origin/tools?model=$profile_id&autoload=true"
+tool_names=$(jq -r '.[].tool' "$call_out" 2>/dev/null | sort | tr '\n' ',')
+if [ "$tool_names" = "web_fetch_exa,web_search_exa," ]; then
+    record tool_enumeration pass "$tool_names via $router_origin"
+else
+    record tool_enumeration fail "$tool_names status=$call_status"
+fi
+cp "$call_out" "$output_directory/tools.json"
+# The child's own port is a diagnostic control: it separates a router proxy
+# defect from a child tool defect when one appears, and no admission check
+# reads it.
 child_port=''
 for candidate in $(ss -ltnp 2>/dev/null | grep '"llama-server"' | grep -o '127\.0\.0\.1:[0-9]*' | sed 's/.*://' | sort -u); do
     [ "$candidate" != "$server_port" ] || continue
     child_port=$candidate
 done
 if [ -n "$child_port" ]; then
-    record child_port_discovered pass "port=$child_port"
+    call child-tools-control GET "http://127.0.0.1:$child_port/tools"
+    record child_port_control observed "port=$child_port status=$call_status tools=$(jq -r '.[].tool' "$call_out" 2>/dev/null | sort | tr '\n' ',')"
 else
-    record child_port_discovered fail 'no llama-server listener beside the router'
-    child_port=$server_port
+    record child_port_control observed 'no child listener beside the router'
 fi
-tools_origin=http://127.0.0.1:$child_port
-call tools GET "$tools_origin/tools"
-tool_names=$(jq -r '.[].tool' "$call_out" 2>/dev/null | sort | tr '\n' ',')
-if [ "$tool_names" = "web_fetch_exa,web_search_exa," ]; then
-    record tool_enumeration pass "$tool_names via $tools_origin"
+# The page the router serves is the executor the browser runs, so its own
+# source is read for the route shape: GET /tools carrying ?model= and the
+# POST body carrying the model key beside tool and params.
+call page GET "$router_origin/"
+if grep -q 'tools?model=' "$call_out" && grep -q 'model, tool: toolName, params' "$call_out"; then
+    record ui_executor_targets_router pass 'served page composes ./tools?model= and posts {model, tool, params}'
 else
-    record tool_enumeration fail "$tool_names status=$call_status"
+    record ui_executor_targets_router observed "served page is not the fallback UI or lacks the model-scoped routes (status=$call_status)"
 fi
-cp "$call_out" "$output_directory/tools.json"
 
 # 5. Broker identity and the session secret's gates.
 call broker-health GET "$broker_origin/health" '' -H "Host: 127.0.0.1:$broker_port"
@@ -331,17 +402,26 @@ else
     record session_name_host_refused fail "status=$call_status"
 fi
 
-# 6. One grant, signed over the exact fields the page shows.
-grant_body=$(jq -cn --arg q "$query" --arg p "$profile_id" \
-    '{query: $q, profile_id: $p, max_results: 3, include_domains: [], exclude_domains: []}')
-call grant POST "$broker_origin/grant" "$grant_body" -H "Origin: $router_origin" \
-    -H "Host: 127.0.0.1:$broker_port" -H "X-Qwen-Web-Session: $session_secret"
-authorization=$(jq -r '.authorization // empty' "$call_out" 2>/dev/null)
+# 6. Grants, signed over the exact fields the page shows. One per search the
+# run performs, since the broker signs single-use.
+issue_grant() {
+    grant_label=$1
+    grant_query=$2
+    grant_body=$(jq -cn --arg q "$grant_query" --arg p "$profile_id" \
+        '{query: $q, profile_id: $p, max_results: 3, include_domains: [], exclude_domains: []}')
+    call "$grant_label" POST "$broker_origin/grant" "$grant_body" -H "Origin: $router_origin" \
+        -H "Host: 127.0.0.1:$broker_port" -H "X-Qwen-Web-Session: $session_secret"
+    issued_authorization=$(jq -r '.authorization // empty' "$call_out" 2>/dev/null)
+}
+issue_grant grant "$query"
+authorization=$issued_authorization
 if [ "$call_status" = 200 ] && [ -n "$authorization" ]; then
     record grant_issued pass "status=$call_status bytes=${#authorization}"
 else
     record grant_issued fail "status=$call_status"
 fi
+grant_body=$(jq -cn --arg q "$query" --arg p "$profile_id" \
+    '{query: $q, profile_id: $p, max_results: 3, include_domains: [], exclude_domains: []}')
 wrong_profile_body=$(jq -cn --arg q "$query" '{query: $q, profile_id: "web-other", max_results: 3, include_domains: [], exclude_domains: []}')
 call grant-wrong-profile POST "$broker_origin/grant" "$wrong_profile_body" -H "Origin: $router_origin" \
     -H "Host: 127.0.0.1:$broker_port" -H "X-Qwen-Web-Session: $session_secret"
@@ -365,59 +445,123 @@ else
     record grant_foreign_origin_refused fail "status=$call_status"
 fi
 
-# 7. The search runs through the real llama-server and its MCP child.
+# 7. The search runs through the router, the child, and its MCP process. The
+# body carries the model key the router reads and stream=false, and the
+# child's executor forwards params alone.
+tool_body() {
+    jq -cn --arg m "$profile_id" --arg t "$1" --argjson p "$2" \
+        '{model: $m, tool: $t, params: $p, stream: false}'
+}
 search_params=$(jq -cn --arg q "$query" --arg a "$authorization" \
-    '{tool: "web_search_exa", params: {query: $q, max_results: 3, include_domains: [], exclude_domains: [], authorization: $a}}')
-call search POST "$tools_origin/tools" "$search_params"
+    '{query: $q, max_results: 3, include_domains: [], exclude_domains: [], authorization: $a}')
+call search-no-model POST "$router_origin/tools" "$(jq -cn --argjson p "$search_params" '{tool: "web_search_exa", params: $p, stream: false}')"
+if [ "$call_status" != 200 ] && jq -e '.error' "$call_out" >/dev/null 2>&1; then
+    record post_without_model_refused pass "status=$call_status $(jq -r '.error.message // .error' "$call_out" | head -c 80)"
+else
+    record post_without_model_refused fail "status=$call_status $(head -c 120 "$call_out")"
+fi
+call search-unknown-model POST "$router_origin/tools" "$(jq -cn --argjson p "$search_params" '{model: "no-such-model", tool: "web_search_exa", params: $p, stream: false}')"
+if [ "$call_status" != 200 ] && jq -e '.error' "$call_out" >/dev/null 2>&1; then
+    record post_unknown_model_refused pass "status=$call_status $(jq -r '.error.message // .error' "$call_out" | head -c 80)"
+else
+    record post_unknown_model_refused fail "status=$call_status $(head -c 120 "$call_out")"
+fi
+call search POST "$router_origin/tools" "$(tool_body web_search_exa "$search_params")"
 search_text=$(jq -r 'if type == "object" then (.error // .plain_text_response // tostring) else tostring end' "$call_out" 2>/dev/null)
 cp "$call_out" "$output_directory/search-response.json"
 result_id=$(printf '%s\n' "$search_text" | sed -n 's/^Result ID: //p' | head -1)
 if [ "$call_status" = 200 ] && [ -n "$result_id" ] && ! jq -e '.error' "$call_out" >/dev/null 2>&1; then
-    record search_executed pass "results=$(printf '%s\n' "$search_text" | grep -c '^Result ID: ')"
+    record search_executed pass "results=$(printf '%s\n' "$search_text" | grep -c '^Result ID: ') via $router_origin"
 else
     record search_executed fail "status=$call_status $(printf '%s' "$search_text" | head -c 160)"
 fi
-call search-replay POST "$tools_origin/tools" "$search_params"
+call search-replay POST "$router_origin/tools" "$(tool_body web_search_exa "$search_params")"
 if [ "$call_status" = 200 ] && jq -e '.error' "$call_out" >/dev/null 2>&1; then
     record grant_replay_refused pass "$(jq -r '.error' "$call_out" | head -c 120)"
 else
     record grant_replay_refused fail "status=$call_status $(head -c 120 "$call_out")"
 fi
 unauthorized_params=$(jq -cn --arg q "$query" \
-    '{tool: "web_search_exa", params: {query: $q, max_results: 3, include_domains: [], exclude_domains: []}}')
-call search-no-grant POST "$tools_origin/tools" "$unauthorized_params"
+    '{query: $q, max_results: 3, include_domains: [], exclude_domains: []}')
+call search-no-grant POST "$router_origin/tools" "$(tool_body web_search_exa "$unauthorized_params")"
 if [ "$call_status" = 200 ] && jq -e '.error' "$call_out" >/dev/null 2>&1; then
     record search_without_grant_refused pass "$(jq -r '.error' "$call_out" | head -c 120)"
 else
     record search_without_grant_refused fail "status=$call_status $(head -c 120 "$call_out")"
 fi
+# The MCP server refuses an argument outside a tool's schema by name, so the
+# search above, which carried model at the top level, proves the router's
+# routing key stayed out of the arguments; the control places the same key
+# inside params and is refused naming it.
+call search-model-in-params POST "$router_origin/tools" "$(tool_body web_search_exa "$(jq -cn --argjson p "$unauthorized_params" --arg m "$profile_id" '$p + {model: $m}')")"
+if [ "$call_status" = 200 ] && jq -e '.error' "$call_out" >/dev/null 2>&1 && jq -r '.error' "$call_out" | grep -q 'model'; then
+    record routing_key_outside_arguments pass "top-level model executed the search; params.model refused: $(jq -r '.error' "$call_out" | head -c 100)"
+else
+    record routing_key_outside_arguments fail "status=$call_status $(head -c 120 "$call_out")"
+fi
 
 # 8. Fetch by Result ID, then the allowance and the URL refusal.
-fetch_params=$(jq -cn --arg r "$result_id" '{tool: "web_fetch_exa", params: {result_id: $r}}')
-call fetch POST "$tools_origin/tools" "$fetch_params"
+fetch_params=$(jq -cn --arg r "$result_id" '{result_id: $r}')
+call fetch POST "$router_origin/tools" "$(tool_body web_fetch_exa "$fetch_params")"
 fetch_text=$(jq -r 'if type == "object" then (.error // .plain_text_response // tostring) else tostring end' "$call_out" 2>/dev/null)
 if [ "$call_status" = 200 ] && printf '%s' "$fetch_text" | grep -q 'FIXTURE-PAGE-' && ! jq -e '.error' "$call_out" >/dev/null 2>&1; then
-    record fetch_by_result_id pass "chars=${#fetch_text}"
+    record fetch_by_result_id pass "chars=${#fetch_text} via $router_origin"
 else
     record fetch_by_result_id fail "status=$call_status $(printf '%s' "$fetch_text" | head -c 160)"
 fi
 cp "$call_out" "$output_directory/fetch-response.json"
-second_id=$(printf '%s\n' "$search_text" | sed -n 's/^Result ID: //p' | sed -n '2p')
-call fetch-past-allowance POST "$tools_origin/tools" "$(jq -cn --arg r "${second_id:-$result_id}" '{tool: "web_fetch_exa", params: {result_id: $r}}')"
+second_result=$(printf '%s\n' "$search_text" | sed -n 's/^Result ID: //p' | sed -n '2p')
+call fetch-past-allowance POST "$router_origin/tools" "$(tool_body web_fetch_exa "$(jq -cn --arg r "${second_result:-$result_id}" '{result_id: $r}')")"
 if [ "$call_status" = 200 ] && jq -e '.error' "$call_out" >/dev/null 2>&1; then
     record fetch_allowance_enforced pass "$(jq -r '.error' "$call_out" | head -c 120)"
 else
     record fetch_allowance_enforced fail "status=$call_status $(head -c 120 "$call_out")"
 fi
-call fetch-url POST "$tools_origin/tools" "$(jq -cn '{tool: "web_fetch_exa", params: {result_id: "https://example.org/raven2"}}')"
+call fetch-url POST "$router_origin/tools" "$(tool_body web_fetch_exa "$(jq -cn '{result_id: "https://example.org/raven2"}')")"
 if [ "$call_status" = 200 ] && jq -e '.error' "$call_out" >/dev/null 2>&1; then
     record fetch_url_refused pass "$(jq -r '.error' "$call_out" | head -c 120)"
 else
     record fetch_url_refused fail "status=$call_status $(head -c 120 "$call_out")"
 fi
 
-# 9. The model meets the composed tools and the search result. The proposal
-# is the model's own, so both halves are recorded as observations.
+# 9. Deadlines. The fixture holds one query for 5 seconds and one for 40. The
+# generated configuration names timeout_ms 30000 for the child's MCP call and
+# the router proxies with llama-server's 3600 second read timeout, so the slow
+# call completes through the router and the stalled one is answered by the
+# child's own deadline, as an error body, before the router gives up on it.
+timed_search() {
+    timed_label=$1
+    timed_query=$2
+    issue_grant "$timed_label-grant" "$timed_query"
+    timed_params=$(jq -cn --arg q "$timed_query" --arg a "$issued_authorization" \
+        '{query: $q, max_results: 3, include_domains: [], exclude_domains: [], authorization: $a}')
+    timed_start=$(date +%s)
+    call "$timed_label" POST "$router_origin/tools" "$(tool_body web_search_exa "$timed_params")"
+    timed_elapsed=$(( $(date +%s) - timed_start ))
+}
+timed_search search-slow 'raven2 vulkan decode slow'
+if [ "$call_status" = 200 ] && ! jq -e '.error' "$call_out" >/dev/null 2>&1 && \
+   jq -r '.plain_text_response' "$call_out" | grep -q '^Result ID: ' && [ "$timed_elapsed" -ge 5 ]; then
+    record delayed_provider_completes pass "elapsed=${timed_elapsed}s status=$call_status"
+else
+    record delayed_provider_completes fail "elapsed=${timed_elapsed}s status=$call_status $(head -c 120 "$call_out")"
+fi
+timed_search search-stalled 'raven2 vulkan decode stalled'
+if jq -e '.error' "$call_out" >/dev/null 2>&1 && [ "$timed_elapsed" -ge 25 ] && [ "$timed_elapsed" -lt 40 ]; then
+    record mcp_deadline_precedes_router pass "elapsed=${timed_elapsed}s status=$call_status $(jq -r '.error | if type == "object" then .message else . end' "$call_out" | head -c 100)"
+else
+    record mcp_deadline_precedes_router fail "elapsed=${timed_elapsed}s status=$call_status $(head -c 120 "$call_out")"
+fi
+# A call after the stalled one proves the child and its MCP process serve on.
+call tools-after-stall GET "$router_origin/tools?model=$profile_id&autoload=true"
+if [ "$(jq -r '.[].tool' "$call_out" 2>/dev/null | sort | tr '\n' ',')" = "web_fetch_exa,web_search_exa," ]; then
+    record child_serves_after_stall pass "status=$call_status"
+else
+    record child_serves_after_stall fail "status=$call_status $(head -c 120 "$call_out")"
+fi
+
+# The model meets the composed tools and the search result. The proposal is
+# the model's own, so both halves are recorded as observations.
 tools_for_chat=$(jq -c '[.[] | .definition | select(.type == "function") | .function.parameters.properties |= (del(.authorization) // {}) | .function.parameters.required |= ((. // []) | map(select(. != "authorization")))]' "$output_directory/tools.json" 2>/dev/null || printf '[]')
 chat_body=$(jq -cn --arg m "$profile_id" --arg q "$query" --argjson tools "$tools_for_chat" \
     '{model: $m, messages: [{role: "user", content: ("Search the web with the query " + $q + " and report the decode rate the result states.")}], tools: $tools, tool_choice: "auto", max_tokens: 512, temperature: 0, chat_template_kwargs: {enable_thinking: false}}')

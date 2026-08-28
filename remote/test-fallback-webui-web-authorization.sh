@@ -25,7 +25,8 @@ grep -F 'tools.push(...await resolveWebTools(requestModel, modelStateGeneration)
 # The schemas come from the running server rather than from a copy kept in the
 # page, so the model reads the arguments the wrapper validates. A build without
 # the tool routes answers 404 and the turn carries no web tool.
-grep -F "const response = await fetch('./tools', { headers: authHeaders() });" \
+# shellcheck disable=SC2016
+grep -F 'tools?model=${encodeURIComponent(selectedModel)}&autoload=true`,' \
     "$fallback_ui" >/dev/null
 grep -F 'WEB_TOOL_NAMES.includes(entry && entry.tool)' "$fallback_ui" >/dev/null
 grep -F 'const { authorization, ...offered } = parameters.properties;' \
@@ -57,7 +58,7 @@ grep -F \
     "$fallback_ui" >/dev/null
 grep -F 'BROKER_SESSION_HEADER]: secret' "$fallback_ui" >/dev/null
 grep -F 'searchRequestParams(fields, outcome.authorization)' "$fallback_ui" >/dev/null
-grep -F "body: JSON.stringify({ tool: toolName, params })" "$fallback_ui" >/dev/null
+grep -F "body: JSON.stringify({ model, tool: toolName, params, stream: false })" "$fallback_ui" >/dev/null
 grep -F "'The user refused this web search. It did not run.'" \
     "$fallback_ui" >/dev/null
 
@@ -155,7 +156,7 @@ grep -F 'if (turnGeneration !== conversationGeneration) return;' "$fallback_ui" 
 grep -F 'const WEB_FETCH_BUDGET_PER_TURN = 2;' "$fallback_ui" >/dev/null
 grep -F 'if (fetchBudget.remaining <= 0) {' "$fallback_ui" >/dev/null
 grep -F 'fetchBudget.remaining--;' "$fallback_ui" >/dev/null
-grep -F 'answerCall(callId, toolName, await executeWebTool(toolName, params), turnGeneration);' \
+grep -F 'answerCall(callId, toolName, await executeWebTool(toolName, params, requestModel), turnGeneration);' \
     "$fallback_ui" >/dev/null
 
 # One completion can emit several web_search_exa calls in one round, and
@@ -408,7 +409,7 @@ fi
 # tool. A listing this loop never parsed must not reach the cache: a cached
 # empty result would leave every later turn on this model and generation
 # silently offering no web tool until a reselect or a reload.
-grep -F 'async function fetchWebToolListing() {' "$fallback_ui" >/dev/null
+grep -F 'async function fetchWebToolListing(selectedModel) {' "$fallback_ui" >/dev/null
 grep -F "throw new Error(\`GET /tools returned HTTP \${response.status}\`);" \
     "$fallback_ui" >/dev/null
 grep -F "throw new Error('GET /tools returned a body that is not an array');" \

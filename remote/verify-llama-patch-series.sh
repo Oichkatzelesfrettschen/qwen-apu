@@ -32,7 +32,8 @@ for patch_name in \
     llama-no-cpu-fallback.patch \
     llama-vulkan-duty-cycle.patch \
     llama-vulkan-runtime-submit-limit.patch \
-    llama-vulkan-submit-trace.patch; do
+    llama-vulkan-submit-trace.patch \
+    llama-router-tools-proxy.patch; do
     git -C "$temporary_directory/llama.cpp" apply --check \
         "$patch_directory/$patch_name"
     git -C "$temporary_directory/llama.cpp" apply \
@@ -64,4 +65,6 @@ verify_source ecc818cdce4a7265f6f932962c325a582f42b91cb2661916fa28b5a79a49d1ad \
     src/llama-context.cpp
 verify_source d0d6c8725891ac4baf68fd947ab4be75cc93ba37b1e988ca1c556881a49d0abc \
     src/llama-model-loader.cpp
+verify_source d2d5cb43a83c6b2b459b85f2df181a3d976efcaef351e5cbc6b418ba839390e3 \
+    tools/server/server.cpp
 printf 'patch_series=accepted commit=%s\n' "$expected_commit"

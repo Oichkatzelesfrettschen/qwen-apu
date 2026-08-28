@@ -92,9 +92,12 @@ The llama.cpp source commit is
 `patches/llama-vulkan-low-priority.patch` followed by
 `patches/llama-no-cpu-fallback.patch` and
 `patches/llama-vulkan-duty-cycle.patch`, then
-`patches/llama-vulkan-runtime-submit-limit.patch`. The replay verifier checks
-the resulting five modified source files byte for byte against their admitted
-hashes.
+`patches/llama-vulkan-runtime-submit-limit.patch`, then
+`patches/llama-router-tools-proxy.patch`. The last one registers `/tools` on a
+router that holds no tools of its own as a proxy to the child the request
+selects, so the fixed router port serves the route the fallback UI targets.
+The replay verifier checks the resulting six modified source files byte for
+byte against their admitted hashes.
 
 The retained llama.cpp executables and derived source patches carry the
 upstream MIT terms in `licenses/llama.cpp-LICENSE`. The external GGUF model
