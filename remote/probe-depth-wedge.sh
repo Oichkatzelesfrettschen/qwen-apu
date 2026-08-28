@@ -248,7 +248,7 @@ identity_environment=$(
         QWEN_WEDGE_CONTROL_TOKENS QWEN_WEDGE_ARM_TIMEOUT_S \
         QWEN_WEDGE_ARM_KILL_AFTER_S GGML_VK_MAX_NODES_PER_SUBMIT \
         GGML_VK_SERIALIZE_SUBMISSIONS QWEN_VULKAN_PROFILE; do
-        eval "identity_value=\${$identity_var:-unset}"
+        identity_value=$(eval "printf '%s' \"\${$identity_var:-unset}\"")
         printf '%s=%s;' "$identity_var" "$identity_value"
     done | tr '\t\n' '  '
 )
