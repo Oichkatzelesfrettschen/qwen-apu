@@ -27,7 +27,17 @@ monitor_pid=""
 latency_watchdog_pid=""
 kernel_hazard_watchdog_pid=""
 server_pid=""
+broker_pid=""
 router_preset_snapshot=''
+# The approval broker signs one search grant per human approval and holds no
+# device, so it is a guarded child of this session the way the probe, the
+# monitor, and the kernel-hazard watcher are. qwen-web-launch.sh sets
+# QWEN_WEB_BROKER=1; the ordinary launch leaves it unset and starts no broker.
+broker_enabled=${QWEN_WEB_BROKER:-0}
+broker_program=${QWEN_WEB_BROKER_PROGRAM:-"$script_directory/web-mcp/authorize-broker.py"}
+broker_port=${QWEN_WEB_BROKER_PORT:-8571}
+broker_state_directory=${QWEN_WEB_STATE_DIR:-"$state_directory/web-mcp"}
+broker_log=$state_directory/authorize-broker.log
 case ${QWEN_ROUTER_PRESETS:-} in
     "$state_directory"/.router-presets.active.*)
         router_preset_snapshot=$QWEN_ROUTER_PRESETS
@@ -50,6 +60,13 @@ cleanup() {
     if [ -n "$server_pid" ]; then
         kill "$server_pid" 2>/dev/null || true
         wait "$server_pid" 2>/dev/null || true
+    fi
+    # The broker removes its per-launch session secret while unwinding from
+    # SIGTERM, so it is signalled and waited for rather than left to the
+    # process group: a killed broker leaves that file for the next launch.
+    if [ -n "$broker_pid" ]; then
+        kill "$broker_pid" 2>/dev/null || true
+        wait "$broker_pid" 2>/dev/null || true
     fi
     if [ -n "$router_preset_snapshot" ]; then
         rm -f -- "$router_preset_snapshot"
@@ -95,6 +112,56 @@ else
 fi
 
 printf 'state=starting utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
+
+# The broker starts ahead of the capacity server because model loading occupies
+# the readiness loop for up to 120 seconds and the broker allocates nothing on
+# the device: starting it first bounds the window in which the page is reachable
+# while the endpoint that signs its approvals is absent. Every failure path
+# below leaves through the EXIT trap, which stops it.
+#
+# The listener is the loopback literal the broker itself admits, and the page
+# that reads the session secret is named by Origin rather than by another
+# setting: the served page is the one this session binds, so its origin comes
+# from QWEN_BIND_HOST and the served port. The signing key travels as a path in
+# the environment and its contents stay in the broker's own address space.
+if [ "$broker_enabled" = 1 ]; then
+    if [ ! -x "$broker_program" ]; then
+        printf 'state=failed reason=authorization_broker_unavailable path=%s utc=%s\n' \
+            "$broker_program" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
+        exit 1
+    fi
+    mkdir -p "$broker_state_directory"
+    chmod 700 "$broker_state_directory"
+    : >"$broker_log"
+    chmod 600 "$broker_log"
+    QWEN_WEB_STATE_DIR=$broker_state_directory \
+    QWEN_WEB_BROKER_ORIGIN="http://${QWEN_BIND_HOST:-127.0.0.1}:$server_port" \
+        "$broker_program" --host 127.0.0.1 --port "$broker_port" \
+        --state-dir "$broker_state_directory" \
+        >"$broker_log" 2>&1 &
+    broker_pid=$!
+
+    broker_ready=0
+    attempt=0
+    while [ "$attempt" -lt 300 ]; do
+        if grep -F "listening 127.0.0.1 $broker_port" "$broker_log" \
+            >/dev/null 2>&1; then
+            broker_ready=1
+            break
+        fi
+        if ! kill -0 "$broker_pid" 2>/dev/null; then
+            break
+        fi
+        attempt=$((attempt + 1))
+        sleep 0.1
+    done
+    if [ "$broker_ready" -ne 1 ]; then
+        printf 'state=failed reason=authorization_broker_not_listening port=%s utc=%s\n' \
+            "$broker_port" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
+        exit 1
+    fi
+fi
+
 QWEN_VULKAN_PROFILE=$vulkan_profile \
 "$script_directory/run-qwen-capacity-server.sh" \
     "$llama_server" "$model_path" "$context_size" "$required_vulkan_mib" \
@@ -225,9 +292,17 @@ fi
 monitor_pid=$!
 # The paced profile uses the aggregate busy ceiling. The serialized LOW
 # profile uses the MEDIUM graphics-family deadline as its responsiveness gate.
-printf 'state=running server_pid=%s monitor_pid=%s latency_watchdog_pid=%s kernel_hazard_watchdog_pid=%s profile=%s host=%s port=%s context=%s latency_mode=%s utc=%s\n' \
+#
+# broker_pid appears on this line only where a broker runs, so its absence is
+# what the ordinary launch records: qwen-teardown.sh reads the field to signal
+# the process and to decide whether the session secret is its own to prove gone.
+broker_status_field=''
+if [ -n "$broker_pid" ]; then
+    broker_status_field=" broker_pid=$broker_pid"
+fi
+printf 'state=running server_pid=%s monitor_pid=%s latency_watchdog_pid=%s kernel_hazard_watchdog_pid=%s%s profile=%s host=%s port=%s context=%s latency_mode=%s utc=%s\n' \
     "$server_pid" "$monitor_pid" "$latency_watchdog_pid" \
-    "$kernel_hazard_watchdog_pid" "$vulkan_profile" \
+    "$kernel_hazard_watchdog_pid" "$broker_status_field" "$vulkan_profile" \
     "${QWEN_BIND_HOST:-127.0.0.1}" "$server_port" "$context_size" \
     "$latency_probe_mode" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
@@ -254,6 +329,15 @@ printf 'router enabled=%s presets=%s preset_sha256=%s models_max=%s\n' \
     "${QWEN_ROUTER_PRESETS:-default}" \
     "${QWEN_ROUTER_PRESET_SHA256:-unbound}" \
     "${QWEN_ROUTER_MAX:-1}" >>"$status_file"
+# The broker's session secret lands on a fifth line, whole, because
+# QWEN_WEB_STATE_DIR reaches this session alone and a teardown run as a bare
+# command would otherwise re-derive the default path and prove the absence of a
+# file the broker never wrote there. A line of its own carries a directory
+# holding a space, which the space-delimited first line splits.
+if [ -n "$broker_pid" ]; then
+    printf 'broker secret_file=%s\n' \
+        "$broker_state_directory/authorize-session.secret" >>"$status_file"
+fi
 
 set +e
 wait "$server_pid"
