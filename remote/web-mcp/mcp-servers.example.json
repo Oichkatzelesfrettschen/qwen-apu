@@ -17,7 +17,9 @@
         "QWEN_WEB_PROFILE": "paced-60",
         "QWEN_WEB_SEARCH_PER_MINUTE": "10",
         "QWEN_WEB_FETCH_PER_MINUTE": "20",
-        "QWEN_WEB_DAILY_BUDGET": "500"
+        "QWEN_WEB_DAILY_BUDGET": "500",
+        "QWEN_WEB_DAILY_PAGE_BUDGET": "2000",
+        "QWEN_WEB_MAX_FETCHES_PER_SEARCH": "8"
       },
       "cwd": "/path/to/qwen-laptop-setup",
       "timeout_ms": 30000

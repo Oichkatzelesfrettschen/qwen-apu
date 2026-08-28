@@ -166,12 +166,6 @@ class GrantReplayed(AuthorizationDenied):
     """A grant whose single use the ledger already recorded."""
 
 
-class InternalError(ToolError):
-    """An unexpected exception reached the audit path."""
-
-    status = "internal_error"
-
-
 AUDIT_STATUSES = (
     "success",
     "authorization_denied",
