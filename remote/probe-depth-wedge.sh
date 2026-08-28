@@ -183,6 +183,73 @@ else
     printf '%s\n%s\n' "$metadata_header" "$metadata_row" >"$metadata"
 fi
 
+# wedge-identity.tsv is provenance rather than a resume gate: one row per
+# invocation, appended rather than validated, naming the tool and driver
+# versions an arm ran under so a wedge or its absence can be traced back to
+# what produced it. Absent evidence reads "-" rather than stopping the probe.
+identity=$output_directory/wedge-identity.tsv
+identity_header='run_utc	llama_bench_sha256	llama_cpp_commit	runner_sha256	sampler_sha256	kernel_release	mesa_radv_version	amdgpu_module_version	argv	environment'
+if [ ! -s "$identity" ]; then
+    printf '%s\n' "$identity_header" >"$identity"
+fi
+llama_bench_sha256=$(nice -n 19 sha256sum "$bench")
+llama_bench_sha256=${llama_bench_sha256%% *}
+runner_sha256=$(nice -n 19 sha256sum "$0")
+runner_sha256=${runner_sha256%% *}
+sampler_sha256=$(nice -n 19 sha256sum "$clock_sampler")
+sampler_sha256=${sampler_sha256%% *}
+llama_cpp_commit=-
+# --version identifies the build without an arm-sized invocation and is
+# bounded rather than left to the caller-configured arm timeout: an
+# implementation that ignores --version and behaves like a full run would
+# otherwise stall identity capture before the first arm starts.
+if bench_version_output=$(timeout 5s "$bench" --version 2>&1); then
+    parsed_commit=$(printf '%s\n' "$bench_version_output" |
+        grep -o 'build: [0-9a-f]\{4,\}' | tail -n1 | awk '{ print $2 }')
+    [ -z "$parsed_commit" ] || llama_cpp_commit=$parsed_commit
+fi
+if [ "$llama_cpp_commit" = - ]; then
+    identity_search_dir=$(dirname -- "$bench")
+    identity_search_depth=0
+    while [ "$identity_search_depth" -lt 6 ] && [ "$identity_search_dir" != / ]; do
+        if [ -d "$identity_search_dir/.git" ]; then
+            llama_cpp_commit=$(git -C "$identity_search_dir" rev-parse HEAD \
+                2>/dev/null || printf -)
+            break
+        fi
+        identity_search_dir=$(dirname -- "$identity_search_dir")
+        identity_search_depth=$((identity_search_depth + 1))
+    done
+fi
+kernel_release=$(uname -r)
+mesa_radv_version=-
+if command -v vulkaninfo >/dev/null 2>&1; then
+    parsed_driver=$(vulkaninfo --summary 2>/dev/null |
+        awk -F': *' '/driverInfo/ { print $2; exit }')
+    [ -z "$parsed_driver" ] || mesa_radv_version=$parsed_driver
+fi
+amdgpu_module_version=-
+if command -v modinfo >/dev/null 2>&1; then
+    parsed_module=$(modinfo amdgpu 2>/dev/null |
+        awk -F': *' '/^version:/ { print $2; exit }')
+    [ -z "$parsed_module" ] || amdgpu_module_version=$parsed_module
+fi
+identity_argv=$(printf '%s ' "$0" "$@" | tr '\t\n' '  ')
+identity_environment=$(
+    for identity_var in QWEN_CACHE_TYPE_K QWEN_CACHE_TYPE_V QWEN_FLASH_ATTN \
+        QWEN_WEDGE_DEPTHS QWEN_WEDGE_GEOMETRIES QWEN_WEDGE_CONDITIONAL_DEPTHS \
+        QWEN_WEDGE_CONTROL_TOKENS QWEN_WEDGE_ARM_TIMEOUT_S \
+        QWEN_WEDGE_ARM_KILL_AFTER_S GGML_VK_MAX_NODES_PER_SUBMIT \
+        GGML_VK_SERIALIZE_SUBMISSIONS QWEN_VULKAN_PROFILE; do
+        eval "identity_value=\${$identity_var:-unset}"
+        printf '%s=%s;' "$identity_var" "$identity_value"
+    done | tr '\t\n' '  '
+)
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$llama_bench_sha256" "$llama_cpp_commit" \
+    "$runner_sha256" "$sampler_sha256" "$kernel_release" "$mesa_radv_version" \
+    "$amdgpu_module_version" "$identity_argv" "$identity_environment" >>"$identity"
+
 # A killed run leaves its sampler writing once a second into a file the next run
 # recreates, which contaminates that run and hides the orphan behind a plausible
 # name. The trap ends the sampler with the script that started it.

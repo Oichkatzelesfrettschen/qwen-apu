@@ -255,6 +255,38 @@ if ! awk -F'\t' '$1 == "d1-b1-ub1" && $19 == "unverified" { found = 1 }
     exit 1
 fi
 
+# wedge-identity.tsv names the tool and driver versions the invocation ran
+# under: the bench, the runner script, and the sampler are all hashed, and a
+# probe with no --version support or no build-tree .git still records "-"
+# rather than failing.
+identity_file=$wedge_output/wedge-identity.tsv
+if [ ! -s "$identity_file" ]; then
+    printf 'depth wedge did not write an identity record\n' >&2
+    exit 1
+fi
+if [ "$(sed -n '1p' "$identity_file")" != \
+'run_utc	llama_bench_sha256	llama_cpp_commit	runner_sha256	sampler_sha256	kernel_release	mesa_radv_version	amdgpu_module_version	argv	environment' ]; then
+    printf 'depth wedge identity record header does not match\n' >&2
+    cat "$identity_file" >&2
+    exit 1
+fi
+identity_bench_sha256=$(sha256sum "$fake_bench")
+identity_bench_sha256=${identity_bench_sha256%% *}
+if ! awk -F'\t' -v want="$identity_bench_sha256" \
+    'NR > 1 && $2 == want { found = 1 } END { exit !found }' "$identity_file"; then
+    printf 'depth wedge identity record did not carry the bench digest\n' >&2
+    cat "$identity_file" >&2
+    exit 1
+fi
+if awk -F'\t' 'NR > 1 && (NF != 10 || $3 == "" || $6 == "" || $7 == "" || $8 == "") {
+                    found = 1
+                }
+                END { exit !found }' "$identity_file"; then
+    printf 'depth wedge identity record left a field empty rather than "-"\n' >&2
+    cat "$identity_file" >&2
+    exit 1
+fi
+
 # A fault line with no reset line names a hazard the ring never recovered from
 # on its own. arm_healthy must read gpu_faults as well as ring_resets, so this
 # arm stays unhealthy even though status, control status, and reset count are
@@ -372,13 +404,15 @@ printf '%s\n' '#!/bin/sh' 'set -eu' \
     'cat "$log"' \
     >"$reset_bin/dmesg"
 chmod +x "$reset_bin/dmesg"
+# The probe now runs one `--version` identity call before the first arm, so
+# the arm is the second bench invocation and its control is the third.
 reset_control_bench=$temporary_directory/reset-control-bench
 reset_control_counter=$temporary_directory/reset-control-counter
 printf '%s\n' '#!/bin/sh' 'set -eu' \
     "counter=$reset_control_counter" \
     'printf x >>"$counter"' \
     'count=$(wc -c <"$counter")' \
-    'if [ "$count" -ge 2 ]; then exit 7; fi' \
+    'if [ "$count" -ge 3 ]; then exit 7; fi' \
     'printf "| fake | tg64 | 3.00 +/- 0.10 |\\n"' >"$reset_control_bench"
 chmod +x "$reset_control_bench"
 reset_output=$temporary_directory/wedge-post-reset-control-failure
