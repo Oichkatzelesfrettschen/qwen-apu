@@ -129,8 +129,16 @@ grep -F 'const additionalOmitted = serverOmitted + (blocks.length - 1);' \
 # regardless of what wrap_untrusted (remote/web-mcp/server.py) reported.
 grep -F 'function truncateFetchResult(text, footerMatch) {' "$fallback_ui" >/dev/null
 grep -F 'const fetchTruncated = truncateFetchResult(text, footerMatch);' "$fallback_ui" >/dev/null
-grep -F "\`\\nNext Start Index: \${startIndex + keptWindow.length}\`" "$fallback_ui" >/dev/null
+grep -F "\`\\nNext Start Index: \${startIndex + keptWindowPoints.length}\`" "$fallback_ui" >/dev/null
 grep -F "\\nPossibly Truncated: yes\\n" "$fallback_ui" >/dev/null
+
+# `wrap_untrusted` (remote/web-mcp/server.py) counts Start Index and Next
+# Start Index in Python Unicode code points, so a client-side recomputation
+# over JavaScript's UTF-16 `.length` reports one too many per astral
+# character and a `.slice` can split its surrogate pair. truncateFetchResult
+# iterates the kept window by code point instead.
+grep -F 'const codePoints = str => Array.from(str);' "$fallback_ui" >/dev/null
+grep -F 'const windowPoints = codePoints(window);' "$fallback_ui" >/dev/null
 
 # Clear can land while a stream, an approval dialog, or a fetch is still
 # awaited, so every later write to `history` for that turn checks the
@@ -521,6 +529,66 @@ if (Number(nextMatch[1]) !== startIndex + keptWindowLength) {
 }
 if (truncatedMatch[1] !== "yes") {
     throw new Error("Possibly Truncated was not forced to yes for a client-side cut");
+}
+' "$fallback_ui"
+fi
+
+# node exercises truncateFetchResult against a window built from astral
+# characters (outside the BMP, stored as UTF-16 surrogate pairs): Returned
+# Characters and Next Start Index must count Unicode code points the way
+# wrap_untrusted''s Python `len` does, one per emoji rather than two, and the
+# kept window must end on a whole character rather than a split surrogate.
+if command -v node >/dev/null 2>&1; then
+    node -e '
+const fs = require("fs");
+const source = fs.readFileSync(process.argv[1], "utf8");
+const match = source.match(
+    /const TOOL_RESULT_CHARACTER_CAP[\s\S]*?\nfunction truncateSearchResult[\s\S]*?\n}\n/
+);
+if (!match) throw new Error("truncateToolResult was not found in the served file");
+eval(match[0]);
+
+const nonce = "astralNonce1";
+const startIndex = 1000;
+const window = "\u{1F600}".repeat(4500); // each code point is a UTF-16 surrogate pair
+if (window.length !== 9000) throw new Error("fixture window is not 9000 UTF-16 units");
+const codePointCount = Array.from(window).length;
+if (codePointCount !== 4500) throw new Error("fixture window is not 4500 code points");
+const frame = [
+    `BEGIN UNTRUSTED WEB CONTENT [${nonce}]`,
+    "Source: https://example.org/raven2",
+    "Retrieved: 2026-01-05T00:00:00Z",
+    "Content SHA-256: " + "0".repeat(64),
+    `Start Index: ${startIndex}`,
+    `Returned Characters: ${codePointCount}`,
+    "Next Start Index: end",
+    "Possibly Truncated: no",
+    window,
+    `END UNTRUSTED WEB CONTENT [${nonce}]`
+].join("\n");
+if (frame.length <= 8000) throw new Error("the astral fixture frame fits under the cap already");
+
+const capped = truncateToolResult(frame);
+if (capped.length > 8000) {
+    throw new Error(`a capped astral frame still measures ${capped.length} characters`);
+}
+const returnedMatch = capped.match(/\nReturned Characters: (\d+)\n/);
+const nextMatch = capped.match(/\nNext Start Index: (\d+)\n/);
+if (!returnedMatch || !nextMatch) {
+    throw new Error("a capped astral frame lost one of its navigation lines");
+}
+const keptCodePoints = Number(returnedMatch[1]);
+const bodyStart = capped.indexOf("Possibly Truncated: yes\n") + "Possibly Truncated: yes\n".length;
+const bodyEnd = capped.indexOf(`\nEND UNTRUSTED WEB CONTENT [${nonce}]`);
+const keptBody = capped.slice(bodyStart, bodyEnd);
+if (Array.from(keptBody).length !== keptCodePoints) {
+    throw new Error("Returned Characters does not match the kept window'\''s own code-point count");
+}
+if (Number(nextMatch[1]) !== startIndex + keptCodePoints) {
+    throw new Error("Next Start Index does not count code points the way wrap_untrusted does");
+}
+if (/\uD83D(?!\uDE00)|(?<!\uD83D)\uDE00/.test(keptBody)) {
+    throw new Error("a capped astral frame split a surrogate pair");
 }
 ' "$fallback_ui"
 fi

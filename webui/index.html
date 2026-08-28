@@ -483,16 +483,40 @@ function truncateFetchResult(text, footerMatch) {
     /\nContent SHA-256: [0-9a-f]+$/,
     '\nContent SHA-256: not recomputed; the client truncated this window.'
   );
-  const buildFrame = keptWindow => `${prefix}${startIndex}` +
-    `\nReturned Characters: ${keptWindow.length}` +
-    `\nNext Start Index: ${startIndex + keptWindow.length}` +
-    `\nPossibly Truncated: yes\n${keptWindow}\n${footerLine}`;
+  // `wrap_untrusted` (remote/web-mcp/server.py) computes `Start Index` and
+  // `Next Start Index` over Python `len`, which counts Unicode code points; a
+  // JavaScript `.length` counts UTF-16 code units and reports one extra unit
+  // per astral character (an emoji, for instance), and a raw `.slice` can
+  // split the surrogate pair such a character is stored as. `codePoints`
+  // iterates by code point so both the counts and the cut this function makes
+  // agree with the wrapper's own arithmetic for every character, BMP or not.
+  const codePoints = str => Array.from(str);
+  const buildFrame = keptWindowPoints => {
+    const keptWindow = keptWindowPoints.join('');
+    return `${prefix}${startIndex}` +
+      `\nReturned Characters: ${keptWindowPoints.length}` +
+      `\nNext Start Index: ${startIndex + keptWindowPoints.length}` +
+      `\nPossibly Truncated: yes\n${keptWindow}\n${footerLine}`;
+  };
+  const windowPoints = codePoints(window);
   // Reserved against the original window's own digit counts, which are at
   // least as wide as whatever the trimmed window produces, so the assembled
   // frame never exceeds the cap once the actual (shorter) digits are used.
-  const overhead = buildFrame(window).length - window.length;
+  const overhead = buildFrame(windowPoints).length - window.length;
   const budget = Math.max(0, TOOL_RESULT_CHARACTER_CAP - overhead);
-  return buildFrame(window.slice(0, budget));
+  // A code point spends one UTF-16 unit inside the BMP and two outside it, so
+  // a slice count against `budget` (a unit count) keeps points one at a time
+  // until the next one would spend more units than remain, rather than
+  // assuming every point is one unit wide and overrunning the cap on an
+  // astral window.
+  let unitsKept = 0;
+  let pointsKept = 0;
+  for (const point of windowPoints) {
+    if (unitsKept + point.length > budget) break;
+    unitsKept += point.length;
+    pointsKept++;
+  }
+  return buildFrame(windowPoints.slice(0, pointsKept));
 }
 
 function truncateSearchResult(text) {
