@@ -99,6 +99,16 @@ set -eu
 # `required` is yes and `none` is no; tool_selection reads raw_tool_selection,
 # the graded score unaided by any execution guard.
 #
+# A profile_id names an INI section, an MCP configuration file, and a served
+# alias, so it is restricted to a leading alphanumeric followed by
+# alphanumerics, underscores, and hyphens. A path separator or a `..` component
+# would place the configuration outside the temporary tree and overwrite an
+# unrelated JSON file before the run's final validation, and a bracket or a
+# newline would spell a section header the preset reader parses differently
+# than the generator wrote it. Two rows sharing one profile_id write two
+# sections of one name and one configuration file that the second row's budgets
+# own, so the ledger carries each id once and the run stops on a repeat.
+#
 # Every numeric field is validated before it is compared. A shell numeric
 # comparison against a malformed operand raises an error the surrounding
 # `2>/dev/null` would swallow, leaving the test false and admitting the row, so
@@ -268,6 +278,33 @@ require_canonical_integer() {
     esac
 }
 
+# The profile_id becomes a path component, an INI section name, and the served
+# alias. The vocabulary admits what all three read the same way, which also
+# leaves `/`, `.`, `[`, `]`, and every control character outside it.
+require_canonical_profile_id() {
+    case $1 in
+        '' | [!A-Za-z0-9]* | *[!A-Za-z0-9_-]*)
+            printf 'profile_id %s lies outside the admitted vocabulary\n' "$1" >&2
+            printf 'a profile_id starts with a letter or digit and holds letters, digits, underscores, and hyphens\n' >&2
+            exit 1
+            ;;
+    esac
+}
+
+# One id per ledger. The seen list is a space-delimited string because the
+# generator runs under POSIX sh, which holds no associative array.
+seen_profile_ids=' '
+require_unique_profile_id() {
+    case $seen_profile_ids in
+        *" $1 "*)
+            printf 'ledger repeats profile_id %s\n' "$1" >&2
+            printf 'two rows of one id write two sections of one name and one MCP configuration the second row owns\n' >&2
+            exit 1
+            ;;
+    esac
+    seen_profile_ids="$seen_profile_ids$1 "
+}
+
 # The ledger repeats three registry fields so a profile row reads whole, and the
 # registry stays their authority. A divergence names the profile, the field, and
 # both values, because either side may be the stale one and the reader decides.
@@ -296,6 +333,8 @@ while IFS='	' read -r profile_id model_id _web_mode context \
     case $profile_id in
         '#'* | '') continue ;;
     esac
+    require_canonical_profile_id "$profile_id"
+    require_unique_profile_id "$profile_id"
 
     require_canonical_integer context "$context" sentinel-refused "$profile_id"
     require_canonical_integer validated_filled_depth \

@@ -823,6 +823,68 @@ else
     cat "$work/atomic-success.err" >&2
 fi
 
+# A profile_id names a path component, an INI section, and the served alias. A
+# traversal component would place the MCP configuration outside the temporary
+# tree and overwrite an unrelated JSON file, which the assembled-file check
+# never sees, so the vocabulary refuses it before any path is constructed.
+mkdir -p "$work/traversal-out"
+victim_json=$work/traversal-out/victim.json
+printf '{"victim":true}\n' >"$victim_json"
+victim_digest_before=$(sha256sum "$victim_json" | cut -d' ' -f1)
+web_profiles_traversal=$work/web-profiles-traversal.tsv
+printf '../victim\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\n' \
+    >"$web_profiles_traversal"
+if build "$web_profiles_traversal" "$work/traversal-out/presets.ini" \
+    env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
+    QWEN_WEB_STATE_DIR="$web_state_directory" \
+    >"$work/traversal.log" 2>"$work/traversal.err"; then
+    report traversal_profile_id_refused accepted
+else
+    report traversal_profile_id_refused ok
+fi
+if [ "$(sha256sum "$victim_json" | cut -d' ' -f1)" = "$victim_digest_before" ]; then
+    report traversal_leaves_neighbour_file_intact ok
+else
+    report traversal_leaves_neighbour_file_intact overwritten
+fi
+
+# A bracket, a space, a slash, or a leading hyphen spells a section name the
+# preset reader parses differently than the generator wrote it.
+for noncanonical_id in 'web]fixture[x' 'web fixture' '-web-fixture' 'web/fixture'; do
+    noncanonical_profiles=$work/web-profiles-noncanonical.tsv
+    printf '%s\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\n' \
+        "$noncanonical_id" >"$noncanonical_profiles"
+    if build "$noncanonical_profiles" "$work/presets-noncanonical.ini" \
+        env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+        QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
+        QWEN_WEB_STATE_DIR="$web_state_directory" \
+        >"$work/noncanonical.log" 2>"$work/noncanonical.err"; then
+        report noncanonical_profile_id_refused "accepted_$noncanonical_id"
+    else
+        report noncanonical_profile_id_refused ok
+    fi
+done
+
+# Two rows of one profile_id write two sections of one name, and the second
+# row's budgets own the single configuration file both point at.
+web_profiles_duplicate=$work/web-profiles-duplicate.tsv
+{
+    printf 'web-fixture-dup\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\n'
+    printf 'web-fixture-dup\tfixture-candidate-validated\tvalidator-gated\t8192\t8192\t7\t3\t9000\tyes\tno\t9/10\tvalidator-gated\n'
+} >"$web_profiles_duplicate"
+if build "$web_profiles_duplicate" "$work/presets-duplicate.ini" \
+    env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
+    QWEN_WEB_STATE_DIR="$web_state_directory" \
+    >"$work/duplicate.log" 2>"$work/duplicate.err"; then
+    report duplicate_profile_id_refused accepted
+elif grep -q 'repeats profile_id web-fixture-dup' "$work/duplicate.err"; then
+    report duplicate_profile_id_refused ok
+else
+    report duplicate_profile_id_refused message_omits_profile
+fi
+
 if [ "$failures" -ne 0 ]; then
     printf 'test-web-presets: %d check(s) failed\n' "$failures" >&2
     exit 1
