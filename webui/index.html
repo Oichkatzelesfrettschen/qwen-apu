@@ -1411,6 +1411,19 @@ async function send() {
         outcome.calls, callIds, view, round === CONTINUATION_CAP - 1, fetchBudget,
         searchBudget, turnGeneration, proposalModel);
       if (turnGeneration !== conversationGeneration) return;
+      if (requestModel !== proposalModel) {
+        // The picker stays enabled while a tool request is in flight, so
+        // the next round would otherwise carry this model's call and its
+        // result to whichever model the picker now names. The turn ends
+        // here with the transcript intact; the next send reads the new
+        // model with the whole history, as any later turn does.
+        const note = document.createElement('div');
+        note.className = 'meta bad';
+        note.textContent = `the model changed from ${proposalModel} to ${requestModel} ` +
+          'during the tool call; the turn ends without a continuation';
+        view.turn.root.append(note);
+        return;
+      }
     }
   } finally {
     busy = false; $('#send').disabled = false;

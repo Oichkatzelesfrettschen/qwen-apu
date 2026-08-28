@@ -36,8 +36,8 @@ verify_artifact() {
         "$artifact_path" "$actual_bytes" "$actual_sha256"
 }
 
-# The raven2-vulkan-production closure: llama.cpp f280b269 under the six-patch
-# series, promoted to build-appliance-current. The prior five-file closure
+# The raven2-vulkan-production closure: llama.cpp f280b269 under the five-patch
+# production series, promoted to build-appliance-current. The prior five-file closure
 # (llama-server 3d5b1581...) is retained in ARTIFACTS.md as rollback identity.
 verify_artifact "$binary_directory/llama-server" 57696808 \
     4117a9c4d58e530c3c5ef6934596ae6d257ca61ef80c5f0f8a5ee71d1d63ca79

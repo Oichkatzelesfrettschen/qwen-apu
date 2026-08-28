@@ -101,7 +101,7 @@ The replay verifier checks the resulting six modified source files byte for
 byte against their admitted hashes.
 
 The four rows above are the `raven2-vulkan-production` preset built from that
-six-patch source and promoted to `build-appliance-current` by
+five-patch production source and promoted to `build-appliance-current` by
 `remote/promote-llama-build.sh`, which `remote/verify-runtime-artifacts.sh`
 checks. The preset links statically (`BUILD_SHARED_LIBS=OFF`), so the build
 directory owns no shared object and the executable's load closure is the
@@ -119,7 +119,7 @@ The closure this one replaced is retained as rollback identity, since
 `83cc86e271b7fe784d208c00ca22d1fe6875e7a956790d16b55a9e617d23cc5b`, and
 `llama-mtmd-cli` 55,610,680 bytes
 `96e01162de9b4f5c1ebbaed246ad9cfe8964812c6e006c468df9cf44322cba52`, built
-from the five-patch series whose `server.cpp` was upstream and which answered
+from the four-patch series whose `server.cpp` was upstream and which answered
 `403 feature_disabled` on the router port.
 
 The retained llama.cpp executables and derived source patches carry the

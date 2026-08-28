@@ -1,8 +1,8 @@
 artifact	class	bytes	sha256	replay_authority
-artifacts/bin/llama-server	retained-exact-build-binary	57696808	4117a9c4d58e530c3c5ef6934596ae6d257ca61ef80c5f0f8a5ee71d1d63ca79	llama.cpp-f280b269-plus-six-qwen-apu-patches
-artifacts/bin/llama-cli	retained-exact-build-binary	57865008	59b8154a83cb3da1555e07330a7ca7bf5cefd3de2603791302f2c29388e9c21c	llama.cpp-f280b269-plus-six-qwen-apu-patches
-artifacts/bin/llama-mtmd-cli	retained-exact-build-binary	55806024	dd094cfbddf4bc971c003a3612b8a83a34c6f39e05b6cac871ed78cdd98e54af	llama.cpp-f280b269-plus-six-qwen-apu-patches
-artifacts/bin/llama-bench	retained-exact-build-binary	54160040	557d6690d338bc79b81ea690762a0d8987c0ca66f3c122a5fcc0f2a8420df092	llama.cpp-f280b269-plus-six-qwen-apu-patches
+artifacts/bin/llama-server	retained-exact-build-binary	57696808	4117a9c4d58e530c3c5ef6934596ae6d257ca61ef80c5f0f8a5ee71d1d63ca79	llama.cpp-f280b269-plus-five-qwen-apu-patches
+artifacts/bin/llama-cli	retained-exact-build-binary	57865008	59b8154a83cb3da1555e07330a7ca7bf5cefd3de2603791302f2c29388e9c21c	llama.cpp-f280b269-plus-five-qwen-apu-patches
+artifacts/bin/llama-mtmd-cli	retained-exact-build-binary	55806024	dd094cfbddf4bc971c003a3612b8a83a34c6f39e05b6cac871ed78cdd98e54af	llama.cpp-f280b269-plus-five-qwen-apu-patches
+artifacts/bin/llama-bench	retained-exact-build-binary	54160040	557d6690d338bc79b81ea690762a0d8987c0ca66f3c122a5fcc0f2a8420df092	llama.cpp-f280b269-plus-five-qwen-apu-patches
 artifacts/rollback/llama-server	rollback-exact-build-binary	57475792	3d5b158160b08cf897bb05b47186a13f67e8a17def31012f2f8282f12e95cb08	llama.cpp-f280b269-plus-four-qwen-apu-patches
 artifacts/rollback/llama-cli	rollback-exact-build-binary	57643992	83cc86e271b7fe784d208c00ca22d1fe6875e7a956790d16b55a9e617d23cc5b	llama.cpp-f280b269-plus-four-qwen-apu-patches
 artifacts/rollback/llama-mtmd-cli	rollback-exact-build-binary	55610680	96e01162de9b4f5c1ebbaed246ad9cfe8964812c6e006c468df9cf44322cba52	llama.cpp-f280b269-plus-four-qwen-apu-patches

@@ -208,6 +208,9 @@ grep -F 'const proposalModel = requestModel;' "$fallback_ui" >/dev/null
 grep -F 'if (requestModel !== proposalModel) {' "$fallback_ui" >/dev/null
 grep -F 'function approveWebSearch(fields, proposalModel) {' "$fallback_ui" >/dev/null
 grep -F 'const outcome = await approveWebSearch(fields, proposalModel);' "$fallback_ui" >/dev/null
+# The picker can move while a tool request is awaited, so the turn ends
+# rather than sending the proposing model's call and result to another model.
+grep -F 'during the tool call; the turn ends without a continuation' "$fallback_ui" >/dev/null
 
 # A present-but-malformed start_index or max_chars refuses the fetch rather
 # than falling back to require_integer's default (remote/web-mcp/server.py):

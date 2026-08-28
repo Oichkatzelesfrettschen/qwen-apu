@@ -17,7 +17,7 @@ tokens, `max_results` 3, `max_fetches` 1, `max_chars_per_fetch` 12000.
 ## Terms
 
 ```text
-closure:        llama.cpp f280b269 plus the six-patch series, preset
+closure:        llama.cpp f280b269 plus the five-patch production series, preset
                 raven2-vulkan-production, promoted to build-appliance-current
 llama-server:   4117a9c4d58e530c3c5ef6934596ae6d257ca61ef80c5f0f8a5ee71d1d63ca79
 llama-cli:      59b8154a83cb3da1555e07330a7ca7bf5cefd3de2603791302f2c29388e9c21c
