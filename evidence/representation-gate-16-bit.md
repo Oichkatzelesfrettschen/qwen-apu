@@ -75,6 +75,134 @@ device. It rejects no model identity: a checkpoint whose weights are only
 published as safetensors or BF16 can still be converted to a K-quant that
 serves, and the conversion strategy is what this outcome selects.
 
-## Results
+## Results: Qwen3.8-2B Distill, F16 against Q4_K_M
 
-Pending. The arm has not run.
+| position | role | artifact | prefill tok/s | decode tok/s | mclk | sclk max | temp C | VRAM | GTT |
+| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | control | Q4_K_M | 53.12 | 10.03 | 1067 | 1100 | 76 | 1.73 GB | 0.63 GB |
+| 2 | subject | F16 | 54.65 | 4.94 | 1067 | 1100 | 83 | 2.11 GB | 2.75 GB |
+| 3 | subject | F16 | 54.88 | 4.99 | 1067 | 1100 | 82 | 2.11 GB | 2.75 GB |
+| 4 | control | Q4_K_M | 53.09 | 10.00 | 1067 | 1100 | 77 | 1.73 GB | 0.63 GB |
+
+Paired means: decode 10.02 against 4.96, a ratio of 0.496; prefill 53.11
+against 54.77, a ratio of 1.031. Achieved streaming is 11.78 GiB tok/s for the
+control and 17.41 for the subject. The two control arms differ by 0.3% and the
+two subject arms by 1.0%, against the 30.6% this tree measures between sweeps,
+so the ABBA order delivered what it was run for. Every arm selected 1067 MHz
+memory and peaked at 1100 MHz shader, so no clock state orders these rows.
+
+### Prediction 1 is falsified, and the deviation is the result
+
+The registered band was 0.30 to 0.38, taken from the streamed-byte ratio of
+0.336 on the assumption that a value format costs what it moves. The measured
+ratio is 0.496. F16 streams 2.980 times the bytes and costs 2.016 times the
+decode, so a third of the byte penalty is returned.
+
+Achieved streaming names where it comes from: 17.41 GiB tok/s against 11.78, a
+47.8% difference on the same weights, the same device, and the same flags. That
+difference is the cost of unpacking a K-quant, measured directly rather than
+inferred from the trunk groupings this tree had recorded, and it is larger than
+those groupings implied. `evidence/decode-bound-analysis.md` reads a Q4_K trunk
+and a Q6_K trunk near 8.1 GB/s against a Q5_K trunk near 5.9 and orders them by
+kernel rather than by bit width; F16 is a fourth trunk above all three, and it
+reaches that position by having no reconstruction kernel at all.
+
+### Prefill rises where decode falls
+
+F16 prefills 3.1% faster than Q4_K_M while moving three times the bytes. The
+control arms differ by 0.06% and the subject arms by 0.4%, so 3.1% sits well
+outside the spread of either pair. Prefill submits 512 tokens at once and is
+bound by the matrix multiply; decode submits one and is bound by the weight
+stream. Removing the dequantization step therefore helps the first directly and
+is overwhelmed in the second by the bytes it costs. The two phases move in
+opposite directions on the same change, which separates their bounds on this
+device without a separate experiment.
+
+### What the memory columns show
+
+The F16 checkpoint holds 2.75 GB in GTT against the control's 0.63 GB, with
+VRAM rising only from 1.73 to 2.11 GB. The 3.6 GiB of weights do not fit the
+VRAM carveout, so the device reads most of them across the host memory
+interface. Die temperature runs 6 C higher on the F16 arms, at 82 to 83 C.
+
+### The other four predictions
+
+2 holds: 4.96 tok/s is below the 9 tok/s admission floor, by a factor of 1.8.
+4 holds by a wide margin: 17.41 against 11.78 GiB tok/s.
+5 holds: every arm placed all weights on Vulkan0, checked per arm by the owner
+of each nonzero model buffer line rather than by the presence of the word CPU.
+3 is answered by the 0.8B arm below, and falsified there.
+
+### What this decides
+
+F16 is rejected as a serving representation for the 2B on the stated floor.
+It is rejected at 0.496 rather than at the 0.336 the byte count alone predicts,
+which changes what the rest of the ladder is worth measuring: a rung's decode
+cost is its byte count divided by the bandwidth its kernel achieves, and those
+two terms move in opposite directions as bit width rises. Q8_0 at 1.934 GiB
+sits between the two measured points on both terms and is the rung this result
+makes worth a measurement rather than an extrapolation.
+
+
+## Results: Qwen3.5-0.8B, F16 against Q8_0
+
+| position | role | artifact | prefill tok/s | decode tok/s | mclk | temp C | VRAM | GTT |
+| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | control | Q8_0 | 138.99 | 20.19 | 1067 | 73 | 1.27 GB | 0.63 GB |
+| 2 | subject | F16 | 147.71 | 15.67 | 1067 | 74 | 1.97 GB | 0.63 GB |
+| 3 | subject | F16 | 147.53 | 15.68 | 1067 | 73 | 1.97 GB | 0.63 GB |
+| 4 | control | Q8_0 | 138.80 | 20.11 | 1067 | 72 | 1.28 GB | 0.65 GB |
+
+Paired means: decode 20.15 against 15.68, a ratio of 0.778; prefill 138.90
+against 147.62, a ratio of 1.063. Achieved streaming is 15.03 GiB tok/s for the
+control and 21.98 for the subject. The subject arms differ by 0.06% and the
+control arms by 0.4%.
+
+### Prediction 3 is falsified upward
+
+The registered band was 8.5 to 11.2 tok/s, centred on 9.85. The measured rate is
+15.68, which clears the 9 tok/s admission floor by 74% and clears the 12 tok/s
+preference as well.
+
+The band was built by holding the control's achieved streaming constant and
+dividing by the subject's bytes. The 2B arm had already shown that F16 does not
+hold it constant, and the stated reason for expecting a smaller gain here was
+that Q8_0 unpacking is cheaper than Q4_K unpacking. That reasoning is refuted:
+
+| checkpoint | control | control achieved | F16 achieved | gain |
+| --- | --- | ---: | ---: | ---: |
+| Qwen3.8-2B Distill | Q4_K_M | 11.78 | 17.41 | 47.8% |
+| Qwen3.5-0.8B | Q8_0 | 15.03 | 21.98 | 46.2% |
+
+F16 gains the same 46 to 48% over a four-bit K-quant and over an eight-bit
+block quant. A gain that tracked the reconstruction each format needs would
+differ between those two, so what F16 removes is not a cost proportional to the
+control's complexity. `ggml-vulkan.cpp` builds dedicated F16 matmul and
+matrix-vector pipelines beside the dequantize-then-multiply path every quantized
+type takes, and the device reports `shaderFloat16 = true`, which is the
+candidate mechanism. It is unisolated here and recorded as an effect: this arm
+varies the value format and reads the rate, and a kernel attribution needs an
+arm that varies the pipeline at a fixed format.
+
+### The gain survives a GTT spill
+
+The 2B F16 holds 2.75 GB in GTT against its control's 0.63 GB, so most of its
+weights are read across the host memory interface; the 0.8B F16 fits VRAM at
+1.97 GB and spills nothing. The two carry the same 46 to 48% gain regardless, so
+the advantage is a property of the format's kernel rather than of where the
+weights sit.
+
+### What this decides
+
+The 0.8B admits F16 as a serving representation. It is the highest-precision
+artifact the publisher offers, it decodes 15.68 tok/s against a 9 tok/s floor
+and a 12 tok/s preference, and it places every weight on Vulkan0. The 2B does
+not, at 4.96 tok/s.
+
+Between them the ladder is no longer a byte count. A rung's decode rate is its
+byte count divided by the bandwidth its kernel achieves, and those two terms
+move in opposite directions as precision rises. The 0.8B Q8_0 rung is 46% slower
+per byte than the F16 rung above it, which is why 1.88 times the bytes cost only
+1.29 times the decode. The rungs between Q4_K_M and F16 on both checkpoints are
+now worth measuring rather than interpolating, since neither endpoint predicts
+them.
