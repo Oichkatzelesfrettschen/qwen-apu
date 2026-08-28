@@ -93,6 +93,7 @@ LEDGER_BUSY_TIMEOUT_SECONDS = 10.0
 LEDGER_BUSY_TIMEOUT_MS = 10000
 AUDIT_RETENTION_SECONDS = 14 * 86400
 GRANT_MAX_USES = 1
+SEARCH_FETCH_ALLOWANCE_DEFAULT = 8
 GRANT_ID_BYTES = 12
 
 
@@ -896,6 +897,16 @@ class Ledger:
             "grant_id TEXT PRIMARY KEY, profile TEXT, provider TEXT,"
             " consumed_at INTEGER, expiry INTEGER)"
         )
+        self.connection.execute(
+            "CREATE TABLE IF NOT EXISTS searches ("
+            "search_id TEXT PRIMARY KEY, profile TEXT, provider TEXT,"
+            " fetches_used INTEGER, fetches_allowed INTEGER, expiry INTEGER)"
+        )
+        self.connection.execute(
+            "CREATE TABLE IF NOT EXISTS search_results ("
+            "search_id TEXT, canonical_url TEXT, provider_result_id TEXT,"
+            " PRIMARY KEY(search_id, canonical_url))"
+        )
         self.prune(time.time() if now is None else now)
 
     def prune(self, now):
@@ -914,7 +925,90 @@ class Ledger:
         self.connection.execute(
             "DELETE FROM grants WHERE expiry < ?", (int(now),)
         )
+        self.connection.execute(
+            "DELETE FROM searches WHERE expiry < ?", (int(now),)
+        )
+        self.connection.execute(
+            "DELETE FROM search_results WHERE search_id NOT IN"
+            " (SELECT search_id FROM searches)"
+        )
         self.connection.commit()
+
+    def open_search(self, search_id, profile, provider, allowed, expiry, issued):
+        """Record the results one search issued and the fetches they buy.
+
+        The result identifiers a search hands out are what a later fetch may
+        redeem, so the ledger holds the pair (search, canonical URL) beside the
+        fetch allowance. The row expires with the result identifiers it covers,
+        and `prune` drops it and its results together.
+        """
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            self.connection.execute(
+                "INSERT OR REPLACE INTO searches(search_id, profile, provider,"
+                " fetches_used, fetches_allowed, expiry) VALUES(?, ?, ?, 0, ?, ?)",
+                (search_id, profile, provider, int(allowed), int(expiry)),
+            )
+            self.connection.executemany(
+                "INSERT OR REPLACE INTO search_results(search_id, canonical_url,"
+                " provider_result_id) VALUES(?, ?, ?)",
+                [
+                    (search_id, url, provider_result)
+                    for url, provider_result in issued
+                ],
+            )
+            self.connection.execute("COMMIT")
+        except BaseException:
+            self.connection.execute("ROLLBACK")
+            raise
+
+    def consume_fetch(self, search_id, url, now):
+        """Charge one document against the search that issued its result.
+
+        A global bucket bounds the account and says nothing about one search,
+        so a page a search returned buys a bounded number of documents: the row
+        carries the allowance its profile set, the read-modify-write runs
+        inside BEGIN IMMEDIATE, and a result the ledger never issued reaches no
+        provider.
+        """
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.connection.execute(
+                "SELECT fetches_used, fetches_allowed, expiry FROM searches"
+                " WHERE search_id = ?",
+                (search_id,),
+            ).fetchone()
+            if row is None:
+                raise AuthorizationDenied(
+                    "the search that issued this result is unknown to the ledger"
+                )
+            used, allowed, expiry = row
+            if now >= expiry:
+                raise ExpiredResult(
+                    "the search that issued this result has expired"
+                )
+            issued = self.connection.execute(
+                "SELECT 1 FROM search_results WHERE search_id = ?"
+                " AND canonical_url = ?",
+                (search_id, url),
+            ).fetchone()
+            if issued is None:
+                raise AuthorizationDenied(
+                    "the search that issued this result returned another URL"
+                )
+            if used >= allowed:
+                raise BudgetExhausted(
+                    f"the per-search fetch budget of {allowed} is exhausted; "
+                    "a further document needs a new search"
+                )
+            self.connection.execute(
+                "UPDATE searches SET fetches_used = ? WHERE search_id = ?",
+                (used + 1, search_id),
+            )
+            self.connection.execute("COMMIT")
+        except BaseException:
+            self.connection.execute("ROLLBACK")
+            raise
 
     def consume_grant(self, grant_id, profile, provider, expiry, now):
         """Spend the single use of one grant, or refuse a replay.
@@ -1237,6 +1331,7 @@ def render_search_results(
     clear of the highlight region.
     """
     blocks = []
+    issued = []
     rendered_characters = 0
     for record in results:
         url = canonical_url(str(record.get("url", "")))
@@ -1270,13 +1365,14 @@ def render_search_results(
         if rendered_characters > SEARCH_OUTPUT_CHARACTER_CAP:
             break
         blocks.append(block)
+        issued.append((url, provider_result_id(record)))
     if not blocks:
-        return "No results."
+        return "No results.", issued
     rendered = "\n---\n".join(blocks) + "\n---"
     omitted = len(results) - len(blocks)
     if omitted:
         rendered += f"\nResults Omitted: {omitted}"
-    return rendered
+    return rendered, issued
 
 
 def clip(value, cap):
@@ -1405,7 +1501,7 @@ def call_search(settings, arguments):
             )
         results = provider.search(query, max_results, constraints)[:max_results]
         search_id = search_id_for()
-        rendered = render_search_results(
+        rendered, issued = render_search_results(
             results,
             provider.name,
             signing_key,
@@ -1414,6 +1510,17 @@ def call_search(settings, arguments):
             int(now),
             resolve_token_lifetime(settings),
         )
+        if ledger is not None:
+            ledger.open_search(
+                search_id,
+                settings.get("profile") or "default",
+                provider.name,
+                integer_setting(
+                    settings, "max_fetches", SEARCH_FETCH_ALLOWANCE_DEFAULT
+                ),
+                int(now) + resolve_token_lifetime(settings),
+                issued,
+            )
         audit["result_count"] = len(
             [line for line in rendered.splitlines() if line.startswith("URL: ")]
         )
@@ -1477,6 +1584,7 @@ def call_fetch(settings, arguments):
                 "configured one"
             )
         if ledger is not None:
+            ledger.consume_fetch(claim["search_id"], url, now)
             spend_budget(ledger, settings, "fetch", now)
         record = provider.contents(
             url,
@@ -1614,6 +1722,7 @@ def settings_from_environment(argv):
         "fetch_per_minute": os.environ.get("QWEN_WEB_FETCH_PER_MINUTE", ""),
         "daily_budget": os.environ.get("QWEN_WEB_DAILY_BUDGET", ""),
         "page_budget": os.environ.get("QWEN_WEB_DAILY_PAGE_BUDGET", ""),
+        "max_fetches": os.environ.get("QWEN_WEB_MAX_FETCHES_PER_SEARCH", ""),
     }
     option_keys = {
         "--provider": "provider",

@@ -1301,6 +1301,75 @@ class WebMcpServerTest(unittest.TestCase):
             ["success", "budget_exhausted", "success"],
         )
 
+    def test_the_per_search_fetch_budget_refuses_a_further_document(self):
+        state_path = self.state_directory("fetch-budget-state")
+        session = self.open_session(
+            QWEN_WEB_STATE_DIR=state_path,
+            QWEN_WEB_MAX_FETCHES_PER_SEARCH="2",
+        )
+        search_text = self.result_text(self.search(session, max_results=10))
+        tokens = [
+            self.token_for(search_text, url)
+            for url in (
+                "https://example.org/raven2",
+                "https://hostile.example.net/inject",
+                "https://frame.example.net/close",
+            )
+        ]
+        for token in tokens[:2]:
+            self.assertFalse(
+                session.call_tool("fetch_exa", {"result_id": token})["result"][
+                    "isError"
+                ]
+            )
+        third = session.call_tool("fetch_exa", {"result_id": tokens[2]})
+        self.assertTrue(third["result"]["isError"])
+        self.assertIn("per-search fetch budget of 2", self.result_text(third))
+        self.assertEqual(
+            [row[7] for row in self.audit_rows(state_path)][-1], "budget_exhausted"
+        )
+        second_search = self.result_text(self.search(session, max_results=10))
+        renewed = session.call_tool(
+            "fetch_exa",
+            {"result_id": self.token_for(second_search, "https://frame.example.net/close")},
+        )
+        self.assertFalse(renewed["result"]["isError"])
+
+    def test_a_result_the_ledger_never_issued_reaches_no_provider(self):
+        state_path = self.state_directory("unissued-result-state")
+        session = self.open_session(QWEN_WEB_STATE_DIR=state_path)
+        search_text = self.result_text(self.search(session, max_results=1))
+        claim = json.loads(
+            server.base64url_decode(
+                self.first_result_id(search_text).split(".")[0]
+            ).decode("utf-8")
+        )
+        claim["canonical_url"] = "https://hostile.example.net/inject"
+        forged = server.sign_claim(
+            TOKEN_SECRET, server.RESULT_CLAIM_CONTEXT, claim
+        )
+        response = session.call_tool("fetch_exa", {"result_id": forged})
+        self.assertTrue(response["result"]["isError"])
+        self.assertIn("returned another URL", self.result_text(response))
+
+    def test_a_result_from_an_unknown_search_is_refused(self):
+        state_path = self.state_directory("unknown-search-state")
+        session = self.open_session(QWEN_WEB_STATE_DIR=state_path)
+        self.search(session, max_results=1)
+        stranger = server.issue_result_id(
+            TOKEN_SECRET,
+            "https://example.org/raven2",
+            "",
+            "fake",
+            "never-recorded",
+            {"max_age_hours": None, "published_after": "", "published_before": ""},
+            int(time.time()),
+            server.TOKEN_LIFETIME_DEFAULT_SECONDS,
+        )
+        response = session.call_tool("fetch_exa", {"result_id": stranger})
+        self.assertTrue(response["result"]["isError"])
+        self.assertIn("unknown to the ledger", self.result_text(response))
+
     def test_the_daily_budget_covers_both_operations(self):
         state_path = self.state_directory("budget-state")
         session = self.open_session(
