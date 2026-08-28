@@ -68,16 +68,28 @@ fi
 # Every configuration a section names is read here, because llama-server reports
 # an unreadable mcp-servers-config as a child startup failure well after the
 # listener is up, where the operator reads it as a model fault.
+#
+# The named paths reach the loop one line at a time through a file rather than
+# through command substitution, which field-splits a path holding a space into
+# several unreadable fragments; $HOME, QWEN_WEBUI_STATE_DIRECTORY, and
+# QWEN_WEB_PRESETS each place one in the generated tree. The loop reads from a
+# redirection rather than a pipeline so its count survives the loop, since a
+# pipeline runs the body in a subshell and leaves the count at zero.
+named_mcp_config_list=$(mktemp)
+trap 'rm -f -- "$named_mcp_config_list"' EXIT HUP INT TERM
+sed -n 's/^[[:space:]]*LLAMA_ARG_MCP_SERVERS_CONFIG[[:space:]]*=[[:space:]]*//p' \
+    "$web_presets" >"$named_mcp_config_list"
 missing_mcp_configs=0
-for named_mcp_config in $(sed -n \
-    's/^[[:space:]]*LLAMA_ARG_MCP_SERVERS_CONFIG[[:space:]]*=[[:space:]]*//p' \
-    "$web_presets"); do
+while IFS= read -r named_mcp_config; do
+    [ -n "$named_mcp_config" ] || continue
     if [ ! -r "$named_mcp_config" ]; then
         printf 'preset names an unreadable MCP configuration: %s\n' \
             "$named_mcp_config" >&2
         missing_mcp_configs=$((missing_mcp_configs + 1))
     fi
-done
+done <"$named_mcp_config_list"
+rm -f -- "$named_mcp_config_list"
+trap - EXIT HUP INT TERM
 if [ "$missing_mcp_configs" -ne 0 ]; then
     printf 'regenerate the preset tree with remote/build-web-presets.sh\n' >&2
     exit 2

@@ -297,6 +297,50 @@ else
     cat "$work/inside-ceiling.err" >&2
 fi
 
+# A generated tree under a path holding a space names one readable
+# configuration, and the launch admits it. Field splitting over command
+# substitution would report each fragment of that one path as unreadable.
+spaced_state_directory="$work/state with space"
+mkdir -p "$spaced_state_directory/web mcp configs"
+spaced_mcp_config="$spaced_state_directory/web mcp configs/web-fixture.json"
+printf '{}\n' >"$spaced_mcp_config"
+spaced_presets="$spaced_state_directory/web-presets.ini"
+write_web_preset "$spaced_presets" unmarked
+sed -i "s|^LLAMA_ARG_MCP_SERVERS_CONFIG = .*|LLAMA_ARG_MCP_SERVERS_CONFIG = $spaced_mcp_config|" \
+    "$spaced_presets"
+if QWEN_WEBUI_STATE_DIRECTORY="$spaced_state_directory" \
+    QWEN_WEB_PRESETS="$spaced_presets" QWEN_WEB_LAUNCH_RECORD=$record \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/spaced.log" 2>"$work/spaced.err"; then
+    report spaced_mcp_config_path_admitted ok
+else
+    report spaced_mcp_config_path_admitted refused
+    cat "$work/spaced.err" >&2
+fi
+
+# The count of unreadable configurations survives the loop, which a pipeline
+# would leave at zero by running the body in a subshell. A preset naming one
+# readable and one absent configuration refuses.
+mixed_presets=$state_directory/web-presets-mixed-mcp.ini
+write_web_preset "$mixed_presets" unmarked
+{
+    printf '[web-fixture-second]\n'
+    printf 'LLAMA_ARG_MODEL = %s\n' "$policy_model_root/Fixture-GGUF/production.gguf"
+    printf 'LLAMA_ARG_MCP_SERVERS_CONFIG = /nonexistent/second-web-mcp.json\n'
+    printf '\n'
+} >>"$mixed_presets"
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_PRESETS=$mixed_presets QWEN_WEB_LAUNCH_RECORD=$record \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/mixed-mcp.log" 2>"$work/mixed-mcp.err"; then
+    report absent_mcp_config_beside_readable_refused accepted
+else
+    outcome=ok
+    grep -q '/nonexistent/second-web-mcp.json' "$work/mixed-mcp.err" ||
+        outcome=missing_message
+    report absent_mcp_config_beside_readable_refused "$outcome"
+fi
+
 if [ "$failures" -ne 0 ]; then
     printf 'test-qwen-web-launch: %d check(s) failed\n' "$failures" >&2
     exit 1
