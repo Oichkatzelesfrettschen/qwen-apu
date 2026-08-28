@@ -22,6 +22,7 @@ import collections
 import datetime
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import re
@@ -302,6 +303,38 @@ def base64url_decode(text):
     return base64.urlsafe_b64decode(text + padding)
 
 
+def require_public_host(parts):
+    """Refuse a result whose host names this machine or a private network.
+
+    A search result reaches the provider's crawler and the wrapper's own error
+    text, and a loopback or RFC 1918 literal in that position asks the tool
+    surface to describe the network the appliance sits on. The check reads the
+    literal address and the reserved `localhost` name; classifying an ordinary
+    hostname would take a resolution here that differs from the provider's own,
+    so a name resolves nowhere in this process.
+    """
+    host = (parts.hostname or "").lower()
+    if host == "localhost" or host.endswith(".localhost"):
+        raise ProviderContentError(
+            "the result URL names a private host, which is refused"
+        )
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return
+    if (
+        address.is_private
+        or address.is_loopback
+        or address.is_link_local
+        or address.is_reserved
+        or address.is_multicast
+        or address.is_unspecified
+    ):
+        raise ProviderContentError(
+            "the result URL names a private address, which is refused"
+        )
+
+
 def canonical_url(url):
     """Return the comparison form of a URL: scheme and host lowercased.
 
@@ -321,6 +354,7 @@ def canonical_url(url):
         raise ProviderContentError("the result URL carries userinfo, which is refused")
     if any(character in url for character in ("\n", "\r", "\t", " ")):
         raise ProviderContentError("the result URL carries whitespace, which is refused")
+    require_public_host(parts)
     return urllib.parse.urlunsplit(
         (
             parts.scheme.lower(),

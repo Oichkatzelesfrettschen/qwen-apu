@@ -129,6 +129,42 @@ def build_fixture_document():
                     "highlights": [],
                 },
             ],
+            "private hosts": [
+                {
+                    "title": "Loopback literal",
+                    "url": "http://127.0.0.1:8080/status",
+                    "publishedDate": "",
+                    "author": "",
+                    "highlights": [],
+                }
+            ],
+            "private range": [
+                {
+                    "title": "Private range",
+                    "url": "https://192.168.1.9/admin",
+                    "publishedDate": "",
+                    "author": "",
+                    "highlights": [],
+                }
+            ],
+            "private name": [
+                {
+                    "title": "Reserved name",
+                    "url": "http://localhost/secrets",
+                    "publishedDate": "",
+                    "author": "",
+                    "highlights": [],
+                }
+            ],
+            "link local": [
+                {
+                    "title": "Metadata service",
+                    "url": "http://169.254.169.254/latest/meta-data",
+                    "publishedDate": "",
+                    "author": "",
+                    "highlights": [],
+                }
+            ],
             "userinfo url": [
                 {
                     "title": "Credentialed",
@@ -1150,6 +1186,19 @@ class WebMcpServerTest(unittest.TestCase):
         response = self.search(session, query="userinfo url")
         self.assertTrue(response["result"]["isError"])
         self.assertIn("userinfo", self.result_text(response))
+
+    def test_a_result_on_a_private_or_loopback_host_is_refused(self):
+        session = self.open_session()
+        for query, expected in (
+            ("private hosts", "private address"),
+            ("private range", "private address"),
+            ("link local", "private address"),
+            ("private name", "private host"),
+        ):
+            with self.subTest(query=query):
+                response = self.search(session, query=query)
+                self.assertTrue(response["result"]["isError"])
+                self.assertIn(expected, self.result_text(response))
 
     def test_domain_entries_must_be_hostnames(self):
         session = self.open_session()
