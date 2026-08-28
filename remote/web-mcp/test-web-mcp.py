@@ -1417,6 +1417,107 @@ class WebMcpServerTest(unittest.TestCase):
         )
         self.assertFalse(renewed["result"]["isError"])
 
+    def search_row(self, state_path):
+        connection = sqlite3.connect(
+            os.path.join(state_path, server.LEDGER_FILE_NAME)
+        )
+        try:
+            return connection.execute(
+                "SELECT search_id, fetches_used, fetches_allowed FROM searches"
+            ).fetchall()
+        finally:
+            connection.close()
+
+    def test_a_cached_window_charges_the_call_and_page_buckets(self):
+        """A window read from the snapshot spends a call and a page.
+
+        The snapshot spares the provider request alone, so the fetch-minute
+        and pages-day buckets charge every invocation and the third call in a
+        minute meets a limit of two whether or not its document was stored.
+        """
+        state_path = self.state_directory("cached-charge-state")
+        session = self.open_session(
+            QWEN_WEB_STATE_DIR=state_path, QWEN_WEB_FETCH_PER_MINUTE="2"
+        )
+        token = self.first_result_id(
+            self.result_text(self.search(session, max_results=1))
+        )
+        for index in range(2):
+            with self.subTest(call=index):
+                self.assertFalse(
+                    session.call_tool("fetch_exa", {"result_id": token})[
+                        "result"
+                    ]["isError"]
+                )
+        third = session.call_tool("fetch_exa", {"result_id": token})
+        self.assertTrue(third["result"]["isError"])
+        self.assertIn("fetch-minute", self.result_text(third))
+
+    def test_a_refused_provider_budget_returns_the_fetch_allowance(self):
+        """A fetch that reaches no provider leaves its document unspent.
+
+        The per-search allowance is reserved before the provider bucket is
+        charged, so a refusal there rolls the reservation back and the row
+        still buys every document the search issued.
+        """
+        state_path = self.state_directory("allowance-rollback-state")
+        session = self.open_session(
+            QWEN_WEB_STATE_DIR=state_path, QWEN_WEB_DAILY_BUDGET="1"
+        )
+        token = self.first_result_id(
+            self.result_text(self.search(session, max_results=1))
+        )
+        refused = session.call_tool("fetch_exa", {"result_id": token})
+        self.assertTrue(refused["result"]["isError"])
+        self.assertIn("provider-day", self.result_text(refused))
+        self.assertEqual(
+            [row[1] for row in self.search_row(state_path)],
+            [0],
+            "a fetch that reached no provider spent a document",
+        )
+
+    def test_the_snapshot_recheck_and_the_reservation_are_one_transaction(self):
+        """A snapshot stored between two children charges one document.
+
+        Two children spawned for one result can both observe the snapshot
+        absent, so the lookup and the allowance reservation run inside one
+        BEGIN IMMEDIATE: a reservation granted while the row was absent is
+        followed by a lookup that finds the stored row and charges nothing.
+        """
+        state_path = self.state_directory("reserve-recheck-state")
+        ledger = server.Ledger(state_path)
+        self.addCleanup(ledger.close)
+        url = "https://example.org/raven2"
+        expiry = int(time.time()) + 600
+        ledger.open_search("search-1", "default", "fake", 4, expiry, [(url, "")])
+        content_id = server.content_identity("search-1", url)
+        self.assertIsNone(
+            ledger.reserve_fetch("search-1", url, content_id, time.time())
+        )
+        ledger.store_snapshot(
+            server.ExtractedContent(
+                text="stored body",
+                provider_may_have_more=False,
+                provider_status="success",
+                content_id=content_id,
+            ),
+            "search-1",
+            url,
+            time.time(),
+            expiry,
+        )
+        stored = ledger.reserve_fetch("search-1", url, content_id, time.time())
+        self.assertIsNotNone(stored)
+        self.assertEqual(stored["text"], "stored body")
+        self.assertEqual(
+            ledger.connection.execute(
+                "SELECT fetches_used FROM searches WHERE search_id = ?",
+                ("search-1",),
+            ).fetchone()[0],
+            1,
+            "the recheck charged a second document for one retrieval",
+        )
+
     def rewrite_fixture_text(self, url, text):
         """Change one document in the fixture file the next call reads."""
         document = build_fixture_document()

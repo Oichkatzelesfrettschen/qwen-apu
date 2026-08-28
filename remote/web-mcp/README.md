@@ -124,7 +124,13 @@ provider status, retrieval time, and the result identifier's expiry. Every
 later window reads that row, so paging costs one provider request per document,
 a source that changes between two pages leaves both pages as retrieved, and the
 `Retrieved:` line keeps the time of the one retrieval. The fetch allowance
-charges documents rather than windows for the same reason, and `prune` deletes
+charges documents rather than windows for the same reason, while the per-minute
+call bucket and the daily page bucket charge every invocation, so a window read
+from the snapshot spends them and spares the provider request alone. The
+allowance is reserved and the snapshot is reread inside one BEGIN IMMEDIATE, so
+two children spawned for one result issue one billable request, and a daily
+provider budget that refuses the request returns the document to the search.
+`prune` deletes
 the stored text when the reference that reaches it expires. A body refused for
 its size or its encoding stores nothing, so the next attempt charges the
 provider again.

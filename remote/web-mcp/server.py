@@ -1056,17 +1056,24 @@ class Ledger:
             self.connection.execute("ROLLBACK")
             raise
 
-    def consume_fetch(self, search_id, url, now):
-        """Charge one document against the search that issued its result.
+    def reserve_fetch(self, search_id, url, content_id, now):
+        """Return the stored document, or reserve one against the search.
 
-        A global bucket bounds the account and says nothing about one search,
-        so a page a search returned buys a bounded number of documents: the row
-        carries the allowance its profile set, the read-modify-write runs
-        inside BEGIN IMMEDIATE, and a result the ledger never issued reaches no
-        provider.
+        The snapshot lookup and the allowance reservation run inside one
+        BEGIN IMMEDIATE, so two children spawned for one result cannot both
+        observe the row absent and both issue a billable provider request: the
+        second takes the write lock after the first commits its snapshot and
+        reads it. A global bucket bounds the account and says nothing about
+        one search, so a page a search returned buys the bounded number of
+        documents the row carries, and a result the ledger never issued
+        reaches no provider.
         """
         self.connection.execute("BEGIN IMMEDIATE")
         try:
+            stored = self.snapshot(content_id, now)
+            if stored is not None:
+                self.connection.execute("COMMIT")
+                return stored
             row = self.connection.execute(
                 "SELECT fetches_used, fetches_allowed, expiry FROM searches"
                 " WHERE search_id = ?",
@@ -1098,6 +1105,27 @@ class Ledger:
             self.connection.execute(
                 "UPDATE searches SET fetches_used = ? WHERE search_id = ?",
                 (used + 1, search_id),
+            )
+            self.connection.execute("COMMIT")
+        except BaseException:
+            self.connection.execute("ROLLBACK")
+            raise
+        return None
+
+    def release_fetch(self, search_id):
+        """Return one reserved document to the search that reserved it.
+
+        A reservation buys a provider request, so a refusal that reaches no
+        provider gives the document back rather than spending it: repeated
+        rate-limited attempts would otherwise exhaust an allowance no
+        retrieval consumed.
+        """
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            self.connection.execute(
+                "UPDATE searches SET fetches_used = MAX(fetches_used - 1, 0)"
+                " WHERE search_id = ?",
+                (search_id,),
             )
             self.connection.execute("COMMIT")
         except BaseException:
@@ -1242,15 +1270,15 @@ def open_ledger(settings):
         ) from None
 
 
-def spend_budget(ledger, settings, operation, now, pages=1):
-    """Charge the three counters one call spends.
+def spend_call_budget(ledger, settings, operation, now, pages=1):
+    """Charge the call and page counters one invocation spends.
 
     A call, a page, and a provider request are three costs and the ledger
-    keeps three buckets: the per-minute bucket bounds how fast calls arrive,
-    the daily page bucket bounds how many results and windows reach the model,
-    and the daily provider bucket bounds what the account is billed for. A
-    search that asks for ten results charges ten pages against one call and one
-    provider request.
+    keeps three buckets. These two charge every invocation: the per-minute
+    bucket bounds how fast calls arrive and the daily page bucket bounds how
+    many results and windows reach the model, so a window served from a stored
+    snapshot spends them the same way a retrieval does. A search that asks for
+    ten results charges ten pages against one call.
     """
     per_minute = (
         integer_setting(settings, "search_per_minute", SEARCH_PER_MINUTE_DEFAULT)
@@ -1268,6 +1296,15 @@ def spend_budget(ledger, settings, operation, now, pages=1):
         BudgetExhausted,
         units=pages,
     )
+
+
+def spend_provider_budget(ledger, settings, now):
+    """Charge one provider request against the daily account budget.
+
+    The bucket counts what the account is billed for, so a window served from
+    a stored snapshot leaves it untouched while the call and page buckets it
+    reaches charge every invocation.
+    """
     ledger.consume(
         "provider-day",
         86400,
@@ -1610,7 +1647,8 @@ def call_search(settings, arguments):
             ledger,
         )
         if ledger is not None:
-            spend_budget(ledger, settings, "search", now, pages=max_results)
+            spend_call_budget(ledger, settings, "search", now, pages=max_results)
+            spend_provider_budget(ledger, settings, now)
         # The grant is spent immediately ahead of the provider request, so a
         # rate or budget refusal that reaches no provider leaves the single use
         # intact and a spent grant means a request was issued.
@@ -1707,12 +1745,26 @@ def call_fetch(settings, arguments):
                 "configured one"
             )
         content_id = content_identity(claim["search_id"], url)
-        stored = ledger.snapshot(content_id, now) if ledger is not None else None
+        # The call and page buckets charge every invocation, so a window read
+        # from the snapshot spends them; the snapshot spares the provider
+        # request alone.
+        if ledger is not None:
+            spend_call_budget(ledger, settings, "fetch", now)
+        stored = (
+            ledger.reserve_fetch(claim["search_id"], url, content_id, now)
+            if ledger is not None
+            else None
+        )
         retrieved_at = now
         if stored is None:
             if ledger is not None:
-                ledger.consume_fetch(claim["search_id"], url, now)
-                spend_budget(ledger, settings, "fetch", now)
+                # The reservation buys a provider request, so a daily budget
+                # that refuses one returns the document to the search.
+                try:
+                    spend_provider_budget(ledger, settings, now)
+                except BaseException:
+                    ledger.release_fetch(claim["search_id"])
+                    raise
             # The retrieval asks for the whole document the cap admits rather
             # than this window, so the snapshot holds every character a later
             # window can name and the truncation flag describes the document.
