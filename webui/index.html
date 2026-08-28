@@ -438,6 +438,8 @@ function truncateToolResult(text) {
   if (text.length <= TOOL_RESULT_CHARACTER_CAP) return text;
   const footerMatch = text.match(/\n(END UNTRUSTED WEB CONTENT \[[^\]\n]*\])\s*$/);
   if (footerMatch) {
+    const fetchTruncated = truncateFetchResult(text, footerMatch);
+    if (fetchTruncated !== null) return fetchTruncated;
     const footerLine = footerMatch[1];
     const noticeLine = `Truncated by the client at ${TOOL_RESULT_CHARACTER_CAP} characters.`;
     const suffix = `\n${noticeLine}\n${footerLine}`;
@@ -447,6 +449,50 @@ function truncateToolResult(text) {
   const searchTruncated = truncateSearchResult(text);
   if (searchTruncated !== null) return searchTruncated;
   return text.slice(0, TOOL_RESULT_CHARACTER_CAP);
+}
+
+function truncateFetchResult(text, footerMatch) {
+  /* Recompute a fetched page's navigation lines after the cap trims its
+     window, or return null when the frame carries no such lines to rewrite.
+
+     `wrap_untrusted` (remote/web-mcp/server.py) writes `Start Index`,
+     `Returned Characters`, `Next Start Index`, and `Possibly Truncated` ahead
+     of the window it frames, so a paging model reads where to resume from
+     those lines rather than from arithmetic over a body it cannot measure.
+     Slicing the whole frame at a raw character offset left those lines
+     describing the server's own window instead of the shorter one this cap
+     actually kept, so `Next Start Index` told the model to resume past text
+     the cap had already dropped. This finds the window between `Possibly
+     Truncated: ...` and the footer, trims it to fit, and rewrites the three
+     lines -- with `Possibly Truncated` forced to `yes`, since a window this
+     client cut is truncated regardless of what the server reported -- to
+     describe the window the model actually receives. The `Content SHA-256`
+     line names a digest over the server's window, which a client-side cut
+     invalidates the same way, so that line is replaced with a notice rather
+     than left to claim a match that no longer holds. */
+  const headerMatch = text.match(
+    /^([\s\S]*?\nStart Index: )(\d+)\nReturned Characters: \d+\nNext Start Index: [^\n]+\nPossibly Truncated: (?:yes|no)\n/
+  );
+  if (!headerMatch) return null;
+  const startIndex = Number(headerMatch[2]);
+  const windowStart = headerMatch[0].length;
+  const windowEnd = text.length - footerMatch[0].length;
+  const window = text.slice(windowStart, windowEnd);
+  const footerLine = footerMatch[1];
+  const prefix = headerMatch[1].replace(
+    /\nContent SHA-256: [0-9a-f]+$/,
+    '\nContent SHA-256: not recomputed; the client truncated this window.'
+  );
+  const buildFrame = keptWindow => `${prefix}${startIndex}` +
+    `\nReturned Characters: ${keptWindow.length}` +
+    `\nNext Start Index: ${startIndex + keptWindow.length}` +
+    `\nPossibly Truncated: yes\n${keptWindow}\n${footerLine}`;
+  // Reserved against the original window's own digit counts, which are at
+  // least as wide as whatever the trimmed window produces, so the assembled
+  // frame never exceeds the cap once the actual (shorter) digits are used.
+  const overhead = buildFrame(window).length - window.length;
+  const budget = Math.max(0, TOOL_RESULT_CHARACTER_CAP - overhead);
+  return buildFrame(window.slice(0, budget));
 }
 
 function truncateSearchResult(text) {

@@ -113,6 +113,16 @@ grep -F 'const totalOmitted = serverOmitted + (blocks.length - kept.length);' \
     "$fallback_ui" >/dev/null
 grep -F 'const searchTruncated = truncateSearchResult(text);' "$fallback_ui" >/dev/null
 
+# A capped fetch frame rewrites its own navigation lines rather than leaving
+# them to describe the server's uncapped window: Returned Characters and Next
+# Start Index are recomputed from the window the client actually kept, and
+# Possibly Truncated is forced to yes since a client-side cut is truncation
+# regardless of what wrap_untrusted (remote/web-mcp/server.py) reported.
+grep -F 'function truncateFetchResult(text, footerMatch) {' "$fallback_ui" >/dev/null
+grep -F 'const fetchTruncated = truncateFetchResult(text, footerMatch);' "$fallback_ui" >/dev/null
+grep -F "\`\\nNext Start Index: \${startIndex + keptWindow.length}\`" "$fallback_ui" >/dev/null
+grep -F "\\nPossibly Truncated: yes\\n" "$fallback_ui" >/dev/null
+
 # Clear can land while a stream, an approval dialog, or a fetch is still
 # awaited, so every later write to `history` for that turn checks the
 # conversation generation Clear increments and discards the result rather
@@ -391,6 +401,64 @@ for (const malformed of [
         throw new Error(
             `a malformed field was not refused: ${JSON.stringify(malformed)}`);
     }
+}
+' "$fallback_ui"
+fi
+
+# node exercises truncateFetchResult against a full wrap_untrusted-shaped
+# frame, when node is on the path: Returned Characters and Next Start Index
+# must describe the window actually kept rather than the server's original
+# window, and Possibly Truncated must read yes even where the server's own
+# line read no.
+if command -v node >/dev/null 2>&1; then
+    node -e '
+const fs = require("fs");
+const source = fs.readFileSync(process.argv[1], "utf8");
+const match = source.match(
+    /const TOOL_RESULT_CHARACTER_CAP[\s\S]*?\nfunction truncateSearchResult[\s\S]*?\n}\n/
+);
+if (!match) throw new Error("truncateToolResult was not found in the served file");
+eval(match[0]);
+
+const nonce = "fetchNonce9";
+const startIndex = 4000;
+const window = "y".repeat(9000);
+const frame = [
+    `BEGIN UNTRUSTED WEB CONTENT [${nonce}]`,
+    "Source: https://example.org/raven2",
+    "Retrieved: 2026-01-05T00:00:00Z",
+    "Content SHA-256: " + "0".repeat(64),
+    `Start Index: ${startIndex}`,
+    `Returned Characters: ${window.length}`,
+    "Next Start Index: end",
+    "Possibly Truncated: no",
+    window,
+    `END UNTRUSTED WEB CONTENT [${nonce}]`
+].join("\n");
+if (frame.length <= 8000) throw new Error("the fixture fetch frame fits under the cap already");
+
+const capped = truncateToolResult(frame);
+if (capped.length > 8000) {
+    throw new Error(`a capped fetch frame still measures ${capped.length} characters`);
+}
+if (!capped.endsWith(`END UNTRUSTED WEB CONTENT [${nonce}]`)) {
+    throw new Error("a capped fetch frame lost its footer");
+}
+const returnedMatch = capped.match(/\nReturned Characters: (\d+)\n/);
+const nextMatch = capped.match(/\nNext Start Index: (\d+)\n/);
+const truncatedMatch = capped.match(/\nPossibly Truncated: (yes|no)\n/);
+if (!returnedMatch || !nextMatch || !truncatedMatch) {
+    throw new Error("a capped fetch frame lost one of its navigation lines");
+}
+const keptWindowLength = Number(returnedMatch[1]);
+if (keptWindowLength >= window.length) {
+    throw new Error("Returned Characters was not shrunk to the kept window");
+}
+if (Number(nextMatch[1]) !== startIndex + keptWindowLength) {
+    throw new Error("Next Start Index does not name the kept window'\''s own end");
+}
+if (truncatedMatch[1] !== "yes") {
+    throw new Error("Possibly Truncated was not forced to yes for a client-side cut");
 }
 ' "$fallback_ui"
 fi
