@@ -20,8 +20,6 @@ the largest window still fails.
 """
 
 import argparse
-import contextlib
-import hashlib
 import importlib.util
 import json
 import pathlib
