@@ -8,7 +8,10 @@
 # registry row and stops the run on divergence, naming the profile, the field,
 # and both values. A copy that drifts states a depth or a vision grant the
 # runtime never honours, so correcting this file rather than the registry is
-# what the refusal asks for.
+# what the refusal asks for. Every row meets that comparison, the tier rule, and
+# the ceiling rule whatever its execution_policy, so the ledger is validated
+# whole and an edit that turns one row into an emitting policy changes what
+# emits rather than what passes.
 #
 # context and validated_filled_depth are copied verbatim from the named
 # model_id's context_ceiling and validated_filled_depth columns in
@@ -25,10 +28,12 @@
 # naming the unknown state or the numeric gap, and the output file's
 # unvalidated-depth-override head marker. These rows set a policy starting
 # point rather than a measured optimum: no web-research arm has run against
-# any of them, and under the current registry every row here fails the
-# default rule -- five carry `-` and web-balanced requests 32768 against a
-# numeric 16384 -- so none emits without the override. Under the override,
-# all six emit, each tagged experimental.
+# any of them. Against the registry that evidence/depth-validation-32k/ moved
+# to 32768, five rows request a depth that row has filled and decoded and
+# emit under the default rule with no experimental tag. web-vision alone
+# requests 24576 against a `-`, so it emits under
+# QWEN_WEB_ALLOW_UNVALIDATED_DEPTH=1 and carries the marker and the tag when
+# it does.
 #
 # web_mode is `validator-gated` where a later validator is expected to compare
 # emitted tool arguments against the user's own authorization before a fetch
@@ -48,9 +53,9 @@
 # execution guard.
 #
 # profile_id	model_id	web_mode	context	validated_filled_depth	max_results	max_fetches	max_chars_per_fetch	multi_source	vision_allowed	tool_selection	execution_policy
-web-balanced	qwen38-4b-distill	validator-gated	32768	16384	8	3	12000	yes	no	9/10	refused
-web-compact	qwen35-2b	validator-gated	8192	-	5	2	12000	yes	yes	9/10	refused
-web-fast-vl	lfm25-vl-16b	validator-gated	8192	-	5	2	12000	yes	yes	8/10	refused
-web-lookup	qwen35-08b	ui-mediated	8192	-	3	1	12000	no	no	9/10	refused
-web-reader	qwen38-2b-distill	ui-mediated	32768	-	5	2	12000	yes	no	2/10	refused
+web-balanced	qwen38-4b-distill	validator-gated	32768	32768	8	3	12000	yes	no	9/10	refused
+web-compact	qwen35-2b	validator-gated	8192	32768	5	2	12000	yes	yes	9/10	refused
+web-fast-vl	lfm25-vl-16b	validator-gated	8192	32768	5	2	12000	yes	yes	8/10	refused
+web-lookup	qwen35-08b	ui-mediated	8192	32768	3	1	12000	no	no	9/10	refused
+web-reader	qwen38-2b-distill	ui-mediated	32768	32768	5	2	12000	yes	no	2/10	refused
 web-vision	qwen35-4b-base	ui-mediated	24576	-	5	2	12000	yes	yes	8/10	refused

@@ -107,6 +107,13 @@ set -eu
 # `required` is yes and `none` is no; tool_selection reads raw_tool_selection,
 # the graded score unaided by any execution guard.
 #
+# Every row meets the registry, the tier rule, and the ceiling rule before the
+# emission gate reads its execution_policy. The ledger is one claimed policy
+# document, so a row that emits nothing today still states a depth and a vision
+# grant a reader trusts, and validating the emitting rows alone left checked-in
+# drift standing until a later edit to one row's execution_policy turned a
+# previously successful ledger into an error.
+#
 # A profile_id names an INI section, an MCP configuration file, and a served
 # alias, so it is restricted to a leading alphanumeric followed by
 # alphanumerics, underscores, and hyphens. A path separator or a `..` component
@@ -372,19 +379,7 @@ while IFS='	' read -r profile_id model_id _web_mode context \
         sentinel-refused "$profile_id"
 
     case $execution_policy in
-        refused)
-            printf 'web_preset_skipped profile=%s execution_policy=refused\n' \
-                "$profile_id" >&2
-            continue
-            ;;
-        validator-gated)
-            if [ "$authorizer_ready" != 1 ]; then
-                printf 'web_preset_skipped profile=%s execution_policy=validator-gated authorizer=absent\n' \
-                    "$profile_id" >&2
-                continue
-            fi
-            ;;
-        ui-mediated) ;;
+        refused | validator-gated | ui-mediated) ;;
         *)
             printf 'profile %s carries execution_policy %s, which is outside the vocabulary\n' \
                 "$profile_id" "$execution_policy" >&2
@@ -448,6 +443,27 @@ while IFS='	' read -r profile_id model_id _web_mode context \
             "$profile_id" "$context" "$model_id" "$context_ceiling" >&2
         exit 1
     fi
+
+    # The registry join, the copied-field comparison, the tier rule, and the
+    # ceiling rule above run for every row, because the ledger is one claimed
+    # policy document and a stale field states a depth or a vision grant the
+    # runtime never honours whether or not that row emits today. The emission
+    # gate runs here, so changing one row's execution_policy turns a validated
+    # ledger into an emitting one rather than into an error.
+    case $execution_policy in
+        refused)
+            printf 'web_preset_skipped profile=%s execution_policy=refused\n' \
+                "$profile_id" >&2
+            continue
+            ;;
+        validator-gated)
+            if [ "$authorizer_ready" != 1 ]; then
+                printf 'web_preset_skipped profile=%s execution_policy=validator-gated authorizer=absent\n' \
+                    "$profile_id" >&2
+                continue
+            fi
+            ;;
+    esac
 
     # Unknown is not permission: a `-` field and a numeric field the context
     # exceeds both fail the default rule. The override admits either state

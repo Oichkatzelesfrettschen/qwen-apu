@@ -974,6 +974,62 @@ else
     report gated_requires_search_key_file message_omits_profile
 fi
 
+# The ledger is one claimed policy document, so a refused row meets the registry
+# join, the copied-field comparison, the tier rule, and the ceiling rule that an
+# emitting row meets. A run whose emitting row is sound still stops on the
+# refused row's drift.
+for refused_drift_case in depth tier ceiling unknown_model; do
+    refused_drift_profiles=$work/web-profiles-refused-drift.tsv
+    {
+        printf 'web-fixture-emitting\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tui-mediated\n'
+        case $refused_drift_case in
+            depth)
+                printf 'web-fixture-stale\tfixture-production\tvalidator-gated\t8192\t16384\t5\t2\t12000\tyes\tno\t9/10\trefused\n'
+                ;;
+            tier)
+                printf 'web-fixture-stale\tfixture-archive\tvalidator-gated\t8192\t-\t5\t2\t12000\tyes\tno\t9/10\trefused\n'
+                ;;
+            ceiling)
+                printf 'web-fixture-stale\tfixture-production\tvalidator-gated\t32768\t8192\t5\t2\t12000\tyes\tno\t9/10\trefused\n'
+                ;;
+            unknown_model)
+                printf 'web-fixture-stale\tfixture-absent\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\trefused\n'
+                ;;
+        esac
+    } >"$refused_drift_profiles"
+    if build "$refused_drift_profiles" "$work/presets-refused-drift.ini" \
+        env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+        QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
+        QWEN_WEB_STATE_DIR="$web_state_directory" \
+        >"$work/refused-drift.log" 2>"$work/refused-drift.err"; then
+        report "refused_row_${refused_drift_case}_drift_refused" accepted
+    elif grep -q 'web-fixture-stale' "$work/refused-drift.err"; then
+        report "refused_row_${refused_drift_case}_drift_refused" ok
+    else
+        report "refused_row_${refused_drift_case}_drift_refused" message_omits_profile
+    fi
+done
+
+# The checked-in ledger is read against the checked-in registry, so drift in
+# either file fails here rather than at the first edit that turns a row into an
+# executing policy. Every shipped row reads `refused`, so the run stops on the
+# empty emission and every message before it names a skipped profile.
+checked_in_out=$work/checked-in
+mkdir -p "$checked_in_out"
+if QWEN_MODEL_ROOT=$policy_model_root \
+    env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
+    QWEN_WEB_STATE_DIR="$web_state_directory" \
+    "$builder" "$checked_in_out/presets.ini" \
+    >"$work/checked-in.log" 2>"$work/checked-in.err"; then
+    report checked_in_ledger_matches_registry emitted_a_section
+elif grep -q 'withholds an executing policy' "$work/checked-in.err"; then
+    report checked_in_ledger_matches_registry ok
+else
+    report checked_in_ledger_matches_registry diverges
+    cat "$work/checked-in.err" >&2
+fi
+
 if [ "$failures" -ne 0 ]; then
     printf 'test-web-presets: %d check(s) failed\n' "$failures" >&2
     exit 1

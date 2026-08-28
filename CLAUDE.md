@@ -244,7 +244,10 @@ emits a section carrying `LLAMA_ARG_MCP_SERVERS_CONFIG` only under
 `QWEN_WEB_AUTHORIZER_READY=1`, and `ui-mediated` emits a section naming no
 configuration because the UI performs the retrieval. Every checked-in row reads
 `refused`, so the generator against the shipped ledger emits nothing and says
-so. The `# qwen-web-presets: unvalidated-depth-override` marker forces the
+so. Every row still meets the registry join, the copied-field comparison, the
+tier rule, and the ceiling rule before that gate, so the ledger is validated
+whole and an edit to one row's `execution_policy` changes what emits rather
+than turning a previously successful ledger into an error. The `# qwen-web-presets: unvalidated-depth-override` marker forces the
 listener to loopback the way the quarantine marker does, and
 `remote/qwen-web-launch.sh` binds 127.0.0.1 with `QWEN_ROUTER_MAX=1` and refuses
 a caller who asked for any other listener.
