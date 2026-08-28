@@ -65,6 +65,28 @@
           "POST /tools runs one named tool with the caller's params"
         ]
       }
+    ],
+    "raven2 vulkan decode rate": [
+      {
+        "title": "Vulkan decode on Raven2",
+        "url": "https://example.org/raven2",
+        "publishedDate": "2026-01-05",
+        "author": "A. Measurer",
+        "highlights": [
+          "decode reaches 3.07 tok/s on the 4B distill",
+          "two Vega compute units share one DDR4 controller"
+        ]
+      },
+      {
+        "title": "MCP tool routes in llama-server",
+        "url": "https://docs.example.net/llama-server-tools",
+        "publishedDate": "2026-03-03",
+        "author": "",
+        "highlights": [
+          "GET /tools lists the wrapped MCP tools",
+          "POST /tools runs one named tool with the caller's params"
+        ]
+      }
     ]
   },
   "contents": {

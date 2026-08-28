@@ -95,7 +95,11 @@ serving. `webui/index.html` is an APU-specific adaptation of the MIT-licensed
 qwen-lab single-file diagnostic page. It uses the loaded server's `/tokenize`
 route, accepts text attachments, exposes reasoning separately, and prefers
 server-reported prefill and decode timing. It contains no external resources
-and starts no second process on the laptop.
+and starts no second process on the laptop. `qwen-webui-control.sh` serves
+the pinned llama UI build under `webui-llama-ui/` when that directory holds
+an `index.html`, and `qwen-web-launch.sh` sets `QWEN_STATIC_PATH` to `webui/`
+because the web path's executor is this page: it scopes `GET /tools` by model
+and posts the routing key beside the tool, which the pinned build does not.
 
 ## Start and connect
 

@@ -358,12 +358,14 @@ else
 fi
 # The page the router serves is the executor the browser runs, so its own
 # source is read for the route shape: GET /tools carrying ?model= and the
-# POST body carrying the model key beside tool and params.
+# POST body carrying the model key beside tool and params. The web launcher
+# serves webui/index.html, and a router serving any other page fails here
+# because the browser arm below would then run a page with no executor.
 call page GET "$router_origin/"
 if grep -q 'tools?model=' "$call_out" && grep -q 'model, tool: toolName, params' "$call_out"; then
     record ui_executor_targets_router pass 'served page composes ./tools?model= and posts {model, tool, params}'
 else
-    record ui_executor_targets_router observed "served page is not the fallback UI or lacks the model-scoped routes (status=$call_status)"
+    record ui_executor_targets_router fail "served page is not the fallback UI or lacks the model-scoped routes (status=$call_status)"
 fi
 
 # 5. Broker identity and the session secret's gates.
@@ -587,6 +589,85 @@ if printf '%s' "$final_answer" | grep -q '3\.07'; then
     record model_reads_tool_result pass "$(printf '%s' "$final_answer" | tr '\n' ' ' | head -c 200)"
 else
     record model_reads_tool_result observed "status=$call_status $(printf '%s' "$final_answer" | tr '\n' ' ' | head -c 200)"
+fi
+
+# 9b. The browser runs the served page through the same turn: a headless
+# Chromium on the appliance loads the page at the router origin, sends the
+# prompt, approves the one dialog, and reports every request the page's own
+# fetch made. The checks read that log rather than the page source, so they
+# fail when the page posts to the child port, omits the routing key, or runs
+# the search without a grant, whatever its source says.
+browser_report=$output_directory/browser-turn.json
+if command -v chromium >/dev/null 2>&1; then
+    browser_prompt="Search the web with the query $query and report the decode rate the result states."
+    if python3 "$script_directory/web-mcp/drive-fallback-page.py" --origin "$router_origin" \
+            --prompt "$browser_prompt" >"$browser_report" 2>"$output_directory/browser-turn.err"; then
+        browser_origin=$(jq -r '.origin // empty' "$browser_report")
+        if [ "$browser_origin" = "$router_origin" ]; then
+            record browser_page_origin pass "origin=$browser_origin model=$(jq -r '.model' "$browser_report")"
+        else
+            record browser_page_origin fail "origin=$browser_origin"
+        fi
+        listing_request=$(jq -r --arg u "$router_origin/tools?model=$profile_id&autoload=true" \
+            '[.requests[] | select(.method == "GET" and .url == $u)] | length' "$browser_report")
+        if [ "$listing_request" -ge 1 ]; then
+            record browser_lists_tools_via_router pass "GET /tools?model=$profile_id&autoload=true count=$listing_request"
+        else
+            record browser_lists_tools_via_router fail "requests=$(jq -c '[.requests[].url]' "$browser_report" | head -c 300)"
+        fi
+        grant_request=$(jq -r --arg u "$broker_origin/grant" \
+            '[.requests[] | select(.method == "POST" and .url == $u)] | length' "$browser_report")
+        if [ "$grant_request" -ge 1 ]; then
+            record browser_grant_from_broker pass "POST $broker_origin/grant count=$grant_request"
+        else
+            record browser_grant_from_broker fail "no grant request in the page log"
+        fi
+        search_post=$(jq -c --arg u "$router_origin/tools" \
+            '[.requests[] | select(.method == "POST" and .url == $u) | (.body | fromjson? // {}) | select(.tool == "web_search_exa")] | first // empty' "$browser_report")
+        if [ -n "$search_post" ] && \
+           [ "$(printf '%s' "$search_post" | jq -r '.model')" = "$profile_id" ] && \
+           [ "$(printf '%s' "$search_post" | jq -r '.stream')" = false ] && \
+           [ "$(printf '%s' "$search_post" | jq -r '.params.authorization // empty | length')" -gt 0 ] && \
+           [ "$(printf '%s' "$search_post" | jq -r '.params.query')" = "$(jq -r '.dialog.args.query // empty' "$browser_report")" ]; then
+            record browser_search_via_router pass "POST /tools model=$profile_id tool=web_search_exa stream=false grant=present query=$(printf '%s' "$search_post" | jq -r '.params.query')"
+        else
+            record browser_search_via_router fail "$(printf '%s' "$search_post" | jq -c 'del(.params.authorization)' 2>/dev/null | head -c 300)"
+        fi
+        off_router=$(jq -r --arg r "$router_origin/" --arg b "$broker_origin/" \
+            '[.requests[] | select((.url | startswith($r) | not) and (.url | startswith($b) | not))] | length' "$browser_report")
+        if [ "$off_router" -eq 0 ]; then
+            record browser_requests_stay_on_router_and_broker pass "every page request names $router_origin or $broker_origin"
+        else
+            record browser_requests_stay_on_router_and_broker fail "$(jq -c --arg r "$router_origin/" --arg b "$broker_origin/" '[.requests[] | select((.url | startswith($r) | not) and (.url | startswith($b) | not)) | .url]' "$browser_report" | head -c 300)"
+        fi
+        tool_message=$(jq -r '[.history[] | select(.role == "tool")] | first | .content // empty' "$browser_report")
+        if printf '%s' "$tool_message" | grep -q '^Result ID: '; then
+            record browser_tool_result_in_transcript pass "$(printf '%s' "$tool_message" | head -c 120 | tr '\n' ' ')"
+        else
+            record browser_tool_result_in_transcript fail "$(printf '%s' "$tool_message" | head -c 200 | tr '\n' ' ')"
+        fi
+        fetch_post=$(jq -c --arg u "$router_origin/tools" \
+            '[.requests[] | select(.method == "POST" and .url == $u) | (.body | fromjson? // {}) | select(.tool == "web_fetch_exa")] | first // empty' "$browser_report")
+        if [ -n "$fetch_post" ]; then
+            record browser_fetch_via_router observed "model=$(printf '%s' "$fetch_post" | jq -r '.model') result_id=$(printf '%s' "$fetch_post" | jq -r '.params.result_id // empty' | head -c 40)"
+        else
+            record browser_fetch_via_router observed 'the model proposed no fetch in this turn'
+        fi
+        browser_answer=$(jq -r '[.history[] | select(.role == "assistant")] | last | .content // empty' "$browser_report")
+        if [ -n "$browser_answer" ]; then
+            record browser_final_answer pass "$(printf '%s' "$browser_answer" | tr '\n' ' ' | head -c 200)"
+        else
+            record browser_final_answer fail 'the transcript ends without an assistant answer'
+        fi
+        # The grant is spent inside the request the browser sent, so the
+        # retained page log keeps the fields and drops the token.
+        jq '.requests |= map(.body |= (if . == null then null else (fromjson? // .) end) | .body |= (if type == "object" and .params? then .params |= del(.authorization) else . end))' \
+            "$browser_report" >"$browser_report.tmp" && mv "$browser_report.tmp" "$browser_report"
+    else
+        record browser_turn_completed fail "$(tail -c 300 "$output_directory/browser-turn.err" | tr '\n' ' ')"
+    fi
+else
+    record browser_turn_completed fail 'chromium is absent, so the served page was not run'
 fi
 
 # 10. Secret hygiene: key bytes, grant, session secret, and query text stay out

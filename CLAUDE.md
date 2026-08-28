@@ -473,7 +473,17 @@ the fake provider: the promoted `llama-server`, a real router child, the
 broker, and the MCP child all execute, and every request the page would make
 runs with curl in its place on the router port alone, from
 `GET /tools?model=` through one grant, one search, one fetch by Result ID,
-and each refusal the design relies on. The generated MCP configuration
+and each refusal the design relies on. The page itself then runs the same
+turn: `qwen-web-launch.sh` serves `webui/index.html` rather than the pinned
+llama UI build, because that build neither scopes `GET /tools` by model nor
+posts the routing key, and `remote/web-mcp/drive-fallback-page.py` opens the
+served page in the appliance's headless Chromium over the DevTools protocol
+with the standard library alone, sends the prompt, approves the one dialog,
+and reports every request the page's own `fetch` made. The admission reads
+that log: the listing and the search post name the router port with the
+model beside the tool, the grant comes from the broker, no request leaves
+those two origins, and the transcript carries the Result ID. A router
+serving any other page fails the run. The generated MCP configuration
 carries the names `server.py` reads -- `QWEN_WEB_EXA_KEY_FILE`,
 `QWEN_WEB_FAKE_FIXTURES`, `QWEN_WEB_MAX_FETCHES_PER_SEARCH`,
 `QWEN_WEB_MAX_RESULTS`, `QWEN_WEB_MAX_CHARS_PER_FETCH` -- so the ledger's

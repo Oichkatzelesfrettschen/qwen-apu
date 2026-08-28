@@ -48,10 +48,18 @@ set -eu
     printf 'QWEN_WEB_PROFILE=%s\n' "${QWEN_WEB_PROFILE:-unset}"
     printf 'QWEN_WEB_PROVIDER=%s\n' "${QWEN_WEB_PROVIDER:-unset}"
     printf 'QWEN_WEB_PROFILES=%s\n' "${QWEN_WEB_PROFILES:-unset}"
+    printf 'QWEN_STATIC_PATH=%s\n' "${QWEN_STATIC_PATH:-unset}"
 } >"$QWEN_WEB_LAUNCH_RECORD"
 EOF
 chmod +x "$harness/qwen-launch.sh"
 launcher=$harness/qwen-web-launch.sh
+# The wrapper serves the fallback page beside its own directory, so the
+# harness carries a page holding the two route shapes the wrapper reads for.
+mkdir -p "$work/webui"
+# shellcheck disable=SC2016
+printf '%s\n' 'fetch(`./tools?model=${encodeURIComponent(selectedModel)}&autoload=true`)' \
+    'JSON.stringify({ model, tool: toolName, params, stream: false })' \
+    >"$work/webui/index.html"
 
 # Every launch below carries a usable signing key, because the wrapper requires
 # one before it forwards anything; the arms that test the key rules override
@@ -113,6 +121,7 @@ if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
     grep -qx 'QWEN_ROUTER_MAX=1' "$record" || outcome=wrong_models_max
     grep -qx 'QWEN_BIND_HOST=127.0.0.1' "$record" || outcome=wrong_bind_host
     grep -qx 'profile=low-async' "$record" || outcome=profile_dropped
+    grep -qx "QWEN_STATIC_PATH=$harness/../webui" "$record" || outcome=static_path_dropped
     report wrapper_forwards_web_router_environment "$outcome"
     broker_outcome=ok
     grep -qx 'QWEN_WEB_BROKER=1' "$record" || broker_outcome=marker_unset
@@ -242,6 +251,22 @@ else
     grep -q 'QWEN_WEB_PROVIDER must be exa or fake' "$work/provider.err" ||
         outcome=missing_message
     report unknown_provider_refused "$outcome"
+fi
+# A page without the model-scoped routes is refused before any launch, since
+# the pinned llama UI build is what an unset static path would otherwise serve.
+other_page=$work/other-ui
+mkdir -p "$other_page"
+printf '<html>upstream ui</html>\n' >"$other_page/index.html"
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_STATIC_PATH=$other_page \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/static.log" 2>"$work/static.err"; then
+    report foreign_page_refused accepted
+else
+    outcome=ok
+    grep -q 'composes no model-scoped /tools request' "$work/static.err" ||
+        outcome=missing_message
+    report foreign_page_refused "$outcome"
 fi
 ledger_copy=$work/profiles.tsv
 printf 'profile_id\n' >"$ledger_copy"

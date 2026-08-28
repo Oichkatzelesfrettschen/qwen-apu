@@ -1262,8 +1262,21 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
         answerCall(callId, toolName, `The fetch did not run: ${error.message || error}`, turnGeneration);
         continue;
       }
+      if (requestModel !== proposalModel) {
+        // A Result ID is signed by the MCP child of the profile that ran the
+        // search, so a fetch posted under a picker value the user moved to
+        // mid-stream would route the ID into another child, which refuses
+        // the signature. The fetch continues under the proposing model alone
+        // and a changed picker is named here rather than surfaced as an
+        // opaque signature failure.
+        refused = true;
+        answerCall(callId, toolName,
+          `The fetch did not run: it was proposed by model ${proposalModel}, ` +
+          `the current model is ${requestModel}.`, turnGeneration);
+        continue;
+      }
       fetchBudget.remaining--;
-      answerCall(callId, toolName, await executeWebTool(toolName, params, requestModel), turnGeneration);
+      answerCall(callId, toolName, await executeWebTool(toolName, params, proposalModel), turnGeneration);
       continue;
     }
     if (toolName !== WEB_SEARCH_TOOL_NAME) {
@@ -1311,7 +1324,7 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
     const outcome = await approveWebSearch(fields, proposalModel);
     if (outcome.decision === 'once') {
       answerCall(callId, toolName, await executeWebTool(
-        toolName, searchRequestParams(fields, outcome.authorization), requestModel), turnGeneration);
+        toolName, searchRequestParams(fields, outcome.authorization), proposalModel), turnGeneration);
     } else {
       refused = true;
       answerCall(callId, toolName, outcome.reason

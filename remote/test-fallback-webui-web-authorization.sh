@@ -156,8 +156,19 @@ grep -F 'if (turnGeneration !== conversationGeneration) return;' "$fallback_ui" 
 grep -F 'const WEB_FETCH_BUDGET_PER_TURN = 2;' "$fallback_ui" >/dev/null
 grep -F 'if (fetchBudget.remaining <= 0) {' "$fallback_ui" >/dev/null
 grep -F 'fetchBudget.remaining--;' "$fallback_ui" >/dev/null
-grep -F 'answerCall(callId, toolName, await executeWebTool(toolName, params, requestModel), turnGeneration);' \
+# The MCP child of the profile that ran the search signed the Result ID, so
+# the fetch posts under the proposing model and a picker moved mid-stream
+# refuses by name instead of routing the ID into another child.
+grep -F 'answerCall(callId, toolName, await executeWebTool(toolName, params, proposalModel), turnGeneration);' \
     "$fallback_ui" >/dev/null
+grep -F 'The fetch did not run: it was proposed by model ${proposalModel}, ' \
+    "$fallback_ui" >/dev/null
+grep -F 'toolName, searchRequestParams(fields, outcome.authorization), proposalModel), turnGeneration);' \
+    "$fallback_ui" >/dev/null
+if grep -F 'executeWebTool(toolName, params, requestModel)' "$fallback_ui" >/dev/null; then
+    printf 'a fetch still executes under the picker value rather than the proposing model\n' >&2
+    exit 1
+fi
 
 # One completion can emit several web_search_exa calls in one round, and
 # CONTINUATION_CAP bounds only the round count, so a per-turn search budget

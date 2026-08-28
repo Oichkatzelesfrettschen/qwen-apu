@@ -28,9 +28,10 @@ on the source host.
 
 | Artifact | Bytes | SHA-256 |
 | --- | ---: | --- |
-| `llama-server` | 57,475,792 | `3d5b158160b08cf897bb05b47186a13f67e8a17def31012f2f8282f12e95cb08` |
-| `llama-cli` | 57,643,992 | `83cc86e271b7fe784d208c00ca22d1fe6875e7a956790d16b55a9e617d23cc5b` |
-| `llama-mtmd-cli` | 55,610,680 | `96e01162de9b4f5c1ebbaed246ad9cfe8964812c6e006c468df9cf44322cba52` |
+| `llama-server` | 57,696,808 | `4117a9c4d58e530c3c5ef6934596ae6d257ca61ef80c5f0f8a5ee71d1d63ca79` |
+| `llama-cli` | 57,865,008 | `59b8154a83cb3da1555e07330a7ca7bf5cefd3de2603791302f2c29388e9c21c` |
+| `llama-mtmd-cli` | 55,806,024 | `dd094cfbddf4bc971c003a3612b8a83a34c6f39e05b6cac871ed78cdd98e54af` |
+| `llama-bench`, Vulkan production | 54,160,040 | `557d6690d338bc79b81ea690762a0d8987c0ca66f3c122a5fcc0f2a8420df092` |
 | `llama-bench`, dual backend | 17,920 | `5d8dc29d0b012f4b8dd5057fcfe0f1786311835efe0445a6608000c8e9536d34` |
 | `libllama-bench-impl.so` | 472,200 | `b69ad09e4623116c5e6756c5210b9e29e8e2451e95c685e383ae9b82b28fae53` |
 | `libggml-hip.so` | 66,553,472 | `1034a6fb7ac6319608f69e2b351b56c4c7d6c450cf092cb79a16454072114266` |
@@ -98,6 +99,28 @@ router that holds no tools of its own as a proxy to the child the request
 selects, so the fixed router port serves the route the fallback UI targets.
 The replay verifier checks the resulting six modified source files byte for
 byte against their admitted hashes.
+
+The four rows above are the `raven2-vulkan-production` preset built from that
+six-patch source and promoted to `build-appliance-current` by
+`remote/promote-llama-build.sh`, which `remote/verify-runtime-artifacts.sh`
+checks. The preset links statically (`BUILD_SHARED_LIBS=OFF`), so the build
+directory owns no shared object and the executable's load closure is the
+executable plus the distribution objects `ldd` resolves and the RADV ICD the
+Vulkan loader opens by `radeon_icd.x86_64.json`.
+`evidence/load-closure/raven2-vulkan-production.tsv` records every member of
+that closure with its byte count, SHA-256, and owning package version; all
+four executables resolve the same six distribution objects.
+
+The closure this one replaced is retained as rollback identity, since
+`promote-llama-build.sh rollback` restores it by one rename:
+`llama-server` 57,475,792 bytes
+`3d5b158160b08cf897bb05b47186a13f67e8a17def31012f2f8282f12e95cb08`,
+`llama-cli` 57,643,992 bytes
+`83cc86e271b7fe784d208c00ca22d1fe6875e7a956790d16b55a9e617d23cc5b`, and
+`llama-mtmd-cli` 55,610,680 bytes
+`96e01162de9b4f5c1ebbaed246ad9cfe8964812c6e006c468df9cf44322cba52`, built
+from the five-patch series whose `server.cpp` was upstream and which answered
+`403 feature_disabled` on the router port.
 
 The retained llama.cpp executables and derived source patches carry the
 upstream MIT terms in `licenses/llama.cpp-LICENSE`. The external GGUF model

@@ -30,7 +30,11 @@ child:          the router's model process, loopback port assigned at load
 MCP child:      python3 server.py --provider fake, timeout_ms 30000
 fixture:        remote/test-fixtures/web-fake-provider.json, with two delayed
                 queries at 5 s and 40 s
-outage:         20:14:22Z to 20:16:53Z, ordinary router restored
+page:           webui/index.html, served by qwen-web-launch.sh through
+                QWEN_STATIC_PATH; the ordinary router keeps the pinned llama UI
+browser:        Chromium 151 headless on the appliance, driven over the
+                DevTools protocol by remote/web-mcp/drive-fallback-page.py
+outage:         21:23:11Z to 21:29:13Z, ordinary router restored
 ```
 
 The promotion ran the tree's own gate first (`promotion-chain.log`): one token
@@ -61,12 +65,20 @@ secret hygiene, teardown residue, roster restoration.
 
 ## Results
 
-Two runs were made on this closure. The first passed every check but the
+Four runs were made on this closure. The first passed every check but the
 eviction one, where the harness read the roster while the first model was
 still `loading` because `POST /models/load` returns before the child is
 resident; the harness now polls the roster until the model reads `loaded`.
-The second run is retained whole here with the grants, session secret, and
-key digest redacted.
+The second passed every check and recorded the page-side check as observed,
+because the router served the pinned llama UI build. The third served the
+fallback page and ran the browser arm, which passed every routing check and
+failed `browser_tool_result_in_transcript`: the fake provider keys results on
+the exact query, the fixture held `raven2 vulkan decode`, and the model
+composed `raven2 vulkan decode rate` in the dialog, so the search executed
+through the router with a grant and returned `No results.`;
+`browser-turn-fixture-miss.json` retains that turn. The fixture now carries
+the query the model composes, and the fourth run is retained whole here with
+the grants, session secret, and key digest redacted.
 
 | check | result |
 | --- | --- |
@@ -103,6 +115,25 @@ key digest redacted.
 | `GET /tools?model=lfm25-vl-16b` on the ordinary router | 403 `feature_disabled` |
 | load `qwen35-08b` then `qwen38-2b-distill` under `models-max=1` | first `loaded`, then `unloaded`; second `loaded` |
 
+The browser arm's checks read the request log the page's own `fetch` wrote:
+
+| check | result |
+| --- | --- |
+| served page composes the model-scoped routes | pass, `webui/index.html` |
+| page origin and selected model | `http://127.0.0.1:8080`, `web-balanced-admission` |
+| listing | `GET /tools?model=web-balanced-admission&autoload=true`, once |
+| grant | `POST 127.0.0.1:8571/grant`, once, after `GET /session` |
+| search | `POST /tools` `{model: web-balanced-admission, tool: web_search_exa, stream: false}`, grant present, query equal to the dialog's |
+| every request | names the router origin or the broker origin |
+| tool message in the transcript | `Result ID:` present, the fixture's two results |
+| fetch | observed: the model proposed none |
+| final answer | pass, `3.07 tokens/second` read from the tool result |
+
+The page made six requests in the turn: the listing, the completion that
+proposed the search, the session secret, the grant, the search, and the
+completion that read the result. `browser-turn.json` retains them with the
+grant removed from the search body.
+
 ## What the routing key proves
 
 `server-tools.cpp` reads `tool`, `params`, and `stream` from the body and
@@ -138,9 +169,11 @@ listener, the identity-checked broker, the human's approval, and the
 single-use grant all still gate a call, and the patch forwards a route
 without adding a grant.
 
-The browser was not in the loop, and the appliance serves the pinned llama UI
-build rather than the fallback page, so the page-side check is recorded as
-observed. The fallback page's request shape is locked by
-`remote/test-fallback-webui-web-authorization.sh` against the same routes the
-harness drove. The checked-in ledger stays `refused`; promotion of a web
-profile waits on the live Exa smoke and the graded web rows.
+The browser ran the served page through the same turn, so the executor the
+user runs is measured rather than read: its listing and its search reached
+the router port with the model beside the tool, its grant came from the
+broker under the session secret, and nothing it sent left those two origins.
+The dialog approved was the page's own, clicked by the driver where a user
+would click it; the driver adds one `fetch` wrapper for the log and no other
+code. The checked-in ledger stays `refused`; promotion of a web profile waits
+on the live Exa smoke through this same page and the graded web rows.
