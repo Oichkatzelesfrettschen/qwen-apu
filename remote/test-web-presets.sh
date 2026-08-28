@@ -3,7 +3,7 @@ set -eu
 
 # Tests remote/build-web-presets.sh against temporary copies of models.tsv and
 # web-profiles.tsv, so a case that must fail (an over-ceiling context, an
-# over-depth context, a missing MCP config) never depends on editing the
+# unvalidated depth, a missing MCP config) never depends on editing the
 # checked-in ledgers.
 
 if [ "$#" -ne 0 ]; then
@@ -23,15 +23,16 @@ report() {
     [ "$2" = ok ] || failures=$((failures + 1))
 }
 
-# A single fabricated model row carrying a known context_ceiling and
-# validated_filled_depth, so the geometry-key and refusal checks below read
-# against fixed values rather than against whatever the live registry states
-# on the day the test runs.
+# Four fabricated model rows, one per tier-and-depth combination the
+# refusal rules below distinguish: a production row with a numeric validated
+# depth, a candidate row with a numeric validated depth, a candidate row
+# whose depth reads `-`, and an archive row.
 model_registry=$work/models.tsv
 cat >"$model_registry" <<'EOF'
 # id	role	model_file	fetch_script	context_default	context_ceiling	context_target	cache_type_k	cache_type_v	flash_attention	projector	projector_fetch_script	decode_tok_s	prefill_tok_s	quality	tier	batch	ubatch	validated_filled_depth	validation_evidence	raw_tool_selection	guarded_tool_execution
 fixture-production	fixture-role	Fixture-GGUF/fixture.gguf	download-fixture.sh	8192	16384	32768	q8_0	q4_0	on	none	-	1.00	1.00	untested	production	128	32	8192	evidence/fixture.md	9/10	refused
-fixture-candidate	fixture-role	Fixture-GGUF/fixture.gguf	download-fixture.sh	8192	16384	32768	q8_0	q4_0	on	none	-	1.00	1.00	untested	candidate	128	32	-	-	9/10	refused
+fixture-candidate-validated	fixture-role	Fixture-GGUF/fixture.gguf	download-fixture.sh	8192	16384	32768	q8_0	q4_0	on	none	-	1.00	1.00	untested	candidate	128	32	8192	evidence/fixture.md	9/10	refused
+fixture-candidate-unknown	fixture-role	Fixture-GGUF/fixture.gguf	download-fixture.sh	8192	16384	32768	q8_0	q4_0	on	none	-	1.00	1.00	untested	candidate	128	32	-	-	9/10	refused
 fixture-archive	fixture-role	Fixture-GGUF/fixture.gguf	download-fixture.sh	8192	16384	32768	q8_0	q4_0	on	none	-	1.00	1.00	untested	archive	128	32	-	-	9/10	refused
 EOF
 
@@ -46,9 +47,24 @@ cat >"$web_profiles_over_ceiling" <<'EOF'
 web-fixture-over-ceiling	fixture-production	validator-gated	32768	8192	5	2	12000	yes	no	9/10	refused
 EOF
 
+# Candidate tier, numeric validated_filled_depth of 8192, context 16384: the
+# exceeded-numeric-depth case.
 web_profiles_over_depth=$work/web-profiles-over-depth.tsv
 cat >"$web_profiles_over_depth" <<'EOF'
-web-fixture-over-depth	fixture-production	validator-gated	16384	8192	5	2	12000	yes	no	9/10	refused
+web-fixture-over-depth	fixture-candidate-validated	validator-gated	16384	8192	5	2	12000	yes	no	9/10	refused
+EOF
+
+# Candidate tier, validated_filled_depth `-`: the unknown-depth case.
+web_profiles_unknown_depth=$work/web-profiles-unknown-depth.tsv
+cat >"$web_profiles_unknown_depth" <<'EOF'
+web-fixture-unknown-depth	fixture-candidate-unknown	validator-gated	8192	-	5	2	12000	yes	no	9/10	refused
+EOF
+
+# Production tier at an unvalidated depth: the override never admits this
+# one, regardless of QWEN_WEB_ALLOW_UNVALIDATED_DEPTH.
+web_profiles_production_unvalidated=$work/web-profiles-production-unvalidated.tsv
+cat >"$web_profiles_production_unvalidated" <<'EOF'
+web-fixture-production-unvalidated	fixture-production	validator-gated	16384	8192	5	2	12000	yes	no	9/10	refused
 EOF
 
 web_profiles_archive=$work/web-profiles-archive.tsv
@@ -68,8 +84,9 @@ build() {
         "$@" "$builder" "$build_output"
 }
 
-# A profile within the ceiling and within the validated depth is accepted and
-# carries every required key.
+# A profile within the ceiling and within the validated depth is accepted,
+# carries every required key, and carries no experimental tag or override
+# marker.
 presets_ok=$work/presets-ok.ini
 if build "$web_profiles_ok" "$presets_ok" \
     env QWEN_WEB_MCP_CONFIG="$mcp_config" \
@@ -106,6 +123,20 @@ if [ -f "$presets_ok" ] &&
 fi
 report no_mcp_key_outside_section "$preamble_clean"
 
+# A fully validated profile carries no unvalidated-depth-override marker and
+# no experimental tag.
+no_marker=ok
+if grep -q 'unvalidated-depth-override' "$presets_ok"; then
+    no_marker=marker_present
+fi
+report validated_profile_carries_no_marker "$no_marker"
+
+no_experimental_tag=ok
+if grep -q 'experimental' "$presets_ok"; then
+    no_experimental_tag=tag_present
+fi
+report validated_profile_carries_no_experimental_tag "$no_experimental_tag"
+
 # A profile whose context exceeds the registry context_ceiling is refused.
 presets_over_ceiling=$work/presets-over-ceiling.ini
 if build "$web_profiles_over_ceiling" "$presets_over_ceiling" \
@@ -116,30 +147,76 @@ else
     report over_ceiling_refused ok
 fi
 
-# A profile whose context exceeds validated_filled_depth is refused without
-# the override.
+# A profile whose context exceeds a numeric validated_filled_depth is refused
+# by default.
 presets_over_depth=$work/presets-over-depth.ini
 if build "$web_profiles_over_depth" "$presets_over_depth" \
     env QWEN_WEB_MCP_CONFIG="$mcp_config" \
     >"$work/over-depth.log" 2>"$work/over-depth.err"; then
-    report over_depth_refused_without_override failed
+    report numeric_over_depth_refused_without_override failed
 else
-    report over_depth_refused_without_override ok
+    report numeric_over_depth_refused_without_override ok
 fi
 
-# The same profile is admitted and warned under the override.
+# The same profile is admitted, tagged experimental, and warned with the
+# numeric gap under the override, and the file carries the override marker.
 presets_over_depth_allowed=$work/presets-over-depth-allowed.ini
 if build "$web_profiles_over_depth" "$presets_over_depth_allowed" \
     env QWEN_WEB_MCP_CONFIG="$mcp_config" QWEN_WEB_ALLOW_UNVALIDATED_DEPTH=1 \
     >"$work/over-depth-allowed.log" 2>"$work/over-depth-allowed.err"; then
-    if grep -q 'web_preset_warning' "$work/over-depth-allowed.err"; then
-        report over_depth_admitted_with_override_and_warned ok
-    else
-        report over_depth_admitted_with_override_and_warned missing_warning
-    fi
+    outcome=ok
+    grep -q 'validated_filled_depth_gap=8192' "$work/over-depth-allowed.err" ||
+        outcome=missing_gap_warning
+    grep -q ',experimental' "$presets_over_depth_allowed" ||
+        outcome=missing_experimental_tag
+    grep -q 'unvalidated-depth-override' "$presets_over_depth_allowed" ||
+        outcome=missing_override_marker
+    report numeric_over_depth_admitted_with_override "$outcome"
 else
-    report over_depth_admitted_with_override_and_warned failed
+    report numeric_over_depth_admitted_with_override failed
     cat "$work/over-depth-allowed.err" >&2
+fi
+
+# A profile whose validated_filled_depth reads `-` is refused by default: the
+# unmeasured case fails the same way the measured-too-shallow case does.
+presets_unknown_depth=$work/presets-unknown-depth.ini
+if build "$web_profiles_unknown_depth" "$presets_unknown_depth" \
+    env QWEN_WEB_MCP_CONFIG="$mcp_config" \
+    >"$work/unknown-depth.log" 2>"$work/unknown-depth.err"; then
+    report unknown_depth_refused_without_override failed
+else
+    report unknown_depth_refused_without_override ok
+fi
+
+# The same profile is admitted, tagged experimental, and warned with the
+# unknown state under the override, and the file carries the override
+# marker.
+presets_unknown_depth_allowed=$work/presets-unknown-depth-allowed.ini
+if build "$web_profiles_unknown_depth" "$presets_unknown_depth_allowed" \
+    env QWEN_WEB_MCP_CONFIG="$mcp_config" QWEN_WEB_ALLOW_UNVALIDATED_DEPTH=1 \
+    >"$work/unknown-depth-allowed.log" 2>"$work/unknown-depth-allowed.err"; then
+    outcome=ok
+    grep -q 'validated_filled_depth=unknown' "$work/unknown-depth-allowed.err" ||
+        outcome=missing_unknown_warning
+    grep -q ',experimental' "$presets_unknown_depth_allowed" ||
+        outcome=missing_experimental_tag
+    grep -q 'unvalidated-depth-override' "$presets_unknown_depth_allowed" ||
+        outcome=missing_override_marker
+    report unknown_depth_admitted_with_override "$outcome"
+else
+    report unknown_depth_admitted_with_override failed
+    cat "$work/unknown-depth-allowed.err" >&2
+fi
+
+# A production-tier profile at an unvalidated depth refuses even under the
+# override, because production claims a measured-safe tuple.
+presets_production_unvalidated=$work/presets-production-unvalidated.ini
+if build "$web_profiles_production_unvalidated" "$presets_production_unvalidated" \
+    env QWEN_WEB_MCP_CONFIG="$mcp_config" QWEN_WEB_ALLOW_UNVALIDATED_DEPTH=1 \
+    >"$work/production-unvalidated.log" 2>"$work/production-unvalidated.err"; then
+    report production_tier_refuses_override failed
+else
+    report production_tier_refuses_override ok
 fi
 
 # A profile naming an archive-tiered model is refused.
