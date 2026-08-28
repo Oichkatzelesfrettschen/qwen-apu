@@ -208,3 +208,45 @@ per byte than the F16 rung above it, which is why 1.88 times the bytes cost only
 1.29 times the decode. The rungs between Q4_K_M and F16 on both checkpoints are
 now worth measuring rather than interpolating, since neither endpoint predicts
 them.
+
+## What F16 buys in quality on the 0.8B: nothing this suite resolves
+
+Both precisions of the same weights were graded in one sweep, thinking off, a
+1024-token budget, the 55 text rows the `NN/55` scale names.
+
+| arm | total | arithmetic | code | format | long_context | screen | termination | word_problem |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Q8_0 | 33/55 | 5/10 | 7/10 | 6/10 | 5/5 | 4/5 | 5/5 | 1/10 |
+| F16 | 32/55 | 5/10 | 5/10 | 6/10 | 5/5 | 4/5 | 5/5 | 2/10 |
+
+The Q8_0 arm reproduces the 33 of 55 already recorded for it from an earlier and
+separate sweep, which is what makes the pair readable: the comparator landed on
+its own recorded score before the subject was read against it. Both arms
+completed every row, truncated none, and emitted no empty answer.
+
+One row separates them, and it separates them in both directions: F16 loses two
+code rows and gains one word_problem row while five categories are identical.
+This tree's own rule is that a one-row or two-row difference reports position in
+a request sequence rather than capability, and a difference that changes sign
+between categories is what that looks like. The result is therefore no
+measurable quality difference rather than a measured tie, and the falsifier for
+any future claim of one is a margin declared in advance with two one-sided
+bounds inside it.
+
+That is the expected direction. Q8_0 reconstruction error on these weights is
+small enough that a 55-row graded suite has no resolution to see it, and the
+measurement says so rather than inventing a gap.
+
+### The consequence for serving
+
+Q8_0 dominates F16 on everything this sweep measures. It decodes 18.53 against
+15.68, streams 0.746 GiB per token against 1.402, and grades one row higher
+inside the noise. Nothing here recommends paying 88% more bytes per token.
+
+What the sweep does not measure is the use the precision was wanted for. Its
+categories are arithmetic, code, format, long context, screen, termination, and
+word problems; none of them grades prose. A creative comparison needs
+continuation fidelity, character voice, scene coherence, stylistic diversity,
+and freedom from assistant boilerplate, judged blind and pairwise, and no such
+arm has run. The F16 row therefore stays `candidate` with its graded total
+recorded and the question it was admitted for still open.
