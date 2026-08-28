@@ -273,7 +273,7 @@ printf '%s\n' '#!/bin/sh' 'set -eu' \
     "log=$fault_log" \
     'printf x >>"$counter"' \
     'count=$(wc -c <"$counter")' \
-    'if [ "$count" -eq 3 ]; then' \
+    'if [ "$count" -eq 4 ]; then' \
     '    printf "amdgpu: VM_L2_PROTECTION_FAULT detected\\n" >>"$log"' \
     'fi' \
     'cat "$log"' \
@@ -328,7 +328,7 @@ printf '%s\n' '#!/bin/sh' 'set -eu' \
     "log=$gfxhub_log" \
     'printf x >>"$counter"' \
     'count=$(wc -c <"$counter")' \
-    'if [ "$count" -eq 3 ]; then' \
+    'if [ "$count" -eq 4 ]; then' \
     '    printf "amdgpu: [gfxhub0] page fault detected\\n" >>"$log"' \
     'fi' \
     'cat "$log"' \
@@ -366,7 +366,7 @@ printf '%s\n' '#!/bin/sh' 'set -eu' \
     "log=$reset_log" \
     'printf x >>"$counter"' \
     'count=$(wc -c <"$counter")' \
-    'if [ "$count" -eq 3 ]; then' \
+    'if [ "$count" -eq 4 ]; then' \
     '    printf "amdgpu: GPU reset begin\\n" >>"$log"' \
     'fi' \
     'cat "$log"' \
@@ -628,6 +628,53 @@ if ! awk -F'\t' '$1 == "d1-b1-ub1" && $8 == 137 { found = 1 }
                  END { exit !found }' "$timeout_output/wedge-summary.tsv"; then
     printf 'depth wedge did not record the kill-after escalation status\n' >&2
     cat "$timeout_output/wedge-summary.tsv" >&2
+    exit 1
+fi
+
+# A dmesg that follows the buffer stays attached after --follow, so the probe
+# reads the arm's kernel delta straight off the streaming file rather than
+# subtracting a before count from an after snapshot, and never calls plain
+# dmesg for this arm at all.
+follow_bin=$temporary_directory/follow-bin
+follow_pid_marker=$temporary_directory/follow-pid
+follow_plain_call_marker=$temporary_directory/follow-plain-call
+mkdir -p "$follow_bin"
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    "case \$* in" \
+    '  *--follow*) ;;' \
+    "  *) : >\"$follow_plain_call_marker\"; exit 0 ;;" \
+    'esac' \
+    "printf '%s\\n' \"\$\$\" >\"$follow_pid_marker\"" \
+    'printf "amdgpu: GPU reset via follow\\n"' \
+    "trap 'exit 0' TERM" \
+    'while :; do sleep 1; done' >"$follow_bin/dmesg"
+chmod +x "$follow_bin/dmesg"
+follow_output=$temporary_directory/wedge-follow
+active_fixture=depth-wedge-kernel-follow-capture
+diagnostic_file=$temporary_directory/wedge-follow.stderr
+QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
+QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_WEDGE_DEPTHS=1 \
+QWEN_WEDGE_GEOMETRIES=1:1 PATH="$follow_bin:$PATH" \
+    "$script_directory/probe-depth-wedge.sh" "$model_path" "$follow_output" \
+    >"$temporary_directory/wedge-follow.stdout" \
+    2>"$temporary_directory/wedge-follow.stderr"
+if [ -e "$follow_plain_call_marker" ]; then
+    printf 'depth wedge called plain dmesg despite a following dmesg being available\n' >&2
+    exit 1
+fi
+if [ ! -f "$follow_output/d1-b1-ub1.dmesg-method.txt" ] ||
+   [ "$(cat "$follow_output/d1-b1-ub1.dmesg-method.txt")" != follow ]; then
+    printf 'depth wedge did not record the follow capture method\n' >&2
+    exit 1
+fi
+if ! awk -F'\t' '$1 == "d1-b1-ub1" && $9 == 1 { found = 1 }
+                 END { exit !found }' "$follow_output/wedge-summary.tsv"; then
+    printf 'depth wedge did not count the reset the following dmesg streamed\n' >&2
+    cat "$follow_output/wedge-summary.tsv" >&2
+    exit 1
+fi
+if kill -0 "$(cat "$follow_pid_marker")" 2>/dev/null; then
+    printf 'depth wedge left the following dmesg reader alive\n' >&2
     exit 1
 fi
 

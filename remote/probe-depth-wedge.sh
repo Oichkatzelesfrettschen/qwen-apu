@@ -194,9 +194,19 @@ stop_sampler() {
     wait "$sampler_pid" 2>/dev/null || true
     sampler_pid=''
 }
+# A killed run leaves its follow reader attached to the kernel ring buffer the
+# same way an orphaned sampler leaves one attached to the clock sysfs files.
+kernel_follow_pid=''
+stop_kernel_follow() {
+    [ -n "$kernel_follow_pid" ] || return 0
+    kill "$kernel_follow_pid" 2>/dev/null || true
+    wait "$kernel_follow_pid" 2>/dev/null || true
+    kernel_follow_pid=''
+}
 interrupt_run() {
     signal_status=$1
     stop_sampler
+    stop_kernel_follow
     if [ -n "$active_arm_label" ]; then
         printf 'arm_abort_utc=%s label=%s status=%s\n' \
             "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$active_arm_label" \
@@ -206,7 +216,7 @@ interrupt_run() {
         "$signal_status" "$output_directory" >&2
     exit "$signal_status"
 }
-trap 'stop_sampler' EXIT
+trap 'stop_sampler; stop_kernel_follow' EXIT
 trap 'interrupt_run 129' HUP
 trap 'interrupt_run 130' INT
 trap 'interrupt_run 143' TERM
@@ -222,12 +232,42 @@ kernel_line_count() {
 # The lines the kernel emitted during one arm, retained verbatim. The ring
 # reset count and the fault count are grepped from these rather than from the
 # whole buffer, so a reset that predates the probe stays out of the delta.
+# This offset method breaks when the ring buffer wraps between the before
+# count and the after read, which loses the earliest lines of a long arm's
+# delta silently; start_kernel_capture's follow method reads the delta
+# directly and does not depend on the buffer holding still.
 kernel_delta_lines() {
     delta_before=$1
     delta_file=$2
     rm -f -- "$delta_file"
     [ "$delta_before" != unavailable ] || return 0
     dmesg | tail -n "+$((delta_before + 1))" >"$delta_file" 2>/dev/null || true
+}
+
+# `dmesg --follow` streams new kernel lines into the arm's kernel file as they
+# arrive, which survives a ring-buffer wrap the offset method cannot: the
+# offset method reads a before count and an after snapshot and subtracts, so a
+# wrap between those two reads loses the earliest lines of the delta, where
+# the follow reader has already written them to disk. A short-lived probe
+# invocation distinguishes a following dmesg from one that only replays the
+# buffer once and exits: this probe waits a beat and checks the process is
+# still attached before trusting the read. When no dmesg on this host follows
+# the buffer, kernel_capture_method stays `offset` and the caller falls back
+# to kernel_line_count and kernel_delta_lines exactly as before this method
+# existed.
+kernel_capture_method=offset
+start_kernel_capture() {
+    capture_file=$1
+    kernel_capture_method=offset
+    dmesg --follow >"$capture_file" 2>/dev/null &
+    kernel_follow_pid=$!
+    sleep 0.2
+    if kill -0 "$kernel_follow_pid" 2>/dev/null; then
+        kernel_capture_method=follow
+    else
+        wait "$kernel_follow_pid" 2>/dev/null || true
+        kernel_follow_pid=''
+    fi
 }
 
 parse_decode_rate() {
@@ -454,12 +494,14 @@ run_arm() {
     done
 
     active_arm_label=$arm_label
-    kernel_before=$(kernel_line_count)
+    start_kernel_capture "$arm_kernel"
+    kernel_before=unavailable
+    [ "$kernel_capture_method" = follow ] || kernel_before=$(kernel_line_count)
     arm_started=$(date +%s)
 
-    printf 'arm_start_utc=%s label=%s cache=%s/%s fa=%s\n' \
+    printf 'arm_start_utc=%s label=%s cache=%s/%s fa=%s kernel_capture=%s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$arm_label" "$cache_type_k" \
-        "$cache_type_v" "$flash_attention"
+        "$cache_type_v" "$flash_attention" "$kernel_capture_method"
     "$clock_sampler" "$arm_samples" &
     sampler_pid=$!
     set +e
@@ -468,7 +510,12 @@ run_arm() {
     set -e
     stop_sampler
     arm_wall=$(($(date +%s) - arm_started))
-    kernel_delta_lines "$kernel_before" "$arm_kernel"
+    if [ "$kernel_capture_method" = follow ]; then
+        stop_kernel_follow
+    else
+        kernel_delta_lines "$kernel_before" "$arm_kernel"
+    fi
+    printf '%s\n' "$kernel_capture_method" >"$output_directory/$arm_label.dmesg-method.txt"
 
     resets=unavailable
     faults=unavailable
