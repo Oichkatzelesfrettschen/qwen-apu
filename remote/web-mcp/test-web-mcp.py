@@ -157,6 +157,7 @@ class WebMcpServerTest(unittest.TestCase):
                 "QWEN_WEB_PROVIDER": "fake",
                 "QWEN_WEB_FAKE_FIXTURES": self.fixture_path,
                 "QWEN_WEB_TOKEN_KEY_FILE": self.token_key_path,
+                "QWEN_WEB_SEARCH_AUTH": "optional",
                 "QWEN_WEB_EXA_KEY_FILE": self.exa_key_path,
                 "PYTHONDONTWRITEBYTECODE": "1",
             }
@@ -361,6 +362,134 @@ class WebMcpServerTest(unittest.TestCase):
             {"result_id": "a.b", "max_chars": server.FETCH_CHARACTER_CAP + 1},
         )
         self.assertIn("must lie between", self.result_text(response))
+
+    def grant(self, **overrides):
+        claim = {
+            "query": "raven2 vulkan decode",
+            "include_domains": [],
+            "exclude_domains": [],
+            "published_after": "",
+            "published_before": "",
+            "max_results": 5,
+            "expiry": int(time.time()) + 900,
+        }
+        claim.update(overrides)
+        return server.sign_claim(
+            TOKEN_SECRET, server.AUTHORIZATION_CLAIM_CONTEXT, claim
+        )
+
+    def test_authorization_is_required_by_default(self):
+        session = self.open_session(QWEN_WEB_SEARCH_AUTH=None)
+        response = self.search(session)
+        self.assertTrue(response["result"]["isError"])
+        self.assertIn("authorization token", self.result_text(response))
+
+    def test_a_matching_grant_admits_the_search(self):
+        session = self.open_session(QWEN_WEB_SEARCH_AUTH="required")
+        response = self.search(session, authorization=self.grant(), max_results=5)
+        self.assertFalse(response["result"]["isError"])
+        narrowed = self.search(
+            session, authorization=self.grant(), max_results=2
+        )
+        self.assertFalse(narrowed["result"]["isError"])
+        self.assertEqual(self.result_text(narrowed).count("URL: "), 2)
+
+    def test_a_grant_admits_its_own_arguments_alone(self):
+        session = self.open_session(QWEN_WEB_SEARCH_AUTH="required")
+        cases = (
+            ({"query": "attacker chosen query"}, "query differs"),
+            ({"include_domains": ["evil.test"]}, "include_domains differs"),
+            ({"exclude_domains": ["evil.test"]}, "exclude_domains differs"),
+            ({"published_after": "2026-01-01"}, "published_after differs"),
+            ({"published_before": "2026-01-01"}, "published_before differs"),
+            ({"max_results": 6}, "max_results exceeds"),
+        )
+        for arguments, expected in cases:
+            with self.subTest(arguments=sorted(arguments)):
+                response = self.search(
+                    session, authorization=self.grant(max_results=5), **arguments
+                )
+                self.assertTrue(response["result"]["isError"])
+                self.assertIn(expected, self.result_text(response))
+
+    def test_a_forged_or_expired_grant_is_refused(self):
+        session = self.open_session(QWEN_WEB_SEARCH_AUTH="required")
+        foreign = server.sign_claim(
+            "another-signing-key",
+            server.AUTHORIZATION_CLAIM_CONTEXT,
+            {
+                "query": "raven2 vulkan decode",
+                "include_domains": [],
+                "exclude_domains": [],
+                "published_after": "",
+                "published_before": "",
+                "max_results": 5,
+                "expiry": int(time.time()) + 900,
+            },
+        )
+        response = self.search(session, authorization=foreign)
+        self.assertIn("authorization signature", self.result_text(response))
+        response = self.search(
+            session, authorization=self.grant(expiry=int(time.time()) - 1)
+        )
+        self.assertIn("authorization has expired", self.result_text(response))
+
+    def test_a_result_id_never_verifies_as_a_grant(self):
+        session = self.open_session(QWEN_WEB_SEARCH_AUTH="required")
+        permissive = self.open_session()
+        result_id = self.first_result_id(
+            self.result_text(self.search(permissive, max_results=1))
+        )
+        response = self.search(session, authorization=result_id)
+        self.assertIn("authorization signature", self.result_text(response))
+
+    def test_the_authorize_subcommand_issues_a_spendable_grant(self):
+        completed = subprocess.run(
+            [
+                sys.executable,
+                SERVER_PATH,
+                "authorize",
+                "--token-key-file",
+                self.token_key_path,
+                "--query",
+                "  raven2 vulkan decode  ",
+                "--max-results",
+                "3",
+                "--include-domain",
+                "Example.ORG",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        token = completed.stdout.strip()
+        self.assertNotIn(TOKEN_SECRET, completed.stdout + completed.stderr)
+        session = self.open_session(QWEN_WEB_SEARCH_AUTH="required")
+        response = self.search(
+            session,
+            authorization=token,
+            max_results=3,
+            include_domains=["example.org"],
+        )
+        self.assertFalse(response["result"]["isError"])
+        self.assertIn("URL: https://example.org/raven2", self.result_text(response))
+
+    def test_the_authorize_subcommand_refuses_a_bad_invocation(self):
+        for arguments in (
+            ["authorize"],
+            ["authorize", "--query"],
+            ["authorize", "--query", "q", "--published-after", "soon"],
+            ["authorize", "--query", "q", "--unknown", "x"],
+        ):
+            with self.subTest(arguments=arguments):
+                completed = subprocess.run(
+                    [sys.executable, SERVER_PATH, *arguments],
+                    capture_output=True,
+                    text=True,
+                    env=self.environment(QWEN_WEB_TOKEN_KEY_FILE=self.token_key_path),
+                )
+                self.assertEqual(completed.returncode, 2)
+                self.assertEqual(completed.stdout, "")
 
     def test_publication_window_arguments_are_validated(self):
         session = self.open_session()

@@ -19,7 +19,39 @@ llama-server --mcp-servers-config /path/to/mcp-servers.json
 
 `--provider`, `--exa-key-file`, `--token-key-file`, and `--fixtures` override
 `QWEN_WEB_PROVIDER`, `QWEN_WEB_EXA_KEY_FILE`, `QWEN_WEB_TOKEN_KEY_FILE`, and
-`QWEN_WEB_FAKE_FIXTURES`.
+`QWEN_WEB_FAKE_FIXTURES`. `QWEN_WEB_SEARCH_AUTH` and
+`QWEN_WEB_TOKEN_LIFETIME_SECONDS` carry the authorization mode and the token
+lifetime.
+
+## The operator authorizes a search; the model does not
+
+A result identifier guards `fetch_exa` alone. A search query is written by the
+model, and `evidence/model-admission` records `tool-08` carrying an injected
+city into a tool call in place of the authorized one in all six measured arms,
+so a note the model reads can rewrite the query it searches for. `search_exa`
+therefore takes an `authorization` argument: an HMAC-signed grant over the
+query, both domain lists, the publication window, the result count, and an
+expiry, issued outside the session by
+
+```sh
+remote/web-mcp/server.py authorize --token-key-file PATH --query TEXT \
+    [--include-domain D]... [--exclude-domain D]... \
+    [--published-after DATE] [--published-before DATE] \
+    [--max-results N] [--lifetime SECONDS]
+```
+
+The serving path rebuilds the same canonical claim from the arguments it
+received and compares field by field, admitting a smaller `max_results` as a
+narrowing of the grant and refusing every other difference.
+`QWEN_WEB_SEARCH_AUTH` selects `required`, the default, or `optional` for an
+operator who accepts an unauthorized query. `max_age_hours` stays outside the
+signature, so a grant covers which query runs rather than how fresh a copy the
+provider serves.
+
+The grant and the result identifier are signed under the same key with
+different context strings, so neither verifies in the other's position. Both
+mechanisms mark provenance and enforce authorization at the wrapper; the model
+is not the boundary.
 
 ## The result identifier carries the state the process cannot
 
@@ -33,7 +65,8 @@ checks the expiry, and fetches the canonical URL the claim names. A URL the
 model writes carries no signature and is refused, so the tool surface reaches
 pages a prior search returned and nothing else.
 
-The token lives 900 seconds. The child holds no registry, so the expiry is what
+The token lifetime is 900 seconds by default and
+`QWEN_WEB_TOKEN_LIFETIME_SECONDS` sets it anywhere in [60, 3600]. The child holds no registry, so the expiry is what
 bounds replay of a leaked token, and the lifetime covers a reasoning turn while
 staying short against a transcript that outlives the session. `search_id`
 records which search issued a token and is provenance rather than an enforced

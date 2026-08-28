@@ -50,6 +50,8 @@ TOKEN_LIFETIME_DEFAULT_SECONDS = 900
 TOKEN_LIFETIME_MINIMUM_SECONDS = 60
 TOKEN_LIFETIME_MAXIMUM_SECONDS = 3600
 SECRET_BYTE_CAP = 4096
+RESULT_CLAIM_CONTEXT = "result-id"
+AUTHORIZATION_CLAIM_CONTEXT = "search-authorization"
 
 EXA_SEARCH_ENDPOINT = "https://api.exa.ai/search"
 EXA_CONTENTS_ENDPOINT = "https://api.exa.ai/contents"
@@ -208,66 +210,176 @@ def canonical_url(url):
     )
 
 
-def issue_result_id(
-    signing_key, url, provider_name, search_id, issued_at, lifetime_seconds
-):
-    """Sign a result reference into an opaque token.
+def sign_claim(signing_key, context, claim):
+    """Return `payload.signature` for a claim bound to one context string.
 
-    The signature covers the base64url payload string rather than the decoded
-    JSON, so an encoder that admits two representations of one object still
-    yields one signed byte string. `search_id` records which search issued the
-    token and is provenance rather than an enforced check, since the process
-    holds no registry to check it against.
+    The HMAC covers the context and the base64url payload string rather than
+    the decoded object, so an encoder that admits two spellings of one object
+    still signs one byte string, and a search authorization never verifies as a
+    result identifier.
     """
-    claim = {
-        "canonical_url": url,
-        "provider": provider_name,
-        "issued_at": issued_at,
-        "expiry": issued_at + lifetime_seconds,
-        "search_id": search_id,
-    }
     payload = base64url_encode(
         json.dumps(claim, sort_keys=True, separators=(",", ":")).encode("utf-8")
     )
     signature = base64url_encode(
         hmac.new(
-            signing_key.encode("utf-8"), payload.encode("ascii"), hashlib.sha256
+            signing_key.encode("utf-8"),
+            f"{context}:{payload}".encode("ascii"),
+            hashlib.sha256,
         ).digest()
     )
     return f"{payload}.{signature}"
 
 
-def redeem_result_id(signing_key, result_id, now):
-    """Return the claim of a token whose signature verifies and whose term runs.
-
-    A tampered payload fails `compare_digest`, and an expired claim fails the
-    term check, so the only URL a fetch reaches is one this server issued
-    inside the lifetime.
-    """
-    if not isinstance(result_id, str) or result_id.count(".") != 1:
-        raise ToolError("the result_id is malformed")
-    payload, signature = result_id.split(".")
+def verify_claim(signing_key, context, token, now, label):
+    """Return the claim of a token whose signature verifies and whose term runs."""
+    if not isinstance(token, str) or token.count(".") != 1:
+        raise ToolError(f"the {label} is malformed")
+    payload, signature = token.split(".")
     expected = base64url_encode(
         hmac.new(
-            signing_key.encode("utf-8"), payload.encode("ascii"), hashlib.sha256
+            signing_key.encode("utf-8"),
+            f"{context}:{payload}".encode("ascii"),
+            hashlib.sha256,
         ).digest()
     )
     if not hmac.compare_digest(signature, expected):
-        raise ToolError("the result_id signature fails verification")
+        raise ToolError(f"the {label} signature fails verification")
     try:
         claim = json.loads(base64url_decode(payload).decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
-        raise ToolError("the result_id payload is malformed") from None
-    if not isinstance(claim, dict) or "canonical_url" not in claim:
-        raise ToolError("the result_id payload is malformed")
+        raise ToolError(f"the {label} payload is malformed") from None
+    if not isinstance(claim, dict):
+        raise ToolError(f"the {label} payload is malformed")
     expiry = claim.get("expiry")
     if not isinstance(expiry, (int, float)) or now >= expiry:
-        raise ToolError(
-            "the result_id has expired; run search_exa again to obtain a "
-            "current one"
-        )
+        raise ToolError(f"the {label} has expired")
+    return claim
+
+
+def issue_result_id(
+    signing_key, url, provider_name, search_id, issued_at, lifetime_seconds
+):
+    """Sign a result reference into an opaque token.
+
+    `search_id` records which search issued the token and is provenance rather
+    than an enforced check, since the process holds no registry to check it
+    against.
+    """
+    return sign_claim(
+        signing_key,
+        RESULT_CLAIM_CONTEXT,
+        {
+            "canonical_url": url,
+            "provider": provider_name,
+            "issued_at": issued_at,
+            "expiry": issued_at + lifetime_seconds,
+            "search_id": search_id,
+        },
+    )
+
+
+def redeem_result_id(signing_key, result_id, now):
+    """Return the claim of a result identifier this server issued.
+
+    A tampered payload fails `compare_digest` and an expired claim fails the
+    term check, so the only URL a fetch reaches is one a prior search returned
+    inside the lifetime.
+    """
+    claim = verify_claim(
+        signing_key, RESULT_CLAIM_CONTEXT, result_id, now, "result_id"
+    )
+    if "canonical_url" not in claim:
+        raise ToolError("the result_id payload is malformed")
     claim["canonical_url"] = canonical_url(str(claim["canonical_url"]))
     return claim
+
+
+def authorization_claim(
+    query,
+    include_domains,
+    exclude_domains,
+    published_after,
+    published_before,
+    max_results,
+    expiry,
+):
+    """Return the canonical form of a search grant.
+
+    Both the issuing subcommand and the serving path build the grant through
+    this function, so the comparison runs over one spelling of every field:
+    the query stripped, the domain lists normalized and sorted, and the dates
+    in the calendar form `require_iso_date` produces.
+    """
+    return {
+        "query": query.strip(),
+        "include_domains": sorted(include_domains),
+        "exclude_domains": sorted(exclude_domains),
+        "published_after": published_after,
+        "published_before": published_before,
+        "max_results": max_results,
+        "expiry": expiry,
+    }
+
+
+def enforce_search_authorization(
+    settings, signing_key, query, max_results, constraints
+):
+    """Admit a search that an operator grant covers.
+
+    A search query is model-authored, and a note the model reads can rewrite it
+    the way `tool-08` rewrote a tool argument in every measured arm, so the
+    signed grant rather than the model decides which query reaches the
+    provider. `QWEN_WEB_SEARCH_AUTH=optional` admits an unauthorized search for
+    an operator who accepts that exposure; the default refuses it.
+    """
+    mode = settings.get("search_auth") or "required"
+    if mode not in ("required", "optional"):
+        raise ToolError(
+            f"QWEN_WEB_SEARCH_AUTH names an unknown mode: {mode}"
+        )
+    token = settings.get("_authorization")
+    if not token:
+        if mode == "required":
+            raise ToolError(
+                "search_exa requires an authorization token issued by "
+                "`server.py authorize`; the operator grants the query rather "
+                "than the model"
+            )
+        return
+    granted = verify_claim(
+        signing_key,
+        AUTHORIZATION_CLAIM_CONTEXT,
+        token,
+        time.time(),
+        "authorization",
+    )
+    requested = authorization_claim(
+        query,
+        constraints["include_domains"],
+        constraints["exclude_domains"],
+        constraints["published_after"],
+        constraints["published_before"],
+        max_results,
+        granted.get("expiry"),
+    )
+    for field in (
+        "query",
+        "include_domains",
+        "exclude_domains",
+        "published_after",
+        "published_before",
+    ):
+        if granted.get(field) != requested[field]:
+            raise ToolError(
+                f"the search arguments leave the authorization: {field} differs"
+            )
+    granted_results = granted.get("max_results")
+    if not isinstance(granted_results, int) or max_results > granted_results:
+        raise ToolError(
+            "the search arguments leave the authorization: max_results exceeds "
+            "the granted count"
+        )
 
 
 class Provider:
@@ -598,7 +710,14 @@ def call_search(settings, arguments):
         and constraints["published_after"] > constraints["published_before"]
     ):
         raise ToolError("published_after falls after published_before")
+    settings = dict(settings)
+    settings["_authorization"] = require_string(
+        arguments, "authorization", 4096, required=False, default=""
+    )
     signing_key = read_secret_file(settings["token_key_file"], "token signing")
+    enforce_search_authorization(
+        settings, signing_key, query, max_results, constraints
+    )
     provider = select_provider(settings)
     results = provider.search(query, max_results, constraints)
     issued_at = int(time.time())
@@ -684,6 +803,13 @@ TOOL_DEFINITIONS = [
                     "items": {"type": "string"},
                     "description": "Drop these domains, at most 10.",
                 },
+                "authorization": {
+                    "type": "string",
+                    "description": (
+                        "Operator-issued grant covering these exact search "
+                        "arguments. Supply the token the user provided."
+                    ),
+                },
             },
             "required": ["query"],
         },
@@ -726,6 +852,7 @@ def settings_from_environment(argv):
         "token_key_file": os.environ.get("QWEN_WEB_TOKEN_KEY_FILE", ""),
         "fixtures": os.environ.get("QWEN_WEB_FAKE_FIXTURES", ""),
         "token_lifetime": os.environ.get("QWEN_WEB_TOKEN_LIFETIME_SECONDS", ""),
+        "search_auth": os.environ.get("QWEN_WEB_SEARCH_AUTH", "required"),
     }
     option_keys = {
         "--provider": "provider",
@@ -749,8 +876,87 @@ def usage():
     sys.stderr.write(
         "usage: server.py [--provider exa|fake] [--exa-key-file PATH]"
         " [--token-key-file PATH] [--fixtures PATH]\n"
+        "       server.py authorize --token-key-file PATH --query TEXT"
+        " [--include-domain D]... [--exclude-domain D]..."
+        " [--published-after DATE] [--published-before DATE]"
+        " [--max-results N] [--lifetime SECONDS]\n"
     )
     raise SystemExit(2)
+
+
+def run_authorize(argv):
+    """Print a search grant for the exact arguments an operator names.
+
+    The subcommand runs outside the MCP session, so the operator or the user
+    interface issues the grant and the model receives a token it can spend on
+    one query alone. The grant is signed with the same key file the server
+    verifies against, and the key never leaves that file.
+    """
+    fields = {
+        "token_key_file": os.environ.get("QWEN_WEB_TOKEN_KEY_FILE", ""),
+        "query": None,
+        "published_after": "",
+        "published_before": "",
+        "max_results": 5,
+        "lifetime": TOKEN_LIFETIME_DEFAULT_SECONDS,
+    }
+    include_domains = []
+    exclude_domains = []
+    index = 0
+    while index < len(argv):
+        option = argv[index]
+        if index + 1 >= len(argv):
+            usage()
+        value = argv[index + 1]
+        if option == "--token-key-file":
+            fields["token_key_file"] = value
+        elif option == "--query":
+            fields["query"] = value
+        elif option == "--include-domain":
+            include_domains.append(value)
+        elif option == "--exclude-domain":
+            exclude_domains.append(value)
+        elif option == "--published-after":
+            fields["published_after"] = value
+        elif option == "--published-before":
+            fields["published_before"] = value
+        elif option in ("--max-results", "--lifetime"):
+            try:
+                fields[option[2:].replace("-", "_")] = int(value)
+            except ValueError:
+                usage()
+        else:
+            usage()
+        index += 2
+    if fields["query"] is None:
+        usage()
+    arguments = {
+        "query": fields["query"],
+        "published_after": fields["published_after"],
+        "published_before": fields["published_before"],
+        "include_domains": include_domains,
+        "exclude_domains": exclude_domains,
+        "max_results": fields["max_results"],
+    }
+    try:
+        claim = authorization_claim(
+            require_string(arguments, "query", QUERY_CHARACTER_CAP),
+            require_domain_list(arguments, "include_domains"),
+            require_domain_list(arguments, "exclude_domains"),
+            require_iso_date(arguments, "published_after"),
+            require_iso_date(arguments, "published_before"),
+            require_integer(arguments, "max_results", 5, 1, RESULT_COUNT_CAP),
+            int(time.time())
+            + resolve_token_lifetime({"token_lifetime": str(fields["lifetime"])}),
+        )
+        signing_key = read_secret_file(fields["token_key_file"], "token signing")
+    except ToolError as error:
+        sys.stderr.write(f"{error}\n")
+        return 2
+    sys.stdout.write(
+        sign_claim(signing_key, AUTHORIZATION_CLAIM_CONTEXT, claim) + "\n"
+    )
+    return 0
 
 
 def handle_request(settings, message):
@@ -815,6 +1021,8 @@ def handle_request(settings, message):
 
 
 def main(argv):
+    if argv and argv[0] == "authorize":
+        return run_authorize(argv[1:])
     settings = settings_from_environment(argv)
     for line in sys.stdin:
         line = line.strip()
