@@ -40,7 +40,9 @@ PYTHONDONTWRITEBYTECODE=1 python3 remote/test-quality-suite.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-regrade-quality-roster.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-gguf-tokenizer-identity.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/web-mcp/test-web-mcp.py
+PYTHONDONTWRITEBYTECODE=1 python3 remote/web-mcp/test-authorize-broker.py
 remote/test-fallback-webui-model-selection.sh
+remote/test-fallback-webui-web-authorization.sh
 node remote/test-fallback-webui-model-state.mjs
 remote/test-measurement-harnesses.sh
 remote/test-one-token-admission.sh

@@ -2136,6 +2136,83 @@ def usage():
     raise SystemExit(2)
 
 
+def issue_grant(
+    token_key_file,
+    query,
+    include_domains,
+    exclude_domains,
+    published_after,
+    published_before,
+    max_age_hours,
+    max_results,
+    provider,
+    profile,
+    lifetime,
+    now=None,
+):
+    """Return the signed grant for one exact set of search arguments.
+
+    Both issuing paths -- the `authorize` subcommand an operator runs and the
+    approval broker a user interface calls -- reach the signing key through
+    this function, so one implementation validates the fields, builds the
+    canonical claim, and signs it. A second implementation would admit a
+    spelling the serving path rejects, and `enforce_search_authorization`
+    compares the claim field by field against arguments rebuilt through the
+    same helpers.
+
+    Every failure is a `ToolError`, and the key contents reach `sign_claim`
+    alone, so no message and no return value carries them.
+    """
+    if provider not in ("exa", "fake"):
+        raise InvalidArgument(f"provider names neither exa nor fake: {provider}")
+    arguments = {
+        "query": query,
+        "published_after": published_after,
+        "published_before": published_before,
+        "max_age_hours": max_age_hours,
+        "include_domains": include_domains,
+        "exclude_domains": exclude_domains,
+        "max_results": max_results,
+    }
+    issued_at = int(time.time() if now is None else now)
+    claim = authorization_claim(
+        require_string(arguments, "query", QUERY_CHARACTER_CAP),
+        require_domain_list(arguments, "include_domains"),
+        require_domain_list(arguments, "exclude_domains"),
+        require_iso_date(arguments, "published_after"),
+        require_iso_date(arguments, "published_before"),
+        require_optional_integer(arguments, "max_age_hours", 0, MAX_AGE_HOURS_CAP),
+        require_integer(arguments, "max_results", 5, 1, RESULT_COUNT_CAP),
+        issued_at + resolve_token_lifetime({"token_lifetime": str(lifetime)}),
+    )
+    # The identity fields bind the grant to one ledger row, one provider, and
+    # one profile: `grant_id` is the primary key the single use is recorded
+    # under, and the serving path refuses a grant whose provider or profile
+    # differs from the one it runs as.
+    claim.update(
+        {
+            "grant_id": base64url_encode(os.urandom(GRANT_ID_BYTES)),
+            "provider": provider,
+            "profile_id": profile,
+            "issued_at": issued_at,
+            "max_uses": GRANT_MAX_USES,
+        }
+    )
+    signing_key = read_secret_file(token_key_file, "token signing")
+    token = sign_claim(signing_key, AUTHORIZATION_CLAIM_CONTEXT, claim)
+    if len(token) > AUTHORIZATION_CHARACTER_CAP:
+        # A grant the serving path refuses before signature verification buys
+        # nothing, so the cap is enforced where the grant is issued rather than
+        # where it is presented, and both issuing paths meet it here. The
+        # message states the cap alone, which keeps the oversized token out of
+        # the operator's stderr and out of the broker's response and audit row.
+        raise InvalidArgument(
+            f"the grant exceeds the {AUTHORIZATION_CHARACTER_CAP} character "
+            "cap the search argument admits"
+        )
+    return token
+
+
 def run_authorize(argv):
     """Print a search grant for the exact arguments an operator names.
 
@@ -2189,58 +2266,24 @@ def run_authorize(argv):
         index += 2
     if fields["query"] is None:
         usage()
-    arguments = {
-        "query": fields["query"],
-        "published_after": fields["published_after"],
-        "published_before": fields["published_before"],
-        "max_age_hours": fields["max_age_hours"],
-        "include_domains": include_domains,
-        "exclude_domains": exclude_domains,
-        "max_results": fields["max_results"],
-    }
     if fields["provider"] not in ("exa", "fake"):
         usage()
-    issued_at = int(time.time())
     try:
-        claim = authorization_claim(
-            require_string(arguments, "query", QUERY_CHARACTER_CAP),
-            require_domain_list(arguments, "include_domains"),
-            require_domain_list(arguments, "exclude_domains"),
-            require_iso_date(arguments, "published_after"),
-            require_iso_date(arguments, "published_before"),
-            require_optional_integer(
-                arguments, "max_age_hours", 0, MAX_AGE_HOURS_CAP
-            ),
-            require_integer(arguments, "max_results", 5, 1, RESULT_COUNT_CAP),
-            issued_at
-            + resolve_token_lifetime({"token_lifetime": str(fields["lifetime"])}),
+        token = issue_grant(
+            fields["token_key_file"],
+            fields["query"],
+            include_domains,
+            exclude_domains,
+            fields["published_after"],
+            fields["published_before"],
+            fields["max_age_hours"],
+            fields["max_results"],
+            fields["provider"],
+            fields["profile"],
+            fields["lifetime"],
         )
-        # The identity fields bind the grant to one ledger row, one provider,
-        # and one profile: `grant_id` is the primary key the single use is
-        # recorded under, and the serving path refuses a grant whose provider
-        # or profile differs from the one it runs as.
-        claim.update(
-            {
-                "grant_id": base64url_encode(os.urandom(GRANT_ID_BYTES)),
-                "provider": fields["provider"],
-                "profile_id": fields["profile"],
-                "issued_at": issued_at,
-                "max_uses": GRANT_MAX_USES,
-            }
-        )
-        signing_key = read_secret_file(fields["token_key_file"], "token signing")
     except ToolError as error:
         sys.stderr.write(f"{error}\n")
-        return 2
-    token = sign_claim(signing_key, AUTHORIZATION_CLAIM_CONTEXT, claim)
-    if len(token) > AUTHORIZATION_CHARACTER_CAP:
-        # A printed grant the serving path refuses before signature
-        # verification is a token that buys nothing, so the cap is enforced
-        # where the grant is issued rather than where it is presented.
-        sys.stderr.write(
-            f"the grant exceeds the {AUTHORIZATION_CHARACTER_CAP} character "
-            "cap the search argument admits\n"
-        )
         return 2
     sys.stdout.write(token + "\n")
     return 0

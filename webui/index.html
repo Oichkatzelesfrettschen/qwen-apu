@@ -72,6 +72,19 @@
               border:1px solid var(--line); border-radius:.4rem; background:var(--bg); color:var(--fg); }
   label.file { cursor:pointer; }
   input[type=file] { display:none; }
+  dialog.approval { border:1px solid var(--line); border-radius:.6rem; padding:1rem;
+             background:var(--bg); color:var(--fg); max-width:36rem; width:92vw;
+             font:inherit; }
+  dialog.approval::backdrop { background:rgba(0,0,0,.45); }
+  dialog.approval h2 { font-size:15px; margin:0 0 .2rem; }
+  dialog.approval p.why { color:var(--dim); font-size:13px; margin:0 0 .7rem; }
+  dl.args { display:grid; grid-template-columns:auto 1fr; gap:.25rem .8rem;
+            margin:0 0 .9rem; font-size:13px; }
+  dl.args dt { color:var(--dim); }
+  dl.args dd { margin:0; overflow-wrap:anywhere; }
+  dl.args dd.live { color:var(--warn); }
+  .approval-actions { display:flex; gap:.5rem; justify-content:flex-end; }
+  .approval-note { color:var(--bad); font-size:12px; margin:0 0 .6rem; }
 </style>
 </head>
 
@@ -87,10 +100,34 @@
   <button class="act" id="set-key">set key</button>
   <label class="chip"><input type="checkbox" id="reasoning"> reasoning</label>
   <label class="chip"><input type="checkbox" id="tools"> offer a demo tool</label>
+  <label class="chip"><input type="checkbox" id="web-tools"> web</label>
+  <input class="key" type="text" id="broker-origin" placeholder="approval broker origin" autocomplete="off">
   <button class="act" id="clear">clear</button>
 </header>
 
 <div id="log"></div>
+
+<!--
+  The approval dialog is the boundary the web search tool is built around. The
+  model writes the query, and evidence/model-admission records tool-08 carrying
+  an injected city into a tool call in place of the authorized one in all six
+  measured arms, so a human reads the exact proposed arguments here and the
+  broker signs a grant over those arguments alone. The dialog offers one
+  approval and a refusal: a standing grade would authorize a query nobody has
+  read, which is what the single-use grant exists to prevent.
+-->
+<dialog class="approval" id="web-approval">
+  <h2>Authorize one web search</h2>
+  <p class="why">The model proposes these exact arguments. An approval signs a
+    grant over them and admits one search; the served path refuses any other
+    query, domain list, publication window, cached age, or larger result count.</p>
+  <p class="approval-note" id="approval-note" hidden></p>
+  <dl class="args" id="approval-args"></dl>
+  <div class="approval-actions">
+    <button class="act" id="approve-deny">deny</button>
+    <button class="act" id="approve-once">approve once</button>
+  </div>
+</dialog>
 
 <footer>
   <div id="attached"></div>
@@ -113,6 +150,11 @@ let nctxModel = null;
 let busy = false;
 let requestModel = null;
 let modelStateGeneration = 0;
+// requestMessages selects a tool_calls entry by id to splice in an authorized
+// grant, so an id must stay unique across the whole conversation rather than
+// within one round: a per-round counter starting at 0 collides across turns
+// and a later grant would overwrite every earlier call sharing its id.
+let toolCallSequence = 0;
 
 function readBrowserStorage(storageName, key) {
   try { return window[storageName].getItem(key); } catch { return null; }
@@ -248,6 +290,248 @@ const DEMO_TOOL = [{
     }
   }
 }];
+
+// The web tools are declared by name as llama-server composes them: an MCP
+// server configured as `web` produces `web_search_exa` and `web_fetch_exa`.
+// The per-turn toggle decides whether these reach the request at all, so a
+// turn with the toggle off offers the model no web surface to propose.
+const WEB_SEARCH_TOOL_NAME = 'web_search_exa';
+const WEB_FETCH_TOOL_NAME = 'web_fetch_exa';
+const WEB_TOOLS = [{
+  type: "function",
+  function: {
+    name: WEB_SEARCH_TOOL_NAME,
+    description: "Search the web and return ranked results with titles, URLs, " +
+      "and highlights. Each result carries a Result ID that the fetch tool " +
+      "redeems for the page text.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Search query, at most 512 characters." },
+        max_results: { type: "integer", description: "Result count, 1 to 10. Default 5." },
+        published_after: { type: "string", description: "ISO 8601 date; earlier results are dropped." },
+        published_before: { type: "string", description: "ISO 8601 date; later results are dropped." },
+        max_age_hours: { type: "integer", description: "Cached page age the provider may serve. 0 forces a live crawl." },
+        include_domains: { type: "array", items: { type: "string" }, description: "Admit these domains alone, at most 10." },
+        exclude_domains: { type: "array", items: { type: "string" }, description: "Drop these domains, at most 10." }
+      },
+      required: ["query"]
+    }
+  }
+}, {
+  type: "function",
+  function: {
+    name: WEB_FETCH_TOOL_NAME,
+    description: "Fetch the text of a page named by a Result ID from a prior search.",
+    parameters: {
+      type: "object",
+      properties: {
+        result_id: { type: "string", description: "Result ID printed by the search tool." },
+        start_index: { type: "integer", description: "Character offset into the page text." },
+        max_chars: { type: "integer", description: "Characters to return, at most 24000." }
+      },
+      required: ["result_id"]
+    }
+  }
+}];
+
+const BROKER_ORIGIN_DEFAULT = 'http://127.0.0.1:8571';
+const BROKER_SESSION_HEADER = 'X-Qwen-Web-Session';
+const CONTINUATION_CAP = 4;
+
+// The session secret and every issued grant live in this closure alone. Both
+// stay out of `history`, which is re-sent whole on every request, and out of
+// browser storage, which outlives the launch that signed them: a retained
+// grant is an authorization nobody read waiting to be spent.
+let brokerSessionSecret = null;
+let brokerSessionOrigin = null;
+
+$('#broker-origin').value =
+  readBrowserStorage('localStorage', 'qwen-apu-broker-origin') || BROKER_ORIGIN_DEFAULT;
+$('#broker-origin').addEventListener('change', () => {
+  brokerSessionSecret = null;
+  brokerSessionOrigin = null;
+  writeBrowserStorage(
+    'localStorage', 'qwen-apu-broker-origin', $('#broker-origin').value.trim() || null);
+});
+
+// The web surface is a per-turn choice rather than a remembered one. The
+// toggle governs whether a network-reaching tool is offered at all, and a
+// setting restored from a previous visit would offer it to a turn the user
+// opened with no such intent.
+$('#web-tools').checked = false;
+
+function brokerOrigin() {
+  return ($('#broker-origin').value.trim() || BROKER_ORIGIN_DEFAULT).replace(/\/+$/, '');
+}
+
+async function brokerSession(signal) {
+  // The secret reaches the page in a response body rather than a URL, so it
+  // stays out of the browser history and the Referer header. It is read once
+  // per origin and held in memory for the life of the page.
+  const origin = brokerOrigin();
+  if (brokerSessionSecret && brokerSessionOrigin === origin) return brokerSessionSecret;
+  const response = await fetch(`${origin}/session`, { method: 'GET', mode: 'cors', signal });
+  if (!response.ok) {
+    throw new Error(`the approval broker refused the session request: HTTP ${response.status}`);
+  }
+  const payload = await response.json();
+  if (typeof payload.session_secret !== 'string' || !payload.session_secret) {
+    throw new Error('the approval broker returned no session secret');
+  }
+  brokerSessionSecret = payload.session_secret;
+  brokerSessionOrigin = origin;
+  return brokerSessionSecret;
+}
+
+async function postGrant(fields, secret, signal) {
+  const response = await fetch(`${brokerOrigin()}/grant`, {
+    method: 'POST',
+    mode: 'cors',
+    headers: { 'Content-Type': 'application/json', [BROKER_SESSION_HEADER]: secret },
+    body: JSON.stringify(fields),
+    signal
+  });
+  const payload = await response.json().catch(() => ({}));
+  return { response, payload };
+}
+
+async function requestGrant(fields, signal) {
+  // The posted object is the parsed proposal itself, so the fields the human
+  // read in the dialog are the fields the grant covers and the served path
+  // compares against. `signal` aborts every fetch this call makes when a
+  // later denial or dismissal outruns it, so a click that landed before the
+  // dialog closed cannot still land a grant after it.
+  const secret = await brokerSession(signal);
+  let { response, payload } = await postGrant(fields, secret, signal);
+  if (response.status === 403) {
+    // A broker restarted on the same host and port signs a new per-launch
+    // secret, so the cached one this page still holds is stale rather than
+    // wrong. One retry against a freshly fetched secret recovers that case
+    // without the user reloading the page; a second 403 is a genuine refusal
+    // and surfaces as one.
+    brokerSessionSecret = null;
+    brokerSessionOrigin = null;
+    const refreshed = await brokerSession(signal);
+    ({ response, payload } = await postGrant(fields, refreshed, signal));
+  }
+  if (!response.ok || typeof payload.authorization !== 'string') {
+    throw new Error(payload.error || `the approval broker refused: HTTP ${response.status}`);
+  }
+  return payload.authorization;
+}
+
+function proposedSearchFields(argumentText) {
+  // A proposal whose arguments fail to parse is refused rather than repaired:
+  // a dialog cannot show a human what a malformed object means, and a grant
+  // over a guess authorizes something nobody read.
+  const parsed = JSON.parse(argumentText);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('the proposed arguments are not an object');
+  }
+  const domainList = value => Array.isArray(value)
+    ? value.filter(entry => typeof entry === 'string') : [];
+  return {
+    query: typeof parsed.query === 'string' ? parsed.query : '',
+    include_domains: domainList(parsed.include_domains),
+    exclude_domains: domainList(parsed.exclude_domains),
+    published_after: typeof parsed.published_after === 'string' ? parsed.published_after : '',
+    published_before: typeof parsed.published_before === 'string' ? parsed.published_before : '',
+    max_age_hours: Number.isInteger(parsed.max_age_hours) ? parsed.max_age_hours : null,
+    max_results: Number.isInteger(parsed.max_results) ? parsed.max_results : 5
+  };
+}
+
+function renderApprovalFields(fields) {
+  const list = $('#approval-args');
+  list.textContent = '';
+  const row = (label, value, live) => {
+    const term = document.createElement('dt');
+    term.textContent = label;
+    const detail = document.createElement('dd');
+    detail.textContent = value;
+    if (live) detail.className = 'live';
+    list.append(term, detail);
+  };
+  row('query', fields.query || '(empty)');
+  const interval = [
+    fields.published_after ? `published after ${fields.published_after}` : '',
+    fields.published_before ? `published before ${fields.published_before}` : ''
+  ].filter(Boolean).join(', ');
+  row('publication interval', interval || 'any publication date');
+  row('included domains', fields.include_domains.length
+    ? fields.include_domains.join(', ') : 'every domain');
+  row('excluded domains', fields.exclude_domains.length
+    ? fields.exclude_domains.join(', ') : 'none');
+  row('max results', String(fields.max_results));
+  // max_age_hours of 0 forces a live crawl, which is the one search parameter
+  // that spends provider budget on the model's word, so the dialog names that
+  // case rather than printing a bare number.
+  row('live crawl',
+    fields.max_age_hours === 0
+      ? 'yes -- this forces a fresh crawl and spends provider budget'
+      : fields.max_age_hours === null
+        ? 'the provider decides which cached copy to serve'
+        : `a cached copy up to ${fields.max_age_hours} hours old is accepted`,
+    fields.max_age_hours === 0);
+}
+
+function approveWebSearch(fields) {
+  // The dialog resolves to one approval or a refusal. A standing grade is
+  // absent by construction: the broker signs a single-use grant, so admitting
+  // one search is the widest outcome this control offers.
+  return new Promise(resolve => {
+    const dialog = $('#web-approval');
+    const note = $('#approval-note');
+    note.hidden = true;
+    note.textContent = '';
+    renderApprovalFields(fields);
+    const once = $('#approve-once');
+    const deny = $('#approve-deny');
+    // A denial or dismissal can land while requestGrant(fields) is still
+    // in flight, and the fetches it issued are otherwise still able to
+    // complete: a late grant would spend the rate bucket and issue a token
+    // nobody reads, and its stale `finish` callback would resolve a second
+    // time and clear buttons a newer dialog now owns. `settled` makes
+    // completion one-shot and `controller` aborts the pending request the
+    // instant denial wins the race.
+    let settled = false;
+    const controller = new AbortController();
+    const finish = outcome => {
+      if (settled) return;
+      settled = true;
+      once.onclick = null;
+      deny.onclick = null;
+      dialog.onclose = null;
+      once.disabled = false;
+      dialog.close();
+      resolve(outcome);
+    };
+    once.onclick = async () => {
+      once.disabled = true;
+      try {
+        const authorization = await requestGrant(fields, controller.signal);
+        finish({ decision: 'once', authorization });
+      } catch (error) {
+        if (settled) return;
+        once.disabled = false;
+        note.hidden = false;
+        note.textContent = String(error.message || error);
+      }
+    };
+    deny.onclick = () => {
+      controller.abort();
+      finish({ decision: 'deny' });
+    };
+    // A dismissal is a refusal. Treating it as an approval would let a stray
+    // keystroke sign a grant over arguments nobody accepted.
+    dialog.onclose = () => {
+      controller.abort();
+      finish({ decision: 'deny' });
+    };
+    dialog.showModal();
+  });
+}
 
 async function boot() {
   // The router creates no qwen-apu compatibility alias. Its roster is the
@@ -388,12 +672,227 @@ function turn(who, cls) {
   return { root: d, body: b };
 }
 
-$('#clear').onclick = () => { history = []; logEl.textContent = ''; };
+$('#clear').onclick = () => { history = []; toolCallSequence = 0; logEl.textContent = ''; };
 
 $('#input').addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
 });
 $('#send').onclick = send;
+
+function buildRequestBody(messages) {
+  const body = { model: requestModel, stream: true, temperature: 0.7,
+                 stream_options: { include_usage: true },
+                 max_tokens: 512, messages };
+  const reasoningOn = $('#reasoning').checked;
+  // Qwen3 emits its <think> block from the chat template, so the switch is a
+  // template argument. reasoning_budget 0 ends the block immediately on builds
+  // that read the OpenAI-side field instead, and both are ignored by a
+  // template that does not offer the option.
+  body.chat_template_kwargs = { enable_thinking: reasoningOn };
+  if (!reasoningOn) body.reasoning_budget = 0;
+  const tools = [];
+  if ($('#tools').checked) tools.push(...DEMO_TOOL);
+  // The Web toggle is read at the moment the request is built, so a turn run
+  // with it off carries no web tool and the model has no network-reaching
+  // surface to propose. Stripping the declaration rather than refusing the
+  // proposal is what makes the toggle a boundary instead of a prompt.
+  if ($('#web-tools').checked) tools.push(...WEB_TOOLS);
+  if (tools.length) body.tools = tools;
+  return body;
+}
+
+function requestMessages(authorizations) {
+  // `history` holds the proposed arguments and the request carries the
+  // authorized ones. The grant therefore reaches the server inside one
+  // request and stays out of the transcript that every later request re-sends,
+  // so a single-use token is presented once rather than replayed each turn.
+  if (!authorizations.size) return history;
+  return history.map(message => {
+    if (!Array.isArray(message.tool_calls)) return message;
+    return {
+      ...message,
+      tool_calls: message.tool_calls.map(call => authorizations.has(call.id)
+        ? { ...call, function: { ...call.function, arguments: authorizations.get(call.id) } }
+        : call)
+    };
+  });
+}
+
+async function streamCompletion(messages, view) {
+  const t0 = performance.now();
+  let first = null, streamChunks = 0, completionTokens = null;
+  let serverTimings = null, answer = '', reasoning = '', finish = null;
+  const toolCalls = {};
+  const resp = await fetch('./v1/chat/completions', {
+    method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(buildRequestBody(messages))
+  });
+  if (!resp.ok) {
+    const detail = await resp.text();
+    throw new Error(`HTTP ${resp.status}. ${detail.slice(0, 300)}`);
+  }
+  const reader = resp.body.getReader();
+  const dec = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const lines = buf.split('\n');
+    buf = lines.pop();
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue;
+      if (line === 'data: [DONE]') continue;
+      let d; try { d = JSON.parse(line.slice(6)); } catch { continue; }
+      if (d.usage?.completion_tokens !== undefined) completionTokens = d.usage.completion_tokens;
+      if (d.timings) serverTimings = d.timings;
+      const ch = d.choices?.[0]; if (!ch) continue;
+      if (ch.finish_reason) finish = ch.finish_reason;
+      const delta = ch.delta || {};
+      for (const tc of delta.tool_calls || []) {
+        const k = tc.index ?? 0;
+        toolCalls[k] ||= { name: '', args: '' };
+        if (tc.function?.name) toolCalls[k].name += tc.function.name;
+        if (tc.function?.arguments) toolCalls[k].args += tc.function.arguments;
+      }
+      if (delta.reasoning_content) {
+        if (first === null) first = performance.now();
+        streamChunks++; reasoning += delta.reasoning_content; view.thinkBody.textContent = reasoning;
+        if (!view.thinkShown) { view.turn.root.insertBefore(view.think, view.turn.body); view.thinkShown = true; }
+      }
+      if (delta.content) {
+        if (first === null) first = performance.now();
+        streamChunks++; answer += delta.content; view.turn.body.textContent = answer;
+      }
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+  }
+
+  const calls = Object.values(toolCalls);
+  if (calls.length) {
+    const pre = document.createElement('pre');
+    pre.className = 'tool';
+    pre.textContent = calls.map(c => `${c.name}(${c.args})`).join('\n');
+    view.turn.root.insertBefore(pre, view.meta);
+  }
+
+  const total = (performance.now() - t0) / 1000;
+  const ttft = first ? (first - t0) / 1000 : null;
+  const browserDecodeSeconds = first ? (performance.now() - first) / 1000 : null;
+  const rate = serverTimings?.predicted_per_second ??
+    (browserDecodeSeconds && completionTokens ? completionTokens / browserDecodeSeconds : null);
+  const bits = [];
+  if (serverTimings?.prompt_per_second !== undefined) {
+    bits.push(`${serverTimings.prompt_per_second.toFixed(1)} tok/s prefill`);
+  } else if (ttft !== null) {
+    bits.push(`time to first token ${ttft.toFixed(2)}s`);
+  }
+  if (rate !== null) bits.push(`${rate.toFixed(1)} tok/s decode`);
+  if (completionTokens !== null) {
+    bits.push(`${completionTokens} generated tokens in ${total.toFixed(1)}s`);
+  } else {
+    bits.push(`${streamChunks} streamed chunks in ${total.toFixed(1)}s`);
+  }
+  // A non-stop finish is a budget or a tool hand-off, not a wrong answer, and
+  // saying so is the difference between reading a truncation as a model failure
+  // and reading it as a harness limit.
+  if (finish && finish !== 'stop') bits.push(`ended on ${finish}`);
+  if (!answer && reasoning) bits.push('the answer is empty; the model spent the budget reasoning');
+  view.meta.textContent = bits.join(' | ');
+  return { answer, reasoning, calls };
+}
+
+function openTurnView() {
+  const t = turn('qwen');
+  const think = document.createElement('details');
+  think.className = 'think';
+  const sum = document.createElement('summary');
+  sum.textContent = 'reasoning';
+  const thinkBody = document.createElement('div');
+  thinkBody.className = 'body';
+  think.append(sum, thinkBody);
+  const meta = document.createElement('div');
+  meta.className = 'meta';
+  t.root.append(meta);
+  return { turn: t, think, thinkBody, thinkShown: false, meta };
+}
+
+async function resolveWebApprovals(calls, callIds, view, roundBudgetExhausted) {
+  /* Return the authorized argument strings for this round, or null on refusal.
+
+     Each proposed web search is shown to a human with the arguments it would
+     run under, and the broker signs a grant over exactly those fields. A
+     refusal answers the call with a tool message so the model reads that the
+     search did not run, which is the outcome the model would otherwise be
+     free to narrate however it liked. */
+  const authorizations = new Map();
+  let refused = false;
+  for (let index = 0; index < calls.length; index++) {
+    if (calls[index].name === WEB_SEARCH_TOOL_NAME && roundBudgetExhausted) {
+      // The continuation cap bounds the rounds left to spend a grant in: the
+      // round that just streamed is the last one send() will send again, so
+      // no approval reaches a request that never goes out. The dialog stays
+      // closed and the model reads the same refusal shape a denial produces.
+      refused = true;
+      history.push({ role: 'tool', tool_call_id: callIds[index], name: calls[index].name,
+                     content: 'The round budget is exhausted; the search did not run.' });
+      continue;
+    }
+    if (calls[index].name !== WEB_SEARCH_TOOL_NAME) {
+      // A fetch, demo, or other advertised call carries no approval path of its
+      // own. Answering it here, rather than skipping it, is what keeps every
+      // tool_calls entry paired with a tool message: an unanswered call would
+      // make the next request's message array illegal and the server would
+      // refuse the whole continuation instead of the one call.
+      refused = true;
+      history.push({ role: 'tool', tool_call_id: callIds[index], name: calls[index].name,
+                     content: `The served path executes no tool named ${calls[index].name} ` +
+                              'in this turn.' });
+      continue;
+    }
+    let fields;
+    try {
+      fields = proposedSearchFields(calls[index].args);
+    } catch (error) {
+      refused = true;
+      history.push({ role: 'tool', tool_call_id: callIds[index], name: calls[index].name,
+                     content: `The search did not run: ${error.message || error}` });
+      continue;
+    }
+    const outcome = await approveWebSearch(fields);
+    if (outcome.decision === 'once') {
+      // The grant enters a request-scoped argument string. `history` keeps the
+      // proposal it was signed over, so the transcript records what the model
+      // asked for and holds no token.
+      authorizations.set(callIds[index],
+        JSON.stringify({ ...fields, authorization: outcome.authorization }));
+      // Every assistant message carrying tool_calls needs a tool message per
+      // call before the array is a legal request, so the approval answers its
+      // own call. What answers it is the state of the grant rather than search
+      // results: which process executes an approved web_search_exa is
+      // unresolved between llama-server's own MCP child and this page, and
+      // evidence/web-ui-authorization-design.md names the source that settles
+      // it. The single-use grant is issued and travels in the next request's
+      // arguments; the results reach the model once an executor exists.
+      history.push({ role: 'tool', tool_call_id: callIds[index], name: calls[index].name,
+                     content: 'The user approved these exact search arguments and a ' +
+                              'single-use grant covers them. The search awaits its ' +
+                              'executor, so no results are available in this turn.' });
+    } else {
+      refused = true;
+      history.push({ role: 'tool', tool_call_id: callIds[index], name: calls[index].name,
+                     content: 'The user refused this web search. It did not run.' });
+    }
+  }
+  if (!authorizations.size && !refused) return null;
+  if (refused && !authorizations.size) {
+    const note = document.createElement('div');
+    note.className = 'meta bad';
+    note.textContent = 'the web search was refused; the model continues without it';
+    view.turn.root.append(note);
+  }
+  return authorizations;
+}
 
 async function send() {
   if (busy) return;
@@ -419,129 +918,42 @@ async function send() {
   renderAttached();
 
   busy = true; $('#send').disabled = true;
-  const t = turn('qwen');
-  const think = document.createElement('details');
-  think.className = 'think';
-  const sum = document.createElement('summary');
-  sum.textContent = 'reasoning';
-  const tb = document.createElement('div');
-  tb.className = 'body';
-  think.append(sum, tb);
-  let thinkShown = false;
-  const meta = document.createElement('div');
-  meta.className = 'meta';
-  t.root.append(meta);
-
-  const body = { model: requestModel, stream: true, temperature: 0.7,
-                 stream_options: { include_usage: true },
-                 max_tokens: 512, messages: history };
-  const reasoningOn = $('#reasoning').checked;
-  // Qwen3 emits its <think> block from the chat template, so the switch is a
-  // template argument. reasoning_budget 0 ends the block immediately on builds
-  // that read the OpenAI-side field instead, and both are ignored by a
-  // template that does not offer the option.
-  body.chat_template_kwargs = { enable_thinking: reasoningOn };
-  if (!reasoningOn) body.reasoning_budget = 0;
-  if ($('#tools').checked) body.tools = DEMO_TOOL;
-
-  const t0 = performance.now();
-  let first = null, streamChunks = 0, completionTokens = null;
-  let serverTimings = null, answer = '', reasoning = '', finish = null;
-  const toolCalls = {};
+  // The continuation cap bounds one user turn. A model that keeps proposing
+  // searches meets a fixed number of approval dialogs rather than an unbounded
+  // sequence of them.
+  let authorizations = new Map();
   try {
-    const resp = await fetch('./v1/chat/completions', {
-      method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(body)
-    });
-    if (!resp.ok) {
-      const detail = await resp.text();
-      throw new Error(`HTTP ${resp.status}. ${detail.slice(0, 300)}`);
-    }
-    const reader = resp.body.getReader();
-    const dec = new TextDecoder();
-    let buf = '';
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      const lines = buf.split('\n');
-      buf = lines.pop();
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue;
-        if (line === 'data: [DONE]') continue;
-        let d; try { d = JSON.parse(line.slice(6)); } catch { continue; }
-        if (d.usage?.completion_tokens !== undefined) completionTokens = d.usage.completion_tokens;
-        if (d.timings) serverTimings = d.timings;
-        const ch = d.choices?.[0]; if (!ch) continue;
-        if (ch.finish_reason) finish = ch.finish_reason;
-        const delta = ch.delta || {};
-        for (const tc of delta.tool_calls || []) {
-          const k = tc.index ?? 0;
-          toolCalls[k] ||= { name: '', args: '' };
-          if (tc.function?.name) toolCalls[k].name += tc.function.name;
-          if (tc.function?.arguments) toolCalls[k].args += tc.function.arguments;
-        }
-        if (delta.reasoning_content) {
-          if (first === null) first = performance.now();
-          streamChunks++; reasoning += delta.reasoning_content; tb.textContent = reasoning;
-          if (!thinkShown) { t.root.insertBefore(think, t.body); thinkShown = true; }
-        }
-        if (delta.content) {
-          if (first === null) first = performance.now();
-          streamChunks++; answer += delta.content; t.body.textContent = answer;
-        }
-        logEl.scrollTop = logEl.scrollHeight;
+    for (let round = 0; round < CONTINUATION_CAP; round++) {
+      const view = openTurnView();
+      let outcome;
+      try {
+        outcome = await streamCompletion(requestMessages(authorizations), view);
+      } catch (err) {
+        view.meta.className = 'meta bad';
+        view.meta.textContent = String(err.message || err);
+        return;
       }
+      authorizations = new Map();
+      const msg = { role: 'assistant', content: outcome.answer };
+      let callIds = [];
+      if (outcome.calls.length) {
+        callIds = outcome.calls.map(() => `call_${toolCallSequence++}`);
+        msg.tool_calls = outcome.calls.map((c, i) => ({
+          id: callIds[i], type: 'function',
+          function: { name: c.name, arguments: c.args }
+        }));
+      }
+      history.push(msg);
+      if (!outcome.calls.length) return;
+      const resolved = await resolveWebApprovals(
+        outcome.calls, callIds, view, round === CONTINUATION_CAP - 1);
+      if (resolved === null) return;
+      authorizations = resolved;
     }
-  } catch (err) {
-    meta.className = 'meta bad';
-    meta.textContent = String(err.message || err);
+  } finally {
     busy = false; $('#send').disabled = false;
-    return;
+    $('#input').focus();
   }
-
-  const calls = Object.values(toolCalls);
-  if (calls.length) {
-    const pre = document.createElement('pre');
-    pre.className = 'tool';
-    pre.textContent = calls.map(c => `${c.name}(${c.args})`).join('\n');
-    t.root.insertBefore(pre, meta);
-  }
-
-  const total = (performance.now() - t0) / 1000;
-  const ttft = first ? (first - t0) / 1000 : null;
-  const browserDecodeSeconds = first ? (performance.now() - first) / 1000 : null;
-  const rate = serverTimings?.predicted_per_second ??
-    (browserDecodeSeconds && completionTokens ? completionTokens / browserDecodeSeconds : null);
-  const bits = [];
-  if (serverTimings?.prompt_per_second !== undefined) {
-    bits.push(`${serverTimings.prompt_per_second.toFixed(1)} tok/s prefill`);
-  } else if (ttft !== null) {
-    bits.push(`time to first token ${ttft.toFixed(2)}s`);
-  }
-  if (rate !== null) bits.push(`${rate.toFixed(1)} tok/s decode`);
-  if (completionTokens !== null) {
-    bits.push(`${completionTokens} generated tokens in ${total.toFixed(1)}s`);
-  } else {
-    bits.push(`${streamChunks} streamed chunks in ${total.toFixed(1)}s`);
-  }
-  // A non-stop finish is a budget or a tool hand-off, not a wrong answer, and
-  // saying so is the difference between reading a truncation as a model failure
-  // and reading it as a harness limit.
-  if (finish && finish !== 'stop') bits.push(`ended on ${finish}`);
-  if (!answer && reasoning) bits.push('the answer is empty; the model spent the budget reasoning');
-  meta.textContent = bits.join(' | ');
-
-  const msg = { role: 'assistant', content: answer };
-  if (calls.length) {
-    msg.tool_calls = calls.map((c, i) => ({
-      id: `call_${i}`, type: 'function',
-      function: { name: c.name, arguments: c.args }
-    }));
-  }
-  history.push(msg);
-  busy = false; $('#send').disabled = false;
-  $('#input').focus();
 }
 </script>
 </body>

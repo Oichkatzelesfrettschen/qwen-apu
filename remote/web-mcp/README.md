@@ -65,6 +65,56 @@ credential, which `Provider.preflight` reads from the same file the request
 does -- so a refusal from either leaves the grant spendable, and a presented grant
 requires `QWEN_WEB_STATE_DIR` because the count lives in that database.
 
+## The broker turns one human approval into one grant
+
+`server.py authorize` signs from a command line, which serves an operator
+ahead of a session and serves nothing while one runs. `authorize-broker.py`
+gives the same signing path a request interface: a front end that has shown a
+human the exact proposed `search_exa` arguments posts those arguments and
+receives the grant that admits them.
+
+```sh
+remote/web-mcp/authorize-broker.py --origin http://127.0.0.1:8080 \
+    [--host 127.0.0.1] [--port N] [--token-key-file PATH] [--state-dir PATH] \
+    [--provider exa|fake] [--profile NAME] [--lifetime SECONDS] \
+    [--per-minute N]
+```
+
+Both paths reach the key through `server.issue_grant`, which validates through
+`require_string`, `require_domain_list`, `require_iso_date`,
+`require_optional_integer`, and `require_integer` and builds the claim through
+`authorization_claim`, so an approved argument and a served argument pass one
+validator and the serving path's field-by-field comparison holds. That function
+also signs and measures the grant against `AUTHORIZATION_CHARACTER_CAP`, so a
+token the search argument would refuse before signature verification is refused
+where it is issued, and the operator's command and the broker's request meet
+that refusal alike.
+
+The service admits `127.0.0.1` and `::1` and refuses every other `--host` with
+exit 2 before the socket exists, so a browser on another machine reaches it
+through `ssh -L PORT:127.0.0.1:PORT` rather than through a wider bind. The
+`Host` header is compared against the same two literals, which is what closes
+DNS rebinding against a socket a resolver can point a name at.
+
+`GET /session` returns the per-launch session secret to a page whose `Origin`
+matches `--origin` or `QWEN_WEB_BROKER_ORIGIN`; an absent Origin is refused, so
+omitting the header reaches no fallback. `POST /grant` requires that secret in
+an `X-Qwen-Web-Session` header compared with `hmac.compare_digest`. The secret
+lives in memory as the authority and reaches the front end through
+`authorize-session.secret`, a file created at mode 0600 under the state
+directory and removed when the launch ends, so a stale file authorizes nothing
+against the next launch. `OPTIONS` answers the preflight a custom header and a
+JSON body force, echoing the one admitted origin rather than a wildcard and
+leaving credentials unallowed.
+
+The `authorize-minute` bucket sits beside `search-minute` and `fetch-minute` in
+the same table and refuses under the same `rate_limited` term, defaulting to
+six approvals a minute. Each outcome writes one audit row with `authorize` as
+its operation, the SHA-256 of the query, the domain filters, and the requested
+result count; the signing key and the issued grant reach the row, the access
+log, and every error message nowhere. The claim carries `max_uses` of one, so
+one approval buys one search and the endpoint has no standing grade to offer.
+
 The grant and the result identifier are signed under the same key with
 different context strings, so neither verifies in the other's position. Both
 mechanisms mark provenance and enforce authorization at the wrapper; the model
@@ -287,6 +337,7 @@ UTF-8 while the fixture file stays a legal UTF-8 JSON document.
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 remote/web-mcp/test-web-mcp.py
+PYTHONDONTWRITEBYTECODE=1 python3 remote/web-mcp/test-authorize-broker.py
 ```
 
 The test spawns the server the way llama-server spawns it, writes its fixtures
@@ -300,3 +351,10 @@ what ends the server's read loop; a child still running five seconds later is
 escalated to SIGTERM and then SIGKILL. Tests exercise both the clean exit
 path when the child responds to stdin closure and the escalation to SIGKILL
 when the child ignores SIGTERM.
+
+`test-authorize-broker.py` launches the broker as a subprocess, reads its port
+from the `listening` line it prints on stdout, and speaks HTTP to that port, so
+the bind refusal, the preflight, the session header, the Host check, and the
+audit rows are measured on the wire. Each issued grant is then spent against
+`server.py` under the fake provider, which is what proves the two paths agree
+on one canonical claim.
