@@ -59,7 +59,10 @@ inserting `grant_id` under the ledger's primary key inside BEGIN IMMEDIATE, so
 a second search presenting the same token meets a constraint violation and
 answers `authorization_denied` where the first answered results. The insert
 sits immediately ahead of the provider request, which leaves the use intact
-when a rate or budget refusal reaches no provider, and a presented grant
+when a rate or budget refusal reaches no provider. Every local configuration
+the reply depends on resolves first -- the token lifetime and the provider
+credential, which `Provider.preflight` reads from the same file the request
+does -- so a refusal from either leaves the grant spendable, and a presented grant
 requires `QWEN_WEB_STATE_DIR` because the count lives in that database.
 
 The grant and the result identifier are signed under the same key with

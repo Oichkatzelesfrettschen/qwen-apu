@@ -629,6 +629,17 @@ class Provider:
 
     name = "provider"
 
+    def preflight(self):
+        """Validate the credential this provider posts with.
+
+        A grant admits one search and the ledger spends its use before the
+        request, so a credential the provider rejects at request time would
+        cost the operator a token for a call that reached no network. The
+        check runs ahead of that spend and reads the same file the request
+        does.
+        """
+        return None
+
     def search(self, query, max_results, constraints):
         raise NotImplementedError
 
@@ -753,6 +764,9 @@ class ExaProvider(Provider):
         # redirector's choosing.
         self.search_endpoint = EXA_SEARCH_ENDPOINT
         self.contents_endpoint = EXA_CONTENTS_ENDPOINT
+
+    def preflight(self):
+        read_secret_file(self.key_file_path, "Exa API")
 
     def _post(self, endpoint, body):
         api_key = read_secret_file(self.key_file_path, "Exa API")
@@ -1694,6 +1708,12 @@ def call_search(settings, arguments):
     try:
         signing_key = read_secret_file(settings["token_key_file"], "token signing")
         provider = select_provider(settings)
+        # Every local configuration the reply depends on resolves before the
+        # ledger spends the grant: a lifetime outside its range and a key file
+        # the mode check refuses both reach no provider, so the single use
+        # stays available to the operator who corrects the configuration.
+        lifetime_seconds = resolve_token_lifetime(settings)
+        provider.preflight()
         granted = enforce_search_authorization(
             settings,
             signing_key,
@@ -1733,7 +1753,7 @@ def call_search(settings, arguments):
             search_id,
             freshness_policy(constraints),
             int(now),
-            resolve_token_lifetime(settings),
+            lifetime_seconds,
         )
         if ledger is not None:
             ledger.open_search(
@@ -1743,7 +1763,7 @@ def call_search(settings, arguments):
                 integer_setting(
                     settings, "max_fetches", SEARCH_FETCH_ALLOWANCE_DEFAULT
                 ),
-                int(now) + resolve_token_lifetime(settings),
+                int(now) + lifetime_seconds,
                 issued,
             )
         audit["result_count"] = len(

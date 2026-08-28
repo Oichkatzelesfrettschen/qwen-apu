@@ -879,6 +879,52 @@ class WebMcpServerTest(unittest.TestCase):
         )
         self.assertFalse(admitted["result"]["isError"])
 
+    def grant_rows(self, state_path):
+        connection = sqlite3.connect(
+            os.path.join(state_path, server.LEDGER_FILE_NAME)
+        )
+        try:
+            return connection.execute("SELECT grant_id FROM grants").fetchall()
+        finally:
+            connection.close()
+
+    def test_local_configuration_resolves_before_the_grant_is_spent(self):
+        """A grant survives a refusal the local configuration produces.
+
+        A token lifetime outside its range and an Exa key file the mode check
+        refuses both reach no provider, so the single use stays available to
+        the operator who fixes the configuration and retries the same token.
+        """
+        for name, overrides, provider_name, expected in (
+            (
+                "lifetime-first-state",
+                {"QWEN_WEB_TOKEN_LIFETIME_SECONDS": "5"},
+                "fake",
+                "QWEN_WEB_TOKEN_LIFETIME_SECONDS",
+            ),
+            (
+                "credential-first-state",
+                {
+                    "QWEN_WEB_PROVIDER": "exa",
+                    "QWEN_WEB_EXA_KEY_FILE": self.loose_key_path,
+                },
+                "exa",
+                "0644",
+            ),
+        ):
+            with self.subTest(configuration=name):
+                state_path = self.state_directory(name)
+                session = self.authorized_session(name, **overrides)
+                token = self.grant(provider=provider_name)
+                response = self.search(session, authorization=token)
+                self.assertTrue(response["result"]["isError"])
+                self.assertIn(expected, self.result_text(response))
+                self.assertEqual(
+                    self.grant_rows(state_path),
+                    [],
+                    "a refusal that reached no provider spent the grant",
+                )
+
     def test_a_grant_admits_its_own_arguments_alone(self):
         session = self.authorized_session("argument-grant-state")
         cases = (
