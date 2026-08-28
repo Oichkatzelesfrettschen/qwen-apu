@@ -646,6 +646,16 @@ if [ "$router_enabled" = 1 ]; then
             exit 2
             ;;
     esac
+    # build-web-presets.sh writes this marker when
+    # QWEN_WEB_ALLOW_UNVALIDATED_DEPTH admitted a profile whose context exceeds
+    # its row's validated_filled_depth or whose depth reads `-`. The preset file
+    # carries the marker, so the restriction follows the file across every later
+    # launch the way the quarantine provenance does.
+    web_depth_override_from_preset=0
+    if grep -qx '# qwen-web-presets: unvalidated-depth-override' \
+        "$router_presets"; then
+        web_depth_override_from_preset=1
+    fi
     quarantine_override_from_preset=$(sed -n \
         's/^# qwen_router_include_quarantine=\([01]\)$/\1/p' \
         "$router_presets")
@@ -695,6 +705,18 @@ if [ "$router_enabled" = 1 ]; then
        [ "$quarantine_override_from_preset" = 1 ]; then
         if [ "$bind_host" != 127.0.0.1 ]; then
             printf 'quarantine override forces the listener to loopback: %s -> 127.0.0.1\n' \
+                "$bind_host" >&2
+            bind_host=127.0.0.1
+        fi
+    fi
+    # A section admitted past its validated_filled_depth serves a depth no run
+    # has filled and decoded, so the same restriction applies for the same
+    # reason: the appliance binds 0.0.0.0 and a depth that wedged the compute
+    # ring reaches every host on the network from there. The bind host is forced
+    # rather than refused, so the experiment the override exists for still runs.
+    if [ "$web_depth_override_from_preset" = 1 ]; then
+        if [ "$bind_host" != 127.0.0.1 ]; then
+            printf 'web preset unvalidated-depth override forces the listener to loopback: %s -> 127.0.0.1\n' \
                 "$bind_host" >&2
             bind_host=127.0.0.1
         fi

@@ -232,6 +232,23 @@ quarantine section retains exactly one `LLAMA_ARG_TAGS` key that contains
 `quarantine` and excludes `default` and every conflicting tier tag; startup
 rejects a stale tag set before the server runs.
 
+`remote/build-web-presets.sh` generates a second preset file from
+`remote/web-profiles.tsv`, where a section is named for a profile rather than a
+checkpoint and several profiles serve one checkpoint at depths the profile
+chooses. Its head marker `# qwen_web_presets=1` switches
+`qwen-capacity-policy.sh` to resolve each section through its `LLAMA_ARG_MODEL`
+path against the unique `model_file` column and to bound `LLAMA_ARG_CTX_SIZE` by
+`context_ceiling` rather than pin it to `context_default`. `execution_policy`
+decides emission: `refused` emits nothing under every setting, `validator-gated`
+emits a section carrying `LLAMA_ARG_MCP_SERVERS_CONFIG` only under
+`QWEN_WEB_AUTHORIZER_READY=1`, and `ui-mediated` emits a section naming no
+configuration because the UI performs the retrieval. Every checked-in row reads
+`refused`, so the generator against the shipped ledger emits nothing and says
+so. The `# qwen-web-presets: unvalidated-depth-override` marker forces the
+listener to loopback the way the quarantine marker does, and
+`remote/qwen-web-launch.sh` binds 127.0.0.1 with `QWEN_ROUTER_MAX=1` and refuses
+a caller who asked for any other listener.
+
 Router mode leaves depth, cache triple, and submission geometry off its own
 argv. `server-models.cpp` ends its preset assembly with
 `preset.merge(base_preset)` and `common_preset::merge` overwrites, so a router
@@ -389,6 +406,7 @@ launch. A load that exceeds the machine fails at once and names its reason.
 ```sh
 # Start and stop the appliance (run on the laptop)
 ~/qwen-laptop-setup/remote/qwen-launch.sh [paced-60|low-serialized|low-async]
+~/qwen-laptop-setup/remote/qwen-web-launch.sh [PROFILE]   # web presets, loopback only
 ~/qwen-laptop-setup/remote/qwen-teardown.sh
 ~/qwen-laptop-setup/remote/qwen-webui-control.sh status
 
@@ -418,6 +436,7 @@ remote/sample-gpu-clocks.sh OUT_TSV [SECONDS]  # the DPM step a rate ran at
 remote/measure-dpm-force.sh MODEL [OUT]         # auto against global high governor
 remote/model-registry.sh id|path SELECTOR [FIELD]
 remote/build-router-presets.sh [OUTPUT_INI]    # the picker, from the tier field
+remote/build-web-presets.sh OUTPUT_INI         # web profiles, from the execution_policy field
 remote/fetch-candidate-artifact.sh REPO REV FILE DIR  # observed, not pinned
 remote/run-one-token-admission.sh RECORD [OUT]  # load every candidate once
 remote/run-representation-arm.sh LABEL CONTROL SUBJECT
@@ -450,6 +469,8 @@ remote/test-qwen-runtime-guards.sh
 remote/test-radv-low-priority-env.sh
 remote/test-model-registry.sh
 remote/test-model-tiers.sh
+remote/test-web-presets.sh
+remote/test-qwen-web-launch.sh
 remote/test-quality-suite.py
 remote/test-quality-roster.sh
 remote/test-promote-llama-build.sh

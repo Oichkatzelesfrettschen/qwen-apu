@@ -337,6 +337,42 @@ else
     cat "$work/policy-build.err" >&2
 fi
 
+# A ui-mediated section carries no LLAMA_ARG_MCP_SERVERS_CONFIG and a
+# validator-gated one does, so a file holding both proves the policy reads the
+# tuple keys and leaves the MCP key to the generator.
+mkdir -p "$work/mixed-out"
+web_profiles_mixed=$work/web-profiles-mixed.tsv
+{
+    printf 'web-fixture-gated\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\n'
+    printf 'web-fixture-ui\tfixture-candidate-validated\tui-mediated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tui-mediated\n'
+} >"$web_profiles_mixed"
+presets_mixed=$work/mixed-out/presets-mixed.ini
+if QWEN_MODEL_ROOT=$policy_model_root build "$web_profiles_mixed" \
+    "$presets_mixed" \
+    env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
+    QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" \
+    QWEN_WEB_STATE_DIR="$web_state_directory" \
+    >"$work/mixed-build.log" 2>"$work/mixed-build.err"; then
+    if run_policy_over_presets "$presets_mixed" \
+        >"$work/mixed-policy.log" 2>"$work/mixed-policy.err"; then
+        mixed_outcome=ok
+        grep -q '^\[web-fixture-gated\]' "$presets_mixed" ||
+            mixed_outcome=gated_section_absent
+        grep -q '^\[web-fixture-ui\]' "$presets_mixed" ||
+            mixed_outcome=ui_section_absent
+        [ "$(grep -c '^LLAMA_ARG_MCP_SERVERS_CONFIG' "$presets_mixed")" = 1 ] ||
+            mixed_outcome=wrong_mcp_key_count
+        report mixed_policy_preset_passes_capacity_policy "$mixed_outcome"
+    else
+        report mixed_policy_preset_passes_capacity_policy failed
+        cat "$work/mixed-policy.err" >&2
+    fi
+else
+    report mixed_policy_preset_passes_capacity_policy build_failed
+    cat "$work/mixed-build.err" >&2
+fi
+
 # A misspelled or absent tuple key fails that same validation. Each key is
 # removed in turn, so the arm proves the validator reads every one rather than
 # reading the file's first line.
@@ -587,7 +623,8 @@ if QWEN_MODEL_REGISTRY=$malformed_registry \
     report registry_batch_leading_zero_refused emitted_a_section
 else
     outcome=ok
-    grep -q 'batch' "$work/malformed-batch.err" || outcome=message_omits_field
+    grep -q 'batch outside canonical positive decimal form: 0128' \
+        "$work/malformed-batch.err" || outcome=message_omits_field
     report registry_batch_leading_zero_refused "$outcome"
 fi
 
