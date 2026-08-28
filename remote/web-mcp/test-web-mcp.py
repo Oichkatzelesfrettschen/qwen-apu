@@ -59,6 +59,13 @@ def build_fixture_document():
                     "highlights": [],
                 },
                 {
+                    "title": "Structurally broken record",
+                    "url": "https://broken.example.net/list",
+                    "publishedDate": "",
+                    "author": "",
+                    "highlights": [],
+                },
+                {
                     "title": "Invalid encoding",
                     "url": "https://bad.example.net/bytes",
                     "publishedDate": "",
@@ -74,6 +81,7 @@ def build_fixture_document():
             "https://hostile.example.net/inject": {"text": INJECTION_TEXT},
             "https://big.example.net/huge": {"text": oversized},
             "https://bad.example.net/bytes": {"text_base64": invalid_utf8},
+            "https://broken.example.net/list": [],
         },
     }
 
@@ -202,6 +210,30 @@ class WebMcpServerTest(unittest.TestCase):
         session = self.open_session()
         response = session.request("resources/list")
         self.assertEqual(response["error"]["code"], -32601)
+
+    def test_non_object_arguments_are_a_protocol_error(self):
+        session = self.open_session()
+        for arguments in ([], "query", 7):
+            with self.subTest(arguments=arguments):
+                response = session.request(
+                    "tools/call", {"name": "search_exa", "arguments": arguments}
+                )
+                self.assertEqual(response["error"]["code"], -32602)
+
+    def test_unexpected_exception_answers_with_a_sanitized_internal_error(self):
+        session = ServerSession(self.environment())
+        session.request("initialize", {"protocolVersion": "2025-06-18"})
+        search_text = self.result_text(
+            session.call_tool("search_exa", {"query": "raven2 vulkan decode"})
+        )
+        result_id = self.token_for(search_text, "https://broken.example.net/list")
+        response = session.call_tool("fetch_exa", {"result_id": result_id})
+        self.assertEqual(response["error"]["code"], -32603)
+        session.close()
+        self.assertIn("web-mcp internal error: AttributeError", session.stderr_text)
+        self.assertIn("server.py:", session.stderr_text)
+        self.assertNotIn("Traceback", session.stderr_text)
+        self.assertNotIn(TOKEN_SECRET, session.stderr_text)
 
     def test_search_renders_the_parsed_block_layout(self):
         session = self.open_session()

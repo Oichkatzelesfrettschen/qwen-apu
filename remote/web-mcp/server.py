@@ -25,6 +25,7 @@ import os
 import stat
 import sys
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -53,13 +54,47 @@ UNTRUSTED_FOOTER = "END UNTRUSTED WEB CONTENT"
 
 
 class ToolError(Exception):
-    """A tool call that fails on policy, input, or provider grounds.
+    """An expected execution failure: policy, input, or provider grounds.
 
-    The message reaches the model inside an `isError` result rather than a
-    JSON-RPC error object, which the protocol layer reserves for protocol
-    faults. Every construction site writes a fixed-shape message, so a
-    provider exception never carries a request header into the reply.
+    The message reaches the model inside an `isError` result, which is what
+    lets the model correct its own call. A malformed request and an unexpected
+    exception take JSON-RPC error codes instead, so the client distinguishes a
+    tool that refused from a tool that broke.
     """
+
+
+def sanitized_traceback(error):
+    """Return a frame list of an unexpected exception with every value dropped.
+
+    The exception message and the source lines can carry provider response text
+    or an argument the caller supplied, so the diagnostic keeps the exception
+    type and the file, line, and function of each frame and discards the rest.
+    """
+    frames = traceback.extract_tb(error.__traceback__)
+    trail = " <- ".join(
+        f"{os.path.basename(frame.filename)}:{frame.lineno} in {frame.name}"
+        for frame in frames
+    )
+    return f"web-mcp internal error: {type(error).__name__} at {trail}"
+
+
+def jsonrpc_error(identifier, code, message):
+    return {
+        "jsonrpc": "2.0",
+        "id": identifier,
+        "error": {"code": code, "message": message},
+    }
+
+
+def tool_result(identifier, text, is_error):
+    return {
+        "jsonrpc": "2.0",
+        "id": identifier,
+        "result": {
+            "content": [{"type": "text", "text": text}],
+            "isError": is_error,
+        },
+    }
 
 
 def read_secret_file(path, purpose):
@@ -638,39 +673,28 @@ def handle_request(settings, message):
         params = message.get("params") or {}
         handler = TOOL_HANDLERS.get(params.get("name"))
         if handler is None:
-            return {
-                "jsonrpc": "2.0",
-                "id": identifier,
-                "error": {
-                    "code": -32602,
-                    "message": f"unknown tool: {params.get('name')}",
-                },
-            }
-        arguments = params.get("arguments") or {}
-        if not isinstance(arguments, dict):
+            return jsonrpc_error(
+                identifier, -32602, f"unknown tool: {params.get('name')}"
+            )
+        arguments = params.get("arguments")
+        if arguments is None:
             arguments = {}
+        if not isinstance(arguments, dict):
+            return jsonrpc_error(
+                identifier, -32602, "arguments must be a JSON object"
+            )
         try:
             text = handler(settings, arguments)
-            is_error = False
         except ToolError as error:
-            text = str(error)
-            is_error = True
-        except Exception:
-            text = "the tool call failed"
-            is_error = True
-        return {
-            "jsonrpc": "2.0",
-            "id": identifier,
-            "result": {
-                "content": [{"type": "text", "text": text}],
-                "isError": is_error,
-            },
-        }
-    return {
-        "jsonrpc": "2.0",
-        "id": identifier,
-        "error": {"code": -32601, "message": f"unknown method: {method}"},
-    }
+            return tool_result(identifier, str(error), True)
+        except Exception as error:
+            sys.stderr.write(sanitized_traceback(error) + "\n")
+            sys.stderr.flush()
+            return jsonrpc_error(
+                identifier, -32603, "internal error during tool execution"
+            )
+        return tool_result(identifier, text, False)
+    return jsonrpc_error(identifier, -32601, f"unknown method: {method}")
 
 
 def main(argv):
@@ -682,18 +706,10 @@ def main(argv):
         try:
             message = json.loads(line)
         except ValueError:
-            response = {
-                "jsonrpc": "2.0",
-                "id": None,
-                "error": {"code": -32700, "message": "parse error"},
-            }
+            response = jsonrpc_error(None, -32700, "parse error")
         else:
             if not isinstance(message, dict):
-                response = {
-                    "jsonrpc": "2.0",
-                    "id": None,
-                    "error": {"code": -32600, "message": "invalid request"},
-                }
+                response = jsonrpc_error(None, -32600, "invalid request")
             else:
                 response = handle_request(settings, message)
         if response is not None:
