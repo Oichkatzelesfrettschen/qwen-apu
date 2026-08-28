@@ -20,8 +20,8 @@ calls that printer and adds the node range of the previous submission from
 catches in `VK_CHECK`, in both queue-handle submit wrappers, and in
 `ggml_backend_vk_graph_compute` reach it. Three of the four capabilities the
 quarantine record registers therefore exist upstream, and the fifth patch adds
-the fourth: a per-dispatch record with the buffer spans that let a faulting
-address be attributed to an operation.
+the fourth: a per-dispatch record naming the operation, the pipeline, the
+dispatch geometry, and every buffer the dispatch bound.
 
 ## The record
 
@@ -36,8 +36,10 @@ and nothing else.
 Each record carries the submission serial, the graph node index, the ggml
 operation name, the `src[0]`, `src[1]`, and destination tensor names, the
 pipeline name, the dispatch grid, the pipeline's workgroup denominators, and up
-to twelve descriptor buffer offset and size pairs, which is
-`MAX_PARAMETER_COUNT` and therefore every buffer a dispatch can bind. Two sites
+to twelve descriptor buffer handle, offset, and size triples, which is
+`MAX_PARAMETER_COUNT` and therefore every buffer a dispatch can bind. The
+handle travels beside the span because a `vk::DescriptorBufferInfo` offset is
+relative to its own `VkBuffer`, so a span alone names no allocation. Two sites
 fill it. `ggml_vk_build_graph` publishes the node index, operation, and tensor
 names for the node it is recording; `ggml_vk_dispatch_pipeline` appends one
 record per `vkCmdDispatch` with the pipeline, the computed workgroup counts, and
@@ -46,12 +48,26 @@ guarded block, because the dump runs after the device is lost and a pointer into
 a graph or a pipeline is a claim about lifetime that the dump cannot check.
 
 Fence state is derived rather than queried. The serial advances when a batch
-reaches the queue, `submit_after` marks the submitted serial on entry and marks
-the completed serial after `waitForFences` returns success on the serialized
-path, and a record reads `retired`, `submitted`, or `recorded` by comparing its
-own serial against those two marks. A fence query per record would cost a
-round trip at record time and would answer a question about a submission that
-has not happened yet.
+reaches the queue, and the two paths that submit mark it: `submit_after` in
+`ggml_backend_vk_graph_compute` for every flushed batch, and
+`ggml_vk_synchronize` for the tail the graph leaves behind. Each marks the
+completed serial after `waitForFences` returns success. A record reads
+`retired`, `submitted`, or `recorded` by comparing its own serial against those
+two marks. A fence query per record would cost a round trip at record time and
+would answer a question about a submission that has not happened yet.
+
+Retirement marking lives on the serialized path, because that is where a fence
+is waited on at all: under `GGML_VK_SERIALIZE_SUBMISSIONS` absent,
+`last_completed_serial` stays zero and every record reads `submitted` or
+`recorded`. Upstream gates its own node-range print the same way. A traced arm
+therefore sets `GGML_VK_SERIALIZE_SUBMISSIONS=1`, which is what the two named
+serialized profiles already export.
+
+The dump prints every record no fence has retired, bounded by the 256 the ring
+holds, rather than a fixed tail. A node is not a dispatch -- `mul_mat` with
+split_k issues two and flash attention up to three -- so a fixed count under
+`GGML_VK_MAX_NODES_PER_SUBMIT=32` can truncate before the batch boundary and
+hide where the failing submission started.
 
 Cost when disabled is one load and one branch at each of the two sites. The
 guard precedes every string copy, so a disabled trace constructs nothing.
@@ -71,9 +87,9 @@ QWEN_VULKAN_PROFILE=custom GGML_VK_SUBMIT_TRACE=1 \
     ~/qwen-laptop-setup/remote/qwen-launch.sh
 ```
 
-`remote/test-radv-low-priority-env.sh` covers the three named profiles and
-ends on a `vulkaninfo` assertion that names RADV RAVEN2, so it runs on the
-laptop.
+`remote/test-radv-low-priority-env.sh` asserts what each of the three named
+profiles exports after the scrub and ends on a `vulkaninfo` assertion naming
+RADV RAVEN2, so the full test passes on the laptop alone.
 
 ## The five failure classes and what recognises each
 
@@ -83,15 +99,18 @@ supplies the rest, so that a class is never assigned on the trace alone.
 `ring-timeout-only`. The kernel log carries a ring timeout and a reset with zero
 fault lines, `vkGetDeviceFaultInfoEXT` returns zero address and zero vendor
 records, and the trace shows one serial submitted with no retirement mark. The
-tail then names the dispatches that batch contained, which is the set the
-timeout is charged to.
+unretired set then names the dispatches that batch contained, which is the set
+the timeout is charged to.
 
-`gfxhub-page-fault`. The kernel names a faulting virtual address. The trace's
-recorded buffer offsets and sizes are what turn that address into an operation:
-an address inside a recorded span identifies the dispatch and its node, and an
-address outside every recorded span is itself a finding, because it points at an
-allocation no dispatch in the ring bound. This attribution is the patch's own
-contribution and the reason offsets and sizes are in the record.
+`gfxhub-page-fault`. The kernel names a faulting virtual address. The trace
+narrows what that address can belong to: the unretired records name every
+buffer handle the failing submission bound and the span of each, so the fault is
+charged to a dispatch once one of those buffers is resolved to a base address.
+That resolution lives in the memory binding rather than in the record, so the
+attribution the trace delivers by itself is buffer-relative and the kernel VA
+correlation needs the allocation base beside it. The address `0x0` the retained
+coredump names resolves against no buffer at all, which is itself a finding
+about the class rather than about a node.
 
 `vm-protection-fault`. A nonzero protection-fault status in the kernel record
 separates this from the page fault above. The kernel supplies the
@@ -99,8 +118,8 @@ discriminator; the trace supplies the same address attribution.
 
 `device-lost-without-kernel-record`. `vk::DeviceLostError` is thrown and the
 kernel log carries no reset and no fault line at all. The trace is then the only
-retained account of what the device was holding, and its tail plus the submitted
-and retired serials are the whole record.
+retained account of what the device was holding, and its unretired set plus the
+submitted and retired serials are the whole record.
 
 `post-reset-control-failure`. The post-arm control at the served `128/32`
 geometry fails after a wedging arm. Registered and unobserved: every control in
@@ -119,7 +138,7 @@ workstation has `glslc` and `vulkan_core.h` without it. Compiling the
 `ggml-vulkan` target is therefore `not run` with that dependency named, and no
 package was installed. `g++ -std=c++17 -fsyntax-only` over
 `ggml-vulkan-submit-trace.h` passes, which is a partial result about the header
-alone and says nothing about the seven hunks in `ggml-vulkan.cpp`.
+alone and says nothing about the nine hunks in `ggml-vulkan.cpp`.
 `remote/verify-llama-patch-series.sh` replays all five patches against a
 pristine checkout of the pinned commit and matches every recorded digest, so the
 patch applies and its result is fixed; whether it compiles is open until the

@@ -52,13 +52,13 @@ verify_source() {
     printf 'patch_replay_match=%s sha256=%s\n' "$relative_path" "$actual_sha256"
 }
 
-verify_source dc7dde3632a85deff3767f96bad9cd6931c9046c40ed20cbe8ef3bb7df222070 \
+verify_source 3c39e13043f1c949d3a75bbb198285e943bc832810232b25883c82cfcc7e43a4 \
     ggml/src/ggml-vulkan/ggml-vulkan.cpp
 verify_source 16abd2face079cad962bb722026d7418e65de67c18c1e1f954df733c1598a70a \
     ggml/src/ggml-vulkan/ggml-vulkan-pacing.h
 verify_source 4b8befd927e9b0c83cfc7cfe843d2f853a9a9db7f6a55c147ffcd4129afd95f8 \
     ggml/src/ggml-vulkan/ggml-vulkan-submit-limit.h
-verify_source f913c8e7d8e1e96a1e247ce68bf08c3aa36ad37438d092bfc63c84e950fdc888 \
+verify_source ac957254c09afda811983801e7dd59d7e4829d40e572804ea7e23dadba521867 \
     ggml/src/ggml-vulkan/ggml-vulkan-submit-trace.h
 verify_source ecc818cdce4a7265f6f932962c325a582f42b91cb2661916fa28b5a79a49d1ad \
     src/llama-context.cpp
