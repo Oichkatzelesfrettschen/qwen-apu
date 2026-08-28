@@ -21,6 +21,9 @@ set -eu
 # depth that fails prints nothing at all. `mem_info_vram_used` covers the 2 GiB
 # carve-out and `mem_info_gtt_used` covers the system memory the driver maps for
 # the device, which is where a Q4_K_M trunk and a deep KV cache actually live.
+# Both counters are device-global: they sum every process's allocation on the
+# GPU, not the sampled process's model and KV cache alone, so a reading names
+# how full the device is rather than what one measurement privately holds.
 #
 # The caller runs this in the background and kills it when the measurement ends.
 # Rows are `mclk_mhz`, `sclk_mhz`, `millidegrees`, `loadavg_1min`,

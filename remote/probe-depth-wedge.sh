@@ -33,8 +33,17 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
     printf 'depths from QWEN_WEDGE_DEPTHS, default "8192 16384"\n' >&2
     printf 'geometries from QWEN_WEDGE_GEOMETRIES as batch:ubatch pairs,\n' >&2
     printf 'default "2048:512 128:32 32:8"\n' >&2
+    printf 'QWEN_WEDGE_ARM_TIMEOUT_S overrides the per-invocation SIGTERM\n' >&2
+    printf 'limit, default 120 + depth/4 seconds; QWEN_WEDGE_ARM_KILL_AFTER_S\n' >&2
+    printf 'overrides the SIGKILL grace period after it, default 30\n' >&2
     exit 2
 fi
+
+# The wedge-metadata.tsv schema version. A metadata file whose header carries
+# no ledger_version field predates this field and is refused rather than
+# read as if version 1 were compatible with an unmarked format: nothing in
+# an unmarked file states which reader wrote it.
+ledger_version=2
 
 model_path=$1
 output_directory=${2:-"${HOME:?}/qwen-depth-wedge"}
@@ -54,6 +63,18 @@ control_tokens=${QWEN_WEDGE_CONTROL_TOKENS:-16}
 # failure mechanisms. A depth absent from this list runs every geometry, which
 # is what the 16384 matrix requires of its reduced-geometry arm.
 conditional_depths=${QWEN_WEDGE_CONDITIONAL_DEPTHS:-8192}
+# A wedge parks llama-bench in the driver rather than returning an error, so
+# nothing but an external timeout ends it. QWEN_WEDGE_ARM_TIMEOUT_S overrides
+# the per-invocation limit; its default scales with the prefill depth passed
+# to that invocation, 120 seconds plus one second per four depth tokens, which
+# covers this device's measured prefill and the fixed-length decode with
+# margin while still bounding a hang. QWEN_WEDGE_ARM_KILL_AFTER_S is the grace
+# period between the SIGTERM `timeout` sends at the limit and the SIGKILL it
+# escalates to if the process ignores it; `timeout` reports its own exit
+# status (124 on a plain timeout, 128+signal after a kill-after escalation),
+# so a timed-out arm reads as a failure distinguishable from a bench failure
+# by that status alone.
+arm_timeout_kill_after_s=${QWEN_WEDGE_ARM_KILL_AFTER_S:-30}
 
 if [ ! -x "$bench" ] || [ ! -f "$model_path" ]; then
     printf 'llama-bench and the model must both exist\n' >&2
@@ -67,7 +88,33 @@ fi
 
 mkdir -p "$output_directory"
 summary=$output_directory/wedge-summary.tsv
-summary_header='arm	depth	batch	ubatch	cache_k	cache_v	flash_attn	status	ring_resets	gpu_faults	wall_s	decode_tok_s	vram_peak_mib	gtt_peak_mib	control_status	control_tok_s	mclk_modal	temp_c_max'
+# vram_peak_mib and gtt_peak_mib read amdgpu's whole-device VRAM and GTT
+# accounting, sampled by sample-gpu-clocks.sh from the same sysfs and hwmon
+# nodes every process on the device shares. They are the device's total
+# allocation during the arm, not bytes this arm's own model or KV cache
+# holds exclusively: a resident model, another process's allocation, and this
+# arm's own buffers all sum into the one peak, and the peak is read as a
+# device-occupancy ceiling rather than as this arm's private footprint.
+# health carries the promotion signal a downstream consumer reads instead of
+# recomputing arm_status, control_status, ring_resets, and gpu_faults itself.
+# `healthy` is a clean arm with a passing control and a kernel delta that
+# confirms zero resets and zero faults; `unhealthy` is a failed status, a
+# failed control, or a confirmed reset or fault; `unverified` is every other
+# case, where dmesg was unavailable or unreadable so the arm's reset and fault
+# counts are `unavailable` and a clean run cannot be told apart from a
+# recovery this probe did not see. A promotion rule that treats `unverified`
+# as `healthy` promotes an arm this probe never confirmed clean.
+# hazard_class names what the kernel and the bench logs together say happened,
+# beside the ring_resets and gpu_faults line counts: `ring-timeout-only` is a
+# reset or wedge line with no page-fault line in the same delta;
+# `gfxhub-page-fault` is a GFXHUB-tagged page fault; `VM-protection-fault` is
+# an L2 protection fault; `device-lost-without-kernel-record` is a Vulkan
+# device-lost error from the bench or control process with a zero or
+# unavailable reset and fault count, naming a hazard the kernel log never
+# recorded; `post-reset-control-failure` is a confirmed reset (resets > 0)
+# whose recovery control then failed. A clean arm reads `none`; several
+# classes join with a comma when more than one line matches.
+summary_header='arm	depth	batch	ubatch	cache_k	cache_v	flash_attn	status	ring_resets	gpu_faults	wall_s	decode_tok_s	vram_peak_mib	gtt_peak_mib	control_status	control_tok_s	mclk_modal	temp_c_max	health	hazard_class'
 summary_has_arms=0
 if [ -s "$summary" ]; then
     if [ "$(sed -n '1p' "$summary")" != "$summary_header" ]; then
@@ -76,7 +123,7 @@ if [ -s "$summary" ]; then
         exit 2
     fi
     malformed_line=$(awk -F'\t' '
-        NR > 1 && (NF != 18 || $1 != "d" $2 "-b" $3 "-ub" $4) {
+        NR > 1 && (NF != 20 || $1 != "d" $2 "-b" $3 "-ub" $4) {
             print NR
             exit
         }' "$summary")
@@ -116,12 +163,18 @@ fi
 # beside a filled-depth arm and binds every resumed row to immutable input
 # bytes rather than to a reusable path.
 metadata=$output_directory/wedge-metadata.tsv
-metadata_header='model_sha256	model_bytes	control_tokens'
+metadata_header='ledger_version	model_sha256	model_bytes	control_tokens'
+legacy_metadata_header='model_sha256	model_bytes	control_tokens'
 model_sha256=$(nice -n 19 sha256sum "$model_path")
 model_sha256=${model_sha256%% *}
 model_bytes=$(stat -c %s -- "$model_path")
-metadata_row="$model_sha256	$model_bytes	$control_tokens"
+metadata_row="$ledger_version	$model_sha256	$model_bytes	$control_tokens"
 if [ -s "$metadata" ]; then
+    if [ "$(sed -n '1p' "$metadata")" = "$legacy_metadata_header" ]; then
+        printf 'wedge metadata predates ledger versioning (legacy ledger, no ledger_version field): %s\n' \
+            "$metadata" >&2
+        exit 2
+    fi
     if [ "$(sed -n '1p' "$metadata")" != "$metadata_header" ] ||
        [ "$(sed -n '2p' "$metadata")" != "$metadata_row" ] ||
        [ -n "$(sed -n '3p' "$metadata")" ]; then
@@ -137,6 +190,73 @@ else
     printf '%s\n%s\n' "$metadata_header" "$metadata_row" >"$metadata"
 fi
 
+# wedge-identity.tsv is provenance rather than a resume gate: one row per
+# invocation, appended rather than validated, naming the tool and driver
+# versions an arm ran under so a wedge or its absence can be traced back to
+# what produced it. Absent evidence reads "-" rather than stopping the probe.
+identity=$output_directory/wedge-identity.tsv
+identity_header='run_utc	llama_bench_sha256	llama_cpp_commit	runner_sha256	sampler_sha256	kernel_release	mesa_radv_version	amdgpu_module_version	argv	environment'
+if [ ! -s "$identity" ]; then
+    printf '%s\n' "$identity_header" >"$identity"
+fi
+llama_bench_sha256=$(nice -n 19 sha256sum "$bench")
+llama_bench_sha256=${llama_bench_sha256%% *}
+runner_sha256=$(nice -n 19 sha256sum "$0")
+runner_sha256=${runner_sha256%% *}
+sampler_sha256=$(nice -n 19 sha256sum "$clock_sampler")
+sampler_sha256=${sampler_sha256%% *}
+llama_cpp_commit=-
+# --version identifies the build without an arm-sized invocation and is
+# bounded rather than left to the caller-configured arm timeout: an
+# implementation that ignores --version and behaves like a full run would
+# otherwise stall identity capture before the first arm starts.
+if bench_version_output=$(timeout 5s "$bench" --version 2>&1); then
+    parsed_commit=$(printf '%s\n' "$bench_version_output" |
+        grep -o 'build: [0-9a-f]\{4,\}' | tail -n1 | awk '{ print $2 }')
+    [ -z "$parsed_commit" ] || llama_cpp_commit=$parsed_commit
+fi
+if [ "$llama_cpp_commit" = - ]; then
+    identity_search_dir=$(dirname -- "$bench")
+    identity_search_depth=0
+    while [ "$identity_search_depth" -lt 6 ] && [ "$identity_search_dir" != / ]; do
+        if [ -d "$identity_search_dir/.git" ]; then
+            llama_cpp_commit=$(git -C "$identity_search_dir" rev-parse HEAD \
+                2>/dev/null || printf -)
+            break
+        fi
+        identity_search_dir=$(dirname -- "$identity_search_dir")
+        identity_search_depth=$((identity_search_depth + 1))
+    done
+fi
+kernel_release=$(uname -r)
+mesa_radv_version=-
+if command -v vulkaninfo >/dev/null 2>&1; then
+    parsed_driver=$(vulkaninfo --summary 2>/dev/null |
+        awk -F': *' '/driverInfo/ { print $2; exit }')
+    [ -z "$parsed_driver" ] || mesa_radv_version=$parsed_driver
+fi
+amdgpu_module_version=-
+if command -v modinfo >/dev/null 2>&1; then
+    parsed_module=$(modinfo amdgpu 2>/dev/null |
+        awk -F': *' '/^version:/ { print $2; exit }')
+    [ -z "$parsed_module" ] || amdgpu_module_version=$parsed_module
+fi
+identity_argv=$(printf '%s ' "$0" "$@" | tr '\t\n' '  ')
+identity_environment=$(
+    for identity_var in QWEN_CACHE_TYPE_K QWEN_CACHE_TYPE_V QWEN_FLASH_ATTN \
+        QWEN_WEDGE_DEPTHS QWEN_WEDGE_GEOMETRIES QWEN_WEDGE_CONDITIONAL_DEPTHS \
+        QWEN_WEDGE_CONTROL_TOKENS QWEN_WEDGE_ARM_TIMEOUT_S \
+        QWEN_WEDGE_ARM_KILL_AFTER_S GGML_VK_MAX_NODES_PER_SUBMIT \
+        GGML_VK_SERIALIZE_SUBMISSIONS QWEN_VULKAN_PROFILE; do
+        identity_value=$(eval "printf '%s' \"\${$identity_var:-unset}\"")
+        printf '%s=%s;' "$identity_var" "$identity_value"
+    done | tr '\t\n' '  '
+)
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$llama_bench_sha256" "$llama_cpp_commit" \
+    "$runner_sha256" "$sampler_sha256" "$kernel_release" "$mesa_radv_version" \
+    "$amdgpu_module_version" "$identity_argv" "$identity_environment" >>"$identity"
+
 # A killed run leaves its sampler writing once a second into a file the next run
 # recreates, which contaminates that run and hides the orphan behind a plausible
 # name. The trap ends the sampler with the script that started it.
@@ -148,9 +268,19 @@ stop_sampler() {
     wait "$sampler_pid" 2>/dev/null || true
     sampler_pid=''
 }
+# A killed run leaves its follow reader attached to the kernel ring buffer the
+# same way an orphaned sampler leaves one attached to the clock sysfs files.
+kernel_follow_pid=''
+stop_kernel_follow() {
+    [ -n "$kernel_follow_pid" ] || return 0
+    kill "$kernel_follow_pid" 2>/dev/null || true
+    wait "$kernel_follow_pid" 2>/dev/null || true
+    kernel_follow_pid=''
+}
 interrupt_run() {
     signal_status=$1
     stop_sampler
+    stop_kernel_follow
     if [ -n "$active_arm_label" ]; then
         printf 'arm_abort_utc=%s label=%s status=%s\n' \
             "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$active_arm_label" \
@@ -160,7 +290,7 @@ interrupt_run() {
         "$signal_status" "$output_directory" >&2
     exit "$signal_status"
 }
-trap 'stop_sampler' EXIT
+trap 'stop_sampler; stop_kernel_follow' EXIT
 trap 'interrupt_run 129' HUP
 trap 'interrupt_run 130' INT
 trap 'interrupt_run 143' TERM
@@ -176,12 +306,42 @@ kernel_line_count() {
 # The lines the kernel emitted during one arm, retained verbatim. The ring
 # reset count and the fault count are grepped from these rather than from the
 # whole buffer, so a reset that predates the probe stays out of the delta.
+# This offset method breaks when the ring buffer wraps between the before
+# count and the after read, which loses the earliest lines of a long arm's
+# delta silently; start_kernel_capture's follow method reads the delta
+# directly and does not depend on the buffer holding still.
 kernel_delta_lines() {
     delta_before=$1
     delta_file=$2
     rm -f -- "$delta_file"
     [ "$delta_before" != unavailable ] || return 0
     dmesg | tail -n "+$((delta_before + 1))" >"$delta_file" 2>/dev/null || true
+}
+
+# `dmesg --follow` streams new kernel lines into the arm's kernel file as they
+# arrive, which survives a ring-buffer wrap the offset method cannot: the
+# offset method reads a before count and an after snapshot and subtracts, so a
+# wrap between those two reads loses the earliest lines of the delta, where
+# the follow reader has already written them to disk. A short-lived probe
+# invocation distinguishes a following dmesg from one that only replays the
+# buffer once and exits: this probe waits a beat and checks the process is
+# still attached before trusting the read. When no dmesg on this host follows
+# the buffer, kernel_capture_method stays `offset` and the caller falls back
+# to kernel_line_count and kernel_delta_lines exactly as before this method
+# existed.
+kernel_capture_method=offset
+start_kernel_capture() {
+    capture_file=$1
+    kernel_capture_method=offset
+    dmesg --follow >"$capture_file" 2>/dev/null &
+    kernel_follow_pid=$!
+    sleep 0.2
+    if kill -0 "$kernel_follow_pid" 2>/dev/null; then
+        kernel_capture_method=follow
+    else
+        wait "$kernel_follow_pid" 2>/dev/null || true
+        kernel_follow_pid=''
+    fi
 }
 
 parse_decode_rate() {
@@ -194,24 +354,76 @@ parse_decode_rate() {
                END { print (rate == "" ? "n/a" : rate) }' "$1"
 }
 
+# classify_hazard names what happened rather than how many lines matched.
+# ring-timeout-only and the two fault classes read the kernel delta alone;
+# device-lost-without-kernel-record reads the bench and control logs for a
+# Vulkan device-lost error the kernel delta never recorded a matching reset or
+# fault for; post-reset-control-failure reads the confirmed reset count
+# against the control's own status. Classes join with a comma, and a clean
+# arm reads `none`.
+classify_hazard() {
+    hazard_bench_log=$1
+    hazard_kernel_file=$2
+    hazard_control_log=$3
+    hazard_resets=$4
+    hazard_faults=$5
+    hazard_control_status=$6
+    hazard_classes=''
+    hazard_has_page_fault=0
+    if [ -f "$hazard_kernel_file" ]; then
+        grep -qi 'page fault' "$hazard_kernel_file" 2>/dev/null &&
+            hazard_has_page_fault=1
+        if [ "$hazard_has_page_fault" -eq 1 ] &&
+           grep -qi 'gfxhub' "$hazard_kernel_file" 2>/dev/null; then
+            hazard_classes=${hazard_classes:+$hazard_classes,}gfxhub-page-fault
+        fi
+        if grep -qE 'VM_L2_PROTECTION_FAULT|PROTECTION_FAULT' \
+            "$hazard_kernel_file" 2>/dev/null; then
+            hazard_classes=${hazard_classes:+$hazard_classes,}VM-protection-fault
+        fi
+        if [ "$hazard_has_page_fault" -eq 0 ] &&
+           grep -qE 'ring reset|Ring .* reset|device wedged|GPU reset' \
+               "$hazard_kernel_file" 2>/dev/null; then
+            hazard_classes=${hazard_classes:+$hazard_classes,}ring-timeout-only
+        fi
+    fi
+    if grep -qiE 'device lost|VK_ERROR_DEVICE_LOST' \
+        "$hazard_bench_log" "$hazard_control_log" 2>/dev/null; then
+        if { [ "$hazard_resets" = unavailable ] || [ "$hazard_resets" -eq 0 ]; } &&
+           { [ "$hazard_faults" = unavailable ] || [ "$hazard_faults" -eq 0 ]; }; then
+            hazard_classes=${hazard_classes:+$hazard_classes,}device-lost-without-kernel-record
+        fi
+    fi
+    if [ "$hazard_resets" != unavailable ] && [ "$hazard_resets" -gt 0 ] &&
+       [ "$hazard_control_status" -ne 0 ]; then
+        hazard_classes=${hazard_classes:+$hazard_classes,}post-reset-control-failure
+    fi
+    printf '%s' "${hazard_classes:-none}"
+}
+
 run_bench() {
     bench_log=$1
     bench_depth=$2
     bench_batch=$3
     bench_ubatch=$4
     bench_tokens=$5
+    bench_timeout_s=${QWEN_WEDGE_ARM_TIMEOUT_S:-$((120 + bench_depth / 4))}
     # errexit is the caller's to manage. Restoring it here re-arms it before the
     # return, and a non-zero return then kills the caller on the very failure
     # this probe exists to record: the wedge at 16384 aborted llama-bench, the
     # function returned 134, and the script died without writing the row.
     if [ "$bench_depth" -eq 0 ]; then
-        nice -n 19 ionice -c 3 "$bench" -m "$model_path" \
+        nice -n 19 ionice -c 3 timeout \
+            --kill-after="${arm_timeout_kill_after_s}s" "${bench_timeout_s}s" \
+            "$bench" -m "$model_path" \
             -ngl 99 -t 2 -r 1 -p 0 -n "$bench_tokens" \
             -b "$bench_batch" -ub "$bench_ubatch" \
             -ctk "$cache_type_k" -ctv "$cache_type_v" -fa "$flash_attention" \
             -o md >"$bench_log" 2>&1
     else
-        nice -n 19 ionice -c 3 "$bench" -m "$model_path" \
+        nice -n 19 ionice -c 3 timeout \
+            --kill-after="${arm_timeout_kill_after_s}s" "${bench_timeout_s}s" \
+            "$bench" -m "$model_path" \
             -ngl 99 -t 2 -r 1 -p 0 -n "$bench_tokens" -d "$bench_depth" \
             -b "$bench_batch" -ub "$bench_ubatch" \
             -ctk "$cache_type_k" -ctv "$cache_type_v" -fa "$flash_attention" \
@@ -249,6 +461,15 @@ run_arm() {
             '$1 == label { print $10; exit }' "$summary")
         recorded_control_status=$(awk -F'\t' -v label="$arm_label" \
             '$1 == label { print $15; exit }' "$summary")
+        recorded_health=$(awk -F'\t' -v label="$arm_label" \
+            '$1 == label { print $19; exit }' "$summary")
+        recorded_hazard_class=$(awk -F'\t' -v label="$arm_label" \
+            '$1 == label { print $20; exit }' "$summary")
+        if [ -z "$recorded_hazard_class" ]; then
+            printf 'recorded arm %s carries an empty hazard class\n' \
+                "$arm_label" >&2
+            exit 2
+        fi
         recorded_cache_type_k=$(awk -F'\t' -v label="$arm_label" \
             '$1 == label { print $5; exit }' "$summary")
         recorded_cache_type_v=$(awk -F'\t' -v label="$arm_label" \
@@ -306,20 +527,36 @@ run_arm() {
                 "$arm_label" "$arm_kernel" >&2
             exit 2
         fi
-        arm_healthy=0
-        if [ "$recorded_status" -eq 0 ] &&
-           [ "$recorded_control_status" -eq 0 ]; then
+        case $recorded_health in
+            healthy | unhealthy | unverified) ;;
+            *)
+                printf 'recorded arm %s carries invalid health: %s\n' \
+                    "$arm_label" "$recorded_health" >&2
+                exit 2
+                ;;
+        esac
+        expected_health=unhealthy
+        if [ "$recorded_status" -eq 0 ] && [ "$recorded_control_status" -eq 0 ]; then
             if [ "$recorded_resets" = unavailable ] ||
-               [ "$recorded_resets" -eq 0 ]; then
-                arm_healthy=1
+               [ "$recorded_faults" = unavailable ]; then
+                expected_health=unverified
+            elif [ "$recorded_resets" -eq 0 ] && [ "$recorded_faults" -eq 0 ]; then
+                expected_health=healthy
             fi
         fi
+        if [ "$recorded_health" != "$expected_health" ]; then
+            printf 'recorded arm %s carries health %s inconsistent with its status, control, resets, and faults (expected %s)\n' \
+                "$arm_label" "$recorded_health" "$expected_health" >&2
+            exit 2
+        fi
+        arm_healthy=0
+        [ "$recorded_health" != healthy ] || arm_healthy=1
         if [ "$recorded_control_status" -ne 0 ]; then
             device_corrupt=1
         fi
-        printf 'arm_resume_skip label=%s status=%s resets=%s control=%s\n' \
+        printf 'arm_resume_skip label=%s status=%s resets=%s control=%s health=%s\n' \
             "$arm_label" "$recorded_status" "$recorded_resets" \
-            "$recorded_control_status"
+            "$recorded_control_status" "$recorded_health"
         return 0
     fi
     for incomplete_artifact in "$arm_log" "$arm_samples" "$control_log"; do
@@ -331,12 +568,14 @@ run_arm() {
     done
 
     active_arm_label=$arm_label
-    kernel_before=$(kernel_line_count)
+    start_kernel_capture "$arm_kernel"
+    kernel_before=unavailable
+    [ "$kernel_capture_method" = follow ] || kernel_before=$(kernel_line_count)
     arm_started=$(date +%s)
 
-    printf 'arm_start_utc=%s label=%s cache=%s/%s fa=%s\n' \
+    printf 'arm_start_utc=%s label=%s cache=%s/%s fa=%s kernel_capture=%s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$arm_label" "$cache_type_k" \
-        "$cache_type_v" "$flash_attention"
+        "$cache_type_v" "$flash_attention" "$kernel_capture_method"
     "$clock_sampler" "$arm_samples" &
     sampler_pid=$!
     set +e
@@ -345,7 +584,12 @@ run_arm() {
     set -e
     stop_sampler
     arm_wall=$(($(date +%s) - arm_started))
-    kernel_delta_lines "$kernel_before" "$arm_kernel"
+    if [ "$kernel_capture_method" = follow ]; then
+        stop_kernel_follow
+    else
+        kernel_delta_lines "$kernel_before" "$arm_kernel"
+    fi
+    printf '%s\n' "$kernel_capture_method" >"$output_directory/$arm_label.dmesg-method.txt"
 
     resets=unavailable
     faults=unavailable
@@ -362,10 +606,14 @@ run_arm() {
         arm_status=65
     fi
 
-    # The memory the arm actually held, read from amdgpu's accounting during the
-    # arm rather than parsed from the log: llama-bench prints no buffer sizes at
-    # default verbosity, and an arm that wedges prints nothing at all. The peak
-    # of each is reported because the KV cache grows through the prefill.
+    # The device's VRAM and GTT occupancy during the arm, read from amdgpu's
+    # whole-device accounting rather than parsed from the log: llama-bench
+    # prints no buffer sizes at default verbosity, and an arm that wedges
+    # prints nothing at all. amdgpu's accounting is device-global -- it sums
+    # every process's allocation, not this arm's model and KV cache alone --
+    # so the peak names how full the device got, not what this arm privately
+    # holds. The peak of each is reported because the KV cache grows through
+    # the prefill.
     # The sampler is killed as soon as the arm ends, so an arm that completes
     # before the sampler writes its first row leaves no file at all and awk
     # exits fatal under set -e. This probe reports `unavailable` for every other
@@ -431,16 +679,36 @@ run_arm() {
             }' "$arm_samples")
     fi
 
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    # health carries the promotion signal. A fault or reset line without
+    # recovery leaves the arm unhealthy regardless of dmesg availability. A
+    # clean status and control with dmesg unavailable or unreadable cannot be
+    # told apart from a hazard this probe did not see, so it reads
+    # `unverified` rather than `healthy`: kernel telemetry unavailable keeps
+    # the arm's decode and control results as an exploratory measurement
+    # without certifying it clean, and a promotion rule that treats
+    # `unverified` as `healthy` promotes an arm this probe never confirmed.
+    health=unhealthy
+    if [ "$arm_status" -eq 0 ] && [ "$control_status" -eq 0 ]; then
+        if [ "$resets" = unavailable ] || [ "$faults" = unavailable ]; then
+            health=unverified
+        elif [ "$resets" -eq 0 ] && [ "$faults" -eq 0 ]; then
+            health=healthy
+        fi
+    fi
+
+    hazard_class=$(classify_hazard "$arm_log" "$arm_kernel" "$control_log" \
+        "$resets" "$faults" "$control_status")
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$arm_label" "$arm_depth" "$arm_batch" "$arm_ubatch" "$cache_type_k" \
         "$cache_type_v" "$flash_attention" "$arm_status" "$resets" "$faults" \
         "$arm_wall" "$decode" "$memory_report" "$control_status" \
-        "$control_decode" "$clock_report" >>"$summary"
-    printf 'arm_stop_utc=%s label=%s status=%s decode=%s resets=%s faults=%s wall_s=%s peak_vram_gtt_mib=%s control=%s control_tok_s=%s\n' \
+        "$control_decode" "$clock_report" "$health" "$hazard_class" >>"$summary"
+    printf 'arm_stop_utc=%s label=%s status=%s decode=%s resets=%s faults=%s wall_s=%s peak_vram_gtt_mib=%s control=%s control_tok_s=%s health=%s hazard_class=%s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$arm_label" "$arm_status" "$decode" \
         "$resets" "$faults" "$arm_wall" \
         "$(printf '%s' "$memory_report" | tr '\t' '/')" "$control_status" \
-        "$control_decode"
+        "$control_decode" "$health" "$hazard_class"
     active_arm_label=''
 
     if [ "$control_status" -ne 0 ]; then
@@ -449,12 +717,12 @@ run_arm() {
         device_corrupt=1
     fi
 
+    # arm_healthy gates the conditional-depth rescue skip below, and only
+    # `healthy` promotes it: `unverified` runs every remaining geometry at
+    # this depth exactly as `unhealthy` does, because a confirmed-clean depth
+    # is what the rescue skip requires.
     arm_healthy=0
-    if [ "$arm_status" -eq 0 ] && [ "$control_status" -eq 0 ]; then
-        if [ "$resets" = unavailable ] || [ "$resets" -eq 0 ]; then
-            arm_healthy=1
-        fi
-    fi
+    [ "$health" != healthy ] || arm_healthy=1
 }
 
 for depth in $depths; do

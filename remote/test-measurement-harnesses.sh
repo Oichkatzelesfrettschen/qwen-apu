@@ -248,6 +248,195 @@ if [ -e "$wedge_output/d1-b1-ub1.dmesg.txt" ]; then
 fi
 awk -F'\t' '$1 == "d1-b1-ub1" && $9 == "unavailable" { found = 1 }
             END { exit !found }' "$wedge_output/wedge-summary.tsv"
+if ! awk -F'\t' '$1 == "d1-b1-ub1" && $19 == "unverified" { found = 1 }
+                 END { exit !found }' "$wedge_output/wedge-summary.tsv"; then
+    printf 'depth wedge did not mark unavailable kernel telemetry non-promotable\n' >&2
+    cat "$wedge_output/wedge-summary.tsv" >&2
+    exit 1
+fi
+
+# wedge-identity.tsv names the tool and driver versions the invocation ran
+# under: the bench, the runner script, and the sampler are all hashed, and a
+# probe with no --version support or no build-tree .git still records "-"
+# rather than failing.
+identity_file=$wedge_output/wedge-identity.tsv
+if [ ! -s "$identity_file" ]; then
+    printf 'depth wedge did not write an identity record\n' >&2
+    exit 1
+fi
+if [ "$(sed -n '1p' "$identity_file")" != \
+'run_utc	llama_bench_sha256	llama_cpp_commit	runner_sha256	sampler_sha256	kernel_release	mesa_radv_version	amdgpu_module_version	argv	environment' ]; then
+    printf 'depth wedge identity record header does not match\n' >&2
+    cat "$identity_file" >&2
+    exit 1
+fi
+identity_bench_sha256=$(sha256sum "$fake_bench")
+identity_bench_sha256=${identity_bench_sha256%% *}
+if ! awk -F'\t' -v want="$identity_bench_sha256" \
+    'NR > 1 && $2 == want { found = 1 } END { exit !found }' "$identity_file"; then
+    printf 'depth wedge identity record did not carry the bench digest\n' >&2
+    cat "$identity_file" >&2
+    exit 1
+fi
+if awk -F'\t' 'NR > 1 && (NF != 10 || $3 == "" || $6 == "" || $7 == "" || $8 == "") {
+                    found = 1
+                }
+                END { exit !found }' "$identity_file"; then
+    printf 'depth wedge identity record left a field empty rather than "-"\n' >&2
+    cat "$identity_file" >&2
+    exit 1
+fi
+
+# A fault line with no reset line names a hazard the ring never recovered from
+# on its own. arm_healthy must read gpu_faults as well as ring_resets, so this
+# arm stays unhealthy even though status, control status, and reset count are
+# all clean.
+# kernel_line_count calls dmesg twice (an existence probe, then the count), so
+# the fault must not appear until the third call: the delta read after the
+# arm ends. A counter file tracks the call ordinal across both the health
+# probe and the count read that precede every arm.
+fault_bin=$temporary_directory/fault-bin
+fault_counter=$temporary_directory/fault-dmesg-counter
+fault_log=$temporary_directory/fault-dmesg-log
+: >"$fault_log"
+mkdir -p "$fault_bin"
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    "counter=$fault_counter" \
+    "log=$fault_log" \
+    'printf x >>"$counter"' \
+    'count=$(wc -c <"$counter")' \
+    'if [ "$count" -eq 4 ]; then' \
+    '    printf "amdgpu: VM_L2_PROTECTION_FAULT detected\\n" >>"$log"' \
+    'fi' \
+    'cat "$log"' \
+    >"$fault_bin/dmesg"
+chmod +x "$fault_bin/dmesg"
+fault_output=$temporary_directory/wedge-fault-no-reset
+active_fixture=depth-wedge-fault-without-reset
+diagnostic_file=$temporary_directory/wedge-fault.stderr
+QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
+QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_WEDGE_DEPTHS=1 \
+QWEN_WEDGE_CONDITIONAL_DEPTHS=1 QWEN_WEDGE_GEOMETRIES='1:1 2:2' \
+PATH="$fault_bin:$PATH" \
+    "$script_directory/probe-depth-wedge.sh" "$model_path" "$fault_output" \
+    >"$temporary_directory/wedge-fault.stdout" \
+    2>"$temporary_directory/wedge-fault.stderr"
+if ! awk -F'\t' '$1 == "d1-b1-ub1" && $8 == 0 && $9 == 0 && $10 > 0 {
+                     found = 1
+                 }
+                 END { exit !found }' "$fault_output/wedge-summary.tsv"; then
+    printf 'depth wedge did not record a clean-reset fault as a fault row\n' >&2
+    cat "$fault_output/wedge-summary.tsv" >&2
+    exit 1
+fi
+if [ "$(awk -F'\t' 'NR > 1' "$fault_output/wedge-summary.tsv" | wc -l)" -ne 2 ]; then
+    printf 'depth wedge suppressed rescue geometry despite an unhealthy fault arm\n' >&2
+    cat "$fault_output/wedge-summary.tsv" >&2
+    exit 1
+fi
+if grep -F 'arm_skipped label=d1-b2-ub2' \
+    "$temporary_directory/wedge-fault.stdout" >/dev/null; then
+    printf 'depth wedge skipped the second geometry despite an unhealthy fault arm\n' >&2
+    exit 1
+fi
+if ! awk -F'\t' '$1 == "d1-b1-ub1" && $20 == "VM-protection-fault" {
+                     found = 1
+                 }
+                 END { exit !found }' "$fault_output/wedge-summary.tsv"; then
+    printf 'depth wedge did not classify the protection fault by name\n' >&2
+    cat "$fault_output/wedge-summary.tsv" >&2
+    exit 1
+fi
+
+# A GFXHUB-tagged page fault is a distinct class from the generic protection
+# fault above, named by the same line carrying both "gfxhub" and "page fault".
+gfxhub_bin=$temporary_directory/gfxhub-bin
+gfxhub_counter=$temporary_directory/gfxhub-dmesg-counter
+gfxhub_log=$temporary_directory/gfxhub-dmesg-log
+: >"$gfxhub_log"
+mkdir -p "$gfxhub_bin"
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    "counter=$gfxhub_counter" \
+    "log=$gfxhub_log" \
+    'printf x >>"$counter"' \
+    'count=$(wc -c <"$counter")' \
+    'if [ "$count" -eq 4 ]; then' \
+    '    printf "amdgpu: [gfxhub0] page fault detected\\n" >>"$log"' \
+    'fi' \
+    'cat "$log"' \
+    >"$gfxhub_bin/dmesg"
+chmod +x "$gfxhub_bin/dmesg"
+gfxhub_output=$temporary_directory/wedge-gfxhub
+active_fixture=depth-wedge-gfxhub-page-fault
+diagnostic_file=$temporary_directory/wedge-gfxhub.stderr
+QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
+QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_WEDGE_DEPTHS=1 \
+QWEN_WEDGE_GEOMETRIES=1:1 PATH="$gfxhub_bin:$PATH" \
+    "$script_directory/probe-depth-wedge.sh" "$model_path" "$gfxhub_output" \
+    >"$temporary_directory/wedge-gfxhub.stdout" \
+    2>"$temporary_directory/wedge-gfxhub.stderr"
+if ! awk -F'\t' '$1 == "d1-b1-ub1" && $20 == "gfxhub-page-fault" {
+                     found = 1
+                 }
+                 END { exit !found }' "$gfxhub_output/wedge-summary.tsv"; then
+    printf 'depth wedge did not classify the GFXHUB page fault by name\n' >&2
+    cat "$gfxhub_output/wedge-summary.tsv" >&2
+    exit 1
+fi
+
+# A reset line with no page-fault line is ring-timeout-only. Its control then
+# fails, which is what post-reset-control-failure names: a confirmed reset
+# whose recovery control did not pass. A call-counting bench succeeds on the
+# arm and fails on the control that follows it.
+reset_bin=$temporary_directory/reset-bin
+reset_counter=$temporary_directory/reset-dmesg-counter
+reset_log=$temporary_directory/reset-dmesg-log
+: >"$reset_log"
+mkdir -p "$reset_bin"
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    "counter=$reset_counter" \
+    "log=$reset_log" \
+    'printf x >>"$counter"' \
+    'count=$(wc -c <"$counter")' \
+    'if [ "$count" -eq 4 ]; then' \
+    '    printf "amdgpu: GPU reset begin\\n" >>"$log"' \
+    'fi' \
+    'cat "$log"' \
+    >"$reset_bin/dmesg"
+chmod +x "$reset_bin/dmesg"
+# The probe now runs one `--version` identity call before the first arm, so
+# the arm is the second bench invocation and its control is the third.
+reset_control_bench=$temporary_directory/reset-control-bench
+reset_control_counter=$temporary_directory/reset-control-counter
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    "counter=$reset_control_counter" \
+    'printf x >>"$counter"' \
+    'count=$(wc -c <"$counter")' \
+    'if [ "$count" -ge 3 ]; then exit 7; fi' \
+    'printf "| fake | tg64 | 3.00 +/- 0.10 |\\n"' >"$reset_control_bench"
+chmod +x "$reset_control_bench"
+reset_output=$temporary_directory/wedge-post-reset-control-failure
+active_fixture=depth-wedge-post-reset-control-failure
+diagnostic_file=$temporary_directory/wedge-post-reset.stderr
+if QWEN_LLAMA_BENCH=$reset_control_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
+    QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_WEDGE_DEPTHS=1 \
+    QWEN_WEDGE_GEOMETRIES=1:1 PATH="$reset_bin:$PATH" \
+    "$script_directory/probe-depth-wedge.sh" "$model_path" "$reset_output" \
+    >"$temporary_directory/wedge-post-reset.stdout" \
+    2>"$temporary_directory/wedge-post-reset.stderr"; then
+    printf 'depth wedge accepted a post-reset control failure as recoverable\n' >&2
+    exit 1
+fi
+if ! awk -F'\t' '$1 == "d1-b1-ub1" &&
+                 $20 ~ /ring-timeout-only/ &&
+                 $20 ~ /post-reset-control-failure/ {
+                     found = 1
+                 }
+                 END { exit !found }' "$reset_output/wedge-summary.tsv"; then
+    printf 'depth wedge did not record both the reset and the post-reset control-failure class\n' >&2
+    cat "$reset_output/wedge-summary.tsv" >&2
+    exit 1
+fi
 
 # A sampler that writes nothing leaves the arm without device covariates, which
 # this probe records as `unavailable` alongside every other absent device
@@ -367,6 +556,25 @@ fi
 grep -F 'wedge metadata does not match the model or recovery control:' \
     "$temporary_directory/wedge-model-mismatch.stderr" >/dev/null
 
+legacy_metadata_output=$temporary_directory/wedge-legacy-metadata
+mkdir -p "$legacy_metadata_output"
+printf 'model_sha256\tmodel_bytes\tcontrol_tokens\n' \
+    >"$legacy_metadata_output/wedge-metadata.tsv"
+active_fixture=depth-wedge-legacy-metadata
+diagnostic_file=$temporary_directory/wedge-legacy-metadata.stderr
+if QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
+    QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_WEDGE_DEPTHS=1 \
+    QWEN_WEDGE_GEOMETRIES=1:1 PATH="$fake_bin:$PATH" \
+    "$script_directory/probe-depth-wedge.sh" "$model_path" \
+    "$legacy_metadata_output" \
+    >"$temporary_directory/wedge-legacy-metadata.stdout" \
+    2>"$temporary_directory/wedge-legacy-metadata.stderr"; then
+    printf 'depth wedge accepted a pre-versioning legacy metadata ledger\n' >&2
+    exit 1
+fi
+grep -F 'wedge metadata predates ledger versioning (legacy ledger, no ledger_version field):' \
+    "$temporary_directory/wedge-legacy-metadata.stderr" >/dev/null
+
 kernel_gap_output=$temporary_directory/wedge-kernel-gap
 mkdir -p "$kernel_gap_output"
 cp "$wedge_output/wedge-metadata.tsv" "$kernel_gap_output/wedge-metadata.tsv"
@@ -429,6 +637,80 @@ grep -F 'control_failed label=d1-b1-ub1' \
     "$temporary_directory/unparseable.stderr" >/dev/null
 awk -F'\t' '$1 == "d1-b1-ub1" && $8 == 65 && $15 == 65 { found = 1 }
             END { exit !found }' "$unparseable_output/wedge-summary.tsv"
+
+# A bench that ignores SIGTERM reproduces a wedge parked in the driver: only
+# the SIGKILL escalation after the kill-after grace period ends it, and the
+# arm is recorded as a failure carrying that escalation's distinct status
+# (128 + SIGKILL) rather than hanging the probe.
+hanging_bench=$temporary_directory/hanging-llama-bench
+printf '%s\n' '#!/bin/sh' "trap '' TERM" 'sleep 30' >"$hanging_bench"
+chmod +x "$hanging_bench"
+timeout_output=$temporary_directory/wedge-timeout
+active_fixture=depth-wedge-timeout-kill-after
+diagnostic_file=$temporary_directory/wedge-timeout.stderr
+if QWEN_LLAMA_BENCH=$hanging_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
+    QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_WEDGE_DEPTHS=1 \
+    QWEN_WEDGE_GEOMETRIES=1:1 QWEN_WEDGE_ARM_TIMEOUT_S=1 \
+    QWEN_WEDGE_ARM_KILL_AFTER_S=1 PATH="$fake_bin:$PATH" \
+    "$script_directory/probe-depth-wedge.sh" "$model_path" \
+    "$timeout_output" >"$temporary_directory/wedge-timeout.stdout" \
+    2>"$temporary_directory/wedge-timeout.stderr"; then
+    printf 'depth wedge accepted a timed-out arm as successful\n' >&2
+    exit 1
+fi
+if ! awk -F'\t' '$1 == "d1-b1-ub1" && $8 == 137 { found = 1 }
+                 END { exit !found }' "$timeout_output/wedge-summary.tsv"; then
+    printf 'depth wedge did not record the kill-after escalation status\n' >&2
+    cat "$timeout_output/wedge-summary.tsv" >&2
+    exit 1
+fi
+
+# A dmesg that follows the buffer stays attached after --follow, so the probe
+# reads the arm's kernel delta straight off the streaming file rather than
+# subtracting a before count from an after snapshot, and never calls plain
+# dmesg for this arm at all.
+follow_bin=$temporary_directory/follow-bin
+follow_pid_marker=$temporary_directory/follow-pid
+follow_plain_call_marker=$temporary_directory/follow-plain-call
+mkdir -p "$follow_bin"
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    "case \$* in" \
+    '  *--follow*) ;;' \
+    "  *) : >\"$follow_plain_call_marker\"; exit 0 ;;" \
+    'esac' \
+    "printf '%s\\n' \"\$\$\" >\"$follow_pid_marker\"" \
+    'printf "amdgpu: GPU reset via follow\\n"' \
+    "trap 'exit 0' TERM" \
+    'while :; do sleep 1; done' >"$follow_bin/dmesg"
+chmod +x "$follow_bin/dmesg"
+follow_output=$temporary_directory/wedge-follow
+active_fixture=depth-wedge-kernel-follow-capture
+diagnostic_file=$temporary_directory/wedge-follow.stderr
+QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
+QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_WEDGE_DEPTHS=1 \
+QWEN_WEDGE_GEOMETRIES=1:1 PATH="$follow_bin:$PATH" \
+    "$script_directory/probe-depth-wedge.sh" "$model_path" "$follow_output" \
+    >"$temporary_directory/wedge-follow.stdout" \
+    2>"$temporary_directory/wedge-follow.stderr"
+if [ -e "$follow_plain_call_marker" ]; then
+    printf 'depth wedge called plain dmesg despite a following dmesg being available\n' >&2
+    exit 1
+fi
+if [ ! -f "$follow_output/d1-b1-ub1.dmesg-method.txt" ] ||
+   [ "$(cat "$follow_output/d1-b1-ub1.dmesg-method.txt")" != follow ]; then
+    printf 'depth wedge did not record the follow capture method\n' >&2
+    exit 1
+fi
+if ! awk -F'\t' '$1 == "d1-b1-ub1" && $9 == 1 { found = 1 }
+                 END { exit !found }' "$follow_output/wedge-summary.tsv"; then
+    printf 'depth wedge did not count the reset the following dmesg streamed\n' >&2
+    cat "$follow_output/wedge-summary.tsv" >&2
+    exit 1
+fi
+if kill -0 "$(cat "$follow_pid_marker")" 2>/dev/null; then
+    printf 'depth wedge left the following dmesg reader alive\n' >&2
+    exit 1
+fi
 
 for invalid_rounds in 0 -1; do
     active_fixture=dpm-round-validation
@@ -623,6 +905,93 @@ if grep -q 'negative field index' "$temporary_directory/device-banner.stderr"; t
     printf 'bandwidth extractor aborted on a line without pipes\n' >&2
     exit 1
 fi
+
+# run-depth-chain.sh waits between checkpoints for the previous summary to
+# carry a complete row, its control to have passed, no llama process to be
+# running, and the device's gpu_busy_percent sysfs node to read idle for
+# several consecutive samples, rather than for the previous PID alone to
+# exit.
+active_fixture=depth-chain-usage
+diagnostic_file=$temporary_directory/chain-usage.stderr
+if "$script_directory/run-depth-chain.sh" \
+    >"$temporary_directory/chain-usage.stdout" \
+    2>"$temporary_directory/chain-usage.stderr"; then
+    printf 'depth chain accepted zero checkpoint arguments\n' >&2
+    exit 1
+fi
+grep -F 'usage:' "$temporary_directory/chain-usage.stderr" >/dev/null
+
+chain_fake_probe=$temporary_directory/chain-fake-probe.sh
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    'chain_model_path=$1' \
+    'chain_output_directory=$2' \
+    'mkdir -p "$chain_output_directory"' \
+    'printf "%s\\n" "$chain_model_path" >>"'"$temporary_directory"'/chain-probe-calls"' \
+    'header="arm\tdepth\tbatch\tubatch\tcache_k\tcache_v\tflash_attn\tstatus\tring_resets\tgpu_faults\twall_s\tdecode_tok_s\tvram_peak_mib\tgtt_peak_mib\tcontrol_status\tcontrol_tok_s\tmclk_modal\ttemp_c_max\thealth\thazard_class"' \
+    'row="d1-b1-ub1\t1\t1\t1\tq8_0\tq4_0\ton\t0\t0\t0\t1\t3.00\t0\t0\t0\t3.00\t933\t88.0\thealthy\tnone"' \
+    'printf "%b\\n%b\\n" "$header" "$row" \
+        >"$chain_output_directory/wedge-summary.tsv"' \
+    >"$chain_fake_probe"
+chmod +x "$chain_fake_probe"
+
+chain_drm_device=$temporary_directory/chain-drm-device
+mkdir -p "$chain_drm_device"
+printf '0\n' >"$chain_drm_device/gpu_busy_percent"
+
+chain_output_root=$temporary_directory/depth-chain
+chain_home=$temporary_directory/chain-home
+mkdir -p "$chain_home"
+printf 'fake model bytes\n' >"$chain_home/second.gguf"
+active_fixture=depth-chain-success
+diagnostic_file=$temporary_directory/chain-success.stderr
+HOME=$chain_home QWEN_DEPTH_CHAIN_PROBE=$chain_fake_probe \
+QWEN_DEPTH_CHAIN_OUTPUT_ROOT=$chain_output_root \
+QWEN_DRM_DEVICE=$chain_drm_device QWEN_DEPTH_CHAIN_IDLE_INTERVAL_S=1 \
+    "$script_directory/run-depth-chain.sh" "first:/first.gguf" \
+    "second:second.gguf" \
+    >"$temporary_directory/chain-success.stdout" \
+    2>"$temporary_directory/chain-success.stderr"
+if [ "$(wc -l <"$temporary_directory/chain-probe-calls")" -ne 2 ]; then
+    printf 'depth chain did not run both checkpoints\n' >&2
+    cat "$temporary_directory/chain-success.stderr" >&2
+    exit 1
+fi
+grep -Fx '/first.gguf' "$temporary_directory/chain-probe-calls" >/dev/null
+grep -Fx "$chain_home/second.gguf" "$temporary_directory/chain-probe-calls" \
+    >/dev/null
+if grep -F 'chain_gpu_idle=unavailable' \
+    "$temporary_directory/chain-success.stderr" >/dev/null; then
+    printf 'depth chain reported the fake sysfs busy node unavailable\n' >&2
+    exit 1
+fi
+grep -F 'depth_chain=completed' \
+    "$temporary_directory/chain-success.stdout" >/dev/null
+
+chain_failed_probe=$temporary_directory/chain-failed-probe.sh
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    'chain_output_directory=$2' \
+    'mkdir -p "$chain_output_directory"' \
+    'header="arm\tdepth\tbatch\tubatch\tcache_k\tcache_v\tflash_attn\tstatus\tring_resets\tgpu_faults\twall_s\tdecode_tok_s\tvram_peak_mib\tgtt_peak_mib\tcontrol_status\tcontrol_tok_s\tmclk_modal\ttemp_c_max\thealth\thazard_class"' \
+    'row="d1-b1-ub1\t1\t1\t1\tq8_0\tq4_0\ton\t0\t0\t0\t1\t3.00\t0\t0\t7\t3.00\t933\t88.0\tunhealthy\tnone"' \
+    'printf "%b\\n%b\\n" "$header" "$row" \
+        >"$chain_output_directory/wedge-summary.tsv"' \
+    >"$chain_failed_probe"
+chmod +x "$chain_failed_probe"
+chain_failed_output_root=$temporary_directory/depth-chain-failed-control
+active_fixture=depth-chain-failed-control
+diagnostic_file=$temporary_directory/chain-failed.stderr
+if HOME=$chain_home QWEN_DEPTH_CHAIN_PROBE=$chain_failed_probe \
+    QWEN_DEPTH_CHAIN_OUTPUT_ROOT=$chain_failed_output_root \
+    QWEN_DRM_DEVICE=$chain_drm_device QWEN_DEPTH_CHAIN_IDLE_INTERVAL_S=1 \
+    "$script_directory/run-depth-chain.sh" "first:/first.gguf" \
+    "second:second.gguf" \
+    >"$temporary_directory/chain-failed.stdout" \
+    2>"$temporary_directory/chain-failed.stderr"; then
+    printf 'depth chain started a checkpoint after a failed recovery control\n' >&2
+    exit 1
+fi
+grep -F 'the previous checkpoint left a failed recovery control' \
+    "$temporary_directory/chain-failed.stderr" >/dev/null
 
 active_fixture=completed
 diagnostic_file=
