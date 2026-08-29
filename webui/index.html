@@ -95,6 +95,11 @@
   dl.args dd.live { color:var(--warn); }
   .approval-actions { display:flex; gap:.5rem; justify-content:flex-end; }
   .approval-note { color:var(--bad); font-size:12px; margin:0 0 .6rem; }
+  figure.image-artifact { margin:.4rem 0; padding:.5rem .7rem; border:1px solid var(--line);
+             border-radius:.5rem; }
+  figure.image-artifact img { max-width:100%; display:block; border-radius:.4rem; }
+  figure.image-artifact figcaption { font-size:12px; color:var(--dim); margin-top:.35rem; }
+  figure.image-artifact button.act { margin-top:.4rem; }
 </style>
 </head>
 
@@ -111,6 +116,7 @@
   <label class="chip"><input type="checkbox" id="reasoning"> reasoning</label>
   <label class="chip"><input type="checkbox" id="tools"> offer a demo tool</label>
   <label class="chip"><input type="checkbox" id="web-tools"> web</label>
+  <label class="chip"><input type="checkbox" id="image-tools"> image</label>
   <input class="key" type="text" id="broker-origin" placeholder="approval broker origin" autocomplete="off">
   <button class="act" id="clear">clear</button>
 </header>
@@ -138,6 +144,29 @@
     <button class="act" id="approve-once">approve once</button>
   </div>
 </dialog>
+
+<!--
+  Image generation section (PR D, UI half). A proposed generate_image call
+  opens this dialog with the same exact-argument discipline as the web search
+  dialog: the broker signs its qwen-image-generate-v1 grant over the fields
+  shown here, never over a value the model wrote and nobody read. The one
+  addition against the search dialog is the seed -- when the model omits it
+  this page generates one with crypto.getRandomValues and the dialog names it
+  as generated, because randomness is never chosen after authorization.
+-->
+<dialog class="approval" id="image-approval">
+  <h2>Authorize one image generation</h2>
+  <p class="why">The model proposes these exact arguments. An approval signs a
+    grant over them and admits one generation; the served path refuses any
+    other prompt, negative prompt, seed, size, step count, or profile.</p>
+  <p class="approval-note" id="image-approval-note" hidden></p>
+  <dl class="args" id="image-approval-args"></dl>
+  <div class="approval-actions">
+    <button class="act" id="image-approve-deny">deny</button>
+    <button class="act" id="image-approve-once">approve once</button>
+  </div>
+</dialog>
+<!-- end image generation dialog -->
 
 <footer>
   <div id="attached"></div>
@@ -272,6 +301,7 @@ function selectRequestModel(selectedModel) {
   nctx = null;
   nctxModel = null;
   forgetWebTools();
+  forgetImageTools();
   attachments.forEach(attachment => {
     attachment.tokens = null;
     attachment.tokenModel = null;
@@ -433,6 +463,67 @@ function forgetWebTools() {
   webToolsModel = null;
   webToolsGeneration = -1;
 }
+
+// ==== Image generation (PR D, UI half): tool discovery =====================
+// The image tool listing is a second, independent read of `GET /tools`: it
+// shares the endpoint and the retry helper with the web listing but keeps its
+// own cache, so a rename or restructuring of the web tool composition above
+// does not touch this block and this block does not touch it.
+const IMAGE_TOOL_NAME = 'generate_image';
+
+function findImageCancelToolName(listing) {
+  /* Return the name of a listed tool that cancels an image generation, or
+     null. The served tool set may or may not offer one -- this reads the
+     listing for a name that marks itself as the image-cancel action rather
+     than asserting the served path always carries it. */
+  const entry = listing.find(row =>
+    row && typeof row.tool === 'string' && /cancel/i.test(row.tool) && /image/i.test(row.tool));
+  return entry ? entry.tool : null;
+}
+
+let imageToolDefinitionCached = null;
+let imageCancelToolNameCached = null;
+let imageToolsModel = null;
+let imageToolsGeneration = -1;
+
+function forgetImageTools() {
+  imageToolDefinitionCached = null;
+  imageCancelToolNameCached = null;
+  imageToolsModel = null;
+  imageToolsGeneration = -1;
+}
+
+async function resolveImageTools(selectedModel, generation) {
+  /* Return { definition, cancelToolName } for one model selection, or nulls.
+
+     `definition` is the request-body tool object for generate_image, built
+     with the same webToolDefinition() the web tools use, which is generic
+     over the entry's own name and strips no field but `authorization`. */
+  if (imageToolsModel === selectedModel && imageToolsGeneration === generation) {
+    return { definition: imageToolDefinitionCached, cancelToolName: imageCancelToolNameCached };
+  }
+  let listed = null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      listed = await fetchWebToolListing(selectedModel);
+      break;
+    } catch {
+      if (attempt === 0) await sleep(TOOLS_LISTING_RETRY_DELAY_MS);
+    }
+  }
+  if (listed === null) return { definition: null, cancelToolName: null };
+  const entry = listed.find(row => row && row.tool === IMAGE_TOOL_NAME);
+  const definition = entry ? webToolDefinition(entry) : null;
+  const cancelToolName = findImageCancelToolName(listed);
+  if (modelStateMatches(selectedModel, generation)) {
+    imageToolDefinitionCached = definition;
+    imageCancelToolNameCached = cancelToolName;
+    imageToolsModel = selectedModel;
+    imageToolsGeneration = generation;
+  }
+  return { definition, cancelToolName };
+}
+// ==== end image generation: tool discovery ==================================
 
 // The broker origin resolves in one order: a `?broker=` query parameter, then
 // the `qwen-web-broker` meta tag the served page carries, then the loopback
@@ -658,6 +749,12 @@ $('#broker-origin').addEventListener('change', () => {
 // opened with no such intent.
 $('#web-tools').checked = false;
 
+// The Image toggle is the same per-turn choice as Web: it governs whether
+// generate_image is offered at all, and a setting restored from a previous
+// visit would offer image generation to a turn the user opened with no such
+// intent.
+$('#image-tools').checked = false;
+
 function brokerOrigin() {
   return ($('#broker-origin').value.trim() || BROKER_ORIGIN_DEFAULT).replace(/\/+$/, '');
 }
@@ -854,6 +951,210 @@ function approveWebSearch(fields, proposalModel) {
   });
 }
 
+// ==== Image generation (PR D, UI half): proposal parsing and grant =========
+const IMAGE_GRANT_CONTEXT = 'qwen-image-generate-v1';
+const IMAGE_GENERATE_BUDGET_PER_TURN = 1;
+// The 660 s bound is this page's own wait on the generation fetch; it names
+// no runtime, image-service, MCP, or router deadline, each of which owns its
+// own timeout on its own side of the call.
+const IMAGE_GENERATION_TIMEOUT_MS = 660000;
+
+function randomSeed() {
+  // crypto.getRandomValues is the browser's cryptographic RNG. A seed
+  // generated here is what the approval binds: randomness is never chosen
+  // after authorization, so this runs before the dialog opens rather than
+  // after the human approves.
+  return crypto.getRandomValues(new Uint32Array(1))[0];
+}
+
+async function sha256Hex(text) {
+  const bytes = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function aspectRatio(width, height) {
+  const gcd = (a, b) => (b === 0 ? a : gcd(b, a % b));
+  const divisor = gcd(width, height) || 1;
+  return `${width / divisor}:${height / divisor}`;
+}
+
+function proposedImageFields(argumentText) {
+  /* Parse one proposed generate_image call into its dialog fields, or throw.
+
+     A missing or malformed field cannot be shown to a human meaningfully, so
+     this fails closed rather than substituting a value nobody proposed. The
+     seed is the one exception: the brief assigns this page the authority to
+     generate one when the model omits it, and the dialog names that case. */
+  const parsed = JSON.parse(argumentText);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('the proposed arguments are not an object');
+  }
+  if (typeof parsed.prompt !== 'string' || !parsed.prompt) {
+    throw new Error('prompt must be a non-empty string');
+  }
+  if (typeof parsed.profile !== 'string' || !parsed.profile) {
+    throw new Error('profile must be a non-empty string');
+  }
+  const requirePositiveInteger = key => {
+    if (!Number.isInteger(parsed[key]) || parsed[key] <= 0) {
+      throw new Error(`${key} must be a positive integer`);
+    }
+    return parsed[key];
+  };
+  const width = requirePositiveInteger('width');
+  const height = requirePositiveInteger('height');
+  const steps = requirePositiveInteger('steps');
+  const negativePrompt = typeof parsed.negative_prompt === 'string' ? parsed.negative_prompt : '';
+  let seed, seedGenerated;
+  if ('seed' in parsed) {
+    if (!Number.isInteger(parsed.seed) || parsed.seed < 0) {
+      throw new Error('seed must be a non-negative integer');
+    }
+    seed = parsed.seed;
+    seedGenerated = false;
+  } else {
+    seed = randomSeed();
+    seedGenerated = true;
+  }
+  return { prompt: parsed.prompt, negative_prompt: negativePrompt, profile: parsed.profile,
+           width, height, steps, seed, seedGenerated };
+}
+
+function renderImageApprovalFields(fields) {
+  const list = $('#image-approval-args');
+  list.textContent = '';
+  const row = (label, value, live) => {
+    const term = document.createElement('dt');
+    term.textContent = label;
+    const detail = document.createElement('dd');
+    detail.textContent = value;
+    if (live) detail.className = 'live';
+    list.append(term, detail);
+  };
+  row('prompt', fields.prompt);
+  row('negative prompt', fields.negative_prompt || '(none)');
+  row('seed', fields.seedGenerated
+    ? `${fields.seed} -- generated by this page; the model proposed no seed`
+    : String(fields.seed), fields.seedGenerated);
+  row('width', String(fields.width));
+  row('height', String(fields.height));
+  row('steps', String(fields.steps));
+  row('profile', fields.profile);
+}
+
+async function postImageGrant(fields, secret, signal) {
+  const response = await fetch(`${brokerOrigin()}/grant-image`, {
+    method: 'POST',
+    mode: 'cors',
+    headers: { 'Content-Type': 'application/json', [BROKER_SESSION_HEADER]: secret },
+    body: JSON.stringify(fields),
+    signal
+  });
+  const payload = await response.json().catch(() => ({}));
+  return { response, payload };
+}
+
+async function requestImageGrant(fields, signal) {
+  // Mirrors requestGrant() for the web search grant: the same session secret
+  // and the same one-retry recovery from a broker restart's fresh secret.
+  const secret = await brokerSession(signal);
+  let { response, payload } = await postImageGrant(fields, secret, signal);
+  if (response.status === 403 && payload.code === STALE_SESSION_SECRET_CODE) {
+    brokerSessionSecret = null;
+    brokerSessionOrigin = null;
+    const refreshed = await brokerSession(signal);
+    ({ response, payload } = await postImageGrant(fields, refreshed, signal));
+  }
+  if (!response.ok || typeof payload.authorization !== 'string') {
+    throw new Error(payload.error || `the approval broker refused: HTTP ${response.status}`);
+  }
+  return payload.authorization;
+}
+
+async function imageGrantFields(fields, languageProfile, conversationGenerationValue) {
+  /* Build the qwen-image-generate-v1 grant request. The grant binds a hash
+     of each stripped prompt, the spelling image_grant.prompt_digest hashes on
+     the broker side, rather than the prompt text, an aspect ratio and a single
+     max-dimension bound rather than the exact pixel size, and the step count
+     and conversation generation the dialog showed -- never the image bytes,
+     which do not exist yet when this grant is requested. */
+  const [promptHash, negativePromptHash] = await Promise.all([
+    sha256Hex(fields.prompt.trim()), sha256Hex(fields.negative_prompt.trim())
+  ]);
+  return {
+    context: IMAGE_GRANT_CONTEXT,
+    language_profile: languageProfile,
+    image_profile: fields.profile,
+    prompt_hash: promptHash,
+    negative_prompt_hash: negativePromptHash,
+    seed: fields.seed,
+    aspect: aspectRatio(fields.width, fields.height),
+    max_dimension: Math.max(fields.width, fields.height),
+    max_steps: fields.steps,
+    conversation_generation: conversationGenerationValue
+  };
+}
+
+function approveImageGeneration(fields, proposalModel) {
+  // Mirrors approveWebSearch(): one approval or a refusal, a single-use
+  // grant, and an abort of the in-flight grant request on denial or
+  // dismissal so a late click cannot spend the rate bucket for a dialog the
+  // human already closed.
+  return new Promise(resolve => {
+    const dialog = $('#image-approval');
+    const note = $('#image-approval-note');
+    note.hidden = true;
+    note.textContent = '';
+    renderImageApprovalFields(fields);
+    const once = $('#image-approve-once');
+    const deny = $('#image-approve-deny');
+    let settled = false;
+    const controller = new AbortController();
+    const finish = outcome => {
+      if (settled) return;
+      settled = true;
+      once.onclick = null;
+      deny.onclick = null;
+      dialog.onclose = null;
+      once.disabled = false;
+      dialog.close();
+      resolve(outcome);
+    };
+    once.onclick = async () => {
+      once.disabled = true;
+      try {
+        if (requestModel !== proposalModel) {
+          finish({
+            decision: 'deny',
+            reason: `it was proposed by model ${proposalModel}, ` +
+                    `the current model is ${requestModel}`
+          });
+          return;
+        }
+        const grantFields = await imageGrantFields(fields, requestModel, conversationGeneration);
+        const authorization = await requestImageGrant(grantFields, controller.signal);
+        finish({ decision: 'once', authorization });
+      } catch (error) {
+        if (settled) return;
+        once.disabled = false;
+        note.hidden = false;
+        note.textContent = String(error.message || error);
+      }
+    };
+    deny.onclick = () => {
+      controller.abort();
+      finish({ decision: 'deny' });
+    };
+    dialog.onclose = () => {
+      controller.abort();
+      finish({ decision: 'deny' });
+    };
+    dialog.showModal();
+  });
+}
+// ==== end image generation: proposal parsing and grant ======================
+
 async function boot() {
   // The router creates no qwen-apu compatibility alias. Its roster is the
   // authority for request ids, so the fallback page selects only a model that
@@ -864,6 +1165,7 @@ async function boot() {
   nctx = null;
   nctxModel = null;
   forgetWebTools();
+  forgetImageTools();
   attachments.forEach(attachment => {
     attachment.tokens = null;
     attachment.tokenModel = null;
@@ -1004,7 +1306,7 @@ $('#input').addEventListener('keydown', e => {
 });
 $('#send').onclick = send;
 
-async function buildRequestBody(messages, webPermission) {
+async function buildRequestBody(messages, webPermission, imagePermission) {
   const body = { model: requestModel, stream: true, temperature: 0.7,
                  stream_options: { include_usage: true },
                  max_tokens: 512, messages };
@@ -1023,18 +1325,25 @@ async function buildRequestBody(messages, webPermission) {
   if (webPermission) {
     tools.push(...await resolveWebTools(requestModel, modelStateGeneration));
   }
+  // Image generation is a second, independent per-turn permission: the toggle
+  // decides only whether generate_image is offered, and it composes into the
+  // same tools array the web and demo tools already build.
+  if (imagePermission) {
+    const { definition } = await resolveImageTools(requestModel, modelStateGeneration);
+    if (definition) tools.push(definition);
+  }
   if (tools.length) body.tools = tools;
   return body;
 }
 
-async function streamCompletion(messages, view, webPermission) {
+async function streamCompletion(messages, view, webPermission, imagePermission) {
   const t0 = performance.now();
   let first = null, streamChunks = 0, completionTokens = null;
   let serverTimings = null, answer = '', reasoning = '', finish = null;
   const toolCalls = {};
   const resp = await fetch('./v1/chat/completions', {
     method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(await buildRequestBody(messages, webPermission))
+    body: JSON.stringify(await buildRequestBody(messages, webPermission, imagePermission))
   });
   if (!resp.ok) {
     const detail = await resp.text();
@@ -1217,6 +1526,202 @@ function proposedFetchParams(argumentText) {
   return params;
 }
 
+// ==== Image generation (PR D, UI half): execution and rendering ============
+function imageRequestParams(fields, authorization) {
+  return {
+    prompt: fields.prompt,
+    negative_prompt: fields.negative_prompt,
+    seed: fields.seed,
+    width: fields.width,
+    height: fields.height,
+    steps: fields.steps,
+    profile: fields.profile,
+    authorization
+  };
+}
+
+function renderImageState(container, text, isError) {
+  container.textContent = text;
+  container.className = 'meta image-state' + (isError ? ' bad' : '');
+}
+
+function parseCompletedImageResult(text) {
+  /* Parse the plain_text_response body a completed generate_image call
+     returns, or throw. The MCP result carries `status` and, on completion,
+     `sha256` and `provenance_url` -- the only two identifying fields this
+     page keeps; the image bytes and the spent grant never reach here. A
+     status other than `completed` reaching this branch is a protocol
+     anomaly rather than an authored refusal, since `refused`, `cancelled`,
+     and `failed` arrive through `payload.error` instead and never enter this
+     function. */
+  const parsed = JSON.parse(text);
+  if (!parsed || typeof parsed !== 'object') {
+    throw new Error('the result body is not a JSON object');
+  }
+  if (parsed.status !== 'completed') {
+    throw new Error(`the result reports status ${JSON.stringify(parsed.status)}, not completed`);
+  }
+  if (typeof parsed.sha256 !== 'string' || !parsed.sha256) {
+    throw new Error('the result carries no sha256');
+  }
+  if (typeof parsed.provenance_url !== 'string' || !parsed.provenance_url) {
+    throw new Error('the result carries no provenance_url');
+  }
+  return { sha256: parsed.sha256, provenanceUrl: parsed.provenance_url };
+}
+
+function buildImageToolResultSummary(result) {
+  // The tool message the model reads back carries the sha256 and the
+  // provenance URL alone -- never the image bytes and never the grant, which
+  // is spent inside the request this summary follows and stays out of
+  // `history` the same way the search grant does.
+  return `Image generated: sha256 ${result.sha256}, provenance ${result.provenanceUrl}.`;
+}
+
+async function loadArtifactBlobUrl(provenanceUrl) {
+  /* Fetch the artifact PNG with the same credential header the page sends
+     for chat -- an <img src> cannot carry that header, and the hash never
+     substitutes for it in a query parameter -- and hand back a local blob
+     URL the caller owns and must revoke. */
+  const response = await fetch(new URL(provenanceUrl, window.location.href).href,
+    { headers: authHeaders() });
+  if (!response.ok) {
+    throw new Error(`the artifact fetch returned HTTP ${response.status}`);
+  }
+  const blob = await response.blob();
+  return URL.createObjectURL(blob);
+}
+
+function renderImageArtifactCard(container, fields, result) {
+  const card = document.createElement('figure');
+  card.className = 'image-artifact';
+  const img = document.createElement('img');
+  img.alt = fields.prompt;
+  card.append(img);
+  const caption = document.createElement('figcaption');
+  const parts = [
+    `sha256 ${result.sha256}`,
+    `seed ${fields.seed}`,
+    `${fields.width}x${fields.height}`,
+    `${fields.steps} steps`,
+    fields.profile
+  ];
+  caption.textContent = parts.join(' | ');
+  card.append(caption);
+  let blobUrl = null;
+  const removeButton = document.createElement('button');
+  removeButton.className = 'act';
+  removeButton.textContent = 'remove image';
+  removeButton.onclick = () => {
+    if (blobUrl) URL.revokeObjectURL(blobUrl);
+    card.remove();
+  };
+  card.append(removeButton);
+  container.append(card);
+  loadArtifactBlobUrl(result.provenanceUrl).then(url => {
+    blobUrl = url;
+    img.src = url;
+  }).catch(error => {
+    caption.textContent += ` | image fetch failed: ${error.message || error}`;
+  });
+}
+
+async function postCancelBestEffort(cancelToolName, model) {
+  if (!cancelToolName) return;
+  try {
+    await fetch('./tools', {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ model, tool: cancelToolName, params: {}, stream: false })
+    });
+  } catch {
+    // The abort already ended this page's own wait; a cancel post that does
+    // not reach the server leaves the child to its own deadline.
+  }
+}
+
+function openImageState(view) {
+  const el = document.createElement('div');
+  el.className = 'meta image-state';
+  el.textContent = 'Approved';
+  view.turn.root.insertBefore(el, view.meta);
+  return el;
+}
+
+async function executeImageGeneration(stateEl, artifactContainer, toolName, fields, params,
+                                       model, cancelToolName) {
+  /* Run one approved generate_image call and drive the synchronous state
+     line through Approved -> Generating image... -> Image complete or Image
+     failed. `payload.error` at HTTP 200 is how the served path answers a
+     refused, cancelled, or failed status (mcp_result_to_response maps an MCP
+     isError result onto that key the way it does for the web tools), so that
+     branch alone produces "Image failed:" and reads its reason from the body
+     rather than from the HTTP status. */
+  renderImageState(stateEl, 'Approved');
+  // Yields one microtask so "Approved" paints before "Generating image..."
+  // overwrites it; openImageState() already set this text, so this call
+  // re-states it rather than skipping straight to the next phase.
+  await Promise.resolve();
+  renderImageState(stateEl, 'Generating image...');
+  const controller = new AbortController();
+  let cancelled = false;
+  const cancelButton = document.createElement('button');
+  cancelButton.className = 'act';
+  cancelButton.textContent = 'cancel';
+  cancelButton.onclick = () => {
+    cancelled = true;
+    controller.abort();
+    void postCancelBestEffort(cancelToolName, model);
+  };
+  stateEl.after(cancelButton);
+  const timeoutId = setTimeout(() => controller.abort(), IMAGE_GENERATION_TIMEOUT_MS);
+  try {
+    let response;
+    try {
+      response = await fetch('./tools', {
+        method: 'POST',
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ model, tool: toolName, params, stream: false }),
+        signal: controller.signal
+      });
+    } catch (error) {
+      const reason = cancelled
+        ? 'cancelled by the user'
+        : error.name === 'AbortError'
+          ? `the request timed out after ${IMAGE_GENERATION_TIMEOUT_MS / 1000}s`
+          : (error.message || String(error));
+      renderImageState(stateEl, `Image failed: ${reason}`, true);
+      return { ok: false, text: `The image did not complete: ${reason}` };
+    }
+    let payload = null;
+    try { payload = await response.json(); } catch { payload = null; }
+    if (payload && typeof payload.error === 'string') {
+      renderImageState(stateEl, `Image failed: ${payload.error}`, true);
+      return { ok: false, text: `The image did not complete: ${payload.error}` };
+    }
+    if (!response.ok || !payload || typeof payload.plain_text_response !== 'string') {
+      const reason = `HTTP ${response.status} with no result text`;
+      renderImageState(stateEl, `Image failed: ${reason}`, true);
+      return { ok: false, text: `The image did not complete: ${reason}` };
+    }
+    let result;
+    try {
+      result = parseCompletedImageResult(payload.plain_text_response);
+    } catch (error) {
+      const reason = error.message || String(error);
+      renderImageState(stateEl, `Image failed: ${reason}`, true);
+      return { ok: false, text: `The image did not complete: ${reason}` };
+    }
+    renderImageState(stateEl, 'Image complete');
+    renderImageArtifactCard(artifactContainer, fields, result);
+    return { ok: true, text: buildImageToolResultSummary(result) };
+  } finally {
+    clearTimeout(timeoutId);
+    cancelButton.remove();
+  }
+}
+// ==== end image generation: execution and rendering =========================
+
 function answerCall(callId, toolName, content, turnGeneration) {
   // Every assistant message carrying tool_calls needs one tool message per
   // call before the array is a legal request, so each branch of the round
@@ -1229,7 +1734,7 @@ function answerCall(callId, toolName, content, turnGeneration) {
 
 async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetchBudget,
                                  searchBudget, turnGeneration, proposalModel,
-                                 webPermission) {
+                                 webPermission, imagePermission, imageBudget, imageCancelToolName) {
   /* Execute this round's proposed calls and answer each one.
 
      A proposed `web_search_exa` is shown to a human with the arguments it
@@ -1272,6 +1777,67 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
         `the current model is ${requestModel}.`, turnGeneration);
       continue;
     }
+    // ==== Image generation (PR D, UI half): dispatch =======================
+    if (toolName === IMAGE_TOOL_NAME) {
+      if (!imagePermission) {
+        refused = true;
+        answerCall(callId, toolName,
+          `The image surface is off for this turn; ${toolName} did not run.`, turnGeneration);
+        continue;
+      }
+      if (roundBudgetExhausted) {
+        refused = true;
+        answerCall(callId, toolName,
+          `The round budget is exhausted; ${toolName} did not run.`, turnGeneration);
+        continue;
+      }
+      if (requestModel !== proposalModel) {
+        refused = true;
+        answerCall(callId, toolName,
+          `The ${toolName} call did not run: it was proposed by model ${proposalModel}, ` +
+          `the current model is ${requestModel}.`, turnGeneration);
+        continue;
+      }
+      if (imageBudget.remaining <= 0) {
+        refused = true;
+        answerCall(callId, toolName,
+          `The per-turn budget of ${IMAGE_GENERATE_BUDGET_PER_TURN} image generations is spent; ` +
+          'this image did not run.', turnGeneration);
+        continue;
+      }
+      let imageFields;
+      try {
+        imageFields = proposedImageFields(calls[index].args);
+      } catch (error) {
+        refused = true;
+        answerCall(callId, toolName, `The image did not run: ${error.message || error}`, turnGeneration);
+        continue;
+      }
+      imageBudget.remaining--;
+      const imageOutcome = await approveImageGeneration(imageFields, proposalModel);
+      if (imageOutcome.decision === 'once' && requestModel !== proposalModel) {
+        refused = true;
+        answerCall(callId, toolName,
+          `The image did not run: it was proposed by model ${proposalModel}, ` +
+          `the current model is ${requestModel}.`, turnGeneration);
+        continue;
+      }
+      if (imageOutcome.decision === 'once') {
+        const stateEl = openImageState(view);
+        const params = imageRequestParams(imageFields, imageOutcome.authorization);
+        const execution = await executeImageGeneration(
+          stateEl, view.turn.root, toolName, imageFields, params, proposalModel, imageCancelToolName);
+        if (!execution.ok) refused = true;
+        answerCall(callId, toolName, execution.text, turnGeneration);
+      } else {
+        refused = true;
+        answerCall(callId, toolName, imageOutcome.reason
+          ? `The image did not run: ${imageOutcome.reason}.`
+          : 'The user refused this image generation. It did not run.', turnGeneration);
+      }
+      continue;
+    }
+    // ==== end image generation: dispatch ====================================
     if (toolName === WEB_FETCH_TOOL_NAME) {
       if (fetchBudget.remaining <= 0) {
         refused = true;
@@ -1383,6 +1949,10 @@ async function send() {
   // and tool call produced by the active turn.
   const webPermission = $('#web-tools').checked;
   $('#web-tools').checked = false;
+  // Image generation carries the same per-turn permission snapshot as Web:
+  // one user turn owns it, and the visible toggle already names the next.
+  const imagePermission = $('#image-tools').checked;
+  $('#image-tools').checked = false;
 
   const shown = text + (attachments.length
     ? '\n' + attachments.map(a => `[${a.name}]`).join(' ') : '');
@@ -1403,6 +1973,7 @@ async function send() {
   // sequence of them, and the fetch budget bounds the pages one turn reads.
   const fetchBudget = { remaining: WEB_FETCH_BUDGET_PER_TURN };
   const searchBudget = { remaining: WEB_SEARCH_BUDGET_PER_TURN };
+  const imageBudget = { remaining: IMAGE_GENERATE_BUDGET_PER_TURN };
   try {
     for (let round = 0; round < CONTINUATION_CAP; round++) {
       const view = openTurnView();
@@ -1414,7 +1985,7 @@ async function send() {
       const proposalModel = requestModel;
       let outcome;
       try {
-        outcome = await streamCompletion(history, view, webPermission);
+        outcome = await streamCompletion(history, view, webPermission, imagePermission);
       } catch (err) {
         view.meta.className = 'meta bad';
         view.meta.textContent = String(err.message || err);
@@ -1436,9 +2007,15 @@ async function send() {
       }
       history.push(msg);
       if (!outcome.calls.length) return;
+      // A cache hit: buildRequestBody() already populated this entry inside
+      // streamCompletion() when imagePermission was on, so this call issues
+      // no second GET /tools.
+      const { cancelToolName: imageCancelToolName } =
+        await resolveImageTools(requestModel, modelStateGeneration);
       await runProposedTools(
         outcome.calls, callIds, view, round === CONTINUATION_CAP - 1, fetchBudget,
-        searchBudget, turnGeneration, proposalModel, webPermission);
+        searchBudget, turnGeneration, proposalModel, webPermission,
+        imagePermission, imageBudget, imageCancelToolName);
       if (turnGeneration !== conversationGeneration) return;
       if (requestModel !== proposalModel) {
         // The picker stays enabled while a tool request is in flight, so
