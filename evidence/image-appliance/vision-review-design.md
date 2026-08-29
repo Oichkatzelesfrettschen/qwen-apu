@@ -1,10 +1,11 @@
 # Vision review of a generated image, and the two corrections it may propose
 
-Nothing here is a measurement. No review has run on the appliance, so every
-quantity below is either a bound this lane imposes or a prediction registered
-with the observation that refutes it. The mechanisms are in the tree and their
-tests run on the workstation: `remote/image-review.py` builds and parses the
-review, `remote/test-image-review.py` drives it against a fake vision router,
+Most of this document predates any appliance run, and every quantity below is
+either a bound this lane imposes or a prediction registered with the
+observation that refutes it, except where a section names a run and points at
+its evidence directory. The mechanisms are in the tree and their tests run on
+the workstation: `remote/image-review.py` builds and parses the review,
+`remote/test-image-review.py` drives it against a fake vision router,
 `webui/index.html` runs the same schema in the browser, and
 `remote/web-mcp/test-fallback-page-image.py` drives the served page through one
 review, two approved corrections, and the cap that ends them.
@@ -170,14 +171,21 @@ hypotheses.
 
 1. **The reply is fenced or narrated.** A model that answers
    ```` ```json ... ``` ```` refuses as `not_json`, and so does one that writes a
-   sentence before the object. Remedy, in order: send `response_format` with a
-   JSON schema and keep the strict parser as the second gate. Whether the pinned
-   f280b269 server honours `response_format` or `json_schema` on
-   `/v1/chat/completions` is unverified here -- the llama.cpp source is absent
-   from this workstation and no file in this tree names either key -- so the
-   check to run first is a grep of the pinned source's
-   `tools/server/server.cpp` and `utils.hpp` for those names. Until that check
-   runs, the request sends neither.
+   sentence before the object. The check this falsifier left open has run:
+   `tools/server/server-common.cpp:1156-1174` in the workstation clone
+   `~/src/llama.cpp` at `c2c62855c` (containing the pinned `f280b269`) reads a
+   top-level `json_schema` key directly and reads
+   `response_format.json_schema.schema` for `{"type": "json_schema", ...}`,
+   and `common/chat.cpp:3673,3802` converts whichever schema arrived into a
+   grammar with `json_schema_to_grammar` -- so `response_format` is honoured
+   and `remote/image-review.py` now sends it. `evidence/image-appliance/vision-review-first-run/`
+   is the run this falsifier predicted against: none of its four rows produced
+   a fenced or narrated reply, so this specific prediction was not met on the
+   first appliance run. What that run hit instead is recorded there --
+   `constraint_count` and `hard_constraints_not_list`, an object that parses as
+   valid JSON while diverging from the declared shape -- which is the failure
+   class a grammar closes and a strict parser alone cannot, since the parser
+   only runs after the reply already exists.
 2. **Thinking off is inert against the template.** `enable_thinking: false` does
    nothing to a chat template that ends its generation prompt with an unguarded
    `<think>`, which this tree already records for one 0.8B row. A reasoning span
