@@ -121,7 +121,11 @@ if [ ! -x "$control_script" ]; then
 fi
 
 printf 'starting YaCy through %s\n' "$control_script"
-QWEN_YACY_INSTALL_DIRECTORY=$install_directory "$control_script" start
+# A cold JVM start on two 2.3 GHz cores takes past the control script's 60 s
+# default before the listener opens (measured on the appliance), so the
+# install waits up to 300 s unless the caller names a bound.
+QWEN_YACY_START_TIMEOUT=${QWEN_YACY_START_TIMEOUT:-300} \
+    QWEN_YACY_INSTALL_DIRECTORY=$install_directory "$control_script" start
 server_started=1
 cleanup_server() {
     if [ "$server_started" -eq 1 ]; then
@@ -143,7 +147,7 @@ if [ -z "$listener_addresses" ]; then
 fi
 for listener_address in $listener_addresses; do
     case $listener_address in
-        127.0.0.1:8090 | \[::1\]:8090) ;;
+        127.0.0.1:8090 | \[::1\]:8090 | \[::ffff:127.0.0.1\]:8090) ;;
         *)
             printf 'refusing non-loopback listener: %s\n' "$listener_address" >&2
             exit 1

@@ -45,10 +45,14 @@ pid_is_alive() {
     [ -d "/proc/$1" ]
 }
 
+# The JVM opens a dual-stack socket and ss reports the IPv4 loopback in its
+# mapped form, `[::ffff:127.0.0.1]:8090` (observed on the appliance under
+# Java 21), so that spelling is the same loopback listener as the plain one.
 listener_present() {
     ss -ltn "sport = :$server_port" 2>/dev/null |
         awk 'NR>1 {print $4}' |
-        grep -qx -e "$bind_address:$server_port" -e "[::1]:$server_port"
+        grep -qxF -e "$bind_address:$server_port" -e "[::1]:$server_port" \
+            -e "[::ffff:$bind_address]:$server_port"
 }
 
 read_pid() {

@@ -107,17 +107,23 @@ engines:
     categories: [news, qwen-news]
 
   # qwen-yacy: the laptop's own on-demand peer at 127.0.0.1:8090
-  # (remote/install-yacy.sh, remote/yacy-control.sh), disabled by default so
-  # an ordinary search does not depend on a process this instance does not
-  # keep running. search_mode "global" queries the wider YaCy network through
-  # that local peer rather than restricting to its own index; search_type
-  # "text" excludes the separate image engine this instance does not enable.
+  # (remote/install-yacy.sh, remote/yacy-control.sh). The engine is enabled
+  # and lives in qwen-yacy alone, so a qwen-open or qwen-broad search never
+  # asks it and a qwen-yacy search reaches it only while yacy-control.sh
+  # holds the peer up; a query while it is down fails that one engine and
+  # the instance suspends it for its own interval. search_mode "global"
+  # queries the wider YaCy network through that local peer rather than
+  # restricting to its own index; search_type "text" excludes the separate
+  # image engine this instance does not enable.
   - name: yacy
     engine: yacy
     shortcut: ya
-    disabled: true
+    disabled: false
     categories: [qwen-yacy]
     base_url:
       - http://127.0.0.1:8090
+    # searx/network refuses a plain-http request unless the engine opts in,
+    # and the local peer serves http alone (server.https=false in yacy.conf).
+    enable_http: true
     search_mode: "global"
     search_type: "text"

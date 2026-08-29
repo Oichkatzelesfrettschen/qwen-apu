@@ -58,6 +58,25 @@ if ! sudo -n true 2>/dev/null; then
     exit 2
 fi
 
+# utils/searxng.sh's searxng-src stage clones this tree as the service user
+# (git_clone runs under `sudo -u searxng`) and its line 424 check refuses a
+# source the user cannot read, so the install root must sit under directories
+# that user can traverse; a home directory at mode 0750 is refused here with
+# the cause named rather than four stages later by the upstream installer.
+install_parent=$(dirname "$install_root")
+if id "$service_user" >/dev/null 2>&1 &&
+        ! sudo -n -u "$service_user" test -x "$install_parent" 2>/dev/null; then
+    printf 'user %s cannot traverse %s; choose an install root the service user can read, such as /opt/searxng-qwen-apu\n' \
+        "$service_user" "$install_parent" >&2
+    exit 2
+fi
+# utils/brand.sh reads server.* settings through a bare `python`, so the
+# stages fail with empty SEARXNG_PORT when only python3 is on PATH.
+if ! command -v python >/dev/null 2>&1; then
+    printf 'python not found on PATH (utils/brand.sh calls it); install python-is-python3\n' >&2
+    exit 2
+fi
+
 printf 'cloning pinned SearXNG commit %s into %s\n' "$pinned_commit" "$install_root"
 if [ -d "$install_root/.git" ]; then
     git -C "$install_root" fetch origin
