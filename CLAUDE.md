@@ -15,10 +15,14 @@ changes nothing on the laptop until it is copied:
 
 ```sh
 rsync -a remote/ eirikr@qwen-laptop:~/qwen-laptop-setup/remote/
+rsync -a --delete patches/ eirikr@qwen-laptop:~/qwen-laptop-setup/patches/
 ```
 
 Every `remote/` script executes from `~/qwen-laptop-setup/remote/` on the
 laptop. A change tested without that copy tests the previous revision.
+`build-llama-trace.sh` and `verify-llama-patch-series.sh` read `../patches`
+from their own directory, so the patch series travels with the scripts; a
+stale patch there fails the replay digest gate before any build starts.
 
 The laptop runs the appliance by itself. `remote/build-llama-vulkan.sh` builds
 there with the distribution toolchain, the fetch scripts pull the checkpoint
