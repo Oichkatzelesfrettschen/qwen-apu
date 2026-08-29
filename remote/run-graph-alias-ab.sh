@@ -217,7 +217,9 @@ start_server() {
     # as divergent and blames the optimizer, and a drifted production arm reads
     # as identical and hides it. LLAMA_NO_CPU_FALLBACK reaches the
     # llama-no-cpu-fallback patch both builds carry, so a fallback fails the
-    # load rather than serving from the other device.
+    # load rather than serving from the other device. The placement lines
+    # read below are library info logs, which the server prints only from
+    # --log-verbosity 4, the value qwen-capacity-policy.sh serves under.
     if [ "$arm_disable_optimize" = 1 ]; then
         LLAMA_NO_CPU_FALLBACK=1 GGML_VK_DISABLE_GRAPH_OPTIMIZE=1 \
             "$arm_build_directory/$server_relative_path" \
@@ -240,6 +242,7 @@ start_server() {
             --threads-batch "$thread_count" \
             --no-context-shift \
             --offline \
+            --log-verbosity 4 \
             >"$arm_log" 2>&1 &
     else
         LLAMA_NO_CPU_FALLBACK=1 \
@@ -263,6 +266,7 @@ start_server() {
             --threads-batch "$thread_count" \
             --no-context-shift \
             --offline \
+            --log-verbosity 4 \
             >"$arm_log" 2>&1 &
     fi
     server_pid=$!
