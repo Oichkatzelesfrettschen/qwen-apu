@@ -125,7 +125,11 @@ fi
 # field, not a hardcoded index, is what proves the resolved device is this
 # appliance's RADV RAVEN2 rather than whichever Vulkan device enumerated
 # first.
-device_listing=$("$runtime" --list-devices 2>&1) || {
+# The listing contract is one `name<TAB>description` line per device on
+# stdout; ggml prints its device banner on stderr with the same description,
+# so reading both streams would match the banner first and pass a
+# description where --backend takes a name.
+device_listing=$("$runtime" --list-devices 2>/dev/null) || {
     printf 'runtime refused --list-devices:\n%s\n' "$device_listing" >&2
     exit 1
 }
@@ -144,7 +148,8 @@ if printf '%s\n' "$device_listing" | grep -Eqi 'AMDGPU-PRO'; then
     exit 1
 fi
 device_pattern=${QWEN_IMAGE_DEVICE_PATTERN:-'RADV RAVEN2'}
-device_line=$(printf '%s\n' "$device_listing" | grep -F "$device_pattern" | head -n 1)
+device_line=$(printf '%s\n' "$device_listing" | grep -F "$device_pattern" |
+    grep "$(printf '\t')" | head -n 1)
 if [ -z "$device_line" ]; then
     printf 'no --list-devices entry names %s:\n%s\n' "$device_pattern" "$device_listing" >&2
     exit 1
