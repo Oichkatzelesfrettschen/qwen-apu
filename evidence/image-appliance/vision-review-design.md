@@ -150,21 +150,19 @@ no MCP configuration, and the tags `vision-review,review-only`.
 `GET /props?model=<vision id>` reports a vision modality, and the page's Review
 button appears on the artifact card.
 
-Every checked-in row reads `review_model = -`, which is falsifier 7 unresolved
-rather than a design preference. The budget gate is what decides it and it is
-unmeasurable off the device: `qwen-image-launch.sh` sums every
+`image-sdxs-512-a` reads `review_model = lfm25-vl-16b`; every other row reads
+`-`. The budget gate is what decides it and it is unmeasurable off the device: `qwen-image-launch.sh` sums every
 `LLAMA_ARG_MODEL` and `LLAMA_ARG_MMPROJ` the preset names, adds the image
 runtime's measured resident cost, hands the total to
 `model-memory-preflight.sh`, and reports what the RADV RAVEN2 probe answers.
 A paired launch refuses on that probe's `vulkan_budget_headroom=short` line;
 a one-section launch reads the same figure and proceeds, since that shape has
 already generated an approved image on this machine and the preflight reports
-rather than predicts by design. Only the appliance holds that probe, and
-this tree's one measured neighbouring figure is the 4B alone peaking at 2029 of
-a 2048 MiB carve-out, so the pair's fit stays a prediction until the launch on
-the laptop reports it.
+rather than predicts by design. Two paired launches have now reported
+`ample`, the second at `required_mib=4388` with 11.42 GiB of Vulkan margin
+free, and both sections served requests in it.
 
-The run is therefore two phases while `review_model` reads `-`:
+The run is two phases wherever `review_model` reads `-`:
 
 1. Generate one artifact through `qwen-image-launch.sh` and record its digest
    and provenance. The lease is released at the rename, and the lane returns to
@@ -190,11 +188,13 @@ outside it, so an alternating same-sweep rerun of the schema-free and
 grammar-bound conditions is what would resolve the direction rather than
 leave it at the edge of measurement noise.
 
-The page arm becomes one phase where the budget admits the pair. Setting
-`review_model` to `lfm25-vl-16b` on `image-sdxs-512-a` and running
-`remote/admit-image-router.sh` with `QWEN_ADMISSION_REVIEW_MODEL` naming the
-same row measures it: a refusal names the shortfall in MiB, and a launch that
-proceeds drives the generation and the review through one page in one session.
+The page arm has run and is closed.
+`evidence/image-appliance/paired-review-admission/` retains it: one session
+carried the approved generation and a vision review of that same artifact,
+`lfm25-vl-16b` rendered `pass prompt_subject` on the card over the one
+constraint the page declared, the transcript kept no verdict text, and the
+review request carried no `tools` key. `remote/image-profiles.tsv` ships
+`review_model = lfm25-vl-16b` on `image-sdxs-512-a` because of it.
 `remote/test-admit-image-router.sh` runs that whole path on the workstation
 against `remote/test-fixtures/fake-router-server.py`, which serves the two
 sections, reports the vision modality from the section's own projector, and
@@ -202,6 +202,12 @@ answers the verdict over the constraints the request declared; the browser
 clicks Review and the checklist it rendered is what the arm reads.
 `remote/web-mcp/test-fallback-page-image.py` remains the place the correction
 loop and its cap run end to end against a stub roster.
+
+What the page arm leaves for the appliance is a verdict that asks to
+regenerate. The retained review passed, so falsifiers 5 and 6 -- convergence
+and the lineage cap -- stayed unrun on the device, and falsifier 3's
+image-withheld control did not run either. Falsifier 4 is met and its
+measurement is below.
 
 ### Falsifiers
 
@@ -242,7 +248,17 @@ hypotheses.
    exceeds the generation's makes a correction loop cost three generations plus
    three reviews; the audit line's `wall_seconds` against the provenance
    record's total is the comparison, and a review above the generation time
-   moves the default vision row or lowers the reply budget.
+   moves the default vision row or lowers the reply budget. This is met:
+   `evidence/image-appliance/paired-review-admission/` measures 19.44 s of
+   review against 11.62 s of generation, a ratio of 1.67, and both named
+   remedies miss the term that sets it. `lfm25-vl-16b` at 15.87 decode tok/s is
+   already the fastest projector-validated row the roster offers, and 14.77 s
+   of the 19.44 is prompt evaluation of the 570-token multimodal prompt against
+   4.67 s of reply, so a zero-token reply would still exceed the generation.
+   The cost is the image the reviewer reads. The consequence is a bound on the
+   correction loop -- three generations plus three reviews is about 93 s of
+   device time against 35 s of generation -- rather than a change to the
+   pairing.
 5. **The correction does not converge.** Two corrections that each fail the same
    named constraint refute the premise that a `prompt_delta` from a vision model
    repairs a named failure. The observation is the second correction's verdict
@@ -253,12 +269,15 @@ hypotheses.
    stub; the appliance repeats it once a two-section preset exists.
 7. **A two-section preset does not fit.** Raising `QWEN_ROUTER_MAX` to hold a
    language row and a vision row together may exceed the 2048 MiB VRAM budget
-   that set `QWEN_ROUTER_MAX=1` in the first place. The mechanism that carries
-   the pair now exists and the measurement does not, so every checked-in
-   `review_model` reads `-`. The observation is
+   that set `QWEN_ROUTER_MAX=1` in the first place. The observation is
    `qwen-image-launch.sh` printing `vulkan_budget_headroom=short` against the
    summed requirement, or the second load failing after an ample report, and
    the consequence is that the page review stays a two-phase operation with the
-   CLI, or that the same model serves both roles. The 2B distill at 1.21 GiB
-   beside `lfm25-vl-16b` is the smallest pair the roster offers if the 4B one
-   is refused.
+   CLI, or that the same model serves both roles. Neither observation was met
+   on either paired launch: `evidence/image-appliance/paired-review-launch/`
+   and `evidence/image-appliance/paired-review-admission/` both report
+   `ample`, the second at `required_mib=4388` with `surplus_bytes=12261912576`,
+   and both sections answered requests in the second. The 4B distill beside
+   `lfm25-vl-16b` is the pair `remote/image-profiles.tsv` now ships; the 2B
+   distill at 1.21 GiB is the smaller one the roster offers where a larger
+   language row is refused.

@@ -83,7 +83,9 @@ PNG SHA-256 reproduces the second file from the first's own runtime.
 `evidence/image-appliance/served-turn-admission/artifact.png` is 583,938 bytes
 at `sha256 17e452e6974ad6d3174c5d0c9f367c90867eb99ffa8a3a6f9e45e78eb4de7639`,
 and the HTTP capture of the same bytes carries that identity in place of a
-second copy.
+second copy. Three admissions at that seed produced that one digest, so
+`evidence/image-appliance/paired-review-admission/` retains no PNG at all and
+its own capture carries the identity line pointing at the file above.
 
 `benchmarks/models/qwen38-27b-files.tsv` is the replay authority for the four
 external Qwen3.8-27B benchmark files. Those 9.83 GB through 14.25 GB files stay
