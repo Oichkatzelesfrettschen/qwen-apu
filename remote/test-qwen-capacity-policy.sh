@@ -1131,4 +1131,54 @@ fi
 grep -F 'carries LLAMA_ARG_SPEC_DRAFT_MODEL without a draft pair row' \
     "$temporary_directory/pair-stray.stderr" >/dev/null
 
+# The context checkpoint count is a policy argument with a served default of
+# zero, so the fixed argv above already proves the default. An integer override
+# reaches the argv verbatim, the minimum step follows it only when named, and
+# a non-integer in either is refused before the server sees it.
+checkpoint_output=$temporary_directory/checkpoint-policy.out
+QWEN_CTX_CHECKPOINTS=4 QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$checkpoint_output \
+    "$policy" "$fake_server" "$model_path" 24576 8080
+checkpoint_arguments=$(sed -n 's/^argument=//p' "$checkpoint_output" | tr '\n' ' ')
+case $checkpoint_arguments in
+    *'--ctx-checkpoints 4 --cache-ram 0 --no-context-shift --offline --ctx-size '*) ;;
+    *)
+        printf 'the checkpoint override did not reach the argv: %s\n' \
+            "$checkpoint_arguments" >&2
+        exit 1
+        ;;
+esac
+case $checkpoint_arguments in
+    *'--checkpoint-min-step'*)
+        printf 'an unset minimum step reached the argv: %s\n' \
+            "$checkpoint_arguments" >&2
+        exit 1
+        ;;
+esac
+QWEN_CTX_CHECKPOINTS=8 QWEN_CHECKPOINT_MIN_STEP=4096 QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$checkpoint_output \
+    "$policy" "$fake_server" "$model_path" 24576 8080
+checkpoint_arguments=$(sed -n 's/^argument=//p' "$checkpoint_output" | tr '\n' ' ')
+case $checkpoint_arguments in
+    *'--ctx-checkpoints 8 '*'--offline --checkpoint-min-step 4096 --ctx-size '*) ;;
+    *)
+        printf 'the minimum step override did not reach the argv: %s\n' \
+            "$checkpoint_arguments" >&2
+        exit 1
+        ;;
+esac
+for refused_pair in 'QWEN_CTX_CHECKPOINTS=two' 'QWEN_CTX_CHECKPOINTS=-1' \
+    'QWEN_CHECKPOINT_MIN_STEP=8k'; do
+    if env "$refused_pair" QWEN_RADV_ICD=$fake_icd \
+        QWEN_POLICY_TEST_OUTPUT=$checkpoint_output \
+        "$policy" "$fake_server" "$model_path" 24576 8080 \
+        2>"$temporary_directory/checkpoint.stderr"; then
+        printf 'the policy accepted a non-integer checkpoint setting: %s\n' \
+            "$refused_pair" >&2
+        exit 1
+    fi
+    grep -F 'must be a non-negative integer' \
+        "$temporary_directory/checkpoint.stderr" >/dev/null
+done
+
 printf 'qwen_capacity_policy=accepted\n'
