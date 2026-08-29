@@ -1635,12 +1635,36 @@ image_token_key_file=$work/private/image-mcp-token.key
 printf 'fixture-image-token-secret\n' >"$image_token_key_file"
 image_state_directory=$work/private/image-state
 image_service_socket=$image_state_directory/image-service.sock
+# The MCP child reads this file for the geometry and ceilings its tool schema
+# states, so the generated section names the same parameter file
+# image-service.py runs a job under and the fixture carries the ledger row's
+# own numbers.
+image_profiles_json=$work/image-parameters.json
+cat >"$image_profiles_json" <<'IMAGE_PARAMETERS'
+{
+  "image-fixture-a": {
+    "profile_id": "image-fixture-a",
+    "model_id": "sdxs-512",
+    "placement": "A",
+    "sampler": "euler",
+    "execution_policy": "validator-gated",
+    "runtime_path": "/nonexistent/sd-cli",
+    "width": 512,
+    "height": 512,
+    "steps": 1,
+    "max_steps": 4,
+    "max_dimension": 512,
+    "timeout_s": 300
+  }
+}
+IMAGE_PARAMETERS
 
 image_environment() {
     printf 'QWEN_IMAGE_MCP_SERVER=%s\n' "$image_mcp_server_program"
     printf 'QWEN_IMAGE_TOKEN_KEY_FILE=%s\n' "$image_token_key_file"
     printf 'QWEN_IMAGE_STATE_DIR=%s\n' "$image_state_directory"
     printf 'QWEN_IMAGE_SERVICE_SOCKET=%s\n' "$image_service_socket"
+    printf 'QWEN_IMAGE_PROFILES_JSON=%s\n' "$image_profiles_json"
 }
 
 # Every checked-in image row reads refused, so the shipped ledger adds no
@@ -1652,6 +1676,7 @@ if build "$web_profiles_ok" "$presets_image_refused" \
     QWEN_IMAGE_TOKEN_KEY_FILE="$image_token_key_file" \
     QWEN_IMAGE_STATE_DIR="$image_state_directory" \
     QWEN_IMAGE_SERVICE_SOCKET="$image_service_socket" \
+    QWEN_IMAGE_PROFILES_JSON="$image_profiles_json" \
     QWEN_WEB_MCP_SERVER="$mcp_server_program" \
     QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
     QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" \
@@ -1684,6 +1709,7 @@ if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_ui \
     QWEN_IMAGE_TOKEN_KEY_FILE="$image_token_key_file" \
     QWEN_IMAGE_STATE_DIR="$image_state_directory" \
     QWEN_IMAGE_SERVICE_SOCKET="$image_service_socket" \
+    QWEN_IMAGE_PROFILES_JSON="$image_profiles_json" \
     QWEN_WEB_MCP_SERVER="$mcp_server_program" \
     QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
     QWEN_WEB_STATE_DIR="$web_state_directory" \
@@ -1709,6 +1735,7 @@ if build "$web_profiles_ok" "$presets_image_gated" \
     QWEN_IMAGE_TOKEN_KEY_FILE="$image_token_key_file" \
     QWEN_IMAGE_STATE_DIR="$image_state_directory" \
     QWEN_IMAGE_SERVICE_SOCKET="$image_service_socket" \
+    QWEN_IMAGE_PROFILES_JSON="$image_profiles_json" \
     QWEN_WEB_MCP_SERVER="$mcp_server_program" \
     QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
     QWEN_WEB_TOKEN_KEY_FILE="$image_token_key_file" \
@@ -1726,7 +1753,7 @@ if build "$web_profiles_ok" "$presets_image_gated" \
             "$gated_config" || outcome=configuration_is_not_json
         for image_environment_name in QWEN_IMAGE_LANGUAGE_PROFILE \
             QWEN_IMAGE_PROFILE QWEN_IMAGE_TOKEN_KEY_FILE QWEN_IMAGE_STATE_DIR \
-            QWEN_IMAGE_SERVICE_SOCKET; do
+            QWEN_IMAGE_SERVICE_SOCKET QWEN_IMAGE_PROFILES_JSON; do
             grep -q "\"$image_environment_name\"" "$gated_config" ||
                 outcome=missing_$image_environment_name
         done
@@ -1773,6 +1800,7 @@ if build "$web_profiles_ui" "$presets_image_ui" \
     QWEN_IMAGE_TOKEN_KEY_FILE="$image_token_key_file" \
     QWEN_IMAGE_STATE_DIR="$image_state_directory" \
     QWEN_IMAGE_SERVICE_SOCKET="$image_service_socket" \
+    QWEN_IMAGE_PROFILES_JSON="$image_profiles_json" \
     >"$work/image-ui.log" 2>"$work/image-ui.err"; then
     outcome=ok
     grep -q '^LLAMA_ARG_TAGS = web-research,ui-mediated,image$' \
@@ -1801,6 +1829,7 @@ if build "$web_profiles_ui" "$presets_image_incomplete" \
     QWEN_IMAGE_MCP_SERVER="$image_mcp_server_program" \
     QWEN_IMAGE_STATE_DIR="$image_state_directory" \
     QWEN_IMAGE_SERVICE_SOCKET="$image_service_socket" \
+    QWEN_IMAGE_PROFILES_JSON="$image_profiles_json" \
     >"$work/image-incomplete.log" 2>"$work/image-incomplete.err"; then
     report image_gated_row_requires_its_inputs accepted
 else
@@ -1812,6 +1841,28 @@ else
     fi
 fi
 
+# The parameter file is one of those names, because the child states the
+# profile's ceilings in its tool schema from that file alone: a section emitted
+# without it lists a tool whose bounds nothing measured.
+presets_image_unbounded=$work/presets-image-unbounded.ini
+if build "$web_profiles_ui" "$presets_image_unbounded" \
+    env -u QWEN_IMAGE_PROFILES_JSON \
+    QWEN_IMAGE_PROFILES="$image_profiles_gated" \
+    QWEN_IMAGE_MCP_SERVER="$image_mcp_server_program" \
+    QWEN_IMAGE_TOKEN_KEY_FILE="$image_token_key_file" \
+    QWEN_IMAGE_STATE_DIR="$image_state_directory" \
+    QWEN_IMAGE_SERVICE_SOCKET="$image_service_socket" \
+    >"$work/image-unbounded.log" 2>"$work/image-unbounded.err"; then
+    report image_gated_row_requires_its_parameter_file accepted
+else
+    if grep -q 'QWEN_IMAGE_PROFILES_JSON names nothing' \
+        "$work/image-unbounded.err"; then
+        report image_gated_row_requires_its_parameter_file ok
+    else
+        report image_gated_row_requires_its_parameter_file wrong_refusal
+    fi
+fi
+
 # A section carries one mcpServers object, so one image profile emits.
 presets_image_two=$work/presets-image-two.ini
 if build "$web_profiles_ui" "$presets_image_two" \
@@ -1820,6 +1871,7 @@ if build "$web_profiles_ui" "$presets_image_two" \
     QWEN_IMAGE_TOKEN_KEY_FILE="$image_token_key_file" \
     QWEN_IMAGE_STATE_DIR="$image_state_directory" \
     QWEN_IMAGE_SERVICE_SOCKET="$image_service_socket" \
+    QWEN_IMAGE_PROFILES_JSON="$image_profiles_json" \
     >"$work/image-two.log" 2>"$work/image-two.err"; then
     report two_gated_image_rows_refused accepted
 else

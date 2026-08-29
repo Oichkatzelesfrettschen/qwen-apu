@@ -59,6 +59,11 @@ IMAGE_PROFILE = "sdxs-512-a"
 PROMPT = "a measured raven on a laptop lid"
 NEGATIVE_PROMPT = "text, watermark"
 SEED = 0
+PROFILE_WIDTH = 512
+PROFILE_HEIGHT = 512
+PROFILE_STEPS = 4
+PROFILE_MAX_DIMENSION = 512
+PROFILE_MAX_STEPS = 4
 ARTIFACT_SHA256 = "b" * 64
 PROVENANCE_URL = f"/artifacts/{ARTIFACT_SHA256}.json"
 START_WAIT_SECONDS = 15.0
@@ -351,6 +356,11 @@ class ImageMcpTest(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as handle:
                 handle.write(secret + "\n")
             os.chmod(path, 0o600)
+        # The tool schema states the served profile's geometry and ceilings, and
+        # image-service.py enforces the same numbers from the same file, so the
+        # suite writes one parameter file both readings would resolve against.
+        self.profiles_json_path = os.path.join(root, "image-parameters.json")
+        self.write_profile_parameters()
         # A Unix socket path is bounded by sun_path, so the stub binds inside a
         # short directory of its own rather than beside the state database.
         self.socket_directory = tempfile.TemporaryDirectory()
@@ -361,6 +371,25 @@ class ImageMcpTest(unittest.TestCase):
         self.addCleanup(self.workspace.cleanup)
         self.addCleanup(self.socket_directory.cleanup)
         self.addCleanup(self.stop_children)
+
+    def write_profile_parameters(self, **overrides):
+        parameters = {
+            "profile_id": IMAGE_PROFILE,
+            "model_id": "sdxs-512",
+            "placement": "A",
+            "sampler": "euler",
+            "execution_policy": "validator-gated",
+            "runtime_path": "/nonexistent/sd-cli",
+            "width": PROFILE_WIDTH,
+            "height": PROFILE_HEIGHT,
+            "steps": PROFILE_STEPS,
+            "max_steps": PROFILE_MAX_STEPS,
+            "max_dimension": PROFILE_MAX_DIMENSION,
+            "timeout_s": 300,
+        }
+        parameters.update(overrides)
+        with open(self.profiles_json_path, "w", encoding="utf-8") as handle:
+            json.dump({IMAGE_PROFILE: parameters}, handle)
 
     def stop_children(self):
         for session in self.sessions:
@@ -383,6 +412,7 @@ class ImageMcpTest(unittest.TestCase):
             "QWEN_IMAGE_TOKEN_KEY_FILE": self.token_key_path,
             "QWEN_IMAGE_STATE_DIR": self.state_directory,
             "QWEN_IMAGE_SERVICE_SOCKET": self.socket_path,
+            "QWEN_IMAGE_PROFILES_JSON": self.profiles_json_path,
         }
         environment.update({key: str(value) for key, value in overrides.items()})
         return environment
@@ -447,6 +477,75 @@ class ImageMcpTest(unittest.TestCase):
                 "width",
             ],
         )
+
+    def test_schema_states_the_served_profile_and_its_bounds(self):
+        """The listing bounds a proposal by the profile the section serves.
+
+        A model proposes from this schema, so the enum, the maxima, and the
+        descriptions are what keep a proposal inside what the broker signs and
+        image-service.py executes.
+        """
+        session = self.start_session()
+        schema = session.request("tools/list")["result"]["tools"][0]["inputSchema"]
+        properties = schema["properties"]
+        self.assertEqual(properties["profile_id"]["enum"], [IMAGE_PROFILE])
+        for field in ("width", "height"):
+            self.assertEqual(properties[field]["maximum"], PROFILE_MAX_DIMENSION)
+        self.assertEqual(properties["width"]["default"], PROFILE_WIDTH)
+        self.assertEqual(properties["height"]["default"], PROFILE_HEIGHT)
+        self.assertEqual(properties["steps"]["maximum"], PROFILE_MAX_STEPS)
+        self.assertEqual(properties["steps"]["default"], PROFILE_STEPS)
+        self.assertIn(
+            f"{PROFILE_WIDTH} natively", properties["width"]["description"]
+        )
+        self.assertIn(
+            f"{PROFILE_HEIGHT} natively", properties["height"]["description"]
+        )
+        self.assertIn(str(PROFILE_STEPS), properties["steps"]["description"])
+        description = session.request("tools/list")["result"]["tools"][0][
+            "description"
+        ]
+        self.assertIn(IMAGE_PROFILE, description)
+        self.assertIn(f"{PROFILE_WIDTH}x{PROFILE_HEIGHT}", description)
+        self.assertIn(f"{PROFILE_MAX_STEPS} sampler steps", description)
+
+    def test_schema_maxima_follow_the_parameter_file(self):
+        """A parameter file is the schema's source rather than a constant.
+
+        The ledger and this file are compared at launch, so lowering the
+        ceiling here is what a registry edit reaches the child as, and the
+        advertised maximum moves with it.
+        """
+        self.write_profile_parameters(max_dimension=256, max_steps=2)
+        session = self.start_session()
+        properties = session.request("tools/list")["result"]["tools"][0][
+            "inputSchema"
+        ]["properties"]
+        self.assertEqual(properties["width"]["maximum"], 256)
+        self.assertEqual(properties["height"]["maximum"], 256)
+        self.assertEqual(properties["steps"]["maximum"], 2)
+
+    def test_absent_parameter_file_answers_the_listing_with_an_error(self):
+        """An unreadable parameter file offers no tool rather than an unbounded one.
+
+        A schema falling back to image_grant's own ceilings would advertise a
+        geometry the profile refuses, which is the proposal the bounds exist to
+        prevent, so the listing fails closed.
+        """
+        os.unlink(self.profiles_json_path)
+        session = self.start_session()
+        response = session.request("tools/list")
+        self.assertIn("error", response, response)
+        self.assertIn("unreadable", response["error"]["message"])
+
+    def test_parameter_file_naming_another_profile_answers_with_an_error(self):
+        self.write_profile_parameters()
+        with open(self.profiles_json_path, "w", encoding="utf-8") as handle:
+            json.dump({"another-profile": {"width": 512}}, handle)
+        session = self.start_session()
+        response = session.request("tools/list")
+        self.assertIn("error", response, response)
+        self.assertIn(IMAGE_PROFILE, response["error"]["message"])
 
     def test_startup_names_the_timeout_it_enforces_on_stderr(self):
         session = self.start_session(QWEN_IMAGE_MCP_TIMEOUT_S="")

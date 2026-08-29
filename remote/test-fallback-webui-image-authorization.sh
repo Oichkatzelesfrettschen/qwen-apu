@@ -152,7 +152,62 @@ grep -F 'void postCancelBestEffort(cancelToolName, model);' "$fallback_ui" >/dev
 grep -F 'async function loadArtifactBlobUrl(sha256) {' "$fallback_ui" >/dev/null
 grep -F '`${artifactOrigin()}/artifacts/${sha256}.png`' "$fallback_ui" >/dev/null
 grep -F 'loadArtifactBlobUrl(result.sha256)' "$fallback_ui" >/dev/null
-grep -F "mode: 'cors', headers: authHeaders() });" "$fallback_ui" >/dev/null
+grep -F "mode: 'cors', headers: authHeaders(), signal: controller.signal });" \
+    "$fallback_ui" >/dev/null
+
+# The artifact read is bounded and awaited: the turn ends on the artifact, so
+# an unresponsive listener answers the model with a tool message rather than
+# holding the send button for the generation deadline.
+grep -F 'const ARTIFACT_FETCH_TIMEOUT_MS = 60000;' "$fallback_ui" >/dev/null
+grep -F 'setTimeout(() => controller.abort(), ARTIFACT_FETCH_TIMEOUT_MS);' \
+    "$fallback_ui" >/dev/null
+grep -F 'async function renderImageArtifactCard(container, fields, result) {' \
+    "$fallback_ui" >/dev/null
+grep -F '  const blobUrl = await loadArtifactBlobUrl(result.sha256);' \
+    "$fallback_ui" >/dev/null
+grep -F 'await renderImageArtifactCard(artifactContainer, fields, result);' \
+    "$fallback_ui" >/dev/null
+grep -F 'const reason = `the artifact did not load: ${error.message || error}`;' \
+    "$fallback_ui" >/dev/null
+card_line=$(grep -n 'await renderImageArtifactCard' "$fallback_ui" | cut -d: -f1)
+complete_line=$(grep -n "renderImageState(stateEl, 'Image complete');" "$fallback_ui" | cut -d: -f1)
+if [ -z "$card_line" ] || [ -z "$complete_line" ] || [ "$card_line" -ge "$complete_line" ]; then
+    printf 'fallback Web UI reports Image complete before the artifact resolves\n' >&2
+    exit 1
+fi
+
+# The tool schema states the served profile and its ceilings, so the page reads
+# both from the listing it already fetched: an argument above a stated maximum
+# is refused before the dialog and before the per-turn budget moves, and the
+# profile the grant names is the schema's enum rather than the proposal's
+# string.
+grep -F 'function imageSchemaBounds(definition) {' "$fallback_ui" >/dev/null
+grep -F 'const listedProfiles = properties.profile_id && properties.profile_id.enum;' \
+    "$fallback_ui" >/dev/null
+grep -F 'function applyImageSchemaBounds(fields, bounds) {' "$fallback_ui" >/dev/null
+grep -F 'imageFields = applyImageSchemaBounds(proposedImageFields(calls[index].args), imageBounds);' \
+    "$fallback_ui" >/dev/null
+grep -F 'exceeds the ${ceiling} this image profile admits' "$fallback_ui" >/dev/null
+grep -F 'profile: served || proposedProfile,' "$fallback_ui" >/dev/null
+grep -F 'if (fields.profileReplaced) {' "$fallback_ui" >/dev/null
+grep -F 'this appliance serves ${fields.profile}, and the grant names the served profile' \
+    "$fallback_ui" >/dev/null
+bounds_line=$(grep -n 'imageFields = applyImageSchemaBounds' "$fallback_ui" | cut -d: -f1)
+budget_line=$(grep -n 'imageBudget.remaining--;' "$fallback_ui" | cut -d: -f1)
+if [ -z "$bounds_line" ] || [ -z "$budget_line" ] || [ "$bounds_line" -ge "$budget_line" ]; then
+    printf 'fallback Web UI spends the image budget on an out-of-bounds proposal\n' >&2
+    exit 1
+fi
+
+# A grant the broker refuses ends the dialog and the turn with a tool message.
+# The re-enable-and-retry path held `busy` for the whole turn while the model
+# waited on a result that never arrived.
+grep -F "finish({ decision: 'failed', reason: String(error.message || error) });" \
+    "$fallback_ui" >/dev/null
+grep -F "if (imageOutcome.decision === 'failed') {" "$fallback_ui" >/dev/null
+grep -F 'renderImageState(openImageState(view), `Image failed: ${imageOutcome.reason}`, true);' \
+    "$fallback_ui" >/dev/null
+grep -F 'The image did not run: ${imageOutcome.reason}.' "$fallback_ui" >/dev/null
 
 # image-service.py binds its artifact listener on an ephemeral port and the
 # router proxies none of its routes, so the origin is configured rather than
@@ -262,6 +317,59 @@ for (const malformed of [
     let threw = false;
     try { proposedImageFields(JSON.stringify(malformed)); } catch { threw = true; }
     if (!threw) throw new Error("a malformed proposal was not refused: " + JSON.stringify(malformed));
+}
+
+// A third span: the tool-discovery block reads the served profile and the
+// maxima out of the listing, and it sits above the grant block with top-level
+// state between them, so it is extracted on its own.
+eval(extract(
+    "function imageSchemaBounds(definition) {",
+    "let imageToolDefinitionCached"
+));
+
+const servedDefinition = { type: "function", function: { name: "image_generate_image",
+    parameters: { type: "object", properties: {
+        width: { type: "integer", maximum: 512 },
+        height: { type: "integer", maximum: 512 },
+        steps: { type: "integer", maximum: 4 },
+        profile_id: { type: "string", enum: ["sdxs-512-a"] } } } } };
+const bounds = imageSchemaBounds(servedDefinition);
+if (bounds.profile !== "sdxs-512-a") throw new Error("the schema enum did not name the served profile");
+if (bounds.width !== 512 || bounds.height !== 512 || bounds.steps !== 4) {
+    throw new Error("the schema maxima were not read: " + JSON.stringify(bounds));
+}
+const openDefinition = { type: "function", function: { name: "image_generate_image",
+    parameters: { type: "object", properties: { profile_id: { type: "string" } } } } };
+const openBounds = imageSchemaBounds(openDefinition);
+if (openBounds.profile !== null || openBounds.width !== null || openBounds.steps !== null) {
+    throw new Error("a schema stating no bound produced one: " + JSON.stringify(openBounds));
+}
+
+// applyImageSchemaBounds: the served profile replaces the proposed one and an
+// argument above a stated maximum throws the bound it exceeds.
+const proposal = proposedImageFields(JSON.stringify({
+    prompt: "a fox", profile_id: "product_photography",
+    width: 512, height: 512, steps: 4, seed: 42
+}));
+const applied = applyImageSchemaBounds(proposal, bounds);
+if (applied.profile !== "sdxs-512-a") throw new Error("the served profile did not replace the proposed one");
+if (!applied.profileReplaced) throw new Error("the replacement went unmarked for the dialog");
+if (applied.proposedProfile !== "product_photography") {
+    throw new Error("the proposed profile was not retained for the note line");
+}
+for (const over of [{ width: 1024 }, { height: 768 }, { steps: 30 }]) {
+    const key = Object.keys(over)[0];
+    let message = null;
+    try { applyImageSchemaBounds({ ...proposal, ...over }, bounds); }
+    catch (error) { message = error.message; }
+    if (message === null) throw new Error("an argument above the schema maximum was admitted: " + key);
+    if (!message.includes(key) || !message.includes(String(bounds[key]))) {
+        throw new Error("the refusal did not name the argument and its bound: " + message);
+    }
+}
+const unbounded = applyImageSchemaBounds(proposal, null);
+if (unbounded.profile !== "product_photography" || unbounded.profileReplaced) {
+    throw new Error("a listing stating no profile replaced the proposal anyway");
 }
 
 // aspectRatio reduces by the GCD.

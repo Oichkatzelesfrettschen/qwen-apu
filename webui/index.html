@@ -492,26 +492,66 @@ function findImageCancelToolName(listing) {
   return entry ? entry.tool : null;
 }
 
+function imageSchemaBounds(definition) {
+  /* Return the served profile and the maxima the tool schema states.
+
+     remote/image-mcp/server.py builds `profile_id` as an enum of the one
+     profile its section serves and sets each maximum from that profile's own
+     ceilings, read from the parameter file image-service.py enforces against,
+     so the listing is this page's authority for what a proposal may carry and
+     for which profile the grant names. A schema that states a bound leaves it
+     null here and the proposal's own value stands, because a bound nothing
+     states refuses nothing. */
+  const parameters = definition && definition.function && definition.function.parameters;
+  const properties = parameters && parameters.properties;
+  if (!properties || typeof properties !== 'object') {
+    return { profile: null, width: null, height: null, steps: null };
+  }
+  const maximumOf = key => {
+    const bound = properties[key] && properties[key].maximum;
+    return Number.isInteger(bound) && bound > 0 ? bound : null;
+  };
+  const listedProfiles = properties.profile_id && properties.profile_id.enum;
+  const profile = Array.isArray(listedProfiles) && listedProfiles.length === 1
+    && typeof listedProfiles[0] === 'string' && listedProfiles[0]
+    ? listedProfiles[0] : null;
+  return {
+    profile,
+    width: maximumOf('width'),
+    height: maximumOf('height'),
+    steps: maximumOf('steps')
+  };
+}
+
 let imageToolDefinitionCached = null;
 let imageCancelToolNameCached = null;
+let imageToolBoundsCached = null;
 let imageToolsModel = null;
 let imageToolsGeneration = -1;
 
 function forgetImageTools() {
   imageToolDefinitionCached = null;
   imageCancelToolNameCached = null;
+  imageToolBoundsCached = null;
   imageToolsModel = null;
   imageToolsGeneration = -1;
 }
 
 async function resolveImageTools(selectedModel, generation) {
-  /* Return { definition, cancelToolName } for one model selection, or nulls.
+  /* Return { definition, cancelToolName, bounds } for one model selection.
 
      `definition` is the request-body tool object for generate_image, built
      with the same webToolDefinition() the web tools use, which is generic
-     over the entry's own name and strips no field but `authorization`. */
+     over the entry's own name and strips no field but `authorization`.
+     `bounds` reads the served profile and the maxima out of that same
+     definition, so the surface offered to the model and the surface the page
+     enforces against its proposal are one listing. */
   if (imageToolsModel === selectedModel && imageToolsGeneration === generation) {
-    return { definition: imageToolDefinitionCached, cancelToolName: imageCancelToolNameCached };
+    return {
+      definition: imageToolDefinitionCached,
+      cancelToolName: imageCancelToolNameCached,
+      bounds: imageToolBoundsCached
+    };
   }
   let listed = null;
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -522,17 +562,19 @@ async function resolveImageTools(selectedModel, generation) {
       if (attempt === 0) await sleep(TOOLS_LISTING_RETRY_DELAY_MS);
     }
   }
-  if (listed === null) return { definition: null, cancelToolName: null };
+  if (listed === null) return { definition: null, cancelToolName: null, bounds: null };
   const entry = listed.find(row => row && row.tool === IMAGE_TOOL_NAME);
   const definition = entry ? webToolDefinition(entry) : null;
   const cancelToolName = findImageCancelToolName(listed);
+  const bounds = definition ? imageSchemaBounds(definition) : null;
   if (modelStateMatches(selectedModel, generation)) {
     imageToolDefinitionCached = definition;
     imageCancelToolNameCached = cancelToolName;
+    imageToolBoundsCached = bounds;
     imageToolsModel = selectedModel;
     imageToolsGeneration = generation;
   }
-  return { definition, cancelToolName };
+  return { definition, cancelToolName, bounds };
 }
 // ==== end image generation: tool discovery ==================================
 
@@ -1071,6 +1113,36 @@ function proposedImageFields(argumentText) {
            width, height, steps, seed, seedGenerated };
 }
 
+function applyImageSchemaBounds(fields, bounds) {
+  /* Return the fields the dialog shows and the grant is signed over, with the
+     served profile in place of the proposed one, or throw the bound a
+     dimension or step count exceeds.
+
+     The proposal is a model's suggestion and the schema is what the section
+     serves, so the two disagree in one direction: an argument above a stated
+     maximum is refused here, ahead of the dialog and ahead of the per-turn
+     budget, and the model reads the bound in its tool message and may propose
+     again. `profile_id` takes the enum's one value rather than a refusal,
+     because the section serves that profile whatever the model named and the
+     broker signs for it alone; the dialog names the substitution so the human
+     approving reads what will run. */
+  const proposedProfile = fields.profile;
+  if (!bounds) return { ...fields, proposedProfile, profileReplaced: false };
+  for (const key of ['width', 'height', 'steps']) {
+    const ceiling = bounds[key];
+    if (ceiling !== null && fields[key] > ceiling) {
+      throw new Error(`${key} ${fields[key]} exceeds the ${ceiling} this image profile admits`);
+    }
+  }
+  const served = bounds.profile;
+  return {
+    ...fields,
+    profile: served || proposedProfile,
+    proposedProfile,
+    profileReplaced: Boolean(served) && served !== proposedProfile
+  };
+}
+
 function renderImageApprovalFields(fields) {
   const list = $('#image-approval-args');
   list.textContent = '';
@@ -1157,6 +1229,14 @@ function approveImageGeneration(fields, proposalModel) {
     note.hidden = true;
     note.textContent = '';
     renderImageApprovalFields(fields);
+    if (fields.profileReplaced) {
+      // The profile row shows what runs, and this line shows what the model
+      // asked for, so the human approves the substitution rather than meeting
+      // it in the broker's refusal after the click.
+      note.hidden = false;
+      note.textContent = `the model proposed profile ${fields.proposedProfile}; ` +
+        `this appliance serves ${fields.profile}, and the grant names the served profile`;
+    }
     const once = $('#image-approve-once');
     const deny = $('#image-approve-deny');
     let settled = false;
@@ -1186,10 +1266,12 @@ function approveImageGeneration(fields, proposalModel) {
         const authorization = await requestImageGrant(grantFields, controller.signal);
         finish({ decision: 'once', authorization });
       } catch (error) {
-        if (settled) return;
-        once.disabled = false;
-        note.hidden = false;
-        note.textContent = String(error.message || error);
+        // Every throw in this handler ends the dialog: the digest, the session
+        // read, and the broker's own refusal all land here, and a dialog left
+        // open holds `busy` for the whole turn while the model waits on a tool
+        // message that never arrives. The caller answers the call with this
+        // reason, so a refused grant reaches the model instead of the page.
+        finish({ decision: 'failed', reason: String(error.message || error) });
       }
     };
     deny.onclick = () => {
@@ -1631,6 +1713,12 @@ function buildImageToolResultSummary(result) {
   return `Image generated: sha256 ${result.sha256}, provenance ${result.provenanceUrl}.`;
 }
 
+// The artifact listener answers a completed generation from disk, and the turn
+// waits on that read, so the bound is the page's own and far below the
+// generation's: an unresponsive listener ends the turn with a tool message
+// rather than holding the send button for the generation timeout.
+const ARTIFACT_FETCH_TIMEOUT_MS = 60000;
+
 async function loadArtifactBlobUrl(sha256) {
   /* Fetch the artifact PNG with the same credential header the page sends
      for chat -- an <img src> cannot carry that header, and the hash never
@@ -1643,16 +1731,33 @@ async function loadArtifactBlobUrl(sha256) {
      reads the record's identity and composes the image route itself. The
      origin is the artifact listener's, because that service owns the routes
      and the router proxies none of them. */
-  const response = await fetch(`${artifactOrigin()}/artifacts/${sha256}.png`,
-    { mode: 'cors', headers: authHeaders() });
-  if (!response.ok) {
-    throw new Error(`the artifact fetch returned HTTP ${response.status}`);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), ARTIFACT_FETCH_TIMEOUT_MS);
+  try {
+    const response = await fetch(`${artifactOrigin()}/artifacts/${sha256}.png`,
+      { mode: 'cors', headers: authHeaders(), signal: controller.signal });
+    if (!response.ok) {
+      throw new Error(`the artifact fetch returned HTTP ${response.status}`);
+    }
+    const blob = await response.blob();
+    return URL.createObjectURL(blob);
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      throw new Error(
+        `the artifact fetch timed out after ${ARTIFACT_FETCH_TIMEOUT_MS / 1000}s`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
   }
-  const blob = await response.blob();
-  return URL.createObjectURL(blob);
 }
 
-function renderImageArtifactCard(container, fields, result) {
+async function renderImageArtifactCard(container, fields, result) {
+  /* Build the artifact card around a blob URL this call already holds, or
+     throw what the fetch refused. The turn ends on the artifact rather than
+     ahead of it: a card whose image never arrives would otherwise leave the
+     model told the image is present while the page shows an empty frame. */
+  const blobUrl = await loadArtifactBlobUrl(result.sha256);
   const card = document.createElement('figure');
   card.className = 'image-artifact';
   const img = document.createElement('img');
@@ -1668,7 +1773,6 @@ function renderImageArtifactCard(container, fields, result) {
   ];
   caption.textContent = parts.join(' | ');
   card.append(caption);
-  let blobUrl = null;
   const removeButton = document.createElement('button');
   removeButton.className = 'act';
   removeButton.textContent = 'remove image';
@@ -1677,13 +1781,8 @@ function renderImageArtifactCard(container, fields, result) {
     card.remove();
   };
   card.append(removeButton);
+  img.src = blobUrl;
   container.append(card);
-  loadArtifactBlobUrl(result.sha256).then(url => {
-    blobUrl = url;
-    img.src = url;
-  }).catch(error => {
-    caption.textContent += ` | image fetch failed: ${error.message || error}`;
-  });
 }
 
 async function postCancelBestEffort(cancelToolName, model) {
@@ -1772,8 +1871,20 @@ async function executeImageGeneration(stateEl, artifactContainer, toolName, fiel
       renderImageState(stateEl, `Image failed: ${reason}`, true);
       return { ok: false, text: `The image did not complete: ${reason}` };
     }
+    try {
+      await renderImageArtifactCard(artifactContainer, fields, result);
+    } catch (error) {
+      // The service holds the artifact and the page failed to read it, so the
+      // model is told the identity it can retry against rather than that the
+      // generation succeeded.
+      const reason = `the artifact did not load: ${error.message || error}`;
+      renderImageState(stateEl, `Image failed: ${reason}`, true);
+      return {
+        ok: false,
+        text: `The image generated as sha256 ${result.sha256} and this page could not display it: ${reason}`
+      };
+    }
     renderImageState(stateEl, 'Image complete');
-    renderImageArtifactCard(artifactContainer, fields, result);
     return { ok: true, text: buildImageToolResultSummary(result) };
   } finally {
     clearTimeout(timeoutId);
@@ -1794,7 +1905,7 @@ function answerCall(callId, toolName, content, turnGeneration) {
 
 async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetchBudget,
                                  searchBudget, turnGeneration, proposalModel,
-                                 webPermission, imagePermission, imageBudget, imageCancelToolName) {
+                                 webPermission, imagePermission, imageBudget, imageCancelToolName, imageBounds) {
   /* Execute this round's proposed calls and answer each one.
 
      A proposed `web_search_exa` is shown to a human with the arguments it
@@ -1867,7 +1978,11 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
       }
       let imageFields;
       try {
-        imageFields = proposedImageFields(calls[index].args);
+        // The schema's own maxima are applied here, above the budget
+        // decrement: an out-of-bounds proposal spends no approval and no
+        // generation, so the model reads the bound and may propose again
+        // inside the CONTINUATION_CAP rounds the turn already allows.
+        imageFields = applyImageSchemaBounds(proposedImageFields(calls[index].args), imageBounds);
       } catch (error) {
         refused = true;
         answerCall(callId, toolName, `The image did not run: ${error.message || error}`, turnGeneration);
@@ -1875,6 +1990,17 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
       }
       imageBudget.remaining--;
       const imageOutcome = await approveImageGeneration(imageFields, proposalModel);
+      if (imageOutcome.decision === 'failed') {
+        // The approval was given and the grant request refused it, so the
+        // state line records the failure and the model reads the reason. The
+        // turn continues to its next completion rather than holding on a
+        // dialog nothing will close.
+        refused = true;
+        renderImageState(openImageState(view), `Image failed: ${imageOutcome.reason}`, true);
+        answerCall(callId, toolName,
+          `The image did not run: ${imageOutcome.reason}.`, turnGeneration);
+        continue;
+      }
       if (imageOutcome.decision === 'once' && requestModel !== proposalModel) {
         refused = true;
         answerCall(callId, toolName,
@@ -2070,12 +2196,12 @@ async function send() {
       // A cache hit: buildRequestBody() already populated this entry inside
       // streamCompletion() when imagePermission was on, so this call issues
       // no second GET /tools.
-      const { cancelToolName: imageCancelToolName } =
+      const { cancelToolName: imageCancelToolName, bounds: imageBounds } =
         await resolveImageTools(requestModel, modelStateGeneration);
       await runProposedTools(
         outcome.calls, callIds, view, round === CONTINUATION_CAP - 1, fetchBudget,
         searchBudget, turnGeneration, proposalModel, webPermission,
-        imagePermission, imageBudget, imageCancelToolName);
+        imagePermission, imageBudget, imageCancelToolName, imageBounds);
       if (turnGeneration !== conversationGeneration) return;
       if (requestModel !== proposalModel) {
         // The picker stays enabled while a tool request is in flight, so

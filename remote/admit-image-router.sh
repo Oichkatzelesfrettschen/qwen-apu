@@ -437,6 +437,7 @@ if QWEN_WEB_PROFILES=$web_ledger QWEN_WEB_MCP_SERVER=$script_directory/web-mcp/s
     QWEN_IMAGE_TOKEN_KEY_FILE=$token_key_file \
     QWEN_IMAGE_STATE_DIR=$image_state_directory \
     QWEN_IMAGE_SERVICE_SOCKET=$image_socket \
+    QWEN_IMAGE_PROFILES_JSON=$image_parameters \
     QWEN_WEB_AUTHORIZER_READY=1 QWEN_MODEL_REGISTRY=$registry QWEN_MODEL_ROOT=$model_root \
     "$script_directory/build-web-presets.sh" "$web_presets" \
     >"$output_directory/build-web-presets.log" 2>&1; then
@@ -816,6 +817,16 @@ if command -v chromium >/dev/null 2>&1; then
             error_message=$(jq -r '.error.message // empty' "$browser_report" | head -c 160)
             record browser_turn_completed refused \
                 "tool_call_proposed=$tool_call_proposed error=${error_type:-none}(${error_message:-}) reply=$last_assistant_text"
+            # Every image failure answers its call with a tool message, so the
+            # transcript states what the page told the model where the turn
+            # ended and states that it told it nothing where the turn hung.
+            # `wait_for busy === false` is the driver's own turn-end check, and
+            # its TimeoutError is what a dialog that settles nothing produces.
+            refused_tool_message=$(jq -r \
+                '[.history[] | select(.role == "tool")] | last | .content // empty' \
+                "$browser_report" | head -c 300)
+            record browser_turn_tool_message observed \
+                "${refused_tool_message:-none}"
         else
             record browser_turn_completed refused "$(tail -c 400 "$output_directory/browser-turn.err" | tr '\n' ' ')"
         fi

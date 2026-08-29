@@ -329,18 +329,20 @@ def main():
             )
             wait_for(page, "busy === false", arguments.turn_timeout, "the turn to end")
             if arguments.lane == "image":
-                # renderImageArtifactCard() starts the artifact fetch and returns,
-                # so the turn ends before the image resolves. The wait ends on the
-                # blob URL or on the caption the failure branch appends, and a
-                # timeout leaves the card as it stands for the report to carry.
+                # executeImageGeneration() awaits the artifact before it answers
+                # the call, so a turn that ended carries either a card holding a
+                # blob URL or an `Image failed` state line. The wait reads that
+                # settled state and a timeout leaves the page as it stands for
+                # the report to carry.
                 try:
                     wait_for(
                         page,
-                        "(() => { const card = document.querySelector('figure.image-artifact');"
+                        "(() => { const state = document.querySelector('.image-state');"
+                        " if (state && /^Image failed/.test(state.textContent)) return true;"
+                        " const card = document.querySelector('figure.image-artifact');"
                         " if (!card) return false;"
                         " const img = card.querySelector('img');"
-                        " return Boolean(img && img.src) ||"
-                        " /image fetch failed/.test(card.querySelector('figcaption').textContent); })()",
+                        " return Boolean(img && img.src); })()",
                         120,
                         "the artifact fetch to resolve",
                     )

@@ -569,7 +569,24 @@ server to each emitted section's MCP configuration under
 `QWEN_WEB_AUTHORIZER_READY=1`, naming `remote/image-mcp/server.py` with the
 section's own profile as `QWEN_IMAGE_LANGUAGE_PROFILE` because the grant binds
 the language profile and the image profile together. One image profile emits,
-since a section carries one `mcpServers` object. `remote/qwen-image-launch.sh`
+since a section carries one `mcpServers` object.
+
+The tool schema states what the section serves rather than what the lane
+admits. The emitted configuration names `QWEN_IMAGE_PROFILES_JSON`, and
+`tools/list` reads that file for the profile's geometry and ceilings, so
+`profile_id` lists the one served profile as its enum and the width, height,
+and step maxima are the ones `image-service.py` enforces from the same file. A
+model reading the listing proposes inside them, and `webui/index.html` reads
+the same listing: an argument above a stated maximum is answered with a tool
+message naming the bound before the dialog opens and before the per-turn
+budget moves, and the dialog and the grant carry the enum's profile with the
+proposed one on a note line. Every failure after the approval -- a refused
+grant, a `POST /tools` error status, a service refusal at HTTP 200, an artifact
+that fails to load -- answers the call with a tool message and ends the turn,
+because a dialog that settles nothing holds the page busy while the model waits
+on a result that never arrives.
+
+`remote/qwen-image-launch.sh`
 rejoins the preset's image markers to the ledger, requires the row to still
 read `validator-gated`, requires the parameter file the service runs a job
 under to carry the ledger's own geometry and ceilings, and proves the deadline
