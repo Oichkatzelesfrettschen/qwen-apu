@@ -529,8 +529,14 @@ if [ "$review_model" = '-' ]; then
 else
     expected_roster=$profile_id,$review_model,
 fi
-if [ "$model_ids" = "$expected_roster" ]; then
-    record router_roster accepted "$model_ids"
+# The real router lists /v1/models sorted rather than in preset section order,
+# so the roster is compared as a set -- every expected id present and no
+# unexpected id, order ignored -- and the measured order is recorded rather
+# than asserted, since it is a router property this check does not test.
+expected_set=$(printf '%s\n' "$expected_roster" | tr ',' '\n' | awk 'NF' | LC_ALL=C sort -u)
+measured_set=$(printf '%s\n' "$model_ids" | tr ',' '\n' | awk 'NF' | LC_ALL=C sort -u)
+if [ "$expected_set" = "$measured_set" ]; then
+    record router_roster accepted "measured_order=${model_ids:-none}"
 else
     record router_roster refused "expected=$expected_roster measured=${model_ids:-none}"
 fi
@@ -751,25 +757,87 @@ else
     record lease_released_after_generation refused "the lease is still held: $lease_file"
 fi
 
-# 8. The browser runs the served page through the same turn. The checks read the
-# page's own request log rather than its source, so they fail when the page
-# posts to another origin, omits the routing key, or runs the generation without
-# a grant, whatever its source says.
+# 8. The browser runs the served page through the same turn, up to
+# QWEN_ADMISSION_BROWSER_ATTEMPTS attempts (default 2), because the 4B's
+# proposal on an explicit prompt is observed to vary between launches --
+# evidence/image-appliance/served-turn-admission/README.md records a
+# schema-valid call, and a later appliance run of the same prompt recorded
+# prose that named the tool and its arguments as text rather than proposing
+# it. Each attempt runs the whole turn in a fresh page -- a new Chromium
+# process reached through a new DevTools session, so no state from a failed
+# attempt carries into the next -- and its complete report is retained at
+# browser-turn-<n>.json whether or not the turn completed. The step accepts
+# on the first attempt whose driver process exits 0, which happens only once
+# the approval dialog opened, the grant was posted, and the turn ended, and
+# refuses after the last attempt with every attempt's reply excerpt. The
+# review arm, where armed, runs inside the accepted attempt alone, because a
+# review needs a rendered artifact card and a failed attempt left none.
 browser_report=$output_directory/browser-turn.json
 # A graded comparison between prompts needs the prompt each run actually sent,
 # so it is recorded once regardless of whether Chromium runs it.
 browser_prompt=${QWEN_ADMISSION_BROWSER_PROMPT:-"Draw $generation_prompt."}
 record browser_prompt_used observed "$browser_prompt"
+browser_attempts=${QWEN_ADMISSION_BROWSER_ATTEMPTS:-2}
+# The driver's own defaults, named explicitly so a caller whose fixture forces
+# an early attempt to fail -- a prose reply that opens no dialog, for instance
+# -- can shorten the wait rather than a refused attempt costing the full
+# dialog timeout before the next one starts.
+browser_load_timeout=${QWEN_ADMISSION_BROWSER_LOAD_TIMEOUT:-180}
+browser_dialog_timeout=${QWEN_ADMISSION_BROWSER_DIALOG_TIMEOUT:-600}
+browser_turn_timeout=${QWEN_ADMISSION_BROWSER_TURN_TIMEOUT:-900}
+browser_accepted_attempt=0
+browser_attempt_excerpts=''
 if command -v chromium >/dev/null 2>&1; then
     browser_review_flag=
     if [ "$review_model" != '-' ]; then
         browser_review_flag=--review
     fi
-    if python3 "$script_directory/web-mcp/drive-fallback-page.py" --lane image \
-            --origin "$router_origin" --api-key-file "$api_key_file" \
-            --broker "$broker_origin" --artifacts "$artifact_origin" \
-            ${browser_review_flag:+"$browser_review_flag"} \
-            --prompt "$browser_prompt" >"$browser_report" 2>"$output_directory/browser-turn.err"; then
+    browser_attempt=1
+    while [ "$browser_attempt" -le "$browser_attempts" ]; do
+        attempt_report=$output_directory/browser-turn-$browser_attempt.json
+        attempt_err=$output_directory/browser-turn-$browser_attempt.err
+        if python3 "$script_directory/web-mcp/drive-fallback-page.py" --lane image \
+                --origin "$router_origin" --api-key-file "$api_key_file" \
+                --broker "$broker_origin" --artifacts "$artifact_origin" \
+                --load-timeout "$browser_load_timeout" \
+                --dialog-timeout "$browser_dialog_timeout" \
+                --turn-timeout "$browser_turn_timeout" \
+                ${browser_review_flag:+"$browser_review_flag"} \
+                --prompt "$browser_prompt" >"$attempt_report" 2>"$attempt_err"; then
+            attempt_tool_call_proposed=yes
+            # A refused earlier attempt is expected behavior the retry budget
+            # exists to absorb, not a harness failure, so every per-attempt
+            # record reads `observed` and the overall gate is
+            # browser_accepted_attempt -- whether any attempt reached a
+            # completed turn -- checked below rather than each attempt's own
+            # outcome.
+            record "browser_attempt_${browser_attempt}_result" observed \
+                "completed=yes tool_call_proposed=$attempt_tool_call_proposed"
+            browser_accepted_attempt=$browser_attempt
+            cp "$attempt_report" "$browser_report"
+            break
+        fi
+        if jq -e . "$attempt_report" >/dev/null 2>&1; then
+            attempt_last_assistant=$(jq -c '[.history[] | select(.role == "assistant")] | last // {}' "$attempt_report")
+            attempt_last_assistant_text=$(printf '%s' "$attempt_last_assistant" | jq -r '.content // empty' | head -c 200)
+            if printf '%s' "$attempt_last_assistant" | jq -e '(.tool_calls // []) | length > 0' >/dev/null 2>&1; then
+                attempt_tool_call_proposed=yes
+            else
+                attempt_tool_call_proposed=no
+            fi
+            attempt_error_type=$(jq -r '.error.type // empty' "$attempt_report")
+            attempt_error_message=$(jq -r '.error.message // empty' "$attempt_report" | head -c 160)
+            record "browser_attempt_${browser_attempt}_result" observed \
+                "completed=no tool_call_proposed=$attempt_tool_call_proposed error=${attempt_error_type:-none}(${attempt_error_message:-}) reply=$attempt_last_assistant_text"
+            browser_attempt_excerpts="$browser_attempt_excerpts attempt=$browser_attempt tool_call_proposed=$attempt_tool_call_proposed reply=$attempt_last_assistant_text;"
+        else
+            record "browser_attempt_${browser_attempt}_result" observed \
+                "completed=no tool_call_proposed=unknown(no report) $(tail -c 400 "$attempt_err" | tr '\n' ' ')"
+            browser_attempt_excerpts="$browser_attempt_excerpts attempt=$browser_attempt tool_call_proposed=unknown(no report);"
+        fi
+        browser_attempt=$((browser_attempt + 1))
+    done
+    if [ "$browser_accepted_attempt" -gt 0 ]; then
         browser_origin_seen=$(jq -r '.origin // empty' "$browser_report")
         if [ "$browser_origin_seen" = "$router_origin" ]; then
             record browser_page_origin accepted "origin=$browser_origin_seen model=$(jq -r '.model' "$browser_report")"
@@ -905,36 +973,27 @@ if command -v chromium >/dev/null 2>&1; then
         jq '.requests |= map(.body |= (if . == null then null else (fromjson? // .) end) | .body |= (if type == "object" and .params? then .params |= del(.authorization) else . end))' \
             "$browser_report" >"$browser_report.tmp" && mv "$browser_report.tmp" "$browser_report"
     else
-        # drive-fallback-page.py writes a JSON report on every exit path,
-        # including a caught TimeoutError, so a refusal reads the page's own
-        # transcript rather than a fragment of the traceback that exits
-        # non-zero produced. `history` carries the model's full reply even
-        # when the approval dialog it names never opened.
-        if jq -e . "$browser_report" >/dev/null 2>&1; then
-            last_assistant=$(jq -c '[.history[] | select(.role == "assistant")] | last // {}' "$browser_report")
-            last_assistant_text=$(printf '%s' "$last_assistant" | jq -r '.content // empty' | head -c 200)
-            if printf '%s' "$last_assistant" | jq -e '(.tool_calls // []) | length > 0' >/dev/null 2>&1; then
-                tool_call_proposed=yes
-            else
-                tool_call_proposed=no
-            fi
-            error_type=$(jq -r '.error.type // empty' "$browser_report")
-            error_message=$(jq -r '.error.message // empty' "$browser_report" | head -c 160)
-            record browser_turn_completed refused \
-                "tool_call_proposed=$tool_call_proposed error=${error_type:-none}(${error_message:-}) reply=$last_assistant_text"
-            # Every image failure answers its call with a tool message, so the
-            # transcript states what the page told the model where the turn
-            # ended and states that it told it nothing where the turn hung.
-            # `wait_for busy === false` is the driver's own turn-end check, and
-            # its TimeoutError is what a dialog that settles nothing produces.
+        # Every attempt ran and none completed, so the refusal names the
+        # attempt count and every attempt's own excerpt rather than only the
+        # last one -- the record above already retains each attempt's full
+        # report at browser-turn-<n>.json for a reader who needs more than the
+        # excerpt.
+        record browser_turn_completed refused \
+            "attempts=$browser_attempts$browser_attempt_excerpts"
+        # Every image failure answers its call with a tool message, so the
+        # transcript states what the page told the model where the turn ended
+        # and states that it told it nothing where the turn hung. The last
+        # attempt is what a reader checks first, since it is the one closest
+        # to what a further attempt would have started from.
+        last_attempt_report=$output_directory/browser-turn-$browser_attempts.json
+        if jq -e . "$last_attempt_report" >/dev/null 2>&1; then
             refused_tool_message=$(jq -r \
                 '[.history[] | select(.role == "tool")] | last | .content // empty' \
-                "$browser_report" | head -c 300)
-            record browser_turn_tool_message observed \
-                "${refused_tool_message:-none}"
+                "$last_attempt_report" | head -c 300)
         else
-            record browser_turn_completed refused "$(tail -c 400 "$output_directory/browser-turn.err" | tr '\n' ' ')"
+            refused_tool_message=''
         fi
+        record browser_turn_tool_message observed "${refused_tool_message:-none}"
     fi
 else
     record browser_turn_completed refused 'chromium is absent, so the served page was not run'

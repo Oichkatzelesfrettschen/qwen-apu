@@ -478,6 +478,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         messages already carry a `role: tool` entry is the continuation round,
         which reads plain text and ends the turn.
 
+        QWEN_FAKE_ROUTER_PROSE_FIRST_COMPLETIONS reproduces the variability
+        `evidence/image-appliance/served-turn-admission/README.md` and a later
+        appliance run both recorded on the same prompt: the 4B answers with a
+        schema-valid call in most runs and with prose in some. Each opening
+        completion -- one per browser attempt, since a fresh page resends the
+        turn from empty history -- increments the shared counter the server
+        holds, and a completion whose count falls at or below the configured
+        threshold answers prose instead of proposing, so a caller can script
+        "prose on attempt 1, a proposal on attempt 2" without touching the
+        continuation branch a real second round would take.
+
         A request naming the review section is the vision review, and the page
         posts it non-streamed with the body carrying no `tools` key at all. The
         fixture answers the verdict object QWEN_FAKE_ROUTER_REVIEW_VERDICT
@@ -511,7 +522,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if isinstance(tool, dict)
         }
         image_tool = served_tool_name(IMAGE_MCP_SERVER_NAME, IMAGE_MCP_TOOL_NAME)
-        if continuation or image_tool not in offered:
+        answer_prose = continuation or image_tool not in offered
+        if not continuation and image_tool in offered:
+            with self.server.opening_completion_lock:
+                self.server.opening_completion_count += 1
+                opening_count = self.server.opening_completion_count
+            if opening_count <= self.settings["prose_first_completions"]:
+                answer_prose = True
+        if answer_prose:
             chunks = [
                 {"choices": [{"index": 0, "delta": {"content": self.settings["answer"]}}]},
                 {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
@@ -618,9 +636,18 @@ def main(argv):
         "answer": os.environ.get(
             "QWEN_FAKE_ROUTER_ANSWER", "The image is ready."
         ),
+        # Zero reproduces the tree's ordinary fixture behavior: every opening
+        # completion proposes, so the single-attempt admission path is
+        # unchanged. A positive count answers prose for that many opening
+        # completions before it proposes.
+        "prose_first_completions": int(
+            os.environ.get("QWEN_FAKE_ROUTER_PROSE_FIRST_COMPLETIONS", "0")
+        ),
     }
     server = Server((settings["host"], settings["port"]), Handler)
     server.router_settings = router_settings
+    server.opening_completion_count = 0
+    server.opening_completion_lock = threading.Lock()
     # qwen-webui-session.sh waits for llama.cpp's own router banner before it
     # arms the watchdogs, so the fixture prints the marker that readiness loop
     # greps for.

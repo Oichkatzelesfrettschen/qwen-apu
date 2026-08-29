@@ -296,6 +296,79 @@ if [ "$(grep -c '^\[' "$review_output/web-presets.ini")" -ne 2 ] ||
     exit 1
 fi
 
+# The browser step retries a turn whose opening completion answers prose, the
+# way the appliance recorded on the same explicit prompt across separate
+# launches. QWEN_FAKE_ROUTER_PROSE_FIRST_COMPLETIONS answers the first opening
+# completion with prose and the next with the proposal, so this arm names one
+# forced prose reply and the default two-attempt budget covers it: attempt 1
+# times out waiting for a dialog that never opens and attempt 2 completes. The
+# env var travels inside a wrapper's own exec rather than across the tmux
+# boundary, because a variable exported only in the calling shell stops there.
+prose_first_router=$work/fake-router-server-prose-first.sh
+cat >"$prose_first_router" <<EOF
+#!/bin/sh
+exec env QWEN_FAKE_ROUTER_PROSE_FIRST_COMPLETIONS=1 \\
+    python3 "$script_directory/test-fixtures/fake-router-server.py" "\$@"
+EOF
+chmod 0755 "$prose_first_router"
+retry_output=$work/output-retry
+mkdir -p "$retry_output"
+set +e
+env -u QWEN_IMAGE_PROFILES -u QWEN_IMAGE_PROFILE \
+    QWEN_WEBUI_STATE_DIRECTORY="$state_directory" \
+    QWEN_MODEL_REGISTRY="$model_registry" \
+    QWEN_MODEL_ROOT="$model_root" \
+    QWEN_ADMISSION_MODEL_ID=image-admission-fixture \
+    QWEN_ADMISSION_CONTEXT=4096 \
+    QWEN_ADMISSION_RESTORE=0 \
+    QWEN_LLAMA_SERVER="$prose_first_router" \
+    QWEN_VULKAN_LATENCY_PROBE="$latency_probe" \
+    QWEN_IMAGE_RUNTIME="$script_directory/test-fixtures/fake-image-runtime.sh" \
+    QWEN_IMAGE_RUNTIME_TEMPLATE=fixture \
+    QWEN_IMAGE_MODEL_PATH="$image_model_directory" \
+    QWEN_RADV_ICD="$fixture_icd" \
+    QWEN_SERVER_PORT="${QWEN_SERVER_PORT:-18080}" \
+    QWEN_WEB_BROKER_PORT="${QWEN_WEB_BROKER_PORT:-18571}" \
+    QWEN_ADMISSION_BROWSER_ATTEMPTS=2 \
+    QWEN_ADMISSION_BROWSER_DIALOG_TIMEOUT=5 \
+    QWEN_ADMISSION_BROWSER_PROMPT='Call the image tool now.' \
+    "$harness/admit-image-router.sh" "$retry_output" \
+    >"$work/retry.stdout" 2>"$work/retry.stderr"
+retry_status=$?
+set -e
+cat "$work/retry.stdout"
+if [ "$retry_status" -ne 0 ]; then
+    keep_on_failure=1
+    printf 'test-admit-image-router: the retry admission refused\n' >&2
+    awk -F'\t' '$2 != "accepted" && $2 != "observed" && $2 != "skipped" { print }' \
+        "$retry_output/summary.tsv" >&2 2>/dev/null || true
+    tail -c 2000 "$work/retry.stderr" >&2
+    exit 1
+fi
+if ! awk -F'\t' \
+    '$1 == "browser_attempt_1_result" && $2 == "observed" && $3 ~ /completed=no/ && $3 ~ /tool_call_proposed=no/ { a = 1 }
+     $1 == "browser_attempt_2_result" && $2 == "observed" && $3 ~ /completed=yes/ && $3 ~ /tool_call_proposed=yes/ { b = 1 }
+     END { exit (a && b) ? 0 : 1 }' \
+    "$retry_output/summary.tsv"; then
+    keep_on_failure=1
+    printf 'test-admit-image-router: attempt 1 did not read prose and attempt 2 did not complete\n' >&2
+    grep '^browser_attempt_' "$retry_output/summary.tsv" >&2 || true
+    exit 1
+fi
+for retry_transcript in browser-turn-1.json browser-turn-2.json; do
+    if [ ! -s "$retry_output/$retry_transcript" ]; then
+        keep_on_failure=1
+        printf 'test-admit-image-router: %s was not retained\n' "$retry_transcript" >&2
+        exit 1
+    fi
+done
+if ! jq -e '[.history[] | select(.role == "assistant") | (.tool_calls // [])[]] | length > 0' \
+        "$retry_output/browser-turn-2.json" >/dev/null 2>&1; then
+    keep_on_failure=1
+    printf 'test-admit-image-router: browser-turn-2.json carries no proposed tool call\n' >&2
+    exit 1
+fi
+
 # A second run refuses while another process holds the admission lock, and runs
 # once the holder has gone, because the kernel releases the lock with it.
 lock_file=$state_directory/image-admission.lock
