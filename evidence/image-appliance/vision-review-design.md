@@ -136,15 +136,31 @@ single arms reports queue position rather than capability; the two vision rows
 review the same artifact against the same constraint list, alternating, in one
 sitting.
 
-The run itself: bring up the image lane through `qwen-image-launch.sh` with a
-`validator-gated` image profile and a preset whose sections include a vision
-row, generate one artifact, then drive `remote/image-review.py` against the
-router and the artifact listener for each vision model, retaining the audit line,
-the verdict JSON, and the raw reply. The page arm follows with
-`remote/web-mcp/drive-fallback-page.py`, which proves the same closure through
-the browser: the review request lands on the router origin with the vision model
-beside no `tools` key, the artifact read carries the credential, and the correction
-posts one grant carrying the first seed.
+The run is two phases, because the launcher that serves the image lane serves
+one model. `remote/qwen-web-launch.sh` counts the sections in the generated
+preset and refuses anything other than exactly one, and it exports
+`QWEN_ROUTER_MAX=1`, so a router carrying the image MCP child holds the
+language profile alone. `GET /v1/models` therefore returns one id on that
+launch, `resolveVisionModel` finds no vision row, and the page's Review button
+stays hidden on the appliance as the tree stands. The review reaches the
+artifact through the CLI instead:
+
+1. Generate one artifact through `qwen-image-launch.sh` and record its digest
+   and provenance. The lease is released at the rename, and the lane returns to
+   idle.
+2. Run `image-service.py` on the same `--state-dir` so `GET /artifacts/` still
+   answers, bring up an ordinary router holding `lfm25-vl-16b` and `qwen35-2b`,
+   and run `remote/image-review.py` against the router origin and the artifact
+   listener for each vision model in turn, alternating, retaining the audit
+   line, the verdict JSON, and the raw reply.
+
+The page arm follows the launcher change rather than this run: driving the
+review through `webui/index.html` on the appliance needs a preset holding a
+language section and a vision section together, which is a change to
+`qwen-web-launch.sh`'s section rule and to `QWEN_ROUTER_MAX`, and a resident
+pair the 2048 MiB VRAM budget has to admit. Until then
+`remote/web-mcp/test-fallback-page-image.py` is the only place the page half
+runs end to end, against a stub roster that serves both rows.
 
 ### Falsifiers
 
@@ -185,5 +201,11 @@ hypotheses.
    failing the constraint the first one named, and the consequence is that
    automatic proposal is withdrawn in favour of a human-written delta.
 6. **The cap leaks.** A third correction reaching the dialog for one original
-   request refutes the lineage counter. The page arm asserts it, and the
-   appliance run repeats it against the real router.
+   request refutes the lineage counter. The page arm asserts it against the
+   stub; the appliance repeats it once a two-section preset exists.
+7. **A two-section preset does not fit.** Raising `QWEN_ROUTER_MAX` to hold a
+   language row and a vision row together may exceed the 2048 MiB VRAM budget
+   that set `QWEN_ROUTER_MAX=1` in the first place. The observation is the
+   router preflight or the second load failing, and the consequence is that the
+   page review stays a two-phase operation with the CLI, or that the same model
+   serves both roles.

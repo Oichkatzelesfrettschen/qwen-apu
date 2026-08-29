@@ -1338,7 +1338,7 @@ function forgetVisionModel() {
   visionModelGeneration = -1;
 }
 
-async function resolveVisionModel(generation) {
+async function resolveVisionModel(generation, signal) {
   /* Return the first roster id whose props report a vision modality, or null.
 
      `GET /props?model=<id>` carries `modalities.vision` per served row, which
@@ -1352,14 +1352,19 @@ async function resolveVisionModel(generation) {
   for (const modelId of rosterIds) {
     try {
       const response = await fetch(`./props?model=${encodeURIComponent(modelId)}`,
-        { headers: authHeaders() });
+        { headers: authHeaders(), signal });
       if (!response.ok) continue;
       const props = await response.json();
       if (props && props.modalities && props.modalities.vision === true) {
         found = modelId;
         break;
       }
-    } catch { /* a row whose props do not answer offers no review */ }
+    } catch (error) {
+      // An abort ends the whole review rather than the one props read, so the
+      // caller reports the deadline instead of an empty roster.
+      if (error.name === 'AbortError') throw error;
+      /* a row whose props do not answer offers no review */
+    }
   }
   if (generation === modelStateGeneration) {
     visionModelCached = found;
@@ -1421,7 +1426,7 @@ function reviewSystemInstruction(constraints) {
   return lines.join('\n');
 }
 
-async function artifactDataUri(sha256) {
+async function artifactDataUri(sha256, signal) {
   /* Read the artifact through its own credentialed route and return the data
      URI llama-server reads.
 
@@ -1431,7 +1436,7 @@ async function artifactDataUri(sha256) {
      String.fromCharCode over a whole 512x512 PNG exceeds the argument limit,
      so the bytes fold in 32 KiB slices. */
   const response = await fetch(`${artifactOrigin()}/artifacts/${sha256}.png`,
-    { mode: 'cors', headers: authHeaders() });
+    { mode: 'cors', headers: authHeaders(), signal });
   if (!response.ok) {
     throw new Error(`the artifact fetch returned HTTP ${response.status}`);
   }
@@ -1628,15 +1633,18 @@ async function proposeImageCorrection(card, fields, lineage, verdict) {
   const note = `correction ${correctionNumber} of ${IMAGE_CORRECTION_CAP}; ` +
     `seed ${fields.seed} is carried from the first approval and the prompt gains ` +
     'the review\'s delta';
-  const outcome = await approveImageGeneration(bounded, lineage.model, note);
-  if (outcome.decision !== 'once') {
-    appendReviewNote(card, outcome.reason
-      ? `The correction did not run: ${outcome.reason}.`
+  // `imageOutcome` rather than `outcome`: the image grant and the web search
+  // grant are separate single-use tokens, and the dispatch path already spells
+  // the image one this way.
+  const imageOutcome = await approveImageGeneration(bounded, lineage.model, note);
+  if (imageOutcome.decision !== 'once') {
+    appendReviewNote(card, imageOutcome.reason
+      ? `The correction did not run: ${imageOutcome.reason}.`
       : 'The user refused this correction. It did not run.');
     return;
   }
   const stateEl = openCorrectionState(card);
-  const params = imageRequestParams(bounded, outcome.authorization);
+  const params = imageRequestParams(bounded, imageOutcome.authorization);
   const execution = await executeImageGeneration(
     stateEl, lineage.container, IMAGE_TOOL_NAME, bounded, params, lineage.model,
     lineage.cancelToolName,
@@ -1661,16 +1669,19 @@ async function runImageReview(card, fields, lineage) {
   $('#send').disabled = true;
   const button = card.querySelector('.image-review-button');
   if (button) button.disabled = true;
+  // One controller covers every awaited fetch in this span -- the props
+  // reads, the artifact read, and the completion -- because a stalled listener
+  // on any of them would hold `busy` and the send button for the session.
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REVIEW_TIMEOUT_MS);
   try {
-    const visionModel = await resolveVisionModel(modelStateGeneration);
+    const visionModel = await resolveVisionModel(modelStateGeneration, controller.signal);
     if (!visionModel) {
       appendReviewNote(card, 'The roster reports no vision model, so no review ran.', true);
       return;
     }
     const constraints = reviewHardConstraints(fields);
-    const dataUri = await artifactDataUri(lineage.sha256);
+    const dataUri = await artifactDataUri(lineage.sha256, controller.signal);
     const promptHash = await sha256Hex(fields.prompt.trim());
     const response = await fetch('./v1/chat/completions', {
       method: 'POST',
