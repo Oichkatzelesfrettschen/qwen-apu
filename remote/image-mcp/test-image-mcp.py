@@ -280,7 +280,12 @@ class ImageServerSession:
 class BrokerProcess:
     """A running approval broker and the client that speaks to its port."""
 
-    def __init__(self, state_directory, token_key_path, api_key_path, profile):
+    def __init__(self, state_directory, token_key_path, api_key_path,
+                 language_profile, image_profile):
+        # The claim joins two profiles and the MCP child compares each against
+        # its own setting, so the broker binds them separately: --profile is
+        # the language profile a section serves and --image-profile is the
+        # image profile the ledger armed.
         argv = [
             sys.executable,
             BROKER_PATH,
@@ -293,7 +298,9 @@ class BrokerProcess:
             "--provider",
             "fake",
             "--profile",
-            profile,
+            language_profile,
+            "--image-profile",
+            image_profile,
             "--origin",
             ORIGIN,
         ]
@@ -463,6 +470,7 @@ class ImageMcpTest(unittest.TestCase):
             self.state_directory,
             self.token_key_path,
             self.api_key_path,
+            LANGUAGE_PROFILE,
             IMAGE_PROFILE,
         )
         self.brokers.append(broker)
@@ -505,6 +513,7 @@ class ImageMcpTest(unittest.TestCase):
             self.state_directory,
             self.token_key_path,
             self.api_key_path,
+            LANGUAGE_PROFILE,
             IMAGE_PROFILE,
         )
         self.brokers.append(broker)
