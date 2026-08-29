@@ -56,6 +56,7 @@ remote/test-model-tiers.sh
 remote/check-validated-tuples.sh
 remote/test-projector-fetch-dispatch.sh
 remote/test-projector-pairing.sh
+remote/test-probe-depth-projector.sh
 remote/test-promote-llama-build.sh
 remote/test-qwen-launch-router-preflight.sh
 remote/test-qwen-capacity-policy.sh
