@@ -79,8 +79,18 @@ fi
 # headroom for a load that never happens. Router presets carry their own model
 # and projector paths, so the largest registry subject replaces any explicit
 # single-model path for fetch and preflight.
+#
+# A draft-pair section holds two checkpoints at once, since
+# common_speculative_init_result loads the draft as a second model beside the
+# target rather than reusing the target's buffers. The section's subject is
+# therefore the sum of both artifacts, and where that sum wins the selection the
+# draft's own bytes are added to the Vulkan requirement the probe measures
+# against, the arithmetic qwen-image-launch.sh applies to its two resident
+# checkpoints.
 if [ "${QWEN_ROUTER:-0}" = 1 ]; then
     largest_servable=''
+    largest_draft=''
+    largest_draft_bytes=0
     largest_bytes=0
     preset_model_paths=$(awk '
         function finish_section() {
@@ -90,8 +100,12 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
                 printf "router preflight section %s requires exactly one LLAMA_ARG_MODEL, found %d\n", \
                     section, model_count > "/dev/stderr"
                 invalid = 1
+            } else if (draft_count > 1) {
+                printf "router preflight section %s carries %d LLAMA_ARG_SPEC_DRAFT_MODEL keys\n", \
+                    section, draft_count > "/dev/stderr"
+                invalid = 1
             } else {
-                print model_path
+                printf "%s\t%s\n", model_path, draft_path
             }
         }
         /^[[:space:]]*($|[#;])/ { next }
@@ -105,12 +119,16 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
                 section = ""
                 model_count = 0
                 model_path = ""
+                draft_count = 0
+                draft_path = ""
                 next
             }
             sub(/^[[:space:]]*\[/, "", section)
             sub(/\][[:space:]]*$/, "", section)
             model_count = 0
             model_path = ""
+            draft_count = 0
+            draft_path = ""
             next
         }
         {
@@ -124,6 +142,9 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
             if (key == "LLAMA_ARG_MODEL") {
                 model_count++
                 model_path = value
+            } else if (key == "LLAMA_ARG_SPEC_DRAFT_MODEL") {
+                draft_count++
+                draft_path = value
             }
         }
         END {
@@ -135,7 +156,7 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
             exit invalid
         }
     ' "$router_presets")
-    while IFS= read -r servable_path; do
+    while IFS='	' read -r servable_path servable_draft_path; do
         if [ -z "$servable_path" ] || [ ! -f "$servable_path" ]; then
             printf 'router preflight model is not a regular file: %s\n' \
                 "$servable_path" >&2
@@ -146,16 +167,50 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
                 "$servable_path" >&2
             exit 1
         fi
-        if [ "$servable_bytes" -gt "$largest_bytes" ]; then
-            largest_bytes=$servable_bytes
+        servable_draft_bytes=0
+        if [ -n "${servable_draft_path:-}" ]; then
+            if [ ! -f "$servable_draft_path" ]; then
+                printf 'router preflight draft model is not a regular file: %s\n' \
+                    "$servable_draft_path" >&2
+                exit 1
+            fi
+            if ! servable_draft_bytes=$(stat -c %s "$servable_draft_path" \
+                2>/dev/null); then
+                printf 'router preflight cannot measure draft model bytes: %s\n' \
+                    "$servable_draft_path" >&2
+                exit 1
+            fi
+        fi
+        servable_resident_bytes=$((servable_bytes + servable_draft_bytes))
+        if [ "$servable_resident_bytes" -gt "$largest_bytes" ]; then
+            largest_bytes=$servable_resident_bytes
             largest_servable=$servable_path
+            largest_draft=${servable_draft_path:-}
+            largest_draft_bytes=$servable_draft_bytes
         fi
     done <<EOF
 $preset_model_paths
 EOF
     if [ -n "$largest_servable" ]; then
-        printf 'router_preflight_subject=%s bytes=%s\n' \
-            "$(basename -- "$largest_servable")" "$largest_bytes"
+        if [ -n "$largest_draft" ]; then
+            printf 'router_preflight_subject=%s bytes=%s draft=%s draft_bytes=%s\n' \
+                "$(basename -- "$largest_servable")" "$largest_bytes" \
+                "$(basename -- "$largest_draft")" "$largest_draft_bytes"
+            # The probe measures one file for its own report, so the draft's
+            # bytes reach the requirement rather than the subject path. Rounding
+            # up keeps a partial mebibyte charged rather than dropped.
+            mebibyte=1048576
+            router_required_vulkan_mib=${QWEN_REQUIRED_VULKAN_MIB:-4608}
+            QWEN_REQUIRED_VULKAN_MIB=$((router_required_vulkan_mib +
+                (largest_draft_bytes + mebibyte - 1) / mebibyte))
+            export QWEN_REQUIRED_VULKAN_MIB
+            printf 'router_preflight_requirement mib=%s draft_mib=%s\n' \
+                "$QWEN_REQUIRED_VULKAN_MIB" \
+                "$(((largest_draft_bytes + mebibyte - 1) / mebibyte))"
+        else
+            printf 'router_preflight_subject=%s bytes=%s\n' \
+                "$(basename -- "$largest_servable")" "$largest_bytes"
+        fi
         model_path=$largest_servable
     fi
 fi

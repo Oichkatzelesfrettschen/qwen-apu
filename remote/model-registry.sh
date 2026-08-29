@@ -498,6 +498,253 @@ if [ "$#" -eq 3 ] && [ "$1" = tuple ]; then
     exit $?
 fi
 
+# The draft pairings that put a small model in front of a larger target.
+# models.tsv carries one row per checkpoint and cannot state that two of them
+# run inside one server, so remote/draft-pairs.tsv carries the pairing and this
+# reader validates the whole ledger before answering any query, the discipline
+# validate_tuple_ledger already applies to the tuple ledger: a caller reading
+# one pairing must not trust a ledger a sibling row has made unsafe to read.
+validate_draft_pair_ledger() {
+    draft_pair_registry=${QWEN_DRAFT_PAIRS:-$script_directory/draft-pairs.tsv}
+    draft_pair_model_registry=${QWEN_MODEL_REGISTRY:-$script_directory/models.tsv}
+    if [ ! -r "$draft_pair_registry" ]; then
+        printf 'draft pair ledger is unreadable: %s\n' \
+            "$draft_pair_registry" >&2
+        return 1
+    fi
+    if [ ! -r "$draft_pair_model_registry" ]; then
+        printf 'model registry is unreadable: %s\n' \
+            "$draft_pair_model_registry" >&2
+        return 1
+    fi
+    # The quarantine authority answers through this script's own query, so a
+    # malformed or unreadable registry stops the pairing read the way it stops
+    # preset generation rather than admitting a pairing over an unread file.
+    # The query names no runtime mode, so it returns every model-scope subject
+    # of both scopes: a pairing serves through the router and is measured
+    # standalone, and one ledger answering both paths retires a checkpoint
+    # excluded on either.
+    draft_pair_quarantine_subjects=$("$script_directory/model-registry.sh" \
+        quarantine-subjects) || return 1
+    draft_pair_rows=$(printf '%s\n' "$draft_pair_quarantine_subjects" |
+        awk -F'\t' '
+        FILENAME == "-" {
+            if ($0 == "") next
+            quarantined_models[$1] = 1
+            next
+        }
+        FILENAME == ARGV[2] {
+            if ($0 ~ /^#/ || $0 ~ /^[[:space:]]*$/) { next }
+            if (NF >= 5) {
+                known_model_ids[$1] = 1
+                model_context_default[$1] = $5
+            }
+            next
+        }
+        $0 ~ /^#/ || $0 ~ /^[[:space:]]*$/ { next }
+        {
+            if (NF != 11) {
+                printf "draft pair row %d holds %d fields, expected 11\n", \
+                    FNR, NF > "/dev/stderr"
+                bad++
+                next
+            }
+            if ($1 == "") {
+                printf "draft pair row %d carries an empty pair_id\n", FNR \
+                    > "/dev/stderr"
+                bad++
+                next
+            }
+            if (seen_id[$1]++) {
+                printf "duplicate pair_id %s at row %d\n", $1, FNR \
+                    > "/dev/stderr"
+                bad++
+            }
+            if (!($2 in known_model_ids)) {
+                printf "%s: target_model_id %s is absent from the model registry\n", \
+                    $1, $2 > "/dev/stderr"
+                bad++
+            }
+            if (!($3 in known_model_ids)) {
+                printf "%s: draft_model_id %s is absent from the model registry\n", \
+                    $1, $3 > "/dev/stderr"
+                bad++
+            }
+            # A checkpoint drafting itself loads one artifact twice for a draft
+            # that agrees with the target by construction, which spends the
+            # device on a copy rather than on a cheaper proposer.
+            if ($2 == $3) {
+                printf "%s: target and draft name the same checkpoint %s\n", \
+                    $1, $2 > "/dev/stderr"
+                bad++
+            }
+            if (quarantined_models[$2]) {
+                printf "%s: target %s is excluded by model quarantine\n", \
+                    $1, $2 > "/dev/stderr"
+                bad++
+            }
+            if (quarantined_models[$3]) {
+                printf "%s: draft %s is excluded by model quarantine\n", \
+                    $1, $3 > "/dev/stderr"
+                bad++
+            }
+            if ($4 != "production" && $4 != "candidate" &&
+                $4 != "quarantine" && $4 != "archive" && $4 != "rejected") {
+                printf "%s: tier %s is outside the vocabulary\n", $1, $4 \
+                    > "/dev/stderr"
+                bad++
+            }
+            if ($5 !~ /^[1-9][0-9]*$/) {
+                printf "%s: spec_draft_n_max %s is not a canonical positive integer\n", \
+                    $1, $5 > "/dev/stderr"
+                bad++
+            } else if ($5 + 0 > 16) {
+                # A draft of N makes the target emit N+1 output positions in one
+                # pass and common_speculative_get_output_limits clamps that count
+                # to the batch size, so sixteen keeps the product inside the
+                # 128-token batch qwen-capacity-policy.sh launches with.
+                printf "%s: spec_draft_n_max %s exceeds the operational maximum of 16\n", \
+                    $1, $5 > "/dev/stderr"
+                bad++
+            }
+            # p_min gates drafting rather than acceptance, and common/arg.cpp
+            # reads it with std::stof, so the ledger spells one decimal fraction
+            # inside the closed unit interval.
+            if ($6 !~ /^(0|1)(\.[0-9]+)?$/ || $6 + 0 > 1) {
+                printf "%s: spec_draft_p_min %s is not a decimal fraction in [0,1]\n", \
+                    $1, $6 > "/dev/stderr"
+                bad++
+            }
+            # The draft context is derived rather than set: common/speculative.cpp
+            # assigns cparams.n_ctx = llama_n_ctx(ctx_tgt) before the draft model
+            # loads, so the column states the target row own admitted depth and a
+            # different number would describe an allocation no launch makes.
+            if ($7 !~ /^[1-9][0-9]*$/) {
+                printf "%s: draft_context %s is not a canonical positive integer\n", \
+                    $1, $7 > "/dev/stderr"
+                bad++
+            } else if (($2 in model_context_default) &&
+                $7 != model_context_default[$2]) {
+                printf "%s: draft_context %s differs from target context_default %s\n", \
+                    $1, $7, model_context_default[$2] > "/dev/stderr"
+                bad++
+            }
+            if ($8 !~ /^(f32|f16|bf16|q8_0|q5_1|q5_0|q4_1|q4_0|iq4_nl)$/) {
+                printf "%s: draft_cache_type_k %s is outside the runtime vocabulary\n", \
+                    $1, $8 > "/dev/stderr"
+                bad++
+            }
+            if ($9 !~ /^(f32|f16|bf16|q8_0|q5_1|q5_0|q4_1|q4_0|iq4_nl)$/) {
+                printf "%s: draft_cache_type_v %s is outside the runtime vocabulary\n", \
+                    $1, $9 > "/dev/stderr"
+                bad++
+            }
+            if ($10 == "") {
+                printf "%s: validated_evidence is empty; write - for an unmeasured pairing\n", \
+                    $1 > "/dev/stderr"
+                bad++
+            }
+            # The note is the display name build-router-presets.sh writes into
+            # LLAMA_ARG_ALIAS beside the pair_id, and common/arg.cpp splits that
+            # value on commas into a set of routing names, so a comma here
+            # silently becomes a third alias.
+            if ($11 == "" || $11 ~ /,/ || $11 ~ /^[[:space:]]/ ||
+                $11 ~ /[[:space:]]$/) {
+                printf "%s: notes is the alias display name and holds no comma or edge whitespace: %s\n", \
+                    $1, $11 > "/dev/stderr"
+                bad++
+            }
+            print $0
+        }
+        END { exit bad ? 1 : 0 }
+    ' - "$draft_pair_model_registry" "$draft_pair_registry") || return 1
+
+    # Ledger text never becomes shell source. AWK has established the 11-field
+    # row shape, so each retained evidence path is read as one shell word and
+    # tested with the shell pathname primitive, which keeps quotes, semicolons,
+    # and command substitutions outside executable input.
+    draft_pair_tab=$(printf '\t')
+    draft_pair_evidence_failures=0
+    while IFS="$draft_pair_tab" read -r draft_pair_id _target_model_id \
+        _draft_model_id _pair_tier _spec_draft_n_max _spec_draft_p_min \
+        _draft_context _draft_cache_type_k _draft_cache_type_v \
+        draft_pair_evidence _notes; do
+        # A ledger admitting no pairing is a valid state, so the empty line the
+        # here-document carries for it reaches this loop and is skipped.
+        [ -n "$draft_pair_id" ] || continue
+        [ "$draft_pair_evidence" = - ] && continue
+        case $draft_pair_evidence in
+            '' | /* | ../* | */../* | */..)
+                printf '%s: validated evidence is not a repository-relative path: %s\n' \
+                    "$draft_pair_id" "$draft_pair_evidence" >&2
+                draft_pair_evidence_failures=$((draft_pair_evidence_failures + 1))
+                continue
+                ;;
+        esac
+        if [ ! -e "$script_directory/../$draft_pair_evidence" ]; then
+            printf '%s: validated evidence is absent from the tree: %s\n' \
+                "$draft_pair_id" "$draft_pair_evidence" >&2
+            draft_pair_evidence_failures=$((draft_pair_evidence_failures + 1))
+        fi
+    done <<EOF
+$draft_pair_rows
+EOF
+    [ "$draft_pair_evidence_failures" -eq 0 ] || return 1
+    printf '%s\n' "$draft_pair_rows"
+}
+
+# Every pairing in ledger order. build-router-presets.sh reads this list to
+# decide which sections to emit and qwen-capacity-policy.sh reads it again at
+# launch, so a preset persisting across a ledger edit is rejoined to the rows
+# the launch itself validated.
+if [ "$#" -eq 1 ] && [ "$1" = draft-pairs ]; then
+    validate_draft_pair_ledger || exit 1
+    exit 0
+fi
+
+# One pairing by its id, either the whole row as key=value lines or a single
+# named field, the interface the model and tuple selectors already give.
+if [ "$#" -eq 2 ] && [ "$1" = draft-pair ]; then
+    draft_pair_selector=$2
+    draft_pair_ledger_rows=$(validate_draft_pair_ledger) || exit 1
+    printf '%s\n' "$draft_pair_ledger_rows" | awk -F'\t' \
+        -v selector="$draft_pair_selector" '
+        $1 == selector {
+            split("pair_id target_model_id draft_model_id tier " \
+                  "spec_draft_n_max spec_draft_p_min draft_context " \
+                  "draft_cache_type_k draft_cache_type_v validated_evidence " \
+                  "notes", names, " ")
+            for (i = 1; i <= 11; i++) { printf "%s=%s\n", names[i], $i }
+            matched = 1
+            next
+        }
+        END { exit matched ? 0 : 3 }
+    '
+    exit $?
+fi
+
+if [ "$#" -eq 3 ] && [ "$1" = draft-pair ]; then
+    draft_pair_selector=$2
+    draft_pair_field=$3
+    draft_pair_ledger_rows=$(validate_draft_pair_ledger) || exit 1
+    printf '%s\n' "$draft_pair_ledger_rows" | awk -F'\t' \
+        -v selector="$draft_pair_selector" -v field="$draft_pair_field" '
+        $1 == selector {
+            split("pair_id target_model_id draft_model_id tier " \
+                  "spec_draft_n_max spec_draft_p_min draft_context " \
+                  "draft_cache_type_k draft_cache_type_v validated_evidence " \
+                  "notes", names, " ")
+            for (i = 1; i <= 11; i++) {
+                if (names[i] == field) { printf "%s\n", $i; found = 1 }
+            }
+            matched = 1
+            next
+        }
+        END { exit matched && found ? 0 : 3 }
+    '
+    exit $?
+fi
+
 if [ "$#" -ne 2 ] && [ "$#" -ne 3 ]; then
     printf 'usage: %s id|path SELECTOR [FIELD]\n' "$0" >&2
     printf '       %s validate-cache-type TYPE\n' "$0" >&2
@@ -506,6 +753,8 @@ if [ "$#" -ne 2 ] && [ "$#" -ne 3 ]; then
     printf '       %s servable-files | servable-ids\n' "$0" >&2
     printf '       %s tuples MODEL_ID\n' "$0" >&2
     printf '       %s tuple TUPLE_ID [FIELD]\n' "$0" >&2
+    printf '       %s draft-pairs\n' "$0" >&2
+    printf '       %s draft-pair PAIR_ID [FIELD]\n' "$0" >&2
     printf 'fields: id role model_file fetch_script context_default context_ceiling\n' >&2
     printf '        context_target cache_type_k cache_type_v flash_attention\n' >&2
     printf '        projector projector_fetch_script decode_tok_s prefill_tok_s\n' >&2

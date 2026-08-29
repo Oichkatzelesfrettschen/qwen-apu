@@ -31,6 +31,12 @@ set -eu
 # tuple is checkable against one file instead of against a file plus the argv
 # that spawned the router.
 #
+# remote/draft-pairs.tsv adds one section per pairing beside the per-checkpoint
+# sections. A pairing is a second serving shape of one target rather than a new
+# checkpoint, so its section names the pair_id, carries the target row's whole
+# six-key tuple, and adds the draft keys the pinned common/arg.cpp registers.
+# The tier field decides emission there the same way it decides it here.
+#
 # Directories are linked rather than moved. A checkpoint's projector must sit in
 # the checkpoint's own directory for remote/select-projector.sh to pair it, and
 # linking the directory preserves that pairing while a file move would break a
@@ -239,8 +245,126 @@ while IFS='	' read -r id role model_file _fetch_script context_default \
     emitted=$((emitted + 1))
 done <"$registry"
 
+# A draft pairing is a second serving shape of one target checkpoint, so it
+# reaches the picker as its own section rather than by changing the target's.
+# The section carries the target row's whole six-key tuple, because
+# server-models.cpp cascades the router argv over every section and an absent
+# key falls through to the llama.cpp defaults of batch 2048 and ubatch 512.
+#
+# The draft keys are the names common/arg.cpp registers at f280b269.
+# `--spec-draft-model`, `--spec-type`, `--spec-draft-n-max`,
+# `--spec-draft-p-min`, `--spec-draft-type-k`, and `--spec-draft-type-v` each
+# carry a set_env, so those six sections keys are LLAMA_ARG_*; draft layers
+# breaks the pattern as LLAMA_ARG_N_GPU_LAYERS_DRAFT. `--spec-draft-device` and
+# `--spec-draft-override-tensor` carry no set_env at all, and
+# common/preset.cpp's get_map_key_opt indexes each option by its dash-stripped
+# argument names beside its env names, so the INI reaches them as
+# `spec-draft-device` and `spec-draft-override-tensor`.
+#
+# Placement is explicit on both because common_base_params_to_speculative
+# overwrites result.devices, result.n_gpu_layers, and
+# result.tensor_buft_overrides with the draft's own values whenever a draft path
+# is set. The router argv's `--device Vulkan0`, `--n-gpu-layers all`, and
+# `--override-tensor .*=Vulkan0` therefore reach the target and leave the draft
+# on the default automatic placement unless the section states it.
+#
+# The draft context takes no key: common/speculative.cpp assigns
+# `cparams.n_ctx = llama_n_ctx(ctx_tgt)` before the draft model loads, so the
+# ledger's draft_context records the derived depth and the section states the
+# target's.
+pairs_emitted=0
+pairs_unlisted=0
+pairs_absent=0
+pairs_quarantined=0
+draft_pair_rows=$("$script_directory/model-registry.sh" draft-pairs)
+while IFS='	' read -r pair_id target_model_id draft_model_id pair_tier \
+    spec_draft_n_max spec_draft_p_min _draft_context draft_cache_type_k \
+    draft_cache_type_v _validated_evidence pair_notes; do
+    [ -n "${pair_id:-}" ] || continue
+
+    case $pair_tier in
+        production | candidate) ;;
+        *)
+            pairs_unlisted=$((pairs_unlisted + 1))
+            continue
+            ;;
+    esac
+
+    target_row=$("$script_directory/model-registry.sh" id "$target_model_id")
+    target_model_file=$(printf '%s\n' "$target_row" | sed -n 's/^model_file=//p')
+    target_context=$(printf '%s\n' "$target_row" | sed -n 's/^context_default=//p')
+    target_cache_k=$(printf '%s\n' "$target_row" | sed -n 's/^cache_type_k=//p')
+    target_cache_v=$(printf '%s\n' "$target_row" | sed -n 's/^cache_type_v=//p')
+    target_flash=$(printf '%s\n' "$target_row" | sed -n 's/^flash_attention=//p')
+    target_batch=$(printf '%s\n' "$target_row" | sed -n 's/^batch=//p')
+    target_ubatch=$(printf '%s\n' "$target_row" | sed -n 's/^ubatch=//p')
+    target_role=$(printf '%s\n' "$target_row" | sed -n 's/^role=//p')
+    draft_model_file=$("$script_directory/model-registry.sh" id \
+        "$draft_model_id" model_file)
+
+    target_path=$model_root/$target_model_file
+    draft_path=$model_root/$draft_model_file
+    if [ ! -f "$target_path" ] || [ ! -f "$draft_path" ]; then
+        printf 'preset_skipped pair=%s reason=weights_absent target=%s draft=%s\n' \
+            "$pair_id" "$target_path" "$draft_path" >&2
+        pairs_absent=$((pairs_absent + 1))
+        continue
+    fi
+
+    # A profile-scope row on the target's own tuple removes the section, because
+    # a pair section serves that exact tuple with a second checkpoint resident
+    # beside it. A model-scope row on either half stops the ledger read one step
+    # earlier, so this branch is where the tuple scope lands.
+    pair_quarantine_row=$(printf '%s\n' "$quarantine_rows" |
+        awk -F'\t' -v target="$target_model_id" -v draft="$draft_model_id" \
+            -v depth="$target_context" -v row_batch="$target_batch" \
+            -v row_ubatch="$target_ubatch" -v cache_k="$target_cache_k" \
+            -v cache_v="$target_cache_v" -v flash="$target_flash" '
+            $2 == "model" && ($3 == target || $3 == draft) { print; exit }
+            $2 == "profile" && $3 == target && $5 == depth &&
+            $6 == row_batch && $7 == row_ubatch && $8 == cache_k &&
+            $9 == cache_v && $10 == flash { print; exit }')
+    if [ -n "$pair_quarantine_row" ]; then
+        pairs_quarantined=$((pairs_quarantined + 1))
+        pair_reason_id=$(printf '%s\n' "$pair_quarantine_row" |
+            awk -F'\t' '{ print $1 }')
+        deploy_quarantine_reason "$pair_reason_id"
+        printf 'preset_skipped pair=%s reason=quarantine record=%s\n' \
+            "$pair_id" "$reason_directory/$pair_reason_id.md" >&2
+        continue
+    fi
+
+    {
+        printf '[%s]\n' "$pair_id"
+        printf 'LLAMA_ARG_MODEL = %s\n' "$target_path"
+        printf 'LLAMA_ARG_ALIAS = %s,%s\n' "$pair_id" "$pair_notes"
+        printf 'LLAMA_ARG_TAGS = candidate,draft-pair,%s\n' "$target_role"
+        printf 'LLAMA_ARG_CTX_SIZE = %s\n' "$target_context"
+        printf 'LLAMA_ARG_CACHE_TYPE_K = %s\n' "$target_cache_k"
+        printf 'LLAMA_ARG_CACHE_TYPE_V = %s\n' "$target_cache_v"
+        printf 'LLAMA_ARG_FLASH_ATTN = %s\n' "$target_flash"
+        printf 'LLAMA_ARG_BATCH = %s\n' "$target_batch"
+        printf 'LLAMA_ARG_UBATCH = %s\n' "$target_ubatch"
+        printf 'LLAMA_ARG_SPEC_TYPE = draft-simple\n'
+        printf 'LLAMA_ARG_SPEC_DRAFT_MODEL = %s\n' "$draft_path"
+        printf 'LLAMA_ARG_SPEC_DRAFT_N_MAX = %s\n' "$spec_draft_n_max"
+        printf 'LLAMA_ARG_SPEC_DRAFT_P_MIN = %s\n' "$spec_draft_p_min"
+        printf 'LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K = %s\n' "$draft_cache_type_k"
+        printf 'LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V = %s\n' "$draft_cache_type_v"
+        printf 'LLAMA_ARG_N_GPU_LAYERS_DRAFT = all\n'
+        printf 'spec-draft-device = Vulkan0\n'
+        printf 'spec-draft-override-tensor = .*=Vulkan0\n'
+        printf '\n'
+    } >>"$output_ini"
+    pairs_emitted=$((pairs_emitted + 1))
+done <<EOF
+$draft_pair_rows
+EOF
+
 printf 'router_presets=written path=%s models=%s unlisted=%s quarantined=%s absent=%s\n' \
     "$output_ini" "$emitted" "$skipped_unlisted" "$quarantined" "$skipped_absent"
+printf 'draft_pairs=written pairs=%s unlisted=%s quarantined=%s absent=%s\n' \
+    "$pairs_emitted" "$pairs_unlisted" "$pairs_quarantined" "$pairs_absent"
 printf 'tier_directories production=%s candidates=%s quarantine=%s reasons=%s\n' \
     "$production_directory" "$candidate_directory" "$quarantine_directory" \
     "$reason_directory"
