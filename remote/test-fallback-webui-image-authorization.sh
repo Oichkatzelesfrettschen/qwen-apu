@@ -18,7 +18,7 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 fallback_ui=$script_directory/../webui/index.html
 
 # The per-turn Image toggle governs the tool list rather than the request
-# text, so a turn run with it off carries no generate_image call to propose,
+# text, so a turn run with it off carries no image_generate_image call to propose,
 # and a proposal carried over from a turn that offered it reaches no
 # generation once the toggle reads off for the current turn.
 grep -F '<input type="checkbox" id="image-tools">' "$fallback_ui" >/dev/null
@@ -30,7 +30,14 @@ fi
 grep -F 'if (imagePermission) {' "$fallback_ui" >/dev/null
 grep -F "const { definition } = await resolveImageTools(requestModel, modelStateGeneration);" \
     "$fallback_ui" >/dev/null
-grep -F "const IMAGE_TOOL_NAME = 'generate_image';" "$fallback_ui" >/dev/null
+# The served name is composed from the section's own mcpServers key rather than
+# written a second time: llama-server serves the `image` server's
+# `generate_image` as `image_generate_image` (server-tools.cpp:1814), so a page
+# naming the child's bare name reaches find_tool's 404.
+grep -F "const IMAGE_MCP_SERVER_NAME = 'image';" "$fallback_ui" >/dev/null
+grep -F "const IMAGE_MCP_TOOL_NAME = 'generate_image';" "$fallback_ui" >/dev/null
+grep -F 'const IMAGE_TOOL_NAME = `${IMAGE_MCP_SERVER_NAME}_${IMAGE_MCP_TOOL_NAME}`;' \
+    "$fallback_ui" >/dev/null
 grep -F "if (!imagePermission) {" "$fallback_ui" >/dev/null
 grep -F 'The image surface is off for this turn; ${toolName} did not run.' "$fallback_ui" >/dev/null
 

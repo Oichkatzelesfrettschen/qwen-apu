@@ -470,7 +470,17 @@ function forgetWebTools() {
 // shares the endpoint and the retry helper with the web listing but keeps its
 // own cache, so a rename or restructuring of the web tool composition above
 // does not touch this block and this block does not touch it.
-const IMAGE_TOOL_NAME = 'generate_image';
+// llama-server serves an MCP tool under `<server>_<tool>`: `server_mcp_tool`
+// sets `name = server_name + "_" + tool_name` (server-tools.cpp:1814) and the
+// listing composes the same string (:2046), so the `image` key of the section's
+// mcpServers object decides what `GET /tools` lists and what `POST /tools` must
+// name. `find_tool` matches that composed name alone (:1935) and answers any
+// other string at 404 (:2163), while the child still receives the bare
+// `generate_image` its own schema declares (:1838). The composition happens
+// here once, so the dispatch branch and the listing match below read one name.
+const IMAGE_MCP_SERVER_NAME = 'image';
+const IMAGE_MCP_TOOL_NAME = 'generate_image';
+const IMAGE_TOOL_NAME = `${IMAGE_MCP_SERVER_NAME}_${IMAGE_MCP_TOOL_NAME}`;
 
 function findImageCancelToolName(listing) {
   /* Return the name of a listed tool that cancels an image generation, or

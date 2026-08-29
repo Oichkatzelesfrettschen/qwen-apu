@@ -53,6 +53,18 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 model_id=${QWEN_ADMISSION_MODEL_ID:-qwen38-2b-distill}
 profile_id=${QWEN_ADMISSION_PROFILE:-web-image-admission}
 image_profile_id=${QWEN_ADMISSION_IMAGE_PROFILE:-image-sdxs-512-a}
+# build-web-presets.sh writes the image MCP server under the key `image`, and
+# llama-server serves each wrapped tool as `<server>_<tool>`: server_mcp_tool
+# sets name = server_name + "_" + tool_name (tools/server/server-tools.cpp:1814)
+# and the listing composes the same string (:2046), so the child's own
+# `generate_image` is served as `image_generate_image`. find_tool matches that
+# composed name alone (:1935) and answers any other string at 404 (:2163),
+# while the child receives the bare name back (:1838). The composition happens
+# once here, so the listing expectation, the call body, and the browser-log
+# check read one string.
+image_mcp_server_name=${QWEN_ADMISSION_IMAGE_MCP_SERVER:-image}
+image_mcp_tool_name=generate_image
+image_tool_name=${image_mcp_server_name}_${image_mcp_tool_name}
 context=${QWEN_ADMISSION_CONTEXT:-4096}
 server_port=${QWEN_SERVER_PORT:-8080}
 broker_port=${QWEN_WEB_BROKER_PORT:-8571}
@@ -510,7 +522,7 @@ fi
 call tools GET "$router_origin/tools?model=$profile_id&autoload=true"
 cp "$call_out" "$output_directory/tools.json"
 tool_names=$(jq -r '.[].tool' "$call_out" 2>/dev/null | sort | tr '\n' ',')
-if [ "$tool_names" = 'generate_image,' ]; then
+if [ "$tool_names" = "$image_tool_name," ]; then
     record tool_enumeration accepted "$tool_names via $router_origin"
 else
     record tool_enumeration refused "status=$call_status tools=${tool_names:-none}"
@@ -584,7 +596,8 @@ fi
 # grant inside params, which is where the page puts it.
 tool_body() {
     jq -cn --arg m "$profile_id" --argjson p "$1" \
-        '{model: $m, tool: "generate_image", params: $p, stream: false}'
+        --arg t "$image_tool_name" \
+        '{model: $m, tool: $t, params: $p, stream: false}'
 }
 generation_params=$(jq -cn --arg prompt "$generation_prompt" --arg profile "$image_profile_id" \
     --arg grant "$authorization" --argjson seed "$generation_seed" \
@@ -683,12 +696,24 @@ else
 fi
 
 # The lease spans the job alone, from its start to the artifact rename, so it is
-# free again while the service still runs.
+# free again while the service still runs. WorkloadLease.acquire creates the
+# lock file on the first job and release() closes the descriptor without
+# unlinking it (image-service.py:556-596), so the file exists exactly when a job
+# has taken the lease and this check reads that file only after a generation
+# completed. Without that precondition an absent file reports the same refusal
+# as a held one, which is what a run whose generation never reached the service
+# records.
 lease_file=$state_directory/vulkan-workload.lock
-if [ -e "$lease_file" ] && flock -n -E 75 "$lease_file" true; then
+if [ "$generation_status" != completed ]; then
+    record lease_released_after_generation skipped \
+        "not run: no generation completed, so no job took the lease at $lease_file"
+elif [ ! -e "$lease_file" ]; then
+    record lease_released_after_generation refused \
+        "the completed job left no lease file: $lease_file"
+elif flock -n -E 75 "$lease_file" true; then
     record lease_released_after_generation accepted "$lease_file"
 else
-    record lease_released_after_generation refused "the lease is held or unusable: $lease_file"
+    record lease_released_after_generation refused "the lease is still held: $lease_file"
 fi
 
 # 8. The browser runs the served page through the same turn. The checks read the
@@ -726,8 +751,8 @@ if command -v chromium >/dev/null 2>&1; then
         else
             record browser_grant_posted_once refused "count=$grant_requests"
         fi
-        generation_post=$(jq -c --arg u "$router_origin/tools" \
-            '[.requests[] | select(.method == "POST" and .url == $u) | (.body | fromjson? // {}) | select(.tool == "generate_image")] | first // empty' \
+        generation_post=$(jq -c --arg u "$router_origin/tools" --arg t "$image_tool_name" \
+            '[.requests[] | select(.method == "POST" and .url == $u) | (.body | fromjson? // {}) | select(.tool == $t)] | first // empty' \
             "$browser_report")
         if [ -n "$generation_post" ] && \
            [ "$(printf '%s' "$generation_post" | jq -r '.model')" = "$profile_id" ] && \
