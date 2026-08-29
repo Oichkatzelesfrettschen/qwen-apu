@@ -28,7 +28,6 @@ import sys
 import tempfile
 import threading
 import time
-import urllib.request
 
 THIS_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(os.path.dirname(THIS_DIRECTORY))
