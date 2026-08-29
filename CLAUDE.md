@@ -472,6 +472,36 @@ only within a narrow band around the fitted points and
 | Qwen3.5-4B base Q4_K_M | 2.54 GiB | 2.84 measured |
 | Qwen3.8-9B distill Q4_K_M | 5.37 GiB | 1.76 measured |
 
+## Three runtime classes, one primary target
+
+The 2B class is the appliance's primary performance target, the 0.8B class its
+secondary fast target, and the 4B class the quality-heavy fallback that tests
+size and shape scaling. The early campaign centered the 4B and its rate target
+leaked into experiment selection; that ordering is retired. A general runtime
+experiment -- prompt-cache checkpoints, prefill geometry, MMVQ, cache type and
+Flash Attention, workgroup and compiler changes, graph optimization, n-gram
+speculation, aggregate throughput -- runs the current 2B first, the current
+0.8B second, and the current 4B third, and its result becomes a Raven2-wide
+default only where the classes agree; a win on one class alone becomes that
+class's profile setting. A representation arm follows the same order and reads
+the 0.8B's Q8_0, Q4_K_M, and F16 rungs as their own comparison, because that
+class already showed a fixed-cost regime the larger two do not share.
+Speculation follows role: a 2B target drafted by the 0.8B leads, a 4B target
+drafted by the 0.8B follows, the 2B's own prediction block at N=1 ranks beside
+the first, and the 0.8B as target takes n-gram or a smaller draft where one
+loads.
+
+Quality belongs to the learned checkpoint and throughput belongs to the
+execution class. Every checkpoint in `remote/models.tsv` -- stock, distill,
+uncensored, or reasoning fine-tune -- receives its own graded reasoning, code,
+tool-selection, and termination admission, and the only arm a fine-tune skips
+is a throughput arm whose architecture, tensor shapes, quantization, backend,
+and serving tuple equal a row already measured. Registry entry needs the
+strict one-token Vulkan load alone; a filled-depth arm, the graded suite, the
+tool-selection grade, and a role comparison against its class control follow
+when the checkpoint is chosen for a role, and visibility in the picker does
+not by itself schedule device time.
+
 ## The launch chain
 
 One command starts the appliance and one ends it. The chain between them
@@ -718,6 +748,9 @@ exports from the session state directory on every launch and
 where its all-idle check finds a busy slot and releases it where the check finds
 none, so an idle loaded server holds nothing while every decoding pass runs
 inside the lease, and the release trails the final decode by exactly one pass.
+Acquisition returns whether the pass may submit: a wait ended by a terminating
+signal or refused by the kernel leaves `update_slots` before it posts
+`NEXT_RESPONSE`, so no graph reaches the device in a pass that holds no lease.
 The acquire tries `LOCK_EX | LOCK_NB` first and logs the waiting line ahead of
 the block, so a stall is visible while it lasts and the acquire line carries
 `waited_ms`. The child holds it in router mode, since `server.cpp` calls
