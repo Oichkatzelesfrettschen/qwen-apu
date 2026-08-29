@@ -205,7 +205,12 @@ for capture_file in "$output_directory"/http/*; do
 done
 
 # The checked-in ledger is the authority the run copies from and never edits.
-if ! grep -q '^image-sdxs-512-a	.*	refused	-$' "$script_directory/image-profiles.tsv"; then
+# The row's `execution_policy` is field 12 and `validated_evidence` is field 13,
+# so the policy is read by column: a campaign that records an evidence path
+# beside the same refusal leaves the authority unchanged.
+if ! awk -F'	' '$1 == "image-sdxs-512-a" && $12 == "refused" { found = 1 }
+                 END { exit found ? 0 : 1 }' \
+        "$script_directory/image-profiles.tsv"; then
     printf 'test-admit-image-router: the checked-in image ledger left refused\n' >&2
     exit 1
 fi

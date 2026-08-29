@@ -606,7 +606,9 @@ generation. It promotes one `remote/image-profiles.tsv` row to
 alone, generates the preset under `QWEN_WEB_AUTHORIZER_READY=1`, launches
 through `qwen-image-launch.sh`, and replays every request the page makes with
 curl on the router port and the artifact listener: `GET /tools?model=` lists
-`generate_image`, `POST /grant-image` signs over a seed the script chose, one
+`image_generate_image`, since `server_mcp_tool` serves each wrapped tool as
+`<server>_<tool>` and the section configures the image MCP server under the key
+`image`, `POST /grant-image` signs over a seed the script chose, one
 `POST /tools` carrying the grant inside `params` completes with a digest and a
 provenance route, and the replayed grant, the ungranted call, the
 out-of-schema argument, the foreign image profile, and the uncredentialed

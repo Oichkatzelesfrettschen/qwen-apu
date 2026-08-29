@@ -6,9 +6,10 @@
 admission needs a different surface: the roster and `/props` a page selects a
 model from, `GET /tools` and `POST /tools` in the shape
 `patches/llama-router-tools-proxy.patch` puts on the router port, a streaming
-chat completion that proposes one `generate_image` call, and the fallback page
-itself at `/`. Adding those to the shell fixture would change what three other
-lanes measure, so this is a second fixture rather than a mode of the first.
+chat completion that proposes one `image_generate_image` call, and the fallback
+page itself at `/`. Adding those to the shell fixture would change what three
+other lanes measure, so this is a second fixture rather than a mode of the
+first.
 
 What it reproduces of the router is the routing rule the admission tests. `GET
 /tools` resolves the model from `?model=`, `POST /tools` resolves it from the
@@ -21,7 +22,7 @@ there. An `isError` result becomes an `error` key at HTTP 200, which is what
 
 What it stands in for is the device. There is no model: the chat completion is
 a fixed script, and `QWEN_FAKE_ROUTER_IMAGE_ARGUMENTS` names the JSON the one
-proposed `generate_image` call carries. A turn that carries a tool message
+proposed `image_generate_image` call carries. A turn that carries a tool message
 already reads the closing plain-text answer, so the fixture proposes once per
 turn the way a model that read its own result would.
 
@@ -44,6 +45,12 @@ import threading
 import urllib.parse
 
 MCP_PROTOCOL_VERSION = "2024-11-05"
+
+# The section configures the image MCP server under this key, so the router
+# serves its one tool under the composed name and the fixture proposes that
+# name rather than the child's own.
+IMAGE_MCP_SERVER_NAME = "image"
+IMAGE_MCP_TOOL_NAME = "generate_image"
 
 
 def parse_arguments(argv):
@@ -112,6 +119,10 @@ def read_preset(path):
 
 class MissingTools(Exception):
     """The section configures no MCP server, so the route answers as the binary does."""
+
+
+class UnknownTool(Exception):
+    """No served name matches, which `find_tool` raises and the route answers at 404."""
 
 
 class ToolChild:
@@ -184,17 +195,30 @@ class ToolChild:
                 child.kill()
 
 
+def served_tool_name(server_name, tool_name):
+    """Return the name llama-server serves one MCP tool under.
+
+    `server_mcp_tool` sets `name = server_name + "_" + tool_name`
+    (tools/server/server-tools.cpp:1814) and the listing composes the same
+    string (:2046), so the configured `mcpServers` key decides what `GET
+    /tools` lists and what `POST /tools` must name. A server configured as
+    `image` serves `generate_image` as `image_generate_image`.
+    """
+    return f"{server_name}_{tool_name}"
+
+
 def tool_listing(child):
     """Return the `[{tool, definition}]` shape the page composes body.tools from."""
     listing = []
-    for _, reply in child.call("tools/list", {}):
+    for server_name, reply in child.call("tools/list", {}):
         for tool in (reply.get("result") or {}).get("tools") or []:
+            name = served_tool_name(server_name, tool["name"])
             listing.append({
-                "tool": tool["name"],
+                "tool": name,
                 "definition": {
                     "type": "function",
                     "function": {
-                        "name": tool["name"],
+                        "name": name,
                         "description": tool.get("description", ""),
                         "parameters": tool.get("inputSchema") or {"type": "object"},
                     },
@@ -206,13 +230,23 @@ def tool_listing(child):
 def call_tool(child, name, params):
     """Return the HTTP body one tool call produces.
 
+    `find_tool` matches the composed `<server>_<tool>` name and raises for any
+    other string (tools/server/server-tools.cpp:1935), which the route answers
+    at 404 (:2163), and `server_mcp_tool::invoke` hands the child the bare tool
+    name (:1838). The owning server is found by its own key rather than by
+    splitting on the first underscore, so a configured name containing one
+    still resolves.
+
     `mcp_result_to_response` maps an `isError` result onto an `error` key at
     HTTP 200, so a refusal is read from the body rather than from the status,
     and the page and the shell harness both read it there.
     """
     for server_name, definition in child.servers.items():
+        prefix = server_name + "_"
+        if not name.startswith(prefix):
+            continue
         reply = ToolChild._one(
-            definition, "tools/call", {"name": name, "arguments": params}
+            definition, "tools/call", {"name": name[len(prefix):], "arguments": params}
         )
         if "error" in reply:
             return {"error": reply["error"].get("message", "the tool call failed")}
@@ -224,7 +258,7 @@ def call_tool(child, name, params):
         if result.get("isError"):
             return {"error": text or f"{server_name} refused the call"}
         return {"plain_text_response": text}
-    return {"error": "no server answered the call"}
+    raise UnknownTool(f'unknown tool "{name}"')
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -369,6 +403,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.send_json(200, call_tool(self.tools_child(), name, params))
             except MissingTools:
                 self.send_error_object(403, "tools are disabled", "feature_disabled")
+            except UnknownTool as error:
+                self.send_error_object(404, str(error), "not_found_error")
             except (OSError, ValueError, RuntimeError) as error:
                 self.send_error_object(500, f"the tool call failed: {error}", "server_error")
             return
@@ -392,7 +428,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             for tool in body.get("tools") or []
             if isinstance(tool, dict)
         }
-        if continuation or "generate_image" not in offered:
+        image_tool = served_tool_name(IMAGE_MCP_SERVER_NAME, IMAGE_MCP_TOOL_NAME)
+        if continuation or image_tool not in offered:
             chunks = [
                 {"choices": [{"index": 0, "delta": {"content": self.settings["answer"]}}]},
                 {"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
@@ -405,7 +442,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "id": "call_image_admission",
                 "type": "function",
                 "function": {
-                    "name": "generate_image",
+                    "name": image_tool,
                     "arguments": self.settings["image_arguments"],
                 },
             }

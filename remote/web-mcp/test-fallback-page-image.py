@@ -5,7 +5,7 @@ The Image half of PR D is the same one-human-approval discipline as the web
 search tool, with its own grant context (qwen-image-generate-v1) and its own
 synchronous state line. This test stands up one stub HTTP server that plays
 every route the page touches -- the model roster, the tool listing, a
-streamed chat completion that proposes generate_image, the broker's session
+streamed chat completion that proposes image_generate_image, the broker's session
 and grant-image routes, the executor's POST /tools, and the artifact PNG --
 and drives the served page in headless Chromium over the DevTools protocol,
 the way drive-fallback-page.py drives the web search turn. It reuses that
@@ -49,6 +49,14 @@ PROVENANCE_PATH = "/artifacts/{}.json".format(ARTIFACT_SHA256)
 API_KEY = "test-image-key"
 GRANT_TOKEN = "grant-token-abc"
 SESSION_SECRET = "session-secret-xyz"
+# llama-server serves an MCP tool as `<server>_<tool>`: server_mcp_tool sets
+# name = server_name + "_" + tool_name (tools/server/server-tools.cpp:1814) and
+# the listing composes the same string (:2046), so the section's `image` server
+# serves `generate_image` as `image_generate_image` and the page addresses it by
+# that name. The stub composes it here once, the way the router does.
+IMAGE_MCP_SERVER_NAME = "image"
+IMAGE_MCP_TOOL_NAME = "generate_image"
+IMAGE_TOOL_NAME = "{}_{}".format(IMAGE_MCP_SERVER_NAME, IMAGE_MCP_TOOL_NAME)
 
 # Load drive-fallback-page.py by path: its filename carries a hyphen, so it
 # is not importable as a normal module.
@@ -114,11 +122,11 @@ def make_handler(state):
                 return
             if parsed_path == "/tools":
                 self._send_json(200, [{
-                    "tool": "generate_image",
+                    "tool": IMAGE_TOOL_NAME,
                     "definition": {
                         "type": "function",
                         "function": {
-                            "name": "generate_image",
+                            "name": IMAGE_TOOL_NAME,
                             "description": "Generate one image.",
                             "parameters": {
                                 "type": "object",
@@ -165,7 +173,7 @@ def make_handler(state):
                     message.get("role") == "tool"
                     for message in request_body.get("messages", []))
                 if already_ran:
-                    # The model proposes generate_image exactly once; the
+                    # The model proposes the image tool exactly once; the
                     # continuation round after the tool result reads plain
                     # text with no further calls, so the turn ends the way an
                     # ordinary model turn would rather than the fixture
@@ -185,7 +193,7 @@ def make_handler(state):
                     chunks = [
                         {"choices": [{"delta": {"tool_calls": [{
                             "index": 0,
-                            "function": {"name": "generate_image", "arguments": arguments},
+                            "function": {"name": IMAGE_TOOL_NAME, "arguments": arguments},
                         }]}}]},
                         {"choices": [{"delta": {}, "finish_reason": "tool_calls"}],
                          "usage": {"completion_tokens": 1}},
@@ -216,7 +224,7 @@ def make_handler(state):
                 payload = self._read_json_body()
                 with state.lock:
                     state.tools_post_bodies.append(payload)
-                if payload.get("tool") != "generate_image":
+                if payload.get("tool") != IMAGE_TOOL_NAME:
                     self._send_json(200, {"error": "unknown tool"})
                     return
                 params = payload.get("params") or {}
@@ -377,24 +385,24 @@ def main():
         if not isinstance(grant.get("seed"), int):
             failures.append("grant did not carry an integer seed: " + repr(grant.get("seed")))
 
-    image_tool_calls = [body for body in tools_bodies if body.get("tool") == "generate_image"]
+    image_tool_calls = [body for body in tools_bodies if body.get("tool") == IMAGE_TOOL_NAME]
     if len(image_tool_calls) != 1:
-        failures.append("expected exactly one POST /tools for generate_image, saw {}"
+        failures.append("expected exactly one POST /tools for " + IMAGE_TOOL_NAME + ", saw {}"
                          .format(len(image_tool_calls)))
     else:
         params = image_tool_calls[0].get("params") or {}
         if params.get("authorization") != GRANT_TOKEN:
-            failures.append("the generate_image call did not carry the issued grant")
+            failures.append("the " + IMAGE_TOOL_NAME + " call did not carry the issued grant")
         if "prompt" not in params:
-            failures.append("the generate_image call carried no prompt")
+            failures.append("the " + IMAGE_TOOL_NAME + " call carried no prompt")
         # remote/image-mcp/server.py names this argument profile_id, requires
         # it, and refuses any name outside its schema, so the page's own wire
         # spelling is checked here rather than only against a stub that would
         # accept either.
         if params.get("profile_id") != "sdxs-512-arm-a":
-            failures.append("the generate_image call named no profile_id: " + repr(params.get("profile_id")))
+            failures.append("the " + IMAGE_TOOL_NAME + " call named no profile_id: " + repr(params.get("profile_id")))
         if "profile" in params:
-            failures.append("the generate_image call carries a profile key the tool refuses by name")
+            failures.append("the " + IMAGE_TOOL_NAME + " call carries a profile key the tool refuses by name")
 
     if "Bearer " + API_KEY not in artifact_headers:
         failures.append("the artifact fetch never carried the page's credential header")
@@ -409,9 +417,9 @@ def main():
         failures.append("the artifact card caption does not name the dimensions")
 
     tool_messages = [m for m in report.get("history", [])
-                      if m.get("role") == "tool" and m.get("name") == "generate_image"]
+                      if m.get("role") == "tool" and m.get("name") == IMAGE_TOOL_NAME]
     if len(tool_messages) != 1:
-        failures.append("expected exactly one retained generate_image tool message, saw {}"
+        failures.append("expected exactly one retained " + IMAGE_TOOL_NAME + " tool message, saw {}"
                          .format(len(tool_messages)))
     else:
         content = tool_messages[0].get("content", "")
