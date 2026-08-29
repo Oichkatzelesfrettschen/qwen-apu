@@ -81,7 +81,7 @@ the fixture arm in `remote/test-admit-image-router.sh` proves the retry
 mechanism accepts on attempt 2 when a fake router is scripted to propose
 there, not that the appliance's own second attempt would have proposed.
 
-## The 4B's behavior on the explicit prompt, across launches
+## The reply on the explicit prompt, across launches, and which model gave it
 
 The prompt is fixed: "Call the image_generate_image tool now to generate
 this image: a red apple on a white table, product photography. Do not
@@ -93,16 +93,20 @@ agree on what the model does with the schema it is offered:
 | `evidence/image-appliance/served-turn-admission/` | A schema-valid `tool_calls` entry: `{"prompt":"a red apple on a white table, product photography","seed":12345,"width":512,"height":512,"steps":1,"profile_id":"image-sdxs-512-a"}`. |
 | Earlier run (not separately retained) | A schema-valid `tool_calls` entry, reported the same as above. |
 | Earlier run (not separately retained) | Prose: a plain description of the requested image, no `tool_calls` entry and no call-shaped text. |
-| This run | Pseudo-call text in `content`: `image_generate_image(red_apple_on_white_table, product_photography)` -- syntax that names the tool and a garbled form of its arguments without ever populating the `tool_calls` array the page's parser reads. |
+| This run | Pseudo-call text in `content`: `image_generate_image(red_apple_on_white_table, product_photography)` -- and `browser-turn.json` records the page's request model as `lfm25-vl-16b`, the review-only row, which sorts first in the router's roster and became the page's default; the 4B never received this turn. |
 
-Three distinct behaviors span four runs on one fixed prompt at temperature
-0.7: a correct proposal, a prose refusal, and a fourth kind of reply that
-looks like a proposal to a human reader and is invisible to the page's parser.
-`raw_tool_selection` in `remote/models.tsv` grades the 4B distill 9 of 10 on
-selection; this prompt is not one of the ten graded rows, and the variance
-recorded here is what motivates the retry bound above rather than a single
-attempt's outcome, and a later graded arm over multiple repeats of this exact
-prompt is what would turn "three behaviors observed" into a rate.
+The 4B has three runs on record on this prompt: two schema-valid proposals
+and one prose reply. The fourth reply, the pseudo-call text, is the 1.6B
+review-only row's: the router lists `/v1/models` sorted, `lfm25-vl-16b`
+sorts ahead of `web-image-admission`, and the page selected the first id at
+load and posted the chat to it with no `tools` key, since a review-only row
+offers none. A rerun of the same launch after PR #69 repeated that selection
+across both attempts (`image_generate_image(...)` and then `image_generate_image`
+alone), which is what identified the page's default rather than the 4B as the
+cause. `raw_tool_selection` in `remote/models.tsv` grades the 4B distill 9 of
+10 on selection; this prompt is not one of the ten graded rows, and the 4B's
+own variance (two proposals, one prose reply) is what motivates the retry
+bound above. The page's default-row rule is the correction that follows.
 
 ## Contents
 
