@@ -75,9 +75,22 @@ the acquire then writes
 srv  workload_lea: vulkan workload lease wait ended without the lease: path=... waited_ms=... reason=Interrupted system call
 ```
 
-and returns, which lets the task queue observe the termination it was told
-about. Looping on `EINTR` instead would leave `qwen-teardown.sh` reporting
-residue for a server whose main thread can never unblock.
+and returns false. `update_slots` then leaves the pass without posting
+`NEXT_RESPONSE`, so no graph reaches the device in a pass that holds no lease,
+and the task queue observes the termination it was told about. Any other
+`errno` from the lock is refused the same way and logged as `vulkan workload
+lease failed`, which trades liveness for the invariant: a pass that ran
+without the lease is the state the lease exists to exclude, and a server whose
+main thread stalls on a refused lock is what `qwen-teardown.sh` reports as
+residue rather than what runs beside a generation. Looping on `EINTR` instead
+would leave that residue for a server whose main thread can never unblock.
+
+A CPU-only build of the fixed patch, started against a lock another process
+held, wrote `lease waiting` on its first completion request, received SIGTERM
+two seconds later, wrote `lease wait ended without the lease ... Interrupted
+system call`, and exited 0 with no `lease acquired` line and an empty reply,
+so the terminating signal leaves the pass before any submission and the
+server ends cleanly.
 
 ## Falsifiers
 
@@ -104,7 +117,7 @@ tree admits all ten checks:
 ok lock_basename=vulkan-workload.lock shared by the policy and the service
 ok both writers resolve the lock under the session state directory
 ok the workload lock variable survives the environment scrub
-ok patch_applies=yes sha256=2338c52a5fc73f029f016e022cacc5892412bf2d11284fe18f5c632144f47916
+ok patch_applies=yes sha256=179391b17c8c24a3e7de0a3e7ccf91c5dfec2015f14fce63bf0665fea4516a9e
 ok the server arms the lease at startup
 ok an idle loaded server leaves the lease free
 ok the reply waits for the holder: elapsed=6s hold=6s

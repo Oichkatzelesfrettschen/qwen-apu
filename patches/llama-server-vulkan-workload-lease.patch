@@ -54,7 +54,7 @@ llama-vulkan-runtime-submit-limit, llama-vulkan-submit-trace,
 llama-router-tools-proxy, and llama-vulkan-view-alias-deps, in that order.
 
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index a9edbd7be..55116e223 100644
+index a9edbd7be..5c7da3b7e 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
 @@ -26,6 +26,14 @@
@@ -90,7 +90,7 @@ index a9edbd7be..55116e223 100644
      server_context_impl() {
          mtmd_helper_log_set(common_log_default_callback, nullptr);
      }
-@@ -887,7 +906,102 @@ private:
+@@ -887,7 +906,108 @@ private:
  
      int64_t t_last_load_progress_ms = 0;
  
@@ -128,10 +128,14 @@ index a9edbd7be..55116e223 100644
 +    // A non-blocking attempt runs first so the waiting line reaches the log
 +    // before the block rather than after it, which is what makes a stall
 +    // visible while it lasts.
-+    void workload_lease_acquire() {
++    // Returns true when this pass may submit graphs: the lease is held, or no
++    // lease is configured. Every failure returns false so the caller leaves
++    // the pass without posting NEXT_RESPONSE, because a pass that submits
++    // without the lease is the one state the lease exists to exclude.
++    bool workload_lease_acquire() {
 +#if defined(__unix__) || (defined(__APPLE__) && defined(__MACH__))
 +        if (workload_lease_descriptor < 0 || workload_lease_held) {
-+            return;
++            return true;
 +        }
 +
 +        int64_t waited_ms = 0;
@@ -140,7 +144,7 @@ index a9edbd7be..55116e223 100644
 +            if (errno != EWOULDBLOCK && errno != EAGAIN) {
 +                SRV_ERR("vulkan workload lease failed: path=%s reason=%s\n",
 +                        workload_lease_path.c_str(), strerror(errno));
-+                return;
++                return false;
 +            }
 +
 +            SRV_INF("vulkan workload lease waiting: path=%s\n", workload_lease_path.c_str());
@@ -151,13 +155,14 @@ index a9edbd7be..55116e223 100644
 +
 +            if (result != 0) {
 +                // server.cpp registers SIGINT and SIGTERM with sa_flags = 0, so
-+                // a terminating signal returns EINTR here. Returning without
-+                // the lease lets the task queue observe the termination it was
-+                // told about; a queue that is still live retries on its next
-+                // update_slots pass.
++                // a terminating signal returns EINTR here. The caller leaves
++                // the pass without submitting, which lets the task queue
++                // observe the termination it was told about; any other errno
++                // is a lock the kernel refused, and the pass is refused with
++                // it rather than run beside the holder.
 +                SRV_WRN("vulkan workload lease wait ended without the lease: path=%s waited_ms=%" PRId64 " reason=%s\n",
 +                        workload_lease_path.c_str(), waited_ms, strerror(errno));
-+                return;
++                return false;
 +            }
 +        }
 +
@@ -166,6 +171,7 @@ index a9edbd7be..55116e223 100644
 +        SRV_INF("vulkan workload lease acquired: path=%s waited_ms=%" PRId64 "\n",
 +                workload_lease_path.c_str(), waited_ms);
 +#endif
++        return true;
 +    }
 +
 +    void workload_lease_release() {
@@ -193,7 +199,7 @@ index a9edbd7be..55116e223 100644
          spec.reset();
          spec_init.reset();
  
-@@ -1317,6 +1431,10 @@ private:
+@@ -1317,6 +1437,10 @@ private:
  
      // unlike load_model(), this is only called once during initialization
      bool init() {
@@ -204,7 +210,7 @@ index a9edbd7be..55116e223 100644
          GGML_ASSERT(ctx_tgt   != nullptr);
          GGML_ASSERT(model_tgt != nullptr);
  
-@@ -2700,6 +2818,10 @@ private:
+@@ -2700,6 +2824,10 @@ private:
              }
  
              if (all_idle) {
@@ -215,14 +221,17 @@ index a9edbd7be..55116e223 100644
                  SRV_TRC("%s", "all slots are idle\n");
  
                  metrics_flush_idle();
-@@ -2707,6 +2829,11 @@ private:
+@@ -2707,6 +2835,14 @@ private:
                  return; // skip further processing
  
              } else {
 +                // Every graph this pass submits runs under the lease, and the
 +                // block here is what an image generation in flight costs a
-+                // chat turn.
-+                workload_lease_acquire();
++                // chat turn. A pass refused the lease posts nothing, so no
++                // graph reaches the device without it.
++                if (!workload_lease_acquire()) {
++                    return;
++                }
 +
                  SRV_DBG("%s", "posting NEXT_RESPONSE\n");
  
