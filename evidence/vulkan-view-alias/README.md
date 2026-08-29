@@ -174,9 +174,50 @@ the next invocation starts from the first arm. `remote/probe-depth-wedge.sh`
 treats its output directory as a resumable ledger and this harness does not, so
 a ten-hour matrix is worth splitting into per-model invocations.
 
+## Result on the appliance
+
+`ab-2b/` retains the run: `qwen38-2b-distill` at its registry tuple (24576,
+128/32, q8_0/q4_0, Flash Attention on), 256 predicted tokens, seed 1, three
+server starts per arm and four requests per start over the six prompts, 72
+samples per arm, on the RADV RAVEN2 device with the router torn down.
+
+| arm | within-start self-consistency | across-start self-consistency | against optimizer-off |
+| --- | --- | --- | --- |
+| production, optimizer on | divergent on 5 of 6 prompts | identical on 6 of 6 | divergent on 5 of 6 (first divergence at token 1, 2, 2, 2, 14) |
+| production, optimizer off | identical on 6 of 6 | identical on 6 of 6 | reference |
+| alias patch, optimizer on | identical on 6 of 6 | identical on 6 of 6 | identical on 5 of 6; `variable-trace` diverges at token 109 |
+
+The production build disagrees with itself: four requests into one server
+process at temperature 0 with `cache_prompt` off return different token arrays
+on five prompts, and the first difference sits inside the first fourteen
+tokens. That is the defect reproduced without the patched build, and the
+across-start agreement shows the disorder lives inside a process rather than
+in its start. The optimizer-off arm is identical on every comparison, so the
+reordering alone carries it. The patched build is identical on every
+self-consistency comparison and rejoins the optimizer-off sequence on five
+prompts; on `variable-trace` it departs at token 109 and then repeats that
+departure in all twelve samples. A deterministic difference from a graph the
+patch still reorders is floating-point non-associativity of a legitimately
+reordered reduction, which the harness cannot separate from a missed
+dependency; the falsifier registered above reads a patched-arm difference as
+a question for the backport, and this one is retained as open with its
+determinism as the fact that distinguishes it from the production arm's
+within-process disorder. Any self-inconsistency promotes the patch, so
+`llama-vulkan-view-alias-deps.patch` joins the production series as its
+seventh member and `verify_source` carries `ggml/src/ggml-vulkan/ggml-vulkan.cpp`
+at `dfac33fe7fd487fc136e2915de7d5c146a3921b231ffef55877c6dd9e4f2c164`.
+
+The promotion also found the appliance's production source tree one patch
+behind the series: `llama-vulkan-submit-trace.patch` had been added to
+`verify-llama-patch-series.sh` without being applied to the working tree the
+promoted build compiles from, so the tree's `ggml-vulkan.cpp` read
+`0527a209...` after the alias patch where the replay reads `dfac33fe...`.
+Applying the trace patch brought all seven verified files to their replay
+digests before the rebuild, and the digest line the promote chain prints
+exists so the next drift is caught before a build rather than after.
+
 ## Status
 
-The lane is prepared and unrun on the device. Ancestry is proved, the backport
-applies cleanly after the production series, and the harness passes its offline
-gate. No arm has executed against a GPU, so the hypothesis stands untested and
-`remote/models.tsv` and the production patch series are unchanged.
+The lane has run on the device and the patch is promoted. The promoted build's
+own admission -- `remote/promote-llama-build.sh`'s Vulkan token and image gates
+-- is recorded beside this file when the chain completes.

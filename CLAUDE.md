@@ -844,6 +844,20 @@ binary answers `403 feature_disabled` for every ordinary model: the route is
 in the binary and the tool set belongs to the section.
 `evidence/web-admission-router-tools.md` records the run on that closure.
 
+`patches/llama-vulkan-view-alias-deps.patch` is the seventh member of the
+production series. `ggml_vk_graph_optimize` at the pinned commit compares
+view bases rather than the underlying tensor when it decides which nodes may
+reorder, so two views of one buffer read as independent and a write moves past
+a read. On the appliance the production build answered the same prompt with
+different token arrays four requests into one process at temperature 0 on
+five of six prompts, the first difference inside fourteen tokens, while the
+optimizer-off arm and the patched arm were identical on every self-consistency
+comparison; `evidence/vulkan-view-alias/ab-2b/` retains the run. A source tree
+the promoted build compiles from must carry every series member: the
+appliance's tree was one patch behind the verifier's list before this
+promotion, which the digest line in the promote chain now catches before a
+build.
+
 ## Commands
 
 ```sh
