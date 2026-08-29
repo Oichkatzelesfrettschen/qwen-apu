@@ -76,13 +76,18 @@ validate_image_registries() {
             return value ~ /^(euler|euler_a|heun|dpm2|dpm\+\+2s_a|dpm\+\+2m|dpm\+\+2mv2|ipndm|ipndm_v|lcm|ddim_trailing|tcd)$/
         }
         function component_slot(value, wanted, subject, slot,    ok) {
+            # wanted is a pipe-separated alternation over component_type, so the
+            # vae slot can name either a full vae decoder or a tae Tiny
+            # AutoEncoder decoder without a second slot column: both reach the
+            # runtime decode stage, and which flag carries the file is a
+            # runtime-argv concern rather than a bundle-composition one.
             if (value == "packaged" || value == "-") { return 1 }
             if (!(value in artifact_type)) {
                 reject(sprintf("%s: %s component %s names no artifact", \
                     subject, slot, value))
                 return 0
             }
-            if (artifact_type[value] != wanted) {
+            if (artifact_type[value] !~ ("^(" wanted ")$")) {
                 reject(sprintf("%s: %s component %s is component_type %s, expected %s", \
                     subject, slot, value, artifact_type[value], wanted))
                 return 0
@@ -129,7 +134,7 @@ validate_image_registries() {
             if ($7 == "" || $7 == "-") {
                 reject(sprintf("%s: license is unnamed", $1))
             }
-            if ($8 !~ /^(diffusion|vae|text_encoder|lora|runtime)$/) {
+            if ($8 !~ /^(diffusion|vae|tae|text_encoder|lora|runtime)$/) {
                 reject(sprintf("%s: component_type %s is outside the vocabulary", $1, $8))
             }
             if ($9 !~ /^(download|derive)-[a-z0-9][a-z0-9.-]*\.sh$/) {
@@ -163,7 +168,7 @@ validate_image_registries() {
             } else {
                 component_slot($3, "diffusion", $1, "diffusion")
             }
-            component_slot($4, "vae", $1, "vae")
+            component_slot($4, "vae|tae", $1, "vae")
             component_slot($5, "text_encoder", $1, "text_encoder")
             component_slot($6, "lora", $1, "lora")
             if ($6 == "packaged") {

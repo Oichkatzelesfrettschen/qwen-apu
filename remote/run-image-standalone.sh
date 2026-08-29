@@ -32,6 +32,7 @@ usage() {
     printf '  QWEN_IMAGE_POLL_INTERVAL_S        default 0.2\n' >&2
     printf '  QWEN_IMAGE_SKIP_MODEL_HASH=1      skip hashing MODEL_PATH\n' >&2
     printf '  QWEN_IMAGE_ALLOW_LLAMA_RESIDENT=1 skip the no-llama-process precondition\n' >&2
+    printf '  QWEN_IMAGE_TAESD                  Tiny AutoEncoder file, passed through --taesd\n' >&2
     printf '  QWEN_VULKANINFO_COMMAND, QWEN_DRM_DEVICE, QWEN_HWMON_ROOT  device probes\n' >&2
     exit 2
 }
