@@ -29,6 +29,14 @@ set -eu
 # command string, so the value reaches qwen-capacity-policy.sh across the tmux
 # boundary that a plain export stops at.
 #
+# QWEN_WEB_REVIEW_SECTION raises both numbers by one. qwen-image-launch.sh sets
+# it to the review-only vision section build-web-presets.sh emits beside the
+# language one, having proved that pair fits the Vulkan budget the memory
+# preflight reports; the page then reads two ids from `GET /v1/models` and its
+# Review button reaches the vision row. The name is required to be a section the
+# preset actually carries, so a marker that survived a regeneration refuses the
+# launch rather than raising the model limit for a section that left.
+#
 # The wrapper reports the preset's marker state and the QWEN_WEB_AUTHORIZER_READY
 # setting before it launches, because those two decide what the running server
 # can do: the marker says a section serves a depth no run has filled and
@@ -177,7 +185,7 @@ if grep -qx '# qwen-web-presets: unvalidated-depth-override' "$web_presets"; the
 else
     depth_marker_state=absent
 fi
-printf 'web_launch presets=%s unvalidated_depth_marker=%s authorizer_ready=%s bind=127.0.0.1 models_max=1\n' \
+printf 'web_launch presets=%s unvalidated_depth_marker=%s authorizer_ready=%s bind=127.0.0.1\n' \
     "$web_presets" "$depth_marker_state" "${QWEN_WEB_AUTHORIZER_READY:-0}"
 
 # The approval broker's lifetime is this launch's. A section reaching the
@@ -236,19 +244,48 @@ export QWEN_WEB_TOKEN_KEY_FILE
 
 # One broker signs for one profile: `POST /grant` refuses a `profile_id` other
 # than the `--profile` the broker started with, so a preset holding several
-# sections would leave every section but one with a broker that refuses it,
-# and the browser would learn that after a human approved the search. The
-# profile is therefore read from the preset rather than typed: the launch
-# requires exactly one section, names it QWEN_WEB_PROFILE, and refuses a
-# caller whose own QWEN_WEB_PROFILE names anything else.
+# language sections would leave every section but one with a broker that
+# refuses it, and the browser would learn that after a human approved the
+# search. The profile is therefore read from the preset rather than typed: the
+# launch requires exactly one language section, names it QWEN_WEB_PROFILE, and
+# refuses a caller whose own QWEN_WEB_PROFILE names anything else.
+#
+# A review-only vision section is the one section that joins it, and the broker
+# signs nothing for it: the page posts one chat completion to that model and
+# the request body omits `tools`, so the reviewer reaches neither the network
+# nor the device. The section name is therefore subtracted here before the
+# language profile is read, since a second header would otherwise make
+# preset_profile two lines and hand the broker a profile spelled across a
+# newline.
+review_section=${QWEN_WEB_REVIEW_SECTION:-}
+case $review_section in
+    '' | *[!A-Za-z0-9._-]*)
+        if [ -n "$review_section" ]; then
+            printf 'QWEN_WEB_REVIEW_SECTION is not a section name: %s\n' \
+                "$review_section" >&2
+            exit 2
+        fi
+        ;;
+esac
+expected_section_count=1
+if [ -n "$review_section" ]; then
+    if ! grep -qxF "[$review_section]" "$web_presets"; then
+        printf 'QWEN_WEB_REVIEW_SECTION names %s, which %s carries no section for\n' \
+            "$review_section" "$web_presets" >&2
+        printf 'regenerate the preset tree with remote/build-web-presets.sh\n' >&2
+        exit 2
+    fi
+    expected_section_count=2
+fi
 preset_section_count=$(grep -c '^\[[^]]*\]$' "$web_presets" || true)
-if [ "$preset_section_count" -ne 1 ]; then
-    printf 'web router mode starts one broker for one profile, and %s carries %s sections\n' \
-        "$web_presets" "$preset_section_count" >&2
-    printf 'generate a preset holding exactly one section, or launch each profile from its own preset file\n' >&2
+if [ "$preset_section_count" -ne "$expected_section_count" ]; then
+    printf 'web router mode starts one broker for one profile, and %s carries %s sections where %s are admitted\n' \
+        "$web_presets" "$preset_section_count" "$expected_section_count" >&2
+    printf 'generate a preset holding one language section, and one review-only vision section where an image row pairs a review_model\n' >&2
     exit 2
 fi
-preset_profile=$(sed -n 's/^\[\([^]]*\)\]$/\1/p' "$web_presets")
+preset_profile=$(sed -n 's/^\[\([^]]*\)\]$/\1/p' "$web_presets" |
+    grep -vxF "${review_section:-}" || true)
 case $preset_profile in
     '' | *[!A-Za-z0-9._-]*)
         printf 'web preset section name is not a profile id: %s\n' "$preset_profile" >&2
@@ -278,8 +315,9 @@ if [ -n "${QWEN_WEB_PROVIDER:-}" ] && \
 fi
 QWEN_WEB_PROVIDER=$preset_provider
 export QWEN_WEB_PROFILE QWEN_WEB_PROVIDER
-printf 'web_launch broker_port=%s broker_state_dir=%s signing_key=configured profile=%s provider=%s\n' \
-    "$QWEN_WEB_BROKER_PORT" "$QWEN_WEB_STATE_DIR" "$QWEN_WEB_PROFILE" "$QWEN_WEB_PROVIDER"
+printf 'web_launch broker_port=%s broker_state_dir=%s signing_key=configured profile=%s provider=%s review_section=%s models_max=%s\n' \
+    "$QWEN_WEB_BROKER_PORT" "$QWEN_WEB_STATE_DIR" "$QWEN_WEB_PROFILE" \
+    "$QWEN_WEB_PROVIDER" "${review_section:--}" "$expected_section_count"
 
 # The page the router serves is the executor the browser runs, and the pinned
 # llama UI build neither scopes GET /tools by model nor posts the routing key
@@ -305,7 +343,9 @@ printf 'web_launch static_path=%s\n' "$QWEN_STATIC_PATH"
 
 QWEN_ROUTER=1
 QWEN_ROUTER_PRESETS=$web_presets
-QWEN_ROUTER_MAX=1
+# The router holds one child per admitted section, so a review section raises
+# the limit to the pair the launch already proved resident.
+QWEN_ROUTER_MAX=$expected_section_count
 QWEN_BIND_HOST=127.0.0.1
 export QWEN_ROUTER QWEN_ROUTER_PRESETS QWEN_ROUTER_MAX QWEN_BIND_HOST
 export QWEN_WEB_BROKER QWEN_WEB_BROKER_PORT QWEN_WEB_STATE_DIR

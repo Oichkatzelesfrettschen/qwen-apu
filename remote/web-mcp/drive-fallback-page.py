@@ -12,9 +12,10 @@ library alone, because the appliance carries Chromium and Python and no
 browser-automation package.
 
 The report on stdout is one JSON object: the page origin, the model the page
-selected, the dialog fields, the transcript the page holds after the turn,
-and the request log the page's own fetch calls produced, captured by wrapping
-window.fetch before the prompt is sent. Every request in that log is what the
+selected, the dialog fields, the rendered review verdict where `--review`
+drove one, the transcript the page holds after the turn, and the request log
+the page's own fetch calls produced, captured by wrapping window.fetch before
+the prompt is sent. Every request in that log is what the
 browser sent; the shell harness compares them against the routes it drove.
 The report is written on every exit path, including a raised TimeoutError:
 `error` names the exception type and message where one interrupted the turn
@@ -31,6 +32,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import socket
 import struct
 import subprocess
@@ -178,6 +180,12 @@ def capture_transcript(page):
         return {}
 
 
+# `body` is truncated because one request carries a data URI of a whole PNG,
+# and a harness reading a cut string cannot parse it. `bodyKeys` carries the
+# top-level key names of a JSON body whole, so a check on which keys a request
+# sent -- that a review carried no `tools`, for instance -- reads the names
+# rather than a fragment, and the values stay out of the report the way the
+# grant does.
 FETCH_RECORDER = """
 (() => {
   window.__qwenRequests = [];
@@ -186,16 +194,74 @@ FETCH_RECORDER = """
     const url = typeof input === 'string' ? input : input.url;
     let body = init && init.body;
     if (typeof body !== 'string') body = null;
+    let bodyKeys = null;
+    let bodyModel = null;
+    if (body !== null) {
+      try {
+        const parsed = JSON.parse(body);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          bodyKeys = Object.keys(parsed);
+          if (typeof parsed.model === 'string') bodyModel = parsed.model;
+        }
+      } catch (error) {
+        /* a body that is not one JSON object contributes no key list */
+      }
+    }
     window.__qwenRequests.push({
       url: new URL(url, window.location.href).href,
       method: (init && init.method) || 'GET',
       body: body === null ? null : body.slice(0, 4000),
+      bodyKeys,
+      bodyModel,
     });
     return original.apply(this, arguments);
   };
   return true;
 })()
 """
+
+
+def run_review(page, seconds):
+    """Click one artifact card's Review button and read the checklist it renders.
+
+    The button is hidden until `resolveVisionModel` finds a roster row whose
+    `GET /props?model=` reports a vision modality, so waiting for it to become
+    visible is the page's own statement that a reviewer serves. `runImageReview`
+    holds the same `busy` flag a chat turn holds and releases it in its own
+    `finally`, so the wait ends on either a rendered checklist or the note the
+    page writes when the review did not complete.
+    """
+    wait_for(
+        page,
+        "(() => { const button = document.querySelector('.image-review-button');"
+        " return Boolean(button && !button.hidden); })()",
+        seconds,
+        "the Review button to appear",
+    )
+    page.evaluate(
+        "(() => { document.querySelector('.image-review-button').click();"
+        " return true; })()"
+    )
+    wait_for(
+        page,
+        "busy === false && Boolean(document.querySelector('.image-review')"
+        " || document.querySelector('.image-review-note'))",
+        seconds,
+        "the review to settle",
+    )
+    raw = page.evaluate(
+        "JSON.stringify((() => {"
+        " const block = document.querySelector('.image-review');"
+        " const note = document.querySelector('.image-review-note');"
+        " return {"
+        "   heading: block ? (block.querySelector('.meta') || {}).textContent || '' : '',"
+        "   constraints: block ? Array.from(block.querySelectorAll('li')).map(item => ({"
+        "     verdict: item.className, text: item.textContent })) : [],"
+        "   note: note ? note.textContent : null,"
+        "   noteIsFailure: Boolean(note && note.classList.contains('bad')) };"
+        "})())"
+    )
+    return json.loads(raw)
 
 
 def main():
@@ -213,6 +279,15 @@ def main():
     # and keeps the page's element names in one place.
     parser.add_argument("--lane", choices=("web", "image"), default="web",
                         help="which per-turn lane's toggle and approval dialog to drive")
+    # The Review button appears on an artifact card where some roster row
+    # reports a vision modality, so a review arm runs only against a preset
+    # holding a review section. The verdict it renders is text a model wrote
+    # after reading an image, which the page puts on the card through
+    # textContent; the report carries the same text and no prompt_delta, the
+    # way the request log carries the grant's fields and not the grant.
+    parser.add_argument("--review", action="store_true",
+                        help="click the artifact card's Review button and report the rendered checklist")
+    parser.add_argument("--review-timeout", type=int, default=420)
     parser.add_argument("--api-key-file", default="",
                         help="file whose first line is the bearer key the page sets before connecting")
     parser.add_argument("--chromium", default="chromium")
@@ -244,6 +319,7 @@ def main():
         page = None
         selected_model = None
         dialog = None
+        review = None
         error = None
         try:
             devtools = None
@@ -348,6 +424,8 @@ def main():
                     )
                 except TimeoutError:
                     pass
+                if arguments.review:
+                    review = run_review(page, arguments.review_timeout)
         except Exception as exc:
             # A raise here -- most often wait_for()'s TimeoutError on a dialog
             # that never opened -- previously left main() propagate straight
@@ -364,6 +442,7 @@ def main():
         report.setdefault("requests", [])
         report["selected_model_at_load"] = selected_model
         report["dialog"] = dialog
+        report["review"] = review
         report["error"] = error
         json.dump(report, sys.stdout, indent=1)
         sys.stdout.write("\n")
@@ -375,12 +454,13 @@ def main():
             browser.wait(timeout=10)
         except subprocess.TimeoutExpired:
             browser.kill()
-        for root, directories, files in os.walk(profile_directory, topdown=False):
-            for name in files:
-                os.unlink(os.path.join(root, name))
-            for name in directories:
-                os.rmdir(os.path.join(root, name))
-        os.rmdir(profile_directory)
+        # Chromium keeps writing into its cache while it unwinds, so a
+        # bottom-up walk races it: a directory emptied by the walk regains an
+        # index file before the rmdir reaches it and the removal raises
+        # ENOTEMPTY out of the `finally`, replacing a completed run's exit
+        # status with a traceback. The profile is a throwaway temporary tree,
+        # so its removal is best effort and the report is what the run carries.
+        shutil.rmtree(profile_directory, ignore_errors=True)
 
 
 if __name__ == "__main__":

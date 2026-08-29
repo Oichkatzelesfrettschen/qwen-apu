@@ -361,6 +361,59 @@ else
     grep -q 'carries 2 sections' "$work/two.err" || outcome=missing_message
     report two_section_preset_refused "$outcome"
 fi
+# QWEN_WEB_REVIEW_SECTION admits exactly one more section, the review-only
+# vision row qwen-image-launch.sh proved resident. The broker still signs for
+# the one language profile, so the review section is subtracted before the
+# profile is read and the router holds two children rather than one.
+review_presets=$state_directory/web-presets-review.ini
+review_projector=$policy_model_root/Fixture-GGUF/review-mmproj.gguf
+: >"$review_projector"
+write_web_preset "$review_presets" unmarked
+{
+    printf '[vision-fixture]\n'
+    printf 'LLAMA_ARG_MODEL = %s\n' "$policy_model_root/Fixture-GGUF/production.gguf"
+    printf 'LLAMA_ARG_ALIAS = vision-fixture\n'
+    printf 'LLAMA_ARG_CTX_SIZE = 8192\n'
+    printf 'LLAMA_ARG_CACHE_TYPE_K = q8_0\n'
+    printf 'LLAMA_ARG_CACHE_TYPE_V = q4_0\n'
+    printf 'LLAMA_ARG_FLASH_ATTN = on\n'
+    printf 'LLAMA_ARG_BATCH = 128\n'
+    printf 'LLAMA_ARG_UBATCH = 32\n'
+    printf 'LLAMA_ARG_MMPROJ = %s\n' "$review_projector"
+    printf 'LLAMA_ARG_TAGS = vision-review,review-only\n'
+    printf '\n'
+} >>"$review_presets"
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_PRESETS=$review_presets QWEN_WEB_LAUNCH_RECORD=$record \
+    QWEN_WEB_REVIEW_SECTION=vision-fixture \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/review.log" 2>"$work/review.err"; then
+    outcome=ok
+    grep -qx 'QWEN_ROUTER_MAX=2' "$record" || outcome=wrong_models_max
+    grep -qx 'QWEN_WEB_PROFILE=web-fixture' "$record" || outcome=wrong_profile
+    grep -q 'review_section=vision-fixture models_max=2' "$work/review.log" ||
+        outcome=unreported
+    report review_section_admits_two_sections "$outcome"
+else
+    report review_section_admits_two_sections refused
+    cat "$work/review.err" >&2
+fi
+
+# The marker names a section rather than raising the limit on its own, so one
+# that survived a regeneration refuses instead of admitting a second child the
+# preset never carries.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_REVIEW_SECTION=vision-absent \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/review-absent.log" 2>"$work/review-absent.err"; then
+    report absent_review_section_refused accepted
+else
+    outcome=ok
+    grep -q 'QWEN_WEB_REVIEW_SECTION names vision-absent' \
+        "$work/review-absent.err" || outcome=missing_message
+    report absent_review_section_refused "$outcome"
+fi
+
 if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
     QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_PROFILE=web-other \
     env -u QWEN_BIND_HOST "$launcher" \

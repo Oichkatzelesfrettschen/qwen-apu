@@ -49,6 +49,8 @@ set -eu
     printf 'QWEN_IMAGE_PROFILE=%s\n' "${QWEN_IMAGE_PROFILE:-unset}"
     printf 'QWEN_IMAGE_PROFILES=%s\n' "${QWEN_IMAGE_PROFILES:-unset}"
     printf 'QWEN_IMAGE_TOKEN_KEY_FILE=%s\n' "${QWEN_IMAGE_TOKEN_KEY_FILE:-unset}"
+    printf 'QWEN_WEB_REVIEW_SECTION=%s\n' "${QWEN_WEB_REVIEW_SECTION:-unset}"
+    printf 'QWEN_REQUIRED_VULKAN_MIB=%s\n' "${QWEN_REQUIRED_VULKAN_MIB:-unset}"
 } >"$QWEN_IMAGE_LAUNCH_RECORD"
 EOF
 chmod +x "$harness/qwen-web-launch.sh"
@@ -57,12 +59,21 @@ launcher=$harness/qwen-image-launch.sh
 # The ledger fixture names the checked-in bundle and differs from the shipped
 # row in execution_policy alone, so remote/image-registry.sh validates it whole
 # against the artifact and model authorities the harness links.
+# write_ledger names the reviewer the row pairs, because that field decides
+# whether the preset serves one section or two and the launch rejoins the
+# marker to it.
+write_ledger() {
+    printf 'image-fixture-a\tsdxs-512\tA\t512\t512\t1\teuler\t1.0\t4\t512\t300\t%s\t%s\t%s\n' \
+        "$2" "$3" "$4" >"$1"
+}
 image_profiles_gated=$work/image-profiles-gated.tsv
-printf 'image-fixture-a\tsdxs-512\tA\t512\t512\t1\teuler\t1.0\t4\t512\t300\tvalidator-gated\tevidence/image-appliance/design.md\n' \
-    >"$image_profiles_gated"
+write_ledger "$image_profiles_gated" validator-gated \
+    evidence/image-appliance/design.md -
+image_profiles_reviewed=$work/image-profiles-reviewed.tsv
+write_ledger "$image_profiles_reviewed" validator-gated \
+    evidence/image-appliance/design.md vision-fixture
 image_profiles_refused=$work/image-profiles-refused.tsv
-printf 'image-fixture-a\tsdxs-512\tA\t512\t512\t1\teuler\t1.0\t4\t512\t300\trefused\t-\n' \
-    >"$image_profiles_refused"
+write_ledger "$image_profiles_refused" refused - -
 
 state_directory=$work/state
 mkdir -p "$state_directory"
@@ -127,10 +138,16 @@ write_configuration
 # The preset is written directly rather than generated, because these arms
 # measure what the launch reads out of one; remote/test-web-presets.sh measures
 # what the generator writes into it.
+# The fourth argument names the reviewer the preset markers claim, and the
+# fifth chooses what the review section itself carries: `section` is the shape
+# the generator writes, `no-projector` strips the projector a reviewer reads an
+# image through, and `third` adds one more section than the launch admits.
 write_preset() {
     preset_path=$1
     preset_profile=$2
     preset_ledger=$3
+    preset_review_model=${4:--}
+    preset_review_shape=${5:-}
     preset_ledger_sha256=$(sha256sum "$preset_ledger" | cut -d' ' -f1)
     {
         printf '# qwen_web_presets=1\n'
@@ -138,13 +155,62 @@ write_preset() {
         printf '# qwen_image_profiles_path=%s\n' "$preset_ledger"
         printf '# qwen_image_profiles_sha256=%s\n' "$preset_ledger_sha256"
         printf '# qwen_image_mcp_timeout_ms=360000\n'
+        printf '# qwen_image_review_model=%s\n' "$preset_review_model"
+        if [ "$preset_review_model" = '-' ]; then
+            printf '# qwen_image_review_section=-\n'
+        else
+            printf '# qwen_image_review_section=%s\n' "$preset_review_model"
+        fi
         printf '\n'
         printf '[web-fixture]\n'
         printf 'LLAMA_ARG_MODEL = %s\n' "$work/fixture.gguf"
         printf 'LLAMA_ARG_MCP_SERVERS_CONFIG = %s\n' "$image_configuration"
         printf 'LLAMA_ARG_TAGS = web-research,ui-mediated,image\n'
+        if [ -n "$preset_review_shape" ]; then
+            printf '\n'
+            printf '[%s]\n' "$preset_review_model"
+            printf 'LLAMA_ARG_MODEL = %s\n' "$work/vision-fixture.gguf"
+            if [ "$preset_review_shape" != no-projector ]; then
+                printf 'LLAMA_ARG_MMPROJ = %s\n' "$work/vision-fixture-mmproj.gguf"
+            fi
+            printf 'LLAMA_ARG_TAGS = vision-review,review-only\n'
+        fi
+        if [ "$preset_review_shape" = third ]; then
+            printf '\n'
+            printf '[web-fixture-second]\n'
+            printf 'LLAMA_ARG_MODEL = %s\n' "$work/fixture.gguf"
+            printf 'LLAMA_ARG_TAGS = web-research,ui-mediated\n'
+        fi
     } >"$preset_path"
 }
+
+# The launch sizes the device against every model and projector the preset
+# names, so the fixtures carry bytes rather than being empty. The numbers are
+# small and arbitrary; what the arms measure is the sum and the refusal, and
+# the budget itself comes from the stubbed preflight.
+head -c 2097152 /dev/zero >"$work/fixture.gguf"
+head -c 1048576 /dev/zero >"$work/vision-fixture.gguf"
+head -c 524288 /dev/zero >"$work/vision-fixture-mmproj.gguf"
+
+# model-memory-preflight.sh compiles a Vulkan probe and requires a RADV RAVEN2
+# physical device, so the arms replace it with a stub that reports the shape the
+# launch reads. QWEN_MEMORY_PREFLIGHT_BUDGET_MIB is what the stub admits.
+memory_preflight_stub=$work/memory-preflight-stub.sh
+cat >"$memory_preflight_stub" <<'PREFLIGHT'
+#!/bin/sh
+set -eu
+printf 'model_bytes=%s\n' "$(wc -c <"$1")"
+printf 'required_vulkan_bytes=%s\n' "$(($2 * 1048576))"
+printf 'host_memory_headroom=ample surplus_bytes=0\n'
+if [ "$2" -le "${QWEN_MEMORY_PREFLIGHT_BUDGET_MIB:-8192}" ]; then
+    printf 'vulkan_budget_headroom=ample surplus_bytes=0\n'
+else
+    printf 'vulkan_budget_headroom=short shortfall_bytes=%s\n' \
+        "$((($2 - ${QWEN_MEMORY_PREFLIGHT_BUDGET_MIB:-8192}) * 1048576))"
+fi
+printf 'model_memory_preflight=observe\n'
+PREFLIGHT
+chmod +x "$memory_preflight_stub"
 
 presets_armed=$work/presets-armed.ini
 write_preset "$presets_armed" image-fixture-a "$image_profiles_gated"
@@ -164,6 +230,7 @@ run_launch() {
         QWEN_WEB_TOKEN_KEY_FILE="$signing_key_file" \
         QWEN_WEB_AUTHORIZER_READY=1 \
         QWEN_IMAGE_PROFILES_JSON="$image_parameters" \
+        QWEN_MEMORY_PREFLIGHT_PROGRAM="$memory_preflight_stub" \
         QWEN_STATIC_PATH="$script_directory/../webui" \
         "$@" "$launcher"
 }
@@ -271,8 +338,7 @@ else
         report ledger_drift_refuses_the_launch wrong_refusal
     fi
 fi
-printf 'image-fixture-a\tsdxs-512\tA\t512\t512\t1\teuler\t1.0\t4\t512\t300\trefused\t-\n' \
-    >"$image_profiles_gated"
+write_ledger "$image_profiles_gated" refused - -
 write_preset "$presets_armed" image-fixture-a "$image_profiles_gated"
 if run_launch "$presets_armed" env \
     >"$work/demoted.log" 2>"$work/demoted.err"; then
@@ -284,8 +350,8 @@ else
         report demoted_row_refuses_the_launch wrong_refusal
     fi
 fi
-printf 'image-fixture-a\tsdxs-512\tA\t512\t512\t1\teuler\t1.0\t4\t512\t300\tvalidator-gated\tevidence/image-appliance/design.md\n' \
-    >"$image_profiles_gated"
+write_ledger "$image_profiles_gated" validator-gated \
+    evidence/image-appliance/design.md -
 write_preset "$presets_armed" image-fixture-a "$image_profiles_gated"
 
 # The parameter file states what a job runs under, so a ceiling it raises above
@@ -322,6 +388,7 @@ if env QWEN_IMAGE_LAUNCH_RECORD="$launch_record" \
     QWEN_WEBUI_STATE_DIRECTORY="$state_directory" \
     QWEN_WEB_TOKEN_KEY_FILE="$signing_key_file" \
     QWEN_IMAGE_PROFILES_JSON="$image_parameters" \
+    QWEN_MEMORY_PREFLIGHT_PROGRAM="$memory_preflight_stub" \
     QWEN_STATIC_PATH="$script_directory/../webui" \
     "$launcher" >"$work/authorizer.log" 2>"$work/authorizer.err"; then
     report absent_authorizer_refuses_the_launch accepted
@@ -331,6 +398,132 @@ else
     else
         report absent_authorizer_refuses_the_launch wrong_refusal
     fi
+fi
+
+# A ledger row pairing a reviewer serves two sections, and the launch names the
+# review section to the web launch so the router admits both children.
+presets_reviewed=$work/presets-reviewed.ini
+write_preset "$presets_reviewed" image-fixture-a "$image_profiles_reviewed" \
+    vision-fixture section
+rm -f "$launch_record"
+if run_launch "$presets_reviewed" env \
+    >"$work/reviewed.log" 2>"$work/reviewed.err"; then
+    outcome=ok
+    grep -qx 'QWEN_WEB_REVIEW_SECTION=vision-fixture' "$launch_record" ||
+        outcome=review_section_absent
+    grep -q 'image_launch review_section=vision-fixture projector=' \
+        "$work/reviewed.log" || outcome=review_unreported
+    # 2 MiB of language weights, 1 MiB of vision weights, and 0.5 MiB of
+    # projector round to 4 MiB, and the runtime's own 480 MiB is charged whole.
+    grep -q 'image_launch budget artifacts_mib=4 runtime_mib=480 required_mib=484 sections=2' \
+        "$work/reviewed.log" || outcome=budget_unreported
+    grep -qx 'QWEN_REQUIRED_VULKAN_MIB=484' "$launch_record" ||
+        outcome=denominator_absent
+    report review_pairing_serves_two_sections "$outcome"
+else
+    report review_pairing_serves_two_sections failed
+    cat "$work/reviewed.err" >&2
+fi
+
+# The broker signs for one language profile, so a third section refuses rather
+# than launching two profiles against one signature.
+presets_three=$work/presets-three.ini
+write_preset "$presets_three" image-fixture-a "$image_profiles_reviewed" \
+    vision-fixture third
+if run_launch "$presets_three" env \
+    >"$work/three.log" 2>"$work/three.err"; then
+    report third_section_refuses_the_launch accepted
+else
+    if grep -q 'image router mode serves 2 section(s)' "$work/three.err"; then
+        report third_section_refuses_the_launch ok
+    else
+        report third_section_refuses_the_launch wrong_refusal
+    fi
+fi
+
+# A reviewer reads an image through its own projector, so a review section that
+# lost one answers from nothing while the roster still advertises vision.
+presets_unprojected=$work/presets-unprojected.ini
+write_preset "$presets_unprojected" image-fixture-a "$image_profiles_reviewed" \
+    vision-fixture no-projector
+if run_launch "$presets_unprojected" env \
+    >"$work/unprojected.log" 2>"$work/unprojected.err"; then
+    report review_section_without_projector_refuses accepted
+else
+    if grep -q 'names no LLAMA_ARG_MMPROJ' "$work/unprojected.err"; then
+        report review_section_without_projector_refuses ok
+    else
+        report review_section_without_projector_refuses wrong_refusal
+    fi
+fi
+
+# A preset persists across an edit to the ledger, so a row that stopped pairing
+# a reviewer refuses rather than serving the persisted second section.
+if run_launch "$presets_reviewed" env QWEN_WEB_PRESETS="$presets_reviewed" \
+    >"$work/review-drift.log" 2>"$work/review-drift.err"; then
+    unpaired=$work/presets-unpaired.ini
+    write_preset "$unpaired" image-fixture-a "$image_profiles_gated" \
+        vision-fixture section
+    if run_launch "$unpaired" env \
+        >"$work/unpaired.log" 2>"$work/unpaired.err"; then
+        report review_drift_refuses_the_launch accepted
+    else
+        if grep -q 'pairs review_model - where the preset carries vision-fixture' \
+            "$work/unpaired.err"; then
+            report review_drift_refuses_the_launch ok
+        else
+            report review_drift_refuses_the_launch wrong_refusal
+        fi
+    fi
+else
+    report review_drift_refuses_the_launch setup_failed
+fi
+
+# Two resident checkpoints share one Vulkan carve-out, and a budget that holds
+# less than the pair needs refuses the launch rather than discovering it at the
+# second load.
+if run_launch "$presets_reviewed" env \
+    QWEN_MEMORY_PREFLIGHT_BUDGET_MIB=400 \
+    >"$work/budget.log" 2>"$work/budget.err"; then
+    report short_budget_refuses_the_launch accepted
+else
+    if grep -q 'Vulkan budget holds less than the 484 MiB' "$work/budget.err"; then
+        report short_budget_refuses_the_launch ok
+    else
+        report short_budget_refuses_the_launch wrong_refusal
+    fi
+fi
+
+# A one-section launch reports the same figure and is admitted whatever it
+# says. That shape has served an approved generation on the appliance without
+# this arithmetic, and the preflight reports rather than refuses by design, so
+# the refusal belongs to the second resident checkpoint alone.
+rm -f "$launch_record"
+if run_launch "$presets_armed" env \
+    QWEN_MEMORY_PREFLIGHT_BUDGET_MIB=1 \
+    >"$work/single-budget.log" 2>"$work/single-budget.err"; then
+    outcome=ok
+    grep -q 'image_launch budget artifacts_mib=2 runtime_mib=480 required_mib=482 sections=1' \
+        "$work/single-budget.log" || outcome=budget_unreported
+    grep -q '^vulkan_budget_headroom=short' "$work/single-budget.log" ||
+        outcome=shortfall_unreported
+    grep -qx 'QWEN_WEB_REVIEW_SECTION=unset' "$launch_record" ||
+        outcome=review_section_exported
+    report short_budget_admits_one_section "$outcome"
+else
+    report short_budget_admits_one_section refused
+    cat "$work/single-budget.err" >&2
+fi
+
+# The same preset under a budget that holds the pair launches, so the refusal
+# above is the budget rather than the pairing.
+if run_launch "$presets_reviewed" env \
+    QWEN_MEMORY_PREFLIGHT_BUDGET_MIB=484 \
+    >"$work/budget-fits.log" 2>"$work/budget-fits.err"; then
+    report exact_budget_admits_the_launch ok
+else
+    report exact_budget_admits_the_launch failed
+    cat "$work/budget-fits.err" >&2
 fi
 
 # A launch that never armed the image lane leaves nothing for the teardown to

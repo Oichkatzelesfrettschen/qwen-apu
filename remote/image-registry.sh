@@ -29,7 +29,7 @@ usage() {
     printf 'profile prints the row as key=value lines, or one named field.\n' >&2
     printf 'fields: profile_id model_id placement width height steps sampler cfg\n' >&2
     printf '        max_steps max_dimension timeout_s execution_policy\n' >&2
-    printf '        validated_evidence\n' >&2
+    printf '        validated_evidence review_model\n' >&2
     exit 2
 }
 
@@ -198,8 +198,8 @@ validate_image_registries() {
 
         file_index == 3 {
             profile_rows++
-            if (NF != 13) {
-                reject(sprintf("profile row %d holds %d fields, expected 13", FNR, NF))
+            if (NF != 14) {
+                reject(sprintf("profile row %d holds %d fields, expected 14", FNR, NF))
                 next
             }
             if (!identifier($1)) {
@@ -267,6 +267,16 @@ validate_image_registries() {
             }
             if ($12 == "validator-gated" && $13 == "-") {
                 reject(sprintf("%s: validator-gated carries no validated_evidence", $1))
+            }
+            # review_model pairs one vision checkpoint with this image shape, so
+            # the reviewer travels with the profile that produced the artifact.
+            # `-` states that the profile offers no review. A named value is a
+            # remote/models.tsv model_id, which the preset generator joins
+            # against that registry and requires to carry a projector; this
+            # ledger validates the spelling alone, because the language registry
+            # is the authority for what the id means.
+            if ($14 != "-" && !identifier($14)) {
+                reject(sprintf("%s: review_model %s is not a model id", $1, $14))
             }
             output[++output_rows] = "profile\t" $0
             next
@@ -370,7 +380,7 @@ retained_path_failures=0
 while IFS="$image_registry_tab" read -r row_kind row_field_1 _row_field_2 \
     _row_field_3 _row_field_4 _row_field_5 _row_field_6 _row_field_7 \
     _row_field_8 row_field_9 row_field_10 row_field_11 _row_field_12 \
-    row_field_13; do
+    row_field_13 _row_field_14; do
     case $row_kind in
         profile)
             check_retained_path "$row_field_1" validated_evidence \
@@ -455,9 +465,10 @@ case $1 in
                 $1 == "profile" && $2 == selector {
                     split("profile_id model_id placement width height steps " \
                           "sampler cfg max_steps max_dimension timeout_s " \
-                          "execution_policy validated_evidence", names, " ")
+                          "execution_policy validated_evidence review_model", \
+                          names, " ")
                     matched = 1
-                    for (name_index = 1; name_index <= 13; name_index++) {
+                    for (name_index = 1; name_index <= 14; name_index++) {
                         if (field == "") {
                             printf "%s=%s\n", names[name_index], $(name_index + 1)
                         } else if (names[name_index] == field) {

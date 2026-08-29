@@ -35,6 +35,7 @@ set -eu
 #   QWEN_ADMISSION_MODEL_ID       registry row to serve, default qwen38-2b-distill
 #   QWEN_ADMISSION_PROFILE        language profile id, default web-image-admission
 #   QWEN_ADMISSION_IMAGE_PROFILE  image profile id, default image-sdxs-512-a
+#   QWEN_ADMISSION_REVIEW_MODEL   vision model id the promoted row pairs; `-` skips the review arm
 #   QWEN_ADMISSION_CONTEXT        depth the language profile requests, default 4096
 #   QWEN_IMAGE_RUNTIME            image runtime binary the profile spawns
 #   QWEN_IMAGE_RUNTIME_TEMPLATE   sd-cli or fixture; the argv template that binary reads
@@ -267,17 +268,23 @@ if [ ! -e "$script_directory/../$image_evidence" ]; then
     restore_ordinary
     exit 2
 fi
-awk -F'\t' -v OFS='\t' -v promoted="$image_profile_id" -v evidence="$image_evidence" '
+# review_model is set in the run's own copy rather than in the shipped ledger,
+# because the pair it names has to fit the Vulkan budget of the machine the run
+# happens on and the checked-in row states no such measurement. A `-` leaves
+# the preset one section and the review arm reports itself skipped.
+review_model=${QWEN_ADMISSION_REVIEW_MODEL:--}
+awk -F'\t' -v OFS='\t' -v promoted="$image_profile_id" -v evidence="$image_evidence" \
+    -v reviewer="$review_model" '
     /^#/ { print; next }
-    $1 == promoted { $12 = "validator-gated"; $13 = evidence }
+    $1 == promoted { $12 = "validator-gated"; $13 = evidence; $14 = reviewer }
     { print }
 ' "$source_image_ledger" >"$image_ledger"
-if ! grep -q "^$image_profile_id	.*	validator-gated	$image_evidence\$" "$image_ledger"; then
+if ! grep -q "^$image_profile_id	.*	validator-gated	$image_evidence	$review_model\$" "$image_ledger"; then
     record image_ledger_promoted refused "$image_profile_id is absent from $source_image_ledger"
     restore_ordinary
     exit 1
 fi
-record image_ledger_promoted accepted "$image_profile_id validator-gated in $image_ledger"
+record image_ledger_promoted accepted "$image_profile_id validator-gated review_model=$review_model in $image_ledger"
 
 image_field() {
     awk -F'\t' -v id="$image_profile_id" -v column="$1" \
@@ -517,10 +524,35 @@ fi
 # MCP configuration.
 call models GET "$router_origin/v1/models"
 model_ids=$(jq -r '.data[].id' "$call_out" 2>/dev/null | tr '\n' ',')
-if [ "$model_ids" = "$profile_id," ]; then
+if [ "$review_model" = '-' ]; then
+    expected_roster=$profile_id,
+else
+    expected_roster=$profile_id,$review_model,
+fi
+if [ "$model_ids" = "$expected_roster" ]; then
     record router_roster accepted "$model_ids"
 else
-    record router_roster refused "${model_ids:-none}"
+    record router_roster refused "expected=$expected_roster measured=${model_ids:-none}"
+fi
+# The Review button appears where some roster row reports a vision modality, so
+# the page's own discriminator is read here before the browser runs.
+if [ "$review_model" != '-' ]; then
+    call review-props GET "$router_origin/props?model=$review_model"
+    if [ "$(jq -r '.modalities.vision // false' "$call_out" 2>/dev/null)" = true ]; then
+        record review_row_reports_vision accepted "$review_model"
+    else
+        record review_row_reports_vision refused "status=$call_status $(head -c 200 "$call_out")"
+    fi
+    # A reviewer holds no execution grant, so the route that serves a tool set
+    # answers the way the binary answers a model carrying none.
+    call review-tools GET "$router_origin/tools?model=$review_model&autoload=true"
+    if [ "$call_status" != 200 ]; then
+        record review_row_offers_no_tools accepted "status=$call_status"
+    else
+        record review_row_offers_no_tools refused "status=$call_status $(head -c 200 "$call_out")"
+    fi
+else
+    record review_row_reports_vision skipped 'the promoted row pairs no review_model'
 fi
 call tools GET "$router_origin/tools?model=$profile_id&autoload=true"
 cp "$call_out" "$output_directory/tools.json"
@@ -729,9 +761,14 @@ browser_report=$output_directory/browser-turn.json
 browser_prompt=${QWEN_ADMISSION_BROWSER_PROMPT:-"Draw $generation_prompt."}
 record browser_prompt_used observed "$browser_prompt"
 if command -v chromium >/dev/null 2>&1; then
+    browser_review_flag=
+    if [ "$review_model" != '-' ]; then
+        browser_review_flag=--review
+    fi
     if python3 "$script_directory/web-mcp/drive-fallback-page.py" --lane image \
             --origin "$router_origin" --api-key-file "$api_key_file" \
             --broker "$broker_origin" --artifacts "$artifact_origin" \
+            ${browser_review_flag:+"$browser_review_flag"} \
             --prompt "$browser_prompt" >"$browser_report" 2>"$output_directory/browser-turn.err"; then
         browser_origin_seen=$(jq -r '.origin // empty' "$browser_report")
         if [ "$browser_origin_seen" = "$router_origin" ]; then
@@ -808,6 +845,60 @@ if command -v chromium >/dev/null 2>&1; then
             record browser_transcript_carries_identity_alone accepted "$(printf '%s' "$tool_message" | head -c 160)"
         else
             record browser_transcript_carries_identity_alone refused "$(printf '%s' "$tool_message" | head -c 200)"
+        fi
+        # The review is a second transition through idle: the page reads the
+        # artifact again, posts one completion to the vision row, and renders a
+        # checklist on the card. The verdict is text a model wrote after reading
+        # an image, so the check reads the rendered constraint names and their
+        # pass state rather than treating the observation as a claim.
+        if [ "$review_model" = '-' ]; then
+            record browser_review_rendered skipped 'the promoted row pairs no review_model'
+        else
+            review_constraints=$(jq -r '[.review.constraints[]? | .verdict] | length' \
+                "$browser_report" 2>/dev/null || echo 0)
+            review_heading=$(jq -r '.review.heading // empty' "$browser_report")
+            review_note=$(jq -r '.review.note // empty' "$browser_report")
+            if [ "${review_constraints:-0}" -gt 0 ] && \
+               [ "$review_heading" = "reviewed by $review_model" ]; then
+                record browser_review_rendered accepted \
+                    "$review_heading constraints=$review_constraints"
+                record browser_review_verdict observed \
+                    "$(jq -c '[.review.constraints[] | {verdict, text}]' "$browser_report" | head -c 300)"
+            else
+                record browser_review_rendered refused \
+                    "heading=${review_heading:-none} constraints=${review_constraints:-0} note=${review_note:-none}"
+            fi
+            # The review's own request and reply stay out of `history`, so the
+            # language model never reads what the vision model saw.
+            review_in_history=$(jq -r '[.history[] | select((.content // "") | test("reviewed by|hard_constraints"))] | length' \
+                "$browser_report" 2>/dev/null || echo 0)
+            if [ "${review_in_history:-0}" -eq 0 ]; then
+                record browser_review_stays_out_of_history accepted \
+                    'the transcript carries no verdict text'
+            else
+                record browser_review_stays_out_of_history refused \
+                    "entries=$review_in_history"
+            fi
+            # The review body carries a data URI of the whole PNG, so the
+            # page log truncates it and only the recorded key names read
+            # whole. `bodyKeys` is what the check reads: the review request
+            # omits `tools` entirely rather than sending an empty list, so the
+            # reviewer is offered no executable surface at all.
+            review_posts=$(jq -r --arg u "$router_origin/v1/chat/completions" \
+                --arg m "$review_model" \
+                '[.requests[] | select(.method == "POST" and .url == $u and .bodyModel == $m)] | length' \
+                "$browser_report" 2>/dev/null || echo 0)
+            review_with_tools=$(jq -r --arg u "$router_origin/v1/chat/completions" \
+                --arg m "$review_model" \
+                '[.requests[] | select(.method == "POST" and .url == $u and .bodyModel == $m) | select((.bodyKeys // []) | index("tools"))] | length' \
+                "$browser_report" 2>/dev/null || echo 0)
+            if [ "${review_posts:-0}" -ge 1 ] && [ "${review_with_tools:-0}" -eq 0 ]; then
+                record browser_review_offers_no_tools accepted \
+                    "posts=$review_posts tools_key=0"
+            else
+                record browser_review_offers_no_tools refused \
+                    "posts=${review_posts:-0} tools_key=${review_with_tools:-0}"
+            fi
         fi
         # The grant is spent inside the request the browser sent, so the retained
         # page log keeps the fields and drops the token.

@@ -137,14 +137,34 @@ single arms reports queue position rather than capability; the two vision rows
 review the same artifact against the same constraint list, alternating, in one
 sitting.
 
-The run is two phases, because the launcher that serves the image lane serves
-one model. `remote/qwen-web-launch.sh` counts the sections in the generated
-preset and refuses anything other than exactly one, and it exports
-`QWEN_ROUTER_MAX=1`, so a router carrying the image MCP child holds the
-language profile alone. `GET /v1/models` therefore returns one id on that
-launch, `resolveVisionModel` finds no vision row, and the page's Review button
-stays hidden on the appliance as the tree stands. The review reaches the
-artifact through the CLI instead:
+Which phase the run takes is decided by one ledger field. `review_model` in
+`remote/image-profiles.tsv` names the vision checkpoint an image profile pairs,
+and `remote/build-web-presets.sh` emits a review-only section for it beside the
+language one: the vision row's own tuple from `remote/models.tsv`, its
+projector from `select-projector.sh`, a `validated` row in
+`remote/validated-tuples.tsv` at that exact tuple with `projector_state=loaded`,
+no MCP configuration, and the tags `vision-review,review-only`.
+`qwen-image-launch.sh` then names that section to `qwen-web-launch.sh` through
+`QWEN_WEB_REVIEW_SECTION`, which admits two sections and exports
+`QWEN_ROUTER_MAX=2`. `GET /v1/models` returns two ids,
+`GET /props?model=<vision id>` reports a vision modality, and the page's Review
+button appears on the artifact card.
+
+Every checked-in row reads `review_model = -`, which is falsifier 7 unresolved
+rather than a design preference. The budget gate is what decides it and it is
+unmeasurable off the device: `qwen-image-launch.sh` sums every
+`LLAMA_ARG_MODEL` and `LLAMA_ARG_MMPROJ` the preset names, adds the image
+runtime's measured resident cost, hands the total to
+`model-memory-preflight.sh`, and reports what the RADV RAVEN2 probe answers.
+A paired launch refuses on that probe's `vulkan_budget_headroom=short` line;
+a one-section launch reads the same figure and proceeds, since that shape has
+already generated an approved image on this machine and the preflight reports
+rather than predicts by design. Only the appliance holds that probe, and
+this tree's one measured neighbouring figure is the 4B alone peaking at 2029 of
+a 2048 MiB carve-out, so the pair's fit stays a prediction until the launch on
+the laptop reports it.
+
+The run is therefore two phases while `review_model` reads `-`:
 
 1. Generate one artifact through `qwen-image-launch.sh` and record its digest
    and provenance. The lease is released at the rename, and the lane returns to
@@ -170,13 +190,18 @@ outside it, so an alternating same-sweep rerun of the schema-free and
 grammar-bound conditions is what would resolve the direction rather than
 leave it at the edge of measurement noise.
 
-The page arm follows the launcher change rather than this run: driving the
-review through `webui/index.html` on the appliance needs a preset holding a
-language section and a vision section together, which is a change to
-`qwen-web-launch.sh`'s section rule and to `QWEN_ROUTER_MAX`, and a resident
-pair the 2048 MiB VRAM budget has to admit. Until then
-`remote/web-mcp/test-fallback-page-image.py` is the only place the page half
-runs end to end, against a stub roster that serves both rows.
+The page arm becomes one phase where the budget admits the pair. Setting
+`review_model` to `lfm25-vl-16b` on `image-sdxs-512-a` and running
+`remote/admit-image-router.sh` with `QWEN_ADMISSION_REVIEW_MODEL` naming the
+same row measures it: a refusal names the shortfall in MiB, and a launch that
+proceeds drives the generation and the review through one page in one session.
+`remote/test-admit-image-router.sh` runs that whole path on the workstation
+against `remote/test-fixtures/fake-router-server.py`, which serves the two
+sections, reports the vision modality from the section's own projector, and
+answers the verdict over the constraints the request declared; the browser
+clicks Review and the checklist it rendered is what the arm reads.
+`remote/web-mcp/test-fallback-page-image.py` remains the place the correction
+loop and its cap run end to end against a stub roster.
 
 ### Falsifiers
 
@@ -228,7 +253,12 @@ hypotheses.
    stub; the appliance repeats it once a two-section preset exists.
 7. **A two-section preset does not fit.** Raising `QWEN_ROUTER_MAX` to hold a
    language row and a vision row together may exceed the 2048 MiB VRAM budget
-   that set `QWEN_ROUTER_MAX=1` in the first place. The observation is the
-   router preflight or the second load failing, and the consequence is that the
-   page review stays a two-phase operation with the CLI, or that the same model
-   serves both roles.
+   that set `QWEN_ROUTER_MAX=1` in the first place. The mechanism that carries
+   the pair now exists and the measurement does not, so every checked-in
+   `review_model` reads `-`. The observation is
+   `qwen-image-launch.sh` printing `vulkan_budget_headroom=short` against the
+   summed requirement, or the second load failing after an ample report, and
+   the consequence is that the page review stays a two-phase operation with the
+   CLI, or that the same model serves both roles. The 2B distill at 1.21 GiB
+   beside `lfm25-vl-16b` is the smallest pair the roster offers if the 4B one
+   is refused.

@@ -133,7 +133,7 @@ fi
 
 run_reader profile image-sdxs-512-a
 if [ "$reader_status" -eq 0 ] &&
-   [ "$(wc -l <"$work_directory/reader.out")" -eq 13 ]; then
+   [ "$(wc -l <"$work_directory/reader.out")" -eq 14 ]; then
     report profile_row accepted
 else
     report profile_row rejected
@@ -292,14 +292,14 @@ seed_copies
 append_row "$work_directory/models.tsv" \
     'no-text-encoder\tsd1.x\tsd15-diffusion\tpackaged\t-\t-\t512\t512\t4\tlcm\t1.5\tcandidate'
 append_row "$work_directory/profiles.tsv" \
-    'arm-b-no-encoder\tno-text-encoder\tB\t512\t512\t4\tlcm\t1.5\t8\t512\t300\trefused\t-'
+    'arm-b-no-encoder\tno-text-encoder\tB\t512\t512\t4\tlcm\t1.5\t8\t512\t300\trefused\t-\t-'
 expect_refusal placement_b_requires_text_encoder
 
 seed_copies
 append_row "$work_directory/models.tsv" \
     'no-vae\tsd1.x\tsd15-diffusion\t-\tpackaged\t-\t512\t512\t4\tlcm\t1.5\tcandidate'
 append_row "$work_directory/profiles.tsv" \
-    'arm-c-no-vae\tno-vae\tC\t512\t512\t4\tlcm\t1.5\t8\t512\t300\trefused\t-'
+    'arm-c-no-vae\tno-vae\tC\t512\t512\t4\tlcm\t1.5\t8\t512\t300\trefused\t-\t-'
 expect_refusal placement_c_requires_vae
 
 # The same bundle at arm A is admitted, so the two refusals above are the arm's
@@ -308,12 +308,12 @@ seed_copies
 append_row "$work_directory/models.tsv" \
     'no-vae\tsd1.x\tsd15-diffusion\t-\tpackaged\t-\t512\t512\t4\tlcm\t1.5\tcandidate'
 append_row "$work_directory/profiles.tsv" \
-    'arm-a-no-vae\tno-vae\tA\t512\t512\t4\tlcm\t1.5\t8\t512\t300\trefused\t-'
+    'arm-a-no-vae\tno-vae\tA\t512\t512\t4\tlcm\t1.5\t8\t512\t300\trefused\t-\t-'
 expect_acceptance placement_a_admits_omitted_vae
 
 seed_copies
 append_row "$work_directory/profiles.tsv" \
-    'bad-policy\tsd15-base\tA\t512\t512\t20\teuler_a\t7.0\t30\t512\t300\tunguarded\t-'
+    'bad-policy\tsd15-base\tA\t512\t512\t20\teuler_a\t7.0\t30\t512\t300\tunguarded\t-\t-'
 expect_refusal profile_execution_policy
 
 seed_copies
@@ -372,12 +372,12 @@ expect_refusal bundle_lora_slot_rejects_tae
 # same row naming an absent record is refused.
 seed_copies
 append_row "$work_directory/profiles.tsv" \
-    'gated-present\tsd15-base\tA\t512\t512\t20\teuler_a\t7.0\t30\t512\t300\tvalidator-gated\tevidence/image-appliance/design.md'
+    'gated-present\tsd15-base\tA\t512\t512\t20\teuler_a\t7.0\t30\t512\t300\tvalidator-gated\tevidence/image-appliance/design.md\t-'
 expect_acceptance validator_gated_with_evidence
 
 seed_copies
 append_row "$work_directory/profiles.tsv" \
-    'gated-absent\tsd15-base\tA\t512\t512\t20\teuler_a\t7.0\t30\t512\t300\tvalidator-gated\tevidence/image-appliance/no-such-record.md'
+    'gated-absent\tsd15-base\tA\t512\t512\t20\teuler_a\t7.0\t30\t512\t300\tvalidator-gated\tevidence/image-appliance/no-such-record.md\t-'
 expect_refusal validator_gated_evidence_absent
 
 seed_copies
@@ -486,6 +486,27 @@ check_header() {
         printf 'header differs:\n  %s\n  %s\n' "$header_actual" "$header_expected" >&2
     fi
 }
+# review_model names the vision checkpoint that reviews what a profile
+# generates. This ledger validates the spelling and remote/models.tsv is the
+# authority for what the id means, so a well-formed id is admitted here whether
+# or not this machine holds its weights, and a path or an empty field is not.
+seed_copies
+append_row "$work_directory/profiles.tsv" \
+    'review-named\tsd15-base\tA\t512\t512\t20\teuler_a\t7.0\t30\t512\t300\trefused\t-\tlfm25-vl-16b'
+expect_acceptance review_model_named
+
+seed_copies
+append_row "$work_directory/profiles.tsv" \
+    'review-path\tsd15-base\tA\t512\t512\t20\teuler_a\t7.0\t30\t512\t300\trefused\t-\t../lfm25-vl-16b'
+expect_refusal review_model_malformed
+
+# A row spelling thirteen fields predates the column, and the reader would take
+# validated_evidence for a reviewer if a short row were admitted.
+seed_copies
+append_row "$work_directory/profiles.tsv" \
+    'review-absent-column\tsd15-base\tA\t512\t512\t20\teuler_a\t7.0\t30\t512\t300\trefused\t-'
+expect_refusal review_model_column_required
+
 check_header "$script_directory/image-artifacts.tsv" \
     "$(printf '# artifact_id\trepository\trevision\tfilename\tsha256\tbytes\tlicense\tcomponent_type\tfetch_script')" \
     artifact_schema_header
@@ -493,7 +514,7 @@ check_header "$script_directory/image-models.tsv" \
     "$(printf '# model_id\tarchitecture\tdiffusion_artifact\tvae_artifact\ttext_encoder_artifact\tlora_artifact\tnative_width\tnative_height\tdefault_steps\tdefault_sampler\tdefault_cfg\ttier')" \
     model_schema_header
 check_header "$script_directory/image-profiles.tsv" \
-    "$(printf '# profile_id\tmodel_id\tplacement\twidth\theight\tsteps\tsampler\tcfg\tmax_steps\tmax_dimension\ttimeout_s\texecution_policy\tvalidated_evidence')" \
+    "$(printf '# profile_id\tmodel_id\tplacement\twidth\theight\tsteps\tsampler\tcfg\tmax_steps\tmax_dimension\ttimeout_s\texecution_policy\tvalidated_evidence\treview_model')" \
     profile_schema_header
 check_header "$script_directory/image-quarantine.tsv" \
     "$(printf '# id\tscope\tsubject\tfailure_class\twidth\theight\tsteps\tplacement\tfirst_evidence\tlatest_evidence\treason_record')" \
