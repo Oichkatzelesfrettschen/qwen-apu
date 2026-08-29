@@ -58,7 +58,7 @@ fake_launch=$temporary_directory/fake-launch.sh
 cat >"$fake_launch" <<EOF
 #!/bin/sh
 set -eu
-printf 'ctx_checkpoints=%s model=%s profile=%s\\n' "\${QWEN_CTX_CHECKPOINTS:-unset}" "\${QWEN_MODEL_PATH:-unset}" "\$1" >>"$launch_log"
+printf 'ctx_checkpoints=%s model=%s profile=%s context=%s\\n' "\${QWEN_CTX_CHECKPOINTS:-unset}" "\${QWEN_MODEL_PATH:-unset}" "\$1" "\${QWEN_CONTEXT_SIZE:-unset}" >>"$launch_log"
 printf 'launch ctx_checkpoints=%s\\n' "\${QWEN_CTX_CHECKPOINTS:-unset}" >"$state_directory/server.log"
 printf 'state=running server_pid=0\\n' >"$state_directory/session.status"
 printf 'fake-key\\n' >"$state_directory/api.key"
@@ -89,10 +89,11 @@ printf 'torn down\\n' >>"$temporary_directory/teardown.log"
 EOF
 chmod +x "$fake_teardown"
 
+harness_registry=$registry
 run_harness() {
     QWEN_LAUNCH_SCRIPT=$fake_launch QWEN_TEARDOWN_SCRIPT=$fake_teardown \
         QWEN_STATE_DIRECTORY=$state_directory QWEN_SERVER_PORT=$fake_port \
-        QWEN_MODEL_REGISTRY=$registry QWEN_MODELS_DIRECTORY=$models_directory \
+        QWEN_MODEL_REGISTRY=$harness_registry QWEN_MODELS_DIRECTORY=$models_directory \
         QWEN_CTX_TARGET_DEPTH=2000 QWEN_CTX_PREDICT=8 \
         "$harness" "$@"
 }
@@ -111,8 +112,32 @@ if [ "$launched_order" != '0 2 4 8 8 4 2 0 ' ]; then
     printf 'arm order reached the launch as: %s\n' "$launched_order" >&2
     exit 1
 fi
-grep -F "model=$models_directory/Fake-GGUF/fake.gguf profile=low-async" \
+grep -F "model=$models_directory/Fake-GGUF/fake.gguf profile=low-async context=32768" \
     "$launch_log" >/dev/null
+
+# The harness launches at the row's validated_filled_depth, so a row without
+# one is refused before any launch, and the launch chain's guards need the
+# harness at nice 0 or below, so a harness started at nice 5 is refused.
+unvalidated_registry=$temporary_directory/unvalidated-models.tsv
+sed 's/\t32768\t-\t-\trefused$/\t-\t-\t-\trefused/' "$registry" >"$unvalidated_registry"
+harness_registry=$unvalidated_registry
+if run_harness unvalidated fake-2b "$temporary_directory/unvalidated" \
+        >/dev/null 2>"$temporary_directory/unvalidated.stderr"; then
+    printf 'a row without validated_filled_depth was swept\n' >&2
+    exit 1
+fi
+grep -F 'carries no validated_filled_depth' "$temporary_directory/unvalidated.stderr" >/dev/null
+harness_registry=$registry
+if nice -n 5 env QWEN_LAUNCH_SCRIPT=$fake_launch QWEN_TEARDOWN_SCRIPT=$fake_teardown \
+        QWEN_STATE_DIRECTORY=$state_directory QWEN_SERVER_PORT=$fake_port \
+        QWEN_MODEL_REGISTRY=$registry QWEN_MODELS_DIRECTORY=$models_directory \
+        QWEN_CTX_TARGET_DEPTH=2000 QWEN_CTX_PREDICT=8 \
+        "$harness" niced fake-2b "$temporary_directory/niced" \
+        >/dev/null 2>"$temporary_directory/niced.stderr"; then
+    printf 'a harness above nice 0 was accepted\n' >&2
+    exit 1
+fi
+grep -F 'needs a harness at nice 0 or below' "$temporary_directory/niced.stderr" >/dev/null
 if [ "$(wc -l <"$temporary_directory/teardown.log")" -ne 8 ]; then
     printf 'each arm did not end in a teardown\n' >&2
     exit 1

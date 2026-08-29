@@ -86,27 +86,48 @@ if command -v pgrep >/dev/null 2>&1 && pgrep -x llama-server >/dev/null 2>&1; th
     exit 1
 fi
 
-# The harness takes nice 19 and every arm inherits it through fork.
-# `renice --priority` writes the absolute value where `nice -n 19` would add
-# 19 to the caller's own niceness, so a caller started below nice 0 still
-# lands the run at 19. The value is read back from the kernel rather than
-# asserted.
-/usr/bin/renice --priority 19 --pid "$$" >/dev/null 2>&1 || true
+# The harness stays at the caller's ordinary priority, because the launch
+# chain sets the priorities itself: qwen-webui-control.sh runs llama-server at
+# nice 19 and monitor-qwen-runtime.sh requires its own guard at nice 0 through
+# `renice -n 0`, which an unprivileged process cannot reach from above zero. A
+# harness reniced to 19 therefore launches a session whose monitor exits at
+# once and the session records monitor_exited. The value is read back from the
+# kernel and retained so a run states the priority it actually held.
 harness_nice=$(LC_ALL=C /usr/bin/ps -o ni= -p "$$" 2>/dev/null |
     /usr/bin/awk '{ gsub(/[[:space:]]/, ""); print; exit }')
-if [ "$harness_nice" != 19 ]; then
-    printf 'measurement priority refused: observed=%s\n' \
+if [ -z "$harness_nice" ] || [ "$harness_nice" -gt 0 ]; then
+    printf 'the launch chain needs a harness at nice 0 or below, found %s\n' \
         "${harness_nice:-unreadable}" >&2
     exit 2
 fi
+
+# The single-model launch allocates QWEN_CONTEXT_SIZE, default 24576, and a
+# turn at the target depth needs an allocation above it. The row's
+# validated_filled_depth is the deepest allocation measured to fill and decode
+# under its own tuple, so the arm allocates exactly that and refuses a row
+# that carries no measured depth or a target at or above it.
+validated_depth=$("$registry_script" id "$model_id" validated_filled_depth)
+case $validated_depth in
+    ''|*[!0-9]*)
+        printf 'model %s carries no validated_filled_depth; measure one before this sweep\n' \
+            "$model_id" >&2
+        exit 2
+        ;;
+esac
+if [ "$target_depth" -ge "$validated_depth" ]; then
+    printf 'target depth %s is not below validated_filled_depth %s\n' \
+        "$target_depth" "$validated_depth" >&2
+    exit 2
+fi
+context_size=$validated_depth
 
 umask 077
 mkdir -p "$output_directory"
 output_directory=$(CDPATH='' cd -- "$output_directory" && pwd)
 summary_file=$output_directory/summary.tsv
-printf 'label=%s\nmodel_id=%s\nmodel=%s\nprofile=%s\narms=%s\ntarget_depth=%s\npredict_tokens=%s\nharness_nice=%s\n' \
+printf 'label=%s\nmodel_id=%s\nmodel=%s\nprofile=%s\narms=%s\ntarget_depth=%s\npredict_tokens=%s\ncontext_size=%s\nharness_nice=%s\n' \
     "$label" "$model_id" "$model_path" "$profile" "$arm_list" \
-    "$target_depth" "$predict_tokens" "$harness_nice" \
+    "$target_depth" "$predict_tokens" "$context_size" "$harness_nice" \
     >"$output_directory/inputs.txt"
 printf 'arm\tctx_checkpoints\tturn\tprompt_n\tprompt_ms\tpredicted_n\tpredicted_ms\tprompt_tok_s\tdecode_tok_s\tprefill_saved_ms\n' \
     >"$summary_file"
@@ -260,6 +281,7 @@ for arm in $arm_list; do
     arm_directory=$output_directory/arm-$arm_index-c$arm
     mkdir -p "$arm_directory"
     if ! QWEN_MODEL_PATH=$model_path QWEN_CTX_CHECKPOINTS=$arm \
+        QWEN_CONTEXT_SIZE=$context_size \
         "$launch_script" "$profile" >"$arm_directory/launch.txt" 2>&1; then
         printf 'launch failed for arm %s (ctx_checkpoints=%s)\n' \
             "$arm_index" "$arm" >&2

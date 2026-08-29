@@ -31,7 +31,16 @@ so the appliance pays the second path on every follow-up turn at depth.
 `QWEN_CTX_CHECKPOINTS` in `remote/qwen-capacity-policy.sh` raises the count
 for one launch and `QWEN_CHECKPOINT_MIN_STEP` names the spacing;
 `remote/qwen-webui-control.sh` forwards both across the tmux boundary, and the
-default of zero leaves the served argv unchanged.
+default of zero leaves the served argv unchanged. Each arm launches at the
+row's `validated_filled_depth` through `QWEN_CONTEXT_SIZE`, since the
+single-model default of 24576 sits below the 30720 target, and the harness
+keeps the caller's ordinary priority: `qwen-webui-control.sh` runs the server
+at nice 19 and `monitor-qwen-runtime.sh` normalizes its own guard to nice 0
+with `renice -n 0`, which cannot be reached from above zero without privilege.
+The first appliance run reniced the harness to 19 and the session recorded
+`monitor_exited` one second after `state=running`; that arm also left the
+server alive through two SIGTERMs until a SIGKILL, which the session's
+post-loop `wait` does not bound.
 
 ## Arms
 
