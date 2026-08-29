@@ -96,7 +96,11 @@ case $action in
         # The image service's marker, program, profile parameters, page origin,
         # and the three names its MCP child reads cross the same way, because
         # qwen-image-launch.sh exports them into this shell and the session
-        # script starts that service beyond the boundary too.
+        # script starts that service beyond the boundary too. QWEN_RADV_ICD
+        # crosses with them: image-service.py pins VK_DRIVER_FILES and
+        # VK_ICD_FILENAMES for every runtime it spawns and derives both from
+        # that name, and a value that stopped at this boundary would leave the
+        # service deriving from the default path instead.
         for forwarded_name in QWEN_MMPROJ QWEN_MMPROJ_OFFLOAD QWEN_IMAGE_MAX_TOKENS \
                               QWEN_INFERENCE_CPU QWEN_SPEC_TYPE \
                               QWEN_SPEC_DRAFT_N_MAX QWEN_SPEC_DRAFT_P_MIN \
@@ -119,7 +123,8 @@ case $action in
                               QWEN_IMAGE_PROFILES_JSON QWEN_IMAGE_PAGE_ORIGIN \
                               QWEN_IMAGE_PROFILE QWEN_IMAGE_TOKEN_KEY_FILE \
                               QWEN_IMAGE_STATE_DIR \
-                              QWEN_IMAGE_SERVICE_SOCKET; do
+                              QWEN_IMAGE_SERVICE_SOCKET \
+                              QWEN_RADV_ICD; do
             eval "forwarded_value=\${$forwarded_name:-}"
             if [ -n "$forwarded_value" ]; then
                 forwarded_environment="$forwarded_environment $forwarded_name=$(shell_quote "$forwarded_value")"

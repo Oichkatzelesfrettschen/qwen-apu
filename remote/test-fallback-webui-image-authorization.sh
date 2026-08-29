@@ -98,6 +98,9 @@ grep -F "fetch(\`\${brokerOrigin()}/grant-image\`, {" "$fallback_ui" >/dev/null
 # POST /tools body the approved generation runs under -- and the transcript
 # never carries it.
 grep -F 'function imageRequestParams(fields, authorization) {' "$fallback_ui" >/dev/null
+# remote/image-mcp/server.py names the argument profile_id, requires it, and
+# refuses any name outside its schema, so the request carries that spelling.
+grep -F 'profile_id: fields.profile,' "$fallback_ui" >/dev/null
 if [ "$(grep -c 'imageOutcome.authorization' "$fallback_ui")" -ne 1 ]; then
     printf 'fallback Web UI reads the issued image grant at more than one site\n' >&2
     exit 1
@@ -134,9 +137,25 @@ grep -F 'void postCancelBestEffort(cancelToolName, model);' "$fallback_ui" >/dev
 
 # The artifact card fetches the PNG with the page's own credential header
 # into a blob URL, because <img src> cannot carry that header, and revokes
-# the blob URL when the card is removed.
-grep -F 'async function loadArtifactBlobUrl(provenanceUrl) {' "$fallback_ui" >/dev/null
-grep -F 'headers: authHeaders() });' "$fallback_ui" >/dev/null
+# the blob URL when the card is removed. The route is derived from the digest
+# rather than taken from the result: image-service.py's provenance_url names
+# the `.json` record and its artifact_url names the `.png`, both from the same
+# digest, so a page that fetched the provenance route would read the record
+# where it wanted the image.
+grep -F 'async function loadArtifactBlobUrl(sha256) {' "$fallback_ui" >/dev/null
+grep -F '`${artifactOrigin()}/artifacts/${sha256}.png`' "$fallback_ui" >/dev/null
+grep -F 'loadArtifactBlobUrl(result.sha256)' "$fallback_ui" >/dev/null
+grep -F "mode: 'cors', headers: authHeaders() });" "$fallback_ui" >/dev/null
+
+# image-service.py binds its artifact listener on an ephemeral port and the
+# router proxies none of its routes, so the origin is configured rather than
+# resolved against the page, and a page given none says so instead of asking
+# the router for a route it does not serve.
+grep -F 'function configuredArtifactOrigin() {' "$fallback_ui" >/dev/null
+grep -F "searchParams.get('artifacts')" "$fallback_ui" >/dev/null
+grep -F 'meta[name="qwen-image-artifacts"]' "$fallback_ui" >/dev/null
+grep -F "throw new Error('no artifact listener origin is configured for this page');" \
+    "$fallback_ui" >/dev/null
 grep -F 'return URL.createObjectURL(blob);' "$fallback_ui" >/dev/null
 grep -F 'if (blobUrl) URL.revokeObjectURL(blobUrl);' "$fallback_ui" >/dev/null
 grep -F 'function renderImageArtifactCard(container, fields, result) {' "$fallback_ui" >/dev/null

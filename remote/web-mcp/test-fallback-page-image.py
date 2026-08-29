@@ -41,6 +41,11 @@ ONE_PIXEL_PNG = base64.b64decode(
 )
 ARTIFACT_SHA256 = hashlib.sha256(ONE_PIXEL_PNG).hexdigest()
 ARTIFACT_PATH = "/artifacts/{}.png".format(ARTIFACT_SHA256)
+# image-service.py derives both routes from the digest: artifact_url names
+# the PNG and provenance_url names the retained record. The page reads the
+# record's identity out of the result and composes the image route itself,
+# so the stub answers with the provenance route the service answers with.
+PROVENANCE_PATH = "/artifacts/{}.json".format(ARTIFACT_SHA256)
 API_KEY = "test-image-key"
 GRANT_TOKEN = "grant-token-abc"
 SESSION_SECRET = "session-secret-xyz"
@@ -123,11 +128,11 @@ def make_handler(state):
                                     "width": {"type": "integer"},
                                     "height": {"type": "integer"},
                                     "steps": {"type": "integer"},
-                                    "profile": {"type": "string"},
+                                    "profile_id": {"type": "string"},
                                     "seed": {"type": "integer"},
                                     "authorization": {"type": "string"},
                                 },
-                                "required": ["prompt", "profile", "width", "height", "steps"],
+                                "required": ["prompt", "profile_id", "width", "height", "steps"],
                             },
                         },
                     },
@@ -175,7 +180,7 @@ def make_handler(state):
                         "prompt": "a fox in a snowy field",
                         "negative_prompt": "blurry, low quality",
                         "width": 512, "height": 512, "steps": 4,
-                        "profile": "sdxs-512-arm-a",
+                        "profile_id": "sdxs-512-arm-a",
                     })
                     chunks = [
                         {"choices": [{"delta": {"tool_calls": [{
@@ -221,7 +226,7 @@ def make_handler(state):
                 result = {
                     "status": "completed",
                     "sha256": ARTIFACT_SHA256,
-                    "provenance_url": ARTIFACT_PATH,
+                    "provenance_url": PROVENANCE_PATH,
                 }
                 self._send_json(200, {"plain_text_response": json.dumps(result)})
                 return
@@ -283,6 +288,12 @@ def main():
         page.evaluate(
             "(() => { document.querySelector('#api-key').value = " + json.dumps(API_KEY) +
             "; document.querySelector('#set-key').click(); return true; })()")
+        # The stub serves the artifact routes on its own origin, and the real
+        # listener binds an ephemeral port, so the page is told where it is
+        # the way an operator tells it: through the field.
+        page.evaluate(
+            "(() => { document.querySelector('#artifact-origin').value = " + json.dumps(origin) +
+            "; return true; })()")
         drive_fallback_page.wait_for(page, "requestModel", 30, "the page to select a model")
         page.evaluate(drive_fallback_page.FETCH_RECORDER)
         page.evaluate(
@@ -376,6 +387,14 @@ def main():
             failures.append("the generate_image call did not carry the issued grant")
         if "prompt" not in params:
             failures.append("the generate_image call carried no prompt")
+        # remote/image-mcp/server.py names this argument profile_id, requires
+        # it, and refuses any name outside its schema, so the page's own wire
+        # spelling is checked here rather than only against a stub that would
+        # accept either.
+        if params.get("profile_id") != "sdxs-512-arm-a":
+            failures.append("the generate_image call named no profile_id: " + repr(params.get("profile_id")))
+        if "profile" in params:
+            failures.append("the generate_image call carries a profile key the tool refuses by name")
 
     if "Bearer " + API_KEY not in artifact_headers:
         failures.append("the artifact fetch never carried the page's credential header")
@@ -398,7 +417,7 @@ def main():
         content = tool_messages[0].get("content", "")
         if ARTIFACT_SHA256 not in content:
             failures.append("the retained tool message does not name the sha256")
-        if ARTIFACT_PATH not in content:
+        if PROVENANCE_PATH not in content:
             failures.append("the retained tool message does not name the provenance URL")
         if GRANT_TOKEN in content:
             failures.append("the retained tool message carries the spent grant")

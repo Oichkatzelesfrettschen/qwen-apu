@@ -199,6 +199,7 @@ if [ "$broker_enabled" = 1 ]; then
         "$broker_program" --host 127.0.0.1 --port "$broker_port" \
         --state-dir "$broker_state_directory" \
         --profile "$QWEN_WEB_PROFILE" \
+        --image-profile "${QWEN_IMAGE_PROFILE:-}" \
         --provider "${QWEN_WEB_PROVIDER:-exa}" \
         --api-key-file "$api_key_file" \
         >"$broker_log" 2>&1 &
@@ -214,8 +215,9 @@ if [ "$broker_enabled" = 1 ]; then
             "$broker_pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         printf 'broker secret_file=%s\n' \
             "$broker_state_directory/authorize-session.secret"
-        printf 'broker_identity pid=%s start_time=%s profile=%s provider=%s signing_key_sha256=%s\n' \
+        printf 'broker_identity pid=%s start_time=%s profile=%s image_profile=%s provider=%s signing_key_sha256=%s\n' \
             "$broker_pid" "$broker_start_time" "$QWEN_WEB_PROFILE" \
+            "${QWEN_IMAGE_PROFILE:--}" \
             "${QWEN_WEB_PROVIDER:-exa}" "$broker_signing_key_sha256"
     } >"$status_file"
 
@@ -250,6 +252,7 @@ if [ "$broker_enabled" = 1 ]; then
     }
     health_pid=$(health_field pid)
     health_profile=$(health_field profile)
+    health_image_profile=$(health_field image_profile)
     health_provider=$(health_field provider)
     health_key=$(health_field signing_key_sha256)
     health_start_time=$(health_field start_time)
@@ -257,6 +260,11 @@ if [ "$broker_enabled" = 1 ]; then
     [ "$health_pid" = "$broker_pid" ] || health_mismatch="pid=$health_pid"
     [ "$health_profile" = "$QWEN_WEB_PROFILE" ] || \
         health_mismatch="$health_mismatch profile=$health_profile"
+    # The image lane the launch armed is the lane the broker signs for. A
+    # broker that loaded another image profile, or none, would refuse every
+    # approved generation at the first grant rather than at startup.
+    [ "$health_image_profile" = "${QWEN_IMAGE_PROFILE:-}" ] || \
+        health_mismatch="$health_mismatch image_profile=$health_image_profile"
     [ "$health_provider" = "${QWEN_WEB_PROVIDER:-exa}" ] || \
         health_mismatch="$health_mismatch provider=$health_provider"
     [ "$health_key" = "$broker_signing_key_sha256" ] || \

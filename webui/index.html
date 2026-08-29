@@ -118,6 +118,7 @@
   <label class="chip"><input type="checkbox" id="web-tools"> web</label>
   <label class="chip"><input type="checkbox" id="image-tools"> image</label>
   <input class="key" type="text" id="broker-origin" placeholder="approval broker origin" autocomplete="off">
+  <input class="key" type="text" id="artifact-origin" placeholder="image artifact origin" autocomplete="off">
   <button class="act" id="clear">clear</button>
 </header>
 
@@ -549,6 +550,38 @@ function configuredBrokerOrigin() {
   return configured.trim().replace(/\/+$/, '');
 }
 const BROKER_ORIGIN_DEFAULT = configuredBrokerOrigin();
+
+// The artifact origin resolves in the same order for the same reason, from an
+// `?artifacts=` query parameter, then a `qwen-image-artifacts` meta tag, and
+// it has no default: image-service.py binds --http-port 0, so the port is
+// ephemeral and qwen-webui-session.sh reports the address it received on its
+// `image_service_identity ... listener=` line. A page given no artifact origin
+// renders the generation's digest and provenance route and states that it
+// reached no listener, rather than resolving the route against the router,
+// which proxies none of it.
+function configuredArtifactOrigin() {
+  let configured = '';
+  try {
+    configured = (new URL(window.location.href)).searchParams.get('artifacts') || '';
+  } catch (error) {
+    configured = '';
+  }
+  if (!configured.trim()) {
+    const tag = document.querySelector('meta[name="qwen-image-artifacts"]');
+    configured = (tag && tag.getAttribute('content')) || '';
+  }
+  return configured.trim().replace(/\/+$/, '');
+}
+const ARTIFACT_ORIGIN_DEFAULT = configuredArtifactOrigin();
+
+function artifactOrigin() {
+  const configured = ($('#artifact-origin').value.trim() || ARTIFACT_ORIGIN_DEFAULT)
+    .replace(/\/+$/, '');
+  if (!configured) {
+    throw new Error('no artifact listener origin is configured for this page');
+  }
+  return configured;
+}
 const BROKER_SESSION_HEADER = 'X-Qwen-Web-Session';
 const STALE_SESSION_SECRET_CODE = 'stale_session_secret';
 const CONTINUATION_CAP = 4;
@@ -993,8 +1026,15 @@ function proposedImageFields(argumentText) {
   if (typeof parsed.prompt !== 'string' || !parsed.prompt) {
     throw new Error('prompt must be a non-empty string');
   }
-  if (typeof parsed.profile !== 'string' || !parsed.profile) {
-    throw new Error('profile must be a non-empty string');
+  // The advertised schema names this argument profile_id, which is what a
+  // model reading the listing emits; `profile` is read after it because the
+  // dialog and the request both spell one field and a proposal that used the
+  // shorter name would otherwise fail closed on a name the tool would accept.
+  const proposedProfile = typeof parsed.profile_id === 'string' && parsed.profile_id
+    ? parsed.profile_id
+    : parsed.profile;
+  if (typeof proposedProfile !== 'string' || !proposedProfile) {
+    throw new Error('profile_id must be a non-empty string');
   }
   const requirePositiveInteger = key => {
     if (!Number.isInteger(parsed[key]) || parsed[key] <= 0) {
@@ -1017,7 +1057,7 @@ function proposedImageFields(argumentText) {
     seed = randomSeed();
     seedGenerated = true;
   }
-  return { prompt: parsed.prompt, negative_prompt: negativePrompt, profile: parsed.profile,
+  return { prompt: parsed.prompt, negative_prompt: negativePrompt, profile: proposedProfile,
            width, height, steps, seed, seedGenerated };
 }
 
@@ -1535,7 +1575,10 @@ function imageRequestParams(fields, authorization) {
     width: fields.width,
     height: fields.height,
     steps: fields.steps,
-    profile: fields.profile,
+    // remote/image-mcp/server.py names this argument profile_id, lists it in
+    // `required`, and refuses any name outside its schema, so the wire
+    // spelling is the tool's rather than the proposal's.
+    profile_id: fields.profile,
     authorization
   };
 }
@@ -1578,13 +1621,20 @@ function buildImageToolResultSummary(result) {
   return `Image generated: sha256 ${result.sha256}, provenance ${result.provenanceUrl}.`;
 }
 
-async function loadArtifactBlobUrl(provenanceUrl) {
+async function loadArtifactBlobUrl(sha256) {
   /* Fetch the artifact PNG with the same credential header the page sends
      for chat -- an <img src> cannot carry that header, and the hash never
      substitutes for it in a query parameter -- and hand back a local blob
-     URL the caller owns and must revoke. */
-  const response = await fetch(new URL(provenanceUrl, window.location.href).href,
-    { headers: authHeaders() });
+     URL the caller owns and must revoke.
+
+     The route is derived from the digest rather than taken from the result:
+     image-service.py's provenance_url names the `.json` record and its
+     artifact_url names the `.png`, both from the same digest, so the page
+     reads the record's identity and composes the image route itself. The
+     origin is the artifact listener's, because that service owns the routes
+     and the router proxies none of them. */
+  const response = await fetch(`${artifactOrigin()}/artifacts/${sha256}.png`,
+    { mode: 'cors', headers: authHeaders() });
   if (!response.ok) {
     throw new Error(`the artifact fetch returned HTTP ${response.status}`);
   }
@@ -1618,7 +1668,7 @@ function renderImageArtifactCard(container, fields, result) {
   };
   card.append(removeButton);
   container.append(card);
-  loadArtifactBlobUrl(result.provenanceUrl).then(url => {
+  loadArtifactBlobUrl(result.sha256).then(url => {
     blobUrl = url;
     img.src = url;
   }).catch(error => {

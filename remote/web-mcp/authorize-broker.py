@@ -28,10 +28,16 @@ approved words stay in the browser and the broker signs an identity.
 `qwen-image-generate-v1` binds one generation -- language profile, image
 profile, prompt and negative-prompt digests, seed, aspect, maximum pixel
 dimension and steps, conversation generation, expiry, and a single-use nonce
--- through `image_grant`, and `--profile` binds the image profile as it binds the
-web profile on `POST /grant`. The seed is a required request field, so the
-trusted user interface generates and displays it before approval and this
-broker chooses no randomness after one.
+-- through `image_grant`. The claim joins two profiles, so two arguments bind
+them: `--profile` is the language profile a section serves and the request's
+`language_profile` must equal it, and `--image-profile` is the image profile
+the ledger armed and the request's `image_profile` must equal that. One
+argument for both would sign a claim naming the language profile twice, which
+`image_grant.enforce_image_authorization` then refuses at the child against
+`QWEN_IMAGE_PROFILE`; a launch that armed no image lane leaves
+`--image-profile` empty and every generation grant is refused. The seed is a
+required request field, so the trusted user interface generates and displays it
+before approval and this broker chooses no randomness after one.
 
 One approval issues one grant. The claim carries `max_uses` of one and the
 serving path spends it under the ledger's primary key, so this service offers
@@ -225,6 +231,7 @@ class BrokerSettings:
         self.state_directory = arguments.state_dir
         self.provider = arguments.provider
         self.profile = arguments.profile
+        self.image_profile = arguments.image_profile
         self.lifetime = arguments.lifetime
         self.origins = tuple(arguments.origin)
         self.per_minute = arguments.per_minute
@@ -398,16 +405,31 @@ def image_audit_row(settings, fields, status, started_at):
 def issue_image_for_request(settings, fields):
     """Sign the generation grant for exactly these approved fields.
 
-    `--profile` binds the image profile the same way it binds the web profile
-    on `POST /grant`: one broker signs for one profile, and the MCP child
-    compares the claim's `image_profile` against the profile it serves, so
-    a mismatch is refused here against the name the grant would carry rather
-    than at the child against a token that already left the machine.
+    The claim joins the language profile a section serves to the image profile
+    the ledger armed, and `image_grant.enforce_image_authorization` compares
+    each against a separate setting the MCP child reads --
+    `QWEN_IMAGE_LANGUAGE_PROFILE` and `QWEN_IMAGE_PROFILE`. Both names are
+    therefore bound here, against `--profile` and `--image-profile`, so a
+    mismatch is refused against the name the grant would carry rather than at
+    the child against a token that already left the machine. An empty
+    `--image-profile` is a launch that armed no image lane, and every
+    generation grant is refused rather than signed for a profile no ledger row
+    admitted.
     """
-    if fields["image_profile"] != settings.profile:
+    if not settings.image_profile:
+        raise server.InvalidArgument(
+            "this broker serves no image profile, so it signs no generation grant"
+        )
+    if fields["language_profile"] != settings.profile:
         raise server.InvalidArgument(
             f"the broker process serves profile {settings.profile!r}; "
-            f"the request named image profile {fields['image_profile']!r}"
+            f"the request named language profile {fields['language_profile']!r}"
+        )
+    if fields["image_profile"] != settings.image_profile:
+        raise server.InvalidArgument(
+            f"the broker process serves image profile "
+            f"{settings.image_profile!r}; the request named "
+            f"{fields['image_profile']!r}"
         )
     return image_grant.issue_image_grant(
         settings.token_key_file, fields, settings.lifetime
@@ -694,6 +716,11 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
             {
                 "protocol": "qwen-web-broker/1",
                 "profile": self.settings.profile,
+                # The image profile reports what this broker signs generation
+                # grants for, so a launch reads the armed lane from the same
+                # route it reads the language profile from. An empty value
+                # states that no image lane is armed.
+                "image_profile": self.settings.image_profile,
                 "provider": self.settings.provider,
                 "pid": os.getpid(),
                 "start_time": self.settings.start_time,
@@ -810,8 +837,9 @@ def build_parser():
         description="issue one grant per human approval over loopback; "
         "POST /grant requires profile_id in the request body, matching "
         "--profile below, beside the search_exa fields it approves, and "
-        "POST /grant-image requires image_profile matching the same value "
-        "beside the generation fields it approves",
+        "POST /grant-image requires language_profile matching --profile and "
+        "image_profile matching --image-profile beside the generation fields "
+        "it approves",
     )
     parser.add_argument("--host", type=loopback_host, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=0)
@@ -827,6 +855,12 @@ def build_parser():
         "--profile", default=os.environ.get("QWEN_WEB_PROFILE", "default"),
         help="the profile this broker serves; POST /grant requires the "
         "request body's profile_id to equal this value",
+    )
+    parser.add_argument(
+        "--image-profile", default=os.environ.get("QWEN_IMAGE_PROFILE", ""),
+        help="the image profile this broker signs generation grants for; "
+        "POST /grant-image requires the request body's image_profile to equal "
+        "this value, and an empty value refuses every generation grant",
     )
     parser.add_argument(
         "--lifetime", type=int, default=server.TOKEN_LIFETIME_DEFAULT_SECONDS

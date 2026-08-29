@@ -587,6 +587,55 @@ with `/proc/PID/stat` before signalling and then runs
 `remote/image-teardown-check.sh`, which proves no service, no runtime, no
 partial artifact, and a free lease.
 
+The generation grant joins two profiles and the broker binds them with two
+arguments. `image_grant.enforce_image_authorization` compares a claim's
+`language_profile` against `QWEN_IMAGE_LANGUAGE_PROFILE` and its
+`image_profile` against `QWEN_IMAGE_PROFILE`, which the emitted configuration
+sets to the section's own id and to the ledger's image row, so
+`authorize-broker.py` takes `--image-profile` beside `--profile` and the
+session hands it `QWEN_IMAGE_PROFILE`. A launch that armed no image lane
+leaves it empty and every `POST /grant-image` is refused. `GET /health`
+reports the pair and the session compares both before it admits the launch, so
+a broker signing for another lane fails at startup rather than at the first
+approved generation.
+
+`remote/admit-image-router.sh` runs that chain against one approved
+generation. It promotes one `remote/image-profiles.tsv` row to
+`validator-gated` in a copy under its own output directory, writes a
+`ui-mediated` language row so the emitted section carries the image server
+alone, generates the preset under `QWEN_WEB_AUTHORIZER_READY=1`, launches
+through `qwen-image-launch.sh`, and replays every request the page makes with
+curl on the router port and the artifact listener: `GET /tools?model=` lists
+`generate_image`, `POST /grant-image` signs over a seed the script chose, one
+`POST /tools` carrying the grant inside `params` completes with a digest and a
+provenance route, and the replayed grant, the ungranted call, the
+out-of-schema argument, the foreign image profile, and the uncredentialed
+artifact read are each refused once. `GET /artifacts/<sha>.png` is compared
+byte-for-byte against the digest the reply named and `GET /artifacts/<sha>.json`
+against the seed and profile that produced it. The page then runs the same turn
+through `remote/web-mcp/drive-fallback-page.py --lane image`, and the checks
+read its own request log: the grant is posted once, the generation names the
+model beside the tool, every request stays on the router, broker, and artifact
+origins, and the retained tool message carries the digest and the route alone.
+`remote/test-admit-image-router.sh` runs the whole harness on the workstation
+against `remote/test-fixtures/fake-router-server.py` and
+`remote/test-fixtures/fake-image-runtime.sh`, replacing the four device-owning
+links -- the memory preflight, the graphics latency probe, the kernel-hazard
+watcher, and the runtime monitor -- and leaving the launch chain, the broker,
+the service, the lease, the MCP child, the served page, and the teardown as
+the tree's own.
+
+The artifact listener is a second origin the page is told about. `--http-port`
+defaults to 0, so `qwen-webui-session.sh` reads the address the service printed
+and records it on its `image_service_identity ... listener=` line, and the
+router proxies none of `/artifacts/`. `webui/index.html` therefore resolves an
+artifact origin from an `?artifacts=` query parameter, then a
+`qwen-image-artifacts` meta tag, then its own field, and a page given none says
+so rather than resolving the route against the router. The image route itself
+is derived from the digest: `provenance_url` names the `.json` record and the
+page composes `/artifacts/<sha>.png` from the same value, so one reply carries
+one identity and both routes follow from it.
+
 `~/qwen-webui-state/vulkan-workload.lock` is that lease, and its scope is
 narrower than the state machine the appliance is heading for. `image-service.py`
 is its only writer, so it serializes image generations against each other and
@@ -656,6 +705,7 @@ remote/run-one-token-admission.sh RECORD [OUT]  # load every candidate once
 remote/run-representation-arm.sh LABEL CONTROL SUBJECT
                                                 # one value format against another, ABBA
 remote/admit-web-router-fake.sh OUTPUT_DIR      # the web router against the fake provider
+remote/admit-image-router.sh OUTPUT_DIR         # one approved generation through the router
 remote/probe-depth-projector.sh MODEL_ID OUT   # filled depth, projector loaded
 remote/image-registry.sh artifacts|models|profiles|bundle|profile
                                                 # the four image authorities, validated whole
@@ -706,6 +756,7 @@ remote/test-qwen-web-launch.sh
 remote/test-image-registry.sh
 remote/test-qwen-image-launch.sh
 remote/test-run-image-standalone.sh
+remote/test-admit-image-router.sh
 remote/test-fallback-webui-image-authorization.sh
 python3 remote/test-image-protocol.py
 python3 remote/test-image-service.py

@@ -785,6 +785,60 @@ class BrokerTest(unittest.TestCase):
         self.assertNotIn("raven2 vulkan decode", stderr)
         self.assertNotIn(secret, stderr)
 
+    def image_grant_body(self, **overrides):
+        """Return one qwen-image-generate-v1 request the page would post."""
+        empty = hashlib.sha256(b"").hexdigest()
+        fields = {
+            "context": "qwen-image-generate-v1",
+            "language_profile": "default",
+            "image_profile": "image-fixture-a",
+            "prompt_hash": hashlib.sha256(b"a fox").hexdigest(),
+            "negative_prompt_hash": empty,
+            "seed": 7,
+            "aspect": "1:1",
+            "max_dimension": 512,
+            "max_steps": 4,
+            "conversation_generation": 0,
+        }
+        fields.update(overrides)
+        return fields
+
+    def test_image_grant_binds_both_profiles(self):
+        """The claim joins two profiles, so two arguments bind them.
+
+        `image_grant.enforce_image_authorization` compares the claim's
+        `language_profile` against `QWEN_IMAGE_LANGUAGE_PROFILE` and its
+        `image_profile` against `QWEN_IMAGE_PROFILE`, and the MCP child reads
+        those from separate settings. One broker argument for both would sign
+        a claim naming the language profile twice, which the child then
+        refuses, so no grant could ever be spent.
+        """
+        broker = self.launch(**{"--image-profile": "image-fixture-a"})
+        secret = self.session_secret()
+        status, _, body = broker.request(
+            "POST", "/grant-image", json.dumps(self.image_grant_body()),
+            self.grant_headers(secret))
+        self.assertEqual(status, 200, body)
+        self.assertTrue(json.loads(body)["authorization"])
+        for overrides, named in (
+            ({"image_profile": "image-other"}, "image profile"),
+            ({"language_profile": "web-other"}, "language profile"),
+        ):
+            status, _, body = broker.request(
+                "POST", "/grant-image", json.dumps(self.image_grant_body(**overrides)),
+                self.grant_headers(secret))
+            self.assertEqual(status, 400, body)
+            self.assertIn(named, json.loads(body)["error"])
+
+    def test_image_grant_refused_where_no_lane_is_armed(self):
+        """A launch that armed no image lane signs no generation grant."""
+        broker = self.launch()
+        status, _, body = broker.request(
+            "POST", "/grant-image", json.dumps(self.image_grant_body()),
+            self.grant_headers())
+        self.assertEqual(status, 400, body)
+        self.assertIn("no image profile", json.loads(body)["error"])
+
     def test_health_reports_process_identity_and_needs_no_origin(self):
         broker = self.launch()
         status, _, body = broker.request("GET", "/health")
@@ -795,6 +849,7 @@ class BrokerTest(unittest.TestCase):
             {
                 "protocol",
                 "profile",
+                "image_profile",
                 "provider",
                 "pid",
                 "start_time",

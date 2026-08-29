@@ -169,6 +169,15 @@ def main():
     parser.add_argument("--prompt", required=True, help="the user turn to send")
     parser.add_argument("--broker", default="",
                         help="approval broker origin; passed to the page as its ?broker= query parameter")
+    parser.add_argument("--artifacts", default="",
+                        help="image artifact listener origin; typed into the page's own "
+                             "artifact-origin field, the way an operator reads the port off the session status line")
+    # The two lanes carry the same turn shape over their own controls: a
+    # per-turn toggle, a dialog the proposal opens, and one approval. Naming
+    # the lane rather than each selector keeps a driver invocation readable
+    # and keeps the page's element names in one place.
+    parser.add_argument("--lane", choices=("web", "image"), default="web",
+                        help="which per-turn lane's toggle and approval dialog to drive")
     parser.add_argument("--api-key-file", default="",
                         help="file whose first line is the bearer key the page sets before connecting")
     parser.add_argument("--chromium", default="chromium")
@@ -208,6 +217,12 @@ def main():
         # The page resolves the broker from ?broker= ahead of its meta tag,
         # so a launch on another broker port reaches the page the way an
         # operator's own visit would.
+        # DevTools takes the target URL as the raw remainder of its own query
+        # string, so one parameter travels there and a second would be read as
+        # the debugger's. The broker goes in the URL, the way an operator's
+        # bookmark carries it, and the artifact listener is typed into its own
+        # field below, the way an operator reads the port off the session
+        # status line.
         page_url = arguments.origin + "/"
         if arguments.broker:
             page_url += "?broker=" + urllib.parse.quote(arguments.broker, safe="")
@@ -233,27 +248,67 @@ def main():
                 + json.dumps(api_key)
                 + "; document.querySelector('#set-key').click(); return true; })()"
             )
+        if arguments.artifacts:
+            page.evaluate(
+                "(() => { document.querySelector('#artifact-origin').value = "
+                + json.dumps(arguments.artifacts)
+                + "; return true; })()"
+            )
         selected_model = wait_for(page, "requestModel", arguments.load_timeout, "the page to select a model")
         page.evaluate(FETCH_RECORDER)
-        page.evaluate("(() => { document.querySelector('#web-tools').checked = true; return true; })()")
+        if arguments.lane == "image":
+            toggle, dialog_id = "#image-tools", "#image-approval"
+            approve, args_list = "#image-approve-once", "#image-approval-args"
+            note_id = "#image-approval-note"
+        else:
+            toggle, dialog_id = "#web-tools", "#web-approval"
+            approve, args_list = "#approve-once", "#approval-args"
+            note_id = "#approval-note"
+        page.evaluate(
+            "(() => { document.querySelector('" + toggle + "').checked = true; return true; })()"
+        )
         page.evaluate(
             "(() => { const box = document.querySelector('#input'); box.value = "
             + json.dumps(arguments.prompt)
             + "; document.querySelector('#send').click(); return true; })()"
         )
-        wait_for(page, "document.querySelector('#web-approval').open", arguments.dialog_timeout,
+        wait_for(page, "document.querySelector('" + dialog_id + "').open", arguments.dialog_timeout,
                  "the approval dialog")
         dialog = page.evaluate(
-            "(() => { const args = {}; document.querySelectorAll('#approval-args dt').forEach(dt => {"
+            "(() => { const args = {}; document.querySelectorAll('" + args_list + " dt').forEach(dt => {"
             " args[dt.textContent.trim()] = (dt.nextElementSibling || {}).textContent; });"
-            " return { heading: document.querySelector('#web-approval h2').textContent,"
-            " note: document.querySelector('#approval-note').textContent, args }; })()"
+            " return { heading: document.querySelector('" + dialog_id + " h2').textContent,"
+            " note: document.querySelector('" + note_id + "').textContent, args }; })()"
         )
-        page.evaluate("(() => { document.querySelector('#approve-once').click(); return true; })()")
+        page.evaluate(
+            "(() => { document.querySelector('" + approve + "').click(); return true; })()"
+        )
         wait_for(page, "busy === false", arguments.turn_timeout, "the turn to end")
+        if arguments.lane == "image":
+            # renderImageArtifactCard() starts the artifact fetch and returns,
+            # so the turn ends before the image resolves. The wait ends on the
+            # blob URL or on the caption the failure branch appends, and a
+            # timeout leaves the card as it stands for the report to carry.
+            try:
+                wait_for(
+                    page,
+                    "(() => { const card = document.querySelector('figure.image-artifact');"
+                    " if (!card) return false;"
+                    " const img = card.querySelector('img');"
+                    " return Boolean(img && img.src) ||"
+                    " /image fetch failed/.test(card.querySelector('figcaption').textContent); })()",
+                    120,
+                    "the artifact fetch to resolve",
+                )
+            except TimeoutError:
+                pass
         report = page.evaluate(
             "JSON.stringify({ origin: window.location.origin, model: requestModel,"
             " history, requests: window.__qwenRequests,"
+            " imageStates: Array.from(document.querySelectorAll('.image-state')).map(el => el.textContent),"
+            " imageCards: Array.from(document.querySelectorAll('figure.image-artifact')).map(card => ({"
+            "   caption: (card.querySelector('figcaption') || {}).textContent || '',"
+            "   src: ((card.querySelector('img') || {}).src || '').slice(0, 40) })),"
             " log: document.querySelector('#log').innerText.slice(0, 6000) })"
         )
         report = json.loads(report)
