@@ -66,7 +66,15 @@ if [ ! -x "$runtime" ]; then
     printf 'runtime binary is missing or not executable: %s\n' "$runtime" >&2
     exit 1
 fi
-if [ ! -f "$model_path" ]; then
+# sd-cli's --model reads a single checkpoint or a diffusers directory, which
+# src/model_loader.cpp resolves by fixed relative paths; SDXS-512 ships the
+# directory form, so a directory is admitted when it holds safetensors files.
+if [ -d "$model_path" ]; then
+    if ! find "$model_path" -type f -name '*.safetensors' | grep -q .; then
+        printf 'model directory holds no safetensors file: %s\n' "$model_path" >&2
+        exit 1
+    fi
+elif [ ! -f "$model_path" ]; then
     printf 'model file is missing: %s\n' "$model_path" >&2
     exit 1
 fi
@@ -84,7 +92,16 @@ mkdir -p "$output_directory"
 binary_sha256=$(sha256sum "$runtime" | awk '{ print $1 }')
 model_sha256=unavailable
 if [ "${QWEN_IMAGE_SKIP_MODEL_HASH:-0}" != 1 ]; then
-    model_sha256=$(sha256sum "$model_path" | awk '{ print $1 }')
+    if [ -d "$model_path" ]; then
+        # A directory's identity is the digest over its safetensors digests in
+        # sorted relative-path order, so one changed component changes it.
+        model_sha256=$(cd "$model_path" && find . -type f -name '*.safetensors' |
+            LC_ALL=C sort | while IFS= read -r relative; do
+                printf '%s  %s\n' "$(sha256sum "$relative" | awk '{ print $1 }')" "$relative"
+            done | sha256sum | awk '{ print $1 }')
+    else
+        model_sha256=$(sha256sum "$model_path" | awk '{ print $1 }')
+    fi
 fi
 
 # Vulkan identity, read the way remote/probe-depth-wedge.sh reads it: driver
