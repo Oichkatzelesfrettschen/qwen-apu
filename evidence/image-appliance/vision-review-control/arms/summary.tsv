@@ -1,0 +1,5 @@
+arm	image_mode	swap_sha256	status	constraints	passed	failed	regenerate	wall_seconds	exit_status
+01-real	real	-	ok	2	2	0	no	35.49	0
+02-withheld	withheld	-	ok	2	1	1	no	20.02	0
+03-swapped	swapped	7c6b7565059771e7e68d467afeae10233204915659c22728442467552e9e6fe3	ok	2	2	0	no	37.27	0
+04-real-closing	real	-	ok	2	2	0	no	36.07	0
