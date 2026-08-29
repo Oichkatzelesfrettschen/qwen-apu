@@ -76,11 +76,16 @@ vulkan_summary=$($vulkaninfo_command --summary 2>&1) || {
     printf 'vulkaninfo --summary failed:\n%s\n' "$vulkan_summary" >&2
     exit 1
 }
-if printf '%s\n' "$vulkan_summary" | grep -Eqi 'llvmpipe|lavapipe|AMDGPU-PRO'; then
-    printf 'refusing to build against a software or non-RADV Vulkan stack:\n%s\n' \
+# Mesa installs lavapipe beside radeon_icd, so a summary that lists llvmpipe
+# as a second physical device is the ordinary appliance state; the device the
+# runtime computes on is chosen per run through --backend and checked there.
+# The build refuses a proprietary stack, whose ICD replaces RADV outright.
+if printf '%s\n' "$vulkan_summary" | grep -Eqi 'AMDGPU-PRO'; then
+    printf 'refusing to build against a non-RADV Vulkan stack:\n%s\n' \
         "$vulkan_summary" >&2
     exit 1
 fi
+software_devices=$(printf '%s\n' "$vulkan_summary" | grep -Eci 'llvmpipe|lavapipe' || true)
 if ! printf '%s\n' "$vulkan_summary" | grep -Eq 'RADV RAVEN2'; then
     printf 'vulkaninfo --summary names no RADV RAVEN2 device:\n%s\n' "$vulkan_summary" >&2
     exit 1
@@ -158,6 +163,7 @@ manifest_path=$build_directory/build-manifest.tsv
     printf 'ninja_version\t%s\n' "$(ninja --version)"
     printf 'vulkan_header_version\t%s\n' "$vulkan_header_version"
     printf 'mesa_radv_driver_info\t%s\n' "$mesa_radv_version"
+    printf 'software_vulkan_devices_listed\t%s\n' "$software_devices"
     printf 'kernel_release\t%s\n' "$kernel_release"
     printf 'amdgpu_module_version\t%s\n' "$amdgpu_module_version"
     printf 'cmake_flags\tSD_VULKAN=ON SD_BUILD_EXAMPLES=ON GGML_NATIVE=OFF\n'
