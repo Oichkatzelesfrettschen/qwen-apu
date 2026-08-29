@@ -1074,12 +1074,13 @@ async function requestImageGrant(fields, signal) {
 
 async function imageGrantFields(fields, languageProfile, conversationGenerationValue) {
   /* Build the qwen-image-generate-v1 grant request. The grant binds a hash
-     of each prompt rather than the prompt text, an aspect ratio and a single
+     of each stripped prompt, the spelling image_grant.prompt_digest hashes on
+     the broker side, rather than the prompt text, an aspect ratio and a single
      max-dimension bound rather than the exact pixel size, and the step count
      and conversation generation the dialog showed -- never the image bytes,
      which do not exist yet when this grant is requested. */
   const [promptHash, negativePromptHash] = await Promise.all([
-    sha256Hex(fields.prompt), sha256Hex(fields.negative_prompt)
+    sha256Hex(fields.prompt.trim()), sha256Hex(fields.negative_prompt.trim())
   ]);
   return {
     context: IMAGE_GRANT_CONTEXT,
