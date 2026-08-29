@@ -49,7 +49,11 @@ fi
 # A second process may run the service without having written that file, so the
 # command line is matched directly as well. The pattern names the script rather
 # than a bare word, which keeps this script's own arguments from matching it.
-service_pids=$(pgrep -f '[i]mage-service\.py' 2>/dev/null || true)
+# A pattern is anchored to the executable position of the command line, since
+# a harness that names the runtime in an environment assignment (for example
+# QWEN_IMAGE_RUNTIME=.../sd-cli) carries the same substring and would count
+# itself as residue under a bare substring match.
+service_pids=$(pgrep -f '^([^ ]*/)?python3?[^ ]* ([^ ]*/)?image-service\.py( |$)' 2>/dev/null || true)
 if [ -n "$service_pids" ]; then
     printf 'image service processes survive: %s\n' \
         "$(printf '%s' "$service_pids" | tr '\n' ' ')" >&2
@@ -59,7 +63,7 @@ fi
 # The runtimes this tree can spawn are the pinned stable-diffusion.cpp binary
 # and the fixture that stands in for it. A deployment that pins another binary
 # names it in QWEN_IMAGE_RUNTIME_PATTERN as an extended regular expression.
-runtime_pattern=${QWEN_IMAGE_RUNTIME_PATTERN:-'[s]table-diffusion|[f]ake-image-runtime\.sh'}
+runtime_pattern=${QWEN_IMAGE_RUNTIME_PATTERN:-'^([^ ]*/)?(sd-cli|fake-image-runtime\.sh)( |$)'}
 runtime_pids=$(pgrep -f "$runtime_pattern" 2>/dev/null || true)
 if [ -n "$runtime_pids" ]; then
     printf 'image runtime processes survive: %s\n' \
