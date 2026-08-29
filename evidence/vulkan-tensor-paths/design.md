@@ -26,13 +26,18 @@ Placement is therefore settled; representation and kernel are the open axes.
 
 ## What each class streams (census, appliance files)
 
-| Checkpoint | Q4_K | Q5_K | Q6_K | Q8_0 | F32 | tied embedding/output |
-| --- | ---: | ---: | ---: | ---: | ---: | --- |
-| Qwen3.8-2B distill Q4_K_M | 48.91% | - | 50.08% | mtp only | 0.17% | 417,177,600 B Q6_K |
-| Qwen3.8-4B distill Q4_K_M | 61.11% | - | 38.36% | - | 0.14% | 521,472,000 B Q6_K |
-| Qwen3.5-2B base Q4_K_M | 36.50% | 1.55% | 53.17% | 7.50% | 0.50% | 417,177,600 B Q6_K |
-| Qwen3.5-4B base Q4_K_M | 49.66% | 18.94% | 30.72% | 0.15% | 0.14% | 521,472,000 B Q6_K |
-| Qwen3.5-0.8B Q8_0 | - | - | - | bulk | small | Q8_0 |
+Shares are over streamed bytes: the multi-token-prediction block is
+`TENSOR_SKIP` on an ordinary load (`src/models/qwen35.cpp`), so its tensors
+are subtracted before the percentage is taken, and a file-level share
+(`evidence/tensor-type-execution-audit.md`) differs from these by that block.
+
+| Checkpoint | streamed bytes | Q4_K | Q5_K | Q6_K | Q8_0 | F32 | tied embedding/output |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| Qwen3.8-2B distill Q4_K_M | 1,263,435,008 | 48.70% | - | 51.13% | - | 0.17% | 417,177,600 B Q6_K |
+| Qwen3.8-4B distill Q4_K_M | 2,697,836,544 | 61.08% | - | 38.78% | - | 0.14% | 521,472,000 B Q6_K |
+| Qwen3.5-2B base Q4_K_M | 1,320,574,208 | 38.59% | 1.64% | 56.21% | 3.04% | 0.52% | 417,177,600 B Q6_K |
+| Qwen3.5-4B base Q4_K_M | 2,729,969,664 | 49.85% | 19.01% | 30.84% | 0.15% | 0.14% | 521,472,000 B Q6_K |
+| Qwen3.5-0.8B Q8_0 | 0.801 GB/token (sweep) | - | - | - | bulk | small | Q8_0 |
 
 The two base checkpoints are the vision rows, and they are where Q5_K lives:
 21.6 MB in the 2B, 519 MB in the 4B, split 346 MB attention and 173 MB Gated
@@ -64,7 +69,7 @@ classes, one primary target").
 ### PR 1: tensor path ledger
 
 `remote/report-vulkan-tensor-paths.py` joins the census (name, role, N x K,
-type, bytes) to the submit trace (pipeline, workgroup, rows per workgroup,
+type, bytes, activation column count per phase) to the submit trace (pipeline, workgroup, rows per workgroup,
 reduction mode, dispatches per token) and to per-dispatch GPU time from
 timestamp queries, with VGPR and LDS from the RADV shader dump. Output:
 `evidence/vulkan-tensor-paths/<model_id>.tsv`, one row per tensor. The ledger
@@ -79,7 +84,13 @@ read. Each rung is quantized from the BF16 source through the appliance's own
 `llama-quantize`, never from the Q4 file, and carries a paired quality run and
 an exact-token comparison. Prediction: Q4_0 gains on the 2B through simpler
 unpack and lower VGPR pressure; falsifier: a paired decode gain under 5%, or a
-quality loss outside the registered bound.
+quality loss outside the registered bound. That bound is preregistered here:
+the candidate's graded total on the 75-row suite (`remote/run-quality-suite.py`)
+may fall at most one row below the Q4_K_M control graded in the same sweep,
+and its greedy token stream on the six graph-alias prompts
+(`evidence/vulkan-view-alias/ab-2b/`) is reported by first-divergence index
+rather than gated, since a representation change is expected to move tokens.
+A two-row fall refutes the rung whatever its rate.
 
 ### PR 3: custom quant recipes
 
@@ -94,7 +105,10 @@ base at 18.94% Q5_K is the row where that can register, and the 2B base at
 
 ### PR 4: Vulkan shape autotuner
 
-For each unique `(type, N, K, op)` on the ledger, sweep workgroup size (32 to
+For each unique `(type, N, K, op, NUM_COLS)` on the ledger -- the activation
+column count is part of the key because one weight shape is dispatched at one
+column in ordinary decode and at two to four columns under MTP verification,
+and `ggml-vulkan.cpp` selects a different mat-vec variant by column count --, sweep workgroup size (32 to
 256), rows per workgroup (1 to 8), reduction (subgroup, hybrid, shared), and
 unroll, measured by timestamp query on the appliance, starting at the 2B shapes
 2048x2048, 2048x6144, 6144x2048, the fused GDN QKV shape, and 248320x2048. The
