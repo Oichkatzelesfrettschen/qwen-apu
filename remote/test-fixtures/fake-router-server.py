@@ -608,6 +608,14 @@ def main(argv):
             review_section = served
         else:
             language_section = served
+    # The real router reports `/v1/models` sorted, which is what put a
+    # review-only vision section ahead of the language section by id alone --
+    # evidence/web-admission-router-tools.md records lfm25-vl-16b sorting
+    # ahead of web-image-admission -- so this fixture sorts the same way
+    # rather than reporting preset section order, which a page's own default
+    # selection or a driver's --model argument cannot be proven against
+    # otherwise.
+    roster = sorted(roster)
     router_settings = {
         "rows": rows,
         "roster": roster,

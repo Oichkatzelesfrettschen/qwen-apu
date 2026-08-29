@@ -279,6 +279,11 @@ def main():
     # and keeps the page's element names in one place.
     parser.add_argument("--lane", choices=("web", "image"), default="web",
                         help="which per-turn lane's toggle and approval dialog to drive")
+    parser.add_argument("--model", default="",
+                        help="select this roster id in the page's own picker before sending "
+                             "the prompt, refusing the step by name where the picker carries "
+                             "no option for it; a paired preset's default selection otherwise "
+                             "follows the page's own rule and can land on a review-only row")
     # The Review button appears on an artifact card where some roster row
     # reports a vision modality, so a review arm runs only against a preset
     # holding a review section. The verdict it renders is text a model wrote
@@ -375,6 +380,35 @@ def main():
                     + "; return true; })()"
                 )
             selected_model = wait_for(page, "requestModel", arguments.load_timeout, "the page to select a model")
+            if arguments.model and arguments.model != selected_model:
+                # The page's own default -- storage, then the first roster id
+                # that answers `GET /tools` with 200 -- is not the identity a
+                # harness needs: it is proving that identity, so this driver
+                # picks the model explicitly rather than trusting the page's
+                # rule to land on it. A picker with no option for the id is a
+                # roster mismatch the harness should fail loudly on rather
+                # than silently sending the turn to whichever row the page
+                # picked, so the check runs before the picker's value is
+                # touched.
+                has_option = page.evaluate(
+                    "Array.from(document.querySelectorAll('#model-picker option'))"
+                    ".some(option => option.value === " + json.dumps(arguments.model) + ")"
+                )
+                if not has_option:
+                    raise RuntimeError(
+                        "the page's model picker carries no option for --model "
+                        + arguments.model
+                    )
+                page.evaluate(
+                    "(() => { const picker = document.querySelector('#model-picker');"
+                    " picker.value = " + json.dumps(arguments.model) + ";"
+                    " picker.dispatchEvent(new Event('change')); return true; })()"
+                )
+                wait_for(
+                    page, "requestModel === " + json.dumps(arguments.model),
+                    arguments.load_timeout, "the page to select --model " + arguments.model,
+                )
+                selected_model = arguments.model
             page.evaluate(FETCH_RECORDER)
             if arguments.lane == "image":
                 toggle, dialog_id = "#image-tools", "#image-approval"

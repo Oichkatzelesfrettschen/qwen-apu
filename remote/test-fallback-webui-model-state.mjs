@@ -175,10 +175,27 @@ const rosterRequest = takeRequest(
   request => request.url === './v1/models', 'initial model roster');
 rosterRequest.resolve(jsonResponse({ data: [{ id: modelA }, { id: modelB }] }));
 await flushPromises();
+// boot() probes GET /tools per roster row before it picks a default, and
+// prefers the first row whose probe answers 200 over sort position: model A
+// answers 200 here (an ordinary language row) and model B answers 403 (a
+// review-only row), so the props request below being for model A is this
+// rule choosing it rather than modelIds[0] happening to agree with it.
+const toolsProbeA = takeRequest(
+  request => request.url === './tools?model=model-A&autoload=true',
+  'model A tool probe');
+toolsProbeA.resolve(jsonResponse([], 200));
+await flushPromises();
+const toolsProbeB = takeRequest(
+  request => request.url === './tools?model=model%20B%2F8k&autoload=true',
+  'model B tool probe');
+toolsProbeB.resolve(jsonResponse({ error: 'feature_disabled' }, 403));
+await flushPromises();
 const initialProps = takeRequest(
   request => request.url === './props?model=model-A', 'model A properties');
 initialProps.resolve(jsonResponse({ n_ctx: 24576 }));
 await flushPromises();
+assert.equal(testApi.state().requestModel, modelA,
+  'boot() did not default to the tool-offering row');
 assert.equal(testApi.state().nctx, 24576);
 assert.equal(testApi.state().nctxModel, modelA);
 

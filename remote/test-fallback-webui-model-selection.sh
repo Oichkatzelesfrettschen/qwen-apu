@@ -17,7 +17,18 @@ grep -F './props?model=${encodeURIComponent(selectedModel)}' \
     "$fallback_ui" >/dev/null
 grep -F "if (!selectedModel) throw new Error('no routable model is selected')" \
     "$fallback_ui" >/dev/null
-grep -F "modelIds.includes(storedModel) ? storedModel : modelIds[0]" \
+# A row that offers no tool -- a review-only vision section -- cannot act on
+# a chat turn's own Web or image toggle, so the roster's sort order alone
+# cannot set the default: the page probes `GET /tools` per roster row and
+# prefers the first one that answers 200 over sort position, while a still-
+# valid stored choice from browser storage stays authoritative over the probe.
+grep -F 'async function probeToolOffering(modelId)' "$fallback_ui" >/dev/null
+grep -F './tools?model=${encodeURIComponent(modelId)}&autoload=true' \
+    "$fallback_ui" >/dev/null
+grep -F 'modelIds.includes(storedModel)' "$fallback_ui" >/dev/null
+grep -F 'modelIds.find(modelId => toolOffering[modelId] === true) ?? modelIds[0]' \
+    "$fallback_ui" >/dev/null
+grep -F "toolOffering[modelId] === false ? \`\${modelId} (review)\` : modelId" \
     "$fallback_ui" >/dev/null
 grep -F "readBrowserStorage('localStorage', 'qwen-apu-model-id')" \
     "$fallback_ui" >/dev/null

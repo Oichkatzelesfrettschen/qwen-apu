@@ -97,6 +97,15 @@ BROKER_REFUSAL = (
 # declares one constraint per approved prompt field, so a verdict names
 # prompt_subject and negative_prompt_absent in that order.
 VISION_MODEL = "qwen35-2b"
+
+# The paired image preset's own roster order: a router lists `/v1/models`
+# sorted, and 'l' precedes 'w', so a review-only vision section sorts ahead of
+# the language section the way lfm25-vl-16b sorts ahead of web-image-admission
+# in evidence/web-admission-router-tools.md. The review section carries no MCP
+# configuration and answers `GET /tools` with 403 the way an ordinary model
+# does; the language section answers 200 and offers the image tool.
+PAIRED_REVIEW_MODEL = "lfm25-vl-16b"
+PAIRED_LANGUAGE_MODEL = "web-image-admission"
 PASSING_REVIEW_VERDICT = {
     "hard_constraints": [
         {"name": "prompt_subject", "passed": True, "observation": "A fox stands in snow."},
@@ -1228,6 +1237,259 @@ def test_review_refuses_a_prose_reply():
     return [], ["review_prose_refusal=" + json.dumps(notes)]
 
 
+def make_paired_roster_handler():
+    """Play a router whose roster sorts the review row ahead of the language row.
+
+    `GET /v1/models` returns [PAIRED_REVIEW_MODEL, PAIRED_LANGUAGE_MODEL], the
+    order the real router's sort produces for the paired image preset. `GET
+    /tools?model=` answers 403 for the review row and 200 for the language
+    row, and `GET /props?model=` reports a vision modality for the review row
+    alone, so the fixture states the same three facts
+    evidence/web-admission-router-tools.md records for the paired preset. The
+    language row's chat, grant, and tool-execution routes reuse the same
+    proposal and credentials make_handler() plays, so a run that lands on it
+    completes a whole generation.
+    """
+    fallback_html = open(FALLBACK_UI_PATH, "rb").read()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *_args):
+            pass
+
+        def _send_json(self, status, payload):
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _read_json_body(self):
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            raw = self.rfile.read(length) if length else b""
+            return json.loads(raw.decode("utf-8")) if raw else {}
+
+        def do_OPTIONS(self):  # noqa: N802
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Headers", "*")
+            self.send_header("Access-Control-Allow-Methods", "*")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_GET(self):  # noqa: N802
+            parsed_path = self.path.split("?", 1)[0]
+            if parsed_path in ("/", "/index.html"):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(fallback_html)))
+                self.end_headers()
+                self.wfile.write(fallback_html)
+                return
+            if parsed_path == "/v1/models":
+                self._send_json(200, {"data": [
+                    {"id": PAIRED_REVIEW_MODEL}, {"id": PAIRED_LANGUAGE_MODEL}]})
+                return
+            query = urllib.parse.parse_qs(
+                self.path.split("?", 1)[1] if "?" in self.path else "")
+            asked = (query.get("model") or [""])[0]
+            if parsed_path == "/props":
+                props = {"default_generation_settings": {"n_ctx": 4096}}
+                if asked == PAIRED_REVIEW_MODEL:
+                    props["modalities"] = {"vision": True, "audio": False}
+                self._send_json(200, props)
+                return
+            if parsed_path == "/tools":
+                if asked == PAIRED_REVIEW_MODEL:
+                    self._send_json(403, {"error": "feature_disabled"})
+                else:
+                    self._send_json(200, image_tool_listing())
+                return
+            if parsed_path == "/session":
+                self._send_json(200, {"session_secret": SESSION_SECRET})
+                return
+            if parsed_path == ARTIFACT_PATH:
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(ONE_PIXEL_PNG)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(ONE_PIXEL_PNG)
+                return
+            self._send_json(404, {"error": "no route: " + self.path})
+
+        def do_POST(self):  # noqa: N802
+            parsed_path = self.path.split("?", 1)[0]
+            if parsed_path == "/v1/chat/completions":
+                request_body = self._read_json_body()
+                already_ran = any(
+                    message.get("role") == "tool"
+                    for message in request_body.get("messages", []))
+                # The review row's `GET /tools` answers 403, so the page's
+                # own resolveImageTools() reads no image tool and composes
+                # `body.tools` empty; a real router proposes no call outside
+                # a schema it was never given, and this stub matches that
+                # rather than proposing unconditionally the way make_handler()
+                # does for a fixture with one servable row.
+                if already_ran or not request_body.get("tools"):
+                    chunks = [
+                        {"choices": [{"delta": {"content": "Here is your fox."}}]},
+                        {"choices": [{"delta": {}, "finish_reason": "stop"}],
+                         "usage": {"completion_tokens": 4}},
+                    ]
+                else:
+                    arguments = json.dumps(DEFAULT_PROPOSAL)
+                    chunks = [
+                        {"choices": [{"delta": {"tool_calls": [{
+                            "index": 0,
+                            "function": {"name": IMAGE_TOOL_NAME, "arguments": arguments},
+                        }]}}]},
+                        {"choices": [{"delta": {}, "finish_reason": "tool_calls"}],
+                         "usage": {"completion_tokens": 1}},
+                    ]
+                body = b""
+                for chunk in chunks:
+                    body += ("data: " + json.dumps(chunk) + "\n\n").encode("utf-8")
+                body += b"data: [DONE]\n\n"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            if parsed_path == "/grant-image":
+                payload = self._read_json_body()
+                if self.headers.get("X-Qwen-Web-Session") != SESSION_SECRET:
+                    self._send_json(403, {"error": "bad session"})
+                    return
+                self._send_json(200, {"authorization": GRANT_TOKEN})
+                return
+            if parsed_path == "/tools":
+                payload = self._read_json_body()
+                params = payload.get("params") or {}
+                if params.get("authorization") != GRANT_TOKEN:
+                    self._send_json(200, {"error": "grant did not verify"})
+                    return
+                result = {
+                    "status": "completed",
+                    "sha256": ARTIFACT_SHA256,
+                    "provenance_url": PROVENANCE_PATH,
+                }
+                self._send_json(200, {"plain_text_response": json.dumps(result)})
+                return
+            self._send_json(404, {"error": "no route: " + self.path})
+
+    return Handler
+
+
+def test_paired_roster_default_and_explicit_selection():
+    """Against a roster that sorts the review row first, prove two facts:
+
+    the page's own default lands on the language row (webui/index.html's
+    `boot()` probes `GET /tools` per roster row and prefers the first one that
+    answers 200 over the first one in sort order), and drive-fallback-page.py's
+    `--model` argument selects a named row through the picker regardless of
+    which one the page would have defaulted to -- the mechanism
+    remote/admit-image-router.sh relies on to send its turn to the language
+    profile it already knows by id. A third arm names a roster id the picker
+    carries no option for and requires the driver to refuse the step by name
+    rather than silently sending the turn to whatever the page selected.
+    """
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), make_paired_roster_handler())
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    origin = "http://127.0.0.1:{}".format(port)
+    chromium = os.environ.get("QWEN_CHROMIUM", "chromium")
+    driver = os.path.join(THIS_DIRECTORY, "drive-fallback-page.py")
+    failures = []
+    try:
+        default_run = subprocess.run(
+            [sys.executable, driver, "--origin", origin, "--prompt", "draw a fox",
+             "--lane", "image", "--chromium", chromium, "--artifacts", origin,
+             "--load-timeout", "30", "--dialog-timeout", "30", "--turn-timeout", "60"],
+            capture_output=True, text=True, timeout=120)
+        try:
+            default_report = json.loads(default_run.stdout)
+        except json.JSONDecodeError:
+            sys.stderr.write("test-fallback-page-image (paired-roster-default) stdout: "
+                              + default_run.stdout[:2000] + "\n")
+            sys.stderr.write("test-fallback-page-image (paired-roster-default) stderr: "
+                              + default_run.stderr[:2000] + "\n")
+            return ["drive-fallback-page.py wrote no parseable JSON report on the default run"]
+        if default_report.get("selected_model_at_load") != PAIRED_LANGUAGE_MODEL:
+            failures.append(
+                "the page's own default selected {} rather than the language row {}".format(
+                    default_report.get("selected_model_at_load"), PAIRED_LANGUAGE_MODEL))
+        if default_run.returncode != 0:
+            failures.append(
+                "drive-fallback-page.py exited {} against the paired roster's own default: {}"
+                .format(default_run.returncode, default_report.get("error")))
+
+        explicit_run = subprocess.run(
+            [sys.executable, driver, "--origin", origin, "--prompt", "draw a fox",
+             "--lane", "image", "--chromium", chromium, "--artifacts", origin,
+             "--model", PAIRED_REVIEW_MODEL,
+             "--load-timeout", "30", "--dialog-timeout", "5", "--turn-timeout", "10"],
+            capture_output=True, text=True, timeout=60)
+        try:
+            explicit_report = json.loads(explicit_run.stdout)
+        except json.JSONDecodeError:
+            sys.stderr.write("test-fallback-page-image (paired-roster-explicit) stdout: "
+                              + explicit_run.stdout[:2000] + "\n")
+            sys.stderr.write("test-fallback-page-image (paired-roster-explicit) stderr: "
+                              + explicit_run.stderr[:2000] + "\n")
+            failures.append(
+                "drive-fallback-page.py wrote no parseable JSON report on the explicit run")
+        else:
+            if explicit_report.get("selected_model_at_load") != PAIRED_REVIEW_MODEL:
+                failures.append(
+                    "--model {} did not hold: selected_model_at_load reads {}".format(
+                        PAIRED_REVIEW_MODEL, explicit_report.get("selected_model_at_load")))
+            # The review row offers no tool, so the toggle and send leave no
+            # dialog to open; the driver's own dialog-timeout ends the turn,
+            # which proves the selection reached the page rather than the run
+            # completing a generation through it.
+            if (explicit_report.get("error") or {}).get("type") != "TimeoutError":
+                failures.append(
+                    "the review row unexpectedly completed a turn: " +
+                    repr(explicit_report.get("error")))
+
+        refused_run = subprocess.run(
+            [sys.executable, driver, "--origin", origin, "--prompt", "draw a fox",
+             "--lane", "image", "--chromium", chromium, "--artifacts", origin,
+             "--model", "not-a-roster-id",
+             "--load-timeout", "30", "--dialog-timeout", "5", "--turn-timeout", "10"],
+            capture_output=True, text=True, timeout=60)
+        try:
+            refused_report = json.loads(refused_run.stdout)
+        except json.JSONDecodeError:
+            sys.stderr.write("test-fallback-page-image (paired-roster-refused) stdout: "
+                              + refused_run.stdout[:2000] + "\n")
+            sys.stderr.write("test-fallback-page-image (paired-roster-refused) stderr: "
+                              + refused_run.stderr[:2000] + "\n")
+            failures.append(
+                "drive-fallback-page.py wrote no parseable JSON report on the refused run")
+        else:
+            if refused_run.returncode == 0:
+                failures.append(
+                    "drive-fallback-page.py exited 0 selecting a roster id its picker carries "
+                    "no option for")
+            error = refused_report.get("error") or {}
+            if error.get("type") != "RuntimeError" or "no option for --model" not in (
+                    error.get("message") or ""):
+                failures.append(
+                    "the missing-option refusal did not name itself: " + repr(error))
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    return failures
+
+
 def main():
     failures = []
 
@@ -1251,12 +1513,20 @@ def main():
         for failure in timeout_failures:
             sys.stderr.write("  - " + failure + "\n")
 
+    paired_roster_failures = test_paired_roster_default_and_explicit_selection()
+    failures.extend(paired_roster_failures)
+    if paired_roster_failures:
+        sys.stderr.write("test-fallback-page-image failures (paired-roster-selection):\n")
+        for failure in paired_roster_failures:
+            sys.stderr.write("  - " + failure + "\n")
+
     if failures:
         return 1
 
     for line in success_lines:
         print(line)
     print("browser_turn_timeout_retains_prose=accepted")
+    print("paired_roster_default_and_explicit_selection=accepted")
     return 0
 
 
