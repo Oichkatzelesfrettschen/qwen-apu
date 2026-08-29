@@ -42,6 +42,13 @@ output_directory=$1
 model_path=$2
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 
+# Every invocation of the pinned runtime, --list-devices included, runs under
+# the RADV ICD pin remote/radv-icd-env.sh derives, so the Vulkan loader
+# enumerates RADV alone and a software rasterizer never reaches
+# --list-devices or a generation arm.
+# shellcheck source=remote/radv-icd-env.sh
+. "$script_directory/radv-icd-env.sh"
+
 runtime=${QWEN_IMAGE_RUNTIME:-"${HOME:?}/src/stable-diffusion.cpp-qwen-apu/build-raven2/bin/sd-cli"}
 prompt=${QWEN_IMAGE_PROMPT:-'a red apple on a white table, product photography'}
 negative_prompt=${QWEN_IMAGE_NEGATIVE_PROMPT:-}
@@ -105,8 +112,18 @@ device_listing=$("$runtime" --list-devices 2>&1) || {
     printf 'runtime refused --list-devices:\n%s\n' "$device_listing" >&2
     exit 1
 }
-if printf '%s\n' "$device_listing" | grep -Eqi 'llvmpipe|lavapipe|AMDGPU-PRO'; then
-    printf 'refusing a software or non-RADV Vulkan device:\n%s\n' "$device_listing" >&2
+if printf '%s\n' "$device_listing" | grep -Eqi 'llvmpipe|lavapipe'; then
+    # radv_icd_path is assigned by the sourced remote/radv-icd-env.sh; the
+    # gate's non-source invocation of shellcheck cannot see across that file
+    # boundary, and remote/test-run-image-standalone.sh proves the value
+    # this message names is the one the ICD pin actually used.
+    # shellcheck disable=SC2154
+    printf 'the RADV ICD pin at %s still let the loader enumerate a software device:\n%s\n' \
+        "$radv_icd_path" "$device_listing" >&2
+    exit 1
+fi
+if printf '%s\n' "$device_listing" | grep -Eqi 'AMDGPU-PRO'; then
+    printf 'refusing a non-RADV Vulkan device:\n%s\n' "$device_listing" >&2
     exit 1
 fi
 device_pattern=${QWEN_IMAGE_DEVICE_PATTERN:-'RADV RAVEN2'}

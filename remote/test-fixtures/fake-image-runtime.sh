@@ -37,8 +37,20 @@ usage() {
 }
 
 if [ "${1:-}" = --list-devices ]; then
-    printf 'Vulkan0\t%s\n' \
-        "${QWEN_FAKE_IMAGE_DEVICE_DESCRIPTION:-AMD Radeon Graphics (RADV RAVEN2) (RADV RAVEN2)}"
+    if [ -n "${QWEN_FAKE_IMAGE_DEVICE_DESCRIPTION:-}" ]; then
+        printf 'Vulkan0\t%s\n' "$QWEN_FAKE_IMAGE_DEVICE_DESCRIPTION"
+        exit 0
+    fi
+    printf 'Vulkan0\t%s\n' 'AMD Radeon Graphics (RADV RAVEN2) (RADV RAVEN2)'
+    # Mesa's loader enumerates lavapipe beside RADV when nothing narrows the
+    # ICD search path; VK_DRIVER_FILES and VK_ICD_FILENAMES are what
+    # remote/radv-icd-env.sh exports to narrow it, so their absence here
+    # stands in for the unrestricted appliance state and their presence
+    # stands in for the restriction a caller is required to apply before
+    # this or any other invocation.
+    if [ -z "${VK_DRIVER_FILES:-}" ] || [ -z "${VK_ICD_FILENAMES:-}" ]; then
+        printf 'Vulkan1\t%s\n' 'llvmpipe (LLVM 17.0.0, 256 bits)'
+    fi
     exit 0
 fi
 
@@ -112,6 +124,8 @@ if [ -n "${QWEN_FAKE_IMAGE_ARGV_LOG:-}" ]; then
         printf 'backend=%s\n' "$backend"
         printf 'nice=%s\n' "$(ps -o ni= -p $$ | tr -d ' ')"
         printf 'timeout=%s\n' "${QWEN_IMAGE_RUNTIME_TIMEOUT_SECONDS:-unset}"
+        printf 'vk_driver_files=%s\n' "${VK_DRIVER_FILES:-unset}"
+        printf 'vk_icd_filenames=%s\n' "${VK_ICD_FILENAMES:-unset}"
     } >"$QWEN_FAKE_IMAGE_ARGV_LOG"
 fi
 
