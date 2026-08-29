@@ -721,8 +721,11 @@ fi
 # posts to another origin, omits the routing key, or runs the generation without
 # a grant, whatever its source says.
 browser_report=$output_directory/browser-turn.json
+# A graded comparison between prompts needs the prompt each run actually sent,
+# so it is recorded once regardless of whether Chromium runs it.
+browser_prompt=${QWEN_ADMISSION_BROWSER_PROMPT:-"Draw $generation_prompt."}
+record browser_prompt_used observed "$browser_prompt"
 if command -v chromium >/dev/null 2>&1; then
-    browser_prompt=${QWEN_ADMISSION_BROWSER_PROMPT:-"Draw $generation_prompt."}
     if python3 "$script_directory/web-mcp/drive-fallback-page.py" --lane image \
             --origin "$router_origin" --api-key-file "$api_key_file" \
             --broker "$broker_origin" --artifacts "$artifact_origin" \
@@ -796,7 +799,26 @@ if command -v chromium >/dev/null 2>&1; then
         jq '.requests |= map(.body |= (if . == null then null else (fromjson? // .) end) | .body |= (if type == "object" and .params? then .params |= del(.authorization) else . end))' \
             "$browser_report" >"$browser_report.tmp" && mv "$browser_report.tmp" "$browser_report"
     else
-        record browser_turn_completed refused "$(tail -c 400 "$output_directory/browser-turn.err" | tr '\n' ' ')"
+        # drive-fallback-page.py writes a JSON report on every exit path,
+        # including a caught TimeoutError, so a refusal reads the page's own
+        # transcript rather than a fragment of the traceback that exits
+        # non-zero produced. `history` carries the model's full reply even
+        # when the approval dialog it names never opened.
+        if jq -e . "$browser_report" >/dev/null 2>&1; then
+            last_assistant=$(jq -c '[.history[] | select(.role == "assistant")] | last // {}' "$browser_report")
+            last_assistant_text=$(printf '%s' "$last_assistant" | jq -r '.content // empty' | head -c 200)
+            if printf '%s' "$last_assistant" | jq -e '(.tool_calls // []) | length > 0' >/dev/null 2>&1; then
+                tool_call_proposed=yes
+            else
+                tool_call_proposed=no
+            fi
+            error_type=$(jq -r '.error.type // empty' "$browser_report")
+            error_message=$(jq -r '.error.message // empty' "$browser_report" | head -c 160)
+            record browser_turn_completed refused \
+                "tool_call_proposed=$tool_call_proposed error=${error_type:-none}(${error_message:-}) reply=$last_assistant_text"
+        else
+            record browser_turn_completed refused "$(tail -c 400 "$output_directory/browser-turn.err" | tr '\n' ' ')"
+        fi
     fi
 else
     record browser_turn_completed refused 'chromium is absent, so the served page was not run'
