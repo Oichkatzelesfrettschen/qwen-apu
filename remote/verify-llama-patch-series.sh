@@ -68,3 +68,26 @@ verify_source d0d6c8725891ac4baf68fd947ab4be75cc93ba37b1e988ca1c556881a49d0abc \
 verify_source d2d5cb43a83c6b2b459b85f2df181a3d976efcaef351e5cbc6b418ba839390e3 \
     tools/server/server.cpp
 printf 'patch_series=accepted commit=%s\n' "$expected_commit"
+
+# A candidate patch is a backport under measurement rather than a member of the
+# production series. Its stage runs after every production digest is verified
+# and mutates the replay tree afterwards, so the loop above and the expected
+# sums it compares against stay byte-identical whether the stage runs or not.
+# QWEN_LLAMA_CANDIDATE_PATCHES=1 arms it; the printed post-apply digest is what
+# a promotion would move into verify_source once its evidence lane closes.
+candidate_patch_names="llama-vulkan-view-alias-deps.patch"
+if [ "${QWEN_LLAMA_CANDIDATE_PATCHES:-0}" = 1 ]; then
+    for candidate_name in $candidate_patch_names; do
+        git -C "$temporary_directory/llama.cpp" apply --check \
+            "$patch_directory/$candidate_name"
+        git -C "$temporary_directory/llama.cpp" apply \
+            "$patch_directory/$candidate_name"
+        git -C "$temporary_directory/llama.cpp" diff --check
+        printf 'candidate_patch=%s applies=yes\n' "$candidate_name"
+    done
+    printf 'candidate_sha256=%s path=%s\n' \
+        "$(sha256sum "$temporary_directory/llama.cpp/ggml/src/ggml-vulkan/ggml-vulkan.cpp" | cut -d ' ' -f 1)" \
+        ggml/src/ggml-vulkan/ggml-vulkan.cpp
+else
+    printf 'candidate_patches=not_run reason=QWEN_LLAMA_CANDIDATE_PATCHES_unset\n'
+fi

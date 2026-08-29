@@ -575,6 +575,8 @@ remote/run-representation-arm.sh LABEL CONTROL SUBJECT
                                                 # one value format against another, ABBA
 remote/admit-web-router-fake.sh OUTPUT_DIR      # the web router against the fake provider
 remote/probe-depth-projector.sh MODEL_ID OUT   # filled depth, projector loaded
+remote/run-graph-alias-ab.sh OUTPUT_DIR [MODEL_ID...]
+                                                # token identity across the graph optimizer
 
 # Rebuild llama.cpp and the static UI
 remote/build-llama-preset.sh PRESET [SOURCE]   # one directory per build arm
@@ -614,7 +616,9 @@ remote/test-gguf-tokenizer-identity.py
 remote/test-admit-candidate-static.py
 remote/test-one-token-admission.sh
 remote/test-fetch-candidate-artifact.sh
+remote/test-run-graph-alias-ab.sh
 remote/verify-llama-patch-series.sh
+QWEN_LLAMA_CANDIDATE_PATCHES=1 remote/verify-llama-patch-series.sh
 GGUF_PY_PATH=~/src/llama.cpp-qwen-apu/gguf-py \
     remote/test-gguf-tensor-census.py [MODEL...]
 ```
