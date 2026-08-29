@@ -161,11 +161,11 @@ grep -F "mode: 'cors', headers: authHeaders(), signal: controller.signal });" \
 grep -F 'const ARTIFACT_FETCH_TIMEOUT_MS = 60000;' "$fallback_ui" >/dev/null
 grep -F 'setTimeout(() => controller.abort(), ARTIFACT_FETCH_TIMEOUT_MS);' \
     "$fallback_ui" >/dev/null
-grep -F 'async function renderImageArtifactCard(container, fields, result) {' \
+grep -F 'async function renderImageArtifactCard(container, fields, result, lineage) {' \
     "$fallback_ui" >/dev/null
 grep -F '  const blobUrl = await loadArtifactBlobUrl(result.sha256);' \
     "$fallback_ui" >/dev/null
-grep -F 'await renderImageArtifactCard(artifactContainer, fields, result);' \
+grep -F 'await renderImageArtifactCard(artifactContainer, fields, result, lineage);' \
     "$fallback_ui" >/dev/null
 grep -F 'const reason = `the artifact did not load: ${error.message || error}`;' \
     "$fallback_ui" >/dev/null
@@ -220,7 +220,7 @@ grep -F "throw new Error('no artifact listener origin is configured for this pag
     "$fallback_ui" >/dev/null
 grep -F 'return URL.createObjectURL(blob);' "$fallback_ui" >/dev/null
 grep -F 'if (blobUrl) URL.revokeObjectURL(blobUrl);' "$fallback_ui" >/dev/null
-grep -F 'function renderImageArtifactCard(container, fields, result) {' "$fallback_ui" >/dev/null
+grep -F 'function renderImageArtifactCard(container, fields, result, lineage) {' "$fallback_ui" >/dev/null
 grep -F "\`sha256 \${result.sha256}\`," "$fallback_ui" >/dev/null
 grep -F "\`seed \${fields.seed}\`," "$fallback_ui" >/dev/null
 grep -F "\`\${fields.width}x\${fields.height}\`," "$fallback_ui" >/dev/null
@@ -423,5 +423,49 @@ imageGrantFields(
 }).catch(error => { console.error(error.message); process.exit(1); });
 ' "$fallback_ui"
 fi
+
+# The vision review (PR F, UI half) runs from idle over one artifact and offers
+# the model no executable surface: the request body omits `tools` entirely, the
+# reply parses against the closed verdict schema, and the verdict, its
+# observations, and any correction stay out of `history`.
+grep -F 'const REVIEW_MAX_TOKENS = 400;' "$fallback_ui" >/dev/null
+grep -F 'const REVIEW_TIMEOUT_MS = 300000;' "$fallback_ui" >/dev/null
+grep -F 'const IMAGE_CORRECTION_CAP = 2;' "$fallback_ui" >/dev/null
+grep -F 'function buildReviewRequestBody(visionModel, dataUri, promptHash, constraints) {' \
+    "$fallback_ui" >/dev/null
+grep -F 'function parseReviewVerdict(reply, names) {' "$fallback_ui" >/dev/null
+grep -F 'function reviewCorrectionAdmitted(verdict) {' "$fallback_ui" >/dev/null
+grep -F "throw new Error('the reply proposes a tool call against a request carrying no tools');" \
+    "$fallback_ui" >/dev/null
+grep -F "throw new Error('the reply is not one JSON object');" "$fallback_ui" >/dev/null
+# The review request body is composed in one place, and a `tools` key anywhere
+# inside it would offer the vision model a surface the design withholds.
+if sed -n '/^function buildReviewRequestBody/,/^}/p' "$fallback_ui" \
+        | grep -qE '(^|[^a-z_])tools:'; then
+    printf 'fallback Web UI offers the review model a tool surface\n' >&2
+    exit 1
+fi
+# The review holds the same `busy` flag a chat turn holds, so each review and
+# each correction is a transition through idle.
+grep -F 'async function runImageReview(card, fields, lineage) {' "$fallback_ui" >/dev/null
+grep -F 'const REVIEW_OBSERVATION_MAX_CHARS = 300;' "$fallback_ui" >/dev/null
+# The correction carries the first approval's seed and adds the review's delta.
+grep -F 'seedGenerated: false };' "$fallback_ui" >/dev/null
+grep -F 'correction ${correctionNumber} of ${IMAGE_CORRECTION_CAP}; ' "$fallback_ui" >/dev/null
+grep -F 'if (lineage.correctionsUsed >= IMAGE_CORRECTION_CAP) {' "$fallback_ui" >/dev/null
+grep -F 'const outcome = await approveImageGeneration(bounded, lineage.model, note);' \
+    "$fallback_ui" >/dev/null
+# The roster decides whether a review is offered at all: GET /props reports the
+# vision modality per model, and a text-only roster leaves the button hidden.
+grep -F 'async function resolveVisionModel(generation) {' "$fallback_ui" >/dev/null
+grep -F 'if (props && props.modalities && props.modalities.vision === true) {' \
+    "$fallback_ui" >/dev/null
+grep -F 'function forgetVisionModel() {' "$fallback_ui" >/dev/null
+if [ "$(grep -c 'forgetVisionModel();' "$fallback_ui")" -lt 2 ]; then
+    printf 'fallback Web UI does not clear the vision-model cache on every roster read\n' >&2
+    exit 1
+fi
+grep -F "reviewButton.className = 'act image-review-button';" "$fallback_ui" >/dev/null
+grep -F '  reviewButton.hidden = true;' "$fallback_ui" >/dev/null
 
 printf 'fallback_webui_image_authorization=accepted\n'

@@ -1,0 +1,441 @@
+#!/usr/bin/env python3
+"""Run remote/image-review.py against a fake vision router and artifact listener.
+
+One stub plays both listeners: `GET /artifacts/<sha256>.png` answers the PNG the
+test hashed, and `POST /v1/chat/completions` answers whichever reply variant an
+arm selected. The stub also enforces the property the design rests on rather
+than describing it: a request carrying a `tools` key at all is answered with a
+reply proposing a tool call, so the arm that would break the zero-tool rule
+fails through the parser instead of passing unnoticed.
+
+Exit status is non-zero on any failed assertion, and the passing arms print what
+they proved.
+"""
+
+import base64
+import hashlib
+import http.server
+import importlib.util
+import json
+import os
+import sys
+import threading
+
+THIS_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
+
+_spec = importlib.util.spec_from_file_location(
+    "image_review", os.path.join(THIS_DIRECTORY, "image-review.py"))
+image_review = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(image_review)
+
+ONE_PIXEL_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
+    "+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)
+ARTIFACT_SHA256 = hashlib.sha256(ONE_PIXEL_PNG).hexdigest()
+PROMPT_HASH = hashlib.sha256(b"a fox in a snowy field").hexdigest()
+API_KEY = "test-review-key"
+VISION_MODEL = "lfm25-vl-16b"
+CONSTRAINTS = [
+    ("subject_count", "exactly one fox is visible"),
+    ("background_color", "the background is snow, and reads white"),
+]
+CONSTRAINT_NAMES = [name for name, _description in CONSTRAINTS]
+
+PASSING_VERDICT = {
+    "hard_constraints": [
+        {"name": "subject_count", "passed": True, "observation": "One fox stands in frame."},
+        {"name": "background_color", "passed": True, "observation": "The field reads white."},
+    ],
+    "composition_change_required": False,
+    "prompt_delta": "",
+    "regenerate": False,
+}
+REGENERATE_VERDICT = {
+    "hard_constraints": [
+        {"name": "subject_count", "passed": False, "observation": "Two foxes stand in frame."},
+        {"name": "background_color", "passed": True, "observation": "The field reads white."},
+    ],
+    "composition_change_required": True,
+    "prompt_delta": "a single fox, alone in the frame",
+    "regenerate": True,
+}
+REGENERATE_WITHOUT_FAILURE = {
+    "hard_constraints": PASSING_VERDICT["hard_constraints"],
+    "composition_change_required": False,
+    "prompt_delta": "a single fox",
+    "regenerate": True,
+}
+PROSE_REPLY = (
+    "The image shows one fox in a snowy field, and every hard constraint "
+    "looks satisfied to me."
+)
+
+
+def verdict_text(verdict):
+    return json.dumps(verdict)
+
+
+def make_handler(state, reply, artifact_bytes=ONE_PIXEL_PNG, artifact_digest=None):
+    """Play the artifact listener and the router for one arm.
+
+    `reply` is either the assistant message dictionary the router answers with
+    or a callable taking the request body, so an arm states the one reply shape
+    it exercises.
+    """
+    served_digest = artifact_digest or ARTIFACT_SHA256
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *_args):
+            pass
+
+        def _send_json(self, status, payload):
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _authorized(self):
+            return self.headers.get("Authorization") == "Bearer " + API_KEY
+
+        def do_GET(self):  # noqa: N802 -- BaseHTTPRequestHandler names the verb
+            if not self._authorized():
+                with state["lock"]:
+                    state["unauthorized_reads"] += 1
+                self._send_json(401, {"error": "missing credential"})
+                return
+            if self.path == "/artifacts/{}.png".format(served_digest):
+                self.send_response(200)
+                self.send_header("Content-Type", "image/png")
+                self.send_header("Content-Length", str(len(artifact_bytes)))
+                self.end_headers()
+                self.wfile.write(artifact_bytes)
+                return
+            self._send_json(404, {"error": "no such artifact"})
+
+        def do_POST(self):  # noqa: N802 -- BaseHTTPRequestHandler names the verb
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            raw = self.rfile.read(length) if length else b"{}"
+            body = json.loads(raw.decode("utf-8"))
+            with state["lock"]:
+                state["chat_bodies"].append(body)
+            if not self._authorized():
+                self._send_json(401, {"error": "missing credential"})
+                return
+            if "tools" in body:
+                # The review offers no executable surface. A request that
+                # carried one would be answered by a model free to propose a
+                # call, so the stub answers exactly that and the parser refuses.
+                message = {"role": "assistant", "content": None, "tool_calls": [
+                    {"id": "call_1", "type": "function",
+                     "function": {"name": "web_search_exa", "arguments": "{}"}}]}
+            else:
+                message = reply(body) if callable(reply) else reply
+            self._send_json(200, {"choices": [{"message": message, "finish_reason": "stop"}]})
+
+    return Handler
+
+
+def serve(handler):
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server, thread, "http://127.0.0.1:{}".format(server.server_address[1])
+
+
+def run_review(reply, constraints=None, artifact_bytes=ONE_PIXEL_PNG,
+               artifact_digest=None, digest=None, prompt_hash=PROMPT_HASH):
+    """Run one review against a stub answering `reply`, returning (record, error, state)."""
+    state = {"lock": threading.Lock(), "chat_bodies": [], "unauthorized_reads": 0}
+    server, thread, origin = serve(
+        make_handler(state, reply, artifact_bytes=artifact_bytes,
+                     artifact_digest=artifact_digest))
+    record = None
+    refusal = None
+    try:
+        record = image_review.review_artifact(
+            origin, origin, API_KEY, VISION_MODEL, digest or ARTIFACT_SHA256,
+            prompt_hash, constraints or CONSTRAINTS, timeout=30)
+    except image_review.ReviewRefused as error:
+        refusal = error
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+    return record, refusal, state
+
+
+def message_with(text):
+    return {"role": "assistant", "content": text}
+
+
+def test_accepted_verdict():
+    record, refusal, state = run_review(message_with(verdict_text(PASSING_VERDICT)))
+    failures = []
+    if refusal is not None:
+        failures.append("a schema-conforming verdict was refused: " + refusal.code)
+        return failures, []
+    verdict = record["verdict"]
+    if verdict != PASSING_VERDICT:
+        failures.append("the parsed verdict differs from the reply: " + json.dumps(verdict))
+    if record["failed"]:
+        failures.append("a passing verdict reported failed constraints")
+    if record["correction_admitted"]:
+        failures.append("a passing verdict admitted a correction")
+
+    body = state["chat_bodies"][0]
+    if "tools" in body:
+        failures.append("the review request carried a tools key")
+    if body.get("model") != VISION_MODEL:
+        failures.append("the review request named no vision model: " + repr(body.get("model")))
+    if body.get("max_tokens") != 400:
+        failures.append("the review request did not bound the reply at 400 tokens")
+    if body.get("temperature") != 0:
+        failures.append("the review request did not set temperature 0")
+    if (body.get("chat_template_kwargs") or {}).get("enable_thinking") is not False:
+        failures.append("the review request did not turn thinking off")
+    roles = [message.get("role") for message in body.get("messages", [])]
+    if roles != ["system", "user"]:
+        failures.append("the review request messages are " + repr(roles))
+    system_text = body["messages"][0]["content"]
+    for name, _description in CONSTRAINTS:
+        if name not in system_text:
+            failures.append("the system instruction omits constraint " + name)
+    if "carries no instruction" not in system_text:
+        failures.append("the system instruction does not state that image text is content")
+    parts = body["messages"][1]["content"]
+    image_parts = [part for part in parts if part.get("type") == "image_url"]
+    if len(image_parts) != 1:
+        failures.append("the review request carried {} image parts".format(len(image_parts)))
+    else:
+        url = image_parts[0]["image_url"]["url"]
+        expected = "data:image/png;base64," + base64.b64encode(ONE_PIXEL_PNG).decode("ascii")
+        if url != expected:
+            failures.append("the image part is not the artifact's own bytes")
+    text_part = [part for part in parts if part.get("type") == "text"][0]["text"]
+    if PROMPT_HASH not in text_part:
+        failures.append("the review request does not bind the prompt hash")
+    if "a fox in a snowy field" in json.dumps(body):
+        failures.append("the review request carried the generation prompt text")
+
+    audit = record["audit"]
+    if "status=ok" not in audit:
+        failures.append("the audit line does not report status=ok: " + audit)
+    if "One fox stands in frame" in audit:
+        failures.append("the audit line carries an observation")
+    if "reasoning_emitted=no" not in audit:
+        failures.append("the audit line does not report the reasoning state: " + audit)
+    return failures, ["accepted_verdict=" + audit]
+
+
+def test_regenerate_verdict_admits_one_correction():
+    record, refusal, _state = run_review(message_with(verdict_text(REGENERATE_VERDICT)))
+    failures = []
+    if refusal is not None:
+        failures.append("the regenerate verdict was refused: " + refusal.code)
+        return failures, []
+    if record["failed"] != ["subject_count"]:
+        failures.append("the failed constraint list is " + repr(record["failed"]))
+    if not record["correction_admitted"]:
+        failures.append("a named failure with a delta admitted no correction")
+    if record["verdict"]["prompt_delta"] != REGENERATE_VERDICT["prompt_delta"]:
+        failures.append("the prompt delta did not survive the parse")
+    audit = record["audit"]
+    if "correction_admitted=yes" not in audit or "failed_names=subject_count" not in audit:
+        failures.append("the audit line does not report the admitted correction: " + audit)
+    if REGENERATE_VERDICT["prompt_delta"] in audit:
+        failures.append("the audit line carries the prompt delta text")
+    delta_digest = hashlib.sha256(
+        REGENERATE_VERDICT["prompt_delta"].encode("utf-8")).hexdigest()
+    if "delta_sha256=" + delta_digest not in audit:
+        failures.append("the audit line does not carry the delta digest: " + audit)
+    return failures, ["regenerate_verdict=" + audit]
+
+
+def test_regenerate_without_a_named_failure_is_not_admitted():
+    record, refusal, _state = run_review(message_with(verdict_text(REGENERATE_WITHOUT_FAILURE)))
+    failures = []
+    if refusal is not None:
+        failures.append("the verdict was refused rather than parsed: " + refusal.code)
+        return failures, []
+    if record["correction_admitted"]:
+        failures.append("a regenerate flag with every constraint passing admitted a correction")
+    if "every hard constraint passed" not in record["correction_reason"]:
+        failures.append("the reason does not name the missing failure: "
+                        + record["correction_reason"])
+    return failures, ["regenerate_without_failure=" + record["correction_reason"]]
+
+
+def refusal_arm(label, reply, expected_code, **kwargs):
+    record, refusal, _state = run_review(reply, **kwargs)
+    if refusal is None:
+        return ["{} was accepted, verdict {}".format(label, json.dumps(record["verdict"]))], []
+    if refusal.code != expected_code:
+        return ["{} refused as {} rather than {}".format(label, refusal.code, expected_code)], []
+    audit = getattr(refusal, "audit", "")
+    if audit and "status=refused:" + expected_code not in audit:
+        return ["{} audit line does not name the code: {}".format(label, audit)], []
+    return [], ["{}={}".format(label, refusal.code)]
+
+
+def test_refusals():
+    failures = []
+    lines = []
+    arms = [
+        ("prose_reply", message_with(PROSE_REPLY), "not_json", {}),
+        ("fenced_reply",
+         message_with("```json\n" + verdict_text(PASSING_VERDICT) + "\n```"),
+         "not_json", {}),
+        ("extra_key",
+         message_with(verdict_text(dict(PASSING_VERDICT, confidence=0.9))),
+         "extra_keys", {}),
+        ("missing_key",
+         message_with(verdict_text(
+             {key: value for key, value in PASSING_VERDICT.items() if key != "regenerate"})),
+         "missing_keys", {}),
+        ("passed_not_bool",
+         message_with(verdict_text(dict(
+             PASSING_VERDICT,
+             hard_constraints=[
+                 {"name": "subject_count", "passed": 1, "observation": "One fox."},
+                 {"name": "background_color", "passed": True, "observation": "White."}]))),
+         "passed_not_bool", {}),
+        ("unnamed_constraint",
+         message_with(verdict_text(dict(
+             PASSING_VERDICT,
+             hard_constraints=[
+                 {"name": "subject_count", "passed": True, "observation": "One fox."},
+                 {"name": "lighting", "passed": True, "observation": "Bright."}]))),
+         "constraint_names", {}),
+        ("constraint_count",
+         message_with(verdict_text(dict(
+             PASSING_VERDICT,
+             hard_constraints=PASSING_VERDICT["hard_constraints"][:1]))),
+         "constraint_count", {}),
+        ("tool_calls_present",
+         {"role": "assistant", "content": verdict_text(PASSING_VERDICT),
+          "tool_calls": [{"id": "call_1", "type": "function",
+                          "function": {"name": "generate_image", "arguments": "{}"}}]},
+         "tool_calls_present", {}),
+        ("empty_content", {"role": "assistant", "content": ""}, "empty_content", {}),
+        ("artifact_digest_mismatch", message_with(verdict_text(PASSING_VERDICT)),
+         "artifact_digest_mismatch",
+         {"artifact_bytes": ONE_PIXEL_PNG + b"\x00", "artifact_digest": ARTIFACT_SHA256}),
+        ("artifact_absent", message_with(verdict_text(PASSING_VERDICT)),
+         "artifact_http_error", {"digest": "0" * 64}),
+        ("bad_prompt_hash", message_with(verdict_text(PASSING_VERDICT)),
+         "bad_prompt_hash", {"prompt_hash": "not-a-hash"}),
+    ]
+    for label, reply, code, kwargs in arms:
+        arm_failures, arm_lines = refusal_arm(label, reply, code, **kwargs)
+        failures.extend(arm_failures)
+        lines.extend(arm_lines)
+    return failures, lines
+
+
+def test_a_tools_key_is_refused_through_the_reply():
+    """The stub answers a tools-carrying request with a proposal the parser refuses.
+
+    The module builds its own body, so this arm reaches the condition by calling
+    post_review with a body the module would never compose, which proves the
+    refusal path rather than the composer.
+    """
+    state = {"lock": threading.Lock(), "chat_bodies": [], "unauthorized_reads": 0}
+    server, thread, origin = serve(
+        make_handler(state, message_with(verdict_text(PASSING_VERDICT))))
+    failures = []
+    try:
+        payload = image_review.build_review_request(
+            VISION_MODEL, ONE_PIXEL_PNG, PROMPT_HASH, CONSTRAINTS)
+        payload["tools"] = [{"type": "function", "function": {"name": "web_search_exa"}}]
+        document = image_review.post_review(origin, API_KEY, payload, timeout=30)
+        try:
+            image_review.parse_verdict(document, CONSTRAINT_NAMES)
+            failures.append("a reply proposing a tool call was accepted")
+        except image_review.ReviewRefused as refusal:
+            if refusal.code != "tool_calls_present":
+                failures.append("the tool-call reply refused as " + refusal.code)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+    return failures, ["tools_key_reply=tool_calls_present"]
+
+
+def test_the_artifact_read_carries_the_credential():
+    state = {"lock": threading.Lock(), "chat_bodies": [], "unauthorized_reads": 0}
+    server, thread, origin = serve(
+        make_handler(state, message_with(verdict_text(PASSING_VERDICT))))
+    failures = []
+    try:
+        try:
+            image_review.fetch_artifact_png(origin, ARTIFACT_SHA256, "wrong-key", timeout=30)
+            failures.append("an artifact read with the wrong credential succeeded")
+        except image_review.ReviewRefused as refusal:
+            if refusal.code != "artifact_http_error":
+                failures.append("the uncredentialed read refused as " + refusal.code)
+        body = image_review.fetch_artifact_png(origin, ARTIFACT_SHA256, API_KEY, timeout=30)
+        if body != ONE_PIXEL_PNG:
+            failures.append("the credentialed read returned other bytes")
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+    if state["unauthorized_reads"] < 1:
+        failures.append("the listener never saw an uncredentialed read")
+    return failures, ["artifact_credential=required"]
+
+
+def test_declared_bounds():
+    failures = []
+    if image_review.REVIEW_TIMEOUT_SECONDS != 300:
+        failures.append("the review timeout is not 300 s")
+    if image_review.REVIEW_MAX_TOKENS != 400:
+        failures.append("the review reply budget is not 400 tokens")
+    try:
+        image_review.validate_constraints([])
+        failures.append("a review with no declared constraint was admitted")
+    except SystemExit:
+        pass
+    try:
+        image_review.parse_constraint("Subject Count=one fox")
+        failures.append("a constraint name outside the pattern was admitted")
+    except SystemExit:
+        pass
+    name, description = image_review.parse_constraint("subject_count=exactly one fox")
+    if (name, description) != ("subject_count", "exactly one fox"):
+        failures.append("a constraint declaration parsed to " + repr((name, description)))
+    return failures, ["declared_bounds=timeout_300s,max_tokens_400"]
+
+
+def main():
+    arms = [
+        ("accepted_verdict", test_accepted_verdict),
+        ("regenerate_verdict", test_regenerate_verdict_admits_one_correction),
+        ("regenerate_without_failure", test_regenerate_without_a_named_failure_is_not_admitted),
+        ("refusals", test_refusals),
+        ("tools_key", test_a_tools_key_is_refused_through_the_reply),
+        ("artifact_credential", test_the_artifact_read_carries_the_credential),
+        ("declared_bounds", test_declared_bounds),
+    ]
+    all_failures = []
+    all_lines = []
+    for label, arm in arms:
+        failures, lines = arm()
+        if failures:
+            sys.stderr.write("test-image-review failures ({}):\n".format(label))
+            for failure in failures:
+                sys.stderr.write("  - " + failure + "\n")
+        all_failures.extend(failures)
+        all_lines.extend(lines)
+    if all_failures:
+        return 1
+    for line in all_lines:
+        sys.stdout.write(line + "\n")
+    sys.stdout.write("image_review_tests=accepted\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
