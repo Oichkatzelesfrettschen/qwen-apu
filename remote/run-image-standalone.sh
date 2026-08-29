@@ -193,8 +193,14 @@ run_refusal_control() {
     refused_device_name=${device_name}_refusal_control_$$
     control_log=$output_directory/device-refusal-control.log
     set +e
-    "$runtime" -m "$model_path" -o "$output_directory/device-refusal-control.png" \
-        -p "$prompt" -W 64 -H 64 --steps 1 -s "$image_seed" \
+    # QWEN_FAKE_IMAGE_MODE=device_refusal is unread by the real pinned binary,
+    # which refuses on the unresolvable --backend value alone
+    # (evidence/image-appliance/stable-diffusion-cpp-pin.md); it is what
+    # remote/test-fixtures/fake-image-runtime.sh needs to take the same
+    # refusal path, since the fixture does not itself resolve device names.
+    QWEN_FAKE_IMAGE_MODE=device_refusal \
+        "$runtime" --model "$model_path" --output "$output_directory/device-refusal-control.png" \
+        --prompt "$prompt" --width 64 --height 64 --steps 1 --seed "$image_seed" \
         --sampling-method "$image_sampler" \
         --backend "te=$refused_device_name,vae=$refused_device_name,diffusion=$refused_device_name" \
         >"$control_log" 2>&1
@@ -229,10 +235,10 @@ run_arm() {
     dmesg_before=$(kernel_line_count)
     shell_start_epoch=$(date +%s.%N 2>/dev/null || date +%s)
 
-    "$runtime" -m "$model_path" -o "$arm_png" \
-        -p "$prompt" -n "$negative_prompt" \
-        -W "$image_width" -H "$image_height" --steps "$image_steps" \
-        -s "$image_seed" --sampling-method "$image_sampler" \
+    "$runtime" --model "$model_path" --output "$arm_png" \
+        --prompt "$prompt" --negative-prompt "$negative_prompt" \
+        --width "$image_width" --height "$image_height" --steps "$image_steps" \
+        --seed "$image_seed" --sampling-method "$image_sampler" \
         --cfg-scale "$image_cfg_scale" --backend "$image_backend" \
         >"$arm_log" 2>&1 &
     child_pid=$!

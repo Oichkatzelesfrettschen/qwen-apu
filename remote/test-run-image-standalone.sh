@@ -58,7 +58,7 @@ report happy_path_two_arms_completed "$t1_status"
 t2_directory=$temporary_directory/t2
 if QWEN_IMAGE_RUNTIME=$fake_runtime QWEN_IMAGE_ALLOW_LLAMA_RESIDENT=1 \
     QWEN_VULKANINFO_COMMAND=/bin/false \
-    QWEN_FAKE_IMAGE_IGNORE_REFUSAL_MARKER=1 \
+    QWEN_FAKE_IMAGE_FORCE_MODE=ok \
     "$runner" "$t2_directory" "$fake_model" >"$temporary_directory/t2.out" 2>&1
 then
     t2_status=refused
@@ -117,14 +117,14 @@ report resident_llama_process_refused "$t4_status"
 t5_directory=$temporary_directory/t5
 if QWEN_IMAGE_RUNTIME=$fake_runtime QWEN_IMAGE_ALLOW_LLAMA_RESIDENT=1 \
     QWEN_VULKANINFO_COMMAND=/bin/false \
-    QWEN_FAKE_IMAGE_EXIT_STATUS=1 \
+    QWEN_FAKE_IMAGE_MODE=fail \
     "$runner" "$t5_directory" "$fake_model" >"$temporary_directory/t5.out" 2>&1
 then
     t5_status=accepted
     cold_status=$(awk -F'\t' 'NR == 2 { print $2 }' "$t5_directory/summary.tsv")
     cold_exit=$(awk -F'\t' 'NR == 2 { print $3 }' "$t5_directory/summary.tsv")
     [ "$cold_status" = failed ] || t5_status=refused
-    [ "$cold_exit" = 1 ] || t5_status=refused
+    [ "$cold_exit" = 3 ] || t5_status=refused
     [ ! -e "$t5_directory/cold.png" ] || t5_status=refused
 else
     t5_status=refused

@@ -8,20 +8,39 @@ set -eu
 # built to survive reachable through one environment variable.
 #
 # QWEN_FAKE_IMAGE_MODE selects the arm:
-#   ok         a valid PNG at the requested dimensions, then exit 0
-#   fail       an exit status of 3 with no file written
-#   truncated  the first half of a valid PNG, then exit 0
-#   dimension  a valid PNG one pixel narrower than the request, then exit 0
-#   hang       SIGTERM ignored and a long sleep, which the service ends with
-#              SIGKILL after its grace
+#   ok              a valid PNG at the requested dimensions, then exit 0
+#   fail            an exit status of 3 with no file written
+#   truncated       the first half of a valid PNG, then exit 0
+#   dimension       a valid PNG one pixel narrower than the request, then exit 0
+#   hang            SIGTERM ignored and a long sleep, which the service ends
+#                   with SIGKILL after its grace
+#   device_refusal  an exit status of 3 with no file written and a message
+#                   naming the unresolved --backend value, standing in for the
+#                   real runtime's device-selection refusal
+#                   (evidence/image-appliance/stable-diffusion-cpp-pin.md)
 # QWEN_FAKE_IMAGE_SLEEP_SECONDS delays the exit after the file is written, so a
 # test can observe the lease held, read status, or cancel while the job runs.
+#
+# --model and --backend are accepted and recorded but otherwise unused: no
+# profile the image service renders names them yet, and the standalone image
+# campaign (remote/run-image-standalone.sh) is what exercises them, pinning
+# every module to the device --list-devices names and proving the refusal
+# path with QWEN_FAKE_IMAGE_MODE=device_refusal. --list-devices is a
+# standalone action, read before any other flag, the way the real runtime
+# reads it.
 
 usage() {
-    printf 'usage: %s --output PATH --width N --height N --seed N [--steps N] [--prompt TEXT] [--negative-prompt TEXT] [--sampler NAME] [--cfg VALUE]\n' \
+    printf 'usage: %s --output PATH --width N --height N --seed N [--steps N] [--prompt TEXT] [--negative-prompt TEXT] [--sampler NAME | --sampling-method NAME] [--cfg VALUE | --cfg-scale VALUE] [--model PATH] [--backend VALUE]\n' \
         "$0" >&2
+    printf '       %s --list-devices\n' "$0" >&2
     exit 2
 }
+
+if [ "${1:-}" = --list-devices ]; then
+    printf 'Vulkan0\t%s\n' \
+        "${QWEN_FAKE_IMAGE_DEVICE_DESCRIPTION:-AMD Radeon Graphics (RADV RAVEN2) (RADV RAVEN2)}"
+    exit 0
+fi
 
 output=''
 width=''
@@ -32,6 +51,8 @@ prompt=''
 negative_prompt=''
 sampler=''
 cfg=''
+model_path=''
+backend=''
 
 while [ "$#" -gt 0 ]; do
     case $1 in
@@ -43,7 +64,17 @@ while [ "$#" -gt 0 ]; do
         --prompt) [ "$#" -ge 2 ] || usage; prompt=$2; shift 2 ;;
         --negative-prompt) [ "$#" -ge 2 ] || usage; negative_prompt=$2; shift 2 ;;
         --sampler) [ "$#" -ge 2 ] || usage; sampler=$2; shift 2 ;;
+        # sd-cli's own long flag names, accepted as aliases so
+        # remote/run-image-standalone.sh can drive the pinned binary directly
+        # with the names evidence/image-appliance/stable-diffusion-cpp-pin.md
+        # records (--sampling-method, --cfg-scale) while
+        # remote/image-service.py's rendered profile argv keeps --sampler and
+        # --cfg unchanged.
+        --sampling-method) [ "$#" -ge 2 ] || usage; sampler=$2; shift 2 ;;
         --cfg) [ "$#" -ge 2 ] || usage; cfg=$2; shift 2 ;;
+        --cfg-scale) [ "$#" -ge 2 ] || usage; cfg=$2; shift 2 ;;
+        --model) [ "$#" -ge 2 ] || usage; model_path=$2; shift 2 ;;
+        --backend) [ "$#" -ge 2 ] || usage; backend=$2; shift 2 ;;
         *) usage ;;
     esac
 done
@@ -51,6 +82,16 @@ done
 [ -n "$output" ] && [ -n "$width" ] && [ -n "$height" ] && [ -n "$seed" ] || usage
 
 mode=${QWEN_FAKE_IMAGE_MODE:-ok}
+# QWEN_FAKE_IMAGE_FORCE_MODE overrides QWEN_FAKE_IMAGE_MODE outright, which is
+# what a test needs to reach remote/run-image-standalone.sh's own safety net:
+# that harness sets QWEN_FAKE_IMAGE_MODE=device_refusal on its refusal-control
+# invocation itself, so nothing the harness's caller passes can out-argue it
+# through the ordinary variable, and a test proving the harness's own check
+# catches a runtime that answers ok anyway needs a second, higher-precedence
+# variable to force that answer.
+if [ -n "${QWEN_FAKE_IMAGE_FORCE_MODE:-}" ]; then
+    mode=$QWEN_FAKE_IMAGE_FORCE_MODE
+fi
 sleep_seconds=${QWEN_FAKE_IMAGE_SLEEP_SECONDS:-0}
 
 # The argv the service rendered is recorded when a test asks for it, so a
@@ -67,6 +108,8 @@ if [ -n "${QWEN_FAKE_IMAGE_ARGV_LOG:-}" ]; then
         printf 'cfg=%s\n' "$cfg"
         printf 'prompt=%s\n' "$prompt"
         printf 'negative_prompt=%s\n' "$negative_prompt"
+        printf 'model_path=%s\n' "$model_path"
+        printf 'backend=%s\n' "$backend"
         printf 'nice=%s\n' "$(ps -o ni= -p $$ | tr -d ' ')"
         printf 'timeout=%s\n' "${QWEN_IMAGE_RUNTIME_TIMEOUT_SECONDS:-unset}"
     } >"$QWEN_FAKE_IMAGE_ARGV_LOG"
@@ -74,6 +117,11 @@ fi
 
 if [ "$mode" = fail ]; then
     printf 'fake image runtime refused the request\n' >&2
+    exit 3
+fi
+
+if [ "$mode" = device_refusal ]; then
+    printf "backend '%s' was not found\n" "$backend" >&2
     exit 3
 fi
 
