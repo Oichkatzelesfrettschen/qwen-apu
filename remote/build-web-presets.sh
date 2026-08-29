@@ -104,6 +104,17 @@ set -eu
 # Any other value stops the run: the ledger states a policy the generator has
 # no rule for, which is a data error rather than a row to skip.
 #
+# remote/image-profiles.tsv is the second execution grant this generator reads
+# and it takes the same two rules: a `refused` row emits nothing under every
+# setting, which is what every checked-in row carries, and a `validator-gated`
+# row emits only under QWEN_WEB_AUTHORIZER_READY=1. An emitting image row adds
+# an `image` server to every section's configuration, naming
+# remote/image-mcp/server.py with the section's own profile_id as
+# QWEN_IMAGE_LANGUAGE_PROFILE, because the grant binds the language profile and
+# the image profile together. Its timeout_ms of 360000 sits above the image
+# service's 330 s and the runtime's 300 s, so a stalled generation is ended by
+# the process that owns it.
+#
 # No environment variable converts a `refused` row into a network-capable
 # profile. The override that exists admits an unvalidated depth, which is a
 # capacity claim; an execution grant is a security boundary and the ledger is
@@ -205,6 +216,10 @@ if [ "$#" -ne 1 ]; then
     printf 'optional QWEN_WEB_TOKEN_KEY_FILE, QWEN_WEB_STATE_DIR\n' >&2
     printf 'QWEN_WEB_ALLOW_UNVALIDATED_DEPTH=1 admits an unknown or over-depth profile as experimental\n' >&2
     printf 'QWEN_WEB_AUTHORIZER_READY=1 asserts the argument-authorization validator runs, admitting validator-gated rows\n' >&2
+    printf 'image profile ledger comes from QWEN_IMAGE_PROFILES, default remote/image-profiles.tsv\n' >&2
+    printf 'a validator-gated image row adds an image server to every emitted section under QWEN_WEB_AUTHORIZER_READY=1\n' >&2
+    printf 'that row requires QWEN_IMAGE_MCP_SERVER (remote/image-mcp/server.py), QWEN_IMAGE_TOKEN_KEY_FILE, QWEN_IMAGE_STATE_DIR, QWEN_IMAGE_SERVICE_SOCKET\n' >&2
+    printf 'optional QWEN_IMAGE_MCP_TIMEOUT_MS, default 360000\n' >&2
     exit 2
 fi
 
@@ -254,6 +269,27 @@ case $mcp_timeout_ms in
     '' | 0* | *[!0-9]*)
         printf 'QWEN_WEB_MCP_TIMEOUT_MS must be a positive decimal integer: %s\n' \
             "$mcp_timeout_ms" >&2
+        exit 2
+        ;;
+esac
+
+# The image lane reaches the device rather than the network, and its deadline
+# is the generation's rather than a provider request's: the runtime is bounded
+# at 300 s, image-service.py at 330 s, and this per-call limit at 360 s, so a
+# stalled generation is ended by the process that owns it. remote/image-mcp
+# reads QWEN_IMAGE_MCP_TIMEOUT_S from the same emitted configuration, and
+# qwen-image-launch.sh verifies the whole stack before it starts anything.
+image_profiles=${QWEN_IMAGE_PROFILES:-$script_directory/image-profiles.tsv}
+image_quarantine=${QWEN_IMAGE_QUARANTINE:-$script_directory/image-quarantine.tsv}
+image_mcp_server=${QWEN_IMAGE_MCP_SERVER:-}
+image_token_key_file=${QWEN_IMAGE_TOKEN_KEY_FILE:-}
+image_state_directory=${QWEN_IMAGE_STATE_DIR:-"${HOME:?}/qwen-webui-state/images"}
+image_service_socket=${QWEN_IMAGE_SERVICE_SOCKET:-$image_state_directory/image-service.sock}
+image_mcp_timeout_ms=${QWEN_IMAGE_MCP_TIMEOUT_MS:-360000}
+case $image_mcp_timeout_ms in
+    '' | 0* | *[!0-9]*)
+        printf 'QWEN_IMAGE_MCP_TIMEOUT_MS must be a positive decimal integer: %s\n' \
+            "$image_mcp_timeout_ms" >&2
         exit 2
         ;;
 esac
@@ -455,6 +491,123 @@ esac
 web_profiles_identity=$(sha256sum -- "$web_profiles")
 web_profiles_sha256=${web_profiles_identity%% *}
 
+# The image lane is a second execution grant over the same sections, so it is
+# resolved once before any section emits. remote/image-registry.sh validates
+# the four image authorities whole and prints the profile rows validation
+# returned, which is the discipline model-registry.sh applies on the language
+# side: a caller acting on one row cannot act on a ledger a sibling row has
+# made unsafe to read. The emission rule mirrors the web one exactly --
+# `refused` emits nothing under every setting and every checked-in row carries
+# it, `validator-gated` emits only under QWEN_WEB_AUTHORIZER_READY=1 -- because
+# an image generation reaches the device through the same argument-authorizing
+# runtime a search reaches the network through.
+#
+# One image profile emits. A section carries one `mcpServers` object and the
+# image server is one key in it, so two emitting rows would write two servers
+# of one name and the second would own the first's budgets; the run stops and
+# names both rather than choosing.
+image_profile_id=
+image_profile_model=
+image_registry_tab=$(printf '\t')
+if ! image_profile_rows=$("$script_directory/image-registry.sh" profiles); then
+    printf 'the image profile ledger fails validation: %s\n' "$image_profiles" >&2
+    exit 1
+fi
+image_quarantine_rows=$(sed -n '/^[^#]/p' "$image_quarantine")
+
+# A quarantine row removes a bundle at `model` scope and one shape at `profile`
+# scope, so the subject is compared against whichever the row's scope names.
+image_profile_quarantined() {
+    quarantine_profile=$1
+    quarantine_model=$2
+    printf '%s\n' "$image_quarantine_rows" |
+        awk -F'\t' -v profile="$quarantine_profile" -v model="$quarantine_model" '
+            $2 == "model" && $3 == model { found = 1 }
+            $2 == "profile" && $3 == profile { found = 1 }
+            END { exit !found }
+        '
+}
+
+while IFS="$image_registry_tab" read -r row_image_profile row_image_model \
+    _row_image_placement _row_image_width _row_image_height _row_image_steps \
+    _row_image_sampler _row_image_cfg _row_image_max_steps \
+    _row_image_max_dimension _row_image_timeout row_image_policy \
+    _row_image_evidence; do
+    [ -n "$row_image_profile" ] || continue
+    case $row_image_policy in
+        refused)
+            printf 'image_preset_skipped profile=%s execution_policy=refused\n' \
+                "$row_image_profile" >&2
+            continue
+            ;;
+        validator-gated) ;;
+        *)
+            printf 'image profile %s carries execution_policy %s, which is outside the vocabulary\n' \
+                "$row_image_profile" "${row_image_policy:-<absent>}" >&2
+            printf 'admitted values are refused and validator-gated\n' >&2
+            exit 1
+            ;;
+    esac
+    if [ "$authorizer_ready" != 1 ]; then
+        printf 'image_preset_skipped profile=%s execution_policy=validator-gated authorizer=absent\n' \
+            "$row_image_profile" >&2
+        continue
+    fi
+    if image_profile_quarantined "$row_image_profile" "$row_image_model"; then
+        printf 'image_preset_skipped profile=%s reason=quarantine model=%s\n' \
+            "$row_image_profile" "$row_image_model" >&2
+        continue
+    fi
+    if [ -n "$image_profile_id" ]; then
+        printf 'image profiles %s and %s both emit, and a section carries one image server\n' \
+            "$image_profile_id" "$row_image_profile" >&2
+        printf 'leave one validator-gated row in %s and refuse the rest\n' \
+            "$image_profiles" >&2
+        exit 1
+    fi
+    image_profile_id=$row_image_profile
+    image_profile_model=$row_image_model
+done <<IMAGE_PROFILE_ROWS
+$image_profile_rows
+IMAGE_PROFILE_ROWS
+
+# The ledger binds the generated preset the way the web ledger does, so
+# qwen-image-launch.sh reads one authority out of the file it launches.
+image_profiles_directory=$(dirname -- "$image_profiles")
+image_profiles_directory=$(CDPATH='' cd -- "$image_profiles_directory" && pwd)
+image_profiles=$image_profiles_directory/$(basename -- "$image_profiles")
+image_profiles_identity=$(sha256sum -- "$image_profiles")
+image_profiles_sha256=${image_profiles_identity%% *}
+
+# Every name the image MCP child reads is required before a section names it,
+# because a configuration missing one reaches the model as a per-call refusal
+# long after the listener reports ready.
+require_image_mcp_inputs() {
+    for image_input_name in QWEN_IMAGE_MCP_SERVER QWEN_IMAGE_TOKEN_KEY_FILE \
+        QWEN_IMAGE_STATE_DIR QWEN_IMAGE_SERVICE_SOCKET; do
+        case $image_input_name in
+            QWEN_IMAGE_MCP_SERVER) image_input_value=$image_mcp_server ;;
+            QWEN_IMAGE_TOKEN_KEY_FILE) image_input_value=$image_token_key_file ;;
+            QWEN_IMAGE_STATE_DIR) image_input_value=$image_state_directory ;;
+            *) image_input_value=$image_service_socket ;;
+        esac
+        if [ -z "$image_input_value" ]; then
+            printf 'image profile %s emits a configuration and %s names nothing\n' \
+                "$image_profile_id" "$image_input_name" >&2
+            exit 1
+        fi
+        require_json_safe_path "$image_input_name" "$image_input_value"
+    done
+    if [ ! -f "$image_mcp_server" ]; then
+        printf 'QWEN_IMAGE_MCP_SERVER names no regular file: %s\n' \
+            "$image_mcp_server" >&2
+        exit 1
+    fi
+}
+if [ -n "$image_profile_id" ]; then
+    require_image_mcp_inputs
+fi
+
 # A section's MCP configuration path is read by qwen-web-launch.sh and by the
 # llama-server child, each from its own working directory, so the generator
 # resolves the output directory absolutely before it embeds the name. A relative
@@ -486,6 +639,11 @@ mkdir -p "$mcp_config_directory_temporary"
     printf '# qwen_web_profiles_path=%s\n' "$web_profiles"
     printf '# qwen_web_profiles_sha256=%s\n' "$web_profiles_sha256"
     printf '# qwen_web_provider=%s\n' "$web_provider"
+    printf '# qwen_image_profiles_path=%s\n' "$image_profiles"
+    printf '# qwen_image_profiles_sha256=%s\n' "$image_profiles_sha256"
+    printf '# qwen_image_profile=%s\n' "${image_profile_id:--}"
+    printf '# qwen_image_model=%s\n' "${image_profile_model:--}"
+    printf '# qwen_image_mcp_timeout_ms=%s\n' "$image_mcp_timeout_ms"
     if [ "$allow_unvalidated_depth" = 1 ]; then
         printf '# qwen-web-presets: unvalidated-depth-override\n'
     fi
@@ -792,13 +950,34 @@ while profile_id=; IFS='	' read -r profile_id model_id _web_mode context \
     fi
 
     # A ui-mediated row performs its retrieval in the web UI and its section
-    # names no configuration, so the run writes none and reads none of the MCP
-    # inputs a configuration would carry.
+    # names no web server, so the run reads none of the MCP inputs a search
+    # configuration would carry. An emitting image profile still writes a
+    # configuration for that section, because generation runs in the child
+    # whatever the page does about search.
     if [ "$execution_policy" = ui-mediated ]; then
-        emit_mcp_configuration=0
+        emit_web_server=0
     else
-        emit_mcp_configuration=1
+        emit_web_server=1
         require_mcp_inputs
+    fi
+    emit_image_server=0
+    web_server_separator=
+    if [ -n "$image_profile_id" ]; then
+        emit_image_server=1
+        # A second server follows the web object, so the web object closes with
+        # the separator JSON requires between two members.
+        web_server_separator=,
+    fi
+    emit_mcp_configuration=0
+    if [ "$emit_web_server" = 1 ] || [ "$emit_image_server" = 1 ]; then
+        emit_mcp_configuration=1
+    fi
+
+    # The tag states what the section carries, so the assembled-file check
+    # reads one line rather than reopening the configuration it names.
+    image_tag_suffix=
+    if [ "$emit_image_server" = 1 ]; then
+        image_tag_suffix=,image
     fi
 
     profile_mcp_config=$mcp_config_directory_marker/$profile_id.json
@@ -807,6 +986,10 @@ while profile_id=; IFS='	' read -r profile_id model_id _web_mode context \
         {
             printf '{\n'
             printf '  "mcpServers": {\n'
+        } >"$profile_mcp_config_temporary"
+    fi
+    if [ "$emit_web_server" = 1 ]; then
+        {
             printf '    "web": {\n'
             printf '      "command": "python3",\n'
             printf '      "timeout_ms": %s,\n' "$mcp_timeout_ms"
@@ -866,10 +1049,49 @@ while profile_id=; IFS='	' read -r profile_id model_id _web_mode context \
             fi
             printf '        "QWEN_WEB_STATE_DIR": "%s"\n' "$web_state_directory"
             printf '      }\n'
+            printf '    }%s\n' "$web_server_separator"
+        } >>"$profile_mcp_config_temporary"
+    fi
+    # The image server names the language profile beside the image profile,
+    # because the grant binds both: one approval authorizes one image profile
+    # for the conversation running under one language profile, and
+    # image_grant.enforce_image_authorization compares each against the section
+    # that executed the call. The key file, the state directory, and the socket
+    # travel as paths; the child reads each itself, so the preset carries no
+    # signing key and no device state.
+    if [ "$emit_image_server" = 1 ]; then
+        {
+            printf '    "image": {\n'
+            printf '      "command": "python3",\n'
+            printf '      "timeout_ms": %s,\n' "$image_mcp_timeout_ms"
+            printf '      "args": [\n'
+            printf '        "%s"\n' "$image_mcp_server"
+            printf '      ],\n'
+            printf '      "env": {\n'
+            printf '        "QWEN_IMAGE_LANGUAGE_PROFILE": "%s",\n' "$profile_id"
+            printf '        "QWEN_IMAGE_PROFILE": "%s",\n' "$image_profile_id"
+            printf '        "QWEN_IMAGE_TOKEN_KEY_FILE": "%s",\n' \
+                "$image_token_key_file"
+            printf '        "QWEN_IMAGE_STATE_DIR": "%s",\n' \
+                "$image_state_directory"
+            printf '        "QWEN_IMAGE_SERVICE_SOCKET": "%s",\n' \
+                "$image_service_socket"
+            # llama-server reads timeout_ms as the per-call limit and the child
+            # reads QWEN_IMAGE_MCP_TIMEOUT_S as its own socket deadline, so the
+            # two are written from one value: an operator raising the router's
+            # limit alone would leave the child cutting at its 360 second
+            # default while the launch verified the larger number.
+            printf '        "QWEN_IMAGE_MCP_TIMEOUT_S": "%s"\n' \
+                "$((image_mcp_timeout_ms / 1000))"
+            printf '      }\n'
             printf '    }\n'
+        } >>"$profile_mcp_config_temporary"
+    fi
+    if [ "$emit_mcp_configuration" = 1 ]; then
+        {
             printf '  }\n'
             printf '}\n'
-        } >"$profile_mcp_config_temporary"
+        } >>"$profile_mcp_config_temporary"
     fi
 
 
@@ -887,11 +1109,11 @@ while profile_id=; IFS='	' read -r profile_id model_id _web_mode context \
         if [ -n "$profile_projector_path" ]; then
             printf 'LLAMA_ARG_MMPROJ = %s\n' "$profile_projector_path"
         fi
-        if [ "$execution_policy" != ui-mediated ]; then
+        if [ "$emit_mcp_configuration" = 1 ]; then
             printf 'LLAMA_ARG_MCP_SERVERS_CONFIG = %s\n' "$profile_mcp_config"
         fi
-        printf 'LLAMA_ARG_TAGS = web-research,%s%s\n' \
-            "$execution_policy" "$tags_suffix"
+        printf 'LLAMA_ARG_TAGS = web-research,%s%s%s\n' \
+            "$execution_policy" "$image_tag_suffix" "$tags_suffix"
         printf '\n'
     } >>"$output_ini_temporary"
 
@@ -928,7 +1150,17 @@ verify_assembled_sections() {
                     section > "/dev/stderr"
                 rejected = 1
             }
+            if (tags_value ~ /(^|,)image(,|$)/ &&
+                !seen_key["LLAMA_ARG_MCP_SERVERS_CONFIG"]) {
+                printf "assembled section %s carries the image tag and omits LLAMA_ARG_MCP_SERVERS_CONFIG\n", \
+                    section > "/dev/stderr"
+                rejected = 1
+            }
+            # A ui-mediated section reaches no network of its own, so a
+            # configuration belongs to it only where the image tag names the
+            # generation server it carries.
             if (tags_value ~ /(^|,)ui-mediated(,|$)/ &&
+                tags_value !~ /(^|,)image(,|$)/ &&
                 seen_key["LLAMA_ARG_MCP_SERVERS_CONFIG"]) {
                 printf "assembled section %s is ui-mediated and carries LLAMA_ARG_MCP_SERVERS_CONFIG\n", \
                     section > "/dev/stderr"
@@ -1043,6 +1275,7 @@ mv -- "$output_ini_temporary.resolved" "$output_ini_temporary"
 mv -- "$output_ini_temporary" "$output_ini"
 trap - EXIT HUP INT TERM
 
-printf 'web_presets=written path=%s profiles=%s absent=%s projector_unresolved=%s mcp_configs=%s\n' \
+printf 'web_presets=written path=%s profiles=%s absent=%s projector_unresolved=%s mcp_configs=%s image_profile=%s\n' \
     "$output_ini" "$emitted" "$skipped_absent_weights" \
-    "$skipped_unresolved_projector" "$mcp_config_directory"
+    "$skipped_unresolved_projector" "$mcp_config_directory" \
+    "${image_profile_id:--}"

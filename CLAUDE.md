@@ -556,6 +556,47 @@ per-profile budgets bound the child rather than describing it, and its
 `server.py` and the router's 3600 s proxy read timeout, so a stalled provider
 is answered by the child's own deadline rather than abandoned by the router.
 
+An image generation reaches the device the way a search reaches the network,
+and one lease separates the two. `remote/image_protocol.py` freezes the job
+frame at version 1 and both `image-service.py` and `image-mcp/server.py` import
+it, so a closed request schema, a closed response schema, the 65536-byte line
+bound, and the coarse `square`/`portrait`/`landscape` label have one reading
+rather than three. `remote/build-web-presets.sh` reads
+`remote/image-profiles.tsv` as a second execution grant under the rules the web
+ledger takes: a `refused` row emits nothing under every setting, which is what
+every checked-in row carries, and a `validator-gated` row adds one `image`
+server to each emitted section's MCP configuration under
+`QWEN_WEB_AUTHORIZER_READY=1`, naming `remote/image-mcp/server.py` with the
+section's own profile as `QWEN_IMAGE_LANGUAGE_PROFILE` because the grant binds
+the language profile and the image profile together. One image profile emits,
+since a section carries one `mcpServers` object. `remote/qwen-image-launch.sh`
+rejoins the preset's image markers to the ledger, requires the row to still
+read `validator-gated`, requires the parameter file the service runs a job
+under to carry the ledger's own geometry and ceilings, and proves the deadline
+stack ordered from the value each layer is configured with -- the runtime at
+the smaller of the profile's `timeout_s` and `image-service.py`'s 300 s
+ceiling, the service at its 330 s job deadline, the tool call at the emitted
+`timeout_ms`, and the page at `webui/index.html`'s own
+`IMAGE_GENERATION_TIMEOUT_MS`. The router proxy configures none of its own in
+this tree, so the launch reads llama-server's 3600 s default and requires it to
+outlast the tool call rather than asserting the 600 s bound
+`remote/image-protocol.md` proposes. `qwen-webui-session.sh` starts the service
+as a guarded child beside the broker and records `image_service_pid=` on the
+`state=running` line, and `qwen-teardown.sh` compares its recorded start time
+with `/proc/PID/stat` before signalling and then runs
+`remote/image-teardown-check.sh`, which proves no service, no runtime, no
+partial artifact, and a free lease.
+
+`~/qwen-webui-state/vulkan-workload.lock` is that lease, and its scope is
+narrower than the state machine the appliance is heading for. `image-service.py`
+is its only writer, so it serializes image generations against each other and
+the kernel lock is the authority a `flock` failure reports; mutual exclusion
+against the LLM router arrives when the owner of GPU work on that side acquires
+the same lock, which no code in this tree does yet. A running llama-server and
+a running generation therefore share the device today, and the one active
+Vulkan workload the brief calls for is enforced by the service holding the lease
+across exactly the span from job start to artifact rename.
+
 `patches/llama-router-tools-proxy.patch` is what puts the route on the router
 port. At f280b269 `server.cpp` registers `/tools` only in a process whose own
 MCP manager holds a server, and the router branch proxies chat, props, and
@@ -579,6 +620,7 @@ in the binary and the tool set belongs to the section.
 # Start and stop the appliance (run on the laptop)
 ~/qwen-laptop-setup/remote/qwen-launch.sh [paced-60|low-serialized|low-async]
 ~/qwen-laptop-setup/remote/qwen-web-launch.sh [PROFILE]   # web presets, loopback only
+~/qwen-laptop-setup/remote/qwen-image-launch.sh [PROFILE] # web presets with the image lane armed
 ~/qwen-laptop-setup/remote/qwen-teardown.sh
 ~/qwen-laptop-setup/remote/qwen-webui-control.sh status
 
@@ -615,6 +657,14 @@ remote/run-representation-arm.sh LABEL CONTROL SUBJECT
                                                 # one value format against another, ABBA
 remote/admit-web-router-fake.sh OUTPUT_DIR      # the web router against the fake provider
 remote/probe-depth-projector.sh MODEL_ID OUT   # filled depth, projector loaded
+remote/image-registry.sh artifacts|models|profiles|bundle|profile
+                                                # the four image authorities, validated whole
+remote/run-image-standalone.sh OUT MODEL       # one image, no llama process resident
+remote/build-stable-diffusion-vulkan.sh        # sd-cli from the pinned commit, Vulkan only
+remote/image-service.py --state-dir DIR --profiles-json FILE
+                                                # the lease owner, one generation at a time
+remote/image-teardown-check.sh [STATE_DIRECTORY]
+                                                # no service, runtime, partial artifact, or held lease
 remote/run-graph-alias-ab.sh OUTPUT_DIR [MODEL_ID...]
                                                 # token identity across the graph optimizer
 
@@ -635,6 +685,11 @@ remote/download-qwen38-2b-distill-bf16.sh       # the 16-bit rung, and the F16 s
 remote/download-qwen35-08b-bf16.sh
 remote/derive-qwen38-2b-distill-f16.sh         # F16 from BF16, validated
 remote/derive-qwen35-08b-f16.sh
+remote/download-sdxs-512.sh                    # the image funnel's first rung
+remote/download-sd15-base.sh
+remote/download-sd15-vae.sh
+remote/download-sd-turbo.sh
+remote/download-lcm-lora-sd15.sh
 ```
 
 Tests are standalone POSIX shell scripts that exit non-zero on failure. Run one
@@ -648,6 +703,13 @@ remote/test-model-tiers.sh
 remote/test-probe-depth-projector.sh
 remote/test-web-presets.sh
 remote/test-qwen-web-launch.sh
+remote/test-image-registry.sh
+remote/test-qwen-image-launch.sh
+remote/test-run-image-standalone.sh
+remote/test-fallback-webui-image-authorization.sh
+python3 remote/test-image-protocol.py
+python3 remote/test-image-service.py
+python3 remote/image-mcp/test-image-mcp.py
 remote/test-quality-suite.py
 remote/test-quality-roster.sh
 remote/test-promote-llama-build.sh

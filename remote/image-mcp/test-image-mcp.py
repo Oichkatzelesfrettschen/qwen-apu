@@ -60,7 +60,7 @@ PROMPT = "a measured raven on a laptop lid"
 NEGATIVE_PROMPT = "text, watermark"
 SEED = 0
 ARTIFACT_SHA256 = "b" * 64
-ARTIFACT_URL = f"http://127.0.0.1:8846/artifacts/{ARTIFACT_SHA256}.png"
+PROVENANCE_URL = f"/artifacts/{ARTIFACT_SHA256}.json"
 START_WAIT_SECONDS = 15.0
 STOP_WAIT_SECONDS = 5.0
 CLOSE_WAIT_SECONDS = 10.0
@@ -182,16 +182,23 @@ class StubService:
 
 
 def completed_reply(request_id, **overrides):
+    """Return the reply a completed generation writes.
+
+    `image_protocol` closes the response schema, so a completed reply names the
+    digest and the route derived from it and carries no error key: a JSON null
+    or an empty string there states a failure the run did not have.
+    """
     reply = {
         "protocol_version": 1,
         "request_id": request_id,
         "status": "completed",
         "sha256": ARTIFACT_SHA256,
-        "provenance_url": ARTIFACT_URL,
-        "error": "",
+        "provenance_url": PROVENANCE_URL,
     }
     reply.update(overrides)
-    return reply
+    # An override of None removes the key, which is how an arm states a reply
+    # that names no artifact: the schema reads a present key as a claim.
+    return {key: value for key, value in reply.items() if value is not None}
 
 
 class EchoingService(StubService):
@@ -555,7 +562,7 @@ class ImageMcpTest(unittest.TestCase):
             {
                 "status": "completed",
                 "sha256": ARTIFACT_SHA256,
-                "provenance_url": ARTIFACT_URL,
+                "provenance_url": PROVENANCE_URL,
             },
         )
         self.assertNotIn("data:", text)
@@ -563,7 +570,7 @@ class ImageMcpTest(unittest.TestCase):
         job = service.requests[0]
         self.assertEqual(job["protocol_version"], 1)
         self.assertEqual(job["action"], "image_generate")
-        self.assertEqual(job["aspect"], "1:1")
+        self.assertEqual(job["aspect"], "square")
         self.assertEqual(job["seed"], SEED)
         self.assertEqual(
             sorted(job),
@@ -729,8 +736,9 @@ class ImageMcpTest(unittest.TestCase):
         service = self.start_echo_service(
             {
                 "status": "refused",
-                "sha256": "",
-                "provenance_url": "",
+                "reason": "lease_unavailable",
+                "sha256": None,
+                "provenance_url": None,
                 "error": "the workload lease is held",
             }
         )
@@ -741,6 +749,32 @@ class ImageMcpTest(unittest.TestCase):
         self.assertIn("refused the generation", text)
         self.assertIn("the workload lease is held", text)
         self.assertEqual(len(service.requests), 1)
+
+    def test_service_refusal_and_absence_take_their_own_audit_terms(self):
+        """The trail separates a declined job from a service that took none.
+
+        `provider_http_error` names a remote HTTP provider and this lane
+        reaches none, so a refusal writes `service_refused` and a socket no
+        process listens on writes `service_unavailable`.
+        """
+        session = self.start_session()
+        absent = self.call(session, tool_arguments(self.grant()))
+        self.assertTrue(absent["isError"], absent)
+        self.start_echo_service(
+            {
+                "status": "refused",
+                "reason": "profile_refused",
+                "sha256": None,
+                "provenance_url": None,
+                "error": "the profile carries execution_policy refused",
+            }
+        )
+        declined = self.call(session, tool_arguments(self.grant()))
+        self.assertTrue(declined["isError"], declined)
+        self.assertEqual(
+            [row[1] for row in self.audit_rows()],
+            ["service_unavailable", "service_refused"],
+        )
 
     def test_reply_naming_another_request_refused(self):
         self.start_service(
@@ -756,7 +790,13 @@ class ImageMcpTest(unittest.TestCase):
 
     def test_service_failure_text_reaches_the_model(self):
         self.start_echo_service(
-            {"status": "failed", "sha256": "", "provenance_url": "", "error": "vk\ndevice lost"}
+            {
+                "status": "failed",
+                "reason": "runtime_failed",
+                "sha256": None,
+                "provenance_url": None,
+                "error": "vk\ndevice lost",
+            }
         )
         session = self.start_session()
         result = self.call(session, tool_arguments(self.grant()))
@@ -766,36 +806,50 @@ class ImageMcpTest(unittest.TestCase):
         self.assertIn("vk device lost", text)
 
     def test_accepted_alone_refuses_a_synchronous_call(self):
-        self.start_echo_service({"status": "accepted", "sha256": "", "provenance_url": ""})
+        self.start_echo_service(
+            {"status": "accepted", "sha256": None, "provenance_url": None}
+        )
         session = self.start_session()
         result = self.call(session, tool_arguments(self.grant()))
         self.assertTrue(result["isError"], result)
         self.assertIn("accepted the generation", self.result_text(result))
 
     def test_status_outside_the_protocol_refused(self):
-        self.start_echo_service({"status": "done"})
+        self.start_echo_service({"status": "done", "sha256": None,
+                                 "provenance_url": None})
         session = self.start_session()
         result = self.call(session, tool_arguments(self.grant()))
         self.assertTrue(result["isError"], result)
         self.assertIn("outside the protocol", self.result_text(result))
 
     def test_provenance_url_naming_another_digest_refused(self):
+        """The route is derived from the digest, so one spelling is admitted."""
         self.start_echo_service(
-            {"provenance_url": "http://127.0.0.1:8846/artifacts/" + "c" * 64 + ".png"}
+            {"provenance_url": "/artifacts/" + "c" * 64 + ".json"}
         )
         session = self.start_session()
         result = self.call(session, tool_arguments(self.grant()))
         self.assertTrue(result["isError"], result)
-        self.assertIn("other than the reply digest", self.result_text(result))
+        self.assertIn("does not name the digest", self.result_text(result))
 
-    def test_provenance_url_off_the_loopback_route_refused(self):
+    def test_provenance_url_carrying_an_origin_refused(self):
+        """A reply names a route rather than a host.
+
+        The artifact listener is the reader's own credentialed origin, so a
+        reply carrying one would hand the page a host the digest does not
+        identify.
+        """
         self.start_echo_service(
-            {"provenance_url": f"http://images.example.net/{ARTIFACT_SHA256}.png"}
+            {
+                "provenance_url": (
+                    f"http://images.example.net/artifacts/{ARTIFACT_SHA256}.json"
+                )
+            }
         )
         session = self.start_session()
         result = self.call(session, tool_arguments(self.grant()))
         self.assertTrue(result["isError"], result)
-        self.assertIn("loopback artifact route", self.result_text(result))
+        self.assertIn("does not name the digest", self.result_text(result))
 
     def test_absent_service_refuses_without_spending_the_grant(self):
         session = self.start_session()

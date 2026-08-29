@@ -51,6 +51,16 @@ API_KEY = "web-ui-api-key-V8N2QK"
 ORIGIN = "http://127.0.0.1:8080"
 START_WAIT_SECONDS = 15.0
 STOP_WAIT_SECONDS = 5.0
+# What the broker's own shutdown sequence costs. A terminating signal raises
+# inside `serve_forever`, whose selector poll is 0.5 s, and `server_close` then
+# joins every handler thread because BrokerServer sets `daemon_threads = False`
+# with `block_on_close = True`; a handler blocked on a client that stopped
+# writing leaves after its own 5 s request read timeout. The unlink of the
+# session secret follows that join in the same `finally`, so the file is gone
+# exactly when the process is. The bound is those two terms with room for a
+# loaded runner, and it exists so the wait never ends in a SIGKILL: a killed
+# broker skips the unlink, which is the property the residue arm measures.
+BROKER_SHUTDOWN_WAIT_SECONDS = 30.0
 
 FIXTURES = {
     "search": {
@@ -113,14 +123,24 @@ class BrokerProcess:
             connection.close()
 
     def close(self):
-        self.process.terminate()
+        """End the broker on SIGTERM and report whether it unwound itself.
+
+        The SIGKILL is a last resort rather than a deadline: it skips the
+        cleanup that removes the session secret, so an arm reading that file
+        checks the returned status instead of racing the unwind.
+        """
+        if self.process.poll() is None:
+            self.process.terminate()
+        unwound = True
         try:
-            self.process.wait(timeout=STOP_WAIT_SECONDS)
+            self.process.wait(timeout=BROKER_SHUTDOWN_WAIT_SECONDS)
         except subprocess.TimeoutExpired:
+            unwound = False
             self.process.kill()
             self.process.wait(timeout=STOP_WAIT_SECONDS)
         self.process.stdout.close()
         self.process.stderr.close()
+        return unwound
 
 
 class BrokerTest(unittest.TestCase):
@@ -735,10 +755,15 @@ class BrokerTest(unittest.TestCase):
         )
         self.session_secret()
         self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
-        broker.close()
-        deadline = time.time() + STOP_WAIT_SECONDS
-        while time.time() < deadline and os.path.lexists(path):
-            time.sleep(0.05)
+        # The unlink runs in the `finally` that follows `server_close`, so the
+        # secret is gone once the process is: waiting on the exit rather than
+        # polling the path removes the timing dependence, and the assertion
+        # keeps its intent on a runner of any speed.
+        self.assertTrue(
+            broker.close(),
+            "the broker unwound from SIGTERM rather than needing SIGKILL",
+        )
+        self.assertIsNotNone(broker.process.returncode)
         self.assertFalse(os.path.lexists(path))
 
     def test_no_response_or_stream_carries_the_signing_key(self):

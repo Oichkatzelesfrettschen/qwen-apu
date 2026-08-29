@@ -181,10 +181,17 @@ expect_accepted(
     validate_response,
     {"protocol_version": 1, "request_id": "img-0001", "status": "accepted"},
 )
+# Every outcome that stops a generation names its term, so a reader routes on
+# a fixed word where the message varies with the argument that produced it.
 expect_accepted(
     "cancelled_response",
     validate_response,
-    {"protocol_version": 1, "request_id": "img-0001", "status": "cancelled"},
+    {
+        "protocol_version": 1,
+        "request_id": "img-0001",
+        "status": "cancelled",
+        "reason": "cancelled",
+    },
 )
 expect_accepted(
     "refused_response",
@@ -193,6 +200,7 @@ expect_accepted(
         "protocol_version": 1,
         "request_id": "img-0001",
         "status": "refused",
+        "reason": "profile_refused",
         "error": "the profile admits 512 and the grant named 1024",
     },
 )
@@ -203,8 +211,53 @@ expect_accepted(
         "protocol_version": 1,
         "request_id": "img-0001",
         "status": "failed",
+        "reason": "runtime_timeout",
         "error": "the runtime exceeded its 300 s bound",
     },
+)
+expect_refused(
+    "refused_response_without_reason",
+    validate_response,
+    {
+        "protocol_version": 1,
+        "request_id": "img-0001",
+        "status": "refused",
+        "error": "the profile admits 512 and the grant named 1024",
+    },
+)
+expect_refused(
+    "completed_carries_reason",
+    validate_response,
+    completed_response(reason="profile_refused"),
+)
+
+# A status or cancel answer reports the service beside the frame, and those
+# keys are a second named set rather than an opening for anything a sender
+# adds: the same line is refused where the caller reads a plain response.
+control_reply = {
+    "protocol_version": 1,
+    "request_id": "img-0001",
+    "status": "accepted",
+    "state": "running",
+    "job_id": "0a1b2c3d",
+    "job_request_id": "img-0001",
+    "lease_held": True,
+    "pid": 4321,
+}
+expect_accepted(
+    "control_reply_carries_observations",
+    lambda message: validate_response(message, control_reply=True),
+    control_reply,
+)
+expect_refused(
+    "control_observations_outside_a_control_reply",
+    validate_response,
+    control_reply,
+)
+expect_refused(
+    "control_reply_unknown_observation",
+    lambda message: validate_response(message, control_reply=True),
+    dict(control_reply, artifact_path="/home/user/out.png"),
 )
 
 expect_refused(

@@ -39,6 +39,16 @@ broker_port=${QWEN_WEB_BROKER_PORT:-8571}
 broker_state_directory=${QWEN_WEB_STATE_DIR:-"$state_directory/web-mcp"}
 broker_log=$state_directory/authorize-broker.log
 broker_origin=${QWEN_WEB_BROKER_ORIGIN:-"http://${QWEN_BIND_HOST:-127.0.0.1}:$server_port"}
+# The image service owns the Vulkan workload lease and the pinned image
+# runtime, and it allocates nothing on the device until a job arrives, so it is
+# a guarded child of this session beside the broker. qwen-image-launch.sh sets
+# QWEN_IMAGE_SERVICE=1; every other launch leaves it unset and starts none.
+image_service_pid=""
+image_service_enabled=${QWEN_IMAGE_SERVICE:-0}
+image_service_program=${QWEN_IMAGE_SERVICE_PROGRAM:-"$script_directory/image-service.py"}
+image_service_profiles_json=${QWEN_IMAGE_PROFILES_JSON:-}
+image_service_origin=${QWEN_IMAGE_PAGE_ORIGIN:-"http://${QWEN_BIND_HOST:-127.0.0.1}:$server_port"}
+image_service_log=$state_directory/image-service.log
 case ${QWEN_ROUTER_PRESETS:-} in
     "$state_directory"/.router-presets.active.*)
         router_preset_snapshot=$QWEN_ROUTER_PRESETS
@@ -69,6 +79,13 @@ cleanup() {
         kill "$broker_pid" 2>/dev/null || true
         wait "$broker_pid" 2>/dev/null || true
     fi
+    # The image service unlinks its socket and releases the workload lease
+    # while unwinding from SIGTERM, and a killed one leaves both for the next
+    # launch to meet, so it is signalled and waited for the same way.
+    if [ -n "$image_service_pid" ]; then
+        kill "$image_service_pid" 2>/dev/null || true
+        wait "$image_service_pid" 2>/dev/null || true
+    fi
     if [ -n "$router_preset_snapshot" ]; then
         rm -f -- "$router_preset_snapshot"
         router_preset_snapshot=''
@@ -98,6 +115,12 @@ require_broker_running() {
     if [ "$broker_enabled" = 1 ] && ! process_running "$broker_pid"; then
         printf 'state=failed reason=authorization_broker_exited broker_pid=%s utc=%s\n' \
             "$broker_pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
+        exit 1
+    fi
+    if [ "$image_service_enabled" = 1 ] && \
+        ! process_running "$image_service_pid"; then
+        printf 'state=failed reason=image_service_exited image_service_pid=%s utc=%s\n' \
+            "$image_service_pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
         exit 1
     fi
 }
@@ -251,6 +274,67 @@ if [ "$broker_enabled" = 1 ]; then
     fi
 fi
 
+# The image service starts here for the reason the broker does: it allocates
+# nothing on the device until a job arrives, where model loading holds the
+# readiness loop for up to 120 seconds, so starting it first bounds the window
+# in which the page is reachable and the executor its approvals name is absent.
+# The `socket` line the service prints proves it bound the control socket; the
+# start time recorded beside its pid is what binds the number to this process,
+# since a pid is reused once its process exits.
+image_service_start_time=''
+image_service_socket=''
+image_service_listener=''
+if [ "$image_service_enabled" = 1 ]; then
+    if [ ! -r "$image_service_program" ]; then
+        printf 'state=failed reason=image_service_unavailable path=%s utc=%s\n' \
+            "$image_service_program" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            >"$status_file"
+        exit 1
+    fi
+    if [ ! -r "${image_service_profiles_json:-}" ]; then
+        printf 'state=failed reason=image_service_profiles_unreadable path=%s utc=%s\n' \
+            "${image_service_profiles_json:-<unset>}" \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
+        exit 1
+    fi
+    : >"$image_service_log"
+    chmod 600 "$image_service_log"
+    python3 "$image_service_program" \
+        --state-dir "$state_directory" \
+        --profiles-json "$image_service_profiles_json" \
+        --api-key-file "$api_key_file" \
+        --origin "$image_service_origin" \
+        --http-host 127.0.0.1 \
+        >"$image_service_log" 2>&1 &
+    image_service_pid=$!
+    image_service_ready=0
+    attempt=0
+    while [ "$attempt" -lt 300 ]; do
+        if grep -F 'socket ' "$image_service_log" >/dev/null 2>&1; then
+            image_service_ready=1
+            break
+        fi
+        if ! kill -0 "$image_service_pid" 2>/dev/null; then
+            break
+        fi
+        attempt=$((attempt + 1))
+        sleep 0.1
+    done
+    if [ "$image_service_ready" -ne 1 ]; then
+        printf 'state=failed reason=image_service_not_listening log=%s utc=%s\n' \
+            "$image_service_log" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
+        exit 1
+    fi
+    image_service_start_time=$(sed 's/^.*) //' "/proc/$image_service_pid/stat" |
+        awk '{ print $20 }')
+    image_service_socket=$(sed -n 's/^socket //p' "$image_service_log" |
+        sed -n '1p')
+    # The artifact listener binds an ephemeral port by default, so its host and
+    # port are read from the line the service printed rather than assumed.
+    image_service_listener=$(sed -n 's/^listening //p' "$image_service_log" |
+        sed -n '1p' | tr ' ' ':')
+fi
+
 QWEN_VULKAN_PROFILE=$vulkan_profile \
 "$script_directory/run-qwen-capacity-server.sh" \
     "$llama_server" "$model_path" "$context_size" "$required_vulkan_mib" \
@@ -393,6 +477,12 @@ broker_status_field=''
 if [ -n "$broker_pid" ]; then
     broker_status_field=" broker_pid=$broker_pid"
 fi
+# image_service_pid appears on the same line for the same reason: the teardown
+# reads the first line to signal the process and to decide whether the socket,
+# the lease, and the partial artifacts are its own to prove gone.
+if [ -n "$image_service_pid" ]; then
+    broker_status_field="$broker_status_field image_service_pid=$image_service_pid"
+fi
 printf 'state=running server_pid=%s monitor_pid=%s latency_watchdog_pid=%s kernel_hazard_watchdog_pid=%s%s profile=%s host=%s port=%s context=%s latency_mode=%s utc=%s\n' \
     "$server_pid" "$monitor_pid" "$latency_watchdog_pid" \
     "$kernel_hazard_watchdog_pid" "$broker_status_field" "$vulkan_profile" \
@@ -437,6 +527,17 @@ if [ -n "$broker_pid" ]; then
     printf 'broker_identity pid=%s start_time=%s profile=%s provider=%s signing_key_sha256=%s\n' \
         "$broker_pid" "$broker_start_time" "$QWEN_WEB_PROFILE" \
         "${QWEN_WEB_PROVIDER:-exa}" "$broker_signing_key_sha256" >>"$status_file"
+fi
+# The image service's identity lands after the same truncating write the
+# broker's does, because `state=running` rewrites this file rather than
+# appending to it. The start time is what binds the pid to the process a
+# teardown signals, and the socket and listener are what a later reader reaches
+# the control channel and the artifact routes through.
+if [ -n "$image_service_pid" ]; then
+    printf 'image_service_identity pid=%s start_time=%s socket=%s listener=%s\n' \
+        "$image_service_pid" "$image_service_start_time" \
+        "${image_service_socket:-unrecorded}" \
+        "${image_service_listener:-unrecorded}" >>"$status_file"
 fi
 
 supervised_component=server

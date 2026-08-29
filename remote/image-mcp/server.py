@@ -33,42 +33,60 @@ import secrets
 import socket
 import sys
 import time
-import urllib.parse
 
 SERVER_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
-WEB_MCP_DIRECTORY = os.path.join(os.path.dirname(SERVER_DIRECTORY), "web-mcp")
-for candidate in (SERVER_DIRECTORY, WEB_MCP_DIRECTORY):
+REMOTE_DIRECTORY = os.path.dirname(SERVER_DIRECTORY)
+WEB_MCP_DIRECTORY = os.path.join(REMOTE_DIRECTORY, "web-mcp")
+for candidate in (SERVER_DIRECTORY, WEB_MCP_DIRECTORY, REMOTE_DIRECTORY):
     if candidate not in sys.path:
         sys.path.insert(0, candidate)
 
 import server as web_server  # noqa: E402
 import image_grant  # noqa: E402
+import image_protocol  # noqa: E402
 
 SERVER_NAME = "image"
 SERVER_VERSION = "1.0.0"
 PROTOCOL_VERSION = web_server.PROTOCOL_VERSION
 SUPPORTED_PROTOCOL_VERSIONS = web_server.SUPPORTED_PROTOCOL_VERSIONS
 
-SERVICE_PROTOCOL_VERSION = 1
-SERVICE_LINE_BYTE_CAP = 64 * 1024
+# The job frame is `image_protocol`'s, so this wrapper and the service read one
+# closed schema rather than two agreeing copies of it.
+SERVICE_PROTOCOL_VERSION = image_protocol.PROTOCOL_VERSION
+SERVICE_LINE_BYTE_CAP = image_protocol.MAX_LINE_BYTES
 SERVICE_ACTION = "image_generate"
-SERVICE_STATUSES = ("accepted", "completed", "refused", "cancelled", "failed")
+SERVICE_STATUSES = image_protocol.STATUSES
 SERVICE_TERMINAL_SUCCESS = "completed"
 SERVICE_ERROR_CHARACTER_CAP = 500
 
 MCP_TIMEOUT_DEFAULT_SECONDS = 360.0
 MCP_TIMEOUT_MAXIMUM_SECONDS = 3600.0
 REQUEST_ID_BYTES = 12
-SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
-PROVENANCE_URL_CHARACTER_CAP = 2048
-PROVENANCE_LOOPBACK_HOSTS = ("127.0.0.1", "::1")
 CONTROL_CHARACTERS = re.compile(r"[\x00-\x1f\x7f]")
 
 
-class ServiceError(web_server.ToolError):
-    """The image service refused the job, failed it, or answered unusably."""
+class ServiceRefused(web_server.ToolError):
+    """The image service answered, and the answer is not a finished artifact.
 
-    status = "provider_http_error"
+    A refusal, a failure, a cancellation, and a reply outside the protocol all
+    reach the audit trail as `service_refused`, because each states that the
+    service read the job and produced no image. The web vocabulary's
+    `provider_http_error` names a remote HTTP provider, which the image lane
+    reaches none of.
+    """
+
+    status = "service_refused"
+
+
+class ServiceUnavailable(web_server.ToolError):
+    """The image service took no job: the socket, the write, or the read failed.
+
+    The trail separates this from a refusal because the remedies differ: an
+    unreachable or silent service is a launch state, where a refusal is a
+    policy or a runtime outcome the operator reads in the service's own log.
+    """
+
+    status = "service_unavailable"
 
 
 def resolve_timeout(raw):
@@ -263,6 +281,13 @@ def service_request(settings, arguments, request_id):
     `authorization`: this child verified it and spent its single use, and the
     service revalidates against the same key file, so neither side takes the
     other's word for what a human approved.
+
+    Two schemas spell the shape differently and each keeps its own spelling.
+    The grant binds the reduced ratio `image_grant.canonical_aspect` produces,
+    which is what the approval displayed; the job line carries the protocol's
+    coarse label, which the frame requires to agree with the dimensions beside
+    it. Both are derived from the same width and height, so the two readings
+    cannot diverge.
     """
     return {
         "protocol_version": SERVICE_PROTOCOL_VERSION,
@@ -272,14 +297,19 @@ def service_request(settings, arguments, request_id):
         "prompt": arguments["prompt"],
         "negative_prompt": arguments["negative_prompt"],
         "seed": arguments["seed"],
-        "aspect": image_grant.canonical_aspect(
-            arguments["width"], arguments["height"]
-        ),
+        "aspect": protocol_aspect(arguments["width"], arguments["height"]),
         "width": arguments["width"],
         "height": arguments["height"],
         "steps": arguments["steps"],
         "authorization": arguments["authorization"],
     }
+
+
+def protocol_aspect(width, height):
+    """Return the label `image_protocol` admits for one geometry."""
+    if width == height:
+        return "square"
+    return "landscape" if width > height else "portrait"
 
 
 def connect_service(settings, timeout):
@@ -298,19 +328,27 @@ def connect_service(settings, timeout):
         connection.connect(settings["socket_path"])
     except (OSError, socket.timeout) as error:
         connection.close()
-        raise ServiceError(
+        raise ServiceUnavailable(
             f"the image service socket is unreachable: {error.__class__.__name__}"
         ) from None
     return connection
 
 
 def exchange(connection, payload, timeout):
-    """Write one job line and read one reply line inside the tool deadline."""
-    line = json.dumps(payload, allow_nan=False).encode("utf-8") + b"\n"
-    if len(line) > SERVICE_LINE_BYTE_CAP:
+    """Write one job line and read one reply line inside the tool deadline.
+
+    The job is validated against the frozen frame before it is encoded, so a
+    grant whose approved ceilings exceed the protocol's own -- `image_grant`
+    admits a 4096 pixel side and a 2**64 seed where the frame admits 2048 and
+    2**32 -- is refused here rather than sent for the service to refuse.
+    """
+    try:
+        image_protocol.validate_request(payload)
+        line = image_protocol.encode_line(payload).encode("utf-8")
+    except image_protocol.ProtocolError as breach:
         raise web_server.InvalidArgument(
-            f"the job line exceeds the {SERVICE_LINE_BYTE_CAP} byte cap"
-        )
+            f"the job leaves the image protocol: {breach}"
+        ) from None
     connection.settimeout(timeout)
     try:
         connection.sendall(line)
@@ -320,23 +358,22 @@ def exchange(connection, payload, timeout):
         stream = connection.makefile("rb")
         reply = stream.readline(SERVICE_LINE_BYTE_CAP + 1)
     except (OSError, socket.timeout) as error:
-        raise ServiceError(
+        raise ServiceUnavailable(
             "the image service answered no reply inside the "
             f"{timeout:g} second tool deadline: {error.__class__.__name__}"
         ) from None
     if not reply:
-        raise ServiceError("the image service closed the connection unanswered")
-    if len(reply) > SERVICE_LINE_BYTE_CAP:
-        raise ServiceError(
-            f"the image service reply exceeds the {SERVICE_LINE_BYTE_CAP} "
-            "byte cap"
+        raise ServiceUnavailable(
+            "the image service closed the connection unanswered"
         )
     try:
-        decoded = web_server.strict_json_loads(reply.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
-        raise ServiceError("the image service reply is not UTF-8 JSON") from None
+        decoded = image_protocol.decode_line(reply)
+    except image_protocol.ProtocolError:
+        raise ServiceRefused(
+            "the image service reply is not UTF-8 JSON inside the line bound"
+        ) from None
     if not isinstance(decoded, dict):
-        raise ServiceError("the image service reply is not an object")
+        raise ServiceRefused("the image service reply is not an object")
     return decoded
 
 
@@ -355,32 +392,21 @@ def clip_service_error(value):
 
 
 def require_provenance(reply):
-    """Return the digest and URL of a completed artifact.
+    """Return the digest and provenance route of a completed artifact.
 
-    The digest identifies the artifact and the URL locates it, so the two are
-    checked against each other: a URL naming another digest would hand the page
-    a location the transcript's identity does not describe. The host is a
-    loopback literal because the artifact route serves the machine that ran the
-    generation; the hash identifies the file and authenticates nothing, so the
-    route carries its own credential.
+    `image_protocol.validate_response` derives the route from the digest and
+    admits one spelling of it, so the identity in the transcript and the
+    location the page resolves are the same value read twice. The reply carries
+    no origin, so the page resolves the route against the artifact listener it
+    already holds a credential for.
     """
-    digest = reply.get("sha256")
-    if not isinstance(digest, str) or not SHA256_PATTERN.match(digest):
-        raise ServiceError("the completed reply carries no artifact SHA-256")
-    url = reply.get("provenance_url")
-    if not isinstance(url, str) or not 0 < len(url) <= PROVENANCE_URL_CHARACTER_CAP:
-        raise ServiceError("the completed reply carries no provenance URL")
-    parts = urllib.parse.urlsplit(url)
-    if parts.scheme != "http" or parts.hostname not in PROVENANCE_LOOPBACK_HOSTS:
-        raise ServiceError(
-            "the provenance URL names something other than the loopback "
-            "artifact route"
-        )
-    if not parts.path.endswith(f"/{digest}.png"):
-        raise ServiceError(
-            "the provenance URL names an artifact other than the reply digest"
-        )
-    return digest, url
+    try:
+        image_protocol.validate_response(reply, control_reply=True)
+    except image_protocol.ProtocolError as breach:
+        raise ServiceRefused(
+            f"the completed reply leaves the image protocol: {breach}"
+        ) from None
+    return reply["sha256"], reply["provenance_url"]
 
 
 def read_reply(reply, request_id):
@@ -392,30 +418,26 @@ def read_reply(reply, request_id):
     reaches the model as a failure rather than as an image that never arrived.
     A status outside the vocabulary is refused for the same reason a schema
     refuses an unknown argument -- an unrecognized term read as success is the
-    failure that matters.
+    failure that matters. A stopped generation carries `reason` as its fixed
+    term and `error` as its prose, and the model reads whichever the service
+    sent.
     """
     if reply.get("protocol_version") != SERVICE_PROTOCOL_VERSION:
-        raise ServiceError(
+        raise ServiceRefused(
             "the image service answered under another protocol version"
         )
     if reply.get("request_id") != request_id:
-        raise ServiceError("the image service reply names another request")
+        raise ServiceRefused("the image service reply names another request")
     status = reply.get("status")
     if status not in SERVICE_STATUSES:
         named = clip_service_error(status) if isinstance(status, str) else "none"
-        raise ServiceError(
+        raise ServiceRefused(
             f"the image service answered a status outside the protocol: {named}"
         )
     if status != SERVICE_TERMINAL_SUCCESS:
-        raise ServiceError(
+        raise ServiceRefused(
             f"the image service {status} the generation: "
-            + clip_service_error(reply.get("error"))
-        )
-    error = reply.get("error")
-    if isinstance(error, str) and error.strip():
-        raise ServiceError(
-            "the image service completed the generation and named an error: "
-            + clip_service_error(error)
+            + clip_service_error(reply.get("error") or reply.get("reason"))
         )
     return require_provenance(reply)
 

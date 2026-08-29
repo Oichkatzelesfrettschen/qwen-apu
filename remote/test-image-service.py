@@ -228,7 +228,7 @@ def generate_request(**overrides):
         "prompt": "a measured raven",
         "negative_prompt": "blurry",
         "seed": 4242,
-        "aspect": "1:1",
+        "aspect": "square",
         "width": 64,
         "height": 64,
         "steps": 1,
@@ -266,7 +266,11 @@ class ImageServiceTest(unittest.TestCase):
         self.assertEqual(response["status"], "completed", response)
         self.assertEqual(response["protocol_version"], 1)
         self.assertEqual(response["request_id"], "req-0001")
-        self.assertIsNone(response["error"])
+        self.assertNotIn(
+            "error",
+            response,
+            "a completed reply omits the key rather than nulling it",
+        )
         digest = response["sha256"]
         artifact = os.path.join(session.artifact_directory(), f"{digest}.png")
         with open(artifact, "rb") as handle:
@@ -276,10 +280,11 @@ class ImageServiceTest(unittest.TestCase):
             digest,
             "the artifact name is the digest of the artifact's own bytes",
         )
-        self.assertEqual(
-            response["provenance_url"],
-            f"http://127.0.0.1:{session.http_port}/artifacts/{digest}.json",
-        )
+        # The digest names the artifact, so both routes are derived from it and
+        # the reply carries no origin: image_protocol admits exactly this one
+        # spelling of a provenance URL.
+        self.assertEqual(response["provenance_url"], f"/artifacts/{digest}.json")
+        self.assertEqual(response["artifact_url"], f"/artifacts/{digest}.png")
         self.assertEqual(
             [name for name in os.listdir(session.artifact_directory())
              if name.endswith(".part")],
@@ -302,6 +307,9 @@ class ImageServiceTest(unittest.TestCase):
         self.assertEqual(record["seed"], 4242)
         self.assertEqual(record["width"], 64)
         self.assertEqual(record["height"], 64)
+        # The wire names the shape by label and the record names it as a
+        # reduced ratio, which is the more informative of the two where the
+        # record is read on its own.
         self.assertEqual(record["aspect"], "1:1")
         self.assertEqual(record["profile_id"], "sdxs-512-a")
         self.assertEqual(record["exit_status"], 0)
@@ -405,7 +413,7 @@ class ImageServiceTest(unittest.TestCase):
         worker.start()
         self.wait_for_running(session)
         cancel = session.control(
-            {"protocol_version": 1, "request_id": "req-cancel", "action": "cancel"}
+            {"protocol_version": 1, "request_id": "req-0001", "action": "cancel"}
         )
         self.assertEqual(cancel["status"], "accepted", cancel)
         worker.join(timeout=30)
@@ -425,6 +433,41 @@ class ImageServiceTest(unittest.TestCase):
         )
         self.assertEqual(response["status"], "refused")
         self.assertEqual(response["reason"], "not_running")
+
+    def test_cancel_naming_another_job_is_refused(self):
+        """A cancel reaches the generation it names and no other.
+
+        The protocol frame gives a cancel one identifier, so the running job's
+        own request_id is the target; a cancel carrying any other identifier
+        answers not_running and the generation it did not name completes.
+        """
+        session = self.start(
+            runtime_environment={"QWEN_FAKE_IMAGE_SLEEP_SECONDS": "5"}
+        )
+        result = {}
+
+        def run_generate():
+            result["response"] = session.control(generate_request())
+
+        import threading
+
+        worker = threading.Thread(target=run_generate)
+        worker.start()
+        try:
+            status = self.wait_for_running(session)
+            self.assertEqual(status["job_request_id"], "req-0001")
+            response = session.control(
+                {
+                    "protocol_version": 1,
+                    "request_id": "req-elsewhere",
+                    "action": "cancel",
+                }
+            )
+            self.assertEqual(response["status"], "refused", response)
+            self.assertEqual(response["reason"], "not_running")
+        finally:
+            worker.join(timeout=60)
+        self.assertEqual(result["response"]["status"], "completed", result)
 
     def test_second_generate_is_refused_while_one_runs(self):
         """One Vulkan workload at a time, with no queue behind it."""

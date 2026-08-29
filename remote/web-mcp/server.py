@@ -276,6 +276,12 @@ AUDIT_PROVENANCE_COLUMNS = (
     ("usable_results", "INTEGER"),
 )
 
+# The trail is one table across the tools this ledger serves, so the vocabulary
+# names every failure any of them records. `service_refused` and
+# `service_unavailable` belong to the image lane, whose executor is a local
+# Unix-socket service rather than an HTTP provider: a service that answers and
+# declines the job is a refusal, and a socket that takes no job at all is a
+# launch state, which `provider_http_error` would report as one remote fault.
 AUDIT_STATUSES = (
     "success",
     "authorization_denied",
@@ -285,6 +291,8 @@ AUDIT_STATUSES = (
     "provider_http_error",
     "provider_content_error",
     "expired_result",
+    "service_refused",
+    "service_unavailable",
     "internal_error",
 )
 
