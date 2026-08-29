@@ -305,13 +305,39 @@ section therefore carries all six keys, since an absent one falls through to the
 llama.cpp defaults of batch 2048 and ubatch 512, which is the quarantined
 geometry.
 
+A draft-pair section is the one preset section named for something other than a
+registry id. `build-router-presets.sh` emits it for a `production` or
+`candidate` row of `remote/draft-pairs.tsv` under the `pair_id`, carrying the
+target row's whole six-key tuple beside nine draft keys and tags
+`candidate,draft-pair`. Six of those keys carry a `set_env` at f280b269 and
+reach the INI as `LLAMA_ARG_SPEC_TYPE`, `LLAMA_ARG_SPEC_DRAFT_MODEL`,
+`LLAMA_ARG_SPEC_DRAFT_N_MAX`, `LLAMA_ARG_SPEC_DRAFT_P_MIN`,
+`LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K`, and `LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V`;
+draft layers breaks the pattern as `LLAMA_ARG_N_GPU_LAYERS_DRAFT`. The draft
+device and tensor override carry no env at all, and `get_map_key_opt` in
+`common/preset.cpp` indexes every option by its dash-stripped argument names
+beside its env names, so those two reach the INI as `spec-draft-device` and
+`spec-draft-override-tensor`; both are stated because
+`common_base_params_to_speculative` overwrites the draft's devices, layers, and
+tensor overrides with its own values and leaves the router argv's Vulkan0
+placement reaching the target alone. `qwen-capacity-policy.sh` resolves the
+section through the ledger to the target row, requires the six tuple keys to
+equal that row and the nine draft keys to equal the pair row, and refuses an
+ordinary section carrying any draft key, because a draft the ledger never
+admitted loads a second checkpoint no resident-set arithmetic counted.
+
 Router startup still selects the largest installed servable GGUF as the
 resident-memory preflight subject. The launcher copies the source preset to a
 unique active-session snapshot, reads every section's model path from that
 snapshot, and selects the largest installed artifact as the load-observation
 subject. Normal and research presets therefore use the exact set they can
 launch rather than separate registry enumerations. The launcher records the
-snapshot SHA-256 and forwards both path and digest across the tmux boundary.
+snapshot SHA-256 and forwards both path and digest across the tmux boundary. A
+draft-pair section counts as the sum of its two artifacts in that selection,
+since the draft is a second resident model rather than a second view of the
+target, and where that sum wins, `qwen-launch.sh` adds the draft's own
+mebibytes to `QWEN_REQUIRED_VULKAN_MIB` and reports both on its
+`router_preflight_subject=` and `router_preflight_requirement` lines.
 The capacity policy validates the current model and quarantine authorities and
 records their SHA-256 identities. After the Vulkan wrapper configures the final
 environment, `qwen-router-exec-guard.sh` remeasures the preset and both registry
@@ -490,6 +516,32 @@ Speculation follows role: a 2B target drafted by the 0.8B leads, a 4B target
 drafted by the 0.8B follows, the 2B's own prediction block at N=1 ranks beside
 the first, and the 0.8B as target takes n-gram or a smaller draft where one
 loads.
+
+The two leading pairings are second-tier serving options rather than experiment
+arms alone, and `remote/draft-pairs.tsv` carries them.
+`qwen38-2b-distill+qwen35-08b-draft` and `qwen38-4b-distill+qwen35-08b-draft`
+sit at `candidate` with `-` evidence, `build-router-presets.sh` gives each its
+own picker section, and `qwen-capacity-policy.sh` admits the section that names
+it, so the ordinary launch chain serves either. `model-registry.sh draft-pairs`
+and `draft-pair PAIR_ID [FIELD]` validate the whole ledger before either
+answers, the discipline `tuples` applies to the tuple ledger. The mechanism is
+`--spec-type draft-simple`: `tools/server/server-context.cpp` builds a second
+`common_params` through `common_base_params_to_speculative`, which copies the
+draft path, devices, layers, tensor overrides, and cache types over the
+target's, and `common_speculative_init_result` loads that path as its own model,
+so a pairing holds two checkpoints resident on one carve-out. The draft context
+is derived rather than configured -- the same constructor assigns
+`cparams.n_ctx = llama_n_ctx(ctx_tgt)` and no argument at f280b269 sets a draft
+depth -- so `draft_context` records the derived value and the preset emits no
+key for it. Both rows start at `spec_draft_n_max` 2, one column clear of the
+five-column occupancy step `evidence/mtp-speculation-matrix.md` measures, where
+its S4 and S6 arms decoded slower than no speculation at all.
+`remote/measure-draft-pair.sh PAIR_ID OUTPUT_DIR` runs the 2B pairing first and
+the 4B second, measures each against a same-session control of the target alone
+in the order control, pair, pair, control, refuses to start beside a server
+holding the device, and refuses a `quarantine` row outright.
+`evidence/draft-pairs/README.md` registers the falsifiers and the tokenizer
+finding the pairing rests on.
 
 Quality belongs to the learned checkpoint and throughput belongs to the
 execution class. Every checkpoint in `remote/models.tsv` -- stock, distill,
@@ -844,6 +896,20 @@ binary answers `403 feature_disabled` for every ordinary model: the route is
 in the binary and the tool set belongs to the section.
 `evidence/web-admission-router-tools.md` records the run on that closure.
 
+`patches/llama-vulkan-view-alias-deps.patch` is the seventh member of the
+production series. `ggml_vk_graph_optimize` at the pinned commit compares
+view bases rather than the underlying tensor when it decides which nodes may
+reorder, so two views of one buffer read as independent and a write moves past
+a read. On the appliance the production build answered the same prompt with
+different token arrays four requests into one process at temperature 0 on
+five of six prompts, the first difference inside fourteen tokens, while the
+optimizer-off arm and the patched arm were identical on every self-consistency
+comparison; `evidence/vulkan-view-alias/ab-2b/` retains the run. A source tree
+the promoted build compiles from must carry every series member: the
+appliance's tree was one patch behind the verifier's list before this
+promotion, which the digest line in the promote chain now catches before a
+build.
+
 ## Commands
 
 ```sh
@@ -879,6 +945,9 @@ remote/regrade-quality-roster.py RECORD...     # a grader change over retained r
 remote/sample-gpu-clocks.sh OUT_TSV [SECONDS]  # the DPM step a rate ran at
 remote/measure-dpm-force.sh MODEL [OUT]         # auto against global high governor
 remote/model-registry.sh id|path SELECTOR [FIELD]
+remote/model-registry.sh draft-pairs | draft-pair PAIR_ID [FIELD]
+remote/measure-draft-pair.sh PAIR_ID OUTPUT_DIR
+                                                # one pairing against its own control, ABBA
 remote/build-router-presets.sh [OUTPUT_INI]    # the picker, from the tier field
 remote/build-web-presets.sh OUTPUT_INI         # web profiles, from the execution_policy field
 remote/fetch-candidate-artifact.sh REPO REV FILE DIR  # observed, not pinned
@@ -941,6 +1010,7 @@ remote/test-qwen-runtime-guards.sh
 remote/test-radv-low-priority-env.sh
 remote/test-model-registry.sh
 remote/test-model-tiers.sh
+remote/test-measure-draft-pair.sh
 remote/test-probe-depth-projector.sh
 remote/test-web-presets.sh
 remote/test-qwen-web-launch.sh
