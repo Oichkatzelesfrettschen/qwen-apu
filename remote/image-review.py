@@ -37,6 +37,21 @@ instruction says so, the schema gives that text no place to steer anything, and
 counts, booleans, and a digest of the delta, so a log reader sees what happened
 without reading what an image told the model to write.
 
+`--image-mode` turns one review into a causal check. `real` sends the
+artifact the caller named. `withheld` keeps the multipart text part and drops
+the image part, which is the image-withheld control
+`remote/run-quality-suite.py` already applies to its graded vision rows: image
+presence is the single changed request dimension, so a verdict that survives it
+reports the model answering from the constraint text rather than from the
+pixels. `swapped` sends a second artifact's bytes in place of the reviewed one
+and leaves the prompt hash, the constraints, the model, the temperature, the
+reply budget, the thinking setting, and the absent `tools` key alone, so an
+observation that still describes the reviewed artifact reports the same thing.
+Both control modes read the reviewed artifact over its own route and hash it
+against the digest the caller named, so `bad_digest`, `artifact_http_error`,
+`artifact_too_large`, and `artifact_digest_mismatch` refuse a control arm the
+way they refuse a real one.
+
 Regeneration is admitted rather than obeyed. `correction_admitted` requires the
 reply to fail at least one named constraint, to set `regenerate`, and to carry a
 non-empty `prompt_delta`; a reply that asks to regenerate with every constraint
@@ -73,6 +88,7 @@ MAX_CONSTRAINTS = 8
 OBSERVATION_MAX_CHARS = 300
 PROMPT_DELTA_MAX_CHARS = 200
 CONSTRAINT_DESCRIPTION_MAX_CHARS = 200
+IMAGE_MODES = ("real", "withheld", "swapped")
 
 
 class ReviewRefused(Exception):
@@ -181,6 +197,21 @@ def image_data_uri(png_bytes):
             "image_url": {"url": "data:image/png;base64," + encoded}}
 
 
+def build_request_content(prompt_text, png_bytes):
+    """Return the user content one review sends under any image mode.
+
+    The text part leads and the content stays a list whether or not an image
+    part follows, so a withheld arm changes image presence alone.
+    `build_request_content` in remote/run-quality-suite.py holds the multipart
+    shape for the same reason: a bare string moves the request's structure
+    beside its pixels, and the control would report two changes at once.
+    """
+    parts = [{"type": "text", "text": prompt_text}]
+    if png_bytes is not None:
+        parts.append(image_data_uri(png_bytes))
+    return parts
+
+
 def build_verdict_schema(constraints):
     """Return the JSON schema a review reply is bound to.
 
@@ -240,8 +271,25 @@ def build_verdict_schema(constraints):
     }
 
 
-def build_review_request(model, png_bytes, prompt_hash, constraints):
+def build_review_request(model, png_bytes, prompt_hash, constraints,
+                         cache_prompt=True):
     """Build the chat request one review posts.
+
+    `png_bytes` carries the image mode: the artifact's own bytes for a real
+    review, a second artifact's bytes for a swapped one, and `None` for a
+    withheld one, where the multipart text part remains and the image part is
+    the single field that leaves. Every other field below reads the same under
+    all three modes, which is what makes the two control arms comparable with
+    the real one.
+
+    `cache_prompt` states what the server does with the prefix this request
+    shares with the last one. A control run sends `False` on every arm, because
+    the four arms differ in their image part alone and the text part ahead of it
+    is identical: a warm prefix would leave arm 2's prefill nearly free whatever
+    the image tokens cost, and this tree measures a warm prefix moving an answer
+    rather than only its timing -- `arith-05` answers 37 cold and 23 warm at the
+    same `prompt_n`. A single review keeps the server's own default, which is
+    what a page-driven review sends.
 
     `tools` is absent rather than empty: the request offers no executable
     surface at all, which is what makes the reply a description of an image and
@@ -255,16 +303,15 @@ def build_review_request(model, png_bytes, prompt_hash, constraints):
         "model": model,
         "messages": [
             {"role": "system", "content": system_instruction(constraints)},
-            {"role": "user", "content": [
-                {"type": "text", "text": review_prompt(prompt_hash, constraints)},
-                image_data_uri(png_bytes),
-            ]},
+            {"role": "user", "content": build_request_content(
+                review_prompt(prompt_hash, constraints), png_bytes)},
         ],
         "max_tokens": REVIEW_MAX_TOKENS,
         "temperature": 0,
         "top_k": 1,
         "seed": 1,
         "stream": False,
+        "cache_prompt": cache_prompt,
         "chat_template_kwargs": {"enable_thinking": False},
         "response_format": {
             "type": "json_schema",
@@ -455,7 +502,8 @@ def correction_admitted(verdict):
 
 
 def audit_line(model, digest, prompt_hash, constraint_names, verdict=None,
-               wall_seconds=0.0, reasoning_emitted=False, refusal_code=None):
+               wall_seconds=0.0, reasoning_emitted=False, refusal_code=None,
+               image_mode="real", swap_digest=None):
     """Return one line of what happened, free of every image-derived string.
 
     `observation` and `prompt_delta` are text a model wrote after reading an
@@ -463,7 +511,9 @@ def audit_line(model, digest, prompt_hash, constraint_names, verdict=None,
     the delta's length and digest instead of the delta. `schema_mode` names
     the constraint mechanism the request carried; this module sends exactly
     one, `response_format`, so the field is a constant here rather than a
-    per-call choice.
+    per-call choice. `image_mode` states which image the request carried, and
+    a refused arm carries it too: a control arm that refuses is the row a
+    reader most needs labelled.
     """
     fields = [
         "image_review",
@@ -472,6 +522,8 @@ def audit_line(model, digest, prompt_hash, constraint_names, verdict=None,
         f"prompt_hash={prompt_hash}",
         f"constraints={len(constraint_names)}",
         "schema_mode=response_format",
+        f"image_mode={image_mode}",
+        "swap_sha256=" + (swap_digest if swap_digest else "-"),
         f"wall_seconds={wall_seconds:.2f}",
         f"reasoning_emitted={'yes' if reasoning_emitted else 'no'}",
     ]
@@ -495,19 +547,65 @@ def audit_line(model, digest, prompt_hash, constraint_names, verdict=None,
 
 
 def review_artifact(router_origin, artifact_origin, api_key, model, digest,
-                    prompt_hash, constraints, timeout=REVIEW_TIMEOUT_SECONDS):
+                    prompt_hash, constraints, timeout=REVIEW_TIMEOUT_SECONDS,
+                    image_mode="real", swap_digest=None, cache_prompt=True):
     """Run one review end to end and return what a caller acts on.
 
     The returned record holds the verdict, the failed names, the correction
     decision with its reason, and the audit line, so a caller renders a
     checklist and logs a line from one call rather than from four.
+
+    The reviewed artifact is read and hashed under all three image modes, so a
+    control arm meets `artifact_digest_mismatch` and the rest of
+    `fetch_artifact_png`'s refusals the way a real arm does and the record's
+    `artifact_sha256` stays a verified claim rather than a caller's string. A
+    swapped arm reads the swap artifact over the same route and sends its bytes
+    in place of the reviewed ones, and a failure of that read carries a
+    `swap_`-prefixed code so a listener fault is told from a model one. Both
+    reads sit ahead of the wall clock, which starts at the request; `timeout`
+    bounds each operation rather than the call, so a swapped review spends it
+    three times over in the worst case against a real review's twice.
     """
     if not DIGEST_PATTERN.match(prompt_hash):
         raise ReviewRefused(
             "bad_prompt_hash", "a prompt hash is 64 lowercase hex digits")
+    if image_mode not in IMAGE_MODES:
+        raise ReviewRefused(
+            "bad_image_mode", "an image mode is one of " + ", ".join(IMAGE_MODES))
+    if image_mode == "swapped":
+        if not swap_digest:
+            raise ReviewRefused(
+                "swap_digest_absent", "a swapped review names a swap artifact")
+        if swap_digest == digest:
+            raise ReviewRefused(
+                "swap_digest_equal",
+                "a swapped review names an artifact other than the reviewed one")
+    elif swap_digest:
+        raise ReviewRefused(
+            "swap_digest_unused",
+            f"a {image_mode} review names no swap artifact")
     names = [name for name, _description in constraints]
-    png_bytes = fetch_artifact_png(artifact_origin, digest, api_key, timeout)
-    payload = build_review_request(model, png_bytes, prompt_hash, constraints)
+    reviewed_bytes = fetch_artifact_png(artifact_origin, digest, api_key, timeout)
+    if image_mode == "withheld":
+        sent_bytes = None
+    elif image_mode == "swapped":
+        # A listener that serves the reviewed artifact and refuses the swap one
+        # is a fact about the listener. Reporting it under the reviewed
+        # artifact's own refusal codes would read as the swapped arm refusing
+        # where the real arm parsed, which is the observation falsifier 4 of
+        # evidence/image-appliance/vision-review-control-design.md reserves for
+        # the model.
+        try:
+            sent_bytes = fetch_artifact_png(artifact_origin, swap_digest, api_key, timeout)
+        except ReviewRefused as refusal:
+            raise ReviewRefused(
+                "swap_" + refusal.code,
+                f"the swap artifact {swap_digest} failed its read: "
+                f"{refusal.message}") from refusal
+    else:
+        sent_bytes = reviewed_bytes
+    payload = build_review_request(model, sent_bytes, prompt_hash, constraints,
+                                   cache_prompt=cache_prompt)
     started = time.monotonic()
     document = post_review(router_origin, api_key, payload, timeout)
     wall_seconds = time.monotonic() - started
@@ -525,13 +623,16 @@ def review_artifact(router_origin, artifact_origin, api_key, model, digest,
     except ReviewRefused as refusal:
         refusal.audit = audit_line(
             model, digest, prompt_hash, names, wall_seconds=wall_seconds,
-            reasoning_emitted=reasoning_emitted, refusal_code=refusal.code)
+            reasoning_emitted=reasoning_emitted, refusal_code=refusal.code,
+            image_mode=image_mode, swap_digest=swap_digest)
         refusal.raw_reply = raw_reply
         raise
     admitted, reason = correction_admitted(verdict)
     return {
         "model": model,
         "artifact_sha256": digest,
+        "image_mode": image_mode,
+        "swap_sha256": swap_digest,
         "prompt_hash": prompt_hash,
         "verdict": verdict,
         "raw_reply": raw_reply,
@@ -542,7 +643,8 @@ def review_artifact(router_origin, artifact_origin, api_key, model, digest,
         "wall_seconds": wall_seconds,
         "audit": audit_line(model, digest, prompt_hash, names, verdict=verdict,
                             wall_seconds=wall_seconds,
-                            reasoning_emitted=reasoning_emitted),
+                            reasoning_emitted=reasoning_emitted,
+                            image_mode=image_mode, swap_digest=swap_digest),
     }
 
 
@@ -588,12 +690,36 @@ def main(argv):
                         help="SHA-256 of the generation prompt the grant bound")
     parser.add_argument("--constraint", action="append", default=[], metavar="NAME=DESCRIPTION",
                         help="one hard constraint, repeatable")
+    parser.add_argument("--image-mode", default="real", choices=IMAGE_MODES,
+                        help="real sends the reviewed artifact, withheld drops the "
+                             "image part, swapped sends --swap-sha256 in its place")
+    parser.add_argument("--swap-sha256", default="",
+                        help="the artifact a swapped review sends instead")
     parser.add_argument("--api-key-file", default="",
                         help="file holding the bearer credential; QWEN_API_KEY otherwise")
-    parser.add_argument("--timeout", type=float, default=REVIEW_TIMEOUT_SECONDS)
+    parser.add_argument("--timeout", type=float, default=REVIEW_TIMEOUT_SECONDS,
+                        help="deadline for each artifact read and for the request")
+    parser.add_argument("--no-prompt-cache", action="store_true",
+                        help="send cache_prompt false, which a control run does so a "
+                             "warm prefix carried from an earlier arm changes nothing")
     parser.add_argument("--verdict-json", default="",
                         help="write the verdict record to this path")
     arguments = parser.parse_args(argv)
+
+    # A swap digest and the swapped mode name each other, so either alone is an
+    # argument error rather than a silently ignored field. A swap digest equal
+    # to the reviewed one is a real arm wearing a control's label, which the
+    # summary would report as a control that proved nothing.
+    if arguments.image_mode == "swapped":
+        if not arguments.swap_sha256:
+            parser.error("--image-mode swapped requires --swap-sha256")
+        if not DIGEST_PATTERN.match(arguments.swap_sha256):
+            parser.error("--swap-sha256 is 64 lowercase hex digits")
+        if arguments.swap_sha256 == arguments.sha256:
+            parser.error("--swap-sha256 names the artifact under review")
+    elif arguments.swap_sha256:
+        parser.error(f"--swap-sha256 states a swap an --image-mode "
+                     f"{arguments.image_mode} review does not send")
 
     constraints = validate_constraints(
         [parse_constraint(value) for value in arguments.constraint])
@@ -602,11 +728,16 @@ def main(argv):
         record = review_artifact(
             arguments.router_origin, arguments.artifact_origin, api_key,
             arguments.model, arguments.sha256, arguments.prompt_hash,
-            constraints, timeout=arguments.timeout)
+            constraints, timeout=arguments.timeout,
+            image_mode=arguments.image_mode,
+            swap_digest=arguments.swap_sha256 or None,
+            cache_prompt=not arguments.no_prompt_cache)
     except ReviewRefused as refusal:
         line = getattr(refusal, "audit", None) or audit_line(
             arguments.model, arguments.sha256, arguments.prompt_hash,
-            [name for name, _description in constraints], refusal_code=refusal.code)
+            [name for name, _description in constraints], refusal_code=refusal.code,
+            image_mode=arguments.image_mode,
+            swap_digest=arguments.swap_sha256 or None)
         sys.stdout.write(line + "\n")
         sys.stderr.write(f"image-review refused: {refusal.message}\n")
         raw_reply = getattr(refusal, "raw_reply", None)

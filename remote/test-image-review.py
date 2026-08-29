@@ -8,17 +8,28 @@ than describing it: a request carrying a `tools` key at all is answered with a
 reply proposing a tool call, so the arm that would break the zero-tool rule
 fails through the parser instead of passing unnoticed.
 
+The control arms run here too: `--image-mode withheld` is read from the request
+the stub recorded rather than from the module's own report, `--image-mode
+swapped` is read from the base64 the second artifact's bytes encode to, and
+`remote/run-vision-review-control.sh` drives all four arms through this same
+stub, so the arm order is proved by the image-part counts of four recorded
+requests.
+
 Exit status is non-zero on any failed assertion, and the passing arms print what
 they proved.
 """
 
 import base64
+import csv
 import hashlib
 import http.server
 import importlib.util
 import json
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 import threading
 
 THIS_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
@@ -32,7 +43,13 @@ ONE_PIXEL_PNG = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk"
     "+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
+# A second artifact the swapped control sends in place of the reviewed one.
+SWAP_PIXEL_PNG = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMB"
+    "AQDJ/pLvAAAAAElFTkSuQmCC"
+)
 ARTIFACT_SHA256 = hashlib.sha256(ONE_PIXEL_PNG).hexdigest()
+SWAP_SHA256 = hashlib.sha256(SWAP_PIXEL_PNG).hexdigest()
 PROMPT_HASH = hashlib.sha256(b"a fox in a snowy field").hexdigest()
 API_KEY = "test-review-key"
 VISION_MODEL = "lfm25-vl-16b"
@@ -76,14 +93,18 @@ def verdict_text(verdict):
     return json.dumps(verdict)
 
 
-def make_handler(state, reply, artifact_bytes=ONE_PIXEL_PNG, artifact_digest=None):
+def make_handler(state, reply, artifact_bytes=ONE_PIXEL_PNG, artifact_digest=None,
+                 artifacts=None):
     """Play the artifact listener and the router for one arm.
 
     `reply` is either the assistant message dictionary the router answers with
     or a callable taking the request body, so an arm states the one reply shape
-    it exercises.
+    it exercises. `artifacts` maps a route digest onto the bytes served there,
+    which is what a swapped arm needs: two artifacts answer on one listener and
+    each route still returns whichever bytes the arm placed behind it.
     """
-    served_digest = artifact_digest or ARTIFACT_SHA256
+    served = dict(artifacts or {})
+    served.setdefault(artifact_digest or ARTIFACT_SHA256, artifact_bytes)
 
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -108,13 +129,14 @@ def make_handler(state, reply, artifact_bytes=ONE_PIXEL_PNG, artifact_digest=Non
                     state["unauthorized_reads"] += 1
                 self._send_json(401, {"error": "missing credential"})
                 return
-            if self.path == "/artifacts/{}.png".format(served_digest):
-                self.send_response(200)
-                self.send_header("Content-Type", "image/png")
-                self.send_header("Content-Length", str(len(artifact_bytes)))
-                self.end_headers()
-                self.wfile.write(artifact_bytes)
-                return
+            for route_digest, route_bytes in served.items():
+                if self.path == "/artifacts/{}.png".format(route_digest):
+                    self.send_response(200)
+                    self.send_header("Content-Type", "image/png")
+                    self.send_header("Content-Length", str(len(route_bytes)))
+                    self.end_headers()
+                    self.wfile.write(route_bytes)
+                    return
             self._send_json(404, {"error": "no such artifact"})
 
         def do_POST(self):  # noqa: N802 -- BaseHTTPRequestHandler names the verb
@@ -148,18 +170,20 @@ def serve(handler):
 
 
 def run_review(reply, constraints=None, artifact_bytes=ONE_PIXEL_PNG,
-               artifact_digest=None, digest=None, prompt_hash=PROMPT_HASH):
+               artifact_digest=None, digest=None, prompt_hash=PROMPT_HASH,
+               artifacts=None, image_mode="real", swap_digest=None):
     """Run one review against a stub answering `reply`, returning (record, error, state)."""
     state = {"lock": threading.Lock(), "chat_bodies": [], "unauthorized_reads": 0}
     server, thread, origin = serve(
         make_handler(state, reply, artifact_bytes=artifact_bytes,
-                     artifact_digest=artifact_digest))
+                     artifact_digest=artifact_digest, artifacts=artifacts))
     record = None
     refusal = None
     try:
         record = image_review.review_artifact(
             origin, origin, API_KEY, VISION_MODEL, digest or ARTIFACT_SHA256,
-            prompt_hash, constraints or CONSTRAINTS, timeout=30)
+            prompt_hash, constraints or CONSTRAINTS, timeout=30,
+            image_mode=image_mode, swap_digest=swap_digest)
     except image_review.ReviewRefused as error:
         refusal = error
     finally:
@@ -467,12 +491,256 @@ def test_the_artifact_read_carries_the_credential():
     return failures, ["artifact_credential=required"]
 
 
+BOTH_ARTIFACTS = {ARTIFACT_SHA256: ONE_PIXEL_PNG, SWAP_SHA256: SWAP_PIXEL_PNG}
+
+
+def user_content(body):
+    return body["messages"][1]["content"]
+
+
+def test_withheld_control_drops_the_image_part_alone():
+    """The withheld arm keeps the multipart text part and sends no image part.
+
+    Image presence is the single changed request dimension, so the content stays
+    a list and every other field of the request reads the same as the real arm's.
+    """
+    record, refusal, state = run_review(
+        message_with(verdict_text(PASSING_VERDICT)), image_mode="withheld")
+    failures = []
+    if refusal is not None:
+        failures.append("the withheld arm was refused: " + refusal.code)
+        return failures, []
+    body = state["chat_bodies"][0]
+    content = user_content(body)
+    if not isinstance(content, list):
+        failures.append("the withheld arm collapsed the content to " + repr(type(content)))
+        return failures, []
+    if [part.get("type") for part in content] != ["text"]:
+        failures.append("the withheld arm sent parts " + repr(
+            [part.get("type") for part in content]))
+    if PROMPT_HASH not in content[0]["text"]:
+        failures.append("the withheld arm dropped the prompt hash with the image")
+    if "tools" in body:
+        failures.append("the withheld arm carried a tools key")
+    if body.get("max_tokens") != 400 or body.get("temperature") != 0:
+        failures.append("the withheld arm moved the reply budget or the temperature")
+    if (body.get("chat_template_kwargs") or {}).get("enable_thinking") is not False:
+        failures.append("the withheld arm did not turn thinking off")
+    if record["image_mode"] != "withheld":
+        failures.append("the record names image mode " + repr(record["image_mode"]))
+    if "image_mode=withheld" not in record["audit"]:
+        failures.append("the audit line does not name the image mode: " + record["audit"])
+    if "swap_sha256=-" not in record["audit"]:
+        failures.append("the withheld audit line names a swap artifact: " + record["audit"])
+    return failures, ["withheld_control=" + record["audit"]]
+
+
+def test_withheld_control_still_reads_the_reviewed_artifact():
+    """A control arm meets `fetch_artifact_png`'s refusals the way a real arm does.
+
+    The withheld request sends no pixels and the reviewed artifact is still read
+    and hashed, so `artifact_sha256` stays a verified claim and a listener
+    answering other bytes refuses the control rather than passing it.
+    """
+    return refusal_arm(
+        "withheld_digest_mismatch", message_with(verdict_text(PASSING_VERDICT)),
+        "artifact_digest_mismatch", image_mode="withheld",
+        artifact_bytes=ONE_PIXEL_PNG + b"\x00", artifact_digest=ARTIFACT_SHA256)
+
+
+def test_swapped_control_sends_the_second_artifact():
+    record, refusal, state = run_review(
+        message_with(verdict_text(PASSING_VERDICT)), artifacts=BOTH_ARTIFACTS,
+        image_mode="swapped", swap_digest=SWAP_SHA256)
+    failures = []
+    if refusal is not None:
+        failures.append("the swapped arm was refused: " + refusal.code)
+        return failures, []
+    content = user_content(state["chat_bodies"][0])
+    image_parts = [part for part in content if part.get("type") == "image_url"]
+    if len(image_parts) != 1:
+        failures.append("the swapped arm sent {} image parts".format(len(image_parts)))
+        return failures, []
+    expected = "data:image/png;base64," + base64.b64encode(SWAP_PIXEL_PNG).decode("ascii")
+    if image_parts[0]["image_url"]["url"] != expected:
+        failures.append("the swapped arm sent bytes other than the swap artifact's")
+    if record["artifact_sha256"] != ARTIFACT_SHA256:
+        failures.append("the swapped record names artifact " + record["artifact_sha256"])
+    if record["swap_sha256"] != SWAP_SHA256:
+        failures.append("the swapped record names swap " + repr(record["swap_sha256"]))
+    if "image_mode=swapped" not in record["audit"]:
+        failures.append("the audit line does not name the image mode: " + record["audit"])
+    if "swap_sha256=" + SWAP_SHA256 not in record["audit"]:
+        failures.append("the audit line does not name the swap artifact: " + record["audit"])
+    return failures, ["swapped_control=" + record["audit"]]
+
+
+def test_a_failed_swap_read_names_the_swap_artifact():
+    """A listener serving A and refusing B refuses under a `swap_` code.
+
+    Falsifier 4 of the control design reserves "a control arm refused where the
+    real arm parsed" for the model, so a listener fault reaches the audit line
+    under a code that names which artifact failed its read.
+    """
+    _record, refusal, _state = run_review(
+        message_with(verdict_text(PASSING_VERDICT)),
+        artifacts={ARTIFACT_SHA256: ONE_PIXEL_PNG}, image_mode="swapped",
+        swap_digest=SWAP_SHA256)
+    failures = []
+    if refusal is None:
+        failures.append("an absent swap artifact was accepted")
+        return failures, []
+    if refusal.code != "swap_artifact_http_error":
+        failures.append("the absent swap artifact refused as " + refusal.code)
+    if SWAP_SHA256 not in refusal.message:
+        failures.append("the refusal does not name the swap artifact: " + refusal.message)
+    return failures, ["swap_read_failure=" + refusal.code]
+
+
+def test_prompt_cache_is_stated_by_the_caller():
+    """`cache_prompt` is a request field rather than the server's default.
+
+    A control run sends it false on every arm, because the four requests share
+    the text part ahead of the image part and a warm prefix moves an answer on
+    this backend rather than only its timing.
+    """
+    failures = []
+    default_payload = image_review.build_review_request(
+        VISION_MODEL, ONE_PIXEL_PNG, PROMPT_HASH, CONSTRAINTS)
+    if default_payload.get("cache_prompt") is not True:
+        failures.append("a single review does not keep the server's caching: "
+                        + repr(default_payload.get("cache_prompt")))
+    control_payload = image_review.build_review_request(
+        VISION_MODEL, ONE_PIXEL_PNG, PROMPT_HASH, CONSTRAINTS, cache_prompt=False)
+    if control_payload.get("cache_prompt") is not False:
+        failures.append("a control arm does not turn the prompt cache off")
+    return failures, ["prompt_cache=stated"]
+
+
+def test_image_mode_argument_refusals():
+    """`--image-mode swapped` and `--swap-sha256` name each other, or argparse exits 2."""
+    base = ["--router-origin", "http://127.0.0.1:1", "--artifact-origin",
+            "http://127.0.0.1:1", "--model", VISION_MODEL, "--sha256", ARTIFACT_SHA256,
+            "--prompt-hash", PROMPT_HASH, "--constraint", "subject_count=one fox"]
+    arms = [
+        ("swapped_without_swap_digest", base + ["--image-mode", "swapped"]),
+        ("swap_digest_without_swapped_mode", base + ["--swap-sha256", SWAP_SHA256]),
+        ("swap_digest_equals_reviewed",
+         base + ["--image-mode", "swapped", "--swap-sha256", ARTIFACT_SHA256]),
+        ("swap_digest_malformed",
+         base + ["--image-mode", "swapped", "--swap-sha256", "not-a-digest"]),
+        ("image_mode_unknown", base + ["--image-mode", "shuffled"]),
+    ]
+    failures = []
+    lines = []
+    stderr = sys.stderr
+    for label, argv in arms:
+        sys.stderr = open(os.devnull, "w")
+        try:
+            image_review.main(argv)
+            failures.append(label + " was admitted rather than refused")
+        except SystemExit as exit_status:
+            if exit_status.code != 2:
+                failures.append("{} exited {} rather than 2".format(label, exit_status.code))
+            else:
+                lines.append(label + "=exit_2")
+        finally:
+            sys.stderr.close()
+            sys.stderr = stderr
+    return failures, lines
+
+
+def test_control_runner_drives_the_four_arms():
+    """`remote/run-vision-review-control.sh` runs real, withheld, swapped, real.
+
+    The stub records every chat body, so the arm order is read from the image
+    part counts the four requests carried rather than from the script's own
+    report.
+    """
+    state = {"lock": threading.Lock(), "chat_bodies": [], "unauthorized_reads": 0}
+    server, thread, origin = serve(
+        make_handler(state, message_with(verdict_text(PASSING_VERDICT)),
+                     artifacts=BOTH_ARTIFACTS))
+    output_directory = tempfile.mkdtemp(prefix="vision-review-control-")
+    failures = []
+    lines = []
+    try:
+        completed = subprocess.run(
+            ["sh", os.path.join(THIS_DIRECTORY, "run-vision-review-control.sh"),
+             origin, origin, VISION_MODEL, ARTIFACT_SHA256, SWAP_SHA256, PROMPT_HASH,
+             output_directory,
+             "--constraint", "subject_count=exactly one fox is visible",
+             "--constraint", "background_color=the background is snow, and reads white"],
+            env=dict(os.environ, QWEN_API_KEY=API_KEY),
+            capture_output=True, text=True, timeout=180)
+        if completed.returncode != 0:
+            failures.append("the runner exited {}: {}".format(
+                completed.returncode, completed.stderr.strip()))
+        image_part_counts = [
+            len([part for part in user_content(body) if part.get("type") == "image_url"])
+            for body in state["chat_bodies"]]
+        if image_part_counts != [1, 0, 1, 1]:
+            failures.append("the arm image part counts are " + repr(image_part_counts))
+        if len(state["chat_bodies"]) == 4:
+            swapped_url = [part for part in user_content(state["chat_bodies"][2])
+                           if part.get("type") == "image_url"][0]["image_url"]["url"]
+            expected = "data:image/png;base64," + base64.b64encode(
+                SWAP_PIXEL_PNG).decode("ascii")
+            if swapped_url != expected:
+                failures.append("the swapped arm did not send the swap artifact's bytes")
+        with open(os.path.join(output_directory, "summary.tsv")) as handle:
+            rows = list(csv.DictReader(handle, delimiter="\t"))
+        if [row["arm"] for row in rows] != ["01-real", "02-withheld", "03-swapped",
+                                            "04-real-closing"]:
+            failures.append("the summary names arms " + repr([row["arm"] for row in rows]))
+        if any(body.get("cache_prompt") is not False for body in state["chat_bodies"]):
+            failures.append("an arm left the prompt cache on: " + repr(
+                [body.get("cache_prompt") for body in state["chat_bodies"]]))
+        if [row["image_mode"] for row in rows] != ["real", "withheld", "swapped", "real"]:
+            failures.append("the summary names modes " + repr(
+                [row["image_mode"] for row in rows]))
+        if any(row["passed"] != "2" for row in rows):
+            failures.append("a summary row reports passed " + repr(
+                [row["passed"] for row in rows]))
+        if any(row["regenerate"] != "no" for row in rows):
+            failures.append("a summary row reports regenerate " + repr(
+                [row["regenerate"] for row in rows]))
+        if len(rows) != 4:
+            failures.append("the summary holds {} arm rows".format(len(rows)))
+        elif rows[2]["swap_sha256"] != SWAP_SHA256:
+            failures.append("the swapped summary row names swap " + rows[2]["swap_sha256"])
+        for row in rows:
+            if row["exit_status"] != "0":
+                failures.append("arm {} exited {}".format(row["arm"], row["exit_status"]))
+        for arm in ("01-real", "02-withheld", "03-swapped", "04-real-closing"):
+            verdict_path = os.path.join(output_directory, arm + ".verdict.json")
+            if not os.path.exists(verdict_path):
+                failures.append("arm {} wrote no verdict record".format(arm))
+                continue
+            with open(verdict_path) as handle:
+                verdict_record = json.load(handle)
+            if verdict_record["verdict"] != PASSING_VERDICT:
+                failures.append("arm {} retained another verdict".format(arm))
+        with open(os.path.join(output_directory, "audit.log")) as handle:
+            audit_text = handle.read()
+        if audit_text.count("status=ok") != 4:
+            failures.append("the audit log holds " + repr(audit_text))
+        lines.append("control_runner=four_arms")
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        shutil.rmtree(output_directory, ignore_errors=True)
+    return failures, lines
+
+
 def test_declared_bounds():
     failures = []
     if image_review.REVIEW_TIMEOUT_SECONDS != 300:
         failures.append("the review timeout is not 300 s")
     if image_review.REVIEW_MAX_TOKENS != 400:
         failures.append("the review reply budget is not 400 tokens")
+    if image_review.IMAGE_MODES != ("real", "withheld", "swapped"):
+        failures.append("the image modes are " + repr(image_review.IMAGE_MODES))
     try:
         image_review.validate_constraints([])
         failures.append("a review with no declared constraint was admitted")
@@ -486,7 +754,7 @@ def test_declared_bounds():
     name, description = image_review.parse_constraint("subject_count=exactly one fox")
     if (name, description) != ("subject_count", "exactly one fox"):
         failures.append("a constraint declaration parsed to " + repr((name, description)))
-    return failures, ["declared_bounds=timeout_300s,max_tokens_400"]
+    return failures, ["declared_bounds=timeout_300s,max_tokens_400,image_modes_3"]
 
 
 def main():
@@ -496,6 +764,13 @@ def main():
         ("regenerate_verdict", test_regenerate_verdict_admits_one_correction),
         ("regenerate_without_failure", test_regenerate_without_a_named_failure_is_not_admitted),
         ("refusals", test_refusals),
+        ("withheld_control", test_withheld_control_drops_the_image_part_alone),
+        ("withheld_artifact_read", test_withheld_control_still_reads_the_reviewed_artifact),
+        ("swapped_control", test_swapped_control_sends_the_second_artifact),
+        ("swap_read_failure", test_a_failed_swap_read_names_the_swap_artifact),
+        ("prompt_cache", test_prompt_cache_is_stated_by_the_caller),
+        ("image_mode_arguments", test_image_mode_argument_refusals),
+        ("control_runner", test_control_runner_drives_the_four_arms),
         ("raw_reply_on_refusal", test_raw_reply_retained_on_refusal),
         ("tools_key", test_a_tools_key_is_refused_through_the_reply),
         ("artifact_credential", test_the_artifact_read_carries_the_credential),
