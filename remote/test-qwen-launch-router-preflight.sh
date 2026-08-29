@@ -26,6 +26,12 @@ fixture_bin=$temporary_directory/bin
 mkdir -p "$fixture_remote" "$fixture_bin"
 cp "$script_directory/qwen-launch.sh" "$fixture_remote/qwen-launch.sh"
 cp "$script_directory/qwen-teardown.sh" "$fixture_remote/qwen-teardown.sh"
+# The teardown proves the image lane left no service, runtime, partial
+# artifact, or held Vulkan workload lease, and it reads that proof from its own
+# directory, so the fixture carries the prover beside it. A fixture without it
+# measures a teardown that reports an absent proof rather than a clean stop.
+cp "$script_directory/image-teardown-check.sh" \
+    "$fixture_remote/image-teardown-check.sh"
 
 cat >"$fixture_bin/pgrep" <<'PGREP'
 #!/bin/sh

@@ -204,7 +204,16 @@ if [ -n "$image_service_pid" ] && kill -0 "$image_service_pid" 2>/dev/null; then
     done
 fi
 image_residue=0
-if ! "$script_directory/image-teardown-check.sh" "$state_directory"; then
+image_residue_prover=$script_directory/image-teardown-check.sh
+if [ ! -x "$image_residue_prover" ]; then
+    # An absent proof is not a proof of absence, so this counts as residue and
+    # names the file rather than reaching the caller as a bare 127 from the
+    # command substitution below. `rsync -a remote/` deploys the directory
+    # whole, so a missing sibling states that the copy is partial.
+    printf 'the image residue proof is absent or not executable: %s\n' \
+        "$image_residue_prover" >&2
+    image_residue=1
+elif ! "$image_residue_prover" "$state_directory"; then
     image_residue=1
 fi
 
