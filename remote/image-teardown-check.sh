@@ -73,9 +73,14 @@ fi
 
 # A partial artifact is what an interrupted job leaves in the directory the
 # finished ones live in, so its presence states that a generation stopped
-# between the runtime write and the digest rename.
+# between the runtime write and the digest rename. image-service.py names the
+# file `.part.png`: the pinned runtime picks its encoder from the output
+# path's own extension and appends `.png` to an extensionless name itself, so
+# the partial name keeps a recognized extension. `*.part` is matched too for
+# an artifact directory a prior version wrote into.
 if [ -d "$artifact_directory" ]; then
-    partial_files=$(find "$artifact_directory" -maxdepth 1 -name '*.part' -print)
+    partial_files=$(find "$artifact_directory" -maxdepth 1 \
+        \( -name '*.part.png' -o -name '*.part' \) -print)
     if [ -n "$partial_files" ]; then
         printf 'partial artifacts survive:\n%s\n' "$partial_files" >&2
         residue=1
