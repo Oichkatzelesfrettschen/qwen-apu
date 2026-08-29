@@ -17,6 +17,16 @@
 # diffusion_artifact always resolves to a `diffusion` artifact, because the
 # denoising trunk is the one component no checkpoint packages inside another.
 #
+# vae_artifact resolves to either a `vae` or a `tae` component_type. sdxs-512
+# names sdxs-512-vae, whose artifact row now reads `tae`: the file is a Tiny
+# AutoEncoder rather than a full VAE, and stable-diffusion.cpp's own metadata
+# check refuses it under the full-VAE loading path
+# (evidence/image-appliance/sdxs-512-standalone/README.md, probe-forms). A
+# `tae` artifact reaches sd-cli through the runtime's own --taesd flag rather
+# than through the directory's vae/ slot the packaged and `vae` cases use, so
+# a launcher resolving this slot to a bundle argv branches on the artifact's
+# component_type to choose which flag carries the file.
+#
 # native_width and native_height are the resolution the publisher trained the
 # trunk at, and default_steps, default_sampler, and default_cfg are the
 # publisher's own sampling recipe. They describe the model rather than admit a

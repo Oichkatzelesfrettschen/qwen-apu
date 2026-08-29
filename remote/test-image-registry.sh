@@ -336,6 +336,36 @@ append_row "$work_directory/artifacts.tsv" \
     'bad-fetch\thf/repo\t-\tfile.safetensors\t-\t-\tmit\tdiffusion\tfetch_it_somehow'
 expect_refusal artifact_fetch_script_name
 
+# tae joins the component_type vocabulary as a second decoder shape: a Tiny
+# AutoEncoder reaches sd-cli through --taesd rather than through the vae/
+# directory slot a full vae uses, and the vae_artifact column accepts either.
+seed_copies
+append_row "$work_directory/artifacts.tsv" \
+    'standalone-tae\thf/repo\t-\ttae.safetensors\t-\t-\tmit\ttae\tdownload-standalone-tae.sh'
+expect_acceptance artifact_component_type_tae
+
+# The seeded sdxs-512 row already resolves its vae_artifact to a tae artifact
+# (sdxs-512-vae), so the bundle query is the acceptance proof: a vae slot
+# naming a tae component is admitted rather than refused as a type mismatch.
+seed_copies
+run_reader bundle sdxs-512
+if [ "$reader_status" -eq 0 ] &&
+   printf '%s\n' "$(cat "$work_directory/reader.out")" | grep -q '^vae	sdxs-512-vae	'; then
+    report bundle_vae_slot_resolves_tae accepted
+else
+    report bundle_vae_slot_resolves_tae rejected
+    cat "$work_directory/reader.out" >&2
+fi
+
+# A tae component stays confined to the vae slot: naming one in the lora slot
+# is still the wrong-type mistake component_slot exists to catch.
+seed_copies
+append_row "$work_directory/artifacts.tsv" \
+    'standalone-tae\thf/repo\t-\ttae.safetensors\t-\t-\tmit\ttae\tdownload-standalone-tae.sh'
+append_row "$work_directory/models.tsv" \
+    'tae-in-lora-slot\tsd1.x\tsd15-diffusion\tpackaged\tpackaged\tstandalone-tae\t512\t512\t4\tlcm\t1.5\tcandidate'
+expect_refusal bundle_lora_slot_rejects_tae
+
 # Every checked-in row reads refused, so an unconditionally refusing gate would
 # pass the suite above. These two rows carry the promotion the gate exists for:
 # a validator-gated profile naming a record that exists is admitted, and the
