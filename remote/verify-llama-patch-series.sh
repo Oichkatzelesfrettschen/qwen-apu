@@ -75,7 +75,13 @@ printf 'patch_series=accepted commit=%s\n' "$expected_commit"
 # sums it compares against stay byte-identical whether the stage runs or not.
 # QWEN_LLAMA_CANDIDATE_PATCHES=1 arms it; the printed post-apply digest is what
 # a promotion would move into verify_source once its evidence lane closes.
-candidate_patch_names="llama-vulkan-view-alias-deps.patch"
+# The order is the apply order: llama-server-vulkan-workload-lease encodes
+# post-series offsets in tools/server/server-context.cpp, which no earlier
+# candidate touches, so the two stay independent while the list stays ordered.
+candidate_patch_names="llama-vulkan-view-alias-deps.patch llama-server-vulkan-workload-lease.patch"
+# One digest line per file the candidate stage rewrites. Retained evidence
+# quotes the ggml-vulkan.cpp line, so it keeps its format and its position.
+candidate_digest_paths="ggml/src/ggml-vulkan/ggml-vulkan.cpp tools/server/server-context.cpp"
 if [ "${QWEN_LLAMA_CANDIDATE_PATCHES:-0}" = 1 ]; then
     for candidate_name in $candidate_patch_names; do
         git -C "$temporary_directory/llama.cpp" apply --check \
@@ -85,9 +91,11 @@ if [ "${QWEN_LLAMA_CANDIDATE_PATCHES:-0}" = 1 ]; then
         git -C "$temporary_directory/llama.cpp" diff --check
         printf 'candidate_patch=%s applies=yes\n' "$candidate_name"
     done
-    printf 'candidate_sha256=%s path=%s\n' \
-        "$(sha256sum "$temporary_directory/llama.cpp/ggml/src/ggml-vulkan/ggml-vulkan.cpp" | cut -d ' ' -f 1)" \
-        ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    for candidate_digest_path in $candidate_digest_paths; do
+        printf 'candidate_sha256=%s path=%s\n' \
+            "$(sha256sum "$temporary_directory/llama.cpp/$candidate_digest_path" | cut -d ' ' -f 1)" \
+            "$candidate_digest_path"
+    done
 else
     printf 'candidate_patches=not_run reason=QWEN_LLAMA_CANDIDATE_PATCHES_unset\n'
 fi

@@ -18,6 +18,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
@@ -97,7 +98,12 @@ class ServiceSession:
     """One running service, its control socket, and its artifact listener."""
 
     def __init__(
-        self, directory, profiles, runtime_environment=None, radv_icd_path=None
+        self,
+        directory,
+        profiles,
+        runtime_environment=None,
+        radv_icd_path=None,
+        lease_wait_seconds=None,
     ):
         self.directory = directory
         self.state_directory = os.path.join(directory, "state")
@@ -139,6 +145,10 @@ class ServiceSession:
         self.radv_icd_path = radv_icd_path
         environment = dict(os.environ)
         environment["QWEN_RADV_ICD"] = radv_icd_path
+        # The lease wait is bounded rather than immediate, so a test that means
+        # to observe the refusal names a deadline it can afford to reach.
+        if lease_wait_seconds is not None:
+            environment["QWEN_IMAGE_LEASE_WAIT_S"] = str(lease_wait_seconds)
         self.process = subprocess.Popen(
             argv,
             stdout=subprocess.PIPE,
@@ -260,13 +270,21 @@ class ImageServiceTest(unittest.TestCase):
         self.sessions = []
 
     def start(
-        self, profiles=None, runtime_environment=None, radv_icd_path=None
+        self,
+        profiles=None,
+        runtime_environment=None,
+        radv_icd_path=None,
+        lease_wait_seconds=None,
     ):
         directory = tempfile.mkdtemp(dir=self.temporary.name)
         if profiles is None:
             profiles = {"sdxs-512-a": build_profile(FAKE_RUNTIME_PATH)}
         session = ServiceSession(
-            directory, profiles, runtime_environment, radv_icd_path
+            directory,
+            profiles,
+            runtime_environment,
+            radv_icd_path,
+            lease_wait_seconds,
         )
         self.sessions.append(session)
         self.addCleanup(self.quiet_stop, session)
@@ -633,10 +651,11 @@ class ImageServiceTest(unittest.TestCase):
             "a refusal above the lease writes no lease status line",
         )
 
-    def test_lease_held_elsewhere_refuses_the_job(self):
+    def test_lease_held_past_the_deadline_refuses_the_job(self):
+        """A holder that outlasts the wait keeps the same refusal reason."""
         import fcntl
 
-        session = self.start()
+        session = self.start(lease_wait_seconds=0)
         descriptor = os.open(session.lease_path(), os.O_RDWR | os.O_CREAT, 0o644)
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         try:
@@ -646,6 +665,57 @@ class ImageServiceTest(unittest.TestCase):
             os.close(descriptor)
         self.assertEqual(response["status"], "refused", response)
         self.assertEqual(response["reason"], "lease_unavailable")
+
+    def test_lease_released_inside_the_deadline_admits_the_job(self):
+        """A chat turn still releasing the lease delays a job rather than failing it.
+
+        llama-server holds the same lock from its first busy slot to the last
+        idle one, so the request that follows an approved tool call meets a
+        lease that is about to be released. The wait is what turns that race
+        into a delay.
+        """
+        import fcntl
+
+        hold_seconds = 3.0
+        session = self.start(lease_wait_seconds=30)
+
+        # The round trip covers verification, the fake runtime, the PNG write,
+        # the hash, and the rename beside the lease, so an uncontended job in
+        # the same session is the baseline the wait is measured against.
+        started = time.monotonic()
+        baseline_response = session.control(generate_request())
+        uncontended = time.monotonic() - started
+        self.assertEqual(baseline_response["status"], "completed", baseline_response)
+
+        descriptor = os.open(session.lease_path(), os.O_RDWR | os.O_CREAT, 0o644)
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        released = threading.Event()
+
+        def release_after_delay():
+            time.sleep(hold_seconds)
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            released.set()
+
+        releaser = threading.Thread(target=release_after_delay)
+        releaser.start()
+        try:
+            started = time.monotonic()
+            request = generate_request()
+            request["request_id"] = "req-0002"
+            response = session.control(request)
+            contended = time.monotonic() - started
+        finally:
+            releaser.join()
+            os.close(descriptor)
+        self.assertTrue(released.is_set())
+        self.assertEqual(response["status"], "completed", response)
+        self.assertGreaterEqual(
+            contended,
+            uncontended + hold_seconds - 0.5,
+            "the job spends the holder's term waiting rather than racing it: "
+            f"uncontended={uncontended:.2f}s contended={contended:.2f}s",
+        )
+        self.assertTrue(session.lease_is_free())
 
     def test_missing_seed_is_refused(self):
         """Randomness is chosen before approval rather than by the service."""
