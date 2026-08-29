@@ -200,6 +200,8 @@ if [ "$#" -ne 1 ]; then
     printf 'MCP server program path is required in QWEN_WEB_MCP_SERVER\n' >&2
     printf 'QWEN_WEB_PROVIDER exa (default) requires a search key file path in QWEN_WEB_SEARCH_KEY_FILE, emitted as QWEN_WEB_EXA_KEY_FILE\n' >&2
     printf 'QWEN_WEB_PROVIDER fake requires a fixture file path in QWEN_WEB_FAKE_FIXTURES, emitted unchanged, and reads no search key file\n' >&2
+    printf 'QWEN_WEB_PROVIDER searxng reads the instance URL and the category policy from the profile row and reads no search key file\n' >&2
+    printf 'optional QWEN_WEB_SEARXNG_LANGUAGE, QWEN_WEB_SEARXNG_SAFESEARCH, QWEN_WEB_SEARXNG_ALLOW_REMOTE\n' >&2
     printf 'optional QWEN_WEB_TOKEN_KEY_FILE, QWEN_WEB_STATE_DIR\n' >&2
     printf 'QWEN_WEB_ALLOW_UNVALIDATED_DEPTH=1 admits an unknown or over-depth profile as experimental\n' >&2
     printf 'QWEN_WEB_AUTHORIZER_READY=1 asserts the argument-authorization validator runs, admitting validator-gated rows\n' >&2
@@ -234,6 +236,9 @@ esac
 mcp_server_program=${QWEN_WEB_MCP_SERVER:-}
 search_key_file=${QWEN_WEB_SEARCH_KEY_FILE:-}
 fake_fixtures=${QWEN_WEB_FAKE_FIXTURES:-}
+searxng_language=${QWEN_WEB_SEARXNG_LANGUAGE:-}
+searxng_safesearch=${QWEN_WEB_SEARXNG_SAFESEARCH:-}
+searxng_allow_remote=${QWEN_WEB_SEARXNG_ALLOW_REMOTE:-}
 token_key_file=${QWEN_WEB_TOKEN_KEY_FILE:-}
 web_state_directory=${QWEN_WEB_STATE_DIR:-"${HOME:?}/qwen-webui-state/web-mcp"}
 web_provider=${QWEN_WEB_PROVIDER:-exa}
@@ -275,21 +280,103 @@ require_json_safe_path() {
     esac
 }
 
+# A profile's search policy is the ledger's own claim about which backend
+# serves it and what that backend is asked for, so it is validated for every
+# row whatever the row's execution_policy, the way the depth and tier rules
+# are. `provider` must equal the generator's own QWEN_WEB_PROVIDER: the head
+# marker records one provider for the file and qwen-web-launch.sh reads it, so
+# a row naming another backend would emit a section the launch serves under a
+# provider the ledger never claimed. A category is a name in the instance's
+# settings.yml rather than an engine list, and minimum_results is the count of
+# validated results below which the fallback category runs, so it cannot exceed
+# the row's own max_results. server.py validates the same four values again in
+# SearXNGProvider.__init__ before the first request.
+require_search_policy() {
+    search_policy_profile=$1
+    search_policy_provider=$2
+    search_policy_primary=$3
+    search_policy_fallback=$4
+    search_policy_minimum=$5
+    search_policy_max_results=$6
+    search_policy_url=$7
+    if [ "$search_policy_provider" != "$web_provider" ]; then
+        printf 'profile %s names provider %s where the run serves %s\n' \
+            "$search_policy_profile" "${search_policy_provider:-<absent>}" \
+            "$web_provider" >&2
+        exit 1
+    fi
+    if [ "$search_policy_provider" != searxng ]; then
+        for search_policy_field in "$search_policy_primary" \
+            "$search_policy_fallback" "$search_policy_minimum" \
+            "$search_policy_url"; do
+            if [ "$search_policy_field" != '-' ]; then
+                printf 'profile %s carries a search policy under provider %s, which reads none\n' \
+                    "$search_policy_profile" "$search_policy_provider" >&2
+                exit 1
+            fi
+        done
+        return 0
+    fi
+    require_category "$search_policy_profile" primary_category \
+        "$search_policy_primary" required
+    require_category "$search_policy_profile" fallback_category \
+        "$search_policy_fallback" optional
+    require_canonical_integer minimum_results "$search_policy_minimum" \
+        sentinel-refused "$search_policy_profile"
+    if [ "$search_policy_minimum" -gt "$search_policy_max_results" ]; then
+        printf 'profile %s names minimum_results %s above its max_results %s\n' \
+            "$search_policy_profile" "$search_policy_minimum" \
+            "$search_policy_max_results" >&2
+        exit 1
+    fi
+    case $search_policy_url in
+        http://127.0.0.1:* | http://127.0.0.1 | http://localhost:* | \
+        http://localhost | https://127.0.0.1:* | https://127.0.0.1 | \
+        https://localhost:* | https://localhost) ;;
+        *)
+            printf 'profile %s names searxng_url %s, and the instance is reached over loopback\n' \
+                "$search_policy_profile" "${search_policy_url:-<absent>}" >&2
+            exit 1
+            ;;
+    esac
+    require_json_safe_path searxng_url "$search_policy_url"
+}
+
+require_category() {
+    case $3 in
+        '-')
+            if [ "$4" = required ]; then
+                printf 'profile %s names no %s, which every searxng row carries\n' \
+                    "$1" "$2" >&2
+                exit 1
+            fi
+            ;;
+        '' | *[!a-z0-9._-]* | [!a-z0-9]*)
+            printf 'profile %s carries %s %s, which holds a character outside a category name\n' \
+                "$1" "$2" "${3:-<absent>}" >&2
+            exit 1
+            ;;
+    esac
+}
+
 # The MCP inputs describe a configuration file, so a ledger whose every row is
 # refused or ui-mediated writes none and needs none. The requirement runs at the
 # first row that writes one, which keeps an offline or manual ledger generating
 # without a server program and a provider key it never reaches, and keeps the
 # refusal on the row that would have been misconfigured by omission.
 #
-# The provider decides which secret backs the emitted section: `exa` reaches
+# The provider decides which input backs the emitted section: `exa` reaches
 # the network and requires QWEN_WEB_SEARCH_KEY_FILE, a readable key file the
 # generator's own input keeps its name for since every caller of this script
 # already spells it that way; `fake` reaches no network and requires
 # QWEN_WEB_FAKE_FIXTURES instead, a readable regular file of recorded
-# responses, and reads no search key file. server.py's settings_from_environment
-# reads QWEN_WEB_EXA_KEY_FILE rather than QWEN_WEB_SEARCH_KEY_FILE, so the
-# emitted section renames the value at the JSON boundary while the shell
-# variable that carries it into this script keeps its established name.
+# responses; `searxng` reaches an unauthenticated instance and requires
+# an instance URL and a category policy from the profile row, so it holds no
+# secret at all and reads no key file.
+# server.py's settings_from_environment reads QWEN_WEB_EXA_KEY_FILE rather than
+# QWEN_WEB_SEARCH_KEY_FILE, so the emitted section renames that one value at
+# the JSON boundary while the shell variable that carries it into this script
+# keeps its established name; every SearXNG name crosses unchanged.
 require_mcp_inputs() {
     if [ -z "$mcp_server_program" ]; then
         printf 'profile %s emits an MCP configuration and QWEN_WEB_MCP_SERVER names no server program\n' \
@@ -301,26 +388,38 @@ require_mcp_inputs() {
     if [ -n "$token_key_file" ]; then
         require_json_safe_path QWEN_WEB_TOKEN_KEY_FILE "$token_key_file"
     fi
-    if [ "$web_provider" = fake ]; then
-        if [ -z "$fake_fixtures" ]; then
-            printf 'profile %s emits an MCP configuration under provider fake and QWEN_WEB_FAKE_FIXTURES names no fixture file\n' \
-                "$profile_id" >&2
-            exit 1
-        fi
-        if [ ! -f "$fake_fixtures" ] || [ ! -r "$fake_fixtures" ]; then
-            printf 'QWEN_WEB_FAKE_FIXTURES names an unreadable regular file: %s\n' \
-                "$fake_fixtures" >&2
-            exit 1
-        fi
-        require_json_safe_path QWEN_WEB_FAKE_FIXTURES "$fake_fixtures"
-    else
-        if [ -z "$search_key_file" ]; then
-            printf 'profile %s emits an MCP configuration and QWEN_WEB_SEARCH_KEY_FILE names no provider key file\n' \
-                "$profile_id" >&2
-            exit 1
-        fi
-        require_json_safe_path QWEN_WEB_SEARCH_KEY_FILE "$search_key_file"
-    fi
+    case $web_provider in
+        fake)
+            if [ -z "$fake_fixtures" ]; then
+                printf 'profile %s emits an MCP configuration under provider fake and QWEN_WEB_FAKE_FIXTURES names no fixture file\n' \
+                    "$profile_id" >&2
+                exit 1
+            fi
+            if [ ! -f "$fake_fixtures" ] || [ ! -r "$fake_fixtures" ]; then
+                printf 'QWEN_WEB_FAKE_FIXTURES names an unreadable regular file: %s\n' \
+                    "$fake_fixtures" >&2
+                exit 1
+            fi
+            require_json_safe_path QWEN_WEB_FAKE_FIXTURES "$fake_fixtures"
+            ;;
+        searxng)
+            # The instance URL and the category policy come from the row that
+            # `require_search_policy` has already validated, so this branch
+            # reads the optional tuning the environment supplies beside it.
+            require_json_safe_path QWEN_WEB_SEARXNG_LANGUAGE "$searxng_language"
+            require_json_safe_path QWEN_WEB_SEARXNG_SAFESEARCH "$searxng_safesearch"
+            require_json_safe_path QWEN_WEB_SEARXNG_ALLOW_REMOTE \
+                "$searxng_allow_remote"
+            ;;
+        *)
+            if [ -z "$search_key_file" ]; then
+                printf 'profile %s emits an MCP configuration and QWEN_WEB_SEARCH_KEY_FILE names no provider key file\n' \
+                    "$profile_id" >&2
+                exit 1
+            fi
+            require_json_safe_path QWEN_WEB_SEARCH_KEY_FILE "$search_key_file"
+            ;;
+    esac
 }
 case $web_provider in
     '' | *[!a-z0-9-]*)
@@ -511,7 +610,9 @@ registry_field() {
 
 while profile_id=; IFS='	' read -r profile_id model_id _web_mode context \
     ledger_validated_filled_depth max_results max_fetches max_chars_per_fetch \
-    multi_source vision_allowed tool_selection execution_policy || \
+    multi_source vision_allowed tool_selection execution_policy \
+    row_provider primary_category fallback_category minimum_results \
+    row_searxng_url || \
     [ -n "$profile_id" ]; do
     case $profile_id in
         '#'* | '') continue ;;
@@ -530,6 +631,9 @@ while profile_id=; IFS='	' read -r profile_id model_id _web_mode context \
         sentinel-refused "$profile_id"
 
     require_multi_source_matches_fetches "$multi_source" "$max_fetches"
+    require_search_policy "$profile_id" "$row_provider" "$primary_category" \
+        "$fallback_category" "$minimum_results" "$max_results" \
+        "$row_searxng_url"
 
     case $execution_policy in
         refused | validator-gated | ui-mediated) ;;
@@ -719,11 +823,44 @@ while profile_id=; IFS='	' read -r profile_id model_id _web_mode context \
             printf '        "QWEN_WEB_MAX_CHARS_PER_FETCH": "%s",\n' \
                 "$max_chars_per_fetch"
             printf '        "QWEN_WEB_SEARCH_AUTH": "required",\n'
-            if [ "$web_provider" = fake ]; then
-                printf '        "QWEN_WEB_FAKE_FIXTURES": "%s",\n' "$fake_fixtures"
-            else
-                printf '        "QWEN_WEB_EXA_KEY_FILE": "%s",\n' "$search_key_file"
-            fi
+            case $web_provider in
+                fake)
+                    printf '        "QWEN_WEB_FAKE_FIXTURES": "%s",\n' \
+                        "$fake_fixtures"
+                    ;;
+                searxng)
+                    # The instance and the category policy come from the
+                    # profile row, so the model supplies none of them and an
+                    # operator changes them by editing the ledger. The three
+                    # tuning names are emitted where the operator set them, so
+                    # an unset one leaves server.py reading its own default
+                    # rather than an empty string the child would interpret.
+                    printf '        "QWEN_WEB_SEARXNG_URL": "%s",\n' \
+                        "$row_searxng_url"
+                    printf '        "QWEN_WEB_SEARXNG_PRIMARY_CATEGORY": "%s",\n' \
+                        "$primary_category"
+                    printf '        "QWEN_WEB_SEARXNG_FALLBACK_CATEGORY": "%s",\n' \
+                        "$fallback_category"
+                    printf '        "QWEN_WEB_SEARXNG_MINIMUM_RESULTS": "%s",\n' \
+                        "$minimum_results"
+                    if [ -n "$searxng_language" ]; then
+                        printf '        "QWEN_WEB_SEARXNG_LANGUAGE": "%s",\n' \
+                            "$searxng_language"
+                    fi
+                    if [ -n "$searxng_safesearch" ]; then
+                        printf '        "QWEN_WEB_SEARXNG_SAFESEARCH": "%s",\n' \
+                            "$searxng_safesearch"
+                    fi
+                    if [ -n "$searxng_allow_remote" ]; then
+                        printf '        "QWEN_WEB_SEARXNG_ALLOW_REMOTE": "%s",\n' \
+                            "$searxng_allow_remote"
+                    fi
+                    ;;
+                *)
+                    printf '        "QWEN_WEB_EXA_KEY_FILE": "%s",\n' \
+                        "$search_key_file"
+                    ;;
+            esac
             if [ -n "$token_key_file" ]; then
                 printf '        "QWEN_WEB_TOKEN_KEY_FILE": "%s",\n' "$token_key_file"
             fi

@@ -361,6 +361,42 @@ are read from the response body rather than from its status and become a tool
 message naming what refused. A refusal in the dialog answers the call with a
 `role: 'tool'` message stating that the search did not run.
 
+A backend states what it can carry rather than being trusted to carry
+everything. Each `Provider` in `remote/web-mcp/server.py` declares
+`supports_exact_date_bounds`, `supports_freshness_max_age`,
+`supports_domain_filter`, `supports_num_results`, and `supports_paging`, and
+`refuse_unhonored_arguments` ends a call whose approved argument the active
+provider cannot express, naming the argument and the provider, ahead of the
+ledger transaction that spends the grant. `exa` carries every field, at any
+`max_age_hours` including the 0 that forces a live crawl.
+
+One local SearXNG instance is the general-search endpoint, and the profile
+rather than the model decides what it is asked. `remote/web-profiles.tsv`
+carries `provider`, `primary_category`, `fallback_category`,
+`minimum_results`, and `searxng_url` per row, `build-web-presets.sh` validates
+them for every row and emits them into the MCP configuration, and
+`SearXNGProvider` validates them again before its first request. Which engines
+answer belongs to the instance's own `settings.yml` under qwen-named
+categories, so the engine population changes by editing the instance rather
+than through a request field. A search queries `primary_category` once and,
+where fewer results survive canonicalization, private-target rejection, and the
+granted domain lists than `minimum_results`, queries `fallback_category`
+exactly once; a failing engine is suspended by the instance rather than retried
+here. Both temporal arguments are refused, because SearXNG maps `time_range`
+onto each engine and a mixed category cannot promise that every result met it.
+Domain scope and result count are honored in the provider, over the answer. A
+dropped private target leaves the answer rather than ending the call, which is
+where a metasearch mix differs from Exa's own crawler. Each result carries its
+`engines`, `category`, `rank`, and `score`, the reply names them on a
+`Sources:` line ahead of `Highlights:`, and the audit row gains `search_id`,
+`category`, `engines_attempted`, `engines_answered`, `engines_failed`,
+`fallback_used`, and `usable_results` while still holding no query text. The
+instance answers with result metadata alone, so `fetch_exa` retrieves the
+source over one GET of the canonical URL its Result ID was signed over, and
+`PROVIDER_OPENER` ends a redirect at the response that requested it.
+`evidence/web-provider-contract.md` carries the flags, the profile columns, and
+what a run against a live instance still leaves unmeasured.
+
 The integer dot product is advertised, functional, and unaccelerated, which
 decides how most of this tree's bytes execute. RADV reports
 `shaderIntegerDotProduct = true` and sets all thirty of its `*Accelerated`

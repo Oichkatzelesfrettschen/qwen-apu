@@ -263,9 +263,9 @@ fi
 QWEN_WEB_PROFILE=$preset_profile
 preset_provider=$(sed -n 's/^# qwen_web_provider=//p' "$web_presets")
 case $preset_provider in
-    exa | fake) ;;
+    exa | fake | searxng) ;;
     *)
-        printf 'web preset provider must be exa or fake: %s\n' \
+        printf 'web preset provider must be exa, fake, or searxng: %s\n' \
             "${preset_provider:-<absent>}" >&2
         exit 2
         ;;

@@ -335,8 +335,8 @@ case $projector in
     *) vision_allowed=yes ;;
 esac
 ledger=$output_directory/web-profiles.tsv
-printf '# profile_id\tmodel_id\tweb_mode\tcontext\tvalidated_filled_depth\tmax_results\tmax_fetches\tmax_chars_per_fetch\tmulti_source\tvision_allowed\ttool_selection\texecution_policy\n' >"$ledger"
-printf '%s\t%s\tvalidator-gated\t%s\t%s\t3\t1\t12000\tno\t%s\t%s\tvalidator-gated\n' \
+printf '# profile_id\tmodel_id\tweb_mode\tcontext\tvalidated_filled_depth\tmax_results\tmax_fetches\tmax_chars_per_fetch\tmulti_source\tvision_allowed\ttool_selection\texecution_policy\tprovider\tprimary_category\tfallback_category\tminimum_results\tsearxng_url\n' >"$ledger"
+printf '%s\t%s\tvalidator-gated\t%s\t%s\t3\t1\t12000\tno\t%s\t%s\tvalidator-gated\tfake\t-\t-\t-\t-\n' \
     "$profile_id" "$model_id" "$context" "$validated_depth" "$vision_allowed" "$tool_selection" >>"$ledger"
 
 web_presets=$output_directory/web-presets.ini

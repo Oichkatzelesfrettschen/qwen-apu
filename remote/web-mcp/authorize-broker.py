@@ -456,7 +456,13 @@ def record_audit(
         ).fetchone()
         if existing is None:
             connection.execute(
-                "INSERT INTO audit VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                # The audit table gained provenance columns for a metasearch
+                # answer, so the insert names the twelve an approval fills
+                # rather than counting on the table's width.
+                "INSERT INTO audit (recorded_at, profile, operation,"
+                " query_sha256, domains, result_count, fetched_host,"
+                " provider_bytes, returned_characters, latency_ms, status,"
+                " recorded_epoch) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     row["recorded_at"],
                     row["profile"],

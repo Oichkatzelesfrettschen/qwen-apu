@@ -39,26 +39,26 @@ EOF
 
 web_profiles_ok=$work/web-profiles-ok.tsv
 cat >"$web_profiles_ok" <<'EOF'
-# profile_id	model_id	web_mode	context	validated_filled_depth	max_results	max_fetches	max_chars_per_fetch	multi_source	vision_allowed	tool_selection	execution_policy
-web-fixture-ok	fixture-production	validator-gated	8192	8192	5	2	12000	yes	no	9/10	validator-gated
+# profile_id	model_id	web_mode	context	validated_filled_depth	max_results	max_fetches	max_chars_per_fetch	multi_source	vision_allowed	tool_selection	execution_policy	provider	primary_category	fallback_category	minimum_results	searxng_url
+web-fixture-ok	fixture-production	validator-gated	8192	8192	5	2	12000	yes	no	9/10	validator-gated	exa	-	-	-	-
 EOF
 
 web_profiles_over_ceiling=$work/web-profiles-over-ceiling.tsv
 cat >"$web_profiles_over_ceiling" <<'EOF'
-web-fixture-over-ceiling	fixture-production	validator-gated	32768	8192	5	2	12000	yes	no	9/10	validator-gated
+web-fixture-over-ceiling	fixture-production	validator-gated	32768	8192	5	2	12000	yes	no	9/10	validator-gated	exa	-	-	-	-
 EOF
 
 # Candidate tier, numeric validated_filled_depth of 8192, context 16384: the
 # exceeded-numeric-depth case.
 web_profiles_over_depth=$work/web-profiles-over-depth.tsv
 cat >"$web_profiles_over_depth" <<'EOF'
-web-fixture-over-depth	fixture-candidate-validated	validator-gated	16384	8192	5	2	12000	yes	no	9/10	validator-gated
+web-fixture-over-depth	fixture-candidate-validated	validator-gated	16384	8192	5	2	12000	yes	no	9/10	validator-gated	exa	-	-	-	-
 EOF
 
 # Candidate tier, validated_filled_depth `-`: the unknown-depth case.
 web_profiles_unknown_depth=$work/web-profiles-unknown-depth.tsv
 cat >"$web_profiles_unknown_depth" <<'EOF'
-web-fixture-unknown-depth	fixture-candidate-unknown	validator-gated	8192	-	5	2	12000	yes	no	9/10	validator-gated
+web-fixture-unknown-depth	fixture-candidate-unknown	validator-gated	8192	-	5	2	12000	yes	no	9/10	validator-gated	exa	-	-	-	-
 EOF
 
 # Production tier at an unvalidated depth: the override admits this one as
@@ -67,12 +67,12 @@ EOF
 # refusing the model_id.
 web_profiles_production_unvalidated=$work/web-profiles-production-unvalidated.tsv
 cat >"$web_profiles_production_unvalidated" <<'EOF'
-web-fixture-production-unvalidated	fixture-production	validator-gated	16384	8192	5	2	12000	yes	no	9/10	validator-gated
+web-fixture-production-unvalidated	fixture-production	validator-gated	16384	8192	5	2	12000	yes	no	9/10	validator-gated	exa	-	-	-	-
 EOF
 
 web_profiles_archive=$work/web-profiles-archive.tsv
 cat >"$web_profiles_archive" <<'EOF'
-web-fixture-archive	fixture-archive	validator-gated	8192	-	5	2	12000	yes	no	9/10	validator-gated
+web-fixture-archive	fixture-archive	validator-gated	8192	-	5	2	12000	yes	no	9/10	validator-gated	exa	-	-	-	-
 EOF
 
 # The generator skips a row whose weights are absent, so every arm that measures
@@ -390,8 +390,8 @@ fi
 mkdir -p "$work/mixed-out"
 web_profiles_mixed=$work/web-profiles-mixed.tsv
 {
-    printf 'web-fixture-gated\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\n'
-    printf 'web-fixture-ui\tfixture-candidate-validated\tui-mediated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tui-mediated\n'
+    printf 'web-fixture-gated\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\texa\t-\t-\t-\t-\n'
+    printf 'web-fixture-ui\tfixture-candidate-validated\tui-mediated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tui-mediated\texa\t-\t-\t-\t-\n'
 } >"$web_profiles_mixed"
 presets_mixed=$work/mixed-out/presets-mixed.ini
 if QWEN_MODEL_ROOT=$policy_model_root build "$web_profiles_mixed" \
@@ -423,7 +423,7 @@ fi
 # The generated preset binds the path and complete digest of the source ledger,
 # so substituting a revoked ledger refuses before any subset join.
 revoked_profiles=$work/web-profiles-revoked.tsv
-printf 'web-fixture-ok\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\trefused\n' \
+printf 'web-fixture-ok\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\trefused\texa\t-\t-\t-\t-\n' \
     >"$revoked_profiles"
 if run_policy_over_presets "$presets_policy" "$revoked_profiles" \
     >"$work/revoked-policy.log" 2>"$work/revoked-policy.err"; then
@@ -466,7 +466,7 @@ fi
 # execution_policy decides emission. A refused row emits nothing under every
 # setting, which is the boundary no override crosses.
 web_profiles_refused=$work/web-profiles-refused.tsv
-printf 'web-fixture-refused\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\trefused\n' \
+printf 'web-fixture-refused\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\trefused\texa\t-\t-\t-\t-\n' \
     >"$web_profiles_refused"
 presets_refused=$work/presets-refused.ini
 if build "$web_profiles_refused" "$presets_refused" \
@@ -498,7 +498,7 @@ fi
 # A validator-gated row emits only where the authorizer marker asserts the
 # argument-authorization path runs.
 web_profiles_gated=$work/web-profiles-gated.tsv
-printf 'web-fixture-gated\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\n' \
+printf 'web-fixture-gated\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\texa\t-\t-\t-\t-\n' \
     >"$web_profiles_gated"
 presets_gated_absent=$work/presets-gated-absent.ini
 if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_gated \
@@ -532,7 +532,7 @@ fi
 # A ui-mediated row emits a section the server runs no MCP client from, so the
 # retrieval stays in the web UI.
 web_profiles_ui=$work/web-profiles-ui.tsv
-printf 'web-fixture-ui\tfixture-production\tui-mediated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tui-mediated\n' \
+printf 'web-fixture-ui\tfixture-production\tui-mediated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tui-mediated\texa\t-\t-\t-\t-\n' \
     >"$web_profiles_ui"
 presets_ui=$work/presets-ui.ini
 if build "$web_profiles_ui" "$presets_ui" \
@@ -565,7 +565,7 @@ fi
 # An execution_policy outside the vocabulary stops the run: the ledger states a
 # policy the generator has no rule for.
 web_profiles_unknown_policy=$work/web-profiles-unknown-policy.tsv
-printf 'web-fixture-unknown-policy\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tunguarded\n' \
+printf 'web-fixture-unknown-policy\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tunguarded\texa\t-\t-\t-\t-\n' \
     >"$web_profiles_unknown_policy"
 presets_unknown_policy=$work/presets-unknown-policy.ini
 if build "$web_profiles_unknown_policy" "$presets_unknown_policy" \
@@ -584,7 +584,7 @@ fi
 # formed except in the one field each arm rewrites.
 emit_numeric_fixture() {
     # profile_id model_id web_mode context depth results fetches chars ...
-    printf 'web-fixture-numeric\tfixture-production\tvalidator-gated\t%s\t%s\t%s\t%s\t%s\tyes\tno\t9/10\tvalidator-gated\n' \
+    printf 'web-fixture-numeric\tfixture-production\tvalidator-gated\t%s\t%s\t%s\t%s\t%s\tyes\tno\t9/10\tvalidator-gated\texa\t-\t-\t-\t-\n' \
         "$1" "$2" "$3" "$4" "$5"
 }
 
@@ -630,7 +630,7 @@ check_multi_source_refused() {
     multi_fetches=$3
     multi_policy=${4:-validator-gated}
     multi_profiles=$work/web-profiles-multi-$multi_case_name.tsv
-    printf 'web-fixture-multi\tfixture-production\tvalidator-gated\t8192\t8192\t5\t%s\t12000\t%s\tno\t9/10\t%s\n' \
+    printf 'web-fixture-multi\tfixture-production\tvalidator-gated\t8192\t8192\t5\t%s\t12000\t%s\tno\t9/10\t%s\texa\t-\t-\t-\t-\n' \
         "$multi_fetches" "$multi_source_value" "$multi_policy" >"$multi_profiles"
     multi_presets=$work/presets-multi-$multi_case_name.ini
     if build "$multi_profiles" "$multi_presets" \
@@ -656,7 +656,7 @@ check_multi_source_refused refused_row no 3 refused
 
 # The two admitted spellings pass: one fetch reads `no` and several read `yes`.
 multi_source_ok_profiles=$work/web-profiles-multi-ok.tsv
-printf 'web-fixture-multi-single\tfixture-production\tui-mediated\t8192\t8192\t5\t1\t12000\tno\tno\t9/10\tui-mediated\n' \
+printf 'web-fixture-multi-single\tfixture-production\tui-mediated\t8192\t8192\t5\t1\t12000\tno\tno\t9/10\tui-mediated\texa\t-\t-\t-\t-\n' \
     >"$multi_source_ok_profiles"
 multi_source_ok_presets=$work/presets-multi-ok.ini
 if build "$multi_source_ok_profiles" "$multi_source_ok_presets" \
@@ -673,7 +673,7 @@ fi
 # the numeric rule. The depth override carries it past the unmeasured-depth
 # refusal, which is a separate rule with its own arms above.
 numeric_sentinel_profiles=$work/web-profiles-numeric-sentinel.tsv
-printf 'web-fixture-sentinel\tfixture-candidate-unknown\tvalidator-gated\t8192\t-\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\n' \
+printf 'web-fixture-sentinel\tfixture-candidate-unknown\tvalidator-gated\t8192\t-\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\texa\t-\t-\t-\t-\n' \
     >"$numeric_sentinel_profiles"
 numeric_sentinel_presets=$work/presets-numeric-sentinel.ini
 if build "$numeric_sentinel_profiles" "$numeric_sentinel_presets" \
@@ -713,13 +713,13 @@ check_divergent_field_refused() {
 # fixture-production reads validated_filled_depth 8192, projector none, and
 # raw_tool_selection 9/10; each row below diverges in one of the three.
 check_divergent_field_refused validated_filled_depth \
-    "$(printf 'web-fixture-divergent\tfixture-production\tvalidator-gated\t8192\t16384\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated')" \
+    "$(printf 'web-fixture-divergent\tfixture-production\tvalidator-gated\t8192\t16384\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\texa\t-\t-\t-\t-')" \
     'validated_filled_depth 16384 where model fixture-production carries 8192'
 check_divergent_field_refused vision_allowed \
-    "$(printf 'web-fixture-divergent\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tyes\t9/10\tvalidator-gated')" \
+    "$(printf 'web-fixture-divergent\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tyes\t9/10\tvalidator-gated\texa\t-\t-\t-\t-')" \
     'vision_allowed yes where model fixture-production carries no'
 check_divergent_field_refused tool_selection \
-    "$(printf 'web-fixture-divergent\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t2/10\tvalidator-gated')" \
+    "$(printf 'web-fixture-divergent\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t2/10\tvalidator-gated\texa\t-\t-\t-\t-')" \
     'tool_selection 2/10 where model fixture-production carries 9/10'
 
 # A registry-side numeric field is validated on the same rule, so a malformed
@@ -799,15 +799,8 @@ fi
 # passes; what it does catch is a key file's contents inlined where its path
 # belongs, which is the substitution that turns a persisted preset tree into a
 # credential store.
-secret_leak_outcome=ok
-for generated_config in "$mcp_configs"/*.json; do
-    [ -f "$generated_config" ] || continue
-    if grep -q 'fixture-search-secret-value\|fixture-token-secret-value' \
-        "$generated_config"; then
-        secret_leak_outcome=key_contents_present
-        break
-    fi
-    unexpected_key=$(python3 - "$generated_config" <<'PYTHON'
+undeclared_env_keys() {
+    python3 - "$1" <<'PYTHON'
 import json
 import sys
 
@@ -820,6 +813,13 @@ admitted = {
     "QWEN_WEB_SEARCH_AUTH",
     "QWEN_WEB_EXA_KEY_FILE",
     "QWEN_WEB_FAKE_FIXTURES",
+    "QWEN_WEB_SEARXNG_URL",
+    "QWEN_WEB_SEARXNG_PRIMARY_CATEGORY",
+    "QWEN_WEB_SEARXNG_FALLBACK_CATEGORY",
+    "QWEN_WEB_SEARXNG_MINIMUM_RESULTS",
+    "QWEN_WEB_SEARXNG_LANGUAGE",
+    "QWEN_WEB_SEARXNG_SAFESEARCH",
+    "QWEN_WEB_SEARXNG_ALLOW_REMOTE",
     "QWEN_WEB_TOKEN_KEY_FILE",
     "QWEN_WEB_STATE_DIR",
 }
@@ -831,7 +831,17 @@ for name, value in environment.items():
     if name.endswith("_KEY_FILE") and not value.startswith("/"):
         print("key file value is no absolute path: %s" % name)
 PYTHON
-    ) || unexpected_key='config unreadable'
+}
+
+secret_leak_outcome=ok
+for generated_config in "$mcp_configs"/*.json; do
+    [ -f "$generated_config" ] || continue
+    if grep -q 'fixture-search-secret-value\|fixture-token-secret-value' \
+        "$generated_config"; then
+        secret_leak_outcome=key_contents_present
+        break
+    fi
+    unexpected_key=$(undeclared_env_keys "$generated_config") || unexpected_key='config unreadable'
     if [ -n "$unexpected_key" ]; then
         secret_leak_outcome=$unexpected_key
         break
@@ -855,7 +865,20 @@ fake_fixtures_file=$work/private/fake-fixtures.json
 printf '{"search": {}, "contents": {}}\n' >"$fake_fixtures_file"
 web_profiles_fake=$work/web-profiles-fake.tsv
 cat >"$web_profiles_fake" <<'EOF'
-web-fixture-fake	fixture-production	validator-gated	8192	8192	5	2	12000	yes	no	9/10	validator-gated
+web-fixture-fake	fixture-production	validator-gated	8192	8192	5	2	12000	yes	no	9/10	validator-gated	fake	-	-	-	-
+EOF
+
+# A profile row names the backend it expects, so an arm that varies
+# QWEN_WEB_PROVIDER carries its own ledger. The searxng rows also name the
+# category policy the emitted configuration must carry.
+web_profiles_searxng=$work/web-profiles-searxng.tsv
+cat >"$web_profiles_searxng" <<'EOF'
+web-fixture-searxng	fixture-production	validator-gated	8192	8192	5	2	12000	yes	no	9/10	validator-gated	searxng	qwen-open	qwen-broad	3	http://127.0.0.1:8888
+EOF
+
+web_profiles_searxng_no_fallback=$work/web-profiles-searxng-no-fallback.tsv
+cat >"$web_profiles_searxng_no_fallback" <<'EOF'
+web-fixture-searxng	fixture-production	validator-gated	8192	8192	5	2	12000	yes	no	9/10	validator-gated	searxng	qwen-yacy	-	1	http://127.0.0.1:8888
 EOF
 
 presets_fake=$work/presets-fake.ini
@@ -899,6 +922,144 @@ else
     report fake_provider_without_fixtures_refused ok
 fi
 
+# QWEN_WEB_PROVIDER searxng reaches an unauthenticated instance, so the profile
+# row rather than a key file supplies what the child needs: the generated
+# section carries the instance URL and the category policy the row names, names
+# no QWEN_WEB_EXA_KEY_FILE, and the build succeeds with no search key file set.
+presets_searxng=$work/presets-searxng.ini
+if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_searxng \
+    QWEN_MODEL_ROOT=$policy_model_root QWEN_WEB_AUTHORIZER_READY=1 \
+    env -u QWEN_WEB_SEARCH_KEY_FILE QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    QWEN_WEB_PROVIDER=searxng \
+    QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" QWEN_WEB_STATE_DIR="$web_state_directory" \
+    "$builder" "$presets_searxng" \
+    >"$work/searxng-provider.log" 2>"$work/searxng-provider.err"; then
+    searxng_mcp_config=$(sed -n \
+        's/^LLAMA_ARG_MCP_SERVERS_CONFIG = //p' "$presets_searxng")
+    searxng_outcome=ok
+    [ -f "$searxng_mcp_config" ] || searxng_outcome=config_absent
+    if [ "$searxng_outcome" = ok ]; then
+        grep -q '"QWEN_WEB_SEARXNG_URL": "http://127.0.0.1:8888"' \
+            "$searxng_mcp_config" || searxng_outcome=missing_instance_url
+        grep -q '"QWEN_WEB_SEARXNG_PRIMARY_CATEGORY": "qwen-open"' \
+            "$searxng_mcp_config" || searxng_outcome=missing_primary_category
+        grep -q '"QWEN_WEB_SEARXNG_FALLBACK_CATEGORY": "qwen-broad"' \
+            "$searxng_mcp_config" || searxng_outcome=missing_fallback_category
+        grep -q '"QWEN_WEB_SEARXNG_MINIMUM_RESULTS": "3"' \
+            "$searxng_mcp_config" || searxng_outcome=missing_minimum_results
+        grep -q '"QWEN_WEB_PROVIDER": "searxng"' \
+            "$searxng_mcp_config" || searxng_outcome=missing_provider_name
+        if grep -q '"QWEN_WEB_EXA_KEY_FILE"' "$searxng_mcp_config"; then
+            searxng_outcome=key_file_present
+        fi
+        if grep -q '"QWEN_WEB_SEARXNG_LANGUAGE"' "$searxng_mcp_config"; then
+            searxng_outcome=unset_name_emitted
+        fi
+        python3 -c 'import json,sys; json.load(open(sys.argv[1]))' \
+            "$searxng_mcp_config" >/dev/null 2>&1 ||
+            searxng_outcome=config_unparseable
+        # The declared-key check runs over this branch's own configuration,
+        # since the shared directory the leak loop walks holds the exa arms
+        # alone and a searxng name absent from the admitted set would pass
+        # unread.
+        searxng_undeclared=$(undeclared_env_keys "$searxng_mcp_config") ||
+            searxng_undeclared='config unreadable'
+        [ -z "$searxng_undeclared" ] || searxng_outcome=$searxng_undeclared
+    fi
+    report searxng_profile_row_carries_the_category_policy "$searxng_outcome"
+else
+    cat "$work/searxng-provider.err" >&2
+    report searxng_profile_row_carries_the_category_policy build_failed
+fi
+
+# A row naming no fallback carries the sentinel through to the child, which
+# reads it as the absence of a second query rather than as a category name.
+presets_searxng_solo=$work/presets-searxng-solo.ini
+if QWEN_MODEL_REGISTRY=$model_registry \
+    QWEN_WEB_PROFILES=$web_profiles_searxng_no_fallback \
+    QWEN_MODEL_ROOT=$policy_model_root QWEN_WEB_AUTHORIZER_READY=1 \
+    env -u QWEN_WEB_SEARCH_KEY_FILE QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    QWEN_WEB_PROVIDER=searxng \
+    QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" QWEN_WEB_STATE_DIR="$web_state_directory" \
+    "$builder" "$presets_searxng_solo" \
+    >"$work/searxng-solo.log" 2>"$work/searxng-solo.err"; then
+    searxng_solo_config=$(sed -n \
+        's/^LLAMA_ARG_MCP_SERVERS_CONFIG = //p' "$presets_searxng_solo")
+    searxng_solo_outcome=ok
+    grep -q '"QWEN_WEB_SEARXNG_PRIMARY_CATEGORY": "qwen-yacy"' \
+        "$searxng_solo_config" || searxng_solo_outcome=missing_primary_category
+    grep -q '"QWEN_WEB_SEARXNG_FALLBACK_CATEGORY": "-"' \
+        "$searxng_solo_config" || searxng_solo_outcome=missing_fallback_sentinel
+    report searxng_absent_fallback_reaches_the_child "$searxng_solo_outcome"
+else
+    cat "$work/searxng-solo.err" >&2
+    report searxng_absent_fallback_reaches_the_child build_failed
+fi
+
+# A row states which backend it expects, so a generator run under another
+# provider refuses it rather than emitting a section the launch would serve
+# under a backend the ledger never claimed.
+presets_provider_drift=$work/presets-provider-drift.ini
+if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_searxng \
+    QWEN_MODEL_ROOT=$policy_model_root QWEN_WEB_AUTHORIZER_READY=1 \
+    env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
+    QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" QWEN_WEB_STATE_DIR="$web_state_directory" \
+    "$builder" "$presets_provider_drift" \
+    >"$work/provider-drift.log" 2>"$work/provider-drift.err"; then
+    report searxng_row_under_another_provider_refused accepted
+elif grep -q 'names provider searxng where the run serves exa' \
+    "$work/provider-drift.err"; then
+    report searxng_row_under_another_provider_refused ok
+else
+    report searxng_row_under_another_provider_refused refused_without_naming_provider
+fi
+
+# The search policy is validated for every row whatever its execution_policy,
+# so a malformed category, a non-loopback instance, and a minimum above the
+# row's own result count each stop the run and name the profile.
+searxng_policy_outcome=ok
+for searxng_bad_row in \
+    'searxng	qwen open	-	1	http://127.0.0.1:8888' \
+    'searxng	-	-	1	http://127.0.0.1:8888' \
+    'searxng	qwen-open	-	1	http://searxng.example.org' \
+    'searxng	qwen-open	-	9	http://127.0.0.1:8888' \
+    'searxng	qwen-open	qwen broad	1	http://127.0.0.1:8888'; do
+    searxng_bad_ledger=$work/web-profiles-searxng-bad.tsv
+    printf 'web-fixture-bad\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\trefused\t%s\n' \
+        "$searxng_bad_row" >"$searxng_bad_ledger"
+    if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$searxng_bad_ledger \
+        QWEN_MODEL_ROOT=$policy_model_root \
+        env -u QWEN_WEB_SEARCH_KEY_FILE QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+        QWEN_WEB_PROVIDER=searxng \
+        QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" QWEN_WEB_STATE_DIR="$web_state_directory" \
+        "$builder" "$work/presets-searxng-bad.ini" \
+        >"$work/searxng-bad.log" 2>"$work/searxng-bad.err"; then
+        searxng_policy_outcome="accepted: $searxng_bad_row"
+        break
+    fi
+    grep -q 'web-fixture-bad' "$work/searxng-bad.err" ||
+        searxng_policy_outcome="refused_without_naming_profile: $searxng_bad_row"
+done
+report searxng_malformed_search_policy_refused "$searxng_policy_outcome"
+
+# A row under provider exa or fake carries no search policy, so a value in one
+# of the four columns states a policy that backend never reads.
+searxng_stray_ledger=$work/web-profiles-stray-policy.tsv
+printf 'web-fixture-stray\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\trefused\texa\tqwen-open\t-\t-\t-\n' \
+    >"$searxng_stray_ledger"
+if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$searxng_stray_ledger \
+    QWEN_MODEL_ROOT=$policy_model_root \
+    env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
+    QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" QWEN_WEB_STATE_DIR="$web_state_directory" \
+    "$builder" "$work/presets-stray-policy.ini" \
+    >"$work/stray-policy.log" 2>"$work/stray-policy.err"; then
+    report search_policy_under_a_keyed_provider_refused accepted
+else
+    report search_policy_under_a_keyed_provider_refused ok
+fi
+
 # A path holding a double quote would change the parsed JSON value, so the run
 # refuses it.
 presets_quoted_path=$work/presets-quoted-path.ini
@@ -924,8 +1085,8 @@ atomic_digest_before=$(sha256sum "$atomic_presets" | cut -d' ' -f1)
 # temporary file already carries a section.
 web_profiles_late_failure=$work/web-profiles-late-failure.tsv
 {
-    printf 'web-fixture-first\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\n'
-    printf 'web-fixture-second\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tunguarded\n'
+    printf 'web-fixture-first\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\texa\t-\t-\t-\t-\n'
+    printf 'web-fixture-second\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tunguarded\texa\t-\t-\t-\t-\n'
 } >"$web_profiles_late_failure"
 
 if build "$web_profiles_late_failure" "$atomic_presets" \
@@ -957,7 +1118,7 @@ fi
 # A ledger whose every row withholds an executing policy leaves the previous
 # file alone for the same reason.
 web_profiles_all_refused=$work/web-profiles-all-refused.tsv
-printf 'web-fixture-all-refused\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\trefused\n' \
+printf 'web-fixture-all-refused\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\trefused\texa\t-\t-\t-\t-\n' \
     >"$web_profiles_all_refused"
 if build "$web_profiles_all_refused" "$atomic_presets" \
     env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
@@ -1003,7 +1164,7 @@ victim_json=$work/traversal-out/victim.json
 printf '{"victim":true}\n' >"$victim_json"
 victim_digest_before=$(sha256sum "$victim_json" | cut -d' ' -f1)
 web_profiles_traversal=$work/web-profiles-traversal.tsv
-printf '../victim\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\n' \
+printf '../victim\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\texa\t-\t-\t-\t-\n' \
     >"$web_profiles_traversal"
 if build "$web_profiles_traversal" "$work/traversal-out/presets.ini" \
     env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
@@ -1024,7 +1185,7 @@ fi
 # preset reader parses differently than the generator wrote it.
 for noncanonical_id in 'web]fixture[x' 'web fixture' '-web-fixture' 'web/fixture'; do
     noncanonical_profiles=$work/web-profiles-noncanonical.tsv
-    printf '%s\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\n' \
+    printf '%s\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\texa\t-\t-\t-\t-\n' \
         "$noncanonical_id" >"$noncanonical_profiles"
     if build "$noncanonical_profiles" "$work/presets-noncanonical.ini" \
         env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
@@ -1041,8 +1202,8 @@ done
 # row's budgets own the single configuration file both point at.
 web_profiles_duplicate=$work/web-profiles-duplicate.tsv
 {
-    printf 'web-fixture-dup\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\n'
-    printf 'web-fixture-dup\tfixture-candidate-validated\tvalidator-gated\t8192\t8192\t7\t3\t9000\tyes\tno\t9/10\tvalidator-gated\n'
+    printf 'web-fixture-dup\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\texa\t-\t-\t-\t-\n'
+    printf 'web-fixture-dup\tfixture-candidate-validated\tvalidator-gated\t8192\t8192\t7\t3\t9000\tyes\tno\t9/10\tvalidator-gated\texa\t-\t-\t-\t-\n'
 } >"$web_profiles_duplicate"
 if build "$web_profiles_duplicate" "$work/presets-duplicate.ini" \
     env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
@@ -1152,19 +1313,19 @@ fi
 for refused_drift_case in depth tier ceiling unknown_model; do
     refused_drift_profiles=$work/web-profiles-refused-drift.tsv
     {
-        printf 'web-fixture-emitting\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tui-mediated\n'
+        printf 'web-fixture-emitting\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tui-mediated\texa\t-\t-\t-\t-\n'
         case $refused_drift_case in
             depth)
-                printf 'web-fixture-stale\tfixture-production\tvalidator-gated\t8192\t16384\t5\t2\t12000\tyes\tno\t9/10\trefused\n'
+                printf 'web-fixture-stale\tfixture-production\tvalidator-gated\t8192\t16384\t5\t2\t12000\tyes\tno\t9/10\trefused\texa\t-\t-\t-\t-\n'
                 ;;
             tier)
-                printf 'web-fixture-stale\tfixture-archive\tvalidator-gated\t8192\t-\t5\t2\t12000\tyes\tno\t9/10\trefused\n'
+                printf 'web-fixture-stale\tfixture-archive\tvalidator-gated\t8192\t-\t5\t2\t12000\tyes\tno\t9/10\trefused\texa\t-\t-\t-\t-\n'
                 ;;
             ceiling)
-                printf 'web-fixture-stale\tfixture-production\tvalidator-gated\t32768\t8192\t5\t2\t12000\tyes\tno\t9/10\trefused\n'
+                printf 'web-fixture-stale\tfixture-production\tvalidator-gated\t32768\t8192\t5\t2\t12000\tyes\tno\t9/10\trefused\texa\t-\t-\t-\t-\n'
                 ;;
             unknown_model)
-                printf 'web-fixture-stale\tfixture-absent\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\trefused\n'
+                printf 'web-fixture-stale\tfixture-absent\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\trefused\texa\t-\t-\t-\t-\n'
                 ;;
         esac
     } >"$refused_drift_profiles"
@@ -1188,8 +1349,8 @@ done
 checked_in_out=$work/checked-in
 mkdir -p "$checked_in_out"
 if QWEN_MODEL_ROOT=$policy_model_root \
-    env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
-    QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
+    env -u QWEN_WEB_SEARCH_KEY_FILE QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    QWEN_WEB_PROVIDER=searxng \
     QWEN_WEB_STATE_DIR="$web_state_directory" \
     "$builder" "$checked_in_out/presets.ini" \
     >"$work/checked-in.log" 2>"$work/checked-in.err"; then
@@ -1210,8 +1371,8 @@ mkdir -p "$absent_model_root/Fixture-GGUF"
 : >"$absent_model_root/Fixture-GGUF/production.gguf"
 web_profiles_partial=$work/web-profiles-partial.tsv
 {
-    printf 'web-fixture-present\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tui-mediated\n'
-    printf 'web-fixture-absent\tfixture-candidate-validated\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tui-mediated\n'
+    printf 'web-fixture-present\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tui-mediated\texa\t-\t-\t-\t-\n'
+    printf 'web-fixture-absent\tfixture-candidate-validated\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tui-mediated\texa\t-\t-\t-\t-\n'
 } >"$web_profiles_partial"
 mkdir -p "$work/partial-out"
 presets_partial=$work/partial-out/presets.ini
@@ -1256,7 +1417,7 @@ fi
 # carries the resolved path in its section and the capacity policy still admits
 # the tuple.
 web_profiles_vision=$work/web-profiles-vision.tsv
-printf 'web-fixture-vision\tfixture-vision\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tyes\t9/10\tui-mediated\n' \
+printf 'web-fixture-vision\tfixture-vision\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tyes\t9/10\tui-mediated\texa\t-\t-\t-\t-\n' \
     >"$web_profiles_vision"
 mkdir -p "$work/vision-out"
 presets_vision=$work/vision-out/presets.ini
@@ -1327,7 +1488,7 @@ done
 mkdir -p "$work/immutable-out"
 immutable_presets=$work/immutable-out/presets.ini
 web_profiles_immutable=$work/web-profiles-immutable.tsv
-printf 'web-fixture-immutable\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\n' \
+printf 'web-fixture-immutable\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\texa\t-\t-\t-\t-\n' \
     >"$web_profiles_immutable"
 if build "$web_profiles_immutable" "$immutable_presets" \
     env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
@@ -1390,8 +1551,8 @@ mkdir -p "$fetch_model_root/Fixture-GGUF"
 : >"$fetch_model_root/Fixture-GGUF/production.gguf"
 web_profiles_fetch=$work/web-profiles-fetch.tsv
 {
-    printf 'web-fixture-held\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\n'
-    printf 'web-fixture-fetched\tfixture-candidate-validated\tvalidator-gated\t8192\t8192\t7\t3\t9000\tyes\tno\t9/10\tvalidator-gated\n'
+    printf 'web-fixture-held\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\texa\t-\t-\t-\t-\n'
+    printf 'web-fixture-fetched\tfixture-candidate-validated\tvalidator-gated\t8192\t8192\t7\t3\t9000\tyes\tno\t9/10\tvalidator-gated\texa\t-\t-\t-\t-\n'
 } >"$web_profiles_fetch"
 mkdir -p "$work/fetch-out"
 fetch_presets=$work/fetch-out/presets.ini
@@ -1427,7 +1588,7 @@ fi
 # newline. POSIX read reports a nonzero status after returning those bytes, so
 # the generator must process the populated fields before ending the loop.
 unterminated_profiles=$work/web-profiles-unterminated.tsv
-printf 'web-fixture-unterminated\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated' \
+printf 'web-fixture-unterminated\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\texa\t-\t-\t-\t-' \
     >"$unterminated_profiles"
 unterminated_presets=$work/presets-unterminated.ini
 if build "$unterminated_profiles" "$unterminated_presets" \
