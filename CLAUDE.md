@@ -677,6 +677,47 @@ a running generation therefore share the device today, and the one active
 Vulkan workload the brief calls for is enforced by the service holding the lease
 across exactly the span from job start to artifact rename.
 
+A review of a generated image is the next transition through idle, and it runs
+against a vision model holding no executable tool. `remote/image-review.py`
+reads the artifact through `GET /artifacts/<sha256>.png` with the Web UI's own
+bearer credential, hashes the bytes against the digest the caller named, and
+posts one non-streamed `/v1/chat/completions` whose body omits `tools`
+entirely, at temperature 0, 400 reply tokens, thinking off, and a 300 s
+deadline. The reply is one JSON object carrying exactly `hard_constraints`
+(one `name`/`passed`/`observation` entry per declared constraint),
+`composition_change_required`, `prompt_delta`, and `regenerate`; prose, a
+fenced block, an extra key, a missing key, a `passed` that is a number, a
+constraint the caller never declared, and a reply carrying `tool_calls` are
+each refused with the code naming the rule. The generation prompt stays out of
+the request, which binds the same `prompt_hash` the image grant is signed over,
+and the audit line carries counts, booleans, `delta_chars`, and the delta's
+SHA-256 rather than the observation or delta text a model wrote after reading
+an image. `reasoning_emitted` sits on that line because
+`chat_template_kwargs.enable_thinking` is inert against a template with an
+unguarded `<think>`, and a reasoning span inside 400 tokens ends the object
+unclosed for the same `not_json` the fence produces.
+
+`webui/index.html` runs that schema in the browser and bounds what a verdict
+may cause. The Review button appears on an artifact card where
+`GET /props?model=<id>` reports a vision modality for some roster row, the
+review holds the same `busy` flag a chat turn holds, and the verdict, its
+observations, and any correction stay out of `history`, so image-derived text
+never enters the transcript every later request re-sends. Three facts admit a
+correction -- a constraint the model marked failed, the `regenerate` flag, and
+a non-empty `prompt_delta` -- and a correction is a proposal: the composed
+prompt meets the tool schema's maxima, the first approval's seed travels on the
+card rather than being chosen again, and the same approval dialog signs a fresh
+single-use grant over the composed prompt's hash. Two approved corrections per
+original request are the whole allowance, counted in the card's lineage so a
+correction's own review inherits the counter rather than restarting it.
+`remote/test-image-review.py` drives the module against a fake vision router
+that answers a tools-carrying request with a tool-call proposal, and
+`remote/web-mcp/test-fallback-page-image.py` drives the served page through one
+review, two approved corrections, and the third that reports the cap.
+`evidence/image-appliance/vision-review-design.md` registers the state machine,
+the schema, and the falsifiers, and names `lfm25-vl-16b` as the first appliance
+arm with `qwen35-2b` as its control inside one sweep.
+
 `patches/llama-router-tools-proxy.patch` is what puts the route on the router
 port. At f280b269 `server.cpp` registers `/tools` only in a process whose own
 MCP manager holds a server, and the router branch proxies chat, props, and
@@ -746,6 +787,9 @@ remote/image-service.py --state-dir DIR --profiles-json FILE
                                                 # the lease owner, one generation at a time
 remote/image-teardown-check.sh [STATE_DIRECTORY]
                                                 # no service, runtime, partial artifact, or held lease
+remote/image-review.py --router-origin URL --artifact-origin URL --model ID \
+    --sha256 HEX --prompt-hash HEX --constraint NAME=DESCRIPTION
+                                                # one artifact reviewed by a vision model, zero tools
 remote/run-graph-alias-ab.sh OUTPUT_DIR [MODEL_ID...]
                                                 # token identity across the graph optimizer
 
@@ -792,6 +836,8 @@ remote/test-fallback-webui-image-authorization.sh
 python3 remote/test-image-protocol.py
 python3 remote/test-image-service.py
 python3 remote/image-mcp/test-image-mcp.py
+python3 remote/test-image-review.py
+python3 remote/web-mcp/test-fallback-page-image.py
 remote/test-quality-suite.py
 remote/test-quality-roster.sh
 remote/test-promote-llama-build.sh

@@ -28,6 +28,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 
 THIS_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(os.path.dirname(THIS_DIRECTORY))
@@ -91,6 +92,34 @@ BROKER_REFUSAL = (
     "image-test-profile"
 )
 
+# The review lane (PR F): a second roster row whose props report a vision
+# modality, and the verdicts the fake vision model answers with. The page
+# declares one constraint per approved prompt field, so a verdict names
+# prompt_subject and negative_prompt_absent in that order.
+VISION_MODEL = "qwen35-2b"
+PASSING_REVIEW_VERDICT = {
+    "hard_constraints": [
+        {"name": "prompt_subject", "passed": True, "observation": "A fox stands in snow."},
+        {"name": "negative_prompt_absent", "passed": True, "observation": "The frame is sharp."},
+    ],
+    "composition_change_required": False,
+    "prompt_delta": "",
+    "regenerate": False,
+}
+REVIEW_PROMPT_DELTA = "a single fox, centred, alone in the frame"
+REGENERATE_REVIEW_VERDICT = {
+    "hard_constraints": [
+        {"name": "prompt_subject", "passed": False, "observation": "Two foxes share the frame."},
+        {"name": "negative_prompt_absent", "passed": True, "observation": "The frame is sharp."},
+    ],
+    "composition_change_required": True,
+    "prompt_delta": REVIEW_PROMPT_DELTA,
+    "regenerate": True,
+}
+REVIEW_PROSE_REPLY = (
+    "The image looks like one fox in a snowy field, and I would leave it as it is."
+)
+
 IMAGE_MCP_SERVER_NAME = "image"
 IMAGE_MCP_TOOL_NAME = "generate_image"
 IMAGE_TOOL_NAME = "{}_{}".format(IMAGE_MCP_SERVER_NAME, IMAGE_MCP_TOOL_NAME)
@@ -109,6 +138,7 @@ class RecordingState:
         self.grant_image_bodies = []
         self.tools_post_bodies = []
         self.artifact_auth_headers = []
+        self.review_bodies = []
 
 
 def image_tool_listing():
@@ -154,12 +184,17 @@ def image_tool_listing():
     }]
 
 
-def make_handler(state, proposal=None, grant_status=200, grant_error=None):
+def make_handler(state, proposal=None, grant_status=200, grant_error=None,
+                 vision_model=None, review_replies=None):
     """Play the router, the broker, and the artifact listener for one turn.
 
     `proposal` is what the fixture model emits as the tool call arguments, and
     `grant_status` with `grant_error` is what the broker answers, so an arm
     states the one condition it exercises and shares every other route.
+    `vision_model` adds a second roster row whose `GET /props` reports a vision
+    modality, which is what makes the page offer a review at all, and
+    `review_replies` is the sequence of assistant messages the router answers
+    each review request with, the last one repeating.
     """
     proposed_arguments = DEFAULT_PROPOSAL if proposal is None else proposal
     fallback_html = open(FALLBACK_UI_PATH, "rb").read()
@@ -202,10 +237,22 @@ def make_handler(state, proposal=None, grant_status=200, grant_error=None):
                 self.wfile.write(fallback_html)
                 return
             if parsed_path == "/v1/models":
-                self._send_json(200, {"data": [{"id": "image-test-profile"}]})
+                roster = [{"id": "image-test-profile"}]
+                if vision_model:
+                    roster.append({"id": vision_model})
+                self._send_json(200, {"data": roster})
                 return
             if parsed_path == "/props":
-                self._send_json(200, {"default_generation_settings": {"n_ctx": 4096}})
+                # llama-server reports the vision modality per served row, which
+                # is the field remote/compare-model-candidate.sh reads and the
+                # one the page asks about before it offers a review.
+                query = urllib.parse.parse_qs(
+                    self.path.split("?", 1)[1] if "?" in self.path else "")
+                asked = (query.get("model") or [""])[0]
+                props = {"default_generation_settings": {"n_ctx": 4096}}
+                if vision_model and asked == vision_model:
+                    props["modalities"] = {"vision": True, "audio": False}
+                self._send_json(200, props)
                 return
             if parsed_path == "/tools":
                 self._send_json(200, image_tool_listing())
@@ -233,6 +280,19 @@ def make_handler(state, proposal=None, grant_status=200, grant_error=None):
             parsed_path = self.path.split("?", 1)[0]
             if parsed_path == "/v1/chat/completions":
                 request_body = self._read_json_body()
+                if request_body.get("stream") is not True:
+                    # A review is the one non-streamed completion this page
+                    # sends, so the stub answers it from the arm's own script
+                    # rather than from the tool-proposal path.
+                    with state.lock:
+                        index = len(state.review_bodies)
+                        state.review_bodies.append(request_body)
+                    replies = review_replies or [
+                        {"role": "assistant", "content": json.dumps(PASSING_REVIEW_VERDICT)}]
+                    message = replies[min(index, len(replies) - 1)]
+                    self._send_json(
+                        200, {"choices": [{"message": message, "finish_reason": "stop"}]})
+                    return
                 already_ran = any(
                     message.get("role") == "tool"
                     for message in request_body.get("messages", []))
@@ -584,6 +644,39 @@ class PageSession:
         return self.evaluate(
             "(() => (document.querySelector('.image-state') || {}).textContent || null)()")
 
+    def cards(self):
+        return self.evaluate(
+            "document.querySelectorAll('figure.image-artifact').length")
+
+    # The expressions below hold JavaScript braces, so they are composed by
+    # concatenation: str.format would read `{ const` as a field.
+    def card_expression(self, index):
+        return "document.querySelectorAll('figure.image-artifact')[" + str(index) + "]"
+
+    def wait_for_review_button(self, index):
+        self.wait_for(
+            "(() => { const card = " + self.card_expression(index) + "; "
+            "return Boolean(card) && Boolean(card.querySelector('.image-review-button')) && "
+            "!card.querySelector('.image-review-button').hidden; })()",
+            30, "the review button on card " + str(index))
+
+    def click_review(self, index):
+        self.evaluate(
+            "(() => { " + self.card_expression(index)
+            + ".querySelector('.image-review-button').click(); return true; })()")
+
+    def review_items(self, index):
+        return self.evaluate(
+            "(() => { const card = " + self.card_expression(index) + "; "
+            "return [...card.querySelectorAll('.image-review li')].map(li => li.textContent); "
+            "})()")
+
+    def review_notes(self, index):
+        return self.evaluate(
+            "(() => { const card = " + self.card_expression(index) + "; "
+            "return [...card.querySelectorAll('.image-review-note')].map(n => n.textContent); "
+            "})()")
+
     def report(self):
         return json.loads(self.evaluate(
             "JSON.stringify({ history, requests: window.__qwenRequests, busy, "
@@ -905,6 +998,236 @@ def test_refused_grant_ends_the_turn():
     ]
 
 
+def prompt_digest(text):
+    return hashlib.sha256(text.strip().encode("utf-8")).hexdigest()
+
+
+def test_review_and_bounded_corrections():
+    """One review, two approved corrections, and a third that proposes none.
+
+    The verdict is rendered as a checklist on the card, each correction carries
+    the first approval's seed with the review's delta appended to the prompt,
+    and the third review reads the cap rather than opening a dialog. The
+    counter travels on the card, so a correction's own review inherits it.
+    """
+    state = RecordingState()
+    server, thread, origin = serve(make_handler(
+        state, vision_model=VISION_MODEL,
+        review_replies=[{"role": "assistant",
+                         "content": json.dumps(REGENERATE_REVIEW_VERDICT)}]))
+    session = None
+    notes = []
+    checklists = []
+    try:
+        session = PageSession(origin)
+        session.send("draw a fox")
+        session.wait_for(
+            "document.querySelector('#image-approval').open", 30,
+            "the image approval dialog")
+        session.approve()
+        session.wait_for(
+            "(() => { const el = document.querySelector('.image-state'); "
+            "return el && el.textContent === 'Image complete'; })()",
+            60, "the image generation to complete")
+        session.wait_for("busy === false", 60, "the turn to end")
+
+        for correction in (1, 2):
+            card_index = correction - 1
+            session.wait_for_review_button(card_index)
+            session.click_review(card_index)
+            session.wait_for(
+                "document.querySelector('#image-approval').open", 60,
+                "the correction {} approval dialog".format(correction))
+            checklists.append(session.review_items(card_index))
+            notes.append(session.dialog_note())
+            fields = session.dialog_fields()
+            if "generated by this page" in (fields.get("seed") or ""):
+                notes.append("correction {} regenerated the seed".format(correction))
+            session.approve()
+            session.wait_for(
+                "document.querySelectorAll('figure.image-artifact').length === {}".format(
+                    correction + 1),
+                60, "the corrected artifact card {}".format(correction + 1))
+            session.wait_for("busy === false", 60, "the review to return the page to idle")
+
+        session.wait_for_review_button(2)
+        session.click_review(2)
+        session.wait_for(
+            "(() => { const card = document.querySelectorAll('figure.image-artifact')[2]; "
+            "return card.querySelectorAll('.image-review-note').length > 0; })()",
+            60, "the capped review to report its reason")
+        session.wait_for("busy === false", 60, "the third review to end")
+        capped_notes = session.review_notes(2)
+        capped_checklist = session.review_items(2)
+        dialog_open_after_cap = session.evaluate(
+            "document.querySelector('#image-approval').open")
+        card_count = session.cards()
+        report = session.report()
+    finally:
+        if session is not None:
+            session.close()
+        server.shutdown()
+        thread.join(timeout=5)
+
+    failures = []
+    with state.lock:
+        grants = list(state.grant_image_bodies)
+        reviews = list(state.review_bodies)
+        tool_calls = [body for body in state.tools_post_bodies
+                      if body.get("tool") == IMAGE_TOOL_NAME]
+
+    for index, checklist in enumerate(checklists):
+        if len(checklist) != 2:
+            failures.append("review {} rendered {} checklist rows".format(
+                index + 1, len(checklist)))
+        elif not checklist[0].startswith("fail prompt_subject"):
+            failures.append("review {} did not render the failed constraint: {}".format(
+                index + 1, checklist[0]))
+    for correction, note in enumerate(notes, start=1):
+        if "regenerated the seed" in (note or ""):
+            failures.append(note)
+        elif "correction {} of 2".format(correction) not in (note or ""):
+            failures.append("correction {} dialog note reads {}".format(correction, note))
+
+    if len(grants) != 3:
+        failures.append("expected three grants, saw {}".format(len(grants)))
+    else:
+        seeds = {grant.get("seed") for grant in grants}
+        if len(seeds) != 1:
+            failures.append("the corrections did not carry the first seed: " + repr(seeds))
+        expected_first = prompt_digest(DEFAULT_PROPOSAL["prompt"])
+        if grants[0].get("prompt_hash") != expected_first:
+            failures.append("the first grant hashed something other than the prompt")
+        # Each correction composes on the prompt that produced the image it
+        # reviewed, so the second correction carries the delta twice: the
+        # review reads a corrected artifact and appends to the prompt behind
+        # it rather than to the original.
+        for index in (1, 2):
+            expected = prompt_digest(
+                DEFAULT_PROPOSAL["prompt"] + (" " + REVIEW_PROMPT_DELTA) * index)
+            if grants[index].get("prompt_hash") != expected:
+                failures.append(
+                    "correction {} did not hash the prompt with the delta appended".format(index))
+
+    if len(tool_calls) != 3:
+        failures.append("expected three generations, saw {}".format(len(tool_calls)))
+    else:
+        for index in (1, 2):
+            params = tool_calls[index].get("params") or {}
+            composed = DEFAULT_PROPOSAL["prompt"] + (" " + REVIEW_PROMPT_DELTA) * index
+            if params.get("prompt") != composed:
+                failures.append("correction {} did not carry the composed prompt: {}".format(
+                    index, params.get("prompt")))
+            if params.get("seed") != (tool_calls[0].get("params") or {}).get("seed"):
+                failures.append("correction {} did not carry the first seed".format(index))
+
+    if len(reviews) != 3:
+        failures.append("expected three review requests, saw {}".format(len(reviews)))
+    for index, body in enumerate(reviews):
+        if "tools" in body:
+            failures.append("review {} carried a tools key".format(index + 1))
+        if body.get("model") != VISION_MODEL:
+            failures.append("review {} named model {}".format(index + 1, body.get("model")))
+        if body.get("max_tokens") != 400:
+            failures.append("review {} did not bound the reply at 400 tokens".format(index + 1))
+        if (body.get("chat_template_kwargs") or {}).get("enable_thinking") is not False:
+            failures.append("review {} did not turn thinking off".format(index + 1))
+        parts = (body.get("messages") or [{}, {}])[1].get("content") or []
+        images = [part for part in parts if part.get("type") == "image_url"]
+        if len(images) != 1:
+            failures.append("review {} carried {} image parts".format(index + 1, len(images)))
+        elif not images[0]["image_url"]["url"].startswith("data:image/png;base64,"):
+            failures.append("review {} sent no data URI".format(index + 1))
+
+    if card_count != 3:
+        failures.append("the run left {} artifact cards".format(card_count))
+    if len(capped_checklist) != 2:
+        failures.append("the capped review rendered no checklist")
+    if not any("corrections for this request are spent" in note for note in capped_notes):
+        failures.append("the capped review did not report the cap: " + repr(capped_notes))
+    if dialog_open_after_cap:
+        failures.append("the capped review opened an approval dialog")
+
+    tool_messages = image_tool_messages(report)
+    if len(tool_messages) != 1:
+        failures.append("the reviews reached the transcript: {} tool messages".format(
+            len(tool_messages)))
+    history_text = json.dumps(report.get("history", []))
+    if REVIEW_PROMPT_DELTA in history_text:
+        failures.append("the review's prompt delta reached the transcript")
+    if "Two foxes share the frame" in history_text:
+        failures.append("a review observation reached the transcript")
+
+    if failures:
+        return report_failures("review-and-corrections", failures), []
+    return [], [
+        "review_checklist_rows=" + json.dumps(checklists[0]),
+        "correction_notes=" + json.dumps(notes),
+        "carried_seed=" + str(grants[0].get("seed")),
+        "capped_note=" + json.dumps(capped_notes),
+    ]
+
+
+def test_review_refuses_a_prose_reply():
+    """A vision model that answers prose leaves the card without a verdict.
+
+    The page refuses the reply rather than reading a verdict out of it, so no
+    correction is proposed and no dialog opens.
+    """
+    state = RecordingState()
+    server, thread, origin = serve(make_handler(
+        state, vision_model=VISION_MODEL,
+        review_replies=[{"role": "assistant", "content": REVIEW_PROSE_REPLY}]))
+    session = None
+    try:
+        session = PageSession(origin)
+        session.send("draw a fox")
+        session.wait_for(
+            "document.querySelector('#image-approval').open", 30,
+            "the image approval dialog")
+        session.approve()
+        session.wait_for(
+            "(() => { const el = document.querySelector('.image-state'); "
+            "return el && el.textContent === 'Image complete'; })()",
+            60, "the image generation to complete")
+        session.wait_for("busy === false", 60, "the turn to end")
+        session.wait_for_review_button(0)
+        session.click_review(0)
+        session.wait_for(
+            "(() => { const card = document.querySelector('figure.image-artifact'); "
+            "return card.querySelectorAll('.image-review-note').length > 0; })()",
+            60, "the refused review to report its reason")
+        session.wait_for("busy === false", 60, "the review to return the page to idle")
+        notes = session.review_notes(0)
+        checklist = session.review_items(0)
+        dialog_open = session.evaluate("document.querySelector('#image-approval').open")
+        cards = session.cards()
+    finally:
+        if session is not None:
+            session.close()
+        server.shutdown()
+        thread.join(timeout=5)
+
+    failures = []
+    if checklist:
+        failures.append("a prose reply rendered a checklist: " + repr(checklist))
+    if not any("did not complete" in note for note in notes):
+        failures.append("the refusal was not reported on the card: " + repr(notes))
+    if not any("not one JSON object" in note for note in notes):
+        failures.append("the refusal did not name the rule: " + repr(notes))
+    if dialog_open:
+        failures.append("a refused review opened an approval dialog")
+    if cards != 1:
+        failures.append("a refused review produced {} cards".format(cards))
+    with state.lock:
+        grants = len(state.grant_image_bodies)
+    if grants != 1:
+        failures.append("a refused review signed {} grants".format(grants))
+    if failures:
+        return report_failures("review-prose-refusal", failures), []
+    return [], ["review_prose_refusal=" + json.dumps(notes)]
+
+
 def main():
     failures = []
 
@@ -913,7 +1236,9 @@ def main():
 
     for arm in (test_out_of_bounds_proposal_refused_before_the_dialog,
                 test_foreign_profile_replaced_by_the_served_one,
-                test_refused_grant_ends_the_turn):
+                test_refused_grant_ends_the_turn,
+                test_review_and_bounded_corrections,
+                test_review_refuses_a_prose_reply):
         arm_failures, arm_lines = arm()
         failures.extend(arm_failures)
         if not arm_failures:
