@@ -37,7 +37,7 @@
 # carries a reason record for it.
 #
 # model_id	architecture	diffusion_artifact	vae_artifact	text_encoder_artifact	lora_artifact	native_width	native_height	default_steps	default_sampler	default_cfg	tier
-sdxs-512	sd1.x-distilled	sdxs-512-diffusion	packaged	packaged	-	512	512	1	euler	1.0	candidate
+sdxs-512	sd1.x-distilled	sdxs-512-diffusion	sdxs-512-vae	sdxs-512-text-encoder	-	512	512	1	euler	1.0	candidate
 sd15-base	sd1.x	sd15-diffusion	packaged	packaged	-	512	512	20	euler_a	7.0	candidate
 sd15-lcm-v1	sd1.x	sd15-diffusion	sd15-vae-ft-mse	packaged	sd15-lcm-lora	512	512	4	lcm	1.5	candidate
 sd-turbo	sd2.x-distilled	sd-turbo-diffusion	packaged	packaged	-	512	512	1	euler_a	1.0	candidate

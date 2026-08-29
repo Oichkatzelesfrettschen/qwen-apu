@@ -82,7 +82,7 @@ expect_acceptance seeded_ledger
 
 run_reader artifacts
 if [ "$reader_status" -eq 0 ] &&
-   [ "$(wc -l <"$work_directory/reader.out")" -eq 5 ]; then
+   [ "$(wc -l <"$work_directory/reader.out")" -eq 7 ]; then
     report artifact_listing accepted
 else
     report artifact_listing rejected
@@ -102,9 +102,9 @@ fi
 run_reader bundle sd15-lcm-v1
 bundle_expected=$(printf '%s\n' \
     'diffusion	sd15-diffusion	stable-diffusion-v1-5/stable-diffusion-v1-5	v1-5-pruned-emaonly.safetensors	download-sd15-base.sh' \
-    'vae	sd15-vae-ft-mse	stabilityai/sd-vae-ft-mse	vae-ft-mse-840000-ema-pruned.safetensors	download-sd15-vae-ft-mse.sh' \
+    'vae	sd15-vae-ft-mse	stabilityai/sd-vae-ft-mse-original	vae-ft-mse-840000-ema-pruned.safetensors	download-sd15-vae.sh' \
     'text_encoder	sd15-diffusion	stable-diffusion-v1-5/stable-diffusion-v1-5	v1-5-pruned-emaonly.safetensors	download-sd15-base.sh' \
-    'lora	sd15-lcm-lora	latent-consistency/lcm-lora-sdv1-5	pytorch_lora_weights.safetensors	download-lcm-lora-sdv15.sh')
+    'lora	sd15-lcm-lora	latent-consistency/lcm-lora-sdv1-5	pytorch_lora_weights.safetensors	download-lcm-lora-sd15.sh')
 if [ "$reader_status" -eq 0 ] &&
    [ "$(cat "$work_directory/reader.out")" = "$bundle_expected" ]; then
     report bundle_resolution accepted
