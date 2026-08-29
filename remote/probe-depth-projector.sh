@@ -493,7 +493,6 @@ wait_for_server() {
 }
 
 device_corrupt=0
-arm_healthy=0
 
 run_arm() {
     arm_depth=$1
@@ -577,9 +576,12 @@ run_arm() {
                 >&2
             exit 2
         fi
-        arm_healthy=0
-        [ "$recorded_health" != healthy ] || arm_healthy=1
-        [ "$recorded_control_status" = ok ] || device_corrupt=1
+        # A resumed arm restores the halt state the live path derives, so a
+        # recorded failure stops the chain on the second invocation exactly as
+        # it stopped it on the first.
+        if [ "$recorded_status" != ok ] || [ "$recorded_control_status" != ok ]; then
+            device_corrupt=1
+        fi
         printf 'arm_resume_skip label=%s status=%s resets=%s control=%s health=%s\n' \
             "$arm_label" "$recorded_status" "$recorded_resets" \
             "$recorded_control_status" "$recorded_health"
@@ -701,8 +703,6 @@ run_arm() {
         "$control_status" "$health" "$hazard_class"
     active_arm_label=''
 
-    arm_healthy=0
-    [ "$health" != healthy ] || arm_healthy=1
     if [ "$arm_status" != ok ] || [ "$control_status" != ok ]; then
         printf 'arm_failed label=%s status=%s control=%s: the chain stops rather than measuring past a failed depth\n' \
             "$arm_label" "$arm_status" "$control_status" >&2
@@ -863,28 +863,40 @@ emit("decode_n", predicted_n)
 # fewer than the generated tokens of headroom evicts instead of decoding.
 floor_tokens = depth - depth * 2 // 100
 ceiling_tokens = depth - decode_tokens
+fill_failure = None
 if prompt_n < floor_tokens or prompt_n > ceiling_tokens:
-    fail(f"prompt-n-outside-window:{prompt_n}:{floor_tokens}:{ceiling_tokens}")
-if predicted_n != decode_tokens:
-    fail(f"decode-length-mismatch:{predicted_n}")
+    fill_failure = (f"prompt-n-outside-window:{prompt_n}"
+                    f":{floor_tokens}:{ceiling_tokens}")
+elif predicted_n != decode_tokens:
+    fill_failure = f"decode-length-mismatch:{predicted_n}"
 
-# The control's outcome reaches the summary through control_status alone, so a
-# recovery failure leaves the fill's own status standing.
+# The control runs whatever the fill did, because a rejected graph and a
+# corrupt device are what it separates: a fill that missed its window against a
+# control that still answers is one refused depth, and a control that fails
+# after it is a device the remaining depths would measure instead of the model.
+# Its outcome reaches the summary through control_status alone, so the fill's
+# own status stands beside it.
+control_failed = False
 try:
     control = chat(control_prompt, 32, False)
 except (urllib.error.URLError, OSError, ValueError) as error:
     emit("control_status", f"request-failed:{type(error).__name__}")
-    sys.exit(1)
-
-reply = ""
-for choice in control.get("choices") or []:
-    reply += (choice.get("message") or {}).get("content") or ""
-reply = " ".join(reply.split())
-emit("control_answer", reply[:120] if reply else "-")
-if control_answer in reply.lower():
-    emit("control_status", "ok")
+    control_failed = True
 else:
-    emit("control_status", "answer-missing-declared-content")
+    reply = ""
+    for choice in control.get("choices") or []:
+        reply += (choice.get("message") or {}).get("content") or ""
+    reply = " ".join(reply.split())
+    emit("control_answer", reply[:120] if reply else "-")
+    if control_answer in reply.lower():
+        emit("control_status", "ok")
+    else:
+        emit("control_status", "answer-missing-declared-content")
+        control_failed = True
+
+if fill_failure is not None:
+    fail(fill_failure)
+if control_failed:
     sys.exit(1)
 PY
 }

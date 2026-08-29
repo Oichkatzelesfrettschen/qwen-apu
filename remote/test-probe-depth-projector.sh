@@ -282,8 +282,54 @@ control_arm_count=$(awk 'NR > 1' \
 [ "$control_arm_count" -eq 1 ] ||
     control_failure_accepted="arms-$control_arm_count"
 [ ! -s "$control_directory/validated-tuples-rows.tsv" ] ||
-    control_failure_accepted=emitted-a-row-for-a-failed-control
+    control_failure_accepted='emitted-a-row-for-a-failed-control'
 report failed_control_halts_chain "$control_failure_accepted"
+
+# A decode shorter than the requested length fails the fill while the control
+# still answers, which is the halt the resume path has to restore from the
+# ledger: a recorded failure stops the chain on the second invocation exactly
+# as it stopped it on the first.
+short_directory=$temporary_directory/short-decode
+short_log=$temporary_directory/short-decode.log
+set +e
+QWEN_WEDGE_DEPTHS='8192 16384' QWEN_POLICY_TEST_PREDICTED_CAP=16 \
+    run_probe "$probe" fake-vision "$short_directory" >"$short_log" 2>&1
+short_status=$?
+set -e
+short_row=$(awk -F'\t' 'NR == 2 { print }' \
+    "$short_directory/projector-summary.tsv" 2>/dev/null || true)
+short_field() {
+    printf '%s' "$short_row" | awk -F'\t' -v index_number="$1" \
+        '{ print $index_number }'
+}
+short_accepted=accepted
+[ "$short_status" -eq 1 ] || short_accepted="status-$short_status"
+case $(short_field 10) in
+    decode-length-mismatch:16) ;;
+    *) short_accepted="arm_status-$(short_field 10)" ;;
+esac
+[ "$(short_field 18)" = ok ] || short_accepted="control-$(short_field 18)"
+[ ! -s "$short_directory/validated-tuples-rows.tsv" ] ||
+    short_accepted='emitted-a-row-for-a-failed-fill'
+report failed_fill_halts_chain "$short_accepted"
+
+short_resume_log=$temporary_directory/short-decode-resume.log
+set +e
+QWEN_WEDGE_DEPTHS='8192 16384' QWEN_POLICY_TEST_PREDICTED_CAP=16 \
+    run_probe "$probe" fake-vision "$short_directory" \
+    >"$short_resume_log" 2>&1
+short_resume_status=$?
+set -e
+short_resume_arms=$(awk 'NR > 1' \
+    "$short_directory/projector-summary.tsv" 2>/dev/null | wc -l)
+short_resume_accepted=accepted
+[ "$short_resume_status" -eq 1 ] ||
+    short_resume_accepted="status-$short_resume_status"
+[ "$short_resume_arms" -eq 1 ] ||
+    short_resume_accepted="arms-$short_resume_arms"
+grep -q 'arm_resume_skip label=d8192-b128-ub32-proj' "$short_resume_log" ||
+    short_resume_accepted='resumed-arm-unreported'
+report failed_fill_halts_on_resume "$short_resume_accepted"
 
 # A second invocation over the same directory resumes the recorded arm rather
 # than re-running it, and a metadata file bound to other weights refuses.

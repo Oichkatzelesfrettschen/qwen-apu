@@ -46,6 +46,7 @@ fi
 QWEN_POLICY_TEST_HTTP_PORT=$QWEN_POLICY_TEST_HTTP_PORT \
 QWEN_POLICY_TEST_IMAGE_TOKENS=${QWEN_POLICY_TEST_IMAGE_TOKENS:-300} \
 QWEN_POLICY_TEST_REPLY=${QWEN_POLICY_TEST_REPLY:-JUN} \
+QWEN_POLICY_TEST_PREDICTED_CAP=${QWEN_POLICY_TEST_PREDICTED_CAP:-0} \
     exec python3 - <<'PY'
 import json
 import os
@@ -54,6 +55,10 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 port = int(os.environ["QWEN_POLICY_TEST_HTTP_PORT"])
 image_tokens = int(os.environ["QWEN_POLICY_TEST_IMAGE_TOKENS"])
 reply = os.environ["QWEN_POLICY_TEST_REPLY"]
+# A positive cap stops the reply short of the requested length, which is the
+# shape a fixed-length decode fails in: the answer arrives and carries fewer
+# tokens than the caller asked for.
+predicted_cap = int(os.environ["QWEN_POLICY_TEST_PREDICTED_CAP"])
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -92,6 +97,8 @@ class Handler(BaseHTTPRequestHandler):
                 if part.get("type") == "image_url":
                     prompt_tokens += image_tokens
         predicted = int(body.get("max_tokens") or 1)
+        if predicted_cap > 0:
+            predicted = min(predicted, predicted_cap)
         self.respond({
             "choices": [{"message": {"role": "assistant", "content": reply}}],
             "timings": {"prompt_n": prompt_tokens, "prompt_ms": 1000.0,
