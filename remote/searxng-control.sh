@@ -26,7 +26,7 @@ run_directory=${QWEN_SEARXNG_RUN_DIRECTORY:-/usr/local/searxng/run}
 python_module=${QWEN_SEARXNG_MODULE:-searx.webapp}
 server_port=${QWEN_SEARXNG_PORT:-8888}
 bind_address=${QWEN_SEARXNG_BIND_ADDRESS:-127.0.0.1}
-start_timeout_seconds=${QWEN_SEARXNG_START_TIMEOUT:-30}
+start_timeout_seconds=${QWEN_SEARXNG_START_TIMEOUT:-120}
 stop_timeout_seconds=${QWEN_SEARXNG_STOP_TIMEOUT:-15}
 
 # QWEN_SEARXNG_LAUNCH_COMMAND replaces the default `python -m searx.webapp`
@@ -56,7 +56,7 @@ pid_is_alive() {
 listener_present() {
     ss -ltn "sport = :$server_port" 2>/dev/null |
         awk 'NR>1 {print $4}' |
-        grep -qx -e "$bind_address:$server_port" -e "[::1]:$server_port"
+        grep -qxF -e "$bind_address:$server_port" -e "[::1]:$server_port"
 }
 
 read_pid() {
@@ -90,8 +90,8 @@ case $action in
         # the pipe reach EOF, so the caller's command substitution waits
         # forever even after this script itself has exited.
         (run_as_service_user \
-            "echo \$\$ > '$pid_file'; exec $launch_command") \
-            >"$log_file" 2>&1 </dev/null &
+            "echo \$\$ > '$pid_file'; exec $launch_command >'$log_file' 2>&1 </dev/null") \
+            >/dev/null 2>&1 </dev/null &
 
         waited=0
         while [ "$waited" -lt "$start_timeout_seconds" ]; do
@@ -107,7 +107,7 @@ case $action in
         done
         printf 'server did not reach a listening state within %ss\n' \
             "$start_timeout_seconds" >&2
-        [ -f "$log_file" ] && tail -n 40 "$log_file" >&2
+        run_as_service_user "[ -f '$log_file' ] && tail -n 40 '$log_file'" >&2 || true
         exit 1
         ;;
 

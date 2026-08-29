@@ -96,7 +96,9 @@ for category, expected_names in qwen_categories.items():
             )
 
 yacy_engine = engines_by_name.get("yacy", [{}])[0]
-check(yacy_engine.get("disabled") is True, "yacy: must be disabled by default")
+check(yacy_engine.get("disabled") is False, "yacy: must be enabled inside qwen-yacy")
+check(yacy_engine.get("categories") == ["qwen-yacy"], "yacy: must live in qwen-yacy alone")
+check(yacy_engine.get("enable_http") is True, "yacy: enable_http must be true for the http-only local peer")
 check(yacy_engine.get("search_mode") == "global", "yacy: search_mode must be global")
 check(yacy_engine.get("search_type") == "text", "yacy: search_type must be text")
 check(
