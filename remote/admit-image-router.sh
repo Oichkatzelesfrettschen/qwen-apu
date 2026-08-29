@@ -9,8 +9,9 @@ set -eu
 # validator-gated image profile from a ledger it writes itself, drives every
 # boundary of the merged image path, tears the test session down, proves absence
 # through image-teardown-check.sh, and restores the ordinary router. The
-# checked-in remote/image-profiles.tsv stays at execution_policy=refused
-# throughout; the test ledger lives under OUTPUT_DIR and names one profile.
+# checked-in remote/image-profiles.tsv is read and never written; the test
+# ledger lives under OUTPUT_DIR and names one profile at the evidence path this
+# run produces.
 #
 # The run exercises what the browser page does, in the order the page does it.
 # `GET /tools?model=` composes the tool list, the broker's /session and
@@ -252,10 +253,11 @@ image_socket=$image_state_directory/image-service.sock
 mkdir -p "$image_state_directory"
 chmod 700 "$image_state_directory"
 
-# The image ledger is the checked-in file with one row's execution_policy moved
-# to validator-gated. Every other row and every other field is copied, so the
-# run measures the shipped shape rather than a fabricated one, and the shipped
-# file stays refused. image-registry.sh requires validated_evidence to name a
+# The image ledger is the checked-in file with one row's execution_policy set
+# to validator-gated and its validated_evidence set to this run's own record.
+# Every other row and every other field is copied, so the run measures the
+# shipped shape rather than a fabricated one, and the shipped file is read
+# rather than written. image-registry.sh requires validated_evidence to name a
 # path that exists in the tree, so the promoted row names one.
 image_ledger=$output_directory/image-profiles.tsv
 image_evidence=${QWEN_ADMISSION_IMAGE_EVIDENCE:-evidence/image-appliance/design.md}

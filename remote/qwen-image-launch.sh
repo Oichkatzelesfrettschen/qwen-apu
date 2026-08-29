@@ -19,10 +19,11 @@ set -eu
 # rather than silently rewritten, for the reason qwen-web-launch.sh states: an
 # operator who typed 0.0.0.0 wants an exposure this launch declines to provide.
 #
-# Every checked-in row of remote/image-profiles.tsv reads `refused`, so the
-# preset a generator writes against the shipped ledger names no image profile
-# and this launch refuses and says so. Promoting a row to `validator-gated` is
-# a measurement on the appliance, and it is the only thing that arms this path.
+# One checked-in row of remote/image-profiles.tsv reads `validator-gated`, so
+# the preset a generator writes against the shipped ledger under
+# QWEN_WEB_AUTHORIZER_READY=1 names that image profile and this launch arms the
+# path. A preset naming none refuses and says so, and promoting a further row
+# is a measurement on the appliance.
 
 if [ "$#" -gt 1 ]; then
     printf 'usage: %s [paced-60|low-serialized|low-async]\n' "$0" >&2

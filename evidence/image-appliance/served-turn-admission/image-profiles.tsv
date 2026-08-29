@@ -31,12 +31,9 @@
 # binds prompt hash, seed, dimensions, and step count, and it requires
 # validated_evidence to name a retained record that exists in the tree, because
 # a profile that may spend the device must carry the run that showed it safe.
-# One row reads `validator-gated`: image-sdxs-512-a carries the served turn of
-# evidence/image-appliance/served-turn-admission/, where an approved generation
-# reached the runtime through router, broker, MCP child, and service and every
-# refusal the design rests on fired once. Every other row reads `refused` and
-# admits a shape alone; a measured campaign on the appliance is what moves the
-# next one.
+# Every checked-in row reads `refused`, so this ledger admits shapes and
+# authorizes nothing; the first standalone campaign on the appliance is what
+# moves one row.
 #
 # validated_evidence is a repository-relative path, `-` where no run has been
 # retained. Any path present must exist in the tree whatever the policy reads,
@@ -44,7 +41,7 @@
 # claim pointing at nothing.
 #
 # profile_id	model_id	placement	width	height	steps	sampler	cfg	max_steps	max_dimension	timeout_s	execution_policy	validated_evidence
-image-sdxs-512-a	sdxs-512	A	512	512	1	euler	1.0	4	512	300	validator-gated	evidence/image-appliance/served-turn-admission/README.md
+image-sdxs-512-a	sdxs-512	A	512	512	1	euler	1.0	4	512	300	validator-gated	evidence/image-appliance/design.md
 image-sdxs-512-b	sdxs-512	B	512	512	1	euler	1.0	4	512	300	refused	-
 image-sd15-lcm-a	sd15-lcm-v1	A	512	512	4	lcm	1.5	8	512	300	refused	-
 image-sd15-base-a	sd15-base	A	512	512	20	euler_a	7.0	30	512	300	refused	-

@@ -11,6 +11,7 @@
 | llama.cpp build tree | derived regenerable | excluded | `remote/build-llama-vulkan.sh` |
 | View-metadata incremental patch | superseded retain | `patches/superseded/` | folded into `llama-no-cpu-fallback.patch` |
 | Raven2 diagnostic Web UI | adapted source asset | ordinary Git under `webui/` | qwen-lab 1.5.0 source plus APU-specific policy tests |
+| Generated image artifacts | raw exact-target evidence, one binary per admission | ordinary Git under `evidence/image-appliance/` | `evidence/SHA256SUMS`, and the profile, seed, and runtime the provenance record beside it names |
 
 `remote/refresh-evidence-manifest.sh` regenerates `evidence/SHA256SUMS` from
 the tracked `benchmarks/` and `evidence/` trees, and `--check` exits non-zero on
@@ -73,6 +74,16 @@ with identical pixels. `remote/generate-quality-images.py --check` therefore
 decodes both sides and compares pixels, which is the claim a fixture makes;
 inflate is fully specified where deflate leaves the match search to the
 implementation.
+
+An image admission retains one PNG. `remote/admit-image-router.sh` drives two
+generations -- one by curl replay and one by the served page -- and the retained
+record keeps the replay's bytes and the page artifact's digest alone, because a
+provenance record naming the profile, the seed, the runtime SHA-256, and the
+PNG SHA-256 reproduces the second file from the first's own runtime.
+`evidence/image-appliance/served-turn-admission/artifact.png` is 583,938 bytes
+at `sha256 17e452e6974ad6d3174c5d0c9f367c90867eb99ffa8a3a6f9e45e78eb4de7639`,
+and the HTTP capture of the same bytes carries that identity in place of a
+second copy.
 
 `benchmarks/models/qwen38-27b-files.tsv` is the replay authority for the four
 external Qwen3.8-27B benchmark files. Those 9.83 GB through 14.25 GB files stay
