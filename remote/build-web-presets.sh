@@ -111,7 +111,11 @@ set -eu
 # an `image` server to every section's configuration, naming
 # remote/image-mcp/server.py with the section's own profile_id as
 # QWEN_IMAGE_LANGUAGE_PROFILE, because the grant binds the language profile and
-# the image profile together. Its timeout_ms of 360000 sits above the image
+# the image profile together. It also names QWEN_IMAGE_PROFILES_JSON, the
+# validated parameter file image-service.py runs a job under, because the child
+# states that profile's geometry and ceilings in its own tool schema and the
+# advertised maximum and the enforced maximum are then one number. Its
+# timeout_ms of 360000 sits above the image
 # service's 330 s and the runtime's 300 s, so a stalled generation is ended by
 # the process that owns it.
 #
@@ -218,7 +222,8 @@ if [ "$#" -ne 1 ]; then
     printf 'QWEN_WEB_AUTHORIZER_READY=1 asserts the argument-authorization validator runs, admitting validator-gated rows\n' >&2
     printf 'image profile ledger comes from QWEN_IMAGE_PROFILES, default remote/image-profiles.tsv\n' >&2
     printf 'a validator-gated image row adds an image server to every emitted section under QWEN_WEB_AUTHORIZER_READY=1\n' >&2
-    printf 'that row requires QWEN_IMAGE_MCP_SERVER (remote/image-mcp/server.py), QWEN_IMAGE_TOKEN_KEY_FILE, QWEN_IMAGE_STATE_DIR, QWEN_IMAGE_SERVICE_SOCKET\n' >&2
+    printf 'that row requires QWEN_IMAGE_MCP_SERVER (remote/image-mcp/server.py), QWEN_IMAGE_TOKEN_KEY_FILE, QWEN_IMAGE_STATE_DIR, QWEN_IMAGE_SERVICE_SOCKET, QWEN_IMAGE_PROFILES_JSON\n' >&2
+    printf 'QWEN_IMAGE_PROFILES_JSON names the validated parameter file whose geometry and ceilings the MCP tool schema states\n' >&2
     printf 'optional QWEN_IMAGE_MCP_TIMEOUT_MS, default 360000\n' >&2
     exit 2
 fi
@@ -285,6 +290,13 @@ image_mcp_server=${QWEN_IMAGE_MCP_SERVER:-}
 image_token_key_file=${QWEN_IMAGE_TOKEN_KEY_FILE:-}
 image_state_directory=${QWEN_IMAGE_STATE_DIR:-"${HOME:?}/qwen-webui-state/images"}
 image_service_socket=${QWEN_IMAGE_SERVICE_SOCKET:-$image_state_directory/image-service.sock}
+# The MCP child states the served profile's geometry and ceilings in its own
+# tool schema, and it reads them from the parameter file image-service.py runs
+# a job under, so the maximum a model is offered and the maximum the service
+# enforces are one number. The path travels; the file is read by the child at
+# every start, which is what keeps a preset that persists across a registry
+# edit from advertising a ceiling the ledger has since lowered.
+image_profiles_json=${QWEN_IMAGE_PROFILES_JSON:-}
 image_mcp_timeout_ms=${QWEN_IMAGE_MCP_TIMEOUT_MS:-360000}
 case $image_mcp_timeout_ms in
     '' | 0* | *[!0-9]*)
@@ -584,11 +596,12 @@ image_profiles_sha256=${image_profiles_identity%% *}
 # long after the listener reports ready.
 require_image_mcp_inputs() {
     for image_input_name in QWEN_IMAGE_MCP_SERVER QWEN_IMAGE_TOKEN_KEY_FILE \
-        QWEN_IMAGE_STATE_DIR QWEN_IMAGE_SERVICE_SOCKET; do
+        QWEN_IMAGE_STATE_DIR QWEN_IMAGE_SERVICE_SOCKET QWEN_IMAGE_PROFILES_JSON; do
         case $image_input_name in
             QWEN_IMAGE_MCP_SERVER) image_input_value=$image_mcp_server ;;
             QWEN_IMAGE_TOKEN_KEY_FILE) image_input_value=$image_token_key_file ;;
             QWEN_IMAGE_STATE_DIR) image_input_value=$image_state_directory ;;
+            QWEN_IMAGE_PROFILES_JSON) image_input_value=$image_profiles_json ;;
             *) image_input_value=$image_service_socket ;;
         esac
         if [ -z "$image_input_value" ]; then
@@ -1076,6 +1089,8 @@ while profile_id=; IFS='	' read -r profile_id model_id _web_mode context \
                 "$image_state_directory"
             printf '        "QWEN_IMAGE_SERVICE_SOCKET": "%s",\n' \
                 "$image_service_socket"
+            printf '        "QWEN_IMAGE_PROFILES_JSON": "%s",\n' \
+                "$image_profiles_json"
             # llama-server reads timeout_ms as the per-call limit and the child
             # reads QWEN_IMAGE_MCP_TIMEOUT_S as its own socket deadline, so the
             # two are written from one value: an operator raising the router's

@@ -21,6 +21,13 @@ decides what the transcript carries: the result is a JSON object naming the
 status, the artifact SHA-256, and its provenance URL, so the model and the page
 read an identity and a location rather than image bytes.
 
+The listing states the served profile rather than the lane. `tools/list` reads
+`QWEN_IMAGE_PROFILES_JSON` -- the parameter file `image-service.py` runs a job
+under and `qwen-image-launch.sh` validates against the ledger row -- and builds
+`profile_id` as an enum of the one served profile with the dimension and step
+maxima that profile admits, so a model proposing from the schema proposes what
+the broker signs and the service executes.
+
 The tool bounds its own call at `QWEN_IMAGE_MCP_TIMEOUT_S`, 360 seconds by
 default, and applies it as the socket deadline, so a stalled service is
 answered by this child's own timer rather than abandoned by the router.
@@ -120,6 +127,7 @@ def settings_from_environment():
         "token_key_file": os.environ.get("QWEN_IMAGE_TOKEN_KEY_FILE", ""),
         "state_dir": os.environ.get("QWEN_IMAGE_STATE_DIR", ""),
         "socket_path": os.environ.get("QWEN_IMAGE_SERVICE_SOCKET", ""),
+        "profiles_json": os.environ.get("QWEN_IMAGE_PROFILES_JSON", ""),
         "timeout": os.environ.get("QWEN_IMAGE_MCP_TIMEOUT_S", ""),
     }
 
@@ -138,6 +146,7 @@ def require_configuration(settings):
         ("token_key_file", "QWEN_IMAGE_TOKEN_KEY_FILE"),
         ("state_dir", "QWEN_IMAGE_STATE_DIR"),
         ("socket_path", "QWEN_IMAGE_SERVICE_SOCKET"),
+        ("profiles_json", "QWEN_IMAGE_PROFILES_JSON"),
     ):
         if not settings.get(key):
             raise web_server.InvalidArgument(
@@ -145,23 +154,102 @@ def require_configuration(settings):
             )
 
 
-def tool_definitions():
-    """Return the one tool this server exposes.
+PROFILE_INTEGER_FIELDS = ("width", "height", "steps", "max_dimension", "max_steps")
 
-    Every argument the tool reads is named here, and `additionalProperties` is
-    false, so `handle_request` refuses a name outside the set. `authorization`
-    is an argument rather than an ambient setting because one approval
-    authorizes one call, and it takes the name the service protocol gives the
-    same field, so one word names the grant along its whole path.
+# Every argument the tool reads, named once. `additionalProperties` is false and
+# `handle_request` refuses a name outside this set, so the schema and that
+# refusal read one tuple rather than two lists that drift apart.
+TOOL_ARGUMENT_NAMES = (
+    "prompt",
+    "negative_prompt",
+    "seed",
+    "width",
+    "height",
+    "steps",
+    "profile_id",
+    "authorization",
+)
+
+
+def profile_parameters(settings):
+    """Return the served profile's geometry and ceilings from the parameter file.
+
+    `QWEN_IMAGE_PROFILES_JSON` is the file `image-service.py` runs a job under
+    and `qwen-image-launch.sh` validates against the `remote/image-profiles.tsv`
+    row before anything starts, so the maximum this schema advertises and the
+    maximum the service enforces at `request["width"] > profile["max_dimension"]`
+    are one number read from one file. A preset persists across a registry edit
+    where this file is read again at every child start, which is why the bounds
+    live here rather than in the section's environment.
+
+    An absent file, an absent profile, or a non-positive field raises. A schema
+    falling back to `image_grant`'s own 4096 pixel ceiling would advertise a
+    geometry the profile refuses, which is the state the bounds exist to end.
     """
+    parameter_path = settings["profiles_json"]
+    if not parameter_path:
+        raise web_server.InvalidArgument(
+            "QWEN_IMAGE_PROFILES_JSON is unconfigured, so the tool states no "
+            "profile bounds"
+        )
+    try:
+        with open(parameter_path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, ValueError) as error:
+        raise web_server.InvalidArgument(
+            "the image parameter file is unreadable or is not JSON: "
+            f"{error.__class__.__name__}"
+        ) from None
+    profile = payload.get(settings["profile"]) if isinstance(payload, dict) else None
+    if not isinstance(profile, dict):
+        raise web_server.InvalidArgument(
+            "the image parameter file holds no object for profile "
+            f"{settings['profile']!r}"
+        )
+    bounds = {"profile_id": settings["profile"]}
+    for field in PROFILE_INTEGER_FIELDS:
+        value = profile.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            raise web_server.InvalidArgument(
+                f"the parameters for profile {settings['profile']!r} carry no "
+                f"positive integer {field}"
+            )
+        bounds[field] = value
+    return bounds
+
+
+def tool_definitions(bounds):
+    """Return the one tool this server exposes, bounded by the served profile.
+
+    The schema states what this section serves rather than what the lane could
+    serve: `profile_id` is an enum of the one admitted profile, the dimension
+    and step maxima are that profile's own ceilings, and each description names
+    its native geometry. A model reading the listing proposes inside the bounds
+    the broker signs and the service enforces, where a schema stating the
+    helper's widest ceilings invites a proposal every later layer refuses.
+
+    `image_grant` bounds a dimension at `DIMENSION_MAXIMUM` and a step count at
+    `STEP_MAXIMUM`, and `parse_arguments` applies both to what arrives, so an
+    advertised ceiling is clamped to them: a profile admitting more would
+    otherwise advertise a geometry this file refuses.
+
+    `authorization` is an argument rather than an ambient setting because one
+    approval authorizes one call, and it takes the name the service protocol
+    gives the same field, so one word names the grant along its whole path.
+    """
+    profile = bounds["profile_id"]
+    dimension_ceiling = min(bounds["max_dimension"], image_grant.DIMENSION_MAXIMUM)
+    step_ceiling = min(bounds["max_steps"], image_grant.STEP_MAXIMUM)
     return [
         {
             "name": "generate_image",
             "description": (
-                "Generate one image from an approved prompt. The call runs "
-                "only under a grant the user approved for these exact "
-                "arguments, and the reply names the artifact digest and its "
-                "provenance URL."
+                f"Generate one image under the {profile} image profile, which "
+                f"renders {bounds['width']}x{bounds['height']} and admits at "
+                f"most {dimension_ceiling} pixels a side and {step_ceiling} "
+                "sampler steps. The call runs only under a grant the user "
+                "approved for these exact arguments, and the reply names the "
+                "artifact digest and its provenance URL."
             ),
             "inputSchema": {
                 "type": "object",
@@ -193,24 +281,44 @@ def tool_definitions():
                     "width": {
                         "type": "integer",
                         "minimum": image_grant.DIMENSION_MINIMUM,
-                        "maximum": image_grant.DIMENSION_MAXIMUM,
-                        "description": "Pixel width, at most the granted maximum.",
+                        "maximum": dimension_ceiling,
+                        "default": bounds["width"],
+                        "description": (
+                            f"Pixel width. The {profile} profile renders "
+                            f"{bounds['width']} natively and admits at most "
+                            f"{dimension_ceiling}."
+                        ),
                     },
                     "height": {
                         "type": "integer",
                         "minimum": image_grant.DIMENSION_MINIMUM,
-                        "maximum": image_grant.DIMENSION_MAXIMUM,
-                        "description": "Pixel height, at most the granted maximum.",
+                        "maximum": dimension_ceiling,
+                        "default": bounds["height"],
+                        "description": (
+                            f"Pixel height. The {profile} profile renders "
+                            f"{bounds['height']} natively and admits at most "
+                            f"{dimension_ceiling}."
+                        ),
                     },
                     "steps": {
                         "type": "integer",
                         "minimum": image_grant.STEP_MINIMUM,
-                        "maximum": image_grant.STEP_MAXIMUM,
-                        "description": "Sampler steps, at most the granted maximum.",
+                        "maximum": step_ceiling,
+                        "default": bounds["steps"],
+                        "description": (
+                            f"Sampler steps. The {profile} profile runs "
+                            f"{bounds['steps']} and admits at most "
+                            f"{step_ceiling}."
+                        ),
                     },
                     "profile_id": {
                         "type": "string",
-                        "description": "The image profile the grant names.",
+                        "enum": [profile],
+                        "description": (
+                            f"The image profile this server serves. {profile} "
+                            "is the one profile it admits, and the grant names "
+                            "the same one."
+                        ),
                     },
                     "authorization": {
                         "type": "string",
@@ -565,10 +673,19 @@ def handle_request(settings, message):
     if method == "ping":
         return {"jsonrpc": "2.0", "id": identifier, "result": {}}
     if method == "tools/list":
+        # The listing states the served profile's own bounds, so an unreadable
+        # parameter file answers with an error rather than with a schema whose
+        # maxima nothing measured. A model offered no tool proposes no
+        # generation, where a model offered unbounded arguments proposes a
+        # geometry the broker and the service both refuse.
+        try:
+            bounds = profile_parameters(settings)
+        except web_server.ToolError as error:
+            return web_server.jsonrpc_error(identifier, -32603, str(error))
         return {
             "jsonrpc": "2.0",
             "id": identifier,
-            "result": {"tools": tool_definitions()},
+            "result": {"tools": tool_definitions(bounds)},
         }
     if method == "tools/call":
         handler = TOOL_HANDLERS.get(params.get("name"))
@@ -589,13 +706,9 @@ def handle_request(settings, message):
         # `params` object of POST /tools and keeps its own routing keys out of
         # it, and a parser that started forwarding one surfaces here as a
         # refusal rather than as a generation that ran anyway.
-        admitted = {
-            name
-            for tool in tool_definitions()
-            if tool["name"] == params.get("name")
-            for name in tool["inputSchema"]["properties"]
-        }
-        unknown = sorted(name for name in arguments if name not in admitted)
+        unknown = sorted(
+            name for name in arguments if name not in TOOL_ARGUMENT_NAMES
+        )
         if unknown:
             return web_server.tool_result(
                 identifier,

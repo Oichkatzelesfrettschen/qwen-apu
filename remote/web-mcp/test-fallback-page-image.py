@@ -28,7 +28,6 @@ import sys
 import tempfile
 import threading
 import time
-import urllib.request
 
 THIS_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(os.path.dirname(THIS_DIRECTORY))
@@ -54,6 +53,44 @@ SESSION_SECRET = "session-secret-xyz"
 # the listing composes the same string (:2046), so the section's `image` server
 # serves `generate_image` as `image_generate_image` and the page addresses it by
 # that name. The stub composes it here once, the way the router does.
+# The section serves one image profile, and remote/image-mcp/server.py states
+# it as the enum of `profile_id` with the maxima that profile admits, so the
+# stub listing carries the same shape the child builds from its parameter file.
+SERVED_IMAGE_PROFILE = "sdxs-512-arm-a"
+SCHEMA_MAX_DIMENSION = 512
+SCHEMA_MAX_STEPS = 4
+DEFAULT_PROPOSAL = {
+    "prompt": "a fox in a snowy field",
+    "negative_prompt": "blurry, low quality",
+    "width": 512,
+    "height": 512,
+    "steps": 4,
+    "profile_id": SERVED_IMAGE_PROFILE,
+}
+# The proposal the appliance answered with a 900 second hang: a model reading an
+# unbounded schema proposed another profile at another geometry.
+OUT_OF_BOUNDS_PROPOSAL = {
+    "prompt": "a fox in a snowy field",
+    "seed": 42,
+    "width": 1024,
+    "height": 768,
+    "steps": 30,
+    "profile_id": "product_photography",
+}
+FOREIGN_PROFILE_PROPOSAL = {
+    "prompt": "a fox in a snowy field",
+    "negative_prompt": "blurry, low quality",
+    "seed": 42,
+    "width": 512,
+    "height": 512,
+    "steps": 4,
+    "profile_id": "product_photography",
+}
+BROKER_REFUSAL = (
+    "the broker process serves language profile fast-text; the request named "
+    "image-test-profile"
+)
+
 IMAGE_MCP_SERVER_NAME = "image"
 IMAGE_MCP_TOOL_NAME = "generate_image"
 IMAGE_TOOL_NAME = "{}_{}".format(IMAGE_MCP_SERVER_NAME, IMAGE_MCP_TOOL_NAME)
@@ -74,7 +111,57 @@ class RecordingState:
         self.artifact_auth_headers = []
 
 
-def make_handler(state):
+def image_tool_listing():
+    """Return the `GET /tools` row the router serves for the image child.
+
+    `profile_id` carries the one-value enum and `width`, `height`, and `steps`
+    carry the profile's own maxima, which is what remote/image-mcp/server.py
+    builds from the parameter file image-service.py enforces against. The page
+    reads both out of this listing.
+    """
+    return [{
+        "tool": IMAGE_TOOL_NAME,
+        "definition": {
+            "type": "function",
+            "function": {
+                "name": IMAGE_TOOL_NAME,
+                "description": (
+                    "Generate one image under the {} image profile, which renders "
+                    "512x512 and admits at most {} pixels a side and {} sampler "
+                    "steps.".format(
+                        SERVED_IMAGE_PROFILE, SCHEMA_MAX_DIMENSION, SCHEMA_MAX_STEPS)
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {"type": "string"},
+                        "negative_prompt": {"type": "string"},
+                        "width": {"type": "integer", "maximum": SCHEMA_MAX_DIMENSION,
+                                   "default": 512},
+                        "height": {"type": "integer", "maximum": SCHEMA_MAX_DIMENSION,
+                                    "default": 512},
+                        "steps": {"type": "integer", "maximum": SCHEMA_MAX_STEPS,
+                                   "default": 1},
+                        "profile_id": {"type": "string",
+                                        "enum": [SERVED_IMAGE_PROFILE]},
+                        "seed": {"type": "integer"},
+                        "authorization": {"type": "string"},
+                    },
+                    "required": ["prompt", "profile_id", "width", "height", "steps"],
+                },
+            },
+        },
+    }]
+
+
+def make_handler(state, proposal=None, grant_status=200, grant_error=None):
+    """Play the router, the broker, and the artifact listener for one turn.
+
+    `proposal` is what the fixture model emits as the tool call arguments, and
+    `grant_status` with `grant_error` is what the broker answers, so an arm
+    states the one condition it exercises and shares every other route.
+    """
+    proposed_arguments = DEFAULT_PROPOSAL if proposal is None else proposal
     fallback_html = open(FALLBACK_UI_PATH, "rb").read()
 
     class Handler(http.server.BaseHTTPRequestHandler):
@@ -121,30 +208,7 @@ def make_handler(state):
                 self._send_json(200, {"default_generation_settings": {"n_ctx": 4096}})
                 return
             if parsed_path == "/tools":
-                self._send_json(200, [{
-                    "tool": IMAGE_TOOL_NAME,
-                    "definition": {
-                        "type": "function",
-                        "function": {
-                            "name": IMAGE_TOOL_NAME,
-                            "description": "Generate one image.",
-                            "parameters": {
-                                "type": "object",
-                                "properties": {
-                                    "prompt": {"type": "string"},
-                                    "negative_prompt": {"type": "string"},
-                                    "width": {"type": "integer"},
-                                    "height": {"type": "integer"},
-                                    "steps": {"type": "integer"},
-                                    "profile_id": {"type": "string"},
-                                    "seed": {"type": "integer"},
-                                    "authorization": {"type": "string"},
-                                },
-                                "required": ["prompt", "profile_id", "width", "height", "steps"],
-                            },
-                        },
-                    },
-                }])
+                self._send_json(200, image_tool_listing())
                 return
             if parsed_path == "/session":
                 self._send_json(200, {"session_secret": SESSION_SECRET})
@@ -184,12 +248,7 @@ def make_handler(state):
                          "usage": {"completion_tokens": 4}},
                     ]
                 else:
-                    arguments = json.dumps({
-                        "prompt": "a fox in a snowy field",
-                        "negative_prompt": "blurry, low quality",
-                        "width": 512, "height": 512, "steps": 4,
-                        "profile_id": "sdxs-512-arm-a",
-                    })
+                    arguments = json.dumps(proposed_arguments)
                     chunks = [
                         {"choices": [{"delta": {"tool_calls": [{
                             "index": 0,
@@ -217,6 +276,9 @@ def make_handler(state):
                     return
                 if payload.get("context") != "qwen-image-generate-v1":
                     self._send_json(400, {"error": "wrong grant context"})
+                    return
+                if grant_status != 200:
+                    self._send_json(grant_status, {"error": grant_error})
                     return
                 self._send_json(200, {"authorization": GRANT_TOKEN})
                 return
@@ -414,115 +476,168 @@ def test_timeout_without_proposal():
     return failures
 
 
-def test_full_authorization():
-    state = RecordingState()
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), make_handler(state))
-    port = server.server_address[1]
+def serve(handler):
+    """Return a started stub server, its thread, and its origin."""
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    origin = "http://127.0.0.1:{}".format(port)
+    return server, thread, "http://127.0.0.1:{}".format(server.server_address[1])
 
-    profile_directory = tempfile.mkdtemp(prefix="qwen-image-page-drive.")
-    chromium = os.environ.get("QWEN_CHROMIUM", "chromium")
-    command = [
-        chromium, "--headless=new", "--no-sandbox", "--disable-gpu",
-        "--no-first-run", "--remote-debugging-port=0",
-        "--user-data-dir=" + profile_directory, "about:blank",
-    ]
-    browser_log = open(os.path.join(profile_directory, "chromium.log"), "w+b")
-    browser = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=browser_log)
-    try:
+
+class PageSession:
+    """One headless Chromium holding the served page with the image lane armed.
+
+    Every arm drives the same page through the same three steps -- load it,
+    give it the credential and the artifact origin, arm the Image toggle and
+    send one prompt -- and differs in what the stub answers and what the arm
+    reads back, so the plumbing lives here and each arm states its own
+    condition.
+    """
+
+    def __init__(self, origin):
+        import urllib.parse
+
+        self.origin = origin
+        self.profile_directory = tempfile.mkdtemp(prefix="qwen-image-page-drive.")
+        chromium = os.environ.get("QWEN_CHROMIUM", "chromium")
+        command = [
+            chromium, "--headless=new", "--no-sandbox", "--disable-gpu",
+            "--no-first-run", "--remote-debugging-port=0",
+            "--user-data-dir=" + self.profile_directory, "about:blank",
+        ]
+        self.browser_log = open(
+            os.path.join(self.profile_directory, "chromium.log"), "w+b")
+        self.browser = subprocess.Popen(
+            command, stdout=subprocess.DEVNULL, stderr=self.browser_log)
         devtools = None
         deadline = time.monotonic() + 60
-        while time.monotonic() < deadline and browser.poll() is None:
-            browser_log.seek(0)
+        while time.monotonic() < deadline and self.browser.poll() is None:
+            self.browser_log.seek(0)
             match = re.search(
                 r"DevTools listening on (ws://\S+)",
-                browser_log.read().decode("utf-8", "replace"))
+                self.browser_log.read().decode("utf-8", "replace"))
             if match:
                 devtools = match.group(1)
                 break
             time.sleep(0.2)
         if devtools is None:
+            self.close()
             raise RuntimeError("Chromium printed no DevTools address")
         http_origin = re.match(r"ws://([^/]+)/", devtools).group(1)
-
-        # The broker origin defaults to the hardcoded loopback fallback the
-        # page ships with; this stub plays both the router and the broker on
-        # one origin, so the page must be told to use it via ?broker=, the
-        # same override qwen-webui-session.sh's own operator uses.
-        import urllib.parse as _urlparse
-        page_url = origin + "/?broker=" + _urlparse.quote(origin, safe="")
+        # The stub plays the router and the broker on one origin, so the page is
+        # told to use it through ?broker=, the override qwen-webui-session.sh's
+        # own operator uses.
+        page_url = origin + "/?broker=" + urllib.parse.quote(origin, safe="")
         request = urllib.request.Request(
             "http://{}/json/new?{}".format(http_origin, page_url), method="PUT")
         with urllib.request.urlopen(request, timeout=30) as response:
             target = json.load(response)
-        page = drive_fallback_page.DevToolsSocket(target["webSocketDebuggerUrl"])
-        page.call("Page.enable")
-        page.call("Runtime.enable")
-
+        self.page = drive_fallback_page.DevToolsSocket(target["webSocketDebuggerUrl"])
+        self.page.call("Page.enable")
+        self.page.call("Runtime.enable")
         drive_fallback_page.wait_for(
-            page, "document.readyState === 'complete' && typeof requestModel !== 'undefined'",
+            self.page,
+            "document.readyState === 'complete' && typeof requestModel !== 'undefined'",
             30, "the page to load")
-        page.evaluate(
+        self.evaluate(
             "(() => { document.querySelector('#api-key').value = " + json.dumps(API_KEY) +
             "; document.querySelector('#set-key').click(); return true; })()")
         # The stub serves the artifact routes on its own origin, and the real
-        # listener binds an ephemeral port, so the page is told where it is
-        # the way an operator tells it: through the field.
-        page.evaluate(
-            "(() => { document.querySelector('#artifact-origin').value = " + json.dumps(origin) +
-            "; return true; })()")
-        drive_fallback_page.wait_for(page, "requestModel", 30, "the page to select a model")
-        page.evaluate(drive_fallback_page.FETCH_RECORDER)
-        page.evaluate(
-            "(() => { document.querySelector('#image-tools').checked = true; return true; })()")
-        page.evaluate(
-            "(() => { document.querySelector('#input').value = 'draw a fox'; "
-            "document.querySelector('#send').click(); return true; })()")
-
+        # listener binds an ephemeral port, so the page is told where it is the
+        # way an operator tells it: through the field.
+        self.evaluate(
+            "(() => { document.querySelector('#artifact-origin').value = "
+            + json.dumps(origin) + "; return true; })()")
         drive_fallback_page.wait_for(
-            page, "document.querySelector('#image-approval').open", 30,
-            "the image approval dialog")
-        dialog_fields = page.evaluate(
+            self.page, "requestModel", 30, "the page to select a model")
+        self.evaluate(drive_fallback_page.FETCH_RECORDER)
+
+    def evaluate(self, expression):
+        return self.page.evaluate(expression)
+
+    def wait_for(self, expression, seconds, what):
+        return drive_fallback_page.wait_for(self.page, expression, seconds, what)
+
+    def send(self, prompt):
+        self.evaluate(
+            "(() => { document.querySelector('#image-tools').checked = true; return true; })()")
+        self.evaluate(
+            "(() => { document.querySelector('#input').value = " + json.dumps(prompt) +
+            "; document.querySelector('#send').click(); return true; })()")
+
+    def dialog_fields(self):
+        return self.evaluate(
             "(() => { const args = {}; document.querySelectorAll('#image-approval-args dt')"
             ".forEach(dt => { args[dt.textContent.trim()] = "
             "(dt.nextElementSibling || {}).textContent; }); return args; })()")
 
-        state_after_approval = page.evaluate(
-            "(() => (document.querySelector('.image-state') || {}).textContent || null)()")
-        if state_after_approval is not None:
-            raise AssertionError(
-                "an image-state element exists before approval: " + repr(state_after_approval))
+    def dialog_note(self):
+        return self.evaluate(
+            "(() => { const note = document.querySelector('#image-approval-note');"
+            " return note.hidden ? null : note.textContent; })()")
 
-        page.evaluate(
+    def approve(self):
+        self.evaluate(
             "(() => { document.querySelector('#image-approve-once').click(); return true; })()")
 
-        drive_fallback_page.wait_for(
-            page,
-            "(() => { const el = document.querySelector('.image-state'); "
-            "return el && el.textContent === 'Image complete'; })()",
-            60, "the image generation to complete")
+    def image_state(self):
+        return self.evaluate(
+            "(() => (document.querySelector('.image-state') || {}).textContent || null)()")
 
-        report = page.evaluate(
-            "JSON.stringify({ history, requests: window.__qwenRequests, "
+    def report(self):
+        return json.loads(self.evaluate(
+            "JSON.stringify({ history, requests: window.__qwenRequests, busy, "
             "imgSrc: (document.querySelector('.image-artifact img') || {}).src || null, "
             "caption: (document.querySelector('.image-artifact figcaption') || {}).textContent "
-            "|| null })")
-        report = json.loads(report)
-    finally:
-        browser_log.close()
-        browser.terminate()
+            "|| null, imageState: (document.querySelector('.image-state') || {}).textContent "
+            "|| null })"))
+
+    def close(self):
+        self.browser_log.close()
+        self.browser.terminate()
         try:
-            browser.wait(timeout=10)
+            self.browser.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            browser.kill()
-        for root, directories, files in os.walk(profile_directory, topdown=False):
+            self.browser.kill()
+        for root, directories, files in os.walk(self.profile_directory, topdown=False):
             for name in files:
                 os.unlink(os.path.join(root, name))
             for name in directories:
                 os.rmdir(os.path.join(root, name))
-        os.rmdir(profile_directory)
+        os.rmdir(self.profile_directory)
+
+
+def image_tool_messages(report):
+    return [message for message in report.get("history", [])
+            if message.get("role") == "tool" and message.get("name") == IMAGE_TOOL_NAME]
+
+
+def test_full_authorization():
+    state = RecordingState()
+    server, thread, origin = serve(make_handler(state))
+    session = None
+    try:
+        session = PageSession(origin)
+        session.send("draw a fox")
+        session.wait_for(
+            "document.querySelector('#image-approval').open", 30,
+            "the image approval dialog")
+        dialog_fields = session.dialog_fields()
+        state_after_approval = session.image_state()
+        if state_after_approval is not None:
+            raise AssertionError(
+                "an image-state element exists before approval: "
+                + repr(state_after_approval))
+        session.approve()
+        session.wait_for(
+            "(() => { const el = document.querySelector('.image-state'); "
+            "return el && el.textContent === 'Image complete'; })()",
+            60, "the image generation to complete")
+        session.wait_for("busy === false", 60, "the turn to end")
+        report = session.report()
+    finally:
+        if session is not None:
+            session.close()
         server.shutdown()
         thread.join(timeout=5)
 
@@ -533,7 +648,7 @@ def test_full_authorization():
         failures.append("dialog did not name the generated seed: " + repr(dialog_fields.get("seed")))
     if dialog_fields.get("prompt") != "a fox in a snowy field":
         failures.append("dialog prompt field mismatch: " + repr(dialog_fields.get("prompt")))
-    if dialog_fields.get("profile") != "sdxs-512-arm-a":
+    if dialog_fields.get("profile") != SERVED_IMAGE_PROFILE:
         failures.append("dialog profile field mismatch: " + repr(dialog_fields.get("profile")))
 
     with state.lock:
@@ -570,7 +685,7 @@ def test_full_authorization():
         # it, and refuses any name outside its schema, so the page's own wire
         # spelling is checked here rather than only against a stub that would
         # accept either.
-        if params.get("profile_id") != "sdxs-512-arm-a":
+        if params.get("profile_id") != SERVED_IMAGE_PROFILE:
             failures.append("the " + IMAGE_TOOL_NAME + " call named no profile_id: " + repr(params.get("profile_id")))
         if "profile" in params:
             failures.append("the " + IMAGE_TOOL_NAME + " call carries a profile key the tool refuses by name")
@@ -587,8 +702,7 @@ def test_full_authorization():
     if "512x512" not in caption:
         failures.append("the artifact card caption does not name the dimensions")
 
-    tool_messages = [m for m in report.get("history", [])
-                      if m.get("role") == "tool" and m.get("name") == IMAGE_TOOL_NAME]
+    tool_messages = image_tool_messages(report)
     if len(tool_messages) != 1:
         failures.append("expected exactly one retained " + IMAGE_TOOL_NAME + " tool message, saw {}"
                          .format(len(tool_messages)))
@@ -630,11 +744,180 @@ def test_full_authorization():
     return [], success_lines
 
 
+def report_failures(label, failures):
+    if failures:
+        sys.stderr.write("test-fallback-page-image failures ({}):\n".format(label))
+        for failure in failures:
+            sys.stderr.write("  - " + failure + "\n")
+    return failures
+
+
+def test_out_of_bounds_proposal_refused_before_the_dialog():
+    """A proposal above the schema's maxima is answered rather than approved.
+
+    The dialog stays shut, the broker sees no request, and the model reads the
+    bound it exceeded, so it may propose again inside the turn's remaining
+    continuation rounds.
+    """
+    state = RecordingState()
+    server, thread, origin = serve(
+        make_handler(state, proposal=OUT_OF_BOUNDS_PROPOSAL))
+    session = None
+    try:
+        session = PageSession(origin)
+        session.send("draw a fox")
+        session.wait_for("busy === false", 60, "the turn to end")
+        dialog_open = session.evaluate(
+            "document.querySelector('#image-approval').open")
+        report = session.report()
+    finally:
+        if session is not None:
+            session.close()
+        server.shutdown()
+        thread.join(timeout=5)
+
+    failures = []
+    if dialog_open:
+        failures.append("the approval dialog opened for an out-of-bounds proposal")
+    with state.lock:
+        if state.grant_image_bodies:
+            failures.append("a grant was requested for an out-of-bounds proposal")
+        if state.tools_post_bodies:
+            failures.append("a generation ran for an out-of-bounds proposal")
+    tool_messages = image_tool_messages(report)
+    if len(tool_messages) != 1:
+        failures.append("expected one tool message naming the bound, saw {}".format(
+            len(tool_messages)))
+    else:
+        content = tool_messages[0].get("content", "")
+        if "width" not in content or str(SCHEMA_MAX_DIMENSION) not in content:
+            failures.append("the tool message named no argument and no bound: " + repr(content))
+    if report.get("busy") is not False:
+        failures.append("the turn did not end: busy=" + repr(report.get("busy")))
+    return report_failures("out-of-bounds-proposal", failures), [
+        "out_of_bounds_refused_before_dialog=accepted",
+        "out_of_bounds_tool_message=" + (
+            image_tool_messages(report)[0]["content"] if image_tool_messages(report) else ""),
+    ]
+
+
+def test_foreign_profile_replaced_by_the_served_one():
+    """The dialog and the grant name the profile the section serves.
+
+    A model proposing another profile is shown its own value on the note line
+    and the served value on the profile row, and the grant the broker signs
+    carries the served profile, which is the one the broker is bound to.
+    """
+    state = RecordingState()
+    server, thread, origin = serve(
+        make_handler(state, proposal=FOREIGN_PROFILE_PROPOSAL))
+    session = None
+    try:
+        session = PageSession(origin)
+        session.send("draw a fox")
+        session.wait_for(
+            "document.querySelector('#image-approval').open", 30,
+            "the image approval dialog")
+        dialog_fields = session.dialog_fields()
+        dialog_note = session.dialog_note()
+        session.approve()
+        session.wait_for("busy === false", 60, "the turn to end")
+        report = session.report()
+    finally:
+        if session is not None:
+            session.close()
+        server.shutdown()
+        thread.join(timeout=5)
+
+    failures = []
+    if dialog_fields.get("profile") != SERVED_IMAGE_PROFILE:
+        failures.append("the dialog named a profile other than the served one: "
+                         + repr(dialog_fields.get("profile")))
+    if not dialog_note or "product_photography" not in dialog_note:
+        failures.append("the dialog note did not name the proposed profile: " + repr(dialog_note))
+    if not dialog_note or SERVED_IMAGE_PROFILE not in dialog_note:
+        failures.append("the dialog note did not name the served profile: " + repr(dialog_note))
+    with state.lock:
+        grants = list(state.grant_image_bodies)
+        tools_bodies = list(state.tools_post_bodies)
+    if len(grants) != 1 or grants[0].get("image_profile") != SERVED_IMAGE_PROFILE:
+        failures.append("the grant did not name the served image profile: " + repr(grants))
+    calls = [body for body in tools_bodies if body.get("tool") == IMAGE_TOOL_NAME]
+    if len(calls) != 1 or (calls[0].get("params") or {}).get("profile_id") != SERVED_IMAGE_PROFILE:
+        failures.append("the generation did not name the served profile_id: " + repr(calls))
+    if report.get("busy") is not False:
+        failures.append("the turn did not end: busy=" + repr(report.get("busy")))
+    return report_failures("foreign-profile", failures), [
+        "foreign_profile_replaced=accepted",
+        "dialog_note=" + repr(dialog_note),
+    ]
+
+
+def test_refused_grant_ends_the_turn():
+    """A broker refusal after the approval reaches the model and ends the turn.
+
+    The appliance held `busy` for 900 seconds here: the dialog caught the
+    refusal, re-enabled its button, and settled nothing, so the model waited on
+    a tool message that never arrived.
+    """
+    state = RecordingState()
+    server, thread, origin = serve(
+        make_handler(state, grant_status=400, grant_error=BROKER_REFUSAL))
+    session = None
+    try:
+        session = PageSession(origin)
+        session.send("draw a fox")
+        session.wait_for(
+            "document.querySelector('#image-approval').open", 30,
+            "the image approval dialog")
+        session.approve()
+        session.wait_for("busy === false", 60, "the turn to end")
+        dialog_open = session.evaluate("document.querySelector('#image-approval').open")
+        report = session.report()
+    finally:
+        if session is not None:
+            session.close()
+        server.shutdown()
+        thread.join(timeout=5)
+
+    failures = []
+    if dialog_open:
+        failures.append("the approval dialog stayed open after the broker refused")
+    if report.get("busy") is not False:
+        failures.append("the turn did not end: busy=" + repr(report.get("busy")))
+    tool_messages = image_tool_messages(report)
+    if len(tool_messages) != 1:
+        failures.append("expected one tool message naming the refusal, saw {}".format(
+            len(tool_messages)))
+    elif BROKER_REFUSAL not in tool_messages[0].get("content", ""):
+        failures.append("the tool message did not carry the broker's reason: "
+                         + repr(tool_messages[0].get("content")))
+    image_state = report.get("imageState") or ""
+    if not image_state.startswith("Image failed:"):
+        failures.append("the image state did not read failed: " + repr(image_state))
+    with state.lock:
+        if state.tools_post_bodies:
+            failures.append("a generation ran without a grant")
+    return report_failures("refused-grant", failures), [
+        "refused_grant_ends_turn=accepted",
+        "refused_grant_tool_message=" + (
+            tool_messages[0]["content"] if tool_messages else ""),
+    ]
+
+
 def main():
     failures = []
 
     authorization_failures, success_lines = test_full_authorization()
     failures.extend(authorization_failures)
+
+    for arm in (test_out_of_bounds_proposal_refused_before_the_dialog,
+                test_foreign_profile_replaced_by_the_served_one,
+                test_refused_grant_ends_the_turn):
+        arm_failures, arm_lines = arm()
+        failures.extend(arm_failures)
+        if not arm_failures:
+            success_lines.extend(arm_lines)
 
     timeout_failures = test_timeout_without_proposal()
     failures.extend(timeout_failures)
