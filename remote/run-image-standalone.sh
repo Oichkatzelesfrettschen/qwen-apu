@@ -162,7 +162,21 @@ fi
 image_backend=${QWEN_IMAGE_BACKEND:-"te=$device_name,vae=$device_name,diffusion=$device_name"}
 
 summary_path=$output_directory/summary.tsv
-summary_header='arm	status	exit_status	timed_out	binary_sha256	model_sha256	device_name	backend	prompt	seed	width	height	steps	sampler	cfg_scale	wall_load_s	text_encoder_s	diffusion_s	vae_s	total_generate_s	residual_encode_overhead_s	shell_wall_s	rss_peak_kib	pss_peak_kib	mem_available_min_kib	swap_free_delta_kib	vram_used_bytes	gtt_used_bytes	mclk_modal_mhz	temp_millidegrees_max	ring_resets	gpu_faults	dmesg_state	png_path	png_sha256'
+# SDXS-512 ships a Tiny AutoEncoder in place of a full VAE, which sd-cli loads
+# through --taesd rather than from the directory's vae/ slot; the metadata
+# check refuses the tiny decoder under the full-VAE slot. QWEN_IMAGE_TAESD
+# names that file and the summary records its digest.
+taesd_path=${QWEN_IMAGE_TAESD:-}
+taesd_sha256=-
+if [ -n "$taesd_path" ]; then
+    if [ ! -f "$taesd_path" ]; then
+        printf 'taesd file is missing: %s\n' "$taesd_path" >&2
+        exit 1
+    fi
+    taesd_sha256=$(sha256sum "$taesd_path" | awk '{ print $1 }')
+fi
+
+summary_header='arm	status	exit_status	timed_out	binary_sha256	model_sha256	device_name	backend	prompt	seed	width	height	steps	sampler	cfg_scale	wall_load_s	text_encoder_s	diffusion_s	vae_s	total_generate_s	residual_encode_overhead_s	shell_wall_s	rss_peak_kib	pss_peak_kib	mem_available_min_kib	swap_free_delta_kib	vram_used_bytes	gtt_used_bytes	mclk_modal_mhz	temp_millidegrees_max	ring_resets	gpu_faults	dmesg_state	png_path	png_sha256	taesd_sha256'
 if [ ! -f "$summary_path" ]; then
     printf '%s\n' "$summary_header" >"$summary_path"
 fi
@@ -279,6 +293,7 @@ run_arm() {
         --width "$image_width" --height "$image_height" --steps "$image_steps" \
         --seed "$image_seed" --sampling-method "$image_sampler" \
         --cfg-scale "$image_cfg_scale" --backend "$image_backend" \
+        ${taesd_path:+--taesd "$taesd_path"} \
         >"$arm_log" 2>&1 &
     child_pid=$!
 
@@ -391,14 +406,14 @@ run_arm() {
         rm -f "$arm_png"
     fi
 
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$arm_label" "$arm_status" "$exit_status" "$timed_out" "$binary_sha256" "$model_sha256" \
         "$device_name" "$image_backend" "$prompt" "$image_seed" "$image_width" "$image_height" \
         "$image_steps" "$image_sampler" "$image_cfg_scale" "$wall_load_s" "$text_encoder_s" \
         "$diffusion_s" "$vae_s" "$total_generate_s" "$residual_encode_overhead_s" "$shell_wall_s" \
         "$rss_peak_kib" "$pss_peak_kib" "$mem_available_min_kib" "$swap_free_delta_kib" \
         "$vram_used_bytes" "$gtt_used_bytes" "$mclk_modal_mhz" "$temp_millidegrees_max" "$ring_resets" \
-        "$gpu_faults" "$dmesg_state" "$arm_png" "$png_sha256" >>"$summary_path"
+        "$gpu_faults" "$dmesg_state" "$arm_png" "$png_sha256" "$taesd_sha256" >>"$summary_path"
 
     printf 'arm=%s status=%s exit_status=%s wall_s=%s png=%s\n' \
         "$arm_label" "$arm_status" "$exit_status" "$shell_wall_s" "$arm_png"
