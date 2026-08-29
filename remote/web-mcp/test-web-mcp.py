@@ -1501,8 +1501,22 @@ class WebMcpServerTest(unittest.TestCase):
         """Return a SearXNGProvider pointed at a fixture instance on loopback."""
         fixture = SearxngFixtureServer()
         self.addCleanup(fixture.close)
-        provider = server.SearXNGProvider(fixture.origin, **overrides)
+        arguments = {"primary_category": "qwen-open"}
+        arguments.update(overrides)
+        provider = server.SearXNGProvider(fixture.origin, **arguments)
         return fixture, provider
+
+    def searxng_session(self, fixture, **overrides):
+        """Open a session serving the searxng provider against one instance."""
+        settings = {
+            "QWEN_WEB_PROVIDER": "searxng",
+            "QWEN_WEB_SEARXNG_URL": fixture.origin,
+            "QWEN_WEB_SEARXNG_PRIMARY_CATEGORY": "qwen-open",
+            "QWEN_WEB_FAKE_FIXTURES": None,
+            "QWEN_WEB_STATE_DIR": tempfile.mkdtemp(dir=self.directory.name),
+        }
+        settings.update(overrides)
+        return self.open_session(**settings)
 
     @staticmethod
     def unconstrained():
@@ -1515,7 +1529,7 @@ class WebMcpServerTest(unittest.TestCase):
         }
 
     def test_a_searxng_result_maps_onto_the_rendered_shape(self):
-        """The instance's own snippet, date, and engine reach the renderer."""
+        """Snippet, date, and provenance reach the record the renderer reads."""
         fixture, provider = self.searxng_provider()
         fixture.search_document(
             [
@@ -1524,12 +1538,13 @@ class WebMcpServerTest(unittest.TestCase):
                     "title": "Vulkan decode on Raven2",
                     "content": "decode reaches 3.07 tok/s",
                     "publishedDate": "2026-01-05",
-                    "engine": "marginalia",
+                    "engines": ["google", "brave"],
+                    "score": 4.5,
                 },
                 {
                     "url": "https://example.org/second",
                     "title": "Second",
-                    "engines": ["mwmbl", "wiby"],
+                    "engine": "duckduckgo",
                 },
             ]
         )
@@ -1541,28 +1556,32 @@ class WebMcpServerTest(unittest.TestCase):
                 "title": "Vulkan decode on Raven2",
                 "publishedDate": "2026-01-05",
                 "author": "",
-                "engine": "marginalia",
+                "engines": ["google", "brave"],
+                "category": "qwen-open",
+                "rank": 1,
+                "score": 4.5,
                 "highlights": ["decode reaches 3.07 tok/s"],
             },
         )
-        self.assertEqual(results[1]["engine"], "mwmbl, wiby")
+        self.assertEqual(results[1]["engines"], ["duckduckgo"])
+        self.assertEqual(results[1]["rank"], 2)
+        self.assertIsNone(results[1]["score"])
         self.assertEqual(results[1]["highlights"], [])
         query = fixture.requests[0]["query"]
         self.assertEqual(query["q"], ["raven2"])
         self.assertEqual(query["format"], ["json"])
-        self.assertEqual(
-            query["engines"], [",".join(server.SEARXNG_DEFAULT_ENGINES)]
-        )
+        self.assertEqual(query["categories"], ["qwen-open"])
+        self.assertNotIn("engines", query)
         self.assertNotIn("time_range", query)
 
-    def test_the_engine_reaches_the_rendered_block_before_the_highlights(self):
-        """`Engine:` names the index that answered and precedes `Highlights:`."""
+    def test_the_sources_line_names_the_engines_before_the_highlights(self):
+        """`Sources:` states which indexes returned the record."""
         rendered, _ = server.render_search_results(
             [
                 {
                     "url": "https://example.org/raven2",
                     "title": "Titled",
-                    "engine": "marginalia",
+                    "engines": ["google", "brave"],
                     "highlights": ["one"],
                 }
             ],
@@ -1574,15 +1593,17 @@ class WebMcpServerTest(unittest.TestCase):
             900,
         )
         lines = rendered.splitlines()
-        self.assertIn("Engine: marginalia", lines)
-        self.assertLess(lines.index("Engine: marginalia"), lines.index("Highlights:"))
+        self.assertIn("Sources: google, brave", lines)
+        self.assertLess(
+            lines.index("Sources: google, brave"), lines.index("Highlights:")
+        )
         self.assertGreater(
-            lines.index("Engine: marginalia"),
+            lines.index("Sources: google, brave"),
             lines.index("Trust: untrusted-web-result"),
         )
 
-    def test_an_exa_result_renders_no_engine_line(self):
-        """A record without an engine leaves the block as the pinned UI reads it."""
+    def test_an_exa_result_renders_no_sources_line(self):
+        """A record without engines leaves the block as the pinned UI reads it."""
         rendered, _ = server.render_search_results(
             [{"url": "https://example.org/raven2", "title": "Titled"}],
             "exa",
@@ -1592,98 +1613,149 @@ class WebMcpServerTest(unittest.TestCase):
             1700000000,
             900,
         )
-        self.assertNotIn("Engine:", rendered)
+        self.assertNotIn("Sources:", rendered)
 
-    def test_the_cached_age_maps_onto_the_four_named_windows(self):
-        for hours, window in sorted(server.SEARXNG_TIME_RANGE_HOURS.items()):
-            with self.subTest(hours=hours):
-                fixture, provider = self.searxng_provider()
-                fixture.search_document([])
-                constraints = dict(self.unconstrained(), max_age_hours=hours)
-                provider.search("raven2", 5, constraints)
-                self.assertEqual(
-                    fixture.requests[0]["query"]["time_range"], [window]
-                )
+    def test_a_sufficient_primary_category_runs_one_query(self):
+        """The fallback exists and stays unused while the primary suffices."""
+        fixture, provider = self.searxng_provider(
+            fallback_category="qwen-broad", minimum_results=2
+        )
+        fixture.search_document(
+            [
+                {"url": "https://example.org/one", "engines": ["google"]},
+                {"url": "https://example.org/two", "engines": ["brave"]},
+            ]
+        )
+        results = provider.search("raven2", 5, self.unconstrained())
+        self.assertEqual(len(results), 2)
+        self.assertEqual(len(fixture.requests), 1)
+        self.assertEqual(fixture.requests[0]["query"]["categories"], ["qwen-open"])
+        self.assertEqual(provider.provenance()["fallback_used"], 0)
+        self.assertEqual(provider.provenance()["usable_results"], 2)
 
-    def test_a_cached_age_off_the_named_windows_refuses_the_call(self):
-        """0 forces a live crawl and 25 names no window, so both end the call.
+    def test_a_short_primary_category_runs_the_fallback_once(self):
+        """One fallback query runs, and a repeated URL is issued once.
 
-        The refusal reaches the model as an `isError` result naming the
-        argument and the provider, which is what lets the operator reissue a
-        grant the instance can honor rather than reading results drawn from a
-        window nobody approved.
+        An instance suspends a failing engine on its own, so the wrapper spends
+        the approval on a single second category rather than on a retry loop
+        against the same outage.
+        """
+        fixture = SearxngFixtureServer()
+        self.addCleanup(fixture.close)
+        fixture.responses["/search"] = {
+            "body": json.dumps(
+                {
+                    "results": [
+                        {"url": "https://example.org/one", "engines": ["mwmbl"]}
+                    ],
+                    "unresponsive_engines": [["yacy", "timeout"], "wiby"],
+                }
+            ),
+            "content_type": "application/json",
+        }
+        provider = server.SearXNGProvider(
+            fixture.origin,
+            "qwen-open",
+            fallback_category="qwen-broad",
+            minimum_results=3,
+        )
+        results = provider.search("raven2", 5, self.unconstrained())
+        self.assertEqual(len(fixture.requests), 2)
+        self.assertEqual(
+            [request["query"]["categories"][0] for request in fixture.requests],
+            ["qwen-open", "qwen-broad"],
+        )
+        self.assertEqual([record["url"] for record in results],
+                         ["https://example.org/one"])
+        provenance = provider.provenance()
+        self.assertEqual(provenance["fallback_used"], 1)
+        self.assertEqual(provenance["usable_results"], 1)
+        self.assertEqual(provenance["engines_answered"], "mwmbl")
+        self.assertEqual(provenance["engines_failed"], "wiby,yacy")
+        self.assertEqual(provenance["engines_attempted"], "mwmbl,wiby,yacy")
+        self.assertEqual(provenance["category"], "qwen-open")
+
+    def test_an_absent_fallback_leaves_a_short_answer_as_it_stands(self):
+        fixture, provider = self.searxng_provider(minimum_results=5)
+        fixture.search_document([{"url": "https://example.org/one"}])
+        results = provider.search("raven2", 5, self.unconstrained())
+        self.assertEqual(len(results), 1)
+        self.assertEqual(len(fixture.requests), 1)
+        self.assertEqual(provider.provenance()["fallback_used"], 0)
+
+    def test_the_domain_lists_bound_the_returned_results_exactly(self):
+        """A host is the domain itself or a subdomain of it, and nothing else.
+
+        `example.org.attacker.test` ends with the granted name as a label
+        prefix and `notexample.org` ends with it as a string suffix, so a
+        comparison over either form would admit a host the approval never
+        covered.
+        """
+        fixture, provider = self.searxng_provider()
+        fixture.search_document(
+            [
+                {"url": "https://example.org/root"},
+                {"url": "https://docs.example.org/sub"},
+                {"url": "https://notexample.org/suffix"},
+                {"url": "https://example.org.attacker.test/prefix"},
+                {"url": "https://elsewhere.test/other"},
+            ]
+        )
+        constraints = dict(self.unconstrained(), include_domains=["example.org"])
+        results = provider.search("raven2", 5, constraints)
+        self.assertEqual(
+            [record["url"] for record in results],
+            ["https://example.org/root", "https://docs.example.org/sub"],
+        )
+        fixture.requests.clear()
+        constraints = dict(
+            self.unconstrained(), exclude_domains=["example.org"]
+        )
+        results = provider.search("raven2", 5, constraints)
+        self.assertEqual(
+            [record["url"] for record in results],
+            [
+                "https://notexample.org/suffix",
+                "https://example.org.attacker.test/prefix",
+                "https://elsewhere.test/other",
+            ],
+        )
+
+    def test_the_result_count_truncates_the_validated_results(self):
+        """`max_results` bounds the reply, and the count still reads the whole set."""
+        fixture, provider = self.searxng_provider()
+        fixture.search_document(
+            [{"url": f"https://example.org/{index}"} for index in range(6)]
+        )
+        results = provider.search("raven2", 2, self.unconstrained())
+        self.assertEqual(len(results), 2)
+        self.assertEqual(provider.provenance()["usable_results"], 6)
+
+    def test_a_temporal_argument_refuses_against_searxng(self):
+        """A category mixes engines, so no category promises a time range.
+
+        SearXNG maps `time_range` onto each engine, and Bing's web engine
+        expresses none at all, so a mixed category cannot honor a publication
+        interval or a cached-age bound and both are refused by name rather than
+        approximated.
         """
         fixture = SearxngFixtureServer()
         self.addCleanup(fixture.close)
         fixture.search_document([])
-        session = self.open_session(
-            QWEN_WEB_PROVIDER="searxng",
-            QWEN_WEB_SEARXNG_URL=fixture.origin,
-            QWEN_WEB_FAKE_FIXTURES=None,
-            QWEN_WEB_STATE_DIR=tempfile.mkdtemp(dir=self.directory.name),
-        )
-        for hours in (0, 25, 8759):
-            with self.subTest(hours=hours):
-                response = self.search(session, max_age_hours=hours)
-                self.assertTrue(response["result"]["isError"])
-                text = self.result_text(response)
-                self.assertIn("max_age_hours", text)
-                self.assertIn("searxng", text)
-        self.assertEqual(fixture.requests, [], "a refused call reached the instance")
-
-    def test_an_exact_publication_interval_refuses_against_searxng(self):
-        fixture = SearxngFixtureServer()
-        self.addCleanup(fixture.close)
-        fixture.search_document([])
-        session = self.open_session(
-            QWEN_WEB_PROVIDER="searxng",
-            QWEN_WEB_SEARXNG_URL=fixture.origin,
-            QWEN_WEB_FAKE_FIXTURES=None,
-            QWEN_WEB_STATE_DIR=tempfile.mkdtemp(dir=self.directory.name),
-        )
-        for arguments in (
-            {"published_after": "2026-01-01"},
-            {"published_before": "2026-12-31"},
+        session = self.searxng_session(fixture)
+        for arguments, expected in (
+            ({"published_after": "2026-01-01"}, "published_after"),
+            ({"published_before": "2026-12-31"}, "published_after"),
+            ({"max_age_hours": 0}, "max_age_hours"),
+            ({"max_age_hours": 24}, "max_age_hours"),
         ):
             with self.subTest(arguments=sorted(arguments)):
                 response = self.search(session, **arguments)
                 self.assertTrue(response["result"]["isError"])
                 text = self.result_text(response)
-                self.assertIn("published_after", text)
+                self.assertIn(expected, text)
                 self.assertIn("searxng", text)
         self.assertEqual(fixture.requests, [], "a refused call reached the instance")
-
-    def test_the_domain_lists_and_the_result_count_stay_honored(self):
-        """The wrapper enforces both over the instance's answer.
-
-        SearXNG carries neither a domain filter nor a result count in its
-        request, and `filter_by_domains` and the slice in `call_search` apply
-        both to whatever comes back, so the capabilities read true and a grant
-        naming domains reaches the instance rather than a refusal.
-        """
-        fixture = SearxngFixtureServer()
-        self.addCleanup(fixture.close)
-        fixture.search_document(
-            [
-                {"url": "https://example.org/one", "title": "One"},
-                {"url": "https://elsewhere.test/two", "title": "Two"},
-                {"url": "https://example.org/three", "title": "Three"},
-            ]
-        )
-        session = self.open_session(
-            QWEN_WEB_PROVIDER="searxng",
-            QWEN_WEB_SEARXNG_URL=fixture.origin,
-            QWEN_WEB_FAKE_FIXTURES=None,
-            QWEN_WEB_STATE_DIR=tempfile.mkdtemp(dir=self.directory.name),
-        )
-        response = self.search(
-            session, include_domains=["example.org"], max_results=1
-        )
-        self.assertFalse(response["result"].get("isError"))
-        text = self.result_text(response)
-        self.assertIn("URL: https://example.org/one", text)
-        self.assertNotIn("elsewhere.test", text)
-        self.assertEqual(text.count("URL: "), 1)
 
     def test_a_non_loopback_instance_is_refused_and_the_flag_admits_it(self):
         for url in (
@@ -1692,16 +1764,20 @@ class WebMcpServerTest(unittest.TestCase):
         ):
             with self.subTest(url=url):
                 with self.assertRaises(server.InvalidArgument) as raised:
-                    server.SearXNGProvider(url)
+                    server.SearXNGProvider(url, "qwen-open")
                 self.assertIn("loopback", str(raised.exception))
-                admitted = server.SearXNGProvider(url, allow_remote=True)
+                admitted = server.SearXNGProvider(
+                    url, "qwen-open", allow_remote=True
+                )
                 self.assertTrue(admitted.search_endpoint.endswith("/search"))
         for url in ("http://127.0.0.1:8888", "http://localhost:8888/searx/"):
             with self.subTest(url=url):
-                provider = server.SearXNGProvider(url)
+                provider = server.SearXNGProvider(url, "qwen-open")
                 self.assertTrue(provider.search_endpoint.endswith("/search"))
         self.assertEqual(
-            server.SearXNGProvider("http://localhost:8888/searx/").search_endpoint,
+            server.SearXNGProvider(
+                "http://localhost:8888/searx/", "qwen-open"
+            ).search_endpoint,
             "http://localhost:8888/searx/search",
         )
 
@@ -1711,77 +1787,42 @@ class WebMcpServerTest(unittest.TestCase):
             ({"base_url": "ftp://127.0.0.1/"}, "unsupported scheme"),
             ({"base_url": "http://user@127.0.0.1/"}, "no plain host"),
             ({"base_url": "http://127.0.0.1/?a=b"}, "query or fragment"),
+            ({"primary_category": ""}, "PRIMARY_CATEGORY"),
+            ({"primary_category": "qwen open"}, "PRIMARY_CATEGORY"),
+            ({"primary_category": "-"}, "PRIMARY_CATEGORY"),
+            ({"fallback_category": "qwen broad"}, "FALLBACK_CATEGORY"),
+            ({"minimum_results": "many"}, "no integer"),
+            ({"minimum_results": 0}, "lies between"),
             (
-                {"base_url": "http://127.0.0.1", "engines": ("bad engine!",)},
-                "names bad engine!",
+                {"minimum_results": server.RESULT_COUNT_CAP + 1},
+                "lies between",
             ),
-            (
-                {"base_url": "http://127.0.0.1", "engines": ("google",)},
-                "names google",
-            ),
-            (
-                {"base_url": "http://127.0.0.1", "engines": ("mwmbl", "bing")},
-                "names bing",
-            ),
-            (
-                {"base_url": "http://127.0.0.1", "language": "not a tag"},
-                "no language tag",
-            ),
-            ({"base_url": "http://127.0.0.1", "safesearch": "9"}, "SAFESEARCH"),
+            ({"language": "not a tag"}, "no language tag"),
+            ({"safesearch": "9"}, "SAFESEARCH"),
         ):
             with self.subTest(arguments=sorted(arguments)):
+                call = {"base_url": "http://127.0.0.1", "primary_category": "qwen-open"}
+                call.update(arguments)
+                base_url = call.pop("base_url")
                 with self.assertRaises(server.InvalidArgument) as raised:
-                    server.SearXNGProvider(**arguments)
+                    server.SearXNGProvider(base_url, **call)
                 self.assertIn(expected, str(raised.exception))
-
-    def test_the_engine_set_is_pinned_to_the_key_free_indexes(self):
-        """A narrowing setting reaches the query and a widening one refuses.
-
-        The `searxng` provider names one engine population, so a profile
-        already serving under that name keeps the same sources whatever the
-        environment carries. A broader population belongs to a provider of its
-        own rather than to a setting that widens this one.
-        """
+        # The sentinel a profile row carries for an absent fallback reads as
+        # the absence of a second query rather than as a category name.
         self.assertEqual(
-            server.SEARXNG_ADMITTED_ENGINES,
-            ("mwmbl", "marginalia", "wiby", "yacy", "wikipedia", "wikidata"),
+            server.SearXNGProvider(
+                "http://127.0.0.1", "qwen-open", fallback_category="-"
+            ).fallback_category,
+            "",
         )
-        self.assertEqual(
-            server.SEARXNG_DEFAULT_ENGINES, server.SEARXNG_ADMITTED_ENGINES
-        )
-        settings = {
-            "provider": "searxng",
-            "searxng_url": "http://127.0.0.1:8888",
-            "searxng_language": "",
-            "searxng_safesearch": "",
-            "searxng_allow_remote": "",
-        }
-        narrowed = server.select_provider(
-            dict(settings, searxng_engines="wikipedia, marginalia")
-        )
-        self.assertEqual(narrowed.engines, ("wikipedia", "marginalia"))
-        self.assertEqual(
-            server.select_provider(dict(settings, searxng_engines="")).engines,
-            server.SEARXNG_ADMITTED_ENGINES,
-        )
-        with self.assertRaises(server.InvalidArgument) as raised:
-            server.select_provider(
-                dict(settings, searxng_engines="mwmbl,duckduckgo")
-            )
-        self.assertIn("duckduckgo", str(raised.exception))
-        with self.assertRaises(server.InvalidArgument):
-            server.select_provider(dict(settings, searxng_engines=" , "))
 
     def test_the_language_and_safesearch_settings_reach_the_query(self):
-        fixture, provider = self.searxng_provider(
-            engines=("mwmbl",), language="en-GB", safesearch="2"
-        )
+        fixture, provider = self.searxng_provider(language="en-GB", safesearch="2")
         fixture.search_document([])
         provider.search("raven2", 5, self.unconstrained())
         query = fixture.requests[0]["query"]
         self.assertEqual(query["language"], ["en-GB"])
         self.assertEqual(query["safesearch"], ["2"])
-        self.assertEqual(query["engines"], ["mwmbl"])
 
     def test_a_malformed_instance_answer_is_a_provider_content_error(self):
         cases = (
@@ -1884,47 +1925,41 @@ class WebMcpServerTest(unittest.TestCase):
         self.assertEqual(record["text"], "abcd")
         self.assertFalse(record["complete"])
 
-    def test_a_searxng_result_naming_a_private_target_refuses_the_search(self):
-        """A loopback or RFC 1918 result URL ends the call.
+    def test_a_searxng_result_naming_a_private_target_is_dropped(self):
+        """A private or malformed target leaves the answer rather than ending it.
 
-        A metasearch instance indexes what its engines return, so a result may
-        name the network the appliance sits on. `canonical_url` applies
-        `require_public_host` to every record before a Result ID is signed, so
-        the private target is refused for a SearXNG answer exactly as it is for
-        an Exa one and no fetchable reference is issued for it.
+        A metasearch answer mixes engines, so one entry naming this machine, a
+        private network, or a legacy numeric spelling of a loopback address is
+        an entry to discard rather than a reason to refuse the approved search.
+        The dropped entry reaches no `Result ID`, so nothing fetchable is signed
+        for it, and it never counts toward the fallback threshold.
         """
-        fixture = SearxngFixtureServer()
-        self.addCleanup(fixture.close)
-        session = self.open_session(
-            QWEN_WEB_PROVIDER="searxng",
-            QWEN_WEB_SEARXNG_URL=fixture.origin,
-            QWEN_WEB_FAKE_FIXTURES=None,
-            QWEN_WEB_STATE_DIR=tempfile.mkdtemp(dir=self.directory.name),
+        fixture, provider = self.searxng_provider()
+        fixture.search_document(
+            [
+                {"url": "http://127.0.0.1:8080/admin"},
+                {"url": "http://192.168.1.5/router"},
+                {"url": "http://localhost/admin"},
+                {"url": "http://2130706433/admin"},
+                {"url": "ftp://example.org/file"},
+                {"url": "https://example.org/public"},
+            ]
         )
-        for url, expected in (
-            ("http://127.0.0.1:8080/admin", "private address"),
-            ("http://192.168.1.5/router", "private address"),
-            ("http://localhost/admin", "private host"),
-            ("http://2130706433/admin", "noncanonical numeric host"),
-        ):
-            with self.subTest(url=url):
-                fixture.search_document([{"url": url, "title": "Local"}])
-                response = self.search(session)
-                self.assertTrue(response["result"]["isError"])
-                self.assertIn(expected, self.result_text(response))
-                self.assertNotIn("Result ID:", self.result_text(response))
+        results = provider.search("raven2", 5, self.unconstrained())
+        self.assertEqual(
+            [record["url"] for record in results], ["https://example.org/public"]
+        )
+        self.assertEqual(provider.provenance()["usable_results"], 1)
 
     def test_a_fetch_of_a_searxng_result_runs_through_the_search_allowance(self):
         """The Result ID gate and the per-search fetch budget are unchanged.
 
-        The search runs against the fixture instance and returns two results
-        whose hosts are in the reserved `.invalid` namespace, so the retrieval
-        leaves this machine for nothing that resolves and answers with a
-        provider transport failure. What the arm reads is the wrapper around
-        it: the first fetch redeems its Result ID and spends the profile's one
-        allowance, and the second is refused by that allowance rather than
-        reaching the network, so a SearXNG result is metered by the same ledger
-        an Exa result is.
+        The search returns two results whose hosts are in the reserved
+        `.invalid` namespace, so the retrieval reaches nothing that resolves.
+        What the arm reads is the wrapper around it: the first fetch redeems
+        its Result ID and spends the profile's one allowance, the second is
+        refused by that allowance, and a URL in place of a Result ID is refused
+        outright, so a SearXNG result is metered by the ledger an Exa result is.
         """
         fixture = SearxngFixtureServer()
         self.addCleanup(fixture.close)
@@ -1934,13 +1969,8 @@ class WebMcpServerTest(unittest.TestCase):
                 {"url": "https://second.invalid/two", "title": "Two"},
             ]
         )
-        state_directory = tempfile.mkdtemp(dir=self.directory.name)
-        session = self.open_session(
-            QWEN_WEB_PROVIDER="searxng",
-            QWEN_WEB_SEARXNG_URL=fixture.origin,
-            QWEN_WEB_FAKE_FIXTURES=None,
-            QWEN_WEB_STATE_DIR=state_directory,
-            QWEN_WEB_MAX_FETCHES_PER_SEARCH="1",
+        session = self.searxng_session(
+            fixture, QWEN_WEB_MAX_FETCHES_PER_SEARCH="1"
         )
         text = self.result_text(self.search(session))
         identifiers = [
@@ -1951,15 +1981,120 @@ class WebMcpServerTest(unittest.TestCase):
         self.assertEqual(len(identifiers), 2)
         first = session.call_tool("fetch_exa", {"result_id": identifiers[0]})
         self.assertTrue(first["result"]["isError"])
-        self.assertIn("provider request failed", self.result_text(first))
         second = session.call_tool("fetch_exa", {"result_id": identifiers[1]})
         self.assertTrue(second["result"]["isError"])
         self.assertIn("fetch", self.result_text(second).lower())
-        self.assertNotIn("provider request failed", self.result_text(second))
         url_reference = session.call_tool(
             "fetch_exa", {"result_id": "https://first.invalid/one"}
         )
         self.assertTrue(url_reference["result"]["isError"])
+
+    def test_the_audit_row_carries_the_search_provenance_and_no_query(self):
+        """The trail states which category ran and which engines answered."""
+        fixture = SearxngFixtureServer()
+        self.addCleanup(fixture.close)
+        fixture.responses["/search"] = {
+            "body": json.dumps(
+                {
+                    "results": [
+                        {"url": "https://example.org/one", "engines": ["google"]}
+                    ],
+                    "unresponsive_engines": [["brave", "timeout"]],
+                }
+            ),
+            "content_type": "application/json",
+        }
+        state_path = tempfile.mkdtemp(dir=self.directory.name)
+        session = self.searxng_session(
+            fixture,
+            QWEN_WEB_STATE_DIR=state_path,
+            QWEN_WEB_SEARXNG_FALLBACK_CATEGORY="qwen-broad",
+            QWEN_WEB_SEARXNG_MINIMUM_RESULTS="3",
+            QWEN_WEB_PROFILE="web-balanced",
+        )
+        response = self.search(session, query="raven2 vulkan decode")
+        self.assertFalse(response["result"].get("isError"))
+        rendered_id = self.first_result_id(self.result_text(response))
+        connection = sqlite3.connect(
+            os.path.join(state_path, server.LEDGER_FILE_NAME)
+        )
+        try:
+            row = connection.execute(
+                "SELECT profile, search_id, category, engines_attempted,"
+                " engines_answered, engines_failed, fallback_used,"
+                " usable_results, query_sha256 FROM audit"
+                " WHERE operation = 'search'"
+            ).fetchone()
+        finally:
+            connection.close()
+        (
+            profile,
+            search_id,
+            category,
+            attempted,
+            answered,
+            failed,
+            fallback_used,
+            usable_results,
+            query_sha256,
+        ) = row
+        self.assertEqual(profile, "web-balanced")
+        self.assertTrue(search_id)
+        self.assertEqual(category, "qwen-open")
+        self.assertEqual(attempted, "brave,google")
+        self.assertEqual(answered, "google")
+        self.assertEqual(failed, "brave")
+        self.assertEqual(fallback_used, 1)
+        self.assertEqual(usable_results, 1)
+        self.assertEqual(
+            query_sha256,
+            hashlib.sha256(b"raven2 vulkan decode").hexdigest(),
+        )
+        # The trail holds the digest of the query and no query text, and the
+        # Result ID the reply carried stays out of it too.
+        connection = sqlite3.connect(
+            os.path.join(state_path, server.LEDGER_FILE_NAME)
+        )
+        try:
+            dumped = "\n".join(connection.iterdump())
+        finally:
+            connection.close()
+        self.assertNotIn("raven2 vulkan decode", dumped)
+        self.assertNotIn(rendered_id, dumped)
+
+    def test_an_audit_table_from_an_earlier_revision_gains_its_columns(self):
+        """A ledger written before the provenance columns migrates in place."""
+        state_path = tempfile.mkdtemp(dir=self.directory.name)
+        os.chmod(state_path, 0o700)
+        database_path = os.path.join(state_path, server.LEDGER_FILE_NAME)
+        connection = sqlite3.connect(database_path)
+        try:
+            connection.execute(
+                "CREATE TABLE audit ("
+                "recorded_at TEXT, profile TEXT, operation TEXT,"
+                " query_sha256 TEXT, domains TEXT, result_count INTEGER,"
+                " fetched_host TEXT, provider_bytes INTEGER,"
+                " returned_characters INTEGER, latency_ms INTEGER,"
+                " status TEXT, recorded_epoch INTEGER)"
+            )
+            connection.execute(
+                "INSERT INTO audit VALUES('t', 'p', 'search', '', '', 0, '',"
+                " 0, 0, 0, 'success', 1)"
+            )
+            connection.commit()
+        finally:
+            connection.close()
+        os.chmod(database_path, 0o600)
+        ledger = server.Ledger(state_path)
+        try:
+            columns = {
+                column[1]
+                for column in ledger.connection.execute("PRAGMA table_info(audit)")
+            }
+        finally:
+            ledger.close()
+        for column, _ in server.AUDIT_PROVENANCE_COLUMNS:
+            self.assertIn(column, columns)
 
     def test_the_capability_contract_reads_the_declared_flags(self):
         """`refuse_unhonored_arguments` consults the provider rather than a name."""
@@ -2002,6 +2137,22 @@ class WebMcpServerTest(unittest.TestCase):
                     ),
                     5,
                 )
+        searxng = server.SearXNGProvider("http://127.0.0.1:8888", "qwen-open")
+        self.assertEqual(
+            (
+                searxng.supports_exact_date_bounds,
+                searxng.supports_freshness_max_age,
+                searxng.supports_domain_filter,
+                searxng.supports_paging,
+                searxng.supports_num_results,
+            ),
+            (False, False, True, False, True),
+        )
+        server.refuse_unhonored_arguments(
+            searxng,
+            dict(self.unconstrained(), include_domains=["example.org"]),
+            5,
+        )
 
     def test_a_grant_signs_for_the_searxng_provider(self):
         """`issue_grant` admits every name `select_provider` can construct.
@@ -2495,7 +2646,10 @@ class WebMcpServerTest(unittest.TestCase):
             os.path.join(state_path, server.LEDGER_FILE_NAME)
         )
         connection.execute(
-            "INSERT INTO audit VALUES('2020-01-01T00:00:00Z','aged','search',"
+            "INSERT INTO audit (recorded_at, profile, operation, query_sha256,"
+            " domains, result_count, fetched_host, provider_bytes,"
+            " returned_characters, latency_ms, status, recorded_epoch)"
+            " VALUES('2020-01-01T00:00:00Z','aged','search',"
             "'','',0,'',0,0,0,'success',?)",
             (int(time.time()) - server.AUDIT_RETENTION_SECONDS - 60,),
         )

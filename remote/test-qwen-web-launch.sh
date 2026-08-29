@@ -181,9 +181,9 @@ printf '{}\n' >"$mcp_config"
 
 web_profiles=$work/web-profiles.tsv
 write_web_profiles() {
-    printf '# profile_id\tmodel_id\tweb_mode\tcontext\tvalidated_filled_depth\tmax_results\tmax_fetches\tmax_chars_per_fetch\tmulti_source\tvision_allowed\ttool_selection\texecution_policy\n' \
+    printf '# profile_id\tmodel_id\tweb_mode\tcontext\tvalidated_filled_depth\tmax_results\tmax_fetches\tmax_chars_per_fetch\tmulti_source\tvision_allowed\ttool_selection\texecution_policy\tprovider\tprimary_category\tfallback_category\tminimum_results\tsearxng_url\n' \
         >"$2"
-    printf 'web-fixture\tfixture-production\tvalidator-gated\t8192\t16384\t5\t2\t12000\tyes\tno\t9/10\t%s\n' \
+    printf 'web-fixture\tfixture-production\tvalidator-gated\t8192\t16384\t5\t2\t12000\tyes\tno\t9/10\t%s\texa\t-\t-\t-\t-\n' \
         "$1" >>"$2"
 }
 write_web_profiles validator-gated "$web_profiles"

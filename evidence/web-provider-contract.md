@@ -23,28 +23,23 @@ corrected call.
 | Flag | What it states |
 | --- | --- |
 | `supports_exact_date_bounds` | `published_after` and `published_before` reach the request as a calendar interval. |
-| `supports_freshness_max_age` | `max_age_hours` bounds the age of the copy served. `freshness_max_age_hours` narrows it to the values one backend expresses; None admits every value the argument's own bounds allow. |
+| `supports_freshness_max_age` | `max_age_hours` bounds the age of the copy served. |
 | `supports_domain_filter` | `include_domains` and `exclude_domains` bound the sources. |
 | `supports_num_results` | `max_results` bounds the returned count. |
 | `supports_paging` | The backend returns further pages of one result set. |
 
 A flag reads true where the argument is honored, whether the provider's own
 request field carries it or the wrapper enforces it over the response.
-`filter_by_domains` drops an off-domain record before the renderer signs a
-Result ID for it, and `call_search` slices to the granted count, both over
-whatever any provider returns, so `supports_domain_filter` and
-`supports_num_results` read true for a backend whose request carries neither.
-
-`supports_paging` gates no argument. `fetch_exa`'s `start_index` pages the
+`supports_paging` gates no argument: `fetch_exa`'s `start_index` pages the
 document snapshot the ledger stores, which is wrapper state rather than a
 provider result page, so the flag records the surface a later argument would
 consult.
 
 | Provider | date bounds | freshness | domains | count | paging |
 | --- | --- | --- | --- | --- | --- |
-| `exa` | yes | yes, any value | yes | yes | no |
-| `fake` | yes | yes, any value | yes | yes | no |
-| `searxng` | no | four named windows | yes, in the wrapper | yes, in the wrapper | yes |
+| `exa` | yes | yes | yes | yes | no |
+| `fake` | yes | yes | yes | yes | no |
+| `searxng` | no | no | yes, in the provider | yes, in the provider | no |
 
 Exa keeps every field optional. Its Search API reads `startPublishedDate`,
 `endPublishedDate`, `includeDomains`, `excludeDomains`, and `numResults` at the
@@ -56,62 +51,92 @@ reaches.
 
 ## SearXNG
 
-`SearXNGProvider` issues `GET {base}/search?q=...&format=json` and reads the
-`results` array. The response carries result metadata and no page text, so
-`contents` retrieves the source itself over one GET of the exact canonical URL
-a prior search signed into a Result ID.
+One SearXNG instance on the appliance is the general-search endpoint.
+`SearXNGProvider` issues `GET {base}/search?q=...&format=json&categories=<name>`
+and reads the `results` array. The response carries result metadata and no page
+text, so `contents` retrieves the source itself over one GET of the exact
+canonical URL a prior search signed into a Result ID.
 
-### The time_range mapping
+### Categories rather than engines
 
-SearXNG expresses publication recency as one of four named windows, so an hour
-count maps onto the window whose length it equals and every other value leaves
-the contract:
+Which engines answer belongs to the instance's own `settings.yml`, which groups
+them under qwen-named categories. The web profile names a category and the
+provider sends it, so the engine population changes by editing the instance
+rather than through any request field a model or an environment reaches.
+`remote/web-profiles.tsv` carries the policy in five trailing columns:
 
-| `max_age_hours` | `time_range` |
+| Column | What it states |
 | --- | --- |
-| 24 | `day` |
-| 168 | `week` |
-| 720 | `month` |
-| 8760 | `year` |
+| `provider` | The backend the row expects, which must equal the generator's `QWEN_WEB_PROVIDER`. |
+| `primary_category` | The category every approved search queries first. |
+| `fallback_category` | The category queried once where the primary is short; `-` for none. |
+| `minimum_results` | The count of usable results below which the fallback runs. |
+| `searxng_url` | The instance, over loopback. |
 
-`month` is the 30-day convention SearXNG applies and `year` is 365 days. A
-value off those four -- including the 0 that means force a live crawl, which
-the instance cannot express at all -- refuses the call naming the argument, the
-provider, and the four admitted counts. An omitted `max_age_hours` sends no
-`time_range` and leaves the instance's own ranking.
+The seeded rows: `web-open` queries `qwen-open` alone; `web-balanced` queries
+`qwen-open` and falls back to `qwen-broad` below three usable results;
+`web-sovereign` queries `qwen-yacy` alone. Every checked-in row keeps
+`execution_policy=refused`, so the shipped ledger emits nothing.
 
-### The pinned engine set
+`remote/build-web-presets.sh` validates the policy for every row whatever its
+execution_policy -- the way the depth and tier rules are validated -- and emits
+it into the MCP configuration as `QWEN_WEB_SEARXNG_URL`,
+`QWEN_WEB_SEARXNG_PRIMARY_CATEGORY`, `QWEN_WEB_SEARXNG_FALLBACK_CATEGORY`, and
+`QWEN_WEB_SEARXNG_MINIMUM_RESULTS`. `SearXNGProvider.__init__` validates the
+same four again before the first request. The model supplies none of them.
 
-`QWEN_WEB_PROVIDER=searxng` names one engine population: the independently
-crawled indexes and the two Wikimedia sources, which serve their own data and
-reach no commercial search API.
+### One fallback, no retry loop
 
-| Engine | What it is |
-| --- | --- |
-| `mwmbl` | Community-run crawler and index |
-| `marginalia` | Independent crawler weighted toward non-commercial pages |
-| `wiby` | Independent index of hand-submitted pages |
-| `yacy` | Peer-to-peer index |
-| `wikipedia` | Wikimedia article search |
-| `wikidata` | Wikimedia structured-data search |
+A search queries `primary_category` once. A record is usable when its URL
+canonicalizes, names a public host, and survives the granted domain lists, so
+the count that decides the fallback is the count of results the reply can
+actually carry. Where that count falls below `minimum_results` and a fallback
+category exists, the provider queries the fallback exactly once and appends the
+records whose canonical URLs the primary did not already issue. A failing
+engine is the instance's own problem: SearXNG suspends one on its own, so a
+retry loop here would spend the approval on an outage the instance is already
+routing around.
 
-`QWEN_WEB_SEARXNG_ENGINES` narrows or reorders that set. An engine outside it
-is refused by name, in `remote/build-web-presets.sh` where the operator sets it
-and again in `SearXNGProvider.__init__` before the first request, because a
-SearXNG instance also proxies scraper-backed engines and admitting one through
-this provider would change what `searxng` means for every profile that already
-names it. A broader engine population is a provider of its own --
-`searxng-broad` -- with its own capability declaration and its own admission
-record.
+### No time range
+
+SearXNG maps `time_range` onto each engine, and an engine that expresses none
+-- Bing's web engine among them -- simply ignores it. A qwen-named category is
+a mix of engines, so no category can promise that a recency bound was applied to
+every result in its answer. `supports_freshness_max_age` and
+`supports_exact_date_bounds` therefore both read false and both temporal
+arguments are refused by name, which states the absence to the model rather
+than returning a result set filtered on some engines and not others.
+
+### Provenance
+
+Each result carries `engines` (the instance's own list), `category`, `rank`
+(the position the instance returned it at), and `score`. The rendered block adds
+one line, `Sources: google, brave`, after `Trust:` and before `Highlights:`.
+The pinned llama-ui reads everything after `Highlights:` up to the `---`
+separator as highlight text and `webui/index.html` reads the block for
+`Result ID:` and the trailing separator, so the line sits outside both parse
+regions, and a record carrying no engines renders no line -- an Exa block is
+byte-identical to what it was.
+
+The audit row gains seven columns beside the original twelve: `search_id`,
+`category`, `engines_attempted`, `engines_answered`, `engines_failed` (from the
+answer's `unresponsive_engines`), `fallback_used`, and `usable_results`. A
+database written before those columns is migrated in place by
+`PRAGMA table_info(audit)` and `ALTER TABLE ADD COLUMN`, and both `Ledger.record`
+and the broker's own insert name their columns rather than counting on the
+table's width. The trail still holds the SHA-256 of the query and no query
+text.
 
 ### Configuration
 
 | Name | Effect |
 | --- | --- |
-| `QWEN_WEB_SEARXNG_URL` | The instance base URL. Required. |
-| `QWEN_WEB_SEARXNG_ENGINES` | Comma list narrowing the pinned set. Default: the whole set. |
-| `QWEN_WEB_SEARXNG_LANGUAGE` | `language` request field. Omitted where unset. |
-| `QWEN_WEB_SEARXNG_SAFESEARCH` | `safesearch` request field, one of 0, 1, 2. Omitted where unset. |
+| `QWEN_WEB_SEARXNG_URL` | The instance base URL. From the profile row. |
+| `QWEN_WEB_SEARXNG_PRIMARY_CATEGORY` | The first category. From the profile row. |
+| `QWEN_WEB_SEARXNG_FALLBACK_CATEGORY` | The second category, or `-`. From the profile row. |
+| `QWEN_WEB_SEARXNG_MINIMUM_RESULTS` | The fallback threshold. From the profile row. |
+| `QWEN_WEB_SEARXNG_LANGUAGE` | `language` request field. Operator-set, omitted where unset. |
+| `QWEN_WEB_SEARXNG_SAFESEARCH` | `safesearch` request field, one of 0, 1, 2. Operator-set, omitted where unset. |
 | `QWEN_WEB_SEARXNG_ALLOW_REMOTE` | `1` admits an instance URL outside loopback. |
 
 `require_loopback_endpoint` reads the base URL the way `require_public_host`
@@ -120,31 +145,26 @@ reserved `localhost` name classify it, no hostname resolves in the process, and
 a host that is neither is refused. An SSH-forwarded loopback port therefore
 reaches a remote instance while a bare hostname refuses, and
 `QWEN_WEB_SEARXNG_ALLOW_REMOTE=1` is the operator's statement that the
-model-authored query may leave the machine.
+model-authored query may leave the machine. `build-web-presets.sh` enforces the
+loopback form on the row's own `searxng_url` as well.
 
-`remote/build-web-presets.sh` emits the required URL and each tuning name the
-operator set, so an unset one leaves the child reading its own default rather
-than an empty string. The `searxng` branch reads no key file, because the
-instance is unauthenticated and this provider holds no secret at all.
+The `searxng` branch reads no key file, because the instance is unauthenticated
+and this provider holds no secret at all.
 
 ### What the retrieval keeps and what it costs
 
 Every wrapper guard applies unchanged. A SearXNG result is mapped into the
-record shape the renderer already reads -- `url`, `title`, `publishedDate`, the
-instance's `content` snippet as the single highlight, and `engine` -- so
-`canonical_url` runs `require_public_host` over each URL before a Result ID is
-signed, `issue_result_id` signs the same claim, `open_search` records the
-profile's fetch allowance, and `reserve_fetch` meters the redemption. A
-metasearch instance indexes what its engines return, so a result naming
-loopback, an RFC 1918 address, or a legacy numeric spelling of one refuses the
-search rather than issuing a fetchable reference for it.
-
-`Engine:` is a new rendered line, placed after `Trust:` and before
-`Highlights:`. The pinned llama-ui reads everything after `Highlights:` up to
-the `---` separator as highlight text and `webui/index.html` reads the block for
-`Result ID:` and the trailing separator, so the line sits outside both parse
-regions. A record carrying no engine renders no line, which leaves an Exa block
-byte-identical to what it was.
+record shape the renderer already reads, so `canonical_url` runs
+`require_public_host` over each URL before a Result ID is signed,
+`issue_result_id` signs the same claim, `open_search` records the profile's
+fetch allowance, and `reserve_fetch` meters the redemption. A metasearch
+instance indexes what its engines return, so a result naming loopback, an
+RFC 1918 address, or a legacy numeric spelling of one is dropped from the answer
+-- one entry among ten is an entry to discard rather than a reason to refuse the
+approved search -- and it reaches no Result ID and never counts toward the
+fallback threshold. That differs from Exa, where the same URL ends the call:
+Exa returns its own crawler's results and a private target there is a provider
+defect.
 
 `contents` costs two things a page-text provider does not. The retrieval runs
 through `PROVIDER_OPENER`, which ends a redirect at the response that requested
@@ -163,26 +183,34 @@ because the frame around the window already states that the content is
 untrusted and a refusal there would let a broken page deny a fetch its Result ID
 bought.
 
+One guard does differ. `ExaProvider.contents` carries the signed `freshness`
+claim into its request as `maxAgeHours`, and `SearXNGProvider.contents` reads
+the source live on every retrieval. A live read satisfies any granted age
+bound, so the claim is met rather than ignored, and the field simply has no
+request position to occupy.
+
 ## Tool names
 
 The tools stay `search_exa` and `fetch_exa`, which llama-server composes with
 the MCP server name `web` into `web_search_exa` and `web_fetch_exa`. The
 identifiers are written into `webui/index.html`, `remote/admit-web-router-fake.sh`,
 and `evidence/web-admission-fake.md`, and the pinned llama-ui renders those two
-natively, so a provider-neutral rename is a change across the page, the
-admission harness, and two evidence records rather than a change in one place.
-The names are a follow-up rather than part of the provider.
+natively. The rename to `web_search` and `web_fetch` with the current names kept
+as aliases is a later phase: it touches the page, the admission harness, and two
+evidence records together, and an alias period is what keeps a running session
+from losing its tool surface mid-turn.
 
 ## What is unmeasured
 
 No run of this provider against a live SearXNG instance is retained. Every
 result here comes from `remote/web-mcp/test-web-mcp.py`, which stands a
 standard-library HTTP server on loopback in the instance's place and in the
-source page's place. That covers the request the provider composes, the mapping
-it applies, every refusal the contract states, the deadline, and the wrapper
-guards around a fetch; it establishes nothing about result quality, coverage,
-or latency from the six engines, and nothing about how often a real page is
-lost to the redirect refusal or the content-type gate.
+source page's place. That covers the request the provider composes, the category
+and fallback logic, the mapping and provenance, every refusal the contract
+states, the deadline, the audit row, and the wrapper guards around a fetch; it
+establishes nothing about result quality, coverage, or latency from any real
+engine population, and nothing about how often a real page is lost to the
+redirect refusal or the content-type gate.
 
 `remote/admit-web-router-fake.sh` runs the router path on the appliance against
 the fake provider and has not been run against `searxng`.

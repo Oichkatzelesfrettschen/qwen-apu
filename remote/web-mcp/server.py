@@ -98,29 +98,14 @@ EXA_CONTENTS_ENDPOINT = "https://api.exa.ai/contents"
 # refused in another signs grants the serving path never verifies.
 PROVIDER_NAMES = ("exa", "fake", "searxng")
 
-# SearXNG expresses publication recency as one of four named windows, so a
-# cached-age bound maps onto the window whose hour count it equals and every
-# other value leaves the contract. `month` is the 30-day convention SearXNG
-# applies and `year` is 365 days.
-SEARXNG_TIME_RANGE_HOURS = {24: "day", 168: "week", 720: "month", 8760: "year"}
-# The `searxng` provider is pinned to the independently crawled indexes and the
-# two Wikimedia sources, which serve their own data and reach no commercial
-# search API. QWEN_WEB_SEARXNG_ENGINES narrows or reorders this set, and an
-# engine outside it is refused by name at startup: a SearXNG instance also
-# proxies scraper-backed engines, and admitting one through this provider would
-# change what `searxng` means for every profile that already names it. A
-# broader engine population is a provider of its own -- `searxng-broad` -- with
-# its own capability declaration and its own admission record.
-SEARXNG_ADMITTED_ENGINES = (
-    "mwmbl",
-    "marginalia",
-    "wiby",
-    "yacy",
-    "wikipedia",
-    "wikidata",
-)
-SEARXNG_DEFAULT_ENGINES = SEARXNG_ADMITTED_ENGINES
+# Which engines answer a search belongs to the SearXNG instance's own
+# `settings.yml`, which groups them into qwen-named categories. The web profile
+# names a category and this provider sends it, so changing the engine
+# population is an edit to the instance rather than to a request field a model
+# or an environment could reach.
+SEARXNG_CATEGORY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 SEARXNG_LANGUAGE_PATTERN = re.compile(r"^(all|[A-Za-z]{2,8}(-[A-Za-z0-9]{2,8})*)$")
+ENGINE_LIST_CHARACTER_CAP = 256
 SEARXNG_SAFESEARCH_VALUES = ("0", "1", "2")
 # `decode_content_text` reads text, so the retrieval admits the document types
 # whose bodies are text and names a PDF or an archive by its declared type
@@ -142,7 +127,6 @@ SEARXNG_BLOCK_ELEMENTS = frozenset(
         "table", "td", "th", "tr", "ul",
     )
 )
-ENGINE_CHARACTER_CAP = 64
 
 UNTRUSTED_HEADER = "BEGIN UNTRUSTED WEB CONTENT"
 UNTRUSTED_FOOTER = "END UNTRUSTED WEB CONTENT"
@@ -276,6 +260,21 @@ def strict_json_loads(text):
         parse_float=parse_finite_float,
     )
 
+
+# The provenance an audit row retains beside the original twelve columns. A
+# metasearch answer comes from several engines and may run a second category,
+# so the trail states which search it was, which category was asked, which
+# engines answered and which failed, whether the fallback ran, and how many
+# results survived validation. None of it is query text.
+AUDIT_PROVENANCE_COLUMNS = (
+    ("search_id", "TEXT"),
+    ("category", "TEXT"),
+    ("engines_attempted", "TEXT"),
+    ("engines_answered", "TEXT"),
+    ("engines_failed", "TEXT"),
+    ("fallback_used", "INTEGER"),
+    ("usable_results", "INTEGER"),
+)
 
 AUDIT_STATUSES = (
     "success",
@@ -806,14 +805,15 @@ class Provider:
     slice in `call_search` for every provider, so both stay true where the
     backend has no matching request field.
 
-    `freshness_max_age_hours` narrows `supports_freshness_max_age` to the
-    values one backend expresses. None admits every value the argument's own
-    bounds allow; a mapping admits its keys alone.
-
     `supports_paging` states whether the backend returns further pages of
     results. No tool argument requests one -- `fetch_exa`'s `start_index` pages
     the stored document snapshot inside this wrapper -- so the flag records the
     surface a later argument would consult rather than gating one today.
+
+    `provenance` returns what the completed search retained about where its
+    results came from. `call_search` copies it into the audit row, so a trail
+    states which engines were asked and which answered without holding the
+    query. A backend that reports none leaves the fields empty.
     """
 
     name = "provider"
@@ -823,7 +823,16 @@ class Provider:
     supports_domain_filter = True
     supports_paging = False
     supports_num_results = True
-    freshness_max_age_hours = None
+
+    def provenance(self):
+        return {
+            "category": "",
+            "engines_attempted": "",
+            "engines_answered": "",
+            "engines_failed": "",
+            "fallback_used": 0,
+            "usable_results": 0,
+        }
 
     def preflight(self):
         """Validate the credential this provider posts with.
@@ -877,6 +886,42 @@ def host_within_domain(host, domain):
     return host == domain or host.endswith("." + domain)
 
 
+def admitted_by_domains(url, include_domains, exclude_domains):
+    """Return whether one URL's host survives the granted domain lists.
+
+    The comparison reads the hostname rather than the netloc, which leaves the
+    exclusion in force where the URL carries a port.
+    """
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    if include_domains and not any(
+        host_within_domain(host, domain) for domain in include_domains
+    ):
+        return False
+    return not any(host_within_domain(host, domain) for domain in exclude_domains)
+
+
+def unresponsive_engine_names(reported):
+    """Return the engine names a SearXNG answer reports as failing.
+
+    The field is a list whose entries are `[engine, reason]` pairs in the
+    instance's JSON format, and an entry may be a bare name. The value comes
+    from the instance rather than from a page, and it reaches an audit column,
+    so a name is clipped to the engine-list cap and an entry of another shape
+    contributes nothing.
+    """
+    names = []
+    if not isinstance(reported, list):
+        return names
+    for entry in reported:
+        if isinstance(entry, list) and entry:
+            entry = entry[0]
+        if isinstance(entry, str) and entry.strip():
+            name = entry.strip()[:ENGINE_LIST_CHARACTER_CAP]
+            if name not in names:
+                names.append(name)
+    return names
+
+
 def filter_by_domains(results, include_domains, exclude_domains):
     """Return the records the granted domain lists admit.
 
@@ -889,22 +934,14 @@ def filter_by_domains(results, include_domains, exclude_domains):
     """
     if not include_domains and not exclude_domains:
         return results
-    admitted = []
-    for record in results:
-        if not isinstance(record, dict):
-            continue
-        parts = urllib.parse.urlsplit(str(record.get("url", "")))
-        host = (parts.hostname or "").lower()
-        if include_domains and not any(
-            host_within_domain(host, domain) for domain in include_domains
-        ):
-            continue
-        if any(
-            host_within_domain(host, domain) for domain in exclude_domains
-        ):
-            continue
-        admitted.append(record)
-    return admitted
+    return [
+        record
+        for record in results
+        if isinstance(record, dict)
+        and admitted_by_domains(
+            str(record.get("url", "")), include_domains, exclude_domains
+        )
+    ]
 
 
 def refuse_unhonored_arguments(provider, constraints, max_results):
@@ -926,20 +963,13 @@ def refuse_unhonored_arguments(provider, constraints, max_results):
             "published_after and published_before name an exact publication "
             f"interval, which provider {provider.name} does not express"
         )
-    max_age_hours = constraints["max_age_hours"]
-    if max_age_hours is not None:
-        if not provider.supports_freshness_max_age:
-            raise InvalidArgument(
-                "max_age_hours bounds the age of the copy served, which "
-                f"provider {provider.name} does not express"
-            )
-        admitted = provider.freshness_max_age_hours
-        if admitted is not None and max_age_hours not in admitted:
-            raise InvalidArgument(
-                f"provider {provider.name} expresses max_age_hours as one of "
-                + ", ".join(str(hours) for hours in sorted(admitted))
-                + f", and the call names {max_age_hours}"
-            )
+    if constraints["max_age_hours"] is not None and (
+        not provider.supports_freshness_max_age
+    ):
+        raise InvalidArgument(
+            "max_age_hours bounds the age of the copy served, which provider "
+            f"{provider.name} does not express"
+        )
     if not provider.supports_domain_filter and (
         constraints["include_domains"] or constraints["exclude_domains"]
     ):
@@ -1215,36 +1245,49 @@ class SearXNGProvider(Provider):
     other; a page that answers only behind a redirect therefore fails.
 
     The instance is unauthenticated, so no secret reaches this provider and
-    `preflight` validates nothing. The endpoint and the engine set are
-    validated in `__init__`, ahead of every ledger transaction, which keeps a
-    misconfigured base URL or an engine outside `SEARXNG_ADMITTED_ENGINES` from
-    spending a grant.
+    `preflight` validates nothing. The endpoint, the categories, and the
+    minimum are validated in `__init__`, ahead of every ledger transaction, so
+    a misconfigured profile spends no grant.
+
+    Which engines answer belongs to the instance's `settings.yml`, which groups
+    them under qwen-named categories. The web profile names a primary category
+    and an optional fallback, and this provider sends the category: the engine
+    population changes by editing the instance rather than by any request field
+    a model or an environment reaches.
     """
 
     name = "searxng"
 
-    # The JSON API reads `time_range` over four named windows, `language`,
-    # `safesearch`, `engines`, and `pageno`, and carries no publication
-    # interval. Domain scope and result count are honored in this wrapper:
-    # `filter_by_domains` drops an off-domain record and `call_search` slices
-    # to the granted count, both over whatever the instance returns.
+    # The JSON API reads `categories`, `language`, `safesearch`, and `pageno`,
+    # and carries no publication interval. A mixed category answers from
+    # engines whose recency support differs -- Bing's web engine expresses no
+    # time range at all -- so a category cannot promise one and both temporal
+    # arguments are refused rather than approximated. Domain scope and result
+    # count are honored in this provider: it drops an off-domain or private
+    # record before counting, which is also what decides whether the fallback
+    # category runs.
     supports_exact_date_bounds = False
-    supports_freshness_max_age = True
+    supports_freshness_max_age = False
     supports_domain_filter = True
-    supports_paging = True
+    supports_paging = False
     supports_num_results = True
-    freshness_max_age_hours = SEARXNG_TIME_RANGE_HOURS
 
     def __init__(
         self,
         base_url,
-        engines=SEARXNG_DEFAULT_ENGINES,
+        primary_category,
+        fallback_category="",
+        minimum_results=1,
         language="",
         safesearch="",
         allow_remote=False,
     ):
         self.response_bytes = 0
         self.timeout_seconds = REQUEST_TIMEOUT_SECONDS
+        self.fallback_used = 0
+        self.usable_results = 0
+        self.engines_answered = []
+        self.engines_failed = []
         if not base_url:
             raise InvalidArgument(
                 "the searxng provider requires QWEN_WEB_SEARXNG_URL to name "
@@ -1254,14 +1297,33 @@ class SearXNGProvider(Provider):
             base_url, allow_remote, "QWEN_WEB_SEARXNG_URL"
         )
         self.search_endpoint = self.base_url + "/search"
-        self.engines = tuple(engines)
-        for engine in self.engines:
-            if engine not in SEARXNG_ADMITTED_ENGINES:
-                raise InvalidArgument(
-                    f"provider searxng admits the engine set "
-                    + ", ".join(SEARXNG_ADMITTED_ENGINES)
-                    + f", and QWEN_WEB_SEARXNG_ENGINES names {engine}"
-                )
+        self.primary_category = (primary_category or "").strip()
+        if not SEARXNG_CATEGORY_PATTERN.match(self.primary_category):
+            raise InvalidArgument(
+                "QWEN_WEB_SEARXNG_PRIMARY_CATEGORY names no category the "
+                f"instance can carry: {primary_category}"
+            )
+        self.fallback_category = (fallback_category or "").strip()
+        if self.fallback_category in ("-", ""):
+            self.fallback_category = ""
+        elif not SEARXNG_CATEGORY_PATTERN.match(self.fallback_category):
+            raise InvalidArgument(
+                "QWEN_WEB_SEARXNG_FALLBACK_CATEGORY names no category the "
+                f"instance can carry: {fallback_category}"
+            )
+        try:
+            self.minimum_results = int(minimum_results)
+        except (TypeError, ValueError):
+            raise InvalidArgument(
+                "QWEN_WEB_SEARXNG_MINIMUM_RESULTS names no integer: "
+                f"{minimum_results}"
+            ) from None
+        if not 1 <= self.minimum_results <= RESULT_COUNT_CAP:
+            raise InvalidArgument(
+                "QWEN_WEB_SEARXNG_MINIMUM_RESULTS lies between 1 and "
+                f"{RESULT_COUNT_CAP}, and the configuration names "
+                f"{self.minimum_results}"
+            )
         self.language = language
         if self.language and not SEARXNG_LANGUAGE_PATTERN.match(self.language):
             raise InvalidArgument(
@@ -1312,23 +1374,42 @@ class SearXNGProvider(Provider):
         return raw, headers
 
     def search(self, query, max_results, constraints):
-        """Ask the instance for ranked results in its JSON format.
+        """Query the primary category, and the fallback once where it is short.
 
-        `refuse_unhonored_arguments` has already ended a call naming a
-        publication interval or a cached age outside the four windows, so the
-        mapping here reads a value the contract admits.
+        A record is usable when its URL canonicalizes, names a public host, and
+        survives the granted domain lists, so the count that decides the
+        fallback is the count of results the reply can actually carry. Exactly
+        one fallback query runs: an instance suspends a failing engine on its
+        own, so a retry loop here would spend the approval on the same outage
+        the instance is already routing around.
         """
-        parameters = [("q", query), ("format", "json")]
-        if constraints["max_age_hours"] is not None:
-            parameters.append(
-                ("time_range", SEARXNG_TIME_RANGE_HOURS[constraints["max_age_hours"]])
-            )
+        usable = self._query_category(query, self.primary_category, constraints)
+        if len(usable) < self.minimum_results and self.fallback_category:
+            self.fallback_used = 1
+            issued = {record["url"] for record in usable}
+            usable = usable + [
+                record
+                for record in self._query_category(
+                    query, self.fallback_category, constraints
+                )
+                if record["url"] not in issued
+            ]
+        self.usable_results = len(usable)
+        return usable[:max_results]
+
+    def _query_category(self, query, category, constraints):
+        """Return the usable records of one category query.
+
+        A result whose URL names this machine, a private network, or a domain
+        outside the grant is dropped here rather than raising, because a
+        metasearch answer mixes engines and one bad entry among ten is an entry
+        to discard rather than a reason to refuse the approved search.
+        """
+        parameters = [("q", query), ("format", "json"), ("categories", category)]
         if self.language:
             parameters.append(("language", self.language))
         if self.safesearch:
             parameters.append(("safesearch", self.safesearch))
-        if self.engines:
-            parameters.append(("engines", ",".join(self.engines)))
         raw, _ = self._open(
             self.search_endpoint + "?" + urllib.parse.urlencode(parameters),
             "application/json",
@@ -1348,32 +1429,77 @@ class SearXNGProvider(Provider):
             raise ProviderContentError(
                 "the provider response carries a result that is not an object"
             )
-        return [self.map_result(record) for record in results]
+        for name in unresponsive_engine_names(document.get("unresponsive_engines")):
+            if name not in self.engines_failed:
+                self.engines_failed.append(name)
+        usable = []
+        for position, record in enumerate(results, start=1):
+            mapped = self.map_result(record, category, position)
+            try:
+                mapped["url"] = canonical_url(mapped["url"])
+            except ToolError:
+                continue
+            if not admitted_by_domains(
+                mapped["url"],
+                constraints["include_domains"],
+                constraints["exclude_domains"],
+            ):
+                continue
+            for name in mapped["engines"]:
+                if name not in self.engines_answered:
+                    self.engines_answered.append(name)
+            usable.append(mapped)
+        return usable
+
+    def provenance(self):
+        attempted = list(self.engines_answered) + [
+            name for name in self.engines_failed if name not in self.engines_answered
+        ]
+        return {
+            "category": self.primary_category,
+            "engines_attempted": ",".join(sorted(attempted)),
+            "engines_answered": ",".join(sorted(self.engines_answered)),
+            "engines_failed": ",".join(sorted(self.engines_failed)),
+            "fallback_used": self.fallback_used,
+            "usable_results": self.usable_results,
+        }
 
     @staticmethod
-    def map_result(record):
+    def map_result(record, category, rank):
         """Return one SearXNG entry in the shape the renderer reads.
 
         `content` is the instance's own snippet, which takes the highlight
-        position an Exa result fills, and `engine` names which index answered.
-        The record carries no opaque identifier, so `provider_result_id`
-        returns the empty string and the canonical URL alone resolves the
-        fetch.
+        position an Exa result fills. `engines`, `category`, `rank`, and
+        `score` state where the entry came from and how the instance placed it,
+        which is what the reply's `Sources:` line and the audit row read. The
+        record carries no opaque identifier, so `provider_result_id` returns
+        the empty string and the canonical URL alone resolves the fetch.
         """
-        engine = record.get("engine")
-        if not isinstance(engine, str):
-            engines = record.get("engines")
-            engine = ", ".join(
-                entry for entry in engines if isinstance(entry, str)
-            ) if isinstance(engines, list) else ""
+        engines = []
+        for key in ("engines", "engine"):
+            value = record.get(key)
+            if isinstance(value, str):
+                value = [value]
+            if isinstance(value, list):
+                for entry in value:
+                    if (
+                        isinstance(entry, str)
+                        and entry.strip()
+                        and entry.strip() not in engines
+                    ):
+                        engines.append(entry.strip())
         snippet = record.get("content")
         published = record.get("publishedDate")
+        score = record.get("score")
         return {
             "url": str(record.get("url", "")),
             "title": record.get("title") or "",
             "publishedDate": published if isinstance(published, str) else "",
             "author": "",
-            "engine": engine,
+            "engines": engines,
+            "category": category,
+            "rank": rank,
+            "score": score if isinstance(score, (int, float)) else None,
             "highlights": [snippet] if isinstance(snippet, str) and snippet else [],
         }
 
@@ -1591,6 +1717,20 @@ class Ledger:
             " provider_bytes INTEGER, returned_characters INTEGER,"
             " latency_ms INTEGER, status TEXT, recorded_epoch INTEGER)"
         )
+        # A database written by an earlier revision holds the twelve original
+        # columns, and `CREATE TABLE IF NOT EXISTS` leaves it as it stands, so
+        # each provenance column is added where the table lacks it. `record`
+        # names its columns rather than counting them, which keeps one INSERT
+        # correct across a migrated and a fresh table alike.
+        present = {
+            column[1]
+            for column in self.connection.execute("PRAGMA table_info(audit)")
+        }
+        for column, declaration in AUDIT_PROVENANCE_COLUMNS:
+            if column not in present:
+                self.connection.execute(
+                    f"ALTER TABLE audit ADD COLUMN {column} {declaration}"
+                )
         self.connection.execute(
             "CREATE TABLE IF NOT EXISTS grants ("
             "grant_id TEXT PRIMARY KEY, profile TEXT, provider TEXT,"
@@ -1932,22 +2072,41 @@ class Ledger:
         writes `internal_error`.
         """
         status = row["status"] if row["status"] in AUDIT_STATUSES else "internal_error"
+        columns = [
+            "recorded_at",
+            "profile",
+            "operation",
+            "query_sha256",
+            "domains",
+            "result_count",
+            "fetched_host",
+            "provider_bytes",
+            "returned_characters",
+            "latency_ms",
+            "status",
+            "recorded_epoch",
+        ] + [column for column, _ in AUDIT_PROVENANCE_COLUMNS]
+        values = [
+            row["recorded_at"],
+            row["profile"],
+            row["operation"],
+            row["query_sha256"],
+            row["domains"],
+            row["result_count"],
+            row["fetched_host"],
+            row["provider_bytes"],
+            row["returned_characters"],
+            row["latency_ms"],
+            status,
+            int(row["recorded_epoch"]),
+        ] + [row.get(column, "") for column, _ in AUDIT_PROVENANCE_COLUMNS]
         self.connection.execute(
-            "INSERT INTO audit VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                row["recorded_at"],
-                row["profile"],
-                row["operation"],
-                row["query_sha256"],
-                row["domains"],
-                row["result_count"],
-                row["fetched_host"],
-                row["provider_bytes"],
-                row["returned_characters"],
-                row["latency_ms"],
-                status,
-                int(row["recorded_epoch"]),
-            ),
+            "INSERT INTO audit ("
+            + ", ".join(columns)
+            + ") VALUES("
+            + ", ".join("?" for _ in columns)
+            + ")",
+            values,
         )
         self.connection.commit()
 
@@ -2140,30 +2299,14 @@ def select_provider(settings):
     if settings["provider"] == "searxng":
         return SearXNGProvider(
             settings["searxng_url"],
-            searxng_engines(settings),
+            settings["searxng_primary_category"].strip(),
+            settings["searxng_fallback_category"].strip(),
+            settings["searxng_minimum_results"].strip() or 1,
             settings["searxng_language"].strip(),
             settings["searxng_safesearch"].strip(),
             allow_remote=settings["searxng_allow_remote"].strip() == "1",
         )
     return ExaProvider(settings["exa_key_file"])
-
-
-def searxng_engines(settings):
-    """Return the engine list a comma-separated setting names.
-
-    An empty setting takes `SEARXNG_DEFAULT_ENGINES`, and a setting holding
-    separators alone names no engine, which reaches the instance as a request
-    for its own default set rather than as this repository's, so it is refused.
-    """
-    configured = settings["searxng_engines"].strip()
-    if not configured:
-        return SEARXNG_DEFAULT_ENGINES
-    engines = tuple(
-        entry.strip().lower() for entry in configured.split(",") if entry.strip()
-    )
-    if not engines:
-        raise InvalidArgument("QWEN_WEB_SEARXNG_ENGINES names no engine")
-    return engines
 
 
 def require_string(arguments, key, cap, required=True, default=""):
@@ -2378,13 +2521,18 @@ def render_search_results(
             ),
             "Trust: untrusted-web-result",
         ]
-        # A metasearch answer names which index returned the record, which is
-        # what separates one crawler's coverage from another's in the reply.
-        # The line sits ahead of `Highlights:`, so the highlight region the
-        # pinned llama-ui parses keeps its own boundary.
-        engine = clip(record.get("engine") or "", ENGINE_CHARACTER_CAP)
-        if engine:
-            lines.append(f"Engine: {engine}")
+        # A metasearch answer names which engines returned the record, which is
+        # what tells a reader whether one index or several found it. The line
+        # sits ahead of `Highlights:`, so the highlight region the pinned
+        # llama-ui parses keeps its own boundary.
+        engines = record.get("engines") or []
+        if isinstance(engines, list) and engines:
+            sources = clip(
+                ", ".join(str(engine) for engine in engines),
+                ENGINE_LIST_CHARACTER_CAP,
+            )
+            if sources:
+                lines.append(f"Sources: {sources}")
         lines.append("Highlights:")
         for highlight in highlights[:HIGHLIGHT_COUNT_CAP]:
             lines.append(f"- {clip(highlight, HIGHLIGHT_CHARACTER_CAP)}")
@@ -2509,6 +2657,13 @@ def call_search(settings, arguments):
         "returned_characters": 0,
         "latency_ms": 0,
         "status": "internal_error",
+        "search_id": "",
+        "category": "",
+        "engines_attempted": "",
+        "engines_answered": "",
+        "engines_failed": "",
+        "fallback_used": 0,
+        "usable_results": 0,
     }
     provider = None
     try:
@@ -2555,6 +2710,7 @@ def call_search(settings, arguments):
             constraints["exclude_domains"],
         )[:max_results]
         search_id = search_id_for()
+        audit["search_id"] = search_id
         rendered, issued = render_search_results(
             results,
             provider.name,
@@ -2593,6 +2749,10 @@ def call_search(settings, arguments):
         # to what was spent.
         if provider is not None:
             audit["provider_bytes"] = provider.response_bytes
+            # The provenance is copied on every exit path, so a search that
+            # reached the instance and then failed a later rule still records
+            # which engines answered and whether the fallback ran.
+            audit.update(provider.provenance())
         audit["latency_ms"] = int((time.monotonic() - started) * 1000)
         if ledger is not None:
             ledger.record(audit)
@@ -2634,6 +2794,13 @@ def call_fetch(settings, arguments):
         "returned_characters": 0,
         "latency_ms": 0,
         "status": "internal_error",
+        "search_id": "",
+        "category": "",
+        "engines_attempted": "",
+        "engines_answered": "",
+        "engines_failed": "",
+        "fallback_used": 0,
+        "usable_results": 0,
     }
     provider = None
     try:
@@ -2855,7 +3022,15 @@ def settings_from_environment(argv):
         "token_key_file": os.environ.get("QWEN_WEB_TOKEN_KEY_FILE", ""),
         "fixtures": os.environ.get("QWEN_WEB_FAKE_FIXTURES", ""),
         "searxng_url": os.environ.get("QWEN_WEB_SEARXNG_URL", ""),
-        "searxng_engines": os.environ.get("QWEN_WEB_SEARXNG_ENGINES", ""),
+        "searxng_primary_category": os.environ.get(
+            "QWEN_WEB_SEARXNG_PRIMARY_CATEGORY", ""
+        ),
+        "searxng_fallback_category": os.environ.get(
+            "QWEN_WEB_SEARXNG_FALLBACK_CATEGORY", ""
+        ),
+        "searxng_minimum_results": os.environ.get(
+            "QWEN_WEB_SEARXNG_MINIMUM_RESULTS", ""
+        ),
         "searxng_language": os.environ.get("QWEN_WEB_SEARXNG_LANGUAGE", ""),
         "searxng_safesearch": os.environ.get("QWEN_WEB_SEARXNG_SAFESEARCH", ""),
         "searxng_allow_remote": os.environ.get(
