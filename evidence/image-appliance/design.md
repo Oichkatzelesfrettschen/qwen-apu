@@ -178,7 +178,8 @@ it.
 
 `remote/image-protocol.md` freezes the request and response shape those layers
 exchange at `protocol_version=1`, and `remote/image_protocol.py` is the checker
-the service and MCP lanes test against.
+it requires the service and MCP lanes to import rather than restate. Neither
+lane exists in this tree yet, so that is the contract they are built against.
 
 ## Vision review
 

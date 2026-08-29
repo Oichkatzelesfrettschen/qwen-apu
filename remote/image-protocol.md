@@ -12,7 +12,10 @@ a dependency to enforce it, and an unenforced schema drifts from the callers it
 describes. `image_protocol.validate_request` and
 `image_protocol.validate_response` raise `ProtocolError` naming the field and
 the breach; `decode_line` and `encode_line` carry the framing.
-`remote/test-image-protocol.py` drives every refusal below.
+`remote/test-image-protocol.py` drives every refusal below. The module carries
+no package: an importer sits in `remote/` beside it, where CPython puts the
+running script's own directory first on `sys.path`, or it prepends that
+directory itself.
 
 ## Framing
 
@@ -111,6 +114,7 @@ promise.
 
 `remote/test-image-protocol.py` exercises every accepted shape and every refusal
 named above, including the line exactly at the 65536-byte bound and the line one
-byte past it. The service and MCP lanes import `remote/image_protocol.py` and
-test against this file, so a change to the contract is one edit here, one edit
-in the module, and a failing suite everywhere the old reading survived.
+byte past it. The requirement this file places on the lanes above it: the image
+service and the image MCP wrapper import `remote/image_protocol.py` rather than
+restating its rules, so a change to the contract is one edit here, one edit in
+the module, and a failing suite everywhere the old reading survived.
