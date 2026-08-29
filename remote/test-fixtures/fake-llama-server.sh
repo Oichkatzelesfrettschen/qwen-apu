@@ -1,6 +1,13 @@
 #!/bin/sh
 set -eu
 
+# A build identity answers before the argv recorder runs, so an identity query
+# leaves the recorded launch argv of the run under test in place.
+if [ "${1:-}" = --version ]; then
+    printf 'version: 0 (fake)\nbuild: 0000000 with fake\n'
+    exit 0
+fi
+
 if [ -z "${QWEN_POLICY_TEST_OUTPUT:-}" ]; then
     printf 'QWEN_POLICY_TEST_OUTPUT is required\n' >&2
     exit 2
@@ -27,3 +34,76 @@ fi
         printf 'argument=%s\n' "$argument"
     done
 } > "$QWEN_POLICY_TEST_OUTPUT"
+
+# QWEN_POLICY_TEST_HTTP_PORT turns the recorder into a served endpoint, so a
+# harness that drives requests through llama-server's own routes runs without
+# the device. One whitespace-separated word stands for one token and each image
+# part contributes a fixed lump, which is the shape a projector-loaded prompt
+# has: the /tokenize route sees the text alone and timings.prompt_n carries the
+# image tokens beside it.
+[ -n "${QWEN_POLICY_TEST_HTTP_PORT:-}" ] || exit 0
+
+QWEN_POLICY_TEST_HTTP_PORT=$QWEN_POLICY_TEST_HTTP_PORT \
+QWEN_POLICY_TEST_IMAGE_TOKENS=${QWEN_POLICY_TEST_IMAGE_TOKENS:-300} \
+QWEN_POLICY_TEST_REPLY=${QWEN_POLICY_TEST_REPLY:-JUN} \
+QWEN_POLICY_TEST_PREDICTED_CAP=${QWEN_POLICY_TEST_PREDICTED_CAP:-0} \
+    exec python3 - <<'PY'
+import json
+import os
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
+port = int(os.environ["QWEN_POLICY_TEST_HTTP_PORT"])
+image_tokens = int(os.environ["QWEN_POLICY_TEST_IMAGE_TOKENS"])
+reply = os.environ["QWEN_POLICY_TEST_REPLY"]
+# A positive cap stops the reply short of the requested length, which is the
+# shape a fixed-length decode fails in: the answer arrives and carries fewer
+# tokens than the caller asked for.
+predicted_cap = int(os.environ["QWEN_POLICY_TEST_PREDICTED_CAP"])
+
+
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *arguments):
+        pass
+
+    def respond(self, payload):
+        body = json.dumps(payload).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        if self.path.startswith("/health"):
+            self.respond({"status": "ok"})
+        else:
+            self.send_error(404)
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        body = json.loads(self.rfile.read(length).decode() or "{}")
+        if self.path.startswith("/tokenize"):
+            words = len(str(body.get("content", "")).split())
+            self.respond({"tokens": list(range(words))})
+            return
+        if not self.path.startswith("/v1/chat/completions"):
+            self.send_error(404)
+            return
+        prompt_tokens = 0
+        for message in body.get("messages") or []:
+            for part in message.get("content") or []:
+                if part.get("type") == "text":
+                    prompt_tokens += len(part.get("text", "").split())
+                if part.get("type") == "image_url":
+                    prompt_tokens += image_tokens
+        predicted = int(body.get("max_tokens") or 1)
+        if predicted_cap > 0:
+            predicted = min(predicted, predicted_cap)
+        self.respond({
+            "choices": [{"message": {"role": "assistant", "content": reply}}],
+            "timings": {"prompt_n": prompt_tokens, "prompt_ms": 1000.0,
+                        "predicted_n": predicted, "predicted_per_second": 4.5}})
+
+
+HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+PY

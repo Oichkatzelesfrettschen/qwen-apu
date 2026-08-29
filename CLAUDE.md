@@ -174,6 +174,28 @@ legacy row without model identity requires a new output directory. The retained
 row also restores health and device-corruption state, so conditional arms and
 terminal halt behavior remain the same across an interrupted run.
 
+`check-validated-tuples.sh` maps a `projector` field of `required` onto an
+expected projector state of `loaded`, and `probe-depth-wedge.sh` drives
+llama-bench, which takes no `--mmproj` and allocates no projector buffers, so
+every arm it records reads `projector_state=none` and a vision row keeps `-` in
+`validated_filled_depth` however many arms it accumulates.
+`remote/probe-depth-projector.sh` measures the tuple those rows need. It reads
+one registry row, resolves the projector through `select-projector.sh` in the
+model's own directory, and runs llama-server standalone at the row's cache
+triple and submission geometry with the projector attached. A probe request
+measures the template and image overhead `/tokenize` cannot see, since that
+route tokenizes text and the projector writes image tokens inside the chat
+pipeline, and padding measured through `/tokenize` closes the remainder. The
+acceptance window is asymmetric because decode follows the fill inside one
+allocation: an arm passes on `DEPTH - 2% <= prompt_n <= DEPTH - 32`, where a
+prompt at or above the depth evicts rather than decodes. Each arm ends on the
+question `bars.png` declares the answer to, so a projector that stopped
+encoding into the language model's embedding space fails the control and halts
+the chain. A healthy arm emits an appendable ledger line carrying
+`projector_state=loaded` beside its evidence directory rather than into
+`remote/validated-tuples.tsv`, because a `validated` row requires its evidence
+path to exist in the tree.
+
 The `tier` field states what is claimed about a row and
 `remote/build-router-presets.sh` turns it into what the picker offers.
 `production` is a serving tuple measured safe and useful; `candidate` leaves
@@ -552,6 +574,7 @@ remote/run-one-token-admission.sh RECORD [OUT]  # load every candidate once
 remote/run-representation-arm.sh LABEL CONTROL SUBJECT
                                                 # one value format against another, ABBA
 remote/admit-web-router-fake.sh OUTPUT_DIR      # the web router against the fake provider
+remote/probe-depth-projector.sh MODEL_ID OUT   # filled depth, projector loaded
 
 # Rebuild llama.cpp and the static UI
 remote/build-llama-preset.sh PRESET [SOURCE]   # one directory per build arm
@@ -580,6 +603,7 @@ remote/test-qwen-runtime-guards.sh
 remote/test-radv-low-priority-env.sh
 remote/test-model-registry.sh
 remote/test-model-tiers.sh
+remote/test-probe-depth-projector.sh
 remote/test-web-presets.sh
 remote/test-qwen-web-launch.sh
 remote/test-quality-suite.py
