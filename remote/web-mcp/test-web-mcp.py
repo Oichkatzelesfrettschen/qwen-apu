@@ -1675,6 +1675,30 @@ class WebMcpServerTest(unittest.TestCase):
         self.assertEqual(provenance["engines_attempted"], "mwmbl,wiby,yacy")
         self.assertEqual(provenance["category"], "qwen-open")
 
+    def test_a_repeated_url_counts_once_and_lets_the_fallback_run(self):
+        """The renderer issues one block per canonical URL, so the count agrees.
+
+        Two records that canonicalize alike reach one rendered block, so a
+        count that read both would report a result the reply never carried and
+        would hold back a fallback the reply needed.
+        """
+        fixture, provider = self.searxng_provider(
+            fallback_category="qwen-broad", minimum_results=2
+        )
+        fixture.search_document(
+            [
+                {"url": "https://Example.ORG/one", "engines": ["google"]},
+                {"url": "https://example.org/one", "engines": ["brave"]},
+            ]
+        )
+        results = provider.search("raven2", 5, self.unconstrained())
+        self.assertEqual(
+            [record["url"] for record in results], ["https://example.org/one"]
+        )
+        self.assertEqual(provider.provenance()["usable_results"], 1)
+        self.assertEqual(provider.provenance()["fallback_used"], 1)
+        self.assertEqual(len(fixture.requests), 2)
+
     def test_an_absent_fallback_leaves_a_short_answer_as_it_stands(self):
         fixture, provider = self.searxng_provider(minimum_results=5)
         fixture.search_document([{"url": "https://example.org/one"}])

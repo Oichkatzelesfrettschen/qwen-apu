@@ -799,15 +799,8 @@ fi
 # passes; what it does catch is a key file's contents inlined where its path
 # belongs, which is the substitution that turns a persisted preset tree into a
 # credential store.
-secret_leak_outcome=ok
-for generated_config in "$mcp_configs"/*.json; do
-    [ -f "$generated_config" ] || continue
-    if grep -q 'fixture-search-secret-value\|fixture-token-secret-value' \
-        "$generated_config"; then
-        secret_leak_outcome=key_contents_present
-        break
-    fi
-    unexpected_key=$(python3 - "$generated_config" <<'PYTHON'
+undeclared_env_keys() {
+    python3 - "$1" <<'PYTHON'
 import json
 import sys
 
@@ -821,7 +814,9 @@ admitted = {
     "QWEN_WEB_EXA_KEY_FILE",
     "QWEN_WEB_FAKE_FIXTURES",
     "QWEN_WEB_SEARXNG_URL",
-    "QWEN_WEB_SEARXNG_ENGINES",
+    "QWEN_WEB_SEARXNG_PRIMARY_CATEGORY",
+    "QWEN_WEB_SEARXNG_FALLBACK_CATEGORY",
+    "QWEN_WEB_SEARXNG_MINIMUM_RESULTS",
     "QWEN_WEB_SEARXNG_LANGUAGE",
     "QWEN_WEB_SEARXNG_SAFESEARCH",
     "QWEN_WEB_SEARXNG_ALLOW_REMOTE",
@@ -836,7 +831,17 @@ for name, value in environment.items():
     if name.endswith("_KEY_FILE") and not value.startswith("/"):
         print("key file value is no absolute path: %s" % name)
 PYTHON
-    ) || unexpected_key='config unreadable'
+}
+
+secret_leak_outcome=ok
+for generated_config in "$mcp_configs"/*.json; do
+    [ -f "$generated_config" ] || continue
+    if grep -q 'fixture-search-secret-value\|fixture-token-secret-value' \
+        "$generated_config"; then
+        secret_leak_outcome=key_contents_present
+        break
+    fi
+    unexpected_key=$(undeclared_env_keys "$generated_config") || unexpected_key='config unreadable'
     if [ -n "$unexpected_key" ]; then
         secret_leak_outcome=$unexpected_key
         break
@@ -953,6 +958,13 @@ if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_searxng \
         python3 -c 'import json,sys; json.load(open(sys.argv[1]))' \
             "$searxng_mcp_config" >/dev/null 2>&1 ||
             searxng_outcome=config_unparseable
+        # The declared-key check runs over this branch's own configuration,
+        # since the shared directory the leak loop walks holds the exa arms
+        # alone and a searxng name absent from the admitted set would pass
+        # unread.
+        searxng_undeclared=$(undeclared_env_keys "$searxng_mcp_config") ||
+            searxng_undeclared='config unreadable'
+        [ -z "$searxng_undeclared" ] || searxng_outcome=$searxng_undeclared
     fi
     report searxng_profile_row_carries_the_category_policy "$searxng_outcome"
 else

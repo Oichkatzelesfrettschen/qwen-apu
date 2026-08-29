@@ -82,17 +82,27 @@ The seeded rows: `web-open` queries `qwen-open` alone; `web-balanced` queries
 execution_policy -- the way the depth and tier rules are validated -- and emits
 it into the MCP configuration as `QWEN_WEB_SEARXNG_URL`,
 `QWEN_WEB_SEARXNG_PRIMARY_CATEGORY`, `QWEN_WEB_SEARXNG_FALLBACK_CATEGORY`, and
-`QWEN_WEB_SEARXNG_MINIMUM_RESULTS`. `SearXNGProvider.__init__` validates the
-same four again before the first request. The model supplies none of them.
+`QWEN_WEB_SEARXNG_MINIMUM_RESULTS`. `SearXNGProvider.__init__` validates all
+four again before the first request, so a hand-edited configuration meets the
+rules too. The two gates are not identical and the generator is the stricter of
+them: it admits the literal hosts `127.0.0.1` and `localhost` where
+`require_loopback_endpoint` admits every address in 127/8 and `::1`, and it
+bounds a category by character class where `SEARXNG_CATEGORY_PATTERN` also caps
+the length at 64. Both differences refuse more in the generator than in the
+child, so a row this file admits is one the child admits. The model supplies
+none of the four.
 
 ### One fallback, no retry loop
 
 A search queries `primary_category` once. A record is usable when its URL
-canonicalizes, names a public host, and survives the granted domain lists, so
-the count that decides the fallback is the count of results the reply can
-actually carry. Where that count falls below `minimum_results` and a fallback
+canonicalizes, names a public host, survives the granted domain lists, and is
+not a URL an earlier record already carried, so the count that decides the
+fallback is the count of results the reply can actually carry:
+`render_search_results` renders one block per canonical URL, so a repeat that
+counted would both inflate the audit's `usable_results` and suppress a fallback
+the reply needed. Where that count falls below `minimum_results` and a fallback
 category exists, the provider queries the fallback exactly once and appends the
-records whose canonical URLs the primary did not already issue. A failing
+records whose canonical URLs no earlier record issued. A failing
 engine is the instance's own problem: SearXNG suspends one on its own, so a
 retry loop here would spend the approval on an outage the instance is already
 routing around.

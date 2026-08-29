@@ -1376,34 +1376,37 @@ class SearXNGProvider(Provider):
     def search(self, query, max_results, constraints):
         """Query the primary category, and the fallback once where it is short.
 
-        A record is usable when its URL canonicalizes, names a public host, and
-        survives the granted domain lists, so the count that decides the
-        fallback is the count of results the reply can actually carry. Exactly
-        one fallback query runs: an instance suspends a failing engine on its
-        own, so a retry loop here would spend the approval on the same outage
-        the instance is already routing around.
+        A record is usable when its URL canonicalizes, names a public host,
+        survives the granted domain lists, and is not a URL an earlier record
+        already carried, so the count that decides the fallback is the count of
+        results the reply can actually carry: `render_search_results` renders
+        one block per canonical URL, so a repeat that counted here would both
+        inflate the audit's `usable_results` and suppress a fallback the reply
+        needed. Exactly one fallback query runs: an instance suspends a failing
+        engine on its own, so a retry loop here would spend the approval on the
+        same outage the instance is already routing around.
         """
-        usable = self._query_category(query, self.primary_category, constraints)
+        issued = set()
+        usable = self._query_category(
+            query, self.primary_category, constraints, issued
+        )
         if len(usable) < self.minimum_results and self.fallback_category:
             self.fallback_used = 1
-            issued = {record["url"] for record in usable}
-            usable = usable + [
-                record
-                for record in self._query_category(
-                    query, self.fallback_category, constraints
-                )
-                if record["url"] not in issued
-            ]
+            usable = usable + self._query_category(
+                query, self.fallback_category, constraints, issued
+            )
         self.usable_results = len(usable)
         return usable[:max_results]
 
-    def _query_category(self, query, category, constraints):
+    def _query_category(self, query, category, constraints, issued):
         """Return the usable records of one category query.
 
         A result whose URL names this machine, a private network, or a domain
         outside the grant is dropped here rather than raising, because a
         metasearch answer mixes engines and one bad entry among ten is an entry
-        to discard rather than a reason to refuse the approved search.
+        to discard rather than a reason to refuse the approved search. `issued`
+        accumulates the canonical URLs already returned across both category
+        queries, so one URL is counted and rendered once.
         """
         parameters = [("q", query), ("format", "json"), ("categories", category)]
         if self.language:
@@ -1445,6 +1448,9 @@ class SearXNGProvider(Provider):
                 constraints["exclude_domains"],
             ):
                 continue
+            if mapped["url"] in issued:
+                continue
+            issued.add(mapped["url"])
             for name in mapped["engines"]:
                 if name not in self.engines_answered:
                     self.engines_answered.append(name)
@@ -2099,7 +2105,14 @@ class Ledger:
             row["latency_ms"],
             status,
             int(row["recorded_epoch"]),
-        ] + [row.get(column, "") for column, _ in AUDIT_PROVENANCE_COLUMNS]
+        ] + [
+            # A caller that fills none of the provenance -- the approval broker
+            # writes its own rows through this method -- leaves each column at
+            # the empty value its declared type takes, so an aggregate over
+            # `fallback_used` or `usable_results` reads integers throughout.
+            row.get(column, "" if declaration == "TEXT" else 0)
+            for column, declaration in AUDIT_PROVENANCE_COLUMNS
+        ]
         self.connection.execute(
             "INSERT INTO audit ("
             + ", ".join(columns)
