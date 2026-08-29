@@ -646,6 +646,11 @@ classify_hazard() {
 # states. `timeout` reports 124 on a plain expiry and 128+signal after the
 # kill-after escalation, which is what makes a parked driver distinguishable
 # from a bench that returned an error.
+# The wrapper exports LLAMA_NO_CPU_FALLBACK=1, and llama-bench without a
+# placement leaves model.input_embed on the host, which the guard rejects
+# during the fused Gated DeltaNet reserve check. -dev Vulkan0 with the
+# override pattern is the placement qwen-capacity-policy.sh gives the server,
+# so every arm measures the served placement under the served guard.
 run_bench() {
     bench_log=$1
     bench_depth=$2
@@ -664,7 +669,8 @@ run_bench() {
             nice -n 19 ionice -c 3 timeout \
             --kill-after="${arm_timeout_kill_after_s}s" "${bench_timeout_s}s" \
             "$environment_wrapper" "$bench" -m "$model_path" \
-            -ngl 99 -t 2 -r 1 -p 0 -n "$bench_tokens" \
+            -ngl 99 -dev Vulkan0 -ot '.*=Vulkan0' \
+            -t 2 -r 1 -p 0 -n "$bench_tokens" \
             -b "$bench_batch" -ub "$bench_ubatch" \
             -ctk "$cache_type_k" -ctv "$cache_type_v" -fa "$flash_attention" \
             -o md >"$bench_log" 2>&1
@@ -676,7 +682,8 @@ run_bench() {
             nice -n 19 ionice -c 3 timeout \
             --kill-after="${arm_timeout_kill_after_s}s" "${bench_timeout_s}s" \
             "$environment_wrapper" "$bench" -m "$model_path" \
-            -ngl 99 -t 2 -r 1 -p 0 -n "$bench_tokens" -d "$bench_depth" \
+            -ngl 99 -dev Vulkan0 -ot '.*=Vulkan0' \
+            -t 2 -r 1 -p 0 -n "$bench_tokens" -d "$bench_depth" \
             -b "$bench_batch" -ub "$bench_ubatch" \
             -ctk "$cache_type_k" -ctv "$cache_type_v" -fa "$flash_attention" \
             -o md >"$bench_log" 2>&1
