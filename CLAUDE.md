@@ -361,6 +361,29 @@ are read from the response body rather than from its status and become a tool
 message naming what refused. A refusal in the dialog answers the call with a
 `role: 'tool'` message stating that the search did not run.
 
+`QWEN_WEB_PROVIDER` names which backend serves that approval, and a backend
+states what it can carry rather than being trusted to carry everything. Each
+`Provider` in `remote/web-mcp/server.py` declares `supports_exact_date_bounds`,
+`supports_freshness_max_age`, `supports_domain_filter`, `supports_num_results`,
+and `supports_paging`, and `refuse_unhonored_arguments` ends a call whose
+approved argument the active provider cannot express, naming the argument and
+the provider, ahead of the ledger transaction that spends the grant. A flag
+reads true where the wrapper honors the argument as well as where the request
+field does: `filter_by_domains` and the slice in `call_search` bound domains and
+count over every provider's answer. `exa` carries every field, at any
+`max_age_hours` including the 0 that forces a live crawl. `searxng` reaches an
+unauthenticated instance at `QWEN_WEB_SEARXNG_URL` over loopback or an
+SSH-forwarded loopback port, expresses recency as `time_range` over the four
+counts 24, 168, 720, and 8760, and refuses an exact publication interval; its
+engine population is pinned to the key-free indexes `mwmbl`, `marginalia`,
+`wiby`, `yacy`, `wikipedia`, and `wikidata`, which `QWEN_WEB_SEARXNG_ENGINES`
+narrows and an engine outside refuses by name in both the generator and the
+child. The instance answers with result metadata alone, so `fetch_exa`
+retrieves the source over one GET of the canonical URL its Result ID was signed
+over, and `PROVIDER_OPENER` ends a redirect at the response that requested it.
+`evidence/web-provider-contract.md` carries the flags, the mapping table, and
+what a run against a live instance still leaves unmeasured.
+
 The integer dot product is advertised, functional, and unaccelerated, which
 decides how most of this tree's bytes execute. RADV reports
 `shaderIntegerDotProduct = true` and sets all thirty of its `*Accelerated`

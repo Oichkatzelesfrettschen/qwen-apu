@@ -820,6 +820,11 @@ admitted = {
     "QWEN_WEB_SEARCH_AUTH",
     "QWEN_WEB_EXA_KEY_FILE",
     "QWEN_WEB_FAKE_FIXTURES",
+    "QWEN_WEB_SEARXNG_URL",
+    "QWEN_WEB_SEARXNG_ENGINES",
+    "QWEN_WEB_SEARXNG_LANGUAGE",
+    "QWEN_WEB_SEARXNG_SAFESEARCH",
+    "QWEN_WEB_SEARXNG_ALLOW_REMOTE",
     "QWEN_WEB_TOKEN_KEY_FILE",
     "QWEN_WEB_STATE_DIR",
 }
@@ -897,6 +902,81 @@ if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_fake \
     report fake_provider_without_fixtures_refused accepted
 else
     report fake_provider_without_fixtures_refused ok
+fi
+
+# QWEN_WEB_PROVIDER searxng reaches an unauthenticated instance, so it requires
+# QWEN_WEB_SEARXNG_URL rather than a key file: the generated section carries the
+# instance URL and the engine list the operator named, names no
+# QWEN_WEB_EXA_KEY_FILE, and the build succeeds with no search key file set.
+presets_searxng=$work/presets-searxng.ini
+if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_fake \
+    QWEN_MODEL_ROOT=$policy_model_root QWEN_WEB_AUTHORIZER_READY=1 \
+    env -u QWEN_WEB_SEARCH_KEY_FILE QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    QWEN_WEB_PROVIDER=searxng QWEN_WEB_SEARXNG_URL='http://127.0.0.1:8888' \
+    QWEN_WEB_SEARXNG_ENGINES='mwmbl,marginalia' \
+    QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" QWEN_WEB_STATE_DIR="$web_state_directory" \
+    "$builder" "$presets_searxng" \
+    >"$work/searxng-provider.log" 2>"$work/searxng-provider.err"; then
+    searxng_mcp_config=$(sed -n \
+        's/^LLAMA_ARG_MCP_SERVERS_CONFIG = //p' "$presets_searxng")
+    searxng_outcome=ok
+    [ -f "$searxng_mcp_config" ] || searxng_outcome=config_absent
+    if [ "$searxng_outcome" = ok ]; then
+        grep -q '"QWEN_WEB_SEARXNG_URL": "http://127.0.0.1:8888"' \
+            "$searxng_mcp_config" || searxng_outcome=missing_instance_url
+        grep -q '"QWEN_WEB_SEARXNG_ENGINES": "mwmbl,marginalia"' \
+            "$searxng_mcp_config" || searxng_outcome=missing_engine_list
+        grep -q '"QWEN_WEB_PROVIDER": "searxng"' \
+            "$searxng_mcp_config" || searxng_outcome=missing_provider_name
+        if grep -q '"QWEN_WEB_EXA_KEY_FILE"' "$searxng_mcp_config"; then
+            searxng_outcome=key_file_present
+        fi
+        if grep -q '"QWEN_WEB_SEARXNG_LANGUAGE"' "$searxng_mcp_config"; then
+            searxng_outcome=unset_name_emitted
+        fi
+        python3 -c 'import json,sys; json.load(open(sys.argv[1]))' \
+            "$searxng_mcp_config" >/dev/null 2>&1 ||
+            searxng_outcome=config_unparseable
+    fi
+    report searxng_provider_emits_instance_url_without_key_file "$searxng_outcome"
+else
+    cat "$work/searxng-provider.err" >&2
+    report searxng_provider_emits_instance_url_without_key_file build_failed
+fi
+
+# The searxng provider names one engine population, so QWEN_WEB_SEARXNG_ENGINES
+# narrows it and an engine outside it is refused by name where the operator set
+# it rather than by the child at launch.
+presets_searxng_engine=$work/presets-searxng-engine.ini
+if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_fake \
+    QWEN_MODEL_ROOT=$policy_model_root QWEN_WEB_AUTHORIZER_READY=1 \
+    env -u QWEN_WEB_SEARCH_KEY_FILE QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    QWEN_WEB_PROVIDER=searxng QWEN_WEB_SEARXNG_URL='http://127.0.0.1:8888' \
+    QWEN_WEB_SEARXNG_ENGINES='mwmbl,duckduckgo' \
+    QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" QWEN_WEB_STATE_DIR="$web_state_directory" \
+    "$builder" "$presets_searxng_engine" \
+    >"$work/searxng-engine.log" 2>"$work/searxng-engine.err"; then
+    report searxng_engine_outside_the_set_refused accepted
+elif grep -q 'names duckduckgo' "$work/searxng-engine.err"; then
+    report searxng_engine_outside_the_set_refused ok
+else
+    report searxng_engine_outside_the_set_refused refused_without_naming_engine
+fi
+
+# QWEN_WEB_PROVIDER searxng with QWEN_WEB_SEARXNG_URL unset names no instance,
+# so the build refuses the row rather than emitting a section whose child has
+# nothing to query.
+presets_searxng_missing=$work/presets-searxng-missing.ini
+if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_fake \
+    QWEN_MODEL_ROOT=$policy_model_root QWEN_WEB_AUTHORIZER_READY=1 \
+    env -u QWEN_WEB_SEARCH_KEY_FILE -u QWEN_WEB_SEARXNG_URL \
+    QWEN_WEB_MCP_SERVER="$mcp_server_program" QWEN_WEB_PROVIDER=searxng \
+    QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" QWEN_WEB_STATE_DIR="$web_state_directory" \
+    "$builder" "$presets_searxng_missing" \
+    >"$work/searxng-missing.log" 2>"$work/searxng-missing.err"; then
+    report searxng_provider_without_instance_url_refused accepted
+else
+    report searxng_provider_without_instance_url_refused ok
 fi
 
 # A path holding a double quote would change the parsed JSON value, so the run

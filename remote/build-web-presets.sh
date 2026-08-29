@@ -200,6 +200,8 @@ if [ "$#" -ne 1 ]; then
     printf 'MCP server program path is required in QWEN_WEB_MCP_SERVER\n' >&2
     printf 'QWEN_WEB_PROVIDER exa (default) requires a search key file path in QWEN_WEB_SEARCH_KEY_FILE, emitted as QWEN_WEB_EXA_KEY_FILE\n' >&2
     printf 'QWEN_WEB_PROVIDER fake requires a fixture file path in QWEN_WEB_FAKE_FIXTURES, emitted unchanged, and reads no search key file\n' >&2
+    printf 'QWEN_WEB_PROVIDER searxng requires an instance URL in QWEN_WEB_SEARXNG_URL and reads no search key file\n' >&2
+    printf 'optional QWEN_WEB_SEARXNG_ENGINES, QWEN_WEB_SEARXNG_LANGUAGE, QWEN_WEB_SEARXNG_SAFESEARCH, QWEN_WEB_SEARXNG_ALLOW_REMOTE\n' >&2
     printf 'optional QWEN_WEB_TOKEN_KEY_FILE, QWEN_WEB_STATE_DIR\n' >&2
     printf 'QWEN_WEB_ALLOW_UNVALIDATED_DEPTH=1 admits an unknown or over-depth profile as experimental\n' >&2
     printf 'QWEN_WEB_AUTHORIZER_READY=1 asserts the argument-authorization validator runs, admitting validator-gated rows\n' >&2
@@ -234,6 +236,11 @@ esac
 mcp_server_program=${QWEN_WEB_MCP_SERVER:-}
 search_key_file=${QWEN_WEB_SEARCH_KEY_FILE:-}
 fake_fixtures=${QWEN_WEB_FAKE_FIXTURES:-}
+searxng_url=${QWEN_WEB_SEARXNG_URL:-}
+searxng_engines=${QWEN_WEB_SEARXNG_ENGINES:-}
+searxng_language=${QWEN_WEB_SEARXNG_LANGUAGE:-}
+searxng_safesearch=${QWEN_WEB_SEARXNG_SAFESEARCH:-}
+searxng_allow_remote=${QWEN_WEB_SEARXNG_ALLOW_REMOTE:-}
 token_key_file=${QWEN_WEB_TOKEN_KEY_FILE:-}
 web_state_directory=${QWEN_WEB_STATE_DIR:-"${HOME:?}/qwen-webui-state/web-mcp"}
 web_provider=${QWEN_WEB_PROVIDER:-exa}
@@ -275,21 +282,53 @@ require_json_safe_path() {
     esac
 }
 
+# The `searxng` provider names one engine population: the key-free indexes and
+# the two Wikimedia sources that serve their own data. QWEN_WEB_SEARXNG_ENGINES
+# narrows or reorders that set, and an engine outside it is refused here by
+# name, so the operator reads the refusal where the setting is made rather than
+# from the child at launch. server.py holds the same list in
+# SEARXNG_ADMITTED_ENGINES and applies it again before the first request. A
+# broader engine population is a provider of its own rather than a widening of
+# this one.
+searxng_admitted_engines='mwmbl marginalia wiby yacy wikipedia wikidata'
+require_admitted_engines() {
+    if [ -z "$1" ]; then
+        return 0
+    fi
+    # The setting is a comma list, so the separator is exchanged for the field
+    # separator the shell splits on and the loop reads one engine per word.
+    for engine_name in $(printf '%s' "$1" | tr ',' ' '); do
+        engine_admitted=0
+        for admitted_engine in $searxng_admitted_engines; do
+            if [ "$engine_name" = "$admitted_engine" ]; then
+                engine_admitted=1
+            fi
+        done
+        if [ "$engine_admitted" = 0 ]; then
+            printf 'provider searxng admits the engine set %s, and QWEN_WEB_SEARXNG_ENGINES names %s\n' \
+                "$searxng_admitted_engines" "$engine_name" >&2
+            exit 1
+        fi
+    done
+}
+
 # The MCP inputs describe a configuration file, so a ledger whose every row is
 # refused or ui-mediated writes none and needs none. The requirement runs at the
 # first row that writes one, which keeps an offline or manual ledger generating
 # without a server program and a provider key it never reaches, and keeps the
 # refusal on the row that would have been misconfigured by omission.
 #
-# The provider decides which secret backs the emitted section: `exa` reaches
+# The provider decides which input backs the emitted section: `exa` reaches
 # the network and requires QWEN_WEB_SEARCH_KEY_FILE, a readable key file the
 # generator's own input keeps its name for since every caller of this script
 # already spells it that way; `fake` reaches no network and requires
 # QWEN_WEB_FAKE_FIXTURES instead, a readable regular file of recorded
-# responses, and reads no search key file. server.py's settings_from_environment
-# reads QWEN_WEB_EXA_KEY_FILE rather than QWEN_WEB_SEARCH_KEY_FILE, so the
-# emitted section renames the value at the JSON boundary while the shell
-# variable that carries it into this script keeps its established name.
+# responses; `searxng` reaches an unauthenticated instance and requires
+# QWEN_WEB_SEARXNG_URL, so it holds no secret at all and reads no key file.
+# server.py's settings_from_environment reads QWEN_WEB_EXA_KEY_FILE rather than
+# QWEN_WEB_SEARCH_KEY_FILE, so the emitted section renames that one value at
+# the JSON boundary while the shell variable that carries it into this script
+# keeps its established name; every SearXNG name crosses unchanged.
 require_mcp_inputs() {
     if [ -z "$mcp_server_program" ]; then
         printf 'profile %s emits an MCP configuration and QWEN_WEB_MCP_SERVER names no server program\n' \
@@ -301,26 +340,43 @@ require_mcp_inputs() {
     if [ -n "$token_key_file" ]; then
         require_json_safe_path QWEN_WEB_TOKEN_KEY_FILE "$token_key_file"
     fi
-    if [ "$web_provider" = fake ]; then
-        if [ -z "$fake_fixtures" ]; then
-            printf 'profile %s emits an MCP configuration under provider fake and QWEN_WEB_FAKE_FIXTURES names no fixture file\n' \
-                "$profile_id" >&2
-            exit 1
-        fi
-        if [ ! -f "$fake_fixtures" ] || [ ! -r "$fake_fixtures" ]; then
-            printf 'QWEN_WEB_FAKE_FIXTURES names an unreadable regular file: %s\n' \
-                "$fake_fixtures" >&2
-            exit 1
-        fi
-        require_json_safe_path QWEN_WEB_FAKE_FIXTURES "$fake_fixtures"
-    else
-        if [ -z "$search_key_file" ]; then
-            printf 'profile %s emits an MCP configuration and QWEN_WEB_SEARCH_KEY_FILE names no provider key file\n' \
-                "$profile_id" >&2
-            exit 1
-        fi
-        require_json_safe_path QWEN_WEB_SEARCH_KEY_FILE "$search_key_file"
-    fi
+    case $web_provider in
+        fake)
+            if [ -z "$fake_fixtures" ]; then
+                printf 'profile %s emits an MCP configuration under provider fake and QWEN_WEB_FAKE_FIXTURES names no fixture file\n' \
+                    "$profile_id" >&2
+                exit 1
+            fi
+            if [ ! -f "$fake_fixtures" ] || [ ! -r "$fake_fixtures" ]; then
+                printf 'QWEN_WEB_FAKE_FIXTURES names an unreadable regular file: %s\n' \
+                    "$fake_fixtures" >&2
+                exit 1
+            fi
+            require_json_safe_path QWEN_WEB_FAKE_FIXTURES "$fake_fixtures"
+            ;;
+        searxng)
+            if [ -z "$searxng_url" ]; then
+                printf 'profile %s emits an MCP configuration under provider searxng and QWEN_WEB_SEARXNG_URL names no instance\n' \
+                    "$profile_id" >&2
+                exit 1
+            fi
+            require_json_safe_path QWEN_WEB_SEARXNG_URL "$searxng_url"
+            require_json_safe_path QWEN_WEB_SEARXNG_ENGINES "$searxng_engines"
+            require_admitted_engines "$searxng_engines"
+            require_json_safe_path QWEN_WEB_SEARXNG_LANGUAGE "$searxng_language"
+            require_json_safe_path QWEN_WEB_SEARXNG_SAFESEARCH "$searxng_safesearch"
+            require_json_safe_path QWEN_WEB_SEARXNG_ALLOW_REMOTE \
+                "$searxng_allow_remote"
+            ;;
+        *)
+            if [ -z "$search_key_file" ]; then
+                printf 'profile %s emits an MCP configuration and QWEN_WEB_SEARCH_KEY_FILE names no provider key file\n' \
+                    "$profile_id" >&2
+                exit 1
+            fi
+            require_json_safe_path QWEN_WEB_SEARCH_KEY_FILE "$search_key_file"
+            ;;
+    esac
 }
 case $web_provider in
     '' | *[!a-z0-9-]*)
@@ -719,11 +775,39 @@ while profile_id=; IFS='	' read -r profile_id model_id _web_mode context \
             printf '        "QWEN_WEB_MAX_CHARS_PER_FETCH": "%s",\n' \
                 "$max_chars_per_fetch"
             printf '        "QWEN_WEB_SEARCH_AUTH": "required",\n'
-            if [ "$web_provider" = fake ]; then
-                printf '        "QWEN_WEB_FAKE_FIXTURES": "%s",\n' "$fake_fixtures"
-            else
-                printf '        "QWEN_WEB_EXA_KEY_FILE": "%s",\n' "$search_key_file"
-            fi
+            case $web_provider in
+                fake)
+                    printf '        "QWEN_WEB_FAKE_FIXTURES": "%s",\n' \
+                        "$fake_fixtures"
+                    ;;
+                searxng)
+                    # The instance URL is required and the four tuning names
+                    # are emitted where the operator set them, so an unset one
+                    # leaves server.py reading its own default rather than an
+                    # empty string the child would have to interpret.
+                    printf '        "QWEN_WEB_SEARXNG_URL": "%s",\n' "$searxng_url"
+                    if [ -n "$searxng_engines" ]; then
+                        printf '        "QWEN_WEB_SEARXNG_ENGINES": "%s",\n' \
+                            "$searxng_engines"
+                    fi
+                    if [ -n "$searxng_language" ]; then
+                        printf '        "QWEN_WEB_SEARXNG_LANGUAGE": "%s",\n' \
+                            "$searxng_language"
+                    fi
+                    if [ -n "$searxng_safesearch" ]; then
+                        printf '        "QWEN_WEB_SEARXNG_SAFESEARCH": "%s",\n' \
+                            "$searxng_safesearch"
+                    fi
+                    if [ -n "$searxng_allow_remote" ]; then
+                        printf '        "QWEN_WEB_SEARXNG_ALLOW_REMOTE": "%s",\n' \
+                            "$searxng_allow_remote"
+                    fi
+                    ;;
+                *)
+                    printf '        "QWEN_WEB_EXA_KEY_FILE": "%s",\n' \
+                        "$search_key_file"
+                    ;;
+            esac
             if [ -n "$token_key_file" ]; then
                 printf '        "QWEN_WEB_TOKEN_KEY_FILE": "%s",\n' "$token_key_file"
             fi

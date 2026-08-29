@@ -23,6 +23,7 @@ import contextlib
 import datetime
 import hashlib
 import hmac
+import html.parser
 import ipaddress
 import json
 import math
@@ -89,6 +90,59 @@ HOSTNAME_PATTERN = re.compile(
 
 EXA_SEARCH_ENDPOINT = "https://api.exa.ai/search"
 EXA_CONTENTS_ENDPOINT = "https://api.exa.ai/contents"
+
+# Every place a provider name is admitted reads this tuple: the stdio server's
+# own argument check, the `authorize` subcommand, `issue_grant`, and the
+# approval broker that calls it. `enforce_search_authorization` compares the
+# grant's provider against `provider.name`, so a name admitted in one place and
+# refused in another signs grants the serving path never verifies.
+PROVIDER_NAMES = ("exa", "fake", "searxng")
+
+# SearXNG expresses publication recency as one of four named windows, so a
+# cached-age bound maps onto the window whose hour count it equals and every
+# other value leaves the contract. `month` is the 30-day convention SearXNG
+# applies and `year` is 365 days.
+SEARXNG_TIME_RANGE_HOURS = {24: "day", 168: "week", 720: "month", 8760: "year"}
+# The `searxng` provider is pinned to the independently crawled indexes and the
+# two Wikimedia sources, which serve their own data and reach no commercial
+# search API. QWEN_WEB_SEARXNG_ENGINES narrows or reorders this set, and an
+# engine outside it is refused by name at startup: a SearXNG instance also
+# proxies scraper-backed engines, and admitting one through this provider would
+# change what `searxng` means for every profile that already names it. A
+# broader engine population is a provider of its own -- `searxng-broad` -- with
+# its own capability declaration and its own admission record.
+SEARXNG_ADMITTED_ENGINES = (
+    "mwmbl",
+    "marginalia",
+    "wiby",
+    "yacy",
+    "wikipedia",
+    "wikidata",
+)
+SEARXNG_DEFAULT_ENGINES = SEARXNG_ADMITTED_ENGINES
+SEARXNG_LANGUAGE_PATTERN = re.compile(r"^(all|[A-Za-z]{2,8}(-[A-Za-z0-9]{2,8})*)$")
+SEARXNG_SAFESEARCH_VALUES = ("0", "1", "2")
+# `decode_content_text` reads text, so the retrieval admits the document types
+# whose bodies are text and names a PDF or an archive by its declared type
+# rather than by the decode failure it would raise.
+SEARXNG_DOCUMENT_CONTENT_TYPES = (
+    "text/html",
+    "application/xhtml+xml",
+    "text/plain",
+)
+SEARXNG_DOCUMENT_CHARSETS = ("utf-8", "utf8", "ascii", "us-ascii")
+SEARXNG_SKIPPED_ELEMENTS = frozenset(
+    ("script", "style", "noscript", "template", "svg", "head")
+)
+SEARXNG_BLOCK_ELEMENTS = frozenset(
+    (
+        "address", "article", "aside", "blockquote", "br", "dd", "div", "dl",
+        "dt", "figcaption", "figure", "footer", "h1", "h2", "h3", "h4", "h5",
+        "h6", "header", "hr", "li", "main", "nav", "ol", "p", "pre", "section",
+        "table", "td", "th", "tr", "ul",
+    )
+)
+ENGINE_CHARACTER_CAP = 64
 
 UNTRUSTED_HEADER = "BEGIN UNTRUSTED WEB CONTENT"
 UNTRUSTED_FOOTER = "END UNTRUSTED WEB CONTENT"
@@ -408,6 +462,41 @@ def require_public_host(parts):
         )
 
 
+def require_loopback_endpoint(url, allow_remote, name):
+    """Return a provider endpoint reduced to scheme and authority.
+
+    A SearXNG instance runs on this machine or reaches one over an
+    SSH-forwarded loopback port, so the endpoint is read the way
+    `require_public_host` reads a result host and with the opposite polarity:
+    the check classifies the literal address and the reserved `localhost` name
+    and resolves no hostname, since a resolution here would differ from the one
+    the request performs. `QWEN_WEB_SEARXNG_ALLOW_REMOTE=1` admits any host for
+    an operator who accepts that the model-authored query leaves the machine.
+    """
+    parts = urllib.parse.urlsplit(url.strip())
+    if parts.scheme.lower() not in ("http", "https"):
+        raise InvalidArgument(f"{name} carries an unsupported scheme: {url}")
+    if not parts.netloc or "@" in parts.netloc:
+        raise InvalidArgument(f"{name} names no plain host: {url}")
+    if parts.query or parts.fragment:
+        raise InvalidArgument(f"{name} carries a query or fragment: {url}")
+    if allow_remote:
+        return f"{parts.scheme.lower()}://{parts.netloc.lower()}{parts.path.rstrip('/')}"
+    host = (parts.hostname or "").lower()
+    loopback = host == "localhost" or host.endswith(".localhost")
+    if not loopback:
+        try:
+            loopback = ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            loopback = False
+    if not loopback:
+        raise InvalidArgument(
+            f"{name} names a host other than loopback, which "
+            "QWEN_WEB_SEARXNG_ALLOW_REMOTE=1 admits: " + url
+        )
+    return f"{parts.scheme.lower()}://{parts.netloc.lower()}{parts.path.rstrip('/')}"
+
+
 def canonical_url(url):
     """Return the comparison form of a URL: scheme and host lowercased.
 
@@ -700,14 +789,41 @@ def enforce_search_authorization(
 
 
 class Provider:
-    """The two operations a web-research backend supplies.
+    """The two operations a web-research backend supplies, and what it honors.
 
     `search` returns a list of result records with `url` and optional `title`,
-    `published`, `author`, and `highlights`. `contents` returns the extracted
-    text of one already-issued URL.
+    `published`, `author`, `engine`, and `highlights`. `contents` returns the
+    extracted text of one already-issued URL.
+
+    The five capability flags state which authorized search arguments the
+    backend carries into its request. An argument a human approved and the
+    provider cannot express is refused by `refuse_unhonored_arguments` naming
+    both the argument and the provider, because dropping it silently serves a
+    result set outside the window the approval covered. A flag reads true where
+    the argument is honored, whether the provider's own request field carries
+    it or this wrapper enforces it over the response: `include_domains` and
+    `exclude_domains` reach `filter_by_domains` and `max_results` reaches the
+    slice in `call_search` for every provider, so both stay true where the
+    backend has no matching request field.
+
+    `freshness_max_age_hours` narrows `supports_freshness_max_age` to the
+    values one backend expresses. None admits every value the argument's own
+    bounds allow; a mapping admits its keys alone.
+
+    `supports_paging` states whether the backend returns further pages of
+    results. No tool argument requests one -- `fetch_exa`'s `start_index` pages
+    the stored document snapshot inside this wrapper -- so the flag records the
+    surface a later argument would consult rather than gating one today.
     """
 
     name = "provider"
+
+    supports_exact_date_bounds = True
+    supports_freshness_max_age = True
+    supports_domain_filter = True
+    supports_paging = False
+    supports_num_results = True
+    freshness_max_age_hours = None
 
     def preflight(self):
         """Validate the credential this provider posts with.
@@ -791,6 +907,53 @@ def filter_by_domains(results, include_domains, exclude_domains):
     return admitted
 
 
+def refuse_unhonored_arguments(provider, constraints, max_results):
+    """Refuse a search argument the active provider cannot carry.
+
+    The dialog a human approves names the query, the publication interval, both
+    domain lists, the result count, and whether `max_age_hours` of 0 forces a
+    live crawl, and the grant is signed over those exact fields. A provider
+    that drops one of them answers a different question than the one approved,
+    so the call ends here naming the argument and the provider rather than
+    returning results the operator never authorized. The refusal runs before
+    the ledger spends the grant, which leaves the single use available to the
+    caller who corrects the arguments.
+    """
+    if not provider.supports_exact_date_bounds and (
+        constraints["published_after"] or constraints["published_before"]
+    ):
+        raise InvalidArgument(
+            "published_after and published_before name an exact publication "
+            f"interval, which provider {provider.name} does not express"
+        )
+    max_age_hours = constraints["max_age_hours"]
+    if max_age_hours is not None:
+        if not provider.supports_freshness_max_age:
+            raise InvalidArgument(
+                "max_age_hours bounds the age of the copy served, which "
+                f"provider {provider.name} does not express"
+            )
+        admitted = provider.freshness_max_age_hours
+        if admitted is not None and max_age_hours not in admitted:
+            raise InvalidArgument(
+                f"provider {provider.name} expresses max_age_hours as one of "
+                + ", ".join(str(hours) for hours in sorted(admitted))
+                + f", and the call names {max_age_hours}"
+            )
+    if not provider.supports_domain_filter and (
+        constraints["include_domains"] or constraints["exclude_domains"]
+    ):
+        raise InvalidArgument(
+            "include_domains and exclude_domains bound the sources, which "
+            f"provider {provider.name} does not express"
+        )
+    if not provider.supports_num_results and max_results:
+        raise InvalidArgument(
+            "max_results bounds the result count, which provider "
+            f"{provider.name} does not express"
+        )
+
+
 def failure_tag(status):
     """Return the provider's failure tag reduced to a safe short token.
 
@@ -833,6 +996,17 @@ class ExaProvider(Provider):
     """
 
     name = "exa"
+
+    # The Search API reads `startPublishedDate`, `endPublishedDate`,
+    # `includeDomains`, `excludeDomains`, and `numResults` at the request top
+    # level and `maxAgeHours` inside `contents`, at any hour count including
+    # the 0 that forces a live crawl. It returns one ranked set per request.
+    supports_exact_date_bounds = True
+    supports_freshness_max_age = True
+    supports_domain_filter = True
+    supports_paging = False
+    supports_num_results = True
+    freshness_max_age_hours = None
 
     def __init__(self, key_file_path):
         self.key_file_path = key_file_path
@@ -975,6 +1149,278 @@ class ExaProvider(Provider):
         return record
 
 
+class HtmlTextExtractor(html.parser.HTMLParser):
+    """Reduce one HTML document to the text a reader sees.
+
+    A SearXNG result names a page rather than carrying it, so the fetch reads
+    the source itself and this parser is what turns the response into the text
+    `decode_content_text` accepts. Script, style, and template contents are
+    dropped because they are program text rather than prose, and a block
+    element ends the line so the extracted document keeps the paragraph
+    structure a model reads it by.
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+        self.suppressed = 0
+
+    def handle_starttag(self, tag, attributes):
+        if tag in SEARXNG_SKIPPED_ELEMENTS:
+            self.suppressed += 1
+        elif tag in SEARXNG_BLOCK_ELEMENTS:
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in SEARXNG_SKIPPED_ELEMENTS:
+            self.suppressed = max(0, self.suppressed - 1)
+        elif tag in SEARXNG_BLOCK_ELEMENTS:
+            self.parts.append("\n")
+
+    def handle_data(self, data):
+        if self.suppressed == 0:
+            self.parts.append(data)
+
+    def text(self):
+        joined = "".join(self.parts)
+        lines = [" ".join(line.split()) for line in joined.splitlines()]
+        return "\n".join(line for line in lines if line)
+
+
+def html_to_text(document):
+    """Return the readable text of an HTML document, or the document itself.
+
+    A malformed document reaches this parser as page bytes an attacker chose,
+    so a parser failure returns the raw text rather than breaking the call: the
+    frame around the window already states that the content is untrusted, and a
+    refusal here would let a broken page deny the fetch its Result ID bought.
+    """
+    extractor = HtmlTextExtractor()
+    try:
+        extractor.feed(document)
+        extractor.close()
+    except Exception:
+        return document
+    return extractor.text()
+
+
+class SearXNGProvider(Provider):
+    """A SearXNG instance's JSON search API, and a direct read of one result.
+
+    `GET {base}/search?q=...&format=json` returns ranked metadata with no page
+    text, so `contents` retrieves the source itself over one GET of the exact
+    canonical URL a prior search signed into a Result ID. That retrieval runs
+    through `PROVIDER_OPENER`, which ends a redirect at the response that
+    requested it, so the fetch reaches the host the search returned and no
+    other; a page that answers only behind a redirect therefore fails.
+
+    The instance is unauthenticated, so no secret reaches this provider and
+    `preflight` validates nothing. The endpoint and the engine set are
+    validated in `__init__`, ahead of every ledger transaction, which keeps a
+    misconfigured base URL or an engine outside `SEARXNG_ADMITTED_ENGINES` from
+    spending a grant.
+    """
+
+    name = "searxng"
+
+    # The JSON API reads `time_range` over four named windows, `language`,
+    # `safesearch`, `engines`, and `pageno`, and carries no publication
+    # interval. Domain scope and result count are honored in this wrapper:
+    # `filter_by_domains` drops an off-domain record and `call_search` slices
+    # to the granted count, both over whatever the instance returns.
+    supports_exact_date_bounds = False
+    supports_freshness_max_age = True
+    supports_domain_filter = True
+    supports_paging = True
+    supports_num_results = True
+    freshness_max_age_hours = SEARXNG_TIME_RANGE_HOURS
+
+    def __init__(
+        self,
+        base_url,
+        engines=SEARXNG_DEFAULT_ENGINES,
+        language="",
+        safesearch="",
+        allow_remote=False,
+    ):
+        self.response_bytes = 0
+        self.timeout_seconds = REQUEST_TIMEOUT_SECONDS
+        if not base_url:
+            raise InvalidArgument(
+                "the searxng provider requires QWEN_WEB_SEARXNG_URL to name "
+                "the instance"
+            )
+        self.base_url = require_loopback_endpoint(
+            base_url, allow_remote, "QWEN_WEB_SEARXNG_URL"
+        )
+        self.search_endpoint = self.base_url + "/search"
+        self.engines = tuple(engines)
+        for engine in self.engines:
+            if engine not in SEARXNG_ADMITTED_ENGINES:
+                raise InvalidArgument(
+                    f"provider searxng admits the engine set "
+                    + ", ".join(SEARXNG_ADMITTED_ENGINES)
+                    + f", and QWEN_WEB_SEARXNG_ENGINES names {engine}"
+                )
+        self.language = language
+        if self.language and not SEARXNG_LANGUAGE_PATTERN.match(self.language):
+            raise InvalidArgument(
+                f"QWEN_WEB_SEARXNG_LANGUAGE names no language tag: {self.language}"
+            )
+        self.safesearch = safesearch
+        if self.safesearch and self.safesearch not in SEARXNG_SAFESEARCH_VALUES:
+            raise InvalidArgument(
+                "QWEN_WEB_SEARXNG_SAFESEARCH reads one of "
+                + ", ".join(SEARXNG_SAFESEARCH_VALUES)
+                + f", and the configuration names {self.safesearch}"
+            )
+
+    def _open(self, url, accept):
+        """Return the body and headers of one bounded GET.
+
+        The body is read to one byte past the cap so an oversized response is
+        refused during the read, and the same POSIX timer that bounds an Exa
+        request bounds DNS, connect, headers, and body here.
+        """
+        request = urllib.request.Request(
+            url, headers={"accept": accept}, method="GET"
+        )
+        try:
+            with provider_deadline(self.timeout_seconds):
+                with PROVIDER_OPENER.open(
+                    request, timeout=self.timeout_seconds
+                ) as response:
+                    raw = response.read(HTTP_RESPONSE_BYTE_CAP + 1)
+                    headers = response.headers
+            self.response_bytes += len(raw)
+        except ProviderDeadlineExpired:
+            raise ProviderHttpError(
+                f"the provider request exceeded {self.timeout_seconds:g} seconds"
+            ) from None
+        except urllib.error.HTTPError as error:
+            status_code = error.code
+            error.close()
+            raise ProviderHttpError(
+                f"the provider rejected the request with status {status_code}"
+            ) from None
+        except Exception:
+            raise ProviderHttpError("the provider request failed") from None
+        if len(raw) > HTTP_RESPONSE_BYTE_CAP:
+            raise ProviderContentError(
+                f"the provider response exceeds the {HTTP_RESPONSE_BYTE_CAP} byte cap"
+            )
+        return raw, headers
+
+    def search(self, query, max_results, constraints):
+        """Ask the instance for ranked results in its JSON format.
+
+        `refuse_unhonored_arguments` has already ended a call naming a
+        publication interval or a cached age outside the four windows, so the
+        mapping here reads a value the contract admits.
+        """
+        parameters = [("q", query), ("format", "json")]
+        if constraints["max_age_hours"] is not None:
+            parameters.append(
+                ("time_range", SEARXNG_TIME_RANGE_HOURS[constraints["max_age_hours"]])
+            )
+        if self.language:
+            parameters.append(("language", self.language))
+        if self.safesearch:
+            parameters.append(("safesearch", self.safesearch))
+        if self.engines:
+            parameters.append(("engines", ",".join(self.engines)))
+        raw, _ = self._open(
+            self.search_endpoint + "?" + urllib.parse.urlencode(parameters),
+            "application/json",
+        )
+        try:
+            document = strict_json_loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            raise ProviderContentError(
+                "the provider response is not valid UTF-8 JSON"
+            ) from None
+        if not isinstance(document, dict):
+            raise ProviderContentError("the provider response is not a JSON object")
+        results = document.get("results")
+        if not isinstance(results, list):
+            raise ProviderContentError("the provider response carries no result list")
+        if any(not isinstance(record, dict) for record in results):
+            raise ProviderContentError(
+                "the provider response carries a result that is not an object"
+            )
+        return [self.map_result(record) for record in results]
+
+    @staticmethod
+    def map_result(record):
+        """Return one SearXNG entry in the shape the renderer reads.
+
+        `content` is the instance's own snippet, which takes the highlight
+        position an Exa result fills, and `engine` names which index answered.
+        The record carries no opaque identifier, so `provider_result_id`
+        returns the empty string and the canonical URL alone resolves the
+        fetch.
+        """
+        engine = record.get("engine")
+        if not isinstance(engine, str):
+            engines = record.get("engines")
+            engine = ", ".join(
+                entry for entry in engines if isinstance(entry, str)
+            ) if isinstance(engines, list) else ""
+        snippet = record.get("content")
+        published = record.get("publishedDate")
+        return {
+            "url": str(record.get("url", "")),
+            "title": record.get("title") or "",
+            "publishedDate": published if isinstance(published, str) else "",
+            "author": "",
+            "engine": engine,
+            "highlights": [snippet] if isinstance(snippet, str) and snippet else [],
+        }
+
+    def contents(self, url, max_characters, provider_result_id="", freshness=None):
+        """Return the text of the source page a signed Result ID names.
+
+        A SearXNG instance holds no page text, so the document comes from the
+        host the search returned. `redeem_result_id` has verified the signature
+        and re-run `canonical_url`, which applies `require_public_host`, so the
+        URL reaching this GET is one a prior search issued over a public host.
+        The declared content type decides admission, which names a PDF or an
+        archive as the wrong document type rather than letting it reach the
+        UTF-8 decode as a byte error.
+        """
+        raw, headers = self._open(
+            url, "text/html, application/xhtml+xml;q=0.9, text/plain;q=0.8"
+        )
+        content_type = (headers.get_content_type() or "").lower()
+        if content_type not in SEARXNG_DOCUMENT_CONTENT_TYPES:
+            raise ProviderContentError(
+                f"the source answered with content type {content_type or 'none'}, "
+                "and the fetch reads HTML and plain text"
+            )
+        charset = (headers.get_content_charset() or "utf-8").lower()
+        if charset not in SEARXNG_DOCUMENT_CHARSETS:
+            raise ProviderContentError(
+                f"the source declares the {charset} character set, and the "
+                "fetch reads UTF-8"
+            )
+        try:
+            document = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            raise ProviderContentError(
+                "the provider content is not valid UTF-8"
+            ) from None
+        if content_type != "text/plain":
+            document = html_to_text(document)
+        # `extract_content` reads `complete` to separate a document that ends
+        # at the requested length from one the retrieval cut, and the read
+        # above covers the whole response, so completion is the length
+        # comparison this method can make.
+        return {
+            "text": document[:max_characters],
+            "complete": len(document) <= max_characters,
+        }
+
+
 class FakeProvider(Provider):
     """Fixture-backed provider that runs the tools with the network absent.
 
@@ -986,6 +1432,17 @@ class FakeProvider(Provider):
     """
 
     name = "fake"
+
+    # A fixture answers whatever the document holds, and `call_search` applies
+    # the domain lists and the result slice over that answer the same way it
+    # applies them to an HTTP provider, so every argument a grant carries is
+    # honored and a fixture run reaches the same refusals a live run reaches.
+    supports_exact_date_bounds = True
+    supports_freshness_max_age = True
+    supports_domain_filter = True
+    supports_paging = False
+    supports_num_results = True
+    freshness_max_age_hours = None
 
     def __init__(self, fixture_path):
         self.response_bytes = 0
@@ -1680,7 +2137,33 @@ def search_budget_limits(settings):
 def select_provider(settings):
     if settings["provider"] == "fake":
         return FakeProvider(settings["fixtures"])
+    if settings["provider"] == "searxng":
+        return SearXNGProvider(
+            settings["searxng_url"],
+            searxng_engines(settings),
+            settings["searxng_language"].strip(),
+            settings["searxng_safesearch"].strip(),
+            allow_remote=settings["searxng_allow_remote"].strip() == "1",
+        )
     return ExaProvider(settings["exa_key_file"])
+
+
+def searxng_engines(settings):
+    """Return the engine list a comma-separated setting names.
+
+    An empty setting takes `SEARXNG_DEFAULT_ENGINES`, and a setting holding
+    separators alone names no engine, which reaches the instance as a request
+    for its own default set rather than as this repository's, so it is refused.
+    """
+    configured = settings["searxng_engines"].strip()
+    if not configured:
+        return SEARXNG_DEFAULT_ENGINES
+    engines = tuple(
+        entry.strip().lower() for entry in configured.split(",") if entry.strip()
+    )
+    if not engines:
+        raise InvalidArgument("QWEN_WEB_SEARXNG_ENGINES names no engine")
+    return engines
 
 
 def require_string(arguments, key, cap, required=True, default=""):
@@ -1894,8 +2377,15 @@ def render_search_results(
                 lifetime_seconds,
             ),
             "Trust: untrusted-web-result",
-            "Highlights:",
         ]
+        # A metasearch answer names which index returned the record, which is
+        # what separates one crawler's coverage from another's in the reply.
+        # The line sits ahead of `Highlights:`, so the highlight region the
+        # pinned llama-ui parses keeps its own boundary.
+        engine = clip(record.get("engine") or "", ENGINE_CHARACTER_CAP)
+        if engine:
+            lines.append(f"Engine: {engine}")
+        lines.append("Highlights:")
         for highlight in highlights[:HIGHLIGHT_COUNT_CAP]:
             lines.append(f"- {clip(highlight, HIGHLIGHT_CHARACTER_CAP)}")
         block = "\n".join(lines)
@@ -2030,6 +2520,10 @@ def call_search(settings, arguments):
         # stays available to the operator who corrects the configuration.
         lifetime_seconds = resolve_token_lifetime(settings)
         provider.preflight()
+        # An argument the active provider cannot carry refuses here, ahead of
+        # the ledger transaction, so a grant approved for a window this
+        # provider does not express stays available to a corrected call.
+        refuse_unhonored_arguments(provider, constraints, max_results)
         limits = search_budget_limits(settings)
         granted = enforce_search_authorization(
             settings,
@@ -2360,6 +2854,13 @@ def settings_from_environment(argv):
         "exa_key_file": os.environ.get("QWEN_WEB_EXA_KEY_FILE", ""),
         "token_key_file": os.environ.get("QWEN_WEB_TOKEN_KEY_FILE", ""),
         "fixtures": os.environ.get("QWEN_WEB_FAKE_FIXTURES", ""),
+        "searxng_url": os.environ.get("QWEN_WEB_SEARXNG_URL", ""),
+        "searxng_engines": os.environ.get("QWEN_WEB_SEARXNG_ENGINES", ""),
+        "searxng_language": os.environ.get("QWEN_WEB_SEARXNG_LANGUAGE", ""),
+        "searxng_safesearch": os.environ.get("QWEN_WEB_SEARXNG_SAFESEARCH", ""),
+        "searxng_allow_remote": os.environ.get(
+            "QWEN_WEB_SEARXNG_ALLOW_REMOTE", ""
+        ),
         "token_lifetime": os.environ.get("QWEN_WEB_TOKEN_LIFETIME_SECONDS", ""),
         "search_auth": os.environ.get("QWEN_WEB_SEARCH_AUTH", "required"),
         "state_dir": os.environ.get("QWEN_WEB_STATE_DIR", ""),
@@ -2379,6 +2880,7 @@ def settings_from_environment(argv):
         "--exa-key-file": "exa_key_file",
         "--token-key-file": "token_key_file",
         "--fixtures": "fixtures",
+        "--searxng-url": "searxng_url",
     }
     index = 0
     while index < len(argv):
@@ -2387,19 +2889,20 @@ def settings_from_environment(argv):
             usage()
         settings[key] = argv[index + 1]
         index += 2
-    if settings["provider"] not in ("exa", "fake"):
+    if settings["provider"] not in PROVIDER_NAMES:
         usage()
     return settings
 
 
 def usage():
+    names = "|".join(PROVIDER_NAMES)
     sys.stderr.write(
-        "usage: server.py [--provider exa|fake] [--exa-key-file PATH]"
-        " [--token-key-file PATH] [--fixtures PATH]\n"
+        f"usage: server.py [--provider {names}] [--exa-key-file PATH]"
+        " [--token-key-file PATH] [--fixtures PATH] [--searxng-url URL]\n"
         "       server.py authorize --token-key-file PATH --query TEXT"
         " [--include-domain D]... [--exclude-domain D]..."
         " [--published-after DATE] [--published-before DATE]"
-        " [--max-age-hours N] [--provider exa|fake] [--profile NAME]"
+        f" [--max-age-hours N] [--provider {names}] [--profile NAME]"
         " [--max-results N] [--lifetime SECONDS]\n"
     )
     raise SystemExit(2)
@@ -2432,8 +2935,10 @@ def issue_grant(
     Every failure is a `ToolError`, and the key contents reach `sign_claim`
     alone, so no message and no return value carries them.
     """
-    if provider not in ("exa", "fake"):
-        raise InvalidArgument(f"provider names neither exa nor fake: {provider}")
+    if provider not in PROVIDER_NAMES:
+        raise InvalidArgument(
+            "provider names none of " + ", ".join(PROVIDER_NAMES) + f": {provider}"
+        )
     arguments = {
         "query": query,
         "published_after": published_after,
@@ -2535,7 +3040,7 @@ def run_authorize(argv):
         index += 2
     if fields["query"] is None:
         usage()
-    if fields["provider"] not in ("exa", "fake"):
+    if fields["provider"] not in PROVIDER_NAMES:
         usage()
     try:
         token = issue_grant(
