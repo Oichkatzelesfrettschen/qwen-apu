@@ -224,11 +224,66 @@ def test_accepted_verdict():
     audit = record["audit"]
     if "status=ok" not in audit:
         failures.append("the audit line does not report status=ok: " + audit)
+    if "schema_mode=response_format" not in audit:
+        failures.append("the audit line does not name the schema mode: " + audit)
     if "One fox stands in frame" in audit:
         failures.append("the audit line carries an observation")
     if "reasoning_emitted=no" not in audit:
         failures.append("the audit line does not report the reasoning state: " + audit)
+    if record["raw_reply"] != verdict_text(PASSING_VERDICT):
+        failures.append("the record does not retain the raw reply text")
     return failures, ["accepted_verdict=" + audit]
+
+
+def test_response_format_carries_bounded_schema():
+    """The request bounds the reply through `response_format`, not `grammar`.
+
+    `tools/server/server-common.cpp:1158-1160` refuses a request naming both
+    `json_schema` and `grammar`, so a caller sends the constraint through one
+    mechanism. `response_format.json_schema.schema` is the one this module
+    reads at c2c62855c (containing f280b269), and the array bounds and the
+    name enum come from the two declared constraints.
+    """
+    record, refusal, state = run_review(message_with(verdict_text(PASSING_VERDICT)))
+    failures = []
+    if refusal is not None:
+        failures.append("a schema-bound request was refused: " + refusal.code)
+        return failures, []
+    body = state["chat_bodies"][0]
+    if "grammar" in body:
+        failures.append("the request named grammar beside response_format")
+    if "json_schema" in body:
+        failures.append("the request named a top-level json_schema beside response_format")
+    response_format = body.get("response_format")
+    if not isinstance(response_format, dict) or response_format.get("type") != "json_schema":
+        failures.append("response_format.type is not json_schema: " + repr(response_format))
+        return failures, []
+    wrapper = response_format.get("json_schema")
+    if not isinstance(wrapper, dict) or wrapper.get("name") != "image_review":
+        failures.append("json_schema.name is not image_review: " + repr(wrapper))
+        return failures, []
+    schema = wrapper.get("schema")
+    if not isinstance(schema, dict):
+        failures.append("json_schema.schema is not an object")
+        return failures, []
+    if schema.get("additionalProperties") is not False:
+        failures.append("the top-level schema admits additional properties")
+    if sorted(schema.get("required", [])) != sorted(image_review.VERDICT_KEYS):
+        failures.append("the top-level schema does not require the four verdict keys")
+    constraints_schema = schema.get("properties", {}).get("hard_constraints", {})
+    if constraints_schema.get("minItems") != len(CONSTRAINT_NAMES):
+        failures.append("hard_constraints.minItems is not " + str(len(CONSTRAINT_NAMES)))
+    if constraints_schema.get("maxItems") != len(CONSTRAINT_NAMES):
+        failures.append("hard_constraints.maxItems is not " + str(len(CONSTRAINT_NAMES)))
+    item_schema = constraints_schema.get("items", {})
+    name_enum = item_schema.get("properties", {}).get("name", {}).get("enum")
+    if name_enum != CONSTRAINT_NAMES:
+        failures.append("the constraint name enum is " + repr(name_enum))
+    if item_schema.get("additionalProperties") is not False:
+        failures.append("a constraint entry schema admits additional properties")
+    if sorted(item_schema.get("required", [])) != sorted(image_review.CONSTRAINT_KEYS):
+        failures.append("a constraint entry schema does not require name, passed, observation")
+    return failures, ["response_format_schema=bound"]
 
 
 def test_regenerate_verdict_admits_one_correction():
@@ -310,6 +365,13 @@ def test_refusals():
                  {"name": "subject_count", "passed": True, "observation": "One fox."},
                  {"name": "lighting", "passed": True, "observation": "Bright."}]))),
          "constraint_names", {}),
+        ("duplicated_name",
+         message_with(verdict_text(dict(
+             PASSING_VERDICT,
+             hard_constraints=[
+                 {"name": "subject_count", "passed": True, "observation": "One fox."},
+                 {"name": "subject_count", "passed": True, "observation": "Still one fox."}]))),
+         "constraint_names", {}),
         ("constraint_count",
          message_with(verdict_text(dict(
              PASSING_VERDICT,
@@ -334,6 +396,24 @@ def test_refusals():
         failures.extend(arm_failures)
         lines.extend(arm_lines)
     return failures, lines
+
+
+def test_raw_reply_retained_on_refusal():
+    """A reply that fails the parser still leaves its raw text on the refusal.
+
+    The grammar bounds a compliant model's tokens; a reply that reaches the
+    parser malformed anyway -- prose, a duplicate name, an out-of-schema
+    key -- is a finding about the served row, and `raw_reply` is what a later
+    reader rereads to tell a fenced answer from a genuinely unbound one.
+    """
+    _record, refusal, _state = run_review(message_with(PROSE_REPLY))
+    failures = []
+    if refusal is None:
+        failures.append("the prose reply was accepted rather than refused")
+        return failures, []
+    if getattr(refusal, "raw_reply", None) != PROSE_REPLY:
+        failures.append("the refusal does not retain the raw reply text")
+    return failures, ["raw_reply_on_refusal=retained"]
 
 
 def test_a_tools_key_is_refused_through_the_reply():
@@ -412,9 +492,11 @@ def test_declared_bounds():
 def main():
     arms = [
         ("accepted_verdict", test_accepted_verdict),
+        ("response_format_schema", test_response_format_carries_bounded_schema),
         ("regenerate_verdict", test_regenerate_verdict_admits_one_correction),
         ("regenerate_without_failure", test_regenerate_without_a_named_failure_is_not_admitted),
         ("refusals", test_refusals),
+        ("raw_reply_on_refusal", test_raw_reply_retained_on_refusal),
         ("tools_key", test_a_tools_key_is_refused_through_the_reply),
         ("artifact_credential", test_the_artifact_read_carries_the_credential),
         ("declared_bounds", test_declared_bounds),

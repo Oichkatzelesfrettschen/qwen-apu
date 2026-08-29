@@ -16,12 +16,20 @@ The reply is one JSON object against a closed schema:
      "prompt_delta": str,
      "regenerate": bool}
 
-The parser here admits that object and nothing else. Prose around it, a missing
+The request carries the same schema as `response_format`, so the server's own
+grammar (`build_verdict_schema`, wired through `json_schema_to_grammar` at
+`common/chat.cpp:3802`) bounds the sampled tokens before the parser ever runs.
+The grammar cannot enforce a caller's own constraint list against duplicate
+names, since a JSON Schema `enum` admits the same value twice, so the parser
+here still admits that object and nothing else. Prose around it, a missing
 key, an extra key, a `passed` that is a number rather than a boolean, and a
 constraint list naming anything other than the constraints the caller declared
 are each refused with the code that says which rule failed, because a tolerant
 parser would report a verdict the model did not state and hide the reply shape
-an appliance run exists to measure.
+an appliance run exists to measure. `review_artifact` reads the message's raw
+content string ahead of the parse and carries it as `raw_reply` on the
+successful record and on a `ReviewRefused` alike, because a grammar-bounded
+reply that still fails the parser is itself a finding worth rereading.
 
 Text visible inside an image is content the model describes. The system
 instruction says so, the schema gives that text no place to steer anything, and
@@ -173,13 +181,75 @@ def image_data_uri(png_bytes):
             "image_url": {"url": "data:image/png;base64," + encoded}}
 
 
+def build_verdict_schema(constraints):
+    """Return the JSON schema a review reply is bound to.
+
+    `tools/server/server-common.cpp:1156-1174` (workstation clone
+    `~/src/llama.cpp` at c2c62855c, which contains f280b269) reads a top-level
+    `json_schema` key directly, and for `response_format: {"type":
+    "json_schema", "json_schema": {"schema": ...}}` reads the schema from
+    `response_format.json_schema.schema` alone -- the sibling `name` key the
+    OpenAI shape carries is never read at that commit. `common/chat.cpp:3673`
+    parses whichever schema arrived into `params.json_schema` and line 3802
+    converts it with `json_schema_to_grammar`, so the schema below becomes the
+    grammar bounding every sampled token; line 1158-1160 refuses a request
+    naming both `json_schema` and `grammar`, so this module sends only the
+    first.
+
+    The array length and the per-entry `name` enum come from the caller's own
+    declaration, so a reply cannot state a different constraint count or name a
+    constraint nobody declared -- the two failure modes the first appliance run
+    hit as `constraint_count` and `hard_constraints_not_list`. The grammar
+    bounds the shape; `parse_verdict` still checks names against the
+    declaration and refuses a duplicate, because a grammar enum admits the same
+    value twice where the caller's list may not.
+
+    `common/json-schema-to-grammar.cpp` reads every keyword below without
+    falling through to its `Unrecognized schema` error at line 1080:
+    `minItems`/`maxItems` build an array repetition rule at lines 1030-1031,
+    `enum` builds a literal-alternation rule at line 938 ahead of the `type`
+    check, `maxLength` on a string builds a character repetition rule at
+    lines 1046-1049, and `required`/`additionalProperties` build the object
+    rule at lines 943-965.
+    """
+    names = [name for name, _description in constraints]
+    return {
+        "type": "object",
+        "properties": {
+            "hard_constraints": {
+                "type": "array",
+                "minItems": len(names),
+                "maxItems": len(names),
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string", "enum": names},
+                        "passed": {"type": "boolean"},
+                        "observation": {"type": "string", "maxLength": OBSERVATION_MAX_CHARS},
+                    },
+                    "required": list(CONSTRAINT_KEYS),
+                    "additionalProperties": False,
+                },
+            },
+            "composition_change_required": {"type": "boolean"},
+            "prompt_delta": {"type": "string", "maxLength": PROMPT_DELTA_MAX_CHARS},
+            "regenerate": {"type": "boolean"},
+        },
+        "required": list(VERDICT_KEYS),
+        "additionalProperties": False,
+    }
+
+
 def build_review_request(model, png_bytes, prompt_hash, constraints):
     """Build the chat request one review posts.
 
     `tools` is absent rather than empty: the request offers no executable
     surface at all, which is what makes the reply a description of an image and
     nothing else. Thinking is off and the reply budget is fixed, because a
-    reasoning span inside 400 tokens ends the object unclosed.
+    reasoning span inside 400 tokens ends the object unclosed. `response_format`
+    carries the schema `build_verdict_schema` states, so the server's own
+    grammar bounds the reply's shape before the strict parser reads its content
+    a second time.
     """
     return {
         "model": model,
@@ -196,6 +266,13 @@ def build_review_request(model, png_bytes, prompt_hash, constraints):
         "seed": 1,
         "stream": False,
         "chat_template_kwargs": {"enable_thinking": False},
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "image_review",
+                "schema": build_verdict_schema(constraints),
+            },
+        },
     }
 
 
@@ -383,7 +460,10 @@ def audit_line(model, digest, prompt_hash, constraint_names, verdict=None,
 
     `observation` and `prompt_delta` are text a model wrote after reading an
     image whose own text this appliance treats as content, so the line carries
-    the delta's length and digest instead of the delta.
+    the delta's length and digest instead of the delta. `schema_mode` names
+    the constraint mechanism the request carried; this module sends exactly
+    one, `response_format`, so the field is a constant here rather than a
+    per-call choice.
     """
     fields = [
         "image_review",
@@ -391,6 +471,7 @@ def audit_line(model, digest, prompt_hash, constraint_names, verdict=None,
         f"artifact={digest}",
         f"prompt_hash={prompt_hash}",
         f"constraints={len(constraint_names)}",
+        "schema_mode=response_format",
         f"wall_seconds={wall_seconds:.2f}",
         f"reasoning_emitted={'yes' if reasoning_emitted else 'no'}",
     ]
@@ -431,9 +512,12 @@ def review_artifact(router_origin, artifact_origin, api_key, model, digest,
     document = post_review(router_origin, api_key, payload, timeout)
     wall_seconds = time.monotonic() - started
     reasoning_emitted = False
+    raw_reply = None
     try:
         message = reply_message(document)
         reasoning_emitted = bool(message.get("reasoning_content"))
+        content = message.get("content")
+        raw_reply = content if isinstance(content, str) else None
     except ReviewRefused:
         pass
     try:
@@ -442,6 +526,7 @@ def review_artifact(router_origin, artifact_origin, api_key, model, digest,
         refusal.audit = audit_line(
             model, digest, prompt_hash, names, wall_seconds=wall_seconds,
             reasoning_emitted=reasoning_emitted, refusal_code=refusal.code)
+        refusal.raw_reply = raw_reply
         raise
     admitted, reason = correction_admitted(verdict)
     return {
@@ -449,6 +534,7 @@ def review_artifact(router_origin, artifact_origin, api_key, model, digest,
         "artifact_sha256": digest,
         "prompt_hash": prompt_hash,
         "verdict": verdict,
+        "raw_reply": raw_reply,
         "failed": failed_constraint_names(verdict),
         "correction_admitted": admitted,
         "correction_reason": reason,
@@ -458,6 +544,22 @@ def review_artifact(router_origin, artifact_origin, api_key, model, digest,
                             wall_seconds=wall_seconds,
                             reasoning_emitted=reasoning_emitted),
     }
+
+
+def raw_reply_sibling_path(verdict_json_path):
+    """Return the path the raw reply text writes to beside a verdict JSON path.
+
+    `qwen35-2b-7c6b7565.verdict.json` names `qwen35-2b-7c6b7565.raw`, and a
+    plain `.json` suffix strips the same way, so a caller's own naming
+    convention decides the stem and this function decides the extension alone.
+    """
+    if verdict_json_path.endswith(".verdict.json"):
+        stem = verdict_json_path[: -len(".verdict.json")]
+    elif verdict_json_path.endswith(".json"):
+        stem = verdict_json_path[: -len(".json")]
+    else:
+        stem = verdict_json_path
+    return stem + ".raw"
 
 
 def read_api_key(arguments):
@@ -507,12 +609,19 @@ def main(argv):
             [name for name, _description in constraints], refusal_code=refusal.code)
         sys.stdout.write(line + "\n")
         sys.stderr.write(f"image-review refused: {refusal.message}\n")
+        raw_reply = getattr(refusal, "raw_reply", None)
+        if arguments.verdict_json and raw_reply is not None:
+            with open(raw_reply_sibling_path(arguments.verdict_json), "w") as handle:
+                handle.write(raw_reply)
         return 1
     sys.stdout.write(record["audit"] + "\n")
     if arguments.verdict_json:
         with open(arguments.verdict_json, "w") as handle:
             json.dump(record, handle, indent=2, sort_keys=True)
             handle.write("\n")
+        if record["raw_reply"] is not None:
+            with open(raw_reply_sibling_path(arguments.verdict_json), "w") as handle:
+                handle.write(record["raw_reply"])
     else:
         sys.stdout.write(json.dumps(record, indent=2, sort_keys=True) + "\n")
     return 0
