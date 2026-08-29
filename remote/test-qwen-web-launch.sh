@@ -789,8 +789,15 @@ write_lowered_registry() {
     } >"$2"
 }
 
+# A router preset joins the draft-pair ledger against the model registry, so a
+# fabricated registry names its own ledger. An empty one admits no pairing,
+# which is what the plain-router depth rule below is measured against.
+fixture_draft_pairs=$work/draft-pairs.tsv
+printf '# the web-launch fixture admits no draft pairing\n' \
+    >"$fixture_draft_pairs"
 run_policy_with_registry() {
     QWEN_MODEL_REGISTRY=$1 QWEN_MODEL_ROOT=$policy_model_root \
+    QWEN_DRAFT_PAIRS=$fixture_draft_pairs \
     QWEN_QUARANTINE_REGISTRY=$quarantine_registry QWEN_RADV_ICD=$fake_icd \
     QWEN_WEB_PROFILES=${QWEN_WEB_PROFILES:-$web_profiles} \
     QWEN_POLICY_TEST_OUTPUT=$policy_output QWEN_ROUTER=1 \

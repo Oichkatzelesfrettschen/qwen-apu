@@ -282,6 +282,44 @@ grep -Fx '[quarantine]' "$preset_snapshot" >/dev/null
 grep -Fx '# qwen_router_include_quarantine=0' \
     "$source_router_presets" >/dev/null
 
+# A draft-pair section holds two checkpoints at once, so its subject is the sum
+# of both artifacts and the Vulkan requirement grows by the draft's own bytes.
+# The pair here sums to seven against the six of the largest single section, so
+# the selection moves only because the draft is counted.
+mkdir -p "$temporary_directory/models/Pair"
+printf 'draftt' >"$temporary_directory/models/Pair/draft.gguf"
+printf '%s\n' \
+    '# qwen_router_include_quarantine=0' \
+    '[quarantine]' \
+    "LLAMA_ARG_MODEL = $temporary_directory/models/Quarantine/large.gguf" \
+    '[normal+draft]' \
+    "LLAMA_ARG_MODEL = $temporary_directory/models/Normal/small.gguf" \
+    "LLAMA_ARG_SPEC_DRAFT_MODEL = $temporary_directory/models/Pair/draft.gguf" \
+    >"$source_router_presets"
+HOME=$temporary_directory QWEN_ROUTER=1 \
+QWEN_MODEL_PATH=$temporary_directory/models/Normal/small.gguf \
+QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+QWEN_REQUIRED_VULKAN_MIB=2048 \
+FIXTURE_SOURCE_PRESET=$source_router_presets \
+FIXTURE_MUTATION_MARKER=$temporary_directory/pair-no-mutation \
+FIXTURE_REAL_STAT=$(command -v stat) \
+FIXTURE_CONTROL_LOG=$temporary_directory/pair-control.log \
+PATH="$fixture_bin:$PATH" \
+    "$fixture_remote/qwen-launch.sh" \
+    >"$temporary_directory/pair-launch.stdout" \
+    2>"$temporary_directory/pair-launch.stderr"
+grep -Fx 'router_preflight_subject=small.gguf bytes=7 draft=draft.gguf draft_bytes=6' \
+    "$temporary_directory/pair-launch.stdout" >/dev/null
+grep -Fx 'router_preflight_requirement mib=2049 draft_mib=1' \
+    "$temporary_directory/pair-launch.stdout" >/dev/null
+
+# Restore the single-section preset the signal fixtures below are written for.
+printf '%s\n' \
+    '# qwen_router_include_quarantine=0' \
+    '[normal]' \
+    "LLAMA_ARG_MODEL = $temporary_directory/models/Normal/small.gguf" \
+    >"$source_router_presets"
+
 # A terminating signal transfers control to a handler that removes the owned
 # snapshot and exits with the signal status before readiness polling begins.
 printf '%s\n' \

@@ -1,0 +1,56 @@
+# The pairings that put a small draft model in front of a larger target through
+# llama.cpp's standalone draft path. One row per pairing; a router preset
+# section named for the pair_id carries the target's full six-key tuple beside
+# the draft keys, and remote/measure-draft-pair.sh measures a row against a
+# same-session control of the target alone.
+#
+# The mechanism at f280b269 is `--spec-type draft-simple`.
+# common/speculative.cpp maps that exact string onto
+# COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE, tools/server/server-context.cpp builds a
+# second common_params through common_base_params_to_speculative, which copies
+# the draft's mparams, devices, n_gpu_layers, tensor overrides, and cache types
+# over the target's, and common_speculative_init_result loads that path as a
+# separate model with its own context. The draft context takes its depth from
+# the target -- `cparams.n_ctx = llama_n_ctx(ctx_tgt)` -- so draft_context is
+# the depth the runtime derives rather than a depth any argument sets, and the
+# preset emits no key for it. The column records the derived value so a row
+# states the allocation it asks the device for.
+#
+# common_speculative_impl_draft_simple calls common_speculative_are_compatible
+# and throws when it fails, so a pairing is admitted on vocabulary identity
+# rather than on architecture: matching vocab type, matching add_bos and
+# add_eos with matching token ids, a token-count difference within
+# SPEC_VOCAB_MAX_SIZE_DIFFERENCE of 128, and byte-identical token text from id
+# 5 upward. evidence/model-admission/static-admission.tsv reports vocabulary
+# size 248320, tokenizer_pre qwen35, and tokens_sha256
+# 5cf6b9d701d926cb509a0c7218d94a9f3b472d87715c344e676b8e93c99d2af9 for the
+# Qwen3.5-0.8B and the Qwen3.8 distills alike, which is the identity the
+# runtime check reduces to.
+#
+# spec_draft_n_max starts at 2 for both rows because
+# evidence/mtp-speculation-matrix.md prices the target's verification pass by
+# column count on this device. Its arm labels map to draft length through the
+# S1 log line `n_max=1` beside the S1 table row `cols 2`, so a draft of N
+# verifies N+1 columns; that mapping is inference from the two, not a figure
+# either states. Columns one through four cost about 150 ms each and column
+# five costs 536 ms, an occupancy step rather than a slope, so a draft of 4 or
+# more lands past the cliff and S4 and S6 both decoded slower than no
+# speculation at all. A draft of 2 verifies three columns, inside the measured
+# flat region and one column clear of the step. The MTP head's draft pass cost
+# 66.4 ms and the 0.8B's whole token time is 63 to 66 ms, so the draft half of
+# the arithmetic transfers; the acceptance half does not, since a standalone
+# draft is a different model rather than a head trained on the target's own
+# hidden state.
+#
+# spec_draft_p_min is the probability floor below which the draft loop stops
+# proposing. Both rows carry 0.00, the value every arm in the MTP matrix ran
+# at, so the first pair arm changes the draft mechanism alone.
+#
+# tier carries the model registry's vocabulary and the same claims.
+# build-router-presets.sh emits a section for a production or candidate row and
+# for nothing else. validated_evidence names the directory holding the measured
+# arm; `-` means no run has measured this pairing and the tier states that.
+#
+# pair_id	target_model_id	draft_model_id	tier	spec_draft_n_max	spec_draft_p_min	draft_context	draft_cache_type_k	draft_cache_type_v	validated_evidence	notes
+qwen38-2b-distill+qwen35-08b-draft	qwen38-2b-distill	qwen35-08b	candidate	2	0.00	24576	q8_0	q4_0	-	2B + 0.8B draft
+qwen38-4b-distill+qwen35-08b-draft	qwen38-4b-distill	qwen35-08b	candidate	2	0.00	24576	q8_0	q4_0	-	4B + 0.8B draft
