@@ -22,6 +22,17 @@ in a header and the broker compares the value with `hmac.compare_digest`.
 existing Web UI bearer API key. The signing key travels from its file into
 `sign_claim` and into no response, log line, or audit row.
 
+`POST /grant-image` signs the second context this broker serves. The
+approving page posts the prompt digests rather than the prompt text, so the
+approved words stay in the browser and the broker signs an identity.
+`qwen-image-generate-v1` binds one generation -- language profile, image
+profile, prompt and negative-prompt digests, seed, aspect, maximum pixel
+dimension and steps, conversation generation, expiry, and a single-use nonce
+-- through `image_grant`, and `--profile` binds the image profile as it binds the
+web profile on `POST /grant`. The seed is a required request field, so the
+trusted user interface generates and displays it before approval and this
+broker chooses no randomness after one.
+
 One approval issues one grant. The claim carries `max_uses` of one and the
 serving path spends it under the ledger's primary key, so this service offers
 one grade of approval and holds no standing permission.
@@ -47,6 +58,7 @@ if BROKER_DIRECTORY not in sys.path:
     sys.path.insert(0, BROKER_DIRECTORY)
 
 import server  # noqa: E402
+import image_grant  # noqa: E402
 
 LOOPBACK_HOSTS = ("127.0.0.1", "::1")
 SESSION_SECRET_FILE_NAME = "authorize-session.secret"
@@ -57,6 +69,7 @@ REQUEST_READ_TIMEOUT_DEFAULT_SECONDS = 5.0
 REQUEST_READ_TIMEOUT_MAX_SECONDS = 30.0
 AUTHORIZE_PER_MINUTE_DEFAULT = 6
 GRANT_PATH = "/grant"
+IMAGE_GRANT_PATH = "/grant-image"
 SESSION_PATH = "/session"
 HEALTH_PATH = "/health"
 KEY_MODE_FORBIDDEN_BITS = 0o077
@@ -350,6 +363,57 @@ def issue_for_request(settings, fields):
     )
 
 
+def image_audit_row(settings, fields, status, started_at):
+    """Return the audit row one image grant request writes.
+
+    The row fills the same twelve-column vocabulary the search trail uses, so
+    one table answers what a session authorized. `query_sha256` carries the
+    prompt digest, which is the value the column is shaped for and the value
+    the claim itself binds, and `domains` carries the language and image
+    profile pair, so a reader separates the two grant contexts by `operation`
+    and reads the profiles a grant joined without recovering the prompt.
+    """
+    prompt_sha256 = ""
+    profiles = ""
+    if fields is not None:
+        prompt_sha256 = fields["prompt_hash"]
+        profiles = f"{fields['language_profile']}>{fields['image_profile']}"
+    now = time.time()
+    return {
+        "recorded_at": server.utc_timestamp(now),
+        "profile": settings.profile,
+        "operation": "authorize-image",
+        "query_sha256": prompt_sha256,
+        "domains": profiles,
+        "result_count": 0,
+        "fetched_host": "",
+        "provider_bytes": 0,
+        "returned_characters": 0,
+        "latency_ms": int((now - started_at) * 1000),
+        "status": status,
+        "recorded_epoch": int(now),
+    }
+
+
+def issue_image_for_request(settings, fields):
+    """Sign the generation grant for exactly these approved fields.
+
+    `--profile` binds the image profile the same way it binds the web profile
+    on `POST /grant`: one broker signs for one profile, and the MCP child
+    compares the claim's `image_profile` against the profile it serves, so
+    a mismatch is refused here against the name the grant would carry rather
+    than at the child against a token that already left the machine.
+    """
+    if fields["image_profile"] != settings.profile:
+        raise server.InvalidArgument(
+            f"the broker process serves profile {settings.profile!r}; "
+            f"the request named image profile {fields['image_profile']!r}"
+        )
+    return image_grant.issue_image_grant(
+        settings.token_key_file, fields, settings.lifetime
+    )
+
+
 HTTP_STATUS_FOR_TERM = {
     "authorization_denied": 403,
     "rate_limited": 429,
@@ -415,7 +479,7 @@ def record_audit(
 
 
 class BrokerHandler(http.server.BaseHTTPRequestHandler):
-    """Serve health, session-capability, and one-search grant requests."""
+    """Serve health, session capability, and one-use search and image grants."""
 
     protocol_version = "HTTP/1.1"
     server_version = "qwen-web-authorize-broker/1.0"
@@ -648,9 +712,18 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
         """
         started_at = time.time()
         origin = self.allowed_origin()
-        if self.path.split("?", 1)[0] != GRANT_PATH:
+        path = self.path.split("?", 1)[0]
+        if path not in (GRANT_PATH, IMAGE_GRANT_PATH):
             self.send_json(404, {"error": "no such endpoint"}, origin)
             return
+        # The two endpoints share every gate ahead of the body, so an image
+        # grant charges the same meter and presents the same session authority
+        # a search grant does. The context they sign under is what differs:
+        # `search-authorization` names a query and `qwen-image-generate-v1`
+        # names a generation, and `sign_claim` covers the context string, so
+        # neither token verifies as the other.
+        image = path == IMAGE_GRANT_PATH
+        row_for = image_audit_row if image else audit_row
         ledger = None
         fields = None
         try:
@@ -667,14 +740,19 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
                     "the request Origin is absent or outside the admitted set"
                 )
             self.require_session_secret()
-            fields = parse_request_arguments(self.read_body())
-            token = issue_for_request(self.settings, fields)
-            ledger.record(audit_row(self.settings, fields, "success", started_at))
+            payload = self.read_body()
+            if image:
+                fields = image_grant.parse_image_request(payload)
+                token = issue_image_for_request(self.settings, fields)
+            else:
+                fields = parse_request_arguments(payload)
+                token = issue_for_request(self.settings, fields)
+            ledger.record(row_for(self.settings, fields, "success", started_at))
         except server.ToolError as error:
             if ledger is not None:
                 record_audit(
                     ledger,
-                    audit_row(self.settings, fields, error.status, started_at),
+                    row_for(self.settings, fields, error.status, started_at),
                     60 if error.status == "rate_limited" else None,
                     started_at,
                 )
@@ -723,9 +801,11 @@ def positive_seconds(value):
 def build_parser():
     parser = argparse.ArgumentParser(
         prog="authorize-broker.py",
-        description="issue one search grant per human approval over loopback; "
+        description="issue one grant per human approval over loopback; "
         "POST /grant requires profile_id in the request body, matching "
-        "--profile below, beside the search_exa fields it approves",
+        "--profile below, beside the search_exa fields it approves, and "
+        "POST /grant-image requires image_profile matching the same value "
+        "beside the generation fields it approves",
     )
     parser.add_argument("--host", type=loopback_host, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=0)
