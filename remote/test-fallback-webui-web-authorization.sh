@@ -66,7 +66,7 @@ grep -F "'The user refused this web search. It did not run.'" \
 
 # The grant enters one request body. A transcript message, a stored value, or a
 # completion body carrying it would present a single-use token twice.
-grep -F 'outcome = await streamCompletion(history, view, webPermission);' \
+grep -F 'outcome = await streamCompletion(history, view, webPermission, imagePermission);' \
     "$fallback_ui" >/dev/null
 if grep -E 'answerCall\([^)]*authorization' "$fallback_ui" >/dev/null; then
     printf 'fallback Web UI writes a grant into the transcript\n' >&2
@@ -187,11 +187,12 @@ grep -F 'const searchBudget = { remaining: WEB_SEARCH_BUDGET_PER_TURN };' "$fall
 grep -F \
     'async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetchBudget,
                                  searchBudget, turnGeneration, proposalModel,
-                                 webPermission) {' \
+                                 webPermission, imagePermission, imageBudget, imageCancelToolName) {' \
     "$fallback_ui" >/dev/null
 grep -F \
     'outcome.calls, callIds, view, round === CONTINUATION_CAP - 1, fetchBudget,
-        searchBudget, turnGeneration, proposalModel, webPermission);' \
+        searchBudget, turnGeneration, proposalModel, webPermission,
+        imagePermission, imageBudget, imageCancelToolName);' \
     "$fallback_ui" >/dev/null
 # The decrement precedes the approval dialog: the budget is spent by opening
 # the dialog and executing on approval, not by a later decision inside it.
