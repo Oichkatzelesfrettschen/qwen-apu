@@ -1066,6 +1066,34 @@ if [ "${QWEN_BACKEND_SAMPLING:-0}" = 1 ]; then
     set -- "$@" --backend-sampling
 fi
 
+# Context checkpoints are the one saved-state mechanism a hybrid recurrent
+# model has: server-context.cpp cannot roll the Gated DeltaNet state back, so
+# a second turn sharing a long prefix re-prefills from the newest checkpoint
+# below the divergence point or from zero. The served default is zero, which
+# keeps every checkpoint's host copy of the recurrent state off the desktop
+# reserve, and QWEN_CTX_CHECKPOINTS raises it for a sweep that measures what
+# the copies buy. QWEN_CHECKPOINT_MIN_STEP names --checkpoint-min-step and
+# leaves the pinned build's 8192-token default in place when unset. Both are
+# non-negative integers, since common/arg.cpp reads them as such.
+ctx_checkpoints=${QWEN_CTX_CHECKPOINTS:-0}
+case $ctx_checkpoints in
+    '' | *[!0-9]*)
+        printf 'context checkpoint count must be a non-negative integer: %s\n' \
+            "$ctx_checkpoints" >&2
+        exit 2
+        ;;
+esac
+checkpoint_min_step=${QWEN_CHECKPOINT_MIN_STEP:-}
+if [ -n "$checkpoint_min_step" ]; then
+    case $checkpoint_min_step in
+        *[!0-9]*)
+            printf 'checkpoint minimum step must be a non-negative integer: %s\n' \
+                "$checkpoint_min_step" >&2
+            exit 2
+            ;;
+    esac
+fi
+
 set -- "$@" \
     --log-verbosity 4 \
     --device Vulkan0 \
@@ -1076,10 +1104,13 @@ set -- "$@" \
     --parallel 1 \
     --threads 1 \
     --threads-batch 1 \
-    --ctx-checkpoints 0 \
+    --ctx-checkpoints "$ctx_checkpoints" \
     --cache-ram 0 \
     --no-context-shift \
     --offline
+if [ -n "$checkpoint_min_step" ]; then
+    set -- "$@" --checkpoint-min-step "$checkpoint_min_step"
+fi
 
 # The six per-checkpoint flags stay off the router's own argv, because
 # server-models.cpp ends its preset assembly with `preset.merge(base_preset)`

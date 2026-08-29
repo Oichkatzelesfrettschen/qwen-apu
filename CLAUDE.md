@@ -906,6 +906,8 @@ remote/run-vision-review-control.sh ROUTER_ORIGIN ARTIFACT_ORIGIN MODEL \
                                                 # real, withheld, swapped, and a closing real arm
 remote/run-graph-alias-ab.sh OUTPUT_DIR [MODEL_ID...]
                                                 # token identity across the graph optimizer
+remote/run-ctx-checkpoint-sweep.sh LABEL MODEL_ID OUT
+                                                # what --ctx-checkpoints buys a second turn at 30K
 
 # Rebuild llama.cpp and the static UI
 remote/build-llama-preset.sh PRESET [SOURCE]   # one directory per build arm
@@ -962,6 +964,7 @@ remote/test-admit-candidate-static.py
 remote/test-one-token-admission.sh
 remote/test-fetch-candidate-artifact.sh
 remote/test-run-graph-alias-ab.sh
+remote/test-run-ctx-checkpoint-sweep.sh
 remote/verify-llama-patch-series.sh
 QWEN_LLAMA_CANDIDATE_PATCHES=1 remote/verify-llama-patch-series.sh
 GGUF_PY_PATH=~/src/llama.cpp-qwen-apu/gguf-py \
