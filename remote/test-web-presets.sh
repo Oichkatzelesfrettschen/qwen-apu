@@ -1911,12 +1911,36 @@ else
 fi
 
 # The checked-in image ledger is what a launch on the appliance reads, so its
-# one validator-gated row emits one image server under the authorizer marker.
-# The fixture cases above prove the rule; this one proves the shipped file
-# meets it.
+# one validator-gated row emits one image server and the review-only vision
+# section its review_model names. The fixture cases above prove the rules; this
+# one proves the shipped file meets them against the shipped model registry and
+# the shipped tuple ledger. GGUF weights stay outside Git, so the model root
+# holds an empty stand-in at every path those authorities name -- the generator
+# reads presence and the registry's own tuple rather than tensor bytes -- and
+# the projector's file name comes from the projector_fetch_script the registry
+# row names, which is the same authority that puts the file on the appliance.
+checked_in_review_row=$(grep '^lfm25-vl-16b	' "$script_directory/models.tsv")
+# remote/validated-tuples.tsv is validated whole against the registry it is read
+# with, so the registry this arm builds is the shipped file with the fixture
+# rows appended rather than the fixture file with one shipped row added.
+checked_in_registry=$work/model-registry-checked-in.tsv
+cat "$script_directory/models.tsv" >"$checked_in_registry"
+grep -v '^#' "$model_registry" >>"$checked_in_registry"
+checked_in_review_file=$(printf '%s\n' "$checked_in_review_row" | cut -f3)
+checked_in_review_projector=$(sed -n 's/^artifact_name=//p' \
+    "$script_directory/$(printf '%s\n' "$checked_in_review_row" | cut -f12)")
+checked_in_model_root=$work/model-root-checked-in
+cp -R "$policy_model_root" "$checked_in_model_root"
+mkdir -p "$checked_in_model_root/${checked_in_review_file%/*}"
+: >"$checked_in_model_root/$checked_in_review_file"
+: >"$checked_in_model_root/${checked_in_review_file%/*}/$checked_in_review_projector"
+
 presets_image_checked_in=$work/presets-image-checked-in.ini
 if build "$web_profiles_ui" "$presets_image_checked_in" \
     env QWEN_IMAGE_PROFILES="$script_directory/image-profiles.tsv" \
+    QWEN_MODEL_REGISTRY="$checked_in_registry" \
+    QWEN_MODEL_ROOT="$checked_in_model_root" \
+    QWEN_VALIDATED_TUPLES="$script_directory/validated-tuples.tsv" \
     QWEN_IMAGE_MCP_SERVER="$image_mcp_server_program" \
     QWEN_IMAGE_TOKEN_KEY_FILE="$image_token_key_file" \
     QWEN_IMAGE_STATE_DIR="$image_state_directory" \
@@ -1935,6 +1959,33 @@ EOF
 else
     report checked_in_image_ledger_emits_its_server failed
     cat "$work/image-checked-in.err" >&2
+fi
+
+# The shipped row pairs lfm25-vl-16b, admitted on the appliance by the paired
+# launch of evidence/image-appliance/paired-review-admission/, so the same
+# generator run emits the language section and the review-only section beside
+# it. The review section holds no execution grant, so the language section is
+# the only one naming an MCP configuration.
+if [ -s "$presets_image_checked_in" ]; then
+    outcome=ok
+    grep -Fqx '# qwen_image_review_model=lfm25-vl-16b' \
+        "$presets_image_checked_in" || outcome=review_marker_absent
+    grep -Fqx '# qwen_image_review_section=lfm25-vl-16b' \
+        "$presets_image_checked_in" || outcome=review_section_marker_absent
+    grep -Fqx '[lfm25-vl-16b]' "$presets_image_checked_in" ||
+        outcome=review_section_absent
+    grep -Fqx 'LLAMA_ARG_TAGS = vision-review,review-only' \
+        "$presets_image_checked_in" || outcome=wrong_tags
+    grep -Fqx \
+        "LLAMA_ARG_MMPROJ = $checked_in_model_root/${checked_in_review_file%/*}/$checked_in_review_projector" \
+        "$presets_image_checked_in" || outcome=projector_absent
+    [ "$(grep -c '^LLAMA_ARG_MCP_SERVERS_CONFIG' "$presets_image_checked_in")" \
+        -eq 1 ] || outcome=configuration_count
+    [ "$(grep -c '^\[' "$presets_image_checked_in")" -eq 2 ] ||
+        outcome=section_count
+    report checked_in_image_ledger_emits_its_reviewer "$outcome"
+else
+    report checked_in_image_ledger_emits_its_reviewer failed
 fi
 
 # An image row pairing a review_model adds one review-only vision section. The

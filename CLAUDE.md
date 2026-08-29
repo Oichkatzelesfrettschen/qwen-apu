@@ -610,10 +610,16 @@ the image runtime's resident cost, hands the total to
 paired launch refuses on that probe's own `vulkan_budget_headroom=short` line;
 a one-section launch is the shape
 `evidence/image-appliance/served-turn-admission/` already ran and passed, and
-it reads the figure without being gated on it. Every checked-in row reads `-`, because
-the RADV RAVEN2 probe runs on the appliance alone and no run has reported the
-pair; `evidence/image-appliance/vision-review-design.md` carries that as its
-seventh falsifier and names the command that decides it.
+it reads the figure without being gated on it.
+`image-sdxs-512-a` names `lfm25-vl-16b` because the probe reported the pair
+ample twice on the appliance and one page session then generated and reviewed
+one artifact through it; every other row reads `-`, since the RADV RAVEN2
+probe runs on the appliance alone and no run has reported those pairs.
+`evidence/image-appliance/paired-review-admission/` carries the admitted run,
+where the review cost 19.44 s against the generation's 11.62 s: 14.77 s of
+that is prompt evaluation of the 570-token multimodal prompt, so a smaller
+reply budget reaches 4.67 s of it and the roster holds no faster reviewer than
+the row already named.
 
 `remote/qwen-image-launch.sh`
 rejoins the preset's image markers to the ledger, requires the row to still
@@ -671,6 +677,10 @@ appliance that moved `image-sdxs-512-a` to `validator-gated`: 41 rows, 40
 accepted and one observed, one artifact generated in 12 s by the curl replay
 and one in 11.3 s by the served page, with the model's own proposal inside
 every bound the tool listing states and its seed displayed before approval.
+`evidence/image-appliance/paired-review-admission/` retains the paired run
+that moved its `review_model` to `lfm25-vl-16b`: 48 rows, 45 accepted and 3
+observed, `sections=2`, and one page session carrying the approved generation
+and a parsed vision review of its own artifact.
 The 4B distill proposed a schema-valid call in every run there and the 2B
 distill answered in prose, which its `raw_tool_selection` grade of 2/10
 already states, so an image-capable language profile names the 4B.

@@ -45,14 +45,10 @@
 #
 # review_model pairs one vision checkpoint with this image shape, because the
 # reviewer belongs to the profile that produced the artifact rather than to the
-# conversation that asked for it. `-` offers no review. image-sdxs-512-a names
-# lfm25-vl-16b, because the appliance's own budget gate admitted the pair at
-# 4388 MiB against 11.42 GiB of Vulkan margin and one page session then ran an
-# approved generation and a parsed review of its artifact
-# (evidence/image-appliance/paired-review-admission/). Every other row reads
-# `-`, since a second resident checkpoint has to fit beside the language row
-# inside the Vulkan budget this machine carves and only the appliance holds
-# that probe. A named value is a remote/models.tsv model_id
+# conversation that asked for it. `-` offers no review and is what every
+# checked-in row reads: a second resident checkpoint has to fit beside the
+# language row inside the Vulkan budget this machine carves, and no appliance
+# run has measured that pair. A named value is a remote/models.tsv model_id
 # whose projector column reads `required`; remote/build-web-presets.sh joins it
 # against that registry, requires a projector on disk and a validated tuple with
 # the projector loaded, and emits a review-only section beside the language one.
@@ -61,7 +57,7 @@
 # it and reaches nothing else.
 #
 # profile_id	model_id	placement	width	height	steps	sampler	cfg	max_steps	max_dimension	timeout_s	execution_policy	validated_evidence	review_model
-image-sdxs-512-a	sdxs-512	A	512	512	1	euler	1.0	4	512	300	validator-gated	evidence/image-appliance/served-turn-admission/README.md	lfm25-vl-16b
+image-sdxs-512-a	sdxs-512	A	512	512	1	euler	1.0	4	512	300	validator-gated	evidence/image-appliance/design.md	lfm25-vl-16b
 image-sdxs-512-b	sdxs-512	B	512	512	1	euler	1.0	4	512	300	refused	-	-
 image-sd15-lcm-a	sd15-lcm-v1	A	512	512	4	lcm	1.5	8	512	300	refused	-	-
 image-sd15-base-a	sd15-base	A	512	512	20	euler_a	7.0	30	512	300	refused	-	-
