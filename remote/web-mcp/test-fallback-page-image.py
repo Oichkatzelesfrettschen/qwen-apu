@@ -243,7 +243,178 @@ def make_handler(state):
     return Handler
 
 
-def main():
+# The finding this scenario reproduces: against the real qwen38-4b-distill,
+# the model sometimes spends its whole reply budget on prose and proposes no
+# tool call, so the approval dialog never opens and drive-fallback-page.py's
+# wait_for() raises TimeoutError. The prose text is asserted for verbatim so
+# the test fails if a future edit stops retaining the model's reply on that
+# path.
+PROSE_REPLY = (
+    "I can describe a fox in a snowy field for you, but I have not called "
+    "any tool to draw one."
+)
+
+
+def make_prose_handler():
+    """Plays a router whose model never proposes the image tool.
+
+    Serves the same page, roster, and tool listing as make_handler(), and
+    answers every /v1/chat/completions call with plain text and
+    finish_reason: stop -- no tool_calls delta -- so the page's approval
+    dialog for the image lane never opens.
+    """
+    fallback_html = open(FALLBACK_UI_PATH, "rb").read()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *_args):
+            pass
+
+        def _send_json(self, status, payload):
+            body = json.dumps(payload).encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_OPTIONS(self):  # noqa: N802
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Headers", "*")
+            self.send_header("Access-Control-Allow-Methods", "*")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_GET(self):  # noqa: N802
+            parsed_path = self.path.split("?", 1)[0]
+            if parsed_path in ("/", "/index.html"):
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(fallback_html)))
+                self.end_headers()
+                self.wfile.write(fallback_html)
+                return
+            if parsed_path == "/v1/models":
+                self._send_json(200, {"data": [{"id": "image-test-profile"}]})
+                return
+            if parsed_path == "/props":
+                self._send_json(200, {"default_generation_settings": {"n_ctx": 4096}})
+                return
+            if parsed_path == "/tools":
+                self._send_json(200, [{
+                    "tool": IMAGE_TOOL_NAME,
+                    "definition": {
+                        "type": "function",
+                        "function": {
+                            "name": IMAGE_TOOL_NAME,
+                            "description": "Generate one image.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "prompt": {"type": "string"},
+                                    "profile_id": {"type": "string"},
+                                    "width": {"type": "integer"},
+                                    "height": {"type": "integer"},
+                                    "steps": {"type": "integer"},
+                                },
+                                "required": ["prompt", "profile_id", "width", "height", "steps"],
+                            },
+                        },
+                    },
+                }])
+                return
+            self._send_json(404, {"error": "no route: " + self.path})
+
+        def do_POST(self):  # noqa: N802
+            parsed_path = self.path.split("?", 1)[0]
+            if parsed_path == "/v1/chat/completions":
+                chunks = [
+                    {"choices": [{"delta": {"content": PROSE_REPLY}}]},
+                    {"choices": [{"delta": {}, "finish_reason": "stop"}],
+                     "usage": {"completion_tokens": 24}},
+                ]
+                body = b""
+                for chunk in chunks:
+                    body += ("data: " + json.dumps(chunk) + "\n\n").encode("utf-8")
+                body += b"data: [DONE]\n\n"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+            self._send_json(404, {"error": "no route: " + self.path})
+
+    return Handler
+
+
+def test_timeout_without_proposal():
+    """Runs drive-fallback-page.py as admit-image-router.sh does: as a
+
+    subprocess against a router that answers prose without a proposal, so
+    the approval dialog never opens. Asserts the process exits non-zero, still
+    writes a parseable JSON report on stdout, names the TimeoutError, and
+    retains the model's prose reply in `history` rather than losing it to an
+    uncaught traceback.
+    """
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), make_prose_handler())
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    origin = "http://127.0.0.1:{}".format(port)
+    chromium = os.environ.get("QWEN_CHROMIUM", "chromium")
+    driver = os.path.join(THIS_DIRECTORY, "drive-fallback-page.py")
+    try:
+        result = subprocess.run(
+            [sys.executable, driver, "--origin", origin, "--prompt", "draw a fox",
+             "--lane", "image", "--chromium", chromium,
+             "--load-timeout", "30", "--dialog-timeout", "3", "--turn-timeout", "10"],
+            capture_output=True, text=True, timeout=90)
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    failures = []
+    if result.returncode == 0:
+        failures.append(
+            "drive-fallback-page.py exited 0 against a router that proposed no tool call")
+
+    try:
+        report = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        sys.stderr.write("test-fallback-page-image (timeout-without-proposal) stdout: "
+                          + result.stdout[:2000] + "\n")
+        sys.stderr.write("test-fallback-page-image (timeout-without-proposal) stderr: "
+                          + result.stderr[:2000] + "\n")
+        failures.append(
+            "drive-fallback-page.py wrote no parseable JSON report on the dialog timeout")
+        return failures
+
+    error = report.get("error") or {}
+    if error.get("type") != "TimeoutError":
+        failures.append("report[\"error\"][\"type\"] was not TimeoutError: " + repr(error))
+    if "dialog" not in report or report["dialog"] is not None:
+        failures.append("report[\"dialog\"] was not null: " + repr(report.get("dialog")))
+
+    assistant_messages = [m for m in (report.get("history") or []) if m.get("role") == "assistant"]
+    if not assistant_messages:
+        failures.append("the report retained no assistant message from the model's prose reply")
+    else:
+        last = assistant_messages[-1]
+        if PROSE_REPLY not in (last.get("content") or ""):
+            failures.append(
+                "the retained assistant message did not carry the model's prose: "
+                + repr(last.get("content")))
+        if last.get("tool_calls"):
+            failures.append(
+                "the retained assistant message carried a tool call the fixture never proposed")
+    return failures
+
+
+def test_full_authorization():
     state = RecordingState()
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), make_handler(state))
     port = server.server_address[1]
@@ -443,17 +614,41 @@ def main():
                          .format(len(requests_to_grant_image)))
 
     if failures:
-        sys.stderr.write("test-fallback-page-image failures:\n")
+        sys.stderr.write("test-fallback-page-image failures (full-authorization):\n")
         for failure in failures:
             sys.stderr.write("  - " + failure + "\n")
         sys.stderr.write("report: " + json.dumps(report, indent=1) + "\n")
+        return failures, []
+
+    success_lines = [
+        "fallback_page_image_authorization=accepted",
+        "dialog_fields=" + json.dumps(dialog_fields),
+        "grant_context=" + grant_bodies[0]["context"],
+        "artifact_sha256=" + ARTIFACT_SHA256,
+        "history_tool_message=" + tool_messages[0]["content"],
+    ]
+    return [], success_lines
+
+
+def main():
+    failures = []
+
+    authorization_failures, success_lines = test_full_authorization()
+    failures.extend(authorization_failures)
+
+    timeout_failures = test_timeout_without_proposal()
+    failures.extend(timeout_failures)
+    if timeout_failures:
+        sys.stderr.write("test-fallback-page-image failures (timeout-without-proposal):\n")
+        for failure in timeout_failures:
+            sys.stderr.write("  - " + failure + "\n")
+
+    if failures:
         return 1
 
-    print("fallback_page_image_authorization=accepted")
-    print("dialog_fields=" + json.dumps(dialog_fields))
-    print("grant_context=" + grant_bodies[0]["context"])
-    print("artifact_sha256=" + ARTIFACT_SHA256)
-    print("history_tool_message=" + tool_messages[0]["content"])
+    for line in success_lines:
+        print(line)
+    print("browser_turn_timeout_retains_prose=accepted")
     return 0
 
 
