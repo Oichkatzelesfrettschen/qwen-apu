@@ -75,9 +75,9 @@ printf 'patch_series=accepted commit=%s\n' "$expected_commit"
 # sums it compares against stay byte-identical whether the stage runs or not.
 # QWEN_LLAMA_CANDIDATE_PATCHES=1 arms it; the printed post-apply digest is what
 # a promotion would move into verify_source once its evidence lane closes.
+candidate_patch_names="llama-vulkan-view-alias-deps.patch"
 if [ "${QWEN_LLAMA_CANDIDATE_PATCHES:-0}" = 1 ]; then
-    for candidate_name in \
-        llama-vulkan-view-alias-deps.patch; do
+    for candidate_name in $candidate_patch_names; do
         git -C "$temporary_directory/llama.cpp" apply --check \
             "$patch_directory/$candidate_name"
         git -C "$temporary_directory/llama.cpp" apply \
