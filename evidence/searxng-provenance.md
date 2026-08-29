@@ -95,3 +95,16 @@ java major version measured:  -
   it to `qwen-news`; whether a live request against it succeeds without
   further credentials is unconfirmed until a laptop run's `GET /config` and a
   live search both return.
+
+## Known interaction: crossref's per-engine timeout against max_request_timeout
+
+`searx/search/__init__.py`'s `_get_requests` sets `actual_timeout =
+min(default_timeout, max_request_timeout)`, where `default_timeout` is the
+max of every selected engine's own `timeout`. `crossref`'s block in the
+pinned `searx/settings.yml` carries `timeout: 30`, which this instance's
+`max_request_timeout: 8.0` caps to 8 seconds regardless. A crossref query
+that upstream expected to need up to 30 seconds routinely times out under
+this instance's outgoing tuple; this is a consequence of the design facts
+this file was built from, not a bug in `remote/searxng-settings.yml`, and a
+laptop run's live search against `qwen-academic` should confirm whether 8
+seconds is enough in practice.

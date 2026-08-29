@@ -103,8 +103,17 @@ run_install_stage() {
     # The redirect runs in this script's own shell, at this user's
     # privilege, before sudo starts the installer; only the installer's
     # write to /etc/searxng and its own user/package operations need root.
+    # searxng.install.pyenv calls wait_key with no argument, which reads one
+    # key from stdin with no timeout unless utils/lib.sh's FORCE_TIMEOUT is
+    # set. `sudo env FORCE_TIMEOUT=1 installer` sets it inside the root
+    # process env itself rather than relying on sudo to forward it from this
+    # shell, which a default sudoers env_reset policy would otherwise strip;
+    # </dev/null backs the read with an immediate EOF too, so a read that
+    # somehow ignored FORCE_TIMEOUT would fail closed rather than block this
+    # script on a terminal no automated run has.
     # shellcheck disable=SC2024
-    if ! sudo -H "$installer" install "$stage" >>"$installer_log" 2>&1; then
+    if ! sudo -H env FORCE_TIMEOUT=1 "$installer" install "$stage" \
+            </dev/null >>"$installer_log" 2>&1; then
         printf 'install stage failed: %s -- see %s\n' "$stage" "$installer_log" >&2
         tail -n 40 "$installer_log" >&2
         exit 1

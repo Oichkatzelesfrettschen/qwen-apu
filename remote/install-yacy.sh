@@ -96,12 +96,13 @@ mkdir -p "$settings_directory"
 config_file=$settings_directory/yacy.conf
 
 # defaults/yacy.init in the pinned tree carries every key at its shipped
-# default; this file names only the keys this instance overrides, and YaCy's
-# own Switchboard layers a present yacy.conf over defaults/yacy.init on
-# startup, generating every key this file omits. autocrawl already defaults
-# to false in the pinned tree (defaults/yacy.init:627); this instance states
-# it explicitly so a later upstream default change cannot start a crawl this
-# laptop never asked for.
+# default; this file names only the keys this instance overrides.
+# source/net/yacy/server/serverSwitch.java's constructor loads both files as
+# maps and does initProps.putAll(configProps), so a yacy.conf naming a subset
+# of keys layers over the full defaults rather than needing every key
+# restated. autocrawl already defaults to false in the pinned tree
+# (defaults/yacy.init:627); this instance states it explicitly so a later
+# upstream default change cannot start a crawl this laptop never asked for.
 cat >"$config_file" <<EOF
 port = 8090
 host = 127.0.0.1

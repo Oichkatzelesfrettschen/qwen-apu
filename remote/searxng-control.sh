@@ -73,12 +73,25 @@ case $action in
             exit 2
         fi
         run_as_service_user "mkdir -p '$run_directory' && rm -f '$pid_file'"
-        # The launched shell writes its own PID before exec replaces it with
-        # the server process, so the PID in the file is the server's own for
-        # the rest of its life rather than a forking wrapper's.
-        run_as_service_user \
-            "echo \$\$ > '$pid_file'; exec $launch_command" \
-            >"$log_file" 2>&1 &
+        # The redirect and the PID write both run inside the privileged
+        # shell rather than this script's own, because run_directory is
+        # owned by service_user (mode 0755 from install's own `mkdir -p`)
+        # and the invoking human cannot open a file for writing there. The
+        # launched shell writes its own PID before exec replaces it with the
+        # server process, so the PID in the file is the server's own for the
+        # rest of its life rather than a forking wrapper's.
+        #
+        # The subshell's own stdin, stdout, and stderr are reassigned before
+        # it forks anything, rather than only inside the exec'd command, so
+        # no fd inherited from this script's caller -- in particular the
+        # write end of a command substitution's pipe, when this script runs
+        # as `$(searxng-control.sh start)` -- survives into the long-lived
+        # server process. A server left holding that pipe open never lets
+        # the pipe reach EOF, so the caller's command substitution waits
+        # forever even after this script itself has exited.
+        (run_as_service_user \
+            "echo \$\$ > '$pid_file'; exec $launch_command") \
+            >"$log_file" 2>&1 </dev/null &
 
         waited=0
         while [ "$waited" -lt "$start_timeout_seconds" ]; do
@@ -101,7 +114,7 @@ case $action in
     stop)
         current_pid=$(read_pid || true)
         if [ -z "${current_pid:-}" ] || ! pid_is_alive "$current_pid"; then
-            rm -f "$pid_file"
+            run_as_service_user "rm -f '$pid_file'"
             if listener_present; then
                 printf 'no recorded process but %s:%s is still listening\n' \
                     "$bind_address" "$server_port" >&2
@@ -115,7 +128,7 @@ case $action in
         waited=0
         while [ "$waited" -lt "$stop_timeout_seconds" ]; do
             if ! pid_is_alive "$current_pid" && ! listener_present; then
-                rm -f "$pid_file"
+                run_as_service_user "rm -f '$pid_file'"
                 printf 'stopped: pid=%s\n' "$current_pid"
                 exit 0
             fi
@@ -131,7 +144,7 @@ case $action in
                 "$(listener_present && echo yes || echo no)" >&2
             exit 1
         fi
-        rm -f "$pid_file"
+        run_as_service_user "rm -f '$pid_file'"
         printf 'stopped (forced): pid=%s\n' "$current_pid"
         ;;
 

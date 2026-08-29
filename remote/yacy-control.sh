@@ -67,9 +67,17 @@ case $action in
         rm -f "$pid_file"
         # The launched shell writes its own PID before exec replaces it with
         # the server process, so the PID in the file is the server's own for
-        # the rest of its life rather than a forking wrapper's.
+        # the rest of its life rather than a forking wrapper's. The redirects
+        # bind to this whole `sh -c` command rather than only to the exec
+        # statement inside it, and </dev/null joins them, so no fd this
+        # script inherited from its own caller -- in particular the write
+        # end of a command substitution's pipe, when this script runs as
+        # `$(yacy-control.sh start)` -- survives into the long-lived server
+        # process; a server left holding that pipe open never lets it reach
+        # EOF, so the caller's command substitution waits forever even after
+        # this script itself has exited.
         sh -c "echo \$\$ > '$pid_file'; exec $launch_command" \
-            >"$log_file" 2>&1 &
+            >"$log_file" 2>&1 </dev/null &
 
         waited=0
         while [ "$waited" -lt "$start_timeout_seconds" ]; do
