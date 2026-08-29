@@ -23,6 +23,21 @@ report() {
     [ "$2" = ok ] || failures=$((failures + 1))
 }
 
+# The web-lane cases below read a temporary all-refused image ledger for the
+# reason they read a temporary model registry: the checked-in
+# remote/image-profiles.tsv carries one validator-gated row, so a generator run
+# that names no image ledger would require the five image MCP inputs of a lane
+# these cases never arm. The image-lane cases further down set
+# QWEN_IMAGE_PROFILES themselves, and an explicit setting wins because build()
+# passes its callers' `env` prefix after this default.
+image_profiles_none=$work/image-profiles-none.tsv
+cat >"$image_profiles_none" <<'EOF'
+# profile_id	model_id	placement	width	height	steps	sampler	cfg	max_steps	max_dimension	timeout_s	execution_policy	validated_evidence
+image-fixture-refused	sdxs-512	A	512	512	1	euler	1.0	4	512	300	refused	-
+EOF
+QWEN_IMAGE_PROFILES=$image_profiles_none
+export QWEN_IMAGE_PROFILES
+
 # Four fabricated model rows, one per tier-and-depth combination the
 # refusal rules below distinguish: a production row with a numeric validated
 # depth, a candidate row with a numeric validated depth, a candidate row
@@ -1619,7 +1634,7 @@ fi
 # authorities whole, so the fixture ledger names the checked-in bundle and
 # differs from it in execution_policy alone; the artifact, model, and
 # quarantine files stay the tree's own.
-image_profiles_refused=$script_directory/image-profiles.tsv
+image_profiles_refused=$image_profiles_none
 image_profiles_gated=$work/image-profiles-gated.tsv
 printf 'image-fixture-a\tsdxs-512\tA\t512\t512\t1\teuler\t1.0\t4\t512\t300\tvalidator-gated\tevidence/image-appliance/design.md\n' \
     >"$image_profiles_gated"
@@ -1667,8 +1682,8 @@ image_environment() {
     printf 'QWEN_IMAGE_PROFILES_JSON=%s\n' "$image_profiles_json"
 }
 
-# Every checked-in image row reads refused, so the shipped ledger adds no
-# server under any setting and names each row it skipped.
+# A refused image row adds no server under any setting and is named where it is
+# skipped, which is what every row of the fixture ledger carries.
 presets_image_refused=$work/presets-image-refused.ini
 if build "$web_profiles_ok" "$presets_image_refused" \
     env QWEN_IMAGE_PROFILES="$image_profiles_refused" \
@@ -1893,6 +1908,33 @@ if grep -Fqx "# qwen_image_profiles_path=$image_profiles_gated" \
     report preset_binds_image_ledger_identity ok
 else
     report preset_binds_image_ledger_identity missing_identity
+fi
+
+# The checked-in image ledger is what a launch on the appliance reads, so its
+# one validator-gated row emits one image server under the authorizer marker.
+# The fixture cases above prove the rule; this one proves the shipped file
+# meets it.
+presets_image_checked_in=$work/presets-image-checked-in.ini
+if build "$web_profiles_ui" "$presets_image_checked_in" \
+    env QWEN_IMAGE_PROFILES="$script_directory/image-profiles.tsv" \
+    QWEN_IMAGE_MCP_SERVER="$image_mcp_server_program" \
+    QWEN_IMAGE_TOKEN_KEY_FILE="$image_token_key_file" \
+    QWEN_IMAGE_STATE_DIR="$image_state_directory" \
+    QWEN_IMAGE_SERVICE_SOCKET="$image_service_socket" \
+    QWEN_IMAGE_PROFILES_JSON="$image_profiles_json" \
+    >"$work/image-checked-in.log" 2>"$work/image-checked-in.err"; then
+    outcome=ok
+    grep -Fqx '# qwen_image_profile=image-sdxs-512-a' \
+        "$presets_image_checked_in" || outcome=marker_names_another_profile
+    while IFS= read -r checked_in_config; do
+        grep -q '"image"' "$checked_in_config" || outcome=image_server_absent
+    done <<EOF
+$(sed -n 's/^LLAMA_ARG_MCP_SERVERS_CONFIG = //p' "$presets_image_checked_in")
+EOF
+    report checked_in_image_ledger_emits_its_server "$outcome"
+else
+    report checked_in_image_ledger_emits_its_server failed
+    cat "$work/image-checked-in.err" >&2
 fi
 
 if [ "$failures" -ne 0 ]; then

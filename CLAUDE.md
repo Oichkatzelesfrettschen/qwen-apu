@@ -563,13 +563,17 @@ it, so a closed request schema, a closed response schema, the 65536-byte line
 bound, and the coarse `square`/`portrait`/`landscape` label have one reading
 rather than three. `remote/build-web-presets.sh` reads
 `remote/image-profiles.tsv` as a second execution grant under the rules the web
-ledger takes: a `refused` row emits nothing under every setting, which is what
-every checked-in row carries, and a `validator-gated` row adds one `image`
-server to each emitted section's MCP configuration under
-`QWEN_WEB_AUTHORIZER_READY=1`, naming `remote/image-mcp/server.py` with the
-section's own profile as `QWEN_IMAGE_LANGUAGE_PROFILE` because the grant binds
-the language profile and the image profile together. One image profile emits,
-since a section carries one `mcpServers` object.
+ledger takes: a `refused` row emits nothing under every setting, and a
+`validator-gated` row adds one `image` server to each emitted section's MCP
+configuration under `QWEN_WEB_AUTHORIZER_READY=1`, naming
+`remote/image-mcp/server.py` with the section's own profile as
+`QWEN_IMAGE_LANGUAGE_PROFILE` because the grant binds the language profile and
+the image profile together. One image profile emits, since a section carries
+one `mcpServers` object, and `image-sdxs-512-a` is the checked-in row that
+carries the grant. Every other row reads `refused`. A generator run that names
+no image ledger therefore reads the shipped one and requires the five image MCP
+inputs, so a caller arming the web lane alone names an all-refused ledger in
+`QWEN_IMAGE_PROFILES` the way `test-web-presets.sh` does.
 
 The tool schema states what the section serves rather than what the lane
 admits. The emitted configuration names `QWEN_IMAGE_PROFILES_JSON`, and
@@ -617,8 +621,8 @@ a broker signing for another lane fails at startup rather than at the first
 approved generation.
 
 `remote/admit-image-router.sh` runs that chain against one approved
-generation. It promotes one `remote/image-profiles.tsv` row to
-`validator-gated` in a copy under its own output directory, writes a
+generation. It sets one `remote/image-profiles.tsv` row to `validator-gated` in
+a copy under its own output directory, writes a
 `ui-mediated` language row so the emitted section carries the image server
 alone, generates the preset under `QWEN_WEB_AUTHORIZER_READY=1`, launches
 through `qwen-image-launch.sh`, and replays every request the page makes with
@@ -636,6 +640,14 @@ through `remote/web-mcp/drive-fallback-page.py --lane image`, and the checks
 read its own request log: the grant is posted once, the generation names the
 model beside the tool, every request stays on the router, broker, and artifact
 origins, and the retained tool message carries the digest and the route alone.
+`evidence/image-appliance/served-turn-admission/` retains the run on the
+appliance that moved `image-sdxs-512-a` to `validator-gated`: 41 rows, 40
+accepted and one observed, one artifact generated in 12 s by the curl replay
+and one in 11.3 s by the served page, with the model's own proposal inside
+every bound the tool listing states and its seed displayed before approval.
+The 4B distill proposed a schema-valid call in every run there and the 2B
+distill answered in prose, which its `raw_tool_selection` grade of 2/10
+already states, so an image-capable language profile names the 4B.
 `remote/test-admit-image-router.sh` runs the whole harness on the workstation
 against `remote/test-fixtures/fake-router-server.py` and
 `remote/test-fixtures/fake-image-runtime.sh`, replacing the four device-owning
