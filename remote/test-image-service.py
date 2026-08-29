@@ -26,6 +26,7 @@ SERVICE_PATH = os.path.join(SERVICE_DIRECTORY, "image-service.py")
 FAKE_RUNTIME_PATH = os.path.join(
     SERVICE_DIRECTORY, "test-fixtures", "fake-image-runtime.sh"
 )
+TEARDOWN_CHECK_PATH = os.path.join(SERVICE_DIRECTORY, "image-teardown-check.sh")
 sys.path.insert(0, SERVICE_DIRECTORY)
 
 API_KEY = "image-api-key-TESTONLY7Q2X"
@@ -279,7 +280,7 @@ class ImageServiceTest(unittest.TestCase):
             pass
 
     def test_success_names_the_artifact_by_its_own_digest(self):
-        """A completed job renames the .part to the SHA-256 of its own bytes."""
+        """A completed job renames the .part.png to the SHA-256 of its own bytes."""
         session = self.start()
         response = session.control(generate_request())
         self.assertEqual(response["status"], "completed", response)
@@ -306,7 +307,7 @@ class ImageServiceTest(unittest.TestCase):
         self.assertEqual(response["artifact_url"], f"/artifacts/{digest}.png")
         self.assertEqual(
             [name for name in os.listdir(session.artifact_directory())
-             if name.endswith(".part")],
+             if name.endswith((".part", ".part.png"))],
             [],
             "a completed job leaves no partial file",
         )
@@ -482,7 +483,7 @@ class ImageServiceTest(unittest.TestCase):
         self.assertTrue(session.lease_is_free())
         self.assertEqual(
             [name for name in os.listdir(session.artifact_directory())
-             if name.endswith(".part")],
+             if name.endswith((".part", ".part.png"))],
             [],
         )
 
@@ -511,7 +512,7 @@ class ImageServiceTest(unittest.TestCase):
         self.assertTrue(session.lease_is_free())
         self.assertEqual(
             [name for name in os.listdir(session.artifact_directory())
-             if name.endswith(".part")],
+             if name.endswith((".part", ".part.png"))],
             [],
         )
 
@@ -756,7 +757,7 @@ class ImageServiceTest(unittest.TestCase):
         self.assertEqual(payload["pid"], session.pid)
 
     def test_shutdown_proves_no_child_no_part_and_a_free_lease(self):
-        """SIGTERM during a job leaves no runtime, no .part, and no lease."""
+        """SIGTERM during a job leaves no runtime, no .part.png, and no lease."""
         session = self.start(
             runtime_environment={"QWEN_FAKE_IMAGE_SLEEP_SECONDS": "20"}
         )
@@ -789,9 +790,140 @@ class ImageServiceTest(unittest.TestCase):
         self.assertTrue(session.lease_is_free())
         self.assertEqual(
             [name for name in os.listdir(session.artifact_directory())
-             if name.endswith(".part")],
+             if name.endswith((".part", ".part.png"))],
             [],
         )
+
+    def test_fixture_appends_png_for_an_unrecognized_output_extension(self):
+        """The fixture mirrors sd-cli's own encoder-selection rule.
+
+        examples/cli/main.cpp at the pinned stable-diffusion.cpp commit
+        (de298c225bed97c3f9026b73cd7b71e7879bd41b) resolves the output
+        format from the requested path's extension and, when that lookup
+        stays UNKNOWN, appends ".png" to the unmodified path rather than
+        refusing (lines 458-472 and 549-557; the recognized set is
+        .jpg/.jpeg/.jpe/.png/.webp, examples/common/media_io.cpp:684-698).
+        A caller that hands the runtime an extensionless path gets a file
+        one component longer than the path it waited on, which is the
+        defect this fixture must reproduce to be a faithful stand-in.
+        """
+        directory = tempfile.mkdtemp(dir=self.temporary.name)
+        requested_output = os.path.join(directory, "5b1cb18e266db788.part")
+        subprocess.run(
+            [
+                FAKE_RUNTIME_PATH,
+                "--output", requested_output,
+                "--width", "4",
+                "--height", "4",
+                "--seed", "1",
+            ],
+            check=True,
+            timeout=20,
+        )
+        self.assertFalse(
+            os.path.exists(requested_output),
+            "the runtime writes to its own resolved path, not the bare one",
+        )
+        self.assertTrue(
+            os.path.exists(requested_output + ".png"),
+            "an unrecognized extension makes the runtime append .png",
+        )
+
+    def test_generation_completes_because_the_partial_name_carries_a_recognized_extension(
+        self,
+    ):
+        """The naming fix keeps the runtime's write and the service's wait aligned.
+
+        image-service.py names its partial file `<job>.part.png` rather than
+        `<job>.part`. `.png` is one of the extensions the runtime's own
+        encoder-selection rule recognizes (examples/common/media_io.cpp:684-698
+        at the pinned commit), so the rule the previous test proves the
+        fixture applies leaves this path unchanged and the runtime writes
+        exactly where the service is waiting. Before the fix, the service
+        named an extensionless `<job>.part`, the runtime (mirroring the real
+        binary) wrote `<job>.part.png`, and the service read "the runtime
+        exited successfully and wrote no file" against a file that existed
+        one component away.
+        """
+        session = self.start()
+        response = session.control(generate_request())
+        self.assertEqual(response["status"], "completed", response)
+        self.assertEqual(
+            [name for name in os.listdir(session.artifact_directory())
+             if name.endswith((".part", ".part.png"))],
+            [],
+            "the runtime wrote to the exact path the service named",
+        )
+
+    def test_shutdown_sweep_removes_a_stray_part_png(self):
+        """`shutdown_residue`'s own sweep matches the `.part.png` suffix.
+
+        test_shutdown_proves_no_child_no_part_and_a_free_lease already proves
+        `part_files=0` after a SIGTERM taken mid-job, but the fixture's own
+        TERM trap removes that job's partial file before shutdown_residue
+        ever lists the directory, so that assertion passes whether the
+        sweep's own endswith check names `.part` alone or both suffixes. A
+        stray file planted ahead of an otherwise idle shutdown is what
+        discriminates the two: only a sweep that recognizes `.part.png`
+        removes it and reports it swept.
+        """
+        session = self.start()
+        # A status round trip proves the control loop is serving before the
+        # signal lands: `read_startup` returns once the service has printed
+        # its `pid` line, ahead of the point in `run()` where the SIGTERM
+        # handler is installed, so a stop() sent immediately after start()
+        # races that installation on an otherwise idle service.
+        status = session.control(
+            {"protocol_version": 1, "request_id": "req-status", "action": "status"}
+        )
+        self.assertEqual(status["state"], "idle", status)
+        residue_path = os.path.join(
+            session.artifact_directory(), "deadbeefcafef00d.part.png"
+        )
+        with open(residue_path, "wb") as handle:
+            handle.write(b"\x89PNG\r\n\x1a\n")
+        code, stdout, stderr = session.stop()
+        self.assertEqual(code, 0, stderr)
+        residue_line = [
+            line for line in stdout.splitlines() if line.startswith("shutdown ")
+        ][-1]
+        self.assertIn("part_files=0", residue_line)
+        self.assertFalse(
+            os.path.exists(residue_path), "the sweep removes a .part.png stray"
+        )
+
+    def test_teardown_check_flags_a_part_png_residue(self):
+        """A stray `.part.png` is what image-teardown-check.sh must catch.
+
+        The naming fix moved the partial file's suffix from `.part` to
+        `.part.png`, so the residue proof's own glob has to move with it or
+        an interrupted generation would pass a teardown check that never
+        looked at the file the service actually leaves behind. No service
+        runs here: a live service's own shutdown path already clears a
+        `.part.png` on a graceful SIGTERM (test_shutdown_proves_no_child_no
+        _part_and_a_free_lease proves that), so this proof needs a state
+        directory left over from something less orderly than that, and
+        image-teardown-check.sh reads process and filesystem state alone.
+        """
+        state_directory = os.path.join(
+            tempfile.mkdtemp(dir=self.temporary.name), "state"
+        )
+        artifact_directory = os.path.join(state_directory, "images", "artifacts")
+        os.makedirs(artifact_directory)
+        residue_path = os.path.join(artifact_directory, "deadbeefcafef00d.part.png")
+        with open(residue_path, "wb") as handle:
+            handle.write(b"\x89PNG\r\n\x1a\n")
+        result = subprocess.run(
+            [TEARDOWN_CHECK_PATH, state_directory],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        self.assertNotEqual(
+            result.returncode, 0, "a stray .part.png must fail the teardown check"
+        )
+        self.assertIn("partial artifacts survive", result.stderr)
+        self.assertIn(residue_path, result.stderr)
 
     def wait_for_running(self, session, timeout=20.0):
         deadline = time.time() + timeout

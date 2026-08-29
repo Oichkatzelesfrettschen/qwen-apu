@@ -363,6 +363,23 @@ else
 fi
 rm -f "$state_directory/images/artifacts/interrupted.part"
 
+# image-service.py names its partial file `<job>.part.png`, since the pinned
+# runtime picks its encoder from the output path's own extension and appends
+# `.png` itself to an extensionless name; the teardown check's glob has to
+# catch that suffix too, not only the bare `.part` a prior version wrote.
+: >"$state_directory/images/artifacts/interrupted.part.png"
+if "$script_directory/image-teardown-check.sh" "$state_directory" \
+    >"$work/teardown-residue-png.log" 2>"$work/teardown-residue-png.err"; then
+    report partial_png_artifact_fails_the_teardown_check accepted
+else
+    if grep -q 'partial artifacts survive' "$work/teardown-residue-png.err"; then
+        report partial_png_artifact_fails_the_teardown_check ok
+    else
+        report partial_png_artifact_fails_the_teardown_check wrong_refusal
+    fi
+fi
+rm -f "$state_directory/images/artifacts/interrupted.part.png"
+
 if [ "$failures" -ne 0 ]; then
     printf 'test-qwen-image-launch: %d check(s) failed\n' "$failures" >&2
     exit 1

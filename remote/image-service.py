@@ -15,7 +15,7 @@ reader; neither does a query parameter, which the route ignores entirely.
 The job pipeline is one sequence with one owner: parse the request, hand it to
 the injected verifier for its profile parameters, refuse every cap violation,
 acquire the Vulkan workload lease, spawn the pinned runtime at an absolute nice
-of 19 in its own session, write `<job>.part`, validate the PNG against the
+of 19 in its own session, write `<job>.part.png`, validate the PNG against the
 requested dimensions, hash it, rename it to `<sha256>.png`, write the
 provenance JSON, and release the lease. Every refusal above the lease runs
 before `flock`, so a request the service declines leaves the GPU lease
@@ -113,9 +113,9 @@ ACTIONS = protocol.ACTIONS
 
 # The request keys the control socket admits come from the frozen protocol, so
 # the service and the MCP wrapper read one closed schema. A filesystem path
-# never appears among them: the service names the `.part` file, the artifact,
-# and the provenance record from its own state directory, so a caller cannot
-# steer a write.
+# never appears among them: the service names the `.part.png` file, the
+# artifact, and the provenance record from its own state directory, so a
+# caller cannot steer a write.
 GENERATE_KEYS = protocol.REQUEST_FIELDS
 
 # What the argv template may name. The output path is supplied by the service,
@@ -799,7 +799,17 @@ class ImageService:
         job_id = secrets.token_hex(8)
         started_at = time.time()
         deadline = started_at + SERVICE_JOB_DEADLINE_SECONDS
-        part_path = os.path.join(self.artifact_directory, f"{job_id}.part")
+        # The pinned runtime picks its encoder from the output path's own
+        # extension and appends `.png` itself when that path names none it
+        # recognizes (examples/cli/main.cpp at de298c225bed97c3f9026b73cd7b71
+        # e7879bd41b, lines 458-472 and 549-557 of stable-diffusion.cpp): an
+        # extensionless `.part` name left the runtime writing `.part.png`
+        # while this service waited on the bare name and read "wrote no
+        # file". Naming the partial artifact `.part.png` keeps the `.part`
+        # marker and gives the runtime's own encoder-selection rule a
+        # recognized extension, so the file the runtime writes and the file
+        # this service waits on are the same path.
+        part_path = os.path.join(self.artifact_directory, f"{job_id}.part.png")
         # The lease is taken before the job is published, so `status` reports a
         # running job only once the workload lock is held and a reader never
         # sees a running state with a free lease.
@@ -993,7 +1003,7 @@ class ImageService:
     def finish_artifact(self, request, profile, job_id, part_path, started_at, outcome):
         """Validate, hash, and name what the runtime wrote.
 
-        The `.part` file is read whole and checked against the requested
+        The `.part.png` file is read whole and checked against the requested
         geometry before it acquires a name, so the artifact directory holds
         validated images alone and a reader of `<sha256>.png` needs no second
         opinion about what it holds. The rename is atomic within the directory
@@ -1230,10 +1240,12 @@ class ImageService:
     def shutdown_residue(self):
         """Remove what a job leaves behind and report what survives it.
 
-        The three residues are a live child, a `.part` file, and a held lease.
-        Each is proved from its own state rather than from the absence of the
-        others: a child that ignored SIGTERM is killed and re-checked, every
-        `.part` under the artifact directory is removed, and the lease closes
+        The three residues are a live child, a `.part.png` file, and a held
+        lease. Each is proved from its own state rather than from the absence
+        of the others: a child that ignored SIGTERM is killed and re-checked,
+        every `.part.png` (and any `.part` a prior version left, since a
+        directory this proof runs against outlives the service that wrote to
+        it) under the artifact directory is removed, and the lease closes
         with the descriptor.
         """
         with self.job.lock:
@@ -1268,7 +1280,7 @@ class ImageService:
         remaining_parts = []
         with contextlib.suppress(OSError):
             for name in sorted(os.listdir(self.artifact_directory)):
-                if name.endswith(".part"):
+                if name.endswith(".part.png") or name.endswith(".part"):
                     path = os.path.join(self.artifact_directory, name)
                     with contextlib.suppress(OSError):
                         os.unlink(path)

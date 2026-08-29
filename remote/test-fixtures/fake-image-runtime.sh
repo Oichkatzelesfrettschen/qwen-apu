@@ -93,6 +93,23 @@ done
 
 [ -n "$output" ] && [ -n "$width" ] && [ -n "$height" ] && [ -n "$seed" ] || usage
 
+# The pinned runtime picks its encoder from the output path's own extension
+# and appends `.png` itself when that extension is absent or unrecognized
+# (examples/cli/main.cpp at de298c225bed97c3f9026b73cd7b71e7879bd41b: the
+# EncodedImageFormat lookup in examples/common/media_io.cpp recognizes only
+# .jpg/.jpeg/.jpe/.png/.webp, lines 458-472 build the base path from the
+# requested output unchanged for every other extension, and lines 549-557
+# unconditionally append ".png" when the resolved format stayed UNKNOWN).
+# Mirroring that rule here is what let a caller passing an extensionless
+# `--output` reproduce the defect image-service.py hit against the real
+# binary: the fixture used to write the exact path it was given and never
+# saw the mismatch a caller of the naive path would.
+resolved_output=$output
+case $(printf '%s' "$output" | tr '[:upper:]' '[:lower:]') in
+    *.jpg | *.jpeg | *.jpe | *.png | *.webp) ;;
+    *) resolved_output=${output}.png ;;
+esac
+
 mode=${QWEN_FAKE_IMAGE_MODE:-ok}
 # QWEN_FAKE_IMAGE_FORCE_MODE overrides QWEN_FAKE_IMAGE_MODE outright, which is
 # what a test needs to reach remote/run-image-standalone.sh's own safety net:
@@ -153,8 +170,8 @@ fi
 
 # A SIGTERM in every other arm ends the runtime the way a cancellation expects:
 # the partial file goes and the exit status names the signal's own convention.
-trap 'rm -f -- "$output"; exit 143' TERM
-trap 'rm -f -- "$output"; exit 130' INT
+trap 'rm -f -- "$resolved_output"; exit 143' TERM
+trap 'rm -f -- "$resolved_output"; exit 130' INT
 
 emit_width=$width
 if [ "$mode" = dimension ]; then
@@ -169,7 +186,7 @@ fi
 QWEN_FAKE_IMAGE_WIDTH=$emit_width \
 QWEN_FAKE_IMAGE_HEIGHT=$height \
 QWEN_FAKE_IMAGE_SEED=$seed \
-QWEN_FAKE_IMAGE_OUTPUT=$output \
+QWEN_FAKE_IMAGE_OUTPUT=$resolved_output \
 QWEN_FAKE_IMAGE_TRUNCATE=$([ "$mode" = truncated ] && echo 1 || echo 0) \
 python3 - <<'PYTHON'
 import binascii
