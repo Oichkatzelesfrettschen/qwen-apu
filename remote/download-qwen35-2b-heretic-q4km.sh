@@ -1,13 +1,11 @@
 #!/bin/sh
 set -eu
 
-# The Fable5 V2 fine-tune of stock MiniCPM5-1B this tree admits alongside its
-# stock counterpart. The publisher's model card names openbmb/MiniCPM5-1B as
-# base_model and states the fine-tune keeps MiniCPM5's native chat template
-# embedded in the GGUF files, which
-# evidence/model-admission/minicpm5-static-admission.md confirms over a
-# ranged header read: the two artifacts carry the identical chat template
-# digest and an unchanged architecture fingerprint.
+# A multistage supervised fine-tune of Qwen3.5-2B on Opus-distilled reasoning
+# traces. Its header declares the Qwen3.5 2B trunk at 24 blocks and the chat
+# template hash the served distill carries, so `enable_thinking` gates the
+# reasoning span rather than an unguarded template opening it. The digest is
+# the publisher's own LFS object id at the pinned revision.
 
 renice -n 19 -p $$ >/dev/null
 taskset -pc 0 $$ >/dev/null
@@ -18,15 +16,15 @@ if [ "$#" -gt 1 ]; then
     exit 2
 fi
 
-destination_directory=${1:-"${HOME:?}/models/candidate-staging/minicpm5-1b-fable5-v2"}
-artifact_name=MiniCPM5-1B-Claude-Opus-Fable5-V2-Thinking-Q8_0.gguf
+destination_directory=${1:-"${HOME:?}/models/Qwen3.5-2B-Opus-Distilled-Heretic-GGUF"}
+artifact_name=Qwen3.5-2B-Opus-Distilled-Heretic-Thinking-Multistage-SFT-v1.0.Q4_K_M.gguf
 artifact_path=$destination_directory/$artifact_name
 partial_path=$artifact_path.part
-source_repository=GnLOLot/MiniCPM5-1B-Claude-Opus-Fable5-V2-Thinking-GGUF
-source_revision=1c5821260e77c42e0b350f0248fabcf3c90ecade
-source_url=https://huggingface.co/$source_repository/resolve/$source_revision/$artifact_name
-expected_bytes=1153529184
-expected_sha256=fc3ee1eddd305c155f63b6bd7bb189daa4d5f226ca325ab219bd7acd3b00ec77
+source_repository=prithivMLmods/Qwen3.5-2B-Opus-Distilled-Heretic-Thinking-Multistage-SFT-v1.0-GGUF
+source_revision=48027b695bf608bbfd60c7d708e664e8999afe79
+source_url=https://huggingface.co/$source_repository/resolve/$source_revision/Qwen3.5-2B-Opus-Distilled-Heretic-Thinking-Multistage-SFT-v1.0.Q4_K_M.gguf
+expected_bytes=1274396512
+expected_sha256=a4abaa15144864347f391712d8f59ba379305ba8cae1bd3237450dd86a917893
 
 umask 077
 mkdir -p "$destination_directory"

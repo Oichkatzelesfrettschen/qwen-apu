@@ -1,13 +1,11 @@
 #!/bin/sh
 set -eu
 
-# The Fable5 V2 fine-tune of stock MiniCPM5-1B this tree admits alongside its
-# stock counterpart. The publisher's model card names openbmb/MiniCPM5-1B as
-# base_model and states the fine-tune keeps MiniCPM5's native chat template
-# embedded in the GGUF files, which
-# evidence/model-admission/minicpm5-static-admission.md confirms over a
-# ranged header read: the two artifacts carry the identical chat template
-# digest and an unchanged architecture fingerprint.
+# An uncensored fine-tune of Qwen3.5-2B at the same architecture the served
+# qwen35-2b row runs: 24 blocks, 2048 embedding width, 6144 feed-forward width,
+# 8 heads over 2 KV heads. Its chat template hash and tokenizer identity match
+# the served Qwen3.8-2B distill, so thinking-off requests gate the same way.
+# The digest is the publisher's own LFS object id at the pinned revision.
 
 renice -n 19 -p $$ >/dev/null
 taskset -pc 0 $$ >/dev/null
@@ -18,15 +16,15 @@ if [ "$#" -gt 1 ]; then
     exit 2
 fi
 
-destination_directory=${1:-"${HOME:?}/models/candidate-staging/minicpm5-1b-fable5-v2"}
-artifact_name=MiniCPM5-1B-Claude-Opus-Fable5-V2-Thinking-Q8_0.gguf
+destination_directory=${1:-"${HOME:?}/models/Qwen3.5-2B-Uncensored-HauhauCS-Aggressive-GGUF"}
+artifact_name=Qwen3.5-2B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf
 artifact_path=$destination_directory/$artifact_name
 partial_path=$artifact_path.part
-source_repository=GnLOLot/MiniCPM5-1B-Claude-Opus-Fable5-V2-Thinking-GGUF
-source_revision=1c5821260e77c42e0b350f0248fabcf3c90ecade
-source_url=https://huggingface.co/$source_repository/resolve/$source_revision/$artifact_name
-expected_bytes=1153529184
-expected_sha256=fc3ee1eddd305c155f63b6bd7bb189daa4d5f226ca325ab219bd7acd3b00ec77
+source_repository=HauhauCS/Qwen3.5-2B-Uncensored-HauhauCS-Aggressive
+source_revision=2bcf35c1ebf62c837c12c1aa90b578ff4717e831
+source_url=https://huggingface.co/$source_repository/resolve/$source_revision/Qwen3.5-2B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf
+expected_bytes=1270808032
+expected_sha256=be3ccca13a9d1bc8b67165ea80bd103cd6151a37ad131183cc7ca388f78d9517
 
 umask 077
 mkdir -p "$destination_directory"

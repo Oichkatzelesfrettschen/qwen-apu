@@ -17,7 +17,7 @@ if [ "$#" -gt 1 ]; then
     exit 2
 fi
 
-destination_directory=${1:-"${HOME:?}/models/candidates/minicpm5-1b-stock"}
+destination_directory=${1:-"${HOME:?}/models/candidate-staging/minicpm5-1b-stock"}
 artifact_name=MiniCPM5-1B-Q8_0.gguf
 artifact_path=$destination_directory/$artifact_name
 partial_path=$artifact_path.part
