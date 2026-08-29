@@ -70,10 +70,15 @@ inside `prompt_n` rather than reported separately.
 | | 16384 | 16231 | 1241.084 | 2.318 | ok | 0 | 0 | healthy |
 | | 32768 | 32632 | 3375.497 | 1.816 | ok | 0 | 0 | healthy |
 
-Every arm's `prompt_n` sits inside its acceptance window, every control
-answers JUN, and every kernel delta and `vram_peak_mib`/`gtt_peak_mib` sample
-carries zero resets and zero GPU faults across all nine arms. The chain never
-halted, so no depth was left unmeasured behind a failed arm.
+Every arm's `prompt_n` sits inside its acceptance window and every control
+answers JUN. Every `.dmesg-method.txt` reads `follow`, so each `.dmesg.txt`
+window is captured live rather than by an offset subtraction. Eight of the
+nine windows are empty; the ninth, `qwen35-4b-base` at 32768, carries two
+userif link-flap pairs and two `dm_irq_work_func` workqueue-latency warnings,
+none of which the reset or fault patterns match, so the arm's own summary row
+reads `ring_resets=0 gpu_faults=0` and the ledger's `classify_hazard` names it
+`none`. The chain never halted, so no depth was left unmeasured behind a
+failed arm.
 
 ## What the rows establish
 
