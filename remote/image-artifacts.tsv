@@ -1,0 +1,41 @@
+# One row per file the image lane fetches. An artifact is a byte sequence a
+# publisher offers; what it is used for is a component of a bundle in
+# remote/image-models.tsv, and how it is served is a row in
+# remote/image-profiles.tsv. Splitting those three claims keeps one file
+# reachable from several bundles: the SD 1.5 diffusion checkpoint carries both
+# the sd15-base and the sd15-lcm-v1 bundle, and the sd15-lcm-v1 bundle replaces
+# the packaged decoder with a separate VAE artifact while reusing the same
+# diffusion bytes.
+#
+# repository and filename are the publisher coordinates. revision, sha256, and
+# bytes are the pin, and they move together: all three read `-` while the file
+# is unfetched, and the pin lane sets all three from one verified download.
+# remote/image-registry.sh refuses a partial pin, because a digest without the
+# revision it was read at names no source and a revision without a digest
+# verifies nothing.
+#
+# fetch_script names the downloader the pin lane writes. This file validates
+# the name shape rather than testing the path, which is where it diverges from
+# remote/models.tsv: that registry's rows serve, so their fetch scripts exist
+# and are executable, while an image row states an admitted source before any
+# byte has crossed the network. The pin lane turns the name into an executable
+# script that pins revision, byte count, and SHA-256 the way every
+# remote/download-*.sh does.
+#
+# component_type states what the runtime does with the bytes: `diffusion` is
+# the denoising trunk, `vae` the latent decoder, `text_encoder` the prompt
+# encoder, `lora` a weight delta applied over a trunk, and `runtime` an
+# executable or library the appliance builds against. A bundle resolves each of
+# its components against this column, so a VAE named in the diffusion slot is
+# refused rather than loaded.
+#
+# license is the publisher's own term, recorded because SD-Turbo ships under a
+# non-commercial research community licence where SD 1.5 ships OpenRAIL-M, and
+# a bundle inherits the most restrictive licence among its components.
+#
+# artifact_id	repository	revision	filename	sha256	bytes	license	component_type	fetch_script
+sdxs-512-diffusion	IDKiro/sdxs-512-dreamshaper	-	sdxs-512-dreamshaper.safetensors	-	-	openrail++	diffusion	download-sdxs-512.sh
+sd15-diffusion	stable-diffusion-v1-5/stable-diffusion-v1-5	-	v1-5-pruned-emaonly.safetensors	-	-	creativeml-openrail-m	diffusion	download-sd15-base.sh
+sd15-vae-ft-mse	stabilityai/sd-vae-ft-mse	-	vae-ft-mse-840000-ema-pruned.safetensors	-	-	mit	vae	download-sd15-vae-ft-mse.sh
+sd15-lcm-lora	latent-consistency/lcm-lora-sdv1-5	-	pytorch_lora_weights.safetensors	-	-	openrail++	lora	download-lcm-lora-sdv15.sh
+sd-turbo-diffusion	stabilityai/sd-turbo	-	sd_turbo.safetensors	-	-	stability-ai-nc-research-community	diffusion	download-sd-turbo.sh
