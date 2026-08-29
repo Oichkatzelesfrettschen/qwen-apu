@@ -1722,6 +1722,30 @@ async function runImageReview(card, fields, lineage) {
 }
 // ==== end image review ======================================================
 
+async function probeToolOffering(modelId) {
+  /* Return true where `GET /tools` answers 200 for this model, false where it
+     answers 403, and null for any other status or a transport failure.
+
+     A review-only section carries no MCP configuration, so its child answers
+     `403 feature_disabled` the way `evidence/web-admission-router-tools.md`
+     records for an ordinary model with no armed lane; a section with tools
+     armed answers 200. The probe needs no new server surface -- it is the
+     same request `resolveWebTools` makes once a model is already selected --
+     so `boot()` reads it per roster row to pick a default that can act on the
+     per-turn Web or image toggle rather than one that can only sit idle
+     behind it. */
+  try {
+    const response = await fetch(
+      `./tools?model=${encodeURIComponent(modelId)}&autoload=true`,
+      { headers: authHeaders() });
+    if (response.status === 200) return true;
+    if (response.status === 403) return false;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 async function boot() {
   // The router creates no qwen-apu compatibility alias. Its roster is the
   // authority for request ids, so the fallback page selects only a model that
@@ -1765,13 +1789,30 @@ async function boot() {
       return;
     }
 
+    // A row that offers no tool -- a review-only vision section, in the
+    // paired image preset -- answers a chat turn with no network-reaching
+    // surface behind the per-turn Web or image toggle, so the roster's sort
+    // order alone (`/v1/models` returns it sorted) cannot set the default:
+    // `evidence/web-admission-router-tools.md` records a router serving that
+    // route by model section, and a review row's section carries no MCP
+    // configuration. `toolOffering` probes every row once so both the default
+    // and each option's own label read the same evidence.
+    const toolOffering = {};
+    if (modelIds.length > 1) {
+      for (const modelId of modelIds) {
+        toolOffering[modelId] = await probeToolOffering(modelId);
+      }
+      if (generation !== modelStateGeneration) return;
+    }
     const storedModel = readBrowserStorage('localStorage', 'qwen-apu-model-id');
-    const selectedModel = modelIds.includes(storedModel) ? storedModel : modelIds[0];
+    const selectedModel = modelIds.includes(storedModel)
+      ? storedModel
+      : (modelIds.find(modelId => toolOffering[modelId] === true) ?? modelIds[0]);
     modelPicker.textContent = '';
     for (const modelId of modelIds) {
       const option = document.createElement('option');
       option.value = modelId;
-      option.textContent = modelId;
+      option.textContent = toolOffering[modelId] === false ? `${modelId} (review)` : modelId;
       modelPicker.append(option);
     }
     modelPicker.value = selectedModel;

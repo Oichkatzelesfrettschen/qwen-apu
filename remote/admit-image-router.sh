@@ -799,6 +799,7 @@ if command -v chromium >/dev/null 2>&1; then
         if python3 "$script_directory/web-mcp/drive-fallback-page.py" --lane image \
                 --origin "$router_origin" --api-key-file "$api_key_file" \
                 --broker "$broker_origin" --artifacts "$artifact_origin" \
+                --model "$profile_id" \
                 --load-timeout "$browser_load_timeout" \
                 --dialog-timeout "$browser_dialog_timeout" \
                 --turn-timeout "$browser_turn_timeout" \
@@ -839,10 +840,16 @@ if command -v chromium >/dev/null 2>&1; then
     done
     if [ "$browser_accepted_attempt" -gt 0 ]; then
         browser_origin_seen=$(jq -r '.origin // empty' "$browser_report")
-        if [ "$browser_origin_seen" = "$router_origin" ]; then
-            record browser_page_origin accepted "origin=$browser_origin_seen model=$(jq -r '.model' "$browser_report")"
+        browser_model_seen=$(jq -r '.model // empty' "$browser_report")
+        # The driver's own --model selection is what proves the page sent the
+        # generation to the language section rather than to whichever roster
+        # row a review-only sibling's sort position put first: a page whose
+        # picker carried no option for $profile_id would have left the
+        # driver's own --model step raising before this report was written.
+        if [ "$browser_origin_seen" = "$router_origin" ] && [ "$browser_model_seen" = "$profile_id" ]; then
+            record browser_page_origin accepted "origin=$browser_origin_seen model=$browser_model_seen"
         else
-            record browser_page_origin refused "origin=${browser_origin_seen:-none}"
+            record browser_page_origin refused "origin=${browser_origin_seen:-none} model=${browser_model_seen:-none} expected_model=$profile_id"
         fi
         # Randomness is fixed ahead of the grant rather than after: the dialog
         # names the seed the grant binds, whether the model proposed it or the
