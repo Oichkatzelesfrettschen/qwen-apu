@@ -754,6 +754,31 @@ review, two approved corrections, and the third that reports the cap.
 the schema, and the falsifiers, and names `lfm25-vl-16b` as the first appliance
 arm with `qwen35-2b` as its control inside one sweep.
 
+A grammar states reply shape and leaves the source of a verdict open, so
+`image-review.py` takes `--image-mode` over `real`, `withheld`, and `swapped`
+with `--swap-sha256` naming the second artifact a swapped review sends.
+`withheld` keeps the multipart text part and drops the image part, the
+image-withheld convention `remote/run-quality-suite.py` applies to its graded
+vision rows, and `swapped` sends another artifact's bytes under the same prompt
+hash, constraint list, model, temperature, reply budget, thinking setting, and
+absent `tools` key. Both modes still read and hash the reviewed artifact over
+its own route, so every `fetch_artifact_png` refusal holds for a control arm and
+the audit line and verdict record carry `image_mode` beside `swap_sha256`.
+`remote/run-vision-review-control.sh` runs real-A, withheld-A,
+swapped-A-with-B, and a closing real-A through one router and one artifact
+listener, retains a verdict record and an audit line per arm, and prints a
+summary TSV of per-arm `passed` counts and the `regenerate` flag. Every arm sends
+`--no-prompt-cache`, since the four requests share the text part ahead of the
+image part and a warm prefix moves an answer on this backend rather than only
+its timing, so the closing arm's agreement with the opening one is what licenses
+reading the two control arms as image effects rather than as position in a
+request sequence.
+`evidence/image-appliance/vision-review-control-design.md` registers the
+hypothesis, the arm order, and the falsifiers ahead of any run: a withheld arm
+passing every constraint it cannot see refutes the visual grounding, and swapped
+observations agreeing with A rather than B report the same thing through a
+second route.
+
 `patches/llama-router-tools-proxy.patch` is what puts the route on the router
 port. At f280b269 `server.cpp` registers `/tools` only in a process whose own
 MCP manager holds a server, and the router branch proxies chat, props, and
@@ -824,8 +849,12 @@ remote/image-service.py --state-dir DIR --profiles-json FILE
 remote/image-teardown-check.sh [STATE_DIRECTORY]
                                                 # no service, runtime, partial artifact, or held lease
 remote/image-review.py --router-origin URL --artifact-origin URL --model ID \
-    --sha256 HEX --prompt-hash HEX --constraint NAME=DESCRIPTION
+    --sha256 HEX --prompt-hash HEX --constraint NAME=DESCRIPTION \
+    [--image-mode real|withheld|swapped [--swap-sha256 HEX]]
                                                 # one artifact reviewed by a vision model, zero tools
+remote/run-vision-review-control.sh ROUTER_ORIGIN ARTIFACT_ORIGIN MODEL \
+    SHA256_A SHA256_B PROMPT_HASH OUTPUT_DIR --constraint NAME=DESCRIPTION
+                                                # real, withheld, swapped, and a closing real arm
 remote/run-graph-alias-ab.sh OUTPUT_DIR [MODEL_ID...]
                                                 # token identity across the graph optimizer
 
