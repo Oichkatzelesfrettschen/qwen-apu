@@ -23,6 +23,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -701,12 +702,20 @@ class PageSession:
             self.browser.wait(timeout=10)
         except subprocess.TimeoutExpired:
             self.browser.kill()
-        for root, directories, files in os.walk(self.profile_directory, topdown=False):
-            for name in files:
-                os.unlink(os.path.join(root, name))
-            for name in directories:
-                os.rmdir(os.path.join(root, name))
-        os.rmdir(self.profile_directory)
+        # Chromium's helper processes outlive the browser process by a few
+        # hundred milliseconds and write into the profile while they exit, so
+        # a single-pass removal races them and fails on a directory that is
+        # empty a moment later. The removal retries until the tree is gone or
+        # the bound is spent, and the last failure is the one raised.
+        deadline = time.monotonic() + 10
+        while True:
+            shutil.rmtree(self.profile_directory, ignore_errors=True)
+            if not os.path.exists(self.profile_directory):
+                return
+            if time.monotonic() > deadline:
+                shutil.rmtree(self.profile_directory)
+                return
+            time.sleep(0.2)
 
 
 def image_tool_messages(report):
