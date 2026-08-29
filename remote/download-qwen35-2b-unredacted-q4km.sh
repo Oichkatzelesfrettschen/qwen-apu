@@ -1,13 +1,11 @@
 #!/bin/sh
 set -eu
 
-# The Fable5 V2 fine-tune of stock MiniCPM5-1B this tree admits alongside its
-# stock counterpart. The publisher's model card names openbmb/MiniCPM5-1B as
-# base_model and states the fine-tune keeps MiniCPM5's native chat template
-# embedded in the GGUF files, which
-# evidence/model-admission/minicpm5-static-admission.md confirms over a
-# ranged header read: the two artifacts carry the identical chat template
-# digest and an unchanged architecture fingerprint.
+# The plain-GGUF rung of the Qwen3.5-2B Unredacted MAX fine-tune. The same
+# publisher ships an i1 repository whose Q4_K_M artifact carries an identical
+# tensor byte count, so one rung is fetched and the reconstruction ladder stays
+# a separate question. The digest is the publisher's own LFS object id at the
+# pinned revision.
 
 renice -n 19 -p $$ >/dev/null
 taskset -pc 0 $$ >/dev/null
@@ -18,15 +16,15 @@ if [ "$#" -gt 1 ]; then
     exit 2
 fi
 
-destination_directory=${1:-"${HOME:?}/models/candidate-staging/minicpm5-1b-fable5-v2"}
-artifact_name=MiniCPM5-1B-Claude-Opus-Fable5-V2-Thinking-Q8_0.gguf
+destination_directory=${1:-"${HOME:?}/models/Qwen3.5-2B-Unredacted-MAX-GGUF"}
+artifact_name=Qwen3.5-2B-Unredacted-MAX.Q4_K_M.gguf
 artifact_path=$destination_directory/$artifact_name
 partial_path=$artifact_path.part
-source_repository=GnLOLot/MiniCPM5-1B-Claude-Opus-Fable5-V2-Thinking-GGUF
-source_revision=1c5821260e77c42e0b350f0248fabcf3c90ecade
-source_url=https://huggingface.co/$source_repository/resolve/$source_revision/$artifact_name
-expected_bytes=1153529184
-expected_sha256=fc3ee1eddd305c155f63b6bd7bb189daa4d5f226ca325ab219bd7acd3b00ec77
+source_repository=mradermacher/Qwen3.5-2B-Unredacted-MAX-GGUF
+source_revision=69d5860d3e02d2214ce0a7c5ff89cd8f769391ae
+source_url=https://huggingface.co/$source_repository/resolve/$source_revision/Qwen3.5-2B-Unredacted-MAX.Q4_K_M.gguf
+expected_bytes=1270809056
+expected_sha256=b0d7d09194dbaa1ec01edd3424494e820038da27f518288da44594bdce5b937c
 
 umask 077
 mkdir -p "$destination_directory"
