@@ -829,10 +829,13 @@ run_arm() {
     # completed reads `not-triggered` and `absent` belongs to a traced arm that
     # failed and named no dispatch, which is the instrumentation failure the
     # field exists to separate from a graph that never lost the device. An
-    # untraced arm reads `off`.
+    # untraced arm reads `off`. The match names the dump's two header forms
+    # from ggml_vk_print_submit_trace, since the startup banner also carries
+    # `submission trace = on` and would otherwise read a completed arm as a dump.
     trace_dump=off
     if [ "$arm_submit_trace" = on ]; then
-        if grep -q 'submission trace' "$arm_log" 2>/dev/null; then
+        if grep -qE 'submission trace, [0-9]+ unretired of [0-9]+ dispatches|submission trace holds no unretired dispatch' \
+            "$arm_log" 2>/dev/null; then
             trace_dump=present
         elif [ "$arm_status" -eq 0 ]; then
             trace_dump=not-triggered
