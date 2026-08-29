@@ -343,7 +343,11 @@ if [ "$image_service_enabled" = 1 ]; then
         sed -n '1p' | tr ' ' ':')
 fi
 
+# The session owns the state directory, so it names the one the Vulkan workload
+# lease lives in; qwen-capacity-policy.sh derives the lock path from it and
+# image-service.py opens the same file under its own --state-dir.
 QWEN_VULKAN_PROFILE=$vulkan_profile \
+QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
 "$script_directory/run-qwen-capacity-server.sh" \
     "$llama_server" "$model_path" "$context_size" "$required_vulkan_mib" \
     "$server_port" "$static_path" "$api_key_file" >"$server_log" 2>&1 &

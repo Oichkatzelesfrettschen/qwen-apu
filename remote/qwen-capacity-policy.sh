@@ -1103,6 +1103,21 @@ if [ "$router_enabled" != 1 ]; then
         --cache-type-v "$cache_type_v"
 fi
 
+# The appliance admits one active qwen-owned Vulkan workload, and
+# ~/qwen-webui-state/vulkan-workload.lock is the kernel lock that carries it.
+# remote/image-service.py takes it across one generation and llama-server holds
+# it from the first busy slot to the last idle one, so a resident idle server
+# competes with nothing while active prompt processing and decode exclude a
+# generation. radv-low-priority-env.sh scrubs the GGML_VK_*, display, AMD,
+# RADV, and VK layer names alone, so this variable crosses the exec boundary
+# untouched. In router mode server-models.cpp snapshots environ into base_env
+# at server_models_routes construction and spawns every child with that copy, so
+# the child executing the graphs opens the lock; the router parent leaves
+# server_context uninitialised and opens nothing.
+workload_lease_state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
+export QWEN_VULKAN_WORKLOAD_LOCK="$workload_lease_state_directory/vulkan-workload.lock"
+printf 'vulkan_workload_lease path=%s\n' "$QWEN_VULKAN_WORKLOAD_LOCK"
+
 # The launcher hashes its immutable-per-session snapshot before preflight. The
 # exec boundary revalidates both mutable registry authorities and measures the
 # preset again, so a quarantine or model-registry replacement invalidates the

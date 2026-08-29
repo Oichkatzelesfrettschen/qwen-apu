@@ -703,15 +703,30 @@ is derived from the digest: `provenance_url` names the `.json` record and the
 page composes `/artifacts/<sha>.png` from the same value, so one reply carries
 one identity and both routes follow from it.
 
-`~/qwen-webui-state/vulkan-workload.lock` is that lease, and its scope is
-narrower than the state machine the appliance is heading for. `image-service.py`
-is its only writer, so it serializes image generations against each other and
-the kernel lock is the authority a `flock` failure reports; mutual exclusion
-against the LLM router arrives when the owner of GPU work on that side acquires
-the same lock, which no code in this tree does yet. A running llama-server and
-a running generation therefore share the device today, and the one active
-Vulkan workload the brief calls for is enforced by the service holding the lease
-across exactly the span from job start to artifact rename.
+`~/qwen-webui-state/vulkan-workload.lock` is that lease, and it is two-sided in
+time rather than tied to residency. `image-service.py` holds it from job start
+to artifact rename, and its acquisition waits on a bounded deadline --
+`QWEN_IMAGE_LEASE_WAIT_S`, 60 seconds by default, zero for one non-blocking
+attempt -- because the chat turn that emitted the approved tool call is still
+releasing when the generation request arrives; the refusal past that deadline
+keeps the `lease_unavailable` reason.
+`patches/llama-server-vulkan-workload-lease.patch` makes llama-server the second
+writer under `QWEN_VULKAN_WORKLOAD_LOCK`, which `qwen-capacity-policy.sh`
+exports from the session state directory on every launch and
+`radv-low-priority-env.sh` leaves alone.
+`server_context_impl::update_slots` owns the transitions: it takes the lease
+where its all-idle check finds a busy slot and releases it where the check finds
+none, so an idle loaded server holds nothing while every decoding pass runs
+inside the lease, and the release trails the final decode by exactly one pass.
+The acquire tries `LOCK_EX | LOCK_NB` first and logs the waiting line ahead of
+the block, so a stall is visible while it lasts and the acquire line carries
+`waited_ms`. The child holds it in router mode, since `server.cpp` calls
+`load_model` and therefore `init()` only in its non-router branch while
+`server-models.cpp` spawns each child from the `environ` snapshot in `base_env`.
+`remote/test-vulkan-workload-lease.sh` admits both halves and
+`evidence/vulkan-workload-lease/README.md` registers the invariant, the
+falsifiers, and the appliance sequence; the patch is a candidate under
+`QWEN_LLAMA_CANDIDATE_PATCHES=1` awaiting admission on the device.
 
 A review of a generated image is the next transition through idle, and it runs
 against a vision model holding no executable tool. `remote/image-review.py`
@@ -848,6 +863,7 @@ remote/image-service.py --state-dir DIR --profiles-json FILE
                                                 # the lease owner, one generation at a time
 remote/image-teardown-check.sh [STATE_DIRECTORY]
                                                 # no service, runtime, partial artifact, or held lease
+remote/test-vulkan-workload-lease.sh           # one workload, both writers of the lease
 remote/image-review.py --router-origin URL --artifact-origin URL --model ID \
     --sha256 HEX --prompt-hash HEX --constraint NAME=DESCRIPTION \
     [--image-mode real|withheld|swapped [--swap-sha256 HEX]]
@@ -897,6 +913,7 @@ remote/test-image-registry.sh
 remote/test-qwen-image-launch.sh
 remote/test-run-image-standalone.sh
 remote/test-admit-image-router.sh
+remote/test-vulkan-workload-lease.sh
 remote/test-fallback-webui-image-authorization.sh
 python3 remote/test-image-protocol.py
 python3 remote/test-image-service.py

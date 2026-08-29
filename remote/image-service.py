@@ -21,14 +21,24 @@ provenance JSON, and release the lease. Every refusal above the lease runs
 before `flock`, so a request the service declines leaves the GPU lease
 untouched and an ordinary LLM turn continues.
 
+The lease acquisition waits rather than refusing at once. llama-server holds
+the same lock from its first busy slot to the last idle one, so the chat turn
+that just emitted the approved tool call is still releasing while this request
+arrives. `QWEN_IMAGE_LEASE_WAIT_S` bounds that wait at 60 seconds by default
+and a value of zero makes one non-blocking attempt; the refusal past the
+deadline carries the same `lease_unavailable` reason a held lease always
+carried.
+
 The service holds the lease descriptor for the duration of the job and passes
 it to nothing. `flock` binds to the open file description, so a descriptor
 handed to the runtime would keep the lease held by every grandchild that
 inherited it; acquiring at job start and closing at job end holds the lease
 exactly across active GPU work. The lease is an image-side lease as it stands:
-this service is the only writer of `vulkan-workload.lock`, so it serializes
-image generations against each other, and mutual exclusion against the LLM
-router arrives when the GPU owner on that side acquires the same lock.
+`patches/llama-server-vulkan-workload-lease.patch` makes llama-server the
+second writer of `vulkan-workload.lock` under `QWEN_VULKAN_WORKLOAD_LOCK`, so
+the two lanes exclude each other through the kernel once that candidate patch
+is admitted on the appliance; a server built without it leaves this an
+image-side lease that serializes generations against each other alone.
 
 Two seams are injected because two other lanes own them. `--verifier
 MODULE:FUNCTION` names the signed-request verifier, whose contract is
@@ -89,6 +99,8 @@ CONTROL_READ_TIMEOUT_SECONDS = 30.0
 ARTIFACT_BYTE_CAP = 64 * 1024 * 1024
 MEMORY_SAMPLE_INTERVAL_SECONDS = 0.5
 LEASE_FILE_NAME = "vulkan-workload.lock"
+DEFAULT_LEASE_WAIT_SECONDS = 60.0
+LEASE_WAIT_POLL_SECONDS = 0.05
 LEASE_STATUS_FILE_NAME = "vulkan-workload.status"
 SOCKET_FILE_NAME = "image-service.sock"
 PID_FILE_NAME = "image-service.pid"
@@ -543,6 +555,26 @@ def parse_png(raw, expected_width, expected_height):
     }
 
 
+def lease_wait_seconds_from_environment():
+    """Read the bounded lease wait, refusing a value the deadline cannot use.
+
+    A malformed or negative setting would silently become the default and hide
+    a launch that meant to configure the wait, so it raises instead.
+    """
+    raw = os.environ.get("QWEN_IMAGE_LEASE_WAIT_S", "")
+    if raw == "":
+        return DEFAULT_LEASE_WAIT_SECONDS
+    try:
+        seconds = float(raw)
+    except ValueError:
+        raise ServiceError(
+            f"QWEN_IMAGE_LEASE_WAIT_S is not a number: {raw}"
+        ) from None
+    if seconds < 0 or seconds != seconds:
+        raise ServiceError(f"QWEN_IMAGE_LEASE_WAIT_S is negative: {raw}")
+    return seconds
+
+
 class WorkloadLease:
     """The Vulkan workload lease, a kernel lock with an observed status line.
 
@@ -552,25 +584,41 @@ class WorkloadLease:
     consults and no code trusts.
     """
 
-    def __init__(self, state_directory):
+    def __init__(self, state_directory, wait_seconds=None):
         self.lock_path = os.path.join(state_directory, LEASE_FILE_NAME)
         self.status_path = os.path.join(state_directory, LEASE_STATUS_FILE_NAME)
         self.descriptor = None
+        if wait_seconds is None:
+            wait_seconds = lease_wait_seconds_from_environment()
+        self.wait_seconds = wait_seconds
 
     def acquire(self, holder, job_id):
+        """Take the lease, waiting up to `wait_seconds` for a live holder.
+
+        A monotonic deadline is what bounds the wait, and `flock` offers no
+        timeout: bounding a blocking call would take SIGALRM, whose delivery
+        thread is unspecified in a process that runs the memory sampler and the
+        listener beside this one. The poll costs one syscall every 50 ms and
+        needs no signal. A zero deadline makes exactly one attempt.
+        """
         if self.descriptor is not None:
             raise LeaseUnavailable("this service already holds the workload lease")
         descriptor = os.open(
             self.lock_path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o644
         )
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            os.close(descriptor)
-            raise LeaseUnavailable(
-                "another Vulkan workload holds the lease; one workload runs at "
-                "a time"
-            ) from None
+        deadline = time.monotonic() + self.wait_seconds
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    os.close(descriptor)
+                    raise LeaseUnavailable(
+                        "another Vulkan workload holds the lease; one workload "
+                        "runs at a time"
+                    ) from None
+                time.sleep(LEASE_WAIT_POLL_SECONDS)
         self.descriptor = descriptor
         self.write_status(
             f"state=held holder={holder} pid={os.getpid()} job={job_id} "
