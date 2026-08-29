@@ -95,7 +95,9 @@ def build_profile(runtime_path, execution_policy="validator-gated", **overrides)
 class ServiceSession:
     """One running service, its control socket, and its artifact listener."""
 
-    def __init__(self, directory, profiles, runtime_environment=None):
+    def __init__(
+        self, directory, profiles, runtime_environment=None, radv_icd_path=None
+    ):
         self.directory = directory
         self.state_directory = os.path.join(directory, "state")
         os.makedirs(self.state_directory, mode=0o700, exist_ok=True)
@@ -124,11 +126,24 @@ class ServiceSession:
         ]
         for name, value in (runtime_environment or {}).items():
             argv.extend(["--runtime-env", f"{name}={value}"])
+        # image-service.py derives VK_DRIVER_FILES and VK_ICD_FILENAMES from
+        # QWEN_RADV_ICD the way remote/radv-icd-env.sh derives the identical
+        # pair for a shell caller, and refuses to start against an unreadable
+        # ICD file. This workstation carries no RADV ICD, so every session
+        # supplies one unless a test asks for the refusal explicitly.
+        if radv_icd_path is None:
+            radv_icd_path = os.path.join(directory, "fake-radv-icd.json")
+            with open(radv_icd_path, "w", encoding="ascii") as handle:
+                handle.write("{}\n")
+        self.radv_icd_path = radv_icd_path
+        environment = dict(os.environ)
+        environment["QWEN_RADV_ICD"] = radv_icd_path
         self.process = subprocess.Popen(
             argv,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env=environment,
         )
         self.socket_path = ""
         self.http_port = 0
@@ -243,11 +258,15 @@ class ImageServiceTest(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.sessions = []
 
-    def start(self, profiles=None, runtime_environment=None):
+    def start(
+        self, profiles=None, runtime_environment=None, radv_icd_path=None
+    ):
         directory = tempfile.mkdtemp(dir=self.temporary.name)
         if profiles is None:
             profiles = {"sdxs-512-a": build_profile(FAKE_RUNTIME_PATH)}
-        session = ServiceSession(directory, profiles, runtime_environment)
+        session = ServiceSession(
+            directory, profiles, runtime_environment, radv_icd_path
+        )
         self.sessions.append(session)
         self.addCleanup(self.quiet_stop, session)
         return session
@@ -349,6 +368,76 @@ class ImageServiceTest(unittest.TestCase):
         first = session.control(generate_request())
         second = session.control(generate_request(request_id="req-0002"))
         self.assertEqual(first["sha256"], second["sha256"])
+
+    def test_runtime_environment_carries_the_radv_icd_pin(self):
+        """The spawned runtime inherits VK_DRIVER_FILES and VK_ICD_FILENAMES.
+
+        image-service.py derives the pair from QWEN_RADV_ICD the way
+        remote/radv-icd-env.sh derives it for a shell caller, and pins both
+        names into the runtime's own environment ahead of every generation,
+        so the Vulkan loader the runtime process sees enumerates RADV alone.
+        The fake runtime records what it actually received rather than what
+        the service intended to send.
+        """
+        argv_log = os.path.join(self.temporary.name, "argv.log")
+        session = self.start(
+            runtime_environment={"QWEN_FAKE_IMAGE_ARGV_LOG": argv_log}
+        )
+        response = session.control(generate_request())
+        self.assertEqual(response["status"], "completed", response)
+        with open(argv_log, encoding="utf-8") as handle:
+            recorded = dict(
+                line.rstrip("\n").split("=", 1) for line in handle if "=" in line
+            )
+        self.assertEqual(recorded["vk_driver_files"], session.radv_icd_path)
+        self.assertEqual(recorded["vk_icd_filenames"], session.radv_icd_path)
+
+    def test_unreadable_radv_icd_refuses_before_the_server_starts(self):
+        """A missing RADV ICD file stops the service before it spawns anything.
+
+        derive_radv_icd_environment runs while ServiceSettings is built, ahead
+        of the control socket and the artifact listener, so a bad QWEN_RADV_ICD
+        never reaches a point where a job could run against an unrestricted
+        Vulkan loader.
+        """
+        directory = tempfile.mkdtemp(dir=self.temporary.name)
+        missing_icd = os.path.join(directory, "no-such-radv-icd.json")
+        profiles_path = os.path.join(directory, "profiles.json")
+        with open(profiles_path, "w", encoding="utf-8") as handle:
+            json.dump({"sdxs-512-a": build_profile(FAKE_RUNTIME_PATH)}, handle)
+        api_key_path = os.path.join(directory, "api.key")
+        with open(api_key_path, "w", encoding="ascii") as handle:
+            handle.write(API_KEY + "\n")
+        os.chmod(api_key_path, 0o600)
+        state_directory = os.path.join(directory, "state")
+        os.makedirs(state_directory, mode=0o700)
+        environment = dict(os.environ)
+        environment["QWEN_RADV_ICD"] = missing_icd
+        completed = subprocess.run(
+            [
+                sys.executable,
+                SERVICE_PATH,
+                "--state-dir",
+                state_directory,
+                "--profiles-json",
+                profiles_path,
+                "--api-key-file",
+                api_key_path,
+                "--origin",
+                PAGE_ORIGIN,
+                "--http-host",
+                "127.0.0.1",
+                "--http-port",
+                "0",
+            ],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=STARTUP_SECONDS,
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("RADV ICD is not readable", completed.stderr)
+        self.assertIn(missing_icd, completed.stderr)
 
     def test_dimension_mismatch_is_refused(self):
         """A runtime that ignores the requested geometry produces no artifact."""

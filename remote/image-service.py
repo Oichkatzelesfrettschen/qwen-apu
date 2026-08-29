@@ -95,6 +95,7 @@ PID_FILE_NAME = "image-service.pid"
 ARTIFACT_DIRECTORY_NAME = "artifacts"
 IMAGE_DIRECTORY_NAME = "images"
 PRIVATE_DIRECTORY_MODE = 0o700
+DEFAULT_RADV_ICD_PATH = "/usr/share/vulkan/icd.d/radeon_icd.x86_64.json"
 ARTIFACT_NAME_PATTERN = re.compile(r"^([0-9a-f]{64})\.(png|json)$")
 TEMPLATE_TOKEN_PATTERN = re.compile(r"\{([a-z_]+)\}")
 SAMPLER_PATTERN = re.compile(r"^[A-Za-z0-9_+-]{1,32}$")
@@ -283,6 +284,24 @@ def host_header_is_loopback(header):
             return False
         return value[1:closing] in LOOPBACK_HOSTS
     return value.split(":", 1)[0] in LOOPBACK_HOSTS
+
+
+def derive_radv_icd_environment():
+    """Return the RADV ICD pin every spawned runtime process inherits.
+
+    remote/radv-icd-env.sh derives the identical pair by sourcing it into a
+    shell caller: QWEN_RADV_ICD names the ICD JSON, defaulting to
+    DEFAULT_RADV_ICD_PATH, and VK_DRIVER_FILES and VK_ICD_FILENAMES both
+    carry it so the Vulkan loader enumerates RADV alone and lavapipe never
+    appears to the runtime's --list-devices or a generation arm. This
+    service derives the same path in Python rather than sourcing that file,
+    because a Python process has no shell to source it into; the derivation
+    is documented here as the second reading of one rule.
+    """
+    radv_icd_path = os.environ.get("QWEN_RADV_ICD", DEFAULT_RADV_ICD_PATH)
+    if not os.access(radv_icd_path, os.R_OK):
+        raise InvalidArgument(f"RADV ICD is not readable: {radv_icd_path}")
+    return {"VK_DRIVER_FILES": radv_icd_path, "VK_ICD_FILENAMES": radv_icd_path}
 
 
 def read_secret_file(path, purpose):
@@ -865,6 +884,16 @@ class ImageService:
             "QWEN_IMAGE_RUNTIME_TIMEOUT_SECONDS": str(applied_timeout),
         }
         environment.update(self.settings.runtime_environment)
+        # ServiceSettings pins these two names at startup, so their absence
+        # here means a later change stopped carrying the pin into this
+        # dictionary; the runtime never spawns against a Vulkan loader that
+        # can enumerate lavapipe.
+        for required_variable in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
+            if not environment.get(required_variable):
+                raise InvalidArgument(
+                    f"the runtime environment carries no {required_variable}; "
+                    "refusing to spawn against an unrestricted Vulkan loader"
+                )
         usage_before = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
         spawned_at = time.time()
         with open(os.devnull, "rb") as devnull:
@@ -1520,6 +1549,11 @@ class ServiceSettings:
         self.runtime_environment = dict(
             entry.split("=", 1) for entry in arguments.runtime_env
         )
+        # The RADV ICD pin wins over any conflicting --runtime-env entry,
+        # the way remote/radv-icd-env.sh's export always sets the pair
+        # rather than leaving it to the caller to remember; a caller may
+        # still steer the derivation itself through QWEN_RADV_ICD.
+        self.runtime_environment.update(derive_radv_icd_environment())
 
     @staticmethod
     def device_telemetry():
@@ -1707,7 +1741,11 @@ def run(argv):
     os.makedirs(arguments.state_dir, mode=PRIVATE_DIRECTORY_MODE, exist_ok=True)
     image_directory = os.path.join(arguments.state_dir, IMAGE_DIRECTORY_NAME)
     os.makedirs(image_directory, mode=PRIVATE_DIRECTORY_MODE, exist_ok=True)
-    settings = ServiceSettings(arguments, verifier, api_key)
+    try:
+        settings = ServiceSettings(arguments, verifier, api_key)
+    except ServiceError as error:
+        sys.stderr.write(f"the runtime environment is unusable: {error}\n")
+        return 2
     service = ImageService(settings)
     socket_path = os.path.join(image_directory, SOCKET_FILE_NAME)
     try:

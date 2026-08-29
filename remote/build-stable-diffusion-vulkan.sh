@@ -66,26 +66,48 @@ for required_command in cmake ninja glslc cc c++ sha256sum vulkaninfo; do
     fi
 done
 
-# The device this build serves. Reject a software rasterizer, a vendor stack
-# this appliance does not run, or a summary this host's vulkaninfo cannot
-# produce, and require the device description to name RAVEN2 through RADV --
-# the description --list-devices later prints for the same device, not a
-# hardcoded device index.
+radv_icd=${QWEN_RADV_ICD:-/usr/share/vulkan/icd.d/radeon_icd.x86_64.json}
+if [ ! -r "$radv_icd" ]; then
+    printf 'RADV ICD is not readable: %s\n' "$radv_icd" >&2
+    exit 1
+fi
+
+# The device this build serves, read twice. The unrestricted pass records how
+# many software devices this host's Vulkan loader enumerates ordinarily --
+# Mesa installs lavapipe beside radeon_icd, so a summary that lists llvmpipe
+# as a second physical device is the appliance's ordinary state rather than a
+# fault -- and the restricted pass pins VK_DRIVER_FILES and VK_ICD_FILENAMES
+# to the RADV ICD alone, the way remote/radv-icd-env.sh pins every inference
+# and image process, so the gate itself sees only the device the build
+# serves. Reject a vendor stack this appliance does not run, a summary this
+# host's vulkaninfo cannot produce, or a restricted summary that still lists
+# a software device, and require the device description to name RAVEN2
+# through RADV -- the description --list-devices later prints for the same
+# device, not a hardcoded device index.
 vulkaninfo_command=${QWEN_VULKANINFO_COMMAND:-vulkaninfo}
-vulkan_summary=$($vulkaninfo_command --summary 2>&1) || {
-    printf 'vulkaninfo --summary failed:\n%s\n' "$vulkan_summary" >&2
+vulkan_summary_unrestricted=$($vulkaninfo_command --summary 2>&1) || {
+    printf 'vulkaninfo --summary failed:\n%s\n' "$vulkan_summary_unrestricted" >&2
     exit 1
 }
-# Mesa installs lavapipe beside radeon_icd, so a summary that lists llvmpipe
-# as a second physical device is the ordinary appliance state; the device the
-# runtime computes on is chosen per run through --backend and checked there.
-# The build refuses a proprietary stack, whose ICD replaces RADV outright.
+software_devices=$(printf '%s\n' "$vulkan_summary_unrestricted" |
+    grep -Eci 'llvmpipe|lavapipe' || true)
+
+vulkan_summary=$(VK_DRIVER_FILES=$radv_icd VK_ICD_FILENAMES=$radv_icd \
+    $vulkaninfo_command --summary 2>&1) || {
+    printf 'vulkaninfo --summary failed under the RADV ICD restriction:\n%s\n' \
+        "$vulkan_summary" >&2
+    exit 1
+}
+if printf '%s\n' "$vulkan_summary" | grep -Eqi 'llvmpipe|lavapipe'; then
+    printf 'the RADV ICD restriction at %s still let the loader enumerate a software device:\n%s\n' \
+        "$radv_icd" "$vulkan_summary" >&2
+    exit 1
+fi
 if printf '%s\n' "$vulkan_summary" | grep -Eqi 'AMDGPU-PRO'; then
     printf 'refusing to build against a non-RADV Vulkan stack:\n%s\n' \
         "$vulkan_summary" >&2
     exit 1
 fi
-software_devices=$(printf '%s\n' "$vulkan_summary" | grep -Eci 'llvmpipe|lavapipe' || true)
 if ! printf '%s\n' "$vulkan_summary" | grep -Eq 'RADV RAVEN2'; then
     printf 'vulkaninfo --summary names no RADV RAVEN2 device:\n%s\n' "$vulkan_summary" >&2
     exit 1

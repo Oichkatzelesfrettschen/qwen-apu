@@ -26,6 +26,12 @@ report() {
 fake_model=$temporary_directory/fake-model.safetensors
 printf 'not a real checkpoint\n' >"$fake_model"
 
+# remote/radv-icd-env.sh requires a readable file at QWEN_RADV_ICD or its
+# default path, which this workstation does not carry; every arm below that
+# should reach the fake runtime supplies its own stand-in.
+fake_radv_icd=$temporary_directory/fake-radv-icd.json
+printf '{}\n' >"$fake_radv_icd"
+
 is_valid_png() {
     [ -f "$1" ] && head -c 8 "$1" | od -An -tx1 | tr -d ' \n' | grep -qi '^89504e470d0a1a0a$'
 }
@@ -35,7 +41,7 @@ is_valid_png() {
 # harness derives from the runtime's own log lines.
 t1_directory=$temporary_directory/t1
 if QWEN_IMAGE_RUNTIME=$fake_runtime QWEN_IMAGE_ALLOW_LLAMA_RESIDENT=1 \
-    QWEN_VULKANINFO_COMMAND=/bin/false \
+    QWEN_VULKANINFO_COMMAND=/bin/false QWEN_RADV_ICD=$fake_radv_icd \
     "$runner" "$t1_directory" "$fake_model" >"$temporary_directory/t1.out" 2>&1
 then
     t1_status=accepted
@@ -57,7 +63,7 @@ report happy_path_two_arms_completed "$t1_status"
 # report a generation result as strictly placed.
 t2_directory=$temporary_directory/t2
 if QWEN_IMAGE_RUNTIME=$fake_runtime QWEN_IMAGE_ALLOW_LLAMA_RESIDENT=1 \
-    QWEN_VULKANINFO_COMMAND=/bin/false \
+    QWEN_VULKANINFO_COMMAND=/bin/false QWEN_RADV_ICD=$fake_radv_icd \
     QWEN_FAKE_IMAGE_FORCE_MODE=ok \
     "$runner" "$t2_directory" "$fake_model" >"$temporary_directory/t2.out" 2>&1
 then
@@ -78,7 +84,7 @@ report refusal_control_safety_net_stops_the_run "$t2_status"
 # arm runs.
 t3_directory=$temporary_directory/t3
 if QWEN_IMAGE_RUNTIME=$fake_runtime QWEN_IMAGE_ALLOW_LLAMA_RESIDENT=1 \
-    QWEN_VULKANINFO_COMMAND=/bin/false \
+    QWEN_VULKANINFO_COMMAND=/bin/false QWEN_RADV_ICD=$fake_radv_icd \
     QWEN_FAKE_IMAGE_DEVICE_DESCRIPTION='llvmpipe (LLVM 17.0.0, 256 bits)' \
     "$runner" "$t3_directory" "$fake_model" >"$temporary_directory/t3.out" 2>&1
 then
@@ -101,7 +107,7 @@ FAKE_PGREP
 chmod +x "$fake_bin_directory/pgrep"
 t4_directory=$temporary_directory/t4
 if PATH=$fake_bin_directory:$PATH QWEN_IMAGE_RUNTIME=$fake_runtime \
-    QWEN_VULKANINFO_COMMAND=/bin/false \
+    QWEN_VULKANINFO_COMMAND=/bin/false QWEN_RADV_ICD=$fake_radv_icd \
     "$runner" "$t4_directory" "$fake_model" >"$temporary_directory/t4.out" 2>&1
 then
     t4_status=refused
@@ -116,7 +122,7 @@ report resident_llama_process_refused "$t4_status"
 # arm without aborting the ones that have not run yet.
 t5_directory=$temporary_directory/t5
 if QWEN_IMAGE_RUNTIME=$fake_runtime QWEN_IMAGE_ALLOW_LLAMA_RESIDENT=1 \
-    QWEN_VULKANINFO_COMMAND=/bin/false \
+    QWEN_VULKANINFO_COMMAND=/bin/false QWEN_RADV_ICD=$fake_radv_icd \
     QWEN_FAKE_IMAGE_MODE=fail \
     "$runner" "$t5_directory" "$fake_model" >"$temporary_directory/t5.out" 2>&1
 then
@@ -130,6 +136,37 @@ else
     t5_status=refused
 fi
 report generation_failure_recorded_not_dropped "$t5_status"
+
+# T6: an unreadable RADV ICD refuses before --list-devices or any runtime
+# invocation runs, naming the ICD path in the message
+# (remote/radv-icd-env.sh).
+t6_directory=$temporary_directory/t6
+missing_radv_icd=$temporary_directory/no-such-radv-icd.json
+if QWEN_IMAGE_RUNTIME=$fake_runtime QWEN_IMAGE_ALLOW_LLAMA_RESIDENT=1 \
+    QWEN_VULKANINFO_COMMAND=/bin/false QWEN_RADV_ICD=$missing_radv_icd \
+    "$runner" "$t6_directory" "$fake_model" >"$temporary_directory/t6.out" 2>&1
+then
+    t6_status=refused
+else
+    t6_status=accepted
+    grep -qF "$missing_radv_icd" "$temporary_directory/t6.out" || t6_status=refused
+    [ ! -e "$t6_directory" ] || t6_status=refused
+fi
+report unreadable_radv_icd_refused_before_any_device_call "$t6_status"
+
+# T7: the default (unforced) device listing names llvmpipe when nothing
+# restricts the Vulkan loader and names RADV alone once VK_DRIVER_FILES and
+# VK_ICD_FILENAMES are set, proving remote/test-fixtures/fake-image-runtime.sh
+# is driven by the same environment remote/run-image-standalone.sh exports
+# rather than by a fixed string.
+t7_unrestricted=$(VK_DRIVER_FILES='' VK_ICD_FILENAMES='' "$fake_runtime" --list-devices)
+t7_restricted=$(VK_DRIVER_FILES=$fake_radv_icd VK_ICD_FILENAMES=$fake_radv_icd \
+    "$fake_runtime" --list-devices)
+t7_status=accepted
+printf '%s\n' "$t7_unrestricted" | grep -qi llvmpipe || t7_status=refused
+printf '%s\n' "$t7_restricted" | grep -qi llvmpipe && t7_status=refused
+printf '%s\n' "$t7_restricted" | grep -q 'RADV RAVEN2' || t7_status=refused
+report fixture_list_devices_driven_by_the_icd_environment "$t7_status"
 
 if [ "$failures" -eq 0 ]; then
     printf 'test-run-image-standalone=accepted\n'
