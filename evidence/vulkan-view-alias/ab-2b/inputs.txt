@@ -1,0 +1,8 @@
+production_build=$HOME/src/llama.cpp-qwen-apu/build-raven2-vulkan-production
+alias_build=$HOME/src/llama.cpp-alias/build-raven2-vulkan-production
+reference_arm=production-optimize-off
+restarts=3
+runs_per_start=4
+predict_tokens=256
+seed=1
+models=qwen38-2b-distill
