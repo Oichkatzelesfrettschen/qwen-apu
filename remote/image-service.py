@@ -73,15 +73,20 @@ import threading
 import time
 import zlib
 
-PROTOCOL_VERSION = 1
+SERVICE_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
+if SERVICE_DIRECTORY not in sys.path:
+    sys.path.insert(0, SERVICE_DIRECTORY)
+
+import image_protocol as protocol  # noqa: E402
+
+PROTOCOL_VERSION = protocol.PROTOCOL_VERSION
 LOOPBACK_HOSTS = ("127.0.0.1", "::1")
 RUNTIME_HARD_TIMEOUT_SECONDS = 300
 SERVICE_JOB_DEADLINE_SECONDS = 330
 TERMINATION_GRACE_SECONDS = 5.0
-CONTROL_LINE_BYTE_CAP = 64 * 1024
+CONTROL_LINE_BYTE_CAP = protocol.MAX_LINE_BYTES
 CONTROL_READ_TIMEOUT_SECONDS = 30.0
 ARTIFACT_BYTE_CAP = 64 * 1024 * 1024
-PROMPT_CHARACTER_CAP = 4096
 MEMORY_SAMPLE_INTERVAL_SECONDS = 0.5
 LEASE_FILE_NAME = "vulkan-workload.lock"
 LEASE_STATUS_FILE_NAME = "vulkan-workload.status"
@@ -91,39 +96,26 @@ ARTIFACT_DIRECTORY_NAME = "artifacts"
 IMAGE_DIRECTORY_NAME = "images"
 PRIVATE_DIRECTORY_MODE = 0o700
 ARTIFACT_NAME_PATTERN = re.compile(r"^([0-9a-f]{64})\.(png|json)$")
-REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 TEMPLATE_TOKEN_PATTERN = re.compile(r"\{([a-z_]+)\}")
 SAMPLER_PATTERN = re.compile(r"^[A-Za-z0-9_+-]{1,32}$")
-ASPECT_PATTERN = re.compile(r"^[1-9][0-9]{0,4}:[1-9][0-9]{0,4}$")
 PLACEMENT_ARMS = ("A", "B", "C")
 EXECUTION_POLICY_ADMITTED = "validator-gated"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 PNG_CHANNELS_FOR_COLOR_TYPE = {0: 1, 2: 3, 4: 2, 6: 4}
 UNOBSERVED = "-"
+# The identifier a reply carries where the request named none the protocol
+# admits, since every response echoes an identifier the schema validates.
+UNIDENTIFIED_REQUEST = "unidentified"
 
-ACTION_GENERATE = "image_generate"
-ACTION_CANCEL = "cancel"
-ACTION_STATUS = "status"
-ACTIONS = (ACTION_GENERATE, ACTION_CANCEL, ACTION_STATUS)
+ACTION_GENERATE, ACTION_CANCEL, ACTION_STATUS = protocol.ACTIONS
+ACTIONS = protocol.ACTIONS
 
-# The request keys the control socket admits. A filesystem path never appears
-# among them: the service names the `.part` file, the artifact, and the
-# provenance record from its own state directory, so a caller cannot steer a
-# write.
-GENERATE_KEYS = (
-    "protocol_version",
-    "request_id",
-    "action",
-    "authorization",
-    "profile_id",
-    "prompt",
-    "negative_prompt",
-    "seed",
-    "aspect",
-    "width",
-    "height",
-    "steps",
-)
+# The request keys the control socket admits come from the frozen protocol, so
+# the service and the MCP wrapper read one closed schema. A filesystem path
+# never appears among them: the service names the `.part` file, the artifact,
+# and the provenance record from its own state directory, so a caller cannot
+# steer a write.
+GENERATE_KEYS = protocol.REQUEST_FIELDS
 
 # What the argv template may name. The output path is supplied by the service,
 # so `{output}` resolves to a file under the artifact directory and to nothing
@@ -357,17 +349,6 @@ def aspect_ratio(width, height):
     """Return the reduced `w:h` string a request declares an aspect with."""
     divisor = math.gcd(width, height)
     return f"{width // divisor}:{height // divisor}"
-
-
-def require_integer(payload, key, minimum, maximum):
-    value = payload.get(key)
-    if not isinstance(value, int) or isinstance(value, bool):
-        raise InvalidArgument(f"{key} must be an integer")
-    if not minimum <= value <= maximum:
-        raise InvalidArgument(
-            f"{key} is {value}; the admitted range is {minimum} to {maximum}"
-        )
-    return value
 
 
 def validate_profile(profile):
@@ -700,75 +681,44 @@ class ImageService:
             settings.image_directory, ARTIFACT_DIRECTORY_NAME
         )
         os.makedirs(self.artifact_directory, mode=PRIVATE_DIRECTORY_MODE, exist_ok=True)
-        self.artifact_base_url = ""
         self.job_lock = threading.Lock()
         self.job = JobState()
 
     def parse_generate(self, payload):
         """Return the exact fields a generate request names, and no others.
 
-        An unknown key is refused rather than ignored, so a caller that names
-        an output path, a model file, or a runtime argument reaches an argument
-        error instead of a silently dropped field.
+        `image_protocol.validate_request` is the closed schema: an unknown key
+        is refused rather than ignored, so a caller that names an output path,
+        a model file, or a runtime argument reaches an argument error instead
+        of a silently dropped field, and the seed, dimension, step, and aspect
+        bounds are the ones the MCP wrapper and the page read from the same
+        module. The prompt reaches the runtime as an argument, so a whitespace
+        prompt is refused here where the frame admits any string.
+
+        The wire names the shape by label and the provenance record names it as
+        a reduced ratio: `square` states what the request and its grant agree
+        on, and `1:1` states what the retained record measures.
         """
-        unknown = sorted(set(payload) - set(GENERATE_KEYS))
-        if unknown:
-            raise InvalidArgument(
-                f"the request names {', '.join(unknown)}, which the control "
-                "socket does not admit; the service supplies every filesystem "
-                "path itself"
-            )
-        profile_id = payload.get("profile_id")
-        if not isinstance(profile_id, str) or not profile_id:
-            raise InvalidArgument("profile_id must name an image profile")
-        prompt = payload.get("prompt")
-        if not isinstance(prompt, str) or not prompt.strip():
+        try:
+            protocol.validate_request(payload)
+        except protocol.ProtocolError as breach:
+            raise InvalidArgument(str(breach)) from None
+        prompt = payload["prompt"]
+        if not prompt.strip():
             raise InvalidArgument("prompt must be a non-empty string")
-        negative_prompt = payload.get("negative_prompt", "")
-        if not isinstance(negative_prompt, str):
-            raise InvalidArgument("negative_prompt must be a string")
-        for name, value in (("prompt", prompt), ("negative_prompt", negative_prompt)):
-            if len(value) > PROMPT_CHARACTER_CAP:
-                raise InvalidArgument(
-                    f"{name} exceeds the {PROMPT_CHARACTER_CAP} character cap"
-                )
-        if "seed" not in payload:
-            # The trusted interface generates and displays a seed before the
-            # human approves, so a request reaching here without one asks the
-            # service to choose randomness after authorization.
-            raise InvalidArgument(
-                "seed is required; randomness is chosen before approval rather "
-                "than by the service"
-            )
-        authorization = payload.get("authorization", "")
-        if not isinstance(authorization, str):
+        if not payload["authorization"].strip():
             raise InvalidArgument("authorization must be an opaque string")
         request = {
-            "authorization": authorization,
-            "profile_id": profile_id,
+            "authorization": payload["authorization"],
+            "profile_id": payload["profile_id"],
             "prompt": prompt,
-            "negative_prompt": negative_prompt,
-            "seed": require_integer(payload, "seed", 0, 2**63 - 1),
-            "width": require_integer(payload, "width", 1, 16384),
-            "height": require_integer(payload, "height", 1, 16384),
-            "steps": require_integer(payload, "steps", 1, 1000),
+            "negative_prompt": payload["negative_prompt"],
+            "seed": payload["seed"],
+            "width": payload["width"],
+            "height": payload["height"],
+            "steps": payload["steps"],
+            "aspect": aspect_ratio(payload["width"], payload["height"]),
         }
-        declared_aspect = payload.get("aspect", "")
-        if not isinstance(declared_aspect, str):
-            raise InvalidArgument("aspect must be a string such as 1:1")
-        derived_aspect = aspect_ratio(request["width"], request["height"])
-        if declared_aspect:
-            if not ASPECT_PATTERN.match(declared_aspect):
-                raise InvalidArgument("aspect is spelled width:height in integers")
-            if aspect_ratio(*(int(part) for part in declared_aspect.split(":"))) != (
-                derived_aspect
-            ):
-                raise InvalidArgument(
-                    f"the request declares aspect {declared_aspect} where "
-                    f"{request['width']}x{request['height']} reduces to "
-                    f"{derived_aspect}"
-                )
-        request["aspect"] = derived_aspect
         return request
 
     def admit(self, request, profile):
@@ -1070,11 +1020,20 @@ class ImageService:
             "seconds": round(completed_at - started_at, 3),
         }
 
-    def artifact_url(self, digest):
-        return f"{self.artifact_base_url}/artifacts/{digest}.png"
+    @staticmethod
+    def artifact_url(digest):
+        """Return the route the artifact is read at, relative to the listener.
 
-    def provenance_url(self, digest):
-        return f"{self.artifact_base_url}/artifacts/{digest}.json"
+        The digest names the file, so both routes are derived from it rather
+        than chosen by the service: a reader resolves the path against the
+        artifact listener it already holds a credential for, and no absolute
+        origin travels in a protocol line.
+        """
+        return f"/artifacts/{digest}.png"
+
+    @staticmethod
+    def provenance_url(digest):
+        return f"/artifacts/{digest}.json"
 
     def build_provenance(
         self,
@@ -1170,20 +1129,31 @@ class ImageService:
         except OSError:
             return UNOBSERVED
 
-    def handle_cancel(self):
-        """End the owned child and report whether one was running.
+    def handle_cancel(self, request_id):
+        """End the generation the cancel names, or refuse as `not_running`.
 
-        One job runs at a time, so cancellation names no target: it reaches the
-        generation this service owns, and a service holding none refuses.
+        The protocol frame gives a cancel one identifier, so a cancel names its
+        target by carrying the running generation's own `request_id`, which
+        `status` reports as `job_request_id`. A cancel naming any other job
+        answers `not_running` rather than ending the generation that happens to
+        hold the device: one owner cancels one job, and a stale identifier from
+        an earlier turn stops nothing.
         """
         with self.job.lock:
             running = self.job.running
             job_id = self.job.job_id
+            job_request_id = self.job.request_id
             child_pid = self.job.child_pid
-            if running:
+            owned = running and request_id == job_request_id
+            if owned:
                 self.job.cancel_requested = True
         if not running:
             raise NotRunning("no generation is running")
+        if not owned:
+            raise NotRunning(
+                f"the cancel names {request_id!r} where the running generation "
+                f"carries {job_request_id!r}"
+            )
         if child_pid:
             self.signal_child(child_pid)
         return {"status": "accepted", "job_id": job_id, "cancelled": True}
@@ -1210,31 +1180,23 @@ class ImageService:
         return payload
 
     def dispatch(self, payload):
-        """Route one control line to its action under the protocol contract."""
-        if not isinstance(payload, dict):
-            raise InvalidArgument("the control request is not an object")
-        version = payload.get("protocol_version")
-        if version != PROTOCOL_VERSION:
-            raise InvalidArgument(
-                f"the request names protocol_version {version!r}; this service "
-                f"speaks {PROTOCOL_VERSION}"
-            )
-        request_id = payload.get("request_id")
-        if not isinstance(request_id, str) or not REQUEST_ID_PATTERN.match(request_id):
-            raise InvalidArgument(
-                "request_id is 1 to 64 characters of letters, digits, and "
-                "the separators . _ -"
-            )
-        action = payload.get("action")
+        """Route one control line to its action under the protocol contract.
+
+        The frame check runs here for every action, so a control message meets
+        the same closed schema a generation does: `cancel` and `status` name a
+        job and carry none of the fields that describe one.
+        """
+        try:
+            protocol.validate_request(payload)
+        except protocol.ProtocolError as breach:
+            raise InvalidArgument(str(breach)) from None
+        request_id = payload["request_id"]
+        action = payload["action"]
         if action == ACTION_GENERATE:
             return self.handle_generate(payload, request_id)
         if action == ACTION_CANCEL:
-            return self.handle_cancel()
-        if action == ACTION_STATUS:
-            return self.handle_status()
-        raise InvalidArgument(
-            f"action is one of {', '.join(ACTIONS)}; {action!r} names none of them"
-        )
+            return self.handle_cancel(request_id)
+        return self.handle_status()
 
     def shutdown_residue(self):
         """Remove what a job leaves behind and report what survives it.
@@ -1311,22 +1273,22 @@ class ControlHandler(socketserver.StreamRequestHandler):
             return
         if not line:
             return
-        if len(line.rstrip(b"\n")) > CONTROL_LINE_BYTE_CAP:
-            self.refuse(
-                request_id,
-                "invalid_argument",
-                f"the control line exceeds the {CONTROL_LINE_BYTE_CAP} byte cap",
-            )
-            return
         try:
-            payload = json.loads(line.decode("utf-8"))
-        except (ValueError, UnicodeDecodeError):
-            self.refuse(
-                request_id, "invalid_argument", "the control line is not UTF-8 JSON"
-            )
+            payload = protocol.decode_line(line)
+        except protocol.ProtocolError as breach:
+            self.refuse(request_id, "invalid_argument", str(breach))
             return
+        # The identifier is echoed on every reply, so it is read before the
+        # frame check and held to the protocol's own identifier rule; a line
+        # naming something outside that rule answers under UNIDENTIFIED_REQUEST
+        # rather than putting the sender's bytes back on the wire.
         if isinstance(payload, dict) and isinstance(payload.get("request_id"), str):
-            request_id = payload["request_id"][:64]
+            candidate = payload["request_id"]
+            if (
+                0 < len(candidate) <= protocol.MAX_IDENTIFIER_CHARACTERS
+                and set(candidate) <= protocol.IDENTIFIER_CHARACTERS
+            ):
+                request_id = candidate
         try:
             self.reply(request_id, service.dispatch(payload))
         except ServiceError as error:
@@ -1346,20 +1308,40 @@ class ControlHandler(socketserver.StreamRequestHandler):
         self.reply(request_id, payload)
 
     def reply(self, request_id, payload):
-        """Write one response line carrying every field the protocol names."""
+        """Write one response line the protocol module validates before it goes.
+
+        A field is present where it carries a value and absent otherwise: a
+        JSON null in `error` reads as a stated failure to a strict reader, and
+        `image_protocol.validate_response` refuses the key on a completed run
+        for that reason. A cancellation reports its term through `reason`,
+        which is what a reader routes on.
+        """
         response = {
             "protocol_version": PROTOCOL_VERSION,
-            "request_id": request_id,
+            "request_id": request_id or UNIDENTIFIED_REQUEST,
             "status": payload.get("status", "accepted"),
-            "sha256": payload.get("sha256"),
-            "provenance_url": payload.get("provenance_url"),
-            "error": payload.get("error"),
         }
         for key, value in payload.items():
-            if key not in response:
+            if key != "status" and value is not None:
                 response[key] = value
+        if response["status"] in ("accepted", "cancelled"):
+            for key in ("sha256", "provenance_url", "error"):
+                response.pop(key, None)
+        try:
+            protocol.validate_response(response, control_reply=True)
+        except protocol.ProtocolError as breach:
+            # A reply this service cannot state under its own protocol is a
+            # defect in this service, so the peer reads a refusal naming it
+            # rather than a line the checker on the other side rejects.
+            response = {
+                "protocol_version": PROTOCOL_VERSION,
+                "request_id": request_id or UNIDENTIFIED_REQUEST,
+                "status": "failed",
+                "reason": "internal_error",
+                "error": f"the service composed a reply outside its protocol: {breach}",
+            }
         with contextlib.suppress(OSError):
-            self.wfile.write(json.dumps(response).encode("utf-8") + b"\n")
+            self.wfile.write(protocol.encode_line(response).encode("utf-8"))
             self.wfile.flush()
 
 
@@ -1738,7 +1720,6 @@ def run(argv):
         (arguments.http_host, arguments.http_port), settings, service
     )
     http_port = artifacts.server_address[1]
-    service.artifact_base_url = f"http://{arguments.http_host}:{http_port}"
     pid_path = os.path.join(image_directory, PID_FILE_NAME)
     with open(pid_path, "w", encoding="ascii") as handle:
         handle.write(f"{os.getpid()}\n")

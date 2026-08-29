@@ -57,9 +57,35 @@ RESPONSE_FIELDS = (
     "protocol_version",
     "request_id",
     "status",
+    "reason",
     "sha256",
     "provenance_url",
     "error",
+)
+
+# What a control reply reports beside the response frame. `status` and `cancel`
+# answer with an observation of the service rather than with the outcome of a
+# job, and a refusal names the artifact rule it broke, so the closed schema
+# carries those keys as a second named set rather than admitting anything a
+# sender adds. `validate_response` reads them only where the caller states that
+# the line is a control reply.
+OBSERVATION_FIELDS = (
+    "state",
+    "job_id",
+    "job_request_id",
+    "profile_id",
+    "started_at",
+    "elapsed_seconds",
+    "cancel_requested",
+    "cancelled",
+    "lease_held",
+    "lease_path",
+    "artifact_directory",
+    "artifact_url",
+    "bytes",
+    "seconds",
+    "pid",
+    "png_detail",
 )
 
 GENERATION_FIELDS = (
@@ -243,12 +269,22 @@ def validate_request(message):
     return message
 
 
-def validate_response(message):
-    """Return the response unchanged, or raise ProtocolError naming the breach."""
+def validate_response(message, control_reply=False):
+    """Return the response unchanged, or raise ProtocolError naming the breach.
+
+    `control_reply` admits OBSERVATION_FIELDS beside the frame, which is what a
+    `status` or `cancel` answer reports. The outcome rules are the same either
+    way: an artifact is named by a completed run alone and a failure names its
+    cause alone.
+    """
     role = "response"
     _require_object(message, role)
     _require_present(message, ("protocol_version", "request_id", "status"), role)
-    _require_closed_keys(message, RESPONSE_FIELDS, role)
+    _require_closed_keys(
+        message,
+        RESPONSE_FIELDS + OBSERVATION_FIELDS if control_reply else RESPONSE_FIELDS,
+        role,
+    )
     _protocol_version(message, role)
     _identifier(message, "request_id", role)
 
@@ -257,6 +293,23 @@ def validate_response(message):
         raise ProtocolError(
             "response: status %r is outside %s" % (status, list(STATUSES))
         )
+
+    # The reason is the machine-readable term a reader routes on, where the
+    # error is the prose a human or a model reads. Each outcome that stops a
+    # generation carries one, so a refusal is dispatched on a fixed word rather
+    # than by matching a message that varies with its argument.
+    if status == "completed":
+        _require_absent(
+            message,
+            ("reason",),
+            role,
+            "names a refusal reason a completed run did not have",
+        )
+    elif status in ("refused", "failed", "cancelled"):
+        _require_present(message, ("reason",), role)
+        _identifier(message, "reason", role)
+    elif "reason" in message:
+        _identifier(message, "reason", role)
 
     if status == "completed":
         _require_present(message, ("sha256", "provenance_url"), role)

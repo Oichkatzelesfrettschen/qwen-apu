@@ -1615,6 +1615,234 @@ else
     report preset_binds_complete_ledger_identity missing_identity
 fi
 
+# The image execution grant. remote/image-registry.sh validates the four image
+# authorities whole, so the fixture ledger names the checked-in bundle and
+# differs from it in execution_policy alone; the artifact, model, and
+# quarantine files stay the tree's own.
+image_profiles_refused=$script_directory/image-profiles.tsv
+image_profiles_gated=$work/image-profiles-gated.tsv
+printf 'image-fixture-a\tsdxs-512\tA\t512\t512\t1\teuler\t1.0\t4\t512\t300\tvalidator-gated\tevidence/image-appliance/design.md\n' \
+    >"$image_profiles_gated"
+image_profiles_two_gated=$work/image-profiles-two-gated.tsv
+{
+    cat "$image_profiles_gated"
+    printf 'image-fixture-b\tsdxs-512\tB\t512\t512\t1\teuler\t1.0\t4\t512\t300\tvalidator-gated\tevidence/image-appliance/design.md\n'
+} >"$image_profiles_two_gated"
+
+image_mcp_server_program=$work/image-mcp-server.py
+: >"$image_mcp_server_program"
+image_token_key_file=$work/private/image-mcp-token.key
+printf 'fixture-image-token-secret\n' >"$image_token_key_file"
+image_state_directory=$work/private/image-state
+image_service_socket=$image_state_directory/image-service.sock
+
+image_environment() {
+    printf 'QWEN_IMAGE_MCP_SERVER=%s\n' "$image_mcp_server_program"
+    printf 'QWEN_IMAGE_TOKEN_KEY_FILE=%s\n' "$image_token_key_file"
+    printf 'QWEN_IMAGE_STATE_DIR=%s\n' "$image_state_directory"
+    printf 'QWEN_IMAGE_SERVICE_SOCKET=%s\n' "$image_service_socket"
+}
+
+# Every checked-in image row reads refused, so the shipped ledger adds no
+# server under any setting and names each row it skipped.
+presets_image_refused=$work/presets-image-refused.ini
+if build "$web_profiles_ok" "$presets_image_refused" \
+    env QWEN_IMAGE_PROFILES="$image_profiles_refused" \
+    QWEN_IMAGE_MCP_SERVER="$image_mcp_server_program" \
+    QWEN_IMAGE_TOKEN_KEY_FILE="$image_token_key_file" \
+    QWEN_IMAGE_STATE_DIR="$image_state_directory" \
+    QWEN_IMAGE_SERVICE_SOCKET="$image_service_socket" \
+    QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
+    QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" \
+    QWEN_WEB_STATE_DIR="$web_state_directory" \
+    >"$work/image-refused.log" 2>"$work/image-refused.err"; then
+    outcome=ok
+    grep -q ',image$' "$presets_image_refused" && outcome=image_tag_present
+    grep -Fqx '# qwen_image_profile=-' "$presets_image_refused" ||
+        outcome=marker_names_a_profile
+    grep -q 'image_preset_skipped .*execution_policy=refused' \
+        "$work/image-refused.err" || outcome=skip_unreported
+    while IFS= read -r refused_config; do
+        grep -q '"image"' "$refused_config" && outcome=image_server_present
+    done <<EOF
+$(sed -n 's/^LLAMA_ARG_MCP_SERVERS_CONFIG = //p' "$presets_image_refused")
+EOF
+    report image_refused_rows_emit_no_server "$outcome"
+else
+    report image_refused_rows_emit_no_server failed
+    cat "$work/image-refused.err" >&2
+fi
+
+# The authorizer marker gates the image grant the way it gates the web one.
+presets_image_unmarked=$work/presets-image-unmarked.ini
+if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_ui \
+    QWEN_MODEL_ROOT=$policy_model_root \
+    env -u QWEN_WEB_AUTHORIZER_READY \
+    QWEN_IMAGE_PROFILES="$image_profiles_gated" \
+    QWEN_IMAGE_MCP_SERVER="$image_mcp_server_program" \
+    QWEN_IMAGE_TOKEN_KEY_FILE="$image_token_key_file" \
+    QWEN_IMAGE_STATE_DIR="$image_state_directory" \
+    QWEN_IMAGE_SERVICE_SOCKET="$image_service_socket" \
+    QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
+    QWEN_WEB_STATE_DIR="$web_state_directory" \
+    "$builder" "$presets_image_unmarked" \
+    >"$work/image-unmarked.log" 2>"$work/image-unmarked.err"; then
+    outcome=ok
+    grep -q '^LLAMA_ARG_MCP_SERVERS_CONFIG' "$presets_image_unmarked" &&
+        outcome=configuration_written
+    grep -q 'image_preset_skipped .*authorizer=absent' \
+        "$work/image-unmarked.err" || outcome=skip_unreported
+    report image_gated_row_waits_for_the_authorizer "$outcome"
+else
+    report image_gated_row_waits_for_the_authorizer failed
+    cat "$work/image-unmarked.err" >&2
+fi
+
+# Under the authorizer the row emits one image server per section, naming the
+# language profile beside the image profile because the grant binds both.
+presets_image_gated=$work/presets-image-gated.ini
+if build "$web_profiles_ok" "$presets_image_gated" \
+    env QWEN_IMAGE_PROFILES="$image_profiles_gated" \
+    QWEN_IMAGE_MCP_SERVER="$image_mcp_server_program" \
+    QWEN_IMAGE_TOKEN_KEY_FILE="$image_token_key_file" \
+    QWEN_IMAGE_STATE_DIR="$image_state_directory" \
+    QWEN_IMAGE_SERVICE_SOCKET="$image_service_socket" \
+    QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
+    QWEN_WEB_TOKEN_KEY_FILE="$image_token_key_file" \
+    QWEN_WEB_STATE_DIR="$web_state_directory" \
+    >"$work/image-gated.log" 2>"$work/image-gated.err"; then
+    outcome=ok
+    grep -q '^LLAMA_ARG_TAGS = web-research,validator-gated,image$' \
+        "$presets_image_gated" || outcome=wrong_tags
+    grep -Fqx '# qwen_image_profile=image-fixture-a' "$presets_image_gated" ||
+        outcome=marker_absent
+    gated_config=$(sed -n 's/^LLAMA_ARG_MCP_SERVERS_CONFIG = //p' \
+        "$presets_image_gated")
+    if [ -r "$gated_config" ]; then
+        python3 -c 'import json,sys; json.load(open(sys.argv[1]))' \
+            "$gated_config" || outcome=configuration_is_not_json
+        for image_environment_name in QWEN_IMAGE_LANGUAGE_PROFILE \
+            QWEN_IMAGE_PROFILE QWEN_IMAGE_TOKEN_KEY_FILE QWEN_IMAGE_STATE_DIR \
+            QWEN_IMAGE_SERVICE_SOCKET; do
+            grep -q "\"$image_environment_name\"" "$gated_config" ||
+                outcome=missing_$image_environment_name
+        done
+        grep -Fq '"timeout_ms": 360000' "$gated_config" || outcome=wrong_timeout
+        # The router bounds the call and the child bounds its own socket read,
+        # so both numbers come from the one setting.
+        grep -Fq '"QWEN_IMAGE_MCP_TIMEOUT_S": "360"' "$gated_config" ||
+            outcome=child_deadline_absent
+        grep -Fq "\"$image_mcp_server_program\"" "$gated_config" ||
+            outcome=server_program_absent
+        grep -Fq '"QWEN_IMAGE_LANGUAGE_PROFILE": "web-fixture-ok"' \
+            "$gated_config" || outcome=language_profile_absent
+        grep -Fq '"QWEN_IMAGE_PROFILE": "image-fixture-a"' "$gated_config" ||
+            outcome=image_profile_absent
+        grep -Fq '"web"' "$gated_config" || outcome=web_server_dropped
+    else
+        outcome=configuration_unreadable
+    fi
+    report image_gated_row_emits_its_server "$outcome"
+else
+    report image_gated_row_emits_its_server failed
+    cat "$work/image-gated.err" >&2
+fi
+
+# The image tag is a third term in LLAMA_ARG_TAGS, and qwen-capacity-policy.sh
+# rejoins each section to the ledger by the policy word its tags carry. The
+# real policy runs over the armed preset here, because every other arm drives
+# it over a two-term tag set and the armed path is the only one that produces
+# three.
+if run_policy_over_presets "$presets_image_gated" "$web_profiles_ok" \
+    >"$work/image-policy.log" 2>"$work/image-policy.err"; then
+    report image_tagged_section_passes_capacity_policy ok
+else
+    report image_tagged_section_passes_capacity_policy failed
+    cat "$work/image-policy.err" >&2
+fi
+
+# A generation runs in the server child whatever the page does about search, so
+# a ui-mediated section carries the image server and nothing else.
+presets_image_ui=$work/presets-image-ui.ini
+if build "$web_profiles_ui" "$presets_image_ui" \
+    env QWEN_IMAGE_PROFILES="$image_profiles_gated" \
+    QWEN_IMAGE_MCP_SERVER="$image_mcp_server_program" \
+    QWEN_IMAGE_TOKEN_KEY_FILE="$image_token_key_file" \
+    QWEN_IMAGE_STATE_DIR="$image_state_directory" \
+    QWEN_IMAGE_SERVICE_SOCKET="$image_service_socket" \
+    >"$work/image-ui.log" 2>"$work/image-ui.err"; then
+    outcome=ok
+    grep -q '^LLAMA_ARG_TAGS = web-research,ui-mediated,image$' \
+        "$presets_image_ui" || outcome=wrong_tags
+    ui_config=$(sed -n 's/^LLAMA_ARG_MCP_SERVERS_CONFIG = //p' \
+        "$presets_image_ui")
+    if [ -r "$ui_config" ]; then
+        python3 -c 'import json,sys; json.load(open(sys.argv[1]))' \
+            "$ui_config" || outcome=configuration_is_not_json
+        grep -Fq '"image"' "$ui_config" || outcome=image_server_absent
+        grep -Fq '"web"' "$ui_config" && outcome=web_server_present
+    else
+        outcome=configuration_unreadable
+    fi
+    report ui_mediated_section_carries_the_image_server "$outcome"
+else
+    report ui_mediated_section_carries_the_image_server failed
+    cat "$work/image-ui.err" >&2
+fi
+
+# Each name the image child reads is required before a section names it.
+presets_image_incomplete=$work/presets-image-incomplete.ini
+if build "$web_profiles_ui" "$presets_image_incomplete" \
+    env -u QWEN_IMAGE_TOKEN_KEY_FILE \
+    QWEN_IMAGE_PROFILES="$image_profiles_gated" \
+    QWEN_IMAGE_MCP_SERVER="$image_mcp_server_program" \
+    QWEN_IMAGE_STATE_DIR="$image_state_directory" \
+    QWEN_IMAGE_SERVICE_SOCKET="$image_service_socket" \
+    >"$work/image-incomplete.log" 2>"$work/image-incomplete.err"; then
+    report image_gated_row_requires_its_inputs accepted
+else
+    if grep -q 'QWEN_IMAGE_TOKEN_KEY_FILE names nothing' \
+        "$work/image-incomplete.err"; then
+        report image_gated_row_requires_its_inputs ok
+    else
+        report image_gated_row_requires_its_inputs wrong_refusal
+    fi
+fi
+
+# A section carries one mcpServers object, so one image profile emits.
+presets_image_two=$work/presets-image-two.ini
+if build "$web_profiles_ui" "$presets_image_two" \
+    env QWEN_IMAGE_PROFILES="$image_profiles_two_gated" \
+    QWEN_IMAGE_MCP_SERVER="$image_mcp_server_program" \
+    QWEN_IMAGE_TOKEN_KEY_FILE="$image_token_key_file" \
+    QWEN_IMAGE_STATE_DIR="$image_state_directory" \
+    QWEN_IMAGE_SERVICE_SOCKET="$image_service_socket" \
+    >"$work/image-two.log" 2>"$work/image-two.err"; then
+    report two_gated_image_rows_refused accepted
+else
+    if grep -q 'both emit' "$work/image-two.err"; then
+        report two_gated_image_rows_refused ok
+    else
+        report two_gated_image_rows_refused wrong_refusal
+    fi
+fi
+
+# The preset binds the image ledger the way it binds the web one, so
+# qwen-image-launch.sh reads one authority out of the file it launches.
+expected_image_ledger_sha256=$(sha256sum "$image_profiles_gated" | cut -d' ' -f1)
+if grep -Fqx "# qwen_image_profiles_path=$image_profiles_gated" \
+       "$presets_image_gated" &&
+   grep -Fqx "# qwen_image_profiles_sha256=$expected_image_ledger_sha256" \
+       "$presets_image_gated" &&
+   grep -Fqx '# qwen_image_mcp_timeout_ms=360000' "$presets_image_gated"; then
+    report preset_binds_image_ledger_identity ok
+else
+    report preset_binds_image_ledger_identity missing_identity
+fi
+
 if [ "$failures" -ne 0 ]; then
     printf 'test-web-presets: %d check(s) failed\n' "$failures" >&2
     exit 1

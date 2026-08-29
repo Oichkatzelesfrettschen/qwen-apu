@@ -476,12 +476,18 @@ fi
 # gone. Its control script is a fixture, so the arm leaves any tmux session on
 # this machine alone.
 cp "$script_directory/qwen-teardown.sh" "$fixture_remote/qwen-teardown.sh"
+# The teardown reads its image residue proof from its own directory, so the
+# fixture carries that script too and these arms measure a teardown whose
+# proof ran rather than one reporting the proof absent.
+cp "$script_directory/image-teardown-check.sh" \
+    "$fixture_remote/image-teardown-check.sh"
 cat >"$fixture_remote/qwen-webui-control.sh" <<'CONTROL'
 #!/bin/sh
 set -eu
 printf 'stopped tmux_socket=fixture tmux_session=fixture\n'
 CONTROL
-chmod +x "$fixture_remote/qwen-teardown.sh" "$fixture_remote/qwen-webui-control.sh"
+chmod +x "$fixture_remote/qwen-teardown.sh" "$fixture_remote/qwen-webui-control.sh" \
+    "$fixture_remote/image-teardown-check.sh"
 
 run_teardown_arm() {
     teardown_state_directory=$temporary_directory/state-teardown-$1
