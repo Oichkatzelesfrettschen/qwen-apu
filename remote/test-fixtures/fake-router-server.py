@@ -26,6 +26,16 @@ proposed `image_generate_image` call carries. A turn that carries a tool message
 already reads the closing plain-text answer, so the fixture proposes once per
 turn the way a model that read its own result would.
 
+A preset carrying a review-only vision section beside the language one serves
+two roster ids. `GET /props` reports `modalities.vision` from the section's own
+`LLAMA_ARG_MMPROJ`, which is what makes the page's Review button appear, and a
+completion naming the review section answers the verdict object
+`QWEN_FAKE_ROUTER_REVIEW_VERDICT` holds. A review request that arrived carrying
+a `tools` key is answered with an object outside the schema, so the page's own
+parser reports it rather than the fixture asserting it. The verdict names the
+constraints the request declared, since the page requires one entry per name in
+the order it gave.
+
 The child is spawned per call over stdio, the way llama-server spawns an MCP
 server for one invocation, and its stderr reaches this process's stderr so a
 child that refused startup names its reason in the server log.
@@ -37,6 +47,7 @@ usage: fake-router-server.py --models-preset FILE --host HOST --port PORT
 import http.server
 import json
 import os
+import re
 import shlex
 import socketserver
 import subprocess
@@ -87,11 +98,11 @@ def parse_arguments(argv):
 
 
 def read_preset(path):
-    """Return the one section this preset names, as (section_id, keys).
+    """Return the sections this preset names, in file order.
 
-    The fixture serves a single-section web preset, which is what
-    `qwen-web-launch.sh` requires of every launch it performs, so a file
-    carrying two sections is a preset this fixture cannot stand in for.
+    `qwen-web-launch.sh` admits one language section, and one review-only
+    vision section beside it where an image row pairs a review_model, so the
+    fixture serves one or two. A third is a preset no launch produces.
     """
     sections = {}
     order = []
@@ -110,11 +121,11 @@ def read_preset(path):
                 continue
             name, value = stripped.split("=", 1)
             sections[current][name.strip()] = value.strip()
-    if len(order) != 1:
+    if not 1 <= len(order) <= 2:
         raise SystemExit(
-            f"the fixture router serves one preset section; {path} names {len(order)}"
+            f"the fixture router serves one or two preset sections; {path} names {len(order)}"
         )
-    return order[0], sections[order[0]]
+    return [(name, sections[name]) for name in order]
 
 
 class MissingTools(Exception):
@@ -261,6 +272,44 @@ def call_tool(child, name, params):
     raise UnknownTool(f'unknown tool "{name}"')
 
 
+CONSTRAINT_NAMES = re.compile(r"Constraint names, in order:\s*(.+)")
+
+
+def review_verdict(body):
+    """Compose a passing verdict over the constraints the request declared.
+
+    `buildReviewRequestBody` writes `Constraint names, in order: a, b` into the
+    user turn's text part, and `parseReviewVerdict` requires one entry per
+    declared name in that order, so a fixture answering a fixed list would fail
+    the page's own parser whenever the approval carried a negative prompt. The
+    names are read back out of the request for that reason: the fixture stands
+    in for a model that read the instruction, not for one that guessed it.
+    """
+    declared = []
+    for message in body.get("messages") or []:
+        content = message.get("content")
+        parts = content if isinstance(content, list) else [{"text": content}]
+        for part in parts:
+            text = part.get("text") if isinstance(part, dict) else None
+            if not isinstance(text, str):
+                continue
+            found = CONSTRAINT_NAMES.search(text)
+            if found:
+                declared = [
+                    name.strip() for name in found.group(1).split(",") if name.strip()
+                ]
+    return json.dumps({
+        "hard_constraints": [
+            {"name": name, "passed": True,
+             "observation": "The frame meets this constraint."}
+            for name in declared
+        ],
+        "composition_change_required": False,
+        "prompt_delta": "",
+        "regenerate": False,
+    })
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "qwen-fake-router/1"
@@ -301,21 +350,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return {}
 
     def resolve_model(self, named):
-        """Refuse a request naming no model or one outside the roster.
+        """Return the named row of the roster, or refuse and return None.
 
         The router resolves `/tools` the way it resolves `/props`, so an absent
         and an unknown name are separate refusals and neither reaches a child.
         """
         if not named:
             self.send_error_object(400, "a model must be named")
-            return False
-        if named != self.settings["section"]:
+            return None
+        row = self.settings["rows"].get(named)
+        if row is None:
             self.send_error_object(404, f"no model named {named}", "not_found_error")
-            return False
-        return True
+            return None
+        return row
 
-    def tools_child(self):
-        configuration = self.settings["mcp_configuration"]
+    def tools_child(self, row):
+        configuration = row["mcp_configuration"]
         if not configuration:
             raise MissingTools("the section carries no MCP configuration")
         return ToolChild(configuration)
@@ -344,24 +394,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         if parsed.path in ("/v1/models", "/models"):
             self.send_json(200, {"object": "list", "data": [{
-                "id": self.settings["section"],
+                "id": row_id,
                 "object": "model",
                 "status": {"value": "loaded"},
-            }]})
+            } for row_id in self.settings["roster"]]})
             return
         if parsed.path == "/props":
-            if not self.resolve_model((query.get("model") or [""])[0]):
+            row = self.resolve_model((query.get("model") or [""])[0])
+            if row is None:
                 return
+            # The page asks each roster row which modality it reads, and
+            # llama-server reports vision for a child holding a projector. The
+            # review section is the one carrying LLAMA_ARG_MMPROJ, so that key
+            # rather than a name decides the answer here too.
             self.send_json(200, {
-                "default_generation_settings": {"n_ctx": self.settings["context"]},
-                "model_path": self.settings["model_path"],
+                "default_generation_settings": {"n_ctx": row["context"]},
+                "model_path": row["model_path"],
+                "modalities": {"vision": bool(row["projector"])},
             })
             return
         if parsed.path == "/tools":
-            if not self.resolve_model((query.get("model") or [""])[0]):
+            row = self.resolve_model((query.get("model") or [""])[0])
+            if row is None:
                 return
             try:
-                self.send_json(200, tool_listing(self.tools_child()))
+                self.send_json(200, tool_listing(self.tools_child(row)))
             except MissingTools:
                 self.send_error_object(403, "tools are disabled", "feature_disabled")
             except (OSError, ValueError, RuntimeError) as error:
@@ -390,7 +447,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return
         body = self.read_body()
         if parsed.path == "/tools":
-            if not self.resolve_model(body.get("model") or ""):
+            row = self.resolve_model(body.get("model") or "")
+            if row is None:
                 return
             name = body.get("tool")
             if not isinstance(name, str) or not name:
@@ -400,7 +458,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if not isinstance(params, dict):
                 params = {}
             try:
-                self.send_json(200, call_tool(self.tools_child(), name, params))
+                self.send_json(200, call_tool(self.tools_child(row), name, params))
             except MissingTools:
                 self.send_error_object(403, "tools are disabled", "feature_disabled")
             except UnknownTool as error:
@@ -419,7 +477,31 @@ class Handler(http.server.BaseHTTPRequestHandler):
         The turn shape rather than a model decides the branch: a request whose
         messages already carry a `role: tool` entry is the continuation round,
         which reads plain text and ends the turn.
+
+        A request naming the review section is the vision review, and the page
+        posts it non-streamed with the body carrying no `tools` key at all. The
+        fixture answers the verdict object QWEN_FAKE_ROUTER_REVIEW_VERDICT
+        names, so the admission reads the checklist the page rendered rather
+        than a device's opinion of an image.
         """
+        review_row = self.settings["review_section"]
+        if review_row and body.get("model") == review_row:
+            verdict = self.settings["review_verdict"] or review_verdict(body)
+            if "tools" in body:
+                verdict = json.dumps({
+                    "note": "the review request carried a tools key",
+                })
+            self.send_json(200, {
+                "id": "chatcmpl-review",
+                "object": "chat.completion",
+                "model": review_row,
+                "choices": [{
+                    "index": 0,
+                    "message": {"role": "assistant", "content": verdict},
+                    "finish_reason": "stop",
+                }],
+            })
+            return
         continuation = any(
             message.get("role") == "tool" for message in body.get("messages") or []
         )
@@ -483,18 +565,45 @@ def main(argv):
     if not settings["preset"]:
         sys.stderr.write("--models-preset names the section this fixture serves\n")
         return 2
-    section, keys = read_preset(settings["preset"])
+    preset_sections = read_preset(settings["preset"])
     api_key = ""
     if settings["api_key_file"]:
         with open(settings["api_key_file"], encoding="utf-8") as handle:
             api_key = handle.readline().strip()
+    rows = {}
+    roster = []
+    language_section = ""
+    review_section = ""
+    for section, keys in preset_sections:
+        served = keys.get("LLAMA_ARG_ALIAS", section)
+        rows[served] = {
+            "mcp_configuration": keys.get("LLAMA_ARG_MCP_SERVERS_CONFIG", ""),
+            "model_path": keys.get("LLAMA_ARG_MODEL", ""),
+            "context": int(keys.get("LLAMA_ARG_CTX_SIZE", "4096")),
+            "projector": keys.get("LLAMA_ARG_MMPROJ", ""),
+        }
+        roster.append(served)
+        # The review section is the one tagged review-only, which is also the
+        # one carrying a projector and no MCP configuration; the tag is read
+        # because it is what the generator writes and the launch checks.
+        if "review-only" in keys.get("LLAMA_ARG_TAGS", "").split(","):
+            review_section = served
+        else:
+            language_section = served
     router_settings = {
-        "section": keys.get("LLAMA_ARG_ALIAS", section),
-        "mcp_configuration": keys.get("LLAMA_ARG_MCP_SERVERS_CONFIG", ""),
-        "model_path": keys.get("LLAMA_ARG_MODEL", ""),
-        "context": int(keys.get("LLAMA_ARG_CTX_SIZE", "4096")),
+        "rows": rows,
+        "roster": roster,
+        "section": language_section or roster[0],
+        "review_section": review_section,
+        "mcp_configuration": rows[language_section or roster[0]]["mcp_configuration"],
+        "model_path": rows[language_section or roster[0]]["model_path"],
+        "context": rows[language_section or roster[0]]["context"],
         "static": settings["static"],
         "api_key": api_key,
+        # An unset override leaves the verdict composed from the constraints
+        # the request declared, which is the only reply the page's parser
+        # admits whatever the approval carried.
+        "review_verdict": os.environ.get("QWEN_FAKE_ROUTER_REVIEW_VERDICT", ""),
         "image_arguments": os.environ.get(
             "QWEN_FAKE_ROUTER_IMAGE_ARGUMENTS",
             json.dumps({
@@ -517,10 +626,11 @@ def main(argv):
     # greps for.
     sys.stderr.write("starting server in router mode\n")
     sys.stderr.write(
-        "fake_router listening {} {} section={} tools={}\n".format(
+        "fake_router listening {} {} section={} review={} tools={}\n".format(
             settings["host"],
             server.server_address[1],
             router_settings["section"],
+            router_settings["review_section"] or "none",
             shlex.quote(router_settings["mcp_configuration"] or "none"),
         )
     )

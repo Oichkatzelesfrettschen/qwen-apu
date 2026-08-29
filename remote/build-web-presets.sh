@@ -119,6 +119,22 @@ set -eu
 # service's 330 s and the runtime's 300 s, so a stalled generation is ended by
 # the process that owns it.
 #
+# An image row's `review_model` names the vision checkpoint that reviews what
+# that row generates, and the generator emits one review-only section for it.
+# The page reads `GET /v1/models` for its roster and asks `GET /props?model=`
+# which row reports a vision modality, so a second section is what puts the
+# Review button on an artifact card; a preset holding the language section
+# alone leaves the review to remote/image-review.py on a second launch. The
+# section is named for the model_id rather than for a profile, because the
+# reviewer is a checkpoint at its own validated tuple rather than a served
+# policy: remote/models.tsv supplies the depth, the cache triple, the flash
+# setting, and the submission geometry, remote/validated-tuples.tsv is required
+# to carry a `validated` row at that exact tuple with `projector_state=loaded`,
+# and select-projector.sh resolves the projector inside the model file's own
+# directory. It names no LLAMA_ARG_MCP_SERVERS_CONFIG and carries the tags
+# `vision-review,review-only`, so it holds no execution grant of any kind and
+# the review request the page posts offers the model no tool.
+#
 # No environment variable converts a `refused` row into a network-capable
 # profile. The override that exists admits an unvalidated depth, which is a
 # capacity claim; an execution grant is a security boundary and the ledger is
@@ -520,6 +536,7 @@ web_profiles_sha256=${web_profiles_identity%% *}
 # names both rather than choosing.
 image_profile_id=
 image_profile_model=
+image_profile_review_model=
 image_registry_tab=$(printf '\t')
 if ! image_profile_rows=$("$script_directory/image-registry.sh" profiles); then
     printf 'the image profile ledger fails validation: %s\n' "$image_profiles" >&2
@@ -544,7 +561,7 @@ while IFS="$image_registry_tab" read -r row_image_profile row_image_model \
     _row_image_placement _row_image_width _row_image_height _row_image_steps \
     _row_image_sampler _row_image_cfg _row_image_max_steps \
     _row_image_max_dimension _row_image_timeout row_image_policy \
-    _row_image_evidence; do
+    _row_image_evidence row_image_review_model; do
     [ -n "$row_image_profile" ] || continue
     case $row_image_policy in
         refused)
@@ -579,6 +596,7 @@ while IFS="$image_registry_tab" read -r row_image_profile row_image_model \
     fi
     image_profile_id=$row_image_profile
     image_profile_model=$row_image_model
+    image_profile_review_model=$row_image_review_model
 done <<IMAGE_PROFILE_ROWS
 $image_profile_rows
 IMAGE_PROFILE_ROWS
@@ -621,6 +639,107 @@ if [ -n "$image_profile_id" ]; then
     require_image_mcp_inputs
 fi
 
+registry_field() {
+    registry_field_row=$1
+    registry_field_name=$2
+    printf '%s\n' "$registry_field_row" | sed -n "s/^$registry_field_name=//p"
+}
+
+# The review section is resolved before any section emits, for the reason the
+# image profile is: it is one more claim over the whole file, and a run that
+# discovered it unusable after writing half the sections would land a preset
+# whose Review button reaches a section that never emitted. `-` leaves the
+# review to a second launch, which is what every checked-in row reads.
+review_section=
+review_model_path=
+review_projector_path=
+review_context=
+review_cache_k=
+review_cache_v=
+review_flash=
+review_batch=
+review_ubatch=
+if [ -n "$image_profile_review_model" ] &&
+    [ "$image_profile_review_model" != '-' ]; then
+    if ! review_registry_row=$("$script_directory/model-registry.sh" id \
+        "$image_profile_review_model"); then
+        printf 'image profile %s names review_model %s, which the model registry holds no row for\n' \
+            "$image_profile_id" "$image_profile_review_model" >&2
+        exit 1
+    fi
+    review_section=$image_profile_review_model
+    review_projector=$(registry_field "$review_registry_row" projector)
+    if [ "$review_projector" != required ]; then
+        printf 'review_model %s carries projector %s, and a reviewer reads an image through its own projector\n' \
+            "$image_profile_review_model" "$review_projector" >&2
+        exit 1
+    fi
+    review_tier=$(registry_field "$review_registry_row" tier)
+    case $review_tier in
+        production | candidate) ;;
+        *)
+            printf 'review_model %s is tiered %s, which is not production or candidate\n' \
+                "$image_profile_review_model" "$review_tier" >&2
+            exit 1
+            ;;
+    esac
+    review_model_file=$(registry_field "$review_registry_row" model_file)
+    review_model_path=$model_root/$review_model_file
+    if [ ! -f "$review_model_path" ]; then
+        printf 'review_model %s names weights this machine holds no file for: %s\n' \
+            "$image_profile_review_model" "$review_model_path" >&2
+        exit 1
+    fi
+    # select-projector.sh prints nothing for both the absent and the ambiguous
+    # case, so an empty result rather than the exit status discriminates. A
+    # review section emitted text-only would answer from an image it never read.
+    review_projector_path=$("$script_directory/select-projector.sh" \
+        "$review_model_path" 2>/dev/null) || review_projector_path=''
+    if [ -z "$review_projector_path" ]; then
+        printf 'review_model %s resolves no projector inside %s\n' \
+            "$image_profile_review_model" "$(dirname -- "$review_model_path")" >&2
+        exit 1
+    fi
+    # The reviewer serves at its registry default depth rather than at a depth a
+    # profile chooses, because the tuple has to be one remote/validated-tuples.tsv
+    # already carries with the projector loaded: llama-bench allocates no
+    # projector buffers, so a `none` row measures a different allocation than the
+    # one this section makes.
+    review_context=$(registry_field "$review_registry_row" context_default)
+    review_cache_k=$(registry_field "$review_registry_row" cache_type_k)
+    review_cache_v=$(registry_field "$review_registry_row" cache_type_v)
+    review_flash=$(registry_field "$review_registry_row" flash_attention)
+    review_batch=$(registry_field "$review_registry_row" batch)
+    review_ubatch=$(registry_field "$review_registry_row" ubatch)
+    for review_numeric_field in "$review_context" "$review_batch" \
+        "$review_ubatch"; do
+        case $review_numeric_field in
+            '' | *[!0-9]* | 0*)
+                printf 'review_model %s carries a tuple field outside canonical positive decimal form: %s\n' \
+                    "$image_profile_review_model" "$review_numeric_field" >&2
+                exit 1
+                ;;
+        esac
+    done
+    if ! "$script_directory/model-registry.sh" tuples \
+        "$image_profile_review_model" |
+        awk -F'\t' -v depth="$review_context" -v batch="$review_batch" \
+            -v ubatch="$review_ubatch" -v cache_k="$review_cache_k" \
+            -v cache_v="$review_cache_v" -v flash="$review_flash" '
+            $4 == depth && $5 == batch && $6 == ubatch && $7 == cache_k &&
+            $8 == cache_v && $9 == flash && $12 == "loaded" &&
+            $14 == "validated" { found = 1 }
+            END { exit !found }
+        '; then
+        printf 'review_model %s carries no validated tuple at depth %s, %s/%s, %s/%s, flash %s with the projector loaded\n' \
+            "$image_profile_review_model" "$review_context" "$review_batch" \
+            "$review_ubatch" "$review_cache_k" "$review_cache_v" \
+            "$review_flash" >&2
+        printf 'remote/probe-depth-projector.sh measures that arm\n' >&2
+        exit 1
+    fi
+fi
+
 # A section's MCP configuration path is read by qwen-web-launch.sh and by the
 # llama-server child, each from its own working directory, so the generator
 # resolves the output directory absolutely before it embeds the name. A relative
@@ -657,6 +776,8 @@ mkdir -p "$mcp_config_directory_temporary"
     printf '# qwen_image_profile=%s\n' "${image_profile_id:--}"
     printf '# qwen_image_model=%s\n' "${image_profile_model:--}"
     printf '# qwen_image_mcp_timeout_ms=%s\n' "$image_mcp_timeout_ms"
+    printf '# qwen_image_review_model=%s\n' "${image_profile_review_model:--}"
+    printf '# qwen_image_review_section=%s\n' "${review_section:--}"
     if [ "$allow_unvalidated_depth" = 1 ]; then
         printf '# qwen-web-presets: unvalidated-depth-override\n'
     fi
@@ -771,12 +892,6 @@ require_multi_source_matches_fetches() {
         printf 'one fetch reaches one source, so a single-fetch budget reads multi_source no\n' >&2
         exit 1
     fi
-}
-
-registry_field() {
-    registry_field_row=$1
-    registry_field_name=$2
-    printf '%s\n' "$registry_field_row" | sed -n "s/^$registry_field_name=//p"
 }
 
 while profile_id=; IFS='	' read -r profile_id model_id _web_mode context \
@@ -1135,6 +1250,45 @@ while profile_id=; IFS='	' read -r profile_id model_id _web_mode context \
     emitted=$((emitted + 1))
 done <"$web_profiles"
 
+# The review section follows the language sections and carries the vision row's
+# own tuple, its projector, and nothing else. Its name is the model_id, which
+# `GET /v1/models` returns as the roster id and `GET /props?model=` answers a
+# vision modality for, so the page finds the reviewer by asking the server what
+# each row can read rather than by matching a name. A section header spelled
+# like a profile the ledger already emitted would be two sections of one name,
+# so a collision refuses here rather than landing a file whose second section
+# overwrites the first.
+if [ -n "$review_section" ]; then
+    case $seen_profile_ids in
+        *" $review_section "*)
+            printf 'review section %s is spelled like a web profile the ledger emits\n' \
+                "$review_section" >&2
+            printf 'rename the profile or pair the image row with another review_model\n' >&2
+            exit 1
+            ;;
+    esac
+    if [ "$emitted" -eq 0 ]; then
+        printf 'the review section %s reviews artifacts of a language section, and none emitted\n' \
+            "$review_section" >&2
+        exit 1
+    fi
+    {
+        printf '[%s]\n' "$review_section"
+        printf 'LLAMA_ARG_MODEL = %s\n' "$review_model_path"
+        printf 'LLAMA_ARG_ALIAS = %s\n' "$review_section"
+        printf 'LLAMA_ARG_CTX_SIZE = %s\n' "$review_context"
+        printf 'LLAMA_ARG_CACHE_TYPE_K = %s\n' "$review_cache_k"
+        printf 'LLAMA_ARG_CACHE_TYPE_V = %s\n' "$review_cache_v"
+        printf 'LLAMA_ARG_FLASH_ATTN = %s\n' "$review_flash"
+        printf 'LLAMA_ARG_BATCH = %s\n' "$review_batch"
+        printf 'LLAMA_ARG_UBATCH = %s\n' "$review_ubatch"
+        printf 'LLAMA_ARG_MMPROJ = %s\n' "$review_projector_path"
+        printf 'LLAMA_ARG_TAGS = vision-review,review-only\n'
+        printf '\n'
+    } >>"$output_ini_temporary"
+    emitted=$((emitted + 1))
+fi
+
 web_profiles_current_identity=$(sha256sum -- "$web_profiles")
 web_profiles_current_sha256=${web_profiles_current_identity%% *}
 if [ "$web_profiles_current_sha256" != "$web_profiles_sha256" ]; then
@@ -1170,6 +1324,21 @@ verify_assembled_sections() {
                 printf "assembled section %s carries the image tag and omits LLAMA_ARG_MCP_SERVERS_CONFIG\n", \
                     section > "/dev/stderr"
                 rejected = 1
+            }
+            # A review-only section holds no execution grant of any kind, so a
+            # configuration reaching it would arm a tool the page never offers
+            # the reviewer.
+            if (tags_value ~ /(^|,)review-only(,|$)/) {
+                if (seen_key["LLAMA_ARG_MCP_SERVERS_CONFIG"]) {
+                    printf "assembled section %s is review-only and carries LLAMA_ARG_MCP_SERVERS_CONFIG\n", \
+                        section > "/dev/stderr"
+                    rejected = 1
+                }
+                if (!seen_key["LLAMA_ARG_MMPROJ"]) {
+                    printf "assembled section %s is review-only and omits LLAMA_ARG_MMPROJ\n", \
+                        section > "/dev/stderr"
+                    rejected = 1
+                }
             }
             # A ui-mediated section reaches no network of its own, so a
             # configuration belongs to it only where the image tag names the
@@ -1290,7 +1459,7 @@ mv -- "$output_ini_temporary.resolved" "$output_ini_temporary"
 mv -- "$output_ini_temporary" "$output_ini"
 trap - EXIT HUP INT TERM
 
-printf 'web_presets=written path=%s profiles=%s absent=%s projector_unresolved=%s mcp_configs=%s image_profile=%s\n' \
+printf 'web_presets=written path=%s profiles=%s absent=%s projector_unresolved=%s mcp_configs=%s image_profile=%s review_section=%s\n' \
     "$output_ini" "$emitted" "$skipped_absent_weights" \
     "$skipped_unresolved_projector" "$mcp_config_directory" \
-    "${image_profile_id:--}"
+    "${image_profile_id:--}" "${review_section:--}"

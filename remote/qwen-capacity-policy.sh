@@ -655,6 +655,21 @@ validate_web_preset_execution_policies() {
         }
         function finish_section(   ledger_policy, section_policy) {
             if (section == "" || section == "*") return
+            # A review-only section names a vision checkpoint rather than a web
+            # profile, so the web ledger holds no row for it and the rejoin that
+            # guards an execution grant has nothing to rejoin. What makes it
+            # safe is that it holds no grant at all: the tuple validator has
+            # already bound it to one registry row at that row own geometry,
+            # and an MCP configuration reaching it would arm a tool the page
+            # never offers a reviewer, so its absence is required here.
+            if (tags_value ~ /(^|,)review-only(,|$)/) {
+                if (seen_mcp_configuration) {
+                    printf "web preset section %s is review-only and carries LLAMA_ARG_MCP_SERVERS_CONFIG\n", \
+                        section > "/dev/stderr"
+                    rejected = 1
+                }
+                return
+            }
             if (!(section in ledger_execution_policy)) {
                 printf "web preset section %s names a profile the ledger %s no longer carries\n", \
                     section, ledger > "/dev/stderr"
@@ -692,6 +707,7 @@ validate_web_preset_execution_policies() {
             sub(/^[[:space:]]*\[/, "", section)
             sub(/\][[:space:]]*$/, "", section)
             tags_value = ""
+            seen_mcp_configuration = 0
             next
         }
         {
@@ -703,6 +719,7 @@ validate_web_preset_execution_policies() {
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
             gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
             if (key == "LLAMA_ARG_TAGS") tags_value = value
+            if (key == "LLAMA_ARG_MCP_SERVERS_CONFIG") seen_mcp_configuration = 1
         }
         END {
             finish_section()

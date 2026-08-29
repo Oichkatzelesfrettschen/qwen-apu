@@ -135,10 +135,26 @@ model_registry=$work/models.tsv
 {
     printf '# id\trole\tmodel_file\tfetch_script\tcontext_default\tcontext_ceiling\tcontext_target\tcache_type_k\tcache_type_v\tflash_attention\tprojector\tprojector_fetch_script\tdecode_tok_s\tprefill_tok_s\tquality\ttier\tbatch\tubatch\tvalidated_filled_depth\tvalidation_evidence\traw_tool_selection\tguarded_tool_execution\n'
     printf 'image-admission-fixture\tfixture-role\tFixture-GGUF/fixture.gguf\tdownload-fixture.sh\t4096\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t1.00\t1.00\tuntested\tcandidate\t128\t32\t4096\tevidence/image-appliance/design.md\t9/10\trefused\n'
+    printf 'image-review-fixture\tfixture-role\tFixture-Vision-GGUF/vision.gguf\tdownload-fixture.sh\t4096\t8192\t8192\tq8_0\tq4_0\ton\trequired\tdownload-fixture-mmproj.sh\t1.00\t1.00\tuntested\tcandidate\t128\t32\t4096\tevidence/image-appliance/design.md\t8/10\trefused\n'
 } >"$model_registry"
 model_root=$work/model-root
 mkdir -p "$model_root/Fixture-GGUF"
 : >"$model_root/Fixture-GGUF/fixture.gguf"
+# select-projector.sh searches the model file's own directory, so the vision
+# row sits in its own and a projector beside a text checkpoint pairs with
+# nothing.
+mkdir -p "$model_root/Fixture-Vision-GGUF"
+: >"$model_root/Fixture-Vision-GGUF/vision.gguf"
+: >"$model_root/Fixture-Vision-GGUF/mmproj-F16.gguf"
+
+# The review section serves the vision row's registry default tuple, and the
+# generator requires remote/validated-tuples.tsv to carry that arm with the
+# projector loaded.
+validated_tuples=$work/validated-tuples.tsv
+{
+    printf '# tuple_id\tmodel_id\truntime_mode\tcontext\tbatch\tubatch\tcache_k\tcache_v\tflash_attention\tthreads\tparallel\tprojector_state\tbackend\tstatus\tevidence\tllama_commit\trunner_sha256\tkernel\tmesa\tamdgpu\tmeasured_at\n'
+    printf 'image-review-fixture-d4096-b128-ub32-proj\timage-review-fixture\tstandalone\t4096\t128\t32\tq8_0\tq4_0\ton\t1\t1\tloaded\tvulkan\tvalidated\tevidence/image-appliance/design.md\t-\t-\t-\t-\t-\t2026-08-29\n'
+} >"$validated_tuples"
 
 # The fixture runtime writes a PNG of the requested dimensions from the seed
 # alone, so the artifact digest the service reports is a function of the seed
@@ -214,6 +230,69 @@ if ! awk -F'	' '$1 == "image-sdxs-512-a" && $12 == "validator-gated" &&
                  END { exit found ? 0 : 1 }' \
         "$script_directory/image-profiles.tsv"; then
     printf 'test-admit-image-router: the harness edited the checked-in image ledger\n' >&2
+    exit 1
+fi
+
+# The review pairing runs the whole admission again with the image row naming a
+# vision checkpoint. Two sections serve, the page's Review button appears
+# because `GET /props` reports a vision modality for the second row, and the
+# rendered checklist is what the arm reads.
+review_output=$work/output-review
+mkdir -p "$review_output"
+set +e
+env -u QWEN_IMAGE_PROFILES -u QWEN_IMAGE_PROFILE \
+    QWEN_WEBUI_STATE_DIRECTORY="$state_directory" \
+    QWEN_MODEL_REGISTRY="$model_registry" \
+    QWEN_VALIDATED_TUPLES="$validated_tuples" \
+    QWEN_MODEL_ROOT="$model_root" \
+    QWEN_ADMISSION_MODEL_ID=image-admission-fixture \
+    QWEN_ADMISSION_REVIEW_MODEL=image-review-fixture \
+    QWEN_ADMISSION_CONTEXT=4096 \
+    QWEN_ADMISSION_RESTORE=0 \
+    QWEN_LLAMA_SERVER="$script_directory/test-fixtures/fake-router-server.py" \
+    QWEN_VULKAN_LATENCY_PROBE="$latency_probe" \
+    QWEN_IMAGE_RUNTIME="$script_directory/test-fixtures/fake-image-runtime.sh" \
+    QWEN_IMAGE_RUNTIME_TEMPLATE=fixture \
+    QWEN_IMAGE_MODEL_PATH="$image_model_directory" \
+    QWEN_RADV_ICD="$fixture_icd" \
+    QWEN_SERVER_PORT="${QWEN_SERVER_PORT:-18080}" \
+    QWEN_WEB_BROKER_PORT="${QWEN_WEB_BROKER_PORT:-18571}" \
+    "$harness/admit-image-router.sh" "$review_output" \
+    >"$work/review.stdout" 2>"$work/review.stderr"
+review_status=$?
+set -e
+cat "$work/review.stdout"
+if [ "$review_status" -ne 0 ]; then
+    keep_on_failure=1
+    printf 'test-admit-image-router: the review admission refused\n' >&2
+    awk -F'\t' '$2 != "accepted" && $2 != "observed" && $2 != "skipped" { print }' \
+        "$review_output/summary.tsv" >&2 2>/dev/null || true
+    tail -c 2000 "$work/review.stderr" >&2
+    exit 1
+fi
+for review_check in router_roster review_row_reports_vision \
+    review_row_offers_no_tools browser_review_rendered \
+    browser_review_stays_out_of_history browser_review_offers_no_tools; do
+    if ! awk -F'\t' -v name="$review_check" \
+        '$1 == name && $2 == "accepted" { found = 1 } END { exit found ? 0 : 1 }' \
+        "$review_output/summary.tsv"; then
+        keep_on_failure=1
+        printf 'test-admit-image-router: %s was not accepted in the review run\n' \
+            "$review_check" >&2
+        grep "^$review_check	" "$review_output/summary.tsv" >&2 || true
+        exit 1
+    fi
+done
+# The preset the review run generated names one language section and one
+# review-only vision section, and the review section holds no execution grant.
+if [ "$(grep -c '^\[' "$review_output/web-presets.ini")" -ne 2 ] ||
+   [ "$(grep -c '^LLAMA_ARG_MCP_SERVERS_CONFIG' "$review_output/web-presets.ini")" -ne 1 ] ||
+   ! grep -qx 'LLAMA_ARG_TAGS = vision-review,review-only' \
+       "$review_output/web-presets.ini"; then
+    keep_on_failure=1
+    printf 'test-admit-image-router: the review preset is not one language and one review section\n' >&2
+    grep '^\[\|^LLAMA_ARG_TAGS\|^LLAMA_ARG_MCP_SERVERS_CONFIG' \
+        "$review_output/web-presets.ini" >&2
     exit 1
 fi
 

@@ -289,6 +289,10 @@ listener to loopback the way the quarantine marker does, and
 a caller who asked for any other listener, and reads every
 `LLAMA_ARG_MCP_SERVERS_CONFIG` and `LLAMA_ARG_MMPROJ` path its sections name,
 since router mode reads a projector only when a request selects that child.
+`QWEN_WEB_REVIEW_SECTION` raises both to two for one named section, which
+`qwen-image-launch.sh` sets to the review-only vision section an image row's
+`review_model` produces; the broker still signs for the one language profile,
+so the review section is subtracted before the profile is read.
 `multi_source` reads `yes` exactly where `max_fetches` exceeds one, because the
 emitted configuration carries the fetch budget alone.
 
@@ -590,9 +594,31 @@ that fails to load -- answers the call with a tool message and ends the turn,
 because a dialog that settles nothing holds the page busy while the model waits
 on a result that never arrives.
 
+`remote/image-profiles.tsv` carries a `review_model` column naming the vision
+checkpoint a shape's artifacts are reviewed by, and it decides whether the
+preset serves one section or two. A named row makes
+`remote/build-web-presets.sh` emit a review-only section for that model_id --
+its `remote/models.tsv` tuple, its projector, a `validated` row in
+`remote/validated-tuples.tsv` at that exact tuple with `projector_state=loaded`,
+no MCP configuration, tags `vision-review,review-only` -- so `GET /v1/models`
+returns two ids, `GET /props?model=` reports a vision modality for the second,
+and the page's Review button appears on an artifact card. Two resident
+checkpoints share one carve-out the 4B alone fills to 2029 of 2048 MiB, so
+`qwen-image-launch.sh` sums every model and projector the preset names, adds
+the image runtime's resident cost, hands the total to
+`model-memory-preflight.sh`, and reports what it answers on every launch. A
+paired launch refuses on that probe's own `vulkan_budget_headroom=short` line;
+a one-section launch is the shape
+`evidence/image-appliance/served-turn-admission/` already ran and passed, and
+it reads the figure without being gated on it. Every checked-in row reads `-`, because
+the RADV RAVEN2 probe runs on the appliance alone and no run has reported the
+pair; `evidence/image-appliance/vision-review-design.md` carries that as its
+seventh falsifier and names the command that decides it.
+
 `remote/qwen-image-launch.sh`
 rejoins the preset's image markers to the ledger, requires the row to still
-read `validator-gated`, requires the parameter file the service runs a job
+read `validator-gated`, requires its `review_model` to match the preset's own
+marker and the review section to carry a projector and no MCP configuration, requires the parameter file the service runs a job
 under to carry the ledger's own geometry and ceilings, and proves the deadline
 stack ordered from the value each layer is configured with -- the runtime at
 the smaller of the profile's `timeout_s` and `image-service.py`'s 300 s

@@ -32,8 +32,8 @@ report() {
 # passes its callers' `env` prefix after this default.
 image_profiles_none=$work/image-profiles-none.tsv
 cat >"$image_profiles_none" <<'EOF'
-# profile_id	model_id	placement	width	height	steps	sampler	cfg	max_steps	max_dimension	timeout_s	execution_policy	validated_evidence
-image-fixture-refused	sdxs-512	A	512	512	1	euler	1.0	4	512	300	refused	-
+# profile_id	model_id	placement	width	height	steps	sampler	cfg	max_steps	max_dimension	timeout_s	execution_policy	validated_evidence	review_model
+image-fixture-refused	sdxs-512	A	512	512	1	euler	1.0	4	512	300	refused	-	-
 EOF
 QWEN_IMAGE_PROFILES=$image_profiles_none
 export QWEN_IMAGE_PROFILES
@@ -1636,12 +1636,12 @@ fi
 # quarantine files stay the tree's own.
 image_profiles_refused=$image_profiles_none
 image_profiles_gated=$work/image-profiles-gated.tsv
-printf 'image-fixture-a\tsdxs-512\tA\t512\t512\t1\teuler\t1.0\t4\t512\t300\tvalidator-gated\tevidence/image-appliance/design.md\n' \
+printf 'image-fixture-a\tsdxs-512\tA\t512\t512\t1\teuler\t1.0\t4\t512\t300\tvalidator-gated\tevidence/image-appliance/design.md\t-\n' \
     >"$image_profiles_gated"
 image_profiles_two_gated=$work/image-profiles-two-gated.tsv
 {
     cat "$image_profiles_gated"
-    printf 'image-fixture-b\tsdxs-512\tB\t512\t512\t1\teuler\t1.0\t4\t512\t300\tvalidator-gated\tevidence/image-appliance/design.md\n'
+    printf 'image-fixture-b\tsdxs-512\tB\t512\t512\t1\teuler\t1.0\t4\t512\t300\tvalidator-gated\tevidence/image-appliance/design.md\t-\n'
 } >"$image_profiles_two_gated"
 
 image_mcp_server_program=$work/image-mcp-server.py
@@ -1935,6 +1935,142 @@ EOF
 else
     report checked_in_image_ledger_emits_its_server failed
     cat "$work/image-checked-in.err" >&2
+fi
+
+# An image row pairing a review_model adds one review-only vision section. The
+# reviewer serves at its registry default depth and geometry, and
+# remote/validated-tuples.tsv has to carry that exact arm with the projector
+# loaded, since llama-bench allocates no projector buffers and a `none` row
+# measures a different allocation.
+validated_tuples=$work/validated-tuples.tsv
+cat >"$validated_tuples" <<'EOF'
+# tuple_id	model_id	runtime_mode	context	batch	ubatch	cache_k	cache_v	flash_attention	threads	parallel	projector_state	backend	status	evidence	llama_commit	runner_sha256	kernel	mesa	amdgpu	measured_at
+fixture-vision-d8192-b128-ub32-proj	fixture-vision	standalone	8192	128	32	q8_0	q4_0	on	1	1	loaded	vulkan	validated	evidence/image-appliance/design.md	-	-	-	-	-	2026-08-29
+EOF
+validated_tuples_unloaded=$work/validated-tuples-unloaded.tsv
+sed 's/	loaded	/	none	/' "$validated_tuples" >"$validated_tuples_unloaded"
+
+image_profiles_reviewed=$work/image-profiles-reviewed.tsv
+printf 'image-fixture-a\tsdxs-512\tA\t512\t512\t1\teuler\t1.0\t4\t512\t300\tvalidator-gated\tevidence/image-appliance/design.md\tfixture-vision\n' \
+    >"$image_profiles_reviewed"
+image_profiles_reviewed_absent=$work/image-profiles-reviewed-absent.tsv
+printf 'image-fixture-a\tsdxs-512\tA\t512\t512\t1\teuler\t1.0\t4\t512\t300\tvalidator-gated\tevidence/image-appliance/design.md\tfixture-absent\n' \
+    >"$image_profiles_reviewed_absent"
+image_profiles_reviewed_text=$work/image-profiles-reviewed-text.tsv
+printf 'image-fixture-a\tsdxs-512\tA\t512\t512\t1\teuler\t1.0\t4\t512\t300\tvalidator-gated\tevidence/image-appliance/design.md\tfixture-production\n' \
+    >"$image_profiles_reviewed_text"
+
+build_reviewed() {
+    build "$web_profiles_ui" "$1" \
+        env QWEN_VALIDATED_TUPLES="${3:-$validated_tuples}" \
+        QWEN_IMAGE_PROFILES="$2" \
+        QWEN_IMAGE_MCP_SERVER="$image_mcp_server_program" \
+        QWEN_IMAGE_TOKEN_KEY_FILE="$image_token_key_file" \
+        QWEN_IMAGE_STATE_DIR="$image_state_directory" \
+        QWEN_IMAGE_SERVICE_SOCKET="$image_service_socket" \
+        QWEN_IMAGE_PROFILES_JSON="$image_profiles_json"
+}
+
+presets_reviewed=$work/presets-reviewed.ini
+if build_reviewed "$presets_reviewed" "$image_profiles_reviewed" \
+    >"$work/reviewed.log" 2>"$work/reviewed.err"; then
+    outcome=ok
+    grep -Fqx '# qwen_image_review_model=fixture-vision' "$presets_reviewed" ||
+        outcome=review_marker_absent
+    grep -Fqx '# qwen_image_review_section=fixture-vision' "$presets_reviewed" ||
+        outcome=review_section_marker_absent
+    grep -Fqx '[fixture-vision]' "$presets_reviewed" || outcome=section_absent
+    grep -Fqx 'LLAMA_ARG_TAGS = vision-review,review-only' "$presets_reviewed" ||
+        outcome=wrong_tags
+    grep -Fqx "LLAMA_ARG_MMPROJ = $policy_model_root/Fixture-Vision-GGUF/mmproj-F16.gguf" \
+        "$presets_reviewed" || outcome=projector_absent
+    grep -Fqx 'LLAMA_ARG_CTX_SIZE = 8192' "$presets_reviewed" ||
+        outcome=depth_absent
+    # The review section holds no execution grant, so the language section is
+    # the only one naming an MCP configuration.
+    [ "$(grep -c '^LLAMA_ARG_MCP_SERVERS_CONFIG' "$presets_reviewed")" -eq 1 ] ||
+        outcome=configuration_count
+    [ "$(grep -c '^\[' "$presets_reviewed")" -eq 2 ] || outcome=section_count
+    grep -q 'review_section=fixture-vision' "$work/reviewed.log" ||
+        outcome=unreported
+    report review_model_emits_a_review_section "$outcome"
+else
+    report review_model_emits_a_review_section failed
+    cat "$work/reviewed.err" >&2
+fi
+
+# qwen-capacity-policy.sh rejoins every web section to the ledger by profile_id,
+# and the review section names a checkpoint rather than a profile. Its tags are
+# what exempt it, and the tuple validator still binds it to its registry row.
+if run_policy_over_presets "$presets_reviewed" "$web_profiles_ui" \
+    >"$work/reviewed-policy.log" 2>"$work/reviewed-policy.err"; then
+    report review_section_passes_capacity_policy ok
+else
+    report review_section_passes_capacity_policy failed
+    cat "$work/reviewed-policy.err" >&2
+fi
+
+# A review section that acquired an MCP configuration would arm a tool the page
+# never offers a reviewer, so the policy refuses it.
+presets_reviewed_armed=$work/presets-reviewed-armed.ini
+awk -v configuration="$image_profiles_json" '
+    /^LLAMA_ARG_TAGS = vision-review,review-only$/ {
+        printf "LLAMA_ARG_MCP_SERVERS_CONFIG = %s\n", configuration
+    }
+    { print }
+' "$presets_reviewed" >"$presets_reviewed_armed"
+if run_policy_over_presets "$presets_reviewed_armed" "$web_profiles_ui" \
+    >"$work/reviewed-armed.log" 2>"$work/reviewed-armed.err"; then
+    report armed_review_section_refused_by_policy accepted
+else
+    if grep -q 'is review-only and carries LLAMA_ARG_MCP_SERVERS_CONFIG' \
+        "$work/reviewed-armed.err"; then
+        report armed_review_section_refused_by_policy ok
+    else
+        report armed_review_section_refused_by_policy wrong_refusal
+    fi
+fi
+
+presets_review_absent=$work/presets-review-absent.ini
+if build_reviewed "$presets_review_absent" "$image_profiles_reviewed_absent" \
+    >"$work/review-absent.log" 2>"$work/review-absent.err"; then
+    report unknown_review_model_refused accepted
+else
+    if grep -q 'the model registry holds no row for' "$work/review-absent.err"; then
+        report unknown_review_model_refused ok
+    else
+        report unknown_review_model_refused wrong_refusal
+    fi
+fi
+
+# A reviewer reads an image through its own projector, so a text row cannot
+# serve the role however well it answers.
+presets_review_text=$work/presets-review-text.ini
+if build_reviewed "$presets_review_text" "$image_profiles_reviewed_text" \
+    >"$work/review-text.log" 2>"$work/review-text.err"; then
+    report text_review_model_refused accepted
+else
+    if grep -q 'carries projector none' "$work/review-text.err"; then
+        report text_review_model_refused ok
+    else
+        report text_review_model_refused wrong_refusal
+    fi
+fi
+
+# The tuple the section serves has to be one measured with the projector
+# loaded, since that allocation is what the section makes.
+presets_review_unloaded=$work/presets-review-unloaded.ini
+if build_reviewed "$presets_review_unloaded" "$image_profiles_reviewed" \
+    "$validated_tuples_unloaded" \
+    >"$work/review-unloaded.log" 2>"$work/review-unloaded.err"; then
+    report unloaded_projector_tuple_refused accepted
+else
+    if grep -q 'carries no validated tuple at depth 8192' \
+        "$work/review-unloaded.err"; then
+        report unloaded_projector_tuple_refused ok
+    else
+        report unloaded_projector_tuple_refused wrong_refusal
+    fi
 fi
 
 if [ "$failures" -ne 0 ]; then
