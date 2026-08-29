@@ -218,6 +218,13 @@ exists so the next drift is caught before a build rather than after.
 
 ## Status
 
-The lane has run on the device and the patch is promoted. The promoted build's
-own admission -- `remote/promote-llama-build.sh`'s Vulkan token and image gates
--- is recorded beside this file when the chain completes.
+The lane has run on the device and the patch is promoted. `remote/build-llama-preset.sh
+raven2-vulkan-production` rebuilt the seven-patch tree on the appliance in
+111 s, and `remote/promote-llama-build.sh raven2-vulkan-production` accepted
+it with `strict_vulkan=passed multimodal=passed`, so the served router runs
+the patched optimizer; `llama-cli` promoted at
+`0a7c6909bced2329f25a23c495bcf38544fef1e6f7b7da68eb0b2bb493ec9518`,
+`llama-bench` at
+`20e0ae33e203622b611a7be7f8fcea8b9ada1e625e222925dd96132396dd5869`, and
+`llama-mtmd-cli` at
+`4103d02b0fc1a5b64902d11ef43bebe1d98cdd7a2cba4cd1ad49bc4d133b2a89`.
