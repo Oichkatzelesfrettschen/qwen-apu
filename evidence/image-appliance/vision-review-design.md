@@ -155,6 +155,21 @@ artifact through the CLI instead:
    listener for each vision model in turn, alternating, retaining the audit
    line, the verdict JSON, and the raw reply.
 
+Both steps have run twice: once with no `response_format`
+(`evidence/image-appliance/vision-review-first-run/`, three structural
+refusals of four rows) and once with a `json_schema`-carrying
+`response_format` (`evidence/image-appliance/vision-review-grammar-run/`,
+four of four rows accepted, the three prior refusals closed, and the one row
+present in both runs -- `qwen35-2b`/apple, the only row where both runs
+produced a verdict to compare -- unchanged in its judgment). The grammar
+run's own next step is the page arm below. It also proposes a timing arm it
+did not run: the two runs sit twenty minutes apart rather than in one sweep,
+every observed wall-time delta is positive, and the mean (+5.0%) sits at the
+edge of this machine's ~4% same-flags spread rather than clearly inside or
+outside it, so an alternating same-sweep rerun of the schema-free and
+grammar-bound conditions is what would resolve the direction rather than
+leave it at the edge of measurement noise.
+
 The page arm follows the launcher change rather than this run: driving the
 review through `webui/index.html` on the appliance needs a preset holding a
 language section and a vision section together, which is a change to
