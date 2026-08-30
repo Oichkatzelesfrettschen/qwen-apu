@@ -105,8 +105,10 @@ barriers, or instructions, and a variant whose VGPR or LDS footprint leaves
 one resident wave is rejected on the census before its rate is read. The
 matmul tile sweep runs offline over 32x32 through 128x128 crossed with K
 tile, accumulator, alignment, quant format, and batch, and promotes one
-immutable lookup table keyed by op, weight type, M, N, K ranges, and
-accumulator; the generic selector picks 128x128 once the grid holds about
+immutable lookup table keyed by (op, weight type, M range, N range, K
+range, accumulator, alignment class, batch range) whose value is the tile
+and K tile, distinct from the mat-vec key of (op, type, N, K, `NUM_COLS`,
+accumulator, alignment); the generic selector picks 128x128 once the grid holds about
 twice the shader-core count of tiles, which on two CUs is four tiles. Flash
 Attention sweeps `Br` and `Bc` at 4K, 16K, 24K, and 32K with FP32 softmax
 statistics and separate FP16/FP32 QK and PV accumulation arms, and keeps KV

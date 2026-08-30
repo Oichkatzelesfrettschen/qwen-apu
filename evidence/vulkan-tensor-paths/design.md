@@ -78,7 +78,14 @@ classes, one primary target").
 type, bytes, activation column count per phase) to the submit trace (pipeline, workgroup, rows per workgroup,
 reduction mode, dispatches per token) and to per-dispatch GPU time from
 timestamp queries, with VGPR and LDS from the RADV shader dump. Output:
-`evidence/vulkan-tensor-paths/<model_id>.tsv`, one row per tensor. The ledger
+`evidence/vulkan-tensor-paths/<model_id>.tsv`, one row per observed tensor
+execution path, keyed by tensor name, role, phase, GGML op, `pipeline_name`,
+`shader_symbol`, `NUM_COLS`, accumulator precision, and alignment variant, so
+the tied embedding/output tensor and a tensor dispatched under several phases
+or specializations each keep every path. Static fields such as type,
+dimensions, and bytes repeat across a tensor's path rows, and a census tensor
+with no observed dispatch takes one row with `dispatch_count=0` and `-` in
+the execution-path fields. The ledger
 answers which tensor is expensive by measured GPU time rather than by bytes,
 and is the precondition of every later step.
 
@@ -93,13 +100,21 @@ unpack and lower VGPR pressure; falsifier: a paired decode gain under 5%, or a
 quality loss outside the registered bound. That bound is preregistered here:
 the paired text-quality arm selects
 `screen,arithmetic,word_problem,code,format,long_context,termination`
-through `remote/run-quality-suite.py --categories`, the same 55-row
-authority the roster sweep uses, so the retained 33/55, 40/55, and 47/55
-baselines stay comparable. The control is the deployed representation of
+through `remote/run-quality-suite.py --categories`, with
+`--long-context-characters 24000 --thinking off --max-tokens 1024` beside
+the runner's fixed temperature 0, `top_k` 1, and seed 1: the 55-row
+invocation `remote/run-quality-roster.sh` retains, so the 33/55, 40/55, and
+47/55 baselines stay comparable in procedure and not in row names alone. The control is the deployed representation of
 the same registry row -- Q4_K_M for the 2B and 4B rows and Q8_0 for the
 0.8B row -- graded in the same sweep, and the candidate may fall at most one
 row against it. Vision and photographic rows are a separate projector-quality
-gate and stay out of the text total. The candidate's greedy token stream on the six graph-alias prompts
+gate and stay out of the text total: a vision-capable candidate is compared
+with the deployed representation of the same registry row under the same
+projector, image fixtures, request tuple, and paired arm order, the ten
+`vision` rows and nine `photo` rows are reported as two columns, neither
+column may fall by more than one row, and the nineteen-row total may fall by
+at most one row against its paired control. A two-row fall in either column
+or overall refutes the candidate whatever its throughput. The candidate's greedy token stream on the six graph-alias prompts
 (`evidence/vulkan-view-alias/ab-2b/`) is reported by first-divergence index
 rather than gated, since a representation change is expected to move tokens.
 A two-row fall refutes the rung whatever its rate.
