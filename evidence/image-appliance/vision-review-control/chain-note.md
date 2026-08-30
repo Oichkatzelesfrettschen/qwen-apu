@@ -13,7 +13,7 @@ evidence.
   `7c6b7565059771e7e68d467afeae10233204915659c22728442467552e9e6fe3`,
   prompt SHA-256
   `c59aebadc82bffa15660ab38c507fbfacbd030deaf9a66e7fe05f0d1bde1b973`,
-  two constraints, response-schema mode, and prompt caching disabled.
+  a constraint count of two, and response-schema mode.
 - The numbered filenames and `summary.tsv` record the order as real A,
   withheld A, swapped A with B, and real A.
 - `vision-review-control-design.md` records the command template and intended
@@ -24,10 +24,13 @@ evidence.
 
 The tree contains no run timestamps, original shell invocation, router or
 artifact-listener command lines, process identifiers, startup readiness
-records, teardown statuses, immutable model digest, or server-properties
-response. The tree therefore cannot prove standalone service topology, exact
-constraint descriptions as transmitted on the wire, clean teardown between
-runs, or immutable attribution of `qwen-apu` to `lfm25-vl-16b`.
+records, teardown statuses, immutable model digest, server-properties
+response, request payload, or prompt-cache field. The tree therefore cannot
+prove standalone service topology, exact constraint descriptions as
+transmitted on the wire, disabled prompt caching, clean teardown between runs,
+or immutable attribution of `qwen-apu` to `lfm25-vl-16b`. The operator states
+that the run used the registered descriptions and disabled prompt caching;
+those settings remain annotations rather than retained request evidence.
 
 The arm replies remain evidence of four responses in the recorded order. Any
 claim that depends on the missing process fields requires a new retained run or
