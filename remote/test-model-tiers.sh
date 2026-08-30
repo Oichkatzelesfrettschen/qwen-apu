@@ -537,15 +537,6 @@ cat >"$ledger_race_bin/sha256sum" <<'SHA256SUM'
 if [ "${2:-}" != "$QWEN_TEST_LEDGER_PATH" ]; then
     exec "$QWEN_TEST_REAL_SHA256SUM" "$@"
 fi
-ledger_race_count=0
-if [ -r "$QWEN_TEST_LEDGER_COUNT" ]; then
-    ledger_race_count=$(cat "$QWEN_TEST_LEDGER_COUNT")
-fi
-ledger_race_count=$((ledger_race_count + 1))
-printf '%s\n' "$ledger_race_count" >"$QWEN_TEST_LEDGER_COUNT"
-if [ "$ledger_race_count" -eq 1 ]; then
-    exec "$QWEN_TEST_REAL_SHA256SUM" "$@"
-fi
 printf '%s  %s\n' \
     0000000000000000000000000000000000000000000000000000000000000000 "$2"
 SHA256SUM
@@ -573,6 +564,49 @@ if [ "$ledger_race_status" -ne 0 ] &&
 else
     report ctx_checkpoint_ledger_generation_race_refused rejected
     cat "$work/ledger-race.err" >&2
+fi
+
+# The rows every section carries are read from a copy rather than from the
+# ledger itself, so the emitted counts and the recorded digest name one set of
+# bytes even where the source changes and changes back between the two reads a
+# live query would take.
+snapshot_tools=$work/snapshot-tools
+snapshot_calls=$work/snapshot-registry.calls
+mkdir -p "$snapshot_tools"
+for remote_entry in "$script_directory"/*; do
+    ln -sf "$remote_entry" "$snapshot_tools/"
+done
+rm -f "$snapshot_tools/model-registry.sh"
+cat >"$snapshot_tools/model-registry.sh" <<'REGISTRY'
+#!/bin/sh
+printf '%s\t%s\n' "${1:-}" "${QWEN_CTX_CHECKPOINT_LEDGER:-unset}" \
+    >>"$QWEN_TEST_REGISTRY_CALLS"
+exec "$QWEN_TEST_REAL_MODEL_REGISTRY" "$@"
+REGISTRY
+chmod +x "$snapshot_tools/model-registry.sh"
+: >"$snapshot_calls"
+snapshot_presets=$work/snapshot-presets.ini
+if QWEN_MODEL_REGISTRY=$fixture_registry QWEN_MODEL_ROOT=$fixture_model_root \
+    QWEN_QUARANTINE_REGISTRY=$fixture_quarantine \
+    QWEN_QUARANTINE_REASONS=$fixture_reasons QWEN_DRAFT_PAIRS=$fixture_pairs \
+    QWEN_CTX_CHECKPOINT_LEDGER=$fixture_ctx_checkpoints \
+    QWEN_TEST_REGISTRY_CALLS=$snapshot_calls \
+    QWEN_TEST_REAL_MODEL_REGISTRY=$reader \
+    "$snapshot_tools/build-router-presets.sh" "$snapshot_presets" \
+    >"$work/snapshot.log" 2>"$work/snapshot.err"; then
+    snapshot_queried=$(awk -F'\t' '$1 == "ctx-checkpoints" { print $2; exit }' \
+        "$snapshot_calls")
+    snapshot_whole=$(grep -c '^ctx-checkpoints	' "$snapshot_calls" || true)
+    if [ "$snapshot_whole" = 1 ] && [ -n "$snapshot_queried" ] &&
+       [ "$snapshot_queried" != "$fixture_ctx_checkpoints" ]; then
+        report ctx_checkpoint_ledger_read_from_snapshot accepted
+    else
+        report ctx_checkpoint_ledger_read_from_snapshot rejected
+        printf 'reads=%s queried=%s\n' "$snapshot_whole" "$snapshot_queried" >&2
+    fi
+else
+    report ctx_checkpoint_ledger_read_from_snapshot rejected
+    cat "$work/snapshot.err" >&2
 fi
 
 if [ "$failures" -eq 0 ]; then

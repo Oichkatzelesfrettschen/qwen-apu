@@ -2194,15 +2194,6 @@ cat >"$ledger_race_bin/sha256sum" <<'SHA256SUM'
 if [ "${2:-}" != "$QWEN_TEST_LEDGER_PATH" ]; then
     exec "$QWEN_TEST_REAL_SHA256SUM" "$@"
 fi
-ledger_race_count=0
-if [ -r "$QWEN_TEST_LEDGER_COUNT" ]; then
-    ledger_race_count=$(cat "$QWEN_TEST_LEDGER_COUNT")
-fi
-ledger_race_count=$((ledger_race_count + 1))
-printf '%s\n' "$ledger_race_count" >"$QWEN_TEST_LEDGER_COUNT"
-if [ "$ledger_race_count" -eq 1 ]; then
-    exec "$QWEN_TEST_REAL_SHA256SUM" "$@"
-fi
 printf '%s  %s\n' \
     0000000000000000000000000000000000000000000000000000000000000000 "$2"
 SHA256SUM
@@ -2241,7 +2232,8 @@ done
 rm -f "$snapshot_tools/model-registry.sh"
 cat >"$snapshot_tools/model-registry.sh" <<'REGISTRY'
 #!/bin/sh
-printf '%s\n' "${1:-}" >>"$QWEN_TEST_REGISTRY_CALLS"
+printf '%s\t%s\n' "${1:-}" "${QWEN_CTX_CHECKPOINT_LEDGER:-unset}" \
+    >>"$QWEN_TEST_REGISTRY_CALLS"
 exec "$QWEN_TEST_REAL_MODEL_REGISTRY" "$@"
 REGISTRY
 chmod +x "$snapshot_tools/model-registry.sh"
@@ -2256,9 +2248,16 @@ if QWEN_MODEL_REGISTRY=$model_registry \
     env QWEN_WEB_MCP_SERVER="$mcp_server_program" QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" QWEN_WEB_STATE_DIR="$web_state_directory" \
     "$snapshot_tools/build-web-presets.sh" "$snapshot_presets" \
     >"$work/snapshot.log" 2>"$work/snapshot.err"; then
-    snapshot_whole=$(grep -c '^ctx-checkpoints$' "$snapshot_calls" || true)
-    snapshot_per_row=$(grep -c '^ctx-checkpoint$' "$snapshot_calls" || true)
-    if [ "$snapshot_whole" = 1 ] && [ "$snapshot_per_row" = 0 ]; then
+    snapshot_whole=$(grep -c '^ctx-checkpoints	' "$snapshot_calls" || true)
+    snapshot_per_row=$(grep -c '^ctx-checkpoint	' "$snapshot_calls" || true)
+    # The query runs against a copy rather than against the ledger itself, so
+    # the rows the sections carry and the digest the run records name one set of
+    # bytes even where the source changes and changes back beneath them.
+    snapshot_queried=$(awk -F'\t' '$1 == "ctx-checkpoints" { print $2; exit }' \
+        "$snapshot_calls")
+    if [ "$snapshot_whole" = 1 ] && [ "$snapshot_per_row" = 0 ] &&
+       [ -n "$snapshot_queried" ] &&
+       [ "$snapshot_queried" != "$QWEN_CTX_CHECKPOINT_LEDGER" ]; then
         report ctx_checkpoint_ledger_read_once ok
     else
         report ctx_checkpoint_ledger_read_once "whole=$snapshot_whole per_row=$snapshot_per_row"

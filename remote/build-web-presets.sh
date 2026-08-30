@@ -668,15 +668,23 @@ if [ ! -r "$ctx_checkpoint_ledger" ]; then
         "$ctx_checkpoint_ledger" >&2
     exit 1
 fi
-ctx_checkpoint_ledger_identity=$(sha256sum -- "$ctx_checkpoint_ledger")
+# One copy is the whole run's ledger: the digest names the copy's bytes and
+# every section's count is resolved from rows read out of that same copy, so
+# the emitted file states one ledger state by construction. Live reads of the
+# source cannot state that, since a file that changed and changed back between
+# the digest and a query answers both digests consistently while the query in
+# the middle returns the state neither saw. The comparison before the file
+# lands then measures the source against the copy.
+ctx_checkpoint_snapshot=$(mktemp "${TMPDIR:-/tmp}/.ctx-checkpoints.XXXXXX")
+cleanup_ctx_checkpoint_snapshot() {
+    rm -f -- "$ctx_checkpoint_snapshot"
+}
+trap 'cleanup_ctx_checkpoint_snapshot' EXIT HUP INT TERM
+cp -- "$ctx_checkpoint_ledger" "$ctx_checkpoint_snapshot"
+ctx_checkpoint_ledger_identity=$(sha256sum -- "$ctx_checkpoint_snapshot")
 ctx_checkpoint_ledger_sha256=${ctx_checkpoint_ledger_identity%% *}
-QWEN_CTX_CHECKPOINT_LEDGER=$ctx_checkpoint_ledger
+QWEN_CTX_CHECKPOINT_LEDGER=$ctx_checkpoint_snapshot
 export QWEN_CTX_CHECKPOINT_LEDGER
-# Every section's count is resolved from one validated snapshot held here
-# rather than from a query per section, so the emitted file states one ledger
-# state: a file that changed and changed back between two per-section queries
-# would otherwise pass both identity comparisons while carrying counts from the
-# state in between.
 if ! ctx_checkpoint_rows=$("$script_directory/model-registry.sh" \
     ctx-checkpoints); then
     printf 'context checkpoint ledger refused: %s\n' \
@@ -842,7 +850,8 @@ mcp_config_directory_marker=@QWEN_WEB_MCP_CONFIG_DIRECTORY@
 mcp_config_directory=
 output_ini_temporary=$output_ini.tmp.$$
 mcp_config_directory_temporary=$output_directory/web-mcp-configs.tmp.$$
-trap 'rm -rf -- "$output_ini_temporary" "$output_ini_temporary.resolved" \
+trap 'cleanup_ctx_checkpoint_snapshot; rm -rf -- "$output_ini_temporary" \
+    "$output_ini_temporary.resolved" \
     "$mcp_config_directory_temporary"' EXIT HUP INT TERM
 rm -rf -- "$mcp_config_directory_temporary"
 mkdir -p "$mcp_config_directory_temporary"
@@ -1564,6 +1573,7 @@ awk -v config_directory="$mcp_config_directory" \
 mv -- "$output_ini_temporary.resolved" "$output_ini_temporary"
 mv -- "$output_ini_temporary" "$output_ini"
 trap - EXIT HUP INT TERM
+cleanup_ctx_checkpoint_snapshot
 
 printf 'web_presets=written path=%s profiles=%s absent=%s projector_unresolved=%s mcp_configs=%s image_profile=%s review_section=%s\n' \
     "$output_ini" "$emitted" "$skipped_absent_weights" \
