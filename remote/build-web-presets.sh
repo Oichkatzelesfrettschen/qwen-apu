@@ -756,6 +756,12 @@ if [ -n "$image_profile_review_model" ] &&
     review_flash=$(registry_field "$review_registry_row" flash_attention)
     review_batch=$(registry_field "$review_registry_row" batch)
     review_ubatch=$(registry_field "$review_registry_row" ubatch)
+    if ! review_ctx_checkpoints=$("$script_directory/model-registry.sh" \
+        ctx-checkpoint "$image_profile_review_model"); then
+        printf 'review_model %s: context checkpoint ledger refused\n' \
+            "$image_profile_review_model" >&2
+        exit 1
+    fi
     for review_numeric_field in "$review_context" "$review_batch" \
         "$review_ubatch"; do
         case $review_numeric_field in
@@ -981,6 +987,13 @@ while profile_id=; IFS='	' read -r profile_id model_id _web_mode context \
 
     if ! registry_row=$("$script_directory/model-registry.sh" id "$model_id"); then
         printf 'profile %s names unknown model_id %s\n' "$profile_id" "$model_id" >&2
+        exit 1
+    fi
+    # The checkpoint count is the row's rather than the profile's, and the
+    # reader validates the whole ledger before answering.
+    if ! profile_ctx_checkpoints=$("$script_directory/model-registry.sh" \
+        ctx-checkpoint "$model_id"); then
+        printf 'profile %s: context checkpoint ledger refused\n' "$profile_id" >&2
         exit 1
     fi
 
@@ -1284,6 +1297,7 @@ while profile_id=; IFS='	' read -r profile_id model_id _web_mode context \
         printf 'LLAMA_ARG_FLASH_ATTN = %s\n' "$flash_attention"
         printf 'LLAMA_ARG_BATCH = %s\n' "$batch"
         printf 'LLAMA_ARG_UBATCH = %s\n' "$ubatch"
+        printf 'LLAMA_ARG_CTX_CHECKPOINTS = %s\n' "$profile_ctx_checkpoints"
         if [ -n "$profile_projector_path" ]; then
             printf 'LLAMA_ARG_MMPROJ = %s\n' "$profile_projector_path"
         fi
@@ -1330,6 +1344,7 @@ if [ -n "$review_section" ]; then
         printf 'LLAMA_ARG_FLASH_ATTN = %s\n' "$review_flash"
         printf 'LLAMA_ARG_BATCH = %s\n' "$review_batch"
         printf 'LLAMA_ARG_UBATCH = %s\n' "$review_ubatch"
+        printf 'LLAMA_ARG_CTX_CHECKPOINTS = %s\n' "$review_ctx_checkpoints"
         printf 'LLAMA_ARG_MMPROJ = %s\n' "$review_projector_path"
         printf 'LLAMA_ARG_TAGS = vision-review,review-only\n'
         printf '\n'
@@ -1412,7 +1427,8 @@ verify_assembled_sections() {
             required_count = split("LLAMA_ARG_MODEL LLAMA_ARG_ALIAS " \
                 "LLAMA_ARG_CTX_SIZE LLAMA_ARG_CACHE_TYPE_K " \
                 "LLAMA_ARG_CACHE_TYPE_V LLAMA_ARG_FLASH_ATTN " \
-                "LLAMA_ARG_BATCH LLAMA_ARG_UBATCH LLAMA_ARG_TAGS", \
+                "LLAMA_ARG_BATCH LLAMA_ARG_UBATCH LLAMA_ARG_CTX_CHECKPOINTS " \
+                "LLAMA_ARG_TAGS", \
                 required_keys, " ")
         }
         /^[[:space:]]*($|[#;])/ { next }

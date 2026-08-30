@@ -754,6 +754,127 @@ if [ "$#" -eq 3 ] && [ "$1" = draft-pair ]; then
     exit $?
 fi
 
+# The context checkpoint count is per registry row, because the classes
+# disagree on first-turn token fidelity under checkpointing (the 0.8B differs
+# at zero-based index 25, the 2B and 4B do not), so remote/ctx-checkpoints.tsv
+# carries one count per model_id and this reader validates the whole ledger
+# before answering any query, the discipline the tuple and draft-pair ledgers
+# already take. A model_id outside the ledger serves at 0.
+validate_ctx_checkpoint_ledger() {
+    ctx_checkpoint_ledger=${QWEN_CTX_CHECKPOINT_LEDGER:-$script_directory/ctx-checkpoints.tsv}
+    ctx_checkpoint_model_registry=${QWEN_MODEL_REGISTRY:-$script_directory/models.tsv}
+    if [ ! -r "$ctx_checkpoint_ledger" ]; then
+        printf 'context checkpoint ledger is unreadable: %s\n' \
+            "$ctx_checkpoint_ledger" >&2
+        return 1
+    fi
+    if [ ! -r "$ctx_checkpoint_model_registry" ]; then
+        printf 'model registry is unreadable: %s\n' \
+            "$ctx_checkpoint_model_registry" >&2
+        return 1
+    fi
+    ctx_checkpoint_rows=$(awk -F'\t' '
+        FILENAME == ARGV[1] {
+            if ($0 ~ /^#/ || $0 ~ /^[[:space:]]*$/) { next }
+            if (NF >= 1) { known_model_ids[$1] = 1 }
+            next
+        }
+        $0 ~ /^#/ || $0 ~ /^[[:space:]]*$/ { next }
+        {
+            if (NF != 3) {
+                printf "context checkpoint row %d holds %d fields, expected 3\n", \
+                    FNR, NF > "/dev/stderr"
+                bad++
+                next
+            }
+            if ($1 == "") {
+                printf "context checkpoint row %d carries an empty model_id\n", \
+                    FNR > "/dev/stderr"
+                bad++
+            }
+            if (seen_id[$1]++) {
+                printf "duplicate model_id %s at context checkpoint row %d\n", \
+                    $1, FNR > "/dev/stderr"
+                bad++
+            }
+            if (!($1 in known_model_ids)) {
+                printf "%s: model_id is absent from the model registry\n", \
+                    $1 > "/dev/stderr"
+                bad++
+            }
+            # common/arg.cpp reads --ctx-checkpoints as an int and the policy
+            # builds exact string tuple keys, so the count is one canonical
+            # non-negative decimal integer without leading zeroes.
+            if ($2 !~ /^(0|[1-9][0-9]*)$/) {
+                printf "%s: ctx_checkpoints %s is not a canonical non-negative integer\n", \
+                    $1, $2 > "/dev/stderr"
+                bad++
+            }
+            if ($3 == "") {
+                printf "%s: evidence is empty; write - for an unmeasured zero\n", \
+                    $1 > "/dev/stderr"
+                bad++
+            } else if ($3 == "-" && $2 != "0") {
+                printf "%s: a count above 0 requires retained evidence\n", \
+                    $1 > "/dev/stderr"
+                bad++
+            }
+            print $0
+        }
+        END { exit bad ? 1 : 0 }
+    ' "$ctx_checkpoint_model_registry" "$ctx_checkpoint_ledger") || return 1
+
+    # AWK has established the three-field shape, so each evidence path is read
+    # as one shell word and tested with the pathname primitive, which keeps
+    # ledger text outside executable input.
+    ctx_checkpoint_tab=$(printf '\t')
+    ctx_checkpoint_evidence_failures=0
+    while IFS="$ctx_checkpoint_tab" read -r ctx_checkpoint_model_id \
+        _ctx_checkpoint_count ctx_checkpoint_evidence; do
+        [ -n "$ctx_checkpoint_model_id" ] || continue
+        [ "$ctx_checkpoint_evidence" = - ] && continue
+        case $ctx_checkpoint_evidence in
+            '' | /* | ../* | */../* | */..)
+                printf '%s: evidence is not a repository-relative path: %s\n' \
+                    "$ctx_checkpoint_model_id" "$ctx_checkpoint_evidence" >&2
+                ctx_checkpoint_evidence_failures=$((ctx_checkpoint_evidence_failures + 1))
+                continue
+                ;;
+        esac
+        if [ ! -e "$script_directory/../$ctx_checkpoint_evidence" ]; then
+            printf '%s: evidence is absent from the tree: %s\n' \
+                "$ctx_checkpoint_model_id" "$ctx_checkpoint_evidence" >&2
+            ctx_checkpoint_evidence_failures=$((ctx_checkpoint_evidence_failures + 1))
+        fi
+    done <<EOF
+$ctx_checkpoint_rows
+EOF
+    [ "$ctx_checkpoint_evidence_failures" -eq 0 ] || return 1
+    printf '%s\n' "$ctx_checkpoint_rows"
+}
+
+# Every ledger row in order, validated whole. build-router-presets.sh and
+# build-web-presets.sh read it before emitting a section, and
+# qwen-capacity-policy.sh reads it again at launch to rejoin a persisted preset
+# to the counts this launch validated.
+if [ "$#" -eq 1 ] && [ "$1" = ctx-checkpoints ]; then
+    validate_ctx_checkpoint_ledger || exit 1
+    exit 0
+fi
+
+# One model's count after validating the whole ledger; a model outside the
+# ledger answers 0, the process-wide fallback.
+if [ "$#" -eq 2 ] && [ "$1" = ctx-checkpoint ]; then
+    ctx_checkpoint_selector=$2
+    ctx_checkpoint_ledger_rows=$(validate_ctx_checkpoint_ledger) || exit 1
+    printf '%s\n' "$ctx_checkpoint_ledger_rows" | awk -F'\t' \
+        -v selector="$ctx_checkpoint_selector" '
+        $1 == selector { count = $2; matched = 1 }
+        END { print matched ? count : 0 }
+    '
+    exit 0
+fi
+
 if [ "$#" -ne 2 ] && [ "$#" -ne 3 ]; then
     printf 'usage: %s id|path SELECTOR [FIELD]\n' "$0" >&2
     printf '       %s validate-cache-type TYPE\n' "$0" >&2
@@ -764,6 +885,8 @@ if [ "$#" -ne 2 ] && [ "$#" -ne 3 ]; then
     printf '       %s tuple TUPLE_ID [FIELD]\n' "$0" >&2
     printf '       %s draft-pairs\n' "$0" >&2
     printf '       %s draft-pair PAIR_ID [FIELD]\n' "$0" >&2
+    printf '       %s ctx-checkpoints\n' "$0" >&2
+    printf '       %s ctx-checkpoint MODEL_ID\n' "$0" >&2
     printf 'fields: id role model_file fetch_script context_default context_ceiling\n' >&2
     printf '        context_target cache_type_k cache_type_v flash_attention\n' >&2
     printf '        projector projector_fetch_script decode_tok_s prefill_tok_s\n' >&2

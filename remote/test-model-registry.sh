@@ -390,6 +390,80 @@ evidence_present_relative=evidence/depth-versus-submission-geometry.md
 QWEN_MODEL_REGISTRY=$tuple_fixture_models \
     "$reader" id tuple-model role >/dev/null
 
+# The context checkpoint ledger is validated whole before any count is
+# answered, joins against the model registry, and admits evidence-free rows at
+# 0 alone. tuple-model stands in for a registry row.
+ledger_ok=$work_directory/ctx-checkpoints-ok.tsv
+printf 'tuple-model\t2\t%s\n' "$evidence_present_relative" >"$ledger_ok"
+if [ "$(QWEN_MODEL_REGISTRY=$tuple_fixture_models \
+    QWEN_CTX_CHECKPOINT_LEDGER=$ledger_ok \
+    "$reader" ctx-checkpoint tuple-model)" = 2 ]; then
+    report ctx_checkpoint_ledger_row accepted
+else
+    report ctx_checkpoint_ledger_row rejected
+fi
+if [ "$(QWEN_MODEL_REGISTRY=$tuple_fixture_models \
+    QWEN_CTX_CHECKPOINT_LEDGER=$ledger_ok \
+    "$reader" ctx-checkpoint absent-model)" = 0 ]; then
+    report ctx_checkpoint_absent_row_reads_zero accepted
+else
+    report ctx_checkpoint_absent_row_reads_zero rejected
+fi
+ledger_zero_unmeasured=$work_directory/ctx-checkpoints-zero.tsv
+printf 'tuple-model\t0\t-\n' >"$ledger_zero_unmeasured"
+if [ "$(QWEN_MODEL_REGISTRY=$tuple_fixture_models \
+    QWEN_CTX_CHECKPOINT_LEDGER=$ledger_zero_unmeasured \
+    "$reader" ctx-checkpoint tuple-model)" = 0 ]; then
+    report ctx_checkpoint_zero_without_evidence accepted
+else
+    report ctx_checkpoint_zero_without_evidence rejected
+fi
+for ledger_case in \
+    "bad_count	tuple-model	02	$evidence_present_relative	not a canonical non-negative integer" \
+    "unknown_model	no-such-model	2	$evidence_present_relative	absent from the model registry" \
+    "missing_evidence	tuple-model	2	evidence/no-such-directory	absent from the tree" \
+    "unmeasured_positive	tuple-model	2	-	requires retained evidence" \
+    "short_row	tuple-model	2	-	-	holds 4 fields"; do
+    ledger_case_name=${ledger_case%%	*}
+    ledger_case_rest=${ledger_case#*	}
+    ledger_case_message=${ledger_case_rest##*	}
+    ledger_case_row=${ledger_case_rest%	*}
+    ledger_case_file=$work_directory/ctx-checkpoints-$ledger_case_name.tsv
+    printf '%s\n' "$ledger_case_row" >"$ledger_case_file"
+    set +e
+    QWEN_MODEL_REGISTRY=$tuple_fixture_models \
+    QWEN_CTX_CHECKPOINT_LEDGER=$ledger_case_file \
+        "$reader" ctx-checkpoints >/dev/null 2>"$work_directory/ledger-case.err"
+    ledger_case_status=$?
+    set -e
+    if [ "$ledger_case_status" -ne 0 ] &&
+       grep -F "$ledger_case_message" "$work_directory/ledger-case.err" >/dev/null; then
+        report "ctx_checkpoint_ledger_refuses_$ledger_case_name" accepted
+    else
+        report "ctx_checkpoint_ledger_refuses_$ledger_case_name" rejected
+    fi
+done
+ledger_duplicate=$work_directory/ctx-checkpoints-duplicate.tsv
+printf 'tuple-model\t0\t-\ntuple-model\t0\t-\n' >"$ledger_duplicate"
+set +e
+QWEN_MODEL_REGISTRY=$tuple_fixture_models \
+QWEN_CTX_CHECKPOINT_LEDGER=$ledger_duplicate \
+    "$reader" ctx-checkpoints >/dev/null 2>"$work_directory/ledger-duplicate.err"
+ledger_duplicate_status=$?
+set -e
+if [ "$ledger_duplicate_status" -ne 0 ] &&
+   grep -F 'duplicate model_id tuple-model' "$work_directory/ledger-duplicate.err" >/dev/null; then
+    report ctx_checkpoint_ledger_refuses_duplicate accepted
+else
+    report ctx_checkpoint_ledger_refuses_duplicate rejected
+fi
+# The shipped ledger validates against the shipped registry.
+if "$reader" ctx-checkpoints >/dev/null; then
+    report ctx_checkpoint_ledger_shipped accepted
+else
+    report ctx_checkpoint_ledger_shipped rejected
+fi
+
 valid_tuple_ledger=$work_directory/valid-tuples.tsv
 printf '%b\n' \
     "tuple-model-d8192-b128-ub32\ttuple-model\tstandalone\t8192\t128\t32\tq8_0\tq4_0\ton\t2\t1\tnone\tvulkan\tvalidated\t$evidence_present_relative\t-\t-\t-\t-\t-\t-" \

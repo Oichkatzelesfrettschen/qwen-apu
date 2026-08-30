@@ -78,6 +78,15 @@ fi
 # preset that looks complete.
 quarantine_rows=$("$script_directory/model-registry.sh" quarantine-rows router-child)
 draft_pair_rows=$("$script_directory/model-registry.sh" draft-pairs)
+# The context checkpoint count is per row and every section carries it, since
+# common_preset::merge would push one router argv value onto every child.
+ctx_checkpoint_rows=$("$script_directory/model-registry.sh" ctx-checkpoints)
+ledger_ctx_checkpoints() {
+    printf '%s\n' "$ctx_checkpoint_rows" | awk -F'\t' -v id="$1" '
+        $1 == id { count = $2; matched = 1 }
+        END { print matched ? count : 0 }
+    '
+}
 
 output_parent=$(dirname -- "$output_ini")
 mkdir -p "$output_parent"
@@ -241,6 +250,7 @@ while IFS='	' read -r id role model_file _fetch_script context_default \
         printf 'LLAMA_ARG_FLASH_ATTN = %s\n' "$flash_attention"
         printf 'LLAMA_ARG_BATCH = %s\n' "$batch"
         printf 'LLAMA_ARG_UBATCH = %s\n' "$ubatch"
+        printf 'LLAMA_ARG_CTX_CHECKPOINTS = %s\n' "$(ledger_ctx_checkpoints "$id")"
     } >>"$output_staging"
 
     if [ "$projector" = required ]; then
@@ -372,6 +382,8 @@ while IFS='	' read -r pair_id target_model_id draft_model_id pair_tier \
         printf 'LLAMA_ARG_FLASH_ATTN = %s\n' "$target_flash"
         printf 'LLAMA_ARG_BATCH = %s\n' "$target_batch"
         printf 'LLAMA_ARG_UBATCH = %s\n' "$target_ubatch"
+        printf 'LLAMA_ARG_CTX_CHECKPOINTS = %s\n' \
+            "$(ledger_ctx_checkpoints "$target_model_id")"
         printf 'LLAMA_ARG_SPEC_TYPE = draft-simple\n'
         printf 'LLAMA_ARG_SPEC_DRAFT_MODEL = %s\n' "$draft_path"
         printf 'LLAMA_ARG_SPEC_DRAFT_N_MAX = %s\n' "$spec_draft_n_max"

@@ -137,6 +137,14 @@ model_registry=$work/models.tsv
     printf 'image-admission-fixture\tfixture-role\tFixture-GGUF/fixture.gguf\tdownload-fixture.sh\t4096\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t1.00\t1.00\tuntested\tcandidate\t128\t32\t4096\tevidence/image-appliance/design.md\t9/10\trefused\n'
     printf 'image-review-fixture\tfixture-role\tFixture-Vision-GGUF/vision.gguf\tdownload-fixture.sh\t4096\t8192\t8192\tq8_0\tq4_0\ton\trequired\tdownload-fixture-mmproj.sh\t1.00\t1.00\tuntested\tcandidate\t128\t32\t4096\tevidence/image-appliance/design.md\t8/10\trefused\n'
 } >"$model_registry"
+# The context checkpoint ledger joins against the model registry, so the
+# fixture registry names an empty ledger and both emitted sections carry the
+# 0 an absent row admits; the harness inherits it through the environment the
+# way it inherits the registry.
+QWEN_CTX_CHECKPOINT_LEDGER=$work/ctx-checkpoints.tsv
+printf '# the fixture registry admits no checkpoint count\n' \
+    >"$QWEN_CTX_CHECKPOINT_LEDGER"
+export QWEN_CTX_CHECKPOINT_LEDGER
 model_root=$work/model-root
 mkdir -p "$model_root/Fixture-GGUF"
 : >"$model_root/Fixture-GGUF/fixture.gguf"

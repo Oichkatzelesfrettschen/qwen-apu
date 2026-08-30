@@ -27,6 +27,14 @@ report() {
     [ "$2" = ok ] || failures=$((failures + 1))
 }
 
+# The context checkpoint ledger joins against the model registry, so the
+# fixture registry names an empty ledger and every fixture section carries the
+# 0 an absent row admits.
+QWEN_CTX_CHECKPOINT_LEDGER=$work/ctx-checkpoints.tsv
+printf '# the fixture registry admits no checkpoint count\n' \
+    >"$QWEN_CTX_CHECKPOINT_LEDGER"
+export QWEN_CTX_CHECKPOINT_LEDGER
+
 # The wrapper runs from a directory holding a recorder in place of
 # qwen-launch.sh, so the arms read the forwarded environment out of a file.
 harness=$work/harness
@@ -233,6 +241,7 @@ write_web_preset() {
         printf 'LLAMA_ARG_FLASH_ATTN = on\n'
         printf 'LLAMA_ARG_BATCH = 128\n'
         printf 'LLAMA_ARG_UBATCH = 32\n'
+        printf 'LLAMA_ARG_CTX_CHECKPOINTS = 0\n'
         printf 'LLAMA_ARG_MCP_SERVERS_CONFIG = %s\n' "$mcp_config"
         printf 'LLAMA_ARG_TAGS = web-research,validator-gated\n'
         printf '\n'
@@ -400,6 +409,7 @@ write_web_preset "$review_presets" unmarked
     printf 'LLAMA_ARG_FLASH_ATTN = on\n'
     printf 'LLAMA_ARG_BATCH = 128\n'
     printf 'LLAMA_ARG_UBATCH = 32\n'
+    printf 'LLAMA_ARG_CTX_CHECKPOINTS = 0\n'
     printf 'LLAMA_ARG_MMPROJ = %s\n' "$review_projector"
     printf 'LLAMA_ARG_TAGS = vision-review,review-only\n'
     printf '\n'
@@ -931,6 +941,7 @@ router_presets_plain=$state_directory/router-presets-plain.ini
     printf 'LLAMA_ARG_FLASH_ATTN = on\n'
     printf 'LLAMA_ARG_BATCH = 128\n'
     printf 'LLAMA_ARG_UBATCH = 32\n'
+    printf 'LLAMA_ARG_CTX_CHECKPOINTS = 0\n'
     printf 'LLAMA_ARG_TAGS = production,fixture-role,default\n'
     printf '\n'
 } >"$router_presets_plain"

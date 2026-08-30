@@ -166,6 +166,34 @@ between the two files fails the gate rather than serving silently. The seeded
 depth 16384 passes and batch 2048 wedges the compute ring under the same
 cache triple, both at the probe's own `-t 2`.
 
+The context checkpoint count is per row, and `remote/ctx-checkpoints.tsv`
+carries it as `model_id`, `ctx_checkpoints`, `evidence`. A checkpoint copies
+the recurrent state into host memory at the boundaries
+`server-context.cpp` chooses, so a second turn sharing a long prefix restores
+the newest checkpoint below the divergence point instead of reconstructing
+the Gated DeltaNet state from zero: `evidence/ctx-checkpoint-sweep/` measures
+turn 2 at a 30K prompt boundary charging 27 tokens under any positive count
+where zero charges 30748, on all three classes. The count is a row property
+rather than an appliance default because the 0.8B alone emits a different
+first-turn token at zero-based index 25 once checkpoints are armed, on every
+positive arm and neither zero arm, which the forced prefill tail partition at
+`server-context.cpp:3449` (`checkpoint_offsets[] = {4 + n_ubatch, 4}`)
+supports; the 2B and 4B hold identity on both turns. The 2B and 4B rows read
+2, the 0.8B reads 0, and a row absent from the ledger reads 0.
+`model-registry.sh ctx-checkpoints` and `ctx-checkpoint MODEL_ID` validate the
+whole ledger before answering, a count above 0 requires its evidence path in
+the tree, and `QWEN_CTX_CHECKPOINT_LEDGER` names another file for a fixture.
+`qwen-capacity-policy.sh` sets `--ctx-checkpoints` from the row on the
+single-model path, with `QWEN_CTX_CHECKPOINTS` replacing it for an experiment
+arm, an explicit 0 included. In router mode the flag stays off the router argv
+with the six tuple flags, because `common_preset::merge` would push one value
+onto every child; `build-router-presets.sh` and `build-web-presets.sh` write
+`LLAMA_ARG_CTX_CHECKPOINTS` from the row into every section, a draft-pair
+section from its target row and a review-only section from its own, and the
+launch requires exactly one such key per section equal to the ledger's value.
+An absent key is refused rather than defaulted, since the pinned build's
+default is 32.
+
 `remote/probe-depth-wedge.sh` treats an output directory as a resumable evidence
 ledger. `wedge-metadata.tsv` binds the ledger to the model SHA-256, model byte
 count, and recovery-control length. Startup validates every retained row against
@@ -303,7 +331,7 @@ CLI argument replaces the same key in every model section: passing `--ctx-size
 24576` served the vision row at 24576 where its section named 16384. Every
 section therefore carries all six keys, since an absent one falls through to the
 llama.cpp defaults of batch 2048 and ubatch 512, which is the quarantined
-geometry.
+geometry, and `LLAMA_ARG_CTX_CHECKPOINTS` beside them for the same reason.
 
 A draft-pair section is the one preset section named for something other than a
 registry id. `build-router-presets.sh` emits it for a `production` or
@@ -946,6 +974,7 @@ remote/sample-gpu-clocks.sh OUT_TSV [SECONDS]  # the DPM step a rate ran at
 remote/measure-dpm-force.sh MODEL [OUT]         # auto against global high governor
 remote/model-registry.sh id|path SELECTOR [FIELD]
 remote/model-registry.sh draft-pairs | draft-pair PAIR_ID [FIELD]
+remote/model-registry.sh ctx-checkpoints | ctx-checkpoint MODEL_ID
 remote/measure-draft-pair.sh PAIR_ID OUTPUT_DIR
                                                 # one pairing against its own control, ABBA
 remote/build-router-presets.sh [OUTPUT_INI]    # the picker, from the tier field

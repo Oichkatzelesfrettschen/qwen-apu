@@ -179,6 +179,7 @@ for preset_key in $(sed -n 's/^\(LLAMA_ARG_[A-Z_]*\) *=.*/\1/p' "$presets" |
         LLAMA_ARG_MODEL | LLAMA_ARG_ALIAS | LLAMA_ARG_TAGS | \
         LLAMA_ARG_CTX_SIZE | LLAMA_ARG_CACHE_TYPE_K | LLAMA_ARG_CACHE_TYPE_V | \
         LLAMA_ARG_FLASH_ATTN | LLAMA_ARG_BATCH | LLAMA_ARG_UBATCH | \
+        LLAMA_ARG_CTX_CHECKPOINTS | \
         LLAMA_ARG_MMPROJ | LLAMA_ARG_SPEC_TYPE | LLAMA_ARG_SPEC_DRAFT_MODEL | \
         LLAMA_ARG_SPEC_DRAFT_N_MAX | LLAMA_ARG_SPEC_DRAFT_P_MIN | \
         LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K | LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V | \
@@ -196,16 +197,17 @@ else
     report preset_key_vocabulary rejected
 fi
 
-# Every section carries all six per-checkpoint keys. The router argv omits them
-# so the preset decides, and a key absent from a section falls through to the
-# llama.cpp defaults, where batch 2048 and ubatch 512 is the quarantined
-# geometry. An incomplete section is therefore how a quarantined tuple would
-# reach a child without any row asking for it.
+# Every section carries all six per-checkpoint keys and the checkpoint count.
+# The router argv omits them so the preset decides, and a key absent from a
+# section falls through to the llama.cpp defaults, where batch 2048 and ubatch
+# 512 is the quarantined geometry and the checkpoint count is 32. An incomplete
+# section is therefore how a quarantined tuple would reach a child without any
+# row asking for it.
 section_completeness=0
 for section in $section_ids; do
     for required_key in LLAMA_ARG_CTX_SIZE LLAMA_ARG_CACHE_TYPE_K \
         LLAMA_ARG_CACHE_TYPE_V LLAMA_ARG_FLASH_ATTN LLAMA_ARG_BATCH \
-        LLAMA_ARG_UBATCH; do
+        LLAMA_ARG_UBATCH LLAMA_ARG_CTX_CHECKPOINTS; do
         if ! awk -F'[][]' -v want="$section" -v key="$required_key" '
             /^\[/ { in_section = ($2 == want); next }
             in_section && index($0, key) == 1 { found = 1 }
@@ -401,9 +403,14 @@ printf '%s\n' \
     'profile-record	profile	profile-model	ring-timeout-only	8192	128	32	q8_0	q4_0	on	-	-	evidence/quarantine/profile-record.md	router-child' \
     'archived-record	model	archived-model	device-lost	-	-	-	-	-	-	-	-	evidence/quarantine/archived-record.md	any' \
     >"$fixture_quarantine"
+# The checkpoint ledger joins against the model registry, so a fixture registry
+# names an empty ledger: every section then carries the 0 an absent row admits.
+fixture_ctx_checkpoints=$work/fixture-ctx-checkpoints.tsv
+printf '# the fixture registry admits no checkpoint count\n' >"$fixture_ctx_checkpoints"
 QWEN_MODEL_REGISTRY=$fixture_registry QWEN_MODEL_ROOT=$fixture_model_root \
 QWEN_QUARANTINE_REGISTRY=$fixture_quarantine \
 QWEN_QUARANTINE_REASONS=$fixture_reasons QWEN_DRAFT_PAIRS=$fixture_pairs \
+QWEN_CTX_CHECKPOINT_LEDGER=$fixture_ctx_checkpoints \
     "$builder" "$fixture_presets" >"$work/quarantine-fixture.log"
 if ! grep -q '^\[' "$fixture_presets" &&
    [ -L "$fixture_model_root/quarantine/Hidden" ] &&
@@ -417,6 +424,7 @@ QWEN_MODEL_REGISTRY=$fixture_registry QWEN_MODEL_ROOT=$fixture_model_root \
 QWEN_QUARANTINE_REGISTRY=$fixture_quarantine \
 QWEN_QUARANTINE_REASONS=$fixture_reasons QWEN_ROUTER_INCLUDE_QUARANTINE=1 \
 QWEN_DEFAULT_MODEL_ID=hidden-model QWEN_DRAFT_PAIRS=$fixture_pairs \
+QWEN_CTX_CHECKPOINT_LEDGER=$fixture_ctx_checkpoints \
     "$builder" "$fixture_presets" >"$work/quarantine-fixture-override.log"
 fixture_sections=$(awk -F'[][]' '/^\[/ { print $2 }' "$fixture_presets" | sort)
 hidden_tags=$(awk -F' = ' '
@@ -505,6 +513,7 @@ QWEN_MODEL_REGISTRY=$pair_fixture_registry QWEN_MODEL_ROOT=$pair_fixture_root \
 QWEN_QUARANTINE_REGISTRY=$pair_fixture_quarantine \
 QWEN_QUARANTINE_REASONS=$pair_fixture_reasons \
 QWEN_DRAFT_PAIRS=$pair_fixture_pairs \
+QWEN_CTX_CHECKPOINT_LEDGER=$fixture_ctx_checkpoints \
     "$builder" "$pair_fixture_presets" >"$work/pair-fixture.log" \
     2>"$work/pair-fixture.err" || pair_fixture_status=$?
 if [ "$pair_fixture_status" -ne 0 ] &&

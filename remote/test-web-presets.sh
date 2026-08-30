@@ -23,6 +23,14 @@ report() {
     [ "$2" = ok ] || failures=$((failures + 1))
 }
 
+# The context checkpoint ledger joins against the model registry, so the
+# temporary registry every case reads names an empty ledger and each emitted
+# section carries the 0 an absent row admits.
+QWEN_CTX_CHECKPOINT_LEDGER=$work/ctx-checkpoints.tsv
+printf '# the fixture registry admits no checkpoint count\n' \
+    >"$QWEN_CTX_CHECKPOINT_LEDGER"
+export QWEN_CTX_CHECKPOINT_LEDGER
+
 # The web-lane cases below read a temporary all-refused image ledger for the
 # reason they read a temporary model registry: the checked-in
 # remote/image-profiles.tsv carries one validator-gated row, so a generator run
@@ -149,7 +157,7 @@ else
     cat "$work/ok.err" >&2
 fi
 
-required_keys='LLAMA_ARG_MODEL LLAMA_ARG_ALIAS LLAMA_ARG_CTX_SIZE LLAMA_ARG_BATCH LLAMA_ARG_UBATCH LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V LLAMA_ARG_FLASH_ATTN LLAMA_ARG_MCP_SERVERS_CONFIG LLAMA_ARG_TAGS'
+required_keys='LLAMA_ARG_MODEL LLAMA_ARG_ALIAS LLAMA_ARG_CTX_SIZE LLAMA_ARG_BATCH LLAMA_ARG_UBATCH LLAMA_ARG_CTX_CHECKPOINTS LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V LLAMA_ARG_FLASH_ATTN LLAMA_ARG_MCP_SERVERS_CONFIG LLAMA_ARG_TAGS'
 geometry_ok=ok
 for key in $required_keys; do
     if ! awk -v key="$key" '
@@ -456,7 +464,7 @@ fi
 # reading the file's first line.
 for required_key in LLAMA_ARG_MODEL LLAMA_ARG_CTX_SIZE LLAMA_ARG_BATCH \
     LLAMA_ARG_UBATCH LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V \
-    LLAMA_ARG_FLASH_ATTN; do
+    LLAMA_ARG_FLASH_ATTN LLAMA_ARG_CTX_CHECKPOINTS; do
     broken_presets=$work/presets-without-$required_key.ini
     sed "/^$required_key =/d" "$presets_policy" >"$broken_presets"
     if run_policy_over_presets "$broken_presets" \
