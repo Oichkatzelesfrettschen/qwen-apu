@@ -27,6 +27,7 @@ SERVICE_PATH = os.path.join(SERVICE_DIRECTORY, "image-service.py")
 FAKE_RUNTIME_PATH = os.path.join(
     SERVICE_DIRECTORY, "test-fixtures", "fake-image-runtime.sh"
 )
+WRAPPER_PATH = os.path.join(SERVICE_DIRECTORY, "qwen-exec-idle-priority.sh")
 TEARDOWN_CHECK_PATH = os.path.join(SERVICE_DIRECTORY, "image-teardown-check.sh")
 sys.path.insert(0, SERVICE_DIRECTORY)
 
@@ -104,6 +105,8 @@ class ServiceSession:
         runtime_environment=None,
         radv_icd_path=None,
         lease_wait_seconds=None,
+        priority_wrapper=None,
+        procfs_root=None,
     ):
         self.directory = directory
         self.state_directory = os.path.join(directory, "state")
@@ -133,6 +136,8 @@ class ServiceSession:
         ]
         for name, value in (runtime_environment or {}).items():
             argv.extend(["--runtime-env", f"{name}={value}"])
+        if priority_wrapper is not None:
+            argv.extend(["--priority-wrapper", priority_wrapper])
         # image-service.py derives VK_DRIVER_FILES and VK_ICD_FILENAMES from
         # QWEN_RADV_ICD the way remote/radv-icd-env.sh derives the identical
         # pair for a shell caller, and refuses to start against an unreadable
@@ -149,6 +154,10 @@ class ServiceSession:
         # to observe the refusal names a deadline it can afford to reach.
         if lease_wait_seconds is not None:
             environment["QWEN_IMAGE_LEASE_WAIT_S"] = str(lease_wait_seconds)
+        # The priority readback goes through /proc; a test that points it at
+        # an empty directory reaches the unreadable arm without root.
+        if procfs_root is not None:
+            environment["QWEN_IMAGE_PROCFS_ROOT"] = procfs_root
         self.process = subprocess.Popen(
             argv,
             stdout=subprocess.PIPE,
@@ -275,6 +284,8 @@ class ImageServiceTest(unittest.TestCase):
         runtime_environment=None,
         radv_icd_path=None,
         lease_wait_seconds=None,
+        priority_wrapper=None,
+        procfs_root=None,
     ):
         directory = tempfile.mkdtemp(dir=self.temporary.name)
         if profiles is None:
@@ -285,6 +296,8 @@ class ImageServiceTest(unittest.TestCase):
             runtime_environment,
             radv_icd_path,
             lease_wait_seconds,
+            priority_wrapper,
+            procfs_root,
         )
         self.sessions.append(session)
         self.addCleanup(self.quiet_stop, session)
@@ -352,6 +365,18 @@ class ImageServiceTest(unittest.TestCase):
         self.assertEqual(record["profile_id"], "sdxs-512-a")
         self.assertEqual(record["exit_status"], 0)
         self.assertEqual(record["nice"], 19, "the runtime priority is read back")
+        self.assertEqual(record["ioclass"], "idle", "the I/O class is read back")
+        self.assertEqual(record["priority_wrapper"], os.path.realpath(WRAPPER_PATH))
+        with open(WRAPPER_PATH, "rb") as handle:
+            wrapper_digest = hashlib.sha256(handle.read()).hexdigest()
+        self.assertEqual(record["priority_wrapper_sha256"], wrapper_digest)
+        self.assertIsInstance(record["runtime_pid"], int)
+        self.assertGreater(record["runtime_pid"], 0)
+        self.assertEqual(
+            record["runtime_argv"][0],
+            FAKE_RUNTIME_PATH,
+            "the record names the runtime rather than the wrapper",
+        )
         self.assertEqual(record["timeout_s_applied"], 20)
         self.assertEqual(
             record["prompt_sha256"],
@@ -533,6 +558,134 @@ class ImageServiceTest(unittest.TestCase):
              if name.endswith((".part", ".part.png"))],
             [],
         )
+
+    def service_children(self, session):
+        """Return the pids the service still parents, from /proc."""
+        children = []
+        for entry in os.listdir("/proc"):
+            if not entry.isdigit():
+                continue
+            try:
+                with open(f"/proc/{entry}/stat", encoding="ascii") as handle:
+                    fields = handle.read().rsplit(")", 1)[1].split()
+            except (OSError, IndexError):
+                continue
+            if int(fields[1]) == session.pid:
+                children.append((int(entry), fields[0]))
+        return children
+
+    def write_wrapper(self, name, body):
+        path = os.path.join(self.temporary.name, name)
+        with open(path, "w", encoding="ascii") as handle:
+            handle.write(body)
+        os.chmod(path, 0o755)
+        return path
+
+    def test_unreadable_priority_fails_the_job_and_reaps_the_child(self):
+        """A None readback refuses the job; the runtime is signalled and reaped."""
+        empty_proc = os.path.join(self.temporary.name, "empty-proc")
+        os.makedirs(empty_proc)
+        argv_log = os.path.join(self.temporary.name, "argv.log")
+        session = self.start(
+            runtime_environment={
+                "QWEN_FAKE_IMAGE_SLEEP_SECONDS": "10",
+                "QWEN_FAKE_IMAGE_ARGV_LOG": argv_log,
+            },
+            procfs_root=empty_proc,
+        )
+        response = session.control(generate_request())
+        self.assertEqual(response["status"], "failed", response)
+        self.assertEqual(response["reason"], "runtime_failed", response)
+        self.assertIn(
+            "the runtime priority was unreadable after the priority wrapper",
+            response["error"],
+        )
+        self.assertEqual(
+            self.service_children(session), [], "the child is reaped, no zombie"
+        )
+        self.assertTrue(session.lease_is_free())
+        self.assertEqual(os.listdir(session.artifact_directory()), [])
+
+    def test_priority_other_than_19_fails_the_job_and_reaps_the_child(self):
+        """A wrapper that execs without renice leaves the runtime at the service's nice."""
+        wrapper = self.write_wrapper(
+            "exec-without-renice.sh", "#!/bin/sh\nexec \"$@\"\n"
+        )
+        session = self.start(
+            runtime_environment={"QWEN_FAKE_IMAGE_SLEEP_SECONDS": "10"},
+            priority_wrapper=wrapper,
+        )
+        service_nice = int(
+            subprocess.run(
+                ["ps", "-o", "ni=", "-p", str(session.pid)],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout
+        )
+        if service_nice == 19:
+            self.skipTest("the test process already runs at nice 19")
+        response = session.control(generate_request())
+        self.assertEqual(response["status"], "failed", response)
+        self.assertEqual(response["reason"], "runtime_failed", response)
+        self.assertIn(
+            f"the runtime ran at nice {service_nice}; nice 19 is required",
+            response["error"],
+        )
+        self.assertEqual(self.service_children(session), [])
+        self.assertTrue(session.lease_is_free())
+        self.assertEqual(os.listdir(session.artifact_directory()), [])
+
+    def test_cancel_during_wrapper_startup_ends_the_process_group(self):
+        """A cancel that lands before exec kills the wrapper's group; nothing runs."""
+        started_marker = os.path.join(self.temporary.name, "wrapper-started")
+        argv_log = os.path.join(self.temporary.name, "argv.log")
+        # The stand-in takes nice 19 itself, so the confirmation succeeds, then
+        # holds before exec for longer than the cancel takes to arrive.
+        wrapper = self.write_wrapper(
+            "slow-wrapper.sh",
+            "#!/bin/sh\n"
+            "/usr/bin/renice --priority 19 --pid $$ >/dev/null 2>&1\n"
+            "/usr/bin/ionice -c 3 -p $$ >/dev/null 2>&1\n"
+            f"touch '{started_marker}'\n"
+            "sleep 30\n"
+            "exec \"$@\"\n",
+        )
+        session = self.start(
+            runtime_environment={"QWEN_FAKE_IMAGE_ARGV_LOG": argv_log},
+            priority_wrapper=wrapper,
+        )
+        result = {}
+
+        def run_generate():
+            result["response"] = session.control(generate_request(), timeout=60)
+
+        import threading
+
+        worker = threading.Thread(target=run_generate)
+        worker.start()
+        deadline = time.time() + 20
+        while not os.path.exists(started_marker) and time.time() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(os.path.exists(started_marker), "the wrapper started")
+        children_before = self.service_children(session)
+        self.assertEqual(len(children_before), 1, children_before)
+        wrapper_pid = children_before[0][0]
+        cancel = session.control(
+            {"protocol_version": 1, "request_id": "req-0001", "action": "cancel"}
+        )
+        self.assertEqual(cancel["status"], "accepted", cancel)
+        worker.join(timeout=30)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result["response"]["status"], "cancelled", result)
+        self.assertFalse(
+            os.path.exists(argv_log), "the runtime never ran behind the wrapper"
+        )
+        self.assertEqual(self.service_children(session), [])
+        with self.assertRaises(ProcessLookupError):
+            os.killpg(wrapper_pid, 0)
+        self.assertTrue(session.lease_is_free())
+        self.assertEqual(os.listdir(session.artifact_directory()), [])
 
     def test_cancel_without_a_job_is_refused(self):
         session = self.start()

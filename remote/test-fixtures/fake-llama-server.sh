@@ -97,8 +97,32 @@ fi
 # contributes a fixed lump, which is the shape a projector-loaded prompt has:
 # the /tokenize route sees the text alone and timings.prompt_n carries the image
 # tokens beside it.
+# The speculation arm is read from the argv the caller built rather than from a
+# second variable, so a draft-pair harness and its control reach one fixture and
+# differ by the same flag the real server differs by. tools/server has the same
+# shape: server-common.cpp adds draft_n and draft_n_accepted to a request's
+# timings only where that request drafted something.
+fake_spec_active=0
+for fake_argument in "$@"; do
+    if [ "$fake_argument" = --spec-type ]; then
+        fake_spec_active=1
+        break
+    fi
+done
+fake_decode_tok_s=${QWEN_FAKE_SERVER_DECODE_TOK_S:-3.00}
+fake_draft_n=0
+fake_draft_accepted=0
+if [ "$fake_spec_active" = 1 ]; then
+    fake_decode_tok_s=${QWEN_FAKE_SERVER_DECODE_TOK_S_SPEC:-$fake_decode_tok_s}
+    fake_draft_n=${QWEN_FAKE_SERVER_DRAFT_N:-64}
+    fake_draft_accepted=${QWEN_FAKE_SERVER_DRAFT_ACCEPTED:-48}
+fi
+
 QWEN_FAKE_SERVER_RESOLVED_PORT=$serving_port \
 QWEN_FAKE_SERVER_RESOLVED_TOKENS=$fake_tokens \
+QWEN_FAKE_SERVER_RESOLVED_DECODE_TOK_S=$fake_decode_tok_s \
+QWEN_FAKE_SERVER_RESOLVED_DRAFT_N=$fake_draft_n \
+QWEN_FAKE_SERVER_RESOLVED_DRAFT_ACCEPTED=$fake_draft_accepted \
 QWEN_POLICY_TEST_IMAGE_TOKENS=${QWEN_POLICY_TEST_IMAGE_TOKENS:-300} \
 QWEN_POLICY_TEST_REPLY=${QWEN_POLICY_TEST_REPLY:-JUN} \
 QWEN_POLICY_TEST_PREDICTED_CAP=${QWEN_POLICY_TEST_PREDICTED_CAP:-0} \
@@ -115,6 +139,9 @@ reply = os.environ["QWEN_POLICY_TEST_REPLY"]
 # shape a fixed-length decode fails in: the answer arrives and carries fewer
 # tokens than the caller asked for.
 predicted_cap = int(os.environ["QWEN_POLICY_TEST_PREDICTED_CAP"])
+decode_tok_s = float(os.environ["QWEN_FAKE_SERVER_RESOLVED_DECODE_TOK_S"])
+draft_n = int(os.environ["QWEN_FAKE_SERVER_RESOLVED_DRAFT_N"])
+draft_accepted = int(os.environ["QWEN_FAKE_SERVER_RESOLVED_DRAFT_ACCEPTED"])
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -148,7 +175,17 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/completion"):
             predict = int(body.get("n_predict") or len(tokens))
             emitted = [tokens[index % len(tokens)] for index in range(predict)]
-            self.respond({"content": "", "tokens": emitted})
+            timings = {
+                "prompt_n": len(str(body.get("prompt", "")).split()),
+                "prompt_ms": 1000.0,
+                "predicted_n": predict,
+                "predicted_per_second": decode_tok_s,
+            }
+            if draft_n > 0:
+                timings["draft_n"] = draft_n
+                timings["draft_n_accepted"] = draft_accepted
+            self.respond({"content": "", "tokens": emitted,
+                          "timings": timings})
             return
         if not self.path.startswith("/v1/chat/completions"):
             self.send_error(404)

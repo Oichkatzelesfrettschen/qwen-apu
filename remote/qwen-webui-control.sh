@@ -105,6 +105,7 @@ case $action in
                               QWEN_INFERENCE_CPU QWEN_SPEC_TYPE \
                               QWEN_SPEC_DRAFT_N_MAX QWEN_SPEC_DRAFT_P_MIN \
                               QWEN_SPEC_BACKEND_SAMPLING QWEN_BACKEND_SAMPLING \
+                              QWEN_CTX_CHECKPOINTS QWEN_CHECKPOINT_MIN_STEP \
                               QWEN_CACHE_TYPE_K QWEN_CACHE_TYPE_V \
                               QWEN_FLASH_ATTN \
                               QWEN_CACHE_OVERRIDE_CONTEXT_CEILING \

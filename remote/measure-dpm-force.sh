@@ -80,9 +80,27 @@ trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+# The harness itself takes nice 19 and the idle I/O class, and every arm
+# inherits both through fork. `renice --priority` writes the absolute value
+# where `nice -n 19` would add 19 to the caller's own niceness, so a caller
+# started below nice 0 still lands the bench at 19. Both values are read back
+# from the kernel and retained beside every arm rather than asserted.
+/usr/bin/renice --priority 19 --pid "$$" >/dev/null 2>&1 || true
+harness_nice=$(LC_ALL=C /usr/bin/ps -o ni= -p "$$" 2>/dev/null |
+    /usr/bin/awk '{ gsub(/[[:space:]]/, ""); print; exit }')
+if [ "$harness_nice" != 19 ]; then
+    printf 'measurement priority refused: observed=%s\n' \
+        "${harness_nice:-unreadable}" >&2
+    exit 2
+fi
+/usr/bin/ionice -c 3 -p "$$" >/dev/null 2>&1 || true
+harness_ioclass=$(LC_ALL=C /usr/bin/ionice -p "$$" 2>/dev/null |
+    /usr/bin/awk '{ sub(/:$/, "", $1); print $1; exit }')
+harness_ioclass=${harness_ioclass:-unreadable}
+
 mkdir -p "$output_directory"
 summary=$output_directory/dpm-summary.tsv
-printf 'arm\tlevel\tfclk_before_load\tdecode_tok_s\tstatus\tfclk_modal\tsclk_max\ttemp_c_max\n' \
+printf 'arm\tlevel\tfclk_before_load\tdecode_tok_s\tstatus\tfclk_modal\tsclk_max\ttemp_c_max\tharness_nice\tharness_ioclass\n' \
     >"$summary"
 
 measurement_failed=0
@@ -113,13 +131,13 @@ run_arm() {
         return 1
     fi
 
-    printf 'arm_start_utc=%s label=%s level=%s mclk_before_load=%s\n' \
+    printf 'arm_start_utc=%s label=%s level=%s mclk_before_load=%s harness_nice=%s harness_ioclass=%s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$arm_label" "$applied_level" \
-        "$selected_fclk"
+        "$selected_fclk" "$harness_nice" "$harness_ioclass"
     "$clock_sampler" "$arm_samples" 1 &
     sampler_pid=$!
     set +e
-    nice -n 19 ionice -c 3 "$bench" -m "$model_path" \
+    "$bench" -m "$model_path" \
         -ngl 99 -t 2 -r 3 -p 0 -n 64 -o md >"$arm_log" 2>&1
     arm_status=$?
     set -e
@@ -160,8 +178,9 @@ run_arm() {
                 (temperature_samples ? sprintf("%.1f", temp_max / 1000) : "unavailable")
         }' "$arm_samples")
 
-    printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$arm_label" "$applied_level" \
-        "$selected_fclk" "$decode" "$arm_status" "$clock_report" >>"$summary"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$arm_label" "$applied_level" \
+        "$selected_fclk" "$decode" "$arm_status" "$clock_report" \
+        "$harness_nice" "$harness_ioclass" >>"$summary"
     printf 'arm_stop_utc=%s label=%s decode=%s status=%s clocks=%s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$arm_label" "$decode" "$arm_status" \
         "$(printf '%s' "$clock_report" | tr '\t' ' ')"

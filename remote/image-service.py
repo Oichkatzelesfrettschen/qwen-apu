@@ -78,6 +78,7 @@ import socket
 import socketserver
 import stat
 import struct
+import subprocess
 import sys
 import threading
 import time
@@ -116,6 +117,17 @@ EXECUTION_POLICY_ADMITTED = "validator-gated"
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 PNG_CHANNELS_FOR_COLOR_TYPE = {0: 1, 2: 3, 4: 2, 6: 4}
 UNOBSERVED = "-"
+REQUIRED_RUNTIME_NICE = 19
+PRIORITY_CONFIRMATION_SECONDS = 1.0
+PRIORITY_POLL_INTERVAL_SECONDS = 0.002
+# The wrapper that places the runtime at nice 19 and the idle I/O class lives
+# beside this file; QWEN_IMAGE_PRIORITY_WRAPPER or --priority-wrapper names a
+# stand-in for a test. /proc is read through PROCFS_ROOT so a test can point
+# the reader at a directory holding no process and reach the unreadable path.
+DEFAULT_PRIORITY_WRAPPER = os.path.join(
+    os.path.dirname(os.path.realpath(__file__)), "qwen-exec-idle-priority.sh"
+)
+PROCFS_ROOT = os.environ.get("QWEN_IMAGE_PROCFS_ROOT", "/proc")
 # The identifier a reply carries where the request named none the protocol
 # admits, since every response echoes an identifier the schema validates.
 UNIDENTIFIED_REQUEST = "unidentified"
@@ -711,11 +723,52 @@ def read_process_nice(pid):
     parenthesis.
     """
     try:
-        with open(f"/proc/{pid}/stat", encoding="ascii") as handle:
+        with open(f"{PROCFS_ROOT}/{pid}/stat", encoding="ascii") as handle:
             fields = handle.read().rsplit(")", 1)[1].split()
         return int(fields[16])
     except (OSError, IndexError, ValueError):
         return None
+
+
+def wait_for_process_nice(pid, required=REQUIRED_RUNTIME_NICE, timeout_seconds=1.0):
+    """Poll the kernel until the pid's nice equals `required` or time runs out.
+
+    The wrapper applies the priority inside the child after the spawn returns,
+    so the first reading is the value the child inherited and the required
+    value appears once `renice` has run. The last observed value is returned,
+    which is `required` on success, another integer when the deadline passed
+    with the priority elsewhere, and None when the entry was unreadable at the
+    deadline.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    observed = read_process_nice(pid)
+    while observed != required and time.monotonic() < deadline:
+        time.sleep(PRIORITY_POLL_INTERVAL_SECONDS)
+        observed = read_process_nice(pid)
+    return observed
+
+
+def read_process_ioclass(pid):
+    """Return the I/O scheduling class ionice(1) reports for the pid, or None.
+
+    The kernel exposes the class through ioprio_get(2) alone, so the reading
+    goes through /usr/bin/ionice rather than a /proc file. The first word of
+    its output is the class name, `idle` for the class the wrapper applied.
+    """
+    try:
+        completed = subprocess.run(
+            ["/usr/bin/ionice", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            check=False,
+            env={"LC_ALL": "C", "PATH": "/usr/bin:/bin"},
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0 or not completed.stdout.split():
+        return None
+    return completed.stdout.split()[0].rstrip(":")
 
 
 class JobState:
@@ -900,9 +953,12 @@ class ImageService:
                 self.job.part_path = ""
 
     def execute_runtime(self, request, profile, part_path, deadline):
-        """Spawn the pinned runtime at nice 19 and wait out its own deadline.
+        """Spawn the pinned runtime through the priority wrapper and wait.
 
-        The child runs in its own session, so a runtime that forks is signalled
+        The wrapper places its own pid at nice 19 and the idle I/O class and
+        execs the runtime in place; this side confirms nice 19 from the kernel
+        within a bounded wait and refuses the job when the reading is absent
+        or different. The child runs in its own session, so a runtime that forks is signalled
         as a process group rather than leaving workers on the device. The hard
         timeout is the smaller of the profile's own bound and the 300 second
         ceiling; SIGTERM runs first and SIGKILL follows a fixed grace, so a
@@ -954,25 +1010,58 @@ class ImageService:
                 )
         usage_before = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
         spawned_at = time.time()
+        # The wrapper is the spawned executable and the runtime is its exec
+        # target: it writes nice 19 and the idle I/O class into its own pid,
+        # reads both back from the kernel, and replaces itself with the runtime
+        # under the same pid, session, and process group. posix_spawn rather
+        # than a preexec hook keeps every post-fork step out of Python, since
+        # this service is multithreaded and a forked interpreter can block on a
+        # lock another thread held.
+        wrapper_path = self.settings.priority_wrapper
         with open(os.devnull, "rb") as devnull:
             child_pid = os.posix_spawn(
-                argv[0],
-                argv,
+                wrapper_path,
+                [wrapper_path, *argv],
                 environment,
                 file_actions=[(os.POSIX_SPAWN_DUP2, devnull.fileno(), 0)],
                 setsid=True,
             )
-        # The priority is applied as an absolute value from the parent rather
-        # than as an offset in the child, so the runtime lands at 19 whatever
-        # the launching shell's own niceness is, and it is read back below
-        # because the request and the applied value are two claims.
-        with contextlib.suppress(OSError):
-            os.setpriority(os.PRIO_PROCESS, child_pid, 19)
-        observed_nice = read_process_nice(child_pid)
+        # The pid is published before the priority is confirmed, so a cancel
+        # that lands while the wrapper is still applying its priority reaches
+        # the wrapper's process group, which is the runtime's process group.
         with self.job.lock:
             self.job.child_pid = child_pid
             cancel_requested = self.job.cancel_requested
         if cancel_requested:
+            self.signal_child(child_pid)
+        observed_nice = wait_for_process_nice(
+            child_pid, REQUIRED_RUNTIME_NICE, PRIORITY_CONFIRMATION_SECONDS
+        )
+        # The wrapper writes the I/O class after the priority, so the class is
+        # polled inside the same confirmation window; the value recorded is
+        # what ionice reported at the last reading, and the wrapper's own
+        # refusal (status 125) is what ends a runtime whose class stayed
+        # elsewhere.
+        observed_ioclass = None
+        if observed_nice == REQUIRED_RUNTIME_NICE:
+            ioclass_deadline = time.monotonic() + PRIORITY_CONFIRMATION_SECONDS
+            observed_ioclass = read_process_ioclass(child_pid)
+            while observed_ioclass != "idle" and time.monotonic() < ioclass_deadline:
+                time.sleep(PRIORITY_POLL_INTERVAL_SECONDS)
+                observed_ioclass = read_process_ioclass(child_pid)
+        priority_failure = None
+        if observed_nice is None:
+            priority_failure = (
+                "the runtime priority was unreadable after the priority wrapper"
+            )
+        elif observed_nice != REQUIRED_RUNTIME_NICE:
+            priority_failure = (
+                f"the runtime ran at nice {observed_nice}; nice "
+                f"{REQUIRED_RUNTIME_NICE} is required"
+            )
+        if priority_failure is not None and not cancel_requested:
+            # Fail closed: a runtime whose priority the kernel did not confirm
+            # is ended as a process group and reaped before the job is refused.
             self.signal_child(child_pid)
         runtime_deadline = min(spawned_at + applied_timeout, deadline)
         status, timed_out = self.wait_for_child(child_pid, runtime_deadline)
@@ -982,12 +1071,15 @@ class ImageService:
             cancelled = self.job.cancel_requested
             self.job.child_pid = 0
         outcome = {
+            "priority_wrapper": wrapper_path,
+            "priority_wrapper_sha256": self.settings.priority_wrapper_sha256,
             "runtime_argv": recorded_argv,
             "runtime_pid": child_pid,
             "runtime_seconds": round(elapsed, 3),
             "timeout_s_requested": profile["timeout_s"],
             "timeout_s_applied": applied_timeout,
             "nice": observed_nice if observed_nice is not None else UNOBSERVED,
+            "ioclass": observed_ioclass if observed_ioclass is not None else UNOBSERVED,
             "children_maxrss_kib": max(usage_after, usage_before),
         }
         if os.WIFSIGNALED(status):
@@ -998,6 +1090,8 @@ class ImageService:
             outcome["terminating_signal"] = UNOBSERVED
         if cancelled:
             raise JobCancelled("the generation was cancelled by its owner")
+        if priority_failure is not None:
+            raise RuntimeFailed(priority_failure)
         if timed_out:
             raise RuntimeTimeout(
                 f"the runtime passed its {applied_timeout} second bound and was "
@@ -1007,10 +1101,6 @@ class ImageService:
             raise RuntimeFailed(
                 f"the runtime exited {outcome['exit_status']} with signal "
                 f"{outcome['terminating_signal']}"
-            )
-        if observed_nice is not None and observed_nice != 19:
-            raise RuntimeFailed(
-                f"the runtime ran at nice {observed_nice} where 19 is required"
             )
         return outcome
 
@@ -1173,9 +1263,12 @@ class ImageService:
             "runtime_sha256": self.artifact_digest(profile["runtime_path"]),
             "runtime_argv": outcome["runtime_argv"],
             "runtime_pid": outcome["runtime_pid"],
+            "priority_wrapper": outcome["priority_wrapper"],
+            "priority_wrapper_sha256": outcome["priority_wrapper_sha256"],
             "model_path": profile.get("model_path", "") or UNOBSERVED,
             "model_sha256": profile.get("model_sha256", UNOBSERVED),
             "nice": outcome["nice"],
+            "ioclass": outcome["ioclass"],
             "exit_status": outcome["exit_status"],
             "terminating_signal": outcome["terminating_signal"],
             "started_at": utc_timestamp(started_at),
@@ -1614,6 +1707,14 @@ class ServiceSettings:
         # rather than leaving it to the caller to remember; a caller may
         # still steer the derivation itself through QWEN_RADV_ICD.
         self.runtime_environment.update(derive_radv_icd_environment())
+        self.priority_wrapper = os.path.realpath(arguments.priority_wrapper)
+        if not os.path.isfile(self.priority_wrapper) or not os.access(
+            self.priority_wrapper, os.X_OK
+        ):
+            raise ServiceError(
+                f"the priority wrapper is not executable: {self.priority_wrapper}"
+            )
+        self.priority_wrapper_sha256 = sha256_file(self.priority_wrapper)
 
     @staticmethod
     def device_telemetry():
@@ -1745,6 +1846,13 @@ def build_parser():
         "--origin",
         default=os.environ.get("QWEN_IMAGE_PAGE_ORIGIN", ""),
         help="the one page origin the artifact routes admit through CORS",
+    )
+    parser.add_argument(
+        "--priority-wrapper",
+        default=os.environ.get("QWEN_IMAGE_PRIORITY_WRAPPER", DEFAULT_PRIORITY_WRAPPER),
+        help="the executable that places the runtime at nice 19 and the idle "
+        "I/O class before exec; defaults to qwen-exec-idle-priority.sh beside "
+        "this file",
     )
     parser.add_argument("--http-host", type=loopback_host, default="127.0.0.1")
     parser.add_argument("--http-port", type=int, default=0)

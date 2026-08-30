@@ -34,11 +34,23 @@ cors_origins=${QWEN_CORS_ORIGINS:-localhost}
 # again by that row's validated_filled_depth unless $7 carries the preset's
 # unvalidated-depth marker. Every other tuple key, tier rule, and quarantine
 # rule stays identical.
+#
+# A draft-pair section names a pair_id, so $8 carries the validated rows of
+# remote/draft-pairs.tsv and the section resolves through them to the target
+# registry row. The six tuple keys are then compared against that row and the
+# nine draft keys against the pair row, and a section outside the ledger
+# carrying any draft key is refused, because a draft the ledger never admitted
+# loads a second checkpoint no resident-set arithmetic counted.
 validate_router_preset_tuples() {
     printf '%s\n' "$4" | awk -F'\t' -v model_root="$3" \
         -v include_quarantine="$5" -v web_profile_sections="${6:-0}" \
-        -v web_depth_override="${7:-0}" '
-        function reset_tuple() {
+        -v web_depth_override="${7:-0}" -v draft_pair_ledger="${8:-}" '
+        function reset_tuple(   draft_key_index) {
+            for (draft_key_index = 1; draft_key_index <= draft_key_count;
+                 draft_key_index++) {
+                draft_count[draft_keys[draft_key_index]] = 0
+                draft_value[draft_keys[draft_key_index]] = ""
+            }
             model_count = 0
             context_count = 0
             cache_k_count = 0
@@ -70,6 +82,17 @@ validate_router_preset_tuples() {
             printf "router preset section %s carries %s %s, registry admits %s\n", \
                 section, key, value, expected > "/dev/stderr"
             rejected = 1
+        }
+        function check_draft_key(key, expected) {
+            if (draft_count[key] != 1) {
+                reject_key(key, draft_count[key])
+                return
+            }
+            if (draft_value[key] != expected) {
+                printf "router preset section %s carries %s %s, the draft pair ledger admits %s\n", \
+                    section, key, draft_value[key], expected > "/dev/stderr"
+                rejected = 1
+            }
         }
         function finish_section() {
             if (section == "" || section == "*") {
@@ -106,7 +129,49 @@ validate_router_preset_tuples() {
             if (flash_count == 1 && flash_value !~ /^(on|off|auto)$/) {
                 reject_value("LLAMA_ARG_FLASH_ATTN", flash_value)
             }
+            # A draft-pair section names a pair_id rather than a registry id, so
+            # the ledger resolves it to the target row whose tuple the six keys
+            # above are then compared against. The draft keys are compared
+            # against the pair row in the same pass, and an ordinary section
+            # carrying any of them is refused, because a section that gained a
+            # draft outside the ledger loads a second checkpoint the resident-set
+            # arithmetic never counted.
+            is_draft_pair = (web_profile_sections != 1 && (section in pair_target))
+            if (!is_draft_pair) {
+                for (draft_key_index = 1; draft_key_index <= draft_key_count;
+                     draft_key_index++) {
+                    draft_key = draft_keys[draft_key_index]
+                    if (draft_count[draft_key] != 0) {
+                        printf "router preset section %s carries %s without a draft pair row\n", \
+                            section, draft_key > "/dev/stderr"
+                        rejected = 1
+                    }
+                }
+            }
             registry_key = section
+            if (is_draft_pair) {
+                registry_key = pair_target[section]
+                check_draft_key("LLAMA_ARG_SPEC_TYPE", "draft-simple")
+                check_draft_key("LLAMA_ARG_SPEC_DRAFT_MODEL",
+                    model_root "/" registry_model[pair_draft[section]])
+                check_draft_key("LLAMA_ARG_SPEC_DRAFT_N_MAX",
+                    pair_n_max[section])
+                check_draft_key("LLAMA_ARG_SPEC_DRAFT_P_MIN",
+                    pair_p_min[section])
+                check_draft_key("LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K",
+                    pair_cache_k[section])
+                check_draft_key("LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V",
+                    pair_cache_v[section])
+                # Placement is stated rather than inherited:
+                # common_base_params_to_speculative overwrites result.devices,
+                # result.n_gpu_layers, and result.tensor_buft_overrides with the
+                # own draft values, so the Vulkan0 placement on the router argv
+                # reaches the target and leaves the draft on automatic placement
+                # unless the section names it.
+                check_draft_key("LLAMA_ARG_N_GPU_LAYERS_DRAFT", "all")
+                check_draft_key("spec-draft-device", "Vulkan0")
+                check_draft_key("spec-draft-override-tensor", ".*=Vulkan0")
+            }
             if (web_profile_sections == 1) {
                 model_root_prefix = model_root "/"
                 if (model_count == 1 &&
@@ -257,7 +322,43 @@ validate_router_preset_tuples() {
                 rejected = 1
             }
         }
-        BEGIN { reset_tuple() }
+        BEGIN {
+            # Six draft keys carry a set_env in the pinned common/arg.cpp and
+            # reach the INI as LLAMA_ARG_ names; draft layers breaks the SPEC
+            # pattern as LLAMA_ARG_N_GPU_LAYERS_DRAFT. The device and tensor
+            # override options carry no env at all, and get_map_key_opt in
+            # common/preset.cpp indexes every option by its dash-stripped
+            # argument names beside its env names, so those two reach the INI as
+            # spec-draft-device and spec-draft-override-tensor.
+            draft_key_count = split("LLAMA_ARG_SPEC_TYPE " \
+                "LLAMA_ARG_SPEC_DRAFT_MODEL LLAMA_ARG_SPEC_DRAFT_N_MAX " \
+                "LLAMA_ARG_SPEC_DRAFT_P_MIN LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K " \
+                "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V LLAMA_ARG_N_GPU_LAYERS_DRAFT " \
+                "spec-draft-device spec-draft-override-tensor",
+                draft_keys, " ")
+            for (draft_key_index = 1; draft_key_index <= draft_key_count;
+                 draft_key_index++) {
+                is_draft_key[draft_keys[draft_key_index]] = 1
+            }
+            # The ledger arrives as validated rows rather than as a path, so a
+            # preset persisting across a ledger edit is rejoined to the rows this
+            # launch itself read and validated.
+            ledger_row_count = split(draft_pair_ledger, ledger_rows, "\n")
+            for (ledger_row_index = 1; ledger_row_index <= ledger_row_count;
+                 ledger_row_index++) {
+                if (ledger_rows[ledger_row_index] == "") continue
+                split(ledger_rows[ledger_row_index], pair_fields, "\t")
+                if (pair_fields[4] != "production" &&
+                    pair_fields[4] != "candidate") continue
+                pair_target[pair_fields[1]] = pair_fields[2]
+                pair_draft[pair_fields[1]]  = pair_fields[3]
+                pair_n_max[pair_fields[1]]  = pair_fields[5]
+                pair_p_min[pair_fields[1]]  = pair_fields[6]
+                pair_cache_k[pair_fields[1]] = pair_fields[8]
+                pair_cache_v[pair_fields[1]] = pair_fields[9]
+            }
+            reset_tuple()
+        }
         FILENAME == "-" {
             if ($0 == "") next
             if ($2 == "model") {
@@ -339,6 +440,9 @@ validate_router_preset_tuples() {
             } else if (key == "LLAMA_ARG_TAGS") {
                 tags_count++
                 tags_value = value
+            } else if (is_draft_key[key]) {
+                draft_count[key]++
+                draft_value[key] = value
             }
         }
         END {
@@ -753,10 +857,24 @@ validate_current_router_authorities() {
         printf 'router quarantine authority is unavailable\n' >&2
         return 1
     fi
+    # The draft-pair ledger is a third authority the router preset persists
+    # across, so it is read and validated whole at every router launch and its
+    # rows are what a pair section is rejoined to. A web preset names profiles
+    # rather than pair ids and build-web-presets.sh emits no draft key, so that
+    # path resolves against an empty ledger and joins nothing.
+    router_draft_pair_rows=''
+    if [ "$web_presets_from_preset" != 1 ]; then
+        if ! router_draft_pair_rows=$(
+            "$script_directory/model-registry.sh" draft-pairs
+        ); then
+            printf 'router draft pair authority is unavailable\n' >&2
+            return 1
+        fi
+    fi
     if ! validate_router_preset_tuples "$router_registry" "$router_presets" \
         "$router_model_root" "$router_quarantine_rows" \
         "$quarantine_override_from_preset" "$web_presets_from_preset" \
-        "$web_depth_override_from_preset"; then
+        "$web_depth_override_from_preset" "$router_draft_pair_rows"; then
         printf 'router presets do not carry complete admitted tuples: %s\n' \
             "$router_presets" >&2
         return 1
@@ -1066,6 +1184,34 @@ if [ "${QWEN_BACKEND_SAMPLING:-0}" = 1 ]; then
     set -- "$@" --backend-sampling
 fi
 
+# Context checkpoints are the one saved-state mechanism a hybrid recurrent
+# model has: server-context.cpp cannot roll the Gated DeltaNet state back, so
+# a second turn sharing a long prefix re-prefills from the newest checkpoint
+# below the divergence point or from zero. The served default is zero, which
+# keeps every checkpoint's host copy of the recurrent state off the desktop
+# reserve, and QWEN_CTX_CHECKPOINTS raises it for a sweep that measures what
+# the copies buy. QWEN_CHECKPOINT_MIN_STEP names --checkpoint-min-step and
+# leaves the pinned build's 8192-token default in place when unset. Both are
+# non-negative integers, since common/arg.cpp reads them as such.
+ctx_checkpoints=${QWEN_CTX_CHECKPOINTS:-0}
+case $ctx_checkpoints in
+    '' | *[!0-9]*)
+        printf 'context checkpoint count must be a non-negative integer: %s\n' \
+            "$ctx_checkpoints" >&2
+        exit 2
+        ;;
+esac
+checkpoint_min_step=${QWEN_CHECKPOINT_MIN_STEP:-}
+if [ -n "$checkpoint_min_step" ]; then
+    case $checkpoint_min_step in
+        *[!0-9]*)
+            printf 'checkpoint minimum step must be a non-negative integer: %s\n' \
+                "$checkpoint_min_step" >&2
+            exit 2
+            ;;
+    esac
+fi
+
 set -- "$@" \
     --log-verbosity 4 \
     --device Vulkan0 \
@@ -1076,10 +1222,13 @@ set -- "$@" \
     --parallel 1 \
     --threads 1 \
     --threads-batch 1 \
-    --ctx-checkpoints 0 \
+    --ctx-checkpoints "$ctx_checkpoints" \
     --cache-ram 0 \
     --no-context-shift \
     --offline
+if [ -n "$checkpoint_min_step" ]; then
+    set -- "$@" --checkpoint-min-step "$checkpoint_min_step"
+fi
 
 # The six per-checkpoint flags stay off the router's own argv, because
 # server-models.cpp ends its preset assembly with `preset.merge(base_preset)`
