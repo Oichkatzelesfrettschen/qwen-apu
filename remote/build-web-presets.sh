@@ -1388,29 +1388,6 @@ if [ -n "$review_section" ]; then
     emitted=$((emitted + 1))
 fi
 
-web_profiles_current_identity=$(sha256sum -- "$web_profiles")
-web_profiles_current_sha256=${web_profiles_current_identity%% *}
-if [ "$web_profiles_current_sha256" != "$web_profiles_sha256" ]; then
-    printf 'web profile ledger identity changed during generation: expected %s, measured %s\n' \
-        "$web_profiles_sha256" "$web_profiles_current_sha256" >&2
-    exit 1
-fi
-validated_tuples_current_identity=$(sha256sum -- "$validated_tuples")
-validated_tuples_current_sha256=${validated_tuples_current_identity%% *}
-if [ "$validated_tuples_current_sha256" != "$validated_tuples_sha256" ]; then
-    printf 'validated-tuple ledger identity changed during generation: expected %s, measured %s\n' \
-        "$validated_tuples_sha256" "$validated_tuples_current_sha256" >&2
-    exit 1
-fi
-ctx_checkpoint_ledger_current_identity=$(sha256sum -- "$ctx_checkpoint_ledger")
-ctx_checkpoint_ledger_current_sha256=${ctx_checkpoint_ledger_current_identity%% *}
-if [ "$ctx_checkpoint_ledger_current_sha256" != "$ctx_checkpoint_ledger_sha256" ]; then
-    printf 'context checkpoint ledger identity changed during generation: expected %s, measured %s\n' \
-        "$ctx_checkpoint_ledger_sha256" \
-        "$ctx_checkpoint_ledger_current_sha256" >&2
-    exit 1
-fi
-
 # The assembled file is read back before it lands, so a section missing a key
 # the emission loop should have written stops the run rather than reaching the
 # launch. Sections are counted here too, which catches a row that emitted a
@@ -1571,6 +1548,34 @@ awk -v config_directory="$mcp_config_directory" \
     }
 ' "$output_ini_temporary" >"$output_ini_temporary.resolved"
 mv -- "$output_ini_temporary.resolved" "$output_ini_temporary"
+# Every authority is measured against the identity the sections were generated
+# from immediately before the file lands, so the window the comparison covers
+# ends at the publish rather than at the last emission: assembly verification,
+# MCP configuration hashing, and the directory moves all run inside it, and an
+# edit during any of them leaves the last known-good preset in place.
+web_profiles_current_identity=$(sha256sum -- "$web_profiles")
+web_profiles_current_sha256=${web_profiles_current_identity%% *}
+if [ "$web_profiles_current_sha256" != "$web_profiles_sha256" ]; then
+    printf 'web profile ledger identity changed during generation: expected %s, measured %s\n' \
+        "$web_profiles_sha256" "$web_profiles_current_sha256" >&2
+    exit 1
+fi
+validated_tuples_current_identity=$(sha256sum -- "$validated_tuples")
+validated_tuples_current_sha256=${validated_tuples_current_identity%% *}
+if [ "$validated_tuples_current_sha256" != "$validated_tuples_sha256" ]; then
+    printf 'validated-tuple ledger identity changed during generation: expected %s, measured %s\n' \
+        "$validated_tuples_sha256" "$validated_tuples_current_sha256" >&2
+    exit 1
+fi
+ctx_checkpoint_ledger_current_identity=$(sha256sum -- "$ctx_checkpoint_ledger")
+ctx_checkpoint_ledger_current_sha256=${ctx_checkpoint_ledger_current_identity%% *}
+if [ "$ctx_checkpoint_ledger_current_sha256" != "$ctx_checkpoint_ledger_sha256" ]; then
+    printf 'context checkpoint ledger identity changed during generation: expected %s, measured %s\n' \
+        "$ctx_checkpoint_ledger_sha256" \
+        "$ctx_checkpoint_ledger_current_sha256" >&2
+    exit 1
+fi
+
 mv -- "$output_ini_temporary" "$output_ini"
 trap - EXIT HUP INT TERM
 cleanup_ctx_checkpoint_snapshot
