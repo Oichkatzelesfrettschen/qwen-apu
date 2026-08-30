@@ -463,6 +463,34 @@ if "$reader" ctx-checkpoints >/dev/null; then
 else
     report ctx_checkpoint_ledger_shipped rejected
 fi
+# The appliance runs from a copy holding remote/ alone and reads this ledger at
+# every router launch, so the shipped rows validate there while the same rows
+# against a checkout still require the tree to hold what they name. A missing
+# evidence tree admits the row; a missing evidence path beside a present tree
+# refuses it.
+runtime_copy=$work_directory/runtime-copy
+mkdir -p "$runtime_copy"
+cp -r "$script_directory" "$runtime_copy/remote"
+if "$runtime_copy/remote/model-registry.sh" ctx-checkpoints >/dev/null 2>&1; then
+    report ctx_checkpoint_ledger_runtime_copy accepted
+else
+    report ctx_checkpoint_ledger_runtime_copy rejected
+fi
+ledger_absent_evidence=$work_directory/ctx-checkpoints-absent-evidence.tsv
+printf 'tuple-model\t2\tevidence/ctx-checkpoint-absent\n' >"$ledger_absent_evidence"
+set +e
+QWEN_MODEL_REGISTRY=$tuple_fixture_models \
+QWEN_CTX_CHECKPOINT_LEDGER=$ledger_absent_evidence \
+    "$reader" ctx-checkpoints >/dev/null 2>"$work_directory/ledger-absent.err"
+ledger_absent_status=$?
+set -e
+if [ "$ledger_absent_status" -ne 0 ] &&
+   grep -F 'evidence is absent from the tree' "$work_directory/ledger-absent.err" \
+   >/dev/null; then
+    report ctx_checkpoint_ledger_refuses_absent_evidence accepted
+else
+    report ctx_checkpoint_ledger_refuses_absent_evidence rejected
+fi
 
 valid_tuple_ledger=$work_directory/valid-tuples.tsv
 printf '%b\n' \

@@ -41,6 +41,20 @@ fi
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 quarantine_registry=${QWEN_QUARANTINE_REGISTRY:-$script_directory/quarantine.tsv}
 
+# A ledger row names its evidence by a repository-relative path, and the
+# appliance runs from a copy carrying remote/ and patches/ alone, so that tree
+# is absent beside the runtime scripts while every gate, generator, and registry
+# test runs in a checkout that holds it. The path shape is validated wherever
+# the ledger is read, since it is a property of the row; the existence of the
+# file it names is asserted where the tree is present, and
+# remote/repository-quality-gates.sh runs there, so a row reaches the appliance
+# with its evidence already proven. Without this split
+# qwen-capacity-policy.sh refuses every router launch on the appliance the
+# moment a launch-read ledger row carries a path instead of `-`.
+evidence_tree_is_present() {
+    [ -d "$script_directory/../evidence" ]
+}
+
 # The quarantine queries read a second file rather than the tier field alone,
 # because a quarantine has two scopes and the model registry has one row per
 # checkpoint. A scope `model` row removes a checkpoint entirely; a scope
@@ -436,6 +450,7 @@ validate_tuple_ledger() {
                 continue
                 ;;
         esac
+        evidence_tree_is_present || continue
         if [ ! -e "$script_directory/../$tuple_evidence" ]; then
             printf '%s: validation evidence is absent from the tree: %s\n' \
                 "$tuple_id" "$tuple_evidence" >&2
@@ -690,6 +705,7 @@ validate_draft_pair_ledger() {
                 continue
                 ;;
         esac
+        evidence_tree_is_present || continue
         if [ ! -e "$script_directory/../$draft_pair_evidence" ]; then
             printf '%s: validated evidence is absent from the tree: %s\n' \
                 "$draft_pair_id" "$draft_pair_evidence" >&2
@@ -841,6 +857,7 @@ validate_ctx_checkpoint_ledger() {
                 continue
                 ;;
         esac
+        evidence_tree_is_present || continue
         if [ ! -e "$script_directory/../$ctx_checkpoint_evidence" ]; then
             printf '%s: evidence is absent from the tree: %s\n' \
                 "$ctx_checkpoint_model_id" "$ctx_checkpoint_evidence" >&2
