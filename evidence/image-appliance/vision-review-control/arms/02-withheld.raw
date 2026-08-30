@@ -1,0 +1,17 @@
+{
+  "hard_constraints": [
+    {
+      "name": "prompt_subject",
+      "passed": false,
+      "observation": "The image does not contain a fox."
+    },
+    {
+      "name": "background_plain",
+      "passed": true,
+      "observation": "The background is plain and uncluttered."
+    }
+  ],
+  "composition_change_required": true,
+  "prompt_delta": "Add a fox in a snowy field.",
+  "regenerate": false
+}
