@@ -74,10 +74,16 @@ precision, dispatch count, total and percentile GPU time, VGPR and SGPR
 counts, LDS bytes, spill or scratch bytes, and queue. The backend already
 holds a per-pipeline register count and queries pipeline executable
 properties where RADV exposes them. `radv-low-priority-env.sh` gains a
-non-serving `diagnostic` profile that preserves `GGML_VK_PIPELINE_STATS`,
+non-serving `diagnostic` profile that exports
+`GGML_VK_SERIALIZE_SUBMISSIONS=1` and preserves `GGML_VK_PIPELINE_STATS`,
 `GGML_VK_PERF_LOGGER`, `GGML_VK_PERF_LOGGER_FREQUENCY`,
 `GGML_VK_MEMORY_LOGGER`, `GGML_VK_SUBMIT_TRACE`, and `RADV_DEBUG`; the
-serving profiles keep scrubbing them. The kernels with the largest
+serving profiles keep scrubbing them. The submit-trace patch throws during
+device construction when `GGML_VK_SUBMIT_TRACE=1` reaches a process without
+serialization, so a trace-enabled launch is refused unless serialization is
+active. The serialized arm supplies dispatch attribution and resource
+statistics; ordinary `low-async` arms supply the serving-profile end-to-end
+throughput promotion reads. The kernels with the largest
 cumulative GPU time are the ones the later stages touch.
 
 ### B. Precision, one mechanism at a time
@@ -148,8 +154,11 @@ Every candidate retains ABBA paired throughput, per-kernel GPU time,
 logical bytes per token, VGPR/SGPR/LDS, spill state, memory and clocks,
 temperature, graphics-service latency, kernel hazard delta, one-token and
 logit comparison, the graded suite, long-context retrieval, and teardown
-proof. Promotion needs the 5% paired gain, exact token output, and zero
-faults `design.md` states.
+proof. Promotion needs the all-pairs 5% ABBA rule, the mechanism-specific
+output gate, and the zero-fault rule `design.md` registers: a
+representation change reports its first token divergence and clears the
+paired quality gates, and a kernel, tile, layout, or compiler change that
+preserves the stored representation requires exact greedy token arrays.
 
 ## Bounded knobs and settled policy
 

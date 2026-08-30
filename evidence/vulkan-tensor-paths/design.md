@@ -159,8 +159,13 @@ full-attention layers at 32K.
 
 ## Promotion criteria
 
-A candidate is promoted on a paired end-to-end gain of at least 5% in
-interleaved ABBA arms, an output gate split by mechanism, quality inside
+A candidate is promoted on an all-pairs gain in one interleaved ABBA block
+C1, S1, S2, C2 over its preregistered primary throughput metric: with
+`g1 = S1 / C1 - 1` and `g2 = S2 / C2 - 1`, promotion requires `g1 >= 0.05`
+and `g2 >= 0.05`. The paired mean is reported and cannot compensate for a
+pair below 5%; a split result is inconclusive, schedules another
+preregistered ABBA block, and supports no promotion. Promotion further
+requires an output gate split by mechanism, quality inside
 the registered bound, zero ring resets, VM faults, or device losses, no
 desktop-QoS regression on the graphics probe, and strict Vulkan placement.
 `llama-bench`'s printed deviation is within-arm and is not the uncertainty
