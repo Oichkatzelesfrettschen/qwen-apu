@@ -59,6 +59,7 @@ usage() {
     printf '  QWEN_TRACE_ARM_TIMEOUT_S    per-invocation SIGTERM limit\n' >&2
     printf '  QWEN_TRACE_ARM_KILL_AFTER_S SIGKILL grace period, default 30\n' >&2
     printf '  QWEN_TRACE_CONTROL_TOKENS   post-arm control length, default 16\n' >&2
+    printf '  QWEN_VULKAN_WORKLOAD_LOCK   absolute shared Vulkan lease path\n' >&2
     printf '  QWEN_TRACE_FOREGROUND=1     run in this process rather than detaching\n' >&2
     printf '  QWEN_TRACE_SKIP_TRACE_SOURCE_GATE=1       admit an unverified\n' >&2
     printf '                              trace build; the run records the bypass\n' >&2
@@ -88,6 +89,7 @@ kernel_reader=${QWEN_TRACE_KERNEL_READER:-dmesg}
 control_tokens=${QWEN_TRACE_CONTROL_TOKENS:-16}
 arm_timeout_kill_after_s=${QWEN_TRACE_ARM_KILL_AFTER_S:-30}
 generate_tokens=${QWEN_TRACE_GENERATE_TOKENS:-32}
+workload_lock=${QWEN_VULKAN_WORKLOAD_LOCK:-}
 
 # The production cache triple of the `qwen38-4b-distill` row in models.tsv. The
 # campaign measures the served tuple, so the triple is the row's rather than the
@@ -154,6 +156,35 @@ for required_helper in "$environment_wrapper" "$clock_sampler" \
     fi
 done
 
+# The lease precedes source, process, closure, and device checks and remains on
+# fd 9 through every arm, control, and EXIT restoration. A detached child
+# inherits the locked open-file description; it proves that inheritance before
+# trusting the flag rather than reopening the path and dropping the lease.
+if [ -z "$workload_lock" ] || [ "${workload_lock#/}" = "$workload_lock" ]; then
+    printf 'QWEN_VULKAN_WORKLOAD_LOCK must name the absolute shared lease path\n' >&2
+    exit 2
+fi
+if [ ! -d "$(dirname -- "$workload_lock")" ]; then
+    printf 'Vulkan workload lease directory is absent: %s\n' \
+        "$(dirname -- "$workload_lock")" >&2
+    exit 2
+fi
+if [ "${QWEN_TRACE_LEASE_INHERITED:-0}" = 1 ]; then
+    inherited_lease=$(readlink "/proc/$$/fd/9" 2>/dev/null || true)
+    if [ "$inherited_lease" != "$workload_lock" ] || ! flock -n 9; then
+        printf 'inherited Vulkan workload lease is invalid: %s\n' \
+            "$workload_lock" >&2
+        exit 2
+    fi
+else
+    exec 9>"$workload_lock"
+    if ! flock -n 9; then
+        printf 'another Vulkan workload holds the shared lease: %s\n' \
+            "$workload_lock" >&2
+        exit 2
+    fi
+fi
+
 # The trace build is the production five-patch series plus
 # `patches/llama-vulkan-submit-trace.patch`, which is the six-patch replay
 # `verify-llama-patch-series.sh` records. Three checks establish that the binary
@@ -219,18 +250,34 @@ if [ "${QWEN_TRACE_SKIP_TRACE_SOURCE_GATE:-0}" != 1 ]; then
             "$trace_source_directory" >&2
         exit 2
     fi
-    trace_manifest=$trace_build_directory/artifact-manifest.tsv
-    if [ ! -r "$trace_manifest" ]; then
-        printf 'trace build has no artifact manifest: %s\n' "$trace_manifest" >&2
-        exit 2
-    fi
-    trace_manifest_commit=$(awk -F'\t' '$1 == "commit" { print $2; exit }' \
-        "$trace_manifest")
-    if [ "$trace_manifest_commit" != "$pinned_commit" ]; then
-        printf 'trace build manifest names commit %s, not the pinned %s\n' \
-            "$trace_manifest_commit" "$pinned_commit" >&2
-        exit 2
-    fi
+fi
+
+# The source-gate bypass never bypasses the binary authority. The manifest must
+# name the pinned commit and exactly the closure the executable resolves now.
+trace_manifest=$trace_build_directory/artifact-manifest.tsv
+if [ ! -r "$trace_manifest" ]; then
+    printf 'trace build has no artifact manifest: %s\n' "$trace_manifest" >&2
+    exit 2
+fi
+trace_manifest_commit=$(awk -F'\t' '$1 == "commit" { print $2; exit }' \
+    "$trace_manifest")
+if [ "$trace_manifest_commit" != "$pinned_commit" ]; then
+    printf 'trace build manifest names commit %s, not the pinned %s\n' \
+        "$trace_manifest_commit" "$pinned_commit" >&2
+    exit 2
+fi
+if ! trace_closure=$($closure_hasher "$bench"); then
+    printf 'trace build load-closure enumeration failed: %s\n' "$bench" >&2
+    exit 2
+fi
+trace_closure_rows=$(printf '%s\n' "$trace_closure" | sed 1d | LC_ALL=C sort)
+manifest_closure_rows=$(awk -F'\t' \
+    '$1 == "executable" || $1 == "linked" || $1 == "loadable" { print }' \
+    "$trace_manifest" | LC_ALL=C sort)
+if [ "$trace_closure_rows" != "$manifest_closure_rows" ]; then
+    printf 'trace build manifest load closure differs from the executable: %s\n' \
+        "$trace_manifest" >&2
+    exit 2
 fi
 
 # The campaign owns the device for its whole run. The ordinary router holds the
@@ -274,7 +321,9 @@ fi
 # its own trap and print a restore line over a running campaign.
 if [ "${QWEN_TRACE_FOREGROUND:-0}" != 1 ]; then
     QWEN_TRACE_FOREGROUND=1
+    QWEN_TRACE_LEASE_INHERITED=1
     export QWEN_TRACE_FOREGROUND
+    export QWEN_TRACE_LEASE_INHERITED
     setsid nohup "$script_path" "$output_directory" \
         >>"$campaign_log" 2>&1 </dev/null &
     printf 'trace_campaign=detached pid=%s log=%s\n' "$!" "$campaign_log"
@@ -291,6 +340,21 @@ current_link=$appliance_source/build-appliance-current
 recorded_link_target=''
 if [ -L "$current_link" ]; then
     recorded_link_target=$(readlink "$current_link")
+fi
+canonical_production_build=$appliance_source/build-raven2-vulkan-production
+recorded_promoted_directory=''
+if [ -n "$recorded_link_target" ]; then
+    case $recorded_link_target in
+        /*) recorded_promoted_directory=$recorded_link_target ;;
+        *) recorded_promoted_directory=$appliance_source/$recorded_link_target ;;
+    esac
+fi
+canonical_resolved=$(readlink -f "$canonical_production_build" 2>/dev/null || true)
+recorded_resolved=$(readlink -f "$recorded_promoted_directory" 2>/dev/null || true)
+if [ -z "$canonical_resolved" ] || [ "$recorded_resolved" != "$canonical_resolved" ]; then
+    printf 'production promotion link does not name the canonical build root: %s\n' \
+        "$canonical_production_build" >&2
+    exit 2
 fi
 
 summary=$output_directory/trace-campaign-summary.tsv
@@ -339,15 +403,15 @@ fi
 # bench binary, and the recovery control stay the same. The metadata row binds
 # the ledger to all three, so a rebuilt trace binary requires a new directory
 # rather than resuming into rows another binary produced.
-ledger_version=1
+ledger_version=2
 metadata=$output_directory/trace-campaign-metadata.tsv
-metadata_header='ledger_version	model_sha256	model_bytes	bench_sha256	control_tokens'
+metadata_header='ledger_version	model_sha256	model_bytes	bench_sha256	control_tokens	device	override_tensor'
 model_sha256=$(nice -n 19 sha256sum "$model_path")
 model_sha256=${model_sha256%% *}
 model_bytes=$(stat -c %s -- "$model_path")
 bench_sha256=$(nice -n 19 sha256sum "$bench")
 bench_sha256=${bench_sha256%% *}
-metadata_row="$ledger_version	$model_sha256	$model_bytes	$bench_sha256	$control_tokens"
+metadata_row="$ledger_version	$model_sha256	$model_bytes	$bench_sha256	$control_tokens	Vulkan0	.*=Vulkan0"
 if [ -s "$metadata" ]; then
     if [ "$(sed -n '1p' "$metadata")" != "$metadata_header" ] ||
        [ "$(sed -n '2p' "$metadata")" != "$metadata_row" ] ||
@@ -557,7 +621,7 @@ kernel_capture_method=offset
 start_kernel_capture() {
     capture_file=$1
     kernel_capture_method=offset
-    "$kernel_reader" --follow-new >"$capture_file" 2>/dev/null &
+    "$kernel_reader" --follow-new >"$capture_file" 2>/dev/null 9>&- &
     kernel_follow_pid=$!
     sleep 0.2
     if kill -0 "$kernel_follow_pid" 2>/dev/null; then
@@ -658,6 +722,8 @@ run_bench() {
     bench_ubatch=$4
     bench_tokens=$5
     bench_submit_trace=$6
+    bench_timeout_marker=$7
+    rm -f -- "$bench_timeout_marker"
     bench_timeout_s=${QWEN_TRACE_ARM_TIMEOUT_S:-$((120 + bench_depth / 4))}
     bench_trace_value=
     [ "$bench_submit_trace" != on ] || bench_trace_value=1
@@ -666,28 +732,37 @@ run_bench() {
         GGML_VK_MAX_NODES_PER_SUBMIT=$max_nodes_per_submit \
         GGML_VK_SERIALIZE_SUBMISSIONS=$serialize_submissions \
         GGML_VK_SUBMIT_TRACE=$bench_trace_value \
-            nice -n 19 ionice -c 3 timeout \
+            nice -n 19 ionice -c 3 env LC_ALL=C timeout --verbose \
             --kill-after="${arm_timeout_kill_after_s}s" "${bench_timeout_s}s" \
             "$environment_wrapper" "$bench" -m "$model_path" \
             -ngl 99 -dev Vulkan0 -ot '.*=Vulkan0' \
             -t 2 -r 1 -p 0 -n "$bench_tokens" \
             -b "$bench_batch" -ub "$bench_ubatch" \
             -ctk "$cache_type_k" -ctv "$cache_type_v" -fa "$flash_attention" \
-            -o md >"$bench_log" 2>&1
+            -o md >"$bench_log" 2>&1 9>&-
     else
         QWEN_VULKAN_PROFILE=custom \
         GGML_VK_MAX_NODES_PER_SUBMIT=$max_nodes_per_submit \
         GGML_VK_SERIALIZE_SUBMISSIONS=$serialize_submissions \
         GGML_VK_SUBMIT_TRACE=$bench_trace_value \
-            nice -n 19 ionice -c 3 timeout \
+            nice -n 19 ionice -c 3 env LC_ALL=C timeout --verbose \
             --kill-after="${arm_timeout_kill_after_s}s" "${bench_timeout_s}s" \
             "$environment_wrapper" "$bench" -m "$model_path" \
             -ngl 99 -dev Vulkan0 -ot '.*=Vulkan0' \
             -t 2 -r 1 -p 0 -n "$bench_tokens" -d "$bench_depth" \
             -b "$bench_batch" -ub "$bench_ubatch" \
             -ctk "$cache_type_k" -ctv "$cache_type_v" -fa "$flash_attention" \
-            -o md >"$bench_log" 2>&1
+            -o md >"$bench_log" 2>&1 9>&-
     fi
+    bench_status=$?
+    if grep -q '^timeout: sending signal ' "$bench_log" 2>/dev/null; then
+        if grep -q '^timeout: sending signal KILL ' "$bench_log" 2>/dev/null; then
+            printf 'deadline=expired escalation=kill\n' >"$bench_timeout_marker"
+        else
+            printf 'deadline=expired escalation=term\n' >"$bench_timeout_marker"
+        fi
+    fi
+    return "$bench_status"
 }
 
 campaign_halted=0
@@ -708,6 +783,8 @@ run_arm() {
     arm_signature=$output_directory/$arm_label.kernel-signature.txt
     control_log=$output_directory/$arm_label.control.log
     control_kernel=$output_directory/$arm_label.control.dmesg.txt
+    arm_timeout_marker=$output_directory/$arm_label.timeout.txt
+    control_timeout_marker=$output_directory/$arm_label.control.timeout.txt
 
     recorded_count=$(awk -F'\t' -v label="$arm_label" \
         'NR > 1 && $1 == label { count++ } END { print count + 0 }' "$summary")
@@ -793,11 +870,11 @@ run_arm() {
         "$serialize_submissions" "$kernel_capture_method"
 
     : >"$arm_samples"
-    "$clock_sampler" "$arm_samples" &
+    "$clock_sampler" "$arm_samples" 9>&- &
     sampler_pid=$!
     set +e
     run_bench "$arm_log" "$arm_depth" "$arm_batch" "$arm_ubatch" \
-        "$generate_tokens" "$arm_submit_trace"
+        "$generate_tokens" "$arm_submit_trace" "$arm_timeout_marker"
     arm_status=$?
     set -e
     stop_sampler
@@ -813,7 +890,7 @@ run_arm() {
     if [ -f "$arm_kernel" ]; then
         arm_resets=$(grep -c 'ring reset\|Ring .* reset\|device wedged\|GPU reset' \
             "$arm_kernel" || true)
-        arm_faults=$(grep -c 'page fault\|VM_L2_PROTECTION_FAULT\|PROTECTION_FAULT' \
+        arm_faults=$(grep -ci 'page fault\|VM_L2_PROTECTION_FAULT\|PROTECTION_FAULT' \
             "$arm_kernel" || true)
     fi
 
@@ -871,7 +948,8 @@ run_arm() {
         control_kernel_before=$(kernel_line_count)
     control_kernel_capture_method=$kernel_capture_method
     set +e
-    run_bench "$control_log" 0 128 32 "$control_tokens" off
+    run_bench "$control_log" 0 128 32 "$control_tokens" off \
+        "$control_timeout_marker"
     control_status=$?
     set -e
     if [ "$control_kernel_capture_method" = follow ]; then
@@ -884,7 +962,7 @@ run_arm() {
     if [ -f "$control_kernel" ]; then
         control_resets=$(grep -c 'ring reset\|Ring .* reset\|device wedged\|GPU reset' \
             "$control_kernel" || true)
-        control_faults=$(grep -c 'page fault\|VM_L2_PROTECTION_FAULT\|PROTECTION_FAULT' \
+        control_faults=$(grep -ci 'page fault\|VM_L2_PROTECTION_FAULT\|PROTECTION_FAULT' \
             "$control_kernel" || true)
     fi
     resets=unavailable
@@ -952,10 +1030,11 @@ run_arm() {
         halt_trace_log=$trace_log
         if [ "$control_status" -ne 0 ]; then
             halt_reason=control-failed
-        elif [ "$arm_status" -eq 124 ]; then
-            halt_reason=arm-timed-out
-        elif [ "$arm_status" -eq 137 ]; then
+        elif grep -q '^deadline=expired escalation=kill$' \
+            "$arm_timeout_marker" 2>/dev/null; then
             halt_reason=arm-killed-after-timeout
+        elif grep -q '^deadline=expired ' "$arm_timeout_marker" 2>/dev/null; then
+            halt_reason=arm-timed-out
         elif [ "$arm_status" -ne 0 ]; then
             halt_reason=arm-failed
         else

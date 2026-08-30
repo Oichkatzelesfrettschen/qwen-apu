@@ -144,7 +144,7 @@ When the browser-facing server port differs from the remote server port, bind
 the broker to that exact browser origin before starting the remote session:
 
 ```sh
-ssh TARGET 'QWEN_WEB_BROKER_ORIGIN=http://127.0.0.1:18080 $HOME/qwen-laptop-setup/remote/qwen-webui-control.sh start'
+ssh TARGET 'QWEN_WEB_BROKER_ORIGIN=http://127.0.0.1:18080 QWEN_WEB_PROFILE=web-qwen38-4b-distill QWEN_WEB_PROVIDER=searxng $HOME/qwen-laptop-setup/remote/qwen-web-launch.sh low-serialized'
 ./remote/connect-qwen-webui.sh TARGET 18080 8080
 ```
 

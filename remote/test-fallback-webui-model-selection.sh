@@ -19,13 +19,22 @@ grep -F "if (!selectedModel) throw new Error('no routable model is selected')" \
     "$fallback_ui" >/dev/null
 # A row that offers no tool -- a review-only vision section -- cannot act on
 # a chat turn's own Web or image toggle, so the roster's sort order alone
-# cannot set the default: the page probes `GET /tools` per roster row and
-# prefers the first one that answers 200 over sort position, while a still-
-# valid stored choice from browser storage stays authoritative over the probe.
+# cannot set the default: the page probes `GET /tools` per roster row without
+# autoloading a model, validates the returned tool rows, and prefers the first
+# proven offering over sort position. A stored choice remains authoritative
+# only while that row still offers tools.
 grep -F 'async function probeToolOffering(modelId)' "$fallback_ui" >/dev/null
-grep -F './tools?model=${encodeURIComponent(modelId)}&autoload=true' \
+grep -F './tools?model=${encodeURIComponent(modelId)}' \
     "$fallback_ui" >/dev/null
-grep -F 'modelIds.includes(storedModel)' "$fallback_ui" >/dev/null
+if grep -F './tools?model=${encodeURIComponent(modelId)}&autoload=true' \
+    "$fallback_ui" >/dev/null; then
+    printf 'fallback Web UI autoloads every roster row while selecting a default\n' >&2
+    exit 1
+fi
+grep -F 'const storedModelUsable = modelIds.includes(storedModel)' \
+    "$fallback_ui" >/dev/null
+grep -F '(modelIds.length === 1 || toolOffering[storedModel] === true)' \
+    "$fallback_ui" >/dev/null
 grep -F 'modelIds.find(modelId => toolOffering[modelId] === true) ?? modelIds[0]' \
     "$fallback_ui" >/dev/null
 grep -F "toolOffering[modelId] === false ? \`\${modelId} (review)\` : modelId" \
@@ -34,6 +43,9 @@ grep -F "readBrowserStorage('localStorage', 'qwen-apu-model-id')" \
     "$fallback_ui" >/dev/null
 grep -F "writeBrowserStorage('localStorage', 'qwen-apu-model-id', selectedModel)" \
     "$fallback_ui" >/dev/null
+grep -F "writeBrowserStorage('localStorage', 'qwen-apu-model-id', null)" \
+    "$fallback_ui" >/dev/null
+grep -F 'selectRequestModel(selectedModel, selectionProven)' "$fallback_ui" >/dev/null
 grep -F 'const generation = ++modelStateGeneration' "$fallback_ui" >/dev/null
 grep -F 'return requestModel === selectedModel && modelStateGeneration === generation' \
     "$fallback_ui" >/dev/null

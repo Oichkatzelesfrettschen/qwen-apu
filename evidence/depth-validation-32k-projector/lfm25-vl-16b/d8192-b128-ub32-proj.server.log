@@ -13,9 +13,9 @@
 0.00.102.034 W srv  llama_server: more info: https://github.com/ggml-org/llama.cpp/pull/25655
 0.00.102.047 W srv  llama_server: -----------------
 0.00.102.068 I srv         start: binding port with default address family
-0.00.103.321 I srv    load_model: loading model '/home/eirikr/models/LFM2.5-VL-1.6B-GGUF/LFM2.5-VL-1.6B-Q4_K_M.gguf'
-0.00.103.357 I srv    load_model: local path '/home/eirikr/models/LFM2.5-VL-1.6B-GGUF/LFM2.5-VL-1.6B-Q4_K_M.gguf'
-0.00.128.647 I llama_model_loader: loaded meta data with 37 key-value pairs and 148 tensors from /home/eirikr/models/LFM2.5-VL-1.6B-GGUF/LFM2.5-VL-1.6B-Q4_K_M.gguf (version GGUF V3 (latest))
+0.00.103.321 I srv    load_model: loading model '$HOME/models/LFM2.5-VL-1.6B-GGUF/LFM2.5-VL-1.6B-Q4_K_M.gguf'
+0.00.103.357 I srv    load_model: local path '$HOME/models/LFM2.5-VL-1.6B-GGUF/LFM2.5-VL-1.6B-Q4_K_M.gguf'
+0.00.128.647 I llama_model_loader: loaded meta data with 37 key-value pairs and 148 tensors from $HOME/models/LFM2.5-VL-1.6B-GGUF/LFM2.5-VL-1.6B-Q4_K_M.gguf (version GGUF V3 (latest))
 0.00.130.813 I llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
 0.00.130.816 I llama_model_loader: - kv   0:                       general.architecture str              = lfm2
 0.00.130.817 I llama_model_loader: - kv   1:                               general.type str              = model
@@ -202,7 +202,7 @@
 0.01.785.434 I reserve_compute_meta:        CPU compute buffer size =     3.00 MiB
 0.01.785.435 I reserve_compute_meta: graph splits = 1, nodes = 870
 0.01.785.491 I warmup: flash attention is enabled
-0.01.785.555 I srv    load_model: loaded multimodal model, '/home/eirikr/models/LFM2.5-VL-1.6B-GGUF/mmproj-LFM2.5-VL-1.6b-Q8_0.gguf'
+0.01.785.555 I srv    load_model: loaded multimodal model, '$HOME/models/LFM2.5-VL-1.6B-GGUF/mmproj-LFM2.5-VL-1.6b-Q8_0.gguf'
 0.01.791.385 I cmn  common_conte: the context does not support partial sequence removal
 0.01.938.541 I srv    load_model: speculative decoding will use checkpoints
 0.01.938.555 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 8192, kv_unified = 'false'

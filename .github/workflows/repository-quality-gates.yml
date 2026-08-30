@@ -27,4 +27,5 @@ jobs:
       - name: Run clone-local gates
         env:
           PATH: /tmp/qwen-apu-quality-gates/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          QWEN_CHROMIUM: google-chrome
         run: remote/repository-quality-gates.sh

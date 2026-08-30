@@ -103,7 +103,7 @@ run_reader bundle sd15-lcm-v1
 bundle_expected=$(printf '%s\n' \
     'diffusion	sd15-diffusion	stable-diffusion-v1-5/stable-diffusion-v1-5	v1-5-pruned-emaonly.safetensors	download-sd15-base.sh' \
     'vae	sd15-vae-ft-mse	stabilityai/sd-vae-ft-mse-original	vae-ft-mse-840000-ema-pruned.safetensors	download-sd15-vae.sh' \
-    'text_encoder	sd15-diffusion	stable-diffusion-v1-5/stable-diffusion-v1-5	v1-5-pruned-emaonly.safetensors	download-sd15-base.sh' \
+    'diffusion	sd15-diffusion	stable-diffusion-v1-5/stable-diffusion-v1-5	v1-5-pruned-emaonly.safetensors	download-sd15-base.sh' \
     'lora	sd15-lcm-lora	latent-consistency/lcm-lora-sdv1-5	pytorch_lora_weights.safetensors	download-lcm-lora-sd15.sh')
 if [ "$reader_status" -eq 0 ] &&
    [ "$(cat "$work_directory/reader.out")" = "$bundle_expected" ]; then
@@ -350,7 +350,7 @@ expect_acceptance artifact_component_type_tae
 seed_copies
 run_reader bundle sdxs-512
 if [ "$reader_status" -eq 0 ] &&
-   printf '%s\n' "$(cat "$work_directory/reader.out")" | grep -q '^vae	sdxs-512-vae	'; then
+   printf '%s\n' "$(cat "$work_directory/reader.out")" | grep -q '^tae	sdxs-512-vae	'; then
     report bundle_vae_slot_resolves_tae accepted
 else
     report bundle_vae_slot_resolves_tae rejected
@@ -399,11 +399,23 @@ seed_copies
 append_row "$work_directory/quarantine.tsv" \
     'valid-model-row\tmodel\tsd15-base\tdevice-lost\t-\t-\t-\t-\tevidence/image-appliance/design.md\tevidence/image-appliance/design.md\tevidence/image-appliance/design.md'
 expect_acceptance quarantine_model_row
+run_reader bundle sd15-base
+if [ "$reader_status" -eq 1 ]; then
+    report quarantine_model_excluded_from_bundle accepted
+else
+    report quarantine_model_excluded_from_bundle rejected
+fi
 
 seed_copies
 append_row "$work_directory/quarantine.tsv" \
     'valid-profile-row\tprofile\timage-sd15-base-a\tring-timeout-only\t512\t512\t20\tA\t-\t-\tevidence/image-appliance/design.md'
 expect_acceptance quarantine_profile_row
+run_reader profile image-sd15-base-a
+if [ "$reader_status" -eq 1 ]; then
+    report quarantine_profile_excluded_from_query accepted
+else
+    report quarantine_profile_excluded_from_query rejected
+fi
 
 seed_copies
 append_row "$work_directory/quarantine.tsv" \

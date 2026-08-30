@@ -46,6 +46,17 @@ image_directory=$temporary_directory/images
 mkdir -p "$image_directory"
 cp "$script_directory/quality-images/bars.png" "$image_directory/bars.png"
 
+fake_icd=$temporary_directory/radeon_icd.json
+printf '{}\n' >"$fake_icd"
+vulkan_wrapper=$temporary_directory/vulkan-wrapper.sh
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    ': "${QWEN_VULKAN_PROFILE:?}"' \
+    'export GGML_VK_LOW_PRIORITY=1' \
+    'export GGML_VK_SERIALIZE_SUBMISSIONS=1' \
+    'export GGML_VK_MAX_NODES_PER_SUBMIT=32' \
+    'exec "$@"' >"$vulkan_wrapper"
+chmod +x "$vulkan_wrapper"
+
 # A dmesg that follows an empty buffer, so the reset and fault accounting runs
 # on a host whose own kernel log is restricted to root.
 dmesg_stub=$temporary_directory/dmesg-stub.sh
@@ -56,17 +67,22 @@ chmod +x "$dmesg_stub"
 
 run_probe() {
     env QWEN_MODEL_REGISTRY="$registry" \
+        QWEN_MODEL_REGISTRY_READER="$script_directory/model-registry.sh" \
+        QWEN_PROJECTOR_SELECTOR="$script_directory/select-projector.sh" \
         QWEN_MODEL_ROOT="$model_root" \
-        QWEN_LLAMA_SERVER="$fake_server" \
+        QWEN_LLAMA_SERVER="${QWEN_LLAMA_SERVER:-$fake_server}" \
         QWEN_QUALITY_IMAGE_DIRECTORY="$image_directory" \
         QWEN_CLOCK_SAMPLER="$temporary_directory/absent-sampler.sh" \
         QWEN_DMESG_COMMAND="$dmesg_stub" \
         QWEN_POLICY_TEST_OUTPUT="$temporary_directory/launch-argv.txt" \
-        QWEN_POLICY_TEST_HTTP_PORT=18091 \
-        QWEN_PROJECTOR_PROBE_PORT=18091 \
-        QWEN_PROJECTOR_READY_TIMEOUT_S=30 \
-        QWEN_PROJECTOR_ARM_TIMEOUT_S=30 \
+        QWEN_POLICY_TEST_HTTP_PORT="${QWEN_POLICY_TEST_HTTP_PORT:-18091}" \
+        QWEN_PROJECTOR_PROBE_PORT="${QWEN_PROJECTOR_PROBE_PORT:-18091}" \
+        QWEN_PROJECTOR_READY_TIMEOUT_S="${QWEN_PROJECTOR_READY_TIMEOUT_S:-30}" \
+        QWEN_PROJECTOR_ARM_TIMEOUT_S="${QWEN_PROJECTOR_ARM_TIMEOUT_S:-30}" \
         QWEN_PROJECTOR_KILL_AFTER_S=3 \
+        QWEN_RADV_ICD="$fake_icd" \
+        QWEN_PROJECTOR_PRIORITY_WRAPPER="$script_directory/qwen-exec-idle-priority.sh" \
+        QWEN_PROJECTOR_VULKAN_WRAPPER="$vulkan_wrapper" \
         "$@"
 }
 
@@ -208,6 +224,11 @@ for required_argument in \
     grep -qxF "$required_argument" "$launch_argv" 2>/dev/null ||
         argv_accepted="missing-$required_argument"
 done
+for required_profile_field in 'nice=19' 'low=1' 'serialized=1' \
+    'max_nodes=32' 'profile=low-serialized'; do
+    grep -qxF "$required_profile_field" "$launch_argv" 2>/dev/null ||
+        argv_accepted="missing-$required_profile_field"
+done
 grep -qxF 'strict=1' "$launch_argv" 2>/dev/null ||
     argv_accepted=missing-strict-placement
 report launch_argv_carries_tuple "$argv_accepted"
@@ -285,6 +306,108 @@ control_arm_count=$(awk 'NR > 1' \
     control_failure_accepted='emitted-a-row-for-a-failed-control'
 report failed_control_halts_chain "$control_failure_accepted"
 
+# A label embedded in prose is not the fixture's declared label-alone answer.
+for foreign_reply in 'NOT JUN' 'JUN is tallest'; do
+    exact_suffix=$(printf '%s' "$foreign_reply" | tr ' ' -)
+    exact_directory=$temporary_directory/exact-$exact_suffix
+    set +e
+    QWEN_WEDGE_DEPTHS=8192 QWEN_POLICY_TEST_REPLY="$foreign_reply" \
+        run_probe "$probe" fake-vision "$exact_directory" >/dev/null 2>&1
+    exact_status=$?
+    set -e
+    exact_name=$(printf '%s' "$foreign_reply" | tr ' ' '_')
+    [ "$exact_status" -eq 1 ] &&
+        report "control_exact_$exact_name" accepted ||
+        report "control_exact_$exact_name" "status-$exact_status"
+done
+
+# A healthy foreign HTTP listener cannot stand in for the process this harness
+# launched. The preflight refuses the occupied endpoint before an arm starts.
+python3 -m http.server 18092 --bind 127.0.0.1 \
+    >"$temporary_directory/foreign-listener.log" 2>&1 &
+foreign_listener_pid=$!
+sleep 1
+set +e
+QWEN_PROJECTOR_PROBE_PORT=18092 run_probe "$probe" fake-vision \
+    "$temporary_directory/foreign-listener" >/dev/null 2>&1
+foreign_listener_status=$?
+set -e
+kill "$foreign_listener_pid" 2>/dev/null || true
+wait "$foreign_listener_pid" 2>/dev/null || true
+[ "$foreign_listener_status" -eq 2 ] &&
+    report foreign_listener_refused accepted ||
+    report foreign_listener_refused "status-$foreign_listener_status"
+
+# An unready server still receives the request artifact the resume contract
+# requires, so a later invocation can validate and skip the failed arm.
+unready_server=$temporary_directory/unready-server.sh
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    'if [ "${1:-}" = --version ]; then printf "build: 0000000 with fake\\n"; exit 0; fi' \
+    'sleep 60' >"$unready_server"
+chmod +x "$unready_server"
+unready_directory=$temporary_directory/unready
+set +e
+QWEN_WEDGE_DEPTHS=8192 QWEN_LLAMA_SERVER="$unready_server" \
+    QWEN_PROJECTOR_READY_TIMEOUT_S=1 run_probe "$probe" fake-vision \
+    "$unready_directory" >/dev/null 2>&1
+unready_status=$?
+set -e
+unready_request=$unready_directory/d8192-b128-ub32-proj.requests.txt
+if [ "$unready_status" -eq 1 ] &&
+   grep -qxF 'failure=server-unready' "$unready_request"; then
+    report server_unready_retains_request_artifact accepted
+else
+    report server_unready_retains_request_artifact "status-$unready_status"
+fi
+
+# The request budget belongs to the whole arm. Delaying every endpoint cannot
+# multiply the timeout across probe, tokenization, fill, and control.
+deadline_directory=$temporary_directory/deadline
+deadline_start=$(date +%s)
+set +e
+QWEN_WEDGE_DEPTHS=8192 QWEN_PROJECTOR_ARM_TIMEOUT_S=1 \
+    QWEN_POLICY_TEST_POST_DELAY_S=0.45 run_probe "$probe" fake-vision \
+    "$deadline_directory" >/dev/null 2>&1
+deadline_status=$?
+set -e
+deadline_elapsed=$(($(date +%s) - deadline_start))
+deadline_request=$deadline_directory/d8192-b128-ub32-proj.requests.txt
+# The three-second termination grace is part of the outer elapsed time after
+# the one-second request budget expires; one second of scheduler granularity
+# leaves a five-second bound for the complete failed arm.
+if [ "$deadline_status" -eq 1 ] && [ "$deadline_elapsed" -le 5 ] &&
+   grep -q 'TimeoutError' "$deadline_request"; then
+    report one_monotonic_request_deadline accepted
+else
+    report one_monotonic_request_deadline \
+        "status-$deadline_status-elapsed-$deadline_elapsed"
+fi
+
+# A server-side device-loss report is itself a health hazard even when the
+# synthetic kernel stream records zero resets and faults.
+device_loss_server=$temporary_directory/device-loss-server.sh
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    'if [ "${1:-}" != --version ]; then printf "VK_ERROR_DEVICE_LOST\\n" >&2; fi' \
+    "exec '$fake_server' \"\$@\"" >"$device_loss_server"
+chmod +x "$device_loss_server"
+device_loss_directory=$temporary_directory/device-loss
+set +e
+QWEN_WEDGE_DEPTHS=8192 QWEN_LLAMA_SERVER="$device_loss_server" \
+    run_probe "$probe" fake-vision "$device_loss_directory" >/dev/null 2>&1
+device_loss_status=$?
+set -e
+device_loss_row=$(sed -n '2p' "$device_loss_directory/projector-summary.tsv")
+device_loss_health=$(printf '%s' "$device_loss_row" | cut -f20)
+device_loss_hazard=$(printf '%s' "$device_loss_row" | cut -f21)
+if [ "$device_loss_status" -eq 1 ] && [ "$device_loss_health" = unhealthy ] &&
+   printf '%s' "$device_loss_hazard" | grep -q 'device-lost' &&
+   [ ! -s "$device_loss_directory/validated-tuples-rows.tsv" ]; then
+    report log_only_device_loss_blocks_emission accepted
+else
+    report log_only_device_loss_blocks_emission \
+        "status-$device_loss_status-health-$device_loss_health-hazard-$device_loss_hazard"
+fi
+
 # A decode shorter than the requested length fails the fill while the control
 # still answers, which is the halt the resume path has to restore from the
 # ledger: a recorded failure stops the chain on the second invocation exactly
@@ -345,6 +468,32 @@ if [ "$resume_status" -eq 0 ] &&
 else
     report recorded_arm_resumes "status-$resume_status"
 fi
+
+# The summary label alone cannot authorize resume after the runner identity
+# changes. A byte-distinct copy must fail against the retained arm sidecar.
+changed_probe=$temporary_directory/probe-depth-projector-changed.sh
+cp "$probe" "$changed_probe"
+printf '\n# identity mutation fixture\n' >>"$changed_probe"
+chmod +x "$changed_probe"
+set +e
+QWEN_WEDGE_DEPTHS=8192 run_probe "$changed_probe" fake-vision "$arm_directory" \
+    >/dev/null 2>&1
+changed_probe_status=$?
+set -e
+[ "$changed_probe_status" -eq 2 ] &&
+    report changed_runner_refuses_resume accepted ||
+    report changed_runner_refuses_resume "status-$changed_probe_status"
+
+# The prompt text is part of the metadata authority even when its expected
+# answer and fixture name stay fixed.
+set +e
+QWEN_WEDGE_DEPTHS=8192 QWEN_PROJECTOR_CONTROL_PROMPT='Name the tallest bar.' \
+    run_probe "$probe" fake-vision "$arm_directory" >/dev/null 2>&1
+changed_prompt_status=$?
+set -e
+[ "$changed_prompt_status" -eq 2 ] &&
+    report changed_control_prompt_refuses_resume accepted ||
+    report changed_control_prompt_refuses_resume "status-$changed_prompt_status"
 
 # The decode length sets the ceiling of the acceptance window, so a resume at
 # another length would admit a row measured against a different window.

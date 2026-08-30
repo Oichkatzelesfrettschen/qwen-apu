@@ -1,4 +1,4 @@
-# Filled depth to 32768 with the projector loaded
+# Projector-loaded depth campaign on the retained rollback server
 
 `evidence/depth-validation-32k/` fills and decodes 8192, 16384, and 32768 on
 five checkpoints through `llama-bench -d`, which takes no `--mmproj` and
@@ -70,6 +70,27 @@ inside `prompt_n` rather than reported separately.
 | | 16384 | 16231 | 1241.084 | 2.318 | ok | 0 | 0 | healthy |
 | | 32768 | 32632 | 3375.497 | 1.816 | ok | 0 | 0 | healthy |
 
+## Historical executable boundary
+
+All three `projector-identity.tsv` rows name `llama-server` SHA-256
+`3d5b158160b08cf897bb05b47186a13f67e8a17def31012f2f8282f12e95cb08`.
+`ARTIFACTS.md` identifies that executable as the retained four-patch rollback
+server. The promoted five-patch server has SHA-256
+`4117a9c4d58e530c3c5ef6934596ae6d257ca61ef80c5f0f8a5ee71d1d63ca79`.
+The nine measurements therefore establish behavior for the rollback
+executable alone. They do not validate filled depth, projector behavior, or a
+serving ceiling for the promoted executable.
+
+`remote/models.tsv` and `remote/web-profiles.tsv` consequently retain their
+pre-campaign ceilings and carry `validated_filled_depth=-` for these three
+projector-required models. The historical rows remain in
+`remote/validated-tuples.tsv` with their evidence paths; their `validated`
+status means that the recorded arm completed against the rollback executable,
+not that the promoted executable inherits the result. An authentic rerun must
+name the promoted server digest in `projector-identity.tsv` and retain the
+summary, requests, clocks, kernel delta, and server log for every admitted
+depth before the serving registries can promote these claims.
+
 Every arm's `prompt_n` sits inside its acceptance window and every control
 answers JUN. Every `.dmesg-method.txt` reads `follow`, so each `.dmesg.txt`
 window is captured live rather than by an offset subtraction. Eight of the
@@ -82,27 +103,17 @@ failed arm.
 
 ## What the rows establish
 
-A context of 32768 tokens allocates, fills, and decodes with the projector
-resident on all three checkpoints that require one in serving, at the served
-cache triple and submission geometry, on one device, in one session per
-checkpoint, with the device answering its own recovery question afterward.
-`remote/models.tsv` now reads `validated_filled_depth=32768` for `qwen35-2b`,
-`lfm25-vl-16b`, and `qwen35-4b-base`, each pointing `validation_evidence` at
-its subdirectory here. `context_ceiling` moves from 8192 to 32768 for
-`qwen35-2b` and `lfm25-vl-16b` and from 24576 to 32768 for `qwen35-4b-base`
-alongside the validated depth: `remote/test-model-registry.sh` refuses a
-`validated_filled_depth` that exceeds `context_ceiling`, and this campaign's
-own precedent in `evidence/depth-validation-32k.md` states the rule directly
--- a row moves from unmeasured to measured, in both fields, when its arm
-passes. `qwen35-4b-base` had no depth arm of any kind before this campaign;
-its evidence directory here is not an addition to prior arms, since its
-`projector` field reads `required` and `llama-bench` never attaches one.
+For the retained rollback executable, a context of 32768 tokens allocated,
+filled, and decoded with the projector resident on all three checkpoints at
+the recorded cache triple and submission geometry. Each standalone session
+also answered its recovery question afterward. The evidence does not transfer
+that result across the executable-identity change to the promoted server.
 
-Every measured arm's `evidence` and `validation_evidence` path resolves to a
-directory under this one, so `remote/model-registry.sh tuples MODEL_ID`
-returns nine new rows across the three model ids, each `status=validated`
-beside its own subdirectory, and `remote/check-validated-tuples.sh` and
-`remote/test-model-registry.sh` both accept the joined registry.
+Every historical arm's evidence path resolves to a directory under this one,
+so `remote/model-registry.sh tuples MODEL_ID` returns nine rows across the
+three model ids, each `status=validated` beside its subdirectory. The model
+registry carries no numeric projector-loaded depth for those models until the
+promoted executable satisfies the rerun intake condition above.
 
 ## Retained artifacts
 

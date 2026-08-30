@@ -6,8 +6,8 @@ set -eu
 #
 # `nice -n 19` adds 19 to the caller's own value, so a launcher started below
 # nice 0 lands its workload above 19. `renice --priority 19` writes the
-# absolute value through setpriority(2), and the value is read back through
-# ps(1) rather than trusted, because the request and the applied value are two
+# absolute value through setpriority(2), and field 19 of /proc/PID/stat reads
+# the kernel value back, because the request and the applied value are two
 # claims. ionice(1) writes the idle class the same way and the class is read
 # back the same way. Both readbacks name the value the kernel holds for this
 # pid; a mismatch ends the wrapper with status 125 and the command never
@@ -19,8 +19,9 @@ set -eu
 # the kernel confirmed rather than a request it might not honour.
 #
 # Every utility is named by its fixed path, so PATH cannot substitute one. The
-# QWEN_IDLE_PRIORITY_RENICE, QWEN_IDLE_PRIORITY_PS, QWEN_IDLE_PRIORITY_AWK, and
-# QWEN_IDLE_PRIORITY_IONICE variables override those paths, which is what lets
+# QWEN_IDLE_PRIORITY_RENICE, QWEN_IDLE_PRIORITY_PROC_STAT,
+# QWEN_IDLE_PRIORITY_AWK, and QWEN_IDLE_PRIORITY_IONICE variables override
+# those paths, which is what lets
 # a test stand in a renice that applies nothing or an ionice that reports
 # best-effort without root.
 
@@ -30,14 +31,21 @@ if [ "$#" -lt 1 ]; then
 fi
 
 renice_program=${QWEN_IDLE_PRIORITY_RENICE:-/usr/bin/renice}
-ps_program=${QWEN_IDLE_PRIORITY_PS:-/usr/bin/ps}
+proc_stat_path=${QWEN_IDLE_PRIORITY_PROC_STAT:-/proc/$$/stat}
 awk_program=${QWEN_IDLE_PRIORITY_AWK:-/usr/bin/awk}
 ionice_program=${QWEN_IDLE_PRIORITY_IONICE:-/usr/bin/ionice}
 required_nice=19
 
 "$renice_program" --priority "$required_nice" --pid "$$" >/dev/null 2>&1 || true
-observed_nice=$(LC_ALL=C "$ps_program" -o ni= -p "$$" 2>/dev/null |
-    "$awk_program" '{ gsub(/[[:space:]]/, ""); print; exit }')
+observed_nice=$(LC_ALL=C "$awk_program" '
+    {
+        stat_line = $0
+        sub(/^.*[)] /, "", stat_line)
+        field_count = split(stat_line, fields, /[[:space:]]+/)
+        if (field_count >= 17) print fields[17]
+        exit
+    }
+' "$proc_stat_path" 2>/dev/null || true)
 if [ "$observed_nice" != "$required_nice" ]; then
     printf 'priority setup refused: requested=%s observed=%s\n' \
         "$required_nice" "${observed_nice:-unreadable}" >&2

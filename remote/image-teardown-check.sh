@@ -63,7 +63,7 @@ fi
 # The runtimes this tree can spawn are the pinned stable-diffusion.cpp binary
 # and the fixture that stands in for it. A deployment that pins another binary
 # names it in QWEN_IMAGE_RUNTIME_PATTERN as an extended regular expression.
-runtime_pattern=${QWEN_IMAGE_RUNTIME_PATTERN:-'^([^ ]*/)?(sd-cli|fake-image-runtime\.sh)( |$)'}
+runtime_pattern=${QWEN_IMAGE_RUNTIME_PATTERN:-'^([^ ]*/)?sd-cli( |$)|^(([^ ]*/)?[^ ]*sh )?([^ ]*/)?fake-image-runtime\.sh( |$)'}
 runtime_pids=$(pgrep -f "$runtime_pattern" 2>/dev/null || true)
 if [ -n "$runtime_pids" ]; then
     printf 'image runtime processes survive: %s\n' \
@@ -108,12 +108,47 @@ if [ -e "$lease_file" ]; then
     fi
 fi
 
-# The socket file outlives a killed service, and the next launch unlinks a
-# refused one; a socket that still accepts a connection means a service holds
-# it, which the process checks above have already reported.
+# The socket file can outlive a killed service. Probe the Unix listener before
+# unlinking: a successful connection proves a live endpoint even when process
+# discovery lacks permission to inspect its owner, while ECONNREFUSED proves
+# the filesystem node is stale. Any other connection error preserves the path
+# as unresolved residue.
 if [ -S "$socket_file" ]; then
-    printf 'control socket file remains: %s\n' "$socket_file"
-    rm -f -- "$socket_file"
+    socket_state=$(python3 - "$socket_file" <<'PYTHON'
+import errno
+import socket
+import sys
+
+probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+probe.settimeout(1.0)
+try:
+    probe.connect(sys.argv[1])
+except OSError as error:
+    if error.errno in {errno.ECONNREFUSED, errno.ENOENT}:
+        print("stale")
+    else:
+        print(f"unknown:{error}")
+else:
+    print("live")
+finally:
+    probe.close()
+PYTHON
+    )
+    case $socket_state in
+        stale)
+            printf 'stale control socket removed: %s\n' "$socket_file"
+            rm -f -- "$socket_file"
+            ;;
+        live)
+            printf 'live control socket remains: %s\n' "$socket_file" >&2
+            residue=1
+            ;;
+        *)
+            printf 'control socket state is unresolved at %s: %s\n' \
+                "$socket_file" "$socket_state" >&2
+            residue=1
+            ;;
+    esac
 elif [ -e "$socket_file" ] || [ -L "$socket_file" ]; then
     printf 'the control socket path is not a socket: %s\n' "$socket_file" >&2
     residue=1

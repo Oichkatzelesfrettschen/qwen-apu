@@ -45,6 +45,7 @@ arm_list=${QWEN_CTX_CHECKPOINT_ARMS:-'0 2 4 8 8 4 2 0'}
 target_depth=${QWEN_CTX_TARGET_DEPTH:-30720}
 predict_tokens=${QWEN_CTX_PREDICT:-32}
 request_seconds=${QWEN_CTX_REQUEST_SECONDS:-3600}
+checkpoint_min_step=${QWEN_CHECKPOINT_MIN_STEP:-8192}
 export QWEN_WEBUI_STATE_DIRECTORY=$state_directory
 
 for arm in $arm_list; do
@@ -55,10 +56,11 @@ for arm in $arm_list; do
             ;;
     esac
 done
-for positive_value in "$target_depth" "$predict_tokens" "$request_seconds"; do
+for positive_value in "$target_depth" "$predict_tokens" "$request_seconds" \
+    "$checkpoint_min_step"; do
     case $positive_value in
         '' | *[!0-9]* | 0)
-            printf 'depth, predict, and request seconds must be positive integers: %s\n' \
+            printf 'depth, predict, request seconds, and checkpoint spacing must be positive integers: %s\n' \
                 "$positive_value" >&2
             exit 2
             ;;
@@ -93,8 +95,15 @@ fi
 # harness reniced to 19 therefore launches a session whose monitor exits at
 # once and the session records monitor_exited. The value is read back from the
 # kernel and retained so a run states the priority it actually held.
-harness_nice=$(LC_ALL=C /usr/bin/ps -o ni= -p "$$" 2>/dev/null |
-    /usr/bin/awk '{ gsub(/[[:space:]]/, ""); print; exit }')
+harness_nice=$(LC_ALL=C /usr/bin/awk '
+    {
+        stat_line = $0
+        sub(/^.*[)] /, "", stat_line)
+        field_count = split(stat_line, fields, /[[:space:]]+/)
+        if (field_count >= 17) print fields[17]
+        exit
+    }
+' "/proc/$$/stat" 2>/dev/null || true)
 if [ -z "$harness_nice" ] || [ "$harness_nice" -gt 0 ]; then
     printf 'the launch chain needs a harness at nice 0 or below, found %s\n' \
         "${harness_nice:-unreadable}" >&2
@@ -121,13 +130,45 @@ if [ "$target_depth" -ge "$validated_depth" ]; then
 fi
 context_size=$validated_depth
 
+# The prompt composer accepts a turn-one prompt up to 2% above the target.
+# The second turn appends an ASCII suffix, and generation then consumes its
+# own context positions. One token cannot encode less than one byte of this
+# ASCII suffix, so its byte length is a conservative tokenizer-independent
+# reservation before any server starts.
+depth_tolerance=$((target_depth / 50))
+turn_two_suffix=' The record opened with a word.
+
+Question: how many sentences does the record hold, roughly?
+Answer:'
+turn_two_suffix_reserve=$(LC_ALL=C printf '%s' "$turn_two_suffix" | wc -c)
+required_context=$((target_depth + depth_tolerance + turn_two_suffix_reserve + predict_tokens))
+if [ "$required_context" -gt "$validated_depth" ]; then
+    printf 'validated_filled_depth %s cannot reserve target %s, tolerance %s, turn-two suffix %s, and prediction %s (requires %s)\n' \
+        "$validated_depth" "$target_depth" "$depth_tolerance" \
+        "$turn_two_suffix_reserve" "$predict_tokens" "$required_context" >&2
+    exit 2
+fi
+
 umask 077
+if [ -e "$output_directory" ]; then
+    if [ ! -d "$output_directory" ]; then
+        printf 'output path exists and is not a directory: %s\n' \
+            "$output_directory" >&2
+        exit 2
+    fi
+    if find "$output_directory" -mindepth 1 -maxdepth 1 -print -quit |
+            grep -q .; then
+        printf 'output directory must be empty: %s\n' "$output_directory" >&2
+        exit 2
+    fi
+fi
 mkdir -p "$output_directory"
 output_directory=$(CDPATH='' cd -- "$output_directory" && pwd)
 summary_file=$output_directory/summary.tsv
-printf 'label=%s\nmodel_id=%s\nmodel=%s\nprofile=%s\narms=%s\ntarget_depth=%s\npredict_tokens=%s\ncontext_size=%s\nharness_nice=%s\n' \
+printf 'label=%s\nmodel_id=%s\nmodel=%s\nprofile=%s\narms=%s\ntarget_depth=%s\npredict_tokens=%s\ncontext_size=%s\ncheckpoint_min_step=%s\nharness_nice=%s\n' \
     "$label" "$model_id" "$model_path" "$profile" "$arm_list" \
-    "$target_depth" "$predict_tokens" "$context_size" "$harness_nice" \
+    "$target_depth" "$predict_tokens" "$context_size" \
+    "$checkpoint_min_step" "$harness_nice" \
     >"$output_directory/inputs.txt"
 printf 'arm\tctx_checkpoints\tturn\tprompt_n\tprompt_ms\tpredicted_n\tpredicted_ms\tprompt_tok_s\tdecode_tok_s\tprefill_saved_ms\n' \
     >"$summary_file"
@@ -135,14 +176,15 @@ printf 'arm\tctx_checkpoints\tturn\tprompt_n\tprompt_ms\tpredicted_n\tpredicted_
 server_started=0
 teardown_server() {
     [ "$server_started" -eq 1 ] || return 0
-    server_started=0
     "$teardown_script" >>"$output_directory/teardown.txt" 2>&1 || {
         printf 'teardown failed for arm %s\n' "$current_arm" >&2
         return 1
     }
+    server_started=0
 }
 current_arm=none
 trap 'teardown_server' EXIT
+trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -175,9 +217,9 @@ post_json() {
 
 # The filler is a deterministic walk over a fixed word list, so the same
 # seed and word count produce byte-identical text on every arm and every
-# machine. The prompt is composed once against the first arm's tokenizer,
-# because the tokenizer belongs to the checkpoint rather than the launch, and
-# every later arm reuses the file.
+# machine. Each invocation starts with an empty output directory and composes
+# a fresh prompt against the first successful arm's tokenizer. Every later arm
+# in that invocation reuses the newly generated file.
 generate_filler() {
     awk -v count="$1" 'BEGIN {
         split("river stone maple harbor lantern copper meadow signal orbit " \
@@ -216,7 +258,6 @@ with open(sys.argv[1]) as handle:
 
 compose_prompt() {
     prompt_file=$output_directory/prompt-turn1.txt
-    depth_tolerance=$((target_depth / 50))
     filler_words=$target_depth
     attempt=0
     while :; do
@@ -245,8 +286,16 @@ compose_prompt() {
         >"$output_directory/prompt-depth.txt"
     {
         cat "$prompt_file"
-        printf ' The record opened with a word.\n\nQuestion: how many sentences does the record hold, roughly?\nAnswer:'
+        printf '%s' "$turn_two_suffix"
     } >"$output_directory/prompt-turn2.txt"
+    turn_two_tokens=$(count_tokens "$output_directory/prompt-turn2.txt")
+    if [ $((turn_two_tokens + predict_tokens)) -gt "$context_size" ]; then
+        printf 'turn-two prompt %s plus prediction %s exceeds context %s\n' \
+            "$turn_two_tokens" "$predict_tokens" "$context_size" >&2
+        return 1
+    fi
+    printf 'turn_two_tokens=%s\n' "$turn_two_tokens" \
+        >>"$output_directory/prompt-depth.txt"
 }
 
 # One completion through the raw route: greedy, fixed length, cache_prompt on
@@ -275,25 +324,30 @@ PY
 
 arm_index=0
 failed_arms=0
+prompts_composed=0
 for arm in $arm_list; do
     arm_index=$((arm_index + 1))
     current_arm=$arm_index
     arm_directory=$output_directory/arm-$arm_index-c$arm
     mkdir -p "$arm_directory"
     if ! QWEN_MODEL_PATH=$model_path QWEN_CTX_CHECKPOINTS=$arm \
+        QWEN_CHECKPOINT_MIN_STEP=$checkpoint_min_step \
         QWEN_CONTEXT_SIZE=$context_size \
         "$launch_script" "$profile" >"$arm_directory/launch.txt" 2>&1; then
         printf 'launch failed for arm %s (ctx_checkpoints=%s)\n' \
             "$arm_index" "$arm" >&2
         failed_arms=$((failed_arms + 1))
         server_started=1
-        teardown_server || true
+        if ! teardown_server; then
+            exit 1
+        fi
         continue
     fi
     server_started=1
     read_api_key
-    if [ ! -s "$output_directory/prompt-turn2.txt" ]; then
+    if [ "$prompts_composed" -eq 0 ]; then
         compose_prompt
+        prompts_composed=1
     fi
     turn_status=0
     run_turn "$output_directory/prompt-turn1.txt" "$arm_directory/turn1.json" \
@@ -305,7 +359,9 @@ for arm in $arm_list; do
     cp "$state_directory/server.log" "$arm_directory/server.log" 2>/dev/null || true
     sed -n '1,4p' "$state_directory/session.status" \
         >"$arm_directory/session.status" 2>/dev/null || true
-    teardown_server || turn_status=1
+    if ! teardown_server; then
+        exit 1
+    fi
     if [ "$turn_status" -ne 0 ]; then
         printf 'request failed for arm %s (ctx_checkpoints=%s): status %s\n' \
             "$arm_index" "$arm" "$turn_status" >&2

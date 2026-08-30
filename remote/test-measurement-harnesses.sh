@@ -103,10 +103,23 @@ chmod +x "$fake_bench"
 model_path=$temporary_directory/model.gguf
 : >"$model_path"
 
+# Clone-local fixtures use fake executables and files, so a host inference
+# service cannot consume their synthetic device. Hide host llama processes from
+# the two repeatability arms while recording that each contention check ran.
+isolated_process_bin=$temporary_directory/isolated-process-bin
+process_probe_log=$temporary_directory/process-probe.log
+mkdir -p "$isolated_process_bin"
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    'printf "%s\\n" "$*" >>"${QWEN_TEST_PROCESS_PROBE_LOG:?}"' \
+    'exit 1' >"$isolated_process_bin/pgrep"
+chmod +x "$isolated_process_bin/pgrep"
+
 sampler_pid_file=$temporary_directory/sampler.pid
 successful_output=$temporary_directory/repeatability-success
 active_fixture=bench-repeatability-success
 diagnostic_file=$temporary_directory/success.stderr
+PATH="$isolated_process_bin:$PATH" \
+QWEN_TEST_PROCESS_PROBE_LOG=$process_probe_log \
 QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
 QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_IDLE_SECONDS=0 \
     "$script_directory/measure-bench-repeatability.sh" "$model_path" \
@@ -122,7 +135,9 @@ fi
 failed_output=$temporary_directory/repeatability-failure
 active_fixture=bench-repeatability-failure
 diagnostic_file=$temporary_directory/failure.stderr
-if QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
+if PATH="$isolated_process_bin:$PATH" \
+    QWEN_TEST_PROCESS_PROBE_LOG=$process_probe_log \
+    QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
     QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_IDLE_SECONDS=0 \
     QWEN_TEST_BENCH_MODE=failure \
     "$script_directory/measure-bench-repeatability.sh" "$model_path" \
@@ -140,6 +155,12 @@ if grep -F 'bench_repeatability=completed' \
 fi
 if kill -0 "$(cat "$sampler_pid_file")" 2>/dev/null; then
     printf 'failed measurement left its sampler alive\n' >&2
+    exit 1
+fi
+if [ "$(grep -Fxc -- '-x llama-server' "$process_probe_log")" -ne 2 ] || \
+   [ "$(grep -Fxc -- '-x llama-bench' "$process_probe_log")" -ne 2 ]; then
+    printf 'repeatability fixtures did not execute both isolated contention checks\n' >&2
+    cat "$process_probe_log" >&2
     exit 1
 fi
 
@@ -287,10 +308,10 @@ if awk -F'\t' 'NR > 1 && (NF != 10 || $3 == "" || $6 == "" || $7 == "" || $8 == 
     exit 1
 fi
 
-# A fault line with no reset line names a hazard the ring never recovered from
-# on its own. arm_healthy must read gpu_faults as well as ring_resets, so this
-# arm stays unhealthy even though status, control status, and reset count are
-# all clean.
+# The same fault class in the arm and control names one taxonomy term while
+# the event count remains two. arm_healthy must read gpu_faults as well as
+# ring_resets, so this arm stays unhealthy even though status, control status,
+# and reset count are all clean.
 # kernel_line_count calls dmesg twice (an existence probe, then the count), so
 # the fault must not appear until the third call: the delta read after the
 # arm ends. A counter file tracks the call ordinal across both the health
@@ -305,7 +326,7 @@ printf '%s\n' '#!/bin/sh' 'set -eu' \
     "log=$fault_log" \
     'printf x >>"$counter"' \
     'count=$(wc -c <"$counter")' \
-    'if [ "$count" -eq 4 ]; then' \
+    'if [ "$count" -eq 4 ] || [ "$count" -eq 8 ]; then' \
     '    printf "amdgpu: VM_L2_PROTECTION_FAULT detected\\n" >>"$log"' \
     'fi' \
     'cat "$log"' \
@@ -321,7 +342,7 @@ PATH="$fault_bin:$PATH" \
     "$script_directory/probe-depth-wedge.sh" "$model_path" "$fault_output" \
     >"$temporary_directory/wedge-fault.stdout" \
     2>"$temporary_directory/wedge-fault.stderr"
-if ! awk -F'\t' '$1 == "d1-b1-ub1" && $8 == 0 && $9 == 0 && $10 > 0 {
+if ! awk -F'\t' '$1 == "d1-b1-ub1" && $8 == 0 && $9 == 0 && $10 == 2 {
                      found = 1
                  }
                  END { exit !found }' "$fault_output/wedge-summary.tsv"; then
@@ -375,7 +396,7 @@ QWEN_WEDGE_GEOMETRIES=1:1 PATH="$gfxhub_bin:$PATH" \
     "$script_directory/probe-depth-wedge.sh" "$model_path" "$gfxhub_output" \
     >"$temporary_directory/wedge-gfxhub.stdout" \
     2>"$temporary_directory/wedge-gfxhub.stderr"
-if ! awk -F'\t' '$1 == "d1-b1-ub1" && $20 == "gfxhub-page-fault" {
+if ! awk -F'\t' '$1 == "d1-b1-ub1" && $10 > 0 && $20 == "gfxhub-page-fault" {
                      found = 1
                  }
                  END { exit !found }' "$gfxhub_output/wedge-summary.tsv"; then

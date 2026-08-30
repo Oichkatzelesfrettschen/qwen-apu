@@ -92,7 +92,7 @@ the service chooses every path it writes.
 | `status` | string | `accepted`, `completed`, `refused`, `cancelled`, or `failed` |
 | `reason` | string | identifier shape, present on `refused`, `failed`, and `cancelled` |
 | `sha256` | string | 64 lowercase hex digits, present on `completed` alone |
-| `provenance_url` | string | `/artifacts/<sha256>.json`, present on `completed` alone |
+| `provenance_url` | string | `/artifacts/<provenance-sha256>.json`, present on `completed` alone |
 | `error` | string | 1 to 1024 characters, present on `refused` and `failed` |
 
 `reason` is the fixed term a reader routes on and `error` is the prose a human
@@ -107,9 +107,10 @@ A field is present where it carries a value and absent otherwise. A JSON null in
 key rather than admitting the null.
 
 `completed` carries the digest and the provenance URL and no error.
-`provenance_url` is derived from `sha256` rather than chosen by the sender, and
-the checker requires the two to agree, so an artifact is reachable only by its
-own identity and a caller supplies no path at any layer. `refused` and `failed`
+`provenance_url` carries the provenance JSON's own digest rather than the PNG
+digest. The independent content address preserves every immutable job record
+when two jobs produce identical PNG bytes. Both routes keep a closed digest
+shape, so a caller supplies no path at any layer. `refused` and `failed`
 carry a non-empty error and name no artifact. `accepted` and `cancelled` name no
 artifact and state no error; `cancelled` carries its reason.
 

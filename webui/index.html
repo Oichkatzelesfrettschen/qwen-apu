@@ -302,7 +302,7 @@ async function refreshAttachmentTokens(selectedModel, generation) {
   if (modelStateMatches(selectedModel, generation)) renderAttached();
 }
 
-function selectRequestModel(selectedModel) {
+function selectRequestModel(selectedModel, persist = true) {
   const generation = ++modelStateGeneration;
   requestModel = selectedModel;
   nctx = null;
@@ -314,7 +314,11 @@ function selectRequestModel(selectedModel) {
     attachment.tokens = null;
     attachment.tokenModel = null;
   });
-  writeBrowserStorage('localStorage', 'qwen-apu-model-id', selectedModel);
+  if (persist) {
+    writeBrowserStorage('localStorage', 'qwen-apu-model-id', selectedModel);
+  } else {
+    writeBrowserStorage('localStorage', 'qwen-apu-model-id', null);
+  }
   $('#ctx').textContent = 'context pending for selected model';
   renderAttached();
   void refreshModelContext(selectedModel, generation);
@@ -633,13 +637,50 @@ function configuredArtifactOrigin() {
 }
 const ARTIFACT_ORIGIN_DEFAULT = configuredArtifactOrigin();
 
+function trustedArtifactOrigin(configured) {
+  /* Return one canonical listener origin before any credential is read.
+
+     image-service.py binds a literal loopback address and an ephemeral port.
+     A hostname, userinfo, path, query, or fragment therefore describes a
+     different authority than the local listener and must never receive the
+     page's bearer API key. */
+  const literalLoopbackOrigin =
+    /^(?:https?):\/\/(?:127\.0\.0\.1|\[::1\]):[0-9]+$/i;
+  if (!literalLoopbackOrigin.test(configured)) {
+    throw new Error(
+      'the artifact listener origin must be only a literal loopback address and explicit port');
+  }
+  let parsed;
+  try {
+    parsed = new URL(configured);
+  } catch {
+    throw new Error('the artifact listener origin is not an absolute URL');
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error('the artifact listener origin must use HTTP or HTTPS');
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error('the artifact listener origin must carry no user information');
+  }
+  // URL canonicalizes integer and shortened IPv4 spellings to 127.0.0.1.
+  // The lexical check above rejects those aliases before canonicalization so
+  // the credential destination remains the exact listener form we admit.
+  if (!parsed.port) {
+    throw new Error('the artifact listener origin must name its ephemeral port');
+  }
+  if (parsed.pathname !== '/' || parsed.search || parsed.hash) {
+    throw new Error('the artifact listener origin must carry no path, query, or fragment');
+  }
+  return parsed.origin;
+}
+
 function artifactOrigin() {
   const configured = ($('#artifact-origin').value.trim() || ARTIFACT_ORIGIN_DEFAULT)
     .replace(/\/+$/, '');
   if (!configured) {
     throw new Error('no artifact listener origin is configured for this page');
   }
-  return configured;
+  return trustedArtifactOrigin(configured);
 }
 const BROKER_SESSION_HEADER = 'X-Qwen-Web-Session';
 const STALE_SESSION_SECRET_CODE = 'stale_session_secret';
@@ -1134,6 +1175,11 @@ function applyImageSchemaBounds(fields, bounds) {
      broker signs for it alone; the dialog names the substitution so the human
      approving reads what will run. */
   const proposedProfile = fields.profile;
+  if (fields.prompt.length > IMAGE_PROMPT_CHARACTER_CAP) {
+    throw new Error(
+      `prompt states ${fields.prompt.length} characters; ` +
+      `the image service admits ${IMAGE_PROMPT_CHARACTER_CAP}`);
+  }
   if (!bounds) return { ...fields, proposedProfile, profileReplaced: false };
   for (const key of ['width', 'height', 'steps']) {
     const ceiling = bounds[key];
@@ -1324,6 +1370,7 @@ function approveImageGeneration(fields, proposalModel, correctionNote = '') {
 const REVIEW_MAX_TOKENS = 400;
 const REVIEW_TIMEOUT_MS = 300000;
 const IMAGE_CORRECTION_CAP = 2;
+const IMAGE_PROMPT_CHARACTER_CAP = 2000;
 const REVIEW_VERDICT_KEYS = ['hard_constraints', 'composition_change_required',
                              'prompt_delta', 'regenerate'];
 const REVIEW_CONSTRAINT_KEYS = ['name', 'passed', 'observation'];
@@ -1348,7 +1395,7 @@ async function resolveVisionModel(generation, signal) {
      requests out of every turn that generates nothing. */
   if (visionModelGeneration === generation) return visionModelCached;
   const rosterIds = [...$('#model-picker').options].map(option => option.value);
-  let found = null;
+  const found = [];
   for (const modelId of rosterIds) {
     try {
       const response = await fetch(`./props?model=${encodeURIComponent(modelId)}`,
@@ -1356,8 +1403,12 @@ async function resolveVisionModel(generation, signal) {
       if (!response.ok) continue;
       const props = await response.json();
       if (props && props.modalities && props.modalities.vision === true) {
-        found = modelId;
-        break;
+        const option = [...$('#model-picker').options]
+          .find(candidate => candidate.value === modelId);
+        found.push({
+          modelId,
+          reviewOnly: option && option.dataset.toolOffering === 'false'
+        });
       }
     } catch (error) {
       // An abort ends the whole review rather than the one props read, so the
@@ -1367,10 +1418,10 @@ async function resolveVisionModel(generation, signal) {
     }
   }
   if (generation === modelStateGeneration) {
-    visionModelCached = found;
+    visionModelCached = (found.find(candidate => candidate.reviewOnly) || found[0] || {}).modelId || null;
     visionModelGeneration = generation;
   }
-  return found;
+  return (found.find(candidate => candidate.reviewOnly) || found[0] || {}).modelId || null;
 }
 
 function reviewHardConstraints(fields) {
@@ -1435,7 +1486,8 @@ async function artifactDataUri(sha256, signal) {
      credential header is what reads it. btoa takes a binary string, and
      String.fromCharCode over a whole 512x512 PNG exceeds the argument limit,
      so the bytes fold in 32 KiB slices. */
-  const response = await fetch(`${artifactOrigin()}/artifacts/${sha256}.png`,
+  const origin = artifactOrigin();
+  const response = await fetch(`${origin}/artifacts/${sha256}.png`,
     { mode: 'cors', headers: authHeaders(), signal });
   if (!response.ok) {
     throw new Error(`the artifact fetch returned HTTP ${response.status}`);
@@ -1620,7 +1672,7 @@ async function proposeImageCorrection(card, fields, lineage, verdict) {
      prompt meets the schema's own bounds before the dialog opens, the way a
      model's proposal does, so a correction outside them is answered on the
      card rather than refused after the click. */
-  const correctionNumber = lineage.correctionsUsed + 1;
+  const correctionNumber = lineage.state.correctionsUsed + 1;
   const delta = verdict.prompt_delta.trim();
   const corrected = { ...fields, prompt: `${fields.prompt} ${delta}`, seedGenerated: false };
   let bounded;
@@ -1643,12 +1695,16 @@ async function proposeImageCorrection(card, fields, lineage, verdict) {
       : 'The user refused this correction. It did not run.');
     return;
   }
+  // The approval spends one lineage slot even when the runtime later refuses
+  // or fails. Every card shares this object, so revisiting an earlier card
+  // cannot reopen an already spent correction number.
+  lineage.state.correctionsUsed = correctionNumber;
   const stateEl = openCorrectionState(card);
   const params = imageRequestParams(bounded, imageOutcome.authorization);
   const execution = await executeImageGeneration(
     stateEl, lineage.container, IMAGE_TOOL_NAME, bounded, params, lineage.model,
     lineage.cancelToolName,
-    { correctionsUsed: correctionNumber, model: lineage.model,
+    { state: lineage.state, model: lineage.model,
       cancelToolName: lineage.cancelToolName, bounds: lineage.bounds });
   if (!execution.ok) {
     appendReviewNote(card, execution.text, true);
@@ -1674,15 +1730,20 @@ async function runImageReview(card, fields, lineage) {
   // on any of them would hold `busy` and the send button for the session.
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REVIEW_TIMEOUT_MS);
+  const reviewGeneration = conversationGeneration;
+  const reviewIsCurrent = () => reviewGeneration === conversationGeneration && card.isConnected;
   try {
     const visionModel = await resolveVisionModel(modelStateGeneration, controller.signal);
+    if (!reviewIsCurrent()) return;
     if (!visionModel) {
       appendReviewNote(card, 'The roster reports no vision model, so no review ran.', true);
       return;
     }
     const constraints = reviewHardConstraints(fields);
     const dataUri = await artifactDataUri(lineage.sha256, controller.signal);
+    if (!reviewIsCurrent()) return;
     const promptHash = await sha256Hex(fields.prompt.trim());
+    if (!reviewIsCurrent()) return;
     const response = await fetch('./v1/chat/completions', {
       method: 'POST',
       headers: authHeaders({ 'Content-Type': 'application/json' }),
@@ -1694,6 +1755,7 @@ async function runImageReview(card, fields, lineage) {
       throw new Error(`the review request returned HTTP ${response.status}`);
     }
     const reply = await response.json();
+    if (!reviewIsCurrent()) return;
     const verdict = parseReviewVerdict(reply, constraints.map(constraint => constraint.name));
     renderReviewChecklist(card, verdict, visionModel);
     const decision = reviewCorrectionAdmitted(verdict);
@@ -1701,7 +1763,7 @@ async function runImageReview(card, fields, lineage) {
       appendReviewNote(card, `No correction is proposed: ${decision.reason}.`);
       return;
     }
-    if (lineage.correctionsUsed >= IMAGE_CORRECTION_CAP) {
+    if (lineage.state.correctionsUsed >= IMAGE_CORRECTION_CAP) {
       appendReviewNote(card,
         `The ${IMAGE_CORRECTION_CAP} approved corrections for this request are spent, ` +
         'so this verdict proposes none.');
@@ -1736,9 +1798,16 @@ async function probeToolOffering(modelId) {
      behind it. */
   try {
     const response = await fetch(
-      `./tools?model=${encodeURIComponent(modelId)}&autoload=true`,
+      `./tools?model=${encodeURIComponent(modelId)}`,
       { headers: authHeaders() });
-    if (response.status === 200) return true;
+    if (response.status === 200) {
+      const listing = await response.json();
+      return Array.isArray(listing) && listing.some(row =>
+        row && typeof row.tool === 'string' && row.tool.length > 0 &&
+        row.definition && row.definition.function &&
+        typeof row.definition.function.name === 'string' &&
+        row.definition.function.name === row.tool);
+    }
     if (response.status === 403) return false;
     return null;
   } catch {
@@ -1805,21 +1874,25 @@ async function boot() {
       if (generation !== modelStateGeneration) return;
     }
     const storedModel = readBrowserStorage('localStorage', 'qwen-apu-model-id');
-    const selectedModel = modelIds.includes(storedModel)
+    const storedModelUsable = modelIds.includes(storedModel) &&
+      (modelIds.length === 1 || toolOffering[storedModel] === true);
+    const selectedModel = storedModelUsable
       ? storedModel
       : (modelIds.find(modelId => toolOffering[modelId] === true) ?? modelIds[0]);
+    const selectionProven = modelIds.length === 1 || toolOffering[selectedModel] === true;
     modelPicker.textContent = '';
     for (const modelId of modelIds) {
       const option = document.createElement('option');
       option.value = modelId;
       option.textContent = toolOffering[modelId] === false ? `${modelId} (review)` : modelId;
+      option.dataset.toolOffering = String(toolOffering[modelId]);
       modelPicker.append(option);
     }
     modelPicker.value = selectedModel;
     modelPicker.hidden = false;
     $('#model').textContent = `${modelIds.length} model${modelIds.length === 1 ? '' : 's'} available`;
 
-    selectRequestModel(selectedModel);
+    selectRequestModel(selectedModel, selectionProven);
   } catch (error) {
     if (generation !== modelStateGeneration) return;
     requestModel = null;
@@ -2196,7 +2269,7 @@ function buildImageToolResultSummary(result) {
 // rather than holding the send button for the generation timeout.
 const ARTIFACT_FETCH_TIMEOUT_MS = 60000;
 
-async function loadArtifactBlobUrl(sha256) {
+async function loadArtifactBlobUrl(sha256, callerSignal) {
   /* Fetch the artifact PNG with the same credential header the page sends
      for chat -- an <img src> cannot carry that header, and the hash never
      substitutes for it in a query parameter -- and hand back a local blob
@@ -2208,10 +2281,20 @@ async function loadArtifactBlobUrl(sha256) {
      reads the record's identity and composes the image route itself. The
      origin is the artifact listener's, because that service owns the routes
      and the router proxies none of them. */
+  const origin = artifactOrigin();
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), ARTIFACT_FETCH_TIMEOUT_MS);
+  let timedOut = false;
+  const abortFromCaller = () => controller.abort();
+  if (callerSignal) {
+    if (callerSignal.aborted) controller.abort();
+    else callerSignal.addEventListener('abort', abortFromCaller, { once: true });
+  }
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, ARTIFACT_FETCH_TIMEOUT_MS);
   try {
-    const response = await fetch(`${artifactOrigin()}/artifacts/${sha256}.png`,
+    const response = await fetch(`${origin}/artifacts/${sha256}.png`,
       { mode: 'cors', headers: authHeaders(), signal: controller.signal });
     if (!response.ok) {
       throw new Error(`the artifact fetch returned HTTP ${response.status}`);
@@ -2220,21 +2303,26 @@ async function loadArtifactBlobUrl(sha256) {
     return URL.createObjectURL(blob);
   } catch (error) {
     if (error.name === 'AbortError') {
+      if (callerSignal && callerSignal.aborted) {
+        throw new Error('the artifact fetch was cancelled by the user');
+      }
+      if (!timedOut) throw error;
       throw new Error(
         `the artifact fetch timed out after ${ARTIFACT_FETCH_TIMEOUT_MS / 1000}s`);
     }
     throw error;
   } finally {
     clearTimeout(timeoutId);
+    if (callerSignal) callerSignal.removeEventListener('abort', abortFromCaller);
   }
 }
 
-async function renderImageArtifactCard(container, fields, result, lineage) {
+async function renderImageArtifactCard(container, fields, result, lineage, signal) {
   /* Build the artifact card around a blob URL this call already holds, or
      throw what the fetch refused. The turn ends on the artifact rather than
      ahead of it: a card whose image never arrives would otherwise leave the
      model told the image is present while the page shows an empty frame. */
-  const blobUrl = await loadArtifactBlobUrl(result.sha256);
+  const blobUrl = await loadArtifactBlobUrl(result.sha256, signal);
   const card = document.createElement('figure');
   card.className = 'image-artifact';
   const img = document.createElement('img');
@@ -2265,7 +2353,7 @@ async function renderImageArtifactCard(container, fields, result, lineage) {
   // belongs to the original request rather than to one card.
   const cardLineage = {
     sha256: result.sha256,
-    correctionsUsed: (lineage && lineage.correctionsUsed) || 0,
+    state: (lineage && lineage.state) || { correctionsUsed: 0 },
     model: lineage && lineage.model,
     cancelToolName: lineage && lineage.cancelToolName,
     bounds: lineage && lineage.bounds,
@@ -2324,18 +2412,21 @@ async function executeImageGeneration(stateEl, artifactContainer, toolName, fiel
   // re-states it rather than skipping straight to the next phase.
   await Promise.resolve();
   renderImageState(stateEl, 'Generating image...');
-  const controller = new AbortController();
+  const requestController = new AbortController();
+  const cancellationController = new AbortController();
   let cancelled = false;
   const cancelButton = document.createElement('button');
   cancelButton.className = 'act';
   cancelButton.textContent = 'cancel';
   cancelButton.onclick = () => {
     cancelled = true;
-    controller.abort();
+    requestController.abort();
+    cancellationController.abort();
     void postCancelBestEffort(cancelToolName, model);
   };
   stateEl.after(cancelButton);
-  const timeoutId = setTimeout(() => controller.abort(), IMAGE_GENERATION_TIMEOUT_MS);
+  const timeoutId = setTimeout(
+    () => requestController.abort(), IMAGE_GENERATION_TIMEOUT_MS);
   try {
     let response;
     try {
@@ -2343,7 +2434,7 @@ async function executeImageGeneration(stateEl, artifactContainer, toolName, fiel
         method: 'POST',
         headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ model, tool: toolName, params, stream: false }),
-        signal: controller.signal
+        signal: requestController.signal
       });
     } catch (error) {
       const reason = cancelled
@@ -2374,17 +2465,25 @@ async function executeImageGeneration(stateEl, artifactContainer, toolName, fiel
       return { ok: false, text: `The image did not complete: ${reason}` };
     }
     try {
-      await renderImageArtifactCard(artifactContainer, fields, result, lineage);
+      await renderImageArtifactCard(
+        artifactContainer, fields, result, lineage, cancellationController.signal);
     } catch (error) {
       // The service holds the artifact and the page failed to read it, so the
       // model is told the identity it can retry against rather than that the
       // generation succeeded.
-      const reason = `the artifact did not load: ${error.message || error}`;
+      const reason = cancelled
+        ? 'cancelled by the user'
+        : `the artifact did not load: ${error.message || error}`;
       renderImageState(stateEl, `Image failed: ${reason}`, true);
       return {
         ok: false,
         text: `The image generated as sha256 ${result.sha256} and this page could not display it: ${reason}`
       };
+    }
+    if (cancelled) {
+      const reason = 'cancelled by the user';
+      renderImageState(stateEl, `Image failed: ${reason}`, true);
+      return { ok: false, text: `The image did not complete: ${reason}` };
     }
     renderImageState(stateEl, 'Image complete');
     return { ok: true, text: buildImageToolResultSummary(result) };
@@ -2515,7 +2614,7 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
         const params = imageRequestParams(imageFields, imageOutcome.authorization);
         const execution = await executeImageGeneration(
           stateEl, view.turn.root, toolName, imageFields, params, proposalModel, imageCancelToolName,
-          { correctionsUsed: 0, model: proposalModel, cancelToolName: imageCancelToolName,
+          { state: { correctionsUsed: 0 }, model: proposalModel, cancelToolName: imageCancelToolName,
             bounds: imageBounds });
         if (!execution.ok) refused = true;
         answerCall(callId, toolName, execution.text, turnGeneration);

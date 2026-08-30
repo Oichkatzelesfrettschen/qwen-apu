@@ -16,7 +16,16 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 harness=$script_directory/run-graph-alias-ab.sh
 fixture=$script_directory/test-fixtures/fake-llama-server.sh
 temporary_directory=$(mktemp -d)
-trap 'rm -rf "$temporary_directory"' EXIT HUP INT TERM
+cleanup() {
+    cleanup_status=$?
+    if [ "${QWEN_TEST_KEEP_OUTPUT:-0}" = 1 ]; then
+        printf 'graph_alias_fixture_directory=%s\n' "$temporary_directory" >&2
+    else
+        rm -rf -- "$temporary_directory"
+    fi
+    exit "$cleanup_status"
+}
+trap cleanup EXIT HUP INT TERM
 
 failures=0
 report() {
@@ -99,6 +108,7 @@ divergent_status=0
 run_harness "$divergent_directory" \
     env QWEN_PRODUCTION_BUILD_DIR="$production_build" \
         QWEN_ALIAS_BUILD_DIR="$alias_build" \
+        GGML_VK_DISABLE_GRAPH_OPTIMIZE=1 \
         QWEN_FAKE_SERVER_TOKENS='10 11 12 13 14 15 16 17' \
         QWEN_FAKE_SERVER_TOKENS_OPTIMIZE='10 11 12 99 14 15 16 17' \
         >"$divergent_directory.log" 2>&1 || divergent_status=$?
@@ -195,6 +205,13 @@ if [ "$optimize_off_records" -eq 2 ]; then
 else
     report 1 "GGML_VK_DISABLE_GRAPH_OPTIMIZE reaches the optimizer-off arm alone ($optimize_off_records of 2 starts)"
 fi
+optimize_on_records=$(grep -l 'disable_graph_optimize=unset' \
+    "$divergent_directory"/argv/argv-*.txt | wc -l)
+if [ "$optimize_on_records" -eq 4 ]; then
+    report 0 'optimizer-on arms clear an inherited disable override'
+else
+    report 1 'optimizer-on arms clear an inherited disable override'
+fi
 
 # Without an injected reorder every arm returns the same sequence, so the same
 # harness must reach the identical verdict rather than always finding a
@@ -208,11 +225,55 @@ run_harness "$identical_directory" \
         >"$identical_directory.log" 2>&1 || identical_status=$?
 
 if [ "$identical_status" -eq 0 ] &&
-    grep -q '^graph_alias_ab=identical comparisons=4$' \
+    grep -q '^graph_alias_ab=identical comparisons=4 self_divergence=0$' \
         "$identical_directory.log"; then
     report 0 'reports graph_alias_ab=identical over four comparisons'
 else
     report 1 "reports graph_alias_ab=identical over four comparisons (status $identical_status)"
+fi
+
+# Reference configuration and retained output ownership fail before any model
+# launch, so a typo or stale run cannot silently change the oracle.
+invalid_reference_directory=$temporary_directory/invalid-reference
+if run_harness "$invalid_reference_directory" \
+        env QWEN_PRODUCTION_BUILD_DIR="$production_build" \
+            QWEN_ALIAS_AB_REFERENCE_ARM=typo \
+        >"$temporary_directory/invalid-reference.log" 2>&1; then
+    report 1 'an invalid reference arm is refused before launch'
+elif grep -q 'invalid reference arm' "$temporary_directory/invalid-reference.log"; then
+    report 0 'an invalid reference arm is refused before launch'
+else
+    report 1 'an invalid reference arm is refused before launch'
+fi
+
+reuse_directory=$temporary_directory/reused
+mkdir -p "$reuse_directory"
+printf 'retained\n' >"$reuse_directory/marker"
+if run_harness "$reuse_directory" \
+        env QWEN_PRODUCTION_BUILD_DIR="$production_build" \
+        >"$temporary_directory/reused.log" 2>&1; then
+    report 1 'a nonempty output directory is refused'
+elif grep -q 'output directory must be empty' "$temporary_directory/reused.log" &&
+    grep -qxF retained "$reuse_directory/marker"; then
+    report 0 'a nonempty output directory is refused'
+else
+    report 1 'a nonempty output directory is refused'
+fi
+
+insufficient_directory=$temporary_directory/insufficient
+insufficient_status=0
+run_harness "$insufficient_directory" \
+    env QWEN_ALIAS_AB_RESTARTS=1 QWEN_ALIAS_AB_RUNS=1 \
+        QWEN_PRODUCTION_BUILD_DIR="$production_build" \
+        QWEN_ALIAS_BUILD_DIR="$alias_build" \
+        QWEN_FAKE_SERVER_TOKENS='10 11 12 13 14 15 16 17' \
+        >"$temporary_directory/insufficient.log" 2>&1 || insufficient_status=$?
+if [ "$insufficient_status" -eq 0 ] &&
+    grep -q 'graph_alias_selfconsistent=not_run.*reason=insufficient_samples' \
+        "$insufficient_directory/summary.tsv"; then
+    report 0 'one-sample scopes are reported as not run'
+else
+    report 1 'one-sample scopes are reported as not run'
 fi
 
 # A lane that has not built the patched tree still answers the cheaper

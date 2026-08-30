@@ -35,7 +35,7 @@ The optimizer is `ggml_vk_graph_optimize` at
 returns on, so the environment variable is a complete off switch for the
 reordering.
 
-## The candidate patch
+## The production patch
 
 `patches/llama-vulkan-view-alias-deps.patch` backports upstream commit
 b387ddfd84b4b1f79a6e09910748195e3320e89e, PR ggml-org/llama.cpp#27812, which
@@ -45,25 +45,19 @@ the base of `dst` against the base of `src->src[s]`, and the `is_empty` guard
 keeps NONE, RESHAPE, TRANSPOSE, VIEW and PERMUTE nodes out of the relation
 since they execute nothing.
 
-It applies after the six production patches and stays out of the production
-series until this lane closes. `remote/verify-llama-patch-series.sh` runs the
-candidate stage under `QWEN_LLAMA_CANDIDATE_PATCHES=1`, after every production
-digest is compared, so the production loop and its expected sums are unchanged
-whether the stage runs or not:
+It is the seventh member of the production series.
+`remote/verify-llama-patch-series.sh` applies it in the production loop and
+compares the resulting `ggml/src/ggml-vulkan/ggml-vulkan.cpp` against
+`dfac33fe7fd487fc136e2915de7d5c146a3921b231ffef55877c6dd9e4f2c164`:
 
 ```sh
 remote/verify-llama-patch-series.sh
-QWEN_LLAMA_CANDIDATE_PATCHES=1 remote/verify-llama-patch-series.sh
 ```
 
-The first prints `patch_series=accepted` with
-`ggml/src/ggml-vulkan/ggml-vulkan.cpp` at
-`d81e9093b4a3d98bf5cde8dc710ec187ddbaffca84540369cec72ecd132e575c` and
-`candidate_patches=not_run`. The second adds
-`candidate_patch=llama-vulkan-view-alias-deps.patch applies=yes` and
-`candidate_sha256=dfac33fe7fd487fc136e2915de7d5c146a3921b231ffef55877c6dd9e4f2c164`.
-Promotion moves that digest into a `verify_source` call and the patch name into
-the production loop.
+The verifier prints `patch_series=accepted` only after every production patch
+applies and every registered source digest matches. Its optional candidate
+stage now concerns `llama-server-vulkan-workload-lease.patch`; the view-alias
+patch has no candidate-stage invocation.
 
 ## Hypothesis
 
@@ -87,13 +81,17 @@ order the unoptimized graph already carries.
 
 ## Falsifier
 
-Any arm diverging from the production build means the optimizer changes
-ordinary output, and the fix joins the production series. The cheapest form
-needs no patched build at all: the production-optimize arm disagreeing with
-itself across restarts reproduces the defect directly, which is why
+The production-optimize arm disagreeing with itself across matched requests
+reproduces the defect directly, which is why
 `remote/run-graph-alias-ab.sh` reports `graph_alias_selfconsistent=` beside
 `graph_alias_ab=`. The reported symptom is per-start rather than per-request,
 so the sample budget splits across fresh server processes.
+
+The preregistered patched-arm falsifier remains binding: any patched-arm token
+sequence that differs from the optimizer-off reference leaves the backport's
+output-equivalence claim unresolved. A stable patched arm can still remove the
+production arm's within-process nondeterminism without proving complete output
+equivalence.
 
 ## Running it on the appliance
 
@@ -105,14 +103,9 @@ Tear the appliance down first.
 # on the laptop, from ~/qwen-laptop-setup
 remote/qwen-teardown.sh
 
-# the reference build, at the pinned commit with the six production patches
-remote/build-llama-preset.sh raven2-vulkan-production
-
-# the candidate build, in its own source tree and its own build directory
-git -C "$HOME/src/llama.cpp-alias" apply \
-    ~/qwen-laptop-setup/patches/llama-vulkan-view-alias-deps.patch
-QWEN_ALLOW_ANY_COMMIT=1 remote/build-llama-preset.sh \
-    raven2-vulkan-production "$HOME/src/llama.cpp-alias"
+# Build an explicit historical control without the seventh production patch,
+# and build the canonical seven-patch production source separately. Record
+# both resulting llama-server SHA-256 identities before running the harness.
 
 QWEN_PRODUCTION_BUILD_DIR=$HOME/src/llama.cpp-qwen-apu/build-raven2-vulkan-production \
 QWEN_ALIAS_BUILD_DIR=$HOME/src/llama.cpp-alias/build-raven2-vulkan-production \
@@ -187,7 +180,7 @@ samples per arm, on the RADV RAVEN2 device with the router torn down.
 | production, optimizer off | identical on 6 of 6 | identical on 6 of 6 | reference |
 | alias patch, optimizer on | identical on 6 of 6 | identical on 6 of 6 | identical on 5 of 6; `variable-trace` diverges at token 109 |
 
-The production build disagrees with itself: four requests into one server
+The historical unpatched build disagrees with itself: four requests into one server
 process at temperature 0 with `cache_prompt` off return different token arrays
 on five prompts, and the first difference sits inside the first fourteen
 tokens. That is the defect reproduced without the patched build, and the
@@ -199,13 +192,22 @@ prompts; on `variable-trace` it departs at token 109 and then repeats that
 departure in all twelve samples. A deterministic difference from a graph the
 patch still reorders is floating-point non-associativity of a legitimately
 reordered reduction, which the harness cannot separate from a missed
-dependency; the falsifier registered above reads a patched-arm difference as
-a question for the backport, and this one is retained as open with its
-determinism as the fact that distinguishes it from the production arm's
-within-process disorder. Any self-inconsistency promotes the patch, so
-`llama-vulkan-view-alias-deps.patch` joins the production series as its
-seventh member and `verify_source` carries `ggml/src/ggml-vulkan/ggml-vulkan.cpp`
-at `dfac33fe7fd487fc136e2915de7d5c146a3921b231ffef55877c6dd9e4f2c164`.
+dependency. The registered patched-arm falsifier therefore fired on
+`variable-trace`. The retained run supports two bounded findings: the patch
+eliminated the observed within-process nondeterminism on all six prompts, and
+five prompts matched the optimizer-off reference. The run does not establish
+complete output equivalence or a generally safe reordering relation. A new
+control must distinguish permitted floating-point reassociation from a missed
+dependency before closing that claim. The production series nevertheless
+contains `llama-vulkan-view-alias-deps.patch` as its seventh member, and
+`verify_source` carries `ggml/src/ggml-vulkan/ggml-vulkan.cpp` at
+`dfac33fe7fd487fc136e2915de7d5c146a3921b231ffef55877c6dd9e4f2c164`.
+
+The retained `ab-2b/inputs.txt` names mutable build directories and omits the
+two `llama-server` digests. The directory therefore identifies the observed
+paths but does not cryptographically bind either A/B arm to immutable binary
+content. The later promotion digests below identify promoted utilities; they
+do not retroactively establish the binaries used by the earlier A/B run.
 
 The promotion also found the appliance's production source tree one patch
 behind the series: `llama-vulkan-submit-trace.patch` had been added to
@@ -218,11 +220,14 @@ exists so the next drift is caught before a build rather than after.
 
 ## Status
 
-The lane has run on the device and the patch is promoted. `remote/build-llama-preset.sh
+The lane has run on the device and the patch is operationally promoted.
+`remote/build-llama-preset.sh
 raven2-vulkan-production` rebuilt the seven-patch tree on the appliance in
 111 s, and `remote/promote-llama-build.sh raven2-vulkan-production` accepted
-it with `strict_vulkan=passed multimodal=passed`, so the served router runs
-the patched optimizer; `llama-cli` promoted at
+it with `strict_vulkan=passed multimodal=passed`. Those admission checks prove
+the named placement and multimodal gates; the open `variable-trace` falsifier
+prevents a broader correctness or safety claim. The served router runs the
+patched optimizer; `llama-cli` promoted at
 `0a7c6909bced2329f25a23c495bcf38544fef1e6f7b7da68eb0b2bb493ec9518`,
 `llama-bench` at
 `20e0ae33e203622b611a7be7f8fcea8b9ada1e625e222925dd96132396dd5869`, and

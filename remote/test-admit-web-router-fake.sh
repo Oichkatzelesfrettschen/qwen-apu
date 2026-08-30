@@ -23,6 +23,10 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 mkdir -p "$harness" "$fixture_bin" "$output_directory"
+mkdir -p "$output_directory/keys"
+retained_key='fixture-key-must-not-survive'
+printf 'header = "Authorization: Bearer %s"\n' "$retained_key" \
+    >"$output_directory/keys/api-key.curl"
 cp "$script_directory/admit-web-router-fake.sh" \
     "$harness/admit-web-router-fake.sh"
 cp /usr/bin/sleep "$temporary_directory/llama-server"
@@ -98,6 +102,11 @@ if [ "$admission_status" -eq 0 ]; then
     printf 'admission fixture accepted an absent model\n' >&2
     exit 1
 fi
+if [ -e "$output_directory/keys/api-key.curl" ] ||
+   grep -R -F "$retained_key" "$output_directory" >/dev/null 2>&1; then
+    printf 'an API key survived an admission exit\n' >&2
+    exit 1
+fi
 if ! grep -Fqx "$temporary_directory/llama-server" \
     "$temporary_directory/restored-server.path"; then
     printf 'restoration did not receive the captured server binary\n' >&2
@@ -167,4 +176,66 @@ if grep -q 'another admission run holds' "$temporary_directory/released.stderr";
     exit 1
 fi
 
-printf 'admit_web_router_fake=accepted restoration=exit-trap,captured-server private_http=accepted lock=flock-live-refused,released-with-holder\n'
+# The advertised wrapper PID owns cancellation of the locked admission. A
+# signal reaches the entire isolated process group, the inner operation gets a
+# chance to clean its private material, the wrapper returns the signal status,
+# and the lock becomes immediately available.
+signal_bin=$temporary_directory/signal-bin
+signal_output=$temporary_directory/signal-output
+signal_started=$temporary_directory/signal-started
+signal_finished=$temporary_directory/signal-finished
+mkdir -p "$signal_bin" "$signal_output/keys"
+cp "$fixture_bin/pgrep" "$fixture_bin/curl" "$signal_bin/"
+cat >"$signal_bin/sha256sum" <<'EOF'
+#!/bin/sh
+set -eu
+trap 'printf terminated >"$QWEN_TEST_SIGNAL_FINISHED"; exit 0' HUP INT TERM
+printf '%s\n' "$$" >"$QWEN_TEST_SIGNAL_STARTED"
+while :; do sleep 1; done
+EOF
+chmod 0755 "$signal_bin/pgrep" "$signal_bin/curl" "$signal_bin/sha256sum"
+printf 'header = "Authorization: Bearer %s"\n' "$retained_key" \
+    >"$signal_output/keys/api-key.curl"
+PATH="$signal_bin:$PATH" \
+QWEN_WEBUI_STATE_DIRECTORY=$temporary_directory/signal-state \
+QWEN_TEST_PROCESS_STATE=$process_state_file \
+QWEN_TEST_RESTORE_SERVER_RECORD=$temporary_directory/restored-server.path \
+QWEN_TEST_SIGNAL_STARTED=$signal_started \
+QWEN_TEST_SIGNAL_FINISHED=$signal_finished \
+QWEN_MODEL_REGISTRY=$registry \
+QWEN_LLAMA_SERVER=$temporary_directory/llama-server \
+QWEN_ADMISSION_MODEL_ID=absent-model \
+    "$harness/admit-web-router-fake.sh" "$signal_output" \
+    >"$temporary_directory/signal.stdout" \
+    2>"$temporary_directory/signal.stderr" &
+admission_pid=$!
+signal_deadline=$(( $(date +%s) + 10 ))
+while [ ! -s "$signal_started" ] && [ "$(date +%s)" -lt "$signal_deadline" ]; do
+    sleep 0.05
+done
+if [ ! -s "$signal_started" ]; then
+    printf 'the signal fixture never entered the locked operation\n' >&2
+    exit 1
+fi
+kill -TERM "$admission_pid"
+set +e
+wait "$admission_pid"
+signal_status=$?
+set -e
+if [ "$signal_status" -ne 143 ] || [ ! -s "$signal_finished" ]; then
+    printf 'cancellation did not terminate and reap the locked operation: status %s\n' \
+        "$signal_status" >&2
+    exit 1
+fi
+if [ -e "$signal_output/keys/api-key.curl" ] ||
+   grep -R -F "$retained_key" "$signal_output" >/dev/null 2>&1; then
+    printf 'an API key survived a signalled admission exit\n' >&2
+    grep -R -l -F "$retained_key" "$signal_output" >&2 || true
+    exit 1
+fi
+if ! flock -n "$temporary_directory/signal-state/web-admission.lock" true; then
+    printf 'the admission lock survived cancellation\n' >&2
+    exit 1
+fi
+
+printf 'admit_web_router_fake=accepted restoration=exit-trap,captured-server private_http=accepted lock=flock-live-refused,released-with-holder,cancellation-owned key_cleanup=early-exit,signal\n'

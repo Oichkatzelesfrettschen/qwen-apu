@@ -35,6 +35,7 @@ stop_timeout_seconds=${QWEN_SEARXNG_STOP_TIMEOUT:-15}
 launch_command=${QWEN_SEARXNG_LAUNCH_COMMAND:-"env SEARXNG_SETTINGS_PATH='$settings_path' '$pyenv_python' -m $python_module"}
 
 pid_file=$run_directory/server.pid
+identity_file=$run_directory/server.starttime
 log_file=$run_directory/server.log
 
 run_as_service_user() {
@@ -51,6 +52,49 @@ run_as_service_user() {
 
 pid_is_alive() {
     [ -d "/proc/$1" ]
+}
+
+process_start_time() {
+    sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null | awk '{ print $20 }'
+}
+
+pid_identity_matches() {
+    identity_pid=$1
+    [ -r "$identity_file" ] || return 1
+    recorded_start_time=$(sed -n '1p' "$identity_file" | tr -d ' ')
+    case $recorded_start_time in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+    current_start_time=$(process_start_time "$identity_pid") || return 1
+    [ "$current_start_time" = "$recorded_start_time" ]
+}
+
+remove_process_record() {
+    run_as_service_user "rm -f '$pid_file' '$identity_file'"
+}
+
+terminate_recorded_process() {
+    terminate_pid=$1
+    if ! pid_identity_matches "$terminate_pid"; then
+        printf 'refusing to signal pid %s because its recorded start time does not match\n' \
+            "$terminate_pid" >&2
+        return 1
+    fi
+    run_as_service_user "kill -TERM $terminate_pid" 2>/dev/null || true
+    terminate_waited=0
+    while [ "$terminate_waited" -lt "$stop_timeout_seconds" ]; do
+        pid_identity_matches "$terminate_pid" || break
+        sleep 1
+        terminate_waited=$((terminate_waited + 1))
+    done
+    if pid_identity_matches "$terminate_pid"; then
+        run_as_service_user "kill -KILL $terminate_pid" 2>/dev/null || true
+        sleep 1
+    fi
+    if pid_identity_matches "$terminate_pid"; then
+        return 1
+    fi
+    remove_process_record
 }
 
 listener_present() {
@@ -72,7 +116,7 @@ case $action in
             printf 'already running: pid=%s\n' "$existing_pid" >&2
             exit 2
         fi
-        run_as_service_user "mkdir -p '$run_directory' && rm -f '$pid_file'"
+        run_as_service_user "mkdir -p '$run_directory' && rm -f '$pid_file' '$identity_file'"
         # The redirect and the PID write both run inside the privileged
         # shell rather than this script's own, because run_directory is
         # owned by service_user (mode 0755 from install's own `mkdir -p`)
@@ -90,13 +134,13 @@ case $action in
         # the pipe reach EOF, so the caller's command substitution waits
         # forever even after this script itself has exited.
         (run_as_service_user \
-            "echo \$\$ > '$pid_file'; exec $launch_command >'$log_file' 2>&1 </dev/null") \
+            "echo \$\$ > '$pid_file'; sed 's/^.*) //' /proc/\$\$/stat | awk '{ print \$20 }' > '$identity_file'; exec $launch_command >'$log_file' 2>&1 </dev/null") \
             >/dev/null 2>&1 </dev/null &
 
         waited=0
         while [ "$waited" -lt "$start_timeout_seconds" ]; do
             started_pid=$(read_pid || true)
-            if [ -n "${started_pid:-}" ] && pid_is_alive "$started_pid" &&
+            if [ -n "${started_pid:-}" ] && pid_identity_matches "$started_pid" &&
                 listener_present; then
                 printf 'started: pid=%s listener=%s:%s\n' \
                     "$started_pid" "$bind_address" "$server_port"
@@ -108,13 +152,18 @@ case $action in
         printf 'server did not reach a listening state within %ss\n' \
             "$start_timeout_seconds" >&2
         run_as_service_user "[ -f '$log_file' ] && tail -n 40 '$log_file'" >&2 || true
+        started_pid=$(read_pid || true)
+        if [ -n "${started_pid:-}" ] && ! terminate_recorded_process "$started_pid"; then
+            printf 'startup timeout cleanup could not prove process termination: pid=%s\n' \
+                "$started_pid" >&2
+        fi
         exit 1
         ;;
 
     stop)
         current_pid=$(read_pid || true)
         if [ -z "${current_pid:-}" ] || ! pid_is_alive "$current_pid"; then
-            run_as_service_user "rm -f '$pid_file'"
+            remove_process_record
             if listener_present; then
                 printf 'no recorded process but %s:%s is still listening\n' \
                     "$bind_address" "$server_port" >&2
@@ -124,11 +173,17 @@ case $action in
             exit 0
         fi
 
+        if ! pid_identity_matches "$current_pid"; then
+            printf 'refusing to stop pid %s because its recorded start time does not match\n' \
+                "$current_pid" >&2
+            exit 1
+        fi
+
         run_as_service_user "kill -TERM $current_pid" 2>/dev/null || true
         waited=0
         while [ "$waited" -lt "$stop_timeout_seconds" ]; do
-            if ! pid_is_alive "$current_pid" && ! listener_present; then
-                run_as_service_user "rm -f '$pid_file'"
+            if ! pid_identity_matches "$current_pid" && ! listener_present; then
+                remove_process_record
                 printf 'stopped: pid=%s\n' "$current_pid"
                 exit 0
             fi
@@ -138,19 +193,19 @@ case $action in
 
         run_as_service_user "kill -KILL $current_pid" 2>/dev/null || true
         sleep 1
-        if pid_is_alive "$current_pid" || listener_present; then
+        if pid_identity_matches "$current_pid" || listener_present; then
             printf 'residue after stop: pid_alive=%s listener=%s\n' \
-                "$(pid_is_alive "$current_pid" && echo yes || echo no)" \
+                "$(pid_identity_matches "$current_pid" && echo yes || echo no)" \
                 "$(listener_present && echo yes || echo no)" >&2
             exit 1
         fi
-        run_as_service_user "rm -f '$pid_file'"
+        remove_process_record
         printf 'stopped (forced): pid=%s\n' "$current_pid"
         ;;
 
     status)
         current_pid=$(read_pid || true)
-        if [ -n "${current_pid:-}" ] && pid_is_alive "$current_pid" &&
+        if [ -n "${current_pid:-}" ] && pid_identity_matches "$current_pid" &&
             listener_present; then
             printf 'state=running pid=%s listener=%s:%s\n' \
                 "$current_pid" "$bind_address" "$server_port"

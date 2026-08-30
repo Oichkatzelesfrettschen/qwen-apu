@@ -420,7 +420,14 @@ def protocol_aspect(width, height):
     return "landscape" if width > height else "portrait"
 
 
-def connect_service(settings, timeout):
+def remaining_seconds(deadline):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise ServiceUnavailable("the image tool deadline expired")
+    return remaining
+
+
+def connect_service(settings, deadline):
     """Return a connected socket to the image service, or refuse the call.
 
     The connection opens before the ledger spends the grant, so a socket no
@@ -431,7 +438,7 @@ def connect_service(settings, timeout):
     approval buys one attempt, and a retry needs a second approval.
     """
     connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    connection.settimeout(timeout)
+    connection.settimeout(remaining_seconds(deadline))
     try:
         connection.connect(settings["socket_path"])
     except (OSError, socket.timeout) as error:
@@ -442,7 +449,7 @@ def connect_service(settings, timeout):
     return connection
 
 
-def exchange(connection, payload, timeout):
+def exchange(connection, payload, deadline, timeout_seconds):
     """Write one job line and read one reply line inside the tool deadline.
 
     The job is validated against the frozen frame before it is encoded, so a
@@ -457,18 +464,19 @@ def exchange(connection, payload, timeout):
         raise web_server.InvalidArgument(
             f"the job leaves the image protocol: {breach}"
         ) from None
-    connection.settimeout(timeout)
     try:
+        connection.settimeout(remaining_seconds(deadline))
         connection.sendall(line)
         # The reader takes the cap plus one byte, so a service that writes
         # bytes and no newline meets the cap rather than growing a buffer
         # until the child dies.
+        connection.settimeout(remaining_seconds(deadline))
         stream = connection.makefile("rb")
         reply = stream.readline(SERVICE_LINE_BYTE_CAP + 1)
     except (OSError, socket.timeout) as error:
         raise ServiceUnavailable(
             "the image service answered no reply inside the "
-            f"{timeout:g} second tool deadline: {error.__class__.__name__}"
+            f"{timeout_seconds:g} second tool deadline: {error.__class__.__name__}"
         ) from None
     if not reply:
         raise ServiceUnavailable(
@@ -502,11 +510,11 @@ def clip_service_error(value):
 def require_provenance(reply):
     """Return the digest and provenance route of a completed artifact.
 
-    `image_protocol.validate_response` derives the route from the digest and
-    admits one spelling of it, so the identity in the transcript and the
-    location the page resolves are the same value read twice. The reply carries
-    no origin, so the page resolves the route against the artifact listener it
-    already holds a credential for.
+    `image_protocol.validate_response` requires independent content-addressed
+    routes for the PNG and its job provenance. Repeated PNG bytes can therefore
+    retain multiple immutable records. The reply carries no origin, so the page
+    resolves the route against the artifact listener it already holds a
+    credential for.
     """
     try:
         image_protocol.validate_response(reply, control_reply=True)
@@ -550,7 +558,7 @@ def read_reply(reply, request_id):
     return require_provenance(reply)
 
 
-def audit_row(settings, arguments, status, started_at):
+def audit_row(settings, arguments, status, started_monotonic):
     """Return the trail row one generation writes.
 
     The row carries the prompt digest rather than the prompt and the artifact
@@ -569,11 +577,11 @@ def audit_row(settings, arguments, status, started_at):
             else ""
         ),
         "domains": "",
-        "result_count": 1,
+        "result_count": 1 if status == "success" else 0,
         "fetched_host": "",
         "provider_bytes": 0,
         "returned_characters": 0,
-        "latency_ms": int((now - started_at) * 1000),
+        "latency_ms": int((time.monotonic() - started_monotonic) * 1000),
         "status": status,
         "recorded_epoch": int(now),
     }
@@ -591,22 +599,34 @@ def call_generate(settings, raw):
     twice.
     """
     started_at = time.time()
-    require_configuration(settings)
-    arguments = parse_arguments(raw)
-    signing_key = web_server.read_secret_file(
-        settings["token_key_file"], "token signing"
-    )
-    claim = image_grant.verify_image_grant(
-        signing_key, arguments["authorization"], started_at
-    )
-    image_grant.enforce_image_authorization(
-        claim, settings["language_profile"], settings["profile"], arguments
-    )
-    request_id = web_server.base64url_encode(secrets.token_bytes(REQUEST_ID_BYTES))
+    started_monotonic = time.monotonic()
+    deadline = started_monotonic + settings["timeout_seconds"]
+    arguments = None
+    claim = None
     ledger = web_server.Ledger(settings["state_dir"])
     connection = None
     try:
-        connection = connect_service(settings, settings["timeout_seconds"])
+        require_configuration(settings)
+        arguments = parse_arguments(raw)
+        signing_key = web_server.read_secret_file(
+            settings["token_key_file"], "token signing"
+        )
+        claim = image_grant.verify_image_grant(
+            signing_key, arguments["authorization"], started_at
+        )
+        image_grant.enforce_image_authorization(
+            claim, settings["language_profile"], settings["profile"], arguments
+        )
+        request_id = web_server.base64url_encode(secrets.token_bytes(REQUEST_ID_BYTES))
+        job_request = service_request(settings, arguments, request_id)
+        try:
+            image_protocol.validate_request(job_request)
+            image_protocol.encode_line(job_request)
+        except image_protocol.ProtocolError as breach:
+            raise web_server.InvalidArgument(
+                f"the job leaves the image protocol: {breach}"
+            ) from None
+        connection = connect_service(settings, deadline)
         ledger.consume_grant(
             claim["grant_id"],
             settings["profile"],
@@ -616,15 +636,18 @@ def call_generate(settings, raw):
         )
         reply = exchange(
             connection,
-            service_request(settings, arguments, request_id),
+            job_request,
+            deadline,
             settings["timeout_seconds"],
         )
         digest, url = read_reply(reply, request_id)
     except web_server.ToolError as error:
-        ledger.record(audit_row(settings, arguments, error.status, started_at))
+        ledger.record(
+            audit_row(settings, arguments, error.status, started_monotonic)
+        )
         raise
     else:
-        ledger.record(audit_row(settings, arguments, "success", started_at))
+        ledger.record(audit_row(settings, arguments, "success", started_monotonic))
     finally:
         if connection is not None:
             connection.close()

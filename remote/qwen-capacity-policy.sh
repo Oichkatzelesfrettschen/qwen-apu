@@ -685,11 +685,14 @@ fi
 router_presets=${QWEN_ROUTER_PRESETS:-"${HOME:?}/qwen-webui-state/router-presets.ini"}
 router_registry=${QWEN_MODEL_REGISTRY:-"$script_directory/models.tsv"}
 router_quarantine_registry=${QWEN_QUARANTINE_REGISTRY:-$script_directory/quarantine.tsv}
+router_draft_pair_registry=${QWEN_DRAFT_PAIRS:-$script_directory/draft-pairs.tsv}
 router_model_root=${QWEN_MODEL_ROOT:-"${HOME:?}/models"}
 router_web_profiles_environment=${QWEN_WEB_PROFILES:-}
 router_web_profiles=$script_directory/web-profiles.tsv
 router_web_profiles_guard_path=-
 router_web_profiles_guard_sha256=-
+router_draft_pair_guard_path=-
+router_draft_pair_guard_sha256=-
 router_max=${QWEN_ROUTER_MAX:-1}
 router_preset_expected_sha256=${QWEN_ROUTER_PRESET_SHA256:-}
 verify_router_preset_identity() {
@@ -1019,6 +1022,11 @@ if [ "$router_enabled" = 1 ]; then
         'router model registry' "$router_registry") || exit 2
     router_quarantine_guard_sha256=$(measure_router_authority_identity \
         'router quarantine registry' "$router_quarantine_registry") || exit 2
+    if [ "$web_presets_from_preset" != 1 ]; then
+        router_draft_pair_guard_path=$router_draft_pair_registry
+        router_draft_pair_guard_sha256=$(measure_router_authority_identity \
+            'router draft-pair ledger' "$router_draft_pair_registry") || exit 2
+    fi
     validate_current_router_authorities || exit 2
     quarantine_override_from_environment=${QWEN_ROUTER_INCLUDE_QUARANTINE:-0}
     case $quarantine_override_from_environment in
@@ -1264,6 +1272,8 @@ fi
 # the child executing the graphs opens the lock; the router parent leaves
 # server_context uninitialised and opens nothing.
 workload_lease_state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
+mkdir -p -- "$workload_lease_state_directory"
+chmod 700 -- "$workload_lease_state_directory"
 export QWEN_VULKAN_WORKLOAD_LOCK="$workload_lease_state_directory/vulkan-workload.lock"
 printf 'vulkan_workload_lease path=%s\n' "$QWEN_VULKAN_WORKLOAD_LOCK"
 
@@ -1279,6 +1289,7 @@ if [ "$router_enabled" = 1 ]; then
         "$router_presets" "$router_preset_guard_sha256" \
         "$router_registry" "$router_registry_guard_sha256" \
         "$router_quarantine_registry" "$router_quarantine_guard_sha256" \
+        "$router_draft_pair_guard_path" "$router_draft_pair_guard_sha256" \
         "$router_web_profiles_guard_path" \
         "$router_web_profiles_guard_sha256" \
         "$@"

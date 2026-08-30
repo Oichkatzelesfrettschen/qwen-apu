@@ -75,6 +75,7 @@ REVIEW_MAX_TOKENS = 400
 # read here so a route that answers with something other than an artifact is
 # bounded by the same number on both sides.
 ARTIFACT_BYTE_CAP = 64 * 1024 * 1024
+PROVENANCE_BYTE_CAP = 64 * 1024
 VERDICT_KEYS = (
     "hard_constraints",
     "composition_change_required",
@@ -359,6 +360,48 @@ def fetch_artifact_png(artifact_origin, digest, api_key, timeout=REVIEW_TIMEOUT_
     return body
 
 
+def fetch_artifact_provenance(artifact_origin, digest, api_key,
+                              timeout=REVIEW_TIMEOUT_SECONDS):
+    """Read the artifact's provenance and bind its prompt to the PNG digest."""
+    if not DIGEST_PATTERN.match(digest):
+        raise ReviewRefused("bad_digest", "an artifact is named by 64 lowercase hex digits")
+    url = f"{artifact_origin.rstrip('/')}/artifacts/{digest}.json"
+    request = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read(PROVENANCE_BYTE_CAP + 1)
+    except urllib.error.HTTPError as error:
+        raise ReviewRefused(
+            "provenance_http_error",
+            f"the provenance route answered HTTP {error.code}") from error
+    except OSError as error:
+        raise ReviewRefused(
+            "provenance_unreachable",
+            f"the provenance route is unreachable: {error}") from error
+    if len(body) > PROVENANCE_BYTE_CAP:
+        raise ReviewRefused(
+            "provenance_too_large",
+            f"the provenance route answered past {PROVENANCE_BYTE_CAP} bytes")
+    try:
+        provenance = json.loads(body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ReviewRefused(
+            "provenance_invalid", "the provenance route returned invalid JSON") from error
+    if not isinstance(provenance, dict):
+        raise ReviewRefused("provenance_invalid", "the provenance record is no object")
+    if provenance.get("png_sha256") != digest:
+        raise ReviewRefused(
+            "provenance_artifact_mismatch",
+            "the provenance record names another PNG digest")
+    recorded_prompt_hash = provenance.get("prompt_sha256")
+    if not isinstance(recorded_prompt_hash, str) or not DIGEST_PATTERN.match(
+            recorded_prompt_hash):
+        raise ReviewRefused(
+            "provenance_prompt_invalid",
+            "the provenance record names no canonical prompt digest")
+    return provenance
+
+
 def post_review(router_origin, api_key, payload, timeout=REVIEW_TIMEOUT_SECONDS):
     """Post one review request to the router and return the reply document."""
     body = json.dumps(payload).encode("utf-8")
@@ -503,7 +546,7 @@ def correction_admitted(verdict):
 
 def audit_line(model, digest, prompt_hash, constraint_names, verdict=None,
                wall_seconds=0.0, reasoning_emitted=False, refusal_code=None,
-               image_mode="real", swap_digest=None):
+               image_mode="real", swap_digest=None, schema_mode="response_format"):
     """Return one line of what happened, free of every image-derived string.
 
     `observation` and `prompt_delta` are text a model wrote after reading an
@@ -521,7 +564,7 @@ def audit_line(model, digest, prompt_hash, constraint_names, verdict=None,
         f"artifact={digest}",
         f"prompt_hash={prompt_hash}",
         f"constraints={len(constraint_names)}",
-        "schema_mode=response_format",
+        f"schema_mode={schema_mode}",
         f"image_mode={image_mode}",
         "swap_sha256=" + (swap_digest if swap_digest else "-"),
         f"wall_seconds={wall_seconds:.2f}",
@@ -566,66 +609,72 @@ def review_artifact(router_origin, artifact_origin, api_key, model, digest,
     bounds each operation rather than the call, so a swapped review spends it
     three times over in the worst case against a real review's twice.
     """
-    if not DIGEST_PATTERN.match(prompt_hash):
-        raise ReviewRefused(
-            "bad_prompt_hash", "a prompt hash is 64 lowercase hex digits")
-    if image_mode not in IMAGE_MODES:
-        raise ReviewRefused(
-            "bad_image_mode", "an image mode is one of " + ", ".join(IMAGE_MODES))
-    if image_mode == "swapped":
-        if not swap_digest:
-            raise ReviewRefused(
-                "swap_digest_absent", "a swapped review names a swap artifact")
-        if swap_digest == digest:
-            raise ReviewRefused(
-                "swap_digest_equal",
-                "a swapped review names an artifact other than the reviewed one")
-    elif swap_digest:
-        raise ReviewRefused(
-            "swap_digest_unused",
-            f"a {image_mode} review names no swap artifact")
     names = [name for name, _description in constraints]
-    reviewed_bytes = fetch_artifact_png(artifact_origin, digest, api_key, timeout)
-    if image_mode == "withheld":
-        sent_bytes = None
-    elif image_mode == "swapped":
-        # A listener that serves the reviewed artifact and refuses the swap one
-        # is a fact about the listener. Reporting it under the reviewed
-        # artifact's own refusal codes would read as the swapped arm refusing
-        # where the real arm parsed, which is the observation falsifier 4 of
-        # evidence/image-appliance/vision-review-control-design.md reserves for
-        # the model.
-        try:
-            sent_bytes = fetch_artifact_png(artifact_origin, swap_digest, api_key, timeout)
-        except ReviewRefused as refusal:
-            raise ReviewRefused(
-                "swap_" + refusal.code,
-                f"the swap artifact {swap_digest} failed its read: "
-                f"{refusal.message}") from refusal
-    else:
-        sent_bytes = reviewed_bytes
-    payload = build_review_request(model, sent_bytes, prompt_hash, constraints,
-                                   cache_prompt=cache_prompt)
     started = time.monotonic()
-    document = post_review(router_origin, api_key, payload, timeout)
-    wall_seconds = time.monotonic() - started
-    reasoning_emitted = False
-    raw_reply = None
+    schema_mode = "none"
     try:
-        message = reply_message(document)
-        reasoning_emitted = bool(message.get("reasoning_content"))
-        content = message.get("content")
-        raw_reply = content if isinstance(content, str) else None
-    except ReviewRefused:
-        pass
-    try:
+        if not DIGEST_PATTERN.match(prompt_hash):
+            raise ReviewRefused(
+                "bad_prompt_hash", "a prompt hash is 64 lowercase hex digits")
+        if image_mode not in IMAGE_MODES:
+            raise ReviewRefused(
+                "bad_image_mode", "an image mode is one of " + ", ".join(IMAGE_MODES))
+        if image_mode == "swapped":
+            if not swap_digest:
+                raise ReviewRefused(
+                    "swap_digest_absent", "a swapped review names a swap artifact")
+            if swap_digest == digest:
+                raise ReviewRefused(
+                    "swap_digest_equal",
+                    "a swapped review names an artifact other than the reviewed one")
+        elif swap_digest:
+            raise ReviewRefused(
+                "swap_digest_unused",
+                f"a {image_mode} review names no swap artifact")
+        reviewed_bytes = fetch_artifact_png(artifact_origin, digest, api_key, timeout)
+        provenance = fetch_artifact_provenance(
+            artifact_origin, digest, api_key, timeout)
+        if provenance["prompt_sha256"] != prompt_hash:
+            raise ReviewRefused(
+                "prompt_hash_mismatch",
+                "the supplied prompt hash differs from artifact provenance")
+        if image_mode == "withheld":
+            sent_bytes = None
+        elif image_mode == "swapped":
+            try:
+                sent_bytes = fetch_artifact_png(
+                    artifact_origin, swap_digest, api_key, timeout)
+            except ReviewRefused as refusal:
+                raise ReviewRefused(
+                    "swap_" + refusal.code,
+                    f"the swap artifact {swap_digest} failed its read: "
+                    f"{refusal.message}") from refusal
+        else:
+            sent_bytes = reviewed_bytes
+        payload = build_review_request(
+            model, sent_bytes, prompt_hash, constraints, cache_prompt=cache_prompt)
+        schema_mode = "response_format"
+        document = post_review(router_origin, api_key, payload, timeout)
+        wall_seconds = time.monotonic() - started
+        reasoning_emitted = False
+        raw_reply = None
+        try:
+            message = reply_message(document)
+            reasoning_emitted = bool(message.get("reasoning_content"))
+            content = message.get("content")
+            raw_reply = content if isinstance(content, str) else None
+        except ReviewRefused:
+            pass
         verdict = parse_verdict(document, names)
     except ReviewRefused as refusal:
-        refusal.audit = audit_line(
-            model, digest, prompt_hash, names, wall_seconds=wall_seconds,
-            reasoning_emitted=reasoning_emitted, refusal_code=refusal.code,
-            image_mode=image_mode, swap_digest=swap_digest)
-        refusal.raw_reply = raw_reply
+        if not hasattr(refusal, "audit"):
+            refusal.audit = audit_line(
+                model, digest, prompt_hash, names,
+                wall_seconds=time.monotonic() - started,
+                refusal_code=refusal.code, image_mode=image_mode,
+                swap_digest=swap_digest, schema_mode=schema_mode)
+        if "raw_reply" in locals():
+            refusal.raw_reply = raw_reply
         raise
     admitted, reason = correction_admitted(verdict)
     return {
@@ -705,6 +754,14 @@ def main(argv):
     parser.add_argument("--verdict-json", default="",
                         help="write the verdict record to this path")
     arguments = parser.parse_args(argv)
+
+    if arguments.verdict_json:
+        for stale_path in (arguments.verdict_json,
+                           raw_reply_sibling_path(arguments.verdict_json)):
+            try:
+                os.unlink(stale_path)
+            except FileNotFoundError:
+                pass
 
     # A swap digest and the swapped mode name each other, so either alone is an
     # argument error rather than a silently ignored field. A swap digest equal

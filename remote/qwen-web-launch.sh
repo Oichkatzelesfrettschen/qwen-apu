@@ -275,6 +275,105 @@ if [ -n "$review_section" ]; then
         printf 'regenerate the preset tree with remote/build-web-presets.sh\n' >&2
         exit 2
     fi
+    preset_validated_tuples=$(sed -n \
+        's/^# qwen_validated_tuples_path=//p' "$web_presets")
+    preset_validated_tuples_sha256=$(sed -n \
+        's/^# qwen_validated_tuples_sha256=//p' "$web_presets")
+    case $preset_validated_tuples in
+        /*) ;;
+        *)
+            printf 'review preset omits an absolute validated-tuple ledger path: %s\n' \
+                "$web_presets" >&2
+            exit 2
+            ;;
+    esac
+    if [ "${#preset_validated_tuples_sha256}" -ne 64 ]; then
+        printf 'review preset validated-tuple SHA-256 must hold 64 lowercase hexadecimal characters\n' >&2
+        exit 2
+    fi
+    case $preset_validated_tuples_sha256 in
+        *[!0-9a-f]*)
+            printf 'review preset validated-tuple SHA-256 must hold 64 lowercase hexadecimal characters\n' >&2
+            exit 2
+            ;;
+    esac
+    if [ -n "${QWEN_VALIDATED_TUPLES:-}" ] && \
+       [ "$QWEN_VALIDATED_TUPLES" != "$preset_validated_tuples" ]; then
+        printf 'QWEN_VALIDATED_TUPLES names %s where the review preset binds %s\n' \
+            "$QWEN_VALIDATED_TUPLES" "$preset_validated_tuples" >&2
+        exit 2
+    fi
+    if ! preset_validated_tuples_identity=$(sha256sum -- \
+            "$preset_validated_tuples"); then
+        printf 'validated-tuple ledger identity cannot be measured: %s\n' \
+            "$preset_validated_tuples" >&2
+        exit 2
+    fi
+    preset_validated_tuples_actual_sha256=${preset_validated_tuples_identity%% *}
+    if [ "$preset_validated_tuples_actual_sha256" != \
+            "$preset_validated_tuples_sha256" ]; then
+        printf 'validated-tuple ledger identity changed: expected %s, measured %s\n' \
+            "$preset_validated_tuples_sha256" \
+            "$preset_validated_tuples_actual_sha256" >&2
+        exit 2
+    fi
+    QWEN_VALIDATED_TUPLES=$preset_validated_tuples
+    export QWEN_VALIDATED_TUPLES
+
+    if ! review_tuple=$(awk -v wanted="$review_section" '
+        /^[[:space:]]*\[/ {
+            section = $0
+            sub(/^[[:space:]]*\[/, "", section)
+            sub(/\][[:space:]]*$/, "", section)
+            next
+        }
+        section != wanted { next }
+        {
+            separator = index($0, "=")
+            if (separator == 0) next
+            key = substr($0, 1, separator - 1)
+            value = substr($0, separator + 1)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+            if (key == "LLAMA_ARG_CTX_SIZE") depth = value
+            if (key == "LLAMA_ARG_BATCH") batch = value
+            if (key == "LLAMA_ARG_UBATCH") ubatch = value
+            if (key == "LLAMA_ARG_CACHE_TYPE_K") cache_k = value
+            if (key == "LLAMA_ARG_CACHE_TYPE_V") cache_v = value
+            if (key == "LLAMA_ARG_FLASH_ATTN") flash = value
+            if (key == "LLAMA_ARG_MMPROJ") projector = value
+            if (key == "LLAMA_ARG_MCP_SERVERS_CONFIG") configuration = value
+            if (key == "LLAMA_ARG_TAGS") tags = value
+        }
+        END {
+            if (projector == "" || configuration != "" ||
+                tags !~ /(^|,)review-only(,|$)/) exit 1
+            print depth "\t" batch "\t" ubatch "\t" cache_k "\t" cache_v "\t" flash
+        }
+    ' "$web_presets"); then
+        printf 'review section %s must carry review-only, a projector, and no MCP configuration\n' \
+            "$review_section" >&2
+        exit 2
+    fi
+    review_tuple_tab=$(printf '\t')
+    IFS=$review_tuple_tab read -r review_depth review_batch review_ubatch \
+        review_cache_k review_cache_v review_flash <<EOF
+$review_tuple
+EOF
+    if ! awk -F '\t' -v model="$review_section" -v depth="$review_depth" \
+        -v batch="$review_batch" -v ubatch="$review_ubatch" \
+        -v cache_k="$review_cache_k" -v cache_v="$review_cache_v" \
+        -v flash="$review_flash" '
+        $2 == model && $3 == "router-child" && $4 == depth &&
+        $5 == batch && $6 == ubatch && $7 == cache_k &&
+        $8 == cache_v && $9 == flash && $12 == "loaded" &&
+        $13 == "vulkan" && $14 == "validated" { found = 1 }
+        END { exit !found }
+    ' "$preset_validated_tuples"; then
+        printf 'review section %s carries no validated router-child Vulkan tuple with its projector loaded\n' \
+            "$review_section" >&2
+        exit 2
+    fi
     expected_section_count=2
 fi
 preset_section_count=$(grep -c '^\[[^]]*\]$' "$web_presets" || true)

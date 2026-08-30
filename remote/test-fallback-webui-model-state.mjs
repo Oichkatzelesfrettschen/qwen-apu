@@ -9,6 +9,7 @@ class FakeElement {
     this.checked = false;
     this.children = [];
     this.className = '';
+    this.dataset = {};
     this.hidden = false;
     this.listeners = new Map();
     this.scrollHeight = 0;
@@ -181,12 +182,15 @@ await flushPromises();
 // review-only row), so the props request below being for model A is this
 // rule choosing it rather than modelIds[0] happening to agree with it.
 const toolsProbeA = takeRequest(
-  request => request.url === './tools?model=model-A&autoload=true',
+  request => request.url === './tools?model=model-A',
   'model A tool probe');
-toolsProbeA.resolve(jsonResponse([], 200));
+toolsProbeA.resolve(jsonResponse([{
+  tool: 'web_search_exa',
+  definition: { function: { name: 'web_search_exa' } },
+}], 200));
 await flushPromises();
 const toolsProbeB = takeRequest(
-  request => request.url === './tools?model=model%20B%2F8k&autoload=true',
+  request => request.url === './tools?model=model%20B%2F8k',
   'model B tool probe');
 toolsProbeB.resolve(jsonResponse({ error: 'feature_disabled' }, 403));
 await flushPromises();

@@ -279,8 +279,13 @@ expect_refused(
     validate_response,
     completed_response(sha256="A" * 64, provenance_url="/artifacts/%s.json" % ("A" * 64)),
 )
+expect_accepted(
+    "completed_provenance_has_an_independent_digest",
+    validate_response,
+    completed_response(provenance_url="/artifacts/%s.json" % ("b" * 64)),
+)
 expect_refused(
-    "completed_url_disagrees_with_digest",
+    "completed_provenance_url_is_not_content_addressed",
     validate_response,
     completed_response(provenance_url="/artifacts/other.json"),
 )
@@ -330,6 +335,17 @@ expect_refused(
 # oversized line costs a length check rather than a parse.
 line = image_protocol.encode_line(generate_request())
 expect_accepted("round_trip_line", image_protocol.read_request, line)
+
+multibyte_request = generate_request(
+    prompt="\u00e9" * image_protocol.MAX_PROMPT_CHARACTERS
+)
+multibyte_line = image_protocol.encode_line(multibyte_request)
+if "\u00e9" not in multibyte_line or "\\u00e9" in multibyte_line:
+    report("multibyte_wire_form", False, "the encoder escaped admitted UTF-8")
+else:
+    expect_accepted(
+        "multibyte_wire_form", image_protocol.read_request, multibyte_line
+    )
 
 oversized = '{"protocol_version":1,"pad":"' + "x" * image_protocol.MAX_LINE_BYTES + '"}'
 try:

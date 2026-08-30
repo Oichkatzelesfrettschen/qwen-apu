@@ -11,10 +11,12 @@ were not retained. Artifact A is the fox
 (`17e452e6...`), artifact B the apple (`7c6b7565...`), prompt hash
 `c59aebad...`. The operator annotation names two declared constraints:
 `prompt_subject=one fox in a snowy field` and
-`background_plain=the background is plain and uncluttered`. Every
-arm sent `--no-prompt-cache`, temperature 0, 400 reply tokens, no `tools`
-key. `arms/` retains `summary.tsv`, `audit.log`, and the raw reply, stdout,
-stderr, and parsed verdict of each arm.
+`background_plain=the background is plain and uncluttered`. The annotation
+also states that every arm sent `--no-prompt-cache`, temperature 0, 400 reply
+tokens, and no `tools` key. The retained outputs prove neither those request
+settings nor the exact constraint descriptions transmitted on the wire.
+`arms/` retains `summary.tsv`, `audit.log`, and the raw reply, stdout, stderr,
+and parsed verdict of each arm.
 
 | arm | image sent | prompt_subject | background_plain | regenerate | prompt_delta | wall s |
 | --- | --- | --- | --- | --- | --- | ---: |
@@ -31,27 +33,30 @@ That endpoint agreement does not measure a real request at sequence positions
 four rows therefore describe the registered order alone; they do not isolate
 the intermediate differences as image effects.
 
-Falsifier 1 is not met on the subject constraint: with no pixels the model
-fails `prompt_subject` and names the absence. It is met on the background
-constraint, which the withheld arm passes with the same sentence the real arm
-writes. That equality is consistent with an answer derived from the constraint
-text, but the fixed-text sequence does not identify the answer's source.
+Under the operator-annotated constraint descriptions, Falsifier 1 is not met
+on the subject constraint: with no pixels the model fails `prompt_subject` and
+names the absence. The background field passes with the same sentence the real
+arm writes. That equality is consistent with an answer derived from a
+constraint description, but the retained records neither prove the description
+nor identify the answer's source.
 
-Falsifier 2 is met in its second form. The swapped arm's
-observation describes B -- a bitten red apple on white -- so the pixels reach
-the model, and the same verdict marks `prompt_subject` passed for "one fox in
-a snowy field". The row establishes an inconsistency between the observation
-and the flag. Every arm holds the constraint text fixed, while the same flag is
-false in the withheld arm and true in both image-bearing arms, so these data do
-not identify the cause of the flag or show that the flag follows the constraint
-text. One sequence from one served model id cannot authorize automatic
-regeneration.
+The swapped arm's observation describes B -- a bitten red apple on white -- so
+the pixels reach the model, and the same verdict records `prompt_subject` as
+passed. Those two retained fields establish an inconsistency only under the
+operator annotation that `prompt_subject` required one fox in a snowy field;
+the records omit the transmitted description and cannot establish the
+inconsistency independently. Under that annotation, Falsifier 2 is met in its
+second form. The field is false in the withheld arm and true in both
+image-bearing arms, so these data do not identify the cause of the field value
+or show that it follows constraint text. One sequence from one served model id
+cannot authorize automatic regeneration.
 
 ## Consequence for the page
 
-The CLI control uses `remote/image-review.py`, whose request carries a response
-schema and disables prompt caching. The page builds a different schema-free
-request, so this run establishes no page-driven reviewer behavior. In the page
+The CLI control script would carry a response schema and disable prompt caching
+when invoked through the registered template, but the retained run does not
+prove that invocation. The page builds a different schema-free request, so this
+run establishes no page-driven reviewer behavior. In the page
 implementation, a correction is admitted only when all three conditions hold:
 a constraint fails, `regenerate` is true, and `prompt_delta` is non-empty. The
 approval dialog remains the authority for an admitted proposal. A page-driven

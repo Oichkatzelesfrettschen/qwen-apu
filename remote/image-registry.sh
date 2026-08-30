@@ -236,6 +236,21 @@ validate_image_registries() {
             # authorization grant is checked against, so a request above it is
             # refused here rather than at the runtime argv.
             if (geometry_ok) {
+                if ($4 + 0 < 64 || $4 + 0 > 2048 || ($4 + 0) % 64 != 0) {
+                    reject(sprintf("%s: width %s is outside the protocol geometry", $1, $4))
+                }
+                if ($5 + 0 < 64 || $5 + 0 > 2048 || ($5 + 0) % 64 != 0) {
+                    reject(sprintf("%s: height %s is outside the protocol geometry", $1, $5))
+                }
+                if ($6 + 0 > 100) {
+                    reject(sprintf("%s: steps %s exceed the protocol maximum 100", $1, $6))
+                }
+                if ($9 + 0 > 100) {
+                    reject(sprintf("%s: max_steps %s exceed the protocol maximum 100", $1, $9))
+                }
+                if ($10 + 0 > 2048) {
+                    reject(sprintf("%s: max_dimension %s exceeds the protocol maximum 2048", $1, $10))
+                }
                 if ($4 + 0 > $10 + 0) {
                     reject(sprintf("%s: width %s exceeds max_dimension %s", $1, $4, $10))
                 }
@@ -407,7 +422,34 @@ EOF
 
 select_rows() {
     printf '%s\n' "$image_registry_rows" |
-        awk -F'\t' -v kind="$1" '$1 == kind { sub(/^[^\t]*\t/, ""); print }'
+        awk -F'\t' -v kind="$1" '
+            $1 == "model" {
+                model_rows[++model_count] = substr($0, index($0, "\t") + 1)
+                model_ids[model_count] = $2
+            }
+            $1 == "profile" {
+                profile_rows[++profile_count] = substr($0, index($0, "\t") + 1)
+                profile_ids[profile_count] = $2
+                profile_models[profile_count] = $3
+            }
+            $1 == "artifact" {
+                artifact_rows[++artifact_count] = substr($0, index($0, "\t") + 1)
+            }
+            $1 == "quarantine" && $3 == "model" { quarantined_model[$4] = 1 }
+            $1 == "quarantine" && $3 == "profile" { quarantined_profile[$4] = 1 }
+            END {
+                if (kind == "artifact") {
+                    for (row_index = 1; row_index <= artifact_count; row_index++) print artifact_rows[row_index]
+                } else if (kind == "model") {
+                    for (row_index = 1; row_index <= model_count; row_index++)
+                        if (!quarantined_model[model_ids[row_index]]) print model_rows[row_index]
+                } else if (kind == "profile") {
+                    for (row_index = 1; row_index <= profile_count; row_index++)
+                        if (!quarantined_profile[profile_ids[row_index]] &&
+                            !quarantined_model[profile_models[row_index]]) print profile_rows[row_index]
+                }
+            }
+        '
 }
 
 case $1 in
@@ -433,22 +475,32 @@ case $1 in
                     repository[$2] = $3
                     filename[$2] = $5
                     fetch_script[$2] = $10
+                    artifact_type[$2] = $9
                     next
                 }
                 $1 == "model" && $2 == model_id {
                     matched = 1
                     diffusion = $4
+                    selected_model = $2
                     split("diffusion vae text_encoder lora", slot_names, " ")
                     for (slot_index = 1; slot_index <= 4; slot_index++) {
                         slot_value = $(slot_index + 3)
                         if (slot_value == "-") { continue }
                         resolved = (slot_value == "packaged") ? diffusion : slot_value
-                        printf "%s\t%s\t%s\t%s\t%s\n", slot_names[slot_index], \
+                        component_count++
+                        component_resolved[component_count] = resolved
+                    }
+                }
+                $1 == "quarantine" && $3 == "model" { quarantined_model[$4] = 1 }
+                END {
+                    if (!matched || quarantined_model[selected_model]) exit 1
+                    for (component_index = 1; component_index <= component_count; component_index++) {
+                        resolved = component_resolved[component_index]
+                        printf "%s\t%s\t%s\t%s\t%s\n", artifact_type[resolved], \
                             resolved, repository[resolved], filename[resolved], \
                             fetch_script[resolved]
                     }
                 }
-                END { exit matched ? 0 : 1 }
             ' || {
                 printf 'no image model row matches %s\n' "$bundle_model_id" >&2
                 exit 1
@@ -468,6 +520,7 @@ case $1 in
                           "execution_policy validated_evidence review_model", \
                           names, " ")
                     matched = 1
+                    selected_model = $3
                     for (name_index = 1; name_index <= 14; name_index++) {
                         if (field == "") {
                             printf "%s=%s\n", names[name_index], $(name_index + 1)
@@ -477,8 +530,11 @@ case $1 in
                         }
                     }
                 }
+                $1 == "quarantine" && $3 == "model" { quarantined_model[$4] = 1 }
+                $1 == "quarantine" && $3 == "profile" { quarantined_profile[$4] = 1 }
                 END {
-                    if (!matched) { exit 1 }
+                    if (!matched || quarantined_profile[selector] ||
+                        quarantined_model[selected_model]) { exit 1 }
                     if (field != "" && !found) { exit 3 }
                 }
             '
