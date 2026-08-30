@@ -1,0 +1,49 @@
+arm_geometry	model=qwen38-2b-distill	context=24576	batch=128	ubatch=32	cache_k=q8_0	cache_v=q4_0	flash_attn=on
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=production-optimize	prompt=accumulator	scope=across-start	comparisons=2
+graph_alias_selfconsistent=divergent	model=qwen38-2b-distill	arm=production-optimize	prompt=accumulator	scope=within-start	sample=start-1-run-2	first_divergence=2
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=production-optimize	prompt=stack	scope=across-start	comparisons=2
+graph_alias_selfconsistent=divergent	model=qwen38-2b-distill	arm=production-optimize	prompt=stack	scope=within-start	sample=start-1-run-2	first_divergence=5
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=production-optimize	prompt=list-transform	scope=across-start	comparisons=2
+graph_alias_selfconsistent=divergent	model=qwen38-2b-distill	arm=production-optimize	prompt=list-transform	scope=within-start	sample=start-1-run-2	first_divergence=1
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=production-optimize	prompt=variable-trace	scope=across-start	comparisons=2
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=production-optimize	prompt=variable-trace	scope=within-start	comparisons=9
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=production-optimize	prompt=state-machine	scope=across-start	comparisons=2
+graph_alias_selfconsistent=divergent	model=qwen38-2b-distill	arm=production-optimize	prompt=state-machine	scope=within-start	sample=start-1-run-2	first_divergence=11
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=production-optimize	prompt=constraints	scope=across-start	comparisons=2
+graph_alias_selfconsistent=divergent	model=qwen38-2b-distill	arm=production-optimize	prompt=constraints	scope=within-start	sample=start-1-run-2	first_divergence=2
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=production-optimize-off	prompt=accumulator	scope=across-start	comparisons=2
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=production-optimize-off	prompt=accumulator	scope=within-start	comparisons=9
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=production-optimize-off	prompt=stack	scope=across-start	comparisons=2
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=production-optimize-off	prompt=stack	scope=within-start	comparisons=9
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=production-optimize-off	prompt=list-transform	scope=across-start	comparisons=2
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=production-optimize-off	prompt=list-transform	scope=within-start	comparisons=9
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=production-optimize-off	prompt=variable-trace	scope=across-start	comparisons=2
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=production-optimize-off	prompt=variable-trace	scope=within-start	comparisons=9
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=production-optimize-off	prompt=state-machine	scope=across-start	comparisons=2
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=production-optimize-off	prompt=state-machine	scope=within-start	comparisons=9
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=production-optimize-off	prompt=constraints	scope=across-start	comparisons=2
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=production-optimize-off	prompt=constraints	scope=within-start	comparisons=9
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=alias-optimize	prompt=accumulator	scope=across-start	comparisons=2
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=alias-optimize	prompt=accumulator	scope=within-start	comparisons=9
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=alias-optimize	prompt=stack	scope=across-start	comparisons=2
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=alias-optimize	prompt=stack	scope=within-start	comparisons=9
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=alias-optimize	prompt=list-transform	scope=across-start	comparisons=2
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=alias-optimize	prompt=list-transform	scope=within-start	comparisons=9
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=alias-optimize	prompt=variable-trace	scope=across-start	comparisons=2
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=alias-optimize	prompt=variable-trace	scope=within-start	comparisons=9
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=alias-optimize	prompt=state-machine	scope=across-start	comparisons=2
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=alias-optimize	prompt=state-machine	scope=within-start	comparisons=9
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=alias-optimize	prompt=constraints	scope=across-start	comparisons=2
+graph_alias_selfconsistent=identical	model=qwen38-2b-distill	arm=alias-optimize	prompt=constraints	scope=within-start	comparisons=9
+graph_alias_ab=identical	model=qwen38-2b-distill	arm=production-optimize	prompt=accumulator	reference_arm=production-optimize-off
+graph_alias_ab=divergent	model=qwen38-2b-distill	arm=production-optimize	prompt=stack	reference_arm=production-optimize-off	first_divergence=2
+graph_alias_ab=divergent	model=qwen38-2b-distill	arm=production-optimize	prompt=list-transform	reference_arm=production-optimize-off	first_divergence=1
+graph_alias_ab=divergent	model=qwen38-2b-distill	arm=production-optimize	prompt=variable-trace	reference_arm=production-optimize-off	first_divergence=2
+graph_alias_ab=divergent	model=qwen38-2b-distill	arm=production-optimize	prompt=state-machine	reference_arm=production-optimize-off	first_divergence=2
+graph_alias_ab=divergent	model=qwen38-2b-distill	arm=production-optimize	prompt=constraints	reference_arm=production-optimize-off	first_divergence=14
+graph_alias_ab=identical	model=qwen38-2b-distill	arm=alias-optimize	prompt=accumulator	reference_arm=production-optimize-off
+graph_alias_ab=identical	model=qwen38-2b-distill	arm=alias-optimize	prompt=stack	reference_arm=production-optimize-off
+graph_alias_ab=identical	model=qwen38-2b-distill	arm=alias-optimize	prompt=list-transform	reference_arm=production-optimize-off
+graph_alias_ab=divergent	model=qwen38-2b-distill	arm=alias-optimize	prompt=variable-trace	reference_arm=production-optimize-off	first_divergence=109
+graph_alias_ab=identical	model=qwen38-2b-distill	arm=alias-optimize	prompt=state-machine	reference_arm=production-optimize-off
+graph_alias_ab=identical	model=qwen38-2b-distill	arm=alias-optimize	prompt=constraints	reference_arm=production-optimize-off

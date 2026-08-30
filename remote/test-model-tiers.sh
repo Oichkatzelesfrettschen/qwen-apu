@@ -179,7 +179,10 @@ for preset_key in $(sed -n 's/^\(LLAMA_ARG_[A-Z_]*\) *=.*/\1/p' "$presets" |
         LLAMA_ARG_MODEL | LLAMA_ARG_ALIAS | LLAMA_ARG_TAGS | \
         LLAMA_ARG_CTX_SIZE | LLAMA_ARG_CACHE_TYPE_K | LLAMA_ARG_CACHE_TYPE_V | \
         LLAMA_ARG_FLASH_ATTN | LLAMA_ARG_BATCH | LLAMA_ARG_UBATCH | \
-        LLAMA_ARG_MMPROJ) ;;
+        LLAMA_ARG_MMPROJ | LLAMA_ARG_SPEC_TYPE | LLAMA_ARG_SPEC_DRAFT_MODEL | \
+        LLAMA_ARG_SPEC_DRAFT_N_MAX | LLAMA_ARG_SPEC_DRAFT_P_MIN | \
+        LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K | LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V | \
+        LLAMA_ARG_N_GPU_LAYERS_DRAFT) ;;
         *)
             printf 'preset key is outside the llama-server vocabulary: %s\n' \
                 "$preset_key" >&2
@@ -374,6 +377,12 @@ fixture_quarantine=$work/quarantine-fixture.tsv
 fixture_reasons=$work/quarantine-fixture-reasons
 fixture_model_root=$work/quarantine-fixture-models
 fixture_presets=$work/quarantine-fixture.ini
+# A fixture registry replaces the model authority the pair ledger joins against,
+# so the fixture names its own pair ledger. An empty one is a valid ledger and
+# emits no pair section, which keeps this block measuring the quarantine rules
+# it was written for.
+fixture_pairs=$work/quarantine-fixture-pairs.tsv
+printf '# the quarantine fixture admits no draft pairing\n' >"$fixture_pairs"
 mkdir -p "$fixture_reasons" "$fixture_model_root/Hidden" \
     "$fixture_model_root/Profile" "$fixture_model_root/Archived"
 : >"$fixture_model_root/Hidden/model.gguf"
@@ -394,7 +403,7 @@ printf '%s\n' \
     >"$fixture_quarantine"
 QWEN_MODEL_REGISTRY=$fixture_registry QWEN_MODEL_ROOT=$fixture_model_root \
 QWEN_QUARANTINE_REGISTRY=$fixture_quarantine \
-QWEN_QUARANTINE_REASONS=$fixture_reasons \
+QWEN_QUARANTINE_REASONS=$fixture_reasons QWEN_DRAFT_PAIRS=$fixture_pairs \
     "$builder" "$fixture_presets" >"$work/quarantine-fixture.log"
 if ! grep -q '^\[' "$fixture_presets" &&
    [ -L "$fixture_model_root/quarantine/Hidden" ] &&
@@ -407,7 +416,7 @@ fi
 QWEN_MODEL_REGISTRY=$fixture_registry QWEN_MODEL_ROOT=$fixture_model_root \
 QWEN_QUARANTINE_REGISTRY=$fixture_quarantine \
 QWEN_QUARANTINE_REASONS=$fixture_reasons QWEN_ROUTER_INCLUDE_QUARANTINE=1 \
-QWEN_DEFAULT_MODEL_ID=hidden-model \
+QWEN_DEFAULT_MODEL_ID=hidden-model QWEN_DRAFT_PAIRS=$fixture_pairs \
     "$builder" "$fixture_presets" >"$work/quarantine-fixture-override.log"
 fixture_sections=$(awk -F'[][]' '/^\[/ { print $2 }' "$fixture_presets" | sort)
 hidden_tags=$(awk -F' = ' '
@@ -430,6 +439,81 @@ else
     report quarantine_registry_override rejected
     printf 'override tags hidden=%s profile=%s\n' \
         "$hidden_tags" "$profile_tags" >&2
+fi
+
+# A draft pairing reaches the picker as its own section carrying the target
+# row's whole six-key tuple beside the draft keys. The six env-named draft keys
+# are the set_env() names common/arg.cpp registers at the pinned build, and
+# spec-draft-device and spec-draft-override-tensor carry no env at all, so the
+# INI reaches them through the dash-stripped argument names common/preset.cpp
+# indexes beside every env name.
+pair_section=qwen38-2b-distill+qwen35-08b-draft
+read_pair_key() {
+    awk -F' = ' -v section="[$1]" -v key="$2" '
+        $0 == section { wanted = 1; next }
+        /^\[/ { wanted = 0 }
+        wanted && $1 == key { print $2; exit }
+    ' "$presets"
+}
+pair_target_context=$("$reader" id qwen38-2b-distill context_default)
+pair_target_batch=$("$reader" id qwen38-2b-distill batch)
+pair_draft_file=$("$reader" id qwen35-08b model_file)
+if printf '%s\n' "$section_ids" | grep -qx "$pair_section" &&
+   [ "$(read_pair_key "$pair_section" LLAMA_ARG_CTX_SIZE)" = \
+     "$pair_target_context" ] &&
+   [ "$(read_pair_key "$pair_section" LLAMA_ARG_BATCH)" = \
+     "$pair_target_batch" ] &&
+   [ "$(read_pair_key "$pair_section" LLAMA_ARG_SPEC_TYPE)" = draft-simple ] &&
+   [ "$(read_pair_key "$pair_section" LLAMA_ARG_SPEC_DRAFT_MODEL)" = \
+     "$model_root/$pair_draft_file" ] &&
+   [ "$(read_pair_key "$pair_section" LLAMA_ARG_SPEC_DRAFT_N_MAX)" = \
+     "$("$reader" draft-pair "$pair_section" spec_draft_n_max)" ] &&
+   [ "$(read_pair_key "$pair_section" LLAMA_ARG_N_GPU_LAYERS_DRAFT)" = all ] &&
+   [ "$(read_pair_key "$pair_section" spec-draft-device)" = Vulkan0 ]; then
+    report draft_pair_section_emitted accepted
+else
+    report draft_pair_section_emitted rejected
+fi
+
+# A pairing inherits both checkpoints' exclusions. A model-scope quarantine on
+# either half makes the ledger itself invalid, so preset generation stops and
+# names the row rather than dropping one serving option quietly; the operator
+# retires the pairing in the same edit that quarantines the checkpoint.
+pair_fixture_registry=$work/pair-fixture-models.tsv
+pair_fixture_quarantine=$work/pair-fixture-quarantine.tsv
+pair_fixture_pairs=$work/pair-fixture-pairs.tsv
+pair_fixture_reasons=$work/pair-fixture-reasons
+pair_fixture_root=$work/pair-fixture-models
+pair_fixture_presets=$work/pair-fixture.ini
+mkdir -p "$pair_fixture_reasons" "$pair_fixture_root/Target" \
+    "$pair_fixture_root/Draft"
+: >"$pair_fixture_root/Target/model.gguf"
+: >"$pair_fixture_root/Draft/model.gguf"
+: >"$pair_fixture_reasons/draft-record.md"
+printf '%s\n' \
+    'target-model	fixture	Target/model.gguf	fetch.sh	8192	8192	8192	q8_0	q4_0	on	none	-	-	-	untested	production	128	32	-	-	unmeasured	refused' \
+    'draft-model	fixture	Draft/model.gguf	fetch.sh	8192	8192	8192	q8_0	q4_0	on	none	-	-	-	untested	candidate	128	32	-	-	unmeasured	refused' \
+    >"$pair_fixture_registry"
+printf '%s\n' \
+    'draft-record	model	draft-model	device-lost	-	-	-	-	-	-	-	-	evidence/quarantine/draft-record.md	any' \
+    >"$pair_fixture_quarantine"
+printf '%s\n' \
+    'target-model+draft	target-model	draft-model	candidate	2	0.00	8192	q8_0	q4_0	-	fixture pairing' \
+    >"$pair_fixture_pairs"
+pair_fixture_status=0
+QWEN_MODEL_REGISTRY=$pair_fixture_registry QWEN_MODEL_ROOT=$pair_fixture_root \
+QWEN_QUARANTINE_REGISTRY=$pair_fixture_quarantine \
+QWEN_QUARANTINE_REASONS=$pair_fixture_reasons \
+QWEN_DRAFT_PAIRS=$pair_fixture_pairs \
+    "$builder" "$pair_fixture_presets" >"$work/pair-fixture.log" \
+    2>"$work/pair-fixture.err" || pair_fixture_status=$?
+if [ "$pair_fixture_status" -ne 0 ] &&
+   grep -q 'draft draft-model is excluded by model quarantine' \
+       "$work/pair-fixture.err"; then
+    report draft_pair_quarantined_draft_refused accepted
+else
+    report draft_pair_quarantined_draft_refused rejected
+    cat "$work/pair-fixture.err" >&2
 fi
 
 if [ "$failures" -eq 0 ]; then

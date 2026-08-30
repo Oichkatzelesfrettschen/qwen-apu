@@ -159,6 +159,15 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t
 registry_model=$temporary_directory/fabricated.gguf
 : >"$registry_model"
 router_model_root=$temporary_directory
+# The draft-pair ledger joins against the model registry, so the fabricated
+# registry names its own ledger. An empty one admits no pairing, which is what
+# every check below the pair block measures against; the pair checks name a
+# populated ledger on their own command lines.
+fabricated_draft_pairs=$temporary_directory/draft-pairs.tsv
+printf '# the fabricated registry admits no draft pairing\n' \
+    >"$fabricated_draft_pairs"
+QWEN_DRAFT_PAIRS=$fabricated_draft_pairs
+export QWEN_DRAFT_PAIRS
 QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_RADV_ICD=$fake_icd \
     QWEN_MODEL_ROOT=$router_model_root \
     QWEN_POLICY_TEST_OUTPUT=$cache_output \
@@ -1032,5 +1041,144 @@ case $quarantine_geometry in
         exit 1
         ;;
 esac
+
+# A draft-pair section names a pair_id rather than a registry id, so the policy
+# resolves it through remote/draft-pairs.tsv to the target row and compares the
+# six tuple keys against that row and the nine draft keys against the pair row.
+# A preset persists across a ledger edit, so a draft key that no longer matches
+# the ledger refuses the launch rather than serving a draft nobody admitted.
+pair_registry=$temporary_directory/pair-models.tsv
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    pair-target research pair-target.gguf download-qwen38-4b-distill-q4km.sh \
+    4096 8192 8192 q5_1 iq4_nl auto none - - - untested candidate 256 64 4096 - \
+    unmeasured refused \
+    >"$pair_registry"
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    pair-draft research pair-draft.gguf download-qwen35-08b-q80.sh \
+    4096 8192 8192 q5_1 iq4_nl auto none - - - untested candidate 256 64 4096 - \
+    unmeasured refused \
+    >>"$pair_registry"
+: >"$temporary_directory/pair-target.gguf"
+: >"$temporary_directory/pair-draft.gguf"
+populated_draft_pairs=$temporary_directory/populated-draft-pairs.tsv
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    pair-target+pair-draft pair-target pair-draft candidate 2 0.00 4096 \
+    q8_0 q4_0 - 'target plus draft' \
+    >"$populated_draft_pairs"
+write_pair_section() {
+    pair_section_file=$1
+    pair_section_n_max=$2
+    {
+        printf '[pair-target+pair-draft]\n'
+        printf 'LLAMA_ARG_MODEL = %s/pair-target.gguf\n' "$router_model_root"
+        printf 'LLAMA_ARG_CTX_SIZE = 4096\n'
+        printf 'LLAMA_ARG_CACHE_TYPE_K = q5_1\n'
+        printf 'LLAMA_ARG_CACHE_TYPE_V = iq4_nl\n'
+        printf 'LLAMA_ARG_FLASH_ATTN = auto\n'
+        printf 'LLAMA_ARG_BATCH = 256\n'
+        printf 'LLAMA_ARG_UBATCH = 64\n'
+        printf 'LLAMA_ARG_SPEC_TYPE = draft-simple\n'
+        printf 'LLAMA_ARG_SPEC_DRAFT_MODEL = %s/pair-draft.gguf\n' \
+            "$router_model_root"
+        printf 'LLAMA_ARG_SPEC_DRAFT_N_MAX = %s\n' "$pair_section_n_max"
+        printf 'LLAMA_ARG_SPEC_DRAFT_P_MIN = 0.00\n'
+        printf 'LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K = q8_0\n'
+        printf 'LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V = q4_0\n'
+        printf 'LLAMA_ARG_N_GPU_LAYERS_DRAFT = all\n'
+        printf 'spec-draft-device = Vulkan0\n'
+        printf 'spec-draft-override-tensor = .*=Vulkan0\n'
+    } >"$pair_section_file"
+}
+pair_presets=$temporary_directory/pair-presets.ini
+write_pair_section "$pair_presets" 2
+QWEN_MODEL_REGISTRY=$pair_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_DRAFT_PAIRS=$populated_draft_pairs QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$router_output \
+    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$pair_presets QWEN_ROUTER_MAX=1 \
+    "$policy" "$fake_server" "$temporary_directory/pair-target.gguf" 4096 18080
+
+pair_mismatch_presets=$temporary_directory/pair-mismatch.ini
+write_pair_section "$pair_mismatch_presets" 5
+if QWEN_MODEL_REGISTRY=$pair_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_DRAFT_PAIRS=$populated_draft_pairs QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$router_output \
+    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$pair_mismatch_presets \
+    "$policy" "$fake_server" "$temporary_directory/pair-target.gguf" 4096 18080 \
+    >"$temporary_directory/pair-mismatch.stdout" \
+    2>"$temporary_directory/pair-mismatch.stderr"; then
+    printf 'router accepted a draft length the pair ledger refuses\n' >&2
+    exit 1
+fi
+grep -F 'carries LLAMA_ARG_SPEC_DRAFT_N_MAX 5, the draft pair ledger admits 2' \
+    "$temporary_directory/pair-mismatch.stderr" >/dev/null
+
+# An ordinary section that gained a draft key loads a second checkpoint no
+# resident-set arithmetic counted, so the policy refuses it by the key alone.
+pair_stray_presets=$temporary_directory/pair-stray.ini
+: >"$pair_stray_presets"
+append_complete_router_section "$pair_stray_presets"
+printf 'LLAMA_ARG_SPEC_DRAFT_MODEL = %s/pair-draft.gguf\n' \
+    "$router_model_root" >>"$pair_stray_presets"
+if QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$router_output \
+    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$pair_stray_presets \
+    "$policy" "$fake_server" "$registry_model" 4096 18080 \
+    >"$temporary_directory/pair-stray.stdout" \
+    2>"$temporary_directory/pair-stray.stderr"; then
+    printf 'router accepted a draft key outside the pair ledger\n' >&2
+    exit 1
+fi
+grep -F 'carries LLAMA_ARG_SPEC_DRAFT_MODEL without a draft pair row' \
+    "$temporary_directory/pair-stray.stderr" >/dev/null
+
+# The context checkpoint count is a policy argument with a served default of
+# zero, so the fixed argv above already proves the default. An integer override
+# reaches the argv verbatim, the minimum step follows it only when named, and
+# a non-integer in either is refused before the server sees it.
+checkpoint_output=$temporary_directory/checkpoint-policy.out
+QWEN_CTX_CHECKPOINTS=4 QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$checkpoint_output \
+    "$policy" "$fake_server" "$model_path" 24576 8080
+checkpoint_arguments=$(sed -n 's/^argument=//p' "$checkpoint_output" | tr '\n' ' ')
+case $checkpoint_arguments in
+    *'--ctx-checkpoints 4 --cache-ram 0 --no-context-shift --offline --ctx-size '*) ;;
+    *)
+        printf 'the checkpoint override did not reach the argv: %s\n' \
+            "$checkpoint_arguments" >&2
+        exit 1
+        ;;
+esac
+case $checkpoint_arguments in
+    *'--checkpoint-min-step'*)
+        printf 'an unset minimum step reached the argv: %s\n' \
+            "$checkpoint_arguments" >&2
+        exit 1
+        ;;
+esac
+QWEN_CTX_CHECKPOINTS=8 QWEN_CHECKPOINT_MIN_STEP=4096 QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$checkpoint_output \
+    "$policy" "$fake_server" "$model_path" 24576 8080
+checkpoint_arguments=$(sed -n 's/^argument=//p' "$checkpoint_output" | tr '\n' ' ')
+case $checkpoint_arguments in
+    *'--ctx-checkpoints 8 '*'--offline --checkpoint-min-step 4096 --ctx-size '*) ;;
+    *)
+        printf 'the minimum step override did not reach the argv: %s\n' \
+            "$checkpoint_arguments" >&2
+        exit 1
+        ;;
+esac
+for refused_pair in 'QWEN_CTX_CHECKPOINTS=two' 'QWEN_CTX_CHECKPOINTS=-1' \
+    'QWEN_CHECKPOINT_MIN_STEP=8k'; do
+    if env "$refused_pair" QWEN_RADV_ICD=$fake_icd \
+        QWEN_POLICY_TEST_OUTPUT=$checkpoint_output \
+        "$policy" "$fake_server" "$model_path" 24576 8080 \
+        2>"$temporary_directory/checkpoint.stderr"; then
+        printf 'the policy accepted a non-integer checkpoint setting: %s\n' \
+            "$refused_pair" >&2
+        exit 1
+    fi
+    grep -F 'must be a non-negative integer' \
+        "$temporary_directory/checkpoint.stderr" >/dev/null
+done
 
 printf 'qwen_capacity_policy=accepted\n'
