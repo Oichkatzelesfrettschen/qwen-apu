@@ -12,19 +12,24 @@ different run.
 
 ## Falsifiers
 
-**Standalone generation survives Raven2 with zero hazard.** Falsified by any
-nonzero `ring_resets` or `gpu_faults`, a nonempty kernel delta, a nonzero
-generation exit status, or a device-refusal control that accepts an
-unresolvable backend name -- the last of which would mean the strict
-device-selection proof itself failed, so a passing cold or warm arm could not
-be read as strictly placed. Not falsified: `sdxs-512-a`, `sdxs-512-b`, and
-`sdxs-512-c` each complete both arms at `exit_status=0`, each of the twelve
-`*.dmesg.txt` files (six generation arms, three device-refusal controls run
-before them) is empty, every `ring_resets` and `gpu_faults` cell reads `0`,
-and every `device-refusal-control.log` records `new_sd_ctx_t failed` on the
-salted, unresolvable backend name -- the control the harness runs before every
-generation pair. `sdxs-512-a-resident-2b` and `sdxs-512-a-resident-4b` meet
-the same criterion with the router holding a checkpoint resident and idle.
+**Standalone generation survives Raven2 with zero detected generation-arm
+hazard.** Falsified by any nonzero `ring_resets` or `gpu_faults`, a nonempty
+generation-arm kernel delta, a nonzero generation exit status, or a
+device-refusal control that accepts an unresolvable backend name -- the last
+of which would mean the strict device-selection proof itself failed, so a
+passing cold or warm arm could not be read as strictly placed. Not falsified:
+all ten cold and warm generation arms complete at `exit_status=0`; the ten
+retained `*.dmesg.txt` files are empty; every `ring_resets` and `gpu_faults`
+cell reads `0`; and all five `device-refusal-control.log` files record
+`new_sd_ctx_t failed` on the salted, unresolvable backend name.
+
+The refusal controls have no before-and-after kernel capture. A reset or fault
+during a control could occur before the following generation arm takes its
+`dmesg_before` snapshot and would remain outside these ten windows. The control
+logs therefore prove strict device refusal, while kernel-hazard coverage is
+limited to the ten generation arms. A future authentic rerun must capture and
+retain a kernel delta around each refusal control before this campaign can
+claim control-path kernel coverage.
 
 **A placement arm is compared inside one chain.** The repository's own
 throughput doctrine reads a comparison inside one sweep, where both arms met
@@ -150,29 +155,36 @@ digest alone is the record, per the coordinator's scope for this addendum.
 | 4B distill | warm | 1.65 | 4.05 | 3.53 | 9.25 | 6932780 | 457000 |
 
 Both `ring_resets` and `gpu_faults` read 0 in all four arms, and all four
-`*.dmesg.txt` files are empty, so co-residency introduces no hazard this
-campaign can detect. Every PNG digest in both directories equals
+`*.dmesg.txt` files are empty, so the image-generation windows contain no
+detected kernel hazard. Every PNG digest in both directories equals
 `a9491c82599937f9dd5320be4642366a35689c4794f450bb772fa298646ce143`, the
-standalone arm A digest, so a resident LLM checkpoint changes the timing of
-the image generation and not its output.
+standalone arm A digest, so the retained outputs are byte-identical across the
+standalone and resident sweeps.
 
-Against the standalone arm A baseline (7.55/7.35 s), the resident arms cost
-1.43-1.83 s more (8.98-9.46 s against 7.55-7.35 s), landing almost entirely in
-`vae_s`: 3.24-3.54 s resident against 2.11 s standalone, a 1.1-1.4 s
-increase, with `text_encoder_s` and `diffusion_s` within their own
-standalone-arm spread. `mem_available_min_kib` is lower here than in the
+The resident sweep reports `total_generate_s=8.98-9.46` and
+`vae_s=3.24-3.54`; the earlier standalone A sweep reports
+`total_generate_s=7.35-7.55` and `vae_s=2.11`. Those observational ranges do
+not measure an LLM-residency cost. The sweeps ran at different times, and only
+the resident sweep also carried a 16.5 GiB QEMU virtual machine, so elapsed
+time, VM load, and LLM residency changed together. `mem_available_min_kib` is
+lower here than in the
 `sdxs-512-a` directory above (7.94-8.15 GiB free with the 2B resident,
 6.09-6.61 GiB with the 4B resident) because the appliance also carried a
 16.5 GiB qemu virtual machine throughout this addendum's arms, which the
 `sdxs-512-a`/`b`/`c` directories did not; the floors here describe that
-machine state rather than what the appliance alone leaves free. `/health`
-answered before and after each of the four arms, and a chat completion driven
-against the resident checkpoint afterward decoded at 9.41 tok/s (2B) and
-3.32 tok/s (4B), so the router served correctly once the image process exited
-in every case. Co-residency at placement A is healthy at both checkpoint
-sizes measured, at a decoder-phase cost of about 1.1-1.4 s. The next levers
-this addendum leaves open: keeping the image runtime itself resident across
-jobs instead of reloading `sd-cli` per generation, and the shared
+machine state rather than what the appliance alone leaves free.
+
+The committed campaign contains no `/health` response, post-image chat
+response, or router log that supports the reported 9.41 tok/s and 3.32 tok/s
+observations. The retained files therefore establish successful image
+generation while a router checkpoint was resident; they do not establish
+post-image router health or throughput. That claim requires either the
+original response and router-log captures with pre-sanitization identities and
+provenance, or an authentic rerun that retains those captures beside each
+image arm. A contemporaneous, interleaved no-LLM control under the same VM and
+machine load is also required before assigning any timing delta to LLM
+residency. The next measured levers remain keeping the image runtime itself
+resident across jobs instead of reloading `sd-cli` per generation, and the shared
 `~/qwen-webui-state/vulkan-workload.lock` lease `CLAUDE.md` names as the
 mechanism that will eventually serialize image and LLM device work rather
 than leaving them merely observed to coexist.
@@ -216,4 +228,11 @@ carries `form-A.log`/`form-A.png` and `form-B.log`, the two invocation shapes
 that established `--model DIR --taesd VAE` ahead of the harness's own defaults.
 Every `/home/eirikr` path in every retained file reads `$HOME` per the
 repository's sanitization rule; no private hostname or MAC address appears in
-this campaign's output.
+this campaign's output. `evidence/PRE_SANITIZATION_SHA256SUMS` contains no
+source-host identity for these imported logs and telemetry files. Their Git
+copies remain hashable as retained files, but the repository cannot
+authenticate them back to the pre-sanitization source artifacts. That linkage
+requires the original source-host files and their provenance so their original
+SHA-256 values can be recorded, or an authentic rerun that records original
+hashes before producing the sanitized Git copies. Sanitized-file hashes must
+not be substituted for the missing original identities.

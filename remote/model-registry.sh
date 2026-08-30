@@ -321,6 +321,11 @@ validate_tuple_ledger() {
                 bad++
                 next
             }
+            if ($1 in known_model_ids) {
+                printf "%s: pair_id collides with model registry id\n", $1 \
+                    > "/dev/stderr"
+                bad++
+            }
             if (seen_id[$1]++) {
                 printf "duplicate tuple_id %s at row %d\n", $1, FNR \
                     > "/dev/stderr"
@@ -641,6 +646,10 @@ validate_draft_pair_ledger() {
             }
             if ($10 == "") {
                 printf "%s: validated_evidence is empty; write - for an unmeasured pairing\n", \
+                    $1 > "/dev/stderr"
+                bad++
+            } else if ($4 == "production" && $10 == "-") {
+                printf "%s: production pairing requires retained validated_evidence\n", \
                     $1 > "/dev/stderr"
                 bad++
             }

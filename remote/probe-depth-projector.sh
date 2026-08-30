@@ -46,7 +46,7 @@ fi
 # The projector-summary.tsv and wedge-metadata.tsv schema version. A metadata
 # file whose header carries no ledger_version field predates this field and is
 # refused rather than read as if version 1 described an unmarked format.
-ledger_version=1
+ledger_version=2
 
 model_id=$1
 output_directory=$2
@@ -70,6 +70,8 @@ evidence_root=${QWEN_PROJECTOR_EVIDENCE_ROOT:-evidence/depth-validation-32k-proj
 # The kernel-log reader is named rather than hardcoded so a harness test drives
 # the reset and fault accounting on a host whose own dmesg is restricted.
 dmesg_command=${QWEN_DMESG_COMMAND:-dmesg}
+priority_wrapper=${QWEN_PROJECTOR_PRIORITY_WRAPPER:-$script_directory/qwen-exec-idle-priority.sh}
+vulkan_profile_wrapper=${QWEN_PROJECTOR_VULKAN_WRAPPER:-$script_directory/radv-low-priority-env.sh}
 
 for numeric_setting_name in decode_tokens fill_margin_tokens server_port \
     ready_timeout_s arm_kill_after_s; do
@@ -135,6 +137,13 @@ if [ ! -x "$llama_server" ]; then
     printf 'llama-server is not executable: %s\n' "$llama_server" >&2
     exit 2
 fi
+for required_wrapper in "$priority_wrapper" "$vulkan_profile_wrapper"; do
+    if [ ! -x "$required_wrapper" ]; then
+        printf 'projector launch wrapper is not executable: %s\n' \
+            "$required_wrapper" >&2
+        exit 2
+    fi
+done
 if [ ! -f "$model_path" ]; then
     printf 'model is not a regular file: %s\n' "$model_path" >&2
     exit 2
@@ -169,6 +178,38 @@ fi
 if pgrep -x llama-server >/dev/null 2>&1 ||
    pgrep -x llama-bench >/dev/null 2>&1; then
     printf 'another llama process holds the device\n' >&2
+    exit 2
+fi
+
+# Refuse an occupied endpoint before creating evidence. The post-spawn check
+# below also proves that the process whose pid this harness owns holds the
+# listener, which closes the race between this bind probe and llama-server.
+if ! python3 - "$server_port" <<'PY'
+import socket
+import sys
+from pathlib import Path
+
+port = int(sys.argv[1])
+for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+    try:
+        lines = Path(table).read_text(encoding="ascii").splitlines()[1:]
+    except OSError:
+        continue
+    for line in lines:
+        fields = line.split()
+        if (len(fields) >= 4 and fields[3] == "0A" and
+                int(fields[1].rsplit(":", 1)[1], 16) == port):
+            raise SystemExit(1)
+with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        listener.bind(("127.0.0.1", port))
+    except OSError:
+        raise SystemExit(1)
+PY
+then
+    printf 'projector probe port is already occupied: 127.0.0.1:%s\n' \
+        "$server_port" >&2
     exit 2
 fi
 
@@ -225,14 +266,16 @@ fi
 # re-encodes a fixture to different bytes with identical pixels across hosts
 # and a byte digest would refuse a legitimate resume.
 metadata=$output_directory/wedge-metadata.tsv
-metadata_header='ledger_version	model_id	model_sha256	model_bytes	projector_sha256	projector_bytes	cache_k	cache_v	flash_attn	batch	ubatch	decode_tokens	fill_margin	control_fixture	control_answer'
+metadata_header='ledger_version	model_id	model_sha256	model_bytes	projector_sha256	projector_bytes	cache_k	cache_v	flash_attn	batch	ubatch	decode_tokens	fill_margin	control_fixture	control_answer	control_prompt_sha256'
 model_sha256=$(nice -n 19 sha256sum "$model_path")
 model_sha256=${model_sha256%% *}
 model_bytes=$(stat -c %s -- "$model_path")
 projector_sha256=$(nice -n 19 sha256sum "$projector_path")
 projector_sha256=${projector_sha256%% *}
 projector_bytes=$(stat -c %s -- "$projector_path")
-metadata_row="$ledger_version	$model_id	$model_sha256	$model_bytes	$projector_sha256	$projector_bytes	$cache_type_k	$cache_type_v	$flash_attention	$batch_size	$ubatch_size	$decode_tokens	$fill_margin_tokens	$control_fixture	$control_answer"
+control_prompt_sha256=$(printf '%s' "$control_prompt" | sha256sum)
+control_prompt_sha256=${control_prompt_sha256%% *}
+metadata_row="$ledger_version	$model_id	$model_sha256	$model_bytes	$projector_sha256	$projector_bytes	$cache_type_k	$cache_type_v	$flash_attention	$batch_size	$ubatch_size	$decode_tokens	$fill_margin_tokens	$control_fixture	$control_answer	$control_prompt_sha256"
 if [ -s "$metadata" ]; then
     if [ "$(sed -n '1p' "$metadata")" != "$metadata_header" ] ||
        [ "$(sed -n '2p' "$metadata")" != "$metadata_row" ] ||
@@ -249,13 +292,19 @@ else
     printf '%s\n%s\n' "$metadata_header" "$metadata_row" >"$metadata"
 fi
 
-# projector-identity.tsv is provenance rather than a resume gate: one row per
-# invocation naming the tool, fixture, and driver versions an arm ran under,
-# appended rather than validated. Absent evidence reads `-`.
+# projector-identity.tsv records one immutable invocation digest per run. Each
+# arm stores that digest in its own sidecar, so resume accepts an arm only when
+# the server, runner, sampler, fixture, wrappers, driver observations, and
+# profile still match the invocation that produced it. Absent evidence reads
+# `-` and remains part of the digest rather than becoming a wildcard.
 identity=$output_directory/projector-identity.tsv
-identity_header='run_utc	llama_server_sha256	llama_cpp_commit	runner_sha256	sampler_sha256	control_image_sha256	kernel_release	mesa_radv_version	amdgpu_module_version	vulkan_profile	argv'
+identity_header='run_utc	invocation_sha256	llama_server_sha256	llama_cpp_commit	runner_sha256	sampler_sha256	control_image_sha256	priority_wrapper_sha256	vulkan_wrapper_sha256	kernel_release	mesa_radv_version	amdgpu_module_version	vulkan_profile	argv'
 if [ ! -s "$identity" ]; then
     printf '%s\n' "$identity_header" >"$identity"
+elif [ "$(sed -n '1p' "$identity")" != "$identity_header" ]; then
+    printf 'projector identity header is incompatible with this harness: %s\n' \
+        "$identity" >&2
+    exit 2
 fi
 llama_server_sha256=$(nice -n 19 sha256sum "$llama_server")
 llama_server_sha256=${llama_server_sha256%% *}
@@ -268,6 +317,10 @@ if [ -r "$clock_sampler" ]; then
 fi
 control_image_sha256=$(nice -n 19 sha256sum "$control_image")
 control_image_sha256=${control_image_sha256%% *}
+priority_wrapper_sha256=$(sha256sum "$priority_wrapper")
+priority_wrapper_sha256=${priority_wrapper_sha256%% *}
+vulkan_wrapper_sha256=$(sha256sum "$vulkan_profile_wrapper")
+vulkan_wrapper_sha256=${vulkan_wrapper_sha256%% *}
 llama_cpp_commit=-
 if server_version_output=$(timeout 5s "$llama_server" --version 2>&1); then
     parsed_commit=$(printf '%s\n' "$server_version_output" |
@@ -288,11 +341,18 @@ if command -v modinfo >/dev/null 2>&1; then
     [ -z "$parsed_module" ] || amdgpu_module_version=$parsed_module
 fi
 identity_argv=$(printf '%s ' "$0" "$@" | tr '\t\n' '  ')
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$llama_server_sha256" "$llama_cpp_commit" \
-    "$runner_sha256" "$sampler_sha256" "$control_image_sha256" \
-    "$kernel_release" "$mesa_radv_version" "$amdgpu_module_version" \
-    "${QWEN_VULKAN_PROFILE:-unset}" "$identity_argv" >>"$identity"
+invocation_identity_sha256=$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$llama_server_sha256" "$llama_cpp_commit" "$runner_sha256" \
+    "$sampler_sha256" "$control_image_sha256" "$priority_wrapper_sha256" \
+    "$vulkan_wrapper_sha256" "$kernel_release" "$mesa_radv_version" \
+    "$amdgpu_module_version" low-serialized | sha256sum)
+invocation_identity_sha256=${invocation_identity_sha256%% *}
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$invocation_identity_sha256" \
+    "$llama_server_sha256" "$llama_cpp_commit" "$runner_sha256" \
+    "$sampler_sha256" "$control_image_sha256" "$priority_wrapper_sha256" \
+    "$vulkan_wrapper_sha256" "$kernel_release" "$mesa_radv_version" \
+    "$amdgpu_module_version" low-serialized "$identity_argv" >>"$identity"
 
 # A killed run otherwise leaves the server holding the device, the sampler
 # writing once a second into a file the next run recreates, and a dmesg reader
@@ -424,6 +484,7 @@ classify_hazard() {
     fi
     if grep -qiE 'device lost|VK_ERROR_DEVICE_LOST' "$hazard_server_log" \
         2>/dev/null; then
+        hazard_classes=${hazard_classes:+$hazard_classes,}device-lost
         if { [ "$hazard_resets" = unavailable ] || [ "$hazard_resets" -eq 0 ]; } &&
            { [ "$hazard_faults" = unavailable ] || [ "$hazard_faults" -eq 0 ]; }; then
             hazard_classes=${hazard_classes:+$hazard_classes,}device-lost-without-kernel-record
@@ -446,7 +507,8 @@ start_server() {
     start_depth=$1
     start_log=$2
     env LLAMA_NO_CPU_FALLBACK=1 DISPLAY= WAYLAND_DISPLAY= \
-        nice -n 19 ionice -c 3 "$llama_server" \
+        QWEN_VULKAN_PROFILE=low-serialized \
+        "$priority_wrapper" "$vulkan_profile_wrapper" "$llama_server" \
         --model "$model_path" \
         --mmproj "$projector_path" \
         --alias "$model_id" \
@@ -476,12 +538,53 @@ start_server() {
     server_pid=$!
 }
 
+listener_owned_by_server() {
+    python3 - "$server_pid" "$server_port" <<'PY'
+import os
+import pathlib
+import sys
+
+pid = int(sys.argv[1])
+port = int(sys.argv[2])
+owned = set()
+try:
+    for descriptor in pathlib.Path(f"/proc/{pid}/fd").iterdir():
+        try:
+            target = os.readlink(descriptor)
+        except OSError:
+            continue
+        if target.startswith("socket:[") and target.endswith("]"):
+            owned.add(target[8:-1])
+except OSError:
+    raise SystemExit(1)
+
+listeners = set()
+for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+    try:
+        lines = pathlib.Path(table).read_text(encoding="ascii").splitlines()[1:]
+    except OSError:
+        continue
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 10 or fields[3] != "0A":
+            continue
+        if int(fields[1].rsplit(":", 1)[1], 16) == port:
+            listeners.add(fields[9])
+raise SystemExit(0 if owned & listeners else 1)
+PY
+}
+
 wait_for_server() {
     wait_elapsed=0
     while [ "$wait_elapsed" -lt "$ready_timeout_s" ]; do
         if curl --silent --fail --max-time 5 \
             "http://127.0.0.1:$server_port/health" >/dev/null 2>&1; then
-            return 0
+            if listener_owned_by_server; then
+                return 0
+            fi
+            printf 'healthy listener on port %s is not owned by server pid %s\n' \
+                "$server_port" "$server_pid" >&2
+            return 1
         fi
         if ! kill -0 "$server_pid" 2>/dev/null; then
             return 1
@@ -501,18 +604,26 @@ run_arm() {
     arm_samples=$output_directory/$arm_label.clocks.tsv
     arm_kernel=$output_directory/$arm_label.dmesg.txt
     arm_requests=$output_directory/$arm_label.requests.txt
+    arm_identity=$output_directory/$arm_label.identity.sha256
     arm_timeout_s=${QWEN_PROJECTOR_ARM_TIMEOUT_S:-$((300 + arm_depth / 2))}
 
     recorded_count=$(awk -F'\t' -v label="$arm_label" \
         'NR > 1 && $1 == label { count++ } END { print count + 0 }' "$summary")
     if [ "$recorded_count" -eq 1 ]; then
-        for retained_artifact in "$arm_log" "$arm_samples" "$arm_requests"; do
+        for retained_artifact in "$arm_log" "$arm_samples" "$arm_requests" \
+            "$arm_identity"; do
             if [ ! -f "$retained_artifact" ]; then
                 printf 'recorded arm %s is missing retained artifact: %s\n' \
                     "$arm_label" "$retained_artifact" >&2
                 exit 2
             fi
         done
+        if [ "$(sed -n '1p' "$arm_identity")" != "$invocation_identity_sha256" ] ||
+           [ -n "$(sed -n '2p' "$arm_identity")" ]; then
+            printf 'recorded arm %s belongs to another invocation identity\n' \
+                "$arm_label" >&2
+            exit 2
+        fi
         recorded_status=$(awk -F'\t' -v label="$arm_label" \
             '$1 == label { print $10; exit }' "$summary")
         recorded_resets=$(awk -F'\t' -v label="$arm_label" \
@@ -570,6 +681,9 @@ run_arm() {
                 expected_health=healthy
             fi
         fi
+        case $recorded_hazard_class in
+            *device-lost*) expected_health=unhealthy ;;
+        esac
         if [ "$recorded_health" != "$expected_health" ]; then
             printf 'recorded arm %s carries health %s inconsistent with its status, control, resets, and faults (expected %s)\n' \
                 "$arm_label" "$recorded_health" "$expected_health" \
@@ -579,7 +693,8 @@ run_arm() {
         # A resumed arm restores the halt state the live path derives, so a
         # recorded failure stops the chain on the second invocation exactly as
         # it stopped it on the first.
-        if [ "$recorded_status" != ok ] || [ "$recorded_control_status" != ok ]; then
+        if [ "$recorded_status" != ok ] || [ "$recorded_control_status" != ok ] ||
+           [ "$recorded_health" = unhealthy ]; then
             device_corrupt=1
         fi
         printf 'arm_resume_skip label=%s status=%s resets=%s control=%s health=%s\n' \
@@ -587,7 +702,8 @@ run_arm() {
             "$recorded_control_status" "$recorded_health"
         return 0
     fi
-    for incomplete_artifact in "$arm_log" "$arm_samples" "$arm_requests"; do
+    for incomplete_artifact in "$arm_log" "$arm_samples" "$arm_requests" \
+        "$arm_identity"; do
         if [ -e "$incomplete_artifact" ]; then
             printf 'unrecorded arm %s has incomplete artifact; use a new output directory: %s\n' \
                 "$arm_label" "$incomplete_artifact" >&2
@@ -596,6 +712,7 @@ run_arm() {
     done
 
     active_arm_label=$arm_label
+    printf '%s\n' "$invocation_identity_sha256" >"$arm_identity"
     start_kernel_capture "$arm_kernel"
     kernel_before=unavailable
     [ "$kernel_capture_method" = follow ] || kernel_before=$(kernel_line_count)
@@ -641,6 +758,7 @@ run_arm() {
         fi
     else
         arm_status=server-unready
+        printf 'failure=server-unready\n' >"$arm_requests"
         printf 'server_unready label=%s log=%s\n' "$arm_label" "$arm_log" >&2
     fi
     stop_server
@@ -690,6 +808,9 @@ run_arm() {
     fi
     hazard_class=$(classify_hazard "$arm_kernel" "$arm_log" "$arm_resets" \
         "$arm_faults" "$control_status")
+    case $hazard_class in
+        *device-lost*) health=unhealthy ;;
+    esac
 
     printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\tloaded\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$arm_label" "$model_id" "$arm_depth" "$batch_size" "$ubatch_size" \
@@ -703,7 +824,8 @@ run_arm() {
         "$control_status" "$health" "$hazard_class"
     active_arm_label=''
 
-    if [ "$arm_status" != ok ] || [ "$control_status" != ok ]; then
+    if [ "$arm_status" != ok ] || [ "$control_status" != ok ] ||
+       [ "$health" = unhealthy ]; then
         printf 'arm_failed label=%s status=%s control=%s: the chain stops rather than measuring past a failed depth\n' \
             "$arm_label" "$arm_status" "$control_status" >&2
         device_corrupt=1
@@ -738,12 +860,15 @@ import json
 import mimetypes
 import os
 import sys
+import time
+import unicodedata
 import urllib.error
 import urllib.request
 
 endpoint = os.environ["QWEN_PROJECTOR_REQUEST_ENDPOINT"]
 depth = int(os.environ["QWEN_PROJECTOR_REQUEST_DEPTH"])
 timeout_s = int(os.environ["QWEN_PROJECTOR_REQUEST_TIMEOUT_S"])
+deadline = time.monotonic() + timeout_s
 image_path = os.environ["QWEN_PROJECTOR_REQUEST_IMAGE"]
 control_prompt = os.environ["QWEN_PROJECTOR_REQUEST_PROMPT"]
 control_answer = os.environ["QWEN_PROJECTOR_REQUEST_ANSWER"].lower()
@@ -758,12 +883,15 @@ PADDING_UNIT = ("The tide reaches the seawall at the equinox and withdraws "
 
 
 def post(route, payload):
+    remaining_s = deadline - time.monotonic()
+    if remaining_s <= 0:
+        raise TimeoutError("arm request deadline expired")
     request = urllib.request.Request(
         endpoint + route,
         data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"},
         method="POST")
-    with urllib.request.urlopen(request, timeout=timeout_s) as response:
+    with urllib.request.urlopen(request, timeout=remaining_s) as response:
         return json.loads(response.read().decode())
 
 
@@ -888,7 +1016,10 @@ else:
         reply += (choice.get("message") or {}).get("content") or ""
     reply = " ".join(reply.split())
     emit("control_answer", reply[:120] if reply else "-")
-    if control_answer in reply.lower():
+    normalized_reply = unicodedata.normalize("NFKC", reply).strip().casefold()
+    normalized_answer = unicodedata.normalize(
+        "NFKC", control_answer).strip().casefold()
+    if normalized_reply == normalized_answer:
         emit("control_status", "ok")
     else:
         emit("control_status", "answer-missing-declared-content")

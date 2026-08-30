@@ -21,17 +21,23 @@ easiest completion is agreement. The review is worth its 19.44 s of device time
 (`evidence/image-appliance/paired-review-admission/`) only under the first, so
 the hypothesis this design registers is that the verdict is caused by the image.
 
-## The four arms
+## The four conditions and four orders
 
-`remote/run-vision-review-control.sh` runs them in this order, each through
-`remote/image-review.py` against one router and one artifact listener:
+`remote/run-vision-review-control.sh` rotates four labeled conditions through
+four orders, each through `remote/image-review.py` against one router and one
+artifact listener:
 
 | Arm | `--image-mode` | Image the request carries |
 | --- | --- | --- |
-| `01-real` | `real` | artifact A, the reviewed one |
-| `02-withheld` | `withheld` | the multipart text part alone |
-| `03-swapped` | `swapped` | artifact B, under A's prompt hash and constraints |
-| `04-real-closing` | `real` | artifact A again |
+| `real-opening` | `real` | artifact A, the reviewed one |
+| `withheld` | `withheld` | the multipart text part alone |
+| `swapped` | `swapped` | artifact B, under A's prompt hash and constraints |
+| `real-closing` | `real` | artifact A again |
+
+The first order uses the table order. Each later order cyclically moves the
+first condition to the last position. The 16 retained rows therefore place
+each labeled condition once at each position; a mode difference is not bound
+to one request position.
 
 Every other request field is identical across the four: the same model, the same
 constraint declaration, the same prompt hash, temperature 0, `top_k` 1, seed 1,
@@ -43,19 +49,13 @@ reviewed artifact is read and hashed over its own route in all three modes, so
 `artifact_digest_mismatch` and the rest of `fetch_artifact_png`'s refusals hold
 for a control arm and the record's `artifact_sha256` stays a verified claim.
 
-The closing control exists because the three control arms sit at different
-positions in one request sequence. The request is greedy -- temperature 0,
-`top_k` 1, seed 1 -- and this tree measures greedy decoding on this backend as
-deterministic within a fixed sequence, so sampling noise is not what separates
-arm 1 from arm 4. What separates them is the three requests in between, and that
-effect is measured here already: `arith-05` answers 37 cold and 23 warm, one
-unrelated 300-token predecessor leaves it at 37, and the standing reading is
-that a one-row or two-row difference reports position in a sequence rather than
-capability. Arms 2 and 3 arrive at positions 2 and 3 of that same sequence, so a
-difference between either and arm 1 is confounded with position on arrival. Arm
-4 un-confounds it: its agreement with arm 1 licenses reading arms 2 and 3 as
-image effects, and it is the one arm whose value carries that license rather
-than a measurement of its own.
+Sequence position can change a verdict even under greedy decoding. The four
+cyclic orders counterbalance that measured nuisance variable: each labeled
+condition reaches each position once. A mode claim therefore compares the
+condition across positions and requires the same direction across orders.
+Fresh server state would isolate predecessor effects further; this design
+claims counterbalancing within one server session and does not claim fresh-state
+isolation.
 
 The prompt cache is what would break that reading, so every arm sends
 `cache_prompt` false. The four requests share their system instruction and text
@@ -92,14 +92,11 @@ carries the field.
    an image is a judgment no field states, so a reader settles this one against
    the retained `.verdict.json` and `.raw` files; the script reports counts and
    flags and grades no prose.
-3. **The opening and closing real arms disagree.** The two carry identical
-   requests under greedy decoding, so agreement is the expected observation and
-   is what licenses reading arms 2 and 3 as image effects. A `passed` count or a
-   verdict that moves between `01-real` and `04-real-closing` reports that the
-   four-arm run measures sequence position, and arms 2 and 3 then state nothing
-   about the image. The remedy runs one condition per fresh server state, or
-   mirrors the arm order the way a throughput sweep here does; adding arms
-   inside one sequence adds positions rather than removing the term.
+3. **The mode effect changes direction across orders.** Each labeled condition
+   reaches every sequence position. A withheld or swapped difference that
+   appears at one position and disappears or reverses at another remains
+   compatible with a predecessor or warm-state effect and does not establish
+   an image effect.
 4. **An arm refuses.** A refusal carries its code on the audit line and the
    summary reports `passed=-` with `status=refused:CODE`. A control arm that
    refuses where the real arm parsed is itself the finding: the two differ by
@@ -149,8 +146,8 @@ same subject tests nothing the constraints can separate.
 runs, so a re-run into a used directory cannot pair this run's refusal with the
 previous run's verdict record.
 
-The output directory retains four `.stdout` audit lines, four `.stderr` files,
-four `.verdict.json` records, four `.raw` replies, `audit.log`, and
+The output directory retains 16 `.stdout` audit lines, 16 `.stderr` files,
+16 `.verdict.json` records, 16 `.raw` replies, `audit.log`, and
 `summary.tsv`. That set plus a sanitized chain note is what an evidence
 directory beside this file carries once the run happens.
 
@@ -159,7 +156,7 @@ directory beside this file carries once the run happens.
 The arms run one vision checkpoint. `evidence/image-appliance/vision-review-design.md`
 names `qwen35-2b` as the control row inside one sweep, and repeating the four
 arms against it measures whether a withheld-arm result belongs to the review
-path or to one checkpoint. The four arms also run one constraint declaration; a
+path or to one checkpoint. The 16 arms also run one constraint declaration; a
 declaration loose enough for any image to satisfy produces the same summary as a
 model ignoring the pixels, and only falsifier 2's reading of the observations
 separates them.

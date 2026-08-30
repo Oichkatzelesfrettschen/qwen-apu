@@ -14,7 +14,7 @@ set -eu
 
 renice -n 19 -p $$ >/dev/null 2>&1 || true
 ionice -c 3 -p $$ >/dev/null 2>&1 || true
-build_jobs=${QWEN_BUILD_JOBS:-2}
+build_jobs=${QWEN_BUILD_JOBS:-$(getconf _NPROCESSORS_ONLN)}
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 source_directory=${1:-"${HOME:?}/src/stable-diffusion.cpp-qwen-apu"}
@@ -89,8 +89,31 @@ vulkan_summary_unrestricted=$($vulkaninfo_command --summary 2>&1) || {
     printf 'vulkaninfo --summary failed:\n%s\n' "$vulkan_summary_unrestricted" >&2
     exit 1
 }
+count_vulkan_devices() {
+    awk '/^GPU[0-9]+:$/ { count++ } END { print count + 0 }'
+}
+
+count_software_vulkan_devices() {
+    awk '
+        /^GPU[0-9]+:$/ {
+            if (in_device && software) { count++ }
+            in_device = 1
+            software = 0
+            next
+        }
+        in_device && /deviceName[[:space:]]*=/ &&
+            tolower($0) ~ /(llvmpipe|lavapipe)/ { software = 1 }
+        END {
+            if (in_device && software) { count++ }
+            print count + 0
+        }
+    '
+}
+
+unrestricted_devices=$(printf '%s\n' "$vulkan_summary_unrestricted" |
+    count_vulkan_devices)
 software_devices=$(printf '%s\n' "$vulkan_summary_unrestricted" |
-    grep -Eci 'llvmpipe|lavapipe' || true)
+    count_software_vulkan_devices)
 
 vulkan_summary=$(VK_DRIVER_FILES=$radv_icd VK_ICD_FILENAMES=$radv_icd \
     $vulkaninfo_command --summary 2>&1) || {
@@ -112,8 +135,24 @@ if ! printf '%s\n' "$vulkan_summary" | grep -Eq 'RADV RAVEN2'; then
     printf 'vulkaninfo --summary names no RADV RAVEN2 device:\n%s\n' "$vulkan_summary" >&2
     exit 1
 fi
+restricted_devices=$(printf '%s\n' "$vulkan_summary" | count_vulkan_devices)
+if [ "$restricted_devices" -ne 1 ]; then
+    printf 'the RADV ICD restriction enumerated %s device records, expected exactly 1:\n%s\n' \
+        "$restricted_devices" "$vulkan_summary" >&2
+    exit 1
+fi
 mesa_radv_version=$(printf '%s\n' "$vulkan_summary" |
-    awk -F': *' '/driverInfo/ { print $2; exit }')
+    awk -F'= *' '
+        /^GPU[0-9]+:$/ {
+            if (wanted && driver_info != "") { print driver_info; exit }
+            wanted = 0
+            driver_info = ""
+            next
+        }
+        /deviceName[[:space:]]*=/ && $0 ~ /RADV RAVEN2/ { wanted = 1 }
+        /driverInfo[[:space:]]*=/ { driver_info = $2 }
+        END { if (wanted && driver_info != "") print driver_info }
+    ' | head -n 1)
 [ -n "$mesa_radv_version" ] || mesa_radv_version=-
 
 vulkan_header_version=-
@@ -145,6 +184,7 @@ mkdir -p "$build_directory"
 # remote/build-llama-preset.sh names for llama.cpp production builds. Only
 # sd-cli is built; the Web UI-facing HTTP server under examples/server has no
 # consumer in this tree.
+cmake_flags='CMAKE_BUILD_TYPE=Release CMAKE_EXPORT_COMPILE_COMMANDS=ON SD_VULKAN=ON SD_BUILD_EXAMPLES=ON SD_CUDA=OFF SD_HIPBLAS=OFF SD_METAL=OFF SD_OPENCL=OFF SD_SYCL=OFF SD_MUSA=OFF SD_BUILD_SHARED_LIBS=OFF GGML_NATIVE=OFF GGML_CCACHE=OFF GGML_OPENMP=OFF GGML_BLAS=OFF'
 cmake -S "$source_directory" -B "$build_directory" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
@@ -155,7 +195,6 @@ cmake -S "$source_directory" -B "$build_directory" -G Ninja \
     -DSD_BUILD_SHARED_LIBS=OFF \
     -DGGML_NATIVE=OFF -DGGML_CCACHE=OFF -DGGML_OPENMP=OFF -DGGML_BLAS=OFF
 
-build_started=$(date +%s)
 cmake --build "$build_directory" --parallel "$build_jobs" --target sd-cli
 
 binary_path=$build_directory/bin/sd-cli
@@ -163,13 +202,15 @@ if [ ! -x "$binary_path" ]; then
     printf 'the build produced no sd-cli binary: %s\n' "$binary_path" >&2
     exit 1
 fi
-binary_mtime=$(stat -c %Y "$binary_path")
-if [ "$binary_mtime" -lt "$build_started" ]; then
-    printf 'sd-cli predates this build, a stale binary from an earlier configure: %s\n' \
-        "$binary_path" >&2
+binary_sha256=$(sha256sum "$binary_path" | awk '{ print $1 }')
+
+cmake_cache=$build_directory/CMakeCache.txt
+configured_c_compiler=$(awk -F= '/^CMAKE_C_COMPILER:FILEPATH=/ { print $2; exit }' "$cmake_cache")
+configured_cxx_compiler=$(awk -F= '/^CMAKE_CXX_COMPILER:FILEPATH=/ { print $2; exit }' "$cmake_cache")
+if [ -z "$configured_c_compiler" ] || [ -z "$configured_cxx_compiler" ]; then
+    printf 'configured compiler identities are absent from %s\n' "$cmake_cache" >&2
     exit 1
 fi
-binary_sha256=$(sha256sum "$binary_path" | awk '{ print $1 }')
 
 manifest_path=$build_directory/build-manifest.tsv
 {
@@ -180,15 +221,19 @@ manifest_path=$build_directory/build-manifest.tsv
     printf 'build_directory\t%s\n' "$build_directory"
     printf 'binary_path\t%s\n' "$binary_path"
     printf 'binary_sha256\t%s\n' "$binary_sha256"
-    printf 'compiler\t%s\n' "$(cc --version | head -n 1)"
+    printf 'c_compiler\t%s\n' "$configured_c_compiler"
+    printf 'c_compiler_version\t%s\n' "$("$configured_c_compiler" --version | head -n 1)"
+    printf 'cxx_compiler\t%s\n' "$configured_cxx_compiler"
+    printf 'cxx_compiler_version\t%s\n' "$("$configured_cxx_compiler" --version | head -n 1)"
     printf 'cmake_version\t%s\n' "$(cmake --version | head -n 1)"
     printf 'ninja_version\t%s\n' "$(ninja --version)"
     printf 'vulkan_header_version\t%s\n' "$vulkan_header_version"
     printf 'mesa_radv_driver_info\t%s\n' "$mesa_radv_version"
+    printf 'vulkan_devices_listed\t%s\n' "$unrestricted_devices"
     printf 'software_vulkan_devices_listed\t%s\n' "$software_devices"
     printf 'kernel_release\t%s\n' "$kernel_release"
     printf 'amdgpu_module_version\t%s\n' "$amdgpu_module_version"
-    printf 'cmake_flags\tSD_VULKAN=ON SD_BUILD_EXAMPLES=ON GGML_NATIVE=OFF\n'
+    printf 'cmake_flags\t%s\n' "$cmake_flags"
     printf 'parallel_jobs\t%s\n' "$build_jobs"
 } >"$manifest_path"
 

@@ -883,8 +883,9 @@ cat >"$web_profiles_fake" <<'EOF'
 web-fixture-fake	fixture-production	validator-gated	8192	8192	5	2	12000	yes	no	9/10	validator-gated	fake	-	-	-	-
 EOF
 
-# A profile row names the backend it expects, so an arm that varies
-# QWEN_WEB_PROVIDER carries its own ledger. The searxng rows also name the
+# A profile row names the backend it expects, so an arm that varies an explicit
+# QWEN_WEB_PROVIDER carries its own ledger. With the variable absent, the
+# ledger's single provider is authoritative. The searxng rows also name the
 # category policy the emitted configuration must carry.
 web_profiles_searxng=$work/web-profiles-searxng.tsv
 cat >"$web_profiles_searxng" <<'EOF'
@@ -919,6 +920,31 @@ if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_fake \
 else
     cat "$work/fake-provider.err" >&2
     report fake_provider_emits_fixtures_without_key_file build_failed
+fi
+
+# With QWEN_WEB_PROVIDER absent, the checked-in row's provider remains the only
+# default authority. The generated child must therefore receive searxng rather
+# than an unrelated shell default.
+presets_searxng_default=$work/presets-searxng-default.ini
+if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_searxng \
+    QWEN_MODEL_ROOT=$policy_model_root QWEN_WEB_AUTHORIZER_READY=1 \
+    env -u QWEN_WEB_PROVIDER -u QWEN_WEB_SEARCH_KEY_FILE \
+    QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" \
+    QWEN_WEB_STATE_DIR="$web_state_directory" \
+    "$builder" "$presets_searxng_default" \
+    >"$work/searxng-default.log" 2>"$work/searxng-default.err"; then
+    searxng_default_config=$(sed -n \
+        's/^LLAMA_ARG_MCP_SERVERS_CONFIG = //p' "$presets_searxng_default")
+    if grep -q '"QWEN_WEB_PROVIDER": "searxng"' \
+        "$searxng_default_config"; then
+        report profile_ledger_supplies_default_provider ok
+    else
+        report profile_ledger_supplies_default_provider wrong_provider
+    fi
+else
+    cat "$work/searxng-default.err" >&2
+    report profile_ledger_supplies_default_provider build_failed
 fi
 
 # QWEN_WEB_PROVIDER fake with QWEN_WEB_FAKE_FIXTURES unset names no fixture
@@ -1017,7 +1043,7 @@ fi
 presets_provider_drift=$work/presets-provider-drift.ini
 if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_searxng \
     QWEN_MODEL_ROOT=$policy_model_root QWEN_WEB_AUTHORIZER_READY=1 \
-    env QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+    env QWEN_WEB_PROVIDER=exa QWEN_WEB_MCP_SERVER="$mcp_server_program" \
     QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" \
     QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" QWEN_WEB_STATE_DIR="$web_state_directory" \
     "$builder" "$presets_provider_drift" \
@@ -1057,6 +1083,35 @@ for searxng_bad_row in \
         searxng_policy_outcome="refused_without_naming_profile: $searxng_bad_row"
 done
 report searxng_malformed_search_policy_refused "$searxng_policy_outcome"
+
+# server.py admits ASCII category names of one through 64 characters. The
+# generator enforces the same upper bound before writing a child configuration.
+category_64=$(printf '%064d' 0 | tr '0' a)
+category_65=${category_64}a
+category_limit_outcome=ok
+for category_case in "$category_64:accepted" "$category_65:refused"; do
+    category_value=${category_case%:*}
+    category_expectation=${category_case##*:}
+    category_ledger=$work/web-profiles-category-$category_expectation.tsv
+    printf 'web-fixture-category\tfixture-production\tvalidator-gated\t8192\t8192\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\tsearxng\t%s\t-\t1\thttp://127.0.0.1:8888\n' \
+        "$category_value" >"$category_ledger"
+    if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$category_ledger \
+        QWEN_MODEL_ROOT=$policy_model_root QWEN_WEB_AUTHORIZER_READY=1 \
+        env -u QWEN_WEB_SEARCH_KEY_FILE \
+        QWEN_WEB_MCP_SERVER="$mcp_server_program" \
+        QWEN_WEB_PROVIDER=searxng QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" \
+        QWEN_WEB_STATE_DIR="$web_state_directory" \
+        "$builder" "$work/presets-category-$category_expectation.ini" \
+        >"$work/category-$category_expectation.log" \
+        2>"$work/category-$category_expectation.err"; then
+        [ "$category_expectation" = accepted ] || \
+            category_limit_outcome=accepted_65_char_category
+    else
+        [ "$category_expectation" = refused ] || \
+            category_limit_outcome=refused_64_char_category
+    fi
+done
+report searxng_category_64_character_cap "$category_limit_outcome"
 
 # A row under provider exa or fake carries no search policy, so a value in one
 # of the four columns states a policy that backend never reads.
@@ -1955,37 +2010,17 @@ if build "$web_profiles_ui" "$presets_image_checked_in" \
     done <<EOF
 $(sed -n 's/^LLAMA_ARG_MCP_SERVERS_CONFIG = //p' "$presets_image_checked_in")
 EOF
-    report checked_in_image_ledger_emits_its_server "$outcome"
+    report checked_in_image_ledger_withholds_unmeasured_reviewer accepted
+    report checked_in_image_ledger_withholds_paired_server accepted
 else
-    report checked_in_image_ledger_emits_its_server failed
-    cat "$work/image-checked-in.err" >&2
-fi
-
-# The shipped row pairs lfm25-vl-16b, admitted on the appliance by the paired
-# launch of evidence/image-appliance/paired-review-admission/, so the same
-# generator run emits the language section and the review-only section beside
-# it. The review section holds no execution grant, so the language section is
-# the only one naming an MCP configuration.
-if [ -s "$presets_image_checked_in" ]; then
-    outcome=ok
-    grep -Fqx '# qwen_image_review_model=lfm25-vl-16b' \
-        "$presets_image_checked_in" || outcome=review_marker_absent
-    grep -Fqx '# qwen_image_review_section=lfm25-vl-16b' \
-        "$presets_image_checked_in" || outcome=review_section_marker_absent
-    grep -Fqx '[lfm25-vl-16b]' "$presets_image_checked_in" ||
-        outcome=review_section_absent
-    grep -Fqx 'LLAMA_ARG_TAGS = vision-review,review-only' \
-        "$presets_image_checked_in" || outcome=wrong_tags
-    grep -Fqx \
-        "LLAMA_ARG_MMPROJ = $checked_in_model_root/${checked_in_review_file%/*}/$checked_in_review_projector" \
-        "$presets_image_checked_in" || outcome=projector_absent
-    [ "$(grep -c '^LLAMA_ARG_MCP_SERVERS_CONFIG' "$presets_image_checked_in")" \
-        -eq 1 ] || outcome=configuration_count
-    [ "$(grep -c '^\[' "$presets_image_checked_in")" -eq 2 ] ||
-        outcome=section_count
-    report checked_in_image_ledger_emits_its_reviewer "$outcome"
-else
-    report checked_in_image_ledger_emits_its_reviewer failed
+    if grep -q 'carries no validated tuple at depth 8192' \
+        "$work/image-checked-in.err"; then
+        report checked_in_image_ledger_withholds_unmeasured_reviewer ok
+        report checked_in_image_ledger_withholds_paired_server ok
+    else
+        report checked_in_image_ledger_withholds_unmeasured_reviewer wrong_refusal
+        report checked_in_image_ledger_withholds_paired_server wrong_refusal
+    fi
 fi
 
 # An image row pairing a review_model adds one review-only vision section. The
@@ -1996,10 +2031,12 @@ fi
 validated_tuples=$work/validated-tuples.tsv
 cat >"$validated_tuples" <<'EOF'
 # tuple_id	model_id	runtime_mode	context	batch	ubatch	cache_k	cache_v	flash_attention	threads	parallel	projector_state	backend	status	evidence	llama_commit	runner_sha256	kernel	mesa	amdgpu	measured_at
-fixture-vision-d8192-b128-ub32-proj	fixture-vision	standalone	8192	128	32	q8_0	q4_0	on	1	1	loaded	vulkan	validated	evidence/image-appliance/design.md	-	-	-	-	-	2026-08-29
+fixture-vision-d8192-b128-ub32-proj	fixture-vision	router-child	8192	128	32	q8_0	q4_0	on	1	1	loaded	vulkan	validated	evidence/image-appliance/design.md	-	-	-	-	-	2026-08-29
 EOF
 validated_tuples_unloaded=$work/validated-tuples-unloaded.tsv
 sed 's/	loaded	/	none	/' "$validated_tuples" >"$validated_tuples_unloaded"
+validated_tuples_standalone=$work/validated-tuples-standalone.tsv
+sed 's/	router-child	/	standalone	/' "$validated_tuples" >"$validated_tuples_standalone"
 
 image_profiles_reviewed=$work/image-profiles-reviewed.tsv
 printf 'image-fixture-a\tsdxs-512\tA\t512\t512\t1\teuler\t1.0\t4\t512\t300\tvalidator-gated\tevidence/image-appliance/design.md\tfixture-vision\n' \
@@ -2121,6 +2158,20 @@ else
         report unloaded_projector_tuple_refused ok
     else
         report unloaded_projector_tuple_refused wrong_refusal
+    fi
+fi
+
+presets_review_standalone=$work/presets-review-standalone.ini
+if build_reviewed "$presets_review_standalone" "$image_profiles_reviewed" \
+    "$validated_tuples_standalone" \
+    >"$work/review-standalone.log" 2>"$work/review-standalone.err"; then
+    report standalone_reviewer_tuple_refused accepted
+else
+    if grep -q 'carries no validated tuple at depth 8192' \
+        "$work/review-standalone.err"; then
+        report standalone_reviewer_tuple_refused ok
+    else
+        report standalone_reviewer_tuple_refused wrong_refusal
     fi
 fi
 

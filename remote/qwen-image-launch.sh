@@ -283,8 +283,9 @@ with open(sys.argv[1], encoding="utf-8") as handle:
 profile = profiles.get(sys.argv[2])
 if not isinstance(profile, dict):
     raise SystemExit("the parameter file holds no object for " + sys.argv[2])
-for name in ("width", "height", "steps", "max_steps", "max_dimension",
-             "timeout_s", "execution_policy", "runtime_path"):
+for name in ("model_id", "placement", "width", "height", "steps", "sampler",
+             "cfg", "max_steps", "max_dimension", "timeout_s",
+             "execution_policy", "runtime_path"):
     if name not in profile:
         raise SystemExit("the parameters omit " + name)
     print("%s=%s" % (name, profile[name]))
@@ -296,8 +297,8 @@ fi
 image_parameter_field() {
     printf '%s\n' "$image_parameters" | sed -n "s/^$1=//p"
 }
-for compared_field in width height steps max_steps max_dimension timeout_s \
-    execution_policy; do
+for compared_field in model_id placement width height steps sampler cfg \
+    max_steps max_dimension timeout_s execution_policy; do
     ledger_value=$(image_profile_field "$compared_field")
     parameter_value=$(image_parameter_field "$compared_field")
     if [ "$ledger_value" != "$parameter_value" ]; then
@@ -367,11 +368,20 @@ if not isinstance(image, dict):
     raise SystemExit("the configuration names no image server")
 for name in ("QWEN_IMAGE_LANGUAGE_PROFILE", "QWEN_IMAGE_PROFILE",
              "QWEN_IMAGE_TOKEN_KEY_FILE", "QWEN_IMAGE_STATE_DIR",
-             "QWEN_IMAGE_SERVICE_SOCKET", "QWEN_IMAGE_MCP_TIMEOUT_S"):
+             "QWEN_IMAGE_SERVICE_SOCKET", "QWEN_IMAGE_PROFILES_JSON",
+             "QWEN_IMAGE_MCP_TIMEOUT_S"):
     if not image.get("env", {}).get(name):
         raise SystemExit("the image server names no " + name)
 if image["env"]["QWEN_IMAGE_PROFILE"] != sys.argv[2]:
     raise SystemExit("the image server names another profile")
+if image["env"]["QWEN_IMAGE_LANGUAGE_PROFILE"] != sys.argv[6]:
+    raise SystemExit("the image server names another language profile")
+if image["env"]["QWEN_IMAGE_PROFILES_JSON"] != sys.argv[3]:
+    raise SystemExit("the image server names another profile parameter file")
+if image["env"]["QWEN_IMAGE_STATE_DIR"] != sys.argv[4]:
+    raise SystemExit("the image server names another image state directory")
+if image["env"]["QWEN_IMAGE_SERVICE_SOCKET"] != sys.argv[5]:
+    raise SystemExit("the image server names another service socket")
 # The router bounds the call at timeout_ms and the child bounds its own socket
 # read at QWEN_IMAGE_MCP_TIMEOUT_S. Two numbers for one deadline let the router
 # wait past the point the child gave up, so the launch requires them to agree.
@@ -383,47 +393,50 @@ if abs(router_limit / 1000.0 - child_limit) > 0.001:
         % (router_limit, child_limit)
     )
 print(router_limit)
-' "$image_mcp_configuration" "$preset_image_profile"); then
+' "$image_mcp_configuration" "$preset_image_profile" "$image_profiles_json" \
+    "$state_directory/images" "$state_directory/images/image-service.sock" \
+    "${QWEN_WEB_PROFILE:-$(sed -n 's/^\[\([^]]*\)\]$/\1/p' "$web_presets" | sed -n '1p')}"); then
     printf 'the image MCP configuration is unusable: %s\n' \
         "$image_mcp_configuration" >&2
     exit 2
 fi
-image_mcp_timeout=$((image_mcp_timeout_ms / 1000))
-browser_timeout=$((browser_timeout_ms / 1000))
+runtime_timeout_ms=$((runtime_timeout * 1000))
+service_job_deadline_ms=$((service_job_deadline * 1000))
+router_proxy_timeout_ms=$((router_proxy_timeout * 1000))
 
-for measured_deadline in "$runtime_timeout" "$service_job_deadline" \
-    "$image_mcp_timeout" "$router_proxy_timeout" "$browser_timeout"; do
+for measured_deadline in "$runtime_timeout_ms" "$service_job_deadline_ms" \
+    "$image_mcp_timeout_ms" "$router_proxy_timeout_ms" "$browser_timeout_ms"; do
     case $measured_deadline in
         '' | 0 | *[!0-9]*)
             printf 'a deadline in the stack is unreadable: runtime=%s service=%s mcp=%s proxy=%s browser=%s\n' \
-                "$runtime_timeout" "$service_job_deadline" \
-                "$image_mcp_timeout" "$router_proxy_timeout" \
-                "$browser_timeout" >&2
+                "$runtime_timeout_ms" "$service_job_deadline_ms" \
+                "$image_mcp_timeout_ms" "$router_proxy_timeout_ms" \
+                "$browser_timeout_ms" >&2
             exit 2
             ;;
     esac
 done
 
 deadline_breach=''
-if [ "$runtime_timeout" -ge "$service_job_deadline" ]; then
+if [ "$runtime_timeout_ms" -ge "$service_job_deadline_ms" ]; then
     deadline_breach='runtime>=service'
-elif [ "$service_job_deadline" -ge "$image_mcp_timeout" ]; then
+elif [ "$service_job_deadline_ms" -ge "$image_mcp_timeout_ms" ]; then
     deadline_breach='service>=mcp'
-elif [ "$image_mcp_timeout" -ge "$browser_timeout" ]; then
+elif [ "$image_mcp_timeout_ms" -ge "$browser_timeout_ms" ]; then
     deadline_breach='mcp>=browser'
-elif [ "$image_mcp_timeout" -ge "$router_proxy_timeout" ]; then
+elif [ "$image_mcp_timeout_ms" -ge "$router_proxy_timeout_ms" ]; then
     deadline_breach='mcp>=proxy'
 fi
 if [ -n "$deadline_breach" ]; then
     printf 'the image deadline stack is out of order at %s: runtime=%s service=%s mcp=%s proxy=%s browser=%s\n' \
-        "$deadline_breach" "$runtime_timeout" "$service_job_deadline" \
-        "$image_mcp_timeout" "$router_proxy_timeout" "$browser_timeout" >&2
+        "$deadline_breach" "$runtime_timeout_ms" "$service_job_deadline_ms" \
+        "$image_mcp_timeout_ms" "$router_proxy_timeout_ms" "$browser_timeout_ms" >&2
     printf 'a stalled generation is ended by the process that owns it, so each deadline sits inside the one above it\n' >&2
     exit 2
 fi
-printf 'image_launch timeouts runtime=%s service=%s mcp=%s proxy=%s browser=%s proxy_source=%s\n' \
-    "$runtime_timeout" "$service_job_deadline" "$image_mcp_timeout" \
-    "$router_proxy_timeout" "$browser_timeout" \
+printf 'image_launch timeouts runtime_ms=%s service_ms=%s mcp_ms=%s proxy_ms=%s browser_ms=%s proxy_source=%s\n' \
+    "$runtime_timeout_ms" "$service_job_deadline_ms" "$image_mcp_timeout_ms" \
+    "$router_proxy_timeout_ms" "$browser_timeout_ms" \
     "${QWEN_IMAGE_ROUTER_PROXY_TIMEOUT_S:+configured}${QWEN_IMAGE_ROUTER_PROXY_TIMEOUT_S:-llama-server-default}"
 
 # Two resident checkpoints and a running image runtime draw on one Vulkan

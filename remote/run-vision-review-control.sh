@@ -1,7 +1,8 @@
 #!/bin/sh
 set -eu
 
-# Four reviews of one artifact that turn a passing verdict into a causal claim.
+# Four counterbalanced orders review one artifact without assigning image mode
+# to one fixed request position.
 # remote/image-review.py bounds the reply's shape with a grammar and refuses
 # every other shape, so a 4/4 result states that the model answered inside the
 # schema. What it leaves open is where the answer came from, and two control
@@ -10,14 +11,15 @@ set -eu
 # under the same prompt hash, constraint list, model, temperature, reply budget,
 # thinking setting, and absent `tools` key.
 #
-# The arms run real-A, withheld-A, swapped-A-with-B, real-A. Every arm sends
+# Each order rotates real-A, withheld-A, swapped-A-with-B, and the replicated
+# real-A condition through all four sequence positions. Every arm sends
 # --no-prompt-cache, because the four requests share their system instruction
 # and text part as a prefix and a warm prefix changes an answer rather than only
 # its timing on this backend: arith-05 answers 37 cold and 23 warm at the same
 # prompt_n. With the cache off, each arm meets the server the way the first one
 # did, arm 2's prefill genuinely excludes the image tokens it dropped, and the
-# closing real arm agreeing with the opening one is what licenses reading arms 2
-# and 3 as image effects rather than as position in a request sequence.
+# the rotations separate an image-mode difference from one fixed position in a
+# request sequence.
 #
 # The falsifiers this run registers:
 #
@@ -160,9 +162,17 @@ run_arm() {
     arm_regenerate=$(audit_field regenerate "$arm_audit")
     arm_wall_seconds=$(audit_field wall_seconds "$arm_audit")
     arm_swap_field=$(audit_field swap_sha256 "$arm_audit")
-    if [ "$arm_status" = ok ]; then
+    if [ "$arm_status" = ok ] && [ "$arm_exit_status" -eq 0 ] && \
+       [ -s "$arm_verdict" ] && [ -s "$output_directory/$arm_label.raw" ]; then
         arm_passed=$((arm_constraints - arm_failed))
     else
+        if [ "$arm_status" = ok ]; then
+            if [ "$arm_exit_status" -ne 0 ]; then
+                arm_status=incomplete:child_exit
+            else
+                arm_status=incomplete:missing_record
+            fi
+        fi
         arm_passed=-
         arm_failed=-
         arm_regenerate=-
@@ -175,10 +185,25 @@ run_arm() {
         "$arm_exit_status" >>"$summary_path"
 }
 
-run_arm 01-real real '' "$@"
-run_arm 02-withheld withheld '' "$@"
-run_arm 03-swapped swapped "$artifact_b" "$@"
-run_arm 04-real-closing real '' "$@"
+run_arm order-1-position-1-real-opening real '' "$@"
+run_arm order-1-position-2-withheld withheld '' "$@"
+run_arm order-1-position-3-swapped swapped "$artifact_b" "$@"
+run_arm order-1-position-4-real-closing real '' "$@"
+
+run_arm order-2-position-1-withheld withheld '' "$@"
+run_arm order-2-position-2-swapped swapped "$artifact_b" "$@"
+run_arm order-2-position-3-real-closing real '' "$@"
+run_arm order-2-position-4-real-opening real '' "$@"
+
+run_arm order-3-position-1-swapped swapped "$artifact_b" "$@"
+run_arm order-3-position-2-real-closing real '' "$@"
+run_arm order-3-position-3-real-opening real '' "$@"
+run_arm order-3-position-4-withheld withheld '' "$@"
+
+run_arm order-4-position-1-real-closing real '' "$@"
+run_arm order-4-position-2-real-opening real '' "$@"
+run_arm order-4-position-3-withheld withheld '' "$@"
+run_arm order-4-position-4-swapped swapped "$artifact_b" "$@"
 
 cat "$summary_path"
 
@@ -186,4 +211,5 @@ if [ "$refused_arms" -gt 0 ]; then
     printf 'vision_review_control=incomplete refused_arms=%s\n' "$refused_arms"
     exit 1
 fi
-printf 'vision_review_control=complete arms=4 output=%s\n' "$output_directory"
+printf 'vision_review_control=complete arms=16 counterbalanced_orders=4 output=%s\n' \
+    "$output_directory"

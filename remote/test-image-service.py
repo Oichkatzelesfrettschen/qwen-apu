@@ -331,10 +331,11 @@ class ImageServiceTest(unittest.TestCase):
             digest,
             "the artifact name is the digest of the artifact's own bytes",
         )
-        # The digest names the artifact, so both routes are derived from it and
-        # the reply carries no origin: image_protocol admits exactly this one
-        # spelling of a provenance URL.
-        self.assertEqual(response["provenance_url"], f"/artifacts/{digest}.json")
+        provenance_name = response["provenance_url"].removeprefix(
+            "/artifacts/"
+        ).removesuffix(".json")
+        self.assertEqual(len(provenance_name), 64)
+        self.assertNotEqual(provenance_name, digest)
         self.assertEqual(response["artifact_url"], f"/artifacts/{digest}.png")
         self.assertEqual(
             [name for name in os.listdir(session.artifact_directory())
@@ -348,8 +349,11 @@ class ImageServiceTest(unittest.TestCase):
         session = self.start()
         response = session.control(generate_request())
         digest = response["sha256"]
+        provenance_name = response["provenance_url"].removeprefix(
+            "/artifacts/"
+        ).removesuffix(".json")
         with open(
-            os.path.join(session.artifact_directory(), f"{digest}.json"),
+            os.path.join(session.artifact_directory(), f"{provenance_name}.json"),
             encoding="utf-8",
         ) as handle:
             record = json.load(handle)
@@ -378,6 +382,8 @@ class ImageServiceTest(unittest.TestCase):
             "the record names the runtime rather than the wrapper",
         )
         self.assertEqual(record["timeout_s_applied"], 20)
+        self.assertIn("children_lifetime_maxrss_kib", record)
+        self.assertNotIn("children_maxrss_kib", record)
         self.assertEqual(
             record["prompt_sha256"],
             hashlib.sha256("a measured raven".encode("utf-8")).hexdigest(),
@@ -407,11 +413,16 @@ class ImageServiceTest(unittest.TestCase):
             )
 
     def test_same_seed_reproduces_one_artifact_name(self):
-        """Two runs at one seed agree on the digest, on this host."""
+        """Repeated PNG bytes retain two immutable job provenance records."""
         session = self.start()
         first = session.control(generate_request())
         second = session.control(generate_request(request_id="req-0002"))
         self.assertEqual(first["sha256"], second["sha256"])
+        self.assertNotEqual(first["provenance_url"], second["provenance_url"])
+        for response in (first, second):
+            status, _, body = session.authorized_http(response["provenance_url"])
+            self.assertEqual(status, 200)
+            self.assertEqual(json.loads(body)["png_sha256"], response["sha256"])
 
     def test_runtime_environment_carries_the_radv_icd_pin(self):
         """The spawned runtime inherits VK_DRIVER_FILES and VK_ICD_FILENAMES.
@@ -530,6 +541,29 @@ class ImageServiceTest(unittest.TestCase):
             [],
         )
 
+    def test_leader_exit_waits_for_and_kills_a_live_group_worker(self):
+        """A leader exit cannot release the lease around a surviving worker."""
+        worker_pid_file = os.path.join(self.temporary.name, "worker.pid")
+        profiles = {"sdxs-512-a": build_profile(FAKE_RUNTIME_PATH, timeout_s=2)}
+        session = self.start(
+            profiles=profiles,
+            runtime_environment={
+                "QWEN_FAKE_IMAGE_MODE": "orphan_worker",
+                "QWEN_FAKE_IMAGE_WORKER_PID_FILE": worker_pid_file,
+            },
+        )
+        response = session.control(generate_request())
+        self.assertEqual(response["status"], "failed", response)
+        self.assertEqual(response["reason"], "runtime_timeout", response)
+        with open(worker_pid_file, encoding="ascii") as handle:
+            worker_pid = int(handle.read())
+        self.assertEqual(
+            service_module.live_process_group_members(worker_pid),
+            [],
+            "the leader's process group contains no live worker",
+        )
+        self.assertTrue(session.lease_is_free())
+
     def test_cancel_ends_the_owned_child_and_removes_the_part(self):
         """Cancellation kills the runtime and the partial file goes with it."""
         session = self.start(
@@ -615,14 +649,8 @@ class ImageServiceTest(unittest.TestCase):
             runtime_environment={"QWEN_FAKE_IMAGE_SLEEP_SECONDS": "10"},
             priority_wrapper=wrapper,
         )
-        service_nice = int(
-            subprocess.run(
-                ["ps", "-o", "ni=", "-p", str(session.pid)],
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout
-        )
+        service_nice = service_module.read_process_nice(session.pid)
+        self.assertIsNotNone(service_nice, "procfs reports the service nice value")
         if service_nice == 19:
             self.skipTest("the test process already runs at nice 19")
         response = session.control(generate_request())
@@ -682,8 +710,11 @@ class ImageServiceTest(unittest.TestCase):
             os.path.exists(argv_log), "the runtime never ran behind the wrapper"
         )
         self.assertEqual(self.service_children(session), [])
-        with self.assertRaises(ProcessLookupError):
-            os.killpg(wrapper_pid, 0)
+        self.assertEqual(
+            service_module.live_process_group_members(wrapper_pid),
+            [],
+            "the cancelled group contains no process that can execute",
+        )
         self.assertTrue(session.lease_is_free())
         self.assertEqual(os.listdir(session.artifact_directory()), [])
 
@@ -784,7 +815,7 @@ class ImageServiceTest(unittest.TestCase):
         self.assertFalse(idle["lease_held"])
 
     def test_refused_profile_leaves_the_lease_untouched(self):
-        """A policy refusal happens above the lease, so the lock stays free."""
+        """A policy refusal releases the capacity reserved ahead of the grant."""
         profiles = {
             "sdxs-512-a": build_profile(FAKE_RUNTIME_PATH, execution_policy="refused")
         }
@@ -793,16 +824,11 @@ class ImageServiceTest(unittest.TestCase):
         self.assertEqual(response["status"], "refused", response)
         self.assertEqual(response["reason"], "profile_refused")
         self.assertTrue(session.lease_is_free())
-        # Acquisition writes `state=held` beside the lock, so the absence of
-        # that line proves the refusal happened before flock rather than after
-        # a lease was taken and given back.
         status_path = os.path.join(
             session.state_directory, "vulkan-workload.status"
         )
-        self.assertFalse(
-            os.path.exists(status_path),
-            "a refusal above the lease writes no lease status line",
-        )
+        with open(status_path, encoding="ascii") as handle:
+            self.assertIn("state=released", handle.read())
 
     def test_lease_held_past_the_deadline_refuses_the_job(self):
         """A holder that outlasts the wait keeps the same refusal reason."""
@@ -868,6 +894,57 @@ class ImageServiceTest(unittest.TestCase):
             "the job spends the holder's term waiting rather than racing it: "
             f"uncontended={uncontended:.2f}s contended={contended:.2f}s",
         )
+        self.assertTrue(session.lease_is_free())
+
+    def test_cancel_while_waiting_for_the_lease_prevents_runtime_start(self):
+        """The published wait phase accepts cancellation before authorization."""
+        import fcntl
+
+        argv_log = os.path.join(self.temporary.name, "wait-cancel-argv.log")
+        session = self.start(
+            lease_wait_seconds=30,
+            runtime_environment={"QWEN_FAKE_IMAGE_ARGV_LOG": argv_log},
+        )
+        descriptor = os.open(session.lease_path(), os.O_RDWR | os.O_CREAT, 0o644)
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = {}
+
+        def run_generate():
+            result["response"] = session.control(generate_request(), timeout=60)
+
+        worker = threading.Thread(target=run_generate)
+        worker.start()
+        try:
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                status = session.control(
+                    {
+                        "protocol_version": 1,
+                        "request_id": "wait-status",
+                        "action": "status",
+                    }
+                )
+                if status["state"] == "waiting_for_lease":
+                    break
+                time.sleep(0.02)
+            else:
+                self.fail("the generation published no lease-wait state")
+            self.assertFalse(status["lease_held"], status)
+            cancelled = session.control(
+                {
+                    "protocol_version": 1,
+                    "request_id": "req-0001",
+                    "action": "cancel",
+                }
+            )
+            self.assertEqual(cancelled["status"], "accepted", cancelled)
+            worker.join(timeout=20)
+            self.assertFalse(worker.is_alive(), "the cancelled lease wait returned")
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+        self.assertEqual(result["response"]["status"], "cancelled", result)
+        self.assertFalse(os.path.exists(argv_log), "the runtime never started")
         self.assertTrue(session.lease_is_free())
 
     def test_missing_seed_is_refused(self):
@@ -939,10 +1016,24 @@ class ImageServiceTest(unittest.TestCase):
         self.assertEqual(headers["ETag"], f'"{digest}"')
         self.assertEqual(headers["X-Content-Type-Options"], "nosniff")
         self.assertEqual(hashlib.sha256(body).hexdigest(), digest)
-        status, headers, body = session.authorized_http(f"/artifacts/{digest}.json")
+        status, headers, body = session.authorized_http(response["provenance_url"])
         self.assertEqual(status, 200)
         self.assertEqual(headers["Content-Type"], "application/json")
         self.assertEqual(json.loads(body)["png_sha256"], digest)
+
+    def test_uncommitted_artifact_pair_is_not_reachable(self):
+        """Files become HTTP-visible only through one atomic publication marker."""
+        session = self.start()
+        digest = "d" * 64
+        png_path = os.path.join(session.artifact_directory(), f"{digest}.png")
+        json_path = os.path.join(session.artifact_directory(), f"{digest}.json")
+        with open(png_path, "wb") as handle:
+            handle.write(b"uncommitted")
+        with open(json_path, "w", encoding="utf-8") as handle:
+            handle.write("{}\n")
+        for path in (f"/artifacts/{digest}.png", f"/artifacts/{digest}.json"):
+            status, _, _ = session.authorized_http(path)
+            self.assertEqual(status, 404, path)
 
     def test_artifact_path_outside_the_digest_form_is_refused(self):
         session = self.start()
@@ -1167,7 +1258,7 @@ class ImageServiceTest(unittest.TestCase):
 class PngValidatorTest(unittest.TestCase):
     """The PNG rules, exercised against bytes rather than through a runtime."""
 
-    def valid_png(self, width=4, height=3):
+    def valid_png(self, width=4, height=3, filter_byte=0, trailing_pixels=b""):
         import binascii
         import struct
         import zlib
@@ -1182,8 +1273,9 @@ class PngValidatorTest(unittest.TestCase):
 
         raw = bytearray()
         for _ in range(height):
-            raw.append(0)
+            raw.append(filter_byte)
             raw.extend(b"\x10\x20\x30" * width)
+        raw.extend(trailing_pixels)
         return (
             b"\x89PNG\r\n\x1a\x0a"
             + chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0))
@@ -1217,6 +1309,28 @@ class PngValidatorTest(unittest.TestCase):
         with self.assertRaises(service_module.PngInvalid) as caught:
             service_module.parse_png(bytes(raw), 4, 3)
         self.assertIn(caught.exception.detail, ("checksum", "truncated"))
+
+    def test_undefined_scanline_filter_is_refused(self):
+        with self.assertRaises(service_module.PngInvalid) as caught:
+            service_module.parse_png(self.valid_png(filter_byte=5), 4, 3)
+        self.assertEqual(caught.exception.detail, "filter")
+
+    def test_decompressed_bytes_cannot_exceed_declared_geometry(self):
+        with self.assertRaises(service_module.PngInvalid) as caught:
+            service_module.parse_png(
+                self.valid_png(trailing_pixels=b"compressed expansion" * 64), 4, 3
+            )
+        self.assertEqual(caught.exception.detail, "decode")
+
+
+class ProfileValidationTest(unittest.TestCase):
+    def test_cfg_must_be_finite(self):
+        for value in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(value=value):
+                with self.assertRaises(service_module.ProfileRefused):
+                    service_module.validate_profile(
+                        build_profile(FAKE_RUNTIME_PATH, cfg=value)
+                    )
 
 
 if __name__ == "__main__":

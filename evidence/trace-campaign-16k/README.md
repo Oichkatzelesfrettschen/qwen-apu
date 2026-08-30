@@ -2,7 +2,9 @@
 
 `remote/run-trace-campaign.sh` ran three arms of `qwen38-4b-distill` Q4_K_M at
 depth 16384 under the served cache triple, `q8_0`/`q4_0` with Flash Attention
-on, against the trace-capable build at commit `f280b26983ad0fdb705a0d9ebf0503e76f2899b0`.
+on. The retained metadata associates the trace-capable build with commit
+`f280b26983ad0fdb705a0d9ebf0503e76f2899b0`, and the retained closure records
+bind the executed model and `llama-bench` files by size and SHA-256.
 Every arm ran `QWEN_VULKAN_PROFILE=custom` with `GGML_VK_MAX_NODES_PER_SUBMIT=16`
 and `GGML_VK_SERIALIZE_SUBMISSIONS=1`, because
 `ggml/src/ggml-vulkan/ggml-vulkan-submit-trace.h` throws
@@ -11,6 +13,24 @@ creation and `mark_completed` -- the call that advances
 `last_completed_serial` -- runs on the serialized path alone. `llama-bench`
 ran under `LLAMA_NO_CPU_FALLBACK=1` with `-dev Vulkan0 -ot '.*=Vulkan0'`, the
 placement `qwen-capacity-policy.sh` gives the server.
+
+## Retained-evidence limit
+
+The imported directory omits `campaign.log`. That driver log was the only
+campaign output that recorded the source-gate result or bypass notice, arm
+start and stop records, and final restoration result. The per-arm logs,
+summary, metadata, and closure records cannot distinguish an enforced source
+gate from a run admitted with `QWEN_TRACE_SKIP_TRACE_SOURCE_GATE=1`.
+Consequently, the retained evidence proves the file identities and arm
+outputs described below, but it does not independently prove that the
+executed binary came from a source tree accepted by the trace-source gate.
+
+That historical gap closes only when either the original `campaign.log`
+arrives with its pre-sanitization SHA-256 and provenance plus a sanitized Git
+copy, or an authentic campaign rerun retains `campaign.log` beside all arm,
+closure, metadata, and restoration outputs. Until one of those inputs exists,
+the commit association remains metadata rather than a reproduced source-gate
+result.
 
 ## Falsification criterion
 
@@ -71,10 +91,14 @@ run to 10 lines and the only line containing the substring `submission trace`
 is the startup banner `ggml_vulkan: AMD Radeon Graphics (RADV RAVEN2):
 submission trace = on`, printed once at device creation regardless of whether
 the device is later lost. Neither log carries a submission serial, a node
-index, an operation name, or a buffer record. **Submission records: 0 in
-both. Last completed serial: not printed in either log, because
-`ggml_vk_print_device_lost_info` never ran.** No record exists to be retired
-or unretired.
+index, an operation name, or a buffer record. **Neither arm emitted a
+per-dispatch dump. The retained logs therefore expose neither a record count
+nor a last-completed serial.** The trace implementation appends an in-memory
+ring record for each `vkCmdDispatch` while tracing is enabled and advances and
+retires serials during successful serialized execution. Those records existed
+during P1 and T1, but the successful process exits discarded them without a
+device-loss print path, so their exact counts and serial values are
+unavailable from the retained evidence.
 
 `run-trace-campaign.sh`'s `trace_dump` field reads `present` for both P1 and
 T1 because its detector, `grep -q 'submission trace' "$arm_log"`, matches the
@@ -125,15 +149,20 @@ ubatch 512, to the unserialized regime, or to their combination.
 3. **2048/256** serialized, traced -- brackets 512 from below under the
    serialized regime.
 4. **2048/512 serialized**, traced -- the full quarantine batch/ubatch tuple,
-   still serialized. A wedge here isolates ubatch 512 as sufficient to
-   reproduce the hazard independent of the unserialized regime; a pass moves
-   the open question entirely onto serialization.
-5. **2048/512 unserialized, trace off** -- the literal quarantine geometry,
+   still serialized. Comparison with the lower-ubatch traced arms tests whether
+   the hazard appears when ubatch reaches 512 under the serialized traced
+   regime; the result alone cannot isolate serialization because the original
+   quarantine run had tracing disabled.
+5. **2048/512 serialized, trace off** -- the same geometry and serialized
+   regime as arm 4 with instrumentation disabled. Arm 4 against arm 5 measures
+   the trace flag alone at the full geometry.
+6. **2048/512 unserialized, trace off** -- the literal quarantine geometry,
    run last because the trace requires serialization and cannot instrument
-   it. A wedge here against a pass at arm 4 isolates the unserialized regime
-   as the necessary condition; a wedge at both isolates ubatch 512 alone; a
-   pass at both means the original wedge depended on run state or another
-   uncontrolled variable and needs reproduction before any conclusion moves.
+   it. Arm 5 against arm 6 changes serialization alone while holding geometry
+   and tracing fixed. A pass in arm 5 and wedge in arm 6 supports serialization
+   as the discriminating condition; matching outcomes leave serialization
+   unisolated. Any outcome that disagrees with the original wedge requires an
+   authentic reproduction before a causal conclusion moves.
 
 ## Production closure
 

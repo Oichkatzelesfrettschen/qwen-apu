@@ -310,6 +310,7 @@ if [ "$image_service_enabled" = 1 ]; then
     python3 "$image_service_program" \
         --state-dir "$state_directory" \
         --profiles-json "$image_service_profiles_json" \
+        --verifier image_signed_verifier:verify \
         --api-key-file "$api_key_file" \
         --origin "$image_service_origin" \
         --http-host 127.0.0.1 \
@@ -376,7 +377,8 @@ while [ "$attempt" -lt 1200 ]; do
         break
     fi
     affinity=$(awk '$1 == "Cpus_allowed_list:" { print $2 }' "/proc/$server_pid/status")
-    nice_value=$(ps -o ni= -p "$server_pid" | tr -d ' ')
+    nice_value=$(sed 's/^.*) //' "/proc/$server_pid/stat" 2>/dev/null |
+        awk '{ print $17 }')
     if [ "$affinity" = "$inference_cpu" ] && [ "$nice_value" = 19 ] && \
        grep -F "$readiness_marker" "$server_log" >/dev/null 2>&1; then
         ready_for_monitor=1

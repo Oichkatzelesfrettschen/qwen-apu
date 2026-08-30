@@ -94,7 +94,7 @@ def verdict_text(verdict):
 
 
 def make_handler(state, reply, artifact_bytes=ONE_PIXEL_PNG, artifact_digest=None,
-                 artifacts=None):
+                 artifacts=None, provenance_prompt_hash=PROMPT_HASH):
     """Play the artifact listener and the router for one arm.
 
     `reply` is either the assistant message dictionary the router answers with
@@ -130,6 +130,12 @@ def make_handler(state, reply, artifact_bytes=ONE_PIXEL_PNG, artifact_digest=Non
                 self._send_json(401, {"error": "missing credential"})
                 return
             for route_digest, route_bytes in served.items():
+                if self.path == "/artifacts/{}.json".format(route_digest):
+                    self._send_json(200, {
+                        "png_sha256": route_digest,
+                        "prompt_sha256": provenance_prompt_hash,
+                    })
+                    return
                 if self.path == "/artifacts/{}.png".format(route_digest):
                     self.send_response(200)
                     self.send_header("Content-Type", "image/png")
@@ -171,12 +177,14 @@ def serve(handler):
 
 def run_review(reply, constraints=None, artifact_bytes=ONE_PIXEL_PNG,
                artifact_digest=None, digest=None, prompt_hash=PROMPT_HASH,
-               artifacts=None, image_mode="real", swap_digest=None):
+               artifacts=None, image_mode="real", swap_digest=None,
+               provenance_prompt_hash=PROMPT_HASH):
     """Run one review against a stub answering `reply`, returning (record, error, state)."""
     state = {"lock": threading.Lock(), "chat_bodies": [], "unauthorized_reads": 0}
     server, thread, origin = serve(
         make_handler(state, reply, artifact_bytes=artifact_bytes,
-                     artifact_digest=artifact_digest, artifacts=artifacts))
+                     artifact_digest=artifact_digest, artifacts=artifacts,
+                     provenance_prompt_hash=provenance_prompt_hash))
     record = None
     refusal = None
     try:
@@ -346,6 +354,26 @@ def test_regenerate_without_a_named_failure_is_not_admitted():
         failures.append("the reason does not name the missing failure: "
                         + record["correction_reason"])
     return failures, ["regenerate_without_failure=" + record["correction_reason"]]
+
+
+def test_prompt_hash_is_bound_to_provenance():
+    record, refusal, state = run_review(
+        message_with(verdict_text(PASSING_VERDICT)),
+        prompt_hash="f" * 64,
+        provenance_prompt_hash=PROMPT_HASH,
+    )
+    failures = []
+    if record is not None or refusal is None:
+        failures.append("a prompt hash differing from provenance was accepted")
+        return failures, []
+    if refusal.code != "prompt_hash_mismatch":
+        failures.append("the prompt mismatch refused as " + refusal.code)
+    if state["chat_bodies"]:
+        failures.append("a prompt mismatch reached the review model")
+    audit = getattr(refusal, "audit", "")
+    if "schema_mode=none" not in audit or "wall_seconds=" not in audit:
+        failures.append("the pre-request refusal audit is incomplete: " + audit)
+    return failures, ["prompt_provenance=bound"]
 
 
 def refusal_arm(label, reply, expected_code, **kwargs):
@@ -650,8 +678,8 @@ def test_image_mode_argument_refusals():
     return failures, lines
 
 
-def test_control_runner_drives_the_four_arms():
-    """`remote/run-vision-review-control.sh` runs real, withheld, swapped, real.
+def test_control_runner_counterbalances_the_four_conditions():
+    """The control runner rotates each condition through every sequence position.
 
     The stub records every chat body, so the arm order is read from the image
     part counts the four requests carried rather than from the script's own
@@ -679,24 +707,44 @@ def test_control_runner_drives_the_four_arms():
         image_part_counts = [
             len([part for part in user_content(body) if part.get("type") == "image_url"])
             for body in state["chat_bodies"]]
-        if image_part_counts != [1, 0, 1, 1]:
+        expected_image_part_counts = [
+            1, 0, 1, 1,
+            0, 1, 1, 1,
+            1, 1, 1, 0,
+            1, 1, 0, 1,
+        ]
+        if image_part_counts != expected_image_part_counts:
             failures.append("the arm image part counts are " + repr(image_part_counts))
-        if len(state["chat_bodies"]) == 4:
-            swapped_url = [part for part in user_content(state["chat_bodies"][2])
+        for swapped_index in (2, 5, 8, 15):
+            swapped_url = [part for part in user_content(state["chat_bodies"][swapped_index])
                            if part.get("type") == "image_url"][0]["image_url"]["url"]
             expected = "data:image/png;base64," + base64.b64encode(
                 SWAP_PIXEL_PNG).decode("ascii")
             if swapped_url != expected:
-                failures.append("the swapped arm did not send the swap artifact's bytes")
+                failures.append("swapped arm {} did not send the swap artifact's bytes".format(
+                    swapped_index + 1))
         with open(os.path.join(output_directory, "summary.tsv")) as handle:
             rows = list(csv.DictReader(handle, delimiter="\t"))
-        if [row["arm"] for row in rows] != ["01-real", "02-withheld", "03-swapped",
-                                            "04-real-closing"]:
+        expected_arms = [
+            "order-1-position-1-real-opening", "order-1-position-2-withheld",
+            "order-1-position-3-swapped", "order-1-position-4-real-closing",
+            "order-2-position-1-withheld", "order-2-position-2-swapped",
+            "order-2-position-3-real-closing", "order-2-position-4-real-opening",
+            "order-3-position-1-swapped", "order-3-position-2-real-closing",
+            "order-3-position-3-real-opening", "order-3-position-4-withheld",
+            "order-4-position-1-real-closing", "order-4-position-2-real-opening",
+            "order-4-position-3-withheld", "order-4-position-4-swapped",
+        ]
+        if [row["arm"] for row in rows] != expected_arms:
             failures.append("the summary names arms " + repr([row["arm"] for row in rows]))
         if any(body.get("cache_prompt") is not False for body in state["chat_bodies"]):
             failures.append("an arm left the prompt cache on: " + repr(
                 [body.get("cache_prompt") for body in state["chat_bodies"]]))
-        if [row["image_mode"] for row in rows] != ["real", "withheld", "swapped", "real"]:
+        if [row["image_mode"] for row in rows] != [
+                "real", "withheld", "swapped", "real",
+                "withheld", "swapped", "real", "real",
+                "swapped", "real", "real", "withheld",
+                "real", "real", "withheld", "swapped"]:
             failures.append("the summary names modes " + repr(
                 [row["image_mode"] for row in rows]))
         if any(row["passed"] != "2" for row in rows):
@@ -705,14 +753,16 @@ def test_control_runner_drives_the_four_arms():
         if any(row["regenerate"] != "no" for row in rows):
             failures.append("a summary row reports regenerate " + repr(
                 [row["regenerate"] for row in rows]))
-        if len(rows) != 4:
+        if len(rows) != 16:
             failures.append("the summary holds {} arm rows".format(len(rows)))
-        elif rows[2]["swap_sha256"] != SWAP_SHA256:
-            failures.append("the swapped summary row names swap " + rows[2]["swap_sha256"])
+        for swapped_index in (2, 5, 8, 15):
+            if rows[swapped_index]["swap_sha256"] != SWAP_SHA256:
+                failures.append("the swapped summary row names swap " +
+                                rows[swapped_index]["swap_sha256"])
         for row in rows:
             if row["exit_status"] != "0":
                 failures.append("arm {} exited {}".format(row["arm"], row["exit_status"]))
-        for arm in ("01-real", "02-withheld", "03-swapped", "04-real-closing"):
+        for arm in expected_arms:
             verdict_path = os.path.join(output_directory, arm + ".verdict.json")
             if not os.path.exists(verdict_path):
                 failures.append("arm {} wrote no verdict record".format(arm))
@@ -723,12 +773,54 @@ def test_control_runner_drives_the_four_arms():
                 failures.append("arm {} retained another verdict".format(arm))
         with open(os.path.join(output_directory, "audit.log")) as handle:
             audit_text = handle.read()
-        if audit_text.count("status=ok") != 4:
+        if audit_text.count("status=ok") != 16:
             failures.append("the audit log holds " + repr(audit_text))
-        lines.append("control_runner=four_arms")
+        lines.append("control_runner=counterbalanced_16_arms")
     finally:
         server.shutdown()
         thread.join(timeout=5)
+        shutil.rmtree(output_directory, ignore_errors=True)
+    return failures, lines
+
+
+def test_control_runner_rejects_nonzero_after_ok_audit():
+    """A child exit after an ok audit keeps the full control run incomplete."""
+    harness_directory = tempfile.mkdtemp(prefix="vision-review-exit-harness-")
+    output_directory = tempfile.mkdtemp(prefix="vision-review-exit-output-")
+    failures = []
+    lines = []
+    try:
+        runner = os.path.join(harness_directory, "run-vision-review-control.sh")
+        shutil.copy(os.path.join(THIS_DIRECTORY, "run-vision-review-control.sh"), runner)
+        reviewer = os.path.join(harness_directory, "image-review.py")
+        with open(reviewer, "w", encoding="utf-8") as handle:
+            handle.write(
+                "import sys\n"
+                "print('image_review constraints=2 failed=0 regenerate=no "
+                "wall_seconds=0.01 swap_sha256=- status=ok')\n"
+                "sys.exit(1)\n"
+            )
+        completed = subprocess.run(
+            ["sh", runner, "http://127.0.0.1:1", "http://127.0.0.1:1",
+             VISION_MODEL, ARTIFACT_SHA256, SWAP_SHA256, PROMPT_HASH,
+             output_directory, "--constraint", "subject_count=one fox"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if completed.returncode != 1:
+            failures.append("the runner exited {} rather than 1".format(
+                completed.returncode))
+        with open(os.path.join(output_directory, "summary.tsv")) as handle:
+            rows = list(csv.DictReader(handle, delimiter="\t"))
+        if len(rows) != 16:
+            failures.append("the incomplete summary holds {} rows".format(len(rows)))
+        if any(row["status"] != "incomplete:child_exit" for row in rows):
+            failures.append("the incomplete statuses are " + repr(
+                [row["status"] for row in rows]))
+        if "vision_review_control=incomplete refused_arms=16" not in completed.stdout:
+            failures.append("the terminal state is " + repr(completed.stdout[-200:]))
+        lines.append("control_runner_nonzero_after_ok=incomplete")
+    finally:
+        shutil.rmtree(harness_directory, ignore_errors=True)
         shutil.rmtree(output_directory, ignore_errors=True)
     return failures, lines
 
@@ -763,6 +855,7 @@ def main():
         ("response_format_schema", test_response_format_carries_bounded_schema),
         ("regenerate_verdict", test_regenerate_verdict_admits_one_correction),
         ("regenerate_without_failure", test_regenerate_without_a_named_failure_is_not_admitted),
+        ("prompt_provenance", test_prompt_hash_is_bound_to_provenance),
         ("refusals", test_refusals),
         ("withheld_control", test_withheld_control_drops_the_image_part_alone),
         ("withheld_artifact_read", test_withheld_control_still_reads_the_reviewed_artifact),
@@ -770,7 +863,8 @@ def main():
         ("swap_read_failure", test_a_failed_swap_read_names_the_swap_artifact),
         ("prompt_cache", test_prompt_cache_is_stated_by_the_caller),
         ("image_mode_arguments", test_image_mode_argument_refusals),
-        ("control_runner", test_control_runner_drives_the_four_arms),
+        ("control_runner", test_control_runner_counterbalances_the_four_conditions),
+        ("control_runner_exit", test_control_runner_rejects_nonzero_after_ok_audit),
         ("raw_reply_on_refusal", test_raw_reply_retained_on_refusal),
         ("tools_key", test_a_tools_key_is_refused_through_the_reply),
         ("artifact_credential", test_the_artifact_read_carries_the_credential),

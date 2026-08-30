@@ -153,7 +153,7 @@ mkdir -p "$model_root/Fixture-Vision-GGUF"
 validated_tuples=$work/validated-tuples.tsv
 {
     printf '# tuple_id\tmodel_id\truntime_mode\tcontext\tbatch\tubatch\tcache_k\tcache_v\tflash_attention\tthreads\tparallel\tprojector_state\tbackend\tstatus\tevidence\tllama_commit\trunner_sha256\tkernel\tmesa\tamdgpu\tmeasured_at\n'
-    printf 'image-review-fixture-d4096-b128-ub32-proj\timage-review-fixture\tstandalone\t4096\t128\t32\tq8_0\tq4_0\ton\t1\t1\tloaded\tvulkan\tvalidated\tevidence/image-appliance/design.md\t-\t-\t-\t-\t-\t2026-08-29\n'
+    printf 'image-review-fixture-d4096-b128-ub32-proj\timage-review-fixture\trouter-child\t4096\t128\t32\tq8_0\tq4_0\ton\t1\t1\tloaded\tvulkan\tvalidated\tevidence/image-appliance/design.md\t-\t-\t-\t-\t-\t2026-08-29\n'
 } >"$validated_tuples"
 
 # The fixture runtime writes a PNG of the requested dimensions from the seed

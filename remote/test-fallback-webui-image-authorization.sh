@@ -139,7 +139,8 @@ grep -F 'typeof parsed.provenance_url' "$fallback_ui" >/dev/null
 # The client-side wait is the browser's own bound alone and names no
 # runtime, image-service, MCP, or router deadline.
 grep -F 'const IMAGE_GENERATION_TIMEOUT_MS = 660000;' "$fallback_ui" >/dev/null
-grep -F 'setTimeout(() => controller.abort(), IMAGE_GENERATION_TIMEOUT_MS);' "$fallback_ui" >/dev/null
+grep -F '    () => requestController.abort(), IMAGE_GENERATION_TIMEOUT_MS);' \
+    "$fallback_ui" >/dev/null
 
 # A Cancel button aborts the fetch and, only when the served tool set names a
 # cancel tool, also posts a best-effort cancel; either way the abort itself
@@ -147,6 +148,8 @@ grep -F 'setTimeout(() => controller.abort(), IMAGE_GENERATION_TIMEOUT_MS);' "$f
 grep -F 'async function postCancelBestEffort(cancelToolName, model) {' "$fallback_ui" >/dev/null
 grep -F 'if (!cancelToolName) return;' "$fallback_ui" >/dev/null
 grep -F 'cancelled = true;' "$fallback_ui" >/dev/null
+grep -F 'requestController.abort();' "$fallback_ui" >/dev/null
+grep -F 'cancellationController.abort();' "$fallback_ui" >/dev/null
 grep -F 'void postCancelBestEffort(cancelToolName, model);' "$fallback_ui" >/dev/null
 
 # The artifact card fetches the PNG with the page's own credential header
@@ -156,9 +159,10 @@ grep -F 'void postCancelBestEffort(cancelToolName, model);' "$fallback_ui" >/dev
 # the `.json` record and its artifact_url names the `.png`, both from the same
 # digest, so a page that fetched the provenance route would read the record
 # where it wanted the image.
-grep -F 'async function loadArtifactBlobUrl(sha256) {' "$fallback_ui" >/dev/null
-grep -F '`${artifactOrigin()}/artifacts/${sha256}.png`' "$fallback_ui" >/dev/null
-grep -F 'loadArtifactBlobUrl(result.sha256)' "$fallback_ui" >/dev/null
+grep -F 'async function loadArtifactBlobUrl(sha256, callerSignal) {' "$fallback_ui" >/dev/null
+grep -F '  const origin = artifactOrigin();' "$fallback_ui" >/dev/null
+grep -F '`${origin}/artifacts/${sha256}.png`' "$fallback_ui" >/dev/null
+grep -F 'loadArtifactBlobUrl(result.sha256, signal)' "$fallback_ui" >/dev/null
 grep -F "mode: 'cors', headers: authHeaders(), signal: controller.signal });" \
     "$fallback_ui" >/dev/null
 
@@ -166,16 +170,17 @@ grep -F "mode: 'cors', headers: authHeaders(), signal: controller.signal });" \
 # an unresponsive listener answers the model with a tool message rather than
 # holding the send button for the generation deadline.
 grep -F 'const ARTIFACT_FETCH_TIMEOUT_MS = 60000;' "$fallback_ui" >/dev/null
-grep -F 'setTimeout(() => controller.abort(), ARTIFACT_FETCH_TIMEOUT_MS);' \
+grep -F '    timedOut = true;' "$fallback_ui" >/dev/null
+grep -F 'callerSignal.addEventListener' "$fallback_ui" >/dev/null
+grep -F "callerSignal.removeEventListener('abort', abortFromCaller);" "$fallback_ui" >/dev/null
+grep -F 'async function renderImageArtifactCard(container, fields, result, lineage, signal) {' \
     "$fallback_ui" >/dev/null
-grep -F 'async function renderImageArtifactCard(container, fields, result, lineage) {' \
+grep -F '  const blobUrl = await loadArtifactBlobUrl(result.sha256, signal);' \
     "$fallback_ui" >/dev/null
-grep -F '  const blobUrl = await loadArtifactBlobUrl(result.sha256);' \
+grep -F '        artifactContainer, fields, result, lineage, cancellationController.signal);' \
     "$fallback_ui" >/dev/null
-grep -F 'await renderImageArtifactCard(artifactContainer, fields, result, lineage);' \
-    "$fallback_ui" >/dev/null
-grep -F 'const reason = `the artifact did not load: ${error.message || error}`;' \
-    "$fallback_ui" >/dev/null
+grep -F "? 'cancelled by the user'" "$fallback_ui" >/dev/null
+grep -F '    if (cancelled) {' "$fallback_ui" >/dev/null
 card_line=$(grep -n 'await renderImageArtifactCard' "$fallback_ui" | cut -d: -f1)
 complete_line=$(grep -n "renderImageState(stateEl, 'Image complete');" "$fallback_ui" | cut -d: -f1)
 if [ -z "$card_line" ] || [ -z "$complete_line" ] || [ "$card_line" -ge "$complete_line" ]; then
@@ -223,11 +228,16 @@ grep -F 'The image did not run: ${imageOutcome.reason}.' "$fallback_ui" >/dev/nu
 grep -F 'function configuredArtifactOrigin() {' "$fallback_ui" >/dev/null
 grep -F "searchParams.get('artifacts')" "$fallback_ui" >/dev/null
 grep -F 'meta[name="qwen-image-artifacts"]' "$fallback_ui" >/dev/null
+grep -F 'function trustedArtifactOrigin(configured) {' "$fallback_ui" >/dev/null
+grep -F '/^(?:https?):\/\/(?:127\.0\.0\.1|\[::1\]):[0-9]+$/i;' \
+    "$fallback_ui" >/dev/null
+grep -F '  return trustedArtifactOrigin(configured);' "$fallback_ui" >/dev/null
 grep -F "throw new Error('no artifact listener origin is configured for this page');" \
     "$fallback_ui" >/dev/null
 grep -F 'return URL.createObjectURL(blob);' "$fallback_ui" >/dev/null
 grep -F 'if (blobUrl) URL.revokeObjectURL(blobUrl);' "$fallback_ui" >/dev/null
-grep -F 'function renderImageArtifactCard(container, fields, result, lineage) {' "$fallback_ui" >/dev/null
+grep -F 'function renderImageArtifactCard(container, fields, result, lineage, signal) {' \
+    "$fallback_ui" >/dev/null
 grep -F "\`sha256 \${result.sha256}\`," "$fallback_ui" >/dev/null
 grep -F "\`seed \${fields.seed}\`," "$fallback_ui" >/dev/null
 grep -F "\`\${fields.width}x\${fields.height}\`," "$fallback_ui" >/dev/null
@@ -286,6 +296,36 @@ const globalCrypto = {
     }
 };
 globalThis.crypto = globalCrypto;
+
+const promptCapMatch = source.match(/const IMAGE_PROMPT_CHARACTER_CAP = ([0-9]+);/);
+if (!promptCapMatch) throw new Error("the image prompt character cap is not declared");
+const IMAGE_PROMPT_CHARACTER_CAP = Number(promptCapMatch[1]);
+
+eval(extract(
+    "function trustedArtifactOrigin(configured) {",
+    "\n\nfunction artifactOrigin() {"
+));
+for (const [configured, expected] of [
+    ["http://127.0.0.1:8181", "http://127.0.0.1:8181"],
+    ["https://[::1]:9443", "https://[::1]:9443"],
+]) {
+    if (trustedArtifactOrigin(configured) !== expected) {
+        throw new Error("a literal loopback artifact origin did not canonicalize: " + configured);
+    }
+}
+for (const configured of [
+    "https://attacker.example:9443", "http://localhost:8181",
+    "http://127.1:8181", "http://2130706433:8181",
+    "http://user@127.0.0.1:8181", "http://127.0.0.1:8181/path",
+    "http://127.0.0.1:8181?key=value", "http://127.0.0.1:8181#fragment",
+    "http://127.0.0.1",
+]) {
+    let threw = false;
+    try { trustedArtifactOrigin(configured); } catch { threw = true; }
+    if (!threw) {
+        throw new Error("an untrusted artifact origin was admitted: " + configured);
+    }
+}
 
 eval(extract(
     "const IMAGE_GRANT_CONTEXT = ",
@@ -459,7 +499,9 @@ grep -F 'const REVIEW_OBSERVATION_MAX_CHARS = 300;' "$fallback_ui" >/dev/null
 # The correction carries the first approval's seed and adds the review's delta.
 grep -F 'seedGenerated: false };' "$fallback_ui" >/dev/null
 grep -F 'correction ${correctionNumber} of ${IMAGE_CORRECTION_CAP}; ' "$fallback_ui" >/dev/null
-grep -F 'if (lineage.correctionsUsed >= IMAGE_CORRECTION_CAP) {' "$fallback_ui" >/dev/null
+grep -F 'if (lineage.state.correctionsUsed >= IMAGE_CORRECTION_CAP) {' \
+    "$fallback_ui" >/dev/null
+grep -F 'lineage.state.correctionsUsed = correctionNumber;' "$fallback_ui" >/dev/null
 grep -F 'const imageOutcome = await approveImageGeneration(bounded, lineage.model, note);' \
     "$fallback_ui" >/dev/null
 # The roster decides whether a review is offered at all: GET /props reports the

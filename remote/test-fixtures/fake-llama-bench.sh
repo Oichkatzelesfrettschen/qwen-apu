@@ -11,6 +11,10 @@ set -eu
 # QWEN_FAKE_BENCH_FAIL_STATUS   exit status those use, default 124
 # QWEN_FAKE_BENCH_TRACE_DUMP    signatures that print the submission trace dump
 # QWEN_FAKE_BENCH_DISPLACE_LINK symlink the arm repoints at DISPLACE_TARGET
+# QWEN_FAKE_BENCH_DELAY          space-separated signatures that sleep
+# QWEN_FAKE_BENCH_DELAY_S        seconds slept by a delayed signature
+# QWEN_FAKE_BENCH_KERNEL_EVENT   signatures that append a mixed-case page fault
+# QWEN_FAKE_BENCH_KERNEL_LOG     file receiving the synthetic kernel event
 
 depth=0
 batch=0
@@ -32,6 +36,19 @@ if [ -n "${QWEN_FAKE_BENCH_INVOCATIONS:-}" ]; then
         "${GGML_VK_SERIALIZE_SUBMISSIONS:-unset}" \
         >>"$QWEN_FAKE_BENCH_INVOCATIONS"
 fi
+
+for delayed_signature in ${QWEN_FAKE_BENCH_DELAY:-}; do
+    if [ "$delayed_signature" = "$signature" ]; then
+        sleep "${QWEN_FAKE_BENCH_DELAY_S:-30}"
+    fi
+done
+
+for kernel_signature in ${QWEN_FAKE_BENCH_KERNEL_EVENT:-}; do
+    if [ "$kernel_signature" = "$signature" ]; then
+        printf 'amdgpu: Page fault observed by fixture\n' \
+            >>"${QWEN_FAKE_BENCH_KERNEL_LOG:?}"
+    fi
+done
 
 # A campaign whose promotion link moves while an arm runs is what the restore's
 # relink exists for, so the fixture can move it from inside the arm.

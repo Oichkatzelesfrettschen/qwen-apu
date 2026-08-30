@@ -69,18 +69,64 @@ state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"$HOME/qwen-webui-state"}
 # launches inherit no lock and cannot hold it past the run's end.
 admission_lock=$state_directory/web-admission.lock
 if [ "${QWEN_ADMISSION_LOCKED:-}" != "$admission_lock" ]; then
+    for lock_tool in flock setsid ps; do
+        if ! command -v "$lock_tool" >/dev/null 2>&1; then
+            printf '%s is required\n' "$lock_tool" >&2
+            exit 2
+        fi
+    done
     mkdir -p "$state_directory"
     QWEN_ADMISSION_LOCKED=$admission_lock
     export QWEN_ADMISSION_LOCKED
-    if flock -n --close -E 75 "$admission_lock" "$0" "$@"; then
-        exit 0
-    else
-        lock_status=$?
-        if [ "$lock_status" -eq 75 ]; then
-            printf 'another admission run holds %s\n' "$admission_lock" >&2
+    lock_child_pid=0
+    lock_group_has_live_members() {
+        LC_ALL=C ps -e -o pgid=,stat= 2>/dev/null |
+            awk -v group_id="$lock_child_pid" \
+                '$1 == group_id && $2 !~ /^Z/ { found = 1 } END { exit !found }'
+    }
+    drain_lock_group() {
+        drain_deadline=$(( $(date +%s) + 5 ))
+        while lock_group_has_live_members; do
+            if [ "$(date +%s)" -ge "$drain_deadline" ]; then
+                kill -KILL -- "-$lock_child_pid" 2>/dev/null || true
+                break
+            fi
+            sleep 0.05
+        done
+        kill_deadline=$(( $(date +%s) + 5 ))
+        while lock_group_has_live_members; do
+            if [ "$(date +%s)" -ge "$kill_deadline" ]; then
+                printf 'locked admission process group %s survived SIGKILL\n' \
+                    "$lock_child_pid" >&2
+                return 1
+            fi
+            sleep 0.05
+        done
+    }
+    forward_lock_signal() {
+        signal_name=$1
+        signal_status=$2
+        trap - HUP INT TERM
+        if [ "$lock_child_pid" -gt 0 ]; then
+            kill -s "$signal_name" -- "-$lock_child_pid" 2>/dev/null ||
+                kill -s "$signal_name" "$lock_child_pid" 2>/dev/null || true
+            wait "$lock_child_pid" 2>/dev/null || true
+            drain_lock_group || signal_status=1
         fi
-        exit "$lock_status"
+        exit "$signal_status"
+    }
+    trap 'forward_lock_signal HUP 129' HUP
+    trap 'forward_lock_signal INT 130' INT
+    trap 'forward_lock_signal TERM 143' TERM
+    setsid flock -n --close -E 75 "$admission_lock" "$0" "$@" &
+    lock_child_pid=$!
+    lock_status=0
+    wait "$lock_child_pid" || lock_status=$?
+    trap - HUP INT TERM
+    if [ "$lock_status" -eq 75 ]; then
+        printf 'another admission run holds %s\n' "$admission_lock" >&2
     fi
+    exit "$lock_status"
 fi
 fixture=${QWEN_WEB_FAKE_FIXTURES:-$script_directory/test-fixtures/web-fake-provider.json}
 router_origin=http://127.0.0.1:$server_port
@@ -153,15 +199,23 @@ call() {
 mkdir -p "$output_directory/http"
 api_key_curl_config=$output_directory/keys/api-key.curl
 api_key_bytes=''
+remove_api_key_material() {
+    rm -f -- "$api_key_curl_config"
+    api_key_bytes=''
+}
 # An early exit under set -e names itself in run.log rather than leaving an
 # empty summary as the only trace.
 note_exit() {
     exit_status=${1:-$?}
+    remove_api_key_material
     if [ "$exit_status" -ne 0 ]; then
         printf 'admission_aborted status=%s utc=%s\n' "$exit_status" "$(utc)" >>"$output_directory/run.log"
     fi
 }
 trap note_exit EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # 1. The ordinary router, as found.
 printf 'admission_start utc=%s host=%s\n' "$(utc)" "$(uname -n)" >"$output_directory/run.log"
@@ -339,11 +393,21 @@ printf '# profile_id\tmodel_id\tweb_mode\tcontext\tvalidated_filled_depth\tmax_r
 printf '%s\t%s\tvalidator-gated\t%s\t%s\t3\t1\t12000\tno\t%s\t%s\tvalidator-gated\tfake\t-\t-\t-\t-\n' \
     "$profile_id" "$model_id" "$context" "$validated_depth" "$vision_allowed" "$tool_selection" >>"$ledger"
 
+# The web-only admission owns no image runtime. An explicit all-refused image
+# ledger prevents a checked-in validator-gated image row from turning the
+# web-only preset into an image configuration with absent authorities.
+image_ledger=$output_directory/image-profiles-refused.tsv
+awk -F'\t' -v OFS='\t' '
+    /^#/ { print; next }
+    { $12 = "refused"; $13 = "-"; $14 = "-"; print }
+' "$script_directory/image-profiles.tsv" >"$image_ledger"
+
 web_presets=$output_directory/web-presets.ini
 if QWEN_WEB_PROFILES=$ledger QWEN_WEB_MCP_SERVER=$script_directory/web-mcp/server.py \
     QWEN_WEB_PROVIDER=fake QWEN_WEB_FAKE_FIXTURES=$fixture \
     QWEN_WEB_TOKEN_KEY_FILE=$token_key_file QWEN_WEB_STATE_DIR=$output_directory/web-mcp \
-    QWEN_WEB_AUTHORIZER_READY=1 QWEN_MODEL_REGISTRY=$registry QWEN_MODEL_ROOT=$model_root \
+    QWEN_WEB_AUTHORIZER_READY=1 QWEN_IMAGE_PROFILES=$image_ledger \
+    QWEN_MODEL_REGISTRY=$registry QWEN_MODEL_ROOT=$model_root \
     "$script_directory/build-web-presets.sh" "$web_presets" >"$output_directory/build-web-presets.log" 2>&1; then
     record preset_generated pass "$(grep -c '^\[' "$web_presets") section"
 else
@@ -802,7 +866,14 @@ if command -v chromium >/dev/null 2>&1; then
         jq '.requests |= map(.body |= (if . == null then null else (fromjson? // .) end) | .body |= (if type == "object" and .params? then .params |= del(.authorization) else . end))' \
             "$browser_report" >"$browser_report.tmp" && mv "$browser_report.tmp" "$browser_report"
     else
-        record browser_turn_completed fail "$(tail -c 300 "$output_directory/browser-turn.err" | tr '\n' ' ')"
+        if jq -e . "$browser_report" >/dev/null 2>&1; then
+            browser_error=$(jq -r \
+                '(.error.type // "browser_error") + ": " + (.error.message // "unknown failure")' \
+                "$browser_report" | head -c 300 | tr '\n' ' ')
+        else
+            browser_error=$(tail -c 300 "$output_directory/browser-turn.err" | tr '\n' ' ')
+        fi
+        record browser_turn_completed fail "${browser_error:-browser driver produced no diagnostic}"
     fi
 else
     record browser_turn_completed fail 'chromium is absent, so the served page was not run'

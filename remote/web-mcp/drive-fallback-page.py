@@ -221,7 +221,7 @@ FETCH_RECORDER = """
 """
 
 
-def run_review(page, seconds):
+def run_review(page, seconds, correction_action):
     """Click one artifact card's Review button and read the checklist it renders.
 
     The button is hidden until `resolveVisionModel` finds a roster row whose
@@ -242,10 +242,19 @@ def run_review(page, seconds):
         "(() => { document.querySelector('.image-review-button').click();"
         " return true; })()"
     )
+    correction_button = (
+        "#image-approve-once"
+        if correction_action == "approve"
+        else "#image-approve-deny"
+    )
     wait_for(
         page,
-        "busy === false && Boolean(document.querySelector('.image-review')"
-        " || document.querySelector('.image-review-note'))",
+        "(() => { const dialog = document.querySelector('#image-approval');"
+        " if (dialog && dialog.open) document.querySelector("
+        + json.dumps(correction_button)
+        + ").click();"
+        " return busy === false && Boolean(document.querySelector('.image-review')"
+        " || document.querySelector('.image-review-note')); })()",
         seconds,
         "the review to settle",
     )
@@ -293,6 +302,12 @@ def main():
     parser.add_argument("--review", action="store_true",
                         help="click the artifact card's Review button and report the rendered checklist")
     parser.add_argument("--review-timeout", type=int, default=420)
+    parser.add_argument(
+        "--review-correction",
+        choices=("approve", "refuse"),
+        default="refuse",
+        help="explicitly approve or refuse a correction dialog opened by the review",
+    )
     parser.add_argument("--api-key-file", default="",
                         help="file whose first line is the bearer key the page sets before connecting")
     parser.add_argument("--chromium", default="chromium")
@@ -459,7 +474,9 @@ def main():
                 except TimeoutError:
                     pass
                 if arguments.review:
-                    review = run_review(page, arguments.review_timeout)
+                    review = run_review(
+                        page, arguments.review_timeout, arguments.review_correction
+                    )
         except Exception as exc:
             # A raise here -- most often wait_for()'s TimeoutError on a dialog
             # that never opened -- previously left main() propagate straight

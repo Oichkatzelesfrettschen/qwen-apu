@@ -97,6 +97,9 @@ set -eu
     printf 'broker_state=%s\n' "${QWEN_WEB_STATE_DIR:-unset}"
     printf 'token_key=%s\n' "${QWEN_WEB_TOKEN_KEY_FILE:-unset}"
     printf 'broker_origin=%s\n' "${QWEN_WEB_BROKER_ORIGIN:-unset}"
+    printf 'submit_trace=%s\n' "${GGML_VK_SUBMIT_TRACE:-unset}"
+    printf 'image_priority_wrapper=%s\n' "${QWEN_IMAGE_PRIORITY_WRAPPER:-unset}"
+    printf 'image_lease_wait=%s\n' "${QWEN_IMAGE_LEASE_WAIT_S:-unset}"
     printf 'api_key=%s\n' "${QWEN_REQUIRE_API_KEY:-unset}"
     printf 'authorizer=%s\n' "${QWEN_WEB_AUTHORIZER_READY:-unset}"
 } >"$QWEN_CONTROL_SESSION_RECORD"
@@ -112,6 +115,9 @@ if PATH="$control_bin:$PATH" QWEN_TMUX_RECORD=$control_record \
     QWEN_WEB_STATE_DIR="$work/broker state" \
     QWEN_WEB_TOKEN_KEY_FILE="$work/token key" \
     QWEN_WEB_BROKER_ORIGIN=http://127.0.0.1:18080 \
+    GGML_VK_SUBMIT_TRACE=1 \
+    QWEN_IMAGE_PRIORITY_WRAPPER="$work/image priority wrapper" \
+    QWEN_IMAGE_LEASE_WAIT_S=7.25 \
     QWEN_REQUIRE_API_KEY=1 QWEN_WEB_AUTHORIZER_READY=1 \
     "$control_harness/qwen-webui-control.sh" start custom \
     >"$work/control.log" 2>"$work/control.err"; then
@@ -134,6 +140,12 @@ if PATH="$control_bin:$PATH" QWEN_TMUX_RECORD=$control_record \
         outcome=token_key_split
     grep -qx 'broker_origin=http://127.0.0.1:18080' "$control_session_record" ||
         outcome=broker_origin_dropped
+    grep -qx 'submit_trace=1' "$control_session_record" ||
+        outcome=submit_trace_dropped
+    grep -Fqx "image_priority_wrapper=$work/image priority wrapper" "$control_session_record" ||
+        outcome=image_priority_wrapper_dropped
+    grep -qx 'image_lease_wait=7.25' "$control_session_record" ||
+        outcome=image_lease_wait_dropped
     report control_forwards_web_authority "$outcome"
 else
     report control_forwards_web_authority failed
@@ -188,6 +200,12 @@ write_web_profiles() {
 }
 write_web_profiles validator-gated "$web_profiles"
 
+validated_tuples=$work/validated-tuples.tsv
+cat >"$validated_tuples" <<'EOF'
+# tuple_id	model_id	runtime_mode	context	batch	ubatch	cache_k	cache_v	flash_attention	threads	parallel	projector_state	backend	status	evidence	llama_commit	runner_sha256	kernel	mesa	amdgpu	measured_at
+vision-fixture-router-child	vision-fixture	router-child	8192	128	32	q8_0	q4_0	on	1	1	loaded	vulkan	validated	evidence/fixture.md	-	-	-	-	-	2026-08-29
+EOF
+
 write_web_preset() {
     web_preset_path=$1
     web_preset_marker=$2
@@ -199,6 +217,9 @@ write_web_preset() {
         printf '# qwen_web_profiles_sha256=%s\n' \
             "$(sha256sum "$web_profiles" | cut -d' ' -f1)"
         printf '# qwen_web_provider=%s\n' "$web_preset_provider"
+        printf '# qwen_validated_tuples_path=%s\n' "$validated_tuples"
+        printf '# qwen_validated_tuples_sha256=%s\n' \
+            "$(sha256sum "$validated_tuples" | cut -d' ' -f1)"
         if [ "$web_preset_marker" = marked ]; then
             printf '# qwen-web-presets: unvalidated-depth-override\n'
         fi
@@ -397,6 +418,56 @@ if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
 else
     report review_section_admits_two_sections refused
     cat "$work/review.err" >&2
+fi
+
+review_without_tag=$state_directory/web-presets-review-without-tag.ini
+sed 's/LLAMA_ARG_TAGS = vision-review,review-only/LLAMA_ARG_TAGS = vision-review/' \
+    "$review_presets" >"$review_without_tag"
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_PRESETS=$review_without_tag QWEN_WEB_LAUNCH_RECORD=$record \
+    QWEN_WEB_REVIEW_SECTION=vision-fixture \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/review-without-tag.log" 2>"$work/review-without-tag.err"; then
+    report untagged_review_section_refused accepted
+elif grep -q 'must carry review-only' "$work/review-without-tag.err"; then
+    report untagged_review_section_refused ok
+else
+    report untagged_review_section_refused wrong_refusal
+fi
+
+review_with_mcp=$state_directory/web-presets-review-with-mcp.ini
+sed "/LLAMA_ARG_TAGS = vision-review,review-only/i LLAMA_ARG_MCP_SERVERS_CONFIG = $mcp_config" \
+    "$review_presets" >"$review_with_mcp"
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_PRESETS=$review_with_mcp QWEN_WEB_LAUNCH_RECORD=$record \
+    QWEN_WEB_REVIEW_SECTION=vision-fixture \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/review-with-mcp.log" 2>"$work/review-with-mcp.err"; then
+    report armed_review_section_refused_at_launch accepted
+elif grep -q 'must carry review-only' "$work/review-with-mcp.err"; then
+    report armed_review_section_refused_at_launch ok
+else
+    report armed_review_section_refused_at_launch wrong_refusal
+fi
+
+validated_tuples_standalone=$work/validated-tuples-standalone.tsv
+sed 's/\trouter-child\t/\tstandalone\t/' "$validated_tuples" \
+    >"$validated_tuples_standalone"
+review_with_standalone_tuple=$state_directory/web-presets-review-standalone.ini
+sed -e "s|^# qwen_validated_tuples_path=.*|# qwen_validated_tuples_path=$validated_tuples_standalone|" \
+    -e "s|^# qwen_validated_tuples_sha256=.*|# qwen_validated_tuples_sha256=$(sha256sum "$validated_tuples_standalone" | cut -d' ' -f1)|" \
+    "$review_presets" >"$review_with_standalone_tuple"
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_PRESETS=$review_with_standalone_tuple QWEN_WEB_LAUNCH_RECORD=$record \
+    QWEN_WEB_REVIEW_SECTION=vision-fixture \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/review-standalone.log" 2>"$work/review-standalone.err"; then
+    report standalone_review_tuple_refused_at_launch accepted
+elif grep -q 'no validated router-child Vulkan tuple' \
+    "$work/review-standalone.err"; then
+    report standalone_review_tuple_refused_at_launch ok
+else
+    report standalone_review_tuple_refused_at_launch wrong_refusal
 fi
 
 # The marker names a section rather than raising the limit on its own, so one

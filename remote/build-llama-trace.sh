@@ -42,6 +42,7 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repository_directory=$(CDPATH='' cd -- "$script_directory/.." && pwd)
 base_source=${1:-"${HOME:?}/src/llama.cpp"}
 trace_source=${2:-"${HOME:?}/src/llama.cpp-qwen-apu-trace"}
+status_checker=${QWEN_TRACE_STATUS_CHECKER:-$script_directory/check-trace-source-status.sh}
 expected_commit=f280b26983ad0fdb705a0d9ebf0503e76f2899b0
 trace_preset=raven2-vulkan-production
 
@@ -60,6 +61,11 @@ pre_router_server_sha256=2833d9d237e77a70a75736426f11432b964bc66f8e85c5751451f77
 
 if [ ! -d "$base_source/.git" ]; then
     printf 'base llama.cpp source repository is missing: %s\n' "$base_source" >&2
+    exit 1
+fi
+if [ ! -x "$status_checker" ]; then
+    printf 'trace source status checker is not executable: %s\n' \
+        "$status_checker" >&2
     exit 1
 fi
 
@@ -100,7 +106,7 @@ trace_series_matches() {
     source_matches "$trace_server_sha256" tools/server/server.cpp
 }
 
-if trace_series_matches; then
+if trace_series_matches && "$status_checker" "$trace_source" >/dev/null; then
     prepared_state=already_verified
 else
     current_status=$(git -C "$trace_source" status --porcelain)
@@ -132,6 +138,10 @@ fi
 
 if ! trace_series_matches; then
     printf 'trace source does not match the replayed six-patch digests\n' >&2
+    exit 1
+fi
+if ! "$status_checker" "$trace_source" >/dev/null; then
+    printf 'trace source carries changes outside the exact six-patch path set\n' >&2
     exit 1
 fi
 

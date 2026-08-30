@@ -32,6 +32,7 @@ stop_timeout_seconds=${QWEN_YACY_STOP_TIMEOUT:-30}
 # from before exec replaces it with the java process, and stopYACY.sh reads
 # DATA/SETTINGS/yacy.conf from the same directory to find the admin API.
 pid_file=${QWEN_YACY_PID_FILE:-"$install_directory/yacy.pid"}
+identity_file=${QWEN_YACY_IDENTITY_FILE:-"$pid_file.starttime"}
 log_file=${QWEN_YACY_LOG_FILE:-"$install_directory/yacy.log"}
 
 # -f runs startYACY.sh's java invocation in the foreground: `exec` inside the
@@ -43,6 +44,49 @@ stop_command=${QWEN_YACY_STOP_COMMAND:-"'$install_directory/stopYACY.sh'"}
 
 pid_is_alive() {
     [ -d "/proc/$1" ]
+}
+
+process_start_time() {
+    sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null | awk '{ print $20 }'
+}
+
+pid_identity_matches() {
+    identity_pid=$1
+    [ -r "$identity_file" ] || return 1
+    recorded_start_time=$(sed -n '1p' "$identity_file" | tr -d ' ')
+    case $recorded_start_time in
+        '' | *[!0-9]*) return 1 ;;
+    esac
+    current_start_time=$(process_start_time "$identity_pid") || return 1
+    [ "$current_start_time" = "$recorded_start_time" ]
+}
+
+remove_process_record() {
+    rm -f "$pid_file" "$identity_file"
+}
+
+terminate_recorded_process() {
+    terminate_pid=$1
+    if ! pid_identity_matches "$terminate_pid"; then
+        printf 'refusing to signal pid %s because its recorded start time does not match\n' \
+            "$terminate_pid" >&2
+        return 1
+    fi
+    kill -TERM "$terminate_pid" 2>/dev/null || true
+    terminate_waited=0
+    while [ "$terminate_waited" -lt "$stop_timeout_seconds" ]; do
+        pid_identity_matches "$terminate_pid" || break
+        sleep 1
+        terminate_waited=$((terminate_waited + 1))
+    done
+    if pid_identity_matches "$terminate_pid"; then
+        kill -KILL "$terminate_pid" 2>/dev/null || true
+        sleep 1
+    fi
+    if pid_identity_matches "$terminate_pid"; then
+        return 1
+    fi
+    remove_process_record
 }
 
 # The JVM opens a dual-stack socket and ss reports the IPv4 loopback in its
@@ -68,7 +112,7 @@ case $action in
             printf 'already running: pid=%s\n' "$existing_pid" >&2
             exit 2
         fi
-        rm -f "$pid_file"
+        remove_process_record
         # The launched shell writes its own PID before exec replaces it with
         # the server process, so the PID in the file is the server's own for
         # the rest of its life rather than a forking wrapper's. The redirects
@@ -80,13 +124,13 @@ case $action in
         # process; a server left holding that pipe open never lets it reach
         # EOF, so the caller's command substitution waits forever even after
         # this script itself has exited.
-        sh -c "echo \$\$ > '$pid_file'; exec $launch_command" \
+        sh -c "echo \$\$ > '$pid_file'; sed 's/^.*) //' /proc/\$\$/stat | awk '{ print \$20 }' > '$identity_file'; exec $launch_command" \
             >"$log_file" 2>&1 </dev/null &
 
         waited=0
         while [ "$waited" -lt "$start_timeout_seconds" ]; do
             started_pid=$(read_pid || true)
-            if [ -n "${started_pid:-}" ] && pid_is_alive "$started_pid" &&
+            if [ -n "${started_pid:-}" ] && pid_identity_matches "$started_pid" &&
                 listener_present; then
                 printf 'started: pid=%s listener=%s:%s\n' \
                     "$started_pid" "$bind_address" "$server_port"
@@ -98,13 +142,18 @@ case $action in
         printf 'server did not reach a listening state within %ss\n' \
             "$start_timeout_seconds" >&2
         [ -f "$log_file" ] && tail -n 40 "$log_file" >&2
+        started_pid=$(read_pid || true)
+        if [ -n "${started_pid:-}" ] && ! terminate_recorded_process "$started_pid"; then
+            printf 'startup timeout cleanup could not prove process termination: pid=%s\n' \
+                "$started_pid" >&2
+        fi
         exit 1
         ;;
 
     stop)
         current_pid=$(read_pid || true)
         if [ -z "${current_pid:-}" ] || ! pid_is_alive "$current_pid"; then
-            rm -f "$pid_file"
+            remove_process_record
             if listener_present; then
                 printf 'no recorded process but %s:%s is still listening\n' \
                     "$bind_address" "$server_port" >&2
@@ -114,11 +163,17 @@ case $action in
             exit 0
         fi
 
+        if ! pid_identity_matches "$current_pid"; then
+            printf 'refusing to stop pid %s because its recorded start time does not match\n' \
+                "$current_pid" >&2
+            exit 1
+        fi
+
         sh -c "$stop_command" >/dev/null 2>&1 || true
         waited=0
         while [ "$waited" -lt "$stop_timeout_seconds" ]; do
-            if ! pid_is_alive "$current_pid" && ! listener_present; then
-                rm -f "$pid_file"
+            if ! pid_identity_matches "$current_pid" && ! listener_present; then
+                remove_process_record
                 printf 'stopped: pid=%s\n' "$current_pid"
                 exit 0
             fi
@@ -128,23 +183,23 @@ case $action in
 
         kill -TERM "$current_pid" 2>/dev/null || true
         sleep 2
-        if pid_is_alive "$current_pid"; then
+        if pid_identity_matches "$current_pid"; then
             kill -KILL "$current_pid" 2>/dev/null || true
             sleep 1
         fi
-        if pid_is_alive "$current_pid" || listener_present; then
+        if pid_identity_matches "$current_pid" || listener_present; then
             printf 'residue after stop: pid_alive=%s listener=%s\n' \
-                "$(pid_is_alive "$current_pid" && echo yes || echo no)" \
+                "$(pid_identity_matches "$current_pid" && echo yes || echo no)" \
                 "$(listener_present && echo yes || echo no)" >&2
             exit 1
         fi
-        rm -f "$pid_file"
+        remove_process_record
         printf 'stopped (forced): pid=%s\n' "$current_pid"
         ;;
 
     status)
         current_pid=$(read_pid || true)
-        if [ -n "${current_pid:-}" ] && pid_is_alive "$current_pid" &&
+        if [ -n "${current_pid:-}" ] && pid_identity_matches "$current_pid" &&
             listener_present; then
             printf 'state=running pid=%s listener=%s:%s\n' \
                 "$current_pid" "$bind_address" "$server_port"

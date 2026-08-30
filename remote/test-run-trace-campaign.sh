@@ -38,6 +38,8 @@ cp "$fixtures/fake-llama-bench.sh" "$trace_build/bin/llama-bench"
 chmod +x "$trace_build/bin/llama-bench"
 printf 'preset\traven2-vulkan-production\ncommit\tf280b26983ad0fdb705a0d9ebf0503e76f2899b0\n' \
     >"$trace_build/artifact-manifest.tsv"
+"$script_directory/hash-load-closure.sh" "$trace_build/bin/llama-bench" |
+    sed 1d >>"$trace_build/artifact-manifest.tsv"
 
 appliance_source=$work_directory/llama.cpp-qwen-apu
 production_build=$appliance_source/build-raven2-vulkan-production
@@ -49,7 +51,7 @@ SERVER
 chmod +x "$production_build/bin/llama-server"
 "$script_directory/hash-load-closure.sh" "$production_build/bin/llama-server" |
     sed 1d >"$production_build/artifact-manifest.tsv"
-ln -sfn "$production_build" "$appliance_source/build-appliance-current"
+ln -sfnT "$production_build" "$appliance_source/build-appliance-current"
 
 model_file=$work_directory/model.gguf
 printf 'GGUF fixture\n' >"$model_file"
@@ -61,7 +63,12 @@ sleep 30
 SAMPLER
 cat >"$work_directory/fake-kernel-reader.sh" <<'KERNEL'
 #!/bin/sh
-exit 1
+if [ "${1:-}" = --follow-new ]; then
+    exit 1
+fi
+[ -z "${QWEN_FAKE_BENCH_KERNEL_LOG:-}" ] ||
+    [ ! -f "$QWEN_FAKE_BENCH_KERNEL_LOG" ] ||
+    cat "$QWEN_FAKE_BENCH_KERNEL_LOG"
 KERNEL
 cat >"$work_directory/fake-patch-verifier.sh" <<'VERIFIER'
 #!/bin/sh
@@ -93,6 +100,7 @@ run_campaign() {
     QWEN_TRACE_SKIP_PRODUCTION_SOURCE_GATE=1 \
     QWEN_TRACE_ARM_TIMEOUT_S=20 \
     QWEN_TRACE_ARM_KILL_AFTER_S=5 \
+    QWEN_VULKAN_WORKLOAD_LOCK=$work_directory/vulkan-workload.lock \
     QWEN_FAKE_BENCH_INVOCATIONS=$campaign_output.invocations \
     env "$@" \
         "$campaign" "$campaign_output" >"$campaign_output.stdout" \
@@ -164,6 +172,7 @@ QWEN_TRACE_FOREGROUND=1 QWEN_TRACE_BUILD_DIR=$trace_build \
     QWEN_TRACE_ENV_WRAPPER=$fixtures/fake-vulkan-env-wrapper.sh \
     QWEN_TRACE_CLOCK_SAMPLER=$work_directory/fake-clock-sampler.sh \
     QWEN_TRACE_PATCH_VERIFIER=$work_directory/fake-patch-verifier.sh \
+    QWEN_VULKAN_WORKLOAD_LOCK=$work_directory/vulkan-workload.lock \
     "$campaign" "$work_directory/out-stale" \
         >"$work_directory/out-stale.stdout" 2>"$work_directory/out-stale.stderr"
 stale_status=$?
@@ -184,6 +193,73 @@ grep -q 'predates llama-router-tools-proxy.patch' "$campaign" ||
     router_state='no refusal names the router tools patch'
 report names_pre_router_digest "$router_state"
 
+# The build manifest binds the executable closure, not only the source commit.
+# Replacing the bench after publication must fail before any arm starts.
+cp "$trace_build/bin/llama-bench" "$work_directory/llama-bench.original"
+printf '# replacement\n' >>"$trace_build/bin/llama-bench"
+set +e
+run_campaign "$work_directory/out-replaced-bench"
+replaced_bench_status=$?
+set -e
+cp "$work_directory/llama-bench.original" "$trace_build/bin/llama-bench"
+chmod +x "$trace_build/bin/llama-bench"
+replaced_bench_state=accepted
+[ "$replaced_bench_status" -eq 2 ] ||
+    replaced_bench_state="a replaced bench exited $replaced_bench_status"
+grep -q 'manifest load closure differs' \
+    "$work_directory/out-replaced-bench.stderr" ||
+    replaced_bench_state='the refusal did not name manifest closure drift'
+report refuses_replaced_trace_bench "$replaced_bench_state"
+
+# Two campaigns race the same lease. The first holds it from preflight through
+# all controls and restoration; the second reaches no bench invocation.
+lease_first=$work_directory/out-lease-first
+(
+    set +e
+    QWEN_FAKE_BENCH_DELAY=d16384-b128-ub32-traceoff \
+        QWEN_FAKE_BENCH_DELAY_S=2 run_campaign "$lease_first"
+    printf '%s\n' "$?" >"$lease_first.status"
+) &
+lease_first_pid=$!
+lease_wait=0
+while [ ! -s "$lease_first.invocations" ] && [ "$lease_wait" -lt 50 ]; do
+    sleep 0.1
+    lease_wait=$((lease_wait + 1))
+done
+set +e
+run_campaign "$work_directory/out-lease-second"
+lease_second_status=$?
+set -e
+wait "$lease_first_pid"
+lease_state=accepted
+[ "$(cat "$lease_first.status")" -eq 0 ] || lease_state='the first campaign failed'
+[ "$lease_second_status" -eq 2 ] ||
+    lease_state="the racing campaign exited $lease_second_status"
+[ ! -e "$work_directory/out-lease-second.invocations" ] ||
+    lease_state='the racing campaign reached an arm'
+grep -q 'another Vulkan workload holds the shared lease' \
+    "$work_directory/out-lease-second.stderr" ||
+    lease_state='the racing refusal did not name the lease holder'
+report serializes_campaigns_with_shared_lease "$lease_state"
+
+# Restoration accepts only the production build root under the production
+# source tree, even when an external target carries a self-consistent manifest.
+external_build=$work_directory/external-production
+cp -a "$production_build" "$external_build"
+ln -sfnT "$external_build" "$appliance_source/build-appliance-current"
+set +e
+run_campaign "$work_directory/out-external-production"
+external_status=$?
+set -e
+ln -sfnT "$production_build" "$appliance_source/build-appliance-current"
+external_state=accepted
+[ "$external_status" -eq 2 ] ||
+    external_state="an external production target exited $external_status"
+grep -q 'does not name the canonical build root' \
+    "$work_directory/out-external-production.stderr" ||
+    external_state="the external target refusal said $(tr '\n' ' ' <"$work_directory/out-external-production.stderr")"
+report refuses_external_production_target "$external_state"
+
 # A clean campaign runs P0, P1, T1 in that order, each followed by its control,
 # and every arm carries the resolved submission triple.
 clean_output=$work_directory/out-clean
@@ -199,7 +275,9 @@ d16384-b128-ub32-trace1
 d0-b128-ub32-traceoff
 d16384-b2048-ub32-trace1
 d0-b128-ub32-traceoff'
-actual_invocations=$(awk '{ print $1 }' "$clean_output.invocations")
+actual_invocations=''
+[ ! -f "$clean_output.invocations" ] ||
+    actual_invocations=$(awk '{ print $1 }' "$clean_output.invocations")
 [ "$actual_invocations" = "$expected_invocations" ] ||
     clean_state="arm order was $(printf '%s' "$actual_invocations" | tr '\n' ' ')"
 recorded_arms=$(awk -F'\t' 'NR > 1 { print $1 }' \
@@ -216,6 +294,12 @@ grep -q 'trace_campaign=completed' "$clean_output.stdout" ||
 [ "$(summary_field "$clean_output" p1 22)" = not-triggered ] ||
     clean_state='a completed traced arm did not read not-triggered'
 report clean_campaign_arm_order "$clean_state"
+
+metadata_state=accepted
+metadata=$clean_output/trace-campaign-metadata.tsv
+[ "$(cut -f1,6,7 "$metadata" | sed -n '2p')" = '2	Vulkan0	.*=Vulkan0' ] ||
+    metadata_state='campaign metadata omits the served placement'
+report metadata_binds_served_placement "$metadata_state"
 
 # The trace build's own load closure is recorded beside the arms.
 closure_state=accepted
@@ -236,6 +320,18 @@ resume_skips=$(grep -c 'arm_resume_skip' "$clean_output.stdout" || true)
 [ "$resume_skips" -eq 3 ] || resume_state="the resume skipped $resume_skips arms"
 report resumes_recorded_arms "$resume_state"
 
+old_metadata_output=$work_directory/out-old-metadata
+cp -a "$clean_output" "$old_metadata_output"
+sed -i '1s/\tdevice\toverride_tensor$//; 2s/^2\t/1\t/; 2s/\tVulkan0\t\.\*=Vulkan0$//' \
+    "$old_metadata_output/trace-campaign-metadata.tsv"
+set +e
+run_campaign "$old_metadata_output"
+old_metadata_status=$?
+set -e
+[ "$old_metadata_status" -eq 2 ] &&
+    report refuses_preplacement_metadata accepted ||
+    report refuses_preplacement_metadata "status-$old_metadata_status"
+
 # P0 failing ends the campaign before any trace exists, which the terminal
 # summary states rather than leaving to inference.
 p0_output=$work_directory/out-p0-fail
@@ -249,11 +345,63 @@ p0_state=accepted
 p0_arms=$(awk -F'\t' 'NR > 1 { print $1 }' \
     "$p0_output/trace-campaign-summary.tsv" | tr '\n' ' ')
 [ "$p0_arms" = 'p0 ' ] || p0_state="the ledger recorded $p0_arms after a P0 failure"
-grep -q 'trace_campaign=halted arm=p0 reason=arm-timed-out' "$p0_output.stdout" ||
-    p0_state='the halt did not name the timed-out P0 arm'
+grep -q 'trace_campaign=halted arm=p0 reason=arm-failed' "$p0_output.stdout" ||
+    p0_state='a direct status 124 was misclassified as a controller timeout'
 [ "$(summary_field "$p0_output" p0 22)" = off ] ||
     p0_state='an untraced arm claimed a trace state'
 report halts_at_first_failure "$p0_state"
+
+# Direct exit 137 and a controller deadline are distinct. Only timeout(1)'s
+# own signal diagnostic creates the retained timeout marker.
+direct_kill_output=$work_directory/out-direct-137
+set +e
+QWEN_FAKE_BENCH_FAIL=d16384-b128-ub32-traceoff \
+    QWEN_FAKE_BENCH_FAIL_STATUS=137 run_campaign "$direct_kill_output"
+direct_kill_status=$?
+set -e
+direct_kill_state=accepted
+[ "$direct_kill_status" -eq 1 ] ||
+    direct_kill_state="a direct 137 campaign exited $direct_kill_status"
+grep -q 'trace_campaign=halted arm=p0 reason=arm-failed' \
+    "$direct_kill_output.stdout" ||
+    direct_kill_state='direct 137 was attributed to the deadline controller'
+[ ! -e "$direct_kill_output/p0.timeout.txt" ] ||
+    direct_kill_state='direct 137 created a timeout marker'
+report distinguishes_direct_sigkill "$direct_kill_state"
+
+deadline_output=$work_directory/out-deadline
+set +e
+QWEN_FAKE_BENCH_DELAY=d16384-b128-ub32-traceoff \
+    QWEN_FAKE_BENCH_DELAY_S=5 run_campaign "$deadline_output" \
+        QWEN_TRACE_ARM_TIMEOUT_S=1
+deadline_status=$?
+set -e
+deadline_state=accepted
+[ "$deadline_status" -eq 1 ] ||
+    deadline_state="a timed campaign exited $deadline_status"
+grep -q 'trace_campaign=halted arm=p0 reason=arm-timed-out' \
+    "$deadline_output.stdout" ||
+    deadline_state='the deadline marker did not select arm-timed-out'
+grep -q '^deadline=expired escalation=term$' \
+    "$deadline_output/p0.timeout.txt" ||
+    deadline_state='the deadline controller left no retained marker'
+report records_timeout_controller_marker "$deadline_state"
+
+# The kernel matcher is case-insensitive in both classification and counting.
+page_fault_output=$work_directory/out-page-fault
+page_fault_log=$work_directory/page-fault-kernel.log
+set +e
+QWEN_FAKE_BENCH_KERNEL_EVENT=d16384-b128-ub32-traceoff \
+    QWEN_FAKE_BENCH_KERNEL_LOG=$page_fault_log \
+    run_campaign "$page_fault_output"
+page_fault_status=$?
+set -e
+page_fault_state=accepted
+[ "$page_fault_status" -eq 1 ] ||
+    page_fault_state="a page-fault campaign exited $page_fault_status"
+[ "$(summary_field "$page_fault_output" p0 13)" = 1 ] ||
+    page_fault_state='mixed-case Page fault was not counted'
+report counts_page_fault_case_insensitively "$page_fault_state"
 
 # T1 failing with a trace names the retained log, which is where the submission
 # serial, the last completed serial, the node, the pipeline, and the dispatch

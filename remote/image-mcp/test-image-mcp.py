@@ -65,7 +65,8 @@ PROFILE_STEPS = 4
 PROFILE_MAX_DIMENSION = 512
 PROFILE_MAX_STEPS = 4
 ARTIFACT_SHA256 = "b" * 64
-PROVENANCE_URL = f"/artifacts/{ARTIFACT_SHA256}.json"
+PROVENANCE_SHA256 = "c" * 64
+PROVENANCE_URL = f"/artifacts/{PROVENANCE_SHA256}.json"
 START_WAIT_SECONDS = 15.0
 STOP_WAIT_SECONDS = 5.0
 CLOSE_WAIT_SECONDS = 10.0
@@ -930,15 +931,14 @@ class ImageMcpTest(unittest.TestCase):
         self.assertTrue(result["isError"], result)
         self.assertIn("outside the protocol", self.result_text(result))
 
-    def test_provenance_url_naming_another_digest_refused(self):
-        """The route is derived from the digest, so one spelling is admitted."""
+    def test_provenance_url_has_an_independent_content_digest(self):
+        """Repeated PNG bytes can retain distinct immutable job records."""
         self.start_echo_service(
             {"provenance_url": "/artifacts/" + "c" * 64 + ".json"}
         )
         session = self.start_session()
         result = self.call(session, tool_arguments(self.grant()))
-        self.assertTrue(result["isError"], result)
-        self.assertIn("does not name the digest", self.result_text(result))
+        self.assertFalse(result["isError"], result)
 
     def test_provenance_url_carrying_an_origin_refused(self):
         """A reply names a route rather than a host.
@@ -957,7 +957,7 @@ class ImageMcpTest(unittest.TestCase):
         session = self.start_session()
         result = self.call(session, tool_arguments(self.grant()))
         self.assertTrue(result["isError"], result)
-        self.assertIn("does not name the digest", self.result_text(result))
+        self.assertIn("content-addressed JSON route", self.result_text(result))
 
     def test_absent_service_refuses_without_spending_the_grant(self):
         session = self.start_session()

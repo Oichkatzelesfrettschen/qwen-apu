@@ -154,9 +154,9 @@ for connections in 1 2 4 7; do
     fi
 done
 
-# One-stream mode must keep a prior partial and ask the origin only for the
-# remaining suffix. The range log distinguishes a resumed transfer from a
-# byte-zero restart that happens to produce the same final digest.
+# An unbound one-stream prefix must be discarded rather than mixed with the
+# requested artifact. The range log distinguishes unsafe resumption from the
+# required byte-zero restart.
 rm -rf "$temporary_directory/dest"
 mkdir -p "$temporary_directory/dest"
 head -c 12345 "$document_root/model.gguf" \
@@ -165,16 +165,44 @@ head -c 12345 "$document_root/model.gguf" \
 line=$(QWEN_HUGGINGFACE_ENDPOINT=$endpoint QWEN_FETCH_CONNECTIONS=1 \
     "$fetcher" owner/repo revision model.gguf \
     "$temporary_directory/dest" 2>&1) || {
-        report single_stream_resume rejected
+        report unbound_partial_restart rejected
         printf '%s\n' "$line" >&2
         line=''
     }
 resumed_digest=$(sha256sum "$temporary_directory/dest/model.gguf" | awk '{ print $1 }')
 if [ "$resumed_digest" = "$origin_digest" ] && \
-   grep -Fx 'bytes=12345-' "$request_log" >/dev/null; then
-    report single_stream_resume accepted
+   ! grep -Fx 'bytes=12345-' "$request_log" >/dev/null; then
+    report unbound_partial_restart accepted
 else
-    report single_stream_resume rejected
+    report unbound_partial_restart rejected
+fi
+
+# A prefix whose sidecar binds the exact repository, revision, URL, digest,
+# and byte count can resume safely. Any change to those fields produces a
+# different identity and therefore the byte-zero behavior above.
+rm -f "$temporary_directory/dest/model.gguf"
+head -c 12345 "$document_root/model.gguf" \
+    >"$temporary_directory/dest/model.gguf.part"
+source_url=$endpoint/owner/repo/resolve/revision/model.gguf
+partial_identity=$(printf '%s\0' owner/repo revision model.gguf "$source_url" \
+    "$origin_digest" "$origin_bytes" | sha256sum | awk '{ print $1 }')
+printf '%s\n' "$partial_identity" \
+    >"$temporary_directory/dest/model.gguf.part.identity"
+: >"$request_log"
+line=$(QWEN_HUGGINGFACE_ENDPOINT=$endpoint QWEN_FETCH_CONNECTIONS=1 \
+    "$fetcher" owner/repo revision model.gguf \
+    "$temporary_directory/dest" 2>&1) || {
+        report bound_partial_resume rejected
+        printf '%s\n' "$line" >&2
+        line=''
+    }
+resumed_digest=$(sha256sum "$temporary_directory/dest/model.gguf" | awk '{ print $1 }')
+if [ "$resumed_digest" = "$origin_digest" ] && \
+   grep -Fx 'bytes=12345-' "$request_log" >/dev/null && \
+   [ ! -e "$temporary_directory/dest/model.gguf.part.identity" ]; then
+    report bound_partial_resume accepted
+else
+    report bound_partial_resume rejected
 fi
 
 # Artifact names retain their repository-relative path. The fetcher creates the

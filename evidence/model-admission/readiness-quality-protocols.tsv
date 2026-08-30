@@ -1,0 +1,3 @@
+candidate_id	quality_control_model_id	evaluation_mode	score_scale	sweep_requirement	scope
+qwen2vl-2b-platinum	none	thinking-off	55-row-roster	same-sweep	text-trunk-only; vision remains unclassified until a pinned loaded projector is admitted
+qwen3-zero-coder-08b	none	thinking-off	55-row-roster	same-sweep	text-generation

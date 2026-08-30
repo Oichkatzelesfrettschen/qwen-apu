@@ -277,7 +277,29 @@ searxng_safesearch=${QWEN_WEB_SEARXNG_SAFESEARCH:-}
 searxng_allow_remote=${QWEN_WEB_SEARXNG_ALLOW_REMOTE:-}
 token_key_file=${QWEN_WEB_TOKEN_KEY_FILE:-}
 web_state_directory=${QWEN_WEB_STATE_DIR:-"${HOME:?}/qwen-webui-state/web-mcp"}
-web_provider=${QWEN_WEB_PROVIDER:-exa}
+# The checked-in profile ledger is the default provider authority. An explicit
+# environment value is an assertion that every row below must match, not a
+# second default that can drift from the file the generator consumes.
+web_provider=${QWEN_WEB_PROVIDER:-}
+if [ -z "$web_provider" ]; then
+    if [ ! -r "$web_profiles" ]; then
+        printf 'web profile ledger is unreadable: %s\n' "$web_profiles" >&2
+        exit 1
+    fi
+    web_provider_values=$(
+        awk -F '\t' '!/^#/ && NF { print $13 }' "$web_profiles" |
+            LC_ALL=C sort -u
+    )
+    case $web_provider_values in
+        '' | *'
+'*)
+            printf 'web profile ledger must name exactly one provider: %s\n' \
+                "$web_profiles" >&2
+            exit 1
+            ;;
+        *) web_provider=$web_provider_values ;;
+    esac
+fi
 # llama-server reads timeout_ms from the MCP configuration as the per-call
 # deadline for the child (server-mcp.cpp, server_mcp_server_config). The
 # three deadlines on a call are ordered so the innermost fires first: the
@@ -407,6 +429,7 @@ require_search_policy() {
 }
 
 require_category() {
+    category_value=$3
     case $3 in
         '-')
             if [ "$4" = required ]; then
@@ -421,6 +444,11 @@ require_category() {
             exit 1
             ;;
     esac
+    if [ "$category_value" != '-' ] && [ "${#category_value}" -gt 64 ]; then
+        printf 'profile %s carries %s longer than 64 characters: %s\n' \
+            "$1" "$2" "$category_value" >&2
+        exit 1
+    fi
 }
 
 # The MCP inputs describe a configuration file, so a ledger whose every row is
@@ -609,6 +637,23 @@ image_profiles=$image_profiles_directory/$(basename -- "$image_profiles")
 image_profiles_identity=$(sha256sum -- "$image_profiles")
 image_profiles_sha256=${image_profiles_identity%% *}
 
+# A persisted review section remains authorized only while the exact
+# validated-tuple ledger used to generate it remains unchanged. Canonicalize
+# and bind that authority before consulting model-registry.sh, so both the
+# emitted marker and the tuple query name the same file.
+validated_tuples=${QWEN_VALIDATED_TUPLES:-$script_directory/validated-tuples.tsv}
+validated_tuples_directory=$(dirname -- "$validated_tuples")
+validated_tuples_directory=$(CDPATH='' cd -- "$validated_tuples_directory" && pwd)
+validated_tuples=$validated_tuples_directory/$(basename -- "$validated_tuples")
+if [ ! -r "$validated_tuples" ]; then
+    printf 'validated-tuple ledger is unreadable: %s\n' "$validated_tuples" >&2
+    exit 1
+fi
+validated_tuples_identity=$(sha256sum -- "$validated_tuples")
+validated_tuples_sha256=${validated_tuples_identity%% *}
+QWEN_VALIDATED_TUPLES=$validated_tuples
+export QWEN_VALIDATED_TUPLES
+
 # Every name the image MCP child reads is required before a section names it,
 # because a configuration missing one reaches the model as a per-call refusal
 # long after the listener reports ready.
@@ -726,9 +771,10 @@ if [ -n "$image_profile_review_model" ] &&
         awk -F'\t' -v depth="$review_context" -v batch="$review_batch" \
             -v ubatch="$review_ubatch" -v cache_k="$review_cache_k" \
             -v cache_v="$review_cache_v" -v flash="$review_flash" '
-            $4 == depth && $5 == batch && $6 == ubatch && $7 == cache_k &&
+            $3 == "router-child" && $4 == depth && $5 == batch &&
+            $6 == ubatch && $7 == cache_k &&
             $8 == cache_v && $9 == flash && $12 == "loaded" &&
-            $14 == "validated" { found = 1 }
+            $13 == "vulkan" && $14 == "validated" { found = 1 }
             END { exit !found }
         '; then
         printf 'review_model %s carries no validated tuple at depth %s, %s/%s, %s/%s, flash %s with the projector loaded\n' \
@@ -778,6 +824,8 @@ mkdir -p "$mcp_config_directory_temporary"
     printf '# qwen_image_mcp_timeout_ms=%s\n' "$image_mcp_timeout_ms"
     printf '# qwen_image_review_model=%s\n' "${image_profile_review_model:--}"
     printf '# qwen_image_review_section=%s\n' "${review_section:--}"
+    printf '# qwen_validated_tuples_path=%s\n' "$validated_tuples"
+    printf '# qwen_validated_tuples_sha256=%s\n' "$validated_tuples_sha256"
     if [ "$allow_unvalidated_depth" = 1 ]; then
         printf '# qwen-web-presets: unvalidated-depth-override\n'
     fi
@@ -1294,6 +1342,13 @@ web_profiles_current_sha256=${web_profiles_current_identity%% *}
 if [ "$web_profiles_current_sha256" != "$web_profiles_sha256" ]; then
     printf 'web profile ledger identity changed during generation: expected %s, measured %s\n' \
         "$web_profiles_sha256" "$web_profiles_current_sha256" >&2
+    exit 1
+fi
+validated_tuples_current_identity=$(sha256sum -- "$validated_tuples")
+validated_tuples_current_sha256=${validated_tuples_current_identity%% *}
+if [ "$validated_tuples_current_sha256" != "$validated_tuples_sha256" ]; then
+    printf 'validated-tuple ledger identity changed during generation: expected %s, measured %s\n' \
+        "$validated_tuples_sha256" "$validated_tuples_current_sha256" >&2
     exit 1
 fi
 

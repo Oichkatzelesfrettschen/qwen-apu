@@ -388,6 +388,15 @@ classify_hazard() {
     hazard_control_faults=$8
     hazard_control_status=$9
     hazard_classes=''
+    append_hazard_class() {
+        appended_hazard_class=$1
+        case ,$hazard_classes, in
+            *,"$appended_hazard_class",*) ;;
+            *)
+                hazard_classes=${hazard_classes:+$hazard_classes,}$appended_hazard_class
+                ;;
+        esac
+    }
     hazard_has_page_fault=0
     for hazard_kernel_file in "$hazard_arm_kernel_file" \
         "$hazard_control_kernel_file"; do
@@ -396,33 +405,30 @@ classify_hazard() {
             hazard_has_page_fault=1
         if grep -qiE 'gfxhub.*page fault|page fault.*gfxhub' \
             "$hazard_kernel_file" 2>/dev/null; then
-            hazard_classes=${hazard_classes:+$hazard_classes,}gfxhub-page-fault
+            append_hazard_class gfxhub-page-fault
         fi
         if grep -qE 'VM_L2_PROTECTION_FAULT|PROTECTION_FAULT' \
             "$hazard_kernel_file" 2>/dev/null; then
-            hazard_classes=${hazard_classes:+$hazard_classes,}VM-protection-fault
+            append_hazard_class VM-protection-fault
         fi
     done
     if [ "$hazard_has_page_fault" -eq 0 ] &&
        grep -qE 'ring reset|Ring .* reset|device wedged|GPU reset' \
            "$hazard_arm_kernel_file" "$hazard_control_kernel_file" 2>/dev/null; then
-        hazard_classes=${hazard_classes:+$hazard_classes,}ring-timeout-only
+        append_hazard_class ring-timeout-only
     fi
     if grep -qiE 'device lost|VK_ERROR_DEVICE_LOST' "$hazard_bench_log" \
         2>/dev/null; then
         if { [ "$hazard_arm_resets" = unavailable ] || [ "$hazard_arm_resets" -eq 0 ]; } &&
            { [ "$hazard_arm_faults" = unavailable ] || [ "$hazard_arm_faults" -eq 0 ]; }; then
-            hazard_classes=${hazard_classes:+$hazard_classes,}device-lost-without-kernel-record
+            append_hazard_class device-lost-without-kernel-record
         fi
     fi
     if grep -qiE 'device lost|VK_ERROR_DEVICE_LOST' "$hazard_control_log" \
         2>/dev/null; then
         if { [ "$hazard_control_resets" = unavailable ] || [ "$hazard_control_resets" -eq 0 ]; } &&
            { [ "$hazard_control_faults" = unavailable ] || [ "$hazard_control_faults" -eq 0 ]; }; then
-            case ,$hazard_classes, in
-                *,device-lost-without-kernel-record,*) ;;
-                *) hazard_classes=${hazard_classes:+$hazard_classes,}device-lost-without-kernel-record ;;
-            esac
+            append_hazard_class device-lost-without-kernel-record
         fi
     fi
     combined_resets=unavailable
@@ -432,7 +438,7 @@ classify_hazard() {
     fi
     if [ "$combined_resets" != unavailable ] && [ "$combined_resets" -gt 0 ] &&
        [ "$hazard_control_status" -ne 0 ]; then
-        hazard_classes=${hazard_classes:+$hazard_classes,}post-reset-control-failure
+        append_hazard_class post-reset-control-failure
     fi
     printf '%s' "${hazard_classes:-none}"
 }

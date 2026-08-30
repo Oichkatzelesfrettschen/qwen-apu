@@ -34,14 +34,14 @@ reading survived as `nice=-` in the provenance record and the job completed.
 ## Fix
 
 `remote/qwen-exec-idle-priority.sh` is the child-side wrapper. It runs
-`/usr/bin/renice --priority 19 --pid "$$"`, reads the value back through
-`/usr/bin/ps -o ni=`, and exits 125 with `priority setup refused: requested=19
+`/usr/bin/renice --priority 19 --pid "$$"`, reads field 19 back from
+`/proc/$$/stat`, and exits 125 with `priority setup refused: requested=19
 observed=...` on any other reading; it then runs `/usr/bin/ionice -c 3 -p
 "$$"`, reads the class back through `/usr/bin/ionice -p`, and exits 125 on any
 class other than `idle`; then it `exec`s the command. `exec(2)` keeps the pid,
 session, process group, nice value, and I/O class, so the pid a parent recorded
 at spawn is the pid of the command it later signals. Every utility is named by
-its fixed path, and `QWEN_IDLE_PRIORITY_RENICE`, `QWEN_IDLE_PRIORITY_PS`,
+its fixed path, and `QWEN_IDLE_PRIORITY_RENICE`, `QWEN_IDLE_PRIORITY_PROC_STAT`,
 `QWEN_IDLE_PRIORITY_AWK`, and `QWEN_IDLE_PRIORITY_IONICE` override those paths
 for a test that substitutes a failing utility.
 
@@ -78,7 +78,7 @@ so the fixtures ran from the condition under test.
 
 | fixture | result |
 | --- | --- |
-| `remote/test-qwen-exec-idle-priority.sh` | `idle_priority_wrapper=passed fixtures=8`: exec target reports nice 19 and class `idle` from a `nice -n 5` caller; exec keeps the launched pid; a renice applying nothing, an unreadable ps, and an ionice reporting `best-effort` each exit 125 with the command's marker file absent; the command's exit status passes through |
+| `remote/test-qwen-exec-idle-priority.sh` | `idle_priority_wrapper=passed fixtures=8`: exec target reports nice 19 and class `idle` from a `nice -n 5` caller; exec keeps the launched pid; a renice applying nothing, unreadable procfs state, and an ionice reporting `best-effort` each exit 125 with the command's marker file absent; the command's exit status passes through |
 | `python3 remote/test-image-service.py` | `Ran 40 tests ... OK`: the 37 prior tests through the wrapper, plus unreadable priority fails and reaps, nice other than 19 fails and reaps, cancel during wrapper startup kills the group before exec with no runtime run and no artifact, and the provenance record carries the wrapper path, its digest, the runtime pid, `nice=19`, `ioclass=idle`, and the runtime as `runtime_argv[0]` |
 | `remote/test-measure-dpm-force.sh` | `dpm_harness_priority=passed arms=2 bench_nice=19`: the harness run from `nice -n 5` writes `harness_nice=19` and `harness_ioclass=idle` on both arms and the forked bench observes nice 19 on itself |
 | `remote/test-measurement-harnesses.sh` | `measurement_harnesses=accepted` |
