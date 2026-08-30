@@ -1117,6 +1117,51 @@ if [ -e "$carrier_record" ]; then
 fi
 grep -Fx "argument=--ctx-checkpoints" "$carrier_output" >/dev/null
 
+# The guard digest is measured once and the checkpoint ledger is validated
+# twice, so a file holding the admitted rows at each validation and revoked rows
+# at the measurement would hand the guard a digest naming content no validation
+# read. The launch remeasures the ledger after the final validation and requires
+# the two to agree, so the recorder stays untouched.
+ledger_window_bin=$temporary_directory/ledger-window-bin
+mkdir -p "$ledger_window_bin"
+cat >"$ledger_window_bin/sha256sum" <<'SHA256SUM'
+#!/bin/sh
+if [ "${1:-}" != "$QWEN_TEST_LEDGER_PATH" ]; then
+    exec "$QWEN_TEST_REAL_SHA256SUM" "$@"
+fi
+ledger_window_count=0
+if [ -r "$QWEN_TEST_LEDGER_COUNT" ]; then
+    ledger_window_count=$(cat "$QWEN_TEST_LEDGER_COUNT")
+fi
+ledger_window_count=$((ledger_window_count + 1))
+printf '%s\n' "$ledger_window_count" >"$QWEN_TEST_LEDGER_COUNT"
+if [ "$ledger_window_count" -eq 1 ]; then
+    exec "$QWEN_TEST_REAL_SHA256SUM" "$@"
+fi
+printf '%s  %s\n' \
+    0000000000000000000000000000000000000000000000000000000000000000 "$1"
+SHA256SUM
+chmod +x "$ledger_window_bin/sha256sum"
+if run_identity_carrier env QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS="$router_presets" QWEN_ROUTER_MAX=1 \
+    QWEN_TEST_LEDGER_PATH="$fabricated_ctx_checkpoints" \
+    QWEN_TEST_LEDGER_COUNT="$temporary_directory/ledger-window.count" \
+    QWEN_TEST_REAL_SHA256SUM="$(command -v sha256sum)" \
+    PATH="$ledger_window_bin:$PATH" \
+    "$carrier_tools/qwen-capacity-policy.sh" \
+    "$fake_server" "$registry_model" 4096 18080 \
+    >"$temporary_directory/ledger-window.stdout" \
+    2>"$temporary_directory/ledger-window.stderr"; then
+    printf 'policy accepted a checkpoint ledger measured outside its validation\n' >&2
+    exit 1
+fi
+grep -F 'context checkpoint ledger identity changed during validation:' \
+    "$temporary_directory/ledger-window.stderr" >/dev/null
+if [ -e "$carrier_record" ]; then
+    printf 'exec chain ran after the checkpoint ledger validation window opened\n' >&2
+    exit 1
+fi
+
 # A web preset leaves the draft-pair pair at `-` because build-web-presets.sh
 # emits no draft key, and it carries the checkpoint pair for the same reason a
 # router preset does: every section names a count the ledger admits. That

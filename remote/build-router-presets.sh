@@ -79,8 +79,15 @@ fi
 quarantine_rows=$("$script_directory/model-registry.sh" quarantine-rows router-child)
 draft_pair_rows=$("$script_directory/model-registry.sh" draft-pairs)
 # The context checkpoint count is per row and every section carries it, since
-# common_preset::merge would push one router argv value onto every child.
+# common_preset::merge would push one router argv value onto every child. The
+# ledger identity is retained beside the rows and compared again before the file
+# lands, because qwen-capacity-policy.sh rejoins every persisted section to the
+# ledger it reads at launch: an edit during generation would otherwise replace
+# the last known-good preset with counts the launch refuses.
+ctx_checkpoint_ledger=${QWEN_CTX_CHECKPOINT_LEDGER:-$script_directory/ctx-checkpoints.tsv}
 ctx_checkpoint_rows=$("$script_directory/model-registry.sh" ctx-checkpoints)
+ctx_checkpoint_ledger_identity=$(sha256sum -- "$ctx_checkpoint_ledger")
+ctx_checkpoint_ledger_sha256=${ctx_checkpoint_ledger_identity%% *}
 ledger_ctx_checkpoints() {
     printf '%s\n' "$ctx_checkpoint_rows" | awk -F'\t' -v id="$1" '
         $1 == id { count = $2; matched = 1 }
@@ -402,6 +409,15 @@ while IFS='	' read -r pair_id target_model_id draft_model_id pair_tier \
 done <<EOF
 $draft_pair_rows
 EOF
+
+ctx_checkpoint_ledger_current_identity=$(sha256sum -- "$ctx_checkpoint_ledger")
+ctx_checkpoint_ledger_current_sha256=${ctx_checkpoint_ledger_current_identity%% *}
+if [ "$ctx_checkpoint_ledger_current_sha256" != "$ctx_checkpoint_ledger_sha256" ]; then
+    printf 'context checkpoint ledger identity changed during generation: expected %s, measured %s\n' \
+        "$ctx_checkpoint_ledger_sha256" \
+        "$ctx_checkpoint_ledger_current_sha256" >&2
+    exit 1
+fi
 
 chmod 600 "$output_staging"
 mv -f -- "$output_staging" "$output_ini"

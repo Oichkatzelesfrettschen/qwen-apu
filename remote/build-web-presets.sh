@@ -654,6 +654,25 @@ validated_tuples_sha256=${validated_tuples_identity%% *}
 QWEN_VALIDATED_TUPLES=$validated_tuples
 export QWEN_VALIDATED_TUPLES
 
+# Each section's checkpoint count is a separate model-registry.sh query, so an
+# edit between two of them would write one section from the old ledger and the
+# next from the new one, and the launch rejoins every section to whichever
+# ledger it then reads. The path is canonicalized and bound the way the tuple
+# ledger is, and its identity is compared again before the file lands.
+ctx_checkpoint_ledger=${QWEN_CTX_CHECKPOINT_LEDGER:-$script_directory/ctx-checkpoints.tsv}
+ctx_checkpoint_ledger_directory=$(dirname -- "$ctx_checkpoint_ledger")
+ctx_checkpoint_ledger_directory=$(CDPATH='' cd -- "$ctx_checkpoint_ledger_directory" && pwd)
+ctx_checkpoint_ledger=$ctx_checkpoint_ledger_directory/$(basename -- "$ctx_checkpoint_ledger")
+if [ ! -r "$ctx_checkpoint_ledger" ]; then
+    printf 'context checkpoint ledger is unreadable: %s\n' \
+        "$ctx_checkpoint_ledger" >&2
+    exit 1
+fi
+ctx_checkpoint_ledger_identity=$(sha256sum -- "$ctx_checkpoint_ledger")
+ctx_checkpoint_ledger_sha256=${ctx_checkpoint_ledger_identity%% *}
+QWEN_CTX_CHECKPOINT_LEDGER=$ctx_checkpoint_ledger
+export QWEN_CTX_CHECKPOINT_LEDGER
+
 # Every name the image MCP child reads is required before a section names it,
 # because a configuration missing one reaches the model as a per-call refusal
 # long after the listener reports ready.
@@ -1364,6 +1383,14 @@ validated_tuples_current_sha256=${validated_tuples_current_identity%% *}
 if [ "$validated_tuples_current_sha256" != "$validated_tuples_sha256" ]; then
     printf 'validated-tuple ledger identity changed during generation: expected %s, measured %s\n' \
         "$validated_tuples_sha256" "$validated_tuples_current_sha256" >&2
+    exit 1
+fi
+ctx_checkpoint_ledger_current_identity=$(sha256sum -- "$ctx_checkpoint_ledger")
+ctx_checkpoint_ledger_current_sha256=${ctx_checkpoint_ledger_current_identity%% *}
+if [ "$ctx_checkpoint_ledger_current_sha256" != "$ctx_checkpoint_ledger_sha256" ]; then
+    printf 'context checkpoint ledger identity changed during generation: expected %s, measured %s\n' \
+        "$ctx_checkpoint_ledger_sha256" \
+        "$ctx_checkpoint_ledger_current_sha256" >&2
     exit 1
 fi
 

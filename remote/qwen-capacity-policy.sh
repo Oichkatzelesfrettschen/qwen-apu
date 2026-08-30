@@ -1362,6 +1362,22 @@ printf 'vulkan_workload_lease path=%s\n' "$QWEN_VULKAN_WORKLOAD_LOCK"
 if [ "$router_enabled" = 1 ]; then
     verify_router_preset_identity || exit 2
     validate_current_router_authorities || exit 2
+    # The digest the guard carries is measured once, and the validation that
+    # admits the counts runs twice, so the ledger is remeasured here and
+    # required to equal that digest. Without the comparison a file holding the
+    # admitted rows at each validation and revoked rows at the single
+    # measurement would hand the guard a digest naming content no validation
+    # read, and the guard would then accept the revoked file it matches.
+    router_ctx_checkpoint_final_sha256=$(measure_router_authority_identity \
+        'router context checkpoint ledger' \
+        "$router_ctx_checkpoint_ledger") || exit 2
+    if [ "$router_ctx_checkpoint_final_sha256" != \
+        "$router_ctx_checkpoint_guard_sha256" ]; then
+        printf 'context checkpoint ledger identity changed during validation: expected %s, measured %s\n' \
+            "$router_ctx_checkpoint_guard_sha256" \
+            "$router_ctx_checkpoint_final_sha256" >&2
+        exit 2
+    fi
     exec "$script_directory/radv-low-priority-env.sh" \
         "$script_directory/qwen-router-exec-guard.sh" \
         "$router_presets" "$router_preset_guard_sha256" \

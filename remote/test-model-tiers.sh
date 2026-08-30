@@ -525,6 +525,56 @@ else
     cat "$work/pair-fixture.err" >&2
 fi
 
+# The checkpoint ledger identity is retained across generation and compared
+# again before the file lands, so an edit between the row read and the rename
+# leaves the last known-good preset in place. The launch rejoins every section
+# to the ledger it reads, and a published mix of old and new counts refuses
+# there instead.
+ledger_race_bin=$work/ledger-race-bin
+mkdir -p "$ledger_race_bin"
+cat >"$ledger_race_bin/sha256sum" <<'SHA256SUM'
+#!/bin/sh
+if [ "${2:-}" != "$QWEN_TEST_LEDGER_PATH" ]; then
+    exec "$QWEN_TEST_REAL_SHA256SUM" "$@"
+fi
+ledger_race_count=0
+if [ -r "$QWEN_TEST_LEDGER_COUNT" ]; then
+    ledger_race_count=$(cat "$QWEN_TEST_LEDGER_COUNT")
+fi
+ledger_race_count=$((ledger_race_count + 1))
+printf '%s\n' "$ledger_race_count" >"$QWEN_TEST_LEDGER_COUNT"
+if [ "$ledger_race_count" -eq 1 ]; then
+    exec "$QWEN_TEST_REAL_SHA256SUM" "$@"
+fi
+printf '%s  %s\n' \
+    0000000000000000000000000000000000000000000000000000000000000000 "$2"
+SHA256SUM
+chmod +x "$ledger_race_bin/sha256sum"
+ledger_race_presets=$work/ledger-race-presets.ini
+printf 'the previous preset\n' >"$ledger_race_presets"
+ledger_race_before=$(sha256sum "$ledger_race_presets" | cut -d' ' -f1)
+ledger_race_status=0
+QWEN_MODEL_REGISTRY=$fixture_registry QWEN_MODEL_ROOT=$fixture_model_root \
+QWEN_QUARANTINE_REGISTRY=$fixture_quarantine \
+QWEN_QUARANTINE_REASONS=$fixture_reasons QWEN_DRAFT_PAIRS=$fixture_pairs \
+QWEN_CTX_CHECKPOINT_LEDGER=$fixture_ctx_checkpoints \
+QWEN_TEST_LEDGER_PATH=$fixture_ctx_checkpoints \
+QWEN_TEST_LEDGER_COUNT=$work/ledger-race.count \
+QWEN_TEST_REAL_SHA256SUM=$(command -v sha256sum) \
+PATH="$ledger_race_bin:$PATH" \
+    "$builder" "$ledger_race_presets" >"$work/ledger-race.log" \
+    2>"$work/ledger-race.err" || ledger_race_status=$?
+ledger_race_after=$(sha256sum "$ledger_race_presets" | cut -d' ' -f1)
+if [ "$ledger_race_status" -ne 0 ] &&
+   grep -q 'context checkpoint ledger identity changed during generation' \
+       "$work/ledger-race.err" &&
+   [ "$ledger_race_after" = "$ledger_race_before" ]; then
+    report ctx_checkpoint_ledger_generation_race_refused accepted
+else
+    report ctx_checkpoint_ledger_generation_race_refused rejected
+    cat "$work/ledger-race.err" >&2
+fi
+
 if [ "$failures" -eq 0 ]; then
     printf 'model_tiers=accepted\n'
     exit 0

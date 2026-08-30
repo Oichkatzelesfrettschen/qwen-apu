@@ -2183,6 +2183,51 @@ else
     fi
 fi
 
+# Each section's checkpoint count is a separate ledger query, so an edit during
+# generation would write one section from the old ledger and the next from the
+# new one. The identity retained at the start is compared again before the file
+# lands, and the previous preset survives the refusal.
+ledger_race_bin=$work/ledger-race-bin
+mkdir -p "$ledger_race_bin"
+cat >"$ledger_race_bin/sha256sum" <<'SHA256SUM'
+#!/bin/sh
+if [ "${2:-}" != "$QWEN_TEST_LEDGER_PATH" ]; then
+    exec "$QWEN_TEST_REAL_SHA256SUM" "$@"
+fi
+ledger_race_count=0
+if [ -r "$QWEN_TEST_LEDGER_COUNT" ]; then
+    ledger_race_count=$(cat "$QWEN_TEST_LEDGER_COUNT")
+fi
+ledger_race_count=$((ledger_race_count + 1))
+printf '%s\n' "$ledger_race_count" >"$QWEN_TEST_LEDGER_COUNT"
+if [ "$ledger_race_count" -eq 1 ]; then
+    exec "$QWEN_TEST_REAL_SHA256SUM" "$@"
+fi
+printf '%s  %s\n' \
+    0000000000000000000000000000000000000000000000000000000000000000 "$2"
+SHA256SUM
+chmod +x "$ledger_race_bin/sha256sum"
+ledger_race_presets=$work/ledger-race-presets.ini
+printf 'the previous preset\n' >"$ledger_race_presets"
+ledger_race_before=$(sha256sum "$ledger_race_presets" | cut -d' ' -f1)
+if build "$web_profiles_ok" "$ledger_race_presets" \
+    env QWEN_WEB_MCP_SERVER="$mcp_server_program" QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" QWEN_WEB_STATE_DIR="$web_state_directory" \
+    QWEN_TEST_LEDGER_PATH="$QWEN_CTX_CHECKPOINT_LEDGER" \
+    QWEN_TEST_LEDGER_COUNT="$work/ledger-race.count" \
+    QWEN_TEST_REAL_SHA256SUM="$(command -v sha256sum)" \
+    PATH="$ledger_race_bin:$PATH" \
+    >"$work/ledger-race.log" 2>"$work/ledger-race.err"; then
+    report ctx_checkpoint_ledger_generation_race_refused accepted_a_changed_ledger
+elif grep -q 'context checkpoint ledger identity changed during generation' \
+    "$work/ledger-race.err" &&
+    [ "$(sha256sum "$ledger_race_presets" | cut -d' ' -f1)" \
+      = "$ledger_race_before" ]; then
+    report ctx_checkpoint_ledger_generation_race_refused ok
+else
+    report ctx_checkpoint_ledger_generation_race_refused wrong_refusal
+    cat "$work/ledger-race.err" >&2
+fi
+
 if [ "$failures" -ne 0 ]; then
     printf 'test-web-presets: %d check(s) failed\n' "$failures" >&2
     exit 1
