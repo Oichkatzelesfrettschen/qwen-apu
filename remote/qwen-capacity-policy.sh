@@ -720,6 +720,10 @@ router_presets=${QWEN_ROUTER_PRESETS:-"${HOME:?}/qwen-webui-state/router-presets
 router_registry=${QWEN_MODEL_REGISTRY:-"$script_directory/models.tsv"}
 router_quarantine_registry=${QWEN_QUARANTINE_REGISTRY:-$script_directory/quarantine.tsv}
 router_draft_pair_registry=${QWEN_DRAFT_PAIRS:-$script_directory/draft-pairs.tsv}
+# model-registry.sh resolves the checkpoint ledger from the same variable and
+# the same default, so the path this launch hashes is the path whose rows the
+# tuple validator compared each section against.
+router_ctx_checkpoint_ledger=${QWEN_CTX_CHECKPOINT_LEDGER:-$script_directory/ctx-checkpoints.tsv}
 router_model_root=${QWEN_MODEL_ROOT:-"${HOME:?}/models"}
 router_web_profiles_environment=${QWEN_WEB_PROFILES:-}
 router_web_profiles=$script_directory/web-profiles.tsv
@@ -1072,6 +1076,14 @@ if [ "$router_enabled" = 1 ]; then
             'router draft-pair ledger' "$router_draft_pair_registry") || exit 2
     fi
     validate_current_router_authorities || exit 2
+    # The digest follows the validation that read the rows, so the guard's
+    # remeasurement binds the admitted counts to the ledger content this launch
+    # compared each section against. Both preset shapes carry the count, so this
+    # authority is measured for every router launch rather than skipped the way
+    # the draft-pair and web ledgers are.
+    router_ctx_checkpoint_guard_sha256=$(measure_router_authority_identity \
+        'router context checkpoint ledger' \
+        "$router_ctx_checkpoint_ledger") || exit 2
     quarantine_override_from_environment=${QWEN_ROUTER_INCLUDE_QUARANTINE:-0}
     case $quarantine_override_from_environment in
         0 | 1) ;;
@@ -1343,9 +1355,10 @@ export QWEN_VULKAN_WORKLOAD_LOCK="$workload_lease_state_directory/vulkan-workloa
 printf 'vulkan_workload_lease path=%s\n' "$QWEN_VULKAN_WORKLOAD_LOCK"
 
 # The launcher hashes its immutable-per-session snapshot before preflight. The
-# exec boundary revalidates both mutable registry authorities and measures the
-# preset again, so a quarantine or model-registry replacement invalidates the
-# assembled server command before llama-server starts.
+# exec boundary revalidates every mutable authority and measures the preset
+# again, so a replacement of the model registry, the quarantine registry, the
+# draft-pair ledger, the web profile ledger, or the context checkpoint ledger
+# invalidates the assembled server command before llama-server starts.
 if [ "$router_enabled" = 1 ]; then
     verify_router_preset_identity || exit 2
     validate_current_router_authorities || exit 2
@@ -1357,6 +1370,8 @@ if [ "$router_enabled" = 1 ]; then
         "$router_draft_pair_guard_path" "$router_draft_pair_guard_sha256" \
         "$router_web_profiles_guard_path" \
         "$router_web_profiles_guard_sha256" \
+        "$router_ctx_checkpoint_ledger" \
+        "$router_ctx_checkpoint_guard_sha256" \
         "$@"
 fi
 

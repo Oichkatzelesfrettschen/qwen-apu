@@ -368,8 +368,13 @@ mebibytes to `QWEN_REQUIRED_VULKAN_MIB` and reports both on its
 `router_preflight_subject=` and `router_preflight_requirement` lines.
 The capacity policy validates the current model and quarantine authorities and
 records their SHA-256 identities. After the Vulkan wrapper configures the final
-environment, `qwen-router-exec-guard.sh` remeasures the preset and both registry
-identities immediately before it replaces itself with llama-server. A
+environment, `qwen-router-exec-guard.sh` remeasures the preset and every ledger
+identity immediately before it replaces itself with llama-server. The draft-pair
+and web profile ledgers reach it as `-` where the preset shape holds no rows of
+theirs; the context checkpoint ledger is required, since every router and web
+section names a count and a replacement between validation and exec would
+otherwise leave a count the ledger no longer states in front of a build whose
+`n_ctx_checkpoints` default is 32. A
 terminating launch signal tears down a session whose control start has begun,
 removes the launcher-owned snapshot, and exits with the signal status. The
 tmux session applies the same terminating cleanup to its server, watchdogs, and

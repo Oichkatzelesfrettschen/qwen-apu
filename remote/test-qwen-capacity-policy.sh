@@ -922,13 +922,17 @@ guard_preset_sha256=$(sha256sum "$router_presets" | cut -d' ' -f1)
 guard_model_sha256=$(sha256sum "$fabricated_registry" | cut -d' ' -f1)
 guard_quarantine_sha256=$(sha256sum "$authority_race_quarantine" | cut -d' ' -f1)
 guard_web_profiles_sha256=$(sha256sum "$guard_web_profiles" | cut -d' ' -f1)
+guard_ctx_ledger=$temporary_directory/guard-ctx-checkpoints.tsv
+printf 'guard-fixture\t2\t-\n' >"$guard_ctx_ledger"
+guard_ctx_ledger_sha256=$(sha256sum "$guard_ctx_ledger" | cut -d' ' -f1)
 printf 'changed\n' >>"$guard_web_profiles"
 if QWEN_TEST_GUARD_COMMAND_OUTPUT=$guard_command_output \
     "$exec_guard" "$router_presets" "$guard_preset_sha256" \
     "$fabricated_registry" "$guard_model_sha256" \
     "$authority_race_quarantine" "$guard_quarantine_sha256" \
     - - \
-    "$guard_web_profiles" "$guard_web_profiles_sha256" "$guard_command" \
+    "$guard_web_profiles" "$guard_web_profiles_sha256" \
+    "$guard_ctx_ledger" "$guard_ctx_ledger_sha256" "$guard_command" \
     >"$temporary_directory/web-ledger-guard.stdout" \
     2>"$temporary_directory/web-ledger-guard.stderr"; then
     printf 'exec guard accepted a replaced web profile ledger\n' >&2
@@ -938,6 +942,235 @@ grep -F 'router web profile ledger identity changed:' \
     "$temporary_directory/web-ledger-guard.stderr" >/dev/null
 if [ -e "$guard_command_output" ]; then
     printf 'guarded command ran after web-ledger identity rejection\n' >&2
+    exit 1
+fi
+
+# The context checkpoint ledger is the sixth authority pair and it is required
+# rather than optional, because every router and web preset section carries
+# LLAMA_ARG_CTX_CHECKPOINTS. An unchanged ledger reaches the command; a
+# replacement, a removal, and a wrong digest each stop before it runs.
+guard_web_profiles_unchanged=$temporary_directory/guard-web-profiles-unchanged.tsv
+printf 'web-fixture\tfixture\tvalidator-gated\t4096\t4096\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\n' \
+    >"$guard_web_profiles_unchanged"
+guard_web_unchanged_sha256=$(sha256sum "$guard_web_profiles_unchanged" | cut -d' ' -f1)
+run_ctx_ledger_guard() {
+    ctx_guard_label=$1
+    ctx_guard_path=$2
+    ctx_guard_sha256=$3
+    rm -f "$guard_command_output"
+    QWEN_TEST_GUARD_COMMAND_OUTPUT=$guard_command_output \
+        "$exec_guard" "$router_presets" "$guard_preset_sha256" \
+        "$fabricated_registry" "$guard_model_sha256" \
+        "$authority_race_quarantine" "$guard_quarantine_sha256" \
+        - - \
+        "$guard_web_profiles_unchanged" "$guard_web_unchanged_sha256" \
+        "$ctx_guard_path" "$ctx_guard_sha256" "$guard_command" \
+        >"$temporary_directory/ctx-guard-$ctx_guard_label.stdout" \
+        2>"$temporary_directory/ctx-guard-$ctx_guard_label.stderr"
+}
+if ! run_ctx_ledger_guard accepted "$guard_ctx_ledger" \
+    "$guard_ctx_ledger_sha256"; then
+    printf 'exec guard refused an unchanged context checkpoint ledger\n' >&2
+    exit 1
+fi
+grep -Fx executed "$guard_command_output" >/dev/null
+printf 'guard-fixture\t0\t-\n' >"$guard_ctx_ledger"
+if run_ctx_ledger_guard changed "$guard_ctx_ledger" \
+    "$guard_ctx_ledger_sha256"; then
+    printf 'exec guard accepted a replaced context checkpoint ledger\n' >&2
+    exit 1
+fi
+grep -F 'router context checkpoint ledger identity changed:' \
+    "$temporary_directory/ctx-guard-changed.stderr" >/dev/null
+if [ -e "$guard_command_output" ]; then
+    printf 'guarded command ran after checkpoint ledger identity rejection\n' >&2
+    exit 1
+fi
+rm -f "$guard_ctx_ledger"
+if run_ctx_ledger_guard removed "$guard_ctx_ledger" \
+    "$guard_ctx_ledger_sha256"; then
+    printf 'exec guard accepted a removed context checkpoint ledger\n' >&2
+    exit 1
+fi
+grep -F 'router context checkpoint ledger identity cannot be measured:' \
+    "$temporary_directory/ctx-guard-removed.stderr" >/dev/null
+if [ -e "$guard_command_output" ]; then
+    printf 'guarded command ran after checkpoint ledger removal\n' >&2
+    exit 1
+fi
+printf 'guard-fixture\t2\t-\n' >"$guard_ctx_ledger"
+if run_ctx_ledger_guard digest "$guard_ctx_ledger" \
+    0000000000000000000000000000000000000000000000000000000000000000; then
+    printf 'exec guard accepted a wrong checkpoint ledger digest\n' >&2
+    exit 1
+fi
+grep -F 'router context checkpoint ledger identity changed:' \
+    "$temporary_directory/ctx-guard-digest.stderr" >/dev/null
+if run_ctx_ledger_guard malformed "$guard_ctx_ledger" not-a-digest; then
+    printf 'exec guard accepted a malformed checkpoint ledger digest\n' >&2
+    exit 1
+fi
+grep -F 'router context checkpoint ledger SHA-256 must hold 64 lowercase hexadecimal characters' \
+    "$temporary_directory/ctx-guard-malformed.stderr" >/dev/null
+if [ -e "$guard_command_output" ]; then
+    printf 'guarded command ran after checkpoint digest rejection\n' >&2
+    exit 1
+fi
+
+# The ledger path reaches the guard as one argument, so a directory holding a
+# space stays one authority rather than splitting into two.
+guard_spaced_directory="$temporary_directory/guard ctx directory"
+mkdir -p "$guard_spaced_directory"
+guard_spaced_ledger="$guard_spaced_directory/ctx-checkpoints.tsv"
+cp "$guard_ctx_ledger" "$guard_spaced_ledger"
+guard_spaced_sha256=$(sha256sum "$guard_spaced_ledger" | cut -d' ' -f1)
+if ! run_ctx_ledger_guard spaced "$guard_spaced_ledger" \
+    "$guard_spaced_sha256"; then
+    printf 'exec guard lost a checkpoint ledger path holding a space\n' >&2
+    exit 1
+fi
+grep -Fx executed "$guard_command_output" >/dev/null
+
+# A successful launch alone proves nothing about what the policy handed the
+# guard, so a recorder in place of the guard reads the assembled argv. The
+# checkpoint pair occupies positions 11 and 12 and carries the ledger this
+# launch validated, beside the `-` pair a router preset leaves for the web
+# ledger.
+carrier_tools=$temporary_directory/identity-carrier-tools
+carrier_record=$temporary_directory/identity-carrier.argv
+carrier_quarantine=$temporary_directory/identity-carrier-quarantine.tsv
+carrier_output=$temporary_directory/identity-carrier.out
+mkdir -p "$carrier_tools"
+: >"$carrier_quarantine"
+cp "$policy" "$carrier_tools/qwen-capacity-policy.sh"
+cat >"$carrier_tools/model-registry.sh" <<'REGISTRY'
+#!/bin/sh
+exec "$QWEN_TEST_REAL_MODEL_REGISTRY" "$@"
+REGISTRY
+cat >"$carrier_tools/radv-low-priority-env.sh" <<'RADV'
+#!/bin/sh
+exec "$@"
+RADV
+cat >"$carrier_tools/qwen-router-exec-guard.sh" <<'RECORDER'
+#!/bin/sh
+: >"$QWEN_TEST_GUARD_ARGV"
+for guard_argument in "$@"; do
+    printf '%s\n' "$guard_argument" >>"$QWEN_TEST_GUARD_ARGV"
+done
+RECORDER
+chmod +x "$carrier_tools"/*.sh
+run_identity_carrier() {
+    rm -f "$carrier_record" "$carrier_output"
+    QWEN_MODEL_REGISTRY=$fabricated_registry \
+        QWEN_QUARANTINE_REGISTRY=$carrier_quarantine \
+        QWEN_MODEL_ROOT=$router_model_root QWEN_RADV_ICD=$fake_icd \
+        QWEN_POLICY_TEST_OUTPUT=$carrier_output \
+        QWEN_TEST_GUARD_ARGV=$carrier_record \
+        QWEN_TEST_REAL_MODEL_REGISTRY=$script_directory/model-registry.sh \
+        "$@"
+}
+carrier_ctx_sha256=$(sha256sum "$fabricated_ctx_checkpoints" | cut -d' ' -f1)
+if ! run_identity_carrier env QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS="$router_presets" QWEN_ROUTER_MAX=1 \
+    "$carrier_tools/qwen-capacity-policy.sh" \
+    "$fake_server" "$registry_model" 4096 18080 \
+    >"$temporary_directory/identity-carrier.stdout" \
+    2>"$temporary_directory/identity-carrier.stderr"; then
+    printf 'policy refused the router launch the identity recorder observes\n' >&2
+    cat "$temporary_directory/identity-carrier.stderr" >&2
+    exit 1
+fi
+carrier_web_path=$(sed -n '9p' "$carrier_record")
+carrier_web_sha256=$(sed -n '10p' "$carrier_record")
+carrier_ctx_path=$(sed -n '11p' "$carrier_record")
+carrier_ctx_carried_sha256=$(sed -n '12p' "$carrier_record")
+if [ "$carrier_web_path" != - ] || [ "$carrier_web_sha256" != - ]; then
+    printf 'router preset carried a web profile ledger pair: %s %s\n' \
+        "$carrier_web_path" "$carrier_web_sha256" >&2
+    exit 1
+fi
+if [ "$carrier_ctx_path" != "$fabricated_ctx_checkpoints" ]; then
+    printf 'exec chain carried checkpoint ledger %s where the launch read %s\n' \
+        "$carrier_ctx_path" "$fabricated_ctx_checkpoints" >&2
+    exit 1
+fi
+if [ "$carrier_ctx_carried_sha256" != "$carrier_ctx_sha256" ]; then
+    printf 'exec chain carried checkpoint ledger digest %s where the file measures %s\n' \
+        "$carrier_ctx_carried_sha256" "$carrier_ctx_sha256" >&2
+    exit 1
+fi
+
+# The standalone path leaves the guard out of the chain entirely, since it
+# assembles the tuple from the row it launches rather than from a preset that
+# persists. The recorder therefore stays untouched while the server still runs.
+if ! run_identity_carrier "$carrier_tools/qwen-capacity-policy.sh" \
+    "$fake_server" "$registry_model" 4096 18080 \
+    >"$temporary_directory/identity-standalone.stdout" \
+    2>"$temporary_directory/identity-standalone.stderr"; then
+    printf 'policy refused the standalone launch the identity recorder observes\n' >&2
+    cat "$temporary_directory/identity-standalone.stderr" >&2
+    exit 1
+fi
+if [ -e "$carrier_record" ]; then
+    printf 'standalone launch reached the router exec guard\n' >&2
+    exit 1
+fi
+grep -Fx "argument=--ctx-checkpoints" "$carrier_output" >/dev/null
+
+# A web preset leaves the draft-pair pair at `-` because build-web-presets.sh
+# emits no draft key, and it carries the checkpoint pair for the same reason a
+# router preset does: every section names a count the ledger admits. That
+# asymmetry is what makes the checkpoint authority required rather than
+# optional.
+carrier_web_profiles=$temporary_directory/identity-carrier-web-profiles.tsv
+{
+    printf '# profile_id\tmodel_id\tweb_mode\tcontext\tvalidated_filled_depth\tmax_results\tmax_fetches\tmax_chars_per_fetch\tmulti_source\tvision_allowed\ttool_selection\texecution_policy\tprovider\tprimary_category\tfallback_category\tminimum_results\tsearxng_url\n'
+    printf 'web-carrier\tfabricated\tui-mediated\t4096\t4096\t5\t2\t12000\tyes\tno\t9/10\tui-mediated\texa\t-\t-\t-\t-\n'
+} >"$carrier_web_profiles"
+carrier_web_presets=$temporary_directory/identity-carrier-web-presets.ini
+{
+    printf '# Generated by remote/build-web-presets.sh from remote/web-profiles.tsv.\n'
+    printf '# qwen_web_presets=1\n'
+    printf '# qwen_web_profiles_path=%s\n' "$carrier_web_profiles"
+    printf '# qwen_web_profiles_sha256=%s\n' \
+        "$(sha256sum "$carrier_web_profiles" | cut -d' ' -f1)"
+    printf '\n'
+    printf '[web-carrier]\n'
+    printf 'LLAMA_ARG_MODEL = %s\n' "$registry_model"
+    printf 'LLAMA_ARG_ALIAS = web-carrier\n'
+    printf 'LLAMA_ARG_CTX_SIZE = 4096\n'
+    printf 'LLAMA_ARG_CACHE_TYPE_K = q5_1\n'
+    printf 'LLAMA_ARG_CACHE_TYPE_V = iq4_nl\n'
+    printf 'LLAMA_ARG_FLASH_ATTN = auto\n'
+    printf 'LLAMA_ARG_BATCH = 256\n'
+    printf 'LLAMA_ARG_UBATCH = 64\n'
+    printf 'LLAMA_ARG_CTX_CHECKPOINTS = 0\n'
+    printf 'LLAMA_ARG_TAGS = web-research,ui-mediated\n'
+} >"$carrier_web_presets"
+if ! run_identity_carrier env QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS="$carrier_web_presets" QWEN_ROUTER_MAX=1 \
+    QWEN_BIND_HOST=127.0.0.1 \
+    "$carrier_tools/qwen-capacity-policy.sh" \
+    "$fake_server" "$registry_model" 4096 18080 \
+    >"$temporary_directory/identity-web-carrier.stdout" \
+    2>"$temporary_directory/identity-web-carrier.stderr"; then
+    printf 'policy refused the web launch the identity recorder observes\n' >&2
+    cat "$temporary_directory/identity-web-carrier.stderr" >&2
+    exit 1
+fi
+carrier_web_draft_path=$(sed -n '7p' "$carrier_record")
+carrier_web_draft_sha256=$(sed -n '8p' "$carrier_record")
+carrier_web_ctx_path=$(sed -n '11p' "$carrier_record")
+carrier_web_ctx_sha256=$(sed -n '12p' "$carrier_record")
+if [ "$carrier_web_draft_path" != - ] || [ "$carrier_web_draft_sha256" != - ]; then
+    printf 'web preset carried a draft-pair ledger pair: %s %s\n' \
+        "$carrier_web_draft_path" "$carrier_web_draft_sha256" >&2
+    exit 1
+fi
+if [ "$carrier_web_ctx_path" != "$fabricated_ctx_checkpoints" ] ||
+    [ "$carrier_web_ctx_sha256" != "$carrier_ctx_sha256" ]; then
+    printf 'web preset lost the checkpoint ledger identity: %s %s\n' \
+        "$carrier_web_ctx_path" "$carrier_web_ctx_sha256" >&2
     exit 1
 fi
 
