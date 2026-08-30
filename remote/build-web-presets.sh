@@ -672,6 +672,23 @@ ctx_checkpoint_ledger_identity=$(sha256sum -- "$ctx_checkpoint_ledger")
 ctx_checkpoint_ledger_sha256=${ctx_checkpoint_ledger_identity%% *}
 QWEN_CTX_CHECKPOINT_LEDGER=$ctx_checkpoint_ledger
 export QWEN_CTX_CHECKPOINT_LEDGER
+# Every section's count is resolved from one validated snapshot held here
+# rather than from a query per section, so the emitted file states one ledger
+# state: a file that changed and changed back between two per-section queries
+# would otherwise pass both identity comparisons while carrying counts from the
+# state in between.
+if ! ctx_checkpoint_rows=$("$script_directory/model-registry.sh" \
+    ctx-checkpoints); then
+    printf 'context checkpoint ledger refused: %s\n' \
+        "$ctx_checkpoint_ledger" >&2
+    exit 1
+fi
+ledger_ctx_checkpoints() {
+    printf '%s\n' "$ctx_checkpoint_rows" | awk -F'\t' -v id="$1" '
+        $1 == id { count = $2; matched = 1 }
+        END { print matched ? count : 0 }
+    '
+}
 
 # Every name the image MCP child reads is required before a section names it,
 # because a configuration missing one reaches the model as a per-call refusal
@@ -775,12 +792,7 @@ if [ -n "$image_profile_review_model" ] &&
     review_flash=$(registry_field "$review_registry_row" flash_attention)
     review_batch=$(registry_field "$review_registry_row" batch)
     review_ubatch=$(registry_field "$review_registry_row" ubatch)
-    if ! review_ctx_checkpoints=$("$script_directory/model-registry.sh" \
-        ctx-checkpoint "$image_profile_review_model"); then
-        printf 'review_model %s: context checkpoint ledger refused\n' \
-            "$image_profile_review_model" >&2
-        exit 1
-    fi
+    review_ctx_checkpoints=$(ledger_ctx_checkpoints "$image_profile_review_model")
     for review_numeric_field in "$review_context" "$review_batch" \
         "$review_ubatch"; do
         case $review_numeric_field in
@@ -1008,13 +1020,9 @@ while profile_id=; IFS='	' read -r profile_id model_id _web_mode context \
         printf 'profile %s names unknown model_id %s\n' "$profile_id" "$model_id" >&2
         exit 1
     fi
-    # The checkpoint count is the row's rather than the profile's, and the
-    # reader validates the whole ledger before answering.
-    if ! profile_ctx_checkpoints=$("$script_directory/model-registry.sh" \
-        ctx-checkpoint "$model_id"); then
-        printf 'profile %s: context checkpoint ledger refused\n' "$profile_id" >&2
-        exit 1
-    fi
+    # The checkpoint count is the row's rather than the profile's, and it comes
+    # from the snapshot the whole run emits against.
+    profile_ctx_checkpoints=$(ledger_ctx_checkpoints "$model_id")
 
     model_file=$(registry_field "$registry_row" model_file)
     context_ceiling=$(registry_field "$registry_row" context_ceiling)

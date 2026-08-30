@@ -191,7 +191,11 @@ split, so a launch-read row naming a path leaves the appliance serving rather
 than refusing a launch over a directory the sync never sent.
 `qwen-capacity-policy.sh` sets `--ctx-checkpoints` from the row on the
 single-model path, with `QWEN_CTX_CHECKPOINTS` replacing it for an experiment
-arm, an explicit 0 included. In router mode the flag stays off the router argv
+arm, an explicit 0 included. `QWEN_CHECKPOINT_MIN_STEP` belongs to that path
+alone and router mode refuses it: the spacing reaches the router's own argv,
+`common_preset::merge` would place every child's checkpoints from that one
+value while each section still matched the ledger's count, and the ledger
+states a count per row where no authority states a spacing. In router mode the flag stays off the router argv
 with the six tuple flags, because `common_preset::merge` would push one value
 onto every child; `build-router-presets.sh` and `build-web-presets.sh` write
 `LLAMA_ARG_CTX_CHECKPOINTS` from the row into every section, a draft-pair

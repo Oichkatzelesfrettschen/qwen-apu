@@ -2228,6 +2228,46 @@ else
     cat "$work/ledger-race.err" >&2
 fi
 
+# Every section's count comes from one validated snapshot, so the generator
+# reads the ledger once for the whole run. A query per section would let a
+# ledger that changed and changed back carry counts from the state in between
+# past both identity comparisons.
+snapshot_tools=$work/snapshot-tools
+snapshot_calls=$work/snapshot-registry.calls
+mkdir -p "$snapshot_tools"
+for remote_entry in "$script_directory"/*; do
+    ln -sf "$remote_entry" "$snapshot_tools/"
+done
+rm -f "$snapshot_tools/model-registry.sh"
+cat >"$snapshot_tools/model-registry.sh" <<'REGISTRY'
+#!/bin/sh
+printf '%s\n' "${1:-}" >>"$QWEN_TEST_REGISTRY_CALLS"
+exec "$QWEN_TEST_REAL_MODEL_REGISTRY" "$@"
+REGISTRY
+chmod +x "$snapshot_tools/model-registry.sh"
+: >"$snapshot_calls"
+snapshot_presets=$work/snapshot-presets.ini
+if QWEN_MODEL_REGISTRY=$model_registry \
+    QWEN_WEB_PROFILES=$web_profiles_ok \
+    QWEN_WEB_AUTHORIZER_READY=1 \
+    QWEN_MODEL_ROOT=${QWEN_MODEL_ROOT:-$policy_model_root} \
+    QWEN_TEST_REGISTRY_CALLS=$snapshot_calls \
+    QWEN_TEST_REAL_MODEL_REGISTRY=$script_directory/model-registry.sh \
+    env QWEN_WEB_MCP_SERVER="$mcp_server_program" QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" QWEN_WEB_STATE_DIR="$web_state_directory" \
+    "$snapshot_tools/build-web-presets.sh" "$snapshot_presets" \
+    >"$work/snapshot.log" 2>"$work/snapshot.err"; then
+    snapshot_whole=$(grep -c '^ctx-checkpoints$' "$snapshot_calls" || true)
+    snapshot_per_row=$(grep -c '^ctx-checkpoint$' "$snapshot_calls" || true)
+    if [ "$snapshot_whole" = 1 ] && [ "$snapshot_per_row" = 0 ]; then
+        report ctx_checkpoint_ledger_read_once ok
+    else
+        report ctx_checkpoint_ledger_read_once "whole=$snapshot_whole per_row=$snapshot_per_row"
+    fi
+else
+    report ctx_checkpoint_ledger_read_once generation_failed
+    cat "$work/snapshot.err" >&2
+fi
+
 if [ "$failures" -ne 0 ]; then
     printf 'test-web-presets: %d check(s) failed\n' "$failures" >&2
     exit 1

@@ -1294,6 +1294,18 @@ if [ -n "$checkpoint_min_step" ]; then
             exit 2
             ;;
     esac
+    # The spacing reaches the router's own argv, and common_preset::merge
+    # overwrites, so one value would place every child's checkpoints while each
+    # section still matched the ledger. The ledger states a count per row and no
+    # authority states a spacing, and evidence/ctx-checkpoint-sweep/ measured
+    # its counts at the pinned build's 8192-token default, so the override
+    # belongs to the single-model path where it changes the one row it launches.
+    if [ "$router_enabled" = 1 ]; then
+        printf 'QWEN_CHECKPOINT_MIN_STEP is refused in router mode: %s\n' \
+            "$checkpoint_min_step" >&2
+        printf 'launch the checkpoint the arm measures on the single-model path\n' >&2
+        exit 2
+    fi
 fi
 
 set -- "$@" \

@@ -84,10 +84,14 @@ draft_pair_rows=$("$script_directory/model-registry.sh" draft-pairs)
 # lands, because qwen-capacity-policy.sh rejoins every persisted section to the
 # ledger it reads at launch: an edit during generation would otherwise replace
 # the last known-good preset with counts the launch refuses.
+# The digest is measured ahead of the query, so the rows the sections carry are
+# read no earlier than the content the digest names: a change between the two
+# leaves the final comparison measuring a third value and the preset unwritten,
+# where the reverse order would publish rows from the file the digest replaced.
 ctx_checkpoint_ledger=${QWEN_CTX_CHECKPOINT_LEDGER:-$script_directory/ctx-checkpoints.tsv}
-ctx_checkpoint_rows=$("$script_directory/model-registry.sh" ctx-checkpoints)
 ctx_checkpoint_ledger_identity=$(sha256sum -- "$ctx_checkpoint_ledger")
 ctx_checkpoint_ledger_sha256=${ctx_checkpoint_ledger_identity%% *}
+ctx_checkpoint_rows=$("$script_directory/model-registry.sh" ctx-checkpoints)
 ledger_ctx_checkpoints() {
     printf '%s\n' "$ctx_checkpoint_rows" | awk -F'\t' -v id="$1" '
         $1 == id { count = $2; matched = 1 }

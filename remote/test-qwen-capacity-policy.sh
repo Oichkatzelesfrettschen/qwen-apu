@@ -1117,6 +1117,42 @@ if [ -e "$carrier_record" ]; then
 fi
 grep -Fx "argument=--ctx-checkpoints" "$carrier_output" >/dev/null
 
+# The checkpoint spacing reaches the router's own argv, where
+# common_preset::merge would place every child's checkpoints from one value
+# while each section still matched the ledger's count. The ledger states a count
+# and no authority states a spacing, so router mode refuses the override and the
+# single-model path takes it.
+spacing_output=$temporary_directory/spacing.out
+if QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$spacing_output \
+    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$router_presets QWEN_ROUTER_MAX=1 \
+    QWEN_CHECKPOINT_MIN_STEP=4096 \
+    "$policy" "$fake_server" "$registry_model" 4096 18080 \
+    >"$temporary_directory/spacing-router.stdout" \
+    2>"$temporary_directory/spacing-router.stderr"; then
+    printf 'policy accepted a checkpoint spacing override in router mode\n' >&2
+    exit 1
+fi
+grep -F 'QWEN_CHECKPOINT_MIN_STEP is refused in router mode:' \
+    "$temporary_directory/spacing-router.stderr" >/dev/null
+if [ -e "$spacing_output" ]; then
+    printf 'server ran after the router-mode spacing refusal\n' >&2
+    exit 1
+fi
+QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$spacing_output \
+    QWEN_CHECKPOINT_MIN_STEP=4096 \
+    "$policy" "$fake_server" "$registry_model" 4096 18080 >/dev/null
+spacing_arguments=$(sed -n 's/^argument=//p' "$spacing_output" | tr '\n' ' ')
+case $spacing_arguments in
+    *'--checkpoint-min-step 4096 '*) ;;
+    *)
+        printf 'standalone launch lost the checkpoint spacing: %s\n' \
+            "$spacing_arguments" >&2
+        exit 1
+        ;;
+esac
+
 # The guard digest is measured once and the checkpoint ledger is validated
 # twice, so a file holding the admitted rows at each validation and revoked rows
 # at the measurement would hand the guard a digest naming content no validation
