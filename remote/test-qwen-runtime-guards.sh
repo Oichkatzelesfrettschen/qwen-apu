@@ -5,9 +5,45 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 temporary_directory=$(mktemp -d)
 fake_gpu_directory=$temporary_directory/fake-gpu
 export QWEN_GUARD_CPU_ACTIVE=1
+# A quality-gate parent can run under SCHED_IDLE at nice 19 while the safety
+# guards must remain responsive under SCHED_OTHER at nice 0. An optional test
+# runner performs that privileged scheduler transition without weakening the
+# guards' readback assertions; its target fixture nice travels in the
+# QWEN_GUARD_RUNNER_TARGET_NICE environment variable.
+guard_test_runner=${QWEN_GUARD_TEST_RUNNER:-}
 test_pid=""
 watchdog_pid=""
 kernel_watchdog_pid=""
+
+if [ -n "$guard_test_runner" ] && [ ! -x "$guard_test_runner" ]; then
+    printf 'guard test runner is not executable: %s\n' \
+        "$guard_test_runner" >&2
+    exit 2
+fi
+
+run_guard_test() {
+    if [ -n "$guard_test_runner" ]; then
+        "$guard_test_runner" "$@"
+        return
+    fi
+    "$@"
+}
+
+launch_guard_fixture() {
+    fixture_nice_value=$1
+    shift
+    if [ -n "$guard_test_runner" ]; then
+        QWEN_GUARD_RUNNER_TARGET_NICE=$fixture_nice_value \
+            "$guard_test_runner" "$@" &
+    else
+        "$@" &
+    fi
+    launched_fixture_pid=$!
+    if [ -z "$guard_test_runner" ]; then
+        renice -n "$fixture_nice_value" -p "$launched_fixture_pid" \
+            >/dev/null
+    fi
+}
 
 cleanup() {
     if [ -n "$test_pid" ]; then
@@ -36,41 +72,39 @@ printf '0: 400Mhz *\n' >"$fake_gpu_directory/pp_dpm_mclk"
 start_test_process() {
     target_nice_value=$1
     duration_seconds=$2
-    taskset -c 0 sleep "$duration_seconds" &
-    test_pid=$!
-    renice -n "$target_nice_value" -p "$test_pid" >/dev/null
+    launch_guard_fixture "$target_nice_value" \
+        taskset -c 0 sleep "$duration_seconds"
+    test_pid=$launched_fixture_pid
 }
 
 start_persistent_test_process() {
     target_nice_value=$1
-    taskset -c 0 sh -c 'while :; do sleep 1; done' &
-    test_pid=$!
-    renice -n "$target_nice_value" -p "$test_pid" >/dev/null
+    launch_guard_fixture "$target_nice_value" \
+        taskset -c 0 sh -c 'while :; do sleep 1; done'
+    test_pid=$launched_fixture_pid
 }
 
 start_term_ignoring_process() {
-    taskset -c 0 sh -c 'trap "" TERM; while :; do sleep 1; done' &
-    test_pid=$!
-    renice -n 19 -p "$test_pid" >/dev/null
+    launch_guard_fixture 19 taskset -c 0 sh -c \
+        'trap "" TERM; while :; do sleep 1; done'
+    test_pid=$launched_fixture_pid
 }
 
 start_watchdog_process() {
-    taskset -c 0 sleep 60 &
-    watchdog_pid=$!
-    renice -n 19 -p "$watchdog_pid" >/dev/null
+    launch_guard_fixture 19 taskset -c 0 sleep 60
+    watchdog_pid=$launched_fixture_pid
 }
 
 start_kernel_watchdog_process() {
-    taskset -c 0 sleep 60 &
-    kernel_watchdog_pid=$!
-    renice -n 19 -p "$kernel_watchdog_pid" >/dev/null
+    launch_guard_fixture 19 taskset -c 0 sleep 60
+    kernel_watchdog_pid=$launched_fixture_pid
 }
 
 start_test_process 19 5
 start_watchdog_process
 start_kernel_watchdog_process
 QWEN_GUARD_TEST_MODE=1 QWEN_GPU_DEVICE_DIRECTORY=$fake_gpu_directory \
-    "$script_directory/monitor-qwen-runtime.sh" \
+    run_guard_test "$script_directory/monitor-qwen-runtime.sh" \
     "$test_pid" "$temporary_directory/positive-telemetry.log" \
     paced-60 "$watchdog_pid" "$kernel_watchdog_pid"
 wait "$test_pid" 2>/dev/null || true
@@ -90,7 +124,7 @@ start_watchdog_process
 start_kernel_watchdog_process
 set +e
 QWEN_GUARD_TEST_MODE=1 QWEN_GPU_DEVICE_DIRECTORY=$fake_gpu_directory \
-    "$script_directory/monitor-qwen-runtime.sh" \
+    run_guard_test "$script_directory/monitor-qwen-runtime.sh" \
     "$test_pid" "$temporary_directory/negative-telemetry.log" \
     paced-60 "$watchdog_pid" "$kernel_watchdog_pid"
 monitor_status=$?
@@ -117,7 +151,7 @@ start_watchdog_process
 start_kernel_watchdog_process
 set +e
 QWEN_GUARD_TEST_MODE=1 QWEN_GPU_DEVICE_DIRECTORY=$fake_gpu_directory \
-    "$script_directory/monitor-qwen-runtime.sh" \
+    run_guard_test "$script_directory/monitor-qwen-runtime.sh" \
     "$test_pid" "$temporary_directory/gpu-busy-telemetry.log" \
     paced-60 "$watchdog_pid" "$kernel_watchdog_pid"
 monitor_status=$?
@@ -145,7 +179,7 @@ start_test_process 19 5
 start_watchdog_process
 start_kernel_watchdog_process
 QWEN_GUARD_TEST_MODE=1 QWEN_GPU_DEVICE_DIRECTORY=$fake_gpu_directory \
-    "$script_directory/monitor-qwen-runtime.sh" \
+    run_guard_test "$script_directory/monitor-qwen-runtime.sh" \
     "$test_pid" "$temporary_directory/priority-first-telemetry.log" \
     low-serialized "$watchdog_pid" "$kernel_watchdog_pid"
 wait "$test_pid" 2>/dev/null || true
@@ -163,7 +197,7 @@ start_test_process 19 5
 start_watchdog_process
 start_kernel_watchdog_process
 QWEN_GUARD_TEST_MODE=1 QWEN_GPU_DEVICE_DIRECTORY=$fake_gpu_directory \
-    "$script_directory/monitor-qwen-runtime.sh" \
+    run_guard_test "$script_directory/monitor-qwen-runtime.sh" \
     "$test_pid" "$temporary_directory/async-priority-first-telemetry.log" \
     low-async "$watchdog_pid" "$kernel_watchdog_pid"
 wait "$test_pid" 2>/dev/null || true
@@ -185,7 +219,7 @@ wait "$watchdog_pid" 2>/dev/null || true
 watchdog_pid=""
 set +e
 QWEN_GUARD_TEST_MODE=1 QWEN_GPU_DEVICE_DIRECTORY=$fake_gpu_directory \
-    "$script_directory/monitor-qwen-runtime.sh" \
+    run_guard_test "$script_directory/monitor-qwen-runtime.sh" \
     "$test_pid" "$temporary_directory/watchdog-telemetry.log" \
     low-serialized 999999999 999999998
 monitor_status=$?
@@ -204,7 +238,7 @@ start_persistent_test_process 19
 start_watchdog_process
 set +e
 QWEN_GUARD_TEST_MODE=1 QWEN_GPU_DEVICE_DIRECTORY=$fake_gpu_directory \
-    "$script_directory/monitor-qwen-runtime.sh" \
+    run_guard_test "$script_directory/monitor-qwen-runtime.sh" \
     "$test_pid" "$temporary_directory/kernel-watchdog-telemetry.log" \
     low-serialized "$watchdog_pid" 999999997
 monitor_status=$?
@@ -226,7 +260,7 @@ start_persistent_test_process 19
 printf '%s\n' 'amdgpu: ring gfx timeout, signaled seq=1' \
     >"$temporary_directory/synthetic-kernel.log"
 set +e
-"$script_directory/watch-qwen-kernel-hazards.sh" "$test_pid" \
+run_guard_test "$script_directory/watch-qwen-kernel-hazards.sh" "$test_pid" \
     "$temporary_directory/hazard-watch.log" \
     "$temporary_directory/synthetic-kernel.log"
 hazard_status=$?

@@ -103,10 +103,23 @@ chmod +x "$fake_bench"
 model_path=$temporary_directory/model.gguf
 : >"$model_path"
 
+# Clone-local fixtures use fake executables and files, so a host inference
+# service cannot consume their synthetic device. Hide host llama processes from
+# the two repeatability arms while recording that each contention check ran.
+isolated_process_bin=$temporary_directory/isolated-process-bin
+process_probe_log=$temporary_directory/process-probe.log
+mkdir -p "$isolated_process_bin"
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    'printf "%s\\n" "$*" >>"${QWEN_TEST_PROCESS_PROBE_LOG:?}"' \
+    'exit 1' >"$isolated_process_bin/pgrep"
+chmod +x "$isolated_process_bin/pgrep"
+
 sampler_pid_file=$temporary_directory/sampler.pid
 successful_output=$temporary_directory/repeatability-success
 active_fixture=bench-repeatability-success
 diagnostic_file=$temporary_directory/success.stderr
+PATH="$isolated_process_bin:$PATH" \
+QWEN_TEST_PROCESS_PROBE_LOG=$process_probe_log \
 QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
 QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_IDLE_SECONDS=0 \
     "$script_directory/measure-bench-repeatability.sh" "$model_path" \
@@ -122,7 +135,9 @@ fi
 failed_output=$temporary_directory/repeatability-failure
 active_fixture=bench-repeatability-failure
 diagnostic_file=$temporary_directory/failure.stderr
-if QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
+if PATH="$isolated_process_bin:$PATH" \
+    QWEN_TEST_PROCESS_PROBE_LOG=$process_probe_log \
+    QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
     QWEN_TEST_SAMPLER_PID_FILE=$sampler_pid_file QWEN_IDLE_SECONDS=0 \
     QWEN_TEST_BENCH_MODE=failure \
     "$script_directory/measure-bench-repeatability.sh" "$model_path" \
@@ -140,6 +155,12 @@ if grep -F 'bench_repeatability=completed' \
 fi
 if kill -0 "$(cat "$sampler_pid_file")" 2>/dev/null; then
     printf 'failed measurement left its sampler alive\n' >&2
+    exit 1
+fi
+if [ "$(grep -Fxc -- '-x llama-server' "$process_probe_log")" -ne 2 ] || \
+   [ "$(grep -Fxc -- '-x llama-bench' "$process_probe_log")" -ne 2 ]; then
+    printf 'repeatability fixtures did not execute both isolated contention checks\n' >&2
+    cat "$process_probe_log" >&2
     exit 1
 fi
 
