@@ -1,0 +1,25 @@
+arm=1 ctx_checkpoints=0 turn1_prompt_ms=807829.8 turn2_prompt_ms=740371.2 prefill_saved_ms=67458.6
+arm=2 ctx_checkpoints=2 turn1_prompt_ms=694595.3 turn2_prompt_ms=2227.4 prefill_saved_ms=692367.8
+arm=3 ctx_checkpoints=4 turn1_prompt_ms=702477.3 turn2_prompt_ms=2233.3 prefill_saved_ms=700244.0
+arm=4 ctx_checkpoints=8 turn1_prompt_ms=694329.1 turn2_prompt_ms=2231.3 prefill_saved_ms=692097.8
+arm=5 ctx_checkpoints=8 turn1_prompt_ms=694488.4 turn2_prompt_ms=2240.3 prefill_saved_ms=692248.1
+arm=6 ctx_checkpoints=4 turn1_prompt_ms=694621.8 turn2_prompt_ms=2275.3 prefill_saved_ms=692346.5
+arm=7 ctx_checkpoints=2 turn1_prompt_ms=694209.0 turn2_prompt_ms=2227.1 prefill_saved_ms=691981.9
+arm=8 ctx_checkpoints=0 turn1_prompt_ms=731079.5 turn2_prompt_ms=907464.6 prefill_saved_ms=-176385.1
+turn=1 arm=1 ctx_checkpoints=0 reference=self
+turn=1 arm=2 ctx_checkpoints=2 divergence=25 against=arm 1
+turn=1 arm=3 ctx_checkpoints=4 divergence=25 against=arm 1
+turn=1 arm=4 ctx_checkpoints=8 divergence=25 against=arm 1
+turn=1 arm=5 ctx_checkpoints=8 divergence=25 against=arm 1
+turn=1 arm=6 ctx_checkpoints=4 divergence=25 against=arm 1
+turn=1 arm=7 ctx_checkpoints=2 divergence=25 against=arm 1
+turn=1 arm=8 ctx_checkpoints=0 divergence=none
+turn=2 arm=1 ctx_checkpoints=0 reference=self
+turn=2 arm=2 ctx_checkpoints=2 divergence=none
+turn=2 arm=3 ctx_checkpoints=4 divergence=none
+turn=2 arm=4 ctx_checkpoints=8 divergence=none
+turn=2 arm=5 ctx_checkpoints=8 divergence=none
+turn=2 arm=6 ctx_checkpoints=4 divergence=none
+turn=2 arm=7 ctx_checkpoints=2 divergence=none
+turn=2 arm=8 ctx_checkpoints=0 divergence=none
+ctx_checkpoint_sweep=failed label=qwen35-08b failed_arms=0 divergence=1 output=$HOME/qwen-ctx-checkpoint-sweep/qwen35-08b

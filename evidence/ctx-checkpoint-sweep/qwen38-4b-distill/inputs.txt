@@ -1,0 +1,9 @@
+label=qwen38-4b-distill
+model_id=qwen38-4b-distill
+model=$HOME/models/Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf
+profile=low-async
+arms=0 2 4 8 8 4 2 0
+target_depth=30720
+predict_tokens=32
+context_size=32768
+harness_nice=0
