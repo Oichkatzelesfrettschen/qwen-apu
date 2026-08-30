@@ -1,0 +1,18 @@
+# The context checkpoint count each registry row serves with. server-context.cpp
+# copies the recurrent state at checkpoint boundaries so a second turn sharing
+# a long prefix restores the newest checkpoint below the divergence point rather
+# than re-prefilling from zero; a hybrid Gated DeltaNet model rolls nothing back
+# without one. The count is per row because the classes disagree on fidelity:
+# evidence/ctx-checkpoint-sweep/ measures a 275x to 500x second-turn prefill
+# reduction on every class, and the 0.8B alone emits a different first-turn
+# token at zero-based index 25 whenever checkpoints are armed, which
+# server-context.cpp:3449's forced prefill tail partition supports. A row
+# absent from this ledger serves at 0. A count above 0 names the evidence
+# directory that measured it; `-` is admitted for 0 alone. qwen-capacity-policy.sh
+# sets --ctx-checkpoints from the row on the single-model path, and in router
+# mode every preset section carries LLAMA_ARG_CTX_CHECKPOINTS from the row,
+# since common_preset::merge would push one router argv value onto every child.
+# model_id	ctx_checkpoints	evidence
+qwen38-2b-distill	2	evidence/ctx-checkpoint-sweep/qwen38-2b-distill
+qwen35-08b	0	evidence/ctx-checkpoint-sweep/qwen35-08b
+qwen38-4b-distill	2	evidence/ctx-checkpoint-sweep/qwen38-4b-distill

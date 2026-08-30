@@ -1,0 +1,7 @@
+chain_start utc=2026-08-29T21:44:35Z
+teardown status=0 utc=2026-08-29T21:44:35Z
+sweep model=qwen38-2b-distill status=0 ctx_checkpoint_sweep=completed label=qwen38-2b-distill arms=8 output=$HOME/qwen-ctx-checkpoint-sweep/qwen38-2b-distill utc=2026-08-30T01:35:19Z
+sweep model=qwen35-08b status=1 ctx_checkpoint_sweep=failed label=qwen35-08b failed_arms=0 divergence=1 output=$HOME/qwen-ctx-checkpoint-sweep/qwen35-08b utc=2026-08-30T03:39:47Z
+sweep model=qwen38-4b-distill status=1 ctx_checkpoint_sweep=failed label=qwen38-4b-distill failed_arms=1 divergence=0 output=$HOME/qwen-ctx-checkpoint-sweep/qwen38-4b-disti utc=2026-08-30T11:52:13Z
+relaunch status=0 utc=2026-08-30T11:52:17Z
+chain_end utc=2026-08-30T11:52:17Z

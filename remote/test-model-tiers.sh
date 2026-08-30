@@ -179,6 +179,7 @@ for preset_key in $(sed -n 's/^\(LLAMA_ARG_[A-Z_]*\) *=.*/\1/p' "$presets" |
         LLAMA_ARG_MODEL | LLAMA_ARG_ALIAS | LLAMA_ARG_TAGS | \
         LLAMA_ARG_CTX_SIZE | LLAMA_ARG_CACHE_TYPE_K | LLAMA_ARG_CACHE_TYPE_V | \
         LLAMA_ARG_FLASH_ATTN | LLAMA_ARG_BATCH | LLAMA_ARG_UBATCH | \
+        LLAMA_ARG_CTX_CHECKPOINTS | \
         LLAMA_ARG_MMPROJ | LLAMA_ARG_SPEC_TYPE | LLAMA_ARG_SPEC_DRAFT_MODEL | \
         LLAMA_ARG_SPEC_DRAFT_N_MAX | LLAMA_ARG_SPEC_DRAFT_P_MIN | \
         LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K | LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V | \
@@ -196,16 +197,17 @@ else
     report preset_key_vocabulary rejected
 fi
 
-# Every section carries all six per-checkpoint keys. The router argv omits them
-# so the preset decides, and a key absent from a section falls through to the
-# llama.cpp defaults, where batch 2048 and ubatch 512 is the quarantined
-# geometry. An incomplete section is therefore how a quarantined tuple would
-# reach a child without any row asking for it.
+# Every section carries all six per-checkpoint keys and the checkpoint count.
+# The router argv omits them so the preset decides, and a key absent from a
+# section falls through to the llama.cpp defaults, where batch 2048 and ubatch
+# 512 is the quarantined geometry and the checkpoint count is 32. An incomplete
+# section is therefore how a quarantined tuple would reach a child without any
+# row asking for it.
 section_completeness=0
 for section in $section_ids; do
     for required_key in LLAMA_ARG_CTX_SIZE LLAMA_ARG_CACHE_TYPE_K \
         LLAMA_ARG_CACHE_TYPE_V LLAMA_ARG_FLASH_ATTN LLAMA_ARG_BATCH \
-        LLAMA_ARG_UBATCH; do
+        LLAMA_ARG_UBATCH LLAMA_ARG_CTX_CHECKPOINTS; do
         if ! awk -F'[][]' -v want="$section" -v key="$required_key" '
             /^\[/ { in_section = ($2 == want); next }
             in_section && index($0, key) == 1 { found = 1 }
@@ -401,9 +403,14 @@ printf '%s\n' \
     'profile-record	profile	profile-model	ring-timeout-only	8192	128	32	q8_0	q4_0	on	-	-	evidence/quarantine/profile-record.md	router-child' \
     'archived-record	model	archived-model	device-lost	-	-	-	-	-	-	-	-	evidence/quarantine/archived-record.md	any' \
     >"$fixture_quarantine"
+# The checkpoint ledger joins against the model registry, so a fixture registry
+# names an empty ledger: every section then carries the 0 an absent row admits.
+fixture_ctx_checkpoints=$work/fixture-ctx-checkpoints.tsv
+printf '# the fixture registry admits no checkpoint count\n' >"$fixture_ctx_checkpoints"
 QWEN_MODEL_REGISTRY=$fixture_registry QWEN_MODEL_ROOT=$fixture_model_root \
 QWEN_QUARANTINE_REGISTRY=$fixture_quarantine \
 QWEN_QUARANTINE_REASONS=$fixture_reasons QWEN_DRAFT_PAIRS=$fixture_pairs \
+QWEN_CTX_CHECKPOINT_LEDGER=$fixture_ctx_checkpoints \
     "$builder" "$fixture_presets" >"$work/quarantine-fixture.log"
 if ! grep -q '^\[' "$fixture_presets" &&
    [ -L "$fixture_model_root/quarantine/Hidden" ] &&
@@ -417,6 +424,7 @@ QWEN_MODEL_REGISTRY=$fixture_registry QWEN_MODEL_ROOT=$fixture_model_root \
 QWEN_QUARANTINE_REGISTRY=$fixture_quarantine \
 QWEN_QUARANTINE_REASONS=$fixture_reasons QWEN_ROUTER_INCLUDE_QUARANTINE=1 \
 QWEN_DEFAULT_MODEL_ID=hidden-model QWEN_DRAFT_PAIRS=$fixture_pairs \
+QWEN_CTX_CHECKPOINT_LEDGER=$fixture_ctx_checkpoints \
     "$builder" "$fixture_presets" >"$work/quarantine-fixture-override.log"
 fixture_sections=$(awk -F'[][]' '/^\[/ { print $2 }' "$fixture_presets" | sort)
 hidden_tags=$(awk -F' = ' '
@@ -505,6 +513,7 @@ QWEN_MODEL_REGISTRY=$pair_fixture_registry QWEN_MODEL_ROOT=$pair_fixture_root \
 QWEN_QUARANTINE_REGISTRY=$pair_fixture_quarantine \
 QWEN_QUARANTINE_REASONS=$pair_fixture_reasons \
 QWEN_DRAFT_PAIRS=$pair_fixture_pairs \
+QWEN_CTX_CHECKPOINT_LEDGER=$fixture_ctx_checkpoints \
     "$builder" "$pair_fixture_presets" >"$work/pair-fixture.log" \
     2>"$work/pair-fixture.err" || pair_fixture_status=$?
 if [ "$pair_fixture_status" -ne 0 ] &&
@@ -514,6 +523,90 @@ if [ "$pair_fixture_status" -ne 0 ] &&
 else
     report draft_pair_quarantined_draft_refused rejected
     cat "$work/pair-fixture.err" >&2
+fi
+
+# The checkpoint ledger identity is retained across generation and compared
+# again before the file lands, so an edit between the row read and the rename
+# leaves the last known-good preset in place. The launch rejoins every section
+# to the ledger it reads, and a published mix of old and new counts refuses
+# there instead.
+ledger_race_bin=$work/ledger-race-bin
+mkdir -p "$ledger_race_bin"
+cat >"$ledger_race_bin/sha256sum" <<'SHA256SUM'
+#!/bin/sh
+if [ "${2:-}" != "$QWEN_TEST_LEDGER_PATH" ]; then
+    exec "$QWEN_TEST_REAL_SHA256SUM" "$@"
+fi
+printf '%s  %s\n' \
+    0000000000000000000000000000000000000000000000000000000000000000 "$2"
+SHA256SUM
+chmod +x "$ledger_race_bin/sha256sum"
+ledger_race_presets=$work/ledger-race-presets.ini
+printf 'the previous preset\n' >"$ledger_race_presets"
+ledger_race_before=$(sha256sum "$ledger_race_presets" | cut -d' ' -f1)
+ledger_race_status=0
+QWEN_MODEL_REGISTRY=$fixture_registry QWEN_MODEL_ROOT=$fixture_model_root \
+QWEN_QUARANTINE_REGISTRY=$fixture_quarantine \
+QWEN_QUARANTINE_REASONS=$fixture_reasons QWEN_DRAFT_PAIRS=$fixture_pairs \
+QWEN_CTX_CHECKPOINT_LEDGER=$fixture_ctx_checkpoints \
+QWEN_TEST_LEDGER_PATH=$fixture_ctx_checkpoints \
+QWEN_TEST_LEDGER_COUNT=$work/ledger-race.count \
+QWEN_TEST_REAL_SHA256SUM=$(command -v sha256sum) \
+PATH="$ledger_race_bin:$PATH" \
+    "$builder" "$ledger_race_presets" >"$work/ledger-race.log" \
+    2>"$work/ledger-race.err" || ledger_race_status=$?
+ledger_race_after=$(sha256sum "$ledger_race_presets" | cut -d' ' -f1)
+if [ "$ledger_race_status" -ne 0 ] &&
+   grep -q 'context checkpoint ledger identity changed during generation' \
+       "$work/ledger-race.err" &&
+   [ "$ledger_race_after" = "$ledger_race_before" ]; then
+    report ctx_checkpoint_ledger_generation_race_refused accepted
+else
+    report ctx_checkpoint_ledger_generation_race_refused rejected
+    cat "$work/ledger-race.err" >&2
+fi
+
+# The rows every section carries are read from a copy rather than from the
+# ledger itself, so the emitted counts and the recorded digest name one set of
+# bytes even where the source changes and changes back between the two reads a
+# live query would take.
+snapshot_tools=$work/snapshot-tools
+snapshot_calls=$work/snapshot-registry.calls
+mkdir -p "$snapshot_tools"
+for remote_entry in "$script_directory"/*; do
+    ln -sf "$remote_entry" "$snapshot_tools/"
+done
+rm -f "$snapshot_tools/model-registry.sh"
+cat >"$snapshot_tools/model-registry.sh" <<'REGISTRY'
+#!/bin/sh
+printf '%s\t%s\n' "${1:-}" "${QWEN_CTX_CHECKPOINT_LEDGER:-unset}" \
+    >>"$QWEN_TEST_REGISTRY_CALLS"
+exec "$QWEN_TEST_REAL_MODEL_REGISTRY" "$@"
+REGISTRY
+chmod +x "$snapshot_tools/model-registry.sh"
+: >"$snapshot_calls"
+snapshot_presets=$work/snapshot-presets.ini
+if QWEN_MODEL_REGISTRY=$fixture_registry QWEN_MODEL_ROOT=$fixture_model_root \
+    QWEN_QUARANTINE_REGISTRY=$fixture_quarantine \
+    QWEN_QUARANTINE_REASONS=$fixture_reasons QWEN_DRAFT_PAIRS=$fixture_pairs \
+    QWEN_CTX_CHECKPOINT_LEDGER=$fixture_ctx_checkpoints \
+    QWEN_TEST_REGISTRY_CALLS=$snapshot_calls \
+    QWEN_TEST_REAL_MODEL_REGISTRY=$reader \
+    "$snapshot_tools/build-router-presets.sh" "$snapshot_presets" \
+    >"$work/snapshot.log" 2>"$work/snapshot.err"; then
+    snapshot_queried=$(awk -F'\t' '$1 == "ctx-checkpoints" { print $2; exit }' \
+        "$snapshot_calls")
+    snapshot_whole=$(grep -c '^ctx-checkpoints	' "$snapshot_calls" || true)
+    if [ "$snapshot_whole" = 1 ] && [ -n "$snapshot_queried" ] &&
+       [ "$snapshot_queried" != "$fixture_ctx_checkpoints" ]; then
+        report ctx_checkpoint_ledger_read_from_snapshot accepted
+    else
+        report ctx_checkpoint_ledger_read_from_snapshot rejected
+        printf 'reads=%s queried=%s\n' "$snapshot_whole" "$snapshot_queried" >&2
+    fi
+else
+    report ctx_checkpoint_ledger_read_from_snapshot rejected
+    cat "$work/snapshot.err" >&2
 fi
 
 if [ "$failures" -eq 0 ]; then

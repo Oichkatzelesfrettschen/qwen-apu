@@ -44,7 +44,8 @@ cors_origins=${QWEN_CORS_ORIGINS:-localhost}
 validate_router_preset_tuples() {
     printf '%s\n' "$4" | awk -F'\t' -v model_root="$3" \
         -v include_quarantine="$5" -v web_profile_sections="${6:-0}" \
-        -v web_depth_override="${7:-0}" -v draft_pair_ledger="${8:-}" '
+        -v web_depth_override="${7:-0}" -v draft_pair_ledger="${8:-}" \
+        -v ctx_checkpoint_ledger="${9:-}" '
         function reset_tuple(   draft_key_index) {
             for (draft_key_index = 1; draft_key_index <= draft_key_count;
                  draft_key_index++) {
@@ -58,6 +59,7 @@ validate_router_preset_tuples() {
             flash_count = 0
             batch_count = 0
             ubatch_count = 0
+            checkpoint_count = 0
             tags_count = 0
             model_value = ""
             context_value = ""
@@ -66,6 +68,7 @@ validate_router_preset_tuples() {
             flash_value = ""
             batch_value = ""
             ubatch_value = ""
+            checkpoint_value = ""
             tags_value = ""
         }
         function reject_key(key, count) {
@@ -106,6 +109,15 @@ validate_router_preset_tuples() {
             if (flash_count != 1) reject_key("LLAMA_ARG_FLASH_ATTN", flash_count)
             if (batch_count != 1) reject_key("LLAMA_ARG_BATCH", batch_count)
             if (ubatch_count != 1) reject_key("LLAMA_ARG_UBATCH", ubatch_count)
+            # The checkpoint count is the seventh per-section key. The pinned
+            # build defaults n_ctx_checkpoints to 32, so an absent key serves
+            # thirty-two host copies of the recurrent state where the ledger
+            # admits at most two, which is why the key is required rather than
+            # defaulted.
+            if (checkpoint_count != 1) reject_key("LLAMA_ARG_CTX_CHECKPOINTS", checkpoint_count)
+            if (checkpoint_count == 1 && checkpoint_value !~ /^(0|[1-9][0-9]*)$/) {
+                reject_value("LLAMA_ARG_CTX_CHECKPOINTS", checkpoint_value)
+            }
             if (context_count == 1 && (context_value !~ /^[0-9]+$/ || context_value + 0 < 1)) {
                 reject_value("LLAMA_ARG_CTX_SIZE", context_value)
             }
@@ -279,6 +291,18 @@ validate_router_preset_tuples() {
                 reject_registry_value("LLAMA_ARG_UBATCH", ubatch_value,
                     registry_ubatch[registry_key])
             }
+            # The count is compared against the ledger row of the registry key
+            # the section resolved to, which for a draft-pair section is its
+            # target row and for a web section its model row; a row outside
+            # the ledger admits 0.
+            expected_checkpoints = (registry_key in ledger_checkpoints) ? \
+                ledger_checkpoints[registry_key] : "0"
+            if (checkpoint_count == 1 && checkpoint_value ~ /^(0|[1-9][0-9]*)$/ &&
+                checkpoint_value != expected_checkpoints) {
+                printf "router preset section %s carries LLAMA_ARG_CTX_CHECKPOINTS %s, the context checkpoint ledger admits %s\n", \
+                    section, checkpoint_value, expected_checkpoints > "/dev/stderr"
+                rejected = 1
+            }
             if (include_quarantine != 1 && quarantined_models[registry_key]) {
                 printf "router preset section %s is excluded by model quarantine\n", \
                     section > "/dev/stderr"
@@ -356,6 +380,13 @@ validate_router_preset_tuples() {
                 pair_p_min[pair_fields[1]]  = pair_fields[6]
                 pair_cache_k[pair_fields[1]] = pair_fields[8]
                 pair_cache_v[pair_fields[1]] = pair_fields[9]
+            }
+            checkpoint_row_count = split(ctx_checkpoint_ledger, checkpoint_rows, "\n")
+            for (checkpoint_row_index = 1; checkpoint_row_index <= checkpoint_row_count;
+                 checkpoint_row_index++) {
+                if (checkpoint_rows[checkpoint_row_index] == "") continue
+                split(checkpoint_rows[checkpoint_row_index], checkpoint_fields, "\t")
+                ledger_checkpoints[checkpoint_fields[1]] = checkpoint_fields[2]
             }
             reset_tuple()
         }
@@ -437,6 +468,9 @@ validate_router_preset_tuples() {
             } else if (key == "LLAMA_ARG_UBATCH") {
                 ubatch_count++
                 ubatch_value = value
+            } else if (key == "LLAMA_ARG_CTX_CHECKPOINTS") {
+                checkpoint_count++
+                checkpoint_value = value
             } else if (key == "LLAMA_ARG_TAGS") {
                 tags_count++
                 tags_value = value
@@ -686,6 +720,10 @@ router_presets=${QWEN_ROUTER_PRESETS:-"${HOME:?}/qwen-webui-state/router-presets
 router_registry=${QWEN_MODEL_REGISTRY:-"$script_directory/models.tsv"}
 router_quarantine_registry=${QWEN_QUARANTINE_REGISTRY:-$script_directory/quarantine.tsv}
 router_draft_pair_registry=${QWEN_DRAFT_PAIRS:-$script_directory/draft-pairs.tsv}
+# model-registry.sh resolves the checkpoint ledger from the same variable and
+# the same default, so the path this launch hashes is the path whose rows the
+# tuple validator compared each section against.
+router_ctx_checkpoint_ledger=${QWEN_CTX_CHECKPOINT_LEDGER:-$script_directory/ctx-checkpoints.tsv}
 router_model_root=${QWEN_MODEL_ROOT:-"${HOME:?}/models"}
 router_web_profiles_environment=${QWEN_WEB_PROFILES:-}
 router_web_profiles=$script_directory/web-profiles.tsv
@@ -874,10 +912,20 @@ validate_current_router_authorities() {
             return 1
         fi
     fi
+    # The context checkpoint ledger is read whole at every router launch, for
+    # web presets as much as router presets, since every section carries the
+    # count and a persisted preset is rejoined to the rows this launch read.
+    if ! router_ctx_checkpoint_rows=$(
+        "$script_directory/model-registry.sh" ctx-checkpoints
+    ); then
+        printf 'router context checkpoint authority is unavailable\n' >&2
+        return 1
+    fi
     if ! validate_router_preset_tuples "$router_registry" "$router_presets" \
         "$router_model_root" "$router_quarantine_rows" \
         "$quarantine_override_from_preset" "$web_presets_from_preset" \
-        "$web_depth_override_from_preset" "$router_draft_pair_rows"; then
+        "$web_depth_override_from_preset" "$router_draft_pair_rows" \
+        "$router_ctx_checkpoint_rows"; then
         printf 'router presets do not carry complete admitted tuples: %s\n' \
             "$router_presets" >&2
         return 1
@@ -1028,6 +1076,14 @@ if [ "$router_enabled" = 1 ]; then
             'router draft-pair ledger' "$router_draft_pair_registry") || exit 2
     fi
     validate_current_router_authorities || exit 2
+    # The digest follows the validation that read the rows, so the guard's
+    # remeasurement binds the admitted counts to the ledger content this launch
+    # compared each section against. Both preset shapes carry the count, so this
+    # authority is measured for every router launch rather than skipped the way
+    # the draft-pair and web ledgers are.
+    router_ctx_checkpoint_guard_sha256=$(measure_router_authority_identity \
+        'router context checkpoint ledger' \
+        "$router_ctx_checkpoint_ledger") || exit 2
     quarantine_override_from_environment=${QWEN_ROUTER_INCLUDE_QUARANTINE:-0}
     case $quarantine_override_from_environment in
         0 | 1) ;;
@@ -1195,13 +1251,33 @@ fi
 # Context checkpoints are the one saved-state mechanism a hybrid recurrent
 # model has: server-context.cpp cannot roll the Gated DeltaNet state back, so
 # a second turn sharing a long prefix re-prefills from the newest checkpoint
-# below the divergence point or from zero. The served default is zero, which
-# keeps every checkpoint's host copy of the recurrent state off the desktop
-# reserve, and QWEN_CTX_CHECKPOINTS raises it for a sweep that measures what
-# the copies buy. QWEN_CHECKPOINT_MIN_STEP names --checkpoint-min-step and
+# below the divergence point or from zero. The count is per registry row:
+# remote/ctx-checkpoints.tsv carries it, because
+# evidence/ctx-checkpoint-sweep/ measures the same second-turn reduction on
+# every class while the 0.8B alone emits a different first-turn token once
+# checkpoints are armed, and a row outside the ledger serves at 0.
+# QWEN_CTX_CHECKPOINTS replaces the row's count for a sweep that measures what
+# the copies buy, an explicit 0 included. A checkpoint copies the recurrent
+# state into host memory, so the count stays on the desktop reserve's side of
+# the arithmetic. QWEN_CHECKPOINT_MIN_STEP names --checkpoint-min-step and
 # leaves the pinned build's 8192-token default in place when unset. Both are
-# non-negative integers, since common/arg.cpp reads them as such.
-ctx_checkpoints=${QWEN_CTX_CHECKPOINTS:-0}
+# non-negative integers, since common/arg.cpp reads them as such. In router
+# mode the count belongs to each section's LLAMA_ARG_CTX_CHECKPOINTS, which
+# the tuple validator above compared against the ledger, and this variable
+# stays off the router argv with the six tuple flags.
+registry_ctx_checkpoints=0
+if [ "$router_enabled" != 1 ]; then
+    registry_model_id=$("$script_directory/model-registry.sh" path "$model_path" \
+        id 2>/dev/null) || registry_model_id=''
+    if [ -n "$registry_model_id" ]; then
+        if ! registry_ctx_checkpoints=$("$script_directory/model-registry.sh" \
+            ctx-checkpoint "$registry_model_id"); then
+            printf 'context checkpoint authority is unavailable\n' >&2
+            exit 2
+        fi
+    fi
+fi
+ctx_checkpoints=${QWEN_CTX_CHECKPOINTS:-$registry_ctx_checkpoints}
 case $ctx_checkpoints in
     '' | *[!0-9]*)
         printf 'context checkpoint count must be a non-negative integer: %s\n' \
@@ -1209,6 +1285,17 @@ case $ctx_checkpoints in
         exit 2
         ;;
 esac
+# Router mode takes its count from each section, so this variable would reach
+# neither the argv nor the preset and the launch would serve the ledger's count
+# under a name that says otherwise. An arm measuring what the copies buy runs
+# the checkpoint it measures on the single-model path, where the count reaches
+# the server.
+if [ "$router_enabled" = 1 ] && [ -n "${QWEN_CTX_CHECKPOINTS:-}" ]; then
+    printf 'QWEN_CTX_CHECKPOINTS is refused in router mode: %s\n' \
+        "$QWEN_CTX_CHECKPOINTS" >&2
+    printf 'launch the checkpoint the arm measures on the single-model path\n' >&2
+    exit 2
+fi
 checkpoint_min_step=${QWEN_CHECKPOINT_MIN_STEP:-}
 if [ -n "$checkpoint_min_step" ]; then
     case $checkpoint_min_step in
@@ -1218,6 +1305,18 @@ if [ -n "$checkpoint_min_step" ]; then
             exit 2
             ;;
     esac
+    # The spacing reaches the router's own argv, and common_preset::merge
+    # overwrites, so one value would place every child's checkpoints while each
+    # section still matched the ledger. The ledger states a count per row and no
+    # authority states a spacing, and evidence/ctx-checkpoint-sweep/ measured
+    # its counts at the pinned build's 8192-token default, so the override
+    # belongs to the single-model path where it changes the one row it launches.
+    if [ "$router_enabled" = 1 ]; then
+        printf 'QWEN_CHECKPOINT_MIN_STEP is refused in router mode: %s\n' \
+            "$checkpoint_min_step" >&2
+        printf 'launch the checkpoint the arm measures on the single-model path\n' >&2
+        exit 2
+    fi
 fi
 
 set -- "$@" \
@@ -1230,7 +1329,6 @@ set -- "$@" \
     --parallel 1 \
     --threads 1 \
     --threads-batch 1 \
-    --ctx-checkpoints "$ctx_checkpoints" \
     --cache-ram 0 \
     --no-context-shift \
     --offline
@@ -1249,9 +1347,11 @@ fi
 #
 # Every section carrying all six is what makes the omission safe: an absent key
 # falls through to the llama.cpp defaults, and those are batch 2048 and ubatch
-# 512, which is the quarantined geometry.
+# 512, which is the quarantined geometry. The checkpoint count joins them for
+# the same reason, with a default of 32 where the ledger admits at most two.
 if [ "$router_enabled" != 1 ]; then
     set -- "$@" \
+        --ctx-checkpoints "$ctx_checkpoints" \
         --ctx-size "$context_size" \
         --batch-size "$batch_size" \
         --ubatch-size "$ubatch_size" \
@@ -1278,12 +1378,29 @@ export QWEN_VULKAN_WORKLOAD_LOCK="$workload_lease_state_directory/vulkan-workloa
 printf 'vulkan_workload_lease path=%s\n' "$QWEN_VULKAN_WORKLOAD_LOCK"
 
 # The launcher hashes its immutable-per-session snapshot before preflight. The
-# exec boundary revalidates both mutable registry authorities and measures the
-# preset again, so a quarantine or model-registry replacement invalidates the
-# assembled server command before llama-server starts.
+# exec boundary revalidates every mutable authority and measures the preset
+# again, so a replacement of the model registry, the quarantine registry, the
+# draft-pair ledger, the web profile ledger, or the context checkpoint ledger
+# invalidates the assembled server command before llama-server starts.
 if [ "$router_enabled" = 1 ]; then
     verify_router_preset_identity || exit 2
     validate_current_router_authorities || exit 2
+    # The digest the guard carries is measured once, and the validation that
+    # admits the counts runs twice, so the ledger is remeasured here and
+    # required to equal that digest. Without the comparison a file holding the
+    # admitted rows at each validation and revoked rows at the single
+    # measurement would hand the guard a digest naming content no validation
+    # read, and the guard would then accept the revoked file it matches.
+    router_ctx_checkpoint_final_sha256=$(measure_router_authority_identity \
+        'router context checkpoint ledger' \
+        "$router_ctx_checkpoint_ledger") || exit 2
+    if [ "$router_ctx_checkpoint_final_sha256" != \
+        "$router_ctx_checkpoint_guard_sha256" ]; then
+        printf 'context checkpoint ledger identity changed during validation: expected %s, measured %s\n' \
+            "$router_ctx_checkpoint_guard_sha256" \
+            "$router_ctx_checkpoint_final_sha256" >&2
+        exit 2
+    fi
     exec "$script_directory/radv-low-priority-env.sh" \
         "$script_directory/qwen-router-exec-guard.sh" \
         "$router_presets" "$router_preset_guard_sha256" \
@@ -1292,6 +1409,8 @@ if [ "$router_enabled" = 1 ]; then
         "$router_draft_pair_guard_path" "$router_draft_pair_guard_sha256" \
         "$router_web_profiles_guard_path" \
         "$router_web_profiles_guard_sha256" \
+        "$router_ctx_checkpoint_ledger" \
+        "$router_ctx_checkpoint_guard_sha256" \
         "$@"
 fi
 

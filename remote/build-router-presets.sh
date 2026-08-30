@@ -78,11 +78,43 @@ fi
 # preset that looks complete.
 quarantine_rows=$("$script_directory/model-registry.sh" quarantine-rows router-child)
 draft_pair_rows=$("$script_directory/model-registry.sh" draft-pairs)
+# The context checkpoint count is per row and every section carries it, since
+# common_preset::merge would push one router argv value onto every child. The
+# ledger identity is retained beside the rows and compared again before the file
+# lands, because qwen-capacity-policy.sh rejoins every persisted section to the
+# ledger it reads at launch: an edit during generation would otherwise replace
+# the last known-good preset with counts the launch refuses.
+# One copy is the whole run's ledger: the digest names the copy's bytes and the
+# rows are read from the same copy, so the emitted counts and the recorded
+# identity describe one state by construction. Two live reads of the source
+# cannot state that, since a file that changed and changed back between them
+# answers both reads consistently while the query in the middle returns the
+# state neither digest saw. The comparison before the rename then measures the
+# source against that copy, and a source standing where it stood is what admits
+# the preset the launch rejoins to it.
+ctx_checkpoint_ledger=${QWEN_CTX_CHECKPOINT_LEDGER:-$script_directory/ctx-checkpoints.tsv}
+ctx_checkpoint_snapshot=$(mktemp "${TMPDIR:-/tmp}/.ctx-checkpoints.XXXXXX")
+cleanup_ctx_checkpoint_snapshot() {
+    rm -f -- "$ctx_checkpoint_snapshot"
+}
+trap 'cleanup_ctx_checkpoint_snapshot' EXIT HUP INT TERM
+cp -- "$ctx_checkpoint_ledger" "$ctx_checkpoint_snapshot"
+ctx_checkpoint_ledger_identity=$(sha256sum -- "$ctx_checkpoint_snapshot")
+ctx_checkpoint_ledger_sha256=${ctx_checkpoint_ledger_identity%% *}
+ctx_checkpoint_rows=$(QWEN_CTX_CHECKPOINT_LEDGER=$ctx_checkpoint_snapshot \
+    "$script_directory/model-registry.sh" ctx-checkpoints)
+ledger_ctx_checkpoints() {
+    printf '%s\n' "$ctx_checkpoint_rows" | awk -F'\t' -v id="$1" '
+        $1 == id { count = $2; matched = 1 }
+        END { print matched ? count : 0 }
+    '
+}
 
 output_parent=$(dirname -- "$output_ini")
 mkdir -p "$output_parent"
 output_staging=$(mktemp "$output_parent/.router-presets.XXXXXX")
 cleanup_output_staging() {
+    cleanup_ctx_checkpoint_snapshot
     rm -f -- "$output_staging"
 }
 trap 'cleanup_output_staging' EXIT HUP INT TERM
@@ -241,6 +273,7 @@ while IFS='	' read -r id role model_file _fetch_script context_default \
         printf 'LLAMA_ARG_FLASH_ATTN = %s\n' "$flash_attention"
         printf 'LLAMA_ARG_BATCH = %s\n' "$batch"
         printf 'LLAMA_ARG_UBATCH = %s\n' "$ubatch"
+        printf 'LLAMA_ARG_CTX_CHECKPOINTS = %s\n' "$(ledger_ctx_checkpoints "$id")"
     } >>"$output_staging"
 
     if [ "$projector" = required ]; then
@@ -372,6 +405,8 @@ while IFS='	' read -r pair_id target_model_id draft_model_id pair_tier \
         printf 'LLAMA_ARG_FLASH_ATTN = %s\n' "$target_flash"
         printf 'LLAMA_ARG_BATCH = %s\n' "$target_batch"
         printf 'LLAMA_ARG_UBATCH = %s\n' "$target_ubatch"
+        printf 'LLAMA_ARG_CTX_CHECKPOINTS = %s\n' \
+            "$(ledger_ctx_checkpoints "$target_model_id")"
         printf 'LLAMA_ARG_SPEC_TYPE = draft-simple\n'
         printf 'LLAMA_ARG_SPEC_DRAFT_MODEL = %s\n' "$draft_path"
         printf 'LLAMA_ARG_SPEC_DRAFT_N_MAX = %s\n' "$spec_draft_n_max"
@@ -390,6 +425,15 @@ while IFS='	' read -r pair_id target_model_id draft_model_id pair_tier \
 done <<EOF
 $draft_pair_rows
 EOF
+
+ctx_checkpoint_ledger_current_identity=$(sha256sum -- "$ctx_checkpoint_ledger")
+ctx_checkpoint_ledger_current_sha256=${ctx_checkpoint_ledger_current_identity%% *}
+if [ "$ctx_checkpoint_ledger_current_sha256" != "$ctx_checkpoint_ledger_sha256" ]; then
+    printf 'context checkpoint ledger identity changed during generation: expected %s, measured %s\n' \
+        "$ctx_checkpoint_ledger_sha256" \
+        "$ctx_checkpoint_ledger_current_sha256" >&2
+    exit 1
+fi
 
 chmod 600 "$output_staging"
 mv -f -- "$output_staging" "$output_ini"

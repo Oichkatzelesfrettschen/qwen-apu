@@ -1,0 +1,9 @@
+label=qwen35-08b
+model_id=qwen35-08b
+model=$HOME/models/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf
+profile=low-async
+arms=0 2 4 8 8 4 2 0
+target_depth=30720
+predict_tokens=32
+context_size=32768
+harness_nice=0

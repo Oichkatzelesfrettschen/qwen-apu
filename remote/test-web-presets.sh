@@ -23,6 +23,14 @@ report() {
     [ "$2" = ok ] || failures=$((failures + 1))
 }
 
+# The context checkpoint ledger joins against the model registry, so the
+# temporary registry every case reads names an empty ledger and each emitted
+# section carries the 0 an absent row admits.
+QWEN_CTX_CHECKPOINT_LEDGER=$work/ctx-checkpoints.tsv
+printf '# the fixture registry admits no checkpoint count\n' \
+    >"$QWEN_CTX_CHECKPOINT_LEDGER"
+export QWEN_CTX_CHECKPOINT_LEDGER
+
 # The web-lane cases below read a temporary all-refused image ledger for the
 # reason they read a temporary model registry: the checked-in
 # remote/image-profiles.tsv carries one validator-gated row, so a generator run
@@ -149,7 +157,7 @@ else
     cat "$work/ok.err" >&2
 fi
 
-required_keys='LLAMA_ARG_MODEL LLAMA_ARG_ALIAS LLAMA_ARG_CTX_SIZE LLAMA_ARG_BATCH LLAMA_ARG_UBATCH LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V LLAMA_ARG_FLASH_ATTN LLAMA_ARG_MCP_SERVERS_CONFIG LLAMA_ARG_TAGS'
+required_keys='LLAMA_ARG_MODEL LLAMA_ARG_ALIAS LLAMA_ARG_CTX_SIZE LLAMA_ARG_BATCH LLAMA_ARG_UBATCH LLAMA_ARG_CTX_CHECKPOINTS LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V LLAMA_ARG_FLASH_ATTN LLAMA_ARG_MCP_SERVERS_CONFIG LLAMA_ARG_TAGS'
 geometry_ok=ok
 for key in $required_keys; do
     if ! awk -v key="$key" '
@@ -456,7 +464,7 @@ fi
 # reading the file's first line.
 for required_key in LLAMA_ARG_MODEL LLAMA_ARG_CTX_SIZE LLAMA_ARG_BATCH \
     LLAMA_ARG_UBATCH LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V \
-    LLAMA_ARG_FLASH_ATTN; do
+    LLAMA_ARG_FLASH_ATTN LLAMA_ARG_CTX_CHECKPOINTS; do
     broken_presets=$work/presets-without-$required_key.ini
     sed "/^$required_key =/d" "$presets_policy" >"$broken_presets"
     if run_policy_over_presets "$broken_presets" \
@@ -2173,6 +2181,90 @@ else
     else
         report standalone_reviewer_tuple_refused wrong_refusal
     fi
+fi
+
+# Each section's checkpoint count is a separate ledger query, so an edit during
+# generation would write one section from the old ledger and the next from the
+# new one. The identity retained at the start is compared again before the file
+# lands, and the previous preset survives the refusal.
+ledger_race_bin=$work/ledger-race-bin
+mkdir -p "$ledger_race_bin"
+cat >"$ledger_race_bin/sha256sum" <<'SHA256SUM'
+#!/bin/sh
+if [ "${2:-}" != "$QWEN_TEST_LEDGER_PATH" ]; then
+    exec "$QWEN_TEST_REAL_SHA256SUM" "$@"
+fi
+printf '%s  %s\n' \
+    0000000000000000000000000000000000000000000000000000000000000000 "$2"
+SHA256SUM
+chmod +x "$ledger_race_bin/sha256sum"
+ledger_race_presets=$work/ledger-race-presets.ini
+printf 'the previous preset\n' >"$ledger_race_presets"
+ledger_race_before=$(sha256sum "$ledger_race_presets" | cut -d' ' -f1)
+if build "$web_profiles_ok" "$ledger_race_presets" \
+    env QWEN_WEB_MCP_SERVER="$mcp_server_program" QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" QWEN_WEB_STATE_DIR="$web_state_directory" \
+    QWEN_TEST_LEDGER_PATH="$QWEN_CTX_CHECKPOINT_LEDGER" \
+    QWEN_TEST_LEDGER_COUNT="$work/ledger-race.count" \
+    QWEN_TEST_REAL_SHA256SUM="$(command -v sha256sum)" \
+    PATH="$ledger_race_bin:$PATH" \
+    >"$work/ledger-race.log" 2>"$work/ledger-race.err"; then
+    report ctx_checkpoint_ledger_generation_race_refused accepted_a_changed_ledger
+elif grep -q 'context checkpoint ledger identity changed during generation' \
+    "$work/ledger-race.err" &&
+    [ "$(sha256sum "$ledger_race_presets" | cut -d' ' -f1)" \
+      = "$ledger_race_before" ]; then
+    report ctx_checkpoint_ledger_generation_race_refused ok
+else
+    report ctx_checkpoint_ledger_generation_race_refused wrong_refusal
+    cat "$work/ledger-race.err" >&2
+fi
+
+# Every section's count comes from one validated snapshot, so the generator
+# reads the ledger once for the whole run. A query per section would let a
+# ledger that changed and changed back carry counts from the state in between
+# past both identity comparisons.
+snapshot_tools=$work/snapshot-tools
+snapshot_calls=$work/snapshot-registry.calls
+mkdir -p "$snapshot_tools"
+for remote_entry in "$script_directory"/*; do
+    ln -sf "$remote_entry" "$snapshot_tools/"
+done
+rm -f "$snapshot_tools/model-registry.sh"
+cat >"$snapshot_tools/model-registry.sh" <<'REGISTRY'
+#!/bin/sh
+printf '%s\t%s\n' "${1:-}" "${QWEN_CTX_CHECKPOINT_LEDGER:-unset}" \
+    >>"$QWEN_TEST_REGISTRY_CALLS"
+exec "$QWEN_TEST_REAL_MODEL_REGISTRY" "$@"
+REGISTRY
+chmod +x "$snapshot_tools/model-registry.sh"
+: >"$snapshot_calls"
+snapshot_presets=$work/snapshot-presets.ini
+if QWEN_MODEL_REGISTRY=$model_registry \
+    QWEN_WEB_PROFILES=$web_profiles_ok \
+    QWEN_WEB_AUTHORIZER_READY=1 \
+    QWEN_MODEL_ROOT=${QWEN_MODEL_ROOT:-$policy_model_root} \
+    QWEN_TEST_REGISTRY_CALLS=$snapshot_calls \
+    QWEN_TEST_REAL_MODEL_REGISTRY=$script_directory/model-registry.sh \
+    env QWEN_WEB_MCP_SERVER="$mcp_server_program" QWEN_WEB_SEARCH_KEY_FILE="$search_key_file" QWEN_WEB_TOKEN_KEY_FILE="$token_key_file" QWEN_WEB_STATE_DIR="$web_state_directory" \
+    "$snapshot_tools/build-web-presets.sh" "$snapshot_presets" \
+    >"$work/snapshot.log" 2>"$work/snapshot.err"; then
+    snapshot_whole=$(grep -c '^ctx-checkpoints	' "$snapshot_calls" || true)
+    snapshot_per_row=$(grep -c '^ctx-checkpoint	' "$snapshot_calls" || true)
+    # The query runs against a copy rather than against the ledger itself, so
+    # the rows the sections carry and the digest the run records name one set of
+    # bytes even where the source changes and changes back beneath them.
+    snapshot_queried=$(awk -F'\t' '$1 == "ctx-checkpoints" { print $2; exit }' \
+        "$snapshot_calls")
+    if [ "$snapshot_whole" = 1 ] && [ "$snapshot_per_row" = 0 ] &&
+       [ -n "$snapshot_queried" ] &&
+       [ "$snapshot_queried" != "$QWEN_CTX_CHECKPOINT_LEDGER" ]; then
+        report ctx_checkpoint_ledger_read_once ok
+    else
+        report ctx_checkpoint_ledger_read_once "whole=$snapshot_whole per_row=$snapshot_per_row"
+    fi
+else
+    report ctx_checkpoint_ledger_read_once generation_failed
+    cat "$work/snapshot.err" >&2
 fi
 
 if [ "$failures" -ne 0 ]; then

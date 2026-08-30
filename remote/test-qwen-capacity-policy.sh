@@ -64,12 +64,12 @@ off
 1
 --threads-batch
 1
---ctx-checkpoints
-0
 --cache-ram
 0
 --no-context-shift
 --offline
+--ctx-checkpoints
+0
 --ctx-size
 24576
 --batch-size
@@ -170,6 +170,15 @@ printf '# the fabricated registry admits no draft pairing\n' \
     >"$fabricated_draft_pairs"
 QWEN_DRAFT_PAIRS=$fabricated_draft_pairs
 export QWEN_DRAFT_PAIRS
+# The context checkpoint ledger joins against the model registry the same way,
+# so the fabricated registry names an empty ledger and every section below
+# carries the count 0 that an absent row admits; the ledger-driven default is
+# measured on its own below with a populated ledger.
+fabricated_ctx_checkpoints=$temporary_directory/ctx-checkpoints.tsv
+printf '# the fabricated registry admits no checkpoint count\n' \
+    >"$fabricated_ctx_checkpoints"
+QWEN_CTX_CHECKPOINT_LEDGER=$fabricated_ctx_checkpoints
+export QWEN_CTX_CHECKPOINT_LEDGER
 QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_RADV_ICD=$fake_icd \
     QWEN_MODEL_ROOT=$router_model_root \
     QWEN_POLICY_TEST_OUTPUT=$cache_output \
@@ -350,6 +359,7 @@ append_complete_router_section() {
         printf 'LLAMA_ARG_FLASH_ATTN = auto\n'
         printf 'LLAMA_ARG_BATCH = 256\n'
         printf 'LLAMA_ARG_UBATCH = 64\n'
+        printf 'LLAMA_ARG_CTX_CHECKPOINTS = 0\n'
     } >>"$router_section_file"
 }
 router_presets=$temporary_directory/router-presets.ini
@@ -517,7 +527,7 @@ case " $router_candidate_arguments " in
         ;;
 esac
 for overridden_flag in --ctx-size --batch-size --ubatch-size --flash-attn \
-    --cache-type-k --cache-type-v; do
+    --cache-type-k --cache-type-v --ctx-checkpoints; do
     case " $router_candidate_arguments " in
         *" $overridden_flag "*)
             printf 'candidate-only router carries tuple flag %s: %s\n' \
@@ -543,6 +553,69 @@ grep -F 'router preset section fabricated requires exactly one LLAMA_ARG_UBATCH,
     "$temporary_directory/incomplete-router.stderr" >/dev/null
 grep -F 'router presets do not carry complete admitted tuples:' \
     "$temporary_directory/incomplete-router.stderr" >/dev/null
+
+# The checkpoint count is the seventh required key: absent, repeated, and
+# differing from the ledger each refuse, since an absent key falls to the
+# pinned build's default of 32 host copies of the recurrent state.
+absent_checkpoint_presets=$temporary_directory/absent-checkpoint-router-presets.ini
+sed '/^LLAMA_ARG_CTX_CHECKPOINTS =/d' "$router_presets" >"$absent_checkpoint_presets"
+if QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS=$absent_checkpoint_presets QWEN_ROUTER_MAX=1 \
+    "$policy" "$fake_server" "$registry_model" 24576 18080 \
+    >"$temporary_directory/absent-checkpoint-router.stdout" \
+    2>"$temporary_directory/absent-checkpoint-router.stderr"; then
+    printf 'router accepted a preset section without a checkpoint count\n' >&2
+    exit 1
+fi
+grep -F 'router preset section fabricated requires exactly one LLAMA_ARG_CTX_CHECKPOINTS, found 0' \
+    "$temporary_directory/absent-checkpoint-router.stderr" >/dev/null
+duplicate_checkpoint_presets=$temporary_directory/duplicate-checkpoint-router-presets.ini
+{ cat "$router_presets"; printf 'LLAMA_ARG_CTX_CHECKPOINTS = 0\n'; } \
+    >"$duplicate_checkpoint_presets"
+if QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS=$duplicate_checkpoint_presets QWEN_ROUTER_MAX=1 \
+    "$policy" "$fake_server" "$registry_model" 24576 18080 \
+    >"$temporary_directory/duplicate-checkpoint-router.stdout" \
+    2>"$temporary_directory/duplicate-checkpoint-router.stderr"; then
+    printf 'router accepted a preset section with two checkpoint counts\n' >&2
+    exit 1
+fi
+grep -F 'router preset section fabricated requires exactly one LLAMA_ARG_CTX_CHECKPOINTS, found 2' \
+    "$temporary_directory/duplicate-checkpoint-router.stderr" >/dev/null
+mismatched_checkpoint_presets=$temporary_directory/mismatched-checkpoint-router-presets.ini
+sed 's/^LLAMA_ARG_CTX_CHECKPOINTS = 0$/LLAMA_ARG_CTX_CHECKPOINTS = 3/' \
+    "$router_presets" >"$mismatched_checkpoint_presets"
+if QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS=$mismatched_checkpoint_presets QWEN_ROUTER_MAX=1 \
+    "$policy" "$fake_server" "$registry_model" 24576 18080 \
+    >"$temporary_directory/mismatched-checkpoint-router.stdout" \
+    2>"$temporary_directory/mismatched-checkpoint-router.stderr"; then
+    printf 'router accepted a checkpoint count the ledger refuses\n' >&2
+    exit 1
+fi
+grep -F 'router preset section fabricated carries LLAMA_ARG_CTX_CHECKPOINTS 3, the context checkpoint ledger admits 0' \
+    "$temporary_directory/mismatched-checkpoint-router.stderr" >/dev/null
+noninteger_checkpoint_presets=$temporary_directory/noninteger-checkpoint-router-presets.ini
+sed 's/^LLAMA_ARG_CTX_CHECKPOINTS = 0$/LLAMA_ARG_CTX_CHECKPOINTS = 02/' \
+    "$router_presets" >"$noninteger_checkpoint_presets"
+if QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$router_output QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS=$noninteger_checkpoint_presets QWEN_ROUTER_MAX=1 \
+    "$policy" "$fake_server" "$registry_model" 24576 18080 \
+    >"$temporary_directory/noninteger-checkpoint-router.stdout" \
+    2>"$temporary_directory/noninteger-checkpoint-router.stderr"; then
+    printf 'router accepted a non-canonical checkpoint count\n' >&2
+    exit 1
+fi
+grep -F 'router preset section fabricated carries invalid LLAMA_ARG_CTX_CHECKPOINTS: 02' \
+    "$temporary_directory/noninteger-checkpoint-router.stderr" >/dev/null
 
 unsafe_geometry_presets=$temporary_directory/unsafe-geometry-router-presets.ini
 sed -e 's/^LLAMA_ARG_BATCH = 256$/LLAMA_ARG_BATCH = 2048/' \
@@ -708,7 +781,7 @@ done
 # on the router argv silently replaces the same key in every section. Router
 # mode leaves them to the preset file for that reason.
 for overridden_flag in --ctx-size --batch-size --ubatch-size --flash-attn \
-    --cache-type-k --cache-type-v; do
+    --cache-type-k --cache-type-v --ctx-checkpoints; do
     case " $router_arguments " in
         *" $overridden_flag "*)
             printf 'router argv carries %s, which overwrites every model preset: %s\n' \
@@ -849,13 +922,17 @@ guard_preset_sha256=$(sha256sum "$router_presets" | cut -d' ' -f1)
 guard_model_sha256=$(sha256sum "$fabricated_registry" | cut -d' ' -f1)
 guard_quarantine_sha256=$(sha256sum "$authority_race_quarantine" | cut -d' ' -f1)
 guard_web_profiles_sha256=$(sha256sum "$guard_web_profiles" | cut -d' ' -f1)
+guard_ctx_ledger=$temporary_directory/guard-ctx-checkpoints.tsv
+printf 'guard-fixture\t2\t-\n' >"$guard_ctx_ledger"
+guard_ctx_ledger_sha256=$(sha256sum "$guard_ctx_ledger" | cut -d' ' -f1)
 printf 'changed\n' >>"$guard_web_profiles"
 if QWEN_TEST_GUARD_COMMAND_OUTPUT=$guard_command_output \
     "$exec_guard" "$router_presets" "$guard_preset_sha256" \
     "$fabricated_registry" "$guard_model_sha256" \
     "$authority_race_quarantine" "$guard_quarantine_sha256" \
     - - \
-    "$guard_web_profiles" "$guard_web_profiles_sha256" "$guard_command" \
+    "$guard_web_profiles" "$guard_web_profiles_sha256" \
+    "$guard_ctx_ledger" "$guard_ctx_ledger_sha256" "$guard_command" \
     >"$temporary_directory/web-ledger-guard.stdout" \
     2>"$temporary_directory/web-ledger-guard.stderr"; then
     printf 'exec guard accepted a replaced web profile ledger\n' >&2
@@ -865,6 +942,351 @@ grep -F 'router web profile ledger identity changed:' \
     "$temporary_directory/web-ledger-guard.stderr" >/dev/null
 if [ -e "$guard_command_output" ]; then
     printf 'guarded command ran after web-ledger identity rejection\n' >&2
+    exit 1
+fi
+
+# The context checkpoint ledger is the sixth authority pair and it is required
+# rather than optional, because every router and web preset section carries
+# LLAMA_ARG_CTX_CHECKPOINTS. An unchanged ledger reaches the command; a
+# replacement, a removal, and a wrong digest each stop before it runs.
+guard_web_profiles_unchanged=$temporary_directory/guard-web-profiles-unchanged.tsv
+printf 'web-fixture\tfixture\tvalidator-gated\t4096\t4096\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\n' \
+    >"$guard_web_profiles_unchanged"
+guard_web_unchanged_sha256=$(sha256sum "$guard_web_profiles_unchanged" | cut -d' ' -f1)
+run_ctx_ledger_guard() {
+    ctx_guard_label=$1
+    ctx_guard_path=$2
+    ctx_guard_sha256=$3
+    rm -f "$guard_command_output"
+    QWEN_TEST_GUARD_COMMAND_OUTPUT=$guard_command_output \
+        "$exec_guard" "$router_presets" "$guard_preset_sha256" \
+        "$fabricated_registry" "$guard_model_sha256" \
+        "$authority_race_quarantine" "$guard_quarantine_sha256" \
+        - - \
+        "$guard_web_profiles_unchanged" "$guard_web_unchanged_sha256" \
+        "$ctx_guard_path" "$ctx_guard_sha256" "$guard_command" \
+        >"$temporary_directory/ctx-guard-$ctx_guard_label.stdout" \
+        2>"$temporary_directory/ctx-guard-$ctx_guard_label.stderr"
+}
+if ! run_ctx_ledger_guard accepted "$guard_ctx_ledger" \
+    "$guard_ctx_ledger_sha256"; then
+    printf 'exec guard refused an unchanged context checkpoint ledger\n' >&2
+    exit 1
+fi
+grep -Fx executed "$guard_command_output" >/dev/null
+printf 'guard-fixture\t0\t-\n' >"$guard_ctx_ledger"
+if run_ctx_ledger_guard changed "$guard_ctx_ledger" \
+    "$guard_ctx_ledger_sha256"; then
+    printf 'exec guard accepted a replaced context checkpoint ledger\n' >&2
+    exit 1
+fi
+grep -F 'router context checkpoint ledger identity changed:' \
+    "$temporary_directory/ctx-guard-changed.stderr" >/dev/null
+if [ -e "$guard_command_output" ]; then
+    printf 'guarded command ran after checkpoint ledger identity rejection\n' >&2
+    exit 1
+fi
+rm -f "$guard_ctx_ledger"
+if run_ctx_ledger_guard removed "$guard_ctx_ledger" \
+    "$guard_ctx_ledger_sha256"; then
+    printf 'exec guard accepted a removed context checkpoint ledger\n' >&2
+    exit 1
+fi
+grep -F 'router context checkpoint ledger identity cannot be measured:' \
+    "$temporary_directory/ctx-guard-removed.stderr" >/dev/null
+if [ -e "$guard_command_output" ]; then
+    printf 'guarded command ran after checkpoint ledger removal\n' >&2
+    exit 1
+fi
+printf 'guard-fixture\t2\t-\n' >"$guard_ctx_ledger"
+if run_ctx_ledger_guard digest "$guard_ctx_ledger" \
+    0000000000000000000000000000000000000000000000000000000000000000; then
+    printf 'exec guard accepted a wrong checkpoint ledger digest\n' >&2
+    exit 1
+fi
+grep -F 'router context checkpoint ledger identity changed:' \
+    "$temporary_directory/ctx-guard-digest.stderr" >/dev/null
+if run_ctx_ledger_guard malformed "$guard_ctx_ledger" not-a-digest; then
+    printf 'exec guard accepted a malformed checkpoint ledger digest\n' >&2
+    exit 1
+fi
+grep -F 'router context checkpoint ledger SHA-256 must hold 64 lowercase hexadecimal characters' \
+    "$temporary_directory/ctx-guard-malformed.stderr" >/dev/null
+if [ -e "$guard_command_output" ]; then
+    printf 'guarded command ran after checkpoint digest rejection\n' >&2
+    exit 1
+fi
+
+# The ledger path reaches the guard as one argument, so a directory holding a
+# space stays one authority rather than splitting into two.
+guard_spaced_directory="$temporary_directory/guard ctx directory"
+mkdir -p "$guard_spaced_directory"
+guard_spaced_ledger="$guard_spaced_directory/ctx-checkpoints.tsv"
+cp "$guard_ctx_ledger" "$guard_spaced_ledger"
+guard_spaced_sha256=$(sha256sum "$guard_spaced_ledger" | cut -d' ' -f1)
+if ! run_ctx_ledger_guard spaced "$guard_spaced_ledger" \
+    "$guard_spaced_sha256"; then
+    printf 'exec guard lost a checkpoint ledger path holding a space\n' >&2
+    exit 1
+fi
+grep -Fx executed "$guard_command_output" >/dev/null
+
+# A successful launch alone proves nothing about what the policy handed the
+# guard, so a recorder in place of the guard reads the assembled argv. The
+# checkpoint pair occupies positions 11 and 12 and carries the ledger this
+# launch validated, beside the `-` pair a router preset leaves for the web
+# ledger.
+carrier_tools=$temporary_directory/identity-carrier-tools
+carrier_record=$temporary_directory/identity-carrier.argv
+carrier_quarantine=$temporary_directory/identity-carrier-quarantine.tsv
+carrier_output=$temporary_directory/identity-carrier.out
+mkdir -p "$carrier_tools"
+: >"$carrier_quarantine"
+cp "$policy" "$carrier_tools/qwen-capacity-policy.sh"
+cat >"$carrier_tools/model-registry.sh" <<'REGISTRY'
+#!/bin/sh
+exec "$QWEN_TEST_REAL_MODEL_REGISTRY" "$@"
+REGISTRY
+cat >"$carrier_tools/radv-low-priority-env.sh" <<'RADV'
+#!/bin/sh
+exec "$@"
+RADV
+cat >"$carrier_tools/qwen-router-exec-guard.sh" <<'RECORDER'
+#!/bin/sh
+: >"$QWEN_TEST_GUARD_ARGV"
+for guard_argument in "$@"; do
+    printf '%s\n' "$guard_argument" >>"$QWEN_TEST_GUARD_ARGV"
+done
+RECORDER
+chmod +x "$carrier_tools"/*.sh
+run_identity_carrier() {
+    rm -f "$carrier_record" "$carrier_output"
+    QWEN_MODEL_REGISTRY=$fabricated_registry \
+        QWEN_QUARANTINE_REGISTRY=$carrier_quarantine \
+        QWEN_MODEL_ROOT=$router_model_root QWEN_RADV_ICD=$fake_icd \
+        QWEN_POLICY_TEST_OUTPUT=$carrier_output \
+        QWEN_TEST_GUARD_ARGV=$carrier_record \
+        QWEN_TEST_REAL_MODEL_REGISTRY=$script_directory/model-registry.sh \
+        "$@"
+}
+carrier_ctx_sha256=$(sha256sum "$fabricated_ctx_checkpoints" | cut -d' ' -f1)
+if ! run_identity_carrier env QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS="$router_presets" QWEN_ROUTER_MAX=1 \
+    "$carrier_tools/qwen-capacity-policy.sh" \
+    "$fake_server" "$registry_model" 4096 18080 \
+    >"$temporary_directory/identity-carrier.stdout" \
+    2>"$temporary_directory/identity-carrier.stderr"; then
+    printf 'policy refused the router launch the identity recorder observes\n' >&2
+    cat "$temporary_directory/identity-carrier.stderr" >&2
+    exit 1
+fi
+carrier_web_path=$(sed -n '9p' "$carrier_record")
+carrier_web_sha256=$(sed -n '10p' "$carrier_record")
+carrier_ctx_path=$(sed -n '11p' "$carrier_record")
+carrier_ctx_carried_sha256=$(sed -n '12p' "$carrier_record")
+if [ "$carrier_web_path" != - ] || [ "$carrier_web_sha256" != - ]; then
+    printf 'router preset carried a web profile ledger pair: %s %s\n' \
+        "$carrier_web_path" "$carrier_web_sha256" >&2
+    exit 1
+fi
+if [ "$carrier_ctx_path" != "$fabricated_ctx_checkpoints" ]; then
+    printf 'exec chain carried checkpoint ledger %s where the launch read %s\n' \
+        "$carrier_ctx_path" "$fabricated_ctx_checkpoints" >&2
+    exit 1
+fi
+if [ "$carrier_ctx_carried_sha256" != "$carrier_ctx_sha256" ]; then
+    printf 'exec chain carried checkpoint ledger digest %s where the file measures %s\n' \
+        "$carrier_ctx_carried_sha256" "$carrier_ctx_sha256" >&2
+    exit 1
+fi
+
+# The standalone path leaves the guard out of the chain entirely, since it
+# assembles the tuple from the row it launches rather than from a preset that
+# persists. The recorder therefore stays untouched while the server still runs.
+if ! run_identity_carrier "$carrier_tools/qwen-capacity-policy.sh" \
+    "$fake_server" "$registry_model" 4096 18080 \
+    >"$temporary_directory/identity-standalone.stdout" \
+    2>"$temporary_directory/identity-standalone.stderr"; then
+    printf 'policy refused the standalone launch the identity recorder observes\n' >&2
+    cat "$temporary_directory/identity-standalone.stderr" >&2
+    exit 1
+fi
+if [ -e "$carrier_record" ]; then
+    printf 'standalone launch reached the router exec guard\n' >&2
+    exit 1
+fi
+grep -Fx "argument=--ctx-checkpoints" "$carrier_output" >/dev/null
+
+# The count override reaches neither the router argv nor a preset section, so a
+# router launch carrying it would serve the ledger's count while its name says
+# otherwise. Router mode refuses it and the single-model path applies it.
+count_override_output=$temporary_directory/count-override.out
+if QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$count_override_output \
+    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$router_presets QWEN_ROUTER_MAX=1 \
+    QWEN_CTX_CHECKPOINTS=2 \
+    "$policy" "$fake_server" "$registry_model" 4096 18080 \
+    >"$temporary_directory/count-override.stdout" \
+    2>"$temporary_directory/count-override.stderr"; then
+    printf 'policy accepted a checkpoint count override in router mode\n' >&2
+    exit 1
+fi
+grep -F 'QWEN_CTX_CHECKPOINTS is refused in router mode:' \
+    "$temporary_directory/count-override.stderr" >/dev/null
+if [ -e "$count_override_output" ]; then
+    printf 'server ran after the router-mode count refusal\n' >&2
+    exit 1
+fi
+QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$count_override_output \
+    QWEN_CTX_CHECKPOINTS=2 \
+    "$policy" "$fake_server" "$registry_model" 4096 18080 >/dev/null
+count_override_arguments=$(sed -n 's/^argument=//p' "$count_override_output" |
+    tr '\n' ' ')
+case $count_override_arguments in
+    *'--ctx-checkpoints 2 '*) ;;
+    *)
+        printf 'standalone launch lost the checkpoint count override: %s\n' \
+            "$count_override_arguments" >&2
+        exit 1
+        ;;
+esac
+
+# The checkpoint spacing reaches the router's own argv, where
+# common_preset::merge would place every child's checkpoints from one value
+# while each section still matched the ledger's count. The ledger states a count
+# and no authority states a spacing, so router mode refuses the override and the
+# single-model path takes it.
+spacing_output=$temporary_directory/spacing.out
+if QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$spacing_output \
+    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$router_presets QWEN_ROUTER_MAX=1 \
+    QWEN_CHECKPOINT_MIN_STEP=4096 \
+    "$policy" "$fake_server" "$registry_model" 4096 18080 \
+    >"$temporary_directory/spacing-router.stdout" \
+    2>"$temporary_directory/spacing-router.stderr"; then
+    printf 'policy accepted a checkpoint spacing override in router mode\n' >&2
+    exit 1
+fi
+grep -F 'QWEN_CHECKPOINT_MIN_STEP is refused in router mode:' \
+    "$temporary_directory/spacing-router.stderr" >/dev/null
+if [ -e "$spacing_output" ]; then
+    printf 'server ran after the router-mode spacing refusal\n' >&2
+    exit 1
+fi
+QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$spacing_output \
+    QWEN_CHECKPOINT_MIN_STEP=4096 \
+    "$policy" "$fake_server" "$registry_model" 4096 18080 >/dev/null
+spacing_arguments=$(sed -n 's/^argument=//p' "$spacing_output" | tr '\n' ' ')
+case $spacing_arguments in
+    *'--checkpoint-min-step 4096 '*) ;;
+    *)
+        printf 'standalone launch lost the checkpoint spacing: %s\n' \
+            "$spacing_arguments" >&2
+        exit 1
+        ;;
+esac
+
+# The guard digest is measured once and the checkpoint ledger is validated
+# twice, so a file holding the admitted rows at each validation and revoked rows
+# at the measurement would hand the guard a digest naming content no validation
+# read. The launch remeasures the ledger after the final validation and requires
+# the two to agree, so the recorder stays untouched.
+ledger_window_bin=$temporary_directory/ledger-window-bin
+mkdir -p "$ledger_window_bin"
+cat >"$ledger_window_bin/sha256sum" <<'SHA256SUM'
+#!/bin/sh
+if [ "${1:-}" != "$QWEN_TEST_LEDGER_PATH" ]; then
+    exec "$QWEN_TEST_REAL_SHA256SUM" "$@"
+fi
+ledger_window_count=0
+if [ -r "$QWEN_TEST_LEDGER_COUNT" ]; then
+    ledger_window_count=$(cat "$QWEN_TEST_LEDGER_COUNT")
+fi
+ledger_window_count=$((ledger_window_count + 1))
+printf '%s\n' "$ledger_window_count" >"$QWEN_TEST_LEDGER_COUNT"
+if [ "$ledger_window_count" -eq 1 ]; then
+    exec "$QWEN_TEST_REAL_SHA256SUM" "$@"
+fi
+printf '%s  %s\n' \
+    0000000000000000000000000000000000000000000000000000000000000000 "$1"
+SHA256SUM
+chmod +x "$ledger_window_bin/sha256sum"
+if run_identity_carrier env QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS="$router_presets" QWEN_ROUTER_MAX=1 \
+    QWEN_TEST_LEDGER_PATH="$fabricated_ctx_checkpoints" \
+    QWEN_TEST_LEDGER_COUNT="$temporary_directory/ledger-window.count" \
+    QWEN_TEST_REAL_SHA256SUM="$(command -v sha256sum)" \
+    PATH="$ledger_window_bin:$PATH" \
+    "$carrier_tools/qwen-capacity-policy.sh" \
+    "$fake_server" "$registry_model" 4096 18080 \
+    >"$temporary_directory/ledger-window.stdout" \
+    2>"$temporary_directory/ledger-window.stderr"; then
+    printf 'policy accepted a checkpoint ledger measured outside its validation\n' >&2
+    exit 1
+fi
+grep -F 'context checkpoint ledger identity changed during validation:' \
+    "$temporary_directory/ledger-window.stderr" >/dev/null
+if [ -e "$carrier_record" ]; then
+    printf 'exec chain ran after the checkpoint ledger validation window opened\n' >&2
+    exit 1
+fi
+
+# A web preset leaves the draft-pair pair at `-` because build-web-presets.sh
+# emits no draft key, and it carries the checkpoint pair for the same reason a
+# router preset does: every section names a count the ledger admits. That
+# asymmetry is what makes the checkpoint authority required rather than
+# optional.
+carrier_web_profiles=$temporary_directory/identity-carrier-web-profiles.tsv
+{
+    printf '# profile_id\tmodel_id\tweb_mode\tcontext\tvalidated_filled_depth\tmax_results\tmax_fetches\tmax_chars_per_fetch\tmulti_source\tvision_allowed\ttool_selection\texecution_policy\tprovider\tprimary_category\tfallback_category\tminimum_results\tsearxng_url\n'
+    printf 'web-carrier\tfabricated\tui-mediated\t4096\t4096\t5\t2\t12000\tyes\tno\t9/10\tui-mediated\texa\t-\t-\t-\t-\n'
+} >"$carrier_web_profiles"
+carrier_web_presets=$temporary_directory/identity-carrier-web-presets.ini
+{
+    printf '# Generated by remote/build-web-presets.sh from remote/web-profiles.tsv.\n'
+    printf '# qwen_web_presets=1\n'
+    printf '# qwen_web_profiles_path=%s\n' "$carrier_web_profiles"
+    printf '# qwen_web_profiles_sha256=%s\n' \
+        "$(sha256sum "$carrier_web_profiles" | cut -d' ' -f1)"
+    printf '\n'
+    printf '[web-carrier]\n'
+    printf 'LLAMA_ARG_MODEL = %s\n' "$registry_model"
+    printf 'LLAMA_ARG_ALIAS = web-carrier\n'
+    printf 'LLAMA_ARG_CTX_SIZE = 4096\n'
+    printf 'LLAMA_ARG_CACHE_TYPE_K = q5_1\n'
+    printf 'LLAMA_ARG_CACHE_TYPE_V = iq4_nl\n'
+    printf 'LLAMA_ARG_FLASH_ATTN = auto\n'
+    printf 'LLAMA_ARG_BATCH = 256\n'
+    printf 'LLAMA_ARG_UBATCH = 64\n'
+    printf 'LLAMA_ARG_CTX_CHECKPOINTS = 0\n'
+    printf 'LLAMA_ARG_TAGS = web-research,ui-mediated\n'
+} >"$carrier_web_presets"
+if ! run_identity_carrier env QWEN_ROUTER=1 \
+    QWEN_ROUTER_PRESETS="$carrier_web_presets" QWEN_ROUTER_MAX=1 \
+    QWEN_BIND_HOST=127.0.0.1 \
+    "$carrier_tools/qwen-capacity-policy.sh" \
+    "$fake_server" "$registry_model" 4096 18080 \
+    >"$temporary_directory/identity-web-carrier.stdout" \
+    2>"$temporary_directory/identity-web-carrier.stderr"; then
+    printf 'policy refused the web launch the identity recorder observes\n' >&2
+    cat "$temporary_directory/identity-web-carrier.stderr" >&2
+    exit 1
+fi
+carrier_web_draft_path=$(sed -n '7p' "$carrier_record")
+carrier_web_draft_sha256=$(sed -n '8p' "$carrier_record")
+carrier_web_ctx_path=$(sed -n '11p' "$carrier_record")
+carrier_web_ctx_sha256=$(sed -n '12p' "$carrier_record")
+if [ "$carrier_web_draft_path" != - ] || [ "$carrier_web_draft_sha256" != - ]; then
+    printf 'web preset carried a draft-pair ledger pair: %s %s\n' \
+        "$carrier_web_draft_path" "$carrier_web_draft_sha256" >&2
+    exit 1
+fi
+if [ "$carrier_web_ctx_path" != "$fabricated_ctx_checkpoints" ] ||
+    [ "$carrier_web_ctx_sha256" != "$carrier_ctx_sha256" ]; then
+    printf 'web preset lost the checkpoint ledger identity: %s %s\n' \
+        "$carrier_web_ctx_path" "$carrier_web_ctx_sha256" >&2
     exit 1
 fi
 
@@ -1080,6 +1502,7 @@ write_pair_section() {
         printf 'LLAMA_ARG_FLASH_ATTN = auto\n'
         printf 'LLAMA_ARG_BATCH = 256\n'
         printf 'LLAMA_ARG_UBATCH = 64\n'
+        printf 'LLAMA_ARG_CTX_CHECKPOINTS = 0\n'
         printf 'LLAMA_ARG_SPEC_TYPE = draft-simple\n'
         printf 'LLAMA_ARG_SPEC_DRAFT_MODEL = %s/pair-draft.gguf\n' \
             "$router_model_root"
@@ -1134,17 +1557,66 @@ fi
 grep -F 'carries LLAMA_ARG_SPEC_DRAFT_MODEL without a draft pair row' \
     "$temporary_directory/pair-stray.stderr" >/dev/null
 
-# The context checkpoint count is a policy argument with a served default of
-# zero, so the fixed argv above already proves the default. An integer override
-# reaches the argv verbatim, the minimum step follows it only when named, and
-# a non-integer in either is refused before the server sees it.
+# The context checkpoint count comes from the ledger row of the registry
+# row the model path resolves to, and a path outside the registry serves at
+# 0, which the fixed argv above already proves. An integer override replaces
+# the row's count verbatim, an explicit 0 included, the minimum step follows
+# it only when named, and a non-integer in either is refused before the server
+# sees it.
 checkpoint_output=$temporary_directory/checkpoint-policy.out
+ledger_ctx_checkpoints=$temporary_directory/ledger-ctx-checkpoints.tsv
+printf 'fabricated\t2\tevidence/depth-versus-submission-geometry.md\n' \
+    >"$ledger_ctx_checkpoints"
+QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_CTX_CHECKPOINT_LEDGER=$ledger_ctx_checkpoints \
+    QWEN_CACHE_TYPE_K=q5_1 QWEN_CACHE_TYPE_V=iq4_nl QWEN_FLASH_ATTN=auto \
+    QWEN_CACHE_OVERRIDE_CONTEXT_CEILING=4096 \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$checkpoint_output \
+    "$policy" "$fake_server" "$registry_model" 4096 8080
+checkpoint_arguments=$(sed -n 's/^argument=//p' "$checkpoint_output" | tr '\n' ' ')
+case $checkpoint_arguments in
+    *'--offline --ctx-checkpoints 2 --ctx-size 4096 '*) ;;
+    *)
+        printf 'the ledger count did not reach the argv: %s\n' \
+            "$checkpoint_arguments" >&2
+        exit 1
+        ;;
+esac
+QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_CTX_CHECKPOINT_LEDGER=$ledger_ctx_checkpoints QWEN_CTX_CHECKPOINTS=0 \
+    QWEN_CACHE_TYPE_K=q5_1 QWEN_CACHE_TYPE_V=iq4_nl QWEN_FLASH_ATTN=auto \
+    QWEN_CACHE_OVERRIDE_CONTEXT_CEILING=4096 \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$checkpoint_output \
+    "$policy" "$fake_server" "$registry_model" 4096 8080
+checkpoint_arguments=$(sed -n 's/^argument=//p' "$checkpoint_output" | tr '\n' ' ')
+case $checkpoint_arguments in
+    *'--offline --ctx-checkpoints 0 --ctx-size 4096 '*) ;;
+    *)
+        printf 'the explicit zero override did not replace the ledger count: %s\n' \
+            "$checkpoint_arguments" >&2
+        exit 1
+        ;;
+esac
+malformed_ledger_ctx_checkpoints=$temporary_directory/malformed-ctx-checkpoints.tsv
+printf 'fabricated\t02\t-\n' >"$malformed_ledger_ctx_checkpoints"
+if QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_CTX_CHECKPOINT_LEDGER=$malformed_ledger_ctx_checkpoints \
+    QWEN_CACHE_TYPE_K=q5_1 QWEN_CACHE_TYPE_V=iq4_nl QWEN_FLASH_ATTN=auto \
+    QWEN_CACHE_OVERRIDE_CONTEXT_CEILING=4096 \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$checkpoint_output \
+    "$policy" "$fake_server" "$registry_model" 4096 8080 \
+    2>"$temporary_directory/malformed-ledger.stderr"; then
+    printf 'the policy launched over a malformed checkpoint ledger\n' >&2
+    exit 1
+fi
+grep -F 'context checkpoint authority is unavailable' \
+    "$temporary_directory/malformed-ledger.stderr" >/dev/null
 QWEN_CTX_CHECKPOINTS=4 QWEN_RADV_ICD=$fake_icd \
     QWEN_POLICY_TEST_OUTPUT=$checkpoint_output \
     "$policy" "$fake_server" "$model_path" 24576 8080
 checkpoint_arguments=$(sed -n 's/^argument=//p' "$checkpoint_output" | tr '\n' ' ')
 case $checkpoint_arguments in
-    *'--ctx-checkpoints 4 --cache-ram 0 --no-context-shift --offline --ctx-size '*) ;;
+    *'--no-context-shift --offline --ctx-checkpoints 4 --ctx-size '*) ;;
     *)
         printf 'the checkpoint override did not reach the argv: %s\n' \
             "$checkpoint_arguments" >&2
@@ -1163,7 +1635,7 @@ QWEN_CTX_CHECKPOINTS=8 QWEN_CHECKPOINT_MIN_STEP=4096 QWEN_RADV_ICD=$fake_icd \
     "$policy" "$fake_server" "$model_path" 24576 8080
 checkpoint_arguments=$(sed -n 's/^argument=//p' "$checkpoint_output" | tr '\n' ' ')
 case $checkpoint_arguments in
-    *'--ctx-checkpoints 8 '*'--offline --checkpoint-min-step 4096 --ctx-size '*) ;;
+    *'--offline --checkpoint-min-step 4096 --ctx-checkpoints 8 --ctx-size '*) ;;
     *)
         printf 'the minimum step override did not reach the argv: %s\n' \
             "$checkpoint_arguments" >&2

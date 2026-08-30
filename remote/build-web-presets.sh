@@ -654,6 +654,50 @@ validated_tuples_sha256=${validated_tuples_identity%% *}
 QWEN_VALIDATED_TUPLES=$validated_tuples
 export QWEN_VALIDATED_TUPLES
 
+# Each section's checkpoint count is a separate model-registry.sh query, so an
+# edit between two of them would write one section from the old ledger and the
+# next from the new one, and the launch rejoins every section to whichever
+# ledger it then reads. The path is canonicalized and bound the way the tuple
+# ledger is, and its identity is compared again before the file lands.
+ctx_checkpoint_ledger=${QWEN_CTX_CHECKPOINT_LEDGER:-$script_directory/ctx-checkpoints.tsv}
+ctx_checkpoint_ledger_directory=$(dirname -- "$ctx_checkpoint_ledger")
+ctx_checkpoint_ledger_directory=$(CDPATH='' cd -- "$ctx_checkpoint_ledger_directory" && pwd)
+ctx_checkpoint_ledger=$ctx_checkpoint_ledger_directory/$(basename -- "$ctx_checkpoint_ledger")
+if [ ! -r "$ctx_checkpoint_ledger" ]; then
+    printf 'context checkpoint ledger is unreadable: %s\n' \
+        "$ctx_checkpoint_ledger" >&2
+    exit 1
+fi
+# One copy is the whole run's ledger: the digest names the copy's bytes and
+# every section's count is resolved from rows read out of that same copy, so
+# the emitted file states one ledger state by construction. Live reads of the
+# source cannot state that, since a file that changed and changed back between
+# the digest and a query answers both digests consistently while the query in
+# the middle returns the state neither saw. The comparison before the file
+# lands then measures the source against the copy.
+ctx_checkpoint_snapshot=$(mktemp "${TMPDIR:-/tmp}/.ctx-checkpoints.XXXXXX")
+cleanup_ctx_checkpoint_snapshot() {
+    rm -f -- "$ctx_checkpoint_snapshot"
+}
+trap 'cleanup_ctx_checkpoint_snapshot' EXIT HUP INT TERM
+cp -- "$ctx_checkpoint_ledger" "$ctx_checkpoint_snapshot"
+ctx_checkpoint_ledger_identity=$(sha256sum -- "$ctx_checkpoint_snapshot")
+ctx_checkpoint_ledger_sha256=${ctx_checkpoint_ledger_identity%% *}
+QWEN_CTX_CHECKPOINT_LEDGER=$ctx_checkpoint_snapshot
+export QWEN_CTX_CHECKPOINT_LEDGER
+if ! ctx_checkpoint_rows=$("$script_directory/model-registry.sh" \
+    ctx-checkpoints); then
+    printf 'context checkpoint ledger refused: %s\n' \
+        "$ctx_checkpoint_ledger" >&2
+    exit 1
+fi
+ledger_ctx_checkpoints() {
+    printf '%s\n' "$ctx_checkpoint_rows" | awk -F'\t' -v id="$1" '
+        $1 == id { count = $2; matched = 1 }
+        END { print matched ? count : 0 }
+    '
+}
+
 # Every name the image MCP child reads is required before a section names it,
 # because a configuration missing one reaches the model as a per-call refusal
 # long after the listener reports ready.
@@ -756,6 +800,7 @@ if [ -n "$image_profile_review_model" ] &&
     review_flash=$(registry_field "$review_registry_row" flash_attention)
     review_batch=$(registry_field "$review_registry_row" batch)
     review_ubatch=$(registry_field "$review_registry_row" ubatch)
+    review_ctx_checkpoints=$(ledger_ctx_checkpoints "$image_profile_review_model")
     for review_numeric_field in "$review_context" "$review_batch" \
         "$review_ubatch"; do
         case $review_numeric_field in
@@ -805,7 +850,8 @@ mcp_config_directory_marker=@QWEN_WEB_MCP_CONFIG_DIRECTORY@
 mcp_config_directory=
 output_ini_temporary=$output_ini.tmp.$$
 mcp_config_directory_temporary=$output_directory/web-mcp-configs.tmp.$$
-trap 'rm -rf -- "$output_ini_temporary" "$output_ini_temporary.resolved" \
+trap 'cleanup_ctx_checkpoint_snapshot; rm -rf -- "$output_ini_temporary" \
+    "$output_ini_temporary.resolved" \
     "$mcp_config_directory_temporary"' EXIT HUP INT TERM
 rm -rf -- "$mcp_config_directory_temporary"
 mkdir -p "$mcp_config_directory_temporary"
@@ -983,6 +1029,9 @@ while profile_id=; IFS='	' read -r profile_id model_id _web_mode context \
         printf 'profile %s names unknown model_id %s\n' "$profile_id" "$model_id" >&2
         exit 1
     fi
+    # The checkpoint count is the row's rather than the profile's, and it comes
+    # from the snapshot the whole run emits against.
+    profile_ctx_checkpoints=$(ledger_ctx_checkpoints "$model_id")
 
     model_file=$(registry_field "$registry_row" model_file)
     context_ceiling=$(registry_field "$registry_row" context_ceiling)
@@ -1284,6 +1333,7 @@ while profile_id=; IFS='	' read -r profile_id model_id _web_mode context \
         printf 'LLAMA_ARG_FLASH_ATTN = %s\n' "$flash_attention"
         printf 'LLAMA_ARG_BATCH = %s\n' "$batch"
         printf 'LLAMA_ARG_UBATCH = %s\n' "$ubatch"
+        printf 'LLAMA_ARG_CTX_CHECKPOINTS = %s\n' "$profile_ctx_checkpoints"
         if [ -n "$profile_projector_path" ]; then
             printf 'LLAMA_ARG_MMPROJ = %s\n' "$profile_projector_path"
         fi
@@ -1330,26 +1380,12 @@ if [ -n "$review_section" ]; then
         printf 'LLAMA_ARG_FLASH_ATTN = %s\n' "$review_flash"
         printf 'LLAMA_ARG_BATCH = %s\n' "$review_batch"
         printf 'LLAMA_ARG_UBATCH = %s\n' "$review_ubatch"
+        printf 'LLAMA_ARG_CTX_CHECKPOINTS = %s\n' "$review_ctx_checkpoints"
         printf 'LLAMA_ARG_MMPROJ = %s\n' "$review_projector_path"
         printf 'LLAMA_ARG_TAGS = vision-review,review-only\n'
         printf '\n'
     } >>"$output_ini_temporary"
     emitted=$((emitted + 1))
-fi
-
-web_profiles_current_identity=$(sha256sum -- "$web_profiles")
-web_profiles_current_sha256=${web_profiles_current_identity%% *}
-if [ "$web_profiles_current_sha256" != "$web_profiles_sha256" ]; then
-    printf 'web profile ledger identity changed during generation: expected %s, measured %s\n' \
-        "$web_profiles_sha256" "$web_profiles_current_sha256" >&2
-    exit 1
-fi
-validated_tuples_current_identity=$(sha256sum -- "$validated_tuples")
-validated_tuples_current_sha256=${validated_tuples_current_identity%% *}
-if [ "$validated_tuples_current_sha256" != "$validated_tuples_sha256" ]; then
-    printf 'validated-tuple ledger identity changed during generation: expected %s, measured %s\n' \
-        "$validated_tuples_sha256" "$validated_tuples_current_sha256" >&2
-    exit 1
 fi
 
 # The assembled file is read back before it lands, so a section missing a key
@@ -1412,7 +1448,8 @@ verify_assembled_sections() {
             required_count = split("LLAMA_ARG_MODEL LLAMA_ARG_ALIAS " \
                 "LLAMA_ARG_CTX_SIZE LLAMA_ARG_CACHE_TYPE_K " \
                 "LLAMA_ARG_CACHE_TYPE_V LLAMA_ARG_FLASH_ATTN " \
-                "LLAMA_ARG_BATCH LLAMA_ARG_UBATCH LLAMA_ARG_TAGS", \
+                "LLAMA_ARG_BATCH LLAMA_ARG_UBATCH LLAMA_ARG_CTX_CHECKPOINTS " \
+                "LLAMA_ARG_TAGS", \
                 required_keys, " ")
         }
         /^[[:space:]]*($|[#;])/ { next }
@@ -1511,8 +1548,37 @@ awk -v config_directory="$mcp_config_directory" \
     }
 ' "$output_ini_temporary" >"$output_ini_temporary.resolved"
 mv -- "$output_ini_temporary.resolved" "$output_ini_temporary"
+# Every authority is measured against the identity the sections were generated
+# from immediately before the file lands, so the window the comparison covers
+# ends at the publish rather than at the last emission: assembly verification,
+# MCP configuration hashing, and the directory moves all run inside it, and an
+# edit during any of them leaves the last known-good preset in place.
+web_profiles_current_identity=$(sha256sum -- "$web_profiles")
+web_profiles_current_sha256=${web_profiles_current_identity%% *}
+if [ "$web_profiles_current_sha256" != "$web_profiles_sha256" ]; then
+    printf 'web profile ledger identity changed during generation: expected %s, measured %s\n' \
+        "$web_profiles_sha256" "$web_profiles_current_sha256" >&2
+    exit 1
+fi
+validated_tuples_current_identity=$(sha256sum -- "$validated_tuples")
+validated_tuples_current_sha256=${validated_tuples_current_identity%% *}
+if [ "$validated_tuples_current_sha256" != "$validated_tuples_sha256" ]; then
+    printf 'validated-tuple ledger identity changed during generation: expected %s, measured %s\n' \
+        "$validated_tuples_sha256" "$validated_tuples_current_sha256" >&2
+    exit 1
+fi
+ctx_checkpoint_ledger_current_identity=$(sha256sum -- "$ctx_checkpoint_ledger")
+ctx_checkpoint_ledger_current_sha256=${ctx_checkpoint_ledger_current_identity%% *}
+if [ "$ctx_checkpoint_ledger_current_sha256" != "$ctx_checkpoint_ledger_sha256" ]; then
+    printf 'context checkpoint ledger identity changed during generation: expected %s, measured %s\n' \
+        "$ctx_checkpoint_ledger_sha256" \
+        "$ctx_checkpoint_ledger_current_sha256" >&2
+    exit 1
+fi
+
 mv -- "$output_ini_temporary" "$output_ini"
 trap - EXIT HUP INT TERM
+cleanup_ctx_checkpoint_snapshot
 
 printf 'web_presets=written path=%s profiles=%s absent=%s projector_unresolved=%s mcp_configs=%s image_profile=%s review_section=%s\n' \
     "$output_ini" "$emitted" "$skipped_absent_weights" \

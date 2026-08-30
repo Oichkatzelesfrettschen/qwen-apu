@@ -5,27 +5,45 @@ set -eu
 # environment is configured and immediately before llama-server replaces this
 # process. The server never reads these authorities; their identities bind the
 # assembled argv to the exact preset, model registry, quarantine registry,
-# draft-pair registry, and web profile ledger whose identities admitted the
-# server command. A ledger that does not apply to one preset carries `-` for
-# both its path and digest.
+# draft-pair registry, web profile ledger, and context checkpoint ledger whose
+# identities admitted the server command. A ledger that does not apply to one
+# preset carries `-` for both its path and digest.
+#
+# The context checkpoint ledger is required rather than optional, because every
+# router and web preset section carries LLAMA_ARG_CTX_CHECKPOINTS and the launch
+# rejoins that key to the ledger's rows. A replacement between validation and
+# exec would otherwise admit a count the ledger no longer states, and the pinned
+# build defaults n_ctx_checkpoints to 32 where the ledger admits at most two.
 
-if [ "$#" -lt 11 ]; then
-    printf 'usage: %s PRESET PRESET_SHA MODEL_REGISTRY MODEL_SHA QUARANTINE_REGISTRY QUARANTINE_SHA DRAFT_PAIRS DRAFT_PAIRS_SHA WEB_PROFILES WEB_PROFILES_SHA COMMAND [ARG ...]\n' \
+if [ "$#" -lt 13 ]; then
+    printf 'usage: %s PRESET PRESET_SHA MODEL_REGISTRY MODEL_SHA QUARANTINE_REGISTRY QUARANTINE_SHA DRAFT_PAIRS DRAFT_PAIRS_SHA WEB_PROFILES WEB_PROFILES_SHA CTX_CHECKPOINT_LEDGER CTX_CHECKPOINT_LEDGER_SHA COMMAND [ARG ...]\n' \
         "$0" >&2
     exit 2
 fi
 
 preset_path=$1
-preset_sha256=$2
-model_registry_path=$3
-model_registry_sha256=$4
-quarantine_registry_path=$5
-quarantine_registry_sha256=$6
-draft_pairs_path=$7
-draft_pairs_sha256=$8
-web_profiles_path=$9
-shift 9
+shift
+preset_sha256=$1
+shift
+model_registry_path=$1
+shift
+model_registry_sha256=$1
+shift
+quarantine_registry_path=$1
+shift
+quarantine_registry_sha256=$1
+shift
+draft_pairs_path=$1
+shift
+draft_pairs_sha256=$1
+shift
+web_profiles_path=$1
+shift
 web_profiles_sha256=$1
+shift
+ctx_checkpoint_ledger_path=$1
+shift
+ctx_checkpoint_ledger_sha256=$1
 shift
 
 verify_identity() {
@@ -44,7 +62,7 @@ verify_identity() {
             return 1
             ;;
     esac
-    if ! measured_identity=$(sha256sum "$identity_path"); then
+    if ! measured_identity=$(sha256sum -- "$identity_path"); then
         printf '%s identity cannot be measured: %s\n' \
             "$identity_name" "$identity_path" >&2
         return 1
@@ -80,5 +98,7 @@ else
     verify_identity 'router web profile ledger' \
         "$web_profiles_path" "$web_profiles_sha256"
 fi
+verify_identity 'router context checkpoint ledger' \
+    "$ctx_checkpoint_ledger_path" "$ctx_checkpoint_ledger_sha256"
 
 exec "$@"
