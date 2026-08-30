@@ -1285,6 +1285,17 @@ case $ctx_checkpoints in
         exit 2
         ;;
 esac
+# Router mode takes its count from each section, so this variable would reach
+# neither the argv nor the preset and the launch would serve the ledger's count
+# under a name that says otherwise. An arm measuring what the copies buy runs
+# the checkpoint it measures on the single-model path, where the count reaches
+# the server.
+if [ "$router_enabled" = 1 ] && [ -n "${QWEN_CTX_CHECKPOINTS:-}" ]; then
+    printf 'QWEN_CTX_CHECKPOINTS is refused in router mode: %s\n' \
+        "$QWEN_CTX_CHECKPOINTS" >&2
+    printf 'launch the checkpoint the arm measures on the single-model path\n' >&2
+    exit 2
+fi
 checkpoint_min_step=${QWEN_CHECKPOINT_MIN_STEP:-}
 if [ -n "$checkpoint_min_step" ]; then
     case $checkpoint_min_step in

@@ -1117,6 +1117,41 @@ if [ -e "$carrier_record" ]; then
 fi
 grep -Fx "argument=--ctx-checkpoints" "$carrier_output" >/dev/null
 
+# The count override reaches neither the router argv nor a preset section, so a
+# router launch carrying it would serve the ledger's count while its name says
+# otherwise. Router mode refuses it and the single-model path applies it.
+count_override_output=$temporary_directory/count-override.out
+if QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$count_override_output \
+    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$router_presets QWEN_ROUTER_MAX=1 \
+    QWEN_CTX_CHECKPOINTS=2 \
+    "$policy" "$fake_server" "$registry_model" 4096 18080 \
+    >"$temporary_directory/count-override.stdout" \
+    2>"$temporary_directory/count-override.stderr"; then
+    printf 'policy accepted a checkpoint count override in router mode\n' >&2
+    exit 1
+fi
+grep -F 'QWEN_CTX_CHECKPOINTS is refused in router mode:' \
+    "$temporary_directory/count-override.stderr" >/dev/null
+if [ -e "$count_override_output" ]; then
+    printf 'server ran after the router-mode count refusal\n' >&2
+    exit 1
+fi
+QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$count_override_output \
+    QWEN_CTX_CHECKPOINTS=2 \
+    "$policy" "$fake_server" "$registry_model" 4096 18080 >/dev/null
+count_override_arguments=$(sed -n 's/^argument=//p' "$count_override_output" |
+    tr '\n' ' ')
+case $count_override_arguments in
+    *'--ctx-checkpoints 2 '*) ;;
+    *)
+        printf 'standalone launch lost the checkpoint count override: %s\n' \
+            "$count_override_arguments" >&2
+        exit 1
+        ;;
+esac
+
 # The checkpoint spacing reaches the router's own argv, where
 # common_preset::merge would place every child's checkpoints from one value
 # while each section still matched the ledger's count. The ledger states a count
