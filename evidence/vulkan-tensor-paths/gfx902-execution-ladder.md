@@ -15,9 +15,12 @@ accumulator type, and output type are six claims. On the served path
 quantized weights stay packed in memory, activations travel as FP16, the
 shader reconstructs weights with integer bit operations, and the dot
 reduction accumulates in FP32; only the batched matrix pipelines select true
-FP16 accumulation. The shader family `mul_mat_vec_q4_k_f16_f32` names Q4_K
-weights, an F16 right-hand input, and F32 accumulation and output, and the
-mat-vec generator fixes its `FLOAT_TYPE` to `float`.
+FP16 accumulation. The Vulkan pipeline `mul_mat_vec_q4_k_f16_f32`, selected
+from `pipeline_dequant_mul_mat_vec_f16_f32` and embedded under the shader
+symbol `mul_mat_vec_q4_k_f16`, names Q4_K weights, an F16 right-hand input,
+and F32 accumulation and output, and the mat-vec generator fixes its
+`FLOAT_TYPE` to `float`. Stage A records `pipeline_name` and `shader_symbol`
+separately and joins them through the generated variant metadata.
 
 ## Device facts
 

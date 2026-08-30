@@ -14,8 +14,14 @@ sweep, and a proposal is marked as one.
    and is part of the Vulkan path rather than a CPU fallback.
 2. Representation. `Q4_K`, `Q5_K`, `Q6_K`, `Q8_0`, `F16`, `F32` state how
    weights and state are stored in the file and on the device.
-3. Execution kernel. `mul_mat_vec_q4_k_f32`, the fused Gated DeltaNet
+3. Execution kernel. The Q4_K mat-vec, the fused Gated DeltaNet
    dispatches, and the Flash Attention shader are the code that reads them.
+   One kernel has three names: `ggml-vulkan.cpp` selects it from the array
+   `pipeline_dequant_mul_mat_vec_f16_f32[...][GGML_TYPE_Q4_K][...]`, creates
+   the Vulkan pipeline as `mul_mat_vec_q4_k_f16_f32`, and the retained
+   binary audit counts the embedded shader symbol `mul_mat_vec_q4_k_f16`.
+   The ledger records `pipeline_name` and `shader_symbol` as two fields and
+   joins them through the generated variant and type metadata.
 
 The serving argv (`--device Vulkan0 --split-mode none --n-gpu-layers all
 --override-tensor '.*=Vulkan0' --fit off`, `LLAMA_NO_CPU_FALLBACK=1`) fixes
@@ -85,9 +91,15 @@ read. Each rung is quantized from the BF16 source through the appliance's own
 an exact-token comparison. Prediction: Q4_0 gains on the 2B through simpler
 unpack and lower VGPR pressure; falsifier: a paired decode gain under 5%, or a
 quality loss outside the registered bound. That bound is preregistered here:
-the candidate's graded total on the 75-row suite (`remote/run-quality-suite.py`)
-may fall at most one row below the Q4_K_M control graded in the same sweep,
-and its greedy token stream on the six graph-alias prompts
+the paired text-quality arm selects
+`screen,arithmetic,word_problem,code,format,long_context,termination`
+through `remote/run-quality-suite.py --categories`, the same 55-row
+authority the roster sweep uses, so the retained 33/55, 40/55, and 47/55
+baselines stay comparable. The control is the deployed representation of
+the same registry row -- Q4_K_M for the 2B and 4B rows and Q8_0 for the
+0.8B row -- graded in the same sweep, and the candidate may fall at most one
+row against it. Vision and photographic rows are a separate projector-quality
+gate and stay out of the text total. The candidate's greedy token stream on the six graph-alias prompts
 (`evidence/vulkan-view-alias/ab-2b/`) is reported by first-divergence index
 rather than gated, since a representation change is expected to move tokens.
 A two-row fall refutes the rung whatever its rate.
@@ -112,14 +124,20 @@ and `ggml-vulkan.cpp` selects a different mat-vec variant by column count --, sw
 256), rows per workgroup (1 to 8), reduction (subgroup, hybrid, shared), and
 unroll, measured by timestamp query on the appliance, starting at the 2B shapes
 2048x2048, 2048x6144, 6144x2048, the fused GDN QKV shape, and 248320x2048. The
-result is a static generated header keyed by type and shape; a runtime
-tuning file waits until the static form has been admitted.
+result is a static generated header keyed by (op, weight type, N, K,
+NUM_COLS, accumulator, alignment class), whose value is the selected
+workgroup size, rows per workgroup, reduction, and unroll; a runtime tuning
+file waits until the static form has been admitted.
 
 ### PR 5: specialized hot kernels
 
 Only shapes the ledger ranks hot: packed half2 reconstruction with FP32
-accumulation at fixed intervals, 24-bit index arithmetic where offsets are
-proven below 2^24 so ACO selects `v_mad_i32_i24`, VGPR-lifetime reduction for
+accumulation at fixed intervals, 24-bit index multiplication where both
+multiplicands -- the index and the stride, rather than the final offset --
+are proven to fit signed 24 bits, [-2^23, 2^23-1], for `v_mad_i32_i24`,
+which sign-extends its operands, or [0, 2^24-1] for the unsigned
+`v_mad_u32_u24`, with every other case keeping 32-bit arithmetic,
+VGPR-lifetime reduction for
 occupancy, remaining Gated DeltaNet elementwise fusion the trace shows
 unfused, and Flash Attention tile geometry for the six 2B and eight 4B
 full-attention layers at 32K.
@@ -127,11 +145,18 @@ full-attention layers at 32K.
 ## Promotion criteria
 
 A candidate is promoted on a paired end-to-end gain of at least 5% in
-interleaved ABBA arms, exact or registered-equivalent output, quality inside
+interleaved ABBA arms, an output gate split by mechanism, quality inside
 the registered bound, zero ring resets, VM faults, or device losses, no
 desktop-QoS regression on the graphics probe, and strict Vulkan placement.
 `llama-bench`'s printed deviation is within-arm and is not the uncertainty
 (CLAUDE.md); the spread is read between arms.
+
+The output gate follows the mechanism. A representation change reports its
+first-divergence index and passes through the paired quality bound, since
+token identity is not its predicate. A kernel, tile, layout, or compiler
+change that preserves the stored representation requires exact greedy token
+arrays. A relaxed equivalence predicate for a later candidate is registered
+in that candidate's design record before its device arm runs.
 
 ## Out of scope until PR 5 has reported
 
