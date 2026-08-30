@@ -50,6 +50,14 @@ mkdir -p "$models_directory/Fake-GGUF"
 state_directory=$temporary_directory/state
 mkdir -p "$state_directory"
 launch_log=$temporary_directory/launch-env.log
+nice_zero_wrapper=$temporary_directory/nice-zero-wrapper.sh
+cat >"$nice_zero_wrapper" <<'EOF'
+#!/bin/sh
+set -eu
+/usr/bin/renice --priority 0 --pid "$$" >/dev/null
+exec "$@"
+EOF
+chmod +x "$nice_zero_wrapper"
 
 # The launch stub records the environment the chain would forward, starts the
 # fake server with the checkpoint count as its cost model, and writes the
@@ -58,7 +66,7 @@ fake_launch=$temporary_directory/fake-launch.sh
 cat >"$fake_launch" <<EOF
 #!/bin/sh
 set -eu
-printf 'ctx_checkpoints=%s model=%s profile=%s context=%s\\n' "\${QWEN_CTX_CHECKPOINTS:-unset}" "\${QWEN_MODEL_PATH:-unset}" "\$1" "\${QWEN_CONTEXT_SIZE:-unset}" >>"$launch_log"
+printf 'ctx_checkpoints=%s model=%s profile=%s context=%s min_step=%s\\n' "\${QWEN_CTX_CHECKPOINTS:-unset}" "\${QWEN_MODEL_PATH:-unset}" "\$1" "\${QWEN_CONTEXT_SIZE:-unset}" "\${QWEN_CHECKPOINT_MIN_STEP:-unset}" >>"$launch_log"
 printf 'launch ctx_checkpoints=%s\\n' "\${QWEN_CTX_CHECKPOINTS:-unset}" >"$state_directory/server.log"
 printf 'state=running server_pid=0\\n' >"$state_directory/session.status"
 printf 'fake-key\\n' >"$state_directory/api.key"
@@ -91,11 +99,12 @@ chmod +x "$fake_teardown"
 
 harness_registry=$registry
 run_harness() {
-    QWEN_LAUNCH_SCRIPT=$fake_launch QWEN_TEARDOWN_SCRIPT=$fake_teardown \
+    harness_teardown=${QWEN_TEST_TEARDOWN_SCRIPT:-$fake_teardown}
+    QWEN_LAUNCH_SCRIPT=$fake_launch QWEN_TEARDOWN_SCRIPT=$harness_teardown \
         QWEN_STATE_DIRECTORY=$state_directory QWEN_SERVER_PORT=$fake_port \
         QWEN_MODEL_REGISTRY=$harness_registry QWEN_MODELS_DIRECTORY=$models_directory \
         QWEN_CTX_TARGET_DEPTH=2000 QWEN_CTX_PREDICT=8 \
-        "$harness" "$@"
+        "$nice_zero_wrapper" "$harness" "$@"
 }
 
 active_fixture=mirrored-sweep
@@ -114,6 +123,12 @@ if [ "$launched_order" != '0 2 4 8 8 4 2 0 ' ]; then
 fi
 grep -F "model=$models_directory/Fake-GGUF/fake.gguf profile=low-async context=32768" \
     "$launch_log" >/dev/null
+grep -F 'checkpoint_min_step=8192' "$sweep_output/inputs.txt" >/dev/null
+grep -F 'harness_nice=0' "$sweep_output/inputs.txt" >/dev/null
+if [ "$(sed -n 's/.* min_step=\([0-9]*\)$/\1/p' "$launch_log" | sort -u)" != 8192 ]; then
+    printf 'the effective checkpoint spacing did not reach every launch\n' >&2
+    exit 1
+fi
 
 # The harness launches at the row's validated_filled_depth, so a row without
 # one is refused before any launch, and the launch chain's guards need the
@@ -175,6 +190,23 @@ grep -F 'launch ctx_checkpoints=8' "$sweep_output/arm-4-c8/server.log" >/dev/nul
 test -s "$sweep_output/arm-1-c0/turn2.tokens"
 test -s "$sweep_output/prompt-depth.txt"
 
+# A retained output directory is immutable input to later analysis. A rerun
+# refuses it before launch and preserves every existing byte.
+active_fixture=output-reuse
+launch_count_before=$(wc -l <"$launch_log")
+printf 'retained marker\n' >"$sweep_output/retained-marker.txt"
+if run_harness reused fake-2b "$sweep_output" \
+        >"$temporary_directory/reused.stdout" 2>"$temporary_directory/reused.stderr"; then
+    printf 'a nonempty output directory was reused\n' >&2
+    exit 1
+fi
+grep -F 'output directory must be empty' "$temporary_directory/reused.stderr" >/dev/null
+grep -Fx 'retained marker' "$sweep_output/retained-marker.txt" >/dev/null
+if [ "$(wc -l <"$launch_log")" -ne "$launch_count_before" ]; then
+    printf 'output reuse reached the launch chain\n' >&2
+    exit 1
+fi
+
 # A shifted token sequence on one count fails the run and names the index.
 active_fixture=token-divergence
 diagnostic_file=$temporary_directory/diverge.stderr
@@ -215,6 +247,66 @@ if QWEN_LAUNCH_SCRIPT=$fake_launch QWEN_TEARDOWN_SCRIPT=$fake_teardown \
     exit 1
 fi
 grep -F 'reaches the registry ceiling' "$temporary_directory/bad.stderr" >/dev/null
+if QWEN_CHECKPOINT_MIN_STEP=0 run_harness bad fake-2b \
+        "$temporary_directory/bad-spacing" 2>"$temporary_directory/bad-spacing.stderr"; then
+    printf 'zero checkpoint spacing was accepted\n' >&2
+    exit 1
+fi
+grep -F 'checkpoint spacing must be positive integers' \
+    "$temporary_directory/bad-spacing.stderr" >/dev/null
+
+# The validated allocation must hold the maximum accepted turn-one depth, the
+# appended second-turn suffix, and every generated token. Refusal occurs before
+# the output directory or launch chain changes state.
+active_fixture=context-reservation
+shallow_registry=$temporary_directory/shallow-models.tsv
+sed 's/\t32768\t-\t-\trefused$/\t2100\t-\t-\trefused/' \
+    "$registry" >"$shallow_registry"
+harness_registry=$shallow_registry
+: >"$launch_log"
+if run_harness shallow fake-2b "$temporary_directory/shallow" \
+        >"$temporary_directory/shallow.stdout" 2>"$temporary_directory/shallow.stderr"; then
+    printf 'an allocation without turn-two and prediction capacity was accepted\n' >&2
+    exit 1
+fi
+grep -F 'cannot reserve target' "$temporary_directory/shallow.stderr" >/dev/null
+test ! -e "$temporary_directory/shallow"
+test ! -s "$launch_log"
+harness_registry=$registry
+
+# A failed teardown ends the sweep before another arm starts. The EXIT trap
+# retries teardown because ownership remains armed until a teardown succeeds.
+active_fixture=teardown-failure
+retry_teardown=$temporary_directory/retry-teardown.sh
+teardown_attempts=$temporary_directory/teardown-attempts
+cat >"$retry_teardown" <<EOF
+#!/bin/sh
+set -eu
+printf 'attempt\\n' >>"$teardown_attempts"
+if [ "\$(wc -l <"$teardown_attempts")" -eq 1 ]; then
+    exit 1
+fi
+"$fake_teardown"
+EOF
+chmod +x "$retry_teardown"
+: >"$launch_log"
+if QWEN_TEST_TEARDOWN_SCRIPT=$retry_teardown QWEN_CTX_CHECKPOINT_ARMS='0 2' \
+        run_harness teardown-failure fake-2b "$temporary_directory/teardown-failure" \
+        >"$temporary_directory/teardown-failure.stdout" \
+        2>"$temporary_directory/teardown-failure.stderr"; then
+    printf 'a sweep continued after teardown failed\n' >&2
+    exit 1
+fi
+grep -F 'teardown failed for arm 1' \
+    "$temporary_directory/teardown-failure.stderr" >/dev/null
+if [ "$(wc -l <"$launch_log")" -ne 1 ]; then
+    printf 'a later arm launched after teardown failure\n' >&2
+    exit 1
+fi
+if [ "$(wc -l <"$teardown_attempts")" -ne 2 ]; then
+    printf 'teardown ownership was released before successful retry\n' >&2
+    exit 1
+fi
 
 # A llama-server process refuses the run before any launch.
 active_fixture=process-contention

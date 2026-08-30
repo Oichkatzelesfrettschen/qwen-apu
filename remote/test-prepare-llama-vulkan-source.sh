@@ -1,7 +1,7 @@
 #!/bin/sh
-# Prove the five-to-six-patch transition of prepare-llama-vulkan-source.sh:
-# a tree prepared by the four-patch series upgrades by the router patch alone,
-# the upgraded tree is then reported already verified, and a tree carrying an
+# Prove preparation of the seven-patch production series: recognized four- and
+# five-patch prefixes upgrade through the missing production patches, the
+# upgraded tree is then reported already verified, and a tree carrying an
 # unrelated edit refuses. The script pins commit f280b269 of llama.cpp, so the
 # fixture is a local clone of a checkout holding that commit; a workstation
 # without one reports the test as not run rather than as passed.
@@ -55,9 +55,11 @@ expect_output 'patched_source=upgraded' \
     sh "$script_directory/prepare-llama-vulkan-source.sh" "$base_source" "$patched_source"
 expect_output 'patched_source=already_verified' \
     sh "$script_directory/prepare-llama-vulkan-source.sh" "$base_source" "$patched_source"
+expect_output 'patch_count=7' \
+    sh "$script_directory/prepare-llama-vulkan-source.sh" "$base_source" "$patched_source"
 
-# Stage two: an unrelated edit beside the recognized prefix still refuses.
-git -C "$patched_source" checkout --quiet -- tools/server/server.cpp
+# An unrelated edit beside an otherwise verified series refuses rather than
+# passing the source-hash subset.
 printf '\n' >> "$patched_source/README.md"
 if output=$(sh "$script_directory/prepare-llama-vulkan-source.sh" \
         "$base_source" "$patched_source" 2>&1); then
@@ -71,12 +73,31 @@ case $output in
         exit 1
         ;;
 esac
+git -C "$patched_source" checkout --quiet -- README.md
 
-# Stage three: a clean pinned checkout receives the whole series.
+# A five-patch prefix already carrying the router patch upgrades through the
+# submit-trace and view-alias patches.
+rm -rf "$patched_source"
+git clone --quiet --local --no-hardlinks --no-checkout "$base_source" "$patched_source"
+git -C "$patched_source" checkout --quiet --detach "$pinned_commit"
+for patch_name in \
+    llama-vulkan-low-priority.patch \
+    llama-no-cpu-fallback.patch \
+    llama-vulkan-duty-cycle.patch \
+    llama-vulkan-runtime-submit-limit.patch \
+    llama-router-tools-proxy.patch; do
+    git -C "$patched_source" apply "$repository_directory/patches/$patch_name"
+done
+expect_output 'patched_source=upgraded' \
+    sh "$script_directory/prepare-llama-vulkan-source.sh" "$base_source" "$patched_source"
+expect_output 'patch_count=7' \
+    sh "$script_directory/prepare-llama-vulkan-source.sh" "$base_source" "$patched_source"
+
+# A clean pinned checkout receives the whole production series.
 rm -rf "$patched_source"
 git clone --quiet --local --no-hardlinks --no-checkout "$base_source" "$patched_source"
 git -C "$patched_source" checkout --quiet --detach "$pinned_commit"
 expect_output 'patched_source=prepared' \
     sh "$script_directory/prepare-llama-vulkan-source.sh" "$base_source" "$patched_source"
 
-printf 'prepare_llama_vulkan_source=accepted transitions=upgraded,already_verified,refused,prepared\n'
+printf 'prepare_llama_vulkan_source=accepted transitions=four-prefix,five-prefix,already_verified,refused,prepared patch_count=7\n'

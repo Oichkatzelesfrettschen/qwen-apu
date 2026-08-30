@@ -72,7 +72,20 @@ if [ ! -r "$registry" ]; then
     exit 1
 fi
 
-mkdir -p "$(dirname -- "$output_ini")"
+# Validate every authority before changing tier links or the last known-good
+# preset. In particular, a malformed draft-pair ledger must leave both
+# generated surfaces untouched rather than producing an ordinary-model-only
+# preset that looks complete.
+quarantine_rows=$("$script_directory/model-registry.sh" quarantine-rows router-child)
+draft_pair_rows=$("$script_directory/model-registry.sh" draft-pairs)
+
+output_parent=$(dirname -- "$output_ini")
+mkdir -p "$output_parent"
+output_staging=$(mktemp "$output_parent/.router-presets.XXXXXX")
+cleanup_output_staging() {
+    rm -f -- "$output_staging"
+}
+trap 'cleanup_output_staging' EXIT HUP INT TERM
 production_directory=$model_root/production
 candidate_directory=$model_root/candidates
 quarantine_directory=$model_root/quarantine
@@ -109,8 +122,6 @@ emitted=0
 skipped_unlisted=0
 skipped_absent=0
 quarantined=0
-quarantine_rows=$("$script_directory/model-registry.sh" quarantine-rows router-child)
-
 deploy_quarantine_reason() {
     quarantine_reason_id=$1
     if [ ! -f "$reason_source/$quarantine_reason_id.md" ]; then
@@ -127,7 +138,7 @@ deploy_quarantine_reason() {
     printf '# Edit remote/models.tsv and regenerate; edits here are overwritten.\n'
     printf '# qwen_router_include_quarantine=%s\n' "$include_quarantine"
     printf '\n'
-} >"$output_ini"
+} >"$output_staging"
 
 while IFS='	' read -r id role model_file _fetch_script context_default \
     _context_ceiling _context_target cache_type_k cache_type_v flash_attention \
@@ -230,18 +241,18 @@ while IFS='	' read -r id role model_file _fetch_script context_default \
         printf 'LLAMA_ARG_FLASH_ATTN = %s\n' "$flash_attention"
         printf 'LLAMA_ARG_BATCH = %s\n' "$batch"
         printf 'LLAMA_ARG_UBATCH = %s\n' "$ubatch"
-    } >>"$output_ini"
+    } >>"$output_staging"
 
     if [ "$projector" = required ]; then
         projector_path=$("$script_directory/select-projector.sh" "$model_path" \
             2>/dev/null) || projector_path=''
         if [ -n "$projector_path" ]; then
-            printf 'LLAMA_ARG_MMPROJ = %s\n' "$projector_path" >>"$output_ini"
+            printf 'LLAMA_ARG_MMPROJ = %s\n' "$projector_path" >>"$output_staging"
         else
             printf 'preset_warning id=%s reason=projector_unresolved\n' "$id" >&2
         fi
     fi
-    printf '\n' >>"$output_ini"
+    printf '\n' >>"$output_staging"
     emitted=$((emitted + 1))
 done <"$registry"
 
@@ -276,7 +287,6 @@ pairs_emitted=0
 pairs_unlisted=0
 pairs_absent=0
 pairs_quarantined=0
-draft_pair_rows=$("$script_directory/model-registry.sh" draft-pairs)
 while IFS='	' read -r pair_id target_model_id draft_model_id pair_tier \
     spec_draft_n_max spec_draft_p_min _draft_context draft_cache_type_k \
     draft_cache_type_v _validated_evidence pair_notes; do
@@ -299,6 +309,7 @@ while IFS='	' read -r pair_id target_model_id draft_model_id pair_tier \
     target_batch=$(printf '%s\n' "$target_row" | sed -n 's/^batch=//p')
     target_ubatch=$(printf '%s\n' "$target_row" | sed -n 's/^ubatch=//p')
     target_role=$(printf '%s\n' "$target_row" | sed -n 's/^role=//p')
+    target_projector=$(printf '%s\n' "$target_row" | sed -n 's/^projector=//p')
     draft_model_file=$("$script_directory/model-registry.sh" id \
         "$draft_model_id" model_file)
 
@@ -310,20 +321,36 @@ while IFS='	' read -r pair_id target_model_id draft_model_id pair_tier \
         pairs_absent=$((pairs_absent + 1))
         continue
     fi
+    target_projector_path=''
+    if [ "$target_projector" = required ]; then
+        target_projector_path=$("$script_directory/select-projector.sh" \
+            "$target_path" 2>/dev/null) || target_projector_path=''
+        if [ -z "$target_projector_path" ]; then
+            printf 'preset_skipped pair=%s reason=projector_absent target=%s\n' \
+                "$pair_id" "$target_path" >&2
+            pairs_absent=$((pairs_absent + 1))
+            continue
+        fi
+    fi
 
-    # A profile-scope row on the target's own tuple removes the section, because
-    # a pair section serves that exact tuple with a second checkpoint resident
-    # beside it. A model-scope row on either half stops the ledger read one step
-    # earlier, so this branch is where the tuple scope lands.
+    # A pair serves the target tuple and a draft tuple at the target's derived
+    # context and geometry. Profile quarantine therefore applies independently
+    # to either half; matching only the target would load an explicitly refused
+    # draft cache geometry.
     pair_quarantine_row=$(printf '%s\n' "$quarantine_rows" |
         awk -F'\t' -v target="$target_model_id" -v draft="$draft_model_id" \
             -v depth="$target_context" -v row_batch="$target_batch" \
             -v row_ubatch="$target_ubatch" -v cache_k="$target_cache_k" \
-            -v cache_v="$target_cache_v" -v flash="$target_flash" '
+            -v cache_v="$target_cache_v" -v flash="$target_flash" \
+            -v draft_cache_k="$draft_cache_type_k" \
+            -v draft_cache_v="$draft_cache_type_v" '
             $2 == "model" && ($3 == target || $3 == draft) { print; exit }
             $2 == "profile" && $3 == target && $5 == depth &&
             $6 == row_batch && $7 == row_ubatch && $8 == cache_k &&
-            $9 == cache_v && $10 == flash { print; exit }')
+            $9 == cache_v && $10 == flash { print; exit }
+            $2 == "profile" && $3 == draft && $5 == depth &&
+            $6 == row_batch && $7 == row_ubatch && $8 == draft_cache_k &&
+            $9 == draft_cache_v && $10 == flash { print; exit }')
     if [ -n "$pair_quarantine_row" ]; then
         pairs_quarantined=$((pairs_quarantined + 1))
         pair_reason_id=$(printf '%s\n' "$pair_quarantine_row" |
@@ -338,7 +365,7 @@ while IFS='	' read -r pair_id target_model_id draft_model_id pair_tier \
         printf '[%s]\n' "$pair_id"
         printf 'LLAMA_ARG_MODEL = %s\n' "$target_path"
         printf 'LLAMA_ARG_ALIAS = %s,%s\n' "$pair_id" "$pair_notes"
-        printf 'LLAMA_ARG_TAGS = candidate,draft-pair,%s\n' "$target_role"
+        printf 'LLAMA_ARG_TAGS = %s,draft-pair,%s\n' "$pair_tier" "$target_role"
         printf 'LLAMA_ARG_CTX_SIZE = %s\n' "$target_context"
         printf 'LLAMA_ARG_CACHE_TYPE_K = %s\n' "$target_cache_k"
         printf 'LLAMA_ARG_CACHE_TYPE_V = %s\n' "$target_cache_v"
@@ -354,12 +381,19 @@ while IFS='	' read -r pair_id target_model_id draft_model_id pair_tier \
         printf 'LLAMA_ARG_N_GPU_LAYERS_DRAFT = all\n'
         printf 'spec-draft-device = Vulkan0\n'
         printf 'spec-draft-override-tensor = .*=Vulkan0\n'
+        if [ -n "$target_projector_path" ]; then
+            printf 'LLAMA_ARG_MMPROJ = %s\n' "$target_projector_path"
+        fi
         printf '\n'
-    } >>"$output_ini"
+    } >>"$output_staging"
     pairs_emitted=$((pairs_emitted + 1))
 done <<EOF
 $draft_pair_rows
 EOF
+
+chmod 600 "$output_staging"
+mv -f -- "$output_staging" "$output_ini"
+output_staging=''
 
 printf 'router_presets=written path=%s models=%s unlisted=%s quarantined=%s absent=%s\n' \
     "$output_ini" "$emitted" "$skipped_unlisted" "$quarantined" "$skipped_absent"

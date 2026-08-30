@@ -125,6 +125,8 @@ case $action in
                               QWEN_IMAGE_PROFILE QWEN_IMAGE_TOKEN_KEY_FILE \
                               QWEN_IMAGE_STATE_DIR \
                               QWEN_IMAGE_SERVICE_SOCKET \
+                              QWEN_IMAGE_PRIORITY_WRAPPER \
+                              QWEN_IMAGE_LEASE_WAIT_S \
                               QWEN_RADV_ICD; do
             eval "forwarded_value=\${$forwarded_name:-}"
             if [ -n "$forwarded_value" ]; then
@@ -134,6 +136,7 @@ case $action in
         for forwarded_name in GGML_VK_MAX_NODES_PER_SUBMIT \
                               GGML_VK_SERIALIZE_SUBMISSIONS \
                               GGML_VK_ALLOW_GRAPHICS_QUEUE \
+                              GGML_VK_SUBMIT_TRACE \
                               GGML_VK_DUTY_CYCLE_PERCENT; do
             eval "forwarded_value=\${$forwarded_name:-}"
             if [ -n "$forwarded_value" ]; then

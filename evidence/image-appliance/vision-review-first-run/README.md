@@ -1,14 +1,17 @@
 # The first appliance run of `remote/image-review.py`, before the grammar
 
-Four reviews ran on the appliance on 2026-08-29 over the CLI two-phase
-protocol `evidence/image-appliance/vision-review-design.md` names: two
-artifacts already on disk from an earlier generation run, `17e452e6...` (a
-fox) and `7c6b7565...` (an apple), each reviewed once by `lfm25-vl-16b` and
-once by `qwen35-2b` against the same two-constraint declaration, through the
-router's served model id `qwen-apu`. Every request sent no `response_format`
+Four reviews ran on the appliance on 2026-08-29 over two artifacts already on
+disk from an earlier generation run, `17e452e6...` (a fox) and
+`7c6b7565...` (an apple). The operator-authored chain labels the first pair
+`lfm25-vl-16b` and the second pair `qwen35-2b`; the retained router responses
+identify only the shared served id `qwen-apu`, so the checkpoint identity of
+either pair is an annotation rather than independently replayable evidence.
+The record also omits the transmitted constraint descriptions. Every request sent no `response_format`
 and no `json_schema`; the reply's shape rested on the system instruction
 alone. `chain.log` bounds the run at 2026-08-29T11:19:15Z through
-11:21:10Z. This directory retains the sanitized chain log, the image-service
+11:21:10Z. Both model-labeled teardown rows report status 1 and retain no
+teardown diagnostics, so the record does not establish idle-state isolation
+between the pairs. This directory retains the sanitized chain log, the image-service
 log, the eight per-review stdout/stderr files, and the one verdict record the
 run produced.
 
@@ -26,7 +29,7 @@ reached a parser-acceptable reply on 1 of 4 rows here, so the path is
 unreliable rather than categorically broken, and the grammar's value is
 closing the gap on the three that failed structurally rather than creating a
 possibility that did not already exist. Four rows is too few to state a rate;
-it is enough to state that both outcomes occurred inside one sweep.
+it is enough to state that both outcomes occurred in this retained chain.
 
 ## The four rows
 

@@ -53,7 +53,7 @@ fake_bench=$temporary_directory/llama-bench
 bench_nice_log=$temporary_directory/bench-nice.log
 cat >"$fake_bench" <<EOF
 #!/bin/sh
-LC_ALL=C /usr/bin/ps -o ni= -p \$\$ | tr -d ' ' >>'$bench_nice_log'
+LC_ALL=C /usr/bin/awk '{ line = \$0; sub(/^.*[)] /, "", line); split(line, fields, /[[:space:]]+/); print fields[17] }' /proc/\$\$/stat >>'$bench_nice_log'
 exec '$script_directory/test-fixtures/fake-llama-bench.sh' "\$@"
 EOF
 chmod +x "$fake_bench"
@@ -103,5 +103,49 @@ if [ "$(sort -u "$bench_nice_log" | tr -d '\n')" != 19 ]; then
     exit 1
 fi
 grep -F 'dpm_force=completed' "$temporary_directory/dpm.stdout" >/dev/null
+
+# A failed class transition and a successful command whose readback remains in
+# best-effort both fail before the harness writes a measurement summary.
+active_fixture=ionice-command-failure
+failing_ionice=$temporary_directory/failing-ionice
+printf '#!/bin/sh\nexit 1\n' >"$failing_ionice"
+chmod +x "$failing_ionice"
+if PATH=$stub_directory:$PATH QWEN_DPM_ROUNDS=1 \
+        QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
+        QWEN_DRM_DEVICE=$drm_device QWEN_DPM_IONICE=$failing_ionice \
+        nice -n 5 "$script_directory/measure-dpm-force.sh" "$model_path" \
+        "$temporary_directory/dpm-ionice-failed" \
+        >"$temporary_directory/dpm-ionice-failed.stdout" \
+        2>"$temporary_directory/dpm-ionice-failed.stderr"; then
+    printf 'an ionice setup failure reached the measurement\n' >&2
+    exit 1
+fi
+grep -F 'measurement I/O priority setup failed' \
+    "$temporary_directory/dpm-ionice-failed.stderr" >/dev/null
+test ! -e "$temporary_directory/dpm-ionice-failed/dpm-summary.tsv"
+
+active_fixture=ionice-readback-refusal
+best_effort_ionice=$temporary_directory/best-effort-ionice
+cat >"$best_effort_ionice" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = -p ]; then
+    printf 'best-effort: prio 4\n'
+fi
+exit 0
+EOF
+chmod +x "$best_effort_ionice"
+if PATH=$stub_directory:$PATH QWEN_DPM_ROUNDS=1 \
+        QWEN_LLAMA_BENCH=$fake_bench QWEN_CLOCK_SAMPLER=$fake_sampler \
+        QWEN_DRM_DEVICE=$drm_device QWEN_DPM_IONICE=$best_effort_ionice \
+        nice -n 5 "$script_directory/measure-dpm-force.sh" "$model_path" \
+        "$temporary_directory/dpm-ioclass-refused" \
+        >"$temporary_directory/dpm-ioclass-refused.stdout" \
+        2>"$temporary_directory/dpm-ioclass-refused.stderr"; then
+    printf 'a non-idle ionice readback reached the measurement\n' >&2
+    exit 1
+fi
+grep -F 'measurement I/O priority refused: observed=best-effort' \
+    "$temporary_directory/dpm-ioclass-refused.stderr" >/dev/null
+test ! -e "$temporary_directory/dpm-ioclass-refused/dpm-summary.tsv"
 
 printf 'dpm_harness_priority=passed arms=%s bench_nice=19\n' "$arm_rows"

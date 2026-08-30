@@ -81,6 +81,20 @@ if [ ! -x "$production_build_directory/$server_relative_path" ]; then
         "$production_build_directory/$server_relative_path" >&2
     exit 2
 fi
+case $reference_arm in
+    production-optimize | production-optimize-off) ;;
+    alias-optimize)
+        if [ -z "$alias_build_directory" ] || \
+            [ ! -x "$alias_build_directory/$server_relative_path" ]; then
+            printf 'reference arm alias-optimize requires a runnable alias build\n' >&2
+            exit 2
+        fi
+        ;;
+    *)
+        printf 'invalid reference arm: %s\n' "$reference_arm" >&2
+        exit 2
+        ;;
+esac
 
 # A concurrent llama-server contends for the two Vega compute units and the one
 # DDR4 controller, and a second process holding the device turns a correctness
@@ -97,8 +111,20 @@ if curl --silent --fail --max-time 2 \
         "$appliance_port" "$(basename "$0")" >&2
     exit 1
 fi
+if [ "$server_port" != "$appliance_port" ] && \
+    curl --silent --fail --max-time 2 \
+        "http://127.0.0.1:$server_port/health" >/dev/null 2>&1; then
+    printf 'a server answers /health on experiment port %s\n' \
+        "$server_port" >&2
+    exit 1
+fi
 
 umask 077
+if [ -e "$output_directory" ] && \
+    find "$output_directory" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+    printf 'output directory must be empty: %s\n' "$output_directory" >&2
+    exit 2
+fi
 mkdir -p "$output_directory"
 output_directory=$(CDPATH='' cd -- "$output_directory" && pwd)
 
@@ -187,6 +213,7 @@ registry_field() {
 summary_file=$output_directory/summary.tsv
 : >"$summary_file"
 divergence_seen=0
+self_divergence_seen=0
 comparison_count=0
 
 {
@@ -245,7 +272,7 @@ start_server() {
             --log-verbosity 4 \
             >"$arm_log" 2>&1 &
     else
-        LLAMA_NO_CPU_FALLBACK=1 \
+        env -u GGML_VK_DISABLE_GRAPH_OPTIMIZE LLAMA_NO_CPU_FALLBACK=1 \
             "$arm_build_directory/$server_relative_path" \
             --model "$arm_model_path" \
             --host 127.0.0.1 \
@@ -451,13 +478,17 @@ for model_id in "$@"; do
                                 "$model_id" "$arm_name" "$prompt_id" \
                                 "$consistency_scope" "$sample_label" \
                                 "$divergence_index" >>"$summary_file"
-                            divergence_seen=1
+                            self_divergence_seen=1
                         fi
                         run_index=$((run_index + 1))
                     done
                     start_index=$((start_index + 1))
                 done
-                if [ "$self_divergent" = 0 ]; then
+                if [ "$sample_total" -eq 0 ]; then
+                    printf 'graph_alias_selfconsistent=not_run\tmodel=%s\tarm=%s\tprompt=%s\tscope=%s\treason=insufficient_samples\n' \
+                        "$model_id" "$arm_name" "$prompt_id" \
+                        "$consistency_scope" >>"$summary_file"
+                elif [ "$self_divergent" = 0 ]; then
                     printf 'graph_alias_selfconsistent=identical\tmodel=%s\tarm=%s\tprompt=%s\tscope=%s\tcomparisons=%s\n' \
                         "$model_id" "$arm_name" "$prompt_id" \
                         "$consistency_scope" "$sample_total" >>"$summary_file"
@@ -504,7 +535,9 @@ if [ "$comparison_count" -eq 0 ]; then
     exit 1
 fi
 if [ "$divergence_seen" = 1 ]; then
-    printf 'graph_alias_ab=divergent comparisons=%s\n' "$comparison_count"
+    printf 'graph_alias_ab=divergent comparisons=%s self_divergence=%s\n' \
+        "$comparison_count" "$self_divergence_seen"
 else
-    printf 'graph_alias_ab=identical comparisons=%s\n' "$comparison_count"
+    printf 'graph_alias_ab=identical comparisons=%s self_divergence=%s\n' \
+        "$comparison_count" "$self_divergence_seen"
 fi

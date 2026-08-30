@@ -126,6 +126,7 @@ write_configuration() {
         "QWEN_IMAGE_TOKEN_KEY_FILE": "$signing_key_file",
         "QWEN_IMAGE_STATE_DIR": "$state_directory/images",
         "QWEN_IMAGE_SERVICE_SOCKET": "$state_directory/images/image-service.sock",
+        "QWEN_IMAGE_PROFILES_JSON": "$image_parameters",
         "QWEN_IMAGE_MCP_TIMEOUT_S": "${2:-360}"
       }
     }
@@ -277,7 +278,7 @@ if run_launch "$presets_armed" env \
     grep -Fqx "QWEN_IMAGE_TOKEN_KEY_FILE=$signing_key_file" "$launch_record" ||
         outcome=key_absent
     grep -qx 'profile=low-async' "$launch_record" || outcome=profile_argument
-    grep -q 'image_launch timeouts runtime=300 service=330 mcp=360 proxy=3600 browser=660' \
+    grep -q 'image_launch timeouts runtime_ms=300000 service_ms=330000 mcp_ms=360000 proxy_ms=3600000 browser_ms=660000' \
         "$work/armed.log" || outcome=timeouts_unreported
     report armed_preset_exports_the_image_authority "$outcome"
 else

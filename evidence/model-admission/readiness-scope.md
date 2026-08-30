@@ -17,49 +17,55 @@ model with the evidence file behind each cell.
 | quarantined | `nanbeige42-3b`, `ministral3-3b` | each has a reason record and a re-entry gate under `evidence/quarantine/` |
 | archive or rejected | `qwen38-9b-distill`, the three 4B i1 rungs, the two 27B rungs | measured and displaced; nothing to configure |
 
-## Candidate ledger (28 rows)
+## Candidate ledger (29 rows)
 
 | category | rows |
 | --- | --- |
 | promoted | `qwen38-2b-distill-gguf`, `qwen35-08b-bartowski` |
-| needs-quality-grade | `qwen35-08b-opus-reason` (loaded, 32768 validated), `qwen3-zero-coder-v2-08b` (loaded, 32768 validated), `qwen3-zero-coder-08b` (loaded, throughput measured), `qwen2vl-2b-platinum` (loaded, throughput measured) |
-| needs-throughput | the seven 2B fine-tunes (`qwen38-2b-uncensored`, `qwen35-2b-hauhau`, `qwen35-2b-unsloth`, `qwen35-2b-unredacted`, `qwen35-2b-unredacted-i1`, `qwen35-2b-heretic`, `qwenseer-2b`) and `qwen35-08b-unsloth-unc`: one-token load passed, no arm since |
-| needs-one-token-load | `qwen35-9b-defiant-fable` (static admission already parsed it; the ledger stage is stale), `minicpm5-1b-fable5-v2` |
-| needs-control-arm | `qwen38-9b-distill`: served as `archive` in the registry, `phase-1` in the ledger, and called absent by the throughput document |
+| needs-quality-grade | `qwen3-zero-coder-08b` and the text-trunk scope of `qwen2vl-2b-platinum`; both carry artifact-specific throughput and a same-sweep 55-row protocol |
+| needs-throughput | the seven 2B fine-tune/reconstruction rows (`qwen38-2b-uncensored`, `qwen35-2b-hauhau`, `qwen35-2b-unsloth`, `qwen35-2b-unredacted`, `qwen35-2b-unredacted-i1`, `qwen35-2b-heretic`, `qwenseer-2b`), `qwen35-08b-unsloth-unc`, `qwen35-08b-opus-reason`, and `qwen3-zero-coder-v2-08b` |
+| needs-one-token-load | `qwen35-9b-defiant-fable`, `minicpm5-1b-fable5-v2`, `minicpm5-1b-stock` |
+| archive policy | `qwen38-9b-distill`: the registry and ledger both read `served`; the archive tier is the policy basis, while 5/5-screen and 47/55 remain incomparable quality scales |
 | artifact-absent | six rows, safetensors-only or empty repositories, including both Damien420 rows |
 | rejected or provenance | five rows |
 
-Two ledger stage fields disagreed with the evidence they cite and are
-repaired beside this file: `qwen35-9b-defiant-fable` read `phase-1` where
-`static-admission.tsv` reads `parsed`, and `qwen38-9b-distill` read `phase-1`
-where `models.tsv` serves it. No stock MiniCPM5-1B row exists, so the Fable-trace fine-tune has no
-lineage control yet.
+The repaired ledger reads `static-admitted` for `qwen35-9b-defiant-fable` and
+`served` for `qwen38-9b-distill`, matching the cited static and registry
+evidence. Both MiniCPM5-1B artifacts now have exact ledger, readiness, and
+static-admission rows. `remote/check-model-admission-consistency.py` validates
+those joins and refuses lifecycle transitions that outrun artifact evidence.
 
 ## Appliance artifacts
 
 23 GGUF files at the top level of `$HOME/models`, 63.4 GB, every one matching
-the byte count its pinned `download-*.sh` states; ten candidate staging
-directories under `candidates/` at mode 0700; five symlink groups
-(`production/`, `candidates/`, `quarantine/`). Installed and unregistered:
+the byte count its pinned `download-*.sh` states. The appliance table carries
+17 paths under `candidates/`: 14 ledger staging directories at mode 0700 and
+three symlinks to served directories. Eight symlink rows span `production/`,
+`candidates/`, and `quarantine/`. The checker derives the 17-row count from
+`readiness-appliance-artifacts.tsv` instead of freezing it as verifier input.
+Installed and unregistered:
 `Qwen3.5-0.8B-bf16.gguf` and `Qwen3.8-2B-BF16.gguf` (F16 derivation
-sources, which is their documented role), `Qwen3.8-2B-F16.gguf` (derived, no
-registry row, unlike its 0.8B sibling), and the `stories15M` fixture. Pinned
+sources, which is their documented role), and the `stories15M` fixture.
+`Qwen3.8-2B-F16.gguf` is a measured, rejected representation: its 4.96 tok/s
+decode falls below the registered 9 tok/s floor. Pinned
 but absent: `qwen38-4b-i1-iq3s` (expected 2,191,729,152 bytes, never
 fetched).
 
 ## Order of work that follows from this
 
-1. Ledger repair, no device time: the two stale stages now read
-   `static-admitted` and `served`. `Qwen3.8-2B-F16.gguf` stays a derived,
-   unregistered artifact until `run-representation-arm.sh` measures it against
-   its BF16 source the way the 0.8B pair was measured; the registry row follows
-   the arm.
-2. Quality grading, device time: `qwen35-08b-opus-reason` against stock
-   Qwen3.5-0.8B Q4_K_M in native thinking mode; `qwen3-zero-coder-v2-08b`,
-   `qwen3-zero-coder-08b`, `qwen2vl-2b-platinum` through the roster suite.
-3. MiniCPM5: add the stock control row, fetch both, strict load, template and
-   structured tool-call check, throughput, then the paired suite.
-4. One throughput arm per runtime class for the eight loaded-and-unmeasured
-   fine-tunes, read as ratios inside one sweep.
+1. Ledger verification, no device time: run
+   `remote/check-model-admission-consistency.py` before admitting a readiness
+   or lifecycle edit.
+2. Throughput measurement, device time: run artifact-specific, same-sweep arms
+   for the ten loaded-and-unmeasured rows. Keep the IQ4_XS and IQ3_S
+   reconstruction rungs separate.
+3. Quality grading, device time: grade only `qwen3-zero-coder-08b` and the
+   text-trunk scope of `qwen2vl-2b-platinum` now. Measure
+   `qwen35-08b-opus-reason` and `qwen3-zero-coder-v2-08b` first. A future Opus
+   comparison runs both candidate and control in native-thinking mode inside
+   one 55-row sweep.
+4. MiniCPM5: fetch and strict-load both admitted artifacts, compare tokenizer
+   behavior on an exact prompt corpus, run the server parser/grammar tool-call
+   arm, measure throughput, then run the paired quality suite.
 5. Projector-loaded depth arms for `qwen35-4b-base`, `qwen35-2b`, and
    `lfm25-vl-16b`, since the vision profiles serve all three.

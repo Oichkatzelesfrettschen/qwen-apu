@@ -18,6 +18,7 @@ of what passed is printed on success.
 
 import base64
 import hashlib
+import html
 import http.server
 import importlib.util
 import json
@@ -148,7 +149,10 @@ class RecordingState:
         self.grant_image_bodies = []
         self.tools_post_bodies = []
         self.artifact_auth_headers = []
+        self.hostile_artifact_auth_headers = []
         self.review_bodies = []
+        self.artifact_request_started = threading.Event()
+        self.artifact_response_release = threading.Event()
 
 
 def image_tool_listing():
@@ -195,7 +199,9 @@ def image_tool_listing():
 
 
 def make_handler(state, proposal=None, grant_status=200, grant_error=None,
-                 vision_model=None, review_replies=None):
+                 vision_model=None, review_replies=None,
+                 artifact_meta_origin=None, delay_artifact_response=False,
+                 artifact_fetch_timeout_ms=None):
     """Play the router, the broker, and the artifact listener for one turn.
 
     `proposal` is what the fixture model emits as the tool call arguments, and
@@ -204,10 +210,28 @@ def make_handler(state, proposal=None, grant_status=200, grant_error=None,
     `vision_model` adds a second roster row whose `GET /props` reports a vision
     modality, which is what makes the page offer a review at all, and
     `review_replies` is the sequence of assistant messages the router answers
-    each review request with, the last one repeating.
+    each review request with, the last one repeating. `artifact_meta_origin`
+    injects the served page's artifact-origin meta source for its focused
+    trust-boundary arm. `delay_artifact_response` holds the PNG response until
+    the test releases it after exercising cancellation or timeout behavior.
+    `artifact_fetch_timeout_ms` shortens the served page's local artifact-read
+    deadline for the focused timeout arm.
     """
     proposed_arguments = DEFAULT_PROPOSAL if proposal is None else proposal
     fallback_html = open(FALLBACK_UI_PATH, "rb").read()
+    if artifact_fetch_timeout_ms is not None:
+        timeout_declaration = b"const ARTIFACT_FETCH_TIMEOUT_MS = 60000;"
+        if fallback_html.count(timeout_declaration) != 1:
+            raise AssertionError("the fallback page's artifact timeout declaration drifted")
+        fallback_html = fallback_html.replace(
+            timeout_declaration,
+            "const ARTIFACT_FETCH_TIMEOUT_MS = {};".format(
+                artifact_fetch_timeout_ms).encode("ascii"),
+            1)
+    if artifact_meta_origin is not None:
+        meta_tag = '<meta name="qwen-image-artifacts" content="{}">\n'.format(
+            html.escape(artifact_meta_origin, quote=True)).encode("utf-8")
+        fallback_html = fallback_html.replace(b"</head>", meta_tag + b"</head>", 1)
 
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
@@ -274,6 +298,10 @@ def make_handler(state, proposal=None, grant_status=200, grant_error=None,
                 auth = self.headers.get("Authorization", "")
                 with state.lock:
                     state.artifact_auth_headers.append(auth)
+                state.artifact_request_started.set()
+                if delay_artifact_response:
+                    self.close_connection = True
+                    state.artifact_response_release.wait(timeout=30)
                 if auth != "Bearer " + API_KEY:
                     self._send_json(401, {"error": "missing or wrong credential"})
                     return
@@ -282,7 +310,12 @@ def make_handler(state, proposal=None, grant_status=200, grant_error=None,
                 self.send_header("Content-Length", str(len(ONE_PIXEL_PNG)))
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
-                self.wfile.write(ONE_PIXEL_PNG)
+                try:
+                    self.wfile.write(ONE_PIXEL_PNG)
+                except (BrokenPipeError, ConnectionResetError):
+                    # Cancelling the browser fetch closes the peer before the
+                    # fixture releases its deliberately delayed response.
+                    pass
                 return
             self._send_json(404, {"error": "no route: " + self.path})
 
@@ -403,6 +436,11 @@ def make_prose_handler():
         def log_message(self, *_args):
             pass
 
+        def _discard_request_body(self):
+            content_length = int(self.headers.get("Content-Length", "0") or "0")
+            if content_length:
+                self.rfile.read(content_length)
+
         def _send_json(self, status, payload):
             body = json.dumps(payload).encode("utf-8")
             self.send_response(status)
@@ -461,6 +499,7 @@ def make_prose_handler():
             self._send_json(404, {"error": "no route: " + self.path})
 
         def do_POST(self):  # noqa: N802
+            self._discard_request_body()
             parsed_path = self.path.split("?", 1)[0]
             if parsed_path == "/v1/chat/completions":
                 chunks = [
@@ -554,6 +593,41 @@ def serve(handler):
     return server, thread, "http://127.0.0.1:{}".format(server.server_address[1])
 
 
+def make_hostile_artifact_handler(state):
+    """Serve a reachable cross-origin PNG and record every bearer header.
+
+    The page must reject the configured hostname before calling fetch. The
+    permissive preflight response makes a leaked credential reach this handler
+    if that validation moves after authHeaders() or disappears.
+    """
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *_args):
+            pass
+
+        def do_OPTIONS(self):  # noqa: N802
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Headers", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_GET(self):  # noqa: N802
+            with state.lock:
+                state.hostile_artifact_auth_headers.append(
+                    self.headers.get("Authorization", ""))
+            self.send_response(200)
+            self.send_header("Content-Type", "image/png")
+            self.send_header("Content-Length", str(len(ONE_PIXEL_PNG)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(ONE_PIXEL_PNG)
+
+    return Handler
+
+
 class PageSession:
     """One headless Chromium holding the served page with the image lane armed.
 
@@ -564,7 +638,8 @@ class PageSession:
     condition.
     """
 
-    def __init__(self, origin):
+    def __init__(self, origin, artifact_query_origin=None,
+                 artifact_field_origin=None, set_artifact_field=True):
         import urllib.parse
 
         self.origin = origin
@@ -597,9 +672,13 @@ class PageSession:
         # The stub plays the router and the broker on one origin, so the page is
         # told to use it through ?broker=, the override qwen-webui-session.sh's
         # own operator uses.
-        page_url = origin + "/?broker=" + urllib.parse.quote(origin, safe="")
+        page_parameters = {"broker": origin}
+        if artifact_query_origin is not None:
+            page_parameters["artifacts"] = artifact_query_origin
+        page_url = origin + "/?" + urllib.parse.urlencode(page_parameters)
+        encoded_page_url = urllib.parse.quote(page_url, safe="")
         request = urllib.request.Request(
-            "http://{}/json/new?{}".format(http_origin, page_url), method="PUT")
+            "http://{}/json/new?{}".format(http_origin, encoded_page_url), method="PUT")
         with urllib.request.urlopen(request, timeout=30) as response:
             target = json.load(response)
         self.page = drive_fallback_page.DevToolsSocket(target["webSocketDebuggerUrl"])
@@ -612,12 +691,15 @@ class PageSession:
         self.evaluate(
             "(() => { document.querySelector('#api-key').value = " + json.dumps(API_KEY) +
             "; document.querySelector('#set-key').click(); return true; })()")
-        # The stub serves the artifact routes on its own origin, and the real
-        # listener binds an ephemeral port, so the page is told where it is the
-        # way an operator tells it: through the field.
-        self.evaluate(
-            "(() => { document.querySelector('#artifact-origin').value = "
-            + json.dumps(origin) + "; return true; })()")
+        if set_artifact_field:
+            # The default fixture serves artifacts on the router origin. Trust
+            # boundary arms can instead edit the field or leave it empty so the
+            # query or meta source remains authoritative.
+            configured_field_origin = (
+                origin if artifact_field_origin is None else artifact_field_origin)
+            self.evaluate(
+                "(() => { document.querySelector('#artifact-origin').value = "
+                + json.dumps(configured_field_origin) + "; return true; })()")
         drive_fallback_page.wait_for(
             self.page, "requestModel", 30, "the page to select a model")
         self.evaluate(drive_fallback_page.FETCH_RECORDER)
@@ -649,6 +731,39 @@ class PageSession:
     def approve(self):
         self.evaluate(
             "(() => { document.querySelector('#image-approve-once').click(); return true; })()")
+
+    def start_image_state_recording(self):
+        self.evaluate(
+            """(() => {
+              window.__qwenImageStateHistory = [];
+              const record = () => {
+                document.querySelectorAll('.image-state').forEach(element => {
+                  const value = element.textContent;
+                  const history = window.__qwenImageStateHistory;
+                  if (!history.length || history[history.length - 1] !== value) {
+                    history.push(value);
+                  }
+                });
+              };
+              window.__qwenImageStateObserver = new MutationObserver(record);
+              window.__qwenImageStateObserver.observe(
+                document.body, { childList: true, subtree: true, characterData: true });
+              record();
+              return true;
+            })()""")
+
+    def image_state_history(self):
+        return self.evaluate("window.__qwenImageStateHistory || []")
+
+    def cancel_generation(self):
+        return self.evaluate(
+            """(() => {
+              const button = [...document.querySelectorAll('button')].find(
+                candidate => candidate.textContent.trim().toLowerCase() === 'cancel');
+              if (!button) return false;
+              button.click();
+              return true;
+            })()""")
 
     def image_state(self):
         return self.evaluate(
@@ -861,6 +976,192 @@ def report_failures(label, failures):
         for failure in failures:
             sys.stderr.write("  - " + failure + "\n")
     return failures
+
+
+def test_hostile_artifact_origin_sources_send_no_authorization():
+    """Reject hostile query, meta, and edited-field origins before auth.
+
+    The hostile listener is reachable and permits credentialed CORS requests,
+    so any ordering regression that constructs authHeaders() before validating
+    the literal-loopback listener delivers the bearer value to this fixture.
+    """
+    hostile_state = RecordingState()
+    hostile_server, hostile_thread, hostile_loopback_origin = serve(
+        make_hostile_artifact_handler(hostile_state))
+    hostile_origin = hostile_loopback_origin.replace("127.0.0.1", "localhost", 1)
+    failures = []
+    outcomes = []
+    source_cases = (
+        ("URL query", hostile_origin, None, None, False),
+        ("meta", None, hostile_origin, None, False),
+        ("edited field", None, None, hostile_origin, True),
+    )
+    try:
+        for source_name, query_origin, meta_origin, field_origin, set_field in source_cases:
+            router_state = RecordingState()
+            router_server, router_thread, router_origin = serve(
+                make_handler(router_state, artifact_meta_origin=meta_origin))
+            session = None
+            with hostile_state.lock:
+                header_start = len(hostile_state.hostile_artifact_auth_headers)
+            try:
+                session = PageSession(
+                    router_origin,
+                    artifact_query_origin=query_origin,
+                    artifact_field_origin=field_origin,
+                    set_artifact_field=set_field)
+                session.send("draw a fox")
+                session.wait_for(
+                    "document.querySelector('#image-approval').open", 30,
+                    "the image approval dialog for the " + source_name + " arm")
+                session.approve()
+                session.wait_for(
+                    "(() => { const el = document.querySelector('.image-state'); "
+                    "return el && el.textContent.startsWith('Image failed:'); })()",
+                    60, "the hostile " + source_name + " origin to fail")
+                session.wait_for("busy === false", 60, "the hostile-origin turn to end")
+                final_state = session.image_state()
+                card_count = session.cards()
+            finally:
+                if session is not None:
+                    session.close()
+                router_server.shutdown()
+                router_thread.join(timeout=5)
+
+            with hostile_state.lock:
+                received_headers = list(
+                    hostile_state.hostile_artifact_auth_headers[header_start:])
+            leaked_headers = [value for value in received_headers if value]
+            if leaked_headers:
+                failures.append(
+                    "{} origin received Authorization headers: {}".format(
+                        source_name, leaked_headers))
+            if not final_state or "literal loopback address" not in final_state:
+                failures.append(
+                    "{} origin did not fail at the trust boundary: {}".format(
+                        source_name, final_state))
+            if card_count != 0:
+                failures.append(
+                    "{} origin created {} artifact cards".format(source_name, card_count))
+            outcomes.append("{}={}".format(source_name, final_state))
+    finally:
+        hostile_server.shutdown()
+        hostile_thread.join(timeout=5)
+
+    return report_failures("hostile-artifact-origins", failures), [
+        "hostile_artifact_origins_send_zero_authorization=accepted",
+        "hostile_artifact_origin_outcomes=" + json.dumps(outcomes),
+    ]
+
+
+def test_cancel_during_delayed_artifact_response():
+    """Cancel a completed generation while its artifact body is pending."""
+    state = RecordingState()
+    server, thread, origin = serve(make_handler(state, delay_artifact_response=True))
+    session = None
+    try:
+        session = PageSession(origin)
+        session.start_image_state_recording()
+        session.send("draw a fox")
+        session.wait_for(
+            "document.querySelector('#image-approval').open", 30,
+            "the image approval dialog for the delayed artifact arm")
+        session.approve()
+        if not state.artifact_request_started.wait(timeout=30):
+            raise AssertionError("the delayed artifact listener received no request")
+        session.wait_for(
+            "[...document.querySelectorAll('button')].some(button => "
+            "button.textContent.trim().toLowerCase() === 'cancel')",
+            30, "the image cancel button")
+        if session.cancel_generation() is not True:
+            raise AssertionError("the image cancel button disappeared before the click")
+        session.wait_for(
+            "(() => { const el = document.querySelector('.image-state'); "
+            "return el && el.textContent.startsWith('Image failed:'); })()",
+            60, "the cancelled artifact fetch to fail")
+        session.wait_for("busy === false", 60, "the cancelled image turn to end")
+        final_state = session.image_state()
+        card_count = session.cards()
+        state_history = session.image_state_history()
+    finally:
+        state.artifact_response_release.set()
+        if session is not None:
+            session.close()
+        server.shutdown()
+        thread.join(timeout=5)
+
+    failures = []
+    if not final_state or not final_state.startswith("Image failed:"):
+        failures.append("the cancelled artifact fetch ended in " + repr(final_state))
+    if "cancelled by the user" not in (final_state or ""):
+        failures.append("the failed state did not name cancellation: " + repr(final_state))
+    if card_count != 0:
+        failures.append("the cancelled artifact fetch created {} cards".format(card_count))
+    if "Image complete" in state_history:
+        failures.append("the cancelled artifact fetch reported Image complete: "
+                        + repr(state_history))
+    with state.lock:
+        artifact_headers = list(state.artifact_auth_headers)
+    if artifact_headers != ["Bearer " + API_KEY]:
+        failures.append("the delayed fixture did not hold one authenticated artifact fetch: "
+                        + repr(artifact_headers))
+    return report_failures("cancel-delayed-artifact", failures), [
+        "cancelled_delayed_artifact_ends_failed_without_card=accepted",
+        "cancelled_delayed_artifact_states=" + json.dumps(state_history),
+    ]
+
+
+def test_timeout_during_delayed_artifact_response():
+    """Let the page-local artifact deadline expire without clicking Cancel."""
+    state = RecordingState()
+    server, thread, origin = serve(make_handler(
+        state, delay_artifact_response=True, artifact_fetch_timeout_ms=100))
+    session = None
+    try:
+        session = PageSession(origin)
+        session.start_image_state_recording()
+        session.send("draw a fox")
+        session.wait_for(
+            "document.querySelector('#image-approval').open", 30,
+            "the image approval dialog for the artifact-timeout arm")
+        session.approve()
+        if not state.artifact_request_started.wait(timeout=30):
+            raise AssertionError("the timeout artifact listener received no request")
+        session.wait_for(
+            "(() => { const el = document.querySelector('.image-state'); "
+            "return el && el.textContent.startsWith('Image failed:'); })()",
+            60, "the delayed artifact fetch to time out")
+        session.wait_for("busy === false", 60, "the artifact-timeout turn to end")
+        final_state = session.image_state()
+        card_count = session.cards()
+        state_history = session.image_state_history()
+    finally:
+        state.artifact_response_release.set()
+        if session is not None:
+            session.close()
+        server.shutdown()
+        thread.join(timeout=5)
+
+    failures = []
+    if "artifact fetch timed out" not in (final_state or ""):
+        failures.append("the delayed artifact deadline ended in " + repr(final_state))
+    if "cancelled by the user" in (final_state or ""):
+        failures.append("the artifact deadline was mislabeled as cancellation: "
+                        + repr(final_state))
+    if card_count != 0:
+        failures.append("the timed-out artifact fetch created {} cards".format(card_count))
+    if "Image complete" in state_history:
+        failures.append("the timed-out artifact fetch reported Image complete: "
+                        + repr(state_history))
+    with state.lock:
+        artifact_headers = list(state.artifact_auth_headers)
+    if artifact_headers != ["Bearer " + API_KEY]:
+        failures.append("the timeout fixture did not hold one authenticated artifact fetch: "
+                        + repr(artifact_headers))
+    return report_failures("timeout-delayed-artifact", failures), [
+        "timed_out_delayed_artifact_is_not_cancelled=accepted",
+        "timed_out_delayed_artifact_states=" + json.dumps(state_history),
+    ]
 
 
 def test_out_of_bounds_proposal_refused_before_the_dialog():
@@ -1508,6 +1809,9 @@ def main():
     for arm in (test_out_of_bounds_proposal_refused_before_the_dialog,
                 test_foreign_profile_replaced_by_the_served_one,
                 test_refused_grant_ends_the_turn,
+                test_hostile_artifact_origin_sources_send_no_authorization,
+                test_cancel_during_delayed_artifact_response,
+                test_timeout_during_delayed_artifact_response,
                 test_review_and_bounded_corrections,
                 test_review_refuses_a_prose_reply):
         arm_failures, arm_lines = arm()

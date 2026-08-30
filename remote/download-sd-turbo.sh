@@ -63,6 +63,14 @@ if [ -f "$partial_path" ]; then
             "$partial_bytes" "$expected_bytes" "$partial_path" >&2
         exit 1
     fi
+    if [ "$partial_bytes" -eq "$expected_bytes" ]; then
+        verify_artifact "$partial_path"
+        mv "$partial_path" "$artifact_path"
+        printf 'artifact_status=verified_complete_partial path=%s bytes=%s sha256=%s source_repository=%s source_revision=%s\n' \
+            "$artifact_path" "$expected_bytes" "$expected_sha256" \
+            "$source_repository" "$source_revision"
+        exit 0
+    fi
     printf 'artifact_status=resuming partial_bytes=%s path=%s\n' \
         "$partial_bytes" "$partial_path"
 else

@@ -1504,6 +1504,7 @@ class WebMcpServerTest(unittest.TestCase):
         arguments = {"primary_category": "qwen-open"}
         arguments.update(overrides)
         provider = server.SearXNGProvider(fixture.origin, **arguments)
+        provider.public_address_resolver = lambda _host, _port: ["127.0.0.1"]
         return fixture, provider
 
     def searxng_session(self, fixture, **overrides):
@@ -1811,6 +1812,10 @@ class WebMcpServerTest(unittest.TestCase):
             ({"base_url": "ftp://127.0.0.1/"}, "unsupported scheme"),
             ({"base_url": "http://user@127.0.0.1/"}, "no plain host"),
             ({"base_url": "http://127.0.0.1/?a=b"}, "query or fragment"),
+            ({"base_url": "http://127.0.0.1:"}, "empty port"),
+            ({"base_url": "http://127.0.0.1:abc"}, "invalid port"),
+            ({"base_url": "http://127.0.0.1:0"}, "port"),
+            ({"base_url": "http://127.0.0.1:65536"}, "port"),
             ({"primary_category": ""}, "PRIMARY_CATEGORY"),
             ({"primary_category": "qwen open"}, "PRIMARY_CATEGORY"),
             ({"primary_category": "-"}, "PRIMARY_CATEGORY"),
@@ -1889,6 +1894,40 @@ class WebMcpServerTest(unittest.TestCase):
         self.assertIn("exceeded", str(raised.exception))
         self.assertLess(time.monotonic() - started, 2.0)
 
+    def test_primary_and_fallback_share_one_deadline(self):
+        fixture, provider = self.searxng_provider(
+            fallback_category="qwen-broad", minimum_results=2
+        )
+        provider.timeout_seconds = 0.3
+        fixture.responses["/search"] = {
+            "body": json.dumps({"results": []}),
+            "delay": 0.2,
+        }
+        started = time.monotonic()
+        with self.assertRaises(server.ProviderHttpError) as raised:
+            provider.search("raven2", 5, self.unconstrained())
+        self.assertIn("exceeded", str(raised.exception))
+        self.assertLess(time.monotonic() - started, 0.6)
+        self.assertEqual(len(fixture.requests), 2)
+
+    def test_provenance_names_no_category_before_a_request(self):
+        _, provider = self.searxng_provider(fallback_category="qwen-broad")
+        self.assertEqual(provider.provenance()["category"], "")
+        self.assertEqual(provider.provenance()["fallback_used"], 0)
+
+    def test_private_dns_answers_are_refused_as_one_set(self):
+        original_getaddrinfo = server.socket.getaddrinfo
+        try:
+            server.socket.getaddrinfo = lambda *_args, **_kwargs: [
+                (server.socket.AF_INET, server.socket.SOCK_STREAM, 6, "", ("8.8.8.8", 80)),
+                (server.socket.AF_INET, server.socket.SOCK_STREAM, 6, "", ("127.0.0.1", 80)),
+            ]
+            with self.assertRaises(server.ProviderContentError) as raised:
+                server.resolve_public_addresses("rebinding.example", 80)
+        finally:
+            server.socket.getaddrinfo = original_getaddrinfo
+        self.assertIn("private or non-global", str(raised.exception))
+
     def test_a_source_page_is_reduced_to_its_readable_text(self):
         fixture, provider = self.searxng_provider()
         fixture.responses["/page"] = {
@@ -1908,6 +1947,17 @@ class WebMcpServerTest(unittest.TestCase):
         self.assertTrue(record["complete"])
         self.assertNotIn("alert", record["text"])
         self.assertNotIn("color:red", record["text"])
+
+    def test_source_fetch_pins_the_validated_address_and_preserves_host(self):
+        fixture, provider = self.searxng_provider()
+        fixture.responses["/page"] = {
+            "body": "pinned source",
+            "content_type": "text/plain",
+        }
+        port = fixture.server.server_address[1]
+        record = provider.contents(f"http://source.example:{port}/page", 4321)
+        self.assertEqual(record["text"], "pinned source")
+        self.assertEqual(fixture.requests[-1]["headers"]["host"], f"source.example:{port}")
 
     def test_a_source_answer_outside_the_text_types_is_refused(self):
         cases = (
@@ -2119,6 +2169,39 @@ class WebMcpServerTest(unittest.TestCase):
             ledger.close()
         for column, _ in server.AUDIT_PROVENANCE_COLUMNS:
             self.assertIn(column, columns)
+
+    def test_concurrent_children_serialize_the_audit_migration(self):
+        state_path = tempfile.mkdtemp(dir=self.directory.name)
+        os.chmod(state_path, 0o700)
+        database_path = os.path.join(state_path, server.LEDGER_FILE_NAME)
+        connection = sqlite3.connect(database_path)
+        connection.execute(
+            "CREATE TABLE audit (recorded_at TEXT, profile TEXT, operation TEXT,"
+            " query_sha256 TEXT, domains TEXT, result_count INTEGER,"
+            " fetched_host TEXT, provider_bytes INTEGER, returned_characters INTEGER,"
+            " latency_ms INTEGER, status TEXT, recorded_epoch INTEGER)"
+        )
+        connection.commit()
+        connection.close()
+        os.chmod(database_path, 0o600)
+        barrier = threading.Barrier(2)
+        failures = []
+
+        def open_ledger():
+            try:
+                barrier.wait()
+                ledger = server.Ledger(state_path)
+                ledger.close()
+            except BaseException as error:
+                failures.append(error)
+
+        workers = [threading.Thread(target=open_ledger) for _ in range(2)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join(timeout=5)
+        self.assertEqual(failures, [])
+        self.assertTrue(all(not worker.is_alive() for worker in workers))
 
     def test_the_capability_contract_reads_the_declared_flags(self):
         """`refuse_unhonored_arguments` consults the provider rather than a name."""

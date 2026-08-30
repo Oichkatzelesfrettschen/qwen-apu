@@ -31,6 +31,8 @@ printf 'not a real checkpoint\n' >"$fake_model"
 # should reach the fake runtime supplies its own stand-in.
 fake_radv_icd=$temporary_directory/fake-radv-icd.json
 printf '{}\n' >"$fake_radv_icd"
+export QWEN_IMAGE_POST_LLM_CONTROL=/bin/true
+export QWEN_VULKAN_WORKLOAD_LOCK=$temporary_directory/vulkan-workload.lock
 
 is_valid_png() {
     [ -f "$1" ] && head -c 8 "$1" | od -An -tx1 | tr -d ' \n' | grep -qi '^89504e470d0a1a0a$'
@@ -117,25 +119,23 @@ else
 fi
 report resident_llama_process_refused "$t4_status"
 
-# T5: a generation failure is recorded rather than silently dropped. The
-# harness itself still exits zero, the way a multi-arm probe records a failed
-# arm without aborting the ones that have not run yet.
+# T5: a generation failure is recorded and makes the campaign command fail.
 t5_directory=$temporary_directory/t5
 if QWEN_IMAGE_RUNTIME=$fake_runtime QWEN_IMAGE_ALLOW_LLAMA_RESIDENT=1 \
     QWEN_VULKANINFO_COMMAND=/bin/false QWEN_RADV_ICD=$fake_radv_icd \
     QWEN_FAKE_IMAGE_MODE=fail \
     "$runner" "$t5_directory" "$fake_model" >"$temporary_directory/t5.out" 2>&1
 then
+    t5_status=refused
+else
     t5_status=accepted
     cold_status=$(awk -F'\t' 'NR == 2 { print $2 }' "$t5_directory/summary.tsv")
     cold_exit=$(awk -F'\t' 'NR == 2 { print $3 }' "$t5_directory/summary.tsv")
     [ "$cold_status" = failed ] || t5_status=refused
     [ "$cold_exit" = 3 ] || t5_status=refused
     [ ! -e "$t5_directory/cold.png" ] || t5_status=refused
-else
-    t5_status=refused
 fi
-report generation_failure_recorded_not_dropped "$t5_status"
+report generation_failure_fails_campaign "$t5_status"
 
 # T6: an unreadable RADV ICD refuses before --list-devices or any runtime
 # invocation runs, naming the ICD path in the message
@@ -167,6 +167,22 @@ printf '%s\n' "$t7_unrestricted" | grep -qi llvmpipe || t7_status=refused
 printf '%s\n' "$t7_restricted" | grep -qi llvmpipe && t7_status=refused
 printf '%s\n' "$t7_restricted" | grep -q 'RADV RAVEN2' || t7_status=refused
 report fixture_list_devices_driven_by_the_icd_environment "$t7_status"
+
+# T8: a software device beside RADV does not invalidate the selected RADV
+# record. The selected line, rather than unrelated records, is the execution
+# identity the backend argument carries.
+t8_directory=$temporary_directory/t8
+if QWEN_IMAGE_RUNTIME=$fake_runtime QWEN_IMAGE_ALLOW_LLAMA_RESIDENT=1 \
+    QWEN_VULKANINFO_COMMAND=/bin/false QWEN_RADV_ICD=$fake_radv_icd \
+    QWEN_FAKE_IMAGE_EXTRA_DEVICE_DESCRIPTION='llvmpipe (LLVM 17.0.0, 256 bits)' \
+    "$runner" "$t8_directory" "$fake_model" >"$temporary_directory/t8.out" 2>&1
+then
+    t8_status=accepted
+else
+    t8_status=refused
+    sed -n '1,120p' "$temporary_directory/t8.out" >&2
+fi
+report mixed_listing_selects_radv "$t8_status"
 
 if [ "$failures" -eq 0 ]; then
     printf 'test-run-image-standalone=accepted\n'

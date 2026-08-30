@@ -14,12 +14,11 @@ reader; neither does a query parameter, which the route ignores entirely.
 
 The job pipeline is one sequence with one owner: parse the request, hand it to
 the injected verifier for its profile parameters, refuse every cap violation,
-acquire the Vulkan workload lease, spawn the pinned runtime at an absolute nice
-of 19 in its own session, write `<job>.part.png`, validate the PNG against the
-requested dimensions, hash it, rename it to `<sha256>.png`, write the
-provenance JSON, and release the lease. Every refusal above the lease runs
-before `flock`, so a request the service declines leaves the GPU lease
-untouched and an ordinary LLM turn continues.
+acquire the Vulkan workload lease, verify the one-use grant, spawn the pinned
+runtime at an absolute nice of 19 in its own session, validate and hash the
+PNG, write independently content-addressed provenance, atomically publish one
+marker that makes the pair reachable, and release the lease. Capacity is
+reserved before grant verification, so a busy service does not spend approval.
 
 The lease acquisition waits rather than refusing at once. llama-server holds
 the same lock from its first busy slot to the last idle one, so the chat turn
@@ -224,6 +223,13 @@ class RuntimeTimeout(ServiceError):
     reason = "runtime_timeout"
 
 
+class InternalFailure(ServiceError):
+    """An admitted operation failed outside a declared runtime outcome."""
+
+    status = "failed"
+    reason = "internal_error"
+
+
 class PngInvalid(ServiceError):
     """A produced file fails the PNG contract; `detail` names which rule."""
 
@@ -388,6 +394,39 @@ def sha256_file(path):
     return digest.hexdigest()
 
 
+def require_deadline(deadline, stage):
+    """Fail an admitted job when finalization passes its monotonic bound."""
+    if time.monotonic() > deadline:
+        raise RuntimeTimeout(
+            f"the job passed the {SERVICE_JOB_DEADLINE_SECONDS} second service "
+            f"deadline during {stage}"
+        )
+
+
+def write_private_bytes(path, body):
+    """Create one private durable staging file without following a prior path."""
+    descriptor = os.open(
+        path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC,
+        0o600,
+    )
+    try:
+        with os.fdopen(descriptor, "wb", closefd=False) as handle:
+            handle.write(body)
+            handle.flush()
+            os.fsync(handle.fileno())
+    finally:
+        os.close(descriptor)
+
+
+def fsync_directory(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def aspect_ratio(width, height):
     """Return the reduced `w:h` string a request declares an aspect with."""
     divisor = math.gcd(width, height)
@@ -421,7 +460,12 @@ def validate_profile(profile):
     if not SAMPLER_PATTERN.match(profile["sampler"]):
         raise ProfileRefused("the profile sampler carries characters outside the set")
     cfg = profile.get("cfg")
-    if not isinstance(cfg, (int, float)) or isinstance(cfg, bool) or cfg < 0:
+    if (
+        not isinstance(cfg, (int, float))
+        or isinstance(cfg, bool)
+        or not math.isfinite(cfg)
+        or cfg < 0
+    ):
         raise ProfileRefused("the profile field cfg is not a non-negative number")
     if profile["steps"] > profile["max_steps"]:
         raise ProfileRefused("the profile default steps exceed its own max_steps")
@@ -546,8 +590,12 @@ def parse_png(raw, expected_width, expected_height):
     expected_bytes = height * (1 + width * channels)
     decompressor = zlib.decompressobj()
     try:
-        scanlines = decompressor.decompress(bytes(compressed), expected_bytes + 1024)
-        scanlines += decompressor.flush()
+        scanlines = decompressor.decompress(bytes(compressed), expected_bytes + 1)
+        if len(scanlines) > expected_bytes or decompressor.unconsumed_tail:
+            raise PngInvalid(
+                "the image data expands beyond the declared geometry", "decode"
+            )
+        scanlines += decompressor.flush(expected_bytes - len(scanlines) + 1)
     except zlib.error as error:
         raise PngInvalid(f"the image data fails to decode: {error}", "decode") from None
     if not decompressor.eof or decompressor.unused_data:
@@ -558,6 +606,14 @@ def parse_png(raw, expected_width, expected_height):
             "describe the declared geometry",
             "decode",
         )
+    row_bytes = 1 + width * channels
+    for row_offset in range(0, expected_bytes, row_bytes):
+        if scanlines[row_offset] > 4:
+            raise PngInvalid(
+                f"scanline {row_offset // row_bytes} uses undefined PNG filter "
+                f"{scanlines[row_offset]}",
+                "filter",
+            )
     return {
         "width": width,
         "height": height,
@@ -604,7 +660,7 @@ class WorkloadLease:
             wait_seconds = lease_wait_seconds_from_environment()
         self.wait_seconds = wait_seconds
 
-    def acquire(self, holder, job_id):
+    def acquire(self, holder, job_id, cancelled=None):
         """Take the lease, waiting up to `wait_seconds` for a live holder.
 
         A monotonic deadline is what bounds the wait, and `flock` offers no
@@ -620,10 +676,18 @@ class WorkloadLease:
         )
         deadline = time.monotonic() + self.wait_seconds
         while True:
+            if cancelled is not None and cancelled():
+                os.close(descriptor)
+                raise JobCancelled(
+                    "the generation was cancelled while waiting for the workload lease"
+                )
             try:
                 fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
-            except OSError:
+            except OSError as error:
+                if error.errno not in (errno.EACCES, errno.EAGAIN):
+                    os.close(descriptor)
+                    raise
                 if time.monotonic() >= deadline:
                     os.close(descriptor)
                     raise LeaseUnavailable(
@@ -771,6 +835,33 @@ def read_process_ioclass(pid):
     return completed.stdout.split()[0].rstrip(":")
 
 
+def live_process_group_members(process_group_id):
+    """Return live Linux processes in the runtime's process group.
+
+    Zombies retain their process-group identifier but execute no code and own
+    no Vulkan workload, so the state from the same procfs snapshot excludes
+    them from the live-member result.
+    """
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return None
+    members = []
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/stat", encoding="ascii") as handle:
+                fields = handle.read().rsplit(")", 1)[1].split()
+            process_state = fields[0]
+            member_group = int(fields[2])
+        except (OSError, IndexError, ValueError):
+            continue
+        if member_group == process_group_id and process_state != "Z":
+            members.append(int(entry))
+    return sorted(members)
+
+
 class JobState:
     """What a running job exposes to `status` and `cancel` while it runs.
 
@@ -785,10 +876,11 @@ class JobState:
         self.request_id = ""
         self.profile_id = ""
         self.started_at = 0.0
+        self.started_monotonic = 0.0
         self.child_pid = 0
         self.part_path = ""
         self.cancel_requested = False
-        self.running = False
+        self.phase = "idle"
 
 
 class ImageService:
@@ -801,8 +893,82 @@ class ImageService:
             settings.image_directory, ARTIFACT_DIRECTORY_NAME
         )
         os.makedirs(self.artifact_directory, mode=PRIVATE_DIRECTORY_MODE, exist_ok=True)
+        self.recover_legacy_publications()
         self.job_lock = threading.Lock()
         self.job = JobState()
+
+    def publication_records(self):
+        """Yield complete publication markers from atomic directory entries."""
+        try:
+            names = os.listdir(self.artifact_directory)
+        except OSError:
+            return
+        for name in names:
+            if not name.startswith(".publication-") or not name.endswith(".json"):
+                continue
+            path = os.path.join(self.artifact_directory, name)
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    record = json.load(handle)
+            except (OSError, ValueError):
+                continue
+            if isinstance(record, dict):
+                yield record
+
+    def artifact_is_published(self, digest, suffix):
+        """Return whether one atomic marker commits the requested pair."""
+        key = "png_sha256" if suffix == "png" else "provenance_sha256"
+        for record in self.publication_records():
+            if record.get(key) != digest:
+                continue
+            png_path = os.path.join(
+                self.artifact_directory, f"{record.get('png_sha256', '')}.png"
+            )
+            provenance_path = os.path.join(
+                self.artifact_directory,
+                f"{record.get('provenance_sha256', '')}.json",
+            )
+            if os.path.isfile(png_path) and os.path.isfile(provenance_path):
+                return True
+        return False
+
+    def recover_legacy_publications(self):
+        """Commit complete pre-marker PNG/JSON pairs without exposing orphans."""
+        try:
+            names = os.listdir(self.artifact_directory)
+        except OSError:
+            return
+        for name in names:
+            match = ARTIFACT_NAME_PATTERN.match(name)
+            if match is None or match.group(2) != "json":
+                continue
+            digest = match.group(1)
+            png_path = os.path.join(self.artifact_directory, f"{digest}.png")
+            if not os.path.isfile(png_path):
+                continue
+            marker_path = os.path.join(
+                self.artifact_directory, f".publication-legacy-{digest}.json"
+            )
+            if os.path.exists(marker_path):
+                continue
+            marker_part = f"{marker_path}.part"
+            body = json.dumps(
+                {
+                    "schema": "qwen-image-publication/1",
+                    "job_id": "legacy",
+                    "png_sha256": digest,
+                    "provenance_sha256": digest,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8") + b"\n"
+            try:
+                write_private_bytes(marker_part, body)
+                os.replace(marker_part, marker_path)
+                fsync_directory(self.artifact_directory)
+            finally:
+                with contextlib.suppress(OSError):
+                    os.unlink(marker_part)
 
     def parse_generate(self, payload):
         """Return the exact fields a generate request names, and no others.
@@ -880,26 +1046,27 @@ class ImageService:
 
     def handle_generate(self, payload, request_id):
         request = self.parse_generate(payload)
-        # The verifier is the grant authority and is called exactly once per
-        # request; what it returns is revalidated here, so a verifier that
-        # relaxes a field still meets the shape the spawn depends on.
-        profile = validate_profile(self.settings.verifier(dict(payload)))
-        self.admit(request, profile)
         if not self.job_lock.acquire(blocking=False):
             raise ServiceBusy(
                 "a generation is already running; the service runs one Vulkan "
                 "workload at a time and offers no queue"
             )
         try:
-            return self.run_job(request, profile, request_id)
+            return self.run_job(payload, request, request_id)
         finally:
             self.job_lock.release()
 
-    def run_job(self, request, profile, request_id):
-        """Take the lease, run the runtime, and name what it produced."""
+    def job_cancelled(self):
+        """Return the cancellation bit under the same lock as its writer."""
+        with self.job.lock:
+            return self.job.cancel_requested
+
+    def run_job(self, payload, request, request_id):
+        """Reserve capacity, consume authorization, run, and publish one job."""
         job_id = secrets.token_hex(8)
         started_at = time.time()
-        deadline = started_at + SERVICE_JOB_DEADLINE_SECONDS
+        started_monotonic = time.monotonic()
+        deadline = started_monotonic + SERVICE_JOB_DEADLINE_SECONDS
         # The pinned runtime picks its encoder from the output path's own
         # extension and appends `.png` itself when that path names none it
         # recognizes (examples/cli/main.cpp at de298c225bed97c3f9026b73cd7b71
@@ -911,22 +1078,47 @@ class ImageService:
         # recognized extension, so the file the runtime writes and the file
         # this service waits on are the same path.
         part_path = os.path.join(self.artifact_directory, f"{job_id}.part.png")
-        # The lease is taken before the job is published, so `status` reports a
-        # running job only once the workload lock is held and a reader never
-        # sees a running state with a free lease.
-        self.lease.acquire("image-service", job_id)
         with self.job.lock:
             self.job.job_id = job_id
             self.job.request_id = request_id
-            self.job.profile_id = profile["profile_id"]
+            self.job.profile_id = request["profile_id"]
             self.job.started_at = started_at
+            self.job.started_monotonic = started_monotonic
             self.job.part_path = part_path
             self.job.child_pid = 0
             self.job.cancel_requested = False
-            self.job.running = True
-        sampler = MemorySampler()
-        sampler.start()
+            self.job.phase = "waiting_for_lease"
+        sampler = None
         try:
+            # Reserve local and Vulkan capacity before the verifier spends a
+            # one-use grant. A busy service therefore returns the approval to
+            # its owner instead of consuming it on a job that cannot start.
+            self.lease.acquire("image-service", job_id, self.job_cancelled)
+            with self.job.lock:
+                if self.job.cancel_requested:
+                    raise JobCancelled(
+                        "the generation was cancelled before authorization"
+                    )
+                self.job.phase = "admitting"
+            try:
+                verified_profile = self.settings.verifier(dict(payload))
+            except ServiceError:
+                raise
+            except Exception as error:
+                raise ProfileRefused(
+                    f"the request verifier refused the job: {error}"
+                ) from None
+            profile = validate_profile(verified_profile)
+            self.admit(request, profile)
+            with self.job.lock:
+                if self.job.cancel_requested:
+                    raise JobCancelled(
+                        "the generation was cancelled before runtime startup"
+                    )
+                self.job.profile_id = profile["profile_id"]
+                self.job.phase = "running"
+            sampler = MemorySampler()
+            sampler.start()
             outcome = self.execute_runtime(request, profile, part_path, deadline)
             outcome["swap_delta_kib"] = sampler.finish()
             outcome["memavailable_minimum_kib"] = (
@@ -934,21 +1126,29 @@ class ImageService:
                 if sampler.minimum_available_kib is not None
                 else UNOBSERVED
             )
-            if time.time() > deadline:
+            if time.monotonic() > deadline:
                 raise RuntimeTimeout(
                     f"the job passed the {SERVICE_JOB_DEADLINE_SECONDS} second "
                     "service deadline before the artifact was named"
                 )
             return self.finish_artifact(
-                request, profile, job_id, part_path, started_at, outcome
+                request,
+                profile,
+                job_id,
+                part_path,
+                started_at,
+                started_monotonic,
+                deadline,
+                outcome,
             )
         finally:
-            sampler.stop_event.set()
+            if sampler is not None:
+                sampler.stop_event.set()
             with contextlib.suppress(OSError):
                 os.unlink(part_path)
-            self.lease.release()
             with self.job.lock:
-                self.job.running = False
+                self.lease.release()
+                self.job.phase = "idle"
                 self.job.child_pid = 0
                 self.job.part_path = ""
 
@@ -1009,7 +1209,7 @@ class ImageService:
                     "refusing to spawn against an unrestricted Vulkan loader"
                 )
         usage_before = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
-        spawned_at = time.time()
+        spawned_at = time.monotonic()
         # The wrapper is the spawned executable and the runtime is its exec
         # target: it writes nice 19 and the idle I/O class into its own pid,
         # reads both back from the kernel, and replaces itself with the runtime
@@ -1064,8 +1264,12 @@ class ImageService:
             # is ended as a process group and reaped before the job is refused.
             self.signal_child(child_pid)
         runtime_deadline = min(spawned_at + applied_timeout, deadline)
-        status, timed_out = self.wait_for_child(child_pid, runtime_deadline)
-        elapsed = time.time() - spawned_at
+        status, timed_out = self.wait_for_child(
+            child_pid,
+            runtime_deadline,
+            termination_requested=cancel_requested or priority_failure is not None,
+        )
+        elapsed = time.monotonic() - spawned_at
         usage_after = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
         with self.job.lock:
             cancelled = self.job.cancel_requested
@@ -1080,7 +1284,9 @@ class ImageService:
             "timeout_s_applied": applied_timeout,
             "nice": observed_nice if observed_nice is not None else UNOBSERVED,
             "ioclass": observed_ioclass if observed_ioclass is not None else UNOBSERVED,
-            "children_maxrss_kib": max(usage_after, usage_before),
+            # RUSAGE_CHILDREN is a service-lifetime high-water mark on Linux,
+            # not a per-job observation. The field names that scope honestly.
+            "children_lifetime_maxrss_kib": max(usage_after, usage_before),
         }
         if os.WIFSIGNALED(status):
             outcome["exit_status"] = UNOBSERVED
@@ -1109,7 +1315,9 @@ class ImageService:
         with contextlib.suppress(ProcessLookupError, PermissionError):
             os.killpg(child_pid, signal.SIGTERM)
 
-    def wait_for_child(self, child_pid, runtime_deadline):
+    def wait_for_child(
+        self, child_pid, runtime_deadline, termination_requested=False
+    ):
         """Reap the child, terminating on its deadline and killing on grace.
 
         The shutdown path reaps the same pid while this loop runs, so whichever
@@ -1118,16 +1326,26 @@ class ImageService:
         status, which reaches the cancellation branch that shutdown has already
         armed.
         """
-        termination_sent = False
-        kill_deadline = None
+        termination_sent = termination_requested
+        kill_deadline = (
+            time.monotonic() + TERMINATION_GRACE_SECONDS
+            if termination_requested
+            else None
+        )
+        leader_status = None
         while True:
-            try:
-                waited_pid, status = os.waitpid(child_pid, os.WNOHANG)
-            except ChildProcessError:
-                return signal.SIGKILL, termination_sent
-            if waited_pid == child_pid:
-                return status, termination_sent
-            now = time.time()
+            if leader_status is None:
+                try:
+                    waited_pid, status = os.waitpid(child_pid, os.WNOHANG)
+                except ChildProcessError:
+                    leader_status = signal.SIGKILL
+                else:
+                    if waited_pid == child_pid:
+                        leader_status = status
+            live_members = live_process_group_members(child_pid)
+            if leader_status is not None and live_members == []:
+                return leader_status, termination_sent
+            now = time.monotonic()
             if not termination_sent and now >= runtime_deadline:
                 termination_sent = True
                 kill_deadline = now + TERMINATION_GRACE_SECONDS
@@ -1138,7 +1356,17 @@ class ImageService:
                 kill_deadline = now + TERMINATION_GRACE_SECONDS
             time.sleep(0.05)
 
-    def finish_artifact(self, request, profile, job_id, part_path, started_at, outcome):
+    def finish_artifact(
+        self,
+        request,
+        profile,
+        job_id,
+        part_path,
+        started_at,
+        started_monotonic,
+        deadline,
+        outcome,
+    ):
         """Validate, hash, and name what the runtime wrote.
 
         The `.part.png` file is read whole and checked against the requested
@@ -1147,6 +1375,7 @@ class ImageService:
         opinion about what it holds. The rename is atomic within the directory
         and the provenance record follows the same write-then-rename path.
         """
+        require_deadline(deadline, "artifact inspection")
         try:
             size = os.path.getsize(part_path)
         except OSError:
@@ -1163,12 +1392,10 @@ class ImageService:
             )
         with open(part_path, "rb") as handle:
             raw = handle.read(ARTIFACT_BYTE_CAP + 1)
+        require_deadline(deadline, "artifact read")
         header = parse_png(raw, request["width"], request["height"])
         png_sha256 = hashlib.sha256(raw).hexdigest()
         artifact_path = os.path.join(self.artifact_directory, f"{png_sha256}.png")
-        provenance_path = os.path.join(self.artifact_directory, f"{png_sha256}.json")
-        os.chmod(part_path, 0o600)
-        os.rename(part_path, artifact_path)
         completed_at = time.time()
         provenance = self.build_provenance(
             request,
@@ -1181,20 +1408,88 @@ class ImageService:
             started_at,
             completed_at,
         )
-        provenance_part = f"{provenance_path}.part"
-        with open(provenance_part, "w", encoding="utf-8") as handle:
-            json.dump(provenance, handle, indent=2, sort_keys=True)
-            handle.write("\n")
-        os.chmod(provenance_part, 0o600)
-        os.rename(provenance_part, provenance_path)
+        provenance_body = (
+            json.dumps(provenance, indent=2, sort_keys=True).encode("utf-8") + b"\n"
+        )
+        provenance_sha256 = hashlib.sha256(provenance_body).hexdigest()
+        provenance_path = os.path.join(
+            self.artifact_directory, f"{provenance_sha256}.json"
+        )
+        provenance_part = os.path.join(
+            self.artifact_directory, f"{job_id}.provenance.part"
+        )
+        publication_path = os.path.join(
+            self.artifact_directory, f".publication-{job_id}.json"
+        )
+        publication_part = f"{publication_path}.part"
+        publication_body = json.dumps(
+            {
+                "schema": "qwen-image-publication/1",
+                "job_id": job_id,
+                "png_sha256": png_sha256,
+                "provenance_sha256": provenance_sha256,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8") + b"\n"
+        artifact_created = False
+        provenance_created = False
+        publication_created = False
+        try:
+            require_deadline(deadline, "provenance serialization")
+            write_private_bytes(provenance_part, provenance_body)
+            require_deadline(deadline, "provenance staging")
+            os.chmod(part_path, 0o600)
+            try:
+                os.link(part_path, artifact_path)
+                artifact_created = True
+            except FileExistsError:
+                with open(artifact_path, "rb") as handle:
+                    if handle.read(ARTIFACT_BYTE_CAP + 1) != raw:
+                        raise InternalFailure(
+                            "an existing content-addressed PNG has different bytes"
+                        ) from None
+            require_deadline(deadline, "PNG publication")
+            try:
+                os.link(provenance_part, provenance_path)
+                provenance_created = True
+            except FileExistsError:
+                with open(provenance_path, "rb") as handle:
+                    if handle.read(ARTIFACT_BYTE_CAP + 1) != provenance_body:
+                        raise InternalFailure(
+                            "an existing content-addressed provenance has different bytes"
+                        ) from None
+            require_deadline(deadline, "provenance publication")
+            write_private_bytes(publication_part, publication_body)
+            require_deadline(deadline, "paired publication")
+            os.replace(publication_part, publication_path)
+            publication_created = True
+            fsync_directory(self.artifact_directory)
+            require_deadline(deadline, "publication durability")
+        except Exception:
+            if not publication_created:
+                if provenance_created:
+                    with contextlib.suppress(OSError):
+                        os.unlink(provenance_path)
+                if artifact_created and not self.artifact_is_published(
+                    png_sha256, "png"
+                ):
+                    with contextlib.suppress(OSError):
+                        os.unlink(artifact_path)
+            raise
+        finally:
+            for temporary_path in (provenance_part, publication_part):
+                with contextlib.suppress(OSError):
+                    os.unlink(temporary_path)
+        ended_monotonic = time.monotonic()
         return {
             "status": "completed",
             "sha256": png_sha256,
-            "provenance_url": self.provenance_url(png_sha256),
+            "provenance_url": self.provenance_url(provenance_sha256),
             "artifact_url": self.artifact_url(png_sha256),
             "job_id": job_id,
             "bytes": len(raw),
-            "seconds": round(completed_at - started_at, 3),
+            "seconds": round(ended_monotonic - started_monotonic, 3),
         }
 
     @staticmethod
@@ -1276,7 +1571,9 @@ class ImageService:
             "total_seconds": round(completed_at - started_at, 3),
             "timeout_s_requested": outcome["timeout_s_requested"],
             "timeout_s_applied": outcome["timeout_s_applied"],
-            "children_maxrss_kib": outcome["children_maxrss_kib"],
+            "children_lifetime_maxrss_kib": outcome[
+                "children_lifetime_maxrss_kib"
+            ],
             "memavailable_minimum_kib": outcome["memavailable_minimum_kib"],
             "swap_delta_kib": outcome["swap_delta_kib"],
             "lease_path": self.lease.lock_path,
@@ -1320,14 +1617,14 @@ class ImageService:
         an earlier turn stops nothing.
         """
         with self.job.lock:
-            running = self.job.running
+            active = self.job.phase != "idle"
             job_id = self.job.job_id
             job_request_id = self.job.request_id
             child_pid = self.job.child_pid
-            owned = running and request_id == job_request_id
+            owned = active and request_id == job_request_id
             if owned:
                 self.job.cancel_requested = True
-        if not running:
+        if not active:
             raise NotRunning("no generation is running")
         if not owned:
             raise NotRunning(
@@ -1340,20 +1637,22 @@ class ImageService:
 
     def handle_status(self):
         with self.job.lock:
-            running = self.job.running
+            active = self.job.phase != "idle"
             payload = {
                 "status": "accepted",
-                "state": "running" if running else "idle",
-                "job_id": self.job.job_id if running else "",
-                "job_request_id": self.job.request_id if running else "",
-                "profile_id": self.job.profile_id if running else "",
-                "started_at": utc_timestamp(self.job.started_at) if running else "",
+                "state": self.job.phase,
+                "job_id": self.job.job_id if active else "",
+                "job_request_id": self.job.request_id if active else "",
+                "profile_id": self.job.profile_id if active else "",
+                "started_at": utc_timestamp(self.job.started_at) if active else "",
                 "elapsed_seconds": (
-                    round(time.time() - self.job.started_at, 3) if running else 0
+                    round(time.monotonic() - self.job.started_monotonic, 3)
+                    if active
+                    else 0
                 ),
-                "cancel_requested": self.job.cancel_requested if running else False,
+                "cancel_requested": self.job.cancel_requested if active else False,
+                "lease_held": self.lease.held,
             }
-        payload["lease_held"] = self.lease.held
         payload["lease_path"] = self.lease.lock_path
         payload["artifact_directory"] = self.artifact_directory
         payload["pid"] = os.getpid()
@@ -1394,9 +1693,9 @@ class ImageService:
             self.job.cancel_requested = True
         if child_pid:
             self.signal_child(child_pid)
-            deadline = time.time() + TERMINATION_GRACE_SECONDS
+            deadline = time.monotonic() + TERMINATION_GRACE_SECONDS
             reaped = False
-            while time.time() < deadline:
+            while time.monotonic() < deadline:
                 try:
                     waited, _ = os.waitpid(child_pid, os.WNOHANG)
                 except ChildProcessError:
@@ -1479,8 +1778,9 @@ class ControlHandler(socketserver.StreamRequestHandler):
         except Exception as error:  # noqa: BLE001 -- one request never ends the service
             self.refuse(
                 request_id,
-                "invalid_argument",
+                "internal_error",
                 f"{type(error).__name__}: {error}",
+                "failed",
             )
 
     def refuse(self, request_id, reason, message, status="refused", extra=None):
@@ -1624,14 +1924,15 @@ class ArtifactHandler(http.server.BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path == "/health":
             service = self.server.image_service
+            status = service.handle_status()
             self.send_json(
                 200,
                 {
                     "protocol": "qwen-image-service/1",
                     "protocol_version": PROTOCOL_VERSION,
                     "pid": os.getpid(),
-                    "state": service.handle_status()["state"],
-                    "lease_held": service.lease.held,
+                    "state": status["state"],
+                    "lease_held": status["lease_held"],
                     "artifact_directory": service.artifact_directory,
                 },
                 origin,
@@ -1653,7 +1954,11 @@ class ArtifactHandler(http.server.BaseHTTPRequestHandler):
         self.send_artifact(match.group(1), match.group(2), origin)
 
     def send_artifact(self, digest, suffix, origin):
-        directory = self.server.image_service.artifact_directory
+        service = self.server.image_service
+        directory = service.artifact_directory
+        if not service.artifact_is_published(digest, suffix):
+            self.send_json(404, {"error": "no such artifact"}, origin)
+            return
         path = os.path.join(directory, f"{digest}.{suffix}")
         try:
             with open(path, "rb") as handle:

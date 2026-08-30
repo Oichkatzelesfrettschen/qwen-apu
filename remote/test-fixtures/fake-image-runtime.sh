@@ -14,6 +14,7 @@ set -eu
 #   dimension       a valid PNG one pixel narrower than the request, then exit 0
 #   hang            SIGTERM ignored and a long sleep, which the service ends
 #                   with SIGKILL after its grace
+#   orphan_worker   the leader exits while a same-group worker ignores SIGTERM
 #   device_refusal  an exit status of 3 with no file written and a message
 #                   naming the unresolved --backend value, standing in for the
 #                   real runtime's device-selection refusal
@@ -30,7 +31,7 @@ set -eu
 # reads it.
 
 usage() {
-    printf 'usage: %s --output PATH --width N --height N --seed N [--steps N] [--prompt TEXT] [--negative-prompt TEXT] [--sampler NAME | --sampling-method NAME] [--cfg VALUE | --cfg-scale VALUE] [--model PATH] [--backend VALUE]\n' \
+    printf 'usage: %s --output PATH --width N --height N --seed N [--steps N] [--prompt TEXT] [--negative-prompt TEXT] [--sampler NAME | --sampling-method NAME] [--cfg VALUE | --cfg-scale VALUE] [--model PATH] [--backend VALUE] [--taesd PATH] [--vae PATH] [--lora-model-dir PATH]\n' \
         "$0" >&2
     printf '       %s --list-devices\n' "$0" >&2
     exit 2
@@ -42,6 +43,9 @@ if [ "${1:-}" = --list-devices ]; then
         exit 0
     fi
     printf 'Vulkan0\t%s\n' 'AMD Radeon Graphics (RADV RAVEN2) (RADV RAVEN2)'
+    if [ -n "${QWEN_FAKE_IMAGE_EXTRA_DEVICE_DESCRIPTION:-}" ]; then
+        printf 'Vulkan2\t%s\n' "$QWEN_FAKE_IMAGE_EXTRA_DEVICE_DESCRIPTION"
+    fi
     # Mesa's loader enumerates lavapipe beside RADV when nothing narrows the
     # ICD search path; VK_DRIVER_FILES and VK_ICD_FILENAMES are what
     # remote/radv-icd-env.sh exports to narrow it, so their absence here
@@ -65,6 +69,9 @@ sampler=''
 cfg=''
 model_path=''
 backend=''
+taesd_path=''
+vae_path=''
+lora_directory=''
 
 while [ "$#" -gt 0 ]; do
     case $1 in
@@ -87,6 +94,9 @@ while [ "$#" -gt 0 ]; do
         --cfg-scale) [ "$#" -ge 2 ] || usage; cfg=$2; shift 2 ;;
         --model) [ "$#" -ge 2 ] || usage; model_path=$2; shift 2 ;;
         --backend) [ "$#" -ge 2 ] || usage; backend=$2; shift 2 ;;
+        --taesd) [ "$#" -ge 2 ] || usage; taesd_path=$2; shift 2 ;;
+        --vae) [ "$#" -ge 2 ] || usage; vae_path=$2; shift 2 ;;
+        --lora-model-dir) [ "$#" -ge 2 ] || usage; lora_directory=$2; shift 2 ;;
         *) usage ;;
     esac
 done
@@ -139,6 +149,9 @@ if [ -n "${QWEN_FAKE_IMAGE_ARGV_LOG:-}" ]; then
         printf 'negative_prompt=%s\n' "$negative_prompt"
         printf 'model_path=%s\n' "$model_path"
         printf 'backend=%s\n' "$backend"
+        printf 'taesd_path=%s\n' "$taesd_path"
+        printf 'vae_path=%s\n' "$vae_path"
+        printf 'lora_directory=%s\n' "$lora_directory"
         printf 'nice=%s\n' "$(ps -o ni= -p $$ | tr -d ' ')"
         printf 'timeout=%s\n' "${QWEN_IMAGE_RUNTIME_TIMEOUT_SECONDS:-unset}"
         printf 'vk_driver_files=%s\n' "${VK_DRIVER_FILES:-unset}"
@@ -156,6 +169,20 @@ if [ "$mode" = device_refusal ]; then
     exit 3
 fi
 
+component_location() {
+    component_key=$1
+    component_backend=$(printf '%s\n' "$backend" | tr ',' '\n' |
+        awk -F= -v key="$component_key" '$1 == key { print tolower($2) }')
+    if [ "$component_backend" = cpu ]; then
+        printf 'RAM'
+    else
+        printf 'VRAM'
+    fi
+}
+printf '[INFO ] total params memory size = 1.00MB: text_encoders 0.25MB(%s), diffusion_model 0.50MB(%s), vae 0.25MB(%s)\n' \
+    "$(component_location te)" "$(component_location diffusion)" \
+    "$(component_location vae)" >&2
+
 if [ "$mode" = hang ]; then
     # The signal is ignored rather than handled, which is the arm that reaches
     # the service's SIGKILL after the termination grace. The wait is a loop of
@@ -166,6 +193,15 @@ if [ "$mode" = hang ]; then
     while :; do
         sleep 1
     done
+fi
+
+if [ "$mode" = orphan_worker ]; then
+    sh -c 'trap "" TERM INT HUP; while :; do sleep 1; done' &
+    worker_pid=$!
+    if [ -n "${QWEN_FAKE_IMAGE_WORKER_PID_FILE:-}" ]; then
+        printf '%s\n' "$worker_pid" >"$QWEN_FAKE_IMAGE_WORKER_PID_FILE"
+    fi
+    exit 0
 fi
 
 # A SIGTERM in every other arm ends the runtime the way a cancellation expects:

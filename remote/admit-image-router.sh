@@ -64,7 +64,12 @@ image_profile_id=${QWEN_ADMISSION_IMAGE_PROFILE:-image-sdxs-512-a}
 # while the child receives the bare name back (:1838). The composition happens
 # once here, so the listing expectation, the call body, and the browser-log
 # check read one string.
-image_mcp_server_name=${QWEN_ADMISSION_IMAGE_MCP_SERVER:-image}
+if [ -n "${QWEN_ADMISSION_IMAGE_MCP_SERVER:-}" ] && \
+   [ "$QWEN_ADMISSION_IMAGE_MCP_SERVER" != image ]; then
+    printf 'QWEN_ADMISSION_IMAGE_MCP_SERVER is fixed to image by the generated preset\n' >&2
+    exit 2
+fi
+image_mcp_server_name=image
 image_mcp_tool_name=generate_image
 image_tool_name=${image_mcp_server_name}_${image_mcp_tool_name}
 context=${QWEN_ADMISSION_CONTEXT:-4096}
@@ -120,8 +125,9 @@ failures=0
 restoration_required=0
 restoration_finished=0
 record() {
-    printf '%s\t%s\t%s\n' "$1" "$2" "$3" >>"$summary"
-    printf '%s=%s %s\n' "$1" "$2" "$3"
+    record_detail=$(printf '%s' "$3" | tr '\t\r\n' '   ')
+    printf '%s\t%s\t%s\n' "$1" "$2" "$record_detail" >>"$summary"
+    printf '%s=%s %s\n' "$1" "$2" "$record_detail"
     case $2 in
         accepted | observed | skipped) ;;
         *) failures=$((failures + 1)) ;;
@@ -136,6 +142,22 @@ chmod 700 "$output_directory/http" "$output_directory/keys"
 api_key_curl_config=$output_directory/keys/api-key.curl
 api_key_bytes=''
 exchange=0
+raw_call_request=$output_directory/keys/http-call.request
+raw_call_response=$output_directory/keys/http-call.response
+retain_redacted_json() {
+    raw_path=$1
+    retained_path=$2
+    if [ ! -f "$raw_path" ]; then
+        : >"$retained_path"
+        return 0
+    fi
+    if jq -e . "$raw_path" >/dev/null 2>&1; then
+        jq 'walk(if type == "object" then del(.authorization, .session_secret) else . end)' \
+            "$raw_path" >"$retained_path"
+    else
+        cp "$raw_path" "$retained_path"
+    fi
+}
 call() {
     exchange=$((exchange + 1))
     call_label=$1
@@ -143,7 +165,8 @@ call() {
     call_url=$3
     call_body=${4:-}
     call_headers_file=$output_directory/http/$exchange-$call_label.headers
-    call_out=$output_directory/http/$exchange-$call_label.response
+    call_out=$raw_call_response
+    retained_response=$output_directory/http/$exchange-$call_label.response
     # dash ends the shell on a shift past $#, so the count is checked first.
     if [ "$#" -ge 4 ]; then
         shift 4
@@ -158,20 +181,24 @@ call() {
         set -- "$@" --config "$api_key_curl_config"
     fi
     if [ -n "$call_body" ]; then
-        printf '%s' "$call_body" >"$output_directory/http/$exchange-$call_label.request"
+        printf '%s' "$call_body" >"$raw_call_request"
+        retain_redacted_json "$raw_call_request" \
+            "$output_directory/http/$exchange-$call_label.request"
         curl -sS --max-time 700 -o "$call_out" -D "$call_headers_file" \
             -X "$call_method" "$call_url" -H 'Content-Type: application/json' \
-            --data-binary "@$output_directory/http/$exchange-$call_label.request" \
+            --data-binary "@$raw_call_request" \
             "$@" || true
     else
         curl -sS --max-time 120 -o "$call_out" -D "$call_headers_file" \
             -X "$call_method" "$call_url" "$@" || true
     fi
+    retain_redacted_json "$call_out" "$retained_response"
     call_status=$(sed -n '1s/^HTTP\/[0-9.]* \([0-9]*\).*/\1/p' "$call_headers_file" 2>/dev/null | tail -1)
     call_status=${call_status:-000}
 }
 note_exit() {
     exit_status=${1:-$?}
+    rm -f -- "$raw_call_request" "$raw_call_response" "$api_key_curl_config"
     if [ "$exit_status" -ne 0 ]; then
         printf 'admission_aborted status=%s utc=%s\n' "$exit_status" "$(utc)" >>"$output_directory/run.log"
     fi
@@ -182,6 +209,9 @@ trap note_exit EXIT
 printf 'admission_start utc=%s host=%s\n' "$(utc)" "$(uname -n)" >"$output_directory/run.log"
 cp "$state_directory/session.status" "$output_directory/ordinary-session.status" 2>/dev/null || true
 ordinary_running=0
+ordinary_profile=$(sed -n '1s/^.* profile=\([^ ]*\).*$/\1/p' \
+    "$output_directory/ordinary-session.status" 2>/dev/null || true)
+[ -n "$ordinary_profile" ] || ordinary_profile=low-async
 if pgrep -x llama-server >/dev/null 2>&1; then
     ordinary_running=1
     ordinary_server=$(readlink -f "/proc/$(pgrep -x llama-server | head -1)/exe")
@@ -204,10 +234,14 @@ restore_ordinary() {
     if pgrep -x llama-server >/dev/null 2>&1; then
         "$script_directory/qwen-teardown.sh" >"$output_directory/pre-restore-teardown.log" 2>&1 || true
     fi
+    if [ "$ordinary_running" != 1 ]; then
+        record ordinary_restore accepted 'the recorded ordinary state remains stopped'
+        return 0
+    fi
     if QWEN_LLAMA_SERVER=$ordinary_server QWEN_ROUTER=1 QWEN_BIND_HOST=127.0.0.1 \
-        "$script_directory/qwen-launch.sh" low-async \
+        "$script_directory/qwen-launch.sh" "$ordinary_profile" \
         >"$output_directory/ordinary-restore.log" 2>&1; then
-        record ordinary_restore accepted 'the ordinary router serves again'
+        record ordinary_restore accepted "the ordinary router serves again profile=$ordinary_profile"
     else
         record ordinary_restore refused "$(tail -1 "$output_directory/ordinary-restore.log")"
         return 1
@@ -277,6 +311,7 @@ awk -F'\t' -v OFS='\t' -v promoted="$image_profile_id" -v evidence="$image_evide
     -v reviewer="$review_model" '
     /^#/ { print; next }
     $1 == promoted { $12 = "validator-gated"; $13 = evidence; $14 = reviewer }
+    $1 != promoted { $12 = "refused"; $13 = "-"; $14 = "-" }
     { print }
 ' "$source_image_ledger" >"$image_ledger"
 if ! grep -q "^$image_profile_id	.*	validator-gated	$image_evidence	$review_model\$" "$image_ledger"; then
@@ -349,8 +384,23 @@ case ${QWEN_IMAGE_RUNTIME_TEMPLATE:-} in
         exit 2
         ;;
 esac
-image_model_path=${QWEN_IMAGE_MODEL_PATH:-"$HOME/models/image/sdxs-512"}
-image_taesd_path=${QWEN_IMAGE_TAESD_PATH:-"$image_model_path/vae/diffusion_pytorch_model.safetensors"}
+if [ -n "${QWEN_IMAGE_MODEL_PATH:-}" ]; then
+    image_model_path=$QWEN_IMAGE_MODEL_PATH
+else
+    case $image_model_id in
+        sdxs-512) image_model_path=$HOME/models/image/sdxs-512 ;;
+        *)
+            printf 'QWEN_IMAGE_MODEL_PATH is required for image profile %s model %s\n' \
+                "$image_profile_id" "$image_model_id" >&2
+            restore_ordinary
+            exit 2
+            ;;
+    esac
+fi
+image_taesd_path=${QWEN_IMAGE_TAESD_PATH:-}
+if [ -z "$image_taesd_path" ] && [ "$image_model_id" = sdxs-512 ]; then
+    image_taesd_path=$image_model_path/vae/diffusion_pytorch_model.safetensors
+fi
 if [ ! -x "$image_runtime" ]; then
     record image_runtime_present refused "$image_runtime is absent or not executable"
     restore_ordinary
@@ -386,7 +436,6 @@ if template == "sd-cli":
     # service's own substitution tokens in place of the measured values.
     argv = [
         "--model", "{model_path}",
-        "--taesd", os.environ["QWEN_ADMISSION_TAESD_PATH"],
         "--backend", "vulkan0",
         "-W", "{width}", "-H", "{height}",
         "--steps", "{steps}",
@@ -402,6 +451,9 @@ if template == "sd-cli":
         "-n", "{negative_prompt}",
         "-o", "{output}",
     ]
+    taesd_path = os.environ["QWEN_ADMISSION_TAESD_PATH"]
+    if taesd_path:
+        argv[2:2] = ["--taesd", taesd_path]
 else:
     argv = [
         "--output", "{output}",
@@ -653,10 +705,14 @@ cp "$call_out" "$output_directory/generate-response.json"
 generation_text=$(jq -r '.plain_text_response // empty' "$call_out" 2>/dev/null)
 artifact_sha256=$(printf '%s' "$generation_text" | jq -r '.sha256 // empty' 2>/dev/null)
 provenance_url=$(printf '%s' "$generation_text" | jq -r '.provenance_url // empty' 2>/dev/null)
+provenance_digest=${provenance_url#/artifacts/}
+provenance_digest=${provenance_digest%.json}
 generation_status=$(printf '%s' "$generation_text" | jq -r '.status // empty' 2>/dev/null)
 if [ "$call_status" = 200 ] && [ "$generation_status" = completed ] && \
    [ "${#artifact_sha256}" -eq 64 ] && \
-   [ "$provenance_url" = "/artifacts/$artifact_sha256.json" ]; then
+   [ "$provenance_url" = "/artifacts/$provenance_digest.json" ] && \
+   [ "${#provenance_digest}" -eq 64 ] && \
+   ! printf '%s' "$provenance_digest" | grep -q '[^0-9a-f]'; then
     record generation_completed accepted "elapsed=${generation_elapsed}s sha256=$artifact_sha256 provenance=$provenance_url"
 else
     record generation_completed refused "status=$call_status elapsed=${generation_elapsed}s $(head -c 200 "$call_out")"
@@ -787,6 +843,17 @@ browser_dialog_timeout=${QWEN_ADMISSION_BROWSER_DIALOG_TIMEOUT:-600}
 browser_turn_timeout=${QWEN_ADMISSION_BROWSER_TURN_TIMEOUT:-900}
 browser_accepted_attempt=0
 browser_attempt_excerpts=''
+rm -f -- "$browser_report"
+for stale_browser_report in "$output_directory"/browser-turn-[0-9]*.json \
+    "$output_directory"/browser-turn-[0-9]*.err; do
+    [ -e "$stale_browser_report" ] || continue
+    rm -f -- "$stale_browser_report"
+done
+redact_browser_authorizations() {
+    report_path=$1
+    jq '.requests |= map(.body |= (if . == null then null else (fromjson? // .) end) | .body |= (if type == "object" and .params? then .params |= del(.authorization) else . end))' \
+        "$report_path" >"$report_path.tmp" && mv "$report_path.tmp" "$report_path"
+}
 if command -v chromium >/dev/null 2>&1; then
     browser_review_flag=
     if [ "$review_model" != '-' ]; then
@@ -816,6 +883,7 @@ if command -v chromium >/dev/null 2>&1; then
                 "completed=yes tool_call_proposed=$attempt_tool_call_proposed"
             browser_accepted_attempt=$browser_attempt
             cp "$attempt_report" "$browser_report"
+            redact_browser_authorizations "$attempt_report"
             break
         fi
         if jq -e . "$attempt_report" >/dev/null 2>&1; then
@@ -831,10 +899,15 @@ if command -v chromium >/dev/null 2>&1; then
             record "browser_attempt_${browser_attempt}_result" observed \
                 "completed=no tool_call_proposed=$attempt_tool_call_proposed error=${attempt_error_type:-none}(${attempt_error_message:-}) reply=$attempt_last_assistant_text"
             browser_attempt_excerpts="$browser_attempt_excerpts attempt=$browser_attempt tool_call_proposed=$attempt_tool_call_proposed reply=$attempt_last_assistant_text;"
+            redact_browser_authorizations "$attempt_report"
         else
+            attempt_tool_call_proposed=unknown
             record "browser_attempt_${browser_attempt}_result" observed \
                 "completed=no tool_call_proposed=unknown(no report) $(tail -c 400 "$attempt_err" | tr '\n' ' ')"
             browser_attempt_excerpts="$browser_attempt_excerpts attempt=$browser_attempt tool_call_proposed=unknown(no report);"
+        fi
+        if [ "$attempt_tool_call_proposed" = yes ]; then
+            break
         fi
         browser_attempt=$((browser_attempt + 1))
     done
@@ -863,7 +936,13 @@ if command -v chromium >/dev/null 2>&1; then
         dialog_seed_value=$(printf '%s' "$dialog_seed" | grep -oE '^[0-9]+' || true)
         case $dialog_seed in
             *'generated by this page'*)
-                record browser_dialog_names_bound_seed accepted "source=page $dialog_seed"
+                if [ -n "$dialog_seed_value" ] && [ "$dialog_seed_value" = "$grant_seed" ]; then
+                    record browser_dialog_names_bound_seed accepted \
+                        "source=page seed=$dialog_seed_value"
+                else
+                    record browser_dialog_names_bound_seed refused \
+                        "dialog=${dialog_seed:-absent} grant=${grant_seed:-absent}"
+                fi
                 ;;
             *)
                 if [ -n "$dialog_seed_value" ] && [ "$dialog_seed_value" = "$grant_seed" ]; then
@@ -977,8 +1056,7 @@ if command -v chromium >/dev/null 2>&1; then
         fi
         # The grant is spent inside the request the browser sent, so the retained
         # page log keeps the fields and drops the token.
-        jq '.requests |= map(.body |= (if . == null then null else (fromjson? // .) end) | .body |= (if type == "object" and .params? then .params |= del(.authorization) else . end))' \
-            "$browser_report" >"$browser_report.tmp" && mv "$browser_report.tmp" "$browser_report"
+        redact_browser_authorizations "$browser_report"
     else
         # Every attempt ran and none completed, so the refusal names the
         # attempt count and every attempt's own excerpt rather than only the
@@ -1028,6 +1106,15 @@ for retained in "$state_directory/server.log" "$state_directory/authorize-broker
     [ -r "$retained" ] || continue
     for needle in "$key_bytes" "$api_key_bytes" "$authorization" "$session_secret" \
         "$generation_prompt"; do
+        [ -n "$needle" ] || continue
+        if grep -qF -- "$needle" "$retained"; then
+            hygiene_failures="$hygiene_failures file=$(basename "$retained")"
+        fi
+    done
+done
+for retained in "$output_directory"/http/*; do
+    [ -r "$retained" ] || continue
+    for needle in "$key_bytes" "$api_key_bytes" "$authorization" "$session_secret"; do
         [ -n "$needle" ] || continue
         if grep -qF -- "$needle" "$retained"; then
             hygiene_failures="$hygiene_failures file=$(basename "$retained")"

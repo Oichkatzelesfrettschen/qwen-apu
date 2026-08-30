@@ -246,6 +246,19 @@ prose	Explain, in plain prose, why a laptop integrated GPU that shares its memor
 arithmetic	Start with 12. Add 7, multiply by 3, subtract 11, divide by 2, add 40, multiply by 2, subtract 19. Show the running value after every single operation on its own line, then state the final value.
 PROMPTS
 fi
+if ! awk -F'\t' '
+    NF != 2 || $1 !~ /^[A-Za-z0-9][A-Za-z0-9._-]*$/ || $2 == "" {
+        printf "invalid draft-pair prompt row %d\n", NR > "/dev/stderr"
+        bad = 1
+    }
+    seen[$1]++ {
+        printf "duplicate draft-pair prompt name %s\n", $1 > "/dev/stderr"
+        bad = 1
+    }
+    END { exit bad ? 1 : 0 }
+' "$prompt_file"; then
+    exit 2
+fi
 
 run_arm() {
     arm_label=$1
@@ -275,7 +288,7 @@ PY
             --header 'Content-Type: application/json' \
             --data @"$arm_directory/$prompt_name.request.json" \
             "http://127.0.0.1:$server_port/completion" \
-            >"$arm_directory/$prompt_name.json" || true
+            >"$arm_directory/$prompt_name.json"
     done <"$prompt_file"
     stop_server
     printf 'arm_done label=%s\n' "$arm_label"
@@ -286,20 +299,22 @@ run_arm pair-first pair
 run_arm pair-second pair
 run_arm control-close control
 
-python3 - "$output_directory" "$spec_draft_n_max" <<'PY'
+python3 - "$output_directory" "$spec_draft_n_max" "$prompt_file" <<'PY'
 import json
 import os
 import sys
 
 directory = sys.argv[1]
 n_max = int(sys.argv[2])
+prompt_file = sys.argv[3]
 arms = (
     ('control-open', 'control'),
     ('pair-first', 'pair'),
     ('pair-second', 'pair'),
     ('control-close', 'control'),
 )
-prompts = ('code', 'prose', 'arithmetic')
+with open(prompt_file) as handle:
+    prompts = tuple(line.split('\t', 1)[0] for line in handle if line.strip())
 
 FIELDS = ('arm', 'mode', 'prompt', 'predicted_n', 'decode_tok_s', 'drafted',
           'accepted', 'acceptance', 'verification_steps',
@@ -320,17 +335,21 @@ def show(value, digits=3):
 
 
 rows = []
+invalid = []
 for arm, mode in arms:
     for prompt in prompts:
         payload = load(arm, prompt)
         if payload is None:
             rows.append((arm, mode, prompt) + ('-',) * 7)
+            invalid.append('{}:{}'.format(arm, prompt))
             continue
         timings = payload.get('timings') or {}
         predicted = timings.get('predicted_n')
         rate = timings.get('predicted_per_second')
         drafted = timings.get('draft_n')
         accepted = timings.get('draft_n_accepted')
+        if predicted is None or rate is None:
+            invalid.append('{}:{}'.format(arm, prompt))
         acceptance = (accepted / drafted) if drafted else None
         # Each verification step emits one target token beside the draft tokens
         # it accepted, so the step count follows exactly from the two the server
@@ -375,6 +394,15 @@ def paired_mean(mode):
 incomplete = sorted({row[0] for row in rows
                      if row[1] == 'pair' and row[5] == '-'})
 summary = os.path.join(directory, 'summary.txt')
+if invalid:
+    with open(summary, 'w') as handle:
+        handle.write('draft_n_max={}\n'.format(n_max))
+        handle.write('state=failed\n')
+        handle.write('reason=measurement_absent\n')
+        handle.write('requests={}\n'.format(','.join(sorted(set(invalid)))))
+    print(open(summary).read(), end='')
+    sys.stderr.write('one or more requests produced no complete measurement\n')
+    sys.exit(1)
 if incomplete:
     with open(summary, 'w') as handle:
         handle.write('draft_n_max={}\n'.format(n_max))

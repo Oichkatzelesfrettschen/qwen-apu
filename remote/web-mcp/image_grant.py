@@ -32,10 +32,13 @@ import sys
 import time
 
 MODULE_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
-if MODULE_DIRECTORY not in sys.path:
-    sys.path.insert(0, MODULE_DIRECTORY)
+REMOTE_DIRECTORY = os.path.dirname(MODULE_DIRECTORY)
+for candidate_directory in (MODULE_DIRECTORY, REMOTE_DIRECTORY):
+    if candidate_directory not in sys.path:
+        sys.path.insert(0, candidate_directory)
 
 import server  # noqa: E402
+import image_protocol  # noqa: E402
 
 IMAGE_CLAIM_CONTEXT = "qwen-image-generate-v1"
 IMAGE_GRANT_MAX_USES = 1
@@ -45,11 +48,11 @@ ASPECT_PATTERN = re.compile(r"^([1-9][0-9]{0,3}):([1-9][0-9]{0,3})$")
 DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 PROMPT_CHARACTER_CAP = 2000
-SEED_MAXIMUM = 2**64 - 1
-DIMENSION_MINIMUM = 64
-DIMENSION_MAXIMUM = 4096
+SEED_MAXIMUM = image_protocol.MAX_SEED
+DIMENSION_MINIMUM = image_protocol.MIN_DIMENSION
+DIMENSION_MAXIMUM = image_protocol.MAX_DIMENSION
 STEP_MINIMUM = 1
-STEP_MAXIMUM = 200
+STEP_MAXIMUM = image_protocol.MAX_STEPS
 GENERATION_MAXIMUM = 2**31 - 1
 IMAGE_GRANT_CHARACTER_CAP = 4096
 IMAGE_GRANT_LIFETIME_DEFAULT_SECONDS = 900
@@ -221,7 +224,7 @@ def parse_image_request(payload):
             "the grant request carries a field outside the image claim: "
             + ", ".join(unknown)
         )
-    return {
+    parsed = {
         "context": require_context(payload, "context"),
         "language_profile": require_profile_id(payload, "language_profile"),
         "image_profile": require_profile_id(payload, "image_profile"),
@@ -239,6 +242,12 @@ def parse_image_request(payload):
             payload, "conversation_generation", 0, GENERATION_MAXIMUM
         ),
     }
+    if parsed["max_dimension"] % image_protocol.DIMENSION_MULTIPLE != 0:
+        raise server.InvalidArgument(
+            f"max_dimension must be a multiple of "
+            f"{image_protocol.DIMENSION_MULTIPLE}"
+        )
+    return parsed
 
 
 def image_claim(fields, issued_at, expiry, grant_id):

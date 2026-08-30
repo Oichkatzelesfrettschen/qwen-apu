@@ -36,6 +36,7 @@ artifact_name=$3
 destination_directory=$4
 artifact_path=$destination_directory/$artifact_name
 partial_path=$artifact_path.part
+partial_identity_path=$partial_path.identity
 digest_path=$artifact_path.observed-sha256
 artifact_directory=$(dirname -- "$artifact_path")
 huggingface_endpoint=${QWEN_HUGGINGFACE_ENDPOINT:-https://huggingface.co}
@@ -78,6 +79,28 @@ for entry in entries:
 ' "$artifact_name" 2>/dev/null || true)
     publisher_digest=${publisher_facts%% *}
     publisher_bytes=${publisher_facts##* }
+fi
+
+# A resumable prefix is trusted only when it is bound to these exact source
+# coordinates and to the publisher's immutable LFS digest. A source that
+# declares no digest can still be fetched and recorded honestly, but an old
+# prefix cannot be distinguished from bytes left by another revision and is
+# discarded before the request.
+partial_identity=$(printf '%s\0' \
+    "$source_repository" "$source_revision" "$artifact_name" "$source_url" \
+    "$publisher_digest" "$publisher_bytes" |
+    sha256sum | awk '{ print $1 }')
+if [ -f "$partial_path" ]; then
+    recorded_partial_identity=''
+    if [ -f "$partial_identity_path" ]; then
+        recorded_partial_identity=$(sed -n '1p' "$partial_identity_path")
+    fi
+    if [ -z "$publisher_digest" ] ||
+       [ "$recorded_partial_identity" != "$partial_identity" ]; then
+        rm -f "$partial_path" "$partial_identity_path"
+    fi
+elif [ -e "$partial_identity_path" ]; then
+    rm -f "$partial_identity_path"
 fi
 
 # A verdict is one of three states rather than a boolean, because "verified
@@ -148,6 +171,9 @@ fi
 fetch_single_stream() {
     # --continue-at - resumes a partial transfer, so an interrupted sweep does
     # not refetch a gigabyte it already holds.
+    if [ -n "$publisher_digest" ]; then
+        printf '%s\n' "$partial_identity" >"$partial_identity_path"
+    fi
     curl --location --fail --silent --show-error --continue-at - \
         --output "$partial_path" "$source_url"
 }
@@ -235,17 +261,20 @@ if [ "$fetch_mode" = parallel ]; then
     # A parallel assembly owns the whole partial path and cannot extend a
     # single-stream prefix safely. The one-stream path keeps its prefix so
     # curl --continue-at can resume it on the next invocation.
-    rm -f "$partial_path"
+    rm -f "$partial_path" "$partial_identity_path"
     if ! fetch_parallel_ranges "$declared_bytes"; then
         printf 'parallel range fetch failed, falling back to one stream: %s\n' \
             "$source_url" >&2
         rm -rf "$partial_path.parts"
-        rm -f "$partial_path"
+        rm -f "$partial_path" "$partial_identity_path"
         fetch_mode=single
     fi
 fi
 if [ "$fetch_mode" = single ] && ! fetch_single_stream; then
     printf 'fetch failed: %s\n' "$source_url" >&2
+    if [ -z "$publisher_digest" ]; then
+        rm -f "$partial_path" "$partial_identity_path"
+    fi
     exit 1
 fi
 
@@ -254,16 +283,17 @@ observed_sha256=${observed%% *}
 observed_bytes=${observed##* }
 if [ "$observed_bytes" -le 0 ]; then
     printf 'fetch produced an empty artifact: %s\n' "$source_url" >&2
-    rm -f "$partial_path"
+    rm -f "$partial_path" "$partial_identity_path"
     exit 1
 fi
 
 if ! verify_artifact "$partial_path" "$observed_sha256" "$observed_bytes"; then
-    rm -f "$partial_path"
+    rm -f "$partial_path" "$partial_identity_path"
     exit 1
 fi
 
 mv "$partial_path" "$artifact_path"
+rm -f "$partial_identity_path"
 printf '%s %s %s\n' "$observed_sha256" "$observed_bytes" "$digest_state" >"$digest_path"
 printf 'artifact_status=fetched path=%s bytes=%s %s_sha256=%s mode=%s repository=%s revision=%s\n' \
     "$artifact_path" "$observed_bytes" "$digest_state" "$observed_sha256" "$fetch_mode" \

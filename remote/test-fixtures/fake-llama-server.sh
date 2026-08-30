@@ -38,7 +38,14 @@ fi
 
 record_launch() {
     printf 'affinity=%s\n' "$(awk '/Cpus_allowed_list/ { print $2 }' /proc/self/status)"
-    printf 'nice=%s\n' "$(ps -o ni= -p $$ | tr -d ' ')"
+    printf 'nice=%s\n' "$(LC_ALL=C awk '
+        {
+            stat_line = $0
+            sub(/^.*[)] /, "", stat_line)
+            split(stat_line, fields, /[[:space:]]+/)
+            print fields[17]
+        }
+    ' "/proc/$$/stat")"
     printf 'io=%s\n' "$(ionice -p $$)"
     printf 'low=%s\n' "${GGML_VK_LOW_PRIORITY:-unset}"
     printf 'duty=%s\n' "${GGML_VK_DUTY_CYCLE_PERCENT:-unset}"
@@ -129,6 +136,7 @@ QWEN_POLICY_TEST_PREDICTED_CAP=${QWEN_POLICY_TEST_PREDICTED_CAP:-0} \
     exec python3 - <<'PY'
 import json
 import os
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 port = int(os.environ["QWEN_FAKE_SERVER_RESOLVED_PORT"])
@@ -142,6 +150,7 @@ predicted_cap = int(os.environ["QWEN_POLICY_TEST_PREDICTED_CAP"])
 decode_tok_s = float(os.environ["QWEN_FAKE_SERVER_RESOLVED_DECODE_TOK_S"])
 draft_n = int(os.environ["QWEN_FAKE_SERVER_RESOLVED_DRAFT_N"])
 draft_accepted = int(os.environ["QWEN_FAKE_SERVER_RESOLVED_DRAFT_ACCEPTED"])
+post_delay_s = float(os.environ.get("QWEN_POLICY_TEST_POST_DELAY_S", "0"))
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -163,6 +172,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self):
+        if post_delay_s > 0:
+            time.sleep(post_delay_s)
         length = int(self.headers.get("Content-Length") or 0)
         body = json.loads(self.rfile.read(length).decode() or "{}")
         if self.path.startswith("/tokenize"):

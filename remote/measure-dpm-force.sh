@@ -32,6 +32,7 @@ clock_sampler=${QWEN_CLOCK_SAMPLER:-"$script_directory/sample-gpu-clocks.sh"}
 drm_device=${QWEN_DRM_DEVICE:-/sys/class/drm/card1/device}
 level_node=$drm_device/power_dpm_force_performance_level
 rounds=${QWEN_DPM_ROUNDS:-2}
+ionice_command=${QWEN_DPM_IONICE:-/usr/bin/ionice}
 
 case $rounds in
     '' | *[!0-9]* | 0)
@@ -86,17 +87,32 @@ trap 'exit 143' TERM
 # started below nice 0 still lands the bench at 19. Both values are read back
 # from the kernel and retained beside every arm rather than asserted.
 /usr/bin/renice --priority 19 --pid "$$" >/dev/null 2>&1 || true
-harness_nice=$(LC_ALL=C /usr/bin/ps -o ni= -p "$$" 2>/dev/null |
-    /usr/bin/awk '{ gsub(/[[:space:]]/, ""); print; exit }')
+harness_nice=$(LC_ALL=C /usr/bin/awk '
+    {
+        stat_line = $0
+        sub(/^.*[)] /, "", stat_line)
+        field_count = split(stat_line, fields, /[[:space:]]+/)
+        if (field_count >= 17) print fields[17]
+        exit
+    }
+' "/proc/$$/stat" 2>/dev/null || true)
 if [ "$harness_nice" != 19 ]; then
     printf 'measurement priority refused: observed=%s\n' \
         "${harness_nice:-unreadable}" >&2
     exit 2
 fi
-/usr/bin/ionice -c 3 -p "$$" >/dev/null 2>&1 || true
-harness_ioclass=$(LC_ALL=C /usr/bin/ionice -p "$$" 2>/dev/null |
+if ! "$ionice_command" -c 3 -p "$$" >/dev/null 2>&1; then
+    printf 'measurement I/O priority setup failed for pid %s\n' "$$" >&2
+    exit 2
+fi
+harness_ioclass=$(LC_ALL=C "$ionice_command" -p "$$" 2>/dev/null |
     /usr/bin/awk '{ sub(/:$/, "", $1); print $1; exit }')
 harness_ioclass=${harness_ioclass:-unreadable}
+if [ "$harness_ioclass" != idle ]; then
+    printf 'measurement I/O priority refused: observed=%s\n' \
+        "$harness_ioclass" >&2
+    exit 2
+fi
 
 mkdir -p "$output_directory"
 summary=$output_directory/dpm-summary.tsv

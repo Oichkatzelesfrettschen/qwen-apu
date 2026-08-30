@@ -6,6 +6,8 @@ policy=$script_directory/qwen-capacity-policy.sh
 fake_server=$script_directory/test-fixtures/fake-llama-server.sh
 temporary_directory=$(mktemp -d)
 trap 'rm -rf "$temporary_directory"' EXIT HUP INT TERM
+QWEN_WEBUI_STATE_DIRECTORY=$temporary_directory/state
+export QWEN_WEBUI_STATE_DIRECTORY
 
 model_path=$temporary_directory/model.gguf
 output_path=$temporary_directory/policy.out
@@ -852,6 +854,7 @@ if QWEN_TEST_GUARD_COMMAND_OUTPUT=$guard_command_output \
     "$exec_guard" "$router_presets" "$guard_preset_sha256" \
     "$fabricated_registry" "$guard_model_sha256" \
     "$authority_race_quarantine" "$guard_quarantine_sha256" \
+    - - \
     "$guard_web_profiles" "$guard_web_profiles_sha256" "$guard_command" \
     >"$temporary_directory/web-ledger-guard.stdout" \
     2>"$temporary_directory/web-ledger-guard.stderr"; then

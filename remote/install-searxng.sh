@@ -141,6 +141,11 @@ run_install_stage() {
 
 run_install_stage packages
 run_install_stage user
+if ! sudo -n -u "$service_user" test -x "$install_parent" 2>/dev/null; then
+    printf 'user %s cannot traverse %s; choose an install root the service user can read, such as /opt/searxng-qwen-apu\n' \
+        "$service_user" "$install_parent" >&2
+    exit 2
+fi
 run_install_stage searxng-src
 run_install_stage pyenv
 

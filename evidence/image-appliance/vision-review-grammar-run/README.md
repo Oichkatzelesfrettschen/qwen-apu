@@ -1,11 +1,13 @@
 # The grammar-bound appliance run of `remote/image-review.py`
 
-Four reviews ran on the appliance on 2026-08-29 over the CLI two-phase
-protocol `evidence/image-appliance/vision-review-design.md` names: the same
+Four reviews ran on the appliance on 2026-08-29 over the same
 two artifacts as `evidence/image-appliance/vision-review-first-run/`,
 `17e452e6...` (a fox) and `7c6b7565...` (an apple), each reviewed once by
-`lfm25-vl-16b` and once by `qwen35-2b` against the same two-constraint
-declaration, through the router's served model id `qwen-apu`. Every request
+two operator-labeled router configurations against two named constraints,
+through the shared served model id `qwen-apu`. The retained files do not carry
+router configuration, checkpoint identity, or transmitted constraint
+descriptions, so the model labels and declaration equivalence remain operator
+annotations rather than replayable facts. Every request
 now carries `response_format` with a `json_schema`, so the reply's shape rests
 on a grammar `common/chat.cpp:3673,3802` compiles from that schema rather than
 on the system instruction alone; every audit line's `schema_mode=response_format`
@@ -14,6 +16,8 @@ at 2026-08-29T11:39:34Z through 11:41:33Z, twenty minutes after the first
 run's own 2026-08-29T11:19:15Z through 11:21:10Z. This directory retains the
 sanitized chain log, the image-service log, the eight per-review
 stdout/stderr files, the four `.raw` replies, and the four verdict records.
+Both model-labeled teardown rows report status 1 without diagnostics, so the
+record does not prove idle-state isolation between router configurations.
 
 ## The falsifier
 
@@ -96,15 +100,17 @@ three that the unconstrained request left open.
 | `qwen35-2b` | fox | 31.63 | 33.19 | +4.9% |
 | `qwen35-2b` | apple | 30.18 | 30.21 | +0.1% |
 
-The two runs sit twenty minutes apart on the same morning rather than in
-separate sweeps, so the nearest comparator this tree carries is
+The two runs are separate sweeps twenty minutes apart, with independent router
+processes and teardown/start cycles. The nearest comparator this tree carries is
 `evidence/measurement-state-and-memory-clock.md`'s finding of about 4%
 uncontrolled spread on a depth-0 bench rate from identical flags ten minutes
 apart. That figure measures a different quantity -- a bench rate rather than a
 served review's wall time over an image prefill and a 400-token budget -- so
 it bounds this comparison loosely rather than exactly. All four deltas here
-are positive (+7.5%, +10.3%, +4.9%, +0.1%), mean +5.0%, which sits at the edge
-of that ~4% band rather than clearly inside or outside it: the consistent
+are positive (+7.5%, +10.3%, +4.9%, +0.1%), with an arithmetic mean of +5.7%.
+The aggregate wall-time ratio is approximately +5.0%; neither statistic is a
+same-session estimate. The arithmetic mean sits near the edge of that ~4%
+band rather than clearly inside or outside it: the consistent
 sign across four pairs is worth recording, and the magnitude is not separated
 from machine spread by this comparison. Resolving it needs the two schema
 conditions run alternating inside one sitting, which this record proposes as

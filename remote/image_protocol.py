@@ -324,15 +324,25 @@ def validate_response(message, control_reply=False):
             raise ProtocolError(
                 "response: sha256 is not 64 lowercase hex digits: %s" % digest
             )
-        # The artifact is named by its own digest, so the provenance URL is
-        # derived from the digest rather than chosen by the sender. A caller
-        # therefore supplies no filesystem path at any layer.
-        expected_url = "/artifacts/%s.json" % digest
+        # The PNG and provenance are independently content-addressed. Repeated
+        # PNG bytes can carry distinct job records without replacing an older
+        # immutable record, while the closed route shape still prevents a
+        # sender from choosing an arbitrary path or origin.
         provenance_url = _string(message, "provenance_url", role, 128)
-        if provenance_url != expected_url:
+        prefix = "/artifacts/"
+        suffix = ".json"
+        provenance_digest = (
+            provenance_url[len(prefix) : -len(suffix)]
+            if provenance_url.startswith(prefix) and provenance_url.endswith(suffix)
+            else ""
+        )
+        if (
+            len(provenance_digest) != 64
+            or not set(provenance_digest) <= HEX_CHARACTERS
+        ):
             raise ProtocolError(
-                "response: provenance_url %s does not name the digest, expected %s"
-                % (provenance_url, expected_url)
+                "response: provenance_url %s is not a content-addressed JSON route"
+                % provenance_url
             )
         return message
 
@@ -396,11 +406,12 @@ def decode_line(line):
 def encode_line(message):
     """Serialize one validated message as a bounded protocol line.
 
-    The encoder writes compact separators and escapes non-ASCII, so the line
-    the peer measures is the line this function bounded.
+    The encoder writes compact separators and preserves UTF-8, so the line the
+    peer measures is the same byte representation admission bounded. Escaping
+    every non-ASCII code point can expand an admitted prompt past the wire cap.
     """
     text = json.dumps(
-        message, separators=(",", ":"), sort_keys=True, ensure_ascii=True
+        message, separators=(",", ":"), sort_keys=True, ensure_ascii=False
     )
     encoded = text.encode("utf-8")
     if len(encoded) > MAX_LINE_BYTES:

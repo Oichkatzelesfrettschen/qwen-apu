@@ -24,12 +24,14 @@ import datetime
 import hashlib
 import hmac
 import html.parser
+import http.client
 import ipaddress
 import json
 import math
 import os
 import re
 import signal
+import socket
 import sqlite3
 import stat
 import sys
@@ -469,6 +471,22 @@ def require_public_host(parts):
         )
 
 
+def require_url_port(parts, name, error_class, default_port):
+    """Return one numeric port and reject explicit empty or malformed ports."""
+    try:
+        port = parts.port
+    except ValueError:
+        raise error_class(f"{name} names an invalid port") from None
+    authority = parts.netloc.rsplit("@", 1)[-1]
+    if authority.endswith(":"):
+        raise error_class(f"{name} names an empty port")
+    if port is None:
+        return default_port
+    if not 1 <= port <= 65535:
+        raise error_class(f"{name} names a port outside 1..65535")
+    return port
+
+
 def require_loopback_endpoint(url, allow_remote, name):
     """Return a provider endpoint reduced to scheme and authority.
 
@@ -480,13 +498,22 @@ def require_loopback_endpoint(url, allow_remote, name):
     the request performs. `QWEN_WEB_SEARXNG_ALLOW_REMOTE=1` admits any host for
     an operator who accepts that the model-authored query leaves the machine.
     """
-    parts = urllib.parse.urlsplit(url.strip())
+    try:
+        parts = urllib.parse.urlsplit(url.strip())
+    except ValueError:
+        raise InvalidArgument(f"{name} is not a valid URL") from None
     if parts.scheme.lower() not in ("http", "https"):
         raise InvalidArgument(f"{name} carries an unsupported scheme: {url}")
     if not parts.netloc or "@" in parts.netloc:
         raise InvalidArgument(f"{name} names no plain host: {url}")
     if parts.query or parts.fragment:
         raise InvalidArgument(f"{name} carries a query or fragment: {url}")
+    require_url_port(
+        parts,
+        name,
+        InvalidArgument,
+        443 if parts.scheme.lower() == "https" else 80,
+    )
     if allow_remote:
         return f"{parts.scheme.lower()}://{parts.netloc.lower()}{parts.path.rstrip('/')}"
     host = (parts.hostname or "").lower()
@@ -514,7 +541,10 @@ def canonical_url(url):
         raise ProviderContentError(
             f"the result URL exceeds the {URL_CHARACTER_CAP} character cap"
         )
-    parts = urllib.parse.urlsplit(url)
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        raise ProviderContentError("the result URL is malformed") from None
     if parts.scheme.lower() not in ("http", "https"):
         raise ProviderContentError(f"the result URL carries an unsupported scheme: {url}")
     if not parts.netloc:
@@ -523,6 +553,12 @@ def canonical_url(url):
         raise ProviderContentError("the result URL carries userinfo, which is refused")
     if any(character in url for character in ("\n", "\r", "\t", " ")):
         raise ProviderContentError("the result URL carries whitespace, which is refused")
+    require_url_port(
+        parts,
+        "the result URL",
+        ProviderContentError,
+        443 if parts.scheme.lower() == "https" else 80,
+    )
     require_public_host(parts)
     return urllib.parse.urlunsplit(
         (
@@ -533,6 +569,103 @@ def canonical_url(url):
             "",
         )
     )
+
+
+def resolve_public_addresses(host, port):
+    """Resolve a source host once and return only globally routable addresses."""
+    try:
+        answers = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except OSError:
+        raise ProviderHttpError("the source host could not be resolved") from None
+    addresses = []
+    for answer in answers:
+        candidate = answer[4][0].split("%", 1)[0]
+        try:
+            address = ipaddress.ip_address(candidate)
+        except ValueError:
+            raise ProviderContentError(
+                "the source resolver returned a malformed address"
+            ) from None
+        if not address.is_global:
+            raise ProviderContentError(
+                "the source host resolves to a private or non-global address"
+            )
+        canonical = str(address)
+        if canonical not in addresses:
+            addresses.append(canonical)
+    if not addresses:
+        raise ProviderHttpError("the source host resolved to no stream address")
+    return addresses
+
+
+class PinnedHTTPConnection(http.client.HTTPConnection):
+    """Connect to one validated address while retaining the URL host header."""
+
+    def __init__(self, host, port, address, timeout):
+        super().__init__(host, port=port, timeout=timeout)
+        self.validated_address = address
+
+    def connect(self):
+        self.sock = socket.create_connection(
+            (self.validated_address, self.port), self.timeout, self.source_address
+        )
+
+
+class PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """Connect to one validated address and authenticate the original DNS name."""
+
+    def __init__(self, host, port, address, timeout):
+        super().__init__(host, port=port, timeout=timeout)
+        self.validated_address = address
+
+    def connect(self):
+        self.sock = socket.create_connection(
+            (self.validated_address, self.port), self.timeout, self.source_address
+        )
+        self.sock = self._context.wrap_socket(self.sock, server_hostname=self.host)
+
+
+def open_pinned_public_url(url, accept, deadline, resolver=resolve_public_addresses):
+    """Read one public URL without redirecting or repeating DNS resolution."""
+    parts = urllib.parse.urlsplit(url)
+    host = parts.hostname or ""
+    port = require_url_port(
+        parts,
+        "the source URL",
+        ProviderContentError,
+        443 if parts.scheme.lower() == "https" else 80,
+    )
+    addresses = resolver(host, port)
+    target = parts.path or "/"
+    if parts.query:
+        target += "?" + parts.query
+    last_error = None
+    for address in addresses:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ProviderDeadlineExpired
+        connection_class = (
+            PinnedHTTPSConnection
+            if parts.scheme.lower() == "https"
+            else PinnedHTTPConnection
+        )
+        connection = connection_class(host, port, address, remaining)
+        try:
+            connection.request("GET", target, headers={"accept": accept})
+            response = connection.getresponse()
+            if response.status != 200:
+                raise ProviderHttpError(
+                    f"the provider rejected the request with status {response.status}"
+                )
+            raw = response.read(HTTP_RESPONSE_BYTE_CAP + 1)
+            return raw, response.headers
+        except ProviderHttpError:
+            raise
+        except (OSError, http.client.HTTPException) as error:
+            last_error = error
+        finally:
+            connection.close()
+    raise ProviderHttpError("the provider request failed") from last_error
 
 
 def sign_claim(signing_key, context, claim):
@@ -832,6 +965,10 @@ class Provider:
     supports_paging = False
     supports_num_results = True
 
+    def provider_budget_units(self):
+        """Return the largest number of provider requests one search can issue."""
+        return 1
+
     def provenance(self):
         return {
             "category": "",
@@ -1049,6 +1186,7 @@ class ExaProvider(Provider):
     def __init__(self, key_file_path):
         self.key_file_path = key_file_path
         self.response_bytes = 0
+        self.request_count = 0
         # The endpoints are instance attributes seeded from the module
         # constants, which lets a test point one instance at a local fixture
         # server. The configuration reads no endpoint, because a redirected
@@ -1073,6 +1211,7 @@ class ExaProvider(Provider):
             method="POST",
         )
         try:
+            self.request_count += 1
             with provider_deadline(REQUEST_TIMEOUT_SECONDS):
                 with PROVIDER_OPENER.open(
                     request, timeout=REQUEST_TIMEOUT_SECONDS
@@ -1089,6 +1228,8 @@ class ExaProvider(Provider):
             raise ProviderHttpError(
                 f"the provider rejected the request with status {status_code}"
             ) from None
+        except ProviderHttpError:
+            raise
         except Exception:
             raise ProviderHttpError("the provider request failed") from None
         if len(raw) > HTTP_RESPONSE_BYTE_CAP:
@@ -1291,11 +1432,14 @@ class SearXNGProvider(Provider):
         allow_remote=False,
     ):
         self.response_bytes = 0
+        self.request_count = 0
         self.timeout_seconds = REQUEST_TIMEOUT_SECONDS
         self.fallback_used = 0
         self.usable_results = 0
         self.engines_answered = []
         self.engines_failed = []
+        self.categories_issued = []
+        self.public_address_resolver = resolve_public_addresses
         if not base_url:
             raise InvalidArgument(
                 "the searxng provider requires QWEN_WEB_SEARXNG_URL to name "
@@ -1345,23 +1489,37 @@ class SearXNGProvider(Provider):
                 + f", and the configuration names {self.safesearch}"
             )
 
-    def _open(self, url, accept):
+    def provider_budget_units(self):
+        return 1 + int(bool(self.fallback_category))
+
+    def _open(self, url, accept, deadline=None, public_source=False):
         """Return the body and headers of one bounded GET.
 
         The body is read to one byte past the cap so an oversized response is
         refused during the read, and the same POSIX timer that bounds an Exa
         request bounds DNS, connect, headers, and body here.
         """
-        request = urllib.request.Request(
-            url, headers={"accept": accept}, method="GET"
-        )
+        if deadline is None:
+            deadline = time.monotonic() + self.timeout_seconds
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ProviderHttpError(
+                f"the provider request exceeded {self.timeout_seconds:g} seconds"
+            )
+        request = urllib.request.Request(url, headers={"accept": accept}, method="GET")
         try:
-            with provider_deadline(self.timeout_seconds):
-                with PROVIDER_OPENER.open(
-                    request, timeout=self.timeout_seconds
-                ) as response:
-                    raw = response.read(HTTP_RESPONSE_BYTE_CAP + 1)
-                    headers = response.headers
+            with provider_deadline(remaining):
+                if public_source:
+                    raw, headers = open_pinned_public_url(
+                        url,
+                        accept,
+                        deadline,
+                        resolver=self.public_address_resolver,
+                    )
+                else:
+                    with PROVIDER_OPENER.open(request, timeout=remaining) as response:
+                        raw = response.read(HTTP_RESPONSE_BYTE_CAP + 1)
+                        headers = response.headers
             self.response_bytes += len(raw)
         except ProviderDeadlineExpired:
             raise ProviderHttpError(
@@ -1373,6 +1531,8 @@ class SearXNGProvider(Provider):
             raise ProviderHttpError(
                 f"the provider rejected the request with status {status_code}"
             ) from None
+        except ProviderHttpError:
+            raise
         except Exception:
             raise ProviderHttpError("the provider request failed") from None
         if len(raw) > HTTP_RESPONSE_BYTE_CAP:
@@ -1395,18 +1555,19 @@ class SearXNGProvider(Provider):
         same outage the instance is already routing around.
         """
         issued = set()
+        deadline = time.monotonic() + self.timeout_seconds
         usable = self._query_category(
-            query, self.primary_category, constraints, issued
+            query, self.primary_category, constraints, issued, deadline
         )
         if len(usable) < self.minimum_results and self.fallback_category:
             self.fallback_used = 1
             usable = usable + self._query_category(
-                query, self.fallback_category, constraints, issued
+                query, self.fallback_category, constraints, issued, deadline
             )
         self.usable_results = len(usable)
         return usable[:max_results]
 
-    def _query_category(self, query, category, constraints, issued):
+    def _query_category(self, query, category, constraints, issued, deadline):
         """Return the usable records of one category query.
 
         A result whose URL names this machine, a private network, or a domain
@@ -1421,9 +1582,12 @@ class SearXNGProvider(Provider):
             parameters.append(("language", self.language))
         if self.safesearch:
             parameters.append(("safesearch", self.safesearch))
+        self.categories_issued.append(category)
+        self.request_count += 1
         raw, _ = self._open(
             self.search_endpoint + "?" + urllib.parse.urlencode(parameters),
             "application/json",
+            deadline=deadline,
         )
         try:
             document = strict_json_loads(raw.decode("utf-8"))
@@ -1470,7 +1634,7 @@ class SearXNGProvider(Provider):
             name for name in self.engines_failed if name not in self.engines_answered
         ]
         return {
-            "category": self.primary_category,
+            "category": self.categories_issued[0] if self.categories_issued else "",
             "engines_attempted": ",".join(sorted(attempted)),
             "engines_answered": ",".join(sorted(self.engines_answered)),
             "engines_failed": ",".join(sorted(self.engines_failed)),
@@ -1529,7 +1693,9 @@ class SearXNGProvider(Provider):
         UTF-8 decode as a byte error.
         """
         raw, headers = self._open(
-            url, "text/html, application/xhtml+xml;q=0.9, text/plain;q=0.8"
+            url,
+            "text/html, application/xhtml+xml;q=0.9, text/plain;q=0.8",
+            public_source=True,
         )
         content_type = (headers.get_content_type() or "").lower()
         if content_type not in SEARXNG_DOCUMENT_CONTENT_TYPES:
@@ -1586,6 +1752,7 @@ class FakeProvider(Provider):
 
     def __init__(self, fixture_path):
         self.response_bytes = 0
+        self.request_count = 0
         if not fixture_path:
             raise ToolError(
                 "the fake provider requires QWEN_WEB_FAKE_FIXTURES to name a "
@@ -1608,6 +1775,7 @@ class FakeProvider(Provider):
         served record the way the HTTP provider counts its response, which
         keeps the audit row comparable across the two.
         """
+        self.request_count += 1
         key = self.fixture_key(query)
         delay = self.document.get("delays", {}).get(key, 0) if key else 0
         if delay:
@@ -1736,15 +1904,21 @@ class Ledger:
         # each provenance column is added where the table lacks it. `record`
         # names its columns rather than counting them, which keeps one INSERT
         # correct across a migrated and a fresh table alike.
-        present = {
-            column[1]
-            for column in self.connection.execute("PRAGMA table_info(audit)")
-        }
-        for column, declaration in AUDIT_PROVENANCE_COLUMNS:
-            if column not in present:
-                self.connection.execute(
-                    f"ALTER TABLE audit ADD COLUMN {column} {declaration}"
-                )
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            present = {
+                column[1]
+                for column in self.connection.execute("PRAGMA table_info(audit)")
+            }
+            for column, declaration in AUDIT_PROVENANCE_COLUMNS:
+                if column not in present:
+                    self.connection.execute(
+                        f"ALTER TABLE audit ADD COLUMN {column} {declaration}"
+                    )
+            self.connection.execute("COMMIT")
+        except BaseException:
+            self.connection.execute("ROLLBACK")
+            raise
         self.connection.execute(
             "CREATE TABLE IF NOT EXISTS grants ("
             "grant_id TEXT PRIMARY KEY, profile TEXT, provider TEXT,"
@@ -2008,7 +2182,9 @@ class Ledger:
             (name, window_start, used + units),
         )
 
-    def consume_search(self, grant, profile, provider, now, limits, pages):
+    def consume_search(
+        self, grant, profile, provider, now, limits, pages, provider_units=1
+    ):
         """Atomically spend one grant and every search budget bucket."""
         self.connection.execute("BEGIN IMMEDIATE")
         try:
@@ -2041,6 +2217,7 @@ class Ledger:
                 limits["provider_budget"],
                 now,
                 BudgetExhausted,
+                units=provider_units,
             )
             self.connection.execute("COMMIT")
         except sqlite3.IntegrityError:
@@ -2049,6 +2226,27 @@ class Ledger:
                 "the authorization is spent; a grant admits one search and "
                 "the operator issues another"
             ) from None
+        except BaseException:
+            self.connection.execute("ROLLBACK")
+            raise
+
+    def settle_provider_reservation(self, reserved_units, used_units, reserved_at):
+        """Return unused provider units from one worst-case search reservation."""
+        unused_units = reserved_units - used_units
+        if unused_units <= 0:
+            return
+        window_start = int(reserved_at) - int(reserved_at) % 86400
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.connection.execute(
+                "SELECT window_start, used FROM buckets WHERE name = 'provider-day'"
+            ).fetchone()
+            if row and row[0] == window_start:
+                self.connection.execute(
+                    "UPDATE buckets SET used = ? WHERE name = 'provider-day'",
+                    (max(0, row[1] - unused_units),),
+                )
+            self.connection.execute("COMMIT")
         except BaseException:
             self.connection.execute("ROLLBACK")
             raise
@@ -2687,6 +2885,8 @@ def call_search(settings, arguments):
         "usable_results": 0,
     }
     provider = None
+    provider_reservation = 0
+    provider_reservation_active = False
     try:
         signing_key = read_secret_file(settings["token_key_file"], "token signing")
         provider = select_provider(settings)
@@ -2714,6 +2914,7 @@ def call_search(settings, arguments):
             # The grant and all three search costs form one state transition.
             # A replay fails before charging a bucket, while a bucket refusal
             # rolls the grant insertion back for a corrected retry.
+            provider_reservation = provider.provider_budget_units()
             ledger.consume_search(
                 granted,
                 settings.get("profile") or "default",
@@ -2721,7 +2922,9 @@ def call_search(settings, arguments):
                 now,
                 limits,
                 max_results,
+                provider_units=provider_reservation,
             )
+            provider_reservation_active = True
         # The domain lists reach the provider as request fields and bound
         # what it returns here, so an off-domain record is dropped before the
         # renderer signs it into a fetchable Result ID.
@@ -2774,6 +2977,14 @@ def call_search(settings, arguments):
             # reached the instance and then failed a later rule still records
             # which engines answered and whether the fallback ran.
             audit.update(provider.provenance())
+        if (
+            ledger is not None
+            and provider is not None
+            and provider_reservation_active
+        ):
+            ledger.settle_provider_reservation(
+                provider_reservation, provider.request_count, now
+            )
         audit["latency_ms"] = int((time.monotonic() - started) * 1000)
         if ledger is not None:
             ledger.record(audit)

@@ -2,7 +2,7 @@
 set -eu
 
 # Exercise qwen-exec-idle-priority.sh without root. The kernel is the authority
-# for every positive check: the exec'd command reads its own nice through ps
+# for every positive check: the exec'd command reads its own nice through procfs
 # and its own pid through $$, so a wrapper that only claimed the priority or
 # forked a child would fail here. The refusal arms substitute a renice that
 # applies nothing and an ionice that reports best-effort, which is how a
@@ -34,7 +34,7 @@ grep -F 'usage:' "$temporary_directory/usage.stderr" >/dev/null
 active_fixture=exec-from-nice-5
 report=$temporary_directory/report
 nice -n 5 "$wrapper" sh -c \
-    'printf "pid=%s nice=%s ioclass=%s\n" "$$" "$(LC_ALL=C /usr/bin/ps -o ni= -p $$ | tr -d " ")" "$(LC_ALL=C /usr/bin/ionice -p $$ | /usr/bin/awk "{ print \$1 }")"' \
+    'printf "pid=%s nice=%s ioclass=%s\n" "$$" "$(LC_ALL=C /usr/bin/awk '\''{ line = $0; sub(/^.*[)] /, "", line); split(line, fields, /[[:space:]]+/); print fields[17] }'\'' /proc/$$/stat)" "$(LC_ALL=C /usr/bin/ionice -p $$ | /usr/bin/awk "{ print \$1 }")"' \
     >"$report"
 child_nice=$(sed -n 's/.* nice=\([^ ]*\).*/\1/p' "$report")
 child_ioclass=$(sed -n 's/.* ioclass=\([^ ]*\).*/\1/p' "$report")
@@ -71,7 +71,23 @@ fake_renice=$temporary_directory/renice
 printf '#!/bin/sh\nexit 0\n' >"$fake_renice"
 chmod +x "$fake_renice"
 marker=$temporary_directory/ran-after-fake-renice
-if QWEN_IDLE_PRIORITY_RENICE=$fake_renice nice -n 5 "$wrapper" \
+fake_nonrequired_stat=$temporary_directory/nonrequired-stat
+LC_ALL=C /usr/bin/awk '
+    {
+        stat_line = $0
+        sub(/^.*[)] /, "", stat_line)
+        field_count = split(stat_line, fields, /[[:space:]]+/)
+        fields[17] = 5
+        printf "1 (fixture)"
+        for (field_index = 1; field_index <= field_count; field_index++) {
+            printf " %s", fields[field_index]
+        }
+        printf "\n"
+    }
+' "/proc/$$/stat" >"$fake_nonrequired_stat"
+if QWEN_IDLE_PRIORITY_RENICE=$fake_renice \
+    QWEN_IDLE_PRIORITY_PROC_STAT=$fake_nonrequired_stat \
+    nice -n 5 "$wrapper" \
     sh -c "touch '$marker'" 2>"$temporary_directory/renice.stderr"; then
     printf 'the wrapper ran its command after renice applied nothing\n' >&2
     exit 1
@@ -85,7 +101,9 @@ grep -F 'priority setup refused: requested=19 observed=' \
 
 active_fixture=renice-status-is-125
 set +e
-QWEN_IDLE_PRIORITY_RENICE=$fake_renice nice -n 5 "$wrapper" true 2>/dev/null
+QWEN_IDLE_PRIORITY_RENICE=$fake_renice \
+QWEN_IDLE_PRIORITY_PROC_STAT=$fake_nonrequired_stat \
+    nice -n 5 "$wrapper" true 2>/dev/null
 refused_status=$?
 set -e
 if [ "$refused_status" -ne 125 ]; then
@@ -93,13 +111,11 @@ if [ "$refused_status" -ne 125 ]; then
     exit 1
 fi
 
-active_fixture=ps-unreadable
-fake_ps=$temporary_directory/ps
-printf '#!/bin/sh\nexit 1\n' >"$fake_ps"
-chmod +x "$fake_ps"
+active_fixture=proc-stat-unreadable
+missing_proc_stat=$temporary_directory/missing-stat
 set +e
-QWEN_IDLE_PRIORITY_PS=$fake_ps "$wrapper" sh -c "touch '$marker'" \
-    2>"$temporary_directory/ps.stderr"
+QWEN_IDLE_PRIORITY_PROC_STAT=$missing_proc_stat "$wrapper" \
+    sh -c "touch '$marker'" 2>"$temporary_directory/proc-stat.stderr"
 unreadable_status=$?
 set -e
 if [ "$unreadable_status" -ne 125 ] || [ -e "$marker" ]; then
@@ -107,7 +123,7 @@ if [ "$unreadable_status" -ne 125 ] || [ -e "$marker" ]; then
         "$unreadable_status" >&2
     exit 1
 fi
-grep -F 'observed=unreadable' "$temporary_directory/ps.stderr" >/dev/null
+grep -F 'observed=unreadable' "$temporary_directory/proc-stat.stderr" >/dev/null
 
 active_fixture=ionice-reports-best-effort
 fake_ionice=$temporary_directory/ionice

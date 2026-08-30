@@ -23,6 +23,13 @@ for required_command in bash node shellcheck ruff python3 curl; do
     fi
 done
 
+chromium_command=${QWEN_CHROMIUM:-chromium}
+if ! command -v "$chromium_command" >/dev/null 2>&1; then
+    printf 'required quality-gate browser is absent: %s\n' \
+        "$chromium_command" >&2
+    exit 2
+fi
+
 shell_files=$(find remote -type f -name '*.sh' -print | sort)
 for shell_file in $shell_files; do
     IFS= read -r shebang <"$shell_file"
@@ -40,11 +47,19 @@ PYTHONDONTWRITEBYTECODE=1 python3 remote/test-quality-suite.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-regrade-quality-roster.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-gguf-tokenizer-identity.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-admit-candidate-static.py
+PYTHONDONTWRITEBYTECODE=1 python3 remote/test-check-model-admission-consistency.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-verify-representation-pair.py
+PYTHONDONTWRITEBYTECODE=1 python3 remote/test-image-protocol.py
+PYTHONDONTWRITEBYTECODE=1 python3 remote/test-image-service.py
+PYTHONDONTWRITEBYTECODE=1 python3 remote/image-mcp/test-image-mcp.py
+PYTHONDONTWRITEBYTECODE=1 python3 remote/test-image-review.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/web-mcp/test-web-mcp.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/web-mcp/test-authorize-broker.py
+PYTHONDONTWRITEBYTECODE=1 QWEN_CHROMIUM="$chromium_command" \
+    python3 remote/web-mcp/test-fallback-page-image.py
 remote/test-fallback-webui-model-selection.sh
 remote/test-fallback-webui-web-authorization.sh
+remote/test-fallback-webui-image-authorization.sh
 remote/test-web-tools-roundtrip.sh
 node remote/test-fallback-webui-model-state.mjs
 remote/test-measurement-harnesses.sh
@@ -61,6 +76,10 @@ remote/test-probe-depth-projector.sh
 remote/test-promote-llama-build.sh
 remote/test-qwen-launch-router-preflight.sh
 remote/test-qwen-capacity-policy.sh
+remote/test-image-registry.sh
+remote/test-admit-image-router.sh
+remote/test-run-image-standalone.sh
+remote/test-qwen-image-launch.sh
 remote/test-web-presets.sh
 remote/test-qwen-web-launch.sh
 remote/test-prepare-llama-vulkan-source.sh

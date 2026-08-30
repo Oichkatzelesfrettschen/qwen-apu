@@ -253,11 +253,22 @@ def call_tool(child, name, params):
     and the page and the shell harness both read it there.
     """
     for server_name, definition in child.servers.items():
-        prefix = server_name + "_"
-        if not name.startswith(prefix):
+        listing_reply = ToolChild._one(definition, "tools/list", {})
+        listed_tools = (listing_reply.get("result") or {}).get("tools") or []
+        matching_tool = next(
+            (
+                tool
+                for tool in listed_tools
+                if served_tool_name(server_name, tool.get("name", "")) == name
+            ),
+            None,
+        )
+        if matching_tool is None:
             continue
         reply = ToolChild._one(
-            definition, "tools/call", {"name": name[len(prefix):], "arguments": params}
+            definition,
+            "tools/call",
+            {"name": matching_tool["name"], "arguments": params},
         )
         if "error" in reply:
             return {"error": reply["error"].get("message", "the tool call failed")}
