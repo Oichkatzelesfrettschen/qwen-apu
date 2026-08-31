@@ -79,7 +79,11 @@ printf 'patch_series=accepted commit=%s\n' "$expected_commit"
 # The order is the apply order: llama-server-vulkan-workload-lease encodes
 # post-series offsets in tools/server/server-context.cpp, which no earlier
 # candidate touches, so the two stay independent while the list stays ordered.
-candidate_patch_names="llama-server-vulkan-workload-lease.patch"
+# llama-server-natural-checkpoint-boundary removes the forced near-end
+# checkpoint partition in the same file's batch-fill loop, a region the lease
+# leaves untouched, so the pair applies in either order and the list keeps one.
+candidate_patch_names="llama-server-vulkan-workload-lease.patch
+llama-server-natural-checkpoint-boundary.patch"
 # One digest line per file the candidate stage rewrites. Retained evidence
 # quotes the ggml-vulkan.cpp line, so it keeps its format and its position.
 candidate_digest_paths="tools/server/server-context.cpp"

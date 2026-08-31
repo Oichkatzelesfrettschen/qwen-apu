@@ -1,0 +1,4 @@
+turn=1 arm=1 ctx_checkpoints=0 reference=self
+turn=1 arm=2 ctx_checkpoints=2 divergence=25 against=arm 1
+turn=2 arm=1 ctx_checkpoints=0 reference=self
+turn=2 arm=2 ctx_checkpoints=2 divergence=none

@@ -1,0 +1,8 @@
+stock_c0_vs_patched_c0 bit_identical=True
+stock_c0_vs_patched_c2 bit_identical=True
+patched_c0_vs_patched_c2 bit_identical=True
+stock_c0_vs_stock_c2 bit_identical=False
+stock_c0 turn1_prompt_ms=693122.2 turn2_prompt_ms=693855.4 turn2_prompt_n=30748
+stock_c2 turn1_prompt_ms=693758.2 turn2_prompt_ms=2224.6 turn2_prompt_n=27
+patched_c2 turn1_prompt_ms=693783.6 turn2_prompt_ms=1575.4 turn2_prompt_n=28
+patched_c0 turn1_prompt_ms=693085.9 turn2_prompt_ms=693915.0 turn2_prompt_n=30748
