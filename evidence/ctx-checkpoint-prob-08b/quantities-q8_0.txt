@@ -1,0 +1,13 @@
+repeat_arm_equal_c0=True
+repeat_arm_equal_c2=True
+common_prefix_length=25
+first_divergence_index=25 ordinal=26
+top1_logprob_delta_mean_abs=0.015287
+top1_logprob_delta_max_abs=0.116988
+top1_logprob_delta_signs positive=9 negative=15 zero=1
+top1_logprob_delta_signed=-0.011283 -0.116988 +0.011522 +0.086978 -0.000499 -0.000010 +0.000000 -0.000001 -0.000004 +0.000000 +0.000023 +0.000006 -0.000001 -0.000002 +0.000011 -0.000068 -0.007580 +0.000035 -0.004393 -0.000002 +0.000302 +0.065126 -0.034295 -0.000009 -0.043047
+top2_margin_c0_nats=0.049988 top1_id=85957 top1_piece='/ph' top2_id=318 top2_piece=' ('
+top2_margin_c2_nats=0.077253 top1_id=318 top1_piece=' (' top2_id=85957 top2_piece='/ph'
+pairwise_margin_swing_nats=0.127241
+topk_candidate_overlap=8/8
+tv_contribution_flipped_pair_lower_bound=0.019184
