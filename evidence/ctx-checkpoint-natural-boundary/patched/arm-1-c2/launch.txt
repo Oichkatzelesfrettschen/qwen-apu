@@ -1,0 +1,6 @@
+started tmux_socket=qwen-runtime tmux_session=qwen-webui profile=low-async host=127.0.0.1 port=8080 context=32768 latency_mode=observe model=$HOME/models/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf server=$HOME/src/llama.cpp-natural-boundary/build-candidate/bin/llama-server
+speculation spec_type=off draft_n_max=default draft_p_min=default draft_backend_sampling=0 backend_sampling=0
+cache cache_type_k=registry cache_type_v=registry flash_attention=registry override_context_ceiling=registry
+state=running server_pid=685046 monitor_pid=685346 latency_watchdog_pid=685332 kernel_hazard_watchdog_pid=685341 profile=low-async host=127.0.0.1 port=8080 context=32768 latency_mode=observe utc=2026-08-31T08:03:40Z
+reachable at http://127.0.0.1:8080 (loopback only)
+stop it with $HOME/qwen-laptop-setup/remote/qwen-teardown.sh
