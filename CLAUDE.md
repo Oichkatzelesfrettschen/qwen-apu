@@ -182,13 +182,13 @@ supports; the 2B and 4B hold identity on both turns. The 2B and 4B rows read
 2, the 0.8B reads 0, and a row absent from the ledger reads 0.
 `model-registry.sh ctx-checkpoints` and `ctx-checkpoint MODEL_ID` validate the
 whole ledger before answering, a count above 0 requires an evidence path, and
-`QWEN_CTX_CHECKPOINT_LEDGER` names another file for a fixture. Row shape is
-validated wherever the ledger is read and the named file's existence is
-asserted where `evidence/` sits beside `remote/`, because the appliance runs
-from a copy carrying `remote/` and `patches/` alone while every gate runs in a
-checkout that holds the tree. The tuple and draft-pair ledgers take the same
-split, so a launch-read row naming a path leaves the appliance serving rather
-than refusing a launch over a directory the sync never sent.
+`QWEN_CTX_CHECKPOINT_LEDGER` names another file for a fixture. Row shape is a
+property of the row and is validated wherever a ledger is read; the existence
+of the file a row names is a property of the tree and belongs to
+`remote/check-ledger-evidence.sh`, which the repository gate runs over all
+three ledgers. The appliance runs from a copy carrying `remote/` and `patches/`
+beside whatever `evidence/` a past sync left, so a reader that resolved those
+paths would refuse every launch over a directory the sync never sent.
 `qwen-capacity-policy.sh` sets `--ctx-checkpoints` from the row on the
 single-model path, with `QWEN_CTX_CHECKPOINTS` replacing it for an experiment
 arm, an explicit 0 included. Both it and `QWEN_CHECKPOINT_MIN_STEP` belong to

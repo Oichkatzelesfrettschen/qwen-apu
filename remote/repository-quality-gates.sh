@@ -70,6 +70,7 @@ remote/test-model-registry.sh
 remote/test-model-tiers.sh
 remote/test-measure-draft-pair.sh
 remote/check-validated-tuples.sh
+remote/check-ledger-evidence.sh
 remote/test-projector-fetch-dispatch.sh
 remote/test-projector-pairing.sh
 remote/test-probe-depth-projector.sh
