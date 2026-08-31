@@ -517,6 +517,37 @@ for outside_path in .. ../outside /etc evidence/../../outside; do
         report "ledger_evidence_gate_refuses_outside_${outside_path}" rejected
     fi
 done
+# A symlink reaches outside the tree without writing `..`, so the gate resolves
+# the parent chain and refuses a final component that is itself a link. The
+# probe link lives in the work directory tree rather than in the repository, so
+# the gate under test resolves against a root it owns.
+symlink_root=$work_directory/symlink-root
+mkdir -p "$symlink_root/remote" "$symlink_root/evidence"
+cp "$script_directory/check-ledger-evidence.sh" "$symlink_root/remote/"
+ln -sfn /etc "$symlink_root/evidence/escape"
+for symlink_case in \
+    "through_directory	evidence/escape/hostname	resolving outside the tree" \
+    "final_component	evidence/escape	through a symlink"; do
+    symlink_case_name=${symlink_case%%	*}
+    symlink_case_rest=${symlink_case#*	}
+    symlink_case_path=${symlink_case_rest%%	*}
+    symlink_case_message=${symlink_case_rest#*	}
+    symlink_ledger=$work_directory/ctx-checkpoints-$symlink_case_name.tsv
+    printf 'tuple-model\t2\t%s\n' "$symlink_case_path" >"$symlink_ledger"
+    set +e
+    QWEN_CTX_CHECKPOINT_LEDGER=$symlink_ledger \
+        "$symlink_root/remote/check-ledger-evidence.sh" \
+        >/dev/null 2>"$work_directory/ledger-symlink.err"
+    symlink_case_status=$?
+    set -e
+    if [ "$symlink_case_status" -ne 0 ] &&
+       grep -F "$symlink_case_message" "$work_directory/ledger-symlink.err" \
+       >/dev/null; then
+        report "ledger_evidence_gate_refuses_symlink_$symlink_case_name" accepted
+    else
+        report "ledger_evidence_gate_refuses_symlink_$symlink_case_name" rejected
+    fi
+done
 
 valid_tuple_ledger=$work_directory/valid-tuples.tsv
 printf '%b\n' \

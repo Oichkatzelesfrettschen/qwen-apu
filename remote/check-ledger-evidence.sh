@@ -15,7 +15,7 @@ if [ "$#" -ne 0 ]; then
 fi
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-repository_root=$(CDPATH='' cd -- "$script_directory/.." && pwd)
+repository_root=$(CDPATH='' cd -- "$script_directory/.." && pwd -P)
 tuple_ledger=${QWEN_VALIDATED_TUPLES:-$script_directory/validated-tuples.tsv}
 draft_pair_ledger=${QWEN_DRAFT_PAIRS:-$script_directory/draft-pairs.tsv}
 ctx_checkpoint_ledger=${QWEN_CTX_CHECKPOINT_LEDGER:-$script_directory/ctx-checkpoints.tsv}
@@ -63,7 +63,37 @@ check_ledger() {
             printf '%s: %s names evidence absent from the tree: %s\n' \
                 "$ledger_name" "$row_identifier" "$row_evidence" >&2
             failures=$((failures + 1))
+            continue
         fi
+        # The lexical rule reads the path as written and a symlink reaches
+        # outside the tree without writing `..`: a committed evidence/external
+        # pointing at /etc would let a row name a file no measurement produced.
+        # `pwd -P` resolves the parent chain and the final component is required
+        # to be a real name, so what the row names is a path inside this tree
+        # rather than a door out of it.
+        if [ -L "$repository_root/$row_evidence" ]; then
+            printf '%s: %s names evidence through a symlink: %s\n' \
+                "$ledger_name" "$row_identifier" "$row_evidence" >&2
+            failures=$((failures + 1))
+            continue
+        fi
+        evidence_parent=$(dirname -- "$repository_root/$row_evidence")
+        if ! resolved_parent=$(CDPATH='' cd -- "$evidence_parent" 2>/dev/null &&
+            pwd -P); then
+            printf '%s: %s names evidence whose directory is unreadable: %s\n' \
+                "$ledger_name" "$row_identifier" "$row_evidence" >&2
+            failures=$((failures + 1))
+            continue
+        fi
+        case $resolved_parent/ in
+            "$repository_root"/*) ;;
+            *)
+                printf '%s: %s names evidence resolving outside the tree: %s -> %s\n' \
+                    "$ledger_name" "$row_identifier" "$row_evidence" \
+                    "$resolved_parent" >&2
+                failures=$((failures + 1))
+                ;;
+        esac
     done <<EOF
 $ledger_pairs
 EOF
