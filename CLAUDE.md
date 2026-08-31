@@ -1357,11 +1357,10 @@ where it is.
 
 ## Prose and comments
 
-Prefer affirmative, mechanism-centered prose. Describe what the system does,
-the state transitions it performs, and the observable result. Avoid defining
-behavior primarily through negation such as "no," "does not," "lacks," or
-"without" when the actual behavior can be stated directly. Use negation only
-when the absence itself is the relevant fact.
+Use affirmative, mechanism-centered prose. Describe what the system does, the
+state transitions it performs, and the observable result. State behavior
+directly rather than defining it through "no," "does not," "lacks," or
+"without." Use negation only when absence itself is materially relevant.
 
 Comments, commit messages, durable docs, thinking, replies in session, and
 end-of-session summaries share one voice: direct, declarative, indicative
