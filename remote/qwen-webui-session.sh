@@ -16,8 +16,16 @@ vulkan_profile=${8:-low-serialized}
 
 umask 077
 mkdir -p "$state_directory"
+mkdir -p "$state_directory/telemetry"
 server_log=$state_directory/server.log
-telemetry_log=$state_directory/telemetry.log
+# Telemetry is an evidentiary surface, so each session owns a record no later
+# session can write. A shared telemetry.log erased the triggering
+# mem_available_kib sample of a recorded memory_reserve_breached abort, which
+# left the enforced invariant correct and its measurement unquotable. The
+# symlink keeps the convenience path pointing at the newest record.
+telemetry_directory=$state_directory/telemetry
+telemetry_symlink=$state_directory/telemetry.log
+telemetry_log=$telemetry_symlink
 graphics_latency_log=$state_directory/graphics-latency.log
 kernel_hazard_log=$state_directory/kernel-hazards.log
 pid_file=$state_directory/server.pid
@@ -476,6 +484,13 @@ if [ "$kernel_watch_ready" -ne 1 ]; then
     exit 1
 fi
 
+# The record name carries start time, checkpoint, and server PID, so two
+# sessions never collide and an aborted session's samples survive every later
+# launch. The monitor truncates its own argument, which is now a fresh file.
+telemetry_session_name=$(date -u +%Y%m%dT%H%M%SZ)-$(basename "$model_path" .gguf | tr -c 'A-Za-z0-9._-' '-')-pid$server_pid
+telemetry_log=$telemetry_directory/$telemetry_session_name.log
+ln -sfn "telemetry/$telemetry_session_name.log" "$telemetry_symlink"
+
 "$script_directory/monitor-qwen-runtime.sh" "$server_pid" "$telemetry_log" \
     "$vulkan_profile" "$latency_watchdog_pid" \
     "$kernel_hazard_watchdog_pid" &
@@ -607,6 +622,15 @@ session_status=$server_status
 if [ "$supervised_component" != server ]; then
     session_status=1
 fi
+# The summary derives from the finished record and the record then loses its
+# write bit, so an archived session states its own quantities. Both steps are
+# advisory: `tmux kill-session` ends this script without reaching them, and the
+# record it leaves behind is already complete and already unshared.
+QWEN_TELEMETRY_MODEL_PATH=$model_path \
+QWEN_TELEMETRY_MODEL_ID=$(basename "$model_path" .gguf) \
+    "$script_directory/summarize-telemetry-session.sh" "$telemetry_log" \
+    >/dev/null 2>&1 || true
+chmod 444 "$telemetry_log" 2>/dev/null || true
 printf 'state=stopped server_status=%s monitor_status=%s latency_status=%s kernel_hazard_status=%s broker_status=%s stopped_component=%s profile=%s utc=%s\n' \
     "$server_status" "$monitor_status" "$latency_status" \
     "$kernel_hazard_status" "$broker_status" "$supervised_component" \
