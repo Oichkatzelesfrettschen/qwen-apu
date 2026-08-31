@@ -438,7 +438,7 @@ validate_tuple_ledger() {
         _measured_at; do
         [ "$tuple_status" = validated ] || continue
         case $tuple_evidence in
-            '' | - | /* | ../* | */../* | */..)
+            '' | - | .. | /* | ../* | */../* | */..)
                 printf '%s: validation evidence is not a repository-relative path: %s\n' \
                     "$tuple_id" "$tuple_evidence" >&2
                 tuple_evidence_failures=$((tuple_evidence_failures + 1))
@@ -687,7 +687,7 @@ validate_draft_pair_ledger() {
         [ -n "$draft_pair_id" ] || continue
         [ "$draft_pair_evidence" = - ] && continue
         case $draft_pair_evidence in
-            '' | /* | ../* | */../* | */..)
+            '' | .. | /* | ../* | */../* | */..)
                 printf '%s: validated evidence is not a repository-relative path: %s\n' \
                     "$draft_pair_id" "$draft_pair_evidence" >&2
                 draft_pair_evidence_failures=$((draft_pair_evidence_failures + 1))
@@ -833,7 +833,7 @@ validate_ctx_checkpoint_ledger() {
         [ -n "$ctx_checkpoint_model_id" ] || continue
         [ "$ctx_checkpoint_evidence" = - ] && continue
         case $ctx_checkpoint_evidence in
-            '' | /* | ../* | */../* | */..)
+            '' | .. | /* | ../* | */../* | */..)
                 printf '%s: evidence is not a repository-relative path: %s\n' \
                     "$ctx_checkpoint_model_id" "$ctx_checkpoint_evidence" >&2
                 ctx_checkpoint_evidence_failures=$((ctx_checkpoint_evidence_failures + 1))

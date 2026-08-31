@@ -497,6 +497,26 @@ if "$script_directory/check-ledger-evidence.sh" >/dev/null; then
 else
     report ledger_evidence_gate_shipped rejected
 fi
+# A bare `..` resolves to the repository's own parent, which exists, so the
+# containment rule names it beside the prefixed forms rather than relying on the
+# existence test to refuse it.
+for outside_path in .. ../outside /etc evidence/../../outside; do
+    ledger_outside=$work_directory/ctx-checkpoints-outside.tsv
+    printf 'tuple-model\t2\t%s\n' "$outside_path" >"$ledger_outside"
+    set +e
+    QWEN_CTX_CHECKPOINT_LEDGER=$ledger_outside \
+        "$script_directory/check-ledger-evidence.sh" \
+        >/dev/null 2>"$work_directory/ledger-outside.err"
+    ledger_outside_status=$?
+    set -e
+    if [ "$ledger_outside_status" -ne 0 ] &&
+       grep -F 'names evidence outside the tree' "$work_directory/ledger-outside.err" \
+       >/dev/null; then
+        report "ledger_evidence_gate_refuses_outside_${outside_path}" accepted
+    else
+        report "ledger_evidence_gate_refuses_outside_${outside_path}" rejected
+    fi
+done
 
 valid_tuple_ledger=$work_directory/valid-tuples.tsv
 printf '%b\n' \

@@ -51,7 +51,7 @@ check_ledger() {
         [ "$row_evidence" = - ] && continue
         [ -n "$row_evidence" ] || continue
         case $row_evidence in
-            /* | ../* | */../* | */..)
+            .. | /* | ../* | */../* | */..)
                 printf '%s: %s names evidence outside the tree: %s\n' \
                     "$ledger_name" "$row_identifier" "$row_evidence" >&2
                 failures=$((failures + 1))
