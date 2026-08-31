@@ -421,7 +421,6 @@ fi
 for ledger_case in \
     "bad_count	tuple-model	02	$evidence_present_relative	not a canonical non-negative integer" \
     "unknown_model	no-such-model	2	$evidence_present_relative	absent from the model registry" \
-    "missing_evidence	tuple-model	2	evidence/no-such-directory	absent from the tree" \
     "unmeasured_positive	tuple-model	2	-	requires retained evidence" \
     "short_row	tuple-model	2	-	-	holds 4 fields"; do
     ledger_case_name=${ledger_case%%	*}
@@ -463,33 +462,40 @@ if "$reader" ctx-checkpoints >/dev/null; then
 else
     report ctx_checkpoint_ledger_shipped rejected
 fi
-# The appliance runs from a copy holding remote/ alone and reads this ledger at
-# every router launch, so the shipped rows validate there while the same rows
-# against a checkout still require the tree to hold what they name. A missing
-# evidence tree admits the row; a missing evidence path beside a present tree
-# refuses it.
+# The appliance runs from a copy holding remote/ and patches/ alone and reads
+# this ledger at every router launch, so the reader validates row shape and
+# leaves the existence of the file a row names to
+# remote/check-ledger-evidence.sh. A partial evidence tree beside the runtime
+# scripts is the shape that refuses a launch when the reader tests the tree, so
+# the copy here carries one.
 runtime_copy=$work_directory/runtime-copy
-mkdir -p "$runtime_copy"
+mkdir -p "$runtime_copy/evidence"
 cp -r "$script_directory" "$runtime_copy/remote"
 if "$runtime_copy/remote/model-registry.sh" ctx-checkpoints >/dev/null 2>&1; then
     report ctx_checkpoint_ledger_runtime_copy accepted
 else
     report ctx_checkpoint_ledger_runtime_copy rejected
 fi
+# The gate owns the claim the reader no longer makes.
 ledger_absent_evidence=$work_directory/ctx-checkpoints-absent-evidence.tsv
 printf 'tuple-model\t2\tevidence/ctx-checkpoint-absent\n' >"$ledger_absent_evidence"
 set +e
-QWEN_MODEL_REGISTRY=$tuple_fixture_models \
 QWEN_CTX_CHECKPOINT_LEDGER=$ledger_absent_evidence \
-    "$reader" ctx-checkpoints >/dev/null 2>"$work_directory/ledger-absent.err"
+    "$script_directory/check-ledger-evidence.sh" \
+    >/dev/null 2>"$work_directory/ledger-absent.err"
 ledger_absent_status=$?
 set -e
 if [ "$ledger_absent_status" -ne 0 ] &&
-   grep -F 'evidence is absent from the tree' "$work_directory/ledger-absent.err" \
+   grep -F 'names evidence absent from the tree' "$work_directory/ledger-absent.err" \
    >/dev/null; then
-    report ctx_checkpoint_ledger_refuses_absent_evidence accepted
+    report ctx_checkpoint_evidence_gate_refuses_absent accepted
 else
-    report ctx_checkpoint_ledger_refuses_absent_evidence rejected
+    report ctx_checkpoint_evidence_gate_refuses_absent rejected
+fi
+if "$script_directory/check-ledger-evidence.sh" >/dev/null; then
+    report ledger_evidence_gate_shipped accepted
+else
+    report ledger_evidence_gate_shipped rejected
 fi
 
 valid_tuple_ledger=$work_directory/valid-tuples.tsv
@@ -599,15 +605,14 @@ printf '%b\n' \
     "no-evidence\ttuple-model\tstandalone\t8192\t128\t32\tq8_0\tq4_0\ton\t2\t1\tnone\tvulkan\tvalidated\tevidence/no-such-path.md\t-\t-\t-\t-\t-\t-" \
     >"$absent_evidence_tuple_ledger"
 set +e
-QWEN_MODEL_REGISTRY=$tuple_fixture_models \
 QWEN_VALIDATED_TUPLES=$absent_evidence_tuple_ledger \
-    "$reader" tuples tuple-model \
+    "$script_directory/check-ledger-evidence.sh" \
     >"$work_directory/absent-evidence-tuples.out" \
     2>"$work_directory/absent-evidence-tuples.err"
 absent_evidence_tuple_status=$?
 set -e
 if [ "$absent_evidence_tuple_status" -ne 0 ] &&
-   grep -F 'validation evidence is absent from the tree' \
+   grep -F 'names evidence absent from the tree' \
        "$work_directory/absent-evidence-tuples.err" >/dev/null; then
     report tuple_absent_evidence_refused accepted
 else
@@ -620,9 +625,8 @@ printf '%b\n' \
     "executable-evidence\ttuple-model\tstandalone\t8192\t128\t32\tq8_0\tq4_0\ton\t2\t1\tnone\tvulkan\tvalidated\tevidence/missing\"; touch $evidence_execution_marker; #\t-\t-\t-\t-\t-\t-" \
     >"$executable_evidence_tuple_ledger"
 set +e
-QWEN_MODEL_REGISTRY=$tuple_fixture_models \
 QWEN_VALIDATED_TUPLES=$executable_evidence_tuple_ledger \
-    "$reader" tuples tuple-model \
+    "$script_directory/check-ledger-evidence.sh" \
     >"$work_directory/executable-evidence-tuples.out" \
     2>"$work_directory/executable-evidence-tuples.err"
 executable_evidence_tuple_status=$?
