@@ -2656,6 +2656,24 @@ class WebMcpServerTest(unittest.TestCase):
                         "rate limit", self.result_text(response)
                     )
 
+    def wait_for_bucket_headroom(self, window_seconds=60, required_headroom=20.0):
+        """Return the current rate window after securing headroom inside it.
+
+        `_consume_bucket` keys the search-minute quota on the fixed wall-clock
+        window `int(now) // 60`, so six calls straddling a minute boundary
+        split across two independent quotas and four or five admissions report
+        correct server behavior. The concurrent test proves serialization only
+        when every call lands in one window; this wait sleeps through a
+        boundary closer than the headroom rather than launching into it.
+        """
+        while True:
+            now = time.time()
+            bucket = int(now) // window_seconds
+            remaining = (bucket + 1) * window_seconds - now
+            if remaining >= required_headroom:
+                return bucket
+            time.sleep(remaining + 0.05)
+
     def test_concurrent_children_serialize_on_the_rate_bucket(self):
         state_path = self.state_directory("concurrent-state")
         sessions = [
@@ -2670,6 +2688,7 @@ class WebMcpServerTest(unittest.TestCase):
         for session in sessions:
             self.addCleanup(self.close_cleanly, session)
             session.request("initialize", {"protocolVersion": "2025-06-18"})
+        starting_bucket = self.wait_for_bucket_headroom()
         for session in sessions:
             session.process.stdin.write(
                 json.dumps(
@@ -2690,10 +2709,26 @@ class WebMcpServerTest(unittest.TestCase):
             )
             session.process.stdin.flush()
         admitted = 0
+        refused = 0
         for session in sessions:
             response = json.loads(session.process.stdout.readline())
-            admitted += 0 if response["result"]["isError"] else 1
+            if response["result"]["isError"]:
+                refused += 1
+                self.assertIn("rate limit", self.result_text(response))
+            else:
+                admitted += 1
+        self.assertEqual(
+            int(time.time()) // 60,
+            starting_bucket,
+            "the six calls crossed a rate-limit window boundary, so the run "
+            "measured two quotas; the harness timing failed, not the server",
+        )
         self.assertEqual(admitted, 3)
+        self.assertEqual(refused, 3)
+        statuses = [row[7] for row in self.audit_rows(state_path)]
+        self.assertEqual(len(statuses), 6)
+        self.assertEqual(statuses.count("success"), 3)
+        self.assertEqual(statuses.count("rate_limited"), 3)
 
     def test_the_state_directory_and_database_are_private(self):
         state_path = self.state_directory("private-state")
