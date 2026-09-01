@@ -4,9 +4,13 @@
 The census binary writes three row kinds into one TSV: `census_pipeline`
 (identity and RADV statistics, once per pipeline on first dispatch),
 `census_dispatch` (one per recorded dispatch with its GPU interval), and
-`census_graph` (per graph: node count, dispatch count, host wall time, the
-sum of dispatch intervals, the union from the first timestamp to the last,
-an overflow flag, and where the pool was read). A graph is a decode graph
+`census_graph` (per graph: node count, dispatch count, the host time spent
+recording and submitting, the span from graph start to the read that
+retired the pool, the sum of dispatch intervals, the union from the first
+timestamp to the last, an overflow flag, and where the pool was read). On
+the asynchronous path the read is the synchronize the caller waits in for
+the logits, so the span bounds the token and the recording time bounds only
+the host's part of it; the residual is span minus union. A graph is a decode graph
 where the largest MUL_MAT token column count is 1; every other graph is a
 prefill or warm-up graph and is reported separately.
 
@@ -59,11 +63,12 @@ def parse(path):
                     "gpu_ns": int(gpu_ns), "submit": int(submit_serial),
                 })
             elif kind == "census_graph":
-                (serial, n_nodes, n_dispatches, wall_ns, sum_ns, union_ns,
-                 overflow, read_at) = row[1:9]
+                (serial, n_nodes, n_dispatches, record_ns, span_ns, sum_ns,
+                 union_ns, overflow, read_at) = row[1:10]
                 graphs[int(serial)] = {
                     "n_nodes": int(n_nodes), "dispatches": int(n_dispatches),
-                    "wall_ns": int(wall_ns), "sum_ns": int(sum_ns),
+                    "record_ns": int(record_ns), "span_ns": int(span_ns),
+                    "sum_ns": int(sum_ns),
                     "union_ns": int(union_ns), "overflow": int(overflow),
                     "read_at": read_at,
                 }
@@ -95,8 +100,8 @@ def main():
         if graph["overflow"]:
             print(f"graph {serial} overflowed its query pool and is excluded", file=sys.stderr)
             continue
-        if graph["union_ns"] > graph["wall_ns"]:
-            print(f"graph {serial} union {graph['union_ns']} exceeds wall {graph['wall_ns']}; the timestamp conversion is refuted",
+        if graph["union_ns"] > graph["span_ns"]:
+            print(f"graph {serial} union {graph['union_ns']} exceeds span {graph['span_ns']}; the timestamp conversion is refuted",
                   file=sys.stderr)
             return 1
         selected.append((serial, graph, rows))
@@ -115,7 +120,8 @@ def main():
     n_graphs = len(selected)
     union_total = sum(g["union_ns"] for _s, g, _r in selected)
     sum_total = sum(g["sum_ns"] for _s, g, _r in selected)
-    wall_total = sum(g["wall_ns"] for _s, g, _r in selected)
+    span_total = sum(g["span_ns"] for _s, g, _r in selected)
+    record_total = sum(g["record_ns"] for _s, g, _r in selected)
     print("\t".join([
         "pipeline", "id", "name", "constants", "wg_denoms", "subgroup",
         "calls_per_graph", "workgroups_per_graph", "total_gpu_ms",
@@ -149,8 +155,9 @@ def main():
         "graphs", args.phase, n_graphs,
         f"sum_ms_per_graph={sum_total / n_graphs / 1e6:.3f}",
         f"union_ms_per_graph={union_total / n_graphs / 1e6:.3f}",
-        f"wall_ms_per_graph={wall_total / n_graphs / 1e6:.3f}",
-        f"residual_ms_per_graph={(wall_total - union_total) / n_graphs / 1e6:.3f}",
+        f"span_ms_per_graph={span_total / n_graphs / 1e6:.3f}",
+        f"record_ms_per_graph={record_total / n_graphs / 1e6:.3f}",
+        f"residual_ms_per_graph={(span_total - union_total) / n_graphs / 1e6:.3f}",
         f"read_at={','.join(sorted(set(g['read_at'] for _s, g, _r in selected)))}",
         f"device={opened.get('device', '-')}",
         f"serialize_submissions={opened.get('serialize_submissions', '-')}",
