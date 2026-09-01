@@ -912,24 +912,29 @@ def run(argv):
         sys.stderr.write(f"the broker cannot open the ledger: {error}\n")
         return 2
     ledger.close()
-    settings.session_secret, secret_path = write_session_secret(arguments.state_dir)
-    service = BrokerServer((arguments.host, arguments.port), settings)
-    # The port reaches the caller on stdout because an ephemeral bind is the
-    # default: a launcher reads the line rather than guessing the number.
-    sys.stdout.write(f"listening {arguments.host} {service.server_address[1]}\n")
-    sys.stdout.flush()
-    # A terminating signal raises inside the accept loop rather than ending the
-    # process where it stands, so the cleanup below runs and the secret file
-    # goes with the launch that wrote it. The default SIGTERM disposition would
-    # leave that file behind for the next launch to find.
+    # A terminating signal raises rather than ending the process where it
+    # stands, so the cleanup below runs and the secret file goes with the
+    # launch that wrote it. The handlers precede the secret write and the
+    # readiness line: a launcher may signal the moment it reads `listening`,
+    # and the default SIGTERM disposition in that window would leave the file
+    # behind for the next launch to find.
     for terminating_signal in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         signal.signal(terminating_signal, raise_interrupt)
+    settings.session_secret, secret_path = write_session_secret(arguments.state_dir)
+    service = None
     try:
+        service = BrokerServer((arguments.host, arguments.port), settings)
+        # The port reaches the caller on stdout because an ephemeral bind is
+        # the default: a launcher reads the line rather than guessing the
+        # number.
+        sys.stdout.write(f"listening {arguments.host} {service.server_address[1]}\n")
+        sys.stdout.flush()
         service.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
-        service.server_close()
+        if service is not None:
+            service.server_close()
         if os.path.lexists(secret_path):
             os.unlink(secret_path)
     return 0

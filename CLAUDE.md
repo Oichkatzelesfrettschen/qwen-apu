@@ -174,12 +174,14 @@ the newest checkpoint below the divergence point instead of reconstructing
 the Gated DeltaNet state from zero: `evidence/ctx-checkpoint-sweep/` measures
 turn 2 at a 30K prompt boundary charging 27 tokens under any positive count
 where zero charges 30748, on all three classes. The count is a row property
-rather than an appliance default because the 0.8B alone emits a different
-first-turn token at zero-based index 25 once checkpoints are armed, on every
-positive arm and neither zero arm, which the forced prefill tail partition at
-`server-context.cpp:3449` (`checkpoint_offsets[] = {4 + n_ubatch, 4}`)
-supports; the 2B and 4B hold identity on both turns. The 2B and 4B rows read
-2, the 0.8B reads 0, and a row absent from the ledger reads 0.
+rather than an appliance default because the 0.8B alone emitted a different
+first-turn token at zero-based index 25 once checkpoints were armed, on every
+positive arm and neither zero arm, which the forced prefill tail partition
+(`checkpoint_offsets[] = {4 + n_ubatch, 4}`) produced while the 2B and 4B held
+identity on both turns. The eighth production patch removes that partition and
+`evidence/ctx-checkpoint-natural-boundary/` measures all three classes holding
+token and log-probability identity across the setting, so every served row
+reads 2 and a row absent from the ledger reads 0.
 `model-registry.sh ctx-checkpoints` and `ctx-checkpoint MODEL_ID` validate the
 whole ledger before answering, a count above 0 requires an evidence path, and
 `QWEN_CTX_CHECKPOINT_LEDGER` names another file for a fixture. Row shape is a
@@ -583,8 +585,12 @@ five-column occupancy step `evidence/mtp-speculation-matrix.md` measures, where
 its S4 and S6 arms decoded slower than no speculation at all.
 `remote/measure-draft-pair.sh PAIR_ID OUTPUT_DIR` runs the 2B pairing first and
 the 4B second, measures each against a same-session control of the target alone
-in the order control, pair, pair, control, refuses to start beside a server
-holding the device, and refuses a `quarantine` row outright.
+in the order control, pair, pair, control, holds the shared Vulkan lease,
+refuses listeners on both guarded ports, and requires an absent output path.
+The harness snapshots the registry reader and its three ledgers before lookup,
+binds every HTTP exchange to one PID, start time, and listener inode, and runs
+the retained summarizer only from one hash-verified in-memory read. A
+`quarantine` row remains terminal before any server starts.
 `evidence/draft-pairs/README.md` registers the falsifiers and the tokenizer
 finding the pairing rests on.
 
@@ -955,6 +961,66 @@ appliance's tree was one patch behind the verifier's list before this
 promotion, which the digest line in the promote chain now catches before a
 build.
 
+`patches/llama-server-natural-checkpoint-boundary.patch` is the eighth member
+and it decides what a positive `--ctx-checkpoints` count means.
+`server-context.cpp` at the pinned commit force-breaks the prompt fill loop
+`4 + n_ubatch` and `4` tokens from the end whenever checkpoints are armed, so
+the decode execution shape differs between a count of 0 and a count of 2 and
+the 0.8B emits a different first-turn token at zero-based index 25 on every
+positive arm. The patch removes that block, leaving checkpoints on the natural
+`n_batch` boundaries the loop already produces. All three classes then hold
+token identity across the setting: five 4B witnesses -- frozen production c0,
+candidate c0 opening, candidate c2 first, candidate c2 repeat, candidate c0
+closing -- agree bit-for-bit on ids and retained logprobs over both turns while
+a c2 second turn charges 28 tokens against 30,748, and the 0.8B and 2B carry
+the same relation. `evidence/ctx-checkpoint-natural-boundary/` retains the runs.
+
+The ledger and the binary are separate release artifacts, so an edit to
+`remote/ctx-checkpoints.tsv` alone would pair a positive count with the
+unrepaired implementation. A build earns its declaration rather than asserting
+one: `build-llama-preset.sh` writes `checkpoint_semantics` as
+`natural-boundary-v1` only where the repository still holds the patch at
+`c9d40105...`, the `tools/server/server-context.cpp` it compiles hashes to the
+`3744317b...` that `verify-llama-patch-series.sh` pins for the replayed series,
+and the `checkpoint_offsets` array is absent from that source. The negative
+name is earned the same way: `forced-tail-v1` requires the source to hash to
+`a79cf9e1...`, the pinned commit's own `server-context.cpp` that the
+seven-patch production prefix leaves untouched, and every other source writes
+`unknown`, since a later upstream revision may restructure the partition or
+place checkpoints by a third rule that no digest here identifies. Both names
+refuse a positive count and attribute the refusal to different sources. The
+manifest records `checkpoint_patch`,
+`checkpoint_patch_sha256`, `checkpoint_source_sha256`, and
+`checkpoint_patch_series_sha256` beside it, so the claim is checkable after the
+fact rather than trusted. A preset name is a build role and proves no source
+repair, and a caller-supplied value proves less, which is why neither decides
+the field.
+
+`remote/llama-patch-series.tsv` states the ordered series once.
+`verify-llama-patch-series.sh` replays its `production` stage and prints one
+`patch_series_sha256` over the members' own digests in ledger order,
+`prepare-llama-vulkan-source.sh` applies that stage to a clean tree, and
+`build-llama-preset.sh` recomputes the same digest for the manifest. A member
+added to the ledger reaches all three rather than one.
+
+`qwen-capacity-policy.sh` refuses a positive count against any declaration
+other than `natural-boundary-v1` while the reason is still readable beside the
+argv it would have produced, and `qwen-build-exec-guard.sh` states it again at
+the exec boundary on both serving paths, after `radv-low-priority-env.sh` and
+ahead of `qwen-router-exec-guard.sh` where a router launch runs one. The guard
+resolves the executable through its symlinks, requires the manifest to still
+hash to what the policy measured, requires exactly one executable row matching
+that server's own byte count and digest, and requires exactly one
+`checkpoint_semantics` row, so a symlink repointed, a manifest relabelled, or a
+server replaced between assembly and exec is refused rather than served. The
+requirement follows the count that will actually reach a server: the ledger's
+row on the single-model path, and a positive `LLAMA_ARG_CTX_CHECKPOINTS` in
+some preset section under router mode, so an all-zero preset launches a build
+predating the declaration. `promote-llama-build.sh` applies the same rule at
+the symlink swap and refuses a rollback to a target the current policy cannot
+launch, since a rollback that leaves the appliance refusing every launch trades
+a wrong answer for an outage nobody chose.
+
 ## Commands
 
 ```sh
@@ -993,7 +1059,7 @@ remote/model-registry.sh id|path SELECTOR [FIELD]
 remote/model-registry.sh draft-pairs | draft-pair PAIR_ID [FIELD]
 remote/model-registry.sh ctx-checkpoints | ctx-checkpoint MODEL_ID
 remote/measure-draft-pair.sh PAIR_ID OUTPUT_DIR
-                                                # one pairing against its own control, ABBA
+                                                # snapshot-bound ABBA pairing
 remote/build-router-presets.sh [OUTPUT_INI]    # the picker, from the tier field
 remote/build-web-presets.sh OUTPUT_INI         # web profiles, from the execution_policy field
 remote/fetch-candidate-artifact.sh REPO REV FILE DIR  # observed, not pinned
@@ -1056,6 +1122,7 @@ remote/test-qwen-runtime-guards.sh
 remote/test-radv-low-priority-env.sh
 remote/test-model-registry.sh
 remote/test-model-tiers.sh
+python3 remote/test-summarize-draft-pair.py
 remote/test-measure-draft-pair.sh
 remote/test-probe-depth-projector.sh
 remote/test-web-presets.sh

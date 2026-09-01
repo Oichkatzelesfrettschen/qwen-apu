@@ -1,0 +1,2 @@
+turn=1 arm=1 ctx_checkpoints=0 reference=self
+turn=2 arm=1 ctx_checkpoints=0 reference=self

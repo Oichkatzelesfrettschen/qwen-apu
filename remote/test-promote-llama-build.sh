@@ -65,6 +65,8 @@ write_manifest() {
         printf 'preset\t%s\n' "$preset"
         printf 'commit\t0000000000000000000000000000000000000000\n'
         printf 'worktree\tclean\n'
+        printf 'checkpoint_semantics\t%s\n' \
+            "${fixture_checkpoint_semantics:-natural-boundary-v1}"
         for object_name in llama-server llama-cli llama-mtmd-cli \
             libggml-vulkan.so; do
             object_path=$build_directory/bin/$object_name
@@ -111,6 +113,13 @@ esac
 failing_closure_tools=$work_directory/failing-closure-tools
 mkdir -p "$failing_closure_tools"
 cp "$promoter" "$failing_closure_tools/promote-llama-build.sh"
+# The promoter resolves the checkpoint policy beside itself through the
+# canonical validator, so a copied tools directory carries the ledger, the
+# validator, and the model registry, and this arm measures the closure failure
+# rather than an absent authority.
+cp "$script_directory/ctx-checkpoints.tsv" "$failing_closure_tools/ctx-checkpoints.tsv"
+cp "$script_directory/model-registry.sh" "$failing_closure_tools/model-registry.sh"
+cp "$script_directory/models.tsv" "$failing_closure_tools/models.tsv"
 cat >"$failing_closure_tools/hash-load-closure.sh" <<'CLOSURE'
 #!/bin/sh
 printf 'role\tbasename\tbytes\tsha256\n'
@@ -288,6 +297,7 @@ printf 'fixture backend, second arm\n' >"$second_build_directory/bin/libggml-vul
     printf 'preset\t%s\n' "$second_preset"
     printf 'commit\t0000000000000000000000000000000000000000\n'
     printf 'worktree\tclean\n'
+    printf 'checkpoint_semantics\tnatural-boundary-v1\n'
     for object_name in llama-server llama-cli llama-mtmd-cli \
         libggml-vulkan.so; do
         object_path=$second_build_directory/bin/$object_name
@@ -321,6 +331,163 @@ else
     report rollback_restores rejected
     printf '%s\n' "$rollback_output" >&2
 fi
+
+# The checkpoint policy and the serving artifact meet at promotion. A target
+# that declares no measured checkpoint semantics is refused while the policy
+# arms a positive count, and the same target is refused as a rollback
+# destination before the symlink moves, since a rollback that leaves the
+# appliance unable to launch trades a wrong answer for an outage nobody chose.
+undeclared_ledger=$work_directory/undeclared-ctx-checkpoints.tsv
+printf 'fixture\t2\tevidence/depth-versus-submission-geometry.md\n' \
+    >"$undeclared_ledger"
+zero_ledger=$work_directory/zero-ctx-checkpoints.tsv
+printf 'fixture\t0\t-\n' >"$zero_ledger"
+# The canonical validator joins each ledger row to the model registry, so the
+# fixture ledgers carry a registry naming their one model id.
+fixture_model_registry=$work_directory/fixture-models.tsv
+printf 'fixture\tresearch\tFixture/fixture.gguf\n' >"$fixture_model_registry"
+
+fixture_checkpoint_semantics=forced-tail-v1
+write_manifest
+set +e
+undeclared_output=$(QWEN_CTX_CHECKPOINT_LEDGER=$undeclared_ledger \
+    QWEN_MODEL_REGISTRY=$fixture_model_registry \
+    "$promoter" "$preset" "$work_directory" 2>&1)
+undeclared_status=$?
+set -e
+case $undeclared_status:$undeclared_output in
+    0:*)
+        report undeclared_semantics_rejected rejected
+        printf '%s\n' "$undeclared_output" >&2
+        ;;
+    *:*"requires natural-boundary-v1"*)
+        report undeclared_semantics_rejected accepted ;;
+    *)
+        report undeclared_semantics_rejected rejected
+        printf '%s\n' "$undeclared_output" >&2
+        ;;
+esac
+
+# The same build promotes once the policy arms no positive count, so the gate
+# reads the policy rather than refusing every undeclared build.
+set +e
+zero_policy_output=$(QWEN_CTX_CHECKPOINT_LEDGER=$zero_ledger \
+    QWEN_MODEL_REGISTRY=$fixture_model_registry \
+    "$promoter" "$preset" "$work_directory" 2>&1)
+zero_policy_status=$?
+set -e
+case $zero_policy_status:$zero_policy_output in
+    0:*"checkpoint_semantics=forced-tail-v1"*)
+        report zero_policy_promotes accepted ;;
+    *)
+        report zero_policy_promotes rejected
+        printf '%s\n' "$zero_policy_output" >&2
+        ;;
+esac
+
+# That promotion retained the previous target, so a rollback under a positive
+# policy now has an incompatible destination to refuse.
+set +e
+rollback_refusal_output=$(QWEN_CTX_CHECKPOINT_LEDGER=$undeclared_ledger \
+    QWEN_MODEL_REGISTRY=$fixture_model_registry \
+    "$promoter" --rollback "$work_directory" 2>&1)
+rollback_refusal_status=$?
+set -e
+case $rollback_refusal_status:$rollback_refusal_output in
+    0:*)
+        report incompatible_rollback_rejected rejected
+        printf '%s\n' "$rollback_refusal_output" >&2
+        ;;
+    *:*"rollback target declares checkpoint_semantics="*)
+        report incompatible_rollback_rejected accepted ;;
+    *)
+        report incompatible_rollback_rejected rejected
+        printf '%s\n' "$rollback_refusal_output" >&2
+        ;;
+esac
+
+# An unreadable policy states no requirement, so promotion stops rather than
+# reading absence as a count of zero and moving the symlink onto a build the
+# next launch refuses.
+set +e
+absent_ledger_output=$(QWEN_CTX_CHECKPOINT_LEDGER=$work_directory/no-such-ledger.tsv \
+    "$promoter" "$preset" "$work_directory" 2>&1)
+absent_ledger_status=$?
+set -e
+case $absent_ledger_status:$absent_ledger_output in
+    0:*)
+        report absent_policy_rejected rejected
+        printf '%s\n' "$absent_ledger_output" >&2
+        ;;
+    *:*"context checkpoint policy is unreadable"*)
+        report absent_policy_rejected accepted ;;
+    *)
+        report absent_policy_rejected rejected
+        printf '%s\n' "$absent_ledger_output" >&2
+        ;;
+esac
+
+# Two declarations leave the manifest stating nothing, so the gate refuses on
+# ambiguity rather than reading whichever row comes first.
+fixture_checkpoint_semantics=natural-boundary-v1
+write_manifest
+printf 'checkpoint_semantics\tforced-tail-v1\n' \
+    >>"$build_directory/artifact-manifest.tsv"
+set +e
+ambiguous_output=$(QWEN_CTX_CHECKPOINT_LEDGER=$undeclared_ledger \
+    QWEN_MODEL_REGISTRY=$fixture_model_registry \
+    "$promoter" "$preset" "$work_directory" 2>&1)
+ambiguous_status=$?
+set -e
+case $ambiguous_status:$ambiguous_output in
+    0:*)
+        report ambiguous_semantics_rejected rejected
+        printf '%s\n' "$ambiguous_output" >&2
+        ;;
+    *:*"checkpoint_semantics=ambiguous"*)
+        report ambiguous_semantics_rejected accepted ;;
+    *)
+        report ambiguous_semantics_rejected rejected
+        printf '%s\n' "$ambiguous_output" >&2
+        ;;
+esac
+
+# A readable ledger whose rows fail the canonical validation states no
+# requirement either: a textual count coerces to zero under arithmetic, which
+# is the coercion that would roll back onto a forced-tail build while the
+# appliance still arms a positive count. Each mutation is refused with the
+# validation named rather than read as an all-zero policy.
+fixture_checkpoint_semantics=natural-boundary-v1
+write_manifest
+malformed_ledger=$work_directory/malformed-ctx-checkpoints.tsv
+for malformed_case in \
+    'textual-count:fixture\ttwo\tevidence/depth-versus-submission-geometry.md' \
+    'row-width:fixture\t2' \
+    'duplicate-id:fixture\t0\t-\nfixture\t0\t-' \
+    'unknown-model:absent-model\t0\t-' \
+    'unmeasured-positive:fixture\t2\t-'; do
+    malformed_name=${malformed_case%%:*}
+    printf '%b\n' "${malformed_case#*:}" >"$malformed_ledger"
+    set +e
+    malformed_output=$(QWEN_CTX_CHECKPOINT_LEDGER=$malformed_ledger \
+        QWEN_MODEL_REGISTRY=$fixture_model_registry \
+        "$promoter" "$preset" "$work_directory" 2>&1)
+    malformed_status=$?
+    set -e
+    case $malformed_status:$malformed_output in
+        0:*)
+            report "malformed_policy_${malformed_name}_rejected" rejected
+            printf '%s\n' "$malformed_output" >&2
+            ;;
+        *:*"context checkpoint policy failed validation"*)
+            report "malformed_policy_${malformed_name}_rejected" accepted ;;
+        *)
+            report "malformed_policy_${malformed_name}_rejected" rejected
+            printf '%s\n' "$malformed_output" >&2
+            ;;
+    esac
+done
+write_manifest
 
 # A preset that produced llama-server and no llama-mtmd-cli must refuse
 # promotion. The vision profile is served by the same tree, so a promotion that

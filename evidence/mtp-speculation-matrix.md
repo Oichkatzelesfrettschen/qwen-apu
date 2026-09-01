@@ -12,6 +12,19 @@ reason the n-gram section gives, and the tables that survive it are named there.
 The column cost series and the occupancy cliff rest on that suite alone, because
 they need arms at five and seven columns and only it has them.
 
+The checkout retains the synthesized matrix but lacks the raw request bodies,
+response bodies, server logs, token arrays, and clock samples for the named MTP
+arms. The reported rates, counters, and pass costs support the algebra below but
+cannot be independently reconstructed from checkout artifacts. A repeat must
+bind every request and response, server and listener identity, executed source
+hash, exact token array, speculation counters, clock samples, and terminal
+health to each arm before the reported measurements become replayable evidence.
+
+The experiment registered 4.5 tok/s as its historical target before execution.
+The current performance specification raises the 4B target to 5.25 tok/s.
+Historical predictions and falsifiers below retain 4.5 where that value governed
+the arm, while the forward-looking mechanism bounds use 5.25.
+
 ## The head needs no patch and no sidecar
 
 An earlier revision of `evidence/qwen38-distill-tensor-census.md` recorded
@@ -29,7 +42,7 @@ holds the one appended block rather than a second trunk.
 
 The server log confirms each step:
 
-```
+```text
 common_speculative_init_result: creating MTP draft context against the target model
 llama_context: n_outputs_max = 2
 spec common_specu: adding speculative implementation 'draft-mtp'
@@ -43,7 +56,7 @@ for a plumbing reason.
 
 ## Acceptance clears the admission threshold by a wide margin
 
-| arm | prompt | decode tok/s | verification steps | acceptance | mean accepted length |
+| arm | prompt | tok/s | target steps | acceptance | tokens/target step |
 | --- | --- | ---: | ---: | ---: | ---: |
 | S0 | code | 3.09 | - | - | - |
 | S0 | prose | 3.10 | - | - | - |
@@ -59,15 +72,16 @@ figure once the head's own cost is counted. Measured acceptance is 0.934 across
 the three prompts, so the threshold is cleared and the arm is admitted on that
 criterion.
 
-Speedup is 1.17 to 1.22 times, not the 1.90 the accepted length implies. The
+Speedup is 1.17 to 1.22 times, not the 1.90 tokens per target step implies. The
 gap between those two numbers is the finding.
 
 ## Decode on this APU is not bandwidth-bound, and the matrix shows where
 
-The target ran 67 passes to produce 128 tokens where the unspeculated arm ran
-128. If a two-column pass cost what a one-column pass costs, the whole 1.90
-would arrive as wall clock. Splitting each arm's measured time into target and
-draft with the per-request `dur(g)` the speculation statistics report:
+The target ran 67 post-first passes to produce 127 post-first tokens where the
+unspeculated arm ran 127; prompt logits produced the first token in both arms.
+If a two-column pass cost what a one-column pass costs, the whole 1.90 would
+arrive as wall clock. Splitting each arm's measured time into target and draft
+with the per-request `dur(g)` the speculation statistics report:
 
 | quantity | value |
 | --- | ---: |
@@ -88,19 +102,21 @@ an arm. `ggml-vulkan.cpp` sets `mul_mat_vec_max_cols = 8` and routes to
 every arm from N=1 through N=7 stays on the same GEMV kernel and none of them
 falls back to the GEMM path. `mul_mat_vec_q4_k.comp` already hoists the
 dequantization out of its `NUM_COLS` loop: the sixteen `q4_*` values and the
-eight scales are computed once per row and reused. What the loop does per
-column is the dot product and the `smin` correction, roughly 31 fused
-multiply-adds per 32-element chunk, and that is the work the measurement bills
-at 140 ms.
+eight scales are computed once per row and reused. The loop performs four
+four-term dot products, the `smin` correction, and final accumulation per
+column. The `smin` expression alone contains fifteen fused multiply-adds and one
+terminal multiply: sixteen source FP instructions representing 31 scalar
+multiply or add operations before compiler lowering. The measured 140 ms bills
+the complete additional-column path rather than assigning time to `smin`.
 
 ## The prediction is refuted, and the deviation locates a cliff
 
 The MTP head drafts sequentially, so an arm at N pays N draft passes and
 verifies 1+N columns. Before the deeper arms ran, the recorded model was a step
-time of `323 + 206.4 N` ms with a mean accepted length of `sum 0.93^k`, giving a
-flat peak near 3.8 tok/s at N=2 to N=3, a ceiling below 4.5, and a two-sided
-falsifier: any arm above 4.1 tok/s, or any arm more than 15% below its predicted
-rate.
+time of `323 + 206.4 N` ms with expected tokens per target step of
+`sum 0.93^k`, giving a flat peak near 3.8 tok/s at N=2 to N=3, a ceiling below
+4.5, and a two-sided falsifier: any arm above 4.1 tok/s, or any arm more than
+15% below its predicted rate.
 
 The low side tripped, hard.
 
@@ -116,9 +132,10 @@ S4 and S6 fall below the 3.09 of the unspeculated arm, so drafting four or six
 tokens ahead is slower than not speculating at all. Two errors combine there and
 they separate cleanly.
 
-Acceptance decays faster than a uniform 0.93 allows. Measured mean accepted
-length is 2.00, 2.91, 3.66, 4.16, and 5.41 against a predicted 1.93, 2.80, 3.60,
-4.35, and 5.69, so depth is close through N=3 and the top two arms fall short.
+Acceptance decays faster than a uniform 0.93 allows. Measured tokens per target
+step are 2.00, 2.91, 3.66, 4.16, and 5.41 against predicted values of 1.93,
+2.80, 3.60, 4.35, and 5.69, so depth is close through N=3 and the top two arms
+fall short.
 
 The cost model is where the refutation lives. Subtracting the draft time the
 speculation statistics report leaves the target verification pass:
@@ -253,29 +270,42 @@ baseline by a useful margin, and it does so on all three prompts:
 | S6 | 1.93 | 1.73 | 2.63 | 0.543 |
 
 The gain is 1.17 to 1.22 times on the looping suite and 1.13 to 1.16 on the chat
-suite, and the latter is the operational figure. Reaching 4.5 tok/s from 3.07
-needs 1.466, so the embedded head closes about a quarter of that gap, drafting
+suite, and the latter is the operational figure. The current 5.25 tok/s target
+requires 1.744x against the conservative 3.01 tok/s planning baseline. The
+embedded head cannot close that gap at the reported costs: perfect N=1
+acceptance reaches 3.777 tok/s, and a free draft reaches 4.319 tok/s. Drafting
 deeper closes none of the rest, backend sampling closes none, and n-gram
-drafting costs rather than closes. The two remaining paths are a cheaper
-verification pass, which the column table prices, and a checkpoint that streams
-fewer bytes, which the low-bit quantization ladder measures.
+drafting crosses 5.25 only on the retired arithmetic row while drafting nothing
+on code. The configuration fails the all-prompt target. The remaining path combines a
+cheaper verification pass with a cheaper draft pass or another independently
+measured gain; byte reduction alone already failed in the low-bit ladder.
 
 ## The candidate the decomposition names
 
-`smin` in `mul_mat_vec_q4_k.comp` is one chain of sixteen dependent fused
-multiply-adds per column. Each scale multiplies four components of `b` that the
-chain visits separately, so the same value is applied four times in sequence:
-`sc2` against the four components of `by10`, `sc3` against `by132`, `sc6`
-against `by20`, `sc7` against `by232`. Summing each `vec4` first and then
-applying its scale is four independent three-add reductions feeding four
-multiply-adds, which is the same sixteen operations rearranged. The arithmetic
-volume is unchanged; what changes is the dependency chain, from sixteen deep to
-four, and the instruction-level parallelism available to hide it.
+`smin` in `mul_mat_vec_q4_k.comp` is a sixteen-instruction dependency chain of
+fifteen fused multiply-adds ending in one multiply per column. Each scale
+multiplies four components of `b` that the chain visits separately, so the same
+value is applied four times in sequence: `sc2` against the four components of
+`by10`, `sc3` against `by132`, `sc6` against `by20`, and `sc7` against `by232`.
+Summing each `vec4` first and then applying its scale produces four independent
+three-add reductions, four multiplies, and three final adds. The distributive
+form therefore changes 31 scalar multiply or add operations to 19, but it can
+also change sixteen issued FP instructions to nineteen when each FMA issues as
+one instruction. The rewrite changes dependency depth and rounding order while
+removing twelve scalar multiplications; source arithmetic alone predicts no
+speedup.
 
-That makes the candidate worth measuring and its size unpredicted. A chain that
-is latency-bound gains; one that the compiler already reassociates gains
-nothing. The measurement is the two-column target pass time against the 463.1 ms
-this arm recorded, and the falsification criterion is that it does not move.
+The optimistic scalar-operation ratio is `31 / 19 = 1.632`. Perfect N=1
+acceptance with the reported 66.4 ms draft pass requires the 463.1 ms
+two-column target pass to reach 314.552 ms for 5.25 tok/s. Removing the required
+148.548 ms under the optimistic ratio requires `smin` to own
+`(148.548 / 463.1) / (1 - 19 / 31) = 82.865%` of the whole pass. The older
+47.4% coefficient prices the superseded 4.5 tok/s target. Source structure
+does not establish either ownership. The candidate measurement compares stock
+and distributive SPIR-V and gfx902 ISA, VGPR, SGPR, LDS, scratch, logits, exact
+greedy tokens, and matched two-column pass time. The performance hypothesis
+fails when the matched pass does not move, and the correctness candidate fails
+when the selected token-equivalence rule rejects the output.
 
 ## Greedy token identity breaks, and the control rules out the easy explanation
 
@@ -334,8 +364,9 @@ across settings it is not, as the chat suite shows below.
 creating the draft context while drafting nothing. It aborts the server on the
 first prompt instead:
 
-```
-src/llama-context.cpp:2227: GGML_ASSERT(n_outputs_max <= cparams.n_outputs_max) failed
+```text
+src/llama-context.cpp:2227:
+  GGML_ASSERT(n_outputs_max <= cparams.n_outputs_max) failed
   llama_context::output_reserve(int)
   llama_context::decode(llama_batch const&)
 ```

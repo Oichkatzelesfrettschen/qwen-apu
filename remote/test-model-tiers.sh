@@ -506,7 +506,7 @@ printf '%s\n' \
     'draft-record	model	draft-model	device-lost	-	-	-	-	-	-	-	-	evidence/quarantine/draft-record.md	any' \
     >"$pair_fixture_quarantine"
 printf '%s\n' \
-    'target-model+draft	target-model	draft-model	candidate	2	0.00	8192	q8_0	q4_0	-	fixture pairing' \
+    'target-model+draft	target-model	draft-model	candidate	2	0.00	0.896	8192	q8_0	q4_0	-	fixture pairing' \
     >"$pair_fixture_pairs"
 pair_fixture_status=0
 QWEN_MODEL_REGISTRY=$pair_fixture_registry QWEN_MODEL_ROOT=$pair_fixture_root \
@@ -523,6 +523,30 @@ if [ "$pair_fixture_status" -ne 0 ] &&
 else
     report draft_pair_quarantined_draft_refused rejected
     cat "$work/pair-fixture.err" >&2
+fi
+
+# The acceptance floor drives admission rather than presentation alone. The
+# ledger reader rejects an out-of-range value before a harness can interpret it
+# as a permissive threshold.
+pair_fixture_invalid_floor=$work/pair-fixture-invalid-floor.tsv
+pair_fixture_empty_quarantine=$work/pair-fixture-empty-quarantine.tsv
+sed 's/	0\.896	/	1.001	/' "$pair_fixture_pairs" \
+    >"$pair_fixture_invalid_floor"
+: >"$pair_fixture_empty_quarantine"
+if QWEN_MODEL_REGISTRY=$pair_fixture_registry \
+    QWEN_QUARANTINE_REGISTRY=$pair_fixture_empty_quarantine \
+    QWEN_DRAFT_PAIRS=$pair_fixture_invalid_floor \
+    "$reader" draft-pairs >"$work/pair-invalid-floor.log" \
+        2>"$work/pair-invalid-floor.err"; then
+    report draft_pair_invalid_acceptance_floor_refused rejected
+else
+    if grep -q 'acceptance_floor 1.001 is not a decimal fraction in \[0,1\]' \
+        "$work/pair-invalid-floor.err"; then
+        report draft_pair_invalid_acceptance_floor_refused accepted
+    else
+        report draft_pair_invalid_acceptance_floor_refused rejected
+        cat "$work/pair-invalid-floor.err" >&2
+    fi
 fi
 
 # The checkpoint ledger identity is retained across generation and compared

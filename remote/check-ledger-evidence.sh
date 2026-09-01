@@ -100,7 +100,7 @@ EOF
 }
 
 check_ledger 'validated tuple ledger' "$tuple_ledger" 1 15
-check_ledger 'draft pair ledger' "$draft_pair_ledger" 1 10
+check_ledger 'draft pair ledger' "$draft_pair_ledger" 1 11
 check_ledger 'context checkpoint ledger' "$ctx_checkpoint_ledger" 1 3
 
 if [ "$failures" -eq 0 ]; then

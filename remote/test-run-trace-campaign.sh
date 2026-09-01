@@ -158,7 +158,7 @@ grep -q 'held by llama-server' "$work_directory/out-held.stderr" ||
     held_state='an arm ran while the device was held'
 report refuses_while_server_runs "$held_state"
 
-# The trace-source gate refuses a build whose tree is not the six-patch replay,
+# The trace-source gate refuses a build whose tree is not the eight-patch replay,
 # which is what keeps a diagnostic binary from an earlier revision off an arm.
 stale_source=$work_directory/stale-trace-source
 mkdir -p "$stale_source/.git" "$stale_source/tools/server" \
@@ -179,9 +179,70 @@ stale_status=$?
 set -e
 stale_state=accepted
 [ "$stale_status" -eq 2 ] || stale_state="a stale trace source exited $stale_status"
-grep -q 'six-patch replay' "$work_directory/out-stale.stderr" ||
-    stale_state='the refusal did not name the six-patch replay'
+grep -q 'eight-patch path set' "$work_directory/out-stale.stderr" ||
+    stale_state='the refusal did not name the eight-patch replay'
 report refuses_stale_trace_source "$stale_state"
+
+# The status checker is part of the campaign's source authority, so an
+# environment value cannot replace it. The fixture carries the eight expected
+# paths plus one unrelated tracked modification. A caller-supplied /bin/true
+# would admit the status and advance to the digest checks if the override still
+# controlled the gate.
+extra_path_source=$work_directory/extra-path-trace-source
+git -c core.fsmonitor=false init -q "$extra_path_source"
+git -c core.fsmonitor=false -C "$extra_path_source" config user.name fixture
+git -c core.fsmonitor=false -C "$extra_path_source" config \
+    user.email fixture@example.invalid
+mkdir -p "$extra_path_source/ggml/src/ggml-vulkan" \
+    "$extra_path_source/src" "$extra_path_source/tools/server"
+for tracked_path in \
+    ggml/src/ggml-vulkan/ggml-vulkan.cpp \
+    src/llama-context.cpp \
+    src/llama-model-loader.cpp \
+    tools/server/server-context.cpp \
+    tools/server/server.cpp \
+    unrelated.txt; do
+    printf 'base\n' >"$extra_path_source/$tracked_path"
+done
+git -c core.fsmonitor=false -C "$extra_path_source" add .
+git -c core.fsmonitor=false -C "$extra_path_source" commit -qm base
+for tracked_path in \
+    ggml/src/ggml-vulkan/ggml-vulkan.cpp \
+    src/llama-context.cpp \
+    src/llama-model-loader.cpp \
+    tools/server/server-context.cpp \
+    tools/server/server.cpp; do
+    printf 'patched\n' >>"$extra_path_source/$tracked_path"
+done
+for added_path in \
+    ggml/src/ggml-vulkan/ggml-vulkan-pacing.h \
+    ggml/src/ggml-vulkan/ggml-vulkan-submit-limit.h \
+    ggml/src/ggml-vulkan/ggml-vulkan-submit-trace.h; do
+    printf 'patched\n' >"$extra_path_source/$added_path"
+done
+if ! "$script_directory/check-trace-source-status.sh" \
+        "$extra_path_source" >/dev/null; then
+    printf 'extra-path fixture does not start from the accepted eight-path status\n' >&2
+    exit 1
+fi
+printf 'patched\n' >>"$extra_path_source/unrelated.txt"
+extra_path_output=$work_directory/out-extra-path-source
+set +e
+run_campaign "$extra_path_output" \
+    QWEN_TRACE_SOURCE_DIR="$extra_path_source" \
+    QWEN_TRACE_SKIP_TRACE_SOURCE_GATE=0 \
+    QWEN_TRACE_STATUS_CHECKER=/bin/true
+extra_path_status=$?
+set -e
+extra_path_state=accepted
+[ "$extra_path_status" -eq 2 ] ||
+    extra_path_state="an extra-path trace source exited $extra_path_status"
+grep -q 'trace source differs from the exact eight-patch path set' \
+    "$extra_path_output.stderr" ||
+    extra_path_state='the repository checker did not reject the extra path'
+[ ! -e "$extra_path_output.invocations" ] ||
+    extra_path_state='an extra-path trace source reached an arm'
+report ignores_trace_status_checker_override "$extra_path_state"
 
 # The router-tools digest is what separates a current diagnostic tree from one
 # built before that patch, so the campaign carries the earlier digest by value
@@ -489,8 +550,9 @@ grep -q 'production_closure=UNRESTORED reason=closure-drift' \
     "$drift_output.stderr" || drift_state='the closure drift was not reported'
 report reports_unrestored_closure "$drift_state"
 
-# The serving tree carrying the trace header is the diagnostic tree in the
-# production tree's place, which the restore refuses by name.
+# The serving tree legitimately carries the production submit-trace header.
+# An incomplete source tree still fails the exact eight-patch status gate, and
+# the failure reason must describe closure mismatch rather than header presence.
 traced_appliance=$work_directory/llama.cpp-traced-appliance
 mkdir -p "$traced_appliance/ggml/src/ggml-vulkan" \
     "$traced_appliance/build-raven2-vulkan-production/bin"
@@ -511,10 +573,13 @@ set -e
 traced_state=accepted
 [ "$traced_status" -eq 70 ] ||
     traced_state="a traced serving tree exited $traced_status"
-grep -q 'production_closure=UNRESTORED reason=production-source-carries-trace-header' \
+grep -q 'production_closure=UNRESTORED reason=production-source-status-mismatch' \
     "$traced_output.stderr" ||
-    traced_state='the serving tree was not refused for carrying the trace header'
-report refuses_traced_production_source "$traced_state"
+    traced_state='the incomplete serving tree did not fail the source status gate'
+if grep -q 'production-source-carries-trace-header' "$traced_output.stderr"; then
+    traced_state='the production trace header was classified as diagnostic drift'
+fi
+report separates_trace_header_from_source_status_mismatch "$traced_state"
 
 # A bypassed gate is recorded rather than silent.
 bypass_state=accepted

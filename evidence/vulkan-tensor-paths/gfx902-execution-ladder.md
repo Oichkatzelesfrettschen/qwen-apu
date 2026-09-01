@@ -1,12 +1,10 @@
 # gfx902 execution ladder
 
-The Radeon block of the Athlon Silver 3050U is a two-compute-unit wave64
-GCN5 processor with packed-half arithmetic and no dot-product or matrix
-instructions. This document fixes what that device executes for each
-llama.cpp Vulkan path, where headroom is plausible, and the order the arms
-run in. `design.md` carries the program's ledger, controls, and quality
-bound; this file carries the hardware model and the kernel-level stages that
-program runs under.
+This document fixes what the Athlon Silver 3050U Raven2 path executes in the
+pinned llama.cpp Vulkan backend, where headroom is plausible, and the order the
+arms run in. `design.md` carries the program's ledger, controls, and quality
+bound; this file carries the source-bounded hardware model and the kernel-level
+stages that program runs under.
 
 ## Six types, one path
 
@@ -19,31 +17,83 @@ FP16 accumulation. The Vulkan pipeline `mul_mat_vec_q4_k_f16_f32`, selected
 from `pipeline_dequant_mul_mat_vec_f16_f32` and embedded under the shader
 symbol `mul_mat_vec_q4_k_f16`, names Q4_K weights, an F16 right-hand input,
 and F32 accumulation and output, and the mat-vec generator fixes its
-`FLOAT_TYPE` to `float`. Stage A records `pipeline_name` and `shader_symbol`
-separately and joins them through the generated variant metadata.
+`FLOAT_TYPE` to `float`. The Stage A design records `pipeline_name` and
+`shader_symbol` separately and joins them through generated variant metadata.
 
 ## Device facts
+
+The source boundary uses the AMD processor catalogue, Linux v7.0, Mesa
+`889476855143e855a7f92989251f09fb3b690cda`, LLVM
+`937e353fb22173c5976af9ae03352f16f9c8df2a`, and llama.cpp
+`f280b26983ad0fdb705a0d9ebf0503e76f2899b0`. AMD lists two graphics cores, a
+1.1 GHz maximum graphics frequency, two memory channels, and DDR4-2400 maximum
+memory speed for the processor. Linux KFD maps Raven GC IP 9.1.0 and 9.2.2 to
+`gfx902`, while Mesa maps `CHIP_RAVEN2` to the internal LLVM processor name
+`gfx909`; the names belong to different software contracts and do not identify
+contradictory silicon. LLVM defines `gfx902` as ISA 9.0.2 with wave64
+architecture and `FeatureMadMixInsts`. ISA 9.0.4 introduces
+`FeatureFmaMixInsts`, and ISA 9.0.6 adds the dot feature set. Mesa exposes
+packed 16-bit arithmetic on GFX9, excludes Raven2 from its `has_fma_mix` and
+accelerated-dot predicates, and RADV consequently reports packed 4x8
+integer-dot acceleration as false. Mesa's `has_fma_mix` name does not remove
+LLVM's earlier MAD-mix instruction. The pinned llama.cpp gate leaves the
+accelerated `_q8_1` MMQ and MMVQ pipelines unbuilt.
+
+Primary sources: [AMD processor catalogue](https://www.amd.com/en/products/specifications/processors.html),
+[Linux KFD mapping](https://github.com/torvalds/linux/blob/v7.0/drivers/gpu/drm/amd/amdkfd/kfd_device.c#L301-L313),
+[Mesa family mapping](https://gitlab.freedesktop.org/mesa/mesa/-/blob/889476855143e855a7f92989251f09fb3b690cda/src/amd/common/amd_family.c#L144-146),
+[LLVM processor definition](https://github.com/llvm/llvm-project/blob/937e353fb22173c5976af9ae03352f16f9c8df2a/llvm/lib/Target/AMDGPU/GCNProcessors.td#L146-L149),
+[LLVM ISA feature sets](https://github.com/llvm/llvm-project/blob/937e353fb22173c5976af9ae03352f16f9c8df2a/llvm/lib/Target/AMDGPU/AMDGPU.td#L1943-L1964),
+[LLVM MAD-mix and FMA-mix selection](https://github.com/llvm/llvm-project/blob/937e353fb22173c5976af9ae03352f16f9c8df2a/llvm/lib/Target/AMDGPU/VOP3PInstructions.td#L455-L499),
+[LLVM target restrictions](https://github.com/llvm/llvm-project/blob/937e353fb22173c5976af9ae03352f16f9c8df2a/llvm/docs/AMDGPUUsage.rst#L723-L728),
+[Mesa family ordering](https://gitlab.freedesktop.org/mesa/mesa/-/blob/889476855143e855a7f92989251f09fb3b690cda/src/amd/common/amd_family.h#L96-104),
+[Mesa arithmetic predicates](https://gitlab.freedesktop.org/mesa/mesa/-/blob/889476855143e855a7f92989251f09fb3b690cda/src/amd/common/ac_gpu_info.c#L331-L339),
+[ACO NIR FMA selection](https://gitlab.freedesktop.org/mesa/mesa/-/blob/889476855143e855a7f92989251f09fb3b690cda/src/amd/compiler/instruction_selection/aco_select_nir_alu.cpp#L1931-L1954),
+[ACO mix optimization](https://gitlab.freedesktop.org/mesa/mesa/-/blob/889476855143e855a7f92989251f09fb3b690cda/src/amd/compiler/aco_optimizer.cpp#L843-L883),
+[RADV feature exposure](https://gitlab.freedesktop.org/mesa/mesa/-/blob/889476855143e855a7f92989251f09fb3b690cda/src/amd/vulkan/radv_physical_device.c#L1141),
+[RADV predicate binding](https://gitlab.freedesktop.org/mesa/mesa/-/blob/889476855143e855a7f92989251f09fb3b690cda/src/amd/vulkan/radv_physical_device.c#L1794),
+[RADV property exposure](https://gitlab.freedesktop.org/mesa/mesa/-/blob/889476855143e855a7f92989251f09fb3b690cda/src/amd/vulkan/radv_physical_device.c#L2033-L2062),
+[llama.cpp device gate](https://github.com/ggml-org/llama.cpp/blob/f280b26983ad0fdb705a0d9ebf0503e76f2899b0/ggml/src/ggml-vulkan/ggml-vulkan.cpp#L6449),
+[llama.cpp executable-statistic handling](https://github.com/ggml-org/llama.cpp/blob/f280b26983ad0fdb705a0d9ebf0503e76f2899b0/ggml/src/ggml-vulkan/ggml-vulkan.cpp#L3048-L3084),
+[Mesa AMD statistic names](https://gitlab.freedesktop.org/mesa/mesa/-/blob/889476855143e855a7f92989251f09fb3b690cda/src/util/shader_stats.xml#L104-L113),
+[llama.cpp MMQ construction gate](https://github.com/ggml-org/llama.cpp/blob/f280b26983ad0fdb705a0d9ebf0503e76f2899b0/ggml/src/ggml-vulkan/ggml-vulkan.cpp#L4910-L4913)
+and
+[llama.cpp MMVQ construction gate](https://github.com/ggml-org/llama.cpp/blob/f280b26983ad0fdb705a0d9ebf0503e76f2899b0/ggml/src/ggml-vulkan/ggml-vulkan.cpp#L5297-L5301).
+
+LLVM's `gfx9-generic` documentation table says `v_mad_mix` is unavailable on
+gfx902 and gfx909, which conflicts with the same revision's processor-specific
+TableGen and executable assembler behavior. The hardware model follows the
+processor definitions and treats the generic-target restriction table as
+conflicting upstream documentation rather than as the processor legality gate.
 
 | Property | Value | Consequence |
 | --- | ---: | --- |
 | LLVM/HSA target | `gfx902` | GFX9.0.2, base Vega ISA |
-| Compute units | 2, each 4 x SIMD16 | 128 FP32 lanes; occupancy and tile granularity dominate |
-| Wavefront | 64 lanes, four cycles per SIMD16 | a subgroup-16 algorithm is four partitions inside one wave |
-| LDS | 64 KiB per CU, 32 banks of 32 bits | pack FP16 pairs into aligned words; pad aliasing strides |
-| Shader clock, observed peak | 1.1 GHz | 281.6 GFLOP/s FP32 FMA; 563.2 GFLOP/s packed-half bound |
-| Memory | dual-channel DDR4-2133, 34.13 GB/s peak | host two-thread read 15.44 GB/s; the device ceiling is unmeasured |
-| `V_DOT2_F32_F16`, `V_DOT4_I32_I8`, `V_DOT8_I32_I4` | absent | present from gfx906; a gfx906 build is a disassembly comparator alone |
-| Cooperative matrix, MFMA, WMMA, BF16 extension | absent | matrices run as tiled VALU kernels; BF16 converts through F16 or F32 |
-| `shaderIntegerDotProduct` | true, all thirty `*Accelerated` flags false | `ggml-vulkan.cpp` declines MMVQ and MMQ, so the `_q8_1` pipelines go unbuilt |
+| Graphics cores | 2 | derive occupancy from measured pipeline data |
+| Wavefront | 64 | compare whole-wave and partitioned reductions |
+| Packed 16-bit | exposed | measure ISA and sustained issue rate |
+| MAD mix | LLVM feature exposed | inspect stock ACO ISA for `v_mad_mix_f32` |
+| FMA mix | Mesa predicate false | `v_fma_mix_f32` requires a later feature set |
+| Graphics clock | up to 1.1 GHz | product maximum, not sustained rate |
+| Memory | DDR4-2400 max; [2133.33 retained][umc] | traffic unmeasured |
+| Integer dot | exposed, unaccelerated | accelerated MMQ/MMVQ stay unbuilt |
 
-The 563.2 GFLOP/s figure is an instruction-level bound: it assumes
-`V_PK_FMA_F16` sustains the FMA issue rate under sufficient occupancy, and
-no retained run measures that rate. `V_MAD_MIX_F32` consumes FP16 operands
-and accumulates in FP32 in one instruction, which is the instruction
-quantized decode wants where the compiler emits a separate conversion ahead
-of an FP32 FMA. `GGML_VK_DISABLE_INTEGER_DOT_PRODUCT=1` is a falsification
-control with a predicted ratio of 1.00, because the gated path is already
-inactive; a resolved change reports a second selection rule.
+[umc]: ../measurement-state-and-memory-clock.md#memory-is-trained-at-ddr4-2133-the-reported-steps-are-dynamic-fclk
+
+The packed-half path is a candidate rather than a throughput claim. Mesa exposes
+packed 16-bit arithmetic for GFX9, while no retained run establishes a sustained
+packed-half issue rate. LLVM accepts `v_mad_mix_f32` for gfx902, while gfx902
+lacks `v_fma_mix_f32` and gfx906-class `v_dot2_f32_f16`. Instruction legality
+does not make the pinned shader's explicit FP32 `fma` chain eligible. ACO
+selects fused `v_fma_f32` for that NIR operation and refuses to convert it when
+Raven exposes only unfused MAD-mix. Terminal multiply and deliberately
+non-fused expressions remain eligible only when their rounding and denormal
+behavior is declared and tested. Stock and candidate disassembly, resource
+statistics, the declared numeric oracle, and matched timestamps decide that
+narrower route.
+`GGML_VK_DISABLE_INTEGER_DOT_PRODUCT=1` is a falsification control with a
+predicted ratio of 1.00 because the gated path is already inactive; a resolved
+change reports a second selection rule.
 
 ## What the retained measurements fix
 
@@ -58,22 +108,38 @@ structure are the targets rather than bits per weight. The 30.6% spread
 between sweeps of one configuration means every arm below is read within
 an ABBA block.
 
-## Stages
+The current targets are 20 tok/s for 0.8B, 10 tok/s for 2B, and 5.25 tok/s
+for 4B. `evidence/throughput-target-analysis/` derives their exact latency,
+bandwidth, Amdahl, and N=1 bounds. The 4B planning baseline requires 42.67%
+total time removal, so the pipeline census must prove that any proposed surface
+owns enough time before a shader edit can carry an end-to-end claim.
 
-Every stage runs the 2B first, the 0.8B second, and the 4B third, and a
-result becomes a Raven2-wide default only where the classes agree.
+## Proposed stages
 
-### A. Pipeline census
+The checkout lacks `patches/llama-vulkan-pipeline-census.patch`,
+`remote/run-raven2-vulkan-kernel-census.sh`, and
+`evidence/raven2-vulkan-kernel-census/`. Sections A through F specify the
+implementation and evidence contract rather than completed programs or measured
+results. Every proposed stage runs the 2B first, the 0.8B second, and the 4B
+third, and a result becomes a Raven2-wide default only where the classes agree.
 
-`patches/llama-vulkan-pipeline-census.patch`,
+### A. Pipeline census, unimplemented
+
+The proposed `patches/llama-vulkan-pipeline-census.patch`,
 `remote/run-raven2-vulkan-kernel-census.sh`, and
 `evidence/raven2-vulkan-kernel-census/` record, per pipeline on first use
 and in aggregate: phase, GGML op, tensor types, pipeline name, dimensions,
 alignment variant, workgroup size, `NUM_ROWS`, `NUM_COLS`, accumulator
 precision, dispatch count, total and percentile GPU time, VGPR and SGPR
-counts, LDS bytes, spill or scratch bytes, and queue. The backend already
-holds a per-pipeline register count and queries pipeline executable
-properties where RADV exposes them. `radv-low-priority-env.sh` gains a
+counts, LDS bytes, spill or scratch bytes, and queue. The backend queries
+pipeline executable properties, but it stores only the NVIDIA-named
+`Register Count` statistic in its existing per-pipeline field. RADV instead
+publishes `VGPRs`, `SGPRs`, `Spilled VGPRs`, `LDS size`, `Scratch size`, and
+`Subgroups per SIMD`. The census patch stores those exact names and validates
+each `VkPipelineExecutableStatisticFormatKHR` before using the union value.
+RADV returns those resource fields through
+[`radv_GetPipelineExecutableStatisticsKHR`](https://gitlab.freedesktop.org/mesa/mesa/-/blob/889476855143e855a7f92989251f09fb3b690cda/src/amd/vulkan/radv_pipeline.c#L837-L863).
+`radv-low-priority-env.sh` gains a
 non-serving `diagnostic` profile that exports
 `GGML_VK_SERIALIZE_SUBMISSIONS=1` and preserves `GGML_VK_PIPELINE_STATS`,
 `GGML_VK_PERF_LOGGER`, `GGML_VK_PERF_LOGGER_FREQUENCY`,
@@ -81,10 +147,16 @@ non-serving `diagnostic` profile that exports
 serving profiles keep scrubbing them. The submit-trace patch throws during
 device construction when `GGML_VK_SUBMIT_TRACE=1` reaches a process without
 serialization, so a trace-enabled launch is refused unless serialization is
-active. The serialized arm supplies dispatch attribution and resource
-statistics; ordinary `low-async` arms supply the serving-profile end-to-end
-throughput promotion reads. The kernels with the largest
-cumulative GPU time are the ones the later stages touch.
+active. The serialized arm supplies dispatch identity and compile-time resource
+statistics. The serialized arm cannot supply serving-profile time attribution.
+An asynchronous low-async arm writes
+[Vulkan device timestamps](https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#queries-timestamps)
+around dispatches, reads them at natural synchronization points, and converts
+deltas with `timestampPeriod`. Logger-off, logger-on, logger-on, logger-off on
+an identical binary bounds instrumentation overhead before timestamp rows
+support a gain claim. Ordinary `low-async` arms supply the serving-profile
+end-to-end promotion reads. The kernels with the largest cumulative GPU time
+are the ones the later stages touch.
 
 ### B. Precision, one mechanism at a time
 
@@ -101,9 +173,10 @@ representation comparator and the 4B Q4_K_M the scaled-shape control.
 
 ### C. Wave and tile geometry
 
-A wave64 specialization keys on measured properties -- vendor AMD, GCN,
-subgroup 64, native FP16, integer dot unaccelerated, at most two shader
-cores -- and compares W64 whole-wave, W64 with four 16-lane partitions
+A wave64 specialization keys on source-bound properties -- vendor AMD, GFX9,
+subgroup 64, packed 16-bit arithmetic, unaccelerated integer dot, and two
+advertised graphics cores -- and compares a W64 whole-wave variant, a W64
+four-partition variant
 reduced by `subgroupShuffleXor` over masks 1, 2, 4, 8, W128 with subgroup
 partials plus LDS, and W256, across `NUM_ROWS` 1, 2, 4 and `NUM_COLS` 1, 2,
 4, 8. A variant is retained where the ISA shows fewer LDS operations,
@@ -114,11 +187,22 @@ tile, accumulator, alignment, quant format, and batch, and promotes one
 immutable lookup table keyed by (op, weight type, M range, N range, K
 range, accumulator, alignment class, batch range) whose value is the tile
 and K tile, distinct from the mat-vec key of (op, type, N, K, `NUM_COLS`,
-accumulator, alignment); the generic selector picks 128x128 once the grid holds about
-twice the shader-core count of tiles, which on two CUs is four tiles. Flash
+accumulator, alignment). The generic selector admits 128x128 only when the grid
+retains at least four tiles; the census rather than an assumed core-to-tile ratio
+selects it. Flash
 Attention sweeps `Br` and `Bc` at 4K, 16K, 24K, and 32K with FP32 softmax
 statistics and separate FP16/FP32 QK and PV accumulation arms, and keeps KV
 dequantization fused.
+
+The Q4_K mat-vec row sweep follows resource products rather than row count
+alone. Persistent accumulators require at least `NUM_COLS * NUM_ROWS` FP32
+values per invocation, lexical activation loads contribute
+`4 * NUM_COLS * NUM_ROWS` `vec4` loads per superblock before compiler
+elimination, and shared reduction consumes
+`4 * NUM_COLS * NUM_ROWS * workgroup_size` bytes when the selected reduction
+uses LDS. gfx902 wave64 allocates VGPRs in groups of four from 256 VGPRs per
+SIMD. A row or column change predicts an occupancy transition only when the
+compiled statistics cross an allocation boundary.
 
 ### D. Unpack and layout
 
@@ -131,16 +215,16 @@ load-time metadata expansions under a backend-private layout
 and minima as aligned UINT8 or aligned FP16. The expansion is accounted in
 `get_alloc_size`, the strict-placement check, and the memory preflight, and
 the GGUF on disk is unchanged. The ISA check for each variant looks for
-`v_perm_b32`, `v_bfe_u32`, `v_cvt_f32_ubyte*`, `v_mad_mix_f32`, DPP for
-fixed shuffles, and `buffer_load_dwordx4`. The shader is patched first;
+`v_perm_b32`, `v_bfe_u32`, `v_cvt_f32_ubyte*`, DPP for fixed shuffles, and
+`buffer_load_dwordx4`. The shader is patched first;
 ACO is patched where the SPIR-V states the operation and the ISA misses it.
 
 ### E. ACO, on a demonstrated miss
 
 Mesa is patched only for a pattern the census shows the compiler missing,
-reduced to standalone SPIR-V: a mixed FMA emitted as convert plus FMA, a
-nibble unpack left as a long mask chain, a fixed shuffle reduction lowered
-to LDS or `ds_bpermute`, a wave-uniform value kept in VGPRs, a spill an
+reduced to standalone SPIR-V: an available packed-half operation left
+scalarized, a nibble unpack left as a long mask chain, a fixed shuffle reduction
+lowered to LDS or `ds_bpermute`, a wave-uniform value kept in VGPRs, a spill an
 equivalent shorter-live-range source avoids, or exposed VMEM latency behind
 clustered ALU work. The comparison is installed Mesa 26.2.1, isolated Mesa
 main, and isolated Mesa with the one candidate patch, on identical SPIR-V,
@@ -169,21 +253,26 @@ since the graphics queue degrades frame service in the retained runs.
 `radv_clear_lds` stays false, `override_vram_size` changes the advertised
 figure alone, and the shader cache buys startup. A second LOW-priority
 compute queue with timeline-semaphore dependencies ranks after every kernel
-stage and applies only to branches the census shows underfilling two CUs.
+stage and applies only to branches whose census shows unused execution capacity.
 Full Vulkan placement, one router child, one slot, one orchestration
 thread, nice 19, idle I/O, `low-async` at 16 nodes per submission, Flash
 Attention, and the Q8_0/Q4_0 cache triple stay as served, and each
 `GGML_VK_DISABLE_*` and `GGML_VK_FORCE_*` switch is a control varied one at
 a time under the custom or diagnostic profile.
 
-## Expected locus of headroom
+## Bounded candidate mechanisms
 
-Decode is bound by quantized bytes, reconstruction, and system-memory
-traffic, so its profile is compact weights, cheap unpack, FP32 reduction,
-and wave64 specialization. Prefill, vision encoders, and diffusion reuse
-weights across rows, so their profile is native FP16, packed FMA, two-CU
-matrix tiles, controlled FP16 accumulation, and LDS-efficient reuse. The
-device holds no dormant integer tensor path; the gain, where one exists,
-comes from mixed-precision instruction selection, packed-half matrix work,
-wave64 quant decode, shorter unpack live ranges, expanded metadata alone,
-smaller tiles, and fewer LDS round trips.
+The retained rates show that logical weight bytes and reconstruction format
+both affect decode, but they identify neither physical system-memory traffic
+nor a single bottleneck. The candidate profile therefore combines compact
+weights, cheap unpack, FP32 reduction, and wave64 specialization. Prefill,
+vision encoders, and diffusion reuse weights across rows, so their profile is
+native FP16, mixed MAD only for eligible non-fused expressions, small-device
+matrix tiles, controlled FP16
+accumulation, and LDS-efficient reuse. RADV's packed signed 4x8 property keeps
+the pinned
+backend's accelerated `_q8_1` MMQ and MMVQ construction gates closed;
+quantized shaders still use integer bit operations for unpack. Candidate gains
+can come from available packed-half instruction selection, wave64 quant decode,
+shorter unpack live ranges, expanded metadata alone, smaller tiles, and fewer
+LDS round trips.

@@ -17,6 +17,7 @@ for tracked_path in \
     ggml/src/ggml-vulkan/ggml-vulkan.cpp \
     src/llama-context.cpp \
     src/llama-model-loader.cpp \
+    tools/server/server-context.cpp \
     tools/server/server.cpp; do
     printf 'base\n' >"$repository/$tracked_path"
 done
@@ -26,6 +27,7 @@ for tracked_path in \
     ggml/src/ggml-vulkan/ggml-vulkan.cpp \
     src/llama-context.cpp \
     src/llama-model-loader.cpp \
+    tools/server/server-context.cpp \
     tools/server/server.cpp; do
     printf 'patched\n' >>"$repository/$tracked_path"
 done

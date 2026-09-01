@@ -87,6 +87,21 @@ arithmetic row, deterministically.
 
 ## Throughput
 
+The active performance specification sets 20 tok/s for Qwen3.5-0.8B Q8_0,
+10 tok/s for Qwen3.8-2B Distill Q4_K_M, and 5.25 tok/s for Qwen3.8-4B
+Distill Q4_K_M. The
+[throughput target analysis](evidence/throughput-target-analysis/README.md)
+separates registry, bandwidth, raw but unhashed, depth-wedge, historical ABBA,
+and serving evidence; generates exact latency, bandwidth, Amdahl, and N=1
+coefficients; and records the gfx902 mixed-MAD correction. Historical reported
+ABBA controls reach 20.15 tok/s for 0.8B and 10.02 tok/s for 2B. The checkout
+retains neither historical raw bundle, and it retains no fixed-64,
+exact-default-tuple, balanced serving campaign for all three current artifacts.
+The 4B
+5.25 tok/s target remains unmet across any complete reported prompt set or
+current production-profile campaign; one retired n-gram arithmetic row reaches
+5.47 while the same configuration drafts nothing on code.
+
 Measured by `remote/run-placement-sweep.sh` through `llama-bench`, outside the
 guarded launch path, at 512 prompt tokens and 64 generated tokens.
 
