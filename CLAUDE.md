@@ -585,8 +585,12 @@ five-column occupancy step `evidence/mtp-speculation-matrix.md` measures, where
 its S4 and S6 arms decoded slower than no speculation at all.
 `remote/measure-draft-pair.sh PAIR_ID OUTPUT_DIR` runs the 2B pairing first and
 the 4B second, measures each against a same-session control of the target alone
-in the order control, pair, pair, control, refuses to start beside a server
-holding the device, and refuses a `quarantine` row outright.
+in the order control, pair, pair, control, holds the shared Vulkan lease,
+refuses listeners on both guarded ports, and requires an absent output path.
+The harness snapshots the registry reader and its three ledgers before lookup,
+binds every HTTP exchange to one PID, start time, and listener inode, and runs
+the retained summarizer only from one hash-verified in-memory read. A
+`quarantine` row remains terminal before any server starts.
 `evidence/draft-pairs/README.md` registers the falsifiers and the tokenizer
 finding the pairing rests on.
 
@@ -1055,7 +1059,7 @@ remote/model-registry.sh id|path SELECTOR [FIELD]
 remote/model-registry.sh draft-pairs | draft-pair PAIR_ID [FIELD]
 remote/model-registry.sh ctx-checkpoints | ctx-checkpoint MODEL_ID
 remote/measure-draft-pair.sh PAIR_ID OUTPUT_DIR
-                                                # one pairing against its own control, ABBA
+                                                # snapshot-bound ABBA pairing
 remote/build-router-presets.sh [OUTPUT_INI]    # the picker, from the tier field
 remote/build-web-presets.sh OUTPUT_INI         # web profiles, from the execution_policy field
 remote/fetch-candidate-artifact.sh REPO REV FILE DIR  # observed, not pinned
@@ -1118,6 +1122,7 @@ remote/test-qwen-runtime-guards.sh
 remote/test-radv-low-priority-env.sh
 remote/test-model-registry.sh
 remote/test-model-tiers.sh
+python3 remote/test-summarize-draft-pair.py
 remote/test-measure-draft-pair.sh
 remote/test-probe-depth-projector.sh
 remote/test-web-presets.sh

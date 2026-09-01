@@ -61,6 +61,22 @@ expect_output 'patch_count=8' \
 # An unrelated edit beside an otherwise verified series refuses rather than
 # passing the source-hash subset.
 printf '\n' >> "$patched_source/README.md"
+if output=$(QWEN_TRACE_PREPARE_ONLY=1 \
+        QWEN_TRACE_STATUS_CHECKER=/bin/true \
+        sh "$script_directory/build-llama-trace.sh" \
+        "$base_source" "$patched_source" 2>&1); then
+    printf 'build preparation accepted an extra path through a replacement checker:\n%s\n' \
+        "$output" >&2
+    exit 1
+fi
+case $output in
+    *'unrecognized changes'*) ;;
+    *)
+        printf 'build preparation reported the wrong extra-path refusal:\n%s\n' \
+            "$output" >&2
+        exit 1
+        ;;
+esac
 if output=$(sh "$script_directory/prepare-llama-vulkan-source.sh" \
         "$base_source" "$patched_source" 2>&1); then
     printf 'a tree with an unrecognized edit was accepted:\n%s\n' "$output" >&2
@@ -120,4 +136,4 @@ git -C "$patched_source" checkout --quiet --detach "$pinned_commit"
 expect_output 'patched_source=prepared' \
     sh "$script_directory/prepare-llama-vulkan-source.sh" "$base_source" "$patched_source"
 
-printf 'prepare_llama_vulkan_source=accepted transitions=four-prefix,five-prefix,seven-prefix,already_verified,refused,prepared patch_count=8\n'
+printf 'prepare_llama_vulkan_source=accepted transitions=four-prefix,five-prefix,seven-prefix,already_verified,refused,prepared build_extra_path=refused patch_count=8\n'

@@ -378,8 +378,8 @@ validate_router_preset_tuples() {
                 pair_draft[pair_fields[1]]  = pair_fields[3]
                 pair_n_max[pair_fields[1]]  = pair_fields[5]
                 pair_p_min[pair_fields[1]]  = pair_fields[6]
-                pair_cache_k[pair_fields[1]] = pair_fields[8]
-                pair_cache_v[pair_fields[1]] = pair_fields[9]
+                pair_cache_k[pair_fields[1]] = pair_fields[9]
+                pair_cache_v[pair_fields[1]] = pair_fields[10]
             }
             checkpoint_row_count = split(ctx_checkpoint_ledger, checkpoint_rows, "\n")
             for (checkpoint_row_index = 1; checkpoint_row_index <= checkpoint_row_count;

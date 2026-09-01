@@ -46,11 +46,18 @@
 # proposing. Both rows carry 0.00, the value every arm in the MTP matrix ran
 # at, so the first pair arm changes the draft mechanism alone.
 #
+# acceptance_floor is a conservative comparison policy rather than the
+# standalone draft's calculated break-even. The embedded MTP head reached 0.896
+# on its worst prompt in the preregistered comparison, so a second resident
+# checkpoint must meet that floor as well as beating both adjacent controls.
+# measure-draft-pair.sh reads the value from this ledger and records both gates
+# rather than baking an admission threshold into its summarizer.
+#
 # tier carries the model registry's vocabulary and the same claims.
 # build-router-presets.sh emits a section for a production or candidate row and
 # for nothing else. validated_evidence names the directory holding the measured
 # arm; `-` means no run has measured this pairing and the tier states that.
 #
-# pair_id	target_model_id	draft_model_id	tier	spec_draft_n_max	spec_draft_p_min	draft_context	draft_cache_type_k	draft_cache_type_v	validated_evidence	notes
-qwen38-2b-distill+qwen35-08b-draft	qwen38-2b-distill	qwen35-08b	candidate	2	0.00	24576	q8_0	q4_0	-	2B + 0.8B draft
-qwen38-4b-distill+qwen35-08b-draft	qwen38-4b-distill	qwen35-08b	candidate	2	0.00	24576	q8_0	q4_0	-	4B + 0.8B draft
+# pair_id	target_model_id	draft_model_id	tier	spec_draft_n_max	spec_draft_p_min	acceptance_floor	draft_context	draft_cache_type_k	draft_cache_type_v	validated_evidence	notes
+qwen38-2b-distill+qwen35-08b-draft	qwen38-2b-distill	qwen35-08b	candidate	2	0.00	0.896	24576	q8_0	q4_0	-	2B + 0.8B draft
+qwen38-4b-distill+qwen35-08b-draft	qwen38-4b-distill	qwen35-08b	candidate	2	0.00	0.896	24576	q8_0	q4_0	-	4B + 0.8B draft

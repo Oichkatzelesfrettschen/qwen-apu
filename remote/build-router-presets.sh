@@ -321,7 +321,7 @@ pairs_unlisted=0
 pairs_absent=0
 pairs_quarantined=0
 while IFS='	' read -r pair_id target_model_id draft_model_id pair_tier \
-    spec_draft_n_max spec_draft_p_min _draft_context draft_cache_type_k \
+    spec_draft_n_max spec_draft_p_min _acceptance_floor _draft_context draft_cache_type_k \
     draft_cache_type_v _validated_evidence pair_notes; do
     [ -n "${pair_id:-}" ] || continue
 

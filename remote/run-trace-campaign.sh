@@ -85,6 +85,8 @@ environment_wrapper=${QWEN_TRACE_ENV_WRAPPER:-"$script_directory/radv-low-priori
 clock_sampler=${QWEN_TRACE_CLOCK_SAMPLER:-"$script_directory/sample-gpu-clocks.sh"}
 patch_verifier=${QWEN_TRACE_PATCH_VERIFIER:-"$script_directory/verify-llama-patch-series.sh"}
 closure_hasher=${QWEN_TRACE_CLOSURE_HASHER:-"$script_directory/hash-load-closure.sh"}
+# Repository source admission remains independent of caller-selected helpers.
+source_status_checker=$script_directory/check-trace-source-status.sh
 kernel_reader=${QWEN_TRACE_KERNEL_READER:-dmesg}
 control_tokens=${QWEN_TRACE_CONTROL_TOKENS:-16}
 arm_timeout_kill_after_s=${QWEN_TRACE_ARM_KILL_AFTER_S:-30}
@@ -148,7 +150,7 @@ if [ ! -f "$model_path" ]; then
     exit 2
 fi
 for required_helper in "$environment_wrapper" "$clock_sampler" \
-    "$patch_verifier" "$closure_hasher"; do
+    "$patch_verifier" "$closure_hasher" "$source_status_checker"; do
     if [ ! -x "$required_helper" ]; then
         printf 'required helper is missing or not executable: %s\n' \
             "$required_helper" >&2
@@ -185,19 +187,17 @@ else
     fi
 fi
 
-# The trace build is the production five-patch series plus
-# `patches/llama-vulkan-submit-trace.patch`, which is the six-patch replay
-# `verify-llama-patch-series.sh` records. Three checks establish that the binary
-# about to run came from that tree. The verifier replays the series from the
-# tree's own git objects at the pinned commit, which fixes the patch inputs; the
-# working-tree digests fix the files the compiler read, and
-# `tools/server/server.cpp` among them refuses a tree from before the router
-# tools proxy patch by name; the preset manifest fixes the commit the build
-# recorded. A diagnostic binary retained from an earlier revision fails the
-# second check, so it never reaches an arm.
-trace_ggml_vulkan_sha256=d81e9093b4a3d98bf5cde8dc710ec187ddbaffca84540369cec72ecd132e575c
+# The trace build and serving build share the canonical eight-patch production
+# series. The status, working-tree digests, replay verifier, preset manifest,
+# and executable load closure bind the source and binary independently.
+trace_ggml_vulkan_sha256=dfac33fe7fd487fc136e2915de7d5c146a3921b231ffef55877c6dd9e4f2c164
+trace_pacing_sha256=16abd2face079cad962bb722026d7418e65de67c18c1e1f954df733c1598a70a
+trace_submit_limit_sha256=4b8befd927e9b0c83cfc7cfe843d2f853a9a9db7f6a55c147ffcd4129afd95f8
 trace_submit_trace_sha256=ac957254c09afda811983801e7dd59d7e4829d40e572804ea7e23dadba521867
+trace_llama_context_sha256=ecc818cdce4a7265f6f932962c325a582f42b91cb2661916fa28b5a79a49d1ad
+trace_model_loader_sha256=d0d6c8725891ac4baf68fd947ab4be75cc93ba37b1e988ca1c556881a49d0abc
 trace_server_sha256=d2d5cb43a83c6b2b459b85f2df181a3d976efcaef351e5cbc6b418ba839390e3
+trace_server_context_sha256=3744317beb622feff234e5b7a615c50665579f34ce49921e324bcd418fb3a58a
 pre_router_server_sha256=2833d9d237e77a70a75736426f11432b964bc66f8e85c5751451f77444338703
 pinned_commit=f280b26983ad0fdb705a0d9ebf0503e76f2899b0
 
@@ -218,7 +218,7 @@ require_source_digest() {
            [ "$actual_digest" = "$pre_router_server_sha256" ]; then
             printf 'trace source predates llama-router-tools-proxy.patch; rebuild it with build-llama-trace.sh\n' >&2
         else
-            printf 'trace source %s hashes %s, not the six-patch replay %s\n' \
+            printf 'trace source %s hashes %s, not the eight-patch replay %s\n' \
                 "$relative_path" "$actual_digest" "$expected_digest" >&2
         fi
         exit 2
@@ -240,11 +240,24 @@ if [ "${QWEN_TRACE_SKIP_TRACE_SOURCE_GATE:-0}" != 1 ]; then
             "$trace_source_directory" >&2
         exit 2
     fi
-    require_source_digest "$trace_server_sha256" tools/server/server.cpp
-    require_source_digest "$trace_submit_trace_sha256" \
-        ggml/src/ggml-vulkan/ggml-vulkan-submit-trace.h
+    if ! "$source_status_checker" "$trace_source_directory" >/dev/null 2>&1; then
+        printf 'trace source differs from the exact eight-patch path set: %s\n' \
+            "$trace_source_directory" >&2
+        exit 2
+    fi
     require_source_digest "$trace_ggml_vulkan_sha256" \
         ggml/src/ggml-vulkan/ggml-vulkan.cpp
+    require_source_digest "$trace_pacing_sha256" \
+        ggml/src/ggml-vulkan/ggml-vulkan-pacing.h
+    require_source_digest "$trace_submit_limit_sha256" \
+        ggml/src/ggml-vulkan/ggml-vulkan-submit-limit.h
+    require_source_digest "$trace_submit_trace_sha256" \
+        ggml/src/ggml-vulkan/ggml-vulkan-submit-trace.h
+    require_source_digest "$trace_llama_context_sha256" src/llama-context.cpp
+    require_source_digest "$trace_model_loader_sha256" src/llama-model-loader.cpp
+    require_source_digest "$trace_server_sha256" tools/server/server.cpp
+    require_source_digest "$trace_server_context_sha256" \
+        tools/server/server-context.cpp
     if ! "$patch_verifier" "$trace_source_directory" >/dev/null 2>&1; then
         printf 'trace source refuses the patch series replay: %s\n' \
             "$trace_source_directory" >&2
@@ -485,24 +498,24 @@ restore_production_closure() {
         fi
     fi
 
-    # The production closure is the five-patch series:
-    # `prepare-llama-vulkan-source.sh` reports `patch_count=5` and leaves
-    # `ggml-vulkan-submit-trace.h` off the serving tree, so a serving tree
-    # carrying that header is the diagnostic tree in the production tree's
-    # place. `verify-llama-patch-series.sh` replays six patches and therefore
-    # states that the patch inputs are intact rather than which series the
-    # promoted binary came from; the serving tree's own digests state that.
-    production_ggml_vulkan_sha256=db34fbfc5ee5368ccc5999dc5a37c90dd3198ae0aff8138440cd7f5f0532eca4
-    production_server_sha256=d2d5cb43a83c6b2b459b85f2df181a3d976efcaef351e5cbc6b418ba839390e3
+    # The production closure carries the same eight patches as the trace build.
+    # Exact status and all mutated-file digests bind the serving source; the
+    # replay verifier separately binds the patch inputs.
     if [ "${QWEN_TRACE_SKIP_PRODUCTION_SOURCE_GATE:-0}" != 1 ]; then
-        if [ -e "$appliance_source/ggml/src/ggml-vulkan/ggml-vulkan-submit-trace.h" ]; then
+        if ! "$source_status_checker" "$appliance_source" >/dev/null 2>&1; then
             restore_state=UNRESTORED
-            restore_reason=production-source-carries-trace-header
+            restore_reason=production-source-status-mismatch
             return 0
         fi
         for production_check in \
-            "$production_ggml_vulkan_sha256 ggml/src/ggml-vulkan/ggml-vulkan.cpp" \
-            "$production_server_sha256 tools/server/server.cpp"; do
+            "$trace_ggml_vulkan_sha256 ggml/src/ggml-vulkan/ggml-vulkan.cpp" \
+            "$trace_pacing_sha256 ggml/src/ggml-vulkan/ggml-vulkan-pacing.h" \
+            "$trace_submit_limit_sha256 ggml/src/ggml-vulkan/ggml-vulkan-submit-limit.h" \
+            "$trace_submit_trace_sha256 ggml/src/ggml-vulkan/ggml-vulkan-submit-trace.h" \
+            "$trace_llama_context_sha256 src/llama-context.cpp" \
+            "$trace_model_loader_sha256 src/llama-model-loader.cpp" \
+            "$trace_server_sha256 tools/server/server.cpp" \
+            "$trace_server_context_sha256 tools/server/server-context.cpp"; do
             production_expected=${production_check%% *}
             production_path=${production_check#* }
             if [ ! -r "$appliance_source/$production_path" ]; then

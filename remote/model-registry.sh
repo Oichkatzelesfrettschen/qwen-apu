@@ -552,8 +552,8 @@ validate_draft_pair_ledger() {
         }
         $0 ~ /^#/ || $0 ~ /^[[:space:]]*$/ { next }
         {
-            if (NF != 11) {
-                printf "draft pair row %d holds %d fields, expected 11\n", \
+            if (NF != 12) {
+                printf "draft pair row %d holds %d fields, expected 12\n", \
                     FNR, NF > "/dev/stderr"
                 bad++
                 next
@@ -628,31 +628,36 @@ validate_draft_pair_ledger() {
             # assigns cparams.n_ctx = llama_n_ctx(ctx_tgt) before the draft model
             # loads, so the column states the target row own admitted depth and a
             # different number would describe an allocation no launch makes.
-            if ($7 !~ /^[1-9][0-9]*$/) {
-                printf "%s: draft_context %s is not a canonical positive integer\n", \
+            if ($7 !~ /^(0|1)(\.[0-9]+)?$/ || $7 + 0 > 1) {
+                printf "%s: acceptance_floor %s is not a decimal fraction in [0,1]\n", \
                     $1, $7 > "/dev/stderr"
                 bad++
-            } else if (($2 in model_context_default) &&
-                $7 != model_context_default[$2]) {
-                printf "%s: draft_context %s differs from target context_default %s\n", \
-                    $1, $7, model_context_default[$2] > "/dev/stderr"
-                bad++
             }
-            if ($8 !~ /^(f32|f16|bf16|q8_0|q5_1|q5_0|q4_1|q4_0|iq4_nl)$/) {
-                printf "%s: draft_cache_type_k %s is outside the runtime vocabulary\n", \
+            if ($8 !~ /^[1-9][0-9]*$/) {
+                printf "%s: draft_context %s is not a canonical positive integer\n", \
                     $1, $8 > "/dev/stderr"
+                bad++
+            } else if (($2 in model_context_default) &&
+                $8 != model_context_default[$2]) {
+                printf "%s: draft_context %s differs from target context_default %s\n", \
+                    $1, $8, model_context_default[$2] > "/dev/stderr"
                 bad++
             }
             if ($9 !~ /^(f32|f16|bf16|q8_0|q5_1|q5_0|q4_1|q4_0|iq4_nl)$/) {
-                printf "%s: draft_cache_type_v %s is outside the runtime vocabulary\n", \
+                printf "%s: draft_cache_type_k %s is outside the runtime vocabulary\n", \
                     $1, $9 > "/dev/stderr"
                 bad++
             }
-            if ($10 == "") {
+            if ($10 !~ /^(f32|f16|bf16|q8_0|q5_1|q5_0|q4_1|q4_0|iq4_nl)$/) {
+                printf "%s: draft_cache_type_v %s is outside the runtime vocabulary\n", \
+                    $1, $10 > "/dev/stderr"
+                bad++
+            }
+            if ($11 == "") {
                 printf "%s: validated_evidence is empty; write - for an unmeasured pairing\n", \
                     $1 > "/dev/stderr"
                 bad++
-            } else if ($4 == "production" && $10 == "-") {
+            } else if ($4 == "production" && $11 == "-") {
                 printf "%s: production pairing requires retained validated_evidence\n", \
                     $1 > "/dev/stderr"
                 bad++
@@ -661,10 +666,10 @@ validate_draft_pair_ledger() {
             # LLAMA_ARG_ALIAS beside the pair_id, and common/arg.cpp splits that
             # value on commas into a set of routing names, so a comma here
             # silently becomes a third alias.
-            if ($11 == "" || $11 ~ /,/ || $11 ~ /^[[:space:]]/ ||
-                $11 ~ /[[:space:]]$/) {
+            if ($12 == "" || $12 ~ /,/ || $12 ~ /^[[:space:]]/ ||
+                $12 ~ /[[:space:]]$/) {
                 printf "%s: notes is the alias display name and holds no comma or edge whitespace: %s\n", \
-                    $1, $11 > "/dev/stderr"
+                    $1, $12 > "/dev/stderr"
                 bad++
             }
             print $0
@@ -672,7 +677,7 @@ validate_draft_pair_ledger() {
         END { exit bad ? 1 : 0 }
     ' - "$draft_pair_model_registry" "$draft_pair_registry") || return 1
 
-    # Ledger text never becomes shell source. AWK has established the 11-field
+    # Ledger text never becomes shell source. AWK has established the 12-field
     # row shape, so each retained evidence path is read as one shell word and
     # tested with the shell pathname primitive, which keeps quotes, semicolons,
     # and command substitutions outside executable input.
@@ -680,7 +685,7 @@ validate_draft_pair_ledger() {
     draft_pair_evidence_failures=0
     while IFS="$draft_pair_tab" read -r draft_pair_id _target_model_id \
         _draft_model_id _pair_tier _spec_draft_n_max _spec_draft_p_min \
-        _draft_context _draft_cache_type_k _draft_cache_type_v \
+        _acceptance_floor _draft_context _draft_cache_type_k _draft_cache_type_v \
         draft_pair_evidence _notes; do
         # A ledger admitting no pairing is a valid state, so the empty line the
         # here-document carries for it reaches this loop and is skipped.
@@ -719,10 +724,10 @@ if [ "$#" -eq 2 ] && [ "$1" = draft-pair ]; then
         -v selector="$draft_pair_selector" '
         $1 == selector {
             split("pair_id target_model_id draft_model_id tier " \
-                  "spec_draft_n_max spec_draft_p_min draft_context " \
-                  "draft_cache_type_k draft_cache_type_v validated_evidence " \
+                  "spec_draft_n_max spec_draft_p_min acceptance_floor " \
+                  "draft_context draft_cache_type_k draft_cache_type_v validated_evidence " \
                   "notes", names, " ")
-            for (i = 1; i <= 11; i++) { printf "%s=%s\n", names[i], $i }
+            for (i = 1; i <= 12; i++) { printf "%s=%s\n", names[i], $i }
             matched = 1
             next
         }
@@ -739,10 +744,10 @@ if [ "$#" -eq 3 ] && [ "$1" = draft-pair ]; then
         -v selector="$draft_pair_selector" -v field="$draft_pair_field" '
         $1 == selector {
             split("pair_id target_model_id draft_model_id tier " \
-                  "spec_draft_n_max spec_draft_p_min draft_context " \
-                  "draft_cache_type_k draft_cache_type_v validated_evidence " \
+                  "spec_draft_n_max spec_draft_p_min acceptance_floor " \
+                  "draft_context draft_cache_type_k draft_cache_type_v validated_evidence " \
                   "notes", names, " ")
-            for (i = 1; i <= 11; i++) {
+            for (i = 1; i <= 12; i++) {
                 if (names[i] == field) { printf "%s\n", $i; found = 1 }
             }
             matched = 1

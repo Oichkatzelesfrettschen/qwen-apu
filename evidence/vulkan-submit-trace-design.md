@@ -72,6 +72,22 @@ hide where the failing submission started.
 Cost when disabled is one load and one branch at each of the two sites. The
 guard precedes every string copy, so a disabled trace constructs nothing.
 
+## Successful-run timing remains a separate instrument
+
+The ring dumps only from a device-loss handler. A successful traced arm records
+`trace_dump=not-triggered`, emits no complete dispatch stream, and carries no
+GPU timestamps, token boundary, VGPR count, LDS use, or spill state. The ring
+therefore localizes an unretired failure tail and cannot populate the proposed
+tensor timing ledger for a successful decode.
+
+Successful-run attribution requires asynchronous timestamp queries around each
+dispatch, a complete dispatch count per natural token boundary, pipeline and
+tensor shape identity, and shader resource metadata. Query results must be read
+after an existing natural synchronization point; forcing a fence per dispatch
+would change the low-async execution regime being measured. A disabled/enabled
+ABBA control must bound instrumentation cost before any timestamp-derived
+coefficient drives a promotion.
+
 ## The launch chain passes it through `custom`
 
 `remote/radv-low-priority-env.sh` unsets an enumerated list of `GGML_VK_*`
@@ -139,10 +155,17 @@ workstation has `glslc` and `vulkan_core.h` without it. Compiling the
 package was installed. `g++ -std=c++17 -fsyntax-only` over
 `ggml-vulkan-submit-trace.h` passes, which is a partial result about the header
 alone and says nothing about the nine hunks in `ggml-vulkan.cpp`.
-`remote/verify-llama-patch-series.sh` replays all five patches against a
-pristine checkout of the pinned commit and matches every recorded digest, so the
-patch applies and its result is fixed; whether it compiles is open until the
-laptop builds it.
+The production ledger now carries eight patches, including submit trace,
+view-alias dependencies, and natural checkpoint boundaries.
+`remote/build-llama-trace.sh` reads that ledger, upgrades the recognized legacy
+six-patch trace prefix through the two missing suffixes, and accepts only the
+same eight mutated-file identities as `remote/prepare-llama-vulkan-source.sh`.
+`remote/run-trace-campaign.sh` checks that source closure on both the diagnostic
+and serving trees. The serving tree legitimately carries
+`ggml-vulkan-submit-trace.h`; the environment flag selects instrumentation.
+`remote/test-check-trace-source-status.sh` and
+`remote/test-run-trace-campaign.sh` exercise path-set drift, source drift,
+binary-closure drift, resumption, failures, and restoration without a device.
 
 ## Deployment gate
 
