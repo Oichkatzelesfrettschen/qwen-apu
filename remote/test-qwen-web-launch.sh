@@ -360,12 +360,15 @@ else
         sed 's/^.*) //' "/proc/$lease_holder_pid/stat" 2>/dev/null |
             awk '{ print $20 }'
     )
-    lease_holder_fd9=$(readlink -f -- "/proc/$lease_holder_pid/fd/9" \
-        2>/dev/null || true)
+    lease_holder_fd9_identity=$(stat -Lc '%d:%i' \
+        "/proc/$lease_holder_pid/fd/9" 2>/dev/null || true)
+    lease_control_lock_identity=$(stat -Lc '%d:%i' \
+        "$lease_control_lock" 2>/dev/null || true)
     [ "$lease_holder_observed_start" = "$lease_holder_start" ] ||
         lease_lifetime_outcome=holder_identity_changed
-    [ "$lease_holder_fd9" = "$lease_control_lock" ] ||
-        lease_lifetime_outcome=holder_fd9_mismatch
+    [ -n "$lease_holder_fd9_identity" ] &&
+        [ "$lease_holder_fd9_identity" = "$lease_control_lock_identity" ] ||
+        lease_lifetime_outcome=holder_fd9_inode_mismatch
     awk -F '\t' '$1 == "state" && $2 == "session-bound" { found = 1 }
         END { exit !found }' "$lease_record" ||
         lease_lifetime_outcome=session_identity_unbound
