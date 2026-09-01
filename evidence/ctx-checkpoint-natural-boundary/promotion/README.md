@@ -13,8 +13,13 @@ beside this directory measure the source the promoted build carries.
 
 `remote/build-llama-preset.sh raven2-vulkan-production` produced
 `5dd86b90154f6143a5303efd2590b9268a0a5e3e908c4d6791f1fde03a4782c2`
-(`promoted-binary.txt`) and recorded the semantics it compiled
-(`artifact-manifest-head.tsv`). The promoted digest differs from the validated
+(`promoted-binary.txt`) and earned its declaration from the patch digest, the
+compiled source digest, and the absence of the forced partition
+(`artifact-manifest-head.tsv`). Two builds of that tree ten minutes apart
+produced the same executable digest, and the manifest's
+`checkpoint_patch_series_sha256` of `58e651d7...` equals the value
+`verify-llama-patch-series.sh` prints from its own replay on the workstation,
+so the two machines hold the same ordered series. The promoted digest differs from the validated
 candidate's because the two builds carry different compiler targets and build
 prefixes. The identity arms already measure that difference as numerically
 inert here: the frozen production binary
@@ -36,6 +41,11 @@ frozen production binary, ledger count 2    refused, checkpoint_semantics=unknow
 promoted binary, ledger count 2             --ctx-checkpoints 2 reaches the argv
 ```
 
-`frozen.stderr` retains the refusal. `relaunch.txt` and `smoke.json` retain
-the guarded relaunch on the promoted binary and one served completion at
-9.64 decode tok/s, which is the 2B's ordinary rate.
+`frozen.stderr` retains the refusal, measured against the ledger's own count
+through the capacity policy. `guard-chain.txt` retains both statements of the
+requirement on the admitted launch: the policy's, made while the reason still
+sits beside the argv it would have produced, and `qwen-build-exec-guard.sh`'s,
+made after the Vulkan environment is configured and against the manifest digest
+the policy measured. `relaunch.txt` and `smoke.json` retain the guarded
+relaunch and one served completion at 7.44 decode tok/s, inside the spread this
+machine carries on a repeated rate.
