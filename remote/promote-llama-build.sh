@@ -35,26 +35,45 @@ previous_link=$source_directory/build-appliance-previous
 # measured semantics is refused here rather than at the next launch, and a
 # rollback to such a target is refused before the symlink moves rather than
 # leaving the appliance unable to launch.
+#
+# The ledger is read before either path runs, because a promotion that cannot
+# read the policy authority does not know which requirement applies and an
+# unreadable file is the state a deleted or half-written ledger presents. The
+# predicate below therefore answers over content alone.
+checkpoint_policy_ledger=${QWEN_CTX_CHECKPOINT_LEDGER:-$script_directory/ctx-checkpoints.tsv}
+if [ ! -r "$checkpoint_policy_ledger" ]; then
+    printf 'the context checkpoint policy is unreadable: %s\n' \
+        "$checkpoint_policy_ledger" >&2
+    printf 'promotion cannot derive the checkpoint requirement from an absent policy\n' >&2
+    exit 1
+fi
+
 checkpoint_policy_requires_natural_boundary() {
-    policy_ledger=${QWEN_CTX_CHECKPOINT_LEDGER:-$script_directory/ctx-checkpoints.tsv}
-    [ -r "$policy_ledger" ] || return 1
     awk -F'\t' '
         /^#/ || NF == 0 { next }
         NF >= 2 && $2 + 0 > 0 { found = 1 }
         END { exit found ? 0 : 1 }
-    ' "$policy_ledger"
+    ' "$checkpoint_policy_ledger"
 }
 
+# undeclared names a build predating the receipt and ambiguous names a manifest
+# stating the declaration twice. Both refuse a positive count, and each names
+# its own cause: a missing field is a build to rebuild, a duplicated field is a
+# manifest to investigate.
 manifest_checkpoint_semantics() {
     semantics_manifest=$1/artifact-manifest.tsv
     if [ ! -r "$semantics_manifest" ]; then
         printf 'undeclared'
         return
     fi
-    semantics_value=$(awk -F'\t' '
-        $1 == "checkpoint_semantics" { print $2; exit }
-    ' "$semantics_manifest")
-    printf '%s' "${semantics_value:-undeclared}"
+    awk -F'\t' '
+        $1 == "checkpoint_semantics" { count++; value = $2 }
+        END {
+            if (count > 1) { printf "ambiguous" }
+            else if (count == 1 && value != "") { printf "%s", value }
+            else { printf "undeclared" }
+        }
+    ' "$semantics_manifest"
 }
 
 if [ "$preset" = --rollback ]; then

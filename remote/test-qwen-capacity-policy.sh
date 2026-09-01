@@ -1697,6 +1697,7 @@ done
 semantics_root=$temporary_directory/checkpoint-semantics
 natural_server=$(write_fixture_build "$semantics_root/natural" natural-boundary-v1)
 forced_server=$(write_fixture_build "$semantics_root/forced" forced-tail-v1)
+unknown_server=$(write_fixture_build "$semantics_root/unknown" unknown)
 absent_server=$(write_fixture_build "$semantics_root/absent" absent)
 
 run_semantics_arm() {
@@ -1747,12 +1748,18 @@ expect_semantics_argv() {
 # requirement follows the count rather than the binary.
 expect_semantics_argv absent-zero "$absent_server" 0
 expect_semantics_argv forced-zero "$forced_server" 0
+expect_semantics_argv unknown-zero "$unknown_server" 0
 expect_semantics_argv natural-two "$natural_server" 2
 
 expect_semantics_refusal absent-two "$absent_server" 2 \
     'a positive context checkpoint count requires natural-boundary-v1'
 expect_semantics_refusal forced-two "$forced_server" 2 \
     'a positive context checkpoint count requires natural-boundary-v1'
+# A source the build recognized as neither the pinned partition nor the repair
+# is refused on the same rule under its own name, so an unproven implementation
+# stays distinguishable from the one this tree measured.
+expect_semantics_refusal unknown-two "$unknown_server" 2 \
+    'declares checkpoint_semantics=unknown'
 
 # A server replaced under a manifest that still declares the repaired semantics
 # is refused on its own digest, which is the drift a policy-time read alone
@@ -1796,6 +1803,11 @@ if "$guard" "$duplicate_server" - natural-boundary-v1 /bin/true \
 fi
 grep -F 'requires exactly one' \
     "$temporary_directory/guard-duplicate.stderr" >/dev/null
+
+# The policy counts the same rows, so a duplicated declaration refuses beside
+# the argv it would have produced rather than reaching the exec boundary.
+expect_semantics_refusal duplicate "$duplicate_server" 2 \
+    'declares checkpoint_semantics=unknown'
 
 # Router mode carries the count per section, so the requirement follows the
 # sections a launch would actually serve rather than any positive row in the

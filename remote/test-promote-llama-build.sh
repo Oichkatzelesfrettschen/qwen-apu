@@ -113,6 +113,10 @@ esac
 failing_closure_tools=$work_directory/failing-closure-tools
 mkdir -p "$failing_closure_tools"
 cp "$promoter" "$failing_closure_tools/promote-llama-build.sh"
+# The promoter resolves the checkpoint policy beside itself, so a copied tools
+# directory carries the ledger and this arm measures the closure failure rather
+# than an absent authority.
+cp "$script_directory/ctx-checkpoints.tsv" "$failing_closure_tools/ctx-checkpoints.tsv"
 cat >"$failing_closure_tools/hash-load-closure.sh" <<'CLOSURE'
 #!/bin/sh
 printf 'role\tbasename\tbytes\tsha256\n'
@@ -389,6 +393,51 @@ case $rollback_refusal_status:$rollback_refusal_output in
     *)
         report incompatible_rollback_rejected rejected
         printf '%s\n' "$rollback_refusal_output" >&2
+        ;;
+esac
+
+# An unreadable policy states no requirement, so promotion stops rather than
+# reading absence as a count of zero and moving the symlink onto a build the
+# next launch refuses.
+set +e
+absent_ledger_output=$(QWEN_CTX_CHECKPOINT_LEDGER=$work_directory/no-such-ledger.tsv \
+    "$promoter" "$preset" "$work_directory" 2>&1)
+absent_ledger_status=$?
+set -e
+case $absent_ledger_status:$absent_ledger_output in
+    0:*)
+        report absent_policy_rejected rejected
+        printf '%s\n' "$absent_ledger_output" >&2
+        ;;
+    *:*"context checkpoint policy is unreadable"*)
+        report absent_policy_rejected accepted ;;
+    *)
+        report absent_policy_rejected rejected
+        printf '%s\n' "$absent_ledger_output" >&2
+        ;;
+esac
+
+# Two declarations leave the manifest stating nothing, so the gate refuses on
+# ambiguity rather than reading whichever row comes first.
+fixture_checkpoint_semantics=natural-boundary-v1
+write_manifest
+printf 'checkpoint_semantics\tforced-tail-v1\n' \
+    >>"$build_directory/artifact-manifest.tsv"
+set +e
+ambiguous_output=$(QWEN_CTX_CHECKPOINT_LEDGER=$undeclared_ledger \
+    "$promoter" "$preset" "$work_directory" 2>&1)
+ambiguous_status=$?
+set -e
+case $ambiguous_status:$ambiguous_output in
+    0:*)
+        report ambiguous_semantics_rejected rejected
+        printf '%s\n' "$ambiguous_output" >&2
+        ;;
+    *:*"checkpoint_semantics=ambiguous"*)
+        report ambiguous_semantics_rejected accepted ;;
+    *)
+        report ambiguous_semantics_rejected rejected
+        printf '%s\n' "$ambiguous_output" >&2
         ;;
 esac
 

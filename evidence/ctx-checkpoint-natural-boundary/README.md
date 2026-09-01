@@ -102,6 +102,7 @@ The ledger and the binary are separate release artifacts, so
 is guarded by the build rather than by release order.
 `remote/build-llama-preset.sh` reads the `checkpoint_offsets` array out of the
 source it compiles and records `checkpoint_semantics` as
-`natural-boundary-v1` or `forced-tail-v0` in the build's artifact manifest,
+`natural-boundary-v1` for the repaired source, `forced-tail-v1` for the pinned
+commit's own, and `unknown` for any other, in the build's artifact manifest,
 and `remote/qwen-capacity-policy.sh` refuses any positive count against a
 manifest declaring anything else, an absent declaration included.

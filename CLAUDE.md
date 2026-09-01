@@ -978,8 +978,14 @@ one: `build-llama-preset.sh` writes `checkpoint_semantics` as
 `natural-boundary-v1` only where the repository still holds the patch at
 `c9d40105...`, the `tools/server/server-context.cpp` it compiles hashes to the
 `3744317b...` that `verify-llama-patch-series.sh` pins for the replayed series,
-and the `checkpoint_offsets` array is absent from that source. Any other state
-writes `forced-tail-v1`. The manifest records `checkpoint_patch`,
+and the `checkpoint_offsets` array is absent from that source. The negative
+name is earned the same way: `forced-tail-v1` requires the source to hash to
+`a79cf9e1...`, the pinned commit's own `server-context.cpp` that the
+seven-patch production prefix leaves untouched, and every other source writes
+`unknown`, since a later upstream revision may restructure the partition or
+place checkpoints by a third rule that no digest here identifies. Both names
+refuse a positive count and attribute the refusal to different sources. The
+manifest records `checkpoint_patch`,
 `checkpoint_patch_sha256`, `checkpoint_source_sha256`, and
 `checkpoint_patch_series_sha256` beside it, so the claim is checkable after the
 fact rather than trusted. A preset name is a build role and proves no source

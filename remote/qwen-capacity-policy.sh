@@ -1335,10 +1335,15 @@ llama_server_directory=$(dirname -- "$(readlink -f -- "$llama_server")")
 for checkpoint_manifest in "$llama_server_directory/artifact-manifest.tsv" \
     "$llama_server_directory/../artifact-manifest.tsv"; do
     [ -r "$checkpoint_manifest" ] || continue
+    # A manifest states the declaration once, so a second row leaves the value
+    # undefined rather than disputed. Reading the first row would admit a
+    # manifest whose natural-boundary-v1 sits above a forced-tail-v1, which
+    # qwen-build-exec-guard.sh refuses at the exec boundary; counting here keeps
+    # the refusal beside the argv it would have produced.
     checkpoint_semantics=$(awk -F'\t' '
-        $1 == "checkpoint_semantics" { print $2; exit }
+        $1 == "checkpoint_semantics" { count++; value = $2 }
+        END { print (count == 1 && value != "") ? value : "unknown" }
     ' "$checkpoint_manifest")
-    checkpoint_semantics=${checkpoint_semantics:-unknown}
     checkpoint_manifest_sha256=$(sha256sum -- "$checkpoint_manifest" | cut -d ' ' -f 1)
     break
 done

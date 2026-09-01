@@ -254,15 +254,24 @@ done
 # natural-boundary-v1 requires three facts together: the repository still holds
 # the exact patch the ledger names at the digest recorded here, the source this
 # build compiles hashes to the digest verify-llama-patch-series.sh pins for the
-# replayed series, and the forced partition is absent from that source. Any
-# other state declares forced-tail-v1, which every serving path refuses to arm a
-# positive count against. The recorded patch path, patch digest, source digest,
-# and ordered-series digest make the claim checkable after the fact.
+# replayed series, and the forced partition is absent from that source.
+#
+# The negative name is earned the same way. forced-tail-v1 states that the
+# source carries the known partition, so it is written only where the source
+# hashes to the pinned commit's own server-context.cpp, which the seven-patch
+# production prefix leaves untouched. Every other source declares unknown: a
+# later upstream revision may restructure the partition or place checkpoints by
+# some third rule, and calling it forced-tail-v1 would assert a mechanism no
+# digest here established. Both names refuse a positive count, and they
+# attribute that refusal to different sources. The recorded patch path, patch
+# digest, source digest, and ordered-series digest make each claim checkable
+# after the fact.
 checkpoint_patch=patches/llama-server-natural-checkpoint-boundary.patch
 checkpoint_patch_path=$repository_directory/$checkpoint_patch
 checkpoint_source=$source_directory/tools/server/server-context.cpp
 natural_boundary_source_sha256=3744317beb622feff234e5b7a615c50665579f34ce49921e324bcd418fb3a58a
 natural_boundary_patch_sha256=c9d4010594da1f632be009b934cd045f6625b8baba68d09b7ed6190b02f9ddfc
+forced_tail_source_sha256=a79cf9e1d4a8d7c1f0ee608aa781628db403e8f59e25e731f997d0952d230e47
 
 if [ ! -r "$checkpoint_source" ]; then
     printf 'checkpoint semantics are unreadable: %s\n' "$checkpoint_source" >&2
@@ -299,11 +308,14 @@ if [ -r "$series_ledger" ]; then
     fi
 fi
 
-checkpoint_semantics=forced-tail-v1
+checkpoint_semantics=unknown
 if [ "$checkpoint_patch_sha256" = "$natural_boundary_patch_sha256" ] &&
     [ "$checkpoint_source_sha256" = "$natural_boundary_source_sha256" ] &&
     ! grep -q 'checkpoint_offsets' "$checkpoint_source"; then
     checkpoint_semantics=natural-boundary-v1
+elif [ "$checkpoint_source_sha256" = "$forced_tail_source_sha256" ] &&
+    grep -q 'checkpoint_offsets' "$checkpoint_source"; then
+    checkpoint_semantics=forced-tail-v1
 fi
 
 manifest_path=$build_directory/artifact-manifest.tsv
