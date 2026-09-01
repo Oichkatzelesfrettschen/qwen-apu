@@ -276,6 +276,65 @@ then
     exit 2
 fi
 mv -- "$runtime_inputs_new" "$result_directory/runtime-inputs.json"
+approved_model_identity=$(python3 - "$result_directory/runtime-inputs.json" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+runtime_inputs = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+if runtime_inputs.get("schema") != "served-runtime-inputs-v1":
+    raise SystemExit("approved runtime input schema differs")
+try:
+    model = runtime_inputs["model"]
+    device = model["device"]
+    inode = model["inode"]
+    byte_count = model["bytes"]
+except (KeyError, TypeError) as error:
+    raise SystemExit(f"approved model identity is incomplete: {error}") from None
+model_id = model.get("artifact_model_id")
+model_file = model.get("artifact_model_file")
+if model_id is None and model_file is None:
+    raise SystemExit(0)
+if model_id is None or model_file is None:
+    raise SystemExit("approved publisher identity is incomplete")
+if not isinstance(model_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", model_id):
+    raise SystemExit("approved model ID is malformed")
+if (
+    not isinstance(model_file, str)
+    or not model_file
+    or model_file.startswith("/")
+    or "\\" in model_file
+    or any(part in ("", ".", "..") for part in model_file.split("/"))
+    or any(character in model_file for character in "\t\r\n")
+):
+    raise SystemExit("approved model file is malformed")
+for name, value, minimum in (
+    ("device", device, 0),
+    ("inode", inode, 1),
+    ("bytes", byte_count, 0),
+):
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise SystemExit(f"approved model {name} is malformed")
+print(model_id, model_file, device, inode, byte_count, sep="\t")
+PY
+) || exit 2
+unset QWEN_APPROVED_MODEL_ID QWEN_APPROVED_MODEL_FILE QWEN_APPROVED_MODEL_DEVICE \
+    QWEN_APPROVED_MODEL_INODE QWEN_APPROVED_MODEL_BYTES
+if [ -n "$approved_model_identity" ]; then
+    IFS="$(printf '\t')" read -r approved_model_id approved_model_file \
+        approved_model_device approved_model_inode approved_model_bytes <<EOF
+$approved_model_identity
+EOF
+    QWEN_APPROVED_MODEL_ID=$approved_model_id
+    QWEN_APPROVED_MODEL_FILE=$approved_model_file
+    QWEN_APPROVED_MODEL_DEVICE=$approved_model_device
+    QWEN_APPROVED_MODEL_INODE=$approved_model_inode
+    QWEN_APPROVED_MODEL_BYTES=$approved_model_bytes
+    export QWEN_APPROVED_MODEL_ID QWEN_APPROVED_MODEL_FILE \
+        QWEN_APPROVED_MODEL_DEVICE \
+        QWEN_APPROVED_MODEL_INODE QWEN_APPROVED_MODEL_BYTES
+fi
 printf 'label=%s\nmodel=%s\nprofile=%s\ncache_type_k=%s\ncache_type_v=%s\nflash_attention=%s\nctx_checkpoints=%s\ncheckpoint_min_step=%s\ngenerate_tokens=%s\n' \
     "$label" "$approved_model_path" "$profile" \
     "${QWEN_CACHE_TYPE_K:-registry}" "${QWEN_CACHE_TYPE_V:-registry}" \

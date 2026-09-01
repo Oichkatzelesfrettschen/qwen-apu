@@ -411,6 +411,13 @@ served_success_launch=$temporary_directory/served-success-launch.sh
 printf '%s\n' '#!/bin/sh' 'set -eu' \
     'profile=$1' \
     'state_directory=${QWEN_WEBUI_STATE_DIRECTORY:?}' \
+    '{' \
+    '    printf "id\t%s\n" "${QWEN_APPROVED_MODEL_ID:-unset}"' \
+    '    printf "file\t%s\n" "${QWEN_APPROVED_MODEL_FILE:-unset}"' \
+    '    printf "device\t%s\n" "${QWEN_APPROVED_MODEL_DEVICE:-unset}"' \
+    '    printf "inode\t%s\n" "${QWEN_APPROVED_MODEL_INODE:-unset}"' \
+    '    printf "bytes\t%s\n" "${QWEN_APPROVED_MODEL_BYTES:-unset}"' \
+    '} >"$state_directory/approved-model-identity.tsv"' \
     'launch_complete=0' \
     'supervisor_pid=' \
     'cleanup_failed_launch() {' \
@@ -489,12 +496,19 @@ chmod +x "$served_success_teardown"
 
 served_success_port=$(python3 -c \
     'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
+served_artifact_ledger=$temporary_directory/served-model-artifacts.tsv
+printf 'fixture-model\tmodel.gguf\t%s\t%s\tfixture/source\tfixture-revision\n' \
+    "$(stat -c %s "$model_path")" \
+    "$(sha256sum "$model_path" | cut -d ' ' -f 1)" \
+    >"$served_artifact_ledger"
 active_fixture=served-decode-success
 diagnostic_file=$temporary_directory/served-success.stderr
 QWEN_LAUNCH_SCRIPT=$served_success_launch \
 QWEN_TEARDOWN_SCRIPT=$served_success_teardown \
 QWEN_STATE_DIRECTORY=$served_success_state \
 QWEN_RESULT_DIRECTORY=$served_success_result \
+QWEN_MODEL_ARTIFACTS=$served_artifact_ledger \
+QWEN_MODELS_DIRECTORY=$temporary_directory \
 QWEN_LLAMA_SERVER=$served_python \
 QWEN_SERVER_PORT=$served_success_port \
 QWEN_CONTEXT_SIZE=8192 QWEN_BATCH_SIZE=128 QWEN_UBATCH_SIZE=32 \
@@ -509,6 +523,28 @@ QWEN_TEST_PYTHON_RESOLVED=$served_python \
     2>"$temporary_directory/served-success.stderr"
 grep -F 'served_decode=completed label=served-success' \
     "$temporary_directory/served-success.stdout" >/dev/null
+python3 - "$served_success_result/runtime-inputs.json" \
+    "$served_success_state/approved-model-identity.tsv" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+runtime_inputs = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+carrier = dict(
+    line.split("\t", 1)
+    for line in Path(sys.argv[2]).read_text(encoding="utf-8").splitlines()
+)
+model = runtime_inputs["model"]
+expected = {
+    "id": str(model["artifact_model_id"]),
+    "file": str(model["artifact_model_file"]),
+    "device": str(model["device"]),
+    "inode": str(model["inode"]),
+    "bytes": str(model["bytes"]),
+}
+if carrier != expected:
+    raise SystemExit(f"approved model carrier differs: {carrier} != {expected}")
+PY
 
 for retained_artifact in session.status runtime-inputs.json server-process.json server.log \
         telemetry.log graphics-latency.log kernel-hazards.log; do
@@ -644,6 +680,8 @@ QWEN_LAUNCH_SCRIPT=$served_model_replace_launch \
 QWEN_TEARDOWN_SCRIPT=$served_success_teardown \
 QWEN_STATE_DIRECTORY=$served_success_state \
 QWEN_RESULT_DIRECTORY=$served_model_replace_result \
+QWEN_MODEL_ARTIFACTS=$served_artifact_ledger \
+QWEN_MODELS_DIRECTORY=$temporary_directory \
 QWEN_LLAMA_SERVER=$served_python \
 QWEN_SERVER_PORT=$served_model_replace_port \
 QWEN_CONTEXT_SIZE=8192 QWEN_BATCH_SIZE=128 QWEN_UBATCH_SIZE=32 \
@@ -682,6 +720,28 @@ grep -F 'served_decode=completed label=served-model-replace' \
     "$temporary_directory/served-model-replace.stdout" >/dev/null
 grep -F 'argument=/proc/' \
     "$served_success_state/fake-server-argv.txt" >/dev/null
+python3 - "$served_model_replace_result/runtime-inputs.json" \
+    "$served_success_state/approved-model-identity.tsv" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+runtime_inputs = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+carrier = dict(
+    line.split("\t", 1)
+    for line in Path(sys.argv[2]).read_text(encoding="utf-8").splitlines()
+)
+model = runtime_inputs["model"]
+expected = {
+    "id": str(model["artifact_model_id"]),
+    "file": str(model["artifact_model_file"]),
+    "device": str(model["device"]),
+    "inode": str(model["inode"]),
+    "bytes": str(model["bytes"]),
+}
+if carrier != expected:
+    raise SystemExit(f"replacement carrier differs: {carrier} != {expected}")
+PY
 
 # The executable approval likewise precedes the launch hook. A different but
 # runnable ELF replaces the pathname before server exec; /proc/PID/exe keeps
@@ -712,6 +772,8 @@ QWEN_LAUNCH_SCRIPT=$served_executable_replace_launch \
 QWEN_TEARDOWN_SCRIPT=$served_success_teardown \
 QWEN_STATE_DIRECTORY=$served_success_state \
 QWEN_RESULT_DIRECTORY=$served_executable_replace_result \
+QWEN_MODEL_ARTIFACTS=$served_artifact_ledger \
+QWEN_MODELS_DIRECTORY=$temporary_directory \
 QWEN_LLAMA_SERVER=$served_executable_approved \
 QWEN_SERVER_PORT=$served_executable_replace_port \
 QWEN_CONTEXT_SIZE=8192 QWEN_BATCH_SIZE=128 QWEN_UBATCH_SIZE=32 \

@@ -35,6 +35,8 @@ fake_server=$(write_fixture_build "$temporary_directory/fixture-build" \
     natural-boundary-v1)
 QWEN_WEBUI_STATE_DIRECTORY=$temporary_directory/state
 export QWEN_WEBUI_STATE_DIRECTORY
+QWEN_MODEL_ROOT=$temporary_directory
+export QWEN_MODEL_ROOT
 
 model_path=$temporary_directory/model.gguf
 output_path=$temporary_directory/policy.out
@@ -219,6 +221,374 @@ case $cache_arguments in
         exit 1
         ;;
 esac
+
+# A fixed-length campaign names the descriptor-bound artifact by ID rather than
+# resolving the proc descriptor's mutable link text. The descriptor remains the
+# launch argument after the logical path is renamed, replaced, and unlinked,
+# while the ID selects the non-default cache, geometry, depth, and checkpoint
+# fields from the fabricated row.
+identity_model=$temporary_directory/identity-model.gguf
+identity_retained=$temporary_directory/identity-model.retained
+printf 'descriptor-bound fixture model\n' >"$identity_model"
+exec 7<"$identity_model"
+descriptor_path=/proc/$$/fd/7
+identity_tuple=$(stat -Lc '%d %i %s' "$descriptor_path")
+read -r identity_device identity_inode identity_bytes <<EOF
+$identity_tuple
+EOF
+mv -- "$identity_model" "$identity_retained"
+printf 'adversarial replacement model\n' >"$identity_model"
+
+identity_checkpoints=$temporary_directory/identity-checkpoints.tsv
+printf 'fabricated\t3\tevidence/fabricated-checkpoints\n' \
+    >"$identity_checkpoints"
+identity_quarantine_empty=$temporary_directory/identity-quarantine-empty.tsv
+: >"$identity_quarantine_empty"
+identity_quarantine_profile=$temporary_directory/identity-quarantine-profile.tsv
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    fabricated-profile profile fabricated ring-timeout-only 4096 256 64 \
+    q5_1 iq4_nl auto evidence/x.md evidence/y.md evidence/z.md any \
+    >"$identity_quarantine_profile"
+identity_output=$temporary_directory/identity-policy.out
+
+run_identity_policy() {
+    identity_label=$1
+    carrier_id=$2
+    carrier_file=$3
+    carrier_device=$4
+    carrier_inode=$5
+    carrier_bytes=$6
+    carrier_path=$7
+    carrier_router=$8
+    carrier_quarantine=$9
+    carrier_registry=${QWEN_TEST_IDENTITY_REGISTRY:-$fabricated_registry}
+    rm -f -- "$identity_output"
+    QWEN_MODEL_REGISTRY=$carrier_registry \
+    QWEN_QUARANTINE_REGISTRY=$carrier_quarantine \
+    QWEN_CTX_CHECKPOINT_LEDGER=$identity_checkpoints \
+    QWEN_MODEL_ROOT=$router_model_root QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$identity_output QWEN_ROUTER=$carrier_router \
+    QWEN_APPROVED_MODEL_ID=$carrier_id \
+    QWEN_APPROVED_MODEL_FILE=$carrier_file \
+    QWEN_APPROVED_MODEL_DEVICE=$carrier_device \
+    QWEN_APPROVED_MODEL_INODE=$carrier_inode \
+    QWEN_APPROVED_MODEL_BYTES=$carrier_bytes \
+        "$policy" "$fake_server" "$carrier_path" 4096 18080 \
+        >"$temporary_directory/$identity_label.stdout" \
+        2>"$temporary_directory/$identity_label.stderr"
+}
+
+if ! run_identity_policy descriptor-renamed-and-replaced fabricated fabricated.gguf \
+    "$identity_device" "$identity_inode" "$identity_bytes" \
+    "$descriptor_path" 0 "$identity_quarantine_empty"; then
+    printf 'policy refused the renamed descriptor identity carrier\n' >&2
+    cat "$temporary_directory/descriptor-renamed-and-replaced.stderr" >&2
+    exit 1
+fi
+grep -Fx "argument=$descriptor_path" "$identity_output" >/dev/null
+for identity_argument in \
+    'argument=--ctx-checkpoints' 'argument=3' \
+    'argument=--batch-size' 'argument=256' \
+    'argument=--ubatch-size' 'argument=64' \
+    'argument=--flash-attn' 'argument=auto' \
+    'argument=--cache-type-k' 'argument=q5_1' \
+    'argument=--cache-type-v' 'argument=iq4_nl'; do
+    grep -Fx "$identity_argument" "$identity_output" >/dev/null
+done
+grep -F 'depth_validation admitted=4096 validated=4096 geometry=256/64' \
+    "$temporary_directory/descriptor-renamed-and-replaced.stderr" >/dev/null
+
+rm -- "$identity_retained"
+if ! run_identity_policy descriptor-unlinked fabricated fabricated.gguf \
+    "$identity_device" "$identity_inode" "$identity_bytes" \
+    "$descriptor_path" 0 "$identity_quarantine_empty"; then
+    printf 'policy refused the unlinked descriptor identity carrier\n' >&2
+    cat "$temporary_directory/descriptor-unlinked.stderr" >&2
+    exit 1
+fi
+grep -Fx "argument=$descriptor_path" "$identity_output" >/dev/null
+for identity_argument in \
+    'argument=--ctx-checkpoints' 'argument=3' \
+    'argument=--batch-size' 'argument=256' \
+    'argument=--ubatch-size' 'argument=64' \
+    'argument=--flash-attn' 'argument=auto' \
+    'argument=--cache-type-k' 'argument=q5_1' \
+    'argument=--cache-type-v' 'argument=iq4_nl'; do
+    grep -Fx "$identity_argument" "$identity_output" >/dev/null
+done
+grep -F 'depth_validation admitted=4096 validated=4096 geometry=256/64' \
+    "$temporary_directory/descriptor-unlinked.stderr" >/dev/null
+
+expect_identity_refusal() {
+    refusal_label=$1
+    refusal_message=$2
+    shift 2
+    if run_identity_policy "$refusal_label" "$@"; then
+        printf 'policy accepted invalid approved identity: %s\n' \
+            "$refusal_label" >&2
+        exit 1
+    fi
+    grep -F "$refusal_message" \
+        "$temporary_directory/$refusal_label.stderr" >/dev/null
+    if [ -e "$identity_output" ]; then
+        printf 'server ran after approved identity refusal: %s\n' \
+            "$refusal_label" >&2
+        exit 1
+    fi
+}
+
+expect_identity_refusal identity-device-mismatch \
+    'approved model descriptor identity differs' fabricated fabricated.gguf \
+    "$((identity_device + 1))" "$identity_inode" "$identity_bytes" \
+    "$descriptor_path" 0 "$identity_quarantine_empty"
+expect_identity_refusal identity-inode-mismatch \
+    'approved model descriptor identity differs' fabricated fabricated.gguf \
+    "$identity_device" "$((identity_inode + 1))" "$identity_bytes" \
+    "$descriptor_path" 0 "$identity_quarantine_empty"
+expect_identity_refusal identity-bytes-mismatch \
+    'approved model descriptor identity differs' fabricated fabricated.gguf \
+    "$identity_device" "$identity_inode" "$((identity_bytes + 1))" \
+    "$descriptor_path" 0 "$identity_quarantine_empty"
+expect_identity_refusal identity-missing-id \
+    'approved model identity requires ID, file, device, inode, and bytes' '' \
+    fabricated.gguf \
+    "$identity_device" "$identity_inode" "$identity_bytes" \
+    "$descriptor_path" 0 "$identity_quarantine_empty"
+expect_identity_refusal identity-missing-file \
+    'approved model identity requires ID, file, device, inode, and bytes' \
+    fabricated '' "$identity_device" "$identity_inode" "$identity_bytes" \
+    "$descriptor_path" 0 "$identity_quarantine_empty"
+expect_identity_refusal identity-missing-device \
+    'approved model identity requires ID, file, device, inode, and bytes' \
+    fabricated fabricated.gguf '' "$identity_inode" "$identity_bytes" \
+    "$descriptor_path" 0 \
+    "$identity_quarantine_empty"
+expect_identity_refusal identity-missing-inode \
+    'approved model identity requires ID, file, device, inode, and bytes' \
+    fabricated fabricated.gguf "$identity_device" '' "$identity_bytes" \
+    "$descriptor_path" 0 \
+    "$identity_quarantine_empty"
+expect_identity_refusal identity-missing-bytes \
+    'approved model identity requires ID, file, device, inode, and bytes' \
+    fabricated fabricated.gguf "$identity_device" "$identity_inode" '' \
+    "$descriptor_path" 0 \
+    "$identity_quarantine_empty"
+expect_identity_refusal identity-malformed-device \
+    'approved model device is malformed' fabricated fabricated.gguf 00 \
+    "$identity_inode" \
+    "$identity_bytes" "$descriptor_path" 0 "$identity_quarantine_empty"
+expect_identity_refusal identity-absent-id \
+    'approved model registry row is invalid: ID absent-model resolves to 0 rows' \
+    absent-model fabricated.gguf \
+    "$identity_device" "$identity_inode" "$identity_bytes" \
+    "$descriptor_path" 0 "$identity_quarantine_empty"
+expect_identity_refusal identity-file-mismatch \
+    'ID fabricated names file fabricated.gguf, publisher names other.gguf' \
+    fabricated other.gguf "$identity_device" "$identity_inode" \
+    "$identity_bytes" "$descriptor_path" 0 "$identity_quarantine_empty"
+
+identity_duplicate_registry=$temporary_directory/identity-duplicate-models.tsv
+cat "$fabricated_registry" "$fabricated_registry" \
+    >"$identity_duplicate_registry"
+QWEN_TEST_IDENTITY_REGISTRY=$identity_duplicate_registry
+export QWEN_TEST_IDENTITY_REGISTRY
+expect_identity_refusal identity-duplicate-id \
+    'approved model registry row is invalid: ID fabricated resolves to 2 rows' \
+    fabricated fabricated.gguf "$identity_device" "$identity_inode" \
+    "$identity_bytes" "$descriptor_path" 0 "$identity_quarantine_empty"
+unset QWEN_TEST_IDENTITY_REGISTRY
+
+identity_malformed_registry=$temporary_directory/identity-malformed-models.tsv
+identity_registry_tab=$(printf '\t')
+while IFS="$identity_registry_tab" read -r identity_case identity_field \
+    identity_value identity_message; do
+    awk -F '\t' -v OFS='\t' -v field="$identity_field" \
+        -v value="$identity_value" '{$field = value; print}' \
+        "$fabricated_registry" >"$identity_malformed_registry"
+    QWEN_TEST_IDENTITY_REGISTRY=$identity_malformed_registry
+    export QWEN_TEST_IDENTITY_REGISTRY
+    expect_identity_refusal "identity-malformed-$identity_case" \
+        "$identity_message" fabricated fabricated.gguf "$identity_device" \
+        "$identity_inode" "$identity_bytes" "$descriptor_path" 0 \
+        "$identity_quarantine_empty"
+    unset QWEN_TEST_IDENTITY_REGISTRY
+done <<EOF
+context-ceiling	6	bad	context_ceiling must be a canonical positive integer
+cache-k	8	bad	cache_type_k is invalid: bad
+cache-v	9	bad	cache_type_v is invalid: bad
+flash	10	bad	flash_attention is invalid: bad
+batch	17	0	batch must be a canonical positive integer
+ubatch	18	0	ubatch must be a canonical positive integer
+validated-depth	19	0	validated_filled_depth must be a canonical positive integer
+EOF
+
+# The policy opens the registry before the first helper call. The wrapped
+# reader atomically replaces the logical registry during cache validation, so
+# checkpoint validation can read only the pinned object and the assembled argv
+# can carry only the row cached before replacement.
+identity_registry_race_tools=$temporary_directory/identity-registry-race-tools
+identity_registry_race_source=$temporary_directory/identity-registry-race.tsv
+identity_registry_race_replacement=$temporary_directory/identity-registry-replacement.tsv
+identity_registry_race_marker=$temporary_directory/identity-registry-replaced
+identity_registry_race_output=$temporary_directory/identity-registry-race.out
+mkdir -p "$identity_registry_race_tools"
+cp "$policy" "$identity_registry_race_tools/qwen-capacity-policy.sh"
+cp "$script_directory/qwen-build-exec-guard.sh" \
+    "$identity_registry_race_tools/qwen-build-exec-guard.sh"
+cp "$fabricated_registry" "$identity_registry_race_source"
+awk -F '\t' -v OFS='\t' \
+    '{$6 = 24576; $8 = "q8_0"; $9 = "q4_0"; $10 = "on"; $17 = 128; $18 = 32; $19 = "-"; print}' \
+    "$fabricated_registry" >"$identity_registry_race_replacement"
+cat >"$identity_registry_race_tools/model-registry.sh" <<'REGISTRY'
+#!/bin/sh
+set -eu
+if [ "$1" = validate-cache-type ] && \
+   [ ! -e "$QWEN_TEST_REGISTRY_REPLACED" ]; then
+    mv -- "$QWEN_TEST_REGISTRY_REPLACEMENT" "$QWEN_TEST_REGISTRY_SOURCE"
+    : >"$QWEN_TEST_REGISTRY_REPLACED"
+fi
+exec "$QWEN_TEST_REAL_MODEL_REGISTRY" "$@"
+REGISTRY
+cat >"$identity_registry_race_tools/radv-low-priority-env.sh" <<'RADV'
+#!/bin/sh
+exec "$@"
+RADV
+chmod +x "$identity_registry_race_tools"/*.sh
+rm -f -- "$identity_registry_race_marker" "$identity_registry_race_output"
+if ! QWEN_MODEL_REGISTRY=$identity_registry_race_source \
+    QWEN_QUARANTINE_REGISTRY=$identity_quarantine_empty \
+    QWEN_CTX_CHECKPOINT_LEDGER=$identity_checkpoints \
+    QWEN_MODEL_ROOT=$router_model_root QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$identity_registry_race_output \
+    QWEN_APPROVED_MODEL_ID=fabricated \
+    QWEN_APPROVED_MODEL_FILE=fabricated.gguf \
+    QWEN_APPROVED_MODEL_DEVICE=$identity_device \
+    QWEN_APPROVED_MODEL_INODE=$identity_inode \
+    QWEN_APPROVED_MODEL_BYTES=$identity_bytes \
+    QWEN_TEST_REGISTRY_SOURCE=$identity_registry_race_source \
+    QWEN_TEST_REGISTRY_REPLACEMENT=$identity_registry_race_replacement \
+    QWEN_TEST_REGISTRY_REPLACED=$identity_registry_race_marker \
+    QWEN_TEST_REAL_MODEL_REGISTRY=$script_directory/model-registry.sh \
+        "$identity_registry_race_tools/qwen-capacity-policy.sh" \
+        "$fake_server" "$descriptor_path" 4096 18080 \
+        >"$temporary_directory/identity-registry-race.stdout" \
+        2>"$temporary_directory/identity-registry-race.stderr"; then
+    printf 'policy refused the registry descriptor after pathname replacement\n' >&2
+    cat "$temporary_directory/identity-registry-race.stderr" >&2
+    exit 1
+fi
+test -e "$identity_registry_race_marker"
+for identity_argument in \
+    'argument=--ctx-checkpoints' 'argument=3' \
+    'argument=--batch-size' 'argument=256' \
+    'argument=--ubatch-size' 'argument=64' \
+    'argument=--flash-attn' 'argument=auto' \
+    'argument=--cache-type-k' 'argument=q5_1' \
+    'argument=--cache-type-v' 'argument=iq4_nl'; do
+    grep -Fx "$identity_argument" "$identity_registry_race_output" >/dev/null
+done
+
+expect_identity_refusal identity-router \
+    'approved single-model identity is refused in router mode' fabricated \
+    fabricated.gguf "$identity_device" "$identity_inode" "$identity_bytes" \
+    "$descriptor_path" 1 "$identity_quarantine_empty"
+
+exec 8<"$identity_model"
+replacement_descriptor_path=/proc/$$/fd/8
+expect_identity_refusal identity-replacement-descriptor \
+    'approved model descriptor identity differs' fabricated fabricated.gguf \
+    "$identity_device" "$identity_inode" "$identity_bytes" \
+    "$replacement_descriptor_path" 0 "$identity_quarantine_empty"
+exec 8<&-
+
+if run_identity_policy identity-quarantine-hit fabricated fabricated.gguf \
+    "$identity_device" "$identity_inode" "$identity_bytes" \
+    "$descriptor_path" 0 "$identity_quarantine_profile"; then
+    printf 'approved model ID bypassed its quarantined tuple\n' >&2
+    exit 1
+fi
+grep -F 'this tuple is quarantined: fabricated at depth 4096' \
+    "$temporary_directory/identity-quarantine-hit.stderr" >/dev/null
+if [ -e "$identity_output" ]; then
+    printf 'server ran after descriptor tuple quarantine refusal\n' >&2
+    exit 1
+fi
+
+rm -f -- "$identity_output"
+if QWEN_MODEL_REGISTRY=$fabricated_registry \
+    QWEN_QUARANTINE_REGISTRY=$identity_quarantine_empty \
+    QWEN_CTX_CHECKPOINT_LEDGER=$identity_checkpoints \
+    QWEN_MODEL_ROOT=$router_model_root QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$identity_output \
+        "$policy" "$fake_server" "$descriptor_path" 4096 18080 \
+        >"$temporary_directory/identity-absent.stdout" \
+        2>"$temporary_directory/identity-absent.stderr"; then
+    printf 'policy accepted a descriptor path without approved identity\n' >&2
+    exit 1
+fi
+grep -F 'descriptor-backed model path requires approved model identity' \
+    "$temporary_directory/identity-absent.stderr" >/dev/null
+if [ -e "$identity_output" ]; then
+    printf 'server ran after absent descriptor identity refusal\n' >&2
+    exit 1
+fi
+
+descriptor_alias_index=0
+for descriptor_alias in \
+    "/proc/self/fd/7" \
+    "/proc/$$/fd/./7" \
+    "//proc//$$//fd//7" \
+    "/proc/thread-self/fd/7" \
+    "/dev/fd/7"; do
+    descriptor_alias_index=$((descriptor_alias_index + 1))
+    rm -f -- "$identity_output"
+    if QWEN_MODEL_REGISTRY=$fabricated_registry \
+        QWEN_QUARANTINE_REGISTRY=$identity_quarantine_empty \
+        QWEN_CTX_CHECKPOINT_LEDGER=$identity_checkpoints \
+        QWEN_MODEL_ROOT=$router_model_root QWEN_RADV_ICD=$fake_icd \
+        QWEN_POLICY_TEST_OUTPUT=$identity_output \
+            "$policy" "$fake_server" "$descriptor_alias" 4096 18080 \
+            >"$temporary_directory/identity-alias-$descriptor_alias_index.stdout" \
+            2>"$temporary_directory/identity-alias-$descriptor_alias_index.stderr"; then
+        printf 'policy accepted descriptor alias without identity: %s\n' \
+            "$descriptor_alias" >&2
+        exit 1
+    fi
+    grep -F 'descriptor-backed model path requires approved model identity' \
+        "$temporary_directory/identity-alias-$descriptor_alias_index.stderr" \
+        >/dev/null
+    if [ -e "$identity_output" ]; then
+        printf 'server ran after descriptor alias refusal: %s\n' \
+            "$descriptor_alias" >&2
+        exit 1
+    fi
+done
+
+descriptor_symlink=$temporary_directory/descriptor-model-alias.gguf
+descriptor_symlink_target=$temporary_directory/descriptor-model-target.gguf
+printf 'live descriptor alias target\n' >"$descriptor_symlink_target"
+exec 8<"$descriptor_symlink_target"
+live_descriptor_path=/proc/$$/fd/8
+ln -s "$live_descriptor_path" "$descriptor_symlink"
+if QWEN_MODEL_REGISTRY=$fabricated_registry \
+    QWEN_QUARANTINE_REGISTRY=$identity_quarantine_empty \
+    QWEN_CTX_CHECKPOINT_LEDGER=$identity_checkpoints \
+    QWEN_MODEL_ROOT=$router_model_root QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$identity_output \
+        "$policy" "$fake_server" "$descriptor_symlink" 4096 18080 \
+        >"$temporary_directory/identity-symlink.stdout" \
+        2>"$temporary_directory/identity-symlink.stderr"; then
+    printf 'policy accepted a symbolic descriptor alias without identity\n' >&2
+    exit 1
+fi
+grep -F 'ordinary model path must not contain symbolic links' \
+    "$temporary_directory/identity-symlink.stderr" >/dev/null
+if [ -e "$identity_output" ]; then
+    printf 'server ran after symbolic descriptor alias refusal\n' >&2
+    exit 1
+fi
+exec 8<&-
+exec 7<&-
 
 if QWEN_CACHE_TYPE_K=q3_k QWEN_RADV_ICD=$fake_icd \
     QWEN_POLICY_TEST_OUTPUT=$cache_output \

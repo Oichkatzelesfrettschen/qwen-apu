@@ -159,6 +159,11 @@ fi
     printf 'quarantine_registry=%s\n' "${QWEN_QUARANTINE_REGISTRY:-unset}"
     printf 'validated_tuples=%s\n' "${QWEN_VALIDATED_TUPLES:-unset}"
     printf 'ctx_checkpoint_ledger=%s\n' "${QWEN_CTX_CHECKPOINT_LEDGER:-unset}"
+    printf 'approved_model_id=%s\n' "${QWEN_APPROVED_MODEL_ID:-unset}"
+    printf 'approved_model_file=%s\n' "${QWEN_APPROVED_MODEL_FILE:-unset}"
+    printf 'approved_model_device=%s\n' "${QWEN_APPROVED_MODEL_DEVICE:-unset}"
+    printf 'approved_model_inode=%s\n' "${QWEN_APPROVED_MODEL_INODE:-unset}"
+    printf 'approved_model_bytes=%s\n' "${QWEN_APPROVED_MODEL_BYTES:-unset}"
     printf 'batch_size=%s\n' "${QWEN_BATCH_SIZE:-unset}"
     printf 'ubatch_size=%s\n' "${QWEN_UBATCH_SIZE:-unset}"
     printf 'api_key=%s\n' "${QWEN_REQUIRE_API_KEY:-unset}"
@@ -226,6 +231,10 @@ if PATH="$control_bin:$PATH" QWEN_TMUX_RECORD=$control_record \
     QWEN_QUARANTINE_REGISTRY="$work/quarantine snapshot.tsv" \
     QWEN_VALIDATED_TUPLES="$work/tuples snapshot.tsv" \
     QWEN_CTX_CHECKPOINT_LEDGER="$work/checkpoints snapshot.tsv" \
+    QWEN_APPROVED_MODEL_ID=fixture-model \
+    QWEN_APPROVED_MODEL_FILE='Fixture Models/model.gguf' \
+    QWEN_APPROVED_MODEL_DEVICE=2049 QWEN_APPROVED_MODEL_INODE=8675309 \
+    QWEN_APPROVED_MODEL_BYTES=2783446304 \
     QWEN_BATCH_SIZE=128 QWEN_UBATCH_SIZE=32 \
     QWEN_REQUIRE_API_KEY=1 QWEN_WEB_AUTHORIZER_READY=1 \
     "$control_harness/qwen-webui-control.sh" start custom \
@@ -264,6 +273,16 @@ if PATH="$control_bin:$PATH" QWEN_TMUX_RECORD=$control_record \
         "$control_session_record" || outcome=validated_tuples_split
     grep -Fqx "ctx_checkpoint_ledger=$work/checkpoints snapshot.tsv" \
         "$control_session_record" || outcome=ctx_checkpoint_ledger_split
+    grep -qx 'approved_model_id=fixture-model' "$control_session_record" ||
+        outcome=approved_model_id_dropped
+    grep -qx 'approved_model_file=Fixture Models/model.gguf' \
+        "$control_session_record" || outcome=approved_model_file_dropped
+    grep -qx 'approved_model_device=2049' "$control_session_record" ||
+        outcome=approved_model_device_dropped
+    grep -qx 'approved_model_inode=8675309' "$control_session_record" ||
+        outcome=approved_model_inode_dropped
+    grep -qx 'approved_model_bytes=2783446304' "$control_session_record" ||
+        outcome=approved_model_bytes_dropped
     grep -qx 'batch_size=128' "$control_session_record" ||
         outcome=batch_size_dropped
     grep -qx 'ubatch_size=32' "$control_session_record" ||
