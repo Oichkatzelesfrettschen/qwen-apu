@@ -19,6 +19,7 @@ if [ "$#" -lt 4 ] || [ "$#" -gt 5 ]; then
     exit 2
 fi
 
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 bundle_name=$1
 server_path=$2
 manifest_path=$3
@@ -47,30 +48,43 @@ server_sha256=$(sha256sum "$server_path" | cut -d ' ' -f 1)
 server_bytes=$(wc -c <"$server_path" | tr -d ' ')
 
 # The semantics are read from the manifest that travels into the bundle, and
-# the manifest must own exactly one declaration and exactly one row matching
-# this server's digest, the same discipline the exec guard applies: a
-# manifest describing some other binary must fail assembly rather than
-# activation.
+# the manifest must own exactly one declaration and exactly one executable row
+# whose byte count and digest match this server, the same row shape
+# qwen-build-exec-guard.sh requires: a digest appearing in a comment or in
+# another object's row binds nothing.
 checkpoint_semantics=$(awk -F'\t' '$1 == "checkpoint_semantics" { count++; value = $2 }
     END { if (count != 1) exit 1; print value }' "$manifest_path") || {
     printf 'bundle manifest must carry exactly one checkpoint_semantics row: %s\n' \
         "$manifest_path" >&2
     exit 1
 }
-manifest_digest_rows=$(grep -c "$server_sha256" "$manifest_path" || :)
-if [ "$manifest_digest_rows" -ne 1 ]; then
-    printf 'bundle manifest carries %s rows for server digest %s; exactly one is required: %s\n' \
-        "$manifest_digest_rows" "$server_sha256" "$manifest_path" >&2
+executable_rows=$(awk -F'\t' -v bytes="$server_bytes" -v digest="$server_sha256" '
+    $1 == "executable" && $2 == "llama-server" && NF == 4 &&
+        $3 == bytes && $4 == digest { count++ }
+    END { print count + 0 }' "$manifest_path")
+if [ "$executable_rows" -ne 1 ]; then
+    printf 'artifact manifest holds %s executable llama-server rows matching %s bytes %s; exactly one is required: %s\n' \
+        "$executable_rows" "$server_bytes" "$server_sha256" "$manifest_path" >&2
     exit 1
 fi
+
+# The ledger is read through the registry validator rather than a local awk,
+# so a malformed count, a duplicate id, a model outside the registry, or a
+# positive count with no evidence refuses assembly instead of contributing
+# zero to the maximum.
+validated_ledger_rows=$(QWEN_CTX_CHECKPOINT_LEDGER=$ctx_ledger_path \
+    "$script_directory/model-registry.sh" ctx-checkpoints) || {
+    printf 'context checkpoint ledger failed registry validation: %s\n' \
+        "$ctx_ledger_path" >&2
+    exit 1
+}
+maximum_ledger_count=$(printf '%s\n' "$validated_ledger_rows" | awk -F'\t' '
+    { if ($2 + 0 > maximum) maximum = $2 + 0 }
+    END { print maximum + 0 }')
 
 # A positive checkpoint count is admissible only against natural-boundary-v1,
 # so a bundle pairing them wrongly is refused at assembly, where the operator
 # chose the inputs, rather than at the activation an incident is running on.
-maximum_ledger_count=$(awk -F'\t' '/^#/ || NF == 0 { next }
-    $1 == "model_id" { next }
-    { if ($2 + 0 > maximum) maximum = $2 + 0 }
-    END { print maximum + 0 }' "$ctx_ledger_path")
 if [ "$maximum_ledger_count" -gt 0 ] && \
     [ "$checkpoint_semantics" != natural-boundary-v1 ]; then
     printf 'ledger carries a positive checkpoint count and the server declares %s; a positive count requires natural-boundary-v1\n' \

@@ -54,10 +54,23 @@ llama_server=${QWEN_LLAMA_SERVER:-}
 # QWEN_LLAMA_SERVER or QWEN_CTX_CHECKPOINT_LEDGER still wins, and a machine
 # without a deployment root keeps the promote-chain defaults unchanged.
 deployment_current=${QWEN_DEPLOYMENT_ROOT:-"${HOME:?}/qwen-deployments"}/deployment-current
-if [ -z "$llama_server" ] && [ -x "$deployment_current/llama-server" ]; then
+if [ -z "$llama_server" ] && { [ -e "$deployment_current" ] || \
+    [ -L "$deployment_current" ]; }; then
+    # A deployment link that exists names the selected release, so a dangling
+    # link, a missing server, or an unreadable ledger refuses the start rather
+    # than silently serving whatever the build symlinks name instead.
+    if [ ! -x "$deployment_current/llama-server" ]; then
+        printf 'deployment-current exists but its llama-server is not executable: %s\n' \
+            "$deployment_current/llama-server" >&2
+        exit 1
+    fi
+    if [ ! -r "$deployment_current/ctx-checkpoints.tsv" ]; then
+        printf 'deployment-current exists but its ctx-checkpoints.tsv is unreadable: %s\n' \
+            "$deployment_current/ctx-checkpoints.tsv" >&2
+        exit 1
+    fi
     llama_server=$deployment_current/llama-server
-    if [ -z "${QWEN_CTX_CHECKPOINT_LEDGER:-}" ] && \
-        [ -r "$deployment_current/ctx-checkpoints.tsv" ]; then
+    if [ -z "${QWEN_CTX_CHECKPOINT_LEDGER:-}" ]; then
         QWEN_CTX_CHECKPOINT_LEDGER=$deployment_current/ctx-checkpoints.tsv
         export QWEN_CTX_CHECKPOINT_LEDGER
     fi
