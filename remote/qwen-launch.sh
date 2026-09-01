@@ -44,9 +44,17 @@ fi
 # deployment at all, which keeps the promote-chain defaults; any other
 # refusal is a corrupt or tampered bundle and stops the launch here.
 deployment_root=${QWEN_DEPLOYMENT_ROOT:-"${HOME:?}/qwen-deployments"}
-deployment_resolution=$("$script_directory/resolve-active-deployment.sh" \
-    "$deployment_root" 2>&1) && deployment_resolution_status=0 || \
-    deployment_resolution_status=$?
+# An explicit QWEN_LLAMA_SERVER outranks the deployment, the rule
+# qwen-webui-control.sh applies, so a launch naming its server reads no
+# bundle at all.
+if [ -n "${QWEN_LLAMA_SERVER:-}" ]; then
+    deployment_resolution=''
+    deployment_resolution_status=3
+else
+    deployment_resolution=$("$script_directory/resolve-active-deployment.sh" \
+        "$deployment_root" 2>&1) && deployment_resolution_status=0 || \
+        deployment_resolution_status=$?
+fi
 active_deployment_directory=''
 case $deployment_resolution_status in
     0)
