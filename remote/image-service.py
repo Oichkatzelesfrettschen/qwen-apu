@@ -1711,32 +1711,40 @@ class ImageService:
         with the descriptor.
         """
         self.begin_shutdown()
+        # The child is signalled and escalated ahead of the quiescence
+        # barrier: a handler wedged waiting on that child -- the D-state
+        # Vulkan hang the kernel-hazard watcher exists for -- holds job_lock
+        # for the job's whole duration, so an escalation placed behind the
+        # lock would sit behind the very process it exists to kill.
+        with self.job.lock:
+            child_pid = self.job.child_pid
+        if child_pid:
+            self.signal_child(child_pid)
+            deadline = time.monotonic() + TERMINATION_GRACE_SECONDS
+            reaped = False
+            while time.monotonic() < deadline:
+                try:
+                    waited, _ = os.waitpid(child_pid, os.WNOHANG)
+                except ChildProcessError:
+                    reaped = True
+                    break
+                if waited == child_pid:
+                    reaped = True
+                    break
+                time.sleep(0.05)
+            if not reaped:
+                with contextlib.suppress(ProcessLookupError, PermissionError):
+                    os.killpg(child_pid, signal.SIGKILL)
+                with contextlib.suppress(ChildProcessError):
+                    os.waitpid(child_pid, 0)
         # A generation owns job_lock from admission through its runtime and
-        # final artifact action.  Waiting on that lock after setting the event
-        # forms the quiescence barrier: an active handler observes cancellation,
-        # and a newly accepted handler refuses before creating state.
-        with self.job_lock:
-            with self.job.lock:
-                child_pid = self.job.child_pid
-            if child_pid:
-                self.signal_child(child_pid)
-                deadline = time.monotonic() + TERMINATION_GRACE_SECONDS
-                reaped = False
-                while time.monotonic() < deadline:
-                    try:
-                        waited, _ = os.waitpid(child_pid, os.WNOHANG)
-                    except ChildProcessError:
-                        reaped = True
-                        break
-                    if waited == child_pid:
-                        reaped = True
-                        break
-                    time.sleep(0.05)
-                if not reaped:
-                    with contextlib.suppress(ProcessLookupError, PermissionError):
-                        os.killpg(child_pid, signal.SIGKILL)
-                    with contextlib.suppress(ChildProcessError):
-                        os.waitpid(child_pid, 0)
+        # final artifact action. Waiting on it after the kill forms the
+        # quiescence barrier: an active handler observes cancellation and its
+        # dead child, and a newly accepted handler refuses before creating
+        # state. The wait is bounded so a handler that still fails to release
+        # is reported as residue rather than hanging the teardown proof.
+        job_lock_acquired = self.job_lock.acquire(timeout=TERMINATION_GRACE_SECONDS)
+        try:
             surviving_child = 0
             if child_pid:
                 try:
@@ -1758,7 +1766,11 @@ class ImageService:
                 "child": surviving_child,
                 "part_files": remaining_parts,
                 "lease_held": self.lease.held,
+                "job_lock_released": job_lock_acquired,
             }
+        finally:
+            if job_lock_acquired:
+                self.job_lock.release()
 
 
 class ControlHandler(socketserver.StreamRequestHandler):

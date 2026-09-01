@@ -30,7 +30,7 @@ both turns and all three classes.
 `remote/promote-llama-build.sh` accepted the preset on its own gates --
 manifest digests current, the multimodal load closure whole, the strict Vulkan
 one-token check placing every weight on `Vulkan0`, and the image smoke naming
-the declared colours. The rebuild replaced the previous production directory
+the declared colors. The rebuild replaced the previous production directory
 in place, so `--rollback` resolves to that same directory and
 `~/qwen-frozen-binaries/` holds the only prior serving artifact.
 

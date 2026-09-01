@@ -501,8 +501,18 @@ stop_server() {
     fi
     stop_iteration=0
     while [ "$stop_iteration" -lt 30 ]; do
-        server_status=$(ps -o stat= -p "$server_pid" 2>/dev/null |
-            awk 'NR == 1 { print $1 }')
+        # ps failing is not the process being gone: kill -0 from the parent
+        # is the existence authority, and an unreadable but live process
+        # keeps the loop waiting instead of clearing the identity while the
+        # server still holds the port and the carve-out.
+        if server_state_line=$(ps -o stat= -p "$server_pid" 2>/dev/null); then
+            server_status=$(printf '%s\n' "$server_state_line" |
+                awk 'NR == 1 { print $1 }')
+        elif kill -0 "$server_pid" 2>/dev/null; then
+            server_status=unreadable
+        else
+            server_status=''
+        fi
         case $server_status in
         '' | Z*)
             wait "$server_pid" 2>/dev/null || true
@@ -630,7 +640,7 @@ start_server() {
             --parallel 1 --threads "$thread_count" \
             --threads-batch "$thread_count" \
             --no-context-shift --offline --log-verbosity 4 \
-            >"$arm_log" 2>&1 &
+            >"$arm_log" 2>&1 9>&- &
     else
         env LLAMA_NO_CPU_FALLBACK=1 QWEN_VULKAN_PROFILE="$vulkan_profile" \
             QWEN_VULKAN_WORKLOAD_LOCK= \
@@ -647,7 +657,7 @@ start_server() {
             --parallel 1 --threads "$thread_count" \
             --threads-batch "$thread_count" \
             --no-context-shift --offline --log-verbosity 4 \
-            >"$arm_log" 2>&1 &
+            >"$arm_log" 2>&1 9>&- &
     fi
     server_pid=$!
     if ! server_starttime=$(process_starttime "$server_pid"); then

@@ -327,7 +327,7 @@ if [ "$image_service_enabled" = 1 ]; then
     image_service_ready=0
     attempt=0
     while [ "$attempt" -lt 300 ]; do
-        if grep -F 'socket ' "$image_service_log" >/dev/null 2>&1; then
+        if grep '^socket ' "$image_service_log" >/dev/null 2>&1; then
             image_service_ready=1
             break
         fi
@@ -368,9 +368,14 @@ QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
 server_pid=$!
 printf '%s\n' "$server_pid" >"$pid_file"
 # Start ticks bind every loading-phase termination to this exact process, so
-# a recycled PID after an early server death is left alone.
+# a recycled PID after an early server death is left alone. The second PID
+# file line carries them for the control script's stop path, which otherwise
+# binds its SIGTERM by command name alone.
 server_start_ticks=$(sed 's/^.*) //' "/proc/$server_pid/stat" 2>/dev/null |
     awk '{ print $20 }') || :
+if [ -n "$server_start_ticks" ]; then
+    printf '%s\n' "$server_start_ticks" >>"$pid_file" || :
+fi
 
 # The record name carries start time, checkpoint, and server PID, so two
 # sessions never collide and an aborted session's samples survive every later

@@ -493,13 +493,26 @@ case $action in
             case $server_pid in
                 '' | *[!0-9]*) server_pid=0 ;;
             esac
+            # The session records the server's start ticks on the PID file's
+            # second line, so the SIGTERM binds to the exact spawned process
+            # rather than to a recycled PID that merely shares the command
+            # name. A one-line PID file predates the record and keeps the
+            # command-name binding alone.
+            recorded_start_ticks=$(sed -n '2p' "$pid_file")
             if [ "$server_pid" -gt 0 ] && kill -0 "$server_pid" 2>/dev/null; then
                 server_command=$(ps -o comm= -p "$server_pid" | tr -d ' ')
-                if [ "$server_command" = llama-server ]; then
-                    kill -TERM "$server_pid"
-                else
+                live_start_ticks=$(sed 's/^.*) //' "/proc/$server_pid/stat" \
+                    2>/dev/null | awk '{ print $20 }') || live_start_ticks=''
+                if [ "$server_command" != llama-server ]; then
                     printf 'stale PID file names non-llama process %s; leaving it running\n' \
                         "$server_pid" >&2
+                elif [ -n "$recorded_start_ticks" ] && \
+                    [ "$live_start_ticks" != "$recorded_start_ticks" ]; then
+                    printf 'PID %s start ticks %s differ from recorded %s; leaving it running\n' \
+                        "$server_pid" "$live_start_ticks" \
+                        "$recorded_start_ticks" >&2
+                else
+                    kill -TERM "$server_pid"
                 fi
             fi
         fi
