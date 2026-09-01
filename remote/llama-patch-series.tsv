@@ -19,3 +19,4 @@ production	llama-router-tools-proxy.patch
 production	llama-vulkan-view-alias-deps.patch
 production	llama-server-natural-checkpoint-boundary.patch
 candidate	llama-server-vulkan-workload-lease.patch
+candidate	llama-vulkan-pipeline-census.patch
