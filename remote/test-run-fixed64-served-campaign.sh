@@ -463,7 +463,7 @@ arm_paths = sorted((Path(sys.argv[1]) / "arms").glob("*/server-process.json"))
 if len(arm_paths) != 12:
     raise SystemExit(1)
 expected = {
-    "schema": "served-decode-process-v2",
+    "schema": "served-decode-process-v3",
     "execution_surface": "hp14-ssh",
     "host_shortname": "hp14-dk1xxx",
     "ssh_session": "present",
@@ -479,6 +479,40 @@ then
     hp14_contract_state=arm-process-evidence
 fi
 report binds_hp14_ssh_priority_contract "$hp14_contract_state"
+
+# Model roots commonly reach a data disk through one symlink. The campaign
+# canonicalizes that root before recording models-resolved.tsv, so the producer
+# and summarizer retain one path spelling instead of failing after twelve arms.
+linked_models_directory=$work_directory/models-link
+ln -s -- "$models_directory" "$linked_models_directory"
+linked_models_output=$work_directory/linked-models-success
+linked_models_state=accepted
+if ! run_campaign "$linked_models_output" \
+    QWEN_MODELS_DIRECTORY="$linked_models_directory" \
+    >"$work_directory/linked-models.stdout" \
+    2>"$work_directory/linked-models.stderr"; then
+    linked_models_state='campaign-failed'
+elif ! awk -F '\t' -v expected="$models_directory" '
+    $1 == "models_directory" && $2 == expected { found = 1 }
+    END { exit !found }
+' "$linked_models_output/campaign-inputs.tsv"; then
+    linked_models_state='campaign-input-path'
+elif ! python3 - "$linked_models_output" "$models_directory" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+campaign_directory = Path(sys.argv[1])
+models_directory = Path(sys.argv[2])
+for runtime_inputs_path in campaign_directory.glob("arms/*/runtime-inputs.json"):
+    document = json.loads(runtime_inputs_path.read_text(encoding="utf-8"))
+    if models_directory not in Path(document["model"]["path"]).parents:
+        raise SystemExit(1)
+PY
+then
+    linked_models_state='runtime-input-path'
+fi
+report canonicalizes_linked_model_root "$linked_models_state"
 
 # Re-sealing cannot convert a changed execution identity or scheduling policy
 # into valid evidence. The semantic verifier binds every arm record to the
@@ -500,7 +534,12 @@ process_path = Path(sys.argv[1])
 field = sys.argv[2]
 value_text = sys.argv[3]
 document = json.loads(process_path.read_text(encoding="utf-8"))
-document[field] = int(value_text) if field == "nice" else value_text
+if value_text == "increment":
+    document[field] += 1
+elif field in {"nice", "executable_device", "executable_inode", "executable_bytes"}:
+    document[field] = int(value_text)
+else:
+    document[field] = value_text
 process_path.write_text(
     json.dumps(document, separators=(",", ":")) + "\n", encoding="utf-8"
 )
@@ -519,6 +558,49 @@ run_server_process_contract_mutation server_process_nice_zero \
     nice 0 'nice value differs from 19'
 run_server_process_contract_mutation server_process_best_effort_io \
     io_class best-effort 'io_class differs from idle'
+run_server_process_contract_mutation server_process_executable_inode \
+    executable_inode increment 'executable identity differs from runtime-inputs'
+
+run_runtime_input_contract_mutation() {
+    mutation_name=$1
+    mutation_section=$2
+    mutation_field=$3
+    mutation_value=$4
+    rejection_pattern=$5
+    mutation_directory=$work_directory/resealed-$mutation_name
+    cp -a -- "$success_output" "$mutation_directory"
+    python3 - \
+        "$mutation_directory/arms/01-forward-qwen35-08b/runtime-inputs.json" \
+        "$mutation_section" "$mutation_field" "$mutation_value" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+runtime_inputs_path = Path(sys.argv[1])
+section = sys.argv[2]
+field = sys.argv[3]
+value = sys.argv[4]
+document = json.loads(runtime_inputs_path.read_text(encoding="utf-8"))
+document[section][field] = (
+    document[section][field] + 1 if value == "increment" else value
+)
+runtime_inputs_path.write_text(
+    json.dumps(document, separators=(",", ":")) + "\n", encoding="utf-8"
+)
+PY
+    report_resealed_rejection "rejects_$mutation_name" \
+        "$mutation_directory" "$rejection_pattern"
+}
+
+run_runtime_input_contract_mutation runtime_model_path model path \
+    /tmp/other-model.gguf 'model identity differs from models-resolved.tsv'
+run_runtime_input_contract_mutation runtime_model_descriptor model descriptor_path \
+    /proc/04321/fd/7 'descriptor_path must be /proc/<positive-pid>/fd/7'
+run_runtime_input_contract_mutation runtime_executable_descriptor executable \
+    descriptor_path /proc/4322/fd/6 \
+    'model and executable descriptors use different PIDs'
+run_runtime_input_contract_mutation runtime_executable_bytes executable bytes \
+    increment 'executable bytes differ from identity-before'
 
 run_campaign_input_contract_mutation() {
     mutation_name=$1
@@ -1847,8 +1929,8 @@ if [ "$lease_state" != accepted ]; then
     cat "$work_directory/lease-second.stderr" >&2
 fi
 
-if [ "$checks_run" -ne 85 ]; then
-    printf 'test_run_fixed64_served_campaign=failed expected_checks=85 observed_checks=%s\n' \
+if [ "$checks_run" -ne 91 ]; then
+    printf 'test_run_fixed64_served_campaign=failed expected_checks=91 observed_checks=%s\n' \
         "$checks_run" >&2
     exit 1
 fi

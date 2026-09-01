@@ -78,17 +78,159 @@ printf 'cache cache_type_k=%s cache_type_v=%s flash_attention=%s\n' \
     >>"$result_directory/session.status"
 printf 'router enabled=%s\n' "$QWEN_ROUTER" >>"$result_directory/session.status"
 
-server_sha256=$(sha256sum "$QWEN_LLAMA_SERVER")
-server_sha256=${server_sha256%% *}
 static_path=$campaign_directory/configuration/runtime-source/remote/../webui
-printf '{"schema":"served-decode-process-v2","execution_surface":"%s","host_shortname":"%s","ssh_session":"%s","pid":1234,"start_time_ticks":5678,"executable":"%s","executable_sha256":"%s","argv":["%s","--model","%s","--host","127.0.0.1","--port","8080","--alias","qwen-apu","--cors-origins","localhost","--path","%s","--ui","--log-verbosity","4","--device","Vulkan0","--split-mode","none","--n-gpu-layers","all","--override-tensor",".*=Vulkan0","--fit","off","--parallel","1","--threads","1","--threads-batch","1","--cache-ram","0","--no-context-shift","--offline","--checkpoint-min-step","%s","--ctx-checkpoints","%s","--ctx-size","%s","--batch-size","%s","--ubatch-size","%s","--flash-attn","%s","--cache-type-k","%s","--cache-type-v","%s"],"nice":19,"cpus_allowed_list":"0","io_class":"idle"}\n' \
-    "${QWEN_EXECUTION_SURFACE:?}" "${QWEN_HOST_SHORTNAME:?}" \
-    "${QWEN_SSH_SESSION:?}" \
-    "$QWEN_LLAMA_SERVER" "$server_sha256" "$QWEN_LLAMA_SERVER" \
-    "$model_path" "$static_path" "$QWEN_CHECKPOINT_MIN_STEP" \
-    "$QWEN_CTX_CHECKPOINTS" "$QWEN_CONTEXT_SIZE" "$QWEN_BATCH_SIZE" \
-    "$QWEN_UBATCH_SIZE" "$QWEN_FLASH_ATTN" "$QWEN_CACHE_TYPE_K" \
-    "$QWEN_CACHE_TYPE_V" >"$result_directory/server-process.json"
+python3 - "$model_path" "$QWEN_LLAMA_SERVER" "$static_path" \
+    "$QWEN_MODEL_ARTIFACTS" "$QWEN_MODELS_DIRECTORY" \
+    "$QWEN_EXECUTION_SURFACE" "$QWEN_HOST_SHORTNAME" "$QWEN_SSH_SESSION" \
+    "$QWEN_CHECKPOINT_MIN_STEP" "$QWEN_CTX_CHECKPOINTS" \
+    "$QWEN_CONTEXT_SIZE" "$QWEN_BATCH_SIZE" "$QWEN_UBATCH_SIZE" \
+    "$QWEN_FLASH_ATTN" "$QWEN_CACHE_TYPE_K" "$QWEN_CACHE_TYPE_V" \
+    "$result_directory/runtime-inputs.json" \
+    "$result_directory/server-process.json" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+(
+    model_text,
+    server_text,
+    static_text,
+    artifact_ledger_text,
+    models_directory_text,
+    execution_surface,
+    host_shortname,
+    ssh_session,
+    checkpoint_min_step,
+    ctx_checkpoints,
+    context_size,
+    batch_size,
+    ubatch_size,
+    flash_attention,
+    cache_type_k,
+    cache_type_v,
+    runtime_inputs_text,
+    server_process_text,
+) = sys.argv[1:]
+
+
+def file_identity(path):
+    status = path.stat()
+    return {
+        "path": str(path.resolve(strict=True)),
+        "device": status.st_dev,
+        "inode": status.st_ino,
+        "bytes": status.st_size,
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
+
+
+model_path = Path(model_text)
+server_path = Path(server_text)
+models_directory = Path(models_directory_text).resolve(strict=True)
+model_identity = file_identity(model_path)
+model_file = Path(model_identity["path"]).relative_to(models_directory).as_posix()
+artifact_rows = [
+    line.split("\t")
+    for line in Path(artifact_ledger_text).read_text(encoding="utf-8").splitlines()
+    if line and not line.startswith("#") and line.split("\t")[1] == model_file
+]
+if len(artifact_rows) != 1:
+    raise SystemExit(f"fake runner found {len(artifact_rows)} rows for {model_file}")
+runner_pid = 4321
+model_identity.update(
+    {
+        "descriptor_path": f"/proc/{runner_pid}/fd/7",
+        "artifact_model_id": artifact_rows[0][0],
+        "artifact_model_file": model_file,
+    }
+)
+server_identity = file_identity(server_path)
+server_identity["descriptor_path"] = f"/proc/{runner_pid}/fd/6"
+runtime_inputs = {
+    "schema": "served-runtime-inputs-v1",
+    "model": model_identity,
+    "executable": server_identity,
+}
+Path(runtime_inputs_text).write_text(
+    json.dumps(runtime_inputs, indent=2) + "\n", encoding="utf-8"
+)
+
+server_process = {
+    "schema": "served-decode-process-v3",
+    "execution_surface": execution_surface,
+    "host_shortname": host_shortname,
+    "ssh_session": ssh_session,
+    "pid": 1234,
+    "start_time_ticks": 5678,
+    "executable": server_identity["path"],
+    "executable_proc_link": server_identity["path"],
+    "executable_device": server_identity["device"],
+    "executable_inode": server_identity["inode"],
+    "executable_bytes": server_identity["bytes"],
+    "executable_sha256": server_identity["sha256"],
+    "argv": [
+        server_identity["path"],
+        "--model",
+        model_identity["descriptor_path"],
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8080",
+        "--alias",
+        "qwen-apu",
+        "--cors-origins",
+        "localhost",
+        "--path",
+        static_text,
+        "--ui",
+        "--log-verbosity",
+        "4",
+        "--device",
+        "Vulkan0",
+        "--split-mode",
+        "none",
+        "--n-gpu-layers",
+        "all",
+        "--override-tensor",
+        ".*=Vulkan0",
+        "--fit",
+        "off",
+        "--parallel",
+        "1",
+        "--threads",
+        "1",
+        "--threads-batch",
+        "1",
+        "--cache-ram",
+        "0",
+        "--no-context-shift",
+        "--offline",
+        "--checkpoint-min-step",
+        checkpoint_min_step,
+        "--ctx-checkpoints",
+        ctx_checkpoints,
+        "--ctx-size",
+        context_size,
+        "--batch-size",
+        batch_size,
+        "--ubatch-size",
+        ubatch_size,
+        "--flash-attn",
+        flash_attention,
+        "--cache-type-k",
+        cache_type_k,
+        "--cache-type-v",
+        cache_type_v,
+    ],
+    "nice": 19,
+    "cpus_allowed_list": "0",
+    "io_class": "idle",
+}
+Path(server_process_text).write_text(
+    json.dumps(server_process, indent=2) + "\n", encoding="utf-8"
+)
+PY
 
 printf 'fake server log\n' >"$result_directory/server.log"
 printf 'fake telemetry log\n' >"$result_directory/telemetry.log"

@@ -69,6 +69,7 @@ ARM_ARTIFACT_DIGEST_FIELDS = (
     ("teardown_sha256", "teardown.txt"),
     ("session_status_sha256", "session.status"),
     ("server_process_sha256", "server-process.json"),
+    ("runtime_inputs_sha256", "runtime-inputs.json"),
     ("server_log_sha256", "server.log"),
     ("telemetry_log_sha256", "telemetry.log"),
     ("graphics_latency_log_sha256", "graphics-latency.log"),
@@ -407,14 +408,17 @@ def require_arm_artifacts(arm_directory: Path) -> dict[str, Path]:
 
 
 def expected_server_argv(
-    executable: str, model: dict[str, str], campaign_output_directory: str
+    executable: str,
+    model_descriptor_path: str,
+    model: dict[str, str],
+    campaign_output_directory: str,
 ) -> list[str]:
     runtime_root = Path(campaign_output_directory) / "configuration/runtime-source"
     static_path = str(runtime_root / "remote/../webui")
     return [
         executable,
         "--model",
-        model["model_path"],
+        model_descriptor_path,
         "--host",
         "127.0.0.1",
         "--port",
@@ -467,10 +471,120 @@ def expected_server_argv(
     ]
 
 
+def require_proc_descriptor(path: str, descriptor: str, artifact_path: Path) -> str:
+    parts = Path(path).parts
+    if (
+        len(parts) != 5
+        or parts[:2] != ("/", "proc")
+        or parts[3] != "fd"
+        or parts[4] != descriptor
+        or not is_canonical_nonnegative_integer(parts[2])
+        or parts[2] == "0"
+    ):
+        raise CampaignError(
+            f"{artifact_path} descriptor_path must be /proc/<positive-pid>/fd/{descriptor}"
+        )
+    return parts[2]
+
+
+def validate_runtime_inputs(
+    path: Path,
+    expected_server: str,
+    expected_server_sha256: str,
+    expected_server_bytes: str,
+    model: dict[str, str],
+) -> dict[str, Any]:
+    document = load_json_object(path)
+    if set(document) != {"schema", "model", "executable"}:
+        raise CampaignError(f"{path} runtime-input key set differs")
+    if document["schema"] != "served-runtime-inputs-v1":
+        raise CampaignError(f"{path} schema differs")
+
+    model_identity = document["model"]
+    model_keys = {
+        "path",
+        "descriptor_path",
+        "device",
+        "inode",
+        "bytes",
+        "sha256",
+        "artifact_model_id",
+        "artifact_model_file",
+    }
+    if not isinstance(model_identity, dict) or set(model_identity) != model_keys:
+        raise CampaignError(f"{path} model identity key set differs")
+    expected_model_strings = {
+        "path": model["model_path"],
+        "sha256": model["model_sha256"],
+        "artifact_model_id": model["model_id"],
+        "artifact_model_file": model["model_file"],
+    }
+    observed_model_strings = {
+        key: exact_string(model_identity[key], key, path)
+        for key in expected_model_strings
+    }
+    if observed_model_strings != expected_model_strings:
+        raise CampaignError(f"{path} model identity differs from models-resolved.tsv")
+    model_descriptor = exact_string(
+        model_identity["descriptor_path"], "model.descriptor_path", path
+    )
+    runner_pid = require_proc_descriptor(model_descriptor, "7", path)
+    for field in ("device", "inode", "bytes"):
+        value = exact_integer(model_identity[field], f"model.{field}", path)
+        if value < 0 or (field != "device" and value == 0):
+            raise CampaignError(f"{path} model {field} must be positive")
+    if model_identity["bytes"] != int(model["model_bytes"]):
+        raise CampaignError(f"{path} model bytes differ from models-resolved.tsv")
+    if not is_sha256(observed_model_strings["sha256"]):
+        raise CampaignError(f"{path} model sha256 is invalid")
+
+    executable_identity = document["executable"]
+    executable_keys = {
+        "path",
+        "descriptor_path",
+        "device",
+        "inode",
+        "bytes",
+        "sha256",
+    }
+    if (
+        not isinstance(executable_identity, dict)
+        or set(executable_identity) != executable_keys
+    ):
+        raise CampaignError(f"{path} executable identity key set differs")
+    expected_executable_strings = {
+        "path": expected_server,
+        "sha256": expected_server_sha256,
+    }
+    observed_executable_strings = {
+        key: exact_string(executable_identity[key], f"executable.{key}", path)
+        for key in expected_executable_strings
+    }
+    if observed_executable_strings != expected_executable_strings:
+        raise CampaignError(f"{path} executable identity differs from identity-before")
+    executable_descriptor = exact_string(
+        executable_identity["descriptor_path"], "executable.descriptor_path", path
+    )
+    if require_proc_descriptor(executable_descriptor, "6", path) != runner_pid:
+        raise CampaignError(
+            f"{path} model and executable descriptors use different PIDs"
+        )
+    for field in ("device", "inode", "bytes"):
+        value = exact_integer(executable_identity[field], f"executable.{field}", path)
+        if value < 0 or (field != "device" and value == 0):
+            raise CampaignError(f"{path} executable {field} must be positive")
+    if executable_identity["bytes"] != int(expected_server_bytes):
+        raise CampaignError(f"{path} executable bytes differ from identity-before")
+    if not is_sha256(observed_executable_strings["sha256"]):
+        raise CampaignError(f"{path} executable sha256 is invalid")
+    return document
+
+
 def validate_server_process(
     path: Path,
     expected_server: str,
     expected_server_sha256: str,
+    runtime_inputs: dict[str, Any],
     model: dict[str, str],
     campaign_output_directory: str,
     execution_surface: str,
@@ -486,6 +600,10 @@ def validate_server_process(
         "pid",
         "start_time_ticks",
         "executable",
+        "executable_proc_link",
+        "executable_device",
+        "executable_inode",
+        "executable_bytes",
         "executable_sha256",
         "argv",
         "nice",
@@ -494,7 +612,7 @@ def validate_server_process(
     }
     if set(document) != expected_keys:
         raise CampaignError(f"{path} server-process key set differs")
-    if document["schema"] != "served-decode-process-v2":
+    if document["schema"] != "served-decode-process-v3":
         raise CampaignError(f"{path} schema differs")
     expected_execution_contract = {
         "execution_surface": execution_surface,
@@ -521,6 +639,26 @@ def validate_server_process(
     )
     if not is_sha256(executable_sha256) or executable_sha256 != expected_server_sha256:
         raise CampaignError(f"{path} executable_sha256 differs from identity-before")
+    runtime_executable = cast(dict[str, Any], runtime_inputs["executable"])
+    observed_executable_identity = {
+        "path": executable,
+        "device": exact_integer(
+            document["executable_device"], "executable_device", path
+        ),
+        "inode": exact_integer(document["executable_inode"], "executable_inode", path),
+        "bytes": exact_integer(document["executable_bytes"], "executable_bytes", path),
+        "sha256": executable_sha256,
+    }
+    expected_executable_identity = {
+        key: runtime_executable[key] for key in observed_executable_identity
+    }
+    if observed_executable_identity != expected_executable_identity:
+        raise CampaignError(f"{path} executable identity differs from runtime-inputs")
+    executable_proc_link = exact_string(
+        document["executable_proc_link"], "executable_proc_link", path
+    )
+    if executable_proc_link != runtime_executable["path"]:
+        raise CampaignError(f"{path} executable_proc_link differs from runtime-inputs")
 
     argv_value = document["argv"]
     if (
@@ -530,7 +668,13 @@ def validate_server_process(
     ):
         raise CampaignError(f"{path} argv must be a nonempty string list")
     argv = cast(list[str], argv_value)
-    expected_argv = expected_server_argv(executable, model, campaign_output_directory)
+    runtime_model = cast(dict[str, Any], runtime_inputs["model"])
+    expected_argv = expected_server_argv(
+        executable,
+        cast(str, runtime_model["descriptor_path"]),
+        model,
+        campaign_output_directory,
+    )
     if argv != expected_argv:
         mismatch_index = next(
             (
@@ -666,8 +810,10 @@ def validate_session_status(path: Path, model: dict[str, str]) -> int:
 def validate_arm_server_identity(
     session_status_path: Path,
     server_process_path: Path,
+    runtime_inputs_path: Path,
     expected_server: str,
     expected_server_sha256: str,
+    expected_server_bytes: str,
     model: dict[str, str],
     campaign_output_directory: str,
     execution_surface: str,
@@ -675,10 +821,18 @@ def validate_arm_server_identity(
     ssh_session: str,
 ) -> int:
     canonical_server_pid = validate_session_status(session_status_path, model)
+    runtime_inputs = validate_runtime_inputs(
+        runtime_inputs_path,
+        expected_server,
+        expected_server_sha256,
+        expected_server_bytes,
+        model,
+    )
     captured_server_pid = validate_server_process(
         server_process_path,
         expected_server,
         expected_server_sha256,
+        runtime_inputs,
         model,
         campaign_output_directory,
         execution_surface,
@@ -1002,8 +1156,10 @@ def summarize(
         validate_arm_server_identity(
             arm_artifacts["session.status"],
             arm_artifacts["server-process.json"],
+            arm_artifacts["runtime-inputs.json"],
             expected_server,
             expected_server_sha256,
+            server_identity["bytes"],
             model,
             campaign_inputs["campaign_output_directory"],
             campaign_inputs["execution_surface"],
