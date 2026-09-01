@@ -1,0 +1,1 @@
+external_vulkan_lease=accepted proof=$HOME/qwen-webui-state/.fixed64-vulkan-external-lease.201751.tsv lock=$HOME/qwen-webui-state/vulkan-workload.lock

@@ -1,0 +1,11 @@
+decode_ms=6376.622
+decode_tok_per_second=9.879839200128218
+decode_tokens=64
+label=11-reverse-qwen38-2b-distill
+prefill_ms=662.935
+prefill_tok_per_second=28.660426738669706
+prompt_tokens=19
+request_status=0
+teardown_status=0
+valid=True
+served_decode=completed label=11-reverse-qwen38-2b-distill result_directory=$HOME/fixed64-scoreboard-20260901T2011Z/arms/11-reverse-qwen38-2b-distill

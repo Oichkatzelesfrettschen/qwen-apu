@@ -1,0 +1,13 @@
+slot	block	direction	model_id	role	target_tok_s	arm_directory
+1	1	forward	qwen35-08b	compact-text	20	arms/01-forward-qwen35-08b
+2	1	forward	qwen38-2b-distill	fast-text	10	arms/02-forward-qwen38-2b-distill
+3	1	forward	qwen38-4b-distill	balanced-text	5.25	arms/03-forward-qwen38-4b-distill
+4	2	forward	qwen35-08b	compact-text	20	arms/04-forward-qwen35-08b
+5	2	forward	qwen38-2b-distill	fast-text	10	arms/05-forward-qwen38-2b-distill
+6	2	forward	qwen38-4b-distill	balanced-text	5.25	arms/06-forward-qwen38-4b-distill
+7	3	reverse	qwen38-4b-distill	balanced-text	5.25	arms/07-reverse-qwen38-4b-distill
+8	3	reverse	qwen38-2b-distill	fast-text	10	arms/08-reverse-qwen38-2b-distill
+9	3	reverse	qwen35-08b	compact-text	20	arms/09-reverse-qwen35-08b
+10	4	reverse	qwen38-4b-distill	balanced-text	5.25	arms/10-reverse-qwen38-4b-distill
+11	4	reverse	qwen38-2b-distill	fast-text	10	arms/11-reverse-qwen38-2b-distill
+12	4	reverse	qwen35-08b	compact-text	20	arms/12-reverse-qwen35-08b

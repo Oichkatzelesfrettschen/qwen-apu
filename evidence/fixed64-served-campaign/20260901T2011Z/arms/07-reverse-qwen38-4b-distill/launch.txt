@@ -1,0 +1,8 @@
+runtime_tree=unmanifested manifest=$HOME/fixed64-scoreboard-20260901T2011Z/configuration/runtime-source/remote/../runtime-tree-manifest.tsv
+runtime_tree=unmanifested manifest=$HOME/fixed64-scoreboard-20260901T2011Z/configuration/runtime-source/remote/../runtime-tree-manifest.tsv
+started tmux_socket=qwen-runtime tmux_session=qwen-webui profile=low-async host=127.0.0.1 port=8080 context=24576 latency_mode=observe model=/proc/217508/fd/7 server=$HOME/src/llama.cpp-qwen-apu/build-raven2-vulkan-production/bin/llama-server
+speculation spec_type=off draft_n_max=default draft_p_min=default draft_backend_sampling=0 backend_sampling=0
+cache cache_type_k=q8_0 cache_type_v=q4_0 flash_attention=on override_context_ceiling=registry
+state=running server_pid=217720 monitor_pid=218327 latency_watchdog_pid=218313 kernel_hazard_watchdog_pid=218322 profile=low-async host=127.0.0.1 port=8080 context=24576 latency_mode=observe utc=2026-09-01T20:16:33Z
+reachable at http://127.0.0.1:8080 (loopback only)
+stop it with $HOME/fixed64-scoreboard-20260901T2011Z/configuration/runtime-source/remote/qwen-teardown.sh

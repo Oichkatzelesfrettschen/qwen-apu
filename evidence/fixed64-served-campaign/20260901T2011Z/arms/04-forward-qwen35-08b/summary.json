@@ -1,0 +1,12 @@
+{
+  "label": "04-forward-qwen35-08b",
+  "request_status": 0,
+  "teardown_status": 0,
+  "prefill_tok_per_second": 66.39062145115922,
+  "prefill_ms": 286.185,
+  "decode_tok_per_second": 18.790057494593384,
+  "decode_ms": 3352.837,
+  "prompt_tokens": 19,
+  "decode_tokens": 64,
+  "valid": true
+}

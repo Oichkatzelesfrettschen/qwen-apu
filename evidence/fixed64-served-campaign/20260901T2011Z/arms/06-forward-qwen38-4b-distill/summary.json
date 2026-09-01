@@ -1,0 +1,12 @@
+{
+  "label": "06-forward-qwen38-4b-distill",
+  "request_status": 0,
+  "teardown_status": 0,
+  "prefill_tok_per_second": 11.677697993832947,
+  "prefill_ms": 1627.033,
+  "decode_tok_per_second": 3.3507633304800426,
+  "decode_ms": 18801.686,
+  "prompt_tokens": 19,
+  "decode_tokens": 64,
+  "valid": true
+}

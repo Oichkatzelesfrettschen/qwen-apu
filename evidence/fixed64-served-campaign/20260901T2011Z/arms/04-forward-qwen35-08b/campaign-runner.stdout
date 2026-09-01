@@ -1,0 +1,11 @@
+decode_ms=3352.837
+decode_tok_per_second=18.790057494593384
+decode_tokens=64
+label=04-forward-qwen35-08b
+prefill_ms=286.185
+prefill_tok_per_second=66.39062145115922
+prompt_tokens=19
+request_status=0
+teardown_status=0
+valid=True
+served_decode=completed label=04-forward-qwen35-08b result_directory=$HOME/fixed64-scoreboard-20260901T2011Z/arms/04-forward-qwen35-08b

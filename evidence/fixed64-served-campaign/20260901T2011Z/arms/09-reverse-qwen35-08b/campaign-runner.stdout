@@ -1,0 +1,11 @@
+decode_ms=3291.909
+decode_tok_per_second=19.13783157432359
+decode_tokens=64
+label=09-reverse-qwen35-08b
+prefill_ms=288.236
+prefill_tok_per_second=65.91820591459776
+prompt_tokens=19
+request_status=0
+teardown_status=0
+valid=True
+served_decode=completed label=09-reverse-qwen35-08b result_directory=$HOME/fixed64-scoreboard-20260901T2011Z/arms/09-reverse-qwen35-08b

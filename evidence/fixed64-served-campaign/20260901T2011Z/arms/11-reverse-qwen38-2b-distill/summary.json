@@ -1,0 +1,12 @@
+{
+  "label": "11-reverse-qwen38-2b-distill",
+  "request_status": 0,
+  "teardown_status": 0,
+  "prefill_tok_per_second": 28.660426738669706,
+  "prefill_ms": 662.935,
+  "decode_tok_per_second": 9.879839200128218,
+  "decode_ms": 6376.622,
+  "prompt_tokens": 19,
+  "decode_tokens": 64,
+  "valid": true
+}

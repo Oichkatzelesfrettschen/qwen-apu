@@ -41,7 +41,7 @@ contract.
 | Runtime-class fixed-64 anchor rerun | - | 7.685 | 2.985 | The later anchor rerun covers 2B and 4B only and retains the same unhashed-artifact limitation. |
 | Depth-wedge shallow controls | 18.04 mean | foreign-digest 9.64 mean | 3.335 mean | The 0.8B and 4B rows bind current registered digests. The nominal 2B row binds a different digest and cannot establish the registered artifact. Every row uses `llama-bench`. |
 | Historical representation ABBA control | 20.15 | 10.02 | - | Both targets appear on reported matched Q8_0 or Q4_K_M control arms. The checkout lacks the historical raw ABBA bundles. |
-| Fixed-64 exact-default balanced served campaign | absent | absent | absent | The hash-bound 32-token checkpoint sweep uses experimental checkpoint counts. It does not supply the fixed-64 registry-default-tuple denominator. |
+| Fixed-64 exact-default balanced served campaign, four-arm mean | 18.257 | 9.864 | 3.352 | `evidence/fixed64-served-campaign/20260901T2011Z/` binds model, server, runner, request, and response by SHA-256 over twelve completed arms at `7e79435`; every class reads `unmet`, with the 0.8B slowest arm at 16.233 and the 2B and 4B spans at 0.65% and 1.01%. |
 
 The 0.8B and 2B goals therefore act first as reproducibility targets. Historical
 ABBA prose reports values above both thresholds, while the registry and later

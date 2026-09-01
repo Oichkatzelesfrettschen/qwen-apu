@@ -1,0 +1,11 @@
+decode_ms=18801.686
+decode_tok_per_second=3.3507633304800426
+decode_tokens=64
+label=06-forward-qwen38-4b-distill
+prefill_ms=1627.033
+prefill_tok_per_second=11.677697993832947
+prompt_tokens=19
+request_status=0
+teardown_status=0
+valid=True
+served_decode=completed label=06-forward-qwen38-4b-distill result_directory=$HOME/fixed64-scoreboard-20260901T2011Z/arms/06-forward-qwen38-4b-distill

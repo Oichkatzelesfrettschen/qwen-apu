@@ -1,0 +1,7 @@
+key	value
+schema	fixed64-vulkan-external-lease-v1
+lock_path	$HOME/qwen-webui-state/vulkan-workload.lock
+holder_pid	211276
+holder_start_time_ticks	34592366
+holder_fd	8
+source_revision	7e79435a48295dbd99c836999d3ad4573a874bef
