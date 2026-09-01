@@ -250,7 +250,7 @@ boundary rather than as mutually hostile principals. The proof's
 that field.
 
 `remote/test-run-fixed64-served-campaign.sh` exercises the full contract with
-tiny fake artifacts and enforces an exact 90-check denominator. The checks cover
+tiny fake artifacts and enforces an exact 91-check denominator. The checks cover
 ordering, slot balance, ambient sanitization, publisher identity, exact token
 count, prompt count/time/rate domains and coherence, response-child
 reconciliation, closed child-summary fields, decode timing coherence, target

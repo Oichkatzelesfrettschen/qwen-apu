@@ -178,6 +178,13 @@ for required_command in awk chmod cmp cp env find flock git hostname mkdir mv \
         exit 2
     fi
 done
+canonical_models_directory=$(readlink -f -- "$models_directory" 2>/dev/null || true)
+if [ -z "$canonical_models_directory" ] || \
+   [ ! -d "$canonical_models_directory" ]; then
+    printf 'campaign models directory is absent: %s\n' "$models_directory" >&2
+    exit 2
+fi
+models_directory=$canonical_models_directory
 for executable_source in "$runner_source" "$registry_reader_source" \
     "$artifact_reader_source" \
     "$launch_source" "$teardown_source" "$signal_process_group_source" \

@@ -99,7 +99,7 @@ retains neither historical raw bundle. `remote/run-fixed64-served-campaign.sh`
 constructs the missing fixed-64, exact-default-tuple, balanced serving
 denominator for all three current artifacts; the checkout retains no real
 campaign output from that runner yet.
-The 90-check fake-only suite validates the campaign contract, including strict
+The 91-check fake-only suite validates the campaign contract, including strict
 prompt count, elapsed-time, rate, child-summary reconciliation, and descriptor-
 bound model and executable identities, without
 starting a real server, model, GPU, or remote workload. The suite supplies no throughput

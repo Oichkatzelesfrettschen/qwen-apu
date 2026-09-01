@@ -480,6 +480,40 @@ then
 fi
 report binds_hp14_ssh_priority_contract "$hp14_contract_state"
 
+# Model roots commonly reach a data disk through one symlink. The campaign
+# canonicalizes that root before recording models-resolved.tsv, so the producer
+# and summarizer retain one path spelling instead of failing after twelve arms.
+linked_models_directory=$work_directory/models-link
+ln -s -- "$models_directory" "$linked_models_directory"
+linked_models_output=$work_directory/linked-models-success
+linked_models_state=accepted
+if ! run_campaign "$linked_models_output" \
+    QWEN_MODELS_DIRECTORY="$linked_models_directory" \
+    >"$work_directory/linked-models.stdout" \
+    2>"$work_directory/linked-models.stderr"; then
+    linked_models_state='campaign-failed'
+elif ! awk -F '\t' -v expected="$models_directory" '
+    $1 == "models_directory" && $2 == expected { found = 1 }
+    END { exit !found }
+' "$linked_models_output/campaign-inputs.tsv"; then
+    linked_models_state='campaign-input-path'
+elif ! python3 - "$linked_models_output" "$models_directory" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+campaign_directory = Path(sys.argv[1])
+models_directory = Path(sys.argv[2])
+for runtime_inputs_path in campaign_directory.glob("arms/*/runtime-inputs.json"):
+    document = json.loads(runtime_inputs_path.read_text(encoding="utf-8"))
+    if models_directory not in Path(document["model"]["path"]).parents:
+        raise SystemExit(1)
+PY
+then
+    linked_models_state='runtime-input-path'
+fi
+report canonicalizes_linked_model_root "$linked_models_state"
+
 # Re-sealing cannot convert a changed execution identity or scheduling policy
 # into valid evidence. The semantic verifier binds every arm record to the
 # normalized campaign inputs and the hp14-only nice-19/idle-I/O contract.
@@ -1895,8 +1929,8 @@ if [ "$lease_state" != accepted ]; then
     cat "$work_directory/lease-second.stderr" >&2
 fi
 
-if [ "$checks_run" -ne 90 ]; then
-    printf 'test_run_fixed64_served_campaign=failed expected_checks=90 observed_checks=%s\n' \
+if [ "$checks_run" -ne 91 ]; then
+    printf 'test_run_fixed64_served_campaign=failed expected_checks=91 observed_checks=%s\n' \
         "$checks_run" >&2
     exit 1
 fi
