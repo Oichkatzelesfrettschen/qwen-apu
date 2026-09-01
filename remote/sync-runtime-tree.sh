@@ -96,5 +96,11 @@ printf 'runtime_manifest_sha256=%s\n' "$runtime_manifest_sha256"
 # next launch.
 destination_host=${destination%%:*}
 destination_path=${destination#*:}
+# A leading ~/ stays literal inside the quoted remote command, so it becomes a
+# path relative to the remote home, which is where an unexpanded tilde points.
+# shellcheck disable=SC2088 # the literal two characters are matched, with no expansion intended
+case $destination_path in
+    '~/'*) destination_path=${destination_path#??} ;;
+esac
 ssh "$destination_host" \
     "sh '$destination_path/remote/check-runtime-tree.sh' '$destination_path'"

@@ -27,6 +27,13 @@ printf 'echo serving\n' >"$tree/remote/serve.sh"
 chmod 755 "$tree/remote/serve.sh"
 printf 'patch body\n' >"$tree/patches/repair.patch"
 chmod 644 "$tree/patches/repair.patch"
+# Underscore and hyphen collate differently between C and locale order, the
+# pair that made comm refuse a correctly synced 277-file tree, so the fixture
+# carries both and the first verification runs under a UTF-8 locale.
+printf 'protocol module\n' >"$tree/remote/image_protocol.py"
+chmod 644 "$tree/remote/image_protocol.py"
+printf 'echo fetch\n' >"$tree/remote/image-fetch.sh"
+chmod 755 "$tree/remote/image-fetch.sh"
 
 write_manifest() {
     payload_rows=$work_directory/payload-rows
@@ -54,7 +61,7 @@ write_manifest() {
 
 write_manifest 1111111111111111111111111111111111111111
 
-if "$checker" "$tree" | grep -q 'runtime_tree=verified'; then
+if LC_ALL=en_US.UTF-8 "$checker" "$tree" | grep -q 'runtime_tree=verified'; then
     report consistent_tree_verified accepted
 else
     printf 'a manifest-consistent tree failed to verify\n' >&2

@@ -352,6 +352,11 @@ if [ "$image_service_enabled" = 1 ]; then
         sed -n '1p' | tr ' ' ':')
 fi
 
+# The swap baseline precedes the spawn, so swap-in during the first weight
+# mapping lands inside the first sample's delta rather than ahead of it.
+loading_page_size=$(getconf PAGESIZE)
+loading_previous_pswpin=$(awk '$1 == "pswpin" { print $2 }' /proc/vmstat)
+
 # The session owns the state directory, so it names the one the Vulkan workload
 # lease lives in; qwen-capacity-policy.sh derives the lock path from it and
 # image-service.py opens the same file under its own --state-dir.
@@ -362,15 +367,23 @@ QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
     "$server_port" "$static_path" "$api_key_file" >"$server_log" 2>&1 &
 server_pid=$!
 printf '%s\n' "$server_pid" >"$pid_file"
+# Start ticks bind every loading-phase termination to this exact process, so
+# a recycled PID after an early server death is left alone.
+server_start_ticks=$(sed 's/^.*) //' "/proc/$server_pid/stat" 2>/dev/null |
+    awk '{ print $20 }') || :
 
 # The record name carries start time, checkpoint, and server PID, so two
 # sessions never collide and an aborted session's samples survive every later
 # launch. Naming happens at spawn because the loading phase performs the
 # session's one-time Vulkan allocation and transfer peak, which the runtime
 # monitor never sees: it arms only after readiness. The readiness loop below
-# samples that phase into a session-unique loading record, observation only,
-# since MemAvailable legitimately falls while the model streams in and an
-# enforcing threshold there would abort every valid load.
+# samples that phase into a session-unique loading record. MemAvailable
+# legitimately falls while the model streams in, so the loading phase enforces
+# the same reserve floor and swap-in ceiling the serving monitor holds rather
+# than any load-shape heuristic: a load that crosses the desktop's 4 GiB
+# reserve or swaps past 64 MiB in one sample is the load a larger checkpoint
+# must not survive on this machine, and the termination binds to the recorded
+# PID and start ticks so a recycled PID is left alone.
 telemetry_session_name=$(date -u +%Y%m%dT%H%M%SZ)-$(basename "$model_path" .gguf | tr -c 'A-Za-z0-9._-' '-')-pid$server_pid
 telemetry_log=$telemetry_directory/$telemetry_session_name.log
 telemetry_loading_log=$telemetry_directory/$telemetry_session_name-loading.log
@@ -396,11 +409,49 @@ record_loading_sample() {
     if [ -r "$loading_gpu_device_directory/mem_info_gtt_used" ]; then
         loading_gtt_used_bytes=$(cat "$loading_gpu_device_directory/mem_info_gtt_used")
     fi
-    printf 'loading_sample_utc=%s rss_kib=%s peak_rss_kib=%s mem_available_kib=%s vram_used_bytes=%s gtt_used_bytes=%s\n' \
+    loading_current_pswpin=$(awk '$1 == "pswpin" { print $2 }' /proc/vmstat)
+    loading_swapin_bytes=$(( (loading_current_pswpin - loading_previous_pswpin) \
+        * loading_page_size ))
+    loading_previous_pswpin=$loading_current_pswpin
+    printf 'loading_sample_utc=%s rss_kib=%s peak_rss_kib=%s mem_available_kib=%s swapin_bytes=%s vram_used_bytes=%s gtt_used_bytes=%s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$loading_rss_kib" \
         "$loading_peak_rss_kib" "$loading_mem_available_kib" \
+        "$loading_swapin_bytes" \
         "$loading_vram_used_bytes" "$loading_gtt_used_bytes" \
         >>"$telemetry_loading_log" || :
+}
+
+# The loading record outlives a load that dies or is terminated before
+# readiness, so its terminal classification and seal happen here for every
+# pre-readiness exit path rather than in the session finalization the exit
+# skips.
+finalize_loading_record() {
+    printf 'loading_terminal=%s utc=%s\n' "$1" \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$telemetry_loading_log" || :
+    chmod 444 "$telemetry_loading_log" 2>/dev/null || :
+}
+
+# The loading phase holds the serving monitor's own thresholds; the breach
+# terminates the exact process the session spawned and leaves a finalized
+# loading record carrying the reason.
+loading_minimum_mem_available_kib=4194304
+loading_maximum_swapin_bytes_per_sample=67108864
+terminate_loading_server() {
+    printf 'loading_breach=%s phase=loading mem_available_kib=%s swapin_bytes=%s utc=%s\n' \
+        "$1" "$loading_mem_available_kib" "$loading_swapin_bytes" \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$telemetry_loading_log" || :
+    loading_current_ticks=$(sed 's/^.*) //' "/proc/$server_pid/stat" 2>/dev/null |
+        awk '{ print $20 }') || :
+    if [ -n "$loading_current_ticks" ] && \
+        [ "$loading_current_ticks" = "$server_start_ticks" ]; then
+        kill "$server_pid" 2>/dev/null || :
+    fi
+    wait "$server_pid" 2>/dev/null || :
+    finalize_loading_record "$1"
+    printf 'state=failed reason=%s phase=loading utc=%s\n' \
+        "$1" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
+    server_pid=""
+    exit 1
 }
 
 ready_for_monitor=0
@@ -424,7 +475,8 @@ while [ "$attempt" -lt 1200 ]; do
     if ! kill -0 "$server_pid" 2>/dev/null; then
         break
     fi
-    affinity=$(awk '$1 == "Cpus_allowed_list:" { print $2 }' "/proc/$server_pid/status")
+    affinity=$(awk '$1 == "Cpus_allowed_list:" { print $2 }' \
+        "/proc/$server_pid/status" 2>/dev/null) || affinity=''
     nice_value=$(sed 's/^.*) //' "/proc/$server_pid/stat" 2>/dev/null |
         awk '{ print $17 }')
     if [ "$affinity" = "$inference_cpu" ] && [ "$nice_value" = 19 ] && \
@@ -434,6 +486,16 @@ while [ "$attempt" -lt 1200 ]; do
     fi
     if [ $((attempt % 10)) = 0 ]; then
         record_loading_sample
+        if [ -n "${loading_mem_available_kib:-}" ]; then
+            if [ "$loading_mem_available_kib" -lt \
+                "$loading_minimum_mem_available_kib" ]; then
+                terminate_loading_server memory_reserve_breached
+            fi
+            if [ "$loading_swapin_bytes" -gt \
+                "$loading_maximum_swapin_bytes_per_sample" ]; then
+                terminate_loading_server swapin_rate_breached
+            fi
+        fi
     fi
     attempt=$((attempt + 1))
     sleep 0.1
@@ -444,6 +506,11 @@ printf 'loading_end_utc=%s ready=%s attempts=%s\n' \
     >>"$telemetry_loading_log" || :
 
 if [ "$ready_for_monitor" -ne 1 ]; then
+    loading_terminal_classification=server_policy_not_active
+    if ! kill -0 "$server_pid" 2>/dev/null; then
+        loading_terminal_classification=server_exited
+    fi
+    finalize_loading_record "$loading_terminal_classification"
     printf 'state=failed reason=server_policy_not_active utc=%s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
     wait "$server_pid" 2>/dev/null || true
@@ -708,10 +775,13 @@ fi
 # finalization outcome to one session without parsing the record path, and the
 # guarded append keeps a full or read-only state directory from turning the
 # advisory report into a teardown abort under set -e.
-printf 'session=%s telemetry_record=%s summary=%s seal=%s loading_seal=%s utc=%s\n' \
+# runtime_status carries the server's own verdict beside the advisory
+# outcomes, so a failed summary or seal never rewrites a successful service
+# result and a reader rejecting incomplete evidence has both facts on one line.
+printf 'session=%s telemetry_record=%s summary=%s seal=%s loading_seal=%s runtime_status=%s utc=%s\n' \
     "${telemetry_session_name:-unnamed}" \
     "$telemetry_log" "$telemetry_summary_status" "$telemetry_seal_status" \
-    "$telemetry_loading_seal_status" \
+    "$telemetry_loading_seal_status" "$session_status" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     >>"$state_directory/telemetry-finalization.log" || :
 printf 'state=stopped server_status=%s monitor_status=%s latency_status=%s kernel_hazard_status=%s broker_status=%s stopped_component=%s profile=%s utc=%s\n' \
