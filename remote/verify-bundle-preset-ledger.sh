@@ -6,8 +6,9 @@ set -eu
 # ledger are two statements of the same count and a bundle carries both. This
 # check binds each section to its own model's count: the section's
 # LLAMA_ARG_MODEL path resolves through the registry's model_file column to
-# exactly one model_id by the suffix rule model-registry.sh applies to a path
-# selector, and the section's count must equal that row's ledger count, with
+# exactly one model_id by the raw suffix rule model-registry.sh applies to a
+# path selector, refusing a path two rows match rather than taking the first
+# as the registry would, and the section's count must equal that row's ledger count, with
 # a registry row absent from the ledger reading 0. A draft-pair section names
 # its target's file, so the target's count binds it; a web profile names its
 # checkpoint's file the same way. A section carrying no model path, a path
@@ -85,16 +86,17 @@ awk -F'\t' -v preset="$preset_path" '
         model_value = value
         next
     }
-    # The suffix rule of model-registry.sh path selectors: the section path
-    # ends in "/" model_file, or equals it outright.
+    # The raw suffix rule of a model-registry.sh path selector: the section
+    # path ends in model_file. The registry answers with its first such row;
+    # this check refuses a path that more than one row matches, so a
+    # registry whose files are suffixes of one another cannot bind a section
+    # to whichever row came first.
     function resolve_model(path,    i, file, matches, id) {
         matches = 0
         for (i = 1; i <= registry_rows; i++) {
             file = registry_file[i]
-            if (path == file ||
-                (length(path) > length(file) &&
-                 substr(path, length(path) - length(file) + 1) == file &&
-                 substr(path, length(path) - length(file), 1) == "/")) {
+            if (length(file) <= length(path) &&
+                substr(path, length(path) - length(file) + 1) == file) {
                 matches++
                 id = registry_id[i]
             }

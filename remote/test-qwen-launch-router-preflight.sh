@@ -32,6 +32,8 @@ mkdir -p "$fixture_remote" "$fixture_bin"
 cp "$script_directory/qwen-launch.sh" "$fixture_remote/qwen-launch.sh"
 cp "$script_directory/resolve-active-deployment.sh" \
     "$fixture_remote/resolve-active-deployment.sh"
+cp "$script_directory/open-verified-lock-descriptor.py" \
+    "$fixture_remote/open-verified-lock-descriptor.py"
 cp "$script_directory/check-runtime-tree.sh" "$fixture_remote/check-runtime-tree.sh"
 cp "$script_directory/qwen-teardown.sh" "$fixture_remote/qwen-teardown.sh"
 # The teardown proves the image lane left no service, runtime, partial

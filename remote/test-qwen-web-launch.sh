@@ -70,6 +70,8 @@ cp "$script_directory/qwen-web-launch.sh" "$harness/qwen-web-launch.sh"
 # state directory preset applies.
 cp "$script_directory/resolve-active-deployment.sh" \
     "$harness/resolve-active-deployment.sh"
+cp "$script_directory/open-verified-lock-descriptor.py" \
+    "$harness/open-verified-lock-descriptor.py"
 cat >"$harness/qwen-launch.sh" <<'EOF'
 #!/bin/sh
 set -eu
@@ -114,6 +116,8 @@ cp "$script_directory/check-runtime-tree.sh" \
     "$control_harness/check-runtime-tree.sh"
 cp "$script_directory/resolve-active-deployment.sh" \
     "$control_harness/resolve-active-deployment.sh"
+cp "$script_directory/open-verified-lock-descriptor.py" \
+    "$control_harness/open-verified-lock-descriptor.py"
 cat >"$control_bin/tmux" <<'EOF'
 #!/bin/sh
 set -eu

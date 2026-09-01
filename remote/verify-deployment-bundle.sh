@@ -120,14 +120,26 @@ if [ "$measured_bytes" != "$declared_bytes" ]; then
         "$measured_bytes" "$declared_bytes" >&2
     exit 1
 fi
+# The exec guard requires exactly one executable llama-server row and then
+# checks that row, so the bundle requires the same two facts: one named row,
+# and that row matching the bundled server's bytes and digest. A manifest
+# with a second conflicting row would pass a match count alone and refuse at
+# the exec boundary.
+named_rows=$(awk -F'\t' '
+    $1 == "executable" && $2 == "llama-server" && NF == 4 { count++ }
+    END { print count + 0 }' "$bundle_directory/artifact-manifest.tsv")
+if [ "$named_rows" -ne 1 ]; then
+    printf 'artifact manifest holds %s executable llama-server rows; exactly one is required\n' \
+        "$named_rows" >&2
+    exit 1
+fi
 executable_rows=$(awk -F'\t' -v bytes="$measured_bytes" \
     -v digest="$measured_sha256" '
     $1 == "executable" && $2 == "llama-server" && NF == 4 &&
         $3 == bytes && $4 == digest { count++ }
     END { print count + 0 }' "$bundle_directory/artifact-manifest.tsv")
 if [ "$executable_rows" -ne 1 ]; then
-    printf 'artifact manifest holds %s executable llama-server rows matching the bundled server; exactly one is required\n' \
-        "$executable_rows" >&2
+    printf 'artifact manifest executable llama-server row does not match the bundled server\n' >&2
     exit 1
 fi
 recomputed_semantics=$(awk -F'\t' \

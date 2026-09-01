@@ -640,4 +640,173 @@ if [ "$resolver_status" -ne 3 ]; then
 fi
 report resolver_one_bundle accepted
 
+# The lock leaf is opened without following links or truncating: a symlinked
+# .activate.lock aimed at the outside sentinel refuses both the activator and
+# the resolver and leaves the sentinel's bytes as they were; a directory and
+# a loose mode refuse; an inherited-descriptor marker without descriptor 7,
+# or with an unrelated descriptor 7, refuses on the helper's own check.
+lock_path=$deployment_root/.activate.lock
+rm -f "$lock_path"
+ln -s "$outside_directory/sentinel" "$lock_path"
+if "$activator" bundle-third "$deployment_root" >/dev/null 2>"$work_directory/lock-symlink.stderr"; then
+    printf 'a symlinked activation lock carried an activation\n' >&2
+    exit 1
+fi
+if ! grep -q 'verified_lock_descriptor=rejected' "$work_directory/lock-symlink.stderr"; then
+    printf 'the symlinked lock refusal did not come from the descriptor helper\n' >&2
+    exit 1
+fi
+if "$resolver" "$deployment_root" >/dev/null 2>"$work_directory/lock-symlink-resolve.stderr"; then
+    printf 'a symlinked activation lock carried a resolution\n' >&2
+    exit 1
+fi
+if [ "$(sha256sum "$outside_directory/sentinel" | cut -d ' ' -f 1)" != "$sentinel_digest" ]; then
+    printf 'opening the lock through a symlink truncated the sentinel\n' >&2
+    exit 1
+fi
+rm -f "$lock_path"
+mkdir "$lock_path"
+if "$activator" bundle-third "$deployment_root" >/dev/null 2>&1 || \
+    "$resolver" "$deployment_root" >/dev/null 2>&1; then
+    printf 'a directory at the lock path was accepted\n' >&2
+    exit 1
+fi
+rmdir "$lock_path"
+: >"$lock_path"
+chmod 0666 "$lock_path"
+if "$activator" bundle-third "$deployment_root" >/dev/null 2>"$work_directory/lock-mode.stderr" || \
+    "$resolver" "$deployment_root" >/dev/null 2>&1; then
+    printf 'a lock leaf with a loose mode was accepted\n' >&2
+    exit 1
+fi
+if ! grep -q 'not the admitted legacy mode' "$work_directory/lock-mode.stderr"; then
+    printf 'the loose-mode refusal lost its reason\n' >&2
+    exit 1
+fi
+rm -f "$lock_path"
+if QWEN_ACTIVATION_LOCK_DESCRIPTOR_INHERITED=1 "$activator" bundle-third "$deployment_root" \
+    >/dev/null 2>"$work_directory/lock-marker.stderr"; then
+    printf 'an inherited-descriptor marker without descriptor 7 was accepted\n' >&2
+    exit 1
+fi
+if ! grep -q 'verified_lock_descriptor=rejected' "$work_directory/lock-marker.stderr"; then
+    printf 'the missing-descriptor refusal did not come from the descriptor helper\n' >&2
+    exit 1
+fi
+if QWEN_ACTIVATION_LOCK_DESCRIPTOR_INHERITED=1 "$resolver" "$deployment_root" \
+    7<"$outside_directory/sentinel" >/dev/null 2>"$work_directory/lock-foreign.stderr"; then
+    printf 'an inherited marker over an unrelated descriptor 7 was accepted\n' >&2
+    exit 1
+fi
+if ! grep -q 'verified_lock_descriptor=rejected' "$work_directory/lock-foreign.stderr"; then
+    printf 'the unrelated-descriptor refusal did not come from the descriptor helper\n' >&2
+    exit 1
+fi
+"$activator" bundle-third "$deployment_root" >/dev/null
+if [ "$(stat -c %a "$lock_path")" != 600 ]; then
+    printf 'the lock leaf was created at mode %s rather than 600\n' "$(stat -c %a "$lock_path")" >&2
+    exit 1
+fi
+report lock_leaf_verified accepted
+
+# A manifest with a second, conflicting executable llama-server row is
+# refused at assembly and at activation, the cardinality the exec guard
+# applies, even though one row matches the server.
+conflicting_manifest=$work_directory/manifest-conflicting.tsv
+{
+    cat "$forced_manifest"
+    printf 'executable\tllama-server\t1\t%s\n' \
+        "0000000000000000000000000000000000000000000000000000000000000000"
+} >"$conflicting_manifest"
+if QWEN_BUNDLE_ROUTER_PRESETS=$zero_preset \
+    "$builder" bundle-conflicting "$forced_server" "$conflicting_manifest" \
+    "$zero_ledger" "$deployment_root" >/dev/null 2>"$work_directory/conflicting.stderr"; then
+    printf 'a manifest with two executable rows assembled\n' >&2
+    exit 1
+fi
+if ! grep -q 'holds 2 executable llama-server rows' "$work_directory/conflicting.stderr"; then
+    printf 'the conflicting-row refusal lost its count\n' >&2
+    exit 1
+fi
+"$activator" bundle-natural "$deployment_root" >/dev/null
+cp "$conflicting_manifest" "$deployment_root/bundle-third/artifact-manifest.tsv"
+conflicting_digest=$(sha256sum "$deployment_root/bundle-third/artifact-manifest.tsv" |
+    cut -d ' ' -f 1)
+awk -F'\t' -v OFS='\t' -v digest="$conflicting_digest" '
+    $1 == "artifact-manifest.tsv" { $2 = digest }
+    { print }' "$deployment_root/bundle-third/bundle-manifest.tsv" \
+    >"$deployment_root/bundle-third/bundle-manifest.tsv.new"
+mv "$deployment_root/bundle-third/bundle-manifest.tsv.new" \
+    "$deployment_root/bundle-third/bundle-manifest.tsv"
+if "$activator" bundle-third "$deployment_root" \
+    >/dev/null 2>"$work_directory/conflicting-activate.stderr"; then
+    printf 'a manifest with two executable rows activated\n' >&2
+    exit 1
+fi
+if ! grep -q 'holds 2 executable llama-server rows' "$work_directory/conflicting-activate.stderr"; then
+    printf 'the conflicting-row activation refusal lost its count\n' >&2
+    exit 1
+fi
+cp "$forced_manifest" "$deployment_root/bundle-third/artifact-manifest.tsv"
+restored_third_digest=$(sha256sum "$deployment_root/bundle-third/artifact-manifest.tsv" |
+    cut -d ' ' -f 1)
+awk -F'\t' -v OFS='\t' -v digest="$restored_third_digest" '
+    $1 == "artifact-manifest.tsv" { $2 = digest }
+    { print }' "$deployment_root/bundle-third/bundle-manifest.tsv" \
+    >"$deployment_root/bundle-third/bundle-manifest.tsv.new"
+mv "$deployment_root/bundle-third/bundle-manifest.tsv.new" \
+    "$deployment_root/bundle-third/bundle-manifest.tsv"
+report executable_row_cardinality accepted
+
+# A bundle name starts with an alphanumeric and avoids the root's own names;
+# staging is a private random directory, so an existing dot-prefixed entry at
+# the root survives an assembly under the name it would once have collided
+# with, and a staged bundle that fails verification publishes nothing.
+for reserved_name in .foo deployment-current deployment-state.1 .activate.lock -x; do
+    if QWEN_BUNDLE_ROUTER_PRESETS=$zero_preset \
+        "$builder" "$reserved_name" "$forced_server" "$forced_manifest" \
+        "$zero_ledger" "$deployment_root" >/dev/null 2>&1; then
+        printf 'the reserved bundle name %s was accepted\n' "$reserved_name" >&2
+        exit 1
+    fi
+done
+mkdir "$deployment_root/.foo.staging"
+printf 'kept\n' >"$deployment_root/.foo.staging/marker"
+QWEN_BUNDLE_ROUTER_PRESETS=$zero_preset \
+    "$builder" foo "$forced_server" "$forced_manifest" "$zero_ledger" "$deployment_root" >/dev/null
+if [ ! -f "$deployment_root/.foo.staging/marker" ] || [ ! -d "$deployment_root/foo" ]; then
+    printf 'assembling foo removed the unrelated .foo.staging entry or published nothing\n' >&2
+    exit 1
+fi
+if [ -n "$(ls -A "$deployment_root/.staging" 2>/dev/null)" ]; then
+    printf 'a completed assembly left its staging directory behind\n' >&2
+    exit 1
+fi
+report bundle_name_and_staging accepted
+
+# A section path two registry rows match under the registry's raw suffix
+# rule is refused as ambiguous rather than bound to the first row.
+ambiguous_registry=$work_directory/models-ambiguous.tsv
+printf 'foo\tfast\tfoo.gguf\nxfoo\tfast\txfoo.gguf\n' >"$ambiguous_registry"
+ambiguous_ledger=$work_directory/ledger-ambiguous.tsv
+printf 'foo\t0\t-\nxfoo\t0\t-\n' >"$ambiguous_ledger"
+printf '[xfoo]\nLLAMA_ARG_MODEL = %s/xfoo.gguf\nLLAMA_ARG_CTX_CHECKPOINTS = 0\n' \
+    "$model_root" >"$bound_preset"
+if "$preset_check" "$bound_preset" "$ambiguous_ledger" "$ambiguous_registry" \
+    >/dev/null 2>"$work_directory/ambiguous.stderr"; then
+    printf 'a path two registry rows match was bound to one of them\n' >&2
+    exit 1
+fi
+if ! grep -q 'resolves to 2 registry rows' "$work_directory/ambiguous.stderr"; then
+    printf 'the ambiguity refusal lost its count\n' >&2
+    exit 1
+fi
+printf '[foo]\nLLAMA_ARG_MODEL = %s/foo.gguf\nLLAMA_ARG_CTX_CHECKPOINTS = 0\n' \
+    "$model_root" >"$bound_preset"
+if ! "$preset_check" "$bound_preset" "$ambiguous_ledger" "$ambiguous_registry" >/dev/null; then
+    printf 'a path one registry row matches was refused\n' >&2
+    exit 1
+fi
+report suffix_ambiguity_refused accepted
+
 printf 'deployment_bundle=accepted checks=%s\n' "$checks"

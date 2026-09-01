@@ -1093,22 +1093,32 @@ remote/run-ctx-checkpoint-sweep.sh LABEL MODEL_ID OUT
 # Deployment bundles: the server, its manifest, the checkpoint ledger, and
 # the presets generated against that ledger as one activated unit.
 # Activation and rollback are the same atomic symlink transition, serialized
-# on a descriptor the activator holds exclusively on .activate.lock under
-# the root. A launch resolves the bundle once: resolve-active-deployment.sh
-# takes that lock shared, follows deployment-current to one directory
+# on descriptor 7 of .activate.lock under the root, which
+# open-verified-lock-descriptor.py opens without following a link or
+# truncating and holds exclusively for the activator and shared for the
+# resolver. An automatic launch resolves the bundle once:
+# resolve-active-deployment.sh follows deployment-current to one directory
 # immediately below the root, verifies it whole through
 # verify-deployment-bundle.sh, and the launchers and qwen-webui-control.sh
 # read server, ledger, router-presets.ini, and web-presets.ini from that one
 # directory as QWEN_ACTIVE_DEPLOYMENT_DIRECTORY, so an activation during a
-# launch changes nothing the launch serves. Every name read back from the
-# root is held to its namespace (a role link targets exactly ../NAME, a
-# generation link exactly deployment-state.N, no symlinked bundle or member),
-# and a preset section is bound to the ledger count of the model its
-# LLAMA_ARG_MODEL resolves to through the registry. A rollback to the
-# forced-tail build therefore travels with the all-zero ledger and the
-# all-zero preset it is admissible under. evidence/deployment-bundle-presets/
-# retains the router regression across activation, rollback, and an
-# activation under a paused launch.
+# launch changes nothing the launch serves. An explicit
+# QWEN_ACTIVE_DEPLOYMENT_DIRECTORY is verified rather than inferred, and an
+# explicit QWEN_LLAMA_SERVER is the recovery mode that reads no bundle at
+# all, so a broken deployment-current refuses the automatic launch and
+# leaves the manual one alone. Every name read back from the root is held
+# to its namespace (a role link targets exactly ../NAME, a generation link
+# exactly deployment-state.N, a bundle name [A-Za-z0-9][A-Za-z0-9._-]*
+# outside the root's own names, no symlinked bundle or member), assembly
+# stages under a random .staging directory and verifies before the rename,
+# the artifact manifest carries exactly one executable llama-server row and
+# that row matches the bundled server, and a preset section is bound to the
+# ledger count of the model its LLAMA_ARG_MODEL resolves to through the
+# registry. A rollback to the forced-tail build therefore travels with the
+# all-zero ledger and the all-zero preset it is admissible under.
+# evidence/deployment-bundle-presets/ retains the router regression across
+# activation, rollback, an activation under a paused launch, a recovery
+# launch over a broken deployment, and a symlinked lock leaf.
 QWEN_CTX_CHECKPOINT_LEDGER=LEDGER remote/build-router-presets.sh OUT.ini
 QWEN_BUNDLE_ROUTER_PRESETS=OUT.ini \
     remote/build-deployment-bundle.sh NAME SERVER MANIFEST LEDGER [ROOT]

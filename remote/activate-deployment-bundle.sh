@@ -44,7 +44,28 @@ if [ ! -d "$deployment_root" ]; then
     printf 'deployment root is not a directory: %s\n' "$deployment_root" >&2
     exit 1
 fi
-exec 7>"$deployment_root/.activate.lock"
+# The lock leaf is opened through open-verified-lock-descriptor.py, which
+# refuses a symlink, a directory, a foreign owner, and a loose mode, opens
+# without truncation, and carries descriptor 7 across one exec. The
+# inheritance marker selects the verify branch and authorizes nothing by
+# itself: the helper re-verifies that descriptor 7 is that leaf.
+lock_path=$deployment_root/.activate.lock
+lock_helper=$script_directory/open-verified-lock-descriptor.py
+case ${QWEN_ACTIVATION_LOCK_DESCRIPTOR_INHERITED:-0} in
+    0)
+        QWEN_ACTIVATION_LOCK_DESCRIPTOR_INHERITED=1
+        export QWEN_ACTIVATION_LOCK_DESCRIPTOR_INHERITED
+        exec "$lock_helper" open --normalize-legacy-mode "$lock_path" 7 "$0" "$@"
+        ;;
+    1)
+        "$lock_helper" verify "$lock_path" 7
+        ;;
+    *)
+        printf 'invalid activation-lock inheritance marker: %s\n' \
+            "$QWEN_ACTIVATION_LOCK_DESCRIPTOR_INHERITED" >&2
+        exit 2
+        ;;
+esac
 flock -x 7
 
 verify_bundle() {

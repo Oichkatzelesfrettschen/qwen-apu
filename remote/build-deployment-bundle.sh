@@ -35,9 +35,12 @@ manifest_path=$3
 ctx_ledger_path=$4
 deployment_root=${5:-"${HOME:?}/qwen-deployments"}
 
+# A bundle name starts with an alphanumeric, so it can never spell a
+# dot-prefixed root entry, and the root's own names are reserved.
 case $bundle_name in
-    *[!A-Za-z0-9._-]* | '')
-        printf 'bundle name must be nonempty [A-Za-z0-9._-]: %s\n' \
+    '' | [!A-Za-z0-9]* | *[!A-Za-z0-9._-]* | deployment-current | \
+        deployment-previous | deployment-state | deployment-state.* | . | ..)
+        printf 'bundle name must match [A-Za-z0-9][A-Za-z0-9._-]* and avoid the root names: %s\n' \
             "$bundle_name" >&2
         exit 2
         ;;
@@ -67,13 +70,21 @@ checkpoint_semantics=$(awk -F'\t' '$1 == "checkpoint_semantics" { count++; value
         "$manifest_path" >&2
     exit 1
 }
+named_rows=$(awk -F'\t' '
+    $1 == "executable" && $2 == "llama-server" && NF == 4 { count++ }
+    END { print count + 0 }' "$manifest_path")
+if [ "$named_rows" -ne 1 ]; then
+    printf 'artifact manifest holds %s executable llama-server rows; exactly one is required: %s\n' \
+        "$named_rows" "$manifest_path" >&2
+    exit 1
+fi
 executable_rows=$(awk -F'\t' -v bytes="$server_bytes" -v digest="$server_sha256" '
     $1 == "executable" && $2 == "llama-server" && NF == 4 &&
         $3 == bytes && $4 == digest { count++ }
     END { print count + 0 }' "$manifest_path")
 if [ "$executable_rows" -ne 1 ]; then
-    printf 'artifact manifest holds %s executable llama-server rows matching %s bytes %s; exactly one is required: %s\n' \
-        "$executable_rows" "$server_bytes" "$server_sha256" "$manifest_path" >&2
+    printf 'artifact manifest executable llama-server row does not match %s bytes %s: %s\n' \
+        "$server_bytes" "$server_sha256" "$manifest_path" >&2
     exit 1
 fi
 
@@ -123,9 +134,14 @@ if [ -e "$bundle_directory" ]; then
     printf 'bundle already exists: %s\n' "$bundle_directory" >&2
     exit 1
 fi
-staging_directory=$deployment_root/.$bundle_name.staging
-rm -rf "$staging_directory"
-mkdir -p "$staging_directory"
+# Staging is a private random directory under .staging, so no bundle name
+# can collide with a staging path and nothing existing is ever removed; the
+# staged tree is verified as a bundle before the rename publishes it.
+mkdir -p "$deployment_root/.staging"
+staging_root=$(mktemp -d "$deployment_root/.staging/bundle.XXXXXX")
+staging_directory=$staging_root/$bundle_name
+trap 'rm -rf "$staging_root"' EXIT HUP INT TERM
+mkdir "$staging_directory"
 cp "$server_path" "$staging_directory/llama-server"
 chmod 755 "$staging_directory/llama-server"
 cp "$manifest_path" "$staging_directory/artifact-manifest.tsv"
@@ -160,10 +176,21 @@ fi
     printf 'web-presets.ini\t%s\n' "$web_presets_sha256"
 } >"$staging_directory/bundle-manifest.tsv"
 
-# The rename is what makes a bundle exist: a partially written staging
-# directory never carries the final name, so an interrupted assembly leaves
-# nothing an activation could select.
-mv "$staging_directory" "$bundle_directory"
+# The staged bundle passes the same verification an activation applies,
+# under its own name below the staging root, before anything carries the
+# final name; a partially written or refused staging tree is removed by the
+# trap and an interrupted assembly leaves nothing an activation could select.
+if ! "$script_directory/verify-deployment-bundle.sh" "$staging_root" "$bundle_name" \
+    >/dev/null; then
+    printf 'staged bundle failed verification and was not published: %s\n' \
+        "$bundle_name" >&2
+    exit 1
+fi
+if [ -e "$bundle_directory" ] || [ -L "$bundle_directory" ]; then
+    printf 'bundle already exists: %s\n' "$bundle_directory" >&2
+    exit 1
+fi
+mv -T "$staging_directory" "$bundle_directory"
 printf 'deployment_bundle=%s semantics=%s maximum_count=%s server_sha256=%s router_presets=%s web_presets=%s\n' \
     "$bundle_directory" "$checkpoint_semantics" "$maximum_ledger_count" \
     "$server_sha256" "$router_presets_sha256" "$web_presets_sha256"
