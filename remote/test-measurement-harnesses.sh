@@ -166,8 +166,60 @@ if [ "$(grep -Fxc -- '-x llama-server' "$process_probe_log")" -ne 2 ] || \
 fi
 
 fake_state=$temporary_directory/state
-fake_result=$temporary_directory/served-result
-mkdir -p "$fake_state"
+execution_campaign=$temporary_directory/served-execution-campaign
+fake_result=$execution_campaign/arms/served-result
+mkdir -p "$fake_state" "$execution_campaign/arms"
+QWEN_EXECUTION_SURFACE=hp14-ssh
+QWEN_HOST_SHORTNAME=hp14-dk1xxx
+QWEN_SSH_SESSION=present
+QWEN_EXECUTION_PROOF=$execution_campaign/campaign-inputs.tsv
+printf 'key\tvalue\nschema\tfixed64-served-campaign-v2\nexecution_surface\thp14-ssh\nhost_shortname\thp14-dk1xxx\nssh_session\tpresent\nserver_nice\t19\nserver_io_class\tidle\n' \
+    >"$QWEN_EXECUTION_PROOF"
+QWEN_EXECUTION_PROOF_SHA256=$(sha256sum "$QWEN_EXECUTION_PROOF")
+QWEN_EXECUTION_PROOF_SHA256=${QWEN_EXECUTION_PROOF_SHA256%% *}
+export QWEN_EXECUTION_SURFACE QWEN_HOST_SHORTNAME QWEN_SSH_SESSION \
+    QWEN_EXECUTION_PROOF QWEN_EXECUTION_PROOF_SHA256
+
+contract_mismatch_result=$execution_campaign/arms/contract-mismatch
+active_fixture=served-decode-execution-contract-mismatch
+diagnostic_file=$temporary_directory/served-contract-mismatch.stderr
+if QWEN_EXECUTION_SURFACE=local QWEN_RESULT_DIRECTORY=$contract_mismatch_result \
+    "$script_directory/measure-served-decode.sh" contract-mismatch \
+    "$model_path" >"$temporary_directory/served-contract-mismatch.stdout" \
+    2>"$temporary_directory/served-contract-mismatch.stderr"; then
+    printf 'served measurement accepted a local execution contract\n' >&2
+    exit 1
+fi
+if [ -e "$contract_mismatch_result" ]; then
+    printf 'execution-contract refusal claimed a result directory\n' >&2
+    exit 1
+fi
+grep -F 'served measurement requires the hp14 SSH execution contract' \
+    "$temporary_directory/served-contract-mismatch.stderr" >/dev/null
+
+one_token_launch_marker=$temporary_directory/one-token-launch-ran
+one_token_launch=$temporary_directory/one-token-launch.sh
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    'printf "ran\n" >"${QWEN_TEST_ONE_TOKEN_LAUNCH_MARKER:?}"' \
+    >"$one_token_launch"
+chmod +x "$one_token_launch"
+active_fixture=served-decode-one-token-refusal
+diagnostic_file=$temporary_directory/served-one-token.stderr
+if QWEN_BENCH_GENERATE=1 QWEN_LAUNCH_SCRIPT=$one_token_launch \
+    QWEN_RESULT_DIRECTORY=$execution_campaign/arms/one-token \
+    QWEN_TEST_ONE_TOKEN_LAUNCH_MARKER=$one_token_launch_marker \
+    "$script_directory/measure-served-decode.sh" one-token "$model_path" \
+    >"$temporary_directory/served-one-token.stdout" \
+    2>"$temporary_directory/served-one-token.stderr"; then
+    printf 'served measurement accepted a one-token window\n' >&2
+    exit 1
+fi
+if [ -e "$one_token_launch_marker" ]; then
+    printf 'one-token refusal reached the launch boundary\n' >&2
+    exit 1
+fi
+grep -F 'generation length must cover at least one decode transition: 1' \
+    "$temporary_directory/served-one-token.stderr" >/dev/null
 fake_launch=$temporary_directory/fake-launch.sh
 printf '%s\n' '#!/bin/sh' 'set -eu' \
     'state_directory=${QWEN_WEBUI_STATE_DIRECTORY:?}' \
@@ -205,6 +257,610 @@ if grep -F 'served_decode=completed' "$temporary_directory/served.stdout" >/dev/
     printf 'failed served measurement printed a completed terminal state\n' >&2
     exit 1
 fi
+
+# A successful served arm retains the running process identity before teardown
+# and delegates process ownership to a fixture supervisor. The supervisor reaps
+# the fake server after teardown signals it, so PID absence proves cleanup.
+served_success_state=$temporary_directory/served-success-state
+served_success_result=$execution_campaign/arms/served-success-result
+served_success_bin=$temporary_directory/served-success-bin
+mkdir -p "$served_success_state" "$served_success_bin"
+served_python=$(readlink -f "$(command -v python3)")
+served_python_wrapper=$served_success_bin/python3
+printf '%s\n' '#!/bin/bash' 'set -eu' \
+    'exec -a "${QWEN_TEST_PYTHON_RESOLVED:?}" "${QWEN_TEST_PYTHON_RESOLVED:?}" "$@"' \
+    >"$served_python_wrapper"
+chmod +x "$served_python_wrapper"
+
+served_supervisor=$temporary_directory/served-success-supervisor.sh
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    'state_directory=${QWEN_WEBUI_STATE_DIRECTORY:?}' \
+    'renice -n 19 -p $$ >/dev/null' \
+    'server_pid=' \
+    'reap_server() {' \
+    '    trap - HUP INT TERM' \
+    '    if [ -n "$server_pid" ] && kill -0 "$server_pid" 2>/dev/null; then' \
+    '        kill -TERM "$server_pid" 2>/dev/null || true' \
+    '    fi' \
+    '    if [ -n "$server_pid" ]; then' \
+    '        wait "$server_pid" 2>/dev/null || true' \
+    '        printf "reaped=%s\\n" "$server_pid" >"$state_directory/server.reaped"' \
+    '    fi' \
+    '    exit 0' \
+    '}' \
+    'trap reap_server HUP INT TERM' \
+    'PATH="${QWEN_TEST_PYTHON_BIN:?}:$PATH"' \
+    'export PATH' \
+    'QWEN_POLICY_TEST_OUTPUT="$state_directory/fake-server-argv.txt" \
+QWEN_POLICY_TEST_HTTP_PORT="${QWEN_SERVER_PORT:?}" \
+QWEN_FAKE_SERVER_DECODE_TOK_S=21 \
+QWEN_TEST_PYTHON_RESOLVED="${QWEN_TEST_PYTHON_RESOLVED:?}" \
+taskset -c 0 ionice -c 3 \
+    "${QWEN_TEST_FAKE_SERVER:?}" \
+    --model "${QWEN_MODEL_PATH:?}" \
+    --ctx-size "${QWEN_CONTEXT_SIZE:?}" \
+    --batch-size "${QWEN_BATCH_SIZE:?}" \
+    --ubatch-size "${QWEN_UBATCH_SIZE:?}" \
+    --cache-type-k "${QWEN_CACHE_TYPE_K:?}" \
+    --cache-type-v "${QWEN_CACHE_TYPE_V:?}" \
+    --flash-attn "${QWEN_FLASH_ATTN:?}" \
+    --device Vulkan0 --parallel 1 --threads 1 --threads-batch 1 \
+    >"$state_directory/server.log" 2>&1 &' \
+    'server_pid=$!' \
+    'printf "%s\\n" "$server_pid" >"$state_directory/server.pid"' \
+    'set +e' \
+    'wait "$server_pid"' \
+    'server_status=$?' \
+    'set -e' \
+    'printf "reaped=%s status=%s\\n" "$server_pid" "$server_status" \
+        >"$state_directory/server.reaped"' \
+    'exit "$server_status"' >"$served_supervisor"
+chmod +x "$served_supervisor"
+
+served_success_launch=$temporary_directory/served-success-launch.sh
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    'profile=$1' \
+    'state_directory=${QWEN_WEBUI_STATE_DIRECTORY:?}' \
+    'launch_complete=0' \
+    'supervisor_pid=' \
+    'cleanup_failed_launch() {' \
+    '    if [ "$launch_complete" -eq 0 ] && [ -n "$supervisor_pid" ]; then' \
+    '        kill -TERM "$supervisor_pid" 2>/dev/null || true' \
+    '    fi' \
+    '}' \
+    'trap cleanup_failed_launch EXIT HUP INT TERM' \
+    '"${QWEN_TEST_SUPERVISOR:?}" &' \
+    'supervisor_pid=$!' \
+    'printf "%s\\n" "$supervisor_pid" >"$state_directory/supervisor.pid"' \
+    'attempt=0' \
+    'while [ ! -s "$state_directory/server.pid" ]; do' \
+    '    attempt=$((attempt + 1))' \
+    '    if [ "$attempt" -ge 100 ] || ! kill -0 "$supervisor_pid" 2>/dev/null; then' \
+    '        printf "fake server did not publish its PID\\n" >&2' \
+    '        exit 1' \
+    '    fi' \
+    '    sleep 0.05' \
+    'done' \
+    'server_pid=$(sed -n "1p" "$state_directory/server.pid")' \
+    'attempt=0' \
+    'while ! curl -fsS "http://127.0.0.1:${QWEN_SERVER_PORT:?}/health" >/dev/null 2>&1; do' \
+    '    attempt=$((attempt + 1))' \
+    '    if [ "$attempt" -ge 100 ] || ! kill -0 "$server_pid" 2>/dev/null; then' \
+    '        printf "fake server did not become ready\\n" >&2' \
+    '        exit 1' \
+    '    fi' \
+    '    sleep 0.05' \
+    'done' \
+    'printf "telemetry fixture server_pid=%s\\n" "$server_pid" \
+        >"$state_directory/telemetry.log"' \
+    'printf "graphics fixture profile=%s\\n" "$profile" \
+        >"$state_directory/graphics-latency.log"' \
+    'printf "kernel fixture server_pid=%s\\n" "$server_pid" \
+        >"$state_directory/kernel-hazards.log"' \
+    'printf "state=running server_pid=%s profile=%s host=127.0.0.1 port=%s context=%s latency_mode=observe utc=2026-09-01T00:00:00Z\\n" \
+        "$server_pid" "$profile" "$QWEN_SERVER_PORT" "$QWEN_CONTEXT_SIZE" \
+        >"$state_directory/session.status"' \
+    'printf "speculation spec_type=off draft_n_max=default draft_p_min=default draft_backend_sampling=0 backend_sampling=0\\n" \
+        >>"$state_directory/session.status"' \
+    'printf "cache cache_type_k=%s cache_type_v=%s flash_attention=%s override_context_ceiling=registry\\n" \
+        "$QWEN_CACHE_TYPE_K" "$QWEN_CACHE_TYPE_V" "$QWEN_FLASH_ATTN" \
+        >>"$state_directory/session.status"' \
+    'printf "router enabled=0 presets=default preset_sha256=unbound models_max=1\\n" \
+        >>"$state_directory/session.status"' \
+    'launch_complete=1' \
+    'printf "started fake served server_pid=%s\\n" "$server_pid"' \
+    >"$served_success_launch"
+chmod +x "$served_success_launch"
+
+served_success_teardown=$temporary_directory/served-success-teardown.sh
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    'state_directory=${QWEN_WEBUI_STATE_DIRECTORY:?}' \
+    'server_pid=$(sed -n "1p" "$state_directory/server.pid")' \
+    'supervisor_pid=$(sed -n "1p" "$state_directory/supervisor.pid")' \
+    'kill -TERM "$supervisor_pid" 2>/dev/null || true' \
+    'attempt=0' \
+    'while kill -0 "$server_pid" 2>/dev/null || \
+          kill -0 "$supervisor_pid" 2>/dev/null; do' \
+    '    attempt=$((attempt + 1))' \
+    '    if [ "$attempt" -ge 100 ]; then' \
+    '        printf "fake served descendants survived teardown\\n" >&2' \
+    '        exit 1' \
+    '    fi' \
+    '    sleep 0.05' \
+    'done' \
+    'test -s "$state_directory/server.reaped"' \
+    'if [ "${QWEN_TEST_LATE_KERNEL_HAZARD:-0}" -eq 1 ]; then' \
+    '    printf "amdgpu: GPU reset during teardown\\n" >>"$state_directory/kernel-hazards.log"' \
+    'fi' \
+    'printf "watch_stop_utc=2026-09-01T00:00:01Z reason=server_exited\\n" >>"$state_directory/kernel-hazards.log"' \
+    'printf "torn down and reaped server_pid=%s supervisor_pid=%s\\n" \
+        "$server_pid" "$supervisor_pid"' >"$served_success_teardown"
+chmod +x "$served_success_teardown"
+
+served_success_port=$(python3 -c \
+    'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
+active_fixture=served-decode-success
+diagnostic_file=$temporary_directory/served-success.stderr
+QWEN_LAUNCH_SCRIPT=$served_success_launch \
+QWEN_TEARDOWN_SCRIPT=$served_success_teardown \
+QWEN_STATE_DIRECTORY=$served_success_state \
+QWEN_RESULT_DIRECTORY=$served_success_result \
+QWEN_LLAMA_SERVER=$served_python \
+QWEN_SERVER_PORT=$served_success_port \
+QWEN_CONTEXT_SIZE=8192 QWEN_BATCH_SIZE=128 QWEN_UBATCH_SIZE=32 \
+QWEN_CACHE_TYPE_K=q8_0 QWEN_CACHE_TYPE_V=q4_0 QWEN_FLASH_ATTN=on \
+QWEN_INFERENCE_CPU=0 \
+QWEN_TEST_SUPERVISOR=$served_supervisor \
+QWEN_TEST_FAKE_SERVER=$script_directory/test-fixtures/fake-llama-server.sh \
+QWEN_TEST_PYTHON_BIN=$served_success_bin \
+QWEN_TEST_PYTHON_RESOLVED=$served_python \
+    "$script_directory/measure-served-decode.sh" served-success \
+    "$model_path" low-async >"$temporary_directory/served-success.stdout" \
+    2>"$temporary_directory/served-success.stderr"
+grep -F 'served_decode=completed label=served-success' \
+    "$temporary_directory/served-success.stdout" >/dev/null
+
+for retained_artifact in session.status runtime-inputs.json server-process.json server.log \
+        telemetry.log graphics-latency.log kernel-hazards.log; do
+    if [ ! -s "$served_success_result/$retained_artifact" ] || \
+       [ -L "$served_success_result/$retained_artifact" ]; then
+        printf 'served success omitted a regular nonempty artifact: %s\n' \
+            "$retained_artifact" >&2
+        exit 1
+    fi
+done
+grep -F 'state=running ' "$served_success_result/session.status" >/dev/null
+grep -Fx 'speculation spec_type=off draft_n_max=default draft_p_min=default draft_backend_sampling=0 backend_sampling=0' \
+    "$served_success_result/session.status" >/dev/null
+grep -Fx 'cache cache_type_k=q8_0 cache_type_v=q4_0 flash_attention=on override_context_ceiling=registry' \
+    "$served_success_result/session.status" >/dev/null
+grep -Fx 'router enabled=0 presets=default preset_sha256=unbound models_max=1' \
+    "$served_success_result/session.status" >/dev/null
+
+python3 - "$served_success_result" "$served_python" \
+    "$served_success_state/server.pid" <<'PY'
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+result_directory = Path(sys.argv[1])
+expected_executable = sys.argv[2]
+expected_pid = int(Path(sys.argv[3]).read_text(encoding="utf-8").strip())
+response = json.loads((result_directory / "response.json").read_text(encoding="utf-8"))
+timings = response["timings"]
+if timings["predicted_n"] != 64:
+    raise SystemExit("served success response does not contain 64 tokens")
+if timings["predicted_per_second"] != 21.0 or timings["predicted_ms"] != 3000.0:
+    raise SystemExit("served success response timing is incoherent")
+if (timings["predicted_n"] - 1) * 1000 / timings["predicted_ms"] != 21.0:
+    raise SystemExit("served success response does not cover 63 transitions")
+
+process = json.loads(
+    (result_directory / "server-process.json").read_text(encoding="utf-8")
+)
+if set(process) != {
+    "schema", "pid", "start_time_ticks", "executable", "executable_sha256",
+    "executable_proc_link", "executable_device", "executable_inode",
+    "executable_bytes",
+    "argv", "nice", "cpus_allowed_list", "io_class", "execution_surface",
+    "host_shortname", "ssh_session",
+}:
+    raise SystemExit("served process evidence key set differs")
+if process != {
+    **process,
+    "schema": "served-decode-process-v3",
+    "execution_surface": "hp14-ssh",
+    "host_shortname": "hp14-dk1xxx",
+    "ssh_session": "present",
+    "pid": expected_pid,
+    "executable": expected_executable,
+    "argv": [expected_executable, "-"],
+    "nice": 19,
+    "cpus_allowed_list": "0",
+    "io_class": "idle",
+}:
+    raise SystemExit("served process evidence values differ")
+if process["start_time_ticks"] <= 0:
+    raise SystemExit("served process start time is not positive")
+expected_status = Path(expected_executable).stat()
+if (
+    process["executable_device"],
+    process["executable_inode"],
+    process["executable_bytes"],
+) != (expected_status.st_dev, expected_status.st_ino, expected_status.st_size):
+    raise SystemExit("served process executable inode identity differs")
+if process["executable_proc_link"] != expected_executable:
+    raise SystemExit("served process proc executable link differs")
+expected_digest = hashlib.sha256(Path(expected_executable).read_bytes()).hexdigest()
+if process["executable_sha256"] != expected_digest:
+    raise SystemExit("served process executable digest differs")
+
+runtime_inputs = json.loads(
+    (result_directory / "runtime-inputs.json").read_text(encoding="utf-8")
+)
+if runtime_inputs["schema"] != "served-runtime-inputs-v1":
+    raise SystemExit("served runtime input schema differs")
+if runtime_inputs["model"]["path"] != str(result_directory.parents[2] / "model.gguf"):
+    raise SystemExit("served runtime input model path differs")
+if runtime_inputs["model"]["sha256"] != hashlib.sha256(b"").hexdigest():
+    raise SystemExit("served runtime input model digest differs")
+if runtime_inputs["executable"]["sha256"] != expected_digest:
+    raise SystemExit("served approved executable digest differs")
+
+summary = json.loads((result_directory / "summary.json").read_text(encoding="utf-8"))
+if summary["decode_tokens"] != 64 or summary["valid"] is not True:
+    raise SystemExit("served success summary is invalid")
+PY
+
+served_success_server_pid=$(sed -n '1p' "$served_success_state/server.pid")
+served_success_supervisor_pid=$(sed -n '1p' \
+    "$served_success_state/supervisor.pid")
+if kill -0 "$served_success_server_pid" 2>/dev/null || \
+   kill -0 "$served_success_supervisor_pid" 2>/dev/null; then
+    printf 'served success retained a live descendant after teardown\n' >&2
+    exit 1
+fi
+grep -F "reaped=$served_success_server_pid" \
+    "$served_success_state/server.reaped" >/dev/null
+
+# The runner opens the model before the launch hook runs and passes the pinned
+# descriptor path through the launch closure. Replacing the original pathname
+# after that open leaves the server bound to the approved bytes.
+served_model_replace_result=$execution_campaign/arms/served-model-replace-result
+served_model_replace_state=$temporary_directory/served-model-replace-state
+served_model_backup=$temporary_directory/model-approved-backup.gguf
+served_model_adversary=$temporary_directory/model-adversary.gguf
+served_model_descriptor_sha=$temporary_directory/model-descriptor.sha256
+served_model_replace_launch=$temporary_directory/served-model-replace-launch.sh
+mkdir -p "$served_model_replace_state"
+cp -- "$model_path" "$served_model_backup"
+printf 'adversarial replacement model bytes\n' >"$served_model_adversary"
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    'mv -- "${QWEN_TEST_MODEL_ORIGINAL:?}" "${QWEN_TEST_MODEL_MOVED:?}"' \
+    'mv -- "${QWEN_TEST_MODEL_ADVERSARY:?}" "${QWEN_TEST_MODEL_ORIGINAL:?}"' \
+    'sha256sum "${QWEN_MODEL_PATH:?}" >"${QWEN_TEST_MODEL_DESCRIPTOR_SHA:?}"' \
+    'exec "${QWEN_TEST_BASE_LAUNCH:?}" "$@"' \
+    >"$served_model_replace_launch"
+chmod +x "$served_model_replace_launch"
+served_model_replace_port=$(python3 -c \
+    'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
+rm -f -- "$served_success_state/server.pid" \
+    "$served_success_state/supervisor.pid" "$served_success_state/server.reaped"
+active_fixture=served-decode-model-pathname-replacement
+diagnostic_file=$temporary_directory/served-model-replace.stderr
+set +e
+QWEN_LAUNCH_SCRIPT=$served_model_replace_launch \
+QWEN_TEARDOWN_SCRIPT=$served_success_teardown \
+QWEN_STATE_DIRECTORY=$served_success_state \
+QWEN_RESULT_DIRECTORY=$served_model_replace_result \
+QWEN_LLAMA_SERVER=$served_python \
+QWEN_SERVER_PORT=$served_model_replace_port \
+QWEN_CONTEXT_SIZE=8192 QWEN_BATCH_SIZE=128 QWEN_UBATCH_SIZE=32 \
+QWEN_CACHE_TYPE_K=q8_0 QWEN_CACHE_TYPE_V=q4_0 QWEN_FLASH_ATTN=on \
+QWEN_INFERENCE_CPU=0 \
+QWEN_TEST_SUPERVISOR=$served_supervisor \
+QWEN_TEST_FAKE_SERVER=$script_directory/test-fixtures/fake-llama-server.sh \
+QWEN_TEST_PYTHON_BIN=$served_success_bin \
+QWEN_TEST_PYTHON_RESOLVED=$served_python \
+QWEN_TEST_BASE_LAUNCH=$served_success_launch \
+QWEN_TEST_MODEL_ORIGINAL=$model_path \
+QWEN_TEST_MODEL_MOVED=$temporary_directory/model-approved-moved.gguf \
+QWEN_TEST_MODEL_ADVERSARY=$served_model_adversary \
+QWEN_TEST_MODEL_DESCRIPTOR_SHA=$served_model_descriptor_sha \
+    "$script_directory/measure-served-decode.sh" served-model-replace \
+    "$model_path" low-async >"$temporary_directory/served-model-replace.stdout" \
+    2>"$temporary_directory/served-model-replace.stderr"
+served_model_replace_status=$?
+mv -- "$model_path" "$served_model_adversary"
+mv -- "$temporary_directory/model-approved-moved.gguf" "$model_path"
+set -e
+if [ "$served_model_replace_status" -ne 0 ]; then
+    printf 'descriptor-bound model replacement fixture failed\n' >&2
+    cat "$temporary_directory/served-model-replace.stderr" >&2
+    exit 1
+fi
+expected_model_sha=$(sha256sum "$model_path")
+expected_model_sha=${expected_model_sha%% *}
+observed_model_sha=$(sed -n '1s/[[:space:]].*$//p' \
+    "$served_model_descriptor_sha")
+if [ "$observed_model_sha" != "$expected_model_sha" ]; then
+    printf 'model descriptor followed a pathname replacement\n' >&2
+    exit 1
+fi
+grep -F 'served_decode=completed label=served-model-replace' \
+    "$temporary_directory/served-model-replace.stdout" >/dev/null
+grep -F 'argument=/proc/' \
+    "$served_success_state/fake-server-argv.txt" >/dev/null
+
+# The executable approval likewise precedes the launch hook. A different but
+# runnable ELF replaces the pathname before server exec; /proc/PID/exe keeps
+# the image that actually ran, so the evidence capture rejects the arm even
+# after the pathname is restored by the fixture.
+served_executable_replace_result=$execution_campaign/arms/served-executable-replace-result
+served_executable_approved=$temporary_directory/python-approved
+served_executable_moved=$temporary_directory/python-approved-moved
+served_executable_adversary=$temporary_directory/python-adversary
+served_executable_replace_launch=$temporary_directory/served-executable-replace-launch.sh
+cp -- "$served_python" "$served_executable_approved"
+cp -- "$served_python" "$served_executable_adversary"
+printf 'adversarial trailing bytes\n' >>"$served_executable_adversary"
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    'mv -- "${QWEN_TEST_EXECUTABLE_ORIGINAL:?}" "${QWEN_TEST_EXECUTABLE_MOVED:?}"' \
+    'mv -- "${QWEN_TEST_EXECUTABLE_ADVERSARY:?}" "${QWEN_TEST_EXECUTABLE_ORIGINAL:?}"' \
+    'exec "${QWEN_TEST_BASE_LAUNCH:?}" "$@"' \
+    >"$served_executable_replace_launch"
+chmod +x "$served_executable_replace_launch"
+served_executable_replace_port=$(python3 -c \
+    'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
+rm -f -- "$served_success_state/server.pid" \
+    "$served_success_state/supervisor.pid" "$served_success_state/server.reaped"
+active_fixture=served-decode-executable-pathname-replacement
+diagnostic_file=$temporary_directory/served-executable-replace.stderr
+set +e
+QWEN_LAUNCH_SCRIPT=$served_executable_replace_launch \
+QWEN_TEARDOWN_SCRIPT=$served_success_teardown \
+QWEN_STATE_DIRECTORY=$served_success_state \
+QWEN_RESULT_DIRECTORY=$served_executable_replace_result \
+QWEN_LLAMA_SERVER=$served_executable_approved \
+QWEN_SERVER_PORT=$served_executable_replace_port \
+QWEN_CONTEXT_SIZE=8192 QWEN_BATCH_SIZE=128 QWEN_UBATCH_SIZE=32 \
+QWEN_CACHE_TYPE_K=q8_0 QWEN_CACHE_TYPE_V=q4_0 QWEN_FLASH_ATTN=on \
+QWEN_INFERENCE_CPU=0 \
+QWEN_TEST_SUPERVISOR=$served_supervisor \
+QWEN_TEST_FAKE_SERVER=$script_directory/test-fixtures/fake-llama-server.sh \
+QWEN_TEST_PYTHON_BIN=$served_success_bin \
+QWEN_TEST_PYTHON_RESOLVED=$served_executable_approved \
+QWEN_TEST_BASE_LAUNCH=$served_success_launch \
+QWEN_TEST_EXECUTABLE_ORIGINAL=$served_executable_approved \
+QWEN_TEST_EXECUTABLE_MOVED=$served_executable_moved \
+QWEN_TEST_EXECUTABLE_ADVERSARY=$served_executable_adversary \
+    "$script_directory/measure-served-decode.sh" served-executable-replace \
+    "$model_path" low-async \
+    >"$temporary_directory/served-executable-replace.stdout" \
+    2>"$temporary_directory/served-executable-replace.stderr"
+served_executable_replace_status=$?
+mv -- "$served_executable_approved" "$served_executable_adversary"
+mv -- "$served_executable_moved" "$served_executable_approved"
+set -e
+if [ "$served_executable_replace_status" -eq 0 ]; then
+    printf 'served measurement accepted a replaced executable image\n' >&2
+    exit 1
+fi
+grep -F 'live /proc executable differs from approved identity' \
+    "$temporary_directory/served-executable-replace.stderr" >/dev/null
+grep -F 'served_decode=failed label=served-executable-replace' \
+    "$temporary_directory/served-executable-replace.stderr" >/dev/null
+
+# A reset appended during teardown belongs to the measured arm. The runner
+# copies logs only after teardown quiesces and rejects the late row even when
+# the watcher also publishes its terminal marker.
+served_late_hazard_result=$execution_campaign/arms/served-late-hazard-result
+served_late_hazard_port=$(python3 -c \
+    'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
+rm -f -- "$served_success_state/server.pid" \
+    "$served_success_state/supervisor.pid" "$served_success_state/server.reaped"
+active_fixture=served-decode-late-kernel-hazard
+diagnostic_file=$temporary_directory/served-late-hazard.stderr
+if QWEN_LAUNCH_SCRIPT=$served_success_launch \
+    QWEN_TEARDOWN_SCRIPT=$served_success_teardown \
+    QWEN_STATE_DIRECTORY=$served_success_state \
+    QWEN_RESULT_DIRECTORY=$served_late_hazard_result \
+    QWEN_LLAMA_SERVER=$served_python \
+    QWEN_SERVER_PORT=$served_late_hazard_port \
+    QWEN_CONTEXT_SIZE=8192 QWEN_BATCH_SIZE=128 QWEN_UBATCH_SIZE=32 \
+    QWEN_CACHE_TYPE_K=q8_0 QWEN_CACHE_TYPE_V=q4_0 QWEN_FLASH_ATTN=on \
+    QWEN_INFERENCE_CPU=0 QWEN_TEST_LATE_KERNEL_HAZARD=1 \
+    QWEN_TEST_SUPERVISOR=$served_supervisor \
+    QWEN_TEST_FAKE_SERVER=$script_directory/test-fixtures/fake-llama-server.sh \
+    QWEN_TEST_PYTHON_BIN=$served_success_bin \
+    QWEN_TEST_PYTHON_RESOLVED=$served_python \
+        "$script_directory/measure-served-decode.sh" served-late-hazard \
+        "$model_path" low-async \
+        >"$temporary_directory/served-late-hazard.stdout" \
+        2>"$temporary_directory/served-late-hazard.stderr"; then
+    printf 'served measurement accepted a teardown-time kernel hazard\n' >&2
+    exit 1
+fi
+grep -F 'amdgpu: GPU reset during teardown' \
+    "$served_late_hazard_result/kernel-hazards.log" >/dev/null
+grep -F 'watch_stop_utc=2026-09-01T00:00:01Z reason=server_exited' \
+    "$served_late_hazard_result/kernel-hazards.log" >/dev/null
+grep -F 'kernel hazard log records a terminal GPU or memory hazard' \
+    "$temporary_directory/served-late-hazard.stderr" >/dev/null
+
+# A response-shaping curl wrapper preserves the live launch and teardown path
+# while replacing one served timing field after the fake server responds. Each
+# malformed arm retains its raw response and a summary with valid=false.
+served_real_curl=$(command -v curl)
+served_timing_bin=$temporary_directory/served-timing-bin
+mkdir -p "$served_timing_bin"
+served_timing_curl=$served_timing_bin/curl
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    'response_file=$(mktemp)' \
+    'trap '\''rm -f -- "$response_file"'\'' EXIT' \
+    'curl_status=0' \
+    '"${QWEN_TEST_REAL_CURL:?}" "$@" >"$response_file" || curl_status=$?' \
+    'if [ "$curl_status" -ne 0 ] || \
+        ! grep -F '\''"timings"'\'' "$response_file" >/dev/null; then' \
+    '    cat "$response_file"' \
+    '    exit "$curl_status"' \
+    'fi' \
+    'python3 - "$response_file" "${QWEN_TEST_SERVED_TIMING_MODE:?}" <<'\''PY'\''' \
+    'import json' \
+    'import sys' \
+    '' \
+    'response_path, mode = sys.argv[1:]' \
+    'with open(response_path, encoding="utf-8") as response_handle:' \
+    '    document = json.load(response_handle)' \
+    'timings = document["timings"]' \
+    'if mode == "missing-predicted-ms":' \
+    '    timings.pop("predicted_ms")' \
+    'elif mode == "zero-predicted-ms":' \
+    '    timings["predicted_ms"] = 0' \
+    'elif mode == "nan-predicted-ms":' \
+    '    timings["predicted_ms"] = float("nan")' \
+    'elif mode == "infinite-predicted-ms":' \
+    '    timings["predicted_ms"] = float("inf")' \
+    'elif mode == "boolean-predicted-ms":' \
+    '    timings["predicted_ms"] = True' \
+    'elif mode == "missing-predicted-rate":' \
+    '    timings.pop("predicted_per_second")' \
+    'elif mode == "zero-predicted-rate":' \
+    '    timings["predicted_per_second"] = 0' \
+    'elif mode == "nan-predicted-rate":' \
+    '    timings["predicted_per_second"] = float("nan")' \
+    'elif mode == "infinite-predicted-rate":' \
+    '    timings["predicted_per_second"] = float("inf")' \
+    'elif mode == "boolean-predicted-rate":' \
+    '    timings["predicted_per_second"] = True' \
+    'elif mode == "floating-predicted-count":' \
+    '    timings["predicted_n"] = 64.0' \
+    'elif mode == "boolean-predicted-count":' \
+    '    timings["predicted_n"] = True' \
+    'elif mode == "missing-prompt-count":' \
+    '    timings.pop("prompt_n")' \
+    'elif mode == "null-prompt-count":' \
+    '    timings["prompt_n"] = None' \
+    'elif mode == "zero-prompt-count":' \
+    '    timings["prompt_n"] = 0' \
+    'elif mode == "negative-prompt-count":' \
+    '    timings["prompt_n"] = -1' \
+    'elif mode == "floating-prompt-count":' \
+    '    timings["prompt_n"] = 12.0' \
+    'elif mode == "boolean-prompt-count":' \
+    '    timings["prompt_n"] = True' \
+    'elif mode == "string-prompt-count":' \
+    '    timings["prompt_n"] = "12"' \
+    'elif mode == "missing-prompt-ms":' \
+    '    timings.pop("prompt_ms")' \
+    'elif mode == "null-prompt-ms":' \
+    '    timings["prompt_ms"] = None' \
+    'elif mode == "zero-prompt-ms":' \
+    '    timings["prompt_ms"] = 0' \
+    'elif mode == "negative-prompt-ms":' \
+    '    timings["prompt_ms"] = -1' \
+    'elif mode == "nan-prompt-ms":' \
+    '    timings["prompt_ms"] = float("nan")' \
+    'elif mode == "infinite-prompt-ms":' \
+    '    timings["prompt_ms"] = float("inf")' \
+    'elif mode == "boolean-prompt-ms":' \
+    '    timings["prompt_ms"] = True' \
+    'elif mode == "string-prompt-ms":' \
+    '    timings["prompt_ms"] = "1000"' \
+    'elif mode == "missing-prompt-rate":' \
+    '    timings.pop("prompt_per_second")' \
+    'elif mode == "null-prompt-rate":' \
+    '    timings["prompt_per_second"] = None' \
+    'elif mode == "zero-prompt-rate":' \
+    '    timings["prompt_per_second"] = 0' \
+    'elif mode == "negative-prompt-rate":' \
+    '    timings["prompt_per_second"] = -1' \
+    'elif mode == "nan-prompt-rate":' \
+    '    timings["prompt_per_second"] = float("nan")' \
+    'elif mode == "infinite-prompt-rate":' \
+    '    timings["prompt_per_second"] = float("inf")' \
+    'elif mode == "boolean-prompt-rate":' \
+    '    timings["prompt_per_second"] = True' \
+    'elif mode == "string-prompt-rate":' \
+    '    timings["prompt_per_second"] = "100"' \
+    'elif mode == "divergent-prompt-rate":' \
+    '    timings["prompt_per_second"] = 99' \
+    'elif mode == "divergent-predicted-rate":' \
+    '    timings["predicted_per_second"] = 22.0' \
+    'else:' \
+    '    raise SystemExit(f"unknown served timing mode: {mode}")' \
+    'print(json.dumps(document, separators=(",", ":")))' \
+    'PY' >"$served_timing_curl"
+chmod +x "$served_timing_curl"
+
+run_served_timing_rejection() {
+    served_timing_case=$1
+    served_timing_state=$temporary_directory/served-timing-$served_timing_case-state
+    served_timing_result=$execution_campaign/arms/served-timing-$served_timing_case-result
+    served_timing_stdout=$temporary_directory/served-timing-$served_timing_case.stdout
+    served_timing_stderr=$temporary_directory/served-timing-$served_timing_case.stderr
+    mkdir -p "$served_timing_state"
+    served_timing_port=$(python3 -c \
+        'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')
+    active_fixture=served-decode-timing-$served_timing_case
+    diagnostic_file=$served_timing_stderr
+    if PATH="$served_timing_bin:$PATH" \
+        QWEN_TEST_REAL_CURL=$served_real_curl \
+        QWEN_TEST_SERVED_TIMING_MODE=$served_timing_case \
+        QWEN_LAUNCH_SCRIPT=$served_success_launch \
+        QWEN_TEARDOWN_SCRIPT=$served_success_teardown \
+        QWEN_STATE_DIRECTORY=$served_timing_state \
+        QWEN_RESULT_DIRECTORY=$served_timing_result \
+        QWEN_LLAMA_SERVER=$served_python \
+        QWEN_SERVER_PORT=$served_timing_port \
+        QWEN_CONTEXT_SIZE=8192 QWEN_BATCH_SIZE=128 QWEN_UBATCH_SIZE=32 \
+        QWEN_CACHE_TYPE_K=q8_0 QWEN_CACHE_TYPE_V=q4_0 \
+        QWEN_FLASH_ATTN=on QWEN_INFERENCE_CPU=0 \
+        QWEN_TEST_SUPERVISOR=$served_supervisor \
+        QWEN_TEST_FAKE_SERVER=$script_directory/test-fixtures/fake-llama-server.sh \
+        QWEN_TEST_PYTHON_BIN=$served_success_bin \
+        QWEN_TEST_PYTHON_RESOLVED=$served_python \
+        "$script_directory/measure-served-decode.sh" \
+        "timing-$served_timing_case" "$model_path" low-async \
+        >"$served_timing_stdout" 2>"$served_timing_stderr"; then
+        printf 'served measurement accepted malformed timing: %s\n' \
+            "$served_timing_case" >&2
+        exit 1
+    fi
+    grep -F 'served_decode=failed' "$served_timing_stderr" >/dev/null
+    if grep -F 'served_decode=completed' "$served_timing_stdout" >/dev/null; then
+        printf 'malformed served timing printed a completed state: %s\n' \
+            "$served_timing_case" >&2
+        exit 1
+    fi
+    python3 - "$served_timing_result/summary.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as summary_handle:
+    summary = json.load(summary_handle)
+if summary["valid"] is not False:
+    raise SystemExit("malformed served timing summary is valid")
+PY
+}
+
+for served_timing_case in \
+        missing-predicted-ms zero-predicted-ms nan-predicted-ms \
+        infinite-predicted-ms boolean-predicted-ms \
+        missing-predicted-rate zero-predicted-rate nan-predicted-rate \
+        infinite-predicted-rate boolean-predicted-rate \
+        floating-predicted-count boolean-predicted-count \
+        missing-prompt-count null-prompt-count zero-prompt-count negative-prompt-count \
+        floating-prompt-count boolean-prompt-count string-prompt-count \
+        missing-prompt-ms null-prompt-ms zero-prompt-ms negative-prompt-ms \
+        nan-prompt-ms infinite-prompt-ms boolean-prompt-ms string-prompt-ms \
+        missing-prompt-rate null-prompt-rate zero-prompt-rate negative-prompt-rate \
+        nan-prompt-rate infinite-prompt-rate boolean-prompt-rate \
+        string-prompt-rate divergent-prompt-rate \
+        divergent-predicted-rate; do
+    run_served_timing_rejection "$served_timing_case"
+done
 
 # Hazardous GPU harnesses reject both server and benchmark contention before
 # creating a summary or starting a sampler.

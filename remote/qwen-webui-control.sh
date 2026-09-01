@@ -16,6 +16,7 @@ action=$1
 # raising probe p90 8.6-fold.
 profile=${2:-low-async}
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+campaign_lock_descriptor_helper=$script_directory/open-verified-lock-descriptor.py
 tmux_socket=qwen-runtime
 tmux_session=qwen-webui
 # qwen-runtime was created from a fresh SSH login after render/video group
@@ -59,9 +60,95 @@ if [ ! -f "$static_path/index.html" ]; then
 fi
 pid_file=$state_directory/server.pid
 status_file=$state_directory/session.status
+campaign_control_lock=$state_directory/fixed64-served-campaign.lock
+ordinary_lease_record=$state_directory/ordinary-session-control-lease.tsv
 
 shell_quote() {
     printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+process_start_time() {
+    process_identity_pid=$1
+    sed 's/^.*) //' "/proc/$process_identity_pid/stat" 2>/dev/null |
+        awk '{ print $20 }'
+}
+
+hold_ordinary_session_lease() {
+    holder_ready_path=$1
+    holder_identity_path=$2
+    holder_record_path=$3
+    holder_controller_pid=$4
+    holder_controller_start_time=$5
+    holder_tmux_socket=$6
+    holder_tmux_session=$7
+
+    cleanup_ordinary_session_lease() {
+        rm -f -- "$holder_ready_path" "$holder_identity_path" \
+            "$holder_record_path" 9>&-
+    }
+    trap cleanup_ordinary_session_lease EXIT
+    trap 'exit 129' HUP
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+
+    printf 'ready\n' >"$holder_ready_path.new"
+    chmod 0600 "$holder_ready_path.new" 9>&-
+    mv -- "$holder_ready_path.new" "$holder_ready_path" 9>&-
+
+    while [ ! -s "$holder_identity_path" ]; do
+        observed_controller_start_time=$(
+            exec 9>&-
+            sed 's/^.*) //' "/proc/$holder_controller_pid/stat" \
+                2>/dev/null | awk '{ print $20 }'
+        )
+        if [ "$observed_controller_start_time" != "$holder_controller_start_time" ]; then
+            exit 1
+        fi
+        sleep 0.05 9>&-
+    done
+    expected_tmux_identity=$(
+        exec 9>&-
+        sed -n '1p' "$holder_identity_path"
+    )
+    case $expected_tmux_identity in
+        *:*) ;;
+        *) exit 1 ;;
+    esac
+
+    while :; do
+        observed_tmux_identity=$(
+            exec 9>&-
+            tmux -L "$holder_tmux_socket" display-message -p \
+                -t "$holder_tmux_session" \
+                '#{session_id}:#{session_created}' 2>/dev/null
+        ) || break
+        [ "$observed_tmux_identity" = "$expected_tmux_identity" ] || break
+        sleep 0.05 9>&-
+    done
+}
+
+write_ordinary_lease_record() {
+    lease_record_state=$1
+    lease_record_tmux_identity=$2
+    lease_record_new=$ordinary_lease_record.new
+    {
+        printf 'key\tvalue\n'
+        printf 'schema\tordinary-session-control-lease-v1\n'
+        printf 'state\t%s\n' "$lease_record_state"
+        printf 'lock_path\t%s\n' "$campaign_control_lock"
+        printf 'holder_pid\t%s\n' "$ordinary_lease_holder_pid"
+        printf 'holder_start_time_ticks\t%s\n' \
+            "$ordinary_lease_holder_start_time"
+        printf 'holder_fd\t9\n'
+        printf 'controller_pid\t%s\n' "$$"
+        printf 'controller_start_time_ticks\t%s\n' \
+            "$ordinary_lease_controller_start_time"
+        printf 'tmux_socket\t%s\n' "$tmux_socket"
+        printf 'tmux_session\t%s\n' "$tmux_session"
+        printf 'tmux_identity\t%s\n' "$lease_record_tmux_identity"
+    } >"$lease_record_new"
+    chmod 0600 "$lease_record_new"
+    mv -- "$lease_record_new" "$ordinary_lease_record"
 }
 
 case $action in
@@ -78,6 +165,117 @@ case $action in
             exit 2
         fi
         mkdir -p "$state_directory"
+        ordinary_lease_holder_pid=''
+        ordinary_lease_identity=''
+        if [ -z "${QWEN_VULKAN_EXTERNAL_LEASE_PROOF:-}" ]; then
+            case ${QWEN_FIXED64_CONTROL_LOCK_INHERITED:-0} in
+                0)
+                    if [ ! -x "$campaign_lock_descriptor_helper" ]; then
+                        printf 'campaign lock descriptor helper is absent: %s\n' \
+                            "$campaign_lock_descriptor_helper" >&2
+                        exit 2
+                    fi
+                    QWEN_FIXED64_CONTROL_LOCK_INHERITED=1
+                    export QWEN_FIXED64_CONTROL_LOCK_INHERITED
+                    exec "$campaign_lock_descriptor_helper" open \
+                        "$campaign_control_lock" 9 \
+                        "$script_directory/qwen-webui-control.sh" "$@"
+                    ;;
+                1)
+                    if ! "$campaign_lock_descriptor_helper" verify \
+                            "$campaign_control_lock" 9; then
+                        exit 2
+                    fi
+                    ;;
+                *)
+                    printf 'campaign lock inheritance marker must be 0 or 1: %s\n' \
+                        "$QWEN_FIXED64_CONTROL_LOCK_INHERITED" >&2
+                    exit 2
+                    ;;
+            esac
+            set +e
+            flock -n -E 75 9
+            campaign_lock_status=$?
+            set -e
+            if [ "$campaign_lock_status" -ne 0 ]; then
+                if [ "$campaign_lock_status" -eq 75 ]; then
+                    printf 'a fixed-64 measurement window owns the appliance: %s\n' \
+                        "$campaign_control_lock" >&2
+                else
+                    printf 'campaign control lease is unusable (flock exit %s): %s\n' \
+                        "$campaign_lock_status" "$campaign_control_lock" >&2
+                fi
+                exit 2
+            fi
+            ordinary_lease_controller_start_time=$(process_start_time "$$")
+            if [ -z "$ordinary_lease_controller_start_time" ]; then
+                printf 'cannot read ordinary-session controller identity\n' >&2
+                exit 2
+            fi
+            ordinary_lease_identity=$state_directory/.ordinary-session-control-lease.$$.identity
+            ordinary_lease_ready=$state_directory/.ordinary-session-control-lease.$$.ready
+            rm -f -- "$ordinary_lease_identity" "$ordinary_lease_ready" \
+                "$ordinary_lease_ready.new"
+            hold_ordinary_session_lease "$ordinary_lease_ready" \
+                "$ordinary_lease_identity" \
+                "$ordinary_lease_record" "$$" \
+                "$ordinary_lease_controller_start_time" \
+                "$tmux_socket" "$tmux_session" \
+                </dev/null >/dev/null 2>&1 &
+            ordinary_lease_holder_pid=$!
+            ordinary_lease_holder_start_time=$(
+                process_start_time "$ordinary_lease_holder_pid"
+            )
+            ordinary_lease_tmux_started=0
+            ordinary_lease_wait_attempt=0
+            while [ ! -s "$ordinary_lease_ready" ] && \
+                  [ "$ordinary_lease_wait_attempt" -lt 100 ]; do
+                if ! kill -0 "$ordinary_lease_holder_pid" 2>/dev/null; then
+                    break
+                fi
+                ordinary_lease_wait_attempt=$((ordinary_lease_wait_attempt + 1))
+                sleep 0.01
+            done
+            ordinary_lease_holder_lock=$(
+                readlink -f -- "/proc/$ordinary_lease_holder_pid/fd/9" \
+                    2>/dev/null || true
+            )
+            if [ ! -s "$ordinary_lease_ready" ] || \
+               [ -z "$ordinary_lease_holder_start_time" ] || \
+               [ "$ordinary_lease_holder_lock" != "$campaign_control_lock" ]; then
+                printf 'ordinary-session control lease holder failed to start\n' >&2
+                kill -TERM "$ordinary_lease_holder_pid" 2>/dev/null || true
+                wait "$ordinary_lease_holder_pid" 2>/dev/null || true
+                exit 2
+            fi
+            cleanup_unbound_ordinary_lease() {
+                cleanup_status=$?
+                trap - EXIT HUP INT TERM
+                if [ "$ordinary_lease_tmux_started" -eq 1 ]; then
+                    cleanup_tmux_identity=$(
+                        exec 9>&-
+                        tmux -L "$tmux_socket" display-message -p \
+                            -t "$tmux_session" \
+                            '#{session_id}:#{session_created}' 2>/dev/null || true
+                    )
+                    if [ -z "${tmux_identity:-}" ] || \
+                       [ "$cleanup_tmux_identity" = "$tmux_identity" ]; then
+                        tmux -L "$tmux_socket" kill-session \
+                            -t "$tmux_session" 9>&- 2>/dev/null || true
+                    fi
+                fi
+                kill -TERM "$ordinary_lease_holder_pid" 2>/dev/null || true
+                wait "$ordinary_lease_holder_pid" 2>/dev/null || true
+                rm -f -- "$ordinary_lease_identity" "$ordinary_lease_ready" \
+                    "$ordinary_lease_record"
+                exit "$cleanup_status"
+            }
+            trap cleanup_unbound_ordinary_lease EXIT
+            trap 'exit 129' HUP
+            trap 'exit 130' INT
+            trap 'exit 143' TERM
+            write_ordinary_lease_record awaiting-session -
+        fi
         # A launcher polls this file for the new session's verdict. The previous
         # run's last line would otherwise satisfy that poll before the new
         # session writes anything, reporting a stale failure as this one's.
@@ -106,6 +304,9 @@ case $action in
                               QWEN_SPEC_DRAFT_N_MAX QWEN_SPEC_DRAFT_P_MIN \
                               QWEN_SPEC_BACKEND_SAMPLING QWEN_BACKEND_SAMPLING \
                               QWEN_CTX_CHECKPOINTS QWEN_CHECKPOINT_MIN_STEP \
+                              QWEN_MODEL_REGISTRY QWEN_QUARANTINE_REGISTRY \
+                              QWEN_VALIDATED_TUPLES QWEN_CTX_CHECKPOINT_LEDGER \
+                              QWEN_BATCH_SIZE QWEN_UBATCH_SIZE \
                               QWEN_CACHE_TYPE_K QWEN_CACHE_TYPE_V \
                               QWEN_FLASH_ATTN \
                               QWEN_CACHE_OVERRIDE_CONTEXT_CEILING \
@@ -127,7 +328,9 @@ case $action in
                               QWEN_IMAGE_SERVICE_SOCKET \
                               QWEN_IMAGE_PRIORITY_WRAPPER \
                               QWEN_IMAGE_LEASE_WAIT_S \
-                              QWEN_RADV_ICD; do
+                              QWEN_RADV_ICD \
+                              QWEN_VULKAN_LATENCY_PROBE \
+                              QWEN_VULKAN_EXTERNAL_LEASE_PROOF; do
             eval "forwarded_value=\${$forwarded_name:-}"
             if [ -n "$forwarded_value" ]; then
                 forwarded_environment="$forwarded_environment $forwarded_name=$(shell_quote "$forwarded_value")"
@@ -153,8 +356,31 @@ case $action in
             "$state_directory" "$profile"; do
             session_command="$session_command $(shell_quote "$session_argument")"
         done
-        tmux -L "$tmux_socket" new-session -d -s "$tmux_session" \
-            "$session_command"
+        tmux_identity=$(
+            exec 9>&-
+            tmux -L "$tmux_socket" new-session -d -P \
+                -F '#{session_id}:#{session_created}' -s "$tmux_session" \
+                "$session_command"
+        )
+        if [ -n "$ordinary_lease_holder_pid" ]; then
+            ordinary_lease_tmux_started=1
+        fi
+        case $tmux_identity in
+            *:*) ;;
+            *)
+                printf 'tmux returned a malformed session identity: %s\n' \
+                    "$tmux_identity" >&2
+                exit 2
+                ;;
+        esac
+        if [ -n "$ordinary_lease_holder_pid" ]; then
+            write_ordinary_lease_record session-bound "$tmux_identity"
+            printf '%s\n' "$tmux_identity" >"$ordinary_lease_identity.new"
+            chmod 0600 "$ordinary_lease_identity.new"
+            mv -- "$ordinary_lease_identity.new" "$ordinary_lease_identity"
+            trap - EXIT HUP INT TERM
+            exec 9>&-
+        fi
         printf 'started tmux_socket=%s tmux_session=%s profile=%s host=%s port=%s context=%s latency_mode=%s model=%s server=%s\n' \
             "$tmux_socket" "$tmux_session" "$profile" "$bind_host" \
             "$server_port" "$context_size" "$latency_mode" "$model_path" \

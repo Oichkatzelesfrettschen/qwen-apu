@@ -3,8 +3,8 @@ set -eu
 
 # Prove that no image generation survives. The exit status reports the
 # machine's state rather than an attempt: a live service, a live runtime, a
-# partial artifact, or a held Vulkan workload lease each fail the script, so a
-# caller cannot mistake a partial stop for a clean one.
+# partial artifact, or a held lease without a verified campaign owner each fail
+# the script, so a caller cannot mistake a partial stop for an accepted one.
 #
 # Every proof reads process and filesystem state. The artifact listener carries
 # a credential this script does not hold, so an HTTP probe would report a
@@ -19,12 +19,15 @@ if [ "$#" -gt 1 ]; then
     usage
 fi
 
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 state_directory=${1:-${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}}
 image_directory=$state_directory/images
 artifact_directory=$image_directory/artifacts
 pid_file=$image_directory/image-service.pid
 socket_file=$image_directory/image-service.sock
 lease_file=$state_directory/vulkan-workload.lock
+external_lease_proof=${QWEN_VULKAN_EXTERNAL_LEASE_PROOF:-}
+external_lease_verifier=$script_directory/verify-external-vulkan-lease.py
 
 residue=0
 
@@ -89,22 +92,37 @@ fi
 
 # The kernel lock is the lease authority, so the proof takes it and releases
 # it. flock(1) exits 75 on a lock held elsewhere, which separates a busy lease
-# from every other failure of this command.
+# from every other failure of this command. A served campaign deliberately
+# keeps the host-wide lease while it tears down one arm. The campaign supplies
+# a private proof that binds the expected path, PID start time, descriptor, and
+# descriptor-local fdinfo lock row to that live holder. Accept that owner after
+# the same verifier used by launch succeeds; every absent, stale, mismatched,
+# or malformed proof remains residue.
 if [ -e "$lease_file" ]; then
     if flock -n -E 75 "$lease_file" true; then
         printf 'vulkan workload lease is free: %s\n' "$lease_file"
     else
         lease_status=$?
         if [ "$lease_status" -eq 75 ]; then
-            printf 'vulkan workload lease is held: %s\n' "$lease_file" >&2
-            if [ -r "$state_directory/vulkan-workload.status" ]; then
-                sed -n '1p' "$state_directory/vulkan-workload.status" >&2
+            if [ -n "$external_lease_proof" ] && \
+               [ -x "$external_lease_verifier" ] && \
+               "$external_lease_verifier" "$external_lease_proof" \
+                   "$lease_file"; then
+                printf 'vulkan workload lease has a verified external owner: %s\n' \
+                    "$lease_file"
+            else
+                printf 'vulkan workload lease is held without a verified external owner: %s\n' \
+                    "$lease_file" >&2
+                if [ -r "$state_directory/vulkan-workload.status" ]; then
+                    sed -n '1p' "$state_directory/vulkan-workload.status" >&2
+                fi
+                residue=1
             fi
         else
             printf 'the lease file is unusable (flock exit %s): %s\n' \
                 "$lease_status" "$lease_file" >&2
+            residue=1
         fi
-        residue=1
     fi
 fi
 
@@ -155,7 +173,7 @@ elif [ -e "$socket_file" ] || [ -L "$socket_file" ]; then
 fi
 
 if [ "$residue" -eq 0 ]; then
-    printf 'image teardown verified: no service, no runtime, no partial artifact, lease free\n'
+    printf 'image teardown verified: no service, no runtime, no partial artifact, lease free or verified campaign-owned\n'
 else
     printf 'image teardown incomplete\n' >&2
 fi

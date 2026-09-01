@@ -15,7 +15,7 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repository_root=$(CDPATH='' cd -- "$script_directory/.." && pwd)
 cd "$repository_root"
 
-for required_command in bash node shellcheck ruff python3 curl flock git ps sha256sum; do
+for required_command in bash node shellcheck ruff mypy python3 curl flock git ps sha256sum; do
     if ! command -v "$required_command" >/dev/null 2>&1; then
         printf 'required quality-gate command is absent: %s\n' \
             "$required_command" >&2
@@ -42,6 +42,38 @@ done
 # as a defect even where ShellCheck would return success at error level.
 shellcheck -S warning $shell_files
 ruff check remote
+ruff check --select EXE,I,B \
+    remote/open-verified-lock-descriptor.py \
+    remote/signal-process-group.py \
+    remote/test-signal-process-group.py \
+    remote/summarize-fixed64-served-campaign.py \
+    remote/test-summarize-fixed64-served-campaign.py \
+    remote/test-verify-external-vulkan-lease.py \
+    remote/verify-external-vulkan-lease.py
+ruff format --check \
+    remote/open-verified-lock-descriptor.py \
+    remote/signal-process-group.py \
+    remote/test-signal-process-group.py \
+    remote/summarize-fixed64-served-campaign.py \
+    remote/test-summarize-fixed64-served-campaign.py \
+    remote/test-verify-external-vulkan-lease.py \
+    remote/verify-external-vulkan-lease.py
+mypy --strict \
+    remote/open-verified-lock-descriptor.py \
+    remote/signal-process-group.py \
+    remote/test-signal-process-group.py \
+    remote/summarize-fixed64-served-campaign.py \
+    remote/test-summarize-fixed64-served-campaign.py \
+    remote/test-verify-external-vulkan-lease.py \
+    remote/verify-external-vulkan-lease.py
+python3 -m py_compile \
+    remote/open-verified-lock-descriptor.py \
+    remote/signal-process-group.py \
+    remote/test-signal-process-group.py \
+    remote/summarize-fixed64-served-campaign.py \
+    remote/test-summarize-fixed64-served-campaign.py \
+    remote/test-verify-external-vulkan-lease.py \
+    remote/verify-external-vulkan-lease.py
 
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-quality-suite.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-regrade-quality-roster.py
@@ -66,9 +98,14 @@ remote/test-fallback-webui-image-authorization.sh
 remote/test-web-tools-roundtrip.sh
 node remote/test-fallback-webui-model-state.mjs
 remote/test-measurement-harnesses.sh
+remote/test-run-fixed64-served-campaign.sh
+PYTHONDONTWRITEBYTECODE=1 python3 remote/test-signal-process-group.py
+PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-fixed64-served-campaign.py
+PYTHONDONTWRITEBYTECODE=1 python3 remote/test-verify-external-vulkan-lease.py
 remote/test-representation-arm.sh
 remote/test-one-token-admission.sh
 remote/test-fetch-candidate-artifact.sh
+remote/test-model-artifact-identity.sh
 remote/test-model-registry.sh
 remote/test-model-tiers.sh
 remote/test-measure-draft-pair.sh

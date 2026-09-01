@@ -95,12 +95,18 @@ separates registry, bandwidth, raw but unhashed, depth-wedge, historical ABBA,
 and serving evidence; generates exact latency, bandwidth, Amdahl, and N=1
 coefficients; and records the gfx902 mixed-MAD correction. Historical reported
 ABBA controls reach 20.15 tok/s for 0.8B and 10.02 tok/s for 2B. The checkout
-retains neither historical raw bundle, and it retains no fixed-64,
-exact-default-tuple, balanced serving campaign for all three current artifacts.
-The 4B
-5.25 tok/s target remains unmet across any complete reported prompt set or
-current production-profile campaign; one retired n-gram arithmetic row reaches
-5.47 while the same configuration drafts nothing on code.
+retains neither historical raw bundle. `remote/run-fixed64-served-campaign.sh`
+constructs the missing fixed-64, exact-default-tuple, balanced serving
+denominator for all three current artifacts; the checkout retains no real
+campaign output from that runner yet.
+The 83-check fake-only suite validates the campaign contract, including strict
+prompt count, elapsed-time, rate, and child-summary reconciliation, without
+starting a real server, model, GPU, or remote workload. The suite supplies no throughput
+evidence, so all three targets remain unproved pending the real twelve-arm
+bundle. The 4B 5.25 tok/s target remains unmet across any complete reported
+prompt set or current production-profile campaign; one retired n-gram
+arithmetic row reaches 5.47 while the same configuration drafts nothing on
+code.
 
 Measured by `remote/run-placement-sweep.sh` through `llama-bench`, outside the
 guarded launch path, at 512 prompt tokens and 64 generated tokens.

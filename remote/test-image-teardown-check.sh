@@ -12,14 +12,73 @@ fake_runtime=$script_directory/test-fixtures/fake-image-runtime.sh
 temporary_directory=$(mktemp -d)
 runtime_pid=''
 listener_pid=''
+lease_holder_pid=''
 cleanup() {
     [ -z "$runtime_pid" ] || kill -KILL "$runtime_pid" 2>/dev/null || true
     [ -z "$runtime_pid" ] || wait "$runtime_pid" 2>/dev/null || true
     [ -z "$listener_pid" ] || kill -TERM "$listener_pid" 2>/dev/null || true
     [ -z "$listener_pid" ] || wait "$listener_pid" 2>/dev/null || true
+    [ -z "$lease_holder_pid" ] || kill -TERM "$lease_holder_pid" 2>/dev/null || true
+    [ -z "$lease_holder_pid" ] || wait "$lease_holder_pid" 2>/dev/null || true
     rm -rf "$temporary_directory"
 }
 trap cleanup EXIT HUP INT TERM
+
+start_lease_holder() {
+    holder_lock_path=$1
+    holder_proof_path=$2
+    holder_ready_path=$3
+    holder_release_path=$4
+    python3 - "$holder_lock_path" "$holder_proof_path" "$holder_ready_path" \
+        "$holder_release_path" <<'PYTHON' &
+import fcntl
+import os
+import sys
+import time
+from pathlib import Path
+
+lock_path = Path(sys.argv[1])
+proof_path = Path(sys.argv[2])
+ready_path = Path(sys.argv[3])
+release_path = Path(sys.argv[4])
+
+descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(descriptor, fcntl.LOCK_EX)
+if descriptor != 8:
+    os.dup2(descriptor, 8, inheritable=True)
+    os.close(descriptor)
+else:
+    os.set_inheritable(8, True)
+
+stat_text = Path(f"/proc/{os.getpid()}/stat").read_text(encoding="ascii")
+start_time_ticks = stat_text[stat_text.rfind(")") + 2 :].split()[19]
+proof_path.write_text(
+    "key\tvalue\n"
+    "schema\tfixed64-vulkan-external-lease-v1\n"
+    f"lock_path\t{lock_path}\n"
+    f"holder_pid\t{os.getpid()}\n"
+    f"holder_start_time_ticks\t{start_time_ticks}\n"
+    "holder_fd\t8\n"
+    f"source_revision\t{'0' * 40}\n",
+    encoding="utf-8",
+)
+proof_path.chmod(0o600)
+ready_path.write_text("ready\n", encoding="ascii")
+while not release_path.exists():
+    time.sleep(0.02)
+PYTHON
+    lease_holder_pid=$!
+}
+
+wait_for_file() {
+    awaited_path=$1
+    wait_attempt=0
+    while [ ! -s "$awaited_path" ] && [ "$wait_attempt" -lt 250 ]; do
+        sleep 0.02
+        wait_attempt=$((wait_attempt + 1))
+    done
+    [ -s "$awaited_path" ]
+}
 
 runtime_state=$temporary_directory/runtime-state
 mkdir -p "$runtime_state"
@@ -94,7 +153,67 @@ grep -q '^stale control socket removed:' "$temporary_directory/stale-socket.out"
 
 printf 'live_socket_preserved=%s\n' "$live_socket_status"
 printf 'stale_socket_removed=%s\n' "$stale_socket_status"
+
+lease_state=$temporary_directory/lease-state
+lease_lock=$lease_state/vulkan-workload.lock
+first_proof=$temporary_directory/first-external-lease.tsv
+first_ready=$temporary_directory/first-external-lease.ready
+first_release=$temporary_directory/first-external-lease.release
+mkdir -p "$lease_state"
+start_lease_holder "$lease_lock" "$first_proof" "$first_ready" "$first_release"
+wait_for_file "$first_ready"
+
+if QWEN_IMAGE_RUNTIME_PATTERN='^/definitely/not/matching$' \
+    "$checker" "$lease_state" >"$temporary_directory/unproved-lease.out" 2>&1
+then
+    unproved_lease_status=refused
+else
+    unproved_lease_status=accepted
+fi
+grep -q '^vulkan workload lease is held without a verified external owner:' \
+    "$temporary_directory/unproved-lease.out" || unproved_lease_status=refused
+
+if QWEN_IMAGE_RUNTIME_PATTERN='^/definitely/not/matching$' \
+    QWEN_VULKAN_EXTERNAL_LEASE_PROOF=$first_proof \
+    "$checker" "$lease_state" >"$temporary_directory/verified-lease.out" 2>&1
+then
+    verified_lease_status=accepted
+else
+    verified_lease_status=refused
+fi
+grep -q '^vulkan workload lease has a verified external owner:' \
+    "$temporary_directory/verified-lease.out" || verified_lease_status=refused
+
+: >"$first_release"
+wait "$lease_holder_pid"
+lease_holder_pid=''
+
+second_proof=$temporary_directory/second-external-lease.tsv
+second_ready=$temporary_directory/second-external-lease.ready
+second_release=$temporary_directory/second-external-lease.release
+start_lease_holder "$lease_lock" "$second_proof" "$second_ready" "$second_release"
+wait_for_file "$second_ready"
+if QWEN_IMAGE_RUNTIME_PATTERN='^/definitely/not/matching$' \
+    QWEN_VULKAN_EXTERNAL_LEASE_PROOF=$first_proof \
+    "$checker" "$lease_state" >"$temporary_directory/stale-lease.out" 2>&1
+then
+    stale_lease_status=refused
+else
+    stale_lease_status=accepted
+fi
+grep -q '^external_vulkan_lease=rejected reason=' \
+    "$temporary_directory/stale-lease.out" || stale_lease_status=refused
+: >"$second_release"
+wait "$lease_holder_pid"
+lease_holder_pid=''
+
+printf 'unproved_external_lease_rejected=%s\n' "$unproved_lease_status"
+printf 'verified_external_lease_accepted=%s\n' "$verified_lease_status"
+printf 'stale_external_lease_rejected=%s\n' "$stale_lease_status"
 [ "$runtime_status" = accepted ]
 [ "$live_socket_status" = accepted ]
 [ "$stale_socket_status" = accepted ]
+[ "$unproved_lease_status" = accepted ]
+[ "$verified_lease_status" = accepted ]
+[ "$stale_lease_status" = accepted ]
 printf 'test-image-teardown-check=accepted\n'

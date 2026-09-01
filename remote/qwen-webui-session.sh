@@ -578,8 +578,12 @@ if [ "$supervised_component" != server ]; then
     printf 'state=failed reason=%s_exited utc=%s\n' \
         "$supervised_component" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
 fi
+# The kernel watcher owns the final drain after the server exits. Signalling the
+# watcher here can discard a reset already buffered by dmesg --follow-new and
+# can suppress its terminal watch_stop marker. Stop every other component, then
+# wait for the watcher to observe server exit and finish its own drain.
 for supervised_pid in "$server_pid" "$monitor_pid" "$latency_watchdog_pid" \
-        "$kernel_hazard_watchdog_pid" "$broker_pid"; do
+        "$broker_pid"; do
     [ -n "$supervised_pid" ] || continue
     kill "$supervised_pid" 2>/dev/null || true
 done
@@ -605,6 +609,9 @@ kernel_hazard_watchdog_pid=""
 broker_pid=""
 session_status=$server_status
 if [ "$supervised_component" != server ]; then
+    session_status=1
+fi
+if [ "$kernel_hazard_status" -ne 0 ]; then
     session_status=1
 fi
 printf 'state=stopped server_status=%s monitor_status=%s latency_status=%s kernel_hazard_status=%s broker_status=%s stopped_component=%s profile=%s utc=%s\n' \

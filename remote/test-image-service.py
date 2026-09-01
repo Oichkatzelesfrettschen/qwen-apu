@@ -1108,6 +1108,101 @@ class ImageServiceTest(unittest.TestCase):
             [],
         )
 
+    def test_repeated_shutdown_signals_finish_the_same_cleanup(self):
+        """HUP, TERM, and INT share one idempotent shutdown transition."""
+        session = self.start(
+            runtime_environment={"QWEN_FAKE_IMAGE_SLEEP_SECONDS": "20"}
+        )
+        result = {}
+
+        def run_generate():
+            try:
+                result["response"] = session.control(generate_request())
+            except Exception as error:  # noqa: BLE001 -- shutdown closes the socket
+                result["error"] = error
+
+        worker = threading.Thread(target=run_generate)
+        worker.start()
+        status = self.wait_for_running(session)
+        self.assertTrue(status["job_id"], "a job is running before shutdown")
+        for terminating_signal in (signal.SIGHUP, signal.SIGTERM, signal.SIGINT):
+            try:
+                session.process.send_signal(terminating_signal)
+            except ProcessLookupError:
+                break
+        try:
+            stdout, stderr = session.process.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            session.process.kill()
+            session.process.communicate()
+            self.fail("repeated terminating signals left the service running")
+        worker.join(timeout=30)
+        self.assertFalse(worker.is_alive(), "the interrupted generate returned")
+        self.assertEqual(session.process.returncode, 0, stderr)
+        self.assertNotIn("Traceback", stderr)
+        residue_line = [
+            line for line in stdout.splitlines() if line.startswith("shutdown ")
+        ][-1]
+        self.assertIn("child=absent", residue_line)
+        self.assertIn("part_files=0", residue_line)
+        self.assertIn("lease=released", residue_line)
+        self.assertIn("socket=removed", residue_line)
+        self.assertFalse(os.path.exists(session.socket_path))
+        self.assertTrue(session.lease_is_free())
+
+    def test_shutdown_cancels_lease_wait_before_runtime_start(self):
+        """Shutdown closes a lease-waiting handler before it can spawn."""
+        import fcntl
+
+        argv_log = os.path.join(self.temporary.name, "shutdown-wait-argv.log")
+        session = self.start(
+            lease_wait_seconds=30,
+            runtime_environment={"QWEN_FAKE_IMAGE_ARGV_LOG": argv_log},
+        )
+        descriptor = os.open(session.lease_path(), os.O_RDWR | os.O_CREAT, 0o644)
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        result = {}
+
+        def run_generate():
+            try:
+                result["response"] = session.control(generate_request(), timeout=60)
+            except Exception as error:  # noqa: BLE001 -- shutdown closes the socket
+                result["error"] = error
+
+        worker = threading.Thread(target=run_generate)
+        worker.start()
+        try:
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                status = session.control(
+                    {
+                        "protocol_version": 1,
+                        "request_id": "shutdown-wait-status",
+                        "action": "status",
+                    }
+                )
+                if status["state"] == "waiting_for_lease":
+                    break
+                time.sleep(0.02)
+            else:
+                self.fail("the generation published no lease-wait state")
+            session.process.send_signal(signal.SIGTERM)
+            stdout, stderr = session.process.communicate(timeout=30)
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+        worker.join(timeout=30)
+        self.assertFalse(worker.is_alive(), "the lease-waiting generate returned")
+        self.assertEqual(session.process.returncode, 0, stderr)
+        self.assertNotIn("Traceback", stderr)
+        self.assertFalse(os.path.exists(argv_log), "the runtime never started")
+        residue_line = [
+            line for line in stdout.splitlines() if line.startswith("shutdown ")
+        ][-1]
+        self.assertIn("child=absent", residue_line)
+        self.assertIn("part_files=0", residue_line)
+        self.assertIn("lease=released", residue_line)
+
     def test_fixture_appends_png_for_an_unrecognized_output_extension(self):
         """The fixture mirrors sd-cli's own encoder-selection rule.
 
