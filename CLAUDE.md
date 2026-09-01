@@ -1090,6 +1090,14 @@ remote/run-graph-alias-ab.sh OUTPUT_DIR [MODEL_ID...]
 remote/run-ctx-checkpoint-sweep.sh LABEL MODEL_ID OUT
                                                 # what --ctx-checkpoints buys a second turn at 30K
 
+# Deployment bundles: the server, its manifest, and the checkpoint ledger as
+# one activated unit. Activation and rollback are the same atomic symlink
+# transition; qwen-webui-control.sh prefers deployment-current and carries
+# its ledger, so a rollback to the forced-tail build travels with the
+# all-zero ledger it is admissible under.
+remote/build-deployment-bundle.sh NAME SERVER MANIFEST LEDGER [ROOT]
+remote/activate-deployment-bundle.sh NAME|rollback [ROOT]
+
 # Rebuild llama.cpp and the static UI
 remote/build-llama-preset.sh PRESET [SOURCE]   # one directory per build arm
 remote/build-llama-vulkan.sh                   # llama-server, llama-cli, llama-mtmd-cli
@@ -1143,6 +1151,7 @@ remote/test-quality-roster.sh
 remote/test-promote-llama-build.sh
 remote/test-classify-checkpoint-semantics.sh
 remote/test-check-runtime-tree.sh
+remote/test-deployment-bundle.sh
 remote/generate-quality-images.py --check
 remote/test-gguf-tokenizer-identity.py
 remote/test-admit-candidate-static.py

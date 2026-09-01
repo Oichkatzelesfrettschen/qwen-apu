@@ -48,6 +48,20 @@ model_path=${QWEN_MODEL_PATH:-"${HOME:?}/models/Qwen3.8-4B-Distill-GGUF/Qwen3.8-
 # before presets existed, and it serves until a promotion happens.
 llama_source_directory=${QWEN_LLAMA_SOURCE_DIRECTORY:-"${HOME:?}/src/llama.cpp-qwen-apu"}
 llama_server=${QWEN_LLAMA_SERVER:-}
+# An activated deployment bundle binds the server and the checkpoint ledger
+# it was verified against, so deployment-current outranks the build symlinks
+# and carries its own ledger into the capacity policy; an explicit
+# QWEN_LLAMA_SERVER or QWEN_CTX_CHECKPOINT_LEDGER still wins, and a machine
+# without a deployment root keeps the promote-chain defaults unchanged.
+deployment_current=${QWEN_DEPLOYMENT_ROOT:-"${HOME:?}/qwen-deployments"}/deployment-current
+if [ -z "$llama_server" ] && [ -x "$deployment_current/llama-server" ]; then
+    llama_server=$deployment_current/llama-server
+    if [ -z "${QWEN_CTX_CHECKPOINT_LEDGER:-}" ] && \
+        [ -r "$deployment_current/ctx-checkpoints.tsv" ]; then
+        QWEN_CTX_CHECKPOINT_LEDGER=$deployment_current/ctx-checkpoints.tsv
+        export QWEN_CTX_CHECKPOINT_LEDGER
+    fi
+fi
 if [ -z "$llama_server" ]; then
     llama_server=$llama_source_directory/build-appliance-current/bin/llama-server
     if [ ! -x "$llama_server" ]; then

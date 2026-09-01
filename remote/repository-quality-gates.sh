@@ -134,6 +134,7 @@ remote/test-check-trace-source-status.sh
 remote/test-run-trace-campaign.sh
 remote/test-classify-checkpoint-semantics.sh
 remote/test-check-runtime-tree.sh
+remote/test-deployment-bundle.sh
 remote/test-qwen-session-signals.sh
 remote/test-admit-web-router-fake.sh
 remote/test-quality-roster.sh
