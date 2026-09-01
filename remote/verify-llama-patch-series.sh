@@ -34,7 +34,8 @@ for patch_name in \
     llama-vulkan-runtime-submit-limit.patch \
     llama-vulkan-submit-trace.patch \
     llama-router-tools-proxy.patch \
-    llama-vulkan-view-alias-deps.patch; do
+    llama-vulkan-view-alias-deps.patch \
+    llama-server-natural-checkpoint-boundary.patch; do
     git -C "$temporary_directory/llama.cpp" apply --check \
         "$patch_directory/$patch_name"
     git -C "$temporary_directory/llama.cpp" apply \
@@ -68,6 +69,8 @@ verify_source d0d6c8725891ac4baf68fd947ab4be75cc93ba37b1e988ca1c556881a49d0abc \
     src/llama-model-loader.cpp
 verify_source d2d5cb43a83c6b2b459b85f2df181a3d976efcaef351e5cbc6b418ba839390e3 \
     tools/server/server.cpp
+verify_source 3744317beb622feff234e5b7a615c50665579f34ce49921e324bcd418fb3a58a \
+    tools/server/server-context.cpp
 printf 'patch_series=accepted commit=%s\n' "$expected_commit"
 
 # A candidate patch is a backport under measurement rather than a member of the
@@ -76,14 +79,12 @@ printf 'patch_series=accepted commit=%s\n' "$expected_commit"
 # sums it compares against stay byte-identical whether the stage runs or not.
 # QWEN_LLAMA_CANDIDATE_PATCHES=1 arms it; the printed post-apply digest is what
 # a promotion would move into verify_source once its evidence lane closes.
-# The order is the apply order: llama-server-vulkan-workload-lease encodes
-# post-series offsets in tools/server/server-context.cpp, which no earlier
-# candidate touches, so the two stay independent while the list stays ordered.
-# llama-server-natural-checkpoint-boundary removes the forced near-end
-# checkpoint partition in the same file's batch-fill loop, a region the lease
-# leaves untouched, so the pair applies in either order and the list keeps one.
-candidate_patch_names="llama-server-vulkan-workload-lease.patch
-llama-server-natural-checkpoint-boundary.patch"
+# llama-server-vulkan-workload-lease encodes post-series offsets in
+# tools/server/server-context.cpp, whose production content the
+# natural-boundary member above already fixes, so the lease applies onto the
+# verified production tree and the digest line below reports what a promotion
+# would move into verify_source.
+candidate_patch_names="llama-server-vulkan-workload-lease.patch"
 # One digest line per file the candidate stage rewrites. Retained evidence
 # quotes the ggml-vulkan.cpp line, so it keeps its format and its position.
 candidate_digest_paths="tools/server/server-context.cpp"

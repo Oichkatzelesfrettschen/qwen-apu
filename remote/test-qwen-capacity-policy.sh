@@ -1656,4 +1656,63 @@ for refused_pair in 'QWEN_CTX_CHECKPOINTS=two' 'QWEN_CTX_CHECKPOINTS=-1' \
         "$temporary_directory/checkpoint.stderr" >/dev/null
 done
 
+# A positive count is refused against a server that does not declare
+# natural-boundary checkpoint semantics, and the same server serves a count of
+# zero. The fixture beside fake-llama-server.sh declares the promoted value, so
+# these cases point the policy at copies carrying their own manifests.
+semantics_directory=$temporary_directory/checkpoint-semantics
+mkdir -p "$semantics_directory/undeclared" "$semantics_directory/forced" \
+    "$semantics_directory/natural"
+for semantics_arm in undeclared forced natural; do
+    cp "$fake_server" "$semantics_directory/$semantics_arm/llama-server"
+done
+printf 'preset\tforced\ncheckpoint_semantics\tforced-tail-v0\n' \
+    >"$semantics_directory/forced/artifact-manifest.tsv"
+printf 'preset\tnatural\ncheckpoint_semantics\tnatural-boundary-v1\n' \
+    >"$semantics_directory/natural/artifact-manifest.tsv"
+
+for semantics_arm in undeclared forced; do
+    if QWEN_CTX_CHECKPOINTS=2 QWEN_RADV_ICD=$fake_icd \
+        QWEN_POLICY_TEST_OUTPUT=$checkpoint_output \
+        "$policy" "$semantics_directory/$semantics_arm/llama-server" \
+        "$model_path" 24576 8080 \
+        2>"$temporary_directory/semantics-$semantics_arm.stderr"; then
+        printf 'the policy armed checkpoints against a %s build\n' \
+            "$semantics_arm" >&2
+        exit 1
+    fi
+    grep -F 'a positive context checkpoint count requires natural-boundary-v1' \
+        "$temporary_directory/semantics-$semantics_arm.stderr" >/dev/null
+done
+
+# The undeclared build still serves, so the refusal names the count rather than
+# the binary.
+QWEN_CTX_CHECKPOINTS=0 QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$checkpoint_output \
+    "$policy" "$semantics_directory/undeclared/llama-server" \
+    "$model_path" 24576 8080
+checkpoint_arguments=$(sed -n 's/^argument=//p' "$checkpoint_output" | tr '\n' ' ')
+case $checkpoint_arguments in
+    *'--ctx-checkpoints 0 '*) ;;
+    *)
+        printf 'an undeclared build refused a checkpoint count of zero: %s\n' \
+            "$checkpoint_arguments" >&2
+        exit 1
+        ;;
+esac
+
+QWEN_CTX_CHECKPOINTS=2 QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$checkpoint_output \
+    "$policy" "$semantics_directory/natural/llama-server" \
+    "$model_path" 24576 8080
+checkpoint_arguments=$(sed -n 's/^argument=//p' "$checkpoint_output" | tr '\n' ' ')
+case $checkpoint_arguments in
+    *'--ctx-checkpoints 2 '*) ;;
+    *)
+        printf 'a natural-boundary build refused a positive count: %s\n' \
+            "$checkpoint_arguments" >&2
+        exit 1
+        ;;
+esac
+
 printf 'qwen_capacity_policy=accepted\n'

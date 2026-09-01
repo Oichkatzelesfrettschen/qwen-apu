@@ -955,6 +955,31 @@ appliance's tree was one patch behind the verifier's list before this
 promotion, which the digest line in the promote chain now catches before a
 build.
 
+`patches/llama-server-natural-checkpoint-boundary.patch` is the eighth member
+and it decides what a positive `--ctx-checkpoints` count means.
+`server-context.cpp` at the pinned commit force-breaks the prompt fill loop
+`4 + n_ubatch` and `4` tokens from the end whenever checkpoints are armed, so
+the decode execution shape differs between a count of 0 and a count of 2 and
+the 0.8B emits a different first-turn token at zero-based index 25 on every
+positive arm. The patch removes that block, leaving checkpoints on the natural
+`n_batch` boundaries the loop already produces. All three classes then hold
+token identity across the setting: five 4B witnesses -- frozen production c0,
+candidate c0 opening, candidate c2 first, candidate c2 repeat, candidate c0
+closing -- agree bit-for-bit on ids and retained logprobs over both turns while
+a c2 second turn charges 28 tokens against 30,748, and the 0.8B and 2B carry
+the same relation. `evidence/ctx-checkpoint-natural-boundary/` retains the runs.
+
+The ledger and the binary are separate release artifacts, so an edit to
+`remote/ctx-checkpoints.tsv` alone would pair a positive count with the
+unrepaired implementation. `build-llama-preset.sh` reads the
+`checkpoint_offsets` array out of the source it compiles and records
+`checkpoint_semantics` as `natural-boundary-v1` or `forced-tail-v0` in the
+build's artifact manifest, and `qwen-capacity-policy.sh` reads that declaration
+from the manifest beside the selected executable and refuses any positive count
+against another value on both the single-model and the router path. An absent
+declaration refuses rather than defaults, so release order stops being what
+keeps the two coherent.
+
 ## Commands
 
 ```sh

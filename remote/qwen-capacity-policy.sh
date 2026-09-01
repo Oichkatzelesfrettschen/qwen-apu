@@ -1319,6 +1319,55 @@ if [ -n "$checkpoint_min_step" ]; then
     fi
 fi
 
+# A positive count is meaningful only against a build whose prompt fill loop
+# places checkpoints at natural n_batch boundaries. The pinned build breaks the
+# prompt `4 + n_ubatch` and `4` tokens from the end whenever checkpoints are
+# armed, and evidence/ctx-checkpoint-sweep/ measures that forced partition
+# moving the 0.8B's first-turn token at index 25. The ledger and the binary are
+# separate release artifacts, so a ledger edit alone could otherwise pair a
+# positive count with the unrepaired implementation. build-llama-preset.sh
+# records what it compiled as `checkpoint_semantics` in the build's artifact
+# manifest, this policy reads that declaration from the manifest beside the
+# selected executable, and an absent declaration refuses rather than defaults.
+checkpoint_semantics=unknown
+llama_server_directory=$(dirname -- "$llama_server")
+for checkpoint_manifest in "$llama_server_directory/artifact-manifest.tsv" \
+    "$llama_server_directory/../artifact-manifest.tsv"; do
+    [ -r "$checkpoint_manifest" ] || continue
+    checkpoint_semantics=$(awk -F'\t' '
+        $1 == "checkpoint_semantics" { print $2; exit }
+    ' "$checkpoint_manifest")
+    checkpoint_semantics=${checkpoint_semantics:-unknown}
+    break
+done
+
+# Router mode carries the count per section, so the preset rather than this
+# argv states whether any child arms one.
+checkpoint_count_armed=0
+if [ "$router_enabled" = 1 ]; then
+    if [ -r "$router_presets" ] && awk '
+        /^[[:space:]]*LLAMA_ARG_CTX_CHECKPOINTS[[:space:]]*=/ {
+            value = $0
+            sub(/^[^=]*=[[:space:]]*/, "", value)
+            sub(/[[:space:]]+$/, "", value)
+            if (value + 0 > 0) { found = 1 }
+        }
+        END { exit found ? 0 : 1 }
+    ' "$router_presets"; then
+        checkpoint_count_armed=1
+    fi
+elif [ "$ctx_checkpoints" -gt 0 ]; then
+    checkpoint_count_armed=1
+fi
+
+if [ "$checkpoint_count_armed" = 1 ] &&
+    [ "$checkpoint_semantics" != natural-boundary-v1 ]; then
+    printf 'the selected llama-server declares checkpoint_semantics=%s: %s\n' \
+        "$checkpoint_semantics" "$llama_server" >&2
+    printf 'a positive context checkpoint count requires natural-boundary-v1\n' >&2
+    exit 2
+fi
+
 set -- "$@" \
     --log-verbosity 4 \
     --device Vulkan0 \

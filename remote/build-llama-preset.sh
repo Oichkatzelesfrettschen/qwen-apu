@@ -242,11 +242,33 @@ for output in $preset_outputs; do
     fi
 done
 
+# The forced near-end partition at tools/server/server-context.cpp is what
+# decides whether a positive --ctx-checkpoints count is safe to arm: with it in
+# place the fill loop breaks the prompt at `4 + n_ubatch` and `4` tokens from
+# the end, which perturbed the 0.8B's first-turn logits by 0.01 to 0.15 nats in
+# evidence/ctx-checkpoint-sweep/. The manifest states the semantics the build
+# compiled rather than the semantics the caller intended, so it is read out of
+# the source through the `checkpoint_offsets` array the natural-boundary patch
+# removes. qwen-capacity-policy.sh refuses a positive count against any value
+# other than natural-boundary-v1, which binds policy to the binary instead of
+# to release order.
+checkpoint_source=$source_directory/tools/server/server-context.cpp
+if [ ! -r "$checkpoint_source" ]; then
+    printf 'checkpoint semantics are unreadable: %s\n' "$checkpoint_source" >&2
+    exit 1
+fi
+if grep -q 'checkpoint_offsets' "$checkpoint_source"; then
+    checkpoint_semantics=forced-tail-v0
+else
+    checkpoint_semantics=natural-boundary-v1
+fi
+
 manifest_path=$build_directory/artifact-manifest.tsv
 {
     printf 'preset\t%s\n' "$preset"
     printf 'commit\t%s\n' "$actual_commit"
     printf 'worktree\t%s\n' "$worktree_state"
+    printf 'checkpoint_semantics\t%s\n' "$checkpoint_semantics"
     printf 'compiler_flags\t%s\n' "$compiler_flags"
     printf 'cmake_flags\t%s\n' "$(printf '%s %s' "$preset_flags" "$cpu_instruction_flags" | tr -s ' \n' ' ')"
 } > "$manifest_path"
