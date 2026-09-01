@@ -295,7 +295,12 @@ target_logical_GB_s       = streamed_bytes_per_token * g / 1e9
 The planning ledger deliberately uses the 18.53 universal mean for 0.8B and
 the later 8.24 and 3.01 bandwidth means for 2B and 4B. The ledger keeps the
 more conservative later surfaces visible instead of selecting the most
-favorable historical arm.
+favorable historical arm. The two surfaces are non-substitutable and differ
+by 11.0 to 11.5% on their shared checkpoints, so a row-to-row comparison
+across this table carries that cross-sweep offset inside it: the 0.8B row's
+stated gap of 7.35% is smaller than the offset between the surfaces the
+table mixes, and a target decision on that row waits for all three
+baselines measured inside one sweep.
 
 | Model | Baseline to target | Speedup | Current to target latency | Removal | Removed fraction | Target logical GB/s |
 | --- | --- | ---: | ---: | ---: | ---: | ---: |
