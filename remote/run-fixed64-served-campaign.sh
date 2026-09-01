@@ -1001,6 +1001,11 @@ emergency_teardown_failed_arm() {
         emergency_attempt_label=$(printf '%03d' "$emergency_attempt")
         emergency_attempt_stdout=$emergency_arm_directory/emergency-teardown-attempt-$emergency_attempt_label.stdout
         emergency_attempt_stderr=$emergency_arm_directory/emergency-teardown-attempt-$emergency_attempt_label.stderr
+        # The lease descriptors close inside a child shell: dash applies a
+        # trailing `8>&-` in its own descriptor table for the child's whole
+        # runtime, which empties /proc/$$/fd/8 exactly while the teardown
+        # verifies the holder, so a shell-level closure here can never pass
+        # verification and the closure runs in the child instead.
         if env -i \
             HOME="${HOME:?}" PATH="$campaign_path" TMPDIR=/tmp LC_ALL=C \
             PYTHONDONTWRITEBYTECODE=1 \
@@ -1008,8 +1013,9 @@ emergency_teardown_failed_arm() {
             QWEN_SERVER_PORT="$campaign_server_port" \
             QWEN_RESULT_DIRECTORY="$emergency_arm_directory" \
             QWEN_VULKAN_EXTERNAL_LEASE_PROOF="$lease_proof" \
-            "$retained_teardown" >"$emergency_attempt_stdout" \
-                2>"$emergency_attempt_stderr" 8>&- 9>&-; then
+            sh -c 'exec "$0" "$@" 8>&- 9>&-' "$retained_teardown" \
+                >"$emergency_attempt_stdout" \
+                2>"$emergency_attempt_stderr"; then
             emergency_teardown_status=0
         else
             emergency_teardown_status=$?

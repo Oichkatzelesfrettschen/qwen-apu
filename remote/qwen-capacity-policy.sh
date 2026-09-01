@@ -1429,6 +1429,11 @@ fi
 # block. The 4B distill carries that block at 37,767,168 bytes, which the
 # ordinary load reports as an unused tensor and skips.
 spec_type=${QWEN_SPEC_TYPE:-}
+# `off` is the explicit disable a harness exports to shut out an ambient
+# speculation setting, and it selects the same argv the absent variable does.
+if [ "$spec_type" = off ]; then
+    spec_type=''
+fi
 if [ -n "$spec_type" ]; then
     case $spec_type in
         draft-mtp | ngram-simple | ngram-map-k | ngram-map-k4v | ngram-mod | ngram-cache) ;;

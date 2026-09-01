@@ -347,7 +347,11 @@ teardown_status=not_run
 carrier_lease_proof=''
 teardown_server() {
     [ "$server_started" -eq 1 ] || return 0
-    if "$teardown_script" >"$result_directory/teardown.txt" 2>&1 8>&- 9>&-; then
+    # The lease descriptors close inside a child shell: dash applies a
+    # trailing `8>&-` in its own table for the child's whole runtime, which
+    # would empty /proc/$$/fd/8 exactly while teardown verifies the carrier.
+    if sh -c 'exec "$0" "$@" 8>&- 9>&-' "$teardown_script" \
+        >"$result_directory/teardown.txt" 2>&1; then
         teardown_status=0
     else
         teardown_status=$?
@@ -653,8 +657,9 @@ trap 'exit 143' TERM
 
 publish_carrier_lease_proof
 
-QWEN_MODEL_PATH=$model_launch_path "$launch_script" "$profile" \
-    >"$result_directory/launch.txt" 2>&1 8>&- 9>&- || {
+QWEN_MODEL_PATH=$model_launch_path \
+    sh -c 'exec "$0" "$@" 8>&- 9>&-' "$launch_script" "$profile" \
+    >"$result_directory/launch.txt" 2>&1 || {
         cat "$result_directory/launch.txt" >&2
         exit 1
     }
