@@ -27,9 +27,14 @@ fi
 # The runtime tree is a synced copy, so a divergent or stale copy refuses here
 # rather than launching the previous revision under the current name. A tree
 # without a manifest predates sync-runtime-tree.sh and passes as unmanifested;
-# QWEN_INTENDED_GIT_HEAD additionally requires the manifest's recorded head.
+# QWEN_INTENDED_GIT_HEAD additionally requires the manifest's recorded head,
+# and QWEN_INTENDED_PAYLOAD_SHA256 passes a byte-identical payload under a
+# head that advanced outside remote/ and patches/. The control script repeats
+# this check ahead of tmux creation, so a direct control start is covered;
+# this early copy refuses with a clearer operator error before anything else
+# runs.
 "$script_directory/check-runtime-tree.sh" "$script_directory/.." \
-    "${QWEN_INTENDED_GIT_HEAD:-}"
+    "${QWEN_INTENDED_GIT_HEAD:-}" "${QWEN_INTENDED_PAYLOAD_SHA256:-}"
 
 model_path=${QWEN_MODEL_PATH:-"${HOME:?}/models/Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf"}
 router_snapshot_owned=''

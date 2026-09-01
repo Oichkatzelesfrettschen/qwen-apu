@@ -134,6 +134,7 @@ loading_statistic() {
                 if (value ~ /^[0-9]+$/) {
                     if (count == 0 || value + 0 < minimum + 0) { minimum = value }
                     if (count == 0 || value + 0 > maximum + 0) { maximum = value }
+                    total += value
                     count++
                 }
             }
@@ -142,18 +143,47 @@ loading_statistic() {
             if (count == 0) { print "-"; exit }
             if (want == "minimum") { print minimum }
             else if (want == "maximum") { print maximum }
+            else if (want == "total") { print total }
             else { print count }
         }
     ' "$telemetry_loading_log"
 }
 loading_ready='-'
+loading_terminal='-'
+loading_last_sample_utc='-'
 if [ -r "$telemetry_loading_log" ]; then
     loading_ready=$(awk -F'ready=' '/^loading_end_utc=/ { split($2, a, " "); print a[1] }' \
         "$telemetry_loading_log")
     loading_ready=${loading_ready:--}
+    loading_terminal=$(awk -F'loading_terminal=' '/^loading_terminal=/ \
+        { split($2, a, " "); value = a[1] } END { print value }' \
+        "$telemetry_loading_log")
+    loading_terminal=${loading_terminal:--}
+    loading_last_sample_utc=$(awk -F'loading_sample_utc=' '/^loading_sample_utc=/ \
+        { split($2, a, " "); value = a[1] } END { print value }' \
+        "$telemetry_loading_log")
+    loading_last_sample_utc=${loading_last_sample_utc:--}
+fi
+
+# The two phase records bind through the summary: each carries its digest, and
+# the handoff gap is the span from the last loading sample to the first
+# serving sample, so a summary claiming a monitored session also states how
+# much of the lifecycle sits between its two records. Second-resolution
+# timestamps bound the gap's precision, so the field states whole seconds.
+serving_first_sample_utc=$(awk -F'sample_utc=' '/^sample_utc=/ \
+    { split($2, a, " "); print a[1]; exit }' "$telemetry_log")
+serving_first_sample_utc=${serving_first_sample_utc:--}
+handoff_gap_seconds='-'
+if [ "$loading_last_sample_utc" != - ] && [ "$serving_first_sample_utc" != - ]; then
+    loading_epoch=$(date -u -d "$loading_last_sample_utc" +%s 2>/dev/null) || :
+    serving_epoch=$(date -u -d "$serving_first_sample_utc" +%s 2>/dev/null) || :
+    if [ -n "${loading_epoch:-}" ] && [ -n "${serving_epoch:-}" ]; then
+        handoff_gap_seconds=$((serving_epoch - loading_epoch))
+    fi
 fi
 
 {
+    printf 'session_id=%s\n' "$(basename "$telemetry_log" .log)"
     printf 'telemetry_log=%s\n' "$telemetry_log"
     printf 'telemetry_log_sha256=%s\n' \
         "$(sha256sum "$telemetry_log" | cut -d ' ' -f 1)"
@@ -205,6 +235,14 @@ fi
     printf 'loading_peak_server_rss_kib=%s\n' "$(loading_statistic peak_rss_kib maximum)"
     printf 'loading_peak_vram_used_bytes=%s\n' "$(loading_statistic vram_used_bytes maximum)"
     printf 'loading_peak_gtt_used_bytes=%s\n' "$(loading_statistic gtt_used_bytes maximum)"
+    printf 'loading_cumulative_swapin_bytes=%s\n' \
+        "$(loading_statistic swapin_bytes total)"
+    printf 'loading_log_sha256=%s\n' \
+        "$([ -r "$telemetry_loading_log" ] && sha256sum "$telemetry_loading_log" | cut -d ' ' -f 1 || printf -- '-')"
+    printf 'loading_terminal=%s\n' "$loading_terminal"
+    printf 'loading_last_sample_utc=%s\n' "$loading_last_sample_utc"
+    printf 'serving_first_sample_utc=%s\n' "$serving_first_sample_utc"
+    printf 'handoff_gap_seconds=%s\n' "$handoff_gap_seconds"
     printf 'termination_reason=%s\n' \
         "$(default_to_dash "$(field_of reason)")"
     printf 'termination_sample_utc=%s\n' \

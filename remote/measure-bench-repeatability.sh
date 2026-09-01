@@ -286,8 +286,12 @@ run_arm() {
                 (temperature_samples ? sprintf("%.1f", temp_max / 1000) : "unavailable"),
                 samples
         }' "$arm_samples")
+    # The caller tests this function, which suspends errexit through its whole
+    # body, so the summary append carries its own failure path: a row that
+    # fails to land must fail the arm rather than letting the run print
+    # completed over an absent row.
     printf '%s\t%s\t%s\t%s\t%s\n' "$arm_label" "$*" "$decode" \
-        "$arm_status" "$clock_report" >>"$summary"
+        "$arm_status" "$clock_report" >>"$summary" || return 1
     printf 'arm_stop_utc=%s arm=%s decode=%s status=%s clocks=%s\n' \
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$arm_label" "$decode" "$arm_status" \
         "$(printf '%s' "$clock_report" | tr '\t' ' ')"
@@ -319,5 +323,14 @@ if [ "$measurement_failed" -ne 0 ]; then
     exit 1
 fi
 
+# Five arms ran, so a completed run proves five summary rows; a row lost to a
+# failure errexit could not surface inside the tested function fails here.
+summary_row_count=$(grep -c . "$summary")
+if [ "$summary_row_count" -ne 6 ]; then
+    printf 'bench_repeatability=failed reason=summary_rows_%s_of_6 output_directory=%s\n' \
+        "$summary_row_count" "$output_directory" >&2
+    cat "$summary"
+    exit 1
+fi
 printf 'bench_repeatability=completed output_directory=%s\n' "$output_directory"
 cat "$summary"

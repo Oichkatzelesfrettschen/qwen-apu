@@ -187,7 +187,10 @@ def load_json_object(path: Path) -> dict[str, Any]:
 def exact_integer(value: Any, name: str, path: Path) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise CampaignError(f"{path} field {name} must be an integer")
-    return cast(int, value)
+    # int() rather than cast(): mypy 1.x reads the isinstance-narrowed Any as
+    # Any while 2.x reads a cast over it as redundant, and the constructor on
+    # an int is the identity both versions accept.
+    return int(value)
 
 
 def exact_string(value: Any, name: str, path: Path) -> str:

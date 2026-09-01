@@ -100,6 +100,8 @@ cp "$script_directory/qwen-webui-control.sh" \
     "$control_harness/qwen-webui-control.sh"
 cp "$script_directory/open-verified-lock-descriptor.py" \
     "$control_harness/open-verified-lock-descriptor.py"
+cp "$script_directory/check-runtime-tree.sh" \
+    "$control_harness/check-runtime-tree.sh"
 cat >"$control_bin/tmux" <<'EOF'
 #!/bin/sh
 set -eu

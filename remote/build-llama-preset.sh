@@ -316,8 +316,17 @@ fi
 # divergent tree demotes it to unknown, which refuses a positive count.
 patched_sources_ledger=$script_directory/llama-patched-sources.tsv
 checkpoint_series_tree=unavailable
+checkpoint_series_tree_sha256=-
+checkpoint_sources_ledger_sha256=-
 if [ -r "$patched_sources_ledger" ]; then
     checkpoint_series_tree=verified
+    checkpoint_sources_ledger_sha256=$(sha256sum "$patched_sources_ledger" |
+        cut -d ' ' -f 1)
+    # The tree digest hashes a canonical serialization -- repository-relative
+    # path, byte count, and file digest per row, in ledger order -- so path
+    # association and ordering are part of what the one value identifies
+    # rather than a concatenation of bare hashes.
+    series_tree_rows=$(mktemp)
     while IFS='	' read -r tree_row_path tree_row_sha256; do
         case $tree_row_path in
             ''|'#'*) continue ;;
@@ -328,7 +337,15 @@ if [ -r "$patched_sources_ledger" ]; then
             checkpoint_series_tree=divergent:$tree_row_path
             break
         fi
+        printf '%s\t%s\t%s\n' "$tree_row_path" \
+            "$(wc -c <"$source_directory/$tree_row_path" | tr -d ' ')" \
+            "$tree_row_sha256" >>"$series_tree_rows"
     done <"$patched_sources_ledger"
+    if [ "$checkpoint_series_tree" = verified ]; then
+        checkpoint_series_tree_sha256=$(sha256sum "$series_tree_rows" |
+            cut -d ' ' -f 1)
+    fi
+    rm -f "$series_tree_rows"
 fi
 if [ "$checkpoint_semantics" = natural-boundary-v1 ] &&
     [ "$checkpoint_series_tree" != verified ]; then
@@ -346,6 +363,9 @@ manifest_path=$build_directory/artifact-manifest.tsv
     printf 'checkpoint_source_sha256\t%s\n' "$checkpoint_source_sha256"
     printf 'checkpoint_patch_series_sha256\t%s\n' "$patch_series_sha256"
     printf 'checkpoint_series_tree\t%s\n' "$checkpoint_series_tree"
+    printf 'checkpoint_series_tree_sha256\t%s\n' "$checkpoint_series_tree_sha256"
+    printf 'checkpoint_sources_ledger_sha256\t%s\n' "$checkpoint_sources_ledger_sha256"
+    printf 'checkpoint_source_root\t%s\n' "$source_directory"
     printf 'compiler_flags\t%s\n' "$compiler_flags"
     printf 'cmake_flags\t%s\n' "$(printf '%s %s' "$preset_flags" "$cpu_instruction_flags" | tr -s ' \n' ' ')"
 } > "$manifest_path"

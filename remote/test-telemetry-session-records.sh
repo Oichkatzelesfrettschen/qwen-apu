@@ -166,33 +166,93 @@ if [ "$(summary_field loading_sample_count "$summary_a")" != - ]; then
     exit 1
 fi
 loading_b=${session_b%.log}-loading.log
+# The peak values cross both a lexical boundary ("500" sorts above "3500")
+# and two digit-width boundaries (9999 to 10000, and an eight-digit value),
+# so a comparison that fell back to string order fails on this fixture.
 {
-    printf 'loading_start_utc=2026-08-31T22:14:55Z server_pid=19001 model=model-b.gguf\n'
-    printf 'loading_sample_utc=2026-08-31T22:14:56Z rss_kib=500 peak_rss_kib=500 mem_available_kib=9437184 vram_used_bytes=100 gtt_used_bytes=50\n'
-    printf 'loading_sample_utc=2026-08-31T22:14:57Z rss_kib=3500 peak_rss_kib=3500 mem_available_kib=5242880 vram_used_bytes=1900 gtt_used_bytes=70\n'
-    printf 'loading_end_utc=2026-08-31T22:14:58Z ready=1 attempts=20\n'
+    printf 'loading_start_utc=2026-08-31T21:04:05Z server_pid=19001 model=model-b.gguf\n'
+    printf 'loading_sample_utc=2026-08-31T21:04:06Z rss_kib=500 peak_rss_kib=500 mem_available_kib=9437184 swapin_bytes=0 vram_used_bytes=100 gtt_used_bytes=50\n'
+    printf 'loading_sample_utc=2026-08-31T21:04:07Z rss_kib=3500 peak_rss_kib=3500 mem_available_kib=5242880 swapin_bytes=4096 vram_used_bytes=1900 gtt_used_bytes=70\n'
+    printf 'loading_sample_utc=2026-08-31T21:04:08Z rss_kib=9999 peak_rss_kib=9999 mem_available_kib=5242879 swapin_bytes=0 vram_used_bytes=1901 gtt_used_bytes=70\n'
+    printf 'loading_sample_utc=2026-08-31T21:04:09Z rss_kib=10000 peak_rss_kib=10000 mem_available_kib=5242878 swapin_bytes=8192 vram_used_bytes=1902 gtt_used_bytes=70\n'
+    printf 'loading_sample_utc=2026-08-31T21:04:10Z rss_kib=14177068 peak_rss_kib=14177068 mem_available_kib=5242877 swapin_bytes=0 vram_used_bytes=1903 gtt_used_bytes=70\n'
+    printf 'loading_end_utc=2026-08-31T21:04:11Z ready=1 attempts=60\n'
 } >"$loading_b"
 QWEN_TELEMETRY_MODEL_ID=model-b "$script_directory/summarize-telemetry-session.sh" \
     "$session_b" >/dev/null
 summary_b=${session_b%.log}.summary
-if [ "$(summary_field loading_sample_count "$summary_b")" != 2 ]; then
+if [ "$(summary_field loading_sample_count "$summary_b")" != 5 ]; then
     printf 'summary miscounted loading samples\n' >&2
     exit 1
 fi
-if [ "$(summary_field loading_peak_server_rss_kib "$summary_b")" != 3500 ]; then
+if [ "$(summary_field loading_peak_server_rss_kib "$summary_b")" != 14177068 ]; then
     printf 'summary miscomputed the loading-phase RSS peak\n' >&2
     exit 1
 fi
-if [ "$(summary_field loading_observed_minimum_mem_available_kib "$summary_b")" != 5242880 ]; then
+if [ "$(summary_field loading_cumulative_swapin_bytes "$summary_b")" != 12288 ]; then
+    printf 'summary miscomputed the loading-phase cumulative swap-in\n' >&2
+    exit 1
+fi
+if [ "$(summary_field loading_log_sha256 "$summary_b")" != \
+    "$(sha256sum "$loading_b" | cut -d ' ' -f 1)" ]; then
+    printf 'summary recorded a loading digest the record does not carry\n' >&2
+    exit 1
+fi
+if [ "$(summary_field session_id "$summary_b")" != \
+    "$(basename "$session_b" .log)" ]; then
+    printf 'summary lost the session identity\n' >&2
+    exit 1
+fi
+if [ "$(summary_field loading_observed_minimum_mem_available_kib "$summary_b")" != 5242877 ]; then
     printf 'summary miscomputed the loading-phase MemAvailable minimum\n' >&2
     exit 1
 fi
-if [ "$(summary_field loading_peak_vram_used_bytes "$summary_b")" != 1900 ]; then
+if [ "$(summary_field loading_peak_vram_used_bytes "$summary_b")" != 1903 ]; then
     printf 'summary miscomputed the loading-phase VRAM peak\n' >&2
     exit 1
 fi
 if [ "$(summary_field loading_ready "$summary_b")" != 1 ]; then
     printf 'summary lost the loading-phase readiness outcome\n' >&2
+    exit 1
+fi
+
+# The summary binds the two phase records: last loading sample at 21:04:10Z,
+# first serving sample at 21:04:13Z, so the handoff gap reads three seconds.
+if [ "$(summary_field loading_last_sample_utc "$summary_b")" != \
+    2026-08-31T21:04:10Z ]; then
+    printf 'summary lost the last loading sample time\n' >&2
+    exit 1
+fi
+if [ "$(summary_field serving_first_sample_utc "$summary_b")" != \
+    2026-08-31T21:04:13Z ]; then
+    printf 'summary lost the first serving sample time\n' >&2
+    exit 1
+fi
+if [ "$(summary_field handoff_gap_seconds "$summary_b")" != 3 ]; then
+    printf 'summary miscomputed the phase handoff gap\n' >&2
+    exit 1
+fi
+
+# A load that dies or breaches before readiness leaves a finalized loading
+# record whose terminal classification the summary carries.
+session_c=$state_directory/telemetry/20260831T221600Z-model-c-pid19002.log
+write_session_record "$session_c" 6291456 no
+loading_c=${session_c%.log}-loading.log
+{
+    printf 'loading_start_utc=2026-08-31T21:05:00Z server_pid=19002 model=model-c.gguf\n'
+    printf 'loading_sample_utc=2026-08-31T21:05:01Z rss_kib=100 peak_rss_kib=100 mem_available_kib=4194303 swapin_bytes=0 vram_used_bytes=10 gtt_used_bytes=10\n'
+    printf 'loading_breach=memory_reserve_breached phase=loading mem_available_kib=4194303 swapin_bytes=0 utc=2026-08-31T21:05:02Z\n'
+    printf 'loading_terminal=memory_reserve_breached utc=2026-08-31T21:05:02Z\n'
+} >"$loading_c"
+QWEN_TELEMETRY_MODEL_ID=model-c "$script_directory/summarize-telemetry-session.sh" \
+    "$session_c" >/dev/null
+if [ "$(summary_field loading_terminal "${session_c%.log}.summary")" != \
+    memory_reserve_breached ]; then
+    printf 'summary lost the loading-phase terminal classification\n' >&2
+    exit 1
+fi
+if [ "$(summary_field loading_terminal "$summary_b")" != - ]; then
+    printf 'a healthy load invented a terminal classification\n' >&2
     exit 1
 fi
 
@@ -211,6 +271,37 @@ fi
 if ! grep -q 'telemetry-finalization.log" || :' \
     "$script_directory/qwen-webui-session.sh"; then
     printf 'the finalization append is unguarded under set -e\n' >&2
+    exit 1
+fi
+
+# The loading phase enforces the serving monitor's own thresholds against the
+# exact spawned process, baselines swap-in ahead of the spawn, finalizes the
+# loading record on every pre-readiness exit, and the finalization line
+# carries the runtime verdict beside the advisory outcomes.
+session_script=$script_directory/qwen-webui-session.sh
+if ! grep -q 'terminate_loading_server memory_reserve_breached' "$session_script" || \
+    ! grep -q 'terminate_loading_server swapin_rate_breached' "$session_script"; then
+    printf 'the loading phase no longer enforces the monitor thresholds\n' >&2
+    exit 1
+fi
+if [ "$(grep -c 'loading_minimum_mem_available_kib=4194304' "$session_script")" != 1 ] || \
+    [ "$(grep -c 'loading_maximum_swapin_bytes_per_sample=67108864' "$session_script")" != 1 ]; then
+    printf 'the loading thresholds diverged from the monitor values\n' >&2
+    exit 1
+fi
+if ! awk '/loading_previous_pswpin=/ && !baseline { baseline = NR }
+    /run-qwen-capacity-server.sh/ && !spawn { spawn = NR }
+    END { exit !(baseline && spawn && baseline < spawn) }' "$session_script"; then
+    printf 'the swap baseline no longer precedes the server spawn\n' >&2
+    exit 1
+fi
+if ! grep -q 'finalize_loading_record "$loading_terminal_classification"' \
+    "$session_script"; then
+    printf 'a pre-readiness death no longer finalizes the loading record\n' >&2
+    exit 1
+fi
+if ! grep -q 'runtime_status=%s' "$session_script"; then
+    printf 'the finalization line no longer carries the runtime verdict\n' >&2
     exit 1
 fi
 

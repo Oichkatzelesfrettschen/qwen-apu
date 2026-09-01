@@ -1049,6 +1049,15 @@ emergency_teardown_failed_arm() {
                 arm-emergency-teardown; then
                 mark_emergency_evidence_failure terminal-state.tsv
             fi
+            # The deferral covers a transient teardown failure; a persistent
+            # one re-arms the terminating signals after three attempts, so
+            # the operator can end a wedged campaign with SIGTERM instead of
+            # the SIGKILL the lease design cannot unwind from.
+            if [ "$emergency_attempt" -ge 3 ]; then
+                trap 'handle_signal HUP 129' HUP
+                trap 'handle_signal INT 130' INT
+                trap 'handle_signal TERM 143' TERM
+            fi
             sleep 5
         fi
     done
@@ -1066,6 +1075,12 @@ emergency_teardown_failed_arm() {
     if [ "$emergency_evidence_failed" -ne 0 ]; then
         printf 'emergency teardown completed without a complete evidence record; the campaign retains the Vulkan lease\n' \
             >&2
+        # The hold is deliberate -- the lease outlives the incomplete record
+        # -- and the terminating signals are re-armed first, so the operator
+        # ends the hold with SIGTERM rather than SIGKILL.
+        trap 'handle_signal HUP 129' HUP
+        trap 'handle_signal INT 130' INT
+        trap 'handle_signal TERM 143' TERM
         while :; do
             sleep 5
         done
@@ -1231,8 +1246,12 @@ if ! PYTHONDONTWRITEBYTECODE=1 "$retained_summarizer" "$output_directory" \
 fi
 mv -- "$summary_new" "$output_directory/summary.tsv"
 mv -- "$model_summary_new" "$output_directory/model-summary.tsv"
-target_state=$(awk -F '\t' 'NR > 1 && $11 != "met" { failed = 1 }
-    END { print failed ? "unmet" : "met" }
+# A target claim needs at least one measured row: an empty table proves
+# nothing and reads unmet rather than met.
+target_state=$(awk -F '\t' '
+    NR > 1 { data_rows++ }
+    NR > 1 && $11 != "met" { failed = 1 }
+    END { print (data_rows && !failed) ? "met" : "unmet" }
 ' "$output_directory/model-summary.tsv")
 
 identity_check_new=$output_directory/.identity-check.tsv.new
