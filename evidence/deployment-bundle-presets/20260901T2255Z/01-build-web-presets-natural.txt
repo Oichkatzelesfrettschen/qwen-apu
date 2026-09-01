@@ -1,0 +1,15 @@
+image_preset_skipped profile=image-sdxs-512-a execution_policy=validator-gated authorizer=absent
+image_preset_skipped profile=image-sdxs-512-b execution_policy=refused
+image_preset_skipped profile=image-sd15-lcm-a execution_policy=refused
+image_preset_skipped profile=image-sd15-base-a execution_policy=refused
+image_preset_skipped profile=image-sd-turbo-a execution_policy=refused
+web_preset_skipped profile=web-balanced execution_policy=refused
+web_preset_skipped profile=web-compact execution_policy=refused
+web_preset_skipped profile=web-fast-vl execution_policy=refused
+web_preset_skipped profile=web-lookup execution_policy=refused
+web_preset_skipped profile=web-open execution_policy=refused
+web_preset_skipped profile=web-reader execution_policy=refused
+web_preset_skipped profile=web-sovereign execution_policy=refused
+web_preset_skipped profile=web-vision execution_policy=refused
+every profile in $HOME/qwen-laptop-setup/remote/web-profiles.tsv withholds an executing policy, so no section emits
+a validator-gated row emits under QWEN_WEB_AUTHORIZER_READY=1; a refused row emits under no setting

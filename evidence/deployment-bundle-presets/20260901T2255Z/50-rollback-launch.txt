@@ -1,0 +1,13 @@
+runtime_tree=verified git_head=90b4fa0642670076477a6262ef7e2da8d78cf7f7 payload=9d93120b70497665ce4ad6e842add90ab2eb86b6fb582e5b50b83a46d715d792 files=288
+active_deployment=natural-boundary-13d05a0-r2 directory=$HOME/qwen-deployments/natural-boundary-13d05a0-r2
+router_presets_source=active-deployment path=$HOME/qwen-deployments/natural-boundary-13d05a0-r2/router-presets.ini
+router_preflight_subject=Qwen3.8-4B-Q4_K_M.gguf bytes=3617038400 draft=Qwen3.5-0.8B-Q8_0.gguf draft_bytes=833592096
+router_preflight_requirement mib=5403 draft_mib=795
+runtime_tree=verified git_head=90b4fa0642670076477a6262ef7e2da8d78cf7f7 payload=9d93120b70497665ce4ad6e842add90ab2eb86b6fb582e5b50b83a46d715d792 files=288
+runtime_tree=verified git_head=90b4fa0642670076477a6262ef7e2da8d78cf7f7 payload=9d93120b70497665ce4ad6e842add90ab2eb86b6fb582e5b50b83a46d715d792 files=288
+started tmux_socket=qwen-runtime tmux_session=qwen-webui profile=low-async host=127.0.0.1 port=8080 context=24576 latency_mode=observe model=$HOME/models/Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf server=$HOME/qwen-deployments/natural-boundary-13d05a0-r2/llama-server
+speculation spec_type=off draft_n_max=default draft_p_min=default draft_backend_sampling=0 backend_sampling=0
+cache cache_type_k=registry cache_type_v=registry flash_attention=registry override_context_ceiling=registry
+state=running server_pid=1927225 monitor_pid=1927462 latency_watchdog_pid=1927446 kernel_hazard_watchdog_pid=1927459 profile=low-async host=127.0.0.1 port=8080 context=24576 latency_mode=observe utc=2026-09-01T22:56:17Z
+reachable at http://127.0.0.1:8080 (loopback only)
+stop it with $HOME/qwen-laptop-setup/remote/qwen-teardown.sh
