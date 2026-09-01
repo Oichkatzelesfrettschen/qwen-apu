@@ -62,7 +62,18 @@ terminate_router_launch() {
 # snapshot path and digest so a later source replacement cannot widen the model
 # set after sizing completes.
 if [ "${QWEN_ROUTER:-0}" = 1 ]; then
-    source_router_presets=${QWEN_ROUTER_PRESETS:-"$state_directory/router-presets.ini"}
+    # An activated deployment bundle carries the preset generated against its
+    # own ledger, so a rollback that moves the ledger moves the preset with
+    # it; the state directory's file serves a machine with no bundle, and an
+    # explicit QWEN_ROUTER_PRESETS still names the file it always did.
+    deployment_router_presets=${QWEN_DEPLOYMENT_ROOT:-"${HOME:?}/qwen-deployments"}/deployment-current/router-presets.ini
+    if [ -z "${QWEN_ROUTER_PRESETS:-}" ] && [ -f "$deployment_router_presets" ]; then
+        source_router_presets=$deployment_router_presets
+        printf 'router_presets_source=deployment-current path=%s\n' \
+            "$deployment_router_presets"
+    else
+        source_router_presets=${QWEN_ROUTER_PRESETS:-"$state_directory/router-presets.ini"}
+    fi
     if [ ! -r "$source_router_presets" ]; then
         printf 'router presets are unreadable: %s\n' "$source_router_presets" >&2
         exit 2

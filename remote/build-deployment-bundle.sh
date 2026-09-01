@@ -9,6 +9,15 @@ set -eu
 # with a positive-count ledger and refuse every launch; the bundle makes the
 # pair one unit and activate-deployment-bundle.sh swaps it atomically.
 #
+# The router and web presets belong to the same unit, because each section
+# carries LLAMA_ARG_CTX_CHECKPOINTS from the ledger it was generated against:
+# a rollback that moved the ledger and left the state directory's preset in
+# place would put a count of 2 in front of a build declaring forced-tail-v1.
+# QWEN_BUNDLE_ROUTER_PRESETS and QWEN_BUNDLE_WEB_PRESETS name preset files
+# generated against CTX_LEDGER; each named file is verified against the ledger,
+# copied in as router-presets.ini or web-presets.ini, and digested into the
+# bundle manifest, and an unnamed one is recorded as `-`.
+#
 # usage: build-deployment-bundle.sh BUNDLE_NAME SERVER_PATH MANIFEST_PATH \
 #            CTX_LEDGER [DEPLOYMENT_ROOT]
 # DEPLOYMENT_ROOT defaults to ~/qwen-deployments.
@@ -92,6 +101,23 @@ if [ "$maximum_ledger_count" -gt 0 ] && \
     exit 1
 fi
 
+router_presets_path=${QWEN_BUNDLE_ROUTER_PRESETS:-}
+web_presets_path=${QWEN_BUNDLE_WEB_PRESETS:-}
+for preset_input in "$router_presets_path" "$web_presets_path"; do
+    [ -n "$preset_input" ] || continue
+    if [ ! -r "$preset_input" ] || [ ! -f "$preset_input" ]; then
+        printf 'bundle preset input is not a readable file: %s\n' \
+            "$preset_input" >&2
+        exit 1
+    fi
+    if ! "$script_directory/verify-bundle-preset-ledger.sh" \
+        "$preset_input" "$ctx_ledger_path" >/dev/null; then
+        printf 'bundle preset disagrees with the bundle ledger: %s\n' \
+            "$preset_input" >&2
+        exit 1
+    fi
+done
+
 bundle_directory=$deployment_root/$bundle_name
 if [ -e "$bundle_directory" ]; then
     printf 'bundle already exists: %s\n' "$bundle_directory" >&2
@@ -104,6 +130,20 @@ cp "$server_path" "$staging_directory/llama-server"
 chmod 755 "$staging_directory/llama-server"
 cp "$manifest_path" "$staging_directory/artifact-manifest.tsv"
 cp "$ctx_ledger_path" "$staging_directory/ctx-checkpoints.tsv"
+router_presets_sha256=-
+if [ -n "$router_presets_path" ]; then
+    cp "$router_presets_path" "$staging_directory/router-presets.ini"
+    chmod 600 "$staging_directory/router-presets.ini"
+    router_presets_sha256=$(sha256sum "$staging_directory/router-presets.ini" |
+        cut -d ' ' -f 1)
+fi
+web_presets_sha256=-
+if [ -n "$web_presets_path" ]; then
+    cp "$web_presets_path" "$staging_directory/web-presets.ini"
+    chmod 600 "$staging_directory/web-presets.ini"
+    web_presets_sha256=$(sha256sum "$staging_directory/web-presets.ini" |
+        cut -d ' ' -f 1)
+fi
 
 {
     printf 'bundle_name\t%s\n' "$bundle_name"
@@ -116,12 +156,14 @@ cp "$ctx_ledger_path" "$staging_directory/ctx-checkpoints.tsv"
         "$(sha256sum "$staging_directory/artifact-manifest.tsv" | cut -d ' ' -f 1)"
     printf 'ctx-checkpoints.tsv\t%s\n' \
         "$(sha256sum "$staging_directory/ctx-checkpoints.tsv" | cut -d ' ' -f 1)"
+    printf 'router-presets.ini\t%s\n' "$router_presets_sha256"
+    printf 'web-presets.ini\t%s\n' "$web_presets_sha256"
 } >"$staging_directory/bundle-manifest.tsv"
 
 # The rename is what makes a bundle exist: a partially written staging
 # directory never carries the final name, so an interrupted assembly leaves
 # nothing an activation could select.
 mv "$staging_directory" "$bundle_directory"
-printf 'deployment_bundle=%s semantics=%s maximum_count=%s server_sha256=%s\n' \
+printf 'deployment_bundle=%s semantics=%s maximum_count=%s server_sha256=%s router_presets=%s web_presets=%s\n' \
     "$bundle_directory" "$checkpoint_semantics" "$maximum_ledger_count" \
-    "$server_sha256"
+    "$server_sha256" "$router_presets_sha256" "$web_presets_sha256"

@@ -54,7 +54,16 @@ profile=${1:-low-async}
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 launcher=$script_directory/qwen-launch.sh
 state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
-web_presets=${QWEN_WEB_PRESETS:-$state_directory/web-presets.ini}
+# The activated deployment bundle's web preset outranks the state directory's
+# for the same reason its router preset does in qwen-launch.sh: the sections'
+# checkpoint counts were generated against the bundled ledger.
+deployment_web_presets=${QWEN_DEPLOYMENT_ROOT:-"${HOME:?}/qwen-deployments"}/deployment-current/web-presets.ini
+if [ -z "${QWEN_WEB_PRESETS:-}" ] && [ -f "$deployment_web_presets" ]; then
+    web_presets=$deployment_web_presets
+    printf 'web_presets_source=deployment-current path=%s\n' "$web_presets"
+else
+    web_presets=${QWEN_WEB_PRESETS:-$state_directory/web-presets.ini}
+fi
 
 # The caller's own listener request is read before it is replaced, so an
 # explicit LAN bind refuses rather than serving retrieval on the loopback while

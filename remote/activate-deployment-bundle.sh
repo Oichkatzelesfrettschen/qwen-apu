@@ -11,6 +11,14 @@ set -eu
 # The root names `deployment-current` and `deployment-previous` are stable
 # aliases into `deployment-state/` that later activations leave untouched.
 #
+# Activations serialize on `.activate.lock` under the root, because the
+# transition reads the displaced current, allocates a generation number, and
+# publishes in three steps: two writers that both read the same current
+# publish the same previous, so the rollback pointer loses the intermediate
+# activation, and the generation each removes is the one it read rather than
+# the one the other published, so orphan generation directories accumulate.
+# Under the lock each writer reads the state the previous writer published.
+#
 # usage: activate-deployment-bundle.sh BUNDLE_NAME [DEPLOYMENT_ROOT]
 #        activate-deployment-bundle.sh rollback [DEPLOYMENT_ROOT]
 
@@ -25,6 +33,16 @@ deployment_root=${2:-"${HOME:?}/qwen-deployments"}
 state_link=$deployment_root/deployment-state
 previous_link=$deployment_root/deployment-previous
 
+if [ ! -d "$deployment_root" ]; then
+    printf 'deployment root is not a directory: %s\n' "$deployment_root" >&2
+    exit 1
+fi
+if [ "${QWEN_ACTIVATION_LOCK_HELD:-}" != "$deployment_root" ]; then
+    QWEN_ACTIVATION_LOCK_HELD=$deployment_root
+    export QWEN_ACTIVATION_LOCK_HELD
+    exec flock "$deployment_root/.activate.lock" "$0" "$@"
+fi
+
 # Verification reads nothing outside the bundle directory except the model
 # registry, and every claim the bundle manifest states is recomputed from the
 # members' own bytes: an internal manifest edited to match a tampered member
@@ -37,7 +55,8 @@ verify_bundle() {
         return 1
     fi
     for manifest_key in bundle_name checkpoint_semantics maximum_ledger_count \
-        server_bytes llama-server artifact-manifest.tsv ctx-checkpoints.tsv; do
+        server_bytes llama-server artifact-manifest.tsv ctx-checkpoints.tsv \
+        router-presets.ini web-presets.ini; do
         manifest_key_rows=$(awk -F'\t' -v key="$manifest_key" \
             '$1 == key { count++ } END { print count + 0 }' "$bundle_manifest")
         if [ "$manifest_key_rows" -ne 1 ]; then
@@ -46,6 +65,16 @@ verify_bundle() {
             return 1
         fi
     done
+    # The name a bundle was assembled under is the name it activates under:
+    # a directory renamed onto another bundle's name would otherwise publish
+    # one bundle's bytes under a role record naming another.
+    declared_name=$(awk -F'\t' '$1 == "bundle_name" { print $2; exit }' \
+        "$bundle_manifest")
+    if [ "$declared_name" != "$(basename -- "$bundle_directory")" ]; then
+        printf 'bundle directory %s carries bundle_name %s\n' \
+            "$(basename -- "$bundle_directory")" "$declared_name" >&2
+        return 1
+    fi
     for bundle_member in llama-server artifact-manifest.tsv ctx-checkpoints.tsv; do
         expected_sha256=$(awk -F'\t' -v key="$bundle_member" \
             '$1 == key { print $2; exit }' "$bundle_manifest")
@@ -127,6 +156,40 @@ verify_bundle() {
             "$recomputed_semantics" >&2
         return 1
     fi
+    # A preset member is present exactly where the manifest digests one, and
+    # its sections are re-read against the bundled ledger rather than trusted
+    # from the digest alone.
+    for preset_member in router-presets.ini web-presets.ini; do
+        expected_sha256=$(awk -F'\t' -v key="$preset_member" \
+            '$1 == key { print $2; exit }' "$bundle_manifest")
+        if [ "$expected_sha256" = - ]; then
+            if [ -e "$bundle_directory/$preset_member" ]; then
+                printf 'bundle carries %s that its manifest records as absent\n' \
+                    "$preset_member" >&2
+                return 1
+            fi
+            continue
+        fi
+        if [ ! -r "$bundle_directory/$preset_member" ]; then
+            printf 'bundle member is unreadable: %s\n' \
+                "$bundle_directory/$preset_member" >&2
+            return 1
+        fi
+        actual_sha256=$(sha256sum "$bundle_directory/$preset_member" |
+            cut -d ' ' -f 1)
+        if [ "$actual_sha256" != "$expected_sha256" ]; then
+            printf 'bundle member diverged: %s expected=%s found=%s\n' \
+                "$preset_member" "$expected_sha256" "$actual_sha256" >&2
+            return 1
+        fi
+        if ! "$script_directory/verify-bundle-preset-ledger.sh" \
+            "$bundle_directory/$preset_member" \
+            "$bundle_directory/ctx-checkpoints.tsv" >/dev/null; then
+            printf 'bundle preset %s disagrees with the bundled ledger\n' \
+                "$preset_member" >&2
+            return 1
+        fi
+    done
     return 0
 }
 
