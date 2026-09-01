@@ -1,0 +1,3 @@
+runtime_tree=verified git_head=d8a3e16a8536f357ab4639d90355a916c750e59b payload=82a08f7e80915d53ad0aba7f9ca3295f8bd17da1f6e69b08d93fa556512ee124 files=290
+deployment-current does not resolve to a directory: $HOME/qwen-deployments/deployment-current
+the activated deployment failed resolution; the launch stops

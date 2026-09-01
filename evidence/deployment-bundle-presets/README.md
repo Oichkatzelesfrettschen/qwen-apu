@@ -52,6 +52,25 @@ count of the model its `LLAMA_ARG_MODEL` resolves to.
 `remote/test-deployment-bundle.sh` carries those at 27 checks, including a
 state link through `..` against an outside sentinel that stays byte-identical.
 
+## Recovery and the lock leaf
+
+`20260901T2352Z/` retains the same regression at runtime head `d8a3e16`
+with two more transitions. The sixth points `deployment-state` at a
+generation that does not exist: the automatic launch refuses on
+`deployment-current does not resolve to a directory`, and a launch naming
+`QWEN_LLAMA_SERVER` and `QWEN_CTX_CHECKPOINT_LEDGER` explicitly starts,
+answers `/health`, and tears down, after which the pointer is restored and
+`deployment-current` reads the natural bundle again. The seventh replaces
+`.activate.lock` with a symlink to a sentinel file: the activator refuses
+with `verified_lock_descriptor=rejected`, the automatic launch refuses, and
+the sentinel's digest is unchanged afterwards, since
+`open-verified-lock-descriptor.py` opens the leaf with `O_NOFOLLOW` and
+without truncation. The five earlier transitions passed again ahead of
+them, so the head that carries the verified lock leaf, the recovery mode,
+the executable-row cardinality, the bundle name rule, the random staging,
+and the ambiguity refusal in the preset check serves the same way the
+earlier one did.
+
 ## What the bundle carries
 
 A preset section carries `LLAMA_ARG_CTX_CHECKPOINTS` because

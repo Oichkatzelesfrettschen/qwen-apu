@@ -1,0 +1,10 @@
+bundle_name	emergency-forced-tail-40f7b775-r2
+created_utc	2026-09-01T20:54:15Z
+checkpoint_semantics	unknown
+maximum_ledger_count	0
+server_bytes	57736112
+llama-server	40f7b775074e7d207dc2ad12f1aefc9635bd3904d5c35b68c8e43483622c4005
+artifact-manifest.tsv	81c73bbb409636fe8d7b5d83b658da1093ca9bd3121d8bf4cfe481b074059b5d
+ctx-checkpoints.tsv	47ff4ba0633f1737eafcfd6ab2974ca92dc32c56ef4e8cd82dd913b944afacbc
+router-presets.ini	c08c9027ac4ba960f285b02f4273a1cd322c010acbb100736a4c954693b86538
+web-presets.ini	-
