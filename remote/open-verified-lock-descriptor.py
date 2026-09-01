@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import errno
+import fcntl
 import os
 import stat
 import sys
@@ -14,13 +16,17 @@ class LockDescriptorError(RuntimeError):
     """Report a lock leaf or inherited descriptor that violates the contract."""
 
 
+PRIVATE_LOCK_MODE = 0o600
+LEGACY_LOCK_MODE = 0o664
+
+
 def same_file(left: os.stat_result, right: os.stat_result) -> bool:
     """Return whether two stat results identify one filesystem object."""
     return left.st_dev == right.st_dev and left.st_ino == right.st_ino
 
 
-def verify_status(path: Path, descriptor: int) -> None:
-    """Verify one descriptor and its pathname identify a private regular leaf."""
+def verify_identity(path: Path, descriptor: int) -> os.stat_result:
+    """Verify one descriptor and its pathname identify a same-owner regular leaf."""
     descriptor_status = os.fstat(descriptor)
     if not stat.S_ISREG(descriptor_status.st_mode):
         raise LockDescriptorError(f"lock descriptor is not regular: {path}")
@@ -29,12 +35,6 @@ def verify_status(path: Path, descriptor: int) -> None:
         raise LockDescriptorError(
             f"lock descriptor uid {descriptor_status.st_uid} differs from "
             f"effective uid {effective_uid}: {path}"
-        )
-    descriptor_mode = stat.S_IMODE(descriptor_status.st_mode)
-    if descriptor_mode & 0o077:
-        raise LockDescriptorError(
-            f"lock descriptor mode {descriptor_mode:#05o} grants group or other "
-            f"access: {path}"
         )
     try:
         path_status = path.lstat()
@@ -46,13 +46,63 @@ def verify_status(path: Path, descriptor: int) -> None:
         raise LockDescriptorError(f"lock path is not a regular leaf: {path}")
     if not same_file(path_status, descriptor_status):
         raise LockDescriptorError(f"lock path changed while opening: {path}")
+    return descriptor_status
 
 
-def open_lock(path: Path, descriptor_number: int) -> None:
+def verify_status(path: Path, descriptor: int) -> None:
+    """Verify one descriptor and its pathname identify a private regular leaf."""
+    descriptor_status = verify_identity(path, descriptor)
+    descriptor_mode = stat.S_IMODE(descriptor_status.st_mode)
+    if descriptor_mode & 0o077:
+        raise LockDescriptorError(
+            f"lock descriptor mode {descriptor_mode:#05o} grants group or other "
+            f"access: {path}"
+        )
+
+
+def normalize_legacy_mode(
+    path: Path, descriptor: int, descriptor_status: os.stat_result
+) -> None:
+    """Tighten the admitted unlocked legacy mode through its open descriptor."""
+    descriptor_mode = stat.S_IMODE(descriptor_status.st_mode)
+    if not descriptor_mode & 0o077:
+        return
+    if descriptor_mode != LEGACY_LOCK_MODE:
+        raise LockDescriptorError(
+            f"lock descriptor mode {descriptor_mode:#05o} is not the admitted "
+            f"legacy mode {LEGACY_LOCK_MODE:#05o}: {path}"
+        )
+    if descriptor_status.st_nlink != 1:
+        raise LockDescriptorError(f"legacy lock has multiple hard links: {path}")
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as error:
+        if error.errno in (errno.EACCES, errno.EAGAIN):
+            raise LockDescriptorError(
+                f"legacy lock mode cannot be tightened while the lock is held: {path}"
+            ) from None
+        raise
+    # Revalidate after exclusive acquisition so a pathname replacement cannot
+    # redirect or authorize the descriptor-bound permission change.
+    locked_status = verify_identity(path, descriptor)
+    locked_mode = stat.S_IMODE(locked_status.st_mode)
+    if locked_mode == LEGACY_LOCK_MODE:
+        if locked_status.st_nlink != 1:
+            raise LockDescriptorError(f"legacy lock gained a hard link: {path}")
+        os.fchmod(descriptor, PRIVATE_LOCK_MODE)
+    verify_status(path, descriptor)
+
+
+def open_lock(
+    path: Path, descriptor_number: int, normalize_admitted_legacy_mode: bool
+) -> None:
     """Open a lock leaf without following links or truncating retained bytes."""
     flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NOFOLLOW
-    opened_descriptor = os.open(path, flags, 0o600)
+    opened_descriptor = os.open(path, flags, PRIVATE_LOCK_MODE)
     try:
+        descriptor_status = verify_identity(path, opened_descriptor)
+        if normalize_admitted_legacy_mode:
+            normalize_legacy_mode(path, opened_descriptor, descriptor_status)
         verify_status(path, opened_descriptor)
         if opened_descriptor != descriptor_number:
             os.dup2(opened_descriptor, descriptor_number, inheritable=True)
@@ -68,6 +118,7 @@ def parse_arguments() -> argparse.Namespace:
     subparsers = parser.add_subparsers(dest="action", required=True)
 
     open_parser = subparsers.add_parser("open")
+    open_parser.add_argument("--normalize-legacy-mode", action="store_true")
     open_parser.add_argument("path", type=Path)
     open_parser.add_argument("descriptor", type=int)
     open_parser.add_argument("command", nargs=argparse.REMAINDER)
@@ -94,7 +145,11 @@ def main() -> int:
             return 0
         if not arguments.command:
             raise LockDescriptorError("open requires a command to execute")
-        open_lock(arguments.path, arguments.descriptor)
+        open_lock(
+            arguments.path,
+            arguments.descriptor,
+            arguments.normalize_legacy_mode,
+        )
         os.execvpe(arguments.command[0], arguments.command, os.environ)
     except (LockDescriptorError, OSError) as error:
         print(f"verified_lock_descriptor=rejected reason={error}", file=sys.stderr)

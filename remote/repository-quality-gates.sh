@@ -44,6 +44,7 @@ shellcheck -S warning $shell_files
 ruff check remote
 ruff check --select EXE,I,B \
     remote/open-verified-lock-descriptor.py \
+    remote/test-open-verified-lock-descriptor.py \
     remote/signal-process-group.py \
     remote/test-signal-process-group.py \
     remote/summarize-fixed64-served-campaign.py \
@@ -52,6 +53,7 @@ ruff check --select EXE,I,B \
     remote/verify-external-vulkan-lease.py
 ruff format --check \
     remote/open-verified-lock-descriptor.py \
+    remote/test-open-verified-lock-descriptor.py \
     remote/signal-process-group.py \
     remote/test-signal-process-group.py \
     remote/summarize-fixed64-served-campaign.py \
@@ -60,6 +62,7 @@ ruff format --check \
     remote/verify-external-vulkan-lease.py
 mypy --strict \
     remote/open-verified-lock-descriptor.py \
+    remote/test-open-verified-lock-descriptor.py \
     remote/signal-process-group.py \
     remote/test-signal-process-group.py \
     remote/summarize-fixed64-served-campaign.py \
@@ -68,12 +71,15 @@ mypy --strict \
     remote/verify-external-vulkan-lease.py
 python3 -m py_compile \
     remote/open-verified-lock-descriptor.py \
+    remote/test-open-verified-lock-descriptor.py \
     remote/signal-process-group.py \
     remote/test-signal-process-group.py \
     remote/summarize-fixed64-served-campaign.py \
     remote/test-summarize-fixed64-served-campaign.py \
     remote/test-verify-external-vulkan-lease.py \
     remote/verify-external-vulkan-lease.py
+
+PYTHONDONTWRITEBYTECODE=1 python3 remote/test-open-verified-lock-descriptor.py
 
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-quality-suite.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-regrade-quality-roster.py
