@@ -295,7 +295,10 @@ exec /usr/bin/flock "$@"
 EOF
 chmod +x "$control_bin/flock"
 
-lease_state_directory=$work/lease-control-state
+# The controller accepts a state-directory alias while binding the holder to
+# the same lock inode that the alias names.
+lease_state_directory_target=$work/lease-control-state-target
+lease_state_directory=$work/lease-control-state-alias
 lease_tmux_state=$work/lease-tmux.state
 lease_tmux_pid=$work/lease-tmux.pid
 lease_tmux_record=$work/lease-tmux.record
@@ -305,7 +308,8 @@ lease_gate_release=$work/lease-flock.release
 lease_control_status=$work/lease-control.status
 lease_control_lock=$lease_state_directory/fixed64-served-campaign.lock
 lease_record=$lease_state_directory/ordinary-session-control-lease.tsv
-mkdir -p "$lease_state_directory"
+mkdir -p "$lease_state_directory_target"
+ln -s "$lease_state_directory_target" "$lease_state_directory"
 printf 'state=sentinel\n' >"$lease_state_directory/session.status"
 : >"$lease_state_directory/hold-session"
 (
@@ -344,6 +348,12 @@ report ordinary_lease_precedes_shared_state_mutation \
 
 : >"$lease_gate_release"
 wait "$lease_control_pid"
+lease_alias_outcome=ok
+if [ "$(sed -n '1p' "$lease_control_status")" -ne 0 ]; then
+    lease_alias_outcome=control_start_failed
+fi
+report ordinary_lease_accepts_state_directory_symlink_alias \
+    "$lease_alias_outcome"
 lease_lifetime_outcome=ok
 if [ "$(sed -n '1p' "$lease_control_status")" -ne 0 ]; then
     lease_lifetime_outcome=control_start_failed
