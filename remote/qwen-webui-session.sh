@@ -363,6 +363,44 @@ QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
 server_pid=$!
 printf '%s\n' "$server_pid" >"$pid_file"
 
+# The record name carries start time, checkpoint, and server PID, so two
+# sessions never collide and an aborted session's samples survive every later
+# launch. Naming happens at spawn because the loading phase performs the
+# session's one-time Vulkan allocation and transfer peak, which the runtime
+# monitor never sees: it arms only after readiness. The readiness loop below
+# samples that phase into a session-unique loading record, observation only,
+# since MemAvailable legitimately falls while the model streams in and an
+# enforcing threshold there would abort every valid load.
+telemetry_session_name=$(date -u +%Y%m%dT%H%M%SZ)-$(basename "$model_path" .gguf | tr -c 'A-Za-z0-9._-' '-')-pid$server_pid
+telemetry_log=$telemetry_directory/$telemetry_session_name.log
+telemetry_loading_log=$telemetry_directory/$telemetry_session_name-loading.log
+ln -sfn "telemetry/$telemetry_session_name.log" "$telemetry_symlink"
+loading_gpu_device_directory=${QWEN_GPU_DEVICE_DIRECTORY:-/sys/class/drm/card1/device}
+printf 'loading_start_utc=%s server_pid=%s model=%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$server_pid" \
+    "$(basename "$model_path")" >"$telemetry_loading_log"
+
+record_loading_sample() {
+    loading_rss_kib=$(awk '$1 == "VmRSS:" { print $2 }' \
+        "/proc/$server_pid/status" 2>/dev/null) || return 0
+    loading_peak_rss_kib=$(awk '$1 == "VmHWM:" { print $2 }' \
+        "/proc/$server_pid/status" 2>/dev/null) || return 0
+    loading_mem_available_kib=$(awk '$1 == "MemAvailable:" { print $2 }' /proc/meminfo)
+    loading_vram_used_bytes=-
+    loading_gtt_used_bytes=-
+    if [ -r "$loading_gpu_device_directory/mem_info_vram_used" ]; then
+        loading_vram_used_bytes=$(cat "$loading_gpu_device_directory/mem_info_vram_used")
+    fi
+    if [ -r "$loading_gpu_device_directory/mem_info_gtt_used" ]; then
+        loading_gtt_used_bytes=$(cat "$loading_gpu_device_directory/mem_info_gtt_used")
+    fi
+    printf 'loading_sample_utc=%s rss_kib=%s peak_rss_kib=%s mem_available_kib=%s vram_used_bytes=%s gtt_used_bytes=%s\n' \
+        "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$loading_rss_kib" \
+        "$loading_peak_rss_kib" "$loading_mem_available_kib" \
+        "$loading_vram_used_bytes" "$loading_gtt_used_bytes" \
+        >>"$telemetry_loading_log" || :
+}
+
 ready_for_monitor=0
 attempt=0
 inference_cpu=${QWEN_INFERENCE_CPU:-0}
@@ -392,9 +430,16 @@ while [ "$attempt" -lt 1200 ]; do
         ready_for_monitor=1
         break
     fi
+    if [ $((attempt % 10)) = 0 ]; then
+        record_loading_sample
+    fi
     attempt=$((attempt + 1))
     sleep 0.1
 done
+record_loading_sample
+printf 'loading_end_utc=%s ready=%s attempts=%s\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$ready_for_monitor" "$attempt" \
+    >>"$telemetry_loading_log" || :
 
 if [ "$ready_for_monitor" -ne 1 ]; then
     printf 'state=failed reason=server_policy_not_active utc=%s\n' \
@@ -484,13 +529,9 @@ if [ "$kernel_watch_ready" -ne 1 ]; then
     exit 1
 fi
 
-# The record name carries start time, checkpoint, and server PID, so two
-# sessions never collide and an aborted session's samples survive every later
-# launch. The monitor truncates its own argument, which is now a fresh file.
-telemetry_session_name=$(date -u +%Y%m%dT%H%M%SZ)-$(basename "$model_path" .gguf | tr -c 'A-Za-z0-9._-' '-')-pid$server_pid
-telemetry_log=$telemetry_directory/$telemetry_session_name.log
-ln -sfn "telemetry/$telemetry_session_name.log" "$telemetry_symlink"
-
+# The record was named at spawn beside its loading-phase log. The monitor
+# truncates its own argument, which is still a fresh file: loading samples
+# live in the -loading record beside it.
 "$script_directory/monitor-qwen-runtime.sh" "$server_pid" "$telemetry_log" \
     "$vulkan_profile" "$latency_watchdog_pid" \
     "$kernel_hazard_watchdog_pid" &
@@ -646,9 +687,24 @@ if chmod 444 "$telemetry_log" 2>/dev/null; then
 else
     telemetry_seal_status=failed
 fi
-printf 'telemetry_record=%s summary=%s seal=%s utc=%s\n' \
+telemetry_loading_seal_status=absent
+if [ -n "${telemetry_loading_log:-}" ] && [ -f "$telemetry_loading_log" ]; then
+    if chmod 444 "$telemetry_loading_log" 2>/dev/null; then
+        telemetry_loading_seal_status=sealed
+    else
+        telemetry_loading_seal_status=failed
+    fi
+fi
+# The line carries the session name as its own field, so a reader joins a
+# finalization outcome to one session without parsing the record path, and the
+# guarded append keeps a full or read-only state directory from turning the
+# advisory report into a teardown abort under set -e.
+printf 'session=%s telemetry_record=%s summary=%s seal=%s loading_seal=%s utc=%s\n' \
+    "${telemetry_session_name:-unnamed}" \
     "$telemetry_log" "$telemetry_summary_status" "$telemetry_seal_status" \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$state_directory/telemetry-finalization.log"
+    "$telemetry_loading_seal_status" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    >>"$state_directory/telemetry-finalization.log" || :
 printf 'state=stopped server_status=%s monitor_status=%s latency_status=%s kernel_hazard_status=%s broker_status=%s stopped_component=%s profile=%s utc=%s\n' \
     "$server_status" "$monitor_status" "$latency_status" \
     "$kernel_hazard_status" "$broker_status" "$supervised_component" \

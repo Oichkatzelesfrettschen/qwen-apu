@@ -118,6 +118,62 @@ if [ "$(summary_field terminating_mem_available_kib "${session_b%.log}.summary")
     exit 1
 fi
 
+# A loading record beside the session record yields loading-phase peaks, and a
+# session without one reads `-` in every derived field rather than zero, which
+# is what separates a pre-coverage record from an empty loading phase.
+if [ "$(summary_field loading_sample_count "$summary_a")" != - ]; then
+    printf 'a session without a loading record invented loading samples\n' >&2
+    exit 1
+fi
+loading_b=${session_b%.log}-loading.log
+{
+    printf 'loading_start_utc=2026-08-31T22:14:55Z server_pid=19001 model=model-b.gguf\n'
+    printf 'loading_sample_utc=2026-08-31T22:14:56Z rss_kib=500 peak_rss_kib=500 mem_available_kib=9437184 vram_used_bytes=100 gtt_used_bytes=50\n'
+    printf 'loading_sample_utc=2026-08-31T22:14:57Z rss_kib=3500 peak_rss_kib=3500 mem_available_kib=5242880 vram_used_bytes=1900 gtt_used_bytes=70\n'
+    printf 'loading_end_utc=2026-08-31T22:14:58Z ready=1 attempts=20\n'
+} >"$loading_b"
+QWEN_TELEMETRY_MODEL_ID=model-b "$script_directory/summarize-telemetry-session.sh" \
+    "$session_b" >/dev/null
+summary_b=${session_b%.log}.summary
+if [ "$(summary_field loading_sample_count "$summary_b")" != 2 ]; then
+    printf 'summary miscounted loading samples\n' >&2
+    exit 1
+fi
+if [ "$(summary_field loading_peak_server_rss_kib "$summary_b")" != 3500 ]; then
+    printf 'summary miscomputed the loading-phase RSS peak\n' >&2
+    exit 1
+fi
+if [ "$(summary_field loading_observed_minimum_mem_available_kib "$summary_b")" != 5242880 ]; then
+    printf 'summary miscomputed the loading-phase MemAvailable minimum\n' >&2
+    exit 1
+fi
+if [ "$(summary_field loading_peak_vram_used_bytes "$summary_b")" != 1900 ]; then
+    printf 'summary miscomputed the loading-phase VRAM peak\n' >&2
+    exit 1
+fi
+if [ "$(summary_field loading_ready "$summary_b")" != 1 ]; then
+    printf 'summary lost the loading-phase readiness outcome\n' >&2
+    exit 1
+fi
+
+# The session script samples the loading phase inside its readiness loop and
+# reports finalization with the session name as its own joinable field, through
+# a guarded append that a read-only state directory cannot turn into an abort.
+if ! grep -q 'record_loading_sample$' "$script_directory/qwen-webui-session.sh"; then
+    printf 'the session script no longer samples the loading phase\n' >&2
+    exit 1
+fi
+if ! grep -q 'session=%s telemetry_record=%s' \
+    "$script_directory/qwen-webui-session.sh"; then
+    printf 'the finalization line no longer names its session\n' >&2
+    exit 1
+fi
+if ! grep -q 'telemetry-finalization.log" || :' \
+    "$script_directory/qwen-webui-session.sh"; then
+    printf 'the finalization append is unguarded under set -e\n' >&2
+    exit 1
+fi
+
 # The session script names one record per launch and points the symlink at it.
 if ! grep -q 'telemetry_directory=\$state_directory/telemetry' \
     "$script_directory/qwen-webui-session.sh"; then

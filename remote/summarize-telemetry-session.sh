@@ -1,7 +1,8 @@
 #!/bin/sh
 set -eu
 
-# One session summary derived from one immutable telemetry record. The record
+# One session summary derived from one session-unique, sealed telemetry
+# record. The record
 # is the authority: every observed quantity here is read back out of it, and
 # the provenance arguments name the identities the log itself cannot carry.
 # The summary is a convenience surface, because `tmux kill-session` ends
@@ -46,8 +47,8 @@ sample_statistic() {
                 if (pair[1] != key) { continue }
                 value = substr($index_position, length(key) + 2)
                 if (value ~ /^[0-9]+$/) {
-                    if (count == 0 || value < minimum) { minimum = value }
-                    if (count == 0 || value > maximum) { maximum = value }
+                    if (count == 0 || value + 0 < minimum + 0) { minimum = value }
+                    if (count == 0 || value + 0 > maximum + 0) { maximum = value }
                     total += value
                     count++
                 }
@@ -113,6 +114,45 @@ qemu_pid=$(default_to_dash "$qemu_pid")
 
 boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
 
+# The loading record covers the one-time allocation and transfer phase the
+# runtime monitor never sees, sampled by the session's readiness loop into a
+# sibling file named for the same session. An absent file states that the
+# session predates loading coverage, so every derived field reads `-` rather
+# than zero.
+telemetry_loading_log=${telemetry_log%.log}-loading.log
+loading_statistic() {
+    if [ ! -r "$telemetry_loading_log" ]; then
+        printf -- '-\n'
+        return 0
+    fi
+    awk -v key="$1" -v want="$2" '
+        /^loading_sample_utc=/ {
+            for (index_position = 1; index_position <= NF; index_position++) {
+                split($index_position, pair, "=")
+                if (pair[1] != key) { continue }
+                value = substr($index_position, length(key) + 2)
+                if (value ~ /^[0-9]+$/) {
+                    if (count == 0 || value + 0 < minimum + 0) { minimum = value }
+                    if (count == 0 || value + 0 > maximum + 0) { maximum = value }
+                    count++
+                }
+            }
+        }
+        END {
+            if (count == 0) { print "-"; exit }
+            if (want == "minimum") { print minimum }
+            else if (want == "maximum") { print maximum }
+            else { print count }
+        }
+    ' "$telemetry_loading_log"
+}
+loading_ready='-'
+if [ -r "$telemetry_loading_log" ]; then
+    loading_ready=$(awk -F'ready=' '/^loading_end_utc=/ { split($2, a, " "); print a[1] }' \
+        "$telemetry_loading_log")
+    loading_ready=${loading_ready:--}
+fi
+
 {
     printf 'telemetry_log=%s\n' "$telemetry_log"
     printf 'telemetry_log_sha256=%s\n' \
@@ -156,6 +196,15 @@ boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
     printf 'peak_vram_used_bytes=%s\n' "$(sample_statistic vram_used_bytes maximum)"
     printf 'maximum_temperature_millicelsius=%s\n' \
         "$(sample_statistic max_temp_millicelsius maximum)"
+    printf 'loading_log=%s\n' \
+        "$([ -r "$telemetry_loading_log" ] && printf '%s' "$telemetry_loading_log" || printf -- '-')"
+    printf 'loading_sample_count=%s\n' "$(loading_statistic mem_available_kib count)"
+    printf 'loading_ready=%s\n' "$loading_ready"
+    printf 'loading_observed_minimum_mem_available_kib=%s\n' \
+        "$(loading_statistic mem_available_kib minimum)"
+    printf 'loading_peak_server_rss_kib=%s\n' "$(loading_statistic peak_rss_kib maximum)"
+    printf 'loading_peak_vram_used_bytes=%s\n' "$(loading_statistic vram_used_bytes maximum)"
+    printf 'loading_peak_gtt_used_bytes=%s\n' "$(loading_statistic gtt_used_bytes maximum)"
     printf 'termination_reason=%s\n' \
         "$(default_to_dash "$(field_of reason)")"
     printf 'termination_sample_utc=%s\n' \
