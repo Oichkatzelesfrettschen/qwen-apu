@@ -658,8 +658,11 @@ retain_quiescent_runtime_evidence() {
         return 1
     fi
     hazard_pattern='ring[^[:cntrl:]]*timeout|GPU reset|amdgpu[^[:cntrl:]]*reset|VM fault|device loss|device lost|out of memory|oom-kill|^hazard_utc=|^hazard_stream_ended_while_server_running='
-    if grep -Eai "$hazard_pattern" \
-        "$result_directory/kernel-hazards.log" >/dev/null; then
+    # The watcher opens its log with a `hazard_pattern=` line that spells out
+    # the same alternation, so that declaration is removed ahead of the match
+    # and only a kernel line or a watcher marker counts as a hazard.
+    if grep -Ev '^hazard_pattern=' "$result_directory/kernel-hazards.log" | \
+        grep -Eai "$hazard_pattern" >/dev/null; then
         printf 'kernel hazard log records a terminal GPU or memory hazard\n' >&2
         return 1
     fi

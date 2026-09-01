@@ -452,8 +452,12 @@ printf '%s\n' '#!/bin/sh' 'set -eu' \
         >"$state_directory/telemetry.log"' \
     'printf "graphics fixture profile=%s\\n" "$profile" \
         >"$state_directory/graphics-latency.log"' \
-    'printf "kernel fixture server_pid=%s\\n" "$server_pid" \
+    'printf "watch_start_utc=2026-09-01T00:00:00Z server_pid=%s guard_affinity=1 guard_nice=0\\n" "$server_pid" \
         >"$state_directory/kernel-hazards.log"' \
+    'printf "hazard_pattern=ring[^[:cntrl:]]*timeout|GPU reset|amdgpu[^[:cntrl:]]*reset|VM fault|device loss|device lost|out of memory|oom-kill\\n" \
+        >>"$state_directory/kernel-hazards.log"' \
+    'printf "watch_ready_utc=2026-09-01T00:00:00Z source=dmesg_follow_new reader_pid=%s guard_affinity=1 guard_nice=0\\n" "$server_pid" \
+        >>"$state_directory/kernel-hazards.log"' \
     'printf "state=running server_pid=%s profile=%s host=127.0.0.1 port=%s context=%s latency_mode=observe utc=2026-09-01T00:00:00Z\\n" \
         "$server_pid" "$profile" "$QWEN_SERVER_PORT" "$QWEN_CONTEXT_SIZE" \
         >"$state_directory/session.status"' \
