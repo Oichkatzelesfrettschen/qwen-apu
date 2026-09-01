@@ -170,6 +170,14 @@ case $action in
                 exit 2
                 ;;
         esac
+        # Every start path funnels through here before the tmux session
+        # exists, so a divergent or stale runtime tree refuses ahead of the
+        # session, the server, the PID file, and the workload lease --
+        # including a direct `qwen-webui-control.sh start` that never ran
+        # qwen-launch.sh. A tree without a manifest predates
+        # sync-runtime-tree.sh and passes as unmanifested.
+        "$script_directory/check-runtime-tree.sh" "$script_directory/.." \
+            "${QWEN_INTENDED_GIT_HEAD:-}" "${QWEN_INTENDED_PAYLOAD_SHA256:-}"
         if tmux -L "$tmux_socket" has-session -t "$tmux_session" 2>/dev/null; then
             printf 'tmux session already exists: %s\n' "$tmux_session" >&2
             exit 2
