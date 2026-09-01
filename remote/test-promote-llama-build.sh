@@ -113,10 +113,13 @@ esac
 failing_closure_tools=$work_directory/failing-closure-tools
 mkdir -p "$failing_closure_tools"
 cp "$promoter" "$failing_closure_tools/promote-llama-build.sh"
-# The promoter resolves the checkpoint policy beside itself, so a copied tools
-# directory carries the ledger and this arm measures the closure failure rather
-# than an absent authority.
+# The promoter resolves the checkpoint policy beside itself through the
+# canonical validator, so a copied tools directory carries the ledger, the
+# validator, and the model registry, and this arm measures the closure failure
+# rather than an absent authority.
 cp "$script_directory/ctx-checkpoints.tsv" "$failing_closure_tools/ctx-checkpoints.tsv"
+cp "$script_directory/model-registry.sh" "$failing_closure_tools/model-registry.sh"
+cp "$script_directory/models.tsv" "$failing_closure_tools/models.tsv"
 cat >"$failing_closure_tools/hash-load-closure.sh" <<'CLOSURE'
 #!/bin/sh
 printf 'role\tbasename\tbytes\tsha256\n'
@@ -339,11 +342,16 @@ printf 'fixture\t2\tevidence/depth-versus-submission-geometry.md\n' \
     >"$undeclared_ledger"
 zero_ledger=$work_directory/zero-ctx-checkpoints.tsv
 printf 'fixture\t0\t-\n' >"$zero_ledger"
+# The canonical validator joins each ledger row to the model registry, so the
+# fixture ledgers carry a registry naming their one model id.
+fixture_model_registry=$work_directory/fixture-models.tsv
+printf 'fixture\tresearch\tFixture/fixture.gguf\n' >"$fixture_model_registry"
 
 fixture_checkpoint_semantics=forced-tail-v1
 write_manifest
 set +e
 undeclared_output=$(QWEN_CTX_CHECKPOINT_LEDGER=$undeclared_ledger \
+    QWEN_MODEL_REGISTRY=$fixture_model_registry \
     "$promoter" "$preset" "$work_directory" 2>&1)
 undeclared_status=$?
 set -e
@@ -364,6 +372,7 @@ esac
 # reads the policy rather than refusing every undeclared build.
 set +e
 zero_policy_output=$(QWEN_CTX_CHECKPOINT_LEDGER=$zero_ledger \
+    QWEN_MODEL_REGISTRY=$fixture_model_registry \
     "$promoter" "$preset" "$work_directory" 2>&1)
 zero_policy_status=$?
 set -e
@@ -380,6 +389,7 @@ esac
 # policy now has an incompatible destination to refuse.
 set +e
 rollback_refusal_output=$(QWEN_CTX_CHECKPOINT_LEDGER=$undeclared_ledger \
+    QWEN_MODEL_REGISTRY=$fixture_model_registry \
     "$promoter" --rollback "$work_directory" 2>&1)
 rollback_refusal_status=$?
 set -e
@@ -425,6 +435,7 @@ printf 'checkpoint_semantics\tforced-tail-v1\n' \
     >>"$build_directory/artifact-manifest.tsv"
 set +e
 ambiguous_output=$(QWEN_CTX_CHECKPOINT_LEDGER=$undeclared_ledger \
+    QWEN_MODEL_REGISTRY=$fixture_model_registry \
     "$promoter" "$preset" "$work_directory" 2>&1)
 ambiguous_status=$?
 set -e
@@ -441,7 +452,41 @@ case $ambiguous_status:$ambiguous_output in
         ;;
 esac
 
+# A readable ledger whose rows fail the canonical validation states no
+# requirement either: a textual count coerces to zero under arithmetic, which
+# is the coercion that would roll back onto a forced-tail build while the
+# appliance still arms a positive count. Each mutation is refused with the
+# validation named rather than read as an all-zero policy.
 fixture_checkpoint_semantics=natural-boundary-v1
+write_manifest
+malformed_ledger=$work_directory/malformed-ctx-checkpoints.tsv
+for malformed_case in \
+    'textual-count:fixture\ttwo\tevidence/depth-versus-submission-geometry.md' \
+    'row-width:fixture\t2' \
+    'duplicate-id:fixture\t0\t-\nfixture\t0\t-' \
+    'unknown-model:absent-model\t0\t-' \
+    'unmeasured-positive:fixture\t2\t-'; do
+    malformed_name=${malformed_case%%:*}
+    printf '%b\n' "${malformed_case#*:}" >"$malformed_ledger"
+    set +e
+    malformed_output=$(QWEN_CTX_CHECKPOINT_LEDGER=$malformed_ledger \
+        QWEN_MODEL_REGISTRY=$fixture_model_registry \
+        "$promoter" "$preset" "$work_directory" 2>&1)
+    malformed_status=$?
+    set -e
+    case $malformed_status:$malformed_output in
+        0:*)
+            report "malformed_policy_${malformed_name}_rejected" rejected
+            printf '%s\n' "$malformed_output" >&2
+            ;;
+        *:*"context checkpoint policy failed validation"*)
+            report "malformed_policy_${malformed_name}_rejected" accepted ;;
+        *)
+            report "malformed_policy_${malformed_name}_rejected" rejected
+            printf '%s\n' "$malformed_output" >&2
+            ;;
+    esac
+done
 write_manifest
 
 # A preset that produced llama-server and no llama-mtmd-cli must refuse

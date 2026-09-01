@@ -36,10 +36,15 @@ previous_link=$source_directory/build-appliance-previous
 # rollback to such a target is refused before the symlink moves rather than
 # leaving the appliance unable to launch.
 #
-# The ledger is read before either path runs, because a promotion that cannot
-# read the policy authority does not know which requirement applies and an
-# unreadable file is the state a deleted or half-written ledger presents. The
-# predicate below therefore answers over content alone.
+# The ledger is validated whole before either path runs, because a promotion
+# that cannot read the policy authority does not know which requirement applies
+# and an unreadable file is the state a deleted or half-written ledger
+# presents. model-registry.sh is the one validator of row shape, count syntax,
+# duplicates, and registry membership, so the requirement below derives from
+# its accepted rows: a readable ledger whose count reads "two" is refused here
+# rather than coerced to zero by arithmetic, which is the coercion that would
+# roll back onto a forced-tail build while the appliance still arms a positive
+# count.
 checkpoint_policy_ledger=${QWEN_CTX_CHECKPOINT_LEDGER:-$script_directory/ctx-checkpoints.tsv}
 if [ ! -r "$checkpoint_policy_ledger" ]; then
     printf 'the context checkpoint policy is unreadable: %s\n' \
@@ -47,13 +52,18 @@ if [ ! -r "$checkpoint_policy_ledger" ]; then
     printf 'promotion cannot derive the checkpoint requirement from an absent policy\n' >&2
     exit 1
 fi
+if ! checkpoint_policy_rows=$("$script_directory/model-registry.sh" ctx-checkpoints); then
+    printf 'the context checkpoint policy failed validation: %s\n' \
+        "$checkpoint_policy_ledger" >&2
+    printf 'promotion cannot derive the checkpoint requirement from an invalid policy\n' >&2
+    exit 1
+fi
 
 checkpoint_policy_requires_natural_boundary() {
-    awk -F'\t' '
-        /^#/ || NF == 0 { next }
-        NF >= 2 && $2 + 0 > 0 { found = 1 }
+    printf '%s\n' "$checkpoint_policy_rows" | awk -F'\t' '
+        $2 > 0 { found = 1 }
         END { exit found ? 0 : 1 }
-    ' "$checkpoint_policy_ledger"
+    '
 }
 
 # undeclared names a build predating the receipt and ambiguous names a manifest

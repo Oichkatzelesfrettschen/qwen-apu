@@ -1520,8 +1520,8 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t
 : >"$temporary_directory/pair-target.gguf"
 : >"$temporary_directory/pair-draft.gguf"
 populated_draft_pairs=$temporary_directory/populated-draft-pairs.tsv
-printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    pair-target+pair-draft pair-target pair-draft candidate 2 0.00 4096 \
+printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    pair-target+pair-draft pair-target pair-draft candidate 2 0.00 0.896 4096 \
     q8_0 q4_0 - 'target plus draft' \
     >"$populated_draft_pairs"
 write_pair_section() {
@@ -1742,6 +1742,17 @@ expect_semantics_argv() {
             exit 1
             ;;
     esac
+    # The pinned build defaults an omitted count to 32, so an explicit value
+    # must reach the argv exactly once: an omission would serve the default
+    # under a policy that computed zero, and a second occurrence would leave
+    # the served count to argument-parser precedence rather than the policy.
+    semantics_flag_count=$(grep -c '^argument=--ctx-checkpoints$' \
+        "$checkpoint_output" || true)
+    if [ "$semantics_flag_count" != 1 ]; then
+        printf 'the %s arm emitted --ctx-checkpoints %s times, expected once\n' \
+            "$arm_name" "$semantics_flag_count" >&2
+        exit 1
+    fi
 }
 
 # A build predating the declaration still serves a count of zero, so the
