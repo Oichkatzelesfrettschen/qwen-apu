@@ -236,13 +236,17 @@ case $action in
                 ordinary_lease_wait_attempt=$((ordinary_lease_wait_attempt + 1))
                 sleep 0.01
             done
-            ordinary_lease_holder_lock=$(
-                readlink -f -- "/proc/$ordinary_lease_holder_pid/fd/9" \
-                    2>/dev/null || true
-            )
+            # A state-directory symlink gives the same lock object two valid
+            # path spellings, so holder ownership follows device and inode.
+            ordinary_lease_holder_lock_identity=$(stat -Lc '%d:%i' \
+                "/proc/$ordinary_lease_holder_pid/fd/9" 2>/dev/null || true)
+            campaign_control_lock_identity=$(stat -Lc '%d:%i' \
+                "$campaign_control_lock" 2>/dev/null || true)
             if [ ! -s "$ordinary_lease_ready" ] || \
                [ -z "$ordinary_lease_holder_start_time" ] || \
-               [ "$ordinary_lease_holder_lock" != "$campaign_control_lock" ]; then
+               [ -z "$ordinary_lease_holder_lock_identity" ] || \
+               [ "$ordinary_lease_holder_lock_identity" != \
+                   "$campaign_control_lock_identity" ]; then
                 printf 'ordinary-session control lease holder failed to start\n' >&2
                 kill -TERM "$ordinary_lease_holder_pid" 2>/dev/null || true
                 wait "$ordinary_lease_holder_pid" 2>/dev/null || true
