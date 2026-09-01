@@ -15,7 +15,7 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repository_root=$(CDPATH='' cd -- "$script_directory/.." && pwd)
 cd "$repository_root"
 
-for required_command in bash node shellcheck ruff python3 curl; do
+for required_command in bash node shellcheck ruff python3 curl flock git ps sha256sum; do
     if ! command -v "$required_command" >/dev/null 2>&1; then
         printf 'required quality-gate command is absent: %s\n' \
             "$required_command" >&2
@@ -48,6 +48,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 remote/test-regrade-quality-roster.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-gguf-tokenizer-identity.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-admit-candidate-static.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-check-model-admission-consistency.py
+PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-draft-pair.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-verify-representation-pair.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-image-protocol.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-image-service.py
@@ -84,6 +85,8 @@ remote/test-qwen-image-launch.sh
 remote/test-web-presets.sh
 remote/test-qwen-web-launch.sh
 remote/test-prepare-llama-vulkan-source.sh
+remote/test-check-trace-source-status.sh
+remote/test-run-trace-campaign.sh
 remote/test-qwen-session-signals.sh
 remote/test-admit-web-router-fake.sh
 remote/test-quality-roster.sh

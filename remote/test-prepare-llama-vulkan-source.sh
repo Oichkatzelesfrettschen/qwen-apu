@@ -1,6 +1,6 @@
 #!/bin/sh
-# Prove preparation of the seven-patch production series: recognized four- and
-# five-patch prefixes upgrade through the missing production patches, the
+# Prove preparation of the eight-patch production series: recognized four-,
+# five-, and seven-patch prefixes upgrade through the missing patches, the
 # upgraded tree is then reported already verified, and a tree carrying an
 # unrelated edit refuses. The script pins commit f280b269 of llama.cpp, so the
 # fixture is a local clone of a checkout holding that commit; a workstation
@@ -55,12 +55,28 @@ expect_output 'patched_source=upgraded' \
     sh "$script_directory/prepare-llama-vulkan-source.sh" "$base_source" "$patched_source"
 expect_output 'patched_source=already_verified' \
     sh "$script_directory/prepare-llama-vulkan-source.sh" "$base_source" "$patched_source"
-expect_output 'patch_count=7' \
+expect_output 'patch_count=8' \
     sh "$script_directory/prepare-llama-vulkan-source.sh" "$base_source" "$patched_source"
 
 # An unrelated edit beside an otherwise verified series refuses rather than
 # passing the source-hash subset.
 printf '\n' >> "$patched_source/README.md"
+if output=$(QWEN_TRACE_PREPARE_ONLY=1 \
+        QWEN_TRACE_STATUS_CHECKER=/bin/true \
+        sh "$script_directory/build-llama-trace.sh" \
+        "$base_source" "$patched_source" 2>&1); then
+    printf 'build preparation accepted an extra path through a replacement checker:\n%s\n' \
+        "$output" >&2
+    exit 1
+fi
+case $output in
+    *'unrecognized changes'*) ;;
+    *)
+        printf 'build preparation reported the wrong extra-path refusal:\n%s\n' \
+            "$output" >&2
+        exit 1
+        ;;
+esac
 if output=$(sh "$script_directory/prepare-llama-vulkan-source.sh" \
         "$base_source" "$patched_source" 2>&1); then
     printf 'a tree with an unrecognized edit was accepted:\n%s\n' "$output" >&2
@@ -90,7 +106,27 @@ for patch_name in \
 done
 expect_output 'patched_source=upgraded' \
     sh "$script_directory/prepare-llama-vulkan-source.sh" "$base_source" "$patched_source"
-expect_output 'patch_count=7' \
+expect_output 'patch_count=8' \
+    sh "$script_directory/prepare-llama-vulkan-source.sh" "$base_source" "$patched_source"
+
+# A seven-patch prefix, the shape the tree carried before the natural-boundary
+# member joined the series, upgrades through that member alone.
+rm -rf "$patched_source"
+git clone --quiet --local --no-hardlinks --no-checkout "$base_source" "$patched_source"
+git -C "$patched_source" checkout --quiet --detach "$pinned_commit"
+for patch_name in \
+    llama-vulkan-low-priority.patch \
+    llama-no-cpu-fallback.patch \
+    llama-vulkan-duty-cycle.patch \
+    llama-vulkan-runtime-submit-limit.patch \
+    llama-vulkan-submit-trace.patch \
+    llama-router-tools-proxy.patch \
+    llama-vulkan-view-alias-deps.patch; do
+    git -C "$patched_source" apply "$repository_directory/patches/$patch_name"
+done
+expect_output 'patched_source=upgraded' \
+    sh "$script_directory/prepare-llama-vulkan-source.sh" "$base_source" "$patched_source"
+expect_output 'patch_count=8' \
     sh "$script_directory/prepare-llama-vulkan-source.sh" "$base_source" "$patched_source"
 
 # A clean pinned checkout receives the whole production series.
@@ -100,4 +136,4 @@ git -C "$patched_source" checkout --quiet --detach "$pinned_commit"
 expect_output 'patched_source=prepared' \
     sh "$script_directory/prepare-llama-vulkan-source.sh" "$base_source" "$patched_source"
 
-printf 'prepare_llama_vulkan_source=accepted transitions=four-prefix,five-prefix,already_verified,refused,prepared patch_count=7\n'
+printf 'prepare_llama_vulkan_source=accepted transitions=four-prefix,five-prefix,seven-prefix,already_verified,refused,prepared build_extra_path=refused patch_count=8\n'

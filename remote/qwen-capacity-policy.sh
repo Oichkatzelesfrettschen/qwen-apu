@@ -378,8 +378,8 @@ validate_router_preset_tuples() {
                 pair_draft[pair_fields[1]]  = pair_fields[3]
                 pair_n_max[pair_fields[1]]  = pair_fields[5]
                 pair_p_min[pair_fields[1]]  = pair_fields[6]
-                pair_cache_k[pair_fields[1]] = pair_fields[8]
-                pair_cache_v[pair_fields[1]] = pair_fields[9]
+                pair_cache_k[pair_fields[1]] = pair_fields[9]
+                pair_cache_v[pair_fields[1]] = pair_fields[10]
             }
             checkpoint_row_count = split(ctx_checkpoint_ledger, checkpoint_rows, "\n")
             for (checkpoint_row_index = 1; checkpoint_row_index <= checkpoint_row_count;
@@ -1319,6 +1319,76 @@ if [ -n "$checkpoint_min_step" ]; then
     fi
 fi
 
+# A positive count is meaningful only against a build whose prompt fill loop
+# places checkpoints at natural n_batch boundaries. The pinned build breaks the
+# prompt `4 + n_ubatch` and `4` tokens from the end whenever checkpoints are
+# armed, and evidence/ctx-checkpoint-sweep/ measures that forced partition
+# moving the 0.8B's first-turn token at index 25. The ledger and the binary are
+# separate release artifacts, so a ledger edit alone could otherwise pair a
+# positive count with the unrepaired implementation. build-llama-preset.sh
+# records what it compiled as `checkpoint_semantics` in the build's artifact
+# manifest, this policy reads that declaration from the manifest beside the
+# selected executable, and an absent declaration refuses rather than defaults.
+checkpoint_semantics=unknown
+checkpoint_manifest_sha256=-
+llama_server_directory=$(dirname -- "$(readlink -f -- "$llama_server")")
+for checkpoint_manifest in "$llama_server_directory/artifact-manifest.tsv" \
+    "$llama_server_directory/../artifact-manifest.tsv"; do
+    [ -r "$checkpoint_manifest" ] || continue
+    # A manifest states the declaration once, so a second row leaves the value
+    # undefined rather than disputed. Reading the first row would admit a
+    # manifest whose natural-boundary-v1 sits above a forced-tail-v1, which
+    # qwen-build-exec-guard.sh refuses at the exec boundary; counting here keeps
+    # the refusal beside the argv it would have produced.
+    checkpoint_semantics=$(awk -F'\t' '
+        $1 == "checkpoint_semantics" { count++; value = $2 }
+        END { print (count == 1 && value != "") ? value : "unknown" }
+    ' "$checkpoint_manifest")
+    checkpoint_manifest_sha256=$(sha256sum -- "$checkpoint_manifest" | cut -d ' ' -f 1)
+    break
+done
+
+# Router mode carries the count per section, so the preset rather than this
+# argv states whether any child arms one.
+checkpoint_count_armed=0
+if [ "$router_enabled" = 1 ]; then
+    if [ -r "$router_presets" ] && awk '
+        /^[[:space:]]*LLAMA_ARG_CTX_CHECKPOINTS[[:space:]]*=/ {
+            value = $0
+            sub(/^[^=]*=[[:space:]]*/, "", value)
+            sub(/[[:space:]]+$/, "", value)
+            if (value + 0 > 0) { found = 1 }
+        }
+        END { exit found ? 0 : 1 }
+    ' "$router_presets"; then
+        checkpoint_count_armed=1
+    fi
+elif [ "$ctx_checkpoints" -gt 0 ]; then
+    checkpoint_count_armed=1
+fi
+
+checkpoint_guard_requirement=-
+if [ "$checkpoint_count_armed" = 1 ]; then
+    checkpoint_guard_requirement=natural-boundary-v1
+fi
+
+# The refusal is stated here so an unserviceable combination fails while the
+# reason is still readable beside the argv it would have produced.
+# qwen-build-exec-guard.sh states it again at the exec boundary, where it also
+# measures the manifest and the executable, so a symlink repointed or a manifest
+# rewritten after this point is caught there rather than served.
+if [ "$checkpoint_guard_requirement" != - ] &&
+    [ "$checkpoint_semantics" != "$checkpoint_guard_requirement" ]; then
+    printf 'the selected llama-server declares checkpoint_semantics=%s: %s\n' \
+        "$checkpoint_semantics" "$llama_server" >&2
+    printf 'a positive context checkpoint count requires %s\n' \
+        "$checkpoint_guard_requirement" >&2
+    exit 2
+fi
+printf 'checkpoint_binding semantics=%s requirement=%s manifest_sha256=%s\n' \
+    "$checkpoint_semantics" "$checkpoint_guard_requirement" \
+    "$checkpoint_manifest_sha256"
+
 set -- "$@" \
     --log-verbosity 4 \
     --device Vulkan0 \
@@ -1402,6 +1472,9 @@ if [ "$router_enabled" = 1 ]; then
         exit 2
     fi
     exec "$script_directory/radv-low-priority-env.sh" \
+        "$script_directory/qwen-build-exec-guard.sh" \
+        "$llama_server" "$checkpoint_manifest_sha256" \
+        "$checkpoint_guard_requirement" \
         "$script_directory/qwen-router-exec-guard.sh" \
         "$router_presets" "$router_preset_guard_sha256" \
         "$router_registry" "$router_registry_guard_sha256" \
@@ -1414,4 +1487,8 @@ if [ "$router_enabled" = 1 ]; then
         "$@"
 fi
 
-exec "$script_directory/radv-low-priority-env.sh" "$@"
+exec "$script_directory/radv-low-priority-env.sh" \
+    "$script_directory/qwen-build-exec-guard.sh" \
+    "$llama_server" "$checkpoint_manifest_sha256" \
+    "$checkpoint_guard_requirement" \
+    "$@"

@@ -56,13 +56,53 @@ checkpointing disabled. Together with `evidence/ctx-checkpoint-prob-08b/`,
 the causal chain's previously unobserved link -- the partition, not the
 checkpoint machinery, perturbs the logit field -- is measured by condition.
 
+## The 2B and 4B classes, at the same protocol
+
+`2b/` and `4b/` carry the per-class validations at the same 30720-depth
+greedy protocol with `n_probs` 8, against the same two binaries
+`binaries.txt` names. Each class holds five witnesses: the frozen production
+c=0 arm under `witness/`, and the candidate's c=0 opening, c=2 first, c=2
+repeat, and c=0 closing arms. Every one of the ten pairs inside a class
+agrees bit-for-bit on token ids and retained log-probabilities over both
+turns, at 32 recorded positions per turn, and each class's `divergence.txt`
+records the same relation as `divergence=none` per arm.
+
+```text
+class   turn-2 charge, c=0    turn-2 charge, c=2    restore
+2B      30748 tokens          28 tokens            1.96 s and 1.96 s
+4B      30748 tokens          28 tokens            6.13 s and 7.99 s
+```
+
+The 4B's closing c=0 arm is `4b/patched-arm4b/`, retained separately because
+`4b/patched/arm-4-c0/` holds the attempt that preceded it: the sweep
+harness's fixed 3600 s `QWEN_CTX_REQUEST_SECONDS` ceiling expired against a
+class whose full prefill measures 3251 to 3502 s, so that arm retains a
+first-turn request and no tokens and `4b/patched/divergence.txt` reads
+`tokens=absent` for it. The re-run raised the ceiling to 10800 s and changed
+nothing else. Its model load and first pipeline ran against a warmed RADV
+shader and page cache, so its latencies are not a cold-start measurement;
+the identity predicate is unaffected, because the charge and the tokens both
+come from a request that re-prefills all 30748 tokens after loading.
+
+The five arms of a class span 7.94 to 9.77 prefill tok/s on the 4B and 27.40
+to 29.27 on the 2B. Those spans sit inside this machine's own spread and
+order nothing; the retained rates state what the arms cost rather than
+comparing the settings.
+
 ## Promotion discipline
 
-The patch sits in the candidate series
-(`QWEN_LLAMA_CANDIDATE_PATCHES=1 remote/verify-llama-patch-series.sh`
-verifies it applies after the workload lease). The frozen production binary
-keeps serving until compact per-class validation closes on the 2B and 4B:
-patched c0 equal to stock c0, patched c2 equal to patched c0, a
-natural-boundary restore, and retained restore performance. The local
-checkpoint policy moves all three classes to `ctx_checkpoints=2` only when
-all three close.
+All three classes closed, so the patch is the eighth member of the
+production series that `remote/verify-llama-patch-series.sh` replays, pinning
+`tools/server/server-context.cpp` at
+`3744317beb622feff234e5b7a615c50665579f34ce49921e324bcd418fb3a58a` -- the
+source the candidate binary above compiled.
+
+The ledger and the binary are separate release artifacts, so
+`remote/ctx-checkpoints.tsv` moving all three classes to `ctx_checkpoints=2`
+is guarded by the build rather than by release order.
+`remote/build-llama-preset.sh` reads the `checkpoint_offsets` array out of the
+source it compiles and records `checkpoint_semantics` as
+`natural-boundary-v1` for the repaired source, `forced-tail-v1` for the pinned
+commit's own, and `unknown` for any other, in the build's artifact manifest,
+and `remote/qwen-capacity-policy.sh` refuses any positive count against a
+manifest declaring anything else, an absent declaration included.

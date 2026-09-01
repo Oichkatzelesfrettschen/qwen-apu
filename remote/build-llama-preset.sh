@@ -38,6 +38,7 @@ usage() {
 preset=$1
 source_directory=${2:-"${HOME:?}/src/llama.cpp-qwen-apu"}
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+repository_directory=$(CDPATH='' cd -- "$script_directory/.." && pwd)
 build_jobs=${QWEN_BUILD_JOBS:-$(nproc 2>/dev/null || echo 1)}
 expected_commit=f280b26983ad0fdb705a0d9ebf0503e76f2899b0
 
@@ -242,11 +243,91 @@ for output in $preset_outputs; do
     fi
 done
 
+# The forced near-end partition at tools/server/server-context.cpp is what
+# decides whether a positive --ctx-checkpoints count is safe to arm: with it in
+# place the fill loop breaks the prompt at `4 + n_ubatch` and `4` tokens from
+# the end, which perturbed the 0.8B's first-turn logits by 0.01 to 0.15 nats in
+# evidence/ctx-checkpoint-sweep/.
+#
+# The declaration is earned rather than asserted. A preset name is a build role
+# and proves no source repair, and a caller-supplied value proves less, so
+# natural-boundary-v1 requires three facts together: the repository still holds
+# the exact patch the ledger names at the digest recorded here, the source this
+# build compiles hashes to the digest verify-llama-patch-series.sh pins for the
+# replayed series, and the forced partition is absent from that source.
+#
+# The negative name is earned the same way. forced-tail-v1 states that the
+# source carries the known partition, so it is written only where the source
+# hashes to the pinned commit's own server-context.cpp, which the seven-patch
+# production prefix leaves untouched. Every other source declares unknown: a
+# later upstream revision may restructure the partition or place checkpoints by
+# some third rule, and calling it forced-tail-v1 would assert a mechanism no
+# digest here established. Both names refuse a positive count, and they
+# attribute that refusal to different sources. The recorded patch path, patch
+# digest, source digest, and ordered-series digest make each claim checkable
+# after the fact.
+checkpoint_patch=patches/llama-server-natural-checkpoint-boundary.patch
+checkpoint_patch_path=$repository_directory/$checkpoint_patch
+checkpoint_source=$source_directory/tools/server/server-context.cpp
+natural_boundary_source_sha256=3744317beb622feff234e5b7a615c50665579f34ce49921e324bcd418fb3a58a
+natural_boundary_patch_sha256=c9d4010594da1f632be009b934cd045f6625b8baba68d09b7ed6190b02f9ddfc
+forced_tail_source_sha256=a79cf9e1d4a8d7c1f0ee608aa781628db403e8f59e25e731f997d0952d230e47
+
+if [ ! -r "$checkpoint_source" ]; then
+    printf 'checkpoint semantics are unreadable: %s\n' "$checkpoint_source" >&2
+    exit 1
+fi
+checkpoint_source_sha256=$(sha256sum "$checkpoint_source" | cut -d ' ' -f 1)
+checkpoint_patch_sha256=absent
+if [ -r "$checkpoint_patch_path" ]; then
+    checkpoint_patch_sha256=$(sha256sum "$checkpoint_patch_path" | cut -d ' ' -f 1)
+fi
+
+# The ordered production series, digested the way verify-llama-patch-series.sh
+# digests it: each member's own digest concatenated in ledger order, so a
+# reordering and a substitution are both visible in one field.
+series_ledger=$script_directory/llama-patch-series.tsv
+patch_series_sha256=unavailable
+if [ -r "$series_ledger" ]; then
+    series_identity=''
+    series_complete=1
+    for series_patch in $(awk -F'\t' '
+        /^#/ || NF == 0 { next }
+        $1 == "production" { print $2 }
+    ' "$series_ledger"); do
+        if [ ! -r "$repository_directory/patches/$series_patch" ]; then
+            series_complete=0
+            break
+        fi
+        series_identity=$series_identity$(
+            sha256sum "$repository_directory/patches/$series_patch" | cut -d ' ' -f 1
+        )
+    done
+    if [ "$series_complete" = 1 ] && [ -n "$series_identity" ]; then
+        patch_series_sha256=$(printf '%s' "$series_identity" | sha256sum | cut -d ' ' -f 1)
+    fi
+fi
+
+checkpoint_semantics=unknown
+if [ "$checkpoint_patch_sha256" = "$natural_boundary_patch_sha256" ] &&
+    [ "$checkpoint_source_sha256" = "$natural_boundary_source_sha256" ] &&
+    ! grep -q 'checkpoint_offsets' "$checkpoint_source"; then
+    checkpoint_semantics=natural-boundary-v1
+elif [ "$checkpoint_source_sha256" = "$forced_tail_source_sha256" ] &&
+    grep -q 'checkpoint_offsets' "$checkpoint_source"; then
+    checkpoint_semantics=forced-tail-v1
+fi
+
 manifest_path=$build_directory/artifact-manifest.tsv
 {
     printf 'preset\t%s\n' "$preset"
     printf 'commit\t%s\n' "$actual_commit"
     printf 'worktree\t%s\n' "$worktree_state"
+    printf 'checkpoint_semantics\t%s\n' "$checkpoint_semantics"
+    printf 'checkpoint_patch\t%s\n' "$checkpoint_patch"
+    printf 'checkpoint_patch_sha256\t%s\n' "$checkpoint_patch_sha256"
+    printf 'checkpoint_source_sha256\t%s\n' "$checkpoint_source_sha256"
+    printf 'checkpoint_patch_series_sha256\t%s\n' "$patch_series_sha256"
     printf 'compiler_flags\t%s\n' "$compiler_flags"
     printf 'cmake_flags\t%s\n' "$(printf '%s %s' "$preset_flags" "$cpu_instruction_flags" | tr -s ' \n' ' ')"
 } > "$manifest_path"

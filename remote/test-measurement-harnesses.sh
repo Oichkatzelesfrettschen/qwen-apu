@@ -113,6 +113,7 @@ printf '%s\n' '#!/bin/sh' 'set -eu' \
     'printf "%s\\n" "$*" >>"${QWEN_TEST_PROCESS_PROBE_LOG:?}"' \
     'exit 1' >"$isolated_process_bin/pgrep"
 chmod +x "$isolated_process_bin/pgrep"
+export QWEN_TEST_PROCESS_PROBE_LOG=$process_probe_log
 
 sampler_pid_file=$temporary_directory/sampler.pid
 successful_output=$temporary_directory/repeatability-success
@@ -244,6 +245,12 @@ grep -F 'another llama process holds the device' \
     "$temporary_directory/contended-factorial.stderr" >/dev/null
 kill "$contender_pid" 2>/dev/null || true
 wait "$contender_pid" 2>/dev/null || true
+
+# Every remaining arm uses fixture-owned programs and synthetic device files.
+# Hide ambient host inference services after the explicit contention controls,
+# so unrelated service lifetime cannot change deterministic fixture outcomes.
+PATH="$isolated_process_bin:$PATH"
+export PATH
 
 # Unreadable dmesg removes a stale per-arm delta instead of converting an old
 # reset into a current measurement. A successful bench with no timing row is a

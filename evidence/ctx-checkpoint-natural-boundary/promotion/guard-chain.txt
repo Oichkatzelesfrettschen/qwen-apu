@@ -1,0 +1,2 @@
+checkpoint_binding semantics=natural-boundary-v1 requirement=natural-boundary-v1 manifest_sha256=86cd22d6d60f5c4c67c0b20b44b3c7d941b7c82e99856ad33aa99ae598039ee8
+build_guard=accepted checkpoint_semantics=natural-boundary-v1 server=$HOME/src/llama.cpp-qwen-apu/build-raven2-vulkan-production/bin/llama-server manifest=$HOME/src/llama.cpp-qwen-apu/build-raven2-vulkan-production/bin/../artifact-manifest.tsv

@@ -22,10 +22,13 @@ failure without asserting a rate comparison that did not run.
 ## Registered before the first rung runs
 
 **Proportional scaling.** Q4_K_M streams 2.698 GB per token at 3.07 tok/s, which
-is 8.28 GB/s. Q2_K holding its per-byte rate predicts 4.34 tok/s once its own
-multi-token-prediction block is excluded from the streamed total, which the
-census measures rather than assumes. The falsifier is two-sided and wide: below
-3.5 or above 5.5 refutes proportional scaling. It is wide because this tree has
+is 8.28 GB/s. The registered prediction records 4.34 tok/s for Q2_K holding its
+per-byte rate once its own multi-token-prediction block is excluded from the
+streamed total, which the census measures rather than assumes. Recomputing from
+the displayed 3.07 tok/s and exact streamed-byte counts gives 4.348830 tok/s,
+which rounds to 4.35 rather than 4.34; the one-hundredth correction changes
+neither decision boundary. The falsifier is two-sided and wide: below 3.5 or
+above 5.5 refutes proportional scaling. It is wide because this tree has
 refuted two byte-count models already -- the 2B streams 44.3% faster per byte
 than the 4B, and a two-parameter fit over the 32-layer pair returns a negative
 fixed term when the 2B is added to it. Decode here is not purely bandwidth-bound
@@ -86,12 +89,13 @@ bytes, byte-identical to Q4_K_M, with the same tokenizer model and the same
 at 521,472,000 bytes, so the requantizer compressed the trunk and left the
 projection untouched.
 
-Performance refuses it. `evidence/decode-bound-analysis.md` sweeps both
-checkpoints four times, alternating the model order, and Q4_K_M leads in every
-sweep: 3.28 against 3.18, 2.93 against 2.67, 2.68 against 2.62, and 3.13 against
-3.13. The registered falsifier was a rate below 3.5 and the highest Q2_K arm
-measured 3.18. Achieved streaming fell from 8.11 GB/s to 5.53, a 31.8% drop that
-cancels a 29.4% byte saving.
+Performance refuses it. `evidence/decode-bound-analysis.md` reports four
+alternating-order blocks, and Q4_K_M leads in every block: 3.28 against 3.18,
+2.93 against 2.67, 2.68 against 2.62, and 3.13 against 3.13. The registered
+falsifier was a rate below 3.5 and the highest Q2_K arm measured 3.18. Achieved
+streaming fell from 8.11 GB/s to 5.53, a 31.8% drop that cancels a 29.4% byte
+saving. The decode analysis records the raw-output and artifact-identity
+retention gap that bounds those reported measurements.
 
 The quality suite did not run on L1. Grading 55 rows costs about an hour on this
 part, and the performance failure alone prevents admission for the role this

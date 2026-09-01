@@ -7,26 +7,44 @@ and the served KV cache policy costs 1.9% at depth 0 rather than the 7% it was
 credited with. The remaining published lever was byte count, and
 `evidence/model-admission/qwen38-4b-low-bit-ladder.md` registered proportional
 scaling before the file existed: Q2_K streaming 0.7059 of Q4_K_M's bytes was
-predicted to decode at 4.34 tok/s, with a two-sided falsifier at 3.5 and 5.5.
+recorded as 4.34 tok/s, with a two-sided falsifier at 3.5 and 5.5. Recomputing
+the displayed 3.07 tok/s and exact byte ratio gives 4.348830 tok/s, which rounds
+to 4.35; the correction changes neither falsifier.
 
 ## The measurement
 
-`remote/run-bandwidth-ladder.sh` sweeps five checkpoints four times, alternating
-the model order, and reports achieved streaming rate rather than tokens alone.
+The result table reports five checkpoints across four alternating-order blocks.
+The current `remote/run-bandwidth-ladder.sh` runs each checkpoint twice per
+invocation, once forward and once in reverse, so four blocks require two
+invocations.
 Streamed bytes come from `remote/gguf-tensor-census.py`, which excludes the
 multi-token-prediction block decode skips and counts a tied embedding once for
-the lookup and once for the projection. Every arm ran at nice 19 with `mclk` at
-933 MHz, on a live desktop under load averages between 4.26 and 6.89.
+the lookup and once for the projection. Every arm ran at nice 19 with the
+logger's `pp_dpm_mclk` field at 933 MHz, on a live desktop under load averages
+between 4.26 and 6.89. [Linux v7.0 SMU10](https://github.com/torvalds/linux/blob/v7.0/drivers/gpu/drm/amd/pm/powerplay/hwmgr/smu10_hwmgr.c#L1061-L1063)
+resolves that legacy field through `PPSMC_MSG_GetFclkFrequency`, so 933 MHz
+names selected FCLK rather than trained DRAM rate. The
+[retained clock and UMC record](measurement-state-and-memory-clock.md#memory-is-trained-at-ddr4-2133-the-reported-steps-are-dynamic-fclk)
+keeps those surfaces separate.
+
+The checkout retains neither invocation records nor the five-checkpoint
+`bandwidth-summary.tsv`, per-arm benchmark logs, and clock TSVs behind the four
+blocks. The retained 4B tensor census also records `sha256` as `not computed`,
+so its counts bind the report rather than exact GGUF bytes. The table remains a
+reported measurement whose arithmetic and decision boundaries can be checked;
+the checkout cannot independently reconstruct its execution. A repeat must
+admit both invocation command lines, executed source identities, the summary,
+every arm and clock file, and hash-bound census outputs.
 
 Achieved GB/s per block, and the mean of the four:
 
 | checkpoint | streamed/token | A | B | C | D | mean GB/s | mean tok/s |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| Qwen3.8-2B Q4_K_M | 1,263,435,008 | 12.13 | 8.95 | 9.63 | 10.92 | 10.41 | 8.24 |
-| Qwen3.8-4B Q4_K_M | 2,697,836,544 | 8.85 | 7.90 | 7.23 | 8.44 | 8.11 | 3.01 |
-| Qwen3.8-4B i1-Q6_K | 3,453,087,744 | 8.63 | 8.05 | 7.67 | 8.15 | 8.13 | 2.35 |
-| Qwen3.8-4B i1-Q5_K_M | 3,064,018,944 | 6.40 | 5.73 | 5.55 | 6.01 | 5.92 | 1.93 |
-| Qwen3.8-4B i1-Q2_K | 1,904,502,784 | 6.06 | 5.09 | 4.99 | 5.96 | 5.53 | 2.90 |
+| Qwen3.8-2B Q4_K_M | 1263435008 | 12.13 | 8.95 | 9.63 | 10.92 | 10.41 | 8.24 |
+| Qwen3.8-4B Q4_K_M | 2697836544 | 8.85 | 7.90 | 7.23 | 8.44 | 8.11 | 3.01 |
+| Qwen3.8-4B i1-Q6_K | 3453087744 | 8.63 | 8.05 | 7.67 | 8.15 | 8.13 | 2.35 |
+| Qwen3.8-4B i1-Q5_K_M | 3064018944 | 6.40 | 5.73 | 5.55 | 6.01 | 5.92 | 1.93 |
+| Qwen3.8-4B i1-Q2_K | 1904502784 | 6.06 | 5.09 | 4.99 | 5.96 | 5.53 | 2.90 |
 
 ## A repeated arm spans up to 30% and no logged covariate orders it
 
@@ -36,10 +54,11 @@ sweep exists to resolve, so a rate quoted from one arm reports its position in
 the queue as much as its flags.
 
 The 2B settles what the spread is not. Three of its four arms ran at 88 C with
-`mclk` at 933 and produced 8.95, 9.63, and 10.92 GB/s, a 22% span at fixed die
-temperature and fixed memory clock. Load average fails on the same data from the
-other side: Q6_K rises monotonically with load across all four arms, 7.67 GB/s at
-5.08 up to 8.63 at 5.77, which is the opposite sign to the 2B and to Q4_K_M.
+the logged FCLK state at 933 MHz and produced 8.95, 9.63, and 10.92 GB/s, a 22%
+span at fixed die temperature and fixed reported FCLK. Load average fails on the
+same data from the other side: Q6_K rises monotonically with load across all four
+arms, 7.67 GB/s at 5.08 up to 8.63 at 5.77, which is the opposite sign to the 2B
+and to Q4_K_M.
 Four repeats against three logged covariates support no mechanism, and the
 magnitude is the finding.
 
@@ -132,3 +151,63 @@ changes hidden width and tensor shapes under the same Q4_K_M recipe. The paired
 ordering therefore survives while attribution to depth, width, or shape remains
 open. `evidence/qwen38-2b-distill-candidate.md` holds the refutation of the
 linear size-cost model that this supports.
+
+## The 3.01 tok/s mean requires a mechanism that owns one third of token time
+
+The 3.01 tok/s reference spends 332.226 ms per token. The 4.5 tok/s target
+allows 222.222 ms, so the target removes 110.004 ms per token and requires a
+1.4950x end-to-end speedup. Amdahl's law gives the minimum accelerated fraction
+for a mechanism with speedup `s`:
+
+```text
+required_fraction = (1 - 3.01 / 4.5) / (1 - 1 / s)
+```
+
+| mechanism speedup | minimum share of current token time |
+| ---: | ---: |
+| 2x | 66.22% |
+| 4x | 44.15% |
+| unbounded | 33.11% |
+
+The 33.11% floor belongs to the 3.01 tok/s four-block mean. The individual
+Q4_K_M arms span 2.68 to 3.28 tok/s, so their required latency reductions span
+40.44% to 27.11% and their end-to-end speedups span 1.679x to 1.372x. A matched
+control beside a candidate selects the applicable coefficient; the mean does
+not erase the retained run-order variation.
+
+The tied Q6_K output projection carries 19.33% of the 4B logical streamed
+bytes. That byte share does not establish its time share. A tied-projection-only
+route reaches the target only if successful-run timing shows that the projection
+owns at least 33.11% of token time and the candidate removes nearly all of that
+cost.
+
+At unchanged Q4_K_M bytes, 4.5 tok/s requires 12.14 logical GB/s against the
+retained 8.11. Q2_K at the Q4_K_M achieved streaming rate would reach only
+4.26 tok/s; Q2_K requires 8.57 logical GB/s for 4.5 and currently reaches 5.53.
+The missing coefficient is therefore kernel efficiency as well as bytes.
+
+The [AMD processor catalogue](https://www.amd.com/en/products/specifications/processors.html)
+lists DDR4-2400 as the Athlon Silver 3050U's maximum memory speed. The
+[retained UMC measurement](measurement-state-and-memory-clock.md#memory-is-trained-at-ddr4-2133-the-reported-steps-are-dynamic-fclk)
+reports 2133.33 MT/s on both populated channels. Their counterfactual ratio is
+`2400 / 2133.33 = 1.125`. A model that assigns all token time to DRAM rate moves
+3.01 only to 3.386 tok/s. That model cannot close the target gap and does not
+predict the hardware response; matched UMC and decode measurements remain the
+falsifier for nonlinear interactions.
+
+The N=1 MTP arm exposes the same structural limit from another direction. A
+two-column target pass costs 463.1 ms and one draft pass costs 66.4 ms, or 1.432
+and 0.205 one-column target passes. Even perfect acceptance and a free draft can
+emit at most two tokens per 463.1 ms, which is 4.319 tok/s. The free-draft bound
+requires the two-column target pass to drop below 444.444 ms. Retaining the
+measured 66.4 ms draft pass tightens that target-pass bound to 378.044 ms. These
+are whole-pass coefficients; successful-run timestamps remain necessary before
+assigning either value to a shader. Acceptance alone cannot cross the target.
+
+Perfect N=1 acceptance at both measured pass costs reaches
+`2 / (0.4631 + 0.0664) = 3.777` tok/s. The retained draft cost therefore makes
+the target pass remove 85.056 ms, or 18.37% of its measured latency, before the
+pair reaches 4.5 tok/s. This coupling orders the search: successful-run timing
+first identifies target-pass time that a kernel or submission change can remove;
+draft and acceptance changes then multiply a target pass that already satisfies
+the 378.044 ms bound.

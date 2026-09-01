@@ -123,6 +123,9 @@ if [ "$fake_spec_active" = 1 ]; then
     fake_decode_tok_s=${QWEN_FAKE_SERVER_DECODE_TOK_S_SPEC:-$fake_decode_tok_s}
     fake_draft_n=${QWEN_FAKE_SERVER_DRAFT_N:-64}
     fake_draft_accepted=${QWEN_FAKE_SERVER_DRAFT_ACCEPTED:-48}
+    if [ -n "${QWEN_FAKE_SERVER_TOKENS_SPEC:-}" ]; then
+        fake_tokens=$QWEN_FAKE_SERVER_TOKENS_SPEC
+    fi
 fi
 
 QWEN_FAKE_SERVER_RESOLVED_PORT=$serving_port \
@@ -136,8 +139,10 @@ QWEN_POLICY_TEST_PREDICTED_CAP=${QWEN_POLICY_TEST_PREDICTED_CAP:-0} \
     exec python3 - <<'PY'
 import json
 import os
+import socket
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 
 port = int(os.environ["QWEN_FAKE_SERVER_RESOLVED_PORT"])
 tokens = [int(value) for value in os.environ["QWEN_FAKE_SERVER_RESOLVED_TOKENS"].split()]
@@ -151,6 +156,29 @@ decode_tok_s = float(os.environ["QWEN_FAKE_SERVER_RESOLVED_DECODE_TOK_S"])
 draft_n = int(os.environ["QWEN_FAKE_SERVER_RESOLVED_DRAFT_N"])
 draft_accepted = int(os.environ["QWEN_FAKE_SERVER_RESOLVED_DRAFT_ACCEPTED"])
 post_delay_s = float(os.environ.get("QWEN_POLICY_TEST_POST_DELAY_S", "0"))
+request_directory_text = os.environ.get("QWEN_FAKE_SERVER_REQUEST_DIRECTORY", "")
+request_directory = Path(request_directory_text) if request_directory_text else None
+if request_directory is not None:
+    request_directory.mkdir(parents=True, exist_ok=True)
+takeover_request_marker = os.environ.get(
+    "QWEN_FAKE_SERVER_TAKEOVER_REQUEST_MARKER", "")
+takeover_ready_marker = os.environ.get(
+    "QWEN_FAKE_SERVER_TAKEOVER_READY_MARKER", "")
+rebind_on_completion = os.environ.get(
+    "QWEN_FAKE_SERVER_REBIND_ON_COMPLETION", "") == "1"
+rebind_on_post_health = os.environ.get(
+    "QWEN_FAKE_SERVER_REBIND_ON_POST_HEALTH", "") == "1"
+
+
+def rebind_listener(server):
+    server.server_close()
+    server.socket = socket.socket(server.address_family, server.socket_type)
+    server.server_bind()
+    server.server_activate()
+
+
+class ReusableHTTPServer(HTTPServer):
+    allow_reuse_address = True
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -167,6 +195,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path.startswith("/health"):
+            if (
+                rebind_on_post_health
+                and self.server.request_count > 0
+                and not self.server.health_rebound
+            ):
+                self.server.health_rebound = True
+                rebind_listener(self.server)
             self.respond({"status": "ok"})
         else:
             self.send_error(404)
@@ -175,7 +210,14 @@ class Handler(BaseHTTPRequestHandler):
         if post_delay_s > 0:
             time.sleep(post_delay_s)
         length = int(self.headers.get("Content-Length") or 0)
-        body = json.loads(self.rfile.read(length).decode() or "{}")
+        request_bytes = self.rfile.read(length)
+        self.server.request_count += 1
+        if request_directory is not None:
+            request_path = request_directory / (
+                f"request-{os.getpid()}-{self.server.request_count}.bin"
+            )
+            request_path.write_bytes(request_bytes)
+        body = json.loads(request_bytes.decode() or "{}")
         if self.path.startswith("/tokenize"):
             words = len(str(body.get("content", "")).split())
             self.respond({"tokens": list(range(words))})
@@ -195,6 +237,18 @@ class Handler(BaseHTTPRequestHandler):
             if draft_n > 0:
                 timings["draft_n"] = draft_n
                 timings["draft_n_accepted"] = draft_accepted
+            if rebind_on_completion and not self.server.completion_rebound:
+                self.server.completion_rebound = True
+                rebind_listener(self.server)
+            if takeover_request_marker and not self.server.takeover_started:
+                self.server.takeover_started = True
+                self.server.server_close()
+                Path(takeover_request_marker).write_text("requested\n")
+                takeover_deadline = time.monotonic() + 10
+                while not Path(takeover_ready_marker).exists():
+                    if time.monotonic() >= takeover_deadline:
+                        raise RuntimeError("listener takeover did not become ready")
+                    time.sleep(0.01)
             self.respond({"content": "", "tokens": emitted,
                           "timings": timings})
             return
@@ -217,5 +271,10 @@ class Handler(BaseHTTPRequestHandler):
                         "predicted_n": predicted, "predicted_per_second": 4.5}})
 
 
-HTTPServer(("127.0.0.1", port), Handler).serve_forever()
+server = ReusableHTTPServer(("127.0.0.1", port), Handler)
+server.takeover_started = False
+server.completion_rebound = False
+server.health_rebound = False
+server.request_count = 0
+server.serve_forever()
 PY

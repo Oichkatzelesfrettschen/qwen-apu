@@ -27,14 +27,29 @@ git clone --quiet --shared --no-checkout "$source_directory" \
     "$temporary_directory/llama.cpp"
 git -C "$temporary_directory/llama.cpp" checkout --quiet --detach \
     "$expected_commit"
-for patch_name in \
-    llama-vulkan-low-priority.patch \
-    llama-no-cpu-fallback.patch \
-    llama-vulkan-duty-cycle.patch \
-    llama-vulkan-runtime-submit-limit.patch \
-    llama-vulkan-submit-trace.patch \
-    llama-router-tools-proxy.patch \
-    llama-vulkan-view-alias-deps.patch; do
+
+# remote/llama-patch-series.tsv is the one authority for the ordered series.
+# Reading it here rather than restating it keeps a member added to the ledger
+# from being missed by the replay that is supposed to pin its result.
+series_ledger=$script_directory/llama-patch-series.tsv
+if [ ! -r "$series_ledger" ]; then
+    printf 'patch series ledger is unreadable: %s\n' "$series_ledger" >&2
+    exit 1
+fi
+read_series_stage() {
+    awk -F'\t' -v stage="$1" '
+        /^#/ || NF == 0 { next }
+        NF != 2 { printf "malformed patch series row: %s\n", $0 > "/dev/stderr"; exit 1 }
+        $1 == stage { print $2 }
+    ' "$series_ledger"
+}
+production_patch_names=$(read_series_stage production)
+if [ -z "$production_patch_names" ]; then
+    printf 'patch series ledger names no production member: %s\n' \
+        "$series_ledger" >&2
+    exit 1
+fi
+for patch_name in $production_patch_names; do
     git -C "$temporary_directory/llama.cpp" apply --check \
         "$patch_directory/$patch_name"
     git -C "$temporary_directory/llama.cpp" apply \
@@ -68,22 +83,34 @@ verify_source d0d6c8725891ac4baf68fd947ab4be75cc93ba37b1e988ca1c556881a49d0abc \
     src/llama-model-loader.cpp
 verify_source d2d5cb43a83c6b2b459b85f2df181a3d976efcaef351e5cbc6b418ba839390e3 \
     tools/server/server.cpp
-printf 'patch_series=accepted commit=%s\n' "$expected_commit"
+verify_source 3744317beb622feff234e5b7a615c50665579f34ce49921e324bcd418fb3a58a \
+    tools/server/server-context.cpp
+
+# One digest over the ordered production series, so a build can record which
+# series it compiled in a single field. It is computed over the members' own
+# digests in ledger order, which makes a reordering and a substitution both
+# visible; build-llama-preset.sh recomputes it the same way from the same
+# ledger and records it beside the semantics it declares.
+series_identity=''
+for patch_name in $production_patch_names; do
+    series_identity=$series_identity$(
+        sha256sum "$patch_directory/$patch_name" | cut -d ' ' -f 1
+    )
+done
+patch_series_sha256=$(printf '%s' "$series_identity" | sha256sum | cut -d ' ' -f 1)
+printf 'patch_series=accepted commit=%s patch_series_sha256=%s members=%s\n' \
+    "$expected_commit" "$patch_series_sha256" \
+    "$(printf '%s\n' "$production_patch_names" | grep -c .)"
 
 # A candidate patch is a backport under measurement rather than a member of the
 # production series. Its stage runs after every production digest is verified
 # and mutates the replay tree afterwards, so the loop above and the expected
 # sums it compares against stay byte-identical whether the stage runs or not.
 # QWEN_LLAMA_CANDIDATE_PATCHES=1 arms it; the printed post-apply digest is what
-# a promotion would move into verify_source once its evidence lane closes.
-# The order is the apply order: llama-server-vulkan-workload-lease encodes
-# post-series offsets in tools/server/server-context.cpp, which no earlier
-# candidate touches, so the two stay independent while the list stays ordered.
-# llama-server-natural-checkpoint-boundary removes the forced near-end
-# checkpoint partition in the same file's batch-fill loop, a region the lease
-# leaves untouched, so the pair applies in either order and the list keeps one.
-candidate_patch_names="llama-server-vulkan-workload-lease.patch
-llama-server-natural-checkpoint-boundary.patch"
+# a promotion would move into verify_source once its evidence lane closes. The
+# stage's membership comes from remote/llama-patch-series.tsv rather than from
+# a second list here.
+candidate_patch_names=$(read_series_stage candidate)
 # One digest line per file the candidate stage rewrites. Retained evidence
 # quotes the ggml-vulkan.cpp line, so it keeps its format and its position.
 candidate_digest_paths="tools/server/server-context.cpp"

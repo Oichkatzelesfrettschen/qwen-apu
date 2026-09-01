@@ -29,12 +29,79 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 current_link=$source_directory/build-appliance-current
 previous_link=$source_directory/build-appliance-previous
 
+# The checkpoint policy and the serving artifact are two release artifacts, and
+# promotion is where they first meet. remote/ctx-checkpoints.tsv states the
+# counts the appliance will arm, so a target whose manifest does not declare the
+# measured semantics is refused here rather than at the next launch, and a
+# rollback to such a target is refused before the symlink moves rather than
+# leaving the appliance unable to launch.
+#
+# The ledger is validated whole before either path runs, because a promotion
+# that cannot read the policy authority does not know which requirement applies
+# and an unreadable file is the state a deleted or half-written ledger
+# presents. model-registry.sh is the one validator of row shape, count syntax,
+# duplicates, and registry membership, so the requirement below derives from
+# its accepted rows: a readable ledger whose count reads "two" is refused here
+# rather than coerced to zero by arithmetic, which is the coercion that would
+# roll back onto a forced-tail build while the appliance still arms a positive
+# count.
+checkpoint_policy_ledger=${QWEN_CTX_CHECKPOINT_LEDGER:-$script_directory/ctx-checkpoints.tsv}
+if [ ! -r "$checkpoint_policy_ledger" ]; then
+    printf 'the context checkpoint policy is unreadable: %s\n' \
+        "$checkpoint_policy_ledger" >&2
+    printf 'promotion cannot derive the checkpoint requirement from an absent policy\n' >&2
+    exit 1
+fi
+if ! checkpoint_policy_rows=$("$script_directory/model-registry.sh" ctx-checkpoints); then
+    printf 'the context checkpoint policy failed validation: %s\n' \
+        "$checkpoint_policy_ledger" >&2
+    printf 'promotion cannot derive the checkpoint requirement from an invalid policy\n' >&2
+    exit 1
+fi
+
+checkpoint_policy_requires_natural_boundary() {
+    printf '%s\n' "$checkpoint_policy_rows" | awk -F'\t' '
+        $2 > 0 { found = 1 }
+        END { exit found ? 0 : 1 }
+    '
+}
+
+# undeclared names a build predating the receipt and ambiguous names a manifest
+# stating the declaration twice. Both refuse a positive count, and each names
+# its own cause: a missing field is a build to rebuild, a duplicated field is a
+# manifest to investigate.
+manifest_checkpoint_semantics() {
+    semantics_manifest=$1/artifact-manifest.tsv
+    if [ ! -r "$semantics_manifest" ]; then
+        printf 'undeclared'
+        return
+    fi
+    awk -F'\t' '
+        $1 == "checkpoint_semantics" { count++; value = $2 }
+        END {
+            if (count > 1) { printf "ambiguous" }
+            else if (count == 1 && value != "") { printf "%s", value }
+            else { printf "undeclared" }
+        }
+    ' "$semantics_manifest"
+}
+
 if [ "$preset" = --rollback ]; then
     if [ ! -L "$previous_link" ]; then
         printf 'no retained previous target to roll back to: %s\n' "$previous_link" >&2
         exit 1
     fi
     rollback_target=$(readlink "$previous_link")
+    if checkpoint_policy_requires_natural_boundary; then
+        rollback_semantics=$(manifest_checkpoint_semantics "$rollback_target")
+        if [ "$rollback_semantics" != natural-boundary-v1 ]; then
+            printf 'rollback target declares checkpoint_semantics=%s: %s\n' \
+                "$rollback_semantics" "$rollback_target" >&2
+            printf 'the context checkpoint policy arms a positive count, which requires natural-boundary-v1\n' >&2
+            printf 'lower the policy to zero before rolling back to this build\n' >&2
+            exit 1
+        fi
+    fi
     ln -sfn "$rollback_target" "$current_link.new"
     mv -T "$current_link.new" "$current_link"
     printf 'promotion=rolled-back target=%s\n' "$rollback_target"
@@ -264,6 +331,15 @@ if [ "$named_colours" -lt 2 ]; then
 fi
 multimodal_state=passed
 
+promotion_checkpoint_semantics=$(manifest_checkpoint_semantics "$build_directory")
+if checkpoint_policy_requires_natural_boundary &&
+    [ "$promotion_checkpoint_semantics" != natural-boundary-v1 ]; then
+    printf 'preset declares checkpoint_semantics=%s: %s\n' \
+        "$promotion_checkpoint_semantics" "$build_directory" >&2
+    printf 'the context checkpoint policy arms a positive count, which requires natural-boundary-v1\n' >&2
+    exit 1
+fi
+
 if [ -L "$current_link" ]; then
     ln -sfn "$(readlink "$current_link")" "$previous_link.new"
     mv -T "$previous_link.new" "$previous_link"
@@ -272,6 +348,7 @@ fi
 ln -sfn "$build_directory" "$current_link.new"
 mv -T "$current_link.new" "$current_link"
 
-printf 'promotion=accepted preset=%s target=%s strict_vulkan=%s multimodal=%s previous=%s\n' \
+printf 'promotion=accepted preset=%s target=%s strict_vulkan=%s multimodal=%s checkpoint_semantics=%s previous=%s\n' \
     "$preset" "$build_directory" "$strict_state" "$multimodal_state" \
+    "$promotion_checkpoint_semantics" \
     "$([ -L "$previous_link" ] && readlink "$previous_link" || printf none)"
