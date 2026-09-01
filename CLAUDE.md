@@ -1090,13 +1090,21 @@ remote/run-graph-alias-ab.sh OUTPUT_DIR [MODEL_ID...]
 remote/run-ctx-checkpoint-sweep.sh LABEL MODEL_ID OUT
                                                 # what --ctx-checkpoints buys a second turn at 30K
 
-# Deployment bundles: the server, its manifest, and the checkpoint ledger as
-# one activated unit. Activation and rollback are the same atomic symlink
-# transition; qwen-webui-control.sh prefers deployment-current and carries
-# its ledger, so a rollback to the forced-tail build travels with the
-# all-zero ledger it is admissible under.
-remote/build-deployment-bundle.sh NAME SERVER MANIFEST LEDGER [ROOT]
+# Deployment bundles: the server, its manifest, the checkpoint ledger, and
+# the presets generated against that ledger as one activated unit.
+# Activation and rollback are the same atomic symlink transition, serialized
+# on .activate.lock under the root; qwen-webui-control.sh prefers
+# deployment-current and carries its ledger, and qwen-launch.sh and
+# qwen-web-launch.sh read deployment-current's router-presets.ini and
+# web-presets.ini ahead of the state directory's, so a rollback to the
+# forced-tail build travels with the all-zero ledger and the all-zero preset
+# it is admissible under. evidence/deployment-bundle-presets/ retains the
+# three-transition router regression.
+QWEN_CTX_CHECKPOINT_LEDGER=LEDGER remote/build-router-presets.sh OUT.ini
+QWEN_BUNDLE_ROUTER_PRESETS=OUT.ini \
+    remote/build-deployment-bundle.sh NAME SERVER MANIFEST LEDGER [ROOT]
 remote/activate-deployment-bundle.sh NAME|rollback [ROOT]
+remote/verify-bundle-preset-ledger.sh PRESET LEDGER
 
 # Rebuild llama.cpp and the static UI
 remote/build-llama-preset.sh PRESET [SOURCE]   # one directory per build arm

@@ -1,0 +1,28 @@
+2026-09-01T20:55:40Z runtime_head=5a5758e1943275de7f8566866f8e095ef0bbead9
+2026-09-01T20:55:40Z initial_teardown_exit=0
+2026-09-01T20:55:41Z router_presets_generated role=natural sections=15
+2026-09-01T20:55:41Z web_presets_absent role=natural reason=a validator-gated row emits under QWEN_WEB_AUTHORIZER_READY=1; a refused row emits under no setting
+2026-09-01T20:55:41Z router_presets_generated role=emergency sections=15
+2026-09-01T20:55:41Z web_presets_absent role=emergency reason=a validator-gated row emits under QWEN_WEB_AUTHORIZER_READY=1; a refused row emits under no setting
+2026-09-01T20:55:41Z 10-activate-natural bundle is already deployment-current: natural-boundary-13d05a0-r2
+2026-09-01T20:55:41Z 10-activate-natural current=natural-boundary-13d05a0-r2 previous=natural-boundary-13d05a0 generations=1
+2026-09-01T20:55:46Z 10-activate-natural router_presets_source=deployment-current path=$HOME/qwen-deployments/deployment-current/router-presets.ini state=running server_pid=587327 monitor_pid=587568 latency_watchdog_pid=587549 kernel_hazard_watchdog_pid=587563 profile=low-async host=127.0.0.1 port=8080 context=24576 latency_mode=observe utc=2026-09-01T20:55:46Z 
+2026-09-01T20:55:50Z 10-activate-natural completion_bytes=656 served_model=qwen38-2b-distill
+2026-09-01T20:55:50Z 10-activate-natural child_pid=587628 exe=$HOME/qwen-deployments/natural-boundary-13d05a0-r2/llama-server ctx_checkpoints=2
+2026-09-01T20:55:50Z 10-activate-natural teardown_exit=0 torn down: no server, tmux session, probe, approval broker, image service, or router snapshot; port 8080 free
+2026-09-01T20:55:50Z 10-activate-natural verdict=accepted ctx_checkpoints=2
+2026-09-01T20:55:51Z 20-activate-emergency deployment_current=emergency-forced-tail-40f7b775-r2 deployment_previous=natural-boundary-13d05a0-r2 transition=activate
+2026-09-01T20:55:51Z 20-activate-emergency current=emergency-forced-tail-40f7b775-r2 previous=natural-boundary-13d05a0-r2 generations=1
+2026-09-01T20:55:55Z 20-activate-emergency router_presets_source=deployment-current path=$HOME/qwen-deployments/deployment-current/router-presets.ini state=running server_pid=593256 monitor_pid=593488 latency_watchdog_pid=593469 kernel_hazard_watchdog_pid=593483 profile=low-async host=127.0.0.1 port=8080 context=24576 latency_mode=observe utc=2026-09-01T20:55:55Z 
+2026-09-01T20:55:59Z 20-activate-emergency completion_bytes=665 served_model=qwen38-2b-distill
+2026-09-01T20:55:59Z 20-activate-emergency child_pid=593570 exe=$HOME/qwen-deployments/emergency-forced-tail-40f7b775-r2/llama-server ctx_checkpoints=0
+2026-09-01T20:55:59Z 20-activate-emergency teardown_exit=0 torn down: no server, tmux session, probe, approval broker, image service, or router snapshot; port 8080 free
+2026-09-01T20:55:59Z 20-activate-emergency verdict=accepted ctx_checkpoints=0
+2026-09-01T20:55:59Z 30-rollback deployment_current=natural-boundary-13d05a0-r2 deployment_previous=emergency-forced-tail-40f7b775-r2 transition=rollback
+2026-09-01T20:55:59Z 30-rollback current=natural-boundary-13d05a0-r2 previous=emergency-forced-tail-40f7b775-r2 generations=1
+2026-09-01T20:56:04Z 30-rollback router_presets_source=deployment-current path=$HOME/qwen-deployments/deployment-current/router-presets.ini state=running server_pid=599155 monitor_pid=599400 latency_watchdog_pid=599382 kernel_hazard_watchdog_pid=599395 profile=low-async host=127.0.0.1 port=8080 context=24576 latency_mode=observe utc=2026-09-01T20:56:04Z 
+2026-09-01T20:56:08Z 30-rollback completion_bytes=666 served_model=qwen38-2b-distill
+2026-09-01T20:56:08Z 30-rollback child_pid=599474 exe=$HOME/qwen-deployments/natural-boundary-13d05a0-r2/llama-server ctx_checkpoints=2
+2026-09-01T20:56:09Z 30-rollback teardown_exit=0 torn down: no server, tmux session, probe, approval broker, image service, or router snapshot; port 8080 free
+2026-09-01T20:56:09Z 30-rollback verdict=accepted ctx_checkpoints=2
+2026-09-01T20:56:09Z regression=accepted transitions=3

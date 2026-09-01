@@ -1,0 +1,12 @@
+runtime_tree=verified git_head=5a5758e1943275de7f8566866f8e095ef0bbead9 payload=6f70083a83243f8fa0993849151e910918c3843d8dcba45fc9767ec710180057 files=286
+router_presets_source=deployment-current path=$HOME/qwen-deployments/deployment-current/router-presets.ini
+router_preflight_subject=Qwen3.8-4B-Q4_K_M.gguf bytes=3617038400 draft=Qwen3.5-0.8B-Q8_0.gguf draft_bytes=833592096
+router_preflight_requirement mib=5403 draft_mib=795
+runtime_tree=verified git_head=5a5758e1943275de7f8566866f8e095ef0bbead9 payload=6f70083a83243f8fa0993849151e910918c3843d8dcba45fc9767ec710180057 files=286
+runtime_tree=verified git_head=5a5758e1943275de7f8566866f8e095ef0bbead9 payload=6f70083a83243f8fa0993849151e910918c3843d8dcba45fc9767ec710180057 files=286
+started tmux_socket=qwen-runtime tmux_session=qwen-webui profile=low-async host=127.0.0.1 port=8080 context=24576 latency_mode=observe model=$HOME/models/Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf server=$HOME/qwen-deployments/deployment-current/llama-server
+speculation spec_type=off draft_n_max=default draft_p_min=default draft_backend_sampling=0 backend_sampling=0
+cache cache_type_k=registry cache_type_v=registry flash_attention=registry override_context_ceiling=registry
+state=running server_pid=599155 monitor_pid=599400 latency_watchdog_pid=599382 kernel_hazard_watchdog_pid=599395 profile=low-async host=127.0.0.1 port=8080 context=24576 latency_mode=observe utc=2026-09-01T20:56:04Z
+reachable at http://127.0.0.1:8080 (loopback only)
+stop it with $HOME/qwen-laptop-setup/remote/qwen-teardown.sh
