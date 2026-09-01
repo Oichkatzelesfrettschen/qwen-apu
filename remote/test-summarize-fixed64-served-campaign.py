@@ -53,22 +53,56 @@ def write_server_process(
     server_sha256: str,
     model: dict[str, str],
     campaign_directory: Path,
-    expected_server_argv: Callable[[str, dict[str, str], str], list[str]],
+    expected_server_argv: Callable[[str, str, dict[str, str], str], list[str]],
     server_pid: int = 1234,
 ) -> None:
     document = {
-        "schema": "served-decode-process-v2",
+        "schema": "served-decode-process-v3",
         "execution_surface": "hp14-ssh",
         "host_shortname": "hp14-dk1xxx",
         "ssh_session": "present",
         "pid": server_pid,
         "start_time_ticks": 5678,
         "executable": str(server_path),
+        "executable_proc_link": str(server_path),
+        "executable_device": server_path.stat().st_dev,
+        "executable_inode": server_path.stat().st_ino,
+        "executable_bytes": server_path.stat().st_size,
         "executable_sha256": server_sha256,
-        "argv": expected_server_argv(str(server_path), model, str(campaign_directory)),
+        "argv": expected_server_argv(
+            str(server_path), "/proc/4321/fd/7", model, str(campaign_directory)
+        ),
         "nice": 19,
         "cpus_allowed_list": "0",
         "io_class": "idle",
+    }
+    path.write_text(json.dumps(document) + "\n", encoding="utf-8")
+
+
+def write_runtime_inputs(
+    path: Path, server_path: Path, server_sha256: str, model: dict[str, str]
+) -> None:
+    model_path = Path(model["model_path"])
+    document = {
+        "schema": "served-runtime-inputs-v1",
+        "model": {
+            "path": str(model_path),
+            "descriptor_path": "/proc/4321/fd/7",
+            "device": model_path.stat().st_dev,
+            "inode": model_path.stat().st_ino,
+            "bytes": model_path.stat().st_size,
+            "sha256": model["model_sha256"],
+            "artifact_model_id": model["model_id"],
+            "artifact_model_file": model["model_file"],
+        },
+        "executable": {
+            "path": str(server_path),
+            "descriptor_path": "/proc/4321/fd/6",
+            "device": server_path.stat().st_dev,
+            "inode": server_path.stat().st_ino,
+            "bytes": server_path.stat().st_size,
+            "sha256": server_sha256,
+        },
     }
     path.write_text(json.dumps(document) + "\n", encoding="utf-8")
 
@@ -88,6 +122,7 @@ def expect_resealed_refusal(
     summarizer: Any,
     session_status_path: Path,
     server_process_path: Path,
+    runtime_inputs_path: Path,
     server_path: Path,
     server_sha256: str,
     model: dict[str, str],
@@ -96,14 +131,16 @@ def expect_resealed_refusal(
 ) -> None:
     reseal_artifacts(
         campaign_directory / "SHA256SUMS",
-        (session_status_path, server_process_path),
+        (session_status_path, server_process_path, runtime_inputs_path),
     )
     try:
         summarizer.validate_arm_server_identity(
             session_status_path,
             server_process_path,
+            runtime_inputs_path,
             str(server_path),
             server_sha256,
+            str(server_path.stat().st_size),
             model,
             str(campaign_directory),
             "hp14-ssh",
@@ -126,13 +163,21 @@ def main() -> int:
         campaign_directory = Path(temporary)
         session_status_path = campaign_directory / "session.status"
         server_process_path = campaign_directory / "server-process.json"
+        runtime_inputs_path = campaign_directory / "runtime-inputs.json"
         server_path = campaign_directory / "llama-server"
         server_path.write_bytes(b"fixed64 server identity fixture\n")
         server_sha256 = sha256_file(server_path)
         model = cast(dict[str, str], dict(summarizer.MODEL_CONTRACT["qwen35-08b"]))
+        model["model_id"] = "qwen35-08b"
         model["model_path"] = str(campaign_directory / model["model_file"])
+        model_path = Path(model["model_path"])
+        model_path.parent.mkdir(parents=True)
+        model_path.write_bytes(b"fixed64 model identity fixture\n")
+        model["model_bytes"] = str(model_path.stat().st_size)
+        model["model_sha256"] = sha256_file(model_path)
 
         write_session_status(session_status_path)
+        write_runtime_inputs(runtime_inputs_path, server_path, server_sha256, model)
         write_server_process(
             server_process_path,
             server_path,
@@ -144,8 +189,10 @@ def main() -> int:
         accepted_pid = summarizer.validate_arm_server_identity(
             session_status_path,
             server_process_path,
+            runtime_inputs_path,
             str(server_path),
             server_sha256,
+            str(server_path.stat().st_size),
             model,
             str(campaign_directory),
             "hp14-ssh",
@@ -154,6 +201,68 @@ def main() -> int:
         )
         if accepted_pid != 1234:
             raise AssertionError(f"canonical server PID differs: {accepted_pid}")
+
+        runtime_inputs = json.loads(runtime_inputs_path.read_text(encoding="utf-8"))
+        runtime_inputs["model"]["descriptor_path"] = "/proc/04321/fd/7"
+        runtime_inputs_path.write_text(
+            json.dumps(runtime_inputs) + "\n", encoding="utf-8"
+        )
+        expect_resealed_refusal(
+            summarizer,
+            session_status_path,
+            server_process_path,
+            runtime_inputs_path,
+            server_path,
+            server_sha256,
+            model,
+            campaign_directory,
+            "descriptor_path must be /proc/<positive-pid>/fd/7",
+        )
+
+        write_runtime_inputs(runtime_inputs_path, server_path, server_sha256, model)
+        runtime_inputs = json.loads(runtime_inputs_path.read_text(encoding="utf-8"))
+        runtime_inputs["executable"]["descriptor_path"] = "/proc/4322/fd/6"
+        runtime_inputs_path.write_text(
+            json.dumps(runtime_inputs) + "\n", encoding="utf-8"
+        )
+        expect_resealed_refusal(
+            summarizer,
+            session_status_path,
+            server_process_path,
+            runtime_inputs_path,
+            server_path,
+            server_sha256,
+            model,
+            campaign_directory,
+            "model and executable descriptors use different PIDs",
+        )
+
+        write_runtime_inputs(runtime_inputs_path, server_path, server_sha256, model)
+        server_process = json.loads(server_process_path.read_text(encoding="utf-8"))
+        server_process["executable_inode"] += 1
+        server_process_path.write_text(
+            json.dumps(server_process) + "\n", encoding="utf-8"
+        )
+        expect_resealed_refusal(
+            summarizer,
+            session_status_path,
+            server_process_path,
+            runtime_inputs_path,
+            server_path,
+            server_sha256,
+            model,
+            campaign_directory,
+            "executable identity differs from runtime-inputs",
+        )
+
+        write_server_process(
+            server_process_path,
+            server_path,
+            server_sha256,
+            model,
+            campaign_directory,
+            summarizer.expected_server_argv,
+        )
 
         write_session_status(session_status_path)
         state_line, *policy_lines = session_status_path.read_text(
@@ -169,6 +278,7 @@ def main() -> int:
             summarizer,
             session_status_path,
             server_process_path,
+            runtime_inputs_path,
             server_path,
             server_sha256,
             model,
@@ -190,6 +300,7 @@ def main() -> int:
             summarizer,
             session_status_path,
             server_process_path,
+            runtime_inputs_path,
             server_path,
             server_sha256,
             model,
@@ -217,13 +328,14 @@ def main() -> int:
             summarizer,
             session_status_path,
             server_process_path,
+            runtime_inputs_path,
             server_path,
             server_sha256,
             model,
             campaign_directory,
             "state keys differ: missing=[] extra=['unbound']",
         )
-    print("fixed64_server_identity=accepted cases=4")
+    print("fixed64_server_identity=accepted cases=7")
     return 0
 
 

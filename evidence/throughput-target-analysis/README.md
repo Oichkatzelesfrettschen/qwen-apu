@@ -250,14 +250,15 @@ boundary rather than as mutually hostile principals. The proof's
 that field.
 
 `remote/test-run-fixed64-served-campaign.sh` exercises the full contract with
-tiny fake artifacts and enforces an exact 83-check denominator. The checks cover
+tiny fake artifacts and enforces an exact 90-check denominator. The checks cover
 ordering, slot balance, ambient sanitization, publisher identity, exact token
 count, prompt count/time/rate domains and coherence, response-child
 reconciliation, closed child-summary fields, decode timing coherence, target
 failure, immutable output, child and teardown
 failure, effective argv aliases, closed input schema, the full identity
 denominator, RADV ICD identity, request/model/runner/source drift, atomic
-summary and manifest publication, both workload leases, stale proof removal,
+summary and manifest publication, descriptor-bound runtime model and executable
+identity, both workload leases, stale proof removal,
 TERM recovery, runner `SIGKILL` retry and fail-stop behavior, outer `SIGKILL`
 descriptor inheritance, and host-wide serialization. The companion image
 teardown suite rejects unproved and stale external holders while accepting a

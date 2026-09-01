@@ -99,8 +99,9 @@ retains neither historical raw bundle. `remote/run-fixed64-served-campaign.sh`
 constructs the missing fixed-64, exact-default-tuple, balanced serving
 denominator for all three current artifacts; the checkout retains no real
 campaign output from that runner yet.
-The 83-check fake-only suite validates the campaign contract, including strict
-prompt count, elapsed-time, rate, and child-summary reconciliation, without
+The 90-check fake-only suite validates the campaign contract, including strict
+prompt count, elapsed-time, rate, child-summary reconciliation, and descriptor-
+bound model and executable identities, without
 starting a real server, model, GPU, or remote workload. The suite supplies no throughput
 evidence, so all three targets remain unproved pending the real twelve-arm
 bundle. The 4B 5.25 tok/s target remains unmet across any complete reported
