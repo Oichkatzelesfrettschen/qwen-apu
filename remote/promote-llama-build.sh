@@ -29,12 +29,50 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 current_link=$source_directory/build-appliance-current
 previous_link=$source_directory/build-appliance-previous
 
+# The checkpoint policy and the serving artifact are two release artifacts, and
+# promotion is where they first meet. remote/ctx-checkpoints.tsv states the
+# counts the appliance will arm, so a target whose manifest does not declare the
+# measured semantics is refused here rather than at the next launch, and a
+# rollback to such a target is refused before the symlink moves rather than
+# leaving the appliance unable to launch.
+checkpoint_policy_requires_natural_boundary() {
+    policy_ledger=${QWEN_CTX_CHECKPOINT_LEDGER:-$script_directory/ctx-checkpoints.tsv}
+    [ -r "$policy_ledger" ] || return 1
+    awk -F'\t' '
+        /^#/ || NF == 0 { next }
+        NF >= 2 && $2 + 0 > 0 { found = 1 }
+        END { exit found ? 0 : 1 }
+    ' "$policy_ledger"
+}
+
+manifest_checkpoint_semantics() {
+    semantics_manifest=$1/artifact-manifest.tsv
+    if [ ! -r "$semantics_manifest" ]; then
+        printf 'undeclared'
+        return
+    fi
+    semantics_value=$(awk -F'\t' '
+        $1 == "checkpoint_semantics" { print $2; exit }
+    ' "$semantics_manifest")
+    printf '%s' "${semantics_value:-undeclared}"
+}
+
 if [ "$preset" = --rollback ]; then
     if [ ! -L "$previous_link" ]; then
         printf 'no retained previous target to roll back to: %s\n' "$previous_link" >&2
         exit 1
     fi
     rollback_target=$(readlink "$previous_link")
+    if checkpoint_policy_requires_natural_boundary; then
+        rollback_semantics=$(manifest_checkpoint_semantics "$rollback_target")
+        if [ "$rollback_semantics" != natural-boundary-v1 ]; then
+            printf 'rollback target declares checkpoint_semantics=%s: %s\n' \
+                "$rollback_semantics" "$rollback_target" >&2
+            printf 'the context checkpoint policy arms a positive count, which requires natural-boundary-v1\n' >&2
+            printf 'lower the policy to zero before rolling back to this build\n' >&2
+            exit 1
+        fi
+    fi
     ln -sfn "$rollback_target" "$current_link.new"
     mv -T "$current_link.new" "$current_link"
     printf 'promotion=rolled-back target=%s\n' "$rollback_target"
@@ -264,6 +302,15 @@ if [ "$named_colours" -lt 2 ]; then
 fi
 multimodal_state=passed
 
+promotion_checkpoint_semantics=$(manifest_checkpoint_semantics "$build_directory")
+if checkpoint_policy_requires_natural_boundary &&
+    [ "$promotion_checkpoint_semantics" != natural-boundary-v1 ]; then
+    printf 'preset declares checkpoint_semantics=%s: %s\n' \
+        "$promotion_checkpoint_semantics" "$build_directory" >&2
+    printf 'the context checkpoint policy arms a positive count, which requires natural-boundary-v1\n' >&2
+    exit 1
+fi
+
 if [ -L "$current_link" ]; then
     ln -sfn "$(readlink "$current_link")" "$previous_link.new"
     mv -T "$previous_link.new" "$previous_link"
@@ -272,6 +319,7 @@ fi
 ln -sfn "$build_directory" "$current_link.new"
 mv -T "$current_link.new" "$current_link"
 
-printf 'promotion=accepted preset=%s target=%s strict_vulkan=%s multimodal=%s previous=%s\n' \
+printf 'promotion=accepted preset=%s target=%s strict_vulkan=%s multimodal=%s checkpoint_semantics=%s previous=%s\n' \
     "$preset" "$build_directory" "$strict_state" "$multimodal_state" \
+    "$promotion_checkpoint_semantics" \
     "$([ -L "$previous_link" ] && readlink "$previous_link" || printf none)"

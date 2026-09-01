@@ -169,15 +169,16 @@ elif [ -n "$current_status" ]; then
     git -C "$patched_source" status --short >&2
     exit 1
 else
-    apply_patches \
-        llama-vulkan-low-priority.patch \
-        llama-no-cpu-fallback.patch \
-        llama-vulkan-duty-cycle.patch \
-        llama-vulkan-runtime-submit-limit.patch \
-        llama-vulkan-submit-trace.patch \
-        llama-router-tools-proxy.patch \
-        llama-vulkan-view-alias-deps.patch \
-        llama-server-natural-checkpoint-boundary.patch
+    # A clean tree takes the whole series from remote/llama-patch-series.tsv,
+    # the one authority that states it, so a member added there reaches this
+    # path without a second list. The prefix arms above name the members their
+    # own recorded shape is missing, which is a property of that shape rather
+    # than of the ledger.
+    # shellcheck disable=SC2046
+    apply_patches $(awk -F'\t' '
+        /^#/ || NF == 0 { next }
+        $1 == "production" { print $2 }
+    ' "$script_directory/llama-patch-series.tsv")
     prepared_state=prepared
 fi
 

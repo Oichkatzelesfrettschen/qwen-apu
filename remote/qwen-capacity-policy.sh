@@ -1330,7 +1330,8 @@ fi
 # manifest, this policy reads that declaration from the manifest beside the
 # selected executable, and an absent declaration refuses rather than defaults.
 checkpoint_semantics=unknown
-llama_server_directory=$(dirname -- "$llama_server")
+checkpoint_manifest_sha256=-
+llama_server_directory=$(dirname -- "$(readlink -f -- "$llama_server")")
 for checkpoint_manifest in "$llama_server_directory/artifact-manifest.tsv" \
     "$llama_server_directory/../artifact-manifest.tsv"; do
     [ -r "$checkpoint_manifest" ] || continue
@@ -1338,6 +1339,7 @@ for checkpoint_manifest in "$llama_server_directory/artifact-manifest.tsv" \
         $1 == "checkpoint_semantics" { print $2; exit }
     ' "$checkpoint_manifest")
     checkpoint_semantics=${checkpoint_semantics:-unknown}
+    checkpoint_manifest_sha256=$(sha256sum -- "$checkpoint_manifest" | cut -d ' ' -f 1)
     break
 done
 
@@ -1360,13 +1362,27 @@ elif [ "$ctx_checkpoints" -gt 0 ]; then
     checkpoint_count_armed=1
 fi
 
-if [ "$checkpoint_count_armed" = 1 ] &&
-    [ "$checkpoint_semantics" != natural-boundary-v1 ]; then
+checkpoint_guard_requirement=-
+if [ "$checkpoint_count_armed" = 1 ]; then
+    checkpoint_guard_requirement=natural-boundary-v1
+fi
+
+# The refusal is stated here so an unserviceable combination fails while the
+# reason is still readable beside the argv it would have produced.
+# qwen-build-exec-guard.sh states it again at the exec boundary, where it also
+# measures the manifest and the executable, so a symlink repointed or a manifest
+# rewritten after this point is caught there rather than served.
+if [ "$checkpoint_guard_requirement" != - ] &&
+    [ "$checkpoint_semantics" != "$checkpoint_guard_requirement" ]; then
     printf 'the selected llama-server declares checkpoint_semantics=%s: %s\n' \
         "$checkpoint_semantics" "$llama_server" >&2
-    printf 'a positive context checkpoint count requires natural-boundary-v1\n' >&2
+    printf 'a positive context checkpoint count requires %s\n' \
+        "$checkpoint_guard_requirement" >&2
     exit 2
 fi
+printf 'checkpoint_binding semantics=%s requirement=%s manifest_sha256=%s\n' \
+    "$checkpoint_semantics" "$checkpoint_guard_requirement" \
+    "$checkpoint_manifest_sha256"
 
 set -- "$@" \
     --log-verbosity 4 \
@@ -1451,6 +1467,9 @@ if [ "$router_enabled" = 1 ]; then
         exit 2
     fi
     exec "$script_directory/radv-low-priority-env.sh" \
+        "$script_directory/qwen-build-exec-guard.sh" \
+        "$llama_server" "$checkpoint_manifest_sha256" \
+        "$checkpoint_guard_requirement" \
         "$script_directory/qwen-router-exec-guard.sh" \
         "$router_presets" "$router_preset_guard_sha256" \
         "$router_registry" "$router_registry_guard_sha256" \
@@ -1463,4 +1482,8 @@ if [ "$router_enabled" = 1 ]; then
         "$@"
 fi
 
-exec "$script_directory/radv-low-priority-env.sh" "$@"
+exec "$script_directory/radv-low-priority-env.sh" \
+    "$script_directory/qwen-build-exec-guard.sh" \
+    "$llama_server" "$checkpoint_manifest_sha256" \
+    "$checkpoint_guard_requirement" \
+    "$@"

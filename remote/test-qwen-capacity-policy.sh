@@ -3,9 +3,36 @@ set -eu
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 policy=$script_directory/qwen-capacity-policy.sh
-fake_server=$script_directory/test-fixtures/fake-llama-server.sh
+fixture_server=$script_directory/test-fixtures/fake-llama-server.sh
 temporary_directory=$(mktemp -d)
 trap 'rm -rf "$temporary_directory"' EXIT HUP INT TERM
+
+# qwen-build-exec-guard.sh reads the artifact manifest beside the selected
+# server and compares that server's own byte count and digest against the
+# manifest's executable row, so a fixture standing in for a promoted build is a
+# copy beside a manifest rather than the tracked script in place. The generator
+# takes the declaration as its argument, which is what lets one helper produce
+# the accepted arm and each refused one.
+write_fixture_build() {
+    fixture_directory=$1
+    fixture_semantics=$2
+    mkdir -p "$fixture_directory"
+    cp "$fixture_server" "$fixture_directory/llama-server"
+    chmod 755 "$fixture_directory/llama-server"
+    {
+        printf 'preset\tfixture\n'
+        if [ "$fixture_semantics" != absent ]; then
+            printf 'checkpoint_semantics\t%s\n' "$fixture_semantics"
+        fi
+        printf 'executable\tllama-server\t%s\t%s\n' \
+            "$(stat -c %s "$fixture_directory/llama-server")" \
+            "$(sha256sum "$fixture_directory/llama-server" | cut -d ' ' -f 1)"
+    } >"$fixture_directory/artifact-manifest.tsv"
+    printf '%s/llama-server' "$fixture_directory"
+}
+
+fake_server=$(write_fixture_build "$temporary_directory/fixture-build" \
+    natural-boundary-v1)
 QWEN_WEBUI_STATE_DIRECTORY=$temporary_directory/state
 export QWEN_WEBUI_STATE_DIRECTORY
 
@@ -869,6 +896,11 @@ mkdir -p "$authority_race_tools"
 cp "$policy" "$authority_race_tools/qwen-capacity-policy.sh"
 cp "$script_directory/qwen-router-exec-guard.sh" \
     "$authority_race_tools/qwen-router-exec-guard.sh"
+# The build guard precedes the router guard on the exec chain, so the copied
+# tools directory carries it or the chain breaks before the authority recheck
+# this arm measures.
+cp "$script_directory/qwen-build-exec-guard.sh" \
+    "$authority_race_tools/qwen-build-exec-guard.sh"
 : >"$authority_race_quarantine"
 cat >"$authority_race_tools/model-registry.sh" <<'REGISTRY'
 #!/bin/sh
@@ -1043,6 +1075,8 @@ carrier_output=$temporary_directory/identity-carrier.out
 mkdir -p "$carrier_tools"
 : >"$carrier_quarantine"
 cp "$policy" "$carrier_tools/qwen-capacity-policy.sh"
+cp "$script_directory/qwen-build-exec-guard.sh" \
+    "$carrier_tools/qwen-build-exec-guard.sh"
 cat >"$carrier_tools/model-registry.sh" <<'REGISTRY'
 #!/bin/sh
 exec "$QWEN_TEST_REAL_MODEL_REGISTRY" "$@"
@@ -1656,63 +1690,156 @@ for refused_pair in 'QWEN_CTX_CHECKPOINTS=two' 'QWEN_CTX_CHECKPOINTS=-1' \
         "$temporary_directory/checkpoint.stderr" >/dev/null
 done
 
-# A positive count is refused against a server that does not declare
-# natural-boundary checkpoint semantics, and the same server serves a count of
-# zero. The fixture beside fake-llama-server.sh declares the promoted value, so
-# these cases point the policy at copies carrying their own manifests.
-semantics_directory=$temporary_directory/checkpoint-semantics
-mkdir -p "$semantics_directory/undeclared" "$semantics_directory/forced" \
-    "$semantics_directory/natural"
-for semantics_arm in undeclared forced natural; do
-    cp "$fake_server" "$semantics_directory/$semantics_arm/llama-server"
-done
-printf 'preset\tforced\ncheckpoint_semantics\tforced-tail-v0\n' \
-    >"$semantics_directory/forced/artifact-manifest.tsv"
-printf 'preset\tnatural\ncheckpoint_semantics\tnatural-boundary-v1\n' \
-    >"$semantics_directory/natural/artifact-manifest.tsv"
+# The capability binding, exercised across the states a serving path can reach.
+# A positive count is executable only by a build whose manifest declares the
+# measured checkpoint semantics, and every other combination refuses at the
+# policy or at the exec boundary rather than serving.
+semantics_root=$temporary_directory/checkpoint-semantics
+natural_server=$(write_fixture_build "$semantics_root/natural" natural-boundary-v1)
+forced_server=$(write_fixture_build "$semantics_root/forced" forced-tail-v1)
+absent_server=$(write_fixture_build "$semantics_root/absent" absent)
 
-for semantics_arm in undeclared forced; do
-    if QWEN_CTX_CHECKPOINTS=2 QWEN_RADV_ICD=$fake_icd \
+run_semantics_arm() {
+    arm_name=$1
+    arm_server=$2
+    arm_count=$3
+    QWEN_CTX_CHECKPOINTS=$arm_count QWEN_RADV_ICD=$fake_icd \
         QWEN_POLICY_TEST_OUTPUT=$checkpoint_output \
-        "$policy" "$semantics_directory/$semantics_arm/llama-server" \
-        "$model_path" 24576 8080 \
-        2>"$temporary_directory/semantics-$semantics_arm.stderr"; then
-        printf 'the policy armed checkpoints against a %s build\n' \
-            "$semantics_arm" >&2
+        "$policy" "$arm_server" "$model_path" 24576 8080 \
+        >"$temporary_directory/semantics-$arm_name.stdout" \
+        2>"$temporary_directory/semantics-$arm_name.stderr"
+}
+
+expect_semantics_refusal() {
+    arm_name=$1
+    arm_server=$2
+    arm_count=$3
+    expected_reason=$4
+    if run_semantics_arm "$arm_name" "$arm_server" "$arm_count"; then
+        printf 'the %s arm was admitted\n' "$arm_name" >&2
         exit 1
     fi
-    grep -F 'a positive context checkpoint count requires natural-boundary-v1' \
-        "$temporary_directory/semantics-$semantics_arm.stderr" >/dev/null
-done
-
-# The undeclared build still serves, so the refusal names the count rather than
-# the binary.
-QWEN_CTX_CHECKPOINTS=0 QWEN_RADV_ICD=$fake_icd \
-    QWEN_POLICY_TEST_OUTPUT=$checkpoint_output \
-    "$policy" "$semantics_directory/undeclared/llama-server" \
-    "$model_path" 24576 8080
-checkpoint_arguments=$(sed -n 's/^argument=//p' "$checkpoint_output" | tr '\n' ' ')
-case $checkpoint_arguments in
-    *'--ctx-checkpoints 0 '*) ;;
-    *)
-        printf 'an undeclared build refused a checkpoint count of zero: %s\n' \
-            "$checkpoint_arguments" >&2
+    if ! grep -F "$expected_reason" \
+        "$temporary_directory/semantics-$arm_name.stderr" >/dev/null; then
+        printf 'the %s refusal names the wrong reason:\n' "$arm_name" >&2
+        cat "$temporary_directory/semantics-$arm_name.stderr" >&2
         exit 1
-        ;;
-esac
+    fi
+}
 
-QWEN_CTX_CHECKPOINTS=2 QWEN_RADV_ICD=$fake_icd \
+expect_semantics_argv() {
+    arm_name=$1
+    arm_server=$2
+    arm_count=$3
+    run_semantics_arm "$arm_name" "$arm_server" "$arm_count"
+    semantics_arguments=$(sed -n 's/^argument=//p' "$checkpoint_output" | tr '\n' ' ')
+    case $semantics_arguments in
+        *"--ctx-checkpoints $arm_count "*) ;;
+        *)
+            printf 'the %s arm produced the wrong argv: %s\n' \
+                "$arm_name" "$semantics_arguments" >&2
+            exit 1
+            ;;
+    esac
+}
+
+# A build predating the declaration still serves a count of zero, so the
+# requirement follows the count rather than the binary.
+expect_semantics_argv absent-zero "$absent_server" 0
+expect_semantics_argv forced-zero "$forced_server" 0
+expect_semantics_argv natural-two "$natural_server" 2
+
+expect_semantics_refusal absent-two "$absent_server" 2 \
+    'a positive context checkpoint count requires natural-boundary-v1'
+expect_semantics_refusal forced-two "$forced_server" 2 \
+    'a positive context checkpoint count requires natural-boundary-v1'
+
+# A server replaced under a manifest that still declares the repaired semantics
+# is refused on its own digest, which is the drift a policy-time read alone
+# would miss.
+tampered_server=$(write_fixture_build "$semantics_root/tampered" natural-boundary-v1)
+printf '\n# replaced after the manifest was written\n' >>"$tampered_server"
+if QWEN_CTX_CHECKPOINTS=2 QWEN_RADV_ICD=$fake_icd \
     QWEN_POLICY_TEST_OUTPUT=$checkpoint_output \
-    "$policy" "$semantics_directory/natural/llama-server" \
-    "$model_path" 24576 8080
-checkpoint_arguments=$(sed -n 's/^argument=//p' "$checkpoint_output" | tr '\n' ' ')
-case $checkpoint_arguments in
-    *'--ctx-checkpoints 2 '*) ;;
-    *)
-        printf 'a natural-boundary build refused a positive count: %s\n' \
-            "$checkpoint_arguments" >&2
-        exit 1
-        ;;
-esac
+    "$policy" "$tampered_server" "$model_path" 24576 8080 \
+    >"$temporary_directory/semantics-tampered.stdout" \
+    2>"$temporary_directory/semantics-tampered.stderr"; then
+    printf 'a server replaced under its manifest was admitted\n' >&2
+    exit 1
+fi
+grep -F 'does not match its manifest row' \
+    "$temporary_directory/semantics-tampered.stderr" >/dev/null
+
+# A manifest rewritten between policy assembly and exec is what the recorded
+# digest closes, and only the guard can be placed at that boundary, so it is
+# driven directly with a digest the manifest no longer matches.
+guard=$script_directory/qwen-build-exec-guard.sh
+if "$guard" "$natural_server" \
+    0000000000000000000000000000000000000000000000000000000000000000 \
+    natural-boundary-v1 /bin/true \
+    2>"$temporary_directory/guard-manifest.stderr"; then
+    printf 'the guard accepted a manifest whose identity changed\n' >&2
+    exit 1
+fi
+grep -F 'artifact manifest identity changed' \
+    "$temporary_directory/guard-manifest.stderr" >/dev/null
+
+# Two declarations leave the manifest stating nothing, so the guard refuses
+# rather than reading whichever row comes first.
+duplicate_server=$(write_fixture_build "$semantics_root/duplicate" natural-boundary-v1)
+printf 'checkpoint_semantics\tforced-tail-v1\n' \
+    >>"$semantics_root/duplicate/artifact-manifest.tsv"
+if "$guard" "$duplicate_server" - natural-boundary-v1 /bin/true \
+    2>"$temporary_directory/guard-duplicate.stderr"; then
+    printf 'the guard accepted two checkpoint_semantics rows\n' >&2
+    exit 1
+fi
+grep -F 'requires exactly one' \
+    "$temporary_directory/guard-duplicate.stderr" >/dev/null
+
+# Router mode carries the count per section, so the requirement follows the
+# sections a launch would actually serve rather than any positive row in the
+# ledger. A preset whose sections all read zero launches an older build; one
+# positive section makes the declaration mandatory.
+semantics_router_presets=$temporary_directory/semantics-router-presets.ini
+: >"$semantics_router_presets"
+append_complete_router_section "$semantics_router_presets"
+sed -i 's/^LLAMA_ARG_CTX_CHECKPOINTS = 0$/LLAMA_ARG_CTX_CHECKPOINTS = 2/' \
+    "$semantics_router_presets"
+semantics_router_ledger=$temporary_directory/semantics-router-ctx-checkpoints.tsv
+printf 'fabricated\t2\tevidence/depth-versus-submission-geometry.md\n' \
+    >"$semantics_router_ledger"
+
+if QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_CTX_CHECKPOINT_LEDGER=$semantics_router_ledger \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$checkpoint_output \
+    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$semantics_router_presets QWEN_ROUTER_MAX=1 \
+    "$policy" "$forced_server" "$model_path" 4096 18080 \
+    >"$temporary_directory/semantics-router-forced.stdout" \
+    2>"$temporary_directory/semantics-router-forced.stderr"; then
+    printf 'a router preset carrying a positive count launched a forced-tail build\n' >&2
+    exit 1
+fi
+grep -F 'a positive context checkpoint count requires natural-boundary-v1' \
+    "$temporary_directory/semantics-router-forced.stderr" >/dev/null
+
+QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_CTX_CHECKPOINT_LEDGER=$semantics_router_ledger \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$checkpoint_output \
+    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$semantics_router_presets QWEN_ROUTER_MAX=1 \
+    "$policy" "$natural_server" "$model_path" 4096 18080 \
+    >"$temporary_directory/semantics-router-natural.stdout" 2>&1
+grep -F 'checkpoint_binding semantics=natural-boundary-v1 requirement=natural-boundary-v1' \
+    "$temporary_directory/semantics-router-natural.stdout" >/dev/null
+
+# An all-zero router preset states no requirement, so a build predating the
+# declaration serves it.
+QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$checkpoint_output \
+    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$router_presets QWEN_ROUTER_MAX=1 \
+    "$policy" "$absent_server" "$model_path" 4096 18080 \
+    >"$temporary_directory/semantics-router-zero.stdout" 2>&1
+grep -F 'checkpoint_binding semantics=unknown requirement=-' \
+    "$temporary_directory/semantics-router-zero.stdout" >/dev/null
 
 printf 'qwen_capacity_policy=accepted\n'

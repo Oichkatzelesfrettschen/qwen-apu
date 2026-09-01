@@ -973,14 +973,43 @@ the same relation. `evidence/ctx-checkpoint-natural-boundary/` retains the runs.
 
 The ledger and the binary are separate release artifacts, so an edit to
 `remote/ctx-checkpoints.tsv` alone would pair a positive count with the
-unrepaired implementation. `build-llama-preset.sh` reads the
-`checkpoint_offsets` array out of the source it compiles and records
-`checkpoint_semantics` as `natural-boundary-v1` or `forced-tail-v0` in the
-build's artifact manifest, and `qwen-capacity-policy.sh` reads that declaration
-from the manifest beside the selected executable and refuses any positive count
-against another value on both the single-model and the router path. An absent
-declaration refuses rather than defaults, so release order stops being what
-keeps the two coherent.
+unrepaired implementation. A build earns its declaration rather than asserting
+one: `build-llama-preset.sh` writes `checkpoint_semantics` as
+`natural-boundary-v1` only where the repository still holds the patch at
+`c9d40105...`, the `tools/server/server-context.cpp` it compiles hashes to the
+`3744317b...` that `verify-llama-patch-series.sh` pins for the replayed series,
+and the `checkpoint_offsets` array is absent from that source. Any other state
+writes `forced-tail-v1`. The manifest records `checkpoint_patch`,
+`checkpoint_patch_sha256`, `checkpoint_source_sha256`, and
+`checkpoint_patch_series_sha256` beside it, so the claim is checkable after the
+fact rather than trusted. A preset name is a build role and proves no source
+repair, and a caller-supplied value proves less, which is why neither decides
+the field.
+
+`remote/llama-patch-series.tsv` states the ordered series once.
+`verify-llama-patch-series.sh` replays its `production` stage and prints one
+`patch_series_sha256` over the members' own digests in ledger order,
+`prepare-llama-vulkan-source.sh` applies that stage to a clean tree, and
+`build-llama-preset.sh` recomputes the same digest for the manifest. A member
+added to the ledger reaches all three rather than one.
+
+`qwen-capacity-policy.sh` refuses a positive count against any declaration
+other than `natural-boundary-v1` while the reason is still readable beside the
+argv it would have produced, and `qwen-build-exec-guard.sh` states it again at
+the exec boundary on both serving paths, after `radv-low-priority-env.sh` and
+ahead of `qwen-router-exec-guard.sh` where a router launch runs one. The guard
+resolves the executable through its symlinks, requires the manifest to still
+hash to what the policy measured, requires exactly one executable row matching
+that server's own byte count and digest, and requires exactly one
+`checkpoint_semantics` row, so a symlink repointed, a manifest relabelled, or a
+server replaced between assembly and exec is refused rather than served. The
+requirement follows the count that will actually reach a server: the ledger's
+row on the single-model path, and a positive `LLAMA_ARG_CTX_CHECKPOINTS` in
+some preset section under router mode, so an all-zero preset launches a build
+predating the declaration. `promote-llama-build.sh` applies the same rule at
+the symlink swap and refuses a rollback to a target the current policy cannot
+launch, since a rollback that leaves the appliance refusing every launch trades
+a wrong answer for an outage nobody chose.
 
 ## Commands
 
