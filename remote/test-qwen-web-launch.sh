@@ -295,6 +295,22 @@ exec /usr/bin/flock "$@"
 EOF
 chmod +x "$control_bin/flock"
 
+# Dash applies a simple-command descriptor close in the calling shell while a
+# child runs. The delayed first holder sleep gives the controller a stable
+# interval in which to verify that descriptor 9 remains installed in the holder.
+cat >"$control_bin/sleep" <<'EOF'
+#!/bin/sh
+set -eu
+if [ "${1:-}" = 0.05 ] && \
+   [ -n "${QWEN_HOLDER_SLEEP_DELAY_READY:-}" ] && \
+   [ ! -e "$QWEN_HOLDER_SLEEP_DELAY_READY" ]; then
+    : >"$QWEN_HOLDER_SLEEP_DELAY_READY"
+    exec /usr/bin/sleep 1
+fi
+exec /usr/bin/sleep "$@"
+EOF
+chmod +x "$control_bin/sleep"
+
 # The controller accepts a state-directory alias while binding the holder to
 # the same lock inode that the alias names.
 lease_state_directory_target=$work/lease-control-state-target
@@ -305,6 +321,7 @@ lease_tmux_record=$work/lease-tmux.record
 lease_session_record=$work/lease-session.record
 lease_gate_ready=$work/lease-flock.ready
 lease_gate_release=$work/lease-flock.release
+lease_holder_sleep_delay_ready=$work/lease-holder-sleep-delay.ready
 lease_control_status=$work/lease-control.status
 lease_control_lock=$lease_state_directory/fixed64-served-campaign.lock
 lease_record=$lease_state_directory/ordinary-session-control-lease.tsv
@@ -312,11 +329,20 @@ mkdir -p "$lease_state_directory_target"
 ln -s "$lease_state_directory_target" "$lease_state_directory"
 printf 'state=sentinel\n' >"$lease_state_directory/session.status"
 : >"$lease_state_directory/hold-session"
+(umask 077; : >"$lease_control_lock")
+lease_posix_shell=$(command -v dash || true)
+if [ -z "$lease_posix_shell" ]; then
+    printf 'test-qwen-web-launch: dash is required for descriptor-stability coverage\n' >&2
+    exit 2
+fi
 (
     set +e
+    exec 9<>"$lease_control_lock"
     PATH="$control_bin:$PATH" \
+    QWEN_FIXED64_CONTROL_LOCK_INHERITED=1 \
     QWEN_FLOCK_GATE_READY=$lease_gate_ready \
     QWEN_FLOCK_GATE_RELEASE=$lease_gate_release \
+    QWEN_HOLDER_SLEEP_DELAY_READY=$lease_holder_sleep_delay_ready \
     QWEN_TMUX_RECORD=$lease_tmux_record \
     QWEN_CONTROL_SESSION_RECORD=$lease_session_record \
     QWEN_FAKE_TMUX_STATE=$lease_tmux_state \
@@ -324,7 +350,8 @@ printf 'state=sentinel\n' >"$lease_state_directory/session.status"
     QWEN_WEBUI_STATE_DIRECTORY=$lease_state_directory \
     QWEN_LLAMA_SERVER=$work/lease-server \
     QWEN_MODEL_PATH=$work/lease-model \
-        "$control_harness/qwen-webui-control.sh" start custom \
+        "$lease_posix_shell" "$control_harness/qwen-webui-control.sh" \
+        start custom \
         >"$work/lease-control.log" 2>"$work/lease-control.err"
     printf '%s\n' "$?" >"$lease_control_status"
 ) &
@@ -348,6 +375,14 @@ report ordinary_lease_precedes_shared_state_mutation \
 
 : >"$lease_gate_release"
 wait "$lease_control_pid"
+lease_dash_descriptor_outcome=ok
+if [ ! -e "$lease_holder_sleep_delay_ready" ]; then
+    lease_dash_descriptor_outcome=holder_child_delay_unreached
+elif [ "$(sed -n '1p' "$lease_control_status")" -ne 0 ]; then
+    lease_dash_descriptor_outcome=control_start_failed
+fi
+report ordinary_lease_dash_child_close_preserves_holder \
+    "$lease_dash_descriptor_outcome"
 lease_alias_outcome=ok
 if [ "$(sed -n '1p' "$lease_control_status")" -ne 0 ]; then
     lease_alias_outcome=control_start_failed
@@ -366,32 +401,35 @@ else
         "$lease_record")
     lease_holder_start=$(awk -F '\t' \
         '$1 == "holder_start_time_ticks" { print $2 }' "$lease_record")
-    lease_holder_observed_start=$(
-        sed 's/^.*) //' "/proc/$lease_holder_pid/stat" 2>/dev/null |
-            awk '{ print $20 }'
-    )
-    lease_holder_fd9_identity=$(stat -Lc '%d:%i' \
-        "/proc/$lease_holder_pid/fd/9" 2>/dev/null || true)
-    lease_control_lock_identity=$(stat -Lc '%d:%i' \
-        "$lease_control_lock" 2>/dev/null || true)
-    [ "$lease_holder_observed_start" = "$lease_holder_start" ] ||
-        lease_lifetime_outcome=holder_identity_changed
-    [ -n "$lease_holder_fd9_identity" ] &&
-        [ "$lease_holder_fd9_identity" = "$lease_control_lock_identity" ] ||
-        lease_lifetime_outcome=holder_fd9_inode_mismatch
-    awk -F '\t' '$1 == "state" && $2 == "session-bound" { found = 1 }
-        END { exit !found }' "$lease_record" ||
+    case $lease_holder_pid:$lease_holder_start in
+        :* | *: | *[!0-9:]*) lease_lifetime_outcome=holder_record_malformed ;;
+        *)
+            lease_holder_observed_start=$(
+                sed 's/^.*) //' "/proc/$lease_holder_pid/stat" 2>/dev/null |
+                    awk '{ print $20 }'
+            )
+            [ "$lease_holder_observed_start" = "$lease_holder_start" ] ||
+                lease_lifetime_outcome=holder_identity_changed
+            ;;
+    esac
+    if [ "$lease_lifetime_outcome" = ok ] && \
+       ! awk -F '\t' '$1 == "state" && $2 == "session-bound" { found = 1 }
+           END { exit !found }' "$lease_record"; then
         lease_lifetime_outcome=session_identity_unbound
-    awk -F '\t' '$1 == "tmux_identity" && $2 == "$fixture:1700000000" {
-            found = 1
-        }
-        END { exit !found }' "$lease_record" ||
+    fi
+    if [ "$lease_lifetime_outcome" = ok ] && \
+       ! awk -F '\t' '$1 == "tmux_identity" && $2 == "$fixture:1700000000" {
+               found = 1
+           }
+           END { exit !found }' "$lease_record"; then
         lease_lifetime_outcome=wrong_tmux_identity
+    fi
     set +e
     /usr/bin/flock -n -E 75 "$lease_control_lock" true
     lease_held_probe_status=$?
     set -e
-    [ "$lease_held_probe_status" -eq 75 ] ||
+    [ "$lease_lifetime_outcome" != ok ] || \
+        [ "$lease_held_probe_status" -eq 75 ] ||
         lease_lifetime_outcome=lease_released_while_session_running
 fi
 report ordinary_lease_held_for_exact_tmux_identity "$lease_lifetime_outcome"
