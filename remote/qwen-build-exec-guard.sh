@@ -53,6 +53,12 @@ fi
 # A build directory holds bin/llama-server beside artifact-manifest.tsv, and a
 # test fixture holds the manifest beside the executable itself. Both shapes
 # resolve here so the guard reads one manifest either way.
+#
+# qwen-capacity-policy.sh performs the same two-step search to measure the
+# digest this guard compares against, so the two orders are one decision made
+# twice: a change here that resolved a different file would compare a digest
+# taken from another manifest, and the refusal would name a drift that never
+# happened.
 server_directory=$(dirname -- "$resolved_server")
 manifest_path=''
 for candidate_manifest in "$server_directory/artifact-manifest.tsv" \
