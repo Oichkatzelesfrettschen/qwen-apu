@@ -69,22 +69,28 @@ verify_source() {
     printf 'patch_replay_match=%s sha256=%s\n' "$relative_path" "$actual_sha256"
 }
 
-verify_source dfac33fe7fd487fc136e2915de7d5c146a3921b231ffef55877c6dd9e4f2c164 \
-    ggml/src/ggml-vulkan/ggml-vulkan.cpp
-verify_source 16abd2face079cad962bb722026d7418e65de67c18c1e1f954df733c1598a70a \
-    ggml/src/ggml-vulkan/ggml-vulkan-pacing.h
-verify_source 4b8befd927e9b0c83cfc7cfe843d2f853a9a9db7f6a55c147ffcd4129afd95f8 \
-    ggml/src/ggml-vulkan/ggml-vulkan-submit-limit.h
-verify_source ac957254c09afda811983801e7dd59d7e4829d40e572804ea7e23dadba521867 \
-    ggml/src/ggml-vulkan/ggml-vulkan-submit-trace.h
-verify_source ecc818cdce4a7265f6f932962c325a582f42b91cb2661916fa28b5a79a49d1ad \
-    src/llama-context.cpp
-verify_source d0d6c8725891ac4baf68fd947ab4be75cc93ba37b1e988ca1c556881a49d0abc \
-    src/llama-model-loader.cpp
-verify_source d2d5cb43a83c6b2b459b85f2df181a3d976efcaef351e5cbc6b418ba839390e3 \
-    tools/server/server.cpp
-verify_source 3744317beb622feff234e5b7a615c50665579f34ce49921e324bcd418fb3a58a \
-    tools/server/server-context.cpp
+# remote/llama-patched-sources.tsv carries the post-replay digest of every
+# file the production series rewrites, so this replay and the build's own
+# source-tree comparison read one authority: a row added here reaches both.
+patched_sources_ledger=$script_directory/llama-patched-sources.tsv
+if [ ! -r "$patched_sources_ledger" ]; then
+    printf 'patched sources ledger is unreadable: %s\n' \
+        "$patched_sources_ledger" >&2
+    exit 1
+fi
+patched_source_rows=$(awk -F'\t' '
+    /^#/ || NF == 0 { next }
+    NF != 2 { printf "malformed patched sources row: %s\n", $0 > "/dev/stderr"; exit 1 }
+    { print $2 "\t" $1 }
+' "$patched_sources_ledger")
+if [ -z "$patched_source_rows" ]; then
+    printf 'patched sources ledger names no member: %s\n' \
+        "$patched_sources_ledger" >&2
+    exit 1
+fi
+printf '%s\n' "$patched_source_rows" | while IFS='	' read -r row_sha256 row_path; do
+    verify_source "$row_sha256" "$row_path"
+done
 
 # One digest over the ordered production series, so a build can record which
 # series it compiled in a single field. It is computed over the members' own
