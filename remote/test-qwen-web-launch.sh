@@ -20,6 +20,11 @@ fake_server=$script_directory/test-fixtures/fake-llama-server.sh
 failures=0
 
 work=$(mktemp -d)
+# The launchers resolve the machine's deployment root; the fixture names an
+# empty one so the host's own deployments never reach the test.
+QWEN_DEPLOYMENT_ROOT=$work/deployments
+mkdir -p "$QWEN_DEPLOYMENT_ROOT"
+export QWEN_DEPLOYMENT_ROOT
 trap 'rm -rf "$work"' EXIT INT TERM
 
 report() {

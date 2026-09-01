@@ -22,6 +22,11 @@ cleanup_fixture() {
 }
 trap cleanup_fixture EXIT INT TERM
 fixture_remote=$temporary_directory/remote
+# The launcher resolves the machine's deployment root; the fixture names an
+# empty one so the host's own deployments never reach the test.
+QWEN_DEPLOYMENT_ROOT=$temporary_directory/deployments
+mkdir -p "$QWEN_DEPLOYMENT_ROOT"
+export QWEN_DEPLOYMENT_ROOT
 fixture_bin=$temporary_directory/bin
 mkdir -p "$fixture_remote" "$fixture_bin"
 cp "$script_directory/qwen-launch.sh" "$fixture_remote/qwen-launch.sh"

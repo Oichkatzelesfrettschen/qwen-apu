@@ -14,6 +14,11 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 fixture_remote=$temporary_directory/remote
+# The launcher resolves the machine's deployment root; the fixture names an
+# empty one so the host's own deployments never reach the test.
+QWEN_DEPLOYMENT_ROOT=$temporary_directory/deployments
+mkdir -p "$QWEN_DEPLOYMENT_ROOT"
+export QWEN_DEPLOYMENT_ROOT
 fixture_bin=$temporary_directory/bin
 model_directory=$temporary_directory/models/matched
 state_directory=$temporary_directory/state
