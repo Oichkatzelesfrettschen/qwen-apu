@@ -1,0 +1,3 @@
+depth_validation admitted=24576 validated=32768 geometry=128/32
+the selected llama-server declares checkpoint_semantics=unknown: $HOME/qwen-frozen-binaries/llama-server.production.40f7b775074e7d207dc2ad12f1aefc9635bd3904d5c35b68c8e43483622c4005
+a positive context checkpoint count requires natural-boundary-v1
