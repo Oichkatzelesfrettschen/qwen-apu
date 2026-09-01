@@ -17,14 +17,17 @@ if [ "$#" -gt 1 ]; then
 fi
 
 destination_directory=${1:-"${HOME:?}/models/Qwen3.5-0.8B-GGUF"}
-artifact_name=Qwen3.5-0.8B-Q8_0.gguf
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+identity_row=$("$script_directory/model-artifact-identity.sh" qwen35-08b)
+tab=$(printf '\t')
+IFS="$tab" read -r _model_id model_file expected_bytes expected_sha256 \
+    source_repository source_revision <<EOF
+$identity_row
+EOF
+artifact_name=${model_file##*/}
 artifact_path=$destination_directory/$artifact_name
 partial_path=$artifact_path.part
-source_repository=ggml-org/Qwen3.5-0.8B-GGUF
-source_revision=8fea620810c4afa23dd6443f999a48574c1611a3
-source_url=https://huggingface.co/$source_repository/resolve/$source_revision/Qwen3.5-0.8B-Q8_0.gguf
-expected_bytes=833592096
-expected_sha256=37ae482d336108d23516fa35e8e0c4126688d81018b87178a18d752a1357814f
+source_url=https://huggingface.co/$source_repository/resolve/$source_revision/$artifact_name
 
 umask 077
 mkdir -p "$destination_directory"

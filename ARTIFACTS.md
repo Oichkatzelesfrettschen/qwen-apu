@@ -7,6 +7,10 @@
 | `llama-server`, `llama-cli`, and `llama-mtmd-cli` | derived regenerable | excluded from Git and LFS | byte size and SHA-256 below, against a rebuild |
 | Dual-backend `llama-bench` and its ggml backends | derived regenerable | excluded from Git and LFS | `remote/build-llama-dual.sh`, byte sizes and SHA-256 values below |
 | Qwen3.5-4B, Qwen3.8-9B Distill, and Qwen3.8-27B GGUFs | external reproducible dependencies | excluded from Git and LFS | pinned Hugging Face revisions, byte sizes, and SHA-256 values |
+| Qwen3.5-0.8B Q8_0 and Qwen3.8 2B/4B Distill Q4_K_M target GGUFs | external reproducible dependencies | excluded from Git and LFS | `remote/model-artifacts.tsv` and the three model-specific downloaders |
+| `remote/model-artifacts.tsv` | synthesized machine-readable truth surface | ordinary Git | publisher revision, file path, byte count, and SHA-256 joined by model ID |
+| `remote/signal-process-group.py` | canonical safety mechanism | ordinary Git | Linux 6.9+ pidfd process-group preflight, recorded start-time check, leader/session check, and `remote/test-signal-process-group.py` |
+| Fixed-64 served campaign bundle | raw exact-target evidence | one immutable operator output directory pending privacy review and repository admission | bundle `SHA256SUMS`, sealed semantic recomputation, identity-before/after rows, twelve arm directories, and terminal state |
 | llama.cpp source | external canonical source plus local patch series | pinned commit, five production replay patches, and one diagnostic trace patch | `remote/verify-llama-patch-series.sh` |
 | llama.cpp build tree | derived regenerable | excluded | `remote/build-llama-vulkan.sh` |
 | View-metadata incremental patch | superseded retain | `patches/superseded/` | folded into `llama-no-cpu-fallback.patch` |
@@ -41,6 +45,16 @@ on the source host.
 | `Qwen3.8-9B-Q4_K_M.gguf` | 5,780,090,176 | `df13d66021cef676f82be74053220fd75af6bf2a6a7fb77f5222ab9e50744a7a` |
 | `Qwen3.8-2B-BF16.gguf` | 3,897,387,392 | `44763f3d83f0a1a3ee63334b60916705dc565d796cb0f2b8c320414c57f4ac48` |
 | `Qwen3.5-0.8B-bf16.gguf` | 1,557,662,528 | `ad1549eedc613064971dcbbbfab6c9b7990984d1c9ab38f792c6f2ec1207bbc2` |
+| `Qwen3.5-0.8B-Q8_0.gguf` | 833,592,096 | `37ae482d336108d23516fa35e8e0c4126688d81018b87178a18d752a1357814f` |
+| `Qwen3.8-2B-Q4_K_M.gguf` | 1,312,164,224 | `4aa0fb13c431514262f259d420ecc95a8714df58ac2a2384514e20b93983f0ff` |
+| `Qwen3.8-4B-Q4_K_M.gguf` | 2,783,446,304 | `dec96e8cf2e11b613bb46513dec485377f9ca5a351e71712ee0e244f287c6790` |
+
+`remote/model-artifacts.tsv` binds the three throughput targets to publisher
+revisions and LFS object identities. The 0.8B, 2B, and 4B downloaders consume
+that ledger, and the fixed-64 campaign compares each complete local artifact
+against the same byte count and digest before slot one. The campaign performs
+no publisher network lookup at run time; the retained revision remains the
+replay route for independently revalidating the ledger.
 
 The two F16 checkpoints carry no row above, because neither publisher ships
 one. The generator is the replay authority for a derived file, and each has a

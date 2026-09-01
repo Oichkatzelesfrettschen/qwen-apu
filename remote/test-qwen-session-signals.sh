@@ -30,7 +30,8 @@ trap cleanup_fixture EXIT HUP INT TERM
 
 mkdir -p "$fixture_remote"
 cp "$script_directory/qwen-webui-session.sh" \
-    "$fixture_remote/qwen-webui-session.sh"
+    "$script_directory/preserve-legacy-telemetry.sh" \
+    "$fixture_remote/"
 cat >"$fixture_remote/run-qwen-capacity-server.sh" <<'SERVER'
 #!/bin/sh
 printf '%s\n' "$$" >"$QWEN_TEST_SERVER_PID_MARKER"
@@ -120,9 +121,11 @@ cat >"$fixture_remote/watch-qwen-kernel-hazards.sh" <<'HAZARD'
 #!/bin/sh
 printf 'watch_ready_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$2"
 trap 'exit 0' HUP INT TERM
-while :; do
-    sleep 1
+while kill -0 "$1" 2>/dev/null; do
+    sleep 0.1
 done
+printf 'watch_stop_utc=%s reason=server_exited\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$2"
 HAZARD
 # The session admits the server only once its affinity equals
 # QWEN_INFERENCE_CPU, its nice value reads 19, and the readiness marker reaches

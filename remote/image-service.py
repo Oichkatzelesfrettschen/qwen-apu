@@ -695,6 +695,12 @@ class WorkloadLease:
                         "runs at a time"
                     ) from None
                 time.sleep(LEASE_WAIT_POLL_SECONDS)
+        if cancelled is not None and cancelled():
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
+            raise JobCancelled(
+                "the generation was cancelled as it acquired the workload lease"
+            )
         self.descriptor = descriptor
         self.write_status(
             f"state=held holder={holder} pid={os.getpid()} job={job_id} "
@@ -896,6 +902,7 @@ class ImageService:
         self.recover_legacy_publications()
         self.job_lock = threading.Lock()
         self.job = JobState()
+        self.shutdown_event = threading.Event()
 
     def publication_records(self):
         """Yield complete publication markers from atomic directory entries."""
@@ -1046,12 +1053,16 @@ class ImageService:
 
     def handle_generate(self, payload, request_id):
         request = self.parse_generate(payload)
+        if self.shutdown_event.is_set():
+            raise ServiceBusy("the image service is shutting down")
         if not self.job_lock.acquire(blocking=False):
             raise ServiceBusy(
                 "a generation is already running; the service runs one Vulkan "
                 "workload at a time and offers no queue"
             )
         try:
+            if self.shutdown_event.is_set():
+                raise ServiceBusy("the image service is shutting down")
             return self.run_job(payload, request, request_id)
         finally:
             self.job_lock.release()
@@ -1059,7 +1070,7 @@ class ImageService:
     def job_cancelled(self):
         """Return the cancellation bit under the same lock as its writer."""
         with self.job.lock:
-            return self.job.cancel_requested
+            return self.shutdown_event.is_set() or self.job.cancel_requested
 
     def run_job(self, payload, request, request_id):
         """Reserve capacity, consume authorization, run, and publish one job."""
@@ -1079,6 +1090,8 @@ class ImageService:
         # this service waits on are the same path.
         part_path = os.path.join(self.artifact_directory, f"{job_id}.part.png")
         with self.job.lock:
+            if self.shutdown_event.is_set():
+                raise JobCancelled("the image service is shutting down")
             self.job.job_id = job_id
             self.job.request_id = request_id
             self.job.profile_id = request["profile_id"]
@@ -1095,7 +1108,7 @@ class ImageService:
             # its owner instead of consuming it on a job that cannot start.
             self.lease.acquire("image-service", job_id, self.job_cancelled)
             with self.job.lock:
-                if self.job.cancel_requested:
+                if self.shutdown_event.is_set() or self.job.cancel_requested:
                     raise JobCancelled(
                         "the generation was cancelled before authorization"
                     )
@@ -1111,7 +1124,7 @@ class ImageService:
             profile = validate_profile(verified_profile)
             self.admit(request, profile)
             with self.job.lock:
-                if self.job.cancel_requested:
+                if self.shutdown_event.is_set() or self.job.cancel_requested:
                     raise JobCancelled(
                         "the generation was cancelled before runtime startup"
                     )
@@ -1677,6 +1690,15 @@ class ImageService:
             return self.handle_cancel(request_id)
         return self.handle_status()
 
+    def begin_shutdown(self):
+        """Prevent new jobs and request cancellation for the active job."""
+        self.shutdown_event.set()
+        with self.job.lock:
+            self.job.cancel_requested = True
+            child_pid = self.job.child_pid
+        if child_pid:
+            self.signal_child(child_pid)
+
     def shutdown_residue(self):
         """Remove what a job leaves behind and report what survives it.
 
@@ -1688,50 +1710,55 @@ class ImageService:
         it) under the artifact directory is removed, and the lease closes
         with the descriptor.
         """
-        with self.job.lock:
-            child_pid = self.job.child_pid
-            self.job.cancel_requested = True
-        if child_pid:
-            self.signal_child(child_pid)
-            deadline = time.monotonic() + TERMINATION_GRACE_SECONDS
-            reaped = False
-            while time.monotonic() < deadline:
+        self.begin_shutdown()
+        # A generation owns job_lock from admission through its runtime and
+        # final artifact action.  Waiting on that lock after setting the event
+        # forms the quiescence barrier: an active handler observes cancellation,
+        # and a newly accepted handler refuses before creating state.
+        with self.job_lock:
+            with self.job.lock:
+                child_pid = self.job.child_pid
+            if child_pid:
+                self.signal_child(child_pid)
+                deadline = time.monotonic() + TERMINATION_GRACE_SECONDS
+                reaped = False
+                while time.monotonic() < deadline:
+                    try:
+                        waited, _ = os.waitpid(child_pid, os.WNOHANG)
+                    except ChildProcessError:
+                        reaped = True
+                        break
+                    if waited == child_pid:
+                        reaped = True
+                        break
+                    time.sleep(0.05)
+                if not reaped:
+                    with contextlib.suppress(ProcessLookupError, PermissionError):
+                        os.killpg(child_pid, signal.SIGKILL)
+                    with contextlib.suppress(ChildProcessError):
+                        os.waitpid(child_pid, 0)
+            surviving_child = 0
+            if child_pid:
                 try:
-                    waited, _ = os.waitpid(child_pid, os.WNOHANG)
-                except ChildProcessError:
-                    reaped = True
-                    break
-                if waited == child_pid:
-                    reaped = True
-                    break
-                time.sleep(0.05)
-            if not reaped:
-                with contextlib.suppress(ProcessLookupError, PermissionError):
-                    os.killpg(child_pid, signal.SIGKILL)
-                with contextlib.suppress(ChildProcessError):
-                    os.waitpid(child_pid, 0)
-        surviving_child = 0
-        if child_pid:
-            try:
-                os.kill(child_pid, 0)
-                surviving_child = child_pid
-            except OSError:
-                surviving_child = 0
-        remaining_parts = []
-        with contextlib.suppress(OSError):
-            for name in sorted(os.listdir(self.artifact_directory)):
-                if name.endswith(".part.png") or name.endswith(".part"):
-                    path = os.path.join(self.artifact_directory, name)
-                    with contextlib.suppress(OSError):
-                        os.unlink(path)
-                    if os.path.lexists(path):
-                        remaining_parts.append(name)
-        self.lease.release()
-        return {
-            "child": surviving_child,
-            "part_files": remaining_parts,
-            "lease_held": self.lease.held,
-        }
+                    os.kill(child_pid, 0)
+                    surviving_child = child_pid
+                except OSError:
+                    surviving_child = 0
+            remaining_parts = []
+            with contextlib.suppress(OSError):
+                for name in sorted(os.listdir(self.artifact_directory)):
+                    if name.endswith(".part.png") or name.endswith(".part"):
+                        path = os.path.join(self.artifact_directory, name)
+                        with contextlib.suppress(OSError):
+                            os.unlink(path)
+                        if os.path.lexists(path):
+                            remaining_parts.append(name)
+            self.lease.release()
+            return {
+                "child": surviving_child,
+                "part_files": remaining_parts,
+                "lease_held": self.lease.held,
+            }
 
 
 class ControlHandler(socketserver.StreamRequestHandler):
@@ -2242,7 +2269,13 @@ def run(argv):
     sys.stdout.write(f"pid {os.getpid()}\n")
     sys.stdout.flush()
 
+    shutdown_requested = False
+
     def raise_interrupt(number, frame):
+        nonlocal shutdown_requested
+        if shutdown_requested:
+            return
+        shutdown_requested = True
         raise KeyboardInterrupt(f"signal {number}")
 
     for terminating_signal in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
@@ -2254,6 +2287,11 @@ def run(argv):
     except KeyboardInterrupt:
         pass
     finally:
+        # A control-server return enters the same teardown path without a
+        # signal.  Mark that transition before any blocking shutdown call so a
+        # later HUP, INT, or TERM cannot interrupt child and lease cleanup.
+        shutdown_requested = True
+        service.begin_shutdown()
         artifacts.shutdown()
         artifacts.server_close()
         control.server_close()

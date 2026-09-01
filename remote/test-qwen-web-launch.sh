@@ -27,6 +27,26 @@ report() {
     [ "$2" = ok ] || failures=$((failures + 1))
 }
 
+wait_for_path() {
+    waited_path=$1
+    waited_attempt=0
+    while [ ! -e "$waited_path" ] && [ "$waited_attempt" -lt 500 ]; do
+        waited_attempt=$((waited_attempt + 1))
+        sleep 0.01
+    done
+    [ -e "$waited_path" ]
+}
+
+wait_for_absence() {
+    waited_path=$1
+    waited_attempt=0
+    while [ -e "$waited_path" ] && [ "$waited_attempt" -lt 500 ]; do
+        waited_attempt=$((waited_attempt + 1))
+        sleep 0.01
+    done
+    [ ! -e "$waited_path" ]
+}
+
 # The context checkpoint ledger joins against the model registry, so the
 # fixture registry names an empty ledger and every fixture section carries the
 # 0 an absent row admits.
@@ -78,17 +98,32 @@ control_bin=$work/control-bin
 mkdir -p "$control_harness" "$control_bin"
 cp "$script_directory/qwen-webui-control.sh" \
     "$control_harness/qwen-webui-control.sh"
+cp "$script_directory/open-verified-lock-descriptor.py" \
+    "$control_harness/open-verified-lock-descriptor.py"
 cat >"$control_bin/tmux" <<'EOF'
 #!/bin/sh
 set -eu
 case " $* " in
-    *" has-session "*) exit 1 ;;
+    *" has-session "*) [ -s "$QWEN_FAKE_TMUX_STATE" ] ;;
+    *" display-message "*)
+        [ -s "$QWEN_FAKE_TMUX_STATE" ] || exit 1
+        sed -n '1p' "$QWEN_FAKE_TMUX_STATE"
+        ;;
     *" new-session "*)
         for tmux_argument in "$@"; do
             session_command=$tmux_argument
         done
         printf '%s\n' "$session_command" >"$QWEN_TMUX_RECORD"
-        sh -c "$session_command"
+        printf '%s\n' '$fixture:1700000000' >"$QWEN_FAKE_TMUX_STATE"
+        sh -c "$session_command" </dev/null >/dev/null 2>&1 &
+        printf '%s\n' "$!" >"$QWEN_FAKE_TMUX_PID"
+        printf '%s\n' '$fixture:1700000000'
+        ;;
+    *" kill-session "*)
+        if [ -s "$QWEN_FAKE_TMUX_PID" ]; then
+            kill -TERM "$(sed -n '1p' "$QWEN_FAKE_TMUX_PID")" 2>/dev/null || true
+        fi
+        rm -f -- "$QWEN_FAKE_TMUX_STATE" "$QWEN_FAKE_TMUX_PID"
         ;;
     *) exit 2 ;;
 esac
@@ -97,6 +132,18 @@ chmod +x "$control_bin/tmux"
 cat >"$control_harness/qwen-webui-session.sh" <<'EOF'
 #!/bin/sh
 set -eu
+cleanup_fake_session() {
+    rm -f -- "$QWEN_FAKE_TMUX_STATE" "$QWEN_FAKE_TMUX_PID"
+}
+trap cleanup_fake_session EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+if [ -e "/proc/$$/fd/9" ]; then
+    campaign_control_fd9=$(readlink -f -- "/proc/$$/fd/9" 2>/dev/null || true)
+else
+    campaign_control_fd9=absent
+fi
 {
     printf 'state_directory=%s\n' "$7"
     printf 'server=%s\n' "$1"
@@ -108,15 +155,64 @@ set -eu
     printf 'submit_trace=%s\n' "${GGML_VK_SUBMIT_TRACE:-unset}"
     printf 'image_priority_wrapper=%s\n' "${QWEN_IMAGE_PRIORITY_WRAPPER:-unset}"
     printf 'image_lease_wait=%s\n' "${QWEN_IMAGE_LEASE_WAIT_S:-unset}"
+    printf 'model_registry=%s\n' "${QWEN_MODEL_REGISTRY:-unset}"
+    printf 'quarantine_registry=%s\n' "${QWEN_QUARANTINE_REGISTRY:-unset}"
+    printf 'validated_tuples=%s\n' "${QWEN_VALIDATED_TUPLES:-unset}"
+    printf 'ctx_checkpoint_ledger=%s\n' "${QWEN_CTX_CHECKPOINT_LEDGER:-unset}"
+    printf 'batch_size=%s\n' "${QWEN_BATCH_SIZE:-unset}"
+    printf 'ubatch_size=%s\n' "${QWEN_UBATCH_SIZE:-unset}"
     printf 'api_key=%s\n' "${QWEN_REQUIRE_API_KEY:-unset}"
     printf 'authorizer=%s\n' "${QWEN_WEB_AUTHORIZER_READY:-unset}"
+    printf 'campaign_control_fd9=%s\n' "$campaign_control_fd9"
 } >"$QWEN_CONTROL_SESSION_RECORD"
+while [ -e "$7/hold-session" ]; do
+    sleep 0.01
+done
 EOF
 chmod +x "$control_harness/qwen-webui-session.sh"
+
+# The control lock opener rejects a final symlink through O_NOFOLLOW. The
+# retained target bytes prove the refusal happens before shell redirection can
+# follow the link and truncate another file.
+control_link_state=$work/control-link-state
+control_link_target=$work/control-link-target
+control_link_expected=$work/control-link-expected
+control_link_tmux_state=$work/control-link-tmux.state
+mkdir "$control_link_state"
+printf 'retained control lock target bytes\n' >"$control_link_target"
+cp -- "$control_link_target" "$control_link_expected"
+ln -s "$control_link_target" \
+    "$control_link_state/fixed64-served-campaign.lock"
+set +e
+PATH="$control_bin:$PATH" \
+QWEN_FAKE_TMUX_STATE=$control_link_tmux_state \
+QWEN_WEBUI_STATE_DIRECTORY=$control_link_state \
+QWEN_LLAMA_SERVER=$work/control-link-server \
+QWEN_MODEL_PATH=$work/control-link-model \
+    "$control_harness/qwen-webui-control.sh" start custom \
+    >"$work/control-link.log" 2>"$work/control-link.err"
+control_link_status=$?
+set -e
+control_link_outcome=ok
+[ "$control_link_status" -eq 2 ] || \
+    control_link_outcome="status-$control_link_status"
+cmp -s "$control_link_expected" "$control_link_target" || \
+    control_link_outcome=target-bytes-changed
+[ -L "$control_link_state/fixed64-served-campaign.lock" ] || \
+    control_link_outcome=link-replaced
+grep -F 'verified_lock_descriptor=rejected' \
+    "$work/control-link.err" >/dev/null || control_link_outcome=reason-absent
+report control_final_lock_symlink_preserves_target_bytes \
+    "$control_link_outcome"
+
 control_record=$work/control-tmux.record
 control_session_record=$work/control-session.record
+control_tmux_state=$work/control-tmux.state
+control_tmux_pid=$work/control-tmux.pid
 if PATH="$control_bin:$PATH" QWEN_TMUX_RECORD=$control_record \
     QWEN_CONTROL_SESSION_RECORD=$control_session_record \
+    QWEN_FAKE_TMUX_STATE=$control_tmux_state \
+    QWEN_FAKE_TMUX_PID=$control_tmux_pid \
     QWEN_WEBUI_STATE_DIRECTORY="$work/control state" \
     QWEN_LLAMA_SERVER="$work/fake server" QWEN_MODEL_PATH="$work/fake model" \
     QWEN_WEB_BROKER_PROGRAM="$work/broker program.py" \
@@ -126,10 +222,16 @@ if PATH="$control_bin:$PATH" QWEN_TMUX_RECORD=$control_record \
     GGML_VK_SUBMIT_TRACE=1 \
     QWEN_IMAGE_PRIORITY_WRAPPER="$work/image priority wrapper" \
     QWEN_IMAGE_LEASE_WAIT_S=7.25 \
+    QWEN_MODEL_REGISTRY="$work/models snapshot.tsv" \
+    QWEN_QUARANTINE_REGISTRY="$work/quarantine snapshot.tsv" \
+    QWEN_VALIDATED_TUPLES="$work/tuples snapshot.tsv" \
+    QWEN_CTX_CHECKPOINT_LEDGER="$work/checkpoints snapshot.tsv" \
+    QWEN_BATCH_SIZE=128 QWEN_UBATCH_SIZE=32 \
     QWEN_REQUIRE_API_KEY=1 QWEN_WEB_AUTHORIZER_READY=1 \
     "$control_harness/qwen-webui-control.sh" start custom \
     >"$work/control.log" 2>"$work/control.err"; then
     outcome=ok
+    wait_for_path "$control_session_record" || outcome=session_record_absent
     grep -qx 'api_key=1' "$control_session_record" ||
         outcome=api_key_requirement_dropped
     grep -qx 'authorizer=1' "$control_session_record" ||
@@ -154,11 +256,183 @@ if PATH="$control_bin:$PATH" QWEN_TMUX_RECORD=$control_record \
         outcome=image_priority_wrapper_dropped
     grep -qx 'image_lease_wait=7.25' "$control_session_record" ||
         outcome=image_lease_wait_dropped
+    grep -Fqx "model_registry=$work/models snapshot.tsv" \
+        "$control_session_record" || outcome=model_registry_split
+    grep -Fqx "quarantine_registry=$work/quarantine snapshot.tsv" \
+        "$control_session_record" || outcome=quarantine_registry_split
+    grep -Fqx "validated_tuples=$work/tuples snapshot.tsv" \
+        "$control_session_record" || outcome=validated_tuples_split
+    grep -Fqx "ctx_checkpoint_ledger=$work/checkpoints snapshot.tsv" \
+        "$control_session_record" || outcome=ctx_checkpoint_ledger_split
+    grep -qx 'batch_size=128' "$control_session_record" ||
+        outcome=batch_size_dropped
+    grep -qx 'ubatch_size=32' "$control_session_record" ||
+        outcome=ubatch_size_dropped
+    grep -qx 'campaign_control_fd9=absent' "$control_session_record" ||
+        outcome=campaign_control_fd9_inherited
     report control_forwards_web_authority "$outcome"
 else
     report control_forwards_web_authority failed
     cat "$work/control.err" >&2
 fi
+
+# The controller locks descriptor 9 before removing session.status. A fake
+# flock blocks after the kernel grants that lock, which makes the former race
+# window deterministic: another campaign claimant must fail while the sentinel
+# status line still proves the first shared-state mutation has not run.
+cat >"$control_bin/flock" <<'EOF'
+#!/bin/sh
+set -eu
+if [ -n "${QWEN_FLOCK_GATE_READY:-}" ]; then
+    /usr/bin/flock "$@"
+    : >"$QWEN_FLOCK_GATE_READY"
+    while [ ! -e "$QWEN_FLOCK_GATE_RELEASE" ]; do
+        sleep 0.01
+    done
+    exit 0
+fi
+exec /usr/bin/flock "$@"
+EOF
+chmod +x "$control_bin/flock"
+
+lease_state_directory=$work/lease-control-state
+lease_tmux_state=$work/lease-tmux.state
+lease_tmux_pid=$work/lease-tmux.pid
+lease_tmux_record=$work/lease-tmux.record
+lease_session_record=$work/lease-session.record
+lease_gate_ready=$work/lease-flock.ready
+lease_gate_release=$work/lease-flock.release
+lease_control_status=$work/lease-control.status
+lease_control_lock=$lease_state_directory/fixed64-served-campaign.lock
+lease_record=$lease_state_directory/ordinary-session-control-lease.tsv
+mkdir -p "$lease_state_directory"
+printf 'state=sentinel\n' >"$lease_state_directory/session.status"
+: >"$lease_state_directory/hold-session"
+(
+    set +e
+    PATH="$control_bin:$PATH" \
+    QWEN_FLOCK_GATE_READY=$lease_gate_ready \
+    QWEN_FLOCK_GATE_RELEASE=$lease_gate_release \
+    QWEN_TMUX_RECORD=$lease_tmux_record \
+    QWEN_CONTROL_SESSION_RECORD=$lease_session_record \
+    QWEN_FAKE_TMUX_STATE=$lease_tmux_state \
+    QWEN_FAKE_TMUX_PID=$lease_tmux_pid \
+    QWEN_WEBUI_STATE_DIRECTORY=$lease_state_directory \
+    QWEN_LLAMA_SERVER=$work/lease-server \
+    QWEN_MODEL_PATH=$work/lease-model \
+        "$control_harness/qwen-webui-control.sh" start custom \
+        >"$work/lease-control.log" 2>"$work/lease-control.err"
+    printf '%s\n' "$?" >"$lease_control_status"
+) &
+lease_control_pid=$!
+
+lease_interleaving_outcome=ok
+if ! wait_for_path "$lease_gate_ready"; then
+    lease_interleaving_outcome=lock_gate_unreached
+else
+    set +e
+    /usr/bin/flock -n -E 75 "$lease_control_lock" true
+    lease_competitor_status=$?
+    set -e
+    [ "$lease_competitor_status" -eq 75 ] ||
+        lease_interleaving_outcome=competing_campaign_admitted
+    grep -qx 'state=sentinel' "$lease_state_directory/session.status" ||
+        lease_interleaving_outcome=status_mutated_before_lock
+fi
+report ordinary_lease_precedes_shared_state_mutation \
+    "$lease_interleaving_outcome"
+
+: >"$lease_gate_release"
+wait "$lease_control_pid"
+lease_lifetime_outcome=ok
+if [ "$(sed -n '1p' "$lease_control_status")" -ne 0 ]; then
+    lease_lifetime_outcome=control_start_failed
+elif ! wait_for_path "$lease_session_record"; then
+    lease_lifetime_outcome=session_record_absent
+elif [ ! -s "$lease_record" ]; then
+    lease_lifetime_outcome=lease_record_absent
+else
+    lease_holder_pid=$(awk -F '\t' '$1 == "holder_pid" { print $2 }' \
+        "$lease_record")
+    lease_holder_start=$(awk -F '\t' \
+        '$1 == "holder_start_time_ticks" { print $2 }' "$lease_record")
+    lease_holder_observed_start=$(
+        sed 's/^.*) //' "/proc/$lease_holder_pid/stat" 2>/dev/null |
+            awk '{ print $20 }'
+    )
+    lease_holder_fd9_identity=$(stat -Lc '%d:%i' \
+        "/proc/$lease_holder_pid/fd/9" 2>/dev/null || true)
+    lease_control_lock_identity=$(stat -Lc '%d:%i' \
+        "$lease_control_lock" 2>/dev/null || true)
+    [ "$lease_holder_observed_start" = "$lease_holder_start" ] ||
+        lease_lifetime_outcome=holder_identity_changed
+    [ -n "$lease_holder_fd9_identity" ] &&
+        [ "$lease_holder_fd9_identity" = "$lease_control_lock_identity" ] ||
+        lease_lifetime_outcome=holder_fd9_inode_mismatch
+    awk -F '\t' '$1 == "state" && $2 == "session-bound" { found = 1 }
+        END { exit !found }' "$lease_record" ||
+        lease_lifetime_outcome=session_identity_unbound
+    awk -F '\t' '$1 == "tmux_identity" && $2 == "$fixture:1700000000" {
+            found = 1
+        }
+        END { exit !found }' "$lease_record" ||
+        lease_lifetime_outcome=wrong_tmux_identity
+    set +e
+    /usr/bin/flock -n -E 75 "$lease_control_lock" true
+    lease_held_probe_status=$?
+    set -e
+    [ "$lease_held_probe_status" -eq 75 ] ||
+        lease_lifetime_outcome=lease_released_while_session_running
+fi
+report ordinary_lease_held_for_exact_tmux_identity "$lease_lifetime_outcome"
+
+rm -f -- "$lease_state_directory/hold-session"
+lease_release_outcome=ok
+wait_for_absence "$lease_tmux_state" || lease_release_outcome=tmux_state_retained
+wait_for_absence "$lease_record" || lease_release_outcome=lease_record_retained
+set +e
+/usr/bin/flock -n "$lease_control_lock" true
+lease_released_probe_status=$?
+set -e
+[ "$lease_released_probe_status" -eq 0 ] ||
+    lease_release_outcome=lease_retained_after_session
+report ordinary_lease_released_after_exact_tmux_identity "$lease_release_outcome"
+
+# The campaign owns descriptor 9 in its orchestrator. The launcher closes that
+# descriptor before qwen-webui-control starts, and the controller also closes 9
+# on the tmux client boundary. This arm supplies a real inherited descriptor to
+# catch either layer accidentally carrying it into the ordinary session.
+campaign_state_directory=$work/campaign-child-state
+campaign_tmux_state=$work/campaign-child-tmux.state
+campaign_tmux_pid=$work/campaign-child-tmux.pid
+campaign_tmux_record=$work/campaign-child-tmux.record
+campaign_session_record=$work/campaign-child-session.record
+mkdir -p "$campaign_state_directory"
+set +e
+(
+    PATH="$control_bin:$PATH" \
+    QWEN_VULKAN_EXTERNAL_LEASE_PROOF=$work/campaign-external-proof.tsv \
+    QWEN_TMUX_RECORD=$campaign_tmux_record \
+    QWEN_CONTROL_SESSION_RECORD=$campaign_session_record \
+    QWEN_FAKE_TMUX_STATE=$campaign_tmux_state \
+    QWEN_FAKE_TMUX_PID=$campaign_tmux_pid \
+    QWEN_WEBUI_STATE_DIRECTORY=$campaign_state_directory \
+    QWEN_LLAMA_SERVER=$work/campaign-server \
+    QWEN_MODEL_PATH=$work/campaign-model \
+        "$control_harness/open-verified-lock-descriptor.py" open \
+        "$campaign_state_directory/fixed64-served-campaign.lock" 9 \
+        sh -c '/usr/bin/flock -n 9; exec "$@"' sh \
+        "$control_harness/qwen-webui-control.sh" start custom \
+        >"$work/campaign-child.log" 2>"$work/campaign-child.err"
+)
+campaign_control_status=$?
+set -e
+campaign_fd9_outcome=ok
+[ "$campaign_control_status" -eq 0 ] || campaign_fd9_outcome=control_start_failed
+wait_for_path "$campaign_session_record" || campaign_fd9_outcome=session_record_absent
+grep -qx 'campaign_control_fd9=absent' "$campaign_session_record" ||
+    campaign_fd9_outcome=campaign_fd9_inherited
+report post_campaign_session_fd9_absent "$campaign_fd9_outcome"
 
 cat >"$control_bin/ssh" <<'EOF'
 #!/bin/sh

@@ -232,6 +232,7 @@ class Handler(BaseHTTPRequestHandler):
                 "prompt_n": len(str(body.get("prompt", "")).split()),
                 "prompt_ms": 1000.0,
                 "predicted_n": predict,
+                "predicted_ms": max(predict - 1, 0) * 1000.0 / decode_tok_s,
                 "predicted_per_second": decode_tok_s,
             }
             if draft_n > 0:
@@ -257,7 +258,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         prompt_tokens = 0
         for message in body.get("messages") or []:
-            for part in message.get("content") or []:
+            content = message.get("content") or ""
+            if isinstance(content, str):
+                prompt_tokens += len(content.split())
+                continue
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
                 if part.get("type") == "text":
                     prompt_tokens += len(part.get("text", "").split())
                 if part.get("type") == "image_url":
@@ -265,10 +272,14 @@ class Handler(BaseHTTPRequestHandler):
         predicted = int(body.get("max_tokens") or 1)
         if predicted_cap > 0:
             predicted = min(predicted, predicted_cap)
+        predicted_ms = max(predicted - 1, 0) * 1000.0 / decode_tok_s
         self.respond({
             "choices": [{"message": {"role": "assistant", "content": reply}}],
             "timings": {"prompt_n": prompt_tokens, "prompt_ms": 1000.0,
-                        "predicted_n": predicted, "predicted_per_second": 4.5}})
+                        "prompt_per_second": float(prompt_tokens),
+                        "predicted_n": predicted,
+                        "predicted_ms": predicted_ms,
+                        "predicted_per_second": decode_tok_s}})
 
 
 server = ReusableHTTPServer(("127.0.0.1", port), Handler)

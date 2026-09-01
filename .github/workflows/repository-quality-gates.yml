@@ -12,7 +12,7 @@ permissions:
 jobs:
   clone-local:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - name: Check out the repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -22,7 +22,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes shellcheck
           python3 -m venv /tmp/qwen-apu-quality-gates
-          /tmp/qwen-apu-quality-gates/bin/pip install ruff==0.14.11
+          /tmp/qwen-apu-quality-gates/bin/pip install \
+            mypy==1.19.1 ruff==0.14.11
 
       - name: Run clone-local gates
         env:

@@ -1444,8 +1444,26 @@ fi
 workload_lease_state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
 mkdir -p -- "$workload_lease_state_directory"
 chmod 700 -- "$workload_lease_state_directory"
-export QWEN_VULKAN_WORKLOAD_LOCK="$workload_lease_state_directory/vulkan-workload.lock"
-printf 'vulkan_workload_lease path=%s\n' "$QWEN_VULKAN_WORKLOAD_LOCK"
+workload_lease_path=$workload_lease_state_directory/vulkan-workload.lock
+if [ -n "${QWEN_VULKAN_EXTERNAL_LEASE_PROOF:-}" ]; then
+    external_lease_verifier=$script_directory/verify-external-vulkan-lease.py
+    if [ ! -x "$external_lease_verifier" ]; then
+        printf 'external Vulkan lease verifier is absent: %s\n' \
+            "$external_lease_verifier" >&2
+        exit 2
+    fi
+    if ! "$external_lease_verifier" "$QWEN_VULKAN_EXTERNAL_LEASE_PROOF" \
+        "$workload_lease_path"; then
+        exit 2
+    fi
+    unset QWEN_VULKAN_WORKLOAD_LOCK
+    printf 'vulkan_workload_lease mode=external path=%s proof=%s\n' \
+        "$workload_lease_path" "$QWEN_VULKAN_EXTERNAL_LEASE_PROOF"
+else
+    export QWEN_VULKAN_WORKLOAD_LOCK=$workload_lease_path
+    printf 'vulkan_workload_lease mode=request path=%s\n' \
+        "$QWEN_VULKAN_WORKLOAD_LOCK"
+fi
 
 # The launcher hashes its immutable-per-session snapshot before preflight. The
 # exec boundary revalidates every mutable authority and measures the preset
