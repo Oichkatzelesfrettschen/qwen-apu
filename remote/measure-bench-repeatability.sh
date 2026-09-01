@@ -26,6 +26,8 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 bench=${QWEN_LLAMA_BENCH:-"${HOME:?}/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-bench"}
 clock_sampler=${QWEN_CLOCK_SAMPLER:-"$script_directory/sample-gpu-clocks.sh"}
 idle_seconds=${QWEN_IDLE_SECONDS:-600}
+sampler_term_grace_milliseconds=${QWEN_SAMPLER_TERM_GRACE_MS:-2000}
+sampler_kill_grace_milliseconds=${QWEN_SAMPLER_KILL_GRACE_MS:-2000}
 
 if [ ! -x "$bench" ] || [ ! -f "$model_path" ]; then
     printf 'llama-bench and the model must both exist\n' >&2
@@ -35,18 +37,187 @@ if pgrep -x llama-server >/dev/null 2>&1 || pgrep -x llama-bench >/dev/null 2>&1
     printf 'another llama process holds the device\n' >&2
     exit 2
 fi
+for grace_value in "$sampler_term_grace_milliseconds" \
+        "$sampler_kill_grace_milliseconds"; do
+    case $grace_value in
+        '' | *[!0-9]* | 0*)
+            printf 'sampler teardown grace must be a canonical positive integer: %s\n' \
+                "$grace_value" >&2
+            exit 2
+            ;;
+    esac
+done
+if ! command -v python3 >/dev/null 2>&1; then
+    printf 'python3 is required for identity-bound sampler teardown\n' >&2
+    exit 2
+fi
 
 mkdir -p "$output_directory"
 summary=$output_directory/repeatability-summary.tsv
 printf 'arm\tflags\tdecode_tok_s\tstatus\tmclk_mhz_modal\tsclk_mhz_max\ttemp_c_max\tsamples\n' \
     >"$summary"
 
+process_start_time_ticks() {
+    identity_pid=$1
+    sed 's/^.*) //' "/proc/$identity_pid/stat" 2>/dev/null |
+        awk '{ print $20 }'
+}
+
 sampler_pid=''
+sampler_start_time_ticks=''
 stop_sampler() {
     [ -n "$sampler_pid" ] || return 0
-    kill "$sampler_pid" 2>/dev/null || true
-    wait "$sampler_pid" 2>/dev/null || true
+    teardown_pid=$sampler_pid
+    teardown_start_time_ticks=$sampler_start_time_ticks
     sampler_pid=''
+    sampler_start_time_ticks=''
+
+    if [ -z "$teardown_start_time_ticks" ]; then
+        if [ -e "/proc/$teardown_pid" ]; then
+            printf 'sampler teardown lacks a stable process identity: pid=%s\n' \
+                "$teardown_pid" >&2
+            exit 1
+        fi
+        wait "$teardown_pid" 2>/dev/null || true
+        printf 'sampler_teardown=completed signal=none state=already-exited pid=%s\n' \
+            "$teardown_pid" >&2
+        return 0
+    fi
+
+    sampler_teardown_status=0
+    sampler_teardown_result=''
+    if sampler_teardown_result=$(python3 - "$teardown_pid" \
+            "$teardown_start_time_ticks" \
+            "$sampler_term_grace_milliseconds" \
+            "$sampler_kill_grace_milliseconds" <<'PY'
+import os
+import select
+import signal
+import sys
+from pathlib import Path
+
+
+def positive_integer(text: str, name: str) -> int:
+    if not text.isascii() or not text.isdecimal() or text.startswith("0"):
+        raise ValueError(f"{name} must be a canonical positive integer")
+    value = int(text)
+    if value <= 0:
+        raise ValueError(f"{name} must be a canonical positive integer")
+    return value
+
+
+def process_start_time_ticks(process_id: int) -> int:
+    stat_text = (Path("/proc") / str(process_id) / "stat").read_text(
+        encoding="ascii"
+    )
+    command_end = stat_text.rfind(")")
+    if command_end < 0 or command_end + 2 >= len(stat_text):
+        raise RuntimeError("sampler process stat is malformed")
+    fields = stat_text[command_end + 2 :].split()
+    if len(fields) < 20:
+        raise RuntimeError("sampler process stat has too few fields")
+    return int(fields[19])
+
+
+process_id = positive_integer(sys.argv[1], "sampler pid")
+expected_start_time_ticks = positive_integer(
+    sys.argv[2], "sampler start time"
+)
+term_grace_milliseconds = positive_integer(sys.argv[3], "TERM grace")
+kill_grace_milliseconds = positive_integer(sys.argv[4], "KILL grace")
+
+try:
+    process_descriptor = os.pidfd_open(process_id)
+except ProcessLookupError:
+    print(
+        "sampler_teardown=completed signal=none state=already-exited "
+        f"pid={process_id} start_time_ticks={expected_start_time_ticks}"
+    )
+    raise SystemExit(0)
+
+try:
+    process_poller = select.poll()
+    process_poller.register(process_descriptor, select.POLLIN)
+
+    def process_exited(timeout_milliseconds: int) -> bool:
+        return any(
+            event_mask & select.POLLIN
+            for _, event_mask in process_poller.poll(timeout_milliseconds)
+        )
+
+    if process_exited(0):
+        print(
+            "sampler_teardown=completed signal=none state=already-exited "
+            f"pid={process_id} start_time_ticks={expected_start_time_ticks}"
+        )
+        raise SystemExit(0)
+    try:
+        observed_start_time_ticks = process_start_time_ticks(process_id)
+    except FileNotFoundError:
+        if process_exited(0):
+            print(
+                "sampler_teardown=completed signal=none state=already-exited "
+                f"pid={process_id} start_time_ticks={expected_start_time_ticks}"
+            )
+            raise SystemExit(0)
+        raise RuntimeError("sampler identity vanished before signaling") from None
+    if observed_start_time_ticks != expected_start_time_ticks:
+        raise RuntimeError(
+            "sampler start time differs from the recorded process identity"
+        )
+
+    try:
+        signal.pidfd_send_signal(process_descriptor, signal.SIGTERM)
+    except ProcessLookupError:
+        print(
+            "sampler_teardown=completed signal=none state=already-exited "
+            f"pid={process_id} start_time_ticks={expected_start_time_ticks}"
+        )
+        raise SystemExit(0)
+    if process_exited(term_grace_milliseconds):
+        print(
+            "sampler_teardown=completed signal=TERM state=exited "
+            f"pid={process_id} start_time_ticks={expected_start_time_ticks}"
+        )
+        raise SystemExit(0)
+
+    try:
+        signal.pidfd_send_signal(process_descriptor, signal.SIGKILL)
+    except ProcessLookupError:
+        print(
+            "sampler_teardown=completed signal=TERM state=exited "
+            f"pid={process_id} start_time_ticks={expected_start_time_ticks}"
+        )
+        raise SystemExit(0)
+    if not process_exited(kill_grace_milliseconds):
+        raise RuntimeError("sampler remained live after SIGKILL")
+    print(
+        "sampler_teardown=completed signal=KILL state=exited "
+        f"pid={process_id} start_time_ticks={expected_start_time_ticks}"
+    )
+except (OSError, RuntimeError, ValueError) as error:
+    print(f"sampler_teardown=failed pid={process_id} error={error}", file=sys.stderr)
+    raise SystemExit(1) from None
+finally:
+    os.close(process_descriptor)
+PY
+    ); then
+        sampler_teardown_status=0
+    else
+        sampler_teardown_status=$?
+    fi
+    if [ -n "$sampler_teardown_result" ]; then
+        printf '%s\n' "$sampler_teardown_result" >&2
+    fi
+    if [ "$sampler_teardown_status" -ne 0 ]; then
+        printf 'identity-bound sampler teardown failed: pid=%s start_time_ticks=%s\n' \
+            "$teardown_pid" "$teardown_start_time_ticks" >&2
+        exit 1
+    fi
+
+    # The pidfd poll proves the recorded process has exited. wait now reaps the
+    # direct child without reopening a numeric-PID race or an unbounded wait.
+    wait "$teardown_pid" 2>/dev/null || true
 }
 trap 'stop_sampler' EXIT
 trap 'stop_sampler; exit 130' INT
@@ -63,6 +234,16 @@ run_arm() {
         "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$arm_label" "$*"
     "$clock_sampler" "$arm_samples" &
     sampler_pid=$!
+    sampler_start_time_ticks=$(process_start_time_ticks "$sampler_pid")
+    case $sampler_start_time_ticks in
+        '' | *[!0-9]* | 0)
+            if [ -e "/proc/$sampler_pid" ]; then
+                printf 'cannot bind sampler process identity: pid=%s\n' \
+                    "$sampler_pid" >&2
+                exit 1
+            fi
+            ;;
+    esac
     set +e
     nice -n 19 ionice -c 3 "$bench" -m "$model_path" \
         -ngl 99 -t 2 -r 3 -p 0 -n 64 -o md "$@" >"$arm_log" 2>&1

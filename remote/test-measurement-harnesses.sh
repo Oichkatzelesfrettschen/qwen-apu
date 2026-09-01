@@ -25,6 +25,12 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
+process_start_time_ticks() {
+    identity_pid=$1
+    sed 's/^.*) //' "/proc/$identity_pid/stat" 2>/dev/null |
+        awk '{ print $20 }'
+}
+
 active_fixture=gpu-clock-sampling
 drm_device=$temporary_directory/drm-device
 hwmon_root=$temporary_directory/hwmon
@@ -100,6 +106,51 @@ printf '%s\n' '#!/bin/sh' 'set -eu' \
     'esac' \
     'printf "| fake | tg64 | 3.00 +/- 0.10 |\\n"' >"$fake_bench"
 chmod +x "$fake_bench"
+
+# This sampler publishes its identity only after installing a SIGTERM ignore
+# disposition. The matching bench waits for each publication, so every arm
+# deterministically reaches the SIGKILL escalation rather than winning a
+# startup race against the sampler.
+stubborn_sampler=$temporary_directory/term-ignoring-clock-sampler.py
+printf '%s\n' \
+    '#!/usr/bin/env python3' \
+    'import os' \
+    'import signal' \
+    'import sys' \
+    'from pathlib import Path' \
+    '' \
+    'stat_text = Path(f"/proc/{os.getpid()}/stat").read_text(encoding="ascii")' \
+    'start_time_ticks = stat_text[stat_text.rfind(")") + 2 :].split()[19]' \
+    'signal.signal(signal.SIGTERM, signal.SIG_IGN)' \
+    'identity_path = Path(os.environ["QWEN_TEST_STUBBORN_SAMPLER_IDENTITIES"])' \
+    'with identity_path.open("a", encoding="ascii") as identity_handle:' \
+    '    identity_handle.write(f"{os.getpid()}\t{start_time_ticks}\n")' \
+    'Path(sys.argv[1]).write_text(' \
+    '    "933\t1100\t88000\t5.00\t1024\t2048\n", encoding="ascii"' \
+    ')' \
+    'while True:' \
+    '    signal.pause()' >"$stubborn_sampler"
+chmod +x "$stubborn_sampler"
+
+stubborn_bench=$temporary_directory/term-ignoring-llama-bench
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    'invocation_count_file=${QWEN_TEST_STUBBORN_BENCH_COUNT_FILE:?}' \
+    'identity_file=${QWEN_TEST_STUBBORN_SAMPLER_IDENTITIES:?}' \
+    'invocation_count=0' \
+    'if [ -s "$invocation_count_file" ]; then' \
+    '    invocation_count=$(sed -n "1p" "$invocation_count_file")' \
+    'fi' \
+    'invocation_count=$((invocation_count + 1))' \
+    'printf "%s\\n" "$invocation_count" >"$invocation_count_file"' \
+    'readiness_attempt=0' \
+    'while [ "$(wc -l <"$identity_file")" -lt "$invocation_count" ] &&' \
+    '      [ "$readiness_attempt" -lt 200 ]; do' \
+    '    readiness_attempt=$((readiness_attempt + 1))' \
+    '    sleep 0.01' \
+    'done' \
+    '[ "$(wc -l <"$identity_file")" -ge "$invocation_count" ] || exit 9' \
+    'printf "| fake | tg64 | 3.00 +/- 0.10 |\\n"' >"$stubborn_bench"
+chmod +x "$stubborn_bench"
 model_path=$temporary_directory/model.gguf
 : >"$model_path"
 
@@ -164,6 +215,45 @@ if [ "$(grep -Fxc -- '-x llama-server' "$process_probe_log")" -ne 2 ] || \
     cat "$process_probe_log" >&2
     exit 1
 fi
+
+stubborn_identity_file=$temporary_directory/stubborn-sampler-identities.tsv
+stubborn_bench_count_file=$temporary_directory/stubborn-bench-count
+stubborn_output=$temporary_directory/repeatability-stubborn-sampler
+: >"$stubborn_identity_file"
+: >"$stubborn_bench_count_file"
+active_fixture=bench-repeatability-stubborn-sampler
+diagnostic_file=$temporary_directory/stubborn.stderr
+PATH="$isolated_process_bin:$PATH" \
+QWEN_TEST_PROCESS_PROBE_LOG=$process_probe_log \
+QWEN_LLAMA_BENCH=$stubborn_bench QWEN_CLOCK_SAMPLER=$stubborn_sampler \
+QWEN_TEST_STUBBORN_SAMPLER_IDENTITIES=$stubborn_identity_file \
+QWEN_TEST_STUBBORN_BENCH_COUNT_FILE=$stubborn_bench_count_file \
+QWEN_SAMPLER_TERM_GRACE_MS=25 QWEN_SAMPLER_KILL_GRACE_MS=1000 \
+QWEN_IDLE_SECONDS=0 \
+    "$script_directory/measure-bench-repeatability.sh" "$model_path" \
+    "$stubborn_output" >"$temporary_directory/stubborn.stdout" \
+    2>"$temporary_directory/stubborn.stderr"
+grep -F 'bench_repeatability=completed' \
+    "$temporary_directory/stubborn.stdout" >/dev/null
+if [ "$(grep -c '^sampler_teardown=completed signal=KILL ' \
+        "$temporary_directory/stubborn.stderr")" -ne 5 ]; then
+    printf 'TERM-ignoring samplers did not reach five SIGKILL teardowns\n' >&2
+    sed -n '1,160p' "$temporary_directory/stubborn.stderr" >&2
+    exit 1
+fi
+if [ "$(wc -l <"$stubborn_identity_file")" -ne 5 ]; then
+    printf 'TERM-ignoring sampler identity count differs from five arms\n' >&2
+    exit 1
+fi
+while IFS="$(printf '\t')" read -r stubborn_pid stubborn_start_time; do
+    observed_start_time=$(process_start_time_ticks "$stubborn_pid")
+    if [ -n "$observed_start_time" ] && \
+       [ "$observed_start_time" = "$stubborn_start_time" ]; then
+        printf 'TERM-ignoring sampler identity remains live: %s %s\n' \
+            "$stubborn_pid" "$stubborn_start_time" >&2
+        exit 1
+    fi
+done <"$stubborn_identity_file"
 
 fake_state=$temporary_directory/state
 execution_campaign=$temporary_directory/served-execution-campaign
