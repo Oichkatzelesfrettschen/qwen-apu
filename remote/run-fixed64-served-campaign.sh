@@ -314,7 +314,8 @@ fi
 if [ "$campaign_lock_inherited" -eq 0 ]; then
     QWEN_FIXED64_CONTROL_LOCK_INHERITED=1
     export QWEN_FIXED64_CONTROL_LOCK_INHERITED
-    exec "$campaign_lock_descriptor_helper" open "$campaign_lock" 9 \
+    exec "$campaign_lock_descriptor_helper" open --normalize-legacy-mode \
+        "$campaign_lock" 9 \
         "$orchestrator_source" "$output_directory"
 fi
 if ! "$campaign_lock_descriptor_helper" verify "$campaign_lock" 9; then

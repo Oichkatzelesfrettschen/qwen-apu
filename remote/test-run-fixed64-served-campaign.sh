@@ -356,6 +356,11 @@ state_intermediate_mutation_state=accepted
 report symlinked_intermediate_state_directory_untouched \
     "$state_intermediate_mutation_state"
 
+legacy_campaign_lock_expected=$work_directory/legacy-campaign-lock.expected
+printf 'retained legacy campaign lock bytes\n' >"$campaign_lock"
+cp -- "$campaign_lock" "$legacy_campaign_lock_expected"
+chmod 0664 "$campaign_lock"
+legacy_campaign_lock_identity=$(stat -c '%d:%i' "$campaign_lock")
 success_output=$work_directory/success
 set +e
 run_campaign "$success_output" \
@@ -381,6 +386,14 @@ if [ "$success_status" -ne 0 ]; then
     fi
     exit 1
 fi
+legacy_campaign_lock_state=accepted
+[ "$(stat -c %a "$campaign_lock")" = 600 ] || \
+    legacy_campaign_lock_state='mode-not-normalized'
+[ "$(stat -c '%d:%i' "$campaign_lock")" = "$legacy_campaign_lock_identity" ] || \
+    legacy_campaign_lock_state='inode-changed'
+cmp -s "$legacy_campaign_lock_expected" "$campaign_lock" || \
+    legacy_campaign_lock_state='retained-bytes-changed'
+report normalizes_exact_legacy_campaign_lock "$legacy_campaign_lock_state"
 if [ ! -f "$success_output/schedule.tsv" ]; then
     printf 'balanced campaign stopped before schedule publication: status=%s\n' \
         "$success_status" >&2
@@ -1929,8 +1942,8 @@ if [ "$lease_state" != accepted ]; then
     cat "$work_directory/lease-second.stderr" >&2
 fi
 
-if [ "$checks_run" -ne 91 ]; then
-    printf 'test_run_fixed64_served_campaign=failed expected_checks=91 observed_checks=%s\n' \
+if [ "$checks_run" -ne 92 ]; then
+    printf 'test_run_fixed64_served_campaign=failed expected_checks=92 observed_checks=%s\n' \
         "$checks_run" >&2
     exit 1
 fi
