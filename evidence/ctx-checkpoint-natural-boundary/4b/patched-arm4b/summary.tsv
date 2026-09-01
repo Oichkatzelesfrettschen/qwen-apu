@@ -1,0 +1,3 @@
+arm	ctx_checkpoints	turn	prompt_n	prompt_ms	predicted_n	predicted_ms	prompt_tok_s	decode_tok_s	prefill_saved_ms
+1	0	1	30725	3556157.196	32	33507.743	8.640	0.955	-
+1	0	2	30748	3870565.283	32	18394.383	7.944	1.740	-314408.087
