@@ -1,0 +1,92 @@
+#!/bin/sh
+set -eu
+
+# One resolution of the active deployment for a whole launch. The launch chain
+# reads a server, a checkpoint ledger, and a preset from the activated
+# bundle, and an activation between two reads of `deployment-current` would
+# pair members of two generations. This script takes the activation lock
+# shared, follows `deployment-current` to one bundle, requires that bundle to
+# sit immediately below the deployment root under a plain name, verifies it
+# once, and prints canonical member paths. The caller retains the directory
+# in QWEN_ACTIVE_DEPLOYMENT_DIRECTORY and reads every member from it, so a
+# later activation replaces the pointer while the launch keeps the bundle it
+# resolved. An explicit QWEN_ACTIVE_DEPLOYMENT_DIRECTORY is verified rather
+# than trusted: it must be a bundle below the root and passes the same
+# verification, so a caller that already resolved once hands the same bundle
+# down the chain.
+#
+# usage: resolve-active-deployment.sh [DEPLOYMENT_ROOT]
+# Prints `active_deployment_directory=`, `active_deployment_name=`,
+# `active_deployment_server=`, `active_deployment_ledger=`,
+# `active_deployment_manifest=`, `active_deployment_router_presets=`, and
+# `active_deployment_web_presets=`; an absent preset reads `-`. Exit 3 states
+# that the root holds no deployment-current at all, so a caller can keep the
+# promote-chain defaults; any other failure is a corrupt or refused bundle.
+
+if [ "$#" -gt 1 ]; then
+    printf 'usage: %s [DEPLOYMENT_ROOT]\n' "$0" >&2
+    exit 2
+fi
+
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+deployment_root=${1:-${QWEN_DEPLOYMENT_ROOT:-"${HOME:?}/qwen-deployments"}}
+current_link=$deployment_root/deployment-current
+
+if [ ! -d "$deployment_root" ]; then
+    printf 'no deployment root: %s\n' "$deployment_root" >&2
+    exit 3
+fi
+canonical_root=$(readlink -f -- "$deployment_root")
+
+exec 7>"$deployment_root/.activate.lock"
+flock -s 7
+
+if [ -n "${QWEN_ACTIVE_DEPLOYMENT_DIRECTORY:-}" ]; then
+    candidate_directory=$QWEN_ACTIVE_DEPLOYMENT_DIRECTORY
+    if [ -L "$candidate_directory" ] || [ ! -d "$candidate_directory" ]; then
+        printf 'QWEN_ACTIVE_DEPLOYMENT_DIRECTORY is not a plain directory: %s\n' \
+            "$candidate_directory" >&2
+        exit 1
+    fi
+    canonical_directory=$(readlink -f -- "$candidate_directory")
+else
+    if [ ! -e "$current_link" ] && [ ! -L "$current_link" ]; then
+        printf 'no deployment-current under %s\n' "$deployment_root" >&2
+        exit 3
+    fi
+    if [ ! -L "$current_link" ]; then
+        printf 'deployment-current is not a symlink: %s\n' "$current_link" >&2
+        exit 1
+    fi
+    if [ ! -d "$current_link/" ]; then
+        printf 'deployment-current does not resolve to a directory: %s\n' \
+            "$current_link" >&2
+        exit 1
+    fi
+    canonical_directory=$(readlink -f -- "$current_link")
+fi
+
+bundle_name=${canonical_directory##*/}
+if [ "${canonical_directory%/*}" != "$canonical_root" ]; then
+    printf 'active deployment resolves outside the deployment root: %s\n' \
+        "$canonical_directory" >&2
+    exit 1
+fi
+"$script_directory/verify-deployment-bundle.sh" "$deployment_root" \
+    "$bundle_name" >/dev/null
+
+router_presets=-
+web_presets=-
+if [ -f "$canonical_directory/router-presets.ini" ]; then
+    router_presets=$canonical_directory/router-presets.ini
+fi
+if [ -f "$canonical_directory/web-presets.ini" ]; then
+    web_presets=$canonical_directory/web-presets.ini
+fi
+printf 'active_deployment_directory=%s\n' "$canonical_directory"
+printf 'active_deployment_name=%s\n' "$bundle_name"
+printf 'active_deployment_server=%s\n' "$canonical_directory/llama-server"
+printf 'active_deployment_ledger=%s\n' "$canonical_directory/ctx-checkpoints.tsv"
+printf 'active_deployment_manifest=%s\n' "$canonical_directory/bundle-manifest.tsv"
+printf 'active_deployment_router_presets=%s\n' "$router_presets"
+printf 'active_deployment_web_presets=%s\n' "$web_presets"

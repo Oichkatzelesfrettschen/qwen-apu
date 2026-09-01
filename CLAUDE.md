@@ -1093,18 +1093,29 @@ remote/run-ctx-checkpoint-sweep.sh LABEL MODEL_ID OUT
 # Deployment bundles: the server, its manifest, the checkpoint ledger, and
 # the presets generated against that ledger as one activated unit.
 # Activation and rollback are the same atomic symlink transition, serialized
-# on .activate.lock under the root; qwen-webui-control.sh prefers
-# deployment-current and carries its ledger, and qwen-launch.sh and
-# qwen-web-launch.sh read deployment-current's router-presets.ini and
-# web-presets.ini ahead of the state directory's, so a rollback to the
-# forced-tail build travels with the all-zero ledger and the all-zero preset
-# it is admissible under. evidence/deployment-bundle-presets/ retains the
-# three-transition router regression.
+# on a descriptor the activator holds exclusively on .activate.lock under
+# the root. A launch resolves the bundle once: resolve-active-deployment.sh
+# takes that lock shared, follows deployment-current to one directory
+# immediately below the root, verifies it whole through
+# verify-deployment-bundle.sh, and the launchers and qwen-webui-control.sh
+# read server, ledger, router-presets.ini, and web-presets.ini from that one
+# directory as QWEN_ACTIVE_DEPLOYMENT_DIRECTORY, so an activation during a
+# launch changes nothing the launch serves. Every name read back from the
+# root is held to its namespace (a role link targets exactly ../NAME, a
+# generation link exactly deployment-state.N, no symlinked bundle or member),
+# and a preset section is bound to the ledger count of the model its
+# LLAMA_ARG_MODEL resolves to through the registry. A rollback to the
+# forced-tail build therefore travels with the all-zero ledger and the
+# all-zero preset it is admissible under. evidence/deployment-bundle-presets/
+# retains the router regression across activation, rollback, and an
+# activation under a paused launch.
 QWEN_CTX_CHECKPOINT_LEDGER=LEDGER remote/build-router-presets.sh OUT.ini
 QWEN_BUNDLE_ROUTER_PRESETS=OUT.ini \
     remote/build-deployment-bundle.sh NAME SERVER MANIFEST LEDGER [ROOT]
 remote/activate-deployment-bundle.sh NAME|rollback [ROOT]
-remote/verify-bundle-preset-ledger.sh PRESET LEDGER
+remote/verify-deployment-bundle.sh ROOT NAME
+remote/resolve-active-deployment.sh [ROOT]     # the one bundle a launch reads
+remote/verify-bundle-preset-ledger.sh PRESET LEDGER [REGISTRY]
 
 # Rebuild llama.cpp and the static UI
 remote/build-llama-preset.sh PRESET [SOURCE]   # one directory per build arm

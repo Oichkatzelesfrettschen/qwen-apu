@@ -25,6 +25,8 @@ fixture_remote=$temporary_directory/remote
 fixture_bin=$temporary_directory/bin
 mkdir -p "$fixture_remote" "$fixture_bin"
 cp "$script_directory/qwen-launch.sh" "$fixture_remote/qwen-launch.sh"
+cp "$script_directory/resolve-active-deployment.sh" \
+    "$fixture_remote/resolve-active-deployment.sh"
 cp "$script_directory/check-runtime-tree.sh" "$fixture_remote/check-runtime-tree.sh"
 cp "$script_directory/qwen-teardown.sh" "$fixture_remote/qwen-teardown.sh"
 # The teardown proves the image lane left no service, runtime, partial

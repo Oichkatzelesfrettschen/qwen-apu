@@ -56,11 +56,34 @@ launcher=$script_directory/qwen-launch.sh
 state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
 # The activated deployment bundle's web preset outranks the state directory's
 # for the same reason its router preset does in qwen-launch.sh: the sections'
-# checkpoint counts were generated against the bundled ledger.
-deployment_web_presets=${QWEN_DEPLOYMENT_ROOT:-"${HOME:?}/qwen-deployments"}/deployment-current/web-presets.ini
-if [ -z "${QWEN_WEB_PRESETS:-}" ] && [ -f "$deployment_web_presets" ]; then
+# checkpoint counts were generated against the bundled ledger. The bundle is
+# resolved once here and handed to the launcher as
+# QWEN_ACTIVE_DEPLOYMENT_DIRECTORY, so the preset read here and the server
+# and ledger read beyond the launcher come from one bundle.
+deployment_root=${QWEN_DEPLOYMENT_ROOT:-"${HOME:?}/qwen-deployments"}
+deployment_resolution=$("$script_directory/resolve-active-deployment.sh" \
+    "$deployment_root" 2>&1) && deployment_resolution_status=0 || \
+    deployment_resolution_status=$?
+active_deployment_directory=''
+case $deployment_resolution_status in
+    0)
+        active_deployment_directory=$(printf '%s\n' "$deployment_resolution" |
+            sed -n 's/^active_deployment_directory=//p')
+        QWEN_ACTIVE_DEPLOYMENT_DIRECTORY=$active_deployment_directory
+        export QWEN_ACTIVE_DEPLOYMENT_DIRECTORY
+        ;;
+    3) ;;
+    *)
+        printf '%s\n' "$deployment_resolution" >&2
+        printf 'the activated deployment failed resolution; the launch stops\n' >&2
+        exit 1
+        ;;
+esac
+deployment_web_presets=$active_deployment_directory/web-presets.ini
+if [ -z "${QWEN_WEB_PRESETS:-}" ] && [ -n "$active_deployment_directory" ] && \
+    [ -f "$deployment_web_presets" ]; then
     web_presets=$deployment_web_presets
-    printf 'web_presets_source=deployment-current path=%s\n' "$web_presets"
+    printf 'web_presets_source=active-deployment path=%s\n' "$web_presets"
 else
     web_presets=${QWEN_WEB_PRESETS:-$state_directory/web-presets.ini}
 fi

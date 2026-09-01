@@ -60,6 +60,11 @@ export QWEN_CTX_CHECKPOINT_LEDGER
 harness=$work/harness
 mkdir -p "$harness"
 cp "$script_directory/qwen-web-launch.sh" "$harness/qwen-web-launch.sh"
+# The launcher resolves the active deployment before it reads a preset; the
+# harness holds no deployment root, so the resolver reports none and the
+# state directory preset applies.
+cp "$script_directory/resolve-active-deployment.sh" \
+    "$harness/resolve-active-deployment.sh"
 cat >"$harness/qwen-launch.sh" <<'EOF'
 #!/bin/sh
 set -eu
@@ -102,6 +107,8 @@ cp "$script_directory/open-verified-lock-descriptor.py" \
     "$control_harness/open-verified-lock-descriptor.py"
 cp "$script_directory/check-runtime-tree.sh" \
     "$control_harness/check-runtime-tree.sh"
+cp "$script_directory/resolve-active-deployment.sh" \
+    "$control_harness/resolve-active-deployment.sh"
 cat >"$control_bin/tmux" <<'EOF'
 #!/bin/sh
 set -eu

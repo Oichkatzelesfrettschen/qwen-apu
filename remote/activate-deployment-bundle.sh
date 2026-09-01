@@ -17,7 +17,14 @@ set -eu
 # publish the same previous, so the rollback pointer loses the intermediate
 # activation, and the generation each removes is the one it read rather than
 # the one the other published, so orphan generation directories accumulate.
-# Under the lock each writer reads the state the previous writer published.
+# The lock is a descriptor this process holds exclusively until it exits, so
+# ownership is a kernel fact rather than an inherited environment string, and
+# resolve-active-deployment.sh takes the same lock shared while it reads.
+#
+# Every name the transition reads back from the root is held to its own
+# namespace: a role link targets exactly `../BUNDLE_NAME`, a generation link
+# targets exactly `deployment-state.N`, and only such a validated basename is
+# ever removed. A root whose links name anything else is refused whole.
 #
 # usage: activate-deployment-bundle.sh BUNDLE_NAME [DEPLOYMENT_ROOT]
 #        activate-deployment-bundle.sh rollback [DEPLOYMENT_ROOT]
@@ -37,188 +44,87 @@ if [ ! -d "$deployment_root" ]; then
     printf 'deployment root is not a directory: %s\n' "$deployment_root" >&2
     exit 1
 fi
-if [ "${QWEN_ACTIVATION_LOCK_HELD:-}" != "$deployment_root" ]; then
-    QWEN_ACTIVATION_LOCK_HELD=$deployment_root
-    export QWEN_ACTIVATION_LOCK_HELD
-    exec flock "$deployment_root/.activate.lock" "$0" "$@"
-fi
+exec 7>"$deployment_root/.activate.lock"
+flock -x 7
 
-# Verification reads nothing outside the bundle directory except the model
-# registry, and every claim the bundle manifest states is recomputed from the
-# members' own bytes: an internal manifest edited to match a tampered member
-# still fails on the semantics, ledger, and executable-row recomputation.
 verify_bundle() {
-    bundle_directory=$1
-    bundle_manifest=$bundle_directory/bundle-manifest.tsv
-    if [ ! -r "$bundle_manifest" ]; then
-        printf 'bundle manifest is unreadable: %s\n' "$bundle_manifest" >&2
-        return 1
-    fi
-    for manifest_key in bundle_name checkpoint_semantics maximum_ledger_count \
-        server_bytes llama-server artifact-manifest.tsv ctx-checkpoints.tsv \
-        router-presets.ini web-presets.ini; do
-        manifest_key_rows=$(awk -F'\t' -v key="$manifest_key" \
-            '$1 == key { count++ } END { print count + 0 }' "$bundle_manifest")
-        if [ "$manifest_key_rows" -ne 1 ]; then
-            printf 'bundle manifest carries %s rows for %s; exactly one is required: %s\n' \
-                "$manifest_key_rows" "$manifest_key" "$bundle_manifest" >&2
+    "$script_directory/verify-deployment-bundle.sh" "$deployment_root" "$1" \
+        >/dev/null
+}
+
+bundle_name_is_valid() {
+    case $1 in
+        *[!A-Za-z0-9._-]* | '' | deployment-current | deployment-previous | \
+            deployment-state | deployment-state.* | . | ..)
             return 1
-        fi
-    done
-    # The name a bundle was assembled under is the name it activates under:
-    # a directory renamed onto another bundle's name would otherwise publish
-    # one bundle's bytes under a role record naming another.
-    declared_name=$(awk -F'\t' '$1 == "bundle_name" { print $2; exit }' \
-        "$bundle_manifest")
-    if [ "$declared_name" != "$(basename -- "$bundle_directory")" ]; then
-        printf 'bundle directory %s carries bundle_name %s\n' \
-            "$(basename -- "$bundle_directory")" "$declared_name" >&2
-        return 1
-    fi
-    for bundle_member in llama-server artifact-manifest.tsv ctx-checkpoints.tsv; do
-        expected_sha256=$(awk -F'\t' -v key="$bundle_member" \
-            '$1 == key { print $2; exit }' "$bundle_manifest")
-        if [ ! -r "$bundle_directory/$bundle_member" ]; then
-            printf 'bundle member is unreadable: %s\n' \
-                "$bundle_directory/$bundle_member" >&2
-            return 1
-        fi
-        actual_sha256=$(sha256sum "$bundle_directory/$bundle_member" |
-            cut -d ' ' -f 1)
-        if [ "$actual_sha256" != "$expected_sha256" ]; then
-            printf 'bundle member diverged: %s expected=%s found=%s\n' \
-                "$bundle_member" "$expected_sha256" "$actual_sha256" >&2
-            return 1
-        fi
-    done
-    if [ ! -x "$bundle_directory/llama-server" ]; then
-        printf 'bundle server is not executable: %s\n' \
-            "$bundle_directory/llama-server" >&2
-        return 1
-    fi
-    # The semantics are recomputed from the artifact manifest and the server's
-    # own bytes, and the bundle manifest must agree with what was recomputed.
-    measured_bytes=$(wc -c <"$bundle_directory/llama-server" | tr -d ' ')
-    measured_sha256=$(sha256sum "$bundle_directory/llama-server" |
-        cut -d ' ' -f 1)
-    declared_bytes=$(awk -F'\t' '$1 == "server_bytes" { print $2; exit }' \
-        "$bundle_manifest")
-    if [ "$measured_bytes" != "$declared_bytes" ]; then
-        printf 'bundle server measures %s bytes against the declared %s\n' \
-            "$measured_bytes" "$declared_bytes" >&2
-        return 1
-    fi
-    executable_rows=$(awk -F'\t' -v bytes="$measured_bytes" \
-        -v digest="$measured_sha256" '
-        $1 == "executable" && $2 == "llama-server" && NF == 4 &&
-            $3 == bytes && $4 == digest { count++ }
-        END { print count + 0 }' "$bundle_directory/artifact-manifest.tsv")
-    if [ "$executable_rows" -ne 1 ]; then
-        printf 'artifact manifest holds %s executable llama-server rows matching the bundled server; exactly one is required\n' \
-            "$executable_rows" >&2
-        return 1
-    fi
-    recomputed_semantics=$(awk -F'\t' \
-        '$1 == "checkpoint_semantics" { count++; value = $2 }
-        END { if (count != 1) exit 1; print value }' \
-        "$bundle_directory/artifact-manifest.tsv") || {
-        printf 'artifact manifest must carry exactly one checkpoint_semantics row\n' >&2
-        return 1
-    }
-    declared_semantics=$(awk -F'\t' \
-        '$1 == "checkpoint_semantics" { print $2; exit }' "$bundle_manifest")
-    if [ "$recomputed_semantics" != "$declared_semantics" ]; then
-        printf 'artifact manifest declares checkpoint_semantics %s against the bundle manifest declaration %s\n' \
-            "$recomputed_semantics" "$declared_semantics" >&2
-        return 1
-    fi
-    # The ledger is revalidated through the registry validator, and the
-    # maximum count is recomputed from the validated rows.
-    validated_ledger_rows=$(QWEN_CTX_CHECKPOINT_LEDGER=$bundle_directory/ctx-checkpoints.tsv \
-        "$script_directory/model-registry.sh" ctx-checkpoints) || {
-        printf 'bundle ledger failed registry validation: %s\n' \
-            "$bundle_directory/ctx-checkpoints.tsv" >&2
-        return 1
-    }
-    recomputed_maximum=$(printf '%s\n' "$validated_ledger_rows" | awk -F'\t' '
-        { if ($2 + 0 > maximum) maximum = $2 + 0 }
-        END { print maximum + 0 }')
-    declared_maximum=$(awk -F'\t' \
-        '$1 == "maximum_ledger_count" { print $2; exit }' "$bundle_manifest")
-    if [ "$recomputed_maximum" != "$declared_maximum" ]; then
-        printf 'bundle ledger maximum count %s disagrees with the declared %s\n' \
-            "$recomputed_maximum" "$declared_maximum" >&2
-        return 1
-    fi
-    if [ "$recomputed_maximum" -gt 0 ] && \
-        [ "$recomputed_semantics" != natural-boundary-v1 ]; then
-        printf 'bundle pairs a positive checkpoint count with %s; a positive count requires natural-boundary-v1\n' \
-            "$recomputed_semantics" >&2
-        return 1
-    fi
-    # A preset member is present exactly where the manifest digests one, and
-    # its sections are re-read against the bundled ledger rather than trusted
-    # from the digest alone.
-    for preset_member in router-presets.ini web-presets.ini; do
-        expected_sha256=$(awk -F'\t' -v key="$preset_member" \
-            '$1 == key { print $2; exit }' "$bundle_manifest")
-        if [ "$expected_sha256" = - ]; then
-            if [ -e "$bundle_directory/$preset_member" ]; then
-                printf 'bundle carries %s that its manifest records as absent\n' \
-                    "$preset_member" >&2
-                return 1
-            fi
-            continue
-        fi
-        if [ ! -r "$bundle_directory/$preset_member" ]; then
-            printf 'bundle member is unreadable: %s\n' \
-                "$bundle_directory/$preset_member" >&2
-            return 1
-        fi
-        actual_sha256=$(sha256sum "$bundle_directory/$preset_member" |
-            cut -d ' ' -f 1)
-        if [ "$actual_sha256" != "$expected_sha256" ]; then
-            printf 'bundle member diverged: %s expected=%s found=%s\n' \
-                "$preset_member" "$expected_sha256" "$actual_sha256" >&2
-            return 1
-        fi
-        if ! "$script_directory/verify-bundle-preset-ledger.sh" \
-            "$bundle_directory/$preset_member" \
-            "$bundle_directory/ctx-checkpoints.tsv" >/dev/null; then
-            printf 'bundle preset %s disagrees with the bundled ledger\n' \
-                "$preset_member" >&2
-            return 1
-        fi
-    done
+            ;;
+    esac
     return 0
 }
 
-# The bundle a role name resolves to, through either the generation directory
-# or a legacy plain link a prior activator version left at the root.
+# The bundle name a role resolves to, through either the generation directory
+# or a legacy plain link a prior activator version left at the root. A role
+# link inside a generation targets exactly `../NAME`; a legacy plain link
+# targets exactly `NAME`. Any other target refuses the transition, because a
+# link pointing outside the root would otherwise name the bundle a rollback
+# activates or the generation a publish removes.
 resolve_role() {
     role=$1
     if [ -L "$state_link" ] && [ -L "$state_link/$role" ]; then
         role_target=$(readlink "$state_link/$role")
-        printf '%s\n' "${role_target#../}"
+        case $role_target in
+            ../*) role_name=${role_target#../} ;;
+            *) role_name='' ;;
+        esac
+        if ! bundle_name_is_valid "$role_name"; then
+            printf 'role link %s targets %s; exactly ../BUNDLE_NAME is admitted\n' \
+                "$state_link/$role" "$role_target" >&2
+            return 1
+        fi
+        printf '%s\n' "$role_name"
         return 0
     fi
     if [ -L "$deployment_root/deployment-$role" ]; then
         role_target=$(readlink "$deployment_root/deployment-$role")
         case $role_target in
-            deployment-state/*) ;;
-            *) printf '%s\n' "$role_target" ;;
+            deployment-state/current | deployment-state/previous)
+                return 0
+                ;;
         esac
+        if ! bundle_name_is_valid "$role_target"; then
+            printf 'legacy role link %s targets %s; exactly BUNDLE_NAME is admitted\n' \
+                "$deployment_root/deployment-$role" "$role_target" >&2
+            return 1
+        fi
+        printf '%s\n' "$role_target"
     fi
     return 0
 }
 
+# The generation name the state link targets, held to `deployment-state.N`.
+resolve_state_generation() {
+    if [ ! -L "$state_link" ]; then
+        return 0
+    fi
+    state_target=$(readlink "$state_link")
+    if ! printf '%s\n' "$state_target" | grep -qxE 'deployment-state\.[0-9]+'; then
+        printf 'state link %s targets %s; exactly deployment-state.N is admitted\n' \
+            "$state_link" "$state_target" >&2
+        return 1
+    fi
+    printf '%s\n' "$state_target"
+}
+
 # One rename of the deployment-state link publishes the whole current/previous
-# pair; the displaced generation directory is removed after the publish.
+# pair; the displaced generation directory is removed after the publish, and
+# only a validated generation basename that is a plain directory is removed.
 publish_state() {
     publish_current=$1
     publish_previous=$2
+    displaced_state=$(resolve_state_generation)
     generation=1
-    while [ -e "$deployment_root/deployment-state.$generation" ]; do
+    while [ -e "$deployment_root/deployment-state.$generation" ] || \
+        [ -L "$deployment_root/deployment-state.$generation" ]; do
         generation=$((generation + 1))
     done
     generation_directory=$deployment_root/deployment-state.$generation
@@ -226,10 +132,6 @@ publish_state() {
     ln -s "../$publish_current" "$generation_directory/current"
     if [ -n "$publish_previous" ]; then
         ln -s "../$publish_previous" "$generation_directory/previous"
-    fi
-    displaced_state=''
-    if [ -L "$state_link" ]; then
-        displaced_state=$(readlink "$state_link")
     fi
     ln -sfn "deployment-state.$generation" "$deployment_root/.deployment-state.new"
     mv -T "$deployment_root/.deployment-state.new" "$state_link"
@@ -243,12 +145,17 @@ publish_state() {
             mv -T "$deployment_root/.deployment-$role.new" "$role_link"
         fi
     done
-    case $displaced_state in
-        deployment-state.[0-9]*)
-            rm -rf -- "${deployment_root:?}/$displaced_state"
-            ;;
-    esac
+    if [ -n "$displaced_state" ] && \
+        [ -d "$deployment_root/$displaced_state" ] && \
+        [ ! -L "$deployment_root/$displaced_state" ]; then
+        rm -rf -- "${deployment_root:?}/$displaced_state"
+    fi
 }
+
+# The root's own links are read before any bundle is verified, so a corrupt
+# state or role link refuses the transition ahead of the publish.
+resolve_state_generation >/dev/null
+current_target=$(resolve_role current)
 
 if [ "$selector" = rollback ]; then
     rollback_target=$(resolve_role previous)
@@ -256,8 +163,7 @@ if [ "$selector" = rollback ]; then
         printf 'no deployment-previous to roll back to: %s\n' "$previous_link" >&2
         exit 1
     fi
-    current_target=$(resolve_role current)
-    if ! verify_bundle "$deployment_root/$rollback_target"; then
+    if ! verify_bundle "$rollback_target"; then
         printf 'rollback target failed verification and stays inactive\n' >&2
         exit 1
     fi
@@ -267,23 +173,19 @@ if [ "$selector" = rollback ]; then
     exit 0
 fi
 
-case $selector in
-    *[!A-Za-z0-9._-]* | '' | deployment-current | deployment-previous | \
-        deployment-state | deployment-state.*)
-        printf 'bundle name must be nonempty [A-Za-z0-9._-] and not a link name: %s\n' \
-            "$selector" >&2
-        exit 2
-        ;;
-esac
-if ! verify_bundle "$deployment_root/$selector"; then
+if ! bundle_name_is_valid "$selector"; then
+    printf 'bundle name must be nonempty [A-Za-z0-9._-] and not a link name: %s\n' \
+        "$selector" >&2
+    exit 2
+fi
+if ! verify_bundle "$selector"; then
     printf 'bundle failed verification and stays inactive: %s\n' "$selector" >&2
     exit 1
 fi
-displaced=$(resolve_role current)
-if [ "$displaced" = "$selector" ]; then
+if [ "$current_target" = "$selector" ]; then
     printf 'bundle is already deployment-current: %s\n' "$selector"
     exit 0
 fi
-publish_state "$selector" "$displaced"
+publish_state "$selector" "$current_target"
 printf 'deployment_current=%s deployment_previous=%s transition=activate\n' \
-    "$selector" "${displaced:--}"
+    "$selector" "${current_target:--}"
