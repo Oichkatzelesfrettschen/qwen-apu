@@ -78,6 +78,19 @@ if [ "$named_rows" -ne 1 ]; then
         "$named_rows" "$manifest_path" >&2
     exit 1
 fi
+# A diagnostic build names its instrumentation and declares itself unfit to
+# serve; the bundle is the unit an activation makes the appliance's server,
+# so the declaration is honored here rather than trusted to an operator.
+serving_eligible=$(awk -F'\t' '$1 == "serving_eligible" { print $2; exit }' \
+    "$manifest_path")
+if [ -n "$serving_eligible" ] && [ "$serving_eligible" != yes ]; then
+    printf 'artifact manifest declares serving_eligible %s (instrumentation %s); a bundle carries serving builds alone: %s\n' \
+        "$serving_eligible" \
+        "$(awk -F'\t' '$1 == "instrumentation" { print $2; exit }' "$manifest_path")" \
+        "$manifest_path" >&2
+    exit 1
+fi
+
 executable_rows=$(awk -F'\t' -v bytes="$server_bytes" -v digest="$server_sha256" '
     $1 == "executable" && $2 == "llama-server" && NF == 4 &&
         $3 == bytes && $4 == digest { count++ }

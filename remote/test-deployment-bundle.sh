@@ -809,4 +809,45 @@ if ! "$preset_check" "$bound_preset" "$ambiguous_ledger" "$ambiguous_registry" >
 fi
 report suffix_ambiguity_refused accepted
 
+# A diagnostic build declares serving_eligible no in its artifact manifest
+# and is refused at assembly; the same manifest planted into an assembled
+# bundle with consistent digests is refused at activation.
+diagnostic_manifest=$work_directory/manifest-diagnostic.tsv
+{
+    printf 'instrumentation\tpipeline-census-v1\nbuild_role\tdiagnostic\nserving_eligible\tno\n'
+    cat "$forced_manifest"
+} >"$diagnostic_manifest"
+if "$builder" bundle-diagnostic "$forced_server" "$diagnostic_manifest" \
+    "$zero_ledger" "$deployment_root" \
+    >/dev/null 2>"$work_directory/diagnostic.stderr"; then
+    printf 'a diagnostic build assembled into a bundle\n' >&2
+    exit 1
+fi
+if ! grep -q 'serving_eligible no (instrumentation pipeline-census-v1)' \
+    "$work_directory/diagnostic.stderr"; then
+    printf 'the diagnostic refusal lost its declaration\n' >&2
+    exit 1
+fi
+"$activator" bundle-natural "$deployment_root" >/dev/null
+cp "$diagnostic_manifest" "$deployment_root/bundle-third/artifact-manifest.tsv"
+diagnostic_digest=$(sha256sum "$deployment_root/bundle-third/artifact-manifest.tsv" |
+    cut -d ' ' -f 1)
+awk -F'\t' -v OFS='\t' -v digest="$diagnostic_digest" '
+    $1 == "artifact-manifest.tsv" { $2 = digest }
+    { print }' "$deployment_root/bundle-third/bundle-manifest.tsv" \
+    >"$deployment_root/bundle-third/bundle-manifest.tsv.new"
+mv "$deployment_root/bundle-third/bundle-manifest.tsv.new" \
+    "$deployment_root/bundle-third/bundle-manifest.tsv"
+if "$activator" bundle-third "$deployment_root" \
+    >/dev/null 2>"$work_directory/diagnostic-activate.stderr"; then
+    printf 'a diagnostic manifest activated\n' >&2
+    exit 1
+fi
+if ! grep -q 'a diagnostic build stays inactive' \
+    "$work_directory/diagnostic-activate.stderr"; then
+    printf 'the diagnostic activation refusal lost its reason\n' >&2
+    exit 1
+fi
+report diagnostic_build_refused accepted
+
 printf 'deployment_bundle=accepted checks=%s\n' "$checks"

@@ -52,6 +52,27 @@ environment_output=$(capture_environment low-serialized)
 printf '%s\n' "$environment_output" | grep -F \
     'profile=low-serialized low=1 duty=unset serialized=1 max_nodes=32 strict=1' >/dev/null
 
+# The diagnostic profile fixes serialization and restores the diagnostic
+# variables the serving profiles scrub; a serving profile carries the census
+# toggle across the scrub under its QWEN_ name and nothing else.
+diagnostic_output=$(GGML_VK_PERF_LOGGER=1 GGML_VK_PIPELINE_STATS=mul_mat \
+    RADV_DEBUG=shaderstats QWEN_PIPELINE_CENSUS=1 QWEN_VULKAN_PROFILE=diagnostic \
+    GGML_VK_SERIALIZE_SUBMISSIONS=unexpected GGML_VK_MAX_NODES_PER_SUBMIT=999 \
+    "$wrapper" sh -c 'printf "profile=%s serialized=%s max_nodes=%s perf=%s stats=%s radv=%s census=%s\n" \
+        "$QWEN_VULKAN_PROFILE" "${GGML_VK_SERIALIZE_SUBMISSIONS-unset}" \
+        "${GGML_VK_MAX_NODES_PER_SUBMIT-unset}" "${GGML_VK_PERF_LOGGER-unset}" \
+        "${GGML_VK_PIPELINE_STATS-unset}" "${RADV_DEBUG-unset}" "${GGML_VK_PIPELINE_CENSUS-unset}"')
+printf '%s\n' "$diagnostic_output"
+printf '%s\n' "$diagnostic_output" | grep -Fx \
+    'profile=diagnostic serialized=1 max_nodes=32 perf=1 stats=mul_mat radv=shaderstats census=1' >/dev/null
+serving_census_output=$(GGML_VK_PERF_LOGGER=1 GGML_VK_PIPELINE_CENSUS=stale QWEN_PIPELINE_CENSUS=1 \
+    QWEN_VULKAN_PROFILE=low-async "$wrapper" sh -c 'printf "perf=%s census=%s\n" \
+        "${GGML_VK_PERF_LOGGER-unset}" "${GGML_VK_PIPELINE_CENSUS-unset}"')
+printf '%s\n' "$serving_census_output" | grep -Fx 'perf=unset census=1' >/dev/null
+serving_plain_output=$(GGML_VK_PIPELINE_CENSUS=stale QWEN_VULKAN_PROFILE=low-async \
+    "$wrapper" sh -c 'printf "census=%s\n" "${GGML_VK_PIPELINE_CENSUS-unset}"')
+printf '%s\n' "$serving_plain_output" | grep -Fx 'census=unset' >/dev/null
+
 environment_output=$(capture_environment low-async)
 printf '%s\n' "$environment_output" | grep -F \
     'profile=low-async low=1 duty=unset serialized=unset max_nodes=16 strict=1' >/dev/null

@@ -69,6 +69,12 @@ serving_flags="-DCMAKE_BUILD_TYPE=Release
     -DGGML_CUDA=OFF -DGGML_HIP=OFF -DGGML_OPENCL=OFF -DGGML_RPC=OFF
     -DGGML_SYCL=OFF"
 
+# Every build declares what it is for. A serving build carries no
+# instrumentation and may enter a deployment bundle; a diagnostic build
+# names its instrumentation and is refused by bundle assembly.
+instrumentation=-
+build_role=serving
+serving_eligible=yes
 case $preset in
     raven2-vulkan-production)
         # LLAMA_SUBPROCESS stays on, which is upstream's Linux default.
@@ -102,6 +108,22 @@ case $preset in
         preset_targets='llama-server llama-bench'
         preset_outputs='bin/llama-server bin/llama-bench'
         compiler_flags="$zen_target -fno-omit-frame-pointer"
+        ;;
+    raven2-vulkan-census)
+        # The pipeline census binary: the production flags plus the census
+        # instrumentation compiled in and toggled at runtime, so one binary
+        # supplies the collection-off and collection-on arms of the overhead
+        # control. It is a diagnostic artifact and the manifest says so;
+        # build-deployment-bundle.sh refuses a manifest whose
+        # serving_eligible row reads no.
+        preset_flags="$serving_flags -DGGML_VULKAN=ON -DLLAMA_SUBPROCESS=ON \
+            -DGGML_VULKAN_PIPELINE_CENSUS=ON"
+        preset_targets='llama-server llama-bench'
+        preset_outputs='bin/llama-server bin/llama-bench'
+        compiler_flags=$zen_target
+        instrumentation=pipeline-census-v1
+        build_role=diagnostic
+        serving_eligible=no
         ;;
     raven2-vulkan-tests)
         preset_flags="$(printf '%s' "$serving_flags" |
@@ -357,6 +379,9 @@ manifest_path=$build_directory/artifact-manifest.tsv
     printf 'preset\t%s\n' "$preset"
     printf 'commit\t%s\n' "$actual_commit"
     printf 'worktree\t%s\n' "$worktree_state"
+    printf 'instrumentation\t%s\n' "$instrumentation"
+    printf 'build_role\t%s\n' "$build_role"
+    printf 'serving_eligible\t%s\n' "$serving_eligible"
     printf 'checkpoint_semantics\t%s\n' "$checkpoint_semantics"
     printf 'checkpoint_patch\t%s\n' "$checkpoint_patch"
     printf 'checkpoint_patch_sha256\t%s\n' "$checkpoint_patch_sha256"
