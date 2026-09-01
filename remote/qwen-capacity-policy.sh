@@ -517,6 +517,264 @@ if [ ! -f "$model_path" ]; then
     exit 2
 fi
 
+# A served measurement launches a descriptor path so pathname replacement
+# cannot change the bytes llama-server opens. The measurement runner derives
+# the object tuple from its sealed runtime-input record, and the controller
+# carries the tuple through tmux. The capacity policy re-stats the descriptor
+# before the registry ID becomes policy authority. Resolving the proc link back
+# to a pathname would lose the descriptor guarantee after a rename or unlink.
+approved_model_id=${QWEN_APPROVED_MODEL_ID:-}
+approved_model_file=${QWEN_APPROVED_MODEL_FILE:-}
+approved_model_device=${QWEN_APPROVED_MODEL_DEVICE:-}
+approved_model_inode=${QWEN_APPROVED_MODEL_INODE:-}
+approved_model_bytes=${QWEN_APPROVED_MODEL_BYTES:-}
+approved_identity_field_count=0
+for approved_identity_value in "$approved_model_id" "$approved_model_file" \
+    "$approved_model_device" "$approved_model_inode" "$approved_model_bytes"; do
+    if [ -n "$approved_identity_value" ]; then
+        approved_identity_field_count=$((approved_identity_field_count + 1))
+    fi
+done
+registry_selector_kind=path
+registry_selector=$model_path
+approved_registry_descriptor=''
+approved_registry_id=''
+approved_registry_model_file=''
+approved_registry_context_ceiling=''
+approved_registry_cache_type_k=''
+approved_registry_cache_type_v=''
+approved_registry_flash_attention=''
+approved_registry_batch=''
+approved_registry_ubatch=''
+approved_registry_validated_depth=''
+if [ "$approved_identity_field_count" -ne 0 ]; then
+    if [ "$approved_identity_field_count" -ne 5 ]; then
+        printf 'approved model identity requires ID, file, device, inode, and bytes\n' >&2
+        exit 2
+    fi
+    if [ "$router_enabled" = 1 ]; then
+        printf 'approved single-model identity is refused in router mode\n' >&2
+        exit 2
+    fi
+    if ! python3 - "$model_path" "$approved_model_id" \
+        "$approved_model_device" "$approved_model_inode" \
+        "$approved_model_bytes" <<'PY'
+import os
+import re
+import stat
+import sys
+
+model_path, model_id, device_text, inode_text, bytes_text = sys.argv[1:]
+if not re.fullmatch(r"/proc/[1-9][0-9]*/fd/[0-9]+", model_path):
+    raise SystemExit("approved model identity requires a canonical proc descriptor path")
+if not re.fullmatch(r"[a-z0-9][a-z0-9._-]*", model_id):
+    raise SystemExit("approved model ID is malformed")
+expected_values = []
+for name, value, minimum in (
+    ("device", device_text, 0),
+    ("inode", inode_text, 1),
+    ("bytes", bytes_text, 0),
+):
+    if not value.isascii() or not value.isdecimal():
+        raise SystemExit(f"approved model {name} is malformed")
+    parsed_value = int(value)
+    if parsed_value < minimum or str(parsed_value) != value:
+        raise SystemExit(f"approved model {name} is malformed")
+    expected_values.append(parsed_value)
+try:
+    descriptor_status = os.stat(model_path)
+except OSError as error:
+    raise SystemExit(f"approved model descriptor cannot be stated: {error}") from None
+if not stat.S_ISREG(descriptor_status.st_mode):
+    raise SystemExit("approved model descriptor is not a regular file")
+observed_values = (
+    descriptor_status.st_dev,
+    descriptor_status.st_ino,
+    descriptor_status.st_size,
+)
+if observed_values != tuple(expected_values):
+    raise SystemExit(
+        "approved model descriptor identity differs: "
+        f"expected={tuple(expected_values)} observed={observed_values}"
+    )
+PY
+    then
+        exit 2
+    fi
+    approved_registry_source=${QWEN_MODEL_REGISTRY:-$script_directory/models.tsv}
+    if ! exec 5<"$approved_registry_source"; then
+        printf 'approved model registry cannot be opened: %s\n' \
+            "$approved_registry_source" >&2
+        exit 2
+    fi
+    approved_registry_descriptor=/proc/$$/fd/5
+    if ! approved_registry_row=$(python3 - "$approved_registry_descriptor" \
+        "$approved_model_id" "$approved_model_file" <<'PY'
+import os
+import stat
+import sys
+
+registry_path, expected_id, expected_file = sys.argv[1:]
+
+
+def fail(message):
+    raise SystemExit(f"approved model registry row is invalid: {message}")
+
+
+def canonical_positive(value, name):
+    if not value.isascii() or not value.isdecimal() or value.startswith("0"):
+        fail(f"{name} must be a canonical positive integer")
+    parsed = int(value)
+    if parsed <= 0:
+        fail(f"{name} must be a canonical positive integer")
+    return parsed
+
+
+try:
+    with open(registry_path, "rb", buffering=0) as registry_handle:
+        before = os.fstat(registry_handle.fileno())
+        registry_bytes = registry_handle.read()
+        after = os.fstat(registry_handle.fileno())
+except OSError as error:
+    fail(f"registry cannot be read: {error}")
+if not stat.S_ISREG(before.st_mode):
+    fail("registry is not a regular file")
+identity_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns")
+if tuple(getattr(before, field) for field in identity_fields) != tuple(
+    getattr(after, field) for field in identity_fields
+):
+    fail("registry identity changed while reading")
+try:
+    registry_text = registry_bytes.decode("utf-8")
+except UnicodeDecodeError:
+    fail("registry is not UTF-8")
+
+matching_rows = []
+for line_number, line in enumerate(registry_text.splitlines(), start=1):
+    if not line.strip() or line.startswith("#"):
+        continue
+    fields = line.split("\t")
+    if fields[0] != expected_id:
+        continue
+    if len(fields) != 22:
+        fail(f"line {line_number} holds {len(fields)} fields instead of 22")
+    matching_rows.append((line_number, fields))
+if len(matching_rows) != 1:
+    fail(f"ID {expected_id} resolves to {len(matching_rows)} rows")
+
+line_number, fields = matching_rows[0]
+if fields[2] != expected_file:
+    fail(
+        f"ID {expected_id} names file {fields[2]}, publisher names {expected_file}"
+    )
+context_ceiling = canonical_positive(fields[5], "context_ceiling")
+batch = canonical_positive(fields[16], "batch")
+ubatch = canonical_positive(fields[17], "ubatch")
+if ubatch > batch:
+    fail(f"ubatch {ubatch} exceeds batch {batch}")
+cache_types = {"f32", "f16", "bf16", "q8_0", "q5_1", "q5_0", "q4_1", "q4_0", "iq4_nl"}
+if fields[7] not in cache_types:
+    fail(f"cache_type_k is invalid: {fields[7]}")
+if fields[8] not in cache_types:
+    fail(f"cache_type_v is invalid: {fields[8]}")
+if fields[9] not in {"on", "off", "auto"}:
+    fail(f"flash_attention is invalid: {fields[9]}")
+validated_depth = fields[18]
+if validated_depth != "-":
+    canonical_positive(validated_depth, "validated_filled_depth")
+print(
+    fields[0],
+    fields[2],
+    context_ceiling,
+    fields[7],
+    fields[8],
+    fields[9],
+    batch,
+    ubatch,
+    validated_depth,
+    sep="\t",
+)
+PY
+    ); then
+        exit 2
+    fi
+    IFS="$(printf '\t')" read -r approved_registry_id \
+        approved_registry_model_file approved_registry_context_ceiling \
+        approved_registry_cache_type_k approved_registry_cache_type_v \
+        approved_registry_flash_attention approved_registry_batch \
+        approved_registry_ubatch approved_registry_validated_depth <<EOF
+$approved_registry_row
+EOF
+    registry_selector_kind=id
+    registry_selector=$approved_model_id
+else
+    ordinary_model_root=${QWEN_MODEL_ROOT:-"${HOME:?}/models"}
+    if ! python3 - "$model_path" "$ordinary_model_root" <<'PY'
+import os
+import re
+import sys
+from pathlib import Path
+
+model_path, model_root = sys.argv[1:]
+collapsed_path = re.sub(r"/+", "/", model_path)
+normalized_path = os.path.normpath(collapsed_path)
+descriptor_aliases = (
+    r"/proc/(?:self|thread-self|[1-9][0-9]*)/fd/[0-9]+",
+    r"/proc/(?:self|[1-9][0-9]*)/task/(?:self|[1-9][0-9]*)/fd/[0-9]+",
+    r"/dev/fd/[0-9]+",
+    r"/dev/stdin",
+)
+if any(re.fullmatch(pattern, normalized_path) for pattern in descriptor_aliases):
+    raise SystemExit("descriptor-backed model path requires approved model identity")
+if not os.path.isabs(model_path) or normalized_path != model_path:
+    raise SystemExit("ordinary model path must be canonical and absolute")
+try:
+    resolved_root = Path(model_root).resolve(strict=True)
+    resolved_model = Path(model_path).resolve(strict=True)
+except OSError as error:
+    raise SystemExit(f"ordinary model path cannot be resolved: {error}") from None
+if str(resolved_model) != model_path:
+    raise SystemExit("ordinary model path must not contain symbolic links")
+try:
+    resolved_model.relative_to(resolved_root)
+except ValueError:
+    raise SystemExit(
+        f"ordinary model path escapes QWEN_MODEL_ROOT: {model_path}"
+    ) from None
+PY
+    then
+        exit 2
+    fi
+fi
+
+registry_model_field() {
+    if [ "$registry_selector_kind" = id ]; then
+        case $1 in
+            id) printf '%s\n' "$approved_registry_id" ;;
+            model_file) printf '%s\n' "$approved_registry_model_file" ;;
+            context_ceiling) printf '%s\n' "$approved_registry_context_ceiling" ;;
+            cache_type_k) printf '%s\n' "$approved_registry_cache_type_k" ;;
+            cache_type_v) printf '%s\n' "$approved_registry_cache_type_v" ;;
+            flash_attention) printf '%s\n' "$approved_registry_flash_attention" ;;
+            batch) printf '%s\n' "$approved_registry_batch" ;;
+            ubatch) printf '%s\n' "$approved_registry_ubatch" ;;
+            validated_filled_depth) printf '%s\n' "$approved_registry_validated_depth" ;;
+            *) return 2 ;;
+        esac
+        return 0
+    fi
+    "$script_directory/model-registry.sh" path "$registry_selector" "$1"
+}
+
+registry_checkpoint_count() {
+    if [ "$registry_selector_kind" = id ]; then
+        QWEN_MODEL_REGISTRY=$approved_registry_descriptor \
+            "$script_directory/model-registry.sh" ctx-checkpoint "$1"
+        return
+    fi
+    "$script_directory/model-registry.sh" ctx-checkpoint "$1"
+}
+
 case $context_size in
     '' | *[!0-9]*)
         printf 'context size must be a positive integer\n' >&2
@@ -540,8 +798,8 @@ if [ "$router_enabled" != 1 ]; then
 # depth. remote/models.tsv carries one ceiling per row and this gate reads it.
 # A checkpoint outside the registry keeps the depth that the 24K allocation of
 # 2,974 MiB was measured against.
-registry_ceiling=$("$script_directory/model-registry.sh" path "$model_path" \
-    context_ceiling 2>/dev/null) || registry_ceiling=''
+registry_ceiling=$(registry_model_field context_ceiling 2>/dev/null) || \
+    registry_ceiling=''
 case $registry_ceiling in
     '' | *[!0-9]*) registry_ceiling=24576 ;;
 esac
@@ -551,12 +809,12 @@ esac
 # experiment that changes any member supplies its own positive conservative
 # ceiling explicitly; silently reusing the registered ceiling would present an
 # unvalidated allocation as admitted policy.
-registry_cache_type_k=$("$script_directory/model-registry.sh" path "$model_path" \
-    cache_type_k 2>/dev/null) || registry_cache_type_k=''
-registry_cache_type_v=$("$script_directory/model-registry.sh" path "$model_path" \
-    cache_type_v 2>/dev/null) || registry_cache_type_v=''
-registry_flash_attention=$("$script_directory/model-registry.sh" path "$model_path" \
-    flash_attention 2>/dev/null) || registry_flash_attention=''
+registry_cache_type_k=$(registry_model_field cache_type_k 2>/dev/null) || \
+    registry_cache_type_k=''
+registry_cache_type_v=$(registry_model_field cache_type_v 2>/dev/null) || \
+    registry_cache_type_v=''
+registry_flash_attention=$(registry_model_field flash_attention 2>/dev/null) || \
+    registry_flash_attention=''
 [ -n "$registry_cache_type_k" ] || registry_cache_type_k=q8_0
 [ -n "$registry_cache_type_v" ] || registry_cache_type_v=q4_0
 [ -n "$registry_flash_attention" ] || registry_flash_attention=on
@@ -609,10 +867,8 @@ fi
 # cache triple, Flash Attention state, and device wedged the amdgpu compute ring
 # at 2048/512 and completed twice at 128/32, so a depth is admitted under a
 # geometry and reading the ceiling without it reads half the measurement.
-registry_batch=$("$script_directory/model-registry.sh" path "$model_path" \
-    batch 2>/dev/null) || registry_batch=''
-registry_ubatch=$("$script_directory/model-registry.sh" path "$model_path" \
-    ubatch 2>/dev/null) || registry_ubatch=''
+registry_batch=$(registry_model_field batch 2>/dev/null) || registry_batch=''
+registry_ubatch=$(registry_model_field ubatch 2>/dev/null) || registry_ubatch=''
 case $registry_batch in '' | *[!0-9]*) registry_batch=128 ;; esac
 case $registry_ubatch in '' | *[!0-9]*) registry_ubatch=32 ;; esac
 batch_size=${QWEN_BATCH_SIZE:-$registry_batch}
@@ -634,8 +890,7 @@ fi
 # A quarantined profile names a tuple that produced a device failure. The launch
 # refuses to construct it rather than warning about it, because the failure it
 # reproduces resets the compute ring on a live desktop.
-registry_id=$("$script_directory/model-registry.sh" path "$model_path" \
-    id 2>/dev/null) || registry_id=''
+registry_id=$(registry_model_field id 2>/dev/null) || registry_id=''
 if [ -n "$registry_id" ]; then
     quarantine_profiles=$("$script_directory/model-registry.sh" \
         quarantine-profiles standalone)
@@ -662,8 +917,8 @@ fi
 # The allocation and the validated depth are separate claims and the status line
 # carries both, so a served depth above anything measured to fill and decode is
 # a visible gap rather than an implied guarantee.
-registry_validated_depth=$("$script_directory/model-registry.sh" path \
-    "$model_path" validated_filled_depth 2>/dev/null) || registry_validated_depth=''
+registry_validated_depth=$(registry_model_field validated_filled_depth \
+    2>/dev/null) || registry_validated_depth=''
 [ -n "$registry_validated_depth" ] || registry_validated_depth=-
 if [ "$registry_validated_depth" = - ]; then
     printf 'depth_validation admitted=%s validated=none geometry=%s/%s\n' \
@@ -1267,11 +1522,11 @@ fi
 # stays off the router argv with the six tuple flags.
 registry_ctx_checkpoints=0
 if [ "$router_enabled" != 1 ]; then
-    registry_model_id=$("$script_directory/model-registry.sh" path "$model_path" \
-        id 2>/dev/null) || registry_model_id=''
+    registry_model_id=$(registry_model_field id 2>/dev/null) || \
+        registry_model_id=''
     if [ -n "$registry_model_id" ]; then
-        if ! registry_ctx_checkpoints=$("$script_directory/model-registry.sh" \
-            ctx-checkpoint "$registry_model_id"); then
+        if ! registry_ctx_checkpoints=$(registry_checkpoint_count \
+            "$registry_model_id"); then
             printf 'context checkpoint authority is unavailable\n' >&2
             exit 2
         fi
@@ -1505,6 +1760,9 @@ if [ "$router_enabled" = 1 ]; then
         "$@"
 fi
 
+if [ -n "$approved_registry_descriptor" ]; then
+    exec 5<&-
+fi
 exec "$script_directory/radv-low-priority-env.sh" \
     "$script_directory/qwen-build-exec-guard.sh" \
     "$llama_server" "$checkpoint_manifest_sha256" \

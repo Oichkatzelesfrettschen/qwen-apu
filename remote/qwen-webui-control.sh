@@ -302,6 +302,9 @@ case $action in
         # Speculation and backend sampling are policy arguments the capacity
         # script reads from the environment, so they cross this boundary with
         # the projector settings rather than reaching the tmux server's own.
+        # A fixed-length measurement carries the descriptor-bound model ID,
+        # registry filename, and object tuple through the tmux boundary. The
+        # capacity policy re-stats the descriptor before selecting one row.
         # The approval broker's marker, port, program, state directory, signing
         # key path, profile, API-key requirement, and readiness decision cross
         # with them. qwen-web-launch.sh exports the values into the control
@@ -319,6 +322,11 @@ case $action in
                               QWEN_SPEC_DRAFT_N_MAX QWEN_SPEC_DRAFT_P_MIN \
                               QWEN_SPEC_BACKEND_SAMPLING QWEN_BACKEND_SAMPLING \
                               QWEN_CTX_CHECKPOINTS QWEN_CHECKPOINT_MIN_STEP \
+                              QWEN_APPROVED_MODEL_ID \
+                              QWEN_APPROVED_MODEL_FILE \
+                              QWEN_APPROVED_MODEL_DEVICE \
+                              QWEN_APPROVED_MODEL_INODE \
+                              QWEN_APPROVED_MODEL_BYTES \
                               QWEN_MODEL_REGISTRY QWEN_QUARANTINE_REGISTRY \
                               QWEN_VALIDATED_TUPLES QWEN_CTX_CHECKPOINT_LEDGER \
                               QWEN_BATCH_SIZE QWEN_UBATCH_SIZE \

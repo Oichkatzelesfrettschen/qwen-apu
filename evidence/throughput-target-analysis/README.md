@@ -265,6 +265,19 @@ teardown suite rejects unproved and stale external holders while accepting a
 verified holder. The descriptor-bound verifier test injects a lock-path inode
 replacement. The tests start no real server, model, GPU, or remote workload.
 
+Each served arm hashes the model through descriptor 7 and binds the publisher
+artifact ID, registry filename, device, inode, and byte count in
+`runtime-inputs.json`. The runner carries that identity through the tmux
+command. The capacity policy re-stats the model descriptor, opens the registry
+once on a private descriptor, validates one unique 22-field row, matches the
+publisher filename, and caches the row before constructing server policy.
+Renaming, unlinking, or atomically replacing the logical pathname therefore
+changes neither the bytes opened by llama-server nor the registry ceiling,
+cache geometry, quarantine row, validated depth, or checkpoint count. The tuple
+does not detect an in-place, same-size write to the open inode after hashing;
+the current contract records that residual rather than claiming immutable model
+contents.
+
 ## Exact target coefficients
 
 For baseline rate `r` and goal `g`, the analyzer derives:
