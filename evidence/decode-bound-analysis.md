@@ -1,6 +1,8 @@
 # Byte count does not predict decode on this device
 
-The 4B distill decodes near 3 tok/s and the interactive target is 4.5. Two
+The 4B distill decodes near 3 tok/s and the active interactive target is 5.25.
+The superseded analysis priced two levers against 4.5 tok/s, and both came in
+far under: the
 levers were priced before this measurement and both came in far under: the
 embedded multi-token-prediction head returns 1.13 to 1.16 at one draft token,
 and the served KV cache policy costs 1.9% at depth 0 rather than the 7% it was
@@ -152,39 +154,41 @@ ordering therefore survives while attribution to depth, width, or shape remains
 open. `evidence/qwen38-2b-distill-candidate.md` holds the refutation of the
 linear size-cost model that this supports.
 
-## The 3.01 tok/s mean requires a mechanism that owns one third of token time
+## The 3.01 tok/s mean requires 42.67% total time removal
 
-The 3.01 tok/s reference spends 332.226 ms per token. The 4.5 tok/s target
-allows 222.222 ms, so the target removes 110.004 ms per token and requires a
-1.4950x end-to-end speedup. Amdahl's law gives the minimum accelerated fraction
+The 3.01 tok/s reference spends 332.226 ms per token. The 5.25 tok/s target
+allows 190.476 ms, so the target removes 141.750 ms per token and requires a
+1.7442x end-to-end speedup. Amdahl's law gives the minimum accelerated fraction
 for a mechanism with speedup `s`:
 
 ```text
-required_fraction = (1 - 3.01 / 4.5) / (1 - 1 / s)
+required_fraction = (1 - 3.01 / 5.25) / (1 - 1 / s)
 ```
 
 | mechanism speedup | minimum share of current token time |
 | ---: | ---: |
-| 2x | 66.22% |
-| 4x | 44.15% |
-| unbounded | 33.11% |
+| 2x | 85.33% |
+| 4x | 56.89% |
+| 31/19 | 110.22%, impossible |
+| unbounded | 42.67% |
 
-The 33.11% floor belongs to the 3.01 tok/s four-block mean. The individual
-Q4_K_M arms span 2.68 to 3.28 tok/s, so their required latency reductions span
-40.44% to 27.11% and their end-to-end speedups span 1.679x to 1.372x. A matched
+The 42.67% floor belongs to the 3.01 tok/s four-block mean. The individual
+Q4_K_M arms span 2.68 to 3.28 tok/s, so their required time reductions span
+48.95% to 37.52% and their end-to-end speedups span 1.959x to 1.601x. A matched
 control beside a candidate selects the applicable coefficient; the mean does
-not erase the retained run-order variation.
+not erase the reported run-order variation.
 
 The tied Q6_K output projection carries 19.33% of the 4B logical streamed
 bytes. That byte share does not establish its time share. A tied-projection-only
 route reaches the target only if successful-run timing shows that the projection
-owns at least 33.11% of token time and the candidate removes nearly all of that
-cost.
+owns at least 42.67% of token time and the candidate removes nearly all of that
+cost. The logical byte share alone cannot meet the bound.
 
-At unchanged Q4_K_M bytes, 4.5 tok/s requires 12.14 logical GB/s against the
-retained 8.11. Q2_K at the Q4_K_M achieved streaming rate would reach only
-4.26 tok/s; Q2_K requires 8.57 logical GB/s for 4.5 and currently reaches 5.53.
-The missing coefficient is therefore kernel efficiency as well as bytes.
+At unchanged Q4_K_M bytes, 5.25 tok/s requires 14.1636 logical GB/s. The exact
+3.01-rate product equals 8.12049 GB/s, while the table's rounded block mean is
+8.11 GB/s. Q2_K at the Q4_K_M achieved streaming rate would reach only
+4.26 tok/s; Q2_K requires 9.9986 logical GB/s for 5.25 and currently reaches
+5.53. The missing coefficient is therefore kernel efficiency as well as bytes.
 
 The [AMD processor catalogue](https://www.amd.com/en/products/specifications/processors.html)
 lists DDR4-2400 as the Athlon Silver 3050U's maximum memory speed. The
@@ -199,15 +203,20 @@ The N=1 MTP arm exposes the same structural limit from another direction. A
 two-column target pass costs 463.1 ms and one draft pass costs 66.4 ms, or 1.432
 and 0.205 one-column target passes. Even perfect acceptance and a free draft can
 emit at most two tokens per 463.1 ms, which is 4.319 tok/s. The free-draft bound
-requires the two-column target pass to drop below 444.444 ms. Retaining the
-measured 66.4 ms draft pass tightens that target-pass bound to 378.044 ms. These
+requires the two-column target pass to drop below 380.952 ms. Retaining the
+reported 66.4 ms draft pass tightens that target-pass bound to 314.552 ms. These
 are whole-pass coefficients; successful-run timestamps remain necessary before
 assigning either value to a shader. Acceptance alone cannot cross the target.
 
 Perfect N=1 acceptance at both measured pass costs reaches
 `2 / (0.4631 + 0.0664) = 3.777` tok/s. The retained draft cost therefore makes
-the target pass remove 85.056 ms, or 18.37% of its measured latency, before the
-pair reaches 4.5 tok/s. This coupling orders the search: successful-run timing
+the target pass remove 148.548 ms, or 32.08% of its measured latency, before the
+pair reaches 5.25 tok/s. A `31/19` local speedup must own 82.87% of the target
+pass to remove that much time. The one-column target pass costs 323.4 ms, and
+even recovering that cost with perfect acceptance reaches only 5.1308 tok/s at
+the reported 66.4 ms draft cost. The 4B route therefore also reduces draft cost
+or drives the target pass below the historical one-column cost. This coupling orders the search: successful-run timing
 first identifies target-pass time that a kernel or submission change can remove;
 draft and acceptance changes then multiply a target pass that already satisfies
-the 378.044 ms bound.
+the 314.552 ms bound. `evidence/throughput-target-analysis/` retains the exact
+rational coefficients and the supersession of the 4.5 tok/s calculations.

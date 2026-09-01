@@ -1,0 +1,4 @@
+analysis_id	model_id	baseline_surface	baseline_decode_tok_s	target_decode_tok_s	target_evidence	streamed_bytes_per_token	amdahl_speedups	n1_surface	n1_target_pass_ms	n1_draft_pass_ms	baseline_evidence	streamed_bytes_evidence	n1_evidence
+qwen35-08b-registry	qwen35-08b	universal-sweep-reported-mean	18.53	20	README.md	800881920	2,4,unbounded	-	-	-	evidence/model-admission/universal-candidate-ladder.md	evidence/representation-gate-16-bit.md	-
+qwen38-2b-bandwidth	qwen38-2b-distill	bandwidth-four-block-reported-mean	8.24	10	README.md	1263435008	2,4,unbounded	-	-	-	evidence/decode-bound-analysis.md	evidence/model-admission/qwen38-distill-tensor-census.txt	-
+qwen38-4b-bandwidth	qwen38-4b-distill	bandwidth-four-block-reported-mean	3.01	5.25	README.md	2697836544	2,4,31/19,unbounded	mtp-n1-reported-pass-costs	463.1	66.4	evidence/decode-bound-analysis.md	evidence/model-admission/qwen38-distill-tensor-census.txt	evidence/mtp-speculation-matrix.md

@@ -1,0 +1,221 @@
+# Throughput targets, evidence regimes, and mechanism bounds
+
+The performance program sets three serving targets on the Raven2 appliance:
+20 tok/s for Qwen3.5-0.8B Q8_0, 10 tok/s for Qwen3.8-2B Distill Q4_K_M,
+and 5.25 tok/s for Qwen3.8-4B Distill Q4_K_M. The targets name decode rate.
+They do not name prompt processing, a `llama-bench` row, or a rate copied from
+another checkpoint.
+
+`remote/throughput-targets.tsv` records the planning baselines and their
+evidence surfaces. Each row cites the top-level performance specification as
+`target_evidence`; the ledger does not treat its own target value as sufficient
+authority. `remote/analyze-throughput-targets.py` converts every input decimal
+to an exact rational number and generates `results.tsv` atomically. The
+generated table preserves numerator, denominator, 12-place decimal, unit,
+state, and source path for every coefficient.
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 remote/test-analyze-throughput-targets.py
+PYTHONDONTWRITEBYTECODE=1 python3 remote/analyze-throughput-targets.py
+PYTHONDONTWRITEBYTECODE=1 python3 remote/analyze-throughput-targets.py --check
+```
+
+The analyzer confines input, output, and evidence paths to the named repository,
+rejects symlink traversal, rejects incomplete N=1 records, and leaves an
+existing result unchanged when atomic replacement fails. The generated table
+does not upgrade a reported baseline into a retained raw measurement. The
+analyzer validates cited-path existence and target arithmetic; it does not
+extract values from prose and therefore does not prove source-value agreement.
+
+## Evidence regimes remain separate
+
+The checkout contains several valid observations with different execution and
+provenance contracts. A rate from one row cannot silently supply another row's
+contract.
+
+| Surface | 0.8B | 2B | 4B | Authority and limitation |
+| --- | ---: | ---: | ---: | --- |
+| Universal candidate sweep, reported paired mean | 18.53 | 9.19 | 3.34 | The model registry uses these rates. The checkout retains the synthesized table but lacks its raw arms. |
+| Bandwidth ladder, reported four-block mean | - | 8.24 | 3.01 | `decode-bound-analysis.md` retains block values and arithmetic but states that the arm logs, clock rows, invocation records, and hash-bound censuses are absent. |
+| Runtime-class `tg64` sweep | 15.31 | 8.09 | 3.18 | Raw logs survive, but the runner used model basenames with `--skip-hash`; the rates do not bind artifact bytes. |
+| Runtime-class fixed-64 anchor rerun | - | 7.685 | 2.985 | The later anchor rerun covers 2B and 4B only and retains the same unhashed-artifact limitation. |
+| Depth-wedge shallow controls | 18.04 mean | foreign-digest 9.64 mean | 3.335 mean | The 0.8B and 4B rows bind current registered digests. The nominal 2B row binds a different digest and cannot establish the registered artifact. Every row uses `llama-bench`. |
+| Historical representation ABBA control | 20.15 | 10.02 | - | Both targets appear on reported matched Q8_0 or Q4_K_M control arms. The checkout lacks the historical raw ABBA bundles. |
+| Fixed-64 exact-default balanced served campaign | absent | absent | absent | The hash-bound 32-token checkpoint sweep uses experimental checkpoint counts. It does not supply the fixed-64 exact-production-tuple denominator. |
+
+The 0.8B and 2B goals therefore act first as reproducibility targets. Historical
+ABBA prose reports values above both thresholds, while the registry and later
+sweeps report values below them. No complete reported 4B prompt set or current
+production-profile campaign meets 5.25. One retired n-gram arithmetic row
+reaches 5.47, while the same configuration drafts nothing on code.
+
+The cheapest decisive campaign needs a new orchestrator above
+`remote/measure-served-decode.sh`, which supplies one served arm. The
+orchestrator runs each current pinned artifact with fixed 64-token greedy
+generation, fresh servers, exact production profiles, and four separated slots
+in balanced forward/reverse order. The retained bundle binds the model, server,
+runner, request, response, summary, `predicted_n`, elapsed decode time, and
+`predicted_per_second` by SHA-256. The current checkout lacks that orchestrator
+and full manifest. A corrected 2B shallow arm repairs the depth digest
+contradiction but does not replace the three-model serving campaign.
+
+## Exact target coefficients
+
+For baseline rate `r` and goal `g`, the analyzer derives:
+
+```text
+baseline_latency_ms       = 1000 / r
+target_latency_ms         = 1000 / g
+required_latency_removal  = 1000 / r - 1000 / g
+required_speedup          = g / r
+required_time_fraction F  = 1 - r / g
+minimum_owned_fraction p  = F / (1 - 1 / s)
+target_logical_GB_s       = streamed_bytes_per_token * g / 1e9
+```
+
+The planning ledger deliberately uses the 18.53 universal mean for 0.8B and
+the later 8.24 and 3.01 bandwidth means for 2B and 4B. The ledger keeps the
+more conservative later surfaces visible instead of selecting the most
+favourable historical arm.
+
+| Model | Baseline to target | Speedup | Current to target latency | Removal | Removed fraction | Target logical GB/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 0.8B | 18.53 to 20 | 1.079330815x | 53.966541 to 50.000000 ms/token | 3.966541 ms | 7.3500% | 16.017638400 |
+| 2B | 8.24 to 10 | 1.213592233x | 121.359223 to 100.000000 ms/token | 21.359223 ms | 17.6000% | 12.634350080 |
+| 4B | 3.01 to 5.25 | 1.744186047x | 332.225914 to 190.476190 ms/token | 141.749723 ms | 42.6667% | 14.163641856 |
+
+The generated 4B baseline bandwidth equals 8.12048799744 decimal GB/s. The
+separately reported bandwidth-table mean equals 8.11 GB/s after averaging the
+four rounded block values. The two figures describe related inputs and remain
+distinct.
+
+| Model | 2x mechanism ownership | 4x mechanism ownership | Unbounded ownership | Additional bound |
+| --- | ---: | ---: | ---: | --- |
+| 0.8B | 14.7000% | 9.8000% | 7.3500% | A close matched control can decide the target without a code change. |
+| 2B | 35.2000% | 23.4667% | 17.6000% | The reported 10.02 ABBA control proves reachability only on its historical harness surface. |
+| 4B | 85.3333% | 56.8889% | 42.6667% | A 31/19 local speedup requires 110.2222% ownership and therefore cannot lift the whole 3.01 tok/s path to 5.25. |
+
+The 4B row supplies the strongest scope adjustment. A fast microkernel cannot
+reach 5.25 unless the microkernel owns enough measured token time. A
+`31/19 = 1.6316x` local gain falls short even when the mechanism owns the whole
+3.01 tok/s baseline. The optimization program must combine surfaces or produce
+a larger local speedup.
+
+## N=1 speculation requires a structural cost reduction
+
+The reported N=1 arm records a 463.1 ms two-column target pass and a 66.4 ms
+draft pass. With acceptance `a`, the idealized rate is:
+
+```text
+rate = 1000 * (1 + a) / (draft_pass_ms + target_pass_ms)
+```
+
+Perfect acceptance at current cost reaches 3.777148 tok/s. A free draft at the
+current target-pass cost reaches 4.318722 tok/s. Both ceilings miss 5.25. The
+current costs would require acceptance 1.779875, which lies outside the
+physical interval from zero to one.
+
+| Acceptance | Target-pass limit with 66.4 ms draft | Removal from 463.1 ms | Fraction removed |
+| ---: | ---: | ---: | ---: |
+| 0.846 | 285.219048 ms | 177.880952 ms | 38.41% |
+| 0.934 | 301.980952 ms | 161.119048 ms | 34.79% |
+| 1.000 | 314.552381 ms | 148.547619 ms | 32.0768% |
+
+The perfect-acceptance row gives the least demanding bound. A mechanism with
+local speedup `31/19` must own 82.865043% of the two-column target pass to
+remove the required 32.076791%. The older 47.4% ownership figure prices the
+superseded 4.5 tok/s target and cannot govern the 5.25 tok/s program.
+
+The measured one-column target pass costs 323.4 ms. Perfect acceptance with a
+66.4 ms draft reaches only 5.1308 tok/s, so recovering the one-column target
+cost alone still misses 5.25. At acceptance 0.934 and a 323.4 ms target pass,
+the draft pass must fall from 66.4 ms to 44.981 ms. The 4B route therefore
+needs target-pass work plus draft work, or a target-pass result below the
+one-column historical cost.
+
+## gfx902 exposes mixed MAD but lacks accelerated dot
+
+Primary sources correct a stale mechanism statement in the earlier execution
+ladder:
+
+| Predicate | Primary source | Bounded conclusion |
+| --- | --- | --- |
+| Raven maps to gfx target 90002 | [Linux v7.0 `kfd_device.c`](https://github.com/torvalds/linux/blob/v7.0/drivers/gpu/drm/amd/amdkfd/kfd_device.c#L301-L313) | The target maps to ISA 9.0.2. |
+| `gfx902` names ISA 9.0.2 | [LLVM `GCNProcessors.td`](https://github.com/llvm/llvm-project/blob/937e353fb22173c5976af9ae03352f16f9c8df2a/llvm/lib/Target/AMDGPU/GCNProcessors.td#L146-L149) | LLVM's processor model matches the kernel mapping. |
+| ISA 9.0.2 carries `FeatureMadMixInsts`; 9.0.4 introduces `FeatureFmaMixInsts`; 9.0.6 adds dot features | [LLVM `AMDGPU.td`](https://github.com/llvm/llvm-project/blob/937e353fb22173c5976af9ae03352f16f9c8df2a/llvm/lib/Target/AMDGPU/AMDGPU.td#L1943-L1964) | gfx902 supports MAD-mix and lacks the later FMA-mix and dot feature sets. |
+| LLVM selects `V_MAD_MIX_F32` under `HasMadMixInsts` | [LLVM `VOP3PInstructions.td`](https://github.com/llvm/llvm-project/blob/937e353fb22173c5976af9ae03352f16f9c8df2a/llvm/lib/Target/AMDGPU/VOP3PInstructions.td#L455-L499) | Mixed FP16-input, FP32-output MAD is a legal compiler target. |
+| Mesa reports packed 16-bit math, family-limited FMA-mix, and an explicit accelerated-dot family predicate | [Mesa `ac_gpu_info.c`](https://gitlab.freedesktop.org/mesa/mesa/-/blob/889476855143e855a7f92989251f09fb3b690cda/src/amd/common/ac_gpu_info.c#L329-L339) | Raven exposes packed 16-bit arithmetic and lacks Mesa's FMA-mix and accelerated-dot predicates. |
+| ACO preserves explicit FP32 fused `fma` when the target exposes only unfused MAD-mix | [ACO NIR selection](https://gitlab.freedesktop.org/mesa/mesa/-/blob/889476855143e855a7f92989251f09fb3b690cda/src/amd/compiler/instruction_selection/aco_select_nir_alu.cpp#L1931-L1954) and [mix optimization](https://gitlab.freedesktop.org/mesa/mesa/-/blob/889476855143e855a7f92989251f09fb3b690cda/src/amd/compiler/aco_optimizer.cpp#L843-L883) | The pinned Q4_K shader's explicit `fma` chain is not an ACO MAD-mix miss on Raven. Eligible terminal multiply or deliberately non-fused expressions form a separate semantic surface. |
+
+A session-only LLVM 22.1.8 probe accepts `v_mad_mix_f32` for `-mcpu=gfx902`,
+rejects `v_dot2_f32_f16` for gfx902, and accepts `v_dot2_f32_f16` for gfx906;
+the checkout retains neither commands nor output. Processor-specific TableGen
+establishes instruction legality independently. A candidate probe begins only
+with a terminal multiply or an expression whose non-fused rounding and denormal
+behavior is intentional. It fails when ACO emits no useful `v_mad_mix_f32`,
+compiled resources regress, matched target-pass time stays inside variation,
+or the candidate violates its declared numeric oracle.
+
+## Successful-run attribution precedes shader edits
+
+Pinned llama.cpp already discovers `VK_KHR_pipeline_executable_properties` and
+queries executable statistics. RADV returns VGPR, SGPR, spill, code-size, LDS,
+scratch, and maximum-wave fields through
+[`radv_GetPipelineExecutableStatisticsKHR`](https://gitlab.freedesktop.org/mesa/mesa/-/blob/889476855143e855a7f92989251f09fb3b690cda/src/amd/vulkan/radv_pipeline.c#L837-L863).
+Pinned llama.cpp stores only the NVIDIA-named `Register Count` field in its
+[`register_count` member](https://github.com/ggml-org/llama.cpp/blob/f280b26983ad0fdb705a0d9ebf0503e76f2899b0/ggml/src/ggml-vulkan/ggml-vulkan.cpp#L3048-L3084).
+RADV publishes the exact names through Mesa's
+[`shader_stats.xml`](https://gitlab.freedesktop.org/mesa/mesa/-/blob/889476855143e855a7f92989251f09fb3b690cda/src/util/shader_stats.xml#L104-L113).
+A Raven census must store those names and validate each statistic format before
+the fields become target evidence.
+The Vulkan extension defines the statistics as a debugging and performance
+surface, so field names and meanings remain implementation-defined rather than
+portable performance counters.
+
+[Vulkan timestamp queries](https://registry.khronos.org/vulkan/specs/latest/html/vkspec.html#queries-timestamps)
+write device timestamps on queue families whose `timestampValidBits` is
+nonzero. The host converts deltas with `VkPhysicalDeviceLimits::timestampPeriod`.
+A decisive census therefore writes timestamps around dispatches, reads query
+results at natural synchronization points, and joins each row to operation,
+tensor type and shape, specialization constants, resource statistics, and
+dispatch count. A per-record fence wait changes the schedule and cannot supply
+serving attribution.
+
+The profiling environment follows this exact nesting because
+`remote/radv-low-priority-env.sh` scrubs incoming diagnostic variables:
+
+```sh
+remote/qwen-exec-idle-priority.sh \
+remote/radv-low-priority-env.sh \
+env GGML_VK_PIPELINE_STATS=mul_mat_vec_q4_k_f16_f32 COMMAND ARGUMENTS...
+```
+
+The eventual timestamp campaign first runs logger-off, logger-on, logger-on,
+logger-off against an identical binary. The ABBA control measures query and
+synchronization overhead before any timestamp-derived attribution supports an
+end-to-end gain. Every real arm retains absolute nice 19, idle I/O, LOW RADV
+queue priority, and the production `low-async` comparison. The current work
+runs static and fake-only checks and executes zero model or GPU workloads.
+
+## Per-model mechanism order
+
+| Order | 0.8B | 2B | 4B |
+| ---: | --- | --- | --- |
+| 1 | Reproduce the serving target with the current digest; the historical ABBA control already reaches 20.15. | Reproduce the serving target with the current digest; the historical ABBA control already reaches 10.02 and the depth bundle binds a foreign digest. | Attribute successful-run GPU time and compiled resources before selecting a kernel. |
+| 2 | If matched serving remains below 20, inspect the dominant dispatch and its row/workgroup specialization. | If matched serving remains below 10, inspect shape-specific Q4_K row/workgroup selection before changing representation. | Sweep column-aware `NUM_ROWS` values 1, 2, and 4 while preserving wave64 and shared Q4 unpack. |
+| 3 | Confirm explicit `fma` remains fused; inspect only eligible terminal or deliberately non-fused expressions for MAD-mix. | Inspect stock ACO ISA and compiled resources; target a demonstrated compiler or resource miss. | Shorten C=2 accumulator and activation live ranges only when resource statistics show a higher VGPR bucket, spill, or lower maximum waves. |
+| 4 | Reject any code change whose gain stays inside matched run variation or violates its numeric oracle. | Reject a candidate whose matched effect stays inside variation, violates serving parity, or misses its mechanism prediction; compare the cumulative accepted portfolio with 21.359 ms. | Test MAD-mix only on an eligible expression with declared rounding and denormal behavior; never label the route FP16 dot hardware. |
+| 5 | - | - | Attribute and reduce the 66.4 ms draft head because one-column target-pass recovery alone still misses 5.25. |
+
+The Q4_K shader's persistent accumulator lower bound equals `C * R` FP32
+values per thread for column count `C` and row count `R`. Lexical activation
+loads equal `4 * C * R` `vec4` loads per superblock before compiler common
+subexpression elimination. The one-subgroup reduction uses zero reduction LDS;
+other reductions consume `4 * C * R * W` bytes for workgroup width `W`. gfx902
+wave64 allocates VGPRs in groups of four from 256 VGPRs per SIMD, so occupancy
+transitions require compiled resource values rather than timing folklore.
+
+Every mechanism remains a hypothesis until a retained campaign supplies the
+named falsifier. The target table remains a specification and coefficient
+ledger until one serving campaign reaches all three rates under their exact
+production profiles.

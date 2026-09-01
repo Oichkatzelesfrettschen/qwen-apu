@@ -20,6 +20,11 @@ bind every request and response, server and listener identity, executed source
 hash, exact token array, speculation counters, clock samples, and terminal
 health to each arm before the reported measurements become replayable evidence.
 
+The experiment registered 4.5 tok/s as its historical target before execution.
+The current performance specification raises the 4B target to 5.25 tok/s.
+Historical predictions and falsifiers below retain 4.5 where that value governed
+the arm, while the forward-looking mechanism bounds use 5.25.
+
 ## The head needs no patch and no sidecar
 
 An earlier revision of `evidence/qwen38-distill-tensor-census.md` recorded
@@ -265,12 +270,15 @@ baseline by a useful margin, and it does so on all three prompts:
 | S6 | 1.93 | 1.73 | 2.63 | 0.543 |
 
 The gain is 1.17 to 1.22 times on the looping suite and 1.13 to 1.16 on the chat
-suite, and the latter is the operational figure. Reaching 4.5 tok/s from 3.07
-needs 1.466, so the embedded head closes about a quarter of that gap, drafting
+suite, and the latter is the operational figure. The current 5.25 tok/s target
+requires 1.744x against the conservative 3.01 tok/s planning baseline. The
+embedded head cannot close that gap at the reported costs: perfect N=1
+acceptance reaches 3.777 tok/s, and a free draft reaches 4.319 tok/s. Drafting
 deeper closes none of the rest, backend sampling closes none, and n-gram
-drafting costs rather than closes. The two remaining paths are a cheaper
-verification pass, which the column table prices, and a checkpoint that streams
-fewer bytes, which the low-bit quantization ladder measures.
+drafting crosses 5.25 only on the retired arithmetic row while drafting nothing
+on code. The configuration fails the all-prompt target. The remaining path combines a
+cheaper verification pass with a cheaper draft pass or another independently
+measured gain; byte reduction alone already failed in the low-bit ladder.
 
 ## The candidate the decomposition names
 
@@ -287,11 +295,13 @@ one instruction. The rewrite changes dependency depth and rounding order while
 removing twelve scalar multiplications; source arithmetic alone predicts no
 speedup.
 
-The optimistic scalar-operation ratio is `31 / 19 = 1.632`. Removing the
-required 85.056 ms from the 463.1 ms two-column target pass under that ideal
-ratio requires `smin` to own
-`(85.056 / 463.1) / (1 - 19 / 31) = 47.4%` of the whole pass. Source structure
-does not establish that ownership. The candidate measurement compares stock
+The optimistic scalar-operation ratio is `31 / 19 = 1.632`. Perfect N=1
+acceptance with the reported 66.4 ms draft pass requires the 463.1 ms
+two-column target pass to reach 314.552 ms for 5.25 tok/s. Removing the required
+148.548 ms under the optimistic ratio requires `smin` to own
+`(148.548 / 463.1) / (1 - 19 / 31) = 82.865%` of the whole pass. The older
+47.4% coefficient prices the superseded 4.5 tok/s target. Source structure
+does not establish either ownership. The candidate measurement compares stock
 and distributive SPIR-V and gfx902 ISA, VGPR, SGPR, LDS, scratch, logits, exact
 greedy tokens, and matched two-column pass time. The performance hypothesis
 fails when the matched pass does not move, and the correctness candidate fails
