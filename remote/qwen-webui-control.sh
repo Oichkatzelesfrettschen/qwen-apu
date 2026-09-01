@@ -73,6 +73,14 @@ process_start_time() {
         awk '{ print $20 }'
 }
 
+run_child_without_ordinary_lease_descriptor() (
+    # Dash saves a simple-command redirection in the calling shell, which can
+    # move descriptor 9 until the child exits. A subshell keeps the holder's
+    # descriptor number stable while the child receives a closed copy.
+    exec 9>&-
+    exec "$@"
+)
+
 hold_ordinary_session_lease() {
     holder_ready_path=$1
     holder_identity_path=$2
@@ -83,8 +91,8 @@ hold_ordinary_session_lease() {
     holder_tmux_session=$7
 
     cleanup_ordinary_session_lease() {
-        rm -f -- "$holder_ready_path" "$holder_identity_path" \
-            "$holder_record_path" 9>&-
+        run_child_without_ordinary_lease_descriptor rm -f -- \
+            "$holder_ready_path" "$holder_identity_path" "$holder_record_path"
     }
     trap cleanup_ordinary_session_lease EXIT
     trap 'exit 129' HUP
@@ -92,8 +100,10 @@ hold_ordinary_session_lease() {
     trap 'exit 143' TERM
 
     printf 'ready\n' >"$holder_ready_path.new"
-    chmod 0600 "$holder_ready_path.new" 9>&-
-    mv -- "$holder_ready_path.new" "$holder_ready_path" 9>&-
+    run_child_without_ordinary_lease_descriptor \
+        chmod 0600 "$holder_ready_path.new"
+    run_child_without_ordinary_lease_descriptor \
+        mv -- "$holder_ready_path.new" "$holder_ready_path"
 
     while [ ! -s "$holder_identity_path" ]; do
         observed_controller_start_time=$(
@@ -104,7 +114,7 @@ hold_ordinary_session_lease() {
         if [ "$observed_controller_start_time" != "$holder_controller_start_time" ]; then
             exit 1
         fi
-        sleep 0.05 9>&-
+        run_child_without_ordinary_lease_descriptor sleep 0.05
     done
     expected_tmux_identity=$(
         exec 9>&-
@@ -123,7 +133,7 @@ hold_ordinary_session_lease() {
                 '#{session_id}:#{session_created}' 2>/dev/null
         ) || break
         [ "$observed_tmux_identity" = "$expected_tmux_identity" ] || break
-        sleep 0.05 9>&-
+        run_child_without_ordinary_lease_descriptor sleep 0.05
     done
 }
 
@@ -264,8 +274,9 @@ case $action in
                     )
                     if [ -z "${tmux_identity:-}" ] || \
                        [ "$cleanup_tmux_identity" = "$tmux_identity" ]; then
-                        tmux -L "$tmux_socket" kill-session \
-                            -t "$tmux_session" 9>&- 2>/dev/null || true
+                        run_child_without_ordinary_lease_descriptor \
+                            tmux -L "$tmux_socket" kill-session \
+                            -t "$tmux_session" 2>/dev/null || true
                     fi
                 fi
                 kill -TERM "$ordinary_lease_holder_pid" 2>/dev/null || true
