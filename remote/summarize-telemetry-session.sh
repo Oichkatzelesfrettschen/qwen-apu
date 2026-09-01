@@ -124,8 +124,12 @@ boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || true)
     # holds the readiness loop for up to 120 seconds costs more than the
     # field is worth, and each fetch script verifies the artifact it wrote.
     printf 'model_sha256=%s\n' "$(default_to_dash "${QWEN_TELEMETRY_MODEL_SHA256:-}")"
+    printf 'model_sha256_source=%s\n' \
+        "${QWEN_TELEMETRY_MODEL_SHA256_SOURCE:-unavailable}"
     printf 'llama_server_sha256=%s\n' \
         "$(default_to_dash "${QWEN_TELEMETRY_SERVER_SHA256:-}")"
+    printf 'server_sha256_source=%s\n' \
+        "${QWEN_TELEMETRY_SERVER_SHA256_SOURCE:-unavailable}"
     printf 'boot_id=%s\n' "$(default_to_dash "$boot_id")"
     printf 'server_pid=%s\n' "$(default_to_dash "$(field_of server_pid)")"
     printf 'qemu_pid=%s\n' "$qemu_pid"

@@ -3,8 +3,10 @@ set -eu
 
 # Two regressions close the observability gap a shared telemetry.log left: a
 # later session preserves an earlier session's record byte for byte, and the
-# convenience symlink advances while the recorded immutable path still
-# resolves and still verifies against its retained digest.
+# convenience symlink advances while the recorded session-unique path still
+# resolves and still verifies against its retained digest. The record is
+# session-unique and sealed read-only rather than immutable, since its owner
+# restores the write bit at will.
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 work_directory=$(mktemp -d)
@@ -128,4 +130,4 @@ if ! grep -q 'ln -sfn "telemetry/\$telemetry_session_name.log"' \
     exit 1
 fi
 
-printf 'telemetry_session_records=accepted immutable_record=yes symlink_advances=yes\n'
+printf 'telemetry_session_records=accepted session_unique_record=yes sealed=read_only symlink_advances=yes\n'

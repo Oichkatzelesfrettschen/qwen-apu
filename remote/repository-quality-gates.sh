@@ -88,6 +88,7 @@ remote/test-qwen-session-signals.sh
 remote/test-admit-web-router-fake.sh
 remote/test-quality-roster.sh
 remote/test-qwen-runtime-guards.sh
+remote/test-telemetry-session-records.sh
 remote/refresh-evidence-manifest.sh --check
 PYTHONDONTWRITEBYTECODE=1 python3 remote/check-text-policy.py
 

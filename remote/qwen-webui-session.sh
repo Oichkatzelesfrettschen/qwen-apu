@@ -18,8 +18,8 @@ umask 077
 mkdir -p "$state_directory"
 mkdir -p "$state_directory/telemetry"
 server_log=$state_directory/server.log
-# Telemetry is an evidentiary surface, so each session owns a record no later
-# session can write. A shared telemetry.log erased the triggering
+# Telemetry is an evidentiary surface, so each session owns a session-unique
+# record no later session writes to. A shared telemetry.log erased the triggering
 # mem_available_kib sample of a recorded memory_reserve_breached abort, which
 # left the enforced invariant correct and its measurement unquotable. The
 # symlink keeps the convenience path pointing at the newest record.
@@ -622,15 +622,33 @@ session_status=$server_status
 if [ "$supervised_component" != server ]; then
     session_status=1
 fi
-# The summary derives from the finished record and the record then loses its
-# write bit, so an archived session states its own quantities. Both steps are
-# advisory: `tmux kill-session` ends this script without reaching them, and the
-# record it leaves behind is already complete and already unshared.
-QWEN_TELEMETRY_MODEL_PATH=$model_path \
-QWEN_TELEMETRY_MODEL_ID=$(basename "$model_path" .gguf) \
+# The summary derives from the finished record, which then loses its write bit.
+# Mode 0444 seals the record against ordinary rewriting rather than making it
+# immutable: the owner restores the bit at will, so the durable guarantee is
+# the session-unique name plus the retained digest, and stronger immutability
+# would need fs-verity or a hash anchored outside this directory.
+#
+# Both steps are advisory, because `tmux kill-session` ends this script without
+# reaching them. Their outcome is recorded rather than discarded, since a
+# swallowed failure leaves finalization status unknowable.
+telemetry_summary_status=skipped
+telemetry_seal_status=skipped
+if QWEN_TELEMETRY_MODEL_PATH=$model_path \
+    QWEN_TELEMETRY_MODEL_ID=$(basename "$model_path" .gguf) \
     "$script_directory/summarize-telemetry-session.sh" "$telemetry_log" \
-    >/dev/null 2>&1 || true
-chmod 444 "$telemetry_log" 2>/dev/null || true
+    >/dev/null 2>&1; then
+    telemetry_summary_status=written
+else
+    telemetry_summary_status=failed
+fi
+if chmod 444 "$telemetry_log" 2>/dev/null; then
+    telemetry_seal_status=sealed
+else
+    telemetry_seal_status=failed
+fi
+printf 'telemetry_record=%s summary=%s seal=%s utc=%s\n' \
+    "$telemetry_log" "$telemetry_summary_status" "$telemetry_seal_status" \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$state_directory/telemetry-finalization.log"
 printf 'state=stopped server_status=%s monitor_status=%s latency_status=%s kernel_hazard_status=%s broker_status=%s stopped_component=%s profile=%s utc=%s\n' \
     "$server_status" "$monitor_status" "$latency_status" \
     "$kernel_hazard_status" "$broker_status" "$supervised_component" \
