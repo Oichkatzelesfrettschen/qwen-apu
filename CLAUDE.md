@@ -174,12 +174,14 @@ the newest checkpoint below the divergence point instead of reconstructing
 the Gated DeltaNet state from zero: `evidence/ctx-checkpoint-sweep/` measures
 turn 2 at a 30K prompt boundary charging 27 tokens under any positive count
 where zero charges 30748, on all three classes. The count is a row property
-rather than an appliance default because the 0.8B alone emits a different
-first-turn token at zero-based index 25 once checkpoints are armed, on every
-positive arm and neither zero arm, which the forced prefill tail partition at
-`server-context.cpp:3449` (`checkpoint_offsets[] = {4 + n_ubatch, 4}`)
-supports; the 2B and 4B hold identity on both turns. The 2B and 4B rows read
-2, the 0.8B reads 0, and a row absent from the ledger reads 0.
+rather than an appliance default because the 0.8B alone emitted a different
+first-turn token at zero-based index 25 once checkpoints were armed, on every
+positive arm and neither zero arm, which the forced prefill tail partition
+(`checkpoint_offsets[] = {4 + n_ubatch, 4}`) produced while the 2B and 4B held
+identity on both turns. The eighth production patch removes that partition and
+`evidence/ctx-checkpoint-natural-boundary/` measures all three classes holding
+token and log-probability identity across the setting, so every served row
+reads 2 and a row absent from the ledger reads 0.
 `model-registry.sh ctx-checkpoints` and `ctx-checkpoint MODEL_ID` validate the
 whole ledger before answering, a count above 0 requires an evidence path, and
 `QWEN_CTX_CHECKPOINT_LEDGER` names another file for a fixture. Row shape is a
