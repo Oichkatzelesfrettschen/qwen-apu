@@ -628,6 +628,20 @@ retain_quiescent_runtime_evidence() {
     for retained_name in server.log telemetry.log graphics-latency.log \
             kernel-hazards.log; do
         retained_source=$state_directory/$retained_name
+        # The session publishes telemetry.log as a symlink into the immutable
+        # per-session record directory, so that one name follows its link when
+        # the target is a regular nonempty file inside telemetry/.
+        if [ "$retained_name" = telemetry.log ] && [ -L "$retained_source" ]; then
+            retained_target=$(readlink -f -- "$retained_source" || :)
+            case $retained_target in
+                "$state_directory/telemetry/"*) ;;
+                *) retained_target='' ;;
+            esac
+            if [ -n "$retained_target" ] && [ -f "$retained_target" ] && \
+               [ ! -L "$retained_target" ] && [ -s "$retained_target" ]; then
+                retained_source=$retained_target
+            fi
+        fi
         if [ ! -f "$retained_source" ] || [ -L "$retained_source" ] || \
            [ ! -s "$retained_source" ]; then
             printf 'served runtime log is absent, linked, or empty: %s\n' \
