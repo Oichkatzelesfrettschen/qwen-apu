@@ -1136,6 +1136,7 @@ python3 remote/web-mcp/test-fallback-page-image.py
 remote/test-quality-suite.py
 remote/test-quality-roster.sh
 remote/test-promote-llama-build.sh
+remote/test-classify-checkpoint-semantics.sh
 remote/generate-quality-images.py --check
 remote/test-gguf-tokenizer-identity.py
 remote/test-admit-candidate-static.py

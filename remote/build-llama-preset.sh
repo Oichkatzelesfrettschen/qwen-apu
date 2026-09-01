@@ -269,19 +269,17 @@ done
 checkpoint_patch=patches/llama-server-natural-checkpoint-boundary.patch
 checkpoint_patch_path=$repository_directory/$checkpoint_patch
 checkpoint_source=$source_directory/tools/server/server-context.cpp
-natural_boundary_source_sha256=3744317beb622feff234e5b7a615c50665579f34ce49921e324bcd418fb3a58a
-natural_boundary_patch_sha256=c9d4010594da1f632be009b934cd045f6625b8baba68d09b7ed6190b02f9ddfc
-forced_tail_source_sha256=a79cf9e1d4a8d7c1f0ee608aa781628db403e8f59e25e731f997d0952d230e47
 
-if [ ! -r "$checkpoint_source" ]; then
-    printf 'checkpoint semantics are unreadable: %s\n' "$checkpoint_source" >&2
-    exit 1
-fi
-checkpoint_source_sha256=$(sha256sum "$checkpoint_source" | cut -d ' ' -f 1)
-checkpoint_patch_sha256=absent
-if [ -r "$checkpoint_patch_path" ]; then
-    checkpoint_patch_sha256=$(sha256sum "$checkpoint_patch_path" | cut -d ' ' -f 1)
-fi
+# The classifier is its own script so a unit test drives every branch
+# directly; this build consumes its decision rather than restating it.
+classifier_output=$("$script_directory/classify-checkpoint-semantics.sh" \
+    "$checkpoint_source" "$checkpoint_patch_path")
+checkpoint_semantics=$(printf '%s\n' "$classifier_output" |
+    awk -F= '$1 == "checkpoint_semantics" { print $2 }')
+checkpoint_source_sha256=$(printf '%s\n' "$classifier_output" |
+    awk -F= '$1 == "checkpoint_source_sha256" { print $2 }')
+checkpoint_patch_sha256=$(printf '%s\n' "$classifier_output" |
+    awk -F= '$1 == "checkpoint_patch_sha256" { print $2 }')
 
 # The ordered production series, digested the way verify-llama-patch-series.sh
 # digests it: each member's own digest concatenated in ledger order, so a
@@ -308,14 +306,33 @@ if [ -r "$series_ledger" ]; then
     fi
 fi
 
-checkpoint_semantics=unknown
-if [ "$checkpoint_patch_sha256" = "$natural_boundary_patch_sha256" ] &&
-    [ "$checkpoint_source_sha256" = "$natural_boundary_source_sha256" ] &&
-    ! grep -q 'checkpoint_offsets' "$checkpoint_source"; then
-    checkpoint_semantics=natural-boundary-v1
-elif [ "$checkpoint_source_sha256" = "$forced_tail_source_sha256" ] &&
-    grep -q 'checkpoint_offsets' "$checkpoint_source"; then
-    checkpoint_semantics=forced-tail-v1
+# The series digest above identifies the patch files; this comparison covers
+# the compiled tree. remote/llama-patched-sources.tsv carries the post-replay
+# digest of every file the production series rewrites, so a compiled tree
+# holding a stale sibling -- the right server-context.cpp beside a
+# ggml-vulkan.cpp some other checkout left behind -- reads divergent here
+# while both patch digests still match. natural-boundary-v1 claims a build of
+# the repaired series, so the claim requires the whole series tree: a
+# divergent tree demotes it to unknown, which refuses a positive count.
+patched_sources_ledger=$script_directory/llama-patched-sources.tsv
+checkpoint_series_tree=unavailable
+if [ -r "$patched_sources_ledger" ]; then
+    checkpoint_series_tree=verified
+    while IFS='	' read -r tree_row_path tree_row_sha256; do
+        case $tree_row_path in
+            ''|'#'*) continue ;;
+        esac
+        if [ ! -r "$source_directory/$tree_row_path" ] || [ "$(
+            sha256sum "$source_directory/$tree_row_path" | cut -d ' ' -f 1
+        )" != "$tree_row_sha256" ]; then
+            checkpoint_series_tree=divergent:$tree_row_path
+            break
+        fi
+    done <"$patched_sources_ledger"
+fi
+if [ "$checkpoint_semantics" = natural-boundary-v1 ] &&
+    [ "$checkpoint_series_tree" != verified ]; then
+    checkpoint_semantics=unknown
 fi
 
 manifest_path=$build_directory/artifact-manifest.tsv
@@ -328,6 +345,7 @@ manifest_path=$build_directory/artifact-manifest.tsv
     printf 'checkpoint_patch_sha256\t%s\n' "$checkpoint_patch_sha256"
     printf 'checkpoint_source_sha256\t%s\n' "$checkpoint_source_sha256"
     printf 'checkpoint_patch_series_sha256\t%s\n' "$patch_series_sha256"
+    printf 'checkpoint_series_tree\t%s\n' "$checkpoint_series_tree"
     printf 'compiler_flags\t%s\n' "$compiler_flags"
     printf 'cmake_flags\t%s\n' "$(printf '%s %s' "$preset_flags" "$cpu_instruction_flags" | tr -s ' \n' ' ')"
 } > "$manifest_path"
