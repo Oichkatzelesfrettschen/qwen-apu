@@ -364,6 +364,13 @@ scoreboard_no_backend_sampling=$temporary_directory/scoreboard-no-backend-sampli
 cp -R -- "$scoreboard_receipt" "$scoreboard_no_backend_sampling"
 grep -v '^backend_sampling' "$scoreboard_receipt/campaign-inputs.tsv" \
     >"$scoreboard_no_backend_sampling/campaign-inputs.tsv"
+# A second vulkan_profile row naming another profile leaves the expected row
+# in place, so a presence check would admit a receipt that states two
+# profiles; the count-per-key rule refuses it.
+scoreboard_duplicate_row=$temporary_directory/scoreboard-duplicate-row
+cp -R -- "$scoreboard_receipt" "$scoreboard_duplicate_row"
+printf 'vulkan_profile\tlow-serialized\n' \
+    >>"$scoreboard_duplicate_row/campaign-inputs.tsv"
 scoreboard_no_models=$temporary_directory/scoreboard-no-models
 cp -R -- "$scoreboard_receipt" "$scoreboard_no_models"
 rm -- "$scoreboard_no_models/models-resolved.tsv"
@@ -727,6 +734,9 @@ run_runner runtime_tree_unmanifested 'carries no readable runtime-tree-manifest.
 
 run_runner scoreboard_backend_sampling 'campaign inputs state a profile' \
     QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_no_backend_sampling/identity-check.tsv"
+
+run_runner scoreboard_duplicate_row 'state one of them more than once' \
+    QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_duplicate_row/identity-check.tsv"
 
 run_runner scoreboard_profile 'campaign inputs state a profile' \
     QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_profile/identity-check.tsv"

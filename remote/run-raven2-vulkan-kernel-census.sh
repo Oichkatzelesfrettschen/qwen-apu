@@ -616,21 +616,31 @@ EOF
             "$model_id" "$scoreboard_models" >&2
         exit 2
     fi
+    # Every setting the arms run under is stated exactly once with the
+    # expected value: a key that repeats, whatever its second value, is a
+    # conflicting record rather than a stronger statement, so the count per
+    # key is required to be one rather than its presence alone.
     if ! awk -F'\t' -v require_generate="$require_scoreboard_generate" '
-        $1 == "vulkan_profile" && $2 == "low-async" { seen["profile"] = 1 }
-        $1 == "generate_tokens" && $2 == "64" && require_generate == "1" { seen["generate"] = 1 }
-        $1 == "sampling" && $2 == "temperature=0 top_k=1 seed=1 ignore_eos=true thinking=false" { seen["sampling"] = 1 }
-        $1 == "server_nice" && $2 == "19" { seen["nice"] = 1 }
-        $1 == "inference_cpu" && $2 == "0" { seen["placement"] = 1 }
-        $1 == "speculation" && $2 == "off" { seen["speculation"] = 1 }
-        $1 == "router" && $2 == "0" { seen["router"] = 1 }
-        $1 == "server_io_class" && $2 == "idle" { seen["io"] = 1 }
-        $1 == "backend_sampling" && $2 == "0" { seen["backend_sampling"] = 1 }
-        $1 == "latency_mode" && $2 == "observe" { seen["latency"] = 1 }
-        $1 == "web_broker" && $2 == "0" { seen["broker"] = 1 }
-        $1 == "image_service" && $2 == "0" { seen["image"] = 1 }
-        END { exit length(seen) == 11 + require_generate ? 0 : 1 }' "$scoreboard_inputs"; then
-        printf 'the scoreboard campaign inputs state a profile, token count, sampling, priority, placement, speculation, router, I/O class, backend sampling, latency mode, broker, or image service setting other than the one every arm here runs under: %s\n' \
+        BEGIN {
+            expected["vulkan_profile"] = "low-async"
+            expected["sampling"] = "temperature=0 top_k=1 seed=1 ignore_eos=true thinking=false"
+            expected["server_nice"] = "19"
+            expected["inference_cpu"] = "0"
+            expected["speculation"] = "off"
+            expected["router"] = "0"
+            expected["server_io_class"] = "idle"
+            expected["backend_sampling"] = "0"
+            expected["latency_mode"] = "observe"
+            expected["web_broker"] = "0"
+            expected["image_service"] = "0"
+            if (require_generate == "1") expected["generate_tokens"] = "64"
+        }
+        ($1 in expected) { count[$1]++; if ($2 != expected[$1]) mismatched++ }
+        END {
+            for (key in expected) if (count[key] != 1) exit 1
+            exit mismatched ? 1 : 0
+        }' "$scoreboard_inputs"; then
+        printf 'the scoreboard campaign inputs state a profile, token count, sampling, priority, placement, speculation, router, I/O class, backend sampling, latency mode, broker, or image service setting other than the one every arm here runs under, or state one of them more than once: %s\n' \
             "$scoreboard_inputs" >&2
         exit 2
     fi
