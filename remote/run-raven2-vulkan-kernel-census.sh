@@ -51,6 +51,18 @@ set -eu
 # half-width is 1.591 standard deviations, so a 0.65% bound accepts only where
 # the replicates agree to about 0.4%.
 #
+# A pair is taken over one execution state. The appliance calibration of
+# 20260902T1302Z held 1100 MHz on slots 2 through 9 and then 942, 837, and 775
+# to 857 MHz, with the decode rate falling from about 9.5 to about 7.2 tok/s as
+# it fell, so a pair whose two arms selected different graphics clocks measures
+# the governor step. The validator states each arm's modal selected clock over
+# its request window on a clock_state line, arms.tsv carries it as
+# sclk_mode_mhz beside sclk_share, and the summarizer judges a control over the
+# pairs whose two arms agree there. A control left with fewer than two such
+# pairs reads state-changed, which terminal-state.tsv counts as
+# control_state_changed and which ends the campaign unresolved with exit 4 the
+# way an interval spanning its bound does.
+#
 # The campaign states its inputs in two contracts, because acquisition and
 # analysis fail differently. acquisition-contract.tsv carries every setting
 # that changes an observed byte -- the model tuple, both server digests, the
@@ -1246,7 +1258,13 @@ execution_proof=$output_directory/campaign-inputs.tsv
     printf 'generate_tokens\t%s\n' "$census_generate"
 } >"$execution_proof"
 execution_proof_sha256=$(sha256sum "$execution_proof" | cut -d ' ' -f 1)
-printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\tsidecar\townership\tstatus\n' >"$arms_ledger"
+# The clock-state columns trail the ledger's own so every positional read of
+# an existing field keeps its index. sclk_mode_mhz is the modal selected
+# graphics clock of the arm's request window and sclk_share the fraction of
+# window samples holding it, both read off the sidecar validator's own
+# clock_state line; an arm running with the sampler off reports neither.
+arms_ledger_columns=12
+printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\tsidecar\townership\tstatus\tsclk_mode_mhz\tsclk_share\n' >"$arms_ledger"
 {
     printf 'model_id\t%s\nmodel_path\t%s\ncontext\t%s\nbatch\t%s\nubatch\t%s\n' \
         "$model_id" "$model_path" "$context" "$batch" "$ubatch"
@@ -1383,9 +1401,15 @@ for arm in $execution_arms; do
         *" $slot "*)
             reuse_row=$(awk -F'\t' -v slot="$slot" '$1 == slot { print $0 }' \
                 "$reuse_directory/arms.tsv")
+            # A retained ledger written before a column existed carries fewer
+            # fields than this run's header names, so the echo pads the row to
+            # the header's arity with the unknown value and arms.tsv stays
+            # rectangular under one header.
             printf '%s\n' "$reuse_row" \
                 | awk -F'\t' -v OFS='\t' -v column="$reuse_status_column" \
-                    '{ $column = "reused"; print }' >>"$arms_ledger"
+                    -v want="$arms_ledger_columns" \
+                    '{ $column = "reused"; while (NF < want) { $(NF + 1) = "-" } print }' \
+                    >>"$arms_ledger"
             printf 'census_arm=reused slot=%s arm=%s brick=%s from=%s\n' \
                 "$slot" "$arm" "$(brick_of_slot "$slot")" "$reuse_directory"
             continue
@@ -1567,6 +1591,8 @@ EOF
     # The sidecar record is evidence only where the validator accepts it:
     # exit status, sample count, one footer, the achieved period, the mean
     # cost, every sensor present, and the request window covered.
+    sclk_mode_mhz=-
+    sclk_share=-
     if [ "$sidecar_state" = on ]; then
         set +e
         if [ -n "$window_begin" ] && [ -n "$window_end" ]; then
@@ -1589,6 +1615,19 @@ EOF
         fi
         sidecar_verdict=$?
         set -e
+        # The validator states the window's own clock state on one line; the
+        # ledger carries the modal graphics clock and its share so the controls
+        # summarizer compares the state two arms of a pair ran under.
+        clock_state_line=$(awk '/^clock_state=measured / { print; exit }' \
+            "$arm_directory/clock-sidecar-verdict.txt")
+        if [ -n "$clock_state_line" ]; then
+            sclk_mode_mhz=$(printf '%s\n' "$clock_state_line" \
+                | awk '{ for (i = 1; i <= NF; i++) if (index($i, "sclk_mode_mhz=") == 1) print substr($i, 15) }')
+            sclk_share=$(printf '%s\n' "$clock_state_line" \
+                | awk '{ for (i = 1; i <= NF; i++) if (index($i, "sclk_share=") == 1) print substr($i, 12) }')
+            [ -n "$sclk_mode_mhz" ] || sclk_mode_mhz=-
+            [ -n "$sclk_share" ] || sclk_share=-
+        fi
         if [ "$sidecar_verdict" -ne 0 ]; then
             sidecar_state=refused
             if [ "$status" = completed ]; then
@@ -1657,10 +1696,12 @@ EOF
     fi
     [ "$status" = completed ] || arm_failures=$((arm_failures + 1))
     analysis_end_ns=$(date +%s%N)
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$slot" "$arm" "$server_sha256" \
-        "$predicted_n" "$predicted_ms" "$tok_s" "$census_rows" "$sidecar_state" "$ownership" "$status" >>"$arms_ledger"
-    printf 'census_arm=%s slot=%s arm=%s tok_s=%s census_rows=%s sidecar=%s ownership=%s reason=%s\n' \
-        "$status" "$slot" "$arm" "$tok_s" "$census_rows" "$sidecar_state" "$ownership" "${reason:--}"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$slot" "$arm" "$server_sha256" \
+        "$predicted_n" "$predicted_ms" "$tok_s" "$census_rows" "$sidecar_state" "$ownership" \
+        "$status" "$sclk_mode_mhz" "$sclk_share" >>"$arms_ledger"
+    printf 'census_arm=%s slot=%s arm=%s tok_s=%s census_rows=%s sidecar=%s ownership=%s sclk_mode_mhz=%s reason=%s\n' \
+        "$status" "$slot" "$arm" "$tok_s" "$census_rows" "$sidecar_state" "$ownership" \
+        "$sclk_mode_mhz" "${reason:--}"
     # A canary judges the chain rather than the rate: the arm completed, which
     # carries the launch, the identity comparison, the sidecar validator, the
     # census summarizer at its own decode count, and the S parser at its own
@@ -1749,7 +1790,7 @@ if [ "$census_mode" = canary ]; then
         campaign=canary_failed
         campaign_exit=1
     fi
-    printf 'census=%s\ncensus_mode=%s\narm_failures=%s\ncontrol_incomplete=-\ncontrol_refutations=-\ncontrol_unresolved=-\ncontrol_unclassified=-\ncontrol_accepted=-\ncontrol_required=-\ncanary_structure_failures=%s\ncooldown_timeouts=%s\ncalibration_root_sha256=%s\n' \
+    printf 'census=%s\ncensus_mode=%s\narm_failures=%s\ncontrol_incomplete=-\ncontrol_refutations=-\ncontrol_unresolved=-\ncontrol_state_changed=-\ncontrol_unclassified=-\ncontrol_accepted=-\ncontrol_required=-\ncanary_structure_failures=%s\ncooldown_timeouts=%s\ncalibration_root_sha256=%s\n' \
         "$campaign" "$census_mode" "$arm_failures" "$canary_structure_failures" \
         "$cooldown_timeouts" "$calibration_root_sha256" >"$output_directory/terminal-state.tsv"
     printf 'census_wall_clock=campaign begin_ns=%s end_ns=%s\n' \
@@ -1774,9 +1815,10 @@ control_counts=$(awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) if ($i == "verd
         else if ($column == "incomplete") incomplete++
         else if ($column == "unclassified") unclassified++
         else if ($column == "unresolved") unresolved++
+        else if ($column == "state-changed") state_changed++
         else if ($column == "accepted") accepted++
     }
-    END { print refuted + 0, incomplete + 0, unclassified + 0, accepted + 0, unresolved + 0 }' \
+    END { print refuted + 0, incomplete + 0, unclassified + 0, accepted + 0, unresolved + 0, state_changed + 0 }' \
     "$output_directory/summary.tsv")
 set -- $control_counts
 control_refutations=$1
@@ -1784,6 +1826,7 @@ control_incomplete=$2
 control_unclassified=$3
 control_accepted=$4
 control_unresolved=$5
+control_state_changed=$6
 required_accepted=0
 if [ "$census_mode" = calibration ]; then
     required_accepted=3
@@ -1888,12 +1931,13 @@ if [ "$arm_failures" -ne 0 ] || [ "$control_incomplete" -ne 0 ] \
 elif [ "$control_refutations" -ne 0 ]; then
     campaign=refuted
     campaign_exit=3
-elif [ "$control_unresolved" -ne 0 ]; then
+elif [ "$control_unresolved" -ne 0 ] || [ "$control_state_changed" -ne 0 ]; then
     # A control whose interval spans its bound measured neither a cost inside
-    # the bound nor one beyond it, so the campaign resolves nothing and says
-    # so under its own status rather than borrowing accepted or refuted. The
-    # branch precedes the accepted-count test, since an unresolved control
-    # leaves that count short and would otherwise read as a failure.
+    # the bound nor one beyond it, and a control left with fewer than two pairs
+    # that held one clock state measured the governor instead, so both resolve
+    # nothing and the campaign says so under one status rather than borrowing
+    # accepted or refuted. The branch precedes the accepted-count test, since
+    # either leaves that count short and would otherwise read as a failure.
     campaign=unresolved
     campaign_exit=4
 elif [ "$control_accepted" -lt "$required_accepted" ]; then
@@ -1903,13 +1947,15 @@ else
     campaign=accepted
     campaign_exit=0
 fi
-printf 'census=%s\ncensus_mode=%s\narm_failures=%s\ncontrol_incomplete=%s\ncontrol_refutations=%s\ncontrol_unresolved=%s\ncontrol_unclassified=%s\ncontrol_accepted=%s\ncontrol_required=%s\ncooldown_timeouts=%s\ncalibration_root_sha256=%s\n' \
+printf 'census=%s\ncensus_mode=%s\narm_failures=%s\ncontrol_incomplete=%s\ncontrol_refutations=%s\ncontrol_unresolved=%s\ncontrol_state_changed=%s\ncontrol_unclassified=%s\ncontrol_accepted=%s\ncontrol_required=%s\ncooldown_timeouts=%s\ncalibration_root_sha256=%s\n' \
     "$campaign" "$census_mode" "$arm_failures" "$control_incomplete" "$control_refutations" \
-    "$control_unresolved" "$control_unclassified" "$control_accepted" "$required_accepted" \
+    "$control_unresolved" "$control_state_changed" "$control_unclassified" \
+    "$control_accepted" "$required_accepted" \
     "$cooldown_timeouts" "$calibration_root_sha256" >"$output_directory/terminal-state.tsv"
 printf -- '-\t-\tcampaign\t%s\t%s\t-\n' "$campaign_begin_ns" "$(date +%s%N)" >>"$wall_clock_ledger"
-printf 'census=%s mode=%s model=%s arms=%s reused_bricks=%s arm_failures=%s control_incomplete=%s control_refutations=%s control_unresolved=%s control_unclassified=%s control_accepted=%s control_required=%s calibration_root=%s output=%s\n' \
+printf 'census=%s mode=%s model=%s arms=%s reused_bricks=%s arm_failures=%s control_incomplete=%s control_refutations=%s control_unresolved=%s control_state_changed=%s control_unclassified=%s control_accepted=%s control_required=%s calibration_root=%s output=%s\n' \
     "$campaign" "$census_mode" "$model_id" "$slot" "${reused_bricks:--}" "$arm_failures" \
-    "$control_incomplete" "$control_refutations" "$control_unresolved" "$control_unclassified" \
+    "$control_incomplete" "$control_refutations" "$control_unresolved" \
+    "$control_state_changed" "$control_unclassified" \
     "$control_accepted" "$required_accepted" "$calibration_root_sha256" "$output_directory"
 exit "$campaign_exit"

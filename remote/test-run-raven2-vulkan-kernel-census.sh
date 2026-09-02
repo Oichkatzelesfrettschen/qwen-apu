@@ -1119,11 +1119,35 @@ cp -- "$artifact_ledger" "$brick_directory/model-artifacts.tsv"
 for linked_member in model-registry.sh models.tsv ctx-checkpoints.tsv \
     validated-tuples.tsv quarantine.tsv draft-pairs.tsv \
     summarize-kernel-census.py summarize-census-controls.py \
-    sample-clock-sidecar.py validate-clock-sidecar.py \
+    sample-clock-sidecar.py \
     telemetry-broker.c build-telemetry-broker.sh \
     summarize-perf-logger-slice.py; do
     ln -s -- "$script_directory/$linked_member" "$brick_directory/$linked_member"
 done
+# The sidecar validator stands in for itself: it runs the tree's own reader on
+# every case, and under QWEN_TEST_CLOCK_STATE it answers with one accepted
+# record naming a chosen selected graphics clock, which is what puts a
+# clock_state line in front of the runner where no device sampled one. The
+# delegating default keeps the refusal the silent-broker case reads.
+cat >"$brick_directory/validate-clock-sidecar.py" <<VALIDATOR_STUB
+#!/usr/bin/env python3
+import os
+import runpy
+import sys
+
+state = os.environ.get("QWEN_TEST_CLOCK_STATE", "")
+if state:
+    share = os.environ.get("QWEN_TEST_CLOCK_SHARE", "0.9235")
+    print(f"record_readable=accepted path={sys.argv[1]}")
+    print(f"clock_state=measured window_samples=700 sclk_mode_mhz={state}"
+          f" sclk_share={share} mclk_mode_mhz=1067"
+          " temp_mean_c=71.6 temp_max_c=74.0 busy_mean=94.88")
+    print("clock_sidecar=accepted failures=-")
+    raise SystemExit(0)
+sys.argv[0] = "$script_directory/validate-clock-sidecar.py"
+runpy.run_path(sys.argv[0], run_name="__main__")
+VALIDATOR_STUB
+chmod +x "$brick_directory/validate-clock-sidecar.py"
 # The served runner an executed arm reaches: it refuses at once, so the arm
 # fails on its own runner and the cooldown that follows is what the case
 # reads. The quiescence poller is stubbed because it samples a device, and
@@ -1238,11 +1262,15 @@ run_brick_calibration() {
     # setting of the same executable, so the acquisition contract the reused
     # bricks were closed over holds across both arms.
     brick_broker_silent=${4:-0}
+    # The fifth argument names the selected graphics clock the stub validator
+    # reports, which is what puts a clock state in arms.tsv without a device.
+    brick_clock_state=${5:-}
     active_fixture=$brick_case
     diagnostic_file=$temporary_directory/$brick_case-stderr.txt
     set +e
     env -i \
         QWEN_TEST_BROKER_SILENT="$brick_broker_silent" \
+        QWEN_TEST_CLOCK_STATE="$brick_clock_state" \
         PATH="$signal_path" \
         HOME="$home_directory" \
         QWEN_MODELS_DIRECTORY="$models_directory" \
@@ -1485,6 +1513,54 @@ grep -q '^census_arm_count	14$' "$brick_unresolved_output/inputs.tsv"
 grep -q '^predicted_arm_duration_s	19$' "$brick_unresolved_output/inputs.tsv"
 diagnostic_file=
 printf 'control_unresolved=accepted exit=4\n'
+
+# arms.tsv states the clock state each sampled arm ran under, so a later reader
+# knows which pairs met one governor step. Three bricks reuse and slot 13
+# executes with the stub validator reporting 800 MHz: the sampled row carries
+# that mode and its share, the warmup at slot 0 runs with the sampler off and
+# carries neither, and every echoed row is padded to the header's own arity so
+# the ledger stays rectangular under one header.
+active_fixture=arms_clock_state
+prior_clock_state=$temporary_directory/prior-clock-state
+write_prior_calibration "$prior_clock_state"
+printf 'census=refuted\n' >"$prior_clock_state/terminal-state.tsv"
+clock_state_output=$temporary_directory/out-clock-state
+brick_status=$(run_brick_calibration arms_clock_state "$prior_clock_state" \
+    "$clock_state_output" 0 800)
+if [ "$brick_status" -ne 1 ]; then
+    printf 'the clock-state calibration exited %s where its failed arm exits 1\n' \
+        "$brick_status" >&2
+    exit 1
+fi
+if ! head -n 1 "$clock_state_output/arms.tsv" \
+    | grep -q "	status	sclk_mode_mhz	sclk_share\$"; then
+    printf 'arms.tsv names no clock-state columns after status\n' >&2
+    head -n 1 "$clock_state_output/arms.tsv" >&2
+    exit 1
+fi
+if ! awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
+    $1 == "13" && $(column["sclk_mode_mhz"]) == "800" \
+        && $(column["sclk_share"]) == "0.9235" { found = 1 }
+    END { exit found ? 0 : 1 }' "$clock_state_output/arms.tsv"; then
+    printf 'the sampled arm carries no clock state at slot 13\n' >&2
+    sed -n '1,20p' "$clock_state_output/arms.tsv" >&2
+    exit 1
+fi
+if ! awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
+    $1 == "0" && $(column["sclk_mode_mhz"]) == "-" \
+        && $(column["sclk_share"]) == "-" { found = 1 }
+    END { exit found ? 0 : 1 }' "$clock_state_output/arms.tsv"; then
+    printf 'the warmup arm reports a clock state under a sampler it never ran\n' >&2
+    exit 1
+fi
+if ! awk -F'\t' 'NR == 1 { want = NF; next } NF != want { ragged = 1 }
+    END { exit ragged ? 1 : 0 }' "$clock_state_output/arms.tsv"; then
+    printf 'arms.tsv holds a row whose arity misses the header\n' >&2
+    exit 1
+fi
+grep -q '^control_state_changed=0$' "$clock_state_output/terminal-state.tsv"
+diagnostic_file=
+printf 'arms_clock_state=accepted mode=800\n'
 
 active_fixture=completion
 printf 'run_raven2_vulkan_kernel_census_preflight=accepted cases=%s\n' "$run_index"

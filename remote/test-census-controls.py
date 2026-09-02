@@ -11,9 +11,13 @@ sidecar, compile, and collect bounds to the three registered quadruple shapes
 alone, collapses every replicate of a control onto one row, judges that row by
 whether its nominal 95% interval sits inside, outside, or across the bound,
 marks an unregistered quadruple unclassified, names the direction of a refuted
-interval, and keeps S and the warmup arm W outside the parser. The appliance
-table of 20260902T0819Z is replayed here, where two replicates resolve none of
-the three controls. summarize-perf-logger-slice.py classifies each block by the largest
+interval, and keeps S and the warmup arm W outside the parser. It judges a
+control over the pairs whose two arms held one selected graphics clock,
+excluding a pair that straddled a governor step and reading the whole control
+`state-changed` where fewer than two comparable pairs survive. The appliance
+tables of 20260902T0819Z and 20260902T1302Z are replayed here: the first
+resolves none of the three controls at two replicates, and the second steps
+from 1100 MHz to 800 MHz partway through the arm list. summarize-perf-logger-slice.py classifies each block by the largest
 `n` over its non-f32 matmul rows, folds the decode blocks into per-op calls
 per block, and refuses a decode count other than the requested one.
 """
@@ -92,11 +96,19 @@ result = validate(sidecar_record())
 assert result.returncode == 0, result.stdout
 assert "clock_sidecar=accepted failures=-" in result.stdout, result.stdout
 assert "window_coverage=accepted" in result.stdout, result.stdout
+assert result.stdout.rstrip("\n").split("\n")[-1].startswith("clock_sidecar="), result.stdout
+# The clock state the window ran under prints beside the verdict lines and
+# counts in none of them: the fixture holds one selected step across the whole
+# window, so the mode carries its full share.
+assert ("clock_state=measured window_samples=71 sclk_mode_mhz=400 sclk_share=1.0000"
+        " mclk_mode_mhz=933 temp_mean_c=61.0 temp_max_c=61.0 busy_mean=37.00"
+        in result.stdout), result.stdout
 print("sidecar_accepted=accepted")
 
 result = validate(sidecar_record(), window=None)
 assert result.returncode == 0 and "window_coverage=not_run" in result.stdout, result.stdout
 assert "window_lost=not_run" in result.stdout, result.stdout
+assert "clock_state=not_run no window supplied" in result.stdout, result.stdout
 
 
 def refused(text, needle, **kwargs):
@@ -185,15 +197,30 @@ assert "gaps=not_run rows=1" in result.stdout, result.stdout
 print("sidecar_gaps=accepted")
 
 
-def arms_ledger(rows):
-    header = "slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\tsidecar\tstatus"
+def arms_ledger(rows, modes=None):
+    """One ledger; modes is a per-row selected graphics clock, `-` by default.
+
+    A ledger written before the clock-state columns existed omits them
+    entirely, which is what `modes=None` writes, so the retained campaigns
+    replay through the same reader.
+    """
+    header = ("slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s"
+              "\tcensus_rows\tsidecar\tstatus")
+    if modes is not None:
+        header += "\tsclk_mode_mhz\tsclk_share"
     lines = [header]
     for slot, (arm, rate, status) in enumerate(rows, 1):
-        lines.append(f"{slot}\t{arm}\tabc\t64\t6000\t{rate}\t-\ton\t{status}")
+        line = f"{slot}\t{arm}\tabc\t64\t6000\t{rate}\t-\ton\t{status}"
+        if modes is not None:
+            mode = modes[slot - 1]
+            share = "-" if mode == "-" else "0.9800"
+            line += f"\t{mode}\t{share}"
+        lines.append(line)
     return "\n".join(lines) + "\n"
 
 
-def summarize(rows, sidecar="0.0065", compile_bound="0.0065", collect="0.02"):
+def summarize(rows, sidecar="0.0065", compile_bound="0.0065", collect="0.02",
+              modes=None):
     """Run the controls summarizer and return its rows as field maps.
 
     The verdict is over every replicate of a control, so the columns a case
@@ -201,7 +228,7 @@ def summarize(rows, sidecar="0.0065", compile_bound="0.0065", collect="0.02"):
     per-replicate columns and the bound, and a positional read would follow
     the wrong field once a column lands between them.
     """
-    path = write("arms.tsv", arms_ledger(rows))
+    path = write("arms.tsv", arms_ledger(rows, modes))
     result = subprocess.run([sys.executable, controls, path, "--sidecar-bound", sidecar,
                              "--compile-bound", compile_bound, "--collect-bound", collect],
                             capture_output=True, text=True)
@@ -222,7 +249,8 @@ def quadruple(outer, inner, outer_rate, first_inner_rate, second_inner_rate,
 
 HEADER = ("pair", "control", "outer", "inner", "first_outer", "first_inner", "first_delta",
           "second_outer", "second_inner", "second_delta", "replicates", "mean_delta",
-          "sd_delta", "ci_low", "ci_high", "deltas", "bound", "verdict", "detail")
+          "sd_delta", "ci_low", "ci_high", "deltas", "sclk_modes", "bound", "verdict",
+          "detail")
 
 # Two replicates that agree exactly leave a degenerate interval at their own
 # delta, which is the only way a two-replicate control accepts against a 0.65%
@@ -370,6 +398,66 @@ header, rows = summarize([
 ])
 assert rows[0]["verdict"] == "incomplete", rows[0]
 print("controls_reuse=accepted")
+
+# The clock state a pair ran under decides whether the pair measures the
+# control. The appliance calibration of 20260902T1302Z selected 1100 MHz on the
+# early slots and 800 MHz from the middle of the run on, and the decode rate
+# fell with it, so a pair straddling that step measures the governor. A pair
+# whose two arms hold different numeric modes leaves the mean and the interval
+# and reads state-changed in the deltas listing, while the pairs that held one
+# state still judge the control.
+header, rows = summarize(
+    quadruple("P", "I0", "10.000", "9.950", "9.950", "10.000", repeats=2)
+    + [("S", "3.000", "completed")],
+    modes=["1100", "1100", "1100", "1100", "1100", "800", "800", "1100", "-"])
+assert len(rows) == 1, rows
+changed = rows[0]
+assert changed["replicates"] == "4", changed
+assert changed["deltas"] == "-0.0050 -0.0050 state-changed state-changed", changed
+assert changed["sclk_modes"] == "1100/1100 1100/1100 800/1100 800/1100", changed
+assert changed["verdict"] == "accepted", changed
+assert changed["detail"] == "comparable_pairs=2 of 4", changed
+print("controls_state_changed_excluded=accepted")
+
+# Both pairs of the only quadruple straddle the step, so no comparable pair
+# remains and the control reads state-changed: a verdict distinct from
+# incomplete, which names a missing arm, and from unresolved, which names an
+# interval that spans its bound.
+header, rows = summarize(
+    quadruple("P", "I0", "10.000", "9.950", "9.950", "10.000"),
+    modes=["1100", "800", "800", "1100"])
+assert rows[0]["verdict"] == "state-changed", rows[0]
+assert rows[0]["mean_delta"] == "-" and rows[0]["ci_low"] == "-", rows[0]
+assert rows[0]["first_delta"] == "state-changed", rows[0]
+assert rows[0]["second_delta"] == "state-changed", rows[0]
+assert rows[0]["deltas"] == "state-changed state-changed", rows[0]
+assert rows[0]["detail"] == "comparable_pairs=0 of 2", rows[0]
+# One surviving pair states one delta and no spread, so the control still
+# reads state-changed rather than borrowing a verdict from a single arm pair.
+header, rows = summarize(
+    quadruple("P", "I0", "10.000", "9.950", "9.950", "10.000"),
+    modes=["1100", "1100", "800", "1100"])
+assert rows[0]["verdict"] == "state-changed", rows[0]
+assert rows[0]["deltas"] == "-0.0050 state-changed", rows[0]
+assert rows[0]["detail"] == "comparable_pairs=1 of 2", rows[0]
+print("controls_state_changed_verdict=accepted")
+
+# The sampler is off on P-nosidecar and W, so those arms carry the unknown
+# state and take whatever state their partner held; the sidecar control
+# therefore judges every pair it holds.
+header, rows = summarize(
+    quadruple("P-nosidecar", "P", "10.000", "9.980", "9.980", "10.000"),
+    modes=["-", "1100", "800", "-"])
+assert rows[0]["verdict"] == "accepted", rows[0]
+assert rows[0]["deltas"] == "-0.0020 -0.0020", rows[0]
+assert rows[0]["sclk_modes"] == "1100/- 800/-", rows[0]
+assert rows[0]["detail"] == "-", rows[0]
+# A ledger predating the columns names no mode at all, which is the retained
+# campaigns' own shape, and every pair stays comparable.
+header, rows = summarize(
+    quadruple("I0", "I1", "10.000", "9.850", "9.850", "10.000"))
+assert rows[0]["verdict"] == "accepted" and rows[0]["sclk_modes"] == "-/- -/-", rows[0]
+print("controls_state_unknown=accepted")
 
 slice_text = "\n".join([
     "srv  log_server_r: request: POST /v1/chat/completions",

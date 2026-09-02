@@ -302,6 +302,28 @@ else
     report meminfo_lines "refused lines=$meminfo_lines"
 fi
 
+# The host channel shares the hundredth period, so a 1.9 s arm at 10 ms carries
+# its own readings beside the meminfo lines. The instant is an integer, load1
+# is the decimal /proc/loadavg opens on, and pages_sharing is an integer where
+# the kernel carries KSM and `unavailable` where it does not.
+host_lines=$(grep -c '^# host ' "$record" || true)
+if [ "$host_lines" -ge 1 ]; then
+    report host_lines accepted
+else
+    report host_lines "refused lines=$host_lines"
+fi
+host_shape=$(awk '$1 == "#" && $2 == "host" {
+        split($3, instant, "="); split($4, load, "="); split($5, sharing, "=")
+        if (instant[1] != "monotonic_ns" || instant[2] !~ /^[0-9]+$/) { bad++; next }
+        if (load[1] != "load1" || load[2] !~ /^([0-9]+\.[0-9]+|unavailable)$/) { bad++; next }
+        if (sharing[1] != "ksm_pages_sharing" || sharing[2] !~ /^([0-9]+|unavailable)$/) { bad++; next }
+        if (NF != 5) { bad++ }
+    }
+    END { print bad + 0 }' "$record")
+verdict 0 "$host_shape" host_line_shape
+printf 'observation host_lines=%s first=%s\n' "$host_lines" \
+    "$(grep -m 1 '^# host ' "$record" | cut -d ' ' -f 4-)"
+
 unavailable_temperature=$(awk -F'\t' '
     /^#/ { next }
     $1 ~ /^[0-9]+$/ && $6 == "unavailable" { rows++ }

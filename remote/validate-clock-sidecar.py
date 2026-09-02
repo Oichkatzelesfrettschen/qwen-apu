@@ -36,6 +36,17 @@ A gap [t_i, t_i+1] overlaps the window where t_i+1 exceeds the window begin
 and t_i falls below the window end; a record supplied with no window is
 refused by an over-bound gap anywhere and reports no lost fraction.
 
+Beside the verdict lines the reader prints one `clock_state=` line
+describing the execution state the request window ran under: the modal
+selected graphics clock, the fraction of window samples holding it, the
+modal MCLK surface, the mean and maximum die temperature, and the mean
+GPU busy percentage. A control pair whose two arms ran under different
+selected graphics clocks measures the governor, so the mode is what a
+campaign compares before it takes a paired delta. The line is an
+observation and the verdict stays what the conditions above decide.
+Sensors read `unavailable` are unknown rather than a state of their own,
+so they leave the mode out of the reading and the line prints `-`.
+
 usage: validate-clock-sidecar.py RECORD_TSV --sidecar-status N
        --period-ms F --period-tolerance F --cost-bound-ns N
        [--max-gap-ns N] [--max-lost-fraction F]
@@ -75,6 +86,21 @@ def nearest_rank(sorted_values, permille):
     count = len(sorted_values)
     index = -(-permille * count // 1000) - 1
     return sorted_values[min(max(index, 0), count - 1)]
+
+
+def modal_value(values):
+    """The most frequent value and its share, ties broken by the smaller value.
+
+    The mode feeds a pair-equality test that decides a campaign verdict, so
+    two states at equal counts resolve to the same one on every run.
+    """
+    if not values:
+        return None, None
+    counts = {}
+    for value in values:
+        counts[value] = counts.get(value, 0) + 1
+    mode = sorted(counts, key=lambda value: (-counts[value], value))[0]
+    return mode, counts[mode] / len(values)
 
 
 def parse_key_values(text):
@@ -249,6 +275,34 @@ def main():
                 print(f"gaps_in_window=not_run no window supplied bound_ns={args.max_gap_ns}")
         else:
             print(f"gaps=not_run rows={len(rows)}")
+    # The execution state the request window ran under, printed beside the
+    # conditions above and counted in none of them. A campaign compares the
+    # modal selected graphics clock of two arms before it takes their paired
+    # delta, since a pair straddling a governor step measures the step.
+    window_defined = args.window_begin_ns is not None and args.window_end_ns is not None
+    if rows and row_arity and window_defined:
+        window_rows = [row for row in rows
+                       if args.window_begin_ns <= int(row[0]) <= args.window_end_ns]
+        sclk_mode, sclk_share = modal_value(
+            [row[1] for row in window_rows if row[1] != "unavailable"])
+        mclk_mode, _ = modal_value(
+            [row[2] for row in window_rows if row[2] != "unavailable"])
+        temperatures = [int(row[5]) / 1000.0 for row in window_rows
+                        if row[5] != "unavailable"]
+        busy = [float(row[4]) for row in window_rows if row[4] != "unavailable"]
+        share_text = "-" if sclk_share is None else f"{sclk_share:.4f}"
+        temp_mean = f"{sum(temperatures) / len(temperatures):.1f}" if temperatures else "-"
+        temp_max = f"{max(temperatures):.1f}" if temperatures else "-"
+        busy_mean = f"{sum(busy) / len(busy):.2f}" if busy else "-"
+        print(f"clock_state=measured window_samples={len(window_rows)}"
+              f" sclk_mode_mhz={sclk_mode if sclk_mode is not None else '-'}"
+              f" sclk_share={share_text}"
+              f" mclk_mode_mhz={mclk_mode if mclk_mode is not None else '-'}"
+              f" temp_mean_c={temp_mean} temp_max_c={temp_max} busy_mean={busy_mean}")
+    elif not window_defined:
+        print("clock_state=not_run no window supplied")
+    else:
+        print(f"clock_state=not_run rows={len(rows)}")
     verdict = "accepted" if not failures else "refused"
     print(f"clock_sidecar={verdict} failures={','.join(failures) or '-'}")
     return 0 if not failures else 1

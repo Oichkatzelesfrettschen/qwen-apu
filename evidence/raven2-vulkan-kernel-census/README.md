@@ -97,6 +97,27 @@ one row per registered control with `replicates`, `mean_delta`, `sd_delta`,
 `first_*` and `second_*` columns, so a reader compares one replicate
 against the set that judged it.
 
+The interval is taken over the pairs whose two arms met one execution
+state. The calibration of 20260902T1302Z selected 1100 MHz on slots 2
+through 9 and then 942, 837, and 775 to 857 MHz, and the decode rate fell
+from about 9.5 to about 7.2 tok/s with it while the die cooled, so a pair
+straddling that step measures the governor rather than the change its
+control names. `validate-clock-sidecar.py` states each arm's modal
+selected graphics clock over its request window on a `clock_state=` line
+beside its verdict lines, `arms.tsv` carries it as `sclk_mode_mhz` with
+`sclk_share`, and `summary.tsv` lists each pair's `inner/outer` modes in
+`sclk_modes` and reads a pair whose two arms hold different numeric modes
+as `state-changed` in `deltas`. A `-` is an unknown state -- the sampler
+runs off on `P-nosidecar` and `W`, and a ledger predating the columns
+carries it on every row -- so it takes whatever state its partner held and
+the retained campaigns replay unchanged. A control left with fewer than
+two comparable pairs reads `state-changed`, which `terminal-state.tsv`
+counts as `control_state_changed` and which ends the campaign
+`unresolved` with exit 4 the way an interval spanning its bound does. The
+broker reads `/proc/loadavg` and `/sys/kernel/mm/ksm/pages_sharing` on its
+own 1 s channel and emits them as `# host` lines, so a clock step is read
+beside the host load at that instant.
+
 `QWEN_CENSUS_REPLICATES` sets the count, defaults to 4, and is even and
 between 2 and 8, since every two replicates are one mirrored quadruple and
 the t table covers those degrees of freedom. Two replicates generate the
@@ -772,6 +793,16 @@ inside the 0.02 bound, but the sidecar and compile pairs both refute on
 replicates that disagree in sign, which reads as arm-to-arm scatter rather
 than the mechanism under test and moves the next chain link to a
 replicated-pair, paired-mean verdict.
+
+`20260902T1302Z/` retains the fifth calibration on head d490a39d,
+`calibration_verdict=unresolved`: four replicates per control move all
+three intervals to spanning their bound rather than refuting or
+accepting, but the selected graphics clock inside the request window
+steps from 1100 MHz to between 775 and 857 MHz across slots 9 to 12 while
+temperature falls rather than rises, so the decode-rate step this run
+also shows is a DPM selection and not a thermal ceiling, and a control
+pair straddling that step needs a per-arm clock-state check before its
+next paired-mean verdict.
 
 ## Order and falsifiers
 

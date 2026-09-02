@@ -14,8 +14,15 @@
  * rates against one token and cost different amounts to read. Every period
  * reads gpu_busy_percent; every tenth period reads the selected SCLK, MCLK,
  * and FCLK steps beside the die temperature; every hundredth reads
- * MemAvailable from /proc/meminfo and pswpin from /proc/vmstat. Period 0 reads
- * every family, so the first row carries a real reading in each column.
+ * MemAvailable from /proc/meminfo and pswpin from /proc/vmstat, and every
+ * hundredth also reads the one-minute load average from /proc/loadavg and
+ * pages_sharing from /sys/kernel/mm/ksm. Period 0 reads every family, so the
+ * first row carries a real reading in each column.
+ *
+ * The host channel is what places a clock step beside the machine state at
+ * that instant: the calibration of 20260902T1302Z watched the selected
+ * graphics clock fall from 1100 MHz to 800 MHz partway through an arm list,
+ * and a reading of that fall is a reading of what else the host was doing.
  *
  * The DPM attributes sit on the tenth-period channel because reading them is
  * the expensive half of a sample and their state moves slower than the read.
@@ -37,7 +44,8 @@
  * places, so a row between two reads of a channel repeats that channel's last
  * reading and the row shape is unchanged. MemAvailable and pswpin hold no
  * column, so they are emitted as their own `# meminfo` lines interleaved with
- * the rows at their own sample instants; read_record in the validator sends
+ * the rows at their own sample instants, and the load average and the KSM
+ * sharing count are emitted the same way on `# host` lines; read_record in the validator sends
  * every `#` line other than the footer to the header, which leaves the row
  * count and the column arity alone. A `# sample_rates` header line names the
  * period each surface is read at, so a reader places a repeated value against
@@ -82,7 +90,11 @@
 #define SAMPLE_CAPACITY 262144u
 #define MARK_CAPACITY 4096u
 #define MEMORY_CAPACITY 4096u
+#define HOST_CAPACITY 4096u
 #define MARK_NAME_BYTES 32u
+/* "0.52" and its neighbours; a load average printed wider than this is
+ * truncated at the field rather than overrunning it. */
+#define LOAD_TEXT_BYTES 16u
 #define SYSFS_BUFFER_BYTES 4096u
 #define PROC_BUFFER_BYTES 16384u
 #define CONTROL_BUFFER_BYTES 512u
@@ -91,6 +103,9 @@
 #define DPM_PERIOD_MULTIPLE 10u
 #define TEMPERATURE_PERIOD_MULTIPLE 10u
 #define MEMORY_PERIOD_MULTIPLE 100u
+/* The host channel shares that hundredth period, which is 1 s at the
+ * appliance's 10 ms period. */
+#define HOST_PERIOD_MULTIPLE 100u
 
 #define UNAVAILABLE_SCLK 0x01u
 #define UNAVAILABLE_MCLK 0x02u
@@ -129,6 +144,12 @@ struct memory_record {
     int64_t pswpin;
 };
 
+struct host_record {
+    uint64_t monotonic_ns;
+    int64_t ksm_pages_sharing;
+    char load1[LOAD_TEXT_BYTES];
+};
+
 struct broker {
     int sclk_fd;
     int mclk_fd;
@@ -137,6 +158,8 @@ struct broker {
     int temperature_fd;
     int meminfo_fd;
     int vmstat_fd;
+    int loadavg_fd;
+    int ksm_sharing_fd;
     int control_read_fd;
     int control_keep_fd;
 
@@ -156,6 +179,9 @@ struct broker {
 
     struct memory_record *memory;
     uint64_t memory_count;
+
+    struct host_record *host;
+    uint64_t host_count;
 
     char sysfs_buffer[SYSFS_BUFFER_BYTES];
     char proc_buffer[PROC_BUFFER_BYTES];
@@ -338,6 +364,26 @@ static int64_t parse_proc_field(const char *text, const char *key)
     return INT64_C(-1);
 }
 
+/* /proc/loadavg opens on the one-minute average, "0.52 0.58 0.59 1/512 8123",
+ * which carries a decimal point and no key, so the leading run of digits and
+ * points is copied out as text rather than parsed to an integer. A first
+ * character outside that set is a surface this reader cannot state. */
+static void parse_load_average(const char *text, char *buffer, size_t capacity)
+{
+    size_t index = 0;
+
+    if (text[0] < '0' || text[0] > '9') {
+        snprintf(buffer, capacity, "unavailable");
+        return;
+    }
+    while (index + 1 < capacity &&
+           ((text[index] >= '0' && text[index] <= '9') || text[index] == '.')) {
+        buffer[index] = text[index];
+        index++;
+    }
+    buffer[index] = '\0';
+}
+
 /* Marks */
 
 static bool mark_name_is_admissible(const char *name)
@@ -508,6 +554,7 @@ static int write_record(const struct broker *broker, const char *output_path,
     uint64_t sample_index = 0;
     uint64_t mark_index = 0;
     uint64_t memory_index = 0;
+    uint64_t host_index = 0;
     uint64_t cost_total = 0;
     uint64_t cost_max = 0;
     uint64_t unavailable_rows = 0;
@@ -529,11 +576,13 @@ static int write_record(const struct broker *broker, const char *output_path,
      * from the three the validator reads out of the merged header. */
     fprintf(out, "# sample_rates: gpu_busy_percent_period_ns=%" PRIu64
                  " pp_dpm_period_ns=%" PRIu64 " temp1_input_period_ns=%" PRIu64
-                 " meminfo_period_ns=%" PRIu64 " vmstat_period_ns=%" PRIu64 "\n",
+                 " meminfo_period_ns=%" PRIu64 " vmstat_period_ns=%" PRIu64
+                 " host_period_ns=%" PRIu64 "\n",
             period_ns, period_ns * DPM_PERIOD_MULTIPLE,
             period_ns * TEMPERATURE_PERIOD_MULTIPLE,
             period_ns * MEMORY_PERIOD_MULTIPLE,
-            period_ns * MEMORY_PERIOD_MULTIPLE);
+            period_ns * MEMORY_PERIOD_MULTIPLE,
+            period_ns * HOST_PERIOD_MULTIPLE);
     fprintf(out, "# interpretation: pp_dpm_sclk_selected_mhz is the selected graphics clock step;"
                  " pp_dpm_mclk_surface_mhz is the pp_dpm_mclk sysfs surface, which on SMU10 is a"
                  " fabric-clock state rather than the trained DRAM speed;"
@@ -544,12 +593,12 @@ static int write_record(const struct broker *broker, const char *output_path,
                  "\tpp_dpm_fclk_surface_mhz\tgpu_busy_percent\ttemp1_millidegrees"
                  "\tsample_cost_ns\n");
 
-    /* Three arrays each hold their own instants in order, so one merge places
-     * every mark and memory reading between the rows it fell between. A tie
-     * emits the annotation ahead of the row, since a memory reading is taken
-     * inside the sample that carries its instant. */
+    /* Four arrays each hold their own instants in order, so one merge places
+     * every mark, memory reading, and host reading between the rows it fell
+     * between. A tie emits the annotation ahead of the row, since a slow-rate
+     * reading is taken inside the sample that carries its instant. */
     while (sample_index < broker->sample_count || mark_index < broker->mark_count ||
-           memory_index < broker->memory_count) {
+           memory_index < broker->memory_count || host_index < broker->host_count) {
         uint64_t sample_ns = (sample_index < broker->sample_count)
                                  ? broker->samples[sample_index].monotonic_ns
                                  : UINT64_MAX;
@@ -559,14 +608,17 @@ static int write_record(const struct broker *broker, const char *output_path,
         uint64_t memory_ns = (memory_index < broker->memory_count)
                                  ? broker->memory[memory_index].monotonic_ns
                                  : UINT64_MAX;
+        uint64_t host_ns = (host_index < broker->host_count)
+                               ? broker->host[host_index].monotonic_ns
+                               : UINT64_MAX;
 
-        if (mark_ns <= sample_ns && mark_ns <= memory_ns) {
+        if (mark_ns <= sample_ns && mark_ns <= memory_ns && mark_ns <= host_ns) {
             fprintf(out, "# mark name=%s monotonic_ns=%" PRIu64 "\n",
                     broker->marks[mark_index].name, mark_ns);
             mark_index++;
             continue;
         }
-        if (memory_ns <= sample_ns) {
+        if (memory_ns <= sample_ns && memory_ns <= host_ns) {
             const struct memory_record *record = &broker->memory[memory_index];
             char available[32];
             char pswpin[32];
@@ -585,6 +637,21 @@ static int write_record(const struct broker *broker, const char *output_path,
             fprintf(out, "# meminfo monotonic_ns=%" PRIu64 " mem_available_kb=%s pswpin=%s\n",
                     memory_ns, available, pswpin);
             memory_index++;
+            continue;
+        }
+        if (host_ns <= sample_ns) {
+            const struct host_record *record = &broker->host[host_index];
+            char sharing[32];
+
+            if (record->ksm_pages_sharing < 0) {
+                snprintf(sharing, sizeof(sharing), "unavailable");
+            } else {
+                snprintf(sharing, sizeof(sharing), "%" PRId64,
+                         record->ksm_pages_sharing);
+            }
+            fprintf(out, "# host monotonic_ns=%" PRIu64 " load1=%s ksm_pages_sharing=%s\n",
+                    host_ns, record->load1, sharing);
+            host_index++;
             continue;
         }
         {
@@ -649,6 +716,7 @@ static int write_record(const struct broker *broker, const char *output_path,
      * fast_path_surfaces states which surface that is. */
     fprintf(stderr, "telemetry_broker=drained samples=%" PRIu64
                     " marks=%" PRIu64 " memory_readings=%" PRIu64
+                    " host_readings=%" PRIu64
                     " mean_sample_cost_ns=%" PRIu64 " max_sample_cost_ns=%" PRIu64
                     " fast_path_surfaces=gpu_busy_percent"
                     " fast_path_samples=%" PRIu64
@@ -656,6 +724,7 @@ static int write_record(const struct broker *broker, const char *output_path,
                     " fast_path_max_cost_ns=%" PRIu64
                     " marks_rejected=%" PRIu64 " ring_full=%d\n",
             broker->sample_count, broker->mark_count, broker->memory_count,
+            broker->host_count,
             mean_cost_ns, cost_max, broker->fast_path_samples,
             (broker->fast_path_samples > 0)
                 ? broker->fast_path_cost_total / broker->fast_path_samples
@@ -821,7 +890,9 @@ int main(int argc, char **argv)
     broker.samples = calloc(SAMPLE_CAPACITY, sizeof(*broker.samples));
     broker.marks = calloc(MARK_CAPACITY, sizeof(*broker.marks));
     broker.memory = calloc(MEMORY_CAPACITY, sizeof(*broker.memory));
-    if (broker.samples == NULL || broker.marks == NULL || broker.memory == NULL) {
+    broker.host = calloc(HOST_CAPACITY, sizeof(*broker.host));
+    if (broker.samples == NULL || broker.marks == NULL || broker.memory == NULL ||
+        broker.host == NULL) {
         fprintf(stderr, "cannot allocate the sample ring\n");
         return 2;
     }
@@ -831,6 +902,7 @@ int main(int argc, char **argv)
     memset(broker.samples, 0, (size_t)SAMPLE_CAPACITY * sizeof(*broker.samples));
     memset(broker.marks, 0, (size_t)MARK_CAPACITY * sizeof(*broker.marks));
     memset(broker.memory, 0, (size_t)MEMORY_CAPACITY * sizeof(*broker.memory));
+    memset(broker.host, 0, (size_t)HOST_CAPACITY * sizeof(*broker.host));
     (void)mlockall(MCL_CURRENT | MCL_FUTURE);
 
     broker.sclk_fd = open_surface(drm_device, "pp_dpm_sclk");
@@ -840,6 +912,11 @@ int main(int argc, char **argv)
     broker.temperature_fd = open_surface(hwmon, "temp1_input");
     broker.meminfo_fd = open("/proc/meminfo", O_RDONLY | O_CLOEXEC);
     broker.vmstat_fd = open("/proc/vmstat", O_RDONLY | O_CLOEXEC);
+    broker.loadavg_fd = open("/proc/loadavg", O_RDONLY | O_CLOEXEC);
+    /* KSM is a kernel build option, so a host carrying no pages_sharing
+     * attribute reports the column unavailable on every host line. */
+    broker.ksm_sharing_fd = open("/sys/kernel/mm/ksm/pages_sharing",
+                                 O_RDONLY | O_CLOEXEC);
     broker.control_read_fd = -1;
     broker.control_keep_fd = -1;
 
@@ -899,6 +976,9 @@ int main(int argc, char **argv)
             int64_t memory_available = INT64_C(-1);
             int64_t pswpin = INT64_C(-1);
             bool memory_read = false;
+            int64_t ksm_pages_sharing = INT64_C(-1);
+            char load_average[LOAD_TEXT_BYTES];
+            bool host_read = false;
 
             begin = monotonic_nanoseconds();
 
@@ -943,6 +1023,21 @@ int main(int argc, char **argv)
                 memory_read = true;
             }
 
+            if (tick % HOST_PERIOD_MULTIPLE == 0) {
+                snprintf(load_average, sizeof(load_average), "unavailable");
+                if (read_snapshot(broker.loadavg_fd, broker.proc_buffer,
+                                  PROC_BUFFER_BYTES) >= 0) {
+                    parse_load_average(broker.proc_buffer, load_average,
+                                       sizeof(load_average));
+                }
+                if (read_snapshot(broker.ksm_sharing_fd, broker.proc_buffer,
+                                  PROC_BUFFER_BYTES) >= 0) {
+                    ksm_pages_sharing = parse_leading_integer64(
+                        broker.proc_buffer, strlen(broker.proc_buffer));
+                }
+                host_read = true;
+            }
+
             end = monotonic_nanoseconds();
 
             if (last_sclk == VALUE_UNAVAILABLE) {
@@ -977,7 +1072,8 @@ int main(int argc, char **argv)
                  * alone, which is the cost the sidecar contract bounds. */
                 if (tick % DPM_PERIOD_MULTIPLE != 0 &&
                     tick % TEMPERATURE_PERIOD_MULTIPLE != 0 &&
-                    tick % MEMORY_PERIOD_MULTIPLE != 0) {
+                    tick % MEMORY_PERIOD_MULTIPLE != 0 &&
+                    tick % HOST_PERIOD_MULTIPLE != 0) {
                     broker.fast_path_samples++;
                     broker.fast_path_cost_total += record->cost_ns;
                     if (record->cost_ns > broker.fast_path_cost_max) {
@@ -990,6 +1086,14 @@ int main(int argc, char **argv)
                         memory_available;
                     broker.memory[broker.memory_count].pswpin = pswpin;
                     broker.memory_count++;
+                }
+                if (host_read && broker.host_count < HOST_CAPACITY) {
+                    broker.host[broker.host_count].monotonic_ns = begin;
+                    broker.host[broker.host_count].ksm_pages_sharing =
+                        ksm_pages_sharing;
+                    snprintf(broker.host[broker.host_count].load1,
+                             LOAD_TEXT_BYTES, "%s", load_average);
+                    broker.host_count++;
                 }
             } else if (!broker.ring_full_reported) {
                 /* A full ring stops the appending rather than wrapping it, so
