@@ -54,7 +54,8 @@ runner passes the monotonic window of the one completion request it timed,
 a graph inside that window is one whose begin and retire instants both fall
 inside it, a graph that straddles an edge is refused by serial because its
 membership is ambiguous, and a decode graph is an in-window graph whose
-largest MUL_MAT token column is 1. The decode set is required to be exactly
+largest MUL_MAT token column over weight matmuls, those whose source type
+is other than f32, is 1. The decode set is required to be exactly
 the expected count and contiguous in serial, so a warm-up graph, a cache
 operation, or a second request cannot enter the ledger unnamed.
 
@@ -324,7 +325,16 @@ def validate_context(context):
 
 
 def graph_tokens(rows):
-    columns = [d["ne"][1] for d in rows if d["op"] in ("MUL_MAT", "MUL_MAT_ID")]
+    """The graph's token column, read from its weight matmuls alone.
+
+    An f32 matmul multiplies two activations, the Gated DeltaNet chunk
+    products, and its column count is a chunk dimension that scales with the
+    token count (2, 8, and 32 in a one-token decode graph of the 2B) rather
+    than the token count; every other source type names a stored weight
+    whose column count is the graph's token count.
+    """
+    columns = [d["ne"][1] for d in rows
+               if d["op"] in ("MUL_MAT", "MUL_MAT_ID") and d["src0_type"] != "f32"]
     return max(columns) if columns else 0
 
 

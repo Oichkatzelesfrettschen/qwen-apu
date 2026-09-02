@@ -69,10 +69,11 @@ def pipeline_row(pipeline_id, name, constants):
 
 def dispatch(serial, pipeline_id, node, op, ne1, reach, complete, wg=32,
              submit=1, queue_family=0, reach_query=None, complete_query=None,
-             interval=None):
+             interval=None, src0_type="q8_0"):
     return {
         "serial": serial, "pipeline": pipeline_id, "node": node, "op": op,
         "ne1": ne1, "wg": wg, "submit": submit, "queue_family": queue_family,
+        "src0_type": src0_type,
         "reach_ns": reach, "complete_ns": complete,
         "reach_query": 2 * node + 1 if reach_query is None else reach_query,
         "complete_query": 2 * node + 2 if complete_query is None else complete_query,
@@ -84,7 +85,7 @@ def dispatch_row(d):
     return "\t".join(str(v) for v in [
         "census_dispatch", d["serial"], d["reach_query"], d["complete_query"],
         d["pipeline"], d["node"], 0, d["op"], "blk.0.attn_q",
-        "blk.0.attn_q.weight", "q8_0", "f32", "f32", 2048, d["ne1"], 1, 1,
+        "blk.0.attn_q.weight", d["src0_type"], "f32", "f32", 2048, d["ne1"], 1, 1,
         d["ne1"], d["wg"], 1, 1, d["reach_ns"], d["complete_ns"],
         d["interval_ns"], d["submit"], d["queue_family"], "0x1", 7])
 
@@ -260,6 +261,22 @@ raised = result.stdout.rstrip("\n").split("\n")[-1].split("\t")
 assert "ownership=conclusive" in raised and "overlap_threshold=0.2000" in raised, raised
 assert len(result.stdout.rstrip("\n").split("\n")) == 4, result.stdout
 print("ownership_threshold=accepted")
+
+# An f32 matmul is a Gated DeltaNet chunk product whose column count is a
+# chunk dimension, so a decode graph carrying one at ne1=32 beside its
+# weight matmuls at ne1=1 stays decode; the fixture is the accepted ledger
+# with that dispatch added to the first decode graph.
+decode_a_with_chunk = decode_a + [dispatch(3, 1, 2, "MUL_MAT", 32, 22_300, 23_300, src0_type="f32")]
+chunk_base = ([pipeline_row(1, "mul_mat_vec_q8_0_f32", "64,2,1"),
+               pipeline_row(2, "rms_norm_f32", "-")]
+              + graph_rows(1, warmup, 500_000, 30_000)
+              + graph_rows(2, prefill, 2_000_000, 80_000)
+              + graph_rows(3, decode_a_with_chunk, 3_000_000, 30_000)
+              + graph_rows(4, decode_b, 4_000_000, 50_000))
+result = run(chunk_base)
+assert result.returncode == 0, result.stderr
+assert result.stdout.rstrip("\n").split("\n")[-1].split("\t")[2] == "2", result.stdout
+print("chunk_product_stays_decode=accepted")
 
 # The window, not the shape, excludes the warm-up graph: widening the window
 # admits it and the count then mismatches.

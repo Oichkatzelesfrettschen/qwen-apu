@@ -482,6 +482,19 @@ reads the attribute and grants the allowance on an empty read. The
 sidecar itself held a 5.033 ms period at a mean cost of 603 microseconds
 over 3113 samples, inside both bounds.
 
+`20260902T0426Z/` retains the first calibration on the v3 head 34de93f,
+classified `measurement_status=diagnostic calibration_verdict=failed
+ownership_authority=provisional`. Every arm launched and every rate was
+measured; the run failed on the sidecar gap bound at nice 10, on the
+reader's refusal of the two-context file, on the reader classifying every
+graph as prefill through the f32 chunk products, and on the runtime monitor
+refusing the diagnostic profile. Its two I1 ledgers, read by the analysis
+head, are the first census records: 91% of a 97 ms decode graph inside the
+two mat-vec families, 3.4 ms of queue idle and residual, ownership
+conclusive at a 1% overlap, and the reproducibility build R byte-identical
+to P. `decode-decomposition.md` reads the ledgers against the predictions
+it registered ahead of them.
+
 ## Order and falsifiers
 
 Runs go 2B, then 0.8B, then 4B. The 2B validates the instrument, the 0.8B

@@ -206,3 +206,41 @@ two FMAs per instruction, which halves the weight-dot and minimum stages,
 at the cost the tree already registered for FP16 accumulation over 256-wide
 groups; it is a Section B precision arm rather than a free lever, and it
 composes with the integer path only for the FP32 fixup, so it sits behind E5.
+
+## First reading: the 34de93f acquisition, read by the analysis head
+
+`20260902T0426Z/` holds two I1 ledgers from a calibration that failed on its
+sidecar and reader, read after the reader fixes; the census records
+themselves are valid and the two arms agree within 0.1%. Against the
+predictions above:
+
+| prediction | measured | verdict |
+| --- | --- | --- |
+| P1 mat-vec union 50 to 65 ms | 88.2 ms (Q4_K 51.8, Q6_K 36.4) | refuted upward: the VALU account undershoots; the mat-vecs are 91% of the graph |
+| P2 queue idle plus residual 25 to 40 ms | 3.4 ms (1.83 idle, 1.58 residual) | refuted: the 2B carries no fixed cost worth the name at 40 submits per graph |
+| P3 other families 8 to 15 ms | about 9 ms | holds |
+| P4 conclusive, cross-pipeline overlap below 0.05 | conclusive, 0.0069 | holds |
+| P5 Q4_K mat-vec 40 to 64 VGPRs, 4 or more waves | 64 VGPRs, 4 waves per SIMD | holds at the edge |
+| P6 sclk 1100 during decode graphs | 1100 on 89% of samples, 1083 on 8%, a 200 ms ramp from 400 at the prompt; mclk 1067 throughout | holds for decode; the ramp is the prompt's |
+| P7 the 0.8B residue | not run | open |
+
+Two numbers reorder the ladder. The Q6_K family streams its half of the
+bytes at about 17 GB/s (0.632 GB of the 1.263 GB per token at the 50.08%
+Q6_K byte share, over 36.4 ms; `derived`) while the Q4_K family streams
+its share at about 12 GB/s (the remaining weight bytes over 51.8 ms;
+`derived`), so the memory system delivers at least 17 GB/s to one kernel
+and the Q4_K kernel is the one leaving bandwidth on the table, which is the
+VALU-bound signature the operation count predicted for it and the
+bandwidth-bound reading does not. The Q6_K median of 568 microseconds per
+call against Q4_K's 206 also says the larger matrices reach higher
+bandwidth, so part of the Q4_K deficit is per-dispatch ramp on a 2 CU
+device. The order of work stands as registered, with E5 first and E4
+second, and with the P2 refutation the fusion arm E6 falls to last.
+
+The reproducibility build R, a fresh `raven2-vulkan-production` build from
+the same source tree with ccache disabled, hashes to
+`5dd86b90154f6143a5303efd2590b9268a0a5e3e908c4d6791f1fde03a4782c2`, the
+bundle server's own digest (`measured`, `$HOME/stage-a-repro.log` on the
+appliance), so the P/I base-build identity's unrecorded shader-compiler row
+is observationally closed: the historical toolchain and the current one
+produce the same bytes.
