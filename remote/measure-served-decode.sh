@@ -696,6 +696,14 @@ printf '{"model":"qwen-apu","messages":[{"role":"user","content":"Write one para
 # binary stamps every graph with, so a census reader selects the graphs
 # this one request ran by membership rather than by shape. The window opens
 # ahead of curl and closes after it returns, on an otherwise idle server.
+# The server's own stdout and stderr reach $state_directory/server.log, so the
+# byte offsets bracketing the same window name the region a perf-logger reader
+# consumes and leave every row the session appended outside it unread.
+if [ -f "$state_directory/server.log" ]; then
+    server_log_bytes_begin=$(wc -c <"$state_directory/server.log" | tr -d ' ')
+else
+    server_log_bytes_begin=0
+fi
 request_window_begin_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
 set +e
 if [ -n "$api_key" ]; then
@@ -713,9 +721,17 @@ fi
 request_status=$?
 set -e
 request_window_end_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
+if [ -f "$state_directory/server.log" ]; then
+    server_log_bytes_end=$(wc -c <"$state_directory/server.log" | tr -d ' ')
+else
+    server_log_bytes_end=0
+fi
 printf 'key\tvalue\nclock\tCLOCK_MONOTONIC\nbegin_ns\t%s\nend_ns\t%s\nrequest_status\t%s\n' \
     "$request_window_begin_ns" "$request_window_end_ns" "$request_status" \
     >"$result_directory/request-window.tsv"
+printf 'server_log_bytes_begin\t%s\nserver_log_bytes_end\t%s\n' \
+    "$server_log_bytes_begin" "$server_log_bytes_end" \
+    >>"$result_directory/request-window.tsv"
 
 set +e
 retain_running_process_evidence
@@ -726,6 +742,22 @@ set +e
 retain_quiescent_runtime_evidence
 quiescent_evidence_status=$?
 set -e
+
+# The retained server.log carries the whole session, so the slice cut at the
+# window's own offsets is what a perf-logger reader consumes and rows the
+# session appended outside the request stay out of the identity record. The
+# retention step returns a status rather than aborting, so the slice follows
+# the copy it reads.
+if [ -f "$result_directory/server.log" ]; then
+    if [ "$server_log_bytes_end" -gt "$server_log_bytes_begin" ]; then
+        tail -c "+$((server_log_bytes_begin + 1))" \
+            "$result_directory/server.log" | \
+            head -c "$((server_log_bytes_end - server_log_bytes_begin))" \
+            >"$result_directory/server-log-request.slice"
+    else
+        : >"$result_directory/server-log-request.slice"
+    fi
+fi
 
 set +e
 python3 - "$result_directory" "$label" "$request_status" \
