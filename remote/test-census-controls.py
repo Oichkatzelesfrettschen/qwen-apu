@@ -10,8 +10,9 @@ summarize-census-controls.py assigns the
 sidecar, compile, and collect bounds to the three registered quadruples
 alone, reports each delta on its own, refuses compensation through a mean,
 marks an unregistered quadruple unclassified, and keeps S outside the
-parser. summarize-perf-logger-slice.py folds a request-local logger slice
-into per-op calls per block and refuses a slice short of its blocks.
+parser. summarize-perf-logger-slice.py classifies each block by the largest
+`n` over its non-f32 matmul rows, folds the decode blocks into per-op calls
+per block, and refuses a decode count other than the requested one.
 """
 import os
 import subprocess
@@ -246,18 +247,21 @@ slice_text = "\n".join([
     "",
 ])
 slice_path = write("slice.log", slice_text)
-result = subprocess.run([sys.executable, slicer, slice_path, "--expected-min-blocks", "2"],
+result = subprocess.run([sys.executable, slicer, slice_path, "--expected-decode-blocks", "2"],
                         capture_output=True, text=True)
 assert result.returncode == 0, result.stderr
 rows = [line.split("\t") for line in result.stdout.rstrip("\n").split("\n")]
-assert rows[0][0] == "op" and rows[-1][0] == "blocks" and rows[-1][1] == "2", rows
-inventory = {row[1]: row for row in rows[1:-1]}
+assert rows[0][0] == "op", rows
+summary = {row[0]: row for row in rows if row[0] != "op"}
+assert summary["blocks"][1] == "2" and summary["decode_blocks"][1] == "2", summary
+assert summary["prefill_blocks"][1] == "0" and summary["unknown_blocks"][1] == "0", summary
+inventory = {row[1]: row for row in rows[1:] if row[0] == "op"}
 assert inventory["MUL_MAT"][2] == "24.000" and inventory["MUL_MAT"][3] == "5808.0", inventory
 assert inventory["RMS_NORM"][2] == "48.000" and inventory["MUL"][2] == "48.000", inventory
 assert inventory["ROPE"][2] == "24.000", inventory
-result = subprocess.run([sys.executable, slicer, slice_path, "--expected-min-blocks", "3"],
+result = subprocess.run([sys.executable, slicer, slice_path, "--expected-decode-blocks", "3"],
                         capture_output=True, text=True)
-assert result.returncode != 0 and "holds 2 blocks" in result.stderr, result.stderr
+assert result.returncode != 0 and "holds 2 decode blocks of 2" in result.stderr, result.stderr
 print("perf_logger_slice=accepted")
 
 for name in os.listdir(work):
