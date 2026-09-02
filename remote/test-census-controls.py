@@ -12,12 +12,16 @@ alone, collapses every replicate of a control onto one row, judges that row by
 whether its nominal 95% interval sits inside, outside, or across the bound,
 marks an unregistered quadruple unclassified, names the direction of a refuted
 interval, and keeps S and the warmup arm W outside the parser. It judges a
-control over the pairs whose two arms held one selected graphics clock,
-excluding a pair that straddled a governor step and reading the whole control
-`state-changed` where fewer than two comparable pairs survive. The appliance
-tables of 20260902T0819Z and 20260902T1302Z are replayed here: the first
-resolves none of the three controls at two replicates, and the second steps
-from 1100 MHz to 800 MHz partway through the arm list. summarize-perf-logger-slice.py classifies each block by the largest
+control over the pairs whose two selected graphics clocks lie within
+`--sclk-band` of each other, excluding a pair that straddled a governor step
+and reading the whole control `state-changed` where fewer than two comparable
+pairs survive, and it counts the arms whose `regime_delta` exceeds that band
+as `off_regime_arms`. The appliance tables of 20260902T0819Z and
+20260902T1302Z are replayed here: the first resolves none of the three
+controls at two replicates, the second steps from 1100 MHz to 800 MHz partway
+through the arm list, and its four collect pairs -- 825/837, 787/762,
+775/800, and 812/825 -- are one regime under the band and four governor steps
+under an exact comparison. summarize-perf-logger-slice.py classifies each block by the largest
 `n` over its non-f32 matmul rows, folds the decode blocks into per-op calls
 per block, and refuses a decode count other than the requested one.
 """
@@ -197,17 +201,20 @@ assert "gaps=not_run rows=1" in result.stdout, result.stdout
 print("sidecar_gaps=accepted")
 
 
-def arms_ledger(rows, modes=None):
+def arms_ledger(rows, modes=None, regime_deltas=None):
     """One ledger; modes is a per-row selected graphics clock, `-` by default.
 
     A ledger written before the clock-state columns existed omits them
     entirely, which is what `modes=None` writes, so the retained campaigns
-    replay through the same reader.
+    replay through the same reader. `regime_deltas` adds the column the
+    warmup precondition fills, whose absence is the same retained shape.
     """
     header = ("slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s"
               "\tcensus_rows\tsidecar\tstatus")
     if modes is not None:
         header += "\tsclk_mode_mhz\tsclk_share"
+    if regime_deltas is not None:
+        header += "\tregime_delta"
     lines = [header]
     for slot, (arm, rate, status) in enumerate(rows, 1):
         line = f"{slot}\t{arm}\tabc\t64\t6000\t{rate}\t-\ton\t{status}"
@@ -215,12 +222,14 @@ def arms_ledger(rows, modes=None):
             mode = modes[slot - 1]
             share = "-" if mode == "-" else "0.9800"
             line += f"\t{mode}\t{share}"
+        if regime_deltas is not None:
+            line += f"\t{regime_deltas[slot - 1]}"
         lines.append(line)
     return "\n".join(lines) + "\n"
 
 
 def summarize(rows, sidecar="0.0065", compile_bound="0.0065", collect="0.02",
-              modes=None):
+              modes=None, regime_deltas=None, band=None):
     """Run the controls summarizer and return its rows as field maps.
 
     The verdict is over every replicate of a control, so the columns a case
@@ -228,10 +237,12 @@ def summarize(rows, sidecar="0.0065", compile_bound="0.0065", collect="0.02",
     per-replicate columns and the bound, and a positional read would follow
     the wrong field once a column lands between them.
     """
-    path = write("arms.tsv", arms_ledger(rows, modes))
-    result = subprocess.run([sys.executable, controls, path, "--sidecar-bound", sidecar,
-                             "--compile-bound", compile_bound, "--collect-bound", collect],
-                            capture_output=True, text=True)
+    path = write("arms.tsv", arms_ledger(rows, modes, regime_deltas))
+    argv = [sys.executable, controls, path, "--sidecar-bound", sidecar,
+            "--compile-bound", compile_bound, "--collect-bound", collect]
+    if band is not None:
+        argv += ["--sclk-band", band]
+    result = subprocess.run(argv, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     lines = [line.split("\t") for line in result.stdout.rstrip("\n").split("\n")]
     header = lines[0]
@@ -249,8 +260,8 @@ def quadruple(outer, inner, outer_rate, first_inner_rate, second_inner_rate,
 
 HEADER = ("pair", "control", "outer", "inner", "first_outer", "first_inner", "first_delta",
           "second_outer", "second_inner", "second_delta", "replicates", "mean_delta",
-          "sd_delta", "ci_low", "ci_high", "deltas", "sclk_modes", "bound", "verdict",
-          "detail")
+          "sd_delta", "ci_low", "ci_high", "deltas", "sclk_modes", "off_regime_arms",
+          "bound", "verdict", "detail")
 
 # Two replicates that agree exactly leave a degenerate interval at their own
 # delta, which is the only way a two-replicate control accepts against a 0.65%
@@ -458,6 +469,73 @@ header, rows = summarize(
     quadruple("I0", "I1", "10.000", "9.850", "9.850", "10.000"))
 assert rows[0]["verdict"] == "accepted" and rows[0]["sclk_modes"] == "-/- -/-", rows[0]
 print("controls_state_unknown=accepted")
+
+# The sustained regime hovers across fine-grained values rather than holding a
+# table step, so the four collect pairs of 20260902T1302Z read 825/837,
+# 787/762, 775/800, and 812/825 although all eight arms ran in one regime. The
+# band admits every one of them: the widest sits 3.18% apart against a 6%
+# default, and the control is judged over four pairs rather than none.
+header, rows = summarize(
+    quadruple("I0", "I1", "10.000", "9.900", "9.900", "10.000", repeats=2),
+    modes=["837", "825", "787", "762", "800", "775", "812", "825"])
+assert len(rows) == 1, rows
+banded = rows[0]
+assert banded["sclk_modes"] == "825/837 787/762 775/800 812/825", banded
+assert banded["deltas"] == "-0.0100 -0.0100 -0.0100 -0.0100", banded
+assert banded["verdict"] == "accepted" and banded["detail"] == "-", banded
+# The boost regime against the sustained one sits 27.27% apart, which no
+# plausible band admits, so the step the campaign exists to exclude still
+# reads state-changed.
+header, rows = summarize(
+    quadruple("I0", "I1", "10.000", "9.900", "9.900", "10.000"),
+    modes=["1100", "800", "800", "1100"])
+assert rows[0]["verdict"] == "state-changed", rows[0]
+assert rows[0]["deltas"] == "state-changed state-changed", rows[0]
+# The band is a setting rather than a constant: tightened below the sustained
+# regime's own spread, the same eight arms lose every pair.
+header, rows = summarize(
+    quadruple("I0", "I1", "10.000", "9.900", "9.900", "10.000", repeats=2),
+    modes=["837", "825", "787", "762", "800", "775", "812", "825"],
+    band="0.005")
+assert rows[0]["verdict"] == "state-changed", rows[0]
+assert rows[0]["detail"] == "comparable_pairs=0 of 4", rows[0]
+print("controls_sclk_band=accepted")
+
+# regime_delta is each arm's own distance from the regime the warmups settled
+# on, and off_regime_arms counts the arms of a control that exceed the band.
+# Two arms agreeing with each other while both sit off the regime form a
+# comparable pair, so the count states what the pair comparison cannot.
+header, rows = summarize(
+    quadruple("I0", "I1", "10.000", "9.900", "9.900", "10.000"),
+    modes=["800", "800", "1100", "1100"],
+    regime_deltas=["+0.0000", "+0.0000", "+0.2727", "+0.2727"])
+assert rows[0]["off_regime_arms"] == "2", rows[0]
+assert rows[0]["deltas"] == "-0.0100 -0.0100", rows[0]
+assert rows[0]["verdict"] == "accepted", rows[0]
+# An unknown distance is uncounted rather than counted as agreeing, so a
+# ledger predating the column reports no arm off its regime.
+header, rows = summarize(
+    quadruple("I0", "I1", "10.000", "9.900", "9.900", "10.000"),
+    modes=["800", "800", "800", "800"],
+    regime_deltas=["-", "-", "-", "-"])
+assert rows[0]["off_regime_arms"] == "0", rows[0]
+header, rows = summarize(
+    quadruple("I0", "I1", "10.000", "9.900", "9.900", "10.000"))
+assert rows[0]["off_regime_arms"] == "0", rows[0]
+# An incomplete control and an unregistered quadruple carry the column too,
+# since a reader takes every row of this table by the one header.
+header, rows = summarize([
+    ("I0", "10.000", "reused"), ("I1", "9.900", "skipped"),
+    ("I1", "9.900", "reused"), ("I0", "10.000", "reused"),
+], modes=["800", "800", "1100", "1100"],
+    regime_deltas=["+0.0000", "+0.0000", "+0.2727", "+0.2727"])
+assert rows[0]["verdict"] == "incomplete" and rows[0]["off_regime_arms"] == "2", rows[0]
+header, rows = summarize(
+    quadruple("P", "I1", "10.000", "9.900", "9.900", "10.000"),
+    modes=["800", "800", "800", "800"],
+    regime_deltas=["+0.0000", "+0.0000", "+0.0000", "+0.0000"])
+assert rows[0]["verdict"] == "unclassified" and rows[0]["off_regime_arms"] == "-", rows[0]
+print("controls_off_regime_arms=accepted")
 
 slice_text = "\n".join([
     "srv  log_server_r: request: POST /v1/chat/completions",

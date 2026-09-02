@@ -13,6 +13,22 @@ set -eu
 # check refuses on the measured host and the host check refuses everywhere
 # else. That absence is what keeps the test from launching thirteen served
 # arms on the appliance.
+#
+# The executing cases at the end supply both, and the stub validator's clock
+# table is what drives the regime precondition without a device.
+# regime_settles_at_three admits four warmups and settles on the third, which
+# is the one that agrees with its predecessor inside the band, and requires the
+# fourth to stay unrun; regime_unreached steps the four apart, withholds one
+# clock_state line, and pins one at a share of 0.62, so the precondition spends
+# its cap, records no regime, and leaves every named arm without a distance to
+# one while the warmups stay out of every pair, receipt, and numbered slot;
+# regime_share_window runs the 20260902T1417Z shape three ways -- two warmups
+# agreeing at 1100 MHz at boost shares settle nothing, the same agreement at
+# 0.13 settles at once, and raising the ceiling past the boost share settles
+# the pair the default refused -- so the ceiling rather than the band is what
+# separates the regimes; truncated_reply cuts one reply mid-object and requires
+# the arm to record the unknown triple rather than the campaign to end inside
+# it.
 
 if [ "$#" -ne 0 ]; then
     printf 'usage: %s\n' "$(basename "$0")" >&2
@@ -529,8 +545,10 @@ if [ "$two_replicate_arms" != "P-nosidecar P P P-nosidecar P I0 I0 P I0 I1 I1 I0
         "$two_replicate_arms" >&2
     exit 1
 fi
-if [ "$(contract_field "$two_replicate_contract" census_arm_count)" != 14 ]; then
-    printf 'the thirteen arms and W count %s\n' \
+# The count carries the precondition's cap rather than one warmup, since the
+# run may spend up to that many before it reaches slot 1.
+if [ "$(contract_field "$two_replicate_contract" census_arm_count)" != 29 ]; then
+    printf 'the thirteen arms and the sixteen warmups count %s\n' \
         "$(contract_field "$two_replicate_contract" census_arm_count)" >&2
     exit 1
 fi
@@ -543,8 +561,8 @@ if [ "$four_replicate_arms" != "$expected_four_replicate_arms" ]; then
         "$four_replicate_arms" "$expected_four_replicate_arms" >&2
     exit 1
 fi
-if [ "$(contract_field "$four_replicate_contract" census_arm_count)" != 26 ]; then
-    printf 'the four-replicate list and W count %s\n' \
+if [ "$(contract_field "$four_replicate_contract" census_arm_count)" != 41 ]; then
+    printf 'the four-replicate list and the sixteen warmups count %s\n' \
         "$(contract_field "$four_replicate_contract" census_arm_count)" >&2
     exit 1
 fi
@@ -573,13 +591,13 @@ if [ "$(contract_field "$four_replicate_contract" predicted_arm_duration_s)" != 
     printf 'the predicted arm duration is not 19 seconds plus the cooldown\n' >&2
     exit 1
 fi
-if [ "$(contract_field "$two_replicate_contract" predicted_campaign_duration_s)" != 686 ]; then
-    printf 'the two-replicate campaign is predicted at %s seconds of 686\n' \
+if [ "$(contract_field "$two_replicate_contract" predicted_campaign_duration_s)" != 1421 ]; then
+    printf 'the two-replicate campaign is predicted at %s seconds of 1421\n' \
         "$(contract_field "$two_replicate_contract" predicted_campaign_duration_s)" >&2
     exit 1
 fi
-if [ "$(contract_field "$four_replicate_contract" predicted_campaign_duration_s)" != 1274 ]; then
-    printf 'the four-replicate campaign is predicted at %s seconds of 1274\n' \
+if [ "$(contract_field "$four_replicate_contract" predicted_campaign_duration_s)" != 2009 ]; then
+    printf 'the four-replicate campaign is predicted at %s seconds of 2009\n' \
         "$(contract_field "$four_replicate_contract" predicted_campaign_duration_s)" >&2
     exit 1
 fi
@@ -625,13 +643,13 @@ for replicate_expectation in "2 4 13" "4 8 25"; do
     # The three control bricks and the identity arm cover the generated list
     # exactly, so the partition and the arm count are one statement.
     replicate_arm_count=$(contract_field "$replicate_contract" census_arm_count)
-    if [ "$((3 * brick_slot_width + 1))" -ne "$((replicate_arm_count - 1))" ]; then
+    if [ "$((3 * brick_slot_width + 1))" -ne "$((replicate_arm_count - 16))" ]; then
         printf 'the partition covers %s slots against an arm list of %s\n' \
             "$((3 * brick_slot_width + 1))" "$replicate_arm_count" >&2
         exit 1
     fi
 done
-printf 'replicate_arm_list=accepted two=14 four=26 predicted_s=1274\n'
+printf 'replicate_arm_list=accepted two=29 four=41 predicted_s=2009\n'
 printf 'replicate_brick_partition=accepted identity_slot_two=13 identity_slot_four=25\n'
 
 write_calibration_inputs() {
@@ -973,8 +991,11 @@ mkdir -p "$signal_hwmon/hwmon0"
 printf 'amdgpu\n' >"$signal_hwmon/hwmon0/name"
 printf '61000\n' >"$signal_hwmon/hwmon0/temp1_input"
 
-# The first calibration arm runs with its sidecar off, so the arm that holds
-# a sampler comes from an attribution naming I0. Its receipt must carry the
+# Every arm holds a sampler now that the regime precondition reads the warmup
+# arms' own clock state, so the attribution's first warmup at slot 0a is where
+# this case interrupts: it launches the production server under the Python
+# sampler and hangs in the fake served runner, which is the pair the trap must
+# reach. Its receipt must carry the
 # digest of the contract this environment computes, and the DRM device and
 # the sampler's core are both contract rows, so the print invocation carries
 # exactly the QWEN_DRM_DEVICE and QWEN_CENSUS_SIDECAR_CPU values the signal
@@ -1003,7 +1024,7 @@ write_calibration_inputs "$signal_calibration/inputs.tsv" "$production_sha256" \
     "$signal_contract_sha256"
 
 signal_output=$temporary_directory/out-signal
-signal_arm_directory=$signal_output/arms/01-I0
+signal_arm_directory=$signal_output/arms/0a-W
 signal_record=$signal_arm_directory/clock-sidecar.tsv
 signal_served_pid_file=$signal_arm_directory/fake.pid
 signal_stderr=$temporary_directory/signal-stderr.txt
@@ -1136,12 +1157,26 @@ import runpy
 import sys
 
 state = os.environ.get("QWEN_TEST_CLOCK_STATE", "")
+share = os.environ.get("QWEN_TEST_CLOCK_SHARE", "0.1400")
+# A per-arm table overrides the run-wide state, keyed by the arm directory's
+# own label, and each entry is a mode or a mode and its modal share separated
+# by a colon. The word none stands for a window the validator read no clock
+# state out of, which is the reading that resets the precondition's pair.
+table = os.environ.get("QWEN_TEST_CLOCK_TABLE", "")
+if table and os.path.exists(table):
+    label = os.path.basename(os.path.dirname(sys.argv[1]))
+    for line in open(table):
+        name, _, value = line.rstrip("\n").partition("\t")
+        if name == label:
+            state, _, entry_share = value.partition(":")
+            if entry_share:
+                share = entry_share
 if state:
-    share = os.environ.get("QWEN_TEST_CLOCK_SHARE", "0.9235")
     print(f"record_readable=accepted path={sys.argv[1]}")
-    print(f"clock_state=measured window_samples=700 sclk_mode_mhz={state}"
-          f" sclk_share={share} mclk_mode_mhz=1067"
-          " temp_mean_c=71.6 temp_max_c=74.0 busy_mean=94.88")
+    if state != "none":
+        print(f"clock_state=measured window_samples=700 sclk_mode_mhz={state}"
+              f" sclk_share={share} mclk_mode_mhz=1067"
+              " temp_mean_c=71.6 temp_max_c=74.0 busy_mean=94.88")
     print("clock_sidecar=accepted failures=-")
     raise SystemExit(0)
 sys.argv[0] = "$script_directory/validate-clock-sidecar.py"
@@ -1152,7 +1187,23 @@ chmod +x "$brick_directory/validate-clock-sidecar.py"
 # fails on its own runner and the cooldown that follows is what the case
 # reads. The quiescence poller is stubbed because it samples a device, and
 # the runner reads its printed line rather than its own clock.
-printf '#!/bin/sh\nexit 1\n' >"$brick_directory/measure-served-decode.sh"
+# The served runner an executed arm reaches refuses at once, so the arm fails
+# on its own runner and the cooldown that follows is what a case reads. One
+# label named in QWEN_TEST_CENSUS_TRUNCATE instead leaves a reply cut
+# mid-object, which is what a runner killed while writing leaves behind: the
+# arm's reader answers the unknown triple rather than ending the campaign.
+cat >"$brick_directory/measure-served-decode.sh" <<'FAKE_SERVED_RUNNER'
+#!/bin/sh
+set -eu
+if [ "${QWEN_TEST_CENSUS_TRUNCATE:-}" = "$1" ]; then
+    printf 'begin_ns\t1000000000\nend_ns\t2000000000\n' \
+        >"$QWEN_RESULT_DIRECTORY/request-window.tsv"
+    printf '{"timings": {"predicted_n": 65, "predi' \
+        >"$QWEN_RESULT_DIRECTORY/response.json"
+    exit 0
+fi
+exit 1
+FAKE_SERVED_RUNNER
 chmod +x "$brick_directory/measure-served-decode.sh"
 cat >"$brick_directory/await-quiescence.sh" <<'FAKE_QUIESCENCE'
 #!/bin/sh
@@ -1265,12 +1316,27 @@ run_brick_calibration() {
     # The fifth argument names the selected graphics clock the stub validator
     # reports, which is what puts a clock state in arms.tsv without a device.
     brick_clock_state=${5:-}
+    # The sixth caps the regime precondition. Two is what these cases run at,
+    # so a warmup phase costs two arms rather than eight and each case's own
+    # failure and cooldown counts stay readable.
+    brick_regime_max_arms=${6:-2}
+    # The seventh names a per-arm clock table the stub validator reads, and the
+    # eighth an arm label whose served runner leaves a truncated reply.
+    brick_clock_table=${7:-}
+    brick_truncate_label=${8:-}
+    # The ninth and tenth are the modal share window. The sustained regime
+    # measures 0.12 to 0.16 there and boost 0.55 to 0.68, so a case moving
+    # either bound names it rather than inheriting the shipped defaults.
+    brick_regime_min_share=${9:-0.05}
+    brick_regime_max_share=${10:-0.30}
     active_fixture=$brick_case
     diagnostic_file=$temporary_directory/$brick_case-stderr.txt
     set +e
     env -i \
         QWEN_TEST_BROKER_SILENT="$brick_broker_silent" \
         QWEN_TEST_CLOCK_STATE="$brick_clock_state" \
+        QWEN_TEST_CLOCK_TABLE="$brick_clock_table" \
+        QWEN_TEST_CENSUS_TRUNCATE="$brick_truncate_label" \
         PATH="$signal_path" \
         HOME="$home_directory" \
         QWEN_MODELS_DIRECTORY="$models_directory" \
@@ -1284,6 +1350,9 @@ run_brick_calibration() {
         QWEN_CENSUS_SIDECAR_CPU=0 \
         QWEN_CENSUS_COOLDOWN_S=0 \
         QWEN_CENSUS_REPLICATES=2 \
+        QWEN_CENSUS_REGIME_MAX_ARMS="$brick_regime_max_arms" \
+        QWEN_CENSUS_REGIME_MIN_SHARE="$brick_regime_min_share" \
+        QWEN_CENSUS_REGIME_MAX_SHARE="$brick_regime_max_share" \
         QWEN_CENSUS_REUSE_BRICKS="$brick_prior" \
         SSH_CONNECTION="$signal_ssh_connection" \
         "$brick_runner" "$model_id" "$brick_output" \
@@ -1385,26 +1454,36 @@ if ! awk -F'\t' '$1 == "13" && $3 == "cooldown" && $6 == "quiescence=timeout ela
     sed -n '1,10p' "$brick_cooldown_output/wall-clock.tsv" >&2
     exit 1
 fi
-# W opens the calibration at slot 0 whenever any arm executes, takes the
-# production server with its sampler off, and enters no pair: the sidecar
-# quadruple is reused here, so the summary still carries its three controls
-# while arms.tsv carries the warmup row beside them.
-if ! awk -F'\t' '$1 == "0" && $2 == "W" { found = 1 } END { exit found ? 0 : 1 }' \
-    "$brick_cooldown_output/arms.tsv"; then
-    printf 'the executed-arm calibration recorded no warmup row at slot 0\n' >&2
-    exit 1
-fi
+# The warmups open the calibration at the lettered slots whenever any arm
+# executes, take the production server under the sampler, and enter no pair:
+# the sidecar quadruple is reused here, so the summary still carries its three
+# controls while arms.tsv carries the warmup rows beside them. This case runs
+# the delegating validator, which refuses the stub broker's record and leaves
+# no clock state, so the precondition spends its whole cap and settles nothing.
+for brick_warmup_slot in 0a 0b; do
+    if ! awk -F'\t' -v slot="$brick_warmup_slot" \
+        '$1 == slot && $2 == "W" { found = 1 } END { exit found ? 0 : 1 }' \
+        "$brick_cooldown_output/arms.tsv"; then
+        printf 'the executed-arm calibration recorded no warmup row at slot %s\n' \
+            "$brick_warmup_slot" >&2
+        exit 1
+    fi
+done
 if awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
     $(column["outer"]) == "W" || $(column["inner"]) == "W" { found = 1 }
     END { exit found ? 0 : 1 }' "$brick_cooldown_output/summary.tsv"; then
-    printf 'the warmup arm entered a control pair\n' >&2
+    printf 'a warmup arm entered a control pair\n' >&2
     exit 1
 fi
-grep -q '^cooldown_timeouts=2$' "$brick_cooldown_output/terminal-state.tsv"
-grep -q '^arm_failures=2$' "$brick_cooldown_output/terminal-state.tsv"
+grep -q '^census_regime=unreached sclk_mhz=- arms=2$' \
+    "$temporary_directory/quiescence_cooldown-stdout.txt"
+grep -qxF "$(printf 'regime_sclk_mhz\t-')" "$brick_cooldown_output/inputs.tsv"
+grep -qxF "$(printf 'regime_arms\t2')" "$brick_cooldown_output/inputs.tsv"
+grep -q '^cooldown_timeouts=3$' "$brick_cooldown_output/terminal-state.tsv"
+grep -q '^arm_failures=3$' "$brick_cooldown_output/terminal-state.tsv"
 grep -q 'census_arm=failed slot=13 arm=S .* reason=served_runner' \
     "$temporary_directory/quiescence_cooldown-stdout.txt"
-grep -q 'census_arm=failed slot=0 arm=W .* reason=served_runner' \
+grep -q 'census_arm=failed slot=0a arm=W .* reason=served_runner' \
     "$temporary_directory/quiescence_cooldown-stdout.txt"
 grep -q '^verdict	failed$' "$brick_cooldown_output/bricks/C3.receipt.tsv"
 for brick_member in C0 C1 C2; do
@@ -1509,8 +1588,14 @@ fi
 # inputs.tsv is the run's own record of the shape it ran, so the replicate
 # count and the generated list live there rather than in the contract digest.
 grep -q '^census_replicates	2$' "$brick_unresolved_output/inputs.tsv"
-grep -q '^census_arm_count	14$' "$brick_unresolved_output/inputs.tsv"
+grep -q '^census_arm_count	15$' "$brick_unresolved_output/inputs.tsv"
 grep -q '^predicted_arm_duration_s	19$' "$brick_unresolved_output/inputs.tsv"
+grep -q '^regime_max_arms	2$' "$brick_unresolved_output/inputs.tsv"
+# Four reused bricks leave nothing to warm and nothing to settle, so the
+# precondition runs no arm and says so rather than leaving the rows absent.
+grep -q '^census_regime=unreached sclk_mhz=- arms=0$' \
+    "$temporary_directory/control_unresolved-stdout.txt"
+grep -qxF "$(printf 'regime_arms\t0')" "$brick_unresolved_output/inputs.tsv"
 diagnostic_file=
 printf 'control_unresolved=accepted exit=4\n'
 
@@ -1533,24 +1618,46 @@ if [ "$brick_status" -ne 1 ]; then
     exit 1
 fi
 if ! head -n 1 "$clock_state_output/arms.tsv" \
-    | grep -q "	status	sclk_mode_mhz	sclk_share\$"; then
+    | grep -q "	status	sclk_mode_mhz	sclk_share	regime_delta\$"; then
     printf 'arms.tsv names no clock-state columns after status\n' >&2
     head -n 1 "$clock_state_output/arms.tsv" >&2
     exit 1
 fi
 if ! awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
     $1 == "13" && $(column["sclk_mode_mhz"]) == "800" \
-        && $(column["sclk_share"]) == "0.9235" { found = 1 }
+        && $(column["sclk_share"]) == "0.1400" { found = 1 }
     END { exit found ? 0 : 1 }' "$clock_state_output/arms.tsv"; then
     printf 'the sampled arm carries no clock state at slot 13\n' >&2
     sed -n '1,20p' "$clock_state_output/arms.tsv" >&2
     exit 1
 fi
+# The warmups sample too, so both report the same 800 MHz the stub validator
+# states, the precondition settles on the second, and the run records their
+# mean as the regime every named arm is measured against.
+for brick_warmup_slot in 0a 0b; do
+    if ! awk -F'\t' -v slot="$brick_warmup_slot" \
+        'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
+        $1 == slot && $2 == "W" && $(column["sidecar"]) == "on" \
+            && $(column["sclk_mode_mhz"]) == "800" \
+            && $(column["regime_delta"]) == "-" { found = 1 }
+        END { exit found ? 0 : 1 }' "$clock_state_output/arms.tsv"; then
+        printf 'the warmup at slot %s carries no sampled clock state\n' \
+            "$brick_warmup_slot" >&2
+        sed -n '1,20p' "$clock_state_output/arms.tsv" >&2
+        exit 1
+    fi
+done
+grep -q '^census_regime=reached sclk_mhz=800.0 arms=2$' \
+    "$temporary_directory/arms_clock_state-stdout.txt"
+grep -qxF "$(printf 'regime_sclk_mhz\t800.0')" "$clock_state_output/inputs.tsv"
+grep -qxF "$(printf 'regime_arms\t2')" "$clock_state_output/inputs.tsv"
+# The named arm ran at the regime's own mode, so its distance from it is zero
+# rather than unknown.
 if ! awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
-    $1 == "0" && $(column["sclk_mode_mhz"]) == "-" \
-        && $(column["sclk_share"]) == "-" { found = 1 }
+    $1 == "13" && $(column["regime_delta"]) == "+0.0000" { found = 1 }
     END { exit found ? 0 : 1 }' "$clock_state_output/arms.tsv"; then
-    printf 'the warmup arm reports a clock state under a sampler it never ran\n' >&2
+    printf 'the sampled arm carries no distance from the regime at slot 13\n' >&2
+    sed -n '1,20p' "$clock_state_output/arms.tsv" >&2
     exit 1
 fi
 if ! awk -F'\t' 'NR == 1 { want = NF; next } NF != want { ragged = 1 }
@@ -1561,6 +1668,202 @@ fi
 grep -q '^control_state_changed=0$' "$clock_state_output/terminal-state.tsv"
 diagnostic_file=
 printf 'arms_clock_state=accepted mode=800\n'
+
+# The precondition spends as many warmups as it needs and stops at the pair
+# that settles. Four are admitted here and the third is what agrees with the
+# second, so the run settles at three arms, records their mean, and leaves the
+# fourth unrun.
+active_fixture=regime_settles_at_three
+prior_regime=$temporary_directory/prior-regime
+write_prior_calibration "$prior_regime"
+printf 'census=refuted\n' >"$prior_regime/terminal-state.tsv"
+regime_clock_table=$temporary_directory/clocks-regime
+printf '0a-W\t1100\n0b-W\t800\n0c-W\t812\n0d-W\t1100\n13-S\t825\n' >"$regime_clock_table"
+regime_output=$temporary_directory/out-regime-settles
+brick_status=$(run_brick_calibration regime_settles_at_three "$prior_regime" \
+    "$regime_output" 0 800 4 "$regime_clock_table")
+if [ "$brick_status" -ne 1 ]; then
+    printf 'the regime calibration exited %s where its failed arm exits 1\n' \
+        "$brick_status" >&2
+    exit 1
+fi
+grep -q '^census_regime=reached sclk_mhz=806.0 arms=3$' \
+    "$temporary_directory/regime_settles_at_three-stdout.txt"
+grep -qxF "$(printf 'regime_sclk_mhz\t806.0')" "$regime_output/inputs.tsv"
+grep -qxF "$(printf 'regime_arms\t3')" "$regime_output/inputs.tsv"
+[ "$(awk -F'\t' 'NR > 1 && $2 == "W" { print $1 }' "$regime_output/arms.tsv" | tr '\n' ' ')" \
+    = '0a 0b 0c ' ]
+if [ -e "$regime_output/arms/0d-W" ]; then
+    printf 'the settled precondition ran its fourth warmup\n' >&2
+    exit 1
+fi
+# The identity arm ran 2.30% off that regime, inside the band, and states the
+# distance rather than a verdict: the pair comparability is what the summary
+# carries, and this column is what a reader takes a drifting campaign from.
+if ! awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
+    $1 == "13" && $(column["sclk_mode_mhz"]) == "825" \
+        && $(column["regime_delta"]) == "+0.0230" { found = 1 }
+    END { exit found ? 0 : 1 }' "$regime_output/arms.tsv"; then
+    printf 'the identity arm carries no distance from the settled regime\n' >&2
+    sed -n '1,20p' "$regime_output/arms.tsv" >&2
+    exit 1
+fi
+diagnostic_file=
+printf 'regime_settles_at_three=accepted arms=3 regime=806.0\n'
+
+# No two consecutive warmups both agree and sit inside the share window, so the
+# precondition spends its cap and settles nothing: a window the validator read
+# no clock state out of resets the pair, and so does a window whose mode is
+# pinned at a share of 0.62 even though its clock agrees with its predecessor's.
+# The campaign continues with an unrecorded regime and no distance on any named
+# arm.
+active_fixture=regime_unreached
+prior_unsettled=$temporary_directory/prior-unsettled
+write_prior_calibration "$prior_unsettled"
+printf 'census=refuted\n' >"$prior_unsettled/terminal-state.tsv"
+unsettled_clock_table=$temporary_directory/clocks-unsettled
+printf '0a-W\t1100\n0b-W\tnone\n0c-W\t800\n0d-W\t800:0.62\n13-S\t825\n' \
+    >"$unsettled_clock_table"
+unsettled_output=$temporary_directory/out-regime-unsettled
+brick_status=$(run_brick_calibration regime_unreached "$prior_unsettled" \
+    "$unsettled_output" 0 800 4 "$unsettled_clock_table")
+if [ "$brick_status" -ne 1 ]; then
+    printf 'the unsettled calibration exited %s where its failed arm exits 1\n' \
+        "$brick_status" >&2
+    exit 1
+fi
+grep -q '^census_regime=unreached sclk_mhz=- arms=4$' \
+    "$temporary_directory/regime_unreached-stdout.txt"
+grep -qxF "$(printf 'regime_sclk_mhz\t-')" "$unsettled_output/inputs.tsv"
+grep -qxF "$(printf 'regime_arms\t4')" "$unsettled_output/inputs.tsv"
+[ "$(awk -F'\t' 'NR > 1 && $2 == "W" { print $1 }' "$unsettled_output/arms.tsv" | tr '\n' ' ')" \
+    = '0a 0b 0c 0d ' ]
+[ "$(awk -F'\t' '$1 == "0b" { print $11, $12 }' "$unsettled_output/arms.tsv")" = '- -' ]
+[ "$(awk -F'\t' '$1 == "0d" { print $11, $12 }' "$unsettled_output/arms.tsv")" = '800 0.62' ]
+# An unreached regime leaves every named arm without a distance to it, and the
+# named arms still hold the integer slots every brick and receipt is stated in.
+if awk -F'\t' 'NR > 1 && $2 != "W" && $13 != "-"' "$unsettled_output/arms.tsv" | grep -q .; then
+    printf 'a named arm carries a distance from an unreached regime\n' >&2
+    exit 1
+fi
+[ "$(awk -F'\t' 'NR > 1 && $2 != "W" { print $1 }' "$unsettled_output/arms.tsv" | tr '\n' ' ')" \
+    = '1 2 3 4 5 6 7 8 9 10 11 12 13 ' ]
+# The warmups enter no pair and no census record: the summary carries the three
+# reused controls and names W in neither position of any of them.
+if awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
+    $(column["outer"]) == "W" || $(column["inner"]) == "W" { found = 1 }
+    END { exit found ? 0 : 1 }' "$unsettled_output/summary.tsv"; then
+    printf 'a warmup arm entered a control pair\n' >&2
+    exit 1
+fi
+for unsettled_brick in C0 C1 C2; do
+    if grep -q '	0[a-h]' "$unsettled_output/bricks/$unsettled_brick.receipt.tsv"; then
+        printf 'a brick receipt claims a warmup slot\n' >&2
+        exit 1
+    fi
+done
+diagnostic_file=
+printf 'regime_unreached=accepted arms=4\n'
+
+# A reply the served runner never finished writing is unreadable rather than
+# absent. The reader's own failure answers the unknown triple, the arm fails on
+# its missing rate, and the ledger stays rectangular under one header rather
+# than carrying a completed row with empty fields.
+active_fixture=truncated_reply
+prior_truncated=$temporary_directory/prior-truncated
+write_prior_calibration "$prior_truncated"
+printf 'census=refuted\n' >"$prior_truncated/terminal-state.tsv"
+truncated_output=$temporary_directory/out-truncated-reply
+brick_status=$(run_brick_calibration truncated_reply "$prior_truncated" \
+    "$truncated_output" 0 800 2 '' 13-S)
+if [ "$brick_status" -ne 1 ]; then
+    printf 'the truncated-reply calibration exited %s where its failed arm exits 1\n' \
+        "$brick_status" >&2
+    exit 1
+fi
+grep -q 'census_arm=failed slot=13 arm=S tok_s=- .* reason=served_runner' \
+    "$temporary_directory/truncated_reply-stdout.txt"
+if ! awk -F'\t' '$1 == "13" && $4 == "-" && $5 == "-" && $6 == "-" && $10 == "failed" { found = 1 }
+    END { exit found ? 0 : 1 }' "$truncated_output/arms.tsv"; then
+    printf 'the truncated arm carries no unknown triple at slot 13\n' >&2
+    sed -n '1,20p' "$truncated_output/arms.tsv" >&2
+    exit 1
+fi
+if ! awk -F'\t' 'NR == 1 { want = NF; next } NF != want { ragged = 1 }
+    END { exit ragged ? 1 : 0 }' "$truncated_output/arms.tsv"; then
+    printf 'arms.tsv holds a row whose arity misses the header\n' >&2
+    exit 1
+fi
+# The campaign wrote its terminal state rather than ending inside the arm.
+grep -q '^census=failed$' "$truncated_output/terminal-state.tsv"
+grep -q '^arm_failures=3$' "$truncated_output/terminal-state.tsv"
+diagnostic_file=
+printf 'truncated_reply=accepted\n'
+
+# The sustained regime's modal share is what the threshold has to admit, and
+# 20260902T1417Z measures it at 0.12 to 0.16. A threshold below that admits it:
+# two consecutive warmups at 0.13 settle the precondition on their own mean, so
+# the mechanism holds a low threshold and the shipped 0.5 default is the
+# constant that refuses the served regime rather than the comparison.
+# The share window is what separates the two regimes, and 20260902T1417Z is the
+# shape it is set from: boost pins 1100 MHz at a modal share of 0.5518 to
+# 0.6803, and the sustained regime the appliance serves in hovers across seven
+# values at 0.1206 to 0.1615. Two boost warmups agree at 1100 within any band,
+# so the ceiling is the only rule that declines them.
+active_fixture=regime_share_window
+prior_share_window=$temporary_directory/prior-share-window
+write_prior_calibration "$prior_share_window"
+printf 'census=refuted\n' >"$prior_share_window/terminal-state.tsv"
+boost_clock_table=$temporary_directory/clocks-boost
+printf '0a-W\t1100:0.60\n0b-W\t1100:0.66\n13-S\t1100:0.55\n' >"$boost_clock_table"
+boost_output=$temporary_directory/out-regime-boost
+boost_status=$(run_brick_calibration regime_boost_refused "$prior_share_window" \
+    "$boost_output" 0 800 2 "$boost_clock_table")
+if [ "$boost_status" -ne 1 ]; then
+    printf 'the boost calibration exited %s where its failed arm exits 1\n' \
+        "$boost_status" >&2
+    exit 1
+fi
+grep -q '^census_regime=unreached sclk_mhz=- arms=2$' \
+    "$temporary_directory/regime_boost_refused-stdout.txt"
+[ "$(awk -F'\t' '$1 == "0a" { print $11, $12 }' "$boost_output/arms.tsv")" = '1100 0.60' ]
+[ "$(awk -F'\t' '$1 == "0b" { print $11, $12 }' "$boost_output/arms.tsv")" = '1100 0.66' ]
+# The sustained shape settles on the same two arms under the same defaults, so
+# the ceiling rather than the band or the arm count is what refused the pair
+# above.
+sustained_clock_table=$temporary_directory/clocks-sustained
+printf '0a-W\t800:0.13\n0b-W\t812:0.13\n13-S\t825:0.14\n' >"$sustained_clock_table"
+sustained_output=$temporary_directory/out-regime-sustained
+sustained_status=$(run_brick_calibration regime_sustained_settles "$prior_share_window" \
+    "$sustained_output" 0 800 2 "$sustained_clock_table")
+if [ "$sustained_status" -ne 1 ]; then
+    printf 'the sustained calibration exited %s where its failed arm exits 1\n' \
+        "$sustained_status" >&2
+    exit 1
+fi
+grep -q '^census_regime=reached sclk_mhz=806.0 arms=2$' \
+    "$temporary_directory/regime_sustained_settles-stdout.txt"
+grep -qxF "$(printf 'regime_sclk_mhz\t806.0')" "$sustained_output/inputs.tsv"
+grep -qxF "$(printf 'regime_min_share\t0.05')" "$sustained_output/inputs.tsv"
+grep -qxF "$(printf 'regime_max_share\t0.30')" "$sustained_output/inputs.tsv"
+# The ceiling is an acquisition-contract row, so a run that raises it past the
+# boost share runs under another contract and reuses no brick written against
+# the default; that run settles the boost pair the default refused, which is
+# what makes the ceiling rather than the comparison the deciding rule.
+raised_output=$temporary_directory/out-regime-raised-ceiling
+raised_status=$(run_brick_calibration regime_raised_ceiling '' \
+    "$raised_output" 0 800 2 "$boost_clock_table" '' 0.05 0.7)
+if [ "$raised_status" -ne 1 ]; then
+    printf 'the raised-ceiling calibration exited %s where its failed arm exits 1\n' \
+        "$raised_status" >&2
+    sed -n '1,20p' "$temporary_directory/regime_raised_ceiling-stderr.txt" >&2
+    exit 1
+fi
+grep -q '^census_regime=reached sclk_mhz=1100.0 arms=2$' \
+    "$temporary_directory/regime_raised_ceiling-stdout.txt"
+grep -qxF "$(printf 'regime_max_share\t0.7')" "$raised_output/inputs.tsv"
+diagnostic_file=
+printf 'regime_share_window=accepted boost=unreached sustained=806.0\n'
 
 active_fixture=completion
 printf 'run_raven2_vulkan_kernel_census_preflight=accepted cases=%s\n' "$run_index"
