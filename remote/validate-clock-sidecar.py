@@ -6,13 +6,17 @@ A record is evidence for an arm only where the sampler exited cleanly, held
 its period, cost what it claims, read every sensor on every sample, and
 covered the request window on both sides; a record failing any of those is
 a file that exists rather than a measurement, and the runner treats the arm
-as failed. Every condition prints as a `key=value` line, the last line reads
+as failed. A sensor the kernel reports empty on the measured machine, which
+on the SMU10 path is `pp_dpm_fclk`, is named with `--allow-unavailable` so
+its column may read `unavailable` on every row while any other column may
+not. Every condition prints as a `key=value` line, the last line reads
 `clock_sidecar=accepted` or `clock_sidecar=refused`, and the exit status
 follows it.
 
 usage: validate-clock-sidecar.py RECORD_TSV --sidecar-status N
        --period-ms F --period-tolerance F --cost-bound-ns N
        [--window-begin-ns N --window-end-ns N]
+       [--allow-unavailable COLUMN ...]
 """
 import argparse
 import sys
@@ -75,6 +79,7 @@ def main():
     parser.add_argument("--cost-bound-ns", type=int, required=True)
     parser.add_argument("--window-begin-ns", type=int)
     parser.add_argument("--window-end-ns", type=int)
+    parser.add_argument("--allow-unavailable", action="append", default=[])
     args = parser.parse_args()
 
     failures = []
@@ -123,11 +128,18 @@ def main():
     check("sample_cost", mean_cost <= args.cost_bound_ns,
           f"mean_ns={mean_cost} max_ns={footer['max_sample_cost_ns']} bound_ns={args.cost_bound_ns}")
     unavailable = int(footer["samples_with_unavailable_sensor"])
-    check("sensors", unavailable == 0, f"samples_with_unavailable_sensor={unavailable}")
+    allowed = set(args.allow_unavailable)
+    unknown_allowed = allowed - set(COLUMNS[1:6])
+    check("allowed_columns", not unknown_allowed, f"allowed={','.join(sorted(allowed)) or '-'}")
     if rows and row_arity:
         unavailable_rows = sum(1 for row in rows if "unavailable" in row[1:6])
         check("sensor_rows", unavailable_rows == unavailable,
               f"rows_with_unavailable={unavailable_rows} footer={unavailable}")
+        refused_columns = sorted({
+            COLUMNS[index] for row in rows for index in range(1, 6)
+            if row[index] == "unavailable" and COLUMNS[index] not in allowed})
+        check("sensors", not refused_columns,
+              f"unavailable_outside_allowance={','.join(refused_columns) or '-'} allowed={','.join(sorted(allowed)) or '-'}")
         first = int(rows[0][0])
         last = int(rows[-1][0])
         check("footer_instants", first == int(footer["first_sample_ns"]) and last == int(footer["last_sample_ns"]),

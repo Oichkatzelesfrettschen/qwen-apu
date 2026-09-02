@@ -95,11 +95,29 @@ sidecar_tolerance=${QWEN_CENSUS_SIDECAR_TOLERANCE:-0.25}
 sidecar_cost_ns=${QWEN_CENSUS_SIDECAR_COST_NS:-1000000}
 sidecar_cpu=${QWEN_CENSUS_SIDECAR_CPU:-1}
 sidecar_nice=${QWEN_CENSUS_SIDECAR_NICE:-10}
+drm_device=${QWEN_DRM_DEVICE:-/sys/class/drm/card1/device}
+# The SMU10 kernel path exposes pp_dpm_fclk as an empty file and reports the
+# fabric clock through pp_dpm_mclk, so a column the kernel leaves empty at
+# campaign start is allowed to read unavailable and every other column is
+# required on every sample; the allowance is recorded beside the arms.
+sidecar_allowed_unavailable=''
+if [ ! -s "$drm_device/pp_dpm_fclk" ]; then
+    sidecar_allowed_unavailable=pp_dpm_fclk_surface_mhz
+fi
 # The launch chain runs from the synced runtime tree alone, and a git
 # worktree is refused at launch, so the arms launch and tear down through
 # that tree while this runner and its readers come from wherever the
 # operator checked out.
 runtime_remote=${QWEN_CENSUS_RUNTIME_REMOTE:-"${HOME:?}/qwen-laptop-setup/remote"}
+# measure-served-decode.sh pins the model through a descriptor, and the
+# launch admits a descriptor-backed path only with the approved identity the
+# served runner derives from the artifact ledger, so the ledger travels with
+# every arm; a run without it refuses at launch on every served arm.
+artifact_ledger=${QWEN_MODEL_ARTIFACTS:-"$script_directory/model-artifacts.tsv"}
+if [ ! -r "$artifact_ledger" ] || [ -L "$artifact_ledger" ]; then
+    printf 'model artifact ledger is unreadable or linked: %s\n' "$artifact_ledger" >&2
+    exit 2
+fi
 for runtime_script in qwen-launch.sh qwen-teardown.sh radv-low-priority-env.sh; do
     if [ ! -x "$runtime_remote/$runtime_script" ]; then
         printf 'runtime tree script is not executable: %s\n' \
@@ -355,6 +373,8 @@ printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\
         "$sidecar_bound" "$compile_bound" "$collect_bound" "$overlap_threshold"
     printf 'sidecar_period_ms\t%s\nsidecar_tolerance\t%s\nsidecar_cost_ns\t%s\nsidecar_cpu\t%s\nsidecar_nice\t%s\n' \
         "$sidecar_period_ms" "$sidecar_tolerance" "$sidecar_cost_ns" "$sidecar_cpu" "$sidecar_nice"
+    printf 'sidecar_drm_device\t%s\nsidecar_allowed_unavailable\t%s\n' \
+        "$drm_device" "${sidecar_allowed_unavailable:--}"
     printf 'production_server\t%s\nproduction_server_sha256\t%s\nproduction_server_bytes\t%s\n' \
         "${production_server:--}" "$production_sha256" "$production_bytes"
     printf 'production_artifact_manifest\t%s\nproduction_artifact_manifest_sha256\t%s\n' \
@@ -369,6 +389,8 @@ printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\
         "$instrumented_manifest" "$instrumented_manifest_sha256"
     printf 'instrumented_checkpoint_semantics\t%s\ninstrumented_patch_series_sha256\t%s\n' \
         "$instrumented_semantics" "$instrumented_series"
+    printf 'model_artifacts\t%s\nmodel_artifacts_sha256\t%s\n' \
+        "$artifact_ledger" "$(sha256sum "$artifact_ledger" | cut -d ' ' -f 1)"
     printf 'started_utc\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } >"$output_directory/inputs.tsv"
 
@@ -397,7 +419,7 @@ for arm in $arms; do
     if [ "$sidecar_state" = on ]; then
         python3 "$sidecar" "$arm_directory/clock-sidecar.tsv" \
             --period-ms "$sidecar_period_ms" --cpu "$sidecar_cpu" --nice "$sidecar_nice" \
-            2>"$arm_directory/clock-sidecar.stderr" &
+            --drm-device "$drm_device" 2>"$arm_directory/clock-sidecar.stderr" &
         sidecar_pid=$!
     fi
     set +e
@@ -406,6 +428,7 @@ for arm in $arms; do
         QWEN_LAUNCH_SCRIPT="$runtime_remote/qwen-launch.sh" \
         QWEN_TEARDOWN_SCRIPT="$runtime_remote/qwen-teardown.sh" \
         QWEN_MODELS_DIRECTORY="$models_directory" \
+        QWEN_MODEL_ARTIFACTS="$artifact_ledger" \
         QWEN_RESULT_DIRECTORY="$arm_directory" \
         QWEN_CONTEXT_SIZE="$context" \
         QWEN_BATCH_SIZE="$batch" \
@@ -481,11 +504,13 @@ EOF
                 --sidecar-status "$sidecar_status" --period-ms "$sidecar_period_ms" \
                 --period-tolerance "$sidecar_tolerance" --cost-bound-ns "$sidecar_cost_ns" \
                 --window-begin-ns "$window_begin" --window-end-ns "$window_end" \
+                ${sidecar_allowed_unavailable:+--allow-unavailable "$sidecar_allowed_unavailable"} \
                 >"$arm_directory/clock-sidecar-verdict.txt" 2>&1
         else
             python3 "$sidecar_validator" "$arm_directory/clock-sidecar.tsv" \
                 --sidecar-status "$sidecar_status" --period-ms "$sidecar_period_ms" \
                 --period-tolerance "$sidecar_tolerance" --cost-bound-ns "$sidecar_cost_ns" \
+                ${sidecar_allowed_unavailable:+--allow-unavailable "$sidecar_allowed_unavailable"} \
                 >"$arm_directory/clock-sidecar-verdict.txt" 2>&1
         fi
         sidecar_verdict=$?
