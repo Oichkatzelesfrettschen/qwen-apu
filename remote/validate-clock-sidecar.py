@@ -187,20 +187,31 @@ def main():
             over_loose = sum(1 for gap in gaps if gap > loose_bound)
             over_max = sum(1 for gap in gaps if gap > args.max_gap_ns)
             if windowed:
-                in_window = sum(
-                    1 for index, gap in enumerate(gaps)
+                over_bound_in_window = [
+                    (index, gap) for index, gap in enumerate(gaps)
                     if gap > args.max_gap_ns
                     and instants[index + 1] > args.window_begin_ns
-                    and instants[index] < args.window_end_ns)
+                    and instants[index] < args.window_end_ns]
+                in_window = len(over_bound_in_window)
+                # The window time inside over-bound gaps, as the fraction of
+                # the window the record cannot place a clock step in.
+                lost_ns = sum(
+                    min(instants[index + 1], args.window_end_ns)
+                    - max(instants[index], args.window_begin_ns)
+                    for index, _gap in over_bound_in_window)
+                window_ns = max(1, args.window_end_ns - args.window_begin_ns)
+                lost_fraction = lost_ns / window_ns
             else:
                 in_window = over_max
+                lost_fraction = 0.0
             check("gaps", in_window == 0,
                   f"median_ns={nearest_rank(ordered, 500)} p95_ns={nearest_rank(ordered, 950)}"
                   f" p99_ns={nearest_rank(ordered, 990)} max_ns={ordered[-1]}"
                   f" over_1_5x={over_loose} over_max={over_max}")
             if windowed:
                 print(f"gaps_in_window={in_window} begin={args.window_begin_ns}"
-                      f" end={args.window_end_ns} bound_ns={args.max_gap_ns}")
+                      f" end={args.window_end_ns} bound_ns={args.max_gap_ns}"
+                      f" window_lost_fraction={lost_fraction:.4f}")
             else:
                 print(f"gaps_in_window=not_run no window supplied bound_ns={args.max_gap_ns}")
         else:

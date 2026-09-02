@@ -84,7 +84,7 @@ set -eu
 #   QWEN_CENSUS_SIDECAR_COST_NS      admitted mean sample cost, default 1000000
 #   QWEN_CENSUS_SIDECAR_MAX_GAP_MS   hard maximum adjacent sample gap inside the
 #                                    request window, default 20
-#   QWEN_CENSUS_SIDECAR_CPU          the core the sampler is pinned to, default 1
+#   QWEN_CENSUS_SIDECAR_CPU          the CPU list the sampler is confined to, default 0,1
 #   QWEN_CENSUS_PRINT_CONTRACT       1 prints the calibration contract and its digest, then exits
 
 if [ "$#" -ne 2 ]; then
@@ -140,7 +140,11 @@ sidecar_tolerance=${QWEN_CENSUS_SIDECAR_TOLERANCE:-0.25}
 sidecar_cost_ns=${QWEN_CENSUS_SIDECAR_COST_NS:-1000000}
 sidecar_max_gap_ms=${QWEN_CENSUS_SIDECAR_MAX_GAP_MS:-20}
 sidecar_max_gap_ns=$((sidecar_max_gap_ms * 1000000))
-sidecar_cpu=${QWEN_CENSUS_SIDECAR_CPU:-1}
+# The guards run on core 1 at nice 0 and the server on core 0 at nice 19,
+# so a nice-19 sampler pinned to core 1 loses about 40 ms once a second
+# to a guard's sample; confined to both cores it moves to whichever is
+# free, and the sidecar control still prices what it takes from the server.
+sidecar_cpu=${QWEN_CENSUS_SIDECAR_CPU:-0,1}
 # The appliance runs every measurement process at nice 19, the server
 # included, so the sampler takes that priority as an absolute rather than
 # an option; a hole the scheduler opens at that priority is reported by the
