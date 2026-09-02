@@ -114,8 +114,62 @@ if [ ! -r "$model_path" ]; then
     exit 2
 fi
 
+# measure-served-decode.sh admits an arm only under the served execution
+# contract the scoreboard campaign established: the measured host is
+# hp14-dk1xxx, a structurally valid SSH session is inherited, and a proof
+# file at the output root, digested into the arm environment, restates the
+# surface, host, session, priority, and I/O class beside the census inputs.
+host_shortname=$(hostname -s 2>/dev/null | LC_ALL=C tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz')
+if [ "$host_shortname" != hp14-dk1xxx ]; then
+    printf 'the census runs on the measured host hp14-dk1xxx: observed=%s\n' \
+        "${host_shortname:--}" >&2
+    exit 2
+fi
+if ! python3 - "${SSH_CONNECTION:-}" <<'PY'
+import ipaddress
+import sys
+
+fields = sys.argv[1].split()
+if len(fields) != 4:
+    raise SystemExit(1)
+for address in (fields[0], fields[2]):
+    ipaddress.ip_address(address)
+for port in (fields[1], fields[3]):
+    if not port.isdecimal() or not 1 <= int(port) <= 65535:
+        raise SystemExit(1)
+PY
+then
+    printf 'the census requires a structurally valid inherited SSH session\n' >&2
+    exit 2
+fi
+case $output_directory in
+    /*) ;;
+    *)
+        printf 'output directory must be absolute: %s\n' "$output_directory" >&2
+        exit 2
+        ;;
+esac
+
 mkdir -p "$output_directory/arms"
 arms_ledger=$output_directory/arms.tsv
+execution_proof=$output_directory/campaign-inputs.tsv
+{
+    printf 'key\tvalue\n'
+    printf 'schema\tfixed64-served-campaign-v2\n'
+    printf 'campaign_kind\tpipeline-census\n'
+    printf 'execution_surface\thp14-ssh\n'
+    printf 'host_shortname\t%s\n' "$host_shortname"
+    printf 'ssh_session\tpresent\n'
+    printf 'server_nice\t19\n'
+    printf 'server_io_class\tidle\n'
+    printf 'vulkan_profile\tlow-async\n'
+    printf 'model_id\t%s\n' "$model_id"
+    printf 'arms\t%s\n' "$arms"
+    printf 'production_server\t%s\n' "${production_server:--}"
+    printf 'instrumented_server\t%s\n' "${instrumented_server:--}"
+    printf 'generate_tokens\t64\n'
+} >"$execution_proof"
+execution_proof_sha256=$(sha256sum "$execution_proof" | cut -d ' ' -f 1)
 printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\tstatus\n' >"$arms_ledger"
 {
     printf 'model_id\t%s\nmodel_path\t%s\ncontext\t%s\nbatch\t%s\nubatch\t%s\n' \
@@ -167,6 +221,11 @@ for arm in $arms; do
         QWEN_WEB_BROKER=0 QWEN_IMAGE_SERVICE=0 \
         QWEN_VULKAN_LATENCY_PROBE="${QWEN_CENSUS_LATENCY_PROBE:-}" \
         QWEN_PIPELINE_CENSUS="$census_file" \
+        QWEN_EXECUTION_SURFACE=hp14-ssh \
+        QWEN_HOST_SHORTNAME="$host_shortname" \
+        QWEN_SSH_SESSION=present \
+        QWEN_EXECUTION_PROOF="$execution_proof" \
+        QWEN_EXECUTION_PROOF_SHA256="$execution_proof_sha256" \
         QWEN_BENCH_GENERATE=64 \
         "$runner" "$arm_label" "$model_path" low-async \
         >"$arm_directory/runner.stdout" 2>"$arm_directory/runner.stderr"
