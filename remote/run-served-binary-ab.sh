@@ -12,22 +12,42 @@ set -eu
 #
 # Arms are mirrored quadruples `C K K C`: two paired deltas per quadruple whose
 # second reverses the first's queue position, repeated until the run holds
-# QWEN_AB_REPLICATES of them. A warmup arm W opens the list on the control
-# server with the sampler off, because the first server after a build loads
-# cold and the opening pair would otherwise take its outer rate from a cold
-# load and its inner from a warm one; W is recorded and enters no pair.
+# QWEN_AB_REPLICATES of them. Warmup arms W open the list on the control server
+# with the sampler on, at slots 0a through 0p ahead of slot 1. They absorb the
+# cold load -- the first server after a build loads cold and the opening pair
+# would otherwise take its outer rate from a cold load and its inner from a
+# warm one -- and they carry the regime precondition below. Each is recorded
+# and enters no pair.
+#
+# The precondition runs the warmups until two consecutive arms hold modal
+# selected graphics clocks inside QWEN_CENSUS_SCLK_BAND of each other and each
+# holds a modal share inside [QWEN_CENSUS_REGIME_MIN_SHARE,
+# QWEN_CENSUS_REGIME_MAX_SHARE], then records their mean as regime_sclk_mhz in
+# inputs.tsv beside regime_arms and prints census_regime=reached. Two appliance
+# calibrations in a row held 1100 MHz over the first nine slots and then settled
+# between 762 and 857 MHz for the rest of the campaign, decode falling from
+# about 9.5 to about 7.2 tok/s with it, and the served appliance lives in that
+# sustained regime; a comparison that crosses into it partway through prices the
+# governor beside the binary. The share ceiling is what keeps the precondition
+# out of boost: 20260902T1417Z measures the pinned 1100 MHz at a modal share of
+# 0.5518 to 0.6803 against the sustained regime's 0.1206 to 0.1615, so two boost
+# warmups agree at 1100 on their second arm and only the window declines them.
+# QWEN_CENSUS_REGIME_MAX_ARMS caps the spend, and a cap reached prints
+# census_regime=unreached and runs the named arms against their own pair
+# comparability alone.
 #
 # summarize-census-controls.py is the verdict, over the `C K K C` shape it
 # registers as `served-ab`. Its bound is one-sided about +QWEN_AB_BOUND,
 # because a promotion asks whether the candidate is faster by more than the
 # bound and admits no band below it: `promoted` where the whole nominal 95%
 # interval sits above the bound, `refuted` where the whole interval sits below
-# it, `unresolved` where the interval spans it. A pair whose two arms selected
-# different graphics clocks measures the governor step rather than the binary,
-# so it leaves the mean and the interval, and a control left with fewer than
-# two comparable pairs reads `state-changed`. This machine carries about 4% of
-# uncontrolled spread on a repeated depth-0 rate, so a 5% bound sits near that
-# floor and the mean delta is the quantity a reader takes from a refutation.
+# it, `unresolved` where the interval spans it. A pair whose two modes lie
+# further apart than the band measures the governor step rather than the
+# binary, so it leaves the mean and the interval, and a control left with fewer
+# than two comparable pairs reads `state-changed`. This machine carries about
+# 4% of uncontrolled spread on a repeated depth-0 rate, so a 5% bound sits near
+# that floor and the mean delta is the quantity a reader takes from a
+# refutation.
 #
 # Both binaries are bound rather than named. The control must be the one
 # accepted server row of the fixed-64 scoreboard receipt, whose
@@ -54,6 +74,15 @@ set -eu
 #                                    carries, default
 #                                    llama-vulkan-q4k-activation-group-sums.patch
 #   QWEN_AB_COOLDOWN_S               quiescence deadline between arms, default 30
+#   QWEN_CENSUS_SCLK_BAND            relative distance within which two selected
+#                                    graphics clocks are one regime, default 0.06
+#   QWEN_CENSUS_REGIME_MIN_SHARE     modal share floor a warmup window must hold for
+#                                    the precondition to read its mode, default 0.05
+#   QWEN_CENSUS_REGIME_MAX_SHARE     modal share ceiling above which a window reports a
+#                                    pinned clock rather than the hovering sustained
+#                                    regime, default 0.30
+#   QWEN_CENSUS_REGIME_MAX_ARMS      warmup arms the precondition may spend, 2 through
+#                                    16, default 16
 #   QWEN_CENSUS_RUNTIME_REMOTE       synced runtime tree the arms launch through,
 #                                    default ~/qwen-laptop-setup/remote
 #   QWEN_CENSUS_LATENCY_PROBE        graphics latency probe the runner arms
@@ -125,6 +154,21 @@ if ! python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) > 0 else 1)' "$ab_
 fi
 candidate_patch=${QWEN_AB_CANDIDATE_PATCH:-llama-vulkan-q4k-activation-group-sums.patch}
 cooldown_s=${QWEN_AB_COOLDOWN_S:-30}
+# The band, the share window, and the cap are the census campaign's own, read
+# under the same names, since both campaigns face one governor on one machine
+# and a rule tightened for either belongs to both.
+sclk_band=${QWEN_CENSUS_SCLK_BAND:-0.06}
+regime_min_share=${QWEN_CENSUS_REGIME_MIN_SHARE:-0.05}
+regime_max_share=${QWEN_CENSUS_REGIME_MAX_SHARE:-0.30}
+regime_max_arms=${QWEN_CENSUS_REGIME_MAX_ARMS:-16}
+case $regime_max_arms in
+    2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16) ;;
+    *)
+        printf 'QWEN_CENSUS_REGIME_MAX_ARMS is a count from 2 through 16: %s\n' \
+            "$regime_max_arms" >&2
+        exit 2
+        ;;
+esac
 models_directory=${QWEN_MODELS_DIRECTORY:-"${HOME:?}/models"}
 sidecar_period_ms=${QWEN_CENSUS_SIDECAR_PERIOD_MS:-10}
 sidecar_tolerance=${QWEN_CENSUS_SIDECAR_TOLERANCE:-0.25}
@@ -448,6 +492,11 @@ fi
 if [ "${QWEN_AB_PRINT_PLAN:-0}" = 1 ]; then
     printf 'served_ab_arms\tW %s\n' "$arms"
     printf 'served_ab_replicates\t%s\nserved_ab_bound\t%s\n' "$ab_replicates" "$ab_bound"
+    # The plan names one W as the shape the list opens on; the precondition
+    # spends between two of them and this cap, which is set by the nine arms
+    # boost held for in both retained calibrations.
+    printf 'served_ab_warmup_arms\t%s\nserved_ab_sclk_band\t%s\n' \
+        "$regime_max_arms" "$sclk_band"
     printf 'control_server_sha256\t%s\ncandidate_server_sha256\t%s\n' \
         "$control_sha256" "$candidate_sha256"
     printf 'base_build_identity_sha256\t%s\ncandidate_series\t%s\n' \
@@ -521,8 +570,9 @@ execution_proof_sha256=$(sha256sum "$execution_proof" | cut -d ' ' -f 1)
 # reads it unchanged and a reader of one campaign reads the other.
 # census_rows and ownership belong to the instrumented arms alone and read `-`
 # here; sclk_mode_mhz and sclk_share come off the sidecar validator's own
-# clock_state line and are what makes a pair comparable.
-printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\tsidecar\townership\tstatus\tsclk_mode_mhz\tsclk_share\n' \
+# clock_state line and are what makes a pair comparable, and regime_delta is
+# the named arm's own distance from the regime the warmups settled on.
+printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\tsidecar\townership\tstatus\tsclk_mode_mhz\tsclk_share\tregime_delta\n' \
     >"$arms_ledger"
 {
     printf 'model_id\t%s\nmodel_path\t%s\ncontext\t%s\nbatch\t%s\nubatch\t%s\n' \
@@ -531,7 +581,10 @@ printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\
         "$cache_k" "$cache_v" "$flash" "$ctx_checkpoints" "$checkpoint_min_step"
     printf 'arms\tW %s\nprofile\tlow-async\ngenerate\t%s\n' "$arms" "$ab_generate"
     printf 'served_ab_replicates\t%s\nserved_ab_bound\t%s\n' "$ab_replicates" "$ab_bound"
-    printf 'warmup_arm\tW\nwarmup_excluded_from_pairs\tyes\n'
+    printf 'warmup_arm\tW\nwarmup_sampler\ton\nwarmup_excluded_from_pairs\tyes\n'
+    printf 'sclk_band\t%s\nregime_min_share\t%s\nregime_max_share\t%s\n' \
+        "$sclk_band" "$regime_min_share" "$regime_max_share"
+    printf 'regime_max_arms\t%s\n' "$regime_max_arms"
     printf 'control_server\t%s\ncontrol_server_sha256\t%s\ncontrol_server_bytes\t%s\n' \
         "$control_server" "$control_sha256" "$control_bytes"
     printf 'control_artifact_manifest\t%s\ncontrol_artifact_manifest_sha256\t%s\n' \
@@ -599,21 +652,63 @@ trap 'cleanup_children; trap - EXIT; exit 129' HUP
 wall_clock_ledger=$output_directory/wall-clock.tsv
 printf 'slot\tarm\tphase\tbegin_ns\tend_ns\tnote\n' >"$wall_clock_ledger"
 
-# W takes slot 0, so the paired arms keep the slot numbers a quadruple is
-# stated in.
-execution_arms="W $arms"
-slot=-1
+# The warmups take slots 0a through 0p, so the paired arms keep the integer
+# slot numbers a quadruple is stated in. The list carries the cap's worth of
+# them and the loop stops executing them the instant the regime is reached,
+# which is what lets one loop own both phases.
+warmup_arms=''
+warmup_index=0
+while [ "$warmup_index" -lt "$regime_max_arms" ]; do
+    warmup_arms="$warmup_arms W"
+    warmup_index=$((warmup_index + 1))
+done
+execution_arms="${warmup_arms# } $arms"
+named_slot=0
+warmup_index=0
+regime_previous_mode=-
+regime_previous_share=-
+regime_sclk_mhz=-
+regime_arms=0
+regime_reached=0
+regime_reported=0
+# The regime rows join inputs.tsv the moment the precondition settles, which is
+# ahead of the first named arm in either outcome, so a reader of a run
+# interrupted mid-campaign still finds what its arms were measured against.
+record_regime() {
+    printf 'regime_sclk_mhz\t%s\nregime_arms\t%s\n' \
+        "$regime_sclk_mhz" "$regime_arms" >>"$output_directory/inputs.tsv"
+    if [ "$regime_reached" -eq 1 ]; then
+        printf 'census_regime=reached sclk_mhz=%s arms=%s\n' \
+            "$regime_sclk_mhz" "$regime_arms"
+    else
+        printf 'census_regime=unreached sclk_mhz=%s arms=%s\n' \
+            "$regime_sclk_mhz" "$regime_arms"
+    fi
+    regime_reported=1
+}
 arm_failures=0
 cooldown_timeouts=0
 for arm in $execution_arms; do
-    slot=$((slot + 1))
-    arm_label=$(printf '%02d-%s' "$slot" "$arm")
+    if [ "$arm" = W ]; then
+        [ "$regime_reached" -eq 0 ] || continue
+        warmup_index=$((warmup_index + 1))
+        slot=$(census_warmup_slot "$warmup_index")
+        arm_label=$slot-W
+    else
+        # The precondition ends at the first named arm however it ended, so a
+        # capped run states its outcome ahead of the arms it could not bind.
+        [ "$regime_reported" -eq 1 ] || record_regime
+        named_slot=$((named_slot + 1))
+        slot=$named_slot
+        arm_label=$(printf '%02d-%s' "$slot" "$arm")
+    fi
     arm_begin_ns=$(date +%s%N)
     arm_directory=$output_directory/arms/$arm_label
     sidecar_state=on
+    # A warmup's clock state is what the regime precondition reads, so it runs
+    # the control server under the sampler the named arms run under.
     case $arm in
         K) server=$candidate_server ;;
-        W) server=$control_server; sidecar_state=off ;;
         *) server=$control_server ;;
     esac
     mkdir -p "$arm_directory"
@@ -814,19 +909,43 @@ EOF
         fi
         if [ "$sidecar_verdict" -ne 0 ]; then
             sidecar_state=refused
-            if [ "$status" = completed ]; then
+            # A warmup measures the machine's state rather than the binaries,
+            # so a record the validator refuses costs the precondition that
+            # arm's reading and leaves the campaign standing; the cap is what
+            # bounds a sampler that refuses every warmup.
+            if [ "$status" = completed ] && [ "$arm" != W ]; then
                 status=failed
                 reason=clock_sidecar
             fi
         fi
     fi
+    regime_delta=-
+    if [ "$arm" = W ]; then
+        regime_arms=$warmup_index
+        regime_step=$(census_regime_step "$regime_previous_mode" "$regime_previous_share" \
+            "$sclk_mode_mhz" "$sclk_share" "$sclk_band" "$regime_min_share" \
+            "$regime_max_share")
+        case $regime_step in
+            reached\ *)
+                regime_reached=1
+                regime_sclk_mhz=${regime_step#reached }
+                ;;
+            *)
+                regime_previous_mode=$(printf '%s\n' "$regime_step" | cut -d ' ' -f 2)
+                regime_previous_share=$(printf '%s\n' "$regime_step" | cut -d ' ' -f 3)
+                ;;
+        esac
+    else
+        regime_delta=$(census_regime_delta "$sclk_mode_mhz" "$regime_sclk_mhz")
+    fi
     [ "$status" = completed ] || arm_failures=$((arm_failures + 1))
     analysis_end_ns=$(date +%s%N)
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t-\t%s\t%s\t%s\n' "$slot" "$arm" "$server_sha256" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t-\t%s\t%s\t%s\t%s\n' "$slot" "$arm" "$server_sha256" \
         "$predicted_n" "$predicted_ms" "$tok_s" "$sidecar_state" "$status" \
-        "$sclk_mode_mhz" "$sclk_share" >>"$arms_ledger"
-    printf 'served_ab_arm=%s slot=%s arm=%s tok_s=%s sidecar=%s sclk_mode_mhz=%s reason=%s\n' \
-        "$status" "$slot" "$arm" "$tok_s" "$sidecar_state" "$sclk_mode_mhz" "${reason:--}"
+        "$sclk_mode_mhz" "$sclk_share" "$regime_delta" >>"$arms_ledger"
+    printf 'served_ab_arm=%s slot=%s arm=%s tok_s=%s sidecar=%s sclk_mode_mhz=%s regime_delta=%s reason=%s\n' \
+        "$status" "$slot" "$arm" "$tok_s" "$sidecar_state" "$sclk_mode_mhz" \
+        "$regime_delta" "${reason:--}"
     cooldown_begin_ns=$(date +%s%N)
     # The boundary between arms is convergence rather than a constant. An arm
     # leaves Vulkan submission, clock boost, thermal drift, and page reclaim
@@ -873,12 +992,16 @@ EOF
             "$quiescence_verdict" "$quiescence_elapsed_ms"
     } >>"$wall_clock_ledger"
 done
+# A run whose named arms all failed to start still states what it opened
+# against, so the rows join inputs.tsv whether or not a named arm reported them.
+[ "$regime_reported" -eq 1 ] || record_regime
 
 # The three census bounds reach the summarizer because it requires them, and no
 # arm here forms a sidecar, compile, or collect quadruple, so they bind nothing.
 python3 "$controls_summarizer" "$arms_ledger" \
     --sidecar-bound 0.0065 --compile-bound 0.0065 --collect-bound 0.02 \
-    --served-ab-bound "$ab_bound" >"$output_directory/summary.tsv"
+    --served-ab-bound "$ab_bound" --sclk-band "$sclk_band" \
+    >"$output_directory/summary.tsv"
 # Every column is read by name, since a row gains statistics between the
 # per-replicate columns and the bound and a positional read would follow the
 # wrong field.
