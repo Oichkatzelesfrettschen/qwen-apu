@@ -62,6 +62,16 @@ reads `state-changed`, a verdict distinct from `incomplete`, which names
 missing arms, and from `unresolved`, which names an interval that spans its
 bound.
 
+A pair is judged the same way over a forced clock. Where the campaign pinned
+the graphics clock through `power_dpm_force_performance_level`, each sampled
+arm carries `clock_invariant` from `validate-clock-sidecar.py`, and a pair
+holding an arm whose invariant reads `violated` ran against a clock that left
+the pinned step, so it is listed as `clock-violated` in `deltas` and stays
+outside the mean and the interval exactly as `state-changed` does. The
+violation wins where both markers apply, since a clock that moved off a pin is
+the stronger statement about the arm. An arm under the appliance's own
+governor carries `-` there and pairs as before.
+
 `first_outer` through `second_delta` carry the first quadruple's own two pairs
 rather than extremes of the set, so a reader compares a single replicate
 against the aggregate; `deltas` lists every paired delta in campaign order and
@@ -134,7 +144,8 @@ def read_arms(path):
         # replays those campaigns unchanged.
         arms.append((fields["arm"], float(rate) if rate != "-" else None,
                      fields["status"], fields.get("sclk_mode_mhz", UNKNOWN_STATE),
-                     fields.get("regime_delta", UNKNOWN_STATE)))
+                     fields.get("regime_delta", UNKNOWN_STATE),
+                     fields.get("clock_invariant", UNKNOWN_STATE)))
     return arms
 
 
@@ -298,20 +309,26 @@ def main():
         # arm keeps the pair that held one state and loses the pair that
         # straddled the step.
         deltas = []
+        markers = []
         modes = []
         for a, b, c, d in members:
             for numerator, denominator in ((b, a), (c, d)):
                 modes.append(f"{numerator[3]}/{denominator[3]}")
-                if comparable(numerator[3], denominator[3], band):
+                if "violated" in (numerator[5], denominator[5]):
+                    deltas.append(None)
+                    markers.append("clock-violated")
+                elif comparable(numerator[3], denominator[3], band):
                     deltas.append(numerator[1] / denominator[1] - 1)
+                    markers.append(None)
                 else:
                     deltas.append(None)
-        listed = " ".join("state-changed" if delta is None else f"{delta:+.4f}"
-                          for delta in deltas)
+                    markers.append("state-changed")
+        listed = " ".join(marker if delta is None else f"{delta:+.4f}"
+                          for delta, marker in zip(deltas, markers))
         listed_modes = " ".join(modes)
         a, b, c, d = first
-        first_delta = "state-changed" if deltas[0] is None else f"{deltas[0]:+.4f}"
-        second_delta = "state-changed" if deltas[1] is None else f"{deltas[1]:+.4f}"
+        first_delta = markers[0] if deltas[0] is None else f"{deltas[0]:+.4f}"
+        second_delta = markers[1] if deltas[1] is None else f"{deltas[1]:+.4f}"
         head = (f"{pair}\t{control}\t{outer}\t{inner}"
                 f"\t{a[1]:.3f}\t{b[1]:.3f}\t{first_delta}"
                 f"\t{d[1]:.3f}\t{c[1]:.3f}\t{second_delta}\t{replicates}")

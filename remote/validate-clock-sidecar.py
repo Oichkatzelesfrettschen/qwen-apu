@@ -47,11 +47,34 @@ observation and the verdict stays what the conditions above decide.
 Sensors read `unavailable` are unknown rather than a state of their own,
 so they leave the mode out of the reading and the line prints `-`.
 
+`--required-sclk-mhz N` and `--required-mclk-mhz M` state the operating
+point a campaign pinned and turn the clock reading into a verdict
+condition. The graphics figure is read from `sclk_actual_mhz` where the
+record carries it and from `pp_dpm_sclk_selected_mhz` otherwise, because
+the delivered frequency answers what the selected step only requests: a
+forced performance level pins the step and leaves the fabric clock free,
+which is how an appliance arm ran every sample at the pinned 1100 MHz step
+and decoded slower than the governor did. N is an equality within one
+percent, since a pinned step reports one value here and its neighbouring
+table entry sits several percent away; M is a floor over
+`pp_dpm_mclk_surface_mhz`, since the fabric clock rises under load and a
+campaign asks it not to fall. `clock_invariant=held|violated
+samples_at_required=.. samples_below_required=.. below_required_fraction=..`
+prints ahead of the verdict with the fabric counts beside it, and a
+violation of either joins `failures`. A requested invariant that can be
+measured on no sample -- no window, no readable step -- reads `violated`,
+since an unpinned clock is what the condition exists to catch and an empty
+count proves nothing. Neither argument carries a default, so a campaign
+under the appliance's own `auto` governor prints
+`clock_invariant=not_requested` and the regime taxonomy beside it decides
+comparability as before.
+
 usage: validate-clock-sidecar.py RECORD_TSV --sidecar-status N
        --period-ms F --period-tolerance F --cost-bound-ns N
        [--max-gap-ns N] [--max-lost-fraction F]
        [--window-begin-ns N --window-end-ns N]
        [--allow-unavailable COLUMN ...]
+       [--required-sclk-mhz N] [--required-mclk-mhz M]
 """
 import argparse
 import sys
@@ -65,6 +88,11 @@ COLUMNS = (
     "temp1_millidegrees",
     "sample_cost_ns",
 )
+# telemetry-broker.c appends the delivered graphics frequency after the seven
+# columns sample-clock-sidecar.py writes, so a record is one width or the
+# other and the retained corpus reads unchanged.
+ACTUAL_COLUMN = "sclk_actual_mhz"
+WIDE_COLUMNS = COLUMNS + (ACTUAL_COLUMN,)
 FOOTER_KEYS = (
     "samples",
     "achieved_period_ns",
@@ -113,6 +141,34 @@ def parse_key_values(text):
     return values
 
 
+def count_against(rows, index, required):
+    """Split rows by whether one column reaches the required megahertz.
+
+    A sample one percent under the requirement is that value read through the
+    kernel's own rounding rather than a step below it. An `unavailable` or
+    unparseable reading is unknown rather than low and enters neither count,
+    since the sensor conditions refuse it outside the kernel's own empty-
+    attribute allowance. No requirement counts nothing.
+    """
+    if required is None:
+        return 0, 0
+    threshold = required * 0.99
+    at_required = 0
+    below_required = 0
+    for row in rows:
+        if index >= len(row) or row[index] == "unavailable":
+            continue
+        try:
+            value = float(row[index])
+        except ValueError:
+            continue
+        if value < threshold:
+            below_required += 1
+        else:
+            at_required += 1
+    return at_required, below_required
+
+
 def read_record(path):
     header_lines = []
     footer_lines = []
@@ -146,6 +202,11 @@ def main():
     parser.add_argument("--window-begin-ns", type=int)
     parser.add_argument("--window-end-ns", type=int)
     parser.add_argument("--allow-unavailable", action="append", default=[])
+    # No default: a campaign running under the appliance's own governor states
+    # no required clock, and any default would turn every retained record into
+    # a verdict about a pin it never ran under.
+    parser.add_argument("--required-sclk-mhz", type=int)
+    parser.add_argument("--required-mclk-mhz", type=int)
     args = parser.parse_args()
 
     failures = []
@@ -173,7 +234,10 @@ def main():
           f"declared={header.get('period_ns', '-')} requested={requested_period_ns}")
     check("sampler_identity", "sampler_pid" in header and "nice" in header and "cpu_affinity" in header,
           f"pid={header.get('sampler_pid', '-')} nice={header.get('nice', '-')} cpu_affinity={header.get('cpu_affinity', '-')}")
-    check("columns", column_line == "\t".join(COLUMNS), f"columns={column_line or '-'}")
+    wide = column_line == "\t".join(WIDE_COLUMNS)
+    expected_columns = WIDE_COLUMNS if wide else COLUMNS
+    check("columns", column_line in ("\t".join(COLUMNS), "\t".join(WIDE_COLUMNS)),
+          f"columns={column_line or '-'} width={len(expected_columns)}")
     check("footer_cardinality", len(footer_lines) == 1, f"footers={len(footer_lines)}")
     footer = parse_key_values(footer_lines[0].lstrip("# ")) if len(footer_lines) == 1 else {}
     footer_complete = all(key in footer and footer[key].lstrip("-").isdigit() for key in FOOTER_KEYS)
@@ -183,8 +247,8 @@ def main():
         return 1
     samples = int(footer["samples"])
     check("samples", samples > 1 and samples == len(rows), f"samples={samples} rows={len(rows)}")
-    row_arity = all(len(row) == len(COLUMNS) for row in rows)
-    check("row_arity", row_arity, f"columns={len(COLUMNS)}")
+    row_arity = all(len(row) == len(expected_columns) for row in rows)
+    check("row_arity", row_arity, f"columns={len(expected_columns)}")
     achieved = int(footer["achieved_period_ns"])
     lower = requested_period_ns * (1.0 - args.period_tolerance)
     upper = requested_period_ns * (1.0 + args.period_tolerance)
@@ -280,6 +344,7 @@ def main():
     # modal selected graphics clock of two arms before it takes their paired
     # delta, since a pair straddling a governor step measures the step.
     window_defined = args.window_begin_ns is not None and args.window_end_ns is not None
+    window_rows = []
     if rows and row_arity and window_defined:
         window_rows = [row for row in rows
                        if args.window_begin_ns <= int(row[0]) <= args.window_end_ns]
@@ -303,6 +368,46 @@ def main():
         print("clock_state=not_run no window supplied")
     else:
         print(f"clock_state=not_run rows={len(rows)}")
+    # The invariant a forced clock policy replaces the regime taxonomy with. A
+    # sample reading below the required step is the governor moving under a
+    # policy that states it cannot, which is the one observation that costs the
+    # arm; an unavailable step is unknown rather than low and enters neither
+    # count, since the sensor conditions above already refuse it outside the
+    # kernel's own empty-attribute allowance.
+    if args.required_sclk_mhz is None and args.required_mclk_mhz is None:
+        print("clock_invariant=not_requested")
+    else:
+        # The delivered frequency where the record carries it, the requested
+        # step otherwise. A campaign under a forced level asks the first
+        # question and a record written before the column existed answers only
+        # the second, so the source is named on the line rather than assumed.
+        sclk_index = len(COLUMNS) if wide else 1
+        sclk_source = ACTUAL_COLUMN if wide else COLUMNS[1]
+        at_required, below_required = count_against(window_rows, sclk_index,
+                                                    args.required_sclk_mhz)
+        sclk_counted = at_required + below_required
+        sclk_held = (args.required_sclk_mhz is None
+                     or (sclk_counted > 0 and below_required == 0))
+        fraction = below_required / sclk_counted if sclk_counted else 1.0
+        at_floor, below_floor = count_against(window_rows, 2,
+                                              args.required_mclk_mhz)
+        mclk_counted = at_floor + below_floor
+        mclk_held = (args.required_mclk_mhz is None
+                     or (mclk_counted > 0 and below_floor == 0))
+        mclk_fraction = below_floor / mclk_counted if mclk_counted else 1.0
+        held = sclk_held and mclk_held
+        print(f"clock_invariant={'held' if held else 'violated'}"
+              f" samples_at_required={at_required}"
+              f" samples_below_required={below_required}"
+              f" below_required_fraction={fraction:.4f}"
+              f" sclk_source={sclk_source}"
+              f" required_sclk_mhz={args.required_sclk_mhz or '-'}"
+              f" required_mclk_mhz={args.required_mclk_mhz or '-'}"
+              f" samples_at_mclk_floor={at_floor}"
+              f" samples_below_mclk_floor={below_floor}"
+              f" below_mclk_floor_fraction={mclk_fraction:.4f}")
+        if not held:
+            failures.append("clock_invariant")
     verdict = "accepted" if not failures else "refused"
     print(f"clock_sidecar={verdict} failures={','.join(failures) or '-'}")
     return 0 if not failures else 1

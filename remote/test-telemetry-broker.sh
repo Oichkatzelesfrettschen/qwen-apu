@@ -95,6 +95,11 @@ printf '0: 400Mhz\n1: 933Mhz *\n2: 1067Mhz\n' >"$drm_device/pp_dpm_mclk"
 printf '17\n' >"$drm_device/gpu_busy_percent"
 printf 'amdgpu\n' >"$hwmon/name"
 printf '62000\n' >"$hwmon/temp1_input"
+# The delivered graphics frequency, in the hertz the amdgpu hwmon path reports:
+# 1100 MHz, which the broker normalizes into the sclk_actual_mhz column beside
+# the selected step the fixture stars at 400 MHz, so the two columns are read
+# apart rather than assumed equal.
+printf '1100000000\n' >"$hwmon/freq1_input"
 
 cpu_count=$(nproc 2>/dev/null || echo 1)
 cpu_list=0
@@ -343,6 +348,25 @@ distinct_sclk=$(awk -F'\t' '/^#/ { next } $1 ~ /^[0-9]+$/ { print $2 }' "$record
     sort -u | tr '\n' ',')
 printf 'observation sclk_values=%s\n' "$distinct_sclk"
 
+# The eighth column is the delivered graphics frequency, read from hwmon
+# freq1_input on the DPM channel and normalized from hertz to megahertz. The
+# fixture reports 1.1 GHz while the selected step stars 400 MHz, so a row
+# carrying 1100 in the eighth column and 400 in the second proves the column is
+# the sensor rather than a copy of the step.
+column_line=$(awk '/^#/ { next } { print; exit }' "$record")
+if [ "$column_line" = "$(printf 'monotonic_ns\tpp_dpm_sclk_selected_mhz\tpp_dpm_mclk_surface_mhz\tpp_dpm_fclk_surface_mhz\tgpu_busy_percent\ttemp1_millidegrees\tsample_cost_ns\tsclk_actual_mhz')" ]; then
+    report record_columns accepted
+else
+    report record_columns "refused columns=$column_line"
+fi
+actual_rows=$(awk -F'\t' '
+    /^#/ { next }
+    $1 ~ /^[0-9]+$/ && NF == 8 && $8 == "1100" && $2 == "400" { rows++ }
+    END { print rows + 0 }' "$record")
+total_rows=$(awk -F'\t' '/^#/ { next } $1 ~ /^[0-9]+$/ { rows++ } END { print rows + 0 }' \
+    "$record")
+verdict "$total_rows" "$actual_rows" sclk_actual_in_every_row
+
 # The record is evidence
 
 sed 's/^/    /' "$validation_log"
@@ -398,5 +422,59 @@ nice_header=$(awk '/^# sampler_pid=/ {
         if (index($field, "nice=") == 1) { print substr($field, 6) }
     } }' "$nice_record" 2>/dev/null || true)
 verdict 19 "$nice_header" absolute_nice_reached
+
+# mark_before_term_is_kept: a MARK line written to the control FIFO with no
+# sleep before the TERM that follows it must still reach the drained record.
+# clock_nanosleep returns EINTR on the signal and stop_requested breaks the
+# sample loop before its next scheduled drain_control call, so the fix under
+# test is the one final non-blocking drain ahead of write_record. Ten arms
+# with no sleep between MARK and TERM are what a race surviving at one in ten
+# would show; a single arm cannot distinguish the fix from luck.
+
+mark_race_failures=0
+mark_race_attempt=1
+while [ "$mark_race_attempt" -le 10 ]; do
+    race_control=$work_directory/race-control-$mark_race_attempt.fifo
+    race_record=$work_directory/race-record-$mark_race_attempt.tsv
+    race_stderr=$work_directory/race-broker-$mark_race_attempt.err
+
+    mkfifo "$race_control"
+    "$broker" "$race_record" --period-ms 10 --cpu "$cpu_list" \
+        --drm-device "$drm_device" --hwmon "$hwmon" --control "$race_control" \
+        >/dev/null 2>"$race_stderr" &
+    race_pid=$!
+
+    race_ready=refused
+    race_wait_attempt=0
+    while [ "$race_wait_attempt" -lt 100 ]; do
+        if grep -q '^telemetry_broker=ready ' "$race_stderr" 2>/dev/null; then
+            race_ready=accepted
+            break
+        fi
+        race_wait_attempt=$((race_wait_attempt + 1))
+        sleep 0.05
+    done
+    if [ "$race_ready" != accepted ]; then
+        kill -TERM "$race_pid" 2>/dev/null || true
+        wait "$race_pid" 2>/dev/null || true
+        mark_race_failures=$((mark_race_failures + 1))
+        mark_race_attempt=$((mark_race_attempt + 1))
+        continue
+    fi
+
+    printf 'MARK RACE_MARK\n' >"$race_control"
+    kill -TERM "$race_pid"
+    race_status=0
+    wait "$race_pid" || race_status=$?
+
+    if [ "$race_status" -ne 0 ] || [ ! -s "$race_record" ] || \
+        [ -z "$(mark_instant "$race_record" RACE_MARK)" ]; then
+        mark_race_failures=$((mark_race_failures + 1))
+    fi
+
+    mark_race_attempt=$((mark_race_attempt + 1))
+done
+verdict 0 "$mark_race_failures" mark_before_term_is_kept
+printf 'observation mark_before_term_arms=10 failures=%d\n' "$mark_race_failures"
 
 finish

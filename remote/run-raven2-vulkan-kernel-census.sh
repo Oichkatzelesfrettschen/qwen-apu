@@ -90,6 +90,33 @@ set -eu
 # off_regime_arms: a pair of arms that agree with each other and both sit off
 # the regime is comparable and still reports a campaign that drifted.
 #
+# QWEN_CENSUS_ENGINE_CLOCK_POLICY retires that precondition by removing what it
+# waits for. The kernel's power_dpm_force_performance_level takes `high` for the
+# highest power state, `profile_peak` for peak clocks with gating disabled, and
+# `manual` for the level indices written to pp_dpm_sclk and pp_dpm_mclk, and the
+# appliance default `auto` is the governor the regime taxonomy was built around:
+# a calibration read 1100 MHz for nine arms, then 750 to 857, then 658 after a
+# CPU build, with decode following the clock linearly. `manual` is the measured
+# policy, since the delivered graphics clock is not the whole operating point:
+# under `high` and `profile_peak` freq1_input read 1100 MHz throughout and
+# decode fell to 6.3 to 7.0 tok/s against `auto`'s 6.8 to 8.2, because both
+# levels left the starred fabric state at 400 MHz, where `manual` at the highest
+# graphics level decoded 9.58, 8.91, and 9.23 against interleaved `auto` arms at
+# 8.22 and 7.94. QWEN_CENSUS_SCLK_LEVEL names the graphics level and defaults to
+# the highest the table lists; QWEN_CENSUS_MCLK_LEVEL names a fabric level and
+# defaults to none, since the write is accepted and the starred level does not
+# move, so its readback is recorded rather than required. Every write goes
+# through sudo -n ahead of the first arm, is proven by reading the attribute
+# back, and is restored under the cleanup trap with a dpm_restore= readback. The
+# campaign then runs one priming warmup, which absorbs the cold load alone, and
+# holds every arm to the clock invariant validate-clock-sidecar.py states over
+# its request window: the delivered graphics frequency at the required step and
+# the fabric clock at or above QWEN_CENSUS_MCLK_FLOOR_MHZ, default 933. An arm
+# that misses either fails with reason clock_invariant, and
+# summarize-census-controls.py drops its pair as clock-violated. The clock
+# nuisance is 67% of a decode rate where the effects these controls bound are
+# under 2%.
+#
 # The campaign states its inputs in two contracts, because acquisition and
 # analysis fail differently. acquisition-contract.tsv carries every setting
 # that changes an observed byte -- the model tuple, both server digests, the
@@ -183,6 +210,17 @@ set -eu
 #   QWEN_CENSUS_SIDECAR_BOUND        admitted |delta| for a P-nosidecar/P pair, default 0.0065
 #   QWEN_CENSUS_COMPILE_BOUND        admitted |delta| for a P/I0 pair, default 0.0065
 #   QWEN_CENSUS_COLLECT_BOUND        admitted |delta| for an I0/I1 pair, default 0.02
+#   QWEN_CENSUS_ENGINE_CLOCK_POLICY  auto (default), high, profile_peak, or manual; a
+#                                    forced policy pins power_dpm_force_performance_level
+#                                    for the campaign, runs one priming warmup in place of
+#                                    the regime precondition, and holds every arm to the
+#                                    clock invariant
+#   QWEN_CENSUS_SCLK_LEVEL           graphics level manual selects, default the highest
+#                                    level pp_dpm_sclk lists
+#   QWEN_CENSUS_MCLK_LEVEL           fabric level manual writes, default `-`, none; the
+#                                    write is recorded and its selection is not required
+#   QWEN_CENSUS_MCLK_FLOOR_MHZ       fabric floor the clock invariant holds every window
+#                                    sample to, default 933
 #   QWEN_CENSUS_SCLK_BAND            relative distance within which two selected
 #                                    graphics clocks are one regime, default 0.06
 #   QWEN_CENSUS_REGIME_MIN_SHARE     modal share floor a warmup window must hold for
@@ -426,6 +464,25 @@ case $regime_max_arms in
         exit 2
         ;;
 esac
+# The graphics clock is a control under a forced policy and an observed regime
+# under `auto`. The policy is validated here, ahead of the campaign shape it
+# changes; the device read that resolves the required step follows the DRM
+# device below.
+engine_clock_policy=${QWEN_CENSUS_ENGINE_CLOCK_POLICY:-auto}
+case $engine_clock_policy in
+    auto | high | profile_peak | manual) ;;
+    *)
+        printf 'QWEN_CENSUS_ENGINE_CLOCK_POLICY is auto, high, profile_peak, or manual: %s\n' \
+            "$engine_clock_policy" >&2
+        exit 2
+        ;;
+esac
+# A forced policy replaces the precondition with one priming warmup, which
+# still absorbs the cold load the first server after a build pays.
+warmup_arm_budget=$regime_max_arms
+if [ "$engine_clock_policy" != auto ]; then
+    warmup_arm_budget=1
+fi
 # The campaign's wall clock is bounded rather than measured ahead of the run:
 # the fixed-64 scoreboard arms reach /health in about 9 seconds, answer the
 # request in about 9, and tear down in about 1, and await-quiescence.sh takes
@@ -437,9 +494,15 @@ esac
 predicted_arm_count=$(printf '%s\n' $arms | wc -l | tr -d ' ')
 predicted_warmup_arms=0
 if [ "$census_mode" != canary ]; then
-    predicted_warmup_arms=$regime_max_arms
+    predicted_warmup_arms=$warmup_arm_budget
 fi
 predicted_arm_count=$((predicted_arm_count + predicted_warmup_arms))
+# The cap the ledger records is the precondition's own spend, which a forced
+# policy retires rather than lowers, so it reads `-` there.
+engine_clock_regime_cap_recorded=$predicted_warmup_arms
+if [ "$engine_clock_policy" != auto ]; then
+    engine_clock_regime_cap_recorded=-
+fi
 predicted_arm_duration_s=$((19 + cooldown_s))
 predicted_campaign_duration_s=$((predicted_arm_count * predicted_arm_duration_s))
 overlap_threshold=${QWEN_CENSUS_OVERLAP_THRESHOLD:-0.05}
@@ -467,6 +530,82 @@ sidecar_cpu=${QWEN_CENSUS_SIDECAR_CPU:-0,1}
 # gap validator rather than hidden by a higher priority.
 sidecar_nice=19
 drm_device=${QWEN_DRM_DEVICE:-/sys/class/drm/card1/device}
+# The step a forced policy must select is the highest pp_dpm_sclk lists, read
+# here rather than after the write, so the value reaches the contract and the
+# ledger before the device is touched and QWEN_CENSUS_PRINT_CONTRACT states it
+# without writing anything. The assertion that the policy actually selected it
+# stays where the write is.
+engine_clock_sclk_level=-
+engine_clock_mclk_level=-
+engine_clock_required_sclk_mhz=-
+engine_clock_required_mclk_mhz=-
+engine_clock_below_required_fraction=-
+engine_clock_required_flag=''
+engine_clock_mclk_flag=''
+if [ "$engine_clock_policy" != auto ]; then
+    engine_clock_sclk_path=$drm_device/pp_dpm_sclk
+    if [ ! -r "$engine_clock_sclk_path" ]; then
+        printf 'a forced engine clock policy reads pp_dpm_sclk: %s\n' \
+            "$engine_clock_sclk_path" >&2
+        exit 2
+    fi
+    if [ "$engine_clock_policy" = manual ]; then
+        # The level is derived rather than constant: the highest the table
+        # lists is the one the appliance measured its manual arms at, and a
+        # device listing another count answers for itself.
+        engine_clock_sclk_level=${QWEN_CENSUS_SCLK_LEVEL:-}
+        if [ -z "$engine_clock_sclk_level" ]; then
+            engine_clock_sclk_level=$(census_engine_clock_highest_level \
+                "$engine_clock_sclk_path") || {
+                printf 'pp_dpm_sclk lists no graphics clock level: %s\n' \
+                    "$engine_clock_sclk_path" >&2
+                exit 2
+            }
+        fi
+        engine_clock_required_sclk_mhz=$(census_engine_clock_level_mhz \
+            "$engine_clock_sclk_path" "$engine_clock_sclk_level") || {
+            printf 'pp_dpm_sclk lists no level %s: %s\n' \
+                "$engine_clock_sclk_level" "$engine_clock_sclk_path" >&2
+            exit 2
+        }
+        # The fabric level is written where one is named and left alone
+        # otherwise, since the appliance measured the write accepted and the
+        # starred level unchanged; the floor below is what the invariant holds.
+        engine_clock_mclk_level=${QWEN_CENSUS_MCLK_LEVEL:--}
+        if [ "$engine_clock_mclk_level" != - ]; then
+            engine_clock_mclk_path=$drm_device/pp_dpm_mclk
+            if ! census_engine_clock_level_mhz "$engine_clock_mclk_path" \
+                "$engine_clock_mclk_level" >/dev/null 2>&1; then
+                printf 'pp_dpm_mclk lists no level %s: %s\n' \
+                    "$engine_clock_mclk_level" "$engine_clock_mclk_path" >&2
+                exit 2
+            fi
+        fi
+    else
+        engine_clock_required_sclk_mhz=$(census_engine_clock_highest_mhz \
+            "$engine_clock_sclk_path") || {
+            printf 'pp_dpm_sclk lists no graphics clock step: %s\n' \
+                "$engine_clock_sclk_path" >&2
+            exit 2
+        }
+    fi
+    # The fabric floor the invariant holds every window sample to. 933 MHz is
+    # where the appliance's own manual arms ran, and the selection that would
+    # raise it is accepted by the write and ignored by the firmware.
+    engine_clock_required_mclk_mhz=${QWEN_CENSUS_MCLK_FLOOR_MHZ:-933}
+    case $engine_clock_required_mclk_mhz in
+        '' | *[!0-9]*)
+            printf 'QWEN_CENSUS_MCLK_FLOOR_MHZ is a positive megahertz count: %s\n' \
+                "$engine_clock_required_mclk_mhz" >&2
+            exit 2
+            ;;
+    esac
+    # The admitted share of window samples below the required step is zero: a
+    # pinned clock that moved is the nuisance the policy exists to remove.
+    engine_clock_below_required_fraction=0
+    engine_clock_required_flag=$engine_clock_required_sclk_mhz
+    engine_clock_mclk_flag=$engine_clock_required_mclk_mhz
+fi
 # telemetry-broker takes the hwmon directory as an argument where
 # sample-clock-sidecar.py resolves it inside itself, so the runner applies
 # find_hwmon's own rule -- the first entry under QWEN_HWMON_ROOT whose name
@@ -913,6 +1052,23 @@ write_acquisition_contract() {
         # calibration that measured another.
         printf 'sclk_band\t%s\nregime_min_share\t%s\nregime_max_share\t%s\n' \
             "$sclk_band" "$regime_min_share" "$regime_max_share"
+        # The clock control enters the contract only where one is forced. Every
+        # retained calibration ran under `auto` and an attribution is refused
+        # unless its contract digest equals that receipt's, so an unconditional
+        # row would retire every receipt in the tree to state a default. A
+        # forced contract separates itself from those by carrying six rows
+        # they lack: the policy, the two level selections it writes, the
+        # graphics step every arm is held to, the fabric floor it may not fall
+        # below, and the share of window samples under either the campaign
+        # admits, which is none. A row the policy leaves unused reads `-`.
+        if [ "$engine_clock_policy" != auto ]; then
+            printf 'engine_clock_policy\t%s\nengine_clock_sclk_level\t%s\nengine_clock_mclk_level\t%s\n' \
+                "$engine_clock_policy" "$engine_clock_sclk_level" \
+                "$engine_clock_mclk_level"
+            printf 'engine_clock_required_sclk_mhz\t%s\nengine_clock_required_mclk_mhz\t%s\nclock_below_required_fraction\t%s\n' \
+                "$engine_clock_required_sclk_mhz" "$engine_clock_required_mclk_mhz" \
+                "$engine_clock_below_required_fraction"
+        fi
         # The warmup arms run the production server under the sampler ahead of
         # the registered list, so the contract states what they are for and
         # what they stay out of rather than leaving a reader to infer either
@@ -1157,6 +1313,46 @@ then
     exit 2
 fi
 
+# The device transition runs after the host and session checks, so a run that
+# could never measure leaves the governor where it found it. The snapshot is
+# taken and the restore armed before the write, and the traps below are
+# replaced by cleanup_children, which restores the same way.
+engine_clock_snapshot=-
+engine_clock_sclk_readback=-
+engine_clock_mclk_readback=-
+if [ "$engine_clock_policy" != auto ]; then
+    census_engine_clock_require_sudo
+    engine_clock_snapshot=$(census_engine_clock_snapshot "$drm_device") || exit 2
+    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot"' EXIT
+    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot"; trap - EXIT; exit 143' TERM
+    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot"; trap - EXIT; exit 130' INT
+    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot"; trap - EXIT; exit 129' HUP
+    census_engine_clock_write_level "$engine_clock_policy" "$drm_device"
+    if [ "$engine_clock_policy" = manual ]; then
+        # The selection is captured rather than redirected: a refusal inside
+        # the function exits this shell, and a redirection still in force when
+        # the EXIT trap runs would send the restore's own readback to it.
+        engine_clock_sclk_readback=$(census_engine_clock_select pp_dpm_sclk \
+            "$drm_device" "$engine_clock_sclk_level" 1) || exit 2
+        engine_clock_sclk_readback=${engine_clock_sclk_readback#* }
+        if [ "$engine_clock_mclk_level" != - ]; then
+            # The fabric selection is recorded rather than required: the
+            # appliance took the write and left the starred level where the
+            # firmware had it, so the readback is the observation and the floor
+            # is the condition.
+            engine_clock_mclk_readback=$(census_engine_clock_select pp_dpm_mclk \
+                "$drm_device" "$engine_clock_mclk_level" 0) || exit 2
+            engine_clock_mclk_readback=${engine_clock_mclk_readback#* }
+        fi
+    fi
+    census_engine_clock_confirm "$drm_device" "$engine_clock_required_sclk_mhz"
+    printf 'engine_clock=applied policy=%s sclk_level=%s required_sclk_mhz=%s mclk_level=%s mclk_readback_mhz=%s mclk_floor_mhz=%s snapshot=%s\n' \
+        "$engine_clock_policy" "$engine_clock_sclk_level" \
+        "$engine_clock_required_sclk_mhz" "$engine_clock_mclk_level" \
+        "$engine_clock_mclk_readback" "$engine_clock_required_mclk_mhz" \
+        "$engine_clock_snapshot"
+fi
+
 mkdir -p "$output_directory/arms"
 arms_ledger=$output_directory/arms.tsv
 execution_proof=$output_directory/campaign-inputs.tsv
@@ -1192,8 +1388,11 @@ execution_proof_sha256=$(sha256sum "$execution_proof" | cut -d ' ' -f 1)
 # from the regime the warmup precondition settled on, `-` where the arm ran
 # unsampled, where the precondition reached its cap, or on a warmup arm, whose
 # own state is what produced the regime.
-arms_ledger_columns=13
-printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\tsidecar\townership\tstatus\tsclk_mode_mhz\tsclk_share\tregime_delta\n' >"$arms_ledger"
+# clock_invariant and below_required_fraction trail those for the same reason:
+# they carry the sidecar validator's verdict on a forced clock policy, and both
+# read `-` under `auto`, on an unsampled arm, and on a ledger predating them.
+arms_ledger_columns=15
+printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\tsidecar\townership\tstatus\tsclk_mode_mhz\tsclk_share\tregime_delta\tclock_invariant\tbelow_required_fraction\n' >"$arms_ledger"
 {
     printf 'model_id\t%s\nmodel_path\t%s\ncontext\t%s\nbatch\t%s\nubatch\t%s\n' \
         "$model_id" "$model_path" "$context" "$batch" "$ubatch"
@@ -1257,7 +1456,20 @@ printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\
     # run's inputs should not have to open its contract to read them.
     printf 'sclk_band\t%s\nregime_min_share\t%s\nregime_max_share\t%s\n' \
         "$sclk_band" "$regime_min_share" "$regime_max_share"
-    printf 'regime_max_arms\t%s\n' "$predicted_warmup_arms"
+    printf 'regime_max_arms\t%s\n' "$engine_clock_regime_cap_recorded"
+    # The clock control and what it is held to, stated in every run's own
+    # record whether or not it entered the digest an attribution is bound to.
+    printf 'engine_clock_policy\t%s\nengine_clock_sclk_level\t%s\nengine_clock_mclk_level\t%s\n' \
+        "$engine_clock_policy" "$engine_clock_sclk_level" "$engine_clock_mclk_level"
+    printf 'engine_clock_required_sclk_mhz\t%s\nengine_clock_required_mclk_mhz\t%s\nclock_below_required_fraction\t%s\n' \
+        "$engine_clock_required_sclk_mhz" "$engine_clock_required_mclk_mhz" \
+        "$engine_clock_below_required_fraction"
+    # The floor names what the fabric requirement is, since the graphics
+    # requirement is an equality and the two sit in one contract.
+    printf 'mclk_floor_mhz\t%s\nengine_clock_sclk_readback_mhz\t%s\n' \
+        "$engine_clock_required_mclk_mhz" "$engine_clock_sclk_readback"
+    printf 'engine_clock_mclk_readback_mhz\t%s\nengine_clock_snapshot\t%s\n' \
+        "$engine_clock_mclk_readback" "$engine_clock_snapshot"
     printf 'brick_reuse_directory\t%s\nreused_bricks\t%s\nreused_brick_count\t%s\n' \
         "${reuse_directory:--}" "${reused_bricks:--}" "$reused_brick_count"
     printf 'runtime_tree_manifest\t%s\nruntime_tree_git_head\t%s\nruntime_tree_remote_payload_sha256\t%s\nruntime_tree_patches_payload_sha256\t%s\n' \
@@ -1282,6 +1494,12 @@ cleanup_children() {
         kill -TERM "$sidecar_pid" 2>/dev/null || true
         wait "$sidecar_pid" 2>/dev/null || true
         sidecar_pid=''
+    fi
+    # The forced clock is the campaign's own transition, so it unwinds with the
+    # children rather than in a trap of its own; the restore acts once and
+    # leaves the exit status where it found it.
+    if [ "$engine_clock_policy" != auto ]; then
+        census_engine_clock_restore "$drm_device" "$engine_clock_snapshot"
     fi
 }
 trap cleanup_children EXIT
@@ -1326,7 +1544,7 @@ warmup_arms=''
 if [ "$census_mode" != canary ] && \
     { [ "$census_mode" != calibration ] || [ "$reused_brick_count" -ne 4 ]; }; then
     warmup_index=0
-    while [ "$warmup_index" -lt "$regime_max_arms" ]; do
+    while [ "$warmup_index" -lt "$warmup_arm_budget" ]; do
         warmup_arms="$warmup_arms W"
         warmup_index=$((warmup_index + 1))
     done
@@ -1351,7 +1569,14 @@ regime_reported=0
 record_regime() {
     printf 'regime_sclk_mhz\t%s\nregime_arms\t%s\n' \
         "$regime_sclk_mhz" "$regime_arms" >>"$output_directory/inputs.tsv"
-    if [ "$regime_reached" -eq 1 ]; then
+    if [ "$engine_clock_policy" != auto ]; then
+        # A pinned clock is a control the campaign holds rather than a state it
+        # waits for, so the taxonomy is retired and the priming warmup is what
+        # the line reports.
+        printf 'census_regime=retired policy=%s required_sclk_mhz=%s mclk_floor_mhz=%s arms=%s\n' \
+            "$engine_clock_policy" "$engine_clock_required_sclk_mhz" \
+            "$engine_clock_required_mclk_mhz" "$regime_arms"
+    elif [ "$regime_reached" -eq 1 ]; then
         printf 'census_regime=reached sclk_mhz=%s arms=%s\n' \
             "$regime_sclk_mhz" "$regime_arms"
     else
@@ -1594,6 +1819,8 @@ EOF
     # cost, every sensor present, and the request window covered.
     sclk_mode_mhz=-
     sclk_share=-
+    clock_invariant_state=-
+    below_required_fraction=-
     if [ "$sidecar_state" = on ]; then
         set +e
         if [ -n "$window_begin" ] && [ -n "$window_end" ]; then
@@ -1604,6 +1831,8 @@ EOF
                 --max-lost-fraction "$sidecar_max_lost_fraction" \
                 --window-begin-ns "$window_begin" --window-end-ns "$window_end" \
                 ${sidecar_allowed_unavailable:+--allow-unavailable "$sidecar_allowed_unavailable"} \
+                ${engine_clock_required_flag:+--required-sclk-mhz "$engine_clock_required_flag"} \
+                ${engine_clock_mclk_flag:+--required-mclk-mhz "$engine_clock_mclk_flag"} \
                 >"$arm_directory/clock-sidecar-verdict.txt" 2>&1
         else
             python3 "$sidecar_validator" "$arm_directory/clock-sidecar.tsv" \
@@ -1612,10 +1841,30 @@ EOF
                 --max-gap-ns "$sidecar_max_gap_ns" \
                 --max-lost-fraction "$sidecar_max_lost_fraction" \
                 ${sidecar_allowed_unavailable:+--allow-unavailable "$sidecar_allowed_unavailable"} \
+                ${engine_clock_required_flag:+--required-sclk-mhz "$engine_clock_required_flag"} \
+                ${engine_clock_mclk_flag:+--required-mclk-mhz "$engine_clock_mclk_flag"} \
                 >"$arm_directory/clock-sidecar-verdict.txt" 2>&1
         fi
         sidecar_verdict=$?
         set -e
+        # The invariant line states whether the pinned step held over the
+        # request window. It is read ahead of the exit status because a
+        # violation names its own repair -- a governor that moved under a
+        # policy that states it cannot -- where clock_sidecar names the record.
+        clock_invariant_line=$(awk '/^clock_invariant=/ { print; exit }' \
+            "$arm_directory/clock-sidecar-verdict.txt")
+        if [ -n "$clock_invariant_line" ]; then
+            clock_invariant_state=$(printf '%s\n' "$clock_invariant_line" \
+                | awk '{ sub(/^clock_invariant=/, "", $1); print $1 }')
+            below_required_fraction=$(printf '%s\n' "$clock_invariant_line" \
+                | awk '{ for (i = 1; i <= NF; i++) if (index($i, "below_required_fraction=") == 1) print substr($i, 25) }')
+        fi
+        case $clock_invariant_state in
+            held | violated) ;;
+            *) clock_invariant_state=- ;;
+        esac
+        [ -n "$below_required_fraction" ] || below_required_fraction=-
+        [ "$clock_invariant_state" != - ] || below_required_fraction=-
         # The validator states the window's own clock state on one line; the
         # ledger carries the modal graphics clock and its share so the controls
         # summarizer compares the state two arms of a pair ran under.
@@ -1638,25 +1887,33 @@ EOF
             if [ "$status" = completed ] && [ "$arm" != W ]; then
                 status=failed
                 reason=clock_sidecar
+                [ "$clock_invariant_state" != violated ] || reason=clock_invariant
             fi
         fi
     fi
     regime_delta=-
     if [ "$arm" = W ]; then
         regime_arms=$warmup_index
-        regime_step=$(census_regime_step "$regime_previous_mode" "$regime_previous_share" \
-            "$sclk_mode_mhz" "$sclk_share" "$sclk_band" "$regime_min_share" \
-            "$regime_max_share")
-        case $regime_step in
-            reached\ *)
-                regime_reached=1
-                regime_sclk_mhz=${regime_step#reached }
-                ;;
-            *)
-                regime_previous_mode=$(printf '%s\n' "$regime_step" | cut -d ' ' -f 2)
-                regime_previous_share=$(printf '%s\n' "$regime_step" | cut -d ' ' -f 3)
-                ;;
-        esac
+        if [ "$engine_clock_policy" != auto ]; then
+            # The priming warmup is the whole precondition under a pinned
+            # clock: it absorbs the cold load and settles nothing, since the
+            # policy rather than a measured mode states the execution state.
+            regime_reached=1
+        else
+            regime_step=$(census_regime_step "$regime_previous_mode" "$regime_previous_share" \
+                "$sclk_mode_mhz" "$sclk_share" "$sclk_band" "$regime_min_share" \
+                "$regime_max_share")
+            case $regime_step in
+                reached\ *)
+                    regime_reached=1
+                    regime_sclk_mhz=${regime_step#reached }
+                    ;;
+                *)
+                    regime_previous_mode=$(printf '%s\n' "$regime_step" | cut -d ' ' -f 2)
+                    regime_previous_share=$(printf '%s\n' "$regime_step" | cut -d ' ' -f 3)
+                    ;;
+            esac
+        fi
     else
         regime_delta=$(census_regime_delta "$sclk_mode_mhz" "$regime_sclk_mhz")
     fi
@@ -1720,12 +1977,13 @@ EOF
     fi
     [ "$status" = completed ] || arm_failures=$((arm_failures + 1))
     analysis_end_ns=$(date +%s%N)
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$slot" "$arm" "$server_sha256" \
-        "$predicted_n" "$predicted_ms" "$tok_s" "$census_rows" "$sidecar_state" "$ownership" \
-        "$status" "$sclk_mode_mhz" "$sclk_share" "$regime_delta" >>"$arms_ledger"
-    printf 'census_arm=%s slot=%s arm=%s tok_s=%s census_rows=%s sidecar=%s ownership=%s sclk_mode_mhz=%s regime_delta=%s reason=%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$slot" "$arm" \
+        "$server_sha256" "$predicted_n" "$predicted_ms" "$tok_s" "$census_rows" \
+        "$sidecar_state" "$ownership" "$status" "$sclk_mode_mhz" "$sclk_share" \
+        "$regime_delta" "$clock_invariant_state" "$below_required_fraction" >>"$arms_ledger"
+    printf 'census_arm=%s slot=%s arm=%s tok_s=%s census_rows=%s sidecar=%s ownership=%s sclk_mode_mhz=%s regime_delta=%s clock_invariant=%s reason=%s\n' \
         "$status" "$slot" "$arm" "$tok_s" "$census_rows" "$sidecar_state" "$ownership" \
-        "$sclk_mode_mhz" "$regime_delta" "${reason:--}"
+        "$sclk_mode_mhz" "$regime_delta" "$clock_invariant_state" "${reason:--}"
     # A canary judges the chain rather than the rate: the arm completed, which
     # carries the launch, the identity comparison, the sidecar validator, the
     # census summarizer at its own decode count, and the S parser at its own

@@ -972,6 +972,79 @@ cat >"$signal_bin/hostname" <<'FAKE_HOSTNAME'
 printf 'hp14-dk1xxx\n'
 FAKE_HOSTNAME
 chmod +x "$signal_bin/hostname"
+
+# The privileged writer a forced engine clock policy goes through. The stub
+# answers `sudo -n true` and `sudo -n tee NODE`, records every write, and keeps
+# the fixture DRM directory consistent with what it was told: a policy other
+# than auto stars the highest step pp_dpm_sclk lists, which is what the campaign
+# confirms after its write, and auto stars the lowest, which is the governor
+# state the restore returns the fixture to. QWEN_TEST_SUDO_REFUSE stands for an
+# expired credential.
+cat >"$signal_bin/sudo" <<'SUDO_STUB'
+#!/bin/sh
+set -eu
+if [ "${QWEN_TEST_SUDO_REFUSE:-0}" = 1 ]; then
+    printf 'sudo: a password is required\n' >&2
+    exit 1
+fi
+[ "$1" = -n ] || exit 1
+shift
+case $1 in
+    true) exit 0 ;;
+    tee) ;;
+    *) exit 1 ;;
+esac
+shift
+sudo_node=$1
+# A DPM table answers a write by moving its star and keeps its listing, the way
+# the kernel attribute does, so the value read from stdin reaches the file only
+# where the file is the performance level itself.
+sudo_value=$(cat)
+printf '%s\t%s\n' "$sudo_node" "$sudo_value" >>"${QWEN_TEST_SUDO_LOG:-/dev/null}"
+sudo_directory=$(dirname -- "$sudo_node")
+sudo_leaf=$(basename -- "$sudo_node")
+# The device answers a write by moving the star. A performance level other than
+# auto or manual raises the graphics table to its highest step and leaves the
+# fabric table where it was, which is the SMU10 behavior the manual policy
+# exists for; a level index written to a DPM table stars that level, and
+# QWEN_TEST_SUDO_MCLK_IGNORE reproduces the firmware that takes the fabric write
+# and keeps its own selection.
+sudo_star() {
+    awk -v want="$2" '{
+            line = $0
+            sub(/ \*$/, "", line)
+            index_field = line
+            sub(/:.*$/, "", index_field)
+            if (index_field == want) print line " *"
+            else print line
+        }' "$1" >"$1.tmp"
+    mv -- "$1.tmp" "$1"
+}
+case $sudo_leaf in
+    power_dpm_force_performance_level)
+        printf '%s\n' "$sudo_value" >"$sudo_node"
+        if [ -f "$sudo_directory/pp_dpm_sclk" ]; then
+            if [ "$sudo_value" = auto ] || [ "${QWEN_TEST_SUDO_STAR_LOWEST:-0}" = 1 ]; then
+                sudo_star "$sudo_directory/pp_dpm_sclk" 0
+            elif [ "$sudo_value" != manual ]; then
+                sudo_star "$sudo_directory/pp_dpm_sclk" 1
+            fi
+        fi
+        ;;
+    pp_dpm_mclk)
+        [ "${QWEN_TEST_SUDO_MCLK_IGNORE:-0}" = 1 ] || sudo_star "$sudo_node" "$sudo_value"
+        ;;
+    pp_dpm_sclk)
+        if [ "${QWEN_TEST_SUDO_STAR_LOWEST:-0}" = 1 ]; then
+            sudo_star "$sudo_node" 0
+        else
+            sudo_star "$sudo_node" "$sudo_value"
+        fi
+        ;;
+esac
+printf '%s\n' "$sudo_value"
+SUDO_STUB
+chmod +x "$signal_bin/sudo"
 signal_path=$signal_bin:$execution_path
 signal_ssh_connection='127.0.0.1 40000 127.0.0.1 22'
 
@@ -986,10 +1059,20 @@ printf '0: 200Mhz\n1: 1100Mhz *\n' >"$signal_drm/pp_dpm_sclk"
 printf '0: 933Mhz *\n1: 1067Mhz\n' >"$signal_drm/pp_dpm_mclk"
 : >"$signal_drm/pp_dpm_fclk"
 printf '37\n' >"$signal_drm/gpu_busy_percent"
+# The attribute a forced engine clock policy writes, holding the appliance's
+# own default so a restore has a level to return to. The forced cases run
+# against their own copy, whose path is one acquisition-contract row and is
+# therefore one path across all of them.
+printf 'auto\n' >"$signal_drm/power_dpm_force_performance_level"
+forced_drm=$temporary_directory/drm-forced
+cp -R -- "$signal_drm" "$forced_drm"
 signal_hwmon=$temporary_directory/hwmon-signal
 mkdir -p "$signal_hwmon/hwmon0"
 printf 'amdgpu\n' >"$signal_hwmon/hwmon0/name"
 printf '61000\n' >"$signal_hwmon/hwmon0/temp1_input"
+# The delivered graphics frequency telemetry-broker.c reads beside the DPM
+# steps, in the hertz the amdgpu hwmon path reports.
+printf '1100000000\n' >"$signal_hwmon/hwmon0/freq1_input"
 
 # Every arm holds a sampler now that the regime precondition reads the warmup
 # arms' own clock state, so the attribution's first warmup at slot 0a is where
@@ -1163,8 +1246,18 @@ share = os.environ.get("QWEN_TEST_CLOCK_SHARE", "0.1400")
 # by a colon. The word none stands for a window the validator read no clock
 # state out of, which is the reading that resets the precondition's pair.
 table = os.environ.get("QWEN_TEST_CLOCK_TABLE", "")
+label = os.path.basename(os.path.dirname(sys.argv[1]))
+# The invariant the campaign requests under a forced clock policy.
+# QWEN_TEST_CLOCK_VIOLATED names the arms whose window carried a step below the
+# required one, which is the reading that costs an arm its completion.
+required = None
+if "--required-sclk-mhz" in sys.argv:
+    required = sys.argv[sys.argv.index("--required-sclk-mhz") + 1]
+required_mclk = "-"
+if "--required-mclk-mhz" in sys.argv:
+    required_mclk = sys.argv[sys.argv.index("--required-mclk-mhz") + 1]
+violated = label in os.environ.get("QWEN_TEST_CLOCK_VIOLATED", "").split()
 if table and os.path.exists(table):
-    label = os.path.basename(os.path.dirname(sys.argv[1]))
     for line in open(table):
         name, _, value = line.rstrip("\n").partition("\t")
         if name == label:
@@ -1177,6 +1270,18 @@ if state:
         print(f"clock_state=measured window_samples=700 sclk_mode_mhz={state}"
               f" sclk_share={share} mclk_mode_mhz=1067"
               " temp_mean_c=71.6 temp_max_c=74.0 busy_mean=94.88")
+    if required is None:
+        print("clock_invariant=not_requested")
+    elif violated:
+        print("clock_invariant=violated samples_at_required=600"
+              " samples_below_required=100 below_required_fraction=0.1429"
+              f" required={required}")
+        print("clock_sidecar=refused failures=clock_invariant")
+        raise SystemExit(1)
+    else:
+        print("clock_invariant=held samples_at_required=700"
+              " samples_below_required=0 below_required_fraction=0.0000"
+              f" required={required} required_mclk={required_mclk}")
     print("clock_sidecar=accepted failures=-")
     raise SystemExit(0)
 sys.argv[0] = "$script_directory/validate-clock-sidecar.py"
@@ -1191,10 +1296,19 @@ chmod +x "$brick_directory/validate-clock-sidecar.py"
 # on its own runner and the cooldown that follows is what a case reads. One
 # label named in QWEN_TEST_CENSUS_TRUNCATE instead leaves a reply cut
 # mid-object, which is what a runner killed while writing leaves behind: the
-# arm's reader answers the unknown triple rather than ending the campaign.
+# arm's reader answers the unknown triple rather than ending the campaign. One
+# label named in QWEN_TEST_CENSUS_COMPLETE answers with a whole reply instead,
+# which is what a case reading a verdict past the served runner needs.
 cat >"$brick_directory/measure-served-decode.sh" <<'FAKE_SERVED_RUNNER'
 #!/bin/sh
 set -eu
+if [ "${QWEN_TEST_CENSUS_COMPLETE:-}" = "$1" ]; then
+    printf 'begin_ns\t1000000000\nend_ns\t2000000000\n' \
+        >"$QWEN_RESULT_DIRECTORY/request-window.tsv"
+    printf '{"timings": {"predicted_n": 65, "predicted_ms": 6400.0}}' \
+        >"$QWEN_RESULT_DIRECTORY/response.json"
+    exit 0
+fi
 if [ "${QWEN_TEST_CENSUS_TRUNCATE:-}" = "$1" ]; then
     printf 'begin_ns\t1000000000\nend_ns\t2000000000\n' \
         >"$QWEN_RESULT_DIRECTORY/request-window.tsv"
@@ -1329,6 +1443,32 @@ run_brick_calibration() {
     # either bound names it rather than inheriting the shipped defaults.
     brick_regime_min_share=${9:-0.05}
     brick_regime_max_share=${10:-0.30}
+    # The eleventh names the engine clock policy, the twelfth the arms whose
+    # invariant the stub validator reports violated, the thirteenth an arm
+    # label whose served runner answers a whole reply, and the fourteenth
+    # stands for an expired sudo credential. A forced policy runs against its
+    # own DRM fixture, since the stub sudo rewrites pp_dpm_sclk on every write
+    # and a case is read after the run.
+    brick_engine_clock_policy=${11:-auto}
+    brick_violated_arms=${12:-}
+    brick_complete_label=${13:-}
+    brick_sudo_refuse=${14:-0}
+    # The fifteenth names the fabric level manual writes and the sixteenth
+    # stands for the firmware that takes that write and keeps its own
+    # selection.
+    brick_mclk_level=${15:--}
+    brick_mclk_ignore=${16:-0}
+    brick_drm=$signal_drm
+    brick_sudo_log=$temporary_directory/sudo-$brick_case.log
+    if [ "$brick_engine_clock_policy" != auto ]; then
+        # One directory serves every forced case, because its path is an
+        # acquisition-contract row and a per-case copy would give each case its
+        # own digest and reuse nothing. It is reset to the governor state each
+        # run starts from.
+        brick_drm=$forced_drm
+        printf 'auto\n' >"$brick_drm/power_dpm_force_performance_level"
+        printf '0: 200Mhz *\n1: 1100Mhz\n' >"$brick_drm/pp_dpm_sclk"
+    fi
     active_fixture=$brick_case
     diagnostic_file=$temporary_directory/$brick_case-stderr.txt
     set +e
@@ -1336,7 +1476,14 @@ run_brick_calibration() {
         QWEN_TEST_BROKER_SILENT="$brick_broker_silent" \
         QWEN_TEST_CLOCK_STATE="$brick_clock_state" \
         QWEN_TEST_CLOCK_TABLE="$brick_clock_table" \
+        QWEN_TEST_CLOCK_VIOLATED="$brick_violated_arms" \
         QWEN_TEST_CENSUS_TRUNCATE="$brick_truncate_label" \
+        QWEN_TEST_CENSUS_COMPLETE="$brick_complete_label" \
+        QWEN_TEST_SUDO_REFUSE="$brick_sudo_refuse" \
+        QWEN_TEST_SUDO_LOG="$brick_sudo_log" \
+        QWEN_CENSUS_ENGINE_CLOCK_POLICY="$brick_engine_clock_policy" \
+        QWEN_CENSUS_MCLK_LEVEL="$brick_mclk_level" \
+        QWEN_TEST_SUDO_MCLK_IGNORE="$brick_mclk_ignore" \
         PATH="$signal_path" \
         HOME="$home_directory" \
         QWEN_MODELS_DIRECTORY="$models_directory" \
@@ -1344,7 +1491,7 @@ run_brick_calibration() {
         QWEN_CENSUS_PRODUCTION_SERVER="$production_server" \
         QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
         QWEN_CENSUS_INSTRUMENTED_SERVER="$instrumented_server" \
-        QWEN_DRM_DEVICE="$signal_drm" \
+        QWEN_DRM_DEVICE="$brick_drm" \
         QWEN_CENSUS_BROKER="$broker_stub" \
         QWEN_HWMON_ROOT="$signal_hwmon" \
         QWEN_CENSUS_SIDECAR_CPU=0 \
@@ -1618,7 +1765,7 @@ if [ "$brick_status" -ne 1 ]; then
     exit 1
 fi
 if ! head -n 1 "$clock_state_output/arms.tsv" \
-    | grep -q "	status	sclk_mode_mhz	sclk_share	regime_delta\$"; then
+    | grep -q "	status	sclk_mode_mhz	sclk_share	regime_delta	clock_invariant	below_required_fraction\$"; then
     printf 'arms.tsv names no clock-state columns after status\n' >&2
     head -n 1 "$clock_state_output/arms.tsv" >&2
     exit 1
@@ -1756,8 +1903,15 @@ if awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
     printf 'a warmup arm entered a control pair\n' >&2
     exit 1
 fi
+# A warmup slot is lettered, so the two fields that name slots and arms are
+# read by key rather than the whole receipt by pattern: a digest opening `0a`
+# through `0f` is hexadecimal rather than a slot, and every digest here moves
+# with the scratch directory the contract names.
 for unsettled_brick in C0 C1 C2; do
-    if grep -q '	0[a-h]' "$unsettled_output/bricks/$unsettled_brick.receipt.tsv"; then
+    if awk -F'\t' '$1 == "arm_slots" || $1 == "arms" {
+            if ($2 ~ /(^| )0[a-p]( |$)/) found = 1 }
+        END { exit found ? 0 : 1 }' \
+        "$unsettled_output/bricks/$unsettled_brick.receipt.tsv"; then
         printf 'a brick receipt claims a warmup slot\n' >&2
         exit 1
     fi
@@ -1864,6 +2018,285 @@ grep -q '^census_regime=reached sclk_mhz=1100.0 arms=2$' \
 grep -qxF "$(printf 'regime_max_share\t0.7')" "$raised_output/inputs.tsv"
 diagnostic_file=
 printf 'regime_share_window=accepted boost=unreached sustained=806.0\n'
+
+# The engine clock as a control. A forced policy is validated by name, written
+# through sudo, proven by the device's own selection, and restored on every
+# exit; it replaces the regime precondition with one priming warmup and holds
+# every arm to the invariant the validator states over its request window.
+run_runner engine_clock_policy_name \
+    'QWEN_CENSUS_ENGINE_CLOCK_POLICY is auto, high, profile_peak, or manual: peak' \
+    QWEN_CENSUS_ENGINE_CLOCK_POLICY=peak
+
+# The three clock rows enter the acquisition contract only where a policy is
+# forced. Every retained calibration ran under the governor, and an attribution
+# is refused unless its digest equals its receipt's, so an unconditional row
+# would retire every receipt in the tree.
+active_fixture=engine_clock_contract_rows
+print_forced_contract() {
+    env -i \
+        PATH="$signal_path" \
+        HOME="$home_directory" \
+        QWEN_MODELS_DIRECTORY="$models_directory" \
+        QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+        QWEN_CENSUS_PRODUCTION_SERVER="$production_server" \
+        QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+        QWEN_CENSUS_INSTRUMENTED_SERVER="$instrumented_server" \
+        QWEN_DRM_DEVICE="$forced_drm" \
+        QWEN_CENSUS_BROKER="$broker_stub" \
+        QWEN_CENSUS_SIDECAR_CPU=0 \
+        QWEN_CENSUS_REPLICATES=2 \
+        QWEN_CENSUS_ENGINE_CLOCK_POLICY="$1" \
+        QWEN_CENSUS_MCLK_LEVEL=- \
+        QWEN_CENSUS_PRINT_CONTRACT=1 \
+        "$brick_runner" "$model_id" "$temporary_directory/out-forced-contract-$1"
+}
+forced_contract_output=$(print_forced_contract manual)
+for forced_row in "engine_clock_policy	manual" "engine_clock_sclk_level	1" \
+    "engine_clock_mclk_level	-" "engine_clock_required_sclk_mhz	1100" \
+    "engine_clock_required_mclk_mhz	933" "clock_below_required_fraction	0"; do
+    if ! printf '%s\n' "$forced_contract_output" | grep -qxF -- "$forced_row"; then
+        printf 'the forced contract carries no row %s\n' "$forced_row" >&2
+        exit 1
+    fi
+done
+forced_contract_sha256=$(printf '%s\n' "$forced_contract_output" \
+    | awk -F'\t' '$1 == "acquisition_contract_sha256" { print $2 }')
+[ -n "$forced_contract_sha256" ]
+auto_contract_output=$(print_forced_contract auto)
+if printf '%s\n' "$auto_contract_output" | grep -q '^engine_clock_'; then
+    printf 'the governor contract carries an engine clock row\n' >&2
+    exit 1
+fi
+auto_contract_sha256=$(printf '%s\n' "$auto_contract_output" \
+    | awk -F'\t' '$1 == "acquisition_contract_sha256" { print $2 }')
+if [ "$auto_contract_sha256" = "$forced_contract_sha256" ]; then
+    printf 'the forced and governor contracts carry one digest\n' >&2
+    exit 1
+fi
+# The priming warmup replaces the precondition rather than lowering its cap, so
+# the print states one warmup arm against the ledger's own `-`.
+forced_warmup_arms=$(printf '%s\n' "$forced_contract_output" \
+    | awk -F'\t' '$1 == "census_arm_count" { print $2 }')
+[ "$forced_warmup_arms" = 14 ] || {
+    printf 'a forced calibration at two replicates predicts %s arms of 14\n' \
+        "$forced_warmup_arms" >&2
+    exit 1
+}
+printf 'engine_clock_contract_rows=accepted forced=%s governor=%s\n' \
+    "$forced_contract_sha256" "$auto_contract_sha256"
+
+# A campaign under a forced policy. Its reused bricks are written against the
+# forced contract, since the three rows move the digest a brick is closed over.
+forced_prior_contract=$brick_contract_sha256
+brick_contract_sha256=$forced_contract_sha256
+prior_forced=$temporary_directory/prior-forced
+write_prior_calibration "$prior_forced"
+printf 'census=refuted\n' >"$prior_forced/terminal-state.tsv"
+brick_contract_sha256=$forced_prior_contract
+
+active_fixture=engine_clock_forced_manual
+forced_output=$temporary_directory/out-engine-clock-forced
+forced_status=$(run_brick_calibration engine_clock_forced_manual "$prior_forced" \
+    "$forced_output" 0 800 2 '' '' 0.05 0.30 manual)
+if [ "$forced_status" -ne 1 ]; then
+    printf 'the manual-clock calibration exited %s where its failed arm exits 1\n' \
+        "$forced_status" >&2
+    sed -n '1,20p' "$temporary_directory/engine_clock_forced_manual-stderr.txt" >&2
+    exit 1
+fi
+grep -q '^engine_clock=applied policy=manual sclk_level=1 required_sclk_mhz=1100 mclk_level=- mclk_readback_mhz=- mclk_floor_mhz=933 snapshot=auto 0 0$' \
+    "$temporary_directory/engine_clock_forced_manual-stdout.txt"
+grep -q '^census_regime=retired policy=manual required_sclk_mhz=1100 mclk_floor_mhz=933 arms=1$' \
+    "$temporary_directory/engine_clock_forced_manual-stdout.txt"
+grep -q "^dpm_restore=restored level=auto requested=auto sclk_level=0 mclk_level=0 node=$forced_drm/power_dpm_force_performance_level\$" \
+    "$temporary_directory/engine_clock_forced_manual-stdout.txt"
+for forced_input_row in "engine_clock_policy	manual" "engine_clock_sclk_level	1" \
+    "engine_clock_mclk_level	-" "engine_clock_required_sclk_mhz	1100" \
+    "engine_clock_required_mclk_mhz	933" "clock_below_required_fraction	0" \
+    "mclk_floor_mhz	933" "engine_clock_sclk_readback_mhz	1100" \
+    "engine_clock_mclk_readback_mhz	-" "engine_clock_snapshot	auto 0 0" \
+    "regime_max_arms	-" "regime_sclk_mhz	-" "regime_arms	1"; do
+    if ! grep -qxF -- "$forced_input_row" "$forced_output/inputs.tsv"; then
+        printf 'inputs.tsv carries no row %s\n' "$forced_input_row" >&2
+        exit 1
+    fi
+done
+# One priming warmup opens the ledger at slot 0a and the named arms keep the
+# integer slots every brick and receipt is stated in.
+[ "$(awk -F'\t' 'NR > 1 && $2 == "W" { print $1 }' "$forced_output/arms.tsv" | tr '\n' ' ')" \
+    = '0a ' ]
+if [ -e "$forced_output/arms/0b-W" ]; then
+    printf 'the priming warmup ran a second arm\n' >&2
+    exit 1
+fi
+[ "$(awk -F'\t' '$1 == "0a" { print $14, $15 }' "$forced_output/arms.tsv")" = 'held 0.0000' ]
+# The write and the restore are the two sudo writes the campaign makes, in that
+# order, and the fixture is left where the campaign found it.
+[ "$(awk -F'\t' '{ print $2 }' "$temporary_directory/sudo-engine_clock_forced_manual.log" \
+    | tr '\n' ' ')" = 'manual 1 auto ' ]
+[ "$(cat "$forced_drm/power_dpm_force_performance_level")" = auto ]
+diagnostic_file=
+# The validator was handed both halves of the operating point, which the arm's
+# own verdict file is what proves: a campaign requesting the graphics step
+# alone would leave the fabric clock unbounded and every case above unchanged.
+grep -q '^clock_invariant=held .* required=1100 required_mclk=933$' \
+    "$forced_output/arms/0a-W/clock-sidecar-verdict.txt"
+printf 'engine_clock_forced_manual=accepted sclk_level=1 required_sclk_mhz=1100\n'
+
+# The fabric write is recorded rather than required. The appliance took the
+# write and left its own selection starred, so the campaign reports the readback
+# and holds the arms to the floor instead.
+active_fixture=engine_clock_manual_fabric_write
+fabric_output=$temporary_directory/out-engine-clock-fabric
+# The fabric level is a contract row, so this run's digest is its own and it
+# reuses no brick written against the graphics level alone.
+fabric_status=$(run_brick_calibration engine_clock_manual_fabric_write '' \
+    "$fabric_output" 0 800 2 '' '' 0.05 0.30 manual '' '' 0 1 1)
+if [ "$fabric_status" -ne 1 ]; then
+    printf 'the fabric-write calibration exited %s where its failed arm exits 1\n' \
+        "$fabric_status" >&2
+    sed -n '1,20p' "$temporary_directory/engine_clock_manual_fabric_write-stderr.txt" >&2
+    exit 1
+fi
+grep -q '^engine_clock=applied policy=manual sclk_level=1 required_sclk_mhz=1100 mclk_level=1 mclk_readback_mhz=933 mclk_floor_mhz=933 snapshot=auto 0 0$' \
+    "$temporary_directory/engine_clock_manual_fabric_write-stdout.txt"
+for fabric_input_row in "engine_clock_mclk_level	1" "engine_clock_mclk_readback_mhz	933"; do
+    if ! grep -qxF -- "$fabric_input_row" "$fabric_output/inputs.tsv"; then
+        printf 'inputs.tsv carries no row %s\n' "$fabric_input_row" >&2
+        exit 1
+    fi
+done
+# The performance level, the graphics level, the fabric level, and the restore
+# are the four sudo writes the campaign makes, in that order.
+[ "$(awk -F'\t' '{ print $2 }' \
+    "$temporary_directory/sudo-engine_clock_manual_fabric_write.log" \
+    | tr '\n' ' ')" = 'manual 1 1 auto ' ]
+diagnostic_file=
+printf 'engine_clock_manual_fabric_write=accepted readback_mhz=933\n'
+
+# One arm whose window carried a step below the pinned one. The served runner
+# answers a whole reply, so the arm reaches the invariant and fails on it rather
+# than on its own rate, and the ledger names the fraction the validator counted.
+active_fixture=engine_clock_invariant_violated
+violated_output=$temporary_directory/out-engine-clock-violated
+violated_status=$(run_brick_calibration engine_clock_invariant_violated "$prior_forced" \
+    "$violated_output" 0 800 2 '' '' 0.05 0.30 manual 13-S 13-S)
+if [ "$violated_status" -ne 1 ]; then
+    printf 'the violated-invariant calibration exited %s where its failed arm exits 1\n' \
+        "$violated_status" >&2
+    exit 1
+fi
+grep -q 'census_arm=failed slot=13 arm=S .* clock_invariant=violated reason=clock_invariant' \
+    "$temporary_directory/engine_clock_invariant_violated-stdout.txt"
+[ "$(awk -F'\t' '$1 == "13" { print $14, $15 }' "$violated_output/arms.tsv")" \
+    = 'violated 0.1429' ]
+diagnostic_file=
+printf 'engine_clock_invariant_violated=accepted\n'
+
+# An expired sudo credential is refused ahead of the first arm and names the
+# command that renews it, since a campaign cannot answer a password prompt.
+active_fixture=engine_clock_sudo_refused
+refused_output=$temporary_directory/out-engine-clock-refused
+refused_status=$(run_brick_calibration engine_clock_sudo_refused "$prior_forced" \
+    "$refused_output" 0 800 2 '' '' 0.05 0.30 manual '' '' 1)
+if [ "$refused_status" -ne 2 ]; then
+    printf 'the refused-credential calibration exited %s where it refuses with 2\n' \
+        "$refused_status" >&2
+    exit 1
+fi
+grep -q 'run sudo -v and start the campaign again' \
+    "$temporary_directory/engine_clock_sudo_refused-stderr.txt"
+[ "$(cat "$forced_drm/power_dpm_force_performance_level")" = auto ]
+diagnostic_file=
+printf 'engine_clock_sudo_refused=accepted\n'
+
+# A terminating signal restores the level as it tears the children down. The
+# campaign is signalled once it has printed the line its write produced, so the
+# case reads a restore that ran from the handler rather than from a run that
+# had already finished. It runs the signal fixtures, whose served runner hangs
+# and whose sampler grows a record on disk.
+active_fixture=engine_clock_restore_on_term
+term_drm=$temporary_directory/drm-term
+cp -R -- "$signal_drm" "$term_drm"
+printf 'auto\n' >"$term_drm/power_dpm_force_performance_level"
+term_contract_sha256=$(env -i \
+    PATH="$signal_path" \
+    HOME="$home_directory" \
+    QWEN_MODELS_DIRECTORY="$models_directory" \
+    QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+    QWEN_CENSUS_PRODUCTION_SERVER="$production_server" \
+    QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+    QWEN_CENSUS_INSTRUMENTED_SERVER="$instrumented_server" \
+    QWEN_DRM_DEVICE="$term_drm" \
+    QWEN_CENSUS_BROKER="$broker_stub" \
+    QWEN_CENSUS_SAMPLER=python \
+    QWEN_CENSUS_SIDECAR_CPU=0 \
+    QWEN_CENSUS_ENGINE_CLOCK_POLICY=manual \
+    QWEN_CENSUS_PRINT_CONTRACT=1 \
+    "$signal_runner" "$model_id" "$temporary_directory/out-term-contract" \
+    | awk -F'\t' '$1 == "calibration_contract_sha256" { print $2 }')
+[ -n "$term_contract_sha256" ]
+term_calibration=$temporary_directory/calibration-term
+mkdir -p "$term_calibration"
+write_terminal_state "$term_calibration/terminal-state.tsv" 3
+write_calibration_inputs "$term_calibration/inputs.tsv" "$production_sha256" \
+    "$term_contract_sha256"
+term_output=$temporary_directory/out-engine-clock-term
+term_stdout=$temporary_directory/engine-clock-term-stdout.txt
+: >"$term_stdout"
+diagnostic_file=$temporary_directory/engine-clock-term-stderr.txt
+env -i \
+    PATH="$signal_path" \
+    HOME="$home_directory" \
+    QWEN_MODELS_DIRECTORY="$models_directory" \
+    QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+    QWEN_CENSUS_PRODUCTION_SERVER="$production_server" \
+    QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+    QWEN_CENSUS_INSTRUMENTED_SERVER="$instrumented_server" \
+    QWEN_DRM_DEVICE="$term_drm" \
+    QWEN_CENSUS_BROKER="$broker_stub" \
+    QWEN_CENSUS_SAMPLER=python \
+    QWEN_CENSUS_SIDECAR_CPU=0 \
+    QWEN_HWMON_ROOT="$signal_hwmon" \
+    QWEN_CENSUS_MODE=attribution \
+    QWEN_CENSUS_CALIBRATION_RECEIPT="$term_calibration" \
+    QWEN_CENSUS_ARMS=I0 \
+    QWEN_CENSUS_COOLDOWN_S=0 \
+    QWEN_CENSUS_ENGINE_CLOCK_POLICY=manual \
+    QWEN_TEST_SUDO_LOG="$temporary_directory/sudo-engine-clock-term.log" \
+    SSH_CONNECTION="$signal_ssh_connection" \
+    "$signal_runner" "$model_id" "$term_output" \
+    >"$term_stdout" 2>"$diagnostic_file" &
+term_runner_pid=$!
+term_poll=0
+while [ "$term_poll" -lt 100 ]; do
+    if grep -q '^engine_clock=applied ' "$term_stdout"; then
+        break
+    fi
+    sleep 0.2
+    term_poll=$((term_poll + 1))
+done
+if [ "$term_poll" -ge 100 ]; then
+    kill -TERM "$term_runner_pid" 2>/dev/null || true
+    wait "$term_runner_pid" 2>/dev/null || true
+    printf 'the signalled campaign never applied its clock policy\n' >&2
+    exit 1
+fi
+[ "$(cat "$term_drm/power_dpm_force_performance_level")" = manual ]
+kill -TERM "$term_runner_pid"
+set +e
+wait "$term_runner_pid"
+term_status=$?
+set -e
+if [ "$term_status" -ne 143 ]; then
+    printf 'the signalled campaign exited %s where its TERM trap exits 143\n' \
+        "$term_status" >&2
+    exit 1
+fi
+grep -q '^dpm_restore=restored level=auto requested=auto ' "$term_stdout"
+[ "$(cat "$term_drm/power_dpm_force_performance_level")" = auto ]
+diagnostic_file=
+printf 'engine_clock_restore_on_term=accepted\n'
 
 active_fixture=completion
 printf 'run_raven2_vulkan_kernel_census_preflight=accepted cases=%s\n' "$run_index"

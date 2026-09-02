@@ -104,6 +104,232 @@ census_regime_delta() {
         printf "%+.4f\n", (mode - regime) / larger }'
 }
 
+# The graphics clock is a control rather than an observed regime wherever
+# QWEN_CENSUS_ENGINE_CLOCK_POLICY names one. `power_dpm_force_performance_level`
+# takes `high` for the highest power state, `profile_peak` for peak clocks with
+# gating disabled, and `manual` for the level indices written to pp_dpm_sclk and
+# pp_dpm_mclk, and the appliance default `auto` is what produced the fall the
+# regime precondition was built to wait out: nine arms at 1100 MHz, then 750 to
+# 857, then 658 after a CPU build.
+#
+# The delivered clock rather than the DPM state is what decides decode, which
+# the appliance measured against both forcing levels. Under `high` and
+# `profile_peak` the starred graphics step and hwmon freq1_input both read 1100
+# MHz throughout and decode fell to 6.3 to 7.0 tok/s against `auto`'s 6.8 to
+# 8.2, because both levels left the starred pp_dpm_mclk fabric state at 400 MHz
+# where the governor selected 933 to 1067. `manual` with the highest graphics
+# level selected decoded 9.58, 8.91, and 9.23 tok/s against interleaved `auto`
+# arms at 8.22 and 7.94, so `manual` is the campaign policy. The fabric
+# selection is written and read back rather than required: the starred
+# pp_dpm_mclk level stayed at 933 MHz whether 1067 or 933 was written, and
+# every arm ran there, so 933 is the floor the invariant holds the fabric to
+# and the write is recorded as an observation.
+#
+# The functions below split the transition where its risk sits. The snapshot is
+# taken and the trap armed before anything is written, each write is proven by
+# reading the attribute back, and the restore runs from a signal handler, so it
+# exits nothing, changes no status, and prints the level it observed rather than
+# the one it asked for: a `sudo -n` timestamp that expired mid-campaign is
+# exactly what `dpm_restore=` exists to make visible.
+census_engine_clock_restored=0
+
+# The highest graphics clock a DPM table lists, and the index of the level
+# carrying it. Each line reads `INDEX: VALUEMhz` with a trailing ` *` on the
+# selected one.
+#
+# census_engine_clock_highest_mhz PP_DPM_TABLE
+census_engine_clock_highest_mhz() {
+    awk 'match($0, /[0-9]+[Mm][Hh]z/) {
+            value = substr($0, RSTART, RLENGTH) + 0
+            if (value > highest) highest = value }
+        END { if (highest > 0) print highest; else exit 1 }' "$1"
+}
+
+# census_engine_clock_highest_level PP_DPM_TABLE
+census_engine_clock_highest_level() {
+    awk 'match($0, /[0-9]+[Mm][Hh]z/) {
+            value = substr($0, RSTART, RLENGTH) + 0
+            index_field = $1
+            sub(/:$/, "", index_field)
+            if (index_field ~ /^[0-9]+$/ && value > highest) {
+                highest = value; level = index_field } }
+        END { if (highest > 0) print level; else exit 1 }' "$1"
+}
+
+# The megahertz one level of a DPM table carries. A level the table never lists
+# is refused here rather than written to the device and read back as another.
+#
+# census_engine_clock_level_mhz PP_DPM_TABLE LEVEL
+census_engine_clock_level_mhz() {
+    awk -v want="$2" 'match($0, /[0-9]+[Mm][Hh]z/) {
+            value = substr($0, RSTART, RLENGTH) + 0
+            index_field = $1
+            sub(/:$/, "", index_field)
+            if (index_field == want) { found++; mhz = value } }
+        END { if (found == 1) print mhz; else exit 1 }' "$1"
+}
+
+# The level a DPM table marks selected, as `INDEX MHZ`. Two starred lines
+# describe no single selection, so the count is required to be one.
+#
+# census_engine_clock_selected PP_DPM_TABLE
+census_engine_clock_selected() {
+    awk '/\*/ && match($0, /[0-9]+[Mm][Hh]z/) {
+            starred++
+            value = substr($0, RSTART, RLENGTH) + 0
+            index_field = $1
+            sub(/:$/, "", index_field) }
+        END { if (starred == 1) print index_field, value; else exit 1 }' "$1"
+}
+
+# A forced policy writes kernel attributes the serving user does not own, so
+# the campaign requires a cached credential rather than prompting inside a run
+# that has already begun and naming a password prompt no arm can answer.
+census_engine_clock_require_sudo() {
+    if ! sudo -n true 2>/dev/null; then
+        printf 'a forced engine clock policy writes power_dpm_force_performance_level through sudo -n; run sudo -v and start the campaign again\n' >&2
+        exit 2
+    fi
+}
+
+# The state the device holds now, as `LEVEL SCLK_INDEX MCLK_INDEX`, printed so
+# the caller can arm its restore trap over values it read. A snapshot taken
+# under `manual` carries the two selections that level means, since restoring
+# the level alone would leave the device on this campaign's own indices.
+#
+# census_engine_clock_snapshot DRM_DEVICE
+census_engine_clock_snapshot() {
+    census_clock_node=$1/power_dpm_force_performance_level
+    if [ ! -r "$census_clock_node" ]; then
+        printf 'the forced engine clock policy names an unreadable level attribute: %s\n' \
+            "$census_clock_node" >&2
+        exit 2
+    fi
+    census_clock_level=$(tr -d ' \t' <"$census_clock_node" | head -n 1)
+    if [ -z "$census_clock_level" ]; then
+        printf 'the level attribute names no current policy: %s\n' "$census_clock_node" >&2
+        exit 2
+    fi
+    census_clock_sclk_index=$(census_engine_clock_selected "$1/pp_dpm_sclk" \
+        2>/dev/null | cut -d ' ' -f 1) || census_clock_sclk_index=-
+    census_clock_mclk_index=$(census_engine_clock_selected "$1/pp_dpm_mclk" \
+        2>/dev/null | cut -d ' ' -f 1) || census_clock_mclk_index=-
+    printf '%s %s %s\n' "$census_clock_level" "${census_clock_sclk_index:--}" \
+        "${census_clock_mclk_index:--}"
+}
+
+# One privileged write and its proof. tee is the writer because the redirection
+# belongs to the privileged process rather than to this shell, and its copy to
+# stdout is discarded so the campaign's own lines stay the only ones a reader
+# parses.
+#
+# census_engine_clock_write VALUE NODE
+census_engine_clock_write() {
+    if ! printf '%s\n' "$1" | sudo -n tee "$2" >/dev/null 2>&1; then
+        printf 'writing %s to %s through sudo -n failed\n' "$1" "$2" >&2
+        exit 2
+    fi
+}
+
+# The level write, proven by reading the attribute back.
+#
+# census_engine_clock_write_level POLICY DRM_DEVICE
+census_engine_clock_write_level() {
+    census_clock_node=$2/power_dpm_force_performance_level
+    census_engine_clock_write "$1" "$census_clock_node"
+    census_clock_observed=$(tr -d ' \t' <"$census_clock_node" | head -n 1)
+    if [ "$census_clock_observed" != "$1" ]; then
+        printf 'the level attribute reads %s where the campaign wrote %s: %s\n' \
+            "${census_clock_observed:--}" "$1" "$census_clock_node" >&2
+        exit 2
+    fi
+}
+
+# One DPM level selection, printed back as `INDEX MHZ` from the table's own
+# starred line. REQUIRE 1 refuses a selection the device declined; REQUIRE 0
+# records what it did instead, which is what the fabric table earns: the write
+# is accepted and the starred level stays where the firmware put it.
+#
+# census_engine_clock_select LEAF DRM_DEVICE LEVEL REQUIRE
+census_engine_clock_select() {
+    census_clock_table=$2/$1
+    census_engine_clock_write "$3" "$census_clock_table"
+    census_clock_readback=$(census_engine_clock_selected "$census_clock_table") || {
+        printf '%s marks other than one selected level after the write: %s\n' \
+            "$1" "$census_clock_table" >&2
+        exit 2
+    }
+    if [ "$4" = 1 ] && [ "${census_clock_readback%% *}" != "$3" ]; then
+        printf '%s selected level %s where the campaign wrote %s: %s\n' \
+            "$1" "${census_clock_readback%% *}" "$3" "$census_clock_table" >&2
+        exit 2
+    fi
+    printf '%s\n' "$census_clock_readback"
+}
+
+# What the device delivers under the policy just written. A policy that names a
+# graphics step and leaves the device on another describes something other than
+# the pinned clock the arms are about to be read against.
+#
+# census_engine_clock_confirm DRM_DEVICE REQUIRED_MHZ
+census_engine_clock_confirm() {
+    census_clock_table=$1/pp_dpm_sclk
+    census_clock_selected=$(census_engine_clock_selected "$census_clock_table") || {
+        printf 'pp_dpm_sclk marks other than one selected step under the forced policy: %s\n' \
+            "$census_clock_table" >&2
+        exit 2
+    }
+    if [ "${census_clock_selected#* }" != "$2" ]; then
+        printf 'the forced policy selected %s MHz where the campaign requires %s MHz: %s\n' \
+            "${census_clock_selected#* }" "$2" "$census_clock_table" >&2
+        exit 2
+    fi
+}
+
+# The restore, which runs from EXIT and from every terminating signal handler.
+# It acts once, survives a failed write, and reports the level it read back. A
+# snapshot taken under `manual` restores its two selections after the level, in
+# that order, since the level is what makes them mean anything.
+#
+# census_engine_clock_restore DRM_DEVICE SNAPSHOT
+census_engine_clock_restore() {
+    [ "$census_engine_clock_restored" -eq 0 ] || return 0
+    census_engine_clock_restored=1
+    census_clock_node=$1/power_dpm_force_performance_level
+    census_clock_level=${2%% *}
+    census_clock_rest=${2#* }
+    census_clock_sclk_index=${census_clock_rest%% *}
+    census_clock_mclk_index=${census_clock_rest##* }
+    printf '%s\n' "$census_clock_level" | sudo -n tee "$census_clock_node" \
+        >/dev/null 2>&1 || true
+    if [ "$census_clock_level" = manual ]; then
+        for census_clock_pair in "pp_dpm_sclk $census_clock_sclk_index" \
+            "pp_dpm_mclk $census_clock_mclk_index"; do
+            census_clock_leaf=${census_clock_pair%% *}
+            census_clock_index=${census_clock_pair#* }
+            [ "$census_clock_index" != - ] || continue
+            printf '%s\n' "$census_clock_index" \
+                | sudo -n tee "$1/$census_clock_leaf" >/dev/null 2>&1 || true
+        done
+    fi
+    census_clock_observed=$(tr -d ' \t' <"$census_clock_node" 2>/dev/null | head -n 1) || true
+    if [ -z "${census_clock_observed:-}" ]; then
+        printf 'dpm_restore=unreadable level=- requested=%s node=%s\n' \
+            "$census_clock_level" "$census_clock_node"
+        return 0
+    fi
+    if [ "$census_clock_observed" = "$census_clock_level" ]; then
+        printf 'dpm_restore=restored level=%s requested=%s sclk_level=%s mclk_level=%s node=%s\n' \
+            "$census_clock_observed" "$census_clock_level" \
+            "$census_clock_sclk_index" "$census_clock_mclk_index" "$census_clock_node"
+    else
+        printf 'dpm_restore=mismatch level=%s requested=%s sclk_level=%s mclk_level=%s node=%s\n' \
+            "$census_clock_observed" "$census_clock_level" \
+            "$census_clock_sclk_index" "$census_clock_mclk_index" "$census_clock_node"
+    fi
+    return 0
+}
+
 # The manifest sits beside a bundled server or one directory above a build
 # tree's bin/. Prints the path of the first that is readable.
 census_manifest_beside() {
