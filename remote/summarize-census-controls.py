@@ -45,25 +45,38 @@ failed.
 
 A pair is judged over the execution state its two arms shared. The runner
 records the modal selected graphics clock of each sampled arm's request window
-as `sclk_mode_mhz`, and a pair whose two arms hold different numeric modes
-measures the governor step between them rather than the change the control
-names, so it is listed as `state-changed` in `deltas` and stays outside the
-mean and the interval. A `-` is an unknown state rather than a state of its
-own -- the sampler is off on `P-nosidecar` and `W`, and a ledger predating the
-column carries `-` on every row -- so a pair carrying one holds whatever state
-its partner did and remains comparable. Where fewer than two comparable pairs
-survive, the whole control reads `state-changed`, a verdict distinct from
-`incomplete`, which names missing arms, and from `unresolved`, which names an
-interval that spans its bound.
+as `sclk_mode_mhz`, and a pair whose two modes lie further apart than
+`--sclk-band` measures the governor step between them rather than the change
+the control names, so it is listed as `state-changed` in `deltas` and stays
+outside the mean and the interval. The band is a relative difference over the
+larger of the two modes: under the appliance's sustained regime the selected
+clock hovers across 775, 787, 800, 812, 825, 837, and 857 MHz within one
+thermal state, so an exact comparison read every collect pair of 20260902T1302Z
+as a step while its widest pair sits 3.18% apart, and the boost regime's 1100
+against that regime's 800 sits 27.27% apart and stays state-changed. A `-` is
+an unknown state rather than a state of its own -- the sampler is off on
+`P-nosidecar`, and a ledger predating the column carries `-` on every row -- so
+a pair carrying one holds whatever state its partner did and remains
+comparable. Where fewer than two comparable pairs survive, the whole control
+reads `state-changed`, a verdict distinct from `incomplete`, which names
+missing arms, and from `unresolved`, which names an interval that spans its
+bound.
 
 `first_outer` through `second_delta` carry the first quadruple's own two pairs
 rather than extremes of the set, so a reader compares a single replicate
 against the aggregate; `deltas` lists every paired delta in campaign order and
 `sclk_modes` lists each pair's `inner/outer` modes in the same order and the
-same direction as the delta.
+same direction as the delta. `off_regime_arms` counts the control's own arms
+whose `regime_delta` -- the distance the runner recorded between that arm's
+mode and the regime its warmup precondition settled on, scaled by the same
+larger-of-two denominator -- exceeds the band. A pair of arms that agree with
+each other and both sit outside the regime is comparable and still reports a
+campaign that drifted off the state it opened in, which is what that count
+states and the pair comparison cannot.
 
 usage: summarize-census-controls.py ARMS_TSV --sidecar-bound F
        --compile-bound F --collect-bound F [--served-ab-bound F]
+       [--sclk-band F]
 """
 import argparse
 import math
@@ -93,9 +106,14 @@ COLUMNS = ("pair", "control", "outer", "inner",
            "first_outer", "first_inner", "first_delta",
            "second_outer", "second_inner", "second_delta",
            "replicates", "mean_delta", "sd_delta", "ci_low", "ci_high", "deltas",
-           "sclk_modes", "bound", "verdict", "detail")
+           "sclk_modes", "off_regime_arms", "bound", "verdict", "detail")
 
 UNKNOWN_STATE = "-"
+
+# The band a run states nothing about: the appliance's sustained regime spreads
+# its selected clock over about 3% and its boost regime sits 27% above it, so
+# 6% separates the two while holding one regime together.
+DEFAULT_SCLK_BAND = 0.06
 
 
 def read_arms(path):
@@ -115,18 +133,48 @@ def read_arms(path):
         # unknown state on every row, which leaves every pair comparable and
         # replays those campaigns unchanged.
         arms.append((fields["arm"], float(rate) if rate != "-" else None,
-                     fields["status"], fields.get("sclk_mode_mhz", UNKNOWN_STATE)))
+                     fields["status"], fields.get("sclk_mode_mhz", UNKNOWN_STATE),
+                     fields.get("regime_delta", UNKNOWN_STATE)))
     return arms
 
 
-def comparable(inner, outer):
-    """Whether one pair's two arms held the same selected graphics clock.
+def comparable(inner, outer, band):
+    """Whether one pair's two arms held one selected graphics clock regime.
 
     An unknown mode takes whatever state its partner held, so the test refuses
-    a pair only where both arms name a state and the two differ.
+    a pair only where both arms name a state and the two lie further apart
+    than the band, relative to the larger of the two.
     """
-    return (inner == UNKNOWN_STATE or outer == UNKNOWN_STATE
-            or inner == outer)
+    if inner == UNKNOWN_STATE or outer == UNKNOWN_STATE:
+        return True
+    try:
+        first, second = float(inner), float(outer)
+    except ValueError:
+        return False
+    if first <= 0 or second <= 0:
+        return False
+    return abs(first - second) / max(first, second) <= band
+
+
+def off_regime(arms, band):
+    """How many of these arms sit further from the campaign's regime than the band.
+
+    An arm whose `regime_delta` is unknown -- an unsampled arm, an unreached
+    precondition, or a ledger predating the column -- is uncounted rather than
+    counted as agreeing, so the count states what was measured off the regime
+    rather than what failed to be measured.
+    """
+    count = 0
+    for arm in arms:
+        if arm[4] == UNKNOWN_STATE:
+            continue
+        try:
+            delta = float(arm[4])
+        except ValueError:
+            continue
+        if abs(delta) > band:
+            count += 1
+    return count
 
 
 def interval(deltas):
@@ -213,15 +261,19 @@ def main():
     # The served-ab bound carries a default because a census invocation names
     # no C or K arm and would otherwise have to state a bound it never uses.
     parser.add_argument("--served-ab-bound", type=float, default=0.05)
+    parser.add_argument("--sclk-band", type=float, default=DEFAULT_SCLK_BAND)
     args = parser.parse_args()
+    band = args.sclk_band
     bounds = {
         "sidecar": args.sidecar_bound,
         "compile": args.compile_bound,
         "collect": args.collect_bound,
         "served-ab": args.served_ab_bound,
     }
-    # W is the cold-load warmup and S is the identity arm; neither carries a
-    # registered bound, so both stay outside the quadruple walk.
+    # W is the warmup the regime precondition reads and S is the identity arm;
+    # neither carries a registered bound, so both stay outside the quadruple
+    # walk. A campaign runs two to eight W arms, so dropping them by name is
+    # also what keeps the named arms adjacent for the walk.
     arms = [arm for arm in read_arms(args.arms) if arm[0] not in ("S", "W")]
     print("\t".join(COLUMNS))
     for pair, (control, members) in enumerate(group(arms), 1):
@@ -229,15 +281,16 @@ def main():
         outer, inner = first[0][0], first[1][0]
         if control is None:
             print(f"{pair}\tunregistered\t{outer}\t{inner}"
-                  "\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\tunclassified\t-")
+                  "\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\tunclassified\t-")
             continue
         bound = bounds[control]
         replicates = 2 * len(members)
+        outside = off_regime([arm for quadruple in members for arm in quadruple], band)
         complete = all(arm[2] in COMPLETED_STATUS and arm[1]
                        for quadruple in members for arm in quadruple)
         if not complete:
             print(f"{pair}\t{control}\t{outer}\t{inner}"
-                  f"\t-\t-\t-\t-\t-\t-\t{replicates}\t-\t-\t-\t-\t-\t-"
+                  f"\t-\t-\t-\t-\t-\t-\t{replicates}\t-\t-\t-\t-\t-\t-\t{outside}"
                   f"\t{bound}\tincomplete\t-")
             continue
         # One quadruple carries two pairs and each is judged on its own state,
@@ -249,7 +302,7 @@ def main():
         for a, b, c, d in members:
             for numerator, denominator in ((b, a), (c, d)):
                 modes.append(f"{numerator[3]}/{denominator[3]}")
-                if comparable(numerator[3], denominator[3]):
+                if comparable(numerator[3], denominator[3], band):
                     deltas.append(numerator[1] / denominator[1] - 1)
                 else:
                     deltas.append(None)
@@ -264,7 +317,7 @@ def main():
                 f"\t{d[1]:.3f}\t{c[1]:.3f}\t{second_delta}\t{replicates}")
         measured = [delta for delta in deltas if delta is not None]
         if len(measured) < 2:
-            print(f"{head}\t-\t-\t-\t-\t{listed}\t{listed_modes}"
+            print(f"{head}\t-\t-\t-\t-\t{listed}\t{listed_modes}\t{outside}"
                   f"\t{bound}\tstate-changed"
                   f"\tcomparable_pairs={len(measured)} of {replicates}")
             continue
@@ -277,7 +330,7 @@ def main():
             excluded = f"comparable_pairs={len(measured)} of {replicates}"
             detail = excluded if detail == "-" else f"{detail} {excluded}"
         print(f"{head}\t{mean:+.4f}\t{deviation:.4f}\t{low:+.4f}\t{high:+.4f}"
-              f"\t{listed}\t{listed_modes}"
+              f"\t{listed}\t{listed_modes}\t{outside}"
               f"\t{bound}\t{verdict}\t{detail}")
     return 0
 

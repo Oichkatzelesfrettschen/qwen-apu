@@ -98,25 +98,100 @@ one row per registered control with `replicates`, `mean_delta`, `sd_delta`,
 against the set that judged it.
 
 The interval is taken over the pairs whose two arms met one execution
-state. The calibration of 20260902T1302Z selected 1100 MHz on slots 2
-through 9 and then 942, 837, and 775 to 857 MHz, and the decode rate fell
-from about 9.5 to about 7.2 tok/s with it while the die cooled, so a pair
-straddling that step measures the governor rather than the change its
-control names. `validate-clock-sidecar.py` states each arm's modal
+state, and two appliance calibrations in a row reproduced one regime change
+that decides what "one state" means. d490a39 and b7a3612 each read 1100 MHz
+over the first nine slots -- about five minutes of arms -- and then settled
+between 762 and 857 MHz for the rest of the campaign, with die temperature
+falling and decode falling from about 9.5 to about 7.2 tok/s with it. The
+served appliance lives in the sustained regime, so that regime is the one a
+calibration measures.
+
+Under it the selected clock hovers across fine-grained values -- 775, 787,
+800, 812, 825, 837, 857 -- rather than resting on a table step, so an exact
+comparison read all four collect pairs of 20260902T1302Z as governor steps
+-- `825/837 787/762 775/800 812/825` -- although all eight arms ran in one
+regime. Two modes are therefore one state where they lie within
+`QWEN_CENSUS_SCLK_BAND` of each other, relative to the larger of the two.
+The default 0.06 admits the widest of those pairs at 3.18% and keeps the
+boost regime out: 1100 against 800 sits 27.27% apart and stays
+`state-changed`. `validate-clock-sidecar.py` states each arm's modal
 selected graphics clock over its request window on a `clock_state=` line
 beside its verdict lines, `arms.tsv` carries it as `sclk_mode_mhz` with
 `sclk_share`, and `summary.tsv` lists each pair's `inner/outer` modes in
-`sclk_modes` and reads a pair whose two arms hold different numeric modes
-as `state-changed` in `deltas`. A `-` is an unknown state -- the sampler
-runs off on `P-nosidecar` and `W`, and a ledger predating the columns
-carries it on every row -- so it takes whatever state its partner held and
-the retained campaigns replay unchanged. A control left with fewer than
-two comparable pairs reads `state-changed`, which `terminal-state.tsv`
-counts as `control_state_changed` and which ends the campaign
-`unresolved` with exit 4 the way an interval spanning its bound does. The
-broker reads `/proc/loadavg` and `/sys/kernel/mm/ksm/pages_sharing` on its
-own 1 s channel and emits them as `# host` lines, so a clock step is read
-beside the host load at that instant.
+`sclk_modes` and takes `--sclk-band` for the comparison. A `-` is an
+unknown state -- the sampler runs off on `P-nosidecar`, and a ledger
+predating the columns carries it on every row -- so it takes whatever state
+its partner held and the retained campaigns replay unchanged. A control
+left with fewer than two comparable pairs reads `state-changed`, which
+`terminal-state.tsv` counts as `control_state_changed` and which ends the
+campaign `unresolved` with exit 4 the way an interval spanning its bound
+does. The broker reads `/proc/loadavg` and
+`/sys/kernel/mm/ksm/pages_sharing` on its own 1 s channel and emits them as
+`# host` lines, so a clock step is read beside the host load at that
+instant.
+
+The band decides which pairs a control keeps and settles nothing about
+which regime the campaign ran in, so the regime is a precondition the
+campaign meets before its first named arm. Warmup arms `W` run the
+production server under the sampler at slots 0a through 0p, ahead of slot
+1, until two consecutive warmups hold modes inside the band and each holds
+a modal share inside `[QWEN_CENSUS_REGIME_MIN_SHARE,
+QWEN_CENSUS_REGIME_MAX_SHARE]`, default 0.05 and 0.30. Their mean joins
+`inputs.tsv` as `regime_sclk_mhz` beside `regime_arms` and the run prints
+`census_regime=reached sclk_mhz=.. arms=..`.
+`QWEN_CENSUS_REGIME_MAX_ARMS`, default 16, caps the spend; a cap reached
+prints `census_regime=unreached`, records `regime_sclk_mhz` as `-`, and
+runs the named arms against their own pair comparability alone. Every named
+arm records `regime_delta`, its distance from that regime on the same
+larger-of-two denominator the band uses, and `summary.tsv` counts the arms
+of each control that exceed the band as `off_regime_arms`: a pair of arms
+that agree with each other while both sit off the regime is comparable and
+still reports a campaign that drifted, which the pair comparison cannot
+say. A calibration and an attribution each run the precondition; a canary
+judges chain structure at eight tokens and asserts no rate, so it runs
+none. The measured value stays out of `acquisition-contract.tsv` -- an
+attribution settles its own regime and would refuse against the
+calibration's -- while the band and both share bounds sit in it beside the
+bounds they act with, since each decides a verdict.
+
+The modal share is what sets those two bounds, and
+`20260902T1417Z/arms.tsv` is the measurement: it carries the `sclk_share`
+column `20260902T1302Z` lacks, and it separates the regimes by share as
+sharply as by clock. The boost arms at slots 2 through 7 hold 0.5518 to
+0.6803, slot 9 reads 0.2503 across the fall, and every sustained arm from
+slot 10 through 24 holds 0.1206 to 0.1615. Boost pins one clock and the
+sustained regime hovers across seven, so a high share is the pinned
+signature and hovering is the served one. Two boost warmups agree at
+1100 MHz inside any band and would settle the precondition on its second
+arm, so the 0.30 ceiling rather than the band is what declines them; the
+0.05 floor is a sanity bound under a window whose samples name no mode at
+all. Both campaign tests run that pair of shapes: two warmups at 1100 MHz
+with shares of 0.60 and 0.66 read `census_regime=unreached`, the same
+agreement at 0.13 reads `census_regime=reached sclk_mhz=806.0 arms=2`, and
+a census run that raises the ceiling to 0.7 settles the boost pair the
+default refused, which is what makes the ceiling the deciding rule rather
+than the comparison.
+
+One falsifier stands against the ceiling. A sustained regime whose modal
+share rises above 0.30 on this device leaves the precondition unreached at
+the cap, and the campaign reports that as `census_regime=unreached` with
+`regime_sclk_mhz` `-` rather than serving a regime it never settled. The
+share range rests on one campaign, so a second reproduction is what would
+move the ceiling; the cap is what bounds the cost of being wrong about it.
+
+The precondition costs the campaign its own warmup arms, and the cap
+follows the regime it waits out: boost held for about nine arms in both
+retained calibrations, so a cap short of that would report `unreached` on
+the machine's ordinary behavior. Sixteen admits the fall and the pair that
+has to follow it. A calibration at two replicates ran fourteen arms and now
+runs between fifteen and twenty-nine, and one at four replicates between
+twenty-seven and forty-one. A warmup costs about 23 s with the converged
+cooldown, so a precondition that settles in two arms adds about 46 s and
+one that spends the cap about 368 s. `predicted_campaign_duration_s` takes
+the cap against the per-arm ceiling of 19 s plus the quiescence deadline --
+49 s at the default 30 s cooldown, giving 1421 s at two replicates and 2009
+at four -- since a prediction that assumed the floor would understate every
+run that pays more.
 
 `QWEN_CENSUS_REPLICATES` sets the count, defaults to 4, and is even and
 between 2 and 8, since every two replicates are one mirrored quadruple and
@@ -163,9 +238,11 @@ another replicate count offers nothing to reuse. The prediction bounds the
 run from the per-arm ceiling the scoreboard measured -- about 9 seconds to
 readiness, 9 seconds of request, 1 second of teardown -- plus the
 `QWEN_CENSUS_COOLDOWN_S` quiescence deadline, over every arm the generated
-list names plus W: 686 seconds at two replicates and 1274 at four under the
-default 30-second cooldown. It is a ceiling on the whole list, so a run
-reusing bricks executes fewer arms and costs less. The print also states
+list names plus the precondition's cap of warmups: 1421 seconds at two
+replicates and 2009 at four under the default 30-second cooldown, against
+686 and 1274 before the precondition. It is a ceiling on the whole list, so
+a run whose precondition settles in two arms, or one reusing bricks,
+executes fewer arms and costs less. The print also states
 the brick partition, one `census_brick` row per brick carrying its control
 name, its first slot, and its slot count, from the same functions the run
 indexes with: C3 lands at slot 13 at two replicates and at 25 at four.
@@ -220,21 +297,28 @@ A receipt read by another reader generation is recorded as
 `yes`, `no`, and `unrecorded`, and the run proceeds, since a reader fix
 reinterprets bytes the calibration already acquired.
 
-A calibration opens on a warmup arm `W` at slot 0, the production server
-under the serving profile with the sampler off. The first server after a
-build loads cold and the cold arm sits inside control pair 1: chain seven
-measured slot 1 at 6.783 tok/s against slot 4 at 9.561 and the three P arms
-at 9.428, 9.422, and 9.472, and chain six read the same opener at 8.166, so
-the sidecar control would take its first outer rate from a cold load and
-compare it against a warm one. W absorbs that load. Its row is recorded in
-`arms.tsv` and its rate enters no pair and no census record --
-`summarize-census-controls.py` drops it beside S before the quadruple walk,
-and `acquisition-contract.tsv` states the exclusion as `warmup_arm`,
+The warmup arms carry a second job beside the regime. The first server
+after a build loads cold and the cold arm would sit inside control pair 1:
+chain seven measured slot 1 at 6.783 tok/s against slot 4 at 9.561 and the
+three P arms at 9.428, 9.422, and 9.472, and chain six read the same opener
+at 8.166, so the sidecar control would take its first outer rate from a
+cold load and compare it against a warm one. W absorbs that load whether
+the precondition settles in two arms or eight. Each executed warmup takes
+its own `arms.tsv` row at its lettered slot, its own `wall-clock.tsv` rows,
+and its own sidecar verdict, and a verdict the validator refuses costs the
+precondition that arm's reading rather than failing the campaign -- the cap
+is what bounds a sampler that refuses every warmup. A warmup's rate enters
+no pair and no census record: `summarize-census-controls.py` drops W beside
+S before the quadruple walk, and `acquisition-contract.tsv` states
+`warmup_arm`, `warmup_sampler`, `warmup_precondition`,
 `warmup_excluded_from_pairs`, and `warmup_excluded_from_census` rather than
-leaving a reader to infer it from the slot numbering. The registered arms
-keep slots 1 upward, `QWEN_CENSUS_ARMS` still names exactly the generated
-list, and a calibration whose four bricks all reuse skips the
-warmup too, since a warmup warms the arms that follow it and there are none.
+leaving a reader to infer any of it from the slot lettering. The lettering
+is what keeps the registered arms at slots 1 upward, so every brick,
+receipt, and quadruple is stated in the numbers it always was;
+`QWEN_CENSUS_ARMS` still names exactly the generated list; and a
+calibration whose four bricks all reuse skips the warmups outright, since a
+warmup warms the arms that follow it, there are none, and a regime binds
+nothing the run measures.
 
 Coverage rather than the widest gap is what a sidecar record owes an arm,
 and the gap criterion is refuted as a coverage measure at nice 19 on both
@@ -803,6 +887,16 @@ temperature falls rather than rises, so the decode-rate step this run
 also shows is a DPM selection and not a thermal ceiling, and a control
 pair straddling that step needs a per-arm clock-state check before its
 next paired-mean verdict.
+
+`20260902T1417Z/` retains the sixth calibration on head b7a3612f,
+`calibration_verdict=failed`: `arms.tsv` and `summary.tsv` now carry the
+per-arm clock state the prior link registered as a remedy, and the
+regime step reproduces on slot 10, whose sidecar refuses on
+`window_lost_fraction=0.0326` and turns the compile control
+`incomplete`, while the collect control's exact-mode rule reads every
+comparable pair as state-changed inside the sustained low regime the
+appliance actually serves under, so the next chain link moves that rule
+to a comparability band and a regime precondition ahead of slot 1.
 
 ## Order and falsifiers
 

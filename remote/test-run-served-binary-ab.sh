@@ -19,6 +19,20 @@ set -eu
 # and they are fixtures rather than plausible arm pairs: replicates that agree
 # exactly leave a degenerate interval at their own delta, which is the only way
 # a four-replicate control lands wholly on one side of a 5% bound.
+#
+# The clock table the stub validator reads is what drives the regime
+# precondition here, and its default entry is the sustained regime the
+# appliance serves in: 800 MHz at a modal share of 0.1400. `regime_reached`
+# settles on the second warmup out of that table; `regime_unreached` steps the
+# warmups apart, withholds one clock_state line, and pins one at a share of
+# 0.62, so the precondition spends its cap and the named arms pair on their own
+# comparability; `regime_boost_refused` and `regime_hovering_settles` are the
+# 20260902T1417Z shape and its counterpart -- two warmups agreeing at 1100 MHz
+# at a boost share of 0.60 and 0.66 settle nothing, and the same agreement at
+# 0.13 settles at once, so the share ceiling is what separates the regimes;
+# `off_regime_arms` reads the count a stepped run reports beside the pairs it
+# lost. `truncated_reply` cuts one reply mid-object and requires the campaign
+# to record a failed arm and run to its end.
 
 if [ "$#" -ne 0 ]; then
     printf 'usage: %s\n' "$(basename "$0")" >&2
@@ -481,6 +495,16 @@ plan_four=$(print_plan 4 | awk -F'\t' '$1 == "served_ab_arms" { print $2 }')
     exit 1
 }
 printf 'arm_list_four=accepted\n'
+# The plan names one W as the shape the list opens on and states the cap the
+# precondition may spend beside it, so a reader knows the run may pay sixteen
+# warmups where the arm list shows one.
+active_fixture=arm_list_warmup_cap
+plan_warmups=$(print_plan 4 | awk -F'\t' '$1 == "served_ab_warmup_arms" { print $2 }')
+[ "$plan_warmups" = 16 ] || {
+    printf 'the plan states a warmup cap of [%s]\n' "$plan_warmups" >&2
+    exit 1
+}
+printf 'arm_list_warmup_cap=accepted cap=16\n'
 
 # The executing tree. The harness resolves its served runner, its readers, and
 # its quiescence poller through its own directory, so the stubs live beside a
@@ -503,7 +527,9 @@ done
 # The served runner an arm reaches. It reads the rate its arm is to answer with
 # from the case's own table, writes the timings the harness derives tok_s from,
 # and writes the request window the sidecar validator is bounded by. A rate of
-# `fail` leaves no response at all, which is the arm failure a case reads.
+# `fail` leaves no response at all, which is the arm failure a case reads, and
+# a rate of `truncate` leaves a reply cut mid-object, which is what a runner
+# killed while writing leaves behind.
 cat >"$run_directory/measure-served-decode.sh" <<'FAKE_SERVED_RUNNER'
 #!/bin/sh
 set -eu
@@ -514,6 +540,11 @@ printf 'begin_ns\t1000000000\nend_ns\t2000000000\n' \
     >"$QWEN_RESULT_DIRECTORY/request-window.tsv"
 if [ "$served_rate" = fail ]; then
     exit 1
+fi
+if [ "$served_rate" = truncate ]; then
+    printf '{"timings": {"predicted_n": 65, "predi' \
+        >"$QWEN_RESULT_DIRECTORY/response.json"
+    exit 0
 fi
 python3 - "$served_rate" >"$QWEN_RESULT_DIRECTORY/response.json" <<'PY'
 import json, sys
@@ -535,17 +566,25 @@ import pathlib
 import sys
 
 label = pathlib.Path(sys.argv[1]).parent.name
-state = "1100"
+# A table entry is a mode, a mode and its modal share separated by a colon, or
+# the word `none`, which stands for a window the validator read no clock state
+# out of -- the shape a warmup whose request never ran produces on the
+# appliance, and the one that resets the precondition's pair.
+state = "800"
+share = "0.1400"
 table = os.environ.get("QWEN_TEST_AB_CLOCKS", "")
 if table and os.path.exists(table):
     for line in open(table):
         name, _, value = line.rstrip("\n").partition("\t")
         if name == label:
-            state = value
+            state, _, entry_share = value.partition(":")
+            if entry_share:
+                share = entry_share
 print(f"record_readable=accepted path={sys.argv[1]}")
-print(f"clock_state=measured window_samples=700 sclk_mode_mhz={state}"
-      " sclk_share=0.9235 mclk_mode_mhz=1067"
-      " temp_mean_c=71.6 temp_max_c=74.0 busy_mean=94.88")
+if state != "none":
+    print(f"clock_state=measured window_samples=700 sclk_mode_mhz={state}"
+          f" sclk_share={share} mclk_mode_mhz=1067"
+          " temp_mean_c=71.6 temp_max_c=74.0 busy_mean=94.88")
 print("clock_sidecar=accepted failures=-")
 VALIDATOR_STUB
 chmod +x "$run_directory/validate-clock-sidecar.py"
@@ -570,13 +609,18 @@ run_ssh_connection='127.0.0.1 40000 127.0.0.1 22'
 
 # One rate table per verdict. A slot answers the rate its arm name and position
 # are given here, and the mirrored quadruple gives each replicate its reverse.
+# The warmup arms occupy the lettered slots 0a through 0p, so the table names
+# every one the precondition's own cap admits: a case that settles in two
+# leaves the rest unread, and a case that reaches the cap finds a rate at each.
 write_rates() {
     rates_path=$1
     control_rate=$2
     first_candidate_rate=$3
     second_candidate_rate=$4
     {
-        printf '00-W\t%s\n' "$control_rate"
+        for rates_letter in a b c d e f g h i j k l m n o p; do
+            printf '0%s-W\t%s\n' "$rates_letter" "$control_rate"
+        done
         printf '01-C\t%s\n02-K\t%s\n03-K\t%s\n04-C\t%s\n' \
             "$control_rate" "$first_candidate_rate" "$second_candidate_rate" "$control_rate"
         printf '05-C\t%s\n06-K\t%s\n07-K\t%s\n08-C\t%s\n' \
@@ -590,6 +634,9 @@ run_ab() {
     ab_expected_verdict=$3
     ab_rates=$4
     ab_clocks=$5
+    # The sixth caps the regime precondition, so a case that settles nothing
+    # pays four warmups rather than the shipped sixteen.
+    ab_regime_max_arms=${6:-16}
     active_fixture=$ab_case
     run_index=$((run_index + 1))
     ab_output=$temporary_directory/out-$run_index
@@ -610,6 +657,7 @@ run_ab() {
         QWEN_VULKAN_WORKLOAD_LOCK="$temporary_directory/vulkan-workload.lock" \
         QWEN_TEST_AB_RATES="$ab_rates" \
         QWEN_TEST_AB_CLOCKS="$ab_clocks" \
+        QWEN_CENSUS_REGIME_MAX_ARMS="$ab_regime_max_arms" \
         "$run_harness_path" "$control_server" "$candidate_server" "$model_id" \
         "$ab_output" \
         >"$temporary_directory/$ab_case-stdout.txt" 2>"$diagnostic_file"
@@ -638,8 +686,10 @@ run_ab() {
     ab_last_output=$ab_output
 }
 
-# Every arm holds one graphics clock, so every pair is comparable and the
-# verdict is the interval's own.
+# Every arm holds the sustained regime's own clock at its own modal share --
+# 800 MHz at 0.1400, the stub validator's defaults -- so the precondition
+# settles on the second warmup, every pair is comparable, and the verdict is
+# the interval's own.
 one_clock=$temporary_directory/clocks-one-state
 : >"$one_clock"
 
@@ -649,15 +699,39 @@ promoted_rates=$temporary_directory/rates-promoted
 write_rates "$promoted_rates" 10.000 11.000 11.000
 run_ab verdict_promoted 0 promoted "$promoted_rates" "$one_clock"
 active_fixture=arms_ledger_columns
-[ "$(head -n 1 "$ab_last_output/arms.tsv")" = "$(printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\tsidecar\townership\tstatus\tsclk_mode_mhz\tsclk_share')" ]
-awk -F'\t' 'NF != 12 { exit 1 }' "$ab_last_output/arms.tsv"
-[ "$(awk 'END { print NR }' "$ab_last_output/arms.tsv")" = 10 ]
-# The warmup opens the ledger at slot 0 with the sampler off and enters no
-# pair; the summarizer's own filter is what keeps it out.
-[ "$(awk -F'\t' 'NR == 2 { print $1, $2, $8, $11 }' "$ab_last_output/arms.tsv")" = '0 W off -' ]
-[ "$(awk -F'\t' 'NR == 3 { print $2, $8, $11, $12 }' "$ab_last_output/arms.tsv")" = 'C on 1100 0.9235' ]
-[ "$(awk -F'\t' 'NR == 3 { print $7, $9 }' "$ab_last_output/arms.tsv")" = '- -' ]
+[ "$(head -n 1 "$ab_last_output/arms.tsv")" = "$(printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\tsidecar\townership\tstatus\tsclk_mode_mhz\tsclk_share\tregime_delta')" ]
+awk -F'\t' 'NF != 13 { exit 1 }' "$ab_last_output/arms.tsv"
+# Every arm of the one-clock table holds 800 MHz at a share of 0.1400, inside
+# the sustained regime's own window, so the precondition settles on the second
+# warmup and the ledger carries the header, two warmups, and the eight paired
+# arms.
+[ "$(awk 'END { print NR }' "$ab_last_output/arms.tsv")" = 11 ]
+# The warmups open the ledger at the lettered slots with the sampler on,
+# because their clock state is what the precondition reads, and enter no pair;
+# the summarizer's own filter is what keeps them out.
+[ "$(awk -F'\t' 'NR == 2 { print $1, $2, $8, $11, $13 }' "$ab_last_output/arms.tsv")" = '0a W on 800 -' ]
+[ "$(awk -F'\t' 'NR == 3 { print $1, $2, $8, $11, $13 }' "$ab_last_output/arms.tsv")" = '0b W on 800 -' ]
+[ "$(awk -F'\t' 'NR == 4 { print $1, $2, $8, $11, $12 }' "$ab_last_output/arms.tsv")" = '1 C on 800 0.1400' ]
+[ "$(awk -F'\t' 'NR == 4 { print $7, $9, $13 }' "$ab_last_output/arms.tsv")" = '- - +0.0000' ]
 printf 'arms_ledger_columns=accepted\n'
+
+# The precondition is what the campaign opens on, and its outcome is recorded
+# in inputs.tsv rather than derived from the arm list a reader is left to
+# count. Two consecutive warmups at one mode inside the band settle it.
+active_fixture=regime_reached
+grep -q '^census_regime=reached sclk_mhz=800.0 arms=2$' \
+    "$temporary_directory/verdict_promoted-stdout.txt"
+grep -qxF "$(printf 'regime_sclk_mhz\t800.0')" "$ab_last_output/inputs.tsv"
+grep -qxF "$(printf 'regime_arms\t2')" "$ab_last_output/inputs.tsv"
+grep -qxF "$(printf 'sclk_band\t0.06')" "$ab_last_output/inputs.tsv"
+grep -qxF "$(printf 'regime_min_share\t0.05')" "$ab_last_output/inputs.tsv"
+grep -qxF "$(printf 'regime_max_share\t0.30')" "$ab_last_output/inputs.tsv"
+# The named arms sat on the regime, so no arm of the served-ab control is
+# counted outside the band.
+[ "$(awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
+    $(column["control"]) == "served-ab" { print $(column["off_regime_arms"]) }' \
+    "$ab_last_output/summary.tsv")" = 0 ]
+printf 'regime_reached=accepted arms=2\n'
 active_fixture=promoted_interval
 promoted_summary=$(awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
     $(column["control"]) == "served-ab" { print $(column["replicates"]), $(column["mean_delta"]), $(column["ci_low"]), $(column["bound"]) }' \
@@ -686,9 +760,128 @@ run_ab verdict_unresolved 4 unresolved "$unresolved_rates" "$one_clock"
 # fewer than two comparable pairs.
 stepped_clocks=$temporary_directory/clocks-stepped
 {
-    printf '02-K\t800\n03-K\t800\n06-K\t800\n07-K\t800\n'
+    printf '02-K\t1100\n03-K\t1100\n06-K\t1100\n07-K\t1100\n'
 } >"$stepped_clocks"
 run_ab verdict_state_changed 4 state-changed "$promoted_rates" "$stepped_clocks"
+# The warmups settled on 800 and every candidate arm ran at the boost clock, so
+# each candidate arm sits 27.27% off the regime and the control says so beside
+# the pairs it lost to the same step.
+active_fixture=off_regime_arms
+[ "$(awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
+    $(column["control"]) == "served-ab" { print $(column["off_regime_arms"]) }' \
+    "$ab_last_output/summary.tsv")" = 4 ]
+[ "$(awk -F'\t' '$1 == "2" { print $13 }' "$ab_last_output/arms.tsv")" = '+0.2727' ]
+[ "$(awk -F'\t' '$1 == "1" { print $13 }' "$ab_last_output/arms.tsv")" = '+0.0000' ]
+printf 'off_regime_arms=accepted count=4\n'
+
+# The precondition spends the cap and settles nothing where no two consecutive
+# warmups both agree and sit inside the share window. Two modes step apart by
+# more than the band, one warmup reports a window the validator read no clock
+# state out of, and one holds a clock that agrees with its predecessor's at a
+# modal share of 0.62 -- the pinned boost signature -- so the pair resets at
+# each and the run reaches slot 1 with regime_sclk_mhz unrecorded. The named
+# arms still pair on their own comparability, so the verdict is the promotion
+# the rates carry.
+unsettled_clocks=$temporary_directory/clocks-unsettled
+{
+    printf '0a-W\t1100\n0b-W\tnone\n0c-W\t800\n0d-W\t812:0.62\n'
+} >"$unsettled_clocks"
+run_ab regime_unreached 0 promoted "$promoted_rates" "$unsettled_clocks" 4
+active_fixture=regime_unreached_ledger
+grep -q '^census_regime=unreached sclk_mhz=- arms=4$' \
+    "$temporary_directory/regime_unreached-stdout.txt"
+grep -qxF "$(printf 'regime_sclk_mhz\t-')" "$ab_last_output/inputs.tsv"
+grep -qxF "$(printf 'regime_arms\t4')" "$ab_last_output/inputs.tsv"
+# Four warmups, eight paired arms, and the header.
+[ "$(awk 'END { print NR }' "$ab_last_output/arms.tsv")" = 13 ]
+[ "$(awk -F'\t' 'NR > 1 && $2 == "W"' "$ab_last_output/arms.tsv" | wc -l | tr -d ' ')" = 4 ]
+# The warmup whose validator printed no clock state carries the unknown mode
+# and shares the fate of an unusable reading rather than pairing across it.
+[ "$(awk -F'\t' '$1 == "0b" { print $11, $12 }' "$ab_last_output/arms.tsv")" = '- -' ]
+[ "$(awk -F'\t' '$1 == "0d" { print $11, $12 }' "$ab_last_output/arms.tsv")" = '812 0.62' ]
+# An unreached regime leaves every named arm without a distance to it, and the
+# control counts no arm outside a band it has no centre for.
+[ "$(awk -F'\t' 'NR > 1 && $2 != "W" && $13 != "-"' "$ab_last_output/arms.tsv" | wc -l | tr -d ' ')" = 0 ]
+[ "$(awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
+    $(column["control"]) == "served-ab" { print $(column["off_regime_arms"]) }' \
+    "$ab_last_output/summary.tsv")" = 0 ]
+# The warmups enter no pair and no slot a quadruple is stated in, whatever
+# their count: the named arms still run 1 through 8.
+if awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
+    $(column["outer"]) == "W" || $(column["inner"]) == "W" { found = 1 }
+    END { exit found ? 0 : 1 }' "$ab_last_output/summary.tsv"; then
+    printf 'a warmup arm entered a control pair\n' >&2
+    exit 1
+fi
+[ "$(awk -F'\t' 'NR > 1 && $2 != "W" { print $1 }' "$ab_last_output/arms.tsv" | tr '\n' ' ')" \
+    = '1 2 3 4 5 6 7 8 ' ]
+if [ -e "$ab_last_output/arms/00-W" ]; then
+    printf 'a warmup claimed a numbered slot directory\n' >&2
+    exit 1
+fi
+printf 'regime_unreached=accepted arms=4\n'
+
+# The 20260902T1417Z shape: two warmups pinned at 1100 MHz, agreeing inside any
+# band, at the modal share boost holds. The share ceiling is the only rule that
+# declines them, and declining them is the whole point of the precondition,
+# since the served appliance runs in the sustained regime alone.
+boost_clocks=$temporary_directory/clocks-boost
+{
+    printf '0a-W\t1100:0.60\n0b-W\t1100:0.66\n'
+    printf '0c-W\t1100:0.55\n0d-W\t1100:0.68\n'
+} >"$boost_clocks"
+run_ab regime_boost_refused 0 promoted "$promoted_rates" "$boost_clocks" 4
+active_fixture=regime_boost_refused_ledger
+grep -q '^census_regime=unreached sclk_mhz=- arms=4$' \
+    "$temporary_directory/regime_boost_refused-stdout.txt"
+[ "$(awk -F'\t' '$1 == "0a" { print $11, $12 }' "$ab_last_output/arms.tsv")" = '1100 0.60' ]
+[ "$(awk -F'\t' '$1 == "0b" { print $11, $12 }' "$ab_last_output/arms.tsv")" = '1100 0.66' ]
+# The same two clocks at the sustained regime's own share settle on the second
+# arm, so the ceiling rather than the band or the arm count refused the pair.
+hovering_clocks=$temporary_directory/clocks-hovering
+printf '0a-W\t800:0.13\n0b-W\t812:0.13\n' >"$hovering_clocks"
+run_ab regime_hovering_settles 0 promoted "$promoted_rates" "$hovering_clocks" 4
+active_fixture=regime_hovering_ledger
+grep -q '^census_regime=reached sclk_mhz=806.0 arms=2$' \
+    "$temporary_directory/regime_hovering_settles-stdout.txt"
+grep -qxF "$(printf 'regime_sclk_mhz\t806.0')" "$ab_last_output/inputs.tsv"
+printf 'regime_share_window=accepted boost=unreached hovering=806.0\n'
+
+# A reply the served runner never finished writing is unreadable rather than
+# absent: the arm answers the unknown triple, fails on its missing rate, and
+# the campaign records that rather than ending mid-arm on the reader's own
+# failure.
+truncated_rates=$temporary_directory/rates-truncated
+sed 's/^02-K\t.*/02-K\ttruncate/' "$promoted_rates" >"$truncated_rates"
+active_fixture=truncated_reply
+run_index=$((run_index + 1))
+truncated_output=$temporary_directory/out-$run_index
+set +e
+env -i \
+    PATH="$run_path" HOME="$home_directory" SSH_CONNECTION="$run_ssh_connection" \
+    QWEN_MODELS_DIRECTORY="$models_directory" \
+    QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+    QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+    QWEN_DRM_DEVICE="$fixture_drm" QWEN_HWMON_ROOT="$fixture_hwmon" \
+    QWEN_CENSUS_BROKER="$broker_stub" QWEN_CENSUS_SIDECAR_CPU=0 \
+    QWEN_AB_COOLDOWN_S=0 \
+    QWEN_VULKAN_WORKLOAD_LOCK="$temporary_directory/vulkan-workload.lock" \
+    QWEN_TEST_AB_RATES="$truncated_rates" QWEN_TEST_AB_CLOCKS="$one_clock" \
+    "$run_harness_path" "$control_server" "$candidate_server" "$model_id" \
+    "$truncated_output" \
+    >"$temporary_directory/truncated-reply-stdout.txt" \
+    2>"$temporary_directory/truncated-reply-stderr.txt"
+truncated_status=$?
+set -e
+[ "$truncated_status" -eq 1 ]
+grep -q '^served_ab_arm=failed slot=2 arm=K tok_s=- .* reason=served_runner$' \
+    "$temporary_directory/truncated-reply-stdout.txt"
+# The campaign ran to its end rather than stopping at the unreadable reply.
+[ "$(awk -F'\t' 'NR > 1 && $2 != "W" { print $1 }' "$truncated_output/arms.tsv" | tr '\n' ' ')" \
+    = '1 2 3 4 5 6 7 8 ' ]
+[ "$(awk -F'=' '$1 == "arm_failures" { print $2 }' "$truncated_output/terminal-state.tsv")" = 1 ]
+[ "$(awk -F'\t' '$1 == "2" { print $4, $5, $6 }' "$truncated_output/arms.tsv")" = '- - -' ]
+printf 'truncated_reply=accepted\n'
 
 # One arm whose served runner refuses: the control cannot report a rate verdict
 # over a set an arm is missing from, so the run fails ahead of the verdict

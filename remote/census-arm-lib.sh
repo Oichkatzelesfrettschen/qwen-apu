@@ -17,6 +17,93 @@
 # substitution at both call sites, so its exit ends the subshell alone and
 # census_require_binding_fields is what turns that into the caller's refusal.
 
+# Two selected graphics clocks are one execution state where they lie within a
+# band of each other. The appliance calibrations of 20260902T1302Z and its
+# predecessor both fell from a flat 1100 MHz over the first nine slots to a
+# sustained regime hovering across 775, 787, 800, 812, 825, 837, and 857 MHz,
+# so an exact comparison read every collect pair of one regime as a governor
+# step while the campaign held one thermal state throughout. The band is a
+# relative difference over the larger of the two modes, which is symmetric in
+# its arguments and keeps 1100 against 800 at 0.2727 outside a 0.06 band while
+# the widest sustained pair, 762 against 787, sits at 0.0318 inside it.
+#
+# census_within_band A B BAND -- exits 0 where the two lie inside the band.
+census_within_band() {
+    awk -v first="$1" -v second="$2" -v band="$3" 'BEGIN {
+        if (first + 0 <= 0 || second + 0 <= 0) exit 1
+        larger = (first + 0 > second + 0) ? first + 0 : second + 0
+        difference = first - second
+        if (difference < 0) difference = -difference
+        exit (difference / larger <= band + 0) ? 0 : 1 }'
+}
+
+# One step of the regime precondition. The campaign opens on warmup arms with
+# the sampler on and reads their clock state until two consecutive arms agree
+# inside the band and each holds a modal share inside [MIN_SHARE, MAX_SHARE].
+# That window rather than a floor is what separates the two regimes this device
+# runs in. 20260902T1417Z measures the boost regime pinning 1100 MHz at a modal
+# share of 0.5518 to 0.6803 and the sustained regime hovering across seven
+# values at 0.1206 to 0.1615, so a share above the ceiling reports a pinned
+# clock and two boost warmups would otherwise agree at 1100 on the second arm,
+# settling the precondition on the regime it exists to leave. The floor stays as
+# a sanity bound under a window whose samples name no mode at all.
+#
+# Prints `reached MEAN` where this arm closes such a pair and `pending MODE
+# SHARE` otherwise, with the unusable arm resetting the pair to `pending - -`
+# rather than pairing across it: an arm whose sampler wrote no clock state, an
+# arm spread thinner than the floor, and an arm pinned above the ceiling each
+# report a window the precondition declines to build a regime on.
+#
+# census_regime_step PREVIOUS_MODE PREVIOUS_SHARE MODE SHARE BAND MIN_SHARE \
+#     MAX_SHARE
+census_regime_step() {
+    awk -v previous_mode="$1" -v previous_share="$2" -v mode="$3" -v share="$4" \
+        -v band="$5" -v min_share="$6" -v max_share="$7" 'BEGIN {
+        usable = (mode != "-" && share != "-" && mode + 0 > 0 \
+            && share + 0 >= min_share + 0 && share + 0 <= max_share + 0)
+        if (!usable) { print "pending - -"; exit }
+        settled = (previous_mode != "-" && previous_share != "-" \
+            && previous_mode + 0 > 0 && previous_share + 0 >= min_share + 0 \
+            && previous_share + 0 <= max_share + 0)
+        if (settled) {
+            larger = (mode + 0 > previous_mode + 0) ? mode + 0 : previous_mode + 0
+            difference = mode - previous_mode
+            if (difference < 0) difference = -difference
+            if (difference / larger <= band + 0) {
+                printf "reached %.1f\n", (mode + previous_mode) / 2
+                exit
+            }
+        }
+        printf "pending %s %s\n", mode, share }'
+}
+
+# The warmup arms occupy slots 0a through 0p, one letter per arm in execution
+# order, so the named arms of either campaign keep the integer slots 1 through
+# N that every brick, receipt, pair, and quadruple is stated in. The label
+# sorts ahead of 01- in the arms directory, carries no leading dash, and
+# compares as a string against a ledger's own slot column. Sixteen letters cover
+# the precondition's own cap, which is set by the nine arms boost held for in
+# both retained calibrations.
+#
+# census_warmup_slot INDEX -- 1 prints 0a
+census_warmup_slot() {
+    printf '0%s\n' "$(printf 'abcdefghijklmnop' | cut -c "$1")"
+}
+
+# One arm's distance from the regime the precondition recorded, signed toward
+# the arm and scaled by the larger of the two so its magnitude compares against
+# the same band the pair comparison uses. An unknown mode or an unreached
+# regime prints the unknown value, since a distance from nothing is not zero.
+#
+# census_regime_delta MODE REGIME
+census_regime_delta() {
+    awk -v mode="$1" -v regime="$2" 'BEGIN {
+        if (mode == "-" || regime == "-" || mode + 0 <= 0 || regime + 0 <= 0) {
+            print "-"; exit }
+        larger = (mode + 0 > regime + 0) ? mode + 0 : regime + 0
+        printf "%+.4f\n", (mode - regime) / larger }'
+}
+
 # The manifest sits beside a bundled server or one directory above a build
 # tree's bin/. Prints the path of the first that is readable.
 census_manifest_beside() {
