@@ -492,7 +492,7 @@ run_runner calibration_contract_period 'calibration contract differs from the re
     QWEN_CENSUS_MODE=attribution \
     QWEN_CENSUS_CALIBRATION_RECEIPT="$calibration_receipt" \
     QWEN_CENSUS_ARMS=I1 \
-    QWEN_CENSUS_SIDECAR_PERIOD_MS=10
+    QWEN_CENSUS_SIDECAR_PERIOD_MS=5
 
 run_runner duplicate_executable_row 'not the one executable llama-server row' \
     QWEN_CENSUS_PRODUCTION_SERVER="$duplicate_root/bin/llama-server"

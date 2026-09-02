@@ -406,15 +406,19 @@ geometry are told apart by carrying both.
 The one-second runtime monitor is adequate for safety and too coarse to
 place a 52 to 62 ms token. `remote/sample-clock-sidecar.py` samples
 `pp_dpm_sclk`, `pp_dpm_mclk`, `pp_dpm_fclk`, `gpu_busy_percent`, and
-`temp1_input` every 5 ms on `CLOCK_MONOTONIC`, the clock the census stamps
+`temp1_input` every 10 ms on `CLOCK_MONOTONIC`, the clock the census stamps
 every graph with and the runner stamps its request window with, so a clock
 step is placed against a graph rather than against a minute. The columns
 name what they read: `pp_dpm_sclk_selected_mhz` is the selected graphics
 step, and `pp_dpm_mclk_surface_mhz` and `pp_dpm_fclk_surface_mhz` are the
 sysfs surfaces, which on this SMU10 path are fabric-clock states rather
 than the trained DRAM speed, as the header line states. The sampler is
-pinned to core 1 at nice 10 while the server runs on core 0 at nice 19,
-and it records its pid, niceness, and affinity in the header.
+pinned to core 1 at nice 19, the priority the appliance runs every
+measurement process at, the server on core 0 included, and it records its
+pid, niceness, and affinity in the header. The priority is a constant of
+the runner rather than an option, so a hole the scheduler opens at that
+priority is reported by the gap validator rather than closed by a higher
+one.
 
 A sidecar record is evidence only where `validate-clock-sidecar.py`
 accepts it: exit status 0, one footer, a sample count above one equal to
@@ -422,10 +426,16 @@ the rows, an achieved period within 25% of the requested one, a mean
 sample cost under 1 ms, every sensor read on every sample, footer
 instants equal to the first and last rows, and the request window covered
 on both sides, and no adjacent sample gap above the registered maximum of
-10 ms overlapping the request window, since a 100 ms hole between perfect
-5 ms samples passes a run-wide mean while losing two 2B token intervals;
-the validator reports the median, p95, p99, and maximum gap and the counts
-above 7.5 ms and above the bound. The SMU10 kernel path exposes
+20 ms overlapping the request window, since a 100 ms hole between perfect
+samples passes a run-wide mean while losing one 2B token interval; the
+validator reports the median, p95, p99, and maximum gap and the counts
+above 1.5 periods and above the bound. The first calibration on 34de93f
+refuted a 5 ms period with a 10 ms bound at nice 10: the median gap held
+5.0 ms and the p99 7.3 ms while the maximum reached 58 ms with ten gaps
+above the bound and four inside a 6.4 s request window, which is the
+scheduler preempting a nice-10 sampler for a nice-0 burst on the same core
+rather than the sampler's own cost, so the period doubled and the bound
+follows it. The SMU10 kernel path exposes
 `pp_dpm_fclk` as an empty file and reports the fabric clock through
 `pp_dpm_mclk`, so the runner allows the FCLK column to read `unavailable`
 where a read of that attribute succeeds and returns nothing at campaign
@@ -482,7 +492,7 @@ calibration in which all three registered controls accepted on the exact
 instrument the census runs.
 
 - Either `P-nosidecar P P P-nosidecar` paired delta outside 0.65% refutes
-  the claim that the 5 ms sampler leaves the served rate inside the
+  the claim that the 10 ms sampler leaves the served rate inside the
   class's own spread.
 - Either `P I0 I0 P` paired delta outside the 2B's 0.65% scoreboard span
   refutes the claim that compiling the instrumentation leaves the served
@@ -524,7 +534,7 @@ remote/run-raven2-vulkan-kernel-census.sh     the runner, one class per call
 remote/summarize-kernel-census.py             rows to the per-pipeline ledger
 remote/summarize-census-controls.py           the three registered controls
 remote/summarize-perf-logger-slice.py         the S arm's op inventory
-remote/sample-clock-sidecar.py                DPM state at 5 ms on CLOCK_MONOTONIC
+remote/sample-clock-sidecar.py                DPM state at 10 ms on CLOCK_MONOTONIC
 remote/validate-clock-sidecar.py              whether a sidecar record is evidence
 remote/test-census-sha256.sh                  the embedded hash against sha256sum
 evidence/raven2-vulkan-kernel-census/<stamp>/ retained runs
