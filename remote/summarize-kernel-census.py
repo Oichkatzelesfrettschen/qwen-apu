@@ -3,9 +3,17 @@
 request's graphs, refusing every record that would make the ledger a guess.
 
 The census binary writes a `pipeline-census-v3` file of seven row kinds.
-`census_queue`, `census_selftest`, and `census_open` appear once at device
-creation and `census_close` once at cleanup, and the close row states the
-graph, pipeline, and dispatch counts the reader must recount.
+One backend context contributes one section, opened by `census_queue`,
+`census_selftest`, and `census_open` at device creation and closed by
+`census_close` at cleanup, and the close row states the graph, pipeline,
+and dispatch counts the reader must recount over that section alone. A
+process opening several contexts appends several sections to one file --
+the pinned server opens two, the first running no graph -- so the reader
+validates every section on its own, requires the `census_open`
+configuration to agree across sections because one run holds one
+configuration, and selects the single section whose graphs the request
+window intersects. Graph and pipeline identity is per section, since the
+census counters live in the context's own state.
 `census_pipeline` describes a pipeline the first time an armed graph
 dispatched it: census-local id, name, entry point, source and executed
 SPIR-V SHA-256 with byte counts, specialization constants, workgroup
@@ -61,154 +69,237 @@ the graph row, a union above the completion span, a completion span above
 the host retire span, a missing or inconsistent emit row, a duplicate graph
 or pipeline id, a dispatch naming an undescribed pipeline or an unreported
 graph, a dispatch on a foreign queue family, a self-test other than
-`sha256=ok`, a close count that disagrees with the rows, and a header row
-of the wrong cardinality each fail the run with the reason on stderr.
+`sha256=ok`, a close count that disagrees with the rows, a header row of
+the wrong cardinality, a section missing one of its four header and footer
+rows, a row outside every section, a `census_open` field that differs
+between sections, two sections both holding in-window graphs, and a window
+intersecting the graphs of no section each fail the run with the reason on
+stderr.
 
 usage: summarize-kernel-census.py CENSUS_TSV --window-begin-ns N
        --window-end-ns N --expected-decode-graphs N [--phase decode|prefill]
        [--overlap-threshold F]
 Prints `pipeline` rows ranked by the total bracket upper bound inside the
 selected graphs, then one `graphs` row with the accounting, as TSV on
-stdout.
+stdout. That row ends with `contexts` and the 1-based `selected_context`,
+so a reader sees which section of the file the ledger was read from.
 """
 import argparse
 import statistics
 import sys
 
 CENSUS_FORMAT = "pipeline-census-v3"
+# `census_queue` opens a section and `census_close` ends it, so the two
+# delimit; the other two header rows are counted inside the section they
+# belong to.
+HEADER_KINDS = ("census_queue", "census_selftest", "census_open")
+# One run holds one backend configuration, so every section repeats these
+# `census_open` fields verbatim.
+OPEN_FIELDS = ("format", "device", "timestamp_period_ns",
+               "serialize_submissions", "max_nodes_per_submit", "clock")
 
 
 class CensusError(Exception):
     pass
 
 
+def new_context(index):
+    return {
+        "index": index, "pipelines": {}, "graphs": {}, "dispatches": {},
+        "emits": {}, "counts": dict.fromkeys(HEADER_KINDS, 0), "order": [],
+        "queue": {}, "selftest": {}, "opened": {}, "closed": {},
+    }
+
+
+def parse_body_row(context, row, line_number):
+    """Read one pipeline, dispatch, graph, or emit row into its section."""
+    pipelines = context["pipelines"]
+    graphs = context["graphs"]
+    dispatches = context["dispatches"]
+    emits = context["emits"]
+    kind = row[0]
+    if kind == "census_pipeline":
+        if len(row) != 21:
+            raise CensusError(f"line {line_number}: census_pipeline carries {len(row) - 1} fields, requires 20")
+        (pipeline_id, name, entry, source_sha256, source_bytes,
+         executed_sha256, executed_bytes, constants, wg_denoms,
+         subgroup, full_subgroups, parameter_count, push_constant_size,
+         vgprs, sgprs, spilled, lds, scratch, per_simd,
+         register_count) = row[1:21]
+        pipeline_id = int(pipeline_id)
+        if pipeline_id in pipelines:
+            raise CensusError(f"line {line_number}: pipeline {pipeline_id} described twice")
+        pipelines[pipeline_id] = {
+            "id": pipeline_id, "name": name, "entry": entry,
+            "spirv_source_sha256": source_sha256,
+            "spirv_source_bytes": int(source_bytes),
+            "spirv_executed_sha256": executed_sha256,
+            "spirv_executed_bytes": int(executed_bytes),
+            "constants": constants, "wg_denoms": wg_denoms,
+            "subgroup": int(subgroup), "full_subgroups": int(full_subgroups),
+            "parameter_count": int(parameter_count),
+            "push_constant_size": int(push_constant_size),
+            "vgprs": int(vgprs), "sgprs": int(sgprs), "spilled_vgprs": int(spilled),
+            "lds": int(lds), "scratch": int(scratch),
+            "subgroups_per_simd": int(per_simd),
+            "register_count": int(register_count),
+        }
+    elif kind == "census_dispatch":
+        if len(row) != 28:
+            raise CensusError(f"line {line_number}: census_dispatch carries {len(row) - 1} fields, requires 27")
+        (serial, reach_query, complete_query, pipeline_id, node_idx,
+         fused, op, dst_name, src0_name, src0_type, src1_type,
+         dst_type, ne0, ne1, ne2, ne3, src1_ne1, wg0, wg1, wg2,
+         reach_ns, complete_ns, interval_ns, submit_serial,
+         queue_family, cmd_buffer, cmd_buffer_use) = row[1:28]
+        dispatches.setdefault(int(serial), []).append({
+            "reach_query": int(reach_query),
+            "complete_query": int(complete_query),
+            "pipeline": int(pipeline_id), "node": int(node_idx),
+            "fused": int(fused), "op": op, "dst": dst_name,
+            "src0": src0_name, "src0_type": src0_type,
+            "src1_type": src1_type, "dst_type": dst_type,
+            "ne": (int(ne0), int(ne1), int(ne2), int(ne3)),
+            "src1_ne1": int(src1_ne1),
+            "wg": (int(wg0), int(wg1), int(wg2)),
+            "reach_ns": int(reach_ns), "complete_ns": int(complete_ns),
+            "interval_ns": int(interval_ns),
+            "submit": int(submit_serial), "queue_family": int(queue_family),
+            "cmd_buffer": cmd_buffer, "cmd_buffer_use": int(cmd_buffer_use),
+        })
+    elif kind == "census_graph":
+        if len(row) != 20:
+            raise CensusError(f"line {line_number}: census_graph carries {len(row) - 1} fields, requires 19")
+        (serial, n_nodes, n_dispatches, n_submits, record_ns,
+         retire_span_ns, readback_ns, dispatch_row_emit_ns, raw_sum_ns,
+         union_ns, non_dispatch_ns, completion_span_ns, overflow,
+         unavailable, unbound, read_at, waited, begin_monotonic_ns,
+         retire_monotonic_ns) = row[1:20]
+        serial = int(serial)
+        if serial in graphs:
+            raise CensusError(f"line {line_number}: graph {serial} reported twice")
+        graphs[serial] = {
+            "serial": serial,
+            "n_nodes": int(n_nodes), "dispatches": int(n_dispatches),
+            "submits": int(n_submits), "record_ns": int(record_ns),
+            "retire_span_ns": int(retire_span_ns),
+            "readback_ns": int(readback_ns),
+            "dispatch_row_emit_ns": int(dispatch_row_emit_ns),
+            "raw_sum_ns": int(raw_sum_ns), "union_ns": int(union_ns),
+            "non_dispatch_ns": int(non_dispatch_ns),
+            "completion_span_ns": int(completion_span_ns),
+            "overflow": int(overflow), "unavailable": int(unavailable),
+            "unbound": int(unbound), "read_at": read_at,
+            "waited": int(waited),
+            "begin_monotonic_ns": int(begin_monotonic_ns),
+            "retire_monotonic_ns": int(retire_monotonic_ns),
+        }
+    elif kind == "census_emit":
+        if len(row) != 6:
+            raise CensusError(f"line {line_number}: census_emit carries {len(row) - 1} fields, requires 5")
+        (serial, dispatch_rows_ns, graph_row_ns, flush_ns,
+         total_emit_ns) = row[1:6]
+        serial = int(serial)
+        if serial in emits:
+            raise CensusError(f"line {line_number}: graph {serial} carries two emit rows")
+        emits[serial] = {
+            "dispatch_rows_ns": int(dispatch_rows_ns),
+            "graph_row_ns": int(graph_row_ns),
+            "flush_ns": int(flush_ns),
+            "total_emit_ns": int(total_emit_ns),
+        }
+
+
 def parse(path):
-    pipelines = {}
-    graphs = {}
-    dispatches = {}
-    emits = {}
-    header = {"census_queue": 0, "census_selftest": 0, "census_open": 0,
-              "census_close": 0}
-    opened = {}
-    queue = {}
-    selftest = {}
-    closed = {}
+    """Split the file into context sections and validate each one alone.
+
+    A section runs census_queue, census_selftest, census_open, its body,
+    and census_close in that order. census_queue opens a section and
+    census_close ends it, so a second census_queue before a close and a row
+    outside every section are both refused with their line number.
+    """
+    contexts = []
+    current = None
     with open(path) as handle:
         for line_number, raw in enumerate(handle, 1):
             row = raw.rstrip("\n").split("\t")
             kind = row[0]
-            if kind in header:
-                header[kind] += 1
+            if kind == "census_queue":
+                if current is not None:
+                    raise CensusError(
+                        f"line {line_number}: context {current['index']} reaches a "
+                        f"second census_queue before its census_close")
+                current = new_context(len(contexts) + 1)
+            if current is None:
+                raise CensusError(f"line {line_number}: {kind} appears outside a context section")
+            if kind in HEADER_KINDS:
+                current["counts"][kind] += 1
+                current["order"].append(kind)
                 fields = dict(field.split("=", 1) for field in row[1:]
                               if "=" in field)
-                if kind == "census_open":
-                    opened = fields
-                elif kind == "census_queue":
-                    queue = fields
+                if kind == "census_queue":
+                    current["queue"] = fields
                 elif kind == "census_selftest":
-                    selftest = fields
+                    current["selftest"] = fields
                 else:
-                    closed = fields
-            elif kind == "census_pipeline":
-                if len(row) != 21:
-                    raise CensusError(f"line {line_number}: census_pipeline carries {len(row) - 1} fields, requires 20")
-                (pipeline_id, name, entry, source_sha256, source_bytes,
-                 executed_sha256, executed_bytes, constants, wg_denoms,
-                 subgroup, full_subgroups, parameter_count, push_constant_size,
-                 vgprs, sgprs, spilled, lds, scratch, per_simd,
-                 register_count) = row[1:21]
-                pipeline_id = int(pipeline_id)
-                if pipeline_id in pipelines:
-                    raise CensusError(f"line {line_number}: pipeline {pipeline_id} described twice")
-                pipelines[pipeline_id] = {
-                    "id": pipeline_id, "name": name, "entry": entry,
-                    "spirv_source_sha256": source_sha256,
-                    "spirv_source_bytes": int(source_bytes),
-                    "spirv_executed_sha256": executed_sha256,
-                    "spirv_executed_bytes": int(executed_bytes),
-                    "constants": constants, "wg_denoms": wg_denoms,
-                    "subgroup": int(subgroup), "full_subgroups": int(full_subgroups),
-                    "parameter_count": int(parameter_count),
-                    "push_constant_size": int(push_constant_size),
-                    "vgprs": int(vgprs), "sgprs": int(sgprs), "spilled_vgprs": int(spilled),
-                    "lds": int(lds), "scratch": int(scratch),
-                    "subgroups_per_simd": int(per_simd),
-                    "register_count": int(register_count),
-                }
-            elif kind == "census_dispatch":
-                if len(row) != 28:
-                    raise CensusError(f"line {line_number}: census_dispatch carries {len(row) - 1} fields, requires 27")
-                (serial, reach_query, complete_query, pipeline_id, node_idx,
-                 fused, op, dst_name, src0_name, src0_type, src1_type,
-                 dst_type, ne0, ne1, ne2, ne3, src1_ne1, wg0, wg1, wg2,
-                 reach_ns, complete_ns, interval_ns, submit_serial,
-                 queue_family, cmd_buffer, cmd_buffer_use) = row[1:28]
-                dispatches.setdefault(int(serial), []).append({
-                    "reach_query": int(reach_query),
-                    "complete_query": int(complete_query),
-                    "pipeline": int(pipeline_id), "node": int(node_idx),
-                    "fused": int(fused), "op": op, "dst": dst_name,
-                    "src0": src0_name, "src0_type": src0_type,
-                    "src1_type": src1_type, "dst_type": dst_type,
-                    "ne": (int(ne0), int(ne1), int(ne2), int(ne3)),
-                    "src1_ne1": int(src1_ne1),
-                    "wg": (int(wg0), int(wg1), int(wg2)),
-                    "reach_ns": int(reach_ns), "complete_ns": int(complete_ns),
-                    "interval_ns": int(interval_ns),
-                    "submit": int(submit_serial), "queue_family": int(queue_family),
-                    "cmd_buffer": cmd_buffer, "cmd_buffer_use": int(cmd_buffer_use),
-                })
-            elif kind == "census_graph":
-                if len(row) != 20:
-                    raise CensusError(f"line {line_number}: census_graph carries {len(row) - 1} fields, requires 19")
-                (serial, n_nodes, n_dispatches, n_submits, record_ns,
-                 retire_span_ns, readback_ns, dispatch_row_emit_ns, raw_sum_ns,
-                 union_ns, non_dispatch_ns, completion_span_ns, overflow,
-                 unavailable, unbound, read_at, waited, begin_monotonic_ns,
-                 retire_monotonic_ns) = row[1:20]
-                serial = int(serial)
-                if serial in graphs:
-                    raise CensusError(f"line {line_number}: graph {serial} reported twice")
-                graphs[serial] = {
-                    "serial": serial,
-                    "n_nodes": int(n_nodes), "dispatches": int(n_dispatches),
-                    "submits": int(n_submits), "record_ns": int(record_ns),
-                    "retire_span_ns": int(retire_span_ns),
-                    "readback_ns": int(readback_ns),
-                    "dispatch_row_emit_ns": int(dispatch_row_emit_ns),
-                    "raw_sum_ns": int(raw_sum_ns), "union_ns": int(union_ns),
-                    "non_dispatch_ns": int(non_dispatch_ns),
-                    "completion_span_ns": int(completion_span_ns),
-                    "overflow": int(overflow), "unavailable": int(unavailable),
-                    "unbound": int(unbound), "read_at": read_at,
-                    "waited": int(waited),
-                    "begin_monotonic_ns": int(begin_monotonic_ns),
-                    "retire_monotonic_ns": int(retire_monotonic_ns),
-                }
-            elif kind == "census_emit":
-                if len(row) != 6:
-                    raise CensusError(f"line {line_number}: census_emit carries {len(row) - 1} fields, requires 5")
-                (serial, dispatch_rows_ns, graph_row_ns, flush_ns,
-                 total_emit_ns) = row[1:6]
-                serial = int(serial)
-                if serial in emits:
-                    raise CensusError(f"line {line_number}: graph {serial} carries two emit rows")
-                emits[serial] = {
-                    "dispatch_rows_ns": int(dispatch_rows_ns),
-                    "graph_row_ns": int(graph_row_ns),
-                    "flush_ns": int(flush_ns),
-                    "total_emit_ns": int(total_emit_ns),
-                }
-    for kind, count in header.items():
+                    current["opened"] = fields
+            elif kind == "census_close":
+                current["closed"] = dict(field.split("=", 1) for field in row[1:]
+                                         if "=" in field)
+                contexts.append(current)
+                current = None
+            else:
+                if not current["counts"]["census_open"]:
+                    raise CensusError(
+                        f"line {line_number}: {kind} precedes the census_open of "
+                        f"context {current['index']}")
+                parse_body_row(current, row, line_number)
+    if current is not None:
+        raise CensusError(f"context {current['index']} carries no census_close")
+    if not contexts:
+        raise CensusError("the census file carries no context section")
+    for context in contexts:
+        validate_context(context)
+    # The sections come from one process against one device, so a differing
+    # census_open field reports two configurations in a file the window
+    # selects one section of.
+    reference = contexts[0]
+    for context in contexts[1:]:
+        for field in OPEN_FIELDS:
+            if context["opened"].get(field) != reference["opened"].get(field):
+                raise CensusError(
+                    f"context {context['index']} census_open declares "
+                    f"{field}={context['opened'].get(field, '-')} against "
+                    f"{reference['opened'].get(field, '-')} in context "
+                    f"{reference['index']}; the run is one configuration")
+    return contexts
+
+
+def validate_context(context):
+    """Refuse a section whose own rows disagree with its header or footer."""
+    index = context["index"]
+    pipelines = context["pipelines"]
+    graphs = context["graphs"]
+    dispatches = context["dispatches"]
+    emits = context["emits"]
+    opened = context["opened"]
+    selftest = context["selftest"]
+    closed = context["closed"]
+    for kind in HEADER_KINDS:
+        count = context["counts"][kind]
         if count != 1:
-            raise CensusError(f"{kind} appears {count} times, requires exactly one")
+            raise CensusError(f"{kind} appears {count} times in context {index}, requires exactly one")
+    if context["order"] != list(HEADER_KINDS):
+        raise CensusError(
+            f"context {index} orders its header rows {','.join(context['order'])} "
+            f"rather than {','.join(HEADER_KINDS)}")
     if opened.get("format") != CENSUS_FORMAT:
-        raise CensusError(f"census format {opened.get('format', '-')} is not {CENSUS_FORMAT}")
+        raise CensusError(f"context {index} census format {opened.get('format', '-')} is not {CENSUS_FORMAT}")
     if opened.get("clock") != "CLOCK_MONOTONIC":
-        raise CensusError(f"census clock {opened.get('clock', '-')} is not CLOCK_MONOTONIC")
+        raise CensusError(f"context {index} census clock {opened.get('clock', '-')} is not CLOCK_MONOTONIC")
     if selftest.get("sha256") != "ok":
-        raise CensusError(f"census self-test reports sha256={selftest.get('sha256', '-')} rather than ok")
-    queue_family = int(queue.get("family", -1))
+        raise CensusError(f"context {index} census self-test reports sha256={selftest.get('sha256', '-')} rather than ok")
+    queue_family = int(context["queue"].get("family", -1))
     for serial in sorted(dispatches):
         if serial not in graphs:
             raise CensusError(f"dispatch rows name graph {serial}, which has no graph row")
@@ -227,10 +318,9 @@ def parse(path):
     for field, value in counted.items():
         declared = closed.get(field)
         if declared is None:
-            raise CensusError(f"census_close states no {field} count")
+            raise CensusError(f"context {index} census_close states no {field} count")
         if int(declared) != value:
-            raise CensusError(f"census_close declares {field}={declared} against {value} parsed rows")
-    return opened, pipelines, graphs, dispatches, emits
+            raise CensusError(f"context {index} census_close declares {field}={declared} against {value} parsed rows")
 
 
 def graph_tokens(rows):
@@ -389,9 +479,34 @@ def main():
     parser.add_argument("--overlap-threshold", type=float, default=0.05)
     args = parser.parse_args()
     try:
-        opened, pipelines, graphs, dispatches, emits = parse(args.census)
+        contexts = parse(args.census)
         if args.window_end_ns <= args.window_begin_ns:
             raise CensusError("the request window is empty")
+
+        # A section holds the request where one of its graphs touches the
+        # window at all, which keeps a section whose only claim is a graph
+        # straddling an edge selectable and refuses it by serial below
+        # rather than reporting an empty file.
+        holders = [context for context in contexts
+                   if any(not (graph["retire_monotonic_ns"] < args.window_begin_ns
+                               or graph["begin_monotonic_ns"] > args.window_end_ns)
+                          for graph in context["graphs"].values())]
+        if not holders:
+            raise CensusError(
+                f"the request window {args.window_begin_ns}..{args.window_end_ns} "
+                f"intersects the graphs of none of the {len(contexts)} context sections")
+        if len(holders) > 1:
+            named = ", ".join(str(context["index"]) for context in holders)
+            raise CensusError(
+                f"contexts {named} each hold graphs inside the request window; "
+                f"the ledger reads one context")
+        selected_context = holders[0]
+        context_index = selected_context["index"]
+        opened = selected_context["opened"]
+        pipelines = selected_context["pipelines"]
+        graphs = selected_context["graphs"]
+        dispatches = selected_context["dispatches"]
+        emits = selected_context["emits"]
 
         in_window = []
         for serial, graph in sorted(graphs.items()):
@@ -531,6 +646,8 @@ def main():
         f"read_at={','.join(sorted(set(g['read_at'] for _s, g, _r in selected)))}",
         f"device={opened.get('device', '-')}",
         f"serialize_submissions={opened.get('serialize_submissions', '-')}",
+        f"contexts={len(contexts)}",
+        f"selected_context={context_index}",
     ]))
     return 0
 

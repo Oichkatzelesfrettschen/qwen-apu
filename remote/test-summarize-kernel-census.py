@@ -27,6 +27,15 @@ the recompute settles them first: a recomputed unavailable count above zero
 requires a negative endpoint the bracket check already refuses, and a
 recomputed union never exceeds the recomputed completion span it is bounded
 by. The fixture each would state is asserted against the earlier refusal.
+
+The section fixtures concatenate whole context sections, since a process
+opening two backend contexts appends two to one file. An empty section
+ahead of the run reproduces the pinned server's own shape and selects
+context 2, a second section whose graphs sit past the window selects
+context 1, two sections holding the window refuse by naming both, and a
+missing census_close, a row after a close, a body row ahead of its own
+census_open, and a census_open device that changes between sections each
+refuse.
 """
 import os
 import subprocess
@@ -232,6 +241,7 @@ assert "submits_per_graph=1.000" in graphs, graphs
 assert "read_at=synchronize" in graphs, graphs
 assert "device=fixture" in graphs, graphs
 assert "serialize_submissions=0" in graphs, graphs
+assert "contexts=1" in graphs and "selected_context=1" in graphs, graphs
 print("decode_ledger=accepted")
 
 result = run(base, phase="prefill")
@@ -377,4 +387,89 @@ refused("not pipeline-census-v3", expected=2,
 refused("is not CLOCK_MONOTONIC", expected=2,
         header=(QUEUE, SELFTEST, OPEN.replace("CLOCK_MONOTONIC", "CLOCK_REALTIME")))
 print("defects_terminal=accepted")
+
+
+def context_section(rows, header=(QUEUE, SELFTEST, OPEN), close=True):
+    """One context section: the three header rows, a body, and the close."""
+    return list(header) + rows + ([close_row(rows)] if close else [])
+
+
+def run_file(lines, expected=2, window=WINDOW, phase="decode"):
+    """Run the summarizer over a file written verbatim from `lines`."""
+    argv = [sys.executable, summarizer, "",
+            "--window-begin-ns", str(window[0]),
+            "--window-end-ns", str(window[1]),
+            "--expected-decode-graphs", str(expected),
+            "--phase", phase]
+    with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False) as handle:
+        handle.write("\n".join(lines) + "\n")
+        argv[2] = handle.name
+    try:
+        return subprocess.run(argv, capture_output=True, text=True)
+    finally:
+        os.unlink(argv[2])
+
+
+# The pinned server opens two backend contexts and the first runs no graph,
+# so the retained file carries an empty section ahead of the run. Serials
+# restart per context, which the late section states by numbering from 0.
+empty_context = context_section([])
+late = ([pipeline_row(1, "mul_mat_vec_q8_0_f32", "64,2,1")]
+        + graph_rows(0, [dispatch(0, 1, 0, "MUL_MAT", 1, 100, 20_100)],
+                     20_000_000, 30_000))
+
+result = run_file(empty_context + context_section(base))
+assert result.returncode == 0, result.stderr
+two_context_graphs = result.stdout.rstrip("\n").split("\n")[-1].split("\t")
+assert "contexts=2" in two_context_graphs, two_context_graphs
+assert "selected_context=2" in two_context_graphs, two_context_graphs
+# The section the window selects carries the whole ledger, so the accounting
+# equals the single-section run of the same rows.
+assert two_context_graphs[3:] == graphs[3:-2] + ["contexts=2", "selected_context=2"], two_context_graphs
+
+result = run_file(context_section(base) + context_section(late))
+assert result.returncode == 0, result.stderr
+first_selected = result.stdout.rstrip("\n").split("\n")[-1].split("\t")
+assert "contexts=2" in first_selected and "selected_context=1" in first_selected, first_selected
+print("context_selection=accepted")
+
+result = run_file(context_section(base) + context_section(base))
+assert result.returncode != 0, result.stdout
+assert "contexts 1, 2 each hold graphs inside the request window" in result.stderr, result.stderr
+result = run_file(context_section(base) + context_section(late),
+                  window=(15_000_000, 16_000_000))
+assert result.returncode != 0, result.stdout
+assert "intersects the graphs of none of the 2 context sections" in result.stderr, result.stderr
+print("context_ambiguity=accepted")
+
+# A section stops at its census_close, so a missing one is refused both at
+# the next census_queue and at end of file.
+result = run_file(context_section(base, close=False))
+assert result.returncode != 0 and "context 1 carries no census_close" in result.stderr, result.stderr
+result = run_file(context_section(base, close=False) + context_section(late))
+assert result.returncode != 0, result.stdout
+assert "context 1 reaches a second census_queue" in result.stderr, result.stderr
+# A body row after a close belongs to no section.
+result = run_file(context_section(base) + [dispatch_row(dispatch(9, 1, 0, "MUL_MAT", 1, 100, 20_100))])
+assert result.returncode != 0, result.stdout
+assert "census_dispatch appears outside a context section" in result.stderr, result.stderr
+# A body row ahead of its own census_open is refused with its line number.
+result = run_file([QUEUE, SELFTEST] + base + [OPEN, close_row(base)])
+assert result.returncode != 0, result.stdout
+assert "precedes the census_open of context 1" in result.stderr, result.stderr
+print("section_shape=accepted")
+
+result = run_file(context_section(base) + context_section(
+    late, header=(QUEUE, SELFTEST, OPEN.replace("device=fixture", "device=second"))))
+assert result.returncode != 0, result.stdout
+assert "context 2 census_open declares device=second against fixture in context 1" in result.stderr, result.stderr
+assert "the run is one configuration" in result.stderr, result.stderr
+# The rule covers every census_open field rather than the device alone.
+result = run_file(context_section(base) + context_section(
+    late, header=(QUEUE, SELFTEST,
+                  OPEN.replace("serialize_submissions=0", "serialize_submissions=1"))))
+assert result.returncode != 0, result.stdout
+assert "declares serialize_submissions=1 against 0" in result.stderr, result.stderr
+print("one_configuration=accepted")
+
 print("summarize_kernel_census=accepted")
