@@ -15,17 +15,30 @@ follows it.
 
 The run-wide achieved period the footer declares is a mean, so a 100 ms
 hole surrounded by perfect 5 ms samples holds it while losing two 2B token
-intervals. `--max-gap-ns` bounds the adjacent gap instead: every gap between
-consecutive `monotonic_ns` rows is measured, the `gaps` line reports the
-nearest-rank median, p95, and p99 beside the maximum, the count above 1.5 x
-the requested period, and the count above the bound, and a gap over the
-bound refuses the record where it overlaps the request window. A gap
-[t_i, t_i+1] overlaps the window where t_i+1 exceeds the window begin and
-t_i falls below the window end; a record supplied with no window is refused
-by an over-bound gap anywhere.
+intervals. Coverage rather than the widest gap is what a record owes the
+arm, and the two are measured separately. Every gap between consecutive
+`monotonic_ns` rows is measured; a gap wider than two requested periods has
+missed at least one scheduled sample, and the window-clipped duration of
+those gaps summed over the request window is `window_lost_fraction`, the
+fraction of the window the record can place no clock step in.
+`--max-lost-fraction` bounds it, and that is the coverage criterion.
+
+A sampler at nice 19 sharing two cores with a server at nice 19 is held off
+for scheduler slices, which is measured on the appliance rather than
+conjectured: per window 3 to 5 gaps over 20 ms with a 60 to 119 ms maximum
+and a lost fraction of 0.0122 to 0.0147, and the gaps do not follow a slow
+sysfs read, since the preceding sample cost 0.2 to 1.0 ms at almost every
+one. A CFS slice is therefore an observation the `gaps` line reports with
+its distribution, its maximum, and its counts. `--max-gap-ns` refuses a
+stall rather than a slice: one gap of ten requested periods overlapping the
+window, 100 ms at the appliance's 10 ms period, is a sampler that stopped.
+A gap [t_i, t_i+1] overlaps the window where t_i+1 exceeds the window begin
+and t_i falls below the window end; a record supplied with no window is
+refused by an over-bound gap anywhere and reports no lost fraction.
 
 usage: validate-clock-sidecar.py RECORD_TSV --sidecar-status N
-       --period-ms F --period-tolerance F --cost-bound-ns N --max-gap-ns N
+       --period-ms F --period-tolerance F --cost-bound-ns N
+       [--max-gap-ns N] [--max-lost-fraction F]
        [--window-begin-ns N --window-end-ns N]
        [--allow-unavailable COLUMN ...]
 """
@@ -100,7 +113,10 @@ def main():
     parser.add_argument("--period-ms", type=float, required=True)
     parser.add_argument("--period-tolerance", type=float, required=True)
     parser.add_argument("--cost-bound-ns", type=int, required=True)
-    parser.add_argument("--max-gap-ns", type=int, required=True)
+    # Ten requested periods at the appliance's 10 ms sampler: a stall rather
+    # than a slice. The coverage criterion is --max-lost-fraction beside it.
+    parser.add_argument("--max-gap-ns", type=int, default=100_000_000)
+    parser.add_argument("--max-lost-fraction", type=float, default=0.02)
     parser.add_argument("--window-begin-ns", type=int)
     parser.add_argument("--window-end-ns", type=int)
     parser.add_argument("--allow-unavailable", action="append", default=[])
@@ -184,35 +200,52 @@ def main():
             gaps = [later - earlier for earlier, later in zip(instants, instants[1:])]
             ordered = sorted(gaps)
             loose_bound = requested_period_ns * 3 // 2
+            # A gap wider than two requested periods has missed at least one
+            # scheduled sample, which is the threshold the lost time
+            # accumulates over; the stall bound plays no part in it.
+            missed_bound = requested_period_ns * 2
             over_loose = sum(1 for gap in gaps if gap > loose_bound)
+            over_missed = sum(1 for gap in gaps if gap > missed_bound)
             over_max = sum(1 for gap in gaps if gap > args.max_gap_ns)
             if windowed:
-                over_bound_in_window = [
-                    (index, gap) for index, gap in enumerate(gaps)
+                stalls_in_window = [
+                    index for index, gap in enumerate(gaps)
                     if gap > args.max_gap_ns
                     and instants[index + 1] > args.window_begin_ns
                     and instants[index] < args.window_end_ns]
-                in_window = len(over_bound_in_window)
-                # The window time inside over-bound gaps, as the fraction of
-                # the window the record cannot place a clock step in.
+                in_window = len(stalls_in_window)
+                # The window time inside gaps that missed a sample, as the
+                # fraction of the window the record can place no clock step in.
                 lost_ns = sum(
                     min(instants[index + 1], args.window_end_ns)
                     - max(instants[index], args.window_begin_ns)
-                    for index, _gap in over_bound_in_window)
+                    for index, gap in enumerate(gaps)
+                    if gap > missed_bound
+                    and instants[index + 1] > args.window_begin_ns
+                    and instants[index] < args.window_end_ns)
                 window_ns = max(1, args.window_end_ns - args.window_begin_ns)
                 lost_fraction = lost_ns / window_ns
             else:
                 in_window = over_max
                 lost_fraction = 0.0
+            # The distribution is an observation of how CFS shares two cores
+            # between a nice-19 sampler and a nice-19 server; the verdict on
+            # this line is the stall alone.
             check("gaps", in_window == 0,
                   f"median_ns={nearest_rank(ordered, 500)} p95_ns={nearest_rank(ordered, 950)}"
                   f" p99_ns={nearest_rank(ordered, 990)} max_ns={ordered[-1]}"
-                  f" over_1_5x={over_loose} over_max={over_max}")
+                  f" over_1_5x={over_loose} over_missed={over_missed} over_max={over_max}")
             if windowed:
+                check("window_lost", lost_fraction <= args.max_lost_fraction,
+                      f"window_lost_fraction={lost_fraction:.4f}"
+                      f" bound={args.max_lost_fraction:.4f}"
+                      f" missed_bound_ns={missed_bound}")
                 print(f"gaps_in_window={in_window} begin={args.window_begin_ns}"
                       f" end={args.window_end_ns} bound_ns={args.max_gap_ns}"
                       f" window_lost_fraction={lost_fraction:.4f}")
             else:
+                print("window_lost=not_run no window supplied"
+                      f" bound={args.max_lost_fraction:.4f}")
                 print(f"gaps_in_window=not_run no window supplied bound_ns={args.max_gap_ns}")
         else:
             print(f"gaps=not_run rows={len(rows)}")

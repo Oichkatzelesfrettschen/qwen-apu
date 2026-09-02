@@ -165,8 +165,13 @@ either kernel, and dispatch fusion third.
 
 - **E1, the ISA of the pinned shader.** On the appliance, in a teardown
   window, run the I0 build once with `RADV_DEBUG=shaders` under the census
-  tuple and retain the disassembly of `mul_mat_vec_q4_k_f16_f32` and its
-  Q6_K and Q8_0 siblings, with `RADV_DEBUG=shaderstats` beside it. Count
+  tuple and retain the disassembly of `mul_mat_vec_q4_k_f32_f32` and its
+  Q6_K and Q8_0 siblings, with `RADV_DEBUG=shaderstats` beside it. The
+  accepted I1 decode ledger names the executing pipeline with
+  `constants=64,4,1` and `subgroup=64`, and its module is the file the
+  instrument writes under `GGML_VK_PIPELINE_CENSUS_DUMP` named by the
+  ledger's own digest, since none of the build tree's three `.spv`
+  variants hashes to it. Count
   VALU instructions per superblock. The count replaces the 77 above; a
   count below 50 refutes the VALU account before the census does.
 - **E2, the integer inner product through ACO.** Write one standalone GLSL
@@ -244,3 +249,70 @@ bundle server's own digest (`measured`, `$HOME/stage-a-repro.log` on the
 appliance), so the P/I base-build identity's unrecorded shader-compiler row
 is observationally closed: the historical toolchain and the current one
 produce the same bytes.
+
+## E4, first pass: the hoist inside the shader
+
+`patches/llama-vulkan-q4k-activation-group-sums.patch` forms the four
+32-element activation group sums once per column ahead of the row loop in
+`mul_mat_vec_q4_k.comp` and `mul_mat_vec_q5_k.comp` and reads them for the
+minimum term; Q6_K carries no per-block minimum and is untouched. Counted
+over the GLSL at `NUM_ROWS = 2`, the minimum term falls from 32 operations
+per lane per superblock to 20, so the per-row budget moves from 77 to 71,
+about 8% of the family's issue count rather than the 16% registered above:
+the registered figure describes a per-token pre-pass that hands every row
+four scalars, and the in-shader hoist reaches half of it because the
+twelve adds still run once per column per superblock. The pre-pass is E4b,
+whose arms `state-preserving-campaign.md` registers as E4b-A, E4b-B, E4b-C,
+and E4d.
+Token identity holds on the workstation's Vulkan device under
+`GGML_VK_DISABLE_MMVQ=1`, which forces the dequantize-then-dot family
+Raven2 executes (its `_f32_f32` pipeline under the served tuple):
+byte-identical 64-token greedy output on the 2B Q4_K_M and the 4B
+i1-Q5_K_M, each proven on the dispatch path by a negative control that
+doubled `smin` and diverged. The Q4_K rewrite reassociates the minimum
+term, so identity is measured rather than by construction; the Q5_K hoist
+preserves its addition order exactly. Four extra live scalars per column
+across the unrolled row loop are the register cost the appliance's
+shaderstats measure; E4's prediction is read against 8%, and the shader
+lab's receipt decides whether NIR or ACO had already hoisted it.
+
+The acceptance ladder is strict in this order, and each rung reports its own
+layer alone:
+
+1. A GLSL negative control proves the edited path is dispatched (done: the
+   doubled `smin` diverged, above).
+2. Token identity on the workstation Vulkan device (done: the
+   byte-identical 64-token outputs above).
+3. Compare the executed SPIR-V of control and candidate, and count exactly
+   which operations disappeared.
+4. Run E1 and read the ACO output: verify the expected instructions
+   disappear, and record VALU, SALU, VMEM, LDS, and waitcnt counts beside
+   VGPR, SGPR, and waves per SIMD.
+5. Require VGPR not to rise, occupancy not to fall, and memory operations
+   and barriers not to rise materially.
+6. An isolated Q4_K shape microbenchmark.
+7. Only then the served ABBA.
+
+The closure rule: GLSL and SPIR-V changed with effectively the same ISA
+closes E4 as compiler-already-hoists, with no served campaign. The device
+window is spent on a demonstrated instruction change alone.
+
+The first pass reads as two live reuse domains and one the shader closes.
+The hoist reaches the row domain, where the group sums serve the
+`NUM_ROWS` rows one lane owns. Above it, the row-block workgroup domain
+holds the redundancy E4 leaves: `first_row` derives from `gl_WorkGroupID`,
+so each of the `stride_d / NUM_ROWS` row-block workgroups of one matrix
+recomputes the same group sums over the same activation column. The
+activation tensor and projection fan-out domain is widest, where one
+activation's statistics serve every projection that consumes it. The
+workgroup-internal domain is closed: all 64 lanes of a workgroup serve the
+same `NUM_ROWS` rows over disjoint K slices, one workgroup is one wave at
+the served `constants=64,4,1`, and the 16-lane cohort tiles a superblock
+exactly once, so the within-workgroup reuse factor is 1.0 and a shared
+brick adds 4096 bytes of LDS, a barrier, and a write-then-read round trip
+to save nothing (`e4/e4b-c-first-pass.md`). Counted over the minimum term
+alone at the served `NUM_ROWS = 4`, per lane per superblock, the control
+issues 64 operations, E4 issues 28, and a pre-pass consumer issues 16 plus
+four scalar loads. `state-preserving-campaign.md` registers E4b-A over the
+workgroup domain and E4b-B over the projection fan-out, carries E4b-C as
+refuted, and puts E4d on the token-column axis beside them.
