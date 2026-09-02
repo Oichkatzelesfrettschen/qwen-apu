@@ -119,6 +119,25 @@ registry and ledger digests beside the current registry digest, and the
 mode with its calibration receipt, so an arbitrary executable path cannot
 define production by name.
 
+P and I differ by the census instrumentation alone, and the runner proves
+it rather than naming it. Each manifest yields a base-build identity from
+the rows both carry: the llama.cpp commit, the production patch series
+digest, the checkpoint patch and source digests, the compiler flags, and
+the CMake flags with `-DGGML_VULKAN_PIPELINE_CENSUS=ON` removed; the
+compiler identity is read from each executable's own `.comment` section,
+since the manifest records flags rather than the toolchain. The two
+identities must be equal, I's CMake delta against P must be exactly that
+one flag, and I's manifest must name `candidate_series
+llama-vulkan-pipeline-census.patch`, so `P I0 I0 P` measures compiled
+instrumentation rather than a different commit, compiler, patch prefix, or
+configuration. `inputs.tsv` records both identity digests and the delta.
+The shader compiler identity is recorded as `unrecorded`, since the
+manifest at the promoted build carries no such row; a manifest row for it
+is the change that would bind it. Manifest declaration values are compared
+inside `awk` over the whole tab-delimited field, so `serving_eligible
+yes extra` is the literal it is and refuses rather than word-splitting to
+`yes`.
+
 The census binary is a diagnostic artifact and never a serving one. Its
 artifact manifest carries `instrumentation	pipeline-census-v3`,
 `build_role	diagnostic`, and `serving_eligible	no`, each exactly once.
@@ -154,7 +173,20 @@ explicit `QWEN_LLAMA_SERVER` and a loopback listener, forwards
 `QWEN_PERF_LOGGER` across the tmux boundary, and
 `radv-low-priority-env.sh` turns a positive `QWEN_PERF_LOGGER` into
 `GGML_VK_PERF_LOGGER=1` at that frequency inside the diagnostic branch
-alone; under a serving profile the variable refuses the launch. The logger
+alone; under a serving profile the variable refuses the launch. The
+profile's environment follows from that one number: after the scrub it
+exports `GGML_VK_SERIALIZE_SUBMISSIONS=1`,
+`GGML_VK_MAX_NODES_PER_SUBMIT=32`, `GGML_VK_PERF_LOGGER=1`, and
+`GGML_VK_PERF_LOGGER_FREQUENCY`, restates the unsets for
+`GGML_VK_PERF_LOGGER_CONCURRENT`, `GGML_VK_PIPELINE_STATS`,
+`GGML_VK_MEMORY_LOGGER`, `GGML_VK_SUBMIT_TRACE`, and `RADV_DEBUG`, and
+refuses a diagnostic launch that names no frequency, so an ambient
+diagnostic setting in the calling shell or the tmux server reaches no arm.
+`measure-served-decode.sh` retains the result rather than the intent:
+it reads `/proc/PID/environ` while the server's identity is pinned and
+writes the `GGML_VK_`, `RADV_`, `VK_`, and `QWEN_PERF_LOGGER` names into
+`server-effective-env.tsv` beside `server-process.json`, with one
+`environ=unreadable` line where the read is refused. The logger
 prints to the server's stderr, which the session writes to `server.log`,
 and `measure-served-decode.sh` records that file's byte count as the
 request window opens and closes and cuts `server-log-request.slice` from
@@ -352,11 +384,21 @@ accepts it: exit status 0, one footer, a sample count above one equal to
 the rows, an achieved period within 25% of the requested one, a mean
 sample cost under 1 ms, every sensor read on every sample, footer
 instants equal to the first and last rows, and the request window covered
-on both sides. The SMU10 kernel path exposes `pp_dpm_fclk` as an empty
-file and reports the fabric clock through `pp_dpm_mclk`, so the runner
-allows the FCLK column to read `unavailable` where that file is empty at
-campaign start, records the allowance in `inputs.tsv`, and requires every
-other column on every sample. Any refusal fails the arm. The
+on both sides, and no adjacent sample gap above the registered maximum of
+10 ms overlapping the request window, since a 100 ms hole between perfect
+5 ms samples passes a run-wide mean while losing two 2B token intervals;
+the validator reports the median, p95, p99, and maximum gap and the counts
+above 7.5 ms and above the bound. The SMU10 kernel path exposes
+`pp_dpm_fclk` as an empty file and reports the fabric clock through
+`pp_dpm_mclk`, so the runner allows the FCLK column to read `unavailable`
+where a read of that attribute succeeds and returns nothing at campaign
+start, records the allowance in `inputs.tsv`, and requires every other
+column on every sample. The read decides it because sysfs reports every
+attribute at one page in `stat`, and only the readable-empty state earns
+the allowance: an absent attribute, an unreadable one, or a failing read
+is another telemetry state and refuses the run. Any refusal fails the arm.
+At a 5 ms cadence the measured 603 microsecond read cost is about 12% of
+one core's interval, which is why the sampler control stays mandatory. The
 `P-nosidecar P P P-nosidecar` control runs ahead of the other two and
 bounds what the sampler itself costs the served rate, because two hundred
 sysfs opens per second are a real load on a two-core machine even where

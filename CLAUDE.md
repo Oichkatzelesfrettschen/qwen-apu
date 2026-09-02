@@ -1135,7 +1135,15 @@ remote/run-ctx-checkpoint-sweep.sh LABEL MODEL_ID OUT
 # fixed sampling, nice 19, Vulkan placement, and speculation off. The
 # summarizer splits ambiguous overlap into same-pipeline and cross-pipeline
 # halves beside the whole-overlap verdict, since cross-pipeline overlap
-# alone blocks family ownership.
+# alone blocks family ownership. P and I must yield one base-build
+# identity (commit, patch series and checkpoint digests, compiler flags,
+# CMake flags less the one census flag, and the executable's .comment
+# compiler string) and I's CMake delta must be exactly
+# -DGGML_VULKAN_PIPELINE_CENSUS=ON, so P/I0 measures compiled
+# instrumentation alone. The FCLK allowance is granted only where a read
+# of pp_dpm_fclk succeeds and returns nothing, since sysfs reports every
+# attribute at one page in stat; the sidecar validator refuses an adjacent
+# sample gap above 10 ms inside the request window.
 # The 5 ms sidecar on core 1 at nice 10 is evidence only where
 # validate-clock-sidecar.py accepts its record, and its refusal fails the
 # arm. A diagnostic build reaches the device through an explicit
@@ -1159,7 +1167,7 @@ remote/summarize-census-controls.py OUT/arms.tsv --sidecar-bound 0.0065 \
     --compile-bound 0.0065 --collect-bound 0.02
 remote/sample-clock-sidecar.py OUT.tsv --period-ms 5 --cpu 1 --nice 10
 remote/validate-clock-sidecar.py OUT.tsv --sidecar-status 0 --period-ms 5 \
-    --period-tolerance 0.25 --cost-bound-ns 1000000
+    --period-tolerance 0.25 --cost-bound-ns 1000000 --max-gap-ns 10000000
 remote/summarize-perf-logger-slice.py OUT/arms/NN-S/server-log-request.slice \
     --expected-min-blocks 63
 
@@ -1265,6 +1273,7 @@ remote/test-run-ctx-checkpoint-sweep.sh
 python3 remote/test-summarize-kernel-census.py
 python3 remote/test-census-controls.py
 python3 remote/test-sample-clock-sidecar.py
+python3 remote/test-summarize-perf-logger-slice.py
 remote/test-census-sha256.sh
 remote/test-run-raven2-vulkan-kernel-census.sh
 remote/verify-llama-patch-series.sh

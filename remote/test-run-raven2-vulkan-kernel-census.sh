@@ -119,6 +119,11 @@ instrumented_bytes=$(server_byte_count "$instrumented_server")
     printf 'checkpoint_semantics\tnatural-boundary-v1\n'
     printf 'checkpoint_patch_series_sha256\t%s\n' "$patch_series_sha256"
     printf 'serving_eligible\tyes\n'
+    printf 'commit\tf280b26983ad0fdb705a0d9ebf0503e76f2899b0\n'
+    printf 'checkpoint_patch_sha256\t%s\n' "$patch_series_sha256"
+    printf 'checkpoint_source_sha256\t%s\n' "$patch_series_sha256"
+    printf 'compiler_flags\t-march=znver1 -mtune=znver1\n'
+    printf 'cmake_flags\t-DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON\n'
 } >"$production_root/artifact-manifest.tsv"
 {
     printf 'executable\tllama-server\t%s\t%s\n' "$instrumented_bytes" "$instrumented_sha256"
@@ -126,6 +131,12 @@ instrumented_bytes=$(server_byte_count "$instrumented_server")
     printf 'checkpoint_patch_series_sha256\t%s\n' "$patch_series_sha256"
     printf 'instrumentation\tpipeline-census-v3\n'
     printf 'serving_eligible\tno\n'
+    printf 'commit\tf280b26983ad0fdb705a0d9ebf0503e76f2899b0\n'
+    printf 'checkpoint_patch_sha256\t%s\n' "$patch_series_sha256"
+    printf 'checkpoint_source_sha256\t%s\n' "$patch_series_sha256"
+    printf 'compiler_flags\t-march=znver1 -mtune=znver1\n'
+    printf 'cmake_flags\t-DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON -DGGML_VULKAN_PIPELINE_CENSUS=ON\n'
+    printf 'candidate_series\tllama-vulkan-pipeline-census.patch\n'
 } >"$instrumented_root/artifact-manifest.tsv"
 
 # A production tree whose manifest names llama-server twice: the executable
@@ -140,6 +151,11 @@ chmod +x "$duplicate_root/bin/llama-server"
     printf 'checkpoint_semantics\tnatural-boundary-v1\n'
     printf 'checkpoint_patch_series_sha256\t%s\n' "$patch_series_sha256"
     printf 'serving_eligible\tyes\n'
+    printf 'commit\tf280b26983ad0fdb705a0d9ebf0503e76f2899b0\n'
+    printf 'checkpoint_patch_sha256\t%s\n' "$patch_series_sha256"
+    printf 'checkpoint_source_sha256\t%s\n' "$patch_series_sha256"
+    printf 'compiler_flags\t-march=znver1 -mtune=znver1\n'
+    printf 'cmake_flags\t-DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON\n'
 } >"$duplicate_root/artifact-manifest.tsv"
 
 # An instrumented tree whose executable row names other bytes, and one whose
@@ -157,6 +173,12 @@ chmod +x "$instrumented_mismatch_root/bin/llama-server"
     printf 'checkpoint_patch_series_sha256\t%s\n' "$patch_series_sha256"
     printf 'instrumentation\tpipeline-census-v3\n'
     printf 'serving_eligible\tno\n'
+    printf 'commit\tf280b26983ad0fdb705a0d9ebf0503e76f2899b0\n'
+    printf 'checkpoint_patch_sha256\t%s\n' "$patch_series_sha256"
+    printf 'checkpoint_source_sha256\t%s\n' "$patch_series_sha256"
+    printf 'compiler_flags\t-march=znver1 -mtune=znver1\n'
+    printf 'cmake_flags\t-DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON -DGGML_VULKAN_PIPELINE_CENSUS=ON\n'
+    printf 'candidate_series\tllama-vulkan-pipeline-census.patch\n'
 } >"$instrumented_mismatch_root/artifact-manifest.tsv"
 instrumented_forced_tail_root=$temporary_directory/inst-forced-tail
 mkdir -p "$instrumented_forced_tail_root/bin"
@@ -168,7 +190,58 @@ chmod +x "$instrumented_forced_tail_root/bin/llama-server"
     printf 'checkpoint_patch_series_sha256\t%s\n' "$patch_series_sha256"
     printf 'instrumentation\tpipeline-census-v3\n'
     printf 'serving_eligible\tno\n'
+    printf 'commit\tf280b26983ad0fdb705a0d9ebf0503e76f2899b0\n'
+    printf 'checkpoint_patch_sha256\t%s\n' "$patch_series_sha256"
+    printf 'checkpoint_source_sha256\t%s\n' "$patch_series_sha256"
+    printf 'compiler_flags\t-march=znver1 -mtune=znver1\n'
+    printf 'cmake_flags\t-DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON -DGGML_VULKAN_PIPELINE_CENSUS=ON\n'
+    printf 'candidate_series\tllama-vulkan-pipeline-census.patch\n'
 } >"$instrumented_forced_tail_root/artifact-manifest.tsv"
+
+# The FCLK telemetry states: sysfs reports every attribute at one page in
+# stat, so the runner reads the attribute, and only a readable attribute
+# whose read returns nothing earns the SMU10 allowance.
+drm_empty=$temporary_directory/drm-empty
+mkdir -p "$drm_empty"
+: >"$drm_empty/pp_dpm_fclk"
+drm_absent=$temporary_directory/drm-absent
+mkdir -p "$drm_absent"
+drm_unreadable=$temporary_directory/drm-unreadable
+mkdir -p "$drm_unreadable"
+printf '0: 933Mhz\n' >"$drm_unreadable/pp_dpm_fclk"
+chmod 000 "$drm_unreadable/pp_dpm_fclk"
+drm_populated=$temporary_directory/drm-populated
+mkdir -p "$drm_populated"
+printf '0: 933Mhz *\n1: 1067Mhz\n' >"$drm_populated/pp_dpm_fclk"
+
+# An instrumented tree built from another llama.cpp commit, one whose CMake
+# delta carries a second flag, one without the census flag, and a production
+# manifest whose eligibility
+# value carries a trailing word, which word splitting once read as yes.
+instrumented_foreign_commit_root=$temporary_directory/inst-foreign-commit
+mkdir -p "$instrumented_foreign_commit_root/bin"
+cp -- "$instrumented_server" "$instrumented_foreign_commit_root/bin/llama-server"
+chmod +x "$instrumented_foreign_commit_root/bin/llama-server"
+sed -e 's/^commit\t.*/commit\t0000000000000000000000000000000000000000/' \
+    "$instrumented_root/artifact-manifest.tsv" >"$instrumented_foreign_commit_root/artifact-manifest.tsv"
+instrumented_wide_delta_root=$temporary_directory/inst-wide-delta
+mkdir -p "$instrumented_wide_delta_root/bin"
+cp -- "$instrumented_server" "$instrumented_wide_delta_root/bin/llama-server"
+chmod +x "$instrumented_wide_delta_root/bin/llama-server"
+sed -e 's/-DGGML_VULKAN_PIPELINE_CENSUS=ON/-DGGML_VULKAN_PIPELINE_CENSUS=ON -DGGML_LTO=ON/' \
+    "$instrumented_root/artifact-manifest.tsv" >"$instrumented_wide_delta_root/artifact-manifest.tsv"
+instrumented_no_census_flag_root=$temporary_directory/inst-no-census-flag
+mkdir -p "$instrumented_no_census_flag_root/bin"
+cp -- "$instrumented_server" "$instrumented_no_census_flag_root/bin/llama-server"
+chmod +x "$instrumented_no_census_flag_root/bin/llama-server"
+sed -e 's/ -DGGML_VULKAN_PIPELINE_CENSUS=ON//' \
+    "$instrumented_root/artifact-manifest.tsv" >"$instrumented_no_census_flag_root/artifact-manifest.tsv"
+production_word_split_root=$temporary_directory/prod-word-split
+mkdir -p "$production_word_split_root/bin"
+cp -- "$production_server" "$production_word_split_root/bin/llama-server"
+chmod +x "$production_word_split_root/bin/llama-server"
+sed -e 's/^serving_eligible\tyes$/serving_eligible\tyes extra/' \
+    "$production_root/artifact-manifest.tsv" >"$production_word_split_root/artifact-manifest.tsv"
 
 # The scoreboard receipt: an identity check binding the production server,
 # the tuple that campaign resolved, and the inputs every census arm reruns
@@ -307,6 +380,7 @@ run_runner() {
         QWEN_CENSUS_PRODUCTION_SERVER="$production_server" \
         QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
         QWEN_CENSUS_INSTRUMENTED_SERVER="$instrumented_server" \
+        QWEN_DRM_DEVICE="$drm_empty" \
         "$@" \
         "$runner" "$model_id" "$temporary_directory/out-$run_index" \
         >"$temporary_directory/stdout-$run_index.txt" 2>"$case_stderr"
@@ -372,6 +446,27 @@ run_runner instrumented_executable_row 'the instrumented server is not the one e
 
 run_runner instrumented_forced_tail 'natural-boundary-v1 is required' \
     QWEN_CENSUS_INSTRUMENTED_SERVER="$instrumented_forced_tail_root/bin/llama-server"
+
+run_runner fclk_absent 'pp_dpm_fclk is absent' \
+    QWEN_DRM_DEVICE="$drm_absent"
+
+run_runner fclk_unreadable 'pp_dpm_fclk is unreadable' \
+    QWEN_DRM_DEVICE="$drm_unreadable"
+
+run_runner fclk_populated "$reached_preflight_end" \
+    QWEN_DRM_DEVICE="$drm_populated"
+
+run_runner base_build_commit 'descend from different base builds' \
+    QWEN_CENSUS_INSTRUMENTED_SERVER="$instrumented_foreign_commit_root/bin/llama-server"
+
+run_runner cmake_wide_delta 'descend from different base builds' \
+    QWEN_CENSUS_INSTRUMENTED_SERVER="$instrumented_wide_delta_root/bin/llama-server"
+
+run_runner cmake_missing_census_flag 'CMake delta against production must be exactly' \
+    QWEN_CENSUS_INSTRUMENTED_SERVER="$instrumented_no_census_flag_root/bin/llama-server"
+
+run_runner eligibility_word_split 'serving_eligible other than exactly yes' \
+    QWEN_CENSUS_PRODUCTION_SERVER="$production_word_split_root/bin/llama-server"
 
 run_runner scoreboard_tuple \
     'a tuple other than the one the registry and ledger resolve now' \

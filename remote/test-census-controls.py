@@ -2,8 +2,11 @@
 """The three census campaign helpers over synthetic records.
 
 validate-clock-sidecar.py accepts a record whose header, columns, rows,
-footer, period, cost, sensors, and window coverage each hold, and refuses
-one record per broken condition. summarize-census-controls.py assigns the
+footer, period, cost, sensors, adjacent gaps, and window coverage each
+hold, and refuses one record per broken condition; a hole the run-wide
+achieved period absorbs is refused by the gap bound where it falls inside
+the request window and accepted where it falls outside.
+summarize-census-controls.py assigns the
 sidecar, compile, and collect bounds to the three registered quadruples
 alone, reports each delta on its own, refuses compensation through a mean,
 marks an unregistered quadruple unclassified, and keeps S outside the
@@ -34,7 +37,18 @@ def write(name, text):
 
 def sidecar_record(samples=100, period_ns=5_000_000, cost_ns=30_000, start=1_000_000_000,
                    unavailable_rows=(), footer=None, columns=COLUMNS, header_period=None,
-                   footers=1):
+                   footers=1, hole_after=None, hole_ns=0, achieved_period_ns=None):
+    """Write one synthetic record; hole_ns is the delay inserted after hole_after.
+
+    A hole shifts every later row by hole_ns, so the gap it opens is the
+    period plus hole_ns, and achieved_period_ns keeps the footer declaring
+    the mean a real sampler would report where the rows carry a hole or a
+    period of their own.
+    """
+    def instant_of(index):
+        delay = hole_ns if hole_after is not None and index > hole_after else 0
+        return start + index * period_ns + delay
+
     lines = [
         f"# clock=CLOCK_MONOTONIC period_ns={header_period or period_ns} drm_device=/fake hwmon=/fake/hwmon0",
         "# interpretation: pp_dpm_sclk_selected_mhz is the selected graphics clock step",
@@ -42,12 +56,13 @@ def sidecar_record(samples=100, period_ns=5_000_000, cost_ns=30_000, start=1_000
         columns,
     ]
     for index in range(samples):
-        instant = start + index * period_ns
+        instant = instant_of(index)
         fclk = "unavailable" if index in unavailable_rows else "1067"
         lines.append(f"{instant}\t400\t933\t{fclk}\t37\t61000\t{cost_ns}")
-    last = start + (samples - 1) * period_ns
+    last = instant_of(samples - 1)
     footer_line = footer or (
-        f"# samples={samples} achieved_period_ns={period_ns} mean_sample_cost_ns={cost_ns}"
+        f"# samples={samples} achieved_period_ns={achieved_period_ns or period_ns}"
+        f" mean_sample_cost_ns={cost_ns}"
         f" max_sample_cost_ns={cost_ns * 2} samples_with_unavailable_sensor={len(unavailable_rows)}"
         f" first_sample_ns={start} last_sample_ns={last}")
     lines.extend([footer_line] * footers)
@@ -55,11 +70,11 @@ def sidecar_record(samples=100, period_ns=5_000_000, cost_ns=30_000, start=1_000
 
 
 def validate(text, status=0, window=(1_050_000_000, 1_400_000_000), tolerance="0.25",
-             cost_bound="1000000", period_ms="5", allow=()):
+             cost_bound="1000000", period_ms="5", allow=(), max_gap="10000000"):
     path = write("sidecar.tsv", text)
     command = [sys.executable, validator, path, "--sidecar-status", str(status),
                "--period-ms", period_ms, "--period-tolerance", tolerance,
-               "--cost-bound-ns", cost_bound]
+               "--cost-bound-ns", cost_bound, "--max-gap-ns", max_gap]
     for column in allow:
         command += ["--allow-unavailable", column]
     if window:
@@ -110,6 +125,38 @@ miscounted = sidecar_record().replace("samples_with_unavailable_sensor=0", "samp
 result = validate(miscounted.replace("\t1067\t37", "\tunavailable\t37", 1))
 assert result.returncode != 0 and "sensor_rows=refused" in result.stdout, result.stdout
 print("sidecar_refusals=accepted")
+
+# A 100 ms hole between two 5 ms samples leaves the run-wide achieved period
+# at its declared value and still loses two 2B token intervals, so the gap
+# bound is what refuses it, and it refuses only where the hole overlaps the
+# request window.
+holed = sidecar_record(hole_after=20, hole_ns=100_000_000, achieved_period_ns=5_000_000)
+refused(holed, "gaps")
+result = validate(holed)
+assert "over_max=1" in result.stdout and "gaps_in_window=1 " in result.stdout, result.stdout
+result = validate(holed, window=(1_300_000_000, 1_400_000_000))
+assert result.returncode == 0, result.stdout
+assert "gaps=accepted" in result.stdout and "over_max=1" in result.stdout, result.stdout
+assert "gaps_in_window=0 " in result.stdout, result.stdout
+# A caller supplying no window has named no interval the hole can miss, so
+# an over-bound gap anywhere refuses the record.
+refused(holed, "gaps", window=None)
+result = validate(holed, window=None)
+assert "gaps_in_window=not_run" in result.stdout, result.stdout
+# Every gap 8 ms wide passes 1.5 x the requested 5 ms period on every
+# interval while staying under the bound, so the count reports the whole
+# distribution and the verdict stays accepted.
+loose = sidecar_record(period_ns=8_000_000, header_period=5_000_000,
+                       achieved_period_ns=5_000_000)
+result = validate(loose)
+assert result.returncode == 0, result.stdout
+assert "over_1_5x=99 over_max=0" in result.stdout, result.stdout
+assert "clock_sidecar=accepted failures=-" in result.stdout, result.stdout
+refused(loose, "gaps", max_gap="7000000")
+# One row carries no adjacent gap to measure.
+result = validate(sidecar_record(samples=1))
+assert "gaps=not_run rows=1" in result.stdout, result.stdout
+print("sidecar_gaps=accepted")
 
 
 def arms_ledger(rows):

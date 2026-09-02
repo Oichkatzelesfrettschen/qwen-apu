@@ -138,6 +138,7 @@ remote/test-deployment-bundle.sh
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-kernel-census.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-sample-clock-sidecar.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-census-controls.py
+PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-perf-logger-slice.py
 remote/test-census-sha256.sh
 remote/test-run-raven2-vulkan-kernel-census.sh
 remote/test-qwen-session-signals.sh
