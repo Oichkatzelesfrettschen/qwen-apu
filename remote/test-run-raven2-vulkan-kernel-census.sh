@@ -86,12 +86,16 @@ source_repository=$(awk -F'\t' -v id="$model_id" '$1 == id { print $5 }' "$artif
 source_revision=$(awk -F'\t' -v id="$model_id" '$1 == id { print $6 }' "$artifact_ledger")
 
 # A server is an executable file bound to its manifest by byte count and
-# digest, the rule bind_server applies, so the stub text decides both.
+# digest, the rule bind_server applies, so the embedded role string decides
+# both; the runner reads the compiler identity from the ELF .comment section,
+# so each stub is compiled rather than written as a shell script.
 write_server() {
     server_root=$1
     server_body=$2
     mkdir -p "$server_root/bin"
-    printf '#!/bin/sh\n# %s\nexit 1\n' "$server_body" >"$server_root/bin/llama-server"
+    printf 'const char *role = "%s";\nint main(void) { return 1; }\n' "$server_body" \
+        >"$server_root/llama-server.c"
+    "${CC:-cc}" -o "$server_root/bin/llama-server" "$server_root/llama-server.c"
     chmod +x "$server_root/bin/llama-server"
 }
 
@@ -210,6 +214,10 @@ drm_unreadable=$temporary_directory/drm-unreadable
 mkdir -p "$drm_unreadable"
 printf '0: 933Mhz\n' >"$drm_unreadable/pp_dpm_fclk"
 chmod 000 "$drm_unreadable/pp_dpm_fclk"
+# A read that fails after the readability test passes: a directory is
+# readable by mode and cat refuses it, on every UID.
+drm_read_failure=$temporary_directory/drm-read-failure
+mkdir -p "$drm_read_failure/pp_dpm_fclk"
 drm_populated=$temporary_directory/drm-populated
 mkdir -p "$drm_populated"
 printf '0: 933Mhz *\n1: 1067Mhz\n' >"$drm_populated/pp_dpm_fclk"
@@ -335,13 +343,34 @@ write_terminal_state() {
     } >"$terminal_path"
 }
 
+# The contract digest an attribution is held to comes from the runner's own
+# print mode over the same fixtures, so the receipt states the digest the
+# runner computes rather than a transcription of its rows.
+contract_output=$(env -i \
+    PATH="$execution_path" \
+    HOME="$home_directory" \
+    QWEN_MODELS_DIRECTORY="$models_directory" \
+    QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+    QWEN_CENSUS_PRODUCTION_SERVER="$production_server" \
+    QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+    QWEN_CENSUS_INSTRUMENTED_SERVER="$instrumented_server" \
+    QWEN_DRM_DEVICE="$drm_empty" \
+    QWEN_CENSUS_PRINT_CONTRACT=1 \
+    "$runner" "$model_id" "$temporary_directory/out-contract")
+printf '%s\n' "$contract_output" | grep -q '^contract	pipeline-census-calibration-v1$'
+contract_sha256=$(printf '%s\n' "$contract_output" | awk -F'\t' '$1 == "calibration_contract_sha256" { print $2 }')
+[ -n "$contract_sha256" ]
+printf 'contract_print=accepted sha256=%s\n' "$contract_sha256"
+
 write_calibration_inputs() {
     calibration_inputs_path=$1
     bound_production=$2
+    bound_contract=${3:-$contract_sha256}
     {
         printf 'census_mode\tcalibration\n'
         printf 'production_server_sha256\t%s\n' "$bound_production"
         printf 'instrumented_server_sha256\t%s\n' "$instrumented_sha256"
+        printf 'calibration_contract_sha256\t%s\n' "$bound_contract"
     } >"$calibration_inputs_path"
 }
 
@@ -349,6 +378,10 @@ calibration_receipt=$temporary_directory/calibration
 mkdir -p "$calibration_receipt"
 write_terminal_state "$calibration_receipt/terminal-state.tsv" 3
 write_calibration_inputs "$calibration_receipt/inputs.tsv" "$production_sha256"
+
+calibration_foreign_contract=$temporary_directory/calibration-foreign-contract
+cp -R -- "$calibration_receipt" "$calibration_foreign_contract"
+write_calibration_inputs "$calibration_foreign_contract/inputs.tsv" "$production_sha256" "$foreign_sha256"
 
 calibration_two_controls=$temporary_directory/calibration-two-controls
 cp -R -- "$calibration_receipt" "$calibration_two_controls"
@@ -372,6 +405,15 @@ run_runner() {
     case_stderr=$temporary_directory/stderr-$run_index.txt
     diagnostic_file=$case_stderr
     set +e
+    # QWEN_TEST_PRIVILEGE_DROP, when given as an override, names a command
+    # prefix that drops to an unprivileged identity ahead of the runner.
+    privilege_drop=''
+    for override in "$@"; do
+        case $override in
+            QWEN_TEST_PRIVILEGE_DROP=*) privilege_drop=${override#QWEN_TEST_PRIVILEGE_DROP=} ;;
+        esac
+    done
+    # shellcheck disable=SC2086
     env -i \
         PATH="$execution_path" \
         HOME="$home_directory" \
@@ -382,6 +424,7 @@ run_runner() {
         QWEN_CENSUS_INSTRUMENTED_SERVER="$instrumented_server" \
         QWEN_DRM_DEVICE="$drm_empty" \
         "$@" \
+        $privilege_drop \
         "$runner" "$model_id" "$temporary_directory/out-$run_index" \
         >"$temporary_directory/stdout-$run_index.txt" 2>"$case_stderr"
     runner_status=$?
@@ -438,6 +481,19 @@ run_runner calibration_bound_servers 'bound other servers' \
     QWEN_CENSUS_CALIBRATION_RECEIPT="$calibration_foreign_server" \
     QWEN_CENSUS_ARMS='P I0 I0 P'
 
+# The same servers under another sidecar period yield another contract, and
+# a receipt carrying another digest is refused by the one comparison.
+run_runner calibration_contract_differs 'calibration contract differs from the receipt' \
+    QWEN_CENSUS_MODE=attribution \
+    QWEN_CENSUS_CALIBRATION_RECEIPT="$calibration_foreign_contract" \
+    QWEN_CENSUS_ARMS=I1
+
+run_runner calibration_contract_period 'calibration contract differs from the receipt' \
+    QWEN_CENSUS_MODE=attribution \
+    QWEN_CENSUS_CALIBRATION_RECEIPT="$calibration_receipt" \
+    QWEN_CENSUS_ARMS=I1 \
+    QWEN_CENSUS_SIDECAR_PERIOD_MS=10
+
 run_runner duplicate_executable_row 'not the one executable llama-server row' \
     QWEN_CENSUS_PRODUCTION_SERVER="$duplicate_root/bin/llama-server"
 
@@ -450,8 +506,23 @@ run_runner instrumented_forced_tail 'natural-boundary-v1 is required' \
 run_runner fclk_absent 'pp_dpm_fclk is absent' \
     QWEN_DRM_DEVICE="$drm_absent"
 
-run_runner fclk_unreadable 'pp_dpm_fclk is unreadable' \
-    QWEN_DRM_DEVICE="$drm_unreadable"
+# Mode 000 refuses nothing to UID 0, so a gate running as root drops to an
+# unprivileged identity for this one case where setpriv exists and reports
+# the case not run otherwise; the runtime contract stays as it is.
+if [ "$(id -u)" -ne 0 ]; then
+    run_runner fclk_unreadable 'pp_dpm_fclk is unreadable' \
+        QWEN_DRM_DEVICE="$drm_unreadable"
+elif command -v setpriv >/dev/null 2>&1; then
+    chmod 755 "$temporary_directory" "$drm_unreadable"
+    run_runner fclk_unreadable 'pp_dpm_fclk is unreadable' \
+        QWEN_DRM_DEVICE="$drm_unreadable" \
+        QWEN_TEST_PRIVILEGE_DROP='setpriv --reuid=65534 --regid=65534 --clear-groups'
+else
+    printf 'fclk_unreadable=not_run reason=uid_0_without_setpriv\n'
+fi
+
+run_runner fclk_read_failure 'pp_dpm_fclk read failed' \
+    QWEN_DRM_DEVICE="$drm_read_failure"
 
 run_runner fclk_populated "$reached_preflight_end" \
     QWEN_DRM_DEVICE="$drm_populated"
@@ -480,6 +551,206 @@ run_runner scoreboard_models_absent 'carries no readable models-resolved\.tsv' \
 
 run_runner scoreboard_server_row 'does not carry one accepted server row' \
     QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_foreign/identity-check.tsv"
+
+# A terminating signal ends the arm rather than the sampler alone. The runner
+# installs cleanup_children on TERM ahead of the arm loop and runs the served
+# runner as a background job under wait, so a TERM delivered mid-arm reaches
+# both children at once. This section drives one arm far enough to hold a
+# sampling sidecar beside a live served child, signals the runner, and reads
+# the two pids and the clock record afterwards.
+#
+# The runner is copied into a scratch directory because it resolves
+# measure-served-decode.sh, the registry reader, and the census readers
+# through its own directory: the fake served runner placed there is what
+# makes an arm last long enough to signal. The registry reader and its
+# ledgers are linked from the tree, and the artifact ledger is copied,
+# because the runner refuses a linked ledger by its own -L test.
+active_fixture=signal_cleanup
+signal_directory=$temporary_directory/signal
+mkdir -p "$signal_directory"
+signal_runner=$signal_directory/run-raven2-vulkan-kernel-census.sh
+cp -- "$runner" "$signal_runner"
+chmod +x "$signal_runner"
+cp -- "$artifact_ledger" "$signal_directory/model-artifacts.tsv"
+for linked_member in model-registry.sh models.tsv ctx-checkpoints.tsv \
+    validated-tuples.tsv quarantine.tsv draft-pairs.tsv \
+    summarize-kernel-census.py summarize-census-controls.py \
+    sample-clock-sidecar.py validate-clock-sidecar.py \
+    summarize-perf-logger-slice.py; do
+    ln -s -- "$script_directory/$linked_member" "$signal_directory/$linked_member"
+done
+
+# The served runner the arm launches: it records its own pid inside the arm
+# directory, answers TERM with 143, and sleeps in fifth-of-a-second steps, so
+# the trap runs at the signal where a single foreground sleep of two minutes
+# would defer it and hold cleanup_children in its own wait.
+cat >"$signal_directory/measure-served-decode.sh" <<'FAKE_SERVED_RUNNER'
+#!/bin/sh
+set -eu
+printf '%s\n' "$$" >"$QWEN_RESULT_DIRECTORY/fake.pid"
+trap 'exit 143' TERM
+served_iterations=0
+while [ "$served_iterations" -lt 600 ]; do
+    sleep 0.2
+    served_iterations=$((served_iterations + 1))
+done
+FAKE_SERVED_RUNNER
+chmod +x "$signal_directory/measure-served-decode.sh"
+
+# The preflight ends at the host name and the inherited session, so this one
+# case supplies both: a hostname earlier on PATH than the system's own and a
+# structurally valid SSH_CONNECTION.
+signal_bin=$temporary_directory/signal-bin
+mkdir -p "$signal_bin"
+cat >"$signal_bin/hostname" <<'FAKE_HOSTNAME'
+#!/bin/sh
+printf 'hp14-dk1xxx\n'
+FAKE_HOSTNAME
+chmod +x "$signal_bin/hostname"
+signal_path=$signal_bin:$execution_path
+signal_ssh_connection='127.0.0.1 40000 127.0.0.1 22'
+
+# sample-clock-sidecar.py reads a starred DPM line for each clock,
+# gpu_busy_percent beside them, and temp1_input under the hwmon whose name
+# reads amdgpu, so each is present with plausible content. pp_dpm_fclk stays
+# empty, which is the SMU10 state the runner's unavailable-column allowance
+# covers and the state the calibration contract records.
+signal_drm=$temporary_directory/drm-signal
+mkdir -p "$signal_drm"
+printf '0: 200Mhz\n1: 1100Mhz *\n' >"$signal_drm/pp_dpm_sclk"
+printf '0: 933Mhz *\n1: 1067Mhz\n' >"$signal_drm/pp_dpm_mclk"
+: >"$signal_drm/pp_dpm_fclk"
+printf '37\n' >"$signal_drm/gpu_busy_percent"
+signal_hwmon=$temporary_directory/hwmon-signal
+mkdir -p "$signal_hwmon/hwmon0"
+printf 'amdgpu\n' >"$signal_hwmon/hwmon0/name"
+printf '61000\n' >"$signal_hwmon/hwmon0/temp1_input"
+
+# The first calibration arm runs with its sidecar off, so the arm that holds
+# a sampler comes from an attribution naming I0. Its receipt must carry the
+# digest of the contract this environment computes, and the DRM device and
+# the sampler's core are both contract rows, so the print invocation carries
+# exactly the QWEN_DRM_DEVICE and QWEN_CENSUS_SIDECAR_CPU values the signal
+# run does. The core is 0 because a workstation reaching this test is the
+# only machine that runs it and CPU 1 is the appliance's own choice.
+signal_contract_sha256=$(env -i \
+    PATH="$signal_path" \
+    HOME="$home_directory" \
+    QWEN_MODELS_DIRECTORY="$models_directory" \
+    QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+    QWEN_CENSUS_PRODUCTION_SERVER="$production_server" \
+    QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+    QWEN_CENSUS_INSTRUMENTED_SERVER="$instrumented_server" \
+    QWEN_DRM_DEVICE="$signal_drm" \
+    QWEN_CENSUS_SIDECAR_CPU=0 \
+    QWEN_CENSUS_PRINT_CONTRACT=1 \
+    "$signal_runner" "$model_id" "$temporary_directory/out-signal-contract" \
+    | awk -F'\t' '$1 == "calibration_contract_sha256" { print $2 }')
+[ -n "$signal_contract_sha256" ]
+signal_calibration=$temporary_directory/calibration-signal
+mkdir -p "$signal_calibration"
+write_terminal_state "$signal_calibration/terminal-state.tsv" 3
+write_calibration_inputs "$signal_calibration/inputs.tsv" "$production_sha256" \
+    "$signal_contract_sha256"
+
+signal_output=$temporary_directory/out-signal
+signal_arm_directory=$signal_output/arms/01-I0
+signal_record=$signal_arm_directory/clock-sidecar.tsv
+signal_served_pid_file=$signal_arm_directory/fake.pid
+signal_stderr=$temporary_directory/signal-stderr.txt
+diagnostic_file=$signal_stderr
+env -i \
+    PATH="$signal_path" \
+    HOME="$home_directory" \
+    QWEN_MODELS_DIRECTORY="$models_directory" \
+    QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+    QWEN_CENSUS_PRODUCTION_SERVER="$production_server" \
+    QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+    QWEN_CENSUS_INSTRUMENTED_SERVER="$instrumented_server" \
+    QWEN_DRM_DEVICE="$signal_drm" \
+    QWEN_CENSUS_SIDECAR_CPU=0 \
+    QWEN_HWMON_ROOT="$signal_hwmon" \
+    QWEN_CENSUS_MODE=attribution \
+    QWEN_CENSUS_CALIBRATION_RECEIPT="$signal_calibration" \
+    QWEN_CENSUS_ARMS=I0 \
+    QWEN_CENSUS_COOLDOWN_S=0 \
+    SSH_CONNECTION="$signal_ssh_connection" \
+    "$signal_runner" "$model_id" "$signal_output" \
+    >"$temporary_directory/signal-stdout.txt" 2>"$signal_stderr" &
+signal_runner_pid=$!
+
+# The arm holds once the served child has recorded its pid and the sampler
+# has flushed data rows; the sampler flushes on its own buffer at about a
+# second, so the wait is bounded rather than instantaneous.
+signal_poll=0
+signal_arm_poll_bound=100
+while [ "$signal_poll" -lt "$signal_arm_poll_bound" ]; do
+    if [ -r "$signal_served_pid_file" ] && [ -r "$signal_record" ] \
+        && [ "$(grep -c '^[0-9]' "$signal_record" || true)" -ge 3 ]; then
+        break
+    fi
+    sleep 0.2
+    signal_poll=$((signal_poll + 1))
+done
+if [ "$signal_poll" -ge "$signal_arm_poll_bound" ]; then
+    kill -TERM "$signal_runner_pid" 2>/dev/null || true
+    wait "$signal_runner_pid" 2>/dev/null || true
+    printf 'the signal case reached no sampling arm inside %s seconds\n' \
+        "$((signal_arm_poll_bound / 5))" >&2
+    if [ -r "$signal_arm_directory/clock-sidecar.stderr" ]; then
+        sed -n '1,20p' "$signal_arm_directory/clock-sidecar.stderr" >&2
+    fi
+    exit 1
+fi
+
+signal_sampler_pid=$(sed -n 's/^# sampler_pid=\([0-9][0-9]*\) .*/\1/p' "$signal_record")
+[ -n "$signal_sampler_pid" ]
+signal_served_pid=$(cat -- "$signal_served_pid_file")
+[ -n "$signal_served_pid" ]
+kill -TERM "$signal_runner_pid"
+set +e
+wait "$signal_runner_pid"
+signal_status=$?
+set -e
+if [ "$signal_status" -ne 143 ]; then
+    printf 'the signalled runner exited %s where its TERM trap exits 143\n' \
+        "$signal_status" >&2
+    exit 1
+fi
+
+# Status 143 is what an untrapped TERM reports as well, so the claim rests on
+# the two children: the sampler leaves and its record stops growing, and the
+# served child leaves rather than sleeping out its two minutes.
+signal_poll=0
+signal_exit_poll_bound=25
+while [ "$signal_poll" -lt "$signal_exit_poll_bound" ] \
+    && kill -0 "$signal_sampler_pid" 2>/dev/null; do
+    sleep 0.2
+    signal_poll=$((signal_poll + 1))
+done
+if kill -0 "$signal_sampler_pid" 2>/dev/null; then
+    printf 'the clock sidecar %s survives the signalled runner\n' \
+        "$signal_sampler_pid" >&2
+    kill -TERM "$signal_sampler_pid" 2>/dev/null || true
+    exit 1
+fi
+if kill -0 "$signal_served_pid" 2>/dev/null; then
+    printf 'the served runner child %s survives the signalled runner\n' \
+        "$signal_served_pid" >&2
+    kill -TERM "$signal_served_pid" 2>/dev/null || true
+    exit 1
+fi
+signal_record_bytes=$(wc -c <"$signal_record" | tr -d ' ')
+sleep 1
+signal_record_bytes_after=$(wc -c <"$signal_record" | tr -d ' ')
+if [ "$signal_record_bytes_after" != "$signal_record_bytes" ]; then
+    printf 'the clock record grew from %s to %s bytes after the runner exited\n' \
+        "$signal_record_bytes" "$signal_record_bytes_after" >&2
+    exit 1
+fi
+diagnostic_file=
+printf 'signal_cleanup=accepted sampler_pid=%s served_pid=%s record_bytes=%s\n' \
+    "$signal_sampler_pid" "$signal_served_pid" "$signal_record_bytes"
 
 active_fixture=completion
 printf 'run_raven2_vulkan_kernel_census_preflight=accepted cases=%s\n' "$run_index"

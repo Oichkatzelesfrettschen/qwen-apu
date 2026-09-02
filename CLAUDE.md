@@ -1144,6 +1144,14 @@ remote/run-ctx-checkpoint-sweep.sh LABEL MODEL_ID OUT
 # of pp_dpm_fclk succeeds and returns nothing, since sysfs reports every
 # attribute at one page in stat; the sidecar validator refuses an adjacent
 # sample gap above 10 ms inside the request window.
+# The runner writes calibration-contract.tsv (tuple, both digests,
+# base-build identity, request shape, sidecar geometry and bounds, latency
+# probe digest) and records its SHA-256; an attribution requires the
+# receipt's calibration_contract_sha256 to equal its own, and
+# QWEN_CENSUS_PRINT_CONTRACT=1 prints the contract without touching the
+# device. A TERM to the runner ends the served child and the sidecar
+# together. The measurement head and the analysis head are recorded
+# separately, so a gated reader fix reinterprets retained raw records.
 # The 5 ms sidecar on core 1 at nice 10 is evidence only where
 # validate-clock-sidecar.py accepts its record, and its refusal fails the
 # arm. A diagnostic build reaches the device through an explicit
@@ -1169,7 +1177,7 @@ remote/sample-clock-sidecar.py OUT.tsv --period-ms 5 --cpu 1 --nice 10
 remote/validate-clock-sidecar.py OUT.tsv --sidecar-status 0 --period-ms 5 \
     --period-tolerance 0.25 --cost-bound-ns 1000000 --max-gap-ns 10000000
 remote/summarize-perf-logger-slice.py OUT/arms/NN-S/server-log-request.slice \
-    --expected-min-blocks 63
+    --expected-decode-blocks 63
 
 # Deployment bundles: the server, its manifest, the checkpoint ledger, and
 # the presets generated against that ledger as one activated unit.

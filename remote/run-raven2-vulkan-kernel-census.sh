@@ -54,7 +54,8 @@ set -eu
 # runner exited 0 with a consistent rate, the sidecar exited 0 and its record
 # passes validate-clock-sidecar.py, an I1 census passes the summarizer over
 # the retained request window with predicted_n - 1 decode graphs, and an S
-# slice holds at least that many logger blocks. A refuted registered control
+# slice holds exactly that many decode blocks once each complete block is
+# classified by its token column. A refuted registered control
 # ends the campaign as refuted with exit 3; a failed arm ends it as failed
 # with exit 1; accepted alone exits 0.
 #
@@ -85,6 +86,7 @@ set -eu
 #                                    request window, default 10
 #   QWEN_CENSUS_SIDECAR_CPU          the core the sampler is pinned to, default 1
 #   QWEN_CENSUS_SIDECAR_NICE         the sampler's niceness, default 10
+#   QWEN_CENSUS_PRINT_CONTRACT       1 prints the calibration contract and its digest, then exits
 
 if [ "$#" -ne 2 ]; then
     printf 'usage: %s MODEL_ID OUTPUT_DIRECTORY\n' "$0" >&2
@@ -225,6 +227,13 @@ for arm in $arms; do
             ;;
     esac
 done
+# An attribution binds both servers whatever its arms run, since its
+# contract digest must equal the calibration's and that digest carries
+# both binaries.
+if [ "$census_mode" = attribution ]; then
+    needs_production=1
+    needs_instrumented=1
+fi
 
 # The tuple is the registry's own, read through the same reader the
 # scoreboard campaign used. The checkpoint count decides which
@@ -498,6 +507,13 @@ base_build_identity() {
         | tr '\n' ' ' | sed 's/ *$//') || true
     identity_compiler=$(readelf -p .comment "$identity_server" 2>/dev/null \
         | sed -n 's/^ *\[ *[0-9]*\] *//p' | sort | tr '\n' ';')
+    # Two empty compiler strings compare equal and prove nothing, so an
+    # executable whose .comment section names no compiler refuses.
+    if [ -z "$identity_compiler" ]; then
+        printf 'the %s server carries no compiler identity in its .comment section: %s\n' \
+            "$identity_role" "$identity_server" >&2
+        exit 2
+    fi
     {
         printf 'commit\t%s\n' "$identity_commit"
         printf 'checkpoint_patch_series_sha256\t%s\n' "$identity_series"
@@ -578,6 +594,74 @@ if [ "$census_mode" = attribution ]; then
     fi
     calibration_receipt_sha256=$(sha256sum "$calibration_receipt/terminal-state.tsv" | cut -d ' ' -f 1)
 fi
+
+# The calibration contract is one canonical file rather than a list of
+# field comparisons: every setting under which the three controls were
+# accepted, from the model tuple and both server digests through the sidecar
+# geometry, the bounds, and the latency probe, in fixed row order. Its digest
+# is recorded by the calibration and required equal by every attribution, so
+# a sidecar period or a bound changed between the two refuses the attribution
+# by one comparison. The probe is bound by digest where one is armed.
+latency_probe=${QWEN_CENSUS_LATENCY_PROBE:-}
+latency_probe_sha256=-
+if [ -n "$latency_probe" ]; then
+    if [ ! -r "$latency_probe" ]; then
+        printf 'QWEN_CENSUS_LATENCY_PROBE is unreadable: %s\n' "$latency_probe" >&2
+        exit 2
+    fi
+    latency_probe_sha256=$(sha256sum "$latency_probe" | cut -d ' ' -f 1)
+fi
+write_calibration_contract() {
+    {
+        printf 'contract\tpipeline-census-calibration-v1\n'
+        printf 'model_id\t%s\nmodel_sha256\t%s\nmodel_bytes\t%s\n' "$model_id" "$ledger_sha256" "$ledger_bytes"
+        printf 'context\t%s\nbatch\t%s\nubatch\t%s\ncache_k\t%s\ncache_v\t%s\nflash_attention\t%s\n' \
+            "$context" "$batch" "$ubatch" "$cache_k" "$cache_v" "$flash"
+        printf 'ctx_checkpoints\t%s\ncheckpoint_min_step\t%s\n' "$ctx_checkpoints" "$checkpoint_min_step"
+        printf 'production_server_sha256\t%s\ninstrumented_server_sha256\t%s\n' "$production_sha256" "$instrumented_sha256"
+        printf 'base_build_identity_sha256\t%s\n' "$production_base_identity_sha256"
+        printf 'generate_tokens\t64\nsampling\ttemperature=0 top_k=1 seed=1 ignore_eos=true thinking=false\n'
+        printf 'profile\tlow-async\nserialized_profile\tdiagnostic\nserver_nice\t19\nserver_io_class\tidle\n'
+        printf 'sidecar_period_ms\t%s\nsidecar_tolerance\t%s\nsidecar_cost_ns\t%s\nsidecar_max_gap_ns\t%s\n' \
+            "$sidecar_period_ms" "$sidecar_tolerance" "$sidecar_cost_ns" "$sidecar_max_gap_ns"
+        printf 'sidecar_cpu\t%s\nsidecar_nice\t%s\nsidecar_drm_device\t%s\nsidecar_allowed_unavailable\t%s\n' \
+            "$sidecar_cpu" "$sidecar_nice" "$drm_device" "${sidecar_allowed_unavailable:--}"
+        printf 'sidecar_bound\t%s\ncompile_bound\t%s\ncollect_bound\t%s\noverlap_threshold\t%s\n' \
+            "$sidecar_bound" "$compile_bound" "$collect_bound" "$overlap_threshold"
+        printf 'latency_probe_sha256\t%s\n' "$latency_probe_sha256"
+    } >"$1"
+}
+contract_scratch=$(mktemp)
+write_calibration_contract "$contract_scratch"
+calibration_contract_sha256=$(sha256sum "$contract_scratch" | cut -d ' ' -f 1)
+# QWEN_CENSUS_PRINT_CONTRACT=1 prints the contract this invocation would
+# run under and ends ahead of the host check, so an operator or a test reads
+# the digest an attribution will be held to without touching the device.
+if [ "${QWEN_CENSUS_PRINT_CONTRACT:-0}" = 1 ]; then
+    cat -- "$contract_scratch"
+    printf 'calibration_contract_sha256\t%s\n' "$calibration_contract_sha256"
+    rm -f -- "$contract_scratch"
+    exit 0
+fi
+if [ "$census_mode" = attribution ]; then
+    receipt_contract_sha256=$(awk -F'\t' '$1 == "calibration_contract_sha256" { count++; value = $2 }
+        END { if (count != 1) exit 1; print value }' "$calibration_receipt/inputs.tsv") || {
+        printf 'the calibration receipt records other than one calibration_contract_sha256: %s\n' \
+            "$calibration_receipt/inputs.tsv" >&2
+        rm -f -- "$contract_scratch"
+        exit 2
+    }
+    if [ "$receipt_contract_sha256" != "$calibration_contract_sha256" ]; then
+        printf 'the calibration contract differs from the receipt: this run %s, receipt %s\n' \
+            "$calibration_contract_sha256" "$receipt_contract_sha256" >&2
+        if [ -r "$calibration_receipt/calibration-contract.tsv" ]; then
+            diff -- "$calibration_receipt/calibration-contract.tsv" "$contract_scratch" >&2 || true
+        fi
+        rm -f -- "$contract_scratch"
+        exit 2
+    fi
+fi
+rm -f -- "$contract_scratch"
 
 # measure-served-decode.sh admits an arm only under the served execution
 # contract the scoreboard campaign established: the measured host is
@@ -673,8 +757,35 @@ printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\
     printf 'timestamp_period_ns\t40\ninterval_endpoint_equality\texact_on_this_device\n'
     printf 'model_artifacts\t%s\nmodel_artifacts_sha256\t%s\n' \
         "$artifact_ledger" "$(sha256sum "$artifact_ledger" | cut -d ' ' -f 1)"
+    printf 'calibration_contract_sha256\t%s\nlatency_probe\t%s\nlatency_probe_sha256\t%s\n' \
+        "$calibration_contract_sha256" "${latency_probe:--}" "$latency_probe_sha256"
     printf 'started_utc\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } >"$output_directory/inputs.tsv"
+
+# A terminating signal ends the served runner and the sidecar together:
+# the sampler is a background child that the normal path kills and waits
+# for after the arm, so a runner ended mid-arm would otherwise leave it
+# sampling into the arm directory. The pids are cleared after each normal
+# wait so the exit trap acts once.
+sidecar_pid=''
+served_pid=''
+cleanup_children() {
+    if [ -n "$served_pid" ]; then
+        kill -TERM "$served_pid" 2>/dev/null || true
+        wait "$served_pid" 2>/dev/null || true
+        served_pid=''
+    fi
+    if [ -n "$sidecar_pid" ]; then
+        kill -TERM "$sidecar_pid" 2>/dev/null || true
+        wait "$sidecar_pid" 2>/dev/null || true
+        sidecar_pid=''
+    fi
+}
+trap cleanup_children EXIT
+trap 'cleanup_children; trap - EXIT; exit 143' TERM
+trap 'cleanup_children; trap - EXIT; exit 130' INT
+trap 'cleanup_children; trap - EXIT; exit 129' HUP
+write_calibration_contract "$output_directory/calibration-contract.tsv"
 
 slot=0
 arm_failures=0
@@ -704,6 +815,9 @@ for arm in $arms; do
             --drm-device "$drm_device" 2>"$arm_directory/clock-sidecar.stderr" &
         sidecar_pid=$!
     fi
+    # The served runner runs as a background job under wait, which a trap
+    # interrupts, so a terminating signal reaches the runner and the sidecar
+    # at once rather than after the arm completes.
     set +e
     env \
         QWEN_LLAMA_SERVER="$server" \
@@ -736,13 +850,17 @@ for arm in $arms; do
         QWEN_EXECUTION_PROOF_SHA256="$execution_proof_sha256" \
         QWEN_BENCH_GENERATE=64 \
         "$runner" "$arm_label" "$model_path" "$profile" \
-        >"$arm_directory/runner.stdout" 2>"$arm_directory/runner.stderr"
+        >"$arm_directory/runner.stdout" 2>"$arm_directory/runner.stderr" &
+    served_pid=$!
+    wait "$served_pid"
     runner_status=$?
+    served_pid=''
     sidecar_status=-
     if [ -n "$sidecar_pid" ]; then
         kill -TERM "$sidecar_pid" 2>/dev/null
         wait "$sidecar_pid"
         sidecar_status=$?
+        sidecar_pid=''
     fi
     set -e
     server_sha256=$(sha256sum "$server" | cut -d ' ' -f 1)
@@ -855,7 +973,7 @@ EOF
         if [ "$status" = completed ]; then
             set +e
             python3 "$slice_summarizer" "$arm_directory/server-log-request.slice" \
-                --expected-min-blocks "$((predicted_n - 1))" \
+                --expected-decode-blocks "$((predicted_n - 1))" \
                 >"$arm_directory/perf-logger-inventory.tsv" 2>"$arm_directory/perf-logger.stderr"
             slice_status=$?
             set -e

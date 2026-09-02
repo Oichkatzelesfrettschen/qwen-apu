@@ -89,6 +89,30 @@ those two binaries. `terminal-state.tsv` carries the state, the mode, the
 four counts, and the required count, so a chain reading the exit status
 reads the calibration verdict rather than the request count.
 
+An attribution is bound to the whole calibration rather than to its two
+digests. The runner writes `calibration-contract.tsv` in fixed row order:
+the model tuple and artifact digest, both server digests, the base-build
+identity digest, the request shape, the low-async profile, nice and I/O
+class, the sidecar period, tolerance, cost limit, maximum gap, CPU,
+niceness, DRM device, and allowed unavailable sensor, the three bounds, the
+overlap threshold, and the latency probe digest. Its SHA-256 is recorded as
+`calibration_contract_sha256` in `inputs.tsv`, an attribution computes its
+own contract the same way and requires the receipt's digest to equal it,
+and a changed sidecar period or bound refuses by that one comparison
+rather than by a list of field checks that a new knob would fall outside.
+`QWEN_CENSUS_PRINT_CONTRACT=1` prints the contract an invocation would run
+under and ends ahead of the host check. A terminating signal ends the
+served runner and the sidecar together: the served runner runs as a job
+under `wait`, which a trap interrupts, and `cleanup_children` on EXIT,
+TERM, INT, and HUP signals and waits for both, so a runner ended mid-arm
+leaves no sampler writing into its arm directory.
+
+The expensive measurement and the reader that interprets it are two heads.
+A run is bound to the head that acquired it, and a later reader fix may
+reinterpret the retained raw records where it changes no measured byte,
+the new reader is gated, and the run's README records both the
+acquisition SHA and the analysis SHA.
+
 ## What P stands for and how it is bound
 
 P is bound to the scoreboard it stands for rather than to a path. Its
@@ -191,11 +215,24 @@ prints to the server's stderr, which the session writes to `server.log`,
 and `measure-served-decode.sh` records that file's byte count as the
 request window opens and closes and cuts `server-log-request.slice` from
 the retained copy, so the blocks the identity record reads are the ones
-the timed request appended. `summarize-perf-logger-slice.py` folds the
-slice into calls per block per ggml op, requires at least `predicted_n -
-1` blocks, and retains the inventory beside the I1 ledger; the op-count
-comparison between the two is a reader step over two retained files, and
-S is serialized identity evidence rather than a throughput comparator.
+the timed request appended. `summarize-perf-logger-slice.py` classifies
+each complete block before it aggregates anything: the token column is
+the largest `n` over `MUL_MAT` and `MUL_MAT_VEC` rows naming a source type
+other than `f32`, since an f32 matmul multiplies two activations, the
+Gated DeltaNet chunk products, and its `n` is a chunk dimension that
+scales with the token count (2, 8, and 32 in a decode block against 38,
+152, and 608 in a 19-token prompt block of the retained 0222Z log) rather
+than the token count itself, while every other source type names a stored
+weight whose column count is the graph's token count. A block whose
+token column is 1 is `decode`, above 1 `prefill`, and a block with no such
+row is `unknown` and refuses. The parser requires exactly `predicted_n -
+1` decode blocks and folds calls per block per ggml op over those blocks
+alone, reporting the prefill and unknown counts beside them; the retained
+0222Z log reads 63 decode and 3 prefill, where blocks 1 and 2 are the
+load-time reserve graphs ahead of `model loaded` and block 3 is the
+prompt. The inventory sits beside the I1 ledger; the op-count comparison
+between the two is a reader step over two retained files, and S is
+serialized identity evidence rather than a throughput comparator.
 
 The pinned tree's `vk_pipeline_struct` keeps one resource field,
 `register_count`, filled from the NVIDIA-named `Register Count` statistic
@@ -471,8 +508,8 @@ instrument the census runs.
   span exceeding the host retire span, refutes the timestamp conversion
   and fails the arm.
 - A sidecar record refused by the validator fails the arm.
-- An S slice holding fewer than `predicted_n - 1` logger blocks fails the
-  arm.
+- An S slice holding other than `predicted_n - 1` decode blocks, or any
+  block whose phase cannot be classified, fails the arm.
 - A pipeline whose RADV statistics are absent or of an unexpected format is
   recorded with `-` in those fields and never with the NVIDIA register
   count in their place.
