@@ -5,7 +5,15 @@ validate-clock-sidecar.py accepts a record whose header, columns, rows,
 footer, period, cost, sensors, adjacent gaps, and window coverage each
 hold, and refuses one record per broken condition; a hole the run-wide
 achieved period absorbs is refused by the gap bound where it falls inside
-the request window and accepted where it falls outside.
+the request window and accepted where it falls outside. Under
+`--required-sclk-mhz` and `--required-mclk-mhz` it states the clock
+invariant a forced policy replaces the regime taxonomy with -- held over a
+window whose delivered graphics frequency sits at the required step and
+whose fabric clock stays at or above its floor, violated over one below
+either or over no sample at all, and not_requested where the campaign ran
+under the governor. The graphics figure comes from the eight-column
+record's `sclk_actual_mhz` where telemetry-broker.c wrote one and from the
+selected step otherwise, and both widths are read here.
 summarize-census-controls.py assigns the
 sidecar, compile, and collect bounds to the three registered quadruple shapes
 alone, collapses every replicate of a control onto one row, judges that row by
@@ -16,7 +24,8 @@ control over the pairs whose two selected graphics clocks lie within
 `--sclk-band` of each other, excluding a pair that straddled a governor step
 and reading the whole control `state-changed` where fewer than two comparable
 pairs survive, and it counts the arms whose `regime_delta` exceeds that band
-as `off_regime_arms`. The appliance tables of 20260902T0819Z and
+as `off_regime_arms`. A pair holding an arm whose `clock_invariant` reads
+`violated` leaves the interval the same way and is named `clock-violated`. The appliance tables of 20260902T0819Z and
 20260902T1302Z are replayed here: the first resolves none of the three
 controls at two replicates, the second steps from 1100 MHz to 800 MHz partway
 through the arm list, and its four collect pairs -- 825/837, 787/762,
@@ -38,6 +47,9 @@ work = tempfile.mkdtemp(prefix="census-controls-")
 
 COLUMNS = ("monotonic_ns\tpp_dpm_sclk_selected_mhz\tpp_dpm_mclk_surface_mhz"
            "\tpp_dpm_fclk_surface_mhz\tgpu_busy_percent\ttemp1_millidegrees\tsample_cost_ns")
+# telemetry-broker.c appends the delivered graphics frequency, so a record is
+# seven or eight columns wide and the validator reads both.
+WIDE_COLUMNS = COLUMNS + "\tsclk_actual_mhz"
 
 
 def write(name, text):
@@ -49,7 +61,8 @@ def write(name, text):
 
 def sidecar_record(samples=100, period_ns=5_000_000, cost_ns=30_000, start=1_000_000_000,
                    unavailable_rows=(), footer=None, columns=COLUMNS, header_period=None,
-                   footers=1, hole_after=None, hole_ns=0, achieved_period_ns=None):
+                   footers=1, hole_after=None, hole_ns=0, achieved_period_ns=None,
+                   actual_mhz=None, mclk="933"):
     """Write one synthetic record; hole_ns is the delay inserted after hole_after.
 
     A hole shifts every later row by hole_ns, so the gap it opens is the
@@ -70,7 +83,10 @@ def sidecar_record(samples=100, period_ns=5_000_000, cost_ns=30_000, start=1_000
     for index in range(samples):
         instant = instant_of(index)
         fclk = "unavailable" if index in unavailable_rows else "1067"
-        lines.append(f"{instant}\t400\t933\t{fclk}\t37\t61000\t{cost_ns}")
+        row = f"{instant}\t400\t{mclk}\t{fclk}\t37\t61000\t{cost_ns}"
+        if actual_mhz is not None:
+            row += f"\t{actual_mhz}"
+        lines.append(row)
     last = instant_of(samples - 1)
     footer_line = footer or (
         f"# samples={samples} achieved_period_ns={achieved_period_ns or period_ns}"
@@ -83,12 +99,16 @@ def sidecar_record(samples=100, period_ns=5_000_000, cost_ns=30_000, start=1_000
 
 def validate(text, status=0, window=(1_050_000_000, 1_400_000_000), tolerance="0.25",
              cost_bound="1000000", period_ms="5", allow=(), max_gap="50000000",
-             max_lost="0.02"):
+             max_lost="0.02", required=None, required_mclk=None):
     path = write("sidecar.tsv", text)
     command = [sys.executable, validator, path, "--sidecar-status", str(status),
                "--period-ms", period_ms, "--period-tolerance", tolerance,
                "--cost-bound-ns", cost_bound, "--max-gap-ns", max_gap,
                "--max-lost-fraction", max_lost]
+    if required is not None:
+        command += ["--required-sclk-mhz", required]
+    if required_mclk is not None:
+        command += ["--required-mclk-mhz", required_mclk]
     for column in allow:
         command += ["--allow-unavailable", column]
     if window:
@@ -200,8 +220,88 @@ result = validate(sidecar_record(samples=1))
 assert "gaps=not_run rows=1" in result.stdout, result.stdout
 print("sidecar_gaps=accepted")
 
+# The clock invariant a forced policy replaces the regime taxonomy with. The
+# fixture holds 400 MHz across the whole window, so a campaign that pinned
+# 400 MHz reads every window sample at the required step and one that pinned
+# 1100 MHz reads every one below it. An invocation naming no required step --
+# the appliance's own governor -- states that rather than a verdict, and the
+# verdict line stays last in every case.
+result = validate(sidecar_record())
+assert "clock_invariant=not_requested" in result.stdout, result.stdout
+assert result.stdout.rstrip("\n").split("\n")[-1].startswith("clock_sidecar="), result.stdout
+result = validate(sidecar_record(), required="400")
+assert result.returncode == 0, result.stdout
+assert ("clock_invariant=held samples_at_required=71 samples_below_required=0"
+        " below_required_fraction=0.0000" in result.stdout), result.stdout
+assert "clock_sidecar=accepted failures=-" in result.stdout, result.stdout
+result = validate(sidecar_record(), required="1100")
+assert result.returncode != 0, result.stdout
+assert ("clock_invariant=violated samples_at_required=0 samples_below_required=71"
+        " below_required_fraction=1.0000" in result.stdout), result.stdout
+assert "clock_sidecar=refused failures=clock_invariant" in result.stdout, result.stdout
+assert result.stdout.rstrip("\n").split("\n")[-1].startswith("clock_sidecar="), result.stdout
+# A step one percent under the pin is that pinned step read through the
+# kernel's own rounding, and 405 is where the tolerance over 400 ends.
+result = validate(sidecar_record(), required="404")
+assert result.returncode == 0 and "clock_invariant=held" in result.stdout, result.stdout
+result = validate(sidecar_record(), required="405")
+assert result.returncode != 0 and "clock_invariant=violated" in result.stdout, result.stdout
+# A requested invariant no sample can answer is a violation rather than a
+# vacuous pass: an unpinned clock is what the condition exists to catch.
+result = validate(sidecar_record(), window=None, required="400")
+assert result.returncode != 0, result.stdout
+assert ("clock_invariant=violated samples_at_required=0 samples_below_required=0"
+        " below_required_fraction=1.0000" in result.stdout), result.stdout
+# The eight-column record telemetry-broker.c writes. The delivered frequency
+# rather than the selected step answers the invariant where the column exists,
+# which is the whole point of the column: a level that pins the step reads 1100
+# there while the step column still says 400.
+wide = sidecar_record(columns=WIDE_COLUMNS, actual_mhz=1100)
+result = validate(wide)
+assert result.returncode == 0, result.stdout
+assert "columns=accepted" in result.stdout and "width=8" in result.stdout, result.stdout
+assert "row_arity=accepted columns=8" in result.stdout, result.stdout
+result = validate(wide, required="1100")
+assert result.returncode == 0, result.stdout
+assert ("clock_invariant=held samples_at_required=71 samples_below_required=0"
+        " below_required_fraction=0.0000 sclk_source=sclk_actual_mhz"
+        in result.stdout), result.stdout
+# The seven-column record answers the same question from the step column, so
+# the two widths differ in what they read rather than in whether they answer:
+# a record whose delivered frequency fell to 400 violates a 1100 requirement
+# the step column alone would have called held.
+narrow = validate(sidecar_record(), required="1100")
+assert narrow.returncode != 0, narrow.stdout
+assert "sclk_source=pp_dpm_sclk_selected_mhz" in narrow.stdout, narrow.stdout
+fallen = validate(sidecar_record(columns=WIDE_COLUMNS, actual_mhz=400), required="1100")
+assert fallen.returncode != 0, fallen.stdout
+assert ("clock_invariant=violated samples_at_required=0 samples_below_required=71"
+        " below_required_fraction=1.0000 sclk_source=sclk_actual_mhz"
+        in fallen.stdout), fallen.stdout
 
-def arms_ledger(rows, modes=None, regime_deltas=None):
+# The fabric floor is the second half of the operating point, and it is a floor
+# rather than an equality: the appliance ran every manual arm at 933 MHz with
+# the selection that would raise it accepted and ignored.
+result = validate(wide, required="1100", required_mclk="933")
+assert result.returncode == 0, result.stdout
+assert ("samples_at_mclk_floor=71 samples_below_mclk_floor=0"
+        " below_mclk_floor_fraction=0.0000" in result.stdout), result.stdout
+assert "clock_invariant=held" in result.stdout, result.stdout
+result = validate(sidecar_record(columns=WIDE_COLUMNS, actual_mhz=1100, mclk="1067"),
+                  required="1100", required_mclk="933")
+assert result.returncode == 0 and "clock_invariant=held" in result.stdout, result.stdout
+result = validate(sidecar_record(columns=WIDE_COLUMNS, actual_mhz=1100, mclk="400"),
+                  required="1100", required_mclk="933")
+assert result.returncode != 0, result.stdout
+assert ("clock_invariant=violated samples_at_required=71 samples_below_required=0"
+        in result.stdout), result.stdout
+assert ("samples_at_mclk_floor=0 samples_below_mclk_floor=71"
+        " below_mclk_floor_fraction=1.0000" in result.stdout), result.stdout
+assert "clock_sidecar=refused failures=clock_invariant" in result.stdout, result.stdout
+print("sidecar_clock_invariant=accepted")
+
+
+def arms_ledger(rows, modes=None, regime_deltas=None, invariants=None):
     """One ledger; modes is a per-row selected graphics clock, `-` by default.
 
     A ledger written before the clock-state columns existed omits them
@@ -215,6 +315,8 @@ def arms_ledger(rows, modes=None, regime_deltas=None):
         header += "\tsclk_mode_mhz\tsclk_share"
     if regime_deltas is not None:
         header += "\tregime_delta"
+    if invariants is not None:
+        header += "\tclock_invariant"
     lines = [header]
     for slot, (arm, rate, status) in enumerate(rows, 1):
         line = f"{slot}\t{arm}\tabc\t64\t6000\t{rate}\t-\ton\t{status}"
@@ -224,12 +326,14 @@ def arms_ledger(rows, modes=None, regime_deltas=None):
             line += f"\t{mode}\t{share}"
         if regime_deltas is not None:
             line += f"\t{regime_deltas[slot - 1]}"
+        if invariants is not None:
+            line += f"\t{invariants[slot - 1]}"
         lines.append(line)
     return "\n".join(lines) + "\n"
 
 
 def summarize(rows, sidecar="0.0065", compile_bound="0.0065", collect="0.02",
-              modes=None, regime_deltas=None, band=None):
+              modes=None, regime_deltas=None, band=None, invariants=None):
     """Run the controls summarizer and return its rows as field maps.
 
     The verdict is over every replicate of a control, so the columns a case
@@ -237,7 +341,7 @@ def summarize(rows, sidecar="0.0065", compile_bound="0.0065", collect="0.02",
     per-replicate columns and the bound, and a positional read would follow
     the wrong field once a column lands between them.
     """
-    path = write("arms.tsv", arms_ledger(rows, modes, regime_deltas))
+    path = write("arms.tsv", arms_ledger(rows, modes, regime_deltas, invariants))
     argv = [sys.executable, controls, path, "--sidecar-bound", sidecar,
             "--compile-bound", compile_bound, "--collect-bound", collect]
     if band is not None:
@@ -452,6 +556,36 @@ assert rows[0]["verdict"] == "state-changed", rows[0]
 assert rows[0]["deltas"] == "-0.0050 state-changed", rows[0]
 assert rows[0]["detail"] == "comparable_pairs=1 of 2", rows[0]
 print("controls_state_changed_verdict=accepted")
+
+# A forced clock policy states each sampled arm's invariant, and a pair holding
+# a violated arm leaves the interval the way a pair straddling a governor step
+# does. The marker names which of the two happened, and a violation wins where
+# both apply, since a clock that left its pin is the stronger statement.
+header, rows = summarize(
+    quadruple("P", "I0", "10.000", "9.950", "9.950", "10.000", repeats=2),
+    modes=["1100"] * 8,
+    invariants=["held", "held", "held", "held", "held", "violated", "held", "held"])
+assert len(rows) == 1, rows
+violated_row = rows[0]
+assert violated_row["deltas"] == "-0.0050 -0.0050 clock-violated -0.0050", violated_row
+assert violated_row["replicates"] == "4", violated_row
+assert violated_row["verdict"] == "accepted", violated_row
+assert violated_row["detail"] == "comparable_pairs=3 of 4", violated_row
+header, rows = summarize(
+    quadruple("P", "I0", "10.000", "9.950", "9.950", "10.000"),
+    modes=["1100", "800", "1100", "1100"],
+    invariants=["held", "violated", "held", "held"])
+assert rows[0]["first_delta"] == "clock-violated", rows[0]
+assert rows[0]["deltas"] == "clock-violated -0.0050", rows[0]
+assert rows[0]["verdict"] == "state-changed", rows[0]
+assert rows[0]["detail"] == "comparable_pairs=1 of 2", rows[0]
+# A ledger written under the governor names no invariant at all, which is every
+# retained campaign's shape, and each pair stays comparable.
+header, rows = summarize(
+    quadruple("P", "I0", "10.000", "9.950", "9.950", "10.000"),
+    modes=["1100"] * 4, invariants=["-"] * 4)
+assert rows[0]["deltas"] == "-0.0050 -0.0050", rows[0]
+print("controls_clock_violated=accepted")
 
 # The sampler is off on P-nosidecar and W, so those arms carry the unknown
 # state and take whatever state their partner held; the sidecar control

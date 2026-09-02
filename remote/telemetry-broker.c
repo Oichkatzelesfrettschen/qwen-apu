@@ -13,7 +13,8 @@
  * The schedule is multirate because the sensor families move at different
  * rates against one token and cost different amounts to read. Every period
  * reads gpu_busy_percent; every tenth period reads the selected SCLK, MCLK,
- * and FCLK steps beside the die temperature; every hundredth reads
+ * and FCLK steps and the delivered graphics frequency beside the die
+ * temperature; every hundredth reads
  * MemAvailable from /proc/meminfo and pswpin from /proc/vmstat, and every
  * hundredth also reads the one-minute load average from /proc/loadavg and
  * pages_sharing from /sys/kernel/mm/ksm. Period 0 reads every family, so the
@@ -38,9 +39,24 @@
  * survives the reduction. The `# sample_rates` header line carries the
  * interval the run actually used.
  *
- * The emitted record is byte-compatible with sample-clock-sidecar.py:
- * validate-clock-sidecar.py reads the same header keys, the same seven
- * columns, and the same footer keys. The four slow columns hold their own
+ * The record carries one column sample-clock-sidecar.py does not:
+ * sclk_actual_mhz, the graphics frequency the hwmon freq1_input attribute
+ * reports, read on the same tenth-period channel as the DPM steps. It is the
+ * delivered clock where pp_dpm_sclk_selected_mhz is the requested step, and
+ * the two separate under a forced power_dpm_force_performance_level: a level
+ * that pins the starred step still leaves the fabric clock free, so an
+ * invariant over the requested step alone states less than the operating
+ * point. The column sits last, after sample_cost_ns, so a reader written
+ * against the seven-column record reads the first seven unchanged, and
+ * validate-clock-sidecar.py accepts both widths. It carries no unavailable
+ * flag, since the flags feed samples_with_unavailable_sensor and the
+ * validator compares that count against the five sensor columns alone; a
+ * hwmon without freq1_input therefore reads `unavailable` in the eighth
+ * column and leaves the footer where it stands.
+ *
+ * The emitted record is otherwise byte-compatible with
+ * sample-clock-sidecar.py: validate-clock-sidecar.py reads the same header
+ * keys, the same first seven columns, and the same footer keys. The four slow columns hold their own
  * places, so a row between two reads of a channel repeats that channel's last
  * reading and the row shape is unchanged. MemAvailable and pswpin hold no
  * column, so they are emitted as their own `# meminfo` lines interleaved with
@@ -128,6 +144,7 @@ struct sample_record {
     int32_t temperature_millidegrees;
     uint32_t cost_ns;
     uint32_t unavailable_flags;
+    int32_t sclk_actual_mhz;
 };
 
 _Static_assert(sizeof(struct sample_record) == 40,
@@ -156,6 +173,7 @@ struct broker {
     int fclk_fd;
     int busy_fd;
     int temperature_fd;
+    int actual_frequency_fd;
     int meminfo_fd;
     int vmstat_fd;
     int loadavg_fd;
@@ -300,6 +318,27 @@ static int32_t parse_selected_step(const char *text)
         line = newline + 1;
     }
     return VALUE_UNAVAILABLE;
+}
+
+/* hwmon freq1_input reports the delivered graphics frequency, in hertz on the
+ * amdgpu path and in megahertz where a driver reports the smaller unit. One
+ * megahertz is the boundary between the two readings, since no graphics clock
+ * on this class of part reaches a million megahertz and none idles below one
+ * megahertz, so a value at or above a million is hertz and is rounded to the
+ * nearest megahertz while a smaller one is already megahertz. */
+static int32_t parse_frequency_mhz(const char *text)
+{
+    const char *cursor = text;
+    int32_t value;
+
+    while (*cursor == ' ' || *cursor == '\t' || *cursor == '\n') {
+        cursor++;
+    }
+    value = parse_leading_integer(cursor, strlen(cursor));
+    if (value == VALUE_UNAVAILABLE || value < 1000000) {
+        return value;
+    }
+    return (int32_t)((value + 500000) / 1000000);
 }
 
 static int32_t parse_scalar(const char *text)
@@ -586,12 +625,15 @@ static int write_record(const struct broker *broker, const char *output_path,
     fprintf(out, "# interpretation: pp_dpm_sclk_selected_mhz is the selected graphics clock step;"
                  " pp_dpm_mclk_surface_mhz is the pp_dpm_mclk sysfs surface, which on SMU10 is a"
                  " fabric-clock state rather than the trained DRAM speed;"
-                 " pp_dpm_fclk_surface_mhz is the pp_dpm_fclk sysfs surface\n");
+                 " pp_dpm_fclk_surface_mhz is the pp_dpm_fclk sysfs surface;"
+                 " sclk_actual_mhz is the delivered graphics frequency from hwmon"
+                 " freq1_input, which a forced performance level pins where the"
+                 " selected step states only what was requested\n");
     fprintf(out, "# sampler_pid=%d nice=%d cpu_affinity=%s\n",
             (int)getpid(), nice_value, cpu_affinity);
     fprintf(out, "monotonic_ns\tpp_dpm_sclk_selected_mhz\tpp_dpm_mclk_surface_mhz"
                  "\tpp_dpm_fclk_surface_mhz\tgpu_busy_percent\ttemp1_millidegrees"
-                 "\tsample_cost_ns\n");
+                 "\tsample_cost_ns\tsclk_actual_mhz\n");
 
     /* Four arrays each hold their own instants in order, so one merge places
      * every mark, memory reading, and host reading between the rows it fell
@@ -661,8 +703,9 @@ static int write_record(const struct broker *broker, const char *output_path,
             char fclk[32];
             char busy[32];
             char temperature[32];
+            char actual[32];
 
-            fprintf(out, "%" PRIu64 "\t%s\t%s\t%s\t%s\t%s\t%" PRIu32 "\n",
+            fprintf(out, "%" PRIu64 "\t%s\t%s\t%s\t%s\t%s\t%" PRIu32 "\t%s\n",
                     sample->monotonic_ns,
                     format_value(sample->sclk_mhz, sclk, sizeof(sclk)),
                     format_value(sample->mclk_mhz, mclk, sizeof(mclk)),
@@ -670,7 +713,8 @@ static int write_record(const struct broker *broker, const char *output_path,
                     format_value(sample->busy_percent, busy, sizeof(busy)),
                     format_value(sample->temperature_millidegrees, temperature,
                                  sizeof(temperature)),
-                    sample->cost_ns);
+                    sample->cost_ns,
+                    format_value(sample->sclk_actual_mhz, actual, sizeof(actual)));
             if (sample->unavailable_flags != 0) {
                 unavailable_rows++;
             }
@@ -910,6 +954,7 @@ int main(int argc, char **argv)
     broker.fclk_fd = open_surface(drm_device, "pp_dpm_fclk");
     broker.busy_fd = open_surface(drm_device, "gpu_busy_percent");
     broker.temperature_fd = open_surface(hwmon, "temp1_input");
+    broker.actual_frequency_fd = open_surface(hwmon, "freq1_input");
     broker.meminfo_fd = open("/proc/meminfo", O_RDONLY | O_CLOEXEC);
     broker.vmstat_fd = open("/proc/vmstat", O_RDONLY | O_CLOEXEC);
     broker.loadavg_fd = open("/proc/loadavg", O_RDONLY | O_CLOEXEC);
@@ -967,6 +1012,7 @@ int main(int argc, char **argv)
         int32_t last_sclk = VALUE_UNAVAILABLE;
         int32_t last_mclk = VALUE_UNAVAILABLE;
         int32_t last_fclk = VALUE_UNAVAILABLE;
+        int32_t last_sclk_actual = VALUE_UNAVAILABLE;
 
         while (stop_requested == 0) {
             uint64_t begin;
@@ -1000,6 +1046,14 @@ int main(int argc, char **argv)
                                            SYSFS_BUFFER_BYTES) < 0)
                                 ? VALUE_UNAVAILABLE
                                 : parse_selected_step(broker.sysfs_buffer);
+                /* The delivered frequency rides the DPM channel because it
+                 * answers the same question the selected step asks and moves
+                 * on the same scale. */
+                last_sclk_actual = (read_snapshot(broker.actual_frequency_fd,
+                                                  broker.sysfs_buffer,
+                                                  SYSFS_BUFFER_BYTES) < 0)
+                                       ? VALUE_UNAVAILABLE
+                                       : parse_frequency_mhz(broker.sysfs_buffer);
             }
 
             if (tick % TEMPERATURE_PERIOD_MULTIPLE == 0) {
@@ -1067,6 +1121,7 @@ int main(int argc, char **argv)
                 record->temperature_millidegrees = last_temperature;
                 record->cost_ns = (uint32_t)(end - begin);
                 record->unavailable_flags = flags;
+                record->sclk_actual_mhz = last_sclk_actual;
                 broker.sample_count++;
                 /* The fast path is the sample that reads gpu_busy_percent
                  * alone, which is the cost the sidecar contract bounds. */
@@ -1145,6 +1200,15 @@ int main(int argc, char **argv)
             }
         }
     }
+
+    /* A mark written to the control FIFO an instant before the terminating
+     * signal can still sit unread in the kernel buffer once clock_nanosleep
+     * returns EINTR and stop_requested breaks the sample loop before the next
+     * scheduled drain_control call. The read end is O_NONBLOCK, so one more
+     * call here reads every complete line already written without blocking
+     * the exit, and it runs ahead of write_record so a mark it records still
+     * reaches the merge. */
+    drain_control(&broker);
 
     status = write_record(&broker, output_path, period_ns, drm_device,
                           (hwmon != NULL) ? hwmon : "-", affinity_string,

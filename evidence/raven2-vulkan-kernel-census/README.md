@@ -172,6 +172,89 @@ a census run that raises the ceiling to 0.7 settles the boost pair the
 default refused, which is what makes the ceiling the deciding rule rather
 than the comparison.
 
+`QWEN_CENSUS_ENGINE_CLOCK_POLICY` retires that taxonomy by removing what
+it classifies. The kernel's `power_dpm_force_performance_level` takes
+`high` for the highest power state, `profile_peak` for peak clocks with
+gating disabled, and `manual` for the level indices written to
+`pp_dpm_sclk` and `pp_dpm_mclk`, and `auto` is the governor everything
+above measures: the clock read 1100 MHz for nine arms, then 750 to 857,
+then 658 after a CPU build, and decode followed it linearly, a 97 ms GPU
+bracket scaled by 1100/658 plus 3.4 ms of host time predicting 6.04 tok/s
+against 5.7 to 6.1 measured. E4's whole-token effect is about 4% where that
+nuisance is 67%, so a campaign that can pin the clock pins it.
+
+Which level to pin is a measurement rather than a choice, and the first
+answer was wrong. Under `high` and `profile_peak` the starred graphics step
+and the hwmon `freq1_input` frequency both read exactly 1100 MHz for whole
+arms and decode still fell, to 6.3 to 7.0 tok/s against `auto`'s 6.8 to
+8.2, because both levels left the starred `pp_dpm_mclk` fabric state at
+400 MHz where the governor selected 933 to 1067. The delivered graphics
+clock is not the operating point; the fabric clock decides more of decode
+than it does. `manual` with the graphics level selected decoded 9.58, 8.91,
+and 9.23 tok/s across three arms against interleaved `auto` arms at 8.22
+and 7.94, so `manual` is the campaign policy and `high` and `profile_peak`
+remain admitted names that measure the fabric fall. The fabric selection
+itself is inert: the starred `pp_dpm_mclk` level read 933 MHz whether
+level 3 at 1067 or level 2 at 933 was written, and every arm ran there, so
+the write is recorded with its readback and 933 is the floor the invariant
+holds the fabric to.
+
+Both campaigns therefore require `sudo -n true` and name `sudo -v` where it
+fails, snapshot the level and its two selections, write the policy through
+`sudo -n tee`, require the readback to equal it, and under `manual` write
+`QWEN_CENSUS_SCLK_LEVEL` -- the highest level `pp_dpm_sclk` lists where the
+caller names none, level 2 at 1100 MHz on this device -- requiring the
+starred level to be the one written, and `QWEN_CENSUS_MCLK_LEVEL` where one
+is named, recording its readback. The snapshot is restored under the same
+cleanup trap the sampler and served child unwind through, on EXIT and on
+TERM, INT, or HUP, a `manual` snapshot restoring its own level selections
+after the level, and the restore prints the level it read back as
+`dpm_restore=`. The regime precondition becomes exactly one priming warmup,
+sampled and outside every pair, and the run prints `census_regime=retired
+policy=.. required_sclk_mhz=.. mclk_floor_mhz=.. arms=1`.
+
+The invariant is over delivered clocks rather than the DPM state, which is
+what the `high` arms make necessary. `telemetry-broker.c` reads hwmon
+`freq1_input` on the same 100 ms channel as the DPM steps and writes it as
+`sclk_actual_mhz`, an eighth column after `sample_cost_ns`;
+`validate-clock-sidecar.py` accepts the seven-column and eight-column
+records alike, so the replay corpus reads unchanged, and
+`--required-sclk-mhz N` counts over `sclk_actual_mhz` where the record
+carries it and over the selected step otherwise while `--required-mclk-mhz
+M` counts over `pp_dpm_mclk_surface_mhz` as a floor. The line reads
+`clock_invariant=held|violated samples_at_required=..
+samples_below_required=.. below_required_fraction=..` with the source and
+the fabric counts beside it, and `held` requires both. An arm whose
+invariant is violated fails with reason `clock_invariant`, `arms.tsv`
+carries `clock_invariant` and `below_required_fraction`, and
+`summarize-census-controls.py` drops that arm's pair as `clock-violated`
+the way it drops a governor step as `state-changed`. The policy, the two
+level selections, the required graphics step, the fabric floor, and the
+admitted `clock_below_required_fraction` of 0 enter `inputs.tsv` on every
+run and `acquisition-contract.tsv` only where a policy is forced, since a
+governor run applied no control and a row stating that would be a default
+rather than a setting.
+
+The eighth column retires the retained receipts by itself, and that is the
+right outcome rather than a cost of the conditional rows.
+`sidecar_binary_sha256` and `sidecar_source_sha256` are acquisition-contract
+rows, so a change to `telemetry-broker.c` moves the digest of every contract
+the tree computes, `auto` runs included: no calibration retained under
+`20260902*/` answers an attribution across this change, and
+`QWEN_CENSUS_REUSE_BRICKS` reuses no brick across it. A brick measured under
+the seven-column sampler was measured under a different instrument, which is
+what the digest comparison exists to catch.
+
+One falsifier stands against the mechanism the policy assumes. A forced
+level that still reads 658 MHz after a CPU build falsifies the governor as
+the cause of the fall and moves the investigation to package power, where a
+shared thermal and current budget rather than a DPM decision sets the
+clock; the run reports it as a refusal at the `pp_dpm_sclk` confirmation or
+as `clock_invariant=violated` on every arm, both of which name the
+observation rather than absorbing it. The `high` arms are that falsifier
+half met already: the level held its graphics clock and lost the throughput
+anyway, which is why the invariant reads two clocks rather than one.
+
 One falsifier stands against the ceiling. A sustained regime whose modal
 share rises above 0.30 on this device leaves the precondition unreached at
 the cap, and the campaign reports that as `census_regime=unreached` with
