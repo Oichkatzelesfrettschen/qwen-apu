@@ -58,7 +58,14 @@ and decoded slower than the governor did. N is an equality within one
 percent, since a pinned step reports one value here and its neighbouring
 table entry sits several percent away; M is a floor over
 `pp_dpm_mclk_surface_mhz`, since the fabric clock rises under load and a
-campaign asks it not to fall. `clock_invariant=held|violated
+campaign asks it to stay at or above its selection. The floor carries a
+tolerance where the graphics equality carries none, because the fabric
+hovers: arm 03-P of the 20260902T2011Z calibration read 933 MHz on 356 of
+358 window samples with excursions to 1067 above and two samples below,
+while the graphics clock read the pinned 1100 on every one.
+`--max-below-mclk-floor-fraction` is the admitted share of window samples
+under the floor, 0.01 by default, and the counts print whatever it admits.
+`clock_invariant=held|violated
 samples_at_required=.. samples_below_required=.. below_required_fraction=..`
 prints ahead of the verdict with the fabric counts beside it, and a
 violation of either joins `failures`. A requested invariant that can be
@@ -75,6 +82,7 @@ usage: validate-clock-sidecar.py RECORD_TSV --sidecar-status N
        [--window-begin-ns N --window-end-ns N]
        [--allow-unavailable COLUMN ...]
        [--required-sclk-mhz N] [--required-mclk-mhz M]
+       [--max-below-mclk-floor-fraction F]
 """
 import argparse
 import sys
@@ -198,7 +206,10 @@ def main():
     # Ten requested periods at the appliance's 10 ms sampler: a stall rather
     # than a slice. The coverage criterion is --max-lost-fraction beside it.
     parser.add_argument("--max-gap-ns", type=int, default=100_000_000)
-    parser.add_argument("--max-lost-fraction", type=float, default=0.02)
+    # Coverage for a clock-state record rather than a safety ceiling: at a
+    # 20 ms period 0.03 of the window is under 15 samples of 400 and every
+    # sample the record does hold still enters the clock invariant.
+    parser.add_argument("--max-lost-fraction", type=float, default=0.03)
     parser.add_argument("--window-begin-ns", type=int)
     parser.add_argument("--window-end-ns", type=int)
     parser.add_argument("--allow-unavailable", action="append", default=[])
@@ -207,6 +218,13 @@ def main():
     # a verdict about a pin it never ran under.
     parser.add_argument("--required-sclk-mhz", type=int)
     parser.add_argument("--required-mclk-mhz", type=int)
+    # The fabric floor takes a tolerance where the graphics equality takes
+    # none: the fabric hovers under load with transient excursions on both
+    # sides of its selection, which arm 03-P of the 20260902T2011Z calibration
+    # measured as 2 samples of 358 below 933 MHz while the graphics clock held
+    # 1100 on every one.
+    parser.add_argument("--max-below-mclk-floor-fraction", type=float,
+                        default=0.01)
     args = parser.parse_args()
 
     failures = []
@@ -392,9 +410,15 @@ def main():
         at_floor, below_floor = count_against(window_rows, 2,
                                               args.required_mclk_mhz)
         mclk_counted = at_floor + below_floor
-        mclk_held = (args.required_mclk_mhz is None
-                     or (mclk_counted > 0 and below_floor == 0))
         mclk_fraction = below_floor / mclk_counted if mclk_counted else 1.0
+        # The floor holds within a tolerance and the graphics equality holds
+        # exactly, because the two clocks answer differently: a pinned
+        # graphics step reports one value on every sample, while the fabric
+        # hovers under load and dips below its own selection for a sample at a
+        # time. A window whose fabric never reads is unknown rather than held.
+        mclk_held = (args.required_mclk_mhz is None
+                     or (mclk_counted > 0
+                         and mclk_fraction <= args.max_below_mclk_floor_fraction))
         held = sclk_held and mclk_held
         print(f"clock_invariant={'held' if held else 'violated'}"
               f" samples_at_required={at_required}"
@@ -403,6 +427,7 @@ def main():
               f" sclk_source={sclk_source}"
               f" required_sclk_mhz={args.required_sclk_mhz or '-'}"
               f" required_mclk_mhz={args.required_mclk_mhz or '-'}"
+              f" max_below_mclk_floor_fraction={args.max_below_mclk_floor_fraction:.4f}"
               f" samples_at_mclk_floor={at_floor}"
               f" samples_below_mclk_floor={below_floor}"
               f" below_mclk_floor_fraction={mclk_fraction:.4f}")

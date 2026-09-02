@@ -171,6 +171,11 @@ BROKER_STUB
 chmod +x "$broker_stub"
 broker_stub_sha256=$(server_digest "$broker_stub")
 broker_source_sha256=$(server_digest "$script_directory/telemetry-broker.c")
+# The source record build-telemetry-broker.sh writes beside an executable it
+# compiled. The stub was compiled from nothing, so the record is written here
+# to state the source the preflight holds it to; a case that omits it is a
+# stale broker and the preflight rebuilds over it.
+printf '%s\n' "$broker_source_sha256" >"$broker_stub.source-sha256"
 broker_absent=$temporary_directory/telemetry-broker-absent
 
 {
@@ -513,6 +518,105 @@ if [ "$python_contract_sha256" = "$acquisition_sha256" ]; then
     exit 1
 fi
 printf 'sampler_python_contract=accepted acquisition=%s\n' "$python_contract_sha256"
+
+# A broker standing beside a source record naming another telemetry-broker.c is
+# rebuilt rather than sampled with. The appliance ran a whole calibration
+# against a binary that predated the delivered-frequency column because the
+# preflight built only where the executable was absent; here the record states
+# a digest no source has, the compiler is a stub that copies the broker stub
+# into place and logs the output it was asked for, and the contract carries the
+# tree's own source digest afterwards.
+active_fixture=broker_rebuild_stale_source
+rebuild_directory=$temporary_directory/broker-rebuild
+mkdir -p "$rebuild_directory"
+rebuild_broker=$rebuild_directory/telemetry-broker
+cp -- "$broker_stub" "$rebuild_broker"
+printf '%s\n' \
+    '0000000000000000000000000000000000000000000000000000000000000000' \
+    >"$rebuild_broker.source-sha256"
+rebuild_cc=$temporary_directory/stub-cc
+cat >"$rebuild_cc" <<'STUB_CC'
+#!/bin/sh
+set -eu
+compiler_output=''
+compiler_previous=''
+for compiler_argument in "$@"; do
+    if [ "$compiler_previous" = -o ]; then
+        compiler_output=$compiler_argument
+    fi
+    compiler_previous=$compiler_argument
+done
+printf '%s\n' "$compiler_output" >>"$QWEN_TEST_CC_LOG"
+cp -- "$QWEN_TEST_CC_PAYLOAD" "$compiler_output"
+chmod +x "$compiler_output"
+STUB_CC
+chmod +x "$rebuild_cc"
+rebuild_cc_log=$temporary_directory/stub-cc.log
+: >"$rebuild_cc_log"
+print_rebuild_contract() {
+    env -i \
+        PATH="$execution_path" \
+        HOME="$home_directory" \
+        QWEN_MODELS_DIRECTORY="$models_directory" \
+        QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+        QWEN_CENSUS_PRODUCTION_SERVER="$production_server" \
+        QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+        QWEN_CENSUS_INSTRUMENTED_SERVER="$instrumented_server" \
+        QWEN_DRM_DEVICE="$drm_empty" \
+        QWEN_CENSUS_BROKER="$rebuild_broker" \
+        QWEN_TEST_CC_LOG="$rebuild_cc_log" \
+        QWEN_TEST_CC_PAYLOAD="$broker_stub" \
+        CC="$rebuild_cc" \
+        QWEN_CENSUS_PRINT_CONTRACT=1 \
+        "$runner" "$model_id" "$temporary_directory/out-rebuild-$1" \
+        2>"$temporary_directory/rebuild-stderr-$1.txt"
+}
+rebuild_contract_output=$(print_rebuild_contract 1)
+if ! grep -q '^telemetry_broker=rebuilt reason=stale ' \
+    "$temporary_directory/rebuild-stderr-1.txt"; then
+    printf 'a broker recording another source was not rebuilt\n' >&2
+    exit 1
+fi
+if [ "$(wc -l <"$rebuild_cc_log")" -ne 1 ]; then
+    printf 'the rebuild invoked the compiler %s times\n' \
+        "$(wc -l <"$rebuild_cc_log")" >&2
+    exit 1
+fi
+[ "$(cat "$rebuild_cc_log")" = "$rebuild_broker" ]
+if ! printf '%s\n' "$rebuild_contract_output" \
+    | grep -q "^sidecar_source_sha256	$broker_source_sha256\$"; then
+    printf 'the rebuilt broker contract carries another source digest\n' >&2
+    exit 1
+fi
+[ "$(cat "$rebuild_broker.source-sha256")" = "$broker_source_sha256" ]
+# The record the build wrote is what makes the next run cheap: the same
+# invocation reads it, finds the tree's own source, and runs no compiler.
+print_rebuild_contract 2 >/dev/null
+if [ "$(wc -l <"$rebuild_cc_log")" -ne 1 ]; then
+    printf 'a broker recording its own source was rebuilt again\n' >&2
+    exit 1
+fi
+if grep -q '^telemetry_broker=rebuilt ' "$temporary_directory/rebuild-stderr-2.txt"; then
+    printf 'the second run reported a rebuild\n' >&2
+    exit 1
+fi
+# An executable standing beside no record at all is the state the appliance
+# is in wherever a past build predates the record, so it takes the same
+# rebuild rather than the benefit of the doubt.
+rm -f -- "$rebuild_broker.source-sha256"
+print_rebuild_contract 3 >/dev/null
+if ! grep -q '^telemetry_broker=rebuilt reason=stale ' \
+    "$temporary_directory/rebuild-stderr-3.txt"; then
+    printf 'a broker standing beside no source record was not rebuilt\n' >&2
+    exit 1
+fi
+if [ "$(wc -l <"$rebuild_cc_log")" -ne 2 ]; then
+    printf 'the record-absent rebuild invoked the compiler %s times of 2\n' \
+        "$(wc -l <"$rebuild_cc_log")" >&2
+    exit 1
+fi
+[ "$(cat "$rebuild_broker.source-sha256")" = "$broker_source_sha256" ]
+printf 'broker_rebuild_stale_source=accepted source=%s\n' "$broker_source_sha256"
 
 # The calibration arm list is generated from the replicate count rather than
 # written down, so the contract print states the list a run would execute and
@@ -1257,6 +1361,11 @@ required_mclk = "-"
 if "--required-mclk-mhz" in sys.argv:
     required_mclk = sys.argv[sys.argv.index("--required-mclk-mhz") + 1]
 violated = label in os.environ.get("QWEN_TEST_CLOCK_VIOLATED", "").split()
+# The column the invariant was counted over. A campaign under a forced policy
+# is answered by the delivered frequency alone, so the default states the
+# column telemetry-broker.c writes and a case naming the DPM column stands for
+# a broker built before that column existed.
+source = os.environ.get("QWEN_TEST_CLOCK_SOURCE", "") or "sclk_actual_mhz"
 if table and os.path.exists(table):
     for line in open(table):
         name, _, value = line.rstrip("\n").partition("\t")
@@ -1275,12 +1384,13 @@ if state:
     elif violated:
         print("clock_invariant=violated samples_at_required=600"
               " samples_below_required=100 below_required_fraction=0.1429"
-              f" required={required}")
+              f" sclk_source={source} required={required}")
         print("clock_sidecar=refused failures=clock_invariant")
         raise SystemExit(1)
     else:
         print("clock_invariant=held samples_at_required=700"
               " samples_below_required=0 below_required_fraction=0.0000"
+              f" sclk_source={source}"
               f" required={required} required_mclk={required_mclk}")
     print("clock_sidecar=accepted failures=-")
     raise SystemExit(0)
@@ -1458,6 +1568,11 @@ run_brick_calibration() {
     # selection.
     brick_mclk_level=${15:--}
     brick_mclk_ignore=${16:-0}
+    # The seventeenth names the column the stub validator reports the invariant
+    # was counted over. A case leaving it unset reads the delivered frequency
+    # telemetry-broker.c writes, and one naming the DPM column stands for a
+    # broker built before that column existed.
+    brick_clock_source=${17:-}
     brick_drm=$signal_drm
     brick_sudo_log=$temporary_directory/sudo-$brick_case.log
     if [ "$brick_engine_clock_policy" != auto ]; then
@@ -1477,6 +1592,7 @@ run_brick_calibration() {
         QWEN_TEST_CLOCK_STATE="$brick_clock_state" \
         QWEN_TEST_CLOCK_TABLE="$brick_clock_table" \
         QWEN_TEST_CLOCK_VIOLATED="$brick_violated_arms" \
+        QWEN_TEST_CLOCK_SOURCE="$brick_clock_source" \
         QWEN_TEST_CENSUS_TRUNCATE="$brick_truncate_label" \
         QWEN_TEST_CENSUS_COMPLETE="$brick_complete_label" \
         QWEN_TEST_SUDO_REFUSE="$brick_sudo_refuse" \
@@ -2053,7 +2169,8 @@ print_forced_contract() {
 forced_contract_output=$(print_forced_contract manual)
 for forced_row in "engine_clock_policy	manual" "engine_clock_sclk_level	1" \
     "engine_clock_mclk_level	-" "engine_clock_required_sclk_mhz	1100" \
-    "engine_clock_required_mclk_mhz	933" "clock_below_required_fraction	0"; do
+    "engine_clock_required_mclk_mhz	933" "clock_below_required_fraction	0" \
+    "clock_below_mclk_floor_fraction	0.01"; do
     if ! printf '%s\n' "$forced_contract_output" | grep -qxF -- "$forced_row"; then
         printf 'the forced contract carries no row %s\n' "$forced_row" >&2
         exit 1
@@ -2113,6 +2230,7 @@ grep -q "^dpm_restore=restored level=auto requested=auto sclk_level=0 mclk_level
 for forced_input_row in "engine_clock_policy	manual" "engine_clock_sclk_level	1" \
     "engine_clock_mclk_level	-" "engine_clock_required_sclk_mhz	1100" \
     "engine_clock_required_mclk_mhz	933" "clock_below_required_fraction	0" \
+    "clock_below_mclk_floor_fraction	0.01" \
     "mclk_floor_mhz	933" "engine_clock_sclk_readback_mhz	1100" \
     "engine_clock_mclk_readback_mhz	-" "engine_clock_snapshot	auto 0 0" \
     "regime_max_arms	-" "regime_sclk_mhz	-" "regime_arms	1"; do
@@ -2192,6 +2310,32 @@ grep -q 'census_arm=failed slot=13 arm=S .* clock_invariant=violated reason=cloc
     = 'violated 0.1429' ]
 diagnostic_file=
 printf 'engine_clock_invariant_violated=accepted\n'
+
+# One arm whose invariant was counted over the DPM column. Under a forced
+# policy that column repeats the selection the campaign itself wrote, so an
+# arm reading it held has agreed with the campaign rather than measured the
+# device, and the runner refuses it on its instrument.
+active_fixture=engine_clock_dpm_source
+dpm_source_output=$temporary_directory/out-engine-clock-dpm-source
+dpm_source_status=$(run_brick_calibration engine_clock_dpm_source "$prior_forced" \
+    "$dpm_source_output" 0 800 2 '' '' 0.05 0.30 manual '' 13-S 0 - 0 \
+    pp_dpm_sclk_selected_mhz)
+if [ "$dpm_source_status" -ne 1 ]; then
+    printf 'the DPM-source calibration exited %s where its failed arm exits 1\n' \
+        "$dpm_source_status" >&2
+    sed -n '1,20p' "$temporary_directory/engine_clock_dpm_source-stderr.txt" >&2
+    exit 1
+fi
+grep -q '^census_clock_source=refused slot=13 arm=S source=pp_dpm_sclk_selected_mhz$' \
+    "$temporary_directory/engine_clock_dpm_source-stdout.txt"
+grep -q 'census_arm=failed slot=13 arm=S .* reason=clock_source' \
+    "$temporary_directory/engine_clock_dpm_source-stdout.txt"
+# The record itself was accepted and its invariant read held, which is what
+# makes the refusal a statement about the instrument rather than the clock.
+[ "$(awk -F'\t' '$1 == "13" { print $14, $15 }' "$dpm_source_output/arms.tsv")" \
+    = 'held 0.0000' ]
+diagnostic_file=
+printf 'engine_clock_dpm_source=accepted\n'
 
 # An expired sudo credential is refused ahead of the first arm and names the
 # command that renews it, since a campaign cannot answer a password prompt.

@@ -343,6 +343,87 @@ census_engine_clock_restore() {
     return 0
 }
 
+# The sampler executable and the source it was compiled from are two
+# identities, and a preflight that builds only where the executable is absent
+# serves whatever a past build left: the 20260902T2011Z calibration read
+# `sclk_source=pp_dpm_sclk_selected_mhz` on every arm because the broker beside
+# it predated telemetry-broker.c's eighth column. build-telemetry-broker.sh
+# records the source digest as `<broker>.source-sha256`, so this preflight
+# rebuilds wherever the executable is absent, that record is absent, or the
+# digest it holds differs from the source's own, and reads the record again
+# after the build so a builder that compiled without recording is refused
+# rather than rebuilt on every run.
+#
+# The two digests reach the caller as the `sidecar_binary_sha256` and
+# `sidecar_source_sha256` variables rather than as output, because a refusal
+# here exits 2 from the shell that sourced this file and a command
+# substitution would swallow it.
+#
+# census_prepare_broker BROKER SOURCE BUILDER
+census_prepare_broker() {
+    census_broker=$1
+    census_broker_source=$2
+    census_broker_builder=$3
+    if [ ! -r "$census_broker_source" ]; then
+        printf 'the telemetry broker source is absent: %s\n' \
+            "$census_broker_source" >&2
+        exit 2
+    fi
+    census_broker_source_sha256=$(sha256sum "$census_broker_source" | cut -d ' ' -f 1)
+    census_broker_record=$census_broker.source-sha256
+    census_broker_recorded=-
+    if [ -r "$census_broker_record" ]; then
+        census_broker_recorded=$(awk 'NR == 1 { print $1 }' "$census_broker_record")
+    fi
+    census_broker_reason=''
+    if [ ! -x "$census_broker" ]; then
+        census_broker_reason=absent
+    elif [ "$census_broker_recorded" != "$census_broker_source_sha256" ]; then
+        census_broker_reason=stale
+    fi
+    if [ -n "$census_broker_reason" ]; then
+        if [ ! -x "$census_broker_builder" ]; then
+            printf 'the telemetry broker is %s and its builder is not executable: %s\n' \
+                "$census_broker_reason" "$census_broker_builder" >&2
+            exit 2
+        fi
+        census_broker_log=$(mktemp)
+        if "$census_broker_builder" "$census_broker" >"$census_broker_log" 2>&1; then
+            rm -f -- "$census_broker_log"
+        else
+            sed -n '1,20p' "$census_broker_log" >&2
+            rm -f -- "$census_broker_log"
+            printf 'the telemetry broker is %s and its build failed: %s\n' \
+                "$census_broker_reason" "$census_broker" >&2
+            exit 2
+        fi
+        # The rebuild is a preflight diagnostic rather than a campaign row, and
+        # it goes to stderr because the contract print writes the whole of
+        # stdout for a caller that reads it through a command substitution.
+        printf 'telemetry_broker=rebuilt reason=%s source_sha256=%s path=%s\n' \
+            "$census_broker_reason" "$census_broker_source_sha256" "$census_broker" >&2
+        census_broker_recorded=-
+        if [ -r "$census_broker_record" ]; then
+            census_broker_recorded=$(awk 'NR == 1 { print $1 }' "$census_broker_record")
+        fi
+    fi
+    if [ ! -x "$census_broker" ]; then
+        printf 'the telemetry broker is not executable after its build: %s\n' \
+            "$census_broker" >&2
+        exit 2
+    fi
+    if [ "$census_broker_recorded" != "$census_broker_source_sha256" ]; then
+        printf 'the telemetry broker records source %s against the tree'"'"'s %s: %s\n' \
+            "$census_broker_recorded" "$census_broker_source_sha256" \
+            "$census_broker_record" >&2
+        exit 2
+    fi
+    # shellcheck disable=SC2034  # both are the caller's contract rows
+    sidecar_binary_sha256=$(sha256sum "$census_broker" | cut -d ' ' -f 1)
+    # shellcheck disable=SC2034
+    sidecar_source_sha256=$census_broker_source_sha256
+}
+
 # The manifest sits beside a bundled server or one directory above a build
 # tree's bin/. Prints the path of the first that is readable.
 census_manifest_beside() {

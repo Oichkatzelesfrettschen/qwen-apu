@@ -62,7 +62,7 @@ def write(name, text):
 def sidecar_record(samples=100, period_ns=5_000_000, cost_ns=30_000, start=1_000_000_000,
                    unavailable_rows=(), footer=None, columns=COLUMNS, header_period=None,
                    footers=1, hole_after=None, hole_ns=0, achieved_period_ns=None,
-                   actual_mhz=None, mclk="933"):
+                   actual_mhz=None, mclk="933", mclk_low_rows=(), mclk_low="400"):
     """Write one synthetic record; hole_ns is the delay inserted after hole_after.
 
     A hole shifts every later row by hole_ns, so the gap it opens is the
@@ -83,7 +83,10 @@ def sidecar_record(samples=100, period_ns=5_000_000, cost_ns=30_000, start=1_000
     for index in range(samples):
         instant = instant_of(index)
         fclk = "unavailable" if index in unavailable_rows else "1067"
-        row = f"{instant}\t400\t{mclk}\t{fclk}\t37\t61000\t{cost_ns}"
+        # A fabric excursion below the floor, which the appliance measures a
+        # sample at a time while the graphics clock holds its pinned step.
+        row_mclk = mclk_low if index in mclk_low_rows else mclk
+        row = f"{instant}\t400\t{row_mclk}\t{fclk}\t37\t61000\t{cost_ns}"
         if actual_mhz is not None:
             row += f"\t{actual_mhz}"
         lines.append(row)
@@ -99,7 +102,8 @@ def sidecar_record(samples=100, period_ns=5_000_000, cost_ns=30_000, start=1_000
 
 def validate(text, status=0, window=(1_050_000_000, 1_400_000_000), tolerance="0.25",
              cost_bound="1000000", period_ms="5", allow=(), max_gap="50000000",
-             max_lost="0.02", required=None, required_mclk=None):
+             max_lost="0.02", required=None, required_mclk=None,
+             max_below_mclk=None):
     path = write("sidecar.tsv", text)
     command = [sys.executable, validator, path, "--sidecar-status", str(status),
                "--period-ms", period_ms, "--period-tolerance", tolerance,
@@ -109,6 +113,8 @@ def validate(text, status=0, window=(1_050_000_000, 1_400_000_000), tolerance="0
         command += ["--required-sclk-mhz", required]
     if required_mclk is not None:
         command += ["--required-mclk-mhz", required_mclk]
+    if max_below_mclk is not None:
+        command += ["--max-below-mclk-floor-fraction", max_below_mclk]
     for column in allow:
         command += ["--allow-unavailable", column]
     if window:
@@ -298,6 +304,37 @@ assert ("clock_invariant=violated samples_at_required=71 samples_below_required=
 assert ("samples_at_mclk_floor=0 samples_below_mclk_floor=71"
         " below_mclk_floor_fraction=1.0000" in result.stdout), result.stdout
 assert "clock_sidecar=refused failures=clock_invariant" in result.stdout, result.stdout
+
+# The floor carries a tolerance where the graphics equality carries none,
+# because the fabric hovers under load: arm 03-P of the 20260902T2011Z
+# calibration read 933 MHz on 356 of 358 window samples, reaching 1067 above
+# its selection and falling below it on 2, while the graphics clock held the
+# pinned 1100 on every one. One low sample of 71 is 0.0141 of the window, so
+# the 0.01 default refuses it and a campaign admitting 0.02 reads it held.
+hovering = sidecar_record(columns=WIDE_COLUMNS, actual_mhz=1100, mclk_low_rows=(30,))
+result = validate(hovering, required="1100", required_mclk="933")
+assert result.returncode != 0, result.stdout
+assert ("clock_invariant=violated samples_at_required=71 samples_below_required=0"
+        in result.stdout), result.stdout
+assert ("max_below_mclk_floor_fraction=0.0100 samples_at_mclk_floor=70"
+        " samples_below_mclk_floor=1 below_mclk_floor_fraction=0.0141"
+        in result.stdout), result.stdout
+result = validate(hovering, required="1100", required_mclk="933", max_below_mclk="0.02")
+assert result.returncode == 0, result.stdout
+assert "clock_invariant=held" in result.stdout, result.stdout
+# The counts print whatever the bound admits, so the excursion stays readable
+# in a record the verdict accepted.
+assert ("max_below_mclk_floor_fraction=0.0200 samples_at_mclk_floor=70"
+        " samples_below_mclk_floor=1 below_mclk_floor_fraction=0.0141"
+        in result.stdout), result.stdout
+# The tolerance prices a hover rather than a fabric that left its floor: a
+# tenth of the window below it refuses under the same admitted share.
+fallen_fabric = sidecar_record(columns=WIDE_COLUMNS, actual_mhz=1100,
+                               mclk_low_rows=tuple(range(20, 40)))
+result = validate(fallen_fabric, required="1100", required_mclk="933",
+                  max_below_mclk="0.02")
+assert result.returncode != 0, result.stdout
+assert "below_mclk_floor_fraction=0.2817" in result.stdout, result.stdout
 print("sidecar_clock_invariant=accepted")
 
 
