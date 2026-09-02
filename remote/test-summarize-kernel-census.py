@@ -214,6 +214,11 @@ assert "ambiguous_overlap_ms_per_graph=0.005" in graphs, graphs
 assert "overlap_ms_per_graph=0.005" in graphs, graphs
 # (0 + 10_000/42_000) / 2 graphs
 assert "overlap_fraction=0.1190" in graphs, graphs
+# The 10_000 ns overlap is between two pipelines, so the derived reading
+# places all of it on the cross-pipeline side.
+assert "same_pipeline_overlap_ms_per_graph=0.000" in graphs, graphs
+assert "cross_pipeline_overlap_ms_per_graph=0.005" in graphs, graphs
+assert "cross_pipeline_overlap_fraction=0.1190" in graphs, graphs
 assert "queue_non_dispatch_ms_per_graph=0.000" in graphs, graphs
 assert "queue_completion_span_ms_per_graph=0.032" in graphs, graphs
 assert "retire_span_ms_per_graph=0.040" in graphs, graphs

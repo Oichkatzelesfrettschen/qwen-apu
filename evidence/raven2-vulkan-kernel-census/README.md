@@ -74,25 +74,50 @@ arms span 0.65%; that span is the registered compile bound, a descriptive
 figure adopted as a tripwire rather than a confidence interval.
 
 The campaign has three terminal states and the exit status follows them: a
-failed arm or an incomplete control ends it `failed` with exit 1, a refuted
-registered control ends it `refuted` with exit 3 even where every arm
-completed, and `accepted` alone exits 0. `terminal-state.tsv` carries the
-state and the four counts, so a chain reading the exit status reads the
-calibration verdict rather than the request count.
+failed arm, an incomplete control, or an unclassified quadruple ends it
+`failed` with exit 1, a refuted registered control ends it `refuted` with
+exit 3 even where every arm completed, and `accepted` alone exits 0.
+`QWEN_CENSUS_MODE` names the contract the counts are held to. A
+`calibration`, the default, runs exactly the thirteen-arm sequence and
+accepts on exactly three accepted controls, so a reordered arm list or a
+fourth quadruple fails the run rather than passing beside the three. An
+`attribution` runs any registered arm list, `I1` alone included, and
+requires `QWEN_CENSUS_CALIBRATION_RECEIPT` to name the output directory of
+an accepted calibration whose `inputs.tsv` bound the same production and
+instrumented digests, since the bounds a calibration accepted belong to
+those two binaries. `terminal-state.tsv` carries the state, the mode, the
+four counts, and the required count, so a chain reading the exit status
+reads the calibration verdict rather than the request count.
 
 ## What P stands for and how it is bound
 
 P is bound to the scoreboard it stands for rather than to a path. Its
-artifact manifest must describe exactly that executable by byte count and
-digest, name no `instrumentation` row, declare `serving_eligible` yes or
-carry no such row, and carry one `checkpoint_semantics` row reading
+artifact manifest must name `llama-server` in exactly one `executable` row
+and that row must describe this file by byte count and digest, the rule
+the bundle verifier and the exec guard apply, so a manifest carrying one
+matching row beside a conflicting one is ambiguous here as it is there.
+The manifest must name no `instrumentation` row, declare `serving_eligible`
+yes or carry no such row, and carry one `checkpoint_semantics` row reading
 `natural-boundary-v1` wherever the registry row runs a positive checkpoint
 count. `QWEN_CENSUS_PRODUCTION_RECEIPT` names the `identity-check.tsv` of
 the fixed-64 sweep, whose one `server` row must carry P's digest and byte
-count as both expected and observed, accepted. `inputs.tsv` records the
-server digest and bytes, the manifest digest, the checkpoint semantics,
-the `checkpoint_patch_series_sha256`, and the receipt digest for both
-servers, so an arbitrary executable path cannot define production by name.
+count as both expected and observed, accepted. The denominator is the
+tuple beside the binary, so the receipt binds it too: the
+`models-resolved.tsv` in the receipt's directory must resolve the model to
+the context, batch, ubatch, cache triple, Flash Attention state, checkpoint
+count and minimum step, and publisher digest and byte count that the
+registry, the checkpoint ledger, and the artifact ledger resolve it to now,
+and the `campaign-inputs.tsv` there must state the low-async profile, 64
+generated tokens, the fixed sampling, server nice 19, Vulkan placement,
+speculation off, and router off, which are the settings every arm runs
+under. A registry edit between the scoreboard and the census therefore
+refuses the run rather than changing the experiment behind a byte-identical
+P. `inputs.tsv` records the server digest and bytes, the manifest digest,
+the checkpoint semantics, the `checkpoint_patch_series_sha256`, the receipt
+digest, the digests of both receipt-directory files, the scoreboard's own
+registry and ledger digests beside the current registry digest, and the
+mode with its calibration receipt, so an arbitrary executable path cannot
+define production by name.
 
 The census binary is a diagnostic artifact and never a serving one. Its
 artifact manifest carries `instrumentation	pipeline-census-v3`,
@@ -216,9 +241,16 @@ globally and under every pipeline whose bracket covers it. Per graph
 `overlap_ns` is the raw bracket sum minus the union and
 `overlap_fraction` is that over the union; a ledger whose mean fraction
 exceeds the preregistered threshold of 0.05 reads `ownership=inconclusive`
-on its `graphs` row and still prints every bound. The S arm's serialized
-ordering tests whether the low-async upper-bound ranking preserves the
-same major pipeline order.
+on its `graphs` row and still prints every bound. The verdict reads the
+whole overlap, which withholds attribution rather than manufacturing it,
+and the `graphs` row carries a derived reading beside it: an ambiguous
+segment whose covering brackets all belong to one pipeline is
+`same_pipeline_overlap`, still that family's at the family level while
+dispatch ownership inside it stays open, and a segment two pipelines cover
+is `cross_pipeline_overlap`, the kind that blocks family ownership;
+`cross_pipeline_overlap_fraction` is the second over the union. The S
+arm's serialized ordering tests whether the low-async upper-bound ranking
+preserves the same major pipeline order.
 
 The summarizer trusts nothing the instrument aggregated. It recomputes the
 raw sum, the union, the queue time outside every bracket, the completion
@@ -233,7 +265,14 @@ pipeline, and dispatch counts. Every graph inside the request window is
 validated ahead of the phase filter, so a defective prefill graph fails a
 decode ledger, and a graph that begins before the window and retires
 inside it, or begins inside and retires after it, is refused as ambiguous
-membership rather than sorted either way.
+membership rather than sorted either way. The interval rule rests on the
+device's timestamp period: the instrument converts the two endpoints and
+the tick distance through `timestampPeriod` separately, so a non-integral
+period could truncate the two conversions one nanosecond apart. RADV
+reports `timestampPeriod = 40` for RAVEN2 (`vulkaninfo` on the appliance),
+and an integer period makes the two products agree exactly, so the rule
+holds on this device and a later device with a fractional period would
+need the interval derived from the converted endpoints.
 
 Each dispatch is bound to its submission at the submit: `ggml_vk_submit`
 allocates the serial for the compute queue of the owning context and

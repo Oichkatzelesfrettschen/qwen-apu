@@ -139,6 +139,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-kernel-census.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-sample-clock-sidecar.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-census-controls.py
 remote/test-census-sha256.sh
+remote/test-run-raven2-vulkan-kernel-census.sh
 remote/test-qwen-session-signals.sh
 remote/test-admit-web-router-fake.sh
 remote/test-quality-roster.sh

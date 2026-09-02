@@ -262,6 +262,13 @@ def sweep(rows):
     ambiguous = {}
     pipeline_union = {}
     ambiguous_total = 0
+    # An ambiguous segment whose covering brackets all belong to one pipeline
+    # still belongs to that pipeline at the family level while dispatch
+    # ownership inside it stays open; a segment two pipelines cover blocks
+    # family ownership. The two are counted apart so a reader can tell which
+    # kind the overlap fraction is made of.
+    same_pipeline_overlap = 0
+    cross_pipeline_overlap = 0
     for index, position in enumerate(positions[:-1]):
         for pipeline_id in ends.get(position, ()):
             active[pipeline_id] -= 1
@@ -282,11 +289,17 @@ def sweep(rows):
             exclusive[pipeline_id] = exclusive.get(pipeline_id, 0) + length
         else:
             ambiguous_total += length
+            if len(active) == 1:
+                same_pipeline_overlap += length
+            else:
+                cross_pipeline_overlap += length
             for pipeline_id in active:
                 ambiguous[pipeline_id] = ambiguous.get(pipeline_id, 0) + length
     return {
         "union_ns": union_ns, "exclusive": exclusive, "ambiguous": ambiguous,
         "pipeline_union": pipeline_union, "ambiguous_total": ambiguous_total,
+        "same_pipeline_overlap_ns": same_pipeline_overlap,
+        "cross_pipeline_overlap_ns": cross_pipeline_overlap,
     }
 
 
@@ -420,6 +433,9 @@ def main():
     overlap_ns_total = 0
     exclusive_total = 0
     ambiguous_total = 0
+    same_pipeline_total = 0
+    cross_pipeline_total = 0
+    cross_fractions = []
     for serial, graph, rows in selected:
         accounting = accounted[serial]
         overlap_ns = graph["raw_sum_ns"] - graph["union_ns"]
@@ -427,6 +443,10 @@ def main():
         overlap_fractions.append(overlap_ns / graph["union_ns"] if graph["union_ns"] else 0.0)
         exclusive_total += sum(accounting["exclusive"].values())
         ambiguous_total += accounting["ambiguous_total"]
+        same_pipeline_total += accounting["same_pipeline_overlap_ns"]
+        cross_pipeline_total += accounting["cross_pipeline_overlap_ns"]
+        cross_fractions.append(accounting["cross_pipeline_overlap_ns"] / graph["union_ns"]
+                               if graph["union_ns"] else 0.0)
         for d in rows:
             entry = totals.setdefault(d["pipeline"], {
                 "ns": [], "wg": 0, "calls": 0, "exclusive": 0,
@@ -443,6 +463,11 @@ def main():
 
     n_graphs = len(selected)
     mean_overlap_fraction = sum(overlap_fractions) / n_graphs
+    mean_cross_fraction = sum(cross_fractions) / n_graphs
+    # The verdict reads the whole overlap, which withholds attribution rather
+    # than manufacturing it; the same- and cross-pipeline halves beside it
+    # are the derived reading, since cross-pipeline overlap alone blocks
+    # family ownership.
     ownership = "conclusive" if mean_overlap_fraction <= args.overlap_threshold else "inconclusive"
 
     def per_graph(key):
@@ -486,8 +511,11 @@ def main():
         f"bracket_union_ms_per_graph={per_graph('union_ns'):.3f}",
         f"exclusive_ms_per_graph={exclusive_total / n_graphs / 1e6:.3f}",
         f"ambiguous_overlap_ms_per_graph={ambiguous_total / n_graphs / 1e6:.3f}",
+        f"same_pipeline_overlap_ms_per_graph={same_pipeline_total / n_graphs / 1e6:.3f}",
+        f"cross_pipeline_overlap_ms_per_graph={cross_pipeline_total / n_graphs / 1e6:.3f}",
         f"overlap_ms_per_graph={overlap_ns_total / n_graphs / 1e6:.3f}",
         f"overlap_fraction={mean_overlap_fraction:.4f}",
+        f"cross_pipeline_overlap_fraction={mean_cross_fraction:.4f}",
         f"overlap_threshold={args.overlap_threshold:.4f}",
         f"ownership={ownership}",
         f"queue_non_dispatch_ms_per_graph={per_graph('non_dispatch_ns'):.3f}",

@@ -17,17 +17,32 @@ set -eu
 # kernel-hazard watch, the graphics-latency record, and the teardown proof
 # hold for each.
 #
-# QWEN_CENSUS_ARMS orders the arms. Three quadruples carry a registered bound
-# and summarize-census-controls.py assigns a verdict to those alone:
+# QWEN_CENSUS_MODE names the campaign contract. A calibration runs the exact
+# thirteen-arm sequence and terminates accepted only where all three
+# registered controls accept and no quadruple is unclassified, so a reordered
+# arm list or a fourth quadruple fails the run rather than passing beside the
+# three. An attribution runs any registered arm list, I1 alone included, and
+# requires QWEN_CENSUS_CALIBRATION_RECEIPT to name the output directory of an
+# accepted calibration whose production and instrumented servers are the two
+# this run binds, since the bounds a calibration accepted belong to those two
+# binaries. Three quadruples carry a registered bound and
+# summarize-census-controls.py assigns a verdict to those alone:
 # P-nosidecar P P P-nosidecar measures the sampler's own cost, P I0 I0 P the
-# instrument compiled in, and I0 I1 I1 I0 collection under the sampler. The
-# default runs all three then one S; a census proper names I1 alone.
+# instrument compiled in, and I0 I1 I1 I0 collection under the sampler.
 #
 # P is bound to the scoreboard it stands for rather than to a path: its
 # artifact manifest must describe exactly that executable, name no
 # instrumentation, declare serving_eligible yes or nothing, and the fixed-64
 # identity receipt QWEN_CENSUS_PRODUCTION_RECEIPT names must carry one
-# server row whose expected and observed digest and byte count are P's.
+# server row whose expected and observed digest and byte count are P's. The
+# denominator is the tuple beside the binary: the models-resolved.tsv in the
+# receipt's directory must resolve this model to the context, submission
+# geometry, cache triple, Flash Attention state, checkpoint count and step,
+# and artifact digest the registry and ledger resolve it to now, and the
+# campaign-inputs.tsv there must state the profile, token count, sampling,
+# priority, and inference placement every arm here runs under, so a registry
+# edit between the scoreboard and the census refuses the run rather than
+# changing the experiment behind a byte-identical P.
 # The instrumented server is bound to a manifest declaring exactly one
 # instrumentation pipeline-census-v3 row and one serving_eligible no row.
 # Both manifests must carry one checkpoint_semantics row reading
@@ -48,7 +63,11 @@ set -eu
 #   QWEN_CENSUS_PRODUCTION_RECEIPT   identity-check.tsv of the fixed-64 scoreboard sweep
 #                                    (required beside the production server)
 #   QWEN_CENSUS_INSTRUMENTED_SERVER  path of I0/I1/S (required where an arm names one)
-#   QWEN_CENSUS_ARMS                 space-separated arm names, default
+#   QWEN_CENSUS_MODE                 calibration (default) or attribution
+#   QWEN_CENSUS_CALIBRATION_RECEIPT  output directory of an accepted calibration
+#                                    (required under attribution)
+#   QWEN_CENSUS_ARMS                 space-separated arm names under attribution;
+#                                    a calibration runs exactly
 #                                    "P-nosidecar P P P-nosidecar P I0 I0 P I0 I1 I1 I0 S"
 #   QWEN_CENSUS_COOLDOWN_S           idle seconds between arms, default 30
 #   QWEN_CENSUS_LATENCY_PROBE        graphics latency probe the runner arms
@@ -80,7 +99,30 @@ controls_summarizer=$script_directory/summarize-census-controls.py
 sidecar=$script_directory/sample-clock-sidecar.py
 sidecar_validator=$script_directory/validate-clock-sidecar.py
 slice_summarizer=$script_directory/summarize-perf-logger-slice.py
-arms=${QWEN_CENSUS_ARMS:-"P-nosidecar P P P-nosidecar P I0 I0 P I0 I1 I1 I0 S"}
+calibration_arms="P-nosidecar P P P-nosidecar P I0 I0 P I0 I1 I1 I0 S"
+census_mode=${QWEN_CENSUS_MODE:-calibration}
+calibration_receipt=${QWEN_CENSUS_CALIBRATION_RECEIPT:-}
+case $census_mode in
+    calibration)
+        arms=${QWEN_CENSUS_ARMS:-$calibration_arms}
+        if [ "$arms" != "$calibration_arms" ]; then
+            printf 'a calibration runs exactly "%s"; QWEN_CENSUS_ARMS names "%s"\n' \
+                "$calibration_arms" "$arms" >&2
+            exit 2
+        fi
+        ;;
+    attribution)
+        arms=${QWEN_CENSUS_ARMS:-I1}
+        if [ -z "$calibration_receipt" ]; then
+            printf 'an attribution requires QWEN_CENSUS_CALIBRATION_RECEIPT naming an accepted calibration\n' >&2
+            exit 2
+        fi
+        ;;
+    *)
+        printf 'QWEN_CENSUS_MODE must be calibration or attribution: %s\n' "$census_mode" >&2
+        exit 2
+        ;;
+esac
 cooldown_s=${QWEN_CENSUS_COOLDOWN_S:-30}
 production_server=${QWEN_CENSUS_PRODUCTION_SERVER:-}
 production_receipt=${QWEN_CENSUS_PRODUCTION_RECEIPT:-}
@@ -179,7 +221,10 @@ fi
 
 # The manifest sits beside a bundled server or one directory above a build
 # tree's bin/, and the executable is bound to it by byte count and digest:
-# exactly one executable llama-server row must describe this file.
+# the manifest names llama-server in exactly one executable row and that row
+# describes this file, the rule the bundle verifier and the exec guard apply,
+# so a manifest carrying one matching row beside a conflicting one is
+# ambiguous here as it is there.
 manifest_beside() {
     manifest_candidate=$(dirname -- "$1")/artifact-manifest.tsv
     if [ ! -r "$manifest_candidate" ]; then
@@ -208,9 +253,10 @@ bind_server() {
     bound_sha256=$(sha256sum "$bound_server" | cut -d ' ' -f 1)
     bound_bytes=$(wc -c <"$bound_server" | tr -d ' ')
     if ! awk -F'\t' -v bytes="$bound_bytes" -v digest="$bound_sha256" '
-        $1 == "executable" && $2 == "llama-server" && NF == 4 && $3 == bytes && $4 == digest { found++ }
-        END { exit found == 1 ? 0 : 1 }' "$bound_manifest"; then
-        printf 'the %s server is not the one executable its manifest describes: %s\n' \
+        $1 == "executable" && $2 == "llama-server" { named++
+            if (NF == 4 && $3 == bytes && $4 == digest) found++ }
+        END { exit (named == 1 && found == 1) ? 0 : 1 }' "$bound_manifest"; then
+        printf 'the %s server is not the one executable llama-server row its manifest carries: %s\n' \
             "$bound_role" "$bound_server" >&2
         exit 2
     fi
@@ -240,11 +286,19 @@ production_manifest_sha256=-
 production_semantics=-
 production_series=-
 production_receipt_sha256=-
+scoreboard_models_sha256=-
+scoreboard_inputs_sha256=-
+scoreboard_registry_sha256=-
+scoreboard_ledger_sha256=-
 if [ "$needs_production" = 1 ]; then
     production_manifest=$(manifest_beside "$production_server" production)
+    # The binding's exit status is captured on the assignment rather than
+    # inside a here-document, where a refusal would end only the subshell and
+    # leave read filling every field empty.
+    production_binding=$(bind_server production "$production_server" "$production_manifest") || exit 2
     IFS="$(printf '\t')" read -r production_sha256 production_bytes production_manifest_sha256 \
         production_semantics production_series <<EOF
-$(bind_server production "$production_server" "$production_manifest")
+$production_binding
 EOF
     declaration_rows=$(awk -F'\t' '
         $1 == "instrumentation" { instrumentation++ }
@@ -277,6 +331,59 @@ EOF
         exit 2
     fi
     production_receipt_sha256=$(sha256sum "$production_receipt" | cut -d ' ' -f 1)
+    # The receipt directory carries the tuple the scoreboard resolved and the
+    # campaign inputs it ran under; both must equal what this run resolves.
+    receipt_directory=$(dirname -- "$production_receipt")
+    scoreboard_models=$receipt_directory/models-resolved.tsv
+    scoreboard_inputs=$receipt_directory/campaign-inputs.tsv
+    for scoreboard_file in "$scoreboard_models" "$scoreboard_inputs"; do
+        if [ ! -r "$scoreboard_file" ]; then
+            printf 'the scoreboard receipt directory carries no readable %s\n' \
+                "$(basename -- "$scoreboard_file")" >&2
+            exit 2
+        fi
+    done
+    ledger_sha256=$(awk -F'\t' -v id="$model_id" '$1 == id { print $4 }' "$artifact_ledger")
+    ledger_bytes=$(awk -F'\t' -v id="$model_id" '$1 == id { print $3 }' "$artifact_ledger")
+    if [ -z "$ledger_sha256" ] || [ -z "$ledger_bytes" ]; then
+        printf 'the model artifact ledger resolves no identity for %s\n' "$model_id" >&2
+        exit 2
+    fi
+    if ! awk -F'\t' -v id="$model_id" -v context="$context" -v batch="$batch" -v ubatch="$ubatch" \
+        -v cache_k="$cache_k" -v cache_v="$cache_v" -v flash="$flash" \
+        -v checkpoints="$ctx_checkpoints" -v min_step="$checkpoint_min_step" \
+        -v bytes="$ledger_bytes" -v digest="$ledger_sha256" '
+        NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
+        $(column["model_id"]) == id { rows++
+            if ($(column["context"]) == context && $(column["batch"]) == batch \
+                && $(column["ubatch"]) == ubatch && $(column["cache_k"]) == cache_k \
+                && $(column["cache_v"]) == cache_v && $(column["flash_attention"]) == flash \
+                && $(column["ctx_checkpoints"]) == checkpoints \
+                && $(column["checkpoint_min_step"]) == min_step \
+                && $(column["model_bytes"]) == bytes && $(column["model_sha256"]) == digest \
+                && $(column["publisher_sha256"]) == digest) matched++ }
+        END { exit (rows == 1 && matched == 1) ? 0 : 1 }' "$scoreboard_models"; then
+        printf 'the scoreboard resolved %s to a tuple other than the one the registry and ledger resolve now: %s\n' \
+            "$model_id" "$scoreboard_models" >&2
+        exit 2
+    fi
+    if ! awk -F'\t' '
+        $1 == "vulkan_profile" && $2 == "low-async" { seen["profile"] = 1 }
+        $1 == "generate_tokens" && $2 == "64" { seen["generate"] = 1 }
+        $1 == "sampling" && $2 == "temperature=0 top_k=1 seed=1 ignore_eos=true thinking=false" { seen["sampling"] = 1 }
+        $1 == "server_nice" && $2 == "19" { seen["nice"] = 1 }
+        $1 == "inference_cpu" && $2 == "0" { seen["placement"] = 1 }
+        $1 == "speculation" && $2 == "off" { seen["speculation"] = 1 }
+        $1 == "router" && $2 == "0" { seen["router"] = 1 }
+        END { exit length(seen) == 7 ? 0 : 1 }' "$scoreboard_inputs"; then
+        printf 'the scoreboard campaign inputs state a profile, token count, sampling, priority, placement, speculation, or router setting other than the one every arm here runs under: %s\n' \
+            "$scoreboard_inputs" >&2
+        exit 2
+    fi
+    scoreboard_models_sha256=$(sha256sum "$scoreboard_models" | cut -d ' ' -f 1)
+    scoreboard_inputs_sha256=$(sha256sum "$scoreboard_inputs" | cut -d ' ' -f 1)
+    scoreboard_registry_sha256=$(awk -F'\t' '$1 == "model_registry" { print $6 }' "$production_receipt")
+    scoreboard_ledger_sha256=$(awk -F'\t' '$1 == "artifact_ledger" { print $6 }' "$production_receipt")
 fi
 
 instrumented_sha256=-
@@ -287,9 +394,10 @@ instrumented_semantics=-
 instrumented_series=-
 if [ "$needs_instrumented" = 1 ]; then
     instrumented_manifest=$(manifest_beside "$instrumented_server" instrumented)
+    instrumented_binding=$(bind_server instrumented "$instrumented_server" "$instrumented_manifest") || exit 2
     IFS="$(printf '\t')" read -r instrumented_sha256 instrumented_bytes instrumented_manifest_sha256 \
         instrumented_semantics instrumented_series <<EOF
-$(bind_server instrumented "$instrumented_server" "$instrumented_manifest")
+$instrumented_binding
 EOF
     # Exactly one row of each declaration: a manifest naming eligibility
     # twice is refused rather than read by its first row.
@@ -309,6 +417,44 @@ EOF
             "${3:--}" "${4:--}" >&2
         exit 2
     fi
+fi
+
+# An attribution rests on a calibration: the receipt directory's
+# terminal-state.tsv reads accepted with three accepted controls and none
+# unclassified, and its inputs.tsv binds the same two server digests, so
+# the bounds that calibration accepted cover the binaries this run drives.
+calibration_receipt_sha256=-
+if [ "$census_mode" = attribution ]; then
+    for receipt_member in terminal-state.tsv inputs.tsv; do
+        if [ ! -r "$calibration_receipt/$receipt_member" ]; then
+            printf 'the calibration receipt directory carries no readable %s: %s\n' \
+                "$receipt_member" "$calibration_receipt" >&2
+            exit 2
+        fi
+    done
+    if ! awk -F'=' '
+        $1 == "census" && $2 == "accepted" { seen["census"] = 1 }
+        $1 == "control_accepted" && $2 == "3" { seen["accepted"] = 1 }
+        $1 == "control_unclassified" && $2 == "0" { seen["unclassified"] = 1 }
+        $1 == "control_refutations" && $2 == "0" { seen["refuted"] = 1 }
+        $1 == "control_incomplete" && $2 == "0" { seen["incomplete"] = 1 }
+        $1 == "arm_failures" && $2 == "0" { seen["failures"] = 1 }
+        END { exit length(seen) == 6 ? 0 : 1 }' "$calibration_receipt/terminal-state.tsv"; then
+        printf 'the calibration receipt is not an accepted calibration with three accepted controls: %s\n' \
+            "$calibration_receipt/terminal-state.tsv" >&2
+        exit 2
+    fi
+    if ! awk -F'\t' -v mode="$census_mode" -v production="$production_sha256" \
+        -v instrumented="$instrumented_sha256" '
+        $1 == "census_mode" && $2 == "calibration" { seen["mode"] = 1 }
+        $1 == "production_server_sha256" && (production == "-" || $2 == production) { seen["production"] = 1 }
+        $1 == "instrumented_server_sha256" && (instrumented == "-" || $2 == instrumented) { seen["instrumented"] = 1 }
+        END { exit length(seen) == 3 ? 0 : 1 }' "$calibration_receipt/inputs.tsv"; then
+        printf 'the calibration receipt was run in another mode or bound other servers than %s and %s: %s\n' \
+            "$production_sha256" "$instrumented_sha256" "$calibration_receipt/inputs.tsv" >&2
+        exit 2
+    fi
+    calibration_receipt_sha256=$(sha256sum "$calibration_receipt/terminal-state.tsv" | cut -d ' ' -f 1)
 fi
 
 # measure-served-decode.sh admits an arm only under the served execution
@@ -354,6 +500,7 @@ execution_proof=$output_directory/campaign-inputs.tsv
     printf 'server_io_class\tidle\n'
     printf 'vulkan_profile\tlow-async\n'
     printf 'model_id\t%s\n' "$model_id"
+    printf 'census_mode\t%s\n' "$census_mode"
     printf 'arms\t%s\n' "$arms"
     printf 'production_server\t%s\n' "${production_server:--}"
     printf 'production_server_sha256\t%s\n' "$production_sha256"
@@ -383,6 +530,13 @@ printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\
         "$production_semantics" "$production_series"
     printf 'production_receipt\t%s\nproduction_receipt_sha256\t%s\n' \
         "${production_receipt:--}" "$production_receipt_sha256"
+    printf 'scoreboard_models_resolved_sha256\t%s\nscoreboard_campaign_inputs_sha256\t%s\n' \
+        "$scoreboard_models_sha256" "$scoreboard_inputs_sha256"
+    printf 'scoreboard_model_registry_sha256\t%s\nmodel_registry_sha256\t%s\n' \
+        "$scoreboard_registry_sha256" "$(sha256sum "$script_directory/models.tsv" | cut -d ' ' -f 1)"
+    printf 'scoreboard_artifact_ledger_sha256\t%s\n' "$scoreboard_ledger_sha256"
+    printf 'census_mode\t%s\ncalibration_receipt\t%s\ncalibration_receipt_sha256\t%s\n' \
+        "$census_mode" "${calibration_receipt:--}" "$calibration_receipt_sha256"
     printf 'instrumented_server\t%s\ninstrumented_server_sha256\t%s\ninstrumented_server_bytes\t%s\n' \
         "${instrumented_server:--}" "$instrumented_sha256" "$instrumented_bytes"
     printf 'instrumented_artifact_manifest\t%s\ninstrumented_artifact_manifest_sha256\t%s\n' \
@@ -591,7 +745,10 @@ done
 
 # Paired controls, each pair on its own, registered shapes alone; the
 # verdict column decides the campaign state, so a refuted control ends the
-# run as refuted even where every arm completed.
+# run as refuted even where every arm completed. A calibration accepts on
+# exactly three accepted controls; an unclassified quadruple in either mode
+# is an arm list the parser read as a comparison the registry never bound,
+# which fails the run.
 python3 "$controls_summarizer" "$arms_ledger" --sidecar-bound "$sidecar_bound" \
     --compile-bound "$compile_bound" --collect-bound "$collect_bound" \
     >"$output_directory/summary.tsv"
@@ -607,20 +764,28 @@ control_refutations=$1
 control_incomplete=$2
 control_unclassified=$3
 control_accepted=$4
-if [ "$arm_failures" -ne 0 ] || [ "$control_incomplete" -ne 0 ]; then
+required_accepted=0
+if [ "$census_mode" = calibration ]; then
+    required_accepted=3
+fi
+if [ "$arm_failures" -ne 0 ] || [ "$control_incomplete" -ne 0 ] \
+    || [ "$control_unclassified" -ne 0 ]; then
     campaign=failed
     campaign_exit=1
 elif [ "$control_refutations" -ne 0 ]; then
     campaign=refuted
     campaign_exit=3
+elif [ "$control_accepted" -lt "$required_accepted" ]; then
+    campaign=failed
+    campaign_exit=1
 else
     campaign=accepted
     campaign_exit=0
 fi
-printf 'census=%s\narm_failures=%s\ncontrol_incomplete=%s\ncontrol_refutations=%s\ncontrol_unclassified=%s\ncontrol_accepted=%s\n' \
-    "$campaign" "$arm_failures" "$control_incomplete" "$control_refutations" \
-    "$control_unclassified" "$control_accepted" >"$output_directory/terminal-state.tsv"
-printf 'census=%s model=%s arms=%s arm_failures=%s control_incomplete=%s control_refutations=%s control_unclassified=%s control_accepted=%s output=%s\n' \
-    "$campaign" "$model_id" "$slot" "$arm_failures" "$control_incomplete" \
-    "$control_refutations" "$control_unclassified" "$control_accepted" "$output_directory"
+printf 'census=%s\ncensus_mode=%s\narm_failures=%s\ncontrol_incomplete=%s\ncontrol_refutations=%s\ncontrol_unclassified=%s\ncontrol_accepted=%s\ncontrol_required=%s\n' \
+    "$campaign" "$census_mode" "$arm_failures" "$control_incomplete" "$control_refutations" \
+    "$control_unclassified" "$control_accepted" "$required_accepted" >"$output_directory/terminal-state.tsv"
+printf 'census=%s mode=%s model=%s arms=%s arm_failures=%s control_incomplete=%s control_refutations=%s control_unclassified=%s control_accepted=%s control_required=%s output=%s\n' \
+    "$campaign" "$census_mode" "$model_id" "$slot" "$arm_failures" "$control_incomplete" \
+    "$control_refutations" "$control_unclassified" "$control_accepted" "$required_accepted" "$output_directory"
 exit "$campaign_exit"

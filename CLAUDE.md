@@ -1123,7 +1123,20 @@ remote/run-ctx-checkpoint-sweep.sh LABEL MODEL_ID OUT
 # the request window. Three quadruples carry a bound, P-nosidecar P P
 # P-nosidecar, P I0 I0 P, and I0 I1 I1 I0; any other is unclassified, and
 # a refuted control ends the campaign refuted with exit 3 whatever the
-# arms did. The 5 ms sidecar on core 1 at nice 10 is evidence only where
+# arms did. QWEN_CENSUS_MODE=calibration, the default, runs exactly the
+# thirteen-arm sequence and accepts on exactly three accepted controls
+# with none unclassified; QWEN_CENSUS_MODE=attribution runs any registered
+# arm list and requires QWEN_CENSUS_CALIBRATION_RECEIPT to name the output
+# directory of an accepted calibration that bound the same two server
+# digests. P's denominator is bound beside its binary: the receipt
+# directory's models-resolved.tsv must resolve the model to the tuple and
+# artifact digest the registry and ledger resolve now, and its
+# campaign-inputs.tsv must state the low-async profile, 64 tokens, the
+# fixed sampling, nice 19, Vulkan placement, and speculation off. The
+# summarizer splits ambiguous overlap into same-pipeline and cross-pipeline
+# halves beside the whole-overlap verdict, since cross-pipeline overlap
+# alone blocks family ownership.
+# The 5 ms sidecar on core 1 at nice 10 is evidence only where
 # validate-clock-sidecar.py accepts its record, and its refusal fails the
 # arm. A diagnostic build reaches the device through an explicit
 # QWEN_LLAMA_SERVER alone: bundle assembly and activation refuse any
@@ -1137,7 +1150,9 @@ QWEN_LLAMA_CANDIDATE_SELECT=llama-vulkan-pipeline-census.patch \
 QWEN_CENSUS_PRODUCTION_SERVER=P QWEN_CENSUS_PRODUCTION_RECEIPT=identity-check.tsv \
 QWEN_CENSUS_INSTRUMENTED_SERVER=I \
     remote/run-raven2-vulkan-kernel-census.sh MODEL_ID OUT
-                                # P-nosidecar P P P-nosidecar, P I0 I0 P, I0 I1 I1 I0, S
+                                # calibration: P-nosidecar P P P-nosidecar, P I0 I0 P, I0 I1 I1 I0, S
+QWEN_CENSUS_MODE=attribution QWEN_CENSUS_CALIBRATION_RECEIPT=OUT QWEN_CENSUS_ARMS=I1 \
+    remote/run-raven2-vulkan-kernel-census.sh MODEL_ID OUT2
 remote/summarize-kernel-census.py OUT/arms/NN-I1/pipeline-census.tsv \
     --window-begin-ns B --window-end-ns E --expected-decode-graphs 63
 remote/summarize-census-controls.py OUT/arms.tsv --sidecar-bound 0.0065 \
@@ -1251,6 +1266,7 @@ python3 remote/test-summarize-kernel-census.py
 python3 remote/test-census-controls.py
 python3 remote/test-sample-clock-sidecar.py
 remote/test-census-sha256.sh
+remote/test-run-raven2-vulkan-kernel-census.sh
 remote/verify-llama-patch-series.sh
 QWEN_LLAMA_CANDIDATE_PATCHES=1 remote/verify-llama-patch-series.sh
 GGUF_PY_PATH=~/src/llama.cpp-qwen-apu/gguf-py \
