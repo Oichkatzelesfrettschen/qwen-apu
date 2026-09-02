@@ -11,7 +11,11 @@ set -eu
 #
 #   - no llama-server process is running (pgrep -x llama-server empty)
 #   - gpu_busy_percent is at or below 5
-#   - the selected pp_dpm_sclk step equals the lowest step the file lists
+#   - the selected pp_dpm_sclk step sits below the highest step the file
+#     lists, and that selected step has held unchanged since the hold
+#     window began -- a step change restarts the window the way the
+#     temperature derivative does, because the appliance's idle governor
+#     state selects a middle step rather than the lowest listed one
 #   - temp1_input's derivative across the hold window is at or below
 #     0.5 degrees Celsius per second in either direction, and its absolute
 #     reading stays below 80 degrees Celsius
@@ -35,7 +39,10 @@ set -eu
 #
 # Exit status: 0 once quiescence is reached, 1 once --max-seconds elapses
 # first, 2 on a usage error. Either outcome prints one line naming which,
-# the elapsed milliseconds, and the last sampled vector.
+# the elapsed milliseconds, and the last sampled vector. A timeout also
+# prints one stderr line naming every predicate that read false on the
+# final tick, since the retained stdout line alone left a prior campaign's
+# failing predicate unnamed.
 
 usage() {
     printf 'usage: %s [--max-seconds N] [--hold-ms N] [--drm-device DIR] [--hwmon DIR] [--proc-root DIR] [--latency-log FILE] [--lease FILE]\n' \
@@ -146,33 +153,32 @@ read_gpu_busy_percent() {
     esac
 }
 
-# Reads the selected step and the lowest listed step from one pp_dpm_sclk
-# pass, so the two never disagree about which line of the file they read.
-read_sclk_pair() {
+# Reads the selected step index and the listed step count from one
+# pp_dpm_sclk pass, so the two never disagree about which line of the file
+# they read. The step index is the line's own leading "N:" label rather
+# than its clock frequency, since the predicate below reads position in the
+# listed ladder rather than an absolute rate.
+read_sclk_state() {
     if [ ! -r "$drm_device/pp_dpm_sclk" ]; then
         printf 'unavailable\tunavailable\n'
         return
     fi
     awk '
         {
+            idx = $1
+            sub(/:$/, "", idx)
+            if (idx !~ /^[0-9]+$/) next
+            count++
             for (i = 1; i <= NF; i++) {
-                if ($i == "*") {
-                    sel = $(i - 1)
-                    sub(/Mhz$/, "", sel)
-                }
-            }
-            step = $2
-            sub(/Mhz$/, "", step)
-            if (step ~ /^[0-9]+$/) {
-                if (min == "" || step + 0 < min + 0) {
-                    min = step
-                }
+                if ($i == "*") sel = idx
             }
         }
         END {
-            if (sel == "") sel = "unavailable"
-            if (min == "") min = "unavailable"
-            print sel "\t" min
+            if (sel == "" || count == 0) {
+                print "unavailable\tunavailable"
+            } else {
+                print sel "\t" count
+            }
         }
     ' "$drm_device/pp_dpm_sclk"
 }
@@ -252,6 +258,7 @@ streak_start_ms=0
 temp_base=0
 mem_base=0
 pswpin_base=0
+sclk_base=unavailable
 
 last_vector=''
 outcome=timeout
@@ -271,13 +278,13 @@ while :; do
         *) [ "$gpu_busy" -le 5 ] && gpu_busy_ok=1 ;;
     esac
 
-    sclk_pair=$(read_sclk_pair)
-    sclk_selected=${sclk_pair%%	*}
-    sclk_lowest=${sclk_pair#*	}
+    sclk_state=$(read_sclk_state)
+    sclk_step=${sclk_state%%	*}
+    sclk_steps=${sclk_state#*	}
     sclk_ok=0
-    if [ "$sclk_selected" != unavailable ] && [ "$sclk_lowest" != unavailable ] && \
-       [ "$sclk_selected" = "$sclk_lowest" ]; then
-        sclk_ok=1
+    if [ "$sclk_step" != unavailable ] && [ "$sclk_steps" != unavailable ]; then
+        highest_step=$((sclk_steps - 1))
+        [ "$sclk_step" -lt "$highest_step" ] && sclk_ok=1
     fi
 
     temp_milli=$(read_temp_millicelsius)
@@ -319,6 +326,7 @@ while :; do
     mem_change_ok=0
     mem_change_pct=0.00
     pswpin_ok=0
+    sclk_stable_ok=0
 
     if [ "$streak_active" -eq 0 ]; then
         if [ "$instantaneous_ok" -eq 1 ]; then
@@ -327,9 +335,11 @@ while :; do
             temp_base=$temp_milli
             mem_base=$mem_available
             pswpin_base=$pswpin_now
+            sclk_base=$sclk_step
             temp_rate_ok=1
             mem_change_ok=1
             pswpin_ok=1
+            sclk_stable_ok=1
         fi
     else
         if [ "$instantaneous_ok" -eq 0 ]; then
@@ -349,11 +359,16 @@ while :; do
                 pswpin_ok=1
             fi
 
-            if [ "$temp_rate_ok" -eq 1 ] && [ "$mem_change_ok" -eq 1 ] && [ "$pswpin_ok" -eq 1 ]; then
+            if [ "$sclk_step" = "$sclk_base" ]; then
+                sclk_stable_ok=1
+            fi
+
+            if [ "$temp_rate_ok" -eq 1 ] && [ "$mem_change_ok" -eq 1 ] && [ "$pswpin_ok" -eq 1 ] && \
+               [ "$sclk_stable_ok" -eq 1 ]; then
                 held_ms=$((tick_ms - streak_start_ms))
                 if [ "$held_ms" -ge "$hold_ms" ]; then
-                    last_vector=$(printf 'hold_ms=%s process=absent gpu_busy_percent=%s gpu_busy_ok=%s sclk_selected_mhz=%s sclk_lowest_mhz=%s sclk_ok=%s temp_millicelsius=%s temp_abs_ok=%s temp_rate_c_per_s=%s temp_rate_ok=%s mem_available_kib=%s mem_change_pct=%s mem_ok=%s pswpin=%s pswpin_ok=%s lease_ok=%s latency_ok=%s latency_baseline_us=%s latency_p90_us=%s' \
-                        "$hold_ms" "$gpu_busy" "$gpu_busy_ok" "$sclk_selected" "$sclk_lowest" "$sclk_ok" \
+                    last_vector=$(printf 'hold_ms=%s process=absent gpu_busy_percent=%s gpu_busy_ok=%s sclk_step=%s sclk_steps=%s sclk_ok=%s sclk_stable_ok=%s temp_millicelsius=%s temp_abs_ok=%s temp_rate_c_per_s=%s temp_rate_ok=%s mem_available_kib=%s mem_change_pct=%s mem_ok=%s pswpin=%s pswpin_ok=%s lease_ok=%s latency_ok=%s latency_baseline_us=%s latency_p90_us=%s' \
+                        "$hold_ms" "$gpu_busy" "$gpu_busy_ok" "$sclk_step" "$sclk_steps" "$sclk_ok" "$sclk_stable_ok" \
                         "$temp_milli" "$temp_abs_ok" "$temp_rate" "$temp_rate_ok" \
                         "$mem_available" "$mem_change_pct" "$mem_change_ok" \
                         "$pswpin_now" "$pswpin_ok" "$lease_ok" "$latency_ok" "$latency_baseline" "$latency_p90")
@@ -366,9 +381,9 @@ while :; do
         fi
     fi
 
-    last_vector=$(printf 'hold_ms=%s process=%s gpu_busy_percent=%s gpu_busy_ok=%s sclk_selected_mhz=%s sclk_lowest_mhz=%s sclk_ok=%s temp_millicelsius=%s temp_abs_ok=%s temp_rate_c_per_s=%s temp_rate_ok=%s mem_available_kib=%s mem_change_pct=%s mem_ok=%s pswpin=%s pswpin_ok=%s lease_ok=%s latency_ok=%s latency_baseline_us=%s latency_p90_us=%s' \
+    last_vector=$(printf 'hold_ms=%s process=%s gpu_busy_percent=%s gpu_busy_ok=%s sclk_step=%s sclk_steps=%s sclk_ok=%s sclk_stable_ok=%s temp_millicelsius=%s temp_abs_ok=%s temp_rate_c_per_s=%s temp_rate_ok=%s mem_available_kib=%s mem_change_pct=%s mem_ok=%s pswpin=%s pswpin_ok=%s lease_ok=%s latency_ok=%s latency_baseline_us=%s latency_p90_us=%s' \
         "$hold_ms" "$([ "$process_present" -eq 1 ] && printf present || printf absent)" \
-        "$gpu_busy" "$gpu_busy_ok" "$sclk_selected" "$sclk_lowest" "$sclk_ok" \
+        "$gpu_busy" "$gpu_busy_ok" "$sclk_step" "$sclk_steps" "$sclk_ok" "$sclk_stable_ok" \
         "$temp_milli" "$temp_abs_ok" "$temp_rate" "$temp_rate_ok" \
         "$mem_available" "$mem_change_pct" "$mem_change_ok" \
         "$pswpin_now" "$pswpin_ok" "$lease_ok" "$latency_ok" "$latency_baseline" "$latency_p90")
@@ -390,4 +405,35 @@ printf 'quiescence=%s elapsed_ms=%s %s\n' "$outcome" "$elapsed_ms" "$last_vector
 if [ "$outcome" = reached ]; then
     exit 0
 fi
+
+# A timeout names every predicate that read false on the final tick, so a
+# retained stderr log states the reason rather than leaving a reader to
+# recompute it from the last vector alone.
+process_ok=0
+[ "$process_present" -eq 0 ] && process_ok=1
+
+failed_predicates=''
+add_failed_predicate() {
+    # $1 = predicate name, $2 = its final-tick ok flag (0 or 1)
+    [ "$2" -eq 1 ] && return 0
+    if [ -z "$failed_predicates" ]; then
+        failed_predicates=$1
+    else
+        failed_predicates="$failed_predicates,$1"
+    fi
+}
+add_failed_predicate process "$process_ok"
+add_failed_predicate gpu_busy "$gpu_busy_ok"
+add_failed_predicate sclk "$sclk_ok"
+add_failed_predicate sclk_stable "$sclk_stable_ok"
+add_failed_predicate temp_abs "$temp_abs_ok"
+add_failed_predicate temp_rate "$temp_rate_ok"
+add_failed_predicate mem "$mem_change_ok"
+add_failed_predicate pswpin "$pswpin_ok"
+add_failed_predicate lease "$lease_ok"
+add_failed_predicate latency "$latency_ok"
+if [ -n "$failed_predicates" ]; then
+    printf 'quiescence_timeout_predicates=%s\n' "$failed_predicates" >&2
+fi
+
 exit 1

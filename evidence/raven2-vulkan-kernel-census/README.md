@@ -63,31 +63,91 @@ I0 I1 I1 I0                   collect bound   2%      what collection costs unde
 The sidecar runs during P, I0, and I1, so `I0 I1 I1 I0` measures collection
 under a common sampler load and the sampler's own cost is a separate
 control ahead of it. Each quadruple yields two paired deltas, `b/a - 1`
-and `c/d - 1`, and the runner reports both: a pair is accepted where both
-arms of both pairs completed and both deltas sit inside the registered
-bound, and a fast inner arm never compensates a slow one through a mean.
-Any other quadruple matching the `a b c d` pattern is printed
+and `c/d - 1`, whose second reverses the first's queue position, and a
+control repeats its own quadruple until it holds `QWEN_CENSUS_REPLICATES`
+paired deltas. The verdict is over the whole set: the mean paired delta,
+the sample standard deviation, and a nominal 95% interval from Student's t
+at n-1 degrees of freedom, with the critical values for n of 2 through 8
+written into `summarize-census-controls.py` rather than imported. Any other
+quadruple matching the `a b c d` pattern keeps its own row and is printed
 `unclassified` with no bound, since `P I1 I1 P` conflates compile and
 collection effects and `I1 S S I1` compares two submission shapes; S stays
 outside the pair parser. The 2B calibrates because its four scoreboard
 arms span 0.65%; that span is the registered compile bound, a descriptive
 figure adopted as a tripwire rather than a confidence interval.
 
-The campaign has three terminal states and the exit status follows them: a
+The interval rather than a per-replicate comparison decides the verdict
+because two replicates disagreeing in sign report the machine's own
+arm-to-arm scatter. The calibration of 20260902T0819Z completed all
+fourteen arms with every sidecar accepted and read the sidecar control at
+-1.20% and +0.96% and the compile control at +2.40% and -1.00%: opposite
+signs at magnitudes this tree already documents as about 4% of uncontrolled
+spread on a repeated depth-0 rate. A 0.65% bound tested against each
+replicate separately called both of those refutations, which measured queue
+position, and `evidence/research-claim-methodology.md` already names the
+state a direction takes while its interval crosses its threshold.
+
+A control is therefore `accepted` where the whole interval sits inside
+`[-bound, +bound]`, `refuted` where the whole interval sits outside the
+bound on one side -- a cost where every point is below `-bound`, a speedup
+where every point is above `+bound`, and the `detail` column names which --
+and `unresolved` where the interval spans the bound. `summary.tsv` carries
+one row per registered control with `replicates`, `mean_delta`, `sd_delta`,
+`ci_low`, `ci_high`, and `deltas` beside the first quadruple's own
+`first_*` and `second_*` columns, so a reader compares one replicate
+against the set that judged it.
+
+`QWEN_CENSUS_REPLICATES` sets the count, defaults to 4, and is even and
+between 2 and 8, since every two replicates are one mirrored quadruple and
+the t table covers those degrees of freedom. Two replicates generate the
+thirteen arms the retained runs recorded, which is what keeps a replay of
+their summaries valid, and they resolve nothing at these bounds: one degree
+of freedom carries a critical value of 12.706, and the half-width of a
+two-value interval is 6.353 times the gap between them, so the interval
+spans a 0.65% bound unless the two deltas agree to about 0.1%. Four replicates give a
+half-width of 1.591 standard deviations, so a 0.65% bound accepts only
+where the four agree to about 0.4%, which this tree's documented scatter
+does not promise. An unresolved campaign at four replicates is a reportable
+result stated ahead of the run rather than a defect of it.
+
+The campaign has four terminal states and the exit status follows them: a
 failed arm, an incomplete control, or an unclassified quadruple ends it
 `failed` with exit 1, a refuted registered control ends it `refuted` with
-exit 3 even where every arm completed, and `accepted` alone exits 0.
-`QWEN_CENSUS_MODE` names the contract the counts are held to. A
-`calibration`, the default, runs exactly the thirteen-arm sequence and
-accepts on exactly three accepted controls, so a reordered arm list or a
-fourth quadruple fails the run rather than passing beside the three. An
+exit 3 even where every arm completed, an unresolved control with no
+refutation ends it `unresolved` with exit 4, and `accepted` alone exits 0.
+An unresolved control neither accepts nor refutes, so its branch precedes
+the accepted-count test that an unresolved control would otherwise leave
+short. `terminal-state.tsv` gains `control_unresolved` beside the counts it
+already carried. `QWEN_CENSUS_MODE` names the contract the counts are held
+to. A `calibration`, the default, runs exactly the arm list its replicate
+count generates and accepts on exactly three accepted controls, so a
+reordered arm list or a fourth quadruple fails the run rather than passing
+beside the three. An
 `attribution` runs any registered arm list, `I1` alone included, and
 requires `QWEN_CENSUS_CALIBRATION_RECEIPT` to name the output directory of
 an accepted calibration whose `inputs.tsv` bound the same production and
 instrumented digests, since the bounds a calibration accepted belong to
 those two binaries. `terminal-state.tsv` carries the state, the mode, the
-four counts, and the required count, so a chain reading the exit status
+five counts, and the required count, so a chain reading the exit status
 reads the calibration verdict rather than the request count.
+
+The replicate count, the generated arm list, and the predicted wall clock
+are campaign shape rather than acquisition settings, so they reach
+`inputs.tsv` and the `QWEN_CENSUS_PRINT_CONTRACT` output while
+`acquisition-contract.tsv` keeps the digest an attribution is held to. An
+attribution runs `I1` alone against its calibration's own digest, and a
+replicate count inside that file would refuse every attribution; a brick's
+input closure already hashes its arm list, so a prior calibration at
+another replicate count offers nothing to reuse. The prediction bounds the
+run from the per-arm ceiling the scoreboard measured -- about 9 seconds to
+readiness, 9 seconds of request, 1 second of teardown -- plus the
+`QWEN_CENSUS_COOLDOWN_S` quiescence deadline, over every arm the generated
+list names plus W: 686 seconds at two replicates and 1274 at four under the
+default 30-second cooldown. It is a ceiling on the whole list, so a run
+reusing bricks executes fewer arms and costs less. The print also states
+the brick partition, one `census_brick` row per brick carrying its control
+name, its first slot, and its slot count, from the same functions the run
+indexes with: C3 lands at slot 13 at two replicates and at 25 at four.
 
 An attribution is bound to the whole calibration rather than to its two
 digests. The runner writes `calibration-contract.tsv` in fixed row order:
@@ -150,9 +210,9 @@ compare it against a warm one. W absorbs that load. Its row is recorded in
 `summarize-census-controls.py` drops it beside S before the quadruple walk,
 and `acquisition-contract.tsv` states the exclusion as `warmup_arm`,
 `warmup_excluded_from_pairs`, and `warmup_excluded_from_census` rather than
-leaving a reader to infer it from the slot numbering. The registered
-thirteen keep slots 1 through 13, `QWEN_CENSUS_ARMS` still names exactly
-those thirteen, and a calibration whose four bricks all reuse skips the
+leaving a reader to infer it from the slot numbering. The registered arms
+keep slots 1 upward, `QWEN_CENSUS_ARMS` still names exactly the generated
+list, and a calibration whose four bricks all reuse skips the
 warmup too, since a warmup warms the arms that follow it and there are none.
 
 Coverage rather than the widest gap is what a sidecar record owes an arm,
@@ -185,18 +245,21 @@ The sidecar's own cost is a separate open question this change leaves open.
 Chain seven measured P-nosidecar at 9.561 against P at 9.428, 9.422, and
 9.472, about 1.0 to 1.4%, above the registered 0.0065 sidecar bound. The
 bound stands and the next chain measures the cost under the C broker; a
-refuted pair now carries the delta that left the bound beside the bound in
-its own `detail` column, so the row states which of the two deltas refuted
-it and by how much.
+refuted control now carries the direction and the interval that cleared the
+bound in its own `detail` column, so the row states what refuted it and by
+how much.
 
-The thirteen arms are four control bricks, and a brick rather than a
+The registered arms are four control bricks, and a brick rather than a
 campaign is the unit a verdict and a reuse belong to. C0 is the sidecar
-quadruple at slots 1 through 4, C1 the compile quadruple at 5 through 8, C2
-the collect quadruple at 9 through 12, and C3 the identity arm at slot 13.
-Each writes `bricks/CN.receipt.tsv` carrying its id and control name, its
-slots and arms, its verdict -- `accepted`, `refuted`, or `incomplete` for
-C0 through C2 from the pair parser's own column, `completed` or `failed` for
-C3 from the arm's state -- its arm rates, its input-closure digest, and the
+control, C1 the compile control, C2 the collect control, and C3 the
+identity arm. Each control brick holds twice the replicate count in slots,
+so at two replicates C0 takes slots 1 through 4, C1 5 through 8, C2 9
+through 12, and C3 slot 13, and at four replicates each control brick takes
+eight slots and C3 lands at 25. Each writes `bricks/CN.receipt.tsv`
+carrying its id and control name, its slots and arms, its verdict --
+`accepted`, `refuted`, `unresolved`, or `incomplete` for C0 through C2 from
+the summary's own column, `completed` or `failed` for C3 from the arm's
+state -- its arm rates, its input-closure digest, and the
 SHA-256 of every file its arm directories retained. The input closure is
 what the brick's arms consumed and what a later run can state before it
 launches: the acquisition contract digest, the brick id, its arm list, and,
@@ -243,8 +306,8 @@ runner's retained teardown record, and the absence of either child after the
 runner's waits. `terminal-state.tsv` reads `census=canary_accepted` or
 `census=canary_failed` at exit 0 or 1, assigns no control verdict, and never
 reports a refutation. The canary is what the chain runs ahead of a
-calibration, since four short arms price a broken link at a fraction of
-thirteen.
+calibration, since four short arms price a broken link at a fraction of a
+whole calibration.
 
 `wall-clock.tsv` prices the campaign phase by phase on CLOCK_REALTIME, one
 row per phase per arm as `slot arm phase begin_ns end_ns note` plus one
@@ -700,6 +763,15 @@ opens gaps in every sampled arm, three to five per window on five of the
 eight P and I0 records, so the sidecar and compile pairs stay `incomplete`
 in `summary.tsv` and the next instrument change targets the sampler itself
 rather than the census path.
+
+`20260902T0819Z/` retains the fourth calibration on head f5f92d8e,
+`calibration_verdict=refuted`: the sampler moves to a standalone C
+telemetry broker on a 100 ms `pp_dpm_*` channel and clears its own bound on
+every one of fourteen completed arms, with the two collect slots again
+inside the 0.02 bound, but the sidecar and compile pairs both refute on
+replicates that disagree in sign, which reads as arm-to-arm scatter rather
+than the mechanism under test and moves the next chain link to a
+replicated-pair, paired-mean verdict.
 
 ## Order and falsifiers
 
