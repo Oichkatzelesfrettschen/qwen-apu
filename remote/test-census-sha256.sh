@@ -24,8 +24,8 @@ if [ "$#" -ne 0 ]; then
     usage
 fi
 
-script_directory=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-repository_root=$(CDPATH= cd -- "$script_directory/.." && pwd)
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+repository_root=$(CDPATH='' cd -- "$script_directory/.." && pwd)
 patch_path="$repository_root/patches/llama-vulkan-pipeline-census.patch"
 
 if [ ! -f "$patch_path" ]; then
