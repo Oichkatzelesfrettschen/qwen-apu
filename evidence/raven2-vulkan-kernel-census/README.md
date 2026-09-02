@@ -313,7 +313,11 @@ accepts it: exit status 0, one footer, a sample count above one equal to
 the rows, an achieved period within 25% of the requested one, a mean
 sample cost under 1 ms, every sensor read on every sample, footer
 instants equal to the first and last rows, and the request window covered
-on both sides. Any refusal fails the arm. The
+on both sides. The SMU10 kernel path exposes `pp_dpm_fclk` as an empty
+file and reports the fabric clock through `pp_dpm_mclk`, so the runner
+allows the FCLK column to read `unavailable` where that file is empty at
+campaign start, records the allowance in `inputs.tsv`, and requires every
+other column on every sample. Any refusal fails the arm. The
 `P-nosidecar P P P-nosidecar` control runs ahead of the other two and
 bounds what the sampler itself costs the served rate, because two hundred
 sysfs opens per second are a real load on a two-core machine even where
@@ -323,6 +327,21 @@ its own clock and is read beside the sidecar rather than joined to it.
 Clock selection is an execution-shape axis here, because a faster or more
 fragmented shader can lower apparent demand and select a lower state that
 cancels part of its own gain.
+
+## Retained runs
+
+`20260902T0222Z/` retains the chain run on head 7e9e09b with the v2
+instrument, ahead of the review that produced v3. It is classified
+`measurement_status=diagnostic instrument_version=pipeline-census-v2-pre-review
+merge_authority=no ownership_authority=no`. Its eight served arms refused
+at launch on `descriptor-backed model path requires approved model
+identity`, because the runner passed no artifact ledger and the served
+harness derives the approved identity from that ledger alone; the runner
+now requires the ledger and records its digest. The S arm completed at
+2.485 tok/s with 66 logger blocks under the serialized profile, and the
+sidecar held a 5.0001 ms period at a mean cost of 614 microseconds per
+sample on the appliance, which is the figure the sampler control exists
+to bound. No bracket, overlap, or ownership figure exists from that run.
 
 ## Order and falsifiers
 

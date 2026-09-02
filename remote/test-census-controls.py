@@ -55,11 +55,13 @@ def sidecar_record(samples=100, period_ns=5_000_000, cost_ns=30_000, start=1_000
 
 
 def validate(text, status=0, window=(1_050_000_000, 1_400_000_000), tolerance="0.25",
-             cost_bound="1000000", period_ms="5"):
+             cost_bound="1000000", period_ms="5", allow=()):
     path = write("sidecar.tsv", text)
     command = [sys.executable, validator, path, "--sidecar-status", str(status),
                "--period-ms", period_ms, "--period-tolerance", tolerance,
                "--cost-bound-ns", cost_bound]
+    for column in allow:
+        command += ["--allow-unavailable", column]
     if window:
         command += ["--window-begin-ns", str(window[0]), "--window-end-ns", str(window[1])]
     return subprocess.run(command, capture_output=True, text=True)
@@ -87,6 +89,12 @@ refused(sidecar_record(period_ns=7_000_000, header_period=5_000_000), "achieved_
 refused(sidecar_record(header_period=4_000_000), "period_declared")
 refused(sidecar_record(cost_ns=2_000_000), "sample_cost")
 refused(sidecar_record(unavailable_rows=(3,)), "sensors")
+# A column the kernel leaves empty is allowed by name, on every row; the
+# allowance covers that column alone and an unknown column name is refused.
+result = validate(sidecar_record(unavailable_rows=tuple(range(100))), allow=("pp_dpm_fclk_surface_mhz",))
+assert result.returncode == 0 and "sensors=accepted" in result.stdout, result.stdout
+refused(sidecar_record(unavailable_rows=(3,)), "sensors", allow=("gpu_busy_percent",))
+refused(sidecar_record(), "allowed_columns", allow=("sample_cost_ns",))
 refused(sidecar_record(footers=2), "footer_cardinality")
 refused(sidecar_record(footers=0), "footer_cardinality")
 refused(sidecar_record(columns=COLUMNS.replace("pp_dpm_mclk_surface_mhz", "mclk_mhz")), "columns")
