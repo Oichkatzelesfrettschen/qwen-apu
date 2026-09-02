@@ -23,6 +23,8 @@ set -eu
 #                                    "P I0 I0 P I0 I1 I1 I0"
 #   QWEN_CENSUS_COOLDOWN_S           idle seconds between arms, default 30
 #   QWEN_CENSUS_LATENCY_PROBE        graphics latency probe the runner arms
+#   QWEN_CENSUS_RUNTIME_REMOTE       synced runtime tree the arms launch through,
+#                                    default ~/qwen-laptop-setup/remote
 
 if [ "$#" -ne 2 ]; then
     printf 'usage: %s MODEL_ID OUTPUT_DIRECTORY\n' "$0" >&2
@@ -40,6 +42,18 @@ cooldown_s=${QWEN_CENSUS_COOLDOWN_S:-30}
 production_server=${QWEN_CENSUS_PRODUCTION_SERVER:-}
 instrumented_server=${QWEN_CENSUS_INSTRUMENTED_SERVER:-}
 models_directory=${QWEN_MODELS_DIRECTORY:-"${HOME:?}/models"}
+# The launch chain runs from the synced runtime tree alone, and a git
+# worktree is refused at launch, so the arms launch and tear down through
+# that tree while this runner and its summarizer come from wherever the
+# operator checked out.
+runtime_remote=${QWEN_CENSUS_RUNTIME_REMOTE:-"${HOME:?}/qwen-laptop-setup/remote"}
+for runtime_script in qwen-launch.sh qwen-teardown.sh; do
+    if [ ! -x "$runtime_remote/$runtime_script" ]; then
+        printf 'runtime tree script is not executable: %s\n' \
+            "$runtime_remote/$runtime_script" >&2
+        exit 2
+    fi
+done
 
 if [ -e "$output_directory" ]; then
     printf 'output directory exists and a census never appends to one: %s\n' \
@@ -203,6 +217,8 @@ for arm in $arms; do
     set +e
     env \
         QWEN_LLAMA_SERVER="$server" \
+        QWEN_LAUNCH_SCRIPT="$runtime_remote/qwen-launch.sh" \
+        QWEN_TEARDOWN_SCRIPT="$runtime_remote/qwen-teardown.sh" \
         QWEN_MODELS_DIRECTORY="$models_directory" \
         QWEN_RESULT_DIRECTORY="$arm_directory" \
         QWEN_CONTEXT_SIZE="$context" \
