@@ -1432,6 +1432,13 @@ chmod +x "$brick_directory/measure-served-decode.sh"
 cat >"$brick_directory/await-quiescence.sh" <<'FAKE_QUIESCENCE'
 #!/bin/sh
 set -eu
+# The stub records its own argv, so a case reads which cooldown flags the
+# campaign passed. A stub that printed a verdict alone would leave
+# --sclk-forced unobservable, and that flag is what keeps a cooldown under a
+# forced clock policy from running to its deadline.
+if [ -n "${QWEN_TEST_QUIESCENCE_ARGV:-}" ]; then
+    printf '%s\n' "$*" >>"$QWEN_TEST_QUIESCENCE_ARGV"
+fi
 printf 'quiescence=timeout elapsed_ms=1234 llama_server=absent gpu_busy=0\n'
 exit 1
 FAKE_QUIESCENCE
@@ -1575,6 +1582,7 @@ run_brick_calibration() {
     brick_clock_source=${17:-}
     brick_drm=$signal_drm
     brick_sudo_log=$temporary_directory/sudo-$brick_case.log
+    brick_quiescence_argv=$temporary_directory/quiescence-argv-$brick_case.log
     if [ "$brick_engine_clock_policy" != auto ]; then
         # One directory serves every forced case, because its path is an
         # acquisition-contract row and a per-case copy would give each case its
@@ -1597,6 +1605,7 @@ run_brick_calibration() {
         QWEN_TEST_CENSUS_COMPLETE="$brick_complete_label" \
         QWEN_TEST_SUDO_REFUSE="$brick_sudo_refuse" \
         QWEN_TEST_SUDO_LOG="$brick_sudo_log" \
+        QWEN_TEST_QUIESCENCE_ARGV="$brick_quiescence_argv" \
         QWEN_CENSUS_ENGINE_CLOCK_POLICY="$brick_engine_clock_policy" \
         QWEN_CENSUS_MCLK_LEVEL="$brick_mclk_level" \
         QWEN_TEST_SUDO_MCLK_IGNORE="$brick_mclk_ignore" \
@@ -1711,12 +1720,26 @@ if [ "$brick_status" -ne 1 ]; then
         "$brick_status" >&2
     exit 1
 fi
-if ! awk -F'\t' '$1 == "13" && $3 == "cooldown" && $6 == "quiescence=timeout elapsed_ms=1234" { found = 1 }
+if ! awk -F'\t' '$1 == "13" && $3 == "cooldown" && $6 == "quiescence=timeout elapsed_ms=1234 sclk_forced=0" { found = 1 }
     END { exit found ? 0 : 1 }' "$brick_cooldown_output/wall-clock.tsv"; then
-    printf 'the cooldown row carries no quiescence verdict and elapsed time\n' >&2
+    printf 'the cooldown row carries no quiescence verdict, elapsed time, and forced-clock state\n' >&2
     sed -n '1,10p' "$brick_cooldown_output/wall-clock.tsv" >&2
     exit 1
 fi
+# The governor policy releases the graphics step on its own, so the position
+# predicate still describes idle and the campaign passes no --sclk-forced.
+brick_cooldown_argv=$temporary_directory/quiescence-argv-quiescence_cooldown.log
+if [ ! -s "$brick_cooldown_argv" ]; then
+    printf 'the auto-policy calibration invoked no cooldown poller\n' >&2
+    exit 1
+fi
+if grep -q -- '--sclk-forced' "$brick_cooldown_argv"; then
+    printf 'the auto-policy calibration passed --sclk-forced to the cooldown poller\n' >&2
+    cat "$brick_cooldown_argv" >&2
+    exit 1
+fi
+printf 'quiescence_cooldown_auto=accepted invocations=%s\n' \
+    "$(wc -l <"$brick_cooldown_argv" | tr -d ' ')"
 # The warmups open the calibration at the lettered slots whenever any arm
 # executes, take the production server under the sampler, and enter no pair:
 # the sidecar quadruple is reused here, so the summary still carries its three
@@ -2259,6 +2282,26 @@ diagnostic_file=
 # alone would leave the fabric clock unbounded and every case above unchanged.
 grep -q '^clock_invariant=held .* required=1100 required_mclk=933$' \
     "$forced_output/arms/0a-W/clock-sidecar-verdict.txt"
+# A forced policy pins the graphics step at the highest one pp_dpm_sclk lists
+# and holds it through idle, so the campaign passes --sclk-forced on every
+# cooldown and the wall-clock note carries the state that produced the
+# poller's own verdict.
+forced_quiescence_argv=$temporary_directory/quiescence-argv-engine_clock_forced_manual.log
+if [ ! -s "$forced_quiescence_argv" ]; then
+    printf 'the manual-clock calibration invoked no cooldown poller\n' >&2
+    exit 1
+fi
+if grep -qv -- '--sclk-forced' "$forced_quiescence_argv"; then
+    printf 'a manual-clock cooldown reached the poller without --sclk-forced\n' >&2
+    cat "$forced_quiescence_argv" >&2
+    exit 1
+fi
+if ! awk -F'\t' '$3 == "cooldown" && $6 ~ /sclk_forced=1$/ { found = 1 }
+    END { exit found ? 0 : 1 }' "$forced_output/wall-clock.tsv"; then
+    printf 'no manual-clock cooldown row records sclk_forced=1\n' >&2
+    sed -n '1,10p' "$forced_output/wall-clock.tsv" >&2
+    exit 1
+fi
 printf 'engine_clock_forced_manual=accepted sclk_level=1 required_sclk_mhz=1100\n'
 
 # The fabric write is recorded rather than required. The appliance took the

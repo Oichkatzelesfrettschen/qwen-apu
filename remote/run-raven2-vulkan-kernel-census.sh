@@ -552,6 +552,14 @@ engine_clock_below_mclk_floor_fraction=-
 engine_clock_required_flag=''
 engine_clock_mclk_flag=''
 engine_clock_mclk_fraction_flag=''
+# A forced policy commands the highest graphics step and holds it through
+# idle, so await-quiescence.sh's "step below the highest listed step"
+# predicate reports the policy rather than the machine and every cooldown
+# would run to its deadline. --sclk-forced drops that half and leaves the
+# busy floor and the step's own stability across the hold window carrying
+# idle, which is what the cooldown between arms measures.
+cooldown_sclk_forced_flag=''
+cooldown_sclk_forced=0
 if [ "$engine_clock_policy" != auto ]; then
     engine_clock_sclk_path=$drm_device/pp_dpm_sclk
     if [ ! -r "$engine_clock_sclk_path" ]; then
@@ -629,6 +637,8 @@ if [ "$engine_clock_policy" != auto ]; then
     engine_clock_required_flag=$engine_clock_required_sclk_mhz
     engine_clock_mclk_flag=$engine_clock_required_mclk_mhz
     engine_clock_mclk_fraction_flag=$engine_clock_below_mclk_floor_fraction
+    cooldown_sclk_forced_flag=--sclk-forced
+    cooldown_sclk_forced=1
 fi
 # telemetry-broker takes the hwmon directory as an argument where
 # sample-clock-sidecar.py resolves it inside itself, so the runner applies
@@ -2052,6 +2062,7 @@ EOF
     set +e
     quiescence_line=$("$script_directory/await-quiescence.sh" \
         --max-seconds "$cooldown_s" \
+        ${cooldown_sclk_forced_flag:+--sclk-forced} \
         --lease "${QWEN_VULKAN_WORKLOAD_LOCK:-${HOME:?}/qwen-webui-state/vulkan-workload.lock}" \
         2>"$arm_directory/await-quiescence.stderr")
     quiescence_status=$?
@@ -2066,8 +2077,9 @@ EOF
     [ -n "$quiescence_verdict" ] || quiescence_verdict=unreported
     [ -n "$quiescence_elapsed_ms" ] || quiescence_elapsed_ms=-
     [ "$quiescence_verdict" = reached ] || cooldown_timeouts=$((cooldown_timeouts + 1))
-    printf 'census_cooldown=%s slot=%s arm=%s elapsed_ms=%s status=%s\n' \
-        "$quiescence_verdict" "$slot" "$arm" "$quiescence_elapsed_ms" "$quiescence_status"
+    printf 'census_cooldown=%s slot=%s arm=%s elapsed_ms=%s status=%s sclk_forced=%s\n' \
+        "$quiescence_verdict" "$slot" "$arm" "$quiescence_elapsed_ms" \
+        "$quiescence_status" "$cooldown_sclk_forced"
     # An endpoint the run never observed reads `-` rather than borrowing a
     # neighbouring stamp, so a failed arm reports a missing boundary instead
     # of a mislabeled one.
@@ -2082,9 +2094,9 @@ EOF
         printf '%s\t%s\trequest\t%s\t%s\t-\n' "$slot" "$arm" "$request_begin_wall_ns" "$request_end_wall_ns"
         printf '%s\t%s\tteardown\t%s\t%s\t-\n' "$slot" "$arm" "$request_end_wall_ns" "$served_exit_ns"
         printf '%s\t%s\tanalysis\t%s\t%s\t-\n' "$slot" "$arm" "$served_exit_ns" "$analysis_end_ns"
-        printf '%s\t%s\tcooldown\t%s\t%s\tquiescence=%s elapsed_ms=%s\n' \
+        printf '%s\t%s\tcooldown\t%s\t%s\tquiescence=%s elapsed_ms=%s sclk_forced=%s\n' \
             "$slot" "$arm" "$cooldown_begin_ns" "$cooldown_end_ns" \
-            "$quiescence_verdict" "$quiescence_elapsed_ms"
+            "$quiescence_verdict" "$quiescence_elapsed_ms" "$cooldown_sclk_forced"
     } >>"$wall_clock_ledger"
 done
 # A calibration whose four bricks all reuse executes no arm at all, so the

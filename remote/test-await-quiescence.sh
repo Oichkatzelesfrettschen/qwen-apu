@@ -4,8 +4,11 @@
 # and a starred highest sclk step naming sclk on stderr), times out against a
 # predicate that clears instantaneously but keeps violating its hold-window
 # derivative (rising temperature, and a moving starred sclk step), and times
-# out while the workload lease is held. Every predicate source is a file
-# under a fixture tree named through --drm-device, --hwmon, and --proc-root,
+# out while the workload lease is held. A closing pair proves --sclk-forced:
+# the same highest-step-starred fixture reaches quiescence under the flag and
+# an unreadable pp_dpm_sclk still times out under it. Every
+# predicate source is a file under a fixture tree named through
+# --drm-device, --hwmon, and --proc-root,
 # so the poller under test never reads the real machine.
 set -eu
 
@@ -201,20 +204,21 @@ write_stable_fixture
 # during the hold window restarts the window on every move, the way a
 # rising temperature does, and only reaches quiescence once the writer
 # stops and the step holds still for the full window. The writer alternates
-# every 30 ms, faster than the poller's own 100 ms tick, so no run of three
-# consecutive ticks (the 300 ms hold window) can catch the same value by
-# alignment alone while the writer is still moving it.
+# every 130 ms, longer than the poller's own 100 ms tick, so the 300 ms hold
+# window spans at least two moves however the two periods align. A writer
+# faster than the tick aliases instead: sampling a 60 ms cycle every 100 ms
+# lands on one phase repeatedly and reports a step that never held still.
 write_stable_fixture
 (
     step=0
-    while [ "$step" -lt 34 ]; do
+    while [ "$step" -lt 14 ]; do
         if [ $((step % 2)) -eq 0 ]; then
             printf '0: 200Mhz\n1: 400Mhz *\n2: 800Mhz\n' >"$drm_device/pp_dpm_sclk"
         else
             printf '0: 200Mhz *\n1: 400Mhz\n2: 800Mhz\n' >"$drm_device/pp_dpm_sclk"
         fi
         step=$((step + 1))
-        sleep 0.03
+        sleep 0.13
     done
     printf '0: 200Mhz\n1: 400Mhz *\n2: 800Mhz\n' >"$drm_device/pp_dpm_sclk"
 ) &
@@ -291,5 +295,68 @@ if [ "$(field "$output" latency_baseline_us)" != - ]; then
     fail "no-baseline latency fixture named a baseline: $output"
 fi
 pass "a latency log naming no baseline is not_applicable and does not block"
+
+# Case 9: the same fixture that stars the highest listed step -- the state a
+# forced power_dpm_force_performance_level pins and holds through idle --
+# reaches quiescence under --sclk-forced, where case 3 timed out on it. The
+# busy floor and the step's own stability across the hold window carry idle
+# in the position predicate's place, and the vector states sclk_forced=1 so a
+# retained line names the reading that produced the verdict.
+write_stable_fixture
+printf '0: 200Mhz\n1: 400Mhz\n2: 800Mhz *\n' >"$drm_device/pp_dpm_sclk"
+if ! output=$(run_under_test --max-seconds 5 --hold-ms 300 --sclk-forced); then
+    fail "highest-step-starred fixture did not reach quiescence under --sclk-forced: $output"
+fi
+case $output in
+    quiescence=reached*) : ;;
+    *) fail "--sclk-forced fixture printed no reached line: $output" ;;
+esac
+if [ "$(field "$output" sclk_forced)" != 1 ]; then
+    fail "--sclk-forced fixture reported sclk_forced other than 1: $output"
+fi
+if [ "$(field "$output" sclk_ok)" != 1 ]; then
+    fail "--sclk-forced fixture reported sclk_ok=0 on the pinned highest step: $output"
+fi
+if [ "$(field "$output" sclk_step)" != 2 ] || [ "$(field "$output" sclk_steps)" != 3 ]; then
+    fail "--sclk-forced fixture reported the wrong sclk_step/sclk_steps: $output"
+fi
+pass "a fixture starring the highest listed sclk step reaches quiescence under --sclk-forced"
+
+# Case 10: the flag drops the position half of the sclk predicate alone. An
+# unreadable pp_dpm_sclk still reads unavailable, which counts as not held the
+# way every other unavailable signal does, so --sclk-forced never reports idle
+# over a signal the poller could not read.
+write_stable_fixture
+rm -f "$drm_device/pp_dpm_sclk"
+started_ns=$(date +%s%N)
+status=0
+output=$(run_under_test --max-seconds 2 --hold-ms 300 --sclk-forced \
+    2>"$temporary_directory/stderr") || status=$?
+stderr_output=$(cat "$temporary_directory/stderr")
+finished_ns=$(date +%s%N)
+wall_ms=$(( (finished_ns - started_ns) / 1000000 ))
+if [ "$status" -ne 1 ]; then
+    fail "unreadable-pp_dpm_sclk fixture under --sclk-forced exited $status rather than the timeout status 1"
+fi
+case $output in
+    quiescence=timeout*) : ;;
+    *) fail "unreadable-pp_dpm_sclk fixture under --sclk-forced printed no timeout line: $output" ;;
+esac
+if [ "$(field "$output" sclk_ok)" != 0 ]; then
+    fail "unreadable-pp_dpm_sclk fixture under --sclk-forced reported sclk_ok=1: $output"
+fi
+if [ "$(field "$output" sclk_step)" != unavailable ]; then
+    fail "unreadable-pp_dpm_sclk fixture reported a step: $output"
+fi
+timeout_predicates=$(printf '%s\n' "$stderr_output" | sed -n 's/^quiescence_timeout_predicates=//p')
+case ",$timeout_predicates," in
+    *,sclk,*) : ;;
+    *) fail "unreadable-pp_dpm_sclk fixture under --sclk-forced did not name sclk: $stderr_output" ;;
+esac
+if [ "$wall_ms" -lt 2000 ]; then
+    fail "unreadable-pp_dpm_sclk fixture under --sclk-forced returned before --max-seconds 2 elapsed: wall_ms=$wall_ms"
+fi
+pass "--sclk-forced leaves an unreadable pp_dpm_sclk counting as not held"
+write_stable_fixture
 
 printf 'await_quiescence=accepted\n'
