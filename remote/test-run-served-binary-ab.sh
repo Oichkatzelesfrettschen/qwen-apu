@@ -218,6 +218,31 @@ write_manifest "$candidate_instrumented/artifact-manifest.tsv" "$candidate_bytes
 printf 'instrumentation\tpipeline-census-v3\n' \
     >>"$candidate_instrumented/artifact-manifest.tsv"
 
+# A control whose manifest carries no candidate_series row at all: the shape a
+# promoted production manifest holds, the way it holds no instrumentation row.
+# The absent row reads as the empty selection and the run reaches the same
+# host or session refusal the written-through control does.
+control_series_absent=$temporary_directory/control-series-absent
+mkdir -p "$control_series_absent/bin"
+cp -- "$control_server" "$control_series_absent/bin/llama-server"
+chmod +x "$control_series_absent/bin/llama-server"
+write_manifest "$control_series_absent/artifact-manifest.tsv" "$control_bytes" \
+    "$control_sha256" - verified "$serving_cmake" "$serving_compiler"
+grep -v '^candidate_series	' "$control_series_absent/artifact-manifest.tsv" \
+    >"$control_series_absent/artifact-manifest.tsv.tmp"
+mv -- "$control_series_absent/artifact-manifest.tsv.tmp" \
+    "$control_series_absent/artifact-manifest.tsv"
+
+# A control whose manifest carries the row twice. Two rows are ambiguous the
+# way two executable rows are, and the refusal names the count.
+control_series_duplicated=$temporary_directory/control-series-duplicated
+mkdir -p "$control_series_duplicated/bin"
+cp -- "$control_server" "$control_series_duplicated/bin/llama-server"
+chmod +x "$control_series_duplicated/bin/llama-server"
+write_manifest "$control_series_duplicated/artifact-manifest.tsv" "$control_bytes" \
+    "$control_sha256" - verified "$serving_cmake" "$serving_compiler"
+printf 'candidate_series\t-\n' >>"$control_series_duplicated/artifact-manifest.tsv"
+
 # The scoreboard receipt: an identity check binding the control server, the
 # tuple that campaign resolved, and the inputs every arm here reruns under. The
 # header of identity-check.tsv is compared literally, so it is written once and
@@ -425,6 +450,46 @@ run_candidate candidate_profile_preset 'descend from different base builds' \
     "$candidate_profile_preset"
 run_candidate candidate_instrumented \
     'the candidate manifest names instrumentation' "$candidate_instrumented"
+
+run_control() {
+    control_case=$1
+    control_expectation=$2
+    control_root_path=$3
+    active_fixture=$control_case
+    run_index=$((run_index + 1))
+    diagnostic_file=$temporary_directory/$control_case-stderr.txt
+    set +e
+    env -i \
+        PATH="$execution_path" \
+        HOME="$home_directory" \
+        QWEN_MODELS_DIRECTORY="$models_directory" \
+        QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+        QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+        QWEN_DRM_DEVICE="$fixture_drm" \
+        QWEN_HWMON_ROOT="$fixture_hwmon" \
+        QWEN_CENSUS_BROKER="$broker_stub" \
+        QWEN_CENSUS_SIDECAR_CPU=0 \
+        "$harness" "$control_root_path/bin/llama-server" "$candidate_server" \
+        "$model_id" "$temporary_directory/out-$run_index" \
+        >"$temporary_directory/$control_case-stdout.txt" 2>"$diagnostic_file"
+    control_status=$?
+    set -e
+    [ "$control_status" -eq 2 ]
+    grep -Eq "$control_expectation" "$diagnostic_file"
+    printf '%s=accepted\n' "$control_case"
+    diagnostic_file=
+}
+
+# An absent candidate_series row on the control reads as the empty selection,
+# the way it reads on a promoted production manifest, so preflight passes and
+# the run reaches the host name or session refusal like the written-through
+# control does.
+run_control control_series_absent "$reached_preflight_end" "$control_series_absent"
+# Two rows are ambiguous the way two executable rows are, and the refusal
+# names the count the manifest carries.
+run_control control_series_duplicated \
+    'the control manifest holds 2 candidate_series rows where one or none is admitted' \
+    "$control_series_duplicated"
 
 active_fixture=replicate_count
 run_index=$((run_index + 1))
