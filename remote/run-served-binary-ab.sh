@@ -118,7 +118,10 @@ set -eu
 #   QWEN_CENSUS_LATENCY_PROBE        graphics latency probe the runner arms
 #   QWEN_CENSUS_SAMPLER              broker (default) or python
 #   QWEN_CENSUS_BROKER               telemetry-broker executable under the broker
-#                                    sampler, default ../build/telemetry-broker
+#                                    sampler, default ../build/telemetry-broker,
+#                                    rebuilt where it records another source
+#   QWEN_CENSUS_MCLK_BELOW_FRACTION  admitted share of window samples below the
+#                                    fabric floor under a forced policy, default 0.01
 #   QWEN_CENSUS_SIDECAR_*            the sampler geometry, period, tolerance, cost,
 #                                    gap, lost fraction, and CPU list the census
 #                                    calibrated; these arms sample the same way
@@ -205,7 +208,11 @@ sidecar_tolerance=${QWEN_CENSUS_SIDECAR_TOLERANCE:-0.25}
 sidecar_cost_ns=${QWEN_CENSUS_SIDECAR_COST_NS:-1000000}
 sidecar_max_gap_ms=${QWEN_CENSUS_SIDECAR_MAX_GAP_MS:-100}
 sidecar_max_gap_ns=$((sidecar_max_gap_ms * 1000000))
-sidecar_max_lost_fraction=${QWEN_CENSUS_SIDECAR_MAX_LOST:-0.02}
+# Coverage for a clock-state record rather than a safety ceiling: at the 20 ms
+# period 0.03 is under 15 samples of a 400-sample window and the clock
+# invariant counts every sample taken. The census campaign carries the same
+# bound, since both hold their records to one acquisition contract.
+sidecar_max_lost_fraction=${QWEN_CENSUS_SIDECAR_MAX_LOST:-0.03}
 sidecar_cpu=${QWEN_CENSUS_SIDECAR_CPU:-0,1}
 # Every measurement process on this machine runs at nice 19, the server
 # included, so the sampler takes that priority as an absolute; a hole the
@@ -235,8 +242,10 @@ engine_clock_mclk_level=-
 engine_clock_required_sclk_mhz=-
 engine_clock_required_mclk_mhz=-
 engine_clock_below_required_fraction=-
+engine_clock_below_mclk_floor_fraction=-
 engine_clock_required_flag=''
 engine_clock_mclk_flag=''
+engine_clock_mclk_fraction_flag=''
 if [ "$engine_clock_policy" != auto ]; then
     engine_clock_sclk_path=$drm_device/pp_dpm_sclk
     if [ ! -r "$engine_clock_sclk_path" ]; then
@@ -298,8 +307,20 @@ if [ "$engine_clock_policy" != auto ]; then
     # The admitted share of window samples below the required step is zero: a
     # pinned clock that moved is the nuisance the policy exists to remove.
     engine_clock_below_required_fraction=0
+    # The fabric floor admits a share where the graphics equality admits none:
+    # a pinned step reports one value on every sample and the fabric hovers
+    # under load, so the census campaign prices that hover and this one is
+    # held to the same pair of shares.
+    engine_clock_below_mclk_floor_fraction=${QWEN_CENSUS_MCLK_BELOW_FRACTION:-0.01}
+    if ! awk -v fraction="$engine_clock_below_mclk_floor_fraction" 'BEGIN {
+        exit (fraction + 0 >= 0 && fraction + 0 < 1 && fraction ~ /^[0-9]+(\.[0-9]+)?$/) ? 0 : 1 }'; then
+        printf 'QWEN_CENSUS_MCLK_BELOW_FRACTION is a fraction in [0, 1): %s\n' \
+            "$engine_clock_below_mclk_floor_fraction" >&2
+        exit 2
+    fi
     engine_clock_required_flag=$engine_clock_required_sclk_mhz
     engine_clock_mclk_flag=$engine_clock_required_mclk_mhz
+    engine_clock_mclk_fraction_flag=$engine_clock_below_mclk_floor_fraction
 fi
 # A forced policy replaces the precondition with one priming warmup, which
 # still absorbs the cold load the first server after a build pays. The cap the
@@ -407,32 +428,7 @@ case $ab_sampler in
         broker_source=$script_directory/telemetry-broker.c
         broker_builder=$script_directory/build-telemetry-broker.sh
         broker=${QWEN_CENSUS_BROKER:-"$script_directory/../build/telemetry-broker"}
-        if [ ! -r "$broker_source" ]; then
-            printf 'the telemetry broker source is absent: %s\n' "$broker_source" >&2
-            exit 2
-        fi
-        if [ ! -x "$broker" ]; then
-            if [ ! -x "$broker_builder" ]; then
-                printf 'the telemetry broker is absent and its builder is not executable: %s\n' \
-                    "$broker_builder" >&2
-                exit 2
-            fi
-            broker_build_log=$(mktemp)
-            if "$broker_builder" "$broker" >"$broker_build_log" 2>&1; then
-                rm -f -- "$broker_build_log"
-            else
-                sed -n '1,20p' "$broker_build_log" >&2
-                rm -f -- "$broker_build_log"
-                printf 'the telemetry broker is absent and its build failed: %s\n' "$broker" >&2
-                exit 2
-            fi
-        fi
-        if [ ! -x "$broker" ]; then
-            printf 'the telemetry broker is not executable after its build: %s\n' "$broker" >&2
-            exit 2
-        fi
-        sidecar_binary_sha256=$(sha256sum "$broker" | cut -d ' ' -f 1)
-        sidecar_source_sha256=$(sha256sum "$broker_source" | cut -d ' ' -f 1)
+        census_prepare_broker "$broker" "$broker_source" "$broker_builder"
         ;;
     python)
         sidecar_implementation=sample-clock-sidecar.py
@@ -780,6 +776,8 @@ printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\
     printf 'engine_clock_required_sclk_mhz\t%s\nengine_clock_required_mclk_mhz\t%s\nclock_below_required_fraction\t%s\n' \
         "$engine_clock_required_sclk_mhz" "$engine_clock_required_mclk_mhz" \
         "$engine_clock_below_required_fraction"
+    printf 'clock_below_mclk_floor_fraction\t%s\n' \
+        "$engine_clock_below_mclk_floor_fraction"
     # The floor names what the fabric requirement is, since the graphics
     # requirement is an equality and the two sit in one contract.
     printf 'mclk_floor_mhz\t%s\nengine_clock_sclk_readback_mhz\t%s\n' \
@@ -1100,6 +1098,7 @@ EOF
                 ${sidecar_allowed_unavailable:+--allow-unavailable "$sidecar_allowed_unavailable"} \
                 ${engine_clock_required_flag:+--required-sclk-mhz "$engine_clock_required_flag"} \
                 ${engine_clock_mclk_flag:+--required-mclk-mhz "$engine_clock_mclk_flag"} \
+                ${engine_clock_mclk_fraction_flag:+--max-below-mclk-floor-fraction "$engine_clock_mclk_fraction_flag"} \
                 >"$arm_directory/clock-sidecar-verdict.txt" 2>&1
         else
             python3 "$sidecar_validator" "$arm_directory/clock-sidecar.tsv" \
@@ -1110,6 +1109,7 @@ EOF
                 ${sidecar_allowed_unavailable:+--allow-unavailable "$sidecar_allowed_unavailable"} \
                 ${engine_clock_required_flag:+--required-sclk-mhz "$engine_clock_required_flag"} \
                 ${engine_clock_mclk_flag:+--required-mclk-mhz "$engine_clock_mclk_flag"} \
+                ${engine_clock_mclk_fraction_flag:+--max-below-mclk-floor-fraction "$engine_clock_mclk_fraction_flag"} \
                 >"$arm_directory/clock-sidecar-verdict.txt" 2>&1
         fi
         sidecar_verdict=$?
@@ -1120,11 +1120,15 @@ EOF
         # policy that states it cannot -- where clock_sidecar names the record.
         clock_invariant_line=$(awk '/^clock_invariant=/ { print; exit }' \
             "$arm_directory/clock-sidecar-verdict.txt")
+        clock_invariant_source=-
         if [ -n "$clock_invariant_line" ]; then
             clock_invariant_state=$(printf '%s\n' "$clock_invariant_line" \
                 | awk '{ sub(/^clock_invariant=/, "", $1); print $1 }')
             below_required_fraction=$(printf '%s\n' "$clock_invariant_line" \
                 | awk '{ for (i = 1; i <= NF; i++) if (index($i, "below_required_fraction=") == 1) print substr($i, 25) }')
+            clock_invariant_source=$(printf '%s\n' "$clock_invariant_line" \
+                | awk '{ for (i = 1; i <= NF; i++) if (index($i, "sclk_source=") == 1) print substr($i, 13) }')
+            [ -n "$clock_invariant_source" ] || clock_invariant_source=-
         fi
         case $clock_invariant_state in
             held | violated) ;;
@@ -1156,6 +1160,29 @@ EOF
                 reason=clock_sidecar
                 [ "$clock_invariant_state" != violated ] || reason=clock_invariant
             fi
+        fi
+        # A forced policy is answered by the delivered frequency alone. Where
+        # the validator counted the DPM column instead, the invariant restates
+        # the selection this campaign wrote and holds nothing, so the arm is
+        # refused on its instrument rather than credited for agreeing with
+        # itself: the 20260902T2011Z calibration sampled with a broker built
+        # before telemetry-broker.c grew `sclk_actual_mhz` and read every arm
+        # held.
+        if [ -n "$engine_clock_required_flag" ] \
+            && [ "$clock_invariant_state" != - ] \
+            && [ "$clock_invariant_source" != sclk_actual_mhz ] \
+            && [ "$arm" != W ]; then
+            printf 'served_ab_clock_source=refused slot=%s arm=%s source=%s\n' \
+                "$slot" "$arm" "$clock_invariant_source"
+            # The reason outranks the two verdicts over the same disqualified
+            # reading and leaves a run-level failure alone: a server replaced
+            # under the campaign is what that arm reports.
+            case $reason in
+                '' | clock_sidecar | clock_invariant)
+                    status=failed
+                    reason=clock_source
+                    ;;
+            esac
         fi
     fi
     regime_delta=-

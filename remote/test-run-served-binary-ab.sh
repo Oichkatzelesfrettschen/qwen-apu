@@ -337,6 +337,11 @@ while [ "$broker_iterations" -lt 600 ]; do
 done
 BROKER_STUB
 chmod +x "$broker_stub"
+# The source record build-telemetry-broker.sh writes beside an executable it
+# compiled. The stub was compiled from nothing, so the record states the source
+# the preflight holds it to and no case rebuilds over the stub.
+sha256sum "$script_directory/telemetry-broker.c" | cut -d ' ' -f 1 \
+    >"$broker_stub.source-sha256"
 
 # The DRM surfaces the harness reads at campaign start. pp_dpm_fclk stays
 # empty, which is the SMU10 state the unavailable-column allowance covers.
@@ -644,6 +649,10 @@ required_mclk = "-"
 if "--required-mclk-mhz" in sys.argv:
     required_mclk = sys.argv[sys.argv.index("--required-mclk-mhz") + 1]
 violated = label in os.environ.get("QWEN_TEST_AB_VIOLATED", "").split()
+# The column the invariant was counted over. The delivered frequency is what a
+# forced policy is answered by, so the default names it and a case naming the
+# DPM column stands for a broker built before telemetry-broker.c wrote it.
+source = os.environ.get("QWEN_TEST_AB_CLOCK_SOURCE", "") or "sclk_actual_mhz"
 # A table entry is a mode, a mode and its modal share separated by a colon, or
 # the word `none`, which stands for a window the validator read no clock state
 # out of -- the shape a warmup whose request never ran produces on the
@@ -667,12 +676,12 @@ if required is None:
     print("clock_invariant=not_requested")
 elif violated:
     print(f"clock_invariant=violated samples_at_required=600 samples_below_required=100"
-          f" below_required_fraction=0.1429 required={required}")
+          f" below_required_fraction=0.1429 sclk_source={source} required={required}")
     print("clock_sidecar=refused failures=clock_invariant")
     raise SystemExit(1)
 else:
     print(f"clock_invariant=held samples_at_required=700 samples_below_required=0"
-          f" below_required_fraction=0.0000 required={required}"
+          f" below_required_fraction=0.0000 sclk_source={source} required={required}"
           f" required_mclk={required_mclk}")
 print("clock_sidecar=accepted failures=-")
 VALIDATOR_STUB
@@ -810,6 +819,11 @@ run_ab() {
     # the firmware that takes that write and keeps its own selection.
     ab_mclk_level=${9:--}
     ab_mclk_ignore=${10:-0}
+    # The eleventh names the column the stub validator reports the invariant
+    # was counted over. A case leaving it unset reads the delivered frequency
+    # telemetry-broker.c writes, and one naming the DPM column stands for a
+    # broker built before that column existed.
+    ab_clock_source=${11:-}
     active_fixture=$ab_case
     run_index=$((run_index + 1))
     ab_output=$temporary_directory/out-$run_index
@@ -838,6 +852,7 @@ run_ab() {
         QWEN_TEST_AB_RATES="$ab_rates" \
         QWEN_TEST_AB_CLOCKS="$ab_clocks" \
         QWEN_TEST_AB_VIOLATED="$ab_violated_arms" \
+        QWEN_TEST_AB_CLOCK_SOURCE="$ab_clock_source" \
         QWEN_TEST_SUDO_LOG="$ab_sudo_log" \
         QWEN_CENSUS_ENGINE_CLOCK_POLICY="$ab_engine_clock_policy" \
         QWEN_CENSUS_MCLK_LEVEL="$ab_mclk_level" \
@@ -1161,6 +1176,7 @@ grep -q "^dpm_restore=restored level=auto requested=auto sclk_level=1 mclk_level
 for engine_clock_row in "engine_clock_policy	manual" "engine_clock_sclk_level	1" \
     "engine_clock_mclk_level	-" "engine_clock_required_sclk_mhz	1100" \
     "engine_clock_required_mclk_mhz	933" "clock_below_required_fraction	0" \
+    "clock_below_mclk_floor_fraction	0.01" \
     "mclk_floor_mhz	933" "engine_clock_mclk_readback_mhz	-" \
     "regime_max_arms	-"; do
     grep -qxF -- "$(printf '%s' "$engine_clock_row")" "$ab_last_output/inputs.tsv"
@@ -1217,6 +1233,20 @@ grep -q '^served_ab_arm=failed slot=2 arm=K .* clock_invariant=violated reason=c
 [ "$(awk -F'\t' '$1 == "2" { print $14, $15 }' "$ab_last_output/arms.tsv")" = 'violated 0.1429' ]
 [ "$(awk -F'=' '$1 == "arm_failures" { print $2 }' "$ab_last_output/terminal-state.tsv")" = 1 ]
 printf 'engine_clock_invariant_violated=accepted\n'
+
+# One arm whose invariant was counted over the DPM column. That column repeats
+# the selection the campaign wrote, so an arm reading it held agreed with the
+# campaign rather than measured the device, and the harness refuses it on its
+# instrument while the record itself stays accepted.
+run_ab engine_clock_dpm_source 1 failed "$promoted_rates" "$one_clock" 16 manual '' \
+    - 0 pp_dpm_sclk_selected_mhz
+active_fixture=engine_clock_dpm_source_ledger
+grep -q '^served_ab_clock_source=refused slot=1 arm=C source=pp_dpm_sclk_selected_mhz$' \
+    "$temporary_directory/engine_clock_dpm_source-stdout.txt"
+grep -q '^served_ab_arm=failed slot=1 arm=C .* reason=clock_source$' \
+    "$temporary_directory/engine_clock_dpm_source-stdout.txt"
+[ "$(awk -F'\t' '$1 == "1" { print $14, $15 }' "$ab_last_output/arms.tsv")" = 'held 0.0000' ]
+printf 'engine_clock_dpm_source=accepted\n'
 
 # An expired sudo credential is refused ahead of the first arm and names the
 # command that renews it, since a campaign cannot answer a password prompt.
