@@ -79,13 +79,12 @@ set -eu
 #   QWEN_CENSUS_COLLECT_BOUND        admitted |delta| for an I0/I1 pair, default 0.02
 #   QWEN_CENSUS_OVERLAP_THRESHOLD    mean bracket overlap fraction above which the
 #                                    I1 ledger reads inconclusive, default 0.05
-#   QWEN_CENSUS_SIDECAR_PERIOD_MS    clock sidecar period, default 5
+#   QWEN_CENSUS_SIDECAR_PERIOD_MS    clock sidecar period, default 10
 #   QWEN_CENSUS_SIDECAR_TOLERANCE    admitted achieved-period deviation, default 0.25
 #   QWEN_CENSUS_SIDECAR_COST_NS      admitted mean sample cost, default 1000000
 #   QWEN_CENSUS_SIDECAR_MAX_GAP_MS   hard maximum adjacent sample gap inside the
-#                                    request window, default 10
+#                                    request window, default 20
 #   QWEN_CENSUS_SIDECAR_CPU          the core the sampler is pinned to, default 1
-#   QWEN_CENSUS_SIDECAR_NICE         the sampler's niceness, default 10
 #   QWEN_CENSUS_PRINT_CONTRACT       1 prints the calibration contract and its digest, then exits
 
 if [ "$#" -ne 2 ]; then
@@ -136,13 +135,17 @@ sidecar_bound=${QWEN_CENSUS_SIDECAR_BOUND:-0.0065}
 compile_bound=${QWEN_CENSUS_COMPILE_BOUND:-0.0065}
 collect_bound=${QWEN_CENSUS_COLLECT_BOUND:-0.02}
 overlap_threshold=${QWEN_CENSUS_OVERLAP_THRESHOLD:-0.05}
-sidecar_period_ms=${QWEN_CENSUS_SIDECAR_PERIOD_MS:-5}
+sidecar_period_ms=${QWEN_CENSUS_SIDECAR_PERIOD_MS:-10}
 sidecar_tolerance=${QWEN_CENSUS_SIDECAR_TOLERANCE:-0.25}
 sidecar_cost_ns=${QWEN_CENSUS_SIDECAR_COST_NS:-1000000}
-sidecar_max_gap_ms=${QWEN_CENSUS_SIDECAR_MAX_GAP_MS:-10}
+sidecar_max_gap_ms=${QWEN_CENSUS_SIDECAR_MAX_GAP_MS:-20}
 sidecar_max_gap_ns=$((sidecar_max_gap_ms * 1000000))
 sidecar_cpu=${QWEN_CENSUS_SIDECAR_CPU:-1}
-sidecar_nice=${QWEN_CENSUS_SIDECAR_NICE:-10}
+# The appliance runs every measurement process at nice 19, the server
+# included, so the sampler takes that priority as an absolute rather than
+# an option; a hole the scheduler opens at that priority is reported by the
+# gap validator rather than hidden by a higher priority.
+sidecar_nice=19
 drm_device=${QWEN_DRM_DEVICE:-/sys/class/drm/card1/device}
 # The SMU10 kernel path exposes pp_dpm_fclk as an empty file and reports the
 # fabric clock through pp_dpm_mclk, so a column the kernel leaves empty at

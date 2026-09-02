@@ -22,7 +22,7 @@ file carrying no selected step writes unavailable.
 
 Options: --period-ms N (default 5; must be positive; milliseconds between samples),
 --drm-device PATH (default /sys/class/drm/card1/device or QWEN_DRM_DEVICE),
---hwmon-root PATH (default /sys/class/hwmon or QWEN_HWMON_ROOT), --nice N (default 10;
+--hwmon-root PATH (default /sys/class/hwmon or QWEN_HWMON_ROOT), --nice N (default 19;
 renice the sampler to this absolute niceness), --cpu N (optional; pin the sampler
 to CPU N with os.sched_setaffinity).
 
@@ -79,7 +79,7 @@ def main():
     parser.add_argument("--period-ms", type=float, default=5.0)
     parser.add_argument("--drm-device", default=os.environ.get("QWEN_DRM_DEVICE", "/sys/class/drm/card1/device"))
     parser.add_argument("--hwmon-root", default=os.environ.get("QWEN_HWMON_ROOT", "/sys/class/hwmon"))
-    parser.add_argument("--nice", type=int, default=10)
+    parser.add_argument("--nice", type=int, default=19)
     parser.add_argument("--cpu", type=int, default=None)
     args = parser.parse_args()
 
