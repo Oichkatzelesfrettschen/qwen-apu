@@ -18,18 +18,38 @@ set -eu
 # hold for each.
 #
 # QWEN_CENSUS_MODE names the campaign contract. A calibration runs the exact
-# thirteen-arm sequence and terminates accepted only where all three
-# registered controls accept and no quadruple is unclassified, so a reordered
-# arm list or a fourth quadruple fails the run rather than passing beside the
-# three. An attribution runs any registered arm list, I1 alone included, and
+# arm sequence QWEN_CENSUS_REPLICATES generates and terminates accepted only
+# where all three registered controls accept and no quadruple is unclassified,
+# so a reordered arm list or a fourth quadruple fails the run rather than
+# passing beside the three. An attribution runs any registered arm list, I1
+# alone included, and
 # requires QWEN_CENSUS_CALIBRATION_RECEIPT to name the output directory of an
 # accepted calibration whose production and instrumented servers are the two
 # this run binds, since the bounds a calibration accepted belong to those two
 # binaries. A canary runs P I0 I1 S once each at eight generated tokens and
-# judges the chain's structure rather than any rate. Three quadruples carry a
-# registered bound and summarize-census-controls.py assigns a verdict to those
-# alone: P-nosidecar P P P-nosidecar measures the sampler's own cost, P I0 I0 P
-# the instrument compiled in, and I0 I1 I1 I0 collection under the sampler.
+# judges the chain's structure rather than any rate. Three quadruple shapes
+# carry a registered bound and summarize-census-controls.py assigns a verdict
+# to those alone: P-nosidecar P P P-nosidecar measures the sampler's own cost,
+# P I0 I0 P the instrument compiled in, and I0 I1 I1 I0 collection under the
+# sampler.
+#
+# A verdict is over every replicate of its control rather than over one pair.
+# The appliance calibration of 20260902T0819Z completed all fourteen arms and
+# read the sidecar quadruple at -1.20% and +0.96% and the compile quadruple at
+# +2.40% and -1.00%: two replicates disagreeing in sign report the arm-to-arm
+# scatter this tree measures at about 4% on a repeated depth-0 rate, so a
+# 0.65% bound tested against each replicate separately reports queue position.
+# The summarizer therefore takes the mean paired delta, its sample standard
+# deviation, and a nominal 95% t interval, and a control is accepted where the
+# whole interval sits inside its bound, refuted where the whole interval sits
+# outside it on one side, and unresolved where the interval spans it.
+# QWEN_CENSUS_REPLICATES sets how many paired deltas each control carries:
+# every two replicates are one mirrored quadruple, so the count is even and
+# runs from 2 to 8, and 2 generates the thirteen arms the retained runs used.
+# An unresolved control ends the campaign as unresolved with exit 4, which is
+# a reportable result rather than a defect: at four replicates the interval
+# half-width is 1.591 standard deviations, so a 0.65% bound accepts only where
+# the replicates agree to about 0.4%.
 #
 # The campaign states its inputs in two contracts, because acquisition and
 # analysis fail differently. acquisition-contract.tsv carries every setting
@@ -52,12 +72,12 @@ set -eu
 # sidecar pair would take its first outer rate from a cold load and compare it
 # against a warm one. W absorbs that load. Its result is recorded in arms.tsv
 # and its rate enters no pair and no census record, the slot numbering leaves
-# the thirteen at 1 through 13, and QWEN_CENSUS_ARMS still names exactly the
-# thirteen.
+# the registered arms at 1 upward, and QWEN_CENSUS_ARMS still names exactly
+# the generated list.
 #
-# The thirteen arms are four control bricks -- C0 the sidecar quadruple, C1 the
-# compile quadruple, C2 the collect quadruple, and C3 the identity arm -- and
-# each writes bricks/CN.receipt.tsv carrying its slots, verdict, arm rates,
+# The registered arms are four control bricks -- C0 the sidecar quadruples, C1
+# the compile quadruples, C2 the collect quadruples, and C3 the identity arm --
+# and each writes bricks/CN.receipt.tsv carrying its slots, verdict, arm rates,
 # input-closure digest, and the digest of every artifact it retained.
 # calibration-root.tsv hashes the acquisition digest together with the four
 # receipt digests, so one value names the whole calibration.
@@ -94,7 +114,8 @@ set -eu
 # the retained request window with predicted_n - 1 decode graphs, and an S
 # slice holds exactly that many decode blocks once each complete block is
 # classified by its token column. A refuted registered control
-# ends the campaign as refuted with exit 3; a failed arm ends it as failed
+# ends the campaign as refuted with exit 3; an unresolved control with no
+# refutation ends it as unresolved with exit 4; a failed arm ends it as failed
 # with exit 1; accepted alone exits 0.
 #
 # usage: run-raven2-vulkan-kernel-census.sh MODEL_ID OUTPUT_DIRECTORY
@@ -105,10 +126,15 @@ set -eu
 #   QWEN_CENSUS_MODE                 calibration (default), attribution, or canary
 #   QWEN_CENSUS_CALIBRATION_RECEIPT  output directory of an accepted calibration
 #                                    (required under attribution)
-#   QWEN_CENSUS_ARMS                 space-separated arm names under attribution;
-#                                    a calibration runs exactly
+#   QWEN_CENSUS_ARMS                 space-separated arm names under attribution; a list
+#                                    naming more than four quadruples of one registered
+#                                    control exceeds the summarizer's t table and refuses;
+#                                    a calibration runs exactly the list
+#                                    QWEN_CENSUS_REPLICATES generates and a canary
+#                                    exactly "P I0 I1 S"
+#   QWEN_CENSUS_REPLICATES           paired deltas per control, default 4, even,
+#                                    2 through 8; 2 generates
 #                                    "P-nosidecar P P P-nosidecar P I0 I0 P I0 I1 I1 I0 S"
-#                                    and a canary exactly "P I0 I1 S"
 #   QWEN_CENSUS_REUSE_BRICKS         output directory of a prior calibration whose
 #                                    unchanged bricks this calibration reuses
 #   QWEN_CENSUS_COOLDOWN_S           idle seconds between arms, default 30
@@ -149,7 +175,102 @@ controls_summarizer=$script_directory/summarize-census-controls.py
 sidecar=$script_directory/sample-clock-sidecar.py
 sidecar_validator=$script_directory/validate-clock-sidecar.py
 slice_summarizer=$script_directory/summarize-perf-logger-slice.py
-calibration_arms="P-nosidecar P P P-nosidecar P I0 I0 P I0 I1 I1 I0 S"
+# A control's replicates are mirrored quadruples: `outer inner inner outer`
+# gives two paired deltas whose second reverses the first's queue position, so
+# the replicate count is even and each control repeats its own quadruple
+# count/2 times. The t table the summarizer carries covers 2 through 8.
+census_replicates=${QWEN_CENSUS_REPLICATES:-4}
+case $census_replicates in
+    2 | 4 | 6 | 8) ;;
+    *)
+        printf 'QWEN_CENSUS_REPLICATES is an even count from 2 through 8: %s\n' \
+            "$census_replicates" >&2
+        exit 2
+        ;;
+esac
+census_quadruples=$((census_replicates / 2))
+generate_calibration_arms() {
+    generated_arms=''
+    for generated_control in 'P-nosidecar P P P-nosidecar' 'P I0 I0 P' 'I0 I1 I1 I0'; do
+        generated_index=0
+        while [ "$generated_index" -lt "$census_quadruples" ]; do
+            generated_arms="$generated_arms $generated_control"
+            generated_index=$((generated_index + 1))
+        done
+    done
+    printf '%s S\n' "${generated_arms# }"
+}
+calibration_arms=$(generate_calibration_arms)
+
+# The registered arms partition into four control bricks, and the partition is
+# stated once here: one brick per control carrying every quadruple of that
+# control in slot order, and the identity arm last. A brick is the unit a
+# verdict belongs to and the unit reuse acts on, so the slot list, the arm
+# list, and the summary control name travel together, and each follows the
+# generated arm list rather than a fixed thirteen.
+brick_ids="C0 C1 C2 C3"
+# Slots per control brick: two arms per replicate.
+brick_width=$((census_replicates * 2))
+brick_first_slot() {
+    case $1 in
+        C0) printf '1\n' ;;
+        C1) printf '%s\n' $((brick_width + 1)) ;;
+        C2) printf '%s\n' $((2 * brick_width + 1)) ;;
+        C3) printf '%s\n' $((3 * brick_width + 1)) ;;
+    esac
+}
+brick_slots() {
+    brick_slot_first=$(brick_first_slot "$1")
+    if [ "$1" = C3 ]; then
+        printf '%s\n' "$brick_slot_first"
+        return 0
+    fi
+    brick_slot_list=''
+    brick_slot_index=0
+    while [ "$brick_slot_index" -lt "$brick_width" ]; do
+        brick_slot_list="$brick_slot_list $((brick_slot_first + brick_slot_index))"
+        brick_slot_index=$((brick_slot_index + 1))
+    done
+    printf '%s\n' "${brick_slot_list# }"
+}
+brick_arms() {
+    case $1 in
+        C3) printf 'S\n'; return 0 ;;
+        C0) brick_quadruple='P-nosidecar P P P-nosidecar' ;;
+        C1) brick_quadruple='P I0 I0 P' ;;
+        C2) brick_quadruple='I0 I1 I1 I0' ;;
+    esac
+    brick_arm_list=''
+    brick_arm_index=0
+    while [ "$brick_arm_index" -lt "$census_quadruples" ]; do
+        brick_arm_list="$brick_arm_list $brick_quadruple"
+        brick_arm_index=$((brick_arm_index + 1))
+    done
+    printf '%s\n' "${brick_arm_list# }"
+}
+brick_control() {
+    case $1 in
+        C0) printf 'sidecar\n' ;;
+        C1) printf 'compile\n' ;;
+        C2) printf 'collect\n' ;;
+        C3) printf 'identity\n' ;;
+    esac
+}
+brick_of_slot() {
+    if [ "$1" -lt 1 ]; then
+        printf -- '-\n'
+    elif [ "$1" -le "$brick_width" ]; then
+        printf 'C0\n'
+    elif [ "$1" -le $((2 * brick_width)) ]; then
+        printf 'C1\n'
+    elif [ "$1" -le $((3 * brick_width)) ]; then
+        printf 'C2\n'
+    elif [ "$1" -eq $((3 * brick_width + 1)) ]; then
+        printf 'C3\n'
+    else
+        printf -- '-\n'
+    fi
+}
 canary_arms="P I0 I1 S"
 census_mode=${QWEN_CENSUS_MODE:-calibration}
 calibration_receipt=${QWEN_CENSUS_CALIBRATION_RECEIPT:-}
@@ -213,6 +334,18 @@ case $campaign_begin_ns in
         ;;
 esac
 cooldown_s=${QWEN_CENSUS_COOLDOWN_S:-30}
+# The campaign's wall clock is bounded rather than measured ahead of the run:
+# the fixed-64 scoreboard arms reach /health in about 9 seconds, answer the
+# request in about 9, and tear down in about 1, and await-quiescence.sh takes
+# QWEN_CENSUS_COOLDOWN_S as its deadline, so an arm costs at most 19 seconds
+# plus that deadline. A calibration opens on W, which pays the same ceiling.
+# shellcheck disable=SC2086
+predicted_arm_count=$(printf '%s\n' $arms | wc -l | tr -d ' ')
+if [ "$census_mode" = calibration ]; then
+    predicted_arm_count=$((predicted_arm_count + 1))
+fi
+predicted_arm_duration_s=$((19 + cooldown_s))
+predicted_campaign_duration_s=$((predicted_arm_count * predicted_arm_duration_s))
 production_server=${QWEN_CENSUS_PRODUCTION_SERVER:-}
 production_receipt=${QWEN_CENSUS_PRODUCTION_RECEIPT:-}
 instrumented_server=${QWEN_CENSUS_INSTRUMENTED_SERVER:-}
@@ -887,6 +1020,28 @@ if [ "${QWEN_CENSUS_PRINT_CONTRACT:-0}" = 1 ]; then
     printf 'acquisition_contract_sha256\t%s\n' "$acquisition_contract_sha256"
     printf 'analysis_contract_sha256\t%s\n' "$analysis_contract_sha256"
     printf 'calibration_contract_sha256\t%s\n' "$calibration_contract_sha256"
+    # The arm list, its replicate count, and the predicted wall clock are
+    # campaign shape rather than acquisition settings: an attribution runs its
+    # own list against the same contract, so these are printed here and
+    # recorded in inputs.tsv instead of entering the digest a receipt is held
+    # to. The prediction bounds the campaign from the per-arm ceiling the
+    # scoreboard measured -- about 9 s of launch to readiness, 9 s of request,
+    # and 1 s of teardown -- plus the quiescence deadline QWEN_CENSUS_COOLDOWN_S
+    # sets, over every arm the run executes, W included.
+    printf 'census_replicates\t%s\ncensus_arms\t%s\ncensus_arm_count\t%s\n' \
+        "$census_replicates" "$arms" "$predicted_arm_count"
+    printf 'predicted_campaign_duration_s\t%s\npredicted_arm_duration_s\t%s\n' \
+        "$predicted_campaign_duration_s" "$predicted_arm_duration_s"
+    # The brick partition follows the same replicate count, so the print
+    # states which slots each brick owns from the functions the run indexes
+    # with rather than from a second recipe.
+    if [ "$census_mode" = calibration ]; then
+        for print_brick in $brick_ids; do
+            printf 'census_brick\t%s\t%s\t%s\t%s\n' "$print_brick" \
+                "$(brick_control "$print_brick")" "$(brick_first_slot "$print_brick")" \
+                "$(brick_slots "$print_brick" | wc -w | tr -d ' ')"
+        done
+    fi
     rm -f -- "$contract_scratch" "$analysis_scratch"
     exit 0
 fi
@@ -929,44 +1084,6 @@ if [ "$census_mode" = attribution ]; then
 fi
 rm -f -- "$contract_scratch" "$analysis_scratch"
 
-# The thirteen arms partition into four control bricks, and the partition is
-# stated once here: three quadruples in slot order and the identity arm last.
-# A brick is the unit a verdict belongs to and the unit reuse acts on, so the
-# slot list, the arm list, and the summary control name travel together.
-brick_ids="C0 C1 C2 C3"
-brick_slots() {
-    case $1 in
-        C0) printf '1 2 3 4\n' ;;
-        C1) printf '5 6 7 8\n' ;;
-        C2) printf '9 10 11 12\n' ;;
-        C3) printf '13\n' ;;
-    esac
-}
-brick_arms() {
-    case $1 in
-        C0) printf 'P-nosidecar P P P-nosidecar\n' ;;
-        C1) printf 'P I0 I0 P\n' ;;
-        C2) printf 'I0 I1 I1 I0\n' ;;
-        C3) printf 'S\n' ;;
-    esac
-}
-brick_control() {
-    case $1 in
-        C0) printf 'sidecar\n' ;;
-        C1) printf 'compile\n' ;;
-        C2) printf 'collect\n' ;;
-        C3) printf 'identity\n' ;;
-    esac
-}
-brick_of_slot() {
-    case $1 in
-        1 | 2 | 3 | 4) printf 'C0\n' ;;
-        5 | 6 | 7 | 8) printf 'C1\n' ;;
-        9 | 10 | 11 | 12) printf 'C2\n' ;;
-        13) printf 'C3\n' ;;
-        *) printf -- '-\n' ;;
-    esac
-}
 # The input closure of a brick is what its arms consumed: the acquisition
 # contract every arm runs under, the brick's own identity and arm list, and,
 # for the two bricks that execute the census build, that binary's digest. It
@@ -1182,6 +1299,10 @@ printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\
         "$receipt_analysis_contract_sha256" "$analysis_contract_match"
     printf 'calibration_contract_sha256\t%s\nlatency_probe\t%s\nlatency_probe_sha256\t%s\n' \
         "$calibration_contract_sha256" "${latency_probe:--}" "$latency_probe_sha256"
+    printf 'census_replicates\t%s\ncensus_arms\t%s\ncensus_arm_count\t%s\n' \
+        "$census_replicates" "$arms" "$predicted_arm_count"
+    printf 'predicted_campaign_duration_s\t%s\npredicted_arm_duration_s\t%s\n' \
+        "$predicted_campaign_duration_s" "$predicted_arm_duration_s"
     printf 'brick_reuse_directory\t%s\nreused_bricks\t%s\nreused_brick_count\t%s\n' \
         "${reuse_directory:--}" "${reused_bricks:--}" "$reused_brick_count"
     printf 'runtime_tree_manifest\t%s\nruntime_tree_git_head\t%s\nruntime_tree_remote_payload_sha256\t%s\nruntime_tree_patches_payload_sha256\t%s\n' \
@@ -1611,12 +1732,12 @@ EOF
     } >>"$wall_clock_ledger"
 done
 
-# Paired controls, each pair on its own, registered shapes alone; the
-# verdict column decides the campaign state, so a refuted control ends the
-# run as refuted even where every arm completed. A calibration accepts on
-# exactly three accepted controls; an unclassified quadruple in either mode
-# is an arm list the parser read as a comparison the registry never bound,
-# which fails the run.
+# Paired controls, one row per registered control over all its replicates;
+# the verdict column decides the campaign state, so a refuted control ends
+# the run as refuted and an unresolved one ends it as unresolved even where
+# every arm completed. A calibration accepts on exactly three accepted
+# controls; an unclassified quadruple in either mode is an arm list the parser
+# read as a comparison the registry never bound, which fails the run.
 calibration_root_sha256=-
 if [ "$census_mode" = canary ]; then
     # A canary assigns no control verdict, so the run ends on its structure
@@ -1628,7 +1749,7 @@ if [ "$census_mode" = canary ]; then
         campaign=canary_failed
         campaign_exit=1
     fi
-    printf 'census=%s\ncensus_mode=%s\narm_failures=%s\ncontrol_incomplete=-\ncontrol_refutations=-\ncontrol_unclassified=-\ncontrol_accepted=-\ncontrol_required=-\ncanary_structure_failures=%s\ncooldown_timeouts=%s\ncalibration_root_sha256=%s\n' \
+    printf 'census=%s\ncensus_mode=%s\narm_failures=%s\ncontrol_incomplete=-\ncontrol_refutations=-\ncontrol_unresolved=-\ncontrol_unclassified=-\ncontrol_accepted=-\ncontrol_required=-\ncanary_structure_failures=%s\ncooldown_timeouts=%s\ncalibration_root_sha256=%s\n' \
         "$campaign" "$census_mode" "$arm_failures" "$canary_structure_failures" \
         "$cooldown_timeouts" "$calibration_root_sha256" >"$output_directory/terminal-state.tsv"
     printf 'census_wall_clock=campaign begin_ns=%s end_ns=%s\n' \
@@ -1652,14 +1773,17 @@ control_counts=$(awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) if ($i == "verd
         if ($column == "refuted") refuted++
         else if ($column == "incomplete") incomplete++
         else if ($column == "unclassified") unclassified++
+        else if ($column == "unresolved") unresolved++
         else if ($column == "accepted") accepted++
     }
-    END { print refuted + 0, incomplete + 0, unclassified + 0, accepted + 0 }' "$output_directory/summary.tsv")
+    END { print refuted + 0, incomplete + 0, unclassified + 0, accepted + 0, unresolved + 0 }' \
+    "$output_directory/summary.tsv")
 set -- $control_counts
 control_refutations=$1
 control_incomplete=$2
 control_unclassified=$3
 control_accepted=$4
+control_unresolved=$5
 required_accepted=0
 if [ "$census_mode" = calibration ]; then
     required_accepted=3
@@ -1723,7 +1847,8 @@ if [ "$census_mode" = calibration ]; then
                         # The diagnostic profile's env set exists only once the
                         # arm has run, so it is recorded here rather than
                         # folded into the closure the preflight compares.
-                        brick_env_file=$output_directory/arms/13-S/server-effective-env.tsv
+                        brick_env_file=$output_directory/arms/$(printf '%02d-S' \
+                            "$(brick_first_slot C3)")/server-effective-env.tsv
                         brick_env_sha256=-
                         if [ -r "$brick_env_file" ]; then
                             brick_env_sha256=$(sha256sum "$brick_env_file" | cut -d ' ' -f 1)
@@ -1763,6 +1888,14 @@ if [ "$arm_failures" -ne 0 ] || [ "$control_incomplete" -ne 0 ] \
 elif [ "$control_refutations" -ne 0 ]; then
     campaign=refuted
     campaign_exit=3
+elif [ "$control_unresolved" -ne 0 ]; then
+    # A control whose interval spans its bound measured neither a cost inside
+    # the bound nor one beyond it, so the campaign resolves nothing and says
+    # so under its own status rather than borrowing accepted or refuted. The
+    # branch precedes the accepted-count test, since an unresolved control
+    # leaves that count short and would otherwise read as a failure.
+    campaign=unresolved
+    campaign_exit=4
 elif [ "$control_accepted" -lt "$required_accepted" ]; then
     campaign=failed
     campaign_exit=1
@@ -1770,13 +1903,13 @@ else
     campaign=accepted
     campaign_exit=0
 fi
-printf 'census=%s\ncensus_mode=%s\narm_failures=%s\ncontrol_incomplete=%s\ncontrol_refutations=%s\ncontrol_unclassified=%s\ncontrol_accepted=%s\ncontrol_required=%s\ncooldown_timeouts=%s\ncalibration_root_sha256=%s\n' \
+printf 'census=%s\ncensus_mode=%s\narm_failures=%s\ncontrol_incomplete=%s\ncontrol_refutations=%s\ncontrol_unresolved=%s\ncontrol_unclassified=%s\ncontrol_accepted=%s\ncontrol_required=%s\ncooldown_timeouts=%s\ncalibration_root_sha256=%s\n' \
     "$campaign" "$census_mode" "$arm_failures" "$control_incomplete" "$control_refutations" \
-    "$control_unclassified" "$control_accepted" "$required_accepted" "$cooldown_timeouts" \
-    "$calibration_root_sha256" >"$output_directory/terminal-state.tsv"
+    "$control_unresolved" "$control_unclassified" "$control_accepted" "$required_accepted" \
+    "$cooldown_timeouts" "$calibration_root_sha256" >"$output_directory/terminal-state.tsv"
 printf -- '-\t-\tcampaign\t%s\t%s\t-\n' "$campaign_begin_ns" "$(date +%s%N)" >>"$wall_clock_ledger"
-printf 'census=%s mode=%s model=%s arms=%s reused_bricks=%s arm_failures=%s control_incomplete=%s control_refutations=%s control_unclassified=%s control_accepted=%s control_required=%s calibration_root=%s output=%s\n' \
+printf 'census=%s mode=%s model=%s arms=%s reused_bricks=%s arm_failures=%s control_incomplete=%s control_refutations=%s control_unresolved=%s control_unclassified=%s control_accepted=%s control_required=%s calibration_root=%s output=%s\n' \
     "$campaign" "$census_mode" "$model_id" "$slot" "${reused_bricks:--}" "$arm_failures" \
-    "$control_incomplete" "$control_refutations" "$control_unclassified" "$control_accepted" \
-    "$required_accepted" "$calibration_root_sha256" "$output_directory"
+    "$control_incomplete" "$control_refutations" "$control_unresolved" "$control_unclassified" \
+    "$control_accepted" "$required_accepted" "$calibration_root_sha256" "$output_directory"
 exit "$campaign_exit"

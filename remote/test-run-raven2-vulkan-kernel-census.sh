@@ -391,6 +391,7 @@ write_terminal_state() {
         printf 'arm_failures=0\n'
         printf 'control_incomplete=0\n'
         printf 'control_refutations=0\n'
+        printf 'control_unresolved=0\n'
         printf 'control_unclassified=0\n'
         printf 'control_accepted=%s\n' "$accepted_controls"
         printf 'control_required=3\n'
@@ -496,6 +497,142 @@ if [ "$python_contract_sha256" = "$acquisition_sha256" ]; then
     exit 1
 fi
 printf 'sampler_python_contract=accepted acquisition=%s\n' "$python_contract_sha256"
+
+# The calibration arm list is generated from the replicate count rather than
+# written down, so the contract print states the list a run would execute and
+# the wall clock it would cost. Two replicates must generate the thirteen arms
+# the retained runs recorded, or every replay of their summaries changes shape.
+active_fixture=replicate_arm_list
+print_contract_at_replicates() {
+    env -i \
+        PATH="$execution_path" \
+        HOME="$home_directory" \
+        QWEN_MODELS_DIRECTORY="$models_directory" \
+        QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+        QWEN_CENSUS_PRODUCTION_SERVER="$production_server" \
+        QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+        QWEN_CENSUS_INSTRUMENTED_SERVER="$instrumented_server" \
+        QWEN_DRM_DEVICE="$drm_empty" \
+        QWEN_CENSUS_BROKER="$broker_stub" \
+        QWEN_CENSUS_REPLICATES="$1" \
+        QWEN_CENSUS_PRINT_CONTRACT=1 \
+        "$runner" "$model_id" "$temporary_directory/out-contract-r$1"
+}
+contract_field() {
+    printf '%s\n' "$1" | awk -F'\t' -v key="$2" '$1 == key { print $2 }'
+}
+
+two_replicate_contract=$(print_contract_at_replicates 2)
+two_replicate_arms=$(contract_field "$two_replicate_contract" census_arms)
+if [ "$two_replicate_arms" != "P-nosidecar P P P-nosidecar P I0 I0 P I0 I1 I1 I0 S" ]; then
+    printf 'two replicates generate "%s" rather than the thirteen arms\n' \
+        "$two_replicate_arms" >&2
+    exit 1
+fi
+if [ "$(contract_field "$two_replicate_contract" census_arm_count)" != 14 ]; then
+    printf 'the thirteen arms and W count %s\n' \
+        "$(contract_field "$two_replicate_contract" census_arm_count)" >&2
+    exit 1
+fi
+
+four_replicate_contract=$(print_contract_at_replicates 4)
+expected_four_replicate_arms='P-nosidecar P P P-nosidecar P-nosidecar P P P-nosidecar P I0 I0 P P I0 I0 P I0 I1 I1 I0 I0 I1 I1 I0 S'
+four_replicate_arms=$(contract_field "$four_replicate_contract" census_arms)
+if [ "$four_replicate_arms" != "$expected_four_replicate_arms" ]; then
+    printf 'four replicates generate "%s" rather than "%s"\n' \
+        "$four_replicate_arms" "$expected_four_replicate_arms" >&2
+    exit 1
+fi
+if [ "$(contract_field "$four_replicate_contract" census_arm_count)" != 26 ]; then
+    printf 'the four-replicate list and W count %s\n' \
+        "$(contract_field "$four_replicate_contract" census_arm_count)" >&2
+    exit 1
+fi
+if [ "$(contract_field "$four_replicate_contract" census_replicates)" != 4 ]; then
+    printf 'the contract print states another replicate count\n' >&2
+    exit 1
+fi
+# Four replicates are the default, so an invocation naming none prints the
+# same list.
+if [ "$(contract_field "$contract_output" census_arms)" != "$expected_four_replicate_arms" ]; then
+    printf 'the default replicate count generates another arm list\n' >&2
+    exit 1
+fi
+# The arm list is campaign shape rather than an acquisition setting: an
+# attribution runs I1 alone against the calibration's own contract digest, so
+# a replicate count that moved that digest would refuse every attribution.
+if [ "$(contract_field "$two_replicate_contract" acquisition_contract_sha256)" \
+    != "$acquisition_sha256" ]; then
+    printf 'the replicate count moved the acquisition contract digest\n' >&2
+    exit 1
+fi
+# The wall clock is bounded from the per-arm ceiling plus the quiescence
+# deadline: 19 seconds of launch, request, and teardown against the default
+# 30-second cooldown over every arm the run executes.
+if [ "$(contract_field "$four_replicate_contract" predicted_arm_duration_s)" != 49 ]; then
+    printf 'the predicted arm duration is not 19 seconds plus the cooldown\n' >&2
+    exit 1
+fi
+if [ "$(contract_field "$two_replicate_contract" predicted_campaign_duration_s)" != 686 ]; then
+    printf 'the two-replicate campaign is predicted at %s seconds of 686\n' \
+        "$(contract_field "$two_replicate_contract" predicted_campaign_duration_s)" >&2
+    exit 1
+fi
+if [ "$(contract_field "$four_replicate_contract" predicted_campaign_duration_s)" != 1274 ]; then
+    printf 'the four-replicate campaign is predicted at %s seconds of 1274\n' \
+        "$(contract_field "$four_replicate_contract" predicted_campaign_duration_s)" >&2
+    exit 1
+fi
+# The brick partition is the index the campaign runs on, so it follows the
+# generated list rather than the thirteen slots the first calibrations used:
+# each control brick holds twice the replicate count in slots and the identity
+# arm takes the one after the third.
+brick_partition_row() {
+    printf '%s\n' "$1" | awk -F'\t' -v brick="$2" \
+        '$1 == "census_brick" && $2 == brick { print $3 "\t" $4 "\t" $5 }'
+}
+for replicate_expectation in "2 4 13" "4 8 25"; do
+    # shellcheck disable=SC2086
+    set -- $replicate_expectation
+    replicate_count=$1
+    brick_slot_width=$2
+    identity_slot=$3
+    replicate_contract=$(print_contract_at_replicates "$replicate_count")
+    if [ "$(brick_partition_row "$replicate_contract" C0)" \
+        != "$(printf 'sidecar\t1\t%s' "$brick_slot_width")" ]; then
+        printf 'C0 is not the sidecar control at slot 1 over %s slots: %s\n' \
+            "$brick_slot_width" "$(brick_partition_row "$replicate_contract" C0)" >&2
+        exit 1
+    fi
+    if [ "$(brick_partition_row "$replicate_contract" C1)" \
+        != "$(printf 'compile\t%s\t%s' "$((brick_slot_width + 1))" "$brick_slot_width")" ]; then
+        printf 'C1 does not follow C0 over %s slots: %s\n' \
+            "$brick_slot_width" "$(brick_partition_row "$replicate_contract" C1)" >&2
+        exit 1
+    fi
+    if [ "$(brick_partition_row "$replicate_contract" C2)" \
+        != "$(printf 'collect\t%s\t%s' "$((2 * brick_slot_width + 1))" "$brick_slot_width")" ]; then
+        printf 'C2 does not follow C1 over %s slots: %s\n' \
+            "$brick_slot_width" "$(brick_partition_row "$replicate_contract" C2)" >&2
+        exit 1
+    fi
+    if [ "$(brick_partition_row "$replicate_contract" C3)" \
+        != "$(printf 'identity\t%s\t1' "$identity_slot")" ]; then
+        printf 'C3 is not the identity arm at slot %s: %s\n' \
+            "$identity_slot" "$(brick_partition_row "$replicate_contract" C3)" >&2
+        exit 1
+    fi
+    # The three control bricks and the identity arm cover the generated list
+    # exactly, so the partition and the arm count are one statement.
+    replicate_arm_count=$(contract_field "$replicate_contract" census_arm_count)
+    if [ "$((3 * brick_slot_width + 1))" -ne "$((replicate_arm_count - 1))" ]; then
+        printf 'the partition covers %s slots against an arm list of %s\n' \
+            "$((3 * brick_slot_width + 1))" "$replicate_arm_count" >&2
+        exit 1
+    fi
+done
+printf 'replicate_arm_list=accepted two=14 four=26 predicted_s=1274\n'
+printf 'replicate_brick_partition=accepted identity_slot_two=13 identity_slot_four=25\n'
 
 write_calibration_inputs() {
     calibration_inputs_path=$1
@@ -610,6 +747,15 @@ run_runner broker_build_failure \
 
 run_runner calibration_arm_list 'a calibration runs exactly' \
     QWEN_CENSUS_ARMS=I1
+
+# A replicate count is even and runs from 2 through 8, since every two
+# replicates are one mirrored quadruple.
+run_runner replicate_count_odd 'QWEN_CENSUS_REPLICATES is an even count from 2 through 8' \
+    QWEN_CENSUS_REPLICATES=3
+run_runner replicate_count_high 'QWEN_CENSUS_REPLICATES is an even count from 2 through 8' \
+    QWEN_CENSUS_REPLICATES=10
+run_runner replicate_count_one 'QWEN_CENSUS_REPLICATES is an even count from 2 through 8' \
+    QWEN_CENSUS_REPLICATES=1
 
 # A canary is its own mode rather than a short calibration: it fixes its own
 # four-arm list and refuses another.
@@ -1003,6 +1149,7 @@ brick_contract_sha256=$(env -i \
     QWEN_DRM_DEVICE="$signal_drm" \
     QWEN_CENSUS_BROKER="$broker_stub" \
     QWEN_CENSUS_SIDECAR_CPU=0 \
+    QWEN_CENSUS_REPLICATES=2 \
     QWEN_CENSUS_PRINT_CONTRACT=1 \
     "$brick_runner" "$model_id" "$temporary_directory/out-brick-contract" \
     | awk -F'\t' '$1 == "acquisition_contract_sha256" { print $2 }')
@@ -1036,22 +1183,33 @@ write_prior_receipt() {
     } >"$prior_root/bricks/$prior_brick.receipt.tsv"
 }
 
-# The rates are the ones the controls test pairs: every delta inside its own
-# registered bound, so a run that reuses all four bricks accepts on rows it
-# never measured itself.
+# The rates are the ones the controls test pairs: the two replicates of each
+# control carry the same delta, which is what makes a two-replicate interval
+# degenerate at that delta and therefore acceptable inside its own bound, so a
+# run that reuses all four bricks accepts on rows it never measured itself.
+# Two replicates that differ at all open the interval past a 0.65% bound, so
+# these are a fixture rather than a plausible pair of arms.
 prior_arm_rows="1	P-nosidecar	10.000
 2	P	9.980
-3	P	9.960
+3	P	9.980
 4	P-nosidecar	10.000
 5	P	10.000
 6	I0	9.950
-7	I0	9.940
+7	I0	9.950
 8	P	10.000
 9	I0	10.000
 10	I1	9.850
-11	I1	9.900
+11	I1	9.850
 12	I0	10.000
 13	S	3.000"
+
+# The runner rejoins a receipt's arm_rates to the prior ledger slot by slot,
+# so the receipt reads its rates out of the same rows rather than restating
+# them; a case that changes the rates changes both at once.
+prior_rate_range() {
+    printf '%s\n' "$prior_arm_rows" | awk -F'\t' -v low="$1" -v high="$2" \
+        '$1 >= low && $1 <= high { list = list (list == "" ? "" : " ") $3 } END { print list }'
+}
 
 write_prior_calibration() {
     prior_root=$1
@@ -1066,10 +1224,10 @@ write_prior_calibration() {
         done
     } >"$prior_root/arms.tsv"
     write_prior_receipt "$prior_root" C0 '1 2 3 4' 'P-nosidecar P P P-nosidecar' \
-        '10.000 9.980 9.960 10.000'
-    write_prior_receipt "$prior_root" C1 '5 6 7 8' 'P I0 I0 P' '10.000 9.950 9.940 10.000'
+        "$(prior_rate_range 1 4)"
+    write_prior_receipt "$prior_root" C1 '5 6 7 8' 'P I0 I0 P' "$(prior_rate_range 5 8)"
     write_prior_receipt "$prior_root" C2 '9 10 11 12' 'I0 I1 I1 I0' \
-        '10.000 9.850 9.900 10.000'
+        "$(prior_rate_range 9 12)"
 }
 
 run_brick_calibration() {
@@ -1097,6 +1255,7 @@ run_brick_calibration() {
         QWEN_HWMON_ROOT="$signal_hwmon" \
         QWEN_CENSUS_SIDECAR_CPU=0 \
         QWEN_CENSUS_COOLDOWN_S=0 \
+        QWEN_CENSUS_REPLICATES=2 \
         QWEN_CENSUS_REUSE_BRICKS="$brick_prior" \
         SSH_CONNECTION="$signal_ssh_connection" \
         "$brick_runner" "$model_id" "$brick_output" \
@@ -1264,6 +1423,68 @@ if [ -e "$brick_silent_output/arms/13-S/runner.stdout" ]; then
 fi
 diagnostic_file=
 printf 'sidecar_start_failure=accepted\n'
+
+# A control whose interval spans its bound resolves nothing, which is a
+# campaign state of its own between accepted and refuted. These are the rates
+# the appliance calibration of 20260902T0819Z measured: fourteen arms, every
+# sidecar accepted, and two replicates per control that disagree in sign on
+# the sidecar and compile pairs. All four bricks reuse, so no arm executes and
+# the terminal state reports the three unresolved controls alone.
+prior_unresolved=$temporary_directory/prior-unresolved
+prior_accepted_arm_rows=$prior_arm_rows
+prior_arm_rows="1	P-nosidecar	9.590
+2	P	9.475
+3	P	9.604
+4	P-nosidecar	9.513
+5	P	9.402
+6	I0	9.628
+7	I0	9.427
+8	P	9.522
+9	I0	9.530
+10	I1	9.351
+11	I1	9.498
+12	I0	9.549
+13	S	3.000"
+write_prior_calibration "$prior_unresolved"
+write_prior_receipt "$prior_unresolved" C3 13 S 3.000
+prior_arm_rows=$prior_accepted_arm_rows
+brick_unresolved_output=$temporary_directory/out-unresolved
+brick_status=$(run_brick_calibration control_unresolved "$prior_unresolved" \
+    "$brick_unresolved_output")
+if [ "$brick_status" -ne 4 ]; then
+    printf 'an unresolved calibration exited %s where it exits 4\n' "$brick_status" >&2
+    exit 1
+fi
+grep -q '^census=unresolved$' "$brick_unresolved_output/terminal-state.tsv"
+grep -q '^control_unresolved=3$' "$brick_unresolved_output/terminal-state.tsv"
+grep -q '^control_refutations=0$' "$brick_unresolved_output/terminal-state.tsv"
+grep -q '^control_accepted=0$' "$brick_unresolved_output/terminal-state.tsv"
+if ! awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
+    $(column["verdict"]) == "unresolved" && $(column["detail"]) ~ /^spans bound=/ { found++ }
+    END { exit found == 3 ? 0 : 1 }' "$brick_unresolved_output/summary.tsv"; then
+    printf 'summary.tsv carries no three unresolved controls naming their bound\n' >&2
+    sed -n '1,5p' "$brick_unresolved_output/summary.tsv" >&2
+    exit 1
+fi
+# The aggregate columns travel beside the first replicate's own pair, so a
+# reader compares one arm pair against the set that judged it.
+if ! awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
+    $(column["control"]) == "sidecar" && $(column["replicates"]) == "2" \
+        && $(column["first_delta"]) == "-0.0120" \
+        && $(column["second_delta"]) == "+0.0096" \
+        && $(column["deltas"]) == "-0.0120 +0.0096" { found = 1 }
+    END { exit found ? 0 : 1 }' "$brick_unresolved_output/summary.tsv"; then
+    printf 'the sidecar row carries no replicate columns beside its deltas\n' >&2
+    sed -n '1,5p' "$brick_unresolved_output/summary.tsv" >&2
+    exit 1
+fi
+# inputs.tsv is the run's own record of the shape it ran, so the replicate
+# count and the generated list live there rather than in the contract digest.
+grep -q '^census_replicates	2$' "$brick_unresolved_output/inputs.tsv"
+grep -q '^census_arm_count	14$' "$brick_unresolved_output/inputs.tsv"
+grep -q '^predicted_arm_duration_s	19$' "$brick_unresolved_output/inputs.tsv"
+diagnostic_file=
+printf 'control_unresolved=accepted exit=4\n'
 
 active_fixture=completion
 printf 'run_raven2_vulkan_kernel_census_preflight=accepted cases=%s\n' "$run_index"

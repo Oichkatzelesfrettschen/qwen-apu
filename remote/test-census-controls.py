@@ -7,10 +7,13 @@ hold, and refuses one record per broken condition; a hole the run-wide
 achieved period absorbs is refused by the gap bound where it falls inside
 the request window and accepted where it falls outside.
 summarize-census-controls.py assigns the
-sidecar, compile, and collect bounds to the three registered quadruples
-alone, reports each delta on its own, refuses compensation through a mean,
-marks an unregistered quadruple unclassified, names the delta that left the
-bound on a refuted row, and keeps S and the warmup arm W outside the parser. summarize-perf-logger-slice.py classifies each block by the largest
+sidecar, compile, and collect bounds to the three registered quadruple shapes
+alone, collapses every replicate of a control onto one row, judges that row by
+whether its nominal 95% interval sits inside, outside, or across the bound,
+marks an unregistered quadruple unclassified, names the direction of a refuted
+interval, and keeps S and the warmup arm W outside the parser. The appliance
+table of 20260902T0819Z is replayed here, where two replicates resolve none of
+the three controls. summarize-perf-logger-slice.py classifies each block by the largest
 `n` over its non-f32 matmul rows, folds the decode blocks into per-op calls
 per block, and refuses a decode count other than the requested one.
 """
@@ -191,103 +194,181 @@ def arms_ledger(rows):
 
 
 def summarize(rows, sidecar="0.0065", compile_bound="0.0065", collect="0.02"):
+    """Run the controls summarizer and return its rows as field maps.
+
+    The verdict is over every replicate of a control, so the columns a case
+    reads are named rather than counted: a row gains statistics between the
+    per-replicate columns and the bound, and a positional read would follow
+    the wrong field once a column lands between them.
+    """
     path = write("arms.tsv", arms_ledger(rows))
     result = subprocess.run([sys.executable, controls, path, "--sidecar-bound", sidecar,
                              "--compile-bound", compile_bound, "--collect-bound", collect],
                             capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
-    return [line.split("\t") for line in result.stdout.rstrip("\n").split("\n")]
+    lines = [line.split("\t") for line in result.stdout.rstrip("\n").split("\n")]
+    header = lines[0]
+    return header, [dict(zip(header, line)) for line in lines[1:]]
 
 
-table = summarize([
-    ("P-nosidecar", "10.000", "completed"), ("P", "9.980", "completed"),
-    ("P", "9.960", "completed"), ("P-nosidecar", "10.000", "completed"),
-    ("P", "10.000", "completed"), ("I0", "9.950", "completed"),
-    ("I0", "9.940", "completed"), ("P", "10.000", "completed"),
-    ("I0", "10.000", "completed"), ("I1", "9.850", "completed"),
-    ("I1", "9.900", "completed"), ("I0", "10.000", "completed"),
-    ("S", "3.000", "completed"),
-])
-assert table[0][0] == "pair" and len(table) == 4, table
-sidecar_pair, compile_pair, collect_pair = table[1], table[2], table[3]
-assert sidecar_pair[1] == "sidecar" and sidecar_pair[6] == "-0.0020" and sidecar_pair[9] == "-0.0040"
-assert sidecar_pair[10] == "0.0065" and sidecar_pair[11] == "accepted", sidecar_pair
-assert compile_pair[1] == "compile" and compile_pair[6] == "-0.0050" and compile_pair[9] == "-0.0060"
-assert compile_pair[11] == "accepted", compile_pair
-assert collect_pair[1] == "collect" and collect_pair[6] == "-0.0150" and collect_pair[9] == "-0.0100"
-assert collect_pair[10] == "0.02" and collect_pair[11] == "accepted", collect_pair
-assert sidecar_pair[12] == "-" and collect_pair[12] == "-", (sidecar_pair, collect_pair)
+def quadruple(outer, inner, outer_rate, first_inner_rate, second_inner_rate,
+              second_outer_rate, status="completed", repeats=1):
+    """One mirrored quadruple `outer inner inner outer`, repeated in place."""
+    return repeats * [
+        (outer, outer_rate, status), (inner, first_inner_rate, status),
+        (inner, second_inner_rate, status), (outer, second_outer_rate, status),
+    ]
+
+
+HEADER = ("pair", "control", "outer", "inner", "first_outer", "first_inner", "first_delta",
+          "second_outer", "second_inner", "second_delta", "replicates", "mean_delta",
+          "sd_delta", "ci_low", "ci_high", "deltas", "bound", "verdict", "detail")
+
+# Two replicates that agree exactly leave a degenerate interval at their own
+# delta, which is the only way a two-replicate control accepts against a 0.65%
+# bound: t at one degree of freedom is 12.706, so any spread at all opens the
+# interval past the bound. These rates are a fixture rather than a plausible
+# arm pair, and the appliance table below is what a real pair looks like.
+header, rows = summarize(
+    quadruple("P-nosidecar", "P", "10.000", "9.980", "9.980", "10.000")
+    + quadruple("P", "I0", "10.000", "9.950", "9.950", "10.000")
+    + quadruple("I0", "I1", "10.000", "9.850", "9.850", "10.000")
+    + [("S", "3.000", "completed")])
+assert tuple(header) == HEADER, header
+assert len(rows) == 3, rows
+sidecar_row, compile_row, collect_row = rows
+assert sidecar_row["control"] == "sidecar" and sidecar_row["replicates"] == "2", sidecar_row
+assert sidecar_row["first_delta"] == "-0.0020" and sidecar_row["second_delta"] == "-0.0020"
+assert sidecar_row["mean_delta"] == "-0.0020" and sidecar_row["sd_delta"] == "0.0000"
+assert sidecar_row["ci_low"] == "-0.0020" and sidecar_row["ci_high"] == "-0.0020", sidecar_row
+assert sidecar_row["deltas"] == "-0.0020 -0.0020", sidecar_row
+assert sidecar_row["bound"] == "0.0065" and sidecar_row["verdict"] == "accepted", sidecar_row
+assert compile_row["control"] == "compile" and compile_row["verdict"] == "accepted", compile_row
+assert collect_row["control"] == "collect" and collect_row["bound"] == "0.02"
+assert collect_row["verdict"] == "accepted" and collect_row["mean_delta"] == "-0.0150", collect_row
+assert sidecar_row["detail"] == "-" and collect_row["detail"] == "-", (sidecar_row, collect_row)
 print("controls_accepted=accepted")
 
-# One delta outside the bound refutes the pair even where the other delta
-# is inside it and their mean would pass.
-table = summarize([
-    ("P", "10.000", "completed"), ("I0", "9.900", "completed"),
-    ("I0", "10.000", "completed"), ("P", "10.000", "completed"),
-])
-assert table[1][6] == "-0.0100" and table[1][9] == "+0.0000" and table[1][11] == "refuted", table[1]
-# The refuted row names which delta left the bound and by how much, beside
-# the bound itself, so the sidecar cost the appliance measured at 1.0 to 1.4%
-# is read off the row rather than recomputed from two columns.
-assert table[0][12] == "detail", table[0]
-assert table[1][12] == "exceeds bound=0.0065 first=-0.0100", table[1]
-# An incomplete arm makes the pair incomplete rather than a rate.
-table = summarize([
-    ("I0", "10.000", "completed"), ("I1", "-", "failed"),
-    ("I1", "9.900", "completed"), ("I0", "10.000", "completed"),
-])
-assert table[1][1] == "collect" and table[1][11] == "incomplete", table[1]
-# An unregistered quadruple is printed unclassified with no bound.
-table = summarize([
-    ("P", "10.000", "completed"), ("I1", "9.900", "completed"),
-    ("I1", "9.900", "completed"), ("P", "10.000", "completed"),
-])
-assert table[1][1] == "unregistered" and table[1][10] == "-" and table[1][11] == "unclassified", table[1]
+# The appliance calibration of 20260902T0819Z: every arm completed, every
+# sidecar accepted, and the two replicates of the sidecar and compile controls
+# disagreed in sign. A per-replicate bound read that as two refutations; the
+# interval reads it as the arm-to-arm scatter it is, and all three controls
+# come back unresolved because one degree of freedom resolves nothing at these
+# bounds. The collect control, whose replicates agree in sign at -1.88% and
+# -0.53% against a 2% bound, is unresolved for the same reason.
+header, rows = summarize(
+    quadruple("P-nosidecar", "P", "9.590", "9.475", "9.604", "9.513")
+    + quadruple("P", "I0", "9.402", "9.628", "9.427", "9.522")
+    + quadruple("I0", "I1", "9.530", "9.351", "9.498", "9.549")
+    + [("S", "3.000", "completed")])
+observed = {row["control"]: row for row in rows}
+assert observed["sidecar"]["first_delta"] == "-0.0120", observed["sidecar"]
+assert observed["sidecar"]["second_delta"] == "+0.0096", observed["sidecar"]
+assert observed["compile"]["first_delta"] == "+0.0240", observed["compile"]
+assert observed["compile"]["second_delta"] == "-0.0100", observed["compile"]
+assert observed["collect"]["first_delta"] == "-0.0188", observed["collect"]
+assert observed["collect"]["second_delta"] == "-0.0053", observed["collect"]
+assert [row["verdict"] for row in rows] == ["unresolved", "unresolved", "unresolved"], rows
+for control, row in observed.items():
+    assert row["detail"].startswith(f"spans bound={row['bound']} ci=["), row
+    assert float(row["ci_low"]) < -float(row["bound"]), (control, row)
+    assert float(row["ci_high"]) > float(row["bound"]), (control, row)
+print("controls_unresolved=accepted deltas=%s" % observed["sidecar"]["deltas"])
+
+# A cost the whole interval clears refutes the control, and the detail names
+# the direction: an interval entirely below -bound is a cost, one entirely
+# above +bound a speedup, and each refutes the claim the bound states.
+header, rows = summarize(quadruple("I0", "I1", "10.000", "9.700", "9.700", "10.000"))
+assert rows[0]["verdict"] == "refuted", rows[0]
+assert rows[0]["detail"] == "exceeds bound=0.02 cost ci=[-0.0300,-0.0300]", rows[0]
+header, rows = summarize(quadruple("P", "I0", "10.000", "10.300", "10.300", "10.000"))
+assert rows[0]["verdict"] == "refuted", rows[0]
+assert rows[0]["detail"] == "exceeds bound=0.0065 speedup ci=[+0.0300,+0.0300]", rows[0]
+# One delta outside the bound beside one inside it no longer refutes on its
+# own: two replicates 1.0% apart open an interval that spans the bound.
+header, rows = summarize(quadruple("P", "I0", "10.000", "9.900", "10.000", "10.000"))
+assert rows[0]["first_delta"] == "-0.0100" and rows[0]["second_delta"] == "+0.0000"
+assert rows[0]["verdict"] == "unresolved", rows[0]
+print("controls_refuted=accepted")
+
+# Four replicates are two quadruples of one control, and the control collapses
+# to one row carrying every delta. The first_* and second_* columns stay the
+# first quadruple's own two pairs rather than extremes of the set.
+header, rows = summarize(
+    quadruple("P-nosidecar", "P", "10.000", "9.980", "9.980", "10.000", repeats=2)
+    + quadruple("P", "I0", "9.590", "9.475", "9.604", "9.513", repeats=2)
+    + quadruple("I0", "I1", "10.000", "9.700", "9.720", "10.000", repeats=2)
+    + [("S", "3.000", "completed")])
+assert len(rows) == 3, rows
+observed = {row["control"]: row for row in rows}
+assert observed["sidecar"]["replicates"] == "4", observed["sidecar"]
+assert observed["sidecar"]["deltas"] == "-0.0020 -0.0020 -0.0020 -0.0020", observed["sidecar"]
+assert observed["sidecar"]["verdict"] == "accepted", observed["sidecar"]
+assert observed["compile"]["replicates"] == "4", observed["compile"]
+assert observed["compile"]["first_outer"] == "9.590", observed["compile"]
+assert observed["compile"]["deltas"] == "-0.0120 +0.0096 -0.0120 +0.0096", observed["compile"]
+assert observed["compile"]["mean_delta"] == "-0.0012", observed["compile"]
+assert observed["compile"]["verdict"] == "unresolved", observed["compile"]
+assert observed["collect"]["deltas"] == "-0.0300 -0.0280 -0.0300 -0.0280", observed["collect"]
+assert observed["collect"]["mean_delta"] == "-0.0290", observed["collect"]
+assert observed["collect"]["verdict"] == "refuted", observed["collect"]
+assert observed["collect"]["detail"].startswith("exceeds bound=0.02 cost"), observed["collect"]
+assert float(observed["collect"]["ci_high"]) < -0.02, observed["collect"]
+print("controls_replicates_four=accepted")
+
+# One incomplete arm makes the whole control incomplete, however many other
+# replicates completed, since a set missing a delta measures a different set.
+header, rows = summarize(
+    quadruple("I0", "I1", "10.000", "9.850", "9.850", "10.000")
+    + [("I0", "10.000", "completed"), ("I1", "-", "failed"),
+       ("I1", "9.900", "completed"), ("I0", "10.000", "completed")])
+assert len(rows) == 1 and rows[0]["control"] == "collect", rows
+assert rows[0]["replicates"] == "4" and rows[0]["verdict"] == "incomplete", rows[0]
+assert rows[0]["mean_delta"] == "-" and rows[0]["deltas"] == "-", rows[0]
+# An unregistered quadruple has no control to join, so it keeps its own row
+# and is printed unclassified with no bound.
+header, rows = summarize(quadruple("P", "I1", "10.000", "9.900", "9.900", "10.000"))
+assert rows[0]["control"] == "unregistered" and rows[0]["bound"] == "-"
+assert rows[0]["verdict"] == "unclassified", rows[0]
 # S stays outside the parser: I1 S S I1 forms no pair, and an S between two
 # registered quadruples does not disturb them.
-table = summarize([
+header, rows = summarize([
     ("I1", "9.900", "completed"), ("S", "3.000", "completed"),
     ("S", "3.000", "completed"), ("I1", "9.900", "completed"),
 ])
-assert len(table) == 1, table
+assert rows == [], rows
 # The warmup arm is the cold opener and carries no registered bound, so it
 # leaves the quadruple that follows it exactly where the parser expects it.
-table = summarize([
-    ("W", "6.783", "completed"),
-    ("P-nosidecar", "10.000", "completed"), ("P", "9.980", "completed"),
-    ("P", "9.960", "completed"), ("P-nosidecar", "10.000", "completed"),
-])
-assert len(table) == 2 and table[1][1] == "sidecar", table
-assert table[1][4] == "10.000" and table[1][11] == "accepted", table[1]
-table = summarize([
+header, rows = summarize(
+    [("W", "6.783", "completed")]
+    + quadruple("P-nosidecar", "P", "10.000", "9.980", "9.980", "10.000"))
+assert len(rows) == 1 and rows[0]["control"] == "sidecar", rows
+assert rows[0]["first_outer"] == "10.000" and rows[0]["verdict"] == "accepted", rows[0]
+header, rows = summarize([
     ("P", "10.000", "completed"), ("I0", "9.950", "completed"),
     ("S", "3.000", "completed"),
-    ("I0", "9.940", "completed"), ("P", "10.000", "completed"),
+    ("I0", "9.950", "completed"), ("P", "10.000", "completed"),
 ])
-assert len(table) == 2 and table[1][1] == "compile" and table[1][11] == "accepted", table
+assert len(rows) == 1 and rows[0]["control"] == "compile" and rows[0]["verdict"] == "accepted", rows
 print("controls_shapes=accepted")
 
 # A reused brick echoes its arms at their own slots with the rates it
 # measured, so a quadruple of reused arms pairs the way an executed one does
 # and a calibration whose four bricks all reuse still carries three verdicts.
-table = summarize([
-    ("P-nosidecar", "10.000", "reused"), ("P", "9.980", "reused"),
-    ("P", "9.960", "reused"), ("P-nosidecar", "10.000", "reused"),
-    ("P", "10.000", "reused"), ("I0", "9.950", "reused"),
-    ("I0", "9.940", "reused"), ("P", "10.000", "reused"),
-    ("I0", "10.000", "completed"), ("I1", "9.850", "completed"),
-    ("I1", "9.900", "completed"), ("I0", "10.000", "completed"),
-    ("S", "3.000", "reused"),
-])
-assert len(table) == 4, table
-assert [row[11] for row in table[1:]] == ["accepted", "accepted", "accepted"], table
-assert table[1][6] == "-0.0020" and table[2][6] == "-0.0050", table
-# A status outside completed and reused still makes the pair incomplete.
-table = summarize([
+header, rows = summarize(
+    quadruple("P-nosidecar", "P", "10.000", "9.980", "9.980", "10.000", status="reused")
+    + quadruple("P", "I0", "10.000", "9.950", "9.950", "10.000", status="reused")
+    + quadruple("I0", "I1", "10.000", "9.850", "9.850", "10.000")
+    + [("S", "3.000", "reused")])
+assert len(rows) == 3, rows
+assert [row["verdict"] for row in rows] == ["accepted", "accepted", "accepted"], rows
+assert rows[0]["first_delta"] == "-0.0020" and rows[1]["first_delta"] == "-0.0050", rows
+# A status outside completed and reused still makes the control incomplete.
+header, rows = summarize([
     ("I0", "10.000", "reused"), ("I1", "9.900", "skipped"),
     ("I1", "9.900", "reused"), ("I0", "10.000", "reused"),
 ])
-assert table[1][11] == "incomplete", table[1]
+assert rows[0]["verdict"] == "incomplete", rows[0]
 print("controls_reuse=accepted")
 
 slice_text = "\n".join([
