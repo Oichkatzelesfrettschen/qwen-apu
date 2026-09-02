@@ -350,6 +350,9 @@ fixture_hwmon=$temporary_directory/hwmon
 mkdir -p "$fixture_hwmon/hwmon0"
 printf 'amdgpu\n' >"$fixture_hwmon/hwmon0/name"
 printf '61000\n' >"$fixture_hwmon/hwmon0/temp1_input"
+# The delivered graphics frequency telemetry-broker.c reads beside the DPM
+# steps, in the hertz the amdgpu hwmon path reports.
+printf '1100000000\n' >"$fixture_hwmon/hwmon0/freq1_input"
 
 run_harness() {
     harness_case=$1
@@ -631,6 +634,16 @@ import pathlib
 import sys
 
 label = pathlib.Path(sys.argv[1]).parent.name
+# The invariant the campaign requests under a forced clock policy. The table
+# QWEN_TEST_AB_VIOLATED names the arms whose window carried a step below the
+# required one, which is the reading that costs an arm its completion.
+required = None
+if "--required-sclk-mhz" in sys.argv:
+    required = sys.argv[sys.argv.index("--required-sclk-mhz") + 1]
+required_mclk = "-"
+if "--required-mclk-mhz" in sys.argv:
+    required_mclk = sys.argv[sys.argv.index("--required-mclk-mhz") + 1]
+violated = label in os.environ.get("QWEN_TEST_AB_VIOLATED", "").split()
 # A table entry is a mode, a mode and its modal share separated by a colon, or
 # the word `none`, which stands for a window the validator read no clock state
 # out of -- the shape a warmup whose request never ran produces on the
@@ -650,6 +663,17 @@ if state != "none":
     print(f"clock_state=measured window_samples=700 sclk_mode_mhz={state}"
           f" sclk_share={share} mclk_mode_mhz=1067"
           " temp_mean_c=71.6 temp_max_c=74.0 busy_mean=94.88")
+if required is None:
+    print("clock_invariant=not_requested")
+elif violated:
+    print(f"clock_invariant=violated samples_at_required=600 samples_below_required=100"
+          f" below_required_fraction=0.1429 required={required}")
+    print("clock_sidecar=refused failures=clock_invariant")
+    raise SystemExit(1)
+else:
+    print(f"clock_invariant=held samples_at_required=700 samples_below_required=0"
+          f" below_required_fraction=0.0000 required={required}"
+          f" required_mclk={required_mclk}")
 print("clock_sidecar=accepted failures=-")
 VALIDATOR_STUB
 chmod +x "$run_directory/validate-clock-sidecar.py"
@@ -669,6 +693,80 @@ run_bin=$temporary_directory/run-bin
 mkdir -p "$run_bin"
 printf '#!/bin/sh\nprintf %s\n' "'hp14-dk1xxx\\n'" >"$run_bin/hostname"
 chmod +x "$run_bin/hostname"
+
+# The privileged writer the forced clock policy goes through. The stub answers
+# `sudo -n true` and `sudo -n tee NODE`, records every write, and keeps the
+# fixture DRM directory consistent with what it was told: a policy other than
+# auto stars the highest step pp_dpm_sclk lists, which is what the campaign
+# confirms after its write, and auto stars the lowest, which is the governor
+# state the restore returns the fixture to. QWEN_TEST_SUDO_REFUSE stands for an
+# expired credential, and QWEN_TEST_SUDO_STAR_LOWEST for a forced policy the
+# device declined to follow.
+cat >"$run_bin/sudo" <<'SUDO_STUB'
+#!/bin/sh
+set -eu
+if [ "${QWEN_TEST_SUDO_REFUSE:-0}" = 1 ]; then
+    printf 'sudo: a password is required\n' >&2
+    exit 1
+fi
+[ "$1" = -n ] || exit 1
+shift
+case $1 in
+    true) exit 0 ;;
+    tee) ;;
+    *) exit 1 ;;
+esac
+shift
+sudo_node=$1
+# A DPM table answers a write by moving its star and keeps its listing, the way
+# the kernel attribute does, so the value read from stdin reaches the file only
+# where the file is the performance level itself.
+sudo_value=$(cat)
+printf '%s\t%s\n' "$sudo_node" "$sudo_value" >>"${QWEN_TEST_SUDO_LOG:-/dev/null}"
+sudo_directory=$(dirname -- "$sudo_node")
+sudo_leaf=$(basename -- "$sudo_node")
+# The device answers a write by moving the star. A performance level other than
+# auto or manual raises the graphics table to its highest step and leaves the
+# fabric table where it was, which is the SMU10 behavior the manual policy
+# exists for; a level index written to a DPM table stars that level, and
+# QWEN_TEST_SUDO_MCLK_IGNORE reproduces the firmware that takes the fabric write
+# and keeps its own selection.
+sudo_star() {
+    awk -v want="$2" '{
+            line = $0
+            sub(/ \*$/, "", line)
+            index_field = line
+            sub(/:.*$/, "", index_field)
+            if (index_field == want) print line " *"
+            else print line
+        }' "$1" >"$1.tmp"
+    mv -- "$1.tmp" "$1"
+}
+case $sudo_leaf in
+    power_dpm_force_performance_level)
+        printf '%s\n' "$sudo_value" >"$sudo_node"
+        if [ -f "$sudo_directory/pp_dpm_sclk" ]; then
+            if [ "$sudo_value" = auto ] || [ "${QWEN_TEST_SUDO_STAR_LOWEST:-0}" = 1 ]; then
+                sudo_star "$sudo_directory/pp_dpm_sclk" 0
+            elif [ "$sudo_value" != manual ]; then
+                sudo_star "$sudo_directory/pp_dpm_sclk" 1
+            fi
+        fi
+        ;;
+    pp_dpm_mclk)
+        [ "${QWEN_TEST_SUDO_MCLK_IGNORE:-0}" = 1 ] || sudo_star "$sudo_node" "$sudo_value"
+        ;;
+    pp_dpm_sclk)
+        if [ "${QWEN_TEST_SUDO_STAR_LOWEST:-0}" = 1 ]; then
+            sudo_star "$sudo_node" 0
+        else
+            sudo_star "$sudo_node" "$sudo_value"
+        fi
+        ;;
+esac
+printf '%s\n' "$sudo_value"
+SUDO_STUB
+chmod +x "$run_bin/sudo"
 run_path=$run_bin:$execution_path
 run_ssh_connection='127.0.0.1 40000 127.0.0.1 22'
 
@@ -702,9 +800,26 @@ run_ab() {
     # The sixth caps the regime precondition, so a case that settles nothing
     # pays four warmups rather than the shipped sixteen.
     ab_regime_max_arms=${6:-16}
+    # The seventh names the engine clock policy, the eighth the arms whose
+    # invariant the stub validator reports violated. A forced policy runs
+    # against its own copy of the DRM fixture, since the stub sudo rewrites
+    # pp_dpm_sclk on every write and a case is read after the run.
+    ab_engine_clock_policy=${7:-auto}
+    ab_violated_arms=${8:-}
+    # The ninth names the fabric level manual writes and the tenth stands for
+    # the firmware that takes that write and keeps its own selection.
+    ab_mclk_level=${9:--}
+    ab_mclk_ignore=${10:-0}
     active_fixture=$ab_case
     run_index=$((run_index + 1))
     ab_output=$temporary_directory/out-$run_index
+    ab_drm=$fixture_drm
+    ab_sudo_log=$temporary_directory/sudo-$ab_case.log
+    if [ "$ab_engine_clock_policy" != auto ]; then
+        ab_drm=$temporary_directory/drm-$ab_case
+        cp -R -- "$fixture_drm" "$ab_drm"
+        printf 'auto\n' >"$ab_drm/power_dpm_force_performance_level"
+    fi
     diagnostic_file=$temporary_directory/$ab_case-stderr.txt
     set +e
     env -i \
@@ -714,7 +829,7 @@ run_ab() {
         QWEN_MODELS_DIRECTORY="$models_directory" \
         QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
         QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
-        QWEN_DRM_DEVICE="$fixture_drm" \
+        QWEN_DRM_DEVICE="$ab_drm" \
         QWEN_HWMON_ROOT="$fixture_hwmon" \
         QWEN_CENSUS_BROKER="$broker_stub" \
         QWEN_CENSUS_SIDECAR_CPU=0 \
@@ -722,6 +837,11 @@ run_ab() {
         QWEN_VULKAN_WORKLOAD_LOCK="$temporary_directory/vulkan-workload.lock" \
         QWEN_TEST_AB_RATES="$ab_rates" \
         QWEN_TEST_AB_CLOCKS="$ab_clocks" \
+        QWEN_TEST_AB_VIOLATED="$ab_violated_arms" \
+        QWEN_TEST_SUDO_LOG="$ab_sudo_log" \
+        QWEN_CENSUS_ENGINE_CLOCK_POLICY="$ab_engine_clock_policy" \
+        QWEN_CENSUS_MCLK_LEVEL="$ab_mclk_level" \
+        QWEN_TEST_SUDO_MCLK_IGNORE="$ab_mclk_ignore" \
         QWEN_CENSUS_REGIME_MAX_ARMS="$ab_regime_max_arms" \
         "$run_harness_path" "$control_server" "$candidate_server" "$model_id" \
         "$ab_output" \
@@ -764,8 +884,11 @@ promoted_rates=$temporary_directory/rates-promoted
 write_rates "$promoted_rates" 10.000 11.000 11.000
 run_ab verdict_promoted 0 promoted "$promoted_rates" "$one_clock"
 active_fixture=arms_ledger_columns
-[ "$(head -n 1 "$ab_last_output/arms.tsv")" = "$(printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\tsidecar\townership\tstatus\tsclk_mode_mhz\tsclk_share\tregime_delta')" ]
-awk -F'\t' 'NF != 13 { exit 1 }' "$ab_last_output/arms.tsv"
+[ "$(head -n 1 "$ab_last_output/arms.tsv")" = "$(printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\tsidecar\townership\tstatus\tsclk_mode_mhz\tsclk_share\tregime_delta\tclock_invariant\tbelow_required_fraction')" ]
+awk -F'\t' 'NF != 15 { exit 1 }' "$ab_last_output/arms.tsv"
+# The clock columns trail the ledger and read the unknown value under the
+# appliance's own governor, where the validator requests no invariant.
+[ "$(awk -F'\t' 'NR > 1 && ($14 != "-" || $15 != "-")' "$ab_last_output/arms.tsv" | wc -l | tr -d ' ')" = 0 ]
 # Every arm of the one-clock table holds 800 MHz at a share of 0.1400, inside
 # the sustained regime's own window, so the precondition settles on the second
 # warmup and the ledger carries the header, two warmups, and the eight paired
@@ -997,6 +1120,223 @@ set -e
 [ "$exists_status" -eq 2 ]
 grep -q 'never appends to one' "$temporary_directory/exists-stderr.txt"
 printf 'output_directory_exists=accepted\n'
+
+# The engine clock as a control. A forced policy is validated by name, written
+# through sudo, proven by the device's own selection, and restored on every
+# exit; it replaces the regime precondition with one priming warmup and holds
+# every arm to the invariant the validator states.
+active_fixture=engine_clock_policy_name
+run_index=$((run_index + 1))
+set +e
+env -i PATH="$run_path" HOME="$home_directory" SSH_CONNECTION="$run_ssh_connection" \
+    QWEN_MODELS_DIRECTORY="$models_directory" \
+    QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+    QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+    QWEN_DRM_DEVICE="$fixture_drm" QWEN_HWMON_ROOT="$fixture_hwmon" \
+    QWEN_CENSUS_BROKER="$broker_stub" \
+    QWEN_CENSUS_ENGINE_CLOCK_POLICY=peak \
+    "$run_harness_path" "$control_server" "$candidate_server" "$model_id" \
+    "$temporary_directory/out-$run_index" \
+    >/dev/null 2>"$temporary_directory/engine-clock-name-stderr.txt"
+engine_clock_name_status=$?
+set -e
+[ "$engine_clock_name_status" -eq 2 ]
+grep -q 'QWEN_CENSUS_ENGINE_CLOCK_POLICY is auto, high, profile_peak, or manual: peak' \
+    "$temporary_directory/engine-clock-name-stderr.txt"
+printf 'engine_clock_policy_name=accepted\n'
+
+# A campaign under the measured policy. `manual` selects the highest graphics
+# level the table lists, which is what decoded 9.58, 8.91, and 9.23 tok/s on the
+# appliance against interleaved governor arms at 8.22 and 7.94, and the run
+# states the priming warmup, the ledger rows, the invariant held on every arm,
+# and the restore proven by readback on the ordinary exit.
+run_ab engine_clock_forced_manual 0 promoted "$promoted_rates" "$one_clock" 16 manual
+active_fixture=engine_clock_forced_manual_ledger
+grep -q '^engine_clock=applied policy=manual sclk_level=1 required_sclk_mhz=1100 mclk_level=- mclk_readback_mhz=- mclk_floor_mhz=933 snapshot=auto 1 0$' \
+    "$temporary_directory/engine_clock_forced_manual-stdout.txt"
+grep -q '^census_regime=retired policy=manual required_sclk_mhz=1100 mclk_floor_mhz=933 arms=1$' \
+    "$temporary_directory/engine_clock_forced_manual-stdout.txt"
+grep -q "^dpm_restore=restored level=auto requested=auto sclk_level=1 mclk_level=0 node=$ab_drm/power_dpm_force_performance_level\$" \
+    "$temporary_directory/engine_clock_forced_manual-stdout.txt"
+for engine_clock_row in "engine_clock_policy	manual" "engine_clock_sclk_level	1" \
+    "engine_clock_mclk_level	-" "engine_clock_required_sclk_mhz	1100" \
+    "engine_clock_required_mclk_mhz	933" "clock_below_required_fraction	0" \
+    "mclk_floor_mhz	933" "engine_clock_mclk_readback_mhz	-" \
+    "regime_max_arms	-"; do
+    grep -qxF -- "$(printf '%s' "$engine_clock_row")" "$ab_last_output/inputs.tsv"
+done
+# One priming warmup opens the ledger, the named arms keep their own slots, and
+# every arm carries the invariant the forced policy asked for.
+[ "$(awk -F'\t' 'NR > 1 && $2 == "W"' "$ab_last_output/arms.tsv" | wc -l | tr -d ' ')" = 1 ]
+[ "$(awk -F'\t' 'NR == 2 { print $1, $2, $14, $15 }' "$ab_last_output/arms.tsv")" \
+    = '0a W held 0.0000' ]
+[ "$(awk -F'\t' 'NR > 1 && $14 != "held"' "$ab_last_output/arms.tsv" | wc -l | tr -d ' ')" = 0 ]
+# The performance level, the graphics level, and the restore are the three sudo
+# writes the campaign makes, in that order, and the fixture is left where the
+# campaign found it.
+[ "$(awk -F'\t' '{ print $2 }' "$ab_sudo_log" | tr '\n' ' ')" = 'manual 1 auto ' ]
+[ "$(cat "$ab_drm/power_dpm_force_performance_level")" = auto ]
+# The validator was handed both halves of the operating point, which the arm's
+# own verdict file is what proves: a campaign requesting the graphics step
+# alone would leave the fabric clock unbounded and every case above unchanged.
+grep -q '^clock_invariant=held .* required=1100 required_mclk=933$' \
+    "$ab_last_output/arms/0a-W/clock-sidecar-verdict.txt"
+printf 'engine_clock_forced_manual=accepted sclk_level=1 required_sclk_mhz=1100\n'
+
+# The fabric write is recorded rather than required. The appliance took the
+# write and left its own selection starred, so the campaign reports the
+# readback and holds the arms to the floor instead.
+run_ab engine_clock_manual_fabric_write 0 promoted "$promoted_rates" "$one_clock" 16 manual '' 1 1
+active_fixture=engine_clock_manual_fabric_ledger
+grep -q '^engine_clock=applied policy=manual sclk_level=1 required_sclk_mhz=1100 mclk_level=1 mclk_readback_mhz=933 mclk_floor_mhz=933 snapshot=auto 1 0$' \
+    "$temporary_directory/engine_clock_manual_fabric_write-stdout.txt"
+for engine_clock_row in "engine_clock_mclk_level	1" "engine_clock_mclk_readback_mhz	933"; do
+    grep -qxF -- "$(printf '%s' "$engine_clock_row")" "$ab_last_output/inputs.tsv"
+done
+[ "$(awk -F'\t' '{ print $2 }' "$ab_sudo_log" | tr '\n' ' ')" = 'manual 1 1 auto ' ]
+printf 'engine_clock_manual_fabric_write=accepted readback_mhz=933\n'
+
+# A performance level rather than a level selection: `high` raises the graphics
+# table to its highest step, which the campaign requires and holds the arms to.
+run_ab engine_clock_forced_high 0 promoted "$promoted_rates" "$one_clock" 16 high
+active_fixture=engine_clock_forced_high_ledger
+grep -q '^engine_clock=applied policy=high sclk_level=- required_sclk_mhz=1100 mclk_level=- mclk_readback_mhz=- mclk_floor_mhz=933 snapshot=auto 1 0$' \
+    "$temporary_directory/engine_clock_forced_high-stdout.txt"
+grep -qxF -- "$(printf 'engine_clock_policy\thigh')" "$ab_last_output/inputs.tsv"
+grep -qxF -- "$(printf 'engine_clock_sclk_level\t-')" "$ab_last_output/inputs.tsv"
+[ "$(awk -F'\t' '{ print $2 }' "$ab_sudo_log" | tr '\n' ' ')" = 'high auto ' ]
+printf 'engine_clock_forced_high=accepted required_sclk_mhz=1100\n'
+
+# One arm whose window carried a step below the pinned one: the arm fails on
+# the invariant rather than on the record, and its pair leaves the interval as
+# clock-violated rather than as a governor step.
+run_ab engine_clock_invariant_violated 1 failed "$promoted_rates" "$one_clock" 16 manual 02-K
+active_fixture=engine_clock_invariant_ledger
+grep -q '^served_ab_arm=failed slot=2 arm=K .* clock_invariant=violated reason=clock_invariant$' \
+    "$temporary_directory/engine_clock_invariant_violated-stdout.txt"
+[ "$(awk -F'\t' '$1 == "2" { print $14, $15 }' "$ab_last_output/arms.tsv")" = 'violated 0.1429' ]
+[ "$(awk -F'=' '$1 == "arm_failures" { print $2 }' "$ab_last_output/terminal-state.tsv")" = 1 ]
+printf 'engine_clock_invariant_violated=accepted\n'
+
+# An expired sudo credential is refused ahead of the first arm and names the
+# command that renews it, since a campaign cannot answer a password prompt.
+active_fixture=engine_clock_sudo_refused
+run_index=$((run_index + 1))
+engine_clock_refuse_drm=$temporary_directory/drm-sudo-refused
+cp -R -- "$fixture_drm" "$engine_clock_refuse_drm"
+printf 'auto\n' >"$engine_clock_refuse_drm/power_dpm_force_performance_level"
+set +e
+env -i PATH="$run_path" HOME="$home_directory" SSH_CONNECTION="$run_ssh_connection" \
+    QWEN_MODELS_DIRECTORY="$models_directory" \
+    QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+    QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+    QWEN_DRM_DEVICE="$engine_clock_refuse_drm" QWEN_HWMON_ROOT="$fixture_hwmon" \
+    QWEN_CENSUS_BROKER="$broker_stub" QWEN_CENSUS_SIDECAR_CPU=0 \
+    QWEN_TEST_AB_RATES="$promoted_rates" QWEN_TEST_AB_CLOCKS="$one_clock" \
+    QWEN_CENSUS_ENGINE_CLOCK_POLICY=manual QWEN_TEST_SUDO_REFUSE=1 \
+    "$run_harness_path" "$control_server" "$candidate_server" "$model_id" \
+    "$temporary_directory/out-$run_index" \
+    >"$temporary_directory/engine-clock-sudo-stdout.txt" \
+    2>"$temporary_directory/engine-clock-sudo-stderr.txt"
+engine_clock_sudo_status=$?
+set -e
+[ "$engine_clock_sudo_status" -eq 2 ]
+grep -q 'run sudo -v and start the campaign again' \
+    "$temporary_directory/engine-clock-sudo-stderr.txt"
+[ "$(cat "$engine_clock_refuse_drm/power_dpm_force_performance_level")" = auto ]
+if [ -e "$temporary_directory/out-$run_index" ]; then
+    printf 'the refused credential still opened an output directory\n' >&2
+    exit 1
+fi
+printf 'engine_clock_sudo_refused=accepted\n'
+
+# A device that took the policy and stayed on a lower step describes something
+# other than the pinned clock the arms would be read against.
+active_fixture=engine_clock_below_peak
+run_index=$((run_index + 1))
+engine_clock_low_drm=$temporary_directory/drm-below-peak
+cp -R -- "$fixture_drm" "$engine_clock_low_drm"
+printf 'auto\n' >"$engine_clock_low_drm/power_dpm_force_performance_level"
+set +e
+env -i PATH="$run_path" HOME="$home_directory" SSH_CONNECTION="$run_ssh_connection" \
+    QWEN_MODELS_DIRECTORY="$models_directory" \
+    QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+    QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+    QWEN_DRM_DEVICE="$engine_clock_low_drm" QWEN_HWMON_ROOT="$fixture_hwmon" \
+    QWEN_CENSUS_BROKER="$broker_stub" QWEN_CENSUS_SIDECAR_CPU=0 \
+    QWEN_TEST_AB_RATES="$promoted_rates" QWEN_TEST_AB_CLOCKS="$one_clock" \
+    QWEN_CENSUS_ENGINE_CLOCK_POLICY=manual QWEN_TEST_SUDO_STAR_LOWEST=1 \
+    QWEN_TEST_SUDO_LOG="$temporary_directory/sudo-below-peak.log" \
+    "$run_harness_path" "$control_server" "$candidate_server" "$model_id" \
+    "$temporary_directory/out-$run_index" \
+    >"$temporary_directory/engine-clock-low-stdout.txt" \
+    2>"$temporary_directory/engine-clock-low-stderr.txt"
+engine_clock_low_status=$?
+set -e
+[ "$engine_clock_low_status" -eq 2 ]
+grep -q 'pp_dpm_sclk selected level 0 where the campaign wrote 1' \
+    "$temporary_directory/engine-clock-low-stderr.txt"
+# The refusal unwinds through the same restore, so the device is left on the
+# level the campaign found rather than on the one it could not confirm.
+grep -q '^dpm_restore=restored level=auto requested=auto ' \
+    "$temporary_directory/engine-clock-low-stdout.txt"
+[ "$(cat "$engine_clock_low_drm/power_dpm_force_performance_level")" = auto ]
+printf 'engine_clock_below_peak=accepted\n'
+
+# A terminating signal restores the level as it tears the children down. The
+# campaign is signalled once it has printed the line its write produced, so the
+# case reads a restore that ran from the handler rather than from a run that
+# had already finished.
+active_fixture=engine_clock_restore_on_term
+run_index=$((run_index + 1))
+engine_clock_term_drm=$temporary_directory/drm-term
+cp -R -- "$fixture_drm" "$engine_clock_term_drm"
+printf 'auto\n' >"$engine_clock_term_drm/power_dpm_force_performance_level"
+engine_clock_term_stdout=$temporary_directory/engine-clock-term-stdout.txt
+: >"$engine_clock_term_stdout"
+env -i PATH="$run_path" HOME="$home_directory" SSH_CONNECTION="$run_ssh_connection" \
+    QWEN_MODELS_DIRECTORY="$models_directory" \
+    QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+    QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+    QWEN_DRM_DEVICE="$engine_clock_term_drm" QWEN_HWMON_ROOT="$fixture_hwmon" \
+    QWEN_CENSUS_BROKER="$broker_stub" QWEN_CENSUS_SIDECAR_CPU=0 \
+    QWEN_AB_COOLDOWN_S=0 \
+    QWEN_VULKAN_WORKLOAD_LOCK="$temporary_directory/vulkan-workload.lock" \
+    QWEN_TEST_AB_RATES="$promoted_rates" QWEN_TEST_AB_CLOCKS="$one_clock" \
+    QWEN_CENSUS_ENGINE_CLOCK_POLICY=manual \
+    QWEN_TEST_SUDO_LOG="$temporary_directory/sudo-term.log" \
+    "$run_harness_path" "$control_server" "$candidate_server" "$model_id" \
+    "$temporary_directory/out-$run_index" \
+    >"$engine_clock_term_stdout" 2>"$temporary_directory/engine-clock-term-stderr.txt" &
+engine_clock_term_pid=$!
+engine_clock_term_poll=0
+while [ "$engine_clock_term_poll" -lt 100 ]; do
+    if grep -q '^engine_clock=applied ' "$engine_clock_term_stdout"; then
+        break
+    fi
+    sleep 0.2
+    engine_clock_term_poll=$((engine_clock_term_poll + 1))
+done
+if [ "$engine_clock_term_poll" -ge 100 ]; then
+    kill -TERM "$engine_clock_term_pid" 2>/dev/null || true
+    wait "$engine_clock_term_pid" 2>/dev/null || true
+    printf 'the signalled campaign never applied its clock policy\n' >&2
+    exit 1
+fi
+[ "$(cat "$engine_clock_term_drm/power_dpm_force_performance_level")" = manual ]
+kill -TERM "$engine_clock_term_pid"
+set +e
+wait "$engine_clock_term_pid"
+engine_clock_term_status=$?
+set -e
+if [ "$engine_clock_term_status" -ne 143 ]; then
+    printf 'the signalled campaign exited %s where its TERM trap exits 143\n' \
+        "$engine_clock_term_status" >&2
+    exit 1
+fi
+grep -q '^dpm_restore=restored level=auto requested=auto ' "$engine_clock_term_stdout"
+[ "$(cat "$engine_clock_term_drm/power_dpm_force_performance_level")" = auto ]
+printf 'engine_clock_restore_on_term=accepted\n'
 
 active_fixture=complete
 printf 'run_served_binary_ab=accepted cases=%s\n' "$run_index"
