@@ -23,7 +23,7 @@ file carrying no selected step writes unavailable.
 Options: --period-ms N (default 5; must be positive; milliseconds between samples),
 --drm-device PATH (default /sys/class/drm/card1/device or QWEN_DRM_DEVICE),
 --hwmon-root PATH (default /sys/class/hwmon or QWEN_HWMON_ROOT), --nice N (default 19;
-renice the sampler to this absolute niceness), --cpu N (optional; pin the sampler
+renice the sampler to this absolute niceness), --cpu LIST (optional; pin the sampler
 to CPU N with os.sched_setaffinity).
 
 Header carries clock source, configured period in nanoseconds, drm device path, hwmon
@@ -34,7 +34,7 @@ with any unavailable sensor, and first and last monotonic instants.
 SIGTERM or SIGINT ends the loop and writes the footer.
 
 usage: sample-clock-sidecar.py OUTPUT_TSV [--period-ms N]
-       [--drm-device PATH] [--hwmon-root PATH] [--nice N] [--cpu N]
+       [--drm-device PATH] [--hwmon-root PATH] [--nice N] [--cpu LIST]
 """
 import argparse
 import os
@@ -80,7 +80,8 @@ def main():
     parser.add_argument("--drm-device", default=os.environ.get("QWEN_DRM_DEVICE", "/sys/class/drm/card1/device"))
     parser.add_argument("--hwmon-root", default=os.environ.get("QWEN_HWMON_ROOT", "/sys/class/hwmon"))
     parser.add_argument("--nice", type=int, default=19)
-    parser.add_argument("--cpu", type=int, default=None)
+    parser.add_argument("--cpu", type=str, default=None,
+                        help="comma-separated CPU list the sampler is confined to")
     args = parser.parse_args()
 
     if args.period_ms <= 0:
@@ -105,9 +106,9 @@ def main():
 
     if args.cpu is not None:
         try:
-            os.sched_setaffinity(0, {args.cpu})
+            os.sched_setaffinity(0, {int(c) for c in args.cpu.split(",") if c != ""})
         except OSError as e:
-            print("cannot set CPU affinity to %d: %s" % (args.cpu, e), file=sys.stderr)
+            print("cannot set CPU affinity to %s: %s" % (args.cpu, e), file=sys.stderr)
             return 2
 
     try:

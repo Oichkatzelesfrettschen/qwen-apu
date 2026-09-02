@@ -289,13 +289,22 @@ Host phases are kept apart. `record_ns` is what
 `retire_span_ns` runs from graph start to the moment the reader knew the
 fence had retired and precedes every census read and write, so it is the
 host-side bound on the graph that the residual is taken against.
-`readback_ns` is the query read. `dispatch_row_emit_ns` is the accounting
-and the dispatch rows' write, and the `census_emit` row that follows the
-graph row's flush carries the graph row's own write, the flush, and
-`total_emit_ns` from readback end through that flush, which is the figure
-an overhead analysis uses; all of them follow retirement and are the
-instrument's own cost inside the token, which the `I0 I1 I1 I0` pair
-measures.
+`readback_ns` is the query read. The emission is deferred: at graph end
+the instrument appends fixed-size binary records, one per dispatch and one
+per graph, into a buffer reserved once at context creation (51840
+dispatch records and 128 graph records, 14.3 MiB, 78 decode graphs of the
+2B between drains), and formats and writes the text rows in one drain at
+context close or where the buffer fills, in the same order the rows would
+have been written per graph. `dispatch_row_emit_ns` is the time to append
+the dispatch records, and the `census_emit` row carries the graph record's
+append as `graph_row_ns`, the drain's write and flush as `flush_ns` where
+a drain fell inside this graph's emit and zero otherwise, and
+`total_emit_ns` as their sum from readback end; all of them follow
+retirement and are the instrument's own cost inside the token, which the
+`I0 I1 I1 I0` pair measures. The first two served I1 arms at the
+per-graph text write ran 2.4 to 2.6% under their I0 neighbors against the
+2% bound, and the workstation smoke of the deferral moved the per-graph
+path from 878 to 86 microseconds with byte-identical rows.
 
 Ownership is stated from what the brackets can distinguish. Summing one
 pipeline's bracket durations over a graph and dividing by the union of all
@@ -413,9 +422,12 @@ name what they read: `pp_dpm_sclk_selected_mhz` is the selected graphics
 step, and `pp_dpm_mclk_surface_mhz` and `pp_dpm_fclk_surface_mhz` are the
 sysfs surfaces, which on this SMU10 path are fabric-clock states rather
 than the trained DRAM speed, as the header line states. The sampler is
-pinned to core 1 at nice 19, the priority the appliance runs every
+confined to both cores at nice 19, the priority the appliance runs every
 measurement process at, the server on core 0 included, and it records its
-pid, niceness, and affinity in the header. The priority is a constant of
+pid, niceness, and affinity in the header. Pinned to core 1 it lost about
+40 ms once a second to the guards, which sample on that core at nice 0, so
+it floats to whichever core is free and the sidecar control prices what it
+takes from the server's core. The priority is a constant of
 the runner rather than an option, so a hole the scheduler opens at that
 priority is reported by the gap validator rather than closed by a higher
 one.
@@ -494,6 +506,17 @@ two mat-vec families, 3.4 ms of queue idle and residual, ownership
 conclusive at a 1% overlap, and the reproducibility build R byte-identical
 to P. `decode-decomposition.md` reads the ledgers against the predictions
 it registered ahead of them.
+
+`20260902T0525Z/` retains the second calibration on head 59c03c8, again
+`calibration_verdict=failed`, and closes two of the four failures: the S
+arm ran under the admitted diagnostic profile at 2.458 tok/s with 64
+logger blocks and its server exited cleanly, and the first I1 arm accepted
+whole with `ownership=conclusive`. The sampler at nice 19 on core 1 still
+opened holes up to 42 ms about once a second, the cadence of the guards
+that sample on that core at nice 0, so it is now confined to both cores.
+The two I1 arms sat 2.5% and 1.9% under their I0 neighbors, one outside
+the 2% collection bound, which is what the deferred emission below exists
+to remove.
 
 ## Order and falsifiers
 

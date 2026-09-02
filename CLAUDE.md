@@ -1152,7 +1152,7 @@ remote/run-ctx-checkpoint-sweep.sh LABEL MODEL_ID OUT
 # device. A TERM to the runner ends the served child and the sidecar
 # together. The measurement head and the analysis head are recorded
 # separately, so a gated reader fix reinterprets retained raw records.
-# The 10 ms sidecar on core 1 at nice 19 is evidence only where
+# The 10 ms sidecar on either core at nice 19 is evidence only where
 # validate-clock-sidecar.py accepts its record, and its refusal fails the
 # arm. A diagnostic build reaches the device through an explicit
 # QWEN_LLAMA_SERVER alone: bundle assembly and activation refuse any
@@ -1173,7 +1173,7 @@ remote/summarize-kernel-census.py OUT/arms/NN-I1/pipeline-census.tsv \
     --window-begin-ns B --window-end-ns E --expected-decode-graphs 63
 remote/summarize-census-controls.py OUT/arms.tsv --sidecar-bound 0.0065 \
     --compile-bound 0.0065 --collect-bound 0.02
-remote/sample-clock-sidecar.py OUT.tsv --period-ms 10 --cpu 1 --nice 19
+remote/sample-clock-sidecar.py OUT.tsv --period-ms 10 --cpu 0,1 --nice 19
 remote/validate-clock-sidecar.py OUT.tsv --sidecar-status 0 --period-ms 10 \
     --period-tolerance 0.25 --cost-bound-ns 1000000 --max-gap-ns 20000000
 remote/summarize-perf-logger-slice.py OUT/arms/NN-S/server-log-request.slice \
