@@ -83,6 +83,17 @@ fi
 # A diagnostic build names its instrumentation and declares itself unfit to
 # serve; the bundle is the unit an activation makes the appliance's server,
 # so the declaration is honored here rather than trusted to an operator.
+declaration_rows=$(awk -F'\t' '
+    $1 == "serving_eligible" { eligible++ }
+    $1 == "instrumentation" { instrumentation++ }
+    END { print eligible + 0, instrumentation + 0 }' "$manifest_path")
+serving_rows=${declaration_rows%% *}
+instrumentation_rows=${declaration_rows##* }
+if [ "$serving_rows" -gt 1 ] || [ "$instrumentation_rows" -gt 1 ]; then
+    printf 'artifact manifest holds %s serving_eligible rows and %s instrumentation rows, at most one of each: %s\n' \
+        "$serving_rows" "$instrumentation_rows" "$manifest_path" >&2
+    exit 1
+fi
 serving_eligible=$(awk -F'\t' '$1 == "serving_eligible" { print $2; exit }' \
     "$manifest_path")
 if [ -n "$serving_eligible" ] && [ "$serving_eligible" != yes ]; then
