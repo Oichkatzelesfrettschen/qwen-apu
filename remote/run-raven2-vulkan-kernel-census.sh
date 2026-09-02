@@ -141,9 +141,11 @@ drm_device=${QWEN_DRM_DEVICE:-/sys/class/drm/card1/device}
 # The SMU10 kernel path exposes pp_dpm_fclk as an empty file and reports the
 # fabric clock through pp_dpm_mclk, so a column the kernel leaves empty at
 # campaign start is allowed to read unavailable and every other column is
-# required on every sample; the allowance is recorded beside the arms.
+# required on every sample; the allowance is recorded beside the arms. The
+# emptiness is decided by reading the attribute, since sysfs reports every
+# attribute at one page in stat and a size test reads an empty file as full.
 sidecar_allowed_unavailable=''
-if [ ! -s "$drm_device/pp_dpm_fclk" ]; then
+if [ -z "$(cat "$drm_device/pp_dpm_fclk" 2>/dev/null)" ]; then
     sidecar_allowed_unavailable=pp_dpm_fclk_surface_mhz
 fi
 # The launch chain runs from the synced runtime tree alone, and a git
