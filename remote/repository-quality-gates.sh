@@ -140,7 +140,7 @@ gate_cell test-telemetry-broker derive \
     'remote/test-telemetry-broker.sh remote/telemetry-broker.c remote/build-telemetry-broker.sh remote/validate-clock-sidecar.py' \
     remote/test-telemetry-broker.sh
 gate_cell test-build-cache-keys derive \
-    'remote/test-build-cache-keys.sh remote/build-cache-keys.sh' \
+    'remote/test-build-cache-keys.sh remote/build-cache-keys.sh remote/build-llama-preset.sh' \
     remote/test-build-cache-keys.sh
 gate_cell test-summarize-perf-logger-slice derive \
     remote/test-summarize-perf-logger-slice.py \
