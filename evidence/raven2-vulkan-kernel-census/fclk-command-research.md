@@ -319,8 +319,9 @@ verbatim firmware content.
 
 **`manual` level 3 holds 933.** The driver's request is a hard minimum and a
 soft maximum both at 1067 MHz, in-table and accepted without error. The
-firmware answers `GetFclkFrequency` with 933 anyway. Two accounts remain open
-and this file separates them rather than choosing.
+firmware answers `GetFclkFrequency` with 933 anyway. Two accounts were open
+at first reading; route 2's run (`dpm-authority/20260902T2048Z-fclk-rescind/`,
+see "Results: route 2" below) settles between them.
 
 The first is a firmware refusal: SMU10 PMFW treats 1067 as reachable
 opportunistically under its own DF arbitration but declines to hold it as a
@@ -356,10 +357,17 @@ The manual write leaves that cache stale, so the next display clock request
 carrying a lower value passes the inequality and re-sends a lower hard minimum,
 silently rescinding the pin while the soft maximum of 1067 survives. This
 account predicts an interval of held 1067 between the write and the first
-display request. The retained sampler cannot see that interval: its first row
-already reads 933, and the elapsed time between the `pp_dpm_mclk` write and
-that row is not recorded in the run. The account is therefore untested rather
-than refuted, and a sampler started before the write settles it.
+display request.
+
+Route 2's run supplies the sampler this section originally lacked, positioned
+before the write rather than after it: `dpm-authority/20260902T2048Z-fclk-rescind/`
+starts sampling roughly eighteen seconds ahead of the `pp_dpm_mclk` level-3
+write and reads all 54 samples in the following two seconds at 933 MHz, with
+no interval above it anywhere in the record. The rescind account requires a
+delivered 1067 MHz for the cache to later revert away from; none appears. The
+account is refuted rather than merely untested, and firmware refusal of the
+1067 MHz hard minimum stands as the sole surviving explanation for `manual`
+level 3's 933 MHz readback.
 
 The 1067 excursions the run does carry order with neither account. Rows 15 to
 17 and 32 to 33 read 1067 at `gpu_busy_percent` of 8 to 22, and rows 135 and
@@ -398,11 +406,11 @@ FCLK tracks the memory clock on this part.
 
 | # | route | intervention | reversibility | verdict |
 | --- | --- | --- | --- | --- |
-| 1 | `manual` with both bounds at level 3 | one sysfs write, already made | immediate | exhausted: the driver already sends both |
-| 2 | a sampler started before the write | one harness change, sysfs only | immediate | diagnostic rather than a lever: it decides which of routes 1 and 5 the defect belongs to |
+| 1 | `manual` with both bounds at level 3 | one sysfs write, already made | immediate | exhausted: the driver already sends both, and the firmware refuses the 1067 hard minimum -- resolved by route 2, not merely untested |
+| 2 | a sampler started before the write | one harness change, sysfs only | immediate | run: `dpm-authority/20260902T2048Z-fclk-rescind/`, all 54 post-write samples at 933, no held-1067 interval -- settles route 1 to firmware refusal |
 | 3 | `ppfeaturemask` module parameter | module reload or reboot | reboot | empty: no bit reaches FCLK on this backend |
 | 4 | `pp_od_clk_voltage` fine grain | one sysfs write | immediate | empty: the smu10 OD surface is GFXCLK only |
-| 5 | kernel patch replacing the 1200 constant | build, install, reboot | reboot to the packaged kernel | the registered falsifier, and the only clean route |
+| 5 | kernel patch replacing the 1200 constant | build, install, reboot | reboot to the packaged kernel | narrowed: its hard-minimum half inherits the same firmware refusal route 2 found, so it reduces to route 1's soft-maximum-only form under `high`/`profile_peak`'s GFXCLK pin |
 | 6 | `ryzen_smu` raw mailbox | load an out-of-tree driver | unload, but the SMU state persists | unsound: undocumented namespace, unarbitrated |
 | 7 | BIOS or DIMM change | firmware setting or hardware swap | hardware | empty: the table is firmware-reported and the DIMMs are 2133 parts |
 
@@ -422,6 +430,11 @@ strictly weaker because `low` would then resolve to a lower entry. Readback:
 the starred `pp_dpm_mclk` line, which is `PPSMC_MSG_GetFclkFrequency` compared
 against the table. Falsifier already met: 933 MHz on 105 of 107 busy rows.
 
+Route 2, below, resolves the open question this route left standing: whether
+the 933 MHz readback is the firmware's own refusal of the hard minimum, or a
+driver-side rescind of a floor it briefly held. It is the former. See
+"Results: route 2" below.
+
 ### Route 2 -- sample the fabric clock across the write
 
 The one experiment that separates the firmware-refusal account from the
@@ -434,6 +447,14 @@ immediately after the write that later decays to 933 supports the rescind
 account and makes `f_actual_hard_min_freq` the defect; a first post-write
 sample already at 933 supports the firmware-refusal account and makes route 5
 the only remaining lever.
+
+**Run and outcome:** `dpm-authority/20260902T2048Z-fclk-rescind/`, sampler
+already running before the write. All 54 samples in the two seconds
+following the `pp_dpm_mclk` level-3 write read 933 MHz, with no interval of a
+held 1067 MHz anywhere in the record. The falsifier's second branch is met:
+firmware refusal, not driver rescind. See "Results: route 2" below for the
+full run, including the same-session `auto` arms and a follow-up sysfs-only
+idle probe that bounds which fabric requests the firmware honors.
 
 ### Route 3 -- `ppfeaturemask`
 
@@ -503,6 +524,27 @@ confirms the unsatisfiable-request mechanism; a patched `high` still falling
 to 400 or holding 933 moves the mechanism to the package-power layer and
 retires the constant as the explanation.
 
+Route 2's outcome narrows what this route can deliver even if it lands.
+Replacing the 1200 constant with the table's own top entry changes only the
+*hard-minimum* value `high` and `profile_peak` request, from an out-of-table
+1200 to an in-table 1067 -- exactly the request `manual` level 3 already
+makes and the firmware already refuses down to 933. The patch's soft-maximum
+half is the only part route 2 leaves untested for these two levels: it would
+still ask for 1067 as a ceiling, the same request `auto`'s own soft maximum
+already makes successfully. A patched `high` therefore reduces, on the
+mechanism route 2 establishes, to `auto`'s satisfiable soft-maximum request
+layered under a GFXCLK pin the firmware does not extend to the fabric floor
+-- the expected outcome is not a held 1067 but the same intermittent
+selection A1 showed under plain `auto` (117 of 232 busy samples), now with
+the graphics clock pinned throughout rather than free to move with `auto`'s
+own arbitration. That expected outcome is a hypothesis the sysfs write
+`echo "2 3" | sudo tee pp_dpm_mclk` under `manual` already lets a probe test
+without a build: hard minimum at level 2 (933), soft maximum at level 3
+(1067), sclk pinned separately at level 2. The kernel patch is no longer the
+only way to test the soft-maximum question; it remains the only way to hold
+GFXCLK at 1100 under `high`/`profile_peak` specifically rather than under
+`manual`.
+
 ### Route 6 -- `ryzen_smu`
 
 `$HOME/src/ryzen_smu` on the appliance is at `d298366`, is built
@@ -553,28 +595,96 @@ clock. Neither half is established. Readback, were the modules swapped:
 fixed in firmware rather than memory-derived, which would also retire the
 origin story for the 1200 constant.
 
+## Results: route 2, `20260902T2048Z-fclk-rescind`
+
+Route 2 ran in the mirrored auto/manual/manual/auto shape this file
+registered, with one deviation from the plan: the appliance's `llama-server`
+was resident on the device throughout rather than torn down, so the four
+`tok_s` figures the bench arms produced (A1 `auto` 5.61, M1 `manual` 6.62, M2
+`manual` 6.23, A2 `auto` 6.17) measure a shared device and carry no
+throughput claim. The clock samples are unaffected by that sharing, because
+`freq1_input` and the starred `pp_dpm_mclk` line report the physical clock
+state independent of which process is decoding. The full run is retained at
+`dpm-authority/20260902T2048Z-fclk-rescind/` and narrated in
+`dpm-authority/README.md`'s Experiment 6.
+
+**The write-boundary question, the reason this route exists, is settled.**
+The sampler was already running before the `pp_dpm_mclk` level-3 write
+(`marks.tsv`: `mclk3_write` at `1788382135458832428`, roughly eighteen
+seconds after the first bench window started). All 54 samples in the two
+seconds following the write read the starred `pp_dpm_mclk` line at 933 MHz;
+none reads 1067. A driver-side rescind through `f_actual_hard_min_freq` going
+stale requires an interval of a delivered 1067 MHz for that cache to later
+revert away from, and no such interval is anywhere in the record the sampler
+was positioned to catch from before the write. The rescind account is
+refuted; firmware refusal of the 1067 MHz hard minimum stands as the sole
+surviving explanation, and route 1 above is resolved rather than merely
+exhausted.
+
+**The mirrored session settles the second question too: which half of the
+request the firmware refuses.** Under `auto`, the firmware's own soft-maximum
+arbitration selects 1067 MHz on 117 of 232 busy samples in arm A1 and 9 of
+270 in arm A2 -- wide session-to-session spread, but a nonzero rate in both.
+Under `manual` level 3, which asks for 1067 as *both* the hard minimum and
+the soft maximum, arm M1 reads 1067 on 3 of 282 busy samples and arm M2 on 2
+of 254 -- reduced to nearly the noise floor next to `auto`'s own selection
+rate, with `freq1_input` pinned at 1100 MHz steady throughout both manual
+arms (against 400 to 1100 MHz moving in both auto arms). The soft-maximum
+half of `manual`'s request is not what suppresses the excursions -- `auto`'s
+own soft maximum, an unforced 1067 MHz ceiling, coexists with a firmware that
+still reaches 1067 under load. What differs is the hard minimum: `auto`
+leaves it low and the DF arbitrates freely up to the ceiling; `manual` pins
+it at 1067 and the firmware answers with 933 almost throughout regardless.
+This is the premise route 5's patch already rested on, now measured directly
+in one session rather than inferred from source alone.
+
+**A follow-up sysfs-only probe, at idle with the server resident, bounds
+which fabric requests the firmware honors at all.** Under `manual` with
+`pp_dpm_sclk` level 2: writing hard-minimum-and-soft-maximum level 3 (1067)
+reads back 933, repeatably, at idle, with no transient above it recorded even
+four seconds later. Writing level 1 (400 MHz) reads back `1: 400Mhz` --
+honored exactly, at idle, where 1067 is not. Writing the range `2 3` (hard
+minimum 933, soft maximum 1067, `amdgpu_read_mask`'s multi-token form) also
+reads back 933 at idle. The firmware honors a manual hard minimum at 400 MHz
+and at 933 MHz and caps a 1067 MHz hard-minimum request at 933 MHz, in every
+phrasing tried, while it accepts a 1067 MHz soft maximum and reaches that
+state on its own under load without ever being asked to hold it. 1067 MHz is
+a DPM-internal state this firmware selects for itself; it is not a state any
+sysfs write on this platform commands.
+
 ## The next experiment
 
-Run route 2 before anything else, as a single sysfs-only arm on `qwen-laptop`
-with the appliance torn down: start the 50 ms fabric sampler, let it record
-twenty rows of the `auto` idle state, issue `manual` plus `pp_dpm_sclk` 2 plus
-`pp_dpm_mclk` 3 with the write's timestamp on the sampler's own clock, sample
-thirty seconds of idle, then run one `llama-bench tg32` decode, then return to
-`auto` and sample twenty more rows -- and then run the same shape mirrored as
-auto, manual-3, manual-3, auto under one load state so the `auto` arm that
-reaches 1067 and the `manual` arm that holds 933 finally meet in one session
-rather than in separate runs minutes and hours apart. That single run answers
-both open questions at zero risk: a held 1067 immediately after the write that
-decays to 933 names `f_actual_hard_min_freq`'s stale cache as the defect and
-makes the fix a three-line driver change rather than a constant replacement,
-while a first post-write sample already at 933 leaves the firmware as the
-authority and makes route 5 the only lever left; and an `auto` arm sustaining
-1067 where `manual` level 3 does not confirms that the hard-minimum message
-rather than the soft maximum is what the firmware is refusing, which is
-exactly the premise route 5's patch rests on. Until that run exists, the
-campaign's operating point stays where `dpm-authority/README.md` puts it --
-`manual`, GFXCLK at 1100 MHz, FCLK at 933 MHz -- because every alternative
-measured so far is slower and the one untried alternative is a reboot.
+Route 2 leaves one clean experiment rather than the two it opened with. The
+mirrored session above measured `auto`'s own soft-maximum selection rate
+(about 50% of busy samples in A1) with GFXCLK free to move; it has not
+measured that same firmware arbitration with GFXCLK pinned at 1100 MHz, which
+is the configuration `manual`'s hard-minimum pin currently prevents by
+forcing 933 as a floor. The remaining test is `manual` with `pp_dpm_sclk`
+level 2 and `pp_dpm_mclk` range `2 3` (hard minimum 933, soft maximum 1067)
+under a real decode load, in a teardown window with no resident server,
+50 ms fabric sampling through the window: how often the firmware selects
+1067 with the graphics clock held at 1100, read against `auto`'s own 50% in
+A1. This is the sysfs write route 5's patch would reduce to on its
+soft-maximum half (see route 5 above), so it settles what a kernel patch
+would buy before any build is attempted -- if the range write under load
+already selects 1067 as often as `auto` does, route 5 has nothing left to
+contribute; if it selects markedly less often than `auto`, GFXCLK pinning is
+itself suppressing the fabric excursions and route 5's patch would inherit
+that suppression rather than removing it.
+
+For E4 and the calibration campaigns, route 2's idle probe sets the operating
+contract rather than leaving it implicit: GFXCLK at 1100 MHz, fabric hard
+minimum at 933 MHz, with `pp_dpm_mclk` level 2 written explicitly rather than
+left unwritten. A state the firmware selects on its own -- the 1067 MHz
+excursions under `auto`, or under any hard minimum below it -- cannot be held
+equal across arms, so the campaign's held state is the one the firmware
+proved it honors on request: 933 MHz, written, not 1067 MHz, offered.
+
+Until the range-write-under-load probe exists, the campaign's operating
+point stays where `dpm-authority/README.md` puts it -- `manual`, GFXCLK at
+1100 MHz, FCLK at 933 MHz -- because every alternative measured so far is
+slower or unheld, and the one clean alternative left is a sysfs probe rather
+than a reboot.
 
 ## Sources
 

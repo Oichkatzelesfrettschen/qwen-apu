@@ -300,3 +300,91 @@ Two questions this run leaves open:
   fabric-clock floor `manual` delivers; it does not compare a production
   denominator under either policy, which is unmeasured work the design note
   also registers.
+
+## Experiment 6: `20260902T2048Z-fclk-rescind`, route 2 of `fclk-command-research.md`
+
+`fclk-command-research.md` registered two open accounts for why `manual`'s
+`pp_dpm_mclk` level-3 write holds 933 MHz rather than the 1067 MHz it
+requests: a firmware refusal of the hard minimum, or a driver-side rescind
+through `f_actual_hard_min_freq` going stale. Route 2 of that file's ranking
+is the experiment that separates them -- sample the fabric clock across the
+write itself, at 50 ms resolution, before any decode starts. This directory
+retains that run's raw output as `20260902T2048Z-fclk-rescind/{marks.tsv,
+samples.tsv,A1-auto.bench,A2-auto.bench,M1-manual3.bench,M2-manual3.bench}`,
+sanitized of hostname, path, and MAC content.
+
+**Caveat, stated first.** This run executed while the appliance's
+`llama-server` was resident on the 2048 MiB carve-out, so the bench's own
+2B decode competed with that process for the one device rather than running
+alone. The four `tok_s` figures --A1 `auto` 5.61, M1 `manual` 6.62, M2
+`manual` 6.23, A2 `auto` 6.17-- measure a shared device and carry no
+throughput claim; they are retained for completeness and read against
+nothing in this directory's own denominators. The clock samples are
+unaffected by that sharing: `freq1_input` and the starred `pp_dpm_mclk` line
+report the physical clock state regardless of which process is decoding, so
+the timing and level facts below stand on their own.
+
+**The write-boundary question is settled.** `marks.tsv` places `mclk3_write`
+at monotonic time `1788382135458832428`, with the sampler already running
+before it (`A1-auto bench_start` precedes the write by about 18 seconds).
+All 54 samples in `samples.tsv` inside the two seconds following the write
+read the starred `pp_dpm_mclk` line at 933 MHz, with no row above it. A
+driver-side rescind account needs an interval of a *delivered* 1067 MHz that
+a later, staler write then withdraws; no such interval exists in the record
+the sampler was already positioned to catch. This refutes the rescind
+account and leaves firmware refusal of the 1067 MHz hard minimum as the
+standing explanation -- the same conclusion route 2's falsifier in
+`fclk-command-research.md` named for a first post-write sample already at
+933.
+
+**The auto arms show the firmware choosing 1067 on its own, under load,
+where the manual write cannot compel it.** Restricting to samples at
+`gpu_busy_percent >= 50` inside each bench window: arm A1 (`auto`) reads the
+starred `pp_dpm_mclk` line at 1067 MHz on 117 of 232 busy samples (about
+50%), and arm A2 (`auto`) on 9 of 270 (about 3%). Both arms ran under the
+same `auto` governor setting minutes apart in one session, so the wide
+spread between them is itself a finding about how unstable the firmware's
+own arbitration is, not a fixed duty cycle. `freq1_input` in both auto arms
+ranges from 400 to 1100 MHz across the window rather than holding steady, so
+the graphics clock is not pinned during either arm.
+
+**The manual arms hold 933 MHz almost throughout, with the graphics clock
+pinned.** Arm M1 (`manual`, `pp_dpm_sclk` 2, `pp_dpm_mclk` 3) reads the
+starred fabric line at 933 MHz on 279 of 282 busy samples; arm M2 reads it
+on 252 of 254. `freq1_input` in both manual arms reads 1100 MHz on every
+sampled row across the whole window, busy and idle alike -- the graphics
+clock the `manual` write pins holds without exception here, which the two
+`auto` arms do not.
+
+| arm | level | tok_s (device shared, not a rate claim) | freq1_input | starred FCLK, busy rows | files |
+| --- | --- | ---: | --- | --- | --- |
+| A1 | auto | 5.61 ± 0.71 | 400 to 1100 MHz | 1067 MHz x117 of 232 | `20260902T2048Z-fclk-rescind/A1-auto.bench` |
+| M1 | manual s2/m3 | 6.62 ± 0.06 | 1100 MHz steady | 933 MHz x279 of 282 | `20260902T2048Z-fclk-rescind/M1-manual3.bench` |
+| M2 | manual s2/m3 | 6.23 ± 0.45 | 1100 MHz steady | 933 MHz x252 of 254 | `20260902T2048Z-fclk-rescind/M2-manual3.bench` |
+| A2 | auto | 6.17 ± 0.65 | 400 to 1100 MHz | 1067 MHz x9 of 270 | `20260902T2048Z-fclk-rescind/A2-auto.bench` |
+
+## A second sysfs-only probe, at idle with the server resident
+
+A follow-up probe read `pp_dpm_mclk`'s starred line alone, sysfs writes and
+readbacks with no sampler and no bench, at idle with the appliance's
+`llama-server` still resident. Under `manual` with `pp_dpm_sclk` level 2, the
+starred fabric level read `2: 933Mhz` before any fabric write. Writing `3`
+once left it at 933; writing `3` a second time left it at 933; four seconds
+later it still read 933. Writing `1` -- the table's 400 MHz step -- produced
+`1: 400Mhz`, so the hard minimum at 400 MHz is honored and delivered at idle
+in a way the 933 and 1067 requests are not. Writing `3` again returned to
+933, and writing the range `2 3` (a hard minimum of 933, a soft maximum of
+1067 through `amdgpu_read_mask`'s multi-token form) also read back 933 at
+idle.
+
+**Conclusion.** The firmware honors a manual fabric hard minimum at 400 MHz
+and at 933 MHz, and it caps a hard-minimum request of 1067 MHz at 933 MHz,
+while it accepts a soft maximum of 1067 MHz and selects that state on its own
+under load (the A1/A2 excursions above). 1067 MHz is a DPM-internal state
+this firmware chooses for itself rather than a state any sysfs write
+commands. The asymmetry is exact: a request at or below 933 lands where
+requested, and a request above it lands at 933 regardless of how it is
+phrased, single index or range.
+
+See `fclk-command-research.md` for the revised route ranking this run and
+the idle probe together produce.

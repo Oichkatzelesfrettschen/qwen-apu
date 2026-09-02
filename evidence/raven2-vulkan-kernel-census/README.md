@@ -1043,6 +1043,28 @@ regime this much lower, and the served A/B still refuses at launch on an
 empty `candidate_series` selection the harness reads as a manifest error
 rather than as the empty set.
 
+`20260902T2011Z/` retains the eighth calibration on head 239af705, the first
+under a commanded engine clock (`sclk_level=2`, 1100 MHz, mclk floor 933 MHz)
+in place of the regime precondition: twenty-two of twenty-six arms complete,
+three failing on `clock_invariant`'s mclk floor and one on `clock_sidecar`'s
+`window_lost` bound, the sidecar and compile controls `incomplete` on the
+same failures and the collect control `unresolved` at a mean of +0.0294
+across four clean `1100/1100` pairs. Every cooldown times out
+(`cooldown_timeouts=26`) because the quiescence predicate wants a clock step
+below the regime's highest and the manual policy pins the highest, and the
+sibling E1 ISA dump at 20260902T2039Z reproduces the same 28-module set the
+20260902T1312Z dump recorded.
+
+`e4/served-ab-20260902T2032Z/` retains the first E4 served A/B to complete
+against a production control, comparing the pinned production `llama-server`
+(`5dd86b90...`) against the E4 candidate build (`7d9df19f...`) over four
+`C K` pairs under the same manual 1100/933 clock: `served_ab=unresolved` at a
+mean delta of +0.0150 (sd 0.0426, ci [-0.0529, +0.0828]), an interval wide
+enough to contain the design's registered +3.5% to +4.2% band without
+excluding zero, so the run neither confirms nor refutes the Q4_K
+activation-group-sums prediction and a higher replicate count or an
+identified scatter source is what would separate them.
+
 ## Order and falsifiers
 
 Runs go 2B, then 0.8B, then 4B. The 2B validates the instrument, the 0.8B

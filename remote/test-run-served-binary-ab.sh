@@ -692,6 +692,13 @@ chmod +x "$run_directory/validate-clock-sidecar.py"
 cat >"$run_directory/await-quiescence.sh" <<'FAKE_QUIESCENCE'
 #!/bin/sh
 set -eu
+# The stub records its own argv, so a case reads which cooldown flags the
+# campaign passed. A stub that printed a verdict alone would leave
+# --sclk-forced unobservable, and that flag is what keeps a cooldown under a
+# forced clock policy from running to its deadline.
+if [ -n "${QWEN_TEST_QUIESCENCE_ARGV:-}" ]; then
+    printf '%s\n' "$*" >>"$QWEN_TEST_QUIESCENCE_ARGV"
+fi
 printf 'quiescence=reached elapsed_ms=12 llama_server=absent gpu_busy=0\n'
 FAKE_QUIESCENCE
 chmod +x "$run_directory/await-quiescence.sh"
@@ -829,6 +836,7 @@ run_ab() {
     ab_output=$temporary_directory/out-$run_index
     ab_drm=$fixture_drm
     ab_sudo_log=$temporary_directory/sudo-$ab_case.log
+    ab_quiescence_argv=$temporary_directory/quiescence-argv-$ab_case.log
     if [ "$ab_engine_clock_policy" != auto ]; then
         ab_drm=$temporary_directory/drm-$ab_case
         cp -R -- "$fixture_drm" "$ab_drm"
@@ -854,6 +862,7 @@ run_ab() {
         QWEN_TEST_AB_VIOLATED="$ab_violated_arms" \
         QWEN_TEST_AB_CLOCK_SOURCE="$ab_clock_source" \
         QWEN_TEST_SUDO_LOG="$ab_sudo_log" \
+        QWEN_TEST_QUIESCENCE_ARGV="$ab_quiescence_argv" \
         QWEN_CENSUS_ENGINE_CLOCK_POLICY="$ab_engine_clock_policy" \
         QWEN_CENSUS_MCLK_LEVEL="$ab_mclk_level" \
         QWEN_TEST_SUDO_MCLK_IGNORE="$ab_mclk_ignore" \
@@ -916,7 +925,26 @@ awk -F'\t' 'NF != 15 { exit 1 }' "$ab_last_output/arms.tsv"
 [ "$(awk -F'\t' 'NR == 3 { print $1, $2, $8, $11, $13 }' "$ab_last_output/arms.tsv")" = '0b W on 800 -' ]
 [ "$(awk -F'\t' 'NR == 4 { print $1, $2, $8, $11, $12 }' "$ab_last_output/arms.tsv")" = '1 C on 800 0.1400' ]
 [ "$(awk -F'\t' 'NR == 4 { print $7, $9, $13 }' "$ab_last_output/arms.tsv")" = '- - +0.0000' ]
-printf 'arms_ledger_columns=accepted\n'
+# The governor policy releases the graphics step on its own, so the position
+# predicate still describes idle, the campaign passes no --sclk-forced, and
+# every cooldown row records the state it ran under.
+if [ ! -s "$ab_quiescence_argv" ]; then
+    printf 'the governor campaign invoked no cooldown poller\n' >&2
+    exit 1
+fi
+if grep -q -- '--sclk-forced' "$ab_quiescence_argv"; then
+    printf 'the governor campaign passed --sclk-forced to the cooldown poller\n' >&2
+    cat "$ab_quiescence_argv" >&2
+    exit 1
+fi
+if ! awk -F'\t' '$3 == "cooldown" && $6 ~ /sclk_forced=0$/ { found = 1 }
+    END { exit found ? 0 : 1 }' "$ab_last_output/wall-clock.tsv"; then
+    printf 'no governor cooldown row records sclk_forced=0\n' >&2
+    sed -n '1,10p' "$ab_last_output/wall-clock.tsv" >&2
+    exit 1
+fi
+printf 'arms_ledger_columns=accepted cooldown_invocations=%s\n' \
+    "$(wc -l <"$ab_quiescence_argv" | tr -d ' ')"
 
 # The precondition is what the campaign opens on, and its outcome is recorded
 # in inputs.tsv rather than derived from the arm list a reader is left to
@@ -1197,6 +1225,25 @@ done
 # alone would leave the fabric clock unbounded and every case above unchanged.
 grep -q '^clock_invariant=held .* required=1100 required_mclk=933$' \
     "$ab_last_output/arms/0a-W/clock-sidecar-verdict.txt"
+# A forced policy pins the graphics step at the highest one pp_dpm_sclk lists
+# and holds it through idle, so the campaign passes --sclk-forced on every
+# cooldown and the wall-clock note carries the state that produced the
+# poller's own verdict.
+if [ ! -s "$ab_quiescence_argv" ]; then
+    printf 'the manual-clock campaign invoked no cooldown poller\n' >&2
+    exit 1
+fi
+if grep -qv -- '--sclk-forced' "$ab_quiescence_argv"; then
+    printf 'a manual-clock cooldown reached the poller without --sclk-forced\n' >&2
+    cat "$ab_quiescence_argv" >&2
+    exit 1
+fi
+if ! awk -F'\t' '$3 == "cooldown" && $6 ~ /sclk_forced=1$/ { found = 1 }
+    END { exit found ? 0 : 1 }' "$ab_last_output/wall-clock.tsv"; then
+    printf 'no manual-clock cooldown row records sclk_forced=1\n' >&2
+    sed -n '1,10p' "$ab_last_output/wall-clock.tsv" >&2
+    exit 1
+fi
 printf 'engine_clock_forced_manual=accepted sclk_level=1 required_sclk_mhz=1100\n'
 
 # The fabric write is recorded rather than required. The appliance took the

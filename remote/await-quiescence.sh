@@ -15,7 +15,15 @@ set -eu
 #     lists, and that selected step has held unchanged since the hold
 #     window began -- a step change restarts the window the way the
 #     temperature derivative does, because the appliance's idle governor
-#     state selects a middle step rather than the lowest listed one
+#     state selects a middle step rather than the lowest listed one.
+#     --sclk-forced drops the position half of that predicate, since a
+#     campaign running under power_dpm_force_performance_level other than
+#     `auto` commands the highest listed step and holds it through idle, so
+#     the position a governor would release reports the policy rather than
+#     the machine's state. The busy floor and the step's own stability
+#     across the hold window carry idle in its place, and the vector reads
+#     sclk_forced=1. An unreadable pp_dpm_sclk still counts as not held
+#     under the flag, the way every other unavailable signal does
 #   - temp1_input's derivative across the hold window is at or below
 #     0.5 degrees Celsius per second in either direction, and its absolute
 #     reading stays below 80 degrees Celsius
@@ -35,7 +43,7 @@ set -eu
 #
 # usage: await-quiescence.sh [--max-seconds N] [--hold-ms N]
 #            [--drm-device DIR] [--hwmon DIR] [--proc-root DIR]
-#            [--latency-log FILE] [--lease FILE]
+#            [--latency-log FILE] [--lease FILE] [--sclk-forced]
 #
 # Exit status: 0 once quiescence is reached, 1 once --max-seconds elapses
 # first, 2 on a usage error. Either outcome prints one line naming which,
@@ -45,7 +53,7 @@ set -eu
 # failing predicate unnamed.
 
 usage() {
-    printf 'usage: %s [--max-seconds N] [--hold-ms N] [--drm-device DIR] [--hwmon DIR] [--proc-root DIR] [--latency-log FILE] [--lease FILE]\n' \
+    printf 'usage: %s [--max-seconds N] [--hold-ms N] [--drm-device DIR] [--hwmon DIR] [--proc-root DIR] [--latency-log FILE] [--lease FILE] [--sclk-forced]\n' \
         "$0" >&2
     exit 2
 }
@@ -66,6 +74,7 @@ hwmon_root=${QWEN_HWMON_ROOT:-/sys/class/hwmon}
 proc_root=/proc
 latency_log=
 lease_file=
+sclk_forced=0
 
 while [ "$#" -gt 0 ]; do
     case $1 in
@@ -103,6 +112,10 @@ while [ "$#" -gt 0 ]; do
             [ "$#" -ge 2 ] || usage
             lease_file=$2
             shift 2
+            ;;
+        --sclk-forced)
+            sclk_forced=1
+            shift
             ;;
         *)
             usage
@@ -284,7 +297,11 @@ while :; do
     sclk_ok=0
     if [ "$sclk_step" != unavailable ] && [ "$sclk_steps" != unavailable ]; then
         highest_step=$((sclk_steps - 1))
-        [ "$sclk_step" -lt "$highest_step" ] && sclk_ok=1
+        if [ "$sclk_forced" -eq 1 ]; then
+            sclk_ok=1
+        elif [ "$sclk_step" -lt "$highest_step" ]; then
+            sclk_ok=1
+        fi
     fi
 
     temp_milli=$(read_temp_millicelsius)
@@ -367,8 +384,8 @@ while :; do
                [ "$sclk_stable_ok" -eq 1 ]; then
                 held_ms=$((tick_ms - streak_start_ms))
                 if [ "$held_ms" -ge "$hold_ms" ]; then
-                    last_vector=$(printf 'hold_ms=%s process=absent gpu_busy_percent=%s gpu_busy_ok=%s sclk_step=%s sclk_steps=%s sclk_ok=%s sclk_stable_ok=%s temp_millicelsius=%s temp_abs_ok=%s temp_rate_c_per_s=%s temp_rate_ok=%s mem_available_kib=%s mem_change_pct=%s mem_ok=%s pswpin=%s pswpin_ok=%s lease_ok=%s latency_ok=%s latency_baseline_us=%s latency_p90_us=%s' \
-                        "$hold_ms" "$gpu_busy" "$gpu_busy_ok" "$sclk_step" "$sclk_steps" "$sclk_ok" "$sclk_stable_ok" \
+                    last_vector=$(printf 'hold_ms=%s process=absent gpu_busy_percent=%s gpu_busy_ok=%s sclk_step=%s sclk_steps=%s sclk_ok=%s sclk_forced=%s sclk_stable_ok=%s temp_millicelsius=%s temp_abs_ok=%s temp_rate_c_per_s=%s temp_rate_ok=%s mem_available_kib=%s mem_change_pct=%s mem_ok=%s pswpin=%s pswpin_ok=%s lease_ok=%s latency_ok=%s latency_baseline_us=%s latency_p90_us=%s' \
+                        "$hold_ms" "$gpu_busy" "$gpu_busy_ok" "$sclk_step" "$sclk_steps" "$sclk_ok" "$sclk_forced" "$sclk_stable_ok" \
                         "$temp_milli" "$temp_abs_ok" "$temp_rate" "$temp_rate_ok" \
                         "$mem_available" "$mem_change_pct" "$mem_change_ok" \
                         "$pswpin_now" "$pswpin_ok" "$lease_ok" "$latency_ok" "$latency_baseline" "$latency_p90")
@@ -381,9 +398,9 @@ while :; do
         fi
     fi
 
-    last_vector=$(printf 'hold_ms=%s process=%s gpu_busy_percent=%s gpu_busy_ok=%s sclk_step=%s sclk_steps=%s sclk_ok=%s sclk_stable_ok=%s temp_millicelsius=%s temp_abs_ok=%s temp_rate_c_per_s=%s temp_rate_ok=%s mem_available_kib=%s mem_change_pct=%s mem_ok=%s pswpin=%s pswpin_ok=%s lease_ok=%s latency_ok=%s latency_baseline_us=%s latency_p90_us=%s' \
+    last_vector=$(printf 'hold_ms=%s process=%s gpu_busy_percent=%s gpu_busy_ok=%s sclk_step=%s sclk_steps=%s sclk_ok=%s sclk_forced=%s sclk_stable_ok=%s temp_millicelsius=%s temp_abs_ok=%s temp_rate_c_per_s=%s temp_rate_ok=%s mem_available_kib=%s mem_change_pct=%s mem_ok=%s pswpin=%s pswpin_ok=%s lease_ok=%s latency_ok=%s latency_baseline_us=%s latency_p90_us=%s' \
         "$hold_ms" "$([ "$process_present" -eq 1 ] && printf present || printf absent)" \
-        "$gpu_busy" "$gpu_busy_ok" "$sclk_step" "$sclk_steps" "$sclk_ok" "$sclk_stable_ok" \
+        "$gpu_busy" "$gpu_busy_ok" "$sclk_step" "$sclk_steps" "$sclk_ok" "$sclk_forced" "$sclk_stable_ok" \
         "$temp_milli" "$temp_abs_ok" "$temp_rate" "$temp_rate_ok" \
         "$mem_available" "$mem_change_pct" "$mem_change_ok" \
         "$pswpin_now" "$pswpin_ok" "$lease_ok" "$latency_ok" "$latency_baseline" "$latency_p90")
