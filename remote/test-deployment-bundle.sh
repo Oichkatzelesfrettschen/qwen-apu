@@ -665,6 +665,19 @@ if [ "$(sha256sum "$outside_directory/sentinel" | cut -d ' ' -f 1)" != "$sentine
     exit 1
 fi
 rm -f "$lock_path"
+: >"$outside_directory/private-leaf"
+chmod 0600 "$outside_directory/private-leaf"
+ln "$outside_directory/private-leaf" "$lock_path"
+if "$activator" bundle-third "$deployment_root" >/dev/null 2>"$work_directory/lock-hardlink.stderr" || \
+    "$resolver" "$deployment_root" >/dev/null 2>&1; then
+    printf 'a hard-linked private leaf at the lock path was accepted\n' >&2
+    exit 1
+fi
+if ! grep -q 'hard links' "$work_directory/lock-hardlink.stderr"; then
+    printf 'the hard-link refusal lost its reason\n' >&2
+    exit 1
+fi
+rm -f "$lock_path"
 mkdir "$lock_path"
 if "$activator" bundle-third "$deployment_root" >/dev/null 2>&1 || \
     "$resolver" "$deployment_root" >/dev/null 2>&1; then
@@ -814,7 +827,7 @@ report suffix_ambiguity_refused accepted
 # bundle with consistent digests is refused at activation.
 diagnostic_manifest=$work_directory/manifest-diagnostic.tsv
 {
-    printf 'instrumentation\tpipeline-census-v1\nbuild_role\tdiagnostic\nserving_eligible\tno\n'
+    printf 'instrumentation\tpipeline-census-v2\nbuild_role\tdiagnostic\nserving_eligible\tno\n'
     cat "$forced_manifest"
 } >"$diagnostic_manifest"
 if "$builder" bundle-diagnostic "$forced_server" "$diagnostic_manifest" \
@@ -823,9 +836,26 @@ if "$builder" bundle-diagnostic "$forced_server" "$diagnostic_manifest" \
     printf 'a diagnostic build assembled into a bundle\n' >&2
     exit 1
 fi
-if ! grep -q 'serving_eligible no (instrumentation pipeline-census-v1)' \
+if ! grep -q 'serving_eligible no (instrumentation pipeline-census-v2)' \
     "$work_directory/diagnostic.stderr"; then
     printf 'the diagnostic refusal lost its declaration\n' >&2
+    exit 1
+fi
+# A manifest carrying serving_eligible twice, yes ahead of no, is refused on
+# cardinality rather than read by its first row.
+duplicate_manifest=$work_directory/manifest-duplicate-eligibility.tsv
+{
+    printf 'serving_eligible\tyes\n'
+    cat "$diagnostic_manifest"
+} >"$duplicate_manifest"
+if "$builder" bundle-duplicate "$forced_server" "$duplicate_manifest" \
+    "$zero_ledger" "$deployment_root" \
+    >/dev/null 2>"$work_directory/duplicate-eligibility.stderr"; then
+    printf 'a manifest with two serving_eligible rows assembled\n' >&2
+    exit 1
+fi
+if ! grep -q 'serving_eligible rows' "$work_directory/duplicate-eligibility.stderr"; then
+    printf 'the duplicate eligibility refusal lost its reason\n' >&2
     exit 1
 fi
 "$activator" bundle-natural "$deployment_root" >/dev/null
