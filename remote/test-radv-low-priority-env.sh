@@ -65,6 +65,36 @@ diagnostic_output=$(GGML_VK_PERF_LOGGER=1 GGML_VK_PIPELINE_STATS=mul_mat \
 printf '%s\n' "$diagnostic_output"
 printf '%s\n' "$diagnostic_output" | grep -Fx \
     'profile=diagnostic serialized=1 max_nodes=32 perf=1 stats=mul_mat radv=shaderstats census=1' >/dev/null
+
+# QWEN_PERF_LOGGER states the logger's frequency as one positive integer, which
+# the diagnostic branch turns into the enable flag and the frequency together.
+perf_logger_output=$(QWEN_PERF_LOGGER=1 QWEN_VULKAN_PROFILE=diagnostic \
+    "$wrapper" sh -c 'printf "perf=%s frequency=%s\n" \
+        "${GGML_VK_PERF_LOGGER-unset}" "${GGML_VK_PERF_LOGGER_FREQUENCY-unset}"')
+printf '%s\n' "$perf_logger_output" | grep -Fx 'perf=1 frequency=1' >/dev/null
+perf_logger_output=$(QWEN_PERF_LOGGER=4 QWEN_VULKAN_PROFILE=diagnostic \
+    "$wrapper" sh -c 'printf "perf=%s frequency=%s\n" \
+        "${GGML_VK_PERF_LOGGER-unset}" "${GGML_VK_PERF_LOGGER_FREQUENCY-unset}"')
+printf '%s\n' "$perf_logger_output" | grep -Fx 'perf=1 frequency=4' >/dev/null
+diagnostic_perf_logger_status=0
+QWEN_PERF_LOGGER=x QWEN_VULKAN_PROFILE=diagnostic "$wrapper" true \
+    >/dev/null 2>/dev/null || diagnostic_perf_logger_status=$?
+if [ "$diagnostic_perf_logger_status" -ne 2 ]; then
+    printf 'RADV environment wrapper accepted a non-integer QWEN_PERF_LOGGER\n' >&2
+    exit 1
+fi
+# A serving profile measures a rate the appliance serves, so it refuses the
+# logger rather than exporting it.
+serving_perf_logger_status=0
+serving_perf_logger_error=$(QWEN_PERF_LOGGER=1 QWEN_VULKAN_PROFILE=low-async \
+    "$wrapper" true 2>&1 >/dev/null) || serving_perf_logger_status=$?
+if [ "$serving_perf_logger_status" -ne 2 ]; then
+    printf 'RADV environment wrapper accepted QWEN_PERF_LOGGER under low-async\n' >&2
+    exit 1
+fi
+printf '%s\n' "$serving_perf_logger_error" | grep -Fx \
+    'QWEN_PERF_LOGGER belongs to the diagnostic profile alone' >/dev/null
+
 serving_census_output=$(GGML_VK_PERF_LOGGER=1 GGML_VK_PIPELINE_CENSUS=stale QWEN_PIPELINE_CENSUS=1 \
     QWEN_VULKAN_PROFILE=low-async "$wrapper" sh -c 'printf "perf=%s census=%s\n" \
         "${GGML_VK_PERF_LOGGER-unset}" "${GGML_VK_PIPELINE_CENSUS-unset}"')

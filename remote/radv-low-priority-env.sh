@@ -35,6 +35,10 @@ requested_perf_logger_concurrent=${GGML_VK_PERF_LOGGER_CONCURRENT:-}
 requested_perf_logger_frequency=${GGML_VK_PERF_LOGGER_FREQUENCY:-}
 requested_memory_logger=${GGML_VK_MEMORY_LOGGER:-}
 requested_radv_debug=${RADV_DEBUG:-}
+# The scrub leaves QWEN_ names alone, so this copy records the perf-logger
+# request for uniformity with the GGML_VK_ names beside it; the value reaches
+# the profile case either way.
+requested_qwen_perf_logger=${QWEN_PERF_LOGGER:-}
 
 unset DISPLAY
 unset WAYLAND_DISPLAY
@@ -93,6 +97,18 @@ export GGML_VK_LOW_PRIORITY=1
 export LLAMA_NO_CPU_FALLBACK=1
 
 vulkan_profile=${QWEN_VULKAN_PROFILE:-low-serialized}
+# A serving profile measures a rate the appliance actually serves, and the perf
+# logger puts a host wait behind every graph, so the two are separate arms. The
+# check names the four serving profiles rather than negating diagnostic, which
+# leaves an unrecognized name to the `unknown Vulkan profile` refusal below.
+case $vulkan_profile in
+    paced-60 | low-serialized | low-async | custom)
+        if [ -n "$requested_qwen_perf_logger" ]; then
+            printf 'QWEN_PERF_LOGGER belongs to the diagnostic profile alone\n' >&2
+            exit 2
+        fi
+        ;;
+esac
 case $vulkan_profile in
     paced-60)
         export GGML_VK_DUTY_CYCLE_PERCENT=60
@@ -111,8 +127,12 @@ case $vulkan_profile in
         # runs behind a barrier and every graph ends in a host wait, which
         # is the shape the pinned perf logger imposes, so the profile fixes
         # serialization and restores the diagnostic variables the serving
-        # profiles scrub. It serves nothing: qwen-webui-control.sh admits
-        # the serving profiles alone, and the census runner is its caller.
+        # profiles scrub. It serves nothing on the LAN:
+        # qwen-webui-control.sh admits it behind an explicit
+        # QWEN_LLAMA_SERVER and a loopback listener, and the census runner
+        # is its other caller. QWEN_PERF_LOGGER states the logger's
+        # frequency as one positive integer and follows the ambient
+        # restores, so a named request overwrites an ambient leftover.
         export GGML_VK_SERIALIZE_SUBMISSIONS=1
         export GGML_VK_MAX_NODES_PER_SUBMIT=32
         [ -n "$requested_pipeline_stats" ] && export GGML_VK_PIPELINE_STATS=$requested_pipeline_stats
@@ -122,6 +142,18 @@ case $vulkan_profile in
         [ -n "$requested_memory_logger" ] && export GGML_VK_MEMORY_LOGGER=$requested_memory_logger
         [ -n "$requested_submit_trace" ] && export GGML_VK_SUBMIT_TRACE=$requested_submit_trace
         [ -n "$requested_radv_debug" ] && export RADV_DEBUG=$requested_radv_debug
+        case $requested_qwen_perf_logger in
+            '') ;;
+            *[!0-9]* | 0*)
+                printf 'QWEN_PERF_LOGGER states a positive decimal frequency: %s\n' \
+                    "$requested_qwen_perf_logger" >&2
+                exit 2
+                ;;
+            *)
+                export GGML_VK_PERF_LOGGER=1
+                export GGML_VK_PERF_LOGGER_FREQUENCY=$requested_qwen_perf_logger
+                ;;
+        esac
         ;;
     custom)
         # The named profiles fix both submission settings together, which makes

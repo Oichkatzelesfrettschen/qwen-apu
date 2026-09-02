@@ -1094,33 +1094,59 @@ remote/run-ctx-checkpoint-sweep.sh LABEL MODEL_ID OUT
 # measured through the served path under the scoreboard's own tuple.
 # evidence/raven2-vulkan-kernel-census/README.md registers the design.
 # The census brackets every vkCmdDispatch with a top-of-pipe timestamp
-# ahead of it and an all-commands timestamp after it, reads the pool with
-# availability rather than a wait where the graph's fence has retired,
-# binds each dispatch to the submission serial allocated at submit, keys
-# each pipeline by the SHA-256 of the module bytes vkCreateShaderModule
-# received, and stamps every graph on CLOCK_MONOTONIC, the clock
+# ahead of it and an all-commands timestamp after it; the bracket is a
+# queue-residency envelope, an upper bound wherever the queue lets
+# neighbours overlap, so the ledger states each pipeline's bracket upper
+# bound, its exclusive time from an endpoint sweep as the lower bound, and
+# the ambiguous overlap, and reads ownership=inconclusive above a mean
+# overlap fraction of 0.05 rather than printing a share. The pool is read
+# with availability rather than a wait where the graph's fence has
+# retired, each dispatch is bound to the submission serial allocated at
+# submit, each pipeline is keyed by the SHA-256 of the module bytes
+# vkCreateShaderModule received (self-tested against known vectors at
+# census open and against sha256sum by test-census-sha256.sh), and every
+# graph is stamped through clock_gettime(CLOCK_MONOTONIC), the clock
 # measure-served-decode.sh retains its request window on. The summarizer
-# selects the timed request's graphs by that window, requires exactly
-# predicted_n - 1 decode graphs, and refuses overflow, an unavailable
-# query, an unbound dispatch, a fallback read, or a waited read outright;
-# an I1 arm completes only where it accepts. The instrument's own host cost
-# sits after fence retirement in readback_ns and emit_ns, which the
-# I0 I1 I1 I0 pair measures. The S arm runs the pinned vk_perf_logger
-# under the diagnostic profile as the serialized identity control, and a
-# 5 ms clock sidecar samples SCLK, MCLK, FCLK, busy, and temperature across
-# every arm on the same clock. A diagnostic build reaches the device through
-# an explicit QWEN_LLAMA_SERVER alone: bundle assembly and activation refuse
-# a manifest whose one serving_eligible row reads no, refuse a manifest
-# carrying that row or instrumentation twice, and the explicit-server launch
-# is the recovery mode the bundle layer leaves alone.
+# selects the timed request's graphs by that window, validates every graph
+# inside it ahead of the phase filter, refuses a graph straddling the
+# window, recomputes every graph aggregate from the dispatch rows, requires
+# exactly predicted_n - 1 decode graphs, and refuses overflow, an
+# unavailable query, an unbound dispatch, a fallback read, or a waited
+# read outright; an I1 arm completes only where it accepts. The
+# instrument's own host cost sits after fence retirement in readback_ns,
+# dispatch_row_emit_ns, and the census_emit row's total_emit_ns.
+# Five states run, every one through measure-served-decode.sh: P is bound
+# to the fixed-64 receipt's server row and its manifest, P-nosidecar is P
+# with the sampler off, I0 and I1 are the census build with collection off
+# and on, and S runs the pinned vk_perf_logger under the diagnostic
+# profile through the launch chain, reading the server.log slice cut at
+# the request window. Three quadruples carry a bound, P-nosidecar P P
+# P-nosidecar, P I0 I0 P, and I0 I1 I1 I0; any other is unclassified, and
+# a refuted control ends the campaign refuted with exit 3 whatever the
+# arms did. The 5 ms sidecar on core 1 at nice 10 is evidence only where
+# validate-clock-sidecar.py accepts its record, and its refusal fails the
+# arm. A diagnostic build reaches the device through an explicit
+# QWEN_LLAMA_SERVER alone: bundle assembly and activation refuse any
+# manifest naming instrumentation, refuse a serving_eligible row reading
+# anything but yes including an empty value, and refuse either row twice;
+# the explicit-server launch is the recovery mode the bundle layer leaves
+# alone.
 remote/prepare-llama-census-source.sh BASE PATCHED llama-vulkan-pipeline-census.patch
 QWEN_LLAMA_CANDIDATE_SELECT=llama-vulkan-pipeline-census.patch \
     remote/build-llama-preset.sh raven2-vulkan-census PATCHED
-QWEN_CENSUS_PRODUCTION_SERVER=P QWEN_CENSUS_INSTRUMENTED_SERVER=I \
-    remote/run-raven2-vulkan-kernel-census.sh MODEL_ID OUT   # P I0 I0 P, I0 I1 I1 I0, S
+QWEN_CENSUS_PRODUCTION_SERVER=P QWEN_CENSUS_PRODUCTION_RECEIPT=identity-check.tsv \
+QWEN_CENSUS_INSTRUMENTED_SERVER=I \
+    remote/run-raven2-vulkan-kernel-census.sh MODEL_ID OUT
+                                # P-nosidecar P P P-nosidecar, P I0 I0 P, I0 I1 I1 I0, S
 remote/summarize-kernel-census.py OUT/arms/NN-I1/pipeline-census.tsv \
     --window-begin-ns B --window-end-ns E --expected-decode-graphs 63
-remote/sample-clock-sidecar.py OUT.tsv --period-ms 5   # DPM state on CLOCK_MONOTONIC
+remote/summarize-census-controls.py OUT/arms.tsv --sidecar-bound 0.0065 \
+    --compile-bound 0.0065 --collect-bound 0.02
+remote/sample-clock-sidecar.py OUT.tsv --period-ms 5 --cpu 1 --nice 10
+remote/validate-clock-sidecar.py OUT.tsv --sidecar-status 0 --period-ms 5 \
+    --period-tolerance 0.25 --cost-bound-ns 1000000
+remote/summarize-perf-logger-slice.py OUT/arms/NN-S/server-log-request.slice \
+    --expected-min-blocks 63
 
 # Deployment bundles: the server, its manifest, the checkpoint ledger, and
 # the presets generated against that ledger as one activated unit.
@@ -1222,6 +1248,9 @@ remote/test-fetch-candidate-artifact.sh
 remote/test-run-graph-alias-ab.sh
 remote/test-run-ctx-checkpoint-sweep.sh
 python3 remote/test-summarize-kernel-census.py
+python3 remote/test-census-controls.py
+python3 remote/test-sample-clock-sidecar.py
+remote/test-census-sha256.sh
 remote/verify-llama-patch-series.sh
 QWEN_LLAMA_CANDIDATE_PATCHES=1 remote/verify-llama-patch-series.sh
 GGUF_PY_PATH=~/src/llama.cpp-qwen-apu/gguf-py \

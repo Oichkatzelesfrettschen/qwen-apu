@@ -80,7 +80,19 @@ if [ "$named_rows" -ne 1 ]; then
 fi
 # A diagnostic build names its instrumentation and declares itself unfit to
 # serve; the bundle is the unit an activation makes the appliance's server,
-# so the declaration is honored here rather than trusted to an operator.
+# so the declaration is honored here rather than trusted to an operator. The
+# eligibility grammar admits two shapes and refuses the rest. A manifest
+# carrying zero serving_eligible rows is the legacy shape, admitted only where
+# it also names no instrumentation. A manifest carrying exactly one row is
+# admitted where that row's value is exactly `yes`, so an empty value -- a
+# present declaration stating nothing -- is refused by its own reading rather
+# than by falling through the legacy branch. A second row of either kind is
+# refused on cardinality ahead of both, since a first-row reading of a
+# manifest that declares twice reports one of two answers. An instrumentation
+# row refuses the bundle at whatever eligibility spelling accompanies it, and
+# that refusal precedes the eligibility reading so a diagnostic manifest names
+# the instrumentation that identifies it however its eligibility row is
+# spelled or deleted.
 declaration_rows=$(awk -F'\t' '
     $1 == "serving_eligible" { eligible++ }
     $1 == "instrumentation" { instrumentation++ }
@@ -92,14 +104,21 @@ if [ "$serving_rows" -gt 1 ] || [ "$instrumentation_rows" -gt 1 ]; then
         "$serving_rows" "$instrumentation_rows" "$manifest_path" >&2
     exit 1
 fi
-serving_eligible=$(awk -F'\t' '$1 == "serving_eligible" { print $2; exit }' \
-    "$manifest_path")
-if [ -n "$serving_eligible" ] && [ "$serving_eligible" != yes ]; then
-    printf 'artifact manifest declares serving_eligible %s (instrumentation %s); a bundle carries serving builds alone: %s\n' \
-        "$serving_eligible" \
-        "$(awk -F'\t' '$1 == "instrumentation" { print $2; exit }' "$manifest_path")" \
-        "$manifest_path" >&2
+if [ "$instrumentation_rows" -eq 1 ]; then
+    declared_instrumentation=$(awk -F'\t' \
+        '$1 == "instrumentation" { print $2; exit }' "$manifest_path")
+    printf 'artifact manifest names instrumentation %s; a bundle carries serving builds alone: %s\n' \
+        "${declared_instrumentation:-<empty>}" "$manifest_path" >&2
     exit 1
+fi
+if [ "$serving_rows" -eq 1 ]; then
+    serving_eligible=$(awk -F'\t' '$1 == "serving_eligible" { print $2; exit }' \
+        "$manifest_path")
+    if [ "$serving_eligible" != yes ]; then
+        printf 'artifact manifest declares serving_eligible %s; a bundle carries serving builds alone: %s\n' \
+            "${serving_eligible:-<empty>}" "$manifest_path" >&2
+        exit 1
+    fi
 fi
 
 executable_rows=$(awk -F'\t' -v bytes="$server_bytes" -v digest="$server_sha256" '
