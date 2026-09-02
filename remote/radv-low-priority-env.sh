@@ -29,6 +29,12 @@ requested_max_nodes_per_submit=${GGML_VK_MAX_NODES_PER_SUBMIT:-}
 requested_serialize_submissions=${GGML_VK_SERIALIZE_SUBMISSIONS:-}
 requested_allow_graphics_queue=${GGML_VK_ALLOW_GRAPHICS_QUEUE:-}
 requested_submit_trace=${GGML_VK_SUBMIT_TRACE:-}
+requested_pipeline_stats=${GGML_VK_PIPELINE_STATS:-}
+requested_perf_logger=${GGML_VK_PERF_LOGGER:-}
+requested_perf_logger_concurrent=${GGML_VK_PERF_LOGGER_CONCURRENT:-}
+requested_perf_logger_frequency=${GGML_VK_PERF_LOGGER_FREQUENCY:-}
+requested_memory_logger=${GGML_VK_MEMORY_LOGGER:-}
+requested_radv_debug=${RADV_DEBUG:-}
 
 unset DISPLAY
 unset WAYLAND_DISPLAY
@@ -74,6 +80,7 @@ unset GGML_VK_PERF_LOGGER
 unset GGML_VK_PERF_LOGGER_CONCURRENT
 unset GGML_VK_PERF_LOGGER_FREQUENCY
 unset GGML_VK_PIPELINE_STATS
+unset GGML_VK_PIPELINE_CENSUS
 unset GGML_VK_PREFER_HOST_MEMORY
 unset GGML_VK_SUBALLOCATION_BLOCK_SIZE
 unset GGML_VK_SUBMIT_TRACE
@@ -99,6 +106,23 @@ case $vulkan_profile in
     low-async)
         export GGML_VK_MAX_NODES_PER_SUBMIT=16
         ;;
+    diagnostic)
+        # The serialized attribution arm of the pipeline census: every node
+        # runs behind a barrier and every graph ends in a host wait, which
+        # is the shape the pinned perf logger imposes, so the profile fixes
+        # serialization and restores the diagnostic variables the serving
+        # profiles scrub. It serves nothing: qwen-webui-control.sh admits
+        # the serving profiles alone, and the census runner is its caller.
+        export GGML_VK_SERIALIZE_SUBMISSIONS=1
+        export GGML_VK_MAX_NODES_PER_SUBMIT=32
+        [ -n "$requested_pipeline_stats" ] && export GGML_VK_PIPELINE_STATS=$requested_pipeline_stats
+        [ -n "$requested_perf_logger" ] && export GGML_VK_PERF_LOGGER=$requested_perf_logger
+        [ -n "$requested_perf_logger_concurrent" ] && export GGML_VK_PERF_LOGGER_CONCURRENT=$requested_perf_logger_concurrent
+        [ -n "$requested_perf_logger_frequency" ] && export GGML_VK_PERF_LOGGER_FREQUENCY=$requested_perf_logger_frequency
+        [ -n "$requested_memory_logger" ] && export GGML_VK_MEMORY_LOGGER=$requested_memory_logger
+        [ -n "$requested_submit_trace" ] && export GGML_VK_SUBMIT_TRACE=$requested_submit_trace
+        [ -n "$requested_radv_debug" ] && export RADV_DEBUG=$requested_radv_debug
+        ;;
     custom)
         # The named profiles fix both submission settings together, which makes
         # them useless for measuring either one alone. `custom` restores only
@@ -123,5 +147,12 @@ case $vulkan_profile in
         ;;
 esac
 export QWEN_VULKAN_PROFILE=$vulkan_profile
+# The asynchronous census arm runs under a serving profile's own submission
+# shape, so the collection toggle crosses the scrub under a QWEN_ name and
+# reaches the server as GGML_VK_PIPELINE_CENSUS. Only the census build reads
+# it; the promoted build carries no reader, and that build is never bundled.
+if [ -n "${QWEN_PIPELINE_CENSUS:-}" ]; then
+    export GGML_VK_PIPELINE_CENSUS=$QWEN_PIPELINE_CENSUS
+fi
 
 exec "$@"

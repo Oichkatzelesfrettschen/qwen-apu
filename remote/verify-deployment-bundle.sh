@@ -142,6 +142,13 @@ if [ "$executable_rows" -ne 1 ]; then
     printf 'artifact manifest executable llama-server row does not match the bundled server\n' >&2
     exit 1
 fi
+serving_eligible=$(awk -F'\t' '$1 == "serving_eligible" { print $2; exit }' \
+    "$bundle_directory/artifact-manifest.tsv")
+if [ -n "$serving_eligible" ] && [ "$serving_eligible" != yes ]; then
+    printf 'bundle artifact manifest declares serving_eligible %s; a diagnostic build stays inactive\n' \
+        "$serving_eligible" >&2
+    exit 1
+fi
 recomputed_semantics=$(awk -F'\t' \
     '$1 == "checkpoint_semantics" { count++; value = $2 }
     END { if (count != 1) exit 1; print value }' \

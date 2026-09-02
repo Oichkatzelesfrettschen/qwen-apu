@@ -1,0 +1,524 @@
+diff --git a/ggml/CMakeLists.txt b/ggml/CMakeLists.txt
+index 5f4742a38..78f9f3fb0 100644
+--- a/ggml/CMakeLists.txt
++++ b/ggml/CMakeLists.txt
+@@ -224,6 +224,7 @@ option(GGML_VULKAN                          "ggml: use Vulkan"
+ option(GGML_VULKAN_CHECK_RESULTS            "ggml: run Vulkan op checks"                      OFF)
+ option(GGML_VULKAN_DEBUG                    "ggml: enable Vulkan debug output"                OFF)
+ option(GGML_VULKAN_MEMORY_DEBUG             "ggml: enable Vulkan memory debug output"         OFF)
++option(GGML_VULKAN_PIPELINE_CENSUS          "ggml: compile the Vulkan pipeline census"        OFF)
+ option(GGML_VULKAN_SHADER_DEBUG_INFO        "ggml: enable Vulkan shader debug info"           OFF)
+ option(GGML_VULKAN_VALIDATE                 "ggml: enable Vulkan validation"                  OFF)
+ option(GGML_VULKAN_RUN_TESTS                "ggml: run Vulkan tests"                          OFF)
+diff --git a/ggml/src/ggml-vulkan/CMakeLists.txt b/ggml/src/ggml-vulkan/CMakeLists.txt
+index e733ad5cc..70e4e5fe0 100644
+--- a/ggml/src/ggml-vulkan/CMakeLists.txt
++++ b/ggml/src/ggml-vulkan/CMakeLists.txt
+@@ -133,6 +133,10 @@ if (Vulkan_FOUND)
+         add_compile_definitions(GGML_VULKAN_MEMORY_DEBUG)
+     endif()
+ 
++    if (GGML_VULKAN_PIPELINE_CENSUS)
++        add_compile_definitions(GGML_VULKAN_PIPELINE_CENSUS)
++    endif()
++
+     if (GGML_VULKAN_SHADER_DEBUG_INFO)
+         add_compile_definitions(GGML_VULKAN_SHADER_DEBUG_INFO)
+         list(APPEND VULKAN_SHADER_GEN_CMAKE_ARGS -DGGML_VULKAN_SHADER_DEBUG_INFO=ON)
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index 15075c0fa..6c6ac47c7 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -4,6 +4,10 @@
+ #include "ggml-vulkan-submit-trace.h"
+ #include <vulkan/vulkan_core.h>
+ #include <chrono>
++#ifdef GGML_VULKAN_PIPELINE_CENSUS
++#include <cstdio>
++#include <cinttypes>
++#endif
+ #if defined(GGML_VULKAN_RUN_TESTS) || defined(GGML_VULKAN_CHECK_RESULTS)
+ #include "ggml-cpu.h"
+ #endif
+@@ -241,6 +245,28 @@ struct vk_pipeline_struct {
+     // number of registers used, extracted from pipeline executable properties
+     uint32_t register_count {};
+ 
++#ifdef GGML_VULKAN_PIPELINE_CENSUS
++    // Pipeline census identity: one symbol compiles under several
++    // specialization constants, so the row key carries the SPIR-V digest, the
++    // entry point, the constants, and the subgroup policy beside the name.
++    // The six RADV statistics are stored under their own names and read -1
++    // where the driver reported none of that name or an unexpected format.
++    uint64_t census_spirv_fnv1a64 {};
++    size_t   census_spirv_bytes {};
++    std::string census_entrypoint;
++    std::vector<uint32_t> census_specialization_constants;
++    uint32_t census_required_subgroup_size {};
++    bool     census_require_full_subgroups {};
++    int64_t  census_vgprs {-1};
++    int64_t  census_sgprs {-1};
++    int64_t  census_spilled_vgprs {-1};
++    int64_t  census_lds_size {-1};
++    int64_t  census_scratch_size {-1};
++    int64_t  census_subgroups_per_simd {-1};
++    // 0 until the first dispatch an armed census records
++    uint32_t census_id {};
++#endif
++
+ #if defined(VK_EXT_shader_64bit_indexing)
+     bool is_64b_indexing {};
+ #endif
+@@ -2385,6 +2411,66 @@ class vk_perf_logger {
+     uint32_t print_count {};
+ };
+ 
++#ifdef GGML_VULKAN_PIPELINE_CENSUS
++// One dispatch the census recorded: the query slot its completion timestamp
++// occupies, the pipeline, the graph node it served, and the geometry.
++struct vk_census_dispatch {
++    uint32_t query;
++    vk_pipeline_struct * pipeline;
++    int node_idx;
++    int fused;
++    ggml_op op;
++    char dst_name[GGML_MAX_NAME];
++    char src0_name[GGML_MAX_NAME];
++    ggml_type src0_type;
++    ggml_type src1_type;
++    ggml_type dst_type;
++    int64_t ne[4];
++    int64_t src1_ne1;
++    uint32_t wg[3];
++    uint64_t submit_serial;
++};
++
++// The census keeps one timestamp query pool per backend context, writes one
++// timestamp at graph start and one after every dispatch inside the command
++// buffers the graph already records, and reads the pool where the graph's
++// own fence has retired: in ggml_vk_synchronize after ggml_vk_wait_for_fence
++// on the asynchronous path, at graph end on the serialized path, and at the
++// next graph start as the fallback that names itself. No barrier and no host
++// wait are added, so the intervals are completion-to-completion under the
++// serving profile's own overlap and the summary carries the per-graph union
++// beside the sum. Two host durations are kept apart: record_ns is the time
++// ggml_backend_vk_graph_compute spent recording and submitting, and
++// span_ns runs from graph start to the read, which on the asynchronous path
++// is the synchronize the caller waits in for the logits, so span_ns bounds
++// the token where record_ns bounds only the host's part of it.
++// GGML_VK_PIPELINE_CENSUS names the output file.
++struct vk_pipeline_census {
++    bool enabled {};
++    std::string path;
++    FILE * out {};
++    vk::QueryPool pool;
++    uint32_t capacity {};
++    uint32_t query_idx {};
++    bool armed {};
++    bool overflow {};
++    bool pending {};
++    uint64_t graph_serial {};
++    uint64_t submit_serial {};
++    uint32_t next_pipeline_id {1};
++    int pending_n_nodes {};
++    uint64_t pending_record_ns {};
++    std::chrono::steady_clock::time_point graph_begin;
++    const ggml_tensor * current_node {};
++    int current_node_idx {-1};
++    int current_fused {};
++    std::vector<vk_census_dispatch> dispatches;
++    // Timestamps are valid to the compute queue family's timestampValidBits
++    // and wrap there, so every difference is taken modulo that width.
++    uint64_t timestamp_mask {UINT64_MAX};
++};
++#endif
++
+ struct ggml_backend_vk_context {
+     std::string name;
+ 
+@@ -2455,6 +2541,10 @@ struct ggml_backend_vk_context {
+     std::vector<int> query_node_idx;
+     int32_t num_queries {};
+     int32_t query_idx {};
++
++#ifdef GGML_VULKAN_PIPELINE_CENSUS
++    vk_pipeline_census census;
++#endif
+ };
+ 
+ static void * const vk_ptr_base = (void *)(uintptr_t) 0x1000;  // NOLINT
+@@ -2903,6 +2993,26 @@ static void ggml_vk_create_pipeline_func(vk_device& device, vk_pipeline& pipelin
+     GGML_ASSERT(parameter_count <= MAX_PARAMETER_COUNT);
+     GGML_ASSERT(wg_denoms[0] > 0 && wg_denoms[1] > 0 && wg_denoms[2] > 0); // NOLINT
+ 
++#ifdef GGML_VULKAN_PIPELINE_CENSUS
++    {
++        // FNV-1a over the SPIR-V bytes as compiled: the digest identifies the
++        // module a variant was built from, and the constants beside it
++        // complete the identity of the compiled object.
++        uint64_t digest = 1469598103934665603ULL;
++        const unsigned char * bytes = reinterpret_cast<const unsigned char *>(spv_data);
++        for (size_t i = 0; i < spv_size; i++) {
++            digest ^= bytes[i];
++            digest *= 1099511628211ULL;
++        }
++        pipeline->census_spirv_fnv1a64 = digest;
++        pipeline->census_spirv_bytes = spv_size;
++        pipeline->census_entrypoint = entrypoint;
++        pipeline->census_specialization_constants = specialization_constants;
++        pipeline->census_required_subgroup_size = required_subgroup_size;
++        pipeline->census_require_full_subgroups = require_full_subgroups;
++    }
++#endif
++
+     vk::ShaderModuleCreateInfo shader_module_create_info({}, spv_size, reinterpret_cast<const uint32_t *>(spv_data));
+ 
+     // Patch SPIR-V to enable supported FP16 float controls, avoiding the need
+@@ -3129,6 +3239,34 @@ static void ggml_vk_create_pipeline_func(vk_device& device, vk_pipeline& pipelin
+                 }
+                 std::cerr << std::endl;
+             }
++#ifdef GGML_VULKAN_PIPELINE_CENSUS
++            // RADV reports its resource statistics under these names; the
++            // format is validated before the union member is read, and a
++            // statistic of another format leaves the field at -1.
++            {
++                int64_t * census_field = nullptr;
++                if (strcmp(s.name, "VGPRs") == 0) {
++                    census_field = &pipeline->census_vgprs;
++                } else if (strcmp(s.name, "SGPRs") == 0) {
++                    census_field = &pipeline->census_sgprs;
++                } else if (strcmp(s.name, "Spilled VGPRs") == 0) {
++                    census_field = &pipeline->census_spilled_vgprs;
++                } else if (strcmp(s.name, "LDS size") == 0) {
++                    census_field = &pipeline->census_lds_size;
++                } else if (strcmp(s.name, "Scratch size") == 0) {
++                    census_field = &pipeline->census_scratch_size;
++                } else if (strcmp(s.name, "Subgroups per SIMD") == 0) {
++                    census_field = &pipeline->census_subgroups_per_simd;
++                }
++                if (census_field) {
++                    if (s.format == vk::PipelineExecutableStatisticFormatKHR::eUint64) {
++                        *census_field = (int64_t) s.value.u64;
++                    } else if (s.format == vk::PipelineExecutableStatisticFormatKHR::eInt64) {
++                        *census_field = s.value.i64;
++                    }
++                }
++            }
++#endif
+             // "Register Count" is reported by NVIDIA drivers.
+             if (strcmp(s.name, "Register Count") == 0) {
+                 VK_LOG_DEBUG(pipeline->name << " " << s.name << ": " << s.value.u64 << " registers");
+@@ -3213,6 +3351,216 @@ static vk_command_buffer* ggml_vk_create_cmd_buffer(vk_device& device, vk_comman
+     return &p.cmd_buffers[p.cmd_buffers.size()-1];
+ }
+ 
++#ifdef GGML_VULKAN_PIPELINE_CENSUS
++static vk_context ggml_vk_get_compute_ctx(ggml_backend_vk_context * ctx);
++static std::atomic<uint64_t> vk_census_submit_serial {0};
++static void vk_census_submit_serial_advance() {
++    vk_census_submit_serial.fetch_add(1);
++}
++
++static void ggml_vk_census_init(ggml_backend_vk_context * ctx) {
++    const char * census_path = getenv("GGML_VK_PIPELINE_CENSUS");
++    if (census_path == nullptr) {
++        return;
++    }
++    // The value names the output file, and a bare flag is refused: a census
++    // that wrote to stderr would interleave with the server log and a run
++    // could then claim rows it never retained.
++    if (census_path[0] != '/') {
++        throw std::runtime_error("GGML_VK_PIPELINE_CENSUS names an absolute output path");
++    }
++    FILE * out = fopen(census_path, "a");
++    if (out == nullptr) {
++        throw std::runtime_error(std::string("GGML_VK_PIPELINE_CENSUS output is unwritable: ") + census_path);
++    }
++    ctx->census.enabled = true;
++    ctx->census.path = census_path;
++    ctx->census.out = out;
++    {
++        const auto queue_families = ctx->device->physical_device.getQueueFamilyProperties();
++        const uint32_t family = ctx->device->compute_queue->queue_family_index;
++        uint32_t valid_bits = 64;
++        if (family < queue_families.size()) {
++            valid_bits = queue_families[family].timestampValidBits;
++        }
++        if (valid_bits == 0) {
++            throw std::runtime_error("GGML_VK_PIPELINE_CENSUS: the compute queue family reports no timestamp support");
++        }
++        ctx->census.timestamp_mask = valid_bits >= 64 ? UINT64_MAX : ((1ULL << valid_bits) - 1ULL);
++        fprintf(out, "census_queue\tfamily=%u\ttimestamp_valid_bits=%u\n", family, valid_bits);
++    }
++    fprintf(out, "census_open\tformat=pipeline-census-v1\tdevice=%s\ttimestamp_period_ns=%.6f\tserialize_submissions=%d\tmax_nodes_per_submit=%u\n",
++            ctx->device->name.c_str(), (double) ctx->device->properties.limits.timestampPeriod,
++            ctx->device->serialize_submissions ? 1 : 0, (unsigned) ctx->device->max_nodes_per_submit);
++    fflush(out);
++}
++
++static void ggml_vk_census_emit_pipeline(ggml_backend_vk_context * ctx, vk_pipeline_struct * pipeline) {
++    vk_pipeline_census & census = ctx->census;
++    pipeline->census_id = census.next_pipeline_id++;
++    std::string constants;
++    for (size_t i = 0; i < pipeline->census_specialization_constants.size(); i++) {
++        if (i) {
++            constants += ",";
++        }
++        constants += std::to_string(pipeline->census_specialization_constants[i]);
++    }
++    fprintf(census.out, "census_pipeline\t%u\t%s\t%s\t%016" PRIx64 "\t%zu\t%s\t%u,%u,%u\t%u\t%d\t%" PRId64 "\t%" PRId64 "\t%" PRId64 "\t%" PRId64 "\t%" PRId64 "\t%" PRId64 "\t%u\n",
++            pipeline->census_id, pipeline->name.c_str(), pipeline->census_entrypoint.c_str(),
++            pipeline->census_spirv_fnv1a64, pipeline->census_spirv_bytes,
++            constants.empty() ? "-" : constants.c_str(),
++            pipeline->wg_denoms[0], pipeline->wg_denoms[1], pipeline->wg_denoms[2],
++            pipeline->census_required_subgroup_size, pipeline->census_require_full_subgroups ? 1 : 0,
++            pipeline->census_vgprs, pipeline->census_sgprs, pipeline->census_spilled_vgprs,
++            pipeline->census_lds_size, pipeline->census_scratch_size, pipeline->census_subgroups_per_simd,
++            pipeline->register_count);
++}
++
++// Reads the retired query pool and writes the graph's rows. `read_at` names
++// the synchronization point the read happened at.
++static void ggml_vk_census_read_pending(ggml_backend_vk_context * ctx, const char * read_at) {
++    vk_pipeline_census & census = ctx->census;
++    if (!census.enabled || !census.pending) {
++        return;
++    }
++    census.pending = false;
++    std::vector<uint64_t> timestamps(census.query_idx);
++    if (census.query_idx > 0) {
++        VK_CHECK(ctx->device->device.getQueryPoolResults(census.pool, 0, census.query_idx,
++                    census.query_idx * sizeof(uint64_t), timestamps.data(), sizeof(uint64_t),
++                    vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWait),
++                 "census getQueryPoolResults", ctx->device);
++    }
++    const double period = ctx->device->properties.limits.timestampPeriod;
++    uint64_t sum_ns = 0;
++    for (const vk_census_dispatch & d : census.dispatches) {
++        vk_pipeline_struct * pipeline = d.pipeline;
++        if (pipeline->census_id == 0) {
++            ggml_vk_census_emit_pipeline(ctx, pipeline);
++        }
++        const uint64_t previous = timestamps[d.query - 1];
++        const uint64_t current = timestamps[d.query];
++        const uint64_t gpu_ns = (uint64_t) (((current - previous) & census.timestamp_mask) * period);
++        sum_ns += gpu_ns;
++        fprintf(census.out, "census_dispatch\t%" PRIu64 "\t%u\t%u\t%d\t%d\t%s\t%s\t%s\t%s\t%s\t%s\t%" PRId64 "\t%" PRId64 "\t%" PRId64 "\t%" PRId64 "\t%" PRId64 "\t%u\t%u\t%u\t%" PRIu64 "\t%" PRIu64 "\n",
++                census.graph_serial, d.query, pipeline->census_id, d.node_idx, d.fused,
++                ggml_op_name(d.op), d.dst_name, d.src0_name,
++                ggml_type_name(d.src0_type), d.src1_type == GGML_TYPE_COUNT ? "-" : ggml_type_name(d.src1_type),
++                ggml_type_name(d.dst_type),
++                d.ne[0], d.ne[1], d.ne[2], d.ne[3], d.src1_ne1,
++                d.wg[0], d.wg[1], d.wg[2], gpu_ns, d.submit_serial);
++    }
++    const uint64_t union_ns = census.query_idx > 1
++        ? (uint64_t) (((timestamps[census.query_idx - 1] - timestamps[0]) & census.timestamp_mask) * period) : 0;
++    const uint64_t span_ns = (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(
++        std::chrono::steady_clock::now() - census.graph_begin).count();
++    fprintf(census.out, "census_graph\t%" PRIu64 "\t%d\t%zu\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64 "\t%" PRIu64 "\t%d\t%s\n",
++            census.graph_serial, census.pending_n_nodes, census.dispatches.size(),
++            census.pending_record_ns, span_ns, sum_ns, union_ns, census.overflow ? 1 : 0, read_at);
++    fflush(census.out);
++    census.dispatches.clear();
++}
++
++static void ggml_vk_census_begin_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgraph) {
++    vk_pipeline_census & census = ctx->census;
++    if (!census.enabled) {
++        return;
++    }
++    // A previous graph whose pool was never read at a synchronization point
++    // is read here; the wait this may add is named by the row's read_at.
++    ggml_vk_census_read_pending(ctx, "next_graph");
++    const uint32_t required = (uint32_t) cgraph->n_nodes * 4 + 64;
++    if (census.capacity < required) {
++        if (census.pool) {
++            ctx->device->device.destroyQueryPool(census.pool);
++        }
++        vk::QueryPoolCreateInfo create_info;
++        create_info.queryType = vk::QueryType::eTimestamp;
++        create_info.queryCount = required;
++        census.pool = ctx->device->device.createQueryPool(create_info);
++        census.capacity = required;
++    }
++    ctx->device->device.resetQueryPool(census.pool, 0, census.capacity);
++    census.graph_serial++;
++    census.query_idx = 0;
++    census.overflow = false;
++    census.dispatches.clear();
++    census.current_node = nullptr;
++    census.current_node_idx = -1;
++    census.current_fused = 0;
++    census.graph_begin = std::chrono::steady_clock::now();
++    vk_context compute_ctx = ggml_vk_get_compute_ctx(ctx);
++    compute_ctx->s->buffer->buf.writeTimestamp(vk::PipelineStageFlagBits::eAllCommands, census.pool, census.query_idx++);
++    census.armed = true;
++}
++
++static void ggml_vk_census_end_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgraph) {
++    vk_pipeline_census & census = ctx->census;
++    if (!census.enabled || !census.armed) {
++        return;
++    }
++    census.armed = false;
++    census.pending = true;
++    census.pending_n_nodes = cgraph->n_nodes;
++    census.pending_record_ns = (uint64_t) std::chrono::duration_cast<std::chrono::nanoseconds>(
++        std::chrono::steady_clock::now() - census.graph_begin).count();
++    // The serialized path waited on the fence inside the last submit, so the
++    // pool has retired and the rows are written at graph end.
++    if (ctx->device->serialize_submissions) {
++        ggml_vk_census_read_pending(ctx, "graph_end");
++    }
++}
++
++static void ggml_vk_census_record_dispatch(ggml_backend_vk_context * ctx, vk_context & subctx, vk_pipeline & pipeline, uint32_t wg0, uint32_t wg1, uint32_t wg2) {
++    vk_pipeline_census & census = ctx->census;
++    if (!census.enabled || !census.armed) {
++        return;
++    }
++    if (census.query_idx >= census.capacity) {
++        census.overflow = true;
++        return;
++    }
++    vk_census_dispatch d {};
++    d.query = census.query_idx;
++    d.pipeline = pipeline.get();
++    d.node_idx = census.current_node_idx;
++    d.fused = census.current_fused;
++    d.wg[0] = wg0;
++    d.wg[1] = wg1;
++    d.wg[2] = wg2;
++    d.submit_serial = vk_census_submit_serial.load() + 1;
++    d.src1_type = GGML_TYPE_COUNT;
++    const ggml_tensor * node = census.current_node;
++    if (node) {
++        d.op = node->op;
++        snprintf(d.dst_name, sizeof(d.dst_name), "%s", node->name);
++        d.dst_type = node->type;
++        for (int i = 0; i < 4; i++) {
++            d.ne[i] = node->ne[i];
++        }
++        if (node->src[0]) {
++            snprintf(d.src0_name, sizeof(d.src0_name), "%s", node->src[0]->name);
++            d.src0_type = node->src[0]->type;
++        } else {
++            snprintf(d.src0_name, sizeof(d.src0_name), "-");
++            d.src0_type = node->type;
++        }
++        if (node->src[1]) {
++            d.src1_type = node->src[1]->type;
++            d.src1_ne1 = node->src[1]->ne[1];
++        }
++    } else {
++        d.op = GGML_OP_NONE;
++        snprintf(d.dst_name, sizeof(d.dst_name), "-");
++        snprintf(d.src0_name, sizeof(d.src0_name), "-");
++        d.dst_type = GGML_TYPE_F32;
++        d.src0_type = GGML_TYPE_F32;
++    }
++    subctx->s->buffer->buf.writeTimestamp(vk::PipelineStageFlagBits::eAllCommands, census.pool, census.query_idx++);
++    census.dispatches.push_back(d);
++}
++#endif
++
+ static void ggml_vk_submit(vk_context& ctx, vk::Fence fence) {
+     if (ctx->seqs.empty()) {
+         if (fence) {
+@@ -3221,6 +3569,9 @@ static void ggml_vk_submit(vk_context& ctx, vk::Fence fence) {
+         return;
+     }
+     VK_LOG_DEBUG("ggml_vk_submit(" << ctx << ", " << fence << ")");
++#ifdef GGML_VULKAN_PIPELINE_CENSUS
++    vk_census_submit_serial_advance();
++#endif
+ 
+     std::vector<std::vector<uint64_t>> tl_wait_vals;
+     std::vector<std::vector<uint64_t>> tl_signal_vals;
+@@ -7809,6 +8160,10 @@ static void ggml_vk_init(ggml_backend_vk_context * ctx, size_t idx) {
+         ctx->perf_logger = std::unique_ptr<vk_perf_logger>(new vk_perf_logger());
+     }
+ 
++#ifdef GGML_VULKAN_PIPELINE_CENSUS
++    ggml_vk_census_init(ctx);
++#endif
++
+ #ifdef GGML_VULKAN_CHECK_RESULTS
+     const char* skip_checks = getenv("GGML_VULKAN_SKIP_CHECKS");
+     vk_skip_checks = (skip_checks == NULL ? 0 : atoi(skip_checks));
+@@ -8366,6 +8721,9 @@ static void ggml_vk_dispatch_pipeline(ggml_backend_vk_context* ctx, vk_context&
+     }
+ 
+     subctx->s->buffer->buf.dispatch(wg0, wg1, wg2);
++#ifdef GGML_VULKAN_PIPELINE_CENSUS
++    ggml_vk_census_record_dispatch(ctx, subctx, pipeline, wg0, wg1, wg2);
++#endif
+ }
+ 
+ static void ggml_vk_ctx_end(vk_context& ctx) {
+@@ -16113,6 +16471,20 @@ static void ggml_vk_cleanup(ggml_backend_vk_context * ctx) {
+     ctx->compute_ctx.reset();
+     // wait for any pending command buffers to finish
+     ggml_vk_synchronize(ctx);
++#ifdef GGML_VULKAN_PIPELINE_CENSUS
++    if (ctx->census.enabled) {
++        ggml_vk_census_read_pending(ctx, "cleanup");
++        if (ctx->census.pool) {
++            ctx->device->device.destroyQueryPool(ctx->census.pool);
++            ctx->census.pool = vk::QueryPool();
++        }
++        fprintf(ctx->census.out, "census_close\tgraphs=%" PRIu64 "\tpipelines=%u\n",
++                ctx->census.graph_serial, ctx->census.next_pipeline_id - 1);
++        fclose(ctx->census.out);
++        ctx->census.out = nullptr;
++        ctx->census.enabled = false;
++    }
++#endif
+ 
+     ggml_vk_graph_cleanup(ctx);
+ 
+@@ -16694,6 +17066,9 @@ static void ggml_vk_synchronize(ggml_backend_vk_context * ctx) {
+         }
+         if (!ctx->device->serialize_submissions) {
+             ggml_vk_wait_for_fence(ctx);
++#ifdef GGML_VULKAN_PIPELINE_CENSUS
++            ggml_vk_census_read_pending(ctx, "synchronize");
++#endif
+         }
+         ctx->submit_pending = false;
+         if (cmd_buf) {
+@@ -17329,6 +17704,10 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
+         ggml_vk_sync_buffers(ctx, compute_ctx);
+     }
+ 
++#ifdef GGML_VULKAN_PIPELINE_CENSUS
++    ggml_vk_census_begin_graph(ctx, cgraph);
++#endif
++
+     ctx->prealloc_y_last_pipeline_used = nullptr;
+     ctx->prealloc_y_last_tensor_used = nullptr;
+     ctx->prealloc_y_last_decode_vector_staging = false;
+@@ -17648,6 +18027,11 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
+                       (i + ctx->num_additional_fused_ops >= last_node) ||
+                       (almost_ready && !ctx->almost_ready_fence_pending);
+ 
++#ifdef GGML_VULKAN_PIPELINE_CENSUS
++        ctx->census.current_node = cgraph->nodes[i];
++        ctx->census.current_node_idx = i;
++        ctx->census.current_fused = ctx->num_additional_fused_ops;
++#endif
+         bool enqueued = ggml_vk_build_graph(ctx, cgraph, i, cgraph->nodes[submit_node_idx], submit_node_idx, i + ctx->num_additional_fused_ops >= last_node, almost_ready, submit);
+ 
+         if (vk_perf_logger_enabled && enqueued) {
+@@ -17685,6 +18069,10 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
+ 
+     ctx->last_total_flops = total_flops;
+ 
++#ifdef GGML_VULKAN_PIPELINE_CENSUS
++    ggml_vk_census_end_graph(ctx, cgraph);
++#endif
++
+     if (vk_perf_logger_enabled) {
+         // End the command buffer and submit/wait
+         GGML_ASSERT(!ctx->compute_ctx.expired());

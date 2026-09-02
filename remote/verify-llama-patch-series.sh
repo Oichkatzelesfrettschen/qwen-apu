@@ -116,9 +116,34 @@ printf 'patch_series=accepted commit=%s patch_series_sha256=%s members=%s\n' \
 # a promotion would move into verify_source once its evidence lane closes. The
 # stage's membership comes from remote/llama-patch-series.tsv rather than from
 # a second list here.
-candidate_patch_names=$(read_series_stage candidate)
-# One digest line per file the candidate stage rewrites. Retained evidence
-# quotes the ggml-vulkan.cpp line, so it keeps its format and its position.
+candidate_patch_names=$(read_series_stage candidate | tr '\n' ' ')
+# QWEN_LLAMA_CANDIDATE_SELECT names a subset of the candidate stage, in
+# ledger order, for a build that carries some candidates and not others;
+# every name must be a ledger member.
+if [ -n "${QWEN_LLAMA_CANDIDATE_SELECT:-}" ]; then
+    selected_candidates=''
+    for candidate_name in $candidate_patch_names; do
+        for selected_name in $QWEN_LLAMA_CANDIDATE_SELECT; do
+            if [ "$selected_name" = "$candidate_name" ]; then
+                selected_candidates="$selected_candidates $candidate_name"
+            fi
+        done
+    done
+    for selected_name in $QWEN_LLAMA_CANDIDATE_SELECT; do
+        case " $candidate_patch_names " in
+            *" $selected_name "*) ;;
+            *)
+                printf 'QWEN_LLAMA_CANDIDATE_SELECT names a patch outside the candidate stage: %s\n' \
+                    "$selected_name" >&2
+                exit 1
+                ;;
+        esac
+    done
+    candidate_patch_names=$selected_candidates
+fi
+# One digest line per file the candidate stage rewrites: server-context.cpp
+# first, since retained evidence quotes that line by position, then every
+# ledger path, then every other file the applied candidates touched.
 candidate_digest_paths="tools/server/server-context.cpp"
 if [ "${QWEN_LLAMA_CANDIDATE_PATCHES:-0}" = 1 ]; then
     for candidate_name in $candidate_patch_names; do
@@ -129,11 +154,32 @@ if [ "${QWEN_LLAMA_CANDIDATE_PATCHES:-0}" = 1 ]; then
         git -C "$temporary_directory/llama.cpp" diff --check
         printf 'candidate_patch=%s applies=yes\n' "$candidate_name"
     done
+    for ledger_path in $(printf '%s\n' "$patched_source_rows" | cut -f 2); do
+        case " $candidate_digest_paths " in
+            *" $ledger_path "*) ;;
+            *) candidate_digest_paths="$candidate_digest_paths $ledger_path" ;;
+        esac
+    done
+    for touched_path in $(git -C "$temporary_directory/llama.cpp" diff --name-only); do
+        case " $candidate_digest_paths " in
+            *" $touched_path "*) ;;
+            *) candidate_digest_paths="$candidate_digest_paths $touched_path" ;;
+        esac
+    done
     for candidate_digest_path in $candidate_digest_paths; do
         printf 'candidate_sha256=%s path=%s\n' \
             "$(sha256sum "$temporary_directory/llama.cpp/$candidate_digest_path" | cut -d ' ' -f 1)" \
             "$candidate_digest_path"
     done
+    candidate_identity=''
+    for candidate_name in $candidate_patch_names; do
+        candidate_identity=$candidate_identity$(
+            sha256sum "$patch_directory/$candidate_name" | cut -d ' ' -f 1
+        )
+    done
+    printf 'candidate_series=%s candidate_series_sha256=%s\n' \
+        "$(printf '%s' "$candidate_patch_names" | tr -s ' ' '\n' | sed '/^$/d' | paste -sd,)" \
+        "$(printf '%s' "$candidate_identity" | sha256sum | cut -d ' ' -f 1)"
 else
     printf 'candidate_patches=not_run reason=QWEN_LLAMA_CANDIDATE_PATCHES_unset\n'
 fi
