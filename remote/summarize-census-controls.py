@@ -13,12 +13,23 @@ cost. A control is `accepted` where the whole interval sits inside
 one side -- a cost where every point is below -bound, a speedup where every
 point is above +bound -- and `unresolved` where the interval spans the bound,
 the state `evidence/research-claim-methodology.md` names for a direction whose
-interval still crosses its threshold. Three shapes carry a registered bound
+interval still crosses its threshold. Four shapes carry a registered bound
 and a meaning:
 
     P-nosidecar P P P-nosidecar   sidecar bound   the sampler's own cost
     P I0 I0 P                     compile bound   the instrument compiled in
     I0 I1 I1 I0                   collect bound   collection under the sampler
+    C K K C                       served-ab bound a candidate against a control
+
+The first three carry a two-sided bound, because each names a cost the campaign
+admits in either direction. `C K K C` is the served binary comparison
+run-served-binary-ab.sh drives, and its bound is one-sided about `+bound`,
+since the repository promotes a candidate on a paired gain: the verdict reads
+`promoted` where the whole interval sits above the bound, `refuted` where the
+whole interval sits below it -- a candidate merely no faster than the control
+is refuted the way a slower one is -- and `unresolved` where the interval spans
+it. The delta is the candidate's rate over the control's, so a positive mean is
+the candidate decoding faster.
 
 Any other quadruple that matches the a b c d pattern is printed on its own
 with `verdict=unclassified` and no bound, since `P I1 I1 P` conflates compile
@@ -27,8 +38,10 @@ S arm stays outside the pair parser entirely. A `reused` arm is an arm a
 brick already ran under this run's own input closure, echoed into the ledger
 at its own slot with the rate it measured, so it pairs as a completed arm;
 any other status, or a row without a rate, makes the whole control
-`incomplete`. The runner reads the verdict column by name to decide between
-accepted, refuted, unresolved, state-changed, and failed.
+`incomplete`. Each runner reads the verdict column by name: the census decides
+between accepted, refuted, unresolved, state-changed, and failed, and the
+served comparison between promoted, refuted, unresolved, state-changed, and
+failed.
 
 A pair is judged over the execution state its two arms shared. The runner
 records the modal selected graphics clock of each sampled arm's request window
@@ -50,7 +63,7 @@ against the aggregate; `deltas` lists every paired delta in campaign order and
 same direction as the delta.
 
 usage: summarize-census-controls.py ARMS_TSV --sidecar-bound F
-       --compile-bound F --collect-bound F
+       --compile-bound F --collect-bound F [--served-ab-bound F]
 """
 import argparse
 import math
@@ -62,7 +75,13 @@ REGISTERED = {
     ("P-nosidecar", "P"): "sidecar",
     ("P", "I0"): "compile",
     ("I0", "I1"): "collect",
+    ("C", "K"): "served-ab",
 }
+
+# The controls whose bound is one-sided about +bound rather than two-sided
+# about zero. A served binary comparison asks whether the candidate is faster
+# by more than the promotion bound, which has no admitted band below it.
+ONE_SIDED = frozenset({"served-ab"})
 
 # Two-sided 95% critical values of Student's t, indexed by degrees of freedom,
 # for the replicate counts a campaign admits (n = 2 through 8). The table is
@@ -124,6 +143,20 @@ def interval(deltas):
     return mean, deviation, mean - half_width, mean + half_width
 
 
+def judge_promotion(low, high, bound):
+    """The verdict of one interval against a one-sided promotion bound.
+
+    The bound is a gain the candidate must clear whole, so an interval sitting
+    anywhere below it refutes the promotion whether it names a loss, no change,
+    or a gain the bound does not admit.
+    """
+    if low > bound:
+        return "promoted", f"exceeds bound={bound} gain ci=[{low:+.4f},{high:+.4f}]"
+    if high < bound:
+        return "refuted", f"below bound={bound} ci=[{low:+.4f},{high:+.4f}]"
+    return "unresolved", f"spans bound={bound} ci=[{low:+.4f},{high:+.4f}]"
+
+
 def judge(low, high, bound):
     """The verdict of one interval against one bound, and its own detail."""
     if -bound <= low and high <= bound:
@@ -177,11 +210,15 @@ def main():
     parser.add_argument("--sidecar-bound", type=float, required=True)
     parser.add_argument("--compile-bound", type=float, required=True)
     parser.add_argument("--collect-bound", type=float, required=True)
+    # The served-ab bound carries a default because a census invocation names
+    # no C or K arm and would otherwise have to state a bound it never uses.
+    parser.add_argument("--served-ab-bound", type=float, default=0.05)
     args = parser.parse_args()
     bounds = {
         "sidecar": args.sidecar_bound,
         "compile": args.compile_bound,
         "collect": args.collect_bound,
+        "served-ab": args.served_ab_bound,
     }
     # W is the cold-load warmup and S is the identity arm; neither carries a
     # registered bound, so both stay outside the quadruple walk.
@@ -232,7 +269,10 @@ def main():
                   f"\tcomparable_pairs={len(measured)} of {replicates}")
             continue
         mean, deviation, low, high = interval(measured)
-        verdict, detail = judge(low, high, bound)
+        if control in ONE_SIDED:
+            verdict, detail = judge_promotion(low, high, bound)
+        else:
+            verdict, detail = judge(low, high, bound)
         if len(measured) < replicates:
             excluded = f"comparable_pairs={len(measured)} of {replicates}"
             detail = excluded if detail == "-" else f"{detail} {excluded}"

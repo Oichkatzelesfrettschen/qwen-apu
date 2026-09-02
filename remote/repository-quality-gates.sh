@@ -249,6 +249,9 @@ gate_cell test-run-trace-campaign derive remote/test-run-trace-campaign.sh \
 gate_cell test-run-raven2-vulkan-kernel-census derive \
     remote/test-run-raven2-vulkan-kernel-census.sh \
     remote/test-run-raven2-vulkan-kernel-census.sh
+gate_cell test-run-served-binary-ab derive \
+    remote/test-run-served-binary-ab.sh \
+    remote/test-run-served-binary-ab.sh
 gate_cell test-measurement-harnesses derive remote/test-measurement-harnesses.sh \
     remote/test-measurement-harnesses.sh
 gate_cell test-qwen-session-signals derive remote/test-qwen-session-signals.sh \

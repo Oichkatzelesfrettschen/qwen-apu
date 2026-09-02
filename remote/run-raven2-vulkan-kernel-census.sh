@@ -191,6 +191,11 @@ slice_summarizer=$script_directory/summarize-perf-logger-slice.py
 # gives two paired deltas whose second reverses the first's queue position, so
 # the replicate count is even and each control repeats its own quadruple
 # count/2 times. The t table the summarizer carries covers 2 through 8.
+# The manifest binding, the base-build identity, and the scoreboard receipt
+# rule are shared with run-served-binary-ab.sh, which binds two serving builds
+# the way this runner binds P against I.
+# shellcheck source=census-arm-lib.sh
+. "$script_directory/census-arm-lib.sh"
 census_replicates=${QWEN_CENSUS_REPLICATES:-4}
 case $census_replicates in
     2 | 4 | 6 | 8) ;;
@@ -597,79 +602,6 @@ if [ ! -r "$model_path" ]; then
     exit 2
 fi
 
-# The manifest sits beside a bundled server or one directory above a build
-# tree's bin/, and the executable is bound to it by byte count and digest:
-# the manifest names llama-server in exactly one executable row and that row
-# describes this file, the rule the bundle verifier and the exec guard apply,
-# so a manifest carrying one matching row beside a conflicting one is
-# ambiguous here as it is there.
-manifest_beside() {
-    manifest_candidate=$(dirname -- "$1")/artifact-manifest.tsv
-    if [ ! -r "$manifest_candidate" ]; then
-        manifest_candidate=$(dirname -- "$1")/../artifact-manifest.tsv
-    fi
-    if [ ! -r "$manifest_candidate" ]; then
-        printf 'the %s server carries no artifact manifest beside it or above its bin/: %s\n' \
-            "$2" "$1" >&2
-        exit 2
-    fi
-    printf '%s\n' "$manifest_candidate"
-}
-
-# Prints sha256, bytes, manifest sha256, checkpoint_semantics, and
-# checkpoint_patch_series_sha256 for one server, refusing a manifest that
-# does not describe it or that names checkpoint semantics the checkpoint
-# count cannot run under.
-bind_server() {
-    bound_role=$1
-    bound_server=$2
-    bound_manifest=$3
-    if [ ! -x "$bound_server" ]; then
-        printf 'the %s server must be an executable: %s\n' "$bound_role" "${bound_server:--}" >&2
-        exit 2
-    fi
-    bound_sha256=$(sha256sum "$bound_server" | cut -d ' ' -f 1)
-    bound_bytes=$(wc -c <"$bound_server" | tr -d ' ')
-    if ! awk -F'\t' -v bytes="$bound_bytes" -v digest="$bound_sha256" '
-        $1 == "executable" && $2 == "llama-server" { named++
-            if (NF == 4 && $3 == bytes && $4 == digest) found++ }
-        END { exit (named == 1 && found == 1) ? 0 : 1 }' "$bound_manifest"; then
-        printf 'the %s server is not the one executable llama-server row its manifest carries: %s\n' \
-            "$bound_role" "$bound_server" >&2
-        exit 2
-    fi
-    bound_semantics=$(awk -F'\t' '$1 == "checkpoint_semantics" { count++; value = $2 }
-        END { if (count != 1) exit 1; print value }' "$bound_manifest") || {
-        printf 'the %s manifest holds other than one checkpoint_semantics row\n' "$bound_role" >&2
-        exit 2
-    }
-    if [ "$ctx_checkpoints" -gt 0 ] && [ "$bound_semantics" != natural-boundary-v1 ]; then
-        printf 'the %s server declares checkpoint semantics %s and the registry row runs %s checkpoints; natural-boundary-v1 is required\n' \
-            "$bound_role" "$bound_semantics" "$ctx_checkpoints" >&2
-        exit 2
-    fi
-    bound_series=$(awk -F'\t' '$1 == "checkpoint_patch_series_sha256" { count++; value = $2 }
-        END { if (count != 1) exit 1; print value }' "$bound_manifest") || {
-        printf 'the %s manifest holds other than one checkpoint_patch_series_sha256 row\n' "$bound_role" >&2
-        exit 2
-    }
-    printf '%s\t%s\t%s\t%s\t%s\n' "$bound_sha256" "$bound_bytes" \
-        "$(sha256sum "$bound_manifest" | cut -d ' ' -f 1)" "$bound_semantics" "$bound_series"
-}
-
-# The binding runs in a command substitution, so its status is captured
-# explicitly at the call site and every field is required nonempty before
-# the caller reads it: a refusal inside a here-document substitution ends
-# only the subshell and leaves read filling every field empty, which is how
-# a mismatched instrumented manifest once entered the arm loop.
-require_binding_fields() {
-    if ! printf '%s\n' "$2" | awk -F'\t' 'NF != 5 { exit 1 }
-        { for (i = 1; i <= NF; i++) if ($i == "") exit 1 }'; then
-        printf 'the %s binding printed other than five nonempty fields\n' "$1" >&2
-        exit 2
-    fi
-}
-
 production_sha256=-
 production_bytes=-
 production_manifest=-
@@ -682,13 +614,13 @@ scoreboard_inputs_sha256=-
 scoreboard_registry_sha256=-
 scoreboard_ledger_sha256=-
 if [ "$needs_production" = 1 ]; then
-    production_manifest=$(manifest_beside "$production_server" production)
+    production_manifest=$(census_manifest_beside "$production_server" production)
     set +e
-    production_binding=$(bind_server production "$production_server" "$production_manifest")
+    production_binding=$(census_bind_server production "$production_server" "$production_manifest" "$ctx_checkpoints")
     binding_status=$?
     set -e
     [ "$binding_status" -eq 0 ] || exit "$binding_status"
-    require_binding_fields production "$production_binding"
+    census_require_binding_fields production "$production_binding"
     IFS="$(printf '\t')" read -r production_sha256 production_bytes production_manifest_sha256 \
         production_semantics production_series <<EOF
 $production_binding
@@ -716,81 +648,32 @@ EOF
             "${production_receipt:--}" >&2
         exit 2
     fi
-    if ! awk -F'\t' -v bytes="$production_bytes" -v digest="$production_sha256" '
-        NR == 1 && $0 != "subject\tpath\texpected_bytes\tobserved_bytes\texpected_sha256\tobserved_sha256\tstate" { exit 1 }
-        $1 == "server" { rows++; if ($3 == bytes && $4 == bytes && $5 == digest && $6 == digest && $7 == "accepted") matched++ }
-        END { exit (rows == 1 && matched == 1) ? 0 : 1 }' "$production_receipt"; then
-        printf 'the scoreboard receipt does not carry one accepted server row with the production digest %s and %s bytes: %s\n' \
-            "$production_sha256" "$production_bytes" "$production_receipt" >&2
-        exit 2
-    fi
     production_receipt_sha256=$(sha256sum "$production_receipt" | cut -d ' ' -f 1)
-    # The receipt directory carries the tuple the scoreboard resolved and the
-    # campaign inputs it ran under; both must equal what this run resolves.
-    receipt_directory=$(dirname -- "$production_receipt")
-    scoreboard_models=$receipt_directory/models-resolved.tsv
-    scoreboard_inputs=$receipt_directory/campaign-inputs.tsv
-    for scoreboard_file in "$scoreboard_models" "$scoreboard_inputs"; do
-        if [ ! -r "$scoreboard_file" ]; then
-            printf 'the scoreboard receipt directory carries no readable %s\n' \
-                "$(basename -- "$scoreboard_file")" >&2
-            exit 2
-        fi
-    done
     ledger_sha256=$(awk -F'\t' -v id="$model_id" '$1 == id { print $4 }' "$artifact_ledger")
     ledger_bytes=$(awk -F'\t' -v id="$model_id" '$1 == id { print $3 }' "$artifact_ledger")
     if [ -z "$ledger_sha256" ] || [ -z "$ledger_bytes" ]; then
         printf 'the model artifact ledger resolves no identity for %s\n' "$model_id" >&2
         exit 2
     fi
-    if ! awk -F'\t' -v id="$model_id" -v context="$context" -v batch="$batch" -v ubatch="$ubatch" \
-        -v cache_k="$cache_k" -v cache_v="$cache_v" -v flash="$flash" \
-        -v checkpoints="$ctx_checkpoints" -v min_step="$checkpoint_min_step" \
-        -v bytes="$ledger_bytes" -v digest="$ledger_sha256" '
-        NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
-        $(column["model_id"]) == id { rows++
-            if ($(column["context"]) == context && $(column["batch"]) == batch \
-                && $(column["ubatch"]) == ubatch && $(column["cache_k"]) == cache_k \
-                && $(column["cache_v"]) == cache_v && $(column["flash_attention"]) == flash \
-                && $(column["ctx_checkpoints"]) == checkpoints \
-                && $(column["checkpoint_min_step"]) == min_step \
-                && $(column["model_bytes"]) == bytes && $(column["model_sha256"]) == digest \
-                && $(column["publisher_sha256"]) == digest) matched++ }
-        END { exit (rows == 1 && matched == 1) ? 0 : 1 }' "$scoreboard_models"; then
-        printf 'the scoreboard resolved %s to a tuple other than the one the registry and ledger resolve now: %s\n' \
-            "$model_id" "$scoreboard_models" >&2
+    # The receipt directory carries the tuple the scoreboard resolved and the
+    # campaign inputs it ran under; both must equal what this run resolves.
+    scoreboard_tuple=$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
+        "$context" "$batch" "$ubatch" "$cache_k" "$cache_v" "$flash" \
+        "$ctx_checkpoints" "$checkpoint_min_step" "$ledger_bytes" "$ledger_sha256")
+    set +e
+    scoreboard_digests=$(census_verify_scoreboard_receipt "$production_receipt" \
+        "$production_sha256" "$production_bytes" "$require_scoreboard_generate" \
+        "$model_id" "$scoreboard_tuple")
+    scoreboard_status=$?
+    set -e
+    [ "$scoreboard_status" -eq 0 ] || exit "$scoreboard_status"
+    IFS="$(printf '\t')" read -r scoreboard_models_sha256 scoreboard_inputs_sha256 <<EOF
+$scoreboard_digests
+EOF
+    if [ -z "$scoreboard_models_sha256" ] || [ -z "$scoreboard_inputs_sha256" ]; then
+        printf 'the scoreboard receipt binding printed other than two nonempty digests\n' >&2
         exit 2
     fi
-    # Every setting the arms run under is stated exactly once with the
-    # expected value: a key that repeats, whatever its second value, is a
-    # conflicting record rather than a stronger statement, so the count per
-    # key is required to be one rather than its presence alone.
-    if ! awk -F'\t' -v require_generate="$require_scoreboard_generate" '
-        BEGIN {
-            expected["vulkan_profile"] = "low-async"
-            expected["sampling"] = "temperature=0 top_k=1 seed=1 ignore_eos=true thinking=false"
-            expected["server_nice"] = "19"
-            expected["inference_cpu"] = "0"
-            expected["speculation"] = "off"
-            expected["router"] = "0"
-            expected["server_io_class"] = "idle"
-            expected["backend_sampling"] = "0"
-            expected["latency_mode"] = "observe"
-            expected["web_broker"] = "0"
-            expected["image_service"] = "0"
-            if (require_generate == "1") expected["generate_tokens"] = "64"
-        }
-        ($1 in expected) { count[$1]++; if ($2 != expected[$1]) mismatched++ }
-        END {
-            for (key in expected) if (count[key] != 1) exit 1
-            exit mismatched ? 1 : 0
-        }' "$scoreboard_inputs"; then
-        printf 'the scoreboard campaign inputs state a profile, token count, sampling, priority, placement, speculation, router, I/O class, backend sampling, latency mode, broker, or image service setting other than the one every arm here runs under, or state one of them more than once: %s\n' \
-            "$scoreboard_inputs" >&2
-        exit 2
-    fi
-    scoreboard_models_sha256=$(sha256sum "$scoreboard_models" | cut -d ' ' -f 1)
-    scoreboard_inputs_sha256=$(sha256sum "$scoreboard_inputs" | cut -d ' ' -f 1)
     scoreboard_registry_sha256=$(awk -F'\t' '$1 == "model_registry" { print $6 }' "$production_receipt")
     scoreboard_ledger_sha256=$(awk -F'\t' '$1 == "artifact_ledger" { print $6 }' "$production_receipt")
 fi
@@ -802,13 +685,13 @@ instrumented_manifest_sha256=-
 instrumented_semantics=-
 instrumented_series=-
 if [ "$needs_instrumented" = 1 ]; then
-    instrumented_manifest=$(manifest_beside "$instrumented_server" instrumented)
+    instrumented_manifest=$(census_manifest_beside "$instrumented_server" instrumented)
     set +e
-    instrumented_binding=$(bind_server instrumented "$instrumented_server" "$instrumented_manifest")
+    instrumented_binding=$(census_bind_server instrumented "$instrumented_server" "$instrumented_manifest" "$ctx_checkpoints")
     binding_status=$?
     set -e
     [ "$binding_status" -eq 0 ] || exit "$binding_status"
-    require_binding_fields instrumented "$instrumented_binding"
+    census_require_binding_fields instrumented "$instrumented_binding"
     IFS="$(printf '\t')" read -r instrumented_sha256 instrumented_bytes instrumented_manifest_sha256 \
         instrumented_semantics instrumented_series <<EOF
 $instrumented_binding
@@ -840,55 +723,15 @@ fi
 # equal, and I's CMake delta must be exactly -DGGML_VULKAN_PIPELINE_CENSUS=ON
 # with one candidate_series row naming llama-vulkan-pipeline-census.patch.
 census_cmake_flag=-DGGML_VULKAN_PIPELINE_CENSUS=ON
-# Prints the one value of a manifest key; other than one row is a refusal
-# the caller carries out explicitly, since this runs in a substitution.
-manifest_value() {
-    awk -F'\t' -v key="$2" '$1 == key { count++; value = $2 }
-        END { if (count != 1) exit 1; print value }' "$1" || {
-        printf 'the %s manifest holds other than one %s row\n' "$3" "$2" >&2
-        return 2
-    }
-}
-# Writes the base-build identity of one manifest and server to $4.
-base_build_identity() {
-    identity_manifest=$1
-    identity_server=$2
-    identity_role=$3
-    identity_output=$4
-    identity_commit=$(manifest_value "$identity_manifest" commit "$identity_role") || exit 2
-    identity_series=$(manifest_value "$identity_manifest" checkpoint_patch_series_sha256 "$identity_role") || exit 2
-    identity_patch=$(manifest_value "$identity_manifest" checkpoint_patch_sha256 "$identity_role") || exit 2
-    identity_source=$(manifest_value "$identity_manifest" checkpoint_source_sha256 "$identity_role") || exit 2
-    identity_compiler_flags=$(manifest_value "$identity_manifest" compiler_flags "$identity_role") || exit 2
-    identity_cmake=$(manifest_value "$identity_manifest" cmake_flags "$identity_role") || exit 2
-    identity_cmake=$(printf '%s\n' "$identity_cmake" | tr ' ' '\n' | grep -vx -- "$census_cmake_flag" \
-        | tr '\n' ' ' | sed 's/ *$//') || true
-    identity_compiler=$(readelf -p .comment "$identity_server" 2>/dev/null \
-        | sed -n 's/^ *\[ *[0-9]*\] *//p' | sort | tr '\n' ';')
-    # Two empty compiler strings compare equal and prove nothing, so an
-    # executable whose .comment section names no compiler refuses.
-    if [ -z "$identity_compiler" ]; then
-        printf 'the %s server carries no compiler identity in its .comment section: %s\n' \
-            "$identity_role" "$identity_server" >&2
-        exit 2
-    fi
-    {
-        printf 'commit\t%s\n' "$identity_commit"
-        printf 'checkpoint_patch_series_sha256\t%s\n' "$identity_series"
-        printf 'checkpoint_patch_sha256\t%s\n' "$identity_patch"
-        printf 'checkpoint_source_sha256\t%s\n' "$identity_source"
-        printf 'compiler_flags\t%s\n' "$identity_compiler_flags"
-        printf 'cmake_flags_common\t%s\n' "$identity_cmake"
-        printf 'compiler_identity\t%s\n' "$identity_compiler"
-    } >"$identity_output"
-}
 production_base_identity_sha256=-
 instrumented_base_identity_sha256=-
 shader_compiler_identity=unrecorded
 if [ "$needs_production" = 1 ] && [ "$needs_instrumented" = 1 ]; then
     identity_scratch=$(mktemp -d)
-    base_build_identity "$production_manifest" "$production_server" production "$identity_scratch/production"
-    base_build_identity "$instrumented_manifest" "$instrumented_server" instrumented "$identity_scratch/instrumented"
+    census_base_build_identity "$production_manifest" "$production_server" production \
+        "$identity_scratch/production" "$census_cmake_flag"
+    census_base_build_identity "$instrumented_manifest" "$instrumented_server" instrumented \
+        "$identity_scratch/instrumented" "$census_cmake_flag"
     if ! cmp -s "$identity_scratch/production" "$identity_scratch/instrumented"; then
         printf 'the production and instrumented servers descend from different base builds:\n' >&2
         diff -- "$identity_scratch/production" "$identity_scratch/instrumented" >&2 || true
@@ -898,8 +741,8 @@ if [ "$needs_production" = 1 ] && [ "$needs_instrumented" = 1 ]; then
     production_base_identity_sha256=$(sha256sum "$identity_scratch/production" | cut -d ' ' -f 1)
     instrumented_base_identity_sha256=$(sha256sum "$identity_scratch/instrumented" | cut -d ' ' -f 1)
     rm -r -- "$identity_scratch"
-    instrumented_cmake=$(manifest_value "$instrumented_manifest" cmake_flags instrumented) || exit 2
-    production_cmake=$(manifest_value "$production_manifest" cmake_flags production) || exit 2
+    instrumented_cmake=$(census_manifest_value "$instrumented_manifest" cmake_flags instrumented) || exit 2
+    production_cmake=$(census_manifest_value "$production_manifest" cmake_flags production) || exit 2
     instrumented_delta=$(printf '%s\n' "$instrumented_cmake" | tr ' ' '\n' \
         | grep -vxF -- "$(printf '%s\n' "$production_cmake" | tr ' ' '\n')" | tr '\n' ' ') || true
     if [ "$instrumented_delta" != "$census_cmake_flag " ]; then
@@ -907,7 +750,7 @@ if [ "$needs_production" = 1 ] && [ "$needs_instrumented" = 1 ]; then
             "$census_cmake_flag" "$instrumented_delta" >&2
         exit 2
     fi
-    candidate_series=$(manifest_value "$instrumented_manifest" candidate_series instrumented) || exit 2
+    candidate_series=$(census_manifest_value "$instrumented_manifest" candidate_series instrumented) || exit 2
     if [ "$candidate_series" != llama-vulkan-pipeline-census.patch ]; then
         printf 'the instrumented manifest must name candidate_series llama-vulkan-pipeline-census.patch: %s\n' \
             "$candidate_series" >&2

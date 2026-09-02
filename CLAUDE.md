@@ -1173,6 +1173,14 @@ remote/summarize-kernel-census.py OUT/arms/NN-I1/pipeline-census.tsv \
     --window-begin-ns B --window-end-ns E --expected-decode-graphs 63
 remote/summarize-census-controls.py OUT/arms.tsv --sidecar-bound 0.0065 \
     --compile-bound 0.0065 --collect-bound 0.02
+
+# Rung 7 of the E4 ladder: two serving builds on one checkpoint, mirrored
+# C K K C quadruples under the production receipt binding, promoted on a
+# one-sided 5% paired bound.
+# evidence/raven2-vulkan-kernel-census/e4/served-ab-design.md registers the
+# falsifiers and the chain.
+QWEN_CENSUS_PRODUCTION_RECEIPT=RECEIPT remote/run-served-binary-ab.sh \
+    CONTROL_SERVER CANDIDATE_SERVER MODEL_ID OUT
 remote/sample-clock-sidecar.py OUT.tsv --period-ms 10 --cpu 0,1 --nice 19
 remote/validate-clock-sidecar.py OUT.tsv --sidecar-status 0 --period-ms 10 \
     --period-tolerance 0.25 --cost-bound-ns 1000000 --max-gap-ns 20000000
@@ -1269,6 +1277,7 @@ remote/test-quality-suite.py
 remote/test-quality-roster.sh
 remote/test-promote-llama-build.sh
 remote/test-classify-checkpoint-semantics.sh
+remote/test-run-served-binary-ab.sh
 remote/test-check-runtime-tree.sh
 remote/test-deployment-bundle.sh
 remote/generate-quality-images.py --check

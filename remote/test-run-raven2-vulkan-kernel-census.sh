@@ -919,7 +919,7 @@ cp -- "$runner" "$signal_runner"
 chmod +x "$signal_runner"
 cp -- "$artifact_ledger" "$signal_directory/model-artifacts.tsv"
 for linked_member in model-registry.sh models.tsv ctx-checkpoints.tsv \
-    validated-tuples.tsv quarantine.tsv draft-pairs.tsv \
+    validated-tuples.tsv quarantine.tsv draft-pairs.tsv census-arm-lib.sh \
     summarize-kernel-census.py summarize-census-controls.py \
     sample-clock-sidecar.py validate-clock-sidecar.py \
     telemetry-broker.c build-telemetry-broker.sh \
@@ -1117,7 +1117,7 @@ chmod +x "$brick_directory/run-raven2-vulkan-kernel-census.sh"
 brick_runner=$brick_directory/run-raven2-vulkan-kernel-census.sh
 cp -- "$artifact_ledger" "$brick_directory/model-artifacts.tsv"
 for linked_member in model-registry.sh models.tsv ctx-checkpoints.tsv \
-    validated-tuples.tsv quarantine.tsv draft-pairs.tsv \
+    validated-tuples.tsv quarantine.tsv draft-pairs.tsv census-arm-lib.sh \
     summarize-kernel-census.py summarize-census-controls.py \
     sample-clock-sidecar.py \
     telemetry-broker.c build-telemetry-broker.sh \

@@ -1647,6 +1647,7 @@ ae4fe092e6b93e0e09564ac16810af9d43e36e12c03b592b405c42cbc7cc1310  evidence/raven
 6d58c43a246f3ef9fbbab26f1e0d83fb62b7fed100864cec9150bbe72b9726ff  evidence/raven2-vulkan-kernel-census/e4/e4.spvasm
 ad74e2037ed4508372e7072d2185915e25b86009e061ed973bdcb81f40e5090b  evidence/raven2-vulkan-kernel-census/e4/e4b-a-first-pass.md
 c31ef5dfd06a95b9c98f9eff0d479dd86e7e60b23fc25c914e350156791027f7  evidence/raven2-vulkan-kernel-census/e4/e4b-c-first-pass.md
+d2959e4414326013515881e4d67ee92a1cd4714cc3e158c4089c4900f9edaa5b  evidence/raven2-vulkan-kernel-census/e4/served-ab-design.md
 06f1445549184b98af65f0af3e5158e245f540192646136b4bdb663e5a5ad4bb  evidence/raven2-vulkan-kernel-census/e4/spirv-comparison.md
 393e521778b5eef35a9b48023a089023145daa5d4d73293afe3686d5c11b6238  evidence/raven2-vulkan-kernel-census/e4/traffic-balance.md
 cc7944e76233bceabcdf8bedb339fc192025a503b64807f962a9fa9c70b3b0c9  evidence/raven2-vulkan-kernel-census/replay-corpus/02-P/clock-sidecar-verdict.txt
