@@ -692,6 +692,11 @@ fi
 printf '{"model":"qwen-apu","messages":[{"role":"user","content":"Write one paragraph about tides."}],"max_tokens":%s,"temperature":0,"top_k":1,"seed":1,"ignore_eos":true,"chat_template_kwargs":{"enable_thinking":false}}' \
     "$generate_tokens" >"$result_directory/request.json"
 
+# The request window is retained on CLOCK_MONOTONIC, the clock the census
+# binary stamps every graph with, so a census reader selects the graphs
+# this one request ran by membership rather than by shape. The window opens
+# ahead of curl and closes after it returns, on an otherwise idle server.
+request_window_begin_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
 set +e
 if [ -n "$api_key" ]; then
     curl --silent --show-error --fail-with-body --max-time 900 \
@@ -707,6 +712,10 @@ else
 fi
 request_status=$?
 set -e
+request_window_end_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
+printf 'key\tvalue\nclock\tCLOCK_MONOTONIC\nbegin_ns\t%s\nend_ns\t%s\nrequest_status\t%s\n' \
+    "$request_window_begin_ns" "$request_window_end_ns" "$request_status" \
+    >"$result_directory/request-window.tsv"
 
 set +e
 retain_running_process_evidence
