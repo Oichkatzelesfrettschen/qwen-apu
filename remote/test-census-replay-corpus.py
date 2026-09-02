@@ -155,9 +155,9 @@ def case_raven2_sidecar_gap():
     assert "max_ns=42019502" in gaps_line, gaps_line
     assert lines[-1] == "clock_sidecar=refused failures=gaps", lines[-1]
 
-    # Coverage contract: the default stall bound (100 ms) and the default
-    # lost-fraction bound (0.02) read the same record as a scheduler slice
-    # the window survives rather than a stall.
+    # Coverage contract: the stall bound of 100 ms and a coverage bound of
+    # 0.02 read the same record as a scheduler slice the window survives
+    # rather than a stall.
     result = run(base + ["--max-gap-ns", "100000000", "--max-lost-fraction", "0.02"])
     assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
     lines = result.stdout.rstrip("\n").split("\n")
@@ -178,6 +178,15 @@ def case_raven2_sidecar_gap():
     result = run(base + ["--max-gap-ns", "100000000", "--max-lost-fraction", "0.004"])
     assert result.returncode == 1, (result.returncode, result.stdout)
     assert result.stdout.rstrip("\n").split("\n")[-1] == "clock_sidecar=refused failures=window_lost"
+
+    # The shipped coverage criterion, read from the reader's own default: 0.03
+    # of the window at the appliance's period is under 15 samples of 400, and
+    # the record's 0.0047 sits well inside it.
+    result = run(base)
+    assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
+    lost_line = next(line for line in result.stdout.split("\n")
+                     if line.startswith("window_lost="))
+    assert "bound=0.0300" in lost_line, lost_line
     print("case=raven2-sidecar-gap verdict=accepted")
 
 

@@ -194,3 +194,65 @@ count that the level was obeyed inside each arm's own request window.
 A `none` verdict leaves the taxonomy where it is and moves the investigation
 up one layer, and the retained receipts are then the evidence that the DPM
 interface was not the place to look.
+
+## The fabric-clock ceiling: a kernel hypothesis registered ahead of a prototype
+
+`dpm-authority/20260902T2002Z-fclk-level3/` measured `manual` writing the
+highest advertised fabric step accepted without error and delivered anyway at
+933 MHz on 105 of 107 busy-window samples, with 1067 MHz reached on only 2.
+`high` and `profile_peak` fall further, to 400 MHz (`dpm-authority/README.md`,
+experiments 2 through 4). Three settings now agree in direction -- none holds
+the fabric clock at its advertised ceiling -- and this section registers a
+kernel-level hypothesis for why, ahead of the prototype that would test it.
+
+`smu10_hwmgr.c`'s `high` and `profile_peak` handling issues
+`SetHardMinFclkByFreq` and `SetSoftMaxFclkByFreq` against
+`SMU10_UMD_PSTATE_PEAK_FCLK`, a hard-coded 1200 MHz value rather than the
+firmware table's own highest entry. This platform's table tops out at 1067
+MHz (`pp_dpm_mclk`, `dpm-authority/20260902T2002Z-fclk-level3/tables-before.txt`),
+so a request for 1200 MHz asks the firmware for a step it does not carry. The
+observed fall to 400 MHz under both `high` and `profile_peak` is consistent
+with the firmware rejecting an unsatisfiable request and returning to a
+low fabric state rather than clamping to its own nearest available step. This
+is stated as a hypothesis rather than a finding: no run in this directory has
+read the kernel's own request value off the wire, and the 400 MHz floor is
+equally consistent with a package-power mechanism unrelated to the requested
+frequency.
+
+**Falsifier.** A kernel patched to request the platform's own table maximum
+(1067 MHz) rather than the hard-coded 1200 MHz constant, under `high`,
+delivering 1067 MHz sustained through a decode window at the same 50 ms
+sampling this directory already uses. Meeting the falsifier moves the fabric
+clock from an observed 933 MHz floor to a commanded 1067 MHz ceiling under a
+governor setting rather than under `manual`'s undocumented step write;
+failing to meet it after removing the 1200 MHz constant would move the
+mechanism to the package-power layer the earlier predictions in this file
+already named as the alternative.
+
+The prototype this falsifier requires is a kernel patch, a rebuild, and a
+boot -- work this file registers as its own experiment rather than folding
+into a calibration run. It follows E4 and E1 in the boot-level experiment
+sequence, as a separate boot-level arm with its own before/after table
+capture and its own 50 ms sampling window, not mixed into any campaign's
+performance denominator until it either meets or fails the falsifier above.
+
+## ROCm 10 and the gfx902 target: registered as a bounded ladder, not a plan
+
+ROCm 10's Core SDK release lists no `gfx902` target, and TheRock's own build
+matrix omits `gfx902` from its table. RADV Vulkan stays this repository's
+primary compute path on this device; nothing above depends on HIP building.
+
+Where a HIP arm is wanted regardless, it runs as an isolated eight-step
+ladder rather than as a single build attempt, so a failure names the exact
+step rather than the whole toolchain: compile a trivial kernel with
+`--offload-arch=gfx902`; enumerate the device; run a vector-add kernel; run a
+shared-memory, wave64 kernel; resolve the device library without a `gfx900`
+override; load `hipBLAS` only after those four succeed; run a minimal
+llama.cpp HIP bench only after `hipBLAS` loads; and only then run an ABBA
+comparison against the fixed-clock RADV baseline this directory's `manual`
+operating point now supplies. The ladder follows E4 and E1 the way the
+fabric-clock falsifier above does, and it ends at the first failing step
+rather than proceeding past it -- a `gfx900`-fallback device library
+resolving where the fifth step asks for none, for instance, would report a
+compatibility shim rather than native `gfx902` support, and every step after
+it would be measuring the shim.

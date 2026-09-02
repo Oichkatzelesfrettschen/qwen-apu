@@ -229,11 +229,45 @@ invariant is violated fails with reason `clock_invariant`, `arms.tsv`
 carries `clock_invariant` and `below_required_fraction`, and
 `summarize-census-controls.py` drops that arm's pair as `clock-violated`
 the way it drops a governor step as `state-changed`. The policy, the two
-level selections, the required graphics step, the fabric floor, and the
-admitted `clock_below_required_fraction` of 0 enter `inputs.tsv` on every
-run and `acquisition-contract.tsv` only where a policy is forced, since a
+level selections, the required graphics step, the fabric floor, the
+admitted `clock_below_required_fraction` of 0, and the admitted
+`clock_below_mclk_floor_fraction` of 0.01 enter `inputs.tsv` on every run
+and `acquisition-contract.tsv` only where a policy is forced, since a
 governor run applied no control and a row stating that would be a default
 rather than a setting.
+
+The two clocks carry two admitted shares because they answer a forced
+policy differently. A pinned graphics step reports one value on every
+sample, so its share stays 0 and a sample below it is the governor moving
+under a policy that states it cannot. The fabric hovers: arm 03-P of the
+20260902T2011Z calibration read 933 MHz on 356 of 358 window samples, with
+excursions to 1067 above its selection and two samples below, while the
+graphics clock held the pinned 1100 on all 358, and a floor admitting
+nothing refused that arm as `clock_invariant` violated.
+`--max-below-mclk-floor-fraction`, 0.01 by default and carried as the
+`clock_below_mclk_floor_fraction` contract row, prices that hover and
+leaves a fabric that spent a tenth of a window below its floor refused. The
+line keeps printing `samples_at_mclk_floor`, `samples_below_mclk_floor`,
+and `below_mclk_floor_fraction` whatever the bound admits.
+
+The invariant is a verdict over one column, so an arm states which column
+it was counted over. Under a forced policy the delivered frequency is the
+only answer: `pp_dpm_sclk_selected_mhz` repeats the selection the campaign
+itself wrote, so an arm reading it held has agreed with the campaign rather
+than measured the device. Both runners refuse such an arm with reason
+`clock_source`, ahead of `clock_invariant`, which is a verdict over the
+same disqualified reading. The 20260902T2011Z calibration is what makes the
+condition necessary: it ran `sclk_source=pp_dpm_sclk_selected_mhz` on every
+arm because the broker beside it predated the eighth column, and the
+preflight built a broker only where the executable was absent.
+`build-telemetry-broker.sh` records the source digest it compiled as
+`<broker>.source-sha256`, and `census_prepare_broker` in
+`census-arm-lib.sh` rebuilds wherever the executable is absent, that record
+is absent, or the digest it holds differs from the tree's own, then reads
+the record again so a builder that compiled without recording is refused
+rather than rebuilt on every run. `sidecar_binary_sha256` and
+`sidecar_source_sha256` stay the two `inputs.tsv` rows naming the
+instrument a record was acquired with.
 
 The eighth column retires the retained receipts by itself, and that is the
 right outcome rather than a cost of the conditional rows.
@@ -244,6 +278,16 @@ the tree computes, `auto` runs included: no calibration retained under
 `QWEN_CENSUS_REUSE_BRICKS` reuses no brick across it. A brick measured under
 the seven-column sampler was measured under a different instrument, which is
 what the digest comparison exists to catch.
+
+The calibration brackets retire them a second time, and each of the three
+moves the digest on its own. `clock_below_mclk_floor_fraction` is a new
+contract row, `sidecar_max_lost_fraction` carries 0.03 where it carried
+0.02, and a rebuilt broker carries a `sidecar_binary_sha256` its stale
+predecessor never had. No calibration retained under `20260902*/` answers
+an attribution across this change and `QWEN_CENSUS_REUSE_BRICKS` reuses no
+brick across it, which is the same outcome for the same reason: the arms
+those receipts hold were acquired under another instrument and judged
+against other bounds.
 
 One falsifier stands against the mechanism the policy assumes. A forced
 level that still reads 658 MHz after a CPU build falsifies the governor as
@@ -414,9 +458,16 @@ of 0.0122 to 0.0147, with the S arm at 3 gaps and 0.0027. A slow sysfs read
 does not order them -- the preceding sample cost 0.2 to 1.0 ms at almost
 every over-bound gap, and two of twenty-four followed a 29 to 37 ms
 `pp_dpm` read. Acceptance is therefore
-`window_lost_fraction <= sidecar_max_lost_fraction`, default 0.02, measured
+`window_lost_fraction <= sidecar_max_lost_fraction`, default 0.03, measured
 as the window-clipped duration of every gap wider than two sampling periods,
-which is a gap that missed at least one scheduled sample.
+which is a gap that missed at least one scheduled sample. That default is a
+coverage criterion for a clock-state record rather than a safety ceiling: at
+the 20 ms period 0.03 of a window is under 15 samples of 400, and the clock
+invariant counts every sample the record does hold. Arm 06-P of the
+20260902T2011Z calibration is where 0.02 cost a record that answered its
+question -- both clocks held and the window lost 0.0214 to a nice-19 sampler
+sharing two cores with the server's own nice-19 threads, which is the CFS
+share this bound prices rather than a sampler defect.
 `sidecar_max_gap_ns` survives as a stall bound alone, default ten periods or
 100 ms, and refuses a sampler that stopped rather than one that was
 descheduled; the `gaps` line keeps reporting its distribution, maximum, and

@@ -228,3 +228,75 @@ formula before it is read as a finding about anything other than clock.
 `bapm=-1` on every summary line here means auto-enabled, per
 `/sys/module/amdgpu/parameters/bapm`'s own kernel module documentation, not
 disabled. No arm in this directory wrote to it.
+
+## Naming correction: GFXCLK, FCLK, and DRAM clock are three different rails
+
+The columns and prose above name `freq1_input` and `pp_dpm_mclk` without
+separating what each one measures, and this section states the correction the
+reviewers put to that gap. `freq1_input` is GFXCLK, the graphics engine clock,
+read from the hwmon sensor the amdgpu driver exposes for it; every arm in this
+directory that decodes reads it at 1100 MHz. `pp_dpm_mclk` is not the DRAM
+clock despite its name: on this SMU10 platform it is FCLK, the data-fabric
+clock, and the driver reads it with `PPSMC_MSG_GetFclkFrequency` rather than
+querying the memory controller. Its advertised table states 400, 933, and
+1067 MHz here. The DRAM clock is a third rail this file carries no reading
+of: `evidence/measurement-state-and-memory-clock.md` trains it at DDR4-2133.33
+from both UMC channels' own SMN registers, and the installed Crucial
+CT16G4SFD8213 DIMMs are DDR4-2133 parts by their own SPD EEPROMs. A figure of
+1200 MHz belongs to a DDR4-2400 hypothesis this machine's trained memory does
+not support, not to any reading in this directory.
+
+## Experiment 5: `20260902T2002Z-fclk-level3`, `manual` sclk 2 / mclk 3, 50 ms fabric-clock sampling
+
+`manual` writes `pp_dpm_sclk` level 2 (the top sclk step, 1100 MHz) and
+`pp_dpm_mclk` level 3 (the top fabric step this part advertises, 1067 MHz),
+and a 50 ms sampler reads `freq1_input`, the starred `pp_dpm_mclk` line, and
+`gpu_busy_percent` beside one `llama-bench tg32` decode. `tables-before.txt`
+retains the full `pp_dpm_sclk` and `pp_dpm_mclk` tables read before the
+manual write, with the pre-write starred level marked: `pp_dpm_sclk` reads
+`0: 200Mhz`, `1: 400Mhz *`, `2: 1100Mhz`, and the fabric table reads
+`0: 0Mhz 1: 400Mhz 2: 933Mhz * 3: 1067Mhz`, so the machine sat at fabric level
+2 (933 MHz) before this run wrote level 3. `mclk3.err` is retained at 0
+bytes: the `pp_dpm_mclk` level-3 write returned no error.
+
+The decode measured 9.61 ± 0.13 tok/s (`bench.log`). `samples.tsv` carries
+145 rows at a 50 ms period; restricting to the 107 rows at
+`gpu_busy_percent >= 50` -- the sampler's own busy threshold for a row inside
+the decode's working span, as opposed to the ramp and idle rows the same file
+carries -- `freq1_input` reads 1100 MHz on every one of the 107, and the
+starred `pp_dpm_mclk` line reads 933 MHz on 105 of the 107 and 1067 MHz on
+the remaining 2. Across the full 145-row file the starred fabric line reads
+933 MHz on 137 rows and 1067 MHz on 8, so the excursions above 933 MHz are
+not confined to the busy window and are rare throughout.
+
+| level written | requested top step | delivered GFXCLK (freq1_input) | starred FCLK, busy rows (n=107) | starred FCLK, all rows (n=145) | tok_s | files |
+| --- | --- | --- | --- | --- | ---: | --- |
+| manual sclk 2 / mclk 3 | sclk 1100, fclk 1067 | 1100 MHz, 107 of 107 busy rows | 933 MHz x105, 1067 MHz x2 | 933 MHz x137, 1067 MHz x8 | 9.61 ± 0.13 | `20260902T2002Z-fclk-level3/{tables-before.txt,mclk3.err,samples.tsv,bench.log}` |
+
+The write is accepted and the firmware does not hold the requested level: the
+highest advertised fabric step (1067 MHz) is written without error and the
+delivered fabric clock spends the large majority of the decode window at 933
+MHz regardless, with brief excursions to 1067 MHz rather than a sustained
+hold. This binds explicitly what M1 and M3 in `20260902T1826Z-manual` already
+showed in passing -- both wrote `pp_dpm_mclk` level 3 and read the starred
+line back at 933 MHz -- by sampling the fabric clock directly through the
+decode window at 50 ms resolution rather than reading one post-hoc readback
+per arm.
+
+**The operating point every campaign runs at now**: `manual`, GFXCLK
+(`freq1_input`) delivered at 1100 MHz, FCLK (`pp_dpm_mclk`) at 933 MHz with
+the floor invariant at 933 -- one state, held across every arm this
+directory has measured under `manual`.
+
+Two questions this run leaves open:
+
+- Whether 1067 MHz can be commanded on this firmware at all, as a sustained
+  state rather than as the brief excursions this run reads at both busy and
+  idle threshold. No arm in this directory has forced the fabric clock to
+  1067 MHz and held it; `dpm-authority-design.md` registers the kernel
+  hypothesis for why the write alone does not appear sufficient.
+- Whether the appliance should serve under `manual` production-auto or
+  `manual` production-max as its running policy. This directory measures the
+  fabric-clock floor `manual` delivers; it does not compare a production
+  denominator under either policy, which is unmeasured work the design note
+  also registers.

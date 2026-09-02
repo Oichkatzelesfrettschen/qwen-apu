@@ -19,9 +19,20 @@ if ! command -v "$compiler" >/dev/null 2>&1; then
     exit 1
 fi
 
+source_path=$script_directory/telemetry-broker.c
 mkdir -p "$(dirname -- "$output_path")"
 "$compiler" -O2 -Wall -Wextra -std=c11 \
-    "$script_directory/telemetry-broker.c" \
+    "$source_path" \
     -o "$output_path"
-printf 'telemetry_broker=%s sha256=%s\n' "$output_path" \
-    "$(sha256sum "$output_path" | awk '{ print $1 }')"
+# The digest of the source this executable was compiled from, written beside
+# it as `<output>.source-sha256`. An executable states its own identity and
+# says nothing about the source it descends from, so a campaign preflight
+# reading this file rebuilds an executable that predates an edit rather than
+# sampling with it: the 20260902T2011Z calibration ran an eighth-column
+# invariant against a seven-column binary because the preflight built only
+# where the executable was absent.
+source_sha256=$(sha256sum "$source_path" | awk '{ print $1 }')
+printf '%s\n' "$source_sha256" >"$output_path.source-sha256"
+printf 'telemetry_broker=%s sha256=%s source_sha256=%s source_record=%s\n' \
+    "$output_path" "$(sha256sum "$output_path" | awk '{ print $1 }')" \
+    "$source_sha256" "$output_path.source-sha256"
