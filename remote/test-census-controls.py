@@ -505,6 +505,11 @@ header, rows = summarize(
 assert len(rows) == 1 and rows[0]["control"] == "collect", rows
 assert rows[0]["replicates"] == "4" and rows[0]["verdict"] == "incomplete", rows[0]
 assert rows[0]["mean_delta"] == "-" and rows[0]["deltas"] == "-", rows[0]
+# The detail carries the pairs whose two arms both completed: the first
+# quadruple's two pairs and the second quadruple's second pair survive, the
+# pair holding the failed arm is dropped, and the surviving mean is stated.
+assert rows[0]["detail"].startswith("surviving_pairs=3 of 4 surviving_mean=-0.0133"), rows[0]
+assert rows[0]["detail"].endswith("surviving_deltas=-0.0150 -0.0150 -0.0100"), rows[0]
 # An unregistered quadruple has no control to join, so it keeps its own row
 # and is printed unclassified with no bound.
 header, rows = summarize(quadruple("P", "I1", "10.000", "9.900", "9.900", "10.000"))
