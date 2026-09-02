@@ -48,39 +48,55 @@ model_path=${QWEN_MODEL_PATH:-"${HOME:?}/models/Qwen3.8-4B-Distill-GGUF/Qwen3.8-
 # before presets existed, and it serves until a promotion happens.
 llama_source_directory=${QWEN_LLAMA_SOURCE_DIRECTORY:-"${HOME:?}/src/llama.cpp-qwen-apu"}
 llama_server=${QWEN_LLAMA_SERVER:-}
-# An activated deployment bundle binds the server and the checkpoint ledger
-# it was verified against, so deployment-current outranks the build symlinks
-# and carries its own ledger into the capacity policy; an explicit
-# QWEN_LLAMA_SERVER or QWEN_CTX_CHECKPOINT_LEDGER still wins, and a machine
-# without a deployment root keeps the promote-chain defaults unchanged.
-deployment_current=${QWEN_DEPLOYMENT_ROOT:-"${HOME:?}/qwen-deployments"}/deployment-current
-if [ -z "$llama_server" ] && { [ -e "$deployment_current" ] || \
-    [ -L "$deployment_current" ]; }; then
-    # A deployment link that exists names the selected release, so a dangling
-    # link, a missing server, or an unreadable ledger refuses the start rather
-    # than silently serving whatever the build symlinks name instead.
-    if [ ! -x "$deployment_current/llama-server" ]; then
-        printf 'deployment-current exists but its llama-server is not executable: %s\n' \
-            "$deployment_current/llama-server" >&2
-        exit 1
+# The server the start selects is resolved inside the start action alone, so
+# a stop or status reads no bundle and a tampered bundle cannot hold a
+# teardown hostage.
+select_llama_server() {
+    # An activated deployment bundle binds the server and the checkpoint ledger
+    # it was verified against, so the active deployment outranks the build
+    # symlinks and carries its own ledger into the capacity policy; an explicit
+    # QWEN_LLAMA_SERVER or QWEN_CTX_CHECKPOINT_LEDGER still wins, and a machine
+    # without a deployment root keeps the promote-chain defaults unchanged. The
+    # bundle is the one resolve-active-deployment.sh names: a launcher that
+    # already resolved hands it down as QWEN_ACTIVE_DEPLOYMENT_DIRECTORY and the
+    # resolver verifies that directory again rather than following
+    # deployment-current a second time, so every member this start selects comes
+    # from the bundle the launcher read its preset from. A direct control start
+    # resolves for itself. A deployment that exists and fails verification
+    # refuses the start rather than silently serving whatever the build symlinks
+    # name instead.
+    if [ -z "$llama_server" ]; then
+        deployment_root=${QWEN_DEPLOYMENT_ROOT:-"${HOME:?}/qwen-deployments"}
+        deployment_resolution=$("$script_directory/resolve-active-deployment.sh" \
+            "$deployment_root" 2>&1) && deployment_resolution_status=0 || \
+            deployment_resolution_status=$?
+        case $deployment_resolution_status in
+            0)
+                active_deployment_directory=$(printf '%s\n' "$deployment_resolution" |
+                    sed -n 's/^active_deployment_directory=//p')
+                llama_server=$active_deployment_directory/llama-server
+                if [ -z "${QWEN_CTX_CHECKPOINT_LEDGER:-}" ]; then
+                    QWEN_CTX_CHECKPOINT_LEDGER=$active_deployment_directory/ctx-checkpoints.tsv
+                    export QWEN_CTX_CHECKPOINT_LEDGER
+                fi
+                QWEN_ACTIVE_DEPLOYMENT_DIRECTORY=$active_deployment_directory
+                export QWEN_ACTIVE_DEPLOYMENT_DIRECTORY
+                ;;
+            3) ;;
+            *)
+                printf '%s\n' "$deployment_resolution" >&2
+                printf 'the activated deployment failed resolution; the control start stops\n' >&2
+                exit 1
+                ;;
+        esac
     fi
-    if [ ! -r "$deployment_current/ctx-checkpoints.tsv" ]; then
-        printf 'deployment-current exists but its ctx-checkpoints.tsv is unreadable: %s\n' \
-            "$deployment_current/ctx-checkpoints.tsv" >&2
-        exit 1
+    if [ -z "$llama_server" ]; then
+        llama_server=$llama_source_directory/build-appliance-current/bin/llama-server
+        if [ ! -x "$llama_server" ]; then
+            llama_server=$llama_source_directory/build-qwen-vulkan/bin/llama-server
+        fi
     fi
-    llama_server=$deployment_current/llama-server
-    if [ -z "${QWEN_CTX_CHECKPOINT_LEDGER:-}" ]; then
-        QWEN_CTX_CHECKPOINT_LEDGER=$deployment_current/ctx-checkpoints.tsv
-        export QWEN_CTX_CHECKPOINT_LEDGER
-    fi
-fi
-if [ -z "$llama_server" ]; then
-    llama_server=$llama_source_directory/build-appliance-current/bin/llama-server
-    if [ ! -x "$llama_server" ]; then
-        llama_server=$llama_source_directory/build-qwen-vulkan/bin/llama-server
-    fi
-fi
+}
 static_path=${QWEN_STATIC_PATH:-"$script_directory/../webui-llama-ui"}
 if [ ! -f "$static_path/index.html" ]; then
     static_path=$script_directory/../webui
@@ -205,6 +221,7 @@ case $action in
         # sync-runtime-tree.sh and passes as unmanifested.
         "$script_directory/check-runtime-tree.sh" "$script_directory/.." \
             "${QWEN_INTENDED_GIT_HEAD:-}" "${QWEN_INTENDED_PAYLOAD_SHA256:-}"
+        select_llama_server
         if tmux -L "$tmux_socket" has-session -t "$tmux_session" 2>/dev/null; then
             printf 'tmux session already exists: %s\n' "$tmux_session" >&2
             exit 2
@@ -364,6 +381,7 @@ case $action in
                               QWEN_APPROVED_MODEL_BYTES \
                               QWEN_MODEL_REGISTRY QWEN_QUARANTINE_REGISTRY \
                               QWEN_VALIDATED_TUPLES QWEN_CTX_CHECKPOINT_LEDGER \
+                              QWEN_ACTIVE_DEPLOYMENT_DIRECTORY \
                               QWEN_BATCH_SIZE QWEN_UBATCH_SIZE \
                               QWEN_CACHE_TYPE_K QWEN_CACHE_TYPE_V \
                               QWEN_FLASH_ATTN \

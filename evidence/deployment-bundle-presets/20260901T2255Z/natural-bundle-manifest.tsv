@@ -1,0 +1,10 @@
+bundle_name	natural-boundary-13d05a0-r2
+created_utc	2026-09-01T20:54:15Z
+checkpoint_semantics	natural-boundary-v1
+maximum_ledger_count	2
+server_bytes	57735736
+llama-server	5dd86b90154f6143a5303efd2590b9268a0a5e3e908c4d6791f1fde03a4782c2
+artifact-manifest.tsv	86cd22d6d60f5c4c67c0b20b44b3c7d941b7c82e99856ad33aa99ae598039ee8
+ctx-checkpoints.tsv	b8644d874a0e34b7e3be8e4d673961805991b30396edd2c84467c0b4261f419a
+router-presets.ini	9356fa5126a6586b29ff1e42a0e144043d044ce8c678716525e8897f3f8ac9e8
+web-presets.ini	-

@@ -20,6 +20,11 @@ fake_server=$script_directory/test-fixtures/fake-llama-server.sh
 failures=0
 
 work=$(mktemp -d)
+# The launchers resolve the machine's deployment root; the fixture names an
+# empty one so the host's own deployments never reach the test.
+QWEN_DEPLOYMENT_ROOT=$work/deployments
+mkdir -p "$QWEN_DEPLOYMENT_ROOT"
+export QWEN_DEPLOYMENT_ROOT
 trap 'rm -rf "$work"' EXIT INT TERM
 
 report() {
@@ -60,6 +65,13 @@ export QWEN_CTX_CHECKPOINT_LEDGER
 harness=$work/harness
 mkdir -p "$harness"
 cp "$script_directory/qwen-web-launch.sh" "$harness/qwen-web-launch.sh"
+# The launcher resolves the active deployment before it reads a preset; the
+# harness holds no deployment root, so the resolver reports none and the
+# state directory preset applies.
+cp "$script_directory/resolve-active-deployment.sh" \
+    "$harness/resolve-active-deployment.sh"
+cp "$script_directory/open-verified-lock-descriptor.py" \
+    "$harness/open-verified-lock-descriptor.py"
 cat >"$harness/qwen-launch.sh" <<'EOF'
 #!/bin/sh
 set -eu
@@ -102,6 +114,10 @@ cp "$script_directory/open-verified-lock-descriptor.py" \
     "$control_harness/open-verified-lock-descriptor.py"
 cp "$script_directory/check-runtime-tree.sh" \
     "$control_harness/check-runtime-tree.sh"
+cp "$script_directory/resolve-active-deployment.sh" \
+    "$control_harness/resolve-active-deployment.sh"
+cp "$script_directory/open-verified-lock-descriptor.py" \
+    "$control_harness/open-verified-lock-descriptor.py"
 cat >"$control_bin/tmux" <<'EOF'
 #!/bin/sh
 set -eu

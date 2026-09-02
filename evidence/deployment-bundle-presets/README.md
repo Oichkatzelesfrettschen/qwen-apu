@@ -21,6 +21,56 @@ router port, which is what makes the child exist, read the child's argv from
 next activation. `*-child-argv.txt` holds each argv, `*-launch.txt` each
 launch transcript, and `*-activate.txt` each activator line.
 
+## One bundle per launch
+
+`20260901T2255Z/` retains the same regression at runtime head `90b4fa0`, where
+a launch resolves its bundle once through `resolve-active-deployment.sh` and
+carries the directory as `QWEN_ACTIVE_DEPLOYMENT_DIRECTORY`, with two more
+transitions. The fourth pauses the launch with SIGSTOP three lines in, right
+after it printed the natural bundle's preset path, activates the emergency
+bundle underneath it, and resumes: the launch reported the natural bundle,
+the control script selected `natural-boundary-13d05a0-r2/llama-server`, and
+the 2B child carried count 2 while `deployment-current` already named the
+emergency bundle. The fifth rolls back and serves at 2 again. Every launch
+printed `router_presets_source=active-deployment` with a path inside the
+resolved bundle, and one generation directory existed at every step.
+
+| Step | current at launch | served bundle | count |
+| --- | --- | --- | ---: |
+| activate natural | `natural-boundary-13d05a0-r2` | the same | 2 |
+| activate emergency | `emergency-forced-tail-40f7b775-r2` | the same | 0 |
+| rollback | `natural-boundary-13d05a0-r2` | the same | 2 |
+| activate under a paused launch | `emergency-forced-tail-40f7b775-r2` | `natural-boundary-13d05a0-r2` | 2 |
+| rollback | `natural-boundary-13d05a0-r2` | the same | 2 |
+
+The activation lock behind this is a descriptor the activator holds
+exclusively for its whole run and the resolver holds shared while it reads,
+so a writer exporting the former environment marker waits behind a holder;
+role links are held to exactly `../BUNDLE_NAME` and generation links to
+exactly `deployment-state.N`; and a preset section is bound to the ledger
+count of the model its `LLAMA_ARG_MODEL` resolves to.
+`remote/test-deployment-bundle.sh` carries those at 27 checks, including a
+state link through `..` against an outside sentinel that stays byte-identical.
+
+## Recovery and the lock leaf
+
+`20260901T2352Z/` retains the same regression at runtime head `d8a3e16`
+with two more transitions. The sixth points `deployment-state` at a
+generation that does not exist: the automatic launch refuses on
+`deployment-current does not resolve to a directory`, and a launch naming
+`QWEN_LLAMA_SERVER` and `QWEN_CTX_CHECKPOINT_LEDGER` explicitly starts,
+answers `/health`, and tears down, after which the pointer is restored and
+`deployment-current` reads the natural bundle again. The seventh replaces
+`.activate.lock` with a symlink to a sentinel file: the activator refuses
+with `verified_lock_descriptor=rejected`, the automatic launch refuses, and
+the sentinel's digest is unchanged afterwards, since
+`open-verified-lock-descriptor.py` opens the leaf with `O_NOFOLLOW` and
+without truncation. The five earlier transitions passed again ahead of
+them, so the head that carries the verified lock leaf, the recovery mode,
+the executable-row cardinality, the bundle name rule, the random staging,
+and the ambiguity refusal in the preset check serves the same way the
+earlier one did.
+
 ## What the bundle carries
 
 A preset section carries `LLAMA_ARG_CTX_CHECKPOINTS` because

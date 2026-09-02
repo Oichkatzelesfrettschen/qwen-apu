@@ -36,6 +36,45 @@ fi
 "$script_directory/check-runtime-tree.sh" "$script_directory/.." \
     "${QWEN_INTENDED_GIT_HEAD:-}" "${QWEN_INTENDED_PAYLOAD_SHA256:-}"
 
+# The activated deployment is resolved once for the whole launch. The router
+# preset here, and the server and ledger the control script selects, all come
+# from the one bundle directory this resolution retains, so an activation that
+# moves deployment-current while the launch is between two reads changes
+# nothing the launch consumes. Exit 3 states that the root holds no
+# deployment at all, which keeps the promote-chain defaults; any other
+# refusal is a corrupt or tampered bundle and stops the launch here.
+deployment_root=${QWEN_DEPLOYMENT_ROOT:-"${HOME:?}/qwen-deployments"}
+# An explicit QWEN_LLAMA_SERVER outranks the deployment, the rule
+# qwen-webui-control.sh applies, so a launch naming its server reads no
+# bundle at all.
+if [ -n "${QWEN_LLAMA_SERVER:-}" ]; then
+    deployment_resolution=''
+    deployment_resolution_status=3
+else
+    deployment_resolution=$("$script_directory/resolve-active-deployment.sh" \
+        "$deployment_root" 2>&1) && deployment_resolution_status=0 || \
+        deployment_resolution_status=$?
+fi
+active_deployment_directory=''
+case $deployment_resolution_status in
+    0)
+        active_deployment_directory=$(printf '%s\n' "$deployment_resolution" |
+            sed -n 's/^active_deployment_directory=//p')
+        QWEN_ACTIVE_DEPLOYMENT_DIRECTORY=$active_deployment_directory
+        export QWEN_ACTIVE_DEPLOYMENT_DIRECTORY
+        printf 'active_deployment=%s directory=%s\n' \
+            "$(printf '%s\n' "$deployment_resolution" |
+                sed -n 's/^active_deployment_name=//p')" \
+            "$active_deployment_directory"
+        ;;
+    3) ;;
+    *)
+        printf '%s\n' "$deployment_resolution" >&2
+        printf 'the activated deployment failed resolution; the launch stops\n' >&2
+        exit 1
+        ;;
+esac
+
 model_path=${QWEN_MODEL_PATH:-"${HOME:?}/models/Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf"}
 router_snapshot_owned=''
 control_start_entered=0
@@ -65,11 +104,15 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
     # An activated deployment bundle carries the preset generated against its
     # own ledger, so a rollback that moves the ledger moves the preset with
     # it; the state directory's file serves a machine with no bundle, and an
-    # explicit QWEN_ROUTER_PRESETS still names the file it always did.
-    deployment_router_presets=${QWEN_DEPLOYMENT_ROOT:-"${HOME:?}/qwen-deployments"}/deployment-current/router-presets.ini
-    if [ -z "${QWEN_ROUTER_PRESETS:-}" ] && [ -f "$deployment_router_presets" ]; then
+    # explicit QWEN_ROUTER_PRESETS still names the file it always did. The
+    # preset is read from the bundle directory resolved above rather than
+    # through deployment-current a second time.
+    deployment_router_presets=$active_deployment_directory/router-presets.ini
+    if [ -z "${QWEN_ROUTER_PRESETS:-}" ] && \
+        [ -n "$active_deployment_directory" ] && \
+        [ -f "$deployment_router_presets" ]; then
         source_router_presets=$deployment_router_presets
-        printf 'router_presets_source=deployment-current path=%s\n' \
+        printf 'router_presets_source=active-deployment path=%s\n' \
             "$deployment_router_presets"
     else
         source_router_presets=${QWEN_ROUTER_PRESETS:-"$state_directory/router-presets.ini"}

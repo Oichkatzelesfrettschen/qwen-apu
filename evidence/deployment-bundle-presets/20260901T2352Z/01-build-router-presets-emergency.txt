@@ -1,0 +1,3 @@
+router_presets=written path=$HOME/bundle-router-regression-20260901T2352Z/emergency-router-presets.ini models=13 unlisted=6 quarantined=2 absent=0
+draft_pairs=written pairs=2 unlisted=0 quarantined=0 absent=0
+tier_directories production=$HOME/models/production candidates=$HOME/models/candidates quarantine=$HOME/models/quarantine reasons=$HOME/models/quarantine-reasons
