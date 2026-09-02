@@ -13,8 +13,19 @@ not. Every condition prints as a `key=value` line, the last line reads
 `clock_sidecar=accepted` or `clock_sidecar=refused`, and the exit status
 follows it.
 
+The run-wide achieved period the footer declares is a mean, so a 100 ms
+hole surrounded by perfect 5 ms samples holds it while losing two 2B token
+intervals. `--max-gap-ns` bounds the adjacent gap instead: every gap between
+consecutive `monotonic_ns` rows is measured, the `gaps` line reports the
+nearest-rank median, p95, and p99 beside the maximum, the count above 1.5 x
+the requested period, and the count above the bound, and a gap over the
+bound refuses the record where it overlaps the request window. A gap
+[t_i, t_i+1] overlaps the window where t_i+1 exceeds the window begin and
+t_i falls below the window end; a record supplied with no window is refused
+by an over-bound gap anywhere.
+
 usage: validate-clock-sidecar.py RECORD_TSV --sidecar-status N
-       --period-ms F --period-tolerance F --cost-bound-ns N
+       --period-ms F --period-tolerance F --cost-bound-ns N --max-gap-ns N
        [--window-begin-ns N --window-end-ns N]
        [--allow-unavailable COLUMN ...]
 """
@@ -39,6 +50,18 @@ FOOTER_KEYS = (
     "first_sample_ns",
     "last_sample_ns",
 )
+
+
+def nearest_rank(sorted_values, permille):
+    """Return the nearest-rank quantile, the ceil(q x n)-th smallest value.
+
+    The quantile arrives in permille and the rank is computed in integers, so
+    the rank of p95 over 100 gaps is 95 rather than whatever the float
+    product of 0.95 and 100 rounds to.
+    """
+    count = len(sorted_values)
+    index = -(-permille * count // 1000) - 1
+    return sorted_values[min(max(index, 0), count - 1)]
 
 
 def parse_key_values(text):
@@ -77,6 +100,7 @@ def main():
     parser.add_argument("--period-ms", type=float, required=True)
     parser.add_argument("--period-tolerance", type=float, required=True)
     parser.add_argument("--cost-bound-ns", type=int, required=True)
+    parser.add_argument("--max-gap-ns", type=int, required=True)
     parser.add_argument("--window-begin-ns", type=int)
     parser.add_argument("--window-end-ns", type=int)
     parser.add_argument("--allow-unavailable", action="append", default=[])
@@ -144,11 +168,43 @@ def main():
         last = int(rows[-1][0])
         check("footer_instants", first == int(footer["first_sample_ns"]) and last == int(footer["last_sample_ns"]),
               f"first={first} last={last}")
-        if args.window_begin_ns is not None and args.window_end_ns is not None:
+        windowed = args.window_begin_ns is not None and args.window_end_ns is not None
+        if windowed:
             check("window_coverage", first <= args.window_begin_ns and last >= args.window_end_ns,
                   f"first={first} begin={args.window_begin_ns} end={args.window_end_ns} last={last}")
         else:
             print("window_coverage=not_run no window supplied")
+        # The footer's achieved period is the run mean, which a hole one token
+        # wide leaves inside tolerance. The adjacent gaps carry that hole, and
+        # only a gap overlapping the request window costs the arm its samples,
+        # so the verdict counts over-bound gaps inside the window while the
+        # detail reports the whole distribution.
+        if len(rows) >= 2:
+            instants = [int(row[0]) for row in rows]
+            gaps = [later - earlier for earlier, later in zip(instants, instants[1:])]
+            ordered = sorted(gaps)
+            loose_bound = requested_period_ns * 3 // 2
+            over_loose = sum(1 for gap in gaps if gap > loose_bound)
+            over_max = sum(1 for gap in gaps if gap > args.max_gap_ns)
+            if windowed:
+                in_window = sum(
+                    1 for index, gap in enumerate(gaps)
+                    if gap > args.max_gap_ns
+                    and instants[index + 1] > args.window_begin_ns
+                    and instants[index] < args.window_end_ns)
+            else:
+                in_window = over_max
+            check("gaps", in_window == 0,
+                  f"median_ns={nearest_rank(ordered, 500)} p95_ns={nearest_rank(ordered, 950)}"
+                  f" p99_ns={nearest_rank(ordered, 990)} max_ns={ordered[-1]}"
+                  f" over_1_5x={over_loose} over_max={over_max}")
+            if windowed:
+                print(f"gaps_in_window={in_window} begin={args.window_begin_ns}"
+                      f" end={args.window_end_ns} bound_ns={args.max_gap_ns}")
+            else:
+                print(f"gaps_in_window=not_run no window supplied bound_ns={args.max_gap_ns}")
+        else:
+            print(f"gaps=not_run rows={len(rows)}")
     verdict = "accepted" if not failures else "refused"
     print(f"clock_sidecar={verdict} failures={','.join(failures) or '-'}")
     return 0 if not failures else 1

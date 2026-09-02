@@ -81,6 +81,8 @@ set -eu
 #   QWEN_CENSUS_SIDECAR_PERIOD_MS    clock sidecar period, default 5
 #   QWEN_CENSUS_SIDECAR_TOLERANCE    admitted achieved-period deviation, default 0.25
 #   QWEN_CENSUS_SIDECAR_COST_NS      admitted mean sample cost, default 1000000
+#   QWEN_CENSUS_SIDECAR_MAX_GAP_MS   hard maximum adjacent sample gap inside the
+#                                    request window, default 10
 #   QWEN_CENSUS_SIDECAR_CPU          the core the sampler is pinned to, default 1
 #   QWEN_CENSUS_SIDECAR_NICE         the sampler's niceness, default 10
 
@@ -135,6 +137,8 @@ overlap_threshold=${QWEN_CENSUS_OVERLAP_THRESHOLD:-0.05}
 sidecar_period_ms=${QWEN_CENSUS_SIDECAR_PERIOD_MS:-5}
 sidecar_tolerance=${QWEN_CENSUS_SIDECAR_TOLERANCE:-0.25}
 sidecar_cost_ns=${QWEN_CENSUS_SIDECAR_COST_NS:-1000000}
+sidecar_max_gap_ms=${QWEN_CENSUS_SIDECAR_MAX_GAP_MS:-10}
+sidecar_max_gap_ns=$((sidecar_max_gap_ms * 1000000))
 sidecar_cpu=${QWEN_CENSUS_SIDECAR_CPU:-1}
 sidecar_nice=${QWEN_CENSUS_SIDECAR_NICE:-10}
 drm_device=${QWEN_DRM_DEVICE:-/sys/class/drm/card1/device}
@@ -143,9 +147,29 @@ drm_device=${QWEN_DRM_DEVICE:-/sys/class/drm/card1/device}
 # campaign start is allowed to read unavailable and every other column is
 # required on every sample; the allowance is recorded beside the arms. The
 # emptiness is decided by reading the attribute, since sysfs reports every
-# attribute at one page in stat and a size test reads an empty file as full.
+# attribute at one page in stat and a size test reads an empty file as full,
+# and only a readable attribute whose read succeeds and returns nothing
+# earns it: an absent attribute, an unreadable one, or a read that fails
+# is a different telemetry state and refuses the run.
 sidecar_allowed_unavailable=''
-if [ -z "$(cat "$drm_device/pp_dpm_fclk" 2>/dev/null)" ]; then
+fclk_path=$drm_device/pp_dpm_fclk
+if [ ! -e "$fclk_path" ]; then
+    printf 'pp_dpm_fclk is absent: %s\n' "$fclk_path" >&2
+    exit 2
+fi
+if [ ! -r "$fclk_path" ]; then
+    printf 'pp_dpm_fclk is unreadable: %s\n' "$fclk_path" >&2
+    exit 2
+fi
+set +e
+fclk_contents=$(cat "$fclk_path")
+fclk_status=$?
+set -e
+if [ "$fclk_status" -ne 0 ]; then
+    printf 'pp_dpm_fclk read failed with status %s: %s\n' "$fclk_status" "$fclk_path" >&2
+    exit 2
+fi
+if [ -z "$fclk_contents" ]; then
     sidecar_allowed_unavailable=pp_dpm_fclk_surface_mhz
 fi
 # The launch chain runs from the synced runtime tree alone, and a git
@@ -281,6 +305,19 @@ bind_server() {
         "$(sha256sum "$bound_manifest" | cut -d ' ' -f 1)" "$bound_semantics" "$bound_series"
 }
 
+# The binding runs in a command substitution, so its status is captured
+# explicitly at the call site and every field is required nonempty before
+# the caller reads it: a refusal inside a here-document substitution ends
+# only the subshell and leaves read filling every field empty, which is how
+# a mismatched instrumented manifest once entered the arm loop.
+require_binding_fields() {
+    if ! printf '%s\n' "$2" | awk -F'\t' 'NF != 5 { exit 1 }
+        { for (i = 1; i <= NF; i++) if ($i == "") exit 1 }'; then
+        printf 'the %s binding printed other than five nonempty fields\n' "$1" >&2
+        exit 2
+    fi
+}
+
 production_sha256=-
 production_bytes=-
 production_manifest=-
@@ -294,26 +331,29 @@ scoreboard_registry_sha256=-
 scoreboard_ledger_sha256=-
 if [ "$needs_production" = 1 ]; then
     production_manifest=$(manifest_beside "$production_server" production)
-    # The binding's exit status is captured on the assignment rather than
-    # inside a here-document, where a refusal would end only the subshell and
-    # leave read filling every field empty.
-    production_binding=$(bind_server production "$production_server" "$production_manifest") || exit 2
+    set +e
+    production_binding=$(bind_server production "$production_server" "$production_manifest")
+    binding_status=$?
+    set -e
+    [ "$binding_status" -eq 0 ] || exit "$binding_status"
+    require_binding_fields production "$production_binding"
     IFS="$(printf '\t')" read -r production_sha256 production_bytes production_manifest_sha256 \
         production_semantics production_series <<EOF
 $production_binding
 EOF
-    declaration_rows=$(awk -F'\t' '
-        $1 == "instrumentation" { instrumentation++ }
-        $1 == "serving_eligible" { eligible++; declared_eligibility = $2 }
-        END { print instrumentation + 0, eligible + 0, declared_eligibility }' "$production_manifest")
-    set -- $declaration_rows
-    if [ "$1" -ne 0 ]; then
+    # Cardinality and the exact value are decided inside awk over the whole
+    # tab-delimited field, so a value carrying a space is compared as the
+    # literal it is rather than word-split into a passing first token.
+    if ! awk -F'\t' '$1 == "instrumentation" { instrumentation++ }
+        END { exit instrumentation == 0 ? 0 : 1 }' "$production_manifest"; then
         printf 'the production manifest names instrumentation; P is the promoted serving build alone\n' >&2
         exit 2
     fi
-    if [ "$2" -gt 1 ] || { [ "$2" -eq 1 ] && [ "${3:-}" != yes ]; }; then
-        printf 'the production manifest declares serving_eligible %s across %s rows; yes or no declaration is required\n' \
-            "${3:-<empty>}" "$2" >&2
+    if ! awk -F'\t' '$1 == "serving_eligible" { eligible++; value = $2 }
+        END { if (eligible == 0) exit 0; exit (eligible == 1 && value == "yes") ? 0 : 1 }' \
+        "$production_manifest"; then
+        printf 'the production manifest declares serving_eligible other than exactly yes in exactly one row or none: %s\n' \
+            "$(awk -F'\t' '$1 == "serving_eligible" { printf "[%s] ", $2 }' "$production_manifest")" >&2
         exit 2
     fi
     # The receipt is the identity-check.tsv of the fixed-64 scoreboard sweep
@@ -396,27 +436,107 @@ instrumented_semantics=-
 instrumented_series=-
 if [ "$needs_instrumented" = 1 ]; then
     instrumented_manifest=$(manifest_beside "$instrumented_server" instrumented)
-    instrumented_binding=$(bind_server instrumented "$instrumented_server" "$instrumented_manifest") || exit 2
+    set +e
+    instrumented_binding=$(bind_server instrumented "$instrumented_server" "$instrumented_manifest")
+    binding_status=$?
+    set -e
+    [ "$binding_status" -eq 0 ] || exit "$binding_status"
+    require_binding_fields instrumented "$instrumented_binding"
     IFS="$(printf '\t')" read -r instrumented_sha256 instrumented_bytes instrumented_manifest_sha256 \
         instrumented_semantics instrumented_series <<EOF
 $instrumented_binding
 EOF
-    # Exactly one row of each declaration: a manifest naming eligibility
-    # twice is refused rather than read by its first row.
-    declaration_rows=$(awk -F'\t' '
+    # Exactly one row of each declaration at its exact value, decided inside
+    # awk over the whole field: a manifest naming eligibility twice is
+    # refused rather than read by its first row, and a value carrying a
+    # space is the literal it is rather than its first word.
+    if ! awk -F'\t' '
         $1 == "instrumentation" { instrumentation++; declared_instrumentation = $2 }
         $1 == "serving_eligible" { eligible++; declared_eligibility = $2 }
-        END { print instrumentation + 0, eligible + 0, declared_instrumentation, declared_eligibility }' \
-        "$instrumented_manifest")
-    set -- $declaration_rows
-    if [ "$1" -ne 1 ] || [ "$2" -ne 1 ]; then
-        printf 'the instrumented manifest holds %s instrumentation rows and %s serving_eligible rows, requires exactly one of each\n' \
-            "$1" "$2" >&2
+        END { exit (instrumentation == 1 && eligible == 1 \
+            && declared_instrumentation == "pipeline-census-v3" && declared_eligibility == "no") ? 0 : 1 }' \
+        "$instrumented_manifest"; then
+        printf 'the instrumented manifest must declare instrumentation pipeline-census-v3 and serving_eligible no, each in exactly one row: instrumentation %s serving_eligible %s\n' \
+            "$(awk -F'\t' '$1 == "instrumentation" { printf "[%s] ", $2 }' "$instrumented_manifest")" \
+            "$(awk -F'\t' '$1 == "serving_eligible" { printf "[%s] ", $2 }' "$instrumented_manifest")" >&2
         exit 2
     fi
-    if [ "${3:-}" != pipeline-census-v3 ] || [ "${4:-}" != no ]; then
-        printf 'the instrumented server declares instrumentation %s and serving_eligible %s; pipeline-census-v3 and no are required\n' \
-            "${3:--}" "${4:--}" >&2
+fi
+
+# P and I differ by the census instrumentation alone, and that is proven
+# rather than named. Each manifest yields a base-build identity from the
+# rows both carry: the llama.cpp commit, the production patch series
+# digest, the checkpoint patch and source digests, the compiler flags, and
+# the CMake flags with the one census flag removed; the compiler identity
+# is read from each executable's own .comment section, since the manifest
+# records flags rather than the toolchain. The two identities must be
+# equal, and I's CMake delta must be exactly -DGGML_VULKAN_PIPELINE_CENSUS=ON
+# with one candidate_series row naming llama-vulkan-pipeline-census.patch.
+census_cmake_flag=-DGGML_VULKAN_PIPELINE_CENSUS=ON
+# Prints the one value of a manifest key; other than one row is a refusal
+# the caller carries out explicitly, since this runs in a substitution.
+manifest_value() {
+    awk -F'\t' -v key="$2" '$1 == key { count++; value = $2 }
+        END { if (count != 1) exit 1; print value }' "$1" || {
+        printf 'the %s manifest holds other than one %s row\n' "$3" "$2" >&2
+        return 2
+    }
+}
+# Writes the base-build identity of one manifest and server to $4.
+base_build_identity() {
+    identity_manifest=$1
+    identity_server=$2
+    identity_role=$3
+    identity_output=$4
+    identity_commit=$(manifest_value "$identity_manifest" commit "$identity_role") || exit 2
+    identity_series=$(manifest_value "$identity_manifest" checkpoint_patch_series_sha256 "$identity_role") || exit 2
+    identity_patch=$(manifest_value "$identity_manifest" checkpoint_patch_sha256 "$identity_role") || exit 2
+    identity_source=$(manifest_value "$identity_manifest" checkpoint_source_sha256 "$identity_role") || exit 2
+    identity_compiler_flags=$(manifest_value "$identity_manifest" compiler_flags "$identity_role") || exit 2
+    identity_cmake=$(manifest_value "$identity_manifest" cmake_flags "$identity_role") || exit 2
+    identity_cmake=$(printf '%s\n' "$identity_cmake" | tr ' ' '\n' | grep -vx -- "$census_cmake_flag" \
+        | tr '\n' ' ' | sed 's/ *$//') || true
+    identity_compiler=$(readelf -p .comment "$identity_server" 2>/dev/null \
+        | sed -n 's/^ *\[ *[0-9]*\] *//p' | sort | tr '\n' ';')
+    {
+        printf 'commit\t%s\n' "$identity_commit"
+        printf 'checkpoint_patch_series_sha256\t%s\n' "$identity_series"
+        printf 'checkpoint_patch_sha256\t%s\n' "$identity_patch"
+        printf 'checkpoint_source_sha256\t%s\n' "$identity_source"
+        printf 'compiler_flags\t%s\n' "$identity_compiler_flags"
+        printf 'cmake_flags_common\t%s\n' "$identity_cmake"
+        printf 'compiler_identity\t%s\n' "$identity_compiler"
+    } >"$identity_output"
+}
+production_base_identity_sha256=-
+instrumented_base_identity_sha256=-
+shader_compiler_identity=unrecorded
+if [ "$needs_production" = 1 ] && [ "$needs_instrumented" = 1 ]; then
+    identity_scratch=$(mktemp -d)
+    base_build_identity "$production_manifest" "$production_server" production "$identity_scratch/production"
+    base_build_identity "$instrumented_manifest" "$instrumented_server" instrumented "$identity_scratch/instrumented"
+    if ! cmp -s "$identity_scratch/production" "$identity_scratch/instrumented"; then
+        printf 'the production and instrumented servers descend from different base builds:\n' >&2
+        diff -- "$identity_scratch/production" "$identity_scratch/instrumented" >&2 || true
+        rm -r -- "$identity_scratch"
+        exit 2
+    fi
+    production_base_identity_sha256=$(sha256sum "$identity_scratch/production" | cut -d ' ' -f 1)
+    instrumented_base_identity_sha256=$(sha256sum "$identity_scratch/instrumented" | cut -d ' ' -f 1)
+    rm -r -- "$identity_scratch"
+    instrumented_cmake=$(manifest_value "$instrumented_manifest" cmake_flags instrumented) || exit 2
+    production_cmake=$(manifest_value "$production_manifest" cmake_flags production) || exit 2
+    instrumented_delta=$(printf '%s\n' "$instrumented_cmake" | tr ' ' '\n' \
+        | grep -vxF -- "$(printf '%s\n' "$production_cmake" | tr ' ' '\n')" | tr '\n' ' ') || true
+    if [ "$instrumented_delta" != "$census_cmake_flag " ]; then
+        printf 'the instrumented CMake delta against production must be exactly %s: [%s]\n' \
+            "$census_cmake_flag" "$instrumented_delta" >&2
+        exit 2
+    fi
+    candidate_series=$(manifest_value "$instrumented_manifest" candidate_series instrumented) || exit 2
+    if [ "$candidate_series" != llama-vulkan-pipeline-census.patch ]; then
+        printf 'the instrumented manifest must name candidate_series llama-vulkan-pipeline-census.patch: %s\n' \
+            "$candidate_series" >&2
         exit 2
     fi
 fi
@@ -522,6 +642,7 @@ printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\
         "$sidecar_bound" "$compile_bound" "$collect_bound" "$overlap_threshold"
     printf 'sidecar_period_ms\t%s\nsidecar_tolerance\t%s\nsidecar_cost_ns\t%s\nsidecar_cpu\t%s\nsidecar_nice\t%s\n' \
         "$sidecar_period_ms" "$sidecar_tolerance" "$sidecar_cost_ns" "$sidecar_cpu" "$sidecar_nice"
+    printf 'sidecar_max_gap_ns\t%s\n' "$sidecar_max_gap_ns"
     printf 'sidecar_drm_device\t%s\nsidecar_allowed_unavailable\t%s\n' \
         "$drm_device" "${sidecar_allowed_unavailable:--}"
     printf 'production_server\t%s\nproduction_server_sha256\t%s\nproduction_server_bytes\t%s\n' \
@@ -545,6 +666,11 @@ printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\
         "$instrumented_manifest" "$instrumented_manifest_sha256"
     printf 'instrumented_checkpoint_semantics\t%s\ninstrumented_patch_series_sha256\t%s\n' \
         "$instrumented_semantics" "$instrumented_series"
+    printf 'production_base_build_identity_sha256\t%s\ninstrumented_base_build_identity_sha256\t%s\n' \
+        "$production_base_identity_sha256" "$instrumented_base_identity_sha256"
+    printf 'instrumented_cmake_delta\t%s\nshader_compiler_identity\t%s\n' \
+        "$census_cmake_flag" "$shader_compiler_identity"
+    printf 'timestamp_period_ns\t40\ninterval_endpoint_equality\texact_on_this_device\n'
     printf 'model_artifacts\t%s\nmodel_artifacts_sha256\t%s\n' \
         "$artifact_ledger" "$(sha256sum "$artifact_ledger" | cut -d ' ' -f 1)"
     printf 'started_utc\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -659,6 +785,7 @@ EOF
             python3 "$sidecar_validator" "$arm_directory/clock-sidecar.tsv" \
                 --sidecar-status "$sidecar_status" --period-ms "$sidecar_period_ms" \
                 --period-tolerance "$sidecar_tolerance" --cost-bound-ns "$sidecar_cost_ns" \
+                --max-gap-ns "$sidecar_max_gap_ns" \
                 --window-begin-ns "$window_begin" --window-end-ns "$window_end" \
                 ${sidecar_allowed_unavailable:+--allow-unavailable "$sidecar_allowed_unavailable"} \
                 >"$arm_directory/clock-sidecar-verdict.txt" 2>&1
@@ -666,6 +793,7 @@ EOF
             python3 "$sidecar_validator" "$arm_directory/clock-sidecar.tsv" \
                 --sidecar-status "$sidecar_status" --period-ms "$sidecar_period_ms" \
                 --period-tolerance "$sidecar_tolerance" --cost-bound-ns "$sidecar_cost_ns" \
+                --max-gap-ns "$sidecar_max_gap_ns" \
                 ${sidecar_allowed_unavailable:+--allow-unavailable "$sidecar_allowed_unavailable"} \
                 >"$arm_directory/clock-sidecar-verdict.txt" 2>&1
         fi
