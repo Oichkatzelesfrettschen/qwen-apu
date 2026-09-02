@@ -28,11 +28,26 @@ brick already ran under this run's own input closure, echoed into the ledger
 at its own slot with the rate it measured, so it pairs as a completed arm;
 any other status, or a row without a rate, makes the whole control
 `incomplete`. The runner reads the verdict column by name to decide between
-accepted, refuted, unresolved, and failed.
+accepted, refuted, unresolved, state-changed, and failed.
+
+A pair is judged over the execution state its two arms shared. The runner
+records the modal selected graphics clock of each sampled arm's request window
+as `sclk_mode_mhz`, and a pair whose two arms hold different numeric modes
+measures the governor step between them rather than the change the control
+names, so it is listed as `state-changed` in `deltas` and stays outside the
+mean and the interval. A `-` is an unknown state rather than a state of its
+own -- the sampler is off on `P-nosidecar` and `W`, and a ledger predating the
+column carries `-` on every row -- so a pair carrying one holds whatever state
+its partner did and remains comparable. Where fewer than two comparable pairs
+survive, the whole control reads `state-changed`, a verdict distinct from
+`incomplete`, which names missing arms, and from `unresolved`, which names an
+interval that spans its bound.
 
 `first_outer` through `second_delta` carry the first quadruple's own two pairs
 rather than extremes of the set, so a reader compares a single replicate
-against the aggregate; `deltas` lists every paired delta in campaign order.
+against the aggregate; `deltas` lists every paired delta in campaign order and
+`sclk_modes` lists each pair's `inner/outer` modes in the same order and the
+same direction as the delta.
 
 usage: summarize-census-controls.py ARMS_TSV --sidecar-bound F
        --compile-bound F --collect-bound F
@@ -59,7 +74,9 @@ COLUMNS = ("pair", "control", "outer", "inner",
            "first_outer", "first_inner", "first_delta",
            "second_outer", "second_inner", "second_delta",
            "replicates", "mean_delta", "sd_delta", "ci_low", "ci_high", "deltas",
-           "bound", "verdict", "detail")
+           "sclk_modes", "bound", "verdict", "detail")
+
+UNKNOWN_STATE = "-"
 
 
 def read_arms(path):
@@ -75,8 +92,22 @@ def read_arms(path):
     for line in lines[1:]:
         fields = dict(zip(header, line.split("\t")))
         rate = fields["tok_s"]
-        arms.append((fields["arm"], float(rate) if rate != "-" else None, fields["status"]))
+        # A ledger written before the clock-state columns existed carries the
+        # unknown state on every row, which leaves every pair comparable and
+        # replays those campaigns unchanged.
+        arms.append((fields["arm"], float(rate) if rate != "-" else None,
+                     fields["status"], fields.get("sclk_mode_mhz", UNKNOWN_STATE)))
     return arms
+
+
+def comparable(inner, outer):
+    """Whether one pair's two arms held the same selected graphics clock.
+
+    An unknown mode takes whatever state its partner held, so the test refuses
+    a pair only where both arms name a state and the two differ.
+    """
+    return (inner == UNKNOWN_STATE or outer == UNKNOWN_STATE
+            or inner == outer)
 
 
 def interval(deltas):
@@ -161,7 +192,7 @@ def main():
         outer, inner = first[0][0], first[1][0]
         if control is None:
             print(f"{pair}\tunregistered\t{outer}\t{inner}"
-                  "\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\tunclassified\t-")
+                  "\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\tunclassified\t-")
             continue
         bound = bounds[control]
         replicates = 2 * len(members)
@@ -169,21 +200,44 @@ def main():
                        for quadruple in members for arm in quadruple)
         if not complete:
             print(f"{pair}\t{control}\t{outer}\t{inner}"
-                  f"\t-\t-\t-\t-\t-\t-\t{replicates}\t-\t-\t-\t-\t-"
+                  f"\t-\t-\t-\t-\t-\t-\t{replicates}\t-\t-\t-\t-\t-\t-"
                   f"\t{bound}\tincomplete\t-")
             continue
+        # One quadruple carries two pairs and each is judged on its own state,
+        # so a quadruple whose governor stepped between its second and third
+        # arm keeps the pair that held one state and loses the pair that
+        # straddled the step.
         deltas = []
+        modes = []
         for a, b, c, d in members:
-            deltas.append(b[1] / a[1] - 1)
-            deltas.append(c[1] / d[1] - 1)
-        mean, deviation, low, high = interval(deltas)
-        verdict, detail = judge(low, high, bound)
+            for numerator, denominator in ((b, a), (c, d)):
+                modes.append(f"{numerator[3]}/{denominator[3]}")
+                if comparable(numerator[3], denominator[3]):
+                    deltas.append(numerator[1] / denominator[1] - 1)
+                else:
+                    deltas.append(None)
+        listed = " ".join("state-changed" if delta is None else f"{delta:+.4f}"
+                          for delta in deltas)
+        listed_modes = " ".join(modes)
         a, b, c, d = first
-        listed = " ".join(f"{delta:+.4f}" for delta in deltas)
-        print(f"{pair}\t{control}\t{outer}\t{inner}"
-              f"\t{a[1]:.3f}\t{b[1]:.3f}\t{deltas[0]:+.4f}"
-              f"\t{d[1]:.3f}\t{c[1]:.3f}\t{deltas[1]:+.4f}"
-              f"\t{replicates}\t{mean:+.4f}\t{deviation:.4f}\t{low:+.4f}\t{high:+.4f}\t{listed}"
+        first_delta = "state-changed" if deltas[0] is None else f"{deltas[0]:+.4f}"
+        second_delta = "state-changed" if deltas[1] is None else f"{deltas[1]:+.4f}"
+        head = (f"{pair}\t{control}\t{outer}\t{inner}"
+                f"\t{a[1]:.3f}\t{b[1]:.3f}\t{first_delta}"
+                f"\t{d[1]:.3f}\t{c[1]:.3f}\t{second_delta}\t{replicates}")
+        measured = [delta for delta in deltas if delta is not None]
+        if len(measured) < 2:
+            print(f"{head}\t-\t-\t-\t-\t{listed}\t{listed_modes}"
+                  f"\t{bound}\tstate-changed"
+                  f"\tcomparable_pairs={len(measured)} of {replicates}")
+            continue
+        mean, deviation, low, high = interval(measured)
+        verdict, detail = judge(low, high, bound)
+        if len(measured) < replicates:
+            excluded = f"comparable_pairs={len(measured)} of {replicates}"
+            detail = excluded if detail == "-" else f"{detail} {excluded}"
+        print(f"{head}\t{mean:+.4f}\t{deviation:.4f}\t{low:+.4f}\t{high:+.4f}"
+              f"\t{listed}\t{listed_modes}"
               f"\t{bound}\t{verdict}\t{detail}")
     return 0
 
