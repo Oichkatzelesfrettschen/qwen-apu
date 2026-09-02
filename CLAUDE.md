@@ -523,6 +523,21 @@ retained historical evidence. The live bandwidth harness now admits nice 19
 alone and applies it as an absolute child priority, independent of the calling
 shell's niceness.
 
+That comparison predates the standing guest. The appliance pins its server to
+core 0 at nice 19, and a qemu guest runs two vCPU threads at nice 0 across
+both cores beside `ksmd` at nice 5, so under CFS a runnable vCPU on core 0
+leaves the server weight 15 against 1024.
+`evidence/raven2-vulkan-kernel-census/dpm-authority/20260902T2154Z-nice-probe/`
+measures llama-bench on core 0 under the commanded clock pair at nice 0
+against nice 19 over six adjacent pairs: nice 0 decodes 1.9% faster, interval
++0.6% to +3.2%. The rate follows `load1` under both priorities, sliding from
+9.74 to 9.26 tok/s at nice 0 as `load1` rose from 2.3 to 3.5, so the
+priority is a 2% term and the guest's memory traffic through the shared L3 and
+DDR4 controller is the candidate for the remaining 4% paired scatter; its
+falsifier is one labelled diagnostic with the guest paused, which
+characterizes a machine the appliance is not and decides nothing about
+promotion.
+
 A positive `QWEN_BENCH_PREFILL` requests a paired prefill/decode arm. A
 successful `llama-bench` process must emit exactly one
 `pp${QWEN_BENCH_PREFILL}` row and one `tg${QWEN_BENCH_GENERATE}` row, with an
@@ -617,8 +632,30 @@ through a table entry, and `/proc/cpuinfo` reads it back from aperf/mperf.
 The engine clock has three values and they answer different questions: the
 table states which steps exist, hwmon's `freq1_input` states what an idle
 machine delivers, and the census runs state what a decode window holds. The
-`manual` operating point every campaign runs at delivers 1100 MHz GFXCLK with
-FCLK at 933 MHz.
+operating point every campaign runs at is named `manual-gfx1100-fclk933`:
+`power_dpm_force_performance_level=manual` with `pp_dpm_sclk` at level 2 and
+`pp_dpm_mclk` at level 2, which delivers 1100 MHz GFXCLK on every sample and
+holds FCLK at 933 MHz as both hard minimum and soft maximum. It is the
+highest commandable graphics state paired with the highest fabric state the
+firmware honors as a hard minimum, and a maximum of neither clock table.
+
+`high` and `profile_peak` are invalid for inference on this machine. Both
+pin GFXCLK at 1100 MHz and drop delivered FCLK to 400 MHz, and the 2B
+decodes at 6 to 7 tok/s under either against 9 to 9.6 under `manual` level
+2 (`evidence/raven2-vulkan-kernel-census/dpm-authority/20260902T1822Z-actual/`
+and `20260902T1826Z-manual/`). `smu10_hwmgr.c` sends the hard-coded
+`SMU10_UMD_PSTATE_PEAK_FCLK` of 1200 MHz for both, which the firmware answers
+with its floor, so a generic performance-mode cleanup that reintroduces either
+name reintroduces the 400 MHz fabric.
+
+The clock record is bounded evidence rather than continuous observation. An
+arm's `clock_invariant` counts every sample taken, `window_lost_fraction`
+bounds the samples the sampler was held off for at 0.03, and the stall bound
+refuses one gap on its own at 100 ms under `auto`, where a governor step can
+hide inside it, and at 250 ms under a forced level, where the firmware holds
+one state and the samples at both edges bracket the gap. A 2.5% lost fraction
+satisfies coverage and leaves the throughput and GPU timestamps valid; it
+licenses no statement that the clock held inside the unobserved intervals.
 
 ### Memory
 
@@ -649,14 +686,25 @@ FCLK at 933 MHz.
 | Thermal sensors | -- | four carry a temperature: `k10temp` Tctl, `amdgpu` edge, `acpitz`, and `nvme`; `hp` carries `pwm1_enable` and `BAT0` carries current and voltage | observed, `/sys/class/hwmon/*/name` and each `temp*_input` |
 | Sustained temperature | -- | Tctl at 87 C at the end of a five-minute two-core load; the `amdgpu` edge sensor peaks at 85 C across the `manual` arms | measured, `evidence/raven2-vulkan-kernel-census/dpm-authority/README.md`, experiments 2 and 4 |
 
-Two hardware questions stay open. Whether 1067 MHz FCLK is commandable on
-firmware F.69 at all is unresolved: the level-3 `pp_dpm_mclk` write returns no
-error and the delivered fabric clock still reads 933 MHz on 137 of 145 sampled
-rows, so the firmware accepts a request it does not hold. Whether DDR4-2400
-modules would train faster is a separate hardware hypothesis rather than a
-setting, since the Zen+ FP5 processor family rates DDR4-2400 while the
-installed Crucial parts are DDR4-2133 by their own SPD and the UMC registers
-train them at exactly that.
+The 1067 MHz fabric state is firmware-selected and not commandable as a
+floor. `evidence/raven2-vulkan-kernel-census/dpm-authority/20260902T2048Z-fclk-rescind/`
+writes hard minimums of 400, 933, and 1067 in turn: the firmware honors 400
+and 933 exactly and answers the 1067 request with 933 on 279 of 282 samples,
+while `auto` selects 1067 on its own for about half of one loaded arm. The
+one fabric experiment left is a `manual` mask enabling levels 2 and 3
+together (`echo "2 3" > pp_dpm_mclk`) with GFX pinned at 1100, run as a
+production-policy arm rather than a calibration state: it asks whether the
+firmware raises the fabric under this workload with the 933 floor kept, and a
+promotion comparison stays at fixed 933 because a mixed 933/1067 arm pair
+resolves nothing at the 1 to 4% an E4-class effect is worth. The SMU10
+kernel patch that would replace the hard-coded 1200 is deprioritized by the
+same refusal, since the firmware path it would reach has already declined a
+1067 hard minimum. Whether DDR4-2400 modules would train faster is a
+separate hardware hypothesis rather than a setting, since the Zen+ FP5
+processor family rates DDR4-2400 while the installed Crucial parts are
+DDR4-2133 by their own SPD and the UMC registers train them at exactly that;
+the 1200 MHz the SMU requests is a fabric clock and states nothing about
+what the installed DRAM can train to.
 
 ## Three runtime classes, one primary target
 

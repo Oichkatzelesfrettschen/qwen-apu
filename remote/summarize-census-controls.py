@@ -300,9 +300,27 @@ def main():
         complete = all(arm[2] in COMPLETED_STATUS and arm[1]
                        for quadruple in members for arm in quadruple)
         if not complete:
+            # The verdict stays incomplete, since a set missing a delta
+            # measures a different set, and the detail carries the pairs whose
+            # two arms both completed so the record states what the surviving
+            # replicates measured rather than nothing. The 20260902T2139Z
+            # served A/B lost its last arm to a sampler gap and reported its
+            # three clean pairs as no result at all.
+            survivors = []
+            for a, b, c, d in members:
+                for numerator, denominator in ((b, a), (c, d)):
+                    if (numerator[2] in COMPLETED_STATUS and numerator[1]
+                            and denominator[2] in COMPLETED_STATUS and denominator[1]
+                            and comparable(numerator[3], denominator[3], band)):
+                        survivors.append(numerator[1] / denominator[1] - 1)
+            detail = f"surviving_pairs={len(survivors)} of {replicates}"
+            if survivors:
+                listed = " ".join(f"{delta:+.4f}" for delta in survivors)
+                detail += (f" surviving_mean={sum(survivors) / len(survivors):+.4f}"
+                           f" surviving_deltas={listed}")
             print(f"{pair}\t{control}\t{outer}\t{inner}"
                   f"\t-\t-\t-\t-\t-\t-\t{replicates}\t-\t-\t-\t-\t-\t-\t{outside}"
-                  f"\t{bound}\tincomplete\t-")
+                  f"\t{bound}\tincomplete\t{detail}")
             continue
         # One quadruple carries two pairs and each is judged on its own state,
         # so a quadruple whose governor stepped between its second and third

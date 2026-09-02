@@ -524,7 +524,19 @@ sidecar_cost_ns=${QWEN_CENSUS_SIDECAR_COST_NS:-1000000}
 # window and the clock invariant still counts every sample taken. Arm 06-P of
 # the 20260902T2011Z calibration held both clocks and lost 0.0214, which is a
 # record answering its question under a bound set below what CFS costs it.
-sidecar_max_gap_ms=${QWEN_CENSUS_SIDECAR_MAX_GAP_MS:-100}
+# The stall bound follows the clock policy. Under auto the governor may step
+# inside an unobserved interval, so a stall of ten periods is refused on its
+# own. Under a forced policy the firmware holds the hard minimum and soft
+# maximum at one level, so a step inside a gap has no path and the samples at
+# both edges of the gap bracket it; the stall bound then stands at 250 ms and
+# coverage alone decides. Arm 08-C of the 20260902T2139Z served A/B held
+# 1100/933 on all 365 samples and lost 0.0208, and was refused on one 113 ms
+# gap, which is the refusal this split removes.
+case $engine_clock_policy in
+    auto) sidecar_max_gap_default_ms=100 ;;
+    *) sidecar_max_gap_default_ms=250 ;;
+esac
+sidecar_max_gap_ms=${QWEN_CENSUS_SIDECAR_MAX_GAP_MS:-$sidecar_max_gap_default_ms}
 sidecar_max_gap_ns=$((sidecar_max_gap_ms * 1000000))
 sidecar_max_lost_fraction=${QWEN_CENSUS_SIDECAR_MAX_LOST:-0.03}
 # The guards run on core 1 at nice 0 and the server on core 0 at nice 19,

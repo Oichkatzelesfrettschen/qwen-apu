@@ -206,8 +206,6 @@ models_directory=${QWEN_MODELS_DIRECTORY:-"${HOME:?}/models"}
 sidecar_period_ms=${QWEN_CENSUS_SIDECAR_PERIOD_MS:-20}
 sidecar_tolerance=${QWEN_CENSUS_SIDECAR_TOLERANCE:-0.25}
 sidecar_cost_ns=${QWEN_CENSUS_SIDECAR_COST_NS:-1000000}
-sidecar_max_gap_ms=${QWEN_CENSUS_SIDECAR_MAX_GAP_MS:-100}
-sidecar_max_gap_ns=$((sidecar_max_gap_ms * 1000000))
 # Coverage for a clock-state record rather than a safety ceiling: at the 20 ms
 # period 0.03 is under 15 samples of a 400-sample window and the clock
 # invariant counts every sample taken. The census campaign carries the same
@@ -237,6 +235,16 @@ case $engine_clock_policy in
         exit 2
         ;;
 esac
+# The stall bound follows the policy the way the census runner's does: ten
+# periods under auto, where a governor step can hide inside a gap, and 250 ms
+# under a forced policy, where the firmware holds one level and the samples
+# at both edges of a gap bracket it, so coverage alone decides.
+case $engine_clock_policy in
+    auto) sidecar_max_gap_default_ms=100 ;;
+    *) sidecar_max_gap_default_ms=250 ;;
+esac
+sidecar_max_gap_ms=${QWEN_CENSUS_SIDECAR_MAX_GAP_MS:-$sidecar_max_gap_default_ms}
+sidecar_max_gap_ns=$((sidecar_max_gap_ms * 1000000))
 engine_clock_sclk_level=-
 engine_clock_mclk_level=-
 engine_clock_required_sclk_mhz=-
