@@ -129,6 +129,34 @@ production_bytes=$(server_byte_count "$production_server")
 instrumented_sha256=$(server_digest "$instrumented_server")
 instrumented_bytes=$(server_byte_count "$instrumented_server")
 
+# The sampler the broker path launches per arm. telemetry-broker opens its
+# surfaces, prints one readiness line on stderr, samples until SIGTERM, and
+# formats the record at drain; the stub reproduces the launch contract the
+# runner depends on -- the readiness line and the answer to TERM -- and leaves
+# the device out. QWEN_TEST_BROKER_SILENT withholds the line, which is the
+# state the runner reads as a sampler that never started, and the stub is one
+# file under both settings so its digest holds the acquisition contract
+# constant across the cases that reuse a brick.
+broker_stub=$temporary_directory/telemetry-broker
+cat >"$broker_stub" <<'BROKER_STUB'
+#!/bin/sh
+set -eu
+if [ "${QWEN_TEST_BROKER_SILENT:-0}" != 1 ]; then
+    printf 'telemetry_broker=ready pid=%s period_ns=10000000 nice=19 cpu_affinity=0 ring_samples=1 ring_bytes=40\n' \
+        "$$" >&2
+fi
+trap 'exit 0' TERM
+broker_iterations=0
+while [ "$broker_iterations" -lt 600 ]; do
+    sleep 0.2
+    broker_iterations=$((broker_iterations + 1))
+done
+BROKER_STUB
+chmod +x "$broker_stub"
+broker_stub_sha256=$(server_digest "$broker_stub")
+broker_source_sha256=$(server_digest "$script_directory/telemetry-broker.c")
+broker_absent=$temporary_directory/telemetry-broker-absent
+
 {
     printf 'executable\tllama-server\t%s\t%s\n' "$production_bytes" "$production_sha256"
     printf 'checkpoint_semantics\tnatural-boundary-v1\n'
@@ -374,12 +402,93 @@ contract_output=$(env -i \
     QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
     QWEN_CENSUS_INSTRUMENTED_SERVER="$instrumented_server" \
     QWEN_DRM_DEVICE="$drm_empty" \
+    QWEN_CENSUS_BROKER="$broker_stub" \
     QWEN_CENSUS_PRINT_CONTRACT=1 \
     "$runner" "$model_id" "$temporary_directory/out-contract")
 printf '%s\n' "$contract_output" | grep -q '^contract	pipeline-census-calibration-v1$'
+printf '%s\n' "$contract_output" | grep -q '^contract	pipeline-census-analysis-v1$'
 contract_sha256=$(printf '%s\n' "$contract_output" | awk -F'\t' '$1 == "calibration_contract_sha256" { print $2 }')
 [ -n "$contract_sha256" ]
-printf 'contract_print=accepted sha256=%s\n' "$contract_sha256"
+# The two contracts are separate values and the alias is the acquisition
+# digest under its former name, so the print states three digests and two of
+# them are equal.
+acquisition_sha256=$(printf '%s\n' "$contract_output" | awk -F'\t' '$1 == "acquisition_contract_sha256" { print $2 }')
+analysis_sha256=$(printf '%s\n' "$contract_output" | awk -F'\t' '$1 == "analysis_contract_sha256" { print $2 }')
+[ -n "$acquisition_sha256" ] && [ -n "$analysis_sha256" ]
+if [ "$acquisition_sha256" != "$contract_sha256" ]; then
+    printf 'calibration_contract_sha256 %s is no alias of acquisition %s\n' \
+        "$contract_sha256" "$acquisition_sha256" >&2
+    exit 1
+fi
+if [ "$analysis_sha256" = "$acquisition_sha256" ]; then
+    printf 'the analysis contract digest equals the acquisition digest\n' >&2
+    exit 1
+fi
+# The analysis contract names the four readers in fixed order, so the digest
+# of the last one is the digest of summarize-census-controls.py.
+if ! printf '%s\n' "$contract_output" | grep -q "^summarize-census-controls.py	$(sha256sum "$script_directory/summarize-census-controls.py" | cut -d ' ' -f 1)$"; then
+    printf 'the analysis contract does not carry the controls summarizer digest\n' >&2
+    exit 1
+fi
+printf 'contract_print=accepted acquisition=%s analysis=%s\n' \
+    "$acquisition_sha256" "$analysis_sha256"
+
+# The sampler is an acquisition input rather than a reader, so the contract
+# names the program that produced a record beside the digests of the
+# executable and the source it was built from. An invocation naming no sampler
+# takes the broker.
+active_fixture=sampler_default_broker
+if ! printf '%s\n' "$contract_output" | grep -q '^sidecar_implementation	telemetry-broker$'; then
+    printf 'the default sampler is not the telemetry broker\n' >&2
+    exit 1
+fi
+if ! printf '%s\n' "$contract_output" | grep -q "^sidecar_binary_sha256	$broker_stub_sha256\$"; then
+    printf 'the contract carries no broker executable digest\n' >&2
+    exit 1
+fi
+if ! printf '%s\n' "$contract_output" | grep -q "^sidecar_source_sha256	$broker_source_sha256\$"; then
+    printf 'the contract carries no telemetry-broker.c digest\n' >&2
+    exit 1
+fi
+printf 'sampler_default_broker=accepted binary=%s\n' "$broker_stub_sha256"
+
+# QWEN_CENSUS_SAMPLER=python restores the invocation the runner carried
+# before the broker: the row shape holds and both digests read `-`, since a
+# Python sampler is the reader the analysis contract already names.
+active_fixture=sampler_python_contract
+python_contract_output=$(env -i \
+    PATH="$execution_path" \
+    HOME="$home_directory" \
+    QWEN_MODELS_DIRECTORY="$models_directory" \
+    QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+    QWEN_CENSUS_PRODUCTION_SERVER="$production_server" \
+    QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+    QWEN_CENSUS_INSTRUMENTED_SERVER="$instrumented_server" \
+    QWEN_DRM_DEVICE="$drm_empty" \
+    QWEN_CENSUS_BROKER="$broker_absent" \
+    QWEN_CENSUS_SAMPLER=python \
+    QWEN_CENSUS_PRINT_CONTRACT=1 \
+    "$runner" "$model_id" "$temporary_directory/out-contract-python")
+if ! printf '%s\n' "$python_contract_output" \
+    | grep -q '^sidecar_implementation	sample-clock-sidecar.py$'; then
+    printf 'QWEN_CENSUS_SAMPLER=python names another implementation\n' >&2
+    exit 1
+fi
+if ! printf '%s\n' "$python_contract_output" | grep -q '^sidecar_binary_sha256	-$'; then
+    printf 'the Python sampler contract carries a binary digest\n' >&2
+    exit 1
+fi
+if ! printf '%s\n' "$python_contract_output" | grep -q '^sidecar_source_sha256	-$'; then
+    printf 'the Python sampler contract carries a source digest\n' >&2
+    exit 1
+fi
+python_contract_sha256=$(printf '%s\n' "$python_contract_output" \
+    | awk -F'\t' '$1 == "acquisition_contract_sha256" { print $2 }')
+if [ "$python_contract_sha256" = "$acquisition_sha256" ]; then
+    printf 'the two samplers share one acquisition contract digest\n' >&2
+    exit 1
+fi
+printf 'sampler_python_contract=accepted acquisition=%s\n' "$python_contract_sha256"
 
 write_calibration_inputs() {
     calibration_inputs_path=$1
@@ -442,6 +551,7 @@ run_runner() {
         QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
         QWEN_CENSUS_INSTRUMENTED_SERVER="$instrumented_server" \
         QWEN_DRM_DEVICE="$drm_empty" \
+        QWEN_CENSUS_BROKER="$broker_stub" \
         "$@" \
         $privilege_drop \
         "$runner" "$model_id" "$temporary_directory/out-$run_index" \
@@ -477,11 +587,37 @@ run_runner attribution_receipt "$reached_preflight_end" \
     QWEN_CENSUS_CALIBRATION_RECEIPT="$calibration_receipt" \
     QWEN_CENSUS_ARMS=I1
 
-run_runner mode_name 'QWEN_CENSUS_MODE must be calibration or attribution' \
+run_runner mode_name 'QWEN_CENSUS_MODE must be calibration, attribution, or canary' \
     QWEN_CENSUS_MODE=bogus
+
+run_runner sampler_name 'QWEN_CENSUS_SAMPLER must be broker or python' \
+    QWEN_CENSUS_SAMPLER=bogus
+
+# An absent broker is built rather than refused, so the refusal belongs to the
+# build: CC names no compiler, build-telemetry-broker.sh ends on its own
+# command -v test, and the preflight reports the executable it still lacks.
+run_runner broker_build_failure \
+    'the telemetry broker is absent and its build failed' \
+    QWEN_CENSUS_BROKER="$broker_absent" \
+    CC=/nonexistent/cc
 
 run_runner calibration_arm_list 'a calibration runs exactly' \
     QWEN_CENSUS_ARMS=I1
+
+# A canary is its own mode rather than a short calibration: it fixes its own
+# four-arm list and refuses another.
+run_runner canary_default "$reached_preflight_end" \
+    QWEN_CENSUS_MODE=canary
+
+run_runner canary_arm_list 'a canary runs exactly' \
+    QWEN_CENSUS_MODE=canary \
+    QWEN_CENSUS_ARMS=I1
+
+# The bricks partition a calibration's thirteen arms, so no other mode holds
+# one to reuse.
+run_runner reuse_outside_calibration 'QWEN_CENSUS_REUSE_BRICKS belongs to a calibration' \
+    QWEN_CENSUS_MODE=canary \
+    QWEN_CENSUS_REUSE_BRICKS="$temporary_directory/calibration"
 
 run_runner attribution_without_receipt \
     'an attribution requires QWEN_CENSUS_CALIBRATION_RECEIPT' \
@@ -512,6 +648,30 @@ run_runner calibration_contract_period 'calibration contract differs from the re
     QWEN_CENSUS_CALIBRATION_RECEIPT="$calibration_receipt" \
     QWEN_CENSUS_ARMS=I1 \
     QWEN_CENSUS_SIDECAR_PERIOD_MS=5
+
+# A reuse directory is read whole: the ledger its bricks were echoed from
+# must be there, and its acquisition contract must be this run's, since a
+# brick measured under another contract measures another campaign.
+reuse_no_ledger=$temporary_directory/reuse-no-ledger
+mkdir -p "$reuse_no_ledger"
+write_calibration_inputs "$reuse_no_ledger/inputs.tsv" "$production_sha256"
+run_runner reuse_ledger_absent 'carries no readable arms\.tsv' \
+    QWEN_CENSUS_REUSE_BRICKS="$reuse_no_ledger"
+
+reuse_foreign_contract=$temporary_directory/reuse-foreign-contract
+mkdir -p "$reuse_foreign_contract"
+write_calibration_inputs "$reuse_foreign_contract/inputs.tsv" "$production_sha256" \
+    "$foreign_sha256"
+: >"$reuse_foreign_contract/arms.tsv"
+run_runner reuse_foreign_contract 'ran under acquisition contract' \
+    QWEN_CENSUS_REUSE_BRICKS="$reuse_foreign_contract"
+
+reuse_no_status=$temporary_directory/reuse-no-status
+mkdir -p "$reuse_no_status"
+write_calibration_inputs "$reuse_no_status/inputs.tsv" "$production_sha256"
+printf 'slot\tarm\ttok_s\tstate\n' >"$reuse_no_status/arms.tsv"
+run_runner reuse_ledger_without_status 'names no status column' \
+    QWEN_CENSUS_REUSE_BRICKS="$reuse_no_status"
 
 run_runner duplicate_executable_row 'not the one executable llama-server row' \
     QWEN_CENSUS_PRODUCTION_SERVER="$duplicate_root/bin/llama-server"
@@ -584,6 +744,11 @@ run_runner scoreboard_server_row 'does not carry one accepted server row' \
 # sampling sidecar beside a live served child, signals the runner, and reads
 # the two pids and the clock record afterwards.
 #
+# The section runs the Python sampler, whose evidence is a record growing on
+# disk while the arm is live; telemetry-broker formats its record at drain, so
+# the same poll would read an absent file. The broker's own launch, readiness,
+# and stop are covered by the sampler cases below.
+#
 # The runner is copied into a scratch directory because it resolves
 # measure-served-decode.sh, the registry reader, and the census readers
 # through its own directory: the fake served runner placed there is what
@@ -601,6 +766,7 @@ for linked_member in model-registry.sh models.tsv ctx-checkpoints.tsv \
     validated-tuples.tsv quarantine.tsv draft-pairs.tsv \
     summarize-kernel-census.py summarize-census-controls.py \
     sample-clock-sidecar.py validate-clock-sidecar.py \
+    telemetry-broker.c build-telemetry-broker.sh \
     summarize-perf-logger-slice.py; do
     ln -s -- "$script_directory/$linked_member" "$signal_directory/$linked_member"
 done
@@ -667,6 +833,8 @@ signal_contract_sha256=$(env -i \
     QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
     QWEN_CENSUS_INSTRUMENTED_SERVER="$instrumented_server" \
     QWEN_DRM_DEVICE="$signal_drm" \
+    QWEN_CENSUS_BROKER="$broker_stub" \
+    QWEN_CENSUS_SAMPLER=python \
     QWEN_CENSUS_SIDECAR_CPU=0 \
     QWEN_CENSUS_PRINT_CONTRACT=1 \
     "$signal_runner" "$model_id" "$temporary_directory/out-signal-contract" \
@@ -693,6 +861,8 @@ env -i \
     QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
     QWEN_CENSUS_INSTRUMENTED_SERVER="$instrumented_server" \
     QWEN_DRM_DEVICE="$signal_drm" \
+    QWEN_CENSUS_BROKER="$broker_stub" \
+    QWEN_CENSUS_SAMPLER=python \
     QWEN_CENSUS_SIDECAR_CPU=0 \
     QWEN_HWMON_ROOT="$signal_hwmon" \
     QWEN_CENSUS_MODE=attribution \
@@ -776,6 +946,314 @@ fi
 diagnostic_file=
 printf 'signal_cleanup=accepted sampler_pid=%s served_pid=%s record_bytes=%s\n' \
     "$signal_sampler_pid" "$signal_served_pid" "$signal_record_bytes"
+
+# A brick is the unit reuse acts on, so a calibration whose four bricks all
+# carry this run's input-closure digest runs no arm and still writes a root.
+# The prior directory is synthesized here rather than measured: a run that
+# executes an arm is exactly what these two cases prove absent, and the
+# closure digest is recomputed by the same recipe the runner uses, so a drift
+# between the two stops the reuse and the executed arm fails the case.
+active_fixture=brick_reuse
+brick_directory=$temporary_directory/brick
+mkdir -p "$brick_directory"
+cp -- "$runner" "$brick_directory/run-raven2-vulkan-kernel-census.sh"
+chmod +x "$brick_directory/run-raven2-vulkan-kernel-census.sh"
+brick_runner=$brick_directory/run-raven2-vulkan-kernel-census.sh
+cp -- "$artifact_ledger" "$brick_directory/model-artifacts.tsv"
+for linked_member in model-registry.sh models.tsv ctx-checkpoints.tsv \
+    validated-tuples.tsv quarantine.tsv draft-pairs.tsv \
+    summarize-kernel-census.py summarize-census-controls.py \
+    sample-clock-sidecar.py validate-clock-sidecar.py \
+    telemetry-broker.c build-telemetry-broker.sh \
+    summarize-perf-logger-slice.py; do
+    ln -s -- "$script_directory/$linked_member" "$brick_directory/$linked_member"
+done
+# The served runner an executed arm reaches: it refuses at once, so the arm
+# fails on its own runner and the cooldown that follows is what the case
+# reads. The quiescence poller is stubbed because it samples a device, and
+# the runner reads its printed line rather than its own clock.
+printf '#!/bin/sh\nexit 1\n' >"$brick_directory/measure-served-decode.sh"
+chmod +x "$brick_directory/measure-served-decode.sh"
+cat >"$brick_directory/await-quiescence.sh" <<'FAKE_QUIESCENCE'
+#!/bin/sh
+set -eu
+printf 'quiescence=timeout elapsed_ms=1234 llama_server=absent gpu_busy=0\n'
+exit 1
+FAKE_QUIESCENCE
+chmod +x "$brick_directory/await-quiescence.sh"
+
+brick_contract_sha256=$(env -i \
+    PATH="$signal_path" \
+    HOME="$home_directory" \
+    QWEN_MODELS_DIRECTORY="$models_directory" \
+    QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+    QWEN_CENSUS_PRODUCTION_SERVER="$production_server" \
+    QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+    QWEN_CENSUS_INSTRUMENTED_SERVER="$instrumented_server" \
+    QWEN_DRM_DEVICE="$signal_drm" \
+    QWEN_CENSUS_BROKER="$broker_stub" \
+    QWEN_CENSUS_SIDECAR_CPU=0 \
+    QWEN_CENSUS_PRINT_CONTRACT=1 \
+    "$brick_runner" "$model_id" "$temporary_directory/out-brick-contract" \
+    | awk -F'\t' '$1 == "acquisition_contract_sha256" { print $2 }')
+[ -n "$brick_contract_sha256" ]
+
+brick_closure_sha256() {
+    {
+        printf 'acquisition_contract_sha256\t%s\n' "$brick_contract_sha256"
+        printf 'brick\t%s\n' "$1"
+        printf 'arms\t%s\n' "$2"
+        case $1 in
+            C2 | C3) printf 'instrumented_server_sha256\t%s\n' "$instrumented_sha256" ;;
+        esac
+    } | sha256sum | cut -d ' ' -f 1
+}
+
+write_prior_receipt() {
+    prior_root=$1
+    prior_brick=$2
+    prior_slots=$3
+    prior_arms=$4
+    prior_rates=$5
+    mkdir -p "$prior_root/bricks"
+    {
+        printf 'brick_id\t%s\n' "$prior_brick"
+        printf 'arm_slots\t%s\n' "$prior_slots"
+        printf 'arms\t%s\n' "$prior_arms"
+        printf 'verdict\taccepted\n'
+        printf 'arm_rates\t%s\n' "$prior_rates"
+        printf 'input_closure_sha256\t%s\n' "$(brick_closure_sha256 "$prior_brick" "$prior_arms")"
+    } >"$prior_root/bricks/$prior_brick.receipt.tsv"
+}
+
+# The rates are the ones the controls test pairs: every delta inside its own
+# registered bound, so a run that reuses all four bricks accepts on rows it
+# never measured itself.
+prior_arm_rows="1	P-nosidecar	10.000
+2	P	9.980
+3	P	9.960
+4	P-nosidecar	10.000
+5	P	10.000
+6	I0	9.950
+7	I0	9.940
+8	P	10.000
+9	I0	10.000
+10	I1	9.850
+11	I1	9.900
+12	I0	10.000
+13	S	3.000"
+
+write_prior_calibration() {
+    prior_root=$1
+    mkdir -p "$prior_root"
+    printf 'acquisition_contract_sha256\t%s\n' "$brick_contract_sha256" \
+        >"$prior_root/inputs.tsv"
+    {
+        printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\tsidecar\townership\tstatus\n'
+        printf '%s\n' "$prior_arm_rows" | while IFS="$(printf '\t')" read -r prior_slot prior_arm prior_rate; do
+            printf '%s\t%s\t%s\t64\t6000.000\t%s\t-\ton\t-\tcompleted\n' \
+                "$prior_slot" "$prior_arm" "$production_sha256" "$prior_rate"
+        done
+    } >"$prior_root/arms.tsv"
+    write_prior_receipt "$prior_root" C0 '1 2 3 4' 'P-nosidecar P P P-nosidecar' \
+        '10.000 9.980 9.960 10.000'
+    write_prior_receipt "$prior_root" C1 '5 6 7 8' 'P I0 I0 P' '10.000 9.950 9.940 10.000'
+    write_prior_receipt "$prior_root" C2 '9 10 11 12' 'I0 I1 I1 I0' \
+        '10.000 9.850 9.900 10.000'
+}
+
+run_brick_calibration() {
+    brick_case=$1
+    brick_prior=$2
+    brick_output=$3
+    # The fourth argument withholds the broker's readiness line, which is one
+    # setting of the same executable, so the acquisition contract the reused
+    # bricks were closed over holds across both arms.
+    brick_broker_silent=${4:-0}
+    active_fixture=$brick_case
+    diagnostic_file=$temporary_directory/$brick_case-stderr.txt
+    set +e
+    env -i \
+        QWEN_TEST_BROKER_SILENT="$brick_broker_silent" \
+        PATH="$signal_path" \
+        HOME="$home_directory" \
+        QWEN_MODELS_DIRECTORY="$models_directory" \
+        QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+        QWEN_CENSUS_PRODUCTION_SERVER="$production_server" \
+        QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+        QWEN_CENSUS_INSTRUMENTED_SERVER="$instrumented_server" \
+        QWEN_DRM_DEVICE="$signal_drm" \
+        QWEN_CENSUS_BROKER="$broker_stub" \
+        QWEN_HWMON_ROOT="$signal_hwmon" \
+        QWEN_CENSUS_SIDECAR_CPU=0 \
+        QWEN_CENSUS_COOLDOWN_S=0 \
+        QWEN_CENSUS_REUSE_BRICKS="$brick_prior" \
+        SSH_CONNECTION="$signal_ssh_connection" \
+        "$brick_runner" "$model_id" "$brick_output" \
+        >"$temporary_directory/$brick_case-stdout.txt" \
+        2>"$temporary_directory/$brick_case-stderr.txt"
+    brick_status=$?
+    set -e
+    printf '%s\n' "$brick_status"
+}
+
+prior_calibration=$temporary_directory/prior-calibration
+write_prior_calibration "$prior_calibration"
+write_prior_receipt "$prior_calibration" C3 13 S 3.000
+
+brick_output=$temporary_directory/out-brick-reuse
+brick_status=$(run_brick_calibration brick_reuse_zero_arms "$prior_calibration" "$brick_output")
+if [ "$brick_status" -ne 0 ]; then
+    printf 'a calibration reusing four bricks exited %s where it accepts\n' "$brick_status" >&2
+    exit 1
+fi
+brick_reused_rows=$(awk -F'\t' 'NR > 1 && $10 == "reused"' "$brick_output/arms.tsv" | wc -l)
+if [ "$brick_reused_rows" -ne 13 ]; then
+    printf 'the reusing calibration echoed %s reused rows of 13\n' "$brick_reused_rows" >&2
+    exit 1
+fi
+if [ -n "$(find "$brick_output/arms" -mindepth 1 -print -quit)" ]; then
+    printf 'the reusing calibration created an arm directory\n' >&2
+    exit 1
+fi
+# A warmup warms the arms that follow it, so a calibration with nothing to
+# run skips slot 0 outright rather than launching a server for no arm.
+if ! grep -q 'census_arm=skipped slot=0 arm=W reason=every_brick_reused' \
+    "$temporary_directory/brick_reuse_zero_arms-stdout.txt"; then
+    printf 'the reusing calibration ran the warmup arm\n' >&2
+    exit 1
+fi
+if awk -F'\t' 'NR > 1 && $2 == "W"' "$brick_output/arms.tsv" | grep -q .; then
+    printf 'the reusing calibration recorded a warmup row\n' >&2
+    exit 1
+fi
+brick_root_sha256=$(awk -F'\t' '$1 == "calibration_root_sha256" { print $2 }' \
+    "$brick_output/calibration-root.tsv")
+[ -n "$brick_root_sha256" ]
+if ! grep -q "^calibration_root_sha256=$brick_root_sha256$" "$brick_output/terminal-state.tsv"; then
+    printf 'terminal-state.tsv carries no calibration root\n' >&2
+    exit 1
+fi
+grep -q '^census=accepted$' "$brick_output/terminal-state.tsv"
+grep -q '^cooldown_timeouts=0$' "$brick_output/terminal-state.tsv"
+for brick_member in C0 C1 C2 C3; do
+    grep -q "^reused_from	$prior_calibration$" \
+        "$brick_output/bricks/$brick_member.receipt.tsv"
+    # A brick reused out of a directory that recorded no terminal state says
+    # so, since the root names the receipt and the receipt names its campaign.
+    grep -q '^reused_from_census	unrecorded$' \
+        "$brick_output/bricks/$brick_member.receipt.tsv"
+done
+# A run that executed nothing prices nothing but itself, so the wall-clock
+# ledger holds its header and the one campaign row.
+brick_wall_rows=$(awk 'NR > 1' "$brick_output/wall-clock.tsv" | wc -l)
+if [ "$brick_wall_rows" -ne 1 ]; then
+    printf 'the reusing calibration wrote %s wall-clock rows of 1\n' "$brick_wall_rows" >&2
+    exit 1
+fi
+diagnostic_file=
+printf 'brick_reuse_zero_arms=accepted root=%s\n' "$brick_root_sha256"
+
+# inputs.tsv is the run's own record of what it ran under, so it names the
+# sampler and both digests beside the geometry the contract carries.
+active_fixture=sampler_broker_inputs
+for sampler_row in "sidecar_implementation	telemetry-broker" \
+    "sidecar_binary_sha256	$broker_stub_sha256" \
+    "sidecar_source_sha256	$broker_source_sha256"; do
+    if ! grep -qxF -- "$sampler_row" "$brick_output/inputs.tsv"; then
+        printf 'inputs.tsv carries no row %s\n' "$sampler_row" >&2
+        exit 1
+    fi
+done
+diagnostic_file=
+printf 'sampler_broker_inputs=accepted\n'
+
+# Three bricks reused and C3 executed: the arm fails on its own served runner
+# and the quiescence poller reports a deadline, which the cooldown row records
+# and the terminal state counts rather than charging to the arm.
+prior_three_bricks=$temporary_directory/prior-three-bricks
+write_prior_calibration "$prior_three_bricks"
+printf 'census=refuted\n' >"$prior_three_bricks/terminal-state.tsv"
+brick_cooldown_output=$temporary_directory/out-quiescence-cooldown
+brick_status=$(run_brick_calibration quiescence_cooldown "$prior_three_bricks" \
+    "$brick_cooldown_output")
+if [ "$brick_status" -ne 1 ]; then
+    printf 'the executed-arm calibration exited %s where its failed arm exits 1\n' \
+        "$brick_status" >&2
+    exit 1
+fi
+if ! awk -F'\t' '$1 == "13" && $3 == "cooldown" && $6 == "quiescence=timeout elapsed_ms=1234" { found = 1 }
+    END { exit found ? 0 : 1 }' "$brick_cooldown_output/wall-clock.tsv"; then
+    printf 'the cooldown row carries no quiescence verdict and elapsed time\n' >&2
+    sed -n '1,10p' "$brick_cooldown_output/wall-clock.tsv" >&2
+    exit 1
+fi
+# W opens the calibration at slot 0 whenever any arm executes, takes the
+# production server with its sampler off, and enters no pair: the sidecar
+# quadruple is reused here, so the summary still carries its three controls
+# while arms.tsv carries the warmup row beside them.
+if ! awk -F'\t' '$1 == "0" && $2 == "W" { found = 1 } END { exit found ? 0 : 1 }' \
+    "$brick_cooldown_output/arms.tsv"; then
+    printf 'the executed-arm calibration recorded no warmup row at slot 0\n' >&2
+    exit 1
+fi
+if awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
+    $(column["outer"]) == "W" || $(column["inner"]) == "W" { found = 1 }
+    END { exit found ? 0 : 1 }' "$brick_cooldown_output/summary.tsv"; then
+    printf 'the warmup arm entered a control pair\n' >&2
+    exit 1
+fi
+grep -q '^cooldown_timeouts=2$' "$brick_cooldown_output/terminal-state.tsv"
+grep -q '^arm_failures=2$' "$brick_cooldown_output/terminal-state.tsv"
+grep -q 'census_arm=failed slot=13 arm=S .* reason=served_runner' \
+    "$temporary_directory/quiescence_cooldown-stdout.txt"
+grep -q 'census_arm=failed slot=0 arm=W .* reason=served_runner' \
+    "$temporary_directory/quiescence_cooldown-stdout.txt"
+grep -q '^verdict	failed$' "$brick_cooldown_output/bricks/C3.receipt.tsv"
+for brick_member in C0 C1 C2; do
+    grep -q "^reused_from	$prior_three_bricks$" \
+        "$brick_cooldown_output/bricks/$brick_member.receipt.tsv"
+    # A brick whose arms completed inside a refuted campaign is reused and
+    # names that campaign rather than hiding behind the new run's state.
+    grep -q '^reused_from_census	refuted$' \
+        "$brick_cooldown_output/bricks/$brick_member.receipt.tsv"
+done
+diagnostic_file=
+printf 'quiescence_cooldown=accepted\n'
+
+# A broker that announces no readiness ends the arm ahead of the request. The
+# same three bricks are reused, so S at slot 13 is the one sampled arm, and it
+# reports sidecar_start rather than the served-runner reason the ready sampler
+# produces above; the arm still enters arms.tsv, since the control summarizer
+# walks quadruple positions and a missing row would shift every later pair.
+prior_silent_bricks=$temporary_directory/prior-silent-bricks
+write_prior_calibration "$prior_silent_bricks"
+printf 'census=refuted\n' >"$prior_silent_bricks/terminal-state.tsv"
+brick_silent_output=$temporary_directory/out-sidecar-start
+brick_status=$(run_brick_calibration sidecar_start_failure "$prior_silent_bricks" \
+    "$brick_silent_output" 1)
+if [ "$brick_status" -ne 1 ]; then
+    printf 'the silent-broker calibration exited %s where its failed arm exits 1\n' \
+        "$brick_status" >&2
+    exit 1
+fi
+grep -q 'census_sidecar=start_refused slot=13 arm=S sampler=telemetry-broker' \
+    "$temporary_directory/sidecar_start_failure-stdout.txt"
+grep -q 'census_arm=failed slot=13 arm=S .* reason=sidecar_start' \
+    "$temporary_directory/sidecar_start_failure-stdout.txt"
+if ! awk -F'\t' '$1 == "13" && $8 == "refused" && $10 == "failed" { found = 1 }
+    END { exit found ? 0 : 1 }' "$brick_silent_output/arms.tsv"; then
+    printf 'arms.tsv carries no refused sampler row at slot 13\n' >&2
+    sed -n '1,20p' "$brick_silent_output/arms.tsv" >&2
+    exit 1
+fi
+# The request never ran, so the served runner wrote none of its own output.
+if [ -e "$brick_silent_output/arms/13-S/runner.stdout" ]; then
+    printf 'the served runner ran under a sampler that never started\n' >&2
+    exit 1
+fi
+diagnostic_file=
+printf 'sidecar_start_failure=accepted\n'
 
 active_fixture=completion
 printf 'run_raven2_vulkan_kernel_census_preflight=accepted cases=%s\n' "$run_index"

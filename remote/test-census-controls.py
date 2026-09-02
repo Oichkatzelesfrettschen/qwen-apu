@@ -9,8 +9,8 @@ the request window and accepted where it falls outside.
 summarize-census-controls.py assigns the
 sidecar, compile, and collect bounds to the three registered quadruples
 alone, reports each delta on its own, refuses compensation through a mean,
-marks an unregistered quadruple unclassified, and keeps S outside the
-parser. summarize-perf-logger-slice.py classifies each block by the largest
+marks an unregistered quadruple unclassified, names the delta that left the
+bound on a refuted row, and keeps S and the warmup arm W outside the parser. summarize-perf-logger-slice.py classifies each block by the largest
 `n` over its non-f32 matmul rows, folds the decode blocks into per-op calls
 per block, and refuses a decode count other than the requested one.
 """
@@ -71,11 +71,13 @@ def sidecar_record(samples=100, period_ns=5_000_000, cost_ns=30_000, start=1_000
 
 
 def validate(text, status=0, window=(1_050_000_000, 1_400_000_000), tolerance="0.25",
-             cost_bound="1000000", period_ms="5", allow=(), max_gap="10000000"):
+             cost_bound="1000000", period_ms="5", allow=(), max_gap="50000000",
+             max_lost="0.02"):
     path = write("sidecar.tsv", text)
     command = [sys.executable, validator, path, "--sidecar-status", str(status),
                "--period-ms", period_ms, "--period-tolerance", tolerance,
-               "--cost-bound-ns", cost_bound, "--max-gap-ns", max_gap]
+               "--cost-bound-ns", cost_bound, "--max-gap-ns", max_gap,
+               "--max-lost-fraction", max_lost]
     for column in allow:
         command += ["--allow-unavailable", column]
     if window:
@@ -91,6 +93,7 @@ print("sidecar_accepted=accepted")
 
 result = validate(sidecar_record(), window=None)
 assert result.returncode == 0 and "window_coverage=not_run" in result.stdout, result.stdout
+assert "window_lost=not_run" in result.stdout, result.stdout
 
 
 def refused(text, needle, **kwargs):
@@ -128,30 +131,49 @@ assert result.returncode != 0 and "sensor_rows=refused" in result.stdout, result
 print("sidecar_refusals=accepted")
 
 # A 100 ms hole between two 5 ms samples leaves the run-wide achieved period
-# at its declared value and still loses two 2B token intervals, so the gap
-# bound is what refuses it, and it refuses only where the hole overlaps the
-# request window.
+# at its declared value and still loses two 2B token intervals. It is ten
+# times the 5 ms period, so it refuses on both criteria: the stall bound and
+# the lost fraction, and only where the hole overlaps the request window.
 holed = sidecar_record(hole_after=20, hole_ns=100_000_000, achieved_period_ns=5_000_000)
 refused(holed, "gaps")
+refused(holed, "window_lost")
 result = validate(holed)
 assert "over_max=1" in result.stdout and "gaps_in_window=1 " in result.stdout, result.stdout
 result = validate(holed, window=(1_300_000_000, 1_400_000_000))
 assert result.returncode == 0, result.stdout
 assert "gaps=accepted" in result.stdout and "over_max=1" in result.stdout, result.stdout
 assert "gaps_in_window=0 " in result.stdout, result.stdout
+assert "window_lost=accepted" in result.stdout, result.stdout
 # A caller supplying no window has named no interval the hole can miss, so
-# an over-bound gap anywhere refuses the record.
+# an over-bound gap anywhere refuses the record and no fraction is reported.
 refused(holed, "gaps", window=None)
 result = validate(holed, window=None)
 assert "gaps_in_window=not_run" in result.stdout, result.stdout
+assert "window_lost=not_run" in result.stdout, result.stdout
+# A scheduler slice is an observation rather than a refusal. A 30 ms hole
+# opens a 35 ms gap, seven 5 ms periods and under the ten-period stall bound,
+# and it costs 35 ms of a 350 ms window: 0.1000 refuses against the 0.02
+# coverage bound and passes against a 0.15 one, the gaps line accepting both.
+sliced = sidecar_record(hole_after=20, hole_ns=30_000_000, achieved_period_ns=5_000_000)
+result = validate(sliced)
+assert result.returncode == 1, result.stdout
+assert "gaps=accepted" in result.stdout, result.stdout
+assert "over_max=0" in result.stdout and "over_missed=1" in result.stdout, result.stdout
+assert "window_lost=refused window_lost_fraction=0.1000" in result.stdout, result.stdout
+assert "clock_sidecar=refused failures=window_lost" in result.stdout, result.stdout
+result = validate(sliced, max_lost="0.15")
+assert result.returncode == 0, result.stdout
+assert "window_lost=accepted window_lost_fraction=0.1000" in result.stdout, result.stdout
+assert "clock_sidecar=accepted failures=-" in result.stdout, result.stdout
 # Every gap 8 ms wide passes 1.5 x the requested 5 ms period on every
-# interval while staying under the bound, so the count reports the whole
-# distribution and the verdict stays accepted.
+# interval while staying under two periods, so it misses no sample, the
+# counts report the whole distribution, and the verdict stays accepted.
 loose = sidecar_record(period_ns=8_000_000, header_period=5_000_000,
                        achieved_period_ns=5_000_000)
 result = validate(loose)
 assert result.returncode == 0, result.stdout
-assert "over_1_5x=99 over_max=0" in result.stdout, result.stdout
+assert "over_1_5x=99 over_missed=0 over_max=0" in result.stdout, result.stdout
+assert "window_lost=accepted window_lost_fraction=0.0000" in result.stdout, result.stdout
 assert "clock_sidecar=accepted failures=-" in result.stdout, result.stdout
 refused(loose, "gaps", max_gap="7000000")
 # One row carries no adjacent gap to measure.
@@ -194,6 +216,7 @@ assert compile_pair[1] == "compile" and compile_pair[6] == "-0.0050" and compile
 assert compile_pair[11] == "accepted", compile_pair
 assert collect_pair[1] == "collect" and collect_pair[6] == "-0.0150" and collect_pair[9] == "-0.0100"
 assert collect_pair[10] == "0.02" and collect_pair[11] == "accepted", collect_pair
+assert sidecar_pair[12] == "-" and collect_pair[12] == "-", (sidecar_pair, collect_pair)
 print("controls_accepted=accepted")
 
 # One delta outside the bound refutes the pair even where the other delta
@@ -203,6 +226,11 @@ table = summarize([
     ("I0", "10.000", "completed"), ("P", "10.000", "completed"),
 ])
 assert table[1][6] == "-0.0100" and table[1][9] == "+0.0000" and table[1][11] == "refuted", table[1]
+# The refuted row names which delta left the bound and by how much, beside
+# the bound itself, so the sidecar cost the appliance measured at 1.0 to 1.4%
+# is read off the row rather than recomputed from two columns.
+assert table[0][12] == "detail", table[0]
+assert table[1][12] == "exceeds bound=0.0065 first=-0.0100", table[1]
 # An incomplete arm makes the pair incomplete rather than a rate.
 table = summarize([
     ("I0", "10.000", "completed"), ("I1", "-", "failed"),
@@ -222,6 +250,15 @@ table = summarize([
     ("S", "3.000", "completed"), ("I1", "9.900", "completed"),
 ])
 assert len(table) == 1, table
+# The warmup arm is the cold opener and carries no registered bound, so it
+# leaves the quadruple that follows it exactly where the parser expects it.
+table = summarize([
+    ("W", "6.783", "completed"),
+    ("P-nosidecar", "10.000", "completed"), ("P", "9.980", "completed"),
+    ("P", "9.960", "completed"), ("P-nosidecar", "10.000", "completed"),
+])
+assert len(table) == 2 and table[1][1] == "sidecar", table
+assert table[1][4] == "10.000" and table[1][11] == "accepted", table[1]
 table = summarize([
     ("P", "10.000", "completed"), ("I0", "9.950", "completed"),
     ("S", "3.000", "completed"),
@@ -229,6 +266,29 @@ table = summarize([
 ])
 assert len(table) == 2 and table[1][1] == "compile" and table[1][11] == "accepted", table
 print("controls_shapes=accepted")
+
+# A reused brick echoes its arms at their own slots with the rates it
+# measured, so a quadruple of reused arms pairs the way an executed one does
+# and a calibration whose four bricks all reuse still carries three verdicts.
+table = summarize([
+    ("P-nosidecar", "10.000", "reused"), ("P", "9.980", "reused"),
+    ("P", "9.960", "reused"), ("P-nosidecar", "10.000", "reused"),
+    ("P", "10.000", "reused"), ("I0", "9.950", "reused"),
+    ("I0", "9.940", "reused"), ("P", "10.000", "reused"),
+    ("I0", "10.000", "completed"), ("I1", "9.850", "completed"),
+    ("I1", "9.900", "completed"), ("I0", "10.000", "completed"),
+    ("S", "3.000", "reused"),
+])
+assert len(table) == 4, table
+assert [row[11] for row in table[1:]] == ["accepted", "accepted", "accepted"], table
+assert table[1][6] == "-0.0020" and table[2][6] == "-0.0050", table
+# A status outside completed and reused still makes the pair incomplete.
+table = summarize([
+    ("I0", "10.000", "reused"), ("I1", "9.900", "skipped"),
+    ("I1", "9.900", "reused"), ("I0", "10.000", "reused"),
+])
+assert table[1][11] == "incomplete", table[1]
+print("controls_reuse=accepted")
 
 slice_text = "\n".join([
     "srv  log_server_r: request: POST /v1/chat/completions",

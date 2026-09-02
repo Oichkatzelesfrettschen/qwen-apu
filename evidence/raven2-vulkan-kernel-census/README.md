@@ -119,6 +119,155 @@ reinterpret the retained raw records where it changes no measured byte,
 the new reader is gated, and the run's README records both the
 acquisition SHA and the analysis SHA.
 
+The runner states those two heads as two files. `acquisition-contract.tsv`
+carries every row the calibration contract already carried -- the model
+tuple and artifact digest, both server digests, the base-build identity, the
+request shape, the profile pair, nice and I/O class, the sidecar geometry,
+the three bounds, the overlap threshold, the probe digest, and the runtime
+tree's head and payload digests -- and each of them changes an observed
+byte, so the file gains nothing in the split. `analysis-contract.tsv`
+carries the SHA-256 of the four readers that interpret the retained records,
+in the fixed order `summarize-kernel-census.py`,
+`validate-clock-sidecar.py`, `summarize-perf-logger-slice.py`,
+`summarize-census-controls.py`. `inputs.tsv` records both as
+`acquisition_contract_sha256` and `analysis_contract_sha256`, and
+`calibration_contract_sha256` remains an alias of the acquisition digest for
+one release so a receipt written before the split still answers the
+attribution comparison. An attribution requires acquisition equality alone.
+A receipt read by another reader generation is recorded as
+`receipt_analysis_contract_sha256` beside `analysis_contract_match` over
+`yes`, `no`, and `unrecorded`, and the run proceeds, since a reader fix
+reinterprets bytes the calibration already acquired.
+
+A calibration opens on a warmup arm `W` at slot 0, the production server
+under the serving profile with the sampler off. The first server after a
+build loads cold and the cold arm sits inside control pair 1: chain seven
+measured slot 1 at 6.783 tok/s against slot 4 at 9.561 and the three P arms
+at 9.428, 9.422, and 9.472, and chain six read the same opener at 8.166, so
+the sidecar control would take its first outer rate from a cold load and
+compare it against a warm one. W absorbs that load. Its row is recorded in
+`arms.tsv` and its rate enters no pair and no census record --
+`summarize-census-controls.py` drops it beside S before the quadruple walk,
+and `acquisition-contract.tsv` states the exclusion as `warmup_arm`,
+`warmup_excluded_from_pairs`, and `warmup_excluded_from_census` rather than
+leaving a reader to infer it from the slot numbering. The registered
+thirteen keep slots 1 through 13, `QWEN_CENSUS_ARMS` still names exactly
+those thirteen, and a calibration whose four bricks all reuse skips the
+warmup too, since a warmup warms the arms that follow it and there are none.
+
+Coverage rather than the widest gap is what a sidecar record owes an arm,
+and the gap criterion is refuted as a coverage measure at nice 19 on both
+cores. Chain seven failed calibration with ten arm failures, every one of
+them `sidecar=refused` on `gaps` alone. With the sampler confined to both
+cores at nice 19 and the server's own threads at nice 19, CFS shares the two
+cores fairly and holds the sampler off for scheduler slices: 3 to 5 gaps
+over 20 ms per window, a 60 to 119 ms maximum, and a `window_lost_fraction`
+of 0.0122 to 0.0147, with the S arm at 3 gaps and 0.0027. A slow sysfs read
+does not order them -- the preceding sample cost 0.2 to 1.0 ms at almost
+every over-bound gap, and two of twenty-four followed a 29 to 37 ms
+`pp_dpm` read. Acceptance is therefore
+`window_lost_fraction <= sidecar_max_lost_fraction`, default 0.02, measured
+as the window-clipped duration of every gap wider than two sampling periods,
+which is a gap that missed at least one scheduled sample.
+`sidecar_max_gap_ns` survives as a stall bound alone, default ten periods or
+100 ms, and refuses a sampler that stopped rather than one that was
+descheduled; the `gaps` line keeps reporting its distribution, maximum, and
+counts as observations. Both bounds are contract rows, so a calibration and
+its attributions are held to the same pair.
+`remote/test-census-replay-corpus.py` reads the change against retained
+device bytes: the corpus `02-P` record, whose widest gap is 42.0 ms and
+whose lost fraction is 0.0047, now reads accepted where it read
+`clock_sidecar=refused failures=gaps`, and the same record still refuses
+under a 0.004 coverage bound, so the verdict follows the fraction rather
+than the maximum.
+
+The sidecar's own cost is a separate open question this change leaves open.
+Chain seven measured P-nosidecar at 9.561 against P at 9.428, 9.422, and
+9.472, about 1.0 to 1.4%, above the registered 0.0065 sidecar bound. The
+bound stands and the next chain measures the cost under the C broker; a
+refuted pair now carries the delta that left the bound beside the bound in
+its own `detail` column, so the row states which of the two deltas refuted
+it and by how much.
+
+The thirteen arms are four control bricks, and a brick rather than a
+campaign is the unit a verdict and a reuse belong to. C0 is the sidecar
+quadruple at slots 1 through 4, C1 the compile quadruple at 5 through 8, C2
+the collect quadruple at 9 through 12, and C3 the identity arm at slot 13.
+Each writes `bricks/CN.receipt.tsv` carrying its id and control name, its
+slots and arms, its verdict -- `accepted`, `refuted`, or `incomplete` for
+C0 through C2 from the pair parser's own column, `completed` or `failed` for
+C3 from the arm's state -- its arm rates, its input-closure digest, and the
+SHA-256 of every file its arm directories retained. The input closure is
+what the brick's arms consumed and what a later run can state before it
+launches: the acquisition contract digest, the brick id, its arm list, and,
+for the two bricks that execute the census build, that binary's digest. C3
+also retains the diagnostic profile's env set, which exists only once the
+arm has run, so its receipt records `observed_env_set_sha256` from
+`arms/13-S/server-effective-env.tsv` beside the closure rather than inside
+it. `calibration-root.tsv` hashes the acquisition digest together with the
+four receipt digests, and `terminal-state.tsv` carries the result as
+`calibration_root_sha256`, so one value names the whole calibration.
+
+`QWEN_CENSUS_REUSE_BRICKS` names a prior calibration output directory and
+preserves every expensive state whose inputs are unchanged. The directory is
+read whole: its `inputs.tsv` must state this run's acquisition digest, since
+a brick measured under another contract measures another campaign, and its
+`arms.tsv` must rejoin each receipt slot by slot at the rates the receipt
+records. A brick whose input-closure digest equals this run's is reused --
+its arms are skipped, its receipt is copied into this run's `bricks/`
+carrying `reused_from` and the prior campaign's own terminal state as
+`reused_from_census`, and its arms are echoed into `arms.tsv` at their own
+slots with status `reused` and their measured rates. A brick whose arms
+completed inside a refuted calibration is a legitimate reuse target -- the
+arms ran, the closure holds, the rates stand -- so the provenance is
+recorded on the receipt the root names rather than gating the reuse. The
+echoed status is written into the column the prior ledger's header names,
+since the pair parser reads that field by name and a positional rewrite
+would disagree with it.
+`summarize-census-controls.py` reads `reused` as a completed arm, and it
+pairs by position rather than by slot number, so the echo at the original
+slot is what keeps the three quadruples where the parser finds them. A
+calibration whose four bricks all reuse launches no server and still writes
+a root; a partial reuse spends device time on the changed cell alone.
+
+`QWEN_CENSUS_MODE=canary` runs `P I0 I1 S` once each at
+`QWEN_BENCH_GENERATE=8` and judges the chain's structure rather than any
+rate. Eight generated tokens leave seven decode graphs, which is the
+cardinality `summarize-kernel-census.py` is asked for at
+`--expected-decode-graphs 7` and `summarize-perf-logger-slice.py` at
+`--expected-decode-blocks 7`, so both readers run their real check on a
+short reply. `canary-structure.tsv` carries one row per arm per check over
+the arm's own completion -- which carries the launch, the server identity
+comparison, the sidecar validator, and the two parsers -- the served
+runner's retained teardown record, and the absence of either child after the
+runner's waits. `terminal-state.tsv` reads `census=canary_accepted` or
+`census=canary_failed` at exit 0 or 1, assigns no control verdict, and never
+reports a refutation. The canary is what the chain runs ahead of a
+calibration, since four short arms price a broken link at a fraction of
+thirteen.
+
+`wall-clock.tsv` prices the campaign phase by phase on CLOCK_REALTIME, one
+row per phase per arm as `slot arm phase begin_ns end_ns note` plus one
+`campaign` row, stamped with `date +%s%N`, the GNU extension the appliance's
+coreutils supplies. The `launch` phase runs from the runner's own stamp to
+the request window's begin, since the launch chain writes `launch.txt`
+without stamping the instant the server answered `/health`; `request` is the
+served runner's own window, `teardown` runs from that window's end to the
+served runner's exit, `analysis` covers the summarizers, and `cooldown`
+covers the boundary between arms. The request endpoints reach the ledger
+through one paired reading of CLOCK_REALTIME and CLOCK_MONOTONIC taken on
+the arm that produced the window, rather than once for the campaign, so a
+clock step mid-campaign moves one arm's translation instead of smearing
+every later row; an endpoint the run never observed reads `-` rather than
+borrowing a neighbouring stamp. That boundary is convergence rather than a
+constant: `await-quiescence.sh` polls the submission, clock, thermal,
+reclaim, and lease predicates and reports the instant they have all held
+together, `QWEN_CENSUS_COOLDOWN_S` becomes its deadline, and the cooldown
+row's note carries `quiescence=reached|timeout|unreported` with the poller's
+own `elapsed_ms`. A deadline reached without convergence is counted in
+`cooldown_timeouts` rather than charged to the arm that already completed,
+because the state it left belongs to the arm that follows.
+
 ## What P stands for and how it is bound
 
 P is bound to the scoreboard it stands for rather than to a path. Its
@@ -419,7 +568,25 @@ geometry are told apart by carrying both.
 ## The clock sidecar
 
 The one-second runtime monitor is adequate for safety and too coarse to
-place a 52 to 62 ms token. `remote/sample-clock-sidecar.py` samples
+place a 52 to 62 ms token. `remote/telemetry-broker.c`, built by
+`remote/build-telemetry-broker.sh` into `build/telemetry-broker` beside
+`remote/`, is the sampler `QWEN_CENSUS_SAMPLER` selects by default: it opens
+every surface once at startup, reads `gpu_busy_percent` at the requested
+period into a preallocated ring, reads the three DPM attributes and the die
+temperature on a tenth-period channel that lands at 100 ms under the
+registered 10 ms period, and formats the whole record after SIGTERM, so the
+sample itself opens, allocates, and writes nothing. Nice 19 is a constant of
+the program rather than an option, `--cpu` carries the runner's both-core
+confinement, and one `telemetry_broker=ready` line on stderr states that
+every surface is open and the termination handler is installed, which the
+runner waits for before the request starts and fails the arm on with
+`sidecar_start`. `QWEN_CENSUS_SAMPLER=python`
+runs `remote/sample-clock-sidecar.py` instead; both emit the record
+`validate-clock-sidecar.py` reads, and the acquisition contract carries
+`sidecar_implementation` beside the broker's executable and source digests
+so a record is attributed to the program that produced it.
+
+`remote/sample-clock-sidecar.py` samples
 `pp_dpm_sclk`, `pp_dpm_mclk`, `pp_dpm_fclk`, `gpu_busy_percent`, and
 `temp1_input` every 10 ms on `CLOCK_MONOTONIC`, the clock the census stamps
 every graph with and the runner stamps its request window with, so a clock
@@ -523,6 +690,16 @@ that sample on that core at nice 0, so it is now confined to both cores.
 The two I1 arms sat 2.5% and 1.9% under their I0 neighbors, one outside
 the 2% collection bound, which is what the deferred emission below exists
 to remove.
+
+`20260902T0617Z/` retains the third calibration on head e4c148a, still
+`calibration_verdict=failed`: the I1 arm's per-graph emission moved to a
+preallocated binary buffer drained at context close, and both I1 slots then
+sat 0.9 to 1.9% under their I0 neighbors, inside the 0.02 collect bound for
+the first time. The sampler moved from core 1 alone to both cores and still
+opens gaps in every sampled arm, three to five per window on five of the
+eight P and I0 records, so the sidecar and compile pairs stay `incomplete`
+in `summary.tsv` and the next instrument change targets the sampler itself
+rather than the census path.
 
 ## Order and falsifiers
 
