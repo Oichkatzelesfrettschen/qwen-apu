@@ -95,7 +95,13 @@ the model tuple and artifact digest, both server digests, the base-build
 identity digest, the request shape, the low-async profile, nice and I/O
 class, the sidecar period, tolerance, cost limit, maximum gap, CPU,
 niceness, DRM device, and allowed unavailable sensor, the three bounds, the
-overlap threshold, and the latency probe digest. Its SHA-256 is recorded as
+overlap threshold, the latency probe digest, and the synced runtime tree's
+git head and two payload digests from the manifest the sync writes beside
+`remote/`, since the arms launch through that tree and a resync between
+calibration and attribution would otherwise pass both launches through
+trees that each satisfy their own check. Each arm's server is hashed after
+the arm and compared with the digest the preflight bound to its role, so a
+binary replaced mid-campaign fails the arm it served. Its SHA-256 is recorded as
 `calibration_contract_sha256` in `inputs.tsv`, an attribution computes its
 own contract the same way and requires the receipt's digest to equal it,
 and a changed sidecar period or bound refuses by that one comparison

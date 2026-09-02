@@ -56,11 +56,22 @@ trap cleanup EXIT HUP INT TERM
 # The runtime tree the arms would launch through: the three scripts the runner
 # requires executable, each a stub that never runs because the preflight ends
 # ahead of the first arm.
-runtime_remote=$temporary_directory/runtime-remote
+runtime_remote=$temporary_directory/remote
 mkdir -p "$runtime_remote"
 for runtime_script in qwen-launch.sh qwen-teardown.sh radv-low-priority-env.sh; do
     printf '#!/bin/sh\nexit 1\n' >"$runtime_remote/$runtime_script"
     chmod +x "$runtime_remote/$runtime_script"
+done
+# The sync writes runtime-tree-manifest.tsv beside remote/, and the runner
+# binds its head and payload digests into the contract; a tree without one
+# is refused.
+runtime_tree_manifest=$temporary_directory/runtime-tree-manifest.tsv
+printf 'git_head\t%s\nremote_payload_tree_sha256\t%s\npatches_payload_tree_sha256\t%s\n' \
+    "$patch_series_sha256" "$foreign_sha256" "$registry_sha256" >"$runtime_tree_manifest"
+runtime_remote_unmanifested=$temporary_directory/unmanifested/remote
+mkdir -p "$runtime_remote_unmanifested"
+for runtime_script in qwen-launch.sh qwen-teardown.sh radv-low-priority-env.sh; do
+    cp -- "$runtime_remote/$runtime_script" "$runtime_remote_unmanifested/$runtime_script"
 done
 
 home_directory=$temporary_directory/home
@@ -300,6 +311,7 @@ write_campaign_inputs() {
         printf 'inference_cpu\t0\n'
         printf 'speculation\toff\n'
         printf 'router\t0\n'
+        printf 'server_io_class\tidle\nbackend_sampling\t0\nlatency_mode\tobserve\nweb_broker\t0\nimage_service\t0\n'
     } >"$inputs_path"
 }
 
@@ -317,6 +329,13 @@ scoreboard_profile=$temporary_directory/scoreboard-profile
 cp -R -- "$scoreboard_receipt" "$scoreboard_profile"
 write_campaign_inputs "$scoreboard_profile/campaign-inputs.tsv" low-serialized
 
+# A scoreboard that ran with backend sampling on states a denominator the
+# arms here do not reproduce, so a receipt whose inputs omit or contradict
+# that row is refused the way a wrong profile is.
+scoreboard_no_backend_sampling=$temporary_directory/scoreboard-no-backend-sampling
+cp -R -- "$scoreboard_receipt" "$scoreboard_no_backend_sampling"
+grep -v '^backend_sampling' "$scoreboard_receipt/campaign-inputs.tsv" \
+    >"$scoreboard_no_backend_sampling/campaign-inputs.tsv"
 scoreboard_no_models=$temporary_directory/scoreboard-no-models
 cp -R -- "$scoreboard_receipt" "$scoreboard_no_models"
 rm -- "$scoreboard_no_models/models-resolved.tsv"
@@ -542,6 +561,12 @@ run_runner eligibility_word_split 'serving_eligible other than exactly yes' \
 run_runner scoreboard_tuple \
     'a tuple other than the one the registry and ledger resolve now' \
     QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_batch/identity-check.tsv"
+
+run_runner runtime_tree_unmanifested 'carries no readable runtime-tree-manifest.tsv' \
+    QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote_unmanifested"
+
+run_runner scoreboard_backend_sampling 'campaign inputs state a profile' \
+    QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_no_backend_sampling/identity-check.tsv"
 
 run_runner scoreboard_profile 'campaign inputs state a profile' \
     QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_profile/identity-check.tsv"

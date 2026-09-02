@@ -202,6 +202,30 @@ for runtime_script in qwen-launch.sh qwen-teardown.sh radv-low-priority-env.sh; 
         exit 2
     fi
 done
+# The arms launch through the synced runtime tree, so its identity is part
+# of what a calibration measured: the manifest the sync writes beside it
+# names the git head and the two payload digests, and the contract carries
+# all three, so a resync between calibration and attribution refuses the
+# attribution rather than launching both through trees that each pass
+# their own self-consistency check.
+runtime_tree_manifest=$runtime_remote/../runtime-tree-manifest.tsv
+if [ ! -r "$runtime_tree_manifest" ]; then
+    printf 'the runtime tree carries no readable runtime-tree-manifest.tsv beside remote/: %s\n' \
+        "$runtime_tree_manifest" >&2
+    exit 2
+fi
+runtime_tree_identity=$(awk -F'\t' '
+    $1 == "git_head" || $1 == "remote_payload_tree_sha256" || $1 == "patches_payload_tree_sha256" { seen[$1] = $2; count++ }
+    END { if (count != 3) exit 1
+        printf "%s\t%s\t%s\n", seen["git_head"], seen["remote_payload_tree_sha256"], seen["patches_payload_tree_sha256"] }' \
+    "$runtime_tree_manifest") || {
+    printf 'the runtime tree manifest must name git_head, remote_payload_tree_sha256, and patches_payload_tree_sha256 once each: %s\n' \
+        "$runtime_tree_manifest" >&2
+    exit 2
+}
+IFS="$(printf '\t')" read -r runtime_tree_git_head runtime_tree_remote_payload runtime_tree_patches_payload <<RUNTIME_TREE
+$runtime_tree_identity
+RUNTIME_TREE
 for reader in "$summarizer" "$controls_summarizer" "$sidecar" "$sidecar_validator" "$slice_summarizer"; do
     if [ ! -r "$reader" ]; then
         printf 'census reader is absent: %s\n' "$reader" >&2
@@ -433,8 +457,13 @@ EOF
         $1 == "inference_cpu" && $2 == "0" { seen["placement"] = 1 }
         $1 == "speculation" && $2 == "off" { seen["speculation"] = 1 }
         $1 == "router" && $2 == "0" { seen["router"] = 1 }
-        END { exit length(seen) == 7 ? 0 : 1 }' "$scoreboard_inputs"; then
-        printf 'the scoreboard campaign inputs state a profile, token count, sampling, priority, placement, speculation, or router setting other than the one every arm here runs under: %s\n' \
+        $1 == "server_io_class" && $2 == "idle" { seen["io"] = 1 }
+        $1 == "backend_sampling" && $2 == "0" { seen["backend_sampling"] = 1 }
+        $1 == "latency_mode" && $2 == "observe" { seen["latency"] = 1 }
+        $1 == "web_broker" && $2 == "0" { seen["broker"] = 1 }
+        $1 == "image_service" && $2 == "0" { seen["image"] = 1 }
+        END { exit length(seen) == 12 ? 0 : 1 }' "$scoreboard_inputs"; then
+        printf 'the scoreboard campaign inputs state a profile, token count, sampling, priority, placement, speculation, router, I/O class, backend sampling, latency mode, broker, or image service setting other than the one every arm here runs under: %s\n' \
             "$scoreboard_inputs" >&2
         exit 2
     fi
@@ -636,6 +665,8 @@ write_calibration_contract() {
         printf 'sidecar_bound\t%s\ncompile_bound\t%s\ncollect_bound\t%s\noverlap_threshold\t%s\n' \
             "$sidecar_bound" "$compile_bound" "$collect_bound" "$overlap_threshold"
         printf 'latency_probe_sha256\t%s\n' "$latency_probe_sha256"
+        printf 'runtime_tree_git_head\t%s\nruntime_tree_remote_payload_sha256\t%s\nruntime_tree_patches_payload_sha256\t%s\n' \
+            "$runtime_tree_git_head" "$runtime_tree_remote_payload" "$runtime_tree_patches_payload"
     } >"$1"
 }
 contract_scratch=$(mktemp)
@@ -712,6 +743,9 @@ execution_proof=$output_directory/campaign-inputs.tsv
     printf 'server_nice\t19\n'
     printf 'server_io_class\tidle\n'
     printf 'vulkan_profile\tlow-async\n'
+    printf 'inference_cpu\t0\nlatency_mode\tobserve\nrouter\t0\nspeculation\toff\n'
+    printf 'backend_sampling\t0\nweb_broker\t0\nimage_service\t0\n'
+    printf 'runtime_tree_git_head\t%s\n' "$runtime_tree_git_head"
     printf 'model_id\t%s\n' "$model_id"
     printf 'census_mode\t%s\n' "$census_mode"
     printf 'arms\t%s\n' "$arms"
@@ -766,6 +800,8 @@ printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\
         "$artifact_ledger" "$(sha256sum "$artifact_ledger" | cut -d ' ' -f 1)"
     printf 'calibration_contract_sha256\t%s\nlatency_probe\t%s\nlatency_probe_sha256\t%s\n' \
         "$calibration_contract_sha256" "${latency_probe:--}" "$latency_probe_sha256"
+    printf 'runtime_tree_manifest\t%s\nruntime_tree_git_head\t%s\nruntime_tree_remote_payload_sha256\t%s\nruntime_tree_patches_payload_sha256\t%s\n' \
+        "$runtime_tree_manifest" "$runtime_tree_git_head" "$runtime_tree_remote_payload" "$runtime_tree_patches_payload"
     printf 'started_utc\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } >"$output_directory/inputs.tsv"
 
@@ -870,7 +906,18 @@ for arm in $arms; do
         sidecar_pid=''
     fi
     set -e
+    # The arm's server is hashed after the arm and compared with the digest
+    # the preflight bound to its role, so a binary replaced mid-campaign
+    # fails the arm it served rather than being recorded as that role.
     server_sha256=$(sha256sum "$server" | cut -d ' ' -f 1)
+    case $arm in
+        P | P-nosidecar) bound_role_sha256=$production_sha256 ;;
+        *) bound_role_sha256=$instrumented_sha256 ;;
+    esac
+    server_identity=bound
+    if [ "$server_sha256" != "$bound_role_sha256" ]; then
+        server_identity=replaced
+    fi
     predicted_n=-
     predicted_ms=-
     tok_s=-
@@ -900,6 +947,12 @@ EOF
     if [ "$runner_status" -ne 0 ] || [ "$tok_s" = - ]; then
         status=failed
         reason=served_runner
+    fi
+    if [ "$server_identity" != bound ]; then
+        status=failed
+        reason=server_identity
+        printf 'census_arm=server_replaced slot=%s arm=%s bound=%s observed=%s\n' \
+            "$slot" "$arm" "$bound_role_sha256" "$server_sha256"
     fi
     # The sidecar record is evidence only where the validator accepts it:
     # exit status, sample count, one footer, the achieved period, the mean
