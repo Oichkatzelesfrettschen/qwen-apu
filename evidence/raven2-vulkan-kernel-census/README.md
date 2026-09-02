@@ -382,6 +382,17 @@ sidecar held a 5.0001 ms period at a mean cost of 614 microseconds per
 sample on the appliance, which is the figure the sampler control exists
 to bound. No bracket, overlap, or ownership figure exists from that run.
 
+The first v3 calibration on head e18b840 was stopped after three arms and
+is retained on the appliance alone. Its `P-nosidecar` arm completed at
+8.379 tok/s and both `P` arms measured 9.9 tok/s and failed on
+`sensors=refused unavailable_outside_allowance=pp_dpm_fclk_surface_mhz
+allowed=-`: the runner decided the FCLK allowance with a size test, and
+sysfs reports every attribute at one page in `stat`, so the empty
+`pp_dpm_fclk` read as full and the allowance stayed off. The runner now
+reads the attribute and grants the allowance on an empty read. The
+sidecar itself held a 5.033 ms period at a mean cost of 603 microseconds
+over 3113 samples, inside both bounds.
+
 ## Order and falsifiers
 
 Runs go 2B, then 0.8B, then 4B. The 2B validates the instrument, the 0.8B
