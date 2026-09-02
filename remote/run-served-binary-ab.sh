@@ -170,7 +170,7 @@ case $regime_max_arms in
         ;;
 esac
 models_directory=${QWEN_MODELS_DIRECTORY:-"${HOME:?}/models"}
-sidecar_period_ms=${QWEN_CENSUS_SIDECAR_PERIOD_MS:-10}
+sidecar_period_ms=${QWEN_CENSUS_SIDECAR_PERIOD_MS:-20}
 sidecar_tolerance=${QWEN_CENSUS_SIDECAR_TOLERANCE:-0.25}
 sidecar_cost_ns=${QWEN_CENSUS_SIDECAR_COST_NS:-1000000}
 sidecar_max_gap_ms=${QWEN_CENSUS_SIDECAR_MAX_GAP_MS:-100}
@@ -452,8 +452,21 @@ if ! cmp -s "$identity_scratch/control" "$identity_scratch/candidate"; then
 fi
 base_build_identity_sha256=$(sha256sum "$identity_scratch/control" | cut -d ' ' -f 1)
 rm -r -- "$identity_scratch"
-control_candidate_series=$(census_manifest_value "$control_manifest" candidate_series control) \
-    || exit 2
+# A promoted production manifest carries no candidate_series row at all, the
+# way it carries no instrumentation row, so an absent row is the empty
+# selection; a row present is read exactly once, and two rows are refused.
+control_candidate_rows=$(awk -F'\t' '$1 == "candidate_series" { count++ } END { print count + 0 }' \
+    "$control_manifest")
+case $control_candidate_rows in
+    0) control_candidate_series=- ;;
+    1) control_candidate_series=$(census_manifest_value "$control_manifest" candidate_series control) \
+        || exit 2 ;;
+    *)
+        printf 'the control manifest holds %s candidate_series rows where one or none is admitted\n' \
+            "$control_candidate_rows" >&2
+        exit 2
+        ;;
+esac
 candidate_candidate_series=$(census_manifest_value "$candidate_manifest" candidate_series candidate) \
     || exit 2
 # build-llama-preset.sh writes the selected candidates as a comma-joined list

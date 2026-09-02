@@ -898,6 +898,17 @@ comparable pair as state-changed inside the sustained low regime the
 appliance actually serves under, so the next chain link moves that rule
 to a comparability band and a regime precondition ahead of slot 1.
 
+`20260902T1556Z/` retains the seventh calibration on head 05bd95f0, the
+first to run the regime precondition: three warmup arms settle the sidecar
+at a 658 MHz regime, a third band below the two prior runs' 750 to 857 MHz,
+and eleven of twenty-five named arms then refuse on `window_lost_fraction`
+between 0.0211 and 0.0625 against the 0.02 bound, leaving all three controls
+`incomplete`. The campaign starts one second after a twenty-minute build on
+the laptop's own two CPU cores, which is the registered explanation for a
+regime this much lower, and the served A/B still refuses at launch on an
+empty `candidate_series` selection the harness reads as a manifest error
+rather than as the empty set.
+
 ## Order and falsifiers
 
 Runs go 2B, then 0.8B, then 4B. The 2B validates the instrument, the 0.8B

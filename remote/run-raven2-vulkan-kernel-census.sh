@@ -443,7 +443,7 @@ predicted_arm_count=$((predicted_arm_count + predicted_warmup_arms))
 predicted_arm_duration_s=$((19 + cooldown_s))
 predicted_campaign_duration_s=$((predicted_arm_count * predicted_arm_duration_s))
 overlap_threshold=${QWEN_CENSUS_OVERLAP_THRESHOLD:-0.05}
-sidecar_period_ms=${QWEN_CENSUS_SIDECAR_PERIOD_MS:-10}
+sidecar_period_ms=${QWEN_CENSUS_SIDECAR_PERIOD_MS:-20}
 sidecar_tolerance=${QWEN_CENSUS_SIDECAR_TOLERANCE:-0.25}
 sidecar_cost_ns=${QWEN_CENSUS_SIDECAR_COST_NS:-1000000}
 # Coverage rather than the widest gap is what a sidecar record owes an arm.
