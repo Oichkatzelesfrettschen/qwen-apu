@@ -124,6 +124,13 @@ case $preset in
         instrumentation=pipeline-census-v1
         build_role=diagnostic
         serving_eligible=no
+        case " ${QWEN_LLAMA_CANDIDATE_SELECT:-} " in
+            *" llama-vulkan-pipeline-census.patch "*) ;;
+            *)
+                printf 'the census preset requires QWEN_LLAMA_CANDIDATE_SELECT to name llama-vulkan-pipeline-census.patch\n' >&2
+                exit 2
+                ;;
+        esac
         ;;
     raven2-vulkan-tests)
         preset_flags="$(printf '%s' "$serving_flags" |
@@ -369,8 +376,56 @@ if [ -r "$patched_sources_ledger" ]; then
     fi
     rm -f "$series_tree_rows"
 fi
+# A tree carrying candidate patches diverges from the production ledger by
+# construction. QWEN_LLAMA_CANDIDATE_SELECT names the candidates the tree
+# carries, in ledger order; the series verifier replays production plus
+# exactly those onto the pinned commit and prints the digest of every
+# ledger path and every file the candidates touch, and the compiled tree
+# must match every one. The manifest then records the candidate series
+# beside the production one, and the tree reads verified-candidate. The
+# classifier still decides checkpoint_semantics from server-context.cpp, so
+# a candidate that rewrites that file demotes the build the way any other
+# unpinned source does.
+candidate_series=-
+candidate_series_sha256=-
+if [ -n "${QWEN_LLAMA_CANDIDATE_SELECT:-}" ]; then
+    candidate_replay=$(QWEN_LLAMA_CANDIDATE_PATCHES=1 \
+        QWEN_LLAMA_CANDIDATE_SELECT=$QWEN_LLAMA_CANDIDATE_SELECT \
+        "$script_directory/verify-llama-patch-series.sh" "$source_directory") || {
+        printf 'the candidate replay failed for %s\n' "$QWEN_LLAMA_CANDIDATE_SELECT" >&2
+        exit 1
+    }
+    candidate_series=$(printf '%s\n' "$candidate_replay" |
+        sed -n 's/^candidate_series=\([^ ]*\) .*/\1/p')
+    candidate_series_sha256=$(printf '%s\n' "$candidate_replay" |
+        sed -n 's/^candidate_series=[^ ]* candidate_series_sha256=//p')
+    checkpoint_series_tree=verified-candidate
+    series_tree_rows=$(mktemp)
+    printf '%s\n' "$candidate_replay" |
+        sed -n 's/^candidate_sha256=\([0-9a-f]*\) path=\(.*\)$/\2\t\1/p' |
+    while IFS='	' read -r tree_row_path tree_row_sha256; do
+        if [ ! -r "$source_directory/$tree_row_path" ] || [ "$(
+            sha256sum "$source_directory/$tree_row_path" | cut -d ' ' -f 1
+        )" != "$tree_row_sha256" ]; then
+            printf 'divergent:%s\n' "$tree_row_path" >"$series_tree_rows.state"
+            break
+        fi
+        printf '%s\t%s\t%s\n' "$tree_row_path" \
+            "$(wc -c <"$source_directory/$tree_row_path" | tr -d ' ')" \
+            "$tree_row_sha256" >>"$series_tree_rows"
+    done
+    if [ -r "$series_tree_rows.state" ]; then
+        checkpoint_series_tree=$(cat "$series_tree_rows.state")
+        rm -f "$series_tree_rows.state"
+    else
+        checkpoint_series_tree_sha256=$(sha256sum "$series_tree_rows" |
+            cut -d ' ' -f 1)
+    fi
+    rm -f "$series_tree_rows"
+fi
 if [ "$checkpoint_semantics" = natural-boundary-v1 ] &&
-    [ "$checkpoint_series_tree" != verified ]; then
+    [ "$checkpoint_series_tree" != verified ] &&
+    [ "$checkpoint_series_tree" != verified-candidate ]; then
     checkpoint_semantics=unknown
 fi
 
@@ -388,6 +443,8 @@ manifest_path=$build_directory/artifact-manifest.tsv
     printf 'checkpoint_source_sha256\t%s\n' "$checkpoint_source_sha256"
     printf 'checkpoint_patch_series_sha256\t%s\n' "$patch_series_sha256"
     printf 'checkpoint_series_tree\t%s\n' "$checkpoint_series_tree"
+    printf 'candidate_series\t%s\n' "$candidate_series"
+    printf 'candidate_series_sha256\t%s\n' "$candidate_series_sha256"
     printf 'checkpoint_series_tree_sha256\t%s\n' "$checkpoint_series_tree_sha256"
     printf 'checkpoint_sources_ledger_sha256\t%s\n' "$checkpoint_sources_ledger_sha256"
     printf 'checkpoint_source_root\t%s\n' "$source_directory"

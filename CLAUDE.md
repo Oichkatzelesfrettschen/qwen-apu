@@ -1090,6 +1090,16 @@ remote/run-graph-alias-ab.sh OUTPUT_DIR [MODEL_ID...]
 remote/run-ctx-checkpoint-sweep.sh LABEL MODEL_ID OUT
                                                 # what --ctx-checkpoints buys a second turn at 30K
 
+# Stage A pipeline census: a diagnostic build the bundle layer refuses,
+# measured through the served path under the scoreboard's own tuple.
+# evidence/raven2-vulkan-kernel-census/README.md registers the design.
+remote/prepare-llama-census-source.sh BASE PATCHED llama-vulkan-pipeline-census.patch
+QWEN_LLAMA_CANDIDATE_SELECT=llama-vulkan-pipeline-census.patch \
+    remote/build-llama-preset.sh raven2-vulkan-census PATCHED
+QWEN_CENSUS_PRODUCTION_SERVER=P QWEN_CENSUS_INSTRUMENTED_SERVER=I \
+    remote/run-raven2-vulkan-kernel-census.sh MODEL_ID OUT   # P I0 I0 P, I0 I1 I1 I0
+remote/summarize-kernel-census.py OUT/arms/NN-I1/pipeline-census.tsv --phase decode
+
 # Deployment bundles: the server, its manifest, the checkpoint ledger, and
 # the presets generated against that ledger as one activated unit.
 # Activation and rollback are the same atomic symlink transition, serialized
@@ -1188,6 +1198,7 @@ remote/test-one-token-admission.sh
 remote/test-fetch-candidate-artifact.sh
 remote/test-run-graph-alias-ab.sh
 remote/test-run-ctx-checkpoint-sweep.sh
+python3 remote/test-summarize-kernel-census.py
 remote/verify-llama-patch-series.sh
 QWEN_LLAMA_CANDIDATE_PATCHES=1 remote/verify-llama-patch-series.sh
 GGUF_PY_PATH=~/src/llama.cpp-qwen-apu/gguf-py \
