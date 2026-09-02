@@ -1093,20 +1093,43 @@ remote/run-ctx-checkpoint-sweep.sh LABEL MODEL_ID OUT
 # Stage A pipeline census: a diagnostic build the bundle layer refuses,
 # measured through the served path under the scoreboard's own tuple.
 # evidence/raven2-vulkan-kernel-census/README.md registers the design.
+# The census brackets every vkCmdDispatch with a top-of-pipe timestamp
+# ahead of it and an all-commands timestamp after it, reads the pool with
+# availability rather than a wait where the graph's fence has retired,
+# binds each dispatch to the submission serial allocated at submit, keys
+# each pipeline by the SHA-256 of the module bytes vkCreateShaderModule
+# received, and stamps every graph on CLOCK_MONOTONIC, the clock
+# measure-served-decode.sh retains its request window on. The summarizer
+# selects the timed request's graphs by that window, requires exactly
+# predicted_n - 1 decode graphs, and refuses overflow, an unavailable
+# query, an unbound dispatch, a fallback read, or a waited read outright;
+# an I1 arm completes only where it accepts. The instrument's own host cost
+# sits after fence retirement in readback_ns and emit_ns, which the
+# I0 I1 I1 I0 pair measures. The S arm runs the pinned vk_perf_logger
+# under the diagnostic profile as the serialized identity control, and a
+# 5 ms clock sidecar samples SCLK, MCLK, FCLK, busy, and temperature across
+# every arm on the same clock. A diagnostic build reaches the device through
+# an explicit QWEN_LLAMA_SERVER alone: bundle assembly and activation refuse
+# a manifest whose one serving_eligible row reads no, refuse a manifest
+# carrying that row or instrumentation twice, and the explicit-server launch
+# is the recovery mode the bundle layer leaves alone.
 remote/prepare-llama-census-source.sh BASE PATCHED llama-vulkan-pipeline-census.patch
 QWEN_LLAMA_CANDIDATE_SELECT=llama-vulkan-pipeline-census.patch \
     remote/build-llama-preset.sh raven2-vulkan-census PATCHED
 QWEN_CENSUS_PRODUCTION_SERVER=P QWEN_CENSUS_INSTRUMENTED_SERVER=I \
-    remote/run-raven2-vulkan-kernel-census.sh MODEL_ID OUT   # P I0 I0 P, I0 I1 I1 I0
-remote/summarize-kernel-census.py OUT/arms/NN-I1/pipeline-census.tsv --phase decode
+    remote/run-raven2-vulkan-kernel-census.sh MODEL_ID OUT   # P I0 I0 P, I0 I1 I1 I0, S
+remote/summarize-kernel-census.py OUT/arms/NN-I1/pipeline-census.tsv \
+    --window-begin-ns B --window-end-ns E --expected-decode-graphs 63
+remote/sample-clock-sidecar.py OUT.tsv --period-ms 5   # DPM state on CLOCK_MONOTONIC
 
 # Deployment bundles: the server, its manifest, the checkpoint ledger, and
 # the presets generated against that ledger as one activated unit.
 # Activation and rollback are the same atomic symlink transition, serialized
 # on descriptor 7 of .activate.lock under the root, which
 # open-verified-lock-descriptor.py opens without following a link or
-# truncating and holds exclusively for the activator and shared for the
-# resolver. An automatic launch resolves the bundle once:
+# truncating, refuses a leaf with more than one hard link, and holds
+# exclusively for the activator and shared for the resolver. An automatic
+# launch resolves the bundle once:
 # resolve-active-deployment.sh follows deployment-current to one directory
 # immediately below the root, verifies it whole through
 # verify-deployment-bundle.sh, and the launchers and qwen-webui-control.sh

@@ -121,7 +121,7 @@ case $preset in
         preset_targets='llama-server llama-bench'
         preset_outputs='bin/llama-server bin/llama-bench'
         compiler_flags=$zen_target
-        instrumentation=pipeline-census-v1
+        instrumentation=pipeline-census-v2
         build_role=diagnostic
         serving_eligible=no
         case " ${QWEN_LLAMA_CANDIDATE_SELECT:-} " in
