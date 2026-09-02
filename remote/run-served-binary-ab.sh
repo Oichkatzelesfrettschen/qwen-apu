@@ -186,6 +186,38 @@ if ! python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) > 0 else 1)' "$ab_
     exit 2
 fi
 candidate_patch=${QWEN_AB_CANDIDATE_PATCH:-llama-vulkan-q4k-activation-group-sums.patch}
+# `served` compares two serving builds by decode rate. `kernel-delta` compares
+# two census-instrumented builds whose candidate series differ by exactly the
+# candidate patch, collects the pipeline census in every arm, and judges the
+# candidate by the exclusive GPU bracket of one pipeline against a second
+# pipeline the patch leaves untouched, which is the null control the same
+# arms carry. A bracket is read from device timestamps inside a submitted
+# graph, so host scheduling and HTTP completion move it far less than they
+# move tok/s, and the E4 question -- did the Q4_K mat-vec get shorter --
+# is answered where the patch acts rather than through the whole token.
+ab_mode=${QWEN_CENSUS_AB_MODE:-served}
+case $ab_mode in
+    served | kernel-delta) ;;
+    *)
+        printf 'QWEN_CENSUS_AB_MODE is served or kernel-delta: %s\n' "$ab_mode" >&2
+        exit 2
+        ;;
+esac
+census_patch=llama-vulkan-pipeline-census.patch
+census_summarizer=$script_directory/summarize-kernel-census.py
+bracket_summarizer=$script_directory/summarize-bracket-ab.py
+bracket_subject=${QWEN_AB_BRACKET_SUBJECT:-mul_mat_vec_q4_k_f32_f32}
+bracket_null=${QWEN_AB_BRACKET_NULL:-mul_mat_vec_q6_k_f32_f32}
+bracket_bound=${QWEN_AB_BRACKET_BOUND:-0.02}
+overlap_threshold=${QWEN_CENSUS_OVERLAP_THRESHOLD:-0.05}
+if [ "$ab_mode" = kernel-delta ]; then
+    for required_summarizer in "$census_summarizer" "$bracket_summarizer"; do
+        if [ ! -r "$required_summarizer" ]; then
+            printf 'kernel-delta mode requires a readable summarizer: %s\n' "$required_summarizer" >&2
+            exit 2
+        fi
+    done
+fi
 cooldown_s=${QWEN_AB_COOLDOWN_S:-30}
 # The band, the share window, and the cap are the census campaign's own, read
 # under the same names, since both campaigns face one governor on one machine
@@ -518,15 +550,34 @@ if [ "$control_sha256" = "$candidate_sha256" ]; then
     exit 2
 fi
 
-# Both roles are serving builds. Cardinality and the exact value are decided
-# inside awk over the whole tab-delimited field, so a manifest naming
-# eligibility twice is refused rather than read by its first row and a value
-# carrying a space is compared as the literal it is.
+# Under `served` both roles are serving builds; under `kernel-delta` both
+# carry exactly one instrumentation row naming the same instrument, since a
+# bracket read by two instrument versions is two measurements. Cardinality
+# and the exact value are decided inside awk over the whole tab-delimited
+# field, so a manifest naming eligibility twice is refused rather than read
+# by its first row and a value carrying a space is compared as the literal
+# it is.
+control_instrumentation=-
+candidate_instrumentation=-
 for eligibility_role in control candidate; do
     case $eligibility_role in
         control) eligibility_manifest=$control_manifest ;;
         *) eligibility_manifest=$candidate_manifest ;;
     esac
+    if [ "$ab_mode" = kernel-delta ]; then
+        role_instrumentation=$(awk -F'\t' '$1 == "instrumentation" { count++; value = $2 }
+            END { if (count != 1) exit 1; print value }' "$eligibility_manifest") || {
+            printf 'the %s manifest must name instrumentation exactly once under kernel-delta: %s\n' \
+                "$eligibility_role" \
+                "$(awk -F'\t' '$1 == "instrumentation" { printf "[%s] ", $2 }' "$eligibility_manifest")" >&2
+            exit 2
+        }
+        case $eligibility_role in
+            control) control_instrumentation=$role_instrumentation ;;
+            *) candidate_instrumentation=$role_instrumentation ;;
+        esac
+        continue
+    fi
     if ! awk -F'\t' '$1 == "instrumentation" { instrumentation++ }
         END { exit instrumentation == 0 ? 0 : 1 }' "$eligibility_manifest"; then
         printf 'the %s manifest names instrumentation; a served comparison runs two serving builds\n' \
@@ -542,6 +593,11 @@ for eligibility_role in control candidate; do
         exit 2
     fi
 done
+if [ "$ab_mode" = kernel-delta ] && [ "$control_instrumentation" != "$candidate_instrumentation" ]; then
+    printf 'kernel-delta compares one instrument: control=%s candidate=%s\n' \
+        "$control_instrumentation" "$candidate_instrumentation" >&2
+    exit 2
+fi
 
 # The control is the scoreboard's own server and the denominator is the tuple
 # beside it, so a registry edit between the scoreboard and this run refuses
@@ -560,9 +616,27 @@ fi
 scoreboard_tuple=$(printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s' \
     "$context" "$batch" "$ubatch" "$cache_k" "$cache_v" "$flash" \
     "$ctx_checkpoints" "$checkpoint_min_step" "$ledger_bytes" "$ledger_sha256")
+# Under kernel-delta neither role is the scoreboard's server, since both carry
+# the instrument, so QWEN_CENSUS_PRODUCTION_SERVER names the server the
+# receipt was written over and the receipt is verified against that binary;
+# the tuple beside it stays the denominator both instrumented builds decode
+# under, and the inputs record which server proved it.
+denominator_server=$control_server
+denominator_sha256=$control_sha256
+denominator_bytes=$control_bytes
+if [ "$ab_mode" = kernel-delta ]; then
+    denominator_server=${QWEN_CENSUS_PRODUCTION_SERVER:-}
+    if [ -z "$denominator_server" ] || [ ! -r "$denominator_server" ]; then
+        printf 'kernel-delta requires QWEN_CENSUS_PRODUCTION_SERVER to name the readable server the scoreboard receipt was written over: %s\n' \
+            "${denominator_server:--}" >&2
+        exit 2
+    fi
+    denominator_sha256=$(sha256sum "$denominator_server" | cut -d ' ' -f 1)
+    denominator_bytes=$(wc -c <"$denominator_server" | tr -d ' ')
+fi
 set +e
 scoreboard_digests=$(census_verify_scoreboard_receipt "$production_receipt" \
-    "$control_sha256" "$control_bytes" 1 "$model_id" "$scoreboard_tuple")
+    "$denominator_sha256" "$denominator_bytes" 1 "$model_id" "$scoreboard_tuple")
 scoreboard_status=$?
 set -e
 [ "$scoreboard_status" -eq 0 ] || exit "$scoreboard_status"
@@ -614,15 +688,28 @@ candidate_candidate_series=$(census_manifest_value "$candidate_manifest" candida
 # and `-` where none was selected, so the control's row is the empty selection
 # and the candidate's is exactly one name; a second member leaves a comma in
 # the field and is refused here, which is what makes the comparison isolate
-# one patch.
-if [ "$control_candidate_series" != - ]; then
-    printf 'the control manifest must name candidate_series -, the empty selection: %s\n' \
-        "$control_candidate_series" >&2
+# one patch. Under kernel-delta both trees carry the census instrument as
+# their first member and the candidate's series is that member followed by
+# the candidate patch, so the comparison still isolates one patch and the
+# instrument is the same source on both sides.
+case $ab_mode in
+    kernel-delta)
+        expected_control_series=$census_patch
+        expected_candidate_series=$census_patch,$candidate_patch
+        ;;
+    *)
+        expected_control_series=-
+        expected_candidate_series=$candidate_patch
+        ;;
+esac
+if [ "$control_candidate_series" != "$expected_control_series" ]; then
+    printf 'the control manifest must name candidate_series %s alone under %s: %s\n' \
+        "$expected_control_series" "$ab_mode" "$control_candidate_series" >&2
     exit 2
 fi
-if [ "$candidate_candidate_series" != "$candidate_patch" ]; then
-    printf 'the candidate manifest must name candidate_series %s alone: %s\n' \
-        "$candidate_patch" "$candidate_candidate_series" >&2
+if [ "$candidate_candidate_series" != "$expected_candidate_series" ]; then
+    printf 'the candidate manifest must name candidate_series %s alone under %s: %s\n' \
+        "$expected_candidate_series" "$ab_mode" "$candidate_candidate_series" >&2
     exit 2
 fi
 candidate_series_tree=$(census_manifest_value "$candidate_manifest" checkpoint_series_tree candidate) \
@@ -631,6 +718,15 @@ if [ "$candidate_series_tree" != verified-candidate ]; then
     printf 'the candidate manifest must read checkpoint_series_tree verified-candidate: %s\n' \
         "$candidate_series_tree" >&2
     exit 2
+fi
+if [ "$ab_mode" = kernel-delta ]; then
+    control_series_tree=$(census_manifest_value "$control_manifest" checkpoint_series_tree control) \
+        || exit 2
+    if [ "$control_series_tree" != verified-candidate ]; then
+        printf 'the control manifest must read checkpoint_series_tree verified-candidate under kernel-delta: %s\n' \
+            "$control_series_tree" >&2
+        exit 2
+    fi
 fi
 
 latency_probe=${QWEN_CENSUS_LATENCY_PROBE:-}
@@ -816,6 +912,10 @@ printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\
         "$candidate_semantics" "$candidate_series"
     printf 'candidate_series\t%s\ncandidate_patch\t%s\n' \
         "$candidate_candidate_series" "$candidate_patch"
+    printf 'ab_mode\t%s\ninstrumentation\t%s\nbracket_subject\t%s\nbracket_null\t%s\nbracket_bound\t%s\n' \
+        "$ab_mode" "$control_instrumentation" "$bracket_subject" "$bracket_null" "$bracket_bound"
+    printf 'denominator_server\t%s\ndenominator_server_sha256\t%s\n' \
+        "$denominator_server" "$denominator_sha256"
     printf 'base_build_identity_sha256\t%s\n' "$base_build_identity_sha256"
     printf 'production_receipt\t%s\nproduction_receipt_sha256\t%s\n' \
         "$production_receipt" "$production_receipt_sha256"
@@ -934,6 +1034,13 @@ for arm in $execution_arms; do
     fi
     arm_begin_ns=$(date +%s%N)
     arm_directory=$output_directory/arms/$arm_label
+    # Under kernel-delta every arm collects, the warmup included, so the
+    # census env reaches every server the same way and no arm's first
+    # dispatch differs from another's by the instrument being armed.
+    census_file=''
+    if [ "$ab_mode" = kernel-delta ]; then
+        census_file=$arm_directory/pipeline-census.tsv
+    fi
     sidecar_state=on
     # A warmup's clock state is what the regime precondition reads, so it runs
     # the control server under the sampler the named arms run under.
@@ -1020,6 +1127,7 @@ for arm in $execution_arms; do
             QWEN_EXECUTION_PROOF="$execution_proof" \
             QWEN_EXECUTION_PROOF_SHA256="$execution_proof_sha256" \
             QWEN_BENCH_GENERATE="$ab_generate" \
+            QWEN_PIPELINE_CENSUS="$census_file" \
             "$runner" "$arm_label" "$model_path" low-async \
             >"$arm_directory/runner.stdout" 2>"$arm_directory/runner.stderr" &
         served_pid=$!
@@ -1177,6 +1285,19 @@ EOF
                 status=failed
                 reason=clock_sidecar
                 [ "$clock_invariant_state" != violated ] || reason=clock_invariant
+                # Under kernel-delta a coverage refusal with the invariant held
+                # keeps the arm: the bracket is a device timestamp inside a
+                # submitted graph, the pinned clock held on every sample
+                # taken, and the samples the sampler lost were host time. The
+                # arm's tok/s is contaminated by the same stall and the
+                # sidecar column reads refused, so the served rate under
+                # kernel-delta is read beside that column rather than alone.
+                if [ "$ab_mode" = kernel-delta ] && [ "$engine_clock_policy" != auto ] \
+                    && [ "$clock_invariant_state" = held ]; then
+                    status=completed
+                    reason=sidecar_coverage
+                    printf 'served_ab_arm=coverage_refused_kept slot=%s arm=%s\n' "$slot" "$arm"
+                fi
             fi
         fi
         # A forced policy is answered by the delivered frequency alone. Where
@@ -1229,10 +1350,50 @@ EOF
     else
         regime_delta=$(census_regime_delta "$sclk_mode_mhz" "$regime_sclk_mhz")
     fi
+    # Under kernel-delta the census summarizer is the authority on every
+    # arm, as it is on a census I1 arm: it selects the graphs by the retained
+    # request window, requires predicted_n - 1 decode graphs, and refuses
+    # every defect, so its exit status decides the arm and its decode ledger
+    # is what the bracket summarizer reads.
+    census_rows=-
+    ownership=-
+    if [ -n "$census_file" ]; then
+        census_rows=0
+        if [ -r "$census_file" ]; then
+            census_rows=$(grep -c '^census_dispatch' "$census_file" || true)
+        fi
+        if [ "$status" = completed ]; then
+            set +e
+            python3 "$census_summarizer" "$census_file" \
+                --window-begin-ns "$window_begin" --window-end-ns "$window_end" \
+                --expected-decode-graphs "$((predicted_n - 1))" --phase decode \
+                --overlap-threshold "$overlap_threshold" \
+                >"$arm_directory/pipeline-ledger-decode.tsv" 2>"$arm_directory/summarize.stderr"
+            summary_status=$?
+            set -e
+            if [ "$summary_status" -ne 0 ]; then
+                status=failed
+                reason=census_summary
+                printf 'census_summary=refused slot=%s reason=%s\n' "$slot" \
+                    "$(sed -n '1p' "$arm_directory/summarize.stderr")"
+            else
+                ownership=$(awk -F'\t' '$1 == "graphs" {
+                    for (i = 1; i <= NF; i++) if ($i ~ /^ownership=/) { sub(/^ownership=/, "", $i); print $i } }' \
+                    "$arm_directory/pipeline-ledger-decode.tsv")
+                [ -n "$ownership" ] || ownership=-
+                python3 "$census_summarizer" "$census_file" \
+                    --window-begin-ns "$window_begin" --window-end-ns "$window_end" \
+                    --expected-decode-graphs "$((predicted_n - 1))" --phase prefill \
+                    --overlap-threshold "$overlap_threshold" \
+                    >"$arm_directory/pipeline-ledger-prefill.tsv" 2>>"$arm_directory/summarize.stderr" || true
+            fi
+        fi
+    fi
     [ "$status" = completed ] || arm_failures=$((arm_failures + 1))
     analysis_end_ns=$(date +%s%N)
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\n' "$slot" "$arm" \
-        "$server_sha256" "$predicted_n" "$predicted_ms" "$tok_s" "$sidecar_state" "$status" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$slot" "$arm" \
+        "$server_sha256" "$predicted_n" "$predicted_ms" "$tok_s" "$census_rows" "$sidecar_state" \
+        "$ownership" "$status" \
         "$sclk_mode_mhz" "$sclk_share" "$regime_delta" "$clock_invariant_state" \
         "$below_required_fraction" >>"$arms_ledger"
     printf 'served_ab_arm=%s slot=%s arm=%s tok_s=%s sidecar=%s sclk_mode_mhz=%s regime_delta=%s clock_invariant=%s reason=%s\n' \
@@ -1345,12 +1506,76 @@ else
     campaign=failed
     campaign_exit=1
 fi
+# Under kernel-delta the tok/s verdict above is retained as the whole-token
+# reading under instrumentation and the campaign is decided by the bracket
+# summarizer: the subject pipeline's exclusive bracket must move, the null
+# pipeline's must hold, and every candidate reply must carry the control's
+# tokens, since a shorter kernel that answers differently measured a
+# different computation. Its rows are read by name for the same reason the
+# controls summary is.
+bracket_verdict=-
+bracket_mean_delta=-
+bracket_ci_low=-
+bracket_ci_high=-
+bracket_pairs=-
+null_verdict=-
+null_mean_delta=-
+token_identity=-
+if [ "$ab_mode" = kernel-delta ]; then
+    set +e
+    python3 "$bracket_summarizer" "$arms_ledger" "$output_directory/arms" \
+        --subject "$bracket_subject" --null "$bracket_null" --bound "$bracket_bound" \
+        >"$output_directory/bracket-summary.tsv" 2>"$output_directory/bracket-summary.stderr"
+    bracket_status=$?
+    set -e
+    read_bracket_row() {
+        awk -F'\t' -v role="$1" -v field="$2" 'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
+            $(column["role"]) == role { rows++; value = $(column[field]) }
+            END { if (rows != 1) exit 1; print value }' "$output_directory/bracket-summary.tsv"
+    }
+    if [ "$bracket_status" -eq 0 ]; then
+        bracket_verdict=$(read_bracket_row subject verdict) || bracket_verdict=-
+        bracket_mean_delta=$(read_bracket_row subject mean_delta) || bracket_mean_delta=-
+        bracket_ci_low=$(read_bracket_row subject ci_low) || bracket_ci_low=-
+        bracket_ci_high=$(read_bracket_row subject ci_high) || bracket_ci_high=-
+        bracket_pairs=$(read_bracket_row subject comparable_pairs) || bracket_pairs=-
+        null_verdict=$(read_bracket_row null verdict) || null_verdict=-
+        null_mean_delta=$(read_bracket_row null mean_delta) || null_mean_delta=-
+        token_identity=$(read_bracket_row token_identity verdict) || token_identity=-
+    else
+        printf 'bracket_summary=refused reason=%s\n' \
+            "$(sed -n '1p' "$output_directory/bracket-summary.stderr")"
+    fi
+    if [ "$arm_failures" -ne 0 ] || [ "$bracket_status" -ne 0 ] || [ "$bracket_verdict" = - ] \
+        || [ "$token_identity" != held ]; then
+        campaign=failed
+        campaign_exit=1
+    elif [ "$null_verdict" != held ]; then
+        campaign=state-changed
+        campaign_exit=4
+    else
+        case $bracket_verdict in
+            shortened) campaign=bracket-shortened; campaign_exit=0 ;;
+            unchanged | lengthened) campaign=bracket-$bracket_verdict; campaign_exit=3 ;;
+            *) campaign=unresolved; campaign_exit=4 ;;
+        esac
+    fi
+fi
 printf 'served_ab=%s\nmodel_id=%s\nreplicates=%s\nbound=%s\nmean_delta=%s\nci_low=%s\nci_high=%s\ncomparable_pairs=%s\narm_failures=%s\nunclassified=%s\ncooldown_timeouts=%s\ncontrol_server_sha256=%s\ncandidate_server_sha256=%s\n' \
     "$campaign" "$model_id" "$ab_replicates" "$ab_bound" "$mean_delta" "$ci_low" "$ci_high" \
     "$comparable_pairs" "$arm_failures" "$unclassified" "$cooldown_timeouts" \
     "$control_sha256" "$candidate_sha256" >"$output_directory/terminal-state.tsv"
+printf 'ab_mode\t%s\nbracket_subject\t%s\nbracket_verdict\t%s\nbracket_mean_delta\t%s\nbracket_ci_low\t%s\nbracket_ci_high\t%s\nbracket_pairs\t%s\nbracket_bound\t%s\nnull_pipeline\t%s\nnull_verdict\t%s\nnull_mean_delta\t%s\ntoken_identity\t%s\n' \
+    "$ab_mode" "$bracket_subject" "$bracket_verdict" "$bracket_mean_delta" "$bracket_ci_low" \
+    "$bracket_ci_high" "$bracket_pairs" "$bracket_bound" "$bracket_null" "$null_verdict" \
+    "$null_mean_delta" "$token_identity" >>"$output_directory/terminal-state.tsv"
 printf -- '-\t-\tcampaign\t%s\t%s\t-\n' "$campaign_begin_ns" "$(date +%s%N)" >>"$wall_clock_ledger"
 printf 'served_ab=%s mean_delta=%s ci=[%s,%s] comparable_pairs=%s replicates=%s bound=%s arm_failures=%s output=%s\n' \
     "$campaign" "$mean_delta" "$ci_low" "$ci_high" "$comparable_pairs" "$ab_replicates" \
     "$ab_bound" "$arm_failures" "$output_directory"
+if [ "$ab_mode" = kernel-delta ]; then
+    printf 'kernel_delta=%s subject=%s mean_delta=%s ci=[%s,%s] pairs=%s null=%s null_verdict=%s null_mean_delta=%s token_identity=%s\n' \
+        "$campaign" "$bracket_subject" "$bracket_mean_delta" "$bracket_ci_low" "$bracket_ci_high" \
+        "$bracket_pairs" "$bracket_null" "$null_verdict" "$null_mean_delta" "$token_identity"
+fi
 exit "$campaign_exit"

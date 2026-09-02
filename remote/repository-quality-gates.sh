@@ -124,6 +124,8 @@ gate_cell test-sample-clock-sidecar derive remote/test-sample-clock-sidecar.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-sample-clock-sidecar.py'
 gate_cell test-census-controls derive remote/test-census-controls.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-census-controls.py'
+gate_cell test-summarize-bracket-ab derive remote/test-summarize-bracket-ab.py \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-bracket-ab.py'
 # The replay corpus is real Raven2 records with their expected verdicts; every
 # reader change satisfies it ahead of any device request.
 gate_cell test-census-replay-corpus derive \
