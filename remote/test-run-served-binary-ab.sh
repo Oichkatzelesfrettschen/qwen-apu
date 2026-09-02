@@ -1415,5 +1415,95 @@ grep -q '^dpm_restore=restored level=auto requested=auto ' "$engine_clock_term_s
 [ "$(cat "$engine_clock_term_drm/power_dpm_force_performance_level")" = auto ]
 printf 'engine_clock_restore_on_term=accepted\n'
 
+# kernel-delta compares two census-instrumented builds whose series differ by
+# the candidate patch alone. The mode name is validated ahead of every
+# manifest read, a serving control is refused for carrying no instrument, an
+# instrumented control beside the E4-only instrumented candidate is refused on
+# the candidate's series, and the admitted pair reaches the same host or
+# session refusal a served pair reaches.
+run_pair() {
+    pair_case=$1
+    pair_expectation=$2
+    pair_control=$3
+    pair_candidate=$4
+    shift 4
+    active_fixture=$pair_case
+    run_index=$((run_index + 1))
+    diagnostic_file=$temporary_directory/$pair_case-stderr.txt
+    set +e
+    env -i \
+        PATH="$execution_path" \
+        HOME="$home_directory" \
+        QWEN_MODELS_DIRECTORY="$models_directory" \
+        QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+        QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+        QWEN_DRM_DEVICE="$fixture_drm" \
+        QWEN_HWMON_ROOT="$fixture_hwmon" \
+        QWEN_CENSUS_BROKER="$broker_stub" \
+        QWEN_CENSUS_SIDECAR_CPU=0 \
+        "$@" \
+        "$harness" "$pair_control/bin/llama-server" "$pair_candidate/bin/llama-server" \
+        "$model_id" "$temporary_directory/out-$run_index" \
+        >"$temporary_directory/$pair_case-stdout.txt" 2>"$diagnostic_file"
+    pair_status=$?
+    set -e
+    if [ "$pair_status" -ne 2 ]; then
+        printf 'expected exit 2, observed %s\n' "$pair_status" >&2
+        return 1
+    fi
+    if ! grep -Eq "$pair_expectation" "$diagnostic_file"; then
+        printf 'expected a message matching %s\n' "$pair_expectation" >&2
+        return 1
+    fi
+}
+census_patch=llama-vulkan-pipeline-census.patch
+control_instrumented=$temporary_directory/control-instrumented
+mkdir -p "$control_instrumented/bin"
+cp -- "$control_server" "$control_instrumented/bin/llama-server"
+chmod +x "$control_instrumented/bin/llama-server"
+write_manifest "$control_instrumented/artifact-manifest.tsv" "$control_bytes" \
+    "$control_sha256" "$census_patch" verified-candidate "$serving_cmake" "$serving_compiler"
+printf 'instrumentation\tpipeline-census-v3\n' >>"$control_instrumented/artifact-manifest.tsv"
+candidate_census_e4=$temporary_directory/candidate-census-e4
+mkdir -p "$candidate_census_e4/bin"
+cp -- "$candidate_server" "$candidate_census_e4/bin/llama-server"
+chmod +x "$candidate_census_e4/bin/llama-server"
+write_manifest "$candidate_census_e4/artifact-manifest.tsv" "$candidate_bytes" \
+    "$candidate_sha256" "$census_patch,$candidate_patch" verified-candidate \
+    "$serving_cmake" "$serving_compiler"
+printf 'instrumentation\tpipeline-census-v3\n' >>"$candidate_census_e4/artifact-manifest.tsv"
+candidate_other_instrument=$temporary_directory/candidate-other-instrument
+mkdir -p "$candidate_other_instrument/bin"
+cp -- "$candidate_server" "$candidate_other_instrument/bin/llama-server"
+chmod +x "$candidate_other_instrument/bin/llama-server"
+write_manifest "$candidate_other_instrument/artifact-manifest.tsv" "$candidate_bytes" \
+    "$candidate_sha256" "$census_patch,$candidate_patch" verified-candidate \
+    "$serving_cmake" "$serving_compiler"
+printf 'instrumentation\tpipeline-census-v2\n' >>"$candidate_other_instrument/artifact-manifest.tsv"
+run_pair kernel_delta_mode_name 'QWEN_CENSUS_AB_MODE is served or kernel-delta' \
+    "$control_root" "$candidate_root" QWEN_CENSUS_AB_MODE=bracket
+run_pair kernel_delta_serving_control \
+    'the control manifest must name instrumentation exactly once under kernel-delta' \
+    "$control_root" "$candidate_census_e4" QWEN_CENSUS_AB_MODE=kernel-delta
+run_pair kernel_delta_two_instruments 'kernel-delta compares one instrument' \
+    "$control_instrumented" "$candidate_other_instrument" QWEN_CENSUS_AB_MODE=kernel-delta
+run_pair kernel_delta_candidate_series \
+    "must name candidate_series $census_patch,$candidate_patch alone under kernel-delta" \
+    "$control_instrumented" "$candidate_instrumented" QWEN_CENSUS_AB_MODE=kernel-delta \
+    QWEN_CENSUS_PRODUCTION_SERVER="$control_server"
+run_pair kernel_delta_instrumented_control_under_served \
+    'the control manifest names instrumentation' \
+    "$control_instrumented" "$candidate_root"
+run_pair kernel_delta_denominator_absent \
+    'kernel-delta requires QWEN_CENSUS_PRODUCTION_SERVER' \
+    "$control_instrumented" "$candidate_census_e4" QWEN_CENSUS_AB_MODE=kernel-delta
+run_pair kernel_delta_denominator_mismatch 'does not carry one accepted server row' \
+    "$control_instrumented" "$candidate_census_e4" QWEN_CENSUS_AB_MODE=kernel-delta \
+    QWEN_CENSUS_PRODUCTION_SERVER="$candidate_server"
+run_pair kernel_delta_admitted "$reached_preflight_end" \
+    "$control_instrumented" "$candidate_census_e4" QWEN_CENSUS_AB_MODE=kernel-delta \
+    QWEN_CENSUS_PRODUCTION_SERVER="$control_server"
+printf 'kernel_delta_refusals=accepted\n'
+
 active_fixture=complete
 printf 'run_served_binary_ab=accepted cases=%s\n' "$run_index"
