@@ -1310,6 +1310,47 @@ class ImageServiceTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 2, completed.stderr)
         self.assertIn("--lan-exposure", completed.stderr)
 
+    def test_a_non_finite_artifact_read_timeout_is_refused(self):
+        """inf parses as a float but socket.settimeout(inf) raises OverflowError."""
+        directory = tempfile.mkdtemp(dir=self.temporary.name)
+        state_directory = os.path.join(directory, "state")
+        os.makedirs(state_directory, mode=0o700)
+        api_key_path = os.path.join(directory, "api.key")
+        with open(api_key_path, "w", encoding="ascii") as handle:
+            handle.write(API_KEY + "\n")
+        os.chmod(api_key_path, 0o600)
+        radv_icd_path = os.path.join(directory, "fake-radv-icd.json")
+        with open(radv_icd_path, "w", encoding="ascii") as handle:
+            handle.write("{}\n")
+        profiles_path = os.path.join(directory, "profiles.json")
+        with open(profiles_path, "w", encoding="ascii") as handle:
+            handle.write("{}\n")
+        for bad_value in ("inf", "-inf", "nan", "-5"):
+            with self.subTest(value=bad_value):
+                completed = subprocess.run(
+                    [
+                        sys.executable, SERVICE_PATH,
+                        "--state-dir", state_directory,
+                        "--profiles-json", profiles_path,
+                        "--api-key-file", api_key_path,
+                        "--origin", PAGE_ORIGIN,
+                        "--http-host", "127.0.0.1",
+                        "--http-port", "0",
+                    ],
+                    env={
+                        **os.environ,
+                        "QWEN_RADV_ICD": radv_icd_path,
+                        "QWEN_IMAGE_ARTIFACT_READ_TIMEOUT_S": bad_value,
+                    },
+                    capture_output=True,
+                    text=True,
+                    timeout=STARTUP_SECONDS,
+                )
+                self.assertEqual(completed.returncode, 2, completed.stderr)
+                self.assertIn(
+                    "QWEN_IMAGE_ARTIFACT_READ_TIMEOUT_S", completed.stderr
+                )
+
     def test_health_reports_the_service_state(self):
         session = self.start()
         status, _, body = session.authorized_http("/health")

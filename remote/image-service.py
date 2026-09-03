@@ -750,9 +750,12 @@ def artifact_read_timeout_seconds_from_environment():
     `QWEN_IMAGE_ARTIFACT_READ_TIMEOUT_S` lets a test shrink the bound the
     wildcard listener otherwise holds an idle or partial-request connection
     under for `ARTIFACT_READ_TIMEOUT_SECONDS`, the way
-    `QWEN_IMAGE_LEASE_WAIT_S` shrinks the lease wait; a malformed or negative
-    setting would silently become the default and hide a launch that meant to
-    configure it, so it raises instead.
+    `QWEN_IMAGE_LEASE_WAIT_S` shrinks the lease wait; a malformed, non-positive,
+    or non-finite setting would silently become the default and hide a launch
+    that meant to configure it, so it raises instead. `inf` parses as a float
+    and clears every earlier check, but `socket.settimeout` raises
+    `OverflowError` on it, which would start the service successfully and then
+    fail every artifact connection at handler setup.
     """
     raw = os.environ.get("QWEN_IMAGE_ARTIFACT_READ_TIMEOUT_S", "")
     if raw == "":
@@ -763,9 +766,9 @@ def artifact_read_timeout_seconds_from_environment():
         raise ServiceError(
             f"QWEN_IMAGE_ARTIFACT_READ_TIMEOUT_S is not a number: {raw}"
         ) from None
-    if seconds <= 0 or seconds != seconds:
+    if seconds <= 0 or not math.isfinite(seconds):
         raise ServiceError(
-            f"QWEN_IMAGE_ARTIFACT_READ_TIMEOUT_S is not positive: {raw}"
+            f"QWEN_IMAGE_ARTIFACT_READ_TIMEOUT_S is not a finite positive number: {raw}"
         )
     return seconds
 
