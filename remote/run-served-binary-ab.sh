@@ -217,12 +217,32 @@ if [ "$ab_mode" = kernel-delta ]; then
             exit 2
         fi
     done
+elif [ ! -r "$bracket_summarizer" ]; then
+    # Served mode reads the same summarizer's reply row, which is what binds a
+    # promotion to one computation, so the reader is required in both modes.
+    printf 'the served comparison requires a readable summarizer: %s\n' \
+        "$bracket_summarizer" >&2
+    exit 2
 fi
 cooldown_s=${QWEN_AB_COOLDOWN_S:-30}
 # The band, the share window, and the cap are the census campaign's own, read
 # under the same names, since both campaigns face one governor on one machine
 # and a rule tightened for either belongs to both.
 sclk_band=${QWEN_CENSUS_SCLK_BAND:-0.06}
+# The band is a relative distance over the larger of two clocks and reaches
+# census_regime_step, summarize-census-controls.py, and summarize-bracket-ab.py
+# as a float, so a value at or above one holds every pair of clocks in one
+# state and `inf` leaves no pair outside it. Both are refused before an arm.
+case $sclk_band in
+    '' | . | *[!0-9.]* | *.*.*)
+        printf 'QWEN_CENSUS_SCLK_BAND is a nonnegative decimal: %s\n' "$sclk_band" >&2
+        exit 2
+        ;;
+esac
+if ! awk -v band="$sclk_band" 'BEGIN { exit (band + 0 < 1) ? 0 : 1 }'; then
+    printf 'QWEN_CENSUS_SCLK_BAND is a relative distance in [0, 1): %s\n' "$sclk_band" >&2
+    exit 2
+fi
 regime_min_share=${QWEN_CENSUS_REGIME_MIN_SHARE:-0.05}
 regime_max_share=${QWEN_CENSUS_REGIME_MAX_SHARE:-0.30}
 regime_max_arms=${QWEN_CENSUS_REGIME_MAX_ARMS:-16}
@@ -345,8 +365,12 @@ if [ "$engine_clock_policy" != auto ]; then
     # where the appliance's own manual arms ran, and the selection that would
     # raise it is accepted by the write and ignored by the firmware.
     engine_clock_required_mclk_mhz=${QWEN_CENSUS_MCLK_FLOOR_MHZ:-933}
+    # A floor of zero admits every fabric clock the firmware selects and holds
+    # the window to nothing, and a leading zero writes a second spelling of one
+    # count into the ledger the summarizer reads, so the value is a canonical
+    # positive decimal.
     case $engine_clock_required_mclk_mhz in
-        '' | *[!0-9]*)
+        0 | 0[0-9]* | '' | *[!0-9]*)
             printf 'QWEN_CENSUS_MCLK_FLOOR_MHZ is a positive megahertz count: %s\n' \
                 "$engine_clock_required_mclk_mhz" >&2
             exit 2
@@ -455,6 +479,28 @@ runtime_tree_git_head=$(awk -F'\t' '$1 == "git_head" { count++; value = $2 }
         "$runtime_tree_manifest" >&2
     exit 2
 }
+# Source identity and payload identity are two claims, and check-runtime-tree.sh
+# reads the second one: a tree regenerated from dirty remote/ or patches/ bytes
+# keeps its recorded head and moves its payload digest. The digest is composed
+# from the manifest's two payload rows exactly as that checker composes it, so
+# the value this campaign records is the value QWEN_INTENDED_PAYLOAD_SHA256
+# holds every arm's launch to.
+runtime_tree_payload_sha256() {
+    runtime_tree_payload_rows=$(awk -F'\t' \
+        '$1 == "remote_payload_tree_sha256" { remote_count++; remote_value = $2 }
+        $1 == "patches_payload_tree_sha256" { patches_count++; patches_value = $2 }
+        END {
+            if (remote_count != 1 || patches_count != 1) exit 1
+            printf "remote_payload_tree_sha256=%s\npatches_payload_tree_sha256=%s\n",
+                remote_value, patches_value
+        }' "$1") || return 1
+    printf '%s\n' "$runtime_tree_payload_rows" | sha256sum | cut -d ' ' -f 1
+}
+runtime_tree_payload=$(runtime_tree_payload_sha256 "$runtime_tree_manifest") || {
+    printf 'the runtime tree manifest must name each payload digest exactly once: %s\n' \
+        "$runtime_tree_manifest" >&2
+    exit 2
+}
 for reader in "$controls_summarizer" "$sidecar" "$sidecar_validator"; do
     if [ ! -r "$reader" ]; then
         printf 'reader is absent: %s\n' "$reader" >&2
@@ -520,6 +566,13 @@ if [ ! -r "$model_path" ]; then
     printf 'model file is unreadable: %s\n' "$model_path" >&2
     exit 2
 fi
+# The checkpoint every arm decodes is bound by its own bytes here. An arm
+# re-establishes publisher identity against whichever ledger row it reads, so a
+# model and its row replaced together between two arms pass that check and
+# leave control and candidate measured on different weights; the digest taken
+# once at preflight is what each arm is compared against.
+model_file_bytes=$(wc -c <"$model_path" | tr -d ' ')
+model_file_sha256=$(sha256sum "$model_path" | cut -d ' ' -f 1)
 
 control_manifest=$(census_manifest_beside "$control_server" control)
 set +e
@@ -717,6 +770,33 @@ candidate_series_tree=$(census_manifest_value "$candidate_manifest" checkpoint_s
 if [ "$candidate_series_tree" != verified-candidate ]; then
     printf 'the candidate manifest must read checkpoint_series_tree verified-candidate: %s\n' \
         "$candidate_series_tree" >&2
+    exit 2
+fi
+# The candidate is bound to the patch bytes rather than to the patch name.
+# verify-llama-patch-series.sh digests the concatenated per-member SHA-256 of
+# the selected candidates in ledger order and build-llama-preset.sh records
+# that value as candidate_series_sha256, so recomputing it over this checkout's
+# own patches refuses a binary built before the named patch changed, which the
+# filename comparison above admits.
+patch_directory=$script_directory/../patches
+candidate_series_sha256=$(census_manifest_value "$candidate_manifest" \
+    candidate_series_sha256 candidate) || exit 2
+candidate_series_identity=''
+for candidate_series_member in $(printf '%s\n' "$candidate_candidate_series" | tr ',' ' '); do
+    if [ ! -r "$patch_directory/$candidate_series_member" ]; then
+        printf 'the candidate series names a patch this checkout holds no readable copy of: %s\n' \
+            "$patch_directory/$candidate_series_member" >&2
+        exit 2
+    fi
+    candidate_series_identity=$candidate_series_identity$(
+        sha256sum "$patch_directory/$candidate_series_member" | cut -d ' ' -f 1)
+done
+candidate_series_recomputed=$(printf '%s' "$candidate_series_identity" \
+    | sha256sum | cut -d ' ' -f 1)
+if [ "$candidate_series_sha256" != "$candidate_series_recomputed" ]; then
+    printf 'the candidate manifest records candidate_series_sha256 %s where %s recomputes to %s\n' \
+        "$candidate_series_sha256" "$candidate_candidate_series" \
+        "$candidate_series_recomputed" >&2
     exit 2
 fi
 if [ "$ab_mode" = kernel-delta ]; then
@@ -937,6 +1017,12 @@ printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\
         "$(sha256sum "$controls_summarizer" | cut -d ' ' -f 1)"
     printf 'runtime_tree_manifest\t%s\nruntime_tree_git_head\t%s\n' \
         "$runtime_tree_manifest" "$runtime_tree_git_head"
+    printf 'runtime_tree_payload_sha256\t%s\n' "$runtime_tree_payload"
+    # The model is bound by its own bytes beside the publisher identity the
+    # ledger states, so a checkpoint replaced consistently with its ledger row
+    # between two arms is a different subject rather than a re-established one.
+    printf 'model_file_bytes\t%s\nmodel_file_sha256\t%s\n' \
+        "$model_file_bytes" "$model_file_sha256"
     printf 'latency_probe\t%s\nlatency_probe_sha256\t%s\n' \
         "${latency_probe:--}" "$latency_probe_sha256"
     printf 'started_utc\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -1103,6 +1189,8 @@ for arm in $execution_arms; do
             QWEN_LLAMA_SERVER="$server" \
             QWEN_LAUNCH_SCRIPT="$runtime_remote/qwen-launch.sh" \
             QWEN_TEARDOWN_SCRIPT="$runtime_remote/qwen-teardown.sh" \
+            QWEN_INTENDED_GIT_HEAD="$runtime_tree_git_head" \
+            QWEN_INTENDED_PAYLOAD_SHA256="$runtime_tree_payload" \
             QWEN_MODELS_DIRECTORY="$models_directory" \
             QWEN_MODEL_ARTIFACTS="$artifact_ledger" \
             QWEN_RESULT_DIRECTORY="$arm_directory" \
@@ -1160,6 +1248,52 @@ for arm in $execution_arms; do
     if [ "$server_sha256" != "$bound_role_sha256" ]; then
         server_identity=replaced
     fi
+    # The runtime tree and the checkpoint are re-read after the arm the way the
+    # server is. A tree resynced between two arms runs later arms through
+    # another launch, teardown, and profile implementation, and a model
+    # replaced consistently with its ledger row leaves the two roles decoding
+    # different weights; either fails the arm it served rather than being
+    # recorded under the preflight identity.
+    runtime_tree_identity=bound
+    arm_runtime_tree_git_head=-
+    arm_runtime_tree_payload=-
+    if [ -r "$runtime_tree_manifest" ]; then
+        arm_runtime_tree_git_head=$(awk -F'\t' '$1 == "git_head" { count++; value = $2 }
+            END { if (count == 1) print value; else print "-" }' "$runtime_tree_manifest")
+        arm_runtime_tree_payload=$(runtime_tree_payload_sha256 "$runtime_tree_manifest") \
+            || arm_runtime_tree_payload=-
+    fi
+    if [ "$arm_runtime_tree_git_head" != "$runtime_tree_git_head" ] \
+        || [ "$arm_runtime_tree_payload" != "$runtime_tree_payload" ]; then
+        runtime_tree_identity=replaced
+    fi
+    # The served runner hashes the descriptor it pinned and writes both figures
+    # into runtime-inputs.json, so that record is the arm's own reading of the
+    # checkpoint and the comparison costs no second pass over the file. The
+    # file's byte count is read beside it, which catches a replacement that
+    # left no record at all.
+    model_identity=bound
+    arm_model_bytes=-
+    arm_model_sha256=-
+    if [ -r "$model_path" ]; then
+        arm_model_bytes=$(wc -c <"$model_path" | tr -d ' ')
+    fi
+    if [ "$arm_model_bytes" != "$model_file_bytes" ]; then
+        model_identity=replaced
+    fi
+    if [ -r "$arm_directory/runtime-inputs.json" ]; then
+        arm_model_sha256=$(python3 - "$arm_directory/runtime-inputs.json" <<'ARM_MODEL_IDENTITY' || true
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get("model", {}).get("sha256") or "-")
+except (OSError, ValueError):
+    print("-")
+ARM_MODEL_IDENTITY
+)
+        if [ "$arm_model_sha256" != "$model_file_sha256" ]; then
+            model_identity=replaced
+        fi
+    fi
     predicted_n=-
     predicted_ms=-
     tok_s=-
@@ -1200,6 +1334,19 @@ EOF
         reason=server_identity
         printf 'served_ab_arm=server_replaced slot=%s arm=%s bound=%s observed=%s\n' \
             "$slot" "$arm" "$bound_role_sha256" "$server_sha256"
+    fi
+    if [ "$runtime_tree_identity" != bound ]; then
+        status=failed
+        reason=runtime_tree
+        printf 'served_ab_arm=runtime_tree_replaced slot=%s arm=%s bound_head=%s observed_head=%s bound_payload=%s observed_payload=%s\n' \
+            "$slot" "$arm" "$runtime_tree_git_head" "$arm_runtime_tree_git_head" \
+            "$runtime_tree_payload" "$arm_runtime_tree_payload"
+    fi
+    if [ "$model_identity" != bound ]; then
+        status=failed
+        reason=model_identity
+        printf 'served_ab_arm=model_replaced slot=%s arm=%s bound=%s observed=%s\n' \
+            "$slot" "$arm" "$model_file_sha256" "$arm_model_sha256"
     fi
     if [ "$sidecar_start_failed" -eq 1 ]; then
         status=failed
@@ -1349,6 +1496,12 @@ EOF
             # clock: it absorbs the cold load and settles nothing, since the
             # policy rather than a measured mode states the execution state.
             regime_reached=1
+        elif [ "$sidecar_state" != on ]; then
+            # The validator prints its clock_state line whatever it decides
+            # about the record, so a refused warmup carries a mode the run has
+            # no telemetry for. The precondition spends the arm and keeps the
+            # last accepted reading rather than settling on a refused one.
+            printf 'served_ab_regime=record_refused slot=%s arm=%s\n' "$slot" "$arm"
         else
             regime_step=$(census_regime_step "$regime_previous_mode" "$regime_previous_share" \
                 "$sclk_mode_mhz" "$sclk_share" "$sclk_band" "$regime_min_share" \
@@ -1501,7 +1654,47 @@ unclassified=$(awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; n
     $(column["verdict"]) == "unclassified" { count++ }
     END { print count + 0 }' "$output_directory/summary.tsv")
 
-if [ "$arm_failures" -ne 0 ] || [ "$verdict" = incomplete ] || [ "$unclassified" -ne 0 ]; then
+# Every column is read by name in both summaries, since a row gains statistics
+# between the per-replicate columns and the bound.
+read_summary_row() {
+    awk -F'\t' -v role="$2" -v field="$3" 'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
+        $(column["role"]) == role { rows++; value = $(column[field]) }
+        END { if (rows != 1) exit 1; print value }' "$1"
+}
+response_identity=-
+response_pairs=-
+if [ "$ab_mode" = served ]; then
+    # A rate comparison prices two binaries and states nothing about what they
+    # answered. summarize-bracket-ab.py's response_identity row compares the
+    # candidate's reply with the control's per pair over the replies every arm
+    # retains, so a candidate that decodes faster by answering differently is
+    # refused rather than promoted. Its bracket rows read incomplete here,
+    # since a serving build writes no pipeline ledger, and the campaign reads
+    # the reply row alone.
+    set +e
+    python3 "$bracket_summarizer" "$arms_ledger" "$output_directory/arms" \
+        --subject "$bracket_subject" --null "$bracket_null" --bound "$bracket_bound" \
+        --sclk-band "$sclk_band" \
+        >"$output_directory/response-summary.tsv" 2>"$output_directory/response-summary.stderr"
+    response_status=$?
+    set -e
+    if [ "$response_status" -eq 0 ]; then
+        response_identity=$(read_summary_row "$output_directory/response-summary.tsv" \
+            response_identity verdict) || response_identity=-
+        response_pairs=$(read_summary_row "$output_directory/response-summary.tsv" \
+            response_identity comparable_pairs) || response_pairs=-
+    else
+        printf 'response_summary=refused reason=%s\n' \
+            "$(sed -n '1p' "$output_directory/response-summary.stderr")"
+    fi
+fi
+
+# A cooldown that never converged left the arm after it a machine state the arm
+# before it chose, which is the nuisance the boundary exists to remove, so the
+# count decides the campaign beside the arm failures rather than being reported
+# alongside a verdict it contradicts.
+if [ "$arm_failures" -ne 0 ] || [ "$verdict" = incomplete ] || [ "$unclassified" -ne 0 ] \
+    || [ "$cooldown_timeouts" -ne 0 ]; then
     campaign=failed
     campaign_exit=1
 elif [ "$verdict" = refuted ]; then
@@ -1517,8 +1710,18 @@ elif [ "$verdict" = unresolved ] || [ "$verdict" = state-changed ]; then
     campaign=$verdict
     campaign_exit=4
 elif [ "$verdict" = promoted ]; then
-    campaign=promoted
-    campaign_exit=0
+    if [ "$response_identity" = held ] && [ "$response_pairs" = "$ab_replicates" ]; then
+        campaign=promoted
+        campaign_exit=0
+    else
+        # The gain is real only over one computation. A reply that differs
+        # between the roles, or a pair whose replies could not be compared,
+        # leaves the promotion resting on nothing the run measured.
+        campaign=failed
+        campaign_exit=1
+        printf 'served_ab_response_identity=%s pairs=%s replicates=%s\n' \
+            "$response_identity" "$response_pairs" "$ab_replicates"
+    fi
 else
     campaign=failed
     campaign_exit=1
@@ -1541,19 +1744,20 @@ null_mean_delta=-
 null_union_verdict=-
 null_pairs=-
 module_identity=-
-response_identity=-
-response_pairs=-
 if [ "$ab_mode" = kernel-delta ]; then
     set +e
+    # The band reaches the bracket the way it reaches the served rate: a device
+    # timestamp duration scales with the graphics clock, so two arms that
+    # selected modes farther apart than the band measure the governor step
+    # between them and their pair leaves the interval.
     python3 "$bracket_summarizer" "$arms_ledger" "$output_directory/arms" \
         --subject "$bracket_subject" --null "$bracket_null" --bound "$bracket_bound" \
+        --sclk-band "$sclk_band" \
         >"$output_directory/bracket-summary.tsv" 2>"$output_directory/bracket-summary.stderr"
     bracket_status=$?
     set -e
     read_bracket_row() {
-        awk -F'\t' -v role="$1" -v field="$2" 'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
-            $(column["role"]) == role { rows++; value = $(column[field]) }
-            END { if (rows != 1) exit 1; print value }' "$output_directory/bracket-summary.tsv"
+        read_summary_row "$output_directory/bracket-summary.tsv" "$1" "$2"
     }
     if [ "$bracket_status" -eq 0 ]; then
         bracket_verdict=$(read_bracket_row subject verdict) || bracket_verdict=-
