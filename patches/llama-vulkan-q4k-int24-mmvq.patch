@@ -22,7 +22,12 @@ and a macro puts it behind the extension's own spelling so all forty call
 sites read the same. The Q4_K and Q5_K mmvq_dot_product specializes further:
 repack4 masks its quant bytes to 0..15, and Q5_K merges one bit above that, so
 only the activation byte needs the bias and the correction rides two
-accumulators over sixteen values as one shift. The FP32 tail is byte-identical
+accumulators over sixteen values as one shift. Those sixteen products are
+written straight-line with literal shifts and literal masks, the way the pinned
+function writes four explicit dot calls, so the module holds sixteen multiplies
+of constant-masked bytes and indexes the quant vector statically: the compiled
+Q4_K variant reaches 46 OpIMul against the extension branch's 30 and the same
+73 OpAccessChain. The FP32 tail is byte-identical
 to the pinned function, so the replacement is exact against
 dotPacked4x8EXT rather than approximate: a C model of both forms agrees with
 the signed reference over the whole single-lane domain and four million random
@@ -245,7 +250,7 @@ index 18d441ead..12d78c5a6 100644
  #define MMQ
  #define NEEDS_IQ1S_GRID_GPU
 diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq_funcs.glsl b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq_funcs.glsl
-index a5403ac82..ae3fc7ec6 100644
+index a5403ac82..4a346bf9c 100644
 --- a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq_funcs.glsl
 +++ b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq_funcs.glsl
 @@ -4,6 +4,46 @@
@@ -295,34 +300,62 @@ index a5403ac82..ae3fc7ec6 100644
  #if defined(DATA_A_Q2_0)
  FLOAT_TYPE get_dm(uint ib) {
      return FLOAT_TYPE(data_a[ib / 2].d);
-@@ -371,10 +411,38 @@ FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
+@@ -371,10 +411,66 @@ FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
      const i32vec4 qs_a = repack4(ib_a, iqs * 4);
      const vec2 dm_scale = get_dm_scale(ib_a, iqs * 4);
  
 +#if defined(GGML_VK_INT24_DOT)
 +    // repack4 masks the quant bytes with 0x0F0F0F0F, and Q5_K merges one bit
 +    // plane above that, so each one is already unsigned and at most 31: the
-+    // activation byte alone carries the bias. Accumulating sum(n * bu) beside
-+    // sum(n) over all sixteen values pays the 128 * sum(n) correction once per
-+    // call as a shift rather than once per product, and every multiplicand
-+    // reaches ACO as a literal mask of a value loaded unsigned, which is the
-+    // bound v_mul_u32_u24 selection reads. The products bound at 31 * 255 and
++    // activation byte alone carries the bias. Summing n * bu over all sixteen
++    // values beside sum(n) pays the 128 * sum(n) correction once per call as a
++    // shift rather than once per product. The products bound at 31 * 255 and
 +    // their sum at 126480, so the uint accumulators stay exact.
-+    uint sum_nb = 0;
-+    uint sum_n = 0;
++    //
++    // Every product is written out with a literal shift and a literal mask,
++    // the way the pinned function writes four explicit dot calls: each
++    // multiplicand then reaches ACO as a constant-masked byte of a value held
++    // unsigned, which is the bound v_mul_u32_u24 selection reads and the byte
++    // select SDWA folds into the operand. A loop over the four words would
++    // index qs_a through a pointer and leave one multiply in the module, which
++    // states neither.
++    const uint quants_x = uint(qs_a.x);
++    const uint quants_y = uint(qs_a.y);
++    const uint quants_z = uint(qs_a.z);
++    const uint quants_w = uint(qs_a.w);
 +
-+    [[unroll]] for (uint w = 0; w < 4; ++w) {
-+        const uint quants = uint(qs_a[w]);
-+        const uint biased = uint(cache_b_qs[w]) ^ 0x80808080u;
++    const uint biased_x = uint(cache_b_qs[0]) ^ 0x80808080u;
++    const uint biased_y = uint(cache_b_qs[1]) ^ 0x80808080u;
++    const uint biased_z = uint(cache_b_qs[2]) ^ 0x80808080u;
++    const uint biased_w = uint(cache_b_qs[3]) ^ 0x80808080u;
 +
-+        [[unroll]] for (uint byte = 0; byte < 4; ++byte) {
-+            const uint n = (quants >> (8 * byte)) & 0xFFu;
-+            const uint b = (biased >> (8 * byte)) & 0xFFu;
++    const uint sum_nb =
++        ( quants_x        & 0xFFu) * ( biased_x        & 0xFFu) +
++        ((quants_x >>  8) & 0xFFu) * ((biased_x >>  8) & 0xFFu) +
++        ((quants_x >> 16) & 0xFFu) * ((biased_x >> 16) & 0xFFu) +
++        ((quants_x >> 24) & 0xFFu) * ((biased_x >> 24) & 0xFFu) +
++        ( quants_y        & 0xFFu) * ( biased_y        & 0xFFu) +
++        ((quants_y >>  8) & 0xFFu) * ((biased_y >>  8) & 0xFFu) +
++        ((quants_y >> 16) & 0xFFu) * ((biased_y >> 16) & 0xFFu) +
++        ((quants_y >> 24) & 0xFFu) * ((biased_y >> 24) & 0xFFu) +
++        ( quants_z        & 0xFFu) * ( biased_z        & 0xFFu) +
++        ((quants_z >>  8) & 0xFFu) * ((biased_z >>  8) & 0xFFu) +
++        ((quants_z >> 16) & 0xFFu) * ((biased_z >> 16) & 0xFFu) +
++        ((quants_z >> 24) & 0xFFu) * ((biased_z >> 24) & 0xFFu) +
++        ( quants_w        & 0xFFu) * ( biased_w        & 0xFFu) +
++        ((quants_w >>  8) & 0xFFu) * ((biased_w >>  8) & 0xFFu) +
++        ((quants_w >> 16) & 0xFFu) * ((biased_w >> 16) & 0xFFu) +
++        ((quants_w >> 24) & 0xFFu) * ((biased_w >> 24) & 0xFFu);
 +
-+            sum_nb += n * b;
-+            sum_n  += n;
-+        }
-+    }
++    const uint sum_n =
++        ( quants_x        & 0xFFu) + ((quants_x >>  8) & 0xFFu) +
++        ((quants_x >> 16) & 0xFFu) + ((quants_x >> 24) & 0xFFu) +
++        ( quants_y        & 0xFFu) + ((quants_y >>  8) & 0xFFu) +
++        ((quants_y >> 16) & 0xFFu) + ((quants_y >> 24) & 0xFFu) +
++        ( quants_z        & 0xFFu) + ((quants_z >>  8) & 0xFFu) +
++        ((quants_z >> 16) & 0xFFu) + ((quants_z >> 24) & 0xFFu) +
++        ( quants_w        & 0xFFu) + ((quants_w >>  8) & 0xFFu) +
++        ((quants_w >> 16) & 0xFFu) + ((quants_w >> 24) & 0xFFu);
 +
 +    q_sum = int32_t(sum_nb) - int32_t(sum_n << 7);
 +#else

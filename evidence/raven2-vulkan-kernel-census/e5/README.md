@@ -158,10 +158,14 @@ environment         test-radv-low-priority-env.sh gains the three
 
 `spirv-summary.tsv` carries the compile receipt. The extension branch holds
 four `OpSDot`, the `DotProduct` capability, and the `SPV_KHR_integer_dot_product`
-extension; the int24 branch holds none of the three and reaches 33 `OpIMul`
-against 30. Those are SPIR-V operations at glslc's default optimization with
-the sixteen products still inside a rolled loop, so they state which arithmetic
-the module asks for and count no VALU instruction.
+extension; the int24 branch holds none of the three and reaches 46 `OpIMul`
+against 30, which is the sixteen products the design predicts, on all three
+workgroup variants. Both branches hold 73 `OpAccessChain` and zero
+`OpVectorExtractDynamic`, so the replacement indexes the quant vector
+statically and asks ACO for sixteen multiplies of constant-masked bytes. These
+are SPIR-V operations at glslc's default optimization: they state which
+arithmetic the module asks for and count no VALU instruction, which is what
+falsifier 1 measures.
 
 ## Not run
 
