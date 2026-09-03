@@ -84,6 +84,24 @@ up to 0.375 (`../witness-cpu-reference-20260903T0220Z/`). E4's movement is
 its own reassociation, an order of magnitude inside a backend change the
 appliance already serves as equivalent, with no argmax moved.
 
+The correctness state is a matrix rather than one flag:
+
+| property | result |
+| --- | --- |
+| candidate and control self-repeatability | exact |
+| same-semantics independent builds | bit-identical |
+| token ids, candidate against control | identical over all 768 observed tokens |
+| first token divergence | none |
+| selected log-probability identity | refuted, maximum 2.421e-2 nat |
+| registered 1e-3 nat bound | refuted and retired without a replacement figure |
+| longitudinal amplification over 128 tokens | not observed |
+| margin robustness | `../margin-contract-design.md`, judged on a fresh holdout |
+| general task-quality non-regression | pending the graded suite |
+
+The CPU reference is context rather than a threshold: it shows E4 is far
+smaller than a backend transition and says nothing about whether every
+smaller perturbation is acceptable, which is what the margin contract asks.
+
 ## Reading
 
 E4 shortens the Q4_K mat-vec by 3.9% of its bracket under this execution
