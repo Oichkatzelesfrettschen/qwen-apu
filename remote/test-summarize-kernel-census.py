@@ -21,8 +21,11 @@ serial.
 Validation precedes the phase filter, so a defective prefill graph inside
 the window refuses a decode report. Every refusal is exercised once: the
 graph defects, each reachable recomputed-aggregate disagreement, the emit
-row, the close counts, the queue family, the self-test, and the header
-cardinality. Two rules stay guards rather than reachable refusals, since
+row in both directions, the pair of monotonic instants against each other
+and against the declared retire span, a bare token and a repeated key in
+each of the four header and footer kinds, an infinite, not-a-number, and
+negative overlap threshold, the close counts, the queue family, the
+self-test, and the header cardinality. Two rules stay guards rather than reachable refusals, since
 the recompute settles them first: a recomputed unavailable count above zero
 requires a negative endpoint the bracket check already refuses, and a
 recomputed union never exceeds the recomputed completion span it is bounded
@@ -122,7 +125,7 @@ def aggregates(records):
 
 def graph_rows(serial, records, begin, retire_span, record_ns=None,
                readback_ns=1000, dispatch_row_emit_ns=2000, graph_row_ns=500,
-               flush_ns=300, total_emit_ns=3000, n_nodes=None, overrides=None,
+               flush_ns=300, n_nodes=None, overrides=None,
                emit_overrides=None, emit=True):
     graph = {
         "serial": serial,
@@ -136,10 +139,12 @@ def graph_rows(serial, records, begin, retire_span, record_ns=None,
     }
     graph.update(aggregates(records))
     graph.update(overrides or {})
+    # The instrument sets the total to the sum of its three parts, so the
+    # builder derives it and a test that wants a disagreement overrides it.
     emit_row = {
         "serial": serial, "dispatch_rows_ns": graph["dispatch_row_emit_ns"],
         "graph_row_ns": graph_row_ns, "flush_ns": flush_ns,
-        "total_emit_ns": total_emit_ns,
+        "total_emit_ns": graph["dispatch_row_emit_ns"] + graph_row_ns + flush_ns,
     }
     emit_row.update(emit_overrides or {})
     rows = [dispatch_row(d) for d in records]
@@ -373,11 +378,24 @@ refused("declares dispatch_union_ns=25000 against 20000",
         extra(overrides={"dispatch_union_ns": 25_000,
                          "queue_non_dispatch_ns": -4_900}))
 refused("exceeds the host retire span", extra(retire_span=10_000))
+# The two monotonic instants are checked against each other ahead of the
+# window, so a reversed pair and a pair disagreeing with the declared span
+# both refuse where they would otherwise sit wholly inside the window and be
+# attributed to the timed request.
+refused("graph 5 retires at 4999000, ahead of its begin 5000000",
+        extra(overrides={"retire_monotonic_ns": 4_999_000}))
+refused("graph 5 spans 40000 between its instants against the declared "
+        "retire_span_ns=30000",
+        extra(overrides={"retire_monotonic_ns": 5_040_000}))
 refused("carries no census_emit row", extra(emit=False))
 refused("declares dispatch_rows_ns=1999",
         extra(emit_overrides={"dispatch_rows_ns": 1999}))
-refused("below the 2800 its own parts sum to",
+# The producer sets the total to the sum of its parts, so both directions
+# refuse rather than the low side alone.
+refused("total_emit_ns=2799 against the 2800 its own parts sum to",
         extra(emit_overrides={"total_emit_ns": 2799}))
+refused("total_emit_ns=2801 against the 2800 its own parts sum to",
+        extra(emit_overrides={"total_emit_ns": 2801}))
 refused("the census queue is family 0",
         extra(records=[dispatch(5, 1, 0, "MUL_MAT", 1, 100, 20_100,
                                 queue_family=1)]))
@@ -403,7 +421,42 @@ refused("not pipeline-census-v3", expected=2,
         header=(QUEUE, SELFTEST, OPEN.replace("v3", "v2")))
 refused("is not CLOCK_MONOTONIC", expected=2,
         header=(QUEUE, SELFTEST, OPEN.replace("CLOCK_MONOTONIC", "CLOCK_REALTIME")))
+# One helper reads the four header and footer kinds, so a bare token and a
+# repeated key refuse in each of them. A repeated clock is the case the
+# check exists for: keeping the last value would let the section declare
+# clock=BOGUS and still satisfy the CLOCK_MONOTONIC rule.
+refused("census_open states clock twice", expected=2,
+        header=(QUEUE, SELFTEST,
+                OPEN.replace("clock=CLOCK_MONOTONIC",
+                             "clock=BOGUS\tclock=CLOCK_MONOTONIC")))
+refused("census_open carries the token 'bogus', which states no key=value pair",
+        expected=2, header=(QUEUE, SELFTEST, OPEN + "\tbogus"))
+refused("census_queue states family twice", expected=2,
+        header=(QUEUE + "\tfamily=1", SELFTEST, OPEN))
+refused("census_queue carries the token 'bogus'", expected=2,
+        header=(QUEUE + "\tbogus", SELFTEST, OPEN))
+refused("census_selftest states sha256 twice", expected=2,
+        header=(QUEUE, SELFTEST + "\tsha256=ok", OPEN))
+refused("census_selftest carries the token 'bogus'", expected=2,
+        header=(QUEUE, SELFTEST + "\tbogus", OPEN))
+refused("census_close states graphs twice", expected=2,
+        close=close_row(base) + "\tgraphs=4")
+refused("census_close carries the token 'bogus'", expected=2,
+        close=close_row(base) + "\tbogus")
 print("defects_terminal=accepted")
+
+# argparse takes any float for the threshold, so the value is refused where
+# the diagnostic is still readable rather than making every finite mean
+# overlap conclusive.
+for value in ("inf", "nan", "-0.1"):
+    result = run(base, threshold=value)
+    assert result.returncode != 0, (value, result.stdout)
+    assert f"the overlap threshold {float(value)} is not a finite value at or above zero" \
+        in result.stderr, (value, result.stderr)
+result = run(base, threshold=0.0)
+assert result.returncode == 0, result.stderr
+assert "ownership=inconclusive" in result.stdout.rstrip("\n").split("\n")[-1], result.stdout
+print("overlap_threshold_bounds=accepted")
 
 
 def context_section(rows, header=(QUEUE, SELFTEST, OPEN), close=True):
