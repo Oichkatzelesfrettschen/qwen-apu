@@ -190,11 +190,19 @@ control's 88 with the same sixteen of each `v_cvt_f32_ubyte0..3`. A variant whos
 spanned the scale block and a `qs` dword would need a role per destination component, and
 `classify-loop-phases.py` states one per load.
 
-**Equivalence.** `scale-select-equivalence.py` beside this file drives every formulation and
-the control over the ninety-six single-bit scale words, both saturating words, and 200,000
-random draws, against both values of `v_im`: 400,196 cases, zero mismatches on all five arms.
-The float arithmetic is untouched, so the accumulated value is unchanged bit for bit and the
-appliance arm predicts token identity rather than a tolerance.
+**Equivalence.** `scale-select-equivalence.py` beside this file closes the whole 2**96 input
+space per value of `v_im` by linearity rather than sampling it. At a fixed `v_im` every
+formulation is constant shifts, constant masks, byte gathers, and unions of disjoint bit
+fields, none of which takes the conjunction of two input bits or carries, so each is linear
+over GF(2); a linear map is determined by its image of a basis, so two such maps that send
+zero to zero and agree on the ninety-six single-bit inputs agree everywhere. The script
+establishes that premise for each arm and for the control -- `f(0) == 0` and
+`f(a ^ b) == f(a) ^ f(b)` over 20,000 random pairs -- then reads the basis, and reports
+`linear=yes basis_agrees=yes` on all twelve arm-and-`v_im` rows. Two hundred thousand random
+draws follow as a redundant sample and add nothing the basis has not settled. A byte-swap
+defect in the shipped arm is refused on the basis and a conjunction added to it is refused on
+superposition. The float arithmetic is untouched, so the accumulated value is unchanged bit
+for bit and the appliance arm predicts token identity rather than a tolerance.
 
 **The five formulations, and the four this one was chosen over.** Whole-shader at
 `NUM_ROWS = 4`.
@@ -408,7 +416,7 @@ hiding rather than issue slots, and how much is exactly what a static receipt ca
 | `arm-receipts-num-rows-8.tsv` | Table 2 |
 | `phase-attribution.tsv` | Table 3, body and reduction, four arms at two shapes |
 | `salu-attribution.tsv` | the SALU class split for the same sixteen ranges |
-| `scale-select-equivalence.py` | the enumeration behind the bit-identity claim |
+| `scale-select-equivalence.py` | the linearity argument behind the bit-identity claim |
 | `receipts/ARM-nrN/` | `lab.sh`'s own receipt, statistics, depth table, and disassembly per arm and shape |
 | `receipts/receipt-diff-*.tsv` | `receipt-diff.sh`'s verdict over each pair |
 

@@ -1,14 +1,22 @@
 #!/usr/bin/env python3
-"""Every scale-decode formulation against the post-E4 control, over the input space.
+"""Every scale-decode formulation against the post-E4 control, over the whole input space.
 
 `scale_0_4_l` and `scale8_u32` are functions of one superblock's twelve scale bytes and of
-`v_im` alone, and every formulation below reads those twelve bytes through a different view
-of the same buffer, so the claim that an arm changes the instruction stream and not the value
-is settled by enumeration rather than by a device run. The space is covered by driving each
-of the ninety-six scale bits alone, both saturating words, and 200,000 random draws, against
-both values of `v_im`.
+`v_im` alone, and every formulation reads those twelve bytes through a different view of the
+same buffer, so the claim that an arm changes the instruction stream and not the value is a
+question about two functions rather than one a device run answers.
 
-Exit 0 where every arm matches the control on every case, 1 otherwise.
+The whole space is 2**96 per value of `v_im` and it is closed by linearity rather than by
+sampling it. At a fixed `v_im` every formulation is built from constant shifts, constant
+masks, byte gathers, and unions of disjoint bit fields, and each of those is linear over
+GF(2): no operation takes the conjunction of two input bits and none carries. A linear map is
+determined by its image of a basis, so two linear maps that agree on the ninety-six
+single-bit inputs and send zero to zero agree on all 2**96. `check_superposition` establishes
+the premise the argument needs -- `f(0) == 0` and `f(a ^ b) == f(a) ^ f(b)` over random pairs,
+which fails loudly for any formulation that stops being linear -- and `check_basis` closes it.
+The random draws that follow are a redundant sample and prove nothing the basis has not.
+
+Exit 0 where every arm is linear and matches the control on every case, 1 otherwise.
 
 usage: scale-select-equivalence.py
 """
@@ -81,32 +89,57 @@ ARMS = {
 }
 
 
-def cases():
+def basis():
     for bit in range(96):
         scales = [0] * 6
         scales[bit // 16] |= 1 << (bit % 16)
         yield scales
-    yield [0] * 6
-    yield [0xFFFF] * 6
+
+
+def samples(count):
     generator = random.Random(20260903)
-    for _ in range(200000):
+    yield [0xFFFF] * 6
+    for _ in range(count):
         yield [generator.getrandbits(16) for _ in range(6)]
 
 
+def check_superposition(function, v_im, pairs=20000):
+    """f(0) == 0 and f(a ^ b) == f(a) ^ f(b), the premise the basis argument rests on."""
+    if function([0] * 6, v_im) != (0, 0):
+        return False
+    generator = random.Random(0x5CA1E)
+    for _ in range(pairs):
+        left = [generator.getrandbits(16) for _ in range(6)]
+        right = [generator.getrandbits(16) for _ in range(6)]
+        combined = [left[k] ^ right[k] for k in range(6)]
+        expected = tuple(a ^ b for a, b in zip(function(left, v_im), function(right, v_im)))
+        if function(combined, v_im) != expected:
+            return False
+    return True
+
+
+def check_basis(function, v_im):
+    """Agreement with the control on the ninety-six single-bit inputs."""
+    return all(function(scales, v_im) == control(scales, v_im) for scales in basis())
+
+
 def main():
-    mismatches = {name: 0 for name in ARMS}
-    total = 0
-    for scales in cases():
+    failures = 0
+    print("arm\tv_im\tlinear\tbasis_agrees\tsample_mismatches")
+    for name in ["control"] + sorted(ARMS):
+        function = control if name == "control" else ARMS[name]
         for v_im in (0, 1):
-            total += 1
-            expected = control(scales, v_im)
-            for name, arm in ARMS.items():
-                if arm(scales, v_im) != expected:
-                    mismatches[name] += 1
-    print("arm\tcases\tmismatches")
-    for name in sorted(ARMS):
-        print("%s\t%d\t%d" % (name, total, mismatches[name]))
-    return 1 if any(mismatches.values()) else 0
+            linear = check_superposition(function, v_im)
+            agrees = name == "control" or check_basis(function, v_im)
+            mismatches = sum(1 for scales in samples(200000)
+                             if function(scales, v_im) != control(scales, v_im))
+            if not linear or not agrees or mismatches:
+                failures += 1
+            print("%s\t%d\t%s\t%s\t%d"
+                  % (name, v_im, "yes" if linear else "no",
+                     "yes" if agrees else "no", mismatches))
+    print("scale_select_equivalence=%s" % ("accepted" if failures == 0 else "refused"))
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":
