@@ -287,7 +287,13 @@ runner's own digest, and the request body's digest. The checkpoint reading
 comes from the arm's own `runtime-inputs.json`, which the served runner writes
 from the descriptor it pinned, so the comparison costs no second pass over the
 weights; the runtime tree reading comes from the same reader `qwen-launch.sh`
-runs inside the arm rather than a second hasher over the same bytes. A field
+runs inside the arm rather than a second hasher over the same bytes. That
+reader is resolved from the runner's own directory rather than from the tree it
+verifies, since a verifier read out of the population it checks would answer
+for its own replacement, and its digest is bound at preflight and re-read
+before its verdict as `runtime_tree_checker_sha256`, so a checker replaced
+between two arms names itself rather than being credited with the `verified` it
+prints. A field
 the arm never produced -- a reply it did not reach, a record it did not write
 -- reads `unobserved` and decides nothing; a file that is gone reads `absent`
 and is drift.

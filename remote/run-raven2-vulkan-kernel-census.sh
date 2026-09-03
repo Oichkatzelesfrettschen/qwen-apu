@@ -876,11 +876,17 @@ runtime_tree_payload=$(printf 'remote_payload_tree_sha256=%s\npatches_payload_tr
 # the arm rather than a second digest of the same bytes; the manifest rows are
 # re-read beside it so a drift names the field that moved.
 runtime_tree_root=$(CDPATH='' cd -- "$runtime_remote/.." && pwd)
+# The checker is resolved from this runner's own directory rather than from the
+# tree it verifies, since a verifier read out of the population it checks would
+# answer for its own replacement. Its digest is bound here and re-established by
+# every arm beside the tree's, so an edit to the operator's checkout between two
+# arms names the checker rather than passing a tree it no longer verifies.
 runtime_tree_checker=$script_directory/check-runtime-tree.sh
 if [ ! -r "$runtime_tree_checker" ]; then
     printf 'the runtime tree checker is absent: %s\n' "$runtime_tree_checker" >&2
     exit 2
 fi
+runtime_tree_checker_sha256=$(sha256sum "$runtime_tree_checker" | cut -d ' ' -f 1)
 # The served runner composes the request body and drives the launch, so its own
 # bytes are part of what every arm ran under.
 if [ ! -r "$runner" ]; then
@@ -1968,6 +1974,8 @@ printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\
     printf 'served_runner\t%s\nserved_runner_sha256\t%s\n' \
         "$runner" "$served_runner_sha256"
     printf 'runtime_tree_root\t%s\n' "$runtime_tree_root"
+    printf 'runtime_tree_checker\t%s\nruntime_tree_checker_sha256\t%s\n' \
+        "$runtime_tree_checker" "$runtime_tree_checker_sha256"
     printf 'acquisition_contract_sha256\t%s\nanalysis_contract_sha256\t%s\n' \
         "$acquisition_contract_sha256" "$analysis_contract_sha256"
     printf 'receipt_analysis_contract_sha256\t%s\nanalysis_contract_match\t%s\n' \
@@ -2428,6 +2436,15 @@ ARM_RUNTIME_TREE
         "$runtime_tree_remote_payload" "$arm_runtime_remote_payload"
     record_arm_identity runtime_tree_patches_payload_sha256 \
         "$runtime_tree_patches_payload" "$arm_runtime_patches_payload"
+    # The verifier's own identity is read before its verdict, so a checker
+    # replaced under the campaign names itself rather than being credited with
+    # the `verified` it prints.
+    arm_runtime_checker_sha256=absent
+    if [ -r "$runtime_tree_checker" ]; then
+        arm_runtime_checker_sha256=$(sha256sum "$runtime_tree_checker" | cut -d ' ' -f 1)
+    fi
+    record_arm_identity runtime_tree_checker_sha256 "$runtime_tree_checker_sha256" \
+        "$arm_runtime_checker_sha256"
     set +e
     "$runtime_tree_checker" "$runtime_tree_root" "$runtime_tree_git_head" \
         "$runtime_tree_payload" >"$arm_directory/runtime-tree.txt" 2>&1
