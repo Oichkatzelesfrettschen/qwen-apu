@@ -1991,7 +1991,7 @@ ae4fe092e6b93e0e09564ac16810af9d43e36e12c03b592b405c42cbc7cc1310  evidence/raven
 6d58c43a246f3ef9fbbab26f1e0d83fb62b7fed100864cec9150bbe72b9726ff  evidence/raven2-vulkan-kernel-census/e4/e4.spvasm
 21c63d9d6a8912f0ab26bd9c0e952a59d813ab233372ccfe133aba5f5bf1bb3a  evidence/raven2-vulkan-kernel-census/e4/e4b-a-first-pass.md
 c31ef5dfd06a95b9c98f9eff0d479dd86e7e60b23fc25c914e350156791027f7  evidence/raven2-vulkan-kernel-census/e4/e4b-c-first-pass.md
-d259a7c00cbadc78ab7309f7a034aa7ff8157f7ce4f94356cbf088436c1378cb  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-20260902T2312Z/README.md
+03ea6b14b19b3c9ea25d1ae08f1d7659239c26f590c2ada8513ad5b682b405ad  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-20260902T2312Z/README.md
 f39af63fdac85c15e08eb4cca65eaf5884d8ed5fa77765a0874b2e9bdbaaeb64  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-20260902T2312Z/arms.tsv
 612defeb6d1864a693b1a4d46f6794f54719f3a0fb6d314bdc734bde5e1d5f79  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-20260902T2312Z/arms/01-C/clock-sidecar-verdict.txt
 5cdd28e0c93c2c2083c97ee633fa1e84badae4f7f592b48ccea7937f4deddc95  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-20260902T2312Z/arms/01-C/pipeline-ledger-decode.tsv
@@ -2147,7 +2147,7 @@ cbba7093a680275c83a55a756c25a89d5931bb798c79c86292d65e40e3f193ae  evidence/raven
 b4ff462f5673a2f6343f9395ab32efd74a62f2f374b48043ed3b889c4884c2b4  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-witness-20260903T0148Z/inputs.tsv
 f721f537366f79bfd1441834c59efda1cec28522625bbc5940d8b0d2a5d48542  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-witness-20260903T0148Z/prompts.tsv
 1d965883fc780f2941ec5032fcfdd54749950a4aef8099824a61bc53e5ff430c  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-witness-20260903T0148Z/summary.tsv
-955a1941752b03073b37d3a5a613cfb247ac9e7e4e82345f06a9f4361cdb4dfa  evidence/raven2-vulkan-kernel-census/e4/margin-contract-design.md
+d28a205c45d46b153e56bb8efdd6a0959c4ece50142205c4de68e1ae08aed2da  evidence/raven2-vulkan-kernel-census/e4/margin-contract-design.md
 1ed2e7cb365498c43f5cb3e045764521dc23ec46433bd39955e03a4633bcf2d7  evidence/raven2-vulkan-kernel-census/e4/margin-holdout-20260903T0456Z/README.md
 5f3b5284393ca482b037dc28393c730a3d88d5e36d2971a292d9520c1392ebd2  evidence/raven2-vulkan-kernel-census/e4/margin-holdout-20260903T0456Z/arms/1-C/binary-counter/response-run-1.json
 7e0dc61d243fe6767d2daeac0db236c065c5a9b5ce066b987613df3373d2c931  evidence/raven2-vulkan-kernel-census/e4/margin-holdout-20260903T0456Z/arms/1-C/binary-counter/response-run-2.json
@@ -2345,6 +2345,16 @@ f136b99c7fb8308633f09c89075153e7fc5c79b22fa8adb29956850cd37c005d  evidence/raven
 c0de731dd7b370251c519d2856869787c5019c291173445960797bc1824fda46  evidence/raven2-vulkan-kernel-census/e4/margin-holdout-20260903T0456Z/margin-summary.tsv
 1b784918792edbfcfef38e187020d66b00af99e80ed72d63f49935be01516fdc  evidence/raven2-vulkan-kernel-census/e4/margin-holdout-20260903T0456Z/prompts.tsv
 29a4c8dfa86965210931c515c2be8112f8db5aa2adf6a81ad3db6c6ea3f8eafb  evidence/raven2-vulkan-kernel-census/e4/margin-holdout-20260903T0456Z/summary.tsv
+291fd46c61a6803517c37e21ce1deaf81da2ffbf6c4c8ce69bf4fcaec9ba577b  evidence/raven2-vulkan-kernel-census/e4/quality-gate-20260903T0547Z/README.md
+1078c26462ff0416121ede5d51776525358db5e6d7900f1faf154716a650f546  evidence/raven2-vulkan-kernel-census/e4/quality-gate-20260903T0547Z/arms/1-C/quality.json
+b7bf6e93800d87a43e37298c9cc95fce8e5f81bca7aee36d9278ef463331d386  evidence/raven2-vulkan-kernel-census/e4/quality-gate-20260903T0547Z/arms/1-C/suite.console
+d0465e140fac264dd56562848ae177ce2190fa8c70d04c7791bedacc96f2f00d  evidence/raven2-vulkan-kernel-census/e4/quality-gate-20260903T0547Z/arms/2-K/quality.json
+9c990c26da53f5b5cd71f42cb4923e1ee98b8f8895b1d80fe8cabe1eecd84018  evidence/raven2-vulkan-kernel-census/e4/quality-gate-20260903T0547Z/arms/2-K/suite.console
+aeac0036655a7066f24a72270ffdd9e326e65f915d662399d0a07bb97864a722  evidence/raven2-vulkan-kernel-census/e4/quality-gate-20260903T0547Z/arms/3-K/quality.json
+72e26bb17db20f66f085bade9a1cd4ff1d9d987e2151d6aa135b3c5baa25d145  evidence/raven2-vulkan-kernel-census/e4/quality-gate-20260903T0547Z/arms/3-K/suite.console
+29c930534a77ded64a32b17c68a07339e2103904403ff303ac303ca0f9e6ebf8  evidence/raven2-vulkan-kernel-census/e4/quality-gate-20260903T0547Z/arms/4-C/quality.json
+63ccd45341632d406e345f5c9f149cd5d663453f1481cc7d08a515613df4b2d1  evidence/raven2-vulkan-kernel-census/e4/quality-gate-20260903T0547Z/arms/4-C/suite.console
+f507cb1030c446ecb8769ea1408a98e9b9571f87414f1470b0ec81f673ae037d  evidence/raven2-vulkan-kernel-census/e4/quality-gate-20260903T0547Z/inputs.tsv
 34051948c6d41c929773afe48c864562358fb9966000b3b131bea9f64dc931cd  evidence/raven2-vulkan-kernel-census/e4/served-ab-20260902T2032Z/README.md
 67416bd53cf77d2431e1fcd64646b3066a925780e3492ff820f7d489dd74c7db  evidence/raven2-vulkan-kernel-census/e4/served-ab-20260902T2032Z/arms.tsv
 9beb94940970245adc8dc2baf3f8c338feb6bbc6902503fe9331cae4752f2acd  evidence/raven2-vulkan-kernel-census/e4/served-ab-20260902T2032Z/arms/01-C/clock-sidecar-verdict.txt
