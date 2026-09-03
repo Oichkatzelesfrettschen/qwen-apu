@@ -74,6 +74,29 @@ token_key_file=$work/token.key
 printf 'fixture\n' >"$token_key_file"
 chmod 600 "$token_key_file"
 
+# The checked-in remote/image-profiles.tsv carries one validator-gated row, so a
+# generation that arms the web lane alone names an all-refused ledger the way
+# remote/test-web-presets.sh does; the image arms below name the gated one and
+# supply the five image MCP inputs it requires.
+image_profiles_refused=$work/image-profiles-refused.tsv
+cat >"$image_profiles_refused" <<'EOF'
+# profile_id	model_id	placement	width	height	steps	sampler	cfg	max_steps	max_dimension	timeout_s	execution_policy	validated_evidence	review_model
+image-fixture-refused	sdxs-512	A	512	512	1	euler	1.0	4	512	300	refused	-	-
+EOF
+# remote/image-registry.sh validates the four image authorities whole, so the
+# fixture ledger names the checked-in bundle and differs from it in
+# execution_policy and review_model alone.
+image_profiles_gated=$work/image-profiles-gated.tsv
+printf 'image-fixture-a\tsdxs-512\tA\t512\t512\t1\teuler\t1.0\t4\t512\t300\tvalidator-gated\tevidence/image-appliance/design.md\t-\n' \
+    >"$image_profiles_gated"
+image_profiles_reviewed=$work/image-profiles-reviewed.tsv
+printf 'image-fixture-a\tsdxs-512\tA\t512\t512\t1\teuler\t1.0\t4\t512\t300\tvalidator-gated\tevidence/image-appliance/design.md\tlfm25-vl-16b\n' \
+    >"$image_profiles_reviewed"
+image_mcp_server_program=$work/image-mcp-server.py
+: >"$image_mcp_server_program"
+image_profiles_json=$work/image-parameters.json
+printf '{}\n' >"$image_profiles_json"
+
 build_presets() {
     build_output=$1
     shift
@@ -81,6 +104,7 @@ build_presets() {
     QWEN_QUARANTINE_REGISTRY=$quarantine_registry \
     QWEN_QUARANTINE_REASONS=$repository_root/evidence/quarantine \
     QWEN_CTX_CHECKPOINT_LEDGER=$ctx_ledger \
+    QWEN_IMAGE_PROFILES=$image_profiles_refused \
         env "$@" "$builder" "$build_output"
 }
 
@@ -161,12 +185,94 @@ else
     sed -n '1,8p' "$merged" >&2
 fi
 
-# The image lane stays on qwen-image-launch.sh, so no emitted configuration
-# names an image server whatever the checked-in image ledger carries.
-if ! grep -rq '"image"' "$work"/web-mcp-configs-* 2>/dev/null; then
-    report image_server_withheld ok
+# An all-refused image ledger arms no generation under any setting, so the
+# merged file carries the web server alone and its markers say so.
+if ! grep -rq '"image"' "$work"/web-mcp-configs-* 2>/dev/null &&
+    grep -qx '# qwen_image_profile=-' "$merged" &&
+    grep -qx '# qwen_image_profiles_path=-' "$merged" &&
+    grep -qx '# qwen_image_review_section=-' "$merged"; then
+    report image_server_withheld_under_refused_ledger ok
 else
-    report image_server_withheld failed
+    report image_server_withheld_under_refused_ledger failed
+    sed -n '1,12p' "$merged" >&2
+fi
+
+# A validator-gated image row adds one `image` server to the web section's own
+# configuration, bound to that section as the language profile. The
+# `mcpServers` object then holds two members, so the file has to parse.
+imaged=$work/imaged.ini
+if build_presets "$imaged" QWEN_WEB_AUTHORIZER_READY=1 \
+    "QWEN_WEB_MCP_SERVER=$mcp_server_program" \
+    "QWEN_WEB_TOKEN_KEY_FILE=$token_key_file" \
+    "QWEN_WEB_STATE_DIR=$work/web-mcp" "QWEN_WEB_PROFILES=$web_profiles" \
+    "QWEN_IMAGE_PROFILES=$image_profiles_gated" \
+    "QWEN_IMAGE_MCP_SERVER=$image_mcp_server_program" \
+    "QWEN_IMAGE_TOKEN_KEY_FILE=$token_key_file" \
+    "QWEN_IMAGE_STATE_DIR=$work/image-state" \
+    "QWEN_IMAGE_SERVICE_SOCKET=$work/image-state/image-service.sock" \
+    "QWEN_IMAGE_PROFILES_JSON=$image_profiles_json" \
+    >"$work/imaged.log" 2>"$work/imaged.err"; then
+    imaged_config=$(sed -n 's/^LLAMA_ARG_MCP_SERVERS_CONFIG = //p' "$imaged")
+    outcome=ok
+    [ "$(section_count "$imaged")" -eq 16 ] || outcome=wrong_section_count
+    grep -qx '# qwen_image_profile=image-fixture-a' "$imaged" ||
+        outcome=profile_marker_absent
+    grep -qx "# qwen_image_profiles_path=$image_profiles_gated" "$imaged" ||
+        outcome=ledger_marker_absent
+    grep -qx '# qwen_image_review_section=-' "$imaged" ||
+        outcome=review_marker_set
+    python3 -c '
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    servers = json.load(handle)["mcpServers"]
+image = servers["image"]["env"]
+assert set(servers) == {"web", "image"}, sorted(servers)
+assert image["QWEN_IMAGE_PROFILE"] == "image-fixture-a", image
+assert image["QWEN_IMAGE_LANGUAGE_PROFILE"] == "web-open", image
+' "$imaged_config" >/dev/null 2>>"$work/imaged.err" || outcome=configuration_wrong
+    report image_server_emitted_into_the_web_section "$outcome"
+else
+    report image_server_emitted_into_the_web_section build_failed
+    cat "$work/imaged.err" >&2
+fi
+
+# The reviewer is a roster section rather than a section of its own, and the
+# marker is written only where remote/validated-tuples.tsv carries a validated
+# router-child tuple with the projector loaded. The checked-in ledger carries
+# none for lfm25-vl-16b at that geometry, so the generation lane still arms and
+# the review claim is withheld beside the probe that would measure it.
+reviewed=$work/reviewed.ini
+if build_presets "$reviewed" QWEN_WEB_AUTHORIZER_READY=1 \
+    "QWEN_WEB_MCP_SERVER=$mcp_server_program" \
+    "QWEN_WEB_TOKEN_KEY_FILE=$token_key_file" \
+    "QWEN_WEB_STATE_DIR=$work/web-mcp" "QWEN_WEB_PROFILES=$web_profiles" \
+    "QWEN_IMAGE_PROFILES=$image_profiles_reviewed" \
+    "QWEN_IMAGE_MCP_SERVER=$image_mcp_server_program" \
+    "QWEN_IMAGE_TOKEN_KEY_FILE=$token_key_file" \
+    "QWEN_IMAGE_STATE_DIR=$work/image-state" \
+    "QWEN_IMAGE_SERVICE_SOCKET=$work/image-state/image-service.sock" \
+    "QWEN_IMAGE_PROFILES_JSON=$image_profiles_json" \
+    >"$work/reviewed.log" 2>"$work/reviewed.err"; then
+    outcome=ok
+    grep -qx '# qwen_image_review_model=lfm25-vl-16b' "$reviewed" ||
+        outcome=review_model_marker_absent
+    [ "$(section_count "$reviewed")" -eq 16 ] || outcome=review_section_emitted
+    if grep -qx '# qwen_image_review_section=lfm25-vl-16b' "$reviewed"; then
+        # A tree whose validated-tuple ledger has since gained that arm reads
+        # the marker set, and the roster is what serves it either way.
+        grep -q '^\[lfm25-vl-16b\]$' "$reviewed" || outcome=reviewer_absent
+    else
+        grep -qx '# qwen_image_review_section=-' "$reviewed" ||
+            outcome=review_marker_malformed
+        grep -q 'remote/probe-depth-projector.sh lfm25-vl-16b' \
+            "$work/reviewed.err" || outcome=probe_command_unreported
+    fi
+    report image_review_section_names_a_roster_row "$outcome"
+else
+    report image_review_section_names_a_roster_row build_failed
+    cat "$work/reviewed.err" >&2
 fi
 
 run_policy() {
