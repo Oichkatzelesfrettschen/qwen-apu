@@ -17,6 +17,16 @@ control=$script_directory/qwen-webui-control.sh
 state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
 bind_host=${QWEN_BIND_HOST:-127.0.0.1}
 server_port=${QWEN_SERVER_PORT:-8080}
+case $server_port in
+    '' | *[!0-9]* | 0*)
+        printf 'QWEN_SERVER_PORT is a positive decimal port: %s\n' "$server_port" >&2
+        exit 2
+        ;;
+esac
+if [ "$server_port" -lt 1 ] || [ "$server_port" -gt 65535 ]; then
+    printf 'QWEN_SERVER_PORT must name a TCP port: %s\n' "$server_port" >&2
+    exit 2
+fi
 ready_attempts=${QWEN_READY_ATTEMPTS:-3000}
 # The readiness probe reaches the listener the server actually bound. A server
 # bound to one literal answers on that address alone, so a loopback probe
@@ -210,6 +220,26 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
         else
             QWEN_REQUIRE_API_KEY=1
         fi
+        # admit_web_lan_exposure below requires this file whole before it
+        # admits an authenticated LAN exposure, and qwen-webui-session.sh's
+        # own minting runs deep inside the tmux session this launch has not
+        # started yet, so a fresh state directory refused there before the
+        # session that mints the key ever ran. The same rule
+        # qwen-webui-session.sh applies -- 32 random bytes as 64 hex
+        # characters at mode 0600 -- mints it here instead, idempotently, so
+        # the session's own `[ ! -s "$api_key_file" ]` check finds the file
+        # already present and does nothing.
+        if [ "$QWEN_REQUIRE_API_KEY" = 1 ]; then
+            api_key_file=$state_directory/api.key
+            if [ ! -s "$api_key_file" ]; then
+                if ! command -v openssl >/dev/null 2>&1; then
+                    printf 'openssl is required to create the Web UI API key\n' >&2
+                    exit 1
+                fi
+                openssl rand -hex 32 >"$api_key_file"
+            fi
+            chmod 600 "$api_key_file"
+        fi
         QWEN_WEB_BROKER=1
         # An exposed launch places the broker one port above the router, and
         # the session places the artifact listener one above that, so a LAN
@@ -217,6 +247,17 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
         # router port chosen clear of other services carries its companions
         # with it. A loopback launch keeps the 8571 the meta tags name.
         if [ "${QWEN_WEB_LAN:-0}" = 1 ]; then
+            # A derived pair overflows the valid port range above 65533, the
+            # same ceiling remote/qwen-lan-launch.sh caps QWEN_SERVER_PORT at
+            # for its own wrapper path; an explicit QWEN_WEB_BROKER_PORT
+            # names its own value and is not derived, so it carries no such
+            # bound here.
+            if [ -z "${QWEN_WEB_BROKER_PORT:-}" ] &&
+                [ "$server_port" -gt 65533 ]; then
+                printf 'QWEN_SERVER_PORT leaves room for the broker and artifact ports above it: %s\n' \
+                    "$server_port" >&2
+                exit 2
+            fi
             QWEN_WEB_BROKER_PORT=${QWEN_WEB_BROKER_PORT:-$((server_port + 1))}
         else
             QWEN_WEB_BROKER_PORT=${QWEN_WEB_BROKER_PORT:-8571}
@@ -595,9 +636,33 @@ EOF
         # qwen-web-launch.sh execs this script, so a launch that came through
         # qwen-image-launch.sh arrives with the lane already resolved: that
         # wrapper read the same markers, ran the same library, and charged the
-        # web preset's own two-checkpoint arithmetic. One owner per launch, so
-        # this one reports what it inherited rather than resolving a second
-        # time against a file whose section list it never wrote.
+        # web preset's own two-checkpoint arithmetic. One owner charges the
+        # budget, so this branch does not repeat that arithmetic, but the claim
+        # is validated rather than trusted: any shell can set
+        # QWEN_IMAGE_SERVICE=1 ahead of a direct launch, or carry it over from
+        # an earlier session, so this rejoins it to a fresh read of this
+        # launch's own preset before reusing the wrapper's budget.
+        if [ "$image_lane_armed" != 1 ]; then
+            printf 'QWEN_IMAGE_SERVICE=1 is set and this preset names no image profile: %s\n' \
+                "$router_presets" >&2
+            printf 'the image lane is resolved from the preset a launch reads; an inherited flag over a preset naming none is refused\n' >&2
+            exit 2
+        fi
+        if [ "${QWEN_IMAGE_PROFILE:-}" != "$preset_image_profile" ]; then
+            printf 'QWEN_IMAGE_SERVICE=1 names profile %s where this preset resolves %s\n' \
+                "${QWEN_IMAGE_PROFILE:-<unset>}" "$preset_image_profile" >&2
+            exit 2
+        fi
+        if [ -z "$web_sections" ]; then
+            printf 'the preset names image profile %s and carries no web section\n' \
+                "$preset_image_profile" >&2
+            printf 'regenerate the preset tree with remote/build-router-presets.sh\n' >&2
+            exit 2
+        fi
+        require_image_ledger_row || exit 2
+        require_image_signing_key || exit 2
+        require_image_parameters || exit 2
+        verify_image_deadline_stack "$router_presets" "$web_sections" || exit 2
         printf 'image_launch owner=qwen-image-launch.sh profile=%s required_mib=%s\n' \
             "${QWEN_IMAGE_PROFILE:--}" "${QWEN_REQUIRED_VULKAN_MIB:--}"
     elif [ "$image_lane_armed" = 1 ]; then

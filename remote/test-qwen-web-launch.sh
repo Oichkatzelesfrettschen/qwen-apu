@@ -1106,6 +1106,58 @@ for lan_bind_case in literal:192.168.1.10 wildcard:0.0.0.0; do
     fi
 done
 
+# A bare LAN page URL derives the broker and artifact origins as
+# router_port+1 and router_port+2, so this wrapper matches that derivation on
+# a LAN exposure rather than fixing 8571: a router port of 8080 pairing with
+# a fixed broker 8571 would leave every web approval and artifact load
+# targeting a port the advertised URL never names.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=0.0.0.0 \
+    "$launcher" >"$work/lan-broker-port.log" 2>"$work/lan-broker-port.err"; then
+    outcome=ok
+    grep -qx 'QWEN_WEB_BROKER_PORT=8081' "$record" || outcome=wrong_broker_port
+    report lan_exposure_derives_the_broker_port "$outcome"
+else
+    report lan_exposure_derives_the_broker_port refused
+    cat "$work/lan-broker-port.err" >&2
+fi
+
+# An explicit QWEN_WEB_BROKER_PORT names its own value and is not derived, so
+# it still overrides the LAN derivation.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=0.0.0.0 \
+    QWEN_WEB_BROKER_PORT=19000 \
+    "$launcher" >"$work/lan-broker-port-override.log" \
+    2>"$work/lan-broker-port-override.err"; then
+    outcome=ok
+    grep -qx 'QWEN_WEB_BROKER_PORT=19000' "$record" || outcome=override_dropped
+    report lan_exposure_broker_port_override_wins "$outcome"
+else
+    report lan_exposure_broker_port_override_wins refused
+    cat "$work/lan-broker-port-override.err" >&2
+fi
+
+# A derived broker port at or beyond the top of the valid TCP range overflows
+# when the session derives the artifact port one higher again, the same
+# overflow remote/qwen-lan-launch.sh's own 65533 cap on QWEN_SERVER_PORT
+# exists to keep out of its wrapper path.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=0.0.0.0 \
+    QWEN_SERVER_PORT=65535 \
+    "$launcher" >"$work/lan-broker-port-overflow.log" \
+    2>"$work/lan-broker-port-overflow.err"; then
+    report lan_exposure_broker_port_overflow_refused admitted
+elif grep -q 'leaves room for the broker and artifact ports above it' \
+    "$work/lan-broker-port-overflow.err"; then
+    report lan_exposure_broker_port_overflow_refused ok
+else
+    report lan_exposure_broker_port_overflow_refused wrong_reason
+    cat "$work/lan-broker-port-overflow.err" >&2
+fi
+
 # The mDNS name is a second admitted host rather than a replacement, so the
 # wrapper forwards it beside the literal and names it on its own report line.
 if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \

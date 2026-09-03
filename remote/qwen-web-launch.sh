@@ -290,7 +290,29 @@ if [ "$web_lan_open" = 1 ]; then
 else
     QWEN_REQUIRE_API_KEY=1
 fi
-QWEN_WEB_BROKER_PORT=${QWEN_WEB_BROKER_PORT:-8571}
+# A bare LAN page URL derives the broker and artifact origins as
+# router_port+1 and router_port+2 (webui/index.html's
+# BROKER_LAN_PORT_OFFSET/ARTIFACT_LAN_PORT_OFFSET), the same derivation
+# qwen-launch.sh applies to a direct LAN launch, so this wrapper matches it
+# rather than fixing 8571: a router port of 8080 pairing with broker 8571
+# leaves every web approval and artifact load on this launch targeting a port
+# the advertised URL never names.
+if [ "$web_lan_exposure" = 1 ]; then
+    router_server_port=${QWEN_SERVER_PORT:-8080}
+    # A derived pair overflows the valid port range above 65533, the same
+    # ceiling remote/qwen-lan-launch.sh caps QWEN_SERVER_PORT at and
+    # remote/qwen-launch.sh enforces on its own direct LAN path; this
+    # wrapper's own derivation reaches qwen-launch.sh with the value already
+    # set, which would otherwise bypass that later check.
+    if [ -z "${QWEN_WEB_BROKER_PORT:-}" ] && [ "$router_server_port" -gt 65533 ]; then
+        printf 'QWEN_SERVER_PORT leaves room for the broker and artifact ports above it: %s\n' \
+            "$router_server_port" >&2
+        exit 2
+    fi
+    QWEN_WEB_BROKER_PORT=${QWEN_WEB_BROKER_PORT:-$((router_server_port + 1))}
+else
+    QWEN_WEB_BROKER_PORT=${QWEN_WEB_BROKER_PORT:-8571}
+fi
 QWEN_WEB_STATE_DIR=${QWEN_WEB_STATE_DIR:-$state_directory/web-mcp}
 signing_key_file=${QWEN_WEB_TOKEN_KEY_FILE:-}
 refuse_signing_key() {

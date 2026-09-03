@@ -391,6 +391,61 @@ else
     cat "$work/imaged.err" >&2
 fi
 
+# image-registry.sh's identifier() admits a period after the first character,
+# and a ledger-valid id such as sdxs.512-arm-a carries one, so the marker
+# vocabulary qwen-capacity-policy.sh checks has to match it rather than
+# rejecting a preset the ledger already accepted. A private copy of the
+# ledger carries the row, because the shared $image_profiles file is the one
+# every other arm's preset already bound a digest to.
+image_profiles_dotted=$work/image-profiles-dotted.tsv
+cp -- "$image_profiles" "$image_profiles_dotted"
+printf 'sdxs.512-arm-a\tsdxs-512\tA\t512\t512\t1\teuler\t1.0\t4\t512\t300\tvalidator-gated\tevidence/image-appliance/design.md\t-\n' \
+    >>"$image_profiles_dotted"
+image_parameters_dotted=$work/image-parameters-dotted.json
+sed 's/"image-fixture-a"/"sdxs.512-arm-a"/' "$image_parameters" \
+    >"$image_parameters_dotted"
+image_mcp_config_dotted=$state_directory/web-mcp-configs/web-fixture-image-dotted.json
+sed 's/"QWEN_IMAGE_PROFILE": "image-fixture-a"/"QWEN_IMAGE_PROFILE": "sdxs.512-arm-a"/;
+     s|"QWEN_IMAGE_PROFILES_JSON": "'"$image_parameters"'"|"QWEN_IMAGE_PROFILES_JSON": "'"$image_parameters_dotted"'"|' \
+    "$image_mcp_config" >"$image_mcp_config_dotted"
+imaged_preset_dotted=$work/router-presets-imaged-dotted.ini
+awk -v ledger="$image_profiles_dotted" \
+    -v digest="$(sha256sum "$image_profiles_dotted" | cut -d' ' -f1)" \
+    -v config="$image_mcp_config_dotted" '
+    /^LLAMA_ARG_MCP_SERVERS_CONFIG = / {
+        print "LLAMA_ARG_MCP_SERVERS_CONFIG = " config
+        next
+    }
+    /^# qwen_image_profiles_path=/ {
+        print "# qwen_image_profiles_path=" ledger
+        next
+    }
+    /^# qwen_image_profiles_sha256=/ {
+        print "# qwen_image_profiles_sha256=" digest
+        next
+    }
+    /^# qwen_image_profile=image-fixture-a$/ {
+        print "# qwen_image_profile=sdxs.512-arm-a"
+        next
+    }
+    { print }
+' "$imaged_preset" >"$imaged_preset_dotted"
+if run_launch "$imaged_preset_dotted" env -u QWEN_BIND_HOST \
+    QWEN_IMAGE_SERVICE_PROGRAM="$script_directory/image-service.py" \
+    QWEN_IMAGE_PROFILES_JSON="$image_parameters_dotted" \
+    QWEN_MEMORY_PREFLIGHT_PROGRAM="$memory_preflight" \
+    QWEN_IMAGE_RUNTIME_RESIDENT_MIB=480 \
+    >"$work/imaged-dotted.log" 2>"$work/imaged-dotted.err"; then
+    outcome=ok
+    grep -qx 'QWEN_IMAGE_SERVICE=1' "$record" || outcome=service_unarmed
+    grep -qx 'QWEN_IMAGE_PROFILE=sdxs.512-arm-a' "$record" ||
+        outcome=profile_dropped
+    report image_profile_marker_admits_a_period "$outcome"
+else
+    report image_profile_marker_admits_a_period failed
+    cat "$work/imaged-dotted.err" >&2
+fi
+
 # A preset carrying no image marker is one generated before this lane, so the
 # launch arms no service and charges nothing for a runtime it never starts.
 if run_launch "$merged_preset" env -u QWEN_BIND_HOST \
@@ -408,9 +463,17 @@ fi
 # qwen-image-launch.sh arrives with the lane already resolved and its own
 # requirement already charged. One owner per launch: this one reports what it
 # inherited rather than resolving a second time against a file whose section
-# list it never wrote, and the requirement it forwards is the wrapper's.
+# list it never wrote, and the requirement it forwards is the wrapper's. The
+# ambient QWEN_IMAGE_SERVICE_PROGRAM, QWEN_IMAGE_PROFILES_JSON, and
+# QWEN_IMAGE_TOKEN_KEY_FILE are the same three export_image_service_environment
+# set when the wrapper resolved the lane, so this arm carries them the way a
+# real inherited launch does: the claim is validated against a fresh read of
+# the preset rather than trusted outright.
 if run_launch "$imaged_preset" env -u QWEN_BIND_HOST \
     QWEN_IMAGE_SERVICE=1 QWEN_IMAGE_PROFILE=image-fixture-a \
+    QWEN_IMAGE_SERVICE_PROGRAM="$script_directory/image-service.py" \
+    QWEN_IMAGE_PROFILES_JSON="$image_parameters" \
+    QWEN_IMAGE_TOKEN_KEY_FILE="$token_key_file" \
     QWEN_REQUIRED_VULKAN_MIB=3210 \
     >"$work/inherited.log" 2>"$work/inherited.err"; then
     outcome=ok
@@ -423,6 +486,26 @@ if run_launch "$imaged_preset" env -u QWEN_BIND_HOST \
 else
     report inherited_image_lane_is_reported_once failed
     cat "$work/inherited.err" >&2
+fi
+
+# A stale QWEN_IMAGE_SERVICE=1 left in a calling shell from an earlier
+# wrapper launch, carried into a direct qwen-launch.sh invocation over a
+# preset naming no image profile, is refused rather than trusted: nothing
+# validated that this launch's own preset agrees with the inherited claim.
+if run_launch "$merged_preset" env -u QWEN_BIND_HOST \
+    QWEN_IMAGE_SERVICE=1 QWEN_IMAGE_PROFILE=image-fixture-a \
+    QWEN_IMAGE_SERVICE_PROGRAM="$script_directory/image-service.py" \
+    QWEN_IMAGE_PROFILES_JSON="$image_parameters" \
+    QWEN_IMAGE_TOKEN_KEY_FILE="$token_key_file" \
+    QWEN_REQUIRED_VULKAN_MIB=3210 \
+    >"$work/stale-inherited.log" 2>"$work/stale-inherited.err"; then
+    report stale_inherited_image_flag_refused admitted
+elif grep -q 'this preset names no image profile' \
+    "$work/stale-inherited.err"; then
+    report stale_inherited_image_flag_refused ok
+else
+    report stale_inherited_image_flag_refused wrong_reason
+    cat "$work/stale-inherited.err" >&2
 fi
 
 # The launch reads the bundle's own web-mcp-manifest.tsv and compares each
@@ -562,6 +645,30 @@ else
     cat "$work/lan-named.err" >&2
 fi
 
+# QWEN_WEB_LAN_OPEN=0 is the authenticated LAN bring-up, and
+# admit_web_lan_exposure requires $state_directory/api.key to already exist
+# before it admits the exposure. qwen-webui-session.sh's own minting runs
+# deep inside the tmux session this launch has not started yet, so a fresh
+# state directory with no api.key would previously refuse here before
+# anything ever minted it. This arm removes the fixture's key to prove the
+# launch mints its own ahead of that check, then restores the fixture value
+# so later arms reading a fixed key content are unaffected.
+rm -f "$api_key_file"
+if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_OPEN=0 \
+    >"$work/lan-fresh-key.log" 2>"$work/lan-fresh-key.err"; then
+    outcome=ok
+    [ -s "$api_key_file" ] || outcome=key_not_minted
+    [ "$(stat -c %a "$api_key_file")" = 600 ] || outcome=key_wrong_mode
+    grep -qx '[0-9a-f]\{64\}' "$api_key_file" || outcome=key_wrong_shape
+    report authenticated_lan_launch_mints_a_fresh_api_key "$outcome"
+else
+    report authenticated_lan_launch_mints_a_fresh_api_key refused
+    cat "$work/lan-fresh-key.err" >&2
+fi
+printf 'fixture-api-key\n' >"$api_key_file"
+chmod 600 "$api_key_file"
+
 # The key line is guarded by the terminal test itself rather than by the
 # absence of a match above, so the arm reads the source for that guard.
 if grep -q '\[ -t 1 \] && \[ -s "\$state_directory/api.key" \]' \
@@ -617,6 +724,40 @@ elif grep -q 'not a hostname a browser resolves on the link' \
 else
     report lan_exposure_name_refused wrong_reason
     cat "$work/lan-badname.err" >&2
+fi
+
+# A case variant of localhost names the loopback the admitted set already
+# holds, so web_lan_name_is_valid refuses it the same way it refuses the
+# lowercase spelling; the check runs after lowercasing, not before, so
+# LOCALHOST cannot slip past the pattern and fail downstream in the
+# casefolded exposed_name() validators instead.
+if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=LOCALHOST \
+    >"$work/lan-badname-case.log" 2>"$work/lan-badname-case.err"; then
+    report lan_exposure_localhost_case_variant_refused admitted
+elif grep -q 'not a hostname a browser resolves on the link' \
+    "$work/lan-badname-case.err"; then
+    report lan_exposure_localhost_case_variant_refused ok
+else
+    report lan_exposure_localhost_case_variant_refused wrong_reason
+    cat "$work/lan-badname-case.err" >&2
+fi
+
+# A derived broker port at or beyond the top of the valid TCP range overflows
+# when the session derives the artifact port one higher again, the same
+# overflow remote/qwen-lan-launch.sh's own 65533 cap on QWEN_SERVER_PORT
+# exists to keep out of its wrapper path; a direct LAN launch through
+# qwen-launch.sh carries no such bound before this fix.
+if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_SERVER_PORT=65535 \
+    >"$work/lan-port-overflow.log" 2>"$work/lan-port-overflow.err"; then
+    report lan_derived_port_overflow_refused admitted
+elif grep -q 'leaves room for the broker and artifact ports above it' \
+    "$work/lan-port-overflow.err"; then
+    report lan_derived_port_overflow_refused ok
+else
+    report lan_derived_port_overflow_refused wrong_reason
+    cat "$work/lan-port-overflow.err" >&2
 fi
 
 # QWEN_WEB_LAN_OPEN=1 removes a bearer from a listener the operator exposed,

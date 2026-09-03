@@ -1496,8 +1496,12 @@ if [ "$router_enabled" = 1 ]; then
     case $router_image_profile in
         '' | '-') router_image_profile='' ;;
         [A-Za-z0-9]*)
+            # image-registry.sh's own identifier() admits a period after the
+            # first character, and a ledger-valid id such as sdxs.512-arm-a
+            # carries one, so this vocabulary matches identifier() exactly
+            # rather than rejecting a marker the ledger already accepted.
             case $router_image_profile in
-                *[!A-Za-z0-9_-]*)
+                *[!A-Za-z0-9._-]*)
                     printf 'router presets carry a malformed image profile marker: %s\n' \
                         "$router_image_profile" >&2
                     exit 2

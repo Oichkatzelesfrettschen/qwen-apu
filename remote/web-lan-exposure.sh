@@ -238,19 +238,21 @@ admit_web_lan_exposure() {
     else
         web_lan_name=$(web_lan_default_name)
     fi
+    # The name is lowercased before web_lan_name_is_valid runs, not after, so
+    # a case variant of a name the vocabulary excludes -- LOCALHOST against the
+    # localhost pattern -- is caught here rather than admitted here and
+    # rejected downstream. A browser also lowercases the host in the Origin it
+    # sends, and `allowed_origin` in authorize-broker.py and image-service.py
+    # compares an origin string exactly, so an operator's `MyLaptop.local`
+    # would otherwise configure an allowlist entry no request ever presents.
+    # web_lan_name_is_valid bounds the value to ASCII letters, digits,
+    # hyphens, and dots, so `tr` maps exactly the characters DNS treats as
+    # case-insensitive.
+    web_lan_name=$(printf '%s' "$web_lan_name" | tr '[:upper:]' '[:lower:]')
     if [ -n "$web_lan_name" ] && ! web_lan_name_is_valid "$web_lan_name"; then
         refuse_web_lan_exposure \
             "names host $web_lan_name, which is not a hostname a browser resolves on the link"
     fi
-    # The name is lowercased here so one spelling reaches every reader. A
-    # browser lowercases the host in the Origin it sends, and `allowed_origin`
-    # in authorize-broker.py and image-service.py compares an origin string
-    # exactly, so an operator's `MyLaptop.local` would configure an allowlist
-    # entry no request ever presents and the approval dialog would fail on CORS
-    # rather than on a named refusal. web_lan_name_is_valid has already bounded
-    # the value to ASCII letters, digits, hyphens, and dots, so `tr` maps
-    # exactly the characters DNS treats as case-insensitive.
-    web_lan_name=$(printf '%s' "$web_lan_name" | tr '[:upper:]' '[:lower:]')
     if grep -qx '# qwen-web-presets: unvalidated-depth-override' "$web_lan_presets"; then
         refuse_web_lan_exposure \
             "meets a preset serving a depth no run has filled and decoded; validate the depth or serve it on the loopback"
