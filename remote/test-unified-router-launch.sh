@@ -232,6 +232,9 @@ if run_launch "$merged_preset" env -u QWEN_BIND_HOST \
         outcome=key_path_dropped
     grep -qx "QWEN_STATIC_PATH=$work/webui" "$record" || outcome=page_dropped
     grep -qx 'QWEN_BIND_HOST=127.0.0.1' "$record" || outcome=wrong_bind_host
+    # The launcher leaves the model limit to the capacity policy default of 1,
+    # since one router child at a time is what the 2048 MiB carve-out holds.
+    grep -qx 'QWEN_ROUTER_MAX=unset' "$record" || outcome=models_max_raised
     grep -q 'web_section=web-fixture provider=searxng' "$work/merged.log" ||
         outcome=section_unreported
     if grep -q 'fixture-signing-key' "$work/merged.log" "$work/merged.err"; then

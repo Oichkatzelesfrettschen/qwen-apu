@@ -194,6 +194,65 @@ else
     cat "$work/policy.err" >&2
 fi
 
+# The merged preset is the first shape in which both the draft-pair ledger and
+# the web profile ledger reach qwen-router-exec-guard.sh as real paths: a
+# whole-file web preset left the draft-pair path `-` and a registry preset left
+# the web path `-`. The policy run above execs the whole chain, so the argv the
+# fake server recorded is what proves the guard admitted the pair rather than
+# refusing one of them.
+# The fake server records one argument per line, so the preset and the model
+# limit are read as their own rows. QWEN_ROUTER_MAX stays 1: the merged file
+# holds sixteen sections and the 4B alone peaks at 2029 MiB of a 2048 MiB
+# carve-out, so a second resident child competes for a pool one model
+# saturates.
+if [ -r "$work/policy.out" ] &&
+    grep -qxF -- 'argument=--models-preset' "$work/policy.out" &&
+    grep -qxF -- "argument=$merged" "$work/policy.out" &&
+    grep -qxF -- 'argument=--models-max' "$work/policy.out" &&
+    grep -qxF -- 'argument=1' "$work/policy.out"; then
+    report merged_preset_reaches_the_server ok
+else
+    report merged_preset_reaches_the_server failed
+    [ -r "$work/policy.out" ] && cat "$work/policy.out" >&2
+fi
+
+# The guard is called directly with both ledgers present, because the shape is
+# new and the refusal it exists for is a ledger replaced between validation and
+# exec.
+exec_guard=$script_directory/qwen-router-exec-guard.sh
+guard_digest() {
+    sha256sum -- "$1" | cut -d ' ' -f 1
+}
+if "$exec_guard" "$merged" "$(guard_digest "$merged")" \
+    "$script_directory/models.tsv" "$(guard_digest "$script_directory/models.tsv")" \
+    "$quarantine_registry" "$(guard_digest "$quarantine_registry")" \
+    "$script_directory/draft-pairs.tsv" \
+    "$(guard_digest "$script_directory/draft-pairs.tsv")" \
+    "$web_profiles" "$(guard_digest "$web_profiles")" \
+    "$ctx_ledger" "$(guard_digest "$ctx_ledger")" \
+    true >"$work/guard.log" 2>"$work/guard.err"; then
+    report exec_guard_admits_both_ledgers ok
+else
+    report exec_guard_admits_both_ledgers failed
+    cat "$work/guard.err" >&2
+fi
+if "$exec_guard" "$merged" "$(guard_digest "$merged")" \
+    "$script_directory/models.tsv" "$(guard_digest "$script_directory/models.tsv")" \
+    "$quarantine_registry" "$(guard_digest "$quarantine_registry")" \
+    "$script_directory/draft-pairs.tsv" \
+    "$(guard_digest "$script_directory/draft-pairs.tsv")" \
+    "$web_profiles" "$(guard_digest "$script_directory/models.tsv")" \
+    "$ctx_ledger" "$(guard_digest "$ctx_ledger")" \
+    true >"$work/guard-swap.log" 2>"$work/guard-swap.err"; then
+    report exec_guard_web_ledger_swap_refused admitted
+elif grep -q 'router web profile ledger identity changed' \
+    "$work/guard-swap.err"; then
+    report exec_guard_web_ledger_swap_refused ok
+else
+    report exec_guard_web_ledger_swap_refused wrong_reason
+    cat "$work/guard-swap.err" >&2
+fi
+
 # The tool-free file is the same authority with an empty section list.
 if run_policy "$tool_free" >"$work/policy-free.log" \
     2>"$work/policy-free.err"; then
