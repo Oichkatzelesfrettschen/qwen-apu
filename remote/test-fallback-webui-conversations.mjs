@@ -848,6 +848,39 @@ const flakyRecord = await flakyPage.api.read(flakyId);
 assert.ok(flakyRecord, 'the retried save did not reach the store');
 assert.equal(flakyRecord.messages.at(-1).content, 'a retried save reaches the store');
 
+// A store that permits reads and refuses every write -- a quota exhausted
+// mid-session, unlike the transient failure above -- must not just have the
+// gate re-select the same store: resolveConversationStore()'s own list()
+// probe is a read and would pass again for exactly this backend, so the
+// second save needs the excluded-name check to reach localStorage instead.
+const permanentlyFlakyDatabase = makeFakeIndexedDatabase();
+const permanentFailWrites = { active: true };
+const permanentlyFlakyIndexedDatabase =
+  makeFlakyIndexedDatabase(permanentlyFlakyDatabase, { failWrites: permanentFailWrites });
+const quotaLocalStorage = makeFakeStorage();
+const quotaPage = newPage({
+  indexedDatabase: permanentlyFlakyIndexedDatabase,
+  localStorage: quotaLocalStorage,
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(quotaPage);
+assert.equal(await quotaPage.api.storeName(), 'indexeddb',
+  'the initial resolution did not select IndexedDB, which still answers its own probe');
+const quotaId = await quotaPage.api.runFixtureTurn(fixture);
+await flushPromises();
+assert.equal((await quotaPage.api.list()).length, 0,
+  'the first refused write reached the store it was refused by');
+await quotaPage.api.appendFollowUp('a second write also finds IndexedDB refusing', 'image-capable');
+await flushPromises();
+assert.equal(await quotaPage.api.storeName(), 'localstorage',
+  'the excluded IndexedDB name was reselected after its write failed again');
+const quotaRaw = [...quotaLocalStorage.values.entries()]
+  .map(([key, value]) => `${key}=${value}`).join('\n');
+assert.ok(quotaRaw.includes(quotaId),
+  'a save excluded from IndexedDB never reached the localStorage fallback');
+assert.ok(quotaRaw.includes('a second write also finds IndexedDB refusing'),
+  'the fallback store holds no record of the write IndexedDB kept refusing');
+
 // ---- switchConversation rechecks busy after its own await -----------------
 
 const raceSource = newPage({

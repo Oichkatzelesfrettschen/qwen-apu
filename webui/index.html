@@ -3469,26 +3469,38 @@ function memoryConversationStore() {
   };
 }
 
+// IndexedDB can open and answer its own list() probe while still refusing a
+// write -- a quota, a denied transaction -- and re-running the probe alone
+// selects the same unwritable store again, since the probe is a read. A name
+// entering this set is excluded from its own branch below until the page
+// reloads, so a write failure demotes the store for the rest of the session
+// rather than only for one save.
+const conversationStoreFailedNames = new Set();
+
 async function resolveConversationStore() {
-  try {
-    const database = await openConversationDatabase();
-    const store = indexedDatabaseConversationStore(database);
-    // The list proves the object store answers, so a database that opened and
-    // then refuses every transaction falls through here rather than at the
-    // first save.
-    await store.list();
-    return store;
-  } catch { /* the next store answers where IndexedDB refuses */ }
-  try {
-    // The probe wants the denial to throw here, where the catch selects the
-    // next store, so it reaches the storage directly rather than through the
-    // helpers that swallow one.
-    const probeKey = `${CONVERSATION_RECORD_PREFIX}probe`;
-    const probeStorage = window['localStorage'];
-    probeStorage.setItem(probeKey, '1');
-    probeStorage.removeItem(probeKey);
-    return browserStorageConversationStore();
-  } catch { /* a denied localStorage leaves the record in memory for this page */ }
+  if (!conversationStoreFailedNames.has('indexeddb')) {
+    try {
+      const database = await openConversationDatabase();
+      const store = indexedDatabaseConversationStore(database);
+      // The list proves the object store answers, so a database that opened
+      // and then refuses every transaction falls through here rather than at
+      // the first save.
+      await store.list();
+      return store;
+    } catch { /* the next store answers where IndexedDB refuses */ }
+  }
+  if (!conversationStoreFailedNames.has('localstorage')) {
+    try {
+      // The probe wants the denial to throw here, where the catch selects the
+      // next store, so it reaches the storage directly rather than through the
+      // helpers that swallow one.
+      const probeKey = `${CONVERSATION_RECORD_PREFIX}probe`;
+      const probeStorage = window['localStorage'];
+      probeStorage.setItem(probeKey, '1');
+      probeStorage.removeItem(probeKey);
+      return browserStorageConversationStore();
+    } catch { /* a denied localStorage leaves the record in memory for this page */ }
+  }
   return memoryConversationStore();
 }
 
@@ -3605,14 +3617,18 @@ async function saveConversation() {
   } catch {
     return;
   }
+  const activeStore = await conversationStore();
   try {
-    await (await conversationStore()).write(record);
+    await activeStore.write(record);
   } catch {
     // A store that opened and answered its own probe can still refuse a
-    // later write -- a quota, a denied transaction. Demoting the cached
-    // resolution here re-runs resolveConversationStore()'s own fallback
-    // chain on the next call instead of staying bound to a store proven not
-    // to write, which every later save would otherwise silently repeat.
+    // later write -- a quota, a denied transaction. Excluding this store's
+    // name and demoting the cached resolution makes the next call re-run
+    // resolveConversationStore()'s own fallback chain past the store that
+    // just failed, rather than reselecting the same unwritable one: the
+    // chain's own list()/setItem() probes are reads and would otherwise pass
+    // again for a store that permits reads and refuses writes.
+    conversationStoreFailedNames.add(activeStore.name);
     conversationStoreRead = null;
   }
   await renderConversationList();
