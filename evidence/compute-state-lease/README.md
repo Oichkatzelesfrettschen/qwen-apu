@@ -176,7 +176,7 @@ while it runs, which is what makes the applied profile provable rather than only
 the state before and after it. The lease, its published proof, and
 `verify-external-vulkan-lease.py` run unstubbed against a real `flock`.
 
-Fifteen cases pass: the usage form, the `high` and `profile_peak` refusals, a
+Seventeen cases pass: the usage form, the `high` and `profile_peak` refusals, a
 clean apply-run-restore, the command's observation of the applied profile, its
 inherited affinity, the KSM 0-and-back round trip, the state record's snapshot
 rows, the closed arm environment carrying the lease proof, the serving profile
@@ -184,6 +184,17 @@ accepting the clamped fabric level, an `auto` snapshot restoring the level and
 naming the governor as the selections' owner, the held-lease refusal, an
 unreached clock expectation refusing before the command, a failed restoration
 reported as an incident over a command that exited 0, a terminating signal
-mid-command that still restores, and `status` reporting live values with no
-credential. The bounded shutdown mechanism is implemented and functional; the
-test case remains under development.
+mid-command that still restores, a child that traps SIGTERM and requires the
+SIGKILL escalation, the lease releasing once that child is gone, and `status`
+reporting live values with no credential.
+
+The SIGKILL case is the harness's own deferred one. A command that traps
+SIGTERM and loops on `sleep 1` forks a new `sleep` each iteration, and each
+fork inherits the open lease descriptor `env -i` carries into every command.
+`kill -KILL` reaches the tracked child alone: the `sleep 1` in flight at that
+moment is reparented and keeps running for the rest of its own second, holding
+the descriptor -- and the lease -- open after the transaction and its tracked
+child are both gone. The fixture closes its own copy of the descriptor
+(`exec 8>&-`) before it traps SIGTERM and starts looping, so no forked `sleep`
+ever holds it, and the lease reads free within one poll interval of the KILL
+rather than up to a second later.

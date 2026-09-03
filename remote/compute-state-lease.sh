@@ -544,10 +544,10 @@ stop_child() {
             return 0
         }
         stop_attempt=$((stop_attempt + 1))
-        sleep 0.2
+        sleep 0.2 || true
     done
     kill -KILL "$child_pid" 2>/dev/null || true
-    child_stop=kill
+    child_stop='kill'
     stop_attempt=0
     while [ "$stop_attempt" -lt 25 ]; do
         kill -0 "$child_pid" 2>/dev/null || {
@@ -556,7 +556,7 @@ stop_child() {
             return 0
         }
         stop_attempt=$((stop_attempt + 1))
-        sleep 0.2
+        sleep 0.2 || true
     done
     child_stop=unreaped
     wait "$child_pid" 2>/dev/null || true
