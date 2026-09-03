@@ -120,6 +120,13 @@ with the patch.
    `v_mad_u32_u24` and `v_mul_u32_u24` than sixteen products per call predict.
    The hypothesis is refuted at the compiler before device time is spent, and
    the receipt names ACO's selection rather than the shader's intent.
+   `isa-shimmed-raven2/` answers this without the appliance, and the answer is
+   split three ways: `v_mul_lo_u32` is absent while all 224 products land on
+   `v_mul_u32_u24` with SDWA byte selects, `v_mad_u32_u24` is absent because
+   the byte select occupies the VOP2 encoding the VOP3 multiply-add cannot
+   share, and `v_cvt_f32_f16` stands at 56 -- the same count, in the same
+   places, as the `dotPacked4x8EXT` build of the same shader, so it reports the
+   q8_1 scale decode rather than the replacement.
 2. Correctness. The margin witness reads `differs` under
    `QWEN_WITNESS_CONTRACT=margin`. This is claim B: q8_1 activation
    quantization is a numeric change the design accepted in advance, so the
@@ -154,6 +161,13 @@ environment         test-radv-low-priority-env.sh gains the three
                     GGML_VK_FORCE_INTEGER_DOT arms; the wrapper refuses this
                     workstation for want of a RADV ICD, so the three arms ran
                     against a stand-in ICD and answered unset, 1, unset
+ACO ISA receipt     isa-shimmed-raven2/, the int24 module, its dotPacked4x8EXT
+                    counterpart, and the pinned Q4_K and Q6_K mat-vecs compiled
+                    through RADV on a drm-shimmed RAVEN2 node; the two pinned
+                    arms hash to the appliance's own ad837848 and 0d5c7643, so
+                    this host's ACO answers the appliance's on the mat-vec
+                    family. Both anchors take the FP16 path, so the integer-dot
+                    lowering the arm rests on is outside the matched set
 ```
 
 `spirv-summary.tsv` carries the compile receipt. The extension branch holds
@@ -167,16 +181,80 @@ are SPIR-V operations at glslc's default optimization: they state which
 arithmetic the module asks for and count no VALU instruction, which is what
 falsifier 1 measures.
 
+## The ISA receipt, and what it says about the arm
+
+`isa-shimmed-raven2/README.md` carries the whole reading; three results decide
+what the remaining device stages are worth spending time on.
+
+The 24-bit multiplier is reached exactly as designed: 224 products, every one
+`v_mul_u32_u24_sdwa` with `src0_sel`/`src1_sel` byte selects, and zero
+`v_mul_lo_u32`.
+
+The multiply-add fold the design predicted does not happen, and neither arm
+loses by it. Both q8_1 arms emit zero `v_mad_u32_u24` and accumulate through
+`v_add3_u32`; SDWA rides VOP1 and VOP2 on GFX9 while `v_mad_u32_u24` is VOP3,
+so ACO takes the byte select and cannot also take the fold.
+
+`dotPacked4x8EXT` reaches the same multiplier family on this part. The
+extension build of the same shader compiles to 224 `v_mul_i32_i24_sdwa` in
+1328 VALU against the rewrite's 1646, so the rewrite costs 318 VALU and 2208
+bytes of code at identical registers. That is the price of the appliance's own
+toolchain rather than of the arithmetic:
+`evidence/web-admission-router-tools/build-raven2-vulkan-production.log:33`
+records the appliance's build printing `GL_EXT_integer_dot_product not
+supported by glslc` under Vulkan 1.3.275, so the extension form compiles
+nowhere on that host and the rewrite is the only route to a `_q8_1` pipeline
+there. The measurement opens a route the ladder never registered: a glslc that
+accepts the extension, or SPIR-V compiled elsewhere and shipped, reaches the
+24-bit multiplier in 318 fewer VALU instructions on the same silicon. No arm
+has costed it.
+
+## Stage status
+
+| stage | state | where |
+| --- | --- | --- |
+| patch series replay | measured | `verify-llama-patch-series.sh`, workstation |
+| shader compile matrix | measured | `compile-matrix.tsv`, workstation |
+| SPIR-V receipt | measured | `spirv/`, workstation |
+| arithmetic equivalence | measured | `int24-equivalence.c`, workstation |
+| backend compile | measured | workstation |
+| falsifier 1, ACO ISA | measured | `isa-shimmed-raven2/`, shimmed RAVEN2 on the workstation |
+| appliance build produces this module | unrun | the appliance's own glslc, see below |
+| runtime equality, claim A | unrun | appliance |
+| falsifier 2, margin witness | unrun | appliance |
+| falsifier 3, kernel-delta bracket | unrun | appliance |
+| falsifier 4, whole token | unrun | appliance |
+
+Falsifier 1's ISA question is answered and one identity question behind it is
+not. The receipt compiled `mul_mat_vecq.comp` with glslc 2026.3, and the
+appliance compiles it with the shaderc its distribution ships. Those two
+toolchains produced different SPIR-V for the pinned `mul_mat_vec_q4_k_f32_f32`
+and ACO emitted one identical instruction stream from both, which is the
+anchor `identity-anchor.tsv` records; whether the same holds for the int24
+module is a one-command check on the appliance rather than an inference:
+
+```sh
+# On the appliance, after the candidate build. The census instrument writes the
+# executed module under its own digest, and the lab compiles that module.
+GGML_VK_FORCE_INTEGER_DOT=1 GGML_VK_PIPELINE_CENSUS_DUMP=$HOME/e5-modules \
+    BUILD/bin/llama-server --model MODEL_PATH ...   # one request, then teardown
+remote/raven2-shader-lab/lab.sh $HOME/e5-modules/DIGEST.spv $HOME/e5-isa-int24 \
+    --spec 0:64 --spec 1:1 --spec 2:1 --subgroup 64 \
+    --bindings 5 --push-constants 52 --per-superblock 256
+```
+
+An `isa_sha256` equal to
+`8896269f54c86f1039a08740aaa1f1f3fdbef6080f8d9e7a1908ce84e2598f34` closes the
+identity outright. A different value makes the appliance's own receipt the
+authority and this one a compiler study.
+
 ## Not run
 
 ```text
-ACO ISA receipt         the workstation carries the NVIDIA ICD alone and no
-                        libvulkan_radeon, so RADV_FORCE_FAMILY=raven2 with
-                        RADV_DEBUG=shaderstats has no driver to run through.
-                        Falsifier 1 stays open and the appliance answers it.
 runtime equality        claim A is exact by construction and unmeasured on the
                         device: the arm and its control answering one prompt
                         bit-for-bit is what turns it into a measurement.
 every device arm        falsifiers 2, 3, and 4 need the appliance, which serves
-                        while this branch was written.
+                        while this branch was written. The four commands are
+                        under "The appliance chain" above.
 ```
