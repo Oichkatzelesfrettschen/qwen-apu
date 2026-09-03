@@ -101,8 +101,10 @@ ways to close it, and the operator picks one before starting:
 
 ```text
 refresh   keep the sudo timestamp alive for the campaign's duration
-verify    read the run's dpm_restore= line, and power_dpm_force_performance_level
-          itself, after the run; restore `auto` by hand on a mismatch
+verify    tee the run's stdout, read its dpm_restore= line, and read
+          power_dpm_force_performance_level with pp_dpm_sclk and pp_dpm_mclk off the
+          device afterwards; restore the line's requested= policy and its sclk_level=
+          and mclk_level= indices by hand where they differ
 ```
 
 `census_engine_clock_restore` discarding its write's status while still reporting the

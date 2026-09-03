@@ -218,19 +218,26 @@ rsync -a remote/ eirikr@qwen-laptop:~/qwen-laptop-setup/remote/
 ssh eirikr@qwen-laptop
 sudo -v
 ~/qwen-laptop-setup/remote/qwen-teardown.sh
+out=~/evidence/prefill-ladder/$(date -u +%Y%m%dT%H%MZ)
 QWEN_CENSUS_MCLK_LEVEL=2 \
     ~/qwen-laptop-setup/remote/run-prefill-ladder.sh \
     ~/deployments/CONTROL/llama-server \
     ~/builds/CANDIDATE/bin/llama-server \
     qwen38-2b-distill \
-    ~/evidence/prefill-ladder/$(date -u +%Y%m%dT%H%MZ)
+    "$out" 2>&1 | tee "$out.log"
 
 # the clock the next workload inherits, read from the device rather than assumed
-grep dpm_restore= ~/evidence/prefill-ladder/*/run.log | tail -1
+grep dpm_restore= "$out.log" | tail -1
 cat /sys/class/drm/card1/device/power_dpm_force_performance_level
 cat /sys/class/drm/card1/device/pp_dpm_sclk
 cat /sys/class/drm/card1/device/pp_dpm_mclk
 ```
+
+The runner retains `inputs.tsv`, `arms.tsv`, and `summary.tsv` under its output
+directory and writes `dpm_restore=` to stdout, which nothing captures on its own, so the
+`tee` above is what makes the line readable after the run. The runner refuses an output
+path that already exists, so `$out.log` is named beside that directory rather than
+inside it.
 
 The line reads `dpm_restore=restored level=X requested=X sclk_level=I mclk_level=J` when
 the policy node is back in the policy the run found it in, and `dpm_restore=mismatch`
