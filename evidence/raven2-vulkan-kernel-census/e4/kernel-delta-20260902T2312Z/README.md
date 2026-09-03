@@ -96,7 +96,7 @@ The correctness state is a matrix rather than one flag:
 | registered 1e-3 nat bound | refuted and retired without a replacement figure |
 | longitudinal amplification over 128 tokens | not observed |
 | margin robustness | `../margin-holdout-20260903T0456Z/`: 10 of 12 prompts held with retention at least 0.786; two argmax flips at control margins of 0.0001 and 0.0023 nat, `differs` as registered |
-| general task-quality non-regression | pending the graded suite |
+| general task-quality non-regression | `../quality-gate-20260903T0547Z/`: the same 40 of 65 on all four arms, 64 of 65 replies byte-identical, one wording change in a passing row |
 
 The CPU reference is context rather than a threshold: it shows E4 is far
 smaller than a backend transition and says nothing about whether every
