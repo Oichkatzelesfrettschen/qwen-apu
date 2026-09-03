@@ -244,29 +244,37 @@ Q4_K weight reaches f32 in one `v_cvt_f32_ubyte` directly from a byte lane and
 reaches f16 only through f32, so a packed formulation adds a conversion per
 value instead of replacing one.
 
-Scaled onto the mat-vec, the arithmetic runs the same way. The
-multiply-accumulate phase is 26 per row: 20 fused multiply-adds and 6
-multiplies, of which only the 16 weight-activation products pack. The four
-scale products, the three minimum-term products, the two `dm` products, and the
-final accumulate are f32 by construction. Sixteen packed products would be
-eight `v_pk_fma_f16` plus four cross-half adds to recover `sx` through `sw`,
-twelve in place of sixteen, so -4 per row -- against +8 `v_cvt_f16_f32` per row
-for the weights, the activations amortizing at 8/N. Net +4 per row of 76 at
-N=4, the same sign the probe measures, and it moves the dot's accumulation to
-half precision on top of that.
+Carried onto the mat-vec, the count runs the same way, and the carry is an
+extrapolation rather than a receipt. The multiply-accumulate phase is 26 per
+row: 20 fused multiply-adds and 6 multiplies, of which only the 16
+weight-activation products pack. The four scale products, the three
+minimum-term products, the two `dm` products, and the final accumulate are f32
+by construction. Sixteen packed products would be eight `v_pk_fma_f16` plus
+four cross-half adds to recover `sx` through `sw`, twelve in place of sixteen,
+which is -4 per row. Against that the probe spends 1.5 conversions per product
+where the f32 control spends 1, and the mat-vec's own operands are 16 weights
+per row and 16 activations amortizing at 16/N, so the added conversions are at
+least 16 per row on the weights alone. A route through `v_cvt_f16_u16` with an
+SDWA byte select would be neutral on the weight side and it is not the route
+ACO takes from this GLSL. Every reading of that extrapolation is positive, and
+the probe is what measures the sign.
 
 The scale decode is 19 per row, 25.0% of the 76-per-row body, and four of those
 nineteen are the `v_im` halfword selection alone: two `v_alignbyte_b32`, one
 `v_mov_b32_sdwa`, and one `v_add_u32` per row undoing the `buffer_load_dwordx2`
-merge. Removing them is -4 per row with no change to the accumulation format.
-The two levers differ by eight instructions per row of seventy-six, and the
-scale-decode side is the one that leaves the numerics alone, so the
-scale-decode restructuring is the larger lever and the packed-FP16 formulation
-is refuted rather than ranked.
+merge. One `v_perm_b32` lays those four bytes in their place, so the phase falls
+3 per row with no change to the accumulation format. One lever is -3 per row
+and the other at least +12, and the scale-decode side is the one that leaves
+the numerics alone, so the scale-decode restructuring is the larger lever and
+the packed-FP16 formulation is refuted rather than ranked.
 
 The largest phase is the multiply-accumulate at 26 per row. The largest
 removable is the address rebase at 9 per row, 11.8% of the body, and the
-mechanism it needs is stated in candidate 3 below.
+mechanism it needs is stated in candidate 3 below. That 9 is a ceiling
+constructed from the instruction stream rather than measured: no arm has
+compiled the distributed form, where candidate 1's -3.64% is a receipt. The
+list below is ordered by what a run would settle, so the measured candidate
+leads and the larger unmeasured ceiling follows it.
 
 ## The ranked candidates for the next kernel-delta arm
 
@@ -298,7 +306,8 @@ spends two `v_alignbyte_b32`, one `v_mov_b32_sdwa`, and one `v_add_u32` per row
 selecting the pair back out. `v_im` is invariant across both loops, so a source
 that lays the two halfwords with one `v_perm_b32` from a selector hoisted out
 of the superblock loop replaces four instructions with one. Predicted -3 of 76
-per row, -3.9%, and the accumulated value is unchanged bit for bit.
+per row, -3.9%, constructed from the instruction stream rather than compiled,
+and the accumulated value is unchanged bit for bit.
 *Falsifier.* `v_perm_b32` staying at 0 in the receipt with `v_alignbyte_b32`
 unchanged says GLSL cannot reach the byte permute on this chain, which closes
 the candidate at the compiler and restates E2b's finding on a second chain.
@@ -312,7 +321,9 @@ distribute it: the body issues `v_add_u32`, `v_lshlrev_b32`, and
 `v_lshl_add_u32` per row to rebuild the base and six further `v_add_u32` to
 rebuild the same five offsets, nine per row in total. Predicted ceiling -9 of 76
 per row, -11.8%, the largest named block in the body and the address half E3
-left open. *Falsifier.* `address` in the phase table failing to fall below
+left open. The ceiling is constructed from the instruction stream and rests on
+ACO distributing a multiply it does not distribute today, so it ranks below
+candidate 1 on what a run would settle and above it on size. *Falsifier.* `address` in the phase table failing to fall below
 `5N + 12` after the rewrite says the distribution did not survive NIR and the
 candidate is closed at the compiler.
 
@@ -438,3 +449,26 @@ SPIR-V with another compiler and answers a question about that compiler.
   `check-text-policy.py` ran; the full gate did not, since it carries device
   tests that refuse while a server holds the device.
 - **shellcheck.** No shell file was added or edited on this lane.
+
+## The wait-accounting correction these tables were regenerated under
+
+`depth.py` cleared its outstanding-memory counter at every `s_waitcnt`, but a
+wait at `vmcnt(k)` retires issues down to `k` and leaves `k` of them
+outstanding, so a descending ladder of partial waits undercounted every
+interval after the first. `wait_accounting` now carries `min(outstanding, k)`
+into the next interval, and `test-depth.py` gains a third block whose three
+loads, `vmcnt(2)`, two further loads, and `vmcnt(0)` read a peak of 4 where the
+cleared counter read 3.
+
+`longest_valu_chain` never touched that counter: it is the longest path over
+register definitions and uses, so no chain figure on this page moves. Two
+fields do, and every retained table in this tree was regenerated to find them.
+`max_lgkm_in_flight` rises 17 to 18 in the reduction block of all three FP16
+probes, whose LDS reduction is a descending `lgkmcnt` ladder, and
+`max_vmem_in_flight` rises 15 to 23 in the loop body of
+`evidence/e4b-summary-producer/receipts/e4b-consumer/depth.tsv`, whose
+sideplane read splits the body's single ladder in two. Every shape-sweep arm is
+unchanged, since the Q4_K body issues all 24 of its loads before its first
+wait, and so are the E4 consumer and producer tables and both E4 pair tables in
+`evidence/raven2-vulkan-kernel-census/e1/receipts/`. No number quoted on this
+page changed.
