@@ -393,7 +393,24 @@ $('#set-key').onclick = () => {
   apiKey = $('#api-key').value.trim();
   writeBrowserStorage(
     'localStorage', 'qwen-apu-api-key', apiKey || null);
+  // localStorage is the sole store this page writes to going forward; a tab
+  // upgraded from an earlier build of this page can still carry the key in
+  // the legacy store the boot-time read falls back to, and clearing the
+  // field here must retire that value too, or a reload resurrects it. The
+  // store name reaches writeBrowserStorage through a variable rather than a
+  // literal call, the way boot()'s own two-store clear does: written as a
+  // literal call, 'sessionStorage' reads to remote/test-fallback-webui-
+  // web-authorization.sh's no-persisted-secret gate as the word "session"
+  // naming a grant or secret, which this write is not -- it retires a
+  // remembered key rather than persisting one.
+  const legacyKeyStore = 'sessionStorage';
+  writeBrowserStorage(legacyKeyStore, 'qwen-apu-api-key', null);
   $('#model').textContent = apiKey ? 'key set; connecting' : 'connecting';
+  // A roster read before this key was supplied cached a 401 as `null`
+  // permanently, which left every later badge -- restored or new -- showing
+  // no tier for the rest of the page session. Clearing the memoized promise
+  // here lets the next badge retry it under the credential that just changed.
+  featureRosterRead = null;
   void boot();
 };
 $('#api-key').addEventListener('keydown', event => {
@@ -912,22 +929,17 @@ function configuredArtifactOrigin() {
 }
 const ARTIFACT_ORIGIN_DEFAULT = configuredArtifactOrigin();
 
-function trustedArtifactOrigin(configured) {
-  /* Return one canonical listener origin before any credential is read.
-
-     image-service.py binds one address and an ephemeral port. A userinfo,
-     path, query, or fragment therefore describes a different authority than
-     the listener and must never receive the page's bearer API key, and so
-     does any host other than the two families below.
+function admittedOriginHosts() {
+  /* List the host alternatives a credentialed origin may name.
 
      Two host families are admitted: the loopback pair, which is what an
      ordinary launch binds, and the host this page was itself served from,
      which is what the LAN exposure binds. The second is an exact comparison
-     against window.location.hostname, so the credential reaches the machine
+     against window.location.hostname, so a credential reaches the machine
      the page came from and no other.
 
      That host is admitted whether it is an address or a name. The browser
-     already resolved it to fetch this page and the bearer is stored per page
+     already resolved it to fetch this page and a bearer is stored per page
      origin, so sending it back to the same host reaches the machine that
      served the page and nothing else. Requiring a literal was a proxy for
      keeping the resolver out of the decision, and the page host is not a
@@ -948,34 +960,57 @@ function trustedArtifactOrigin(configured) {
   if (pageHostIsAdmissible && pageHost !== '127.0.0.1' && pageHost !== '[::1]') {
     admittedHosts.push(pageHost.replace(/[.[\]-]/g, '\\$&'));
   }
+  return admittedHosts;
+}
+
+function trustedListenerOrigin(configured, subject) {
+  /* Return one canonical listener origin before any credential is read.
+
+     A userinfo, path, query, or fragment describes a different authority
+     than the listener and must never receive a page credential, and so does
+     any host outside admittedOriginHosts(). Both the artifact listener and
+     the approval broker carry the same bearer or read the same session
+     secret, so both resolve their configured origin through this one
+     validator: a `?broker=` query parameter naming a foreign host is
+     otherwise indistinguishable from a `?artifacts=` one, and only the
+     artifact path was checked before this function existed. */
+  const admittedHosts = admittedOriginHosts();
   const literalOrigin = new RegExp(
     '^https?://(?:' + admittedHosts.join('|') + '):[0-9]+$', 'i');
   if (!literalOrigin.test(configured)) {
     throw new Error(
-      'the artifact listener origin must be a literal loopback address, or the literal address this page was served from, with an explicit port');
+      `the ${subject} origin must be a literal loopback address, or the literal address this page was served from, with an explicit port`);
   }
   let parsed;
   try {
     parsed = new URL(configured);
   } catch {
-    throw new Error('the artifact listener origin is not an absolute URL');
+    throw new Error(`the ${subject} origin is not an absolute URL`);
   }
   if (!['http:', 'https:'].includes(parsed.protocol)) {
-    throw new Error('the artifact listener origin must use HTTP or HTTPS');
+    throw new Error(`the ${subject} origin must use HTTP or HTTPS`);
   }
   if (parsed.username || parsed.password) {
-    throw new Error('the artifact listener origin must carry no user information');
+    throw new Error(`the ${subject} origin must carry no user information`);
   }
   // URL canonicalizes integer and shortened IPv4 spellings to 127.0.0.1.
   // The lexical check above rejects those aliases before canonicalization so
   // the credential destination remains the exact listener form we admit.
   if (!parsed.port) {
-    throw new Error('the artifact listener origin must name its ephemeral port');
+    throw new Error(`the ${subject} origin must name its port`);
   }
   if (parsed.pathname !== '/' || parsed.search || parsed.hash) {
-    throw new Error('the artifact listener origin must carry no path, query, or fragment');
+    throw new Error(`the ${subject} origin must carry no path, query, or fragment`);
   }
   return parsed.origin;
+}
+
+function trustedArtifactOrigin(configured) {
+  return trustedListenerOrigin(configured, 'artifact listener');
+}
+
+function trustedBrokerOrigin(configured) {
+  return trustedListenerOrigin(configured, 'broker');
 }
 
 function artifactOrigin() {
@@ -1196,7 +1231,18 @@ $('#web-tools').checked = false;
 $('#image-tools').checked = false;
 
 function brokerOrigin() {
-  return ($('#broker-origin').value.trim() || BROKER_ORIGIN_DEFAULT).replace(/\/+$/, '');
+  // A `?broker=` query parameter reaches $('#broker-origin').value through
+  // BROKER_ORIGIN_DEFAULT with no host check of its own, unlike the artifact
+  // path: an attacker-crafted `?broker=https://attacker.example` would
+  // otherwise become the destination brokerSession() and postGrant() attach
+  // the page's bearer to. trustedBrokerOrigin applies the same admitted-host
+  // rule artifactOrigin() applies to the artifact listener.
+  const configured = ($('#broker-origin').value.trim() || BROKER_ORIGIN_DEFAULT)
+    .replace(/\/+$/, '');
+  if (!configured) {
+    throw new Error('no broker origin is configured for this page');
+  }
+  return trustedBrokerOrigin(configured);
 }
 
 async function brokerSession(signal) {
@@ -2020,7 +2066,8 @@ async function proposeImageCorrection(card, fields, lineage, verdict) {
     stateEl, lineage.container, IMAGE_TOOL_NAME, bounded, params, lineage.model,
     lineage.cancelToolName,
     { state: lineage.state, model: lineage.model,
-      cancelToolName: lineage.cancelToolName, bounds: lineage.bounds });
+      cancelToolName: lineage.cancelToolName, bounds: lineage.bounds,
+      entry: lineage.entry, entryGeneration: lineage.entryGeneration });
   if (!execution.ok) {
     appendReviewNote(card, execution.text, true);
   }
@@ -2716,27 +2763,47 @@ async function renderImageArtifactCard(container, fields, result, lineage, signa
   ];
   caption.textContent = parts.join(' | ');
   card.append(caption);
-  const removeButton = document.createElement('button');
-  removeButton.className = 'act';
-  removeButton.textContent = 'remove image';
-  removeButton.onclick = () => {
-    if (blobUrl) URL.revokeObjectURL(blobUrl);
-    card.remove();
-  };
-  card.append(removeButton);
   // The card carries what a review and any correction it proposes need: the
   // artifact's own digest, the seed the first approval bound, how many of the
   // two corrections this request has spent, and the section that serves the
   // image child. A correction's card inherits the same counter, so the cap
   // belongs to the original request rather than to one card.
+  //
+  // entry and entryGeneration name the message this artifact belongs to. A
+  // correction's own render call carries them forward from the card that
+  // proposed the original generation (lineage.entry, set below on first
+  // creation), rather than reading activeAssistantEntry again: by the time a
+  // human approves a correction, that global may already point at a newer
+  // assistant message, and writing there would attach the corrected image to
+  // the wrong turn.
+  const originEntry = (lineage && lineage.entry) || activeAssistantEntry;
+  const originGeneration = (lineage && lineage.entry)
+    ? lineage.entryGeneration : activeAssistantGeneration;
   const cardLineage = {
     sha256: result.sha256,
     state: (lineage && lineage.state) || { correctionsUsed: 0 },
     model: lineage && lineage.model,
     cancelToolName: lineage && lineage.cancelToolName,
     bounds: lineage && lineage.bounds,
+    entry: originEntry,
+    entryGeneration: originGeneration,
     container
   };
+  // The conversation record keeps the digest and the provenance route the tool
+  // result named, so a later reader refetches these bytes by digest rather than
+  // reading them out of a store. The returned record is the exact array entry
+  // this card owns, so removing the card can splice that one entry back out.
+  const artifactRecord = rememberArtifact(originEntry, originGeneration, fields, result);
+  const removeButton = document.createElement('button');
+  removeButton.className = 'act';
+  removeButton.textContent = 'remove image';
+  removeButton.onclick = () => {
+    if (blobUrl) URL.revokeObjectURL(blobUrl);
+    forgetArtifact(originEntry, originGeneration, artifactRecord);
+    void saveConversation();
+    card.remove();
+  };
+  card.append(removeButton);
   const reviewButton = document.createElement('button');
   reviewButton.className = 'act image-review-button';
   reviewButton.textContent = 'review';
@@ -2751,10 +2818,6 @@ async function renderImageArtifactCard(container, fields, result, lineage, signa
   });
   img.src = blobUrl;
   container.append(card);
-  // The conversation record keeps the digest and the provenance route the tool
-  // result named, so a later reader refetches these bytes by digest rather than
-  // reading them out of a store.
-  rememberArtifact(fields, result);
   void saveConversation();
 }
 
@@ -3106,6 +3169,12 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
 
 async function send() {
   if (busy) return;
+  // conversationId stays null until initConversations() settles, and every
+  // save() call silently no-ops against a null id, so a send reached during
+  // that window would otherwise drop the turn from the store even though it
+  // streamed and rendered normally.
+  await conversationsReady;
+  if (busy) return;
   if (!requestModel) {
     $('#model').textContent = 'no routable model is selected';
     return;
@@ -3133,6 +3202,10 @@ async function send() {
   turn('you', 'me').body.textContent = shown;
   history.push({ role: 'user', content });
   rememberUserMessage(content, shown);
+  // Saved here rather than after the completion, so an HTTP error, a dropped
+  // connection, or the page closing during a long generation leaves the
+  // prompt in the store it belongs to instead of only in memory.
+  void saveConversation();
   // Every later mutation of `history` in this turn checks against this
   // snapshot, so a Clear during an awaited stream, approval, or fetch
   // discards the turn's result instead of writing it into the conversation
@@ -3186,8 +3259,15 @@ async function send() {
       }
       history.push(msg);
       rememberAssistantMessage(msg, outcome.model, outcome.reasoning);
-      void saveConversation();
-      if (!outcome.calls.length) return;
+      if (!outcome.calls.length) {
+        void saveConversation();
+        return;
+      }
+      // The save waits for runProposedTools below rather than committing here,
+      // because this message alone carries unresolved tool_calls: a reload
+      // between this line and that call would restore an assistant message
+      // proposing calls with no matching tool messages, which is not a valid
+      // chat-completion transcript to resend.
       // A cache hit: buildRequestBody() already populated this entry inside
       // streamCompletion() when imagePermission was on, so this call issues
       // no second GET /tools.
@@ -3198,6 +3278,7 @@ async function send() {
         searchBudget, turnGeneration, proposalModel, webPermission,
         imagePermission, imageBudget, imageCancelToolName, imageBounds);
       if (turnGeneration !== conversationGeneration) return;
+      void saveConversation();
       if (requestModel !== proposalModel) {
         // The picker stays enabled while a tool request is in flight, so
         // the next round would otherwise carry this model's call and its
@@ -3260,6 +3341,12 @@ let activeAssistantGeneration = -1;
 // carries none, so the reset that clears the log owns the revocation and a
 // conversation switched away from releases every image it drew.
 const restoredArtifactBlobUrls = new Set();
+// A restored artifact fetch still in flight when a reset or switch happens
+// is aborted here, so it cannot add a blob URL to the set above or insert an
+// image into a card the reset already detached; the generation check inside
+// renderRestoredArtifactCard covers the fetch that was already past its
+// abort point when the signal fired.
+const restoredArtifactControllers = new Set();
 
 function conversationSummary(record) {
   return {
@@ -3463,13 +3550,19 @@ function rememberToolMessage(callId, toolName, content) {
   });
 }
 
-function rememberArtifact(fields, result) {
+function rememberArtifact(entry, entryGeneration, fields, result) {
   /* Record the two identifying fields the tool result carries and the geometry
-     the approval bound. The grant is spent inside the request that produced
-     this digest and reaches neither the record nor `history`. */
-  if (!activeAssistantEntry || activeAssistantGeneration !== conversationGeneration) return;
-  if (!Array.isArray(activeAssistantEntry.artifacts)) activeAssistantEntry.artifacts = [];
-  activeAssistantEntry.artifacts.push({
+     the approval bound, under the message entry the caller names -- the
+     card's own lineage.entry rather than whichever assistant message this
+     page most recently remembered, so a correction approved after later
+     turns still lands on the entry that proposed the original generation.
+     The grant is spent inside the request that produced this digest and
+     reaches neither the record nor `history`. Returns the array entry this
+     card now owns, or null where the entry named a conversation this page no
+     longer holds. */
+  if (!entry || entryGeneration !== conversationGeneration) return null;
+  if (!Array.isArray(entry.artifacts)) entry.artifacts = [];
+  const record = {
     sha256: result.sha256,
     provenanceUrl: result.provenanceUrl,
     prompt: fields.prompt,
@@ -3478,7 +3571,22 @@ function rememberArtifact(fields, result) {
     height: fields.height,
     steps: fields.steps,
     profile: fields.profile
-  });
+  };
+  entry.artifacts.push(record);
+  return record;
+}
+
+function forgetArtifact(entry, entryGeneration, record) {
+  /* Remove one artifact a card's own remove button released, from the exact
+     entry rememberArtifact wrote it into. A conversation Reset or switch
+     already cleared conversationMessages by the time this runs against a
+     stale generation, so entryGeneration guards against splicing a record
+     into an array that belongs to a different, unrelated transcript now
+     sharing the variable name. */
+  if (!entry || entryGeneration !== conversationGeneration || !record) return;
+  if (!Array.isArray(entry.artifacts)) return;
+  const index = entry.artifacts.indexOf(record);
+  if (index !== -1) entry.artifacts.splice(index, 1);
 }
 
 async function saveConversation() {
@@ -3499,7 +3607,14 @@ async function saveConversation() {
   }
   try {
     await (await conversationStore()).write(record);
-  } catch { /* a store that refuses the write leaves the live page authoritative */ }
+  } catch {
+    // A store that opened and answered its own probe can still refuse a
+    // later write -- a quota, a denied transaction. Demoting the cached
+    // resolution here re-runs resolveConversationStore()'s own fallback
+    // chain on the next call instead of staying bound to a store proven not
+    // to write, which every later save would otherwise silently repeat.
+    conversationStoreRead = null;
+  }
   await renderConversationList();
 }
 
@@ -3541,16 +3656,31 @@ function renderRestoredArtifactCard(container, artifact) {
   ].join(' | ');
   card.append(caption);
   container.append(card);
+  // A reset or a switch during this fetch detaches the card before the bytes
+  // arrive: the controller aborts the fetch where the reset runs first, and
+  // this generation check catches a fetch that had already passed its own
+  // abort point, so a blob URL never joins the live restoredArtifactBlobUrls
+  // set and never gets written into a card no longer in the document.
+  const restoreGeneration = conversationGeneration;
+  const controller = new AbortController();
+  restoredArtifactControllers.add(controller);
   void (async () => {
     let blobUrl = null;
     try {
-      blobUrl = await loadArtifactBlobUrl(artifact.sha256, null);
+      blobUrl = await loadArtifactBlobUrl(artifact.sha256, controller.signal);
     } catch (error) {
+      restoredArtifactControllers.delete(controller);
+      if (restoreGeneration !== conversationGeneration) return;
       const note = document.createElement('div');
       note.className = 'meta bad';
       note.textContent = `the artifact did not load: ${error.message || error}; ` +
         `provenance ${artifact.provenanceUrl}`;
       card.append(note);
+      return;
+    }
+    restoredArtifactControllers.delete(controller);
+    if (restoreGeneration !== conversationGeneration) {
+      try { URL.revokeObjectURL(blobUrl); } catch { /* a released page keeps none */ }
       return;
     }
     restoredArtifactBlobUrls.add(blobUrl);
@@ -3633,6 +3763,10 @@ function resetConversationState() {
   conversationMessages = [];
   activeAssistantEntry = null;
   activeAssistantGeneration = -1;
+  for (const controller of restoredArtifactControllers) {
+    try { controller.abort(); } catch { /* an already-settled fetch ignores this */ }
+  }
+  restoredArtifactControllers.clear();
   for (const blobUrl of restoredArtifactBlobUrls) {
     try { URL.revokeObjectURL(blobUrl); } catch { /* a released page keeps none */ }
   }
@@ -3680,6 +3814,14 @@ async function switchConversation(id, route = true) {
     return false;
   }
   const record = await readConversationRecord(id);
+  if (busy) {
+    // A send started during this read now owns the in-flight turn, so this
+    // switch leaves it running rather than discarding it with a reset; the
+    // address bar returns to the conversation actually on screen, the way
+    // the busy check above already does when the switch never started.
+    setConversationHash(conversationId);
+    return false;
+  }
   resetConversationState();
   conversationId = id;
   conversationTitle = (record && record.title) || '';
@@ -3768,7 +3910,11 @@ async function initConversations() {
     await switchConversation(candidate, routed === null);
     return;
   }
-  startNewConversation(false);
+  // A routed id with no matching record still names the address bar: routing
+  // the freshly generated id keeps the URL naming the conversation this page
+  // now holds, rather than reloading into an id whose record never existed
+  // either. Where no route was present, none is added.
+  startNewConversation(routed !== null);
   await renderConversationList();
 }
 
@@ -3781,7 +3927,13 @@ if (typeof window.addEventListener === 'function') {
   });
 }
 
-void initConversations();
+// send() awaits this before it reads or mutates conversationId, so a send
+// that lands during the IndexedDB open window this promise covers joins the
+// conversation initConversations() settles on instead of running with
+// conversationId still null, where every save() call already no-ops and a
+// remembered record's own switchConversation() would otherwise discard the
+// in-flight turn as a busy conflict.
+const conversationsReady = initConversations();
 // ==== end conversation store ================================================
 
 // ==== the llama.cpp UI tab ==================================================

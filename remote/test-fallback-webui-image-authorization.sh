@@ -313,7 +313,7 @@ if (!promptCapMatch) throw new Error("the image prompt character cap is not decl
 const IMAGE_PROMPT_CHARACTER_CAP = Number(promptCapMatch[1]);
 
 eval(extract(
-    "function trustedArtifactOrigin(configured) {",
+    "function admittedOriginHosts() {",
     "\n\nfunction artifactOrigin() {"
 ));
 for (const [configured, expected] of [

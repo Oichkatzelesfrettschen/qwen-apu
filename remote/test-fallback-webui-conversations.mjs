@@ -58,6 +58,12 @@ class FakeElement {
     if (value === '') this.children = [];
   }
 
+  // resolveVisionModel() reads $('#model-picker').options the way a real
+  // HTMLOptionsCollection mirrors the <option> children boot() appended.
+  get options() {
+    return this.children;
+  }
+
   addEventListener(eventName, listener) {
     this.listeners.set(eventName, listener);
   }
@@ -68,6 +74,11 @@ class FakeElement {
       this._textContent += typeof child === 'string' ? child : child.textContent;
     }
   }
+
+  // The remove-image button removes the card from its own container; this
+  // harness does not track a parent reference, and the store update is what
+  // the artifact-removal check reads.
+  remove() {}
 
   // The restore path places a reasoning block ahead of the answer body, so the
   // double keeps the child order a reader would see.
@@ -193,6 +204,11 @@ globalThis.webuiConversationTest = {
   async storeName() {
     return (await conversationStore()).name;
   },
+  featureRosterOnce,
+  clickSetKey(value) {
+    $('#api-key').value = value;
+    $('#set-key').onclick();
+  },
   state() {
     return {
       conversationId,
@@ -200,10 +216,28 @@ globalThis.webuiConversationTest = {
       messages: JSON.parse(JSON.stringify(conversationMessages)),
       history: JSON.parse(JSON.stringify(history)),
       toolCallSequence,
+      conversationGeneration,
     };
   },
   secretsHeld() {
     return { apiKey, brokerSessionSecret };
+  },
+  activeEntry() { return activeAssistantEntry; },
+  activeGeneration() { return activeAssistantGeneration; },
+  rememberAssistantTurn(content) {
+    const message = { role: 'assistant', content };
+    history.push(message);
+    return rememberAssistantMessage(message, 'image-capable', '');
+  },
+  async renderArtifactCard(fields, result, lineage) {
+    const container = document.createElement('div');
+    await renderImageArtifactCard(container, fields, result, lineage || null, null);
+    return { card: container.children[0], container };
+  },
+  clickRemove(card) {
+    const removeButton = card.children.find(child => child.textContent === 'remove image');
+    if (!removeButton) throw new Error('the card carries no remove button');
+    removeButton.onclick();
   },
   async runFixtureTurn(fixture) {
     // The page's own credentials are live while the record is written, which is
@@ -229,7 +263,7 @@ globalThis.webuiConversationTest = {
     // the record.
     const params = imageRequestParams(fixture.fields, fixture.grant);
     if (params.authorization !== fixture.grant) throw new Error('the grant did not reach the params');
-    rememberArtifact(fixture.fields, fixture.result);
+    rememberArtifact(activeAssistantEntry, activeAssistantGeneration, fixture.fields, fixture.result);
     history.push({
       role: 'tool', tool_call_id: 'call_0', name: IMAGE_TOOL_NAME,
       content: fixture.toolContent,
@@ -253,7 +287,16 @@ globalThis.webuiConversationTest = {
     return readConversationRecord(id);
   },
   setBusy(value) { busy = value; },
+  isBusy() { return busy; },
   restoredBlobUrls() { return restoredArtifactBlobUrls.size; },
+  setRequestModel(id) {
+    requestModel = id;
+    $('#input').value = '';
+  },
+  setInput(text) { $('#input').value = text; },
+  send,
+  conversationsReadyPromise: conversationsReady,
+  imageToolName: IMAGE_TOOL_NAME,
   startNewConversation,
   switchConversation,
   renameConversation,
@@ -295,6 +338,8 @@ function newPage({ indexedDatabase, localStorage, sessionStorage, hash = '' }) {
   const context = {
     AbortController,
     URL: TestUrl,
+    TextDecoder,
+    performance,
     clearTimeout,
     collectText,
     console,
@@ -303,7 +348,19 @@ function newPage({ indexedDatabase, localStorage, sessionStorage, hash = '' }) {
     hashListeners,
     fetch(url, options = {}) {
       return new Promise((resolve, reject) => {
-        pendingRequests.push({ url, options, resolve, reject });
+        const entry = { url, options, resolve, reject };
+        pendingRequests.push(entry);
+        if (options.signal) {
+          const onAbort = () => {
+            const index = pendingRequests.indexOf(entry);
+            if (index !== -1) pendingRequests.splice(index, 1);
+            const abortError = new Error('The operation was aborted.');
+            abortError.name = 'AbortError';
+            reject(abortError);
+          };
+          if (options.signal.aborted) onAbort();
+          else options.signal.addEventListener('abort', onAbort, { once: true });
+        }
       });
     },
     setTimeout,
@@ -337,6 +394,23 @@ function takeRequest(pendingRequests, predicate, description) {
 
 function jsonResponse(payload, status = 200) {
   return { ok: status >= 200 && status < 300, status, async json() { return payload; } };
+}
+
+function sseResponse(events) {
+  /* Build a real ReadableStream a genuine streamCompletion() reads through
+     resp.body.getReader(), so a turn-ordering check drives send() itself
+     rather than a hand-rolled stand-in for it. */
+  const encoder = new TextEncoder();
+  const body = new ReadableStream({
+    start(controller) {
+      for (const event of events) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+      }
+      controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+      controller.close();
+    }
+  });
+  return { ok: true, status: 200, body, async text() { return ''; } };
 }
 
 const fixture = {
@@ -628,5 +702,437 @@ await answerBoot(reloadedDeniedPage);
 await flushPromises();
 assert.equal((await reloadedDeniedPage.api.list()).length, 0);
 assert.equal(reloadedDeniedPage.api.state().history.length, 0);
+
+// ---- send() saves the user turn ahead of the completion, and commits a
+// tool-call round only once its tool answers exist -------------------------
+
+const turnPage = newPage({
+  indexedDatabase: makeFakeIndexedDatabase(),
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(turnPage);
+turnPage.api.setRequestModel('image-capable');
+turnPage.api.setInput('draw something');
+const sendPromise = turnPage.api.send();
+
+// The user message is durable before the completion request is even
+// answered: an HTTP error, a dropped connection, or the page closing during
+// a long generation would otherwise leave it only in memory.
+await flushPromises();
+const turnList = await turnPage.api.list();
+assert.equal(turnList.length, 1, 'the user turn was not saved ahead of the completion');
+const turnId = turnList[0].id;
+let turnRecord = await turnPage.api.read(turnId);
+assert.equal(turnRecord.messages.length, 1);
+assert.equal(turnRecord.messages[0].role, 'user');
+
+const firstCompletion = takeRequest(turnPage.pendingRequests,
+  request => request.url === './v1/chat/completions', 'the first completion request');
+firstCompletion.resolve(sseResponse([{
+  choices: [{
+    delta: { tool_calls: [{ index: 0, function: {
+      name: turnPage.api.imageToolName, arguments: '{}'
+    } }] },
+    finish_reason: 'tool_calls'
+  }]
+}]));
+await flushPromises();
+
+// send() resolves resolveImageTools() before runProposedTools can answer the
+// proposed call, and that fetch is the checkpoint: the assistant message
+// carrying the unresolved tool_calls must not be durable while it is
+// pending, because a reload here would restore an assistant message with no
+// matching tool message -- not a valid chat-completion transcript to resend.
+const toolsListing = takeRequest(turnPage.pendingRequests,
+  request => String(request.url).startsWith('./tools?model='), 'the image tool listing');
+turnRecord = await turnPage.api.read(turnId);
+assert.equal(turnRecord.messages.length, 1,
+  'the assistant message with unresolved tool_calls was saved early');
+toolsListing.resolve(jsonResponse([]));
+await flushPromises();
+
+// The image surface is off for this turn (the toggle default), so the call
+// is answered the moment the listing resolves, with no dialog. That answer
+// is what makes the round durable: the assistant message and its tool
+// answer land together.
+turnRecord = await turnPage.api.read(turnId);
+assert.equal(turnRecord.messages.length, 3,
+  'the assistant message and its tool answer did not land together');
+assert.equal(turnRecord.messages[1].role, 'assistant');
+assert.equal(turnRecord.messages[1].tool_calls.length, 1);
+assert.equal(turnRecord.messages[2].role, 'tool');
+assert.ok(turnRecord.messages[2].content.includes('did not run'),
+  'the refusal message is missing from the tool answer');
+
+// The turn ends on a second round with no further tool call.
+const secondCompletion = takeRequest(turnPage.pendingRequests,
+  request => request.url === './v1/chat/completions', 'the second completion request');
+secondCompletion.resolve(sseResponse([{
+  choices: [{ delta: { content: 'the image tool is off this turn' }, finish_reason: 'stop' }]
+}]));
+await sendPromise;
+await flushPromises();
+turnRecord = await turnPage.api.read(turnId);
+assert.equal(turnRecord.messages.length, 4);
+assert.equal(turnRecord.messages[3].role, 'assistant');
+assert.equal(turnRecord.messages[3].content, 'the image tool is off this turn');
+
+// ---- a write failure demotes the cached store resolution -------------------
+
+function makeFlakyIndexedDatabase(realDatabase, { failWrites }) {
+  /* Wrap a real fake IndexedDB so its object store's put() rejects while
+     failWrites.active is true. list() and get() still answer normally, the
+     way an open connection with a denied or quota-exhausted transaction
+     would.
+
+     The real fake's own open() assigns request.result synchronously, ahead
+     of the setImmediate that fires onupgradeneeded/onsuccess, so the database
+     is already there to patch in place by the time this wrapper's open()
+     returns; every later reader (including the page's own
+     openConversationDatabase(), which overwrites request.onsuccess) reads
+     request.result and gets the same, now-patched, object. */
+  return {
+    open(name) {
+      const request = realDatabase.open(name);
+      const database = request.result;
+      const originalTransaction = database.transaction.bind(database);
+      database.transaction = (...args) => {
+        const transaction = originalTransaction(...args);
+        const originalObjectStore = transaction.objectStore.bind(transaction);
+        transaction.objectStore = (...storeArgs) => {
+          const store = originalObjectStore(...storeArgs);
+          const originalPut = store.put.bind(store);
+          store.put = value => {
+            if (failWrites.active) {
+              const failedRequest = { onsuccess: null, onerror: null };
+              setImmediate(() => {
+                failedRequest.error = new Error('the transaction was denied');
+                if (failedRequest.onerror) failedRequest.onerror({ target: failedRequest });
+              });
+              return failedRequest;
+            }
+            return originalPut(value);
+          };
+          return store;
+        };
+        return transaction;
+      };
+      return request;
+    }
+  };
+}
+
+const failWrites = { active: true };
+const flakyDatabase = makeFakeIndexedDatabase();
+const flakyIndexedDatabase = makeFlakyIndexedDatabase(flakyDatabase, { failWrites });
+const flakyPage = newPage({
+  indexedDatabase: flakyIndexedDatabase,
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(flakyPage);
+assert.equal(await flakyPage.api.storeName(), 'indexeddb');
+const flakyId = await flakyPage.api.runFixtureTurn(fixture);
+await flushPromises();
+// The write was refused, so nothing reached the store yet.
+assert.equal((await flakyPage.api.list()).length, 0,
+  'a refused write reached the store it was refused by');
+failWrites.active = false;
+await flakyPage.api.appendFollowUp('a retried save reaches the store', 'image-capable');
+await flushPromises();
+const flakyList = await flakyPage.api.list();
+assert.equal(flakyList.length, 1,
+  'the store stayed demoted after the write it failed on could have succeeded');
+const flakyRecord = await flakyPage.api.read(flakyId);
+assert.ok(flakyRecord, 'the retried save did not reach the store');
+assert.equal(flakyRecord.messages.at(-1).content, 'a retried save reaches the store');
+
+// ---- switchConversation rechecks busy after its own await -----------------
+
+const raceSource = newPage({
+  indexedDatabase: sharedIndexedDatabase,
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(raceSource);
+const raceId = await raceSource.api.runFixtureTurn(fixture);
+await flushPromises();
+
+const racePage = newPage({
+  indexedDatabase: sharedIndexedDatabase,
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(racePage);
+await flushPromises();
+const beforeSwitch = racePage.api.state().conversationId;
+assert.notEqual(beforeSwitch, raceId);
+
+// busy flips true after switchConversation has already passed its first
+// check and started readConversationRecord(id), but before that read
+// settles: a send that started in this window now owns the in-flight turn.
+const switchPromise = racePage.api.switchConversation(raceId);
+racePage.api.setBusy(true);
+await flushPromises();
+racePage.api.setBusy(false);
+const switchOutcome = await switchPromise;
+assert.equal(switchOutcome, false,
+  'a switch begun before a concurrent send still discarded the in-flight turn');
+assert.equal(racePage.api.state().conversationId, beforeSwitch,
+  'a switch racing a send moved off the turn it should have left running');
+assert.equal(racePage.location.hash, `#/c/${beforeSwitch}`,
+  'the route drifted from the conversation actually left on screen');
+
+// ---- a routed id with no record routes the freshly opened conversation ----
+
+const staleRoutePage = newPage({
+  indexedDatabase: sharedIndexedDatabase,
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage(),
+  hash: '#/c/nosuchrecord0'
+});
+await answerBoot(staleRoutePage);
+await flushPromises();
+const staleState = staleRoutePage.api.state();
+assert.ok(staleState.conversationId, 'a stale route opened no conversation at all');
+assert.notEqual(staleState.conversationId, 'nosuchrecord0');
+assert.equal(staleRoutePage.location.hash, `#/c/${staleState.conversationId}`,
+  'the address bar still names the stale routed id rather than the id this page opened');
+
+// ---- send() awaits initConversations() before it touches conversationId ---
+
+const raceInitSource = newPage({
+  indexedDatabase: sharedIndexedDatabase,
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(raceInitSource);
+const raceInitId = await raceInitSource.api.runFixtureTurn(fixture);
+await flushPromises();
+
+const gatedPage = newPage({
+  indexedDatabase: sharedIndexedDatabase,
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage(),
+  hash: `#/c/${raceInitId}`
+});
+// send() is called in the same tick the page is created, before
+// initConversations() has read the routed record, so conversationId is still
+// null here: the send has to wait on conversationsReadyPromise rather than
+// running against a null id every save() would then no-op against.
+gatedPage.api.setRequestModel('image-capable');
+gatedPage.api.setInput('a message sent before init settles');
+const gatedSendPromise = gatedPage.api.send();
+assert.equal(gatedPage.api.state().conversationId, null,
+  'conversationId was already set before initConversations() could have settled');
+
+await answerBoot(gatedPage);
+await flushPromises();
+assert.equal(gatedPage.api.state().conversationId, raceInitId,
+  'send() proceeded against a conversation initConversations() had not yet selected');
+
+const gatedCompletion = takeRequest(gatedPage.pendingRequests,
+  request => request.url === './v1/chat/completions', 'the gated completion request');
+gatedCompletion.resolve(sseResponse([{
+  choices: [{ delta: { content: 'joined the routed conversation' }, finish_reason: 'stop' }]
+}]));
+await gatedSendPromise;
+await flushPromises();
+const gatedRecord = await gatedPage.api.read(raceInitId);
+assert.equal(gatedRecord.messages.length, 5,
+  'the gated send did not land in the routed conversation the page settled on');
+assert.equal(gatedRecord.messages.at(-1).content, 'joined the routed conversation');
+
+// ---- an artifact card attaches to the message its own lineage names, not
+// whichever message the page most recently remembered, and removing a card
+// deletes the record it wrote ------------------------------------------------
+
+const artifactPage = newPage({
+  indexedDatabase: makeFakeIndexedDatabase(),
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(artifactPage);
+artifactPage.document.querySelector('#artifact-origin').value = ARTIFACT_ORIGIN;
+artifactPage.api.setRequestModel('image-capable');
+
+function artifactBlobResponse() {
+  return { ok: true, status: 200, async blob() { return { size: 4 }; } };
+}
+
+const firstEntry = artifactPage.api.rememberAssistantTurn('the first answer');
+const firstGeneration = artifactPage.api.activeGeneration();
+// A correction's own lineage carries entry/entryGeneration forward the way
+// proposeImageCorrection's reconstructed lineage does, so the test builds
+// one explicit lineage object and reuses it for both renders.
+const firstLineage = { entry: firstEntry, entryGeneration: firstGeneration };
+const firstFields = {
+  prompt: 'a first image', seed: 111, width: 512, height: 512, steps: 4,
+  profile: 'sdxs-512-arm-a'
+};
+const firstResult = { sha256: 'a'.repeat(64), provenanceUrl: '/artifacts/aaa.json' };
+const firstCardPromise = artifactPage.api.renderArtifactCard(firstFields, firstResult, firstLineage);
+takeRequest(artifactPage.pendingRequests,
+  request => String(request.url) === `${ARTIFACT_ORIGIN}/artifacts/${firstResult.sha256}.png`,
+  'the first artifact fetch').resolve(artifactBlobResponse());
+await flushPromises();
+const firstCardInfo = await firstCardPromise;
+
+// A second, unrelated assistant message moves activeAssistantEntry forward
+// the way a later turn would while the first card is still on screen.
+const secondEntry = artifactPage.api.rememberAssistantTurn('a later, unrelated answer');
+assert.notEqual(secondEntry, firstEntry);
+
+// A correction of the FIRST card carries firstLineage, so the corrected
+// artifact must still land on firstEntry rather than the entry
+// activeAssistantEntry now names.
+const correctedFields = { ...firstFields, prompt: 'a corrected image' };
+const correctedResult = { sha256: 'b'.repeat(64), provenanceUrl: '/artifacts/bbb.json' };
+const correctionCardPromise = artifactPage.api.renderArtifactCard(
+  correctedFields, correctedResult, firstLineage);
+takeRequest(artifactPage.pendingRequests,
+  request => String(request.url) === `${ARTIFACT_ORIGIN}/artifacts/${correctedResult.sha256}.png`,
+  'the correction artifact fetch').resolve(artifactBlobResponse());
+await flushPromises();
+const correctionCardInfo = await correctionCardPromise;
+await flushPromises();
+
+let artifactState = artifactPage.api.state();
+const firstMessage = artifactState.messages.find(m => m.content === 'the first answer');
+const secondMessage = artifactState.messages.find(m => m.content === 'a later, unrelated answer');
+assert.equal(firstMessage.artifacts.length, 2,
+  'the correction did not land on the entry that proposed the original generation');
+assert.equal(firstMessage.artifacts[0].sha256, firstResult.sha256);
+assert.equal(firstMessage.artifacts[1].sha256, correctedResult.sha256);
+assert.equal(secondMessage.artifacts.length, 0,
+  'the correction attached to the most recently remembered message instead of its own lineage');
+
+// Removing the corrected card deletes only that record, saved.
+artifactPage.api.clickRemove(correctionCardInfo.card);
+await flushPromises();
+artifactState = artifactPage.api.state();
+const afterRemoveMessage = artifactState.messages.find(m => m.content === 'the first answer');
+assert.equal(afterRemoveMessage.artifacts.length, 1,
+  'removing the card left its record in the live transcript');
+assert.equal(afterRemoveMessage.artifacts[0].sha256, firstResult.sha256,
+  'removing the corrected card deleted the wrong artifact');
+const artifactRecord = await artifactPage.api.read(artifactState.conversationId);
+const persistedFirstMessage = artifactRecord.messages.find(m => m.content === 'the first answer');
+assert.equal(persistedFirstMessage.artifacts.length, 1,
+  'the removed card was not saved out of the persisted record');
+
+// ---- the feature roster cache retries once a key that was missing arrives -
+
+const rosterPage = newPage({
+  indexedDatabase: makeFakeIndexedDatabase(),
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage()
+});
+await flushPromises();
+// The anonymous probe proves the backend requires a bearer, so boot() stops
+// there with no candidate key to retry.
+takeRequest(rosterPage.pendingRequests,
+  request => request.url === './v1/models', 'the anonymous roster probe')
+  .resolve(jsonResponse({}, 401));
+await flushPromises();
+
+// A badge render before any key is supplied reads the roster and caches its
+// 401 as no roster.
+void rosterPage.api.featureRosterOnce();
+await flushPromises();
+const firstRosterFetch = takeRequest(rosterPage.pendingRequests,
+  request => request.url === './roster.json', 'the first roster read');
+assert.equal(firstRosterFetch.options.headers.Authorization, undefined,
+  'the pre-key roster read carried a bearer nothing had supplied yet');
+firstRosterFetch.resolve(jsonResponse({}, 401));
+await flushPromises();
+
+// A second call ahead of any key change reuses the memoized read: this is
+// the caching behaviour the fix leaves alone.
+void rosterPage.api.featureRosterOnce();
+await flushPromises();
+assert.equal(
+  rosterPage.pendingRequests.filter(r => r.url === './roster.json').length, 0,
+  'a repeated call issued a second roster fetch ahead of any key change');
+
+// Supplying the key clears the memoized promise, so the next badge retries
+// the roster read under the credential that just arrived rather than
+// carrying the pre-key 401 for the rest of the page session.
+rosterPage.api.clickSetKey('a-fresh-key');
+await flushPromises();
+// boot() always opens on an anonymous probe; only the retry carries the key
+// this click just supplied.
+takeRequest(rosterPage.pendingRequests,
+  request => request.url === './v1/models' && request.options.headers?.Authorization === undefined,
+  'the anonymous roster probe after the key was set')
+  .resolve(jsonResponse({}, 401));
+await flushPromises();
+takeRequest(rosterPage.pendingRequests,
+  request => request.url === './v1/models' &&
+    request.options.headers?.Authorization === 'Bearer a-fresh-key',
+  'the authenticated roster retry')
+  .resolve(jsonResponse({ data: [{ id: 'image-capable' }] }));
+await flushPromises();
+takeRequest(rosterPage.pendingRequests,
+  request => String(request.url).startsWith('./props?model='),
+  'model properties after the key was set')
+  .resolve(jsonResponse({ n_ctx: 4096 }));
+await flushPromises();
+
+void rosterPage.api.featureRosterOnce();
+await flushPromises();
+const secondRosterFetch = takeRequest(rosterPage.pendingRequests,
+  request => request.url === './roster.json',
+  'the roster read did not retry after the key was set');
+assert.equal(secondRosterFetch.options.headers.Authorization, 'Bearer a-fresh-key',
+  'the retried roster read carried no bearer even though one was just supplied');
+secondRosterFetch.resolve(jsonResponse({
+  schema: 'qwen-feature-roster/1', features: [], models: []
+}));
+await flushPromises();
+
+// ---- a reset aborts a restored artifact fetch still in flight -------------
+
+const restoreDatabase = makeFakeIndexedDatabase();
+const restoreSourcePage = newPage({
+  indexedDatabase: restoreDatabase,
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(restoreSourcePage);
+const restoreId = await restoreSourcePage.api.runFixtureTurn(fixture);
+await flushPromises();
+
+const restoreRacePage = newPage({
+  indexedDatabase: restoreDatabase,
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(restoreRacePage);
+restoreRacePage.document.querySelector('#artifact-origin').value = ARTIFACT_ORIGIN;
+
+// Switching to the conversation starts restoring its artifact card, which
+// issues an artifact fetch this arm holds pending rather than answering.
+await restoreRacePage.api.switchConversation(restoreId);
+await flushPromises();
+assert.equal(restoreRacePage.api.state().conversationId, restoreId);
+const pendingArtifactFetch = takeRequest(restoreRacePage.pendingRequests,
+  request => String(request.url) === `${ARTIFACT_ORIGIN}/artifacts/${FIXTURE_SHA256}.png`,
+  'the restored artifact fetch, held pending');
+
+// A second switch resets state while that fetch is still outstanding: the
+// reset aborts it rather than leaving it to complete into a card the reset
+// already detached.
+restoreRacePage.api.clickNew();
+await flushPromises();
+
+// The fetch settling after the reset -- whether the abort already rejected it
+// or a slower fake resolves it regardless -- must not register a blob URL a
+// live card no longer owns.
+pendingArtifactFetch.resolve({ ok: true, status: 200, async blob() { return { size: 4 }; } });
+await flushPromises();
+assert.equal(restoreRacePage.api.restoredBlobUrls(), 0,
+  'a restore fetch that outran its own reset still registered a blob URL');
 
 console.log('fallback_webui_conversations=accepted');
