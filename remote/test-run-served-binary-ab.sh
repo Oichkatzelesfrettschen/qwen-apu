@@ -48,6 +48,10 @@ model_id=qwen38-2b-distill
 candidate_patch=llama-vulkan-q4k-activation-group-sums.patch
 execution_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 patch_series_sha256=1111111111111111111111111111111111111111111111111111111111111111
+# The runtime tree's head is a git revision, and the campaign signs its Vulkan
+# lease proof with it, so the fixture spells it in the 40-hex form
+# verify-external-vulkan-lease.py validates.
+runtime_git_head=0123456789abcdef0123456789abcdef01234567
 foreign_sha256=2222222222222222222222222222222222222222222222222222222222222222
 registry_sha256=3333333333333333333333333333333333333333333333333333333333333333
 ledger_row_sha256=4444444444444444444444444444444444444444444444444444444444444444
@@ -81,12 +85,17 @@ for runtime_script in qwen-launch.sh qwen-teardown.sh radv-low-priority-env.sh; 
     chmod +x "$runtime_remote/$runtime_script"
 done
 printf 'git_head\t%s\nremote_payload_tree_sha256\t%s\npatches_payload_tree_sha256\t%s\n' \
-    "$patch_series_sha256" "$foreign_sha256" "$registry_sha256" \
+    "$runtime_git_head" "$foreign_sha256" "$registry_sha256" \
     >"$temporary_directory/runtime-tree-manifest.tsv"
 
 home_directory=$temporary_directory/home
 models_directory=$temporary_directory/models
 mkdir -p "$home_directory"
+# The campaign holds its state directory's own lease and refuses any other
+# path, so the fixture home carries that directory.
+workload_lease_directory=$home_directory/qwen-webui-state
+mkdir -p "$workload_lease_directory"
+workload_lease=$workload_lease_directory/vulkan-workload.lock
 model_file=$("$registry_reader" id "$model_id" model_file)
 mkdir -p "$models_directory/$(dirname -- "$model_file")"
 # The checkpoint carries bytes so a replacement can hold its byte count and
@@ -650,6 +659,7 @@ cp -- "$artifact_ledger" "$run_directory/model-artifacts.tsv"
 for linked_member in model-registry.sh models.tsv ctx-checkpoints.tsv \
     validated-tuples.tsv quarantine.tsv draft-pairs.tsv census-arm-lib.sh \
     summarize-census-controls.py summarize-bracket-ab.py sample-clock-sidecar.py \
+    verify-external-vulkan-lease.py \
     telemetry-broker.c build-telemetry-broker.sh; do
     ln -s -- "$script_directory/$linked_member" "$run_directory/$linked_member"
 done
@@ -667,25 +677,41 @@ cp -- "$script_directory/../patches/$candidate_patch" \
 # `fail` leaves no response at all, which is the arm failure a case reads, and
 # a rate of `truncate` leaves a reply cut mid-object, which is what a runner
 # killed while writing leaves behind.
-cat >"$run_directory/measure-served-decode.sh" <<'FAKE_SERVED_RUNNER'
-#!/bin/sh
-set -eu
+# The arm runs under the closed environment census_arm_exec applies, so the
+# stub reads its per-case controls from a file whose path is written into it
+# here rather than from variables the arm no longer inherits, and it appends
+# its own environment so a case reads what the arm was handed.
+arm_controls=$temporary_directory/arm-controls.tsv
+arm_environment=$temporary_directory/arm-environment.txt
+: >"$arm_controls"
+: >"$arm_environment"
+{
+    printf '#!/bin/sh\nset -eu\n'
+    printf 'arm_controls=%s\n' "$arm_controls"
+    printf 'arm_environment=%s\n' "$arm_environment"
+    cat <<'FAKE_SERVED_RUNNER'
+arm_control() {
+    awk -F'\t' -v key="$1" '$1 == key { value = $2; found = 1 }
+        END { if (found) print value }' "$arm_controls"
+}
+env >>"$arm_environment"
 arm_label=$1
 model_launch_path=$2
 served_rate=$(awk -F'\t' -v label="$arm_label" '$1 == label { print $2 }' \
-    "$QWEN_TEST_AB_RATES")
+    "$(arm_control rates)")
 # The identities the launch chain is handed reach the ledger the case reads, so
 # a case asserts which tree and which checkpoint an arm was pinned to rather
 # than inferring it from the arm's own outcome.
-if [ -n "${QWEN_TEST_AB_ARM_ENV:-}" ]; then
+arm_env_ledger=$(arm_control arm_env)
+if [ -n "$arm_env_ledger" ]; then
     printf '%s\t%s\t%s\n' "$arm_label" "${QWEN_INTENDED_GIT_HEAD:--}" \
-        "${QWEN_INTENDED_PAYLOAD_SHA256:--}" >>"$QWEN_TEST_AB_ARM_ENV"
+        "${QWEN_INTENDED_PAYLOAD_SHA256:--}" >>"$arm_env_ledger"
 fi
 # The checkpoint a case replaces under the campaign, ahead of the record this
 # arm writes: the arm then pins the replacement and re-establishes publisher
 # identity against whichever ledger row followed it, which is the swap the
 # preflight digest rather than the arm's own check refuses.
-if [ "${QWEN_TEST_AB_REPLACE_MODEL:-}" = "$arm_label" ]; then
+if [ "$(arm_control replace_model)" = "$arm_label" ]; then
     printf 'fixture-model-b\n' >"$model_launch_path"
 fi
 # The runner records the checkpoint it pinned, which is what an arm's model
@@ -698,13 +724,14 @@ json.dump({"schema": "served-runtime-inputs-v1",
                      "sha256": hashlib.sha256(model).hexdigest()}},
           open(sys.argv[2], "w"))
 RUNTIME_INPUTS
-if [ "${QWEN_TEST_AB_REPLACE_TREE:-}" = "$arm_label" ]; then
+if [ "$(arm_control replace_tree)" = "$arm_label" ]; then
     # A tree regenerated from dirty remote/ or patches/ bytes keeps its
     # recorded head and moves both payload digests, which is the resync the
     # head alone cannot see.
-    tree_head=$(awk -F'\t' '$1 == "git_head" { print $2 }' "$QWEN_TEST_AB_TREE_MANIFEST")
+    tree_manifest=$(arm_control tree_manifest)
+    tree_head=$(awk -F'\t' '$1 == "git_head" { print $2 }' "$tree_manifest")
     printf 'git_head\t%s\nremote_payload_tree_sha256\tresynced\npatches_payload_tree_sha256\tresynced\n' \
-        "$tree_head" >"$QWEN_TEST_AB_TREE_MANIFEST"
+        "$tree_head" >"$tree_manifest"
 fi
 printf 'begin_ns\t1000000000\nend_ns\t2000000000\n' \
     >"$QWEN_RESULT_DIRECTORY/request-window.tsv"
@@ -720,9 +747,10 @@ fi
 # table where one names it, so a case stands a candidate that answers
 # differently up against a control that answered the registered text.
 served_reply=the-answer
-if [ -n "${QWEN_TEST_AB_REPLIES:-}" ] && [ -f "${QWEN_TEST_AB_REPLIES:-}" ]; then
+arm_reply_table=$(arm_control replies)
+if [ -n "$arm_reply_table" ] && [ -f "$arm_reply_table" ]; then
     table_reply=$(awk -F'\t' -v label="$arm_label" '$1 == label { print $2 }' \
-        "$QWEN_TEST_AB_REPLIES")
+        "$arm_reply_table")
     [ -z "$table_reply" ] || served_reply=$table_reply
 fi
 python3 - "$served_rate" "$served_reply" >"$QWEN_RESULT_DIRECTORY/response.json" <<'PY'
@@ -733,6 +761,7 @@ json.dump({"choices": [{"message": {"content": sys.argv[2]}}],
           sys.stdout)
 PY
 FAKE_SERVED_RUNNER
+} >"$run_directory/measure-served-decode.sh"
 chmod +x "$run_directory/measure-served-decode.sh"
 
 # The sidecar validator stands in for itself: it accepts the stub broker's
@@ -972,11 +1001,24 @@ run_ab() {
         printf 'auto\n' >"$ab_drm/power_dpm_force_performance_level"
     fi
     diagnostic_file=$temporary_directory/$ab_case-stderr.txt
+    # The arm's own controls travel in a file rather than in the environment,
+    # since census_arm_exec hands each arm a closed set.
+    {
+        printf 'rates\t%s\n' "$ab_rates"
+        printf 'replies\t%s\n' "$ab_replies"
+        printf 'replace_model\t%s\n' "$ab_replace_model"
+        printf 'replace_tree\t%s\n' "$ab_replace_tree"
+        printf 'tree_manifest\t%s\n' "$temporary_directory/runtime-tree-manifest.tsv"
+        printf 'arm_env\t%s\n' "$ab_arm_env"
+    } >"$arm_controls"
+    : >"$arm_environment"
     set +e
     env -i \
         PATH="$run_path" \
         HOME="$home_directory" \
         SSH_CONNECTION="$run_ssh_connection" \
+        GGML_VK_Q4K_SIDEPLANE=0 \
+        QWEN_CACHE_OVERRIDE_CONTEXT_CEILING=65536 \
         QWEN_MODELS_DIRECTORY="$models_directory" \
         QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
         QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
@@ -985,19 +1027,13 @@ run_ab() {
         QWEN_CENSUS_BROKER="$broker_stub" \
         QWEN_CENSUS_SIDECAR_CPU=0 \
         QWEN_AB_COOLDOWN_S=0 \
-        QWEN_VULKAN_WORKLOAD_LOCK="$temporary_directory/vulkan-workload.lock" \
-        QWEN_TEST_AB_RATES="$ab_rates" \
+        QWEN_VULKAN_WORKLOAD_LOCK="$workload_lease" \
         QWEN_TEST_AB_CLOCKS="$ab_clocks" \
         QWEN_TEST_AB_VIOLATED="$ab_violated_arms" \
         QWEN_TEST_AB_CLOCK_SOURCE="$ab_clock_source" \
         QWEN_TEST_SUDO_LOG="$ab_sudo_log" \
         QWEN_TEST_QUIESCENCE_ARGV="$ab_quiescence_argv" \
         QWEN_TEST_QUIESCENCE_VERDICT="$ab_quiescence_verdict" \
-        QWEN_TEST_AB_REPLIES="$ab_replies" \
-        QWEN_TEST_AB_REPLACE_MODEL="$ab_replace_model" \
-        QWEN_TEST_AB_REPLACE_TREE="$ab_replace_tree" \
-        QWEN_TEST_AB_TREE_MANIFEST="$temporary_directory/runtime-tree-manifest.tsv" \
-        QWEN_TEST_AB_ARM_ENV="$ab_arm_env" \
         QWEN_CENSUS_ENGINE_CLOCK_POLICY="$ab_engine_clock_policy" \
         QWEN_CENSUS_MCLK_LEVEL="$ab_mclk_level" \
         QWEN_TEST_SUDO_MCLK_IGNORE="$ab_mclk_ignore" \
@@ -1125,7 +1161,7 @@ grep -qxF "$(printf 'runtime_tree_payload_sha256\t%s' "$expected_payload_sha256"
 grep -qxF "$(printf 'model_file_sha256\t%s' "$expected_model_sha256")" \
     "$ab_last_output/inputs.tsv"
 # Every arm, warmup included, launched under those two identities.
-if [ "$(awk -F'\t' -v head="$patch_series_sha256" -v payload="$expected_payload_sha256" \
+if [ "$(awk -F'\t' -v head="$runtime_git_head" -v payload="$expected_payload_sha256" \
     '$2 != head || $3 != payload { count++ } END { print count + 0 }' \
     "$temporary_directory/arm-env-verdict_promoted.tsv")" != 0 ]; then
     printf 'an arm launched under other than the preflight tree identity\n' >&2
@@ -1176,7 +1212,7 @@ run_ab runtime_tree_resynced 1 failed "$promoted_rates" "$one_clock"
 grep -q '^served_ab_arm=runtime_tree_replaced slot=2 arm=K ' \
     "$temporary_directory/runtime_tree_resynced-stdout.txt"
 printf 'git_head\t%s\nremote_payload_tree_sha256\t%s\npatches_payload_tree_sha256\t%s\n' \
-    "$patch_series_sha256" "$foreign_sha256" "$registry_sha256" \
+    "$runtime_git_head" "$foreign_sha256" "$registry_sha256" \
     >"$temporary_directory/runtime-tree-manifest.tsv"
 printf 'runtime_tree_resynced=accepted\n'
 
@@ -1295,6 +1331,7 @@ active_fixture=truncated_reply
 run_index=$((run_index + 1))
 truncated_output=$temporary_directory/out-$run_index
 set +e
+printf 'rates\t%s\n' "$truncated_rates" >"$arm_controls"
 env -i \
     PATH="$run_path" HOME="$home_directory" SSH_CONNECTION="$run_ssh_connection" \
     QWEN_MODELS_DIRECTORY="$models_directory" \
@@ -1303,8 +1340,8 @@ env -i \
     QWEN_DRM_DEVICE="$fixture_drm" QWEN_HWMON_ROOT="$fixture_hwmon" \
     QWEN_CENSUS_BROKER="$broker_stub" QWEN_CENSUS_SIDECAR_CPU=0 \
     QWEN_AB_COOLDOWN_S=0 \
-    QWEN_VULKAN_WORKLOAD_LOCK="$temporary_directory/vulkan-workload.lock" \
-    QWEN_TEST_AB_RATES="$truncated_rates" QWEN_TEST_AB_CLOCKS="$one_clock" \
+    QWEN_VULKAN_WORKLOAD_LOCK="$workload_lease" \
+    QWEN_TEST_AB_CLOCKS="$one_clock" \
     "$run_harness_path" "$control_server" "$candidate_server" "$model_id" \
     "$truncated_output" \
     >"$temporary_directory/truncated-reply-stdout.txt" \
@@ -1330,6 +1367,7 @@ active_fixture=verdict_failed
 run_index=$((run_index + 1))
 failed_output=$temporary_directory/out-$run_index
 set +e
+printf 'rates\t%s\n' "$failed_rates" >"$arm_controls"
 env -i \
     PATH="$run_path" HOME="$home_directory" SSH_CONNECTION="$run_ssh_connection" \
     QWEN_MODELS_DIRECTORY="$models_directory" \
@@ -1338,8 +1376,8 @@ env -i \
     QWEN_DRM_DEVICE="$fixture_drm" QWEN_HWMON_ROOT="$fixture_hwmon" \
     QWEN_CENSUS_BROKER="$broker_stub" QWEN_CENSUS_SIDECAR_CPU=0 \
     QWEN_AB_COOLDOWN_S=0 \
-    QWEN_VULKAN_WORKLOAD_LOCK="$temporary_directory/vulkan-workload.lock" \
-    QWEN_TEST_AB_RATES="$failed_rates" QWEN_TEST_AB_CLOCKS="$one_clock" \
+    QWEN_VULKAN_WORKLOAD_LOCK="$workload_lease" \
+    QWEN_TEST_AB_CLOCKS="$one_clock" \
     "$run_harness_path" "$control_server" "$candidate_server" "$model_id" \
     "$failed_output" \
     >"$temporary_directory/verdict-failed-stdout.txt" \
@@ -1354,6 +1392,7 @@ printf 'verdict_failed=accepted exit=%s\n' "$failed_status"
 # An output directory a run already claimed is never appended to.
 active_fixture=output_directory_exists
 set +e
+printf 'rates\t%s\n' "$promoted_rates" >"$arm_controls"
 env -i \
     PATH="$run_path" HOME="$home_directory" SSH_CONNECTION="$run_ssh_connection" \
     QWEN_MODELS_DIRECTORY="$models_directory" \
@@ -1361,7 +1400,7 @@ env -i \
     QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
     QWEN_DRM_DEVICE="$fixture_drm" QWEN_HWMON_ROOT="$fixture_hwmon" \
     QWEN_CENSUS_BROKER="$broker_stub" \
-    QWEN_TEST_AB_RATES="$promoted_rates" QWEN_TEST_AB_CLOCKS="$one_clock" \
+    QWEN_TEST_AB_CLOCKS="$one_clock" \
     "$run_harness_path" "$control_server" "$candidate_server" "$model_id" \
     "$failed_output" \
     >/dev/null 2>"$temporary_directory/exists-stderr.txt"
@@ -1510,13 +1549,14 @@ engine_clock_refuse_drm=$temporary_directory/drm-sudo-refused
 cp -R -- "$fixture_drm" "$engine_clock_refuse_drm"
 printf 'auto\n' >"$engine_clock_refuse_drm/power_dpm_force_performance_level"
 set +e
+printf 'rates\t%s\n' "$promoted_rates" >"$arm_controls"
 env -i PATH="$run_path" HOME="$home_directory" SSH_CONNECTION="$run_ssh_connection" \
     QWEN_MODELS_DIRECTORY="$models_directory" \
     QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
     QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
     QWEN_DRM_DEVICE="$engine_clock_refuse_drm" QWEN_HWMON_ROOT="$fixture_hwmon" \
     QWEN_CENSUS_BROKER="$broker_stub" QWEN_CENSUS_SIDECAR_CPU=0 \
-    QWEN_TEST_AB_RATES="$promoted_rates" QWEN_TEST_AB_CLOCKS="$one_clock" \
+    QWEN_TEST_AB_CLOCKS="$one_clock" \
     QWEN_CENSUS_ENGINE_CLOCK_POLICY=manual QWEN_TEST_SUDO_REFUSE=1 \
     "$run_harness_path" "$control_server" "$candidate_server" "$model_id" \
     "$temporary_directory/out-$run_index" \
@@ -1542,13 +1582,14 @@ engine_clock_low_drm=$temporary_directory/drm-below-peak
 cp -R -- "$fixture_drm" "$engine_clock_low_drm"
 printf 'auto\n' >"$engine_clock_low_drm/power_dpm_force_performance_level"
 set +e
+printf 'rates\t%s\n' "$promoted_rates" >"$arm_controls"
 env -i PATH="$run_path" HOME="$home_directory" SSH_CONNECTION="$run_ssh_connection" \
     QWEN_MODELS_DIRECTORY="$models_directory" \
     QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
     QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
     QWEN_DRM_DEVICE="$engine_clock_low_drm" QWEN_HWMON_ROOT="$fixture_hwmon" \
     QWEN_CENSUS_BROKER="$broker_stub" QWEN_CENSUS_SIDECAR_CPU=0 \
-    QWEN_TEST_AB_RATES="$promoted_rates" QWEN_TEST_AB_CLOCKS="$one_clock" \
+    QWEN_TEST_AB_CLOCKS="$one_clock" \
     QWEN_CENSUS_ENGINE_CLOCK_POLICY=manual QWEN_TEST_SUDO_STAR_LOWEST=1 \
     QWEN_TEST_SUDO_LOG="$temporary_directory/sudo-below-peak.log" \
     "$run_harness_path" "$control_server" "$candidate_server" "$model_id" \
@@ -1578,6 +1619,7 @@ cp -R -- "$fixture_drm" "$engine_clock_term_drm"
 printf 'auto\n' >"$engine_clock_term_drm/power_dpm_force_performance_level"
 engine_clock_term_stdout=$temporary_directory/engine-clock-term-stdout.txt
 : >"$engine_clock_term_stdout"
+printf 'rates\t%s\n' "$promoted_rates" >"$arm_controls"
 env -i PATH="$run_path" HOME="$home_directory" SSH_CONNECTION="$run_ssh_connection" \
     QWEN_MODELS_DIRECTORY="$models_directory" \
     QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
@@ -1585,8 +1627,8 @@ env -i PATH="$run_path" HOME="$home_directory" SSH_CONNECTION="$run_ssh_connecti
     QWEN_DRM_DEVICE="$engine_clock_term_drm" QWEN_HWMON_ROOT="$fixture_hwmon" \
     QWEN_CENSUS_BROKER="$broker_stub" QWEN_CENSUS_SIDECAR_CPU=0 \
     QWEN_AB_COOLDOWN_S=0 \
-    QWEN_VULKAN_WORKLOAD_LOCK="$temporary_directory/vulkan-workload.lock" \
-    QWEN_TEST_AB_RATES="$promoted_rates" QWEN_TEST_AB_CLOCKS="$one_clock" \
+    QWEN_VULKAN_WORKLOAD_LOCK="$workload_lease" \
+    QWEN_TEST_AB_CLOCKS="$one_clock" \
     QWEN_CENSUS_ENGINE_CLOCK_POLICY=manual \
     QWEN_TEST_SUDO_LOG="$temporary_directory/sudo-term.log" \
     "$run_harness_path" "$control_server" "$candidate_server" "$model_id" \
@@ -1720,6 +1762,109 @@ run_pair kernel_delta_admitted "$reached_preflight_end" \
     "$control_instrumented" "$candidate_census_e4" QWEN_CENSUS_AB_MODE=kernel-delta \
     QWEN_CENSUS_PRODUCTION_SERVER="$control_server"
 printf 'kernel_delta_refusals=accepted\n'
+
+# The closed arm environment, read from both sides. Every executed case ran
+# with GGML_VK_Q4K_SIDEPLANE and QWEN_CACHE_OVERRIDE_CONTEXT_CEILING set in the
+# invoking shell: the first gates its pre-pass on getenv returning a pointer
+# rather than on the value, so a 0 enables the feature a control arm is defined
+# by leaving off, and the second is a QWEN_ name radv-low-priority-env.sh
+# leaves alone and qwen-capacity-policy.sh reads. Neither reaches an arm's
+# record, and neither reaches the served runner's own environment, which is
+# what a record alone could not prove.
+active_fixture=arm_environment_closed
+arm_environment_failures=0
+arm_records=$(find "$temporary_directory" -type f -name arm-environment.tsv | sort)
+if [ -z "$arm_records" ]; then
+    printf 'no arm wrote an environment record\n' >&2
+    arm_environment_failures=1
+fi
+for arm_record in $arm_records; do
+    for arm_name in GGML_VK_Q4K_SIDEPLANE QWEN_CACHE_OVERRIDE_CONTEXT_CEILING; do
+        if cut -f1 "$arm_record" | grep -qx "$arm_name"; then
+            printf 'ambient %s reached the arm record: %s\n' "$arm_name" \
+                "$arm_record" >&2
+            arm_environment_failures=1
+        fi
+    done
+    for arm_required in PATH HOME QWEN_LLAMA_SERVER QWEN_RESULT_DIRECTORY \
+        QWEN_VULKAN_EXTERNAL_LEASE_PROOF; do
+        if ! cut -f1 "$arm_record" | grep -qx "$arm_required"; then
+            printf 'arm environment record omits %s: %s\n' "$arm_required" \
+                "$arm_record" >&2
+            arm_environment_failures=1
+        fi
+    done
+done
+if [ ! -s "$arm_environment" ]; then
+    printf 'the served runner recorded no environment of its own\n' >&2
+    arm_environment_failures=1
+fi
+for arm_name in GGML_VK_Q4K_SIDEPLANE QWEN_CACHE_OVERRIDE_CONTEXT_CEILING; do
+    if grep -q "^$arm_name=" "$arm_environment"; then
+        printf 'ambient %s reached the served runner environment\n' "$arm_name" >&2
+        arm_environment_failures=1
+    fi
+done
+[ "$arm_environment_failures" -eq 0 ]
+printf 'arm_environment_closed=accepted records=%s\n' \
+    "$(printf '%s\n' "$arm_records" | grep -c .)"
+
+# The lease as the clock's own authority. A campaign forces a DPM level every
+# workload on the machine then runs at, so it takes the shared Vulkan lease
+# ahead of the first write; another holder therefore refuses the campaign with
+# the fixture level untouched.
+active_fixture=workload_lease_held
+run_index=$((run_index + 1))
+lease_drm=$temporary_directory/drm-lease-held
+cp -R -- "$fixture_drm" "$lease_drm"
+printf 'auto\n' >"$lease_drm/power_dpm_force_performance_level"
+# The holder ends on a flag file rather than on a signal, because a signalled
+# `flock FILE COMMAND` leaves the command holding the inherited descriptor and
+# the lease outlives the process the test killed.
+lease_flag=$temporary_directory/lease-held
+: >"$lease_flag"
+(
+    exec 8<>"$workload_lease"
+    flock 8
+    while [ -e "$lease_flag" ]; do
+        sleep 0.05
+    done
+) &
+lease_holder_pid=$!
+lease_held() {
+    lease_probe_status=0
+    flock -n -E 75 "$workload_lease" true || lease_probe_status=$?
+    [ "$lease_probe_status" -eq 75 ]
+}
+lease_attempt=0
+while [ "$lease_attempt" -lt 200 ] && ! lease_held; do
+    lease_attempt=$((lease_attempt + 1))
+    sleep 0.05
+done
+set +e
+printf 'rates\t%s\n' "$promoted_rates" >"$arm_controls"
+env -i PATH="$run_path" HOME="$home_directory" SSH_CONNECTION="$run_ssh_connection" \
+    QWEN_MODELS_DIRECTORY="$models_directory" \
+    QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+    QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+    QWEN_DRM_DEVICE="$lease_drm" QWEN_HWMON_ROOT="$fixture_hwmon" \
+    QWEN_CENSUS_BROKER="$broker_stub" QWEN_CENSUS_SIDECAR_CPU=0 \
+    QWEN_VULKAN_WORKLOAD_LOCK="$workload_lease" \
+    QWEN_TEST_AB_CLOCKS="$one_clock" \
+    QWEN_CENSUS_ENGINE_CLOCK_POLICY=manual \
+    "$run_harness_path" "$control_server" "$candidate_server" "$model_id" \
+    "$temporary_directory/out-$run_index" \
+    >"$temporary_directory/lease-held-stdout.txt" \
+    2>"$temporary_directory/lease-held-stderr.txt"
+lease_status=$?
+set -e
+rm -f -- "$lease_flag"
+wait "$lease_holder_pid" 2>/dev/null || true
+[ "$lease_status" -eq 2 ]
+grep -q 'another Vulkan workload holds the shared lease' \
+    "$temporary_directory/lease-held-stderr.txt"
+[ "$(cat "$lease_drm/power_dpm_force_performance_level")" = auto ]
+printf 'workload_lease_held=accepted\n'
 
 active_fixture=complete
 printf 'run_served_binary_ab=accepted cases=%s\n' "$run_index"

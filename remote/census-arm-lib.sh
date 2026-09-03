@@ -17,6 +17,165 @@
 # substitution at both call sites, so its exit ends the subshell alone and
 # census_require_binding_fields is what turns that into the caller's refusal.
 
+# The arm environment is closed rather than inherited. `env -i` replaces the
+# invoking shell's whole environment with the five names below and the
+# assignments the caller states, so an ambient GGML_VK_*, RADV_*, VK_*,
+# LLAMA_*, or QWEN_* setting reaches no arm: radv-low-priority-env.sh scrubs
+# the GGML_VK_, display, AMD, RADV, and VK layer names for the server it execs
+# and leaves every QWEN_ name alone, so a QWEN_CACHE_OVERRIDE_CONTEXT_CEILING
+# in the invoking shell would otherwise change the allocation tuple the
+# retained inputs claim, and every name outside that scrub reaches the runner,
+# the sampler, and the teardown untouched.
+#
+# The five names are what the launch chain requires of its caller. PATH and
+# HOME resolve the runner, the registry reader, the state directory, and the
+# model root; TMPDIR gives every mktemp a writable root; LC_ALL fixes the
+# collation and decimal separator every awk comparison in the chain reads
+# under; PYTHONDONTWRITEBYTECODE keeps the arm from writing __pycache__ into a
+# tree the campaign hashes. PATH carries the invoking value forward because the
+# harness resolves its own stubs and helpers through it.
+census_arm_tab=$(printf '\t')
+census_arm_newline=$(printf '\nx')
+census_arm_newline=${census_arm_newline%x}
+
+# census_arm_exec RECORD ASSIGNMENT... -- COMMAND [ARG...]
+#
+# Writes RECORD as `name<TAB>value` over the applied set, base names first and
+# the caller's own in the order given, then replaces this shell with the
+# command under exactly that environment. The record and the exec are built
+# from one positional list, so the file states what ran rather than restating
+# it, and `exec` is the last statement because both served harnesses launch an
+# arm as a background job and read `$!`: a forked subshell that survived the
+# env call would put the subshell's pid there and leave a terminating signal
+# reaching the wrong process.
+#
+# A value carrying a tab or a newline would write a row no reader can split
+# back, so it is refused ahead of the record rather than recorded wrongly.
+census_arm_exec() {
+    census_arm_record=$1
+    shift
+    census_arm_record_new=$census_arm_record.new
+    {
+        printf 'name\tvalue\n'
+        printf 'PATH\t%s\n' "${PATH:?}"
+        printf 'HOME\t%s\n' "${HOME:?}"
+        printf 'TMPDIR\t%s\n' /tmp
+        printf 'LC_ALL\t%s\n' C
+        printf 'PYTHONDONTWRITEBYTECODE\t%s\n' 1
+    } >"$census_arm_record_new" || return 1
+    census_arm_separated=0
+    census_arm_remaining=$#
+    while [ "$census_arm_remaining" -gt 0 ]; do
+        census_arm_item=$1
+        shift
+        census_arm_remaining=$((census_arm_remaining - 1))
+        if [ "$census_arm_separated" -eq 0 ]; then
+            if [ "$census_arm_item" = -- ]; then
+                census_arm_separated=1
+                continue
+            fi
+            case $census_arm_item in
+                [A-Za-z_]*=*) ;;
+                *)
+                    printf 'an arm environment entry is NAME=VALUE: %s\n' \
+                        "$census_arm_item" >&2
+                    return 2
+                    ;;
+            esac
+            case ${census_arm_item#*=} in
+                *"$census_arm_tab"* | *"$census_arm_newline"*)
+                    printf 'an arm environment value carries a tab or newline: %s\n' \
+                        "${census_arm_item%%=*}" >&2
+                    return 2
+                    ;;
+            esac
+            printf '%s\t%s\n' "${census_arm_item%%=*}" "${census_arm_item#*=}" \
+                >>"$census_arm_record_new" || return 1
+        fi
+        set -- "$@" "$census_arm_item"
+    done
+    if [ "$census_arm_separated" -eq 0 ]; then
+        printf 'an arm environment list ends with -- ahead of its command\n' >&2
+        return 2
+    fi
+    mv -- "$census_arm_record_new" "$census_arm_record" || return 1
+    exec env -i \
+        PATH="${PATH:?}" HOME="${HOME:?}" TMPDIR=/tmp LC_ALL=C \
+        PYTHONDONTWRITEBYTECODE=1 \
+        "$@"
+}
+
+# The shared Vulkan lease on descriptor 8, taken before the campaign writes a
+# DPM level and held until the campaign exits. The write moves the clock every
+# workload on the device runs at, so an image job or a served request that
+# started after a `pgrep` reading would land inside the rate a receipt claims;
+# the lease is the authority that excludes it, and it is taken ahead of the
+# first write rather than at the first arm.
+#
+# The open is read-write and creating, the mode image-service.py opens it
+# under, so acquisition truncates nothing and a leaf another holder is using
+# keeps its content. LOCK_NB is what makes a busy device a refusal rather than
+# a wait.
+#
+# census_workload_lease_take LOCK_PATH
+census_workload_lease_take() {
+    census_lease_path=$1
+    census_lease_directory=$(dirname -- "$census_lease_path")
+    if [ ! -d "$census_lease_directory" ]; then
+        printf 'the shared Vulkan lease directory is absent: %s\n' \
+            "$census_lease_directory" >&2
+        exit 2
+    fi
+    exec 8<>"$census_lease_path"
+    if ! flock -n 8; then
+        printf 'another Vulkan workload holds the shared lease: %s\n' \
+            "$census_lease_path" >&2
+        exit 2
+    fi
+}
+
+# The proof a child reads the campaign's own lease through. llama-server takes
+# the lock in `update_slots` and blocks on it, so an arm launched under a
+# campaign that holds it exclusively would wedge its first decode pass;
+# qwen-capacity-policy.sh answers a verified proof by unsetting
+# QWEN_VULKAN_WORKLOAD_LOCK for the server it assembles, which is what leaves
+# the exclusion with the campaign and the device with the arm.
+# verify-external-vulkan-lease.py reads the record back against the live
+# /proc entry, so REVISION is required in the 40-hex form it validates.
+#
+# census_workload_lease_publish LOCK_PATH PROOF_PATH REVISION VERIFIER
+census_workload_lease_publish() {
+    census_lease_path=$1
+    census_lease_proof=$2
+    census_lease_revision=$3
+    census_lease_verifier=$4
+    if [ ! -x "$census_lease_verifier" ]; then
+        printf 'the external Vulkan lease verifier is absent: %s\n' \
+            "$census_lease_verifier" >&2
+        exit 2
+    fi
+    census_lease_start=$(sed 's/^.*) //' "/proc/$$/stat" | awk '{ print $20 }')
+    census_lease_proof_new=$census_lease_proof.new
+    rm -f -- "$census_lease_proof" "$census_lease_proof_new"
+    {
+        printf 'key\tvalue\n'
+        printf 'schema\tfixed64-vulkan-external-lease-v1\n'
+        printf 'lock_path\t%s\n' "$census_lease_path"
+        printf 'holder_pid\t%s\n' "$$"
+        printf 'holder_start_time_ticks\t%s\n' "$census_lease_start"
+        printf 'holder_fd\t8\n'
+        printf 'source_revision\t%s\n' "$census_lease_revision"
+    } >"$census_lease_proof_new"
+    chmod 0600 "$census_lease_proof_new"
+    mv -- "$census_lease_proof_new" "$census_lease_proof"
+    if ! "$census_lease_verifier" "$census_lease_proof" "$census_lease_path" \
+        >/dev/null; then
+        printf 'the campaign lease proof does not identify this holder: %s\n' \
+            "$census_lease_proof" >&2
+        exit 2
+    fi
+}
+
 # Two selected graphics clocks are one execution state where they lie within a
 # band of each other. The appliance calibrations of 20260902T1302Z and its
 # predecessor both fell from a flat 1100 MHz over the first nine slots to a

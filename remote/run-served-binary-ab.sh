@@ -867,6 +867,50 @@ then
     exit 2
 fi
 
+# The campaign owns the device from here, and the shared Vulkan lease is what
+# says so. A forced policy writes the clock every workload on this machine runs
+# at, so the lease is taken ahead of the first write rather than at the first
+# arm: an image generation or a served request admitted between the preflight's
+# process reading and that write would run inside the rate a receipt claims.
+# The lease is held across every arm and released when this shell exits.
+#
+# The arms reach it through a proof rather than through the lock. llama-server
+# takes the same lock in `update_slots` and blocks on it, so an arm launched
+# under a campaign holding it exclusively would wedge its first decode pass;
+# qwen-capacity-policy.sh answers a verified QWEN_VULKAN_EXTERNAL_LEASE_PROOF
+# by unsetting QWEN_VULKAN_WORKLOAD_LOCK for the server it assembles, and
+# measure-served-decode.sh republishes the proof for its own inherited
+# descriptor 8. The runner's expected lease is its state directory's own, which
+# this campaign leaves at the default, so a caller naming another lock path is
+# refused here rather than handing the arms a proof they cannot verify.
+workload_lease_state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
+expected_workload_lease=$workload_lease_state_directory/vulkan-workload.lock
+workload_lease=${QWEN_VULKAN_WORKLOAD_LOCK:-$expected_workload_lease}
+if [ "$workload_lease" != "$expected_workload_lease" ]; then
+    printf 'the served comparison holds the state directory lease alone: %s != %s\n' \
+        "$workload_lease" "$expected_workload_lease" >&2
+    exit 2
+fi
+census_workload_lease_take "$workload_lease"
+workload_lease_proof=$workload_lease_state_directory/.census-vulkan-external-lease.$$.tsv
+census_workload_lease_publish "$workload_lease" "$workload_lease_proof" \
+    "$runtime_tree_git_head" "$script_directory/verify-external-vulkan-lease.py"
+printf 'served_ab_lease=held path=%s proof=%s\n' "$workload_lease" \
+    "$workload_lease_proof"
+# The proof names this pid and this descriptor, so it outlives nothing. Every
+# unwind path removes it: the trap armed here, the forced-clock traps that
+# replace it, and cleanup_children, which replaces those.
+remove_workload_lease_proof() {
+    if [ -n "${workload_lease_proof:-}" ]; then
+        rm -f -- "$workload_lease_proof"
+        workload_lease_proof=''
+    fi
+}
+trap remove_workload_lease_proof EXIT
+trap 'remove_workload_lease_proof; trap - EXIT; exit 143' TERM
+trap 'remove_workload_lease_proof; trap - EXIT; exit 130' INT
+trap 'remove_workload_lease_proof; trap - EXIT; exit 129' HUP
+
 # The device transition runs after the host and session checks, so a run that
 # could never measure leaves the governor where it found it. The snapshot is
 # taken and the restore armed before the write, and the traps below are
@@ -877,10 +921,10 @@ engine_clock_mclk_readback=-
 if [ "$engine_clock_policy" != auto ]; then
     census_engine_clock_require_sudo
     engine_clock_snapshot=$(census_engine_clock_snapshot "$drm_device") || exit 2
-    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot"' EXIT
-    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot"; trap - EXIT; exit 143' TERM
-    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot"; trap - EXIT; exit 130' INT
-    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot"; trap - EXIT; exit 129' HUP
+    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot"; remove_workload_lease_proof' EXIT
+    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot"; remove_workload_lease_proof; trap - EXIT; exit 143' TERM
+    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot"; remove_workload_lease_proof; trap - EXIT; exit 130' INT
+    trap 'census_engine_clock_restore "$drm_device" "$engine_clock_snapshot"; remove_workload_lease_proof; trap - EXIT; exit 129' HUP
     census_engine_clock_write_level "$engine_clock_policy" "$drm_device"
     if [ "$engine_clock_policy" = manual ]; then
         # The selection is captured rather than redirected: a refusal inside
@@ -1052,6 +1096,7 @@ cleanup_children() {
     if [ "$engine_clock_policy" != auto ]; then
         census_engine_clock_restore "$drm_device" "$engine_clock_snapshot"
     fi
+    remove_workload_lease_proof
 }
 trap cleanup_children EXIT
 trap 'cleanup_children; trap - EXIT; exit 143' TERM
@@ -1185,7 +1230,7 @@ for arm in $execution_arms; do
     set +e
     runner_status=1
     if [ "$sidecar_start_failed" -eq 0 ]; then
-        env \
+        census_arm_exec "$arm_directory/arm-environment.tsv" \
             QWEN_LLAMA_SERVER="$server" \
             QWEN_LAUNCH_SCRIPT="$runtime_remote/qwen-launch.sh" \
             QWEN_TEARDOWN_SCRIPT="$runtime_remote/qwen-teardown.sh" \
@@ -1216,6 +1261,8 @@ for arm in $execution_arms; do
             QWEN_EXECUTION_PROOF_SHA256="$execution_proof_sha256" \
             QWEN_BENCH_GENERATE="$ab_generate" \
             QWEN_PIPELINE_CENSUS="$census_file" \
+            QWEN_VULKAN_EXTERNAL_LEASE_PROOF="$workload_lease_proof" \
+            -- \
             "$runner" "$arm_label" "$model_path" low-async \
             >"$arm_directory/runner.stdout" 2>"$arm_directory/runner.stderr" &
         served_pid=$!
@@ -1578,10 +1625,14 @@ EOF
     # cooldown row and counted, because the arm that already ran is complete and
     # the state it left belongs to the arm that follows.
     set +e
+    # The lease predicate is left off. await-quiescence.sh polls it with
+    # `flock -n -x`, and the campaign holds that lock exclusively from before
+    # the clock write to its own exit, so the poll would read the campaign's
+    # own exclusion as a foreign workload and spend every cooldown deadline.
+    # Holding the lease is the stronger form of the predicate the flag polls.
     quiescence_line=$("$script_directory/await-quiescence.sh" \
         --max-seconds "$cooldown_s" \
         ${cooldown_sclk_forced_flag:+--sclk-forced} \
-        --lease "${QWEN_VULKAN_WORKLOAD_LOCK:-${HOME:?}/qwen-webui-state/vulkan-workload.lock}" \
         2>"$arm_directory/await-quiescence.stderr")
     quiescence_status=$?
     set -e
