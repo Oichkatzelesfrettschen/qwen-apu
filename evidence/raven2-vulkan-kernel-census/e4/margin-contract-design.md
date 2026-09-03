@@ -4,7 +4,7 @@
 status=registered ahead of the holdout run; run retained in margin-holdout-20260903T0456Z/, verdict differs as registered, identity-line scope re-registered below
 subject=census+E4 (741a0d76...) against census v7 (addcae10...), both Vulkan0
 model=qwen38-2b-distill under its registry tuple
-prompts=remote/witness-prompts/holdout-12.tsv, read by no earlier run
+prompts=remote/witness-prompts/holdout-12.tsv for the first run; remote/witness-prompts/holdout-12b.tsv, read by no run, for the re-registered rule
 top_k=10  near_tie=0.1 nat  retention=0.5  runs=2 per start  order=C K K C  tokens=128
 reader=remote/summarize-margin-witness.py through run-kernel-delta-witness.sh under QWEN_WITNESS_CONTRACT=margin
 ```
@@ -102,6 +102,29 @@ as committed:
 ```text
 prompts_sha256=1b784918792edbfcfef38e187020d66b00af99e80ed72d63f49935be01516fdc
 ```
+
+### The second holdout, for the re-registered rule
+
+`holdout-12.tsv` is spent: `../margin-holdout-20260903T0456Z/inputs.tsv`
+names it by that digest, so every one of its twelve prompts has reached both
+binaries and the set is discovery evidence for the re-registered rule below.
+`remote/witness-prompts/holdout-12b.tsv` is the set that judges that rule:
+the same twelve kinds -- a queue, a bubble sort, three Euclidean traces, a
+modular counter, bracket matching, run-length encoding, a binary counter, an
+inventory ledger, a grid walk, matrix transformations, a Caesar round trip,
+and a running-statistics walk -- carrying different operands, moduli, bit
+widths, string contents, and step orders, so the kinds are comparable across
+the two sets and no operand is shared. The prompt ids repeat the first set's
+ids because an id names the kind; the evidence directory separates the runs.
+
+```text
+prompts_sha256=09f4f3a8785c9c574cb40cf1e6c92c48fdd2c6efe62504217f3e4c9eac1de4b4
+```
+
+The file and this digest are committed ahead of the run that reads them, and
+the file is frozen from that commit: an operand changed after a result is
+read fits the holdout to its own answer, which is the defect the first
+holdout's retired 1e-3 nat bound already carries.
 
 ## Falsifiers
 
