@@ -103,6 +103,16 @@ remote/test-fallback-webui-web-authorization.sh
 remote/test-fallback-webui-image-authorization.sh
 remote/test-web-tools-roundtrip.sh
 node remote/test-fallback-webui-model-state.mjs
+node remote/test-fallback-webui-roster.mjs
+remote/test-feature-roster.sh
+# The page fetches webui/roster.json from the directory it is served from, so a
+# registry, quarantine, or claim edit that leaves the committed document behind
+# would badge a tier the ledgers retired. Regeneration lands in a scratch
+# directory and the diff is the gate.
+feature_roster_scratch=$(mktemp -d)
+remote/build-feature-roster.sh "$feature_roster_scratch/roster.json" >/dev/null
+diff -u webui/roster.json "$feature_roster_scratch/roster.json"
+rm -rf -- "$feature_roster_scratch"
 remote/test-measurement-harnesses.sh
 remote/test-run-fixed64-served-campaign.sh
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-signal-process-group.py
