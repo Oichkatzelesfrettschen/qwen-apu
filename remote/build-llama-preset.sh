@@ -49,6 +49,9 @@ expected_commit=f280b26983ad0fdb705a0d9ebf0503e76f2899b0
 # they are formed.
 # shellcheck source=remote/build-cache-keys.sh
 . "$script_directory/build-cache-keys.sh"
+# The candidate-derived CMake options live beside them for the same reason.
+# shellcheck source=remote/build-candidate-flags.sh
+. "$script_directory/build-candidate-flags.sh"
 build_cache_enabled=${QWEN_BUILD_CACHE:-1}
 build_cache_directory=$(qwen_build_cache_directory)
 
@@ -187,18 +190,17 @@ case $preset in
         ;;
 esac
 
-# The int24 candidate rewrites the q8_1 mat-vec shader and the pipeline table
-# that names it behind GGML_VULKAN_INT24_DOT, so the option follows the patch
-# rather than the preset name: a tree carrying the patch without the flag
-# compiles the arm out and measures the production shape under the candidate's
-# name. The flag alone changes nothing, since the source it selects arrives
-# with the patch, and the manifest's candidate series states which of the two
-# a binary carries.
-case " ${QWEN_LLAMA_CANDIDATE_SELECT:-} " in
-    *" llama-vulkan-q4k-int24-mmvq.patch "*)
-        preset_flags="$preset_flags -DGGML_VULKAN_INT24_DOT=ON"
-        ;;
-esac
+# A candidate patch that carries its own CMake option contributes it here, in
+# both directions, so the option never falls through to a value CMake cached
+# from an earlier configuration of this directory. The flag alone changes
+# nothing, since the source it selects arrives with the patch, and the
+# manifest's candidate series states which of the two a binary carries. The
+# derivation lives in its own file so a unit test drives every branch directly.
+while IFS= read -r candidate_flag; do
+    preset_flags="$preset_flags $candidate_flag"
+done <<CANDIDATE_FLAGS
+$(qwen_candidate_cmake_flags "${QWEN_LLAMA_CANDIDATE_SELECT:-}")
+CANDIDATE_FLAGS
 
 if [ ! -d "$source_directory/.git" ] && [ ! -f "$source_directory/.git" ]; then
     printf 'llama.cpp checkout is missing: %s\n' "$source_directory" >&2

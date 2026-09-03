@@ -120,6 +120,9 @@ gate_cell test-summarize-draft-pair derive remote/test-summarize-draft-pair.py \
 gate_cell test-build-cache-keys derive \
     'remote/test-build-cache-keys.sh remote/build-cache-keys.sh remote/build-llama-preset.sh' \
     remote/test-build-cache-keys.sh
+gate_cell test-build-llama-preset-flags derive \
+    'remote/test-build-llama-preset-flags.sh remote/build-candidate-flags.sh remote/build-llama-preset.sh remote/llama-patch-series.tsv' \
+    remote/test-build-llama-preset-flags.sh
 gate_cell test-summarize-fixed64-served-campaign derive \
     remote/test-summarize-fixed64-served-campaign.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-fixed64-served-campaign.py'
