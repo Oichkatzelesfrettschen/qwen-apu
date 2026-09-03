@@ -112,9 +112,24 @@ fi
 configuration >"$repository_root/.clangd"
 extract_added_headers
 printf 'clangd_config=written root=%s source=%s\n' "$repository_root" "$patched_source"
-if [ -d "$patched_source/.git" ] || [ -f "$patched_source/CMakeLists.txt" ]; then
-    # The same flags serve the patched tree itself, where the server and
-    # ggml sources open from the tree rather than through a fixture.
-    configuration >"$patched_source/.clangd"
-    printf 'clangd_config=written root=%s\n' "$patched_source"
-fi
+
+# A patched tree itself stays untouched: prepare-llama-vulkan-source.sh and
+# the build-cache identity read the tree's git status, and a configuration
+# file inside it would read as a dirty tree. clangd's user configuration
+# takes a PathMatch block per tree instead, one for every llama.cpp checkout
+# beside the pinned one, so the server and ggml sources resolve wherever a
+# candidate tree is opened.
+user_configuration_directory=${XDG_CONFIG_HOME:-$HOME/.config}/clangd
+mkdir -p "$user_configuration_directory"
+{
+    printf '# Written by remote/write-clangd-config.sh; one block per llama.cpp tree.\n'
+    for tree in "$(dirname -- "$patched_source")"/llama.cpp*; do
+        [ -d "$tree/include" ] && [ -d "$tree/tools/server" ] || continue
+        printf -- '---\nIf:\n  PathMatch: %s/.*\nCompileFlags:\n  Add:\n    - -std=c++17\n' "$tree"
+        for directory in include ggml/include ggml/src common tools/server src vendor; do
+            printf '    - -I%s/%s\n' "$tree" "$directory"
+        done
+        printf '  CompilationDatabase: None\nDiagnostics:\n  UnusedIncludes: None\n'
+    done
+} >"$user_configuration_directory/config.yaml"
+printf 'clangd_user_config=written path=%s/config.yaml\n' "$user_configuration_directory"

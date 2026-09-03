@@ -64,13 +64,15 @@ else
 fi
 
 # The write produces both configurations and extracts the added header only.
-"$root/remote/write-clangd-config.sh" --source "$source" --root "$root" >"$work/write.out"
+XDG_CONFIG_HOME=$work/xdg "$root/remote/write-clangd-config.sh" --source "$source" --root "$root" >"$work/write.out"
 if grep -q "^headers_extracted=1$" "$work/write.out" &&
     [ -f "$root/.clangd-include/server-fixture.h" ] &&
     grep -q 'int fixture_value();' "$root/.clangd-include/server-fixture.h" &&
     [ ! -e "$root/.clangd-include/server-context.cpp" ] &&
     grep -q -- "-I$root/.clangd-include" "$root/.clangd" &&
-    grep -q -- "-I$source/common" "$source/.clangd" &&
+    [ ! -e "$source/.clangd" ] &&
+    grep -q "PathMatch: $source/" "$work/xdg/clangd/config.yaml" &&
+    grep -q -- "-I$source/common" "$work/xdg/clangd/config.yaml" &&
     grep -q 'readability-isolate-declaration' "$root/.clangd"; then
     report configuration_and_headers_written ok
 else
