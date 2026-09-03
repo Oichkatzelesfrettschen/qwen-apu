@@ -53,8 +53,42 @@ than skipping is the repair ba64ef3 made. The ledger's own two-thread row suppli
 
 ## What the run needs
 
-One `sudo -v` typed on the appliance inside the hour before the campaign starts. A
-second requirement follows from the design rather than from the device: `C K K C` is the
-control server against a candidate server, and a run passing one binary as both measures
-that binary's repeatability instead. The deployed `llama-server` (5dd86b90...) is the
-control; the candidate has to be named.
+**A sudo timestamp that outlives the campaign, not one that starts it.** A single
+`sudo -v` before the run is what this record first asked for and it is wrong. The
+acquire and the restore fail differently:
+
+```text
+census-arm-lib.sh:387  census_engine_clock_write   sudo -n tee ... || exit 2
+census-arm-lib.sh:475  census_engine_clock_restore sudo -n tee ... >/dev/null 2>&1 || true
+```
+
+The acquire refuses loudly, which is the refusal this window met. The EXIT-trap restore
+swallows its own failure, so a campaign that outlives
+`/etc/sudoers.d/90-qwen-agent`'s 60-minute `timestamp_type=global` timeout writes
+`power_dpm_force_performance_level` back through an unauthorized `sudo -n`, ignores the
+error, and leaves the appliance pinned at `manual` with the highest graphics and fabric
+levels selected for every workload that follows. Nothing in the run reports it.
+
+The ladder is 32 arms over four depths reaching a 32719-token prompt, under a 1800-second
+per-request timeout and a 15-second cooldown, so its wall time is hours rather than
+minutes; this window measured no ladder arm, so the figure stays unmeasured and the
+bound above is what the configuration allows rather than what a run takes. Either way it
+crosses the timeout.
+
+Two ways to close it, and the operator picks one before starting:
+
+```text
+refresh   keep the timestamp alive for the campaign's duration
+verify    read power_dpm_force_performance_level after the run and restore `auto` by hand
+```
+
+`census_engine_clock_restore` swallowing a failed write is a defect in
+`remote/census-arm-lib.sh` rather than in the ladder, and it belongs to the lane that
+owns that file. It is named here because the ladder is the longest campaign that calls
+it, and a fix that made the restore report its failure would turn this operational
+requirement into a refusal the harness raises by itself.
+
+A second requirement follows from the design rather than from the device: `C K K C` is
+the control server against a candidate server, and a run passing one binary as both
+measures that binary's repeatability instead. The deployed `llama-server` (5dd86b90...)
+is the control; the candidate has to be named.
