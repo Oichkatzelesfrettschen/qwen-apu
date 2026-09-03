@@ -3626,7 +3626,17 @@ async function migrateReadableRecords(failedStore, nextStore) {
   for (const entry of entries) {
     try {
       const record = await failedStore.read(entry.id);
-      if (record) await nextStore.write(record);
+      if (!record) continue;
+      // The store this migrates into can already hold its own copy of the
+      // same id -- an earlier session that ran entirely on the fallback
+      // while this one opened on a store that read as healthy -- and that
+      // copy can be the newer one. A stale record from the store being left
+      // must not overwrite it, so only a copy this store lacks or one this
+      // record's own `updated` postdates is written.
+      let existing = null;
+      try { existing = await nextStore.read(entry.id); } catch { /* treated as absent */ }
+      if (existing && Number(existing.updated) >= Number(record.updated)) continue;
+      await nextStore.write(record);
     } catch { /* this one record stays only in the store that is being left */ }
   }
 }

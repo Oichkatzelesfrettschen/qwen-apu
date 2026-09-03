@@ -953,6 +953,52 @@ assert.equal(migratedPriorRecord.messages.length, 3);
 const migratedNewRecord = await migrationPage.api.read(newId);
 assert.ok(migratedNewRecord, 'the conversation that triggered the demotion did not save');
 
+// A newer copy already in the replacement store survives the migration: an
+// earlier session that ran entirely on the fallback while this one opened on
+// a store that still read as healthy must not have its own newer record
+// overwritten by a stale one carried over from the store being left.
+const staleDatabase = makeFakeIndexedDatabase();
+const staleSourcePage = newPage({
+  indexedDatabase: staleDatabase,
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(staleSourcePage);
+const staleId = await staleSourcePage.api.runFixtureTurn(fixture);
+await flushPromises();
+const staleRecord = await staleSourcePage.api.read(staleId);
+
+const staleFailWrites = { active: true };
+const staleIndexedDatabase =
+  makeFlakyIndexedDatabase(staleDatabase, { failWrites: staleFailWrites });
+const staleLocalStorage = makeFakeStorage();
+// A newer record under the same id is already in localStorage before this
+// page ever runs, the way a later session that fell back to it would leave
+// one.
+const newerRecord = {
+  ...staleRecord, title: 'a newer session already renamed this',
+  updated: staleRecord.updated + 1000
+};
+staleLocalStorage.setItem(
+  'qwen-apu-conversation:' + staleId, JSON.stringify(newerRecord));
+staleLocalStorage.setItem(
+  'qwen-apu-conversation-index',
+  JSON.stringify([{ id: staleId, title: newerRecord.title, updated: newerRecord.updated }]));
+const stalePage = newPage({
+  indexedDatabase: staleIndexedDatabase,
+  localStorage: staleLocalStorage,
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(stalePage);
+assert.equal(await stalePage.api.storeName(), 'indexeddb');
+await stalePage.api.appendFollowUp('a write that triggers the migration', 'image-capable');
+await flushPromises();
+assert.equal(await stalePage.api.storeName(), 'localstorage');
+const survivingRecord = await stalePage.api.read(staleId);
+assert.equal(survivingRecord.title, 'a newer session already renamed this',
+  'a stale record from the demoted store overwrote the newer fallback record');
+assert.equal(survivingRecord.updated, newerRecord.updated);
+
 // rename and delete run through the same demotion-and-retry chain as save:
 // a store that refuses the write no longer just leaves the stored title, or
 // keeps the deleted row, on a store that answered its own probe but refuses
