@@ -345,6 +345,13 @@ $('#set-key').onclick = () => {
 $('#api-key').addEventListener('keydown', event => {
   if (event.key === 'Enter') $('#set-key').click();
 });
+// A pasted key applies by itself: the paste event fires ahead of the value
+// change, so the click waits one task for the field to carry the new text.
+$('#api-key').addEventListener('paste', () => {
+  setTimeout(() => {
+    if ($('#api-key').value.trim() !== apiKey) $('#set-key').click();
+  }, 0);
+});
 
 async function serverTokenCount(text, selectedModel) {
   if (!selectedModel) throw new Error('no routable model is selected');
