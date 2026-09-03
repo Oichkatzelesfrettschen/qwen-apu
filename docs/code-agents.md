@@ -35,13 +35,18 @@ own default. At the 4B distill's roughly 3 tok/s decode a reasoning span is paid
 in wall time, which is why `tools/code-agents/claude-code.env.example` sets
 `MAX_THINKING_TOKENS=0`.
 
-`remote/test-code-agent-endpoint.sh` proves the three routes against a live
-appliance: `GET /v1/models` lists the ids the caller names, `POST /v1/messages`
-answers a one-turn request with the id echoed, and
-`POST /v1/messages/count_tokens` returns a positive `input_tokens` within eight
-tokens of what the messages route charged. It exits 2 on a usage error and 1 on
-any mismatch, and it stays out of the repository gate because it needs the
-appliance running.
+`remote/test-code-agent-endpoint.sh` proves five routes against a live
+appliance, for every model id the caller names rather than the first alone:
+`GET /v1/models` lists the ids, `POST /v1/messages` answers a one-turn request
+with the id echoed both streamed and non-streamed, a forced `tool_choice` call
+returns a `tool_use` block, `POST /v1/messages/count_tokens` returns a positive
+`input_tokens` within eight tokens of what the messages route charged, and
+`POST /v1/chat/completions` answers the OpenAI-compatible route OpenCode uses.
+It exits 2 on a usage error and 1 on any mismatch, and it stays out of the
+repository gate because it needs the appliance running;
+`remote/test-code-agent-endpoint-fixture.sh` is the gate cell that proves the
+check's own logic against `remote/test-fixtures/fake-code-agent-server.py`
+instead.
 
 ## The execution boundary
 
@@ -144,6 +149,17 @@ selects the 2B. OpenCode reaches the OpenAI chat route rather than the Messages
 route, so the routing key travels in the same body field and the same router
 resolution applies.
 
+<https://opencode.ai/docs/permissions/> documents `bash` and `edit` as allowed
+by default absent a `permission` key, which puts shell execution and file
+writes one prompt injection away from a model served here -- the same hazard
+"The execution boundary" names for the appliance side of the wire, on
+OpenCode's own side. `tools/code-agents/opencode.json.example` sets
+`permission.bash`, `permission.edit`, and `permission.webfetch` to `{"*":
+"deny"}` and `permission.external_directory` to `"deny"`, so the shipped
+example asks nothing to run until a caller edits it to relax a specific
+pattern, following the same object syntax the permissions reference documents
+for a scoped rule.
+
 ## OpenRouter as a hosted fallback
 
 <https://openrouter.ai/docs/guides/routing/model-variants/free> documents a
@@ -154,16 +170,23 @@ variants carry: 20 requests per minute, 50 requests per day below 10 lifetime
 purchased credits, and 1000 requests per day at or above 10, governed globally
 so additional accounts or keys leave them unchanged.
 
-The endpoints are compatible with both agents.
-<https://openrouter.ai/docs/api_reference/overview> documents the
-OpenAI-compatible base URL `https://openrouter.ai/api/v1`, which is what an
-OpenCode provider block needs; the Anthropic Messages route resolves to
-`POST https://openrouter.ai/api/v1/messages` from the "Create a message"
-reference, which is what `ANTHROPIC_BASE_URL=https://openrouter.ai/api/v1`
-needs. Adding it to OpenCode is a second entry beside `qwen-appliance` with
-`options.baseURL` set to the OpenAI base and `options.apiKey` reading an
-environment variable; switching Claude Code to it is a change of
-`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`, and the model variables.
+The endpoints are compatible with both agents, and the base URL each one needs
+differs by one path segment. <https://openrouter.ai/docs/api_reference/overview>
+documents the OpenAI-compatible base URL `https://openrouter.ai/api/v1`, which
+is what an OpenCode provider block needs, since OpenCode's `options.baseURL`
+is the full route prefix it posts under. Claude Code appends `/v1/messages`
+itself -- `tools/code-agents/claude-code.env.example` sets
+`ANTHROPIC_BASE_URL=http://qwen-laptop:8080` with no `/v1` for that reason --
+so the Anthropic Messages route from the "Create a message" reference,
+`POST https://openrouter.ai/api/v1/messages`, needs
+`ANTHROPIC_BASE_URL=https://openrouter.ai/api` rather than the OpenAI base;
+appending `/v1` there doubles the segment and resolves to
+`https://openrouter.ai/api/v1/v1/messages`, which 404s. Adding OpenRouter to
+OpenCode is a second entry beside `qwen-appliance` with `options.baseURL` set
+to `https://openrouter.ai/api/v1` and `options.apiKey` reading an environment
+variable; switching Claude Code to it is a change of `ANTHROPIC_BASE_URL` to
+`https://openrouter.ai/api`, plus `ANTHROPIC_AUTH_TOKEN` and the model
+variables.
 
 The documentation reachable here states no keyless path: every request example
 carries a Bearer `OPENROUTER_API_KEY`, and the free-variant limits are keyed to
