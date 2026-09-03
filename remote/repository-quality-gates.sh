@@ -15,7 +15,7 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repository_root=$(CDPATH='' cd -- "$script_directory/.." && pwd)
 cd "$repository_root"
 
-for required_command in bash node shellcheck ruff mypy python3 curl flock git ps sha256sum; do
+for required_command in bash node shellcheck ruff mypy python3 curl flock git ps sha256sum c++; do
     if ! command -v "$required_command" >/dev/null 2>&1; then
         printf 'required quality-gate command is absent: %s\n' \
             "$required_command" >&2
@@ -144,6 +144,15 @@ remote/test-admit-web-router-fake.sh
 remote/test-quality-roster.sh
 remote/test-qwen-runtime-guards.sh
 remote/test-telemetry-session-records.sh
+PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-kernel-census.py
+PYTHONDONTWRITEBYTECODE=1 python3 remote/test-sample-clock-sidecar.py
+PYTHONDONTWRITEBYTECODE=1 python3 remote/test-census-controls.py
+PYTHONDONTWRITEBYTECODE=1 python3 remote/test-census-replay-corpus.py
+PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-perf-logger-slice.py
+remote/test-await-quiescence.sh
+remote/test-telemetry-broker.sh
+remote/test-census-sha256.sh
+remote/test-run-raven2-vulkan-kernel-census.sh
 remote/refresh-evidence-manifest.sh --check
 PYTHONDONTWRITEBYTECODE=1 python3 remote/check-text-policy.py
 

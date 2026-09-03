@@ -38,9 +38,13 @@ case $vulkan_profile in
     paced-60)
         maximum_gpu_busy_percent=75
         ;;
-    low-serialized)
+    low-serialized | diagnostic)
         # The graphics-family latency watchdog replaces aggregate busy as the
         # responsiveness stop condition for the continuously submitted profile.
+        # The diagnostic profile serializes submissions the same way with the
+        # perf logger armed, so it takes the same gate; a profile this case
+        # leaves unnamed ends the monitor at once, and the session then ends
+        # the server with reason monitor_exited ahead of any request.
         maximum_gpu_busy_percent=100
         ;;
     low-async | custom)
