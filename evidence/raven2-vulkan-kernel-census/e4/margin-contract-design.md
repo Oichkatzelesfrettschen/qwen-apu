@@ -1,7 +1,7 @@
 # The E4 correctness contract: decision margins over a held argmax
 
 ```text
-status=registered ahead of the holdout run; run retained in margin-holdout-20260903T0456Z/, verdict differs as registered, identity-line scope re-registered below
+status=twice re-registered; margin-holdout-20260903T0456Z/ refuted the identity line's scope and margin-holdout-b-20260903T1929Z/ refuted the replacement's internal consistency; the second re-registration below awaits a third holdout
 subject=census+E4 (741a0d76...) against census v7 (addcae10...), both Vulkan0
 model=qwen38-2b-distill under its registry tuple
 prompts=remote/witness-prompts/holdout-12.tsv for the first run; remote/witness-prompts/holdout-12b.tsv, read by no run, for the re-registered rule
@@ -158,6 +158,45 @@ The holdout run is not re-read under this rule. A fresh holdout of twelve
 prompts no run has sent judges it, and a candidate that flips at a margin
 at or above the threshold on that set is refuted outright.
 
+## The second holdout refutes the re-registered rule's own consistency
+
+`../margin-holdout-b-20260903T1929Z/` applied the rule above to
+`remote/witness-prompts/holdout-12b.tsv` and found the two lines disagreeing at
+the one position the re-registration exists to tolerate. `m1` is defined with
+`w` fixed as the control's selected token, so at any flip the control's winner
+has stopped winning and `m1 <= 0` follows by construction. The near-tie line
+tolerates a sub-threshold flip; the `everything else: unchanged` line keeps
+`m1 > 0` at every read position, which that same flip always violates. Whether
+the tolerated flip's own position is still a read position is what the rule
+never says, so the run reports both readings and sets no `margin_robustness`.
+
+The first holdout could not expose this, because it was explicitly not re-read
+under the re-registered rule and its own verdict came from the original
+identity line, which refuses every flip before any margin is computed.
+
+The disambiguation is registered here, ahead of the holdout that applies it:
+
+| property | second re-registration |
+| --- | --- |
+| read positions | a sample's read positions are those strictly before its first flip; the flip's own position and everything after it are unread, and the reader counts them as `flip_truncated` rather than as coverage gaps |
+| candidate margin | `m1 > 0` at every read position, which is now consistent with the near-tie line because a flip position is never read |
+| near-tie flips | a flip at a control margin below 0.1 nat is reported with `m0`, the contract's `m1` at that position, and both binaries' top-k orderings; the count is the reported quantity and the graded suite judges the continuation |
+| token id | identical at every read position, and identical at every position whose control margin is at or above 0.1 nat whether read or not, since a flip at or above the threshold refutes outright |
+| everything else | unchanged: exact self-repeatability, retention 0.5 over read positions whose `m0` reaches 0.1 nat, coverage by withheld UTF-8 entries |
+
+Two consequences follow and are stated rather than discovered later. A sample
+that flips early contributes few read positions, so a `margin_retention`
+minimum quoted over a set carrying flips states its denominator: the second
+holdout's 0.875 covers eleven prompts and 5620 positions. And a candidate that
+flips at position 0 on every prompt would satisfy every margin line vacuously,
+so `flip_truncated` positions are reported beside the margins and a run whose
+read positions fall below half the generated positions states that instead of a
+minimum.
+
+`../margin-holdout-b-20260903T1929Z/` is not re-read under this second
+re-registration, for the reason the first holdout was not re-read under the
+first: a third holdout of twelve prompts no run has sent judges it.
+
 ## What remains after the holdout
 
 The graded suite is the quality gate: `remote/run-quality-suite.py` against
@@ -169,6 +208,8 @@ The E4 correctness state until that runs is:
 deterministic                 held
 argmax_identity_observed      held over 768 discovery tokens
 numerical_identity            refuted
-margin_robustness             measured by this contract on the holdout
+margin_robustness             unset: the second holdout held eleven of twelve prompts and
+                              found the re-registered rule undecided at the twelfth, so a
+                              third holdout under the second re-registration decides it
 quality_nonregression         held: ../quality-gate-20260903T0547Z/, the same 40 of 65 on four arms, 64 of 65 replies identical
 ```

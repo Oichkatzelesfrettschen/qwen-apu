@@ -1566,7 +1566,7 @@ cbba7093a680275c83a55a756c25a89d5931bb798c79c86292d65e40e3f193ae  evidence/raven
 b4ff462f5673a2f6343f9395ab32efd74a62f2f374b48043ed3b889c4884c2b4  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-witness-20260903T0148Z/inputs.tsv
 f721f537366f79bfd1441834c59efda1cec28522625bbc5940d8b0d2a5d48542  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-witness-20260903T0148Z/prompts.tsv
 1d965883fc780f2941ec5032fcfdd54749950a4aef8099824a61bc53e5ff430c  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-witness-20260903T0148Z/summary.tsv
-faf7e66595e1c01c0d68d9736ace6969bd14a4824ee583022946db94876d42ea  evidence/raven2-vulkan-kernel-census/e4/margin-contract-design.md
+69c3680075839089a37a22f238749e1fb0fe951715dd15adad342a5c15e57cf1  evidence/raven2-vulkan-kernel-census/e4/margin-contract-design.md
 1ed2e7cb365498c43f5cb3e045764521dc23ec46433bd39955e03a4633bcf2d7  evidence/raven2-vulkan-kernel-census/e4/margin-holdout-20260903T0456Z/README.md
 5f3b5284393ca482b037dc28393c730a3d88d5e36d2971a292d9520c1392ebd2  evidence/raven2-vulkan-kernel-census/e4/margin-holdout-20260903T0456Z/arms/1-C/binary-counter/response-run-1.json
 7e0dc61d243fe6767d2daeac0db236c065c5a9b5ce066b987613df3373d2c931  evidence/raven2-vulkan-kernel-census/e4/margin-holdout-20260903T0456Z/arms/1-C/binary-counter/response-run-2.json
@@ -1764,7 +1764,7 @@ f136b99c7fb8308633f09c89075153e7fc5c79b22fa8adb29956850cd37c005d  evidence/raven
 c0de731dd7b370251c519d2856869787c5019c291173445960797bc1824fda46  evidence/raven2-vulkan-kernel-census/e4/margin-holdout-20260903T0456Z/margin-summary.tsv
 1b784918792edbfcfef38e187020d66b00af99e80ed72d63f49935be01516fdc  evidence/raven2-vulkan-kernel-census/e4/margin-holdout-20260903T0456Z/prompts.tsv
 29a4c8dfa86965210931c515c2be8112f8db5aa2adf6a81ad3db6c6ea3f8eafb  evidence/raven2-vulkan-kernel-census/e4/margin-holdout-20260903T0456Z/summary.tsv
-e347b4fa3c0395968c7a270446076d9d4d5794777f97d4eb26e1491fbad8cc4f  evidence/raven2-vulkan-kernel-census/e4/margin-holdout-b-20260903T1929Z/README.md
+ae3d5306fb4132c05065addd543e2fe6b98467523efcf612fb0dcc46a6422879  evidence/raven2-vulkan-kernel-census/e4/margin-holdout-b-20260903T1929Z/README.md
 08e4f5ffc4b33642b0856462efd3295e7c87bf3734ae1bc0cae6a59a8bdb2775  evidence/raven2-vulkan-kernel-census/e4/margin-holdout-b-20260903T1929Z/arms/1-C/arm-environment.tsv
 62fe03586e56bc79288c3f6dd45c7c3c6f6f59a261a32df203efc576d141dffe  evidence/raven2-vulkan-kernel-census/e4/margin-holdout-b-20260903T1929Z/arms/1-C/binary-counter/prompt.txt
 6be4fd579d99ecb92d77eeec71395bc41cfe640c8a004ee6604cf1a5e1b74226  evidence/raven2-vulkan-kernel-census/e4/margin-holdout-b-20260903T1929Z/arms/1-C/binary-counter/request.json

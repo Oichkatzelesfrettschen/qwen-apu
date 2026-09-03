@@ -7,7 +7,7 @@ control=census v7 (addcae10...), Vulkan0    candidate=census+E4 (741a0d76...), V
 model=qwen38-2b-distill Q4_K_M (4aa0fb13...), context 24576, batch 128, ubatch 32, cache q8_0/q4_0, Flash Attention on
 order=C K K C, 2 runs per start, 128 tokens, temperature 0, top_k 1, seed 1, ignore_eos, cache_prompt off, top_k logprobs 10
 near_tie=0.1 nat  retention=0.5  threads=2
-witness=differs (the harness reads the original identity line); margin_robustness=held under the re-registered rule
+witness=differs (the harness reads the original identity line); margin_robustness unset, since the re-registered rule leaves the one flip undecided
 ```
 
 ## Why this run exists
@@ -51,7 +51,7 @@ content-driven mechanism the coverage line states in place of a cap.
 
 ## The one flip, and what a 0.0085 nat tie decides
 
-| | winner | runner-up | margin |
+| | winner | runner-up | the winner's own margin |
 | --- | --- | --- | ---: |
 | control | 198 at -0.691068769 | 271 at -0.699598372 | 0.008530 |
 | candidate | 271 at -0.692720830 | 198 at -0.697880328 | 0.005159 |
@@ -61,12 +61,53 @@ token 198 by 0.006812 nat and token 271 by 0.006878, and the gap it had to cross
 0.008530, so a perturbation of the size the discovery run already measured reversed a
 pair that was already within it.
 
-The control margin is 0.0085 nat, 12 times below the 0.1 nat near-tie threshold, so the
-re-registered rule reads this as a reported near-tie flip rather than a refutation:
-identity is required at every position whose control margin reaches 0.1 nat, and no
-such position moved. Identity reading for that sample ends at position 2, so the
-retention line is measured on 11 of 12 prompts and this run states no margin for
-bracket-matching.
+Neither 0.005159 above is the contract's `m1`. The rule fixes `w` as the control's
+selected token and reads `m1 = lp1(w) - max(lp1(j) for j != w)`, so `w` is 198 here and
+
+```text
+m1 = -0.697880328 - (-0.692720830) = -0.005159 nat
+```
+
+The contract's `m1` is negative at this position, and it is negative at every flip by
+construction: a flip is exactly the event that the control's winner stops winning, so
+`m1 <= 0` and "the candidate argmax changed" name one occurrence rather than two. The
+right-hand column above is each binary's own winner over its own runner-up, which is a
+different quantity from `m1` wherever the two winners differ.
+
+## The re-registered rule does not decide this position, and that is the second finding
+
+The control margin is 0.008530 nat, twelve times below the 0.1 nat near-tie threshold,
+so the re-registered identity line tolerates this flip: identity is required at every
+position whose control margin reaches 0.1 nat, and no such position moved. That line
+alone reads the run as holding.
+
+The same re-registration ends with `everything else: unchanged`, and everything else
+includes `m1 > 0` at every read position. The two lines disagree here. The identity line
+tolerates a sub-threshold flip and says the flip "ends identity reading for that
+sample"; the margin line, unchanged, forbids the `m1 <= 0` that every flip produces.
+Whether the tolerated flip's own position remains a read position is what the rule never
+states.
+
+This run therefore records two readings and adopts neither:
+
+```text
+reading A  the flip ends the sample at position 2, so no margin line applies there;
+           eleven prompts hold every line and the twelfth is a counted near-tie flip
+reading B  position 2 is read, m1 = -0.005159, and the registered falsifier
+           "any position with m1 <= 0" is met, so the run is refuted
+```
+
+The defect is in the rule rather than in this run. The re-registration introduced a
+tolerated flip class in one line and kept a margin line the tolerated event always
+violates, and the first holdout could not expose it because that run was explicitly not
+re-read under the re-registered rule. The disambiguation belongs in
+`../margin-contract-design.md` ahead of the next holdout and is written there rather than
+chosen here, because a run that picks its own reading after seeing its own answer is the
+fitting this contract's holdout discipline exists to prevent.
+
+The eleven other prompts are untouched by the ambiguity. None of them flips, so `m1` is
+the control winner's own margin at all 5620 of their read positions and it is positive at
+every one.
 
 The consequence of the tie is larger than the tie. Position 2 follows `<think>`, and the
 two candidates are a single newline against a double newline:
@@ -90,19 +131,25 @@ replies byte-identical.
 ```text
 deterministic                 held: 48 samples per binary, every sample of a prompt bit-identical on ids and top-10 lists
 argmax_identity               held: no flip at any position whose control margin reaches 0.1 nat
-near_tie_flips                1 of 12 prompts, control margin 0.008530, candidate margin 0.005159, top-10 order otherwise identical
-candidate_margin              held: 0 nonpositive candidate margins over 5620 read positions
-margin_retention              held on 11 of 12 prompts, minimum 0.875
+near_tie_flips                1 of 12 prompts, control margin 0.008530, contract m1 -0.005159, top-10 order otherwise identical
+candidate_margin              held on the 5620 read positions of the eleven prompts that hold identity;
+                              undecided at the flip, where m1 is -0.005159 and the rule does not say
+                              whether that position is read
+margin_retention              held on 11 of 12 prompts, minimum 0.875; the twelfth states no ratio
 coverage                      12 withheld positions, all admitted by the following multi-byte entry
 numerical_identity            refuted, as the first holdout already recorded
 quality_nonregression         held: ../quality-gate-20260903T0547Z/
+margin_robustness             unset: the rule's two lines disagree at the one flip, and the
+                              disambiguation is registered in ../margin-contract-design.md
+                              ahead of the holdout that will decide it
 ```
 
-`margin_robustness=held` on the second holdout. The harness prints
-`witness=differs` and exits nonzero because its own verdict comes from the original
-identity line, which requires agreement at every position; the re-registered rule is
-applied here over the retained records rather than inside the harness, which is why
-the measurement head and the analysis head are separate.
+The harness prints `witness=differs` and exits nonzero because its own verdict comes
+from the original identity line, which requires agreement at every position. That
+nonzero exit is the registered rule answering rather than the run failing. The
+re-registered rule is applied here over the retained records rather than inside the
+harness, which is what keeps the measurement head and the analysis head separate and is
+what let this reading find the rule's own gap without touching a retained byte.
 
 ## What did not run
 
