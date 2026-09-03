@@ -55,7 +55,8 @@ fi
 
 bundle_manifest=$bundle_directory/bundle-manifest.tsv
 for bundle_member in bundle-manifest.tsv llama-server artifact-manifest.tsv \
-    ctx-checkpoints.tsv router-presets.ini web-presets.ini; do
+    ctx-checkpoints.tsv router-presets.ini web-presets.ini \
+    web-mcp-manifest.tsv; do
     if [ -L "$bundle_directory/$bundle_member" ]; then
         printf 'bundle member is a symlink: %s\n' \
             "$bundle_directory/$bundle_member" >&2
@@ -68,7 +69,7 @@ if [ ! -r "$bundle_manifest" ] || [ ! -f "$bundle_manifest" ]; then
 fi
 for manifest_key in bundle_name checkpoint_semantics maximum_ledger_count \
     server_bytes llama-server artifact-manifest.tsv ctx-checkpoints.tsv \
-    router-presets.ini web-presets.ini; do
+    router-presets.ini web-presets.ini web-mcp-manifest.tsv; do
     manifest_key_rows=$(awk -F'\t' -v key="$manifest_key" \
         '$1 == key { count++ } END { print count + 0 }' "$bundle_manifest")
     if [ "$manifest_key_rows" -ne 1 ]; then
@@ -222,5 +223,71 @@ for preset_member in router-presets.ini web-presets.ini; do
         exit 1
     fi
 done
+# The MCP manifest is the record of what each web section names, and it is
+# compared against the preset rather than against the state directory: a
+# resolution that read the named configurations would refuse every bundle on a
+# machine that has not generated a web preset, which turns a web-lane concern
+# into an outage on the whole roster. qwen-launch.sh reads the files and
+# compares these digests where it arms the lane.
+web_mcp_expected_sha256=$(awk -F'\t' '$1 == "web-mcp-manifest.tsv" { print $2; exit }' \
+    "$bundle_manifest")
+web_mcp_expected_sha256=${web_mcp_expected_sha256:--}
+preset_mcp_rows=''
+if [ -f "$bundle_directory/router-presets.ini" ]; then
+    preset_mcp_rows=$(awk '
+        /^[[:space:]]*\[/ {
+            section = $0
+            sub(/^[[:space:]]*\[/, "", section)
+            sub(/\][[:space:]]*$/, "", section)
+            next
+        }
+        /^[[:space:]]*LLAMA_ARG_MCP_SERVERS_CONFIG[[:space:]]*=/ {
+            value = $0
+            sub(/^[^=]*=[[:space:]]*/, "", value)
+            sub(/[[:space:]]+$/, "", value)
+            printf "%s\t%s\n", section, value
+        }
+    ' "$bundle_directory/router-presets.ini")
+fi
+if [ "$web_mcp_expected_sha256" = - ]; then
+    if [ -e "$bundle_directory/web-mcp-manifest.tsv" ]; then
+        printf 'bundle carries web-mcp-manifest.tsv that its manifest records as absent\n' >&2
+        exit 1
+    fi
+    if [ -n "$preset_mcp_rows" ]; then
+        printf 'bundle router preset names MCP configurations that no web-mcp-manifest.tsv records\n' >&2
+        exit 1
+    fi
+else
+    if [ ! -r "$bundle_directory/web-mcp-manifest.tsv" ] || \
+        [ ! -f "$bundle_directory/web-mcp-manifest.tsv" ]; then
+        printf 'bundle member is unreadable: %s\n' \
+            "$bundle_directory/web-mcp-manifest.tsv" >&2
+        exit 1
+    fi
+    web_mcp_actual_sha256=$(sha256sum "$bundle_directory/web-mcp-manifest.tsv" |
+        cut -d ' ' -f 1)
+    if [ "$web_mcp_actual_sha256" != "$web_mcp_expected_sha256" ]; then
+        printf 'bundle member diverged: web-mcp-manifest.tsv expected=%s found=%s\n' \
+            "$web_mcp_expected_sha256" "$web_mcp_actual_sha256" >&2
+        exit 1
+    fi
+    recorded_mcp_rows=$(awk -F'\t' '
+        /^[[:space:]]*($|#)/ { next }
+        {
+            if (NF != 3 || $1 == "" || $2 == "" || $3 !~ /^[0-9a-f]{64}$/) {
+                printf "web-mcp-manifest.tsv row is malformed: %s\n", $0 > "/dev/stderr"
+                failed = 1
+                next
+            }
+            printf "%s\t%s\n", $1, $2
+        }
+        END { exit failed }
+    ' "$bundle_directory/web-mcp-manifest.tsv") || exit 1
+    if [ "$recorded_mcp_rows" != "$preset_mcp_rows" ]; then
+        printf 'web-mcp-manifest.tsv records configurations the bundled router preset does not name\n' >&2
+        exit 1
+    fi
+fi
 printf 'deployment_bundle_verified=%s directory=%s\n' \
     "$bundle_name" "$canonical_directory"

@@ -850,4 +850,69 @@ if ! grep -q 'a diagnostic build stays inactive' \
 fi
 report diagnostic_build_refused accepted
 
+
+# A merged router preset names one MCP configuration per web section. The
+# configuration is session state -- its contents name the state directory, the
+# broker signing key, and the per-profile budgets -- so the bundle records the
+# path and the digest rather than copying the file, and verification compares
+# that record against the preset alone. Reading the named files at resolution
+# would refuse every bundle on a machine that never armed the web lane, which
+# turns a web-lane concern into an outage across the whole roster.
+merged_configuration=$work_directory/web-open.json
+printf '{"mcpServers":{"web":{"command":"python3"}}}\n' >"$merged_configuration"
+merged_preset=$work_directory/router-presets-merged.ini
+{
+    printf '# qwen_web_sections=web-open\n'
+    printf '[qwen-2b]\nLLAMA_ARG_MODEL = %s/qwen-2b.gguf\nLLAMA_ARG_CTX_CHECKPOINTS = 0\n\n' \
+        "$model_root"
+    printf '[web-open]\nLLAMA_ARG_MODEL = %s/qwen-2b.gguf\nLLAMA_ARG_CTX_CHECKPOINTS = 0\n' \
+        "$model_root"
+    printf 'LLAMA_ARG_MCP_SERVERS_CONFIG = %s\n' "$merged_configuration"
+} >"$merged_preset"
+if ! QWEN_BUNDLE_ROUTER_PRESETS=$merged_preset "$builder" bundle-merged \
+    "$forced_server" "$forced_manifest" "$zero_ledger" "$deployment_root" \
+    >"$work_directory/merged-bundle.log" 2>"$work_directory/merged-bundle.err"; then
+    printf 'a merged preset failed bundle assembly\n' >&2
+    cat "$work_directory/merged-bundle.err" >&2
+    exit 1
+fi
+merged_recorded=$(awk -F'\t' '$1 == "web-open" { print $2 "\t" $3 }' \
+    "$deployment_root/bundle-merged/web-mcp-manifest.tsv")
+if [ "$merged_recorded" != "$merged_configuration	$(sha256sum -- \
+    "$merged_configuration" | cut -d ' ' -f 1)" ]; then
+    printf 'the bundle recorded no MCP configuration identity for web-open\n' >&2
+    exit 1
+fi
+if [ -e "$deployment_root/bundle-merged/web-open.json" ]; then
+    printf 'the bundle copied a session-state configuration into its own tree\n' >&2
+    exit 1
+fi
+# The record binds the preset, so a configuration path that moved between
+# assembly and activation is a preset the bundle no longer describes.
+awk -F'\t' -v OFS='\t' '
+    $1 == "web-open" { $2 = "/nonexistent/web-open.json" }
+    { print }' "$deployment_root/bundle-merged/web-mcp-manifest.tsv" \
+    >"$work_directory/mcp-drift.tsv"
+cp "$work_directory/mcp-drift.tsv" \
+    "$deployment_root/bundle-merged/web-mcp-manifest.tsv"
+drift_digest=$(sha256sum "$deployment_root/bundle-merged/web-mcp-manifest.tsv" |
+    cut -d ' ' -f 1)
+awk -F'\t' -v OFS='\t' -v digest="$drift_digest" '
+    $1 == "web-mcp-manifest.tsv" { $2 = digest }
+    { print }' "$deployment_root/bundle-merged/bundle-manifest.tsv" \
+    >"$work_directory/merged-manifest.tsv"
+cp "$work_directory/merged-manifest.tsv" \
+    "$deployment_root/bundle-merged/bundle-manifest.tsv"
+if "$activator" bundle-merged "$deployment_root" \
+    >/dev/null 2>"$work_directory/merged-drift.stderr"; then
+    printf 'a web MCP record diverging from its preset activated\n' >&2
+    exit 1
+fi
+if ! grep -q 'records configurations the bundled router preset does not name' \
+    "$work_directory/merged-drift.stderr"; then
+    printf 'the MCP record refusal lost its reason\n' >&2
+    exit 1
+fi
+report bundle_records_web_mcp_configurations accepted
+
 printf 'deployment_bundle=accepted checks=%s\n' "$checks"
