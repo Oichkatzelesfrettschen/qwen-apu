@@ -115,18 +115,21 @@ would refute it.
    (32719 under every row this ladder currently admits, the 32768 request
    clamped to the allocation's own headroom limit), or rising at every rung
    with no flattening, refutes the shape. A rung that falls against its
-   predecessor by more than the pair interval at that rung refutes it outright.
+   predecessor is read against an interval built from both rungs' own
+   replicates rather than against either rung's single-depth candidate/control
+   ratio interval, which states a different uncertainty: the uncertainty of the
+   ratio at one depth, not of the absolute rate between two depths.
 
-2. **A candidate reading above 1.0 on time to first token at every admitted
-   depth, with every interval excluding 1.0, refutes a prefill regression
-   claim.** The direction is stated explicitly because the two metrics carry
-   opposite senses: above 1.0 on `ttft_ms` is the candidate taking longer, and
-   above 1.0 on `prompt_tok_s` is the candidate filling faster. A claim that a
-   candidate leaves prefill unchanged is refuted by the first, and a claim that
-   it improves prefill is refuted by intervals that exclude 1.0 on the slow side
-   of `prompt_tok_s`. An interval spanning 1.0 refutes neither and is reported
-   as `unresolved`, the state `evidence/research-claim-methodology.md` names for
-   a direction whose interval still crosses its threshold.
+2. **A candidate does not regress prefill latency or throughput at any admitted
+   depth.** The two metrics carry opposite senses: above 1.0 on `ttft_ms` is
+   the candidate taking longer to first token, and above 1.0 on `prompt_tok_s`
+   is the candidate filling faster. *Falsifier:* an interval on `ttft_ms`
+   sitting wholly above 1.0 at any admitted depth is a latency regression, and
+   an interval on `prompt_tok_s` sitting wholly below 1.0 at any admitted depth
+   is a throughput regression; either refutes the no-regression claim. An
+   interval spanning 1.0 refutes neither and is reported as `unresolved`, the
+   state `evidence/research-claim-methodology.md` names for a direction whose
+   interval still crosses its threshold.
 
 3. **One thread against the row's own thread count states the CPU-side share.**
    The `C T T C` ratio on `prompt_tok_s` above 1.0 with the interval excluding
@@ -143,8 +146,13 @@ seven-checkpoint sweep, which ran 11.1 to 11.5% above them on the two
 checkpoints common to both. Two replicates carry one degree of freedom and a
 critical value of 12.706, so a 22% mean gain whose replicates disagree by 4%
 still leaves the interval spanning unity; the summarizer reports that rather
-than the mean alone, and `QWEN_PREFILL_LADDER_DEPTHS` restricted to one rung is
-how a reader spends more replicates where one is worth resolving.
+than the mean alone. `run-prefill-ladder.sh` schedules exactly two replicates
+per depth, `C K K C` and `C T T C`, regardless of how many depths
+`QWEN_PREFILL_LADDER_DEPTHS` names, and it holds no repetition or append
+mechanism -- `output_directory` is required absent on every invocation -- so
+restricting the list to one rung narrows what a run measures rather than adding
+replicates to it. Resolving a rung past two replicates needs a runner change,
+not a narrower depth list.
 
 ## The deepest rung, and the row that would admit it
 
