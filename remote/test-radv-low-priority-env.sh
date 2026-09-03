@@ -183,6 +183,18 @@ printf '%s\n' "$diagnostic_force_dot_output" | grep -Fx 'force_integer_dot=1' >/
 diagnostic_control_output=$(QWEN_PERF_LOGGER=4 QWEN_VULKAN_PROFILE=diagnostic \
     "$wrapper" sh -c 'printf "force_integer_dot=%s\n" "${GGML_VK_FORCE_INTEGER_DOT-unset}"')
 printf '%s\n' "$diagnostic_control_output" | grep -Fx 'force_integer_dot=unset' >/dev/null
+# ggml_vk_force_integer_dot() compares the value against "1", so a third value
+# runs the control under a name that claims the arm and the profile refuses it.
+diagnostic_force_dot_status=0
+diagnostic_force_dot_error=$(GGML_VK_FORCE_INTEGER_DOT=0 QWEN_PERF_LOGGER=4 \
+    QWEN_VULKAN_PROFILE=diagnostic "$wrapper" true 2>&1 >/dev/null) ||
+    diagnostic_force_dot_status=$?
+if [ "$diagnostic_force_dot_status" -ne 2 ]; then
+    printf 'the diagnostic profile accepted GGML_VK_FORCE_INTEGER_DOT=0\n' >&2
+    exit 1
+fi
+printf '%s\n' "$diagnostic_force_dot_error" | grep -Fx \
+    'GGML_VK_FORCE_INTEGER_DOT admits 1 or an unset value: 0' >/dev/null
 
 # remote/dump-radv-shader-isa.sh runs a serving profile and reaches the arm by
 # forwarding the caller's value past the scrub on its own `env`, so the two arms
@@ -194,6 +206,19 @@ if ! grep -q 'GGML_VK_FORCE_INTEGER_DOT="\$requested_force_integer_dot"' \
     printf 'the ISA collector no longer forwards the force flag past the scrub\n' >&2
     exit 1
 fi
+# The collector names its arm from the same comparison the backend makes, and
+# it refuses a third value ahead of the measured-host check, so this arm runs
+# on any host.
+collector_force_dot_status=0
+collector_force_dot_error=$(GGML_VK_FORCE_INTEGER_DOT=0 "$collector" \
+    /nonexistent/output /nonexistent/server /nonexistent/model 2>&1 >/dev/null) ||
+    collector_force_dot_status=$?
+if [ "$collector_force_dot_status" -ne 2 ]; then
+    printf 'the ISA collector accepted GGML_VK_FORCE_INTEGER_DOT=0\n' >&2
+    exit 1
+fi
+printf '%s\n' "$collector_force_dot_error" | grep -Fx \
+    'GGML_VK_FORCE_INTEGER_DOT admits 1 or an unset value: 0' >/dev/null
 
 environment_output=$(capture_environment low-async)
 printf '%s\n' "$environment_output" | grep -F \

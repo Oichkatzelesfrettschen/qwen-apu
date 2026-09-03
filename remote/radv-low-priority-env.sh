@@ -171,9 +171,21 @@ case $vulkan_profile in
         # four serving profiles leave it scrubbed beside the sideplane names,
         # which keeps a promoted build on the FP16 mat-vec whatever the ambient
         # environment holds, and an arm is asked for by naming this profile.
-        if [ -n "$requested_force_integer_dot" ]; then
-            export GGML_VK_FORCE_INTEGER_DOT=$requested_force_integer_dot
-        fi
+        # ggml_vk_force_integer_dot() compares the value against "1", so a
+        # third value would run the control while the caller named the arm, and
+        # the profile refuses it the way it refuses a malformed frequency.
+        case $requested_force_integer_dot in
+            '')
+                ;;
+            1)
+                export GGML_VK_FORCE_INTEGER_DOT=$requested_force_integer_dot
+                ;;
+            *)
+                printf 'GGML_VK_FORCE_INTEGER_DOT admits 1 or an unset value: %s\n' \
+                    "$requested_force_integer_dot" >&2
+                exit 2
+                ;;
+        esac
         ;;
     custom)
         # The named profiles fix both submission settings together, which makes

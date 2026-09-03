@@ -162,13 +162,16 @@ backend compile     ggml-vulkan.cpp parses and type-checks under all four
                     combinations of GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT and
                     GGML_VULKAN_INT24_DOT, and vulkan-shaders-gen.cpp compiles
                     under the same four at -Wall -Wextra
-environment         test-radv-low-priority-env.sh gains six
-                    GGML_VK_FORCE_INTEGER_DOT arms, one per serving profile
-                    plus the diagnostic profile armed and unarmed, and one
-                    structural check that the ISA collector still forwards the
-                    value; the wrapper refuses this workstation for want of a
-                    RADV ICD, so the arms ran against a stand-in ICD and
-                    answered unset four times, then 1 and unset
+environment         test-radv-low-priority-env.sh gains seven
+                    GGML_VK_FORCE_INTEGER_DOT arms -- one per serving profile,
+                    the diagnostic profile armed and unarmed, and the
+                    diagnostic profile refusing a value other than 1 -- beside
+                    a structural check that the ISA collector still forwards
+                    the value past the scrub and an executed check that the
+                    collector refuses that same third value. The wrapper
+                    refuses this workstation for want of a RADV ICD, so the
+                    arms ran against a stand-in ICD and answered unset four
+                    times, then 1, unset, and exit 2
 ACO ISA receipt     isa-shimmed-raven2/, the int24 module, its dotPacked4x8EXT
                     counterpart, and the pinned Q4_K and Q6_K mat-vecs compiled
                     through RADV on a drm-shimmed RAVEN2 node; the two pinned

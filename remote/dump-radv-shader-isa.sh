@@ -49,13 +49,22 @@ summarizer=$script_directory/summarize-radv-isa.py
 # The int24 candidate admits its q8_1 mat-vec pipelines under this name alone,
 # so the value the caller supplied names which arm this collection is. It is
 # read here, ahead of the wrapper, because the wrapper's serving profile scrubs
-# it.
+# it. ggml_vk_force_integer_dot() compares the value against "1" with strcmp,
+# so every other value leaves the device flag at its hardware-derived false and
+# the run is the control. A collection labelled from emptiness alone would file
+# control-path ISA under the forced arm's name for a caller who wrote 0, so the
+# arm follows the backend's own comparison and any third value is refused
+# rather than guessed at.
 requested_force_integer_dot=${GGML_VK_FORCE_INTEGER_DOT:-}
-if [ -n "$requested_force_integer_dot" ]; then
-    integer_dot_arm=forced
-else
-    integer_dot_arm=control
-fi
+case $requested_force_integer_dot in
+    '') integer_dot_arm=control ;;
+    1) integer_dot_arm=forced ;;
+    *)
+        printf 'GGML_VK_FORCE_INTEGER_DOT admits 1 or an unset value: %s\n' \
+            "$requested_force_integer_dot" >&2
+        exit 2
+        ;;
+esac
 
 # The census runner and the served-decode harness both bind their device work
 # to the measured host, because a device probe run over an inherited SSH
