@@ -394,7 +394,17 @@ case $census_mode in
         fi
         ;;
     attribution)
-        arms=${QWEN_CENSUS_ARMS:-I1}
+        # An attribution names its own arms, so the list is normalized before
+        # it is read: whitespace alone is a supplied value the arm loop
+        # iterates zero times over, which leaves the controls summarizer a
+        # header, the terminal decision zero accepted controls to require, and
+        # a receipt no measurement stands behind.
+        arms=$(printf '%s\n' "${QWEN_CENSUS_ARMS:-I1}" \
+            | tr '\t' ' ' | tr -s ' ' | sed 's/^ //; s/ $//')
+        if [ -z "$arms" ]; then
+            printf 'an attribution names at least one arm; QWEN_CENSUS_ARMS is empty\n' >&2
+            exit 2
+        fi
         if [ -z "$calibration_receipt" ]; then
             printf 'an attribution requires QWEN_CENSUS_CALIBRATION_RECEIPT naming an accepted calibration\n' >&2
             exit 2
@@ -440,12 +450,41 @@ models_directory=${QWEN_MODELS_DIRECTORY:-"${HOME:?}/models"}
 sidecar_bound=${QWEN_CENSUS_SIDECAR_BOUND:-0.0065}
 compile_bound=${QWEN_CENSUS_COMPILE_BOUND:-0.0065}
 collect_bound=${QWEN_CENSUS_COLLECT_BOUND:-0.02}
+# Each bound is the falsifier its control is judged against, and
+# summarize-census-controls.py takes it through argparse's float, which reads
+# `inf` and `nan` as numbers no interval lies outside of. A canonical
+# nonnegative decimal is what a control can be refuted against, so the value is
+# held to that shape here, ahead of the contract that records it.
+for census_control_bound in "$sidecar_bound" "$compile_bound" "$collect_bound"; do
+    case $census_control_bound in
+        '' | . | *[!0-9.]* | *.*.*)
+            printf 'a census control bound is a nonnegative decimal: %s\n' \
+                "$census_control_bound" >&2
+            exit 2
+            ;;
+    esac
+done
 # Two selected graphics clocks are one execution state where they lie within
 # this relative band of each other. The appliance's sustained regime hovers
 # across 775 to 857 MHz, whose widest pair sits 3.18% apart, and its boost
 # regime's 1100 MHz sits 27.27% above 800, so 0.06 holds one regime together
 # and keeps the two apart.
 sclk_band=${QWEN_CENSUS_SCLK_BAND:-0.06}
+# The band is a relative distance over the larger of two clocks, so a value at
+# or above one holds every pair of clocks in one state and states nothing, and
+# `inf` reaches census_regime_step and summarize-census-controls.py as a float
+# no pair lies outside of. Both are refused here, ahead of the contract that
+# records the band and the precondition that reads it.
+case $sclk_band in
+    '' | . | *[!0-9.]* | *.*.*)
+        printf 'QWEN_CENSUS_SCLK_BAND is a nonnegative decimal: %s\n' "$sclk_band" >&2
+        exit 2
+        ;;
+esac
+if ! awk -v band="$sclk_band" 'BEGIN { exit (band + 0 < 1) ? 0 : 1 }'; then
+    printf 'QWEN_CENSUS_SCLK_BAND is a relative distance in [0, 1): %s\n' "$sclk_band" >&2
+    exit 2
+fi
 # The regime precondition's own three settings. The modal share separates the
 # two regimes this device runs in as sharply as the clock does: 20260902T1417Z
 # measures the boost regime pinning 1100 MHz at a modal share of 0.5518 to
@@ -539,6 +578,24 @@ esac
 sidecar_max_gap_ms=${QWEN_CENSUS_SIDECAR_MAX_GAP_MS:-$sidecar_max_gap_default_ms}
 sidecar_max_gap_ns=$((sidecar_max_gap_ms * 1000000))
 sidecar_max_lost_fraction=${QWEN_CENSUS_SIDECAR_MAX_LOST:-0.03}
+# The sampler tolerances reach validate-clock-sidecar.py as floats, where `inf`
+# and `nan` name no bound a record can miss, so both are held to the same
+# canonical nonnegative decimal the control bounds are. The lost fraction is a
+# share of the window, which bounds it above by one.
+for census_sampler_fraction in "$sidecar_tolerance" "$sidecar_max_lost_fraction"; do
+    case $census_sampler_fraction in
+        '' | . | *[!0-9.]* | *.*.*)
+            printf 'a census sampler tolerance is a nonnegative decimal: %s\n' \
+                "$census_sampler_fraction" >&2
+            exit 2
+            ;;
+    esac
+done
+if ! awk -v fraction="$sidecar_max_lost_fraction" 'BEGIN { exit (fraction + 0 < 1) ? 0 : 1 }'; then
+    printf 'QWEN_CENSUS_SIDECAR_MAX_LOST is a share of the window in [0, 1): %s\n' \
+        "$sidecar_max_lost_fraction" >&2
+    exit 2
+fi
 # The guards run on core 1 at nice 0 and the server on core 0 at nice 19,
 # so a nice-19 sampler pinned to core 1 loses about 40 ms once a second
 # to a guard's sample; confined to both cores it moves to whichever is
@@ -744,6 +801,12 @@ runtime_tree_identity=$(awk -F'\t' '
 IFS="$(printf '\t')" read -r runtime_tree_git_head runtime_tree_remote_payload runtime_tree_patches_payload <<RUNTIME_TREE
 $runtime_tree_identity
 RUNTIME_TREE
+# check-runtime-tree.sh composes one payload identity from the two rows and
+# QWEN_INTENDED_PAYLOAD_SHA256 is what it holds a launch to, so the value is
+# composed here the same way and handed to every arm.
+runtime_tree_payload=$(printf 'remote_payload_tree_sha256=%s\npatches_payload_tree_sha256=%s\n' \
+    "$runtime_tree_remote_payload" "$runtime_tree_patches_payload" \
+    | sha256sum | cut -d ' ' -f 1)
 for reader in "$summarizer" "$controls_summarizer" "$sidecar" "$sidecar_validator" "$slice_summarizer"; do
     if [ ! -r "$reader" ]; then
         printf 'census reader is absent: %s\n' "$reader" >&2
@@ -831,6 +894,13 @@ if [ ! -r "$model_path" ]; then
     printf 'model file is unreadable: %s\n' "$model_path" >&2
     exit 2
 fi
+# The checkpoint every arm decodes is bound by its own bytes here. An arm
+# re-establishes publisher identity against whichever ledger row it reads, so a
+# model and its row replaced together between the production and instrumented
+# arms pass that check and leave the two roles measured on different weights;
+# the digest taken once at preflight is what each arm is compared against.
+model_file_bytes=$(wc -c <"$model_path" | tr -d ' ')
+model_file_sha256=$(sha256sum "$model_path" | cut -d ' ' -f 1)
 
 production_sha256=-
 production_bytes=-
@@ -1001,14 +1071,26 @@ if [ "$census_mode" = attribution ]; then
             exit 2
         fi
     done
+    # Each field is counted rather than seen, the shape the contract-digest
+    # reader uses: a retained state carrying `census=accepted` beside
+    # `census=failed`, or two control counts, states no verdict at all, and a
+    # bit set from whichever row matched would read the accepted one and ignore
+    # its contradiction.
     if ! awk -F'=' '
-        $1 == "census" && $2 == "accepted" { seen["census"] = 1 }
-        $1 == "control_accepted" && $2 == "3" { seen["accepted"] = 1 }
-        $1 == "control_unclassified" && $2 == "0" { seen["unclassified"] = 1 }
-        $1 == "control_refutations" && $2 == "0" { seen["refuted"] = 1 }
-        $1 == "control_incomplete" && $2 == "0" { seen["incomplete"] = 1 }
-        $1 == "arm_failures" && $2 == "0" { seen["failures"] = 1 }
-        END { exit length(seen) == 6 ? 0 : 1 }' "$calibration_receipt/terminal-state.tsv"; then
+        $1 == "census" { census_rows++; if ($2 == "accepted") census_match++ }
+        $1 == "control_accepted" { accepted_rows++; if ($2 == "3") accepted_match++ }
+        $1 == "control_unclassified" { unclassified_rows++; if ($2 == "0") unclassified_match++ }
+        $1 == "control_refutations" { refuted_rows++; if ($2 == "0") refuted_match++ }
+        $1 == "control_incomplete" { incomplete_rows++; if ($2 == "0") incomplete_match++ }
+        $1 == "arm_failures" { failure_rows++; if ($2 == "0") failure_match++ }
+        END {
+            exit (census_rows == 1 && census_match == 1 &&
+                accepted_rows == 1 && accepted_match == 1 &&
+                unclassified_rows == 1 && unclassified_match == 1 &&
+                refuted_rows == 1 && refuted_match == 1 &&
+                incomplete_rows == 1 && incomplete_match == 1 &&
+                failure_rows == 1 && failure_match == 1) ? 0 : 1
+        }' "$calibration_receipt/terminal-state.tsv"; then
         printf 'the calibration receipt is not an accepted calibration with three accepted controls: %s\n' \
             "$calibration_receipt/terminal-state.tsv" >&2
         exit 2
@@ -1052,7 +1134,10 @@ write_acquisition_contract() {
         printf 'ctx_checkpoints\t%s\ncheckpoint_min_step\t%s\n' "$ctx_checkpoints" "$checkpoint_min_step"
         printf 'production_server_sha256\t%s\ninstrumented_server_sha256\t%s\n' "$production_sha256" "$instrumented_sha256"
         printf 'base_build_identity_sha256\t%s\n' "$production_base_identity_sha256"
-        printf 'generate_tokens\t64\nsampling\ttemperature=0 top_k=1 seed=1 ignore_eos=true thinking=false\n'
+        # The token count is the mode's own: a canary requests eight and its
+        # contract states the workload its seven decode graphs came out of.
+        printf 'generate_tokens\t%s\nsampling\ttemperature=0 top_k=1 seed=1 ignore_eos=true thinking=false\n' \
+            "$census_generate"
         printf 'profile\tlow-async\nserialized_profile\tdiagnostic\nserver_nice\t19\nserver_io_class\tidle\n'
         printf 'sidecar_period_ms\t%s\nsidecar_tolerance\t%s\nsidecar_cost_ns\t%s\nsidecar_max_gap_ns\t%s\n' \
             "$sidecar_period_ms" "$sidecar_tolerance" "$sidecar_cost_ns" "$sidecar_max_gap_ns"
@@ -1244,6 +1329,25 @@ if [ -n "$reuse_directory" ]; then
             "$reuse_acquisition_sha256" "$acquisition_contract_sha256" "$reuse_directory" >&2
         exit 2
     fi
+    # The root is what binds a receipt to the campaign that wrote it. A receipt
+    # and the ledger it is rejoined to can be edited together and still agree,
+    # so the closure and the rate comparison below prove consistency rather
+    # than provenance; the root's own acquisition digest and its per-brick
+    # receipt digests are the provenance, and they are read ahead of both.
+    if [ ! -r "$reuse_directory/calibration-root.tsv" ]; then
+        printf 'the brick reuse directory carries no readable calibration-root.tsv: %s\n' \
+            "$reuse_directory" >&2
+        exit 2
+    fi
+    reuse_root_acquisition_sha256=$(awk -F'\t' '$1 == "acquisition_contract_sha256" { count++; value = $2 }
+        END { if (count == 1) print value; else print "-" }' \
+        "$reuse_directory/calibration-root.tsv")
+    if [ "$reuse_root_acquisition_sha256" != "$acquisition_contract_sha256" ]; then
+        printf 'the brick reuse root records acquisition contract %s and this run runs under %s: %s\n' \
+            "$reuse_root_acquisition_sha256" "$acquisition_contract_sha256" \
+            "$reuse_directory/calibration-root.tsv" >&2
+        exit 2
+    fi
     # The echo rewrites one field of a retained row and the pair parser reads
     # that field by name, so the column is resolved from the prior ledger's own
     # header rather than from a position this runner's own printf happens to
@@ -1270,6 +1374,18 @@ if [ -n "$reuse_directory" ]; then
     for brick_id in $brick_ids; do
         reuse_receipt=$reuse_directory/bricks/$brick_id.receipt.tsv
         [ -r "$reuse_receipt" ] || continue
+        # The receipt's own bytes against the digest the root recorded for this
+        # brick. A receipt the root names no row for, or one whose bytes moved
+        # since the root was written, is measured again rather than reused.
+        reuse_root_receipt_sha256=$(awk -F'\t' -v brick="$brick_id" \
+            '$1 == "brick" && $2 == brick { count++; value = $3 }
+            END { if (count == 1) print value; else print "-" }' \
+            "$reuse_directory/calibration-root.tsv")
+        if [ "$reuse_root_receipt_sha256" != "$(sha256sum "$reuse_receipt" | cut -d ' ' -f 1)" ]; then
+            printf 'census_brick_reuse=receipt_unbound brick=%s root=%s\n' \
+                "$brick_id" "$reuse_root_receipt_sha256"
+            continue
+        fi
         reuse_closure=$(awk -F'\t' '$1 == "input_closure_sha256" { count++; value = $2 }
             END { if (count == 1) print value; else print "-" }' "$reuse_receipt")
         [ "$reuse_closure" = "$(brick_input_closure_sha256 "$brick_id")" ] || continue
@@ -1500,6 +1616,11 @@ printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\
         "${reuse_directory:--}" "${reused_bricks:--}" "$reused_brick_count"
     printf 'runtime_tree_manifest\t%s\nruntime_tree_git_head\t%s\nruntime_tree_remote_payload_sha256\t%s\nruntime_tree_patches_payload_sha256\t%s\n' \
         "$runtime_tree_manifest" "$runtime_tree_git_head" "$runtime_tree_remote_payload" "$runtime_tree_patches_payload"
+    # The composed payload identity every arm launches under, beside the
+    # checkpoint bytes every arm is compared against.
+    printf 'runtime_tree_payload_sha256\t%s\n' "$runtime_tree_payload"
+    printf 'model_file_bytes\t%s\nmodel_file_sha256\t%s\n' \
+        "$model_file_bytes" "$model_file_sha256"
     printf 'started_utc\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 } >"$output_directory/inputs.tsv"
 
@@ -1731,6 +1852,8 @@ for arm in $execution_arms; do
             QWEN_LLAMA_SERVER="$server" \
             QWEN_LAUNCH_SCRIPT="$runtime_remote/qwen-launch.sh" \
             QWEN_TEARDOWN_SCRIPT="$runtime_remote/qwen-teardown.sh" \
+            QWEN_INTENDED_GIT_HEAD="$runtime_tree_git_head" \
+            QWEN_INTENDED_PAYLOAD_SHA256="$runtime_tree_payload" \
             QWEN_MODELS_DIRECTORY="$models_directory" \
             QWEN_MODEL_ARTIFACTS="$artifact_ledger" \
             QWEN_RESULT_DIRECTORY="$arm_directory" \
@@ -1789,6 +1912,37 @@ for arm in $execution_arms; do
     if [ "$server_sha256" != "$bound_role_sha256" ]; then
         server_identity=replaced
     fi
+    # The checkpoint is re-read after the arm the way the server is. A model
+    # replaced consistently with its ledger row passes the arm's own publisher
+    # check and leaves the production and instrumented rates measured on
+    # different weights, so the preflight digest decides it here.
+    # The served runner hashes the descriptor it pinned and writes both figures
+    # into runtime-inputs.json, so that record is the arm's own reading of the
+    # checkpoint and the comparison costs no second pass over the file. The
+    # file's byte count is read beside it, which catches a replacement that
+    # left no record at all.
+    model_identity=bound
+    arm_model_bytes=-
+    arm_model_sha256=-
+    if [ -r "$model_path" ]; then
+        arm_model_bytes=$(wc -c <"$model_path" | tr -d ' ')
+    fi
+    if [ "$arm_model_bytes" != "$model_file_bytes" ]; then
+        model_identity=replaced
+    fi
+    if [ -r "$arm_directory/runtime-inputs.json" ]; then
+        arm_model_sha256=$(python3 - "$arm_directory/runtime-inputs.json" <<'ARM_MODEL_IDENTITY' || true
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get("model", {}).get("sha256") or "-")
+except (OSError, ValueError):
+    print("-")
+ARM_MODEL_IDENTITY
+)
+        if [ "$arm_model_sha256" != "$model_file_sha256" ]; then
+            model_identity=replaced
+        fi
+    fi
     predicted_n=-
     predicted_ms=-
     tok_s=-
@@ -1829,6 +1983,12 @@ EOF
         reason=server_identity
         printf 'census_arm=server_replaced slot=%s arm=%s bound=%s observed=%s\n' \
             "$slot" "$arm" "$bound_role_sha256" "$server_sha256"
+    fi
+    if [ "$model_identity" != bound ]; then
+        status=failed
+        reason=model_identity
+        printf 'census_arm=model_replaced slot=%s arm=%s bound=%s observed=%s\n' \
+            "$slot" "$arm" "$model_file_sha256" "$arm_model_sha256"
     fi
     # A sampler that announced no readiness is its own reason: the request
     # never ran, so the served-runner verdict above states the consequence
@@ -1954,6 +2114,12 @@ EOF
             # clock: it absorbs the cold load and settles nothing, since the
             # policy rather than a measured mode states the execution state.
             regime_reached=1
+        elif [ "$sidecar_state" != on ]; then
+            # The validator prints its clock_state line whatever it decides
+            # about the record, so a refused warmup carries a mode the run has
+            # no telemetry for. The precondition spends the arm and keeps the
+            # last accepted reading rather than settling on a refused one.
+            printf 'census_regime=record_refused slot=%s arm=%s\n' "$slot" "$arm"
         else
             regime_step=$(census_regime_step "$regime_previous_mode" "$regime_previous_share" \
                 "$sclk_mode_mhz" "$sclk_share" "$sclk_band" "$regime_min_share" \
@@ -2271,8 +2437,13 @@ if [ "$census_mode" = calibration ]; then
     } >"$output_directory/calibration-root.tsv"
     rm -f -- "$root_scratch"
 fi
+# A cooldown that never converged left the arm after it a machine state the arm
+# before it chose -- clock, temperature, memory, or the workload lease -- which
+# is the nuisance the boundary exists to remove, so the count decides the
+# campaign beside the arm failures rather than being printed next to a verdict
+# it contradicts.
 if [ "$arm_failures" -ne 0 ] || [ "$control_incomplete" -ne 0 ] \
-    || [ "$control_unclassified" -ne 0 ]; then
+    || [ "$control_unclassified" -ne 0 ] || [ "$cooldown_timeouts" -ne 0 ]; then
     campaign=failed
     campaign_exit=1
 elif [ "$control_refutations" -ne 0 ]; then
