@@ -1,0 +1,4 @@
+pair	control	outer	inner	first_outer	first_inner	first_delta	second_outer	second_inner	second_delta	replicates	mean_delta	sd_delta	ci_low	ci_high	deltas	sclk_modes	off_regime_arms	bound	verdict	detail
+1	sidecar	P-nosidecar	P	-	-	-	-	-	-	4	-	-	-	-	-	-	1	0.0065	incomplete	-
+2	compile	P	I0	-	-	-	-	-	-	4	-	-	-	-	-	-	3	0.0065	incomplete	-
+3	collect	I0	I1	-	-	-	-	-	-	4	-	-	-	-	-	-	0	0.02	incomplete	-

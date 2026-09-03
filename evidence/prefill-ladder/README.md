@@ -115,10 +115,14 @@ would refute it.
    (32719 under every row this ladder currently admits, the 32768 request
    clamped to the allocation's own headroom limit), or rising at every rung
    with no flattening, refutes the shape. A rung that falls against its
-   predecessor is read against an interval built from both rungs' own
-   replicates rather than against either rung's single-depth candidate/control
-   ratio interval, which states a different uncertainty: the uncertainty of the
-   ratio at one depth, not of the absolute rate between two depths.
+   predecessor is read against each rung's own two-replicate spread in
+   `arms.tsv`'s raw `prompt_tok_s` column (the two `C` rows, or the two subject
+   rows, at that depth) rather than against either rung's single-depth
+   candidate/control ratio interval, which states a different uncertainty: the
+   ratio's own uncertainty at one depth, not the absolute rate's uncertainty
+   between two depths. A fall smaller than either rung's own spread is not
+   distinguishable from within-rung noise; the summarizer computes no formal
+   interval across depths, so a between-rung comparison stays qualitative.
 
 2. **A candidate does not regress prefill latency or throughput at any admitted
    depth.** The two metrics carry opposite senses: above 1.0 on `ttft_ms` is
@@ -147,12 +151,12 @@ checkpoints common to both. Two replicates carry one degree of freedom and a
 critical value of 12.706, so a 22% mean gain whose replicates disagree by 4%
 still leaves the interval spanning unity; the summarizer reports that rather
 than the mean alone. `run-prefill-ladder.sh` schedules exactly two replicates
-per depth, `C K K C` and `C T T C`, regardless of how many depths
-`QWEN_PREFILL_LADDER_DEPTHS` names, and it holds no repetition or append
-mechanism -- `output_directory` is required absent on every invocation -- so
-restricting the list to one rung narrows what a run measures rather than adding
-replicates to it. Resolving a rung past two replicates needs a runner change,
-not a narrower depth list.
+per quadruple per depth -- two for `C K K C` and two for `C T T C` --
+regardless of how many depths `QWEN_PREFILL_LADDER_DEPTHS` names, and it holds
+no repetition or append mechanism -- `output_directory` is required absent on
+every invocation -- so restricting the list to one rung narrows what a run
+measures rather than adding replicates to either quadruple. Resolving a rung
+past two replicates needs a runner change, not a narrower depth list.
 
 ## The deepest rung, and the row that would admit it
 

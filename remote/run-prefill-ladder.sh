@@ -400,16 +400,14 @@ if [ "${QWEN_PREFILL_LADDER_PRINT_PLAN:-0}" = 1 ]; then
     exit 0
 fi
 
-umask 077
-mkdir -p "$output_directory"
-output_directory=$(CDPATH='' cd -- "$output_directory" && pwd)
-
 # The campaign owns the device from here. The lease is taken ahead of the first
 # DPM write rather than at the first arm, because the write moves the clock
 # every workload on this machine runs at and a request admitted between a
 # process reading and that write would land inside the rate this ledger claims.
 # The arms launch directly rather than through qwen-capacity-policy.sh, so no
-# child reads the lock and no external-lease proof is published.
+# child reads the lock and no external-lease proof is published. This is also
+# the first of the still-refusable preflights, and the output directory is not
+# created until the last of them succeeds -- see the comment at that mkdir.
 workload_lease_state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
 workload_lease=$workload_lease_state_directory/vulkan-workload.lock
 census_workload_lease_take "$workload_lease"
@@ -432,7 +430,13 @@ stop_server() {
 stop_sidecar() {
     [ -n "$sidecar_pid" ] || return 0
     kill -TERM "$sidecar_pid" 2>/dev/null || true
-    wait "$sidecar_pid" 2>/dev/null || true
+    # wait's own exit status carries the reaped job's signal-terminated status,
+    # which || true already absorbs; the explicit set +e/-e bracket matches the
+    # per-arm reap below and removes any doubt that a later shell reinterprets
+    # a guarded wait under set -e differently mid-trap.
+    set +e
+    wait "$sidecar_pid" 2>/dev/null
+    set -e
     sidecar_pid=''
 }
 
@@ -545,6 +549,16 @@ if [ "$sampler" = python ]; then
         sidecar_allowed_unavailable=pp_dpm_fclk_surface_mhz
     fi
 fi
+
+# The directory is created only once every preflight that can still refuse --
+# the lease, and under `manual` the DPM reads, the sudo cache, and the
+# selected-level confirmation -- has succeeded, since any of those exits the
+# whole script before an arm ever runs and an empty directory left behind
+# would fail the "must be absent" check above on a corrected replay against
+# the same requested path.
+umask 077
+mkdir -p "$output_directory"
+output_directory=$(CDPATH='' cd -- "$output_directory" && pwd)
 
 prompt_builder=$output_directory/build-prompt.py
 cat >"$prompt_builder" <<'PYTHON'
@@ -808,6 +822,18 @@ start_server() {
             "$start_server_observed" >&2
         return 1
     fi
+    # Linux niceness is per thread, assigned at clone() time from the creating
+    # thread's own value, so a renice applied to the backgrounded pid from this
+    # shell races every thread the server spawns before that renice call
+    # actually runs: a thread created in that window keeps the caller's
+    # ordinary priority regardless of what the pid's own value becomes a
+    # moment later. The exec chain is where the fix belongs instead: the
+    # sealed command is a small self-renicing shell rather than the server
+    # binary directly, so the pid carries nice 19 -- set absolutely by
+    # `renice -n 19 -p $$` on itself, the way radv-low-priority-env.sh renices
+    # itself before its own exec -- before any of the exec calls below even
+    # begin, and therefore before the server has run one instruction of its
+    # own or spawned a single thread.
     census_arm_exec "$start_server_environment" \
         VK_DRIVER_FILES="$radv_icd" VK_ICD_FILENAMES="$radv_icd" \
         LLAMA_NO_CPU_FALLBACK=1 \
@@ -815,6 +841,12 @@ start_server() {
         GGML_VK_MAX_NODES_PER_SUBMIT="$vulkan_max_nodes_per_submit" \
         QWEN_VULKAN_PROFILE="$vulkan_profile" \
         -- \
+        sh -c 'nice_level=$1; shift
+            if ! renice -n "$nice_level" -p $$ >/dev/null 2>&1; then
+                printf "nice %s was refused for pid %s\n" "$nice_level" "$$" >&2
+                exit 97
+            fi
+            exec "$@"' sh "$server_nice_policy" \
         "$start_server_path" \
         --model "$model_path" \
         --host 127.0.0.1 \
@@ -838,30 +870,6 @@ start_server() {
         --log-verbosity 4 \
         >"$start_server_log" 2>&1 &
     server_pid=$!
-    # renice sets the pid's niceness directly rather than adding an offset to
-    # its current one, and that value persists across the execve chain the
-    # backgrounded pid is about to run: the wrapper script this repository's
-    # test fixtures interpose, then census_arm_exec's own env -i, then the
-    # server binary. Applying it here, ahead of any of those exec calls,
-    # carries nice 19 into every thread the server later spawns for model
-    # loading and inference, the way radv-low-priority-env.sh's own
-    # `renice -n 19 -p $$` does for the appliance's launch chain. The read-back
-    # is what turns "applied" into "proven": a renice that silently failed or
-    # raced a process that had already exited fails the arm here rather than
-    # reaching the ledger as a nice-19 measurement it never was.
-    if ! renice -n "$server_nice_policy" -p "$server_pid" >/dev/null 2>&1; then
-        printf 'nice %s was refused for pid %s\n' "$server_nice_policy" \
-            "$server_pid" >&2
-        return 1
-    fi
-    start_server_nice=$(sed 's/^.*) //' "/proc/$server_pid/stat" 2>/dev/null \
-        | awk '{ print $17 }') || start_server_nice=
-    if [ "$start_server_nice" != "$server_nice_policy" ]; then
-        printf 'nice read back from /proc/%s/stat is %s where the policy requires %s\n' \
-            "$server_pid" "${start_server_nice:-absent}" "$server_nice_policy" >&2
-        start_server_nice=-
-        return 1
-    fi
     start_server_iteration=0
     while [ "$start_server_iteration" -lt "$readiness_seconds" ]; do
         if ! kill -0 "$server_pid" 2>/dev/null; then
@@ -870,6 +878,18 @@ start_server() {
         fi
         if curl --silent --fail --max-time 2 "http://127.0.0.1:$server_port/health" \
             >/dev/null 2>&1; then
+            # The self-renice above ran within the process's first instructions,
+            # long before health ever answers, so a mismatch here is the policy
+            # failing rather than a race with it: the read-back is what turns
+            # "applied" into "proven" ahead of recording the arm.
+            start_server_nice=$(sed 's/^.*) //' "/proc/$server_pid/stat" 2>/dev/null \
+                | awk '{ print $17 }') || start_server_nice=
+            if [ "$start_server_nice" != "$server_nice_policy" ]; then
+                printf 'nice read back from /proc/%s/stat is %s where the policy requires %s\n' \
+                    "$server_pid" "${start_server_nice:-absent}" "$server_nice_policy" >&2
+                start_server_nice=-
+                return 1
+            fi
             for placement_line in 'Vulkan0 model buffer size' 'Vulkan0 KV buffer size' \
                 'Vulkan0 compute buffer size'; do
                 if ! grep -qE "$placement_line" "$start_server_log"; then

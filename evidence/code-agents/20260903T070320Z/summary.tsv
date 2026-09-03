@@ -1,0 +1,4 @@
+task_id	kind	model	outcome	tests_passed	wall_seconds	input_tokens	output_tokens	cache_read_input_tokens	count_tokens_input_tokens	reasoning_emitted	stop_reason	baseline_target_lines	reply_lines
+task-01-write	write	qwen38-4b-distill	extracted	True	149.885	280	397	0	278	False	end_turn	0	52
+task-02-fix	fix	qwen38-4b-distill	extracted	True	110.315	726	211	0	724	False	end_turn	26	26
+task-03-refactor	refactor	qwen38-4b-distill	extracted	True	228.811	1016	501	0	1014	False	end_turn	64	64
