@@ -48,6 +48,11 @@ candidate_server=$2
 model_id=$3
 output_directory=$4
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# The arm environment is closed rather than scrubbed, and census_arm_exec owns
+# both halves of that: the record each arm keeps and the `env -i` it execs
+# under.
+# shellcheck source=census-arm-lib.sh
+. "$script_directory/census-arm-lib.sh"
 registry_script=${QWEN_MODEL_REGISTRY_SCRIPT:-"$script_directory/model-registry.sh"}
 models_directory=${QWEN_MODELS_DIRECTORY:-"${HOME:?}/models"}
 server_port=${QWEN_WITNESS_PORT:-8099}
@@ -64,6 +69,12 @@ contract=${QWEN_WITNESS_CONTRACT:-logprob-bound}
 near_tie_nat=${QWEN_WITNESS_NEAR_TIE_NAT:-0.1}
 margin_retention=${QWEN_WITNESS_RETENTION:-0.5}
 prompt_source=${QWEN_WITNESS_PROMPTS:-}
+# The witness starts llama-server itself rather than through
+# radv-low-priority-env.sh, so the ICD the loader reads is stated here the way
+# that wrapper states it. An arm runs under the closed environment
+# census_arm_exec applies, so a driver selected by an ambient VK_DRIVER_FILES
+# reaches nothing.
+radv_icd=${QWEN_RADV_ICD:-/usr/share/vulkan/icd.d/radeon_icd.x86_64.json}
 margin_summarizer=${QWEN_WITNESS_MARGIN_SUMMARIZER:-"$script_directory/summarize-margin-witness.py"}
 
 case $top_count in
@@ -119,6 +130,10 @@ for server in "$control_server" "$candidate_server"; do
         exit 2
     fi
 done
+if [ ! -r "$radv_icd" ]; then
+    printf 'RADV ICD is not readable: %s\n' "$radv_icd" >&2
+    exit 2
+fi
 if pgrep -x llama-server >/dev/null 2>&1; then
     printf 'llama-server is running; run %s after qwen-teardown.sh\n' "$0" >&2
     exit 2
@@ -317,6 +332,7 @@ start_server() {
     arm_log=$2
     arm_device=$3
     arm_expected_sha256=$4
+    arm_environment_record=$5
     # A run spans four model loads and the two paths stay writable throughout,
     # so the digest inputs.tsv records is re-read against the file about to be
     # executed rather than assumed to still describe it. A build landing on
@@ -328,8 +344,15 @@ start_server() {
             "$arm_server" "$arm_expected_sha256" "$arm_observed_sha256" >&2
         return 1
     fi
+    # The graph optimizer setting is absent rather than removed: the closed
+    # environment carries the names below and nothing else, so an ambient
+    # GGML_VK_DISABLE_GRAPH_OPTIMIZE, GGML_VK_Q4K_SIDEPLANE, or RADV_PERFTEST
+    # changes no arm and the record proves which set applied.
     if [ "$arm_device" = cpu ]; then
-        env -u GGML_VK_DISABLE_GRAPH_OPTIMIZE "$arm_server" \
+        census_arm_exec "$arm_environment_record" \
+            VK_DRIVER_FILES="$radv_icd" VK_ICD_FILENAMES="$radv_icd" \
+            -- \
+            "$arm_server" \
             --model "$model_path" --host 127.0.0.1 --port "$server_port" \
             --ctx-size "$model_context" --batch-size "$model_batch" --ubatch-size "$model_ubatch" \
             --cache-type-k "$model_cache_k" --cache-type-v "$model_cache_v" \
@@ -339,7 +362,10 @@ start_server() {
             --no-context-shift --offline --log-verbosity 4 \
             >"$arm_log" 2>&1 &
     else
-        env -u GGML_VK_DISABLE_GRAPH_OPTIMIZE LLAMA_NO_CPU_FALLBACK=1 \
+        census_arm_exec "$arm_environment_record" \
+            VK_DRIVER_FILES="$radv_icd" VK_ICD_FILENAMES="$radv_icd" \
+            LLAMA_NO_CPU_FALLBACK=1 \
+            -- \
             "$arm_server" \
             --model "$model_path" \
             --host 127.0.0.1 \
@@ -430,7 +456,8 @@ for arm in C K K C; do
     arm_directory=$output_directory/arms/$slot-$arm
     mkdir -p "$arm_directory"
     printf 'witness_arm=start slot=%s arm=%s server=%s device=%s\n' "$slot" "$arm" "$arm_server" "$arm_device"
-    start_server "$arm_server" "$arm_directory/server.log" "$arm_device" "$arm_sha256"
+    start_server "$arm_server" "$arm_directory/server.log" "$arm_device" \
+        "$arm_sha256" "$arm_directory/arm-environment.tsv"
     run_index=1
     while [ "$run_index" -le "$run_count" ]; do
         while IFS="$(printf '\t')" read -r prompt_id prompt_text; do
