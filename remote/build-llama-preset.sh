@@ -177,6 +177,19 @@ case $preset in
         ;;
 esac
 
+# The int24 candidate rewrites the q8_1 mat-vec shader and the pipeline table
+# that names it behind GGML_VULKAN_INT24_DOT, so the option follows the patch
+# rather than the preset name: a tree carrying the patch without the flag
+# compiles the arm out and measures the production shape under the candidate's
+# name. The flag alone changes nothing, since the source it selects arrives
+# with the patch, and the manifest's candidate series states which of the two
+# a binary carries.
+case " ${QWEN_LLAMA_CANDIDATE_SELECT:-} " in
+    *" llama-vulkan-q4k-int24-mmvq.patch "*)
+        preset_flags="$preset_flags -DGGML_VULKAN_INT24_DOT=ON"
+        ;;
+esac
+
 if [ ! -d "$source_directory/.git" ] && [ ! -f "$source_directory/.git" ]; then
     printf 'llama.cpp checkout is missing: %s\n' "$source_directory" >&2
     exit 1
