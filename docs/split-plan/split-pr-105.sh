@@ -28,13 +28,19 @@ set -eu
 # last one. It writes nothing to any remote.
 
 usage() {
-    printf 'usage: %s [BASE_REF] [SOURCE_REF]\n' "$0" >&2
+    printf 'usage: %s [BASE_REF] [SOURCE_REF] [LANE...]\n' "$0" >&2
     exit 2
 }
 
-[ "$#" -le 2 ] || usage
-base_ref=${1:-origin/main}
-source_ref=${2:-origin/stage-a-census-brackets}
+[ "$#" -ge 1 ] || set -- origin/main
+[ "$#" -ge 2 ] || set -- "$1" origin/stage-a-census-brackets
+base_ref=$1
+source_ref=$2
+shift 2
+# A named lane rebuilds that branch alone. Every lane is rewritten where none
+# is named, and a lane whose branch is already published is rebuilt under a new
+# commit hash, so a run after a push names the lanes it means.
+requested_lanes=$*
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repository_root=$(CDPATH='' cd -- "$script_directory/../.." && pwd)
@@ -111,9 +117,19 @@ commit_is_pure() {
     [ "$total" -eq "$mine" ]
 }
 
+# lane_requested LANE succeeds where the caller named the lane or named none.
+lane_requested() {
+    [ -n "$requested_lanes" ] || return 0
+    for requested in $requested_lanes; do
+        [ "$requested" = "$1" ] && return 0
+    done
+    return 1
+}
+
 replay_lane() {
     lane=$1
     lane_base=$2
+    lane_requested "$lane" || return 0
     printf '=== lane %s from %s\n' "$lane" "$lane_base"
     git checkout -q -B "lane/$lane" "$lane_base"
     for commit in $commits; do
@@ -198,6 +214,7 @@ carrying a subset of PR #105's evidence needs its own manifest for
 # remaining four commits are pure.
 split_deployment_followups() {
     lane=deployment-followups
+    lane_requested "$lane" || return 0
     printf '=== lane %s from %s\n' "$lane" "$base_commit"
     git checkout -q -B "lane/$lane" "$base_commit"
     git cherry-pick -x 74ddab7 >/dev/null
