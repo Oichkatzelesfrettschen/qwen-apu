@@ -79,6 +79,17 @@ gate_ruff_typed_walk() {
     return 0
 }
 
+# webui/roster.json is generated from the registry, the three profile ledgers,
+# and the feature claim ledger, and the page reads it as the roster authority.
+# A stale committed copy would badge a tier the ledgers retired, so the gate
+# regenerates it into a scratch directory and the diff is the verdict.
+gate_feature_roster_regeneration() {
+    feature_roster_scratch=$(mktemp -d)
+    remote/build-feature-roster.sh "$feature_roster_scratch/roster.json" >/dev/null
+    diff -u webui/roster.json "$feature_roster_scratch/roster.json"
+    rm -rf -- "$feature_roster_scratch"
+}
+
 gate_python_syntax_walk() {
     # shellcheck disable=SC2086
     python3 -m py_compile $python_files
@@ -213,6 +224,9 @@ gate_cell test-check-trace-source-status derive \
     remote/test-check-trace-source-status.sh remote/test-check-trace-source-status.sh
 gate_cell test-feature-roster derive remote/test-feature-roster.sh \
     remote/test-feature-roster.sh
+gate_cell feature-roster-regeneration files \
+    'remote/build-feature-roster.sh remote/model-registry.sh remote/models.tsv remote/quarantine.tsv remote/draft-pairs.tsv remote/web-profiles.tsv remote/image-profiles.tsv remote/feature-claims.tsv webui/roster.json' \
+    gate_feature_roster_regeneration
 gate_cell test-web-presets derive remote/test-web-presets.sh \
     remote/test-web-presets.sh
 gate_cell test-qwen-capacity-policy derive remote/test-qwen-capacity-policy.sh \
