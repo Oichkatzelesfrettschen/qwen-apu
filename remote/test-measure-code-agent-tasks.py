@@ -3,9 +3,9 @@
 the transport-level record checks around a served reply.
 
 Every case here runs without an appliance. grade() and require_sandbox_tool()
-still fork the real `unshare` binary, so this test proves the sandbox mechanism
-itself -- network namespace isolation and the timeout catch -- rather than a
-mock standing in for it.
+still fork the real `bwrap` binary, so this test proves the sandbox mechanism
+itself -- filesystem and network namespace isolation, and the process-group
+kill on timeout -- rather than a mock standing in for it.
 """
 
 import importlib.util
@@ -115,7 +115,15 @@ class GradeSandboxTests(unittest.TestCase):
             result = module.grade(task_directory, meta, source, sys.executable)
             self.assertTrue(result["tests_passed"], result.get("test_output_tail"))
 
-    def test_hung_test_is_recorded_rather_than_raised(self):
+    def test_hung_test_and_its_forked_child_are_both_reaped(self):
+        # The target module forks a grandchild that outlives the direct
+        # bwrap/python process and keeps the stdout/stderr pipes grade()
+        # reads open; subprocess.run's own timeout= would kill bwrap alone
+        # and leave that grandchild running (and the pipes unclosed), which
+        # would force the post-kill communicate() below to wait out its own
+        # 10-second timeout. A tight bound on total elapsed time is what
+        # distinguishes "the whole process group died" from "one process in
+        # it did".
         original_timeout = module.SANDBOX_TIMEOUT_SECONDS
         module.SANDBOX_TIMEOUT_SECONDS = 2
         try:
@@ -139,7 +147,15 @@ class GradeSandboxTests(unittest.TestCase):
                     "        self.assertTrue(target.LOADED)\n",
                     encoding="utf-8",
                 )
-                source = "import time\ntime.sleep(30)\nLOADED = True\n"
+                source = (
+                    "import os\nimport time\n\n"
+                    "pid = os.fork()\n"
+                    "if pid == 0:\n"
+                    "    time.sleep(60)\n"
+                    "    os._exit(0)\n"
+                    "time.sleep(60)\n"
+                    "LOADED = True\n"
+                )
                 meta = __import__("json").loads(
                     (task_directory / "meta.json").read_text(encoding="utf-8")
                 )
@@ -150,12 +166,60 @@ class GradeSandboxTests(unittest.TestCase):
             module.SANDBOX_TIMEOUT_SECONDS = original_timeout
         self.assertFalse(result["tests_passed"])
         self.assertTrue(result.get("test_timed_out"))
-        self.assertLess(elapsed, 15.0, "grade() waited past its own deadline")
+        # SANDBOX_TIMEOUT_SECONDS is 2 here; a full reap finishes within a
+        # few seconds of that. A grandchild left alive would push this past
+        # the second communicate()'s own 10-second timeout.
+        self.assertLess(
+            elapsed, 8.0, "grade() waited on a descendant its kill did not reach"
+        )
+
+
+class GradeFilesystemIsolationTests(unittest.TestCase):
+    def test_generated_code_cannot_list_the_real_host_home(self):
+        # bwrap's mount namespace carries only /usr, /etc, /proc, /dev, a
+        # fresh /tmp, and the workspace bind -- the real $HOME this test
+        # process runs under is absent from it entirely, so a listdir raises
+        # rather than returning the caller's own files under some other
+        # permission outcome.
+        real_home = os.path.expanduser("~")
+        with tempfile.TemporaryDirectory() as work:
+            task_directory = Path(work) / "home-probe"
+            write_task(
+                task_directory,
+                {
+                    "task_id": "home-probe",
+                    "kind": "write",
+                    "target_file": "target.py",
+                    "context_files": [],
+                    "reference_file": "reference/target.py",
+                },
+            )
+            (task_directory / "tests").mkdir()
+            (task_directory / "tests" / "test_target.py").write_text(
+                "import unittest\nimport target\n\n"
+                "class HomeVisibilityTest(unittest.TestCase):\n"
+                "    def test_real_home_is_absent(self):\n"
+                "        self.assertEqual(target.REAL_HOME_STATE, 'ABSENT')\n",
+                encoding="utf-8",
+            )
+            source = (
+                "import os\n\n"
+                "REAL_HOME_STATE = 'PRESENT'\n"
+                "try:\n"
+                "    os.listdir(%r)\n"
+                "except OSError:\n"
+                "    REAL_HOME_STATE = 'ABSENT'\n" % real_home
+            )
+            meta = __import__("json").loads(
+                (task_directory / "meta.json").read_text(encoding="utf-8")
+            )
+            result = module.grade(task_directory, meta, source, sys.executable)
+            self.assertTrue(result["tests_passed"], result.get("test_output_tail"))
 
 
 class RequireSandboxToolTests(unittest.TestCase):
     def test_probe_succeeds_on_a_host_running_this_suite(self):
-        # The gate that runs this test already requires unshare (see
+        # The gate that runs this test already requires bwrap (see
         # required_command in remote/repository-quality-gates.sh); a host
         # that cannot start a sandboxed process should fail the probe rather
         # than this assertion.

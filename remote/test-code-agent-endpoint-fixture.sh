@@ -83,7 +83,8 @@ fi
 for check_name in messages_answered messages_model_echoed messages_usage \
     messages_streamed messages_stream_events messages_tool_use_answered \
     messages_tool_use_block count_tokens_answered count_tokens_counted \
-    count_matches_usage chat_completions_answered chat_completions_usage; do
+    count_matches_usage chat_completions_answered chat_completions_usage \
+    chat_completions_model_echoed; do
     for model_id in served-a served-b; do
         if grep -q "^${check_name}_${model_id}=pass" "$work/pass.out"; then
             report "fixture_pass_${check_name}_${model_id}" pass ''

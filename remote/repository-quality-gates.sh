@@ -15,7 +15,7 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repository_root=$(CDPATH='' cd -- "$script_directory/.." && pwd)
 cd "$repository_root"
 
-for required_command in bash node shellcheck ruff mypy python3 curl flock git ps sha256sum c++ unshare; do
+for required_command in bash node shellcheck ruff mypy python3 curl flock git ps sha256sum c++ bwrap; do
     if ! command -v "$required_command" >/dev/null 2>&1; then
         printf 'required quality-gate command is absent: %s\n' \
             "$required_command" >&2

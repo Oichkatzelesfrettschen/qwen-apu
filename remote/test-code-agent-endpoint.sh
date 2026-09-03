@@ -372,6 +372,12 @@ check_model() {
     else
         report "chat_completions_usage_$model_id" fail "text_characters=$chat_text_length"
     fi
+    chat_reply_model=$(read_field chat_completion_model)
+    if [ "$chat_reply_model" = "$model_id" ]; then
+        report "chat_completions_model_echoed_$model_id" pass "model=$chat_reply_model"
+    else
+        report "chat_completions_model_echoed_$model_id" fail "requested=$model_id echoed=$chat_reply_model"
+    fi
 }
 
 for model_id in "$@"; do

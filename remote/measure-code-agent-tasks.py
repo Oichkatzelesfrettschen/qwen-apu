@@ -17,15 +17,26 @@ runs the same grading path, which proves a fixture reachable without spending
 appliance time.
 
 grade() runs the generated source under a closed sandbox rather than in this
-process's own environment: `unshare --user --net` puts the graded subprocess in
-a fresh network namespace with only a down loopback interface, the environment
-it execs into carries the five names remote/census-arm-lib.sh's env -i
-allowlist grants an arm (PATH, HOME, TMPDIR, LC_ALL,
-PYTHONDONTWRITEBYTECODE), and CPU time, address space, and open file count are
-bounded through resource.setrlimit ahead of the exec. A model response reached
-over a compromised endpoint, or one that simply emits a wrong answer, gets a
-sandbox rather than this script's own credentials, filesystem reach outside its
-scratch workspace, and network path.
+process's own environment. bubblewrap (bwrap) unshares the user, mount,
+network, PID, IPC, and UTS namespaces together (--unshare-all), so the graded
+process sees a filesystem carrying only a read-only /usr, /etc, /proc, and
+/dev, its own tmpfs at /tmp, and one read-write bind of its own scratch
+workspace -- the real $HOME, the repository, and every other host path are
+absent from that mount namespace rather than merely unlisted in the
+environment. The network namespace carries no interface but a down loopback,
+the environment it execs into carries the five names
+remote/census-arm-lib.sh's env -i allowlist grants an arm (PATH, HOME, TMPDIR,
+LC_ALL, PYTHONDONTWRITEBYTECODE), and CPU time, address space, and open file
+count are bounded through resource.setrlimit ahead of the exec.
+grade() also starts bwrap in its own process group (start_new_session) and, on
+a timeout, sends SIGKILL to that whole group rather than to the outer bwrap
+process alone: subprocess.run's built-in timeout kills only the process it
+launched directly, which leaves a descendant a generated test forked free to
+keep running (and holding the workspace and its resource-limited slice of the
+device) after grade() returns. A model response reached over a compromised
+endpoint, or one that simply emits a wrong answer, gets this sandbox rather
+than this script's own credentials, filesystem reach outside its scratch
+workspace, network path, or a process that outlives the graded run.
 """
 
 import argparse
@@ -35,6 +46,7 @@ import pathlib
 import re
 import resource
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -46,7 +58,7 @@ FENCE = re.compile(r"```(?:python|py)?[ \t]*\r?\n(.*?)```", re.DOTALL)
 DEFAULT_TASKS = ("task-01-write", "task-02-fix", "task-03-refactor")
 
 # Bounds applied to the graded subprocess through resource.setrlimit ahead of
-# its exec, so they bind the sandboxed unittest run and everything unshare
+# its exec, so they bind the sandboxed unittest run and everything bwrap
 # execs in its place rather than this script. RLIMIT_NPROC is left out: it
 # caps the invoking user's whole process count on Linux rather than one
 # process tree, so setting it here would starve the caller's other work
@@ -57,11 +69,23 @@ SANDBOX_FILE_SIZE_BYTES = 64 << 20
 SANDBOX_OPEN_FILES = 256
 SANDBOX_TIMEOUT_SECONDS = 120
 
+# The directories a stock python3 -m unittest run needs read access to;
+# /usr covers /bin, /lib, and /lib64 too on a merged-/usr layout, which this
+# repository's own workstation and laptop both use, so the bind list stays
+# short rather than guessing at a split-/usr host's exact paths.
+SANDBOX_SYSTEM_READONLY_BINDS = ("/usr", "/etc")
+SANDBOX_SYSTEM_SYMLINKS = (
+    ("usr/bin", "/bin"),
+    ("usr/bin", "/sbin"),
+    ("usr/lib", "/lib"),
+    ("usr/lib", "/lib64"),
+)
+
 
 def _apply_sandbox_resource_limits():
-    """Runs in the forked child ahead of exec (subprocess.run's preexec_fn),
-    so the limits bind the process unshare replaces itself with rather than
-    this script."""
+    """Runs in the forked child ahead of exec (subprocess.Popen's
+    preexec_fn), so the limits bind the process bwrap replaces itself with
+    rather than this script."""
     resource.setrlimit(
         resource.RLIMIT_CPU, (SANDBOX_CPU_SECONDS, SANDBOX_CPU_SECONDS)
     )
@@ -78,26 +102,72 @@ def _apply_sandbox_resource_limits():
     )
 
 
+def _sandbox_python_extra_binds(python_executable):
+    """A --python override outside /usr (a virtualenv, typically) needs its
+    own read-only bind; /usr alone covers the default sys.executable. A venv
+    is bound at its root (the directory holding pyvenv.cfg) rather than just
+    the interpreter's own directory, since the interpreter still imports from
+    the venv's lib/ tree beside its bin/."""
+    python_path = pathlib.Path(python_executable)
+    if str(python_path).startswith("/usr/"):
+        return []
+    root = python_path.parent
+    if (root.parent / "pyvenv.cfg").is_file():
+        root = root.parent
+    return ["--ro-bind", str(root), str(root)]
+
+
+def _sandbox_bwrap_argv(workspace, sandbox_environment, python_executable):
+    argv = ["bwrap", "--unshare-all", "--die-with-parent"]
+    for host_path in SANDBOX_SYSTEM_READONLY_BINDS:
+        argv += ["--ro-bind", host_path, host_path]
+    for target, symlink_path in SANDBOX_SYSTEM_SYMLINKS:
+        argv += ["--symlink", target, symlink_path]
+    argv += _sandbox_python_extra_binds(python_executable)
+    argv += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"]
+    argv += ["--bind", str(workspace), str(workspace)]
+    argv += ["--chdir", str(workspace)]
+    argv += ["--clearenv"]
+    for name, value in sandbox_environment.items():
+        argv += ["--setenv", name, value]
+    argv += ["--"]
+    return argv
+
+
 def require_sandbox_tool():
     """Refuses to run before any task is graded rather than mislabeling the
-    first task transport_failed when unshare is absent or unprivileged user
+    first task transport_failed when bwrap is absent or unprivileged user
     namespaces are disabled (CLAUDE.md's read-only tool set and its rule that
     a tool-enabled server stays off the LAN assume the caller's own runtime
     holds this boundary; this script is that runtime for the graded reply)."""
-    if shutil.which("unshare") is None:
+    if shutil.which("bwrap") is None:
         sys.stderr.write(
-            "unshare is required to sandbox graded code and is not on PATH\n"
+            "bwrap (bubblewrap) is required to sandbox graded code and is "
+            "not on PATH\n"
         )
         return False
+    # Built from the same SANDBOX_SYSTEM_READONLY_BINDS and
+    # SANDBOX_SYSTEM_SYMLINKS constants grade() uses, so a probe that passes
+    # cannot diverge from the argv the graded run actually execs: an earlier
+    # version of this probe skipped the /bin, /lib, /lib64, /sbin symlinks
+    # and passed on a host where the real grade() argv failed to resolve its
+    # own dynamic linker.
+    probe_argv = ["bwrap", "--unshare-all", "--die-with-parent"]
+    for host_path in SANDBOX_SYSTEM_READONLY_BINDS:
+        probe_argv += ["--ro-bind", host_path, host_path]
+    for target, symlink_path in SANDBOX_SYSTEM_SYMLINKS:
+        probe_argv += ["--symlink", target, symlink_path]
+    probe_argv += ["--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"]
+    probe_argv += ["--", "true"]
     probe = subprocess.run(
-        ["unshare", "--user", "--map-root-user", "--net", "--", "true"],
+        probe_argv,
         capture_output=True,
         text=True,
         check=False,
     )
     if probe.returncode != 0:
         sys.stderr.write(
-            "unshare --user --net cannot start a sandboxed process here "
+            "bwrap --unshare-all cannot start a sandboxed process here "
             "(unprivileged user namespaces may be disabled): %s\n"
             % probe.stderr.strip()
         )
@@ -165,40 +235,50 @@ def grade(task_directory, meta, source_text, python_executable):
         shutil.copytree(task_directory / "tests", workspace, dirs_exist_ok=True)
         (workspace / meta["target_file"]).write_text(source_text, encoding="utf-8")
         sandbox_environment = {
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "PATH": "/usr/bin:/bin",
             "HOME": str(workspace),
             "TMPDIR": str(workspace),
             "LC_ALL": "C",
             "PYTHONDONTWRITEBYTECODE": "1",
         }
+        argv = _sandbox_bwrap_argv(
+            workspace, sandbox_environment, python_executable
+        ) + [python_executable, "-m", "unittest", "discover", "-v"]
+        # start_new_session puts bwrap and everything it execs or forks in
+        # one new process group, so a timeout can signal the whole tree
+        # rather than the one process subprocess.run's own timeout= would
+        # reach; a generated test that forks a child and then hangs cannot
+        # leave that child running after this function returns.
+        process = subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            preexec_fn=_apply_sandbox_resource_limits,
+            start_new_session=True,
+        )
         try:
-            completed = subprocess.run(
-                [
-                    "unshare",
-                    "--user",
-                    "--map-root-user",
-                    "--net",
-                    "--",
-                    python_executable,
-                    "-m",
-                    "unittest",
-                    "discover",
-                    "-v",
-                ],
-                cwd=str(workspace),
-                env=sandbox_environment,
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                timeout=SANDBOX_TIMEOUT_SECONDS,
-                check=False,
-                preexec_fn=_apply_sandbox_resource_limits,
-            )
+            _stdout, stderr = process.communicate(timeout=SANDBOX_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
-            # A generated test that hangs on import or on a blocking call
-            # left this exception uncaught, which aborted main()'s whole task
-            # loop rather than recording the one task that hung; every task
-            # after it went ungraded.
+            # A generated test that hangs on import or on a blocking call, or
+            # forks a child that does, left this exception uncaught before,
+            # which aborted main()'s whole task loop rather than recording
+            # the one task that hung; every task after it went ungraded. The
+            # process-group kill below is what reaches a forked descendant
+            # subprocess.run's own timeout= handling would have left running.
+            try:
+                os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                process.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                # SIGKILL to the whole group should reap everything within
+                # seconds; a second timeout here is not this function's
+                # deadline to enforce, and the caller must still get a
+                # dict back rather than an uncaught exception.
+                process.kill()
             return {
                 "tests_passed": False,
                 "test_returncode": None,
@@ -209,9 +289,9 @@ def grade(task_directory, meta, source_text, python_executable):
                 "test_timed_out": True,
             }
         return {
-            "tests_passed": completed.returncode == 0,
-            "test_returncode": completed.returncode,
-            "test_output_tail": completed.stderr.strip().splitlines()[-12:],
+            "tests_passed": process.returncode == 0,
+            "test_returncode": process.returncode,
+            "test_output_tail": stderr.strip().splitlines()[-12:],
         }
     finally:
         shutil.rmtree(workspace, ignore_errors=True)
@@ -369,11 +449,13 @@ def parse_arguments(argv):
     parser.add_argument("--task", action="append", default=[])
     parser.add_argument("--self-check", action="store_true")
     arguments = parser.parse_args(argv)
-    # grade() execs this path with cwd already changed to the throwaway
-    # sandbox workspace; a relative path carrying a slash (".venv/bin/python")
-    # would then resolve against that workspace instead of the directory this
-    # script was invoked from, and unshare would report the interpreter
-    # missing.
+    # bwrap's --chdir puts the sandboxed process in the throwaway workspace
+    # before it execs python_executable, so a relative path carrying a slash
+    # (".venv/bin/python") would resolve against that workspace rather than
+    # the directory this script was invoked from -- and the workspace is not
+    # the only thing missing from the sandbox's mount namespace; a venv
+    # outside /usr needs its own bind (_sandbox_python_extra_binds), which
+    # only runs once this is already absolute.
     arguments.python = str(pathlib.Path(arguments.python).resolve())
     return arguments
 

@@ -219,7 +219,16 @@ second checkpoint fits beside it, and no part of it lands on the workstation.
 `remote/measure-code-agent-tasks.py` sends one non-streamed `/v1/messages` turn
 per task with a plain standard-library client, extracts the single fenced block
 each prompt demands, writes it as the task's target file in a throwaway
-workspace, and runs that workspace's own `unittest` module. The fixtures are
+workspace, and runs that workspace's own `unittest` module under `bwrap`
+(bubblewrap): a mount namespace carrying only a read-only `/usr` and `/etc`,
+fresh `/proc`, `/dev`, and `/tmp`, and one read-write bind of the workspace
+itself, a network namespace with no interface but a down loopback, a closed
+five-name environment, `resource.setrlimit` bounds on CPU time, address space,
+and open files, and a timeout that SIGKILLs the whole sandboxed process
+group rather than the direct child alone -- so a model reached over a
+compromised endpoint, or one that simply writes a wrong answer, runs with none
+of this script's own credentials, filesystem reach, or network path. The
+fixtures are
 `remote/test-fixtures/code-agent-tasks/`: `task-01-write` writes a duration
 parser from a specification, `task-02-fix` repairs a `rolling_mean` that drops
 its newest sample and returns one window too few, and `task-03-refactor`
