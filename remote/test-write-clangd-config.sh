@@ -23,7 +23,8 @@ report() {
 root=$work/root
 mkdir -p "$root/remote" "$root/patches"
 cp "$script_directory/write-clangd-config.sh" "$root/remote/"
-source=$work/source
+# The user configuration enumerates llama.cpp* siblings of the named tree.
+source=$work/llama.cpp-fixture
 for directory in include ggml/include ggml/src common tools/server src vendor; do
     mkdir -p "$source/$directory"
 done
