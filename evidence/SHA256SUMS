@@ -1828,7 +1828,8 @@ afdb85e6a520caf2a224ab4089037f546737bafdbf8d1d92017f5253db817be2  evidence/raven
 2f55aa443d93b0192451215d94bb3f55ac51ed53b83ebb68b81776aba00a36b1  evidence/raven2-vulkan-kernel-census/20260902T2124Z/summary.tsv
 aaa87254d209ad1321ec02b38bffa3be9afeacf158baa11a50778317928c7ece  evidence/raven2-vulkan-kernel-census/20260902T2124Z/terminal-state.tsv
 187127bca25dc8733cd47114b8e6b59c2040bdc3a57122f6c70fac0e50d78290  evidence/raven2-vulkan-kernel-census/20260902T2124Z/wall-clock.tsv
-2bfeb66e2e863e2675ad03dc906aea412a46dad8b26ba18412225e295d90a38d  evidence/raven2-vulkan-kernel-census/README.md
+8f08eee92100ae60df35307f921649483f96ede7e504b4681f130bd043b42ca6  evidence/raven2-vulkan-kernel-census/README.md
+467b56c2adaefb461c507d4a05a40fed54ffffdbc53926353bdf0af91f1e564a  evidence/raven2-vulkan-kernel-census/decode-decomposition.md
 03ea6b14b19b3c9ea25d1ae08f1d7659239c26f590c2ada8513ad5b682b405ad  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-20260902T2312Z/README.md
 f39af63fdac85c15e08eb4cca65eaf5884d8ed5fa77765a0874b2e9bdbaaeb64  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-20260902T2312Z/arms.tsv
 612defeb6d1864a693b1a4d46f6794f54719f3a0fb6d314bdc734bde5e1d5f79  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-20260902T2312Z/arms/01-C/clock-sidecar-verdict.txt
@@ -1962,6 +1963,17 @@ a32e51302f9f04a598f53c4b005bed582c4e36a6ae72905038ec16bc35cd914f  evidence/raven
 5e452cd9174a7343fcf8f91d0ef8a150755cffae54d3670a6f7da3fdde3048e8  evidence/raven2-vulkan-kernel-census/e4/served-ab-20260902T2222Z/summary.tsv
 263f5894a4e33250071176fe8e833f70d13cd6862c14c479d0907ad33a49545d  evidence/raven2-vulkan-kernel-census/e4/served-ab-20260902T2222Z/terminal-state.tsv
 94b47c6698a0efc3714a04dd3b40496b876349ff8c25e7a8fd8a39d8887b94e4  evidence/raven2-vulkan-kernel-census/e4/served-ab-20260902T2222Z/wall-clock.tsv
+cc7944e76233bceabcdf8bedb339fc192025a503b64807f962a9fa9c70b3b0c9  evidence/raven2-vulkan-kernel-census/replay-corpus/02-P/clock-sidecar-verdict.txt
+616d57344b2043363a0e94419ca84225747760fd6e48a110c174a935f6437db5  evidence/raven2-vulkan-kernel-census/replay-corpus/02-P/clock-sidecar.tsv
+f6918ce2fac2e25bced716baaa00936cc20fa7ddf2690d23c8e11ff64cabb02a  evidence/raven2-vulkan-kernel-census/replay-corpus/02-P/request-window.tsv
+cf7f28cc5815fda26fab6e24d719e262a92994554f0b86044960ea97f241d546  evidence/raven2-vulkan-kernel-census/replay-corpus/10-I1/clock-sidecar-verdict.txt
+6a20384655119e9473ac09b959a1ffc95a6a3a46a7bf2565c814c87906d1a7e7  evidence/raven2-vulkan-kernel-census/replay-corpus/10-I1/clock-sidecar.tsv
+36081cad84d974aecadb3400b9b7039cf704583d5b55eff74a8456263892136f  evidence/raven2-vulkan-kernel-census/replay-corpus/10-I1/pipeline-census.tsv.xz
+d004f26a92f1af64668428337a1a2eca3f2b992efad77af9e085d18a06cd8ff4  evidence/raven2-vulkan-kernel-census/replay-corpus/10-I1/request-window.tsv
+4f9c0a82e3f20fba15d4cbcae26f9108bca0add2b5e324f93b4b0ef72d177cc0  evidence/raven2-vulkan-kernel-census/replay-corpus/13-S/request-window.tsv
+75e5d3b6cde1d31faef02a16287f0bbcf611505602dab351c94c041c733d7552  evidence/raven2-vulkan-kernel-census/replay-corpus/13-S/server-log-request.slice
+76a3424af7d841c7733220cb5307430562cb00206eff7c2e6b116de851ea4e6d  evidence/raven2-vulkan-kernel-census/replay-corpus/README.md
+33ed5a3892d54d8ebfc1a9973b883c3a7de599aa65cc4c816fa57edf8764d238  evidence/raven2-vulkan-kernel-census/state-preserving-campaign.md
 cf001a6a7c693020ab1513ca3390271bbc68aafb9dbd099d6a16db0fc3bf4343  evidence/representation-gate-16-bit.md
 209e63b71e40956071abf677d4eebb5fdcf1178ea959ebe1268567a7e899364c  evidence/research-claim-methodology.md
 232ef6daa437039ba781a8d9ad06c83d5af89ad871d3d1e264d68ab10c9b0e34  evidence/rocm-feasibility-audit.md
