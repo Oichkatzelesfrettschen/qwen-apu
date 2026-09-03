@@ -15,7 +15,7 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repository_root=$(CDPATH='' cd -- "$script_directory/.." && pwd)
 cd "$repository_root"
 
-for required_command in bash node shellcheck ruff mypy python3 curl flock git ps sha256sum c++; do
+for required_command in bash node shellcheck ruff mypy python3 curl flock git ps sha256sum; do
     if ! command -v "$required_command" >/dev/null 2>&1; then
         printf 'required quality-gate command is absent: %s\n' \
             "$required_command" >&2
@@ -160,36 +160,12 @@ gate_cell test-web-mcp derive remote/web-mcp/test-web-mcp.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/web-mcp/test-web-mcp.py'
 gate_cell test-authorize-broker derive remote/web-mcp/test-authorize-broker.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/web-mcp/test-authorize-broker.py'
-gate_cell test-summarize-kernel-census derive \
-    remote/test-summarize-kernel-census.py \
-    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-kernel-census.py'
-gate_cell test-sample-clock-sidecar derive remote/test-sample-clock-sidecar.py \
-    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-sample-clock-sidecar.py'
-gate_cell test-census-controls derive remote/test-census-controls.py \
-    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-census-controls.py'
-gate_cell test-census-replay-corpus derive \
-    remote/test-census-replay-corpus.py \
-    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-census-replay-corpus.py'
-gate_cell test-summarize-perf-logger-slice derive \
-    remote/test-summarize-perf-logger-slice.py \
-    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-perf-logger-slice.py'
-gate_cell test-summarize-margin-witness derive remote/test-summarize-margin-witness.py \
-    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-margin-witness.py'
-gate_cell test-summarize-radv-isa derive remote/test-summarize-radv-isa.py \
-    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-radv-isa.py'
-gate_cell test-depth derive remote/raven2-shader-lab/test-depth.py \
-    'PYTHONDONTWRITEBYTECODE=1 python3 remote/raven2-shader-lab/test-depth.py'
 
 # Ledger readers and registry checks: shell, no fixture server.
 gate_cell check-validated-tuples derive remote/check-validated-tuples.sh \
     remote/check-validated-tuples.sh
 gate_cell check-ledger-evidence derive remote/check-ledger-evidence.sh \
     remote/check-ledger-evidence.sh
-# Row shape and cited-source existence are properties of the tree, so the gate
-# asserts them here. The checks themselves observe software on the appliance or
-# the workstation helper and run there under the host argument.
-gate_cell check-install-requirements derive remote/check-install-requirements.sh \
-    'remote/check-install-requirements.sh validate'
 gate_cell test-model-registry derive remote/test-model-registry.sh \
     remote/test-model-registry.sh
 gate_cell test-model-tiers derive remote/test-model-tiers.sh \
@@ -217,12 +193,6 @@ gate_cell test-classify-checkpoint-semantics derive \
     remote/test-classify-checkpoint-semantics.sh
 gate_cell test-check-trace-source-status derive \
     remote/test-check-trace-source-status.sh remote/test-check-trace-source-status.sh
-gate_cell test-run-kernel-delta-witness derive remote/test-run-kernel-delta-witness.sh \
-    remote/test-run-kernel-delta-witness.sh
-gate_cell test-receipt-diff derive remote/raven2-shader-lab/test-receipt-diff.sh \
-    remote/raven2-shader-lab/test-receipt-diff.sh
-gate_cell test-lab-replay derive remote/raven2-shader-lab/test-lab-replay.sh \
-    remote/raven2-shader-lab/test-lab-replay.sh
 gate_cell test-web-presets derive remote/test-web-presets.sh \
     remote/test-web-presets.sh
 gate_cell test-qwen-capacity-policy derive remote/test-qwen-capacity-policy.sh \
@@ -262,15 +232,6 @@ gate_cell test-telemetry-session-records derive \
     remote/test-telemetry-session-records.sh
 gate_cell test-quality-roster derive remote/test-quality-roster.sh \
     remote/test-quality-roster.sh
-gate_cell test-await-quiescence derive remote/test-await-quiescence.sh \
-    remote/test-await-quiescence.sh
-gate_cell test-telemetry-broker derive remote/test-telemetry-broker.sh \
-    remote/test-telemetry-broker.sh
-gate_cell test-census-sha256 derive remote/test-census-sha256.sh \
-    remote/test-census-sha256.sh
-gate_cell test-run-raven2-vulkan-kernel-census derive \
-    remote/test-run-raven2-vulkan-kernel-census.sh \
-    remote/test-run-raven2-vulkan-kernel-census.sh
 
 # Served-page and full-chain replays: each starts a fixture server, a browser,
 # or a whole launch chain, and each costs minutes.
