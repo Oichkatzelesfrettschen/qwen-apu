@@ -1,0 +1,1 @@
+nir_blocks=1 isa_blocks=1 stats_blocks=1
