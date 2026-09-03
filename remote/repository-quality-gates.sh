@@ -140,6 +140,10 @@ remote/test-admit-web-router-fake.sh
 remote/test-quality-roster.sh
 remote/test-qwen-runtime-guards.sh
 remote/test-telemetry-session-records.sh
+PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-radv-isa.py
+PYTHONDONTWRITEBYTECODE=1 python3 remote/raven2-shader-lab/test-depth.py
+remote/raven2-shader-lab/test-receipt-diff.sh
+remote/raven2-shader-lab/test-lab-replay.sh
 remote/refresh-evidence-manifest.sh --check
 PYTHONDONTWRITEBYTECODE=1 python3 remote/check-text-policy.py
 

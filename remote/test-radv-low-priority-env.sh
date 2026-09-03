@@ -65,6 +65,16 @@ diagnostic_output=$(GGML_VK_PERF_LOGGER=1 GGML_VK_PIPELINE_STATS=mul_mat \
 printf '%s\n' "$diagnostic_output"
 printf '%s\n' "$diagnostic_output" | grep -Fx \
     'profile=diagnostic serialized=1 max_nodes=32 perf=1 stats=mul_mat radv=shaderstats census=1' >/dev/null
+# The sideplane candidate reads its two names through getenv() != NULL, so the
+# value 0 enables the feature and its log where the scrub is what keeps a
+# control arm a control. The request carries 0 for that reason.
+sideplane_ambient_output=$(GGML_VK_Q4K_SIDEPLANE=0 GGML_VK_Q4K_SIDEPLANE_LOG=0 \
+    QWEN_VULKAN_PROFILE=low-async \
+    "$wrapper" sh -c 'printf "sideplane=%s sideplane_log=%s\n" \
+        "${GGML_VK_Q4K_SIDEPLANE-unset}" "${GGML_VK_Q4K_SIDEPLANE_LOG-unset}"')
+printf '%s\n' "$sideplane_ambient_output" | grep -Fx \
+    'sideplane=unset sideplane_log=unset' >/dev/null
+
 serving_census_output=$(GGML_VK_PERF_LOGGER=1 GGML_VK_PIPELINE_CENSUS=stale QWEN_PIPELINE_CENSUS=1 \
     QWEN_VULKAN_PROFILE=low-async "$wrapper" sh -c 'printf "perf=%s census=%s\n" \
         "${GGML_VK_PERF_LOGGER-unset}" "${GGML_VK_PIPELINE_CENSUS-unset}"')

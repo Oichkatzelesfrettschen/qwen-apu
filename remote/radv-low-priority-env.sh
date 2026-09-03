@@ -82,6 +82,13 @@ unset GGML_VK_PERF_LOGGER_FREQUENCY
 unset GGML_VK_PIPELINE_STATS
 unset GGML_VK_PIPELINE_CENSUS
 unset GGML_VK_PREFER_HOST_MEMORY
+# The Q4_K activation sideplane candidate gates its feature and its reuse log
+# on getenv() returning a pointer rather than on the value, so an ambient
+# GGML_VK_Q4K_SIDEPLANE=0 enables the pre-pass a control arm is defined by
+# leaving off. Both names belong in the scrub for that reason; the pinned
+# commit reads neither.
+unset GGML_VK_Q4K_SIDEPLANE
+unset GGML_VK_Q4K_SIDEPLANE_LOG
 unset GGML_VK_SUBALLOCATION_BLOCK_SIZE
 unset GGML_VK_SUBMIT_TRACE
 unset GGML_VK_SYNC_LOGGER
