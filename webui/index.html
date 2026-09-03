@@ -2121,6 +2121,20 @@ function turn(who, cls) {
   return { root: d, body: b, who: w };
 }
 
+function openRoundInTurn(root) {
+  // A continuation round appends its own speaker line and answer body to a turn
+  // that already holds an earlier round, so each round keeps its own model
+  // badge and its own timings while the reader sees one turn.
+  const w = document.createElement('div');
+  w.className = 'who';
+  w.textContent = 'qwen';
+  const b = document.createElement('div');
+  b.className = 'body';
+  root.append(w, b);
+  logEl.scrollTop = logEl.scrollHeight;
+  return { root, body: b, who: w };
+}
+
 // Clear opens a new conversation. The record the panel already holds keeps the
 // transcript this button leaves, so clearing the log discards nothing.
 $('#clear').onclick = () => { startNewConversation(); };
@@ -2254,8 +2268,15 @@ async function streamCompletion(messages, view, webPermission, imagePermission) 
   return { answer, reasoning, calls, model };
 }
 
-function openTurnView() {
-  const t = turn('qwen');
+function openTurnView(sharedRoot) {
+  /* Open one round's view, inside an existing turn where the caller names one.
+
+     A turn that proposes a tool runs several completion rounds, and each round
+     is one assistant message. They share a turn block, so a generated image
+     sits between the round that proposed it and the round that describes it:
+     the artifact card appends to this root and the next round's speaker line,
+     answer, and meta append after it. */
+  const t = sharedRoot ? openRoundInTurn(sharedRoot) : turn('qwen');
   const think = document.createElement('details');
   think.className = 'think';
   const sum = document.createElement('summary');
@@ -2923,9 +2944,13 @@ async function send() {
   const fetchBudget = { remaining: WEB_FETCH_BUDGET_PER_TURN };
   const searchBudget = { remaining: WEB_SEARCH_BUDGET_PER_TURN };
   const imageBudget = { remaining: IMAGE_GENERATE_BUDGET_PER_TURN };
+  // Every round of this turn renders into one turn block, so a tool result's
+  // artifact card and the answer the next round writes about it stay together.
+  let turnRoot = null;
   try {
     for (let round = 0; round < CONTINUATION_CAP; round++) {
-      const view = openTurnView();
+      const view = openTurnView(turnRoot);
+      turnRoot = view.turn.root;
       // buildRequestBody reads `requestModel` at request time, so this
       // snapshot names the model that proposed whatever tool_calls the
       // stream returns; the approval and the executor both compare the
@@ -3279,13 +3304,18 @@ function restoredCallSequence(messages) {
   return highest + 1;
 }
 
-async function renderRestoredArtifactCard(container, artifact) {
-  /* Rebuild one artifact card from its digest. The bytes come back over the
-     listener's own credentialed route rather than out of the record, so a
-     conversation costs the digest and the geometry in the store whatever the
-     image weighs. A listener this page holds no origin for, or one that
-     refuses the read, leaves the digest and the provenance route on the card
-     with the reason beside them. */
+function renderRestoredArtifactCard(container, artifact) {
+  /* Rebuild one artifact card from its digest. The card takes its place in the
+     turn while this call runs, so a restore that reads several artifacts over
+     the network keeps each one between the round that generated it and the
+     round that describes it; the bytes arrive into the card that is already
+     there.
+
+     The image comes back over the listener's own credentialed route rather
+     than out of the record, so a conversation costs the digest and the
+     geometry in the store whatever the image weighs. A listener this page
+     holds no origin for, or one that refuses the read, leaves the digest and
+     the provenance route on the card with the reason beside them. */
   const card = document.createElement('figure');
   card.className = 'image-artifact';
   const caption = document.createElement('figcaption');
@@ -3296,27 +3326,30 @@ async function renderRestoredArtifactCard(container, artifact) {
     `${artifact.steps} steps`,
     artifact.profile
   ].join(' | ');
-  let blobUrl = null;
-  try {
-    blobUrl = await loadArtifactBlobUrl(artifact.sha256, null);
-  } catch (error) {
-    const note = document.createElement('div');
-    note.className = 'meta bad';
-    note.textContent = `the artifact did not load: ${error.message || error}; ` +
-      `provenance ${artifact.provenanceUrl}`;
-    card.append(caption, note);
-    container.append(card);
-    return;
-  }
-  const image = document.createElement('img');
-  image.alt = artifact.prompt || '';
-  image.src = blobUrl;
-  card.append(image, caption);
+  card.append(caption);
   container.append(card);
+  void (async () => {
+    let blobUrl = null;
+    try {
+      blobUrl = await loadArtifactBlobUrl(artifact.sha256, null);
+    } catch (error) {
+      const note = document.createElement('div');
+      note.className = 'meta bad';
+      note.textContent = `the artifact did not load: ${error.message || error}; ` +
+        `provenance ${artifact.provenanceUrl}`;
+      card.append(note);
+      return;
+    }
+    const image = document.createElement('img');
+    image.alt = artifact.prompt || '';
+    image.src = blobUrl;
+    card.insertBefore(image, caption);
+  })();
+  return card;
 }
 
-function renderRestoredAssistantTurn(entry) {
-  const view = turn('qwen');
+function renderRestoredAssistantTurn(entry, sharedRoot) {
+  const view = sharedRoot ? openRoundInTurn(sharedRoot) : turn('qwen');
   void appendModelBadge(view.who, entry.model);
   view.body.textContent = entry.content || '';
   if (entry.reasoning) {
@@ -3338,8 +3371,9 @@ function renderRestoredAssistantTurn(entry) {
     view.root.append(proposal);
   }
   for (const artifact of entry.artifacts || []) {
-    void renderRestoredArtifactCard(view.root, artifact);
+    renderRestoredArtifactCard(view.root, artifact);
   }
+  return view.root;
 }
 
 function restoreTranscript() {
@@ -3348,11 +3382,16 @@ function restoreTranscript() {
      carries the proposed call and the answer the model wrote after reading the
      result. */
   history = [];
+  // A tool-calling assistant message opens a turn its continuation rounds join,
+  // the grouping the live path renders, so a restored image keeps the answer
+  // that follows it under the same speaker.
+  let continuationRoot = null;
   for (const entry of conversationMessages) {
     if (!entry || typeof entry.role !== 'string') continue;
     if (entry.role === 'user') {
       history.push({ role: 'user', content: entry.content });
       turn('you', 'me').body.textContent = entry.shown ?? entry.content;
+      continuationRoot = null;
       continue;
     }
     if (entry.role === 'tool') {
@@ -3367,7 +3406,8 @@ function restoreTranscript() {
       message.tool_calls = entry.tool_calls;
     }
     history.push(message);
-    renderRestoredAssistantTurn(entry);
+    const root = renderRestoredAssistantTurn(entry, continuationRoot);
+    continuationRoot = message.tool_calls ? root : null;
   }
   toolCallSequence = restoredCallSequence(conversationMessages);
 }

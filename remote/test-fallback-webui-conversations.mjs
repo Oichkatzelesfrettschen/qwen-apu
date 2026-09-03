@@ -238,6 +238,14 @@ globalThis.webuiConversationTest = {
     await saveConversation();
     return conversationId;
   },
+  async appendFollowUp(text, servedModel) {
+    // The round that reads the tool result is a second assistant message of the
+    // same turn, which is what the restore has to group under one speaker.
+    const message = { role: 'assistant', content: text };
+    history.push(message);
+    rememberAssistantMessage(message, servedModel, '');
+    await saveConversation();
+  },
   async list() {
     return (await conversationStore()).list();
   },
@@ -383,6 +391,10 @@ const savedId = await first.api.runFixtureTurn(fixture);
 await flushPromises();
 assert.ok(savedId, 'the fixture turn produced no conversation id');
 
+const FOLLOW_UP_TEXT = 'The fox stands in fresh snow.';
+await first.api.appendFollowUp(FOLLOW_UP_TEXT, 'image-capable');
+await flushPromises();
+
 const savedRecord = await first.api.read(savedId);
 assert.ok(savedRecord, 'the store holds no record for the saved conversation');
 const serialized = JSON.stringify(savedRecord);
@@ -399,9 +411,10 @@ for (const secret of [FIXTURE_API_KEY, FIXTURE_SESSION_SECRET, FIXTURE_GRANT]) {
 assert.equal(serialized.includes('authorization'), false,
   'the serialized conversation carries an authorization field');
 
-assert.equal(savedRecord.messages.length, 3);
+assert.equal(savedRecord.messages.length, 4);
 assert.equal(savedRecord.messages[0].role, 'user');
 assert.equal(savedRecord.messages[1].role, 'assistant');
+assert.equal(savedRecord.messages[3].content, FOLLOW_UP_TEXT);
 assert.equal(savedRecord.messages[1].model, 'image-capable',
   'the record does not name the model that answered');
 assert.equal(savedRecord.messages[2].role, 'tool');
@@ -425,10 +438,11 @@ await first.api.switchConversation(savedId);
 await flushPromises();
 const restored = first.api.state();
 assert.equal(restored.conversationId, savedId);
-assert.equal(restored.history.length, 3);
+assert.equal(restored.history.length, 4);
 assert.equal(restored.history[0].role, 'user');
 assert.equal(restored.history[1].tool_calls[0].id, 'call_0');
 assert.equal(restored.history[2].role, 'tool');
+assert.equal(restored.history[3].content, FOLLOW_UP_TEXT);
 assert.equal(restored.toolCallSequence, 1,
   'a restored conversation reuses a call id an earlier message answered');
 assert.equal(first.location.hash, `#/c/${savedId}`,
@@ -451,6 +465,14 @@ assert.ok(restoredTranscript[1].includes('image-capable'),
   'the restored assistant turn names no served model');
 assert.ok(restoredTranscript[1].includes(FIXTURE_SHA256),
   'the restored assistant turn carries no artifact digest');
+// The image and the answer the model wrote after reading the tool result share
+// one turn, and the answer follows the artifact inside it.
+assert.ok(restoredTranscript[1].includes(FOLLOW_UP_TEXT),
+  'the restored turn holds no follow-up round');
+assert.ok(
+  restoredTranscript[1].indexOf(FOLLOW_UP_TEXT) >
+    restoredTranscript[1].indexOf(FIXTURE_SHA256),
+  'the follow-up round renders ahead of the artifact it describes');
 
 // Rename and delete move the panel.
 await first.api.renameConversation(savedId);
