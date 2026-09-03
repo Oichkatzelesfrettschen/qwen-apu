@@ -147,6 +147,241 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
     QWEN_ROUTER_PRESETS=$router_presets
     QWEN_ROUTER_PRESET_SHA256=$router_preset_sha256
     export QWEN_ROUTER_PRESETS QWEN_ROUTER_PRESET_SHA256
+
+    # The merged preset names the sections carrying an MCP configuration, and
+    # the marker is read off the snapshot rather than the source, so an
+    # activation between the two reads cannot change what the broker signs
+    # for. A section reaching the network needs the approval broker issuing
+    # its grants and the search instance answering its queries, and it needs
+    # the repository page, since the pinned llama UI build neither scopes
+    # `GET /tools` by model nor posts the routing key beside the tool.
+    web_sections=$(sed -n 's/^# qwen_web_sections=//p' "$router_presets")
+    case $web_sections in
+        '-') web_sections='' ;;
+    esac
+    if [ -n "$web_sections" ]; then
+        case $web_sections in
+            *,*)
+                # One broker signs for one profile: `POST /grant` refuses a
+                # profile_id other than its own `--profile`, so a second web
+                # section would leave the browser learning that after a human
+                # approved the search.
+                printf 'the preset carries web sections %s, and one broker signs for one profile\n' \
+                    "$web_sections" >&2
+                printf 'leave one validator-gated row in the web profile ledger and regenerate\n' >&2
+                exit 2
+                ;;
+        esac
+        if [ "${QWEN_WEB_AUTHORIZER_READY:-0}" != 1 ]; then
+            printf 'the preset carries the web section %s and QWEN_WEB_AUTHORIZER_READY names %s\n' \
+                "$web_sections" "${QWEN_WEB_AUTHORIZER_READY:-0}" >&2
+            printf 'the marker asserts that the approval dialog and the single-use grant run\n' >&2
+            exit 2
+        fi
+        QWEN_WEB_PROFILE=$web_sections
+        # Browser calls and broker approvals share the server API key, so a
+        # tool-bearing section serves an authenticated listener whatever the
+        # caller asked for.
+        QWEN_REQUIRE_API_KEY=1
+        QWEN_WEB_BROKER=1
+        QWEN_WEB_BROKER_PORT=${QWEN_WEB_BROKER_PORT:-8571}
+        QWEN_WEB_STATE_DIR=${QWEN_WEB_STATE_DIR:-$state_directory/web-mcp}
+        export QWEN_WEB_PROFILE QWEN_REQUIRE_API_KEY QWEN_WEB_BROKER \
+            QWEN_WEB_BROKER_PORT QWEN_WEB_STATE_DIR
+
+        # The preset binds the ledger it was generated from, so the profile row
+        # the launch reads is the row that produced the section.
+        web_profiles=$(sed -n 's/^# qwen_web_profiles_path=//p' "$router_presets")
+        web_provider=$(sed -n 's/^# qwen_web_provider=//p' "$router_presets")
+        case $web_profiles in
+            /*) ;;
+            *)
+                printf 'the merged preset omits an absolute web profile ledger path: %s\n' \
+                    "$router_presets" >&2
+                exit 2
+                ;;
+        esac
+        if [ ! -r "$web_profiles" ]; then
+            printf 'web profile ledger is unreadable: %s\n' "$web_profiles" >&2
+            exit 2
+        fi
+        if [ -n "${QWEN_WEB_PROFILES:-}" ] &&
+            [ "$QWEN_WEB_PROFILES" != "$web_profiles" ]; then
+            printf 'QWEN_WEB_PROFILES names %s where the preset binds %s\n' \
+                "$QWEN_WEB_PROFILES" "$web_profiles" >&2
+            exit 2
+        fi
+        QWEN_WEB_PROFILES=$web_profiles
+        export QWEN_WEB_PROFILES
+        case $web_provider in
+            exa | fake | searxng) ;;
+            *)
+                printf 'the merged preset provider must be exa, fake, or searxng: %s\n' \
+                    "${web_provider:-<absent>}" >&2
+                exit 2
+                ;;
+        esac
+        QWEN_WEB_PROVIDER=$web_provider
+        export QWEN_WEB_PROVIDER
+
+        # The signing key is required whole before anything launches. A broker
+        # that starts without a usable key answers `listening` and then refuses
+        # the first approval a human has already given, so every rule the
+        # broker applies at its own startup is applied here, where the refusal
+        # names the rule. The path alone crosses into the child.
+        signing_key_file=${QWEN_WEB_TOKEN_KEY_FILE:-}
+        refuse_signing_key() {
+            printf 'the grant signing key %s: %s\n' "$1" \
+                "${signing_key_file:-<unset>}" >&2
+            printf 'QWEN_WEB_TOKEN_KEY_FILE names a regular file at mode 0600, owned by this user, holding the HMAC key\n' >&2
+            exit 2
+        }
+        [ -n "$signing_key_file" ] || refuse_signing_key 'is unset'
+        [ ! -L "$signing_key_file" ] || refuse_signing_key 'is a symbolic link'
+        [ -f "$signing_key_file" ] || refuse_signing_key 'is not a regular file'
+        signing_key_owner=$(stat -c %u "$signing_key_file" 2>/dev/null ||
+            echo unknown)
+        if [ "$signing_key_owner" != "$(id -u)" ]; then
+            refuse_signing_key "is owned by uid $signing_key_owner rather than $(id -u)"
+        fi
+        [ -r "$signing_key_file" ] || refuse_signing_key 'is unreadable'
+        [ -s "$signing_key_file" ] || refuse_signing_key 'is empty'
+        signing_key_mode=$(stat -c %a "$signing_key_file" 2>/dev/null ||
+            echo unknown)
+        case $signing_key_mode in
+            400 | 600) ;;
+            *) refuse_signing_key "carries mode $signing_key_mode rather than 0600" ;;
+        esac
+        export QWEN_WEB_TOKEN_KEY_FILE
+
+        # llama-server reports an unreadable mcp-servers-config as a child
+        # startup failure well after the listener is up, and reads a section
+        # projector only when a request selects that child, so every path a
+        # section names is read here. The bundle recorded each configuration
+        # by path and digest, and the comparison against that record is what
+        # binds the file the child will read to the one the bundle described.
+        missing_named_artifacts=0
+        named_artifact_list=$(mktemp "$state_directory/.router-artifacts.XXXXXX")
+        for artifact_key in LLAMA_ARG_MCP_SERVERS_CONFIG LLAMA_ARG_MMPROJ; do
+            sed -n "s/^[[:space:]]*${artifact_key}[[:space:]]*=[[:space:]]*//p" \
+                "$router_presets" >"$named_artifact_list"
+            while IFS= read -r named_artifact; do
+                [ -n "$named_artifact" ] || continue
+                if [ ! -f "$named_artifact" ]; then
+                    printf 'the preset names %s and this machine holds no file for it: %s\n' \
+                        "$artifact_key" "$named_artifact" >&2
+                    missing_named_artifacts=$((missing_named_artifacts + 1))
+                fi
+            done <"$named_artifact_list"
+        done
+        rm -f -- "$named_artifact_list"
+        if [ "$missing_named_artifacts" -ne 0 ]; then
+            printf 'regenerate the preset tree with remote/build-router-presets.sh\n' >&2
+            exit 2
+        fi
+        deployment_web_mcp_manifest=$active_deployment_directory/web-mcp-manifest.tsv
+        if [ -n "$active_deployment_directory" ] &&
+            [ -f "$deployment_web_mcp_manifest" ]; then
+            while IFS='	' read -r recorded_section recorded_path \
+                recorded_sha256; do
+                case $recorded_section in
+                    '#'* | '') continue ;;
+                esac
+                measured_sha256=$(sha256sum -- "$recorded_path" |
+                    cut -d ' ' -f 1) || exit 1
+                if [ "$measured_sha256" != "$recorded_sha256" ]; then
+                    printf 'the MCP configuration for %s changed since the bundle recorded it: expected %s, measured %s\n' \
+                        "$recorded_section" "$recorded_sha256" \
+                        "$measured_sha256" >&2
+                    printf 'regenerate the preset tree and assemble a bundle against it\n' >&2
+                    exit 2
+                fi
+            done <"$deployment_web_mcp_manifest"
+            printf 'web_mcp_configurations=verified record=%s\n' \
+                "$deployment_web_mcp_manifest"
+        fi
+
+        # Provider searxng names one local instance and this launch owns it.
+        # The endpoint comes from the ledger row the section was generated
+        # from, and the port has to be free here, because the session proves a
+        # socket and a child process together one link later, after the model
+        # has begun loading.
+        if [ "$web_provider" = searxng ]; then
+            profile_searxng_url=$(awk -F'\t' -v profile="$QWEN_WEB_PROFILE" \
+                '$1 == profile { print $17; exit }' "$web_profiles")
+            case $profile_searxng_url in
+                http://127.0.0.1:[0-9]*)
+                    searxng_port=${profile_searxng_url#http://127.0.0.1:}
+                    ;;
+                *) searxng_port='' ;;
+            esac
+            case $searxng_port in
+                '' | *[!0-9]*)
+                    printf 'profile %s names searxng_url %s, and this launch starts the loopback instance alone\n' \
+                        "$QWEN_WEB_PROFILE" \
+                        "${profile_searxng_url:-<absent>}" >&2
+                    exit 2
+                    ;;
+            esac
+            if command -v ss >/dev/null 2>&1 &&
+                ss -ltn "sport = :$searxng_port" 2>/dev/null |
+                grep -q ":$searxng_port"; then
+                printf 'port %s already carries a listener, and this launch starts its own search instance there\n' \
+                    "$searxng_port" >&2
+                printf 'stop it with remote/searxng-launch.sh stop, or remote/qwen-teardown.sh\n' >&2
+                exit 2
+            fi
+            QWEN_WEB_SEARXNG=1
+            QWEN_SEARXNG_PORT=$searxng_port
+            export QWEN_WEB_SEARXNG QWEN_SEARXNG_PORT
+        fi
+
+        # The page the router serves is the executor the browser runs, and the
+        # two route shapes the approval path depends on are read here so a
+        # directory holding some other index.html refuses before the listener
+        # exists.
+        QWEN_STATIC_PATH=${QWEN_STATIC_PATH:-"$script_directory/../webui"}
+        if [ ! -f "$QWEN_STATIC_PATH/index.html" ]; then
+            printf 'a web section serves the fallback page and finds no index.html under %s\n' \
+                "$QWEN_STATIC_PATH" >&2
+            exit 2
+        fi
+        if ! grep -qF 'tools?model=' "$QWEN_STATIC_PATH/index.html" ||
+            ! grep -qF 'model, tool: toolName, params' \
+                "$QWEN_STATIC_PATH/index.html"; then
+            printf 'the page under %s composes no model-scoped /tools request; a web section serves webui/index.html\n' \
+                "$QWEN_STATIC_PATH" >&2
+            exit 2
+        fi
+        export QWEN_STATIC_PATH
+
+        # A section reaching the network serves the loopback unless the
+        # operator decided otherwise, so an ordinary launch on 0.0.0.0 with a
+        # search section is exactly as guarded as the web launch on the LAN.
+        if [ "${QWEN_WEB_LAN:-0}" = 1 ]; then
+            web_lan_policy=$script_directory/web-lan-exposure.sh
+            if [ ! -r "$web_lan_policy" ]; then
+                printf 'the LAN exposure policy is unreadable: %s\n' \
+                    "$web_lan_policy" >&2
+                exit 2
+            fi
+            # shellcheck source=remote/web-lan-exposure.sh
+            . "$web_lan_policy"
+            admit_web_lan_exposure "$router_presets" "$state_directory/api.key"
+            bind_host=$QWEN_BIND_HOST
+            health_probe_host=$QWEN_WEB_LAN_ADDRESS
+            [ "$bind_host" != 0.0.0.0 ] || health_probe_host=127.0.0.1
+        elif [ "$bind_host" != 127.0.0.1 ] && [ "$bind_host" != localhost ]; then
+            printf 'the preset carries the web section %s and QWEN_BIND_HOST requests %s\n' \
+                "$web_sections" "$bind_host" >&2
+            printf 'a web section reaches the network through its MCP server; serve 127.0.0.1, or set QWEN_WEB_LAN=1 with QWEN_WEB_LAN_ADDRESS to serve the network deliberately\n' >&2
+            exit 2
+        fi
+        printf 'web_section=%s provider=%s broker_port=%s searxng=%s static_path=%s bind=%s lan_exposure=%s\n' \
+            "$web_sections" "$web_provider" "$QWEN_WEB_BROKER_PORT" \
+            "${QWEN_WEB_SEARXNG:-0}" "$QWEN_STATIC_PATH" "$bind_host" \
+            "${QWEN_WEB_LAN:-0}"
+    fi
 fi
 
 # Router mode sizes the machine against the largest checkpoint the picker can
