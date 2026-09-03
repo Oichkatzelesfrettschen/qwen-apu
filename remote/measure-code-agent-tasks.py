@@ -455,8 +455,15 @@ def parse_arguments(argv):
     # the directory this script was invoked from -- and the workspace is not
     # the only thing missing from the sandbox's mount namespace; a venv
     # outside /usr needs its own bind (_sandbox_python_extra_binds), which
-    # only runs once this is already absolute.
-    arguments.python = str(pathlib.Path(arguments.python).resolve())
+    # only runs once this is already absolute. .absolute() rather than
+    # .resolve(): a venv's bin/python is conventionally a symlink to the
+    # system interpreter, and CPython's own venv detection keys off the path
+    # it was invoked through, not the symlink's target -- resolving it here
+    # would both defeat _sandbox_python_extra_binds's pyvenv.cfg lookup (the
+    # resolved path no longer sits inside the venv directory) and hand
+    # grade() a plain system interpreter that never activates the venv's
+    # site-packages, regardless of what gets bound into the sandbox.
+    arguments.python = str(pathlib.Path(arguments.python).absolute())
     return arguments
 
 

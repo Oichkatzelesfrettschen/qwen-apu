@@ -55,6 +55,48 @@ class ExtractBlockTests(unittest.TestCase):
         )
 
 
+class VenvPythonPathTests(unittest.TestCase):
+    """--python's venv override is a symlink by convention, and CPython's own
+    venv detection keys off the path it was invoked through rather than the
+    symlink's target -- resolving it away (Path.resolve()) both defeats
+    _sandbox_python_extra_binds's pyvenv.cfg lookup and hands grade() a bare
+    system interpreter that never activates the venv's site-packages."""
+
+    def setUp(self):
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.venv_root = Path(self.temporary_directory.name) / "fake-venv"
+        (self.venv_root / "bin").mkdir(parents=True)
+        (self.venv_root / "pyvenv.cfg").write_text("home = /usr\n", encoding="utf-8")
+        self.venv_python = self.venv_root / "bin" / "python"
+        self.venv_python.symlink_to(sys.executable)
+
+    def tearDown(self):
+        self.temporary_directory.cleanup()
+
+    def test_extra_binds_finds_the_venv_root_from_the_symlink_path(self):
+        binds = module._sandbox_python_extra_binds(str(self.venv_python))
+        self.assertEqual(binds, ["--ro-bind", str(self.venv_root), str(self.venv_root)])
+
+    def test_extra_binds_is_empty_once_the_symlink_is_resolved_away(self):
+        # This is the defect itself, pinned as a control: resolving the
+        # symlink first (what parse_arguments must not do) loses the venv.
+        resolved = str(Path(self.venv_python).resolve())
+        self.assertEqual(module._sandbox_python_extra_binds(resolved), [])
+
+    def test_parse_arguments_keeps_the_symlink_rather_than_its_target(self):
+        arguments = module.parse_arguments(
+            [
+                "--self-check",
+                "--output-directory",
+                self.temporary_directory.name,
+                "--python",
+                str(self.venv_python),
+            ]
+        )
+        self.assertEqual(arguments.python, str(self.venv_python))
+        self.assertTrue(arguments.python.startswith(str(self.venv_root)))
+
+
 class GradeSandboxTests(unittest.TestCase):
     def test_task_without_seed_workspace_grades_without_raising(self):
         # task-01-write ships no workspace/ directory (only task-02-fix and
