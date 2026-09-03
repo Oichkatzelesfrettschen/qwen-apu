@@ -12,8 +12,11 @@ The rule. A load's role is decided inside the range by the operations its own
 forward cone performs, with the cone cut at the float multiplies and adds where
 the phases join:
 
-  activation        every `buffer_load_dwordx4`; the mat-vec reads the
-                    activation vector as `vec4` and nothing else at that width
+  activation        a `buffer_load_dwordx4` whose own cone names no scale mask;
+                    the mat-vec reads the activation vector as `vec4`, and the
+                    width alone stops separating the roles once a variant reads
+                    the twelve aligned scale bytes at the same width, which is
+                    what `llama-vulkan-q4k-scale-word-select.patch` does
   superblock_scale  a cone reaching `v_cvt_f32_f16` (the `dm` pair) or masking
                     with 0x3f3f3f3f or 0xc0c0c0c0 (the packed six-bit scales),
                     then closed: a load joins the role where its cone shares an
@@ -271,15 +274,13 @@ def load_roles(instructions, sources, constants):
     for position, (mnemonic, _operands) in enumerate(instructions):
         if not mnemonic.startswith(LOAD_PREFIXES):
             continue
-        if mnemonic.startswith("buffer_load_dwordx4"):
-            roles[position] = "activation"
-            continue
         cones[position] = cut_cone(position)
-        roles[position] = (
-            "superblock_scale"
-            if any(names_scale_mask(index) for index in cones[position])
-            else "weight_nibble"
-        )
+        names_scale = any(names_scale_mask(index) for index in cones[position])
+        if mnemonic.startswith("buffer_load_dwordx4") and not names_scale:
+            roles[position] = "activation"
+            del cones[position]
+            continue
+        roles[position] = "superblock_scale" if names_scale else "weight_nibble"
 
     changed = True
     while changed:
