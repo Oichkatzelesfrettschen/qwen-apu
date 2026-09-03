@@ -43,9 +43,13 @@ prefill_ladder_row_threads        2
 model                             qwen38-2b-distill, sha256 4aa0fb13...
 ```
 
-The 32768 rung clamps to 32719 under `model_context - generate_tokens - tail_reserve`,
-which is the repair ba64ef3 made, and the ledger's own two-thread row supplies the
-`C T T C` subject. The eight arms per depth make 32 arms.
+The 32768 rung clamps to 32719 under
+`model_context - generate_tokens - tail_reserve - prompt_n_slack`, which
+`run-prefill-ladder.sh:338` computes as `32768 - 16 - 32 - 1`; the slack term admits one
+token of excess of `timings.prompt_n` over the tokenized count, so it is held back from
+the prompt the same way the generation length and the tail reserve are. Clamping rather
+than skipping is the repair ba64ef3 made. The ledger's own two-thread row supplies the
+`C T T C` subject, and the eight arms per depth make 32 arms.
 
 ## What the run needs
 
