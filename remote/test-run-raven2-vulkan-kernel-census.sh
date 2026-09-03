@@ -84,10 +84,37 @@ for runtime_script in qwen-launch.sh qwen-teardown.sh radv-low-priority-env.sh; 
 done
 # The sync writes runtime-tree-manifest.tsv beside remote/, and the runner
 # binds its head and payload digests into the contract; a tree without one
-# is refused.
-runtime_tree_manifest=$temporary_directory/runtime-tree-manifest.tsv
-printf 'git_head\t%s\nremote_payload_tree_sha256\t%s\npatches_payload_tree_sha256\t%s\n' \
-    "$runtime_git_head" "$foreign_sha256" "$registry_sha256" >"$runtime_tree_manifest"
+# is refused. Every arm reruns check-runtime-tree.sh over this root, so the
+# fixture manifest carries the per-file rows and the payload digests that
+# reader recomputes rather than three header rows alone. sync-runtime-tree.sh's
+# own recipe is one `path<TAB>sha256<TAB>mode` row per file in LC_ALL=C order
+# per payload directory, and each payload digest is the SHA-256 of that
+# directory's rows; this tree carries remote/ alone, so the patches digest is
+# the SHA-256 of no bytes, which is what the checker recomputes from a tree
+# holding no patches directory.
+write_runtime_tree_manifest() {
+    manifest_tree_root=$1
+    manifest_rows=$manifest_tree_root/.runtime-tree-rows
+    (
+        cd "$manifest_tree_root" || exit 1
+        find remote -type f | LC_ALL=C sort | while IFS= read -r payload_file; do
+            payload_mode=-
+            [ -x "$payload_file" ] && payload_mode=x
+            printf '%s\t%s\t%s\n' "$payload_file" \
+                "$(sha256sum "$payload_file" | cut -d ' ' -f 1)" "$payload_mode"
+        done
+    ) >"$manifest_rows"
+    {
+        printf 'git_head\t%s\n' "$runtime_git_head"
+        printf 'remote_payload_tree_sha256\t%s\n' \
+            "$(sha256sum "$manifest_rows" | cut -d ' ' -f 1)"
+        printf 'patches_payload_tree_sha256\t%s\n' \
+            "$(printf '' | sha256sum | cut -d ' ' -f 1)"
+        cat "$manifest_rows"
+    } >"$manifest_tree_root/runtime-tree-manifest.tsv"
+    rm -f -- "$manifest_rows"
+}
+write_runtime_tree_manifest "$temporary_directory"
 runtime_remote_unmanifested=$temporary_directory/unmanifested/remote
 mkdir -p "$runtime_remote_unmanifested"
 for runtime_script in qwen-launch.sh qwen-teardown.sh radv-low-priority-env.sh; do
@@ -1156,7 +1183,7 @@ for linked_member in model-registry.sh models.tsv ctx-checkpoints.tsv \
     summarize-kernel-census.py summarize-census-controls.py \
     sample-clock-sidecar.py validate-clock-sidecar.py \
     telemetry-broker.c build-telemetry-broker.sh \
-    verify-external-vulkan-lease.py \
+    verify-external-vulkan-lease.py check-runtime-tree.sh \
     summarize-perf-logger-slice.py; do
     ln -s -- "$script_directory/$linked_member" "$signal_directory/$linked_member"
 done
@@ -1441,7 +1468,7 @@ for linked_member in model-registry.sh models.tsv ctx-checkpoints.tsv \
     summarize-kernel-census.py summarize-census-controls.py \
     sample-clock-sidecar.py \
     telemetry-broker.c build-telemetry-broker.sh \
-    verify-external-vulkan-lease.py \
+    verify-external-vulkan-lease.py check-runtime-tree.sh \
     summarize-perf-logger-slice.py; do
     ln -s -- "$script_directory/$linked_member" "$brick_directory/$linked_member"
 done
@@ -1555,6 +1582,30 @@ env >>"$arm_environment"
 if [ "$(arm_control replace_model)" = "$1" ]; then
     printf 'fixture-model-b\n' >"$2"
 fi
+# The three runtime inputs a sync or an edit moves under a running campaign,
+# each applied after the named arm's own launch so the arm that reads it is the
+# one the campaign ends at.
+resync_root=$(arm_control runtime_root)
+if [ -n "$resync_root" ] && [ "$(arm_control resync_head)" = "$1" ]; then
+    # A sync whose payload is byte-identical advances the manifest's head
+    # alone, which check-runtime-tree.sh admits as payload-neutral, so the
+    # campaign's own row comparison is what names it.
+    awk -F'\t' -v OFS='\t' \
+        '$1 == "git_head" { $2 = "89abcdef0123456789abcdef0123456789abcdef" } { print }' \
+        "$resync_root/runtime-tree-manifest.tsv" \
+        >"$resync_root/runtime-tree-manifest.new"
+    mv -- "$resync_root/runtime-tree-manifest.new" \
+        "$resync_root/runtime-tree-manifest.tsv"
+fi
+if [ -n "$resync_root" ] && [ "$(arm_control resync_payload)" = "$1" ]; then
+    # An edit inside remote/ leaves every manifest row where it stands and
+    # moves the bytes under them, so the recompute is what reads it.
+    printf '#!/bin/sh\nexit 3\n' >"$resync_root/remote/qwen-teardown.sh"
+    chmod +x "$resync_root/remote/qwen-teardown.sh"
+fi
+if [ "$(arm_control mutate_ledger)" = "$1" ]; then
+    printf '# a row appended under the campaign\n' >>"$QWEN_MODEL_ARTIFACTS"
+fi
 python3 - "$2" "$QWEN_RESULT_DIRECTORY/runtime-inputs.json" <<'RUNTIME_INPUTS'
 import hashlib, json, pathlib, sys
 model = pathlib.Path(sys.argv[1]).read_bytes()
@@ -1569,6 +1620,14 @@ case " $(arm_control complete) " in
     *" $1 "*)
         printf 'begin_ns\t1000000000\nend_ns\t2000000000\n' \
             >"$QWEN_RESULT_DIRECTORY/request-window.tsv"
+        # The served runner composes the request body and retains it beside
+        # the reply, which is where the campaign reads the workload each arm
+        # actually sent. One named arm sends another body.
+        request_body='{"model":"qwen-apu","max_tokens":64}'
+        if [ "$(arm_control mutate_request)" = "$1" ]; then
+            request_body='{"model":"qwen-apu","max_tokens":96}'
+        fi
+        printf '%s' "$request_body" >"$QWEN_RESULT_DIRECTORY/request.json"
         printf '{"timings": {"predicted_n": 65, "predicted_ms": 6400.0}}' \
             >"$QWEN_RESULT_DIRECTORY/response.json"
         # The identity arm reads the perf logger slice the served runner cut at
@@ -1800,6 +1859,17 @@ run_brick_calibration() {
     # boundary is the default, since a campaign ends at the first that is not
     # one, and `timeout` and `unreported` are the two states that end it.
     brick_quiescence_verdict=${20:-reached}
+    # The twenty-first through twenty-third name the arm after whose launch the
+    # runtime tree's head advances, the arm after whose launch a file inside
+    # remote/ is edited, and the arm after whose launch the artifact ledger
+    # gains a row. Each is a runtime input the campaign bound at preflight and
+    # every arm re-establishes.
+    brick_resync_head=${21:-}
+    brick_resync_payload=${22:-}
+    brick_mutate_ledger=${23:-}
+    # The twenty-fourth names the arm whose served runner sends another request
+    # body, which is the workload every arm is compared over.
+    brick_mutate_request=${24:-}
     brick_drm=$signal_drm
     brick_sudo_log=$temporary_directory/sudo-$brick_case.log
     brick_quiescence_argv=$temporary_directory/quiescence-argv-$brick_case.log
@@ -1820,6 +1890,11 @@ run_brick_calibration() {
         printf 'replace_model\t%s\n' "$brick_replace_model"
         printf 'truncate\t%s\n' "$brick_truncate_label"
         printf 'complete\t%s\n' "$brick_complete_label"
+        printf 'runtime_root\t%s\n' "$temporary_directory"
+        printf 'resync_head\t%s\n' "$brick_resync_head"
+        printf 'resync_payload\t%s\n' "$brick_resync_payload"
+        printf 'mutate_ledger\t%s\n' "$brick_mutate_ledger"
+        printf 'mutate_request\t%s\n' "$brick_mutate_request"
     } >"$brick_arm_controls"
     set +e
     env -i \
@@ -2143,21 +2218,195 @@ printf 'regime_refused_records=accepted status=%s\n' "$brick_status"
 
 # A checkpoint replaced under the campaign passes the arm's own publisher check
 # against the ledger row that followed it, so the preflight digest is what
-# fails the arm that served it.
+# catches it. The campaign's inputs moved under it, so the run ends at that arm
+# as an incident naming the field rather than failing the arm and measuring
+# every later one against different weights.
 active_fixture=census_model_replaced
 prior_model=$temporary_directory/prior-model
 write_prior_calibration "$prior_model"
 brick_model_output=$temporary_directory/out-model-replaced
 brick_status=$(run_brick_calibration census_model_replaced "$prior_model" \
     "$brick_model_output" '' 800 2 '' '' '' '' auto '' '0a-W 0b-W 13-S' 0 - 0 '' '' 0a-W)
-if [ "$brick_status" -eq 0 ]; then
-    printf 'a calibration whose checkpoint was replaced accepted\n' >&2
+if [ "$brick_status" -ne 6 ]; then
+    printf 'a calibration whose checkpoint was replaced exited %s where it ends at 6\n' \
+        "$brick_status" >&2
+    sed -n '1,20p' "$temporary_directory/census_model_replaced-stdout.txt" >&2
     exit 1
 fi
-grep -q '^census_arm=model_replaced slot=0a arm=W ' \
+grep -q '^census_incident=identity slot=0a arm=W field=model_sha256 ' \
     "$temporary_directory/census_model_replaced-stdout.txt"
+for model_row in census=identity_incident terminal_slot=0a terminal_arm=W \
+    terminal_detail=model_sha256; do
+    if ! grep -qx "$model_row" "$brick_model_output/terminal-state.tsv"; then
+        printf 'the incident terminal state carries no %s\n' "$model_row" >&2
+        cat "$brick_model_output/terminal-state.tsv" >&2
+        exit 1
+    fi
+done
+# The record carries both sides of every bound field whatever it decided, so a
+# reader of one arm reads what held beside what moved.
+if ! awk -F'\t' 'NR == 1 { next }
+    { seen[$1] = $4 }
+    END {
+        exit (seen["model_sha256"] == "drifted" && seen["model_bytes"] == "bound" \
+            && seen["server_sha256"] == "bound" && seen["server_bytes"] == "bound" \
+            && seen["runtime_tree_git_head"] == "bound" \
+            && seen["runtime_tree_remote_payload_sha256"] == "bound" \
+            && seen["runtime_tree_patches_payload_sha256"] == "bound" \
+            && seen["runtime_tree_verified"] == "bound" \
+            && seen["artifact_ledger_sha256"] == "bound" \
+            && seen["served_runner_sha256"] == "bound" \
+            && seen["request_sha256"] == "bound") ? 0 : 1
+    }' "$brick_model_output/arms/0a-W/runtime-identity.tsv"; then
+    printf 'the arm identity record does not name every bound field and its state\n' >&2
+    cat "$brick_model_output/arms/0a-W/runtime-identity.tsv" >&2
+    exit 1
+fi
+# The campaign ended at the arm that read the replacement, so no later arm ran
+# and nothing was written over the truncated ledger.
+if awk -F'\t' 'NR > 1 && $1 == "0b"' "$brick_model_output/arms.tsv" | grep -q .; then
+    printf 'an arm ran past the identity incident\n' >&2
+    exit 1
+fi
+for withheld_member in summary.tsv calibration-root.tsv bricks; do
+    if [ -e "$brick_model_output/$withheld_member" ]; then
+        printf 'the incident calibration wrote %s over a truncated ledger\n' \
+            "$withheld_member" >&2
+        exit 1
+    fi
+done
+# A campaign already ending on this arm waits for no boundary, since the arm it
+# would prepare never runs.
+if ! awk -F'\t' '$1 == "0a" && $3 == "cooldown" && $6 ~ /^quiescence=skipped / { found = 1 }
+    END { exit found ? 0 : 1 }' "$brick_model_output/wall-clock.tsv"; then
+    printf 'the incident arm spent a quiescence deadline it had no arm to prepare\n' >&2
+    cat "$brick_model_output/wall-clock.tsv" >&2
+    exit 1
+fi
 diagnostic_file=
 printf 'census_model_replaced=accepted\n'
+
+# A runtime tree edited under the campaign moves two claims independently. An
+# edit inside remote/ leaves every manifest row where it stands, so the
+# per-arm recompute is what reads it; a sync that advances the head over a
+# byte-identical payload is what check-runtime-tree.sh admits as
+# payload-neutral, so the campaign's own row comparison is what reads that.
+# Both end the run at the arm that read them, naming the field that moved.
+active_fixture=runtime_tree_payload_drift
+prior_payload=$temporary_directory/prior-payload-drift
+write_prior_calibration "$prior_payload"
+brick_payload_output=$temporary_directory/out-payload-drift
+brick_status=$(run_brick_calibration runtime_tree_payload_drift "$prior_payload" \
+    "$brick_payload_output" '' 800 2 '' '' '' '' auto '' '0a-W 0b-W 13-S' 0 - 0 '' '' '' \
+    reached '' 0a-W)
+# The tree is restored before the assertions, so a case that fails leaves every
+# later case the tree it was written against.
+printf '#!/bin/sh\nexit 1\n' >"$runtime_remote/qwen-teardown.sh"
+chmod +x "$runtime_remote/qwen-teardown.sh"
+if [ "$brick_status" -ne 6 ]; then
+    printf 'a campaign whose runtime payload moved exited %s where it ends at 6\n' \
+        "$brick_status" >&2
+    sed -n '1,20p' "$temporary_directory/runtime_tree_payload_drift-stdout.txt" >&2
+    exit 1
+fi
+grep -q '^census_incident=identity slot=0a arm=W field=runtime_tree_verified expected=verified observed=divergent$' \
+    "$temporary_directory/runtime_tree_payload_drift-stdout.txt"
+grep -qx 'terminal_detail=runtime_tree_verified' \
+    "$brick_payload_output/terminal-state.tsv"
+# The recompute's own output is retained beside the arm, so the field that
+# moved is readable rather than restated.
+grep -q 'runtime_tree_divergent=remote/qwen-teardown.sh ' \
+    "$brick_payload_output/arms/0a-W/runtime-tree.txt"
+diagnostic_file=
+printf 'runtime_tree_payload_drift=accepted\n'
+
+active_fixture=runtime_tree_head_drift
+prior_head=$temporary_directory/prior-head-drift
+write_prior_calibration "$prior_head"
+brick_head_output=$temporary_directory/out-head-drift
+brick_status=$(run_brick_calibration runtime_tree_head_drift "$prior_head" \
+    "$brick_head_output" '' 800 2 '' '' '' '' auto '' '0a-W 0b-W 13-S' 0 - 0 '' '' '' \
+    reached 0a-W)
+write_runtime_tree_manifest "$temporary_directory"
+if [ "$brick_status" -ne 6 ]; then
+    printf 'a campaign whose runtime head advanced exited %s where it ends at 6\n' \
+        "$brick_status" >&2
+    sed -n '1,20p' "$temporary_directory/runtime_tree_head_drift-stdout.txt" >&2
+    exit 1
+fi
+grep -q '^census_incident=identity slot=0a arm=W field=runtime_tree_git_head ' \
+    "$temporary_directory/runtime_tree_head_drift-stdout.txt"
+# check-runtime-tree.sh passes the same tree as payload-neutral, so the row
+# comparison rather than the recompute is what ended this run.
+if ! awk -F'\t' 'NR == 1 { next } { seen[$1] = $4 }
+    END { exit (seen["runtime_tree_git_head"] == "drifted" \
+        && seen["runtime_tree_remote_payload_sha256"] == "bound" \
+        && seen["runtime_tree_verified"] == "bound") ? 0 : 1 }' \
+    "$brick_head_output/arms/0a-W/runtime-identity.tsv"; then
+    printf 'the head drift was not read against a payload-neutral recompute\n' >&2
+    cat "$brick_head_output/arms/0a-W/runtime-identity.tsv" >&2
+    exit 1
+fi
+diagnostic_file=
+printf 'runtime_tree_head_drift=accepted\n'
+
+# The artifact ledger travels with every arm, since the served runner derives
+# the approved model identity from whichever row it reads, so a row appended
+# under the campaign is the same class of drift as a replaced checkpoint.
+active_fixture=artifact_ledger_drift
+prior_ledger=$temporary_directory/prior-ledger-drift
+write_prior_calibration "$prior_ledger"
+brick_ledger_output=$temporary_directory/out-ledger-drift
+brick_status=$(run_brick_calibration artifact_ledger_drift "$prior_ledger" \
+    "$brick_ledger_output" '' 800 2 '' '' '' '' auto '' '0a-W 0b-W 13-S' 0 - 0 '' '' '' \
+    reached '' '' 0a-W)
+cp -- "$artifact_ledger" "$brick_directory/model-artifacts.tsv"
+if [ "$brick_status" -ne 6 ]; then
+    printf 'a campaign whose artifact ledger moved exited %s where it ends at 6\n' \
+        "$brick_status" >&2
+    sed -n '1,20p' "$temporary_directory/artifact_ledger_drift-stdout.txt" >&2
+    exit 1
+fi
+grep -q '^census_incident=identity slot=0a arm=W field=artifact_ledger_sha256 ' \
+    "$temporary_directory/artifact_ledger_drift-stdout.txt"
+diagnostic_file=
+printf 'artifact_ledger_drift=accepted\n'
+
+# The request body is composed by the served runner rather than by the
+# campaign, so the campaign binds the first body an arm actually sent, records
+# it in inputs.tsv, and holds every later arm to it: two arms whose requests
+# differ measured two workloads whatever else about them agreed.
+active_fixture=request_body_drift
+prior_request=$temporary_directory/prior-request-drift
+write_prior_calibration "$prior_request"
+brick_request_output=$temporary_directory/out-request-drift
+brick_status=$(run_brick_calibration request_body_drift "$prior_request" \
+    "$brick_request_output" '' 800 2 '' '' '' '' auto '' '0a-W 0b-W 13-S' 0 - 0 '' '' '' \
+    reached '' '' '' 0b-W)
+if [ "$brick_status" -ne 6 ]; then
+    printf 'a campaign whose request body moved exited %s where it ends at 6\n' \
+        "$brick_status" >&2
+    sed -n '1,20p' "$temporary_directory/request_body_drift-stdout.txt" >&2
+    exit 1
+fi
+request_first_sha256=$(printf '{"model":"qwen-apu","max_tokens":64}' \
+    | sha256sum | cut -d ' ' -f 1)
+grep -q "^census_request=bound slot=0a arm=W request_sha256=$request_first_sha256\$" \
+    "$temporary_directory/request_body_drift-stdout.txt"
+grep -qxF "$(printf 'request_sha256	%s' "$request_first_sha256")" \
+    "$brick_request_output/inputs.tsv"
+grep -q '^census_incident=identity slot=0b arm=W field=request_sha256 ' \
+    "$temporary_directory/request_body_drift-stdout.txt"
+# The arm that bound the body held it, so the binding is a comparison rather
+# than a value the first arm is also judged against.
+if ! awk -F'\t' 'NR == 1 { next } $1 == "request_sha256" { state = $4 }
+    END { exit state == "bound" ? 0 : 1 }' \
+    "$brick_request_output/arms/0a-W/runtime-identity.tsv"; then
+    printf 'the arm that bound the request body did not read it as bound\n' >&2
+    exit 1
+fi
+diagnostic_file=
+printf 'request_body_drift=accepted\n'
 
 # A broker that announces no readiness ends the arm ahead of the request. The
 # same three bricks are reused, so S at slot 13 is the one sampled arm, and it

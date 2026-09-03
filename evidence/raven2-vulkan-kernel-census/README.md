@@ -259,9 +259,7 @@ overlap threshold, the latency probe digest, and the synced runtime tree's
 git head and two payload digests from the manifest the sync writes beside
 `remote/`, since the arms launch through that tree and a resync between
 calibration and attribution would otherwise pass both launches through
-trees that each satisfy their own check. Each arm's server is hashed after
-the arm and compared with the digest the preflight bound to its role, so a
-binary replaced mid-campaign fails the arm it served. Its SHA-256 is recorded as
+trees that each satisfy their own check. Its SHA-256 is recorded as
 `calibration_contract_sha256` in `inputs.tsv`, an attribution computes its
 own contract the same way and requires the receipt's digest to equal it,
 and a changed sidecar period or bound refuses by that one comparison
@@ -272,6 +270,53 @@ served runner and the sidecar together: the served runner runs as a job
 under `wait`, which a trap interrupts, and `cleanup_children` on EXIT,
 TERM, INT, and HUP signals and waits for both, so a runner ended mid-arm
 leaves no sampler writing into its arm directory.
+
+## Runtime identity is bound per arm
+
+The contract states what the campaign was configured with; the per-arm record
+states what each arm actually ran under. Every arm writes
+`arms/LABEL/runtime-identity.tsv` as `field expected observed state`, carrying
+the preflight's value beside its own reading of the checkpoint's byte count and
+digest, the served binary's byte count and digest for the role that arm plays,
+the runtime tree's `git_head` and both payload digests re-read from the
+manifest, one `check-runtime-tree.sh` recompute over that tree against the head
+and payload the preflight bound, the artifact ledger's digest, the served
+runner's own digest, and the request body's digest. The checkpoint reading
+comes from the arm's own `runtime-inputs.json`, which the served runner writes
+from the descriptor it pinned, so the comparison costs no second pass over the
+weights; the runtime tree reading comes from the same reader `qwen-launch.sh`
+runs inside the arm rather than a second hasher over the same bytes. A field
+the arm never produced -- a reply it did not reach, a record it did not write
+-- reads `unobserved` and decides nothing; a file that is gone reads `absent`
+and is drift.
+
+The request body is the one identity the preflight cannot compute, because
+`measure-served-decode.sh` composes it and a second copy of that template here
+would be a second authority for the workload. The campaign binds the digest of
+the first body an arm actually sent, appends it to `inputs.tsv` as
+`request_sha256` the way the regime rows join it, and holds every later arm to
+it.
+
+A field that moved is an incident rather than one arm's failure. A runtime
+sync, a checkpoint replacement, an executable replacement, or a ledger edit
+changes what every arm after it measures, so the campaign ends at the arm that
+first read it as `identity_incident` with exit 6, `terminal_detail` names the
+field, and a `census_incident=identity` line carries the expected and observed
+values. The first field to differ is the one reported, so a sync that moves the
+head and both payload digests together names the head rather than whichever
+digest a later comparison reached. The arm's own `runtime-tree.txt` retains the
+recompute's output beside the record. A campaign already ending on an arm waits
+for no boundary after it, since the arm that boundary would prepare never runs,
+and its cooldown row reads `quiescence=skipped`.
+
+The two runtime-tree claims separate. `check-runtime-tree.sh` admits a head
+that advanced over a byte-identical payload as `head_divergence=payload-neutral`
+and exits 0, which is right for a launch and wrong for a campaign: the head is
+an acquisition-contract row, so the census compares the manifest rows itself and
+ends the run on `runtime_tree_git_head` while the recompute reads `verified`.
+An edit inside `remote/` moves the opposite way, leaving every manifest row
+where it stands and failing the recompute, which the record names as
+`runtime_tree_verified`.
 
 The expensive measurement and the reader that interprets it are two heads.
 A run is bound to the head that acquired it, and a later reader fix may

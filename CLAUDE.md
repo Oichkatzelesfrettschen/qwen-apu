@@ -1294,6 +1294,15 @@ remote/run-ctx-checkpoint-sweep.sh LABEL MODEL_ID OUT
 # names the slot, the arm, and the failing predicates, and no summary,
 # brick receipt, or calibration root is written over the truncated ledger.
 # --sclk-forced drops the step's position in the listed ladder alone.
+# Runtime identity is bound at preflight and re-established by every arm:
+# arms/LABEL/runtime-identity.tsv carries the bound value beside the arm's
+# own reading of the model bytes and digest, the server bytes and digest,
+# the runtime tree's git head and both payload digests, one
+# check-runtime-tree.sh recompute over that tree, the artifact ledger
+# digest, the served runner digest, and the request digest the campaign
+# binds from the first body an arm sent. A field that moved ends the
+# campaign identity_incident with exit 6 naming that field, since every
+# later arm would measure a different experiment under one receipt.
 # QWEN_CENSUS_MODE=calibration, the default, runs exactly the
 # thirteen-arm sequence and accepts on exactly three accepted controls
 # with none unclassified; QWEN_CENSUS_MODE=attribution runs any registered

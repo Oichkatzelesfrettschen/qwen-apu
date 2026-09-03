@@ -197,6 +197,18 @@ set -eu
 # summary nor a brick receipt nor a calibration root is written, since a root
 # over half a campaign is what a later run's brick reuse would copy forward.
 #
+# The runtime identity is bound once at preflight and re-established by every
+# arm. Each arm writes arms/LABEL/runtime-identity.tsv carrying the preflight's
+# value and its own reading of the checkpoint's bytes and digest, the served
+# binary's bytes and digest, the runtime tree's git head and both payload
+# digests beside one check-runtime-tree.sh recompute over its files, the
+# artifact ledger digest, the served runner's own digest, and the request body
+# the arms send, which the campaign binds from the first arm that sent one. A
+# field that moved is an incident rather than one arm's failure -- every later
+# arm would measure a different experiment under one receipt -- so the campaign
+# ends as `identity_incident` with exit 6, naming the field in terminal_detail
+# and printing the expected and observed values on a census_incident line.
+#
 # usage: run-raven2-vulkan-kernel-census.sh MODEL_ID OUTPUT_DIRECTORY
 #   QWEN_CENSUS_PRODUCTION_SERVER    path of P (required where an arm names P or P-nosidecar)
 #   QWEN_CENSUS_PRODUCTION_RECEIPT   identity-check.tsv of the fixed-64 scoreboard sweep
@@ -803,6 +815,10 @@ if [ ! -r "$artifact_ledger" ] || [ -L "$artifact_ledger" ]; then
     printf 'model artifact ledger is unreadable or linked: %s\n' "$artifact_ledger" >&2
     exit 2
 fi
+# The ledger every arm launches under is one of the identities the preflight
+# binds, so its digest is taken once here and every later reference reads this
+# value rather than hashing the file again.
+artifact_ledger_sha256=$(sha256sum "$artifact_ledger" | cut -d ' ' -f 1)
 for runtime_script in qwen-launch.sh qwen-teardown.sh radv-low-priority-env.sh; do
     if [ ! -x "$runtime_remote/$runtime_script" ]; then
         printf 'runtime tree script is not executable: %s\n' \
@@ -840,6 +856,28 @@ RUNTIME_TREE
 runtime_tree_payload=$(printf 'remote_payload_tree_sha256=%s\npatches_payload_tree_sha256=%s\n' \
     "$runtime_tree_remote_payload" "$runtime_tree_patches_payload" \
     | sha256sum | cut -d ' ' -f 1)
+# The tree the manifest identifies, and the reader that recomputes it. Every
+# arm reruns check-runtime-tree.sh over this root against the head and payload
+# the preflight bound, which is the same recompute qwen-launch.sh runs inside
+# the arm rather than a second digest of the same bytes; the manifest rows are
+# re-read beside it so a drift names the field that moved.
+runtime_tree_root=$(CDPATH='' cd -- "$runtime_remote/.." && pwd)
+runtime_tree_checker=$script_directory/check-runtime-tree.sh
+if [ ! -r "$runtime_tree_checker" ]; then
+    printf 'the runtime tree checker is absent: %s\n' "$runtime_tree_checker" >&2
+    exit 2
+fi
+# The served runner composes the request body and drives the launch, so its own
+# bytes are part of what every arm ran under.
+if [ ! -r "$runner" ]; then
+    printf 'the served runner is absent: %s\n' "$runner" >&2
+    exit 2
+fi
+served_runner_sha256=$(sha256sum "$runner" | cut -d ' ' -f 1)
+# The request body is composed by the served runner rather than here, so the
+# campaign binds the first body an arm actually sent and holds every later arm
+# to it; the bound value joins inputs.tsv the way the regime rows do.
+request_sha256=-
 for reader in "$summarizer" "$controls_summarizer" "$sidecar" "$sidecar_validator" "$slice_summarizer"; do
     if [ ! -r "$reader" ]; then
         printf 'census reader is absent: %s\n' "$reader" >&2
@@ -1657,7 +1695,10 @@ printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\
         "$census_cmake_flag" "$shader_compiler_identity"
     printf 'timestamp_period_ns\t40\ninterval_endpoint_equality\texact_on_this_device\n'
     printf 'model_artifacts\t%s\nmodel_artifacts_sha256\t%s\n' \
-        "$artifact_ledger" "$(sha256sum "$artifact_ledger" | cut -d ' ' -f 1)"
+        "$artifact_ledger" "$artifact_ledger_sha256"
+    printf 'served_runner\t%s\nserved_runner_sha256\t%s\n' \
+        "$runner" "$served_runner_sha256"
+    printf 'runtime_tree_root\t%s\n' "$runtime_tree_root"
     printf 'acquisition_contract_sha256\t%s\nanalysis_contract_sha256\t%s\n' \
         "$acquisition_contract_sha256" "$analysis_contract_sha256"
     printf 'receipt_analysis_contract_sha256\t%s\nanalysis_contract_match\t%s\n' \
@@ -1811,6 +1852,35 @@ record_regime() {
             "$regime_sclk_mhz" "$regime_arms"
     fi
     regime_reported=1
+}
+# One arm's reading of an identity the preflight bound. The record carries both
+# sides of every field whatever it decides, so an arm that held is as readable
+# as one that moved, and the first field to differ is the one the campaign
+# reports: a sync that moved the tree moves three fields at once and the run
+# names the head rather than whichever digest a later comparison reached.
+identity_record=''
+identity_drift_field=''
+identity_drift_expected=-
+identity_drift_observed=-
+record_arm_identity() {
+    # $1 = field, $2 = the preflight's value, $3 = this arm's reading. A `-`
+    # reading is one the arm never produced -- a reply it did not reach, a
+    # record it did not write -- rather than a value that moved, so it records
+    # as unobserved and decides nothing; an absent file reads `absent`, which
+    # differs from every bound value and is drift.
+    arm_identity_state=bound
+    if [ "$3" = - ]; then
+        arm_identity_state=unobserved
+    elif [ "$2" != "$3" ]; then
+        arm_identity_state=drifted
+        if [ -z "$identity_drift_field" ]; then
+            identity_drift_field=$1
+            identity_drift_expected=$2
+            identity_drift_observed=$3
+        fi
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$arm_identity_state" \
+        >>"$identity_record"
 }
 arm_failures=0
 cooldown_timeouts=0
@@ -1990,18 +2060,37 @@ for arm in $execution_arms; do
     # request window into the ledger's wall clock; the offset is read here, on
     # the arm that produced the window, rather than once for the campaign.
     clock_offset_ns=$(python3 -c 'import time; print(time.time_ns() - time.monotonic_ns())')
-    # The arm's server is hashed after the arm and compared with the digest
-    # the preflight bound to its role, so a binary replaced mid-campaign
-    # fails the arm it served rather than being recorded as that role.
+    # Every arm re-establishes the whole runtime identity the preflight bound
+    # and retains both sides of each field, so a runtime sync, a checkpoint
+    # replacement, or an executable replacement between two arms is named at
+    # the arm that first read it rather than left for a reader to infer from
+    # two rates measured under different inputs. The record covers the
+    # checkpoint's bytes and digest, the served binary's bytes and digest, the
+    # runtime tree's head and both payload digests beside one recompute over
+    # its files, the artifact ledger, the served runner itself, and the request
+    # body the arms send.
+    identity_record=$arm_directory/runtime-identity.tsv
+    identity_drift_field=''
+    identity_drift_expected=-
+    identity_drift_observed=-
+    printf 'field\texpected\tobserved\tstate\n' >"$identity_record"
+    # The arm's server is hashed after the arm and compared with the byte count
+    # and digest the preflight bound to its role, so a binary replaced
+    # mid-campaign is named rather than recorded as that role.
     server_sha256=$(sha256sum "$server" | cut -d ' ' -f 1)
+    server_bytes=$(wc -c <"$server" | tr -d ' ')
     case $arm in
-        P | P-nosidecar | W) bound_role_sha256=$production_sha256 ;;
-        *) bound_role_sha256=$instrumented_sha256 ;;
+        P | P-nosidecar | W)
+            bound_role_sha256=$production_sha256
+            bound_role_bytes=$production_bytes
+            ;;
+        *)
+            bound_role_sha256=$instrumented_sha256
+            bound_role_bytes=$instrumented_bytes
+            ;;
     esac
-    server_identity=bound
-    if [ "$server_sha256" != "$bound_role_sha256" ]; then
-        server_identity=replaced
-    fi
+    record_arm_identity server_sha256 "$bound_role_sha256" "$server_sha256"
+    record_arm_identity server_bytes "$bound_role_bytes" "$server_bytes"
     # The checkpoint is re-read after the arm the way the server is. A model
     # replaced consistently with its ledger row passes the arm's own publisher
     # check and leaves the production and instrumented rates measured on
@@ -2011,14 +2100,10 @@ for arm in $execution_arms; do
     # checkpoint and the comparison costs no second pass over the file. The
     # file's byte count is read beside it, which catches a replacement that
     # left no record at all.
-    model_identity=bound
-    arm_model_bytes=-
+    arm_model_bytes=absent
     arm_model_sha256=-
     if [ -r "$model_path" ]; then
         arm_model_bytes=$(wc -c <"$model_path" | tr -d ' ')
-    fi
-    if [ "$arm_model_bytes" != "$model_file_bytes" ]; then
-        model_identity=replaced
     fi
     if [ -r "$arm_directory/runtime-inputs.json" ]; then
         arm_model_sha256=$(python3 - "$arm_directory/runtime-inputs.json" <<'ARM_MODEL_IDENTITY' || true
@@ -2029,10 +2114,70 @@ except (OSError, ValueError):
     print("-")
 ARM_MODEL_IDENTITY
 )
-        if [ "$arm_model_sha256" != "$model_file_sha256" ]; then
-            model_identity=replaced
-        fi
+        [ -n "$arm_model_sha256" ] || arm_model_sha256=-
     fi
+    record_arm_identity model_bytes "$model_file_bytes" "$arm_model_bytes"
+    record_arm_identity model_sha256 "$model_file_sha256" "$arm_model_sha256"
+    # The manifest the sync wrote beside the runtime tree is re-read for the
+    # three rows that name what travelled, so a resync between arms names the
+    # head or the payload half that moved; check-runtime-tree.sh then recomputes
+    # every file digest and mode class against the head and payload the
+    # preflight bound, which is the reader qwen-launch.sh already runs inside
+    # the arm rather than a second hasher over the same bytes.
+    arm_runtime_git_head=absent
+    arm_runtime_remote_payload=absent
+    arm_runtime_patches_payload=absent
+    if arm_runtime_identity=$(awk -F'\t' '
+        $1 == "git_head" || $1 == "remote_payload_tree_sha256" || $1 == "patches_payload_tree_sha256" { seen[$1] = $2; count++ }
+        END { if (count != 3) exit 1
+            printf "%s\t%s\t%s\n", seen["git_head"], seen["remote_payload_tree_sha256"], seen["patches_payload_tree_sha256"] }' \
+        "$runtime_tree_manifest" 2>/dev/null); then
+        IFS="$(printf '\t')" read -r arm_runtime_git_head arm_runtime_remote_payload \
+            arm_runtime_patches_payload <<ARM_RUNTIME_TREE
+$arm_runtime_identity
+ARM_RUNTIME_TREE
+    fi
+    record_arm_identity runtime_tree_git_head "$runtime_tree_git_head" "$arm_runtime_git_head"
+    record_arm_identity runtime_tree_remote_payload_sha256 \
+        "$runtime_tree_remote_payload" "$arm_runtime_remote_payload"
+    record_arm_identity runtime_tree_patches_payload_sha256 \
+        "$runtime_tree_patches_payload" "$arm_runtime_patches_payload"
+    set +e
+    "$runtime_tree_checker" "$runtime_tree_root" "$runtime_tree_git_head" \
+        "$runtime_tree_payload" >"$arm_directory/runtime-tree.txt" 2>&1
+    runtime_tree_status=$?
+    set -e
+    arm_runtime_tree_state=divergent
+    [ "$runtime_tree_status" -ne 0 ] || arm_runtime_tree_state=verified
+    record_arm_identity runtime_tree_verified verified "$arm_runtime_tree_state"
+    arm_artifact_ledger_sha256=absent
+    if [ -r "$artifact_ledger" ]; then
+        arm_artifact_ledger_sha256=$(sha256sum "$artifact_ledger" | cut -d ' ' -f 1)
+    fi
+    record_arm_identity artifact_ledger_sha256 "$artifact_ledger_sha256" \
+        "$arm_artifact_ledger_sha256"
+    arm_served_runner_sha256=absent
+    if [ -r "$runner" ]; then
+        arm_served_runner_sha256=$(sha256sum "$runner" | cut -d ' ' -f 1)
+    fi
+    record_arm_identity served_runner_sha256 "$served_runner_sha256" \
+        "$arm_served_runner_sha256"
+    # The request body is composed by the served runner rather than by this
+    # runner, so the campaign binds the first body an arm actually sent and
+    # holds every later arm to it: two arms whose requests differ measured two
+    # workloads whatever else about them agreed. The bound value joins
+    # inputs.tsv the moment it exists, the way the regime rows do.
+    arm_request_sha256=-
+    if [ -r "$arm_directory/request.json" ]; then
+        arm_request_sha256=$(sha256sum "$arm_directory/request.json" | cut -d ' ' -f 1)
+    fi
+    if [ "$request_sha256" = - ] && [ "$arm_request_sha256" != - ]; then
+        request_sha256=$arm_request_sha256
+        printf 'request_sha256\t%s\n' "$request_sha256" >>"$output_directory/inputs.tsv"
+        printf 'census_request=bound slot=%s arm=%s request_sha256=%s\n' \
+            "$slot" "$arm" "$request_sha256"
+    fi
+    record_arm_identity request_sha256 "$request_sha256" "$arm_request_sha256"
     predicted_n=-
     predicted_ms=-
     tok_s=-
@@ -2068,17 +2213,21 @@ EOF
         status=failed
         reason=served_runner
     fi
-    if [ "$server_identity" != bound ]; then
+    # A field that moved is an incident rather than one arm's failure: the
+    # campaign's inputs changed under it, so every arm after this one would
+    # measure a different experiment under the same receipt. The run ends here
+    # naming the field, and the reason outranks the served-runner verdict
+    # because a replaced binary or checkpoint is what that verdict is about.
+    if [ -n "$identity_drift_field" ]; then
         status=failed
-        reason=server_identity
-        printf 'census_arm=server_replaced slot=%s arm=%s bound=%s observed=%s\n' \
-            "$slot" "$arm" "$bound_role_sha256" "$server_sha256"
-    fi
-    if [ "$model_identity" != bound ]; then
-        status=failed
-        reason=model_identity
-        printf 'census_arm=model_replaced slot=%s arm=%s bound=%s observed=%s\n' \
-            "$slot" "$arm" "$model_file_sha256" "$arm_model_sha256"
+        reason=identity_incident
+        campaign_terminal=identity_incident
+        terminal_slot=$slot
+        terminal_arm=$arm
+        terminal_detail=$identity_drift_field
+        printf 'census_incident=identity slot=%s arm=%s field=%s expected=%s observed=%s\n' \
+            "$slot" "$arm" "$identity_drift_field" "$identity_drift_expected" \
+            "$identity_drift_observed"
     fi
     # A sampler that announced no readiness is its own reason: the request
     # never ran, so the served-runner verdict above states the consequence
@@ -2320,50 +2469,57 @@ EOF
         [ "$canary_orphan_state" = accepted ] || canary_structure_failures=$((canary_structure_failures + 1))
     fi
     cooldown_begin_ns=$(date +%s%N)
+    quiescence_verdict=skipped
+    quiescence_elapsed_ms=0
+    quiescence_status=-
+    quiescence_predicates=-
     # The boundary between arms is convergence rather than a constant. An arm
     # leaves Vulkan submission, clock boost, thermal drift, and page reclaim
     # behind at different rates, so await-quiescence.sh polls each predicate
     # and reports the instant they have all held together; QWEN_CENSUS_COOLDOWN_S
-    # becomes its deadline. A deadline reached without convergence is recorded
-    # on this arm's cooldown row and counted, because the arm that already ran
-    # is complete and the state it left belongs to the arm that follows.
-    set +e
-    # The lease predicate is left off. await-quiescence.sh polls it with
-    # `flock -n -x`, and the campaign holds that lock exclusively from before
-    # the clock write to its own exit, so the poll would read the campaign's
-    # own exclusion as a foreign workload and spend every cooldown deadline.
-    # Holding the lease exclusively is the strictly stronger form of the
-    # predicate the flag polls -- a lock this shell owns admits no other
-    # workload at all -- and the cooldown row states that rather than leaving a
-    # reader of the ledger to infer why the predicate stopped being polled.
-    # The latency predicate is left off for a different reason: it reads a
-    # `baseline_p90_us=` field the graphics probe log names on no line, so the
-    # poller reports it not_applicable and spends one summarize-probe.sh pass
-    # per 100 ms tick to do it. The criterion is live for a caller whose log
-    # grows that field.
-    quiescence_line=$("$script_directory/await-quiescence.sh" \
-        --max-seconds "$cooldown_s" \
-        ${cooldown_sclk_forced_flag:+--sclk-forced} \
-        2>"$arm_directory/await-quiescence.stderr")
-    quiescence_status=$?
-    set -e
+    # becomes its deadline. A campaign already ending on this arm waits for no
+    # boundary, since the arm it would prepare never runs, and its cooldown row
+    # says so rather than spending the deadline to report a state nothing reads.
+    if [ -z "$campaign_terminal" ]; then
+        set +e
+        # The lease predicate is left off. await-quiescence.sh polls it with
+        # `flock -n -x`, and the campaign holds that lock exclusively from
+        # before the clock write to its own exit, so the poll would read the
+        # campaign's own exclusion as a foreign workload and spend every
+        # cooldown deadline. Holding the lease exclusively is the strictly
+        # stronger form of the predicate the flag polls -- a lock this shell
+        # owns admits no other workload at all -- and the cooldown row states
+        # that rather than leaving a reader of the ledger to infer why the
+        # predicate stopped being polled. The latency predicate is left off for
+        # a different reason: it reads a `baseline_p90_us=` field the graphics
+        # probe log names on no line, so the poller reports it not_applicable
+        # and spends one summarize-probe.sh pass per 100 ms tick to do it. The
+        # criterion is live for a caller whose log grows that field.
+        quiescence_line=$("$script_directory/await-quiescence.sh" \
+            --max-seconds "$cooldown_s" \
+            ${cooldown_sclk_forced_flag:+--sclk-forced} \
+            2>"$arm_directory/await-quiescence.stderr")
+        quiescence_status=$?
+        set -e
+        quiescence_verdict=$(printf '%s\n' "$quiescence_line" \
+            | sed -n 's/^quiescence=\([a-z][a-z]*\).*/\1/p')
+        quiescence_elapsed_ms=$(printf '%s\n' "$quiescence_line" \
+            | sed -n 's/.*elapsed_ms=\([0-9][0-9]*\).*/\1/p')
+        # A poller that printed no parseable line is a third state beside
+        # reached and timeout, and it is named rather than folded into either.
+        [ -n "$quiescence_verdict" ] || quiescence_verdict=unreported
+        [ -n "$quiescence_elapsed_ms" ] || quiescence_elapsed_ms=-
+        # The poller names every predicate that read false on its final tick,
+        # so a boundary that never converged states which of process, GPU
+        # occupancy, graphics step, step stability, absolute temperature,
+        # thermal derivative, available memory, swap-in, lease, or latency held
+        # it open.
+        quiescence_predicates=$(sed -n 's/^quiescence_timeout_predicates=//p' \
+            "$arm_directory/await-quiescence.stderr" | tail -n 1)
+        [ -n "$quiescence_predicates" ] || quiescence_predicates=-
+        [ "$quiescence_verdict" = reached ] || cooldown_timeouts=$((cooldown_timeouts + 1))
+    fi
     cooldown_end_ns=$(date +%s%N)
-    quiescence_verdict=$(printf '%s\n' "$quiescence_line" \
-        | sed -n 's/^quiescence=\([a-z][a-z]*\).*/\1/p')
-    quiescence_elapsed_ms=$(printf '%s\n' "$quiescence_line" \
-        | sed -n 's/.*elapsed_ms=\([0-9][0-9]*\).*/\1/p')
-    # A poller that printed no parseable line is a third state beside reached
-    # and timeout, and it is named rather than folded into either.
-    [ -n "$quiescence_verdict" ] || quiescence_verdict=unreported
-    [ -n "$quiescence_elapsed_ms" ] || quiescence_elapsed_ms=-
-    # The poller names every predicate that read false on its final tick, so a
-    # boundary that never converged states which of process, GPU occupancy,
-    # graphics step, step stability, absolute temperature, thermal derivative,
-    # available memory, swap-in, lease, or latency held it open.
-    quiescence_predicates=$(sed -n 's/^quiescence_timeout_predicates=//p' \
-        "$arm_directory/await-quiescence.stderr" | tail -n 1)
-    [ -n "$quiescence_predicates" ] || quiescence_predicates=-
-    [ "$quiescence_verdict" = reached ] || cooldown_timeouts=$((cooldown_timeouts + 1))
     printf 'census_cooldown=%s slot=%s arm=%s elapsed_ms=%s status=%s sclk_forced=%s predicates=%s lease=held-by-campaign\n' \
         "$quiescence_verdict" "$slot" "$arm" "$quiescence_elapsed_ms" \
         "$quiescence_status" "$cooldown_sclk_forced" "$quiescence_predicates"
@@ -2394,7 +2550,7 @@ EOF
     # this arm chose. The campaign ends here, ahead of that arm, and arms.tsv
     # carries the boundary row that names the state; --sclk-forced drops the
     # step's position under a commanded clock and licenses none of the rest.
-    if [ "$quiescence_verdict" != reached ]; then
+    if [ -z "$campaign_terminal" ] && [ "$quiescence_verdict" != reached ]; then
         campaign_terminal=quiescence_unconverged
         terminal_slot=$slot
         terminal_arm=$arm
@@ -2403,8 +2559,11 @@ EOF
             "$slot" "$quiescence_verdict" >>"$arms_ledger"
         printf 'census_cooldown=terminal slot=%s arm=%s verdict=%s predicates=%s\n' \
             "$slot" "$arm" "$quiescence_verdict" "$quiescence_predicates"
-        break
     fi
+    # A campaign state set anywhere inside this arm ends the loop after the
+    # arm's own rows have landed, so the ledger and the wall clock hold the arm
+    # that ended the run rather than stopping one row short of it.
+    [ -z "$campaign_terminal" ] || break
 done
 # A calibration whose four bricks all reuse executes no arm at all, so the
 # precondition never met a named arm to report itself ahead of; the rows still
@@ -2426,6 +2585,7 @@ fi
 if [ -n "$campaign_terminal" ]; then
     case $campaign_terminal in
         quiescence_unconverged) campaign_exit=5 ;;
+        identity_incident) campaign_exit=6 ;;
         *) campaign_exit=1 ;;
     esac
     {
