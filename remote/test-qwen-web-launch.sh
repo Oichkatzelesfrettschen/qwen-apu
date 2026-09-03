@@ -14,6 +14,15 @@ if [ "$#" -ne 0 ]; then
     exit 2
 fi
 
+# The busy-port arm below proves the preflight message qwen-web-launch.sh's
+# own ss check produces; that check silently admits a busy port where ss is
+# absent, so a gate host lacking it would otherwise read the arm as accepted
+# rather than as the undeclared dependency it is.
+if ! command -v ss >/dev/null 2>&1; then
+    printf 'test-qwen-web-launch: ss is required\n' >&2
+    exit 2
+fi
+
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 policy=$script_directory/qwen-capacity-policy.sh
 fake_server=$script_directory/test-fixtures/fake-llama-server.sh
