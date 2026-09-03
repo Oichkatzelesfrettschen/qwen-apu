@@ -134,6 +134,12 @@ searxng_start_timeout=${QWEN_SEARXNG_START_TIMEOUT:-120}
 case $searxng_start_timeout in
     '' | *[!0-9]*) searxng_start_timeout=120 ;;
 esac
+# The teardown deadline for the guarded child, the same variable and default
+# remote/searxng-launch.sh's own stop path reads.
+searxng_stop_timeout=${QWEN_SEARXNG_STOP_TIMEOUT:-15}
+case $searxng_stop_timeout in
+    '' | *[!0-9]*) searxng_stop_timeout=15 ;;
+esac
 # The image service owns the Vulkan workload lease and the pinned image
 # runtime, and it allocates nothing on the device until a job arrives, so it is
 # a guarded child of this session beside the broker. qwen-image-launch.sh sets
@@ -193,10 +199,14 @@ cleanup() {
     fi
     # The instance holds the loopback port the next launch's own health gate
     # reads, so it is signalled and waited for rather than left to the process
-    # group.
+    # group. The production session invokes searxng-launch.sh serve directly
+    # rather than through its own bounded start/stop actions, so this trap is
+    # where an instance stuck handling SIGTERM -- an unhealthy startup, most
+    # plausibly -- would otherwise hold the whole session's cleanup open;
+    # terminate_guarded_child bounds it the way searxng-launch.sh bounds its
+    # own stop and startup-timeout paths.
     if [ -n "$searxng_pid" ]; then
-        kill "$searxng_pid" 2>/dev/null || true
-        wait "$searxng_pid" 2>/dev/null || true
+        terminate_guarded_child "$searxng_pid" "$searxng_stop_timeout"
     fi
     if [ -n "$router_preset_snapshot" ]; then
         rm -f -- "$router_preset_snapshot"
@@ -221,6 +231,26 @@ process_running() {
     [ -r "/proc/$process_pid/stat" ] || return 1
     process_state=$(sed 's/^.*) //' "/proc/$process_pid/stat" | awk '{ print $1 }')
     [ "$process_state" != Z ] && [ "$process_state" != X ]
+}
+
+# A guarded child that ignores or is stuck handling SIGTERM must not hold the
+# EXIT trap open indefinitely, so termination is bounded by a deadline with a
+# SIGKILL escalation past it, the same shape searxng-launch.sh's own `stop`
+# and startup-timeout paths apply to the process it owns directly.
+terminate_guarded_child() {
+    terminate_pid=$1
+    terminate_timeout=${2:-15}
+    kill "$terminate_pid" 2>/dev/null || true
+    terminate_waited=0
+    while [ "$terminate_waited" -lt "$terminate_timeout" ] && \
+        process_running "$terminate_pid"; do
+        sleep 1
+        terminate_waited=$((terminate_waited + 1))
+    done
+    if process_running "$terminate_pid"; then
+        kill -KILL "$terminate_pid" 2>/dev/null || true
+    fi
+    wait "$terminate_pid" 2>/dev/null || true
 }
 
 require_broker_running() {
@@ -315,20 +345,40 @@ if [ "$searxng_enabled" = 1 ]; then
     fi
     searxng_start_time=$(sed 's/^.*) //' "/proc/$searxng_pid/stat" |
         awk '{ print $20 }')
+    # The identity is recorded before the readiness wait rather than after it,
+    # so a teardown that arrives while this loop is still polling reads the
+    # pid, start time, and port off this file instead of finding only the
+    # generic `state=starting` line the broker block below would otherwise
+    # leave in place until health succeeds.
+    {
+        printf 'state=starting searxng_pid=%s utc=%s\n' \
+            "$searxng_pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf 'searxng_identity pid=%s start_time=%s port=%s url=%s\n' \
+            "$searxng_pid" "$searxng_start_time" "$searxng_port" "$searxng_url"
+    } >"$status_file"
     searxng_ready=0
-    attempt=0
-    # `curl -f` reads the status line: an instance that binds its port and
-    # answers 503 is one the launch waits out rather than admits.
-    while [ "$attempt" -lt $((searxng_start_timeout * 10)) ]; do
+    # The loop is bounded by elapsed wall-clock time rather than by attempt
+    # count: each curl below can consume its own --max-time before the loop
+    # sleeps and counts an attempt, so an attempt-counted loop against a
+    # stalling connection can run for the timeout multiplied by the curl
+    # budget instead of the timeout itself. The deadline is computed once and
+    # each request's own timeout is capped to what remains of it.
+    searxng_deadline=$(($(date +%s) + searxng_start_timeout))
+    while [ "$(date +%s)" -lt "$searxng_deadline" ]; do
         if ! kill -0 "$searxng_pid" 2>/dev/null; then
             break
         fi
-        if curl -fsS --max-time 5 -o /dev/null "$searxng_url/healthz" \
-            2>/dev/null; then
+        searxng_remaining=$((searxng_deadline - $(date +%s)))
+        [ "$searxng_remaining" -gt 0 ] || break
+        searxng_curl_timeout=$searxng_remaining
+        [ "$searxng_curl_timeout" -le 5 ] || searxng_curl_timeout=5
+        # `curl -f` reads the status line: an instance that binds its port and
+        # answers 503 is one the launch waits out rather than admits.
+        if curl -fsS --max-time "$searxng_curl_timeout" -o /dev/null \
+            "$searxng_url/healthz" 2>/dev/null; then
             searxng_ready=1
             break
         fi
-        attempt=$((attempt + 1))
         sleep 0.1
     done
     if [ "$searxng_ready" -ne 1 ]; then
@@ -336,12 +386,6 @@ if [ "$searxng_enabled" = 1 ]; then
             "$searxng_port" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
         exit 1
     fi
-    {
-        printf 'state=starting searxng_pid=%s utc=%s\n' \
-            "$searxng_pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        printf 'searxng_identity pid=%s start_time=%s port=%s url=%s\n' \
-            "$searxng_pid" "$searxng_start_time" "$searxng_port" "$searxng_url"
-    } >"$status_file"
 fi
 
 broker_start_time=''

@@ -10,7 +10,9 @@ set -eu
 # too. Both are supplied from the state directory instead, so the serving user
 # runs the same source tree under its own configuration and its own TMPDIR.
 # remote/searxng-control.sh administers the service-account instance; this
-# script owns one whose lifetime is a launch's.
+# script owns one whose lifetime is a launch's. QWEN_SEARXNG_ROOT defaults to
+# /opt/searxng-qwen-apu, the tree remote/install-searxng.sh names when the
+# service account cannot traverse a caller's home directory.
 #
 # `serve` renders the settings and replaces itself with the instance, so the
 # process the caller backgrounds is the instance itself and its PID stays the
@@ -23,10 +25,13 @@ set -eu
 #
 # The rendered settings carry a fresh secret on every render, written through
 # python3 at mode 0600, so the value reaches neither an argument vector nor a
-# log line. The rendered file is the authority for the listener: the port and
-# the bind address are read back from it and required to equal the loopback
-# endpoint this appliance serves, so a template edit that moved either refuses
-# the launch rather than putting the instance somewhere the profile ledger does
+# log line. The render also writes the port and bind address the profile
+# ledger names over the template's own, so a profile choosing a loopback port
+# other than the template's default still gets an instance listening where its
+# searxng_url says. The rendered file stays the authority for the listener:
+# the port and the bind address are read back from it and required to equal
+# the loopback endpoint this launch serves, so a template missing either field
+# refuses rather than putting the instance somewhere the profile ledger does
 # not name.
 
 if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
@@ -37,15 +42,33 @@ action=$1
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 state_directory=${2:-${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}}
 
-instance_root=${QWEN_SEARXNG_ROOT:-/usr/local/searxng}
+instance_root=${QWEN_SEARXNG_ROOT:-/opt/searxng-qwen-apu}
 source_directory=${QWEN_SEARXNG_SOURCE:-$instance_root/searxng-src}
 instance_python=${QWEN_SEARXNG_PYTHON:-$instance_root/searx-pyenv/bin/python}
 instance_module=${QWEN_SEARXNG_MODULE:-searx.webapp}
 settings_template=${QWEN_SEARXNG_SETTINGS_TEMPLATE:-"$script_directory/searxng/settings.template.yml"}
 expected_port=${QWEN_SEARXNG_PORT:-8888}
+# The render substitutes this value into the rendered settings rather than
+# only comparing against the template's own, so this launch's one loopback
+# guarantee lives here instead: a caller naming anything but the loopback
+# literal is refused before an instance ever binds it.
 expected_bind_address=${QWEN_SEARXNG_BIND_ADDRESS:-127.0.0.1}
+case $expected_bind_address in
+    127.0.0.1) ;;
+    *)
+        printf 'QWEN_SEARXNG_BIND_ADDRESS must be 127.0.0.1: %s\n' \
+            "$expected_bind_address" >&2
+        exit 2
+        ;;
+esac
 start_timeout_seconds=${QWEN_SEARXNG_START_TIMEOUT:-120}
+case $start_timeout_seconds in
+    '' | *[!0-9]*) start_timeout_seconds=120 ;;
+esac
 stop_timeout_seconds=${QWEN_SEARXNG_STOP_TIMEOUT:-15}
+case $stop_timeout_seconds in
+    '' | *[!0-9]*) stop_timeout_seconds=15 ;;
+esac
 # QWEN_SEARXNG_LAUNCH_COMMAND replaces the module invocation whole, which is
 # what lets remote/test-web-search-live.sh drive this script against a fake
 # listener on a host holding no SearXNG install.
@@ -59,6 +82,15 @@ pid_file=$instance_directory/searxng.pid
 
 process_start_time() {
     sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null | awk '{ print $20 }'
+}
+
+# Field 3 of /proc/PID/stat, read back the same way qwen-webui-session.sh's
+# process_running() does: a zombie keeps its /proc entry and its recorded start
+# time past the process exiting, until whatever reaps it runs, so a liveness
+# check that stops at readability and start time treats an unreaped zombie as
+# running forever.
+process_state() {
+    sed 's/^.*) //' "/proc/$1/stat" 2>/dev/null | awk '{ print $1 }'
 }
 
 # The recorded pair binds a number to a process: a PID is reused once its
@@ -83,7 +115,30 @@ read_process_record() {
 recorded_process_lives() {
     read_process_record || return 1
     [ -r "/proc/$recorded_pid/stat" ] || return 1
-    [ "$(process_start_time "$recorded_pid")" = "$recorded_start_time" ]
+    [ "$(process_start_time "$recorded_pid")" = "$recorded_start_time" ] || return 1
+    case $(process_state "$recorded_pid") in
+        Z | X) return 1 ;;
+    esac
+    return 0
+}
+
+# The bounded TERM-then-KILL sequence `stop` already applied is what a startup
+# failure needs too: a child that ignores or is stuck handling SIGTERM would
+# otherwise leave the caller inside an unbounded `wait`. recorded_process_lives
+# reads the pid file both callers already wrote, so one deadline serves both.
+terminate_recorded_process() {
+    terminate_pid=$1
+    kill -TERM "$terminate_pid" 2>/dev/null || true
+    terminate_waited=0
+    while [ "$terminate_waited" -lt "$stop_timeout_seconds" ] && \
+        recorded_process_lives; do
+        sleep 1
+        terminate_waited=$((terminate_waited + 1))
+    done
+    if recorded_process_lives; then
+        kill -KILL "$terminate_pid" 2>/dev/null || true
+        sleep 1
+    fi
 }
 
 listener_present() {
@@ -120,20 +175,42 @@ render_settings() {
             "$settings_template" >&2
         exit 2
     fi
-    if ! python3 - "$settings_template" "$settings_file" <<'PY'
+    if ! python3 - "$settings_template" "$settings_file" "$expected_port" \
+        "$expected_bind_address" <<'PY'
 import os
+import re
 import secrets
 import sys
 
-template_path, settings_path = sys.argv[1], sys.argv[2]
+template_path, settings_path, port, bind_address = sys.argv[1:5]
 with open(template_path, "r", encoding="utf-8") as handle:
     template = handle.read()
 if "__SECRET__" not in template:
     sys.stderr.write("the settings template carries no __SECRET__ placeholder\n")
     raise SystemExit(2)
+rendered = template.replace("__SECRET__", secrets.token_hex(32))
+# A profile names its own loopback port in web-profiles.tsv, and the render is
+# what makes that port the one the instance actually binds: the template's own
+# port and bind_address lines are placeholders this launch overwrites rather
+# than a value an operator edit is required to match.
+rendered, port_subs = re.subn(
+    r"(?m)^(  port: )[0-9]+$", r"\g<1>" + port, rendered, count=1
+)
+if port_subs != 1:
+    sys.stderr.write("the settings template carries no server port line\n")
+    raise SystemExit(2)
+rendered, bind_subs = re.subn(
+    r'(?m)^(  bind_address: )"[^"]*"$',
+    r'\g<1>"' + bind_address + '"',
+    rendered,
+    count=1,
+)
+if bind_subs != 1:
+    sys.stderr.write("the settings template carries no server bind_address line\n")
+    raise SystemExit(2)
 descriptor = os.open(settings_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
 with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-    handle.write(template.replace("__SECRET__", secrets.token_hex(32)))
+    handle.write(rendered)
 PY
     then
         printf 'the settings render failed: %s\n' "$settings_file" >&2
@@ -225,7 +302,10 @@ case $action in
         printf 'the instance answered no health request within %ss\n' \
             "$start_timeout_seconds" >&2
         tail -n 40 "$log_file" >&2 2>/dev/null || true
-        kill -TERM "$instance_pid" 2>/dev/null || true
+        # A child that ignores SIGTERM or is stuck handling it must not hang
+        # this caller past the advertised timeout, so the escalation `stop`
+        # applies runs here too rather than an unbounded wait.
+        terminate_recorded_process "$instance_pid"
         wait "$instance_pid" 2>/dev/null || true
         rm -f -- "$pid_file"
         exit 1
@@ -246,17 +326,7 @@ case $action in
             exit 0
         fi
         if recorded_process_lives; then
-            kill -TERM "$recorded_pid" 2>/dev/null || true
-            waited=0
-            while [ "$waited" -lt "$stop_timeout_seconds" ] && \
-                recorded_process_lives; do
-                sleep 1
-                waited=$((waited + 1))
-            done
-            if recorded_process_lives; then
-                kill -KILL "$recorded_pid" 2>/dev/null || true
-                sleep 1
-            fi
+            terminate_recorded_process "$recorded_pid"
         fi
         residue=''
         if recorded_process_lives; then
@@ -274,10 +344,19 @@ case $action in
         ;;
 
     status)
-        if recorded_process_lives && health_answers; then
-            printf 'state=running pid=%s port=%s start_time=%s\n' \
+        # A recorded process that lives and answers is running; one that lives
+        # but answers no health request is degraded rather than absent, since
+        # an occupied port and a live process are not what `stopped` means to
+        # a caller deciding whether `start` may claim this state directory.
+        if recorded_process_lives; then
+            if health_answers; then
+                printf 'state=running pid=%s port=%s start_time=%s\n' \
+                    "$recorded_pid" "$expected_port" "$recorded_start_time"
+                exit 0
+            fi
+            printf 'state=unhealthy pid=%s port=%s start_time=%s\n' \
                 "$recorded_pid" "$expected_port" "$recorded_start_time"
-            exit 0
+            exit 1
         fi
         printf 'state=stopped port=%s\n' "$expected_port"
         exit 1
