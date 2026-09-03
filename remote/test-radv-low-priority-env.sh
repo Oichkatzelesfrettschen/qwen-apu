@@ -52,19 +52,101 @@ environment_output=$(capture_environment low-serialized)
 printf '%s\n' "$environment_output" | grep -F \
     'profile=low-serialized low=1 duty=unset serialized=1 max_nodes=32 strict=1' >/dev/null
 
-# The diagnostic profile fixes serialization and restores the diagnostic
-# variables the serving profiles scrub; a serving profile carries the census
-# toggle across the scrub under its QWEN_ name and nothing else.
-diagnostic_output=$(GGML_VK_PERF_LOGGER=1 GGML_VK_PIPELINE_STATS=mul_mat \
-    RADV_DEBUG=shaderstats QWEN_PIPELINE_CENSUS=1 QWEN_VULKAN_PROFILE=diagnostic \
+# The diagnostic profile states its whole environment from the profile name
+# and QWEN_PERF_LOGGER, so the child's GGML_VK_ set is compared whole against
+# the wrapper-wide low-priority flag and the profile's own four exports. The
+# ambient logger, statistics, submit-trace, and RADV_DEBUG requests around it
+# reach nothing. A serving profile carries the census toggle across the scrub
+# under its QWEN_ name and nothing else, so that name is set here to prove the
+# diagnostic branch leaves it to the block outside the profile case.
+diagnostic_environment=$(GGML_VK_PERF_LOGGER=ambient GGML_VK_PIPELINE_STATS=mul_mat \
+    GGML_VK_PERF_LOGGER_CONCURRENT=1 GGML_VK_PERF_LOGGER_FREQUENCY=999 \
+    GGML_VK_MEMORY_LOGGER=1 GGML_VK_SUBMIT_TRACE=1 RADV_DEBUG=nohiz \
+    QWEN_PERF_LOGGER=4 QWEN_VULKAN_PROFILE=diagnostic \
     GGML_VK_SERIALIZE_SUBMISSIONS=unexpected GGML_VK_MAX_NODES_PER_SUBMIT=999 \
-    "$wrapper" sh -c 'printf "profile=%s serialized=%s max_nodes=%s perf=%s stats=%s radv=%s census=%s\n" \
-        "$QWEN_VULKAN_PROFILE" "${GGML_VK_SERIALIZE_SUBMISSIONS-unset}" \
-        "${GGML_VK_MAX_NODES_PER_SUBMIT-unset}" "${GGML_VK_PERF_LOGGER-unset}" \
-        "${GGML_VK_PIPELINE_STATS-unset}" "${RADV_DEBUG-unset}" "${GGML_VK_PIPELINE_CENSUS-unset}"')
+    "$wrapper" sh -c 'env | grep "^GGML_VK_" | sort')
+printf '%s\n' "$diagnostic_environment"
+diagnostic_expected='GGML_VK_LOW_PRIORITY=1
+GGML_VK_MAX_NODES_PER_SUBMIT=32
+GGML_VK_PERF_LOGGER=1
+GGML_VK_PERF_LOGGER_FREQUENCY=4
+GGML_VK_SERIALIZE_SUBMISSIONS=1'
+if [ "$diagnostic_environment" != "$diagnostic_expected" ]; then
+    printf 'the diagnostic profile exported an environment beyond its declaration\n' >&2
+    exit 1
+fi
+diagnostic_output=$(GGML_VK_MEMORY_LOGGER=1 GGML_VK_SUBMIT_TRACE=1 \
+    GGML_VK_PERF_LOGGER_CONCURRENT=1 RADV_DEBUG=nohiz \
+    QWEN_PIPELINE_CENSUS=1 QWEN_PERF_LOGGER=4 QWEN_VULKAN_PROFILE=diagnostic \
+    "$wrapper" sh -c 'printf "profile=%s memory=%s trace=%s concurrent=%s radv=%s census=%s\n" \
+        "$QWEN_VULKAN_PROFILE" "${GGML_VK_MEMORY_LOGGER-unset}" \
+        "${GGML_VK_SUBMIT_TRACE-unset}" "${GGML_VK_PERF_LOGGER_CONCURRENT-unset}" \
+        "${RADV_DEBUG-unset}" "${GGML_VK_PIPELINE_CENSUS-unset}"')
 printf '%s\n' "$diagnostic_output"
 printf '%s\n' "$diagnostic_output" | grep -Fx \
-    'profile=diagnostic serialized=1 max_nodes=32 perf=1 stats=mul_mat radv=shaderstats census=1' >/dev/null
+    'profile=diagnostic memory=unset trace=unset concurrent=unset radv=unset census=1' >/dev/null
+
+# The same ambient diagnostic request reaches nothing under a serving profile,
+# where the scrub alone answers for it.
+serving_ambient_output=$(GGML_VK_MEMORY_LOGGER=1 GGML_VK_SUBMIT_TRACE=1 \
+    GGML_VK_PERF_LOGGER_CONCURRENT=1 GGML_VK_PIPELINE_STATS=mul_mat \
+    RADV_DEBUG=nohiz QWEN_VULKAN_PROFILE=low-async \
+    "$wrapper" sh -c 'printf "memory=%s trace=%s concurrent=%s stats=%s radv=%s\n" \
+        "${GGML_VK_MEMORY_LOGGER-unset}" "${GGML_VK_SUBMIT_TRACE-unset}" \
+        "${GGML_VK_PERF_LOGGER_CONCURRENT-unset}" "${GGML_VK_PIPELINE_STATS-unset}" \
+        "${RADV_DEBUG-unset}"')
+printf '%s\n' "$serving_ambient_output" | grep -Fx \
+    'memory=unset trace=unset concurrent=unset stats=unset radv=unset' >/dev/null
+
+# The sideplane candidate reads its two names through getenv() != NULL, so the
+# value 0 enables the feature and its log where the scrub is what keeps a
+# control arm a control. The request carries 0 for that reason.
+sideplane_ambient_output=$(GGML_VK_Q4K_SIDEPLANE=0 GGML_VK_Q4K_SIDEPLANE_LOG=0 \
+    QWEN_VULKAN_PROFILE=low-async \
+    "$wrapper" sh -c 'printf "sideplane=%s sideplane_log=%s\n" \
+        "${GGML_VK_Q4K_SIDEPLANE-unset}" "${GGML_VK_Q4K_SIDEPLANE_LOG-unset}"')
+printf '%s\n' "$sideplane_ambient_output" | grep -Fx \
+    'sideplane=unset sideplane_log=unset' >/dev/null
+
+# QWEN_PERF_LOGGER states the logger's frequency as one positive integer, which
+# the diagnostic branch turns into the enable flag and the frequency together.
+perf_logger_output=$(QWEN_PERF_LOGGER=1 QWEN_VULKAN_PROFILE=diagnostic \
+    "$wrapper" sh -c 'printf "perf=%s frequency=%s\n" \
+        "${GGML_VK_PERF_LOGGER-unset}" "${GGML_VK_PERF_LOGGER_FREQUENCY-unset}"')
+printf '%s\n' "$perf_logger_output" | grep -Fx 'perf=1 frequency=1' >/dev/null
+perf_logger_output=$(QWEN_PERF_LOGGER=4 QWEN_VULKAN_PROFILE=diagnostic \
+    "$wrapper" sh -c 'printf "perf=%s frequency=%s\n" \
+        "${GGML_VK_PERF_LOGGER-unset}" "${GGML_VK_PERF_LOGGER_FREQUENCY-unset}"')
+printf '%s\n' "$perf_logger_output" | grep -Fx 'perf=1 frequency=4' >/dev/null
+diagnostic_perf_logger_status=0
+QWEN_PERF_LOGGER=x QWEN_VULKAN_PROFILE=diagnostic "$wrapper" true \
+    >/dev/null 2>/dev/null || diagnostic_perf_logger_status=$?
+if [ "$diagnostic_perf_logger_status" -ne 2 ]; then
+    printf 'RADV environment wrapper accepted a non-integer QWEN_PERF_LOGGER\n' >&2
+    exit 1
+fi
+# The frequency is the profile's only input, so an absent one leaves the arm's
+# environment underdetermined and the profile refuses rather than serving a
+# logger-free run under the diagnostic name.
+absent_perf_logger_status=0
+QWEN_VULKAN_PROFILE=diagnostic "$wrapper" true \
+    >/dev/null 2>/dev/null || absent_perf_logger_status=$?
+if [ "$absent_perf_logger_status" -ne 2 ]; then
+    printf 'RADV environment wrapper accepted a diagnostic profile without QWEN_PERF_LOGGER\n' >&2
+    exit 1
+fi
+# A serving profile measures a rate the appliance serves, so it refuses the
+# logger rather than exporting it.
+serving_perf_logger_status=0
+serving_perf_logger_error=$(QWEN_PERF_LOGGER=1 QWEN_VULKAN_PROFILE=low-async \
+    "$wrapper" true 2>&1 >/dev/null) || serving_perf_logger_status=$?
+if [ "$serving_perf_logger_status" -ne 2 ]; then
+    printf 'RADV environment wrapper accepted QWEN_PERF_LOGGER under low-async\n' >&2
+    exit 1
+fi
+printf '%s\n' "$serving_perf_logger_error" | grep -Fx \
+    'QWEN_PERF_LOGGER belongs to the diagnostic profile alone' >/dev/null
+
 serving_census_output=$(GGML_VK_PERF_LOGGER=1 GGML_VK_PIPELINE_CENSUS=stale QWEN_PIPELINE_CENSUS=1 \
     QWEN_VULKAN_PROFILE=low-async "$wrapper" sh -c 'printf "perf=%s census=%s\n" \
         "${GGML_VK_PERF_LOGGER-unset}" "${GGML_VK_PIPELINE_CENSUS-unset}"')
@@ -74,18 +156,44 @@ serving_plain_output=$(GGML_VK_PIPELINE_CENSUS=stale QWEN_VULKAN_PROFILE=low-asy
 printf '%s\n' "$serving_plain_output" | grep -Fx 'census=unset' >/dev/null
 
 # The int24 candidate admits its q8_1 mat-vec pipelines under
-# GGML_VK_FORCE_INTEGER_DOT, so a serving profile scrubs it and `custom`
-# restores what the caller asked for. The scrub is what keeps the arm and its
-# control apart on one binary.
-serving_force_dot_output=$(GGML_VK_FORCE_INTEGER_DOT=1 QWEN_VULKAN_PROFILE=low-async \
+# GGML_VK_FORCE_INTEGER_DOT, so every serving profile scrubs it the way it
+# scrubs the sideplane names and the diagnostic profile alone restores what the
+# caller asked for. The scrub is what keeps the arm and its control apart on one
+# binary, and `custom` is a serving profile: it varies the submission settings,
+# which leaves a rate it measures comparable with a rate the appliance serves.
+for serving_profile in paced-60 low-serialized low-async custom; do
+    # The nested shell expands its own runtime environment after the wrapper runs.
+    # shellcheck disable=SC2016
+    serving_force_dot_output=$(GGML_VK_FORCE_INTEGER_DOT=1 \
+        QWEN_VULKAN_PROFILE=$serving_profile \
+        "$wrapper" sh -c 'printf "force_integer_dot=%s\n" "${GGML_VK_FORCE_INTEGER_DOT-unset}"')
+    if ! printf '%s\n' "$serving_force_dot_output" | grep -Fx \
+        'force_integer_dot=unset' >/dev/null; then
+        printf 'the %s profile carried GGML_VK_FORCE_INTEGER_DOT: %s\n' \
+            "$serving_profile" "$serving_force_dot_output" >&2
+        exit 1
+    fi
+done
+diagnostic_force_dot_output=$(GGML_VK_FORCE_INTEGER_DOT=1 QWEN_PERF_LOGGER=4 \
+    QWEN_VULKAN_PROFILE=diagnostic \
     "$wrapper" sh -c 'printf "force_integer_dot=%s\n" "${GGML_VK_FORCE_INTEGER_DOT-unset}"')
-printf '%s\n' "$serving_force_dot_output" | grep -Fx 'force_integer_dot=unset' >/dev/null
-custom_force_dot_output=$(GGML_VK_FORCE_INTEGER_DOT=1 QWEN_VULKAN_PROFILE=custom \
+printf '%s\n' "$diagnostic_force_dot_output" | grep -Fx 'force_integer_dot=1' >/dev/null
+# The control arm of the ISA receipt names the same profile and supplies no
+# value, so the restore is what separates the two rather than the profile name.
+diagnostic_control_output=$(QWEN_PERF_LOGGER=4 QWEN_VULKAN_PROFILE=diagnostic \
     "$wrapper" sh -c 'printf "force_integer_dot=%s\n" "${GGML_VK_FORCE_INTEGER_DOT-unset}"')
-printf '%s\n' "$custom_force_dot_output" | grep -Fx 'force_integer_dot=1' >/dev/null
-custom_control_output=$(QWEN_VULKAN_PROFILE=custom \
-    "$wrapper" sh -c 'printf "force_integer_dot=%s\n" "${GGML_VK_FORCE_INTEGER_DOT-unset}"')
-printf '%s\n' "$custom_control_output" | grep -Fx 'force_integer_dot=unset' >/dev/null
+printf '%s\n' "$diagnostic_control_output" | grep -Fx 'force_integer_dot=unset' >/dev/null
+
+# remote/dump-radv-shader-isa.sh runs a serving profile and reaches the arm by
+# forwarding the caller's value past the scrub on its own `env`, so the two arms
+# of the receipt differ in that assignment. A collector that dropped the forward
+# would collect the control under the arm's name.
+collector=$script_directory/dump-radv-shader-isa.sh
+if ! grep -q 'GGML_VK_FORCE_INTEGER_DOT="\$requested_force_integer_dot"' \
+    "$collector"; then
+    printf 'the ISA collector no longer forwards the force flag past the scrub\n' >&2
+    exit 1
+fi
 
 environment_output=$(capture_environment low-async)
 printf '%s\n' "$environment_output" | grep -F \

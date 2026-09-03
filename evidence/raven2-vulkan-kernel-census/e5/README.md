@@ -50,9 +50,14 @@ dispatch takes the production FP16 mat-vec. One build therefore carries the arm
 and its control, and the code-layout difference `P I0 I0 P` exists to separate
 is absent by construction. The residual difference is the unused q8_1 SPIR-V
 linked into the binary and the pipeline table entries that name it.
-`remote/radv-low-priority-env.sh` scrubs the variable under every serving
-profile and restores it under `custom` alone, so an arm is asked for
-explicitly.
+`remote/radv-low-priority-env.sh` scrubs the variable under all four serving
+profiles, `custom` among them, and restores it under `diagnostic` alone, so an
+arm is asked for explicitly and a promoted build stays on the FP16 mat-vec
+whatever the ambient environment holds. `remote/dump-radv-shader-isa.sh` runs
+the `low-async` serving profile, so it forwards the caller's own value past
+that scrub on the same `env` that reintroduces `RADV_DEBUG`, conditionally:
+the two arms of the ISA receipt share one server argv and differ in that
+assignment, and its completion line names the arm it collected.
 
 ## The appliance chain
 
@@ -157,10 +162,13 @@ backend compile     ggml-vulkan.cpp parses and type-checks under all four
                     combinations of GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT and
                     GGML_VULKAN_INT24_DOT, and vulkan-shaders-gen.cpp compiles
                     under the same four at -Wall -Wextra
-environment         test-radv-low-priority-env.sh gains the three
-                    GGML_VK_FORCE_INTEGER_DOT arms; the wrapper refuses this
-                    workstation for want of a RADV ICD, so the three arms ran
-                    against a stand-in ICD and answered unset, 1, unset
+environment         test-radv-low-priority-env.sh gains six
+                    GGML_VK_FORCE_INTEGER_DOT arms, one per serving profile
+                    plus the diagnostic profile armed and unarmed, and one
+                    structural check that the ISA collector still forwards the
+                    value; the wrapper refuses this workstation for want of a
+                    RADV ICD, so the arms ran against a stand-in ICD and
+                    answered unset four times, then 1 and unset
 ACO ISA receipt     isa-shimmed-raven2/, the int24 module, its dotPacked4x8EXT
                     counterpart, and the pinned Q4_K and Q6_K mat-vecs compiled
                     through RADV on a drm-shimmed RAVEN2 node; the two pinned

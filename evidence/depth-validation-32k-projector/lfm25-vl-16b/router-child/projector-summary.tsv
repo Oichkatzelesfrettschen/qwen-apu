@@ -1,0 +1,2 @@
+arm	model_id	depth	batch	ubatch	cache_k	cache_v	flash_attn	projector_state	status	prompt_n	prefill_s	decode_tok_s	ring_resets	gpu_faults	vram_peak_mib	gtt_peak_mib	control_status	control_answer	health	hazard_class	server_log	runtime_mode
+d8192-b128-ub32-proj	lfm25-vl-16b	8192	128	32	q8_0	q4_0	on	loaded	ok	8042	193.069	4.065	0	0	1745	514	ok	JUN	healthy	none	$HOME/qwen-webui-state/depth-validation-32k-projector-router/lfm25-vl-16b-promoted-20260903T1737Z/d8192-b128-ub32-proj.server.log	router-child
