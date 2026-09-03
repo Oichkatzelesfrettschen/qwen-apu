@@ -1125,6 +1125,23 @@ else
     cat "$work/lan-named.err" >&2
 fi
 
+# One spelling reaches every reader: a browser lowercases the host in the Origin
+# it sends and both children compare an origin exactly, so a mixed-case name
+# would configure an allowlist entry no request presents.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=QWEN-Test.LOCAL \
+    QWEN_BIND_HOST=0.0.0.0 \
+    "$launcher" >"$work/lan-case.log" 2>"$work/lan-case.err"; then
+    outcome=ok
+    grep -qx 'QWEN_WEB_LAN_NAME=qwen-test.local' "$record" || outcome=name_not_lowercased
+    grep -q 'name=qwen-test.local' "$work/lan-case.log" || outcome=name_misreported
+    report lan_exposure_name_is_lowercased "$outcome"
+else
+    report lan_exposure_name_is_lowercased refused
+    cat "$work/lan-case.err" >&2
+fi
+
 # A name outside the letter-digit-hyphen set names no host a browser resolves.
 if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
     QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
