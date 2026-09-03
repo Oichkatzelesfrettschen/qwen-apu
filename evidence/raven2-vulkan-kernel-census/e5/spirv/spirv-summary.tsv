@@ -1,0 +1,7 @@
+variant	branch	spirv_val	bytes	OpIMul	OpSDot	OpUDot	OpDot	integer_dot_capability	integer_dot_extension
+plain	extension	passed	22400	30	4	0	0	2	1
+plain	int24	passed	23112	33	0	0	0	0	0
+subgroup	extension	passed	22880	30	4	0	0	2	1
+subgroup	int24	passed	23592	33	0	0	0	0	0
+subgroup_no_shmem	extension	passed	21312	30	4	0	0	2	1
+subgroup_no_shmem	int24	passed	22024	33	0	0	0	0	0
