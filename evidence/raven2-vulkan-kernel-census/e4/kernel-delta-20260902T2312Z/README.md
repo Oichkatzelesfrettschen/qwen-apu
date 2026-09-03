@@ -72,8 +72,17 @@ count and dump rather than by SPIR-V byte identity.
 `response_identity=held` over four pairs: every candidate reply's content
 and `predicted_n` equal its control's (`arms/*/response.json`). Two token
 sequences can share a string, so the token-id and log-probability witness
-(`run-kernel-delta-witness.sh`, chain twenty-one) is recorded in
-`../kernel-delta-witness-20260903T0146Z/` and stated in the section below.
+(`../kernel-delta-witness-20260903T0148Z/`) reads the ids: held on every
+one of 768 generated tokens over six state-carrying prompts, both binaries
+exactly self-consistent, and the selected log-probability moved by at most
+2.4e-2 nat with a median of 1e-6 to 1e-4. That exceeds the 1e-3 bound the
+witness registered, and the two references beside it place the movement:
+two builds of the same shader source move nothing
+(`../witness-calibration-20260903T0203Z/`), and the CPU backend against
+Vulkan moves the argmax on four of six prompts and the log-probabilities by
+up to 0.375 (`../witness-cpu-reference-20260903T0220Z/`). E4's movement is
+its own reassociation, an order of magnitude inside a backend change the
+appliance already serves as equivalent, with no argmax moved.
 
 ## Reading
 
