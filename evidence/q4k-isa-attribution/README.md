@@ -376,21 +376,27 @@ E1=evidence/raven2-vulkan-kernel-census/e1
 Q=evidence/q4k-isa-attribution
 python3 $Q/classify-loop-phases.py $E1/isa/e4-control-subgroup-no-shmem.s \
     101 536 pre-e4-control-body --rows 4
-python3 $Q/classify-loop-phases.py $E1/isa/e4-candidate-subgroup-no-shmem.s \
-    101 501 e4-body-num-rows-4 --rows 4
-python3 $Q/classify-loop-phases.py $E1/isa/e4-candidate-subgroup-no-shmem.s \
-    503 567 e4-reduction-num-rows-4 --rows 4
-python3 $Q/classify-loop-phases.py $Q/receipts/num-rows-8/isa.s \
-    107 854 e4-body-num-rows-8 --rows 8
-python3 $Q/classify-loop-phases.py $Q/receipts/num-rows-8/isa.s \
-    856 984 e4-reduction-num-rows-8 --rows 8
+
+# Every shape, over the disassembly each row was read from. N=4 reads the E1
+# file, since receipts/num-rows-4/ retains no copy of a byte-identical stream.
+# The four numbers per row are the body range then the reduction range.
+printf '%s\n' "1 97 228 230 246"   "2 99 320 322 354"  "4 101 501 503 567" \
+               "8 107 854 856 984" "16 113 1571 1573 1829" |
+while read -r rows body_first body_last reduce_first reduce_last; do
+    isa=$Q/receipts/num-rows-$rows/isa.s
+    [ "$rows" = 4 ] && isa=$E1/isa/e4-candidate-subgroup-no-shmem.s
+    python3 $Q/classify-loop-phases.py "$isa" "$body_first" "$body_last" \
+        e4-body-num-rows-$rows --rows "$rows"
+    python3 $Q/classify-loop-phases.py "$isa" "$reduce_first" "$reduce_last" \
+        e4-reduction-num-rows-$rows --rows "$rows"
+done
 ```
 
-The body ranges are 97-228 at N=1, 99-320 at N=2, 101-501 at N=4, 107-854 at
-N=8, and 113-1571 at N=16; the reduction ranges are 230-246, 322-354, 503-567,
-856-984, and 1573-1829. Each is the label line of the block holding the four
-`buffer_load_dwordx4` through the `s_cbranch` that closes the loop, and the
-block holding the first `v_add_f32_dpp`.
+Each body range runs from the line after the label of the block holding the
+four `buffer_load_dwordx4` through the `s_cbranch` that branches back to that
+label, and each reduction range is the block holding the first
+`v_add_f32_dpp`. Both are derived rather than read off: the body's first line
+is the label line plus two and the reduction ends before the next label.
 
 ## What is retained
 
