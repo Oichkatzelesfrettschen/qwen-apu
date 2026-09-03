@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-# Reproduce the seven successor lanes of PR #105 from a base ref.
+# Reproduce the eight successor lanes of PR #105 from a base ref.
 #
 # The split is a path partition. docs/split-plan/lanes.tsv assigns every path
 # the source branch touches to one lane, to `shared` where several lanes each
@@ -24,7 +24,7 @@ set -eu
 # them. Rebasing the stack onto main after PR #106 merges therefore rebases
 # census-timing first and the three onto its new tip.
 #
-# The script rewrites the seven lane/* branches and leaves the checkout on the
+# The script rewrites the eight lane/* branches and leaves the checkout on the
 # last one. It writes nothing to any remote.
 
 usage() {
@@ -188,6 +188,59 @@ carrying a subset of PR #105's evidence needs its own manifest for
     printf '  tip %s\n' "$(git rev-parse --short HEAD)"
 }
 
+# deployment-followups is the one lane a path replay cannot build. Its six
+# commits predate PR #106 and change the same four files that merge repaired,
+# so replaying the branch's copy would revert main. The lane takes main's shape
+# and adds the branch's own checks on top: 74ddab7 cherry-picks onto the
+# repaired files, b02fabd's three deployment paths arrive as a three-way patch
+# application rather than as a checkout of the branch's whole file, the one
+# CLAUDE.md sentence naming the hard-link refusal is placed by name, and the
+# remaining four commits are pure.
+split_deployment_followups() {
+    lane=deployment-followups
+    printf '=== lane %s from %s\n' "$lane" "$base_commit"
+    git checkout -q -B "lane/$lane" "$base_commit"
+    git cherry-pick -x 74ddab7 >/dev/null
+    printf '  74ddab7 cherry-pick\n'
+    git diff b02fabd^ b02fabd -- remote/build-deployment-bundle.sh \
+        remote/verify-deployment-bundle.sh remote/test-deployment-bundle.sh \
+        >"$work/b02fabd-deployment.patch"
+    git apply -3 "$work/b02fabd-deployment.patch"
+    python3 - "$repository_root/CLAUDE.md" <<'PYTHON'
+import sys
+path = sys.argv[1]
+old = """# open-verified-lock-descriptor.py opens without following a link or
+# truncating and holds exclusively for the activator and shared for the
+# resolver."""
+new = """# open-verified-lock-descriptor.py opens without following a link or
+# truncating, refuses a leaf with more than one hard link, and holds
+# exclusively for the activator and shared for the resolver."""
+with open(path) as handle:
+    text = handle.read()
+if old not in text:
+    raise SystemExit("the lock-leaf sentence anchor moved in CLAUDE.md")
+with open(path, "w") as handle:
+    handle.write(text.replace(old, new, 1))
+PYTHON
+    git add -A
+    git log -1 --format=%B b02fabd >"$work/message"
+    printf '\nSplit-from: %s\n' "$(git rev-parse b02fabd)" >>"$work/message"
+    GIT_AUTHOR_NAME=$(git log -1 --format=%an b02fabd) \
+    GIT_AUTHOR_EMAIL=$(git log -1 --format=%ae b02fabd) \
+    GIT_AUTHOR_DATE=$(git log -1 --format=%aD b02fabd) \
+        git commit -q --file="$work/message" --cleanup=verbatim
+    printf '  b02fabd split\n'
+    git cherry-pick -x a3105b4 7e9e09b 995ef68 f5f92d8 >/dev/null
+    printf '  a3105b4 7e9e09b 995ef68 f5f92d8 cherry-pick\n'
+    remote/refresh-evidence-manifest.sh
+    if ! git diff --quiet -- evidence/SHA256SUMS; then
+        git add evidence/SHA256SUMS
+        git commit -q -m "evidence: regenerate the manifest over this lane's tree"
+        printf '  manifest\n'
+    fi
+    printf '  tip %s\n' "$(git rev-parse --short HEAD)"
+}
+
 replay_lane census-timing "$base_commit"
 replay_lane build-cache-identity "$base_commit"
 replay_lane dpm-telemetry lane/census-timing
@@ -195,3 +248,4 @@ replay_lane shader-e4 "$base_commit"
 replay_lane correctness-witnesses lane/census-timing
 replay_lane served-ab-harness lane/census-timing
 replay_lane retained-evidence "$base_commit"
+split_deployment_followups

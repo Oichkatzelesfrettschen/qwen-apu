@@ -34,21 +34,21 @@ shared	remote/test-radv-low-priority-env.sh
 shared	remote/check-text-policy.py
 # PR #106 landed the activation-lock repairs in main after this branch left it,
 # so the branch's copy of each file below is the older one and replaying it
-# would revert that merge. 74ddab7's own repairs -- the single-hard-link check
-# in verify_identity and the two-row eligibility grammar -- reach neither PR
-# #106 nor any lane here, and the plan document records them as unassigned.
+# would revert that merge. deployment-followups is built by hand instead: it
+# takes main's shape and adds the census branch's own checks on top, which is
+# what `split_deployment_followups` in split-pr-105.sh reproduces.
 dropped	remote/activate-deployment-bundle.sh
 dropped	remote/deployment-bundle-name.sh
 dropped	remote/resolve-active-deployment.sh
 dropped	remote/test-open-verified-lock-descriptor.py
 dropped	remote/test-run-fixed64-served-campaign.sh
-dropped	remote/build-deployment-bundle.sh
-dropped	remote/verify-deployment-bundle.sh
-dropped	remote/open-verified-lock-descriptor.py
-dropped	remote/test-deployment-bundle.sh
-dropped	remote/web-mcp/authorize-broker.py
-dropped	remote/test-qwen-web-launch.sh
-dropped	evidence/deployment-bundle-presets/*
+deployment-followups	remote/build-deployment-bundle.sh
+deployment-followups	remote/verify-deployment-bundle.sh
+deployment-followups	remote/open-verified-lock-descriptor.py
+deployment-followups	remote/test-deployment-bundle.sh
+deployment-followups	remote/web-mcp/authorize-broker.py
+deployment-followups	remote/test-qwen-web-launch.sh
+deployment-followups	evidence/deployment-bundle-presets/*
 census-timing	patches/llama-vulkan-pipeline-census.patch
 census-timing	remote/prepare-llama-census-source.sh
 census-timing	remote/summarize-kernel-census.py
