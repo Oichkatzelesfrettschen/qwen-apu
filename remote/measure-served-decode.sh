@@ -425,12 +425,14 @@ retain_running_process_evidence() {
     cp -- "$status_source" "$result_directory/session.status" || return 1
 
     process_new=$result_directory/.server-process.json.new
-    rm -f -- "$process_new"
+    effective_environment_new=$result_directory/.server-effective-env.tsv.new
+    rm -f -- "$process_new" "$effective_environment_new"
     if ! python3 - "$result_directory/session.status" "$process_new" \
         "$result_directory/runtime-inputs.json" \
         "$profile" "${QWEN_CONTEXT_SIZE:-}" \
         "${QWEN_INFERENCE_CPU:-0}" \
-        "$execution_surface" "$host_shortname" "$ssh_session" <<'PY'
+        "$execution_surface" "$host_shortname" "$ssh_session" \
+        "$effective_environment_new" <<'PY'
 import hashlib
 import json
 import os
@@ -447,6 +449,7 @@ expected_cpu = sys.argv[6]
 execution_surface = sys.argv[7]
 host_shortname = sys.argv[8]
 ssh_session = sys.argv[9]
+environ_output_path = Path(sys.argv[10])
 
 
 def fail(message):
@@ -567,6 +570,48 @@ except UnicodeDecodeError:
 if not argv or argv[0] != executable:
     fail("process argv[0] differs from the executable")
 
+# A rate is read from one process, so the environment that process actually
+# runs under is retained beside its identity: radv-low-priority-env.sh scrubs
+# and then exports a profile, and this file is what the arm ran against rather
+# than what the profile is documented to export. Four name families state the
+# Vulkan and profile settings; every other name stays out, since QWEN_ carries
+# the API-key path and local model paths. A refused read leaves the arm
+# running, because the environment is evidence about a rate rather than a
+# condition on it.
+environ_families = ("GGML_VK_", "RADV_", "VK_")
+environ_rows = []
+environ_readable = True
+try:
+    environ_bytes = (process_root / "environ").read_bytes()
+except OSError:
+    environ_readable = False
+else:
+    for entry in environ_bytes.split(b"\0"):
+        if not entry:
+            continue
+        name, separator, value = entry.decode("utf-8", "replace").partition("=")
+        if not separator:
+            continue
+        if name.startswith(environ_families) or name == "QWEN_PERF_LOGGER":
+            escaped = (
+                value.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n")
+            )
+            environ_rows.append((name, escaped))
+    environ_rows.sort()
+with environ_output_path.open("x", encoding="utf-8") as environ_handle:
+    environ_handle.write(
+        "# The effective environment of the served process, read from\n"
+        "# /proc/PID/environ while its identity is pinned, over the GGML_VK_,\n"
+        "# RADV_, VK_, and QWEN_PERF_LOGGER names alone. A refused read writes\n"
+        "# one environ=unreadable line and the arm continues.\n"
+        "name\tvalue\n"
+    )
+    if environ_readable:
+        for name, value in environ_rows:
+            environ_handle.write(f"{name}\t{value}\n")
+    else:
+        environ_handle.write("environ=unreadable\n")
+
 cpus_allowed_list = ""
 for status_line in (process_root / "status").read_text(encoding="utf-8").splitlines():
     if status_line.startswith("Cpus_allowed_list:"):
@@ -618,9 +663,17 @@ with output_path.open("x", encoding="utf-8") as output_handle:
 PY
     then
         rm -f -- "$process_new"
+        # The environment file is written ahead of the priority and affinity
+        # assertions, so a refused arm keeps what it ran under.
+        if [ -f "$effective_environment_new" ]; then
+            mv -- "$effective_environment_new" \
+                "$result_directory/server-effective-env.tsv" || :
+        fi
         return 1
     fi
     mv -- "$process_new" "$result_directory/server-process.json" || return 1
+    mv -- "$effective_environment_new" \
+        "$result_directory/server-effective-env.tsv" || return 1
 
 }
 
@@ -692,6 +745,19 @@ fi
 printf '{"model":"qwen-apu","messages":[{"role":"user","content":"Write one paragraph about tides."}],"max_tokens":%s,"temperature":0,"top_k":1,"seed":1,"ignore_eos":true,"chat_template_kwargs":{"enable_thinking":false}}' \
     "$generate_tokens" >"$result_directory/request.json"
 
+# The request window is retained on CLOCK_MONOTONIC, the clock the census
+# binary stamps every graph with, so a census reader selects the graphs
+# this one request ran by membership rather than by shape. The window opens
+# ahead of curl and closes after it returns, on an otherwise idle server.
+# The server's own stdout and stderr reach $state_directory/server.log, so the
+# byte offsets bracketing the same window name the region a perf-logger reader
+# consumes and leave every row the session appended outside it unread.
+if [ -f "$state_directory/server.log" ]; then
+    server_log_bytes_begin=$(wc -c <"$state_directory/server.log" | tr -d ' ')
+else
+    server_log_bytes_begin=0
+fi
+request_window_begin_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
 set +e
 if [ -n "$api_key" ]; then
     curl --silent --show-error --fail-with-body --max-time 900 \
@@ -707,6 +773,18 @@ else
 fi
 request_status=$?
 set -e
+request_window_end_ns=$(python3 -c 'import time; print(time.monotonic_ns())')
+if [ -f "$state_directory/server.log" ]; then
+    server_log_bytes_end=$(wc -c <"$state_directory/server.log" | tr -d ' ')
+else
+    server_log_bytes_end=0
+fi
+printf 'key\tvalue\nclock\tCLOCK_MONOTONIC\nbegin_ns\t%s\nend_ns\t%s\nrequest_status\t%s\n' \
+    "$request_window_begin_ns" "$request_window_end_ns" "$request_status" \
+    >"$result_directory/request-window.tsv"
+printf 'server_log_bytes_begin\t%s\nserver_log_bytes_end\t%s\n' \
+    "$server_log_bytes_begin" "$server_log_bytes_end" \
+    >>"$result_directory/request-window.tsv"
 
 set +e
 retain_running_process_evidence
@@ -717,6 +795,22 @@ set +e
 retain_quiescent_runtime_evidence
 quiescent_evidence_status=$?
 set -e
+
+# The retained server.log carries the whole session, so the slice cut at the
+# window's own offsets is what a perf-logger reader consumes and rows the
+# session appended outside the request stay out of the identity record. The
+# retention step returns a status rather than aborting, so the slice follows
+# the copy it reads.
+if [ -f "$result_directory/server.log" ]; then
+    if [ "$server_log_bytes_end" -gt "$server_log_bytes_begin" ]; then
+        tail -c "+$((server_log_bytes_begin + 1))" \
+            "$result_directory/server.log" | \
+            head -c "$((server_log_bytes_end - server_log_bytes_begin))" \
+            >"$result_directory/server-log-request.slice"
+    else
+        : >"$result_directory/server-log-request.slice"
+    fi
+fi
 
 set +e
 python3 - "$result_directory" "$label" "$request_status" \
