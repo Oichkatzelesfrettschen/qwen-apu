@@ -1429,6 +1429,7 @@ ee414df7baa56bedcd65fcff8959a81d8a524af9a175e0c6cae54d555ff9955f  evidence/qwen3
 d886445eae19a1c1cd4241cfea59ac6e88ff0a7d0e23f1ba9ab3275c646644de  evidence/raven2-build-presets.md
 46c3caff09381030254758597f82d260fba6265561950c81e119c896a4600410  evidence/raven2-vulkan-kernel-census/README.md
 467b56c2adaefb461c507d4a05a40fed54ffffdbc53926353bdf0af91f1e564a  evidence/raven2-vulkan-kernel-census/decode-decomposition.md
+d2959e4414326013515881e4d67ee92a1cd4714cc3e158c4089c4900f9edaa5b  evidence/raven2-vulkan-kernel-census/e4/served-ab-design.md
 cc7944e76233bceabcdf8bedb339fc192025a503b64807f962a9fa9c70b3b0c9  evidence/raven2-vulkan-kernel-census/replay-corpus/02-P/clock-sidecar-verdict.txt
 616d57344b2043363a0e94419ca84225747760fd6e48a110c174a935f6437db5  evidence/raven2-vulkan-kernel-census/replay-corpus/02-P/clock-sidecar.tsv
 f6918ce2fac2e25bced716baaa00936cc20fa7ddf2690d23c8e11ff64cabb02a  evidence/raven2-vulkan-kernel-census/replay-corpus/02-P/request-window.tsv
