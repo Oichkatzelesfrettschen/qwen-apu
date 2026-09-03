@@ -1,0 +1,25 @@
+witness_arm=start slot=1 arm=C server=$HOME/src/llama.cpp-census-v7/build-raven2-vulkan-census/bin/llama-server device=Vulkan0
+withheld_utf8_positions=52,104
+withheld_utf8_positions=77
+withheld_utf8_positions=52,104
+withheld_utf8_positions=77
+witness_arm=completed slot=1 arm=C
+witness_arm=start slot=2 arm=K server=$HOME/src/llama.cpp-census-e4/build-raven2-vulkan-census/bin/llama-server device=Vulkan0
+withheld_utf8_positions=52,104
+withheld_utf8_positions=77
+withheld_utf8_positions=52,104
+withheld_utf8_positions=77
+witness_arm=completed slot=2 arm=K
+witness_arm=start slot=3 arm=K server=$HOME/src/llama.cpp-census-e4/build-raven2-vulkan-census/bin/llama-server device=Vulkan0
+withheld_utf8_positions=52,104
+withheld_utf8_positions=77
+withheld_utf8_positions=52,104
+withheld_utf8_positions=77
+witness_arm=completed slot=3 arm=K
+witness_arm=start slot=4 arm=C server=$HOME/src/llama.cpp-census-v7/build-raven2-vulkan-census/bin/llama-server device=Vulkan0
+withheld_utf8_positions=52,104
+withheld_utf8_positions=77
+withheld_utf8_positions=52,104
+withheld_utf8_positions=77
+witness_arm=completed slot=4 arm=C
+witness=differs contract=margin logprob_bound_verdict=differs prompts=12 output=$HOME/worktrees/qwen-apu/device-campaigns-20260903/evidence/raven2-vulkan-kernel-census/e4/margin-holdout-b-20260903T1929Z
