@@ -128,6 +128,18 @@ if [ "$fake_spec_active" = 1 ]; then
     fi
 fi
 
+# The prefill ladder reads a streamed completion, so the fixture answers one
+# whenever the request body sets `stream`. Four variables drive the paths that
+# ladder refuses on: a first-chunk delay stands in for the prefill a time to
+# first token measures, a tokenize multiplier makes the prompt-length loop
+# oscillate rather than converge, a prompt_n skew separates the served count
+# from the tokenized one, and omitting the timings object drives the arm's
+# missing-timings refusal.
+QWEN_FAKE_SERVER_FIRST_TOKEN_DELAY_S=${QWEN_FAKE_SERVER_FIRST_TOKEN_DELAY_S:-0} \
+QWEN_FAKE_SERVER_TOKENIZE_MULTIPLIER=${QWEN_FAKE_SERVER_TOKENIZE_MULTIPLIER:-1} \
+QWEN_FAKE_SERVER_PROMPT_N_SKEW=${QWEN_FAKE_SERVER_PROMPT_N_SKEW:-0} \
+QWEN_FAKE_SERVER_OMIT_TIMINGS=${QWEN_FAKE_SERVER_OMIT_TIMINGS:-0} \
+QWEN_FAKE_SERVER_PROMPT_TOK_S=${QWEN_FAKE_SERVER_PROMPT_TOK_S:-20.00} \
 QWEN_FAKE_SERVER_RESOLVED_PORT=$serving_port \
 QWEN_FAKE_SERVER_RESOLVED_TOKENS=$fake_tokens \
 QWEN_FAKE_SERVER_RESOLVED_DECODE_TOK_S=$fake_decode_tok_s \
@@ -156,6 +168,11 @@ decode_tok_s = float(os.environ["QWEN_FAKE_SERVER_RESOLVED_DECODE_TOK_S"])
 draft_n = int(os.environ["QWEN_FAKE_SERVER_RESOLVED_DRAFT_N"])
 draft_accepted = int(os.environ["QWEN_FAKE_SERVER_RESOLVED_DRAFT_ACCEPTED"])
 post_delay_s = float(os.environ.get("QWEN_POLICY_TEST_POST_DELAY_S", "0"))
+first_token_delay_s = float(os.environ["QWEN_FAKE_SERVER_FIRST_TOKEN_DELAY_S"])
+tokenize_multiplier = int(os.environ["QWEN_FAKE_SERVER_TOKENIZE_MULTIPLIER"])
+prompt_n_skew = int(os.environ["QWEN_FAKE_SERVER_PROMPT_N_SKEW"])
+omit_timings = os.environ["QWEN_FAKE_SERVER_OMIT_TIMINGS"] == "1"
+prompt_tok_s = float(os.environ["QWEN_FAKE_SERVER_PROMPT_TOK_S"])
 request_directory_text = os.environ.get("QWEN_FAKE_SERVER_REQUEST_DIRECTORY", "")
 request_directory = Path(request_directory_text) if request_directory_text else None
 if request_directory is not None:
@@ -193,6 +210,30 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def stream_completion(self, emitted, timings):
+        """One server-sent event per token, closed by the chunk carrying timings.
+
+        The first chunk is held back by the configured delay, so a reader
+        measuring the wall time to the first content delta reads that delay
+        rather than the socket's own latency. Each event is flushed where it is
+        written, which is what makes the delay observable at all.
+        """
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        if first_token_delay_s > 0:
+            time.sleep(first_token_delay_s)
+        for token_id in emitted:
+            self.wfile.write(
+                f"data: {json.dumps({'content': str(token_id), 'stop': False})}\n\n".encode())
+            self.wfile.flush()
+        final = {"content": "", "stop": True, "tokens": emitted}
+        if not omit_timings:
+            final["timings"] = timings
+        self.wfile.write(f"data: {json.dumps(final)}\n\n".encode())
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.wfile.flush()
+
     def do_GET(self):
         if self.path.startswith("/health"):
             if (
@@ -220,7 +261,7 @@ class Handler(BaseHTTPRequestHandler):
         body = json.loads(request_bytes.decode() or "{}")
         if self.path.startswith("/tokenize"):
             words = len(str(body.get("content", "")).split())
-            self.respond({"tokens": list(range(words))})
+            self.respond({"tokens": list(range(words * tokenize_multiplier))})
             return
         # The token-identity route. A fixed cycle over the configured array
         # fills the requested length, so the reply is exactly as long as
@@ -228,13 +269,19 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith("/completion"):
             predict = int(body.get("n_predict") or len(tokens))
             emitted = [tokens[index % len(tokens)] for index in range(predict)]
+            prompt_n = (len(str(body.get("prompt", "")).split())
+                        * tokenize_multiplier + prompt_n_skew)
             timings = {
-                "prompt_n": len(str(body.get("prompt", "")).split()),
-                "prompt_ms": 1000.0,
+                "prompt_n": prompt_n,
+                "prompt_ms": prompt_n * 1000.0 / prompt_tok_s,
+                "prompt_per_second": prompt_tok_s,
                 "predicted_n": predict,
                 "predicted_ms": max(predict - 1, 0) * 1000.0 / decode_tok_s,
                 "predicted_per_second": decode_tok_s,
             }
+            if body.get("stream"):
+                self.stream_completion(emitted, timings)
+                return
             if draft_n > 0:
                 timings["draft_n"] = draft_n
                 timings["draft_n_accepted"] = draft_accepted
