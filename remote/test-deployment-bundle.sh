@@ -712,7 +712,7 @@ if "$activator" bundle-third "$deployment_root" >/dev/null 2>"$work_directory/lo
     printf 'a lock leaf with a loose mode was accepted\n' >&2
     exit 1
 fi
-if ! grep -q 'not the admitted legacy mode' "$work_directory/lock-mode.stderr"; then
+if ! grep -q 'grants write access to another user' "$work_directory/lock-mode.stderr"; then
     printf 'the loose-mode refusal lost its reason\n' >&2
     exit 1
 fi
