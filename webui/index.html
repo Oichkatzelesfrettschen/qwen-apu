@@ -870,17 +870,24 @@ const ARTIFACT_ORIGIN_DEFAULT = configuredArtifactOrigin();
 function trustedArtifactOrigin(configured) {
   /* Return one canonical listener origin before any credential is read.
 
-     image-service.py binds a literal address and an ephemeral port. A
-     hostname, userinfo, path, query, or fragment therefore describes a
-     different authority than the listener and must never receive the page's
-     bearer API key.
+     image-service.py binds one address and an ephemeral port. A userinfo,
+     path, query, or fragment therefore describes a different authority than
+     the listener and must never receive the page's bearer API key, and so
+     does any host other than the two families below.
 
-     Two literal hosts are admitted: the loopback pair, which is what an
+     Two host families are admitted: the loopback pair, which is what an
      ordinary launch binds, and the host this page was itself served from,
-     which is what the LAN exposure binds. The second stays a literal
-     comparison against window.location.hostname rather than an address
-     pattern, so the credential reaches the machine the page came from and
-     no other, and a page served from a name admits nothing on that ground. */
+     which is what the LAN exposure binds. The second is an exact comparison
+     against window.location.hostname, so the credential reaches the machine
+     the page came from and no other.
+
+     That host is admitted whether it is an address or a name. The browser
+     already resolved it to fetch this page and the bearer is stored per page
+     origin, so sending it back to the same host reaches the machine that
+     served the page and nothing else. Requiring a literal was a proxy for
+     keeping the resolver out of the decision, and the page host is not a
+     second resolution -- which is what lets qwen-webui-session.sh advertise
+     the appliance's mDNS name beside its leased address. */
   let pageHost = '';
   try {
     pageHost = (window.location.hostname || '');
@@ -889,11 +896,12 @@ function trustedArtifactOrigin(configured) {
     // an absent location leaves the loopback pair as the admitted set.
     pageHost = '';
   }
-  const pageHostIsLiteral = /^(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-f:]+\])$/i
-    .test(pageHost);
+  const pageHostIsAdmissible =
+    /^(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-f:]+\]|[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*)$/i
+      .test(pageHost);
   const admittedHosts = ['127\\.0\\.0\\.1', '\\[::1\\]'];
-  if (pageHostIsLiteral && pageHost !== '127.0.0.1' && pageHost !== '[::1]') {
-    admittedHosts.push(pageHost.replace(/[.[\]]/g, '\\$&'));
+  if (pageHostIsAdmissible && pageHost !== '127.0.0.1' && pageHost !== '[::1]') {
+    admittedHosts.push(pageHost.replace(/[.[\]-]/g, '\\$&'));
   }
   const literalOrigin = new RegExp(
     '^https?://(?:' + admittedHosts.join('|') + '):[0-9]+$', 'i');

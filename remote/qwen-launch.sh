@@ -188,10 +188,28 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
             exit 2
         fi
         QWEN_WEB_PROFILE=$web_sections
+        # The listener policy is read here, ahead of the credential decision it
+        # governs: QWEN_WEB_LAN_OPEN=1 removes the bearer from all three
+        # listeners and requires the exposure it opens, so a loopback launch
+        # carrying it refuses before this launch mints a key it would not use.
+        web_lan_policy=$script_directory/web-lan-exposure.sh
+        if [ ! -r "$web_lan_policy" ]; then
+            printf 'the LAN exposure policy is unreadable: %s\n' \
+                "$web_lan_policy" >&2
+            exit 2
+        fi
+        # shellcheck source=remote/web-lan-exposure.sh
+        . "$web_lan_policy"
+        resolve_web_lan_mode
         # Browser calls and broker approvals share the server API key, so a
         # tool-bearing section serves an authenticated listener whatever the
-        # caller asked for.
-        QWEN_REQUIRE_API_KEY=1
+        # caller asked for, and the open opt-in is the one decision that serves
+        # the LAN without one.
+        if [ "${QWEN_WEB_LAN_OPEN:-0}" = 1 ]; then
+            QWEN_REQUIRE_API_KEY=0
+        else
+            QWEN_REQUIRE_API_KEY=1
+        fi
         QWEN_WEB_BROKER=1
         # An exposed launch places the broker one port above the router, and
         # the session places the artifact listener one above that, so a LAN
@@ -397,14 +415,6 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
         # operator decided otherwise, so an ordinary launch on 0.0.0.0 with a
         # search section is exactly as guarded as the web launch on the LAN.
         if [ "${QWEN_WEB_LAN:-0}" = 1 ]; then
-            web_lan_policy=$script_directory/web-lan-exposure.sh
-            if [ ! -r "$web_lan_policy" ]; then
-                printf 'the LAN exposure policy is unreadable: %s\n' \
-                    "$web_lan_policy" >&2
-                exit 2
-            fi
-            # shellcheck source=remote/web-lan-exposure.sh
-            . "$web_lan_policy"
             admit_web_lan_exposure "$router_presets" "$state_directory/api.key"
             bind_host=$QWEN_BIND_HOST
             health_probe_host=$QWEN_WEB_LAN_ADDRESS
@@ -415,10 +425,11 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
             printf 'a web section reaches the network through its MCP server; serve 127.0.0.1, or set QWEN_WEB_LAN=1 with QWEN_WEB_LAN_ADDRESS to serve the network deliberately\n' >&2
             exit 2
         fi
-        printf 'web_section=%s provider=%s broker_port=%s searxng=%s static_path=%s bind=%s lan_exposure=%s\n' \
+        printf 'web_section=%s provider=%s broker_port=%s searxng=%s static_path=%s bind=%s lan_exposure=%s lan_name=%s lan_open=%s\n' \
             "$web_sections" "$web_provider" "$QWEN_WEB_BROKER_PORT" \
             "${QWEN_WEB_SEARXNG:-0}" "$QWEN_STATIC_PATH" "$bind_host" \
-            "${QWEN_WEB_LAN:-0}"
+            "${QWEN_WEB_LAN:-0}" "${QWEN_WEB_LAN_NAME:--}" \
+            "${QWEN_WEB_LAN_OPEN:-0}"
     fi
 fi
 
@@ -728,6 +739,35 @@ router_snapshot_owned=''
 control_start_entered=0
 
 sed -n '1p' "$state_directory/session.status"
+# The exposure names the page by the host an operator keeps rather than by the
+# whole set of addresses this machine answers on. The mDNS name outlives a DHCP
+# lease, so it leads and the leased literal follows it; a launch that resolved
+# no name prints the literal alone.
+if [ "${QWEN_WEB_LAN:-0}" = 1 ] && [ -n "${QWEN_WEB_LAN_ADDRESS:-}" ]; then
+    if [ -n "${QWEN_WEB_LAN_NAME:-}" ]; then
+        printf 'the page is at http://%s:%s/ (and http://%s:%s/)\n' \
+            "$QWEN_WEB_LAN_NAME" "$server_port" \
+            "$QWEN_WEB_LAN_ADDRESS" "$server_port"
+        lan_page_link_host=$QWEN_WEB_LAN_NAME
+    else
+        printf 'the page is at http://%s:%s/\n' \
+            "$QWEN_WEB_LAN_ADDRESS" "$server_port"
+        lan_page_link_host=$QWEN_WEB_LAN_ADDRESS
+    fi
+    if [ "${QWEN_WEB_LAN_OPEN:-0}" = 1 ]; then
+        printf 'lan_open=1 every peer on this network can chat, approve a search, and approve a generation\n'
+    else
+        # The key travels in a fragment, which the browser keeps out of the
+        # request line and every server log, and this line prints only where
+        # stdout is a terminal, so a launch whose output is redirected or piped
+        # leaves the bearer out of the file it wrote.
+        if [ -t 1 ] && [ -s "$state_directory/api.key" ]; then
+            printf 'the page with the key is at http://%s:%s/#key=%s\n' \
+                "$lan_page_link_host" "$server_port" \
+                "$(sed -n '1p' "$state_directory/api.key")"
+        fi
+    fi
+fi
 if [ "$bind_host" = 127.0.0.1 ] || [ "$bind_host" = localhost ]; then
     printf 'reachable at http://127.0.0.1:%s (loopback only)\n' "$server_port"
 else
@@ -747,8 +787,15 @@ fi
 # marker set it running.
 if [ "${QWEN_WEB_BROKER:-0}" = 1 ]; then
     if [ "${QWEN_WEB_LAN:-0}" = 1 ] && [ -n "${QWEN_WEB_LAN_ADDRESS:-}" ]; then
-        printf 'approval broker at http://%s:%s (bearer required)\n' \
-            "$QWEN_WEB_LAN_ADDRESS" "${QWEN_WEB_BROKER_PORT:-8571}"
+        if [ "${QWEN_WEB_LAN_OPEN:-0}" = 1 ]; then
+            printf 'approval broker at http://%s:%s (session secret, no bearer)\n' \
+                "${QWEN_WEB_LAN_NAME:-$QWEN_WEB_LAN_ADDRESS}" \
+                "${QWEN_WEB_BROKER_PORT:-8571}"
+        else
+            printf 'approval broker at http://%s:%s (bearer required)\n' \
+                "${QWEN_WEB_LAN_NAME:-$QWEN_WEB_LAN_ADDRESS}" \
+                "${QWEN_WEB_BROKER_PORT:-8571}"
+        fi
     else
         printf 'approval broker at http://127.0.0.1:%s (loopback only)\n' \
             "${QWEN_WEB_BROKER_PORT:-8571}"

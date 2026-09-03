@@ -111,23 +111,19 @@ fi
 # The caller's own listener request is read before it is replaced, so an
 # explicit LAN bind under the default refuses rather than serving retrieval on
 # the loopback while the operator believes the LAN is listening.
-web_lan_exposure=${QWEN_WEB_LAN:-0}
-case $web_lan_exposure in
-    0 | 1) ;;
-    *)
-        printf 'QWEN_WEB_LAN must be 0 or 1: %s\n' "$web_lan_exposure" >&2
-        exit 2
-        ;;
-esac
 web_lan_policy=$script_directory/web-lan-exposure.sh
-if [ "$web_lan_exposure" = 1 ]; then
-    if [ ! -r "$web_lan_policy" ]; then
-        printf 'the LAN exposure policy is unreadable: %s\n' "$web_lan_policy" >&2
-        exit 2
-    fi
-    # shellcheck source=remote/web-lan-exposure.sh
-    . "$web_lan_policy"
-else
+if [ ! -r "$web_lan_policy" ]; then
+    printf 'the LAN exposure policy is unreadable: %s\n' "$web_lan_policy" >&2
+    exit 2
+fi
+# shellcheck source=remote/web-lan-exposure.sh
+. "$web_lan_policy"
+# The policy reads both decisions, so a loopback launch carrying the open
+# opt-in refuses here rather than at the listener it never widens.
+resolve_web_lan_mode
+web_lan_exposure=${QWEN_WEB_LAN:-0}
+web_lan_open=${QWEN_WEB_LAN_OPEN:-0}
+if [ "$web_lan_exposure" = 0 ]; then
     requested_bind_host=${QWEN_BIND_HOST:-127.0.0.1}
     if [ "$requested_bind_host" != 127.0.0.1 ]; then
         printf 'web router mode serves the loopback alone, and QWEN_BIND_HOST requests %s\n' \
@@ -262,9 +258,10 @@ if [ "$web_lan_exposure" = 1 ]; then
     admit_web_lan_exposure "$web_presets" "$state_directory/api.key"
 fi
 router_bind_host=${QWEN_BIND_HOST:-127.0.0.1}
-printf 'web_launch presets=%s unvalidated_depth_marker=%s authorizer_ready=%s bind=%s lan_exposure=%s lan_address=%s\n' \
+printf 'web_launch presets=%s unvalidated_depth_marker=%s authorizer_ready=%s bind=%s lan_exposure=%s lan_address=%s lan_name=%s lan_open=%s\n' \
     "$web_presets" "$depth_marker_state" "${QWEN_WEB_AUTHORIZER_READY:-0}" \
-    "$router_bind_host" "$web_lan_exposure" "${QWEN_WEB_LAN_ADDRESS:--}"
+    "$router_bind_host" "$web_lan_exposure" "${QWEN_WEB_LAN_ADDRESS:--}" \
+    "${QWEN_WEB_LAN_NAME:--}" "$web_lan_open"
 
 # The approval broker's lifetime is this launch's. A section reaching the
 # network through its MCP server signs each search from one human approval, and
@@ -282,10 +279,17 @@ printf 'web_launch presets=%s unvalidated_depth_marker=%s authorizer_ready=%s bi
 # the refusal names the rule. The path alone crosses into the child; the
 # contents stay in the broker's address space.
 QWEN_WEB_BROKER=1
-# Browser calls and broker approvals share the server API key. Web mode always
-# creates or reuses the API key; callers cannot downgrade the session to the
-# unauthenticated default used by ordinary local serving.
-QWEN_REQUIRE_API_KEY=1
+# Browser calls and broker approvals share the server API key, and web mode
+# creates or reuses it, so a caller cannot downgrade the session to the
+# unauthenticated default ordinary local serving takes. QWEN_WEB_LAN_OPEN=1 is
+# the one decision that removes it, and it removes it from the router, the
+# broker's signing routes, and the artifact listener together, so the three
+# listeners state one policy.
+if [ "$web_lan_open" = 1 ]; then
+    QWEN_REQUIRE_API_KEY=0
+else
+    QWEN_REQUIRE_API_KEY=1
+fi
 QWEN_WEB_BROKER_PORT=${QWEN_WEB_BROKER_PORT:-8571}
 QWEN_WEB_STATE_DIR=${QWEN_WEB_STATE_DIR:-$state_directory/web-mcp}
 signing_key_file=${QWEN_WEB_TOKEN_KEY_FILE:-}
@@ -583,9 +587,15 @@ export QWEN_REQUIRE_API_KEY
 # artifact listener takes an ephemeral port, so the session prints its resolved
 # address and the page URL beside it once the service has bound.
 if [ "$web_lan_exposure" = 1 ]; then
-    printf 'web_launch exposure=lan address=%s router=%s:%s broker=%s:%s bearer=required\n' \
-        "$QWEN_WEB_LAN_ADDRESS" "$QWEN_BIND_HOST" "${QWEN_SERVER_PORT:-8080}" \
-        "$QWEN_BIND_HOST" "$QWEN_WEB_BROKER_PORT"
+    if [ "$web_lan_open" = 1 ]; then
+        web_lan_bearer_state=removed
+    else
+        web_lan_bearer_state=required
+    fi
+    printf 'web_launch exposure=lan address=%s name=%s router=%s:%s broker=%s:%s bearer=%s\n' \
+        "$QWEN_WEB_LAN_ADDRESS" "${QWEN_WEB_LAN_NAME:--}" \
+        "$QWEN_BIND_HOST" "${QWEN_SERVER_PORT:-8080}" \
+        "$QWEN_BIND_HOST" "$QWEN_WEB_BROKER_PORT" "$web_lan_bearer_state"
 else
     printf 'web_launch exposure=loopback router=127.0.0.1:%s broker=127.0.0.1:%s\n' \
         "${QWEN_SERVER_PORT:-8080}" "$QWEN_WEB_BROKER_PORT"

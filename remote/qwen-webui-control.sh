@@ -397,6 +397,7 @@ case $action in
                               QWEN_WEB_PROVIDER QWEN_WEB_PROFILES \
                               QWEN_WEB_BROKER_ORIGIN \
                               QWEN_WEB_LAN QWEN_WEB_LAN_ADDRESS \
+                              QWEN_WEB_LAN_NAME QWEN_WEB_LAN_OPEN \
                               QWEN_REQUIRE_API_KEY \
                               QWEN_WEB_AUTHORIZER_READY \
                               QWEN_WEB_SEARXNG QWEN_SEARXNG_PROGRAM \

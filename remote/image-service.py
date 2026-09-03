@@ -14,7 +14,10 @@ reader; neither does a query parameter, which the route ignores entirely.
 `--lan-exposure ADDRESS` is the operator's explicit opt-in: it admits
 `--http-host 0.0.0.0` and adds that one routable literal to the Host headers a
 request may name, and the bearer that already gates every route is what a LAN
-reader presents.
+reader presents. `--lan-name NAME` adds the mDNS hostname beside that literal,
+compared casefolded, so the page is reachable at a host a DHCP lease does not
+move. `--open-lan` removes the bearer from the artifact routes, which leaves
+the admitted Host set and the Origin allowlist carrying the gate.
 
 The job pipeline is one sequence with one owner: parse the request, hand it to
 the injected verifier for its profile parameters, refuse every cap violation,
@@ -95,6 +98,7 @@ import image_protocol as protocol  # noqa: E402
 
 PROTOCOL_VERSION = protocol.PROTOCOL_VERSION
 LOOPBACK_HOSTS = ("127.0.0.1", "::1")
+ASCII_LABEL_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
 WILDCARD_HOST = "0.0.0.0"  # noqa: S104 -- the exposure opt-in binds it deliberately
 RUNTIME_HARD_TIMEOUT_SECONDS = 300
 SERVICE_JOB_DEADLINE_SECONDS = 330
@@ -332,23 +336,83 @@ def exposed_host(value):
     return value
 
 
-def admitted_hosts(exposure=""):
-    """Return the Host-header literals a request may name.
+def exposed_name(value):
+    """Return the mDNS hostname the LAN exposure opt-in admits beside the literal.
+
+    A DHCP lease moves the address, so the name is what an operator bookmarks.
+    Admitting it keeps the set closed rather than reopening the resolver: avahi
+    publishes `<hostname>.local` on the link and a browser resolves that suffix
+    by multicast to the hosts sharing the link, so a name an attacker controls
+    in DNS resolves nowhere near this socket and the rebinding closure the
+    literal set provides holds for this entry too. `localhost` and an
+    all-numeric dotted form are refused by name: the first names the loopback
+    the set already holds and the second is an address `--lan-exposure` takes.
+    """
+    if not value:
+        # argparse applies a string type to its own default, so the empty
+        # default passes through as the absent opt-in.
+        return ""
+    lowered = value.lower()
+    if len(lowered) > 253 or lowered == "localhost" or lowered in LOOPBACK_HOSTS:
+        raise argparse.ArgumentTypeError(
+            f"the LAN exposure name is a hostname a browser resolves on the "
+            f"link; {value!r} is refused"
+        )
+    labels = lowered.split(".")
+    if not all(label_is_admitted(label) for label in labels):
+        raise argparse.ArgumentTypeError(
+            f"the LAN exposure name carries a label outside the "
+            f"letter-digit-hyphen set; {value!r} is refused"
+        )
+    if all(label.isdigit() for label in labels):
+        raise argparse.ArgumentTypeError(
+            f"the LAN exposure name is a dotted address rather than a name; "
+            f"{value!r} belongs in --lan-exposure"
+        )
+    return lowered
+
+
+def label_is_admitted(label):
+    """Return whether one hostname label meets the ASCII letter-digit-hyphen rule.
+
+    The character set stays ASCII rather than reading `str.isalnum`, which
+    admits every Unicode letter: a browser sends an internationalized name in
+    its Punycode form, so a name outside ASCII is refused here rather than
+    admitted into a set no request ever matches.
+    """
+    return (
+        1 <= len(label) <= 63
+        and not label.startswith("-")
+        and not label.endswith("-")
+        and all(character in ASCII_LABEL_CHARACTERS for character in label)
+    )
+
+
+def admitted_hosts(exposure="", name=""):
+    """Return the Host-header names a request may present.
 
     The loopback literals stand under every setting, because `image-review.py`
     and the teardown check reach this listener over 127.0.0.1 whatever the
-    socket binds. The exposure adds exactly one literal.
+    socket binds. The exposure adds exactly one literal and the name adds
+    exactly one lowercased hostname, so the set stays a closed list.
     """
-    return (*LOOPBACK_HOSTS, exposure) if exposure else LOOPBACK_HOSTS
+    admitted = list(LOOPBACK_HOSTS)
+    if exposure:
+        admitted.append(exposure)
+    if name:
+        admitted.append(name)
+    return tuple(admitted)
 
 
 def host_header_names(header, admitted):
-    """Return whether a Host header names one of the admitted literals.
+    """Return whether a Host header names one of the admitted entries.
 
     A browser that resolves an attacker-controlled name to a bound address
     reaches this socket with that name in the Host header, so the bind alone
-    leaves DNS rebinding open; comparing the header against a literal set
-    closes it.
+    leaves DNS rebinding open; comparing the header against a closed set closes
+    it. The comparison falls back to the casefolded form because DNS names are
+    case-insensitive and the admitted name is stored lowercased, while the
+    literals hold digits and dots alone.
     """
     if not header:
         return ""
@@ -360,7 +424,10 @@ def host_header_names(header, admitted):
         named = value[1:closing]
     else:
         named = value.split(":", 1)[0]
-    return named if named in admitted else ""
+    if named in admitted:
+        return named
+    lowered = named.lower()
+    return lowered if lowered in admitted else ""
 
 
 def host_header_is_loopback(header):
@@ -1945,11 +2012,13 @@ class ArtifactHandler(http.server.BaseHTTPRequestHandler):
     def allowed_origin(self):
         """Return the request Origin when the launch admits it, or an empty string.
 
-        One page origin is configured and echoed back exactly, so a wildcard
-        never reaches a response and a second page reads no artifact.
+        The configured origins are echoed back exactly, so a wildcard never
+        reaches a response and a page outside the list reads no artifact. The
+        list holds the exposure literal's page origin and the exposure name's,
+        because one appliance page is reachable at either host.
         """
         origin = self.headers.get("Origin", "")
-        return origin if origin and origin == self.settings.origin else ""
+        return origin if origin and origin in self.settings.origins else ""
 
     def send_json(self, http_status, payload, origin=""):
         body = json.dumps(payload).encode("utf-8")
@@ -1973,8 +2042,13 @@ class ArtifactHandler(http.server.BaseHTTPRequestHandler):
         The fallback Web UI sends `Authorization: Bearer <key>` on every
         request it makes, so an artifact reaches the page through the header it
         already holds. The comparison runs in constant time and precedes every
-        lookup below; a query parameter carries no authority at all.
+        lookup below; a query parameter carries no authority at all. Under
+        `--open-lan` the launch read no key, so the comparison would stand
+        against an empty expectation and the check returns admitted instead:
+        the Host set and the Origin allowlist are what remain.
         """
+        if self.settings.open_lan:
+            return True
         presented = self.headers.get("Authorization", "")
         expected = f"Bearer {self.settings.api_key}"
         return bool(presented) and hmac.compare_digest(presented, expected)
@@ -2102,13 +2176,20 @@ class ServiceSettings:
         self.image_directory = os.path.join(arguments.state_dir, IMAGE_DIRECTORY_NAME)
         self.verifier = verifier
         self.api_key = api_key
-        self.origin = arguments.origin
+        # A page reachable at two hosts sends two Origins, so the allowlist is
+        # a tuple and `allowed_origin` echoes back the one entry it matched.
+        self.origins = tuple(arguments.origin)
         # The exposure literal widens the Host-header set by exactly one entry
-        # and changes nothing else: the bearer already gates every route this
-        # listener serves, so the credential the page holds is the credential a
-        # LAN reader presents.
+        # and the exposure name by one more. The bearer already gates every
+        # route this listener serves, so the credential the page holds is the
+        # credential a LAN reader presents, and `--open-lan` is the operator's
+        # decision to serve the artifact routes without one.
         self.exposure = arguments.lan_exposure
-        self.admitted_hosts = admitted_hosts(arguments.lan_exposure)
+        self.exposure_name = arguments.lan_name
+        self.open_lan = arguments.open_lan
+        self.admitted_hosts = admitted_hosts(
+            arguments.lan_exposure, arguments.lan_name
+        )
         self.runtime_environment = dict(
             entry.split("=", 1) for entry in arguments.runtime_env
         )
@@ -2254,8 +2335,11 @@ def build_parser():
     )
     parser.add_argument(
         "--origin",
-        default=os.environ.get("QWEN_IMAGE_PAGE_ORIGIN", ""),
-        help="the one page origin the artifact routes admit through CORS",
+        action="append",
+        default=None,
+        help="one page origin the artifact routes admit through CORS; repeat "
+        "it for a page reachable at both the exposure literal and the "
+        "exposure name",
     )
     parser.add_argument(
         "--priority-wrapper",
@@ -2269,6 +2353,17 @@ def build_parser():
         "--lan-exposure", type=exposed_host, default="",
         help="the routable IPv4 literal this listener admits in a Host header "
         "beside the loopback ones; the Web UI bearer already gates every route",
+    )
+    parser.add_argument(
+        "--lan-name", type=exposed_name, default="",
+        help="the mDNS hostname this listener admits in a Host header beside "
+        "the exposure literal, compared casefolded",
+    )
+    parser.add_argument(
+        "--open-lan", action="store_true",
+        help="serve the artifact routes without the Web UI bearer, leaving the "
+        "admitted Host set and the Origin allowlist as the gate; requires "
+        "--lan-exposure",
     )
     parser.add_argument("--http-port", type=int, default=0)
     parser.add_argument(
@@ -2293,6 +2388,24 @@ def run(argv):
             "names the routable literal the Host header is gated on\n"
         )
         return 2
+    # The name widens the exposed Host set and the open opt-in removes a
+    # credential from an exposed listener, so each names the exposure it
+    # belongs to rather than standing on its own.
+    if arguments.lan_name and not arguments.lan_exposure:
+        sys.stderr.write(
+            "--lan-name adds a Host to the exposed set, so --lan-exposure "
+            "names the literal that set is built from\n"
+        )
+        return 2
+    if arguments.open_lan and not arguments.lan_exposure:
+        sys.stderr.write(
+            "--open-lan removes the Web UI bearer from an exposed listener, "
+            "so --lan-exposure names the address it exposes\n"
+        )
+        return 2
+    if arguments.origin is None:
+        configured = os.environ.get("QWEN_IMAGE_PAGE_ORIGIN", "")
+        arguments.origin = [entry for entry in configured.split(",") if entry]
     if not arguments.state_dir:
         sys.stderr.write(
             "the service keeps its lease, socket, and artifacts under one "
@@ -2325,11 +2438,17 @@ def run(argv):
             return 2
     else:
         verifier = shape_only_verifier(profiles)
-    try:
-        api_key = read_secret_file(arguments.api_key_file, "Web UI API")
-    except ServiceError as error:
-        sys.stderr.write(f"the service cannot read the Web UI API key: {error}\n")
-        return 2
+    # The open opt-in reads no key file, because the bearer it would compare
+    # against is the one it removes and `read_secret_file` refuses an
+    # unconfigured path: a launch serving without a key hands this process an
+    # empty `--api-key-file` and would otherwise exit here.
+    api_key = ""
+    if not arguments.open_lan:
+        try:
+            api_key = read_secret_file(arguments.api_key_file, "Web UI API")
+        except ServiceError as error:
+            sys.stderr.write(f"the service cannot read the Web UI API key: {error}\n")
+            return 2
     os.makedirs(arguments.state_dir, mode=PRIVATE_DIRECTORY_MODE, exist_ok=True)
     image_directory = os.path.join(arguments.state_dir, IMAGE_DIRECTORY_NAME)
     os.makedirs(image_directory, mode=PRIVATE_DIRECTORY_MODE, exist_ok=True)
