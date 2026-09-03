@@ -320,9 +320,12 @@ refuses the launch rather than serving the persisted MCP configuration.
 decides emission: `refused` emits nothing under every setting, `validator-gated`
 emits a section carrying `LLAMA_ARG_MCP_SERVERS_CONFIG` only under
 `QWEN_WEB_AUTHORIZER_READY=1`, and `ui-mediated` emits a section naming no
-configuration because the UI performs the retrieval. Every checked-in row reads
-`refused`, so the generator against the shipped ledger emits nothing and says
-so. Every row still meets the registry join, the copied-field comparison, the
+configuration because the UI performs the retrieval. `web-open` is the one
+checked-in row carrying `validator-gated`, on the evidence of two retained live
+admissions, so the generator against the shipped ledger emits that section
+under `QWEN_WEB_AUTHORIZER_READY=1` and nothing without it; every other row
+reads `refused` and emits nothing under either setting. Every row still meets
+the registry join, the copied-field comparison, the
 tier rule, and the ceiling rule before that gate, so the ledger is validated
 whole and an edit to one row's `execution_policy` changes what emits rather
 than turning a previously successful ledger into an error. The `# qwen-web-presets: unvalidated-depth-override` marker forces the
@@ -509,17 +512,23 @@ the preset under `QWEN_WEB_AUTHORIZER_READY=1`, launches through
 drives the served page through `drive-fallback-page.py`, and retains per-query
 timing beside the instance's own resident memory and CPU ticks from `/proc`.
 The fake run stays the authority for the refusals, whose fixtures answer
-instantly; this run measures what only a live instance shows. Every checked-in
-row reads `execution_policy=refused`, and a row moves to `validator-gated` by
-an operator edit after a run of this harness is retained under `evidence/`.
-`evidence/web-live/20260903T0724Z/` retains the first such run against
+instantly; this run measures what only a live instance shows. A row moves to
+`validator-gated` by an operator edit after a run of this harness is retained
+under `evidence/`, and `web-open` is the one row that has made that move.
+`evidence/web-live/20260903T0724Z/` retains the first run, against
 `web-compact`: 29 rows, 24 passing, one grant, five results from bing in 1 s,
 one 12,347-character fetch by Result ID, and a page turn whose requests stay on
 the router and broker origins, at 66 MB of resident memory before the first
 query and 75 MB over five threads after it. Its two failures were the harness
 reading the search policy from the preset INI where the section names a
 configuration, and `check-runtime-tree.sh` comparing two `LC_ALL=C` lists under
-the invoking locale.
+the invoking locale. `evidence/web-live/20260903T0810Z/` retains the `web-open`
+run under the repaired harness, where both of those pass: 25 of 29 rows pass,
+the search draws five results from bing and google in 1 s, and the one failure
+is a fetch of `https://www.vulkan.org/` that the provider's own 20 s deadline
+ended at HTTP 200 while the child's 30 s and the router's 3600 s were still
+waiting. Which origin the first Result ID names changes with the query, so a
+fetch arm that must pass whatever the network does belongs to the fake run.
 
 The integer dot product is advertised, functional, and unaccelerated, which
 decides how most of this tree's bytes execute. RADV reports
