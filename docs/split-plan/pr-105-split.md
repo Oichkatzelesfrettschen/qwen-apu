@@ -1,6 +1,7 @@
-# PR #105 split into seven successor lanes
+# PR #105 split into eight successor lanes
 
-`stage-a-census-brackets` carries 58 commits and touches 1183 files. The lanes
+`stage-a-census-brackets` carries 58 commits and touches 1183 files. Every
+commit reaches a lane. The lanes
 branch from `main` at 6fcf390, which is PR #106 merged, so the split is taken
 against the activation-lock repairs rather than against the commit the source
 branch itself left. This document records where each commit lands, which lanes
@@ -34,6 +35,7 @@ trees under new commit hashes: the tips below name one run, and
 | 5 | `lane/correctness-witnesses` @ `48ff457` | `lane/census-timing` | 15 (13 replayed) | the kernel-delta witness, the margin contract, the holdout and quality-gate evidence |
 | 6 | `lane/served-ab-harness` @ `5136c3e` | `lane/census-timing` | 15 (13 replayed) | the served binary A/B runner and the bracket reader |
 | 7 | `lane/retained-evidence` @ `2d71649` | `origin/main` | 20 (18 replayed) | every retained census run directory and the manifest over it |
+| 8 | `lane/deployment-followups` @ `7393ff2` | `origin/main` | 6 (6 replayed) | the activation-lock and eligibility repairs PR #106 did not carry, the broker's port reuse, and the web-launch lease poll |
 
 Three lanes stack on `lane/census-timing` rather than branching from `main`.
 `remote/run-raven2-vulkan-kernel-census.sh` sources `remote/census-arm-lib.sh`
@@ -88,39 +90,42 @@ merge of the two is a no-op.
 `ARTIFACTS.md` gains no row: the branch leaves the file unchanged, so lane 7's
 share of it is empty.
 
-## What no lane carries
+## The eighth lane, built against main rather than replayed
 
-Eight commits and one CLAUDE.md sentence land in neither the seven lanes nor
-PR #106, and the split drops them rather than inventing an eighth lane. The
-first three are live work with no home; the rest are content every lane
-regenerates for itself, or work that predates the base.
+Six commits change the four files PR #106 repaired and predate that merge, so a
+path replay of the branch's copy would revert it. `lane/deployment-followups`
+takes main's shape and adds the branch's own checks on top, which
+`split_deployment_followups` in the script reproduces.
 
 - 74ddab7 `deployment: refuse a multiply linked lock leaf and a doubled
-  eligibility row`. `git diff origin/deployment-lock-repairs
-  origin/stage-a-census-brackets` shows this branch *adding* the
-  `st_nlink != 1` check in `verify_identity` and the two-row eligibility
-  grammar in `build-deployment-bundle.sh`, so PR #106 carries neither. This is
-  live work with no home.
-- b02fabd's hunks in `remote/build-deployment-bundle.sh`,
-  `remote/verify-deployment-bundle.sh`, and `remote/test-deployment-bundle.sh`,
-  for the same reason.
-- The CLAUDE.md sentence at branch line 1356, `# truncating, refuses a leaf
-  with more than one hard link, and holds`, which documents 74ddab7.
+  eligibility row` cherry-picks onto the repaired files. `git diff
+  origin/deployment-lock-repairs origin/stage-a-census-brackets` shows this
+  branch *adding* the `st_nlink != 1` check in `verify_identity` and the
+  row-cardinality refusal in `build-deployment-bundle.sh` and
+  `verify-deployment-bundle.sh`, so PR #106 carried neither and this lane is
+  where they land. main's `FOREIGN_WRITE_BITS` mode rule, its
+  `deployment_bundle_name_is_valid` helper, and its staging-parent check all
+  survive the cherry-pick.
+- b02fabd's three deployment paths arrive as a three-way patch application
+  rather than as a checkout of the branch's whole file, which is what keeps
+  main's repairs while adding the two-shape eligibility grammar and the
+  `plant_manifest` cases that exercise it against an assembled bundle.
+- The CLAUDE.md sentence naming the hard-link refusal is placed by name at the
+  paragraph on descriptor 7 of `.activate.lock`.
 - a3105b4 and 7e9e09b, the `evidence/deployment-bundle-presets/` gate-heads
-  record of the lock-leaf regression.
-- 995ef68, `remote/test-qwen-web-launch.sh` polling the lease release.
-- f5f92d8, `remote/web-mcp/authorize-broker.py` binding over its own port's
-  TIME_WAIT remainders.
-- 2c33709, 7e9e09b, be25554, and bddc3eb are dropped as commits and carried as
-  content: each only rewrites `evidence/SHA256SUMS` or registers a gate cell,
-  and every lane regenerates its own manifest and carries its own cells.
+  record of the lock-leaf regression, and 995ef68's web-launch lease poll and
+  f5f92d8's broker port reuse, are pure cherry-picks.
 
-`lanes.tsv` also drops `remote/activate-deployment-bundle.sh`,
+`lanes.tsv` still drops `remote/activate-deployment-bundle.sh`,
 `remote/deployment-bundle-name.sh`, `remote/resolve-active-deployment.sh`,
 `remote/test-open-verified-lock-descriptor.py`, and
-`remote/test-run-fixed64-served-campaign.sh`. The source branch left `main` at
-9398a46 and holds the pre-#106 copy of each, so replaying that copy over
-6fcf390 would revert the merge.
+`remote/test-run-fixed64-served-campaign.sh`. The source branch holds the
+pre-#106 copy of each and changes none of them, so replaying that copy over
+6fcf390 would revert the merge and add nothing.
+
+2c33709, be25554, and bddc3eb are dropped as commits and carried as content:
+each only rewrites `evidence/SHA256SUMS` or registers a gate cell, and every
+lane regenerates its own manifest and carries its own cells.
 
 ## Files two lanes both change
 
@@ -179,8 +184,8 @@ the tree, `python3 remote/check-text-policy.py`,
 `remote/repository-quality-gates.sh` registers as a cell.
 
 `sh -n`, `shellcheck -S warning`, `ruff check`, `check-text-policy.py`, and
-`check-ledger-evidence.sh` pass on all seven. The manifest check passes on all
-seven and is the one pass in each row's count that carries less weight than the
+`check-ledger-evidence.sh` pass on all eight. The manifest check passes on all
+eight and is the one pass in each row's count that carries less weight than the
 others: the split script runs `refresh-evidence-manifest.sh` in write mode as
 its last step per lane, so `--check` reports what that write produced. What it
 does establish is that the manifest and the tree agree per lane, which is the
@@ -206,6 +211,14 @@ spelling stands; it is the census-timing reviewer's to correct.
 | correctness-witnesses | `48ff457` | 15 | 13 | 18 pass, `remote/test-radv-low-priority-env.sh` not run |
 | served-ab-harness | `5136c3e` | 15 | 13 | 17 pass, `remote/test-run-served-binary-ab.sh` not run, `remote/test-radv-low-priority-env.sh` not run |
 | retained-evidence | `2d71649` | 20 | 18 | 8 pass, `remote/test-radv-low-priority-env.sh` not run |
+| deployment-followups | `7393ff2` | 6 | 6 | 12 pass, `remote/test-radv-low-priority-env.sh` not run |
+
+deployment-followups also runs `remote/test-deployment-bundle.sh` at 38 checks,
+`python3 remote/test-open-verified-lock-descriptor.py` at 15 checks, and
+`ruff format --check` and `mypy --strict` over the eight typed files
+`repository-quality-gates.sh` names, all accepted. `authorize-broker.py` sits
+outside that typed set and fails both on main already, so the lane inherits
+that state rather than introducing it.
 
 Two checks cannot run on this workstation and are reported as not run with
 their reason rather than as failures.
@@ -223,16 +236,18 @@ Every commit of `origin/main..origin/stage-a-census-brackets` with the lane or
 lanes that carry it. `cherry-pick` means the whole commit landed in one lane
 with its authorship and message unchanged; `split` means the commit spans lanes
 and each lane re-committed its own paths under the original subject and body
-with a `Split-from` trailer. `dropped` means no lane carries it, for the reason
-the unassigned section gives.
+with a `Split-from` trailer. `dropped` means the split carries the commit's
+content without the commit, for the reason the eighth-lane section gives.
+deployment-followups is built by hand and appears in the table through its own
+section rather than through the replay log.
 
 | commit | subject | lane | mode |
 | --- | --- | --- | --- |
-| 74ddab7 | deployment: refuse a multiply linked lock leaf and a doubled eligibility row | none | dropped |
+| 74ddab7 | deployment: refuse a multiply linked lock leaf and a doubled eligibility row | deployment-followups | cherry-pick |
 | 0259199 | census: bracket every dispatch, read on availability, bind the request | census-timing | split |
-| a3105b4 | evidence: record the gated head beside the final head of the lock-leaf regression | none | dropped |
-| 7e9e09b | evidence: carry gate-heads.tsv in the manifest | none | dropped |
-| b02fabd | census: state ownership from exclusive brackets, bind every control to its evidence | census-timing | split |
+| a3105b4 | evidence: record the gated head beside the final head of the lock-leaf regression | deployment-followups | cherry-pick |
+| 7e9e09b | evidence: carry gate-heads.tsv in the manifest | deployment-followups | cherry-pick |
+| b02fabd | census: state ownership from exclusive brackets, bind every control to its evidence | census-timing, deployment-followups | split |
 | 8f0f206 | census: carry the artifact ledger into every arm and retain the v2 diagnostic run | census-timing, retained-evidence | split |
 | 2c33709 | evidence: carry the v2 diagnostic census run in the manifest | none | dropped |
 | e18b840 | census: quote the empty CDPATH in the hash test | census-timing | cherry-pick |
@@ -248,9 +263,9 @@ the unassigned section gives.
 | 1878591 | census: state-preserving calibration, C telemetry broker, and the compiler laboratory | census-timing, build-cache-identity, shader-e4, retained-evidence | split |
 | be25554 | gate: the cache-key cell reads build-llama-preset.sh | none | dropped |
 | 67fc486 | census: the scoreboard inputs check counts each setting once | census-timing | cherry-pick |
-| 995ef68 | test: poll the lease release after the web-launch session ends | none | dropped |
+| 995ef68 | test: poll the lease release after the web-launch session ends | deployment-followups | cherry-pick |
 | d173156 | census: E4b-A activation sideplane candidate with the measured projection fan-out | shader-e4 | split |
-| f5f92d8 | web-mcp: the broker binds over TIME_WAIT remainders of its own port | none | dropped |
+| f5f92d8 | web-mcp: the broker binds over TIME_WAIT remainders of its own port | deployment-followups | cherry-pick |
 | d490a39 | census: control verdicts over replicated pairs, a reachable quiescence, and the 0819Z run | census-timing, retained-evidence | split |
 | b7a3612 | census: E1 ISA inventory, the E4 mechanism receipt, and the clock-state invariant | census-timing, shader-e4, retained-evidence | split |
 | 9944c64 | census: served binary ABBA harness for a candidate build | census-timing, shader-e4, served-ab-harness | split |
@@ -459,9 +474,7 @@ to one row per run directory with the file count beside it.
 ## Review threads
 
 The 89 threads of `replies.tsv` mapped to lanes by the path each names. The
-`shared` rows are threads against a file several lanes each own part of, and
-the `dropped` row is the thread against `remote/build-deployment-bundle.sh`,
-which no lane carries.
+`shared` rows are threads against a file several lanes each own part of.
 
 | thread | path | disposition | lane |
 | --- | --- | --- | --- |
