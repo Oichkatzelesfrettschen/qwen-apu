@@ -817,6 +817,49 @@ if [ -n "$(ls -A "$deployment_root/.staging" 2>/dev/null)" ]; then
 fi
 report bundle_name_and_staging accepted
 
+# The staging parent is a plain directory the assembly creates or reuses. A
+# symlink planted at .staging is refused whole, so the copied server, ledger,
+# and preset stay out of the directory it names and the trap that removes the
+# staging root removes nothing there; a leaf that is not a directory refuses
+# on the same rule.
+staging_link_root=$work_directory/staging-link-root
+mkdir -p "$staging_link_root"
+staging_link_target=$work_directory/staging-link-target
+mkdir -p "$staging_link_target"
+printf 'kept\n' >"$staging_link_target/marker"
+ln -s "$staging_link_target" "$staging_link_root/.staging"
+if QWEN_BUNDLE_ROUTER_PRESETS=$zero_preset \
+    "$builder" bundle-staged "$forced_server" "$forced_manifest" \
+    "$zero_ledger" "$staging_link_root" \
+    >/dev/null 2>"$work_directory/staging-link.stderr"; then
+    printf 'a symlinked staging parent carried an assembly\n' >&2
+    exit 1
+fi
+if ! grep -q 'staging parent is a symlink' "$work_directory/staging-link.stderr"; then
+    printf 'the symlinked staging refusal lost its reason\n' >&2
+    exit 1
+fi
+if [ "$(ls -A "$staging_link_target")" != marker ] || \
+    [ ! -f "$staging_link_target/marker" ] || \
+    [ -e "$staging_link_root/bundle-staged" ]; then
+    printf 'a symlinked staging parent reached the directory it named\n' >&2
+    exit 1
+fi
+rm "$staging_link_root/.staging"
+printf 'leaf\n' >"$staging_link_root/.staging"
+if QWEN_BUNDLE_ROUTER_PRESETS=$zero_preset \
+    "$builder" bundle-staged "$forced_server" "$forced_manifest" \
+    "$zero_ledger" "$staging_link_root" \
+    >/dev/null 2>"$work_directory/staging-leaf.stderr"; then
+    printf 'a regular file at the staging parent carried an assembly\n' >&2
+    exit 1
+fi
+if ! grep -q 'staging parent is not a directory' "$work_directory/staging-leaf.stderr"; then
+    printf 'the non-directory staging refusal lost its reason\n' >&2
+    exit 1
+fi
+report staging_parent_plain_directory accepted
+
 # A section path two registry rows match under the registry's raw suffix
 # rule is refused as ambiguous rather than bound to the first row.
 ambiguous_registry=$work_directory/models-ambiguous.tsv

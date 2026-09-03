@@ -149,9 +149,28 @@ if [ -e "$bundle_directory" ]; then
 fi
 # Staging is a private random directory under .staging, so no bundle name
 # can collide with a staging path and nothing existing is ever removed; the
-# staged tree is verified as a bundle before the rename publishes it.
-mkdir -p "$deployment_root/.staging"
-staging_root=$(mktemp -d "$deployment_root/.staging/bundle.XXXXXX")
+# staged tree is verified as a bundle before the rename publishes it. The
+# .staging parent is a plain directory this process creates or reuses at mode
+# 700: a symlink there would carry the copied server, the ledger, and the
+# preset into whatever directory the link named, and the trap that removes
+# the staging root would remove that directory's contents with them. The
+# bundle.XXXXXX leaf is fresh, since mktemp creates it and refuses a name
+# that already exists.
+staging_parent=$deployment_root/.staging
+if [ -L "$staging_parent" ]; then
+    printf 'bundle staging parent is a symlink: %s\n' "$staging_parent" >&2
+    exit 1
+fi
+if [ -e "$staging_parent" ]; then
+    if [ ! -d "$staging_parent" ]; then
+        printf 'bundle staging parent is not a directory: %s\n' \
+            "$staging_parent" >&2
+        exit 1
+    fi
+else
+    mkdir -m 700 "$staging_parent"
+fi
+staging_root=$(mktemp -d "$staging_parent/bundle.XXXXXX")
 staging_directory=$staging_root/$bundle_name
 trap 'rm -rf "$staging_root"' EXIT HUP INT TERM
 mkdir "$staging_directory"
