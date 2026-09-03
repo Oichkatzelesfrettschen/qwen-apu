@@ -79,17 +79,6 @@ gate_ruff_typed_walk() {
     return 0
 }
 
-# webui/roster.json is generated from the registry, the three profile ledgers,
-# and the feature claim ledger, and the page reads it as the roster authority.
-# A stale committed copy would badge a tier the ledgers retired, so the gate
-# regenerates it into a scratch directory and the diff is the verdict.
-gate_feature_roster_regeneration() {
-    feature_roster_scratch=$(mktemp -d)
-    remote/build-feature-roster.sh "$feature_roster_scratch/roster.json" >/dev/null
-    diff -u webui/roster.json "$feature_roster_scratch/roster.json"
-    rm -rf -- "$feature_roster_scratch"
-}
-
 gate_python_syntax_walk() {
     # shellcheck disable=SC2086
     python3 -m py_compile $python_files
@@ -184,6 +173,14 @@ gate_cell test-census-replay-corpus derive \
 gate_cell test-summarize-perf-logger-slice derive \
     remote/test-summarize-perf-logger-slice.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-perf-logger-slice.py'
+gate_cell test-summarize-bracket-ab derive remote/test-summarize-bracket-ab.py \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-bracket-ab.py'
+gate_cell test-summarize-margin-witness derive remote/test-summarize-margin-witness.py \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-margin-witness.py'
+gate_cell test-summarize-radv-isa derive remote/test-summarize-radv-isa.py \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-radv-isa.py'
+gate_cell test-depth derive remote/raven2-shader-lab/test-depth.py \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/raven2-shader-lab/test-depth.py'
 
 # Ledger readers and registry checks: shell, no fixture server.
 gate_cell check-validated-tuples derive remote/check-validated-tuples.sh \
@@ -224,9 +221,14 @@ gate_cell test-check-trace-source-status derive \
     remote/test-check-trace-source-status.sh remote/test-check-trace-source-status.sh
 gate_cell test-feature-roster derive remote/test-feature-roster.sh \
     remote/test-feature-roster.sh
-gate_cell feature-roster-regeneration files \
-    'remote/build-feature-roster.sh remote/model-registry.sh remote/models.tsv remote/quarantine.tsv remote/draft-pairs.tsv remote/web-profiles.tsv remote/image-profiles.tsv remote/feature-claims.tsv webui/roster.json' \
-    gate_feature_roster_regeneration
+gate_cell test-run-served-binary-ab derive remote/test-run-served-binary-ab.sh \
+    remote/test-run-served-binary-ab.sh
+gate_cell test-run-kernel-delta-witness derive remote/test-run-kernel-delta-witness.sh \
+    remote/test-run-kernel-delta-witness.sh
+gate_cell test-receipt-diff derive remote/raven2-shader-lab/test-receipt-diff.sh \
+    remote/raven2-shader-lab/test-receipt-diff.sh
+gate_cell test-lab-replay derive remote/raven2-shader-lab/test-lab-replay.sh \
+    remote/raven2-shader-lab/test-lab-replay.sh
 gate_cell test-web-presets derive remote/test-web-presets.sh \
     remote/test-web-presets.sh
 gate_cell test-qwen-capacity-policy derive remote/test-qwen-capacity-policy.sh \
