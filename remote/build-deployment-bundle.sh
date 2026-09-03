@@ -35,16 +35,18 @@ manifest_path=$3
 ctx_ledger_path=$4
 deployment_root=${5:-"${HOME:?}/qwen-deployments"}
 
-# A bundle name starts with an alphanumeric, so it can never spell a
-# dot-prefixed root entry, and the root's own names are reserved.
-case $bundle_name in
-    '' | [!A-Za-z0-9]* | *[!A-Za-z0-9._-]* | deployment-current | \
-        deployment-previous | deployment-state | deployment-state.* | . | ..)
-        printf 'bundle name must match [A-Za-z0-9][A-Za-z0-9._-]* and avoid the root names: %s\n' \
-            "$bundle_name" >&2
-        exit 2
-        ;;
-esac
+name_helper=$script_directory/deployment-bundle-name.sh
+if [ ! -r "$name_helper" ]; then
+    printf 'deployment bundle name helper is unreadable: %s\n' "$name_helper" >&2
+    exit 1
+fi
+# shellcheck source=deployment-bundle-name.sh
+. "$name_helper"
+if ! deployment_bundle_name_is_valid "$bundle_name"; then
+    printf 'bundle name must match [A-Za-z0-9][A-Za-z0-9._-]* and avoid the root names: %s\n' \
+        "$bundle_name" >&2
+    exit 2
+fi
 for required in "$server_path" "$manifest_path" "$ctx_ledger_path"; do
     if [ ! -r "$required" ]; then
         printf 'bundle input is unreadable: %s\n' "$required" >&2
@@ -80,15 +82,45 @@ if [ "$named_rows" -ne 1 ]; then
 fi
 # A diagnostic build names its instrumentation and declares itself unfit to
 # serve; the bundle is the unit an activation makes the appliance's server,
-# so the declaration is honored here rather than trusted to an operator.
-serving_eligible=$(awk -F'\t' '$1 == "serving_eligible" { print $2; exit }' \
-    "$manifest_path")
-if [ -n "$serving_eligible" ] && [ "$serving_eligible" != yes ]; then
-    printf 'artifact manifest declares serving_eligible %s (instrumentation %s); a bundle carries serving builds alone: %s\n' \
-        "$serving_eligible" \
-        "$(awk -F'\t' '$1 == "instrumentation" { print $2; exit }' "$manifest_path")" \
-        "$manifest_path" >&2
+# so the declaration is honored here rather than trusted to an operator. The
+# eligibility grammar admits two shapes and refuses the rest. A manifest
+# carrying zero serving_eligible rows is the legacy shape, admitted only where
+# it also names no instrumentation. A manifest carrying exactly one row is
+# admitted where that row's value is exactly `yes`, so an empty value -- a
+# present declaration stating nothing -- is refused by its own reading rather
+# than by falling through the legacy branch. A second row of either kind is
+# refused on cardinality ahead of both, since a first-row reading of a
+# manifest that declares twice reports one of two answers. An instrumentation
+# row refuses the bundle at whatever eligibility spelling accompanies it, and
+# that refusal precedes the eligibility reading so a diagnostic manifest names
+# the instrumentation that identifies it however its eligibility row is
+# spelled or deleted.
+declaration_rows=$(awk -F'\t' '
+    $1 == "serving_eligible" { eligible++ }
+    $1 == "instrumentation" { instrumentation++ }
+    END { print eligible + 0, instrumentation + 0 }' "$manifest_path")
+serving_rows=${declaration_rows%% *}
+instrumentation_rows=${declaration_rows##* }
+if [ "$serving_rows" -gt 1 ] || [ "$instrumentation_rows" -gt 1 ]; then
+    printf 'artifact manifest holds %s serving_eligible rows and %s instrumentation rows, at most one of each: %s\n' \
+        "$serving_rows" "$instrumentation_rows" "$manifest_path" >&2
     exit 1
+fi
+if [ "$instrumentation_rows" -eq 1 ]; then
+    declared_instrumentation=$(awk -F'\t' \
+        '$1 == "instrumentation" { print $2; exit }' "$manifest_path")
+    printf 'artifact manifest names instrumentation %s; a bundle carries serving builds alone: %s\n' \
+        "${declared_instrumentation:-<empty>}" "$manifest_path" >&2
+    exit 1
+fi
+if [ "$serving_rows" -eq 1 ]; then
+    serving_eligible=$(awk -F'\t' '$1 == "serving_eligible" { print $2; exit }' \
+        "$manifest_path")
+    if [ "$serving_eligible" != yes ]; then
+        printf 'artifact manifest declares serving_eligible %s; a bundle carries serving builds alone: %s\n' \
+            "${serving_eligible:-<empty>}" "$manifest_path" >&2
+        exit 1
+    fi
 fi
 
 executable_rows=$(awk -F'\t' -v bytes="$server_bytes" -v digest="$server_sha256" '
@@ -149,9 +181,28 @@ if [ -e "$bundle_directory" ]; then
 fi
 # Staging is a private random directory under .staging, so no bundle name
 # can collide with a staging path and nothing existing is ever removed; the
-# staged tree is verified as a bundle before the rename publishes it.
-mkdir -p "$deployment_root/.staging"
-staging_root=$(mktemp -d "$deployment_root/.staging/bundle.XXXXXX")
+# staged tree is verified as a bundle before the rename publishes it. The
+# .staging parent is a plain directory this process creates or reuses at mode
+# 700: a symlink there would carry the copied server, the ledger, and the
+# preset into whatever directory the link named, and the trap that removes
+# the staging root would remove that directory's contents with them. The
+# bundle.XXXXXX leaf is fresh, since mktemp creates it and refuses a name
+# that already exists.
+staging_parent=$deployment_root/.staging
+if [ -L "$staging_parent" ]; then
+    printf 'bundle staging parent is a symlink: %s\n' "$staging_parent" >&2
+    exit 1
+fi
+if [ -e "$staging_parent" ]; then
+    if [ ! -d "$staging_parent" ]; then
+        printf 'bundle staging parent is not a directory: %s\n' \
+            "$staging_parent" >&2
+        exit 1
+    fi
+else
+    mkdir -m 700 "$staging_parent"
+fi
+staging_root=$(mktemp -d "$staging_parent/bundle.XXXXXX")
 staging_directory=$staging_root/$bundle_name
 trap 'rm -rf "$staging_root"' EXIT HUP INT TERM
 mkdir "$staging_directory"

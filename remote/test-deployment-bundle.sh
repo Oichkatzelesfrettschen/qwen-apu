@@ -641,6 +641,39 @@ if [ "$resolver_status" -ne 3 ]; then
 fi
 report resolver_one_bundle accepted
 
+# Absence is decided under the activation lock. The leaf is created private
+# here so the helper's legacy-mode branch returns at once and the resolver
+# reaches `flock -s 7`, where a held exclusive lock stops it: a resolver that
+# answered 3 from a pre-lock read would report an empty root while an
+# activation was midway through publishing one.
+locked_root=$work_directory/locked-root
+mkdir -p "$locked_root"
+locked_lock_path=$locked_root/.activate.lock
+: >"$locked_lock_path"
+chmod 600 "$locked_lock_path"
+flock -x "$locked_lock_path" sleep 5 &
+lock_holder_pid=$!
+lock_wait=0
+while [ "$lock_wait" -lt 50 ] && \
+    flock -x -n "$locked_lock_path" true 2>/dev/null; do
+    lock_wait=$((lock_wait + 1))
+    sleep 0.1
+done
+timeout 2 "$resolver" "$locked_root" >/dev/null 2>&1 && locked_status=0 || \
+    locked_status=$?
+kill "$lock_holder_pid" 2>/dev/null || :
+wait "$lock_holder_pid" 2>/dev/null || :
+if [ "$locked_status" -eq 3 ]; then
+    printf 'the resolver reported an empty root while the activation lock was held\n' >&2
+    exit 1
+fi
+if [ "$locked_status" -ne 124 ]; then
+    printf 'the resolver left the held activation lock with status %s rather than blocking\n' \
+        "$locked_status" >&2
+    exit 1
+fi
+report absence_decided_under_lock accepted
+
 # The lock leaf is opened without following links or truncating: a symlinked
 # .activate.lock aimed at the outside sentinel refuses both the activator and
 # the resolver and leaves the sentinel's bytes as they were; a directory and
@@ -666,6 +699,19 @@ if [ "$(sha256sum "$outside_directory/sentinel" | cut -d ' ' -f 1)" != "$sentine
     exit 1
 fi
 rm -f "$lock_path"
+: >"$outside_directory/private-leaf"
+chmod 0600 "$outside_directory/private-leaf"
+ln "$outside_directory/private-leaf" "$lock_path"
+if "$activator" bundle-third "$deployment_root" >/dev/null 2>"$work_directory/lock-hardlink.stderr" || \
+    "$resolver" "$deployment_root" >/dev/null 2>&1; then
+    printf 'a hard-linked private leaf at the lock path was accepted\n' >&2
+    exit 1
+fi
+if ! grep -q 'hard links' "$work_directory/lock-hardlink.stderr"; then
+    printf 'the hard-link refusal lost its reason\n' >&2
+    exit 1
+fi
+rm -f "$lock_path"
 mkdir "$lock_path"
 if "$activator" bundle-third "$deployment_root" >/dev/null 2>&1 || \
     "$resolver" "$deployment_root" >/dev/null 2>&1; then
@@ -680,7 +726,7 @@ if "$activator" bundle-third "$deployment_root" >/dev/null 2>"$work_directory/lo
     printf 'a lock leaf with a loose mode was accepted\n' >&2
     exit 1
 fi
-if ! grep -q 'not the admitted legacy mode' "$work_directory/lock-mode.stderr"; then
+if ! grep -q 'grants write access to another user' "$work_directory/lock-mode.stderr"; then
     printf 'the loose-mode refusal lost its reason\n' >&2
     exit 1
 fi
@@ -785,6 +831,93 @@ if [ -n "$(ls -A "$deployment_root/.staging" 2>/dev/null)" ]; then
 fi
 report bundle_name_and_staging accepted
 
+# The staging parent is a plain directory the assembly creates or reuses. A
+# symlink planted at .staging is refused whole, so the copied server, ledger,
+# and preset stay out of the directory it names and the trap that removes the
+# staging root removes nothing there; a leaf that is not a directory refuses
+# on the same rule.
+staging_link_root=$work_directory/staging-link-root
+mkdir -p "$staging_link_root"
+staging_link_target=$work_directory/staging-link-target
+mkdir -p "$staging_link_target"
+printf 'kept\n' >"$staging_link_target/marker"
+ln -s "$staging_link_target" "$staging_link_root/.staging"
+if QWEN_BUNDLE_ROUTER_PRESETS=$zero_preset \
+    "$builder" bundle-staged "$forced_server" "$forced_manifest" \
+    "$zero_ledger" "$staging_link_root" \
+    >/dev/null 2>"$work_directory/staging-link.stderr"; then
+    printf 'a symlinked staging parent carried an assembly\n' >&2
+    exit 1
+fi
+if ! grep -q 'staging parent is a symlink' "$work_directory/staging-link.stderr"; then
+    printf 'the symlinked staging refusal lost its reason\n' >&2
+    exit 1
+fi
+if [ "$(ls -A "$staging_link_target")" != marker ] || \
+    [ ! -f "$staging_link_target/marker" ] || \
+    [ -e "$staging_link_root/bundle-staged" ]; then
+    printf 'a symlinked staging parent reached the directory it named\n' >&2
+    exit 1
+fi
+rm "$staging_link_root/.staging"
+printf 'leaf\n' >"$staging_link_root/.staging"
+if QWEN_BUNDLE_ROUTER_PRESETS=$zero_preset \
+    "$builder" bundle-staged "$forced_server" "$forced_manifest" \
+    "$zero_ledger" "$staging_link_root" \
+    >/dev/null 2>"$work_directory/staging-leaf.stderr"; then
+    printf 'a regular file at the staging parent carried an assembly\n' >&2
+    exit 1
+fi
+if ! grep -q 'staging parent is not a directory' "$work_directory/staging-leaf.stderr"; then
+    printf 'the non-directory staging refusal lost its reason\n' >&2
+    exit 1
+fi
+report staging_parent_plain_directory accepted
+
+# Assembly, verification, activation, and resolution read one bundle
+# namespace. A complete bundle carrying a dot-prefixed name -- the shape a
+# directory planted as .staging or .activate.lock would take -- is refused by
+# every reader rather than assembled under one rule and served under another.
+dot_root=$work_directory/dot-name-root
+mkdir -p "$dot_root"
+QWEN_BUNDLE_ROUTER_PRESETS=$zero_preset \
+    "$builder" hidden "$forced_server" "$forced_manifest" "$zero_ledger" \
+    "$dot_root" >/dev/null
+mv "$dot_root/hidden" "$dot_root/.hidden"
+awk -F'\t' -v OFS='\t' '$1 == "bundle_name" { $2 = ".hidden" } { print }' \
+    "$dot_root/.hidden/bundle-manifest.tsv" \
+    >"$dot_root/.hidden/bundle-manifest.tsv.new"
+mv "$dot_root/.hidden/bundle-manifest.tsv.new" \
+    "$dot_root/.hidden/bundle-manifest.tsv"
+if "$script_directory/verify-deployment-bundle.sh" "$dot_root" .hidden \
+    >/dev/null 2>"$work_directory/dot-verify.stderr"; then
+    printf 'a dot-prefixed bundle name passed verification\n' >&2
+    exit 1
+fi
+if ! grep -q 'avoid the root names' "$work_directory/dot-verify.stderr"; then
+    printf 'the dot-prefixed verification refusal lost its reason\n' >&2
+    exit 1
+fi
+if "$activator" .hidden "$dot_root" \
+    >/dev/null 2>"$work_directory/dot-activate.stderr"; then
+    printf 'a dot-prefixed bundle name activated\n' >&2
+    exit 1
+fi
+if ! grep -q 'avoid the root names' "$work_directory/dot-activate.stderr"; then
+    printf 'the dot-prefixed activation refusal lost its reason\n' >&2
+    exit 1
+fi
+if QWEN_ACTIVE_DEPLOYMENT_DIRECTORY=$dot_root/.hidden "$resolver" "$dot_root" \
+    >/dev/null 2>"$work_directory/dot-resolve.stderr"; then
+    printf 'a dot-prefixed bundle name resolved for a launch\n' >&2
+    exit 1
+fi
+if ! grep -q 'avoid the root names' "$work_directory/dot-resolve.stderr"; then
+    printf 'the dot-prefixed resolution refusal lost its reason\n' >&2
+    exit 1
+fi
+report bundle_namespace_shared accepted
+
 # A section path two registry rows match under the registry's raw suffix
 # rule is refused as ambiguous rather than bound to the first row.
 ambiguous_registry=$work_directory/models-ambiguous.tsv
@@ -812,10 +945,12 @@ report suffix_ambiguity_refused accepted
 
 # A diagnostic build declares serving_eligible no in its artifact manifest
 # and is refused at assembly; the same manifest planted into an assembled
-# bundle with consistent digests is refused at activation.
+# bundle with consistent digests is refused at activation. The refusal names
+# the instrumentation rather than the eligibility spelling, because an
+# instrumentation row refuses the bundle however that row reads.
 diagnostic_manifest=$work_directory/manifest-diagnostic.tsv
 {
-    printf 'instrumentation\tpipeline-census-v1\nbuild_role\tdiagnostic\nserving_eligible\tno\n'
+    printf 'instrumentation\tpipeline-census-v3\nbuild_role\tdiagnostic\nserving_eligible\tno\n'
     cat "$forced_manifest"
 } >"$diagnostic_manifest"
 if "$builder" bundle-diagnostic "$forced_server" "$diagnostic_manifest" \
@@ -824,27 +959,54 @@ if "$builder" bundle-diagnostic "$forced_server" "$diagnostic_manifest" \
     printf 'a diagnostic build assembled into a bundle\n' >&2
     exit 1
 fi
-if ! grep -q 'serving_eligible no (instrumentation pipeline-census-v1)' \
+if ! grep -q 'names instrumentation pipeline-census-v3; a bundle carries serving builds alone' \
     "$work_directory/diagnostic.stderr"; then
     printf 'the diagnostic refusal lost its declaration\n' >&2
     exit 1
 fi
+# A manifest carrying serving_eligible twice, yes ahead of no, is refused on
+# cardinality rather than read by its first row.
+duplicate_manifest=$work_directory/manifest-duplicate-eligibility.tsv
+{
+    printf 'serving_eligible\tyes\n'
+    cat "$diagnostic_manifest"
+} >"$duplicate_manifest"
+if "$builder" bundle-duplicate "$forced_server" "$duplicate_manifest" \
+    "$zero_ledger" "$deployment_root" \
+    >/dev/null 2>"$work_directory/duplicate-eligibility.stderr"; then
+    printf 'a manifest with two serving_eligible rows assembled\n' >&2
+    exit 1
+fi
+if ! grep -q 'serving_eligible rows' "$work_directory/duplicate-eligibility.stderr"; then
+    printf 'the duplicate eligibility refusal lost its reason\n' >&2
+    exit 1
+fi
+# A manifest reaches a bundle directory by routes the builder never ran, so
+# each eligibility refusal is exercised again against an assembled bundle:
+# the manifest is copied in and its digest recomputed into bundle-manifest.tsv,
+# which leaves every other claim consistent and the eligibility grammar the
+# one thing the verification meets.
+plant_manifest() {
+    plant_bundle=$1
+    plant_source=$2
+    cp "$plant_source" "$deployment_root/$plant_bundle/artifact-manifest.tsv"
+    planted_digest=$(sha256sum \
+        "$deployment_root/$plant_bundle/artifact-manifest.tsv" | cut -d ' ' -f 1)
+    awk -F'\t' -v OFS='\t' -v digest="$planted_digest" '
+        $1 == "artifact-manifest.tsv" { $2 = digest }
+        { print }' "$deployment_root/$plant_bundle/bundle-manifest.tsv" \
+        >"$deployment_root/$plant_bundle/bundle-manifest.tsv.new"
+    mv "$deployment_root/$plant_bundle/bundle-manifest.tsv.new" \
+        "$deployment_root/$plant_bundle/bundle-manifest.tsv"
+}
 "$activator" bundle-natural "$deployment_root" >/dev/null
-cp "$diagnostic_manifest" "$deployment_root/bundle-third/artifact-manifest.tsv"
-diagnostic_digest=$(sha256sum "$deployment_root/bundle-third/artifact-manifest.tsv" |
-    cut -d ' ' -f 1)
-awk -F'\t' -v OFS='\t' -v digest="$diagnostic_digest" '
-    $1 == "artifact-manifest.tsv" { $2 = digest }
-    { print }' "$deployment_root/bundle-third/bundle-manifest.tsv" \
-    >"$deployment_root/bundle-third/bundle-manifest.tsv.new"
-mv "$deployment_root/bundle-third/bundle-manifest.tsv.new" \
-    "$deployment_root/bundle-third/bundle-manifest.tsv"
+plant_manifest bundle-third "$diagnostic_manifest"
 if "$activator" bundle-third "$deployment_root" \
     >/dev/null 2>"$work_directory/diagnostic-activate.stderr"; then
     printf 'a diagnostic manifest activated\n' >&2
     exit 1
 fi
-if ! grep -q 'a diagnostic build stays inactive' \
+if ! grep -q 'names instrumentation pipeline-census-v3; a bundle carries serving builds alone' \
     "$work_directory/diagnostic-activate.stderr"; then
     printf 'the diagnostic activation refusal lost its reason\n' >&2
     exit 1
@@ -994,5 +1156,89 @@ if ! grep -q 'head marker names no web section' "$work_directory/smuggled.stderr
     exit 1
 fi
 report web_mcp_record_follows_the_marker accepted
+
+# A present serving_eligible row carrying an empty value declares nothing and
+# is read as its own spelling rather than as the absent legacy declaration,
+# at assembly and against an assembled bundle.
+empty_eligibility_manifest=$work_directory/manifest-empty-eligibility.tsv
+{
+    printf 'serving_eligible\t\n'
+    cat "$forced_manifest"
+} >"$empty_eligibility_manifest"
+if "$builder" bundle-empty-eligibility "$forced_server" \
+    "$empty_eligibility_manifest" "$zero_ledger" "$deployment_root" \
+    >/dev/null 2>"$work_directory/empty-eligibility.stderr"; then
+    printf 'an empty serving_eligible value assembled into a bundle\n' >&2
+    exit 1
+fi
+if ! grep -q 'declares serving_eligible <empty>; a bundle carries serving builds alone' \
+    "$work_directory/empty-eligibility.stderr"; then
+    printf 'the empty eligibility refusal lost its observed value\n' >&2
+    exit 1
+fi
+plant_manifest bundle-third "$empty_eligibility_manifest"
+if "$activator" bundle-third "$deployment_root" \
+    >/dev/null 2>"$work_directory/empty-eligibility-activate.stderr"; then
+    printf 'an empty serving_eligible value activated\n' >&2
+    exit 1
+fi
+if ! grep -q 'declares serving_eligible <empty>; a bundle carries serving builds alone' \
+    "$work_directory/empty-eligibility-activate.stderr"; then
+    printf 'the empty eligibility activation refusal lost its observed value\n' >&2
+    exit 1
+fi
+report empty_eligibility_refused accepted
+
+# Deleting the eligibility row from a diagnostic manifest leaves the
+# instrumentation it was built with, and that row alone refuses the bundle at
+# assembly and at verification.
+instrumentation_only_manifest=$work_directory/manifest-instrumentation-only.tsv
+{
+    printf 'instrumentation\tpipeline-census-v3\nbuild_role\tdiagnostic\n'
+    cat "$forced_manifest"
+} >"$instrumentation_only_manifest"
+if "$builder" bundle-instrumentation "$forced_server" \
+    "$instrumentation_only_manifest" "$zero_ledger" "$deployment_root" \
+    >/dev/null 2>"$work_directory/instrumentation-only.stderr"; then
+    printf 'an instrumentation row with no eligibility row assembled\n' >&2
+    exit 1
+fi
+if ! grep -q 'names instrumentation pipeline-census-v3; a bundle carries serving builds alone' \
+    "$work_directory/instrumentation-only.stderr"; then
+    printf 'the instrumentation-only refusal lost its instrumentation\n' >&2
+    exit 1
+fi
+plant_manifest bundle-third "$instrumentation_only_manifest"
+if "$verifier" "$deployment_root" bundle-third \
+    >/dev/null 2>"$work_directory/instrumentation-only-verify.stderr"; then
+    printf 'an instrumentation row with no eligibility row verified\n' >&2
+    exit 1
+fi
+if ! grep -q 'names instrumentation pipeline-census-v3; a bundle carries serving builds alone' \
+    "$work_directory/instrumentation-only-verify.stderr"; then
+    printf 'the instrumentation-only verification refusal lost its instrumentation\n' >&2
+    exit 1
+fi
+report instrumentation_without_eligibility_refused accepted
+
+# An instrumented build that also declares itself servable is refused on the
+# instrumentation, so the eligibility spelling never admits the diagnostic.
+instrumented_servable_manifest=$work_directory/manifest-instrumented-servable.tsv
+{
+    printf 'instrumentation\tpipeline-census-v3\nserving_eligible\tyes\n'
+    cat "$forced_manifest"
+} >"$instrumented_servable_manifest"
+if "$builder" bundle-instrumented-servable "$forced_server" \
+    "$instrumented_servable_manifest" "$zero_ledger" "$deployment_root" \
+    >/dev/null 2>"$work_directory/instrumented-servable.stderr"; then
+    printf 'an instrumented manifest declaring serving_eligible yes assembled\n' >&2
+    exit 1
+fi
+if ! grep -q 'names instrumentation pipeline-census-v3; a bundle carries serving builds alone' \
+    "$work_directory/instrumented-servable.stderr"; then
+    printf 'the instrumented servable refusal lost its instrumentation\n' >&2
+    exit 1
+fi
+report instrumented_servable_refused accepted
 
 printf 'deployment_bundle=accepted checks=%s\n' "$checks"

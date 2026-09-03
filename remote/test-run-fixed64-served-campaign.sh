@@ -359,7 +359,7 @@ report symlinked_intermediate_state_directory_untouched \
 legacy_campaign_lock_expected=$work_directory/legacy-campaign-lock.expected
 printf 'retained legacy campaign lock bytes\n' >"$campaign_lock"
 cp -- "$campaign_lock" "$legacy_campaign_lock_expected"
-chmod 0664 "$campaign_lock"
+chmod 0644 "$campaign_lock"
 legacy_campaign_lock_identity=$(stat -c '%d:%i' "$campaign_lock")
 success_output=$work_directory/success
 set +e

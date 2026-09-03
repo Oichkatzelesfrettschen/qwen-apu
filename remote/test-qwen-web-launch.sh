@@ -482,10 +482,21 @@ rm -f -- "$lease_state_directory/hold-session"
 lease_release_outcome=ok
 wait_for_absence "$lease_tmux_state" || lease_release_outcome=tmux_state_retained
 wait_for_absence "$lease_record" || lease_release_outcome=lease_record_retained
-set +e
-/usr/bin/flock -n "$lease_control_lock" true
-lease_released_probe_status=$?
-set -e
+# The holder unlinks its record before it exits and the kernel drops the
+# flock at exit, so the record's absence precedes the release by the
+# holder's own teardown; the probe polls over the same window the absence
+# waits take rather than reading the lock once at that instant.
+lease_released_attempt=0
+lease_released_probe_status=75
+while [ "$lease_released_probe_status" -ne 0 ] && \
+      [ "$lease_released_attempt" -lt 500 ]; do
+    set +e
+    /usr/bin/flock -n "$lease_control_lock" true
+    lease_released_probe_status=$?
+    set -e
+    [ "$lease_released_probe_status" -eq 0 ] || sleep 0.01
+    lease_released_attempt=$((lease_released_attempt + 1))
+done
 [ "$lease_released_probe_status" -eq 0 ] ||
     lease_release_outcome=lease_retained_after_session
 report ordinary_lease_released_after_exact_tmux_identity "$lease_release_outcome"
