@@ -1216,6 +1216,26 @@ remote/generate-quality-images.py [DIR]        # the vision fixtures, and --chec
 remote/regrade-quality-roster.py RECORD...     # a grader change over retained replies
 remote/sample-gpu-clocks.sh OUT_TSV [SECONDS]  # the DPM step a rate ran at
 remote/measure-dpm-force.sh MODEL [OUT]         # auto against global high governor
+remote/compute-state-lease.sh PROFILE COMMAND [ARG...]
+                                                # one reversible compute-state
+                                                # transaction: the shared Vulkan
+                                                # lease and its published proof,
+                                                # a snapshot of the DPM level
+                                                # with its two selections and
+                                                # the KSM run state, one named
+                                                # profile, a delivered clock
+                                                # proven before the command, and
+                                                # a verified restore after it.
+                                                # measure-fixed pins GFXCLK 1100
+                                                # with FCLK 933 at nice 19;
+                                                # serve-performance-candidate
+                                                # admits FCLK 933 or 1067 at
+                                                # nice 0. Exit 3 names an
+                                                # unreached clock and 4 a
+                                                # restoration incident, which
+                                                # dominates the command's own
+                                                # status.
+remote/compute-state-lease.sh status           # the live values, no credential, no write
 remote/model-registry.sh id|path SELECTOR [FIELD]
 remote/model-registry.sh draft-pairs | draft-pair PAIR_ID [FIELD]
 remote/model-registry.sh ctx-checkpoints | ctx-checkpoint MODEL_ID
@@ -1443,6 +1463,7 @@ python3 remote/test-census-controls.py
 python3 remote/test-sample-clock-sidecar.py
 python3 remote/test-summarize-perf-logger-slice.py
 remote/test-census-sha256.sh
+remote/test-compute-state-lease.sh
 remote/test-run-raven2-vulkan-kernel-census.sh
 remote/verify-llama-patch-series.sh
 QWEN_LLAMA_CANDIDATE_PATCHES=1 remote/verify-llama-patch-series.sh
