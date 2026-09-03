@@ -2445,6 +2445,7 @@ a32e51302f9f04a598f53c4b005bed582c4e36a6ae72905038ec16bc35cd914f  evidence/raven
 5e452cd9174a7343fcf8f91d0ef8a150755cffae54d3670a6f7da3fdde3048e8  evidence/raven2-vulkan-kernel-census/e4/served-ab-20260902T2222Z/summary.tsv
 263f5894a4e33250071176fe8e833f70d13cd6862c14c479d0907ad33a49545d  evidence/raven2-vulkan-kernel-census/e4/served-ab-20260902T2222Z/terminal-state.tsv
 94b47c6698a0efc3714a04dd3b40496b876349ff8c25e7a8fd8a39d8887b94e4  evidence/raven2-vulkan-kernel-census/e4/served-ab-20260902T2222Z/wall-clock.tsv
+d2959e4414326013515881e4d67ee92a1cd4714cc3e158c4089c4900f9edaa5b  evidence/raven2-vulkan-kernel-census/e4/served-ab-design.md
 06f1445549184b98af65f0af3e5158e245f540192646136b4bdb663e5a5ad4bb  evidence/raven2-vulkan-kernel-census/e4/spirv-comparison.md
 393e521778b5eef35a9b48023a089023145daa5d4d73293afe3686d5c11b6238  evidence/raven2-vulkan-kernel-census/e4/traffic-balance.md
 304ae71c89295c0824a993a648fae4ef35f844b9529fa6e5b628fa8cf2517814  evidence/raven2-vulkan-kernel-census/e4/witness-calibration-20260903T0203Z/arms/1-C/accumulator/tokens-run-1.tsv

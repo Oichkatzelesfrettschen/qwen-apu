@@ -1366,6 +1366,14 @@ remote/validate-clock-sidecar.py OUT.tsv --sidecar-status 0 --period-ms 10 \
 remote/summarize-perf-logger-slice.py OUT/arms/NN-S/server-log-request.slice \
     --expected-decode-blocks 63
 
+# Rung 7 of the E4 ladder: two serving builds on one checkpoint, mirrored
+# C K K C quadruples under the production receipt binding, promoted on a
+# one-sided 5% paired bound.
+# evidence/raven2-vulkan-kernel-census/e4/served-ab-design.md registers the
+# falsifiers and the chain.
+QWEN_CENSUS_PRODUCTION_RECEIPT=RECEIPT remote/run-served-binary-ab.sh \
+    CONTROL_SERVER CANDIDATE_SERVER MODEL_ID OUT
+
 # Deployment bundles: the server, its manifest, the checkpoint ledger, and
 # the presets generated against that ledger as one activated unit.
 # Activation and rollback are the same atomic symlink transition, serialized
@@ -1455,6 +1463,7 @@ remote/test-quality-suite.py
 remote/test-quality-roster.sh
 remote/test-promote-llama-build.sh
 remote/test-classify-checkpoint-semantics.sh
+remote/test-run-served-binary-ab.sh
 remote/test-check-runtime-tree.sh
 remote/test-deployment-bundle.sh
 remote/generate-quality-images.py --check
