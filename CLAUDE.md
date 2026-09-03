@@ -512,6 +512,14 @@ The fake run stays the authority for the refusals, whose fixtures answer
 instantly; this run measures what only a live instance shows. Every checked-in
 row reads `execution_policy=refused`, and a row moves to `validator-gated` by
 an operator edit after a run of this harness is retained under `evidence/`.
+`evidence/web-live/20260903T0724Z/` retains the first such run against
+`web-compact`: 29 rows, 24 passing, one grant, five results from bing in 1 s,
+one 12,347-character fetch by Result ID, and a page turn whose requests stay on
+the router and broker origins, at 66 MB of resident memory before the first
+query and 75 MB over five threads after it. Its two failures were the harness
+reading the search policy from the preset INI where the section names a
+configuration, and `check-runtime-tree.sh` comparing two `LC_ALL=C` lists under
+the invoking locale.
 
 The integer dot product is advertised, functional, and unaccelerated, which
 decides how most of this tree's bytes execute. RADV reports
