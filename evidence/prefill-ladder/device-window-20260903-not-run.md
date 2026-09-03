@@ -72,31 +72,45 @@ census-arm-lib.sh:387  census_engine_clock_write   sudo -n tee ... || exit 2
 census-arm-lib.sh:475  census_engine_clock_restore sudo -n tee ... >/dev/null 2>&1 || true
 ```
 
-The acquire refuses loudly, which is the refusal this window met. The EXIT-trap restore
-swallows its own failure, so a campaign that outlives
+The acquire refuses loudly, which is the refusal this window met. The restore discards
+its write's exit status, so a restore attempted past
 `/etc/sudoers.d/90-qwen-agent`'s 60-minute `timestamp_type=global` timeout writes
-`power_dpm_force_performance_level` back through an unauthorized `sudo -n`, ignores the
-error, and leaves the appliance pinned at `manual` with the highest graphics and fabric
-levels selected for every workload that follows. Nothing in the run reports it.
+`power_dpm_force_performance_level` through an unauthorized `sudo -n`, continues, and
+leaves the appliance pinned at `manual` with the highest graphics and fabric levels
+selected for every workload that follows.
 
-The ladder is 32 arms over four depths reaching a 32719-token prompt, under a 1800-second
-per-request timeout and a 15-second cooldown, so its wall time is hours rather than
-minutes; this window measured no ladder arm, so the figure stays unmeasured and the
-bound above is what the configuration allows rather than what a run takes. Either way it
-crosses the timeout.
-
-Two ways to close it, and the operator picks one before starting:
+The failure is reported, and reported weakly. `census_engine_clock_restore` reads the
+node back after writing and prints one of three lines:
 
 ```text
-refresh   keep the timestamp alive for the campaign's duration
-verify    read power_dpm_force_performance_level after the run and restore `auto` by hand
+dpm_restore=restored level=auto requested=auto ...
+dpm_restore=mismatch level=manual requested=auto ...
+dpm_restore=unreadable level=- requested=auto ...
 ```
 
-`census_engine_clock_restore` swallowing a failed write is a defect in
-`remote/census-arm-lib.sh` rather than in the ladder, and it belongs to the lane that
-owns that file. It is named here because the ladder is the longest campaign that calls
-it, and a fix that made the restore report its failure would turn this operational
-requirement into a refusal the harness raises by itself.
+A failed restore therefore emits `dpm_restore=mismatch` naming the level the device is
+actually in. What it does not do is fail: the function returns 0, the campaign's exit
+status is unchanged, and nothing refuses. An operator who reads the tail of the run log
+sees the stranded clock; one who reads only the exit status does not.
+
+Whether this campaign crosses the hour is unmeasured. No ladder arm has run on this
+machine, so no per-arm duration exists: the 1800-second per-request timeout is a
+ceiling rather than a floor, and the 32 cooldowns total eight minutes. The requirement
+does not depend on the answer, because the restore's exit status does not either. Two
+ways to close it, and the operator picks one before starting:
+
+```text
+refresh   keep the sudo timestamp alive for the campaign's duration
+verify    read the run's dpm_restore= line, and power_dpm_force_performance_level
+          itself, after the run; restore `auto` by hand on a mismatch
+```
+
+`census_engine_clock_restore` discarding its write's status while still reporting the
+resulting mismatch is a property of `remote/census-arm-lib.sh` rather than of the
+ladder, and it belongs to the lane that owns that file. It is named here because the
+ladder is the longest campaign that calls it, and a restore that exited nonzero on a
+mismatch would turn this operational requirement into a refusal the harness raises by
+itself rather than a line an operator has to look for.
 
 A second requirement follows from the design rather than from the device: `C K K C` is
 the control server against a candidate server, and a run passing one binary as both
