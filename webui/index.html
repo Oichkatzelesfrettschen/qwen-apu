@@ -3617,27 +3617,26 @@ async function saveConversation() {
   } catch {
     return;
   }
-  const activeStore = await conversationStore();
-  try {
-    await activeStore.write(record);
-  } catch {
-    // A store that opened and answered its own probe can still refuse a
-    // later write -- a quota, a denied transaction. Excluding this store's
-    // name and demoting the cached resolution makes the next call re-run
-    // resolveConversationStore()'s own fallback chain past the store that
-    // just failed, rather than reselecting the same unwritable one: the
-    // chain's own list()/setItem() probes are reads and would otherwise pass
-    // again for a store that permits reads and refuses writes.
-    conversationStoreFailedNames.add(activeStore.name);
-    conversationStoreRead = null;
-    // The record that triggered the demotion is retried once against
-    // whatever the fallback chain now resolves to, so this exact save is not
-    // lost until a later call happens to run: closing or reloading the page
-    // right after this one would otherwise cost the turn that just streamed
-    // and rendered.
+  // A store that opened and answered its own probe can still refuse a later
+  // write -- a quota, a denied transaction -- and more than one backend can
+  // fail this way in the same call: IndexedDB over a denied transaction,
+  // then localStorage over the same quota. Each failure excludes that
+  // store's own name and demotes the cached resolution, so the next
+  // iteration's conversationStore() call re-runs resolveConversationStore()
+  // past every store that has already failed -- its own list()/setItem()
+  // probes are reads and would otherwise pass again for a store that permits
+  // reads and refuses writes -- and retries this same record rather than
+  // leaving it to whatever later save happens to run next. memoryConversationStore()
+  // never throws, so at most three attempts are ever needed.
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const activeStore = await conversationStore();
     try {
-      await (await conversationStore()).write(record);
-    } catch { /* the retried store also refuses; the live page stays authoritative */ }
+      await activeStore.write(record);
+      break;
+    } catch {
+      conversationStoreFailedNames.add(activeStore.name);
+      conversationStoreRead = null;
+    }
   }
   await renderConversationList();
 }
