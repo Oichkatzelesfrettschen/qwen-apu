@@ -190,6 +190,28 @@ function makeDeniedStorage() {
   };
 }
 
+// resolveConversationStore()'s own probe writes and removes one throwaway
+// key ahead of any real write, so a storage whose real writes are refused
+// (quota) but whose probe still answers looks selectable on every
+// resolution -- the shape a real quota-exhausted localStorage takes, and
+// distinct from makeDeniedStorage()'s total refusal, which the probe itself
+// already catches.
+const CONVERSATION_PROBE_KEY = 'qwen-apu-conversation:probe';
+function makeFlakyStorage(failWrites) {
+  const values = new Map();
+  return {
+    values,
+    getItem(key) { return values.has(key) ? values.get(key) : null; },
+    setItem(key, value) {
+      if (failWrites.active && key !== CONVERSATION_PROBE_KEY) {
+        throw new Error('storage denied (quota)');
+      }
+      values.set(key, String(value));
+    },
+    removeItem(key) { values.delete(key); }
+  };
+}
+
 class TestUrl extends URL {}
 TestUrl.createObjectURL = () => 'blob:qwen-apu/fixture';
 TestUrl.revokeObjectURL = () => {};
@@ -858,6 +880,33 @@ assert.equal(await flakyPage.api.storeName(), 'localstorage',
 const flakyFollowUp = await flakyPage.api.read(flakyId);
 assert.equal(flakyFollowUp.messages.at(-1).content,
   'a later save still avoids the demoted store');
+
+// The save loop keeps going past a second failing store: IndexedDB denied,
+// then localStorage's real write also refused (its own probe still answers,
+// the quota shape above), and only the third attempt -- memory, which never
+// throws -- lands the record, all inside the one call that started it.
+const cascadeDatabase = makeFakeIndexedDatabase();
+const cascadeIndexedFailWrites = { active: true };
+const cascadeIndexedDatabase =
+  makeFlakyIndexedDatabase(cascadeDatabase, { failWrites: cascadeIndexedFailWrites });
+const cascadeLocalFailWrites = { active: true };
+const cascadePage = newPage({
+  indexedDatabase: cascadeIndexedDatabase,
+  localStorage: makeFlakyStorage(cascadeLocalFailWrites),
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(cascadePage);
+assert.equal(await cascadePage.api.storeName(), 'indexeddb');
+const cascadeId = await cascadePage.api.runFixtureTurn(fixture);
+await flushPromises();
+assert.equal(await cascadePage.api.storeName(), 'memory',
+  'a call that failed on two stores did not reach the third');
+const cascadeList = await cascadePage.api.list();
+assert.equal(cascadeList.length, 1,
+  'the record was lost after two stores refused it in the same call');
+const cascadeRecord = await cascadePage.api.read(cascadeId);
+assert.ok(cascadeRecord, 'the cascaded save did not reach memory');
+assert.equal(cascadeRecord.messages.length, 3);
 
 // ---- switchConversation rechecks busy after its own await -----------------
 

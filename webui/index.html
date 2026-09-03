@@ -3422,6 +3422,14 @@ function indexedDatabaseConversationStore(database) {
 }
 
 function browserStorageConversationStore() {
+  // writeBrowserStorage swallows a denial by design, for a best-effort cache
+  // (the API key, the reasoning toggle) where the live page state stays
+  // authoritative regardless. This store's write() is what
+  // saveConversation()'s retry loop decides whether to demote and retry
+  // from, so a denial here has to reach the caller instead: writing directly
+  // against window.localStorage is what lets a quota or a denied transaction
+  // surface as a thrown rejection rather than a silently accepted no-op.
+  const storage = window['localStorage'];
   const readIndex = () => {
     const raw = readBrowserStorage('localStorage', CONVERSATION_INDEX_KEY);
     if (!raw) return [];
@@ -3434,8 +3442,8 @@ function browserStorageConversationStore() {
       return [];
     }
   };
-  const writeIndex = entries => writeBrowserStorage(
-    'localStorage', CONVERSATION_INDEX_KEY, JSON.stringify(entries));
+  const writeIndexOrThrow = entries => storage.setItem(
+    CONVERSATION_INDEX_KEY, JSON.stringify(entries));
   return {
     name: 'localstorage',
     async list() { return readIndex(); },
@@ -3445,15 +3453,14 @@ function browserStorageConversationStore() {
       try { return JSON.parse(raw); } catch { return null; }
     },
     async write(record) {
-      writeBrowserStorage(
-        'localStorage', CONVERSATION_RECORD_PREFIX + record.id, JSON.stringify(record));
+      storage.setItem(CONVERSATION_RECORD_PREFIX + record.id, JSON.stringify(record));
       const entries = readIndex().filter(entry => entry.id !== record.id);
       entries.push(conversationSummary(record));
-      writeIndex(entries);
+      writeIndexOrThrow(entries);
     },
     async remove(id) {
-      writeBrowserStorage('localStorage', CONVERSATION_RECORD_PREFIX + id, null);
-      writeIndex(readIndex().filter(entry => entry.id !== id));
+      storage.removeItem(CONVERSATION_RECORD_PREFIX + id);
+      writeIndexOrThrow(readIndex().filter(entry => entry.id !== id));
     }
   };
 }
