@@ -2070,6 +2070,7 @@ EOF
                 ${engine_clock_required_flag:+--required-sclk-mhz "$engine_clock_required_flag"} \
                 ${engine_clock_mclk_flag:+--required-mclk-mhz "$engine_clock_mclk_flag"} \
                 ${engine_clock_mclk_fraction_flag:+--max-below-mclk-floor-fraction "$engine_clock_mclk_fraction_flag"} \
+                --expected-nice "$sidecar_nice" --expected-cpu-affinity "$sidecar_cpu" \
                 >"$arm_directory/clock-sidecar-verdict.txt" 2>&1
         else
             python3 "$sidecar_validator" "$arm_directory/clock-sidecar.tsv" \
@@ -2081,6 +2082,7 @@ EOF
                 ${engine_clock_required_flag:+--required-sclk-mhz "$engine_clock_required_flag"} \
                 ${engine_clock_mclk_flag:+--required-mclk-mhz "$engine_clock_mclk_flag"} \
                 ${engine_clock_mclk_fraction_flag:+--max-below-mclk-floor-fraction "$engine_clock_mclk_fraction_flag"} \
+                --expected-nice "$sidecar_nice" --expected-cpu-affinity "$sidecar_cpu" \
                 >"$arm_directory/clock-sidecar-verdict.txt" 2>&1
         fi
         sidecar_verdict=$?
