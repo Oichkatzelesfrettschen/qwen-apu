@@ -100,6 +100,8 @@ elif selector == "usage_input_tokens":
     print(document.get("usage", {}).get("input_tokens", -1))
 elif selector == "usage_output_tokens":
     print(document.get("usage", {}).get("output_tokens", -1))
+elif selector == "usage_cache_read_input_tokens":
+    print(document.get("usage", {}).get("cache_read_input_tokens", -1))
 PYTHON
 }
 
@@ -158,10 +160,14 @@ if [ "$reply_model" = "$first_model" ]; then
 else
     report messages_model_echoed fail "requested=$first_model echoed=$reply_model"
 fi
+# Every usage field is read here, while the retained reply is still the one the
+# messages route returned; the count route overwrites that file below.
 messages_input=$(read_field usage_input_tokens)
 messages_output=$(read_field usage_output_tokens)
+messages_cached=$(read_field usage_cache_read_input_tokens)
 messages_text_length=$(read_field reply_text_length)
-: "${messages_input:=-1}" "${messages_output:=-1}" "${messages_text_length:=0}"
+: "${messages_input:=-1}" "${messages_output:=-1}" "${messages_cached:=-1}"
+: "${messages_text_length:=0}"
 if [ "$messages_output" -gt 0 ] 2>/dev/null && [ "$messages_text_length" -gt 0 ]; then
     report messages_usage pass "input_tokens=$messages_input output_tokens=$messages_output"
 else
@@ -183,19 +189,25 @@ else
     report count_tokens_counted fail "input_tokens=$counted"
 fi
 
-# The count route tokenizes the same prompt the messages route charged, so the
-# two counts agree within the few tokens a generation prompt adds around the
-# turn. A wide gap says the router sent the two requests to different children.
-if [ "$counted" -gt 0 ] 2>/dev/null && [ "$messages_input" -gt 0 ] 2>/dev/null; then
-    spread=$((counted - messages_input))
+# The two routes tokenize one prompt and report it split differently.
+# handle_count_tokens returns the whole tokenization from tokenize_mixed, while
+# to_json_anthropic sets input_tokens to n_prompt_tokens - n_prompt_tokens_cache
+# and puts the reused prefix in cache_read_input_tokens, so the invariant across
+# a warm cache is the sum rather than either term. A gap past the few tokens a
+# generation prompt adds around the turn says the router sent the two requests
+# to different children.
+if [ "$counted" -gt 0 ] 2>/dev/null && [ "$messages_input" -ge 0 ] 2>/dev/null \
+    && [ "$messages_cached" -ge 0 ] 2>/dev/null; then
+    charged=$((messages_input + messages_cached))
+    spread=$((counted - charged))
     [ "$spread" -ge 0 ] || spread=$((-spread))
     if [ "$spread" -le 8 ]; then
-        report count_matches_usage pass "counted=$counted charged=$messages_input"
+        report count_matches_usage pass "counted=$counted charged=$charged cached=$messages_cached"
     else
-        report count_matches_usage fail "counted=$counted charged=$messages_input"
+        report count_matches_usage fail "counted=$counted charged=$charged cached=$messages_cached"
     fi
 else
-    report count_matches_usage fail "counted=$counted charged=$messages_input"
+    report count_matches_usage fail "counted=$counted uncached=$messages_input cached=$messages_cached"
 fi
 
 printf 'checks_failed=%d\n' "$failures"

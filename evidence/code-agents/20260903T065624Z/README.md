@@ -52,8 +52,9 @@ serving `Qwen3.8-2B-Q4_K_M.gguf` in single-model mode with
 laptop alone, so the workstation reaches nothing, and the port that a router
 would bind is occupied for as long as that campaign runs.
 
-Both halves leave these arms unmeasurable rather than merely delayed. The
-required subject is `qwen38-4b-distill` through the router, which a
+Both halves leave the arms unmeasured for this session, and a router launch
+answering `/health` on a reachable listener is what ends that. The required
+subject is `qwen38-4b-distill` through the router, which a
 single-model 2B server cannot answer, and the requests would enter another
 campaign's request sequence, which CLAUDE.md's own graded-suite result shows
 moves answers on this backend. This lane starts and stops the appliance through
@@ -83,6 +84,14 @@ The token counts carry no such caveat. `input_tokens`, `output_tokens`, and
 counters, and `count_tokens_input_tokens` comes from
 `POST /v1/messages/count_tokens` tokenizing the same prompt through
 `tokenize_mixed`. They are exact.
+
+The two prompt figures count different things and the summary carries both.
+`handle_count_tokens` returns the whole tokenization, while `to_json_anthropic`
+sets `input_tokens` to `n_prompt_tokens - n_prompt_tokens_cache` and reports the
+reused prefix separately, so `count_tokens_input_tokens` equals
+`input_tokens + cache_read_input_tokens` and exceeds `input_tokens` alone
+wherever a prefix was reused. A gap between the two columns is that split rather
+than an error.
 
 `tests_passed` is the outcome that answers the question the arm was built for,
 and it is binary per task.
