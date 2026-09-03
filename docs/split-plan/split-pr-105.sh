@@ -71,23 +71,35 @@ fi
 # owns, one per line, each prefixed by its status letter.
 lane_paths() {
     git diff --name-status --no-renames "$1^" "$1" |
-        LANE=$2 MAP=$lane_map python3 -c '
+        LANE=$2 MAP=$lane_map COMMIT=$(git rev-parse --short "$1") python3 -c '
 import fnmatch, os, sys
-rows = []
+plain, override = [], []
 for line in open(os.environ["MAP"]):
     line = line.rstrip("\n")
     if not line or line.startswith("#") or line.startswith("lane\t"):
         continue
     lane, pattern = line.split("\t", 1)
-    rows.append((lane, pattern))
+    if ":" in pattern:
+        commit, pattern = pattern.split(":", 1)
+        override.append((commit, lane, pattern))
+    else:
+        plain.append((lane, pattern))
 want = os.environ["LANE"]
+commit = os.environ["COMMIT"]
 for line in sys.stdin:
     status, path = line.rstrip("\n").split("\t", 1)
-    for lane, pattern in rows:
-        if fnmatch.fnmatch(path, pattern):
-            if lane == want:
-                print(status[0] + "\t" + path)
+    lane = None
+    for which, candidate, pattern in override:
+        if commit.startswith(which) and fnmatch.fnmatch(path, pattern):
+            lane = candidate
             break
+    if lane is None:
+        for candidate, pattern in plain:
+            if fnmatch.fnmatch(path, pattern):
+                lane = candidate
+                break
+    if lane == want:
+        print(status[0] + "\t" + path)
 '
 }
 
@@ -119,7 +131,11 @@ replay_lane() {
                 git rm -q --ignore-unmatch -- "$path"
             else
                 git checkout -q "$commit" -- "$path"
-                git add -- "$path"
+                # The shader laboratory's replay fixtures carry a
+                # radv-debug.log each, which a global *.log rule ignores, so
+                # the add is forced or the lane loses the three files
+                # test-lab-replay.sh reads.
+                git add -f -- "$path"
             fi
         done <"$work/paths"
         if git diff --cached --quiet; then

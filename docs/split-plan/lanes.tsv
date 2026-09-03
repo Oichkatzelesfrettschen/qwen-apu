@@ -12,6 +12,18 @@ lane	pattern
 # run-raven2-vulkan-kernel-census.sh sources or invokes each of them and lane 1
 # runs nothing without them. dpm-telemetry and served-ab-harness carry their
 # deltas on top and stack on lane 1's tip for that reason.
+# An override row reads `COMMIT:PATTERN` and applies to that commit alone,
+# ahead of every plain pattern. It separates a file's introduction from a later
+# change to it. census-timing introduces telemetry-broker.c,
+# validate-clock-sidecar.py, and summarize-census-controls.py because the
+# census runner reads all three, and e0d179a's freshness column is the DPM
+# authority's own claim over them, so that commit's hunks travel to
+# dpm-telemetry while every earlier hunk stays where the files are introduced.
+dpm-telemetry	e0d179a:remote/telemetry-broker.c
+dpm-telemetry	e0d179a:remote/validate-clock-sidecar.py
+dpm-telemetry	e0d179a:remote/summarize-census-controls.py
+dpm-telemetry	e0d179a:remote/test-census-controls.py
+dpm-telemetry	e0d179a:remote/test-telemetry-broker.sh
 shared	CLAUDE.md
 shared	evidence/SHA256SUMS
 shared	evidence/raven2-vulkan-kernel-census/README.md
@@ -20,6 +32,16 @@ shared	remote/build-llama-preset.sh
 shared	remote/radv-low-priority-env.sh
 shared	remote/test-radv-low-priority-env.sh
 shared	remote/check-text-policy.py
+# PR #106 landed the activation-lock repairs in main after this branch left it,
+# so the branch's copy of each file below is the older one and replaying it
+# would revert that merge. 74ddab7's own repairs -- the single-hard-link check
+# in verify_identity and the two-row eligibility grammar -- reach neither PR
+# #106 nor any lane here, and the plan document records them as unassigned.
+dropped	remote/activate-deployment-bundle.sh
+dropped	remote/deployment-bundle-name.sh
+dropped	remote/resolve-active-deployment.sh
+dropped	remote/test-open-verified-lock-descriptor.py
+dropped	remote/test-run-fixed64-served-campaign.sh
 dropped	remote/build-deployment-bundle.sh
 dropped	remote/verify-deployment-bundle.sh
 dropped	remote/open-verified-lock-descriptor.py
