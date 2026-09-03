@@ -174,7 +174,13 @@ def run_task(arguments, task_directory, key):
 
     source_text = extract_block(text)
     if source_text is None:
-        record["outcome"] = "extraction_failed"
+        # A reply cut at the budget and a reply written in prose are different
+        # findings about the model, and the stop reason separates them: the
+        # Anthropic converter reports "max_tokens" wherever the generation ended
+        # on the budget rather than on a stop word or the end of turn.
+        record["outcome"] = (
+            "truncated" if record["stop_reason"] == "max_tokens" else "extraction_failed"
+        )
         record["tests_passed"] = False
         record["reply_head"] = text[:400]
         return record
@@ -197,7 +203,11 @@ def parse_arguments(argv):
     parser.add_argument(
         "--thinking", choices=("on", "off", "default"), default="off"
     )
-    parser.add_argument("--timeout", type=float, default=900.0)
+    # A 2048-token reply at the 4B distill's roughly 3 tok/s decode runs past
+    # eleven minutes, so the client deadline outlasts a reply that fills the
+    # whole budget rather than cutting one short and recording a transport
+    # failure where the machine was merely slow.
+    parser.add_argument("--timeout", type=float, default=1800.0)
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--task", action="append", default=[])
     parser.add_argument("--self-check", action="store_true")

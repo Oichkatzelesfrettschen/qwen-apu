@@ -205,7 +205,18 @@ string. Each fixture ships a hand-written reference answer, and `--self-check`
 grades that answer through the same path, which is how a fixture is proven
 reachable before appliance time is spent on it.
 
-<!-- MEASUREMENT TABLE -->
+| Task | Outcome | Tests | Wall s | Prompt tokens | Completion tokens |
+| --- | --- | --- | ---: | ---: | ---: |
+| task-01-write | not run | not run | - | - | - |
+| task-02-fix | not run | not run | - | - | - |
+| task-03-refactor | not run | not run | - | - | - |
+
+The arms are `not run`: the appliance answered no `GET /health` while this lane
+was built, and the launch belongs to the appliance's own scripts rather than to
+a measurement. Wall time on this machine is a wall-clock observation of one turn
+rather than a rate, since CLAUDE.md measures 4% of spread at rest and 30.6%
+under desktop load on a repeated depth-0 rate; the token counts come from the
+server's own `usage` counters and are exact.
 
 `evidence/code-agents/` retains the records, the summary TSV, and the reading of
 what the numbers support.
