@@ -52,9 +52,16 @@ and `floor(256/64) = 4` against `floor(256/48) = 5`. That step is the largest ef
 page and it is larger than every instruction count on it. It appears at `NUM_ROWS = 4` alone.
 
 `v_mac_f32` falls 152 to 151 in the combined arm while `v_mad_f32` rises 8 to 9. Both are the
-same fused multiply-add with the same operands; `v_mac_f32` is the two-address VOP2 form and
-`v_mad_f32` the three-address VOP3 form, and register allocation decides which. The float
-operation total is 214 in all four arms.
+same fused multiply-add with the same operands, and register allocation rather than
+instruction selection decides which:
+`aco_register_allocation.cpp:3454` rewrites `v_mad_f32` to `v_mac_f32` where it converts a
+VOP3 instruction to its two-address VOP2 form. The float operation total is 214 in all four
+arms, so no operation was added, removed, or reassociated.
+
+Table 1's `body` rows read `depth.py`'s basic block and Table 3 reads the classifier's range,
+which runs to the back edge and so carries the two blocks that close the loop. That is the
+whole difference between the 329 here and Table 3's 330, and between the 19 here and the 22
+there; it is the relation `evidence/q4k-isa-attribution/` states for the control.
 
 ## Table 2: NUM_ROWS 8, where the occupancy step does not appear
 
@@ -105,10 +112,7 @@ rule claims any VALU a memory instruction's address operand slices back to and t
 each `v_alignbyte_b32` takes is such an operand. The loop restructure's -0.75 per row is
 address alone, and it stacks: the combined arm reaches 8.00 where the control is 12.00.
 
-The scalar split names what the restructure moved. Its total is 22 against the 19 Table 1
-reports, because `depth.py`'s block is the loop's own basic block and the classifier's range
-runs to the back edge, which is the same relation `evidence/q4k-isa-attribution/` states for
-the control.
+The scalar split names what the restructure moved.
 
 | SALU class, body at NUM_ROWS 4 | ctrl | scale-word-select | loop-licm | both |
 | --- | ---: | ---: | ---: | ---: |
@@ -145,8 +149,10 @@ two `v_alignbyte_b32` as ACO merging `scales[v_im]` and `scales[v_im+2]` into on
 choice: `block_q4_K_packed16` declares `scales` as `uint16_t`, so each read is a 16-bit access
 at alignment 2, `nir_lower_mem_access_bit_sizes.c:145` sends the vectorized pair through
 `shift_load_data_alignbyte_amd` at line 73, and that helper emits one `nir_op_alignbyte_amd`
-per output component over a dword-aligned load. The control's final NIR carries 16 of them at
-`NUM_ROWS = 4` and every arm here carries 0. ACO selects each as `v_alignbyte_b32`
+per output component over a dword-aligned load. Each arm's own `final.nir`, which `lab.sh`
+writes beside the receipt and the reproduction block below regenerates, carries 16
+`alignbyte_amd` at `NUM_ROWS = 4` on the control and on the loop-licm arm and 0 on all five
+scale formulations. ACO selects each as `v_alignbyte_b32`
 (`aco_select_nir_alu.cpp:3347`) and merges the two halves with a `v_mov_b32_sdwa`, and the
 shift operand each alignbyte takes is an address the body adds up per output row.
 
@@ -250,7 +256,24 @@ with `QWEN_RADV_ICD` naming a `radeon_icd.json` whose `library_path` points at t
 `libamdgpu_noop_drm_shim.so` from a build of the same release. Both come from Mesa 26.2.1,
 since `ac_gpu_info.c` refuses an amdgpu node below DRM 3.54.0.
 
+Two routes reach each `isa_sha256` on this page, the same pair
+`evidence/q4k-isa-attribution/` uses for the control: `glslc` 2026.3 over
+`mul_mat_vec_q4_k.comp` with the appliance's own defines, and the module
+`vulkan-shaders-gen` emits from the prepared tree. Both give `29454587` for the control,
+`4eb61f83` for the scale-word-select, and `138bab50` for the pair. The generator writes all
+nine Q4_K variants for each tree -- `_f32_f32` and `_f16_f32`, each in the plain, `subgroup`,
+and `subgroup_no_shmem` reductions, and the three `MUL_MAT_ID` forms -- so the `pack32` and
+`u8vec4` the scale-word-select introduces compile in every variant a build embeds rather than
+in the one this page measures.
+
 ```sh
+# Every variant a build embeds, from the prepared tree, on both routes.
+g++ -O2 -std=c++17 -o $SCRATCH/vsgen \
+    $SCRATCH/both/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp -lpthread
+$SCRATCH/vsgen --glslc /usr/bin/glslc --output-dir $SCRATCH/spv \
+    --target-hpp $SCRATCH/spv/gen.hpp --target-cpp $SCRATCH/spv/gen.cpp \
+    --source $SCRATCH/both/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_q4_k.comp
+
 # The control tree, then one tree per candidate, in ledger order.
 remote/prepare-llama-census-source.sh $HOME/src/llama.cpp $SCRATCH/ctrl \
     llama-vulkan-q4k-activation-group-sums.patch
@@ -304,6 +327,14 @@ and one hunk region cannot carry two independent preimages. A chained
 `QWEN_LLAMA_CANDIDATE_PATCHES=1` replay applies the whole candidate stage in ledger order and
 accepts.
 
+That stacking costs one selection. `QWEN_LLAMA_CANDIDATE_SELECT` naming
+`llama-vulkan-q4k-superblock-loop-licm.patch` without the scale-word-select is refused --
+`prepare-llama-census-source.sh` over that pair ends on `patch does not apply` at
+`mul_mat_vec_q4_k.comp:144` -- so the `loop-licm` column of Tables 1 and 2 isolates the
+mechanism over a hand-applied hunk and names no ledger selection. An A/B that wants the hoist
+alone regenerates that patch against the E4 result and takes the scale-word-select's place in
+the ledger.
+
 **The A/B.** The judgement is `mul_mat_vec_q4_k_f32_f32`'s exclusive bracket against the E4
 control's, measured through the kernel-delta mode both binaries collect under:
 
@@ -353,6 +384,13 @@ hiding rather than issue slots, and how much is exactly what a static receipt ca
 - **The occupancy claim.** The served pipeline must be created at `constants=64,4,1` and the
   driver must report 5 subgroups per SIMD for it. A build whose host selects another shape
   loses the register result entirely, since VGPR holds at 64 at `NUM_ROWS = 8`.
+- **The appliance compiler.** Every module here was compiled by `glslc` 2026.3 and by the
+  driver's own ACO on this workstation. The appliance builds its shaders with a `glslc` at
+  Vulkan 1.3.275, which already rejected `GL_EXT_integer_dot_product` for the E5 lane where
+  this host accepted it. `pack32(u8vec4(...))` and the `u8vec4` type are the surface at risk;
+  a `build-llama-vulkan.sh` run on the appliance that fails to emit the nine Q4_K variants
+  closes the scale-word-select there whatever these receipts say, and the arithmetic-merge
+  formulation s1 is its replacement, at 786 VALU and 64 VGPRs.
 
 ## What is retained
 
@@ -377,9 +415,10 @@ about that compiler.
 - **Every device arm.** No submission executed; the shimmed node ends at pipeline creation and
   no figure here is a time. The served kernel-delta A/B, the margin witness, and the Q6_K null
   all need the appliance and a teardown window, and the laptop belongs to another lane.
-- **A build of the whole binary.** The candidate trees prepare and their shader compiles; no
-  `build-llama-preset.sh` run and no manifest was produced here, because the arm's build
-  belongs to the appliance chain that measures it.
+- **A build of the whole binary.** The candidate trees prepare and every Q4_K variant
+  `vulkan-shaders-gen` emits compiles; no `build-llama-preset.sh` run and no manifest was
+  produced here, because the arm's build belongs to the appliance chain that measures it, and
+  the appliance's own `glslc` is a version this host is not.
 - **Q5_K.** `mul_mat_vec_q5_k.comp` carries the same twelve-byte scale block and the same
   two-byte-aligned reads, and E4 patched it beside Q4_K. Neither patch here names it. The
   tensor-type audit reads Q5_K as its own trunk at 5.9 GB/s against the Q4_K trunk's 8.1, so
