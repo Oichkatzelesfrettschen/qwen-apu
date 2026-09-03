@@ -72,6 +72,25 @@ case $top_count in
         exit 2
         ;;
 esac
+case $run_count in
+    '' | *[!0-9]* | 0)
+        printf 'QWEN_WITNESS_RUNS is a positive integer: %s\n' "$run_count" >&2
+        exit 2
+        ;;
+esac
+# The analyzer converts the bound with float(), which reads `inf` and `nan` as
+# numbers and breaks the verdict in opposite directions: every finite delta
+# passes at inf and every comparison fails at nan. A sign is refused for the
+# same reason, since a negative bound admits nothing. The pattern takes plain
+# decimal spellings alone, so the exponent form of the 0.001 default is written
+# out.
+case $logprob_bound in
+    '' | . | *[!0-9.]* | *.*.*)
+        printf 'QWEN_WITNESS_LOGPROB_BOUND is a nonnegative decimal number: %s\n' \
+            "$logprob_bound" >&2
+        exit 2
+        ;;
+esac
 case $contract in
     logprob-bound) ;;
     margin)
@@ -297,6 +316,18 @@ start_server() {
     arm_server=$1
     arm_log=$2
     arm_device=$3
+    arm_expected_sha256=$4
+    # A run spans four model loads and the two paths stay writable throughout,
+    # so the digest inputs.tsv records is re-read against the file about to be
+    # executed rather than assumed to still describe it. A build landing on
+    # either path between arms would otherwise be reported under the identity
+    # the first arm measured.
+    arm_observed_sha256=$(sha256sum "$arm_server" | cut -d ' ' -f 1)
+    if [ "$arm_observed_sha256" != "$arm_expected_sha256" ]; then
+        printf 'server changed under %s: recorded=%s observed=%s\n' \
+            "$arm_server" "$arm_expected_sha256" "$arm_observed_sha256" >&2
+        return 1
+    fi
     if [ "$arm_device" = cpu ]; then
         env -u GGML_VK_DISABLE_GRAPH_OPTIMIZE "$arm_server" \
             --model "$model_path" --host 127.0.0.1 --port "$server_port" \
@@ -360,11 +391,13 @@ start_server() {
     return 1
 }
 
+control_server_sha256=$(sha256sum "$control_server" | cut -d ' ' -f 1)
+candidate_server_sha256=$(sha256sum "$candidate_server" | cut -d ' ' -f 1)
 {
     printf 'control_server\t%s\ncontrol_server_sha256\t%s\n' "$control_server" \
-        "$(sha256sum "$control_server" | cut -d ' ' -f 1)"
+        "$control_server_sha256"
     printf 'candidate_server\t%s\ncandidate_server_sha256\t%s\n' "$candidate_server" \
-        "$(sha256sum "$candidate_server" | cut -d ' ' -f 1)"
+        "$candidate_server_sha256"
     printf 'model_id\t%s\nmodel_path\t%s\nmodel_sha256\t%s\n' "$model_id" "$model_path" \
         "$(sha256sum "$model_path" | cut -d ' ' -f 1)"
     printf 'context\t%s\nbatch\t%s\nubatch\t%s\ncache_k\t%s\ncache_v\t%s\nflash_attention\t%s\n' \
@@ -383,13 +416,21 @@ slot=0
 for arm in C K K C; do
     slot=$((slot + 1))
     case $arm in
-        C) arm_server=$control_server; arm_device=Vulkan0 ;;
-        *) arm_server=$candidate_server; arm_device=$candidate_device ;;
+        C)
+            arm_server=$control_server
+            arm_device=Vulkan0
+            arm_sha256=$control_server_sha256
+            ;;
+        *)
+            arm_server=$candidate_server
+            arm_device=$candidate_device
+            arm_sha256=$candidate_server_sha256
+            ;;
     esac
     arm_directory=$output_directory/arms/$slot-$arm
     mkdir -p "$arm_directory"
     printf 'witness_arm=start slot=%s arm=%s server=%s device=%s\n' "$slot" "$arm" "$arm_server" "$arm_device"
-    start_server "$arm_server" "$arm_directory/server.log" "$arm_device"
+    start_server "$arm_server" "$arm_directory/server.log" "$arm_device" "$arm_sha256"
     run_index=1
     while [ "$run_index" -le "$run_count" ]; do
         while IFS="$(printf '\t')" read -r prompt_id prompt_text; do
