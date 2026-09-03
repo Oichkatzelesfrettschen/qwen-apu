@@ -195,3 +195,28 @@ The harness therefore resolves its server through
 an unadorned invocation measures the bundle the appliance serves; the first
 router-child run on the appliance carried the retired `build-qwen-vulkan`
 default in that column and was discarded on this line rather than retained.
+
+## The retained router-child run
+
+`remote/probe-depth-projector.sh --runtime-mode router-child lfm25-vl-16b`
+ran again on 2026-09-03 against the promoted server, SHA-256
+`5dd86b90154f6143a5303efd2590b9268a0a5e3e908c4d6791f1fde03a4782c2`, the digest
+`projector-identity.tsv` names for this arm. The 8192 arm filled `prompt_n`
+8042 in 193.069 s of prefill and decoded at 4.065 tok/s, with zero ring
+resets, zero GPU faults, `control_status=ok`, and `control_answer=JUN`, all
+of which `projector-summary.tsv` states directly. `remote/check-validated-tuples.sh`
+now finds a `validated` row at `runtime_mode=router-child`,
+`projector_state=loaded`, and the model's own tuple, so
+`build-web-presets.sh` generates the `lfm25-vl-16b` review-only section for
+`image-sdxs-512-a` rather than leaving it ungenerated.
+
+The retained artifacts live under
+`evidence/depth-validation-32k-projector/lfm25-vl-16b/router-child/`, a
+subdirectory of the standalone arms' own directory because both share the
+`d8192-b128-ub32-proj` arm name. The directory carries
+`projector-summary.tsv`, `projector-identity.tsv`, `wedge-metadata.tsv`,
+`validated-tuples-rows.tsv`, the arm's `.server.log`, `.requests.txt`,
+`.clocks.tsv`, `.dmesg.txt`/`.dmesg-method.txt`, `.identity.sha256`, and the
+generated `.router-preset.ini`/`.router-preset.log` the arm served under. The
+row copied into `remote/validated-tuples.tsv` carries this directory as its
+`evidence` field.
