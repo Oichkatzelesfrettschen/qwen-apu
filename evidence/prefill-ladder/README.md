@@ -203,6 +203,15 @@ down. `sudo -v` on the laptop is what admits the DPM writes, since
 `/etc/sudoers.d/90-qwen-agent` sets `timestamp_type=global` with a 60 minute
 timeout.
 
+That one `sudo -v` admits the acquire and does not guarantee the restore.
+`census_engine_clock_write` exits 2 when its write is unauthorized;
+`census_engine_clock_restore` discards its write's status and returns 0, then reads
+the node back and prints `dpm_restore=restored`, `dpm_restore=mismatch`, or
+`dpm_restore=unreadable`. A restore attempted after the timestamp expires therefore
+leaves the device at `manual` with the highest levels selected, says so on that one
+line, and exits zero. The closing command reads it back, which is why the run ends by
+looking at the device rather than at the exit status.
+
 ```sh
 rsync -a remote/ eirikr@qwen-laptop:~/qwen-laptop-setup/remote/
 
@@ -215,7 +224,16 @@ QWEN_CENSUS_MCLK_LEVEL=2 \
     ~/builds/CANDIDATE/bin/llama-server \
     qwen38-2b-distill \
     ~/evidence/prefill-ladder/$(date -u +%Y%m%dT%H%MZ)
+
+# the clock the next workload inherits, read from the device rather than assumed
+grep dpm_restore= ~/evidence/prefill-ladder/*/run.log | tail -1
+cat /sys/class/drm/card1/device/power_dpm_force_performance_level
+# `manual` here means the restore did not take: sudo -v again and write `auto` back
 ```
+
+`../prefill-ladder/device-window-20260903-not-run.md` records the window this
+requirement was found in, and the campaign's own wall time is unmeasured, so the
+read-back closes the gap whether or not a given run crosses the hour.
 
 Both server paths are explicit arguments and the ladder reads no bundle: it
 starts each arm directly rather than through `resolve-active-deployment.sh`, so
