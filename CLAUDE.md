@@ -373,7 +373,15 @@ budgets -- so `build-deployment-bundle.sh` records its path and SHA-256 in
 `web-mcp-manifest.tsv` rather than copying it, `verify-deployment-bundle.sh`
 compares that record against the preset alone, since a resolution reading the
 named files would refuse every bundle on a machine that never armed the lane,
-and `qwen-launch.sh` compares the digests where it arms it. The image lane
+and `qwen-launch.sh` compares the digests where it arms it. The same marker
+decides whether the record exists: a bundle whose preset names no web section
+carries none and verifies with zero rows, which is every bundle assembled
+before this lane, and one whose preset carries the marker requires exactly one
+row matching the sections it names. Requiring the record of every bundle
+refused `natural-boundary-13d05a0-r2` outright and left the appliance serving
+through the recovery form alone, where an explicit `QWEN_LLAMA_SERVER` beside
+`QWEN_ROUTER_PRESETS` outranks the deployment and reads no bundle at all; the
+resolution refusal now prints that form. The image lane
 stays on `qwen-image-launch.sh`, which owns the two-checkpoint resident
 arithmetic, the artifact listener, and the review-only section that a
 sixteen-section preset at `QWEN_ROUTER_MAX=1` supplies none of.

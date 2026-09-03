@@ -178,14 +178,24 @@ fi
 # configuration is session state rather than release state: its contents name
 # QWEN_WEB_STATE_DIR, the broker signing key, and the per-profile budgets, and
 # rewriting those paths to bundle-relative ones would change the preset bytes
-# the digest binds. The bundle therefore records the path and the digest of
-# each configuration and leaves the file where the generator wrote it.
-# verify-deployment-bundle.sh compares the record against the preset alone, so
-# resolution stays a read of the bundle and a machine that never armed the web
-# lane keeps resolving every bundle; qwen-launch.sh reads the named files and
-# compares their digests where it detects the web sections.
+# the digest binds. The bundle records the path and the digest of each
+# configuration and leaves the file where the generator wrote it.
+#
+# The preset own `# qwen_web_sections=` marker decides whether a record exists
+# at all, so a bundle assembled from a registry preset carries none and a
+# bundle assembled from a merged one carries exactly the sections the marker
+# names. verify-deployment-bundle.sh applies the same rule, which is what lets
+# a deployment that predates this lane keep resolving: requiring the record of
+# every bundle refused the whole roster on natural-boundary-13d05a0-r2, whose
+# preset carries no marker, and left the appliance serving through recovery
+# mode alone.
 web_mcp_manifest_sha256=-
 if [ -n "$router_presets_path" ]; then
+    preset_web_sections=$(sed -n 's/^# qwen_web_sections=//p' \
+        "$staging_directory/router-presets.ini")
+    case $preset_web_sections in
+        '-') preset_web_sections='' ;;
+    esac
     web_mcp_rows=$(awk '
         /^[[:space:]]*\[/ {
             section = $0
@@ -200,7 +210,17 @@ if [ -n "$router_presets_path" ]; then
             printf "%s\t%s\n", section, value
         }
     ' "$staging_directory/router-presets.ini")
-    if [ -n "$web_mcp_rows" ]; then
+    if [ -z "$preset_web_sections" ] && [ -n "$web_mcp_rows" ]; then
+        printf 'bundle router preset names MCP configurations and its head marker names no web section: %s\n' \
+            "$router_presets_path" >&2
+        exit 1
+    fi
+    if [ -n "$preset_web_sections" ] && [ -z "$web_mcp_rows" ]; then
+        printf 'bundle router preset names web section %s and no section carries LLAMA_ARG_MCP_SERVERS_CONFIG: %s\n' \
+            "$preset_web_sections" "$router_presets_path" >&2
+        exit 1
+    fi
+    if [ -n "$preset_web_sections" ]; then
         {
             printf '# profile_id\tconfiguration_path\tsha256\n'
             printf '%s\n' "$web_mcp_rows" |

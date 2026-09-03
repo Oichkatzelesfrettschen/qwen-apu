@@ -82,6 +82,15 @@ case $deployment_resolution_status in
     *)
         printf '%s\n' "$deployment_resolution" >&2
         printf 'the activated deployment failed resolution; the launch stops\n' >&2
+        # An explicit QWEN_LLAMA_SERVER outranks the deployment, so naming the
+        # server and the preset reads no bundle at all. That is the recovery
+        # form for a bundle whose verification refuses while the artifacts
+        # inside it are the ones the operator means to serve.
+        printf 'recovery form, which reads no bundle:\n' >&2
+        printf '  QWEN_LLAMA_SERVER=%s/llama-server \\\n' \
+            "${deployment_root%/}/<bundle>" >&2
+        printf '  QWEN_ROUTER_PRESETS=<merged.ini> \\\n' >&2
+        printf '      %s %s\n' "$0" "$profile" >&2
         exit 1
         ;;
 esac
