@@ -579,3 +579,7 @@ The 89 threads of `replies.tsv` mapped to lanes by the path each names. The
 
 Every `OPEN-DEFER` thread travels with the file it names, so the successor
 work each one defers lands in that thread's lane.
+
+## Landings
+
+`lane/census-timing` merged into main as PR #116 at commit 717dbef. `lane/deployment-followups` merged into main as PR #123 at commit 36d54a9. The remaining six lanes remain unmerged: build-cache-identity, dpm-telemetry, shader-e4, correctness-witnesses, served-ab-harness, and retained-evidence.
