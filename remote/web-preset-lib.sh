@@ -436,6 +436,16 @@ require_image_mcp_inputs() {
             "$image_mcp_server" >&2
         exit 1
     fi
+    # A nonempty path is not a readable file, and image-service.py runs every
+    # job under this one: an unreadable QWEN_IMAGE_PROFILES_JSON would still
+    # arm the preset here and only refuse in require_image_parameters() at the
+    # next qwen-launch.sh invocation, after this generator has already
+    # replaced the last known-good preset.
+    if [ ! -r "$image_profiles_json" ]; then
+        printf 'QWEN_IMAGE_PROFILES_JSON names no readable file: %s\n' \
+            "$image_profiles_json" >&2
+        exit 1
+    fi
 }
 
 # The reviewer is a checkpoint at its own validated tuple rather than a served

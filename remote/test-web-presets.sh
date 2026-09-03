@@ -1990,6 +1990,54 @@ else
     fi
 fi
 
+# A nonempty path is not a readable file: require_image_mcp_inputs only
+# checked for nonempty, so an unreadable QWEN_IMAGE_PROFILES_JSON armed the
+# preset here and refused only at the next qwen-launch.sh invocation, after
+# this generator had already replaced the last known-good preset.
+presets_image_unreadable=$work/presets-image-unreadable.ini
+if build "$web_profiles_ui" "$presets_image_unreadable" \
+    env QWEN_IMAGE_PROFILES="$image_profiles_gated" \
+    QWEN_IMAGE_MCP_SERVER="$image_mcp_server_program" \
+    QWEN_IMAGE_TOKEN_KEY_FILE="$image_token_key_file" \
+    QWEN_IMAGE_STATE_DIR="$image_state_directory" \
+    QWEN_IMAGE_SERVICE_SOCKET="$image_service_socket" \
+    QWEN_IMAGE_PROFILES_JSON="$work/no-such-parameters.json" \
+    >"$work/image-unreadable.log" 2>"$work/image-unreadable.err"; then
+    report image_gated_row_requires_a_readable_parameter_file accepted
+else
+    if grep -q 'QWEN_IMAGE_PROFILES_JSON names no readable file' \
+        "$work/image-unreadable.err"; then
+        report image_gated_row_requires_a_readable_parameter_file ok
+    else
+        report image_gated_row_requires_a_readable_parameter_file wrong_refusal
+    fi
+fi
+
+# emit_web_mcp_configuration converts QWEN_IMAGE_MCP_TIMEOUT_MS to
+# QWEN_IMAGE_MCP_TIMEOUT_S by integer division at /1000: a value that is not
+# an exact multiple of 1000 would generate a configuration
+# read-image-mcp-server.py's own millisecond/second agreement check then
+# refuses.
+presets_image_fractional_timeout=$work/presets-image-fractional-timeout.ini
+if build "$web_profiles_ui" "$presets_image_fractional_timeout" \
+    env QWEN_IMAGE_PROFILES="$image_profiles_gated" \
+    QWEN_IMAGE_MCP_SERVER="$image_mcp_server_program" \
+    QWEN_IMAGE_TOKEN_KEY_FILE="$image_token_key_file" \
+    QWEN_IMAGE_STATE_DIR="$image_state_directory" \
+    QWEN_IMAGE_SERVICE_SOCKET="$image_service_socket" \
+    QWEN_IMAGE_PROFILES_JSON="$image_profiles_json" \
+    QWEN_IMAGE_MCP_TIMEOUT_MS=360500 \
+    >"$work/image-fractional-timeout.log" 2>"$work/image-fractional-timeout.err"; then
+    report image_mcp_timeout_requires_a_whole_second accepted
+else
+    if grep -q 'must be an exact multiple of 1000' \
+        "$work/image-fractional-timeout.err"; then
+        report image_mcp_timeout_requires_a_whole_second ok
+    else
+        report image_mcp_timeout_requires_a_whole_second wrong_refusal
+    fi
+fi
+
 # A section carries one mcpServers object, so one image profile emits.
 presets_image_two=$work/presets-image-two.ini
 if build "$web_profiles_ui" "$presets_image_two" \
