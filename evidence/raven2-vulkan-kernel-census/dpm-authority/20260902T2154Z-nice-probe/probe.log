@@ -1,0 +1,16 @@
+14:54:50PDT teardown_exit=0
+14:54:52PDT readback level=manual sclk=2: 1100Mhz * mclk=2: 933Mhz *
+14:54:52PDT tenants:  0 48.7 qemu-system-x86 ksmd_nice=5 load=3.02 3.10 2.87
+14:55:28PDT arm=N19-1 nice=19 status=0 tok_s=9.64 ± 0.11 busy_samples=316 freq_min=1100 freq_mean=1100 max_gap_ms=121 stalls_gt250ms=0 load1_max=3.02
+14:56:09PDT arm=N0-1 nice=0 status=0 tok_s=9.74 ± 0.05 busy_samples=312 freq_min=1100 freq_mean=1100 max_gap_ms=119 stalls_gt250ms=0 load1_max=2.31
+14:56:51PDT arm=N0-2 nice=0 status=0 tok_s=9.52 ± 0.17 busy_samples=318 freq_min=1100 freq_mean=1100 max_gap_ms=188 stalls_gt250ms=0 load1_max=2.43
+14:57:35PDT arm=N19-2 nice=19 status=0 tok_s=9.19 ± 0.17 busy_samples=325 freq_min=1100 freq_mean=1100 max_gap_ms=136 stalls_gt250ms=0 load1_max=3.50
+14:58:19PDT arm=N19-3 nice=19 status=0 tok_s=9.08 ± 0.30 busy_samples=308 freq_min=1100 freq_mean=1100 max_gap_ms=153 stalls_gt250ms=0 load1_max=3.69
+14:59:02PDT arm=N0-3 nice=0 status=0 tok_s=9.32 ± 0.20 busy_samples=276 freq_min=1100 freq_mean=1100 max_gap_ms=255 stalls_gt250ms=1 load1_max=3.90
+14:59:45PDT arm=N0-4 nice=0 status=0 tok_s=9.32 ± 0.18 busy_samples=265 freq_min=1100 freq_mean=1100 max_gap_ms=208 stalls_gt250ms=0 load1_max=4.33
+15:00:29PDT arm=N19-3b nice=19 status=0 tok_s=9.11 ± 0.36 busy_samples=307 freq_min=1100 freq_mean=1100 max_gap_ms=159 stalls_gt250ms=0 load1_max=4.08
+15:01:12PDT arm=N0-5 nice=0 status=0 tok_s=9.26 ± 0.37 busy_samples=297 freq_min=1100 freq_mean=1100 max_gap_ms=307 stalls_gt250ms=1 load1_max=3.53
+15:01:54PDT arm=N0-6 nice=0 status=0 tok_s=9.61 ± 0.19 busy_samples=306 freq_min=1100 freq_mean=1100 max_gap_ms=163 stalls_gt250ms=0 load1_max=3.15
+15:02:36PDT arm=N19-4 nice=19 status=0 tok_s=9.61 ± 0.21 busy_samples=311 freq_min=1100 freq_mean=1100 max_gap_ms=150 stalls_gt250ms=0 load1_max=2.75
+15:02:42PDT out=$HOME/raven2-nice-probe-20260902T2154Z
+15:02:42PDT dpm_restore=auto
