@@ -1428,6 +1428,16 @@ bf711f1df8ef93329e8ca468518210d784f28f7860dd94d45be23380088046c1  evidence/qwen3
 ee414df7baa56bedcd65fcff8959a81d8a524af9a175e0c6cae54d555ff9955f  evidence/qwen38-distill-tensor-census.md
 d886445eae19a1c1cd4241cfea59ac6e88ff0a7d0e23f1ba9ab3275c646644de  evidence/raven2-build-presets.md
 ce1385187a42d5ee517b4dbc0f89a0db1e01c90328980f76dd53620b57d68dd7  evidence/raven2-vulkan-kernel-census/README.md
+cc7944e76233bceabcdf8bedb339fc192025a503b64807f962a9fa9c70b3b0c9  evidence/raven2-vulkan-kernel-census/replay-corpus/02-P/clock-sidecar-verdict.txt
+616d57344b2043363a0e94419ca84225747760fd6e48a110c174a935f6437db5  evidence/raven2-vulkan-kernel-census/replay-corpus/02-P/clock-sidecar.tsv
+f6918ce2fac2e25bced716baaa00936cc20fa7ddf2690d23c8e11ff64cabb02a  evidence/raven2-vulkan-kernel-census/replay-corpus/02-P/request-window.tsv
+cf7f28cc5815fda26fab6e24d719e262a92994554f0b86044960ea97f241d546  evidence/raven2-vulkan-kernel-census/replay-corpus/10-I1/clock-sidecar-verdict.txt
+6a20384655119e9473ac09b959a1ffc95a6a3a46a7bf2565c814c87906d1a7e7  evidence/raven2-vulkan-kernel-census/replay-corpus/10-I1/clock-sidecar.tsv
+36081cad84d974aecadb3400b9b7039cf704583d5b55eff74a8456263892136f  evidence/raven2-vulkan-kernel-census/replay-corpus/10-I1/pipeline-census.tsv.xz
+d004f26a92f1af64668428337a1a2eca3f2b992efad77af9e085d18a06cd8ff4  evidence/raven2-vulkan-kernel-census/replay-corpus/10-I1/request-window.tsv
+4f9c0a82e3f20fba15d4cbcae26f9108bca0add2b5e324f93b4b0ef72d177cc0  evidence/raven2-vulkan-kernel-census/replay-corpus/13-S/request-window.tsv
+75e5d3b6cde1d31faef02a16287f0bbcf611505602dab351c94c041c733d7552  evidence/raven2-vulkan-kernel-census/replay-corpus/13-S/server-log-request.slice
+76a3424af7d841c7733220cb5307430562cb00206eff7c2e6b116de851ea4e6d  evidence/raven2-vulkan-kernel-census/replay-corpus/README.md
 cf001a6a7c693020ab1513ca3390271bbc68aafb9dbd099d6a16db0fc3bf4343  evidence/representation-gate-16-bit.md
 209e63b71e40956071abf677d4eebb5fdcf1178ea959ebe1268567a7e899364c  evidence/research-claim-methodology.md
 232ef6daa437039ba781a8d9ad06c83d5af89ad871d3d1e264d68ab10c9b0e34  evidence/rocm-feasibility-audit.md
