@@ -217,21 +217,25 @@ def top_list(entry, token_id):
 if not isinstance(tokens, list) or not tokens:
     sys.stderr.write("response carries no token array\n")
     raise SystemExit(1)
-# The server at f280b269 returns fewer probability entries than tokens: a
-# 128-token completion on the appliance carried 127 entries, the first 99
-# aligned at offset zero and the remainder shifted by one, so one token in
-# the middle of the array carries no entry. The entries are therefore
-# merged onto the token array by id in order, a token without an entry
-# prints `-` and is compared by id alone, and the merge admits at most two
-# such tokens; every entry must be consumed, since an entry the token array
-# cannot place names a reply this reader does not understand.
+# The server returns fewer probability entries than tokens whenever a token
+# ends inside a multi-byte UTF-8 sequence: `process_token` in
+# tools/server/server-context.cpp at f280b269 calls `slot.add_token` only
+# when `validate_utf8` finds the generated text complete, so the withheld
+# token gets no entry and the next complete token's entry carries both
+# pieces in its `bytes`. A reply writing `÷` three times therefore carries
+# three fewer entries, and the count follows content. The entries are
+# merged onto the token array by id in order; a token without an entry
+# prints `-`, is compared by id alone, and is admitted only when the entry
+# that follows it holds a byte at or above 0x80, which is the sequence the
+# server withheld it for. Every entry must be consumed, since an entry the
+# token array cannot place names a reply this reader does not understand.
 if not isinstance(probabilities, list) or not probabilities:
     sys.stderr.write("response carries no probability entries\n")
     raise SystemExit(1)
 entry_index = 0
-unmatched = 0
+withheld = []
 lines = []
-for token_id in tokens:
+for position, token_id in enumerate(tokens):
     if not isinstance(token_id, int):
         sys.stderr.write("token array holds a non-integer entry\n")
         raise SystemExit(1)
@@ -240,12 +244,20 @@ for token_id in tokens:
         lines.append(f"{token_id}\t{float(entry['logprob']):.9g}\t{top_list(entry, token_id)}")
         entry_index += 1
     else:
+        following = probabilities[entry_index] if entry_index < len(probabilities) else {}
+        following_bytes = following.get("bytes")
+        if not isinstance(following_bytes, list) or not any(isinstance(b, int) and b >= 0x80 for b in following_bytes):
+            sys.stderr.write(f"token {token_id} at position {position} has no probability entry and the"
+                             f" entry that follows carries no multi-byte sequence to explain it\n")
+            raise SystemExit(1)
         lines.append(f"{token_id}\t-\t-")
-        unmatched += 1
-if entry_index != len(probabilities) or unmatched > 2:
+        withheld.append(position)
+if entry_index != len(probabilities):
     sys.stderr.write(f"probability entries do not align with the token array:"
-                     f" consumed={entry_index} of {len(probabilities)} unmatched_tokens={unmatched}\n")
+                     f" consumed={entry_index} of {len(probabilities)} withheld_tokens={len(withheld)}\n")
     raise SystemExit(1)
+if withheld:
+    sys.stderr.write(f"withheld_utf8_positions={','.join(str(p) for p in withheld)}\n")
 print("\n".join(lines))
 PYTHON
 
