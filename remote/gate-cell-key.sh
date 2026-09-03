@@ -32,14 +32,36 @@ gate_cell_key_stream=''
 gate_cell_run_count=0
 gate_cell_reused_count=0
 
-# The four tools whose output decides a cell's verdict independently of the
-# repository bytes. A new shellcheck, ruff, python3, or cc grades the same file
-# differently, so its version enters every key and every record.
+# The browser a cell drives, resolved the way repository-quality-gates.sh
+# resolves it, so the key names the executable the run would use rather than the
+# literal command string.
+gate_cell_chromium=${QWEN_CHROMIUM:-chromium}
+
+# One line per tool: its name, the path the run resolves it to, and the first
+# line of its version report. A tool the run cannot resolve reads absent, which
+# keeps the key moving when it appears.
+gate_cell_tool_report() {
+    gate_cell_tool_name=${2:-$1}
+    gate_cell_tool_path=$(command -v "$1" 2>/dev/null || true)
+    if [ -z "$gate_cell_tool_path" ]; then
+        printf '%s\tabsent\tabsent\n' "$gate_cell_tool_name"
+        return 0
+    fi
+    printf '%s\t%s\t%s\n' "$gate_cell_tool_name" "$gate_cell_tool_path" \
+        "$("$gate_cell_tool_path" --version 2>&1 | head -n 1 || true)"
+}
+
+# Every executable whose output decides a cell's verdict independently of the
+# repository bytes, which is the command set repository-quality-gates.sh
+# requires before it runs a cell. A new shellcheck, ruff, mypy, node, browser,
+# or compiler grades the same file differently, so each identity enters every
+# key and every record.
 gate_cell_tool_versions() {
-    shellcheck --version 2>/dev/null || printf 'shellcheck=absent\n'
-    ruff --version 2>/dev/null || printf 'ruff=absent\n'
-    python3 --version 2>&1 || printf 'python3=absent\n'
-    cc --version 2>/dev/null | head -n 1 || printf 'cc=absent\n'
+    for gate_cell_tool in shellcheck ruff python3 cc c++ bash node mypy git \
+        curl flock ps sha256sum; do
+        gate_cell_tool_report "$gate_cell_tool"
+    done
+    gate_cell_tool_report "$gate_cell_chromium" chromium
 }
 
 gate_cell_init() {
@@ -60,14 +82,23 @@ gate_cell_cleanup() {
     fi
 }
 
-# One manifest line per path, with `absent` standing for a named path the tree
-# lacks so the key moves when the file appears.
+# One manifest line per path carrying its content digest and its mode class,
+# with `absent` standing for a named path the tree lacks so the key moves when
+# the file appears. The gate runs several cells by invoking a script directly,
+# where a cleared execute bit decides whether the command reaches an interpreter
+# at all while the content digest holds still.
 gate_cell_hash_line() {
     if [ -f "$gate_cell_root/$1" ]; then
-        printf '%s %s\n' \
-            "$(sha256sum "$gate_cell_root/$1" | cut -d' ' -f1)" "$1"
+        if [ -x "$gate_cell_root/$1" ]; then
+            gate_cell_mode_class='exec'
+        else
+            gate_cell_mode_class=plain
+        fi
+        printf '%s %s %s\n' \
+            "$(sha256sum "$gate_cell_root/$1" | cut -d' ' -f1)" \
+            "$gate_cell_mode_class" "$1"
     else
-        printf 'absent %s\n' "$1"
+        printf 'absent absent %s\n' "$1"
     fi
 }
 
@@ -103,12 +134,20 @@ gate_cell_reads_are_unbounded() {
 # `os.path.join(os.path.dirname(os.path.abspath(__file__)), "run-quality-suite.py")`
 # is how every Python test in this tree reaches the module it exercises, and the
 # joined name carries no repository prefix for the literal reader to match. A
-# name that resolves to a sibling file enters the read set; a name that resolves
-# nowhere is a fixture the test writes under its own temporary directory.
+# module reached by `import NAME` spells no filename at all, which is how
+# authorize-broker.py reaches image_grant.py, so a bare import name resolves to
+# a sibling NAME.py as well. The reader takes the bare form alone, which is the
+# form every module in this tree is imported under. A name that resolves to a
+# sibling file enters the read set; a name that resolves nowhere is a fixture
+# the test writes under its own temporary directory.
 gate_cell_sibling_paths() {
     sibling_directory=$(dirname "$1")
-    grep -oE '[A-Za-z0-9][A-Za-z0-9_.-]*[.](py|sh|mjs|tsv|json|ini|md|txt|patch|html|png)' \
-        "$gate_cell_root/$1" | LC_ALL=C sort -u |
+    {
+        grep -oE '[A-Za-z0-9][A-Za-z0-9_.-]*[.](py|sh|mjs|tsv|json|ini|md|txt|patch|html|png)' \
+            "$gate_cell_root/$1" || true
+        grep -oE '^[[:space:]]*(import|from)[[:space:]]+[A-Za-z_][A-Za-z0-9_]*' \
+            "$gate_cell_root/$1" | awk '{ printf "%s.py\n", $NF }' || true
+    } | LC_ALL=C sort -u |
         while read -r sibling_name; do
             if [ -f "$gate_cell_root/$sibling_directory/$sibling_name" ]; then
                 printf '%s/%s\n' "$sibling_directory" "$sibling_name"

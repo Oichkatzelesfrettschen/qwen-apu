@@ -191,7 +191,11 @@ report pack_member_count "$(wc -l <"$(qwen_shader_pack_directory "$pack_root" \
 find "$pack_build/ggml" -type f -delete
 rm -f "$pack_build/.ninja_deps" "$pack_build/.ninja_log"
 touch "$pack_source/ggml/src/ggml-vulkan/vulkan-shaders/add.comp"
-if qwen_shader_pack_restore "$pack_root" "$key_a" "$pack_build" "$pack_source"; then
+pack_shader_source=$pack_source/ggml/src/ggml-vulkan/vulkan-shaders/add.comp
+pack_source_mtime_before=$(stat -c %y "$pack_shader_source")
+pack_mtime_save=$work_directory/shader-source-mtimes
+if qwen_shader_pack_restore "$pack_root" "$key_a" "$pack_build" "$pack_source" \
+    "$pack_mtime_save"; then
     report pack_restore accepted
 else
     report pack_restore refused
@@ -203,7 +207,19 @@ expect_equal pack_restored_ninja_deps 'ninja deps' "$(cat "$pack_build/.ninja_de
 # The stamp is what keeps a restored output newer than a source the checkout
 # touched, which is the comparison ninja makes before it declares an edge dirty.
 expect_equal pack_source_stamped 2000 \
-    "$(date -r "$pack_source/ggml/src/ggml-vulkan/vulkan-shaders/add.comp" +%Y)"
+    "$(date -r "$pack_shader_source" +%Y)"
+
+# The stamp belongs to the build that restored the pack. Every other build
+# directory over the same checkout compares its own generated outputs against
+# these sources, so the times the checkout held are put back once that build
+# exits, to the nanosecond stat reports.
+qwen_shader_source_mtimes_apply "$pack_mtime_save"
+expect_equal pack_source_mtime_returned "$pack_source_mtime_before" \
+    "$(stat -c %y "$pack_shader_source")"
+report pack_mtime_save_consumed "$([ -e "$pack_mtime_save" ] && echo present || echo removed)"
+if [ -e "$pack_mtime_save" ]; then
+    failures=$((failures + 1))
+fi
 
 if qwen_shader_pack_restore "$pack_root" "$key_a" "$work_directory/other-build" \
     "$pack_source" 2>/dev/null; then
@@ -234,6 +250,50 @@ if qwen_shader_pack_restore "$pack_root" "$key_a" "$pack_build" "$pack_source"; 
 else
     report pack_restore_tampered_member refused
 fi
+
+# The binary key states the compiled source through the commit and the two
+# series digests, so a checkout carrying a modification those digests never
+# accounted for holds bytes the key attributes to the clean commit. The
+# admission is driven over a real checkout, since git status is the authority
+# it reads.
+keyed_source=$work_directory/keyed-source
+mkdir -p "$keyed_source/tools/server"
+git -C "$keyed_source" init --quiet
+git -C "$keyed_source" config user.email fixture@example.invalid
+git -C "$keyed_source" config user.name fixture
+printf 'int main() { return 0; }\n' >"$keyed_source/tools/server/server-context.cpp"
+printf 'int helper() { return 0; }\n' >"$keyed_source/tools/server/utils.hpp"
+git -C "$keyed_source" add -A
+git -C "$keyed_source" commit --quiet -m 'fixture commit'
+series_paths='tools/server/server-context.cpp'
+
+expect_keyed() {
+    if qwen_binary_tree_is_keyed "$keyed_source" "$2" "$3"; then
+        report "$1" keyed
+    else
+        report "$1" unkeyed
+    fi
+    if [ "$4" = keyed ] && ! qwen_binary_tree_is_keyed "$keyed_source" "$2" "$3"; then
+        printf 'expected a keyed tree for %s\n' "$1" >&2
+        failures=$((failures + 1))
+    fi
+    if [ "$4" = unkeyed ] && qwen_binary_tree_is_keyed "$keyed_source" "$2" "$3"; then
+        printf 'expected an unkeyed tree for %s\n' "$1" >&2
+        failures=$((failures + 1))
+    fi
+}
+
+expect_keyed binary_tree_clean_checkout verified "$series_paths" keyed
+printf 'int main() { return 1; }\n' >"$keyed_source/tools/server/server-context.cpp"
+expect_keyed binary_tree_series_path_modified verified "$series_paths" keyed
+expect_keyed binary_tree_series_path_unverified divergent "$series_paths" unkeyed
+printf 'int helper() { return 1; }\n' >"$keyed_source/tools/server/utils.hpp"
+expect_keyed binary_tree_foreign_path_modified verified "$series_paths" unkeyed
+git -C "$keyed_source" checkout --quiet -- tools/server/utils.hpp
+printf 'int stray() { return 0; }\n' >"$keyed_source/tools/server/stray.cpp"
+expect_keyed binary_tree_untracked_path verified "$series_paths" unkeyed
+rm -f "$keyed_source/tools/server/stray.cpp"
+expect_keyed binary_tree_empty_covered_set verified '' unkeyed
 
 if [ "$failures" -ne 0 ]; then
     printf 'build cache key checks: %s of %s failed\n' "$failures" "$checks" >&2
