@@ -1099,4 +1099,36 @@ if ! grep -q 'names image profile image-sdxs-512-a and its head marker names no 
 fi
 report bundle_records_the_image_server accepted
 
+# The grant binds the generation to the section that proposed it, so a
+# configuration whose QWEN_IMAGE_LANGUAGE_PROFILE names one section reached
+# through a preset naming another is a stale or copied binding: assembly
+# refuses it even though QWEN_IMAGE_PROFILE alone still matches the preset
+# marker, because qwen-capacity-policy.sh rejoins the language profile to the
+# containing section at launch and would refuse the same bundle after it
+# verified and activated.
+mismatched_preset=$work_directory/router-presets-language-mismatch.ini
+{
+    printf '# qwen_web_sections=web-other\n'
+    printf '# qwen_image_profile=image-sdxs-512-a\n'
+    printf '[qwen-2b]\nLLAMA_ARG_MODEL = %s/qwen-2b.gguf\nLLAMA_ARG_CTX_CHECKPOINTS = 0\n\n' \
+        "$model_root"
+    printf '[web-other]\nLLAMA_ARG_MODEL = %s/qwen-2b.gguf\nLLAMA_ARG_CTX_CHECKPOINTS = 0\n' \
+        "$model_root"
+    printf 'LLAMA_ARG_MCP_SERVERS_CONFIG = %s\n' "$imaged_configuration"
+} >"$mismatched_preset"
+if QWEN_BUNDLE_ROUTER_PRESETS=$mismatched_preset "$builder" \
+    bundle-language-mismatch "$forced_server" "$forced_manifest" \
+    "$zero_ledger" "$deployment_root" \
+    >/dev/null 2>"$work_directory/language-mismatch.stderr"; then
+    printf 'a section reaching an image server bound to another section assembled\n' >&2
+    exit 1
+fi
+if ! grep -q 'carries an image server bound to language profile web-open' \
+    "$work_directory/language-mismatch.stderr"; then
+    printf 'the language-profile mismatch refusal lost its reason\n' >&2
+    cat "$work_directory/language-mismatch.stderr" >&2
+    exit 1
+fi
+report bundle_rejects_a_stale_image_language_profile accepted
+
 printf 'deployment_bundle=accepted checks=%s\n' "$checks"
