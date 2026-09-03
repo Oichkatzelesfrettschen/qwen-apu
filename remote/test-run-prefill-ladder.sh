@@ -129,9 +129,13 @@ ledger_field() {
             if (seen == slot) { print $index_of[column]; exit } }' "$1"
 }
 
-# The healthy ladder. One depth is admitted and two are refused, one for sitting
-# above the row's deepest measured fill and one for leaving the allocation no
-# room to decode its own tail.
+# The healthy ladder. One depth is admitted unclamped, one requested depth
+# clamps to the allocation's own headroom limit, and one is refused for sitting
+# above the row's deepest measured fill. The registry stub names
+# validated_filled_depth 128 and context_ceiling 256, so the allocation is 128;
+# at QWEN_PREFILL_LADDER_GENERATE=2 and QWEN_PREFILL_LADDER_TAIL_RESERVE=4 the
+# ceiling a prompt may reach is 128 - 2 - 4 = 122, which is below the requested
+# depth 124 and above the requested depth 8.
 write_server "$root/control-server" control QWEN_FAKE_SERVER_PROMPT_TOK_S=20.00
 write_server "$root/candidate-server" candidate QWEN_FAKE_SERVER_PROMPT_TOK_S=25.00 \
     QWEN_FAKE_SERVER_FIRST_TOKEN_DELAY_S=0.05
@@ -148,21 +152,53 @@ fi
 # A depth above validated_filled_depth is skipped with its reason rather than
 # measured, and a skipped depth leaves the exit status at zero.
 skip_state=0
-for skip_case in '200 above_validated_filled_depth' '124 insufficient_generation_headroom'; do
-    skip_depth=${skip_case%% *}
-    skip_reason=${skip_case#* }
-    if ! awk -F'\t' -v depth="$skip_depth" -v reason="$skip_reason" '
-        NR == 1 { for (i = 1; i <= NF; i++) index_of[$i] = i; next }
-        $index_of["depth"] == depth {
-            rows++
-            if ($index_of["status"] == "skipped" && $index_of["reason"] == reason) matched++ }
-        END { exit (rows > 0 && rows == matched) ? 0 : 1 }' "$healthy_arms"; then
-        skip_state=1
-        printf 'depth %s is not recorded skipped with reason %s\n' "$skip_depth" \
-            "$skip_reason" >&2
-    fi
-done
+if ! awk -F'\t' -v depth=200 -v reason=above_validated_filled_depth '
+    NR == 1 { for (i = 1; i <= NF; i++) index_of[$i] = i; next }
+    $index_of["depth"] == depth {
+        rows++
+        if ($index_of["status"] == "skipped" && $index_of["reason"] == reason) matched++ }
+    END { exit (rows > 0 && rows == matched) ? 0 : 1 }' "$healthy_arms"; then
+    skip_state=1
+    printf 'depth 200 is not recorded skipped with reason above_validated_filled_depth\n' >&2
+fi
 report "$skip_state" depth_above_validated_depth_is_skipped_with_reason
+
+# The requested depth 124 leaves the allocation no room for its own tail, so it
+# clamps to 122 rather than being skipped or submitted at 124: the ledger keys
+# every one of its rows on the clamped count, and inputs.tsv states the
+# requested-to-actual mapping so a reader knows 124 became 122 rather than
+# vanishing. A prompt at or above the 128-token allocation is never constructed:
+# tokenize_n and prompt_n stay "-" on every skipped row, since no prompt was
+# ever built or sent for it, so a completed or failed row is what the headroom
+# rule binds, and none of those reaches the allocation.
+clamp_state=0
+if ! awk -F'\t' '
+    NR == 1 { for (i = 1; i <= NF; i++) index_of[$i] = i; next }
+    $index_of["depth"] == 122 { rows++
+        if ($index_of["status"] == "completed") completed++ }
+    END { exit (rows > 0 && rows == completed) ? 0 : 1 }' "$healthy_arms"; then
+    clamp_state=1
+    printf 'depth 122 (the clamp of requested depth 124) carries no completed row\n' >&2
+fi
+if ! awk -F'\t' '$1 == "depths_admitted_requested_actual" && index($2, "124=122") {
+    matched = 1 } END { exit matched ? 0 : 1 }' "$healthy_output/inputs.tsv"; then
+    clamp_state=1
+    printf 'inputs.tsv does not carry the requested-to-actual mapping 124=122\n' >&2
+fi
+if ! awk -F'\t' -v ceiling=128 '
+    NR == 1 { for (i = 1; i <= NF; i++) index_of[$i] = i; next }
+    $index_of["status"] == "skipped" { next }
+    { for (n in index_of) {
+          name = n
+          if (name != "tokenize_n" && name != "prompt_n") continue
+          value = $index_of[name]
+          if (value == "-") continue
+          if (value + 0 >= ceiling) { print "column=" name " value=" value; bad++ } } }
+    END { exit (bad == 0) ? 0 : 1 }' "$healthy_arms"; then
+    clamp_state=1
+    printf 'a constructed prompt reaches or exceeds the 128-token allocation\n' >&2
+fi
+report "$clamp_state" requested_depth_beyond_headroom_clamps_and_never_reaches_the_allocation
 
 # The mirrored order is what makes the first subject replicate pair with the
 # first control replicate, so the ledger states it arm by arm.
@@ -335,6 +371,17 @@ refuses filler_with_space \
 refuses thread_arms_equal_prefill_threads \
     'the thread quadruple compares two thread counts' \
     QWEN_PREFILL_LADDER_THREADS=2
+
+# Two requested depths that would clamp to the same count share one ledger
+# identity, so the whole invocation refuses ahead of any server start rather
+# than merging their rows. At the ladder's own defaults (generate 16, tail
+# reserve 32) against this registry stub's 128-token allocation, the ceiling a
+# prompt may reach is 80; 100 and 120 both sit above that ceiling and at or
+# below the 128-token validated_filled_depth, so both clamp to 80 rather than
+# one of them being skipped for sitting beyond the row's deepest measured fill.
+refuses clamped_depth_collision \
+    'which a shallower requested depth already admitted' \
+    QWEN_PREFILL_LADDER_DEPTHS='100 120'
 
 if [ "$failures" -ne 0 ]; then
     printf 'run_prefill_ladder_tests=failed failures=%s\n' "$failures" >&2

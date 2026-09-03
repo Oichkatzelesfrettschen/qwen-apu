@@ -54,9 +54,16 @@ set -eu
 # changes the prompt and leaves the KV allocation alone.
 #
 # A depth above the row's `validated_filled_depth` is skipped with its reason
-# rather than measured, and so is a depth leaving fewer than the generation
-# length plus QWEN_PREFILL_LADDER_TAIL_RESERVE tokens of the allocation, since a
-# prompt filling its own allocation evicts rather than decodes. A skipped depth
+# rather than measured, since no run has proven the allocation fills and decodes
+# that deep at all. A depth that would leave fewer than the generation length
+# plus QWEN_PREFILL_LADDER_TAIL_RESERVE tokens of the allocation clamps to the
+# deepest count that leaves exactly that much room instead, and the arm carries
+# the clamped count rather than the requested one, since a prompt filling its
+# own allocation evicts rather than decodes and a "32768" label on a 32720-token
+# prompt misstates what ran. Two requested depths that would clamp to the same
+# count refuse the whole invocation before any server starts, since the ledger
+# keys one row set per depth. A depth left with no positive room to clamp into
+# is skipped rather than measured at a zero or negative count. A skipped depth
 # leaves the exit status at 0; an admitted depth with any failed arm makes it
 # non-zero.
 #
@@ -301,9 +308,10 @@ if [ "$thread_arms" = 1 ]; then
     fi
 fi
 
-# Every rung is admitted or refused before any server starts, so the plan the
-# ledger records is the plan that ran.
+# Every rung is admitted, clamped, or refused before any server starts, so the
+# plan the ledger records is the plan that ran.
 admitted_depths=''
+admitted_sources=''
 skipped_depths=''
 skip_reasons=''
 prompt_ceiling=$((model_context - generate_tokens - tail_reserve))
@@ -313,14 +321,36 @@ for depth in $depths; do
         skip_reasons="$skip_reasons $depth=above_validated_filled_depth"
         continue
     fi
+    admitted_depth=$depth
     if [ "$depth" -gt "$prompt_ceiling" ]; then
-        skipped_depths="$skipped_depths $depth"
-        skip_reasons="$skip_reasons $depth=insufficient_generation_headroom"
-        continue
+        # A prompt filling its own allocation evicts rather than decodes, so a
+        # requested depth beyond the allocation's own headroom clamps to the
+        # deepest prompt the allocation can still decode from, and the arm
+        # carries that count as its own identity rather than the requested
+        # label. A ceiling with no positive room at all leaves nothing to
+        # clamp into.
+        if [ "$prompt_ceiling" -lt 1 ]; then
+            skipped_depths="$skipped_depths $depth"
+            skip_reasons="$skip_reasons $depth=insufficient_generation_headroom"
+            continue
+        fi
+        admitted_depth=$prompt_ceiling
     fi
-    admitted_depths="$admitted_depths $depth"
+    # Two requested depths that clamp to the same count would share one ledger
+    # identity and collapse into one row set, so the collision is refused ahead
+    # of the first server start rather than silently merging two rungs.
+    for existing_admitted_depth in $admitted_depths; do
+        if [ "$existing_admitted_depth" = "$admitted_depth" ]; then
+            printf 'requested depth %s clamps to %s, which a shallower requested depth already admitted; QWEN_PREFILL_LADDER_DEPTHS names two rungs that would share one identity\n' \
+                "$depth" "$admitted_depth" >&2
+            exit 2
+        fi
+    done
+    admitted_depths="$admitted_depths $admitted_depth"
+    admitted_sources="$admitted_sources $depth=$admitted_depth"
 done
 admitted_depths=${admitted_depths# }
+admitted_sources=${admitted_sources# }
 skipped_depths=${skipped_depths# }
 skip_reasons=${skip_reasons# }
 
@@ -335,8 +365,10 @@ model_bytes=$(wc -c <"$model_path" | tr -d ' ')
 if [ "${QWEN_PREFILL_LADDER_PRINT_PLAN:-0}" = 1 ]; then
     printf 'prefill_ladder_depths_requested\t%s\n' "$depths"
     printf 'prefill_ladder_depths_admitted\t%s\n' "${admitted_depths:--}"
+    printf 'prefill_ladder_depths_admitted_requested_actual\t%s\n' "${admitted_sources:--}"
     printf 'prefill_ladder_depths_skipped\t%s\n' "${skipped_depths:--}"
     printf 'prefill_ladder_skip_reasons\t%s\n' "${skip_reasons:--}"
+    printf 'prefill_ladder_prompt_ceiling\t%s\n' "$prompt_ceiling"
     printf 'prefill_ladder_arm_order\t%s\n' "$arm_order"
     printf 'prefill_ladder_context\t%s\n' "$model_context"
     printf 'prefill_ladder_threads\t%s\n' "$prefill_threads"
@@ -671,6 +703,7 @@ printf 'slot\tdepth\tquadruple\tarm\treplicate\tserver_role\tserver_sha256\tthre
         "$model_context_ceiling" "$model_validated_depth" "$prompt_ceiling"
     printf 'depths_requested\t%s\ndepths_admitted\t%s\ndepths_skipped\t%s\nskip_reasons\t%s\n' \
         "$depths" "${admitted_depths:--}" "${skipped_depths:--}" "${skip_reasons:--}"
+    printf 'depths_admitted_requested_actual\t%s\n' "${admitted_sources:--}"
     printf 'arm_order\t%s\ngenerate_tokens\t%s\nprefill_threads\t%s\nrow_threads\t%s\n' \
         "$arm_order" "$generate_tokens" "$prefill_threads" "$row_threads"
     printf 'tail_reserve\t%s\nprompt_n_slack\t%s\ntokenize_attempts\t%s\nfiller_word\t%s\n' \

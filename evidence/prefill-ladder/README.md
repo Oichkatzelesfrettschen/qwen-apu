@@ -109,8 +109,10 @@ would refute it.
    one amortizes them until the DDR4 controller bounds the rate: the theoretical
    dual-channel peak is 34.13 GB/s and the measured achieved streaming on this
    device sits at 8.11 to 10.41 GB/s. *Falsifier:* prompt tokens per second
-   falling monotonically across 512, 4096, 16384, and 32768, or rising at every
-   rung with no flattening, refutes the shape. A rung that falls against its
+   falling monotonically across 512, 4096, 16384, and the deepest admitted rung
+   (32720 under every row this ladder currently admits, the 32768 request
+   clamped to the allocation's own headroom limit), or rising at every rung
+   with no flattening, refutes the shape. A rung that falls against its
    predecessor by more than the pair interval at that rung refutes it outright.
 
 2. **A candidate reading above 1.0 on time to first token at every admitted
@@ -152,19 +154,34 @@ and decoded.
 
 A prompt at or above its own allocation evicts rather than decodes, which is why
 `probe-depth-projector.sh` accepts on `DEPTH - 2% <= prompt_n <= DEPTH - 32`. A
-depth leaving fewer than the generation length plus
-`QWEN_PREFILL_LADDER_TAIL_RESERVE` tokens of the allocation is therefore skipped
-with `insufficient_generation_headroom`, and a depth above the row's deepest
-measured fill is skipped with `above_validated_filled_depth`. Both leave the
-exit status at zero, since a skipped depth is inadmissible rather than failed;
-an admitted depth with any failed arm makes it non-zero.
+requested depth that would leave fewer than the generation length plus
+`QWEN_PREFILL_LADDER_TAIL_RESERVE` tokens of the allocation clamps to
+`model_context - generate_tokens - tail_reserve`, the deepest count the
+allocation can still decode from, and the arm carries that clamped count as its
+own identity rather than the requested label: a "32768" rung on a 32768-token
+allocation would evict rather than decode, so what runs is named for the token
+count it actually is. A requested depth above the row's deepest measured fill is
+skipped with `above_validated_filled_depth`, since no run has proven the
+allocation fills and decodes that deep at all, and a requested depth left with
+no positive room to clamp into is skipped with `insufficient_generation_headroom`.
+Two requested depths that would clamp to the same count refuse the whole
+invocation ahead of any server start, since the ledger keys one row set per
+depth and a silent merge would pair two rungs' arms as one. A skipped depth
+leaves the exit status at zero, since it is inadmissible rather than failed; an
+admitted depth with any failed arm makes it non-zero.
 
 The consequence on the shipped registry is stated rather than worked around.
-`qwen38-2b-distill` and `qwen38-4b-distill` both read `context_ceiling` 32768 and
-`validated_filled_depth` 32768, so the 32768 rung leaves no room for its own tail
-and the ladder records the skip. Measuring that rung needs a row whose ceiling
-and validated depth both exceed 32768 by at least the generation length plus the
-reserve; the ladder declines to measure an eviction and call it a prefill.
+`qwen38-2b-distill`, `qwen38-4b-distill`, `qwen35-08b`, and `qwen35-08b-f16` all
+read `context_ceiling` 32768 and `validated_filled_depth` 32768, so at the
+ladder's own defaults -- 16 generation tokens and a 32-token reserve -- the
+requested 32768 rung clamps to 32720. That count sits inside
+`probe-depth-projector.sh`'s own acceptance window for a 32768-token allocation,
+`[32768 - 2% = 32112.64, 32768 - 32 = 32736]`: the ladder's own headroom formula
+and the projector probe's independent margin agree that a 32720-token prompt
+inside a 32768-token allocation fills rather than evicts. `inputs.tsv` and
+`QWEN_PREFILL_LADDER_PRINT_PLAN=1` both carry the requested-to-actual mapping on
+their `depths_admitted_requested_actual` line, so a reader sees the "32768"
+rung as the 32720-token prompt it actually ran.
 
 ## The appliance command
 
@@ -194,10 +211,11 @@ path under `deployment-current` gets whatever that link resolved to when the
 argument was typed. Naming the bundle directory itself rather than the link is
 what keeps the retained digests meaning one binary.
 
-`QWEN_PREFILL_LADDER_PRINT_PLAN=1` prints the admitted depths, the skipped ones
-with their reasons, the arm order, the allocation, both thread counts, and both
-server digests without touching the device, which is how a run is read before it
-is spent. The class order is the repository's own: the current 2B first, the
+`QWEN_PREFILL_LADDER_PRINT_PLAN=1` prints the admitted depths, the
+requested-to-actual mapping a clamp produced, the skipped ones with their
+reasons, the arm order, the allocation, both thread counts, and both server
+digests without touching the device, which is how a run is read before it is
+spent. The class order is the repository's own: the current 2B first, the
 current 0.8B second, the current 4B third, and a result becomes a Raven2-wide
 default only where the classes agree.
 
@@ -205,8 +223,8 @@ default only where the classes agree.
 
 `inputs.tsv` carries both server digests, the model digest and byte count, the
 registry tuple, the allocation, both thread counts, the depth plan with its skip
-reasons, the clock policy and its operating point, the sampler geometry, and the
-lease path. `arms.tsv` carries one row per depth, quadruple, arm, and replicate
+reasons and its requested-to-actual clamp mapping, the clock policy and its
+operating point, the sampler geometry, and the lease path. `arms.tsv` carries one row per depth, quadruple, arm, and replicate
 with its own server digest, thread count, tokenized count, served `prompt_n`,
 time to first token, `prompt_ms`, prompt tokens per second, tail decode rate,
 modal graphics clock, clock invariant, status, and reason. Each arm keeps its
