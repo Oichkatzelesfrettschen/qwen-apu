@@ -73,6 +73,20 @@ serving_plain_output=$(GGML_VK_PIPELINE_CENSUS=stale QWEN_VULKAN_PROFILE=low-asy
     "$wrapper" sh -c 'printf "census=%s\n" "${GGML_VK_PIPELINE_CENSUS-unset}"')
 printf '%s\n' "$serving_plain_output" | grep -Fx 'census=unset' >/dev/null
 
+# The int24 candidate admits its q8_1 mat-vec pipelines under
+# GGML_VK_FORCE_INTEGER_DOT, so a serving profile scrubs it and `custom`
+# restores what the caller asked for. The scrub is what keeps the arm and its
+# control apart on one binary.
+serving_force_dot_output=$(GGML_VK_FORCE_INTEGER_DOT=1 QWEN_VULKAN_PROFILE=low-async \
+    "$wrapper" sh -c 'printf "force_integer_dot=%s\n" "${GGML_VK_FORCE_INTEGER_DOT-unset}"')
+printf '%s\n' "$serving_force_dot_output" | grep -Fx 'force_integer_dot=unset' >/dev/null
+custom_force_dot_output=$(GGML_VK_FORCE_INTEGER_DOT=1 QWEN_VULKAN_PROFILE=custom \
+    "$wrapper" sh -c 'printf "force_integer_dot=%s\n" "${GGML_VK_FORCE_INTEGER_DOT-unset}"')
+printf '%s\n' "$custom_force_dot_output" | grep -Fx 'force_integer_dot=1' >/dev/null
+custom_control_output=$(QWEN_VULKAN_PROFILE=custom \
+    "$wrapper" sh -c 'printf "force_integer_dot=%s\n" "${GGML_VK_FORCE_INTEGER_DOT-unset}"')
+printf '%s\n' "$custom_control_output" | grep -Fx 'force_integer_dot=unset' >/dev/null
+
 environment_output=$(capture_environment low-async)
 printf '%s\n' "$environment_output" | grep -F \
     'profile=low-async low=1 duty=unset serialized=unset max_nodes=16 strict=1' >/dev/null

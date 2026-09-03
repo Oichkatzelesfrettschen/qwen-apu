@@ -34,6 +34,7 @@ requested_perf_logger=${GGML_VK_PERF_LOGGER:-}
 requested_perf_logger_concurrent=${GGML_VK_PERF_LOGGER_CONCURRENT:-}
 requested_perf_logger_frequency=${GGML_VK_PERF_LOGGER_FREQUENCY:-}
 requested_memory_logger=${GGML_VK_MEMORY_LOGGER:-}
+requested_force_integer_dot=${GGML_VK_FORCE_INTEGER_DOT:-}
 requested_radv_debug=${RADV_DEBUG:-}
 
 unset DISPLAY
@@ -70,6 +71,7 @@ unset GGML_VK_DISABLE_MULTI_ADD
 unset GGML_VK_DISABLE_OCP_FP4
 unset GGML_VK_DUTY_CYCLE_PERCENT
 unset GGML_VK_ENABLE_MEMORY_PRIORITY
+unset GGML_VK_FORCE_INTEGER_DOT
 unset GGML_VK_FORCE_MAX_ALLOCATION_SIZE
 unset GGML_VK_FORCE_MAX_BUFFER_SIZE
 unset GGML_VK_FORCE_MMVQ
@@ -139,6 +141,15 @@ case $vulkan_profile in
         fi
         if [ -n "$requested_submit_trace" ]; then
             export GGML_VK_SUBMIT_TRACE=$requested_submit_trace
+        fi
+        # The int24 candidate build compiles the q8_1 mat-vec pipelines and
+        # admits them only under GGML_VK_FORCE_INTEGER_DOT, so one binary
+        # carries the arm and its control and this restore is what separates
+        # them. A serving profile leaves the variable scrubbed, which keeps a
+        # promoted build on the FP16 mat-vec whatever the ambient environment
+        # holds.
+        if [ -n "$requested_force_integer_dot" ]; then
+            export GGML_VK_FORCE_INTEGER_DOT=$requested_force_integer_dot
         fi
         ;;
     *)
