@@ -640,6 +640,39 @@ if [ "$resolver_status" -ne 3 ]; then
 fi
 report resolver_one_bundle accepted
 
+# Absence is decided under the activation lock. The leaf is created private
+# here so the helper's legacy-mode branch returns at once and the resolver
+# reaches `flock -s 7`, where a held exclusive lock stops it: a resolver that
+# answered 3 from a pre-lock read would report an empty root while an
+# activation was midway through publishing one.
+locked_root=$work_directory/locked-root
+mkdir -p "$locked_root"
+locked_lock_path=$locked_root/.activate.lock
+: >"$locked_lock_path"
+chmod 600 "$locked_lock_path"
+flock -x "$locked_lock_path" sleep 5 &
+lock_holder_pid=$!
+lock_wait=0
+while [ "$lock_wait" -lt 50 ] && \
+    flock -x -n "$locked_lock_path" true 2>/dev/null; do
+    lock_wait=$((lock_wait + 1))
+    sleep 0.1
+done
+timeout 2 "$resolver" "$locked_root" >/dev/null 2>&1 && locked_status=0 || \
+    locked_status=$?
+kill "$lock_holder_pid" 2>/dev/null || :
+wait "$lock_holder_pid" 2>/dev/null || :
+if [ "$locked_status" -eq 3 ]; then
+    printf 'the resolver reported an empty root while the activation lock was held\n' >&2
+    exit 1
+fi
+if [ "$locked_status" -ne 124 ]; then
+    printf 'the resolver left the held activation lock with status %s rather than blocking\n' \
+        "$locked_status" >&2
+    exit 1
+fi
+report absence_decided_under_lock accepted
+
 # The lock leaf is opened without following links or truncating: a symlinked
 # .activate.lock aimed at the outside sentinel refuses both the activator and
 # the resolver and leaves the sentinel's bytes as they were; a directory and
@@ -679,7 +712,7 @@ if "$activator" bundle-third "$deployment_root" >/dev/null 2>"$work_directory/lo
     printf 'a lock leaf with a loose mode was accepted\n' >&2
     exit 1
 fi
-if ! grep -q 'not the admitted legacy mode' "$work_directory/lock-mode.stderr"; then
+if ! grep -q 'grants write access to another user' "$work_directory/lock-mode.stderr"; then
     printf 'the loose-mode refusal lost its reason\n' >&2
     exit 1
 fi
@@ -783,6 +816,93 @@ if [ -n "$(ls -A "$deployment_root/.staging" 2>/dev/null)" ]; then
     exit 1
 fi
 report bundle_name_and_staging accepted
+
+# The staging parent is a plain directory the assembly creates or reuses. A
+# symlink planted at .staging is refused whole, so the copied server, ledger,
+# and preset stay out of the directory it names and the trap that removes the
+# staging root removes nothing there; a leaf that is not a directory refuses
+# on the same rule.
+staging_link_root=$work_directory/staging-link-root
+mkdir -p "$staging_link_root"
+staging_link_target=$work_directory/staging-link-target
+mkdir -p "$staging_link_target"
+printf 'kept\n' >"$staging_link_target/marker"
+ln -s "$staging_link_target" "$staging_link_root/.staging"
+if QWEN_BUNDLE_ROUTER_PRESETS=$zero_preset \
+    "$builder" bundle-staged "$forced_server" "$forced_manifest" \
+    "$zero_ledger" "$staging_link_root" \
+    >/dev/null 2>"$work_directory/staging-link.stderr"; then
+    printf 'a symlinked staging parent carried an assembly\n' >&2
+    exit 1
+fi
+if ! grep -q 'staging parent is a symlink' "$work_directory/staging-link.stderr"; then
+    printf 'the symlinked staging refusal lost its reason\n' >&2
+    exit 1
+fi
+if [ "$(ls -A "$staging_link_target")" != marker ] || \
+    [ ! -f "$staging_link_target/marker" ] || \
+    [ -e "$staging_link_root/bundle-staged" ]; then
+    printf 'a symlinked staging parent reached the directory it named\n' >&2
+    exit 1
+fi
+rm "$staging_link_root/.staging"
+printf 'leaf\n' >"$staging_link_root/.staging"
+if QWEN_BUNDLE_ROUTER_PRESETS=$zero_preset \
+    "$builder" bundle-staged "$forced_server" "$forced_manifest" \
+    "$zero_ledger" "$staging_link_root" \
+    >/dev/null 2>"$work_directory/staging-leaf.stderr"; then
+    printf 'a regular file at the staging parent carried an assembly\n' >&2
+    exit 1
+fi
+if ! grep -q 'staging parent is not a directory' "$work_directory/staging-leaf.stderr"; then
+    printf 'the non-directory staging refusal lost its reason\n' >&2
+    exit 1
+fi
+report staging_parent_plain_directory accepted
+
+# Assembly, verification, activation, and resolution read one bundle
+# namespace. A complete bundle carrying a dot-prefixed name -- the shape a
+# directory planted as .staging or .activate.lock would take -- is refused by
+# every reader rather than assembled under one rule and served under another.
+dot_root=$work_directory/dot-name-root
+mkdir -p "$dot_root"
+QWEN_BUNDLE_ROUTER_PRESETS=$zero_preset \
+    "$builder" hidden "$forced_server" "$forced_manifest" "$zero_ledger" \
+    "$dot_root" >/dev/null
+mv "$dot_root/hidden" "$dot_root/.hidden"
+awk -F'\t' -v OFS='\t' '$1 == "bundle_name" { $2 = ".hidden" } { print }' \
+    "$dot_root/.hidden/bundle-manifest.tsv" \
+    >"$dot_root/.hidden/bundle-manifest.tsv.new"
+mv "$dot_root/.hidden/bundle-manifest.tsv.new" \
+    "$dot_root/.hidden/bundle-manifest.tsv"
+if "$script_directory/verify-deployment-bundle.sh" "$dot_root" .hidden \
+    >/dev/null 2>"$work_directory/dot-verify.stderr"; then
+    printf 'a dot-prefixed bundle name passed verification\n' >&2
+    exit 1
+fi
+if ! grep -q 'avoid the root names' "$work_directory/dot-verify.stderr"; then
+    printf 'the dot-prefixed verification refusal lost its reason\n' >&2
+    exit 1
+fi
+if "$activator" .hidden "$dot_root" \
+    >/dev/null 2>"$work_directory/dot-activate.stderr"; then
+    printf 'a dot-prefixed bundle name activated\n' >&2
+    exit 1
+fi
+if ! grep -q 'avoid the root names' "$work_directory/dot-activate.stderr"; then
+    printf 'the dot-prefixed activation refusal lost its reason\n' >&2
+    exit 1
+fi
+if QWEN_ACTIVE_DEPLOYMENT_DIRECTORY=$dot_root/.hidden "$resolver" "$dot_root" \
+    >/dev/null 2>"$work_directory/dot-resolve.stderr"; then
+    printf 'a dot-prefixed bundle name resolved for a launch\n' >&2
+    exit 1
+fi
+if ! grep -q 'avoid the root names' "$work_directory/dot-resolve.stderr"; then
+    printf 'the dot-prefixed resolution refusal lost its reason\n' >&2
+    exit 1
+fi
+report bundle_namespace_shared accepted
 
 # A section path two registry rows match under the registry's raw suffix
 # rule is refused as ambiguous rather than bound to the first row.
