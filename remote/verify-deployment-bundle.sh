@@ -23,14 +23,18 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 deployment_root=$1
 bundle_name=$2
 
-case $bundle_name in
-    *[!A-Za-z0-9._-]* | '' | deployment-current | deployment-previous | \
-        deployment-state | deployment-state.* | . | ..)
-        printf 'bundle name must be nonempty [A-Za-z0-9._-] and not a link name: %s\n' \
-            "$bundle_name" >&2
-        exit 1
-        ;;
-esac
+name_helper=$script_directory/deployment-bundle-name.sh
+if [ ! -r "$name_helper" ]; then
+    printf 'deployment bundle name helper is unreadable: %s\n' "$name_helper" >&2
+    exit 1
+fi
+# shellcheck source=deployment-bundle-name.sh
+. "$name_helper"
+if ! deployment_bundle_name_is_valid "$bundle_name"; then
+    printf 'bundle name must match [A-Za-z0-9][A-Za-z0-9._-]* and avoid the root names: %s\n' \
+        "$bundle_name" >&2
+    exit 1
+fi
 if [ ! -d "$deployment_root" ]; then
     printf 'deployment root is not a directory: %s\n' "$deployment_root" >&2
     exit 1
@@ -142,12 +146,45 @@ if [ "$executable_rows" -ne 1 ]; then
     printf 'artifact manifest executable llama-server row does not match the bundled server\n' >&2
     exit 1
 fi
-serving_eligible=$(awk -F'\t' '$1 == "serving_eligible" { print $2; exit }' \
-    "$bundle_directory/artifact-manifest.tsv")
-if [ -n "$serving_eligible" ] && [ "$serving_eligible" != yes ]; then
-    printf 'bundle artifact manifest declares serving_eligible %s; a diagnostic build stays inactive\n' \
-        "$serving_eligible" >&2
+# The eligibility grammar is the one assembly applies, restated here because a
+# manifest reaches a bundle directory by other routes than the builder. Zero
+# serving_eligible rows is the legacy shape and holds only beside zero
+# instrumentation rows; exactly one row must read exactly `yes`, so a present
+# row with an empty value is refused by its own reading rather than passing as
+# an absent declaration; a second row of either kind is refused on cardinality
+# ahead of both. An instrumentation row refuses the bundle at whatever
+# eligibility spelling accompanies it, and that refusal precedes the
+# eligibility reading so a diagnostic manifest names its instrumentation
+# however its eligibility row is spelled or deleted.
+declaration_rows=$(awk -F'\t' '
+    $1 == "serving_eligible" { eligible++ }
+    $1 == "instrumentation" { instrumentation++ }
+    END { print eligible + 0, instrumentation + 0 }' "$bundle_directory/artifact-manifest.tsv")
+serving_rows=${declaration_rows%% *}
+instrumentation_rows=${declaration_rows##* }
+if [ "$serving_rows" -gt 1 ] || [ "$instrumentation_rows" -gt 1 ]; then
+    printf 'artifact manifest holds %s serving_eligible rows and %s instrumentation rows, at most one of each: %s\n' \
+        "$serving_rows" "$instrumentation_rows" "$bundle_directory/artifact-manifest.tsv" >&2
     exit 1
+fi
+if [ "$instrumentation_rows" -eq 1 ]; then
+    declared_instrumentation=$(awk -F'\t' \
+        '$1 == "instrumentation" { print $2; exit }' \
+        "$bundle_directory/artifact-manifest.tsv")
+    printf 'artifact manifest names instrumentation %s; a bundle carries serving builds alone: %s\n' \
+        "${declared_instrumentation:-<empty>}" \
+        "$bundle_directory/artifact-manifest.tsv" >&2
+    exit 1
+fi
+if [ "$serving_rows" -eq 1 ]; then
+    serving_eligible=$(awk -F'\t' '$1 == "serving_eligible" { print $2; exit }' \
+        "$bundle_directory/artifact-manifest.tsv")
+    if [ "$serving_eligible" != yes ]; then
+        printf 'artifact manifest declares serving_eligible %s; a bundle carries serving builds alone: %s\n' \
+            "${serving_eligible:-<empty>}" \
+            "$bundle_directory/artifact-manifest.tsv" >&2
+        exit 1
+    fi
 fi
 recomputed_semantics=$(awk -F'\t' \
     '$1 == "checkpoint_semantics" { count++; value = $2 }
