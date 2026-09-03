@@ -36,7 +36,18 @@ subject  mul_mat_vec_q4_k_f32_f32   the pipeline E4 rewrites
 null     mul_mat_vec_q6_k_f32_f32   a pipeline E4 leaves untouched, read from the same graphs
 bound    0.02
 identity every K reply's content and predicted_n equal to its C reply's
+         (response_identity; the token-id and log-probability witness is
+         run-kernel-delta-witness.sh over the same two binaries)
 ```
+
+Read after the run, the reader also states the subject's union beside its
+exclusive time and requires the two verdicts to agree, the null on its union
+as the principal control, the graph span and the Q4_K/Q6_K ratio as
+secondary statistics, one executed subject module per role differing between
+roles with one null module across every arm, every registered pair on every
+row, and zero cooldown timeouts; a coverage-refused arm under the pinned
+clock is kept only where the validator's refusal set is drawn from gaps and
+window_lost alone.
 
 Chain seventeen's four I1 arms put the Q4_K exclusive bracket at 3225.8 ms
 over 63 decode graphs, 51.2 ms per token, and Q6_K at about half of that.

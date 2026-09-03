@@ -134,33 +134,35 @@ probabilities = payload.get("completion_probabilities")
 if not isinstance(tokens, list) or not tokens:
     sys.stderr.write("response carries no token array\n")
     raise SystemExit(1)
-# The server at f280b269 returns one probability entry fewer than tokens
-# on a completion ended by n_predict (128 tokens carried 127 entries on the
-# appliance), so the entries are aligned to the token array by id at
-# offset 0 or 1 rather than assumed to cover it; a token without an entry
-# prints `-` and is compared by id alone.
+# The server at f280b269 returns fewer probability entries than tokens: a
+# 128-token completion on the appliance carried 127 entries, the first 99
+# aligned at offset zero and the remainder shifted by one, so one token in
+# the middle of the array carries no entry. The entries are therefore
+# merged onto the token array by id in order, a token without an entry
+# prints `-` and is compared by id alone, and the merge admits at most two
+# such tokens; every entry must be consumed, since an entry the token array
+# cannot place names a reply this reader does not understand.
 if not isinstance(probabilities, list) or not probabilities:
     sys.stderr.write("response carries no probability entries\n")
     raise SystemExit(1)
-offset = None
-for candidate in (0, 1):
-    span = tokens[candidate:candidate + len(probabilities)]
-    if len(span) == len(probabilities) and all(
-            isinstance(t, int) and e.get("id") == t for t, e in zip(span, probabilities)):
-        offset = candidate
-        break
-if offset is None or len(tokens) - len(probabilities) > 1:
-    sys.stderr.write("probability entries do not align with the token array\n")
-    raise SystemExit(1)
-for index, token_id in enumerate(tokens):
+entry_index = 0
+unmatched = 0
+lines = []
+for token_id in tokens:
     if not isinstance(token_id, int):
         sys.stderr.write("token array holds a non-integer entry\n")
         raise SystemExit(1)
-    entry_index = index - offset
-    if 0 <= entry_index < len(probabilities):
-        print(f"{token_id}\t{float(probabilities[entry_index]['logprob']):.9g}")
+    if entry_index < len(probabilities) and probabilities[entry_index].get("id") == token_id:
+        lines.append(f"{token_id}\t{float(probabilities[entry_index]['logprob']):.9g}")
+        entry_index += 1
     else:
-        print(f"{token_id}\t-")
+        lines.append(f"{token_id}\t-")
+        unmatched += 1
+if entry_index != len(probabilities) or unmatched > 2:
+    sys.stderr.write(f"probability entries do not align with the token array:"
+                     f" consumed={entry_index} of {len(probabilities)} unmatched_tokens={unmatched}\n")
+    raise SystemExit(1)
+print("\n".join(lines))
 PYTHON
 
 server_pid=''

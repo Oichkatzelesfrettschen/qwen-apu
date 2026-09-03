@@ -1991,6 +1991,7 @@ ae4fe092e6b93e0e09564ac16810af9d43e36e12c03b592b405c42cbc7cc1310  evidence/raven
 6d58c43a246f3ef9fbbab26f1e0d83fb62b7fed100864cec9150bbe72b9726ff  evidence/raven2-vulkan-kernel-census/e4/e4.spvasm
 ad74e2037ed4508372e7072d2185915e25b86009e061ed973bdcb81f40e5090b  evidence/raven2-vulkan-kernel-census/e4/e4b-a-first-pass.md
 c31ef5dfd06a95b9c98f9eff0d479dd86e7e60b23fc25c914e350156791027f7  evidence/raven2-vulkan-kernel-census/e4/e4b-c-first-pass.md
+79b4fd58773bbbc98230db76ec0d2ea48dbf3f122e77b9ed697253ab37ae26d6  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-20260902T2312Z/README.md
 f39af63fdac85c15e08eb4cca65eaf5884d8ed5fa77765a0874b2e9bdbaaeb64  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-20260902T2312Z/arms.tsv
 612defeb6d1864a693b1a4d46f6794f54719f3a0fb6d314bdc734bde5e1d5f79  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-20260902T2312Z/arms/01-C/clock-sidecar-verdict.txt
 5cdd28e0c93c2c2083c97ee633fa1e84badae4f7f592b48ccea7937f4deddc95  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-20260902T2312Z/arms/01-C/pipeline-ledger-decode.tsv
@@ -2045,7 +2046,7 @@ bc53a0bd9bb166a1f181e23e3adf9a5932b92368defb3907348657791664121e  evidence/raven
 8b8760b4759e9eb73e071af4c446faf47dd4c3f54b7dbcdd8341f7b393448e6b  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-20260902T2312Z/summary.tsv
 1ca0e96c6cd64dc906a3e604c952075ba240cb4574d99e15e0d9fec34c50f8f4  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-20260902T2312Z/terminal-state.tsv
 efeae2add2f31c3d5a746e662ed80f3a647b03ec049cb7e6ad325caa851e5380  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-20260902T2312Z/wall-clock.tsv
-51d3bea3e2ef50de371e4cf7a33589754eb242f949649002976806970e1b95bf  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-design.md
+41ccf40b26dc4aa180c0b8c8aca88ab59b455f90fb26d0aefc190ac932f224e8  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-design.md
 34051948c6d41c929773afe48c864562358fb9966000b3b131bea9f64dc931cd  evidence/raven2-vulkan-kernel-census/e4/served-ab-20260902T2032Z/README.md
 67416bd53cf77d2431e1fcd64646b3066a925780e3492ff820f7d489dd74c7db  evidence/raven2-vulkan-kernel-census/e4/served-ab-20260902T2032Z/arms.tsv
 9beb94940970245adc8dc2baf3f8c338feb6bbc6902503fe9331cae4752f2acd  evidence/raven2-vulkan-kernel-census/e4/served-ab-20260902T2032Z/arms/01-C/clock-sidecar-verdict.txt
