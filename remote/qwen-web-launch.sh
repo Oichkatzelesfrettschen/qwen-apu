@@ -309,6 +309,21 @@ if [ "$web_lan_exposure" = 1 ]; then
             "$router_server_port" >&2
         exit 2
     fi
+    # webui/index.html derives the broker and artifact origins from the page's
+    # own loaded port at fixed offsets (BROKER_LAN_PORT_OFFSET=1,
+    # ARTIFACT_LAN_PORT_OFFSET=2) whenever the page was reached at a bare LAN
+    # URL rather than one carrying an explicit `?broker=`/`?artifacts=` query
+    # parameter, and the bare URL is exactly what this launch advertises. An
+    # explicit override at another port would serve a broker and an artifact
+    # listener the advertised URL's own page cannot reach, so it is refused
+    # here rather than silently diverging from what the browser assumes.
+    if [ -n "${QWEN_WEB_BROKER_PORT:-}" ] &&
+        [ "$QWEN_WEB_BROKER_PORT" -ne $((router_server_port + 1)) ]; then
+        printf 'QWEN_WEB_BROKER_PORT names %s where the advertised page URL derives %s\n' \
+            "$QWEN_WEB_BROKER_PORT" "$((router_server_port + 1))" >&2
+        printf 'webui/index.html assumes the router port plus one for the broker and plus two for the artifact listener on a bare LAN URL; open the page with an explicit ?broker= query parameter to serve another port\n' >&2
+        exit 2
+    fi
     QWEN_WEB_BROKER_PORT=${QWEN_WEB_BROKER_PORT:-$((router_server_port + 1))}
 else
     QWEN_WEB_BROKER_PORT=${QWEN_WEB_BROKER_PORT:-8571}

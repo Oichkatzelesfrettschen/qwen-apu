@@ -1135,19 +1135,40 @@ else
 fi
 
 # An explicit QWEN_WEB_BROKER_PORT names its own value and is not derived, so
-# it still overrides the LAN derivation.
+# it still overrides the LAN derivation where it agrees with what a bare LAN
+# page URL would derive on its own.
 if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
     QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
     QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=0.0.0.0 \
-    QWEN_WEB_BROKER_PORT=19000 \
+    QWEN_SERVER_PORT=9000 QWEN_WEB_BROKER_PORT=9001 \
     "$launcher" >"$work/lan-broker-port-override.log" \
     2>"$work/lan-broker-port-override.err"; then
     outcome=ok
-    grep -qx 'QWEN_WEB_BROKER_PORT=19000' "$record" || outcome=override_dropped
+    grep -qx 'QWEN_WEB_BROKER_PORT=9001' "$record" || outcome=override_dropped
     report lan_exposure_broker_port_override_wins "$outcome"
 else
     report lan_exposure_broker_port_override_wins refused
     cat "$work/lan-broker-port-override.err" >&2
+fi
+
+# webui/index.html derives the broker and artifact origins from the loaded
+# port at fixed offsets whenever the page was reached at a bare LAN URL, and
+# the bare URL is exactly what this launch advertises, so an override that
+# disagrees with that derivation would serve a broker the advertised page
+# cannot reach.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=0.0.0.0 \
+    QWEN_WEB_BROKER_PORT=19000 \
+    "$launcher" >"$work/lan-broker-port-mismatch.log" \
+    2>"$work/lan-broker-port-mismatch.err"; then
+    report lan_exposure_broker_port_mismatch_refused admitted
+elif grep -q 'names 19000 where the advertised page URL derives 8081' \
+    "$work/lan-broker-port-mismatch.err"; then
+    report lan_exposure_broker_port_mismatch_refused ok
+else
+    report lan_exposure_broker_port_mismatch_refused wrong_reason
+    cat "$work/lan-broker-port-mismatch.err" >&2
 fi
 
 # A derived broker port at or beyond the top of the valid TCP range overflows
