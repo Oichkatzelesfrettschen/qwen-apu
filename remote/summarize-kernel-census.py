@@ -71,10 +71,14 @@ the host retire span, a missing or inconsistent emit row, a duplicate graph
 or pipeline id, a dispatch naming an undescribed pipeline or an unreported
 graph, a dispatch on a foreign queue family, a self-test other than
 `sha256=ok`, a close count that disagrees with the rows, a header row of
-the wrong cardinality, a section missing one of its four header and footer
+the wrong cardinality, a header or footer token stating no `key=value` pair
+or repeating a key, a graph retiring ahead of its own begin instant, a pair
+of instants whose difference disagrees with the declared `retire_span_ns`,
+a section missing one of its four header and footer
 rows, a row outside every section, a `census_open` field that differs
-between sections, two sections both holding in-window graphs, and a window
-intersecting the graphs of no section each fail the run with the reason on
+between sections, two sections both holding in-window graphs, a window
+intersecting the graphs of no section, and an overlap threshold that is
+infinite, not a number, or negative each fail the run with the reason on
 stderr.
 
 usage: summarize-kernel-census.py CENSUS_TSV --window-begin-ns N
@@ -86,6 +90,7 @@ stdout. That row ends with `contexts` and the 1-based `selected_context`,
 so a reader sees which section of the file the ledger was read from.
 """
 import argparse
+import math
 import statistics
 import sys
 
@@ -110,6 +115,28 @@ def new_context(index):
         "emits": {}, "counts": dict.fromkeys(HEADER_KINDS, 0), "order": [],
         "queue": {}, "selftest": {}, "opened": {}, "closed": {},
     }
+
+
+def metadata_fields(kind, row, line_number):
+    """Read one header or footer row's `key=value` tokens into a dictionary.
+
+    A section states one value per key, so a token carrying no '=' and a key
+    stated twice each refuse the file. Dropping the first and keeping the
+    last would let `census_open` declare clock=BOGUS beside
+    clock=CLOCK_MONOTONIC and satisfy the clock check on the survivor, which
+    hands the runner an ambiguous declaration as an accepted arm.
+    """
+    fields = {}
+    for token in row[1:]:
+        key, separator, value = token.partition("=")
+        if not separator:
+            raise CensusError(
+                f"line {line_number}: {kind} carries the token {token!r}, which "
+                f"states no key=value pair")
+        if key in fields:
+            raise CensusError(f"line {line_number}: {kind} states {key} twice")
+        fields[key] = value
+    return fields
 
 
 def parse_body_row(context, row, line_number):
@@ -236,8 +263,7 @@ def parse(path):
             if kind in HEADER_KINDS:
                 current["counts"][kind] += 1
                 current["order"].append(kind)
-                fields = dict(field.split("=", 1) for field in row[1:]
-                              if "=" in field)
+                fields = metadata_fields(kind, row, line_number)
                 if kind == "census_queue":
                     current["queue"] = fields
                 elif kind == "census_selftest":
@@ -245,8 +271,7 @@ def parse(path):
                 else:
                     current["opened"] = fields
             elif kind == "census_close":
-                current["closed"] = dict(field.split("=", 1) for field in row[1:]
-                                         if "=" in field)
+                current["closed"] = metadata_fields(kind, row, line_number)
                 contexts.append(current)
                 current = None
             else:
@@ -471,10 +496,14 @@ def refuse_defects(serial, graph, rows, emit):
         raise CensusError(
             f"graph {serial} declares dispatch_rows_ns={emit['dispatch_rows_ns']} against "
             f"dispatch_row_emit_ns={graph['dispatch_row_emit_ns']}")
+    # The instrument sets the total to the sum of its three parts, so a total
+    # above them is as unemittable as one below and reappears as
+    # total_emit_ms_per_graph, publishing an instrumentation cost no run
+    # measured.
     parts = emit["dispatch_rows_ns"] + emit["graph_row_ns"] + emit["flush_ns"]
-    if emit["total_emit_ns"] < parts:
+    if emit["total_emit_ns"] != parts:
         raise CensusError(
-            f"graph {serial} declares total_emit_ns={emit['total_emit_ns']} below the "
+            f"graph {serial} declares total_emit_ns={emit['total_emit_ns']} against the "
             f"{parts} its own parts sum to")
     return accounting
 
@@ -489,6 +518,13 @@ def main():
     parser.add_argument("--overlap-threshold", type=float, default=0.05)
     args = parser.parse_args()
     try:
+        # argparse takes any float here, and inf makes every finite mean
+        # overlap satisfy the comparison, so a census whose brackets are
+        # overwhelmingly ambiguous would publish ownership=conclusive.
+        if not math.isfinite(args.overlap_threshold) or args.overlap_threshold < 0:
+            raise CensusError(
+                f"the overlap threshold {args.overlap_threshold} is not a finite "
+                f"value at or above zero")
         contexts = parse(args.census)
         if args.window_end_ns <= args.window_begin_ns:
             raise CensusError("the request window is empty")
@@ -522,6 +558,19 @@ def main():
         for serial, graph in sorted(graphs.items()):
             begin = graph["begin_monotonic_ns"]
             retire = graph["retire_monotonic_ns"]
+            # Membership reads both instants against the window and the
+            # window alone relates them, so the pair is checked against
+            # itself first. The instrument sets retire_span_ns to
+            # retire_monotonic_ns minus the graph's begin, which makes the
+            # equality exact and an unrelated graph placed wholly inside the
+            # window detectable here rather than attributed to the request.
+            if retire < begin:
+                raise CensusError(
+                    f"graph {serial} retires at {retire}, ahead of its begin {begin}")
+            if retire - begin != graph["retire_span_ns"]:
+                raise CensusError(
+                    f"graph {serial} spans {retire - begin} between its instants against "
+                    f"the declared retire_span_ns={graph['retire_span_ns']}")
             inside = begin >= args.window_begin_ns and retire <= args.window_end_ns
             outside = retire < args.window_begin_ns or begin > args.window_end_ns
             if not inside and not outside:
