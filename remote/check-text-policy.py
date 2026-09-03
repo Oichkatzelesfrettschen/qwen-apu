@@ -5,7 +5,10 @@ import pathlib
 import subprocess
 import sys
 
-TEXT_SUFFIXES = {".md", ".py", ".sh", ".tsv", ".txt", ".yml", ".yaml"}
+TEXT_SUFFIXES = {
+    ".c", ".comp", ".glsl", ".h", ".md", ".py", ".sh", ".tsv", ".txt",
+    ".yml", ".yaml",
+}
 EMOJI_RANGES = (
     (0x1F1E6, 0x1F1FF),
     (0x1F300, 0x1FAFF),
