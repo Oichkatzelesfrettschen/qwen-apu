@@ -1,0 +1,14 @@
+key	value
+schema	fixed64-served-campaign-v2
+campaign_kind	pipeline-census
+execution_surface	hp14-ssh
+host_shortname	qwen-laptop
+ssh_session	present
+server_nice	19
+server_io_class	idle
+vulkan_profile	low-async
+model_id	qwen38-2b-distill
+arms	P I0 I0 P I0 I1 I1 I0 S
+production_server	$HOME/qwen-deployments/natural-boundary-13d05a0-r2/llama-server
+instrumented_server	$HOME/src/llama.cpp-census-v2/build-raven2-vulkan-census/bin/llama-server
+generate_tokens	64

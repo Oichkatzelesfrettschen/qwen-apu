@@ -1,0 +1,22 @@
+2026-09-02T01:48:43Z teardown_exit=0
+2026-09-02T01:48:43Z gate_head=7e9e09b2cb643bb009d756f23666447c55a10401 clean=yes
+2026-09-02T02:10:25Z gate_exit=0 repository_quality_gates=accepted
+2026-09-02T02:10:28Z prepare_exit=0 build with: QWEN_LLAMA_CANDIDATE_SELECT="llama-vulkan-pipeline-census.patch" $HOME/qwen-gate-84d24b4/remote/build-llama-preset.sh raven2-vulkan-census /h
+2026-09-02T02:22:03Z build_exit=0 executable	llama-bench	54217784	0a1a60fd2e3c373a6ab77d6af856cbc43297ea42692cfaca5e8209c0ceda4b83
+instrumentation=pipeline-census-v2 build_role=diagnostic serving_eligible=no checkpoint_semantics=natural-boundary-v1 checkpoint_series_tree=verified-candidate candidate_series=llama-vulkan-pipeline-census.patch candidate_series_sha256=7d1fccb83356b8aeefa53f3ca9b57d9bc592449b0c352fbeb6d544f520ab9990 checkpoint_series_tree_sha256=929815fb007564a513c298ffe1fdba6a16752877f33c24b1c649a54fd28c7b9c 
+2026-09-02T02:27:45Z census_exit=1 output=$HOME/raven2-kernel-census-20260902T0222Z-2b-calibration census=failed model=qwen38-2b-distill arms=9 failed=8 output=$HOME/raven2-kernel-census-20260902T0222Z-2b-calibration
+slot	arm	server_sha256	predicted_n	predicted_ms	tok_s	census_rows	status
+1	P	5dd86b90154f6143a5303efd2590b9268a0a5e3e908c4d6791f1fde03a4782c2	-	-	-	-	failed
+2	I0	f2a89d85f4ad6e432e5089a87eb42440aa4f057cb498c5692871a7b74f3413ca	-	-	-	-	failed
+3	I0	f2a89d85f4ad6e432e5089a87eb42440aa4f057cb498c5692871a7b74f3413ca	-	-	-	-	failed
+4	P	5dd86b90154f6143a5303efd2590b9268a0a5e3e908c4d6791f1fde03a4782c2	-	-	-	-	failed
+5	I0	f2a89d85f4ad6e432e5089a87eb42440aa4f057cb498c5692871a7b74f3413ca	-	-	-	-	failed
+6	I1	f2a89d85f4ad6e432e5089a87eb42440aa4f057cb498c5692871a7b74f3413ca	-	-	-	0	failed
+7	I1	f2a89d85f4ad6e432e5089a87eb42440aa4f057cb498c5692871a7b74f3413ca	-	-	-	0	failed
+8	I0	f2a89d85f4ad6e432e5089a87eb42440aa4f057cb498c5692871a7b74f3413ca	-	-	-	-	failed
+9	S	f2a89d85f4ad6e432e5089a87eb42440aa4f057cb498c5692871a7b74f3413ca	64	25347.675	2.485	66	completed
+pair	outer	inner	first_outer	first_inner	first_delta	second_outer	second_inner	second_delta	bound	verdict
+1	P	I0	-	-	-	-	-	-	0.0065	incomplete
+2	I0	I1	-	-	-	-	-	-	0.02	incomplete
+2026-09-02T02:27:52Z relaunch_exit=0 health={"status":"ok"}
+2026-09-02T02:27:52Z chain=done

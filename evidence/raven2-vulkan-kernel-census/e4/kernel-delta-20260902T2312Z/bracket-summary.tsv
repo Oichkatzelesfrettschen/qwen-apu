@@ -1,0 +1,4 @@
+role	pipeline	column	replicates	comparable_pairs	mean_delta	sd_delta	ci_low	ci_high	deltas	control_values	candidate_values	bound	verdict	detail
+subject	mul_mat_vec_q4_k_f32_f32	exclusive_bracket_ms	4	4	-0.0393	0.0002	-0.0395	-0.0390	-0.0395 -0.0393 -0.0392 -0.0391	3226.678 3225.998 3225.897 3225.729	3099.331 3099.086 3099.511 3099.628	0.02	shortened	ci=[-0.0395,-0.0390] below -bound=0.02
+null	mul_mat_vec_q6_k_f32_f32	exclusive_bracket_ms	4	4	-0.0001	0.0004	-0.0008	+0.0005	-0.0006 -0.0003 +0.0002 +0.0002	2309.542 2307.818 2307.592 2307.670	2308.102 2307.240 2308.011 2308.200	0.02	held	-
+token_identity	-	content,predicted_n	4	4	-	-	-	-	-	-	-	-	held	pair1=equal pair2=equal pair3=equal pair4=equal
