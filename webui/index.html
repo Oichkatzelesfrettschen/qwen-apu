@@ -317,6 +317,24 @@ function writeBrowserStorage(storageName, key, value) {
 // value an earlier visit left in sessionStorage is read once and carried over.
 let apiKey = readBrowserStorage('localStorage', 'qwen-apu-api-key')
   || readBrowserStorage('sessionStorage', 'qwen-apu-api-key') || '';
+// A link of the form /#key=<bearer> hands the key over once: the fragment
+// stays in the browser rather than reaching the router in a request line or
+// its log, the page stores it beside a pasted key, and the address bar is
+// rewritten without it so a bookmark or a shared tab carries none.
+(() => {
+  let fragment = '';
+  try { fragment = String(window.location.hash || ''); } catch { return; }
+  const match = /^#key=([^&#]+)/.exec(fragment);
+  if (!match) return;
+  let fragmentKey = '';
+  try { fragmentKey = decodeURIComponent(match[1]).trim(); } catch { return; }
+  if (!fragmentKey) return;
+  apiKey = fragmentKey;
+  writeBrowserStorage('localStorage', 'qwen-apu-api-key', apiKey);
+  try {
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+  } catch { /* an address bar that keeps the fragment still serves the page */ }
+})();
 $('#api-key').value = apiKey;
 
 // Reasoning costs decode tokens at about one per second on this APU, so the
