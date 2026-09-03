@@ -83,18 +83,36 @@ fi
 exit 1
 STUB
 
-cat >"$stub_directory/llama-bench" <<'STUB'
-#!/bin/sh
-set -eu
-sleep "${QWEN_TEST_BENCH_SLEEP:-0.4}"
+# The bench is the arm, so the probe launches it through census_arm_exec and it
+# runs under a closed environment. Its fixture controls therefore reach it
+# through a file whose path is written into the stub here rather than through
+# variables the arm no longer inherits, and it appends its own environment so a
+# case reads what the arm was handed rather than what the launch named.
+bench_controls=$temporary_directory/bench-controls.tsv
+bench_environment=$temporary_directory/bench-environment.txt
+: >"$bench_controls"
+: >"$bench_environment"
+{
+    printf '#!/bin/sh\nset -eu\n'
+    printf 'bench_controls=%s\n' "$bench_controls"
+    printf 'bench_environment=%s\n' "$bench_environment"
+    cat <<'STUB'
+env >>"$bench_environment"
+bench_control() {
+    awk -F'\t' -v key="$1" '$1 == key { value = $2; found = 1 }
+        END { if (found) print value }' "$bench_controls"
+}
+bench_sleep=$(bench_control sleep)
+sleep "${bench_sleep:-0.4}"
 printf '| model | size | params | backend | ngl | test | t/s |\n'
 printf '| --- | ---: | ---: | --- | ---: | ---: | ---: |\n'
-if [ "${QWEN_TEST_BENCH_WITHOUT_TG:-0}" = 1 ]; then
+if [ "$(bench_control without_tg)" = 1 ]; then
     printf '| qwen3 2B Q4_K_M | 1.22 GiB | 2.03 B | Vulkan | 99 | pp512 | 21.03 +/- 0.10 |\n'
     exit 0
 fi
 printf '| qwen3 2B Q4_K_M | 1.22 GiB | 2.03 B | Vulkan | 99 | tg64 | 6.12 +/- 0.03 |\n'
 STUB
+} >"$stub_directory/llama-bench"
 
 cat >"$stub_directory/telemetry-broker" <<'STUB'
 #!/bin/sh
@@ -228,6 +246,9 @@ printf '1100000000\n' >"$hwmon_root_fixture/hwmon1/freq1_input"
 model_fixture=$temporary_directory/model.gguf
 printf 'not a real gguf\n' >"$model_fixture"
 
+radv_icd_fixture=$temporary_directory/radeon_icd.x86_64.json
+printf '{}\n' >"$radv_icd_fixture"
+
 reset_level() {
     printf 'manual\n' >"$drm_fixture/power_dpm_force_performance_level"
 }
@@ -239,10 +260,21 @@ reset_level() {
 exec_probe() {
     probe_output=$1
     shift
+    # The two ambient settings are what the closed arm environment exists to
+    # stop: GGML_VK_Q4K_SIDEPLANE gates its pre-pass on getenv returning a
+    # pointer rather than on the value, so a 0 here enables the feature a
+    # control arm is defined by leaving off, and
+    # QWEN_CACHE_OVERRIDE_CONTEXT_CEILING is a QWEN_ name every scrub in the
+    # launch chain leaves alone. Every case runs with both set, so the arm
+    # environment record and the bench's own environment are read against a
+    # shell that carried them.
     exec env PATH="$stub_directory:$PATH" \
+        GGML_VK_Q4K_SIDEPLANE=0 \
+        QWEN_CACHE_OVERRIDE_CONTEXT_CEILING=65536 \
         QWEN_DRM_DEVICE="$drm_fixture" \
         QWEN_BAPM_PARAMETER="$bapm_fixture" \
         QWEN_HWMON_ROOT="$hwmon_root_fixture" \
+        QWEN_RADV_ICD="$radv_icd_fixture" \
         QWEN_VULKAN_WORKLOAD_LOCK="$lease_fixture" \
         QWEN_TELEMETRY_BROKER="$stub_directory/telemetry-broker" \
         "$@" "$probe" "$probe_output" "$model_fixture" \
@@ -504,8 +536,10 @@ fi
 reset_level
 notg_output=$temporary_directory/out-notg
 notg_status=0
-run_probe "$notg_output" QWEN_TEST_BENCH_WITHOUT_TG=1 \
+printf 'without_tg\t1\n' >"$bench_controls"
+run_probe "$notg_output" \
     >"$temporary_directory/notg.log" 2>&1 || notg_status=$?
+: >"$bench_controls"
 notg_invariant=$(receipt_field "$notg_output/D1-high/dpm-receipt.tsv" clock_invariant)
 if [ "$notg_status" -eq 0 ] && [ "$notg_invariant" = not_run ] &&
     grep -q '^dpm_authority=none bapm=Y$' "$temporary_directory/notg.log"; then
@@ -559,7 +593,8 @@ fi
 # would leave the probe, its broker, and its bench running.
 reset_level
 term_output=$temporary_directory/out-term
-{ exec_probe "$term_output" QWEN_TEST_BENCH_SLEEP=8; } \
+printf 'sleep\t8\n' >"$bench_controls"
+{ exec_probe "$term_output"; } \
     >"$temporary_directory/term.log" 2>&1 &
 term_pid=$!
 term_attempt=0
@@ -603,6 +638,53 @@ else
         "$(cat "$drm_fixture/power_dpm_force_performance_level")" \
         "${term_broker_pid:--}" "$term_broker_alive" >&2
 fi
+
+: >"$bench_controls"
+
+# The closed arm environment, read from both sides. Every case above ran with
+# GGML_VK_Q4K_SIDEPLANE and QWEN_CACHE_OVERRIDE_CONTEXT_CEILING set in the
+# invoking shell: the record each arm keeps names neither, and neither reaches
+# the bench's own environment, which is what a record alone could not prove.
+environment_isolated=0
+for isolation_arm in D0-auto D1-high D2-profile_peak; do
+    isolation_record=$complete_output/$isolation_arm/arm-environment.tsv
+    if [ ! -s "$isolation_record" ]; then
+        environment_isolated=1
+        printf 'arm environment record is absent: %s\n' "$isolation_record" >&2
+        continue
+    fi
+    if [ "$(head -n 1 "$isolation_record")" != "$(printf 'name\tvalue')" ]; then
+        environment_isolated=1
+        printf 'arm environment record carries no header: %s\n' "$isolation_record" >&2
+    fi
+    for isolation_name in GGML_VK_Q4K_SIDEPLANE QWEN_CACHE_OVERRIDE_CONTEXT_CEILING; do
+        if cut -f1 "$isolation_record" | grep -qx "$isolation_name"; then
+            environment_isolated=1
+            printf 'ambient %s reached the arm record: %s\n' "$isolation_name" \
+                "$isolation_record" >&2
+        fi
+    done
+    # The names the arm requires are what make the record a statement rather
+    # than an empty set.
+    for isolation_required in PATH HOME VK_DRIVER_FILES LLAMA_NO_CPU_FALLBACK; do
+        if ! cut -f1 "$isolation_record" | grep -qx "$isolation_required"; then
+            environment_isolated=1
+            printf 'arm environment record omits %s: %s\n' "$isolation_required" \
+                "$isolation_record" >&2
+        fi
+    done
+done
+if [ ! -s "$bench_environment" ]; then
+    environment_isolated=1
+    printf 'the bench recorded no environment of its own\n' >&2
+fi
+for isolation_name in GGML_VK_Q4K_SIDEPLANE QWEN_CACHE_OVERRIDE_CONTEXT_CEILING; do
+    if grep -q "^$isolation_name=" "$bench_environment"; then
+        environment_isolated=1
+        printf 'ambient %s reached the bench environment\n' "$isolation_name" >&2
+    fi
+done
+report "$environment_isolated" arm_environment_excludes_ambient_settings
 
 if [ "$failures" -ne 0 ]; then
     printf 'probe_dpm_authority_tests=failed failures=%s\n' "$failures" >&2

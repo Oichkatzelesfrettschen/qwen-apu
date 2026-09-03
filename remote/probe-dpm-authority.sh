@@ -56,12 +56,22 @@ fi
 output_directory=$1
 model_path=$2
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# The decode arm runs under the closed environment census_arm_exec applies, so
+# an ambient GGML_VK_*, RADV_*, or LLAMA_* setting reaches no arm and each arm
+# keeps the record of what did. The lease descriptor survives it: `env -i`
+# replaces the environment and leaves the descriptor table alone, which is what
+# makes the exclusion span every arm.
+# shellcheck source=census-arm-lib.sh
+. "$script_directory/census-arm-lib.sh"
 bench=${3:-"${HOME:?}/src/llama.cpp-census-v7/build-raven2-vulkan-census/bin/llama-bench"}
 broker=${QWEN_TELEMETRY_BROKER:-"$script_directory/../build/telemetry-broker"}
 validator=${QWEN_CLOCK_VALIDATOR:-"$script_directory/validate-clock-sidecar.py"}
 drm_device=${QWEN_DRM_DEVICE:-/sys/class/drm/card1/device}
 bapm_parameter=${QWEN_BAPM_PARAMETER:-/sys/module/amdgpu/parameters/bapm}
 ionice_command=${QWEN_DPM_IONICE:-/usr/bin/ionice}
+# The bench runs directly rather than through radv-low-priority-env.sh, so the
+# ICD the loader reads is stated here the way that wrapper states it.
+radv_icd=${QWEN_RADV_ICD:-/usr/share/vulkan/icd.d/radeon_icd.x86_64.json}
 hwmon_root=${QWEN_HWMON_ROOT:-/sys/class/hwmon}
 sidecar_period_ms=${QWEN_DPM_SIDECAR_PERIOD_MS:-20}
 sidecar_cpu=${QWEN_DPM_SIDECAR_CPU:-0,1}
@@ -101,6 +111,10 @@ if [ ! -x "$bench" ]; then
 fi
 if [ ! -f "$model_path" ]; then
     printf 'model file is absent: %s\n' "$model_path" >&2
+    exit 2
+fi
+if [ ! -r "$radv_icd" ]; then
+    printf 'RADV ICD is not readable: %s\n' "$radv_icd" >&2
     exit 2
 fi
 if [ ! -x "$broker" ]; then
@@ -448,7 +462,11 @@ run_level() {
     # The bench runs as a background job under wait, so a terminating signal
     # reaches this script while the decode is live rather than after it.
     set +e
-    "$bench" -m "$model_path" -p 0 -n "$generate_tokens" -r "$repetitions" \
+    census_arm_exec "$arm_directory/arm-environment.tsv" \
+        VK_DRIVER_FILES="$radv_icd" VK_ICD_FILENAMES="$radv_icd" \
+        LLAMA_NO_CPU_FALLBACK=1 \
+        -- \
+        "$bench" -m "$model_path" -p 0 -n "$generate_tokens" -r "$repetitions" \
         -ngl 99 -t 2 -o md >"$bench_log" 2>&1 &
     bench_pid=$!
     wait "$bench_pid"
