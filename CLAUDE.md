@@ -439,6 +439,47 @@ routable. A new API-key attempt clears the prior selection until the
 authenticated roster returns, and late responses from an older attempt never
 replace the newer state.
 
+What a checkpoint can do is a claim per feature, and `remote/feature-claims.tsv`
+carries it as `subject_id`, `feature`, `status`, `evidence`, `note`. The feature
+decides the namespace the subject resolves in: `text-chat`, `vision`,
+`tool-selection`, `guarded-tool-execution`, `long-context`,
+`context-checkpoints`, and `quarantine` name a `remote/models.tsv` id,
+`draft-pair-speculation` a `remote/draft-pairs.tsv` pair_id, `web-search` a
+`remote/web-profiles.tsv` profile_id, and `image-generation` and `image-review`
+a `remote/image-profiles.tsv` profile_id, so one namespace per feature keeps the
+subject column free of a scope field a typo would put at odds with the id beside
+it. `status` is closed over `production`, `candidate`, `experimental`,
+`unstable`, and `unsupported`; the first, second, and fourth each assert a run
+and require an evidence path, and the other two admit `-` while their note names
+the run that moves them. A `(subject, feature)` pair absent from the file reads
+`unclaimed`, so a hole in the matrix is the absence of a claim rather than a
+denial.
+
+`remote/build-feature-roster.sh` validates every claim before it emits any row
+and writes `webui/roster.json` through one rename. It refuses a claim naming a
+subject outside its feature's ledger, a duplicate pair, an evidence path outside
+`evidence/`, a note carrying a quotation mark or a backslash, and a `production`
+claim over a checkpoint whose registry tier reads `quarantine` or whose id the
+quarantine authority names at model scope; the profile-scope rows stay out of
+that read, since a profile row removes one tuple of a checkpoint that otherwise
+serves. Models order by tier rank and then by the class policy -- the 2B class,
+the 0.8B class, the 4B class, and a row outside the three after them by id --
+and `archive` and `rejected` rows reach no picker, so they reach no roster.
+`remote/repository-quality-gates.sh` regenerates into a scratch directory and
+diffs the result against the committed document, so a ledger edit that leaves
+the page stale fails the gate.
+
+llama-server serves the page with `--path` over the `webui` directory, so
+`webui/index.html` fetches `./roster.json` beside itself and decorates the ids
+`GET /v1/models` returned. The roster contributes no id: each render iterates
+the served ids and looks each one up, so a roster row for a model the listener
+withheld reaches neither the picker nor the matrix and a served id the roster
+omits keeps its option. The picker option carries the row's tags, a badge names
+the selected row's tier, and a collapsible matrix holds one row per served
+rostered id over the model-scope features with each cell's status, evidence
+path, and note. An absent, malformed, or foreign-schema roster leaves both
+decorations off while the picker routes.
+
 A web search reaches the network through one human approval, and the browser is
 the executor. llama-server reads `tools` from the client body alone and runs a
 wrapped MCP tool through the standalone `POST /tools` route, so the page
@@ -1248,6 +1289,7 @@ remote/measure-draft-pair.sh PAIR_ID OUTPUT_DIR
                                                 # snapshot-bound ABBA pairing
 remote/build-router-presets.sh [OUTPUT_INI]    # the picker, from the tier field
 remote/build-web-presets.sh OUTPUT_INI         # web profiles, from the execution_policy field
+remote/build-feature-roster.sh [OUTPUT_JSON]   # webui/roster.json, from the feature claim ledger
 remote/fetch-candidate-artifact.sh REPO REV FILE DIR  # observed, not pinned
 remote/run-one-token-admission.sh RECORD [OUT]  # load every candidate once
 remote/run-representation-arm.sh LABEL CONTROL SUBJECT
@@ -1366,6 +1408,14 @@ remote/validate-clock-sidecar.py OUT.tsv --sidecar-status 0 --period-ms 10 \
 remote/summarize-perf-logger-slice.py OUT/arms/NN-S/server-log-request.slice \
     --expected-decode-blocks 63
 
+# Rung 7 of the E4 ladder: two serving builds on one checkpoint, mirrored
+# C K K C quadruples under the production receipt binding, promoted on a
+# one-sided 5% paired bound.
+# evidence/raven2-vulkan-kernel-census/e4/served-ab-design.md registers the
+# falsifiers and the chain.
+QWEN_CENSUS_PRODUCTION_RECEIPT=RECEIPT remote/run-served-binary-ab.sh \
+    CONTROL_SERVER CANDIDATE_SERVER MODEL_ID OUT
+
 # Deployment bundles: the server, its manifest, the checkpoint ledger, and
 # the presets generated against that ledger as one activated unit.
 # Activation and rollback are the same atomic symlink transition, serialized
@@ -1435,6 +1485,8 @@ remote/test-qwen-runtime-guards.sh
 remote/test-radv-low-priority-env.sh
 remote/test-model-registry.sh
 remote/test-model-tiers.sh
+remote/test-feature-roster.sh
+node remote/test-fallback-webui-roster.mjs
 python3 remote/test-summarize-draft-pair.py
 remote/test-measure-draft-pair.sh
 remote/test-probe-depth-projector.sh
@@ -1455,6 +1507,7 @@ remote/test-quality-suite.py
 remote/test-quality-roster.sh
 remote/test-promote-llama-build.sh
 remote/test-classify-checkpoint-semantics.sh
+remote/test-run-served-binary-ab.sh
 remote/test-check-runtime-tree.sh
 remote/test-deployment-bundle.sh
 remote/generate-quality-images.py --check
