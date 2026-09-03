@@ -646,14 +646,49 @@ file to exist at mode 0600 owned by the serving user rather than minting one
 beside the socket, and refuses the exposure against either research override,
 since `qwen-capacity-policy.sh` forces 127.0.0.1 for the quarantine override
 and the unvalidated-depth marker and an exposure combined with one would print
-an address it never binds. `qwen-webui-session.sh` records `lan_exposure=` and
-`lan_address=` on its `state=running` line and prints the page URL carrying
-`?broker=` and `?artifacts=`, because the page's meta tags name the loopback
-and a LAN browser handed the bare router address would point both back at its
-own machine. What the exposure changes is who reaches the approval dialog. The
-single-use grant the dialog signs, the schema the wrapper enforces, and the
-one human approval per network-reaching call stay exactly what they are, and
-every checked-in `execution_policy` still reads `refused`.
+an address it never binds. `qwen-webui-session.sh` records `lan_exposure=`,
+`lan_address=`, `lan_name=`, and `lan_open=` on its `state=running` line and
+prints the page URL carrying `?broker=` and `?artifacts=`, because the page's
+meta tags name the loopback and a LAN browser handed the bare router address
+would point both back at its own machine. What the exposure changes is who
+reaches the approval dialog. The single-use grant the dialog signs, the schema
+the wrapper enforces, and the one human approval per network-reaching call stay
+exactly what they are, and every checked-in `execution_policy` still reads
+`refused`.
+
+A DHCP lease moves that literal, so `QWEN_WEB_LAN_NAME` adds one mDNS hostname
+to the admitted set and the set stays closed. It defaults to this machine's own
+`hostname -s` under `.local` where avahi-daemon runs and an explicit empty value
+serves the literal alone. The rebinding closure holds for the name because a
+browser resolves a `.local` name by multicast to the hosts sharing the link
+rather than through a recursive resolver, so a name an attacker controls in DNS
+reaches neither socket; `authorize-broker.py --lan-name` and
+`image-service.py --lan-name` compare it casefolded beside the literal, each
+listener admits both page origins through CORS, and `trustedArtifactOrigin`
+admits the page's own hostname whether address or name -- the browser already
+resolved that host to fetch the page and the bearer is stored per page origin,
+so the credential returns to the machine that served the page and no other. The
+launcher names the page by the name with the literal beside it, since the name
+outlives the lease.
+
+`QWEN_WEB_LAN_OPEN=1` is the second explicit decision and it removes that
+bearer. The router serves with `QWEN_REQUIRE_API_KEY` at 0, `--open-lan` makes
+the broker sign `POST /grant` and `POST /grant-image` and answer an exposed
+`GET /health` for a request presenting the session secret alone, and the
+artifact listener reads an artifact for any admitted Host; both children read
+no key file under the flag, because `read_secret_file` refuses the empty path a
+keyless launch hands them. Every peer on the network can then chat, approve a
+search, and approve a generation, and the launcher and `session.status` say so
+on a `lan_open=1` line. What stands is every gate that is not the bearer: the
+closed Host set, the Origin allowlist, the per-launch session secret, the
+single-use grant, each wrapped tool's schema, and one human approval per
+network-reaching and device-reaching call. The opt-in requires
+`QWEN_WEB_LAN=1`, since a listener the operator never exposed has no bearer to
+remove, and it meets both research-override refusals on the exposure's own
+terms. Under the bearer mode the launcher prints the page link carrying
+`#key=<bearer>` only where `[ -t 1 ]` finds stdout on a terminal, so the key
+stays out of a redirected log; the page reads that fragment once, stores it,
+and rewrites the address bar without it.
 
 The integer dot product is advertised, functional, and unaccelerated, which
 decides how most of this tree's bytes execute. RADV reports
@@ -1234,6 +1269,18 @@ QWEN_WEB_LAN=1 QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=0.0.0.0 \
 QWEN_ROUTER=1 QWEN_WEB_AUTHORIZER_READY=1 \
 QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
     ~/qwen-laptop-setup/remote/qwen-launch.sh low-async
+# The same lane at one permanent address with no key step. QWEN_WEB_LAN_NAME
+# defaults to this machine's own `hostname -s` under `.local` where avahi
+# advertises it, so the operator bookmarks a name a DHCP lease does not move.
+# QWEN_WEB_LAN_OPEN=1 removes the Web UI bearer from the router, the broker,
+# and the artifact listener: every peer on this network can chat, approve a
+# search, and approve a generation.
+QWEN_SERVER_PORT=42069 \
+QWEN_WEB_LAN=1 QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_OPEN=1 \
+QWEN_BIND_HOST=0.0.0.0 \
+QWEN_ROUTER=1 QWEN_WEB_AUTHORIZER_READY=1 \
+QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
+    ~/qwen-laptop-setup/remote/qwen-launch.sh low-async
 ~/qwen-laptop-setup/remote/qwen-teardown.sh
 ~/qwen-laptop-setup/remote/qwen-webui-control.sh status
 
@@ -1791,10 +1838,16 @@ reserved for human co-authors.
 - `--tools all` grants shell execution and file writing to a prompt-injectable
   model. The read-only set is `read_file,file_glob_search,grep_search`, and a
   server holding that grant stays off the LAN. The web and image lanes reach
-  the LAN through `QWEN_WEB_LAN=1` alone, where the model executes nothing on
-  its own: every network-reaching and device-reaching call passes one human
-  approval and a single-use grant, and the Web UI bearer gates the router, the
-  broker's signing routes, and the artifact listener.
+  the LAN through `QWEN_WEB_LAN=1` alone, which admits one IPv4 literal and,
+  through `QWEN_WEB_LAN_NAME`, one mDNS name in a closed Host set. The model
+  executes nothing on its own there: every network-reaching and
+  device-reaching call passes one human approval and a single-use grant, and
+  the Web UI bearer gates the router, the broker's signing routes, and the
+  artifact listener. `QWEN_WEB_LAN_OPEN=1` removes that bearer from all three
+  by the operator's explicit decision, which puts chat, search approval, and
+  generation approval in reach of every peer on the network and leaves the
+  Host set, the Origin allowlist, the session secret, the single-use grant,
+  and the one human approval per call carrying the whole gate.
 - The service starts and stops through the launch and teardown scripts alone.
   No unit file, crontab entry, or login hook starts it, so a reboot leaves the
   laptop with nothing listening.
