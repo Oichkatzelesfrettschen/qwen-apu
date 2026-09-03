@@ -2018,17 +2018,17 @@ if build "$web_profiles_ui" "$presets_image_checked_in" \
     done <<EOF
 $(sed -n 's/^LLAMA_ARG_MCP_SERVERS_CONFIG = //p' "$presets_image_checked_in")
 EOF
-    report checked_in_image_ledger_withholds_unmeasured_reviewer accepted
-    report checked_in_image_ledger_withholds_paired_server accepted
+    report checked_in_image_ledger_admits_reviewer "$outcome"
+    review_section_outcome=ok
+    grep -Fqx '# qwen_image_review_section=lfm25-vl-16b' \
+        "$presets_image_checked_in" \
+        || review_section_outcome=review_section_absent
+    grep -Fqx '[lfm25-vl-16b]' "$presets_image_checked_in" \
+        || review_section_outcome=review_section_absent
+    report checked_in_image_ledger_emits_paired_server "$review_section_outcome"
 else
-    if grep -q 'carries no validated tuple at depth 8192' \
-        "$work/image-checked-in.err"; then
-        report checked_in_image_ledger_withholds_unmeasured_reviewer ok
-        report checked_in_image_ledger_withholds_paired_server ok
-    else
-        report checked_in_image_ledger_withholds_unmeasured_reviewer wrong_refusal
-        report checked_in_image_ledger_withholds_paired_server wrong_refusal
-    fi
+    report checked_in_image_ledger_admits_reviewer build_refused
+    report checked_in_image_ledger_emits_paired_server build_refused
 fi
 
 # An image row pairing a review_model adds one review-only vision section. The

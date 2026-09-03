@@ -692,6 +692,12 @@ fi
 # check-validated-tuples.sh derives the expected tuple from models.tsv and
 # requires the ledger to carry a matching validated row.
 check_validated_tuples=$script_directory/check-validated-tuples.sh
+# The checker reads the image ledger for the reviewer claim, so these cases name
+# one whose review_model reads `-` and exercise the registry claim alone.
+check_tuple_image_profiles=$work_directory/check-tuple-image-profiles.tsv
+printf '%b\n' \
+    'check-image\tcheck-bundle\tA\t512\t512\t1\teuler\t1.0\t4\t512\t300\trefused\t-\t-' \
+    >"$check_tuple_image_profiles"
 check_tuple_models=$work_directory/check-tuple-models.tsv
 printf '%b\n' \
     'check-model\ttext\tmodels/check-model.gguf\tfetch.sh\t8192\t8192\t8192\tq8_0\tq4_0\ton\tnone\t-\t-\t-\tuntested\tproduction\t128\t32\t4096\tevidence/check-model.md\tunmeasured\trefused' \
@@ -702,6 +708,7 @@ printf '%b\n' \
     >"$matching_check_tuples"
 if QWEN_MODEL_REGISTRY=$check_tuple_models \
     QWEN_VALIDATED_TUPLES=$matching_check_tuples \
+    QWEN_IMAGE_PROFILES=$check_tuple_image_profiles \
     "$check_validated_tuples" >"$work_directory/matching-check.out"; then
     report check_validated_tuples_matching accepted
 else
@@ -715,6 +722,7 @@ printf '%b\n' \
 set +e
 QWEN_MODEL_REGISTRY=$check_tuple_models \
 QWEN_VALIDATED_TUPLES=$gap_check_tuples \
+QWEN_IMAGE_PROFILES=$check_tuple_image_profiles \
     "$check_validated_tuples" >"$work_directory/gap-check.out" \
     2>"$work_directory/gap-check.err"
 gap_check_status=$?
@@ -734,6 +742,7 @@ printf '%b\n' \
 set +e
 QWEN_MODEL_REGISTRY=$check_tuple_models \
 QWEN_VALIDATED_TUPLES=$malformed_check_tuples \
+QWEN_IMAGE_PROFILES=$check_tuple_image_profiles \
     "$check_validated_tuples" >"$work_directory/malformed-check.out" \
     2>"$work_directory/malformed-check.err"
 malformed_check_status=$?
@@ -757,6 +766,7 @@ printf '%b\n' \
 set +e
 QWEN_MODEL_REGISTRY=$projector_check_models \
 QWEN_VALIDATED_TUPLES=$projector_none_tuples \
+QWEN_IMAGE_PROFILES=$check_tuple_image_profiles \
     "$check_validated_tuples" >"$work_directory/projector-none.out" \
     2>"$work_directory/projector-none.err"
 projector_none_status=$?
@@ -773,6 +783,7 @@ sed 's/\tnone\tvulkan\t/\tloaded\tvulkan\t/' \
     "$projector_none_tuples" >"$projector_loaded_tuples"
 if QWEN_MODEL_REGISTRY=$projector_check_models \
     QWEN_VALIDATED_TUPLES=$projector_loaded_tuples \
+    QWEN_IMAGE_PROFILES=$check_tuple_image_profiles \
     "$check_validated_tuples" >"$work_directory/projector-loaded.out"; then
     report check_validated_tuples_accepts_loaded_projector accepted
 else

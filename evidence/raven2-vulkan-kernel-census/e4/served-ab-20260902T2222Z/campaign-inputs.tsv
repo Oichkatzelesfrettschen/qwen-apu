@@ -1,0 +1,24 @@
+key	value
+schema	fixed64-served-campaign-v2
+campaign_kind	served-binary-ab
+execution_surface	qwen-laptop-ssh
+host_shortname	qwen-laptop
+ssh_session	present
+server_nice	19
+server_io_class	idle
+vulkan_profile	low-async
+inference_cpu	0
+latency_mode	observe
+router	0
+speculation	off
+backend_sampling	0
+web_broker	0
+image_service	0
+runtime_tree_git_head	8e852f8d19740f7c478fd3212c39580cf5cd7921
+model_id	qwen38-2b-distill
+arms	W C K K C C K K C
+control_server	$HOME/qwen-deployments/natural-boundary-13d05a0-r2/llama-server
+control_server_sha256	5dd86b90154f6143a5303efd2590b9268a0a5e3e908c4d6791f1fde03a4782c2
+candidate_server	$HOME/src/llama.cpp-e4/build-raven2-vulkan-production/bin/llama-server
+candidate_server_sha256	7d9df19f846f0696445b55fed138d7d743d8a315ac0e238d34d023c6f94026b7
+generate_tokens	64
