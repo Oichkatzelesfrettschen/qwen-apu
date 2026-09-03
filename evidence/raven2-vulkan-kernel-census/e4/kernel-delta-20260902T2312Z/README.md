@@ -95,7 +95,7 @@ The correctness state is a matrix rather than one flag:
 | selected log-probability identity | refuted, maximum 2.421e-2 nat |
 | registered 1e-3 nat bound | refuted and retired without a replacement figure |
 | longitudinal amplification over 128 tokens | not observed |
-| margin robustness | `../margin-contract-design.md`, judged on a fresh holdout |
+| margin robustness | `../margin-holdout-20260903T0456Z/`: 10 of 12 prompts held with retention at least 0.786; two argmax flips at control margins of 0.0001 and 0.0023 nat, `differs` as registered |
 | general task-quality non-regression | pending the graded suite |
 
 The CPU reference is context rather than a threshold: it shows E4 is far
