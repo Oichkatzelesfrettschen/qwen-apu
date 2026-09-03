@@ -408,6 +408,7 @@ case $action in
                               QWEN_IMAGE_PROFILE QWEN_IMAGE_TOKEN_KEY_FILE \
                               QWEN_IMAGE_STATE_DIR \
                               QWEN_IMAGE_SERVICE_SOCKET \
+                              QWEN_IMAGE_HTTP_PORT \
                               QWEN_IMAGE_PRIORITY_WRAPPER \
                               QWEN_IMAGE_LEASE_WAIT_S \
                               QWEN_RADV_ICD \

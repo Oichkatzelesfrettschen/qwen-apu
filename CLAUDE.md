@@ -1225,6 +1225,11 @@ QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
 # One router serving the whole roster on the LAN: the registry sections stay
 # tool-free and the web section carries the search tools, so the ordinary
 # launcher arms the broker and the search instance from the preset itself.
+# QWEN_SERVER_PORT picks the router port; under the exposure the broker
+# binds one above it and the artifact listener one above that, so a page
+# loaded over the LAN derives both companions from its own address and the
+# bare router URL is the whole thing a browser needs.
+QWEN_SERVER_PORT=42069 \
 QWEN_WEB_LAN=1 QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=0.0.0.0 \
 QWEN_ROUTER=1 QWEN_WEB_AUTHORIZER_READY=1 \
 QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \

@@ -101,6 +101,16 @@ image_service_enabled=${QWEN_IMAGE_SERVICE:-0}
 image_service_program=${QWEN_IMAGE_SERVICE_PROGRAM:-"$script_directory/image-service.py"}
 image_service_profiles_json=${QWEN_IMAGE_PROFILES_JSON:-}
 image_service_origin=${QWEN_IMAGE_PAGE_ORIGIN:-"http://$lan_page_host:$server_port"}
+# The artifact listener takes an ephemeral port on a loopback launch, where the
+# session's own status line is the reader. An exposed launch binds one port
+# above the broker unless the caller names another, so the page URL a LAN
+# browser keeps stays the same across relaunches and the page derives the
+# artifact origin from the address it was loaded over.
+if [ "${QWEN_WEB_LAN:-0}" = 1 ]; then
+    image_service_http_port=${QWEN_IMAGE_HTTP_PORT:-$((${QWEN_WEB_BROKER_PORT:-8571} + 1))}
+else
+    image_service_http_port=${QWEN_IMAGE_HTTP_PORT:-0}
+fi
 image_service_log=$state_directory/image-service.log
 case ${QWEN_ROUTER_PRESETS:-} in
     "$state_directory"/.router-presets.active.*)
@@ -442,6 +452,7 @@ if [ "$image_service_enabled" = 1 ]; then
         --api-key-file "$api_key_file" \
         --origin "$image_service_origin" \
         --http-host "$lan_listen_host" \
+        --http-port "$image_service_http_port" \
         ${lan_address:+--lan-exposure "$lan_address"} \
         >"$image_service_log" 2>&1 &
     image_service_pid=$!

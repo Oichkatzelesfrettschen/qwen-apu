@@ -774,42 +774,78 @@ async function resolveImageTools(selectedModel, generation) {
 // the stated default rather than an empty origin the fetch resolves against
 // this page.
 const BROKER_ORIGIN_FALLBACK = 'http://127.0.0.1:8571';
-function configuredBrokerOrigin() {
-  let configured = '';
+// A page loaded over the LAN names the appliance in its own address, and the
+// exposed launch binds the broker one port above the router and the artifact
+// listener one above that on the same host, so a loopback origin from the
+// meta tags is replaced by the loaded host at that offset where the page was
+// loaded from anywhere but loopback. A query parameter still wins, since it
+// names what the launch printed.
+const BROKER_LAN_PORT_OFFSET = 1;
+const ARTIFACT_LAN_PORT_OFFSET = 2;
+function loadedPort() {
+  if (window.location.port) return Number(window.location.port);
+  return window.location.protocol === 'https:' ? 443 : 80;
+}
+function loadedOverLan() {
+  const location = window.location;
+  if (!location || typeof location.hostname !== 'string') return false;
+  const host = location.hostname;
+  return String(location.protocol || '').startsWith('http')
+    && host !== '' && host !== 'localhost' && host !== '127.0.0.1' && host !== '[::1]';
+}
+function isLoopbackOrigin(origin) {
+  return /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(origin);
+}
+function lanOrigin(port) {
+  return `${window.location.protocol}//${window.location.hostname}:${port}`;
+}
+function queryBrokerOrigin() {
   try {
-    configured = (new URL(window.location.href)).searchParams.get('broker') || '';
+    return ((new URL(window.location.href)).searchParams.get('broker') || '').trim();
   } catch (error) {
-    configured = '';
+    return '';
   }
-  if (!configured.trim()) {
+}
+function queryArtifactOrigin() {
+  try {
+    return ((new URL(window.location.href)).searchParams.get('artifacts') || '').trim();
+  } catch (error) {
+    return '';
+  }
+}
+function configuredBrokerOrigin() {
+  let configured = queryBrokerOrigin();
+  if (!configured) {
     const tag = document.querySelector('meta[name="qwen-web-broker"]');
-    configured = (tag && tag.getAttribute('content')) || '';
+    configured = ((tag && tag.getAttribute('content')) || '').trim();
   }
-  if (!configured.trim()) configured = BROKER_ORIGIN_FALLBACK;
-  return configured.trim().replace(/\/+$/, '');
+  if (!configured) configured = BROKER_ORIGIN_FALLBACK;
+  configured = configured.replace(/\/+$/, '');
+  if (loadedOverLan() && isLoopbackOrigin(configured) && !queryBrokerOrigin()) {
+    configured = lanOrigin(loadedPort() + BROKER_LAN_PORT_OFFSET);
+  }
+  return configured;
 }
 const BROKER_ORIGIN_DEFAULT = configuredBrokerOrigin();
 
 // The artifact origin resolves in the same order for the same reason, from an
-// `?artifacts=` query parameter, then a `qwen-image-artifacts` meta tag, and
-// it has no default: image-service.py binds --http-port 0, so the port is
-// ephemeral and qwen-webui-session.sh reports the address it received on its
-// `image_service_identity ... listener=` line. A page given no artifact origin
-// renders the generation's digest and provenance route and states that it
-// reached no listener, rather than resolving the route against the router,
-// which proxies none of it.
+// `?artifacts=` query parameter, then a `qwen-image-artifacts` meta tag, then
+// the loaded host at 8572 where the page came over the LAN. A loopback launch
+// binds --http-port 0, so the port is ephemeral there and
+// qwen-webui-session.sh reports the address it received on its
+// `image_service_identity ... listener=` line; a loopback page given no
+// artifact origin renders the generation's digest and provenance route and
+// states that it reached no listener, rather than resolving the route against
+// the router, which proxies none of it.
 function configuredArtifactOrigin() {
-  let configured = '';
-  try {
-    configured = (new URL(window.location.href)).searchParams.get('artifacts') || '';
-  } catch (error) {
-    configured = '';
-  }
-  if (!configured.trim()) {
+  let configured = queryArtifactOrigin();
+  if (!configured) {
     const tag = document.querySelector('meta[name="qwen-image-artifacts"]');
-    configured = (tag && tag.getAttribute('content')) || '';
+    configured = ((tag && tag.getAttribute('content')) || '').trim();
   }
-  return configured.trim().replace(/\/+$/, '');
+  configured = configured.replace(/\/+$/, '');
+  if (!configured && loadedOverLan()) configured = lanOrigin(loadedPort() + ARTIFACT_LAN_PORT_OFFSET);
+  return configured;
 }
 const ARTIFACT_ORIGIN_DEFAULT = configuredArtifactOrigin();
 
@@ -1064,8 +1100,11 @@ const WEB_SEARCH_BUDGET_PER_TURN = 1;
 let brokerSessionSecret = null;
 let brokerSessionOrigin = null;
 
-$('#broker-origin').value =
-  readBrowserStorage('localStorage', 'qwen-apu-broker-origin') || BROKER_ORIGIN_DEFAULT;
+// A launch-printed query parameter outranks a remembered origin, since the
+// remembered one may name a launch that is gone.
+$('#broker-origin').value = queryBrokerOrigin()
+  ? BROKER_ORIGIN_DEFAULT
+  : (readBrowserStorage('localStorage', 'qwen-apu-broker-origin') || BROKER_ORIGIN_DEFAULT);
 $('#broker-origin').addEventListener('change', () => {
   brokerSessionSecret = null;
   brokerSessionOrigin = null;

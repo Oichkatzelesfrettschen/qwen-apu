@@ -193,7 +193,16 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
         # caller asked for.
         QWEN_REQUIRE_API_KEY=1
         QWEN_WEB_BROKER=1
-        QWEN_WEB_BROKER_PORT=${QWEN_WEB_BROKER_PORT:-8571}
+        # An exposed launch places the broker one port above the router, and
+        # the session places the artifact listener one above that, so a LAN
+        # page derives both from the one address it was loaded over and a
+        # router port chosen clear of other services carries its companions
+        # with it. A loopback launch keeps the 8571 the meta tags name.
+        if [ "${QWEN_WEB_LAN:-0}" = 1 ]; then
+            QWEN_WEB_BROKER_PORT=${QWEN_WEB_BROKER_PORT:-$((server_port + 1))}
+        else
+            QWEN_WEB_BROKER_PORT=${QWEN_WEB_BROKER_PORT:-8571}
+        fi
         QWEN_WEB_STATE_DIR=${QWEN_WEB_STATE_DIR:-$state_directory/web-mcp}
         export QWEN_WEB_PROFILE QWEN_REQUIRE_API_KEY QWEN_WEB_BROKER \
             QWEN_WEB_BROKER_PORT QWEN_WEB_STATE_DIR
