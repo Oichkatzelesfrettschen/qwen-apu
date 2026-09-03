@@ -301,7 +301,22 @@ restore_ordinary() {
         paced-60 | low-serialized | low-async) ;;
         *) ordinary_profile=low-async ;;
     esac
+    # qwen-launch.sh's own readiness probe reaches 127.0.0.1 unless
+    # QWEN_WEB_LAN=1 names QWEN_WEB_LAN_ADDRESS, which a plain non-web restore
+    # never sets; a server bound to the wildcard or to loopback still answers
+    # there, but one bound to one LAN literal alone does not, so a restored
+    # server the operator ran on such a literal would fail its own readiness
+    # probe and be torn down, trading a stopped appliance for a failed one.
+    # Naming the literal here reaches only that probe: the router-side LAN
+    # admission gate at qwen-launch.sh's web-section branch is not reached by
+    # a preset carrying none.
+    ordinary_lan=0
+    case $ordinary_host in
+        127.0.0.1 | localhost | 0.0.0.0) ;;
+        *) ordinary_lan=1 ;;
+    esac
     if QWEN_LLAMA_SERVER=$ordinary_server QWEN_ROUTER=1 QWEN_BIND_HOST=$ordinary_host \
+        QWEN_WEB_LAN=$ordinary_lan QWEN_WEB_LAN_ADDRESS=$ordinary_host \
         "$script_directory/qwen-launch.sh" "$ordinary_profile" \
         >"$output_directory/ordinary-restore.log" 2>&1; then
         restored_server=$(readlink -f "/proc/$(pgrep -x llama-server | head -1)/exe" 2>/dev/null || true)
