@@ -551,7 +551,16 @@ EOF
     # shellcheck source=remote/image-launch-lib.sh
     . "$script_directory/image-launch-lib.sh"
     read_image_preset_markers "$router_presets"
-    if [ "$image_lane_armed" = 1 ]; then
+    if [ "${QWEN_IMAGE_SERVICE:-0}" = 1 ]; then
+        # qwen-web-launch.sh execs this script, so a launch that came through
+        # qwen-image-launch.sh arrives with the lane already resolved: that
+        # wrapper read the same markers, ran the same library, and charged the
+        # web preset's own two-checkpoint arithmetic. One owner per launch, so
+        # this one reports what it inherited rather than resolving a second
+        # time against a file whose section list it never wrote.
+        printf 'image_launch owner=qwen-image-launch.sh profile=%s required_mib=%s\n' \
+            "${QWEN_IMAGE_PROFILE:--}" "${QWEN_REQUIRED_VULKAN_MIB:--}"
+    elif [ "$image_lane_armed" = 1 ]; then
         # An image server reaches the device from the section the web ledger
         # emitted, and the grant binds that language profile to the image
         # profile, so a lane armed over a preset naming no web section would

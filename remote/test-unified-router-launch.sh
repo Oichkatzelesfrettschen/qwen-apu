@@ -395,6 +395,27 @@ else
     cat "$work/no-image.err" >&2
 fi
 
+# qwen-web-launch.sh execs this launcher, so a launch that came through
+# qwen-image-launch.sh arrives with the lane already resolved and its own
+# requirement already charged. One owner per launch: this one reports what it
+# inherited rather than resolving a second time against a file whose section
+# list it never wrote, and the requirement it forwards is the wrapper's.
+if run_launch "$imaged_preset" env -u QWEN_BIND_HOST \
+    QWEN_IMAGE_SERVICE=1 QWEN_IMAGE_PROFILE=image-fixture-a \
+    QWEN_REQUIRED_VULKAN_MIB=3210 \
+    >"$work/inherited.log" 2>"$work/inherited.err"; then
+    outcome=ok
+    grep -q 'image_launch owner=qwen-image-launch.sh profile=image-fixture-a required_mib=3210' \
+        "$work/inherited.log" || outcome=owner_unreported
+    grep -qx 'QWEN_REQUIRED_VULKAN_MIB=3210' "$record" || outcome=budget_recharged
+    grep -q 'image_launch budget subject_mib=' "$work/inherited.log" &&
+        outcome=lane_resolved_twice
+    report inherited_image_lane_is_reported_once "$outcome"
+else
+    report inherited_image_lane_is_reported_once failed
+    cat "$work/inherited.err" >&2
+fi
+
 # An image row moved to refused after generation revokes the lane, and the
 # ledger digest the preset binds reads the edit before anything starts.
 sed 's/\tvalidator-gated\t/\trefused\t/' "$image_profiles" \
