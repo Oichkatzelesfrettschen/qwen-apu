@@ -1,0 +1,21 @@
+sidecar_exit=accepted status=0
+record_readable=accepted path=$HOME/raven2-kernel-census-20260902T1302Z-2b-calibration-v8/arms/22-I1/clock-sidecar.tsv
+clock=accepted clock=CLOCK_MONOTONIC
+period_declared=accepted declared=10000000 requested=10000000
+sampler_identity=accepted pid=273734 nice=19 cpu_affinity=0,1
+columns=accepted columns=monotonic_ns	pp_dpm_sclk_selected_mhz	pp_dpm_mclk_surface_mhz	pp_dpm_fclk_surface_mhz	gpu_busy_percent	temp1_millidegrees	sample_cost_ns
+footer_cardinality=accepted footers=1
+footer_fields=accepted present=achieved_period_ns,first_sample_ns,last_sample_ns,max_sample_cost_ns,mean_sample_cost_ns,samples,samples_with_unavailable_sensor
+samples=accepted samples=1908 rows=1908
+row_arity=accepted columns=7
+achieved_period=accepted achieved_ns=10284271 requested_ns=10000000 tolerance=0.25
+sample_cost=accepted mean_ns=314600 max_ns=52772013 bound_ns=1000000
+allowed_columns=accepted allowed=pp_dpm_fclk_surface_mhz
+sensor_rows=accepted rows_with_unavailable=1908 footer=1908
+sensors=accepted unavailable_outside_allowance=- allowed=pp_dpm_fclk_surface_mhz
+footer_instants=accepted first=371568461044551 last=371588073149454
+window_coverage=accepted first=371568461044551 begin=371577714076411 end=371587330321694 last=371588073149454
+gaps=accepted median_ns=9999749 p95_ns=12010417 p99_ns=23939275 max_ns=62840250 over_1_5x=47 over_missed=30 over_max=0
+window_lost=accepted window_lost_fraction=0.0180 bound=0.0200 missed_bound_ns=20000000
+gaps_in_window=0 begin=371577714076411 end=371587330321694 bound_ns=100000000 window_lost_fraction=0.0180
+clock_sidecar=accepted failures=-
