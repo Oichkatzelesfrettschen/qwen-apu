@@ -219,7 +219,10 @@ ssh eirikr@qwen-laptop
 sudo -v
 ~/qwen-laptop-setup/remote/qwen-teardown.sh
 out=~/evidence/prefill-ladder/$(date -u +%Y%m%dT%H%MZ)
-set -C; { : >"$out.status" && : >"$out.log"; } || { printf 'output path in use: %s\n' "$out" >&2; exit 1; }; set +C
+( set -C; : >"$out.log" ) 2>/dev/null ||
+    { printf 'output path in use: %s\n' "$out.log" >&2; exit 1; }
+( set -C; : >"$out.status" ) 2>/dev/null ||
+    { rm -f "$out.log"; printf 'output path in use: %s\n' "$out.status" >&2; exit 1; }
 { QWEN_CENSUS_MCLK_LEVEL=2 \
     ~/qwen-laptop-setup/remote/run-prefill-ladder.sh \
     ~/deployments/CONTROL/llama-server \
@@ -245,12 +248,19 @@ exists, so `$out.log` and `$out.status` are named beside that directory rather t
 inside it. The runner's own refusal covers the directory alone: two invocations inside
 one UTC minute compose the same `$out`, and the redirection and `tee` would truncate the
 first run's sidecars while the runner was still refusing its directory. `set -C` makes
-each `: >` an `O_EXCL` create, so a second invocation loses `$out.status` or `$out.log`
-atomically and stops before it reaches `tee`; testing the names first and creating them
+each `: >` an `O_EXCL` create, so a second invocation loses `$out.log` or `$out.status`
+atomically and stops before it reaches `tee`. Each reservation runs in a subshell because
+`:` is a POSIX special builtin and a redirection error on one is fatal to a
+non-interactive shell: written inline, the noclobber refusal killed the script before its
+own `||` branch, so neither the message nor the cleanup ran. The subshell absorbs the
+exit and hands its status to `||`. testing the names first and creating them
+Testing the names first and creating them
 afterwards would leave both runs past the test. Both sidecars are reserved because
 reserving only the status file leaves `tee` truncating a retained `$out.log` that
 outlived its status file, and `tee -a` appends into the empty file the reservation just
-made rather than truncating it again. The device is claimed twice over
+made rather than truncating it again. The log is reserved first and the status second, so
+a refusal leaves the namespace as it found it: the only file the second line can remove
+is the log its own first line just created. The device is claimed twice over
 anyway, since the ladder takes the Vulkan workload lease, but the reservation is what
 keeps the retained bytes safe rather than the lease.
 
