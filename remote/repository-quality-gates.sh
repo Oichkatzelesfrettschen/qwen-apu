@@ -37,6 +37,8 @@ if [ ! -f "$script_directory/gate-cell-key.sh" ]; then
 fi
 GATE_CELL_ROOT=$repository_root
 export GATE_CELL_ROOT
+GATE_CELL_DRIVER_PATH=$script_directory/$(basename -- "$0")
+export GATE_CELL_DRIVER_PATH
 # shellcheck source=remote/gate-cell-key.sh
 . "$script_directory/gate-cell-key.sh"
 
