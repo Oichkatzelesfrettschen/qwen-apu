@@ -862,7 +862,16 @@ function configuredArtifactOrigin() {
     configured = ((tag && tag.getAttribute('content')) || '').trim();
   }
   configured = configured.replace(/\/+$/, '');
-  if (!configured && loadedOverLan()) configured = lanOrigin(loadedPort() + ARTIFACT_LAN_PORT_OFFSET);
+  // A loopback meta value is replaced over the LAN the way the broker's is,
+  // and for a sharper reason: trustedArtifactOrigin admits the loopback pair
+  // unconditionally, so a page served to a LAN browser with a loopback artifact
+  // tag would fetch the artifact from the viewer's own machine and report only
+  // an image that failed to load. The bare page URL the launcher prints carries
+  // no `?artifacts=`, so this rule is what resolves the listener from it.
+  if (loadedOverLan() && !queryArtifactOrigin()
+    && (!configured || isLoopbackOrigin(configured))) {
+    configured = lanOrigin(loadedPort() + ARTIFACT_LAN_PORT_OFFSET);
+  }
   return configured;
 }
 const ARTIFACT_ORIGIN_DEFAULT = configuredArtifactOrigin();

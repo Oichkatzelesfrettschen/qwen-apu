@@ -226,6 +226,12 @@ grep -F 'The image did not run: ${imageOutcome.reason}.' "$fallback_ui" >/dev/nu
 # resolved against the page, and a page given none says so instead of asking
 # the router for a route it does not serve.
 grep -F 'function configuredArtifactOrigin() {' "$fallback_ui" >/dev/null
+# A loopback artifact tag is replaced over the LAN the way the broker tag is:
+# trustedArtifactOrigin admits the loopback pair unconditionally, so a page
+# served to a LAN browser with that tag would read the artifact from the
+# viewer own machine and show only an image that failed to load.
+grep -F 'if (loadedOverLan() && !queryArtifactOrigin()' "$fallback_ui" >/dev/null
+grep -F '&& (!configured || isLoopbackOrigin(configured))) {' "$fallback_ui" >/dev/null
 grep -F "searchParams.get('artifacts')" "$fallback_ui" >/dev/null
 grep -F 'meta[name="qwen-image-artifacts"]' "$fallback_ui" >/dev/null
 grep -F 'function trustedArtifactOrigin(configured) {' "$fallback_ui" >/dev/null

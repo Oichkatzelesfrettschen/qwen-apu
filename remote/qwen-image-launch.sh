@@ -49,6 +49,8 @@ if [ "$#" -gt 1 ]; then
     printf 'QWEN_IMAGE_RUNTIME_RESIDENT_MIB is the image runtime cost charged against the Vulkan budget, default 480\n' >&2
     printf 'the listener is 127.0.0.1; QWEN_BIND_HOST set to any other value refuses the launch\n' >&2
     printf 'QWEN_WEB_LAN=1 with QWEN_WEB_LAN_ADDRESS naming a routable IPv4 literal serves the network instead, with the Web UI bearer required on every route\n' >&2
+    printf 'QWEN_WEB_LAN_NAME adds one mDNS hostname to the admitted set, defaulting to the short hostname under .local where avahi runs\n' >&2
+    printf 'QWEN_WEB_LAN_OPEN=1 removes that bearer, so every peer on the network can chat, approve a search, and approve a generation\n' >&2
     exit 2
 fi
 
@@ -65,24 +67,38 @@ web_presets=${QWEN_WEB_PRESETS:-$state_directory/web-presets.ini}
 . "$script_directory/image-launch-lib.sh"
 
 # QWEN_WEB_LAN=1 is the operator's explicit decision to serve this lane on the
-# network. This wrapper checks the shape of the request and reports it; the six
-# conditions in remote/web-lan-exposure.sh are applied once, by the web
-# launcher this script execs into, so one authority admits both lanes.
+# network, and QWEN_WEB_LAN_OPEN=1 the second decision that removes the bearer
+# from it. resolve_web_lan_mode reads both here so the open opt-in against an
+# unexposed launch refuses at the first link rather than at the second; the
+# remaining conditions in remote/web-lan-exposure.sh are applied once, by the
+# web launcher this script execs into, so one authority admits both lanes.
+web_lan_policy=$script_directory/web-lan-exposure.sh
+if [ ! -r "$web_lan_policy" ]; then
+    printf 'the LAN exposure policy is unreadable: %s\n' "$web_lan_policy" >&2
+    exit 2
+fi
+# shellcheck source=remote/web-lan-exposure.sh
+. "$web_lan_policy"
+resolve_web_lan_mode
 web_lan_exposure=${QWEN_WEB_LAN:-0}
-case $web_lan_exposure in
-    0 | 1) ;;
-    *)
-        printf 'QWEN_WEB_LAN must be 0 or 1: %s\n' "$web_lan_exposure" >&2
-        exit 2
-        ;;
-esac
+web_lan_open=${QWEN_WEB_LAN_OPEN:-0}
 if [ "$web_lan_exposure" = 1 ]; then
     if [ -z "${QWEN_WEB_LAN_ADDRESS:-}" ]; then
         printf 'QWEN_WEB_LAN=1 requires QWEN_WEB_LAN_ADDRESS naming a routable IPv4 literal\n' >&2
         exit 2
     fi
-    printf 'image_launch exposure=lan address=%s bearer=required\n' \
-        "$QWEN_WEB_LAN_ADDRESS"
+    # The bearer state is read from the opt-in rather than asserted, so this
+    # line and the listener the web launcher builds state one policy. The name
+    # is reported unresolved where the caller left it unset, since
+    # admit_web_lan_exposure derives it one link later.
+    if [ "$web_lan_open" = 1 ]; then
+        image_lan_bearer_state=removed
+    else
+        image_lan_bearer_state=required
+    fi
+    printf 'image_launch exposure=lan address=%s name=%s bearer=%s\n' \
+        "$QWEN_WEB_LAN_ADDRESS" "${QWEN_WEB_LAN_NAME:--}" \
+        "$image_lan_bearer_state"
 else
     requested_bind_host=${QWEN_BIND_HOST:-127.0.0.1}
     if [ "$requested_bind_host" != 127.0.0.1 ]; then

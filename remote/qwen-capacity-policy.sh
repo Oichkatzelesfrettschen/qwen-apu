@@ -552,11 +552,27 @@ fi
 # through its MCP server or the device through its image runtime serves an
 # exposed listener only behind the bearer, so the policy refuses to build the
 # tuple rather than warning about it.
-if [ "${QWEN_WEB_LAN:-0}" = 1 ] && [ -z "$api_key_file" ]; then
-    printf 'the LAN exposure serves an authenticated listener, and no API key file reaches this launch\n' >&2
-    printf 'the web and image launchers export QWEN_REQUIRE_API_KEY=1; a launch reaching here without one binds %s unauthenticated\n' \
-        "$bind_host" >&2
-    exit 2
+#
+# QWEN_WEB_LAN_OPEN=1 is the operator's decision that this exposure serves
+# without that bearer, and it inverts the guard rather than lifting it: the
+# open lane refuses a key file and the bearer lane refuses its absence, so the
+# argv this policy builds carries the credential state the launch announced.
+# remote/web-lan-exposure.sh admits the opt-in beside QWEN_WEB_LAN=1 alone, so
+# the value reaching here is the one that passed that admission.
+if [ "${QWEN_WEB_LAN:-0}" = 1 ]; then
+    if [ "${QWEN_WEB_LAN_OPEN:-0}" = 1 ] && [ -n "$api_key_file" ]; then
+        printf 'the open LAN exposure serves without a bearer, and an API key file reaches this launch: %s\n' \
+            "$api_key_file" >&2
+        printf 'QWEN_WEB_LAN_OPEN=1 exports QWEN_REQUIRE_API_KEY=0; a launch reaching here with a key binds %s authenticated where the launch announced an open listener\n' \
+            "$bind_host" >&2
+        exit 2
+    fi
+    if [ "${QWEN_WEB_LAN_OPEN:-0}" = 0 ] && [ -z "$api_key_file" ]; then
+        printf 'the LAN exposure serves an authenticated listener, and no API key file reaches this launch\n' >&2
+        printf 'the web and image launchers export QWEN_REQUIRE_API_KEY=1; a launch reaching here without one binds %s unauthenticated\n' \
+            "$bind_host" >&2
+        exit 2
+    fi
 fi
 
 if [ ! -x "$llama_server" ]; then
