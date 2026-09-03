@@ -908,6 +908,51 @@ const cascadeRecord = await cascadePage.api.read(cascadeId);
 assert.ok(cascadeRecord, 'the cascaded save did not reach memory');
 assert.equal(cascadeRecord.messages.length, 3);
 
+// A store excluded after a write failure can still answer list()/read(): a
+// conversation it already holds from before the failure is migrated into
+// the replacement store rather than left invisible in a store nothing reads
+// from again for the rest of the page session.
+const migrationDatabase = makeFakeIndexedDatabase();
+const priorPage = newPage({
+  indexedDatabase: migrationDatabase,
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(priorPage);
+const priorId = await priorPage.api.runFixtureTurn(fixture);
+await flushPromises();
+assert.ok((await priorPage.api.read(priorId)).messages.length,
+  'the prior conversation did not save ahead of the migration arm');
+
+const migrationFailWrites = { active: true };
+const migrationIndexedDatabase =
+  makeFlakyIndexedDatabase(migrationDatabase, { failWrites: migrationFailWrites });
+const migrationLocalStorage = makeFakeStorage();
+const migrationPage = newPage({
+  indexedDatabase: migrationIndexedDatabase,
+  localStorage: migrationLocalStorage,
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(migrationPage);
+assert.equal(await migrationPage.api.storeName(), 'indexeddb',
+  'the prior conversation was not visible through IndexedDB before the failure');
+const migrationPriorList = await migrationPage.api.list();
+assert.equal(migrationPriorList.length, 1, 'IndexedDB reported no prior conversation');
+const newId = await migrationPage.api.runFixtureTurn(fixture);
+await flushPromises();
+assert.equal(await migrationPage.api.storeName(), 'localstorage',
+  'the write failure did not demote IndexedDB');
+const migratedList = await migrationPage.api.list();
+assert.equal(migratedList.length, 2,
+  'the prior conversation disappeared from the sidebar after the demotion');
+assert.ok(migratedList.some(entry => entry.id === priorId),
+  'the prior conversation was not migrated into the replacement store');
+const migratedPriorRecord = await migrationPage.api.read(priorId);
+assert.ok(migratedPriorRecord, 'the prior conversation could no longer be opened');
+assert.equal(migratedPriorRecord.messages.length, 3);
+const migratedNewRecord = await migrationPage.api.read(newId);
+assert.ok(migratedNewRecord, 'the conversation that triggered the demotion did not save');
+
 // ---- switchConversation rechecks busy after its own await -----------------
 
 const raceSource = newPage({

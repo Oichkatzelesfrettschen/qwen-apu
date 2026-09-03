@@ -3608,6 +3608,29 @@ function forgetArtifact(entry, entryGeneration, record) {
   if (index !== -1) entry.artifacts.splice(index, 1);
 }
 
+async function migrateReadableRecords(failedStore, nextStore) {
+  /* Carry every record a demoted store can still read into the store that
+     replaces it, best effort. A store that refuses a write can still answer
+     list()/read() -- the probe that selected it in the first place proved as
+     much -- so excluding it from every later operation would otherwise hide
+     conversations that saved successfully before the failure: they would
+     stay in the failed store, off the sidebar, and unopenable for the rest
+     of the page session. One record's own migration failure does not block
+     the rest. */
+  let entries;
+  try {
+    entries = await failedStore.list();
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    try {
+      const record = await failedStore.read(entry.id);
+      if (record) await nextStore.write(record);
+    } catch { /* this one record stays only in the store that is being left */ }
+  }
+}
+
 async function saveConversation() {
   if (!conversationId) return;
   // The JSON round trip is the projection boundary: the record the store keeps
@@ -3643,6 +3666,8 @@ async function saveConversation() {
     } catch {
       conversationStoreFailedNames.add(activeStore.name);
       conversationStoreRead = null;
+      const nextStore = await conversationStore();
+      await migrateReadableRecords(activeStore, nextStore);
     }
   }
   await renderConversationList();
