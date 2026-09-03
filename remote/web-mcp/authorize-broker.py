@@ -876,17 +876,23 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
         alone: neither an Origin nor the per-launch session header is
         available to a shell probe that never loads a page, and a bearer on
         that command line would sit in a world-readable
-        `/proc/PID/cmdline`. A request naming either exposed host -- the
-        literal or the mDNS name -- presents the Web UI bearer instead,
-        because every field in the response is a process or configuration
-        identity -- pid, start time, state-directory dev:inode, and the
-        signing key's digest -- that a LAN reader holds no claim on. Under
-        `--open-lan` that requirement is the one the operator removed, and the
-        loopback probe reads the route the same way either way. The signing
-        key contributes its digest and never its bytes.
+        `/proc/PID/cmdline`. The bearer exemption reads `self.client_address`,
+        the peer address the kernel accepted the connection from, rather than
+        the caller-controlled `Host` header: a LAN peer that spells
+        `Host: 127.0.0.1` while connecting to the wildcard listener still
+        carries its own routable source address, so it still presents the Web
+        UI bearer. A request whose peer address falls outside
+        `LOOPBACK_HOSTS` presents the bearer, because every field in the
+        response is a process or configuration identity -- pid, start time,
+        state-directory dev:inode, and the signing key's digest -- that a LAN
+        reader holds no claim on. Under `--open-lan` that requirement is the
+        one the operator removed, and the loopback probe reads the route the
+        same way either way. The signing key contributes its digest and never
+        its bytes.
         """
         try:
-            if self.require_admitted_host() not in LOOPBACK_HOSTS:
+            self.require_admitted_host()
+            if self.client_address[0] not in LOOPBACK_HOSTS:
                 self.require_api_key()
         except server.ToolError as error:
             self.send_json(
@@ -920,12 +926,16 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
         Each admitted outcome writes one audit row under the nine-term
         vocabulary. The trail separates invalid session headers, malformed
         fields, exhausted buckets, and issued grants while every grant stays in
-        the response alone. The `authorize-minute` bucket is charged before the
-        loopback-host and session-header checks run, so a caller that holds
-        neither cannot reach `ledger.record` faster than the bucket admits;
-        without that ordering an unauthenticated loopback process floods the
-        session check alone. Exhausted refusals coalesce to one row per bucket
-        window, so post-limit connections cannot grow the audit trail.
+        the response alone. Under the exposure opt-in the Web UI bearer check
+        runs ahead of the `authorize-minute` bucket, so an unauthenticated LAN
+        peer draws no unit from the meter a bearer-holding caller also spends
+        from and cannot deny that caller's requests with 429. The bearer check
+        is a no-op where `self.settings.exposure` is unset, so a loopback-only
+        launch keeps `ledger.consume` in its original position ahead of the
+        Host and session-header checks -- without that ordering an
+        unauthenticated loopback process floods the session check alone.
+        Exhausted refusals coalesce to one row per bucket window, so
+        post-limit connections cannot grow the audit trail.
         """
         started_at = time.time()
         origin = self.allowed_origin()
@@ -944,6 +954,13 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
         ledger = None
         fields = None
         try:
+            # A signing route under the exposure opt-in reads the Web UI
+            # bearer beside the session secret, so a LAN reader that never
+            # authenticated to the router signs nothing here. The check runs
+            # ahead of the shared bucket so an unauthenticated caller is
+            # refused before it can spend a unit another caller needs.
+            if self.settings.exposure:
+                self.require_api_key()
             ledger = server.Ledger(self.settings.state_directory)
             ledger.consume("authorize-minute", 60, self.settings.per_minute, started_at)
             self.require_admitted_host()
@@ -956,14 +973,6 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
                 raise server.AuthorizationDenied(
                     "the request Origin is absent or outside the admitted set"
                 )
-            # A signing route under the exposure opt-in reads the Web UI bearer
-            # beside the session secret, so a LAN reader that never
-            # authenticated to the router signs nothing here. The secret is
-            # per-launch and the key is per-launch too, and requiring both puts
-            # the same credential in front of a grant that stands in front of
-            # the router's own routes.
-            if self.settings.exposure:
-                self.require_api_key()
             self.require_session_secret()
             payload = self.read_body()
             if image:
