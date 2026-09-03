@@ -254,7 +254,14 @@ grep -F 'round === CONTINUATION_CAP - 1' "$fallback_ui" >/dev/null
 grep -F 'let toolCallSequence = 0;' "$fallback_ui" >/dev/null
 grep -F 'callIds = outcome.calls.map(() => `call_${toolCallSequence++}`);' \
     "$fallback_ui" >/dev/null
-grep -F "history = []; toolCallSequence = 0;" "$fallback_ui" >/dev/null
+# A new conversation resets the counter with the transcript, and a restored
+# conversation continues from the highest id its record carries, so an id the
+# transcript re-sends is never reissued to a later call.
+reset_body=$(sed -n '/^function resetConversationState() {/,/^}/p' "$fallback_ui")
+printf '%s\n' "$reset_body" | grep -F 'history = [];' >/dev/null
+printf '%s\n' "$reset_body" | grep -F 'toolCallSequence = 0;' >/dev/null
+grep -F 'toolCallSequence = restoredCallSequence(conversationMessages);' \
+    "$fallback_ui" >/dev/null
 
 # The grant admits one search, so a standing grade would promise a permission
 # the serving path refuses on the second call. The pinned llama-ui spells those
