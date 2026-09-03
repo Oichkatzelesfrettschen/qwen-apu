@@ -99,6 +99,21 @@ if [ "${canonical_directory%/*}" != "$canonical_root" ]; then
         "$canonical_directory" >&2
     exit 1
 fi
+# The resolved basename meets the bundle namespace here as well, so a launch
+# refuses a directory carrying one of the root's own names before it hands
+# the name to verification.
+name_helper=$script_directory/deployment-bundle-name.sh
+if [ ! -r "$name_helper" ]; then
+    printf 'deployment bundle name helper is unreadable: %s\n' "$name_helper" >&2
+    exit 1
+fi
+# shellcheck source=deployment-bundle-name.sh
+. "$name_helper"
+if ! deployment_bundle_name_is_valid "$bundle_name"; then
+    printf 'active deployment name must match [A-Za-z0-9][A-Za-z0-9._-]* and avoid the root names: %s\n' \
+        "$bundle_name" >&2
+    exit 1
+fi
 "$script_directory/verify-deployment-bundle.sh" "$deployment_root" \
     "$bundle_name" >/dev/null
 

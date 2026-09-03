@@ -860,6 +860,50 @@ if ! grep -q 'staging parent is not a directory' "$work_directory/staging-leaf.s
 fi
 report staging_parent_plain_directory accepted
 
+# Assembly, verification, activation, and resolution read one bundle
+# namespace. A complete bundle carrying a dot-prefixed name -- the shape a
+# directory planted as .staging or .activate.lock would take -- is refused by
+# every reader rather than assembled under one rule and served under another.
+dot_root=$work_directory/dot-name-root
+mkdir -p "$dot_root"
+QWEN_BUNDLE_ROUTER_PRESETS=$zero_preset \
+    "$builder" hidden "$forced_server" "$forced_manifest" "$zero_ledger" \
+    "$dot_root" >/dev/null
+mv "$dot_root/hidden" "$dot_root/.hidden"
+awk -F'\t' -v OFS='\t' '$1 == "bundle_name" { $2 = ".hidden" } { print }' \
+    "$dot_root/.hidden/bundle-manifest.tsv" \
+    >"$dot_root/.hidden/bundle-manifest.tsv.new"
+mv "$dot_root/.hidden/bundle-manifest.tsv.new" \
+    "$dot_root/.hidden/bundle-manifest.tsv"
+if "$script_directory/verify-deployment-bundle.sh" "$dot_root" .hidden \
+    >/dev/null 2>"$work_directory/dot-verify.stderr"; then
+    printf 'a dot-prefixed bundle name passed verification\n' >&2
+    exit 1
+fi
+if ! grep -q 'avoid the root names' "$work_directory/dot-verify.stderr"; then
+    printf 'the dot-prefixed verification refusal lost its reason\n' >&2
+    exit 1
+fi
+if "$activator" .hidden "$dot_root" \
+    >/dev/null 2>"$work_directory/dot-activate.stderr"; then
+    printf 'a dot-prefixed bundle name activated\n' >&2
+    exit 1
+fi
+if ! grep -q 'avoid the root names' "$work_directory/dot-activate.stderr"; then
+    printf 'the dot-prefixed activation refusal lost its reason\n' >&2
+    exit 1
+fi
+if QWEN_ACTIVE_DEPLOYMENT_DIRECTORY=$dot_root/.hidden "$resolver" "$dot_root" \
+    >/dev/null 2>"$work_directory/dot-resolve.stderr"; then
+    printf 'a dot-prefixed bundle name resolved for a launch\n' >&2
+    exit 1
+fi
+if ! grep -q 'avoid the root names' "$work_directory/dot-resolve.stderr"; then
+    printf 'the dot-prefixed resolution refusal lost its reason\n' >&2
+    exit 1
+fi
+report bundle_namespace_shared accepted
+
 # A section path two registry rows match under the registry's raw suffix
 # rule is refused as ambiguous rather than bound to the first row.
 ambiguous_registry=$work_directory/models-ambiguous.tsv

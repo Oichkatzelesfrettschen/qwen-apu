@@ -23,14 +23,18 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 deployment_root=$1
 bundle_name=$2
 
-case $bundle_name in
-    *[!A-Za-z0-9._-]* | '' | deployment-current | deployment-previous | \
-        deployment-state | deployment-state.* | . | ..)
-        printf 'bundle name must be nonempty [A-Za-z0-9._-] and not a link name: %s\n' \
-            "$bundle_name" >&2
-        exit 1
-        ;;
-esac
+name_helper=$script_directory/deployment-bundle-name.sh
+if [ ! -r "$name_helper" ]; then
+    printf 'deployment bundle name helper is unreadable: %s\n' "$name_helper" >&2
+    exit 1
+fi
+# shellcheck source=deployment-bundle-name.sh
+. "$name_helper"
+if ! deployment_bundle_name_is_valid "$bundle_name"; then
+    printf 'bundle name must match [A-Za-z0-9][A-Za-z0-9._-]* and avoid the root names: %s\n' \
+        "$bundle_name" >&2
+    exit 1
+fi
 if [ ! -d "$deployment_root" ]; then
     printf 'deployment root is not a directory: %s\n' "$deployment_root" >&2
     exit 1
