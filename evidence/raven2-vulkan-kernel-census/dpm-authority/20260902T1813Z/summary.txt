@@ -1,0 +1,4 @@
+dpm_level=auto observed=auto sclk_during=- below_max_fraction=- tok_s=9.67 clock_invariant=not_requested
+dpm_level=high observed=high sclk_during=- below_max_fraction=- tok_s=9.72 clock_invariant=not_run
+dpm_level=profile_peak observed=profile_peak sclk_during=- below_max_fraction=- tok_s=9.75 clock_invariant=not_run
+dpm_authority=none bapm=-1

@@ -2,7 +2,7 @@
 set -eu
 
 if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
-    printf 'usage: %s start [paced-60|low-serialized|low-async]|status|stop|key\n' \
+    printf 'usage: %s start [paced-60|low-serialized|low-async|custom|diagnostic]|status|stop|key\n' \
         "$0" >&2
     exit 2
 fi
@@ -206,8 +206,22 @@ write_ordinary_lease_record() {
 
 case $action in
     start)
+        # A serving profile exports one submission shape and scrubs every
+        # logger, so the argv it produces is the one a served rate is read
+        # from. The diagnostic profile is the pinned perf logger's shape --
+        # a barrier per node and a host wait per graph -- and it serves
+        # nothing on the LAN: it admits an explicit QWEN_LLAMA_SERVER, which
+        # is the recovery mode that reads no deployment bundle, behind a
+        # loopback listener alone.
         case $profile in
             paced-60 | low-serialized | low-async | custom) ;;
+            diagnostic)
+                if [ -z "${QWEN_LLAMA_SERVER:-}" ] || \
+                   [ "$bind_host" != 127.0.0.1 ]; then
+                    printf 'the diagnostic profile is a measurement profile: it requires an explicit QWEN_LLAMA_SERVER and a loopback listener\n' >&2
+                    exit 2
+                fi
+                ;;
             *)
                 printf 'unknown Vulkan profile: %s\n' "$profile" >&2
                 exit 2
@@ -382,7 +396,7 @@ case $action in
                               QWEN_MODEL_REGISTRY QWEN_QUARANTINE_REGISTRY \
                               QWEN_VALIDATED_TUPLES QWEN_CTX_CHECKPOINT_LEDGER \
                               QWEN_ACTIVE_DEPLOYMENT_DIRECTORY \
-                              QWEN_PIPELINE_CENSUS \
+                              QWEN_PIPELINE_CENSUS QWEN_PERF_LOGGER \
                               QWEN_BATCH_SIZE QWEN_UBATCH_SIZE \
                               QWEN_CACHE_TYPE_K QWEN_CACHE_TYPE_V \
                               QWEN_FLASH_ATTN \
@@ -582,7 +596,7 @@ case $action in
             "$tmux_socket" "$tmux_session"
         ;;
     *)
-        printf 'usage: %s start [paced-60|low-serialized|low-async]|status|stop|key\n' \
+        printf 'usage: %s start [paced-60|low-serialized|low-async|custom|diagnostic]|status|stop|key\n' \
             "$0" >&2
         exit 2
         ;;
