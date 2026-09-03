@@ -176,18 +176,18 @@ while it runs, which is what makes the applied profile provable rather than only
 the state before and after it. The lease, its published proof, and
 `verify-external-vulkan-lease.py` run unstubbed against a real `flock`.
 
-Eighteen cases pass: the usage form, the `high` and `profile_peak` refusals, a
-refused non-integer stop grace, a clean apply-run-restore, the command's
-observation of the applied profile, its inherited affinity, the KSM 0-and-back
-round trip, the state record's snapshot rows, the closed arm environment
-carrying the lease proof, the serving profile accepting the clamped fabric
-level, an `auto` snapshot restoring the level and naming the governor as the
-selections' owner, the held-lease refusal, an unreached clock expectation
-refusing before the command, a failed restoration reported as an incident over
-a command that exited 0, a terminating signal mid-command that still restores,
-a child that traps SIGTERM and requires the SIGKILL escalation, the lease
-releasing once that child is gone, and `status` reporting live values with no
-credential.
+Nineteen cases pass: the usage form, the `high` and `profile_peak` refusals, a
+refused non-integer stop grace, a refused stop grace above the ceiling, a clean
+apply-run-restore, the command's observation of the applied profile, its
+inherited affinity, the KSM 0-and-back round trip, the state record's snapshot
+rows, the closed arm environment carrying the lease proof, the serving profile
+accepting the clamped fabric level, an `auto` snapshot restoring the level and
+naming the governor as the selections' owner, the held-lease refusal, an
+unreached clock expectation refusing before the command, a failed restoration
+reported as an incident over a command that exited 0, a terminating signal
+mid-command that still restores, a child that traps SIGTERM and requires the
+SIGKILL escalation, the lease releasing once that child is gone, and `status`
+reporting live values with no credential.
 
 The SIGKILL case is the harness's own deferred one. A command that traps
 SIGTERM and loops on `sleep 1` forks a new `sleep` each iteration, and each
@@ -205,14 +205,36 @@ where `kill` was expected. With the trap installed first, no forked `sleep`
 ever holds the descriptor and the lease reads free within one poll interval of
 the KILL rather than up to a second later.
 
-Two more findings came from an independent review of the shutdown sequence
+Three more findings came from an independent review of the shutdown sequence
 itself. `stop_child` no longer calls `wait` on a child still alive after
 SIGKILL and its own 5-second poll: `kill -0` succeeding there means the kernel
 cannot yet reap it, most likely an uninterruptible-sleep child, and `wait`
 blocks until it is reaped -- trading the bounded shutdown this function exists
 to provide for an unbounded one in exactly the case it is supposed to cover.
+That path is reasoned rather than measured: reproducing a genuinely
+SIGKILL-resistant child (one blocked in uninterruptible I/O) needs kernel
+cooperation this fixture tree, built to run with no privilege and no device,
+cannot supply, so no case exercises it -- `sh -n`, `shellcheck -S warning`,
+and the eighteen cases that do run are what stand behind this path.
 `QWEN_COMPUTE_STATE_STOP_GRACE_SECONDS` is validated ahead of the first write
 rather than trusted at the point `stop_child` runs it through
 `$((grace_seconds * 5))` inside the EXIT trap: a non-integer value there is a
 shell arithmetic error that would abort the trap ahead of `finish_transaction`
-and leave the applied DPM/KSM state unrestored.
+and leave the applied DPM/KSM state unrestored. A merely large value parses
+fine but defeats the bound this setting promises, so it is capped at 3600
+seconds, refused the same way and at the same point as the non-integer case.
+
+A fourth review finding is answered rather than fixed. Only `child_pid` is
+signaled, so a command that forks a worker and leaves it running keeps that
+worker alive, holding its own copy of the lease descriptor, through every exit
+path; the design comment above the command's own `exec` names this
+explicitly as a caller's choice when the command backgrounds work, and it
+predates the bounded-shutdown patch and this one -- `kill -TERM "$child_pid"`
+targeted the single tracked pid before either. Reaching further, into a
+process group the command may not have asked for, would kill that backgrounded
+work for every caller of this script rather than closing a gap this patch
+opened, so the finding stands as a documented property of the design rather
+than a defect in it. The `child_stop` field carries this path's own signature:
+it prints empty rather than one of `term`, `kill`, or `unreaped` when the
+command exits on its own and `stop_child` never has cause to signal it, which
+`clean_apply_run_restore` asserts directly.

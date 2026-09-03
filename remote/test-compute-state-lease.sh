@@ -353,6 +353,25 @@ else
     cat "$temporary_directory/grace.log" >&2
 fi
 
+# A merely large grace value is valid arithmetic but defeats the bounded
+# shutdown the setting exists to provide, so the ceiling refuses it the same
+# way: before the first write, rather than leaving stop_child to poll for it.
+reset_fixture
+grace_ceiling_status=0
+QWEN_COMPUTE_STATE_STOP_GRACE_SECONDS=3601 run_transaction measure-fixed \
+    "$stub_directory/observer" >"$temporary_directory/grace-ceiling.log" 2>&1 ||
+    grace_ceiling_status=$?
+if [ "$grace_ceiling_status" -eq 2 ] &&
+    grep -q '^QWEN_COMPUTE_STATE_STOP_GRACE_SECONDS exceeds the 3600 second maximum: 3601$' \
+        "$temporary_directory/grace-ceiling.log" &&
+    [ ! -s "$observer_log" ] &&
+    [ "$(fixture_state)" = "$snapshot_fixture_state" ]; then
+    report 0 refuses_a_stop_grace_above_the_ceiling_before_the_first_write
+else
+    report 1 refuses_a_stop_grace_above_the_ceiling_before_the_first_write
+    cat "$temporary_directory/grace-ceiling.log" >&2
+fi
+
 # The clean transaction: apply, prove the clocks, run, restore, verify.
 reset_fixture
 clean_status=0

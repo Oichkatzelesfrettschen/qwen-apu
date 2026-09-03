@@ -320,7 +320,14 @@ resolve_profile "$profile_name"
 # trap, where `$((grace_seconds * 5))` on a non-integer value is a shell
 # arithmetic error that would abort the trap ahead of finish_transaction and
 # leave the applied DPM/KSM state unrestored, so it is validated here rather
-# than trusted at the point cleanup can no longer refuse.
+# than trusted at the point cleanup can no longer refuse. The upper bound holds
+# the same promise: a merely large value is valid arithmetic but turns the
+# bounded shutdown this setting exists to provide into an effectively unbounded
+# one. The nearest comparable settings in this tree are far smaller --
+# image-service.py's own TERMINATION_GRACE_SECONDS is 5, and its
+# QWEN_IMAGE_LEASE_WAIT_S default is 60 -- so an hour is a generous ceiling
+# rather than one measured against a peer.
+stop_grace_seconds_maximum=3600
 case ${QWEN_COMPUTE_STATE_STOP_GRACE_SECONDS:-10} in
     '' | *[!0-9]*)
         printf 'QWEN_COMPUTE_STATE_STOP_GRACE_SECONDS is not a non-negative integer: %s\n' \
@@ -328,6 +335,11 @@ case ${QWEN_COMPUTE_STATE_STOP_GRACE_SECONDS:-10} in
         exit 2
         ;;
 esac
+if [ "${QWEN_COMPUTE_STATE_STOP_GRACE_SECONDS:-10}" -gt "$stop_grace_seconds_maximum" ]; then
+    printf 'QWEN_COMPUTE_STATE_STOP_GRACE_SECONDS exceeds the %s second maximum: %s\n' \
+        "$stop_grace_seconds_maximum" "${QWEN_COMPUTE_STATE_STOP_GRACE_SECONDS:-10}" >&2
+    exit 2
+fi
 
 for required_command in flock "$renice_command" "$ionice_command" "$taskset_command"; do
     case $required_command in
