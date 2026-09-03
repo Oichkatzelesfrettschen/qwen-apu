@@ -73,15 +73,13 @@ verify_bundle() {
         >/dev/null
 }
 
-bundle_name_is_valid() {
-    case $1 in
-        *[!A-Za-z0-9._-]* | '' | deployment-current | deployment-previous | \
-            deployment-state | deployment-state.* | . | ..)
-            return 1
-            ;;
-    esac
-    return 0
-}
+name_helper=$script_directory/deployment-bundle-name.sh
+if [ ! -r "$name_helper" ]; then
+    printf 'deployment bundle name helper is unreadable: %s\n' "$name_helper" >&2
+    exit 1
+fi
+# shellcheck source=deployment-bundle-name.sh
+. "$name_helper"
 
 # The bundle name a role resolves to, through either the generation directory
 # or a legacy plain link a prior activator version left at the root. A role
@@ -97,7 +95,7 @@ resolve_role() {
             ../*) role_name=${role_target#../} ;;
             *) role_name='' ;;
         esac
-        if ! bundle_name_is_valid "$role_name"; then
+        if ! deployment_bundle_name_is_valid "$role_name"; then
             printf 'role link %s targets %s; exactly ../BUNDLE_NAME is admitted\n' \
                 "$state_link/$role" "$role_target" >&2
             return 1
@@ -112,7 +110,7 @@ resolve_role() {
                 return 0
                 ;;
         esac
-        if ! bundle_name_is_valid "$role_target"; then
+        if ! deployment_bundle_name_is_valid "$role_target"; then
             printf 'legacy role link %s targets %s; exactly BUNDLE_NAME is admitted\n' \
                 "$deployment_root/deployment-$role" "$role_target" >&2
             return 1
@@ -194,8 +192,8 @@ if [ "$selector" = rollback ]; then
     exit 0
 fi
 
-if ! bundle_name_is_valid "$selector"; then
-    printf 'bundle name must be nonempty [A-Za-z0-9._-] and not a link name: %s\n' \
+if ! deployment_bundle_name_is_valid "$selector"; then
+    printf 'bundle name must match [A-Za-z0-9][A-Za-z0-9._-]* and avoid the root names: %s\n' \
         "$selector" >&2
     exit 2
 fi

@@ -22,6 +22,9 @@ set -eu
 # `active_deployment_web_presets=`; an absent preset reads `-`. Exit 3 states
 # that the root holds no deployment-current at all, so a caller can keep the
 # promote-chain defaults; any other failure is a corrupt or refused bundle.
+# Absence is one of the states the lock protects, so a root that admits no
+# lock leaf answers with the helper's own refusal rather than with 3: what a
+# root holds is unknown until the activation lock says it holds still.
 
 if [ "$#" -gt 1 ]; then
     printf 'usage: %s [DEPLOYMENT_ROOT]\n' "$0" >&2
@@ -37,15 +40,6 @@ if [ ! -d "$deployment_root" ]; then
     exit 3
 fi
 canonical_root=$(readlink -f -- "$deployment_root")
-
-# A root holding no deployment-current and no retained directory has nothing
-# to serialize against, so it answers 3 ahead of the lock; the same check
-# repeats under the lock for a root that does.
-if [ -z "${QWEN_ACTIVE_DEPLOYMENT_DIRECTORY:-}" ] && \
-    [ ! -e "$current_link" ] && [ ! -L "$current_link" ]; then
-    printf 'no deployment-current under %s\n' "$deployment_root" >&2
-    exit 3
-fi
 
 # The lock leaf is opened through open-verified-lock-descriptor.py, which
 # refuses a symlink, a directory, a foreign owner, and a loose mode, opens
@@ -80,6 +74,9 @@ if [ -n "${QWEN_ACTIVE_DEPLOYMENT_DIRECTORY:-}" ]; then
     fi
     canonical_directory=$(readlink -f -- "$candidate_directory")
 else
+    # Absence is decided under the lock, so an activation that publishes
+    # deployment-state and its role aliases between the read and the lock
+    # cannot leave the launch reporting an empty root it no longer has.
     if [ ! -e "$current_link" ] && [ ! -L "$current_link" ]; then
         printf 'no deployment-current under %s\n' "$deployment_root" >&2
         exit 3
@@ -100,6 +97,21 @@ bundle_name=${canonical_directory##*/}
 if [ "${canonical_directory%/*}" != "$canonical_root" ]; then
     printf 'active deployment resolves outside the deployment root: %s\n' \
         "$canonical_directory" >&2
+    exit 1
+fi
+# The resolved basename meets the bundle namespace here as well, so a launch
+# refuses a directory carrying one of the root's own names before it hands
+# the name to verification.
+name_helper=$script_directory/deployment-bundle-name.sh
+if [ ! -r "$name_helper" ]; then
+    printf 'deployment bundle name helper is unreadable: %s\n' "$name_helper" >&2
+    exit 1
+fi
+# shellcheck source=deployment-bundle-name.sh
+. "$name_helper"
+if ! deployment_bundle_name_is_valid "$bundle_name"; then
+    printf 'active deployment name must match [A-Za-z0-9][A-Za-z0-9._-]* and avoid the root names: %s\n' \
+        "$bundle_name" >&2
     exit 1
 fi
 "$script_directory/verify-deployment-bundle.sh" "$deployment_root" \
