@@ -182,33 +182,65 @@ trap 'stop_server' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+# The candidate may run on the CPU backend instead of Vulkan0, which is the
+# reference for what a different accumulation order costs: the CPU Q4_K dot
+# product sums in another order than the Vulkan mat-vec, so the same binary
+# against itself across the two backends bounds legitimate reassociation
+# on this model. `--device none` places every buffer on the CPU and the
+# placement lines are read for that prefix.
+candidate_device=${QWEN_WITNESS_CANDIDATE_DEVICE:-Vulkan0}
+case $candidate_device in
+    Vulkan0 | cpu) ;;
+    *)
+        printf 'QWEN_WITNESS_CANDIDATE_DEVICE is Vulkan0 or cpu: %s\n' "$candidate_device" >&2
+        exit 2
+        ;;
+esac
+
 start_server() {
     arm_server=$1
     arm_log=$2
-    env -u GGML_VK_DISABLE_GRAPH_OPTIMIZE LLAMA_NO_CPU_FALLBACK=1 \
-        "$arm_server" \
-        --model "$model_path" \
-        --host 127.0.0.1 \
-        --port "$server_port" \
-        --ctx-size "$model_context" \
-        --batch-size "$model_batch" \
-        --ubatch-size "$model_ubatch" \
-        --cache-type-k "$model_cache_k" \
-        --cache-type-v "$model_cache_v" \
-        --flash-attn "$model_flash_attention" \
-        --device Vulkan0 \
-        --split-mode none \
-        --override-tensor '.*=Vulkan0' \
-        --fit off \
-        --n-gpu-layers all \
-        --parallel 1 \
-        --threads "$thread_count" \
-        --threads-batch "$thread_count" \
-        --no-context-shift \
-        --offline \
-        --log-verbosity 4 \
-        >"$arm_log" 2>&1 &
+    arm_device=$3
+    if [ "$arm_device" = cpu ]; then
+        env -u GGML_VK_DISABLE_GRAPH_OPTIMIZE "$arm_server" \
+            --model "$model_path" --host 127.0.0.1 --port "$server_port" \
+            --ctx-size "$model_context" --batch-size "$model_batch" --ubatch-size "$model_ubatch" \
+            --cache-type-k "$model_cache_k" --cache-type-v "$model_cache_v" \
+            --flash-attn "$model_flash_attention" \
+            --device none --fit off --parallel 1 \
+            --threads "$thread_count" --threads-batch "$thread_count" \
+            --no-context-shift --offline --log-verbosity 4 \
+            >"$arm_log" 2>&1 &
+    else
+        env -u GGML_VK_DISABLE_GRAPH_OPTIMIZE LLAMA_NO_CPU_FALLBACK=1 \
+            "$arm_server" \
+            --model "$model_path" \
+            --host 127.0.0.1 \
+            --port "$server_port" \
+            --ctx-size "$model_context" \
+            --batch-size "$model_batch" \
+            --ubatch-size "$model_ubatch" \
+            --cache-type-k "$model_cache_k" \
+            --cache-type-v "$model_cache_v" \
+            --flash-attn "$model_flash_attention" \
+            --device Vulkan0 \
+            --split-mode none \
+            --override-tensor '.*=Vulkan0' \
+            --fit off \
+            --n-gpu-layers all \
+            --parallel 1 \
+            --threads "$thread_count" \
+            --threads-batch "$thread_count" \
+            --no-context-shift \
+            --offline \
+            --log-verbosity 4 \
+            >"$arm_log" 2>&1 &
+    fi
     server_pid=$!
+    case $arm_device in
+        cpu) placement_prefix='CPU[A-Za-z_]*' ;;
+        *) placement_prefix='Vulkan0' ;;
+    esac
     ready_iteration=0
     while [ "$ready_iteration" -lt "$readiness_seconds" ]; do
         if ! kill -0 "$server_pid" 2>/dev/null; then
@@ -216,9 +248,9 @@ start_server() {
             return 1
         fi
         if curl --silent --fail --max-time 2 "http://127.0.0.1:$server_port/health" >/dev/null 2>&1; then
-            for placement_line in 'Vulkan0 model buffer size' 'Vulkan0 KV buffer size' \
-                'Vulkan0 compute buffer size'; do
-                if ! grep -qF "$placement_line" "$arm_log"; then
+            for placement_line in "$placement_prefix model buffer size" \
+                "$placement_prefix KV buffer size" "$placement_prefix compute buffer size"; do
+                if ! grep -qE "$placement_line" "$arm_log"; then
                     printf 'placement=rejected missing=%s log=%s\n' "$placement_line" "$arm_log" >&2
                     return 1
                 fi
@@ -244,20 +276,20 @@ start_server() {
         "$model_flash_attention"
     printf 'runs_per_start\t%s\npredict_tokens\t%s\nseed\t%s\nthreads\t%s\nlogprob_bound\t%s\n' \
         "$run_count" "$predict_tokens" "$sampling_seed" "$thread_count" "$logprob_bound"
-    printf 'arm_order\tC K K C\n'
+    printf 'arm_order\tC K K C\ncontrol_device\tVulkan0\ncandidate_device\t%s\n' "$candidate_device"
 } >"$output_directory/inputs.tsv"
 
 slot=0
 for arm in C K K C; do
     slot=$((slot + 1))
     case $arm in
-        C) arm_server=$control_server ;;
-        *) arm_server=$candidate_server ;;
+        C) arm_server=$control_server; arm_device=Vulkan0 ;;
+        *) arm_server=$candidate_server; arm_device=$candidate_device ;;
     esac
     arm_directory=$output_directory/arms/$slot-$arm
     mkdir -p "$arm_directory"
-    printf 'witness_arm=start slot=%s arm=%s server=%s\n' "$slot" "$arm" "$arm_server"
-    start_server "$arm_server" "$arm_directory/server.log"
+    printf 'witness_arm=start slot=%s arm=%s server=%s device=%s\n' "$slot" "$arm" "$arm_server" "$arm_device"
+    start_server "$arm_server" "$arm_directory/server.log" "$arm_device"
     run_index=1
     while [ "$run_index" -le "$run_count" ]; do
         while IFS="$(printf '\t')" read -r prompt_id prompt_text; do
