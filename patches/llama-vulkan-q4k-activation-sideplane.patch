@@ -1,8 +1,12 @@
 E4b-A, the global sum4 sideplane: one pre-pass writes the Q4_K activation group sums
 that every output-row workgroup of every projection consuming that activation reads,
 where llama-vulkan-q4k-activation-group-sums.patch (E4) forms them once per column per
-superblock inside each workgroup. This patch applies on top of that one and leaves its
-Q5_K hunk untouched.
+superblock inside each workgroup. This patch replaces E4's mul_mat_vec_q4_k.comp hunk
+rather than stacking on it: both declare that file at preimage 93fbacc62 and both hunk
+at @@ -12,6 and @@ -75,10, so the two apply to the pristine file alternatively. E4's own
+form is the Q4K_SIDEPLANE-clear branch here, which is why a flag-clear arm reproduces E4
+bit for bit. E4's mul_mat_vec_q5_k.comp hunk reaches no file this patch touches, so a
+tree carrying this patch alone carries no Q5_K hoist.
 
 mul_mat_vec_q4_k_prepass.comp writes 64 f32 sums per 256-element superblock and token
 column in exactly the lane-chunk layout E4's by_group_sum uses, over the same four

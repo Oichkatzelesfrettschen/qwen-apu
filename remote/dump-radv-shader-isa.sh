@@ -10,10 +10,10 @@ set -eu
 # than its reader: remote/summarize-radv-isa.py turns the retained log into one
 # row per shader.
 #
-# The run mirrors the low-async serving profile's own exports rather than
-# invoking remote/radv-low-priority-env.sh, because that script's scrub unsets
-# RADV_DEBUG before its profile case runs and RADV_DEBUG is this script's whole
-# point. remote/run-raven2-vulkan-kernel-census.sh binds the census I0 arm to
+# The run goes through remote/radv-low-priority-env.sh under the low-async
+# serving profile, so the scrub that gives a profile name one meaning applies
+# here too and `env` reintroduces RADV_DEBUG after it.
+# remote/run-raven2-vulkan-kernel-census.sh binds the census I0 arm to
 # context 24576, batch 128, ubatch 32, cache-type-k q8_0, cache-type-v q4_0,
 # and flash attention on; the invocation below states that tuple literally
 # rather than reading it from a model registry row, so this diagnostic runs
@@ -111,24 +111,19 @@ trap teardown_server EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# The exports below reproduce what the low-async profile leaves set after
-# radv-low-priority-env.sh scrubs the ambient Vulkan and RADV environment and
-# runs its case statement: VK_DRIVER_FILES and VK_ICD_FILENAMES name the RADV
-# ICD, GGML_VK_LOW_PRIORITY and LLAMA_NO_CPU_FALLBACK are always on, and
-# low-async exports GGML_VK_MAX_NODES_PER_SUBMIT=16 alone, leaving
-# GGML_VK_SERIALIZE_SUBMISSIONS absent rather than zero. RADV_DEBUG is the one
-# name that profile always unsets, so it is exported here instead of through
-# that script.
+# radv-low-priority-env.sh owns the environment this server runs under, so the
+# low-async profile's own exports and its scrub of every ambient GGML_VK_,
+# RADV_, and Vulkan layer name reach this diagnostic rather than being
+# reproduced here. The wrapper unsets RADV_DEBUG before its profile case runs,
+# which is what this collector needs set, so `env` reintroduces it after the
+# scrub and ahead of the server. The wrapper's own nice 19, single-core
+# affinity, and idle I/O class change which cycles the run takes rather than
+# which pipelines RADV compiles.
 (
-    VK_DRIVER_FILES=$radv_icd
-    VK_ICD_FILENAMES=$radv_icd
-    GGML_VK_LOW_PRIORITY=1
-    LLAMA_NO_CPU_FALLBACK=1
-    GGML_VK_MAX_NODES_PER_SUBMIT=16
-    RADV_DEBUG=shaders,shaderstats
-    export VK_DRIVER_FILES VK_ICD_FILENAMES GGML_VK_LOW_PRIORITY \
-        LLAMA_NO_CPU_FALLBACK GGML_VK_MAX_NODES_PER_SUBMIT RADV_DEBUG
-    exec "$server_executable" \
+    exec env QWEN_VULKAN_PROFILE=low-async QWEN_RADV_ICD="$radv_icd" \
+        "$script_directory/radv-low-priority-env.sh" \
+        env RADV_DEBUG=shaders,shaderstats \
+        "$server_executable" \
         --host 127.0.0.1 \
         --port "$server_port" \
         --model "$model_path" \

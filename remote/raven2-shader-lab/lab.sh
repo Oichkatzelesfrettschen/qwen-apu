@@ -144,13 +144,18 @@ if [ "$spirv_only" -eq 0 ]; then
         harness_executable=$output_directory/shader-lab
         cc -O2 -Wall -Wextra "$script_directory/shader-lab.c" -lvulkan -o "$harness_executable"
 
-        # RADV_DEBUG reaches the driver from this environment alone.
-        # remote/radv-low-priority-env.sh unsets every RADV and GGML_VK name
-        # before its profile case runs, so a lab invocation states its own
-        # environment rather than sourcing that script.
+        # An ambient RADV_DEBUG, RADV_PERFTEST, or Vulkan layer name changes
+        # which passes run and what the driver prints, and a receipt compared
+        # against another host's receipt reads that difference as a source
+        # difference. remote/radv-low-priority-env.sh is the scrub that removes
+        # it, under the low-async serving profile; it unsets RADV_DEBUG among
+        # the rest, so `env` reintroduces the one setting this harness needs
+        # after the scrub and ahead of pipeline creation.
         set +e
         # shellcheck disable=SC2086
-        env RADV_DEBUG=shaders,shaderstats,nir "$harness_executable" "$spirv_path" $harness_arguments \
+        env QWEN_VULKAN_PROFILE=low-async "$script_directory/../radv-low-priority-env.sh" \
+            env RADV_DEBUG=shaders,shaderstats,nir \
+            "$harness_executable" "$spirv_path" $harness_arguments \
             >"$harness_log" 2>"$debug_log"
         harness_status=$?
         set -e
@@ -159,6 +164,15 @@ if [ "$spirv_only" -eq 0 ]; then
                 "$harness_status" "$harness_log" "$debug_log" >&2
             exit 1
         fi
+        # The receipt carries the driver-facing names that survived the scrub,
+        # so a reader compares two receipts on what the driver was told rather
+        # than trusting that neither host had an ambient setting. The same
+        # wrapper and profile answer, so the list is the run's own.
+        surviving_names=$(env QWEN_VULKAN_PROFILE=low-async \
+            "$script_directory/../radv-low-priority-env.sh" \
+            env RADV_DEBUG=shaders,shaderstats,nir sh -c \
+            'env | sed -n "s/^\(RADV_[A-Za-z0-9_]*\|VK_[A-Za-z0-9_]*\|MESA_[A-Za-z0-9_]*\|GGML_VK_[A-Za-z0-9_]*\)=.*/\1/p" | sort | tr "\n" "," | sed "s/,$//"')
+        printf 'environment_names=%s\n' "${surviving_names:--}" >>"$harness_log"
     fi
 
     # The disassembly block opens on a stage-name line immediately followed
@@ -364,7 +378,8 @@ fi
     printf 'isa_sha256\t%s\t-\n' "$isa_sha256"
     for harness_field in device_name driver_name driver_info device_api_version spirv_capabilities \
         features_enabled robust_buffer_access spec_constants bindings push_constant_bytes \
-        subgroup_size_requested subgroup_size_min subgroup_size_max; do
+        subgroup_size_requested subgroup_size_min subgroup_size_max \
+        environment_names; do
         printf '%s\t%s\t-\n' "$harness_field" "$(read_harness "$harness_field")"
     done
     # The divisor is an operator claim rather than a fact the ISA carries: the

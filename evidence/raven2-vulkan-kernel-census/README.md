@@ -911,12 +911,17 @@ A sidecar record is evidence only where `validate-clock-sidecar.py`
 accepts it: exit status 0, one footer, a sample count above one equal to
 the rows, an achieved period within 25% of the requested one, a mean
 sample cost under 1 ms, every sensor read on every sample, footer
-instants equal to the first and last rows, and the request window covered
-on both sides, and no adjacent sample gap above the registered maximum of
-20 ms overlapping the request window, since a 100 ms hole between perfect
-samples passes a run-wide mean while losing one 2B token interval; the
-validator reports the median, p95, p99, and maximum gap and the counts
-above 1.5 periods and above the bound. The first calibration on 34de93f
+instants equal to the first and last rows, the request window covered on
+both sides, a `window_lost_fraction` at or below
+`sidecar_max_lost_fraction`, default 0.03, and no adjacent sample gap
+above `sidecar_max_gap_ns`, default ten periods or 100 ms and raised to
+250 ms by the runner under a forced clock policy, overlapping the request
+window. Coverage rather than the widest gap is what the record
+owes the arm: the fraction prices every gap wider than two periods against
+the window it clips, and the stall bound refuses a sampler that stopped
+rather than one the scheduler descheduled. The validator reports the
+median, p95, p99, and maximum gap and the counts above 1.5 periods and
+above the bound as observations beside both verdicts. The first calibration on 34de93f
 refuted a 5 ms period with a 10 ms bound at nice 10: the median gap held
 5.0 ms and the p99 7.3 ms while the maximum reached 58 ms with ten gaps
 above the bound and four inside a 6.4 s request window, which is the

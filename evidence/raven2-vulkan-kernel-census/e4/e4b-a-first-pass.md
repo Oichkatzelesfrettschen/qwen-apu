@@ -10,10 +10,16 @@ than one consumer, not the 23.1 an address-keyed cache reported before the key w
 corrected, and that correction is the run's first finding: keying the sideplane by
 `(buffer, offset)` is a correctness bug, not a tuning choice.
 
-`patches/llama-vulkan-q4k-activation-sideplane.patch` carries the change and applies on
-top of `patches/llama-vulkan-q4k-activation-group-sums.patch`.
+`patches/llama-vulkan-q4k-activation-sideplane.patch` carries the change and replaces
+`patches/llama-vulkan-q4k-activation-group-sums.patch`'s `mul_mat_vec_q4_k.comp` hunk
+rather than stacking on it. Both patches declare that file at preimage `93fbacc62` and
+both hunk at `@@ -12,6` and `@@ -75,10`, so E4b-A is reproduced by applying the sideplane
+patch in place of E4 on a pristine tree. E4's own form survives as the
+`Q4K_SIDEPLANE`-clear branch, which is what makes a flag-clear arm equal to the E4
+control. The sideplane patch names no `mul_mat_vec_q5_k.comp` hunk, so E4's Q5_K hoist
+follows from how a tree was prepared rather than from this patch.
 Its SHA-256 is
-`59b5a680333e4df9f1d33da2d9900dd27974c28d026f9073f424660a0d0d0fbc`.
+`39027e980f9dfecd5bc22ffe2848741f4470d7359c37522dab27d4b81faf0117`.
 
 ## The mechanism
 
@@ -90,7 +96,8 @@ reports both figures so the gap is measured.
 ```sh
 # E4 control: $HOME/src/llama.cpp-e4 at 18b5adbfe with the E4 patch, build-e4.
 # E4b-A: $HOME/src/llama.cpp-e4b, a worktree of that repository at the same commit,
-# with the E4 patch and this one, build-e4b. Both configured
+# carrying the sideplane patch, whose Q4K_SIDEPLANE-clear branch is E4's own form,
+# build-e4b. Both configured
 # -DCMAKE_BUILD_TYPE=Release -DGGML_VULKAN=ON -DGGML_NATIVE=OFF -DLLAMA_CURL=OFF.
 
 arm() {   # arm BINDIR MODEL OUT
@@ -138,7 +145,11 @@ The 2B arm is the identity measurement. The 4B i1-Q5_K_M arm is a scope control 
 a second identity measurement: `remote/gguf-tensor-census.py` reads that file as 65.76%
 Q5_K and 33.77% Q6_K by byte and **no Q4_K at all**, so the feature declines on every one of
 its mat-vecs and the arm proves that the Q5_K and Q6_K paths and the decline itself leave
-the token stream where E4 put it. A Q4_K identity claim rests on the 2B row alone.
+the token stream where E4 put it. A Q4_K identity claim rests on the 2B row alone. The
+Q5_K hoist itself is a property of each tree rather than of the sideplane patch, which
+names no `mul_mat_vec_q5_k.comp` hunk, so the 4B row states that the two trees agree on
+that model, and the Q5_K form each tree carried is read from its preparation rather than
+from this row.
 
 The flag-clear rows are the control arm the same binary serves. They also close the
 question the three extra SPIR-V modules raise, since the sideplane pipelines are created at

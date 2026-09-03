@@ -17,3 +17,4 @@ bindings=5
 push_constant_bytes=64
 subgroup_size_requested=64
 pipeline_created=fixture.spv
+environment_names=GGML_VK_LOW_PRIORITY,GGML_VK_MAX_NODES_PER_SUBMIT,RADV_DEBUG,VK_DRIVER_FILES,VK_ICD_FILENAMES

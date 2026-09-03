@@ -104,12 +104,13 @@ shift
 period_ms=20
 drm_device=''
 control=''
+hwmon=''
 while [ "$#" -gt 0 ]; do
     case $1 in
         --period-ms) period_ms=$2; shift 2 ;;
         --cpu) shift 2 ;;
         --drm-device) drm_device=$2; shift 2 ;;
-        --hwmon) shift 2 ;;
+        --hwmon) hwmon=$2; shift 2 ;;
         --control) control=$2; shift 2 ;;
         *) shift ;;
     esac
@@ -129,29 +130,54 @@ write_record() {
         kill "$reader_pid" 2>/dev/null || true
     fi
     level=$(cat "$drm_device/power_dpm_force_performance_level" 2>/dev/null) || level=auto
+    # telemetry-broker.c opens temp1_input and freq1_input from the --hwmon
+    # directory alone, so a broker told nothing writes `unavailable` in the
+    # temperature and the delivered-frequency columns. The delivered frequency
+    # tracks the selected step here, which is what makes the eighth column the
+    # invariant is counted over answer under `high` and hover under `auto`.
+    temperature=unavailable
+    actual_available=0
+    if [ -n "$hwmon" ] && [ -r "$hwmon/temp1_input" ] && [ -r "$hwmon/freq1_input" ]; then
+        temperature=$(cat "$hwmon/temp1_input")
+        actual_available=1
+    fi
+    mean_cost=50000
+    if [ "${QWEN_TEST_SIDECAR_COST_NS:-}" != "" ]; then
+        mean_cost=$QWEN_TEST_SIDECAR_COST_NS
+    fi
     {
-        printf '# clock=CLOCK_MONOTONIC period_ns=%s drm_device=%s hwmon=-\n' \
-            "$period_ns" "$drm_device"
+        printf '# clock=CLOCK_MONOTONIC period_ns=%s drm_device=%s hwmon=%s\n' \
+            "$period_ns" "$drm_device" "${hwmon:--}"
         printf '# sample_rates: gpu_busy_percent_period_ns=%s pp_dpm_period_ns=%s temp1_input_period_ns=%s meminfo_period_ns=%s vmstat_period_ns=%s host_period_ns=%s\n' \
             "$period_ns" "$((period_ns * 10))" "$((period_ns * 10))" \
             "$((period_ns * 100))" "$((period_ns * 100))" "$((period_ns * 100))"
         printf '# sampler_pid=%s nice=19 cpu_affinity=0,1\n' "$$"
-        printf 'monotonic_ns\tpp_dpm_sclk_selected_mhz\tpp_dpm_mclk_surface_mhz\tpp_dpm_fclk_surface_mhz\tgpu_busy_percent\ttemp1_millidegrees\tsample_cost_ns\n'
+        printf 'monotonic_ns\tpp_dpm_sclk_selected_mhz\tpp_dpm_mclk_surface_mhz\tpp_dpm_fclk_surface_mhz\tgpu_busy_percent\ttemp1_millidegrees\tsample_cost_ns\tsclk_actual_mhz\n'
         awk -F'\t' '{ printf "# mark name=%s monotonic_ns=%s\n", substr($1, 6), $2 }' \
             "$marks"
         awk -v start="$start_ns" -v period="$period_ns" \
-            -v span="$((end_ns - start_ns))" -v level="$level" '
+            -v span="$((end_ns - start_ns))" -v level="$level" \
+            -v temperature="$temperature" -v actual_available="$actual_available" \
+            -v mean_cost="$mean_cost" '
             BEGIN {
                 rows = int(span / period) + 3
                 if (rows < 4) { rows = 4 }
+                unavailable_rows = (temperature == "unavailable") ? rows : 0
                 for (row = 0; row < rows; row++) {
+                    # The DPM surfaces sit on the tenth-period channel and
+                    # the validator counts one reading per channel period,
+                    # so a governor that hovers is written as a decade of
+                    # rows at each step rather than as alternating rows the
+                    # count never sees.
                     sclk = 1100
-                    if (level == "auto" && row % 2 == 1) { sclk = 650 }
-                    printf "%d\t%d\t1067\t1067\t94.0\t75000\t50000\n",
-                        start + row * period, sclk
+                    if (level == "auto" && int(row / 10) % 2 == 1) { sclk = 650 }
+                    actual = (actual_available == 1) ? sclk "" : "unavailable"
+                    printf "%d\t%d\t1067\t1067\t94.0\t%s\t50000\t%s\n",
+                        start + row * period, sclk, temperature, actual
                 }
-                printf "# samples=%d achieved_period_ns=%d mean_sample_cost_ns=50000 max_sample_cost_ns=50000 samples_with_unavailable_sensor=0 first_sample_ns=%d last_sample_ns=%d\n",
-                    rows, period, start, start + (rows - 1) * period
+                printf "# samples=%d achieved_period_ns=%d mean_sample_cost_ns=%d max_sample_cost_ns=%d samples_with_unavailable_sensor=%d first_sample_ns=%d last_sample_ns=%d\n",
+                    rows, period, mean_cost, mean_cost, unavailable_rows, start,
+                    start + (rows - 1) * period
             }'
     } >"$record"
     exit 0
@@ -186,6 +212,19 @@ printf '0: 400Mhz\n1: 1067Mhz *\n' >"$drm_fixture/pp_dpm_fclk"
 bapm_fixture=$temporary_directory/bapm
 printf 'Y\n' >"$bapm_fixture"
 
+lease_fixture=$temporary_directory/vulkan-workload.lock
+: >"$lease_fixture"
+
+# The hwmon rule takes the first entry whose name attribute reads amdgpu, so
+# the fixture puts another sensor ahead of it in glob order.
+hwmon_root_fixture=$temporary_directory/hwmon
+mkdir -p "$hwmon_root_fixture/hwmon0" "$hwmon_root_fixture/hwmon1"
+printf 'nvme\n' >"$hwmon_root_fixture/hwmon0/name"
+printf '41000\n' >"$hwmon_root_fixture/hwmon0/temp1_input"
+printf 'amdgpu\n' >"$hwmon_root_fixture/hwmon1/name"
+printf '75000\n' >"$hwmon_root_fixture/hwmon1/temp1_input"
+printf '1100000000\n' >"$hwmon_root_fixture/hwmon1/freq1_input"
+
 model_fixture=$temporary_directory/model.gguf
 printf 'not a real gguf\n' >"$model_fixture"
 
@@ -193,15 +232,25 @@ reset_level() {
     printf 'manual\n' >"$drm_fixture/power_dpm_force_performance_level"
 }
 
-run_probe() {
+# `exec` makes the probe the process this shell became, so a caller that needs
+# the probe's own pid gets it from `$!` rather than getting a wrapper whose
+# death leaves the probe, the broker, and the bench writing the fixture. Every
+# ordinary case reaches it through run_probe, whose subshell absorbs the exec.
+exec_probe() {
     probe_output=$1
     shift
-    PATH="$stub_directory:$PATH" \
-    QWEN_DRM_DEVICE="$drm_fixture" \
-    QWEN_BAPM_PARAMETER="$bapm_fixture" \
-    QWEN_TELEMETRY_BROKER="$stub_directory/telemetry-broker" \
-        env "$@" "$probe" "$probe_output" "$model_fixture" \
+    exec env PATH="$stub_directory:$PATH" \
+        QWEN_DRM_DEVICE="$drm_fixture" \
+        QWEN_BAPM_PARAMETER="$bapm_fixture" \
+        QWEN_HWMON_ROOT="$hwmon_root_fixture" \
+        QWEN_VULKAN_WORKLOAD_LOCK="$lease_fixture" \
+        QWEN_TELEMETRY_BROKER="$stub_directory/telemetry-broker" \
+        "$@" "$probe" "$probe_output" "$model_fixture" \
         "$stub_directory/llama-bench"
+}
+
+run_probe() {
+    ( exec_probe "$@" )
 }
 
 # usage: two arguments are the minimum and four are one too many.
@@ -247,6 +296,8 @@ reset_level
 drm_status=0
 PATH="$stub_directory:$PATH" QWEN_DRM_DEVICE="$temporary_directory/absent-drm" \
     QWEN_BAPM_PARAMETER="$bapm_fixture" \
+    QWEN_HWMON_ROOT="$hwmon_root_fixture" \
+    QWEN_VULKAN_WORKLOAD_LOCK="$lease_fixture" \
     QWEN_TELEMETRY_BROKER="$stub_directory/telemetry-broker" \
     "$probe" "$temporary_directory/out-nodrm" "$model_fixture" \
     "$stub_directory/llama-bench" \
@@ -270,6 +321,54 @@ if [ "$existing_status" -eq 2 ] &&
     report 0 refuses_existing_output_directory
 else
     report 1 refuses_existing_output_directory
+fi
+
+# lease: another Vulkan workload shares whatever level this probe forces and
+# lands in the rate its receipt carries, so the probe refuses before it writes
+# the level rather than measuring a contended decode.
+reset_level
+# The holder ends on a flag file rather than on a signal, because a signalled
+# `flock FILE COMMAND` leaves the command holding the inherited descriptor and
+# the lease outlives the process the test killed.
+lease_flag=$temporary_directory/lease-held
+: >"$lease_flag"
+(
+    exec 9>"$lease_fixture"
+    flock 9
+    while [ -e "$lease_flag" ]; do
+        sleep 0.05
+    done
+) &
+lease_holder_pid=$!
+lease_held() {
+    lease_probe_status=0
+    flock -n -E 75 "$lease_fixture" true || lease_probe_status=$?
+    [ "$lease_probe_status" -eq 75 ]
+}
+lease_attempt=0
+while [ "$lease_attempt" -lt 200 ] && ! lease_held; do
+    lease_attempt=$((lease_attempt + 1))
+    sleep 0.05
+done
+lease_status=0
+run_probe "$temporary_directory/out-lease" \
+    >"$temporary_directory/lease.log" 2>&1 || lease_status=$?
+rm -f -- "$lease_flag"
+wait "$lease_holder_pid" 2>/dev/null || true
+lease_attempt=0
+while [ "$lease_attempt" -lt 200 ] && lease_held; do
+    lease_attempt=$((lease_attempt + 1))
+    sleep 0.05
+done
+if [ "$lease_status" -eq 2 ] &&
+    grep -q 'another Vulkan workload holds the shared lease' \
+        "$temporary_directory/lease.log" &&
+    [ ! -e "$temporary_directory/out-lease" ] &&
+    [ "$(cat "$drm_fixture/power_dpm_force_performance_level")" = manual ]; then
+    report 0 refuses_while_another_workload_holds_the_lease
+else
+    report 1 refuses_while_another_workload_holds_the_lease
+    cat "$temporary_directory/lease.log" >&2
 fi
 
 # The complete chain: three levels, three receipts, one authority.
@@ -351,6 +450,32 @@ for arm in D0-auto D1-high; do
 done
 report "$counts_agree" receipt_counts_come_from_the_validator
 
+# The record is the broker's own eight-column shape, so the sixth column the
+# thermal peak is read from sits inside a wider row and the peak is the hwmon
+# fixture's own reading rather than an absent row.
+high_thermal=$(receipt_field "$complete_output/D1-high/dpm-receipt.tsv" thermal_peak_millic)
+if [ "$high_thermal" = 75000 ] &&
+    grep -q "	sclk_actual_mhz$" "$complete_output/D1-high/clock-sidecar.tsv"; then
+    report 0 wide_record_reports_a_thermal_peak
+else
+    report 1 wide_record_reports_a_thermal_peak
+    printf 'thermal_peak_millic=%s\n' "$high_thermal" >&2
+fi
+
+# The invariant is counted over the delivered frequency in the eighth column,
+# which the broker fills from the hwmon directory the probe resolved. A probe
+# that named none would leave that column unavailable, the count at zero, and
+# the invariant violated on a level that held.
+high_at_max=$(receipt_field "$complete_output/D1-high/dpm-receipt.tsv" samples_at_max)
+if grep -q "hwmon=$hwmon_root_fixture/hwmon1\$" \
+    "$complete_output/D1-high/clock-sidecar.tsv" &&
+    [ "${high_at_max:-0}" -gt 0 ]; then
+    report 0 broker_reads_the_resolved_amdgpu_hwmon
+else
+    report 1 broker_reads_the_resolved_amdgpu_hwmon
+    printf 'samples_at_max=%s\n' "$high_at_max" >&2
+fi
+
 summary_shape=0
 for level in auto high profile_peak; do
     if ! grep -q "^dpm_level=$level observed=[^ ]* sclk_during=[^ ]* below_max_fraction=[^ ]* tok_s=[^ ]* clock_invariant=[^ ]*$" \
@@ -407,11 +532,34 @@ else
     report 1 profile_peak_unsupported_on_refused_write
 fi
 
+# A record the validator refuses still carries whatever the invariant counted
+# over the samples it holds, so the two readings are separate: the receipt
+# keeps `held` beside `refused` and the campaign-facing authority line names
+# none. The mean sample cost carries the refusal because it is the one footer
+# figure a stub can move without changing a single clock reading.
+reset_level
+refused_output=$temporary_directory/out-refused-record
+refused_record_status=0
+run_probe "$refused_output" QWEN_TEST_SIDECAR_COST_NS=2000000 \
+    >"$temporary_directory/refused-record.log" 2>&1 || refused_record_status=$?
+refused_invariant=$(receipt_field "$refused_output/D1-high/dpm-receipt.tsv" clock_invariant)
+refused_verdict=$(receipt_field "$refused_output/D1-high/dpm-receipt.tsv" sidecar_verdict)
+if [ "$refused_record_status" -eq 0 ] && [ "$refused_invariant" = held ] &&
+    [ "$refused_verdict" = refused ] &&
+    grep -q '^dpm_authority=none bapm=Y$' "$temporary_directory/refused-record.log"; then
+    report 0 refused_record_names_no_authority
+else
+    report 1 refused_record_names_no_authority
+    printf 'invariant=%s verdict=%s\n' "$refused_invariant" "$refused_verdict" >&2
+fi
+
 # A terminating signal reaches the probe while the decode is live, and the
-# laptop is left on the level the run found rather than on a forced one.
+# laptop is left on the level the run found rather than on a forced one. The
+# arm execs so `$!` is the probe itself: a signal that reached a wrapper alone
+# would leave the probe, its broker, and its bench running.
 reset_level
 term_output=$temporary_directory/out-term
-run_probe "$term_output" QWEN_TEST_BENCH_SLEEP=8 \
+{ exec_probe "$term_output" QWEN_TEST_BENCH_SLEEP=8; } \
     >"$temporary_directory/term.log" 2>&1 &
 term_pid=$!
 term_attempt=0
@@ -424,18 +572,36 @@ while [ "$term_attempt" -lt 200 ]; do
     sleep 0.05
 done
 sleep 0.3
+# The broker the arm started is the witness that the signal reached the probe
+# rather than a wrapper around it: the probe tears its broker down from the
+# same trap that restores the level, so a probe that survived the signal leaves
+# this pid alive and keeps writing the record.
+term_broker_pid=$(awk '$0 ~ /^telemetry_broker=ready / {
+        for (field = 1; field <= NF; field++) {
+            if ($field ~ /^pid=/) { print substr($field, 5); exit }
+        }
+    }' "$term_output/D0-auto/clock-sidecar.stderr" 2>/dev/null || true)
 kill -TERM "$term_pid" 2>/dev/null || true
 term_status=0
 wait "$term_pid" || term_status=$?
+term_broker_alive=0
+if [ -n "$term_broker_pid" ] && kill -0 "$term_broker_pid" 2>/dev/null; then
+    term_broker_alive=1
+    kill -TERM "$term_broker_pid" 2>/dev/null || true
+fi
 if [ "$term_status" -eq 143 ] &&
     grep -q '^dpm_restore=held requested=manual observed=manual$' \
         "$temporary_directory/term.log" &&
+    ! grep -q '^dpm_authority=' "$temporary_directory/term.log" &&
+    [ -n "$term_broker_pid" ] && [ "$term_broker_alive" -eq 0 ] &&
+    [ ! -d "$term_output/D1-high" ] &&
     [ "$(cat "$drm_fixture/power_dpm_force_performance_level")" = manual ]; then
     report 0 restores_level_on_term
 else
     report 1 restores_level_on_term
-    printf 'term_status=%s level=%s\n' "$term_status" \
-        "$(cat "$drm_fixture/power_dpm_force_performance_level")" >&2
+    printf 'term_status=%s level=%s broker_pid=%s broker_alive=%s\n' "$term_status" \
+        "$(cat "$drm_fixture/power_dpm_force_performance_level")" \
+        "${term_broker_pid:--}" "$term_broker_alive" >&2
 fi
 
 if [ "$failures" -ne 0 ]; then

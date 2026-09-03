@@ -30,6 +30,12 @@ set -eu
 # harness fault rather than a finding, since one module compiled twice by one
 # driver has no source difference to express; the verdict line names that case
 # separately.
+#
+# The ladder is read from three digests, so a pair of --spirv-only receipts is
+# refused rather than placed on it: those receipts carry no NIR and no ISA, and
+# a rung reached with two layers unmeasured names a compiler stage that never
+# ran. `spirv_unchanged` is a claim about what the later layers received, so it
+# is stated from a device receipt too.
 
 usage() {
     printf 'usage: %s CONTROL_DIR CANDIDATE_DIR\n' "$0" >&2
@@ -65,6 +71,46 @@ compare_state() {
     fi
 }
 
+# The verdict attributes a difference to the source change, which holds only
+# where the two pipelines were created the same way. These ten fields are what
+# the harness chose rather than what the shader declares: a subgroup size, a
+# specialization constant, a robustness setting, or a driver revision that
+# differs makes `isa_changed` a statement about the harness. `bindings`,
+# `push_constant_bytes`, `spirv_capabilities`, and `features_enabled` are the
+# shader's own declaration -- the sideplane variant adds binding 5 -- so they
+# are reported below and decide nothing.
+contract_refused=0
+for contract_field in run_mode device_name driver_name driver_info \
+    device_api_version robust_buffer_access spec_constants \
+    subgroup_size_requested subgroup_size_min subgroup_size_max \
+    environment_names; do
+    control_contract=$(read_field "$control_receipt" "$contract_field")
+    candidate_contract=$(read_field "$candidate_receipt" "$contract_field")
+    if [ "$control_contract" != "$candidate_contract" ]; then
+        printf 'execution contract differs, so the comparison attributes nothing: %s control=%s candidate=%s\n' \
+            "$contract_field" "$control_contract" "$candidate_contract" >&2
+        contract_refused=1
+    fi
+done
+
+# read_field prints `-` for a row the receipt never wrote, and compare_state
+# calls `-` against `-` the same, so a pair of --spirv-only receipts reaches
+# nir_canonicalized with no NIR and no ISA ever captured. A layer the receipt
+# holds no digest for is unknown rather than equal.
+for placeholder_field in nir_sha256 isa_sha256; do
+    for placeholder_receipt in "$control_receipt" "$candidate_receipt"; do
+        if [ "$(read_field "$placeholder_receipt" "$placeholder_field")" = - ]; then
+            printf 'receipt carries no %s, so no layer verdict follows from it: %s\n' \
+                "$placeholder_field" "$placeholder_receipt" >&2
+            contract_refused=1
+        fi
+    done
+done
+
+if [ "$contract_refused" -ne 0 ]; then
+    exit 1
+fi
+
 control_spirv=$(read_field "$control_receipt" spirv_sha256)
 candidate_spirv=$(read_field "$candidate_receipt" spirv_sha256)
 control_nir=$(read_field "$control_receipt" nir_sha256)
@@ -80,6 +126,14 @@ printf 'layer\tcontrol\tcandidate\tstate\n'
 printf 'spirv_sha256\t%s\t%s\t%s\n' "$control_spirv" "$candidate_spirv" "$spirv_state"
 printf 'nir_sha256\t%s\t%s\t%s\n' "$control_nir" "$candidate_nir" "$nir_state"
 printf 'isa_sha256\t%s\t%s\t%s\n' "$control_isa" "$candidate_isa" "$isa_state"
+
+printf '\ndeclaration\tcontrol\tcandidate\tstate\n'
+for declared_field in bindings push_constant_bytes spirv_capabilities features_enabled; do
+    control_declared=$(read_field "$control_receipt" "$declared_field")
+    candidate_declared=$(read_field "$candidate_receipt" "$declared_field")
+    printf '%s\t%s\t%s\t%s\n' "$declared_field" "$control_declared" \
+        "$candidate_declared" "$(compare_state "$control_declared" "$candidate_declared")"
+done
 
 printf '\nfield\tbefore\tafter\tdelta\n'
 # Every count row and every register allocation figure the two receipts share,
