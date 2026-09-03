@@ -147,5 +147,5 @@ deterministic                 held
 argmax_identity_observed      held over 768 discovery tokens
 numerical_identity            refuted
 margin_robustness             measured by this contract on the holdout
-quality_nonregression         pending
+quality_nonregression         held: ../quality-gate-20260903T0547Z/, the same 40 of 65 on four arms, 64 of 65 replies identical
 ```
