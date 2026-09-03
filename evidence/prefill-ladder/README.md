@@ -219,6 +219,9 @@ ssh eirikr@qwen-laptop
 sudo -v
 ~/qwen-laptop-setup/remote/qwen-teardown.sh
 out=~/evidence/prefill-ladder/$(date -u +%Y%m%dT%H%MZ)
+for path in "$out" "$out.log" "$out.status"; do
+    [ ! -e "$path" ] || { printf 'output path in use: %s\n' "$path" >&2; return 1 2>/dev/null || exit 1; }
+done
 { QWEN_CENSUS_MCLK_LEVEL=2 \
     ~/qwen-laptop-setup/remote/run-prefill-ladder.sh \
     ~/deployments/CONTROL/llama-server \
@@ -241,7 +244,11 @@ pipeline reports its last command's status, so `tee` would report success over a
 ladder; the braces record the runner's own status into `$out.status` before the pipe
 sees it, which is what `cat` reads back. The runner refuses an output path that already
 exists, so `$out.log` and `$out.status` are named beside that directory rather than
-inside it.
+inside it. The runner's own refusal covers the directory alone: two invocations inside
+one UTC minute compose the same `$out`, and the redirection and `tee` would truncate the
+first run's sidecars while the runner was still refusing its directory. The loop above
+refuses all three names together, so a second run in the same minute stops before it
+overwrites anything.
 
 The line reads `dpm_restore=restored level=X requested=X sclk_level=I mclk_level=J` when
 the policy node is back in the policy the run found it in, and `dpm_restore=mismatch`
