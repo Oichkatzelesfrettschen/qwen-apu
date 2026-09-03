@@ -37,6 +37,17 @@ pos_max that are merely consistent with each other. A capture whose recurrent
 state sat one batch ahead of its own token array would restore an answer rather
 than fail, which is the hazard the whole-state save exists to close.
 
+The pin fills once and holds for the life of the process. Every chat request
+carrying message spans reaches a last-user boundary of its own, so a newest-wins
+rule would hand the pin to exactly the unrelated request the mechanism exists to
+survive: the sequence head, other head, head evicts the head between its two
+uses and reprefills it, which is the behavior at f280b269 the patch is written
+against. Holding the first captured prefix pins the head and leaves the recent
+prompt to the slot, which already carries it. The cost is that an edited system
+prompt or a changed tool set is pinned at the next process start rather than at
+its first request, and that the first eligible request decides what a process
+holds. A failed capture clears the pin, so the next eligible request retries.
+
 The key is a SHA-256 over the fields the retained bytes depend on: the model
 path and the loader's description of what it holds, a digest of the chat
 template's default and tool_use sources, the tuple that decides the layout of
@@ -118,7 +129,7 @@ llama-router-tools-proxy, llama-vulkan-view-alias-deps, and
 llama-server-natural-checkpoint-boundary, in that order.
 
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index cea23db99..5b96d2440 100644
+index cea23db99..a951c346a 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
 @@ -6,6 +6,7 @@
@@ -129,7 +140,7 @@ index cea23db99..5b96d2440 100644
  
  #include "build-info.h"
  #include "common.h"
-@@ -37,6 +38,90 @@
+@@ -37,6 +38,94 @@
  
  constexpr int HTTP_POLLING_SECONDS = 1;
  
@@ -149,7 +160,11 @@ index cea23db99..5b96d2440 100644
 +// one tuple, so the model, template, runtime, and build fields of its key are
 +// constant while it lives. They are derived and logged so the key states what
 +// the retained bytes claim to be, and the prefix token array is the field that
-+// actually varies between requests.
++// distinguishes one process's pin from another's.
++//
++// One state fills the pin and holds it, because every chat request reaches a
++// last-user boundary of its own and a newest-wins rule would hand the pin to
++// the unrelated request the mechanism exists to survive.
 +struct server_prefix_checkpoint {
 +    bool armed = false;
 +
@@ -220,7 +235,7 @@ index cea23db99..5b96d2440 100644
  static common_speculative_output_limits server_output_limits(const common_params & params) {
      if (params.embedding ||
              (params.pooling_type != LLAMA_POOLING_TYPE_UNSPECIFIED && params.pooling_type != LLAMA_POOLING_TYPE_NONE)) {
-@@ -866,6 +951,9 @@ private:
+@@ -866,6 +955,9 @@ private:
  
      std::unique_ptr<server_prompt_cache> prompt_cache;
  
@@ -230,7 +245,7 @@ index cea23db99..5b96d2440 100644
      server_metrics metrics;
  
      // queued prompt stats - llama_decode() is async, so the timing is only valid after a sync
-@@ -1280,6 +1368,70 @@ private:
+@@ -1280,6 +1372,70 @@ private:
          }
          SRV_TRC("%s", "for more info see https://github.com/ggml-org/llama.cpp/pull/16391\n");
  
@@ -301,7 +316,7 @@ index cea23db99..5b96d2440 100644
          if (params_base.n_ctx_checkpoints > 0) {
              SRV_TRC("context checkpoints enabled, max = %d, min spacing = %d\n",
                      params_base.n_ctx_checkpoints, params_base.checkpoint_min_step);
-@@ -2205,6 +2357,72 @@ private:
+@@ -2205,6 +2361,72 @@ private:
          return true;
      }
  
@@ -374,7 +389,7 @@ index cea23db99..5b96d2440 100644
      // n_tokens_cur: the number of tokens added to the batch for the current slot
      void create_checkpoint(server_slot & slot, const int64_t n_tokens_cur, llama_pos pos_min, llama_pos pos_max) {
          const int id_task = slot.task->id;
-@@ -3102,6 +3320,41 @@ private:
+@@ -3102,6 +3324,41 @@ private:
                                  // reuse any previously computed tokens that are common with the new prompt
                                  n_past = slot.prompt.tokens.get_common_prefix(input_tokens);
  
@@ -416,7 +431,7 @@ index cea23db99..5b96d2440 100644
                                  // if there is an alora invoked, don't cache after the invocation start
                                  if (slot.alora_invocation_start > 0) {
                                      SLT_DBG(slot, "only caching to alora invocation start (n_past = %d, alora_invocation_start = %d)\n", n_past, slot.alora_invocation_start);
-@@ -3431,11 +3684,17 @@ private:
+@@ -3431,11 +3688,17 @@ private:
                          slot.prompt.tokens.push_back(cur_tok);
  
                          // break at the last user message, or at user messages at least min step past the last checkpoint
@@ -436,7 +451,7 @@ index cea23db99..5b96d2440 100644
                                  break;
                              }
                          }
-@@ -3504,6 +3763,38 @@ private:
+@@ -3504,6 +3767,46 @@ private:
                      if (do_checkpoint) {
                          create_checkpoint(slot, n_tokens_cur, pos_min, pos_max);
                      }
@@ -446,11 +461,19 @@ index cea23db99..5b96d2440 100644
 +                    // current batch. The blob needs that equality rather than the internal
 +                    // consistency create_checkpoint settles for, so pos_max is compared against
 +                    // the token count the array will carry: a capture whose recurrent state sits
-+                    // ahead of its own tokens would restore an answer rather than fail. The key
-+                    // is derived again on every capture, so an edited system prompt, a changed
-+                    // tool set, another template, or another model replaces the pin rather than
-+                    // leaving bytes that no longer describe the prefix a request asks for.
-+                    if (prefix_checkpoint_admits(slot) && is_last_user_message && n_tokens_start > 0 &&
++                    // ahead of its own tokens would restore an answer rather than fail.
++                    //
++                    // The pin fills once and holds. Every chat request reaches this boundary
++                    // with a prefix of its own, so replacing the pin with the newest one would
++                    // hand it to the unrelated request the mechanism exists to survive: the
++                    // sequence head, other head, head would evict the head between its two
++                    // uses and reprefill it. Holding the first captured prefix pins the head
++                    // and leaves the recent prompt to the slot, which already carries it. The
++                    // cost is that an edited system prompt or a changed tool set is pinned at
++                    // the next process start rather than at its first request, and a failed
++                    // capture clears the pin so the next eligible request retries.
++                    if (prefix_checkpoint_admits(slot) && prefix_checkpoint.empty() &&
++                        is_last_user_message && n_tokens_start > 0 &&
 +                        pos_min >= 0 && pos_max == (llama_pos) n_tokens_start - 1 && !has_mtmd &&
 +                        !slot.prompt.tokens.has_mtmd && !input_tokens.has_mtmd) {
 +                        const auto & prompt_tokens = slot.prompt.tokens.get_tokens();
@@ -460,7 +483,7 @@ index cea23db99..5b96d2440 100644
 +
 +                        const std::string prefix_key = prefix_checkpoint_key_of(slot, prefix);
 +
-+                        if (prefix_key != prefix_checkpoint.key) {
++                        {
 +                            const int64_t t_start = ggml_time_us();
 +
 +                            if (prefix_checkpoint.capture(ctx_tgt, slot.id, prefix, prefix_key)) {
@@ -477,10 +500,10 @@ index cea23db99..5b96d2440 100644
                  if (!slot_batched) {
 diff --git a/tools/server/server-prefix-checkpoint.h b/tools/server/server-prefix-checkpoint.h
 new file mode 100644
-index 000000000..6e2182153
+index 000000000..50e5a0594
 --- /dev/null
 +++ b/tools/server/server-prefix-checkpoint.h
-@@ -0,0 +1,238 @@
+@@ -0,0 +1,240 @@
 +#pragma once
 +
 +// Key derivation for the schema-bound prefix checkpoint.
@@ -490,8 +513,10 @@ index 000000000..6e2182153
 +// starts with the same prefix, whatever conversation that request belongs to.
 +// A state is only the state a prefix would produce while the model, the chat
 +// template, the runtime tuple that decides the state layout, and the prefix
-+// tokens themselves all hold, so the key is a digest over exactly those
-+// fields and a change in any one of them retires the pin.
++// tokens themselves all hold, so the key is a digest over exactly those fields
++// and states what the retained bytes claim to be. The pin fills once and holds
++// for the life of the process, so the key is derived at the one capture and
++// read back from the log rather than compared against a later candidate.
 +//
 +// The digest labels the pin and the verbatim token comparison guards it:
 +// prefix_checkpoint_key names what the retained state claims to be, and the

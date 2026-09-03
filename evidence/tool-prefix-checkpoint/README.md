@@ -260,6 +260,20 @@ will carry, so the capture requires
 else. A capture whose recurrent state sat one batch ahead of its own token array
 would restore an answer rather than fail.
 
+The pin fills once and holds for the life of the process. Every chat request
+carrying message spans reaches a last-user boundary of its own, so a newest-wins
+rule would hand the pin to exactly the unrelated request the mechanism exists to
+survive: in case (b') the intervening `X` captures its own head, evicts `P`
+between its two uses, and the next request sharing `P` reprefills it. Holding the
+first captured prefix pins the head and leaves the recent prompt to the slot,
+which already carries it. Three consequences follow. An edited system prompt or a
+changed tool set is pinned at the next process start rather than at its first
+request. The first eligible request decides what a process holds, so a probe
+request ahead of the served traffic pins its own head and every later request
+pays a `covers` mismatch and gains nothing. A failed capture calls `clear`, which
+leaves the pin empty, so the next eligible request retries rather than latching
+the mechanism off.
+
 `QWEN_PREFIX_CHECKPOINT` arms it, and an unset, empty, or `0` value leaves every
 hook inert, as does a launch carrying a draft context or a loaded lora adapter,
 for the reasons the key section states. The mechanism is independent of
@@ -315,6 +329,13 @@ decoded), `timings.cache_n` (tokens reused), and `timings.prompt_ms`.
 | D-control | candidate, count 0, pin armed and pin disarmed | arm A alone, run both ways | 0 both ways |
 | C | either | conversation 4: same tool schemas, a different system prompt, user `U4` | 0 |
 
+The arm order decides what a candidate process pins, because the pin fills once.
+Each candidate arm runs against a freshly started server whose first request is
+arm A, so `P` is the first eligible prefix and the pin holds it. A reader who
+reorders the arms inside one process, or who sends any chat request ahead of A,
+pins that request's head instead and reads a `covers` mismatch on every arm
+below.
+
 The two B rows measure two mechanisms rather than one arm on two builds.
 B-production is served by the context checkpoint the fill loop already places at
 the last user message, which case (b) needs no patch for. B-candidate runs at
@@ -341,9 +362,13 @@ Predictions, stated before any run:
   answer, the way `evidence/ctx-checkpoint-natural-boundary/` states it for the
   checkpoint count. It runs on the candidate build alone, so the build is held
   and the arming is the one changed dimension.
-- C: `cache_n = 0` and `prompt_n = |P'| + |U4|` on every build. Partial reuse in
-  C refutes the recurrent-state account above and the pin's `covers` predicate
-  together.
+- C: `cache_n = 0` and `prompt_n = |P'| + |U4|` on every build. Two mechanisms
+  produce that number on the candidate and the arm separates neither: `P'`
+  diverges inside `P`, so the recurrent state cannot be reused below the
+  divergence point, and the pin already holds `P` and is never offered `P'`.
+  Partial reuse in C refutes the recurrent-state account above; the arm tests
+  the pin's `covers` predicate only against a prefix `covers` rejects, since a
+  pin holding `P'` would need a process that met `P'` first.
 
 `remote/measure-served-decode.sh` and the request-window discipline of the
 census campaign supply the timing method; a rate is read inside one sweep,
@@ -400,6 +425,10 @@ alone becomes that class's profile setting.
   `QWEN_PREFIX_CHECKPOINT` set. The pin is disarmed in that child, so the reuse
   came from the context checkpoint the count already places and the arm
   attributes it to the wrong mechanism.
+- A server log carries a second `captured prefix checkpoint` line inside one
+  process. The pin fills once, so a second capture means the fill-once gate is
+  not exact and an unrelated request can evict the head between its two uses,
+  which is the case B' exists to measure.
 
 ## What did not run
 
@@ -418,3 +447,7 @@ alone becomes that class's profile setting.
   the `SRV_WRN` lines the falsifiers above read are unobserved and the exactness
   of `ctx_dft` and `params_base.lora_adapters` as predicates rests on the
   reading of `common_speculative_init` and `construct_lora_list`.
+- The fill-once rule is a serving policy no measurement selected. A process
+  whose head changes mid-life keeps the head it met first, and what that costs a
+  served appliance against a policy that migrated the pin is unmeasured, because
+  every alternative rule carries a threshold this tree has no measurement for.
