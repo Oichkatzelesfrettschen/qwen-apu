@@ -457,12 +457,31 @@ artifactRequest.resolve({
   ok: true, status: 200, async blob() { return { size: 4 }; }
 });
 await flushPromises();
+
+// The badge reads the roster once, on the first assistant message a transcript
+// renders, and decorates a served id the roster carries. A launch that serves
+// no roster leaves the id alone, which is what every other page here shows by
+// leaving this request unanswered.
+const rosterRequest = takeRequest(first.pendingRequests,
+  request => String(request.url) === './roster.json', 'the feature roster read');
+rosterRequest.resolve(jsonResponse({
+  schema: 'qwen-feature-roster/1',
+  features: [{ feature: 'text-chat', scope: 'model' }],
+  models: [{ id: 'image-capable', tier: 'production', tags: ['production'], features: [] }]
+}));
+await flushPromises();
+assert.equal(
+  first.pendingRequests.filter(request => String(request.url) === './roster.json').length, 0,
+  'the badge read the roster more than once');
+
 const restoredTranscript = first.api.transcript();
 assert.equal(restoredTranscript.length, 2, 'the restore rendered no user and assistant turn');
 assert.ok(restoredTranscript[0].includes('draw a fox in a snowy field'));
 assert.ok(restoredTranscript[1].includes('Here is the fox.'));
 assert.ok(restoredTranscript[1].includes('image-capable'),
   'the restored assistant turn names no served model');
+assert.ok(restoredTranscript[1].includes('production'),
+  'the restored assistant turn carries no tier badge for a rostered model');
 assert.ok(restoredTranscript[1].includes(FIXTURE_SHA256),
   'the restored assistant turn carries no artifact digest');
 // The image and the answer the model wrote after reading the tool result share
