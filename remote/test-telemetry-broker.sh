@@ -367,10 +367,38 @@ total_rows=$(awk -F'\t' '/^#/ { next } $1 ~ /^[0-9]+$/ { rows++ } END { print ro
     "$record")
 verdict "$total_rows" "$actual_rows" sclk_actual_in_every_row
 
+# The DPM channel reads once every tenth tick and the nine rows between repeat
+# the cached value, so the record marks the rows that carried a read and
+# validate-clock-sidecar.py judges the clock invariant over those. The broker
+# marks tick 0 and every tenth after it and the ring holds this arm whole, so
+# the marker count follows the row count exactly.
+dpm_marker_rows=$(awk '/^# dpm_read=/ { rows++ } END { print rows + 0 }' "$record")
+verdict $(( (total_rows + 9) / 10 )) "$dpm_marker_rows" dpm_marker_count
+# Every marker names the instant its own row prints in the first column, which
+# is what joins the two without counting positions.
+dpm_marker_orphans=$(awk -F'\t' '
+    /^# dpm_read=/ { marked[substr($0, 12)] = 1; next }
+    /^#/ { next }
+    $1 ~ /^[0-9]+$/ { instant[$1] = 1 }
+    END {
+        for (value in marked) { if (!(value in instant)) { orphans++ } }
+        print orphans + 0
+    }' "$record")
+verdict 0 "$dpm_marker_orphans" dpm_marker_joins_its_row
+
 # The record is evidence
 
 sed 's/^/    /' "$validation_log"
 verdict 0 "$validation_status" clock_sidecar_accepted
+# The reader takes the markers as the authority rather than deriving from the
+# declared channel period, and it counts a tenth of the window rows.
+dpm_freshness=$(awk '/^clock_invariant=/ {
+    for (field = 1; field <= NF; field++) {
+        if (index($field, "dpm_freshness=") == 1) {
+            print substr($field, index($field, "=") + 1)
+        }
+    } }' "$validation_log")
+verdict marker "$dpm_freshness" clock_invariant_counts_marked_reads
 observed_lost_fraction=$(awk '/^gaps_in_window=/ {
     for (field = 1; field <= NF; field++) {
         if (index($field, "window_lost_fraction=") == 1) {

@@ -357,8 +357,15 @@ served_success_bin=$temporary_directory/served-success-bin
 mkdir -p "$served_success_state" "$served_success_bin"
 served_python=$(readlink -f "$(command -v python3)")
 served_python_wrapper=$served_success_bin/python3
-printf '%s\n' '#!/bin/bash' 'set -eu' \
-    'exec -a "${QWEN_TEST_PYTHON_RESOLVED:?}" "${QWEN_TEST_PYTHON_RESOLVED:?}" "$@"' \
+# The fake server ends its argument stage with `exec python3`, so this wrapper
+# is the hop that turns the PATH name into the interpreter the runtime inputs
+# approved, with argv[0] equal to its absolute pathname. `exec PATHNAME` passes
+# that pathname as argv[0], so the hop needs no second interpreter name and runs
+# under `sh`. A rule-based priority daemon that matches the comm `bash` rewrites
+# the nice 19 the supervisor set, and the rewritten value survives the exec into
+# the server the process contract then reads.
+printf '%s\n' '#!/bin/sh' 'set -eu' \
+    'exec "${QWEN_TEST_PYTHON_RESOLVED:?}" "$@"' \
     >"$served_python_wrapper"
 chmod +x "$served_python_wrapper"
 
