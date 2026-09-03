@@ -1,0 +1,4 @@
+pair	control	outer	inner	first_outer	first_inner	first_delta	second_outer	second_inner	second_delta	replicates	mean_delta	sd_delta	ci_low	ci_high	deltas	sclk_modes	bound	verdict	detail
+1	sidecar	P-nosidecar	P	9.445	9.551	+0.0112	9.649	9.414	-0.0244	4	-0.0085	0.0151	-0.0325	+0.0155	+0.0112 -0.0244 -0.0062 -0.0146	1100/- 1100/- 1100/- 1100/-	0.0065	unresolved	spans bound=0.0065 ci=[-0.0325,+0.0155]
+2	compile	P	I0	-	-	-	-	-	-	4	-	-	-	-	-	-	0.0065	incomplete	-
+3	collect	I0	I1	7.273	7.346	state-changed	7.080	7.296	state-changed	4	-	-	-	-	state-changed state-changed state-changed state-changed	825/837 787/762 775/800 812/825	0.02	state-changed	comparable_pairs=0 of 4
