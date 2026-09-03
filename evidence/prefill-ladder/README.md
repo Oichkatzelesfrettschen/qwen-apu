@@ -26,7 +26,12 @@ production thread the audit names. A ratio it reports is the binary.
 
 `C T T C` is the control server at one thread against the control server at the
 thread count `remote/validated-tuples.tsv` states for this row's own depth,
-submission geometry, and cache triple. A ratio it reports is the CPU-side share
+submission geometry, and cache triple. Exactly one validated row states it and
+zero or two refuse ahead of the first server start, which is the discipline
+`check-validated-tuples.sh` applies: `qwen38-2b-distill`, `qwen35-08b`, and
+`qwen38-4b-distill` each carry one `validated` row at 32768/128/32 over
+`q8_0`/`q4_0` with Flash Attention on, and each reads 2 threads there. A ratio
+it reports is the CPU-side share
 of a prefill at that depth: the two Zen+ cores read the load/store path at 7.97
 GB/s on one thread and 15.44 GB/s on two, so a prefill that scales with the
 second thread is spending its time where that bandwidth is consumed, and one
@@ -181,6 +186,13 @@ QWEN_CENSUS_MCLK_LEVEL=2 \
     qwen38-2b-distill \
     ~/evidence/prefill-ladder/$(date -u +%Y%m%dT%H%MZ)
 ```
+
+Both server paths are explicit arguments and the ladder reads no bundle: it
+starts each arm directly rather than through `resolve-active-deployment.sh`, so
+an activation during a run changes nothing it serves and an operator naming a
+path under `deployment-current` gets whatever that link resolved to when the
+argument was typed. Naming the bundle directory itself rather than the link is
+what keeps the retained digests meaning one binary.
 
 `QWEN_PREFILL_LADDER_PRINT_PLAN=1` prints the admitted depths, the skipped ones
 with their reasons, the arm order, the allocation, both thread counts, and both
