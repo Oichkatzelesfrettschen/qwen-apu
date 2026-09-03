@@ -117,6 +117,7 @@ class ServiceSession:
         lan_name=None,
         open_lan=False,
         extra_origins=(),
+        artifact_read_timeout_seconds=None,
     ):
         self.directory = directory
         self.state_directory = os.path.join(directory, "state")
@@ -179,6 +180,13 @@ class ServiceSession:
         # an empty directory reaches the unreadable arm without root.
         if procfs_root is not None:
             environment["QWEN_IMAGE_PROCFS_ROOT"] = procfs_root
+        # The artifact listener's read timeout defaults to a bound too long
+        # for a test to wait out, so an arm that means to observe it shrinks
+        # this the way lease_wait_seconds shrinks the lease wait above.
+        if artifact_read_timeout_seconds is not None:
+            environment["QWEN_IMAGE_ARTIFACT_READ_TIMEOUT_S"] = str(
+                artifact_read_timeout_seconds
+            )
         self.process = subprocess.Popen(
             argv,
             stdout=subprocess.PIPE,
@@ -311,6 +319,7 @@ class ImageServiceTest(unittest.TestCase):
         lan_name=None,
         open_lan=False,
         extra_origins=(),
+        artifact_read_timeout_seconds=None,
     ):
         directory = tempfile.mkdtemp(dir=self.temporary.name)
         if profiles is None:
@@ -327,6 +336,7 @@ class ImageServiceTest(unittest.TestCase):
             lan_name,
             open_lan,
             extra_origins,
+            artifact_read_timeout_seconds,
         )
         self.sessions.append(session)
         self.addCleanup(self.quiet_stop, session)
@@ -1074,6 +1084,56 @@ class ImageServiceTest(unittest.TestCase):
         ):
             status, _, _ = session.authorized_http(path)
             self.assertEqual(status, 404, path)
+
+    def test_artifact_read_timeout_closes_a_partial_request(self):
+        """A connection that never finishes its request line is dropped on a bound."""
+        session = self.start(artifact_read_timeout_seconds=0.5)
+        connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        connection.settimeout(5.0)
+        connection.connect(("127.0.0.1", session.http_port))
+        try:
+            # No terminating blank line follows, so the handler's readline
+            # blocks on the socket's own read timeout rather than parsing a
+            # request.
+            connection.sendall(b"GET /health HTTP/1.1\r\n")
+            started = time.monotonic()
+            received = connection.recv(4096)
+            elapsed = time.monotonic() - started
+        finally:
+            connection.close()
+        self.assertEqual(received, b"")
+        self.assertLess(elapsed, 5.0)
+
+    def test_artifact_connection_cap_refuses_the_next_connection(self):
+        """A connection past the concurrent cap is refused rather than queued."""
+        session = self.start(artifact_read_timeout_seconds=5.0)
+        limit = service_module.ARTIFACT_MAX_CONCURRENT_CONNECTIONS
+        held = []
+        try:
+            for _ in range(limit):
+                connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                connection.settimeout(5.0)
+                connection.connect(("127.0.0.1", session.http_port))
+                held.append(connection)
+            # The accept loop runs in the server's own thread and spawns a
+            # handler thread per connection almost immediately, so this gives
+            # it room to have claimed every held connection's cap slot before
+            # the probe below tests the limit.
+            time.sleep(0.3)
+            overflow = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            overflow.settimeout(5.0)
+            overflow.connect(("127.0.0.1", session.http_port))
+            try:
+                response = overflow.recv(4096)
+            finally:
+                overflow.close()
+        finally:
+            for connection in held:
+                connection.close()
+        self.assertIn(b"503", response)
+        # Freeing a held slot admits the next connection normally again.
+        status, _, _ = session.http("/health")
+        self.assertEqual(status, 401)
 
     def test_admitted_origin_answers_the_preflight(self):
         session = self.start()

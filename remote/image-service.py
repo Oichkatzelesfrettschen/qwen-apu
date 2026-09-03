@@ -105,6 +105,8 @@ SERVICE_JOB_DEADLINE_SECONDS = 330
 TERMINATION_GRACE_SECONDS = 5.0
 CONTROL_LINE_BYTE_CAP = protocol.MAX_LINE_BYTES
 CONTROL_READ_TIMEOUT_SECONDS = 30.0
+ARTIFACT_READ_TIMEOUT_SECONDS = 30.0
+ARTIFACT_MAX_CONCURRENT_CONNECTIONS = 8
 ARTIFACT_BYTE_CAP = 64 * 1024 * 1024
 MEMORY_SAMPLE_INTERVAL_SECONDS = 0.5
 LEASE_FILE_NAME = "vulkan-workload.lock"
@@ -740,6 +742,32 @@ def parse_png(raw, expected_width, expected_height):
         "color_type": color_type,
         "channels": channels,
     }
+
+
+def artifact_read_timeout_seconds_from_environment():
+    """Read the artifact listener's per-socket read timeout, refusing a bad value.
+
+    `QWEN_IMAGE_ARTIFACT_READ_TIMEOUT_S` lets a test shrink the bound the
+    wildcard listener otherwise holds an idle or partial-request connection
+    under for `ARTIFACT_READ_TIMEOUT_SECONDS`, the way
+    `QWEN_IMAGE_LEASE_WAIT_S` shrinks the lease wait; a malformed or negative
+    setting would silently become the default and hide a launch that meant to
+    configure it, so it raises instead.
+    """
+    raw = os.environ.get("QWEN_IMAGE_ARTIFACT_READ_TIMEOUT_S", "")
+    if raw == "":
+        return ARTIFACT_READ_TIMEOUT_SECONDS
+    try:
+        seconds = float(raw)
+    except ValueError:
+        raise ServiceError(
+            f"QWEN_IMAGE_ARTIFACT_READ_TIMEOUT_S is not a number: {raw}"
+        ) from None
+    if seconds <= 0 or seconds != seconds:
+        raise ServiceError(
+            f"QWEN_IMAGE_ARTIFACT_READ_TIMEOUT_S is not positive: {raw}"
+        )
+    return seconds
 
 
 def lease_wait_seconds_from_environment():
@@ -2001,6 +2029,13 @@ class ArtifactHandler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "qwen-image-artifacts/1.0"
     sys_version = ""
+    # `socketserver.StreamRequestHandler.setup` applies this to the accepted
+    # socket, and `BaseHTTPRequestHandler.handle_one_request` already catches
+    # the resulting `socket.timeout` and closes the connection. Under the
+    # wildcard listener an unauthenticated peer that sends a partial request,
+    # or that holds an HTTP/1.1 connection open past a 401, is dropped after
+    # this many idle seconds rather than parking its thread indefinitely.
+    timeout = ARTIFACT_READ_TIMEOUT_SECONDS
 
     def log_message(self, fmt, *args):
         """Drop the default access log; the provenance record is the trail."""
@@ -2156,6 +2191,14 @@ class ArtifactHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+ARTIFACT_CONNECTION_LIMIT_RESPONSE = (
+    b"HTTP/1.1 503 Service Unavailable\r\n"
+    b"Connection: close\r\n"
+    b"Content-Length: 0\r\n"
+    b"\r\n"
+)
+
+
 class ArtifactServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     allow_reuse_address = False
     daemon_threads = True
@@ -2165,7 +2208,37 @@ class ArtifactServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
         self.address_family = socket.AF_INET6 if ":" in address[0] else socket.AF_INET
         self.image_settings = settings
         self.image_service = image_service
+        # `ThreadingMixIn.process_request` spawns a thread on every accepted
+        # connection before the Host or bearer checks run, so a wildcard bind
+        # lets an unauthenticated peer that holds many connections open
+        # exhaust threads ahead of any credential. This semaphore bounds the
+        # resident handler count independently of that check ordering.
+        self._connection_semaphore = threading.BoundedSemaphore(
+            ARTIFACT_MAX_CONCURRENT_CONNECTIONS
+        )
         super().__init__(address, ArtifactHandler)
+
+    def process_request(self, request, client_address):
+        """Refuse a connection past the concurrent cap rather than spawn for it."""
+        if not self._connection_semaphore.acquire(blocking=False):
+            with contextlib.suppress(OSError):
+                request.sendall(ARTIFACT_CONNECTION_LIMIT_RESPONSE)
+            with contextlib.suppress(OSError):
+                request.shutdown(socket.SHUT_RDWR)
+            request.close()
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._connection_semaphore.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        """Release the cap slot this connection's thread acquired, on every exit."""
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._connection_semaphore.release()
 
 
 class ServiceSettings:
@@ -2423,6 +2496,11 @@ def run(argv):
         if "=" not in entry:
             sys.stderr.write(f"--runtime-env takes NAME=VALUE; {entry!r} carries no =\n")
             return 2
+    try:
+        ArtifactHandler.timeout = artifact_read_timeout_seconds_from_environment()
+    except ServiceError as error:
+        sys.stderr.write(f"the artifact listener's read timeout is unusable: {error}\n")
+        return 2
     profiles = {}
     if arguments.profiles_json:
         try:
