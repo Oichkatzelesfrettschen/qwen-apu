@@ -127,6 +127,16 @@
   .tier-badge.quarantine { color:var(--bad); }
   .who .served-model { color:var(--fg); }
   .who .tier-badge { margin-left:.35rem; }
+  nav.tabs { display:flex; gap:.2rem; padding:0 1rem; border-bottom:1px solid var(--line); }
+  nav.tabs button { font:inherit; font-size:13px; padding:.4rem .9rem; border:0;
+             background:none; color:var(--dim); cursor:pointer;
+             border-bottom:2px solid transparent; }
+  nav.tabs button[aria-selected=true] { color:var(--fg); border-bottom-color:var(--fg); }
+  section.notice { flex:1; overflow-y:auto; padding:1rem 1.2rem; }
+  section.notice h2 { font-size:15px; margin:0 0 .6rem; }
+  section.notice p, section.notice ul { max-width:44rem; }
+  section.notice code { background:var(--mine); border-radius:.25rem; padding:.05rem .3rem; }
+  section.notice .hint { color:var(--dim); font-size:13px; }
 </style>
 </head>
 
@@ -148,6 +158,24 @@
   <input class="key" type="text" id="artifact-origin" placeholder="image artifact origin" autocomplete="off">
   <button class="act" id="clear">clear</button>
 </header>
+
+<!--
+  One llama-server process serves one page at the root. `server_http_context::
+  init` mounts a `--path` directory at `api_prefix + "/"` when `public_path`
+  carries a value (tools/server/server-http.cpp:333-335) and registers the
+  compiled-in SvelteKit assets under the same `api_prefix` in its else branch
+  (:339-427, routes at :403-404 and :416-424), and `--api-prefix` supplies one
+  value to whichever branch runs (common/arg.cpp:3352-3356). Router mode changes
+  nothing here: `ctx_http.init(params)` runs ahead of the router branch
+  (tools/server/server.cpp:173 against :188-232) and `server-models.cpp`
+  registers no UI route at all. So the llama.cpp UI and this page are two
+  launches of one binary rather than two routes of one listener, and this tab
+  states that rather than linking to an address nothing answers.
+-->
+<nav class="tabs" id="tab-bar">
+  <button id="tab-chat" aria-selected="true">Chat</button>
+  <button id="tab-llama" aria-selected="false">llama.cpp UI</button>
+</nav>
 
 <!--
   A conversation is a durable record with a URL. The side panel lists what the
@@ -224,6 +252,31 @@
 </footer>
   </div>
 </div>
+
+<section class="notice" id="llama-ui-panel" hidden>
+  <h2>The llama.cpp UI is served by the ordinary router launch</h2>
+  <p>llama-server serves one page at the root of one listener. This appliance
+    runs <code>qwen-web-launch.sh</code>, which passes <code>--path</code> at
+    the directory holding this page, and that same flag is what makes the
+    binary's own compiled-in llama.cpp UI go unregistered. Starting the
+    appliance through <code>qwen-launch.sh</code> instead leaves
+    <code>--path</code> unset, and the llama.cpp UI then answers at this same
+    address and port.</p>
+  <p>Three surfaces exist on this page alone, because each one is built here
+    rather than in the served binary: the approved web search, the approved
+    image generation with its artifact cards and vision review, and the feature
+    roster this page reads beside itself. A turn run in the llama.cpp UI reaches
+    the model and reaches none of them.</p>
+  <p>
+    <a id="llama-ui-link" href="/">open the root of this listener</a>
+    <span class="hint" id="llama-ui-origin"></span>
+  </p>
+  <p class="hint">A LAN launch requires the bearer on every route, so the
+    llama.cpp UI wants the same key this page holds.
+    <button class="act" id="copy-api-key">copy the API key</button>
+    <span id="copy-api-key-note"></span>
+  </p>
+</section>
 
 <script>
 const $ = s => document.querySelector(s);
@@ -3559,6 +3612,58 @@ if (typeof window.addEventListener === 'function') {
 
 void initConversations();
 // ==== end conversation store ================================================
+
+// ==== the llama.cpp UI tab ==================================================
+/* The two tabs name two launches of one binary rather than two routes of one
+   listener. `server_http_context::init` mounts a `--path` directory at
+   `api_prefix + "/"` where `public_path` carries a value
+   (tools/server/server-http.cpp:333-335) and registers the compiled-in UI
+   assets under the same prefix in its else branch (:339-427), and `--api-prefix`
+   supplies one value to whichever branch runs (common/arg.cpp:3352-3356), so
+   the embedded UI reaches no second prefix beside a served static path. Router
+   mode leaves that unchanged: `ctx_http.init(params)` runs ahead of the router
+   branch (tools/server/server.cpp:173 against :188-232). The tab therefore
+   opens a notice naming the launch that serves the other page, and the page
+   this notice belongs to keeps the surfaces the other one has none of. */
+function selectTab(name) {
+  const chatSelected = name !== 'llama';
+  $('#workspace').hidden = !chatSelected;
+  $('#llama-ui-panel').hidden = chatSelected;
+  $('#tab-chat').setAttribute('aria-selected', String(chatSelected));
+  $('#tab-llama').setAttribute('aria-selected', String(!chatSelected));
+}
+
+$('#tab-chat').onclick = () => selectTab('chat');
+$('#tab-llama').onclick = () => selectTab('llama');
+
+try {
+  // The link names the listener this page came from, which is the address the
+  // ordinary launch answers the llama.cpp UI on.
+  const pageOrigin = window.location.origin;
+  if (pageOrigin) {
+    $('#llama-ui-link').href = `${pageOrigin}/`;
+    $('#llama-ui-origin').textContent = ` -- ${pageOrigin}`;
+  }
+} catch { /* a page without a location keeps the relative root the markup names */ }
+
+$('#copy-api-key').onclick = async () => {
+  // The key stays in the header field and in sessionStorage; this copies the
+  // value the user already entered rather than reading any store of its own.
+  const note = $('#copy-api-key-note');
+  const key = $('#api-key').value.trim();
+  if (!key) {
+    note.textContent = ' this page holds no key to copy';
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(key);
+    note.textContent = ' copied';
+  } catch {
+    note.textContent =
+      ' the browser refused the clipboard; read the key from the header field';
+  }
+};
+// ==== end the llama.cpp UI tab ==============================================
 </script>
 </body>
 </html>
