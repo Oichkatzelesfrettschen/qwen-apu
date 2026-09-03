@@ -1289,7 +1289,9 @@ remote/run-ctx-checkpoint-sweep.sh LABEL MODEL_ID OUT
 # process, occupancy, graphics step, step stability, absolute temperature,
 # thermal derivative, memory, swap-in, lease, and latency predicates held
 # together across the hold window, so any other verdict ends the campaign
-# quiescence_unconverged with exit 5 before the next arm starts, arms.tsv
+# quiescence_unconverged with exit 5 before the next arm starts. The last
+# arm a campaign executes polls no boundary, since the arm one would
+# prepare never runs. On a verdict that ends the run, arms.tsv
 # carries a boundary row whose status names the state, terminal-state.tsv
 # names the slot, the arm, and the failing predicates, and no summary,
 # brick receipt, or calibration root is written over the truncated ledger.
@@ -1307,7 +1309,9 @@ remote/run-ctx-checkpoint-sweep.sh LABEL MODEL_ID OUT
 # reuses it: the prior calibration root's own digest is recomputed from its
 # rows, each receipt is rehashed against the digest that root records, every
 # artifact row is rehashed against the bytes it names, and the current
-# readers are rerun over those bytes and must accept. A brick whose receipt
+# readers that read a raw record are rerun over those bytes and must
+# accept, with paths resolved through the receipt's own reused_from chain
+# so a second generation reads the records the original arms wrote. A brick whose receipt
 # names no artifact, or whose arms retained no record a reader reads, is
 # measured again rather than copied forward on a historical completed
 # label, and the copied receipt states revalidation, revalidated_epoch,

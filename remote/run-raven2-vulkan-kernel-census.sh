@@ -1410,18 +1410,64 @@ brick_input_closure_sha256() {
 brick_revalidation_reason=-
 brick_revalidation_readers=-
 brick_revalidation_artifacts=0
+brick_revalidation_root=-
+# A receipt names its artifacts relative to the directory whose arms wrote
+# them, and a calibration that reused a brick copies the receipt forward
+# without those arm directories, so a second generation resolves the paths
+# through the provenance the copy already carries. Each hop reads the receipt
+# the named directory holds for this brick and follows its own `reused_from`
+# until the paths resolve; the depth bound ends a chain a directory edit could
+# otherwise make circular.
+census_brick_artifact_root() {
+    artifact_root_brick=$1
+    artifact_root_directory=$2
+    artifact_root_depth=0
+    while [ "$artifact_root_depth" -lt 16 ]; do
+        artifact_root_receipt=$artifact_root_directory/bricks/$artifact_root_brick.receipt.tsv
+        [ -r "$artifact_root_receipt" ] || return 1
+        artifact_root_first=$(awk -F'\t' '$1 == "artifact" { print $2; exit }' \
+            "$artifact_root_receipt")
+        [ -n "$artifact_root_first" ] || return 1
+        if [ -r "$artifact_root_directory/$artifact_root_first" ]; then
+            printf '%s\n' "$artifact_root_directory"
+            return 0
+        fi
+        artifact_root_next=$(awk -F'\t' '$1 == "reused_from" { count++; value = $2 }
+            END { if (count == 1) print value }' "$artifact_root_receipt")
+        [ -n "$artifact_root_next" ] || return 1
+        [ -d "$artifact_root_next" ] || return 1
+        artifact_root_directory=$artifact_root_next
+        artifact_root_depth=$((artifact_root_depth + 1))
+    done
+    return 1
+}
 census_revalidate_brick() {
     revalidate_brick=$1
     revalidate_receipt=$2
     brick_revalidation_reason=-
     brick_revalidation_readers=''
     brick_revalidation_artifacts=0
+    brick_revalidation_root=-
     revalidate_output=$revalidation_scratch/$revalidate_brick
     mkdir -p "$revalidate_output"
+    # A receipt naming no artifact and a chain whose records no directory
+    # still holds are two states, so the first is read here and the resolver
+    # answers for the second alone.
+    if ! awk -F'\t' '$1 == "artifact" { found = 1 } END { exit found ? 0 : 1 }' \
+        "$revalidate_receipt"; then
+        brick_revalidation_reason=no_retained_artifacts
+        return 1
+    fi
+    if ! brick_revalidation_root=$(census_brick_artifact_root "$revalidate_brick" \
+        "$reuse_directory"); then
+        brick_revalidation_root=-
+        brick_revalidation_reason=artifact_root_unresolved
+        return 1
+    fi
     while IFS="$(printf '\t')" read -r revalidate_kind revalidate_path revalidate_digest; do
         [ "$revalidate_kind" = artifact ] || continue
         brick_revalidation_artifacts=$((brick_revalidation_artifacts + 1))
-        revalidate_file=$reuse_directory/$revalidate_path
+        revalidate_file=$brick_revalidation_root/$revalidate_path
         if [ -L "$revalidate_file" ] || [ ! -r "$revalidate_file" ]; then
             brick_revalidation_reason=artifact_absent:$revalidate_path
             return 1
@@ -1436,7 +1482,7 @@ census_revalidate_brick() {
         return 1
     fi
     for revalidate_slot in $(brick_slots "$revalidate_brick"); do
-        revalidate_arm_directory=$(find "$reuse_directory/arms" -maxdepth 1 -type d \
+        revalidate_arm_directory=$(find "$brick_revalidation_root/arms" -maxdepth 1 -type d \
             -name "$(printf '%02d-*' "$revalidate_slot")" 2>/dev/null \
             | LC_ALL=C sort | head -n 1)
         [ -n "$revalidate_arm_directory" ] || continue
@@ -1596,8 +1642,19 @@ if [ -n "$reuse_directory" ]; then
     # The readers rerun over the retained raw records write their verdicts
     # here, since the output directory is created past the host and session
     # checks and a preflight refusal must leave none behind. A brick that
-    # reuses carries its verdicts forward into the run's own directory.
+    # reuses carries its verdicts forward into the run's own directory. The
+    # scratch root is released on every path out of this shell: the trap armed
+    # here covers the host, session, and lease refusals ahead of the lease
+    # proof's own trap, and remove_workload_lease_proof calls this from the
+    # traps that replace it.
+    remove_revalidation_scratch() {
+        if [ -n "${revalidation_scratch:-}" ]; then
+            rm -r -- "$revalidation_scratch"
+            revalidation_scratch=''
+        fi
+    }
     revalidation_scratch=$(mktemp -d)
+    trap remove_revalidation_scratch EXIT
     # The echo rewrites one field of a retained row and the pair parser reads
     # that field by name, so the column is resolved from the prior ledger's own
     # header rather than from a position this runner's own printf happens to
@@ -1673,9 +1730,9 @@ if [ -n "$reuse_directory" ]; then
                 "$brick_id" "$brick_revalidation_reason"
             continue
         fi
-        printf 'census_brick_reuse=revalidated brick=%s artifacts=%s readers=%s epoch=%s\n' \
+        printf 'census_brick_reuse=revalidated brick=%s artifacts=%s readers=%s records=%s epoch=%s\n' \
             "$brick_id" "$brick_revalidation_artifacts" "$brick_revalidation_readers" \
-            "$analysis_contract_sha256"
+            "$brick_revalidation_root" "$analysis_contract_sha256"
         # The receipt copy below states which epoch revalidated it, so the
         # rows travel beside the brick rather than in this loop's memory.
         printf '%s\t%s\t%s\n' "$brick_id" "$brick_revalidation_readers" \
@@ -1760,6 +1817,12 @@ remove_workload_lease_proof() {
         rm -f -- "$workload_lease_proof"
         workload_lease_proof=''
     fi
+    # The brick revalidation's scratch root unwinds with the lease proof, since
+    # every trap from here on runs this function and the reuse preflight's own
+    # EXIT trap is replaced below.
+    if command -v remove_revalidation_scratch >/dev/null 2>&1; then
+        remove_revalidation_scratch
+    fi
 }
 trap remove_workload_lease_proof EXIT
 trap 'remove_workload_lease_proof; trap - EXIT; exit 143' TERM
@@ -1815,8 +1878,7 @@ if [ -n "${revalidation_scratch:-}" ]; then
         mkdir -p "$output_directory/revalidation"
         cp -R -- "$revalidation_scratch/." "$output_directory/revalidation/"
     fi
-    rm -r -- "$revalidation_scratch"
-    revalidation_scratch=''
+    remove_revalidation_scratch
 fi
 arms_ledger=$output_directory/arms.tsv
 execution_proof=$output_directory/campaign-inputs.tsv
@@ -2030,6 +2092,23 @@ elif [ "$census_mode" = calibration ]; then
     # neither to do and runs no server at all.
     printf 'census_arm=skipped slot=0 arm=W reason=every_brick_reused\n'
 fi
+# The boundary prepares the arm that follows it, so the arm nothing follows
+# polls for none: a machine that never settled after the last measurement would
+# otherwise retire a campaign whose every arm completed. The last executing
+# named slot is known here, since the reuse set is already decided and a warmup
+# runs only where some brick still executes.
+final_executing_slot=0
+final_slot_scan=0
+# shellcheck disable=SC2086 # the arm list is a space-delimited list of names
+set -- $arms
+while [ "$#" -gt 0 ]; do
+    shift
+    final_slot_scan=$((final_slot_scan + 1))
+    case $reused_slots in
+        *" $final_slot_scan "*) ;;
+        *) final_executing_slot=$final_slot_scan ;;
+    esac
+done
 named_slot=0
 warmup_index=0
 regime_previous_mode=-
@@ -2680,6 +2759,13 @@ EOF
     quiescence_elapsed_ms=0
     quiescence_status=-
     quiescence_predicates=-
+    # A warmup is always followed by another arm, since the precondition runs
+    # only where some brick still executes; a named arm at or past the last
+    # executing slot is followed by reused echoes alone.
+    boundary_required=1
+    if [ "$arm" != W ] && [ "$slot" -ge "$final_executing_slot" ]; then
+        boundary_required=0
+    fi
     # The boundary between arms is convergence rather than a constant. An arm
     # leaves Vulkan submission, clock boost, thermal drift, and page reclaim
     # behind at different rates, so await-quiescence.sh polls each predicate
@@ -2687,7 +2773,7 @@ EOF
     # becomes its deadline. A campaign already ending on this arm waits for no
     # boundary, since the arm it would prepare never runs, and its cooldown row
     # says so rather than spending the deadline to report a state nothing reads.
-    if [ -z "$campaign_terminal" ]; then
+    if [ -z "$campaign_terminal" ] && [ "$boundary_required" -eq 1 ]; then
         set +e
         # The lease predicate is left off. await-quiescence.sh polls it with
         # `flock -n -x`, and the campaign holds that lock exclusively from
@@ -2727,9 +2813,10 @@ EOF
         [ "$quiescence_verdict" = reached ] || cooldown_timeouts=$((cooldown_timeouts + 1))
     fi
     cooldown_end_ns=$(date +%s%N)
-    printf 'census_cooldown=%s slot=%s arm=%s elapsed_ms=%s status=%s sclk_forced=%s predicates=%s lease=held-by-campaign\n' \
+    printf 'census_cooldown=%s slot=%s arm=%s elapsed_ms=%s status=%s sclk_forced=%s predicates=%s boundary_required=%s lease=held-by-campaign\n' \
         "$quiescence_verdict" "$slot" "$arm" "$quiescence_elapsed_ms" \
-        "$quiescence_status" "$cooldown_sclk_forced" "$quiescence_predicates"
+        "$quiescence_status" "$cooldown_sclk_forced" "$quiescence_predicates" \
+        "$boundary_required"
     # An endpoint the run never observed reads `-` rather than borrowing a
     # neighbouring stamp, so a failed arm reports a missing boundary instead
     # of a mislabeled one.
@@ -2757,7 +2844,8 @@ EOF
     # this arm chose. The campaign ends here, ahead of that arm, and arms.tsv
     # carries the boundary row that names the state; --sclk-forced drops the
     # step's position under a commanded clock and licenses none of the rest.
-    if [ -z "$campaign_terminal" ] && [ "$quiescence_verdict" != reached ]; then
+    if [ -z "$campaign_terminal" ] && [ "$boundary_required" -eq 1 ] \
+        && [ "$quiescence_verdict" != reached ]; then
         campaign_terminal=quiescence_unconverged
         terminal_slot=$slot
         terminal_arm=$arm

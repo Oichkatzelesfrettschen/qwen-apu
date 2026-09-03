@@ -206,13 +206,15 @@ where the four agree to about 0.4%, which this tree's documented scatter
 does not promise. An unresolved campaign at four replicates is a reportable
 result stated ahead of the run rather than a defect of it.
 
-The campaign has five terminal states and the exit status follows them: a
+The campaign has six terminal states and the exit status follows them: a
 failed arm, an incomplete control, or an unclassified quadruple ends it
 `failed` with exit 1, a refuted registered control ends it `refuted` with
 exit 3 even where every arm completed, an unresolved control with no
 refutation ends it `unresolved` with exit 4, an inter-arm boundary the
 quiescence poller does not report `reached` ends it `quiescence_unconverged`
-with exit 5 before the next arm starts, and `accepted` alone exits 0.
+with exit 5 before the next arm starts, a runtime identity that moved under
+the campaign ends it `identity_incident` with exit 6 at the arm that read it,
+and `accepted` alone exits 0.
 An unresolved control neither accepts nor refutes, so its branch precedes
 the accepted-count test that an unresolved control would otherwise leave
 short. `terminal-state.tsv` gains `control_unresolved` beside the counts it
@@ -470,8 +472,10 @@ arm's request window, `summarize-kernel-census.py` over every retained
 `summarize-perf-logger-slice.py` over a retained
 `server-log-request.slice` at the same count, each under this run's own
 sidecar geometry, bounds, and clock-invariant flags. Every rerun must accept,
-which is what "the current analysis contract accepts this brick" means: the
-readers are the four that contract digests. The sidecar rerun states
+which is what "the current analysis contract accepts this brick" means: these
+are the three of that contract's four readers that read a raw record, and
+`summarize-census-controls.py` reads `arms.tsv` rather than one, so it runs
+over the campaign's own ledger and not here. The sidecar rerun states
 `--sidecar-status 0` as the assumption the reuse rests on -- the record was
 accepted at acquisition, which is what a completed arm means, and the
 sampler's exit status is not retained separately.
@@ -484,9 +488,29 @@ accepted`, `revalidated_epoch` naming this run's analysis contract digest,
 `revalidated_readers` naming the readers that ran, and `revalidated_artifacts`
 counting the files rehashed -- and the reruns' own output is retained under
 `revalidation/CN/` in the run's directory. Prior `revalidat*` rows are stripped
-from the copy, so the epoch on a receipt is always the run that carries it.
-The verdicts are taken before the output directory exists, since a preflight
-refusal leaves none behind, and move into it once it does.
+from the copy, so `revalidated_epoch` always names the run that carries the
+receipt, while the `analysis_contract_sha256` row the original campaign wrote
+travels unchanged beside it: one names the head that first read the arms and
+the other the head that re-read them. The verdicts are taken before the output
+directory exists, since a preflight refusal leaves none behind, and move into
+it once it does.
+
+The receipt names its artifacts relative to the directory whose arms wrote
+them, and a calibration that reused a brick copies the receipt forward without
+those arm directories, so a second generation resolves the paths through the
+provenance the copy already carries: each hop reads the receipt the named
+directory holds for that brick and follows its own `reused_from` until the
+paths resolve, bounded at sixteen hops so a directory edit cannot make the
+chain circular. The `census_brick_reuse=revalidated` line names the directory
+that answered as `records=`.
+
+The boundary between two arms prepares the arm that follows it, so the last
+arm a campaign executes polls for none: a machine that never settled after the
+final measurement would otherwise retire a campaign whose every arm completed.
+The last executing named slot is known once the reuse set is decided, and a
+warmup always polls, since the precondition runs only where some brick still
+executes. The cooldown row of an arm nothing follows reads
+`quiescence=skipped` and its printed line carries `boundary_required=0`.
 
 `QWEN_CENSUS_MODE=canary` runs `P I0 I1 S` once each at
 `QWEN_BENCH_GENERATE=8` and judges the chain's structure rather than any

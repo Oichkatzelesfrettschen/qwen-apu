@@ -2186,12 +2186,23 @@ if [ "$brick_status" -ne 1 ]; then
         "$brick_status" >&2
     exit 1
 fi
-if ! awk -F'\t' '$1 == "13" && $3 == "cooldown" && $6 == "quiescence=reached elapsed_ms=800 sclk_forced=0 predicates=-" { found = 1 }
+if ! awk -F'\t' '$1 == "0b" && $3 == "cooldown" && $6 == "quiescence=reached elapsed_ms=800 sclk_forced=0 predicates=-" { found = 1 }
     END { exit found ? 0 : 1 }' "$brick_cooldown_output/wall-clock.tsv"; then
     printf 'the cooldown row carries no quiescence verdict, elapsed time, forced-clock state, and predicate list\n' >&2
     sed -n '1,10p' "$brick_cooldown_output/wall-clock.tsv" >&2
     exit 1
 fi
+# The boundary prepares the arm that follows it, and slot 13 is the last arm
+# that executes here, so it polls for none rather than letting a machine that
+# never settled after the final measurement retire a completed campaign.
+if ! awk -F'\t' '$1 == "13" && $3 == "cooldown" && $6 ~ /^quiescence=skipped / { found = 1 }
+    END { exit found ? 0 : 1 }' "$brick_cooldown_output/wall-clock.tsv"; then
+    printf 'the last executing arm polled a boundary no arm follows\n' >&2
+    sed -n '1,10p' "$brick_cooldown_output/wall-clock.tsv" >&2
+    exit 1
+fi
+grep -q '^census_cooldown=skipped slot=13 arm=S .* boundary_required=0 ' \
+    "$temporary_directory/quiescence_cooldown-stdout.txt"
 # The governor policy releases the graphics step on its own, so the position
 # predicate still describes idle and the campaign passes no --sclk-forced.
 brick_cooldown_argv=$temporary_directory/quiescence-argv-quiescence_cooldown.log
@@ -2475,6 +2486,41 @@ grep -q '^census_brick_reuse=preflight .*bricks=-$' \
     "$temporary_directory/brick_revalidation_bare_receipts-stdout.txt"
 diagnostic_file=
 printf 'brick_revalidation_bare_receipts=accepted\n'
+
+# A calibration that reused a brick copies its receipt forward without the arm
+# directories that brick's records live in, so a second generation resolves
+# those paths through the provenance the copy carries. The first reuse above
+# is the directory this one reuses, and every brick revalidates against the
+# records two hops away.
+active_fixture=brick_reuse_chained
+brick_chained_output=$temporary_directory/out-brick-chained
+brick_status=$(run_brick_calibration brick_reuse_chained "$brick_output" \
+    "$brick_chained_output" '' 800 2)
+if [ "$brick_status" -ne 0 ]; then
+    printf 'a calibration reusing a reusing calibration exited %s where it accepts\n' \
+        "$brick_status" >&2
+    sed -n '1,20p' "$temporary_directory/brick_reuse_chained-stdout.txt" >&2
+    exit 1
+fi
+grep -q "^census_brick_reuse=preflight directory=$brick_output bricks=C0 C1 C2 C3\$" \
+    "$temporary_directory/brick_reuse_chained-stdout.txt"
+# The records the readers ran over live in the original calibration, and the
+# line names which directory answered.
+grep -q "^census_brick_reuse=revalidated brick=C3 .* records=$prior_calibration " \
+    "$temporary_directory/brick_reuse_chained-stdout.txt"
+grep -q "^reused_from	$brick_output\$" \
+    "$brick_chained_output/bricks/C3.receipt.tsv"
+# The epoch on a receipt is this run's, so a chain does not carry a stale one
+# forward beside it.
+chained_epochs=$(grep -c '^revalidated_epoch	' \
+    "$brick_chained_output/bricks/C3.receipt.tsv")
+if [ "$chained_epochs" -ne 1 ]; then
+    printf 'the chained receipt carries %s revalidated_epoch rows of 1\n' \
+        "$chained_epochs" >&2
+    exit 1
+fi
+diagnostic_file=
+printf 'brick_reuse_chained=accepted\n'
 
 # A record the validator refused states no clock for the precondition to read,
 # however confidently its clock_state line names a mode: two refused warmups at
