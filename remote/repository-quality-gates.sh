@@ -117,6 +117,10 @@ remote/test-model-tiers.sh
 remote/test-measure-draft-pair.sh
 remote/check-validated-tuples.sh
 remote/check-ledger-evidence.sh
+# Row shape and cited-source existence are properties of the tree, so the gate
+# asserts them here. The checks themselves observe software on the appliance or
+# the workstation helper and run there under the host argument.
+remote/check-install-requirements.sh validate
 remote/test-projector-fetch-dispatch.sh
 remote/test-projector-pairing.sh
 remote/test-probe-depth-projector.sh
