@@ -640,6 +640,39 @@ if [ "$resolver_status" -ne 3 ]; then
 fi
 report resolver_one_bundle accepted
 
+# Absence is decided under the activation lock. The leaf is created private
+# here so the helper's legacy-mode branch returns at once and the resolver
+# reaches `flock -s 7`, where a held exclusive lock stops it: a resolver that
+# answered 3 from a pre-lock read would report an empty root while an
+# activation was midway through publishing one.
+locked_root=$work_directory/locked-root
+mkdir -p "$locked_root"
+locked_lock_path=$locked_root/.activate.lock
+: >"$locked_lock_path"
+chmod 600 "$locked_lock_path"
+flock -x "$locked_lock_path" sleep 5 &
+lock_holder_pid=$!
+lock_wait=0
+while [ "$lock_wait" -lt 50 ] && \
+    flock -x -n "$locked_lock_path" true 2>/dev/null; do
+    lock_wait=$((lock_wait + 1))
+    sleep 0.1
+done
+timeout 2 "$resolver" "$locked_root" >/dev/null 2>&1 && locked_status=0 || \
+    locked_status=$?
+kill "$lock_holder_pid" 2>/dev/null || :
+wait "$lock_holder_pid" 2>/dev/null || :
+if [ "$locked_status" -eq 3 ]; then
+    printf 'the resolver reported an empty root while the activation lock was held\n' >&2
+    exit 1
+fi
+if [ "$locked_status" -ne 124 ]; then
+    printf 'the resolver left the held activation lock with status %s rather than blocking\n' \
+        "$locked_status" >&2
+    exit 1
+fi
+report absence_decided_under_lock accepted
+
 # The lock leaf is opened without following links or truncating: a symlinked
 # .activate.lock aimed at the outside sentinel refuses both the activator and
 # the resolver and leaves the sentinel's bytes as they were; a directory and
