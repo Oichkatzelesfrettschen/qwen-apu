@@ -209,6 +209,9 @@ gate_cell test-measure-draft-pair derive remote/test-measure-draft-pair.sh \
 gate_cell test-classify-checkpoint-semantics derive \
     remote/test-classify-checkpoint-semantics.sh \
     remote/test-classify-checkpoint-semantics.sh
+gate_cell test-prefix-checkpoint-key derive \
+    'remote/test-prefix-checkpoint-key.sh remote/test-fixtures/prefix-checkpoint-key-probe.cpp patches/llama-server-prefix-checkpoint.patch' \
+    remote/test-prefix-checkpoint-key.sh
 gate_cell test-check-trace-source-status derive \
     remote/test-check-trace-source-status.sh remote/test-check-trace-source-status.sh
 gate_cell test-web-presets derive remote/test-web-presets.sh \
