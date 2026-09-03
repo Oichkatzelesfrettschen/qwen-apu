@@ -28,7 +28,10 @@ set -eu
 # moves the temperature the part is allowed to reach, which is a different risk
 # class from moving the power it is allowed to draw, so every profile here
 # leaves `THM LIMIT CORE` where the platform set it and the term refuses to run
-# against a reading above the stated ceiling.
+# against a reading above the stated ceiling. The ceiling gates `apply` and
+# never `restore`: refusing to return a raised budget because the part grew hot
+# would leave the raised budget applied, which is the state the term exists to
+# end.
 #
 # Units differ between the two directions and the difference is a factor of a
 # thousand. `main.c` prints the power-metrics table with `%9.3lf` in watts and
@@ -164,6 +167,56 @@ within_readback_band() {
         difference = observed - required
         if (difference < 0) difference = -difference
         exit (difference <= tolerance + 0) ? 0 : 1 }'
+}
+
+# A failure part way through a profile leaves some limits raised and some at the
+# platform's own value, which is the one state this term exists to prevent, so
+# both failure paths below return the snapshot before they report. A rollback
+# that reads back at the baseline removes the snapshot and leaves the failure a
+# refused arm; a rollback that fails keeps the snapshot and raises the failure to
+# the restoration-incident status, because the machine is then holding a budget
+# nobody chose. `apply` therefore reverses itself whether or not a caller wraps
+# it in compute-state-lease.sh.
+roll_back_partial_apply() {
+    rollback_pairs=$1
+    for rollback_pair in $rollback_pairs; do
+        rollback_field=${rollback_pair%%=*}
+        rollback_value=${rollback_pair#*=}
+        rollback_metadata=$(power_field_row "$rollback_field")
+        rollback_option=$(printf '%s' "$rollback_metadata" | cut -f2)
+        sudo -n "$ryzenadj_command" "--$rollback_option=$rollback_value" \
+            >/dev/null 2>&1 || true
+    done
+    rollback_metrics=$(mktemp)
+    rollback_failures=''
+    if read_power_metrics >"$rollback_metrics"; then
+        for rollback_pair in $rollback_pairs; do
+            rollback_field=${rollback_pair%%=*}
+            rollback_value=${rollback_pair#*=}
+            rollback_metadata=$(power_field_row "$rollback_field")
+            rollback_label=$(printf '%s' "$rollback_metadata" | cut -f1)
+            rollback_scale=$(printf '%s' "$rollback_metadata" | cut -f3)
+            rollback_observed=$(scaled_row_value "$rollback_metrics" "$rollback_label" \
+                "$rollback_scale") || rollback_observed=unreadable
+            if [ "$rollback_observed" = unreadable ] ||
+                ! within_readback_band "$rollback_observed" "$rollback_value" \
+                    "$readback_tolerance"; then
+                rollback_failures="${rollback_failures}${rollback_field}=${rollback_observed}(want=${rollback_value}) "
+            fi
+        done
+    else
+        rollback_failures='metrics=unreadable '
+    fi
+    rm -f -- "$rollback_metrics"
+    if [ -n "$rollback_failures" ]; then
+        printf 'power_envelope_rollback=failed profile=%s fields=%s snapshot=%s\n' \
+            "$power_profile_name" "${rollback_failures% }" "$snapshot_file" >&2
+        return 1
+    fi
+    rm -f -- "$snapshot_file"
+    printf 'power_envelope_rollback=held profile=%s fields=%s\n' \
+        "$power_profile_name" "${rollback_pairs% }" >&2
+    return 0
 }
 
 # The thermal limit bounds the term rather than being written by it. A reading
@@ -398,6 +451,7 @@ for profile_pair in $profile_fields; do
     if ! sudo -n "$ryzenadj_command" "--$field_option=$profile_value" >/dev/null 2>&1; then
         printf 'reason=smu_write_refused profile=%s field=%s option=%s value=%s\n' \
             "$power_profile_name" "$profile_field" "$field_option" "$profile_value" >&2
+        roll_back_partial_apply "$snapshot_pairs" || exit 4
         exit 3
     fi
 done
@@ -409,6 +463,7 @@ apply_readback=$(mktemp)
 trap 'rm -f -- "$apply_metrics" "$apply_readback"' EXIT HUP INT TERM
 if ! read_power_metrics >"$apply_readback"; then
     printf 'reason=readback_read_failed profile=%s\n' "$power_profile_name" >&2
+    roll_back_partial_apply "$snapshot_pairs" || exit 4
     exit 3
 fi
 
@@ -432,6 +487,7 @@ done
 if [ -n "$apply_failures" ]; then
     printf 'power_envelope_applied=unreached profile=%s fields=%s snapshot=%s\n' \
         "$power_profile_name" "${apply_failures% }" "$snapshot_file" >&2
+    roll_back_partial_apply "$snapshot_pairs" || exit 4
     exit 3
 fi
 

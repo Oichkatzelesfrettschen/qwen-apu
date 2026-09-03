@@ -356,6 +356,19 @@ temperature. `--info` at arm start and arm end, whole. Graphics-service latency
 from the guarded probe. The GPU bracket population where the arm runs an
 instrumented build.
 
+### What a pinned-clock arm can and cannot answer
+
+The lease profiles pin `pp_dpm_sclk` at level 2 and prove the delivered clock
+from the amdgpu hwmon before the command runs, and the firmware already reports
+1100 MHz as its maximum, so a raised package budget has no higher graphics state
+to select. The observable a package arm therefore carries is the delivered
+clock's residency at 1100 MHz, the sustained package watts, and the host-side
+boost residency that shares the same budget -- not a faster graphics core.
+Retained census runs under this same pin held 1100 MHz on every sample, so the
+pin currently costs the campaign nothing; an arm asking whether a raised budget
+changes which DPM step the governor selects would run under `auto` instead and
+is not registered here.
+
 ### Predictions, registered before the run
 
 The thermal limit binds before the power limit. Tctl read 83.4 C at load

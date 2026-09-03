@@ -1270,9 +1270,13 @@ remote/power-envelope.sh apply PROFILE          # the SMU package budget, one
                                                 # rather than being written.
                                                 # platform-default writes
                                                 # nothing and still snapshots.
-                                                # Exit 3 names an unreached
-                                                # read-back and 4 a failed
-                                                # restore.
+                                                # A failure part way through a
+                                                # profile rolls the limits it
+                                                # already wrote back from the
+                                                # snapshot, so exit 3 names an
+                                                # arm refused with the baseline
+                                                # returned and 4 a budget the
+                                                # platform would not return.
 remote/power-envelope.sh restore | status       # the reversal, and the live
                                                 # limits with no write
 remote/build-ryzenadj.sh [SOURCE_DIRECTORY]    # the pinned RyzenAdj into

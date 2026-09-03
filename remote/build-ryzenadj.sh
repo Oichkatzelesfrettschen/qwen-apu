@@ -23,9 +23,11 @@ set -eu
 # `/dev/mem`. power-envelope.sh supplies that with `sudo -n`; this script never
 # needs it and never asks for it.
 #
-# This is a workstation-class build in cost rather than a device-owning one: it
-# compiles a handful of C files and allocates nothing on the Vulkan device, so
-# it runs beside a served router.
+# The build compiles a handful of C files and allocates nothing on the Vulkan
+# device, so it takes the device from nothing. It does take both cores for the
+# length of the compile, which is the resource a timed measurement arm is
+# sensitive to, so it belongs outside a measurement window rather than inside
+# one.
 
 usage() {
     printf 'usage: %s [SOURCE_DIRECTORY]\n' "$0" >&2
@@ -40,7 +42,10 @@ fi
 ryzenadj_repository=${QWEN_RYZENADJ_REPOSITORY:-https://github.com/FlyGoat/RyzenAdj.git}
 ryzenadj_revision=${QWEN_RYZENADJ_REVISION:-5775fc3e6dbb25c7030ee2d100a1bdd6e8bf2d0a}
 ryzenadj_source=${1:-${QWEN_RYZENADJ_SOURCE:-"${HOME:?}/src/RyzenAdj"}}
-ryzenadj_build=${QWEN_RYZENADJ_BUILD:-$ryzenadj_source/build-raven2}
+# The build directory sits outside the checkout, because the cleanliness check
+# below refuses an untracked file and a build tree inside the source would make
+# every second run refuse its own first run's output.
+ryzenadj_build=${QWEN_RYZENADJ_BUILD:-"${XDG_CACHE_HOME:-${HOME:?}/.cache}/qwen-ryzenadj-build"}
 ryzenadj_install=${QWEN_RYZENADJ_INSTALL:-"${HOME:?}/.local/bin/ryzenadj"}
 
 case $ryzenadj_revision in
@@ -101,6 +106,17 @@ if [ "$resolved_revision" != "$ryzenadj_revision" ]; then
         "$resolved_revision" "$ryzenadj_revision" "$ryzenadj_source" >&2
     exit 2
 fi
+
+resolved_source=$(CDPATH='' cd -- "$ryzenadj_source" && pwd -P)
+mkdir -p -- "$ryzenadj_build"
+resolved_build=$(CDPATH='' cd -- "$ryzenadj_build" && pwd -P)
+case $resolved_build in
+    "$resolved_source" | "$resolved_source"/*)
+        printf 'the build directory sits inside the source checkout, which the revision check below reads as an unclean tree: %s\n' \
+            "$resolved_build" >&2
+        exit 2
+        ;;
+esac
 
 # A modified tree builds something the revision does not name, so the identity
 # the manifest would record would be false.

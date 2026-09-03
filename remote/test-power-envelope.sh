@@ -146,12 +146,21 @@ for invocation_argument in "$@"; do
             exit 1
             ;;
     esac
-    if [ "$(control refuse_writes)" = 1 ]; then
+    if [ "$(control refuse_writes)" = 1 ] ||
+        [ "$(control refuse_write_field)" = "$written_field" ]; then
         printf 'Failed to set the value\n' >&2
         exit 1
     fi
     if [ "$(control honor_writes)" = 1 ]; then
-        set_field "$written_field" "${invocation_argument#*=}"
+        written_value=${invocation_argument#*=}
+        # A sticky field models a platform that latches a raised limit and
+        # accepts the lowering write without applying it, which is the state a
+        # rollback has to report rather than assume.
+        if [ "$(control sticky_field)" = "$written_field" ] &&
+            [ "$written_value" -lt "$(field "$written_field")" ]; then
+            continue
+        fi
+        set_field "$written_field" "$written_value"
     fi
 done
 exit 0
@@ -236,8 +245,37 @@ case_status=0
 [ "$run_status" -eq 3 ] || case_status=1
 stderr_carries 'power_envelope_applied=unreached' || case_status=1
 stderr_carries 'stapm_limit_mw=15000(want=25000)' || case_status=1
+stderr_carries 'power_envelope_rollback=held' || case_status=1
+[ ! -e "$snapshot_file" ] || case_status=1
+report "$case_status" 'a read-back that disagrees with the request refuses the arm and returns the baseline'
+
+# A profile writes several limits in turn, so a refusal on the second leaves the
+# first raised. The rollback returns it before the refusal is reported.
+reset_fixture
+set_control refuse_write_field fast_limit_mw
+run_term apply package-20w
+case_status=0
+[ "$run_status" -eq 3 ] || case_status=1
+stderr_carries 'reason=smu_write_refused profile=package-20w field=fast_limit_mw' || case_status=1
+stderr_carries 'power_envelope_rollback=held' || case_status=1
+[ "$(firmware_field stapm_limit_mw)" = 15000 ] || case_status=1
+[ ! -e "$snapshot_file" ] || case_status=1
+report "$case_status" 'a refusal part way through a profile rolls the earlier limits back'
+
+# A rollback the platform will not take is the incident, so it keeps the
+# snapshot and raises the failure to the restoration status.
+reset_fixture
+set_control refuse_write_field slow_limit_mw
+set_control sticky_field stapm_limit_mw
+run_term apply package-20w
+case_status=0
+[ "$run_status" -eq 4 ] || case_status=1
+stderr_carries 'power_envelope_rollback=failed' || case_status=1
+stderr_carries 'stapm_limit_mw=20000(want=15000)' || case_status=1
+[ "$(firmware_field stapm_limit_mw)" = 20000 ] || case_status=1
 [ -e "$snapshot_file" ] || case_status=1
-report "$case_status" 'a read-back that disagrees with the request refuses the arm and keeps the snapshot'
+report "$case_status" 'a rollback the platform refuses keeps the snapshot and is an incident'
+run_term restore || true
 
 # A restore whose read-back disagrees is an incident rather than a warning, so
 # it ends non-zero and leaves the snapshot for the operator.

@@ -425,6 +425,12 @@ if [ -n "$profile_power_envelope" ]; then
         "$power_envelope_command" status 2>&1) || power_envelope_preflight=''
     case $power_envelope_preflight in
         'power_envelope=live'*' snapshot=absent') ;;
+        'power_envelope=live'*' snapshot=present')
+            printf 'profile %s names power envelope %s and a snapshot from an earlier apply is still live: restore it with `%s restore` before starting another transaction (%s)\n' \
+                "$profile_name" "$profile_power_envelope" "$power_envelope_command" \
+                "$power_envelope_snapshot" >&2
+            exit 2
+            ;;
         *)
             printf 'profile %s names power envelope %s and the term answers: %s\n' \
                 "$profile_name" "$profile_power_envelope" \
