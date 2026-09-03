@@ -1,0 +1,21 @@
+preset	raven2-vulkan-census
+commit	f280b26983ad0fdb705a0d9ebf0503e76f2899b0
+worktree	dirty
+instrumentation	pipeline-census-v2
+build_role	diagnostic
+serving_eligible	no
+checkpoint_semantics	natural-boundary-v1
+checkpoint_patch	patches/llama-server-natural-checkpoint-boundary.patch
+checkpoint_patch_sha256	c9d4010594da1f632be009b934cd045f6625b8baba68d09b7ed6190b02f9ddfc
+checkpoint_source_sha256	3744317beb622feff234e5b7a615c50665579f34ce49921e324bcd418fb3a58a
+checkpoint_patch_series_sha256	58e651d78872c3d2718baee56f6eefb9131961738d8fe8ff1a8f1cab92d43f02
+checkpoint_series_tree	verified-candidate
+candidate_series	llama-vulkan-pipeline-census.patch
+candidate_series_sha256	7d1fccb83356b8aeefa53f3ca9b57d9bc592449b0c352fbeb6d544f520ab9990
+checkpoint_series_tree_sha256	929815fb007564a513c298ffe1fdba6a16752877f33c24b1c649a54fd28c7b9c
+checkpoint_sources_ledger_sha256	650ea90be8684b507ec398eec7e282ddad23d1b47ecbd6b77a1d076f768e75a3
+checkpoint_source_root	$HOME/src/llama.cpp-census-v2
+compiler_flags	-march=znver1 -mtune=znver1
+cmake_flags	-DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF -DBUILD_SHARED_LIBS=OFF -DLLAMA_BUILD_APP=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF -DLLAMA_OPENSSL=OFF -DGGML_CCACHE=ON -DGGML_LTO=OFF -DGGML_OPENMP=OFF -DGGML_BLAS=OFF -DGGML_LLAMAFILE=OFF -DGGML_CPU=ON -DGGML_CUDA=OFF -DGGML_HIP=OFF -DGGML_OPENCL=OFF -DGGML_RPC=OFF -DGGML_SYCL=OFF -DGGML_VULKAN=ON -DLLAMA_SUBPROCESS=ON -DGGML_VULKAN_PIPELINE_CENSUS=ON -DGGML_NATIVE=OFF -DGGML_SSE42=ON -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON -DGGML_BMI2=ON
+executable	llama-server	57754168	f2a89d85f4ad6e432e5089a87eb42440aa4f057cb498c5692871a7b74f3413ca
+executable	llama-bench	54217784	0a1a60fd2e3c373a6ab77d6af856cbc43297ea42692cfaca5e8209c0ceda4b83
