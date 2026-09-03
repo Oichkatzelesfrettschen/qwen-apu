@@ -22,13 +22,21 @@ remote/check-install-requirements.sh workstation   # beside the Git tree
 remote/check-install-requirements.sh validate      # row shape and cited paths
 ```
 
-`validate` runs the shape rules alone and `remote/repository-quality-gates.sh`
-calls it beside `check-validated-tuples.sh` and `check-ledger-evidence.sh`. Row
-shape is a property of the row and the existence of a file a row cites is a
-property of the tree, so both are asserted where the tree is; presence of the
-software is a property of a host, so a check runs there. Each run prints one
-line per requirement over `present`, `absent`, `optional-absent`, `skipped`,
-and `not-run`, and an `absent` required row is what moves the exit status.
+`validate` runs the shape rules and the cited-path rule alone, and
+`remote/repository-quality-gates.sh` calls it beside
+`check-validated-tuples.sh` and `check-ledger-evidence.sh`. Row shape and the
+existence of a file a row cites are properties of the tree, so both are
+asserted where the tree is; presence of the software is a property of a host,
+so a host run resolves no `source_ref` at all. That split is what makes the
+appliance arm runnable: `remote/sync-runtime-tree.sh:85` copies `remote/` and
+`patches/`, so a copy at `~/qwen-laptop-setup` holds neither `docs/` nor the
+evidence a row cites, and a host run that resolved those paths would refuse
+every requirement over a directory the sync never sent. Run the host arm from
+the appliance's own Git checkout, or name the ledger as the second argument.
+
+Each run prints one line per requirement over `present`, `absent`,
+`optional-absent`, `skipped`, and `not-run`, and an `absent` required row is
+what moves the exit status.
 
 Every `source_ref` line number was read at commit
 `9398a467a794ec7b6705b7a35ec0f35e4481f5fd`. A line number moves as the tree
@@ -70,6 +78,10 @@ implementation, which `mv -T` is the one case of.
 | hip-rocm | 5 | laptop |
 | repository-gate | 16 | both |
 | Total | 125 | |
+
+A count is module-requirement pairs rather than distinct software. `cc` earns a
+row in three modules because three different mechanisms need it, and each row
+carries the file that establishes it there.
 
 ## Three findings that change what a reader installs
 
@@ -528,10 +540,14 @@ launched a server or loaded a model.
 | `llama-server`, `llama-bench`, `sd-cli` on `PATH` | absent; both live under their build and deployment directories | absent |
 
 `remote/check-install-requirements.sh workstation` accepted this workstation
-with 35 present, 4 optional-absent, 86 skipped. The laptop arm is `not run`:
-the checker and its ledger live on this branch and reach the appliance only
-through `remote/sync-runtime-tree.sh`, which this audit leaves for the
-operator.
+with 35 present, 4 optional-absent, 86 skipped. The laptop arm ran on the
+workstation to exercise its code path and rejected with 82 present and 22
+absent, which is the expected shape there: the absences are the appliance's
+device nodes, its DRM and hwmon sysfs entries, the RADV ICD file, and the
+built `llama-bench`, `llama-cli`, `llama-quantize`, `sd-cli`, and
+`vulkan-graphics-service-probe`. The laptop arm against the appliance is `not
+run`, because it needs this branch in the appliance's own Git checkout and
+this audit leaves that transfer to the operator.
 
 Two probe results contradict what a reader would assume. The gate venv lives on
 the appliance rather than on the workstation, which is where `ruff` and `mypy`

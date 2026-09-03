@@ -161,9 +161,14 @@ while IFS=$field_separator read -r row_module row_host row_kind row_name \
         rejections=$((rejections + 1))
         continue
     fi
-    validate_source_refs "$row_source_ref" "$row_module" "$row_name"
-
-    [ "$requested_mode" = validate ] && continue
+    # The cited path is a property of the tree and the appliance runs from a
+    # copy carrying remote/ and patches/ alone, so a host run that resolved
+    # these would refuse every requirement over a directory the sync never
+    # sent. The gate asserts them where the tree is.
+    if [ "$requested_mode" = validate ]; then
+        validate_source_refs "$row_source_ref" "$row_module" "$row_name"
+        continue
+    fi
 
     if [ "$row_host" != both ] && [ "$row_host" != "$requested_mode" ]; then
         skipped_count=$((skipped_count + 1))
