@@ -953,6 +953,37 @@ assert.equal(migratedPriorRecord.messages.length, 3);
 const migratedNewRecord = await migrationPage.api.read(newId);
 assert.ok(migratedNewRecord, 'the conversation that triggered the demotion did not save');
 
+// rename and delete run through the same demotion-and-retry chain as save:
+// a store that refuses the write no longer just leaves the stored title, or
+// keeps the deleted row, on a store that answered its own probe but refuses
+// this real operation.
+const mutationDatabase = makeFakeIndexedDatabase();
+const mutationFailWrites = { active: true };
+const mutationIndexedDatabase =
+  makeFlakyIndexedDatabase(mutationDatabase, { failWrites: mutationFailWrites });
+const mutationPage = newPage({
+  indexedDatabase: mutationIndexedDatabase,
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(mutationPage);
+// The fixture turn itself demotes IndexedDB the way the arms above already
+// prove; what this arm adds is the rename and the delete that follow.
+const mutationId = await mutationPage.api.runFixtureTurn(fixture);
+await flushPromises();
+assert.equal(await mutationPage.api.storeName(), 'localstorage');
+
+await mutationPage.api.renameConversation(mutationId);
+await flushPromises();
+const renamedRecord = await mutationPage.api.read(mutationId);
+assert.equal(renamedRecord.title, 'renamed conversation',
+  'the rename did not reach the fallback store');
+
+await mutationPage.api.deleteConversation(mutationId);
+await flushPromises();
+assert.equal(await mutationPage.api.read(mutationId), null,
+  'the delete did not reach the fallback store');
+
 // ---- switchConversation rechecks busy after its own await -----------------
 
 const raceSource = newPage({

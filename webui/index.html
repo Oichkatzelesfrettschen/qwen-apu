@@ -3631,6 +3631,40 @@ async function migrateReadableRecords(failedStore, nextStore) {
   }
 }
 
+async function writeThroughFallbackStore(operation) {
+  /* Run one mutating store call -- write() or remove() -- through demotion,
+     migration, and retry, so a rename or a delete does not silently fail
+     against a store that answered its own probe but refuses this real
+     operation, and does not leave that store selected for whatever call
+     happens to run next.
+
+     A store that opened and answered its own probe can still refuse a later
+     write -- a quota, a denied transaction -- and more than one backend can
+     fail this way in the same call: IndexedDB over a denied transaction,
+     then localStorage over the same quota. Each failure excludes that
+     store's own name and demotes the cached resolution, so the next
+     iteration's conversationStore() call re-runs resolveConversationStore()
+     past every store that has already failed -- its own list()/setItem()
+     probes are reads and would otherwise pass again for a store that permits
+     reads and refuses writes -- and retries the same operation rather than
+     leaving it to whatever later call happens to run next.
+     memoryConversationStore() never throws, so at most three attempts are
+     ever needed. */
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const activeStore = await conversationStore();
+    try {
+      await operation(activeStore);
+      return true;
+    } catch {
+      conversationStoreFailedNames.add(activeStore.name);
+      conversationStoreRead = null;
+      const nextStore = await conversationStore();
+      await migrateReadableRecords(activeStore, nextStore);
+    }
+  }
+  return false;
+}
+
 async function saveConversation() {
   if (!conversationId) return;
   // The JSON round trip is the projection boundary: the record the store keeps
@@ -3647,29 +3681,7 @@ async function saveConversation() {
   } catch {
     return;
   }
-  // A store that opened and answered its own probe can still refuse a later
-  // write -- a quota, a denied transaction -- and more than one backend can
-  // fail this way in the same call: IndexedDB over a denied transaction,
-  // then localStorage over the same quota. Each failure excludes that
-  // store's own name and demotes the cached resolution, so the next
-  // iteration's conversationStore() call re-runs resolveConversationStore()
-  // past every store that has already failed -- its own list()/setItem()
-  // probes are reads and would otherwise pass again for a store that permits
-  // reads and refuses writes -- and retries this same record rather than
-  // leaving it to whatever later save happens to run next. memoryConversationStore()
-  // never throws, so at most three attempts are ever needed.
-  for (let attempt = 0; attempt < 3; attempt++) {
-    const activeStore = await conversationStore();
-    try {
-      await activeStore.write(record);
-      break;
-    } catch {
-      conversationStoreFailedNames.add(activeStore.name);
-      conversationStoreRead = null;
-      const nextStore = await conversationStore();
-      await migrateReadableRecords(activeStore, nextStore);
-    }
-  }
+  await writeThroughFallbackStore(store => store.write(record));
   await renderConversationList();
 }
 
@@ -3902,16 +3914,12 @@ async function renameConversation(id) {
     proposed.trim().replace(/\s+/g, ' ') || 'untitled', CONVERSATION_TITLE_CHARACTER_CAP);
   record.title = title;
   if (id === conversationId) conversationTitle = title;
-  try {
-    await (await conversationStore()).write(record);
-  } catch { /* a store that refuses the rename leaves the stored title */ }
+  await writeThroughFallbackStore(store => store.write(record));
   await renderConversationList();
 }
 
 async function deleteConversation(id) {
-  try {
-    await (await conversationStore()).remove(id);
-  } catch { /* a store that refuses the removal keeps the row */ }
+  await writeThroughFallbackStore(store => store.remove(id));
   if (id === conversationId) startNewConversation();
   await renderConversationList();
 }
