@@ -36,7 +36,8 @@ report() {
 harness=$work/harness
 mkdir -p "$harness"
 for harness_member in qwen-launch.sh web-lan-exposure.sh \
-    resolve-active-deployment.sh open-verified-lock-descriptor.py \
+    resolve-active-deployment.sh deployment-bundle-name.sh \
+    open-verified-lock-descriptor.py \
     select-projector.sh model-registry.sh models.tsv \
     image-launch-lib.sh read-image-mcp-server.py image-registry.sh \
     image-artifacts.tsv image-models.tsv image-quarantine.tsv \
