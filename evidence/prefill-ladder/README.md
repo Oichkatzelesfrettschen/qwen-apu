@@ -219,6 +219,7 @@ ssh eirikr@qwen-laptop
 sudo -v
 ~/qwen-laptop-setup/remote/qwen-teardown.sh
 out=~/evidence/prefill-ladder/$(date -u +%Y%m%dT%H%MZ)
+mkdir -p "$(dirname "$out")"
 ( set -C; : >"$out.log" ) 2>/dev/null ||
     { printf 'output path in use: %s\n' "$out.log" >&2; exit 1; }
 ( set -C; : >"$out.status" ) 2>/dev/null ||
@@ -260,7 +261,9 @@ reserving only the status file leaves `tee` truncating a retained `$out.log` tha
 outlived its status file, and `tee -a` appends into the empty file the reservation just
 made rather than truncating it again. The log is reserved first and the status second, so
 a refusal leaves the namespace as it found it: the only file the second line can remove
-is the log its own first line just created. The device is claimed twice over
+is the log its own first line just created. `mkdir -p` on the parent runs ahead of both,
+because the runner's own `mkdir -p` of the full output path no longer comes first and a
+sidecar cannot be created into a directory that does not exist yet. The device is claimed twice over
 anyway, since the ladder takes the Vulkan workload lease, but the reservation is what
 keeps the retained bytes safe rather than the lease.
 
