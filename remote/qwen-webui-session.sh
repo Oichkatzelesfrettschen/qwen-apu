@@ -15,6 +15,14 @@ state_directory=${7:-"${HOME:?}/qwen-webui-state"}
 vulkan_profile=${8:-low-serialized}
 
 umask 077
+# Every python child of this session imports its modules from the runtime tree,
+# and an import writes bytecode beside them, which check-runtime-tree.sh reads
+# as a stray at the next launch: the manifest names tracked files alone, so no
+# sync ships or removes a .pyc. The session exports the setting for the broker,
+# the image service, the search instance, and the capacity server, and
+# llama-server passes its own environment to the MCP child it spawns.
+PYTHONDONTWRITEBYTECODE=1
+export PYTHONDONTWRITEBYTECODE
 mkdir -p "$state_directory"
 mkdir -p "$state_directory/telemetry"
 server_log=$state_directory/server.log

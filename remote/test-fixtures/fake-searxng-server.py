@@ -17,6 +17,7 @@ instance that binds its port and never becomes usable.
 import argparse
 import http.server
 import json
+import os
 import signal
 import sys
 import urllib.parse
@@ -66,6 +67,15 @@ def main():
             return
         with open(arguments.log, "a", encoding="utf-8") as handle:
             handle.write(line + "\n")
+
+    # The launch chain suppresses bytecode in every python child it starts,
+    # because an import writes it into the runtime tree the manifest names. The
+    # value this child inherited is recorded so a test reads what the session
+    # actually exported rather than what the session's source says.
+    note(
+        "environment pythondontwritebytecode=%s"
+        % (os.environ.get("PYTHONDONTWRITEBYTECODE", "") or "unset")
+    )
 
     class Handler(http.server.BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"

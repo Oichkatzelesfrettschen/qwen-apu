@@ -106,6 +106,11 @@ for tool in python3 curl jq sha256sum ss pgrep; do
 done
 
 umask 077
+# The harness runs python3 from the runtime tree -- the page driver, the audit
+# reader, the key generator -- and an import there writes bytecode the manifest
+# never names, which the next launch reads as a stray.
+PYTHONDONTWRITEBYTECODE=1
+export PYTHONDONTWRITEBYTECODE
 mkdir -p "$output_directory"
 output_directory=$(CDPATH='' cd -- "$output_directory" && pwd)
 summary=$output_directory/summary.tsv
@@ -353,13 +358,26 @@ else
     restore_ordinary
     exit 1
 fi
-if grep -q "QWEN_WEB_SEARXNG_URL.*$searxng_url" "$web_presets" && \
-   grep -q "QWEN_WEB_SEARXNG_PRIMARY_CATEGORY.*$primary_category" "$web_presets"; then
+# The section names its MCP configuration and carries none of the policy
+# itself, so the four values are read out of that configuration through the
+# section rather than grepped from the INI.
+read_policy() {
+    "$script_directory/read-mcp-server-env.sh" "$web_presets" "$profile_id" \
+        web "$1" 2>/dev/null || printf 'absent\n'
+}
+emitted_url=$(read_policy QWEN_WEB_SEARXNG_URL)
+emitted_primary=$(read_policy QWEN_WEB_SEARXNG_PRIMARY_CATEGORY)
+emitted_fallback=$(read_policy QWEN_WEB_SEARXNG_FALLBACK_CATEGORY)
+emitted_minimum=$(read_policy QWEN_WEB_SEARXNG_MINIMUM_RESULTS)
+if [ "$emitted_url" = "$searxng_url" ] && \
+   [ "$emitted_primary" = "$primary_category" ] && \
+   [ "$emitted_fallback" = "$fallback_category" ] && \
+   [ "$emitted_minimum" = "$minimum_results" ]; then
     record preset_carries_search_policy pass \
-        "url=$searxng_url primary=$primary_category fallback=$fallback_category minimum=$minimum_results"
+        "url=$emitted_url primary=$emitted_primary fallback=$emitted_fallback minimum=$emitted_minimum"
 else
     record preset_carries_search_policy fail \
-        'the emitted configuration names no instance URL or primary category'
+        "url=$emitted_url/$searxng_url primary=$emitted_primary/$primary_category fallback=$emitted_fallback/$fallback_category minimum=$emitted_minimum/$minimum_results"
 fi
 
 # 4. Launch the test router. The launcher reads the row's searxng_url, refuses

@@ -122,8 +122,10 @@ printf 'stopped tmux_socket=fixture tmux_session=fixture\n'
 CONTROL
 chmod +x "$fixture_remote"/*.sh
 
+instance_log=$temporary_directory/instance-requests.log
 launch_command_for() {
-    printf "python3 '%s' --port %s %s" "$fake_instance" "$1" "${2:-}"
+    printf "python3 '%s' --port %s --log '%s' %s" \
+        "$fake_instance" "$1" "$instance_log" "${2:-}"
 }
 
 wait_for_health() {
@@ -264,6 +266,17 @@ else
     wait_for_health "$instance_port" || outcome=health_absent
     [ -s "$running_state/searxng/settings.yml" ] || outcome=settings_absent
     report session_records_searxng_child "$outcome"
+
+    # A python child of the session imports from the runtime tree, and the
+    # bytecode an import writes there is a stray the manifest never names, so
+    # check-runtime-tree.sh refuses the next launch over a tree the appliance
+    # itself dirtied. The child reports the value it inherited.
+    if grep -q '^environment pythondontwritebytecode=1$' "$instance_log"; then
+        report session_child_suppresses_bytecode ok
+    else
+        report session_child_suppresses_bytecode \
+            "$(grep '^environment ' "$instance_log" | tail -1)"
+    fi
 
     # 4. The teardown reads the pid and the port off the status file, compares
     # the recorded start time, signals the process, and proves both gone.

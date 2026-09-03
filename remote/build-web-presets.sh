@@ -1224,6 +1224,14 @@ while profile_id=; IFS='	' read -r profile_id model_id _web_mode context \
             printf '        "%s"\n' "$web_provider"
             printf '      ],\n'
             printf '      "env": {\n'
+            # The child imports its modules from the runtime tree, and an
+            # import writes bytecode beside them: the appliance read
+            # remote/web-mcp/__pycache__ as a stray at the next
+            # check-runtime-tree.sh, since no sync ships or removes a file the
+            # manifest never named. The setting travels in the configuration
+            # rather than only in the session's environment, so the child
+            # carries it whatever llama-server inherited.
+            printf '        "PYTHONDONTWRITEBYTECODE": "1",\n'
             printf '        "QWEN_WEB_PROFILE": "%s",\n' "$profile_id"
             printf '        "QWEN_WEB_PROVIDER": "%s",\n' "$web_provider"
             printf '        "QWEN_WEB_MAX_RESULTS": "%s",\n' "$max_results"
@@ -1293,6 +1301,9 @@ while profile_id=; IFS='	' read -r profile_id model_id _web_mode context \
             printf '        "%s"\n' "$image_mcp_server"
             printf '      ],\n'
             printf '      "env": {\n'
+            # image-mcp/server.py imports remote/image_protocol.py, which wrote
+            # remote/__pycache__ into the runtime tree for the same reason.
+            printf '        "PYTHONDONTWRITEBYTECODE": "1",\n'
             printf '        "QWEN_IMAGE_LANGUAGE_PROFILE": "%s",\n' "$profile_id"
             printf '        "QWEN_IMAGE_PROFILE": "%s",\n' "$image_profile_id"
             printf '        "QWEN_IMAGE_TOKEN_KEY_FILE": "%s",\n' \
