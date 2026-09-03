@@ -62,6 +62,7 @@ validator=${QWEN_CLOCK_VALIDATOR:-"$script_directory/validate-clock-sidecar.py"}
 drm_device=${QWEN_DRM_DEVICE:-/sys/class/drm/card1/device}
 bapm_parameter=${QWEN_BAPM_PARAMETER:-/sys/module/amdgpu/parameters/bapm}
 ionice_command=${QWEN_DPM_IONICE:-/usr/bin/ionice}
+hwmon_root=${QWEN_HWMON_ROOT:-/sys/class/hwmon}
 sidecar_period_ms=${QWEN_DPM_SIDECAR_PERIOD_MS:-20}
 sidecar_cpu=${QWEN_DPM_SIDECAR_CPU:-0,1}
 generate_tokens=${QWEN_DPM_GENERATE_TOKENS:-64}
@@ -118,6 +119,55 @@ fi
 if ! python3 "$validator" --help 2>/dev/null | grep -q -- '--required-sclk-mhz'; then
     printf 'clock sidecar validator states no --required-sclk-mhz condition: %s\n' \
         "$validator" >&2
+    exit 2
+fi
+
+# telemetry-broker.c opens temp1_input and freq1_input from the directory
+# --hwmon names, and the record's eighth column carries the delivered graphics
+# frequency the validator states the invariant against. A broker launched
+# without it writes `unavailable` in both, which refuses the record on its
+# temperature column and leaves the invariant counting nothing, so an authority
+# that held would be reported as none. The resolution is
+# run-raven2-vulkan-kernel-census.sh's own rule -- the first entry under the
+# hwmon root whose name attribute reads amdgpu -- and it is a startup
+# requirement rather than a per-arm reading.
+# The pgrep gate above reads the device once, and this probe then forces a
+# performance level and runs a decode of its own across three arms. A workload
+# that starts after that reading shares the level the probe wrote and lands in
+# the rate the receipt carries, so the shared lease is held from before the
+# first level write through the restore. The bench inherits the descriptor,
+# which is what makes the exclusion span every arm.
+workload_lease=${QWEN_VULKAN_WORKLOAD_LOCK:-"${HOME:?}/qwen-webui-state/vulkan-workload.lock"}
+if ! command -v flock >/dev/null 2>&1; then
+    printf 'flock is required to hold the shared Vulkan lease\n' >&2
+    exit 2
+fi
+# `exec` is a special builtin, so a redirection it cannot open ends the shell
+# on the redirection's own message; the directory is read here so an absent
+# state directory is named the way every other refusal is.
+workload_lease_directory=$(dirname -- "$workload_lease")
+if [ ! -d "$workload_lease_directory" ]; then
+    printf 'the shared lease directory is absent: %s\n' "$workload_lease_directory" >&2
+    exit 2
+fi
+exec 9>"$workload_lease"
+if ! flock -n 9; then
+    printf 'another Vulkan workload holds the shared lease: %s\n' "$workload_lease" >&2
+    exit 2
+fi
+
+sidecar_hwmon=''
+for hwmon_entry in "$hwmon_root"/*; do
+    [ -d "$hwmon_entry" ] || continue
+    [ -r "$hwmon_entry/name" ] || continue
+    if [ "$(cat "$hwmon_entry/name")" = amdgpu ]; then
+        sidecar_hwmon=$hwmon_entry
+        break
+    fi
+done
+if [ -z "$sidecar_hwmon" ]; then
+    printf 'no amdgpu hwmon directory under %s; the record would carry no temperature and no delivered clock\n' \
+        "$hwmon_root" >&2
     exit 2
 fi
 
@@ -232,10 +282,12 @@ reported_value() {
 # The one figure the validator reports in a coarser unit than the receipt
 # states: its `temp_max_c` is Celsius at one decimal where the row is the
 # sensor's own millidegrees, so the peak is read off the record's sixth
-# column inside the same window.
+# column inside the same window. telemetry-broker.c appends the delivered
+# graphics frequency as an eighth column, so both widths carry the same sixth
+# column and both are read.
 window_thermal_peak() {
     awk -F'\t' -v begin="$2" -v end="$3" '
-        $1 ~ /^[0-9]+$/ && NF == 7 {
+        $1 ~ /^[0-9]+$/ && (NF == 7 || NF == 8) {
             instant = $1 + 0
             if (instant < begin || instant > end) { next }
             if ($6 != "unavailable") {
@@ -367,7 +419,8 @@ run_level() {
     # the cores, the surfaces, and the control FIFO alone.
     "$broker" "$record" \
         --period-ms "$sidecar_period_ms" --cpu "$sidecar_cpu" \
-        --drm-device "$drm_device" --control "$control_fifo" \
+        --drm-device "$drm_device" --hwmon "$sidecar_hwmon" \
+        --control "$control_fifo" \
         2>"$arm_directory/clock-sidecar.stderr" &
     broker_pid=$!
     # The record is formatted at drain, so the readiness line on stderr is
@@ -493,7 +546,13 @@ run_level() {
         clock_invariant=not_run
     else
         clock_invariant=$reported_invariant
-        if [ "$clock_invariant" = held ] && [ -z "$held_authority" ]; then
+        # An authority is named from a record the validator accepts. The
+        # invariant is counted over the samples the record holds, so a record
+        # refused for coverage, period, cost, or a sensor carries a held
+        # invariant over a window it only partly describes; the receipt keeps
+        # both readings and the campaign-facing name requires the pair.
+        if [ "$clock_invariant" = held ] && [ "$sidecar_verdict" = accepted ] &&
+            [ -z "$held_authority" ]; then
             held_authority=$arm_level
         fi
     fi
