@@ -36,7 +36,7 @@ def run(root, *extra):
 def rows_of(output):
     lines = output.strip().split("\n")
     header = lines[0].split("\t")
-    return [dict(zip(header, l.split("\t"))) for l in lines[1:]]
+    return [dict(zip(header, line.split("\t"))) for line in lines[1:]]
 
 
 def quad(root, prompt_id, control, candidate):
