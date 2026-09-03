@@ -341,6 +341,43 @@ so the review section is subtracted before the profile is read.
 `multi_source` reads `yes` exactly where `max_fetches` exceeds one, because the
 emitted configuration carries the fetch budget alone.
 
+One router serves the whole roster, and the head marker
+`# qwen_web_sections=web-open` is what makes that safe.
+`remote/build-router-presets.sh` reads `remote/web-profiles.tsv` through
+`remote/web-preset-lib.sh`, the file that holds the registry join, the
+copied-field comparison, the search policy, and the MCP configuration writer
+once for both generators, and emits one section per `validator-gated` row
+beside the registry and draft-pair sections: the thirteen servable rows and the
+two pairings stay tool-free and `web-open` carries
+`LLAMA_ARG_MCP_SERVERS_CONFIG` with the six tuple keys and
+`LLAMA_ARG_CTX_CHECKPOINTS`, named for its `profile_id` and resolving to its
+checkpoint through `LLAMA_ARG_MODEL`. `qwen-capacity-policy.sh` reads the
+marker into a section set and selects the rules per section rather than per
+file -- resolution through the model file, the depth bounded by
+`context_ceiling` and `validated_filled_depth`, and the rejoin to the bound
+ledger by `profile_id` -- while refusing an MCP key in any section the marker
+never named and a draft key in any section the pair ledger never named.
+`QWEN_WEB_AUTHORIZER_READY=1` admits the rows and its absence emits the fifteen
+registry sections alone and says so; an unvalidated depth is refused outright
+here, because this is the file an ordinary launch binds `0.0.0.0` with and
+`build-web-presets.sh` keeps the experimental path on its own loopback-forced
+file. `qwen-launch.sh` reads the marker off the snapshot it already took, so an
+activation between the two reads cannot change what the broker signs for: one
+named section becomes `QWEN_WEB_PROFILE` and arms `QWEN_WEB_BROKER=1`,
+`QWEN_REQUIRE_API_KEY=1`, and `QWEN_WEB_SEARXNG=1` at the port the ledger row
+names, the launch serves `webui/index.html`, and a second web section, an
+unreadable signing key, an absent MCP configuration, or a non-loopback bind
+without `QWEN_WEB_LAN=1` each refuse. The MCP configuration is session state --
+its contents name the state directory, the signing key, and the per-profile
+budgets -- so `build-deployment-bundle.sh` records its path and SHA-256 in
+`web-mcp-manifest.tsv` rather than copying it, `verify-deployment-bundle.sh`
+compares that record against the preset alone, since a resolution reading the
+named files would refuse every bundle on a machine that never armed the lane,
+and `qwen-launch.sh` compares the digests where it arms it. The image lane
+stays on `qwen-image-launch.sh`, which owns the two-checkpoint resident
+arithmetic, the artifact listener, and the review-only section that a
+sixteen-section preset at `QWEN_ROUTER_MAX=1` supplies none of.
+
 Router mode leaves depth, cache triple, and submission geometry off its own
 argv. `server-models.cpp` ends its preset assembly with
 `preset.merge(base_preset)` and `common_preset::merge` overwrites, so a router
@@ -1126,6 +1163,13 @@ QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
 # The session's `lan_exposure` line in ~/qwen-webui-state/session.status names
 # the page URL, which carries ?broker= and ?artifacts= because the page's meta
 # tags name the loopback.
+# One router serving the whole roster on the LAN: the registry sections stay
+# tool-free and the web section carries the search tools, so the ordinary
+# launcher arms the broker and the search instance from the preset itself.
+QWEN_WEB_LAN=1 QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=0.0.0.0 \
+QWEN_ROUTER=1 QWEN_WEB_AUTHORIZER_READY=1 \
+QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
+    ~/qwen-laptop-setup/remote/qwen-launch.sh low-async
 ~/qwen-laptop-setup/remote/qwen-teardown.sh
 ~/qwen-laptop-setup/remote/qwen-webui-control.sh status
 
@@ -1159,6 +1203,9 @@ remote/model-registry.sh ctx-checkpoints | ctx-checkpoint MODEL_ID
 remote/measure-draft-pair.sh PAIR_ID OUTPUT_DIR
                                                 # snapshot-bound ABBA pairing
 remote/build-router-presets.sh [OUTPUT_INI]    # the picker, from the tier field
+QWEN_WEB_AUTHORIZER_READY=1 QWEN_WEB_MCP_SERVER=remote/web-mcp/server.py \
+QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
+    remote/build-router-presets.sh OUT.ini     # the roster plus its web section
 remote/build-web-presets.sh OUTPUT_INI         # web profiles, from the execution_policy field
 remote/fetch-candidate-artifact.sh REPO REV FILE DIR  # observed, not pinned
 remote/run-one-token-admission.sh RECORD [OUT]  # load every candidate once
@@ -1275,6 +1322,9 @@ python3 remote/test-summarize-draft-pair.py
 remote/test-measure-draft-pair.sh
 remote/test-probe-depth-projector.sh
 remote/test-web-presets.sh
+remote/test-unified-router-presets.sh
+remote/test-unified-router-launch.sh
+node remote/test-fallback-webui-mixed-roster.mjs
 remote/test-qwen-web-launch.sh
 remote/test-web-search-live.sh
 remote/test-image-registry.sh
