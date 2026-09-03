@@ -58,7 +58,9 @@ hwmon_fixture=$sysfs_fixture/class/hwmon
 ksm_fixture=$sysfs_fixture/kernel/mm/ksm
 state_fixture=$temporary_directory/state
 stub_directory=$temporary_directory/stubs
+power_envelope_snapshot_fixture=$state_fixture/power-envelope-snapshot.tsv
 controls=$temporary_directory/firmware-controls.tsv
+power_envelope_log=$temporary_directory/power-envelope.log
 observer_log=$temporary_directory/observer.log
 mkdir -p "$drm_fixture" "$hwmon_fixture/hwmon0" "$hwmon_fixture/hwmon1" \
     "$ksm_fixture" "$state_fixture" "$stub_directory"
@@ -83,6 +85,8 @@ reset_fixture() {
     printf '1\n' >"$ksm_fixture/run"
     : >"$controls"
     : >"$observer_log"
+    : >"$power_envelope_log"
+    rm -f -- "$power_envelope_snapshot_fixture"
 }
 
 printf 'nvme\n' >"$hwmon_fixture/hwmon0/name"
@@ -237,7 +241,59 @@ exit 0
 OBSERVER
 } >"$stub_directory/observer"
 
-chmod +x "$stub_directory/sudo" "$stub_directory/observer"
+# The power term stands in for power-envelope.sh so the lease's optional term is
+# driven without ryzenadj and without a credential. It answers `status` from the
+# control file, records every subcommand, and owns a snapshot file the way the
+# real term does, which is what lets a refused restore be an incident here.
+{
+    printf '#!/bin/sh\nset -eu\n'
+    printf 'controls=%s\n' "$controls"
+    printf 'power_envelope_log=%s\n' "$power_envelope_log"
+    printf 'snapshot=%s\n' "$power_envelope_snapshot_fixture"
+    cat <<'POWERTERM'
+control() {
+    awk -F'\t' -v key="$1" '$1 == key { value = $2 } END { print value }' "$controls"
+}
+printf '%s\n' "$*" >>"$power_envelope_log"
+case ${1:-} in
+    status)
+        if [ "$(control power_term_unavailable)" = 1 ]; then
+            printf 'power_envelope=unavailable reason=ryzenadj_absent path=absent snapshot=absent\n'
+            exit 0
+        fi
+        if [ -e "$snapshot" ]; then
+            snapshot_state=present
+        else
+            snapshot_state=absent
+        fi
+        printf 'power_envelope=live stapm_limit_mw=15000 fast_limit_mw=15000 slow_limit_mw=15000 vrm_current_ma=30000 vrmmax_current_ma=45000 tctl_limit_c=95 snapshot=%s\n' \
+            "$snapshot_state"
+        exit 0
+        ;;
+    apply)
+        printf 'schema\tpower-envelope-snapshot-v1\t-\n' >"$snapshot"
+        if [ "$(control power_apply_refuses)" = 1 ]; then
+            printf 'power_envelope_applied=unreached profile=%s\n' "${2:-}" >&2
+            exit 3
+        fi
+        printf 'power_envelope_applied=%s fields=stapm_limit_mw=20000\n' "${2:-}"
+        exit 0
+        ;;
+    restore)
+        if [ "$(control power_restore_refuses)" = 1 ]; then
+            printf 'power_envelope_restored=failed profile=stub\n' >&2
+            exit 4
+        fi
+        rm -f -- "$snapshot"
+        printf 'power_envelope_restored=held profile=stub\n'
+        exit 0
+        ;;
+esac
+exit 2
+POWERTERM
+} >"$stub_directory/power-envelope"
+
+chmod +x "$stub_directory/sudo" "$stub_directory/observer" "$stub_directory/power-envelope"
 
 exec_transaction() {
     exec env PATH="$stub_directory:$PATH" \
@@ -248,6 +304,8 @@ exec_transaction() {
         QWEN_COMPUTE_STATE_REVISION=0123456789abcdef0123456789abcdef01234567 \
         QWEN_COMPUTE_STATE_CLOCK_DEADLINE_S=1 \
         QWEN_COMPUTE_STATE_RESTORE_DEADLINE_S=1 \
+        QWEN_POWER_ENVELOPE_COMMAND="${QWEN_TEST_POWER_ENVELOPE_COMMAND:-$stub_directory/power-envelope}" \
+        QWEN_POWER_ENVELOPE_SNAPSHOT="$power_envelope_snapshot_fixture" \
         "$transaction" "$@"
 }
 
@@ -314,11 +372,11 @@ run_transaction measure-fixed "$stub_directory/observer" clean-arm \
     >"$temporary_directory/clean.log" 2>&1 || clean_status=$?
 if [ "$clean_status" -eq 0 ] &&
     grep -q '^compute_state_lease=held ' "$temporary_directory/clean.log" &&
-    grep -q '^compute_state_applied=measure-fixed dpm_level=manual sclk=2 1100 mclk=2 933 ksm_run=0$' \
+    grep -q '^compute_state_applied=measure-fixed dpm_level=manual sclk=2 1100 mclk=2 933 ksm_run=0 power_envelope=-$' \
         "$temporary_directory/clean.log" &&
     grep -q '^clock_expectation=reached profile=measure-fixed gfxclk_mhz=1100 fclk_mhz=933$' \
         "$temporary_directory/clean.log" &&
-    grep -q '^restoration=held profile=measure-fixed dpm_level=manual selections=verified sclk_level=1 mclk_level=1 ksm_run=1$' \
+    grep -q '^restoration=held profile=measure-fixed dpm_level=manual selections=verified sclk_level=1 mclk_level=1 ksm_run=1 power_envelope=-$' \
         "$temporary_directory/clean.log" &&
     [ "$(fixture_state)" = "$snapshot_fixture_state" ]; then
     report 0 clean_apply_run_restore
@@ -400,7 +458,7 @@ serving_status=0
 run_transaction serve-performance-candidate "$stub_directory/observer" \
     >"$temporary_directory/serving.log" 2>&1 || serving_status=$?
 if [ "$serving_status" -eq 0 ] &&
-    grep -q '^compute_state_applied=serve-performance-candidate dpm_level=manual sclk=2 1100 mclk=2 933 ksm_run=0$' \
+    grep -q '^compute_state_applied=serve-performance-candidate dpm_level=manual sclk=2 1100 mclk=2 933 ksm_run=0 power_envelope=-$' \
         "$temporary_directory/serving.log" &&
     grep -q '^clock_expectation=reached profile=serve-performance-candidate gfxclk_mhz=1100 fclk_mhz=933$' \
         "$temporary_directory/serving.log" &&
@@ -426,7 +484,7 @@ run_transaction measure-fixed "$stub_directory/observer" auto-arm \
 if [ "$auto_status" -eq 0 ] &&
     [ "$(observer_field observed_dpm_level)" = manual ] &&
     [ "$(observer_field observed_sclk)" = '2:1100' ] &&
-    grep -q '^restoration=held profile=measure-fixed dpm_level=auto selections=governor-owned sclk_level=1 mclk_level=1 ksm_run=1$' \
+    grep -q '^restoration=held profile=measure-fixed dpm_level=auto selections=governor-owned sclk_level=1 mclk_level=1 ksm_run=1 power_envelope=-$' \
         "$temporary_directory/auto.log" &&
     [ "$(cat "$drm_fixture/power_dpm_force_performance_level")" = auto ] &&
     [ "$(cat "$ksm_fixture/run")" = 1 ]; then
@@ -541,7 +599,7 @@ term_status=0
 wait "$term_pid" || term_status=$?
 if [ "$term_status" -eq 143 ] &&
     grep -q '^observed_sclk	2:1100$' "$observer_log" &&
-    grep -q '^restoration=held profile=measure-fixed dpm_level=manual selections=verified sclk_level=1 mclk_level=1 ksm_run=1$' \
+    grep -q '^restoration=held profile=measure-fixed dpm_level=manual selections=verified sclk_level=1 mclk_level=1 ksm_run=1 power_envelope=-$' \
         "$term_output" &&
     [ "$(fixture_state)" = "$snapshot_fixture_state" ]; then
     report 0 terminating_signal_still_restores
@@ -572,6 +630,84 @@ if [ "$status_status" -eq 0 ] &&
 else
     report 1 status_reports_live_values_without_a_credential
     cat "$temporary_directory/status.log" >&2
+fi
+
+# The package arm is the same transaction with one more authority. The power
+# term runs after the clock writes and ahead of the clock proof, its restore
+# runs ahead of every other restore, and the record names which envelope the
+# command ran under.
+reset_fixture
+package_status=0
+run_transaction measure-fixed-package-20w "$stub_directory/observer" package-arm \
+    >"$temporary_directory/package.log" 2>&1 || package_status=$?
+if [ "$package_status" -eq 0 ] &&
+    grep -q '^compute_state_applied=measure-fixed-package-20w dpm_level=manual sclk=2 1100 mclk=2 933 ksm_run=0 power_envelope=package-20w$' \
+        "$temporary_directory/package.log" &&
+    grep -q '^clock_expectation=reached profile=measure-fixed-package-20w ' \
+        "$temporary_directory/package.log" &&
+    grep -q '^restoration=held profile=measure-fixed-package-20w .* power_envelope=package-20w$' \
+        "$temporary_directory/package.log" &&
+    grep -q '^status$' "$power_envelope_log" &&
+    grep -q '^apply package-20w$' "$power_envelope_log" &&
+    grep -q '^restore$' "$power_envelope_log" &&
+    [ "$(record_field "$state_fixture/compute-state-record.tsv" power_envelope)" = package-20w ] &&
+    [ ! -e "$power_envelope_snapshot_fixture" ] &&
+    [ "$(fixture_state)" = "$snapshot_fixture_state" ]; then
+    report 0 package_profile_applies_and_returns_the_envelope
+else
+    report 1 package_profile_applies_and_returns_the_envelope
+    cat "$temporary_directory/package.log" >&2
+fi
+
+# A term that cannot reach the SMU refuses the whole transaction ahead of the
+# lease, so a machine without ryzenadj costs no state change at all.
+reset_fixture
+set_control power_term_unavailable 1
+unavailable_status=0
+run_transaction measure-fixed-package-25w "$stub_directory/observer" \
+    >"$temporary_directory/power-unavailable.log" 2>&1 || unavailable_status=$?
+if [ "$unavailable_status" -eq 2 ] &&
+    grep -q 'names power envelope package-25w and the term answers: power_envelope=unavailable' \
+        "$temporary_directory/power-unavailable.log" &&
+    ! grep -q '^apply' "$power_envelope_log" &&
+    [ "$(fixture_state)" = "$snapshot_fixture_state" ]; then
+    report 0 an_unavailable_power_term_refuses_before_any_write
+else
+    report 1 an_unavailable_power_term_refuses_before_any_write
+    cat "$temporary_directory/power-unavailable.log" >&2
+fi
+
+# A profile that names no envelope never reaches the term, which is what keeps
+# the clock profiles runnable where the binary is absent.
+reset_fixture
+set_control power_term_unavailable 1
+silent_status=0
+run_transaction measure-fixed "$stub_directory/observer" \
+    >"$temporary_directory/power-silent.log" 2>&1 || silent_status=$?
+if [ "$silent_status" -eq 0 ] &&
+    [ ! -s "$power_envelope_log" ] &&
+    [ "$(fixture_state)" = "$snapshot_fixture_state" ]; then
+    report 0 a_profile_without_an_envelope_never_reaches_the_term
+else
+    report 1 a_profile_without_an_envelope_never_reaches_the_term
+    cat "$temporary_directory/power-silent.log" >&2
+fi
+
+# A package budget left on the machine is an incident, so a refused power
+# restore ends the transaction non-zero and names the field.
+reset_fixture
+set_control power_restore_refuses 1
+power_incident_status=0
+run_transaction measure-fixed-package-20w "$stub_directory/observer" \
+    >"$temporary_directory/power-incident.log" 2>&1 || power_incident_status=$?
+if [ "$power_incident_status" -eq 4 ] &&
+    grep -q '^restoration=failed profile=measure-fixed-package-20w fields=power_envelope=unreturned(profile=package-20w) ' \
+        "$temporary_directory/power-incident.log" &&
+    [ "$(fixture_state)" = "$snapshot_fixture_state" ]; then
+    report 0 a_refused_power_restore_is_an_incident
+else
+    report 1 a_refused_power_restore_is_an_incident
+    cat "$temporary_directory/power-incident.log" >&2
 fi
 
 if [ "$failures" -ne 0 ]; then

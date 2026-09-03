@@ -147,6 +147,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 remote/test-census-replay-corpus.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-perf-logger-slice.py
 remote/test-await-quiescence.sh
 remote/test-compute-state-lease.sh
+remote/test-power-envelope.sh
 remote/test-telemetry-broker.sh
 remote/test-census-sha256.sh
 remote/test-run-raven2-vulkan-kernel-census.sh

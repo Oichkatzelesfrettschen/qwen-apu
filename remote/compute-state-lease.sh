@@ -19,8 +19,9 @@ set -eu
 # ends the transaction non-zero, because a machine left on a forced level is an
 # incident rather than a warning.
 #
-# Two profiles are defined, both against the measurements
-# evidence/raven2-vulkan-kernel-census/dpm-authority/ retains on this part:
+# Five profiles are defined. The first two rest on the measurements
+# evidence/raven2-vulkan-kernel-census/dpm-authority/ retains on this part, and
+# the three package arms on the campaign evidence/power-envelope/ registers:
 #
 #   measure-fixed                manual, pp_dpm_sclk level 2, pp_dpm_mclk level
 #                                2, delivered GFXCLK 1100 MHz, FCLK held at 933
@@ -32,6 +33,15 @@ set -eu
 #                                or 1067 MHz, and the child at nice 0. The
 #                                serving candidate that trades desktop headroom
 #                                for decode.
+#   measure-fixed-package-default   measure-fixed's execution state with the
+#                                power term arming on the platform's own budget:
+#                                it writes no limit, snapshots the baseline, and
+#                                proves the thermal ceiling. The campaign's
+#                                control arm.
+#   measure-fixed-package-20w    the same state with STAPM, PPT fast, and PPT
+#                                slow at 20000 mW.
+#   measure-fixed-package-25w    the same state at 25000 mW, the top of the
+#                                3050U's published 12 to 25 W cTDP range.
 #
 # Three prohibitions are encoded rather than documented. `high` and
 # `profile_peak` pin the delivered graphics clock at 1100 MHz and collapse the
@@ -43,6 +53,14 @@ set -eu
 # takes 2 to unmerge every merged page, which costs the host the sharing it
 # already paid for, so this transaction writes 0 alone and refuses to start
 # against a snapshot reading 2 rather than writing that value back at restore.
+#
+# The package budget is the one authority the SMU rather than the kernel owns.
+# `/sys/class/powercap` creates no `constraint_*` file on this part and the
+# amdgpu hwmon carries a `PPT` label with no `power1_cap` beside it, so a
+# sustained-power arm reaches the firmware through power-envelope.sh and its
+# ryzenadj binary. A profile that names no envelope leaves that term out of the
+# transaction entirely, which is what keeps the clock profiles runnable on a
+# machine where the binary is absent.
 #
 # `pp_dpm_mclk` is a misleading sysfs name on SMU10: the kernel obtains its
 # value with PPSMC_MSG_GetFclkFrequency, so its states are dynamic fabric clocks
@@ -68,6 +86,7 @@ usage() {
     printf 'usage: %s PROFILE COMMAND [ARG...]\n' "$0" >&2
     printf '       %s status\n' "$0" >&2
     printf 'profiles: measure-fixed serve-performance-candidate\n' >&2
+    printf '          measure-fixed-package-default measure-fixed-package-20w measure-fixed-package-25w\n' >&2
     exit 2
 }
 
@@ -86,6 +105,8 @@ ksm_run_node=${QWEN_KSM_RUN_NODE:-$sysfs_root/kernel/mm/ksm/run}
 state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
 workload_lease=${QWEN_VULKAN_WORKLOAD_LOCK:-$state_directory/vulkan-workload.lock}
 lease_verifier=${QWEN_EXTERNAL_LEASE_VERIFIER:-$script_directory/verify-external-vulkan-lease.py}
+power_envelope_command=${QWEN_POWER_ENVELOPE_COMMAND:-$script_directory/power-envelope.sh}
+power_envelope_snapshot=${QWEN_POWER_ENVELOPE_SNAPSHOT:-$state_directory/power-envelope-snapshot.tsv}
 renice_command=${QWEN_RENICE_COMMAND:-/usr/bin/renice}
 ionice_command=${QWEN_IONICE_COMMAND:-/usr/bin/ionice}
 taskset_command=${QWEN_TASKSET_COMMAND:-/usr/bin/taskset}
@@ -121,6 +142,12 @@ profile_level_field() {
 }
 
 resolve_profile() {
+    # The power envelope is the one term a profile may leave unnamed. An empty
+    # value keeps the transaction to the clocks, the memory scanner, and the
+    # process terms, so a machine without ryzenadj still runs every profile that
+    # states no package budget; a named value makes the binary, the credential,
+    # and the read-back preconditions of the whole transaction.
+    profile_power_envelope=''
     case $1 in
         measure-fixed)
             profile_dpm_level=manual
@@ -139,6 +166,42 @@ resolve_profile() {
             profile_child_io_class=best-effort
             profile_child_cpu_list=0,1
             profile_ksm_run=0
+            ;;
+        # The three package-budget arms share `measure-fixed`'s whole execution
+        # state and differ in the SMU's sustained and package power limits
+        # alone, so a pair of them measures the budget rather than the machine.
+        # The default arm names `platform-default`, which writes no limit and
+        # still snapshots the platform's own baseline and proves the thermal
+        # ceiling, so the control runs the same code path as the candidates.
+        measure-fixed-package-default)
+            profile_dpm_level=manual
+            profile_sclk_levels='2=1100'
+            profile_mclk_levels='2=933'
+            profile_child_nice=19
+            profile_child_io_class=idle
+            profile_child_cpu_list=0,1
+            profile_ksm_run=0
+            profile_power_envelope=platform-default
+            ;;
+        measure-fixed-package-20w)
+            profile_dpm_level=manual
+            profile_sclk_levels='2=1100'
+            profile_mclk_levels='2=933'
+            profile_child_nice=19
+            profile_child_io_class=idle
+            profile_child_cpu_list=0,1
+            profile_ksm_run=0
+            profile_power_envelope=package-20w
+            ;;
+        measure-fixed-package-25w)
+            profile_dpm_level=manual
+            profile_sclk_levels='2=1100'
+            profile_mclk_levels='2=933'
+            profile_child_nice=19
+            profile_child_io_class=idle
+            profile_child_cpu_list=0,1
+            profile_ksm_run=0
+            profile_power_envelope=package-25w
             ;;
         high | profile_peak)
             printf '%s pins the delivered graphics clock and collapses the starred pp_dpm_mclk fabric state to 400 MHz, which decoded below auto on this part; it is not a profile here\n' \
@@ -293,6 +356,12 @@ if [ "$1" = status ]; then
     fi
     # caller_nice is the invoking shell's own level, which this subcommand never
     # changes; a profile's term is named on the transaction's own record.
+    if [ -x "$power_envelope_command" ]; then
+        power_envelope_line=$(QWEN_POWER_ENVELOPE_SNAPSHOT="$power_envelope_snapshot" \
+            "$power_envelope_command" status 2>/dev/null) || power_envelope_line=''
+    else
+        power_envelope_line=''
+    fi
     printf 'compute_state=live dpm_level=%s sclk_level=%s sclk_mhz=%s mclk_level=%s mclk_mhz=%s gfxclk_delivered_mhz=%s ksm_run=%s lease=%s caller_nice=%s\n' \
         "$(read_dpm_level "$drm_device/power_dpm_force_performance_level")" \
         "$(read_sclk_index "$drm_device")" \
@@ -303,6 +372,7 @@ if [ "$1" = status ]; then
         "$(read_ksm_run "$ksm_run_node")" \
         "$lease_state" \
         "$(read_process_nice "$$")"
+    printf '%s\n' "${power_envelope_line:-power_envelope=unavailable reason=term_absent}"
     exit 0
 fi
 
@@ -338,6 +408,30 @@ if ! command -v sudo >/dev/null 2>&1 || ! sudo -n true 2>/dev/null; then
     printf 'this transaction writes %s and %s through sudo -n and never prompts; run `sudo -v` first\n' \
         "$drm_device/power_dpm_force_performance_level" "$ksm_run_node" >&2
     exit 2
+fi
+
+# A profile that names a package budget makes the power term a precondition of
+# the whole transaction rather than a step inside it. The writer, the credential
+# it needs, and a readable power-metrics table are proven here, ahead of the
+# lease and ahead of the first clock write, so a machine that cannot carry the
+# budget costs no state change at all.
+if [ -n "$profile_power_envelope" ]; then
+    if [ ! -f "$power_envelope_command" ] || [ ! -x "$power_envelope_command" ]; then
+        printf 'profile %s names power envelope %s and the term is not executable: %s\n' \
+            "$profile_name" "$profile_power_envelope" "$power_envelope_command" >&2
+        exit 2
+    fi
+    power_envelope_preflight=$(QWEN_POWER_ENVELOPE_SNAPSHOT="$power_envelope_snapshot" \
+        "$power_envelope_command" status 2>&1) || power_envelope_preflight=''
+    case $power_envelope_preflight in
+        'power_envelope=live'*' snapshot=absent') ;;
+        *)
+            printf 'profile %s names power envelope %s and the term answers: %s\n' \
+                "$profile_name" "$profile_power_envelope" \
+                "${power_envelope_preflight:-nothing}" >&2
+            exit 2
+            ;;
+    esac
 fi
 
 for required_surface in power_dpm_force_performance_level pp_dpm_sclk pp_dpm_mclk; do
@@ -510,6 +604,8 @@ state_record_new=$state_record.new
     printf 'applied_sclk_selection\t%s\n' "$profile_sclk_selection"
     printf 'applied_mclk_selection\t%s\n' "$profile_mclk_selection"
     printf 'applied_ksm_run\t%s\n' "$profile_ksm_run"
+    printf 'power_envelope\t%s\n' "${profile_power_envelope:--}"
+    printf 'power_envelope_snapshot\t%s\n' "$power_envelope_snapshot"
     printf 'applied_child_nice\t%s\n' "${harness_nice:-unreadable}"
     printf 'applied_child_cpu_list\t%s\n' "${harness_cpu_list:-unreadable}"
     printf 'applied_child_io_class\t%s\n' "${harness_io_class:-unreadable}"
@@ -572,13 +668,25 @@ finish_transaction() {
     restoration_finished=1
     [ "$apply_started" -eq 1 ] || return 0
 
+    restoration_failures=''
+    # The reversal runs in the reverse of the application order, so the package
+    # budget the SMU holds is returned ahead of the memory scanner and the
+    # performance level. power-envelope.sh owns its own snapshot and verifies
+    # its own read-back, so its status is the whole claim here; an apply that
+    # refused before writing the snapshot leaves nothing to reverse.
+    if [ -n "$profile_power_envelope" ] && [ -e "$power_envelope_snapshot" ]; then
+        if ! QWEN_POWER_ENVELOPE_SNAPSHOT="$power_envelope_snapshot" \
+            "$power_envelope_command" restore >&2; then
+            restoration_failures="${restoration_failures}power_envelope=unreturned(profile=$profile_power_envelope) "
+        fi
+    fi
+
     if [ "$snapshot_ksm_run" != "$profile_ksm_run" ]; then
         printf '%s\n' "$snapshot_ksm_run" | sudo -n tee "$ksm_run_node" \
             >/dev/null 2>&1 || true
     fi
     census_engine_clock_restore "$drm_device" "$snapshot_state"
 
-    restoration_failures=''
     if ! restore_observed=$(await_restored_value read_dpm_level \
         "$drm_device/power_dpm_force_performance_level" "$snapshot_dpm_level"); then
         restoration_failures="${restoration_failures}dpm_level=${restore_observed:-unreadable}(want=$snapshot_dpm_level) "
@@ -618,9 +726,10 @@ finish_transaction() {
         printf 'restoration=failed profile=%s fields=%s record=%s\n' \
             "$profile_name" "${restoration_failures% }" "$state_record"
     else
-        printf 'restoration=held profile=%s dpm_level=%s selections=%s sclk_level=%s mclk_level=%s ksm_run=%s\n' \
+        printf 'restoration=held profile=%s dpm_level=%s selections=%s sclk_level=%s mclk_level=%s ksm_run=%s power_envelope=%s\n' \
             "$profile_name" "$snapshot_dpm_level" "$restored_selections" \
-            "$snapshot_sclk_index" "$snapshot_mclk_index" "$snapshot_ksm_run"
+            "$snapshot_sclk_index" "$snapshot_mclk_index" "$snapshot_ksm_run" \
+            "${profile_power_envelope:--}"
     fi
 }
 
@@ -654,9 +763,17 @@ applied_mclk=$(census_engine_clock_select pp_dpm_mclk "$drm_device" \
 if [ "$snapshot_ksm_run" != "$profile_ksm_run" ]; then
     census_engine_clock_write "$profile_ksm_run" "$ksm_run_node"
 fi
-printf 'compute_state_applied=%s dpm_level=%s sclk=%s mclk=%s ksm_run=%s\n' \
+# The package budget is applied ahead of the clock proof, so the delivered
+# graphics clock is read under the profile's whole state rather than under its
+# clock half. A refusal here ends the transaction through the trap, which
+# returns the budget the apply had already written.
+if [ -n "$profile_power_envelope" ]; then
+    QWEN_POWER_ENVELOPE_SNAPSHOT="$power_envelope_snapshot" \
+        "$power_envelope_command" apply "$profile_power_envelope"
+fi
+printf 'compute_state_applied=%s dpm_level=%s sclk=%s mclk=%s ksm_run=%s power_envelope=%s\n' \
     "$profile_name" "$profile_dpm_level" "$applied_sclk" "$applied_mclk" \
-    "$profile_ksm_run"
+    "$profile_ksm_run" "${profile_power_envelope:--}"
 
 # The profile is a claim about what the part delivers, so it is proven before
 # the command runs. The graphics half reads hwmon and the fabric half reads the
