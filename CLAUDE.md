@@ -1303,6 +1303,15 @@ remote/run-ctx-checkpoint-sweep.sh LABEL MODEL_ID OUT
 # binds from the first body an arm sent. A field that moved ends the
 # campaign identity_incident with exit 6 naming that field, since every
 # later arm would measure a different experiment under one receipt.
+# QWEN_CENSUS_REUSE_BRICKS revalidates a retained brick in the epoch that
+# reuses it: the prior calibration root's own digest is recomputed from its
+# rows, each receipt is rehashed against the digest that root records, every
+# artifact row is rehashed against the bytes it names, and the current
+# readers are rerun over those bytes and must accept. A brick whose receipt
+# names no artifact, or whose arms retained no record a reader reads, is
+# measured again rather than copied forward on a historical completed
+# label, and the copied receipt states revalidation, revalidated_epoch,
+# revalidated_readers, and revalidated_artifacts.
 # QWEN_CENSUS_MODE=calibration, the default, runs exactly the
 # thirteen-arm sequence and accepts on exactly three accepted controls
 # with none unclassified; QWEN_CENSUS_MODE=attribution runs any registered

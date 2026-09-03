@@ -154,6 +154,20 @@ set -eu
 # is copied forward carrying reused_from. A calibration whose four bricks all
 # reuse runs no arm and still writes a root.
 #
+# A brick is revalidated in the epoch that reuses it. The prior root's own
+# digest is recomputed from the rows it carries, each receipt is rehashed
+# against the digest that root records, every artifact row of the receipt is
+# rehashed against the bytes it names, and the current readers are rerun over
+# those bytes -- the sidecar validator over every retained clock record at its
+# arm's own request window, the census summarizer over every retained census
+# file at that arm's decode count, and the slice parser over a retained
+# identity slice at the same count -- each of which must accept. A brick whose
+# receipt names no artifact, or whose arms retained no record any reader reads,
+# is measured again, since a historical `completed` label carried forward over
+# nothing is the claim this refuses. The copied receipt states the epoch that
+# licensed it as revalidation, revalidated_epoch, revalidated_readers, and
+# revalidated_artifacts.
+#
 # P is bound to the scoreboard it stands for rather than to a path: its
 # artifact manifest must describe exactly that executable, name no
 # instrumentation, declare serving_eligible yes or nothing, and the fixed-64
@@ -1375,6 +1389,146 @@ brick_input_closure_sha256() {
         esac
     } | sha256sum | cut -d ' ' -f 1
 }
+# A retained brick is a measurement rather than a label, so it is revalidated
+# before it is reused. The receipt names every file its arms retained with the
+# digest they carried when the campaign closed, and each of those files is
+# rehashed here: a raw record edited after its run is not the record the
+# verdict was taken over. The current readers -- the analysis contract this run
+# computes over them -- are then rerun across those records, and each must
+# accept: validate-clock-sidecar.py over every retained clock record and its
+# arm's own request window, summarize-kernel-census.py over every retained
+# census file at that arm's decode count, and summarize-perf-logger-slice.py
+# over a retained identity slice at the same count. The sidecar rerun states
+# --sidecar-status 0 as the assumption the reuse rests on: the record was
+# accepted at acquisition, which is what a completed arm means, and the
+# sampler's exit status is not retained separately.
+#
+# A brick whose receipt names no artifact, or whose arms retained no record any
+# reader reads, is measured again rather than reused, since a historical
+# `completed` label carried forward over nothing is the claim this revalidation
+# exists to refuse.
+brick_revalidation_reason=-
+brick_revalidation_readers=-
+brick_revalidation_artifacts=0
+census_revalidate_brick() {
+    revalidate_brick=$1
+    revalidate_receipt=$2
+    brick_revalidation_reason=-
+    brick_revalidation_readers=''
+    brick_revalidation_artifacts=0
+    revalidate_output=$revalidation_scratch/$revalidate_brick
+    mkdir -p "$revalidate_output"
+    while IFS="$(printf '\t')" read -r revalidate_kind revalidate_path revalidate_digest; do
+        [ "$revalidate_kind" = artifact ] || continue
+        brick_revalidation_artifacts=$((brick_revalidation_artifacts + 1))
+        revalidate_file=$reuse_directory/$revalidate_path
+        if [ -L "$revalidate_file" ] || [ ! -r "$revalidate_file" ]; then
+            brick_revalidation_reason=artifact_absent:$revalidate_path
+            return 1
+        fi
+        if [ "$(sha256sum "$revalidate_file" | cut -d ' ' -f 1)" != "$revalidate_digest" ]; then
+            brick_revalidation_reason=artifact_moved:$revalidate_path
+            return 1
+        fi
+    done <"$revalidate_receipt"
+    if [ "$brick_revalidation_artifacts" -eq 0 ]; then
+        brick_revalidation_reason=no_retained_artifacts
+        return 1
+    fi
+    for revalidate_slot in $(brick_slots "$revalidate_brick"); do
+        revalidate_arm_directory=$(find "$reuse_directory/arms" -maxdepth 1 -type d \
+            -name "$(printf '%02d-*' "$revalidate_slot")" 2>/dev/null \
+            | LC_ALL=C sort | head -n 1)
+        [ -n "$revalidate_arm_directory" ] || continue
+        revalidate_label=$(basename -- "$revalidate_arm_directory")
+        revalidate_window_begin=''
+        revalidate_window_end=''
+        if [ -r "$revalidate_arm_directory/request-window.tsv" ]; then
+            revalidate_window_begin=$(awk -F'\t' '$1 == "begin_ns" { print $2 }' \
+                "$revalidate_arm_directory/request-window.tsv")
+            revalidate_window_end=$(awk -F'\t' '$1 == "end_ns" { print $2 }' \
+                "$revalidate_arm_directory/request-window.tsv")
+        fi
+        # The decode count a reader is asked for is the arm's own predicted_n
+        # less one, read from the reply that arm retained rather than from a
+        # constant, so a reused brick is re-read at the cardinality it ran at.
+        revalidate_decode_graphs=-
+        if [ -r "$revalidate_arm_directory/response.json" ]; then
+            revalidate_decode_graphs=$(python3 - "$revalidate_arm_directory/response.json" <<'REVALIDATE_DECODE' 2>/dev/null || true
+import json, sys
+try:
+    n = json.load(open(sys.argv[1])).get("timings", {}).get("predicted_n")
+except (OSError, ValueError):
+    n = None
+print(n - 1 if isinstance(n, int) and n >= 2 else "-")
+REVALIDATE_DECODE
+)
+            [ -n "$revalidate_decode_graphs" ] || revalidate_decode_graphs=-
+        fi
+        if [ -r "$revalidate_arm_directory/clock-sidecar.tsv" ]; then
+            if ! python3 "$sidecar_validator" "$revalidate_arm_directory/clock-sidecar.tsv" \
+                --sidecar-status 0 --period-ms "$sidecar_period_ms" \
+                --period-tolerance "$sidecar_tolerance" --cost-bound-ns "$sidecar_cost_ns" \
+                --max-gap-ns "$sidecar_max_gap_ns" \
+                --max-lost-fraction "$sidecar_max_lost_fraction" \
+                ${revalidate_window_begin:+--window-begin-ns "$revalidate_window_begin"} \
+                ${revalidate_window_end:+--window-end-ns "$revalidate_window_end"} \
+                ${sidecar_allowed_unavailable:+--allow-unavailable "$sidecar_allowed_unavailable"} \
+                ${engine_clock_required_flag:+--required-sclk-mhz "$engine_clock_required_flag"} \
+                ${engine_clock_mclk_flag:+--required-mclk-mhz "$engine_clock_mclk_flag"} \
+                ${engine_clock_mclk_fraction_flag:+--max-below-mclk-floor-fraction "$engine_clock_mclk_fraction_flag"} \
+                >"$revalidate_output/$revalidate_label.clock-sidecar.txt" 2>&1; then
+                brick_revalidation_reason=clock_sidecar:$revalidate_label
+                return 1
+            fi
+            brick_revalidation_readers="$brick_revalidation_readers validate-clock-sidecar.py"
+        fi
+        if [ -r "$revalidate_arm_directory/pipeline-census.tsv" ]; then
+            if [ "$revalidate_decode_graphs" = - ] || [ -z "$revalidate_window_begin" ] \
+                || [ -z "$revalidate_window_end" ]; then
+                brick_revalidation_reason=census_unbounded:$revalidate_label
+                return 1
+            fi
+            if ! python3 "$summarizer" "$revalidate_arm_directory/pipeline-census.tsv" \
+                --window-begin-ns "$revalidate_window_begin" \
+                --window-end-ns "$revalidate_window_end" \
+                --expected-decode-graphs "$revalidate_decode_graphs" --phase decode \
+                --overlap-threshold "$overlap_threshold" \
+                >"$revalidate_output/$revalidate_label.pipeline-ledger-decode.tsv" \
+                2>"$revalidate_output/$revalidate_label.summarize.stderr"; then
+                brick_revalidation_reason=census_summary:$revalidate_label
+                return 1
+            fi
+            brick_revalidation_readers="$brick_revalidation_readers summarize-kernel-census.py"
+        fi
+        if [ -r "$revalidate_arm_directory/server-log-request.slice" ]; then
+            if [ "$revalidate_decode_graphs" = - ]; then
+                brick_revalidation_reason=slice_unbounded:$revalidate_label
+                return 1
+            fi
+            if ! python3 "$slice_summarizer" \
+                "$revalidate_arm_directory/server-log-request.slice" \
+                --expected-decode-blocks "$revalidate_decode_graphs" \
+                >"$revalidate_output/$revalidate_label.perf-logger-inventory.tsv" \
+                2>"$revalidate_output/$revalidate_label.perf-logger.stderr"; then
+                brick_revalidation_reason=perf_logger_slice:$revalidate_label
+                return 1
+            fi
+            brick_revalidation_readers="$brick_revalidation_readers summarize-perf-logger-slice.py"
+        fi
+    done
+    if [ -z "$brick_revalidation_readers" ]; then
+        brick_revalidation_reason=no_retained_records
+        return 1
+    fi
+    # The reader list is the set that ran rather than the sequence, so a brick
+    # of four arms reads as the readers its records called for.
+    brick_revalidation_readers=$(printf '%s\n' $brick_revalidation_readers \
+        | LC_ALL=C sort -u | tr '\n' ',' | sed 's/,$//')
+    brick_revalidation_reason=-
+    return 0
+}
+
 # The slots whose arms this run skips, as a space-delimited list read by the
 # arm loop; a slot outside it executes.
 reused_slots=' '
@@ -1419,6 +1573,31 @@ if [ -n "$reuse_directory" ]; then
             "$reuse_directory/calibration-root.tsv" >&2
         exit 2
     fi
+    # The root's own digest is recomputed from the rows it carries rather than
+    # read. calibration-root.tsv is the file every receipt digest is bound to,
+    # so a brick row swapped for another campaign's would otherwise leave the
+    # per-brick comparison below agreeing with an edited authority. The input
+    # the writer hashed is the acquisition row followed by one `id digest` row
+    # per brick in file order, which is what this reconstructs.
+    reuse_root_recomputed=$( {
+        printf 'acquisition_contract_sha256\t%s\n' "$reuse_root_acquisition_sha256"
+        awk -F'\t' '$1 == "brick" { printf "%s\t%s\n", $2, $3 }' \
+            "$reuse_directory/calibration-root.tsv"
+    } | sha256sum | cut -d ' ' -f 1)
+    reuse_root_declared=$(awk -F'\t' '$1 == "calibration_root_sha256" { count++; value = $2 }
+        END { if (count == 1) print value; else print "-" }' \
+        "$reuse_directory/calibration-root.tsv")
+    if [ "$reuse_root_recomputed" != "$reuse_root_declared" ]; then
+        printf 'the brick reuse root states calibration_root_sha256 %s over rows hashing to %s: %s\n' \
+            "$reuse_root_declared" "$reuse_root_recomputed" \
+            "$reuse_directory/calibration-root.tsv" >&2
+        exit 2
+    fi
+    # The readers rerun over the retained raw records write their verdicts
+    # here, since the output directory is created past the host and session
+    # checks and a preflight refusal must leave none behind. A brick that
+    # reuses carries its verdicts forward into the run's own directory.
+    revalidation_scratch=$(mktemp -d)
     # The echo rewrites one field of a retained row and the pair parser reads
     # that field by name, so the column is resolved from the prior ledger's own
     # header rather than from a position this runner's own printf happens to
@@ -1484,6 +1663,23 @@ if [ -n "$reuse_directory" ]; then
         done
         [ "$reuse_rejoined" = 1 ] || continue
         [ "${reuse_ledger_rates# }" = "$reuse_rates" ] || continue
+        # The receipt agrees with the ledger, which proves consistency rather
+        # than that the arms still hold. The retained records are re-read here
+        # under the readers this run's analysis contract names, and a brick
+        # that does not revalidate is measured again rather than copied
+        # forward on the verdict its own campaign wrote.
+        if ! census_revalidate_brick "$brick_id" "$reuse_receipt"; then
+            printf 'census_brick_reuse=revalidation_refused brick=%s reason=%s\n' \
+                "$brick_id" "$brick_revalidation_reason"
+            continue
+        fi
+        printf 'census_brick_reuse=revalidated brick=%s artifacts=%s readers=%s epoch=%s\n' \
+            "$brick_id" "$brick_revalidation_artifacts" "$brick_revalidation_readers" \
+            "$analysis_contract_sha256"
+        # The receipt copy below states which epoch revalidated it, so the
+        # rows travel beside the brick rather than in this loop's memory.
+        printf '%s\t%s\t%s\n' "$brick_id" "$brick_revalidation_readers" \
+            "$brick_revalidation_artifacts" >>"$revalidation_scratch/revalidated.tsv"
         reused_bricks="$reused_bricks $brick_id"
         reused_brick_count=$((reused_brick_count + 1))
         for reuse_slot in $(brick_slots "$brick_id"); do
@@ -1611,6 +1807,17 @@ if [ "$engine_clock_policy" != auto ]; then
 fi
 
 mkdir -p "$output_directory/arms"
+# The revalidation verdicts were taken before this directory existed, since a
+# preflight refusal leaves none behind, so they move here now and the scratch
+# root is released.
+if [ -n "${revalidation_scratch:-}" ]; then
+    if [ -n "$reused_bricks" ]; then
+        mkdir -p "$output_directory/revalidation"
+        cp -R -- "$revalidation_scratch/." "$output_directory/revalidation/"
+    fi
+    rm -r -- "$revalidation_scratch"
+    revalidation_scratch=''
+fi
 arms_ledger=$output_directory/arms.tsv
 execution_proof=$output_directory/campaign-inputs.tsv
 {
@@ -2680,10 +2887,25 @@ if [ "$census_mode" = calibration ]; then
         brick_receipt=$output_directory/bricks/$brick_id.receipt.tsv
         case " $reused_bricks " in
             *" $brick_id "*)
-                grep -Ev '^reused_from(_census)?	' \
+                # The historical verdict travels only beside the revalidation
+                # that licensed it, so the copy strips any epoch rows the prior
+                # receipt carried and states this run's own: which readers ran
+                # over the retained records, how many artifacts were rehashed,
+                # and the analysis contract they ran under.
+                grep -Ev '^(reused_from(_census)?|revalidat[a-z_]*)	' \
                     "$reuse_directory/bricks/$brick_id.receipt.tsv" >"$brick_receipt"
                 printf 'reused_from\t%s\n' "$reuse_directory" >>"$brick_receipt"
                 printf 'reused_from_census\t%s\n' "$reuse_census_state" >>"$brick_receipt"
+                brick_revalidated_row=$(awk -F'\t' -v brick="$brick_id" \
+                    '$1 == brick { readers = $2; artifacts = $3 }
+                    END { printf "%s\t%s\n", (readers == "" ? "-" : readers), (artifacts == "" ? "0" : artifacts) }' \
+                    "$output_directory/revalidation/revalidated.tsv")
+                printf 'revalidation\taccepted\n' >>"$brick_receipt"
+                printf 'revalidated_epoch\t%s\n' "$analysis_contract_sha256" >>"$brick_receipt"
+                printf 'revalidated_readers\t%s\n' \
+                    "$(printf '%s\n' "$brick_revalidated_row" | cut -f 1)" >>"$brick_receipt"
+                printf 'revalidated_artifacts\t%s\n' \
+                    "$(printf '%s\n' "$brick_revalidated_row" | cut -f 2)" >>"$brick_receipt"
                 ;;
             *)
                 brick_control_name=$(brick_control "$brick_id")

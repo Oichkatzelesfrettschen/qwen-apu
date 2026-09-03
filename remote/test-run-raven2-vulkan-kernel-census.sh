@@ -1066,22 +1066,48 @@ printf 'slot\tarm\ttok_s\tstatus\n' >"$reuse_no_root/arms.tsv"
 run_runner reuse_root_absent 'carries no readable calibration-root\.tsv' \
     QWEN_CENSUS_REUSE_BRICKS="$reuse_no_root"
 
+# A root naming this run's contract is read past its acquisition row and its
+# own digest, so the fixture states the digest over the rows it carries: the
+# acquisition row alone, since it names no brick.
+write_bare_root() {
+    bare_root_path=$1
+    bare_root_contract=$2
+    bare_root_input=$temporary_directory/.bare-root-input
+    printf 'acquisition_contract_sha256\t%s\n' "$bare_root_contract" >"$bare_root_input"
+    {
+        printf 'calibration_root_sha256\t%s\n' \
+            "$(sha256sum "$bare_root_input" | cut -d ' ' -f 1)"
+        printf 'acquisition_contract_sha256\t%s\n' "$bare_root_contract"
+    } >"$bare_root_path"
+    rm -f -- "$bare_root_input"
+}
+
 reuse_no_status=$temporary_directory/reuse-no-status
 mkdir -p "$reuse_no_status"
 write_calibration_inputs "$reuse_no_status/inputs.tsv" "$production_sha256"
-printf 'acquisition_contract_sha256\t%s\n' "$contract_sha256" \
-    >"$reuse_no_status/calibration-root.tsv"
+write_bare_root "$reuse_no_status/calibration-root.tsv" "$contract_sha256"
 printf 'slot\tarm\ttok_s\tstate\n' >"$reuse_no_status/arms.tsv"
 run_runner reuse_ledger_without_status 'names no status column' \
     QWEN_CENSUS_REUSE_BRICKS="$reuse_no_status"
+
+# A root whose stated digest does not cover the rows it carries is an edited
+# authority, and every receipt digest below is bound to it, so the whole
+# directory is refused rather than filtered brick by brick.
+reuse_tampered_root=$temporary_directory/reuse-tampered-root
+mkdir -p "$reuse_tampered_root"
+write_calibration_inputs "$reuse_tampered_root/inputs.tsv" "$production_sha256"
+write_bare_root "$reuse_tampered_root/calibration-root.tsv" "$contract_sha256"
+printf 'brick\tC0\t%s\n' "$foreign_sha256" >>"$reuse_tampered_root/calibration-root.tsv"
+printf 'slot\tarm\ttok_s\tstatus\n' >"$reuse_tampered_root/arms.tsv"
+run_runner reuse_root_digest 'states calibration_root_sha256' \
+    QWEN_CENSUS_REUSE_BRICKS="$reuse_tampered_root"
 
 # A root that names another acquisition contract than the directory's own
 # inputs states two campaigns, and the receipts it binds belong to neither.
 reuse_foreign_root=$temporary_directory/reuse-foreign-root
 mkdir -p "$reuse_foreign_root"
 write_calibration_inputs "$reuse_foreign_root/inputs.tsv" "$production_sha256"
-printf 'acquisition_contract_sha256\t%s\n' "$foreign_sha256" \
-    >"$reuse_foreign_root/calibration-root.tsv"
+write_bare_root "$reuse_foreign_root/calibration-root.tsv" "$foreign_sha256"
 printf 'slot\tarm\ttok_s\tstatus\n' >"$reuse_foreign_root/arms.tsv"
 run_runner reuse_root_foreign_contract 'the brick reuse root records acquisition contract' \
     QWEN_CENSUS_REUSE_BRICKS="$reuse_foreign_root"
@@ -1690,7 +1716,10 @@ esac
 FAKE_QUIESCENCE
 chmod +x "$brick_directory/await-quiescence.sh"
 
-brick_contract_sha256=$(env -i \
+# The campaign states both heads, and the brick cases read each: the
+# acquisition digest is what a reuse directory must agree with, and the
+# analysis digest is the epoch a revalidated brick records.
+brick_contract_output=$(env -i \
     PATH="$signal_path" \
     HOME="$home_directory" \
     QWEN_MODELS_DIRECTORY="$models_directory" \
@@ -1703,9 +1732,13 @@ brick_contract_sha256=$(env -i \
     QWEN_CENSUS_SIDECAR_CPU=0 \
     QWEN_CENSUS_REPLICATES=2 \
     QWEN_CENSUS_PRINT_CONTRACT=1 \
-    "$brick_runner" "$model_id" "$temporary_directory/out-brick-contract" \
+    "$brick_runner" "$model_id" "$temporary_directory/out-brick-contract")
+brick_contract_sha256=$(printf '%s\n' "$brick_contract_output" \
     | awk -F'\t' '$1 == "acquisition_contract_sha256" { print $2 }')
+brick_analysis_sha256=$(printf '%s\n' "$brick_contract_output" \
+    | awk -F'\t' '$1 == "analysis_contract_sha256" { print $2 }')
 [ -n "$brick_contract_sha256" ]
+[ -n "$brick_analysis_sha256" ]
 
 brick_closure_sha256() {
     {
@@ -1718,24 +1751,105 @@ brick_closure_sha256() {
     } | sha256sum | cut -d ' ' -f 1
 }
 
+# A clock sidecar record validate-clock-sidecar.py accepts on its own terms:
+# the two header lines sample-clock-sidecar.py writes, the wide column set
+# telemetry-broker.c writes, one row per requested period covering the retained
+# request window on both sides, and the footer derived from those rows. The
+# record is genuine rather than stubbed, so a brick revalidation runs the
+# tree's own reader whether or not a case armed the stub validator, and its
+# clocks read the pinned 1100 MHz over a 933 MHz fabric so a campaign under a
+# forced policy holds the same record to its invariant.
+write_clock_sidecar_record() {
+    python3 - "$1" <<'CLOCK_RECORD'
+import sys
+
+path = sys.argv[1]
+period_ns = 20_000_000
+first_ns = 980_000_000
+samples = 62
+cost_ns = 300_000
+instants = [first_ns + index * period_ns for index in range(samples)]
+with open(path, "w") as handle:
+    handle.write("# clock=CLOCK_MONOTONIC period_ns=%d drm_device=fixture"
+                 " hwmon=fixture\n" % period_ns)
+    handle.write("# sampler_pid=1 nice=19 cpu_affinity=0,1\n")
+    handle.write("monotonic_ns\tpp_dpm_sclk_selected_mhz\tpp_dpm_mclk_surface_mhz"
+                 "\tpp_dpm_fclk_surface_mhz\tgpu_busy_percent\ttemp1_millidegrees"
+                 "\tsample_cost_ns\tsclk_actual_mhz\n")
+    for instant in instants:
+        handle.write("%d\t1100\t933\t933\t94\t71600\t%d\t1100\n"
+                     % (instant, cost_ns))
+    handle.write("# samples=%d achieved_period_ns=%d mean_sample_cost_ns=%d"
+                 " max_sample_cost_ns=%d samples_with_unavailable_sensor=0"
+                 " first_sample_ns=%d last_sample_ns=%d\n"
+                 % (samples, period_ns, cost_ns, cost_ns,
+                    instants[0], instants[-1]))
+CLOCK_RECORD
+}
+
+# The identity arm's retained slice, one Vulkan Timings block per decode graph
+# at the predicted_n its reply states.
+write_perf_logger_slice() {
+    slice_path=$1
+    : >"$slice_path"
+    slice_block=0
+    while [ "$slice_block" -lt 64 ]; do
+        {
+            printf 'Vulkan Timings:\n'
+            printf 'MUL_MAT q4_K m=2048 n=1 k=2048: 1 x 100.000 us = 100.000 us\n'
+            printf 'Total time: 100.000 us\n'
+        } >>"$slice_path"
+        slice_block=$((slice_block + 1))
+    done
+}
+
 # The root a calibration writes over its own receipts: the acquisition contract
-# it ran under and one digest per brick receipt. Reuse reads it ahead of the
-# closure and the rates, so a receipt edited after its campaign no longer
-# matches the row that names it.
+# it ran under and one digest per brick receipt, hashed in that order. Reuse
+# reads it ahead of the closure and the rates and recomputes the digest it
+# states, so a receipt edited after its campaign no longer matches the row that
+# names it and a row edited inside the root no longer matches the root.
 write_prior_root() {
     root_directory=$1
+    root_input=$root_directory/.calibration-root.input
+    printf 'acquisition_contract_sha256\t%s\n' "$brick_contract_sha256" >"$root_input"
+    for root_brick in C0 C1 C2 C3; do
+        root_receipt=$root_directory/bricks/$root_brick.receipt.tsv
+        [ -r "$root_receipt" ] || continue
+        printf '%s\t%s\n' "$root_brick" \
+            "$(sha256sum "$root_receipt" | cut -d ' ' -f 1)" >>"$root_input"
+    done
     {
         printf 'calibration_root_sha256\t%s\n' \
-            0000000000000000000000000000000000000000000000000000000000000000
+            "$(sha256sum "$root_input" | cut -d ' ' -f 1)"
         printf 'acquisition_contract_sha256\t%s\n' "$brick_contract_sha256"
         printf 'analysis_contract_sha256\t-\nreused_bricks\t-\n'
-        for root_brick in C0 C1 C2 C3; do
-            root_receipt=$root_directory/bricks/$root_brick.receipt.tsv
-            [ -r "$root_receipt" ] || continue
-            printf 'brick\t%s\t%s\n' "$root_brick" \
-                "$(sha256sum "$root_receipt" | cut -d ' ' -f 1)"
-        done
+        awk -F'\t' 'NR > 1 { printf "brick\t%s\t%s\n", $1, $2 }' "$root_input"
     } >"$root_directory/calibration-root.tsv"
+    rm -f -- "$root_input"
+}
+
+# One retained arm's raw records. A brick is reused only where the readers this
+# run names accept the bytes its arms left, so the prior directory carries the
+# records those readers read rather than a receipt alone: the request window,
+# the reply the decode count comes from, a clock record for every sampled arm,
+# and the identity slice for S.
+write_prior_arm_records() {
+    prior_record_root=$1
+    prior_record_slot=$2
+    prior_record_arm=$3
+    prior_record_directory=$prior_record_root/arms/$(printf '%02d-%s' \
+        "$prior_record_slot" "$prior_record_arm")
+    mkdir -p "$prior_record_directory"
+    printf 'begin_ns\t1000000000\nend_ns\t2000000000\n' \
+        >"$prior_record_directory/request-window.tsv"
+    printf '{"timings": {"predicted_n": 65, "predicted_ms": 6400.0}}' \
+        >"$prior_record_directory/response.json"
+    if [ "$prior_record_arm" != P-nosidecar ]; then
+        write_clock_sidecar_record "$prior_record_directory/clock-sidecar.tsv"
+    fi
+    if [ "$prior_record_arm" = S ]; then
+        write_perf_logger_slice "$prior_record_directory/server-log-request.slice"
+    fi
 }
 
 write_prior_receipt() {
@@ -1752,6 +1866,21 @@ write_prior_receipt() {
         printf 'verdict\taccepted\n'
         printf 'arm_rates\t%s\n' "$prior_rates"
         printf 'input_closure_sha256\t%s\n' "$(brick_closure_sha256 "$prior_brick" "$prior_arms")"
+        # The receipt names every file its arms retained with the digest those
+        # bytes carried when the campaign closed, which is what a later
+        # revalidation rehashes.
+        for prior_receipt_slot in $prior_slots; do
+            prior_receipt_directory=$(find "$prior_root/arms" -maxdepth 1 -type d \
+                -name "$(printf '%02d-*' "$prior_receipt_slot")" 2>/dev/null \
+                | LC_ALL=C sort | head -n 1)
+            [ -n "$prior_receipt_directory" ] || continue
+            find "$prior_receipt_directory" -type f | LC_ALL=C sort \
+                | while IFS= read -r prior_artifact; do
+                    printf 'artifact\t%s\t%s\n' \
+                        "${prior_artifact#"$prior_root"/}" \
+                        "$(sha256sum "$prior_artifact" | cut -d ' ' -f 1)"
+                done
+        done
     } >"$prior_root/bricks/$prior_brick.receipt.tsv"
     # The root follows every receipt it names, so a directory built one brick
     # at a time carries a root over the set it actually holds.
@@ -1791,6 +1920,11 @@ write_prior_calibration() {
     mkdir -p "$prior_root"
     printf 'acquisition_contract_sha256\t%s\n' "$brick_contract_sha256" \
         >"$prior_root/inputs.tsv"
+    printf '%s\n' "$prior_arm_rows" \
+        | cut -f 1,2 \
+        | while IFS="$(printf '\t')" read -r record_slot record_arm; do
+            write_prior_arm_records "$prior_root" "$record_slot" "$record_arm"
+        done
     {
         printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\tsidecar\townership\tstatus\n'
         printf '%s\n' "$prior_arm_rows" | while IFS="$(printf '\t')" read -r prior_slot prior_arm prior_rate; do
@@ -1985,6 +2119,34 @@ for brick_member in C0 C1 C2 C3; do
     # so, since the root names the receipt and the receipt names its campaign.
     grep -q '^reused_from_census	unrecorded$' \
         "$brick_output/bricks/$brick_member.receipt.tsv"
+    # The historical verdict travels beside the revalidation that licensed it,
+    # and the epoch names the reader generation that accepted the retained
+    # bytes rather than the one that first wrote the verdict.
+    grep -q '^revalidation	accepted$' \
+        "$brick_output/bricks/$brick_member.receipt.tsv"
+    grep -qxF "$(printf 'revalidated_epoch	%s' "$brick_analysis_sha256")" \
+        "$brick_output/bricks/$brick_member.receipt.tsv"
+    if ! awk -F'	' '$1 == "revalidated_artifacts" { count = $2 }
+        END { exit (count + 0 > 0) ? 0 : 1 }' \
+        "$brick_output/bricks/$brick_member.receipt.tsv"; then
+        printf 'brick %s reused on no rehashed artifact\n' "$brick_member" >&2
+        exit 1
+    fi
+    grep -q '^revalidated_readers	.*validate-clock-sidecar\.py' \
+        "$brick_output/bricks/$brick_member.receipt.tsv"
+done
+# The identity brick's retained slice is read by the perf-logger reader, so its
+# reader list names that reader beside the sidecar validator.
+grep -q '^revalidated_readers	.*summarize-perf-logger-slice\.py' \
+    "$brick_output/bricks/C3.receipt.tsv"
+# The rerun verdicts travel into the run's own directory, since the readers ran
+# before it existed and the run is what stands behind the reuse.
+for brick_verdict in revalidation/C0/02-P.clock-sidecar.txt \
+    revalidation/C3/13-S.perf-logger-inventory.tsv; do
+    if [ ! -s "$brick_output/$brick_verdict" ]; then
+        printf 'the reusing calibration retained no %s\n' "$brick_verdict" >&2
+        exit 1
+    fi
 done
 # A run that executed nothing prices nothing but itself, so the wall-clock
 # ledger holds its header and the one campaign row.
@@ -2198,6 +2360,121 @@ if grep -q '^census_brick_reuse=preflight .*C2' \
 fi
 diagnostic_file=
 printf 'brick_receipt_unbound=accepted\n'
+
+# A brick is reused only where the readers this run names accept the bytes its
+# arms retained, so the four ways that can fail are read one at a time. Each
+# case leaves the campaign to measure the refused brick again, which is the
+# behavior a copied `completed` label would replace.
+#
+# A retained record edited after its receipt was written is caught by the
+# digest the receipt named, ahead of any reader.
+active_fixture=brick_revalidation_artifact_moved
+prior_moved=$temporary_directory/prior-artifact-moved
+write_prior_calibration "$prior_moved"
+write_prior_receipt "$prior_moved" C3 13 S 3.000
+printf '# a byte appended after the campaign closed\n' \
+    >>"$prior_moved/arms/10-I1/clock-sidecar.tsv"
+brick_moved_output=$temporary_directory/out-artifact-moved
+brick_status=$(run_brick_calibration brick_revalidation_artifact_moved "$prior_moved" \
+    "$brick_moved_output" '' 800 2)
+if [ "$brick_status" -eq 0 ]; then
+    printf 'a calibration reusing an edited record accepted\n' >&2
+    exit 1
+fi
+grep -q '^census_brick_reuse=revalidation_refused brick=C2 reason=artifact_moved:arms/10-I1/clock-sidecar.tsv$' \
+    "$temporary_directory/brick_revalidation_artifact_moved-stdout.txt"
+if grep -q '^census_brick_reuse=preflight .*C2' \
+    "$temporary_directory/brick_revalidation_artifact_moved-stdout.txt"; then
+    printf 'the edited brick entered the reused set\n' >&2
+    exit 1
+fi
+diagnostic_file=
+printf 'brick_revalidation_artifact_moved=accepted\n'
+
+# A record whose bytes still match its receipt and which the current reader
+# refuses is the case the digest cannot see: the identity slice holds three
+# decode blocks against the 64 its own reply states, and the receipt is written
+# after the edit so its digests agree.
+active_fixture=brick_revalidation_reader_refused
+prior_reader=$temporary_directory/prior-reader-refused
+write_prior_calibration "$prior_reader"
+: >"$prior_reader/arms/13-S/server-log-request.slice"
+reader_block=0
+while [ "$reader_block" -lt 3 ]; do
+    {
+        printf 'Vulkan Timings:\n'
+        printf 'MUL_MAT q4_K m=2048 n=1 k=2048: 1 x 100.000 us = 100.000 us\n'
+        printf 'Total time: 100.000 us\n'
+    } >>"$prior_reader/arms/13-S/server-log-request.slice"
+    reader_block=$((reader_block + 1))
+done
+write_prior_receipt "$prior_reader" C3 13 S 3.000
+brick_reader_output=$temporary_directory/out-reader-refused
+brick_status=$(run_brick_calibration brick_revalidation_reader_refused "$prior_reader" \
+    "$brick_reader_output" '' 800 2)
+if [ "$brick_status" -eq 0 ]; then
+    printf 'a calibration reusing a record the reader refuses accepted\n' >&2
+    exit 1
+fi
+grep -q '^census_brick_reuse=revalidation_refused brick=C3 reason=perf_logger_slice:13-S$' \
+    "$temporary_directory/brick_revalidation_reader_refused-stdout.txt"
+# The other three bricks revalidated, so the refusal is the reader's rather
+# than the directory's.
+grep -q '^census_brick_reuse=preflight .*bricks=C0 C1 C2$' \
+    "$temporary_directory/brick_revalidation_reader_refused-stdout.txt"
+diagnostic_file=
+printf 'brick_revalidation_reader_refused=accepted\n'
+
+# A retained census file is read by the census summarizer at the arm's own
+# decode count, so a truncated one refuses the brick that holds it.
+active_fixture=brick_revalidation_census_refused
+prior_census=$temporary_directory/prior-census-refused
+write_prior_calibration "$prior_census"
+write_prior_receipt "$prior_census" C3 13 S 3.000
+printf 'census_queue	family=0	timestamp_valid_bits=64
+' \
+    >"$prior_census/arms/10-I1/pipeline-census.tsv"
+write_prior_receipt "$prior_census" C2 '9 10 11 12' 'I0 I1 I1 I0' \
+    "$(prior_rate_range 9 12)"
+brick_census_output=$temporary_directory/out-census-refused
+brick_status=$(run_brick_calibration brick_revalidation_census_refused "$prior_census" \
+    "$brick_census_output" '' 800 2)
+if [ "$brick_status" -eq 0 ]; then
+    printf 'a calibration reusing a census file the summarizer refuses accepted\n' >&2
+    exit 1
+fi
+grep -q '^census_brick_reuse=revalidation_refused brick=C2 reason=census_summary:10-I1$' \
+    "$temporary_directory/brick_revalidation_census_refused-stdout.txt"
+diagnostic_file=
+printf 'brick_revalidation_census_refused=accepted\n'
+
+# A receipt that names no retained artifact carries a verdict over nothing, so
+# every brick of a directory holding receipts alone is measured again.
+active_fixture=brick_revalidation_bare_receipts
+prior_bare=$temporary_directory/prior-bare-receipts
+write_prior_calibration "$prior_bare"
+rm -r -- "$prior_bare/arms"
+write_prior_receipt "$prior_bare" C0 '1 2 3 4' 'P-nosidecar P P P-nosidecar' \
+    "$(prior_rate_range 1 4)"
+write_prior_receipt "$prior_bare" C1 '5 6 7 8' 'P I0 I0 P' "$(prior_rate_range 5 8)"
+write_prior_receipt "$prior_bare" C2 '9 10 11 12' 'I0 I1 I1 I0' \
+    "$(prior_rate_range 9 12)"
+write_prior_receipt "$prior_bare" C3 13 S 3.000
+brick_bare_output=$temporary_directory/out-bare-receipts
+brick_status=$(run_brick_calibration brick_revalidation_bare_receipts "$prior_bare" \
+    "$brick_bare_output" '' 800 2)
+if [ "$brick_status" -eq 0 ]; then
+    printf 'a calibration reusing receipts over no retained record accepted\n' >&2
+    exit 1
+fi
+for bare_brick in C0 C1 C2 C3; do
+    grep -q "^census_brick_reuse=revalidation_refused brick=$bare_brick reason=no_retained_artifacts\$" \
+        "$temporary_directory/brick_revalidation_bare_receipts-stdout.txt"
+done
+grep -q '^census_brick_reuse=preflight .*bricks=-$' \
+    "$temporary_directory/brick_revalidation_bare_receipts-stdout.txt"
+diagnostic_file=
+printf 'brick_revalidation_bare_receipts=accepted\n'
 
 # A record the validator refused states no clock for the precondition to read,
 # however confidently its clock_state line names a mode: two refused warmups at

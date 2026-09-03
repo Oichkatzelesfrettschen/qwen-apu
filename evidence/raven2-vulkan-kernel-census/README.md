@@ -452,6 +452,42 @@ slot is what keeps the three quadruples where the parser finds them. A
 calibration whose four bricks all reuse launches no server and still writes
 a root; a partial reuse spends device time on the changed cell alone.
 
+A brick is a measurement rather than a label, so reuse revalidates it in the
+epoch that reuses it. The directory's `calibration-root.tsv` is read past its
+acquisition row: the digest it states is recomputed from the rows it carries
+-- the acquisition row followed by one `id digest` row per brick in file order,
+which is the input the writer hashed -- and a root whose stated value does not
+cover its own rows is an edited authority that every receipt digest below is
+bound to, so the whole directory is refused rather than filtered brick by
+brick. Each brick's receipt is then rehashed against the digest the root
+records for it, and every `artifact` row of that receipt is rehashed against
+the bytes it names.
+
+The current readers are then rerun over those bytes:
+`validate-clock-sidecar.py` over every retained `clock-sidecar.tsv` at its own
+arm's request window, `summarize-kernel-census.py` over every retained
+`pipeline-census.tsv` at that arm's `predicted_n - 1`, and
+`summarize-perf-logger-slice.py` over a retained
+`server-log-request.slice` at the same count, each under this run's own
+sidecar geometry, bounds, and clock-invariant flags. Every rerun must accept,
+which is what "the current analysis contract accepts this brick" means: the
+readers are the four that contract digests. The sidecar rerun states
+`--sidecar-status 0` as the assumption the reuse rests on -- the record was
+accepted at acquisition, which is what a completed arm means, and the
+sampler's exit status is not retained separately.
+
+A brick whose receipt names no artifact, or whose arms retained no record any
+reader reads, is measured again: a historical `completed` label carried forward
+over nothing is the claim this revalidation exists to refuse. A reused
+receipt's copy therefore states which epoch licensed it -- `revalidation
+accepted`, `revalidated_epoch` naming this run's analysis contract digest,
+`revalidated_readers` naming the readers that ran, and `revalidated_artifacts`
+counting the files rehashed -- and the reruns' own output is retained under
+`revalidation/CN/` in the run's directory. Prior `revalidat*` rows are stripped
+from the copy, so the epoch on a receipt is always the run that carries it.
+The verdicts are taken before the output directory exists, since a preflight
+refusal leaves none behind, and move into it once it does.
+
 `QWEN_CENSUS_MODE=canary` runs `P I0 I1 S` once each at
 `QWEN_BENCH_GENERATE=8` and judges the chain's structure rather than any
 rate. Eight generated tokens leave seven decode graphs, which is the
