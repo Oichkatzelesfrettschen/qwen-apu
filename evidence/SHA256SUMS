@@ -612,7 +612,7 @@ f6b76b4f02020c9cb4f873da0f960c65f97a08455b3a8b1f8f7f4ed799dd947f  evidence/deplo
 541a3ff229b6124f38ea6eace93ee3d86baeb9a4b45571b5c7b905092ae0ac98  evidence/deployment-bundle-presets/20260901T2352Z/natural-router-presets.ini
 5bd4a1413b47cad5f2c647d79f96f26b12c2a86e652099cda22d5a1def7cb5b0  evidence/deployment-bundle-presets/20260901T2352Z/regression.log
 1cd4d445046550abf8daaaf2adcdf0b48ad5d02c08751229a1cf3a4034a7492b  evidence/deployment-bundle-presets/README.md
-bc25aafe3608518927bb41fb32970de7342416718a97b52f16e65bd824157736  evidence/depth-validation-32k-projector/README.md
+4d9991bce3e436a9254643c65024ba8b3350f4f89c261a5a1b5ff963f0719faf  evidence/depth-validation-32k-projector/README.md
 123dcde06bf84243a08a8d7f3e21a312a533742c8429817b0c80813c402e746f  evidence/depth-validation-32k-projector/lfm25-vl-16b/d16384-b128-ub32-proj.clocks.tsv
 98e42a805bc4c805bab444ef06319f2d77fba84750353317833b624e567549eb  evidence/depth-validation-32k-projector/lfm25-vl-16b/d16384-b128-ub32-proj.dmesg-method.txt
 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  evidence/depth-validation-32k-projector/lfm25-vl-16b/d16384-b128-ub32-proj.dmesg.txt
@@ -630,6 +630,18 @@ e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  evidence/depth
 ee49abb8238ba0b32bef0db8498ae25027bad2e8f7e410c92a141ebf6ab19fe1  evidence/depth-validation-32k-projector/lfm25-vl-16b/d8192-b128-ub32-proj.server.log
 c5f5bd95d9ca2d8d19c2c30fac1d27870a67da8e62693f759e9d2cd7e59b39dc  evidence/depth-validation-32k-projector/lfm25-vl-16b/projector-identity.tsv
 c1ffe701c44d40843740a5e3ebffb0707992e29beca236a4d437ca8d0424d1d1  evidence/depth-validation-32k-projector/lfm25-vl-16b/projector-summary.tsv
+0d4bd1ab8fbbe1d9c1891df3f1dcb7e8c3ec1fbbf932a9708bbd5be889738632  evidence/depth-validation-32k-projector/lfm25-vl-16b/router-child/d8192-b128-ub32-proj.clocks.tsv
+98e42a805bc4c805bab444ef06319f2d77fba84750353317833b624e567549eb  evidence/depth-validation-32k-projector/lfm25-vl-16b/router-child/d8192-b128-ub32-proj.dmesg-method.txt
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  evidence/depth-validation-32k-projector/lfm25-vl-16b/router-child/d8192-b128-ub32-proj.dmesg.txt
+866ee9501a8f5d21302716c23fff8df966f46d4dcf98b0f8d3ccc123bc598cf6  evidence/depth-validation-32k-projector/lfm25-vl-16b/router-child/d8192-b128-ub32-proj.identity.sha256
+458395e0c0465ab6cafd4ba12c054869c137af14d907756d2141ffc6b579ed62  evidence/depth-validation-32k-projector/lfm25-vl-16b/router-child/d8192-b128-ub32-proj.requests.txt
+a46fd9821528e155eb94659a3694bc6c3b91dc1c82151779d228a35f022298c2  evidence/depth-validation-32k-projector/lfm25-vl-16b/router-child/d8192-b128-ub32-proj.router-preset.ini
+a8bb0a493321fc87623257be9f09372e0152491a5a893732e36073dad398d95f  evidence/depth-validation-32k-projector/lfm25-vl-16b/router-child/d8192-b128-ub32-proj.router-preset.log
+90ae2533a0c19edc4ebf91fddecd6da8d6cd9c2be7cad6c013f8084aa3ee78d4  evidence/depth-validation-32k-projector/lfm25-vl-16b/router-child/d8192-b128-ub32-proj.server.log
+0c018e4dee3caad926b1ab70cd370c96cc2803d8a0776879d40f7aa1b63cdd5d  evidence/depth-validation-32k-projector/lfm25-vl-16b/router-child/projector-identity.tsv
+c0ba8a0405de63b3332a1a3452fa2a87de606d69a042eaf822ad8f36e1363a39  evidence/depth-validation-32k-projector/lfm25-vl-16b/router-child/projector-summary.tsv
+2295d0c8a3c43eb826d95f74c888050c88a0630177bba62c90a88520fdc8a730  evidence/depth-validation-32k-projector/lfm25-vl-16b/router-child/validated-tuples-rows.tsv
+2ff86ca30c506cc13e4379ae8b9c4157afa5e3098550d1b17000ab79a1912ae7  evidence/depth-validation-32k-projector/lfm25-vl-16b/router-child/wedge-metadata.tsv
 388a2aaa6577ef10f6a61fad86760a1a4338eb37bb8f08eb790e07c81607e6fd  evidence/depth-validation-32k-projector/lfm25-vl-16b/validated-tuples-rows.tsv
 ed9b5200c8473e1471b49d2fc7e6a67ee5b013a20759cde0affc729ad8d559a7  evidence/depth-validation-32k-projector/lfm25-vl-16b/wedge-metadata.tsv
 0905f35c8736e405c34d8f3f5172bb907204af500e5e10e931a9be149a75cae6  evidence/depth-validation-32k-projector/qwen35-2b/d16384-b128-ub32-proj.clocks.tsv
