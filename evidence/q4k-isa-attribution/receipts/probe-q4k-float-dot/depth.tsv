@@ -1,0 +1,4 @@
+block	first_line	last_line	terminator	instructions	valu	vmem	lds	salu	waitcnt	longest_valu_chain	max_vmem_in_flight	max_lgkm_in_flight	vmcnt_arguments	lgkmcnt_arguments
+1	2	45	s_cbranch_execz	44	32	2	1	6	3	11	2	1	1,0	0
+2	47	172	-	126	64	1	32	2	27	63	0	17	-	14,13,12,11,10,9,8,14,13,12,11,10,14,13,12,11,10,9,8,7,6,5,4,3,2,1,0
+3	174	174	s_endpgm	1	0	0	0	0	0	0	0	0	-	-
