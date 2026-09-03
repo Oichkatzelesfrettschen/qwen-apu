@@ -1292,11 +1292,28 @@ EOF
                 # arm's tok/s is contaminated by the same stall and the
                 # sidecar column reads refused, so the served rate under
                 # kernel-delta is read beside that column rather than alone.
+                # The refusal set is read from the validator's own line, and
+                # only a set drawn from gaps and window_lost is coverage: a
+                # sample-cost, schema, sensor, footer, or process refusal
+                # names a record that proves less than coverage and keeps
+                # the arm failed.
+                sidecar_failures=$(awk '/^clock_sidecar=refused / {
+                    for (i = 1; i <= NF; i++) if (index($i, "failures=") == 1) print substr($i, 10) }' \
+                    "$arm_directory/clock-sidecar-verdict.txt" 2>/dev/null | head -n 1)
+                coverage_only=1
+                [ -n "$sidecar_failures" ] || coverage_only=0
+                for sidecar_failure in $(printf '%s\n' "$sidecar_failures" | tr ',' ' '); do
+                    case $sidecar_failure in
+                        gaps | window_lost) ;;
+                        *) coverage_only=0 ;;
+                    esac
+                done
                 if [ "$ab_mode" = kernel-delta ] && [ "$engine_clock_policy" != auto ] \
-                    && [ "$clock_invariant_state" = held ]; then
+                    && [ "$clock_invariant_state" = held ] && [ "$coverage_only" -eq 1 ]; then
                     status=completed
                     reason=sidecar_coverage
-                    printf 'served_ab_arm=coverage_refused_kept slot=%s arm=%s\n' "$slot" "$arm"
+                    printf 'served_ab_arm=coverage_refused_kept slot=%s arm=%s failures=%s\n' \
+                        "$slot" "$arm" "$sidecar_failures"
                 fi
             fi
         fi
@@ -1518,9 +1535,14 @@ bracket_mean_delta=-
 bracket_ci_low=-
 bracket_ci_high=-
 bracket_pairs=-
+bracket_union_verdict=-
 null_verdict=-
 null_mean_delta=-
-token_identity=-
+null_union_verdict=-
+null_pairs=-
+module_identity=-
+response_identity=-
+response_pairs=-
 if [ "$ab_mode" = kernel-delta ]; then
     set +e
     python3 "$bracket_summarizer" "$arms_ledger" "$output_directory/arms" \
@@ -1539,19 +1561,41 @@ if [ "$ab_mode" = kernel-delta ]; then
         bracket_ci_low=$(read_bracket_row subject ci_low) || bracket_ci_low=-
         bracket_ci_high=$(read_bracket_row subject ci_high) || bracket_ci_high=-
         bracket_pairs=$(read_bracket_row subject comparable_pairs) || bracket_pairs=-
+        bracket_union_verdict=$(read_bracket_row subject-union verdict) || bracket_union_verdict=-
         null_verdict=$(read_bracket_row null verdict) || null_verdict=-
         null_mean_delta=$(read_bracket_row null mean_delta) || null_mean_delta=-
-        token_identity=$(read_bracket_row token_identity verdict) || token_identity=-
+        null_pairs=$(read_bracket_row null comparable_pairs) || null_pairs=-
+        null_union_verdict=$(read_bracket_row null-union verdict) || null_union_verdict=-
+        module_identity=$(read_bracket_row module_identity verdict) || module_identity=-
+        response_identity=$(read_bracket_row response_identity verdict) || response_identity=-
+        response_pairs=$(read_bracket_row response_identity comparable_pairs) || response_pairs=-
     else
         printf 'bracket_summary=refused reason=%s\n' \
             "$(sed -n '1p' "$output_directory/bracket-summary.stderr")"
     fi
+    # Admission is whole or nothing. The registered design names a pair
+    # count, and a set missing a pair is a different experiment rather than
+    # a smaller one; a cooldown that timed out left the next arm a machine
+    # state the arm before it chose; the null is read on its union, since
+    # exclusive time is overlap-sensitive by construction and a shorter
+    # subject changes what its neighbours overlap; the executed modules
+    # must be the same one across every arm of a role and differ between
+    # roles on the subject alone; and the reply identity is content and
+    # token count, which is what the retained replies carry -- the
+    # token-id and log-probability witness is a separate run.
     if [ "$arm_failures" -ne 0 ] || [ "$bracket_status" -ne 0 ] || [ "$bracket_verdict" = - ] \
-        || [ "$token_identity" != held ]; then
+        || [ "$bracket_pairs" != "$ab_replicates" ] || [ "$null_pairs" != "$ab_replicates" ] \
+        || [ "$response_pairs" != "$ab_replicates" ] || [ "$cooldown_timeouts" -ne 0 ] \
+        || [ "$module_identity" != held ] || [ "$response_identity" != held ]; then
         campaign=failed
         campaign_exit=1
-    elif [ "$null_verdict" != held ]; then
+    elif [ "$null_union_verdict" != held ] || [ "$null_verdict" != held ]; then
         campaign=state-changed
+        campaign_exit=4
+    elif [ "$bracket_verdict" != "$bracket_union_verdict" ]; then
+        # Exclusive and union moving apart names an overlap-accounting
+        # change rather than a shorter execution envelope.
+        campaign=unresolved
         campaign_exit=4
     else
         case $bracket_verdict in
@@ -1565,17 +1609,19 @@ printf 'served_ab=%s\nmodel_id=%s\nreplicates=%s\nbound=%s\nmean_delta=%s\nci_lo
     "$campaign" "$model_id" "$ab_replicates" "$ab_bound" "$mean_delta" "$ci_low" "$ci_high" \
     "$comparable_pairs" "$arm_failures" "$unclassified" "$cooldown_timeouts" \
     "$control_sha256" "$candidate_sha256" >"$output_directory/terminal-state.tsv"
-printf 'ab_mode\t%s\nbracket_subject\t%s\nbracket_verdict\t%s\nbracket_mean_delta\t%s\nbracket_ci_low\t%s\nbracket_ci_high\t%s\nbracket_pairs\t%s\nbracket_bound\t%s\nnull_pipeline\t%s\nnull_verdict\t%s\nnull_mean_delta\t%s\ntoken_identity\t%s\n' \
+printf 'ab_mode\t%s\nbracket_subject\t%s\nbracket_verdict\t%s\nbracket_mean_delta\t%s\nbracket_ci_low\t%s\nbracket_ci_high\t%s\nbracket_pairs\t%s\nbracket_union_verdict\t%s\nbracket_bound\t%s\nnull_pipeline\t%s\nnull_verdict\t%s\nnull_union_verdict\t%s\nnull_mean_delta\t%s\nnull_pairs\t%s\nmodule_identity\t%s\nresponse_identity\t%s\nresponse_pairs\t%s\n' \
     "$ab_mode" "$bracket_subject" "$bracket_verdict" "$bracket_mean_delta" "$bracket_ci_low" \
-    "$bracket_ci_high" "$bracket_pairs" "$bracket_bound" "$bracket_null" "$null_verdict" \
-    "$null_mean_delta" "$token_identity" >>"$output_directory/terminal-state.tsv"
+    "$bracket_ci_high" "$bracket_pairs" "$bracket_union_verdict" "$bracket_bound" "$bracket_null" \
+    "$null_verdict" "$null_union_verdict" "$null_mean_delta" "$null_pairs" "$module_identity" \
+    "$response_identity" "$response_pairs" >>"$output_directory/terminal-state.tsv"
 printf -- '-\t-\tcampaign\t%s\t%s\t-\n' "$campaign_begin_ns" "$(date +%s%N)" >>"$wall_clock_ledger"
 printf 'served_ab=%s mean_delta=%s ci=[%s,%s] comparable_pairs=%s replicates=%s bound=%s arm_failures=%s output=%s\n' \
     "$campaign" "$mean_delta" "$ci_low" "$ci_high" "$comparable_pairs" "$ab_replicates" \
     "$ab_bound" "$arm_failures" "$output_directory"
 if [ "$ab_mode" = kernel-delta ]; then
-    printf 'kernel_delta=%s subject=%s mean_delta=%s ci=[%s,%s] pairs=%s null=%s null_verdict=%s null_mean_delta=%s token_identity=%s\n' \
+    printf 'kernel_delta=%s subject=%s mean_delta=%s ci=[%s,%s] pairs=%s union=%s null=%s null_verdict=%s null_union=%s null_mean_delta=%s module_identity=%s response_identity=%s cooldown_timeouts=%s\n' \
         "$campaign" "$bracket_subject" "$bracket_mean_delta" "$bracket_ci_low" "$bracket_ci_high" \
-        "$bracket_pairs" "$bracket_null" "$null_verdict" "$null_mean_delta" "$token_identity"
+        "$bracket_pairs" "$bracket_union_verdict" "$bracket_null" "$null_verdict" "$null_union_verdict" \
+        "$null_mean_delta" "$module_identity" "$response_identity" "$cooldown_timeouts"
 fi
 exit "$campaign_exit"

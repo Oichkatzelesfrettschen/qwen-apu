@@ -2,37 +2,50 @@
 """Judge a kernel-delta comparison by one pipeline's GPU bracket.
 
 usage: summarize-bracket-ab.py ARMS_TSV ARMS_DIRECTORY --subject PIPELINE
-           --null PIPELINE [--bound F] [--column exclusive_bracket_ms]
+           --null PIPELINE [--bound F]
 
 The arms ledger carries `C K K C` quadruples the way run-served-binary-ab.sh
 writes them, and every completed arm's directory holds the decode ledger the
 census summarizer wrote (`pipeline-ledger-decode.tsv`) and the reply the
-served runner retained (`response.json`). For each pair (inner over outer) the
-delta is the candidate's bracket over the control's minus one, read from the
-named column of the row whose `name` matches the pipeline, so a pipeline the
-patch shortens reads negative. Student's t over the paired deltas gives the
-nominal 95% interval, as summarize-census-controls.py does for the served
-rate, and the verdicts read:
+served runner retained (`response.json`). For each pair (inner over outer) a
+delta is the candidate's value over the control's minus one, so a quantity
+the patch shortens reads negative, and Student's t over the paired deltas
+gives the nominal 95% interval, as summarize-census-controls.py does for the
+served rate. The rows, each read by its `role`:
 
-    subject   shortened   the whole interval sits below -bound
-              lengthened  the whole interval sits above +bound
-              unchanged   the whole interval sits inside [-bound, +bound]
-              unresolved  the interval crosses a bound
-    null      held        the whole interval sits inside [-bound, +bound]
-              state-changed otherwise
+    subject          exclusive_bracket_ms of the subject pipeline, the
+                     preregistered primary: time uniquely attributable to it
+    subject-union    pipeline_bracket_union_ms of the subject: the queue
+                     interval it touches, overlap included. Exclusive and
+                     union must move together; exclusive shortening while the
+                     union holds names an overlap-accounting change rather
+                     than a shorter execution envelope
+    null             exclusive_bracket_ms of the null pipeline, which the
+                     patch leaves untouched; overlap-sensitive by construction
+    null-union       pipeline_bracket_union_ms of the null: the principal
+                     unchanged-pipeline control, since a shorter subject
+                     changes what its neighbours overlap without changing
+                     the neighbours
+    graph-span       queue_completion_span_ms_per_graph from the ledger's
+                     graphs row: the whole submitted graph, the common-mode
+                     reference every family moves with
+    ratio            (subject / null) per arm, candidate over control minus
+                     one: a secondary statistic that survives common-mode
+                     movement and was not preregistered as primary
+    module_identity  spirv_executed_sha256: every control arm executes one
+                     subject module, every candidate arm one, the two differ,
+                     and the null module is one digest across every arm
+    response_identity  reply content and predicted_n, candidate against
+                     control per pair. Two token sequences can share a
+                     string, so this is the reply's identity and not the
+                     token array's; run-kernel-delta-witness.sh reads the ids
 
-The null pipeline is the one the patch leaves untouched, and it is read from
-the same arms and the same graphs as the subject, so a null that moves names
-a machine-state change the subject's delta cannot be attributed against. A
-`token_identity` row compares every candidate reply's content and predicted
-token count against the control replies of the same quadruple: `held` where
-all agree, `differs` where any pair disagrees, and `unavailable` where a
-reply is unreadable. Greedy decoding at temperature 0 is deterministic on
-this backend within a fixed request sequence, so a kernel that answers
-differently computed something else.
-
-Every row states its per-arm values so a reader can recompute the delta from
-the retained ledgers rather than trust the mean.
+Verdicts on a bracket row: `shortened` where the whole interval sits below
+-bound, `lengthened` above +bound, `unchanged` inside [-bound, +bound],
+`unresolved` where it crosses a bound; on a null row `held` inside the bound
+and `state-changed` otherwise; on an identity row `held`, `differs`, or
+`unavailable`. Every row states its per-arm values so a reader can recompute
+the delta from the retained ledgers rather than trust the mean.
 """
 
 import argparse
@@ -47,6 +60,10 @@ COMPLETED_STATUS = ("completed", "reused")
 COLUMNS = ("role", "pipeline", "column", "replicates", "comparable_pairs",
            "mean_delta", "sd_delta", "ci_low", "ci_high", "deltas",
            "control_values", "candidate_values", "bound", "verdict", "detail")
+EXCLUSIVE = "exclusive_bracket_ms"
+UNION = "pipeline_bracket_union_ms"
+DIGEST = "spirv_executed_sha256"
+SPAN = "queue_completion_span_ms_per_graph"
 
 
 def read_arms(path):
@@ -75,7 +92,8 @@ def arm_directory(root, row):
     return os.path.join(root, name)
 
 
-def bracket_value(directory, pipeline, column):
+def read_ledger(directory):
+    """The pipeline rows by name and the graphs row's key=value fields."""
     path = os.path.join(directory, "pipeline-ledger-decode.tsv")
     try:
         with open(path) as handle:
@@ -83,30 +101,62 @@ def bracket_value(directory, pipeline, column):
     except OSError:
         return None
     header = None
-    matches = []
+    pipelines = {}
+    graphs = {}
     for line in lines:
         fields = line.split("\t")
+        if fields[0] == "graphs":
+            for field in fields[3:]:
+                if "=" in field:
+                    key, value = field.split("=", 1)
+                    graphs[key] = value
+            continue
         if fields[0] == "pipeline" and fields[1] == "id":
             header = fields
             continue
         if header and fields[0] == "pipeline":
             record = dict(zip(header, fields))
-            if record.get("name") == pipeline:
-                matches.append(record)
-    if header is None or column not in header or len(matches) != 1:
+            pipelines.setdefault(record.get("name"), []).append(record)
+    if header is None:
+        return None
+    return pipelines, graphs
+
+
+def pipeline_value(ledger, pipeline, column):
+    if ledger is None:
+        return None
+    records = ledger[0].get(pipeline, [])
+    if len(records) != 1 or column not in records[0]:
         return None
     try:
-        return float(matches[0][column])
+        return float(records[0][column])
     except ValueError:
         return None
+
+
+def graph_value(ledger, key):
+    if ledger is None or key not in ledger[1]:
+        return None
+    try:
+        return float(ledger[1][key])
+    except ValueError:
+        return None
+
+
+def pipeline_digest(ledger, pipeline):
+    if ledger is None:
+        return None
+    records = ledger[0].get(pipeline, [])
+    if len(records) != 1:
+        return None
+    return records[0].get(DIGEST) or None
 
 
 def reply_identity(directory):
     try:
         with open(os.path.join(directory, "response.json")) as handle:
             reply = json.load(handle)
-        choices = reply["choices"]
-        content = choices[0]["message"]["content"]
+        content = reply["choices"][0]["message"]["content"]
         predicted = reply.get("timings", {}).get("predicted_n")
     except (OSError, ValueError, KeyError, IndexError, TypeError):
         return None
@@ -125,10 +175,12 @@ def interval(deltas):
     return mean, deviation, mean - half, mean + half
 
 
-def judge(role, low, high, bound):
+def judge(kind, low, high, bound):
     inside = -bound <= low and high <= bound
-    if role == "null":
+    if kind == "null":
         return ("held", "-") if inside else ("state-changed", f"ci=[{low:+.4f},{high:+.4f}] outside bound={bound}")
+    if kind == "secondary":
+        return "reported", f"ci=[{low:+.4f},{high:+.4f}] secondary"
     if high < -bound:
         return "shortened", f"ci=[{low:+.4f},{high:+.4f}] below -bound={bound}"
     if low > bound:
@@ -138,20 +190,22 @@ def judge(role, low, high, bound):
     return "unresolved", f"ci=[{low:+.4f},{high:+.4f}] crosses bound={bound}"
 
 
-def pipeline_row(role, pipeline, column, pairs, root, bound):
+def delta_row(role, pipeline, column, kind, pairs, values, bound):
+    """One statistics row over per-pair (control, candidate) values."""
     deltas = []
     listed = []
     controls = []
     candidates = []
     replicates = len(pairs)
-    for control, candidate in pairs:
+    for (control, candidate), (control_value, candidate_value) in zip(pairs, values):
         both = (control["status"] in COMPLETED_STATUS and candidate["status"] in COMPLETED_STATUS)
-        control_value = bracket_value(arm_directory(root, control), pipeline, column) if both else None
-        candidate_value = bracket_value(arm_directory(root, candidate), pipeline, column) if both else None
-        controls.append("-" if control_value is None else f"{control_value:.3f}")
-        candidates.append("-" if candidate_value is None else f"{candidate_value:.3f}")
+        controls.append("-" if control_value is None else f"{control_value:.4f}")
+        candidates.append("-" if candidate_value is None else f"{candidate_value:.4f}")
+        if not both:
+            listed.append("arm-failed")
+            continue
         if control_value is None or candidate_value is None or control_value <= 0:
-            listed.append("arm-failed" if not both else "ledger-missing")
+            listed.append("ledger-missing")
             continue
         delta = candidate_value / control_value - 1
         deltas.append(delta)
@@ -161,16 +215,49 @@ def pipeline_row(role, pipeline, column, pairs, root, bound):
     if len(deltas) < 2:
         return head + ["-", "-", "-", "-"] + tail + ["incomplete", f"comparable_pairs={len(deltas)} of {replicates}"]
     mean, deviation, low, high = interval(deltas)
-    verdict, detail = judge(role, low, high, bound)
+    verdict, detail = judge(kind, low, high, bound)
     if len(deltas) < replicates:
         excluded = f"comparable_pairs={len(deltas)} of {replicates}"
         detail = excluded if detail == "-" else f"{detail} {excluded}"
     return head + [f"{mean:+.4f}", f"{deviation:.4f}", f"{low:+.4f}", f"{high:+.4f}"] + tail + [verdict, detail]
 
 
-def identity_row(pairs, root, replicates):
+def module_row(pairs, ledgers, subject, null_pipeline):
+    control_subject = set()
+    candidate_subject = set()
+    null_digests = set()
+    missing = 0
+    for control, candidate in pairs:
+        for row, bucket in ((control, control_subject), (candidate, candidate_subject)):
+            if row["status"] not in COMPLETED_STATUS:
+                continue
+            ledger = ledgers[row["slot"], row["arm"]]
+            subject_digest = pipeline_digest(ledger, subject)
+            null_digest = pipeline_digest(ledger, null_pipeline)
+            if subject_digest is None or null_digest is None:
+                missing += 1
+                continue
+            bucket.add(subject_digest)
+            null_digests.add(null_digest)
+    if missing or not control_subject or not candidate_subject:
+        verdict, detail = "unavailable", f"arms_without_digest={missing}"
+    elif len(control_subject) == 1 and len(candidate_subject) == 1 \
+            and control_subject != candidate_subject and len(null_digests) == 1:
+        verdict, detail = "held", "-"
+    else:
+        verdict = "differs"
+        detail = (f"control_subject={len(control_subject)} candidate_subject={len(candidate_subject)}"
+                  f" null={len(null_digests)} same_subject={control_subject == candidate_subject}")
+    return ["module_identity", subject, DIGEST, str(len(pairs)), str(len(pairs)),
+            "-", "-", "-", "-", "-",
+            " ".join(sorted(control_subject)) or "-", " ".join(sorted(candidate_subject)) or "-",
+            "-", verdict, f"{detail} null_module={' '.join(sorted(null_digests)) or '-'}"]
+
+
+def response_row(pairs, root):
     verdict = "held"
     details = []
+    compared = 0
     for index, (control, candidate) in enumerate(pairs, 1):
         control_reply = reply_identity(arm_directory(root, control))
         candidate_reply = reply_identity(arm_directory(root, candidate))
@@ -178,13 +265,14 @@ def identity_row(pairs, root, replicates):
             verdict = "unavailable"
             details.append(f"pair{index}=unavailable")
             continue
+        compared += 1
         if control_reply != candidate_reply:
             if verdict != "unavailable":
                 verdict = "differs"
             details.append(f"pair{index}=differs")
         else:
             details.append(f"pair{index}=equal")
-    return ["token_identity", "-", "content,predicted_n", str(replicates), str(len(pairs)),
+    return ["response_identity", "-", "content,predicted_n", str(len(pairs)), str(compared),
             "-", "-", "-", "-", "-", "-", "-", "-", verdict, " ".join(details) or "-"]
 
 
@@ -195,7 +283,6 @@ def main():
     parser.add_argument("--subject", required=True)
     parser.add_argument("--null", required=True, dest="null_pipeline")
     parser.add_argument("--bound", type=float, default=0.02)
-    parser.add_argument("--column", default="exclusive_bracket_ms")
     args = parser.parse_args()
     if args.bound <= 0:
         raise SystemExit("--bound must exceed zero")
@@ -210,11 +297,46 @@ def main():
         pairs.append((d, c))
     if not pairs:
         raise SystemExit("the arms ledger carries no C K K C quadruple")
-    replicates = len(pairs)
+    ledgers = {}
+    for control, candidate in pairs:
+        for row in (control, candidate):
+            key = (row["slot"], row["arm"])
+            if key not in ledgers:
+                ledgers[key] = read_ledger(arm_directory(args.arms_directory, row)) \
+                    if row["status"] in COMPLETED_STATUS else None
+
+    def values(function):
+        return [(function(ledgers[control["slot"], control["arm"]]),
+                 function(ledgers[candidate["slot"], candidate["arm"]]))
+                for control, candidate in pairs]
+
+    def ratio(ledger):
+        subject_value = pipeline_value(ledger, args.subject, EXCLUSIVE)
+        null_value = pipeline_value(ledger, args.null_pipeline, EXCLUSIVE)
+        if subject_value is None or null_value is None or null_value <= 0:
+            return None
+        return subject_value / null_value
+
+    subject, null_pipeline, bound = args.subject, args.null_pipeline, args.bound
     print("\t".join(COLUMNS))
-    print("\t".join(pipeline_row("subject", args.subject, args.column, pairs, args.arms_directory, args.bound)))
-    print("\t".join(pipeline_row("null", args.null_pipeline, args.column, pairs, args.arms_directory, args.bound)))
-    print("\t".join(identity_row(pairs, args.arms_directory, replicates)))
+    rows = [
+        delta_row("subject", subject, EXCLUSIVE, "subject", pairs,
+                  values(lambda ledger: pipeline_value(ledger, subject, EXCLUSIVE)), bound),
+        delta_row("subject-union", subject, UNION, "subject", pairs,
+                  values(lambda ledger: pipeline_value(ledger, subject, UNION)), bound),
+        delta_row("null", null_pipeline, EXCLUSIVE, "null", pairs,
+                  values(lambda ledger: pipeline_value(ledger, null_pipeline, EXCLUSIVE)), bound),
+        delta_row("null-union", null_pipeline, UNION, "null", pairs,
+                  values(lambda ledger: pipeline_value(ledger, null_pipeline, UNION)), bound),
+        delta_row("graph-span", "-", SPAN, "secondary", pairs,
+                  values(lambda ledger: graph_value(ledger, SPAN)), bound),
+        delta_row("ratio", f"{subject}/{null_pipeline}", EXCLUSIVE, "secondary", pairs,
+                  values(ratio), bound),
+        module_row(pairs, ledgers, subject, null_pipeline),
+        response_row(pairs, args.arms_directory),
+    ]
+    for row in rows:
+        print("\t".join(row))
     return 0
 
 

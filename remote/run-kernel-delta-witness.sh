@@ -134,14 +134,33 @@ probabilities = payload.get("completion_probabilities")
 if not isinstance(tokens, list) or not tokens:
     sys.stderr.write("response carries no token array\n")
     raise SystemExit(1)
-if not isinstance(probabilities, list) or len(probabilities) != len(tokens):
-    sys.stderr.write("response carries no probability entry per token\n")
+# The server at f280b269 returns one probability entry fewer than tokens
+# on a completion ended by n_predict (128 tokens carried 127 entries on the
+# appliance), so the entries are aligned to the token array by id at
+# offset 0 or 1 rather than assumed to cover it; a token without an entry
+# prints `-` and is compared by id alone.
+if not isinstance(probabilities, list) or not probabilities:
+    sys.stderr.write("response carries no probability entries\n")
     raise SystemExit(1)
-for token_id, entry in zip(tokens, probabilities):
-    if not isinstance(token_id, int) or entry.get("id") != token_id:
-        sys.stderr.write("token array and probability entries disagree\n")
+offset = None
+for candidate in (0, 1):
+    span = tokens[candidate:candidate + len(probabilities)]
+    if len(span) == len(probabilities) and all(
+            isinstance(t, int) and e.get("id") == t for t, e in zip(span, probabilities)):
+        offset = candidate
+        break
+if offset is None or len(tokens) - len(probabilities) > 1:
+    sys.stderr.write("probability entries do not align with the token array\n")
+    raise SystemExit(1)
+for index, token_id in enumerate(tokens):
+    if not isinstance(token_id, int):
+        sys.stderr.write("token array holds a non-integer entry\n")
         raise SystemExit(1)
-    print(f"{token_id}\t{float(entry['logprob']):.9g}")
+    entry_index = index - offset
+    if 0 <= entry_index < len(probabilities):
+        print(f"{token_id}\t{float(probabilities[entry_index]['logprob']):.9g}")
+    else:
+        print(f"{token_id}\t-")
 PYTHON
 
 server_pid=''
@@ -278,8 +297,13 @@ def read(path):
         for line in handle:
             token_id, logprob = line.rstrip("\n").split("\t")
             ids.append(int(token_id))
-            logprobs.append(float(logprob))
+            logprobs.append(None if logprob == "-" else float(logprob))
     return ids, logprobs
+
+
+def largest_delta(current, a_values, b_values):
+    return max([current] + [abs(a - b) for a, b in zip(a_values, b_values)
+                            if a is not None and b is not None])
 
 
 samples = {}
@@ -307,7 +331,7 @@ for prompt_id, rows in sorted(samples.items()):
                 divergence = str(next(i for i in range(min(len(ids), len(ref_ids)) + 1)
                                       if i >= min(len(ids), len(ref_ids)) or ids[i] != ref_ids[i]))
             else:
-                delta = max([delta] + [abs(a - b) for a, b in zip(logprobs, ref_logprobs)])
+                delta = largest_delta(delta, logprobs, ref_logprobs)
         verdict = "held" if identity == "held" and delta <= bound else "differs"
         if verdict != "held":
             overall = "differs"
@@ -321,7 +345,7 @@ for prompt_id, rows in sorted(samples.items()):
             divergence = str(next(i for i in range(min(len(ids), len(ref_ids)) + 1)
                                   if i >= min(len(ids), len(ref_ids)) or ids[i] != ref_ids[i]))
         else:
-            delta = max([delta] + [abs(a - b) for a, b in zip(logprobs, ref_logprobs)])
+            delta = largest_delta(delta, logprobs, ref_logprobs)
     verdict = "held" if identity == "held" and delta <= bound else "differs"
     if verdict != "held":
         overall = "differs"
