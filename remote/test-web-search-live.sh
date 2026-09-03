@@ -349,19 +349,33 @@ unresponsive_timeout_port=18895
 unresponsive_timeout_state=$temporary_directory/state-unresponsive-timeout
 mkdir -p "$unresponsive_timeout_state"
 unresponsive_wall_start=$(date +%s)
+# A bare command substitution here would hang the whole gate on exactly the
+# regression this arm exists to catch: a `start` that reverted to an
+# unbounded `wait` never returns, so the substitution never completes either.
+# The external `timeout` is what turns that regression into a bounded,
+# reported failure instead.
 unresponsive_output=$(QWEN_SEARXNG_PORT=$unresponsive_timeout_port \
     QWEN_SEARXNG_START_TIMEOUT=2 \
     QWEN_SEARXNG_STOP_TIMEOUT=2 \
     QWEN_SEARXNG_LAUNCH_COMMAND="$(launch_command_for "$unresponsive_timeout_port" '--fail-health --ignore-term')" \
-    "$fixture_remote/searxng-launch.sh" start "$unresponsive_timeout_state" 2>&1) &&
+    timeout 30 "$fixture_remote/searxng-launch.sh" start \
+        "$unresponsive_timeout_state" 2>&1) &&
     unresponsive_status=0 || unresponsive_status=$?
 unresponsive_wall_elapsed=$(( $(date +%s) - unresponsive_wall_start ))
 outcome=ok
 [ "$unresponsive_status" -ne 0 ] || outcome=unexpectedly_healthy
+[ "$unresponsive_status" -ne 124 ] || outcome=timed_out
+if [ "$unresponsive_status" -eq 124 ]; then
+    # The 30-second guard fired instead of the escalation, so the instance is
+    # still there; it is cleared directly so a later arm does not meet a busy
+    # port left over from this one's own failure.
+    pkill -KILL -f "fake-searxng-server.py --port $unresponsive_timeout_port" \
+        2>/dev/null || true
+fi
 # The 2-second start timeout plus a 2-second stop timeout plus the KILL
-# escalation's own 1-second settle bounds this comfortably under a minute; an
-# unbounded `wait` against a child that ignores SIGTERM would never return.
-[ "$unresponsive_wall_elapsed" -lt 60 ] || outcome=exit_not_bounded
+# escalation's own 1-second settle bounds this comfortably under the
+# 30-second external guard.
+[ "$unresponsive_wall_elapsed" -lt 40 ] || outcome=exit_not_bounded
 # The pid record is what recorded_process_lives reads, so its removal and the
 # port's release together prove the escalation actually reached the process
 # rather than merely returning.
@@ -594,12 +608,25 @@ else
     cleanup_searxng_pid=$(read_status_field "$cleanup_state" searxng_pid)
     kill -TERM "$cleanup_session_pid" 2>/dev/null || true
     cleanup_wait_start=$(date +%s)
+    # A bare `wait` here would hang the whole gate on exactly the regression
+    # this arm exists to catch: a session that reverted to an unbounded EXIT
+    # trap never leaves, so a blocking wait on its pid never returns either.
+    # Polling with a bound lets that regression fail this one arm instead.
+    cleanup_poll=0
+    while kill -0 "$cleanup_session_pid" 2>/dev/null && \
+          [ "$cleanup_poll" -lt 300 ]; do
+        cleanup_poll=$((cleanup_poll + 1))
+        sleep 0.1
+    done
+    if kill -0 "$cleanup_session_pid" 2>/dev/null; then
+        kill -KILL "$cleanup_session_pid" 2>/dev/null || true
+    fi
     wait "$cleanup_session_pid" 2>/dev/null || true
     cleanup_wait_elapsed=$(( $(date +%s) - cleanup_wait_start ))
     outcome=ok
     # The 2-second stop timeout plus its own escalation bounds the wait far
-    # below a minute; a regression to an unbounded wait would hang here for
-    # as long as this arm's own timeout allowed it to run.
+    # below the 30-second poll; a regression to an unbounded wait hits that
+    # poll bound, gets force-killed here, and still fails on elapsed time.
     [ "$cleanup_wait_elapsed" -lt 30 ] || outcome=exit_not_bounded
     kill -0 "$cleanup_searxng_pid" 2>/dev/null && outcome=instance_survives
     if [ "$outcome" != ok ]; then
