@@ -228,7 +228,12 @@ QWEN_CENSUS_MCLK_LEVEL=2 \
 # the clock the next workload inherits, read from the device rather than assumed
 grep dpm_restore= ~/evidence/prefill-ladder/*/run.log | tail -1
 cat /sys/class/drm/card1/device/power_dpm_force_performance_level
-# `manual` here means the restore did not take: sudo -v again and write `auto` back
+# the line reads `dpm_restore=restored level=X requested=X` when the device is back in
+# the policy the run found it in, and `dpm_restore=mismatch level=Y requested=X` when it
+# is not. `requested=` is that pre-run policy, which census_engine_clock_snapshot took
+# before the first write, so it is `manual` for a device that was already forced and
+# `auto` otherwise. Compare the sysfs read against `requested=` rather than against a
+# fixed name: on a mismatch, sudo -v again and write `requested=`'s value back.
 ```
 
 `../prefill-ladder/device-window-20260903-not-run.md` records the window this
