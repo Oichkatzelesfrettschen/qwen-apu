@@ -220,9 +220,30 @@ if [ -n "$router_presets_path" ]; then
             "$preset_web_sections" "$router_presets_path" >&2
         exit 1
     fi
+    # The image server lives inside the same per-section configuration, so the
+    # record gains a column rather than a file: `image` where that section arms
+    # a generation and `-` where it carries the search server alone. The preset
+    # own `# qwen_image_profile=` marker decides which the row has to read, and
+    # verify-deployment-bundle.sh compares the two without opening a file a
+    # machine that never armed the lane holds none of.
+    preset_image_profile=$(sed -n 's/^# qwen_image_profile=//p' \
+        "$staging_directory/router-presets.ini")
+    case $preset_image_profile in
+        '-') preset_image_profile='' ;;
+    esac
+    if [ -n "$preset_image_profile" ]; then
+        expected_image_column=image
+        if [ -z "$preset_web_sections" ]; then
+            printf 'bundle router preset names image profile %s and its head marker names no web section: %s\n' \
+                "$preset_image_profile" "$router_presets_path" >&2
+            exit 1
+        fi
+    else
+        expected_image_column=-
+    fi
     if [ -n "$preset_web_sections" ]; then
         {
-            printf '# profile_id\tconfiguration_path\tsha256\n'
+            printf '# profile_id\tconfiguration_path\tsha256\timage_server\n'
             printf '%s\n' "$web_mcp_rows" |
                 while IFS='	' read -r web_section web_configuration; do
                     if [ ! -r "$web_configuration" ]; then
@@ -230,8 +251,38 @@ if [ -n "$router_presets_path" ]; then
                             "$web_section" "$web_configuration" >&2
                         exit 1
                     fi
-                    printf '%s\t%s\t%s\n' "$web_section" "$web_configuration" \
-                        "$(sha256sum -- "$web_configuration" | cut -d ' ' -f 1)"
+                    if ! image_server_report=$(
+                        "$script_directory/read-image-mcp-server.py" \
+                            "$web_configuration"
+                    ); then
+                        printf 'bundle preset section %s names an MCP configuration this record cannot read: %s\n' \
+                            "$web_section" "$web_configuration" >&2
+                        exit 1
+                    fi
+                    image_server_column=-
+                    if [ "$(printf '%s\n' "$image_server_report" |
+                        sed -n 's/^image_server=//p')" = present ]; then
+                        image_server_column=image
+                        recorded_image_profile=$(printf '%s\n' \
+                            "$image_server_report" |
+                            sed -n 's/^QWEN_IMAGE_PROFILE=//p')
+                        if [ "$recorded_image_profile" != "$preset_image_profile" ]; then
+                            printf 'bundle preset section %s arms image profile %s where its preset names %s\n' \
+                                "$web_section" "$recorded_image_profile" \
+                                "${preset_image_profile:--}" >&2
+                            exit 1
+                        fi
+                    fi
+                    if [ "$image_server_column" != "$expected_image_column" ]; then
+                        printf 'bundle preset section %s reads image_server %s where its preset marker reads %s\n' \
+                            "$web_section" "$image_server_column" \
+                            "$expected_image_column" >&2
+                        exit 1
+                    fi
+                    printf '%s\t%s\t%s\t%s\n' "$web_section" \
+                        "$web_configuration" \
+                        "$(sha256sum -- "$web_configuration" | cut -d ' ' -f 1)" \
+                        "$image_server_column"
                 done
         } >"$staging_directory/web-mcp-manifest.tsv" || exit 1
         chmod 600 "$staging_directory/web-mcp-manifest.tsv"

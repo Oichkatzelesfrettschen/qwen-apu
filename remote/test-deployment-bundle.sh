@@ -995,4 +995,108 @@ if ! grep -q 'head marker names no web section' "$work_directory/smuggled.stderr
 fi
 report web_mcp_record_follows_the_marker accepted
 
+# The image server rides inside the same per-section configuration, so the
+# record gains a column rather than a file and the preset own
+# `# qwen_image_profile=` marker decides what it reads. Verification compares
+# the two without opening a configuration, for the reason it compares the
+# digest against the preset rather than the state directory.
+imaged_configuration=$work_directory/web-open-image.json
+cat >"$imaged_configuration" <<'IMAGE_CONFIGURATION'
+{
+  "mcpServers": {
+    "web": {"command": "python3"},
+    "image": {
+      "command": "python3",
+      "timeout_ms": 360000,
+      "args": ["server.py"],
+      "env": {
+        "QWEN_IMAGE_LANGUAGE_PROFILE": "web-open",
+        "QWEN_IMAGE_PROFILE": "image-sdxs-512-a",
+        "QWEN_IMAGE_TOKEN_KEY_FILE": "/nonexistent/token.key",
+        "QWEN_IMAGE_STATE_DIR": "/nonexistent/images",
+        "QWEN_IMAGE_SERVICE_SOCKET": "/nonexistent/images/image.sock",
+        "QWEN_IMAGE_PROFILES_JSON": "/nonexistent/image-parameters.json",
+        "QWEN_IMAGE_MCP_TIMEOUT_S": "360"
+      }
+    }
+  }
+}
+IMAGE_CONFIGURATION
+imaged_preset=$work_directory/router-presets-imaged.ini
+{
+    printf '# qwen_web_sections=web-open\n'
+    printf '# qwen_image_profile=image-sdxs-512-a\n'
+    printf '[qwen-2b]\nLLAMA_ARG_MODEL = %s/qwen-2b.gguf\nLLAMA_ARG_CTX_CHECKPOINTS = 0\n\n' \
+        "$model_root"
+    printf '[web-open]\nLLAMA_ARG_MODEL = %s/qwen-2b.gguf\nLLAMA_ARG_CTX_CHECKPOINTS = 0\n' \
+        "$model_root"
+    printf 'LLAMA_ARG_MCP_SERVERS_CONFIG = %s\n' "$imaged_configuration"
+} >"$imaged_preset"
+if ! QWEN_BUNDLE_ROUTER_PRESETS=$imaged_preset "$builder" bundle-imaged \
+    "$forced_server" "$forced_manifest" "$zero_ledger" "$deployment_root" \
+    >"$work_directory/imaged-bundle.log" 2>"$work_directory/imaged-bundle.err"; then
+    printf 'a preset carrying the image marker failed bundle assembly\n' >&2
+    cat "$work_directory/imaged-bundle.err" >&2
+    exit 1
+fi
+imaged_recorded=$(awk -F'\t' '$1 == "web-open" { print $4 }' \
+    "$deployment_root/bundle-imaged/web-mcp-manifest.tsv")
+if [ "$imaged_recorded" != image ]; then
+    printf 'the bundle recorded image_server %s for a section arming a generation\n' \
+        "${imaged_recorded:--}" >&2
+    exit 1
+fi
+if ! "$activator" bundle-imaged "$deployment_root" >/dev/null; then
+    printf 'a bundle carrying the image marker failed activation\n' >&2
+    exit 1
+fi
+# The marker and the column are one claim, so a preset whose marker was
+# withheld after assembly refuses rather than serving a configuration that
+# still arms the runtime.
+sed 's/^# qwen_image_profile=image-sdxs-512-a$/# qwen_image_profile=-/' \
+    "$deployment_root/bundle-imaged/router-presets.ini" \
+    >"$work_directory/imaged-unmarked.ini"
+cp "$work_directory/imaged-unmarked.ini" \
+    "$deployment_root/bundle-imaged/router-presets.ini"
+unmarked_digest=$(sha256sum "$deployment_root/bundle-imaged/router-presets.ini" |
+    cut -d ' ' -f 1)
+awk -F'\t' -v OFS='\t' -v digest="$unmarked_digest" '
+    $1 == "router-presets.ini" { $2 = digest }
+    { print }' "$deployment_root/bundle-imaged/bundle-manifest.tsv" \
+    >"$work_directory/imaged-manifest.tsv"
+cp "$work_directory/imaged-manifest.tsv" \
+    "$deployment_root/bundle-imaged/bundle-manifest.tsv"
+if "$verifier" "$deployment_root" bundle-imaged \
+    >/dev/null 2>"$work_directory/imaged-unmarked.stderr"; then
+    printf 'a bundle recording an image server verified under a withheld marker\n' >&2
+    exit 1
+fi
+if ! grep -q 'records image_server image for web-open where the preset marker reads -' \
+    "$work_directory/imaged-unmarked.stderr"; then
+    printf 'the withheld-marker refusal lost its reason\n' >&2
+    cat "$work_directory/imaged-unmarked.stderr" >&2
+    exit 1
+fi
+# A marker naming an image profile over a preset holding no web section claims
+# a grant no section carries, so assembly refuses it.
+image_only_preset=$work_directory/router-presets-image-only.ini
+{
+    printf '# qwen_image_profile=image-sdxs-512-a\n'
+    printf '[qwen-2b]\nLLAMA_ARG_MODEL = %s/qwen-2b.gguf\nLLAMA_ARG_CTX_CHECKPOINTS = 0\n' \
+        "$model_root"
+} >"$image_only_preset"
+if QWEN_BUNDLE_ROUTER_PRESETS=$image_only_preset "$builder" bundle-image-only \
+    "$forced_server" "$forced_manifest" "$zero_ledger" "$deployment_root" \
+    >/dev/null 2>"$work_directory/image-only.stderr"; then
+    printf 'a preset arming an image lane over no web section assembled\n' >&2
+    exit 1
+fi
+if ! grep -q 'names image profile image-sdxs-512-a and its head marker names no web section' \
+    "$work_directory/image-only.stderr"; then
+    printf 'the sectionless image lane refusal lost its reason\n' >&2
+    cat "$work_directory/image-only.stderr" >&2
+    exit 1
+fi
+report bundle_records_the_image_server accepted
+
 printf 'deployment_bundle=accepted checks=%s\n' "$checks"
