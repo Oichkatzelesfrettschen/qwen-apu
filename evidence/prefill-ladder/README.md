@@ -207,19 +207,90 @@ down. `sudo -v` on the laptop is what admits the DPM writes, since
 `/etc/sudoers.d/90-qwen-agent` sets `timestamp_type=global` with a 60 minute
 timeout.
 
+That one `sudo -v` admits the acquire and does not guarantee the restore.
+`census_engine_clock_write` exits 2 when its write is unauthorized;
+`census_engine_clock_restore` discards its write's status and returns 0, then reads
+the node back and prints `dpm_restore=restored`, `dpm_restore=mismatch`, or
+`dpm_restore=unreadable`. A restore attempted after the timestamp expires therefore
+leaves the device at `manual` with the highest levels selected, says so on that one
+line, and exits zero. The closing command reads it back, which is why the run ends by
+looking at the device rather than at the exit status.
+
 ```sh
 rsync -a remote/ eirikr@qwen-laptop:~/qwen-laptop-setup/remote/
 
 ssh eirikr@qwen-laptop
 sudo -v
 ~/qwen-laptop-setup/remote/qwen-teardown.sh
-QWEN_CENSUS_MCLK_LEVEL=2 \
+out=~/evidence/prefill-ladder/$(date -u +%Y%m%dT%H%MZ)
+mkdir -p "$(dirname "$out")"
+( set -C; : >"$out.log" ) 2>/dev/null ||
+    { printf 'output path in use: %s\n' "$out.log" >&2; exit 1; }
+( set -C; : >"$out.status" ) 2>/dev/null ||
+    { rm -f "$out.log"; printf 'output path in use: %s\n' "$out.status" >&2; exit 1; }
+{ QWEN_CENSUS_MCLK_LEVEL=2 \
     ~/qwen-laptop-setup/remote/run-prefill-ladder.sh \
     ~/deployments/CONTROL/llama-server \
     ~/builds/CANDIDATE/bin/llama-server \
     qwen38-2b-distill \
-    ~/evidence/prefill-ladder/$(date -u +%Y%m%dT%H%MZ)
+    "$out"; printf 'ladder_exit=%s\n' "$?" >"$out.status"; } 2>&1 | tee -a "$out.log"
+cat "$out.status"
+
+# the clock the next workload inherits, read from the device rather than assumed
+grep dpm_restore= "$out.log" | tail -1
+cat /sys/class/drm/card1/device/power_dpm_force_performance_level
+cat /sys/class/drm/card1/device/pp_dpm_sclk
+cat /sys/class/drm/card1/device/pp_dpm_mclk
 ```
+
+The runner retains `inputs.tsv`, `arms.tsv`, and `summary.tsv` under its output
+directory and writes `dpm_restore=` to stdout, which nothing captures on its own, so the
+`tee` above is what makes the line readable after the run while it still scrolls. A
+pipeline reports its last command's status, so `tee` would report success over a failed
+ladder; the braces record the runner's own status into `$out.status` before the pipe
+sees it, which is what `cat` reads back. The runner refuses an output path that already
+exists, so `$out.log` and `$out.status` are named beside that directory rather than
+inside it. The runner's own refusal covers the directory alone: two invocations inside
+one UTC minute compose the same `$out`, and the redirection and `tee` would truncate the
+first run's sidecars while the runner was still refusing its directory. `set -C` makes
+each `: >` an `O_EXCL` create, so a second invocation loses `$out.log` or `$out.status`
+atomically and stops before it reaches `tee`. Each reservation runs in a subshell because
+`:` is a POSIX special builtin and a redirection error on one is fatal to a
+non-interactive shell: written inline, the noclobber refusal killed the script before its
+own `||` branch, so neither the message nor the cleanup ran. The subshell absorbs the
+exit and hands its status to `||`. testing the names first and creating them
+Testing the names first and creating them
+afterwards would leave both runs past the test. Both sidecars are reserved because
+reserving only the status file leaves `tee` truncating a retained `$out.log` that
+outlived its status file, and `tee -a` appends into the empty file the reservation just
+made rather than truncating it again. The log is reserved first and the status second, so
+a refusal leaves the namespace as it found it: the only file the second line can remove
+is the log its own first line just created. `mkdir -p` on the parent runs ahead of both,
+because the runner's own `mkdir -p` of the full output path no longer comes first and a
+sidecar cannot be created into a directory that does not exist yet. The device is claimed twice over
+anyway, since the ladder takes the Vulkan workload lease, but the reservation is what
+keeps the retained bytes safe rather than the lease.
+
+The line reads `dpm_restore=restored level=X requested=X sclk_level=I mclk_level=J` when
+the policy node is back in the policy the run found it in, and `dpm_restore=mismatch`
+when it is not. `requested=` is that pre-run policy, which `census_engine_clock_snapshot`
+took before the first write, so it is `manual` for a device that was already forced and
+`auto` otherwise. Compare the policy read against `requested=` rather than against a
+fixed name, and write `requested=`'s value back on a mismatch.
+
+`restored` is necessary and not sufficient. `census_engine_clock_restore` writes the
+policy and, under `manual`, the two clock indices, and then compares the policy node
+alone. A device whose pre-run policy was already `manual` therefore reads back
+`level=manual requested=manual` and prints `restored` even when both index writes were
+refused, leaving the campaign's own highest `pp_dpm_sclk` and `pp_dpm_mclk` selections
+starred. The two `cat` reads above close that: the starred step in each table is the one
+the next workload runs at, and it has to be the `sclk_level=` and `mclk_level=` indices
+the same line names. Where it is not, `sudo -v` again and write those indices back to
+`pp_dpm_sclk` and `pp_dpm_mclk`.
+
+`../prefill-ladder/device-window-20260903-not-run.md` records the window this
+requirement was found in, and the campaign's own wall time is unmeasured, so the
+read-back closes the gap whether or not a given run crosses the hour.
 
 Both server paths are explicit arguments and the ladder reads no bundle: it
 starts each arm directly rather than through `resolve-active-deployment.sh`, so
