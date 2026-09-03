@@ -104,7 +104,20 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 registry_reader=${QWEN_MODEL_REGISTRY_READER:-$script_directory/model-registry.sh}
 projector_selector=${QWEN_PROJECTOR_SELECTOR:-$script_directory/select-projector.sh}
 clock_sampler=${QWEN_CLOCK_SAMPLER:-$script_directory/sample-gpu-clocks.sh}
-llama_server=${QWEN_LLAMA_SERVER:-"${HOME:?}/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-server"}
+# A validated row is read against the promoted server, so the default is the
+# server of the active deployment bundle, resolved and verified whole the way a
+# launch resolves it. QWEN_LLAMA_SERVER names another binary for an experiment
+# arm, and projector-identity.tsv records whichever one ran.
+deployment_resolver=${QWEN_DEPLOYMENT_RESOLVER:-$script_directory/resolve-active-deployment.sh}
+if [ -n "${QWEN_LLAMA_SERVER:-}" ]; then
+    llama_server=$QWEN_LLAMA_SERVER
+else
+    llama_server=$("$deployment_resolver" | sed -n 's/^active_deployment_server=//p')
+    if [ -z "$llama_server" ]; then
+        printf 'no active deployment resolves a server; set QWEN_LLAMA_SERVER\n' >&2
+        exit 1
+    fi
+fi
 model_root=${QWEN_MODEL_ROOT:-"${HOME:?}/models"}
 image_directory=${QWEN_QUALITY_IMAGE_DIRECTORY:-$script_directory/quality-images}
 depths=${QWEN_WEDGE_DEPTHS:-"8192 16384 32768"}

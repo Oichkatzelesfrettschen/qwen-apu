@@ -190,3 +190,8 @@ served under, beside the standalone artifacts.
 The executable-identity condition above holds for this arm too: the run's
 `projector-identity.tsv` must name the promoted server digest before
 `remote/models.tsv` or `remote/web-profiles.tsv` promote any claim from it.
+The harness therefore resolves its server through
+`remote/resolve-active-deployment.sh` where `QWEN_LLAMA_SERVER` is unset, so
+an unadorned invocation measures the bundle the appliance serves; the first
+router-child run on the appliance carried the retired `build-qwen-vulkan`
+default in that column and was discarded on this line rather than retained.
