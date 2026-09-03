@@ -46,6 +46,10 @@ model_id=qwen38-2b-distill
 # substitution would end the runner under set -eu with no message.
 execution_path=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 patch_series_sha256=1111111111111111111111111111111111111111111111111111111111111111
+# The runtime tree's head is a git revision, and the campaign signs its Vulkan
+# lease proof with it, so the fixture spells it in the 40-hex form
+# verify-external-vulkan-lease.py validates.
+runtime_git_head=0123456789abcdef0123456789abcdef01234567
 foreign_sha256=2222222222222222222222222222222222222222222222222222222222222222
 registry_sha256=3333333333333333333333333333333333333333333333333333333333333333
 ledger_row_sha256=4444444444444444444444444444444444444444444444444444444444444444
@@ -83,7 +87,7 @@ done
 # is refused.
 runtime_tree_manifest=$temporary_directory/runtime-tree-manifest.tsv
 printf 'git_head\t%s\nremote_payload_tree_sha256\t%s\npatches_payload_tree_sha256\t%s\n' \
-    "$patch_series_sha256" "$foreign_sha256" "$registry_sha256" >"$runtime_tree_manifest"
+    "$runtime_git_head" "$foreign_sha256" "$registry_sha256" >"$runtime_tree_manifest"
 runtime_remote_unmanifested=$temporary_directory/unmanifested/remote
 mkdir -p "$runtime_remote_unmanifested"
 for runtime_script in qwen-launch.sh qwen-teardown.sh radv-low-priority-env.sh; do
@@ -93,6 +97,11 @@ done
 home_directory=$temporary_directory/home
 models_directory=$temporary_directory/models
 mkdir -p "$home_directory"
+# The campaign holds its state directory's own Vulkan lease from before the
+# clock write to its exit, so the fixture home carries that directory.
+workload_lease_directory=$home_directory/qwen-webui-state
+mkdir -p "$workload_lease_directory"
+workload_lease=$workload_lease_directory/vulkan-workload.lock
 model_file=$("$registry_reader" id "$model_id" model_file)
 mkdir -p "$models_directory/$(dirname -- "$model_file")"
 # The checkpoint carries bytes so a replacement can hold its byte count and
@@ -1138,6 +1147,7 @@ for linked_member in model-registry.sh models.tsv ctx-checkpoints.tsv \
     summarize-kernel-census.py summarize-census-controls.py \
     sample-clock-sidecar.py validate-clock-sidecar.py \
     telemetry-broker.c build-telemetry-broker.sh \
+    verify-external-vulkan-lease.py \
     summarize-perf-logger-slice.py; do
     ln -s -- "$script_directory/$linked_member" "$signal_directory/$linked_member"
 done
@@ -1422,6 +1432,7 @@ for linked_member in model-registry.sh models.tsv ctx-checkpoints.tsv \
     summarize-kernel-census.py summarize-census-controls.py \
     sample-clock-sidecar.py \
     telemetry-broker.c build-telemetry-broker.sh \
+    verify-external-vulkan-lease.py \
     summarize-perf-logger-slice.py; do
     ln -s -- "$script_directory/$linked_member" "$brick_directory/$linked_member"
 done
@@ -1509,15 +1520,30 @@ chmod +x "$brick_directory/validate-clock-sidecar.py"
 # arm's reader answers the unknown triple rather than ending the campaign. One
 # label named in QWEN_TEST_CENSUS_COMPLETE answers with a whole reply instead,
 # which is what a case reading a verdict past the served runner needs.
-cat >"$brick_directory/measure-served-decode.sh" <<'FAKE_SERVED_RUNNER'
-#!/bin/sh
-set -eu
+# The arm runs under the closed environment census_arm_exec applies, so the
+# stub reads its per-case controls from a file whose path is written into it
+# here rather than from variables the arm no longer inherits, and it appends
+# its own environment so a case reads what the arm was handed.
+brick_arm_controls=$temporary_directory/brick-arm-controls.tsv
+brick_arm_environment=$temporary_directory/brick-arm-environment.txt
+: >"$brick_arm_controls"
+: >"$brick_arm_environment"
+{
+    printf '#!/bin/sh\nset -eu\n'
+    printf 'arm_controls=%s\n' "$brick_arm_controls"
+    printf 'arm_environment=%s\n' "$brick_arm_environment"
+    cat <<'FAKE_SERVED_RUNNER'
+arm_control() {
+    awk -F'\t' -v key="$1" '$1 == key { value = $2; found = 1 }
+        END { if (found) print value }' "$arm_controls"
+}
+env >>"$arm_environment"
 # The checkpoint a case replaces under the campaign, ahead of the record this
 # arm writes: the arm pins the replacement and re-establishes publisher
 # identity against whichever ledger row followed it, and its byte count holds,
 # so the arm's own descriptor record against the preflight digest is what
 # refuses it.
-if [ "${QWEN_TEST_CENSUS_REPLACE_MODEL:-}" = "$1" ]; then
+if [ "$(arm_control replace_model)" = "$1" ]; then
     printf 'fixture-model-b\n' >"$2"
 fi
 python3 - "$2" "$QWEN_RESULT_DIRECTORY/runtime-inputs.json" <<'RUNTIME_INPUTS'
@@ -1530,7 +1556,7 @@ json.dump({"schema": "served-runtime-inputs-v1",
 RUNTIME_INPUTS
 # The complete-reply set is a list, since a case reading a verdict past the
 # served runner needs every arm it executes to answer.
-case " ${QWEN_TEST_CENSUS_COMPLETE:-} " in
+case " $(arm_control complete) " in
     *" $1 "*)
         printf 'begin_ns\t1000000000\nend_ns\t2000000000\n' \
             >"$QWEN_RESULT_DIRECTORY/request-window.tsv"
@@ -1552,7 +1578,7 @@ case " ${QWEN_TEST_CENSUS_COMPLETE:-} " in
         exit 0
         ;;
 esac
-if [ "${QWEN_TEST_CENSUS_TRUNCATE:-}" = "$1" ]; then
+if [ "$(arm_control truncate)" = "$1" ]; then
     printf 'begin_ns\t1000000000\nend_ns\t2000000000\n' \
         >"$QWEN_RESULT_DIRECTORY/request-window.tsv"
     printf '{"timings": {"predicted_n": 65, "predi' \
@@ -1561,6 +1587,7 @@ if [ "${QWEN_TEST_CENSUS_TRUNCATE:-}" = "$1" ]; then
 fi
 exit 1
 FAKE_SERVED_RUNNER
+} >"$brick_directory/measure-served-decode.sh"
 chmod +x "$brick_directory/measure-served-decode.sh"
 cat >"$brick_directory/await-quiescence.sh" <<'FAKE_QUIESCENCE'
 #!/bin/sh
@@ -1756,17 +1783,23 @@ run_brick_calibration() {
     fi
     active_fixture=$brick_case
     diagnostic_file=$temporary_directory/$brick_case-stderr.txt
+    # The arm's own controls travel in a file rather than in the environment,
+    # since census_arm_exec hands each arm a closed set.
+    {
+        printf 'replace_model\t%s\n' "$brick_replace_model"
+        printf 'truncate\t%s\n' "$brick_truncate_label"
+        printf 'complete\t%s\n' "$brick_complete_label"
+    } >"$brick_arm_controls"
     set +e
     env -i \
+        GGML_VK_Q4K_SIDEPLANE=0 \
+        QWEN_CACHE_OVERRIDE_CONTEXT_CEILING=65536 \
         QWEN_TEST_BROKER_SILENT="$brick_broker_silent" \
         QWEN_TEST_CLOCK_STATE="$brick_clock_state" \
         QWEN_TEST_CLOCK_TABLE="$brick_clock_table" \
         QWEN_TEST_CLOCK_VIOLATED="$brick_violated_arms" \
         QWEN_TEST_CLOCK_SOURCE="$brick_clock_source" \
         QWEN_TEST_CLOCK_REFUSED="$brick_refused_arms" \
-        QWEN_TEST_CENSUS_REPLACE_MODEL="$brick_replace_model" \
-        QWEN_TEST_CENSUS_TRUNCATE="$brick_truncate_label" \
-        QWEN_TEST_CENSUS_COMPLETE="$brick_complete_label" \
         QWEN_TEST_SUDO_REFUSE="$brick_sudo_refuse" \
         QWEN_TEST_SUDO_LOG="$brick_sudo_log" \
         QWEN_TEST_QUIESCENCE_ARGV="$brick_quiescence_argv" \
@@ -2739,6 +2772,109 @@ grep -q '^dpm_restore=restored level=auto requested=auto ' "$term_stdout"
 [ "$(cat "$term_drm/power_dpm_force_performance_level")" = auto ]
 diagnostic_file=
 printf 'engine_clock_restore_on_term=accepted\n'
+
+# The closed arm environment, read from both sides. Every executed case ran
+# with GGML_VK_Q4K_SIDEPLANE and QWEN_CACHE_OVERRIDE_CONTEXT_CEILING set in the
+# invoking shell: the first gates its pre-pass on getenv returning a pointer
+# rather than on the value, so a 0 enables the feature a control arm is defined
+# by leaving off, and the second is a QWEN_ name radv-low-priority-env.sh
+# leaves alone and qwen-capacity-policy.sh reads. Neither reaches an arm's
+# record, and neither reaches the served runner's own environment, which is
+# what a record alone could not prove.
+active_fixture=arm_environment_closed
+arm_environment_failures=0
+arm_records=$(find "$temporary_directory" -type f -name arm-environment.tsv | sort)
+if [ -z "$arm_records" ]; then
+    printf 'no arm wrote an environment record\n' >&2
+    arm_environment_failures=1
+fi
+for arm_record in $arm_records; do
+    for arm_name in GGML_VK_Q4K_SIDEPLANE QWEN_CACHE_OVERRIDE_CONTEXT_CEILING; do
+        if cut -f1 "$arm_record" | grep -qx "$arm_name"; then
+            printf 'ambient %s reached the arm record: %s\n' "$arm_name" \
+                "$arm_record" >&2
+            arm_environment_failures=1
+        fi
+    done
+    for arm_required in PATH HOME QWEN_LLAMA_SERVER QWEN_RESULT_DIRECTORY \
+        QWEN_VULKAN_EXTERNAL_LEASE_PROOF; do
+        if ! cut -f1 "$arm_record" | grep -qx "$arm_required"; then
+            printf 'arm environment record omits %s: %s\n' "$arm_required" \
+                "$arm_record" >&2
+            arm_environment_failures=1
+        fi
+    done
+done
+if [ ! -s "$brick_arm_environment" ]; then
+    printf 'the served runner recorded no environment of its own\n' >&2
+    arm_environment_failures=1
+fi
+for arm_name in GGML_VK_Q4K_SIDEPLANE QWEN_CACHE_OVERRIDE_CONTEXT_CEILING; do
+    if grep -q "^$arm_name=" "$brick_arm_environment"; then
+        printf 'ambient %s reached the served runner environment\n' "$arm_name" >&2
+        arm_environment_failures=1
+    fi
+done
+[ "$arm_environment_failures" -eq 0 ]
+printf 'arm_environment_closed=accepted records=%s\n' \
+    "$(printf '%s\n' "$arm_records" | grep -c .)"
+
+# The lease as the clock's own authority. A campaign forces a DPM level every
+# workload on the machine then runs at, so it takes the shared Vulkan lease
+# ahead of the first write; another holder therefore refuses the campaign with
+# the fixture level untouched.
+active_fixture=workload_lease_held
+run_index=$((run_index + 1))
+lease_drm=$temporary_directory/drm-lease-held
+cp -R -- "$signal_drm" "$lease_drm"
+printf 'auto\n' >"$lease_drm/power_dpm_force_performance_level"
+printf '0: 200Mhz *\n1: 1100Mhz\n' >"$lease_drm/pp_dpm_sclk"
+# The holder ends on a flag file rather than on a signal, because a signalled
+# `flock FILE COMMAND` leaves the command holding the inherited descriptor and
+# the lease outlives the process the test killed.
+lease_flag=$temporary_directory/lease-held
+: >"$lease_flag"
+(
+    exec 8<>"$workload_lease"
+    flock 8
+    while [ -e "$lease_flag" ]; do
+        sleep 0.05
+    done
+) &
+lease_holder_pid=$!
+lease_held() {
+    lease_probe_status=0
+    flock -n -E 75 "$workload_lease" true || lease_probe_status=$?
+    [ "$lease_probe_status" -eq 75 ]
+}
+lease_attempt=0
+while [ "$lease_attempt" -lt 200 ] && ! lease_held; do
+    lease_attempt=$((lease_attempt + 1))
+    sleep 0.05
+done
+set +e
+env -i PATH="$signal_path" HOME="$home_directory" \
+    SSH_CONNECTION="$signal_ssh_connection" \
+    QWEN_MODELS_DIRECTORY="$models_directory" \
+    QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+    QWEN_CENSUS_PRODUCTION_SERVER="$production_server" \
+    QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+    QWEN_CENSUS_INSTRUMENTED_SERVER="$instrumented_server" \
+    QWEN_DRM_DEVICE="$lease_drm" QWEN_HWMON_ROOT="$signal_hwmon" \
+    QWEN_CENSUS_BROKER="$broker_stub" QWEN_CENSUS_SIDECAR_CPU=0 \
+    QWEN_CENSUS_ENGINE_CLOCK_POLICY=manual \
+    "$brick_runner" "$model_id" "$temporary_directory/out-$run_index" \
+    >"$temporary_directory/lease-held-stdout.txt" \
+    2>"$temporary_directory/lease-held-stderr.txt"
+lease_status=$?
+set -e
+rm -f -- "$lease_flag"
+wait "$lease_holder_pid" 2>/dev/null || true
+[ "$lease_status" -eq 2 ]
+grep -q 'another Vulkan workload holds the shared lease' \
+    "$temporary_directory/lease-held-stderr.txt"
+[ "$(cat "$lease_drm/power_dpm_force_performance_level")" = auto ]
+printf 'workload_lease_held=accepted\n'
 
 active_fixture=completion
 printf 'run_raven2_vulkan_kernel_census_preflight=accepted cases=%s\n' "$run_index"
