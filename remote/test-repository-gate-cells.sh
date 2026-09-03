@@ -131,8 +131,9 @@ with open(os.environ["QWEN_GATE_FIXTURE_MARKER"], "a") as marker_stream:
     marker_stream.write("delta\n")
 assert cross_helper.MARGIN >= 0
 subprocess.run(["sh", CROSS_SCRIPT_PATH], check=True)
-# spawns remote/helpers/cross-helper, an extensionless executable script that
-# itself reads remote/helpers/cross-helper-data.tsv.
+# The extensionless sibling is named here as a bare os.path.join(...) leaf
+# alone, with no comment spelling its path, so the read set must resolve it
+# by directory rather than by matching a literal string elsewhere in the file.
 subprocess.run(
     ["sh", os.path.join(HELPERS_DIRECTORY, "cross-helper")], check=True
 )
@@ -375,6 +376,47 @@ if marker_holds delta; then
     report_failure extensionless-executable delta_reuses_the_new_key
 fi
 
+# The extensionless helper itself is named only as the bare last argument of
+# os.path.join(HELPERS_DIRECTORY, "cross-helper") in delta-test.py, with no
+# comment anywhere spelling its repository path, so an edit to its own bytes
+# or mode bits reruns delta only if the reader resolved that bare reference by
+# directory rather than by matching a literal string.
+run_fixture_gate
+printf '# cross-helper edit\n' >>"$fixture_root/remote/helpers/cross-helper"
+run_fixture_gate
+if ! marker_holds delta; then
+    report_failure bare-name-helper delta_reruns_on_the_helper_edit
+fi
+run_fixture_gate
+if marker_holds delta; then
+    report_failure bare-name-helper delta_reuses_the_new_key
+fi
+
+# A mode change to the same bare-named helper moves the key too, holding it
+# executable throughout so the reference keeps resolving: clearing the
+# execute bit instead would fail the bare-name resolver's own `-x` test and
+# move the whole cell to unbounded rather than moving its key, which is a
+# different case from the mode-bit section below that exercises exactly that
+# transition on a filename-matched member.
+chmod 0700 "$fixture_root/remote/helpers/cross-helper"
+run_fixture_gate
+if ! marker_holds delta; then
+    report_failure bare-name-helper delta_reruns_on_the_helper_mode_change
+fi
+run_fixture_gate
+if marker_holds delta; then
+    report_failure bare-name-helper delta_reuses_the_new_mode_key
+fi
+# Restoring 0755 alone would collide with the record the reuse check above
+# already cached for this content at that mode, so a further edit keeps the
+# transition unambiguous.
+printf '# cross-helper mode-restore\n' >>"$fixture_root/remote/helpers/cross-helper"
+chmod 0755 "$fixture_root/remote/helpers/cross-helper"
+run_fixture_gate
+if ! marker_holds delta; then
+    report_failure bare-name-helper delta_reruns_after_restoring_the_mode
+fi
+
 # A cleared or set execute bit moves the key, because the gate runs several
 # cells by invoking their script directly and a mode change alone decides
 # whether that invocation reaches the interpreter. 0644 and 0755 are already
@@ -531,6 +573,112 @@ if [ -z "$beta_key" ]; then
     report_failure read-set-record beta_key_is_reported
 elif ! grep -qx 'read_set=unbounded' "$cache_directory/cells/$beta_key"; then
     report_failure read-set-record beta_record_states_unbounded
+fi
+
+# A bare os.path.join(...) leaf that names neither an existing executable
+# file nor an existing directory in any directory the reference resolves
+# against marks the read set unbounded, since the reader found a spawn target
+# it cannot bound rather than a prose word that happens to share a directory's
+# spelling.
+missing_helper_root=$work_directory/missing-helper-tree
+mkdir -p "$missing_helper_root/remote/helpers"
+cat >"$missing_helper_root/remote/zeta-test.py" <<'FIXTURE'
+import os
+
+ZETA_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
+HELPERS_DIRECTORY = os.path.join(ZETA_DIRECTORY, "helpers")
+SPAWN_TARGET = os.path.join(HELPERS_DIRECTORY, "does-not-exist-helper")
+FIXTURE
+zeta_status=0
+GATE_CELL_ROOT="$missing_helper_root" sh -c \
+    ". \"$script_directory/gate-cell-key.sh\"; gate_cell_read_set remote/zeta-test.py" \
+    >"$work_directory/zeta.out" 2>"$work_directory/zeta.err" || zeta_status=$?
+if [ "$zeta_status" -ne 3 ]; then
+    report_failure bare-name-unresolved zeta_read_set_is_unbounded
+fi
+
+# A helper reached through a directory a script composes purely from two of
+# its own DIRECTORY constants -- LEAF_DIRECTORY built by joining
+# ETA_DIRECTORY with the bare name `only-helpers`, holding no .py module of
+# its own -- still resolves, since gate_cell_named_directories takes the one
+# further hop through a bare token that itself names a directory rather than
+# relying on that directory happening to hold a Python module the way
+# remote/helpers does in the delta fixture above.
+directory_composition_root=$work_directory/directory-composition-tree
+mkdir -p "$directory_composition_root/remote/only-helpers"
+cat >"$directory_composition_root/remote/only-helpers/leaf-helper" <<'FIXTURE'
+#!/bin/sh
+set -eu
+exit 0
+FIXTURE
+chmod 0755 "$directory_composition_root/remote/only-helpers/leaf-helper"
+cat >"$directory_composition_root/remote/eta-test.py" <<'FIXTURE'
+import os
+
+ETA_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
+LEAF_DIRECTORY = os.path.join(ETA_DIRECTORY, "only-helpers")
+LEAF_TARGET = os.path.join(LEAF_DIRECTORY, "leaf-helper")
+FIXTURE
+eta_status=0
+GATE_CELL_ROOT="$directory_composition_root" sh -c \
+    ". \"$script_directory/gate-cell-key.sh\"; gate_cell_read_set remote/eta-test.py" \
+    >"$work_directory/eta.out" 2>"$work_directory/eta.err" || eta_status=$?
+if [ "$eta_status" -ne 0 ]; then
+    report_failure directory-composition eta_read_set_is_bounded
+fi
+if ! grep -qx 'remote/only-helpers/leaf-helper' "$work_directory/eta.out"; then
+    report_failure directory-composition eta_read_set_carries_the_leaf
+fi
+
+# gate_cell_bare_names_are_unresolved binds a bare name to the one directory
+# gate_cell_directory_variable_map traces its own call's first argument to,
+# not to any candidate directory that happens to hold a same-named
+# executable. The decoy sits directly under remote/, which
+# gate_cell_module_search_directories always reports and gate_cell_named_directories
+# would therefore always search under the old, unscoped design this replaces --
+# proving the binding is real rather than incidentally correct because the
+# decoy's directory was never a candidate at all. THETA_DIRECTORY also
+# exercises the third assignment pattern, NAME = os.path.dirname(OTHER_DIRECTORY),
+# the way remote/image-mcp/server.py derives REMOTE_DIRECTORY from its own
+# SERVER_DIRECTORY.
+decoy_root=$work_directory/decoy-directory-tree
+mkdir -p "$decoy_root/remote/nested" "$decoy_root/remote/actual-helpers"
+cat >"$decoy_root/remote/nested/theta-test.py" <<'FIXTURE'
+import os
+
+NESTED_DIRECTORY = os.path.dirname(os.path.abspath(__file__))
+THETA_DIRECTORY = os.path.dirname(NESTED_DIRECTORY)
+HELPER_DIRECTORY = os.path.join(THETA_DIRECTORY, "actual-helpers")
+TARGET = os.path.join(HELPER_DIRECTORY, "shared-name-helper")
+FIXTURE
+cat >"$decoy_root/remote/shared-name-helper" <<'FIXTURE'
+#!/bin/sh
+set -eu
+exit 0
+FIXTURE
+chmod 0755 "$decoy_root/remote/shared-name-helper"
+theta_status=0
+GATE_CELL_ROOT="$decoy_root" sh -c \
+    ". \"$script_directory/gate-cell-key.sh\"; gate_cell_read_set remote/nested/theta-test.py" \
+    >"$work_directory/theta.out" 2>"$work_directory/theta.err" || theta_status=$?
+if [ "$theta_status" -ne 3 ]; then
+    report_failure decoy-directory-binding theta_stays_unbounded_before_the_real_target_exists
+fi
+cat >"$decoy_root/remote/actual-helpers/shared-name-helper" <<'FIXTURE'
+#!/bin/sh
+set -eu
+exit 0
+FIXTURE
+chmod 0755 "$decoy_root/remote/actual-helpers/shared-name-helper"
+theta_status=0
+GATE_CELL_ROOT="$decoy_root" sh -c \
+    ". \"$script_directory/gate-cell-key.sh\"; gate_cell_read_set remote/nested/theta-test.py" \
+    >"$work_directory/theta.out" 2>"$work_directory/theta.err" || theta_status=$?
+if [ "$theta_status" -ne 0 ]; then
+    report_failure decoy-directory-binding theta_resolves_once_the_real_target_exists
+fi
+if ! grep -qx 'remote/actual-helpers/shared-name-helper' "$work_directory/theta.out"; then
+    report_failure decoy-directory-binding theta_read_set_carries_the_real_target
 fi
 
 if [ "$failures" -ne 0 ]; then

@@ -74,6 +74,79 @@ tiny cells rather than the real gate's dozens of minutes-long ones.
   executable, so a script named without a suffix is scanned for the paths it
   names the same way `remote/*.sh` and `remote/*.py` already are, rather than
   being treated as an opaque binary the way a PNG fixture is.
+- **A bare-name reference to an extensionless executable.** The filename and
+  module readers above both require a `.py`, `.sh`, or `.mjs` suffix, so a
+  script that reaches an extensionless helper by joining its own directory
+  variable with a literal name in one Python `os.path.join` call named no
+  token either reader could match, and the earlier version of this fixture
+  only passed because a comment nearby happened to spell the helper's full
+  repository path in prose. `gate_cell_bare_name_tokens` now pulls the last,
+  dotless argument out of every `os.path.join` call in the file regardless of
+  its first argument, and `gate_cell_bare_name_paths` resolves each candidate
+  against `gate_cell_named_directories` -- the reading file's own directory,
+  every module search directory, the directory of every literal path the same
+  file already names, and one further hop through a bare token that is itself
+  a directory rather than a leaf (the `"helpers"` in a join of
+  `DELTA_DIRECTORY` with that bare name), resolved against that base set
+  alone. The extra hop is what resolves a helper reached through a directory
+  a script composes purely from two of its own `DIRECTORY` constants, holding
+  no `.py` module of its own to put it in the module search set already --
+  without it, such a directory would never enter the list and a bare leaf
+  named against it would read `unresolved` on that account alone rather than
+  on an actual missing file. Each candidate joins the read set with its mode
+  bits, the way every other member does, where it names an existing
+  executable regular file there, and skipping it silently otherwise:
+  over-inclusion at this discovery stage costs at most a few extra `stat(2)`
+  calls and can only add a member, never move a cell to `unbounded`. A bare
+  token that resolves to a directory rather than a file -- the `"helpers"`
+  join itself, evaluated again here as a leaf rather than as the extra hop
+  above -- is skipped the same way. Moving a cell to `unbounded` on an
+  unresolved token is a narrower decision, in
+  `gate_cell_bare_names_are_unresolved`: it judges only
+  `gate_cell_bare_name_unbounded_tokens`, the subset of joins whose own first
+  argument follows this tree's convention for a directory constant a script
+  resolves at run time -- an ALL-CAPS name ending `DIRECTORY`, assigned from
+  `os.path.dirname(os.path.abspath(__file__))`, a join of one such name with a
+  bare subdirectory, or `os.path.dirname` of one such name (the
+  `REMOTE_DIRECTORY` a script derives from its own `SERVER_DIRECTORY`, one
+  level up). Unlike discovery, this check does not search every candidate
+  directory for a match: `gate_cell_directory_variable_map` traces each
+  `DIRECTORY`-suffixed constant to the single directory this reader can prove
+  it names, and the check tests the token only there, because binding a bare
+  name to a same-spelled executable found in some unrelated directory would
+  let the cell stay `bounded` while the reference's actual, still-absent
+  target moved nothing. A constant this reader cannot trace to exactly one
+  directory this way is judged unresolved on that account alone, the same as
+  a target that is genuinely absent. Every other `os.path.join` call in this
+  tree -- one composing a state, fixture, or sysfs path from a lowercase
+  local or attribute -- is read by the broad discovery pass but never forces
+  `unbounded` on a token that names no file at all, which a full-tree sweep
+  during this change confirmed resolves nothing outside the scripts this
+  change touches. Both readers scan
+  through `gate_cell_strip_comment_lines`, which drops every full-line
+  comment first, since an unfiltered scan reads a worked example inside a
+  comment or docstring the same as a live construction and would mark the
+  cell `unbounded` on a reference nothing at run time ever names -- a trailing
+  `# comment` sharing a code line still survives this filter, the same
+  asymmetry `gate_cell_reads_are_unbounded` already carries against a
+  mid-line construction. `gate_cell_bare_name_paths` records every candidate
+  directory that resolves a bare name to an executable file, not only the
+  first in sort order, the way `gate_cell_sibling_paths` already resolves an
+  ambiguous filename: a static reader cannot tell which directory the Python
+  variable names at run time, and recording one match would leave the key
+  unmoved by an edit to the helper the variable actually resolves to.
+  Discovery and the unbounded trigger deliberately disagree on how broadly to
+  search, because the two mistakes cost differently: discovery searching
+  every candidate directory can only hash a spurious member into the
+  manifest, which costs a rerun the next time that member changes and never a
+  false reuse, while the unbounded trigger binding to the same spurious
+  match would let the cell read `bounded` on a reference whose real target
+  stayed absent. `test-repository-gate-cells.sh` now spells the helper's
+  reference only as that bare join's last argument, with no comment carrying
+  its path, and
+  proves both that editing the helper's own bytes or mode moves the key and
+  that a bare name in a `DIRECTORY`-suffixed join resolving to nothing marks
+  the read set unbounded.
 - **An unbounded read set, stated rather than inferred.** Every accepted
   manifest and persisted record now carries `read_set=bounded`,
   `read_set=unbounded`, or `read_set=universal` explicitly, so a reader of a
@@ -103,3 +176,26 @@ way it accepts a directory over `gate_cell_directory_walk_limit`: an ambiguity
 resolves toward running the cell rather than toward a guessed partial read set,
 and a construction this reader cannot statically resolve is marked unbounded
 rather than silently under-read.
+
+`gate_cell_bare_name_tokens` reads only the Python `os.path.join` construction;
+a shell script that composes an extensionless helper as `"$var/NAME"` for a
+variable other than the pre-existing `script_directory` substitution, or a
+Python script that composes one through string concatenation or an f-string
+rather than `os.path.join`, names no token this reader matches and the helper
+stays out of the read set the way it did before this change. Widening the
+discovery pattern to every quoted string in the file was rejected during this
+change for the same reason discovery stays unconstrained on its first
+argument while the `unbounded` trigger does not: discovery alone cannot cause
+a false reuse, but an unscoped *unbounded* trigger would resolve an ordinary
+flag or status literal against the same directories and, finding no file or
+directory there, would mark most cells `unbounded` on their own prose rather
+than on an actual unread dependency. The `DIRECTORY`-suffix requirement on the
+unbounded trigger is itself a residual gap in the other direction: a script
+that names its directory constant `HELPERS_DIR` or `helpers_directory` rather
+than following the `..._DIRECTORY` convention composes a helper reference the
+discovery pass still adds to the read set when the helper resolves, but an
+edit that breaks that reference -- the helper renamed or removed -- will not
+force the cell to `unbounded`, since the unresolved token never reaches the
+narrower check. This tree's own scripts follow the `..._DIRECTORY` convention
+throughout, which a full-tree sweep during this change confirmed, so the gap
+is latent rather than active.
