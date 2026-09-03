@@ -219,13 +219,13 @@ ssh eirikr@qwen-laptop
 sudo -v
 ~/qwen-laptop-setup/remote/qwen-teardown.sh
 out=~/evidence/prefill-ladder/$(date -u +%Y%m%dT%H%MZ)
-set -C; : >"$out.status" || { printf 'output path in use: %s\n' "$out" >&2; exit 1; }; set +C
+set -C; { : >"$out.status" && : >"$out.log"; } || { printf 'output path in use: %s\n' "$out" >&2; exit 1; }; set +C
 { QWEN_CENSUS_MCLK_LEVEL=2 \
     ~/qwen-laptop-setup/remote/run-prefill-ladder.sh \
     ~/deployments/CONTROL/llama-server \
     ~/builds/CANDIDATE/bin/llama-server \
     qwen38-2b-distill \
-    "$out"; printf 'ladder_exit=%s\n' "$?" >"$out.status"; } 2>&1 | tee "$out.log"
+    "$out"; printf 'ladder_exit=%s\n' "$?" >"$out.status"; } 2>&1 | tee -a "$out.log"
 cat "$out.status"
 
 # the clock the next workload inherits, read from the device rather than assumed
@@ -245,9 +245,12 @@ exists, so `$out.log` and `$out.status` are named beside that directory rather t
 inside it. The runner's own refusal covers the directory alone: two invocations inside
 one UTC minute compose the same `$out`, and the redirection and `tee` would truncate the
 first run's sidecars while the runner was still refusing its directory. `set -C` makes
-the `: >"$out.status"` an `O_EXCL` create, so the second invocation loses that one
-atomically and stops before it reaches `tee`; testing the three names first and creating
-them afterwards would leave both runs past the test. The device is claimed twice over
+each `: >` an `O_EXCL` create, so a second invocation loses `$out.status` or `$out.log`
+atomically and stops before it reaches `tee`; testing the names first and creating them
+afterwards would leave both runs past the test. Both sidecars are reserved because
+reserving only the status file leaves `tee` truncating a retained `$out.log` that
+outlived its status file, and `tee -a` appends into the empty file the reservation just
+made rather than truncating it again. The device is claimed twice over
 anyway, since the ladder takes the Vulkan workload lease, but the reservation is what
 keeps the retained bytes safe rather than the lease.
 
