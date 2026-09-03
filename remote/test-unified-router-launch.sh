@@ -670,6 +670,31 @@ fi
 printf 'fixture-api-key\n' >"$api_key_file"
 chmod 600 "$api_key_file"
 
+# A symlink at the api.key path is refused outright rather than minted or
+# chmod'd through: `[ -s ... ]` and chmod both follow a link, so writing
+# through one would overwrite or change the mode of whatever it points at
+# ahead of admit_web_lan_exposure's own `[ -L ... ]` refusal.
+api_key_symlink_target=$work/state/elsewhere
+printf 'untouched\n' >"$api_key_symlink_target"
+chmod 644 "$api_key_symlink_target"
+rm -f "$api_key_file"
+ln -s "$api_key_symlink_target" "$api_key_file"
+if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_OPEN=0 \
+    >"$work/lan-symlinked-key.log" 2>"$work/lan-symlinked-key.err"; then
+    report lan_api_key_symlink_refused admitted
+else
+    outcome=ok
+    grep -q 'the Web UI API key path names a symlink' \
+        "$work/lan-symlinked-key.err" || outcome=wrong_reason
+    [ "$(cat "$api_key_symlink_target")" = untouched ] || outcome=target_overwritten
+    [ "$(stat -c %a "$api_key_symlink_target")" = 644 ] || outcome=target_chmodded
+    report lan_api_key_symlink_refused "$outcome"
+fi
+rm -f "$api_key_file"
+printf 'fixture-api-key\n' >"$api_key_file"
+chmod 600 "$api_key_file"
+
 # The key line is guarded by the terminal test itself rather than by the
 # absence of a match above, so the arm reads the source for that guard.
 if grep -q '\[ -t 1 \] && \[ -s "\$state_directory/api.key" \]' \

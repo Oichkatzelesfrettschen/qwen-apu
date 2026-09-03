@@ -231,12 +231,26 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
         # already present and does nothing.
         if [ "$QWEN_REQUIRE_API_KEY" = 1 ]; then
             api_key_file=$state_directory/api.key
+            # A symlink here would have openssl and chmod follow it: `-s`
+            # reports on the link's target, so an empty or missing target
+            # gets overwritten and the target's own mode gets changed before
+            # admit_web_lan_exposure's own `[ -L ... ]` check ever runs. This
+            # refuses the symlink outright, the way the broker signing key's
+            # own admission already does, rather than writing through it.
+            if [ -L "$api_key_file" ]; then
+                printf 'the Web UI API key path names a symlink, and the key is a regular file: %s\n' \
+                    "$api_key_file" >&2
+                exit 1
+            fi
             if [ ! -s "$api_key_file" ]; then
                 if ! command -v openssl >/dev/null 2>&1; then
                     printf 'openssl is required to create the Web UI API key\n' >&2
                     exit 1
                 fi
-                openssl rand -hex 32 >"$api_key_file"
+                (
+                    umask 077
+                    openssl rand -hex 32 >"$api_key_file"
+                )
             fi
             chmod 600 "$api_key_file"
         fi
