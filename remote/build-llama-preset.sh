@@ -131,7 +131,7 @@ case $preset in
         preset_targets='llama-server llama-bench'
         preset_outputs='bin/llama-server bin/llama-bench'
         compiler_flags=$zen_target
-        instrumentation=pipeline-census-v1
+        instrumentation=pipeline-census-v3
         build_role=diagnostic
         serving_eligible=no
         case " ${QWEN_LLAMA_CANDIDATE_SELECT:-} " in
@@ -627,7 +627,12 @@ manifest_path=$build_directory/artifact-manifest.tsv
     printf 'preset\t%s\n' "$preset"
     printf 'commit\t%s\n' "$actual_commit"
     printf 'worktree\t%s\n' "$worktree_state"
-    printf 'instrumentation\t%s\n' "$instrumentation"
+    # A serving build names no instrumentation row, which is the shape the
+    # bundle grammar and the census runner admit as production; a diagnostic
+    # build names its instrumentation and is refused by both.
+    if [ "$instrumentation" != - ]; then
+        printf 'instrumentation\t%s\n' "$instrumentation"
+    fi
     printf 'build_role\t%s\n' "$build_role"
     printf 'serving_eligible\t%s\n' "$serving_eligible"
     printf 'checkpoint_semantics\t%s\n' "$checkpoint_semantics"
