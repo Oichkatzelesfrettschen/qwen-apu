@@ -2,8 +2,14 @@
 
 // A /#key=<bearer> link hands the page its API key once: the page stores the
 // key the way a paste does, rewrites the address bar without the fragment, and
-// sends the bearer on its first roster request. A page loaded without the
-// fragment keeps whatever the browser remembered and stores nothing new.
+// carries the bearer on an authenticated retry once boot()'s own unauthenticated
+// probe of GET /v1/models has proven the backend requires one. A page loaded
+// without the fragment keeps whatever the browser remembered and stores
+// nothing new. An open backend (QWEN_WEB_LAN_OPEN=1) answers that first probe
+// with 200 and no Authorization header, and boot() reads that as proof no key
+// is needed: it drops any remembered key from storage rather than trusting it,
+// so a bearer from an earlier bearer-mode session on this browser never
+// reaches an open listener.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -32,7 +38,18 @@ const webuiPath = new URL('../webui/index.html', import.meta.url);
 const inlineScript = fs.readFileSync(webuiPath, 'utf8').match(/<script>([\s\S]*?)<\/script>/);
 assert.ok(inlineScript, 'the page carries one inline script');
 
-function loadPage({ hash, remembered }) {
+async function flushPromises(turns = 10) {
+  for (let turn = 0; turn < turns; turn += 1) {
+    await new Promise(resolve => setImmediate(resolve));
+  }
+}
+
+// `responses` names the status (and, for a 200, the roster body) each
+// successive `./v1/models` call answers with, in order; the last entry
+// repeats for any call past the end of the list. Every other route answers a
+// harmless empty 200 so a fire-and-forget request boot() issues once a model
+// is selected (props, a tool probe) settles without throwing.
+async function loadPage({ hash, remembered, responses }) {
   const elements = new Map();
   const document = {
     createElement() { return new FakeElement(); },
@@ -54,13 +71,25 @@ function loadPage({ hash, remembered }) {
     pathname: '/', search: '',
     get href() { return `http://10.0.0.170:42069/${this.search}${this.hash}`; },
   };
+  let rosterCall = 0;
+  async function fetchMock(url, options = {}) {
+    const request = { url: String(url), headers: options.headers || {} };
+    requests.push(request);
+    if (request.url === './v1/models') {
+      const spec = responses[Math.min(rosterCall, responses.length - 1)];
+      rosterCall += 1;
+      return {
+        ok: spec.status >= 200 && spec.status < 300,
+        status: spec.status,
+        async json() { return spec.body ?? { data: [] }; },
+      };
+    }
+    return { ok: true, status: 200, async json() { return {}; } };
+  }
   const context = vm.createContext({
     console,
     document,
-    fetch(url, options = {}) {
-      requests.push({ url: String(url), headers: options.headers || {} });
-      return new Promise(() => {});
-    },
+    fetch: fetchMock,
     window: {
       alert() {},
       localStorage,
@@ -70,34 +99,90 @@ function loadPage({ hash, remembered }) {
     },
   });
   vm.runInContext(inlineScript[1], context, { filename: webuiPath.pathname });
-  return { stored, requests, replaced, elements };
+  await flushPromises();
+  const rosterRequests = requests.filter(request => request.url === './v1/models');
+  return { stored, requests, rosterRequests, replaced, elements };
 }
 
 {
-  const page = loadPage({ hash: '#key=abc%2F123', remembered: null });
+  const page = await loadPage({
+    hash: '#key=abc%2F123', remembered: null,
+    responses: [{ status: 401 }, { status: 200, body: { data: [{ id: 'test-model' }] } }],
+  });
   assert.equal(page.stored.get('qwen-apu-api-key'), 'abc/123', 'the fragment key is stored');
   assert.deepEqual(page.replaced, ['/'], 'the address bar loses the fragment');
   assert.equal(page.elements.get('#api-key').value, 'abc/123', 'the field shows the key');
-  const roster = page.requests.find(request => request.url.endsWith('v1/models'));
-  assert.ok(roster, 'the page asks for the roster');
-  assert.equal(roster.headers.Authorization, 'Bearer abc/123', 'the roster request carries the bearer');
+  assert.equal(page.rosterRequests.length, 2, 'a bearer-required backend takes a probe and a retry');
+  assert.equal(page.rosterRequests[0].headers.Authorization, undefined,
+    'the discovery probe carries no Authorization header');
+  assert.equal(page.rosterRequests[1].headers.Authorization, 'Bearer abc/123',
+    'the authenticated retry carries the fragment key');
+  assert.equal(page.elements.get('#api-key').hidden, true,
+    'a working fragment key hides the field rather than asking for it again');
+  assert.equal(page.elements.get('#set-key').hidden, true);
   console.log('fragment_key_stored_and_sent=accepted');
 }
 
 {
-  const page = loadPage({ hash: '', remembered: 'kept-key' });
+  const page = await loadPage({
+    hash: '', remembered: 'kept-key',
+    responses: [{ status: 401 }, { status: 200, body: { data: [{ id: 'test-model' }] } }],
+  });
   assert.equal(page.stored.get('qwen-apu-api-key'), 'kept-key', 'a remembered key survives');
   assert.deepEqual(page.replaced, [], 'no fragment, no rewrite');
-  const roster = page.requests.find(request => request.url.endsWith('v1/models'));
-  assert.equal(roster.headers.Authorization, 'Bearer kept-key');
+  assert.equal(page.rosterRequests.length, 2);
+  assert.equal(page.rosterRequests[0].headers.Authorization, undefined);
+  assert.equal(page.rosterRequests[1].headers.Authorization, 'Bearer kept-key');
   console.log('remembered_key_reused=accepted');
 }
 
 {
-  const page = loadPage({ hash: '#/c/some-conversation', remembered: null });
+  const page = await loadPage({
+    hash: '#/c/some-conversation', remembered: null,
+    responses: [{ status: 200, body: { data: [{ id: 'test-model' }] } }],
+  });
   assert.equal(page.stored.has('qwen-apu-api-key'), false, 'a route fragment stores no key');
   assert.deepEqual(page.replaced, [], 'a route fragment is left alone');
+  assert.equal(page.rosterRequests.length, 1, 'no key means no retry, open or not');
   console.log('route_fragment_untouched=accepted');
+}
+
+// The discovery probe answers 200 with no Authorization header sent, so the
+// backend is open: a key this browser remembered from an earlier bearer-mode
+// session must be dropped from storage and never sent, and every key control
+// disappears rather than asking for a credential the backend does not want.
+{
+  const page = await loadPage({
+    hash: '', remembered: 'stale-bearer-mode-key',
+    responses: [{ status: 200, body: { data: [{ id: 'test-model' }] } }],
+  });
+  assert.equal(page.rosterRequests.length, 1, 'an open backend answers the probe alone');
+  assert.equal(page.rosterRequests[0].headers.Authorization, undefined,
+    'the stale bearer never reaches the open listener');
+  assert.equal(page.stored.has('qwen-apu-api-key'), false,
+    'the stale bearer is dropped from storage rather than kept for next time');
+  assert.equal(page.elements.get('#api-key').hidden, true);
+  assert.equal(page.elements.get('#set-key').hidden, true);
+  assert.equal(page.elements.get('#key-hint').hidden, true);
+  assert.equal(page.elements.get('#lan-key-hint').hidden, true,
+    'the llama.cpp UI tab stops naming a bearer the router does not require');
+  console.log('open_listener_drops_remembered_key=accepted');
+}
+
+// A bearer-required backend with nothing remembered and no fragment key
+// reveals the input rather than asking silently: the field, the set-key
+// button, and the one-line hint all become visible.
+{
+  const page = await loadPage({
+    hash: '', remembered: null,
+    responses: [{ status: 401 }],
+  });
+  assert.equal(page.rosterRequests.length, 1, 'no candidate key means no retry to spend');
+  assert.equal(page.elements.get('#api-key').hidden, false);
+  assert.equal(page.elements.get('#set-key').hidden, false);
+  assert.equal(page.elements.get('#key-hint').hidden, false);
+  assert.equal(page.elements.get('#lan-key-hint').hidden, false);
+  console.log('bearer_listener_with_no_key_reveals_input=accepted');
 }
 
 console.log('fallback_webui_fragment_key=accepted');

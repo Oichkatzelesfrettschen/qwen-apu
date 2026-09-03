@@ -688,7 +688,15 @@ remove, and it meets both research-override refusals on the exposure's own
 terms. Under the bearer mode the launcher prints the page link carrying
 `#key=<bearer>` only where `[ -t 1 ]` finds stdout on a terminal, so the key
 stays out of a redirected log; the page reads that fragment once, stores it,
-and rewrites the address bar without it.
+and rewrites the address bar without it. `webui/index.html` never asks for the
+key unconditionally: `boot()` probes `GET /v1/models` with no Authorization
+header first, and a 200 there proves the router open, hiding the key field,
+the LAN hint, and the copy button outright and dropping any key this browser
+remembered rather than send a stale bearer to a listener that wants none. A
+401 proves the router requires the bearer, and only then does an authenticated
+retry carry a remembered or fragment key; the field reveals itself with a
+one-line hint naming the launcher's printed link only where no such key exists
+or the retry itself came back rejected.
 
 The integer dot product is advertised, functional, and unaccelerated, which
 decides how most of this tree's bytes execute. RADV reports

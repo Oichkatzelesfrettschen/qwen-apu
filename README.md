@@ -356,6 +356,15 @@ generation, while the approval dialog and the single-use grant stay the
 execution gate; `QWEN_WEB_LAN_OPEN=0` requires the bearer on every listener
 instead. `remote/qwen-teardown.sh` ends it.
 
+The page never assumes which mode it was launched under. `webui/index.html`
+probes `GET /v1/models` with no Authorization header on load: a 200 proves the
+router open and the page hides the key field, the LAN hint, and the copy
+button outright, dropping any key this browser remembered from an earlier
+bearer-mode session rather than risk sending it; a 401 proves the router
+requires the bearer, and the page retries once with a remembered or
+`#key=`-fragment key if one exists, revealing the field with a one-line hint
+only where neither exists or the retry itself comes back rejected.
+
 ## Lifecycle
 
 `remote/qwen-launch.sh` starts the appliance and returns once `/health`

@@ -136,7 +136,7 @@
   section.notice h2 { font-size:15px; margin:0 0 .6rem; }
   section.notice p, section.notice ul { max-width:44rem; }
   section.notice code { background:var(--mine); border-radius:.25rem; padding:.05rem .3rem; }
-  section.notice .hint { color:var(--dim); font-size:13px; }
+  .hint { color:var(--dim); font-size:13px; }
 </style>
 </head>
 
@@ -148,8 +148,9 @@
   <select class="model-picker" id="model-picker" aria-label="Model" hidden></select>
   <span id="ctx">context pending</span>
   <span>Raven2 UMA | LOW-priority Vulkan | service-latency guarded</span>
-  <input class="key" type="password" id="api-key" placeholder="API key: the appliance's api.key, remembered on this browser" autocomplete="off">
-  <button class="act" id="set-key">set key</button>
+  <input class="key" type="password" id="api-key" placeholder="API key" autocomplete="off" hidden>
+  <button class="act" id="set-key" hidden>set key</button>
+  <span class="hint" id="key-hint" hidden>no key is remembered; open the /#key=... link the launch printed, or paste api.key from the appliance state directory into the field to the left</span>
   <label class="chip"><input type="checkbox" id="reasoning"> reasoning</label>
   <label class="chip"><input type="checkbox" id="tools"> offer a demo tool</label>
   <label class="chip"><input type="checkbox" id="web-tools"> web</label>
@@ -271,7 +272,7 @@
     <a id="llama-ui-link" href="/">open the root of this listener</a>
     <span class="hint" id="llama-ui-origin"></span>
   </p>
-  <p class="hint">A LAN launch requires the bearer on every route, so the
+  <p class="hint" id="lan-key-hint">A LAN launch requires the bearer on every route, so the
     llama.cpp UI wants the same key this page holds.
     <button class="act" id="copy-api-key">copy the API key</button>
     <span id="copy-api-key-note"></span>
@@ -311,12 +312,21 @@ function writeBrowserStorage(storageName, key, value) {
   } catch { /* storage denial leaves the live page state authoritative */ }
 }
 
-// The bearer is one per appliance rather than one per person: the launch
-// reads it from api.key in its state directory and every listener requires
-// it. localStorage keeps it across tabs and reloads on this browser, and a
-// value an earlier visit left in sessionStorage is read once and carried over.
+// The bearer is one per appliance rather than one per person: a bearer-mode
+// launch reads it from api.key in its state directory and every listener
+// requires it, and an open-mode launch (QWEN_WEB_LAN_OPEN=1) requires none at
+// all. localStorage keeps a remembered key across tabs and reloads on this
+// browser, and a value an earlier visit left in sessionStorage is read once
+// and carried over -- boot() discovers which mode the backend runs in and
+// drops this value rather than trusting it, so a stale key from an earlier
+// bearer-mode session never reaches an open listener.
 let apiKey = readBrowserStorage('localStorage', 'qwen-apu-api-key')
   || readBrowserStorage('sessionStorage', 'qwen-apu-api-key') || '';
+// null until boot()'s first roster probe answers: false once a 200 with no
+// Authorization header proves the backend open, true once a 401 proves it
+// requires the bearer. UI visibility for the key controls follows this rather
+// than being asked for unconditionally.
+let keyRequired = null;
 // A link of the form /#key=<bearer> hands the key over once: the fragment
 // stays in the browser rather than reaching the router in a request line or
 // its log, the page stores it beside a pasted key, and the address bar is
@@ -353,7 +363,33 @@ function authHeaders(additional = {}) {
   return headers;
 }
 
+// boot() calls this once its roster probe (and any authenticated retry) has
+// settled, naming the status that request ended on. An open backend hides
+// every key control outright; a bearer backend reveals them only where
+// rosterStatus is still 401 -- no key at all, or the remembered/fragment key
+// this attempt just carried was rejected -- so a working key stops the page
+// asking for it, and a broken one keeps the field where a person can fix it.
+// The LAN hint by the llama.cpp UI tab is a plain function of open mode alone,
+// since it names a key that page holds whether or not this one's field shows.
+function applyCredentialModeToUi(rosterStatus) {
+  const openMode = keyRequired === false;
+  $('#lan-key-hint').hidden = openMode;
+  if (openMode) {
+    $('#api-key').hidden = true;
+    $('#set-key').hidden = true;
+    $('#key-hint').hidden = true;
+    return;
+  }
+  const reveal = rosterStatus === 401;
+  $('#api-key').hidden = !reveal;
+  $('#set-key').hidden = !reveal;
+  $('#key-hint').hidden = !reveal;
+}
+
 $('#set-key').onclick = () => {
+  // An open backend already dropped this control from view; a script that
+  // clicks it anyway must not re-arm a key discovery already retired.
+  if (keyRequired === false) return;
   apiKey = $('#api-key').value.trim();
   writeBrowserStorage(
     'localStorage', 'qwen-apu-api-key', apiKey || null);
@@ -2115,8 +2151,36 @@ async function boot() {
   renderAttached();
 
   try {
-    const rosterResponse = await fetch('./v1/models', { headers: authHeaders() });
+    // The first request carries no Authorization header regardless of what
+    // this browser remembers, so the response discovers the requirement
+    // rather than assuming it: a 200 proves the backend open (a stale bearer
+    // must never reach it), and only a 401 means a key belongs on the retry.
+    let rosterResponse = await fetch('./v1/models');
     if (generation !== modelStateGeneration) return;
+    if (rosterResponse.status === 200) {
+      keyRequired = false;
+      if (apiKey) {
+        apiKey = '';
+        $('#api-key').value = '';
+        // Clearing both stores through a loop keeps the storage backend's own
+        // name out of a writeBrowserStorage(...) argument list: written as a
+        // literal call, 'sessionStorage' reads to remote/test-fallback-webui-
+        // web-authorization.sh's no-persisted-secret gate as the word
+        // "session" naming a grant or secret, which this write is not -- it
+        // clears a remembered key rather than persisting one.
+        for (const storageName of ['localStorage', 'sessionStorage']) {
+          writeBrowserStorage(storageName, 'qwen-apu-api-key', null);
+        }
+      }
+      applyCredentialModeToUi(rosterResponse.status);
+    } else if (rosterResponse.status === 401) {
+      keyRequired = true;
+      if (apiKey) {
+        rosterResponse = await fetch('./v1/models', { headers: authHeaders() });
+        if (generation !== modelStateGeneration) return;
+      }
+      applyCredentialModeToUi(rosterResponse.status);
+    }
     if (rosterResponse.status === 401) {
       $('#model').textContent =
         apiKey

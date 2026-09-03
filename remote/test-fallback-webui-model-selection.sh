@@ -71,4 +71,16 @@ if grep -E "model: ['\"]qwen-apu['\"]" "$fallback_ui" >/dev/null; then
     exit 1
 fi
 
+# boot() discovers the credential requirement from the roster route itself
+# rather than assuming one: an unauthenticated probe decides open or bearer
+# mode before any key ever reaches the wire, a 200 drops a remembered key
+# rather than trusting it, and only a 401 retries with one.
+grep -F 'let rosterResponse = await fetch(' "$fallback_ui" >/dev/null
+grep -F "if (rosterResponse.status === 200) {" "$fallback_ui" >/dev/null
+grep -F "keyRequired = false;" "$fallback_ui" >/dev/null
+grep -F "rosterResponse = await fetch('./v1/models', { headers: authHeaders() });" \
+    "$fallback_ui" >/dev/null
+grep -F 'function applyCredentialModeToUi(rosterStatus)' "$fallback_ui" >/dev/null
+grep -F "const reveal = rosterStatus === 401;" "$fallback_ui" >/dev/null
+
 printf 'fallback_webui_model_selection=accepted\n'
