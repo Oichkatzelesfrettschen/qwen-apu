@@ -134,21 +134,37 @@ That key is the widest boundary that is valid: wider than one workgroup, which i
 narrower than a graph, because an epoch bump is what keeps a reused buffer offset from
 reading last graph's sums.
 
+**The column guard, and what it leaves untested.** `ggml_vk_q4_k_sideplane_max_columns()`
+admits `ne11 * ne12 * ne13 <= 1` by default, which is the decode step's own shape and the
+shape every retained sideplane measurement was made at, and
+`GGML_VK_Q4K_SIDEPLANE_MAX_COLUMNS` raises it as far as `mul_mat_vec_max_cols`. The two
+indexings agree over that whole range because `ggml-vulkan.cpp:11326` admits the mat-vec
+path at `ne11 > 1` only where `src1->ne[2] * src1->ne[3] == 1`, so exactly one of the two
+factors exceeds 1: `get_offsets` sets `b_offset = batch_idx * p.batch_stride_b` and the
+consumer adds `j * p.batch_stride_b`, and one of `batch_idx` and `j` is zero, which is the
+producer's own `column`. `GGML_ASSERT(stride_batch_y == (uint32_t)ne10)` is what ends a
+submission that violates the relation. No arm has run above one column, so the override is
+the arm that measures the wider envelope rather than a setting with a result behind it.
+
 **The conversion this lane can make.** E4 moved VALU 882 to 810, -8.16%, and the retained
-kernel-delta run `e4/` measured its Q4_K exclusive bracket at -3.93% over 4 of 4 pairs at
-sd 0.0002. That is one transfer point from VALU delta to bracket delta on this shader,
-device, and tuple: 0.48. Applied to the consumer's -1.61% it predicts a consumer bracket of
-about -0.8%, and on the 52 ms Q4_K bracket `e4b-a-first-pass.md` reads from the census that
-is about 0.40 ms per graph. One point is not a law and it carries its own uncertainty; it
-is stated because it is the only calibration between the two quantities this lane holds.
+kernel-delta run `evidence/raven2-vulkan-kernel-census/e4/kernel-delta-20260902T2312Z/`,
+which reaches this repository through `origin/lane/retained-evidence` rather than this
+lane, measured its `mul_mat_vec_q4_k_f32_f32` exclusive bracket at -3.93% over 4 of 4 pairs
+at sd 0.0002. That is one observation of the transfer from VALU delta to bracket delta on this
+shader, device, and tuple, 0.48, and it is a single point rather than a law. Applied to the
+consumer's -1.61% it gives a point estimate of about -0.8% on the consumer's own bracket,
+with no band, because one point supports none. The milliseconds behind that percentage
+come from the arm's own control row rather than from this page: the prediction is stated as
+a fraction and the run supplies its denominator.
 
 **The budget that decides the sign.** A 2B decode graph runs 84 pre-passes against 162
 consumer dispatches, and each miss costs one dispatch between two full memory barriers, so
-the producer adds 84 dispatches and 168 barriers. Those must together cost under about
-0.40 ms, which is under about 4.8 microseconds each, against a Q4_K mat-vec median of 206
-microseconds per call and 1.83 ms of queue idle across the graph's 40 submits. 36 of the 84
-pre-passes serve a single consumer and buy nothing, so a forward walk that declines them is
-the first remedy if the dispatch cost is what refutes the arm.
+the producer adds 84 dispatches and 168 barriers against the consumer's predicted 0.8%.
+The census measured 206 microseconds median per Q4_K mat-vec call and 1.83 ms of queue idle
+across the graph's 40 submits, so a pre-pass costing anything like a mat-vec dispatch
+erases the arm several times over. 36 of the 84 pre-passes serve a single consumer and buy
+nothing, so a forward walk that declines them is the first remedy if the dispatch cost is
+what refutes the arm.
 
 ## The arm order
 
