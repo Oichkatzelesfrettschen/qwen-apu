@@ -129,16 +129,21 @@ if [ "$fake_spec_active" = 1 ]; then
 fi
 
 # The prefill ladder reads a streamed completion, so the fixture answers one
-# whenever the request body sets `stream`. Four variables drive the paths that
+# whenever the request body sets `stream`. Six variables drive the paths that
 # ladder refuses on: a first-chunk delay stands in for the prefill a time to
 # first token measures, a tokenize multiplier makes the prompt-length loop
 # oscillate rather than converge, a prompt_n skew separates the served count
-# from the tokenized one, and omitting the timings object drives the arm's
-# missing-timings refusal.
+# from the tokenized one, omitting the timings object drives the arm's
+# missing-timings refusal, a predicted_n skew reports a decoded count other
+# than the one requested without changing what was actually decoded, and a
+# prompt_per_second override reports a rate the served counts and elapsed time
+# do not back, which is the request client's positivity check.
 QWEN_FAKE_SERVER_FIRST_TOKEN_DELAY_S=${QWEN_FAKE_SERVER_FIRST_TOKEN_DELAY_S:-0} \
 QWEN_FAKE_SERVER_TOKENIZE_MULTIPLIER=${QWEN_FAKE_SERVER_TOKENIZE_MULTIPLIER:-1} \
 QWEN_FAKE_SERVER_PROMPT_N_SKEW=${QWEN_FAKE_SERVER_PROMPT_N_SKEW:-0} \
 QWEN_FAKE_SERVER_OMIT_TIMINGS=${QWEN_FAKE_SERVER_OMIT_TIMINGS:-0} \
+QWEN_FAKE_SERVER_PREDICTED_N_SKEW=${QWEN_FAKE_SERVER_PREDICTED_N_SKEW:-0} \
+QWEN_FAKE_SERVER_PROMPT_PER_SECOND_OVERRIDE=${QWEN_FAKE_SERVER_PROMPT_PER_SECOND_OVERRIDE:-} \
 QWEN_FAKE_SERVER_PROMPT_TOK_S=${QWEN_FAKE_SERVER_PROMPT_TOK_S:-20.00} \
 QWEN_FAKE_SERVER_RESOLVED_PORT=$serving_port \
 QWEN_FAKE_SERVER_RESOLVED_TOKENS=$fake_tokens \
@@ -172,6 +177,12 @@ first_token_delay_s = float(os.environ["QWEN_FAKE_SERVER_FIRST_TOKEN_DELAY_S"])
 tokenize_multiplier = int(os.environ["QWEN_FAKE_SERVER_TOKENIZE_MULTIPLIER"])
 prompt_n_skew = int(os.environ["QWEN_FAKE_SERVER_PROMPT_N_SKEW"])
 omit_timings = os.environ["QWEN_FAKE_SERVER_OMIT_TIMINGS"] == "1"
+predicted_n_skew = int(os.environ["QWEN_FAKE_SERVER_PREDICTED_N_SKEW"])
+prompt_per_second_override_text = os.environ.get(
+    "QWEN_FAKE_SERVER_PROMPT_PER_SECOND_OVERRIDE", "")
+prompt_per_second_override = (
+    float(prompt_per_second_override_text)
+    if prompt_per_second_override_text else None)
 prompt_tok_s = float(os.environ["QWEN_FAKE_SERVER_PROMPT_TOK_S"])
 request_directory_text = os.environ.get("QWEN_FAKE_SERVER_REQUEST_DIRECTORY", "")
 request_directory = Path(request_directory_text) if request_directory_text else None
@@ -271,11 +282,17 @@ class Handler(BaseHTTPRequestHandler):
             emitted = [tokens[index % len(tokens)] for index in range(predict)]
             prompt_n = (len(str(body.get("prompt", "")).split())
                         * tokenize_multiplier + prompt_n_skew)
+            reported_prompt_per_second = (
+                prompt_per_second_override
+                if prompt_per_second_override is not None else prompt_tok_s)
             timings = {
                 "prompt_n": prompt_n,
                 "prompt_ms": prompt_n * 1000.0 / prompt_tok_s,
-                "prompt_per_second": prompt_tok_s,
-                "predicted_n": predict,
+                "prompt_per_second": reported_prompt_per_second,
+                # The emitted array below stays exactly `predict` tokens long,
+                # so a nonzero skew here reports a decoded count the server
+                # never actually decoded rather than changing what it did.
+                "predicted_n": predict + predicted_n_skew,
                 "predicted_ms": max(predict - 1, 0) * 1000.0 / decode_tok_s,
                 "predicted_per_second": decode_tok_s,
             }

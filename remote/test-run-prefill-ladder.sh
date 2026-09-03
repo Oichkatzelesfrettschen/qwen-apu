@@ -4,11 +4,16 @@ set -eu
 # run-prefill-ladder.sh loads a model once per arm on the Vulkan device, so what
 # a workstation checks is the ledger the runner writes around those loads. The
 # fake llama-server answers /health, /tokenize, and a streamed /completion with
-# timings, which is every route the ladder reads, and four of its variables
-# drive the refusals the ladder exists to make: a tokenize multiplier that
-# leaves the prompt-length loop oscillating, a prompt_n skew that separates the
-# served count from the tokenized one, an omitted timings object, and the
-# first-chunk delay a time to first token measures.
+# timings, which is every route the ladder reads, and its variables drive the
+# refusals the ladder exists to make: a tokenize multiplier that leaves the
+# prompt-length loop oscillating, a prompt_n skew that separates the served
+# count from the tokenized one, an omitted timings object, a predicted_n skew
+# that reports a decoded count other than the one requested, a
+# prompt_per_second override for a rate the counts cannot back, and the
+# first-chunk delay a time to first token measures. It also records its own
+# launch environment and /proc-read nice value, which is what proves the
+# ladder applied the production submission profile and priority to the arm
+# rather than only claiming to.
 #
 # Each run below is a whole ladder over one admitted depth and two inadmissible
 # ones, so the skip path and the failure path are read from the same ledger and
@@ -115,6 +120,7 @@ run_ladder() {
         QWEN_PREFILL_LADDER_TAIL_RESERVE=4 \
         QWEN_PREFILL_LADDER_READY_SECONDS=30 \
         QWEN_PREFILL_LADDER_COOLDOWN_S=0 \
+        QWEN_PREFILL_LADDER_PROMPT_N_SLACK=0 \
         "$@" \
         "$ladder" "$root/control-server" "$root/candidate-server" model-id \
         "$run_ladder_output" >"$run_ladder_output.log" 2>&1 || run_ladder_status=$?
@@ -133,9 +139,11 @@ ledger_field() {
 # clamps to the allocation's own headroom limit, and one is refused for sitting
 # above the row's deepest measured fill. The registry stub names
 # validated_filled_depth 128 and context_ceiling 256, so the allocation is 128;
-# at QWEN_PREFILL_LADDER_GENERATE=2 and QWEN_PREFILL_LADDER_TAIL_RESERVE=4 the
-# ceiling a prompt may reach is 128 - 2 - 4 = 122, which is below the requested
-# depth 124 and above the requested depth 8.
+# at QWEN_PREFILL_LADDER_GENERATE=2, QWEN_PREFILL_LADDER_TAIL_RESERVE=4, and the
+# prompt-count slack pinned to 0 above (the dedicated
+# prompt_ceiling_subtracts_prompt_n_slack case below covers a nonzero slack),
+# the ceiling a prompt may reach is 128 - 2 - 4 - 0 = 122, which is below the
+# requested depth 124 and above the requested depth 8.
 write_server "$root/control-server" control QWEN_FAKE_SERVER_PROMPT_TOK_S=20.00
 write_server "$root/candidate-server" candidate QWEN_FAKE_SERVER_PROMPT_TOK_S=25.00 \
     QWEN_FAKE_SERVER_FIRST_TOKEN_DELAY_S=0.05
@@ -255,6 +263,76 @@ if ! awk -F'\t' -v control="$control_digest" -v candidate="$candidate_digest" '
 fi
 report "$digest_state" both_server_digests_recorded
 
+# The production low-async submission profile radv-low-priority-env.sh selects
+# for a served rate, and nice 19, reach every arm's server directly: the ladder
+# starts each server itself rather than through that script, so the ladder's
+# own census_arm_exec assignments and its own renice are what have to carry
+# them. The fixture's own record_launch reads these straight from its
+# environment and from /proc/$$/stat, independently of the ladder's own
+# readback into arms.tsv, so the two are two readers of the same state.
+profile_state=0
+argv_files=$(find "$root/argv" -maxdepth 1 -name 'argv-*.txt')
+if [ -z "$argv_files" ]; then
+    profile_state=1
+    printf 'no server launch recorded its argv under %s\n' "$root/argv" >&2
+fi
+for argv_file in $argv_files; do
+    for expected in 'low=1' 'max_nodes=16' 'profile=low-async' 'nice=19' 'strict=1'; do
+        if ! grep -qF "$expected" "$argv_file"; then
+            profile_state=1
+            printf '%s does not carry %s\n' "$argv_file" "$expected" >&2
+        fi
+    done
+done
+if ! awk -F'\t' '
+    NR == 1 { for (i = 1; i <= NF; i++) index_of[$i] = i; next }
+    $index_of["status"] == "completed" {
+        total++
+        if ($index_of["server_nice"] == 19) matched++ }
+    END { exit (total > 0 && total == matched) ? 0 : 1 }' "$healthy_arms"; then
+    profile_state=1
+    printf 'arms.tsv does not record server_nice=19 on every completed arm\n' >&2
+fi
+report "$profile_state" every_arm_runs_under_low_async_and_nice_19
+
+# prompt_ceiling subtracts the prompt-count slack, so an admitted depth still
+# leaves room for the served BOS overshoot /completion may add above the
+# tokenized count. The registry stub's 128-token allocation, generate 2, tail
+# reserve 4, and a slack of 6 put the ceiling at 128 - 2 - 4 - 6 = 116; the lone
+# requested depth 124 sits above it and clamps there rather than to 122, the
+# value a slack-blind ceiling would still report.
+slack_output=$root/slack
+slack_status=$(run_ladder "$slack_output" \
+    QWEN_PREFILL_LADDER_DEPTHS=124 QWEN_PREFILL_LADDER_PROMPT_N_SLACK=6)
+slack_state=0
+if [ "$slack_status" -ne 0 ]; then
+    slack_state=1
+    printf 'the slack ladder exited %s\n' "$slack_status" >&2
+fi
+if ! awk -F'\t' '$1 == "prompt_ceiling" && $2 == 116 { matched = 1 }
+    END { exit matched ? 0 : 1 }' "$slack_output/inputs.tsv"; then
+    slack_state=1
+    printf 'inputs.tsv does not carry prompt_ceiling 116\n' >&2
+fi
+if ! awk -F'\t' '$1 == "depths_admitted_requested_actual" && index($2, "124=116") {
+    matched = 1 } END { exit matched ? 0 : 1 }' "$slack_output/inputs.tsv"; then
+    slack_state=1
+    printf 'inputs.tsv does not carry the requested-to-actual mapping 124=116\n' >&2
+fi
+report "$slack_state" prompt_ceiling_subtracts_prompt_n_slack
+
+# The manual engine clock policy's operating point is derived from the
+# confirmed sclk/mclk selections at run time; a workstation harness has no
+# sysfs to pin those selections against, so this guards the source against the
+# literal string regressing rather than driving the manual branch itself.
+operating_point_state=0
+if grep -q 'manual-gfx1100-fclk933' "$ladder"; then
+    operating_point_state=1
+    printf '%s still names the literal operating point manual-gfx1100-fclk933\n' \
+        "$ladder" >&2
+fi
+report "$operating_point_state" operating_point_derived_from_selected_clocks_not_hard_coded
+
 # The summary reads a ratio per depth, quadruple, and metric, over the pairs the
 # mirrored order produced.
 summary_state=0
@@ -334,6 +412,45 @@ else
     sed -n '1,40p' "$timings_output.log" >&2
 fi
 
+# A server that decoded a different count than the one requested answered a
+# different request than the one the ladder posted, so predicted_n away from
+# generate_tokens fails the arm rather than pairing two unlike completions
+# under one label.
+write_server "$root/control-server" control QWEN_FAKE_SERVER_PREDICTED_N_SKEW=1
+write_server "$root/candidate-server" candidate QWEN_FAKE_SERVER_PREDICTED_N_SKEW=1
+predicted_n_output=$root/predicted-n
+predicted_n_status=$(run_ladder "$predicted_n_output")
+if [ "$predicted_n_status" -ne 0 ] && awk -F'\t' '
+    NR == 1 { for (i = 1; i <= NF; i++) index_of[$i] = i; next }
+    $index_of["reason"] == "predicted_n_mismatch" { matched++ }
+    END { exit matched > 0 ? 0 : 1 }' "$predicted_n_output/arms.tsv"; then
+    report 0 predicted_n_verified_against_the_requested_generate_tokens
+else
+    report 1 predicted_n_verified_against_the_requested_generate_tokens
+    sed -n '1,40p' "$predicted_n_output.log" >&2
+fi
+
+# A zero prompt_per_second reaches the summarizer as a real ratio of zero
+# rather than a rate no request measured, so a nonpositive timing fails the arm
+# the way a missing one does.
+write_server "$root/control-server" control \
+    QWEN_FAKE_SERVER_PROMPT_PER_SECOND_OVERRIDE=0
+write_server "$root/candidate-server" candidate \
+    QWEN_FAKE_SERVER_PROMPT_PER_SECOND_OVERRIDE=0
+nonpositive_output=$root/nonpositive
+nonpositive_status=$(run_ladder "$nonpositive_output")
+if [ "$nonpositive_status" -ne 0 ] && awk -F'\t' '
+    NR == 1 { for (i = 1; i <= NF; i++) index_of[$i] = i; next }
+    $index_of["reason"] == "timings_nonpositive" {
+        matched++
+        if ($index_of["prompt_tok_s"] != "-") filled++ }
+    END { exit (matched > 0 && filled == 0) ? 0 : 1 }' "$nonpositive_output/arms.tsv"; then
+    report 0 nonpositive_timing_fails_the_arm_rather_than_pairing_a_zero_rate
+else
+    report 1 nonpositive_timing_fails_the_arm_rather_than_pairing_a_zero_rate
+    sed -n '1,40p' "$nonpositive_output.log" >&2
+fi
+
 # The argument contract, refused ahead of any server start.
 refuses() {
     refuses_name=$1
@@ -375,10 +492,11 @@ refuses thread_arms_equal_prefill_threads \
 # Two requested depths that would clamp to the same count share one ledger
 # identity, so the whole invocation refuses ahead of any server start rather
 # than merging their rows. At the ladder's own defaults (generate 16, tail
-# reserve 32) against this registry stub's 128-token allocation, the ceiling a
-# prompt may reach is 80; 100 and 120 both sit above that ceiling and at or
-# below the 128-token validated_filled_depth, so both clamp to 80 rather than
-# one of them being skipped for sitting beyond the row's deepest measured fill.
+# reserve 32, prompt-count slack 1) against this registry stub's 128-token
+# allocation, the ceiling a prompt may reach is 128 - 16 - 32 - 1 = 79; 100 and
+# 120 both sit above that ceiling and at or below the 128-token
+# validated_filled_depth, so both clamp to 79 rather than one of them being
+# skipped for sitting beyond the row's deepest measured fill.
 refuses clamped_depth_collision \
     'which a shallower requested depth already admitted' \
     QWEN_PREFILL_LADDER_DEPTHS='100 120'

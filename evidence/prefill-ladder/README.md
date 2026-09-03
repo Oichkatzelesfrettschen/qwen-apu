@@ -47,11 +47,13 @@ reaches `arms.tsv` row by row.
 
 ## The two clocks the ratio is read under
 
-The device is held at `manual-gfx1100-fclk933`:
-`power_dpm_force_performance_level=manual` with the highest graphics level
-selected and the highest fabric level written, which delivers 1100 MHz GFXCLK
-and holds FCLK at 933 MHz as a hard minimum. `high` and `profile_peak` are
-invalid here -- both drop delivered FCLK to 400 MHz through
+The device is held under `power_dpm_force_performance_level=manual` with the
+highest graphics level selected and the highest fabric level written, which
+delivers 1100 MHz GFXCLK and holds FCLK at 933 MHz as a hard minimum on this
+device; `inputs.tsv`'s `operating_point` names the confirmed selections rather
+than a fixed label, so a different device or a different requested level reads
+its own values there instead of this device's own 1100/933. `high` and
+`profile_peak` are invalid here -- both drop delivered FCLK to 400 MHz through
 `SMU10_UMD_PSTATE_PEAK_FCLK`, and the 2B decodes 6 to 7 tok/s under either
 against 9 to 9.6 under `manual` level 2. The lease at
 `~/qwen-webui-state/vulkan-workload.lock` is taken before the first DPM write,
@@ -110,7 +112,7 @@ would refute it.
    dual-channel peak is 34.13 GB/s and the measured achieved streaming on this
    device sits at 8.11 to 10.41 GB/s. *Falsifier:* prompt tokens per second
    falling monotonically across 512, 4096, 16384, and the deepest admitted rung
-   (32720 under every row this ladder currently admits, the 32768 request
+   (32719 under every row this ladder currently admits, the 32768 request
    clamped to the allocation's own headroom limit), or rising at every rung
    with no flattening, refutes the shape. A rung that falls against its
    predecessor by more than the pair interval at that rung refutes it outright.
@@ -154,13 +156,15 @@ and decoded.
 
 A prompt at or above its own allocation evicts rather than decodes, which is why
 `probe-depth-projector.sh` accepts on `DEPTH - 2% <= prompt_n <= DEPTH - 32`. A
-requested depth that would leave fewer than the generation length plus
-`QWEN_PREFILL_LADDER_TAIL_RESERVE` tokens of the allocation clamps to
-`model_context - generate_tokens - tail_reserve`, the deepest count the
-allocation can still decode from, and the arm carries that clamped count as its
-own identity rather than the requested label: a "32768" rung on a 32768-token
-allocation would evict rather than decode, so what runs is named for the token
-count it actually is. A requested depth above the row's deepest measured fill is
+requested depth that would leave fewer than the generation length, the tail
+reserve, and the prompt-count slack of the allocation clamps to
+`model_context - generate_tokens - tail_reserve - prompt_n_slack`, the deepest
+count the allocation can still decode from even at the served prompt's own
+worst-case overshoot above the tokenized count, and the arm carries that
+clamped count as its own identity rather than the requested label: a "32768"
+rung on a 32768-token allocation would evict rather than decode, so what runs
+is named for the token count it actually is. A requested depth above the row's
+deepest measured fill is
 skipped with `above_validated_filled_depth`, since no run has proven the
 allocation fills and decodes that deep at all, and a requested depth left with
 no positive room to clamp into is skipped with `insufficient_generation_headroom`.
@@ -173,15 +177,16 @@ admitted depth with any failed arm makes it non-zero.
 The consequence on the shipped registry is stated rather than worked around.
 `qwen38-2b-distill`, `qwen38-4b-distill`, `qwen35-08b`, and `qwen35-08b-f16` all
 read `context_ceiling` 32768 and `validated_filled_depth` 32768, so at the
-ladder's own defaults -- 16 generation tokens and a 32-token reserve -- the
-requested 32768 rung clamps to 32720. That count sits inside
-`probe-depth-projector.sh`'s own acceptance window for a 32768-token allocation,
-`[32768 - 2% = 32112.64, 32768 - 32 = 32736]`: the ladder's own headroom formula
-and the projector probe's independent margin agree that a 32720-token prompt
-inside a 32768-token allocation fills rather than evicts. `inputs.tsv` and
+ladder's own defaults -- 16 generation tokens, a 32-token reserve, and 1 token
+of prompt-count slack -- the requested 32768 rung clamps to 32719. That count
+sits inside `probe-depth-projector.sh`'s own acceptance window for a
+32768-token allocation, `[32768 - 2% = 32112.64, 32768 - 32 = 32736]`: the
+ladder's own headroom formula and the projector probe's independent margin
+agree that a 32719-token prompt inside a 32768-token allocation fills rather
+than evicts. `inputs.tsv` and
 `QWEN_PREFILL_LADDER_PRINT_PLAN=1` both carry the requested-to-actual mapping on
 their `depths_admitted_requested_actual` line, so a reader sees the "32768"
-rung as the 32720-token prompt it actually ran.
+rung as the 32719-token prompt it actually ran.
 
 ## The appliance command
 
@@ -224,11 +229,16 @@ default only where the classes agree.
 `inputs.tsv` carries both server digests, the model digest and byte count, the
 registry tuple, the allocation, both thread counts, the depth plan with its skip
 reasons and its requested-to-actual clamp mapping, the clock policy and its
-operating point, the sampler geometry, and the lease path. `arms.tsv` carries one row per depth, quadruple, arm, and replicate
-with its own server digest, thread count, tokenized count, served `prompt_n`,
-time to first token, `prompt_ms`, prompt tokens per second, tail decode rate,
-modal graphics clock, clock invariant, status, and reason. Each arm keeps its
-sealed environment record, written by `census_arm_exec` from the same positional
-list the `env -i` was built from, beside its server log, clock record, and
-validator verdict. `summary.tsv` carries the ratio, its interval, and its
-verdict per depth, quadruple, and metric.
+operating point, the submission profile and its `GGML_VK_LOW_PRIORITY` and
+`GGML_VK_MAX_NODES_PER_SUBMIT` settings, the nice policy every arm's server is
+required to run under, the sampler geometry, and the lease path. `arms.tsv`
+carries one row per depth, quadruple, arm, and replicate with its own server
+digest, thread count, the nice value read back from `/proc` after the renice,
+tokenized count, served `prompt_n`, time to first token, `prompt_ms`, prompt
+tokens per second, tail decode rate, modal graphics clock, clock invariant,
+status, and reason. Each arm keeps its sealed environment record, written by
+`census_arm_exec` from the same positional list the `env -i` was built from --
+which is where the applied `GGML_VK_LOW_PRIORITY`, `GGML_VK_MAX_NODES_PER_SUBMIT`,
+and `QWEN_VULKAN_PROFILE` assignments themselves land -- beside its server log,
+clock record, and validator verdict. `summary.tsv` carries the ratio, its
+interval, and its verdict per depth, quadruple, and metric.

@@ -43,24 +43,27 @@ set -eu
 # restore trap armed ahead of the write, and each arm's clock record is
 # validated by validate-clock-sidecar.py, so an arm that ran off the pinned step
 # reaches the ledger as `clock_invariant=violated` and its pair leaves the
-# interval. The operating point is `manual-gfx1100-fclk933`: the highest
-# commandable graphics state paired with the highest fabric state the firmware
-# honors as a hard minimum.
+# interval. The operating point names the confirmed graphics and fabric
+# selections under `manual`, and the appliance's own governor under `auto`.
 #
 # The servers are started directly, the way run-kernel-delta-witness.sh starts
-# its arms, with the registry tuple, every buffer required on Vulkan0, and the
-# closed environment census_arm_exec applies, and never while the appliance
-# serves. The allocation is one context size for the whole ladder, so a depth
-# changes the prompt and leaves the KV allocation alone.
+# its arms, with the registry tuple, every buffer required on Vulkan0, the
+# closed environment census_arm_exec applies, the production `low-async`
+# submission profile `radv-low-priority-env.sh` selects for a served rate, and
+# the nice 19 policy every measurement process on this machine runs under, and
+# never while the appliance serves. The allocation is one context size for the
+# whole ladder, so a depth changes the prompt and leaves the KV allocation
+# alone.
 #
 # A depth above the row's `validated_filled_depth` is skipped with its reason
 # rather than measured, since no run has proven the allocation fills and decodes
-# that deep at all. A depth that would leave fewer than the generation length
-# plus QWEN_PREFILL_LADDER_TAIL_RESERVE tokens of the allocation clamps to the
-# deepest count that leaves exactly that much room instead, and the arm carries
-# the clamped count rather than the requested one, since a prompt filling its
-# own allocation evicts rather than decodes and a "32768" label on a 32720-token
-# prompt misstates what ran. Two requested depths that would clamp to the same
+# that deep at all. A depth that would leave fewer than the generation length,
+# QWEN_PREFILL_LADDER_TAIL_RESERVE, and QWEN_PREFILL_LADDER_PROMPT_N_SLACK
+# tokens of the allocation clamps to the deepest count that leaves exactly that
+# much room instead, and the arm carries the clamped count rather than the
+# requested one, since a prompt filling its own allocation evicts rather than
+# decodes and a "32768" label on a 32719-token prompt misstates what ran. Two
+# requested depths that would clamp to the same
 # count refuse the whole invocation before any server starts, since the ledger
 # keys one row set per depth. A depth left with no positive room to clamp into
 # is skipped rather than measured at a zero or negative count. A skipped depth
@@ -108,6 +111,19 @@ sidecar=$script_directory/sample-clock-sidecar.py
 sidecar_validator=$script_directory/validate-clock-sidecar.py
 models_directory=${QWEN_MODELS_DIRECTORY:-"${HOME:?}/models"}
 radv_icd=${QWEN_RADV_ICD:-/usr/share/vulkan/icd.d/radeon_icd.x86_64.json}
+# The production submission profile `radv-low-priority-env.sh` names
+# `low-async`: it exports `GGML_VK_MAX_NODES_PER_SUBMIT=16` alone, leaving
+# `GGML_VK_SERIALIZE_SUBMISSIONS` absent rather than zero, and it carries the
+# same `GGML_VK_LOW_PRIORITY=1` global-priority opt-in every named profile
+# exports there. A ladder arm launches its server directly rather than through
+# that script, so the three names are stated here instead of inherited.
+vulkan_profile=low-async
+vulkan_low_priority=1
+vulkan_max_nodes_per_submit=16
+# Every measurement process on this machine runs at nice 19; the ladder's
+# server is no exception, and the value is applied to the backgrounded pid and
+# read back from /proc rather than assumed from the caller's own priority.
+server_nice_policy=19
 server_port=${QWEN_PREFILL_LADDER_PORT:-8098}
 appliance_port=${QWEN_SERVER_PORT:-8080}
 readiness_seconds=${QWEN_PREFILL_LADDER_READY_SECONDS:-180}
@@ -314,7 +330,12 @@ admitted_depths=''
 admitted_sources=''
 skipped_depths=''
 skip_reasons=''
-prompt_ceiling=$((model_context - generate_tokens - tail_reserve))
+# The BOS token /completion prepends is the served prompt-count overshoot
+# QWEN_PREFILL_LADDER_PROMPT_N_SLACK admits above the tokenized count, so a
+# depth admitted at the ceiling before this term still had room for that
+# overshoot; subtracting it here is what keeps prompt_n + generate_tokens
+# inside model_context even at the slack's own worst case.
+prompt_ceiling=$((model_context - generate_tokens - tail_reserve - prompt_n_slack))
 for depth in $depths; do
     if [ "$depth" -gt "$model_validated_depth" ]; then
         skipped_depths="$skipped_depths $depth"
@@ -428,6 +449,10 @@ engine_clock_required_flag=''
 engine_clock_mclk_flag=''
 engine_clock_mclk_fraction_flag=''
 engine_clock_below_mclk_floor_fraction=-
+# The appliance's own governor under `auto`; the manual branch below overwrites
+# this with the confirmed sclk/mclk selections once it has them, so the value
+# never names a state this run did not measure.
+operating_point=governor
 sidecar_max_gap_ms=${QWEN_CENSUS_SIDECAR_MAX_GAP_MS:-100}
 cleanup_children() {
     stop_sidecar
@@ -495,14 +520,19 @@ if [ "$engine_clock_policy" != auto ]; then
     engine_clock_mclk_readback=$(census_engine_clock_select pp_dpm_mclk "$drm_device" \
         "$engine_clock_mclk_level" 0)
     census_engine_clock_confirm "$drm_device" "$engine_clock_required_sclk_mhz"
-    printf 'prefill_ladder_clock=pinned operating_point=manual-gfx1100-fclk933 sclk=%s mclk=%s\n' \
-        "$engine_clock_sclk_readback" "$engine_clock_mclk_readback"
+    # census_engine_clock_select prints exactly one `INDEX MHZ` line, so the
+    # field after the space is the confirmed megahertz value the device
+    # actually selected, not the level index or the requested target; a
+    # hard-coded label would keep naming 1100/933 even where a different
+    # level, a different device, or a moved firmware minimum selected
+    # something else.
+    engine_clock_sclk_readback_mhz=${engine_clock_sclk_readback#* }
+    engine_clock_mclk_readback_mhz=${engine_clock_mclk_readback#* }
+    operating_point="manual-sclk${engine_clock_sclk_readback_mhz}-mclk${engine_clock_mclk_readback_mhz}"
+    printf 'prefill_ladder_clock=pinned operating_point=%s sclk=%s mclk=%s\n' \
+        "$operating_point" "$engine_clock_sclk_readback" "$engine_clock_mclk_readback"
 fi
 sidecar_max_gap_ns=$((sidecar_max_gap_ms * 1000000))
-# The operating point names what the ladder ran under: the commanded pair under
-# `manual`, and the appliance's own governor under `auto`.
-operating_point=manual-gfx1100-fclk933
-[ "$engine_clock_policy" != auto ] || operating_point=governor
 
 # The SMU10 kernel path reports the fabric clock through pp_dpm_mclk and leaves
 # pp_dpm_fclk empty, so a column the kernel empties at campaign start is allowed
@@ -585,6 +615,16 @@ Every timing the ledger states is required. A reply whose `timings` object omits
 one, or states it as something other than a finite number, ends this reader with
 `missing_timings` rather than a zero, since a rate of nothing pairs as a
 measurement.
+
+A finite value is not by itself a measurement: `prompt_n` and `predicted_n` are
+counts, so a non-integer value is `timings_noninteger`, and every count and rate
+is required positive, so a zero or negative one is `timings_nonpositive` --
+`prompt_per_second: 0` and a negative `prompt_ms` are what this rejects. A
+decode spanning more than one token is required to have taken measurable time,
+so `predicted_ms` is nonpositive there too. `predicted_n` is further required to
+equal the `n_predict` this request asked for, as `predicted_n_mismatch`, since a
+server that decoded a different count answered a different request than the one
+the ladder posted.
 """
 import json
 import math
@@ -638,16 +678,36 @@ if not isinstance(timings, dict):
     raise SystemExit(1)
 required = ("prompt_n", "prompt_ms", "prompt_per_second",
             "predicted_n", "predicted_ms", "predicted_per_second")
+count_fields = ("prompt_n", "predicted_n")
+positive_fields = ("prompt_n", "prompt_ms", "prompt_per_second",
+                   "predicted_n", "predicted_per_second")
 values = {}
 for name in required:
     value = timings.get(name)
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         sys.stderr.write(f"missing_timings field={name}\n")
         raise SystemExit(1)
-    if not math.isfinite(float(value)):
+    value = float(value)
+    if not math.isfinite(value):
         sys.stderr.write(f"missing_timings field={name}\n")
         raise SystemExit(1)
-    values[name] = float(value)
+    if name in positive_fields and value <= 0:
+        sys.stderr.write(f"timings_nonpositive field={name} value={value:.6g}\n")
+        raise SystemExit(1)
+    if name in count_fields and not value.is_integer():
+        sys.stderr.write(f"timings_noninteger field={name} value={value:.6g}\n")
+        raise SystemExit(1)
+    values[name] = value
+if values["predicted_n"] > 1 and values["predicted_ms"] <= 0:
+    sys.stderr.write(
+        f"timings_nonpositive field=predicted_ms value={values['predicted_ms']:.6g}\n")
+    raise SystemExit(1)
+requested_predict = int(predict)
+if int(values["predicted_n"]) != requested_predict:
+    sys.stderr.write(
+        f"predicted_n_mismatch requested={requested_predict}"
+        f" reported={int(values['predicted_n'])}\n")
+    raise SystemExit(1)
 with open(destination, "w", encoding="utf-8") as handle:
     json.dump(final, handle)
 print(f"ttft_ms={(first_token_ns - started_ns) / 1e6:.3f}")
@@ -686,7 +746,7 @@ measurement_field() {
 }
 
 arms_ledger=$output_directory/arms.tsv
-printf 'slot\tdepth\tquadruple\tarm\treplicate\tserver_role\tserver_sha256\tthreads\tprompt_target\ttokenize_n\tprompt_n\tttft_ms\tprompt_ms\tprompt_tok_s\tpredicted_n\tdecode_tok_s\tsclk_mode_mhz\tclock_invariant\tstatus\treason\n' \
+printf 'slot\tdepth\tquadruple\tarm\treplicate\tserver_role\tserver_sha256\tthreads\tserver_nice\tprompt_target\ttokenize_n\tprompt_n\tttft_ms\tprompt_ms\tprompt_tok_s\tpredicted_n\tdecode_tok_s\tsclk_mode_mhz\tclock_invariant\tstatus\treason\n' \
     >"$arms_ledger"
 
 {
@@ -723,6 +783,9 @@ printf 'slot\tdepth\tquadruple\tarm\treplicate\tserver_role\tserver_sha256\tthre
     printf 'workload_lease\t%s\narm_environment_record\tarms/SLOT/arm-environment.tsv\n' \
         "$workload_lease"
     printf 'radv_icd\t%s\nserver_port\t%s\n' "$radv_icd" "$server_port"
+    printf 'vulkan_profile\t%s\nvulkan_low_priority\t%s\nvulkan_max_nodes_per_submit\t%s\n' \
+        "$vulkan_profile" "$vulkan_low_priority" "$vulkan_max_nodes_per_submit"
+    printf 'server_nice_policy\t%s\n' "$server_nice_policy"
 } >"$output_directory/inputs.tsv"
 
 start_server() {
@@ -731,6 +794,10 @@ start_server() {
     start_server_expected_sha256=$3
     start_server_threads=$4
     start_server_environment=$5
+    # Reset on every call, since a caller reads this after the function returns
+    # and a path that returns ahead of the exec below must not carry a prior
+    # arm's applied nice forward as this one's own.
+    start_server_nice=-
     # The ladder spans many model loads and both server paths stay writable
     # throughout, so the digest inputs.tsv records is re-read against the file
     # about to be executed rather than assumed to still describe it.
@@ -744,6 +811,9 @@ start_server() {
     census_arm_exec "$start_server_environment" \
         VK_DRIVER_FILES="$radv_icd" VK_ICD_FILENAMES="$radv_icd" \
         LLAMA_NO_CPU_FALLBACK=1 \
+        GGML_VK_LOW_PRIORITY="$vulkan_low_priority" \
+        GGML_VK_MAX_NODES_PER_SUBMIT="$vulkan_max_nodes_per_submit" \
+        QWEN_VULKAN_PROFILE="$vulkan_profile" \
         -- \
         "$start_server_path" \
         --model "$model_path" \
@@ -768,6 +838,30 @@ start_server() {
         --log-verbosity 4 \
         >"$start_server_log" 2>&1 &
     server_pid=$!
+    # renice sets the pid's niceness directly rather than adding an offset to
+    # its current one, and that value persists across the execve chain the
+    # backgrounded pid is about to run: the wrapper script this repository's
+    # test fixtures interpose, then census_arm_exec's own env -i, then the
+    # server binary. Applying it here, ahead of any of those exec calls,
+    # carries nice 19 into every thread the server later spawns for model
+    # loading and inference, the way radv-low-priority-env.sh's own
+    # `renice -n 19 -p $$` does for the appliance's launch chain. The read-back
+    # is what turns "applied" into "proven": a renice that silently failed or
+    # raced a process that had already exited fails the arm here rather than
+    # reaching the ledger as a nice-19 measurement it never was.
+    if ! renice -n "$server_nice_policy" -p "$server_pid" >/dev/null 2>&1; then
+        printf 'nice %s was refused for pid %s\n' "$server_nice_policy" \
+            "$server_pid" >&2
+        return 1
+    fi
+    start_server_nice=$(sed 's/^.*) //' "/proc/$server_pid/stat" 2>/dev/null \
+        | awk '{ print $17 }') || start_server_nice=
+    if [ "$start_server_nice" != "$server_nice_policy" ]; then
+        printf 'nice read back from /proc/%s/stat is %s where the policy requires %s\n' \
+            "$server_pid" "${start_server_nice:-absent}" "$server_nice_policy" >&2
+        start_server_nice=-
+        return 1
+    fi
     start_server_iteration=0
     while [ "$start_server_iteration" -lt "$readiness_seconds" ]; do
         if ! kill -0 "$server_pid" 2>/dev/null; then
@@ -794,10 +888,13 @@ start_server() {
     return 1
 }
 
+# slot depth quadruple arm replicate server_role server_sha256 threads
+# server_nice prompt_target tokenize_n prompt_n ttft_ms prompt_ms prompt_tok_s
+# predicted_n decode_tok_s sclk_mode_mhz clock_invariant status reason
 record_arm() {
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" "${11}" "${12}" \
-        "${13}" "${14}" "${15}" "${16}" "${17}" "${18}" "${19}" "${20}" \
+        "${13}" "${14}" "${15}" "${16}" "${17}" "${18}" "${19}" "${20}" "${21}" \
         >>"$arms_ledger"
 }
 
@@ -809,8 +906,8 @@ for depth in $skipped_depths; do
     for quadruple in binary threads; do
         [ "$quadruple" != threads ] || [ "$thread_arms" = 1 ] || continue
         slot=$((slot + 1))
-        record_arm "$slot" "$depth" "$quadruple" - - - - - "$depth" - - - - - - - \
-            - - skipped "$skip_reason"
+        record_arm "$slot" "$depth" "$quadruple" - - - - - - "$depth" - - - - \
+            - - - - - skipped "$skip_reason"
     done
     printf 'prefill_ladder_depth=skipped depth=%s reason=%s\n' "$depth" "$skip_reason"
 done
@@ -869,6 +966,7 @@ for depth in $admitted_depths; do
             decode_tok_s=-
             sclk_mode_mhz=-
             clock_invariant=-
+            arm_server_nice=-
             window_begin=''
             window_end=''
             printf 'prefill_ladder_arm=start slot=%s depth=%s quadruple=%s arm=%s threads=%s\n' \
@@ -879,6 +977,7 @@ for depth in $admitted_depths; do
                 status=failed
                 reason=server_start
             fi
+            arm_server_nice=$start_server_nice
             if [ "$status" = completed ] && [ "$sampler" = python ]; then
                 python3 "$sidecar" "$arm_directory/clock-sidecar.tsv" \
                     --period-ms "$sidecar_period_ms" --cpu "$sidecar_cpu" \
@@ -1023,9 +1122,10 @@ for depth in $admitted_depths; do
             fi
             [ "$status" = completed ] || arm_failures=$((arm_failures + 1))
             record_arm "$slot" "$depth" "$quadruple" "$arm" "$replicate" "$arm_role" \
-                "$arm_server_sha256" "$arm_threads" "$depth" "$tokenize_n" \
-                "$prompt_n" "$ttft_ms" "$prompt_ms" "$prompt_tok_s" "$predicted_n" \
-                "$decode_tok_s" "$sclk_mode_mhz" "$clock_invariant" "$status" "$reason"
+                "$arm_server_sha256" "$arm_threads" "$arm_server_nice" "$depth" \
+                "$tokenize_n" "$prompt_n" "$ttft_ms" "$prompt_ms" "$prompt_tok_s" \
+                "$predicted_n" "$decode_tok_s" "$sclk_mode_mhz" "$clock_invariant" \
+                "$status" "$reason"
             printf 'prefill_ladder_arm=%s slot=%s depth=%s quadruple=%s arm=%s ttft_ms=%s prompt_tok_s=%s clock_invariant=%s reason=%s\n' \
                 "$status" "$slot" "$depth" "$quadruple" "$arm" "$ttft_ms" \
                 "$prompt_tok_s" "$clock_invariant" "$reason"
