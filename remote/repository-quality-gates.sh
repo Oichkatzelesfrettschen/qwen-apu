@@ -219,6 +219,8 @@ gate_cell test-classify-checkpoint-semantics derive \
     remote/test-classify-checkpoint-semantics.sh
 gate_cell test-check-trace-source-status derive \
     remote/test-check-trace-source-status.sh remote/test-check-trace-source-status.sh
+gate_cell test-feature-roster derive remote/test-feature-roster.sh \
+    remote/test-feature-roster.sh
 gate_cell test-run-served-binary-ab derive remote/test-run-served-binary-ab.sh \
     remote/test-run-served-binary-ab.sh
 gate_cell test-run-kernel-delta-witness derive remote/test-run-kernel-delta-witness.sh \
@@ -281,6 +283,8 @@ gate_cell test-run-raven2-vulkan-kernel-census derive \
 gate_cell test-fallback-webui-model-state derive \
     remote/test-fallback-webui-model-state.mjs \
     'node remote/test-fallback-webui-model-state.mjs'
+gate_cell test-fallback-webui-roster derive remote/test-fallback-webui-roster.mjs \
+    'node remote/test-fallback-webui-roster.mjs'
 gate_cell test-fallback-webui-model-selection derive \
     remote/test-fallback-webui-model-selection.sh \
     remote/test-fallback-webui-model-selection.sh
