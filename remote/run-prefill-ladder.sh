@@ -439,7 +439,13 @@ stop_server() {
 stop_sidecar() {
     [ -n "$sidecar_pid" ] || return 0
     kill -TERM "$sidecar_pid" 2>/dev/null || true
-    wait "$sidecar_pid" 2>/dev/null || true
+    # wait's own exit status carries the reaped job's signal-terminated status,
+    # which || true already absorbs; the explicit set +e/-e bracket matches the
+    # per-arm reap below and removes any doubt that a later shell reinterprets
+    # a guarded wait under set -e differently mid-trap.
+    set +e
+    wait "$sidecar_pid" 2>/dev/null
+    set -e
     sidecar_pid=''
 }
 
