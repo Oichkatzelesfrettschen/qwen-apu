@@ -124,9 +124,33 @@ QWEN_WEB_LAN=1 QWEN_WEB_LAN_ADDRESS=192.168.1.10 \
 conflict_status=$?
 set -e
 if [ "$conflict_status" -ne 2 ] || \
-   ! grep -q 'QWEN_WEB_BROKER_ORIGIN names a host the LAN exposure does not admit' \
+   ! grep -q 'QWEN_WEB_BROKER_ORIGIN names an origin the LAN exposure does not admit' \
        "$state_directory/session.stderr"; then
     printf 'a conflicting QWEN_WEB_BROKER_ORIGIN was not refused\n' >&2
+    cat "$state_directory/session.stderr" >&2
+    exit 1
+fi
+
+# A host that matches the exposure's literal is still refused where the
+# scheme or the port departs from the derived origin, since the broker and
+# the artifact listener compare the whole Origin header rather than its host.
+state_directory=$temporary_directory/state-origin-port-conflict
+mkdir -p "$state_directory"
+set +e
+QWEN_WEB_LAN=1 QWEN_WEB_LAN_ADDRESS=192.168.1.10 \
+    QWEN_WEB_BROKER_ORIGIN=http://192.168.1.10:9999 \
+    "$fixture_remote/qwen-webui-session.sh" \
+        "$temporary_directory/fake-server" \
+        "$temporary_directory/fake-model" \
+        "$temporary_directory/fake-static" 4096 4096 18080 \
+        "$state_directory" low-serialized \
+    >"$state_directory/session.stdout" 2>"$state_directory/session.stderr"
+port_conflict_status=$?
+set -e
+if [ "$port_conflict_status" -ne 2 ] || \
+   ! grep -q 'QWEN_WEB_BROKER_ORIGIN names an origin the LAN exposure does not admit' \
+       "$state_directory/session.stderr"; then
+    printf 'a QWEN_WEB_BROKER_ORIGIN naming the right host and the wrong port was not refused\n' >&2
     cat "$state_directory/session.stderr" >&2
     exit 1
 fi
@@ -145,7 +169,7 @@ QWEN_WEB_LAN=1 QWEN_WEB_LAN_ADDRESS=192.168.1.10 \
 image_conflict_status=$?
 set -e
 if [ "$image_conflict_status" -ne 2 ] || \
-   ! grep -q 'QWEN_IMAGE_PAGE_ORIGIN names a host the LAN exposure does not admit' \
+   ! grep -q 'QWEN_IMAGE_PAGE_ORIGIN names an origin the LAN exposure does not admit' \
        "$state_directory/session.stderr"; then
     printf 'a conflicting QWEN_IMAGE_PAGE_ORIGIN was not refused\n' >&2
     cat "$state_directory/session.stderr" >&2
