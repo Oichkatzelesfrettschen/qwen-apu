@@ -474,6 +474,45 @@ source over one GET of the canonical URL its Result ID was signed over, and
 `evidence/web-provider-contract.md` carries the flags, the profile columns, and
 what a run against a live instance still leaves unmeasured.
 
+The launch owns that instance. The installed tree at `/usr/local/searxng` is
+readable by the serving user and its configuration is not:
+`/etc/searxng/settings.yml` is root-owned and the engine caches under `/tmp`
+belong to the `searxng` account, so `remote/searxng-launch.sh` renders
+`remote/searxng/settings.template.yml` into the state directory at mode 0600
+with a fresh secret and runs `searx.webapp` under `SEARXNG_SETTINGS_PATH` and a
+`TMPDIR` of its own. The rendered file is the authority for the listener: the
+port and bind address are read back from it and required to equal the endpoint
+the launch serves. Six engines answer from this address -- bing, google, and
+wikipedia in `qwen-open`, joined by mdn, github, and stackoverflow in
+`qwen-broad` -- against duckduckgo, startpage, and qwant answering a CAPTCHA,
+brave rate-limiting, and mojeek and yep denying, at 66 to 78 MB of resident
+memory, 180 to 510 ms per query, and 18 to 20 results for `qwen-open` against
+37 for `qwen-broad`.
+`qwen-web-launch.sh` reads `searxng_url` from the launched profile's row,
+admits the loopback endpoint alone, requires the port free, and exports
+`QWEN_WEB_SEARXNG=1`; `qwen-webui-session.sh` then holds the instance as a
+guarded child beside the broker, records `searxng_pid=` on the `state=running`
+line and a `searxng_identity` line beside it, and proves `GET /healthz` and its
+own child's liveness together before `run-qwen-capacity-server.sh` runs, so a
+dead instance ends the launch ahead of the model load. The health gate lives
+there rather than in the launcher because the launcher ends in `exec` and the
+instance it starts exists one link later. `qwen-teardown.sh` compares the
+recorded start time with `/proc/PID/stat` before signalling, the rule it
+applies to the broker, and reports a surviving process or a listener on the
+recorded port as residue.
+
+`remote/admit-web-router-live.sh` is the live twin of the fake admission. It
+copies one `remote/web-profiles.tsv` row into a ledger under its own output
+directory with `execution_policy` alone moved to `validator-gated`, generates
+the preset under `QWEN_WEB_AUTHORIZER_READY=1`, launches through
+`qwen-web-launch.sh`, replays the page's requests with curl on the router port,
+drives the served page through `drive-fallback-page.py`, and retains per-query
+timing beside the instance's own resident memory and CPU ticks from `/proc`.
+The fake run stays the authority for the refusals, whose fixtures answer
+instantly; this run measures what only a live instance shows. Every checked-in
+row reads `execution_policy=refused`, and a row moves to `validator-gated` by
+an operator edit after a run of this harness is retained under `evidence/`.
+
 The integer dot product is advertised, functional, and unaccelerated, which
 decides how most of this tree's bytes execute. RADV reports
 `shaderIntegerDotProduct = true` and sets all thirty of its `*Accelerated`
@@ -1067,6 +1106,10 @@ remote/run-one-token-admission.sh RECORD [OUT]  # load every candidate once
 remote/run-representation-arm.sh LABEL CONTROL SUBJECT
                                                 # one value format against another, ABBA
 remote/admit-web-router-fake.sh OUTPUT_DIR      # the web router against the fake provider
+remote/admit-web-router-live.sh OUTPUT_DIR [PROFILE_ID]
+                                                # the web router against the live SearXNG instance
+remote/searxng-launch.sh serve|start|stop|status [STATE_DIRECTORY]
+                                                # one instance as the serving user, loopback only
 remote/admit-image-router.sh OUTPUT_DIR         # one approved generation through the router
 remote/probe-depth-projector.sh MODEL_ID OUT   # filled depth, projector loaded
 remote/image-registry.sh artifacts|models|profiles|bundle|profile
@@ -1174,6 +1217,7 @@ remote/test-measure-draft-pair.sh
 remote/test-probe-depth-projector.sh
 remote/test-web-presets.sh
 remote/test-qwen-web-launch.sh
+remote/test-web-search-live.sh
 remote/test-image-registry.sh
 remote/test-qwen-image-launch.sh
 remote/test-run-image-standalone.sh

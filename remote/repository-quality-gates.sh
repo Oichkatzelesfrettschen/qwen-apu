@@ -129,6 +129,7 @@ remote/test-run-image-standalone.sh
 remote/test-qwen-image-launch.sh
 remote/test-web-presets.sh
 remote/test-qwen-web-launch.sh
+remote/test-web-search-live.sh
 remote/test-prepare-llama-vulkan-source.sh
 remote/test-check-trace-source-status.sh
 remote/test-run-trace-campaign.sh
