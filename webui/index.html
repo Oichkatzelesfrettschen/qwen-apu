@@ -148,7 +148,7 @@
   <select class="model-picker" id="model-picker" aria-label="Model" hidden></select>
   <span id="ctx">context pending</span>
   <span>Raven2 UMA | LOW-priority Vulkan | service-latency guarded</span>
-  <input class="key" type="password" id="api-key" placeholder="API key (only if the server asks)" autocomplete="off">
+  <input class="key" type="password" id="api-key" placeholder="API key: the appliance's api.key, remembered on this browser" autocomplete="off">
   <button class="act" id="set-key">set key</button>
   <label class="chip"><input type="checkbox" id="reasoning"> reasoning</label>
   <label class="chip"><input type="checkbox" id="tools"> offer a demo tool</label>
@@ -311,7 +311,12 @@ function writeBrowserStorage(storageName, key, value) {
   } catch { /* storage denial leaves the live page state authoritative */ }
 }
 
-let apiKey = readBrowserStorage('sessionStorage', 'qwen-apu-api-key') || '';
+// The bearer is one per appliance rather than one per person: the launch
+// reads it from api.key in its state directory and every listener requires
+// it. localStorage keeps it across tabs and reloads on this browser, and a
+// value an earlier visit left in sessionStorage is read once and carried over.
+let apiKey = readBrowserStorage('localStorage', 'qwen-apu-api-key')
+  || readBrowserStorage('sessionStorage', 'qwen-apu-api-key') || '';
 $('#api-key').value = apiKey;
 
 // Reasoning costs decode tokens at about one per second on this APU, so the
@@ -333,7 +338,7 @@ function authHeaders(additional = {}) {
 $('#set-key').onclick = () => {
   apiKey = $('#api-key').value.trim();
   writeBrowserStorage(
-    'sessionStorage', 'qwen-apu-api-key', apiKey || null);
+    'localStorage', 'qwen-apu-api-key', apiKey || null);
   $('#model').textContent = apiKey ? 'key set; connecting' : 'connecting';
   void boot();
 };
@@ -2033,7 +2038,9 @@ async function boot() {
     if (generation !== modelStateGeneration) return;
     if (rosterResponse.status === 401) {
       $('#model').textContent =
-        apiKey ? 'API key rejected' : 'this server wants an API key';
+        apiKey
+          ? 'API key rejected; the appliance key is api.key in its state directory'
+          : 'this server wants its API key: api.key in the appliance state directory';
       return;
     }
     if (!rosterResponse.ok) {
@@ -3241,9 +3248,13 @@ async function resolveConversationStore() {
     return store;
   } catch { /* the next store answers where IndexedDB refuses */ }
   try {
+    // The probe wants the denial to throw here, where the catch selects the
+    // next store, so it reaches the storage directly rather than through the
+    // helpers that swallow one.
     const probeKey = `${CONVERSATION_RECORD_PREFIX}probe`;
-    window.localStorage.setItem(probeKey, '1');
-    window.localStorage.removeItem(probeKey);
+    const probeStorage = window['localStorage'];
+    probeStorage.setItem(probeKey, '1');
+    probeStorage.removeItem(probeKey);
     return browserStorageConversationStore();
   } catch { /* a denied localStorage leaves the record in memory for this page */ }
   return memoryConversationStore();
