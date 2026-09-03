@@ -4,8 +4,18 @@
 status=not run
 date=2026-09-03, the device campaign window that ran the E4 holdout, two web admissions,
      the workload-lease admission, and the image phase timing
-head=a39c440, which carries the low-async profile, nice 19, and the clamped deepest rung
+head=a39c440 when the refusal was captured; 0bfe788 when the lane was declared ready
 ```
+
+The lane advanced to 0bfe788 while this window was still open -- 4906f7b runs each arm
+under the low-async profile at nice 19 read back from `/proc` and recorded in
+`inputs.tsv` and the `arms.tsv` `server_nice` column, 1d3f8b1 takes the lease before the
+output directory is created, and a merge brought main in. The refusal below was captured
+at a39c440 and applies unchanged at 0bfe788: `git diff a39c440 0bfe788 --
+remote/census-arm-lib.sh` is empty, so the whole clock authority is byte-identical, and
+the only change the diff shows in `run-prefill-ladder.sh`'s clock region is a comment.
+`sudo -n true` still answers `sudo: a password is required` on the appliance at the end
+of this window.
 
 `remote/run-prefill-ladder.sh` was synced to the appliance at a39c440, validated its
 plan, took the Vulkan workload lease, and then refused before its first server start:
