@@ -30,8 +30,6 @@ usage() {
     printf '  QWEN_BUILD_JOBS      parallel jobs, defaults to nproc\n' >&2
     printf '  QWEN_ALLOW_ANY_COMMIT=1  build a source tree off the pinned commit\n' >&2
     printf '  QWEN_CONFIGURE_ONLY=1    configure and stop, for flag checks\n' >&2
-    printf '  QWEN_BUILD_CACHE_DIR     shader packs, ccache objects, and binaries\n' >&2
-    printf '  QWEN_BUILD_CACHE=0       derive every key and reuse nothing\n' >&2
     exit 2
 }
 
@@ -43,14 +41,6 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repository_directory=$(CDPATH='' cd -- "$script_directory/.." && pwd)
 build_jobs=${QWEN_BUILD_JOBS:-$(nproc 2>/dev/null || echo 1)}
 expected_commit=f280b26983ad0fdb705a0d9ebf0503e76f2899b0
-
-# The cache key derivations live in their own file so a unit test drives each
-# field directly; this build consumes the values rather than restating how
-# they are formed.
-# shellcheck source=remote/build-cache-keys.sh
-. "$script_directory/build-cache-keys.sh"
-build_cache_enabled=${QWEN_BUILD_CACHE:-1}
-build_cache_directory=$(qwen_build_cache_directory)
 
 # Zen+ is GCC's znver1 target: Family 17h, and the switch selects AVX2, FMA,
 # F16C, BMI2, and SHA together with the scheduling model. -march=native is
@@ -246,96 +236,6 @@ fi
 printf 'preset=%s source=%s commit=%s worktree=%s jobs=%s\n' \
     "$preset" "$source_directory" "$actual_commit" "$worktree_state" "$build_jobs"
 
-# Shader generation is the longest step of a Vulkan arm: vulkan-shaders-gen
-# drives glslc once per pipeline variant, 1980 of them at this commit, and a
-# candidate tree prepared fresh repeats every one. The pack substitutes the
-# generator's whole output set -- the embed sources, the header, the SPIR-V,
-# and the glslc depfiles -- under a key naming every input that decides them.
-#
-# Ninja accepts the substitution only inside the paths it recorded. Each shader
-# edge carries `deps = gcc`, so ninja refuses an output whose deps log holds no
-# record ("deps for '...' are missing") and refuses one whose recorded mtime
-# trails the file on disk ("stored deps info out of date"), and the build log
-# hashes the command string, which names the build and source directories
-# absolutely. The pack therefore travels with .ninja_deps and .ninja_log, is
-# restored with mtimes preserved, and is bound to the two absolute paths it was
-# stored from; the restore stamps the shader sources at a constant older than
-# any pack so a freshly checked-out tree leaves its outputs current.
-shader_pack_key=-
-shader_pack=unavailable
-# The restore stamps the checkout's shader sources so its own outputs read
-# current, and every other build directory over that checkout compares its
-# generated shaders against the same files. The times the checkout held are
-# saved before the stamp and put back once this build leaves, on the failing
-# path as well as the accepted one.
-shader_source_mtime_save=$(mktemp)
-trap 'qwen_shader_source_mtimes_apply "$shader_source_mtime_save"' EXIT HUP INT TERM
-shader_tree=$source_directory/ggml/src/ggml-vulkan/vulkan-shaders
-shader_pack_root=$build_cache_directory/shader-packs
-glslc_executable=$(command -v glslc 2>/dev/null || printf '')
-case " $preset_flags " in
-    *' -DGGML_VULKAN=ON '*)
-        if [ -n "$glslc_executable" ] && [ -d "$shader_tree" ]; then
-            vulkan_options=$(printf '%s\n' "$preset_flags" | tr -s ' \n' '\n' |
-                grep '^-DGGML_VULKAN' | LC_ALL=C sort | tr '\n' ' ')
-            shader_pack_key=$(qwen_shader_pack_key "$shader_tree" \
-                "$shader_tree/vulkan-shaders-gen.cpp" "$actual_commit" \
-                "$vulkan_options" "$glslc_executable")
-            shader_pack=generated
-            if [ "$build_cache_enabled" != 0 ] &&
-                qwen_shader_pack_restore "$shader_pack_root" "$shader_pack_key" \
-                    "$build_directory" "$source_directory" \
-                    "$shader_source_mtime_save"
-            then
-                shader_pack=restored
-            fi
-        fi
-        ;;
-esac
-printf 'shader_pack=%s key=%s\n' "$shader_pack" "$shader_pack_key"
-
-# Two candidate trees compile the same translation unit at two prefixes, so the
-# object cache only crosses them where the prefix leaves neither the hash nor
-# the object. CCACHE_BASEDIR removes the source prefix from what ccache hashes
-# and -ffile-prefix-map removes it from what the compiler emits, which is what
-# makes a reused object correct rather than merely available. The launcher is
-# named here rather than left to GGML_CCACHE, because ggml/src/CMakeLists.txt
-# takes its own branch only while both launcher variables are empty and it
-# prefers sccache where both are installed; naming ccache keeps one launcher
-# and one cache. That branch also exports CCACHE_SLOPPINESS=time_macros, so
-# this path exports it too or every translation unit reading __DATE__ goes
-# uncacheable without saying why.
-object_cache=none
-cache_launcher_flags=''
-file_prefix_map="-ffile-prefix-map=$source_directory=/src -ffile-prefix-map=$build_directory=/build"
-ccache_executable=$(command -v ccache 2>/dev/null || printf '')
-if [ -n "$ccache_executable" ] && [ "$build_cache_enabled" != 0 ]; then
-    object_cache=ccache
-    CCACHE_DIR=$build_cache_directory/ccache
-    CCACHE_BASEDIR=$source_directory
-    CCACHE_SLOPPINESS=time_macros
-    CCACHE_MAXSIZE=${QWEN_CCACHE_MAX_SIZE:-20G}
-    export CCACHE_DIR CCACHE_BASEDIR CCACHE_SLOPPINESS CCACHE_MAXSIZE
-    mkdir -p "$CCACHE_DIR"
-    cache_launcher_flags="-DCMAKE_C_COMPILER_LAUNCHER=$ccache_executable
-        -DCMAKE_CXX_COMPILER_LAUNCHER=$ccache_executable"
-fi
-# ccache --print-stats prints one machine-readable name and value per line,
-# which is what makes a delta over the build a number rather than a reading of
-# prose. A counter absent from the report reads zero.
-ccache_counter() {
-    if [ "$object_cache" != ccache ]; then
-        printf '0\n'
-        return 0
-    fi
-    "$ccache_executable" --print-stats 2>/dev/null |
-        awk -F'\t' -v names=" $1 " '
-            index(names, " " $1 " ") { total += $2 }
-            END { printf "%d\n", total }'
-}
-ccache_hits_before=$(ccache_counter 'direct_cache_hit preprocessed_cache_hit')
-ccache_misses_before=$(ccache_counter 'cache_miss')
-
 # Removal before compilation is what makes the timestamp proof meaningful: a
 # surviving output could otherwise satisfy it by predating the build.
 for output in $preset_outputs; do
@@ -344,25 +244,33 @@ done
 rm -f "$build_directory"/bin/libggml*.so "$build_directory"/bin/libllama*.so \
       "$build_directory"/bin/libmtmd*.so 2>/dev/null || true
 
-# The prefix maps join the flags the compiler receives while compiler_flags
-# keeps naming the microarchitecture alone, because run-raven2-vulkan-kernel-
-# census.sh compares that manifest row between two builds and a path-dependent
-# value would differ for reasons no arm is testing. The manifest records the
-# maps on their own row instead, so the recorded flags stay complete.
 # shellcheck disable=SC2086
 cmake -S "$source_directory" -B "$build_directory" -G Ninja \
-    -DCMAKE_C_FLAGS="$compiler_flags $file_prefix_map" \
-    -DCMAKE_CXX_FLAGS="$compiler_flags $file_prefix_map" \
-    $cache_launcher_flags $preset_flags $cpu_instruction_flags
+    -DCMAKE_C_FLAGS="$compiler_flags" \
+    -DCMAKE_CXX_FLAGS="$compiler_flags" \
+    $preset_flags $cpu_instruction_flags
 
 if [ "${QWEN_CONFIGURE_ONLY:-0}" = 1 ]; then
     printf 'preset=%s configure=complete build=skipped\n' "$preset"
     exit 0
 fi
 
-# The source identity below decides the binary key, so it is established
-# before anything is compiled or reused; every field it reads is a property of
-# the checked-out tree and the repository's own patches.
+build_started=$(date +%s)
+# shellcheck disable=SC2086
+cmake --build "$build_directory" --parallel "$build_jobs" --target $preset_targets
+
+for output in $preset_outputs; do
+    output_path=$build_directory/$output
+    if [ ! -e "$output_path" ]; then
+        printf 'declared output is missing after the build: %s\n' "$output_path" >&2
+        exit 1
+    fi
+    output_mtime=$(stat -c %Y "$output_path")
+    if [ "$output_mtime" -lt "$build_started" ]; then
+        printf 'declared output predates the build: %s\n' "$output_path" >&2
+        exit 1
+    fi
+done
 
 # The forced near-end partition at tools/server/server-context.cpp is what
 # decides whether a positive --ctx-checkpoints count is safe to arm: with it in
@@ -437,9 +345,6 @@ fi
 # divergent tree demotes it to unknown, which refuses a positive count.
 patched_sources_ledger=$script_directory/llama-patched-sources.tsv
 checkpoint_series_tree=unavailable
-# The paths a verified series accounted for, one per line, which is the set the
-# two series digests in the binary key fix the content of.
-series_covered_paths=''
 checkpoint_series_tree_sha256=-
 checkpoint_sources_ledger_sha256=-
 if [ -r "$patched_sources_ledger" ]; then
@@ -468,9 +373,6 @@ if [ -r "$patched_sources_ledger" ]; then
     if [ "$checkpoint_series_tree" = verified ]; then
         checkpoint_series_tree_sha256=$(sha256sum "$series_tree_rows" |
             cut -d ' ' -f 1)
-        series_covered_paths=$(awk -F'\t' '
-            $1 == "" || $1 ~ /^#/ { next }
-            { print $1 }' "$patched_sources_ledger")
     fi
     rm -f "$series_tree_rows"
 fi
@@ -518,8 +420,6 @@ if [ -n "${QWEN_LLAMA_CANDIDATE_SELECT:-}" ]; then
     else
         checkpoint_series_tree_sha256=$(sha256sum "$series_tree_rows" |
             cut -d ' ' -f 1)
-        series_covered_paths=$(printf '%s\n' "$candidate_replay" |
-            sed -n 's/^candidate_sha256=[0-9a-f]* path=//p')
     fi
     rm -f "$series_tree_rows"
 fi
@@ -528,99 +428,6 @@ if [ "$checkpoint_semantics" = natural-boundary-v1 ] &&
     [ "$checkpoint_series_tree" != verified-candidate ]; then
     checkpoint_semantics=unknown
 fi
-
-# The binary key names the compiled source through the commit and both series
-# digests, the instructions through the preset and both flag strings, the
-# toolchain through the driver's version line, and every shader input through
-# the pack key. None of those fields carries a path, so a candidate tree
-# prepared at a new location under unchanged content reuses its predecessor's
-# executables.
-instrument_binary_key=$(qwen_instrument_binary_key "$actual_commit" \
-    "$patch_series_sha256" "$candidate_series_sha256" "$preset" \
-    "$preset_flags $cpu_instruction_flags" "$compiler_flags" \
-    "$(qwen_compiler_identity cc)" "$shader_pack_key")
-binary_store=$build_cache_directory/binaries/$instrument_binary_key
-
-# A stored set is admitted on the executable's own digest against the manifest
-# it was stored with, which is the same binding verify-deployment-bundle.sh
-# applies to a bundled server. The copy lands after the start stamp and the
-# declared outputs were removed before it, so the timestamp proof below covers
-# a reused binary exactly as it covers a compiled one. The stored manifest
-# decides admission and reaches no further: checkpoint_source_root and the
-# load-closure rows describe the storing tree and this build writes its own.
-#
-# A preset building the `all` target produces more than it declares --
-# raven2-vulkan-tests declares bin/llama-server and exists for the test
-# binaries beside it -- so the declared set understates the build and reuse
-# stays off there.
-binary_store_admits() {
-    case " $preset_targets " in
-        *' all '*) return 1 ;;
-    esac
-    # The key states the compiled source through the commit and the two series
-    # digests alone, so a checkout carrying an edit outside the verified series
-    # holds bytes the key attributes to the clean commit. Reuse would substitute
-    # another tree's executables for that edit and storage would publish it
-    # under the clean key, and both are refused while the tree carries one.
-    qwen_binary_tree_is_keyed "$source_directory" "$checkpoint_series_tree" \
-        "$series_covered_paths" || return 1
-}
-binary_reusable() {
-    [ "$build_cache_enabled" != 0 ] || return 1
-    binary_store_admits || return 1
-    [ -r "$binary_store/artifact-manifest.tsv" ] || return 1
-    for reuse_output in $preset_outputs; do
-        reuse_name=$(basename -- "$reuse_output")
-        reuse_path=$binary_store/$reuse_name
-        [ -f "$reuse_path" ] || return 1
-        awk -F'\t' -v name="$reuse_name" \
-            -v digest="$(sha256sum "$reuse_path" | cut -d ' ' -f 1)" \
-            -v bytes="$(wc -c <"$reuse_path" | tr -d ' ')" '
-            $1 == "executable" && $2 == name && NF == 4 &&
-                $3 == bytes && $4 == digest { found++ }
-            END { exit found == 1 ? 0 : 1 }' \
-            "$binary_store/artifact-manifest.tsv" || return 1
-    done
-}
-
-build_started=$(date +%s)
-if binary_reusable; then
-    binary_state=reused
-    for output in $preset_outputs; do
-        mkdir -p "$build_directory/$(dirname -- "$output")"
-        cp "$binary_store/$(basename -- "$output")" "$build_directory/$output"
-    done
-    # A reused binary runs no generator, so a pack that missed its restore
-    # produced nothing here and the manifest says so rather than claiming a
-    # generation that never ran.
-    if [ "$shader_pack" = generated ]; then
-        shader_pack=skipped
-    fi
-    printf 'binary=reused key=%s\n' "$instrument_binary_key"
-else
-    binary_state=built
-    # shellcheck disable=SC2086
-    cmake --build "$build_directory" --parallel "$build_jobs" --target $preset_targets
-    printf 'binary=built key=%s\n' "$instrument_binary_key"
-fi
-qwen_shader_source_mtimes_apply "$shader_source_mtime_save"
-
-for output in $preset_outputs; do
-    output_path=$build_directory/$output
-    if [ ! -e "$output_path" ]; then
-        printf 'declared output is missing after the build: %s\n' "$output_path" >&2
-        exit 1
-    fi
-    output_mtime=$(stat -c %Y "$output_path")
-    if [ "$output_mtime" -lt "$build_started" ]; then
-        printf 'declared output predates the build: %s\n' "$output_path" >&2
-        exit 1
-    fi
-done
-
-ccache_hits=$(($(ccache_counter 'direct_cache_hit preprocessed_cache_hit') -
-    ccache_hits_before))
-ccache_misses=$(($(ccache_counter 'cache_miss') - ccache_misses_before))
 
 manifest_path=$build_directory/artifact-manifest.tsv
 {
@@ -648,17 +455,6 @@ manifest_path=$build_directory/artifact-manifest.tsv
     printf 'checkpoint_source_root\t%s\n' "$source_directory"
     printf 'compiler_flags\t%s\n' "$compiler_flags"
     printf 'cmake_flags\t%s\n' "$(printf '%s %s' "$preset_flags" "$cpu_instruction_flags" | tr -s ' \n' ' ')"
-    # What the build graph reused and what it produced. The prefix maps sit on
-    # their own row because they join the compiler's flags without joining the
-    # two rows a census arm comparison reads.
-    printf 'file_prefix_map\t%s\n' "$file_prefix_map"
-    printf 'shader_pack_key\t%s\n' "$shader_pack_key"
-    printf 'shader_pack\t%s\n' "$shader_pack"
-    printf 'object_cache\t%s\n' "$object_cache"
-    printf 'ccache_hits\t%s\n' "$ccache_hits"
-    printf 'ccache_misses\t%s\n' "$ccache_misses"
-    printf 'instrument_binary_key\t%s\n' "$instrument_binary_key"
-    printf 'binary\t%s\n' "$binary_state"
 } > "$manifest_path"
 
 for output in $preset_outputs; do
@@ -669,32 +465,6 @@ for output in $preset_outputs; do
             ;;
     esac
 done
-
-# Both stores are written from an accepted build alone, after the manifest
-# binds the executables to their digests, so a key never names artifacts a
-# later run would have to distrust. Storing a pack the restore produced would
-# rewrite it with its own bytes, which is why only a generated pack is kept.
-if [ "$build_cache_enabled" != 0 ]; then
-    if [ "$shader_pack" = generated ] &&
-        qwen_shader_pack_store "$shader_pack_root" "$shader_pack_key" \
-            "$build_directory" "$source_directory" "$actual_commit"
-    then
-        printf 'shader_pack=stored key=%s\n' "$shader_pack_key"
-    fi
-    if [ "$binary_state" = built ] && binary_store_admits; then
-        binary_staging=$build_cache_directory/binaries/.staging-$$-$instrument_binary_key
-        rm -rf "$binary_staging"
-        mkdir -p "$binary_staging"
-        for output in $preset_outputs; do
-            cp -a "$build_directory/$output" \
-                "$binary_staging/$(basename -- "$output")"
-        done
-        cp -a "$manifest_path" "$binary_staging/artifact-manifest.tsv"
-        rm -rf "${binary_store:?}"
-        mv "$binary_staging" "$binary_store"
-        printf 'binary=stored key=%s\n' "$instrument_binary_key"
-    fi
-fi
 
 printf 'preset=%s build=accepted manifest=%s\n' "$preset" "$manifest_path"
 cat "$manifest_path"
