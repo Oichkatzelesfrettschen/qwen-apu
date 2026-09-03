@@ -1466,9 +1466,11 @@ fi
 # qwen-capacity-policy.sh answers a verified QWEN_VULKAN_EXTERNAL_LEASE_PROOF
 # by unsetting QWEN_VULKAN_WORKLOAD_LOCK for the server it assembles, and
 # measure-served-decode.sh republishes the proof for its own inherited
-# descriptor 8. The runner's expected lease is its state directory's own, which
-# this campaign leaves at the default, so a caller naming another lock path is
-# refused here rather than handing the arms a proof they cannot verify.
+# descriptor 8 after comparing that descriptor against its own
+# QWEN_STATE_DIRECTORY's lock. The two sides therefore read one directory: the
+# arm list carries this campaign's own as QWEN_STATE_DIRECTORY, and a caller
+# naming a QWEN_VULKAN_WORKLOAD_LOCK outside it is refused here rather than
+# handing the arms a proof they cannot verify.
 workload_lease_state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
 expected_workload_lease=$workload_lease_state_directory/vulkan-workload.lock
 workload_lease=${QWEN_VULKAN_WORKLOAD_LOCK:-$expected_workload_lease}
@@ -1926,6 +1928,7 @@ for arm in $execution_arms; do
             QWEN_EXECUTION_PROOF_SHA256="$execution_proof_sha256" \
             QWEN_BENCH_GENERATE="$census_generate" \
             QWEN_VULKAN_EXTERNAL_LEASE_PROOF="$workload_lease_proof" \
+            QWEN_STATE_DIRECTORY="$workload_lease_state_directory" \
             -- \
             "$runner" "$arm_label" "$model_path" "$profile" \
             >"$arm_directory/runner.stdout" 2>"$arm_directory/runner.stderr" &
@@ -2289,7 +2292,9 @@ EOF
     # `flock -n -x`, and the campaign holds that lock exclusively from before
     # the clock write to its own exit, so the poll would read the campaign's
     # own exclusion as a foreign workload and spend every cooldown deadline.
-    # Holding the lease is the stronger form of the predicate the flag polls.
+    # Holding the lease is the stronger form of the predicate the flag polls,
+    # and the cooldown row states that rather than leaving a reader of the
+    # ledger to infer why the predicate stopped being polled.
     quiescence_line=$("$script_directory/await-quiescence.sh" \
         --max-seconds "$cooldown_s" \
         ${cooldown_sclk_forced_flag:+--sclk-forced} \
@@ -2306,7 +2311,7 @@ EOF
     [ -n "$quiescence_verdict" ] || quiescence_verdict=unreported
     [ -n "$quiescence_elapsed_ms" ] || quiescence_elapsed_ms=-
     [ "$quiescence_verdict" = reached ] || cooldown_timeouts=$((cooldown_timeouts + 1))
-    printf 'census_cooldown=%s slot=%s arm=%s elapsed_ms=%s status=%s sclk_forced=%s\n' \
+    printf 'census_cooldown=%s slot=%s arm=%s elapsed_ms=%s status=%s sclk_forced=%s lease=held-by-campaign\n' \
         "$quiescence_verdict" "$slot" "$arm" "$quiescence_elapsed_ms" \
         "$quiescence_status" "$cooldown_sclk_forced"
     # An endpoint the run never observed reads `-` rather than borrowing a

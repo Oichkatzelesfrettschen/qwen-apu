@@ -2797,13 +2797,24 @@ for arm_record in $arm_records; do
         fi
     done
     for arm_required in PATH HOME QWEN_LLAMA_SERVER QWEN_RESULT_DIRECTORY \
-        QWEN_VULKAN_EXTERNAL_LEASE_PROOF; do
+        QWEN_VULKAN_EXTERNAL_LEASE_PROOF QWEN_STATE_DIRECTORY; do
         if ! cut -f1 "$arm_record" | grep -qx "$arm_required"; then
             printf 'arm environment record omits %s: %s\n' "$arm_required" \
                 "$arm_record" >&2
             arm_environment_failures=1
         fi
     done
+    # measure-served-decode.sh compares its inherited descriptor 8 against its
+    # own QWEN_STATE_DIRECTORY's lock, so the directory the campaign locked and
+    # the directory the arm resolves that lock in are one value.
+    arm_state_directory=$(awk -F'\t' '$1 == "QWEN_STATE_DIRECTORY" { print $2 }' \
+        "$arm_record")
+    if [ "$arm_state_directory" != "$workload_lease_directory" ]; then
+        printf 'arm resolves the lease in %s where the campaign locked %s: %s\n' \
+            "${arm_state_directory:--}" "$workload_lease_directory" \
+            "$arm_record" >&2
+        arm_environment_failures=1
+    fi
 done
 if [ ! -s "$brick_arm_environment" ]; then
     printf 'the served runner recorded no environment of its own\n' >&2
