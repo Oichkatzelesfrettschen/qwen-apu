@@ -1,0 +1,23 @@
+sidecar_exit=accepted status=0
+record_readable=accepted path=$HOME/raven2-served-ab-e4-20260902T2222Z/arms/0a-W/clock-sidecar.tsv
+clock=accepted clock=CLOCK_MONOTONIC
+period_declared=accepted declared=20000000 requested=20000000
+sampler_identity=accepted pid=1672839 nice=19 cpu_affinity=0,1
+columns=accepted columns=monotonic_ns	pp_dpm_sclk_selected_mhz	pp_dpm_mclk_surface_mhz	pp_dpm_fclk_surface_mhz	gpu_busy_percent	temp1_millidegrees	sample_cost_ns	sclk_actual_mhz width=8
+footer_cardinality=accepted footers=1
+footer_fields=accepted present=achieved_period_ns,first_sample_ns,last_sample_ns,max_sample_cost_ns,mean_sample_cost_ns,samples,samples_with_unavailable_sensor
+samples=accepted samples=984 rows=984
+row_arity=accepted columns=8
+achieved_period=accepted achieved_ns=20061178 requested_ns=20000000 tolerance=0.25
+sample_cost=accepted mean_ns=419852 max_ns=53105032 bound_ns=1000000
+allowed_columns=accepted allowed=pp_dpm_fclk_surface_mhz
+sensor_rows=accepted rows_with_unavailable=984 footer=984
+sensors=accepted unavailable_outside_allowance=- allowed=pp_dpm_fclk_surface_mhz
+footer_instants=accepted first=404679930759260 last=404699650898166
+window_coverage=accepted first=404679930759260 begin=404690972824143 end=404698551347526 last=404699650898166
+gaps=accepted median_ns=20000229 p95_ns=22091934 p99_ns=27165642 max_ns=73195150 over_1_5x=6 over_missed=2 over_max=0
+window_lost=accepted window_lost_fraction=0.0000 bound=0.0300 missed_bound_ns=40000000
+gaps_in_window=0 begin=404690972824143 end=404698551347526 bound_ns=250000000 window_lost_fraction=0.0000
+clock_state=measured window_samples=379 sclk_mode_mhz=1100 sclk_share=1.0000 mclk_mode_mhz=933 temp_mean_c=74.8 temp_max_c=76.0 busy_mean=91.55
+clock_invariant=held samples_at_required=379 samples_below_required=0 below_required_fraction=0.0000 sclk_source=sclk_actual_mhz required_sclk_mhz=1100 required_mclk_mhz=933 max_below_mclk_floor_fraction=0.0100 samples_at_mclk_floor=379 samples_below_mclk_floor=0 below_mclk_floor_fraction=0.0000
+clock_sidecar=accepted failures=-

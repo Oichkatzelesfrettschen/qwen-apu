@@ -41,6 +41,12 @@ def verify_identity(path: Path, descriptor: int) -> os.stat_result:
             f"lock descriptor uid {descriptor_status.st_uid} differs from "
             f"effective uid {effective_uid}: {path}"
         )
+    # One inode reachable by one name: a same-owner private hard link would
+    # otherwise make an unrelated file the synchronization object.
+    if descriptor_status.st_nlink != 1:
+        raise LockDescriptorError(
+            f"lock leaf has {descriptor_status.st_nlink} hard links: {path}"
+        )
     try:
         path_status = path.lstat()
     except OSError as error:

@@ -1,0 +1,4 @@
+pair	control	outer	inner	first_outer	first_inner	first_delta	second_outer	second_inner	second_delta	replicates	mean_delta	sd_delta	ci_low	ci_high	deltas	bound	verdict	detail
+1	sidecar	P-nosidecar	P	9.529	9.542	+0.0014	9.498	9.485	-0.0014	4	-0.0060	0.0079	-0.0186	+0.0066	+0.0014 -0.0014 -0.0165 -0.0074	0.0065	unresolved	spans bound=0.0065 ci=[-0.0186,+0.0066]
+2	compile	P	I0	9.087	8.216	-0.0959	7.375	7.630	+0.0346	4	-0.0208	0.0544	-0.1074	+0.0658	-0.0959 +0.0346 -0.0105 -0.0114	0.0065	unresolved	spans bound=0.0065 ci=[-0.1074,+0.0658]
+3	collect	I0	I1	7.467	7.093	-0.0501	7.208	7.040	-0.0233	4	-0.0215	0.0208	-0.0546	+0.0116	-0.0501 -0.0233 -0.0094 -0.0032	0.02	unresolved	spans bound=0.02 ci=[-0.0546,+0.0116]
