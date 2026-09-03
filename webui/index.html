@@ -3630,6 +3630,14 @@ async function saveConversation() {
     // again for a store that permits reads and refuses writes.
     conversationStoreFailedNames.add(activeStore.name);
     conversationStoreRead = null;
+    // The record that triggered the demotion is retried once against
+    // whatever the fallback chain now resolves to, so this exact save is not
+    // lost until a later call happens to run: closing or reloading the page
+    // right after this one would otherwise cost the turn that just streamed
+    // and rendered.
+    try {
+      await (await conversationStore()).write(record);
+    } catch { /* the retried store also refuses; the live page stays authoritative */ }
   }
   await renderConversationList();
 }

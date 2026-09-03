@@ -833,53 +833,31 @@ const flakyPage = newPage({
 });
 await answerBoot(flakyPage);
 assert.equal(await flakyPage.api.storeName(), 'indexeddb');
+// The failed write is retried once against whatever the fallback chain now
+// resolves to, in the same saveConversation() call, so the record that
+// triggered the demotion is not lost until a later call happens to run.
 const flakyId = await flakyPage.api.runFixtureTurn(fixture);
 await flushPromises();
-// The write was refused, so nothing reached the store yet.
-assert.equal((await flakyPage.api.list()).length, 0,
-  'a refused write reached the store it was refused by');
-failWrites.active = false;
-await flakyPage.api.appendFollowUp('a retried save reaches the store', 'image-capable');
-await flushPromises();
-const flakyList = await flakyPage.api.list();
-assert.equal(flakyList.length, 1,
-  'the store stayed demoted after the write it failed on could have succeeded');
+assert.equal((await flakyPage.api.list()).length, 1,
+  'the record that triggered the demotion was not retried into the fallback');
+assert.equal(await flakyPage.api.storeName(), 'localstorage',
+  'IndexedDB stayed selected after its write failed');
 const flakyRecord = await flakyPage.api.read(flakyId);
-assert.ok(flakyRecord, 'the retried save did not reach the store');
-assert.equal(flakyRecord.messages.at(-1).content, 'a retried save reaches the store');
+assert.ok(flakyRecord, 'the retried save did not reach the fallback store');
+assert.equal(flakyRecord.messages.length, 3);
 
-// A store that permits reads and refuses every write -- a quota exhausted
-// mid-session, unlike the transient failure above -- must not just have the
-// gate re-select the same store: resolveConversationStore()'s own list()
-// probe is a read and would pass again for exactly this backend, so the
-// second save needs the excluded-name check to reach localStorage instead.
-const permanentlyFlakyDatabase = makeFakeIndexedDatabase();
-const permanentFailWrites = { active: true };
-const permanentlyFlakyIndexedDatabase =
-  makeFlakyIndexedDatabase(permanentlyFlakyDatabase, { failWrites: permanentFailWrites });
-const quotaLocalStorage = makeFakeStorage();
-const quotaPage = newPage({
-  indexedDatabase: permanentlyFlakyIndexedDatabase,
-  localStorage: quotaLocalStorage,
-  sessionStorage: makeFakeStorage()
-});
-await answerBoot(quotaPage);
-assert.equal(await quotaPage.api.storeName(), 'indexeddb',
-  'the initial resolution did not select IndexedDB, which still answers its own probe');
-const quotaId = await quotaPage.api.runFixtureTurn(fixture);
+// IndexedDB recovering later does not un-exclude it: the demotion is sticky
+// for the rest of the page session, since resolveConversationStore()'s own
+// probes cannot distinguish a transient failure from a persistent one and a
+// store proven not to write once is not trusted with a second record.
+failWrites.active = false;
+await flakyPage.api.appendFollowUp('a later save still avoids the demoted store', 'image-capable');
 await flushPromises();
-assert.equal((await quotaPage.api.list()).length, 0,
-  'the first refused write reached the store it was refused by');
-await quotaPage.api.appendFollowUp('a second write also finds IndexedDB refusing', 'image-capable');
-await flushPromises();
-assert.equal(await quotaPage.api.storeName(), 'localstorage',
-  'the excluded IndexedDB name was reselected after its write failed again');
-const quotaRaw = [...quotaLocalStorage.values.entries()]
-  .map(([key, value]) => `${key}=${value}`).join('\n');
-assert.ok(quotaRaw.includes(quotaId),
-  'a save excluded from IndexedDB never reached the localStorage fallback');
-assert.ok(quotaRaw.includes('a second write also finds IndexedDB refusing'),
-  'the fallback store holds no record of the write IndexedDB kept refusing');
+assert.equal(await flakyPage.api.storeName(), 'localstorage',
+  'a recovered IndexedDB was reselected after its earlier write had failed');
+const flakyFollowUp = await flakyPage.api.read(flakyId);
+assert.equal(flakyFollowUp.messages.at(-1).content,
+  'a later save still avoids the demoted store');
 
 // ---- switchConversation rechecks busy after its own await -----------------
 
