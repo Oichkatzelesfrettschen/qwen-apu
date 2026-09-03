@@ -1386,20 +1386,28 @@ env -i PATH="$run_path" HOME="$home_directory" SSH_CONNECTION="$run_ssh_connecti
     "$temporary_directory/out-$run_index" \
     >"$engine_clock_term_stdout" 2>"$temporary_directory/engine-clock-term-stderr.txt" &
 engine_clock_term_pid=$!
+# The signal is sent once the campaign has written the level, which its
+# applied line proves. The wait is bounded by the campaign's own life rather
+# than by a fixed budget: the digests and registry reads ahead of the write
+# take seconds on an idle host and far longer under a parallel gate, and a
+# campaign that exits before applying is reported with its own diagnostics.
 engine_clock_term_poll=0
-while [ "$engine_clock_term_poll" -lt 100 ]; do
-    if grep -q '^engine_clock=applied ' "$engine_clock_term_stdout"; then
-        break
+while ! grep -q '^engine_clock=applied ' "$engine_clock_term_stdout"; do
+    if ! kill -0 "$engine_clock_term_pid" 2>/dev/null; then
+        wait "$engine_clock_term_pid" 2>/dev/null || true
+        printf 'the signalled campaign exited before applying its clock policy:\n' >&2
+        cat "$temporary_directory/engine-clock-term-stderr.txt" >&2
+        exit 1
+    fi
+    if [ "$engine_clock_term_poll" -ge 3000 ]; then
+        kill -TERM "$engine_clock_term_pid" 2>/dev/null || true
+        wait "$engine_clock_term_pid" 2>/dev/null || true
+        printf 'the signalled campaign never applied its clock policy within 600 s\n' >&2
+        exit 1
     fi
     sleep 0.2
     engine_clock_term_poll=$((engine_clock_term_poll + 1))
 done
-if [ "$engine_clock_term_poll" -ge 100 ]; then
-    kill -TERM "$engine_clock_term_pid" 2>/dev/null || true
-    wait "$engine_clock_term_pid" 2>/dev/null || true
-    printf 'the signalled campaign never applied its clock policy\n' >&2
-    exit 1
-fi
 [ "$(cat "$engine_clock_term_drm/power_dpm_force_performance_level")" = manual ]
 kill -TERM "$engine_clock_term_pid"
 set +e
@@ -1407,8 +1415,9 @@ wait "$engine_clock_term_pid"
 engine_clock_term_status=$?
 set -e
 if [ "$engine_clock_term_status" -ne 143 ]; then
-    printf 'the signalled campaign exited %s where its TERM trap exits 143\n' \
+    printf 'the signalled campaign exited %s where its TERM trap exits 143:\n' \
         "$engine_clock_term_status" >&2
+    cat "$temporary_directory/engine-clock-term-stderr.txt" >&2
     exit 1
 fi
 grep -q '^dpm_restore=restored level=auto requested=auto ' "$engine_clock_term_stdout"
