@@ -263,6 +263,13 @@ printf 'preset=%s source=%s commit=%s worktree=%s jobs=%s\n' \
 # any pack so a freshly checked-out tree leaves its outputs current.
 shader_pack_key=-
 shader_pack=unavailable
+# The restore stamps the checkout's shader sources so its own outputs read
+# current, and every other build directory over that checkout compares its
+# generated shaders against the same files. The times the checkout held are
+# saved before the stamp and put back once this build leaves, on the failing
+# path as well as the accepted one.
+shader_source_mtime_save=$(mktemp)
+trap 'qwen_shader_source_mtimes_apply "$shader_source_mtime_save"' EXIT HUP INT TERM
 shader_tree=$source_directory/ggml/src/ggml-vulkan/vulkan-shaders
 shader_pack_root=$build_cache_directory/shader-packs
 glslc_executable=$(command -v glslc 2>/dev/null || printf '')
@@ -277,7 +284,8 @@ case " $preset_flags " in
             shader_pack=generated
             if [ "$build_cache_enabled" != 0 ] &&
                 qwen_shader_pack_restore "$shader_pack_root" "$shader_pack_key" \
-                    "$build_directory" "$source_directory"
+                    "$build_directory" "$source_directory" \
+                    "$shader_source_mtime_save"
             then
                 shader_pack=restored
             fi
@@ -429,6 +437,9 @@ fi
 # divergent tree demotes it to unknown, which refuses a positive count.
 patched_sources_ledger=$script_directory/llama-patched-sources.tsv
 checkpoint_series_tree=unavailable
+# The paths a verified series accounted for, one per line, which is the set the
+# two series digests in the binary key fix the content of.
+series_covered_paths=''
 checkpoint_series_tree_sha256=-
 checkpoint_sources_ledger_sha256=-
 if [ -r "$patched_sources_ledger" ]; then
@@ -457,6 +468,9 @@ if [ -r "$patched_sources_ledger" ]; then
     if [ "$checkpoint_series_tree" = verified ]; then
         checkpoint_series_tree_sha256=$(sha256sum "$series_tree_rows" |
             cut -d ' ' -f 1)
+        series_covered_paths=$(awk -F'\t' '
+            $1 == "" || $1 ~ /^#/ { next }
+            { print $1 }' "$patched_sources_ledger")
     fi
     rm -f "$series_tree_rows"
 fi
@@ -504,6 +518,8 @@ if [ -n "${QWEN_LLAMA_CANDIDATE_SELECT:-}" ]; then
     else
         checkpoint_series_tree_sha256=$(sha256sum "$series_tree_rows" |
             cut -d ' ' -f 1)
+        series_covered_paths=$(printf '%s\n' "$candidate_replay" |
+            sed -n 's/^candidate_sha256=[0-9a-f]* path=//p')
     fi
     rm -f "$series_tree_rows"
 fi
@@ -541,6 +557,13 @@ binary_store_admits() {
     case " $preset_targets " in
         *' all '*) return 1 ;;
     esac
+    # The key states the compiled source through the commit and the two series
+    # digests alone, so a checkout carrying an edit outside the verified series
+    # holds bytes the key attributes to the clean commit. Reuse would substitute
+    # another tree's executables for that edit and storage would publish it
+    # under the clean key, and both are refused while the tree carries one.
+    qwen_binary_tree_is_keyed "$source_directory" "$checkpoint_series_tree" \
+        "$series_covered_paths" || return 1
 }
 binary_reusable() {
     [ "$build_cache_enabled" != 0 ] || return 1
@@ -580,6 +603,7 @@ else
     cmake --build "$build_directory" --parallel "$build_jobs" --target $preset_targets
     printf 'binary=built key=%s\n' "$instrument_binary_key"
 fi
+qwen_shader_source_mtimes_apply "$shader_source_mtime_save"
 
 for output in $preset_outputs; do
     output_path=$build_directory/$output

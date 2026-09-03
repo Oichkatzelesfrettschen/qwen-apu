@@ -153,7 +153,7 @@ gate_cell test-summarize-fixed64-served-campaign derive \
     remote/test-summarize-fixed64-served-campaign.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-fixed64-served-campaign.py'
 gate_cell test-verify-external-vulkan-lease derive \
-    remote/test-verify-external-vulkan-lease.py \
+    'remote/test-verify-external-vulkan-lease.py remote/image_protocol.py' \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-verify-external-vulkan-lease.py'
 gate_cell test-verify-representation-pair derive \
     remote/test-verify-representation-pair.py \
@@ -182,7 +182,8 @@ gate_cell test-image-service derive remote/test-image-service.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-image-service.py'
 gate_cell test-image-mcp derive remote/image-mcp/test-image-mcp.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/image-mcp/test-image-mcp.py'
-gate_cell test-image-review derive remote/test-image-review.py \
+gate_cell test-image-review derive \
+    'remote/test-image-review.py remote/image_protocol.py' \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-image-review.py'
 gate_cell test-web-mcp derive remote/web-mcp/test-web-mcp.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/web-mcp/test-web-mcp.py'
@@ -258,12 +259,13 @@ gate_cell test-run-served-binary-ab derive \
     remote/test-run-served-binary-ab.sh
 gate_cell test-measurement-harnesses derive remote/test-measurement-harnesses.sh \
     remote/test-measurement-harnesses.sh
-gate_cell test-qwen-session-signals derive remote/test-qwen-session-signals.sh \
+gate_cell test-qwen-session-signals derive \
+    'remote/test-qwen-session-signals.sh remote/image_protocol.py' \
     remote/test-qwen-session-signals.sh
 gate_cell test-qwen-runtime-guards derive remote/test-qwen-runtime-guards.sh \
     remote/test-qwen-runtime-guards.sh
 gate_cell test-telemetry-session-records derive \
-    remote/test-telemetry-session-records.sh \
+    'remote/test-telemetry-session-records.sh remote/image_protocol.py' \
     remote/test-telemetry-session-records.sh
 gate_cell test-quality-roster derive remote/test-quality-roster.sh \
     remote/test-quality-roster.sh
@@ -277,12 +279,13 @@ gate_cell test-fallback-webui-model-selection derive \
     remote/test-fallback-webui-model-selection.sh \
     remote/test-fallback-webui-model-selection.sh
 gate_cell test-fallback-webui-web-authorization derive \
-    remote/test-fallback-webui-web-authorization.sh \
+    'remote/test-fallback-webui-web-authorization.sh remote/image_protocol.py' \
     remote/test-fallback-webui-web-authorization.sh
 gate_cell test-fallback-webui-image-authorization derive \
     remote/test-fallback-webui-image-authorization.sh \
     remote/test-fallback-webui-image-authorization.sh
-gate_cell test-web-tools-roundtrip derive remote/test-web-tools-roundtrip.sh \
+gate_cell test-web-tools-roundtrip derive \
+    'remote/test-web-tools-roundtrip.sh remote/image_protocol.py' \
     remote/test-web-tools-roundtrip.sh
 gate_cell test-admit-web-router-fake derive remote/test-admit-web-router-fake.sh \
     remote/test-admit-web-router-fake.sh

@@ -107,14 +107,66 @@ qwen_compiler_identity() {
     "${1:-cc}" --version 2>/dev/null | head -1
 }
 
-# The mtime every shader source carries after a pack restore. Ninja decides an
-# output dirty by comparing it against each input's mtime, and a freshly
-# prepared candidate tree stamps its sources with the checkout time, which is
-# later than the packed outputs. Stamping the sources at a constant older than
-# any pack restores the ordering the generator would have produced, and the
-# direction is safe for every other build directory over the same tree: an
-# input moving backwards leaves an existing output current.
+# The mtime every shader source carries while a pack restore's build runs.
+# Ninja decides an output dirty by comparing it against each input's mtime, and
+# a freshly prepared candidate tree stamps its sources with the checkout time,
+# which is later than the packed outputs. Stamping the sources at a constant
+# older than any pack restores the ordering the generator would have produced.
+#
+# The stamp belongs to the build that restored the pack. Another build
+# directory over the same checkout compares its own generated outputs against
+# these same sources, and outputs it generated before a shader edit read newer
+# than a backdated input, which is a stale SPIR-V ninja declares current. The
+# restore therefore saves the times the checkout holds and the builder puts them
+# back once ninja exits, which leaves the stamp required for each warm rebuild
+# rather than carried over from the last one.
 QWEN_SHADER_SOURCE_MTIME=200001010000.00
+
+# The shader sources' own mtimes, one `TIME<tab>PATH` row per file at the
+# nanosecond stat reports, which is the resolution ninja compares at.
+#
+# usage: qwen_shader_source_mtimes_save SOURCE_DIRECTORY SAVE_FILE
+qwen_shader_source_mtimes_save() {
+    find "$1/ggml/src/ggml-vulkan/vulkan-shaders" -type f \
+        -exec stat -c '%y	%n' {} + >"$2"
+}
+
+# Put the saved times back and consume the save file, so a second call over an
+# applied save changes nothing.
+#
+# usage: qwen_shader_source_mtimes_apply SAVE_FILE
+qwen_shader_source_mtimes_apply() {
+    [ -r "$1" ] || return 0
+    while IFS='	' read -r qwen_saved_mtime qwen_saved_path; do
+        [ -n "$qwen_saved_path" ] || continue
+        [ -f "$qwen_saved_path" ] || continue
+        touch -d "$qwen_saved_mtime" -- "$qwen_saved_path" || return 1
+    done <"$1"
+    rm -f "$1"
+}
+
+# Whether the binary key states every byte the checkout would compile. The key
+# names the compiled source through the commit and the two series digests,
+# which fix the content of every path the replayed series rewrites, so a
+# prepared tree reads dirty while its bytes are keyed. A modified or untracked
+# path the series never covered is content the key would attribute to the clean
+# commit, and reuse would substitute another tree's executables for it while
+# storage would publish it under the clean key.
+#
+# usage: qwen_binary_tree_is_keyed SOURCE_DIRECTORY SERIES_TREE_STATE COVERED_PATHS
+qwen_binary_tree_is_keyed() {
+    qwen_keyed_status=$(git -C "$1" status --porcelain --untracked-files=all) ||
+        return 1
+    qwen_keyed_worktree_paths=$(printf '%s' "$qwen_keyed_status" | cut -c 4-)
+    [ -n "$qwen_keyed_worktree_paths" ] || return 0
+    case $2 in
+        verified | verified-candidate) ;;
+        *) return 1 ;;
+    esac
+    [ -n "$3" ] || return 1
+    [ -z "$(printf '%s\n' "$qwen_keyed_worktree_paths" |
+        grep -vxF "$3" || true)" ]
+}
 
 # The build-directory-relative members of a shader pack, printed one per line.
 # The generator writes the embed sources, the header, the SPIR-V, and the
@@ -217,13 +269,17 @@ $qwen_store_required
 # the copy preserves mtimes because ninja's deps log records the output mtime
 # it stored dependencies for, and the shader sources are stamped at the
 # constant so each restored output stays newer than every input it reads.
+# MTIME_SAVE names the file the sources' own times are written to before that
+# stamp, which qwen_shader_source_mtimes_apply puts back once the build exits.
 #
 # usage: qwen_shader_pack_restore PACK_ROOT KEY BUILD_DIRECTORY SOURCE_DIRECTORY
+#            [MTIME_SAVE]
 qwen_shader_pack_restore() {
     qwen_restore_root=$1
     qwen_restore_key=$2
     qwen_restore_build=$3
     qwen_restore_source=$4
+    qwen_restore_mtime_save=${5:-}
     qwen_restore_pack=$(qwen_shader_pack_directory "$qwen_restore_root" \
         "$qwen_restore_key" "$qwen_restore_build" "$qwen_restore_source")
     [ -r "$qwen_restore_pack/manifest.tsv" ] || return 1
@@ -246,6 +302,10 @@ qwen_shader_pack_restore() {
     done <<PACK_MEMBERS
 $(cut -d ' ' -f 3- <"$qwen_restore_pack/SHA256SUMS")
 PACK_MEMBERS
+    if [ -n "$qwen_restore_mtime_save" ]; then
+        qwen_shader_source_mtimes_save "$qwen_restore_source" \
+            "$qwen_restore_mtime_save" || return 1
+    fi
     find "$qwen_restore_source/ggml/src/ggml-vulkan/vulkan-shaders" -type f \
         -exec touch -t "$(qwen_restore_field source_mtime)" {} + || return 1
 }
