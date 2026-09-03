@@ -159,7 +159,11 @@ mode change" (documented). A user report against a Raven-class device confirms
 the symptom and the workaround the ecosystem adopted, which is periodic
 re-application (reported, RyzenAdj issue 16). The campaign therefore reads
 `--info` at both ends of every arm and treats a start-to-end difference as
-platform re-assertion rather than as a measurement.
+platform re-assertion rather than as a measurement. The remedy the project's
+maintainer suggests for it is a large `stapm-time`, and
+`remote/power-envelope.sh` carries no field for that adjuster, so an arm that
+detects re-assertion reports it and ends rather than answering it; adding
+`stapm-time` to the field table is the registered response if an arm does.
 
 ### Two message tables disagree, and the return code settles it
 
@@ -354,7 +358,13 @@ platform already at 25 W voids the campaign.
 ### Retained per arm
 
 Package watts from `intel-rapl:0/energy_uj` differenced across the request
-window, and core watts from `intel-rapl:0:0` beside it. Delivered graphics clock
+window, and core watts from `intel-rapl:0:0` beside it. That reader does not yet
+exist in this tree and is a step the campaign needs before its first arm:
+`sample-clock-sidecar.py` and the telemetry broker sample clocks and run as
+unprivileged nice-19 children, while `energy_uj` is mode 0400, so the energy
+figure is two privileged reads at the window boundaries under the same
+`sudo -n` credential the SMU writer already holds rather than an in-window
+sample. Delivered graphics clock
 from the amdgpu hwmon `freq1_input` and the starred `pp_dpm_mclk` fabric step,
 sampled by `remote/sample-clock-sidecar.py` and validated by
 `remote/validate-clock-sidecar.py`. Tctl from k10temp and the amdgpu edge
