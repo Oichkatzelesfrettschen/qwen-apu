@@ -71,6 +71,14 @@ the executable-row cardinality, the bundle name rule, the random staging,
 and the ambiguity refusal in the preset check serves the same way the
 earlier one did.
 
+The full repository gate ran on `d8a3e16`, and the commit that retained
+this directory followed it, so the final head of that pull request is not
+the commit the gate ran on. `gate-heads.tsv` records the two heads and the
+distinction: the successor touched this directory, this file, and
+`evidence/SHA256SUMS` alone, so the runtime payload the appliance executed
+is the gated payload, and the repository head carries evidence the gate
+did not see beyond the ledger-evidence and manifest checks named there.
+
 ## What the bundle carries
 
 A preset section carries `LLAMA_ARG_CTX_CHECKPOINTS` because

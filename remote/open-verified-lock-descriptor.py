@@ -17,7 +17,12 @@ class LockDescriptorError(RuntimeError):
 
 
 PRIVATE_LOCK_MODE = 0o600
-LEGACY_LOCK_MODE = 0o664
+# The lock leaf is a mutual-exclusion token, so what it needs is one writer:
+# the serving user owns it and no other user may write it. FOREIGN_WRITE_BITS
+# names the group and other write bits that break that rule, so 0644 and 0640
+# are tightened to 0600 while 0664, 0622, and 0666 are refused -- a group-write
+# leaf lets a second account take the lock and publish under it.
+FOREIGN_WRITE_BITS = 0o022
 
 
 def same_file(left: os.stat_result, right: os.stat_result) -> bool:
@@ -35,6 +40,12 @@ def verify_identity(path: Path, descriptor: int) -> os.stat_result:
         raise LockDescriptorError(
             f"lock descriptor uid {descriptor_status.st_uid} differs from "
             f"effective uid {effective_uid}: {path}"
+        )
+    # One inode reachable by one name: a same-owner private hard link would
+    # otherwise make an unrelated file the synchronization object.
+    if descriptor_status.st_nlink != 1:
+        raise LockDescriptorError(
+            f"lock leaf has {descriptor_status.st_nlink} hard links: {path}"
         )
     try:
         path_status = path.lstat()
@@ -63,14 +74,14 @@ def verify_status(path: Path, descriptor: int) -> None:
 def normalize_legacy_mode(
     path: Path, descriptor: int, descriptor_status: os.stat_result
 ) -> None:
-    """Tighten the admitted unlocked legacy mode through its open descriptor."""
+    """Tighten an unlocked owner-writable legacy mode through its descriptor."""
     descriptor_mode = stat.S_IMODE(descriptor_status.st_mode)
     if not descriptor_mode & 0o077:
         return
-    if descriptor_mode != LEGACY_LOCK_MODE:
+    if descriptor_mode & FOREIGN_WRITE_BITS:
         raise LockDescriptorError(
-            f"lock descriptor mode {descriptor_mode:#05o} is not the admitted "
-            f"legacy mode {LEGACY_LOCK_MODE:#05o}: {path}"
+            f"lock descriptor mode {descriptor_mode:#05o} grants write access to "
+            f"another user: {path}"
         )
     if descriptor_status.st_nlink != 1:
         raise LockDescriptorError(f"legacy lock has multiple hard links: {path}")
@@ -86,7 +97,7 @@ def normalize_legacy_mode(
     # redirect or authorize the descriptor-bound permission change.
     locked_status = verify_identity(path, descriptor)
     locked_mode = stat.S_IMODE(locked_status.st_mode)
-    if locked_mode == LEGACY_LOCK_MODE:
+    if locked_mode & 0o077 and not locked_mode & FOREIGN_WRITE_BITS:
         if locked_status.st_nlink != 1:
             raise LockDescriptorError(f"legacy lock gained a hard link: {path}")
         os.fchmod(descriptor, PRIVATE_LOCK_MODE)

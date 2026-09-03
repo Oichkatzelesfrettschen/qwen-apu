@@ -1,0 +1,126 @@
+module	host	kind	name	version_pin	check_command	source_ref
+launch-chain	laptop	command	tmux	-	command -v tmux >/dev/null	remote/qwen-webui-control.sh:174
+launch-chain	laptop	command	curl	-	command -v curl >/dev/null	remote/qwen-launch.sh:364,remote/qwen-webui-session.sh:255
+launch-chain	laptop	command	cc	-	command -v cc >/dev/null	remote/model-memory-preflight.sh:35
+launch-chain	laptop	path	/usr/include/vulkan/vulkan.h	-	test -r /usr/include/vulkan/vulkan.h	remote/model-memory-preflight.sh:36,remote/build-vulkan-graphics-service-probe.sh:18
+launch-chain	laptop	path	radeon_icd.x86_64.json	-	test -r "${QWEN_RADV_ICD:-/usr/share/vulkan/icd.d/radeon_icd.x86_64.json}"	remote/model-memory-preflight.sh:38
+launch-chain	laptop	optional-command	openssl	-	command -v openssl >/dev/null	remote/qwen-webui-session.sh:150,remote/qwen-webui-session.sh:152
+launch-chain	laptop	command	pgrep	-	command -v pgrep >/dev/null	remote/qwen-launch.sh:22,remote/qwen-teardown.sh:78
+launch-chain	laptop	command	ps	-	command -v ps >/dev/null	remote/monitor-qwen-runtime.sh:67,remote/watch-qwen-kernel-hazards.sh:25
+launch-chain	laptop	optional-command	ss	-	command -v ss >/dev/null	remote/qwen-teardown.sh:241
+launch-chain	laptop	command	stat	-	command -v stat >/dev/null	remote/qwen-launch.sh:231,remote/qwen-build-exec-guard.sh:117
+launch-chain	laptop	command	readlink	-	command -v readlink >/dev/null	remote/qwen-build-exec-guard.sh:44,remote/resolve-active-deployment.sh:39
+launch-chain	laptop	command	mktemp	-	command -v mktemp >/dev/null	remote/qwen-launch.sh:130,remote/model-memory-preflight.sh:31
+launch-chain	laptop	command	hostname	-	command -v hostname >/dev/null	remote/qwen-launch.sh:387
+launch-chain	laptop	command	getconf	-	command -v getconf >/dev/null	remote/monitor-qwen-runtime.sh:98
+launch-chain	laptop	command	comm	-	command -v comm >/dev/null	remote/check-runtime-tree.sh:155
+launch-chain	laptop	command	mv	GNU coreutils	mv --version 2>/dev/null | grep -qi 'GNU coreutils'	remote/build-deployment-bundle.sh:206,remote/activate-deployment-bundle.sh:158
+launch-chain	laptop	manual	pidfd process-group signal	-	python3 remote/signal-process-group.py --check	remote/signal-process-group.py:156
+launch-chain	laptop	env	HOME	-	[ -n "${HOME:-}" ]	remote/qwen-launch.sh:17,remote/qwen-webui-control.sh:25
+launch-chain	laptop	sysfs	gpu_busy_percent	-	test -r "${QWEN_GPU_DEVICE_DIRECTORY:-/sys/class/drm/card1/device}/gpu_busy_percent"	remote/monitor-qwen-runtime.sh:97,remote/monitor-qwen-runtime.sh:164
+launch-chain	laptop	sysfs	mem_info_vram_used	-	test -r "${QWEN_GPU_DEVICE_DIRECTORY:-/sys/class/drm/card1/device}/mem_info_vram_used"	remote/monitor-qwen-runtime.sh:166,remote/monitor-qwen-runtime.sh:172
+launch-chain	laptop	path	vulkan-graphics-service-probe	-	test -x "${QWEN_VULKAN_LATENCY_PROBE:-$HOME/qwen-laptop-setup/build/vulkan-graphics-service-probe}"	remote/qwen-webui-session.sh:526,remote/qwen-webui-session.sh:545
+launch-chain	laptop	command	dmesg	-	dmesg --color=never >/dev/null 2>&1	remote/watch-qwen-kernel-hazards.sh:83
+launch-chain	laptop	command	flock	-	command -v flock >/dev/null	remote/activate-deployment-bundle.sh:69
+launch-chain	laptop	command	python3	-	command -v python3 >/dev/null	remote/qwen-webui-session.sh:318,remote/open-verified-lock-descriptor.py:78
+launch-chain	laptop	command	sha256sum	-	command -v sha256sum >/dev/null	remote/qwen-router-exec-guard.sh:65
+launch-chain	laptop	command	awk	-	command -v awk >/dev/null	remote/qwen-capacity-policy.sh:45
+launch-chain	laptop	command	sed	-	command -v sed >/dev/null	remote/qwen-webui-control.sh:76
+launch-chain	laptop	command	taskset	-	command -v taskset >/dev/null	remote/qwen-webui-session.sh:556
+launch-chain	laptop	command	ionice	-	command -v ionice >/dev/null	remote/qwen-webui-session.sh:556
+launch-chain	laptop	sysfs	mem_info_gtt_used	-	test -r "${QWEN_GPU_DEVICE_DIRECTORY:-/sys/class/drm/card1/device}/mem_info_gtt_used"	remote/monitor-qwen-runtime.sh:94,remote/monitor-qwen-runtime.sh:165
+launch-chain	laptop	path	/dev/dri/renderD128	-	test -w /dev/dri/renderD128	remote/permissions-doctor.sh:9
+launch-chain	laptop	path	deployment-current	-	test -x "${QWEN_LLAMA_SERVER:-${QWEN_DEPLOYMENT_ROOT:-$HOME/qwen-deployments}/deployment-current/llama-server}"	remote/resolve-active-deployment.sh:32,remote/resolve-active-deployment.sh:33
+launch-chain	both	command	rsync	-	command -v rsync >/dev/null	remote/sync-runtime-tree.sh:85
+launch-chain	workstation	command	ssh	-	command -v ssh >/dev/null	remote/sync-runtime-tree.sh:105
+launch-chain	workstation	command	git	-	command -v git >/dev/null	remote/sync-runtime-tree.sh:43
+llama-build	laptop	command	cmake	-	command -v cmake >/dev/null	remote/build-llama-vulkan.sh:32
+llama-build	laptop	command	ninja	-	command -v ninja >/dev/null	remote/build-llama-vulkan.sh:32
+llama-build	laptop	command	glslc	-	command -v glslc >/dev/null	remote/build-llama-vulkan.sh:32
+llama-build	laptop	command	cc	-	command -v cc >/dev/null	remote/build-llama-vulkan.sh:32
+llama-build	laptop	command	c++	-	command -v c++ >/dev/null	remote/build-llama-vulkan.sh:32,remote/test-vulkan-submit-limit.sh:31
+llama-build	laptop	path	spirv.hpp	-	test -r /usr/include/spirv/unified1/spirv.hpp || test -r /usr/include/spirv-headers/spirv.hpp || test -r /usr/include/spirv.hpp	remote/build-llama-vulkan.sh:46
+llama-build	laptop	command	git	-	command -v git >/dev/null	remote/build-llama-vulkan.sh:25,remote/verify-llama-patch-series.sh:17
+llama-build	laptop	path	llama.cpp checkout	f280b26983ad0fdb705a0d9ebf0503e76f2899b0	test -d "${QWEN_LLAMA_SOURCE:-$HOME/src/llama.cpp-qwen-apu}/.git"	remote/build-llama-vulkan.sh:17,remote/build-llama-vulkan.sh:20
+llama-build	laptop	command	renice	-	command -v renice >/dev/null	remote/verify-llama-patch-series.sh:9
+llama-build	laptop	command	ionice	-	command -v ionice >/dev/null	remote/verify-llama-patch-series.sh:11
+llama-build	laptop	command	taskset	-	command -v taskset >/dev/null	remote/verify-llama-patch-series.sh:10
+llama-build	laptop	command	ldd	-	command -v ldd >/dev/null	remote/hash-load-closure.sh:39
+llama-build	laptop	optional-command	ccache	-	command -v ccache >/dev/null	remote/build-llama-preset.sh:67
+container-build	workstation	command	podman	-	command -v "${QWEN_CONTAINER:-podman}" >/dev/null	remote/build-llama-on-workstation.sh:21,remote/build-llama-on-workstation.sh:37
+container-build	workstation	optional-env	QWEN_CONTAINER	-	[ -n "${QWEN_CONTAINER:-}" ]	remote/build-llama-on-workstation.sh:21
+container-build	workstation	optional-path	docker.io/library/ubuntu:24.04	24.04	"${QWEN_CONTAINER:-podman}" image inspect "${QWEN_BUILD_IMAGE:-docker.io/library/ubuntu:24.04}" >/dev/null 2>&1	remote/build-llama-on-workstation.sh:32,remote/build-llama-on-workstation.sh:90
+container-build	workstation	command	git	-	command -v git >/dev/null	remote/build-llama-on-workstation.sh:35
+container-build	workstation	command	rsync	-	command -v rsync >/dev/null	remote/build-llama-on-workstation.sh:125
+container-build	workstation	command	ssh	-	command -v ssh >/dev/null	remote/build-llama-on-workstation.sh:125
+ui-build	workstation	command	node	-	command -v node >/dev/null	remote/build-llama-ui.sh:27
+ui-build	workstation	command	npm	-	command -v npm >/dev/null	remote/build-llama-ui.sh:27,remote/build-llama-ui.sh:39
+ui-build	workstation	command	rsync	-	command -v rsync >/dev/null	remote/build-llama-ui.sh:27
+ui-build	workstation	command	ssh	-	command -v ssh >/dev/null	remote/build-llama-ui.sh:34
+measurement	laptop	path	llama-bench	-	test -x "${QWEN_LLAMA_BENCH:-$HOME/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-bench}"	remote/run-placement-sweep.sh:12,remote/run-placement-sweep.sh:23
+measurement	laptop	path	llama-cli	-	test -x "${QWEN_LLAMA_CLI:-$HOME/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-cli}"	remote/run-representation-arm.sh:33
+measurement	laptop	command	cc	-	command -v cc >/dev/null	remote/build-vulkan-graphics-service-probe.sh:14
+measurement	laptop	path	/usr/include/vulkan/vulkan.h	-	test -r /usr/include/vulkan/vulkan.h	remote/build-vulkan-graphics-service-probe.sh:18
+measurement	laptop	sysfs	pp_dpm_sclk	-	test -r "${QWEN_DRM_DEVICE:-/sys/class/drm/card1/device}/pp_dpm_sclk"	remote/sample-gpu-clocks.sh:41,remote/sample-gpu-clocks.sh:64
+measurement	laptop	sysfs	pp_dpm_mclk	-	test -r "${QWEN_DRM_DEVICE:-/sys/class/drm/card1/device}/pp_dpm_mclk"	remote/sample-gpu-clocks.sh:62,remote/measure-dpm-force.sh:126
+measurement	laptop	sysfs	power_dpm_force_performance_level	-	test -r "${QWEN_DRM_DEVICE:-/sys/class/drm/card1/device}/power_dpm_force_performance_level"	remote/measure-dpm-force.sh:33,remote/amdgpu-capacity-audit.sh:52
+measurement	laptop	sysfs	amdgpu hwmon	-	for h in "${QWEN_HWMON_ROOT:-/sys/class/hwmon}"/hwmon*; do [ "$(cat "$h/name" 2>/dev/null)" = amdgpu ] && exit 0; done; exit 1	remote/sample-gpu-clocks.sh:42,remote/sample-gpu-clocks.sh:52
+measurement	laptop	manual	/etc/sudoers.d/90-qwen-agent	-	sudo -n true	remote/measure-dpm-force.sh:56,remote/measure-dpm-force.sh:136
+measurement	laptop	command	renice	-	command -v renice >/dev/null	remote/measure-dpm-force.sh:89
+measurement	laptop	command	ionice	-	command -v ionice >/dev/null	remote/measure-dpm-force.sh:35
+measurement	laptop	command	taskset	-	command -v taskset >/dev/null	remote/run-guarded-webui-benchmark.sh:22
+measurement	laptop	command	nice	-	command -v nice >/dev/null	remote/measure-bench-repeatability.sh:248
+measurement	laptop	command	timeout	-	command -v timeout >/dev/null	remote/run-rocm-vulkan-matrix.sh:99
+quality-suite	both	command	python3	-	command -v python3 >/dev/null	remote/run-quality-suite.py:1
+quality-suite	both	python-module	zlib	-	python3 -c 'import zlib'	remote/generate-quality-images.py:32
+quality-suite	laptop	command	curl	-	command -v curl >/dev/null	remote/run-quality-roster.sh:84
+quality-suite	both	path	remote/quality-images	-	test -d remote/quality-images	remote/generate-quality-images.py:32,remote/quality-suite.tsv:1
+web-lane	laptop	command	python3	-	command -v python3 >/dev/null	remote/web-mcp/server.py:1,remote/web-mcp/authorize-broker.py:1
+web-lane	both	command	chromium	-	command -v "${QWEN_CHROMIUM:-chromium}" >/dev/null	remote/web-mcp/drive-fallback-page.py:313,remote/repository-quality-gates.sh:26
+web-lane	laptop	env	QWEN_WEB_TOKEN_KEY_FILE	-	test -f "${QWEN_WEB_TOKEN_KEY_FILE:-/nonexistent}"	remote/qwen-web-launch.sh:253,remote/qwen-web-launch.sh:256
+web-lane	laptop	optional-env	QWEN_WEB_AUTHORIZER_READY	-	[ -n "${QWEN_WEB_AUTHORIZER_READY:-}" ]	remote/qwen-web-launch.sh:166
+web-lane	laptop	optional-env	QWEN_WEB_EXA_KEY_FILE	-	test -f "${QWEN_WEB_EXA_KEY_FILE:-/nonexistent}"	remote/web-mcp/server.py:3253
+web-lane	laptop	path	searx-pyenv python	-	test -x "${QWEN_SEARXNG_PYTHON:-/usr/local/searxng/searx-pyenv/bin/python}"	remote/searxng-control.sh:23
+web-lane	laptop	path	SEARXNG_SETTINGS_PATH target	-	test -e "${QWEN_SEARXNG_SETTINGS_PATH:-/etc/searxng/settings.yml}"	remote/searxng-control.sh:24,remote/searxng-control.sh:35
+web-lane	laptop	manual	searxng service user	-	sudo -n -u "${QWEN_SEARXNG_SERVICE_USER:-searxng}" true	remote/searxng-control.sh:22,remote/install-searxng.sh:68
+web-lane	laptop	command	openssl	-	command -v openssl >/dev/null	remote/install-searxng.sh:162
+web-lane	laptop	command	git	-	command -v git >/dev/null	remote/install-searxng.sh:82
+web-lane	both	python-module	yaml	-	python3 -c 'import yaml'	remote/test-searxng-config.sh:23
+web-lane	laptop	command	ss	-	command -v ss >/dev/null	remote/admit-web-router-fake.sh:451
+web-lane	laptop	optional-path	yacy install	-	test -d "${QWEN_YACY_INSTALL_DIRECTORY:-$HOME/yacy}"	remote/yacy-control.sh:1,remote/test-search-control.sh:25
+image-lane	laptop	command	cmake	-	command -v cmake >/dev/null	remote/build-stable-diffusion-vulkan.sh:62
+image-lane	laptop	command	ninja	-	command -v ninja >/dev/null	remote/build-stable-diffusion-vulkan.sh:62
+image-lane	laptop	command	glslc	-	command -v glslc >/dev/null	remote/build-stable-diffusion-vulkan.sh:62
+image-lane	laptop	command	vulkaninfo	-	command -v vulkaninfo >/dev/null	remote/build-stable-diffusion-vulkan.sh:62
+image-lane	laptop	path	stable-diffusion.cpp checkout	de298c225bed97c3f9026b73cd7b71e7879bd41b	test -d "${QWEN_IMAGE_SOURCE:-$HOME/src/stable-diffusion.cpp-qwen-apu}/.git"	remote/build-stable-diffusion-vulkan.sh:22,remote/build-stable-diffusion-vulkan.sh:23
+image-lane	laptop	path	sd-cli	-	test -x "${QWEN_IMAGE_RUNTIME:-$HOME/src/stable-diffusion.cpp-qwen-apu/build-raven2/bin/sd-cli}"	remote/run-image-standalone.sh:57
+image-lane	laptop	command	python3	-	command -v python3 >/dev/null	remote/image-service.py:1,remote/image-mcp/server.py:1
+image-lane	laptop	env	QWEN_IMAGE_PROFILES_JSON	-	test -r "${QWEN_IMAGE_PROFILES_JSON:-/nonexistent}"	remote/qwen-image-launch.sh:270,remote/qwen-image-launch.sh:272
+image-lane	laptop	path	vulkan-workload.lock directory	-	test -d "${QWEN_WEBUI_STATE_DIRECTORY:-$HOME/qwen-webui-state}"	remote/image-service.py:101,remote/image-service.py:656
+model-fetch	both	command	curl	-	command -v curl >/dev/null	remote/download-qwen35-4b-q4km.sh:55,remote/fetch-candidate-artifact.sh:60
+model-fetch	both	command	sha256sum	-	command -v sha256sum >/dev/null	remote/download-qwen35-4b-q4km.sh:27,remote/fetch-candidate-artifact.sh:51
+model-fetch	laptop	path	llama-quantize	-	test -x "${QWEN_LLAMA_QUANTIZE:-$HOME/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-quantize}"	remote/derive-f16-artifact.sh:37,remote/derive-f16-artifact.sh:46
+model-fetch	workstation	optional-env	GGUF_PY_PATH	-	test -d "${GGUF_PY_PATH:-/nonexistent}"	remote/test-gguf-tensor-census.py:37,remote/derive-f16-artifact.sh:25
+model-fetch	both	python-module	struct	-	python3 -c 'import struct'	remote/gguf-tensor-census.py:21
+model-fetch	both	python-module	hashlib	-	python3 -c 'import hashlib'	remote/admit-candidate-static.py:23,remote/gguf-tensor-census.py:18
+hip-rocm	laptop	path	TheRock clang++	10.1.0a20260825	test -x "${ROCM_PATH:-$HOME/.venvs/rocm-gfx900/lib/python3.12/site-packages/_rocm_sdk_devel}/lib/llvm/bin/clang++"	remote/build-llama-dual.sh:37,evidence/therock-sdk-manifest.tsv:2
+hip-rocm	laptop	optional-env	ROCM_PATH	-	[ -n "${ROCM_PATH:-}" ]	remote/build-llama-dual.sh:37,remote/run-rocm-vulkan-matrix.sh:37
+hip-rocm	laptop	path	gcc 14 libstdc++	-	test -d /usr/lib/gcc/x86_64-linux-gnu/14	remote/build-llama-dual.sh:114
+hip-rocm	laptop	command	cmake	-	command -v cmake >/dev/null	remote/build-llama-dual.sh:137
+hip-rocm	laptop	command	ninja	-	command -v ninja >/dev/null	remote/build-llama-dual.sh:137
+repository-gate	both	command	bash	-	command -v bash >/dev/null	remote/repository-quality-gates.sh:18
+repository-gate	both	command	node	-	command -v node >/dev/null	remote/repository-quality-gates.sh:18,remote/repository-quality-gates.sh:105
+repository-gate	both	command	shellcheck	-	command -v shellcheck >/dev/null	remote/repository-quality-gates.sh:18,remote/repository-quality-gates.sh:43
+repository-gate	both	command	ruff	-	command -v ruff >/dev/null	remote/repository-quality-gates.sh:18,remote/repository-quality-gates.sh:44
+repository-gate	both	command	mypy	-	command -v mypy >/dev/null	remote/repository-quality-gates.sh:18,remote/repository-quality-gates.sh:63
+repository-gate	both	command	python3	-	command -v python3 >/dev/null	remote/repository-quality-gates.sh:18
+repository-gate	both	command	curl	-	command -v curl >/dev/null	remote/repository-quality-gates.sh:18
+repository-gate	both	command	flock	-	command -v flock >/dev/null	remote/repository-quality-gates.sh:18
+repository-gate	both	command	git	-	command -v git >/dev/null	remote/repository-quality-gates.sh:18
+repository-gate	both	command	ps	-	command -v ps >/dev/null	remote/repository-quality-gates.sh:18
+repository-gate	both	command	sha256sum	-	command -v sha256sum >/dev/null	remote/repository-quality-gates.sh:18
+repository-gate	both	command	chromium	-	command -v "${QWEN_CHROMIUM:-chromium}" >/dev/null	remote/repository-quality-gates.sh:26,remote/repository-quality-gates.sh:99
+repository-gate	both	optional-env	QWEN_CHROMIUM	-	[ -n "${QWEN_CHROMIUM:-}" ]	remote/repository-quality-gates.sh:26
+repository-gate	both	optional-path	$HOME/.qwen-gate-venv	-	test -x "$HOME/.qwen-gate-venv/bin/mypy"	remote/repository-quality-gates.sh:44,remote/repository-quality-gates.sh:63
+repository-gate	both	command	find	-	command -v find >/dev/null	remote/repository-quality-gates.sh:33
+repository-gate	both	command	awk	-	command -v awk >/dev/null	remote/check-ledger-evidence.sh:41
