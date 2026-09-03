@@ -6,6 +6,8 @@ candidate=census+E4 (741a0d76...), Vulkan0
 prompts=6, order C K K C, 2 runs per start, 128 tokens, temperature 0, top_k 1, seed 1, ignore_eos, cache_prompt off
 registered_logprob_bound=1e-3 nat
 witness=differs on the log-probability bound; id_identity=held on every prompt and sample
+bound_status=retired: refuted, no calibrated or margin-based reference, no replacement figure
+successor=../margin-contract-design.md, a decision-margin rule judged on a fresh holdout
 ```
 
 `run-kernel-delta-witness.sh` reads the token-id array and the selected

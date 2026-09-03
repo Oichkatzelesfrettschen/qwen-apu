@@ -12,11 +12,27 @@ set -eu
 # the cross-binary comparison: a control disagreeing with itself reproduces a
 # nondeterminism the candidate cannot be blamed for.
 #
-# The token ids are compared exactly. The log-probabilities are reported as
-# the largest absolute difference over every generated token, and the
-# registered bound is 1e-3 nat: the candidate reorders a floating-point
-# accumulation, so the last bits may move while the argmax stays, and a
-# difference past that bound names a numeric change rather than reordering.
+# The token ids are compared exactly. Two contracts read the log-probabilities.
+# `logprob-bound` reports the largest absolute difference of the selected
+# token's log-probability over every generated token against
+# QWEN_WITNESS_LOGPROB_BOUND; the 1e-3 nat it was first registered with had
+# no reference and E4 refuted it while holding every token id, so it remains
+# as the recorded historical rule. `margin` is the contract that replaces it:
+# QWEN_WITNESS_N_PROBS acquires the top-k log-probabilities at every
+# position, and summarize-margin-witness.py reads the winner's margin over
+# the runner-up in both binaries, which equals the logit margin because the
+# softmax normalizer cancels. The candidate must keep every winner, keep a
+# positive margin at every position, and retain at least
+# QWEN_WITNESS_RETENTION of the control's margin wherever that margin is at
+# least QWEN_WITNESS_NEAR_TIE_NAT; the near-tie positions below it are
+# counted separately, since a ratio over a vanishing margin measures nothing.
+# The rule and its constants are registered in
+# evidence/raven2-vulkan-kernel-census/e4/margin-contract-design.md ahead of
+# the holdout run that first applies them.
+#
+# QWEN_WITNESS_PROMPTS names a prompt file (id, tab, prompt, one per line) in
+# place of the six discovery prompts below, so a contract frozen over the
+# discovery set is judged on prompts no earlier run has read.
 #
 # The servers are started directly, the way run-graph-alias-ab.sh starts its
 # arms, with the tuple the registry names and every buffer required on
@@ -43,6 +59,40 @@ readiness_seconds=${QWEN_WITNESS_READY_SECONDS:-180}
 request_seconds=${QWEN_WITNESS_REQUEST_SECONDS:-900}
 logprob_bound=${QWEN_WITNESS_LOGPROB_BOUND:-0.001}
 appliance_port=${QWEN_SERVER_PORT:-8080}
+top_count=${QWEN_WITNESS_N_PROBS:-1}
+contract=${QWEN_WITNESS_CONTRACT:-logprob-bound}
+near_tie_nat=${QWEN_WITNESS_NEAR_TIE_NAT:-0.1}
+margin_retention=${QWEN_WITNESS_RETENTION:-0.5}
+prompt_source=${QWEN_WITNESS_PROMPTS:-}
+margin_summarizer=${QWEN_WITNESS_MARGIN_SUMMARIZER:-"$script_directory/summarize-margin-witness.py"}
+
+case $top_count in
+    '' | *[!0-9]* | 0)
+        printf 'QWEN_WITNESS_N_PROBS is a positive integer: %s\n' "$top_count" >&2
+        exit 2
+        ;;
+esac
+case $contract in
+    logprob-bound) ;;
+    margin)
+        if [ "$top_count" -lt 2 ]; then
+            printf 'the margin contract reads a runner-up, so QWEN_WITNESS_N_PROBS is at least 2: %s\n' "$top_count" >&2
+            exit 2
+        fi
+        if [ ! -r "$margin_summarizer" ]; then
+            printf 'margin summarizer is unreadable: %s\n' "$margin_summarizer" >&2
+            exit 2
+        fi
+        ;;
+    *)
+        printf 'QWEN_WITNESS_CONTRACT is logprob-bound or margin: %s\n' "$contract" >&2
+        exit 2
+        ;;
+esac
+if [ -n "$prompt_source" ] && [ ! -r "$prompt_source" ]; then
+    printf 'QWEN_WITNESS_PROMPTS is unreadable: %s\n' "$prompt_source" >&2
+    exit 2
+fi
 
 for server in "$control_server" "$candidate_server"; do
     if [ ! -x "$server" ]; then
@@ -85,6 +135,9 @@ if [ ! -r "$model_path" ]; then
 fi
 
 prompt_file=$output_directory/prompts.tsv
+if [ -n "$prompt_source" ]; then
+    cp "$prompt_source" "$prompt_file"
+else
 cat >"$prompt_file" <<'PROMPTS'
 accumulator	Start with the number 7. Apply these operations in order and show the running total after every single step: add 13, multiply by 3, subtract 8, divide by 2, add 45, multiply by 4, subtract 111, add 19, multiply by 2, subtract 37, add 88, divide by 5. State the value after each operation on its own line, then give the final value.
 stack	Simulate a stack, one operation per line, printing the complete stack contents after every operation: push A, push B, push C, pop, push D, push E, pop, pop, push F, push G, push H, pop, push I, pop, pop, push J. Then report the final stack from bottom to top and the full sequence of popped values in order.
@@ -93,13 +146,25 @@ variable-trace	Trace this program line by line and print the value of every vari
 state-machine	A machine has states S0, S1, S2, S3 and transitions: on 0 go S0->S1, S1->S2, S2->S3, S3->S0; on 1 go S0->S2, S1->S0, S2->S1, S3->S2. Starting in S0, process the input 0110100111010011 one symbol at a time. Print the state after each symbol, then report the final state and how many times each state was visited.
 constraints	Five houses in a row are numbered 1 to 5. Each has one colour from red, blue, green, white, yellow and one occupant from Ana, Ben, Cara, Dan, Eve. Apply these clues one at a time, and after each clue print everything you have established so far: the red house is immediately left of the green house; Ana lives in the blue house; Cara lives in house 1; the yellow house is house 5; Ben lives immediately right of the white house; Dan does not live in house 3; the green house is house 4. Then give the complete assignment.
 PROMPTS
+fi
+# A prompt file is two tab-separated columns, ids unique and unindented, so
+# a malformed holdout is refused ahead of any server start.
+if ! awk -F'\t' '
+    NF != 2 || $1 == "" || $2 == "" || $1 ~ /[^A-Za-z0-9_-]/ { bad = 1; exit 1 }
+    seen[$1]++ { bad = 1; exit 1 }
+    END { if (bad || NR == 0) exit 1 }' "$prompt_file"; then
+    printf 'prompt file is not id<TAB>prompt with unique ids: %s\n' "${prompt_source:-$prompt_file}" >&2
+    exit 2
+fi
+prompt_count=$(wc -l <"$prompt_file" | tr -d ' ')
+prompt_sha256=$(sha256sum "$prompt_file" | cut -d ' ' -f 1)
 
 request_builder=$output_directory/build-request.py
 cat >"$request_builder" <<'PYTHON'
 import json
 import sys
 
-prompt_path, predict, seed = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+prompt_path, predict, seed, top_count = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
 with open(prompt_path, "r", encoding="utf-8") as handle:
     prompt_text = handle.read()
 json.dump(
@@ -112,16 +177,20 @@ json.dump(
         "ignore_eos": True,
         "cache_prompt": False,
         "return_tokens": True,
-        "n_probs": 1,
+        "n_probs": top_count,
         "stream": False,
     },
     sys.stdout,
 )
 PYTHON
 
-# One line per generated token: the id and the selected token's log-probability
-# as the server reports it, so the two files a comparison reads are the
-# record and not a re-derivation.
+# One line per generated token: the id, the selected token's log-probability
+# as the server reports it, and the top-k list as `id:logprob` pairs joined
+# by `;`, so the files a comparison reads are the record and not a
+# re-derivation. The server fills `top_logprobs` from the full-vocabulary
+# softmax ahead of sampling, so a top_k of 1 in the sampler leaves the list
+# whole; the reader requires the list to hold the requested count and to
+# open on the selected token, which is what greedy sampling makes true.
 token_reader=$output_directory/read-tokens.py
 cat >"$token_reader" <<'PYTHON'
 import json
@@ -129,8 +198,22 @@ import sys
 
 with open(sys.argv[1], "r", encoding="utf-8") as handle:
     payload = json.load(handle)
+top_count = int(sys.argv[2])
 tokens = payload.get("tokens")
 probabilities = payload.get("completion_probabilities")
+
+
+def top_list(entry, token_id):
+    top = entry.get("top_logprobs")
+    if not isinstance(top, list) or len(top) < top_count:
+        sys.stderr.write(f"top_logprobs holds {len(top) if isinstance(top, list) else 'no'} entries"
+                         f" where {top_count} were requested\n")
+        raise SystemExit(1)
+    if top[0].get("id") != token_id:
+        sys.stderr.write(f"top_logprobs opens on id {top[0].get('id')} where the selected token is {token_id}\n")
+        raise SystemExit(1)
+    return ";".join(f"{int(item['id'])}:{float(item['logprob']):.9g}" for item in top[:top_count])
+
 if not isinstance(tokens, list) or not tokens:
     sys.stderr.write("response carries no token array\n")
     raise SystemExit(1)
@@ -153,10 +236,11 @@ for token_id in tokens:
         sys.stderr.write("token array holds a non-integer entry\n")
         raise SystemExit(1)
     if entry_index < len(probabilities) and probabilities[entry_index].get("id") == token_id:
-        lines.append(f"{token_id}\t{float(probabilities[entry_index]['logprob']):.9g}")
+        entry = probabilities[entry_index]
+        lines.append(f"{token_id}\t{float(entry['logprob']):.9g}\t{top_list(entry, token_id)}")
         entry_index += 1
     else:
-        lines.append(f"{token_id}\t-")
+        lines.append(f"{token_id}\t-\t-")
         unmatched += 1
 if entry_index != len(probabilities) or unmatched > 2:
     sys.stderr.write(f"probability entries do not align with the token array:"
@@ -277,6 +361,10 @@ start_server() {
     printf 'runs_per_start\t%s\npredict_tokens\t%s\nseed\t%s\nthreads\t%s\nlogprob_bound\t%s\n' \
         "$run_count" "$predict_tokens" "$sampling_seed" "$thread_count" "$logprob_bound"
     printf 'arm_order\tC K K C\ncontrol_device\tVulkan0\ncandidate_device\t%s\n' "$candidate_device"
+    printf 'contract\t%s\nn_probs\t%s\nnear_tie_nat\t%s\nmargin_retention\t%s\n' \
+        "$contract" "$top_count" "$near_tie_nat" "$margin_retention"
+    printf 'prompt_source\t%s\nprompt_count\t%s\nprompts_sha256\t%s\n' \
+        "${prompt_source:-builtin}" "$prompt_count" "$prompt_sha256"
 } >"$output_directory/inputs.tsv"
 
 slot=0
@@ -298,13 +386,13 @@ for arm in C K K C; do
             mkdir -p "$prompt_directory"
             printf '%s' "$prompt_text" >"$prompt_directory/prompt.txt"
             python3 "$request_builder" "$prompt_directory/prompt.txt" "$predict_tokens" \
-                "$sampling_seed" >"$prompt_directory/request.json"
+                "$sampling_seed" "$top_count" >"$prompt_directory/request.json"
             curl --silent --show-error --fail-with-body --max-time "$request_seconds" \
                 --header 'Content-Type: application/json' \
                 --data @"$prompt_directory/request.json" \
                 "http://127.0.0.1:$server_port/completion" \
                 >"$prompt_directory/response-run-$run_index.json"
-            python3 "$token_reader" "$prompt_directory/response-run-$run_index.json" \
+            python3 "$token_reader" "$prompt_directory/response-run-$run_index.json" "$top_count" \
                 >"$prompt_directory/tokens-run-$run_index.tsv"
         done <"$prompt_file"
         run_index=$((run_index + 1))
@@ -329,7 +417,7 @@ def read(path):
     ids, logprobs = [], []
     with open(path) as handle:
         for line in handle:
-            token_id, logprob = line.rstrip("\n").split("\t")
+            token_id, logprob = line.rstrip("\n").split("\t")[:2]
             ids.append(int(token_id))
             logprobs.append(None if logprob == "-" else float(logprob))
     return ids, logprobs
@@ -386,8 +474,21 @@ for prompt_id, rows in sorted(samples.items()):
     print(f"{prompt_id}\tcandidate-vs-control\t{len(cross_rows)}\t{identity}\t{divergence}\t{delta:.3e}\t{verdict}")
 print(f"-\toverall\t-\t-\t-\t-\t{overall}")
 PYTHON
-overall=$(awk -F'\t' '$2 == "overall" { print $7 }' "$output_directory/summary.tsv")
-printf 'witness=%s prompts=%s output=%s\n' "$overall" \
-    "$(awk -F'\t' 'NR > 1 && $2 == "candidate-vs-control" { n++ } END { print n + 0 }' "$output_directory/summary.tsv")" \
-    "$output_directory"
+bound_overall=$(awk -F'\t' '$2 == "overall" { print $7 }' "$output_directory/summary.tsv")
+# Under the margin contract the verdict comes from the margin summary and the
+# log-probability bound row is retained as a report; both are printed so a
+# reader sees which rule decided.
+if [ "$contract" = margin ]; then
+    python3 "$margin_summarizer" "$output_directory" --top-k "$top_count" \
+        --near-tie "$near_tie_nat" --retention "$margin_retention" \
+        >"$output_directory/margin-summary.tsv" || {
+        printf 'margin summarizer failed; see %s\n' "$output_directory/margin-summary.tsv" >&2
+        exit 1
+    }
+    overall=$(awk -F'\t' '$2 == "overall" { print $NF }' "$output_directory/margin-summary.tsv")
+else
+    overall=$bound_overall
+fi
+printf 'witness=%s contract=%s logprob_bound_verdict=%s prompts=%s output=%s\n' "$overall" "$contract" \
+    "$bound_overall" "$prompt_count" "$output_directory"
 [ "$overall" = held ]
