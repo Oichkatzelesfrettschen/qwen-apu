@@ -33,6 +33,15 @@ set -eu
 # would leave the raised budget applied, which is the state the term exists to
 # end.
 #
+# The snapshot path is the term's ownership token as well as its baseline. A
+# claim opens it under `set -C`, which is an O_EXCL create, so exactly one
+# concurrent `apply` creates it and every other is refused; the claim precedes
+# the power-metrics read and therefore precedes every SMU write, so a claimed
+# file that carries no schema row means no limit was written and the reversal is
+# to remove it. `QWEN_POWER_ENVELOPE_OWNER` names the transaction that claimed
+# it, and `restore` refuses a snapshot another owner claimed rather than
+# returning a budget a second campaign is still running under.
+#
 # Units differ between the two directions and the difference is a factor of a
 # thousand. `main.c` prints the power-metrics table with `%9.3lf` in watts and
 # amperes, while `README.md` documents every set option in milliwatts and
@@ -65,6 +74,9 @@ tctl_ceiling_c=${QWEN_POWER_ENVELOPE_TCTL_CEILING_C:-95}
 # absolute band in the field's own write unit. A tenth of a watt is two orders
 # below the smallest step any registered profile moves.
 readback_tolerance=${QWEN_POWER_ENVELOPE_TOLERANCE:-100}
+# A caller that owns a wider transaction names itself here, so its restore acts
+# on its own claim alone. A direct invocation owns its snapshot by process.
+owner_token=${QWEN_POWER_ENVELOPE_OWNER:-power-envelope.$$}
 
 # Each field names the power-metrics row it is read from, the set option it is
 # written with, and the factor that converts the printed reading into the write
@@ -292,10 +304,24 @@ if [ "$subcommand" = restore ]; then
             "$snapshot_file" >&2
         exit 2
     fi
+    # A claimed file with no content is an apply that died between its atomic
+    # claim and its baseline record. The claim precedes every SMU write, so the
+    # machine holds the platform's own budget and the reversal is the removal.
+    if [ ! -s "$snapshot_file" ]; then
+        rm -f -- "$snapshot_file"
+        printf 'power_envelope_restored=held profile=unclaimed fields=none\n'
+        exit 0
+    fi
     snapshot_schema=$(LC_ALL=C awk -F'\t' '$1 == "schema" { print $2; exit }' "$snapshot_file")
     if [ "$snapshot_schema" != power-envelope-snapshot-v1 ]; then
         printf 'reason=snapshot_schema_unknown schema=%s path=%s\n' \
             "${snapshot_schema:-absent}" "$snapshot_file" >&2
+        exit 2
+    fi
+    snapshot_owner=$(LC_ALL=C awk -F'\t' '$1 == "owner" { print $2; exit }' "$snapshot_file")
+    if [ "${snapshot_owner:-unowned}" != "$owner_token" ]; then
+        printf 'reason=snapshot_owner_mismatch owner=%s caller=%s path=%s; another transaction is running under this envelope\n' \
+            "${snapshot_owner:-unowned}" "$owner_token" "$snapshot_file" >&2
         exit 2
     fi
     snapshot_profile=$(LC_ALL=C awk -F'\t' '$1 == "profile" { print $2; exit }' "$snapshot_file")
@@ -361,15 +387,6 @@ fi
 power_profile_name=$1
 resolve_power_profile "$power_profile_name"
 
-# A second apply over a live snapshot would record this term's own writes as the
-# platform baseline, so the snapshot is the transaction and a present one is a
-# refusal rather than an overwrite.
-if [ -e "$snapshot_file" ]; then
-    printf 'reason=snapshot_present path=%s; a power envelope is already applied, so restore it before applying another\n' \
-        "$snapshot_file" >&2
-    exit 2
-fi
-
 require_ryzenadj || exit 2
 require_credential || exit 2
 
@@ -378,15 +395,38 @@ if [ ! -d "$state_directory" ]; then
     exit 2
 fi
 
+# A second apply over a live snapshot would record this term's own writes as the
+# platform baseline, so the snapshot is the transaction. The claim is the
+# creation itself: `set -C` opens with O_EXCL, so two concurrent applies cannot
+# both pass, and the loser is refused by name rather than racing the winner to
+# the SMU.
+if ! (set -C; : >"$snapshot_file") 2>/dev/null; then
+    printf 'reason=snapshot_present path=%s; a power envelope is already applied, so restore it before applying another\n' \
+        "$snapshot_file" >&2
+    exit 2
+fi
+chmod 0600 "$snapshot_file"
+
+# Every refusal from here to the baseline record releases the claim, because
+# each of them happens ahead of the first SMU write and leaves the machine on
+# the platform's own budget.
+release_claim() {
+    rm -f -- "$snapshot_file"
+}
+
 apply_metrics=$(mktemp)
 trap 'rm -f -- "$apply_metrics"' EXIT HUP INT TERM
 if ! read_power_metrics >"$apply_metrics"; then
     printf 'reason=metrics_read_failed path=%s; ryzenadj --info answered nothing readable\n' \
         "$ryzenadj_command" >&2
+    release_claim
     exit 2
 fi
 
-snapshot_thermal_limit=$(require_thermal_ceiling "$apply_metrics") || exit 2
+snapshot_thermal_limit=$(require_thermal_ceiling "$apply_metrics") || {
+    release_claim
+    exit 2
+}
 
 # Every field the profile writes is snapshotted before the first write, so a
 # row the table does not carry refuses the term while the machine still holds
@@ -399,12 +439,14 @@ for profile_pair in $profile_fields; do
         '' | *[!0-9]*)
             printf 'reason=profile_value_not_a_positive_integer profile=%s field=%s value=%s\n' \
                 "$power_profile_name" "$profile_field" "$profile_value" >&2
+            release_claim
             exit 2
             ;;
     esac
     power_field_metadata=$(power_field_row "$profile_field") || {
         printf 'reason=unknown_profile_field profile=%s field=%s\n' \
             "$power_profile_name" "$profile_field" >&2
+        release_claim
         exit 2
     }
     field_label=$(printf '%s' "$power_field_metadata" | cut -f1)
@@ -412,6 +454,7 @@ for profile_pair in $profile_fields; do
     field_snapshot=$(scaled_row_value "$apply_metrics" "$field_label" "$field_scale") || {
         printf 'reason=metrics_row_missing profile=%s field=%s row=%s\n' \
             "$power_profile_name" "$profile_field" "$field_label" >&2
+        release_claim
         exit 2
     }
     snapshot_pairs="${snapshot_pairs}${profile_field}=${field_snapshot} "
@@ -422,6 +465,7 @@ snapshot_file_new=$snapshot_file.new
     printf 'key\tvalue\tsnapshot\n'
     printf 'schema\tpower-envelope-snapshot-v1\t-\n'
     printf 'profile\t%s\t-\n' "$power_profile_name"
+    printf 'owner\t%s\t-\n' "$owner_token"
     printf 'holder_pid\t%s\t-\n' "$$"
     printf 'ryzenadj\t%s\t-\n' "$ryzenadj_command"
     printf 'ryzenadj_sha256\t%s\t-\n' "$(binary_digest "$ryzenadj_command")"

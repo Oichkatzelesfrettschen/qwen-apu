@@ -322,6 +322,12 @@ reversible state rather than five.
 | candidate | `measure-fixed-package-20w` | 20000 mW |
 | candidate | `measure-fixed-package-25w` | 25000 mW |
 
+The package budget is machine-wide, so two campaigns cannot share it. The
+snapshot path is claimed atomically by whichever transaction creates it, and a
+restore acts on the owner token its own claim recorded, so a second campaign
+starting mid-arm is refused rather than returning a budget the first is still
+running under.
+
 Arm order per checkpoint is control, candidate, candidate, control, which is the
 mirrored order this tree reads a pair inside. The closing control's agreement
 with the opening one is what licenses reading the two candidates as budget

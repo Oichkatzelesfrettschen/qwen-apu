@@ -1277,6 +1277,12 @@ remote/power-envelope.sh apply PROFILE          # the SMU package budget, one
                                                 # arm refused with the baseline
                                                 # returned and 4 a budget the
                                                 # platform would not return.
+                                                # The snapshot path is the
+                                                # claim: it is created under
+                                                # set -C, so one concurrent
+                                                # apply wins, and restore acts
+                                                # on the owner token that claim
+                                                # recorded alone.
 remote/power-envelope.sh restore | status       # the reversal, and the live
                                                 # limits with no write
 remote/build-ryzenadj.sh [SOURCE_DIRECTORY]    # the pinned RyzenAdj into

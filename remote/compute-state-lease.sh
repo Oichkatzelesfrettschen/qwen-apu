@@ -107,6 +107,13 @@ workload_lease=${QWEN_VULKAN_WORKLOAD_LOCK:-$state_directory/vulkan-workload.loc
 lease_verifier=${QWEN_EXTERNAL_LEASE_VERIFIER:-$script_directory/verify-external-vulkan-lease.py}
 power_envelope_command=${QWEN_POWER_ENVELOPE_COMMAND:-$script_directory/power-envelope.sh}
 power_envelope_snapshot=${QWEN_POWER_ENVELOPE_SNAPSHOT:-$state_directory/power-envelope-snapshot.tsv}
+# The envelope snapshot is claimed atomically by whoever creates it, and this
+# token is what marks the claim as this transaction's. The restore acts on a
+# snapshot carrying this token alone, so a concurrent campaign that claimed the
+# envelope between this transaction's preflight and its apply keeps its own
+# budget rather than having it returned by a transaction that never wrote it.
+power_envelope_owner=compute-state-lease.$$.$(LC_ALL=C od -An -N8 -tx1 /dev/urandom 2>/dev/null |
+    tr -d ' \n')
 renice_command=${QWEN_RENICE_COMMAND:-/usr/bin/renice}
 ionice_command=${QWEN_IONICE_COMMAND:-/usr/bin/ionice}
 taskset_command=${QWEN_TASKSET_COMMAND:-/usr/bin/taskset}
@@ -611,6 +618,7 @@ state_record_new=$state_record.new
     printf 'applied_mclk_selection\t%s\n' "$profile_mclk_selection"
     printf 'applied_ksm_run\t%s\n' "$profile_ksm_run"
     printf 'power_envelope\t%s\n' "${profile_power_envelope:--}"
+    printf 'power_envelope_owner\t%s\n' "${power_envelope_owner:--}"
     printf 'power_envelope_snapshot\t%s\n' "$power_envelope_snapshot"
     printf 'applied_child_nice\t%s\n' "${harness_nice:-unreadable}"
     printf 'applied_child_cpu_list\t%s\n' "${harness_cpu_list:-unreadable}"
@@ -680,8 +688,11 @@ finish_transaction() {
     # performance level. power-envelope.sh owns its own snapshot and verifies
     # its own read-back, so its status is the whole claim here; an apply that
     # refused before writing the snapshot leaves nothing to reverse.
-    if [ -n "$profile_power_envelope" ] && [ -e "$power_envelope_snapshot" ]; then
+    if [ -n "$profile_power_envelope" ] &&
+        [ "$(LC_ALL=C awk -F'\t' '$1 == "owner" { print $2; exit }' \
+            "$power_envelope_snapshot" 2>/dev/null)" = "$power_envelope_owner" ]; then
         if ! QWEN_POWER_ENVELOPE_SNAPSHOT="$power_envelope_snapshot" \
+            QWEN_POWER_ENVELOPE_OWNER="$power_envelope_owner" \
             "$power_envelope_command" restore >&2; then
             restoration_failures="${restoration_failures}power_envelope=unreturned(profile=$profile_power_envelope) "
         fi
@@ -775,6 +786,7 @@ fi
 # returns the budget the apply had already written.
 if [ -n "$profile_power_envelope" ]; then
     QWEN_POWER_ENVELOPE_SNAPSHOT="$power_envelope_snapshot" \
+        QWEN_POWER_ENVELOPE_OWNER="$power_envelope_owner" \
         "$power_envelope_command" apply "$profile_power_envelope"
 fi
 printf 'compute_state_applied=%s dpm_level=%s sclk=%s mclk=%s ksm_run=%s power_envelope=%s\n' \

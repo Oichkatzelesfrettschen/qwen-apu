@@ -107,9 +107,18 @@ if [ "$resolved_revision" != "$ryzenadj_revision" ]; then
     exit 2
 fi
 
+# The comparison resolves what exists and leaves what does not alone, so a
+# refused build directory is refused without this script first creating it
+# inside the checkout it is protecting.
 resolved_source=$(CDPATH='' cd -- "$ryzenadj_source" && pwd -P)
-mkdir -p -- "$ryzenadj_build"
-resolved_build=$(CDPATH='' cd -- "$ryzenadj_build" && pwd -P)
+if [ -d "$ryzenadj_build" ]; then
+    resolved_build=$(CDPATH='' cd -- "$ryzenadj_build" && pwd -P)
+else
+    case $ryzenadj_build in
+        /*) resolved_build=$ryzenadj_build ;;
+        *) resolved_build=$(pwd -P)/$ryzenadj_build ;;
+    esac
+fi
 case $resolved_build in
     "$resolved_source" | "$resolved_source"/*)
         printf 'the build directory sits inside the source checkout, which the revision check below reads as an unclean tree: %s\n' \

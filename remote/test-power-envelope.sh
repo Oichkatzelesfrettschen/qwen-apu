@@ -196,9 +196,14 @@ run_term() {
         QWEN_RYZENADJ="$run_ryzenadj" \
         QWEN_WEBUI_STATE_DIRECTORY="$state_fixture" \
         QWEN_POWER_ENVELOPE_SNAPSHOT="$snapshot_file" \
+        QWEN_POWER_ENVELOPE_OWNER="${QWEN_TEST_OWNER:-power-envelope-test}" \
         "$power_envelope" "$@" >"$temporary_directory/stdout" 2>"$temporary_directory/stderr"
     run_status=$?
     set -e
+}
+
+record_owner() {
+    LC_ALL=C awk -F'\t' '$1 == "owner" { print $2; exit }' "$snapshot_file" 2>/dev/null || true
 }
 
 stdout_carries() {
@@ -401,6 +406,52 @@ case_status=0
 [ "$run_status" -eq 2 ] || case_status=1
 stderr_carries 'reason=snapshot_absent' || case_status=1
 report "$case_status" 'a restore with no snapshot to reverse is refused'
+
+# The claim is the file's creation, so a snapshot another process holds refuses
+# this apply whatever wrote it, and no SMU write is attempted.
+reset_fixture
+printf 'schema\tpower-envelope-snapshot-v1\towner\n' >"$snapshot_file"
+run_term apply package-20w
+case_status=0
+[ "$run_status" -eq 2 ] || case_status=1
+stderr_carries 'reason=snapshot_present' || case_status=1
+if grep -q ryzenadj "$invocation_log"; then case_status=1; fi
+report "$case_status" 'a snapshot another process holds refuses the apply before the binary runs'
+rm -f -- "$snapshot_file"
+
+# A claim that never reached its baseline record means the apply died ahead of
+# the first write, so the reversal is the removal rather than a set of writes.
+reset_fixture
+: >"$snapshot_file"
+run_term restore
+case_status=0
+[ "$run_status" -eq 0 ] || case_status=1
+stdout_carries 'power_envelope_restored=held profile=unclaimed fields=none' || case_status=1
+[ ! -e "$snapshot_file" ] || case_status=1
+if grep -q ryzenadj "$invocation_log"; then case_status=1; fi
+report "$case_status" 'an unfilled claim is reversed by removing it and writes nothing'
+
+# A restore acts on its own claim alone, so a caller naming another owner is
+# refused rather than returning a budget a second campaign is running under.
+reset_fixture
+QWEN_TEST_OWNER=first-campaign
+run_term apply package-20w
+case_status=0
+[ "$run_status" -eq 0 ] || case_status=1
+[ "$(record_owner)" = first-campaign ] || case_status=1
+QWEN_TEST_OWNER=second-campaign
+run_term restore
+[ "$run_status" -eq 2 ] || case_status=1
+stderr_carries 'reason=snapshot_owner_mismatch owner=first-campaign caller=second-campaign' ||
+    case_status=1
+[ -e "$snapshot_file" ] || case_status=1
+[ "$(firmware_field stapm_limit_mw)" = 20000 ] || case_status=1
+QWEN_TEST_OWNER=first-campaign
+run_term restore
+[ "$run_status" -eq 0 ] || case_status=1
+[ "$(firmware_field stapm_limit_mw)" = 15000 ] || case_status=1
+report "$case_status" 'a restore naming another owner is refused and the owner still returns the baseline'
+unset QWEN_TEST_OWNER
 
 if [ "$failures" -ne 0 ]; then
     printf 'power_envelope_tests=failed failures=%s\n' "$failures" >&2

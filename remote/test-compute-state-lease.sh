@@ -261,7 +261,7 @@ case ${1:-} in
             printf 'power_envelope=unavailable reason=ryzenadj_absent path=absent snapshot=absent\n'
             exit 0
         fi
-        if [ -e "$snapshot" ]; then
+        if [ -e "$snapshot" ] && [ "$(control power_status_snapshot_absent)" != 1 ]; then
             snapshot_state=present
         else
             snapshot_state=absent
@@ -271,7 +271,14 @@ case ${1:-} in
         exit 0
         ;;
     apply)
-        printf 'schema\tpower-envelope-snapshot-v1\t-\n' >"$snapshot"
+        if [ "$(control power_apply_refuses_foreign)" = 1 ]; then
+            printf 'reason=snapshot_present path=%s\n' "$snapshot" >&2
+            exit 2
+        fi
+        {
+            printf 'schema\tpower-envelope-snapshot-v1\t-\n'
+            printf 'owner\t%s\t-\n' "${QWEN_POWER_ENVELOPE_OWNER:-}"
+        } >"$snapshot"
         if [ "$(control power_apply_refuses)" = 1 ]; then
             printf 'power_envelope_applied=unreached profile=%s\n' "${2:-}" >&2
             exit 3
@@ -708,6 +715,46 @@ if [ "$power_incident_status" -eq 4 ] &&
 else
     report 1 a_refused_power_restore_is_an_incident
     cat "$temporary_directory/power-incident.log" >&2
+fi
+
+# A snapshot another transaction claimed between this one's preflight and its
+# apply belongs to that campaign, so the refusal stands and the trap leaves the
+# foreign envelope where it is.
+reset_fixture
+{
+    printf 'schema\tpower-envelope-snapshot-v1\t-\n'
+    printf 'owner\tanother-campaign\t-\n'
+} >"$power_envelope_snapshot_fixture"
+set_control power_status_snapshot_absent 1
+set_control power_apply_refuses_foreign 1
+foreign_status=0
+run_transaction measure-fixed-package-20w "$stub_directory/observer" \
+    >"$temporary_directory/power-foreign.log" 2>&1 || foreign_status=$?
+if [ "$foreign_status" -eq 2 ] &&
+    ! grep -q '^restore$' "$power_envelope_log" &&
+    [ "$(record_field "$power_envelope_snapshot_fixture" owner)" = another-campaign ] &&
+    [ "$(fixture_state)" = "$snapshot_fixture_state" ]; then
+    report 0 a_foreign_envelope_snapshot_is_left_alone
+else
+    report 1 a_foreign_envelope_snapshot_is_left_alone
+    cat "$temporary_directory/power-foreign.log" >&2
+fi
+rm -f -- "$power_envelope_snapshot_fixture"
+
+# The transaction's own claim carries its token, which is what makes the restore
+# above act on this transaction's envelope alone.
+reset_fixture
+owner_status=0
+run_transaction measure-fixed-package-20w "$stub_directory/observer" \
+    >"$temporary_directory/power-owner.log" 2>&1 || owner_status=$?
+recorded_owner=$(record_field "$state_fixture/compute-state-record.tsv" power_envelope_owner)
+if [ "$owner_status" -eq 0 ] &&
+    grep -q '^restore$' "$power_envelope_log" &&
+    case $recorded_owner in compute-state-lease.*) true ;; *) false ;; esac; then
+    report 0 the_transaction_claims_the_envelope_under_its_own_token
+else
+    report 1 the_transaction_claims_the_envelope_under_its_own_token
+    cat "$temporary_directory/power-owner.log" >&2
 fi
 
 if [ "$failures" -ne 0 ]; then
