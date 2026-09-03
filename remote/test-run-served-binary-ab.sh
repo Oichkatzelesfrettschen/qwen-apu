@@ -89,7 +89,10 @@ models_directory=$temporary_directory/models
 mkdir -p "$home_directory"
 model_file=$("$registry_reader" id "$model_id" model_file)
 mkdir -p "$models_directory/$(dirname -- "$model_file")"
-: >"$models_directory/$model_file"
+# The checkpoint carries bytes so a replacement can hold its byte count and
+# move its digest alone, which is what leaves the arm's own descriptor record
+# as the only reading that separates the two.
+printf 'fixture-model-a\n' >"$models_directory/$model_file"
 
 # The tuple the scoreboard receipt restates comes from the same readers the
 # harness uses, so a registry edit moves fixture and harness together.
@@ -143,6 +146,19 @@ candidate_bytes=$(server_byte_count "$candidate_server")
 # preset with and without QWEN_LLAMA_CANDIDATE_SELECT. Every row the base build
 # identity reads is equal, so the identity comparison passes and the candidate
 # series comparison is what each case moves.
+# The digest build-llama-preset.sh records beside a candidate series:
+# verify-llama-patch-series.sh concatenates each member's own SHA-256 in ledger
+# order and hashes the concatenation, so a patch edited after the build moves
+# the value the manifest carries.
+candidate_series_digest() {
+    series_identity=''
+    for series_member in $(printf '%s\n' "$1" | tr ',' ' '); do
+        series_identity=$series_identity$(
+            sha256sum "$script_directory/../patches/$series_member" | cut -d ' ' -f 1)
+    done
+    printf '%s' "$series_identity" | sha256sum | cut -d ' ' -f 1
+}
+
 write_manifest() {
     manifest_path=$1
     manifest_bytes=$2
@@ -151,6 +167,16 @@ write_manifest() {
     manifest_tree=$5
     manifest_cmake=$6
     manifest_compiler=$7
+    # The eighth names the series digest the manifest records, which a case
+    # moves to stand for a candidate built before its patch changed.
+    manifest_series_digest=${8:-}
+    if [ -z "$manifest_series_digest" ]; then
+        if [ "$manifest_series" = - ]; then
+            manifest_series_digest=-
+        else
+            manifest_series_digest=$(candidate_series_digest "$manifest_series")
+        fi
+    fi
     {
         printf 'executable\tllama-server\t%s\t%s\n' "$manifest_bytes" "$manifest_digest"
         printf 'checkpoint_semantics\tnatural-boundary-v1\n'
@@ -163,6 +189,7 @@ write_manifest() {
         printf 'cmake_flags\t%s\n' "$manifest_cmake"
         printf 'checkpoint_series_tree\t%s\n' "$manifest_tree"
         printf 'candidate_series\t%s\n' "$manifest_series"
+        printf 'candidate_series_sha256\t%s\n' "$manifest_series_digest"
     } >"$manifest_path"
 }
 
@@ -450,6 +477,23 @@ run_candidate() {
     diagnostic_file=
 }
 
+# The fabric floor is the condition every window sample is held to, so zero
+# holds the window to nothing and a leading zero writes a second spelling of
+# one count; both are refused ahead of the first arm.
+# The band decides which pairs the rate and the bracket are read over, and it
+# reaches three readers as a float, so a value outside [0, 1) is refused before
+# an arm rather than admitting every pair.
+run_harness sclk_band_infinite 'QWEN_CENSUS_SCLK_BAND is a nonnegative decimal' \
+    QWEN_CENSUS_SCLK_BAND=inf
+run_harness sclk_band_above_one 'QWEN_CENSUS_SCLK_BAND is a relative distance' \
+    QWEN_CENSUS_SCLK_BAND=1
+
+run_harness mclk_floor_zero 'QWEN_CENSUS_MCLK_FLOOR_MHZ is a positive megahertz count' \
+    QWEN_CENSUS_ENGINE_CLOCK_POLICY=manual QWEN_CENSUS_MCLK_FLOOR_MHZ=0
+run_harness mclk_floor_leading_zero \
+    'QWEN_CENSUS_MCLK_FLOOR_MHZ is a positive megahertz count' \
+    QWEN_CENSUS_ENGINE_CLOCK_POLICY=manual QWEN_CENSUS_MCLK_FLOOR_MHZ=0933
+
 run_candidate candidate_without_e4_member \
     "must name candidate_series $candidate_patch alone" "$candidate_no_member"
 run_candidate candidate_two_members \
@@ -458,6 +502,19 @@ run_candidate candidate_profile_preset 'descend from different base builds' \
     "$candidate_profile_preset"
 run_candidate candidate_instrumented \
     'the candidate manifest names instrumentation' "$candidate_instrumented"
+
+# A candidate whose manifest names the E4 member and records another series
+# digest: the binary was built before the patch in this checkout changed, which
+# the filename comparison admits and the recomputed digest refuses.
+candidate_stale_series=$temporary_directory/candidate-stale-series
+mkdir -p "$candidate_stale_series/bin"
+cp -- "$candidate_server" "$candidate_stale_series/bin/llama-server"
+chmod +x "$candidate_stale_series/bin/llama-server"
+write_manifest "$candidate_stale_series/artifact-manifest.tsv" "$candidate_bytes" \
+    "$candidate_sha256" "$candidate_patch" verified-candidate \
+    "$serving_cmake" "$serving_compiler" "$foreign_sha256"
+run_candidate candidate_stale_series_digest \
+    'records candidate_series_sha256' "$candidate_stale_series"
 
 run_control() {
     control_case=$1
@@ -592,10 +649,17 @@ chmod +x "$run_harness_path"
 cp -- "$artifact_ledger" "$run_directory/model-artifacts.tsv"
 for linked_member in model-registry.sh models.tsv ctx-checkpoints.tsv \
     validated-tuples.tsv quarantine.tsv draft-pairs.tsv census-arm-lib.sh \
-    summarize-census-controls.py sample-clock-sidecar.py \
+    summarize-census-controls.py summarize-bracket-ab.py sample-clock-sidecar.py \
     telemetry-broker.c build-telemetry-broker.sh; do
     ln -s -- "$script_directory/$linked_member" "$run_directory/$linked_member"
 done
+# The candidate series is bound by the patch bytes and the harness resolves them
+# beside its own directory, so the executing copy carries the same patch files
+# the checked-in tree holds.
+mkdir -p "$temporary_directory/patches"
+cp -- "$script_directory/../patches/$candidate_patch" \
+    "$script_directory/../patches/llama-vulkan-pipeline-census.patch" \
+    "$temporary_directory/patches/"
 
 # The served runner an arm reaches. It reads the rate its arm is to answer with
 # from the case's own table, writes the timings the harness derives tok_s from,
@@ -607,8 +671,41 @@ cat >"$run_directory/measure-served-decode.sh" <<'FAKE_SERVED_RUNNER'
 #!/bin/sh
 set -eu
 arm_label=$1
+model_launch_path=$2
 served_rate=$(awk -F'\t' -v label="$arm_label" '$1 == label { print $2 }' \
     "$QWEN_TEST_AB_RATES")
+# The identities the launch chain is handed reach the ledger the case reads, so
+# a case asserts which tree and which checkpoint an arm was pinned to rather
+# than inferring it from the arm's own outcome.
+if [ -n "${QWEN_TEST_AB_ARM_ENV:-}" ]; then
+    printf '%s\t%s\t%s\n' "$arm_label" "${QWEN_INTENDED_GIT_HEAD:--}" \
+        "${QWEN_INTENDED_PAYLOAD_SHA256:--}" >>"$QWEN_TEST_AB_ARM_ENV"
+fi
+# The checkpoint a case replaces under the campaign, ahead of the record this
+# arm writes: the arm then pins the replacement and re-establishes publisher
+# identity against whichever ledger row followed it, which is the swap the
+# preflight digest rather than the arm's own check refuses.
+if [ "${QWEN_TEST_AB_REPLACE_MODEL:-}" = "$arm_label" ]; then
+    printf 'fixture-model-b\n' >"$model_launch_path"
+fi
+# The runner records the checkpoint it pinned, which is what an arm's model
+# identity is compared against.
+python3 - "$model_launch_path" "$QWEN_RESULT_DIRECTORY/runtime-inputs.json" <<'RUNTIME_INPUTS'
+import hashlib, json, pathlib, sys
+model = pathlib.Path(sys.argv[1]).read_bytes()
+json.dump({"schema": "served-runtime-inputs-v1",
+           "model": {"path": sys.argv[1], "bytes": len(model),
+                     "sha256": hashlib.sha256(model).hexdigest()}},
+          open(sys.argv[2], "w"))
+RUNTIME_INPUTS
+if [ "${QWEN_TEST_AB_REPLACE_TREE:-}" = "$arm_label" ]; then
+    # A tree regenerated from dirty remote/ or patches/ bytes keeps its
+    # recorded head and moves both payload digests, which is the resync the
+    # head alone cannot see.
+    tree_head=$(awk -F'\t' '$1 == "git_head" { print $2 }' "$QWEN_TEST_AB_TREE_MANIFEST")
+    printf 'git_head\t%s\nremote_payload_tree_sha256\tresynced\npatches_payload_tree_sha256\tresynced\n' \
+        "$tree_head" >"$QWEN_TEST_AB_TREE_MANIFEST"
+fi
 printf 'begin_ns\t1000000000\nend_ns\t2000000000\n' \
     >"$QWEN_RESULT_DIRECTORY/request-window.tsv"
 if [ "$served_rate" = fail ]; then
@@ -619,10 +716,20 @@ if [ "$served_rate" = truncate ]; then
         >"$QWEN_RESULT_DIRECTORY/response.json"
     exit 0
 fi
-python3 - "$served_rate" >"$QWEN_RESULT_DIRECTORY/response.json" <<'PY'
+# The reply each arm retains. The content is the arm's own entry in the reply
+# table where one names it, so a case stands a candidate that answers
+# differently up against a control that answered the registered text.
+served_reply=the-answer
+if [ -n "${QWEN_TEST_AB_REPLIES:-}" ] && [ -f "${QWEN_TEST_AB_REPLIES:-}" ]; then
+    table_reply=$(awk -F'\t' -v label="$arm_label" '$1 == label { print $2 }' \
+        "$QWEN_TEST_AB_REPLIES")
+    [ -z "$table_reply" ] || served_reply=$table_reply
+fi
+python3 - "$served_rate" "$served_reply" >"$QWEN_RESULT_DIRECTORY/response.json" <<'PY'
 import json, sys
 rate = float(sys.argv[1])
-json.dump({"timings": {"predicted_n": 65, "predicted_ms": 64000.0 / rate}},
+json.dump({"choices": [{"message": {"content": sys.argv[2]}}],
+           "timings": {"predicted_n": 65, "predicted_ms": 64000.0 / rate}},
           sys.stdout)
 PY
 FAKE_SERVED_RUNNER
@@ -698,6 +805,12 @@ set -eu
 # forced clock policy from running to its deadline.
 if [ -n "${QWEN_TEST_QUIESCENCE_ARGV:-}" ]; then
     printf '%s\n' "$*" >>"$QWEN_TEST_QUIESCENCE_ARGV"
+fi
+# A case naming timeout stands for a poller that spent its deadline with a
+# predicate still unsettled, which is the state the arm after it would inherit.
+if [ "${QWEN_TEST_QUIESCENCE_VERDICT:-reached}" = timeout ]; then
+    printf 'quiescence=timeout elapsed_ms=30000 llama_server=absent gpu_busy=41\n'
+    exit 1
 fi
 printf 'quiescence=reached elapsed_ms=12 llama_server=absent gpu_busy=0\n'
 FAKE_QUIESCENCE
@@ -807,6 +920,15 @@ write_rates() {
     } >"$rates_path"
 }
 
+# What a case moves for its own run: the cooldown verdict the stub poller
+# reports, the reply table the stub served runner answers from, and the arm
+# after which the checkpoint or the runtime tree is replaced under the
+# campaign. Each reads its default here and run_ab restores it.
+case_quiescence=reached
+case_replies=
+case_replace_model=
+case_replace_tree=
+
 run_ab() {
     ab_case=$1
     ab_expected_status=$2
@@ -834,6 +956,13 @@ run_ab() {
     active_fixture=$ab_case
     run_index=$((run_index + 1))
     ab_output=$temporary_directory/out-$run_index
+    # A case sets these before it calls and the call clears them, so one case's
+    # replacement, reply table, or cooldown verdict reaches its own run alone.
+    ab_quiescence_verdict=${case_quiescence:-reached}
+    ab_replies=${case_replies:-}
+    ab_replace_model=${case_replace_model:-}
+    ab_replace_tree=${case_replace_tree:-}
+    ab_arm_env=$temporary_directory/arm-env-$ab_case.tsv
     ab_drm=$fixture_drm
     ab_sudo_log=$temporary_directory/sudo-$ab_case.log
     ab_quiescence_argv=$temporary_directory/quiescence-argv-$ab_case.log
@@ -863,6 +992,12 @@ run_ab() {
         QWEN_TEST_AB_CLOCK_SOURCE="$ab_clock_source" \
         QWEN_TEST_SUDO_LOG="$ab_sudo_log" \
         QWEN_TEST_QUIESCENCE_ARGV="$ab_quiescence_argv" \
+        QWEN_TEST_QUIESCENCE_VERDICT="$ab_quiescence_verdict" \
+        QWEN_TEST_AB_REPLIES="$ab_replies" \
+        QWEN_TEST_AB_REPLACE_MODEL="$ab_replace_model" \
+        QWEN_TEST_AB_REPLACE_TREE="$ab_replace_tree" \
+        QWEN_TEST_AB_TREE_MANIFEST="$temporary_directory/runtime-tree-manifest.tsv" \
+        QWEN_TEST_AB_ARM_ENV="$ab_arm_env" \
         QWEN_CENSUS_ENGINE_CLOCK_POLICY="$ab_engine_clock_policy" \
         QWEN_CENSUS_MCLK_LEVEL="$ab_mclk_level" \
         QWEN_TEST_SUDO_MCLK_IGNORE="$ab_mclk_ignore" \
@@ -872,6 +1007,10 @@ run_ab() {
         >"$temporary_directory/$ab_case-stdout.txt" 2>"$diagnostic_file"
     ab_status=$?
     set -e
+    case_quiescence=reached
+    case_replies=
+    case_replace_model=
+    case_replace_tree=
     if [ "$ab_status" -ne "$ab_expected_status" ]; then
         printf 'expected exit %s, observed %s\n' "$ab_expected_status" "$ab_status" >&2
         sed -n '1,20p' "$temporary_directory/$ab_case-stdout.txt" >&2
@@ -972,6 +1111,74 @@ promoted_summary=$(awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = 
     exit 1
 }
 printf 'promoted_interval=accepted\n'
+
+# The campaign records what it bound each arm to and hands the arm the same
+# values. The payload digest is the one check-runtime-tree.sh composes from the
+# manifest's two payload rows, and the model digest is the checkpoint's own
+# bytes rather than the ledger row an arm re-reads.
+active_fixture=bound_identities_recorded
+expected_payload_sha256=$(printf 'remote_payload_tree_sha256=%s\npatches_payload_tree_sha256=%s\n' \
+    "$foreign_sha256" "$registry_sha256" | sha256sum | cut -d ' ' -f 1)
+expected_model_sha256=$(sha256sum "$models_directory/$model_file" | cut -d ' ' -f 1)
+grep -qxF "$(printf 'runtime_tree_payload_sha256\t%s' "$expected_payload_sha256")" \
+    "$ab_last_output/inputs.tsv"
+grep -qxF "$(printf 'model_file_sha256\t%s' "$expected_model_sha256")" \
+    "$ab_last_output/inputs.tsv"
+# Every arm, warmup included, launched under those two identities.
+if [ "$(awk -F'\t' -v head="$patch_series_sha256" -v payload="$expected_payload_sha256" \
+    '$2 != head || $3 != payload { count++ } END { print count + 0 }' \
+    "$temporary_directory/arm-env-verdict_promoted.tsv")" != 0 ]; then
+    printf 'an arm launched under other than the preflight tree identity\n' >&2
+    cat "$temporary_directory/arm-env-verdict_promoted.tsv" >&2
+    exit 1
+fi
+[ "$(awk 'END { print NR }' "$temporary_directory/arm-env-verdict_promoted.tsv")" = 10 ]
+printf 'bound_identities_recorded=accepted\n'
+
+# The reply is what makes a rate a comparison. A candidate that answers
+# differently while decoding 10% faster carries the promoted interval and is
+# refused on the reply row rather than promoted.
+active_fixture=response_identity_differs
+differing_replies=$temporary_directory/replies-differing
+printf '02-K\tanother-answer\n' >"$differing_replies"
+case_replies=$differing_replies
+run_ab response_identity_differs 1 failed "$promoted_rates" "$one_clock"
+grep -q '^served_ab_response_identity=differs pairs=' \
+    "$temporary_directory/response_identity_differs-stdout.txt"
+grep -qxF "$(printf 'response_identity\tdiffers')" "$ab_last_output/terminal-state.tsv"
+printf 'response_identity_differs=accepted\n'
+
+# A cooldown that spent its deadline left the arm after it a machine state the
+# arm before it chose, so the counter decides the campaign rather than being
+# reported beside a promotion.
+active_fixture=cooldown_timeout
+case_quiescence=timeout
+run_ab cooldown_timeout 1 failed "$promoted_rates" "$one_clock"
+[ "$(awk -F'=' '$1 == "cooldown_timeouts" { print $2 }' \
+    "$ab_last_output/terminal-state.tsv")" = 10 ]
+printf 'cooldown_timeout=accepted\n'
+
+# A checkpoint replaced under the campaign is a different subject however
+# consistently its ledger row follows it, so the arm that served it fails on
+# the preflight digest.
+active_fixture=model_replaced_mid_campaign
+case_replace_model=02-K
+run_ab model_replaced 1 failed "$promoted_rates" "$one_clock"
+grep -q '^served_ab_arm=model_replaced slot=2 arm=K ' \
+    "$temporary_directory/model_replaced-stdout.txt"
+printf 'model_replaced=accepted\n'
+
+# A runtime tree regenerated from dirty bytes keeps its recorded head and moves
+# its payload digest, so the head alone admits it and the payload refuses it.
+active_fixture=runtime_tree_resynced
+case_replace_tree=02-K
+run_ab runtime_tree_resynced 1 failed "$promoted_rates" "$one_clock"
+grep -q '^served_ab_arm=runtime_tree_replaced slot=2 arm=K ' \
+    "$temporary_directory/runtime_tree_resynced-stdout.txt"
+printf 'git_head\t%s\nremote_payload_tree_sha256\t%s\npatches_payload_tree_sha256\t%s\n' \
+    "$patch_series_sha256" "$foreign_sha256" "$registry_sha256" \
+    >"$temporary_directory/runtime-tree-manifest.tsv"
+printf 'runtime_tree_resynced=accepted\n'
 
 # A candidate that measures the control's own rate: the interval is degenerate
 # at zero, wholly below the bound, and a candidate merely no faster than the

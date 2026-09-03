@@ -25,7 +25,7 @@ ARMS_HEADER = ("slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcens
 
 def write_arm(root, slot, arm, status, subject_ms, null_ms, content="the answer", predicted=64,
               subject_union=None, null_union=None, subject_digest=None, null_digest="nulldigest",
-              span=None):
+              span=None, ownership="conclusive", sclk_mode="1100", subject_present=True):
     name = f"{int(slot):02d}-{arm}" if slot.isdigit() else f"{slot}-{arm}"
     directory = os.path.join(root, "arms", name)
     os.makedirs(directory, exist_ok=True)
@@ -42,19 +42,21 @@ def write_arm(root, slot, arm, status, subject_ms, null_ms, content="the answer"
             handle.write(f"graphs\tdecode\t63\texclusive_ms_per_graph=97.0\townership=conclusive"
                          f"\tqueue_completion_span_ms_per_graph={span:.3f}\n")
             handle.write(LEDGER_HEADER + "\n")
-            handle.write(f"pipeline\t31\tmul_mat_vec_q4_k_f32_f32\t64,4,1\t4,1,1\t64\t162.000\t121232.0"
-                         f"\t{subject_ms + 60:.3f}\t{subject_union:.3f}\t{subject_ms:.3f}\t44.335"
-                         f"\t207.4\t596.8\t599.4\t613.1\t64\t48\t0\t0\t0\t4\t{subject_digest}\n")
+            if subject_present:
+                handle.write(f"pipeline\t31\tmul_mat_vec_q4_k_f32_f32\t64,4,1\t4,1,1\t64\t162.000\t121232.0"
+                             f"\t{subject_ms + 60:.3f}\t{subject_union:.3f}\t{subject_ms:.3f}\t44.335"
+                             f"\t207.4\t596.8\t599.4\t613.1\t64\t48\t0\t0\t0\t4\t{subject_digest}\n")
             handle.write(f"pipeline\t32\tmul_mat_vec_q6_k_f32_f32\t64,4,1\t4,1,1\t64\t81.000\t60616.0"
                          f"\t{null_ms + 30:.3f}\t{null_union:.3f}\t{null_ms:.3f}\t2.6"
                          f"\t180.0\t500.0\t520.0\t600.0\t64\t48\t0\t0\t0\t4\t{null_digest}\n")
         with open(os.path.join(directory, "response.json"), "w") as handle:
             json.dump({"choices": [{"message": {"content": content}}],
                        "timings": {"predicted_n": predicted}}, handle)
-    return f"{slot}\t{arm}\tsha\t{predicted}\t6500.0\t9.5\t100\ton\texclusive\t{status}\t1100\t1.0000\t-\theld\t0.0000"
+    return (f"{slot}\t{arm}\tsha\t{predicted}\t6500.0\t9.5\t100\ton\t{ownership}\t{status}"
+            f"\t{sclk_mode}\t1.0000\t-\theld\t0.0000")
 
 
-def run_case(arms, bound=0.02):
+def run_case(arms, bound=0.02, band=None):
     root = tempfile.mkdtemp(prefix="bracket-ab-")
     rows = [ARMS_HEADER, write_arm(root, "0a", "W", "completed", 3200.0, 1600.0)]
     for slot, spec in enumerate(arms, 1):
@@ -63,11 +65,13 @@ def run_case(arms, bound=0.02):
         rows.append(write_arm(root, str(slot), arm, status, subject, null, content, **extra))
     with open(os.path.join(root, "arms.tsv"), "w") as handle:
         handle.write("\n".join(rows) + "\n")
-    completed = subprocess.run(
-        [sys.executable, SUMMARIZER, os.path.join(root, "arms.tsv"), os.path.join(root, "arms"),
-         "--subject", "mul_mat_vec_q4_k_f32_f32", "--null", "mul_mat_vec_q6_k_f32_f32",
-         "--bound", str(bound)],
-        capture_output=True, text=True)
+    command = [sys.executable, SUMMARIZER, os.path.join(root, "arms.tsv"),
+               os.path.join(root, "arms"),
+               "--subject", "mul_mat_vec_q4_k_f32_f32", "--null", "mul_mat_vec_q6_k_f32_f32",
+               "--bound", str(bound)]
+    if band is not None:
+        command += ["--sclk-band", str(band)]
+    completed = subprocess.run(command, capture_output=True, text=True)
     if completed.returncode != 0:
         return completed.returncode, completed.stderr.strip(), {}
     lines = completed.stdout.rstrip("\n").split("\n")
@@ -164,6 +168,61 @@ status, error, table = run_case([
 assert status == 0, error
 assert table["subject"]["verdict"] == "incomplete", table["subject"]
 print("bracket_partial=accepted")
+
+# A completed pair whose subject row the ledger never carried leaves the
+# subject and ratio rows incomplete over three surviving deltas, while the null
+# rows, which every arm reported, still read their own verdict.
+status, error, table = run_case([
+    ("C", "completed", 3200.0, 1600.0, "a"), ("K", "completed", 2944.0, 1600.0, "a"),
+    ("K", "completed", 2950.0, 1600.0, "a"), ("C", "completed", 3200.0, 1600.0, "a"),
+    ("C", "completed", 3190.0, 1600.0, "a"),
+    ("K", "completed", 2930.0, 1600.0, "a", {"subject_present": False}),
+    ("K", "completed", 2940.0, 1600.0, "a"), ("C", "completed", 3200.0, 1600.0, "a"),
+])
+assert status == 0, error
+assert table["subject"]["verdict"] == "incomplete", table["subject"]
+assert table["subject"]["comparable_pairs"] == "3", table["subject"]
+assert "ledger-missing" in table["subject"]["deltas"], table["subject"]
+assert table["null"]["verdict"] == "held", table["null"]
+print("bracket_ledger_missing_incomplete=accepted")
+
+# A pair whose two arms selected modal graphics clocks farther apart than the
+# band measures the governor step between them, so it leaves the mean and the
+# interval as state-changed and the row still reads its verdict over the three
+# pairs that held one state. The same ledger under a band wide enough to hold
+# both clocks reads all four.
+stepped = [
+    ("C", "completed", 3200.0, 1600.0, "a"), ("K", "completed", 2944.0, 1600.0, "a"),
+    ("K", "completed", 2950.0, 1600.0, "a"), ("C", "completed", 3200.0, 1600.0, "a"),
+    ("C", "completed", 3190.0, 1600.0, "a", {"sclk_mode": "800"}),
+    ("K", "completed", 2930.0, 1600.0, "a"),
+    ("K", "completed", 2940.0, 1600.0, "a"), ("C", "completed", 3200.0, 1600.0, "a"),
+]
+status, error, table = run_case(stepped, band=0.06)
+assert status == 0, error
+assert table["subject"]["verdict"] == "shortened", table["subject"]
+assert table["subject"]["comparable_pairs"] == "3", table["subject"]
+assert "state-changed" in table["subject"]["deltas"], table["subject"]
+status, error, table = run_case(stepped, band=0.5)
+assert status == 0, error
+assert table["subject"]["comparable_pairs"] == "4", table["subject"]
+print("bracket_sclk_band=accepted")
+
+# An arm the census left unable to attribute its exclusive time to one pipeline
+# carries no verdict at all: the pair is listed by its reason and the row reads
+# incomplete rather than judging the three pairs that were attributable.
+status, error, table = run_case([
+    ("C", "completed", 3200.0, 1600.0, "a"), ("K", "completed", 2944.0, 1600.0, "a"),
+    ("K", "completed", 2950.0, 1600.0, "a"), ("C", "completed", 3200.0, 1600.0, "a"),
+    ("C", "completed", 3190.0, 1600.0, "a"),
+    ("K", "completed", 2930.0, 1600.0, "a", {"ownership": "inconclusive"}),
+    ("K", "completed", 2940.0, 1600.0, "a"), ("C", "completed", 3200.0, 1600.0, "a"),
+])
+assert status == 0, error
+assert table["subject"]["verdict"] == "incomplete", table["subject"]
+assert "ownership-inconclusive" in table["subject"]["deltas"], table["subject"]
+assert table["null"]["verdict"] == "incomplete", table["null"]
+print("bracket_ownership_inconclusive=accepted")
 
 # A ledger without a C K K C quadruple is refused with its own reason.
 status, error, table = run_case([("C", "completed", 3200.0, 1600.0, "a"), ("C", "completed", 3200.0, 1600.0, "a")])

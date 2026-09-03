@@ -40,6 +40,19 @@ served rate. The rows, each read by its `role`:
                      string, so this is the reply's identity and not the
                      token array's; run-kernel-delta-witness.sh reads the ids
 
+A pair is read over the execution state and the attribution its two arms
+shared, the way summarize-census-controls.py reads a served pair. Two modal
+selected graphics clocks farther apart than `--sclk-band` measure the governor
+step between them, since a device timestamp duration scales with the clock, so
+that pair is listed `state-changed` and stays outside the mean and the
+interval while the row still reads a verdict over the pairs that held one
+state. An arm whose `ownership` column reads anything but `conclusive` or the
+unknown `-` carries exclusive time the census refuses to attribute to one
+pipeline, and a pair whose ledger row for the named pipeline is absent or
+non-positive was measured and not reported: either leaves a completed pair
+unread, so the row states `incomplete` rather than a verdict issued from the
+pairs that survived.
+
 Verdicts on a bracket row: `shortened` where the whole interval sits below
 -bound, `lengthened` above +bound, `unchanged` inside [-bound, +bound],
 `unresolved` where it crosses a bound; on a null row `held` inside the bound
@@ -60,6 +73,12 @@ COMPLETED_STATUS = ("completed", "reused")
 COLUMNS = ("role", "pipeline", "column", "replicates", "comparable_pairs",
            "mean_delta", "sd_delta", "ci_low", "ci_high", "deltas",
            "control_values", "candidate_values", "bound", "verdict", "detail")
+UNKNOWN_STATE = "-"
+# The band summarize-census-controls.py holds a served pair to: the appliance's
+# sustained regime spreads its selected clock over about 3% and its boost
+# regime sits 27% above it, so 0.06 holds one regime together and keeps the two
+# apart.
+DEFAULT_SCLK_BAND = 0.06
 EXCLUSIVE = "exclusive_bracket_ms"
 UNION = "pipeline_bracket_union_ms"
 DIGEST = "spirv_executed_sha256"
@@ -163,6 +182,47 @@ def reply_identity(directory):
     return (content, predicted)
 
 
+def one_clock_state(control, candidate, band):
+    """Whether a pair's two arms held one selected graphics clock regime.
+
+    An unknown mode takes whatever state its partner held, so the test refuses
+    a pair only where both arms name a state and the two lie further apart than
+    the band, relative to the larger of the two. A mode that parses as no
+    number at all states a reading the ledger cannot be judged over and is
+    refused rather than read as unknown.
+    """
+    first_text = control.get("sclk_mode_mhz", UNKNOWN_STATE)
+    second_text = candidate.get("sclk_mode_mhz", UNKNOWN_STATE)
+    if first_text == UNKNOWN_STATE or second_text == UNKNOWN_STATE:
+        return True
+    try:
+        first, second = float(first_text), float(second_text)
+    except ValueError:
+        return False
+    if first <= 0 or second <= 0:
+        return False
+    return abs(first - second) / max(first, second) <= band
+
+
+def pair_state(control, candidate, band):
+    """The listing a pair carries instead of a delta, or the empty string.
+
+    `state-changed` names a governor step between the two arms and leaves the
+    row's verdict standing over the pairs that held one state.
+    `ownership-inconclusive` names exclusive time the census declined to
+    attribute to one pipeline, which a verdict cannot be issued over.
+    """
+    for row in (control, candidate):
+        if row["status"] not in COMPLETED_STATUS:
+            continue
+        ownership = row.get("ownership", UNKNOWN_STATE) or UNKNOWN_STATE
+        if ownership not in ("conclusive", UNKNOWN_STATE):
+            return "ownership-inconclusive"
+    if not one_clock_state(control, candidate, band):
+        return "state-changed"
+    return ""
+
+
 def interval(deltas):
     count = len(deltas)
     degrees = count - 1
@@ -190,29 +250,43 @@ def judge(kind, low, high, bound):
     return "unresolved", f"ci=[{low:+.4f},{high:+.4f}] crosses bound={bound}"
 
 
-def delta_row(role, pipeline, column, kind, pairs, values, bound):
+def delta_row(role, pipeline, column, kind, pairs, values, bound, states):
     """One statistics row over per-pair (control, candidate) values."""
     deltas = []
     listed = []
     controls = []
     candidates = []
+    # Completed pairs the row could not read: a ledger row absent or
+    # non-positive, and an attribution the census left inconclusive. Each is a
+    # measurement the design registered and the row cannot show, so the verdict
+    # states incomplete rather than reporting the pairs that survived.
+    unread = 0
     replicates = len(pairs)
-    for (control, candidate), (control_value, candidate_value) in zip(pairs, values):
+    for (control, candidate), (control_value, candidate_value), state in \
+            zip(pairs, values, states):
         both = (control["status"] in COMPLETED_STATUS and candidate["status"] in COMPLETED_STATUS)
         controls.append("-" if control_value is None else f"{control_value:.4f}")
         candidates.append("-" if candidate_value is None else f"{candidate_value:.4f}")
         if not both:
             listed.append("arm-failed")
             continue
+        if state == "state-changed":
+            listed.append(state)
+            continue
+        if state:
+            listed.append(state)
+            unread += 1
+            continue
         if control_value is None or candidate_value is None or control_value <= 0:
             listed.append("ledger-missing")
+            unread += 1
             continue
         delta = candidate_value / control_value - 1
         deltas.append(delta)
         listed.append(f"{delta:+.4f}")
     head = [role, pipeline, column, str(replicates), str(len(deltas))]
     tail = [" ".join(listed), " ".join(controls), " ".join(candidates), str(bound)]
-    if len(deltas) < 2:
+    if len(deltas) < 2 or unread:
         return head + ["-", "-", "-", "-"] + tail + ["incomplete", f"comparable_pairs={len(deltas)} of {replicates}"]
     mean, deviation, low, high = interval(deltas)
     verdict, detail = judge(kind, low, high, bound)
@@ -283,9 +357,12 @@ def main():
     parser.add_argument("--subject", required=True)
     parser.add_argument("--null", required=True, dest="null_pipeline")
     parser.add_argument("--bound", type=float, default=0.02)
+    parser.add_argument("--sclk-band", type=float, default=DEFAULT_SCLK_BAND)
     args = parser.parse_args()
     if args.bound <= 0:
         raise SystemExit("--bound must exceed zero")
+    if args.sclk_band < 0:
+        raise SystemExit("--sclk-band is a nonnegative relative distance")
     if args.subject == args.null_pipeline:
         raise SystemExit("the subject and the null pipeline must differ")
     arms = read_arms(args.arms)
@@ -297,6 +374,7 @@ def main():
         pairs.append((d, c))
     if not pairs:
         raise SystemExit("the arms ledger carries no C K K C quadruple")
+    states = [pair_state(control, candidate, args.sclk_band) for control, candidate in pairs]
     ledgers = {}
     for control, candidate in pairs:
         for row in (control, candidate):
@@ -321,17 +399,17 @@ def main():
     print("\t".join(COLUMNS))
     rows = [
         delta_row("subject", subject, EXCLUSIVE, "subject", pairs,
-                  values(lambda ledger: pipeline_value(ledger, subject, EXCLUSIVE)), bound),
+                  values(lambda ledger: pipeline_value(ledger, subject, EXCLUSIVE)), bound, states),
         delta_row("subject-union", subject, UNION, "subject", pairs,
-                  values(lambda ledger: pipeline_value(ledger, subject, UNION)), bound),
+                  values(lambda ledger: pipeline_value(ledger, subject, UNION)), bound, states),
         delta_row("null", null_pipeline, EXCLUSIVE, "null", pairs,
-                  values(lambda ledger: pipeline_value(ledger, null_pipeline, EXCLUSIVE)), bound),
+                  values(lambda ledger: pipeline_value(ledger, null_pipeline, EXCLUSIVE)), bound, states),
         delta_row("null-union", null_pipeline, UNION, "null", pairs,
-                  values(lambda ledger: pipeline_value(ledger, null_pipeline, UNION)), bound),
+                  values(lambda ledger: pipeline_value(ledger, null_pipeline, UNION)), bound, states),
         delta_row("graph-span", "-", SPAN, "secondary", pairs,
-                  values(lambda ledger: graph_value(ledger, SPAN)), bound),
+                  values(lambda ledger: graph_value(ledger, SPAN)), bound, states),
         delta_row("ratio", f"{subject}/{null_pipeline}", EXCLUSIVE, "secondary", pairs,
-                  values(ratio), bound),
+                  values(ratio), bound, states),
         module_row(pairs, ledgers, subject, null_pipeline),
         response_row(pairs, args.arms_directory),
     ]

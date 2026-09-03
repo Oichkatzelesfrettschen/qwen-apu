@@ -95,7 +95,10 @@ models_directory=$temporary_directory/models
 mkdir -p "$home_directory"
 model_file=$("$registry_reader" id "$model_id" model_file)
 mkdir -p "$models_directory/$(dirname -- "$model_file")"
-: >"$models_directory/$model_file"
+# The checkpoint carries bytes so a replacement can hold its byte count and
+# move its digest alone, which leaves the arm's own descriptor record as the
+# only reading that separates the two.
+printf 'fixture-model-a\n' >"$models_directory/$model_file"
 
 # The tuple the scoreboard receipt must restate comes from the same readers
 # the runner uses, so a registry edit moves fixture and runner together.
@@ -519,6 +522,30 @@ if [ "$python_contract_sha256" = "$acquisition_sha256" ]; then
 fi
 printf 'sampler_python_contract=accepted acquisition=%s\n' "$python_contract_sha256"
 
+# A canary requests eight tokens, so its acquisition contract states the
+# workload its seven decode graphs came out of rather than the calibration's
+# sixty-four.
+active_fixture=canary_contract_generate
+canary_contract_output=$(env -i \
+    PATH="$execution_path" \
+    HOME="$home_directory" \
+    QWEN_MODELS_DIRECTORY="$models_directory" \
+    QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+    QWEN_CENSUS_PRODUCTION_SERVER="$production_server" \
+    QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+    QWEN_CENSUS_INSTRUMENTED_SERVER="$instrumented_server" \
+    QWEN_DRM_DEVICE="$drm_empty" \
+    QWEN_CENSUS_BROKER="$broker_stub" \
+    QWEN_CENSUS_MODE=canary \
+    QWEN_CENSUS_PRINT_CONTRACT=1 \
+    "$runner" "$model_id" "$temporary_directory/out-contract-canary")
+if ! printf '%s\n' "$canary_contract_output" | grep -q '^generate_tokens	8$'; then
+    printf 'the canary acquisition contract states another token count\n' >&2
+    printf '%s\n' "$canary_contract_output" | grep '^generate_tokens' >&2
+    exit 1
+fi
+printf 'canary_contract_generate=accepted generate_tokens=8\n'
+
 # A broker standing beside a source record naming another telemetry-broker.c is
 # rebuilt rather than sampled with. The appliance ran a whole calibration
 # against a binary that predated the delivered-frequency column because the
@@ -924,6 +951,49 @@ run_runner calibration_contract_period 'calibration contract differs from the re
     QWEN_CENSUS_ARMS=I1 \
     QWEN_CENSUS_SIDECAR_PERIOD_MS=5
 
+# An arm list of whitespace alone is a supplied value that runs no arm, which
+# leaves the summarizer a header and the attribution zero accepted controls to
+# require, so the list is refused ahead of the preflight it would pass.
+run_runner attribution_whitespace_arms 'names at least one arm' \
+    QWEN_CENSUS_MODE=attribution \
+    QWEN_CENSUS_CALIBRATION_RECEIPT="$calibration_receipt" \
+    QWEN_CENSUS_ARMS='   '
+
+# Each bound, band, and tolerance reaches its reader as a float, where `inf`
+# and `nan` name no value a record or an interval can miss, so the runner holds
+# each to a canonical decimal and the band and the lost share to their own
+# range.
+run_runner sidecar_bound_infinite 'a census control bound is a nonnegative decimal' \
+    QWEN_CENSUS_SIDECAR_BOUND=inf
+run_runner compile_bound_not_a_number 'a census control bound is a nonnegative decimal' \
+    QWEN_CENSUS_COMPILE_BOUND=nan
+run_runner collect_bound_negative 'a census control bound is a nonnegative decimal' \
+    QWEN_CENSUS_COLLECT_BOUND=-0.02
+run_runner sclk_band_infinite 'QWEN_CENSUS_SCLK_BAND is a nonnegative decimal' \
+    QWEN_CENSUS_SCLK_BAND=inf
+run_runner sclk_band_above_one 'QWEN_CENSUS_SCLK_BAND is a relative distance' \
+    QWEN_CENSUS_SCLK_BAND=1.5
+run_runner sidecar_tolerance_infinite 'a census sampler tolerance is a nonnegative decimal' \
+    QWEN_CENSUS_SIDECAR_TOLERANCE=inf
+run_runner sidecar_max_lost_infinite 'a census sampler tolerance is a nonnegative decimal' \
+    QWEN_CENSUS_SIDECAR_MAX_LOST=inf
+run_runner sidecar_max_lost_above_one 'QWEN_CENSUS_SIDECAR_MAX_LOST is a share of the window' \
+    QWEN_CENSUS_SIDECAR_MAX_LOST=1
+
+# A retained calibration state carrying a matching row beside a contradicting
+# one states no verdict, so the attribution counts each field rather than
+# setting a bit from whichever row matched.
+calibration_duplicate=$temporary_directory/calibration-duplicate
+mkdir -p "$calibration_duplicate"
+write_terminal_state "$calibration_duplicate/terminal-state.tsv" 3
+printf 'census=failed\n' >>"$calibration_duplicate/terminal-state.tsv"
+write_calibration_inputs "$calibration_duplicate/inputs.tsv" "$production_sha256"
+run_runner calibration_state_contradicted \
+    'is not an accepted calibration with three accepted controls' \
+    QWEN_CENSUS_MODE=attribution \
+    QWEN_CENSUS_CALIBRATION_RECEIPT="$calibration_duplicate" \
+    QWEN_CENSUS_ARMS=I1
+
 # A reuse directory is read whole: the ledger its bricks were echoed from
 # must be there, and its acquisition contract must be this run's, since a
 # brick measured under another contract measures another campaign.
@@ -941,12 +1011,35 @@ write_calibration_inputs "$reuse_foreign_contract/inputs.tsv" "$production_sha25
 run_runner reuse_foreign_contract 'ran under acquisition contract' \
     QWEN_CENSUS_REUSE_BRICKS="$reuse_foreign_contract"
 
+# The root binds each receipt to the campaign that wrote it, so a directory
+# holding a ledger and an agreeing contract and no root offers receipts nothing
+# stands behind.
+reuse_no_root=$temporary_directory/reuse-no-root
+mkdir -p "$reuse_no_root"
+write_calibration_inputs "$reuse_no_root/inputs.tsv" "$production_sha256"
+printf 'slot\tarm\ttok_s\tstatus\n' >"$reuse_no_root/arms.tsv"
+run_runner reuse_root_absent 'carries no readable calibration-root\.tsv' \
+    QWEN_CENSUS_REUSE_BRICKS="$reuse_no_root"
+
 reuse_no_status=$temporary_directory/reuse-no-status
 mkdir -p "$reuse_no_status"
 write_calibration_inputs "$reuse_no_status/inputs.tsv" "$production_sha256"
+printf 'acquisition_contract_sha256\t%s\n' "$contract_sha256" \
+    >"$reuse_no_status/calibration-root.tsv"
 printf 'slot\tarm\ttok_s\tstate\n' >"$reuse_no_status/arms.tsv"
 run_runner reuse_ledger_without_status 'names no status column' \
     QWEN_CENSUS_REUSE_BRICKS="$reuse_no_status"
+
+# A root that names another acquisition contract than the directory's own
+# inputs states two campaigns, and the receipts it binds belong to neither.
+reuse_foreign_root=$temporary_directory/reuse-foreign-root
+mkdir -p "$reuse_foreign_root"
+write_calibration_inputs "$reuse_foreign_root/inputs.tsv" "$production_sha256"
+printf 'acquisition_contract_sha256\t%s\n' "$foreign_sha256" \
+    >"$reuse_foreign_root/calibration-root.tsv"
+printf 'slot\tarm\ttok_s\tstatus\n' >"$reuse_foreign_root/arms.tsv"
+run_runner reuse_root_foreign_contract 'the brick reuse root records acquisition contract' \
+    QWEN_CENSUS_REUSE_BRICKS="$reuse_foreign_root"
 
 run_runner duplicate_executable_row 'not the one executable llama-server row' \
     QWEN_CENSUS_PRODUCTION_SERVER="$duplicate_root/bin/llama-server"
@@ -1361,6 +1454,10 @@ required_mclk = "-"
 if "--required-mclk-mhz" in sys.argv:
     required_mclk = sys.argv[sys.argv.index("--required-mclk-mhz") + 1]
 violated = label in os.environ.get("QWEN_TEST_CLOCK_VIOLATED", "").split()
+# QWEN_TEST_CLOCK_REFUSED names the arms whose record the validator refuses on
+# its own coverage while still printing the window's clock state, which is the
+# reading a refused warmup leaves in front of the regime precondition.
+refused = label in os.environ.get("QWEN_TEST_CLOCK_REFUSED", "").split()
 # The column the invariant was counted over. A campaign under a forced policy
 # is answered by the delivered frequency alone, so the default states the
 # column telemetry-broker.c writes and a case naming the DPM column stands for
@@ -1392,6 +1489,9 @@ if state:
               " samples_below_required=0 below_required_fraction=0.0000"
               f" sclk_source={source}"
               f" required={required} required_mclk={required_mclk}")
+    if refused:
+        print("clock_sidecar=refused failures=gaps")
+        raise SystemExit(1)
     print("clock_sidecar=accepted failures=-")
     raise SystemExit(0)
 sys.argv[0] = "$script_directory/validate-clock-sidecar.py"
@@ -1412,13 +1512,46 @@ chmod +x "$brick_directory/validate-clock-sidecar.py"
 cat >"$brick_directory/measure-served-decode.sh" <<'FAKE_SERVED_RUNNER'
 #!/bin/sh
 set -eu
-if [ "${QWEN_TEST_CENSUS_COMPLETE:-}" = "$1" ]; then
-    printf 'begin_ns\t1000000000\nend_ns\t2000000000\n' \
-        >"$QWEN_RESULT_DIRECTORY/request-window.tsv"
-    printf '{"timings": {"predicted_n": 65, "predicted_ms": 6400.0}}' \
-        >"$QWEN_RESULT_DIRECTORY/response.json"
-    exit 0
+# The checkpoint a case replaces under the campaign, ahead of the record this
+# arm writes: the arm pins the replacement and re-establishes publisher
+# identity against whichever ledger row followed it, and its byte count holds,
+# so the arm's own descriptor record against the preflight digest is what
+# refuses it.
+if [ "${QWEN_TEST_CENSUS_REPLACE_MODEL:-}" = "$1" ]; then
+    printf 'fixture-model-b\n' >"$2"
 fi
+python3 - "$2" "$QWEN_RESULT_DIRECTORY/runtime-inputs.json" <<'RUNTIME_INPUTS'
+import hashlib, json, pathlib, sys
+model = pathlib.Path(sys.argv[1]).read_bytes()
+json.dump({"schema": "served-runtime-inputs-v1",
+           "model": {"path": sys.argv[1], "bytes": len(model),
+                     "sha256": hashlib.sha256(model).hexdigest()}},
+          open(sys.argv[2], "w"))
+RUNTIME_INPUTS
+# The complete-reply set is a list, since a case reading a verdict past the
+# served runner needs every arm it executes to answer.
+case " ${QWEN_TEST_CENSUS_COMPLETE:-} " in
+    *" $1 "*)
+        printf 'begin_ns\t1000000000\nend_ns\t2000000000\n' \
+            >"$QWEN_RESULT_DIRECTORY/request-window.tsv"
+        printf '{"timings": {"predicted_n": 65, "predicted_ms": 6400.0}}' \
+            >"$QWEN_RESULT_DIRECTORY/response.json"
+        # The identity arm reads the perf logger slice the served runner cut at
+        # the request window, one block per decode graph, so a complete reply
+        # carries the 64 blocks its own predicted_n states.
+        slice_block=0
+        : >"$QWEN_RESULT_DIRECTORY/server-log-request.slice"
+        while [ "$slice_block" -lt 64 ]; do
+            {
+                printf 'Vulkan Timings:\n'
+                printf 'MUL_MAT q4_K m=2048 n=1 k=2048: 1 x 100.000 us = 100.000 us\n'
+                printf 'Total time: 100.000 us\n'
+            } >>"$QWEN_RESULT_DIRECTORY/server-log-request.slice"
+            slice_block=$((slice_block + 1))
+        done
+        exit 0
+        ;;
+esac
 if [ "${QWEN_TEST_CENSUS_TRUNCATE:-}" = "$1" ]; then
     printf 'begin_ns\t1000000000\nend_ns\t2000000000\n' \
         >"$QWEN_RESULT_DIRECTORY/request-window.tsv"
@@ -1472,6 +1605,26 @@ brick_closure_sha256() {
     } | sha256sum | cut -d ' ' -f 1
 }
 
+# The root a calibration writes over its own receipts: the acquisition contract
+# it ran under and one digest per brick receipt. Reuse reads it ahead of the
+# closure and the rates, so a receipt edited after its campaign no longer
+# matches the row that names it.
+write_prior_root() {
+    root_directory=$1
+    {
+        printf 'calibration_root_sha256\t%s\n' \
+            0000000000000000000000000000000000000000000000000000000000000000
+        printf 'acquisition_contract_sha256\t%s\n' "$brick_contract_sha256"
+        printf 'analysis_contract_sha256\t-\nreused_bricks\t-\n'
+        for root_brick in C0 C1 C2 C3; do
+            root_receipt=$root_directory/bricks/$root_brick.receipt.tsv
+            [ -r "$root_receipt" ] || continue
+            printf 'brick\t%s\t%s\n' "$root_brick" \
+                "$(sha256sum "$root_receipt" | cut -d ' ' -f 1)"
+        done
+    } >"$root_directory/calibration-root.tsv"
+}
+
 write_prior_receipt() {
     prior_root=$1
     prior_brick=$2
@@ -1487,6 +1640,9 @@ write_prior_receipt() {
         printf 'arm_rates\t%s\n' "$prior_rates"
         printf 'input_closure_sha256\t%s\n' "$(brick_closure_sha256 "$prior_brick" "$prior_arms")"
     } >"$prior_root/bricks/$prior_brick.receipt.tsv"
+    # The root follows every receipt it names, so a directory built one brick
+    # at a time carries a root over the set it actually holds.
+    write_prior_root "$prior_root"
 }
 
 # The rates are the ones the controls test pairs: the two replicates of each
@@ -1580,6 +1736,12 @@ run_brick_calibration() {
     # telemetry-broker.c writes, and one naming the DPM column stands for a
     # broker built before that column existed.
     brick_clock_source=${17:-}
+    # The eighteenth names the arms whose record the stub validator refuses
+    # while still printing their clock state, which is the reading a refused
+    # warmup leaves in front of the precondition, and the nineteenth the arm
+    # after which the checkpoint is replaced under the campaign.
+    brick_refused_arms=${18:-}
+    brick_replace_model=${19:-}
     brick_drm=$signal_drm
     brick_sudo_log=$temporary_directory/sudo-$brick_case.log
     brick_quiescence_argv=$temporary_directory/quiescence-argv-$brick_case.log
@@ -1601,6 +1763,8 @@ run_brick_calibration() {
         QWEN_TEST_CLOCK_TABLE="$brick_clock_table" \
         QWEN_TEST_CLOCK_VIOLATED="$brick_violated_arms" \
         QWEN_TEST_CLOCK_SOURCE="$brick_clock_source" \
+        QWEN_TEST_CLOCK_REFUSED="$brick_refused_arms" \
+        QWEN_TEST_CENSUS_REPLACE_MODEL="$brick_replace_model" \
         QWEN_TEST_CENSUS_TRUNCATE="$brick_truncate_label" \
         QWEN_TEST_CENSUS_COMPLETE="$brick_complete_label" \
         QWEN_TEST_SUDO_REFUSE="$brick_sudo_refuse" \
@@ -1782,6 +1946,97 @@ for brick_member in C0 C1 C2; do
 done
 diagnostic_file=
 printf 'quiescence_cooldown=accepted\n'
+
+# The same three bricks reused with every executed arm answering: the controls
+# are the reused ones, no arm fails, and the only defect left is the cooldown
+# that never converged, which is what the terminal decision reads. A campaign
+# that ignored the counter would accept this run.
+active_fixture=cooldown_blocks_acceptance
+prior_settled=$temporary_directory/prior-settled
+write_prior_calibration "$prior_settled"
+brick_settled_output=$temporary_directory/out-cooldown-acceptance
+brick_status=$(run_brick_calibration cooldown_blocks_acceptance "$prior_settled" \
+    "$brick_settled_output" '' 800 2 '' '' '' '' auto '' '0a-W 0b-W 13-S')
+if [ "$brick_status" -ne 1 ]; then
+    printf 'a calibration whose cooldowns never converged exited %s where it fails\n' \
+        "$brick_status" >&2
+    sed -n '1,20p' "$temporary_directory/cooldown_blocks_acceptance-stdout.txt" >&2
+    exit 1
+fi
+for settled_row in arm_failures=0 control_accepted=3 cooldown_timeouts=3 census=failed; do
+    if ! grep -qx "$settled_row" "$brick_settled_output/terminal-state.tsv"; then
+        printf 'the settled calibration terminal state carries no %s\n' "$settled_row" >&2
+        cat "$brick_settled_output/terminal-state.tsv" >&2
+        grep '^census_arm=' "$temporary_directory/cooldown_blocks_acceptance-stdout.txt" >&2
+        exit 1
+    fi
+done
+diagnostic_file=
+printf 'cooldown_blocks_acceptance=accepted\n'
+
+# A receipt edited after its campaign still agrees with a ledger edited beside
+# it, so the root's own digest for that brick is what refuses the reuse and
+# sends its four slots back to the device.
+active_fixture=brick_receipt_unbound
+prior_tampered=$temporary_directory/prior-tampered
+write_prior_calibration "$prior_tampered"
+write_prior_receipt "$prior_tampered" C3 13 S 3.000
+printf 'tampered\ttampered\n' >>"$prior_tampered/bricks/C2.receipt.tsv"
+brick_tampered_output=$temporary_directory/out-brick-tampered
+brick_status=$(run_brick_calibration brick_receipt_unbound "$prior_tampered" \
+    "$brick_tampered_output")
+if [ "$brick_status" -eq 0 ]; then
+    printf 'a calibration reusing a tampered receipt accepted\n' >&2
+    exit 1
+fi
+if ! grep -q '^census_brick_reuse=receipt_unbound brick=C2 ' \
+    "$temporary_directory/brick_receipt_unbound-stdout.txt"; then
+    printf 'the tampered receipt was reused without a refusal line\n' >&2
+    grep '^census_brick_reuse' "$temporary_directory/brick_receipt_unbound-stdout.txt" >&2
+    exit 1
+fi
+if grep -q '^census_brick_reuse=preflight .*C2' \
+    "$temporary_directory/brick_receipt_unbound-stdout.txt"; then
+    printf 'the tampered brick entered the reused set\n' >&2
+    exit 1
+fi
+diagnostic_file=
+printf 'brick_receipt_unbound=accepted\n'
+
+# A record the validator refused states no clock for the precondition to read,
+# however confidently its clock_state line names a mode: two refused warmups at
+# one mode leave the regime unreached rather than settling the campaign on
+# telemetry nothing accepted.
+active_fixture=regime_refused_records
+prior_refused=$temporary_directory/prior-refused
+write_prior_calibration "$prior_refused"
+brick_refused_output=$temporary_directory/out-regime-refused
+brick_status=$(run_brick_calibration regime_refused_records "$prior_refused" \
+    "$brick_refused_output" '' 800 2 '' '' '' '' auto '' '' 0 - 0 '' '0a-W 0b-W')
+grep -q '^census_regime=record_refused slot=0a arm=W$' \
+    "$temporary_directory/regime_refused_records-stdout.txt"
+grep -q '^census_regime=unreached sclk_mhz=- arms=2$' \
+    "$temporary_directory/regime_refused_records-stdout.txt"
+diagnostic_file=
+printf 'regime_refused_records=accepted status=%s\n' "$brick_status"
+
+# A checkpoint replaced under the campaign passes the arm's own publisher check
+# against the ledger row that followed it, so the preflight digest is what
+# fails the arm that served it.
+active_fixture=census_model_replaced
+prior_model=$temporary_directory/prior-model
+write_prior_calibration "$prior_model"
+brick_model_output=$temporary_directory/out-model-replaced
+brick_status=$(run_brick_calibration census_model_replaced "$prior_model" \
+    "$brick_model_output" '' 800 2 '' '' '' '' auto '' '0a-W 0b-W 13-S' 0 - 0 '' '' 0a-W)
+if [ "$brick_status" -eq 0 ]; then
+    printf 'a calibration whose checkpoint was replaced accepted\n' >&2
+    exit 1
+fi
+grep -q '^census_arm=model_replaced slot=0a arm=W ' \
+    "$temporary_directory/census_model_replaced-stdout.txt"
+diagnostic_file=
+printf 'census_model_replaced=accepted\n'
 
 # A broker that announces no readiness ends the arm ahead of the request. The
 # same three bricks are reused, so S at slot 13 is the one sampled arm, and it
