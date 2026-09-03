@@ -25,7 +25,56 @@ report() {
 harness=$work/harness
 mkdir -p "$harness/web-mcp"
 cp "$script_directory/qwen-lan-launch.sh" "$harness/qwen-lan-launch.sh"
+cp "$script_directory/read-image-mcp-server.py" "$harness/read-image-mcp-server.py"
 : >"$harness/web-mcp/server.py"
+
+# The deployment fixture is a preset naming two MCP configurations, one for
+# a web-only section and one carrying the image server, so the wrapper reads
+# the parameters path from the image server through the tree's own reader.
+deployment=$work/deployment
+mkdir -p "$deployment"
+printf '{}\n' >"$deployment/deployed-parameters.json"
+printf '{"mcpServers":{}}\n' >"$deployment/web-only.json"
+cat >"$deployment/web-image.json" <<CONFIGURATION
+{
+  "mcpServers": {
+    "web": {"command": "python3", "args": [], "env": {}},
+    "image": {
+      "command": "python3",
+      "timeout_ms": 360000,
+      "args": ["$harness/image-mcp/server.py"],
+      "env": {
+        "QWEN_IMAGE_LANGUAGE_PROFILE": "web-open",
+        "QWEN_IMAGE_PROFILE": "image-fixture-a",
+        "QWEN_IMAGE_TOKEN_KEY_FILE": "$deployment/image-token.key",
+        "QWEN_IMAGE_STATE_DIR": "$deployment/images",
+        "QWEN_IMAGE_SERVICE_SOCKET": "$deployment/images/image-service.sock",
+        "QWEN_IMAGE_PROFILES_JSON": "$deployment/deployed-parameters.json",
+        "QWEN_IMAGE_MCP_TIMEOUT_S": "360"
+      }
+    }
+  }
+}
+CONFIGURATION
+cat >"$deployment/router-presets.ini" <<PRESET
+[fixture-production]
+LLAMA_ARG_MODEL=$deployment/fixture.gguf
+
+[web-reader]
+LLAMA_ARG_MODEL=$deployment/fixture.gguf
+LLAMA_ARG_MCP_SERVERS_CONFIG=$deployment/web-only.json
+
+[web-open]
+LLAMA_ARG_MODEL=$deployment/fixture.gguf
+LLAMA_ARG_MCP_SERVERS_CONFIG = $deployment/web-image.json
+PRESET
+cat >"$harness/resolve-active-deployment.sh" <<'EOF'
+#!/bin/sh
+set -eu
+[ "${QWEN_TEST_RESOLVER_STATUS:-0}" = 0 ] || exit "$QWEN_TEST_RESOLVER_STATUS"
+printf 'active_deployment_directory=%s\n' "$QWEN_TEST_DEPLOYMENT"
+printf 'active_deployment_router_presets=%s/router-presets.ini\n' "$QWEN_TEST_DEPLOYMENT"
+EOF
 
 # The launch recorder writes the environment it received and the session
 # record a real launch leaves behind, so the wrapper reads the name from the
@@ -55,12 +104,12 @@ cat >"$harness/probe-address" <<'EOF'
 printf '%s\n' "${QWEN_TEST_PROBE_ANSWER:-}"
 EOF
 chmod 755 "$harness/qwen-lan-launch.sh" "$harness/qwen-launch.sh" \
-    "$harness/qwen-teardown.sh" "$harness/probe-address"
+    "$harness/qwen-teardown.sh" "$harness/probe-address" \
+    "$harness/resolve-active-deployment.sh" "$harness/read-image-mcp-server.py"
 
 home=$work/home
 state=$home/qwen-webui-state
 mkdir -p "$state"
-printf '{}\n' >"$state/image-parameters.json"
 launch_record=$work/launch.record
 teardown_record=$work/teardown.record
 
@@ -71,6 +120,7 @@ run_wrapper() {
     QWEN_TEST_LAUNCH_RECORD=$launch_record \
     QWEN_TEST_TEARDOWN_RECORD=$teardown_record \
     QWEN_TEST_LAN_NAME=laptop.local \
+    QWEN_TEST_DEPLOYMENT=$deployment \
     QWEN_LAN_ADDRESS_PROBE=$harness/probe-address \
     QWEN_TEST_PROBE_ANSWER=${QWEN_TEST_PROBE_ANSWER-10.0.0.7} \
         "$harness/qwen-lan-launch.sh" "$@"
@@ -106,7 +156,8 @@ if recorded 'profile=low-async' &&
     recorded "QWEN_WEB_TOKEN_KEY_FILE=$home/qwen-web-token.key" &&
     recorded "QWEN_WEB_MCP_SERVER=$harness/web-mcp/server.py" &&
     recorded 'QWEN_WEB_PROVIDER=searxng' &&
-    recorded "QWEN_IMAGE_PROFILES_JSON=$state/image-parameters.json"; then
+    recorded "QWEN_IMAGE_PROFILES_JSON=$deployment/deployed-parameters.json" &&
+    grep -q " image_parameters_source=active-deployment$" "$work/first.out"; then
     report exposure_environment_forwarded ok
 else
     report exposure_environment_forwarded fail
@@ -176,6 +227,32 @@ if QWEN_WEB_LAN_ADDRESS=192.168.7.7 QWEN_WEB_LAN_OPEN=0 QWEN_SERVER_PORT=9000 \
 else
     report caller_address_and_bearer_mode fail
     cat "$work/bearer.err" >&2
+fi
+rm -f "$state/session.status"
+
+# The caller's own parameters path replaces the deployment's.
+printf '{}\n' >"$work/caller-parameters.json"
+if QWEN_IMAGE_PROFILES_JSON=$work/caller-parameters.json \
+    run_wrapper >"$work/caller-params.out" 2>"$work/caller-params.err" &&
+    recorded "QWEN_IMAGE_PROFILES_JSON=$work/caller-parameters.json" &&
+    grep -q ' image_parameters_source=caller$' "$work/caller-params.out"; then
+    report caller_parameters_forwarded ok
+else
+    report caller_parameters_forwarded fail
+    cat "$work/caller-params.err" >&2
+fi
+rm -f "$state/session.status"
+
+# A launch with no active bundle, or a bundle naming no image server, serves
+# the web lane alone and hands the launch no parameters path.
+if QWEN_TEST_RESOLVER_STATUS=1 \
+    run_wrapper >"$work/nobundle.out" 2>"$work/nobundle.err" &&
+    ! grep -q '^QWEN_IMAGE_PROFILES_JSON=' "$launch_record" &&
+    grep -q ' image_parameters=- image_parameters_source=none$' "$work/nobundle.out"; then
+    report absent_bundle_serves_no_image_lane ok
+else
+    report absent_bundle_serves_no_image_lane fail
+    cat "$work/nobundle.err" >&2
 fi
 rm -f "$state/session.status"
 
