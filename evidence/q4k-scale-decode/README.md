@@ -171,16 +171,24 @@ device rather than for this one expression.
 `scales[0..2]`, four-byte aligned, so one read serves the halfword pair and the eighth-scale
 halfword alike and the unaligned lowering never runs. The halfword pair is then gathered from
 byte lanes under a selector `compute_outputs` hoists, since `v_im` is invariant across both
-loops. ACO widens the read to one `buffer_load_dwordx4`, which covers the twelve scale bytes
-and the first `qs` dword, so the body's memory instructions fall 24 to 16 per superblock: four
-`buffer_load_dwordx2`, four `buffer_load_ushort`, and four of the twelve `buffer_load_dword`
-are replaced by four `buffer_load_dwordx4`.
+loops. ACO widens the read to one `buffer_load_dwordx4` over bytes 0 to 15 of the block, which
+is the `dm` pair at 0 and all three scale words at 4, so the per-row weight-side loads fall
+from five to three: `buffer_load_dword` for `dm`, `buffer_load_dwordx2` for the scale pair, and
+`buffer_load_ushort` for the eighth-scale halfword become one `buffer_load_dwordx4`, and the
+two `qs` dwords are untouched. The body's memory instructions fall 24 to 16 per superblock.
 
 Fetched bytes per lane per superblock rise 152 to 160, because the widened read takes 16 per
-row where the pair, the halfword, and the `qs` dword it absorbs took 14. That is a
-request-width figure and not a DRAM figure: all
+row where the `dm` dword, the scale pair, and the halfword took 14. That is a request-width
+figure and not a DRAM figure: all
 of it lands inside one 144-byte `block_q4_K` that sixteen lanes read together, so the block
 reaches DRAM once either way and the difference is L1 request width.
+
+The widened load carries no weight nibble, which is what keeps one role per instruction exact
+on this arm: `dm` already belonged to the scale phase under E1's rule, since a cone reaching
+`v_cvt_f32_f16` is a scale read, and `weight_decode` holds at 88 per superblock against the
+control's 88 with the same sixteen of each `v_cvt_f32_ubyte0..3`. A variant whose widened load
+spanned the scale block and a `qs` dword would need a role per destination component, and
+`classify-loop-phases.py` states one per load.
 
 **Equivalence.** `scale-select-equivalence.py` beside this file drives every formulation and
 the control over the ninety-six single-bit scale words, both saturating words, and 200,000

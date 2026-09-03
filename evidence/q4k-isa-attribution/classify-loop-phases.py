@@ -17,6 +17,12 @@ the phases join:
                     width alone stops separating the roles once a variant reads
                     the twelve aligned scale bytes at the same width, which is
                     what `llama-vulkan-q4k-scale-word-select.patch` does
+
+A load takes one role for all of its destination components, so a variant whose
+widened read spans two phases is read wrongly rather than refused. The arms of
+`evidence/q4k-scale-decode/` stay inside the rule: the widened read there covers
+the `dm` pair and the three scale words, both of which the scale role already
+owns, and `weight_decode` holds at its control count on every one.
   superblock_scale  a cone reaching `v_cvt_f32_f16` (the `dm` pair) or masking
                     with 0x3f3f3f3f or 0xc0c0c0c0 (the packed six-bit scales),
                     then closed: a load joins the role where its cone shares an
