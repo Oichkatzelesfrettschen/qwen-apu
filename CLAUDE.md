@@ -242,6 +242,31 @@ the chain. A healthy arm emits an appendable ledger line carrying
 `remote/validated-tuples.tsv`, because a `validated` row requires its evidence
 path to exist in the tree.
 
+`--runtime-mode router-child` measures that arm through the serving path a
+review-only vision section uses, since `build-web-presets.sh` joins an image
+row's `review_model` against the ledger on `runtime_mode=router-child` with
+`projector_state=loaded` and a standalone row leaves the section ungenerated.
+The harness generates a one-section preset with `build-router-presets.sh` over
+a one-row registry copy naming the arm's depth as `context_default`, stages the
+weights and the resolved projector as symlinks so `select-projector.sh` answers
+with the file the standalone arm attaches, and launches `--models-preset` with
+`--models-max 1`; depth, cache triple, submission geometry, checkpoint count,
+and the projector stay off that argv because `common_preset::merge` overwrites
+each section key with the router argv's value of the same name, and the
+generated section is read back before the server starts. Each request names the
+section in the body's `model` key, which `router_validate_model` resolves the
+child from. The emitted line reads `runtime_mode=router-child` with a `-router`
+`tuple_id` suffix and every other field equal to the standalone line, the mode
+reaches `projector-summary.tsv` and `wedge-metadata.tsv`, and an output
+directory therefore holds one mode. `check-validated-tuples.sh` reads the same
+join: a `validator-gated` image row whose reviewer holds no such tuple fails the
+gate and prints the probe command that measures it, and any other execution
+policy reports the absence as a warning, since it emits no section under every
+setting. The shipped tree fails that gate, because `image-sdxs-512-a` names
+`lfm25-vl-16b` and every retained projector arm is standalone;
+`evidence/depth-validation-32k-projector/README.md` states the appliance run
+that closes it.
+
 The `tier` field states what is claimed about a row and
 `remote/build-router-presets.sh` turns it into what the picker offers.
 `production` is a serving tuple measured safe and useful; `candidate` leaves
@@ -1068,7 +1093,8 @@ remote/run-representation-arm.sh LABEL CONTROL SUBJECT
                                                 # one value format against another, ABBA
 remote/admit-web-router-fake.sh OUTPUT_DIR      # the web router against the fake provider
 remote/admit-image-router.sh OUTPUT_DIR         # one approved generation through the router
-remote/probe-depth-projector.sh MODEL_ID OUT   # filled depth, projector loaded
+remote/probe-depth-projector.sh [--runtime-mode standalone|router-child] MODEL_ID OUT
+                                                # filled depth, projector loaded
 remote/image-registry.sh artifacts|models|profiles|bundle|profile
                                                 # the four image authorities, validated whole
 remote/run-image-standalone.sh OUT MODEL       # one image, no llama process resident

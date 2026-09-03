@@ -131,3 +131,62 @@ tokenize, fill, control), `.clocks.tsv` (GPU clock and memory samples), and
 by following the ring buffer or by an offset subtraction). Every path under
 `$HOME` in these files is written literally as `$HOME`, matching this
 repository's Git-copy sanitization rule.
+
+## The router-child arm a review-only section requires
+
+`remote/build-web-presets.sh` emits a review-only vision section for the
+`review_model` an image row names, and it joins that model against
+`remote/validated-tuples.tsv` on `runtime_mode=router-child` with
+`projector_state=loaded` at the model's own registry tuple. Every row above is
+`standalone`, because `remote/probe-depth-projector.sh` launched one
+llama-server per arm with the tuple on its own argv. A standalone row leaves
+that section ungenerated, so `image-sdxs-512-a` names `lfm25-vl-16b` as its
+reviewer while the preset the appliance would serve carries one section rather
+than two. `remote/check-validated-tuples.sh` reports that gap by name and
+prints the arm that closes it.
+
+`--runtime-mode router-child` measures the same geometry through the serving
+path the section uses. The harness generates a one-section preset with
+`remote/build-router-presets.sh` over a one-row copy of the registry whose
+`context_default` is the arm's depth, stages the weights and the resolved
+projector as symlinks so `select-projector.sh` answers with the same file the
+standalone arm attaches, and launches `llama-server --models-preset ...
+--models-max 1`. Depth, cache triple, submission geometry, checkpoint count,
+and the projector stay off that argv, because `common_preset::merge` overwrites
+each section key with the router argv's value of the same name; the section
+carries all of them and the harness reads the generated file back before the
+server starts. Each request names the section in the body's `model` key, since
+`router_validate_model` resolves the child from it and `models_autoload`
+defaults to true, so the first request of an arm loads the child inside the
+arm's own request budget. The fill, the acceptance window, and the `bars.png`
+control are the standalone arm's unchanged.
+
+The unblocking run is the one depth the review section needs, which is
+`lfm25-vl-16b`'s `context_default` of 8192:
+
+```sh
+QWEN_WEDGE_DEPTHS=8192 remote/probe-depth-projector.sh --runtime-mode router-child lfm25-vl-16b OUTPUT_DIRECTORY
+```
+
+On the appliance the runner is `~/qwen-laptop-setup/remote/probe-depth-projector.sh`
+and `OUTPUT_DIRECTORY` is an absent path the run creates, for example
+`~/qwen-webui-state/depth-validation-32k-projector-router/lfm25-vl-16b`. The
+appliance serves nothing else while it runs: the harness refuses to start
+beside another `llama-server` or `llama-bench`, and it refuses an occupied
+`127.0.0.1:18087`. `QWEN_WEDGE_DEPTHS="8192 16384 32768"` runs the full ladder,
+which measures more than the section needs and stops at the first failed arm.
+
+A healthy arm appends one line to `validated-tuples-rows.tsv` in the output
+directory, and that line is copied into `remote/validated-tuples.tsv` by hand
+once the directory is retained under `evidence/depth-validation-32k-projector/`,
+because a `validated` row requires its evidence path to exist in the tree. The
+line reads `runtime_mode=router-child` and `projector_state=loaded` with the
+tuple, backend, and evidence fields of the standalone line beside it; its
+`tuple_id` carries a `-router` suffix, since the ledger keys on that column and
+the two rows state one geometry measured through two serving paths. The output
+directory retains `<arm>.router-preset.ini`, the generated section the arm
+served under, beside the standalone artifacts.
+
+The executable-identity condition above holds for this arm too: the run's
+`projector-identity.tsv` must name the promoted server digest before
+`remote/models.tsv` or `remote/web-profiles.tsv` promote any claim from it.
