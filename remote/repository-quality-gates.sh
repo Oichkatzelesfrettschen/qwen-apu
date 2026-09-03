@@ -173,6 +173,10 @@ gate_cell test-census-replay-corpus derive \
 gate_cell test-summarize-perf-logger-slice derive \
     remote/test-summarize-perf-logger-slice.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-perf-logger-slice.py'
+gate_cell test-summarize-radv-isa derive remote/test-summarize-radv-isa.py \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-radv-isa.py'
+gate_cell test-depth derive remote/raven2-shader-lab/test-depth.py \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/raven2-shader-lab/test-depth.py'
 
 # Ledger readers and registry checks: shell, no fixture server.
 gate_cell check-validated-tuples derive remote/check-validated-tuples.sh \
@@ -211,6 +215,10 @@ gate_cell test-classify-checkpoint-semantics derive \
     remote/test-classify-checkpoint-semantics.sh
 gate_cell test-check-trace-source-status derive \
     remote/test-check-trace-source-status.sh remote/test-check-trace-source-status.sh
+gate_cell test-receipt-diff derive remote/raven2-shader-lab/test-receipt-diff.sh \
+    remote/raven2-shader-lab/test-receipt-diff.sh
+gate_cell test-lab-replay derive remote/raven2-shader-lab/test-lab-replay.sh \
+    remote/raven2-shader-lab/test-lab-replay.sh
 gate_cell test-web-presets derive remote/test-web-presets.sh \
     remote/test-web-presets.sh
 gate_cell test-qwen-capacity-policy derive remote/test-qwen-capacity-policy.sh \

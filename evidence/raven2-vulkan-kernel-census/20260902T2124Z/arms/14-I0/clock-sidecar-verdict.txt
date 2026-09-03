@@ -1,0 +1,23 @@
+sidecar_exit=accepted status=0
+record_readable=accepted path=$HOME/raven2-kernel-census-20260902T2124Z-2b-calibration-v10/arms/14-I0/clock-sidecar.tsv
+clock=accepted clock=CLOCK_MONOTONIC
+period_declared=accepted declared=20000000 requested=20000000
+sampler_identity=accepted pid=1122030 nice=19 cpu_affinity=0,1
+columns=accepted columns=monotonic_ns	pp_dpm_sclk_selected_mhz	pp_dpm_mclk_surface_mhz	pp_dpm_fclk_surface_mhz	gpu_busy_percent	temp1_millidegrees	sample_cost_ns	sclk_actual_mhz width=8
+footer_cardinality=accepted footers=1
+footer_fields=accepted present=achieved_period_ns,first_sample_ns,last_sample_ns,max_sample_cost_ns,mean_sample_cost_ns,samples,samples_with_unavailable_sensor
+samples=accepted samples=827 rows=827
+row_arity=accepted columns=8
+achieved_period=accepted achieved_ns=20000061 requested_ns=20000000 tolerance=0.25
+sample_cost=accepted mean_ns=217611 max_ns=8191142 bound_ns=1000000
+allowed_columns=accepted allowed=pp_dpm_fclk_surface_mhz
+sensor_rows=accepted rows_with_unavailable=827 footer=827
+sensors=accepted unavailable_outside_allowance=- allowed=pp_dpm_fclk_surface_mhz
+footer_instants=accepted first=401709815968143 last=401726336019239
+window_coverage=accepted first=401709815968143 begin=401718293759035 end=401725460176865 last=401726336019239
+gaps=accepted median_ns=20000000 p95_ns=21007864 p99_ns=22966935 max_ns=32703641 over_1_5x=1 over_missed=0 over_max=0
+window_lost=accepted window_lost_fraction=0.0000 bound=0.0300 missed_bound_ns=40000000
+gaps_in_window=0 begin=401718293759035 end=401725460176865 bound_ns=100000000 window_lost_fraction=0.0000
+clock_state=measured window_samples=359 sclk_mode_mhz=1100 sclk_share=1.0000 mclk_mode_mhz=933 temp_mean_c=76.5 temp_max_c=81.0 busy_mean=93.62
+clock_invariant=held samples_at_required=359 samples_below_required=0 below_required_fraction=0.0000 sclk_source=sclk_actual_mhz required_sclk_mhz=1100 required_mclk_mhz=933 max_below_mclk_floor_fraction=0.0100 samples_at_mclk_floor=359 samples_below_mclk_floor=0 below_mclk_floor_fraction=0.0000
+clock_sidecar=accepted failures=-
