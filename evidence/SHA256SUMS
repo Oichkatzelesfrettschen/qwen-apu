@@ -121,6 +121,7 @@ b11bae7d03054f0799280c3b7b0f12cffe6b4db325c434716aae5bc76a0e3708  evidence/code-
 454d26c536839e34e83242700763b07d521dfe843fa3a5b989da4e2980d30506  evidence/code-agents/20260903T071219Z/task-03-refactor.json
 cd1eecfd153284d86127230b2ae86ab719bd9832f538b1a8b0264d71757f44ab  evidence/code-agents/20260903T071219Z/task-03-refactor.produced.py
 4e527195bdd6b283eb30d56f1704a8733e874544b8b3e89d14d84c647bcf7afb  evidence/compiler-opencl-admission.md
+a5794fd3923f5fcb5c40ca42185ed3432bdba1fd4054d435e1fcb5415f2c8d15  evidence/compute-state-lease/README.md
 ba496623b3ec7974aa1cc5398e26ac6adecbb13a6fe2868a42d953aa0a6e9d40  evidence/ctx-checkpoint-natural-boundary/2b/binaries.txt
 14bcdd65c4da97a9fd8472dc9b17072c215f56d2e36326ff8c2046f6d95b52b6  evidence/ctx-checkpoint-natural-boundary/2b/patched/arm-1-c0/launch.txt
 9bd022e27f2f80dcc8acf0246910202ff5edc1a861e36d57b4a1df22ee97a4e6  evidence/ctx-checkpoint-natural-boundary/2b/patched/arm-1-c0/server.log
