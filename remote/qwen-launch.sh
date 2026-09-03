@@ -534,6 +534,60 @@ EOF
         fi
         model_path=$largest_servable
     fi
+
+    # The image lane is armed from the same preset the web lane is, and it is
+    # resolved after the subject selection because its cost composes with what
+    # that selection charged rather than replacing it.
+    # remote/image-launch-lib.sh holds the rules qwen-image-launch.sh applies to
+    # the web-only preset, so one reader decides what an armed lane is.
+    # shellcheck disable=SC2034  # the library reads it by name
+    image_service_program=${QWEN_IMAGE_SERVICE_PROGRAM:-$script_directory/image-service.py}
+    # A withheld lane is the state a preset generated before it carries, so the
+    # names the library writes start at that reading.
+    image_lane_armed=0
+    preset_image_profile=
+    preset_review_section=-
+    image_runtime_resident_mib=0
+    # shellcheck source=remote/image-launch-lib.sh
+    . "$script_directory/image-launch-lib.sh"
+    read_image_preset_markers "$router_presets"
+    if [ "$image_lane_armed" = 1 ]; then
+        # An image server reaches the device from the section the web ledger
+        # emitted, and the grant binds that language profile to the image
+        # profile, so a lane armed over a preset naming no web section would
+        # sign for a profile this launch never resolved.
+        if [ -z "$web_sections" ]; then
+            printf 'the preset names image profile %s and carries no web section\n' \
+                "$preset_image_profile" >&2
+            printf 'regenerate the preset tree with remote/build-router-presets.sh\n' >&2
+            exit 2
+        fi
+        require_image_ledger_row || exit 2
+        require_image_signing_key || exit 2
+        require_image_parameters || exit 2
+        verify_image_deadline_stack "$router_presets" "$web_sections" || exit 2
+        read_image_runtime_resident_mib || exit 2
+        # `--models-max 1` unloads the resident child before loading the next,
+        # so the roster's sections are never co-resident and the reviewer the
+        # marker names is the registry row a request selects rather than a
+        # second load. What the lane adds to the requirement is the image
+        # runtime, which runs while the language child stays loaded.
+        router_required_vulkan_mib=${QWEN_REQUIRED_VULKAN_MIB:-4608}
+        QWEN_REQUIRED_VULKAN_MIB=$((router_required_vulkan_mib +
+            image_runtime_resident_mib))
+        export QWEN_REQUIRED_VULKAN_MIB
+        run_image_memory_preflight "$model_path" \
+            "$QWEN_REQUIRED_VULKAN_MIB" || exit 2
+        # model-memory-preflight.sh reports and admits every launch, and this
+        # shape is the one section plus the runtime that
+        # evidence/image-appliance/served-turn-admission/ ran and passed, so the
+        # figure is reported rather than gated on. The pairing refusal belongs
+        # to qwen-image-launch.sh, where a second checkpoint is resident.
+        printf 'image_launch budget subject_mib=%s runtime_mib=%s required_mib=%s review_section=%s\n' \
+            "$router_required_vulkan_mib" "$image_runtime_resident_mib" \
+            "$QWEN_REQUIRED_VULKAN_MIB" "${preset_review_section:--}"
+        export_image_service_environment
+    fi
 fi
 
 # GGUF weights live outside Git because their size exceeds what Git LFS carries

@@ -37,9 +37,14 @@ harness=$work/harness
 mkdir -p "$harness"
 for harness_member in qwen-launch.sh web-lan-exposure.sh \
     resolve-active-deployment.sh open-verified-lock-descriptor.py \
-    select-projector.sh model-registry.sh models.tsv; do
+    select-projector.sh model-registry.sh models.tsv \
+    image-launch-lib.sh read-image-mcp-server.py image-registry.sh \
+    image-artifacts.tsv image-models.tsv image-quarantine.tsv; do
     cp "$script_directory/$harness_member" "$harness/$harness_member"
 done
+# remote/image-registry.sh resolves a retained evidence path against its own
+# parent directory, so the harness mirrors the tree at that one point.
+ln -s "$script_directory/../evidence" "$work/evidence"
 # check-runtime-tree.sh reads a manifest beside the tree root and passes an
 # unmanifested copy, which the harness is.
 cp "$script_directory/check-runtime-tree.sh" "$harness/check-runtime-tree.sh"
@@ -70,6 +75,13 @@ set -eu
     printf 'QWEN_REQUIRE_API_KEY=%s\n' "${QWEN_REQUIRE_API_KEY:-unset}"
     printf 'QWEN_WEB_LAN=%s\n' "${QWEN_WEB_LAN:-unset}"
     printf 'QWEN_WEB_LAN_ADDRESS=%s\n' "${QWEN_WEB_LAN_ADDRESS:-unset}"
+    printf 'QWEN_IMAGE_SERVICE=%s\n' "${QWEN_IMAGE_SERVICE:-unset}"
+    printf 'QWEN_IMAGE_SERVICE_PROGRAM=%s\n' "${QWEN_IMAGE_SERVICE_PROGRAM:-unset}"
+    printf 'QWEN_IMAGE_PROFILE=%s\n' "${QWEN_IMAGE_PROFILE:-unset}"
+    printf 'QWEN_IMAGE_PROFILES=%s\n' "${QWEN_IMAGE_PROFILES:-unset}"
+    printf 'QWEN_IMAGE_PROFILES_JSON=%s\n' "${QWEN_IMAGE_PROFILES_JSON:-unset}"
+    printf 'QWEN_IMAGE_TOKEN_KEY_FILE=%s\n' "${QWEN_IMAGE_TOKEN_KEY_FILE:-unset}"
+    printf 'QWEN_REQUIRED_VULKAN_MIB=%s\n' "${QWEN_REQUIRED_VULKAN_MIB:-unset}"
 } >"$QWEN_LAUNCH_RECORD"
 printf 'state=running recorder=1\n' >"$QWEN_WEBUI_STATE_DIRECTORY/session.status"
 EOF
@@ -119,6 +131,7 @@ mkdir -p "$work/webui"
 printf '%s\n' \
     'fetch(`./tools?model=${encodeURIComponent(selectedModel)}&autoload=true`)' \
     'JSON.stringify({ model, tool: toolName, params, stream: false })' \
+    'const IMAGE_GENERATION_TIMEOUT_MS = 420000;' \
     >"$work/webui/index.html"
 
 model_root=$work/models
@@ -178,6 +191,89 @@ tool_free_preset=$work/router-presets-tool-free.ini
 write_preset "$tool_free_preset" -
 merged_preset=$work/router-presets-merged.ini
 write_preset "$merged_preset" web-fixture
+
+# The image lane rides the same preset. The ledger fixture names the checked-in
+# bundle and differs from the shipped row in execution_policy and review_model
+# alone, so remote/image-registry.sh validates it whole against the artifact and
+# model authorities the harness copied.
+image_profiles=$work/image-profiles.tsv
+printf 'image-fixture-a\tsdxs-512\tA\t512\t512\t1\teuler\t1.0\t4\t512\t300\tvalidator-gated\tevidence/image-appliance/design.md\t-\n' \
+    >"$image_profiles"
+image_runtime=$work/fake-image-runtime.sh
+printf '#!/bin/sh\nexit 0\n' >"$image_runtime"
+chmod +x "$image_runtime"
+image_parameters=$work/image-parameters.json
+cat >"$image_parameters" <<PARAMETERS
+{
+  "image-fixture-a": {
+    "profile_id": "image-fixture-a",
+    "model_id": "sdxs-512",
+    "placement": "A",
+    "width": 512,
+    "height": 512,
+    "steps": 1,
+    "sampler": "euler",
+    "cfg": 1.0,
+    "max_steps": 4,
+    "max_dimension": 512,
+    "timeout_s": 300,
+    "execution_policy": "validator-gated",
+    "runtime_path": "$image_runtime",
+    "runtime_argv": ["--output", "{output}"]
+  }
+}
+PARAMETERS
+image_mcp_config=$state_directory/web-mcp-configs/web-fixture-image.json
+cat >"$image_mcp_config" <<CONFIGURATION
+{
+  "mcpServers": {
+    "web": {"command": "python3", "args": [], "env": {}},
+    "image": {
+      "command": "python3",
+      "timeout_ms": 360000,
+      "args": ["$script_directory/image-mcp/server.py"],
+      "env": {
+        "QWEN_IMAGE_LANGUAGE_PROFILE": "web-fixture",
+        "QWEN_IMAGE_PROFILE": "image-fixture-a",
+        "QWEN_IMAGE_TOKEN_KEY_FILE": "$token_key_file",
+        "QWEN_IMAGE_STATE_DIR": "$state_directory/images",
+        "QWEN_IMAGE_SERVICE_SOCKET": "$state_directory/images/image-service.sock",
+        "QWEN_IMAGE_PROFILES_JSON": "$image_parameters",
+        "QWEN_IMAGE_MCP_TIMEOUT_S": "360"
+      }
+    }
+  }
+}
+CONFIGURATION
+# model-memory-preflight.sh reads the device, so the harness answers for it with
+# the two lines the launch reads.
+memory_preflight=$work/fake-memory-preflight.sh
+cat >"$memory_preflight" <<'PREFLIGHT'
+#!/bin/sh
+set -eu
+printf 'model_bytes=%s\n' "$(wc -c <"$1")"
+printf 'vulkan_required_mib=%s\n' "$2"
+printf 'vulkan_budget_headroom=ample\n'
+PREFLIGHT
+chmod +x "$memory_preflight"
+imaged_preset=$work/router-presets-imaged.ini
+{
+    sed 's|^LLAMA_ARG_MCP_SERVERS_CONFIG = .*|LLAMA_ARG_MCP_SERVERS_CONFIG = '"$image_mcp_config"'|' \
+        "$merged_preset"
+} >"$imaged_preset.body"
+awk -v ledger="$image_profiles" \
+    -v digest="$(sha256sum "$image_profiles" | cut -d' ' -f1)" '
+    { print }
+    /^# qwen_web_provider=/ {
+        printf "# qwen_image_profiles_path=%s\n", ledger
+        printf "# qwen_image_profiles_sha256=%s\n", digest
+        printf "# qwen_image_profile=image-fixture-a\n"
+        printf "# qwen_image_model=sdxs-512\n"
+        printf "# qwen_image_mcp_timeout_ms=360000\n"
+        printf "# qwen_image_review_model=-\n"
+        printf "# qwen_image_review_section=-\n"
+    }
+' "$imaged_preset.body" >"$imaged_preset"
 
 record=$work/launch.record
 run_launch() {
@@ -244,6 +340,78 @@ if run_launch "$merged_preset" env -u QWEN_BIND_HOST \
 else
     report web_section_launch_arms_children failed
     cat "$work/merged.err" >&2
+fi
+
+# A preset carrying the image marker arms the generation service beside the
+# broker and the search instance, so one launch serves chat, search, and
+# generation. The requirement the session preflights against composes with the
+# subject selection: the image runtime is charged on top of the largest servable
+# checkpoint, since `--models-max 1` keeps the roster's sections from being
+# co-resident while the runtime runs beside the loaded child.
+if run_launch "$imaged_preset" env -u QWEN_BIND_HOST \
+    QWEN_IMAGE_SERVICE_PROGRAM="$script_directory/image-service.py" \
+    QWEN_IMAGE_PROFILES_JSON="$image_parameters" \
+    QWEN_MEMORY_PREFLIGHT_PROGRAM="$memory_preflight" \
+    QWEN_IMAGE_RUNTIME_RESIDENT_MIB=480 \
+    >"$work/imaged.log" 2>"$work/imaged.err"; then
+    outcome=ok
+    grep -qx 'QWEN_IMAGE_SERVICE=1' "$record" || outcome=service_unarmed
+    grep -qx 'QWEN_IMAGE_PROFILE=image-fixture-a' "$record" ||
+        outcome=profile_dropped
+    grep -qx "QWEN_IMAGE_PROFILES=$image_profiles" "$record" ||
+        outcome=ledger_dropped
+    grep -qx "QWEN_IMAGE_PROFILES_JSON=$image_parameters" "$record" ||
+        outcome=parameters_dropped
+    grep -qx "QWEN_IMAGE_TOKEN_KEY_FILE=$token_key_file" "$record" ||
+        outcome=key_path_dropped
+    grep -q '^QWEN_IMAGE_SERVICE_PROGRAM=.*image-service\.py$' "$record" ||
+        outcome=program_dropped
+    grep -qx 'QWEN_REQUIRED_VULKAN_MIB=5088' "$record" ||
+        outcome=budget_uncharged
+    grep -qx 'QWEN_WEB_BROKER=1' "$record" || outcome=broker_unarmed
+    grep -qx 'QWEN_WEB_SEARXNG=1' "$record" || outcome=searxng_unarmed
+    grep -q 'image_launch budget subject_mib=4608 runtime_mib=480 required_mib=5088' \
+        "$work/imaged.log" || outcome=budget_unreported
+    grep -q '^vulkan_budget_headroom=ample' "$work/imaged.log" ||
+        outcome=preflight_unreported
+    grep -q 'image_launch timeouts ' "$work/imaged.log" ||
+        outcome=deadlines_unreported
+    report image_lane_launch_arms_the_service "$outcome"
+else
+    report image_lane_launch_arms_the_service failed
+    cat "$work/imaged.err" >&2
+fi
+
+# A preset carrying no image marker is one generated before this lane, so the
+# launch arms no service and charges nothing for a runtime it never starts.
+if run_launch "$merged_preset" env -u QWEN_BIND_HOST \
+    >"$work/no-image.log" 2>"$work/no-image.err"; then
+    outcome=ok
+    grep -qx 'QWEN_IMAGE_SERVICE=unset' "$record" || outcome=service_armed
+    grep -qx 'QWEN_REQUIRED_VULKAN_MIB=unset' "$record" || outcome=budget_charged
+    report marker_free_preset_arms_no_image_service "$outcome"
+else
+    report marker_free_preset_arms_no_image_service failed
+    cat "$work/no-image.err" >&2
+fi
+
+# An image row moved to refused after generation revokes the lane, and the
+# ledger digest the preset binds reads the edit before anything starts.
+sed 's/\tvalidator-gated\t/\trefused\t/' "$image_profiles" \
+    >"$work/image-refused.tsv"
+cp -- "$work/image-refused.tsv" "$image_profiles"
+if run_launch "$imaged_preset" env -u QWEN_BIND_HOST \
+    QWEN_IMAGE_SERVICE_PROGRAM="$script_directory/image-service.py" \
+    QWEN_IMAGE_PROFILES_JSON="$image_parameters" \
+    QWEN_MEMORY_PREFLIGHT_PROGRAM="$memory_preflight" \
+    >"$work/image-revoked.log" 2>"$work/image-revoked.err"; then
+    report revoked_image_ledger_refuses_the_launch admitted
+elif grep -q 'image profile ledger identity changed' \
+    "$work/image-revoked.err"; then
+    report revoked_image_ledger_refuses_the_launch ok
+else
+    report revoked_image_ledger_refuses_the_launch wrong_reason
+    cat "$work/image-revoked.err" >&2
 fi
 
 # A section reaching the network serves the loopback unless the operator

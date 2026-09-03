@@ -35,7 +35,8 @@ harness=$work/harness
 mkdir -p "$harness"
 cp "$script_directory/qwen-image-launch.sh" "$harness/qwen-image-launch.sh"
 for linked_name in image-registry.sh image-service.py image-artifacts.tsv \
-    image-models.tsv image-quarantine.tsv; do
+    image-models.tsv image-quarantine.tsv image-launch-lib.sh \
+    read-image-mcp-server.py; do
     ln -s "$script_directory/$linked_name" "$harness/$linked_name"
 done
 cat >"$harness/qwen-web-launch.sh" <<'EOF'
