@@ -137,6 +137,15 @@ gate_cell test-summarize-radv-isa derive remote/test-summarize-radv-isa.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-radv-isa.py'
 gate_cell test-shader-lab-depth derive remote/raven2-shader-lab/test-depth.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/raven2-shader-lab/test-depth.py'
+gate_cell test-shader-lab-receipt-diff derive \
+    'remote/raven2-shader-lab/test-receipt-diff.sh remote/raven2-shader-lab/receipt-diff.sh' \
+    remote/raven2-shader-lab/test-receipt-diff.sh
+gate_cell test-shader-lab-replay derive \
+    'remote/raven2-shader-lab/test-lab-replay.sh remote/raven2-shader-lab/lab.sh' \
+    remote/raven2-shader-lab/test-lab-replay.sh
+gate_cell test-run-kernel-delta-witness derive \
+    'remote/test-run-kernel-delta-witness.sh remote/run-kernel-delta-witness.sh' \
+    remote/test-run-kernel-delta-witness.sh
 gate_cell test-await-quiescence derive \
     'remote/test-await-quiescence.sh remote/await-quiescence.sh' \
     remote/test-await-quiescence.sh
