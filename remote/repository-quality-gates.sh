@@ -128,6 +128,9 @@ gate_cell test-summarize-bracket-ab derive remote/test-summarize-bracket-ab.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-bracket-ab.py'
 gate_cell test-summarize-margin-witness derive remote/test-summarize-margin-witness.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-margin-witness.py'
+gate_cell test-summarize-prefill-ladder derive \
+    'remote/test-summarize-prefill-ladder.py remote/summarize-prefill-ladder.py' \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-prefill-ladder.py'
 # The replay corpus is real Raven2 records with their expected verdicts; every
 # reader change satisfies it ahead of any device request.
 gate_cell test-census-replay-corpus derive \
@@ -266,6 +269,9 @@ gate_cell test-run-raven2-vulkan-kernel-census derive \
 gate_cell test-run-served-binary-ab derive \
     remote/test-run-served-binary-ab.sh \
     remote/test-run-served-binary-ab.sh
+gate_cell test-run-prefill-ladder derive \
+    'remote/test-run-prefill-ladder.sh remote/run-prefill-ladder.sh remote/summarize-prefill-ladder.py remote/test-fixtures/fake-llama-server.sh' \
+    remote/test-run-prefill-ladder.sh
 gate_cell test-measurement-harnesses derive remote/test-measurement-harnesses.sh \
     remote/test-measurement-harnesses.sh
 gate_cell test-qwen-session-signals derive \
