@@ -932,33 +932,49 @@ const ARTIFACT_ORIGIN_DEFAULT = configuredArtifactOrigin();
 function admittedOriginHosts() {
   /* List the host alternatives a credentialed origin may name.
 
-     Two host families are admitted: the loopback pair, which is what an
-     ordinary launch binds, and the host this page was itself served from,
-     which is what the LAN exposure binds. The second is an exact comparison
-     against window.location.hostname, so a credential reaches the machine
-     the page came from and no other.
+     Two host families are admitted: the loopback pair, and the host this
+     page was itself served from, which is what the LAN exposure binds. The
+     second is an exact comparison against window.location.hostname, so a
+     credential reaches the machine the page came from and no other.
 
-     That host is admitted whether it is an address or a name. The browser
-     already resolved it to fetch this page and a bearer is stored per page
-     origin, so sending it back to the same host reaches the machine that
-     served the page and nothing else. Requiring a literal was a proxy for
-     keeping the resolver out of the decision, and the page host is not a
-     second resolution -- which is what lets qwen-webui-session.sh advertise
-     the appliance's mDNS name beside its leased address. */
+     The loopback pair is admitted only where the page itself was loaded from
+     loopback. A page reached over the LAN runs in a viewer's own browser on
+     a machine other than the appliance, where 127.0.0.1 names that viewer's
+     own machine rather than the appliance: a `?broker=http://127.0.0.1:PORT`
+     or `?artifacts=http://127.0.0.1:PORT` on such a page would otherwise
+     still validate and send the bearer or the artifact request to whatever
+     that viewer's own loopback happens to be running, not to the appliance
+     that issued the credential.
+
+     The page's own host is admitted whether it is an address or a name. The
+     browser already resolved it to fetch this page and a bearer is stored
+     per page origin, so sending it back to the same host reaches the
+     machine that served the page and nothing else. Requiring a literal was
+     a proxy for keeping the resolver out of the decision, and the page host
+     is not a second resolution -- which is what lets qwen-webui-session.sh
+     advertise the appliance's mDNS name beside its leased address. */
   let pageHost = '';
   try {
     pageHost = (window.location.hostname || '');
   } catch (error) {
     // The function is also evaluated outside a document by the unit test, so
-    // an absent location leaves the loopback pair as the admitted set.
+    // an absent location leaves the loopback pair as the admitted set --
+    // there is no real viewer machine to protect in that context.
     pageHost = '';
   }
-  const pageHostIsAdmissible =
-    /^(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-f:]+\]|[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*)$/i
-      .test(pageHost);
-  const admittedHosts = ['127\\.0\\.0\\.1', '\\[::1\\]'];
-  if (pageHostIsAdmissible && pageHost !== '127.0.0.1' && pageHost !== '[::1]') {
-    admittedHosts.push(pageHost.replace(/[.[\]-]/g, '\\$&'));
+  const pageIsLoopback =
+    pageHost === '' || pageHost === '127.0.0.1' ||
+    pageHost === 'localhost' || pageHost === '[::1]';
+  const admittedHosts = [];
+  if (pageIsLoopback) {
+    admittedHosts.push('127\\.0\\.0\\.1', '\\[::1\\]');
+  } else {
+    const pageHostIsAdmissible =
+      /^(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-f:]+\]|[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*)$/i
+        .test(pageHost);
+    if (pageHostIsAdmissible) {
+      admittedHosts.push(pageHost.replace(/[.[\]-]/g, '\\$&'));
+    }
   }
   return admittedHosts;
 }

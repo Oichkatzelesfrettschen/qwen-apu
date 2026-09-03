@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 
 // trustedBrokerOrigin and trustedArtifactOrigin share one host-admission rule
-// (admittedOriginHosts): the loopback pair, or the exact host this page was
-// served from. brokerOrigin() used to return $('#broker-origin').value
-// unchecked, so a `?broker=` query parameter naming a foreign host became the
-// destination brokerSession() and postGrant() attach the page's bearer to.
-// These checks prove the shared validator admits the same hosts for both
-// listeners and refuses everything else, and that brokerOrigin() now applies
-// it before a caller ever fetches.
+// (admittedOriginHosts): the loopback pair where the page itself was loaded
+// from loopback, or the exact host this page was served from otherwise.
+// brokerOrigin() used to return $('#broker-origin').value unchecked, so a
+// `?broker=` query parameter naming a foreign host became the destination
+// brokerSession() and postGrant() attach the page's bearer to. These checks
+// prove the shared validator admits the same hosts for both listeners and
+// refuses everything else, that a LAN-loaded page's own loopback is not one
+// of them (that loopback names the viewer's machine, not the appliance),
+// and that brokerOrigin() now applies the rule before a caller ever fetches.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -82,49 +84,62 @@ globalThis.brokerOriginTest = {
 };
 `;
 
-const browserContext = vm.createContext({
-  console,
-  document,
-  fetch() {
-    throw new Error('unexpected fetch');
-  },
-  URL,
-  window: {
-    alert() {},
-    localStorage: deniedStorage,
-    sessionStorage: deniedStorage,
-    location: {
-      hostname: 'qwen-test.local',
-      protocol: 'http:',
-      port: '8080',
-      href: 'http://qwen-test.local:8080/',
+function makeApi(hostname) {
+  const browserContext = vm.createContext({
+    console,
+    document,
+    fetch() {
+      throw new Error('unexpected fetch');
     },
-  },
-});
-vm.runInContext(`${inlineScript[1]}\n${testInterface}`, browserContext, {
-  filename: webuiPath.pathname,
-});
+    URL,
+    window: {
+      alert() {},
+      localStorage: deniedStorage,
+      sessionStorage: deniedStorage,
+      location: {
+        hostname,
+        protocol: 'http:',
+        port: '8080',
+        href: `http://${hostname}:8080/`,
+      },
+    },
+  });
+  vm.runInContext(`${inlineScript[1]}\n${testInterface}`, browserContext, {
+    filename: webuiPath.pathname,
+  });
+  return browserContext.brokerOriginTest;
+}
 
-const api = browserContext.brokerOriginTest;
+// ---- a page loaded over the LAN --------------------------------------------
 
-// The loopback pair is admitted for both listeners regardless of page host.
-assert.equal(api.trustedBrokerOrigin('http://127.0.0.1:8571'), 'http://127.0.0.1:8571');
-assert.equal(api.trustedArtifactOrigin('http://127.0.0.1:8572'), 'http://127.0.0.1:8572');
-assert.equal(api.trustedBrokerOrigin('http://[::1]:8571'), 'http://[::1]:8571');
+const lanApi = makeApi('qwen-test.local');
+
+// The loopback pair names the viewer's own machine on a LAN-loaded page, not
+// the appliance, so it is refused rather than admitted: a
+// `?broker=http://127.0.0.1:PORT` on such a page must not become a
+// destination the page's own bearer reaches.
+for (const loopbackOrigin of ['http://127.0.0.1:8571', 'http://[::1]:8571']) {
+  assert.throws(() => lanApi.trustedBrokerOrigin(loopbackOrigin),
+    /must be a literal loopback address, or the literal address this page was served from/,
+    `a LAN page's own loopback must be refused: ${loopbackOrigin}`);
+  assert.throws(() => lanApi.trustedArtifactOrigin(loopbackOrigin),
+    /must be a literal loopback address, or the literal address this page was served from/,
+    `a LAN page's own loopback must be refused for the artifact listener: ${loopbackOrigin}`);
+}
 
 // The exact host this page was served from is admitted for both listeners.
 assert.equal(
-  api.trustedBrokerOrigin('http://qwen-test.local:8571'), 'http://qwen-test.local:8571');
+  lanApi.trustedBrokerOrigin('http://qwen-test.local:8571'), 'http://qwen-test.local:8571');
 assert.equal(
-  api.trustedArtifactOrigin('http://qwen-test.local:8572'), 'http://qwen-test.local:8572');
+  lanApi.trustedArtifactOrigin('http://qwen-test.local:8572'), 'http://qwen-test.local:8572');
 
 // A foreign host is refused for both listeners, by the same rule.
 assert.throws(
-  () => api.trustedBrokerOrigin('https://attacker.example:443'),
+  () => lanApi.trustedBrokerOrigin('https://attacker.example:443'),
   /must be a literal loopback address, or the literal address this page was served from/,
   'a foreign broker host must be refused');
 assert.throws(
-  () => api.trustedArtifactOrigin('https://attacker.example:443'),
+  () => lanApi.trustedArtifactOrigin('https://attacker.example:443'),
   /must be a literal loopback address, or the literal address this page was served from/,
   'a foreign artifact host must be refused');
 
@@ -136,7 +151,7 @@ for (const malformed of [
   'http://qwen-test.local:8571/grant',
   'http://qwen-test.local',
 ]) {
-  assert.throws(() => api.trustedBrokerOrigin(malformed),
+  assert.throws(() => lanApi.trustedBrokerOrigin(malformed),
     /must be a literal loopback address, or the literal address this page was served from/,
     `malformed origin must be refused: ${malformed}`);
 }
@@ -145,11 +160,31 @@ for (const malformed of [
 // which is exactly where a `?broker=` query parameter's value ends up (via
 // BROKER_ORIGIN_DEFAULT) and where a user-typed or localStorage-restored
 // value ends up too.
-api.setBrokerOriginField('http://qwen-test.local:8571');
-assert.equal(api.brokerOrigin(), 'http://qwen-test.local:8571');
-api.setBrokerOriginField('https://attacker.example');
-assert.throws(() => api.brokerOrigin(),
+lanApi.setBrokerOriginField('http://qwen-test.local:8571');
+assert.equal(lanApi.brokerOrigin(), 'http://qwen-test.local:8571');
+lanApi.setBrokerOriginField('https://attacker.example');
+assert.throws(() => lanApi.brokerOrigin(),
   /must be a literal loopback address, or the literal address this page was served from/,
   'brokerOrigin() must refuse a foreign origin rather than returning it');
+lanApi.setBrokerOriginField('http://127.0.0.1:8571');
+assert.throws(() => lanApi.brokerOrigin(),
+  /must be a literal loopback address, or the literal address this page was served from/,
+  'brokerOrigin() must refuse a LAN page\'s own loopback rather than returning it');
+
+// ---- a page loaded from loopback -------------------------------------------
+
+// An ordinary, unexposed launch serves the page from loopback, and there the
+// loopback pair does name the appliance itself, so it is admitted.
+const loopbackApi = makeApi('127.0.0.1');
+assert.equal(
+  loopbackApi.trustedBrokerOrigin('http://127.0.0.1:8571'), 'http://127.0.0.1:8571');
+assert.equal(
+  loopbackApi.trustedArtifactOrigin('http://127.0.0.1:8572'), 'http://127.0.0.1:8572');
+assert.equal(
+  loopbackApi.trustedBrokerOrigin('http://[::1]:8571'), 'http://[::1]:8571');
+assert.throws(
+  () => loopbackApi.trustedBrokerOrigin('https://attacker.example:443'),
+  /must be a literal loopback address, or the literal address this page was served from/,
+  'a foreign broker host must be refused from a loopback page too');
 
 console.log('webui-broker-origin=accepted');
