@@ -3104,6 +3104,10 @@ let conversationMessages = [];
 // dropped rather than written into the record now open.
 let activeAssistantEntry = null;
 let activeAssistantGeneration = -1;
+// A live card revokes its own blob URL from its remove button; a restored card
+// carries none, so the reset that clears the log owns the revocation and a
+// conversation switched away from releases every image it drew.
+const restoredArtifactBlobUrls = new Set();
 
 function conversationSummary(record) {
   return {
@@ -3393,6 +3397,7 @@ function renderRestoredArtifactCard(container, artifact) {
       card.append(note);
       return;
     }
+    restoredArtifactBlobUrls.add(blobUrl);
     const image = document.createElement('img');
     image.alt = artifact.prompt || '';
     image.src = blobUrl;
@@ -3472,6 +3477,10 @@ function resetConversationState() {
   conversationMessages = [];
   activeAssistantEntry = null;
   activeAssistantGeneration = -1;
+  for (const blobUrl of restoredArtifactBlobUrls) {
+    try { URL.revokeObjectURL(blobUrl); } catch { /* a released page keeps none */ }
+  }
+  restoredArtifactBlobUrls.clear();
   logEl.textContent = '';
 }
 
@@ -3506,8 +3515,14 @@ function startNewConversation(route = true) {
 }
 
 async function switchConversation(id, route = true) {
-  if (busy) return false;
-  if (!CONVERSATION_ID_PATTERN.test(id)) return false;
+  if (busy || !CONVERSATION_ID_PATTERN.test(id)) {
+    // A hashchange lands after the address bar already moved, so a refused
+    // switch writes the route back to the conversation on screen rather than
+    // leaving the URL naming one this page never opened. The write raises one
+    // further hashchange whose id already matches, which ends there.
+    setConversationHash(conversationId);
+    return false;
+  }
   const record = await readConversationRecord(id);
   resetConversationState();
   conversationId = id;

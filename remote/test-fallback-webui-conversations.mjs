@@ -252,6 +252,8 @@ globalThis.webuiConversationTest = {
   read(id) {
     return readConversationRecord(id);
   },
+  setBusy(value) { busy = value; },
+  restoredBlobUrls() { return restoredArtifactBlobUrls.size; },
   startNewConversation,
   switchConversation,
   renameConversation,
@@ -493,6 +495,22 @@ assert.ok(
     restoredTranscript[1].indexOf(FIXTURE_SHA256),
   'the follow-up round renders ahead of the artifact it describes');
 
+// A restored card holds one blob URL the reset owns, because it carries no
+// remove button of its own to revoke it.
+assert.equal(first.api.restoredBlobUrls(), 1,
+  'the restored artifact registered no blob URL for the reset to release');
+
+// A route change during a streaming turn is refused, and the address bar is
+// written back to what the page displays rather than left naming a conversation
+// it never opened.
+first.api.setBusy(true);
+const busyOutcome = await first.api.switchConversation('someotherid');
+first.api.setBusy(false);
+assert.equal(busyOutcome, false, 'a switch during a turn was admitted');
+assert.equal(first.api.state().conversationId, savedId);
+assert.equal(first.location.hash, `#/c/${savedId}`,
+  'a refused switch left the route naming a conversation the page did not open');
+
 // Rename and delete move the panel.
 await first.api.renameConversation(savedId);
 await flushPromises();
@@ -506,6 +524,8 @@ await flushPromises();
 rows = first.api.panelRows();
 assert.equal(rows.length, 1);
 assert.equal(rows[0].text, 'this store holds no saved conversation yet');
+assert.equal(first.api.restoredBlobUrls(), 0,
+  'the conversation that left the log kept its restored blob URLs');
 
 // ---- the hash route selects a conversation on a second load ----------------
 
