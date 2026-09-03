@@ -2,11 +2,11 @@ The schema-bound prefix checkpoint, on
 f280b26983ad0fdb705a0d9ebf0503e76f2899b0 after the eight-patch production
 series.
 
-A served web turn carries a stable head: the chat template's own preamble, the
+A served web turn carries a stable head: the chat template's preamble, the
 system prompt, and the tool schemas the page composes from GET /tools. At
-f280b269 that head is reused across turns of one conversation and, under
-narrow conditions, across conversations that meet the same slot in sequence.
-The narrowness is the whole subject. Qwen3.5 is hybrid, so
+f280b269 that head is reused across turns of one conversation and, under narrow
+conditions, across conversations that meet the same slot in sequence. The
+narrowness is the whole subject. Qwen3.5 is hybrid, so
 llama_memory_hybrid::seq_pos_min returns the max over its two halves and the
 recurrent half reports one cell at the latest position; the rollback
 update_slots needs therefore always enters the checkpoint search at
@@ -21,13 +21,21 @@ with it: pos_next reaches 0, every checkpoint is erased, the memory is cleared
 at 3328, and the next request that shares the head reprefills it from token 0.
 
 This patch retains one whole sequence state at the boundary of the last user
-message and restores it for any later request whose token array starts with the
-same prefix. It is saved with LLAMA_STATE_SEQ_FLAGS_NONE, so it carries the
-attention cells and the recurrent state together and a restore reconstructs the
-prefix from the blob rather than from what the slot happens to still hold. The
-restore therefore runs after slot.prompt_clear(), which makes the sequence empty
-before the blob is written and leaves an empty sequence rather than a mixed one
-where the write fails.
+message and restores it for a later request whose token array starts with the
+pinned prefix and extends it. It is saved with LLAMA_STATE_SEQ_FLAGS_NONE, so it
+carries the attention cells and the recurrent state together and a restore
+reconstructs the prefix from the blob rather than from what the slot happens to
+still hold. The restore therefore runs after slot.prompt_clear(), which makes
+the sequence empty before the blob is written and leaves an empty sequence
+rather than a mixed one where the write fails.
+
+The capture proves its own invariant rather than inheriting one. A blob is only
+the prefix's state where the memory holds exactly the tokens the pinned array
+will carry, so the capture requires llama_memory_seq_pos_max to equal
+n_tokens_start - 1 at the site where create_checkpoint settles for a pos_min and
+pos_max that are merely consistent with each other. A capture whose recurrent
+state sat one batch ahead of its own token array would restore an answer rather
+than fail, which is the hazard the whole-state save exists to close.
 
 The key is a SHA-256 over the fields the retained bytes depend on: the model
 path and the loader's description of what it holds, a digest of the chat
@@ -38,9 +46,19 @@ digest of the tokens of the system span, and a digest of the whole prefix token
 array beside its length. Each field is length-prefixed, so a byte moved across a
 field boundary changes the key. The key labels the pin and the verbatim token
 comparison in server_prefix_checkpoint::covers guards it, so a digest collision
-moves no state. The chat template renders tool schemas into the system message,
-so the system span digest carries the tool set and the server observes no field
-that would separate the two.
+moves no state. The tool schemas enter the token array through the Jinja
+template and reach no field of their own: where the template renders them inside
+the system block the system span digest carries them, and where it renders them
+elsewhere the prefix token digest does. Both are fields of the key.
+
+Message spans decide whether the mechanism engages at all. server-context.cpp
+reads message_delimiters out of the request body, server-common.cpp writes it
+there from chat_params.message_delimiters on the OAI-compatible chat path alone,
+and the specialized template handlers in common/chat.cpp fill that field. A
+request carrying no delimiters places no user start anywhere, so no batch
+boundary lands at the head, and this patch captures nothing and restores
+nothing. It shares that dependence with the context checkpoints already in the
+file.
 
 QWEN_PREFIX_CHECKPOINT arms it. An unset, empty, or "0" value leaves every hook
 inert and the file behaves as it did, which is the state of every llama-bench,
@@ -65,7 +83,7 @@ llama-router-tools-proxy, llama-vulkan-view-alias-deps, and
 llama-server-natural-checkpoint-boundary, in that order.
 
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index cea23db99..146f61809 100644
+index cea23db99..9df842cc9 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
 @@ -6,6 +6,7 @@
@@ -323,19 +341,22 @@ index cea23db99..146f61809 100644
                                  break;
                              }
                          }
-@@ -3504,6 +3703,35 @@ private:
+@@ -3504,6 +3703,38 @@ private:
                      if (do_checkpoint) {
                          create_checkpoint(slot, n_tokens_cur, pos_min, pos_max);
                      }
 +
 +                    // Capture the pin where the fill loop stopped exactly at the last user
 +                    // message: the memory then holds [0, n_tokens_start) whole and none of the
-+                    // current batch, the same state create_checkpoint reads. The key is derived
-+                    // again on every capture, so an edited system prompt, a changed tool set,
-+                    // another template, or another model replaces the pin rather than leaving
-+                    // bytes that no longer describe the prefix a request asks for.
++                    // current batch. The blob needs that equality rather than the internal
++                    // consistency create_checkpoint settles for, so pos_max is compared against
++                    // the token count the array will carry: a capture whose recurrent state sits
++                    // ahead of its own tokens would restore an answer rather than fail. The key
++                    // is derived again on every capture, so an edited system prompt, a changed
++                    // tool set, another template, or another model replaces the pin rather than
++                    // leaving bytes that no longer describe the prefix a request asks for.
 +                    if (prefix_checkpoint.armed && is_last_user_message && n_tokens_start > 0 &&
-+                        pos_min >= 0 && !has_mtmd &&
++                        pos_min >= 0 && pos_max == (llama_pos) n_tokens_start - 1 && !has_mtmd &&
 +                        !slot.prompt.tokens.has_mtmd && !input_tokens.has_mtmd) {
 +                        const auto & prompt_tokens = slot.prompt.tokens.get_tokens();
 +

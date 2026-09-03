@@ -107,8 +107,11 @@ defaults it to an empty array, `server-common.cpp:1350` writes it there from
 `common_chat_params_init_qwen3_coder`, the specialized template the dispatcher
 at `common/chat.cpp:3590` selects for a source carrying `<tool_call>`,
 `<function=`, and `<parameter=` and whose comment names Qwen3.5. That handler
-declares `<|im_start|>user` and `<|im_start|>system` delimiters, so a Qwen3.5
-chat request carries both spans. A raw `/completion` request carries no
+declares `<|im_start|>user` and `<|im_start|>system` delimiters, so a request
+whose template takes that branch carries both spans. The served checkpoints'
+own template text is unread here, and the server log names the branch it
+selected, so an arm reads that line rather than assuming this one.
+A raw `/completion` request carries no
 delimiters, `is_user_start` is false everywhere, `last_user_message_pos` is -1,
 no batch boundary lands at the head, and neither the existing checkpoint nor the
 pin below is created. A template falling through to the differential autoparser
@@ -213,6 +216,15 @@ restore therefore runs after `slot.prompt_clear()`, which empties the sequence
 before the blob is written, and a failed write leaves an empty sequence rather
 than a mixed one.
 
+The capture proves its own invariant rather than inheriting one. A blob is the
+prefix's state only where the memory holds exactly the tokens the pinned array
+will carry, so the capture requires
+`llama_memory_seq_pos_max(llama_get_memory(ctx_tgt), slot.id)` to equal
+`n_tokens_start - 1`, at a site where `create_checkpoint` settles for a
+`pos_min` and `pos_max` that are consistent with each other and with nothing
+else. A capture whose recurrent state sat one batch ahead of its own token array
+would restore an answer rather than fail.
+
 `QWEN_PREFIX_CHECKPOINT` arms it, and an unset, empty, or `0` value leaves every
 hook inert. The mechanism is independent of `--ctx-checkpoints`: the fill loop's
 break at the last user message is what puts a batch boundary at the pin's own
@@ -254,23 +266,42 @@ Three request arms against one server, each a `POST /v1/chat/completions` at
 temperature 0 with a short reply budget, read from `timings.prompt_n` (tokens
 decoded), `timings.cache_n` (tokens reused), and `timings.prompt_ms`.
 
-| arm | request | reused tokens |
-| --- | --- | --- |
-| A | conversation 1: head `P`, user `U1`, from a cold slot | 0 |
-| B | conversation 2: head `P`, user `U2`, sent next | `\|P\|` |
-| B' | A, then `X` with its own head, then conversation 3: head `P`, user `U3` | 0 without the pin, `\|P\|` with it |
-| C | conversation 4: same tool schemas, a different system prompt, user `U4` | 0 |
+| arm | build and count | request | reused tokens |
+| --- | --- | --- | --- |
+| A | either | conversation 1: head `P`, user `U1`, from a cold slot | 0 |
+| B-production | promoted `natural-boundary-v1`, count 2 | conversation 2: head `P`, user `U2`, sent next | `\|P\|` |
+| B-candidate | candidate, count 0, pin armed | the same pair | `\|P\|` |
+| B'-production | promoted, count 2 | A, then `X` with its own head, then head `P`, user `U3` | 0 |
+| B'-candidate | candidate, count 0, pin armed | the same triple | `\|P\|` |
+| D-control | candidate, count 0, pin armed and pin disarmed | arm A alone, run both ways | 0 both ways |
+| C | either | conversation 4: same tool schemas, a different system prompt, user `U4` | 0 |
+
+The two B rows measure two mechanisms rather than one arm on two builds.
+B-production is served by the context checkpoint the fill loop already places at
+the last user message, which case (b) needs no patch for. B-candidate runs at
+count 0, where `do_checkpoint` is false and no such checkpoint exists, so it is
+served by the pin alone. A passing B-candidate confirms the pin and says nothing
+about case (b), and the pair separating would say the count rather than the pin
+carried B.
 
 Predictions, stated before any run:
 
 - A: `cache_n = 0`, `prompt_n = |P| + |U1|`. This is the denominator every other
   arm is read against, and the head is the retained 507 tokens at about 26.5 s.
-- B: `cache_n = |P|`, `prompt_n = |U1| + 1`-scale rather than `|P|`-scale, on the
-  production build at count 2 and on the candidate build with the pin armed.
-  The prediction is that both reuse it, because case (b) needs no patch.
-- B': the arms separate here. Production at count 2 predicts `cache_n = 0` and a
-  second full head prefill; the pin predicts `cache_n = |P|`. This is the arm the
-  patch exists for.
+- B-production: `cache_n = |P|`, `prompt_n` at `|U2|` scale rather than `|P|`
+  scale, from the checkpoint mechanism.
+- B-candidate: the same numbers from the pin.
+- B'-production: `cache_n = 0` and a second full head prefill, because the
+  intervening `X` erases the checkpoint and clears the slot.
+- B'-candidate: `cache_n = |P|`. This is the arm the patch exists for, and the
+  B' pair is the reported result.
+- D-control: `cache_n = 0` both ways, and the two runs are read for emitted token
+  identity rather than for reuse. Arming the pin ends a batch at the last user
+  message that would otherwise have run on, so the two runs are two execution
+  shapes and the comparison states whether that partition change moves the
+  answer, the way `evidence/ctx-checkpoint-natural-boundary/` states it for the
+  checkpoint count. It runs on the candidate build alone, so the build is held
+  and the arming is the one changed dimension.
 - C: `cache_n = 0` and `prompt_n = |P'| + |U4|` on every build. Partial reuse in
   C refutes the recurrent-state account above and the pin's `covers` predicate
   together.
@@ -307,9 +338,10 @@ alone becomes that class's profile setting.
 - Arm B' with the pin armed shows `cache_n = |P|` and an answer that differs from
   the same request served cold. The restore is writing state that does not
   describe the prefix, and the patch is unsafe rather than slow.
-- The armed control arm (pin armed, prefix absent) differs in emitted tokens
-  from an unarmed run beyond the fill-partition change the design admits. The
-  hooks are not inert when they claim to be.
+- The D-control pair differs in emitted tokens. Arming the pin then moves the
+  answer through the fill partition alone, and the mechanism costs correctness
+  before it buys anything, which is what the eighth production patch removed for
+  the checkpoint count.
 - The captured state exceeds what the carve-out tolerates. The blob size is
   unmeasured; the capture line reports it in MiB at every capture, and a size
   that competes with the model's own residency ends the design rather than
