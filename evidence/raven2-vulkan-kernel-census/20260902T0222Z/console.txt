@@ -1,0 +1,19 @@
+census_arm=start slot=1 arm=P server=$HOME/qwen-deployments/natural-boundary-13d05a0-r2/llama-server
+census_arm=failed slot=1 arm=P tok_s=- census_rows=-
+census_arm=start slot=2 arm=I0 server=$HOME/src/llama.cpp-census-v2/build-raven2-vulkan-census/bin/llama-server
+census_arm=failed slot=2 arm=I0 tok_s=- census_rows=-
+census_arm=start slot=3 arm=I0 server=$HOME/src/llama.cpp-census-v2/build-raven2-vulkan-census/bin/llama-server
+census_arm=failed slot=3 arm=I0 tok_s=- census_rows=-
+census_arm=start slot=4 arm=P server=$HOME/qwen-deployments/natural-boundary-13d05a0-r2/llama-server
+census_arm=failed slot=4 arm=P tok_s=- census_rows=-
+census_arm=start slot=5 arm=I0 server=$HOME/src/llama.cpp-census-v2/build-raven2-vulkan-census/bin/llama-server
+census_arm=failed slot=5 arm=I0 tok_s=- census_rows=-
+census_arm=start slot=6 arm=I1 server=$HOME/src/llama.cpp-census-v2/build-raven2-vulkan-census/bin/llama-server
+census_arm=failed slot=6 arm=I1 tok_s=- census_rows=0
+census_arm=start slot=7 arm=I1 server=$HOME/src/llama.cpp-census-v2/build-raven2-vulkan-census/bin/llama-server
+census_arm=failed slot=7 arm=I1 tok_s=- census_rows=0
+census_arm=start slot=8 arm=I0 server=$HOME/src/llama.cpp-census-v2/build-raven2-vulkan-census/bin/llama-server
+census_arm=failed slot=8 arm=I0 tok_s=- census_rows=-
+census_arm=start slot=9 arm=S server=$HOME/src/llama.cpp-census-v2/build-raven2-vulkan-census/bin/llama-server
+census_arm=completed slot=9 arm=S tok_s=2.485 census_rows=66
+census=failed model=qwen38-2b-distill arms=9 failed=8 output=$HOME/raven2-kernel-census-20260902T0222Z-2b-calibration

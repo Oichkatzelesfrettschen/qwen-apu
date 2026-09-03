@@ -1,0 +1,156 @@
+# One claim per (subject, feature) pair. The other ledgers state a serving
+# tuple, a pairing, a search grant, or an image grant; each of those implies
+# something about what a reader can do with a checkpoint, and a reader
+# assembling that implication row by row reconstructs it differently every
+# time. This ledger states the implication once, so remote/build-feature-roster.sh
+# emits webui/roster.json from a claim rather than from an inference over four
+# files.
+#
+# subject_id names a row of the ledger the feature belongs to, and the feature
+# decides which ledger that is. text-chat, vision, tool-selection,
+# guarded-tool-execution, long-context, context-checkpoints, and quarantine name
+# a remote/models.tsv id; draft-pair-speculation names a remote/draft-pairs.tsv
+# pair_id; web-search names a remote/web-profiles.tsv profile_id;
+# image-generation and image-review name a remote/image-profiles.tsv
+# profile_id. One namespace per feature keeps the subject column free of a
+# scope field that a typo would put at odds with the id beside it.
+#
+# status is closed over five values, and each states what a run has established.
+# production is a claim measured safe and useful, the vocabulary
+# remote/models.tsv gives its own tier field. candidate leaves quality or
+# performance unqualified while a run has established the mechanism works.
+# experimental names a mechanism the tree carries with the measurement still
+# ahead of it, and its note names the run that moves it. unstable names a
+# reset, fault, device loss, or correctness hazard, and its evidence is the
+# record of that failure. unsupported names a mechanism this row reaches
+# through a path nothing in the tree arms.
+#
+# evidence is a repository-relative path under evidence/ or `-`. production,
+# candidate, and unstable require a path, because those three assert a run;
+# experimental and unsupported admit `-`, because a mechanism nobody measured
+# retains nothing. remote/check-ledger-evidence.sh asserts that every path a
+# row names exists where the tree is, which is a property of the tree rather
+# than of the row, so the generator validates row shape alone and the appliance
+# reads this file over a directory the sync never sent.
+#
+# note carries the mechanism in one clause and stays free of the quotation mark
+# and the backslash, because the generator writes it into a JSON string field
+# and a ledger that cannot express an escape cannot emit invalid JSON.
+#
+# A (subject, feature) pair absent from this file emits status unclaimed, so
+# the matrix reads a hole as the absence of a claim rather than as a denial.
+#
+# subject_id	feature	status	evidence	note
+qwen38-4b-distill	text-chat	production	evidence/model-admission/roster-quality-sweep.md	graded 47 of 55 with thinking off across the seven-checkpoint sweep
+qwen38-4b-distill	vision	unsupported	-	the checkpoint ships text-only, so select-projector.sh finds no projector beside it and the vision profile selects qwen35-4b-base
+qwen38-4b-distill	tool-selection	production	evidence/model-admission/vision-and-tool-sweep.md	9 of 10 unaided, and the image lane reads a schema-valid call from it in every run
+qwen38-4b-distill	guarded-tool-execution	unsupported	evidence/model-admission/vision-and-tool-sweep.md	tool-08 carried the injected city into the call; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated
+qwen38-4b-distill	long-context	production	evidence/depth-validation-32k/qwen38-4b-distill/	32768 filled and decoded at batch 128 ubatch 32 with zero resets and a passing control
+qwen38-4b-distill	context-checkpoints	production	evidence/ctx-checkpoint-natural-boundary/4b	count 2 holds token and log-probability identity across the setting on the natural-boundary build
+qwen38-4b-distill	quarantine	unstable	evidence/quarantine/qwen38-4b-distill-d16384-b2048-ub512.md	profile scope removes depth 16384 at batch 2048 ubatch 512, which wedged the compute ring; the served 128/32 tuple stands
+qwen38-2b-distill	text-chat	production	evidence/model-admission/roster-quality-sweep.md	graded 40 of 55 with thinking off, and the appliance primary performance target
+qwen38-2b-distill	vision	unsupported	-	the checkpoint ships text-only, so select-projector.sh finds no projector beside it
+qwen38-2b-distill	tool-selection	candidate	evidence/model-admission/vision-and-tool-sweep.md	2 of 10 unaided; the row answers an image tool listing in prose, so a tool-shaped turn names another model
+qwen38-2b-distill	guarded-tool-execution	unsupported	evidence/model-admission/vision-and-tool-sweep.md	tool-08 carried the injected city into the call; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated
+qwen38-2b-distill	long-context	production	evidence/depth-validation-32k/qwen38-2b-distill/	32768 filled and decoded at batch 128 ubatch 32 with zero resets and a passing control
+qwen38-2b-distill	context-checkpoints	production	evidence/ctx-checkpoint-natural-boundary/2b	count 2 holds token and log-probability identity across the setting on the natural-boundary build
+qwen35-4b-base	text-chat	production	evidence/model-admission/roster-quality-sweep.md	graded 47 of 55 with thinking off, level with the 4B distill in every category
+qwen35-4b-base	vision	production	evidence/depth-validation-32k-projector/qwen35-4b-base/	the revision-matched projector loads and a validated tuple reads projector_state loaded at 8192 through 32768
+qwen35-4b-base	tool-selection	production	evidence/model-admission/vision-and-tool-sweep.md	8 of 10 unaided
+qwen35-4b-base	guarded-tool-execution	unsupported	evidence/model-admission/vision-and-tool-sweep.md	tool-08 carried the injected city into the call; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated
+qwen35-4b-base	long-context	experimental	-	llama-bench allocates no projector, so probe-depth-wedge.sh leaves a vision row at - and remote/probe-depth-projector.sh measures the tuple this row needs
+qwen35-4b-base	context-checkpoints	unsupported	-	the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it
+qwen35-08b	text-chat	candidate	evidence/model-admission/roster-quality-sweep.md	graded 33 of 55 with thinking off, the secondary fast target of the class policy
+qwen35-08b	vision	unsupported	-	the publisher ships a projector this tree has not fetched, so the model directory holds none and the row runs text-only
+qwen35-08b	tool-selection	candidate	evidence/model-admission/vision-and-tool-sweep.md	9 of 10 unaided
+qwen35-08b	guarded-tool-execution	unsupported	evidence/model-admission/vision-and-tool-sweep.md	tool-08 carried the injected city into the call; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated
+qwen35-08b	long-context	candidate	evidence/depth-validation-32k/qwen35-08b/	32768 filled and decoded at batch 128 ubatch 32
+qwen35-08b	context-checkpoints	production	evidence/ctx-checkpoint-natural-boundary	count 2 holds token identity on the natural-boundary build, which removed the index 25 divergence the forced tail partition produced
+qwen35-2b	text-chat	candidate	evidence/model-admission/roster-quality-sweep.md	graded 41 of 55 with thinking off
+qwen35-2b	vision	candidate	evidence/depth-validation-32k-projector/qwen35-2b/	the revision-matched projector loads and a validated tuple reads projector_state loaded at 8192 through 32768
+qwen35-2b	tool-selection	candidate	evidence/model-admission/vision-and-tool-sweep.md	9 of 10 unaided
+qwen35-2b	guarded-tool-execution	unsupported	evidence/model-admission/vision-and-tool-sweep.md	tool-08 carried the injected city into the call; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated
+qwen35-2b	long-context	experimental	-	llama-bench allocates no projector, so probe-depth-wedge.sh leaves a vision row at - and remote/probe-depth-projector.sh measures the tuple this row needs
+qwen35-2b	context-checkpoints	unsupported	-	the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it
+lfm25-vl-16b	text-chat	candidate	evidence/model-admission/roster-quality-sweep.md	graded 43 of 55 with thinking off at the roster fastest vision decode
+lfm25-vl-16b	vision	candidate	evidence/depth-validation-32k-projector/lfm25-vl-16b/	the revision-matched projector loads and a validated tuple reads projector_state loaded at 8192 through 32768
+lfm25-vl-16b	tool-selection	candidate	evidence/model-admission/vision-and-tool-sweep.md	8 of 10 unaided
+lfm25-vl-16b	guarded-tool-execution	unsupported	evidence/model-admission/vision-and-tool-sweep.md	tool-08 carried the injected city into the call; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated
+lfm25-vl-16b	long-context	experimental	-	llama-bench allocates no projector, so probe-depth-wedge.sh leaves a vision row at - and remote/probe-depth-projector.sh measures the tuple this row needs
+lfm25-vl-16b	context-checkpoints	unsupported	-	the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it
+qwen35-08b-f16	text-chat	candidate	evidence/model-admission/roster-quality-sweep.md	graded 32 of 55 with thinking off; the same weights as qwen35-08b at the highest precision the publisher ships
+qwen35-08b-f16	vision	unsupported	-	the publisher ships a projector this tree has not fetched, so the model directory holds none and the row runs text-only
+qwen35-08b-f16	tool-selection	experimental	-	the tool category of remote/run-quality-suite.py grades the row unaided and moves it off unmeasured
+qwen35-08b-f16	guarded-tool-execution	unsupported	evidence/model-admission/vision-and-tool-sweep.md	tool-08 carried the injected city into the call on every measured arm; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated
+qwen35-08b-f16	long-context	candidate	evidence/depth-validation-32k/qwen35-08b-f16/	32768 filled and decoded at batch 128 ubatch 32
+qwen35-08b-f16	context-checkpoints	unsupported	-	the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it
+qwen38-2b-uncensored	text-chat	experimental	evidence/model-admission/uncensored-roster.md	one strict Vulkan load admits the row; remote/run-quality-roster.sh grades it
+qwen38-2b-uncensored	vision	unsupported	-	the checkpoint ships text-only, so select-projector.sh finds no projector beside it
+qwen38-2b-uncensored	tool-selection	experimental	-	the tool category of remote/run-quality-suite.py grades the row unaided and moves it off unmeasured
+qwen38-2b-uncensored	guarded-tool-execution	unsupported	evidence/model-admission/vision-and-tool-sweep.md	tool-08 carried the injected city into the call on every measured arm; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated
+qwen38-2b-uncensored	long-context	experimental	-	the row enters at 8192 allocation with no filled depth; remote/probe-depth-wedge.sh measures it
+qwen38-2b-uncensored	context-checkpoints	unsupported	-	the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it
+qwen35-2b-hauhau	text-chat	experimental	evidence/model-admission/uncensored-roster.md	one strict Vulkan load admits the row; remote/run-quality-roster.sh grades it
+qwen35-2b-hauhau	vision	unsupported	-	the checkpoint ships text-only, so select-projector.sh finds no projector beside it
+qwen35-2b-hauhau	tool-selection	experimental	-	the tool category of remote/run-quality-suite.py grades the row unaided and moves it off unmeasured
+qwen35-2b-hauhau	guarded-tool-execution	unsupported	evidence/model-admission/vision-and-tool-sweep.md	tool-08 carried the injected city into the call on every measured arm; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated
+qwen35-2b-hauhau	long-context	experimental	-	the row enters at 8192 allocation with no filled depth; remote/probe-depth-wedge.sh measures it
+qwen35-2b-hauhau	context-checkpoints	unsupported	-	the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it
+qwen35-2b-unredacted	text-chat	experimental	evidence/model-admission/uncensored-roster.md	one strict Vulkan load admits the row; remote/run-quality-roster.sh grades it
+qwen35-2b-unredacted	vision	unsupported	-	the checkpoint ships text-only, so select-projector.sh finds no projector beside it
+qwen35-2b-unredacted	tool-selection	experimental	-	the tool category of remote/run-quality-suite.py grades the row unaided and moves it off unmeasured
+qwen35-2b-unredacted	guarded-tool-execution	unsupported	evidence/model-admission/vision-and-tool-sweep.md	tool-08 carried the injected city into the call on every measured arm; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated
+qwen35-2b-unredacted	long-context	experimental	-	the row enters at 8192 allocation with no filled depth; remote/probe-depth-wedge.sh measures it
+qwen35-2b-unredacted	context-checkpoints	unsupported	-	the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it
+qwen35-2b-heretic	text-chat	experimental	evidence/model-admission/uncensored-roster.md	one strict Vulkan load admits the row; remote/run-quality-roster.sh grades it
+qwen35-2b-heretic	vision	unsupported	-	the checkpoint ships text-only, so select-projector.sh finds no projector beside it
+qwen35-2b-heretic	tool-selection	experimental	-	the tool category of remote/run-quality-suite.py grades the row unaided and moves it off unmeasured
+qwen35-2b-heretic	guarded-tool-execution	unsupported	evidence/model-admission/vision-and-tool-sweep.md	tool-08 carried the injected city into the call on every measured arm; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated
+qwen35-2b-heretic	long-context	experimental	-	the row enters at 8192 allocation with no filled depth; remote/probe-depth-wedge.sh measures it
+qwen35-2b-heretic	context-checkpoints	unsupported	-	the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it
+qwen35-08b-unsloth-unc	text-chat	experimental	evidence/model-admission/uncensored-roster.md	one strict Vulkan load admits the row; remote/run-quality-roster.sh grades it
+qwen35-08b-unsloth-unc	vision	unsupported	-	the checkpoint ships text-only, so select-projector.sh finds no projector beside it
+qwen35-08b-unsloth-unc	tool-selection	experimental	-	the tool category of remote/run-quality-suite.py grades the row unaided and moves it off unmeasured
+qwen35-08b-unsloth-unc	guarded-tool-execution	unsupported	evidence/model-admission/vision-and-tool-sweep.md	tool-08 carried the injected city into the call on every measured arm; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated
+qwen35-08b-unsloth-unc	long-context	experimental	-	the row enters at 8192 allocation with no filled depth; remote/probe-depth-wedge.sh measures it
+qwen35-08b-unsloth-unc	context-checkpoints	unsupported	-	the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it
+qwenseer-2b	text-chat	experimental	evidence/model-admission/uncensored-roster.md	one strict Vulkan load admits the row; remote/run-quality-roster.sh grades it
+qwenseer-2b	vision	unsupported	-	the checkpoint ships text-only, so select-projector.sh finds no projector beside it
+qwenseer-2b	tool-selection	experimental	-	the tool category of remote/run-quality-suite.py grades the row unaided and moves it off unmeasured
+qwenseer-2b	guarded-tool-execution	unsupported	evidence/model-admission/vision-and-tool-sweep.md	tool-08 carried the injected city into the call on every measured arm; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated
+qwenseer-2b	long-context	experimental	-	the row enters at 8192 allocation with no filled depth; remote/probe-depth-wedge.sh measures it
+qwenseer-2b	context-checkpoints	unsupported	-	the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it
+nanbeige42-3b	text-chat	unsupported	evidence/quarantine/nanbeige42-3b.md	model scope quarantine removes the checkpoint from every launch path; QWEN_ROUTER_INCLUDE_QUARANTINE exposes it on loopback for research
+nanbeige42-3b	vision	unsupported	-	the checkpoint ships text-only, so select-projector.sh finds no projector beside it
+nanbeige42-3b	tool-selection	unsupported	evidence/quarantine/nanbeige42-3b.md	model scope quarantine removes the checkpoint before any graded arm runs
+nanbeige42-3b	guarded-tool-execution	unsupported	evidence/model-admission/vision-and-tool-sweep.md	every registry row reads refused, and model scope quarantine removes this one from the launch path besides
+nanbeige42-3b	long-context	unsupported	evidence/quarantine/nanbeige42-3b.md	the row carries no validated safe tuple, which is the quarantine reason itself
+nanbeige42-3b	context-checkpoints	unsupported	-	the row sits outside remote/ctx-checkpoints.tsv and serves at 0
+nanbeige42-3b	quarantine	unstable	evidence/quarantine/nanbeige42-3b.md	model scope, runtime mode any, reason no-validated-safe-tuple
+ministral3-3b	text-chat	unsupported	evidence/quarantine/ministral3-3b.md	model scope quarantine removes the checkpoint from router-child launches; QWEN_ROUTER_INCLUDE_QUARANTINE exposes it on loopback for research
+ministral3-3b	vision	unsupported	evidence/quarantine/ministral3-3b.md	the row names a required projector and model scope quarantine removes it before a projector loads
+ministral3-3b	tool-selection	unsupported	evidence/quarantine/ministral3-3b.md	model scope quarantine removes the checkpoint before any graded arm runs
+ministral3-3b	guarded-tool-execution	unsupported	evidence/model-admission/vision-and-tool-sweep.md	every registry row reads refused, and model scope quarantine removes this one from the router path besides
+ministral3-3b	long-context	unsupported	evidence/quarantine/ministral3-3b.md	the graph assert abort ends the load before a depth arm reaches a filled cache
+ministral3-3b	context-checkpoints	unsupported	-	the row sits outside remote/ctx-checkpoints.tsv and serves at 0
+ministral3-3b	quarantine	unstable	evidence/quarantine/ministral3-3b.md	model scope, runtime mode router-child, reason graph-assert-abort
+qwen38-2b-distill+qwen35-08b-draft	draft-pair-speculation	experimental	evidence/draft-pairs/README.md	the pairing serves through its own picker section at spec_draft_n_max 2; remote/measure-draft-pair.sh measures it against a same-session control of the target alone
+qwen38-4b-distill+qwen35-08b-draft	draft-pair-speculation	experimental	evidence/draft-pairs/README.md	the pairing serves through its own picker section at spec_draft_n_max 2; remote/measure-draft-pair.sh measures it against a same-session control of the target alone
+web-balanced	web-search	unsupported	evidence/web-provider-contract.md	execution_policy refused emits no MCP configuration under every setting; a validator-gated row under QWEN_WEB_AUTHORIZER_READY arms the lane
+web-compact	web-search	unsupported	evidence/web-provider-contract.md	execution_policy refused emits no MCP configuration under every setting; a validator-gated row under QWEN_WEB_AUTHORIZER_READY arms the lane
+web-fast-vl	web-search	unsupported	evidence/web-provider-contract.md	execution_policy refused emits no MCP configuration under every setting; a validator-gated row under QWEN_WEB_AUTHORIZER_READY arms the lane
+web-lookup	web-search	unsupported	evidence/web-provider-contract.md	execution_policy refused emits no MCP configuration under every setting; a ui-mediated row emits a section the page retrieves through
+web-open	web-search	unsupported	evidence/web-provider-contract.md	execution_policy refused emits no MCP configuration under every setting; a validator-gated row under QWEN_WEB_AUTHORIZER_READY arms the lane
+web-reader	web-search	unsupported	evidence/web-provider-contract.md	execution_policy refused emits no MCP configuration under every setting; a ui-mediated row emits a section the page retrieves through
+web-sovereign	web-search	unsupported	evidence/web-provider-contract.md	execution_policy refused emits no MCP configuration under every setting; the row names the qwen-yacy category of the local SearXNG instance
+web-vision	web-search	unsupported	evidence/web-provider-contract.md	execution_policy refused emits no MCP configuration under every setting; a ui-mediated row emits a section the page retrieves through
+image-sdxs-512-a	image-generation	candidate	evidence/image-appliance/served-turn-admission/README.md	validator-gated: one approved generation ran through the router and the served page, 40 accepted rows and one observed
+image-sdxs-512-a	image-review	candidate	evidence/image-appliance/paired-review-admission/	review_model lfm25-vl-16b; the paired launch fit one carve-out and the page parsed a vision review of its own artifact
+image-sdxs-512-b	image-generation	unsupported	-	execution_policy refused emits no image server under every setting
+image-sdxs-512-b	image-review	unsupported	-	review_model reads -; the RADV RAVEN2 residency probe for a pairing runs on the appliance alone
+image-sd15-lcm-a	image-generation	unsupported	-	execution_policy refused emits no image server under every setting
+image-sd15-lcm-a	image-review	unsupported	-	review_model reads -; the RADV RAVEN2 residency probe for a pairing runs on the appliance alone
+image-sd15-base-a	image-generation	unsupported	-	execution_policy refused emits no image server under every setting
+image-sd15-base-a	image-review	unsupported	-	review_model reads -; the RADV RAVEN2 residency probe for a pairing runs on the appliance alone
+image-sd-turbo-a	image-generation	unsupported	-	execution_policy refused emits no image server under every setting
+image-sd-turbo-a	image-review	unsupported	-	review_model reads -; the RADV RAVEN2 residency probe for a pairing runs on the appliance alone
