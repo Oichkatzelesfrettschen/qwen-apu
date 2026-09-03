@@ -1,0 +1,48 @@
+runtime_tree=verified git_head=34de93f10ff439b86ae17e084051a994d078c74a payload=6a9a7bc95671deb8f2efc7872f1598367aad46723140de48292c8f6c04aace52 files=299
+runtime_tree=verified git_head=34de93f10ff439b86ae17e084051a994d078c74a payload=6a9a7bc95671deb8f2efc7872f1598367aad46723140de48292c8f6c04aace52 files=299
+runtime_tree=verified git_head=34de93f10ff439b86ae17e084051a994d078c74a payload=6a9a7bc95671deb8f2efc7872f1598367aad46723140de48292c8f6c04aace52 files=299
+started tmux_socket=qwen-runtime tmux_session=qwen-webui profile=diagnostic host=127.0.0.1 port=8080 context=24576 latency_mode=observe model=/proc/3643096/fd/7 server=$HOME/src/llama.cpp-census-v5/build-raven2-vulkan-census/bin/llama-server
+speculation spec_type=off draft_n_max=default draft_p_min=default draft_backend_sampling=0 backend_sampling=0
+cache cache_type_k=q8_0 cache_type_v=q4_0 flash_attention=on override_context_ceiling=registry
+session reported failure
+state=failed reason=monitor_exited utc=2026-09-02T04:36:05Z
+RMS_NORM_MUL RMS_NORM(256,2,2,1): 6 x 674.86 us = 4049.16 us
+RMS_NORM_MUL RMS_NORM(256,8,2,1): 6 x 482.286 us = 2893.72 us
+ROPE: 12 x 469.873 us = 5638.48 us
+SCALE: 36 x 317.987 us = 11447.6 us
+SET_ROWS: 12 x 468.306 us = 5619.68 us
+SIGMOID: 24 x 357.245 us = 8573.88 us
+SILU: 18 x 327.377 us = 5892.8 us
+SOFTPLUS: 18 x 249.057 us = 4483.04 us
+SSM_CONV_SILU SSM_CONV: 18 x 275.475 us = 4958.56 us
+Total time: 481447 us.
+0.03.289.095 I cmn  common_conte: the context does not support partial sequence removal
+0.03.296.369 I srv    load_model: speculative decoding will use checkpoints
+0.03.296.566 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 24576, kv_unified = 'false'
+0.03.296.586 I spec common_specu: no implementations specified for speculative decoding
+0.03.296.601 I slot   load_model: id  0 | task -1 | new slot, n_ctx = 24576
+0.03.296.643 I srv    load_model: prompt cache is disabled - use `--cache-ram N` to enable it
+0.03.296.658 I srv    load_model: for more info see https://github.com/ggml-org/llama.cpp/pull/16391
+0.03.296.673 I srv    load_model: context checkpoints enabled, max = 2, min spacing = 8192
+0.03.296.704 W srv          init: --cache-idle-slots requires --cache-ram, disabling
+0.03.304.689 I srv          init: init: chat template, example_format: '<|im_start|>system
+You are a helpful assistant<|im_end|>
+<|im_start|>user
+Hello<|im_end|>
+<|im_start|>assistant
+Hi there<|im_end|>
+<|im_start|>user
+How are you?<|im_end|>
+<|im_start|>assistant
+<think>
+'
+0.03.305.702 I srv          init: init: chat template, thinking = 1
+0.03.305.738 I srv  llama_server: model loaded
+0.03.305.751 I srv  llama_server: listening on http://127.0.0.1:8080
+0.03.305.763 W srv  llama_server: NOTICE: server default port will be changed to :9931 in a future release
+0.03.305.773 W srv  llama_server:         ref: https://github.com/ggml-org/llama.cpp/pull/26508
+0.03.305.847 I srv  update_slots: all slots are idle
+0.03.481.820 I srv    operator(): operator(): cleaning up before exit...
+0.03.482.277 I common_memory_breakdown_print: | memory breakdown [MiB]               | total    free    self   model   context   compute    unaccounted |
+0.03.482.304 I common_memory_breakdown_print: |   - Vulkan0 (Graphics (RADV RAVEN2)) | 17043 = 15481 + (1347 =  1204 +     136 +       6) +         213 |
+0.03.482.316 I common_memory_breakdown_print: |   - Host                             |                     2 =     0 +       0 +       2                |

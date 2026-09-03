@@ -1,0 +1,58 @@
+part	attribute	rated	measured_or_observed	evidence_class	source
+cpu	model	AMD Athlon Silver 3050U with Radeon Graphics, socket FP5	AMD Athlon Silver 3050U with Radeon Graphics	observed	dmidecode -t processor; lscpu
+cpu	microarchitecture	Zen+ (family 23, model 24, stepping 1)	family 23, model 24, stepping 1	observed	lscpu; /proc/cpuinfo
+cpu	cores_threads	2 cores, 2 threads	2 cores, 1 thread per core, SMT disabled	observed	dmidecode -t processor; lscpu
+cpu	base_clock	2300 MHz	2300000 kHz cpufreq table ceiling	observed	dmidecode Current Speed; cpuinfo_max_freq
+cpu	boost_clock	3200 MHz	3169.362 MHz and 2554.754 MHz on the two cores in one read	observed	dmidecode Max Speed; /proc/cpuinfo cpu MHz
+cpu	cpufreq_range	-	1400000 to 2300000 kHz, boost enabled, 135 percent scaling MHz	observed	cpuinfo_min_freq, cpuinfo_max_freq; lscpu
+cpu	scaling_driver	-	acpi-cpufreq with the schedutil governor	observed	scaling_driver, scaling_governor
+cpu	l1_cache	-	64 KiB L1d and 128 KiB L1i over 2 instances	observed	lscpu
+cpu	l2_cache	-	1 MiB over 2 instances, 512 KiB per core	observed	lscpu; /proc/cpuinfo cache size
+cpu	l3_cache	-	4 MiB, 1 instance	observed	lscpu
+cpu	vector_isa	-	AVX2, FMA, F16C, SHA_NI	observed	lscpu Flags
+cpu	tdp_ctdp	-	not read	not read	powercap zones carry no constraint_0_power_limit_uw; amdgpu hwmon carries power1_label alone; SMBIOS type 39 absent
+cpu	host_read_bandwidth	-	7.97 GB/s on one thread, 15.44 GB/s on two	measured	evidence/measurement-state-and-memory-clock.md
+gpu	device	Raven2 iGPU, PCI 1002:15d8 rev cd, subsystem 103C:879E	AMD Radeon Graphics (RADV RAVEN2)	observed	lspci -nn; vulkaninfo --summary
+gpu	isa_target	gfx902 to the HSA runtime, gfx909 to LLVM	gfx902:xnack+ loads; gfx900, gfx902, gfx909, gfx90c assemble to identical bytes	rated	hp14-raven2-gpu/docs/raven2-capability-decomposition.md
+gpu	compute_units	3 present, 2 active, one fused off	active_cu_number 2, CU per SH 3	rated	hp14-raven2-gpu/docs/raven2-capability-decomposition.md
+gpu	simd_lanes	4 SIMD16 per CU, 128 lanes total	-	rated	hp14-raven2-gpu/docs/raven2-capability-decomposition.md
+gpu	wavefront	64, fixed	minSubgroupSize equals maxSubgroupSize equals 64	rated	hp14-raven2-gpu/docs/raven2-capability-decomposition.md
+gpu	occupancy	10 waves per SIMD, 2560 work-items per CU	-	rated	hp14-raven2-gpu/docs/raven2-capability-decomposition.md
+gpu	lds	64 KiB per CU	maxComputeSharedMemorySize 65536	rated	hp14-raven2-gpu/docs/raven2-capability-decomposition.md
+gpu	caches	16 KiB L1 per CU, 1 MiB L2	-	rated	hp14-raven2-gpu/docs/raven2-capability-decomposition.md
+gpu	fp32_ceiling	281.6 GFLOPS	-	derived	128 lanes x 2 flops x 1.1 GHz
+gpu	fp16_packed_ceiling	563.2 GFLOPS	-	derived	the FP32 ceiling doubled by v_pk_fma_f16
+gpu	fp64_rate	1/16 rate, about 17.6 GFLOPS	-	derived	the FP32 ceiling divided by 16
+gpu	engine_clock_table	200, 400, 1100 MHz	level 1 starred on an idle machine	observed	pp_dpm_sclk
+gpu	engine_clock_idle	-	400 MHz	observed	hwmon freq1_input, sclk label
+gpu	engine_clock_delivered	1100 MHz peak	1100 MHz on 107 of 107 busy rows under manual	measured	evidence/raven2-vulkan-kernel-census/dpm-authority/20260902T2002Z-fclk-level3
+gpu	fabric_clock_table	0, 400, 933, 1067 MHz	level 2 starred on an idle machine	observed	pp_dpm_mclk
+gpu	fabric_clock_delivered	1067 MHz top step	933 MHz on 137 of 145 rows, 1067 MHz on 8, under a level-3 manual write	measured	evidence/raven2-vulkan-kernel-census/dpm-authority/20260902T2002Z-fclk-level3
+gpu	fabric_clock_forced	-	400 MHz under high and profile_peak, against 933 MHz under auto	measured	evidence/raven2-vulkan-kernel-census/dpm-authority/20260902T1822Z-actual
+gpu	fabric_clock_surface	-	pp_dpm_fclk reads empty; the fabric table is on pp_dpm_mclk	observed	pp_dpm_fclk, pp_dpm_mclk
+gpu	vram_carveout	2048 MiB	2147483648 bytes	observed	mem_info_vram_total
+gpu	gtt	-	15723495424 bytes, 14.64 GiB	observed	mem_info_gtt_total
+gpu	integer_dot_product	VK_KHR_shader_integer_dot_product advertised	0 of 30 accelerated bits; no _q8_1 pipeline in the deployed server	measured	evidence/tensor-type-execution-audit.md
+gpu	cooperative_matrix	-	VK_KHR_cooperative_matrix absent on RADV RAVEN2	rated	hp14-raven2-gpu/docs/raven2-capability-decomposition.md
+gpu	global_float_atomic_add	-	false on buffers, true on LDS	rated	hp14-raven2-gpu/docs/raven2-capability-decomposition.md
+gpu	driver	-	Mesa 26.2.1 RADV, device apiVersion 1.4.354	observed	vulkaninfo --summary
+gpu	achieved_streaming	34.13 GB/s memory peak	8.11 GB/s on the 4B Q4_K_M and 10.41 GB/s on the 2B, four-block means	measured	evidence/decode-bound-analysis.md
+memory	module	2 x 16 GiB Crucial CT16G4SFD8213.C16FAD SODIMM, dual-rank, 1.2 V	the same part number in both slots	observed	dmidecode -t memory
+memory	spd_profile	DDR4-2133, 15-15-15-36	both SPD EEPROMs CRC-valid at that profile	rated	evidence/measurement-state-and-memory-clock.md
+memory	trained_speed	2133 MT/s	2133.33 MT/s, both UMC 0x50200 reading 0x00000520	measured	evidence/measurement-state-and-memory-clock.md
+memory	trained_timings	15-15-15-36, tRP 15, tRC 51	the same values from both channels at 0x50204 and 0x50208	measured	evidence/measurement-state-and-memory-clock.md
+memory	channels	2 channels, 64 bits each	both populated as P0 CHANNEL A and P0 CHANNEL B	observed	dmidecode -t memory
+memory	peak_bandwidth	34.13 GB/s	-	derived	2 x 8 bytes x 2133.33 MT/s
+memory	smbios_configured_speed	2133 MT/s by SPD	SMBIOS prints Configured Memory Speed 2400 MT/s, above SPD and above the trained rate	observed	dmidecode -t memory; evidence/measurement-state-and-memory-clock.md
+memory	installed_capacity	32 GB array maximum over 2 devices	32 GiB installed	observed	dmidecode -t memory
+memory	host_visible	-	30709952 kB, 29.29 GiB, after the 2048 MiB carve-out and firmware reserves	observed	/proc/meminfo MemTotal
+platform	system	HP Laptop 14-dk1xxx, family 103C_5335KV HP Notebook	the same strings	observed	dmidecode -t system
+platform	board	HP 879E, version 84.53	the same strings	observed	dmidecode -t baseboard
+platform	firmware	AMI F.69 dated 2023-04-17, BIOS revision 15.69, firmware revision 84.53, 16 MB ROM	the same strings	observed	dmidecode -t bios
+platform	kernel	-	7.0.0-29-generic x86_64	observed	uname -r
+platform	battery_capacity	3355000 uAh design at 11.34 V minimum design voltage	charge_full equals charge_full_design at 3355000 uAh	observed	/sys/class/power_supply/BAT0
+platform	battery_energy	38.0 Wh	-	derived	3.355 Ah x 11.34 V
+platform	adapter	-	not read	not read	SMBIOS type 39 absent; /sys/class/power_supply/AC exposes type alone
+platform	package_power	-	not read	not read	amdgpu hwmon carries power1_label PPT with no power1_average or power1_cap; powercap zones carry no constraint limit
+platform	thermal_sensors	-	four sensors carry a temperature: k10temp Tctl, amdgpu edge, acpitz, nvme; hp carries pwm1_enable and BAT0 carries current and voltage	observed	ls /sys/class/hwmon/*/name and each temp*_input
+platform	sustained_temperature	-	Tctl 87 C at the end of a five-minute two-core load; amdgpu edge peaks at 85 C across the manual arms	measured	evidence/raven2-vulkan-kernel-census/dpm-authority/README.md, experiments 2 and 4

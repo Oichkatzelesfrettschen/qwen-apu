@@ -15,6 +15,7 @@ trap 'rm -rf "$work_directory"' EXIT HUP INT TERM
 
 builder=$script_directory/build-deployment-bundle.sh
 activator=$script_directory/activate-deployment-bundle.sh
+verifier=$script_directory/verify-deployment-bundle.sh
 deployment_root=$work_directory/deployments
 mkdir -p "$deployment_root"
 checks=0
@@ -665,6 +666,19 @@ if [ "$(sha256sum "$outside_directory/sentinel" | cut -d ' ' -f 1)" != "$sentine
     exit 1
 fi
 rm -f "$lock_path"
+: >"$outside_directory/private-leaf"
+chmod 0600 "$outside_directory/private-leaf"
+ln "$outside_directory/private-leaf" "$lock_path"
+if "$activator" bundle-third "$deployment_root" >/dev/null 2>"$work_directory/lock-hardlink.stderr" || \
+    "$resolver" "$deployment_root" >/dev/null 2>&1; then
+    printf 'a hard-linked private leaf at the lock path was accepted\n' >&2
+    exit 1
+fi
+if ! grep -q 'hard links' "$work_directory/lock-hardlink.stderr"; then
+    printf 'the hard-link refusal lost its reason\n' >&2
+    exit 1
+fi
+rm -f "$lock_path"
 mkdir "$lock_path"
 if "$activator" bundle-third "$deployment_root" >/dev/null 2>&1 || \
     "$resolver" "$deployment_root" >/dev/null 2>&1; then
@@ -811,10 +825,12 @@ report suffix_ambiguity_refused accepted
 
 # A diagnostic build declares serving_eligible no in its artifact manifest
 # and is refused at assembly; the same manifest planted into an assembled
-# bundle with consistent digests is refused at activation.
+# bundle with consistent digests is refused at activation. The refusal names
+# the instrumentation rather than the eligibility spelling, because an
+# instrumentation row refuses the bundle however that row reads.
 diagnostic_manifest=$work_directory/manifest-diagnostic.tsv
 {
-    printf 'instrumentation\tpipeline-census-v1\nbuild_role\tdiagnostic\nserving_eligible\tno\n'
+    printf 'instrumentation\tpipeline-census-v3\nbuild_role\tdiagnostic\nserving_eligible\tno\n'
     cat "$forced_manifest"
 } >"$diagnostic_manifest"
 if "$builder" bundle-diagnostic "$forced_server" "$diagnostic_manifest" \
@@ -823,31 +839,142 @@ if "$builder" bundle-diagnostic "$forced_server" "$diagnostic_manifest" \
     printf 'a diagnostic build assembled into a bundle\n' >&2
     exit 1
 fi
-if ! grep -q 'serving_eligible no (instrumentation pipeline-census-v1)' \
+if ! grep -q 'names instrumentation pipeline-census-v3; a bundle carries serving builds alone' \
     "$work_directory/diagnostic.stderr"; then
     printf 'the diagnostic refusal lost its declaration\n' >&2
     exit 1
 fi
+# A manifest carrying serving_eligible twice, yes ahead of no, is refused on
+# cardinality rather than read by its first row.
+duplicate_manifest=$work_directory/manifest-duplicate-eligibility.tsv
+{
+    printf 'serving_eligible\tyes\n'
+    cat "$diagnostic_manifest"
+} >"$duplicate_manifest"
+if "$builder" bundle-duplicate "$forced_server" "$duplicate_manifest" \
+    "$zero_ledger" "$deployment_root" \
+    >/dev/null 2>"$work_directory/duplicate-eligibility.stderr"; then
+    printf 'a manifest with two serving_eligible rows assembled\n' >&2
+    exit 1
+fi
+if ! grep -q 'serving_eligible rows' "$work_directory/duplicate-eligibility.stderr"; then
+    printf 'the duplicate eligibility refusal lost its reason\n' >&2
+    exit 1
+fi
+# A manifest reaches a bundle directory by routes the builder never ran, so
+# each eligibility refusal is exercised again against an assembled bundle:
+# the manifest is copied in and its digest recomputed into bundle-manifest.tsv,
+# which leaves every other claim consistent and the eligibility grammar the
+# one thing the verification meets.
+plant_manifest() {
+    plant_bundle=$1
+    plant_source=$2
+    cp "$plant_source" "$deployment_root/$plant_bundle/artifact-manifest.tsv"
+    planted_digest=$(sha256sum \
+        "$deployment_root/$plant_bundle/artifact-manifest.tsv" | cut -d ' ' -f 1)
+    awk -F'\t' -v OFS='\t' -v digest="$planted_digest" '
+        $1 == "artifact-manifest.tsv" { $2 = digest }
+        { print }' "$deployment_root/$plant_bundle/bundle-manifest.tsv" \
+        >"$deployment_root/$plant_bundle/bundle-manifest.tsv.new"
+    mv "$deployment_root/$plant_bundle/bundle-manifest.tsv.new" \
+        "$deployment_root/$plant_bundle/bundle-manifest.tsv"
+}
 "$activator" bundle-natural "$deployment_root" >/dev/null
-cp "$diagnostic_manifest" "$deployment_root/bundle-third/artifact-manifest.tsv"
-diagnostic_digest=$(sha256sum "$deployment_root/bundle-third/artifact-manifest.tsv" |
-    cut -d ' ' -f 1)
-awk -F'\t' -v OFS='\t' -v digest="$diagnostic_digest" '
-    $1 == "artifact-manifest.tsv" { $2 = digest }
-    { print }' "$deployment_root/bundle-third/bundle-manifest.tsv" \
-    >"$deployment_root/bundle-third/bundle-manifest.tsv.new"
-mv "$deployment_root/bundle-third/bundle-manifest.tsv.new" \
-    "$deployment_root/bundle-third/bundle-manifest.tsv"
+plant_manifest bundle-third "$diagnostic_manifest"
 if "$activator" bundle-third "$deployment_root" \
     >/dev/null 2>"$work_directory/diagnostic-activate.stderr"; then
     printf 'a diagnostic manifest activated\n' >&2
     exit 1
 fi
-if ! grep -q 'a diagnostic build stays inactive' \
+if ! grep -q 'names instrumentation pipeline-census-v3; a bundle carries serving builds alone' \
     "$work_directory/diagnostic-activate.stderr"; then
     printf 'the diagnostic activation refusal lost its reason\n' >&2
     exit 1
 fi
 report diagnostic_build_refused accepted
+
+# A present serving_eligible row carrying an empty value declares nothing and
+# is read as its own spelling rather than as the absent legacy declaration,
+# at assembly and against an assembled bundle.
+empty_eligibility_manifest=$work_directory/manifest-empty-eligibility.tsv
+{
+    printf 'serving_eligible\t\n'
+    cat "$forced_manifest"
+} >"$empty_eligibility_manifest"
+if "$builder" bundle-empty-eligibility "$forced_server" \
+    "$empty_eligibility_manifest" "$zero_ledger" "$deployment_root" \
+    >/dev/null 2>"$work_directory/empty-eligibility.stderr"; then
+    printf 'an empty serving_eligible value assembled into a bundle\n' >&2
+    exit 1
+fi
+if ! grep -q 'declares serving_eligible <empty>; a bundle carries serving builds alone' \
+    "$work_directory/empty-eligibility.stderr"; then
+    printf 'the empty eligibility refusal lost its observed value\n' >&2
+    exit 1
+fi
+plant_manifest bundle-third "$empty_eligibility_manifest"
+if "$activator" bundle-third "$deployment_root" \
+    >/dev/null 2>"$work_directory/empty-eligibility-activate.stderr"; then
+    printf 'an empty serving_eligible value activated\n' >&2
+    exit 1
+fi
+if ! grep -q 'declares serving_eligible <empty>; a bundle carries serving builds alone' \
+    "$work_directory/empty-eligibility-activate.stderr"; then
+    printf 'the empty eligibility activation refusal lost its observed value\n' >&2
+    exit 1
+fi
+report empty_eligibility_refused accepted
+
+# Deleting the eligibility row from a diagnostic manifest leaves the
+# instrumentation it was built with, and that row alone refuses the bundle at
+# assembly and at verification.
+instrumentation_only_manifest=$work_directory/manifest-instrumentation-only.tsv
+{
+    printf 'instrumentation\tpipeline-census-v3\nbuild_role\tdiagnostic\n'
+    cat "$forced_manifest"
+} >"$instrumentation_only_manifest"
+if "$builder" bundle-instrumentation "$forced_server" \
+    "$instrumentation_only_manifest" "$zero_ledger" "$deployment_root" \
+    >/dev/null 2>"$work_directory/instrumentation-only.stderr"; then
+    printf 'an instrumentation row with no eligibility row assembled\n' >&2
+    exit 1
+fi
+if ! grep -q 'names instrumentation pipeline-census-v3; a bundle carries serving builds alone' \
+    "$work_directory/instrumentation-only.stderr"; then
+    printf 'the instrumentation-only refusal lost its instrumentation\n' >&2
+    exit 1
+fi
+plant_manifest bundle-third "$instrumentation_only_manifest"
+if "$verifier" "$deployment_root" bundle-third \
+    >/dev/null 2>"$work_directory/instrumentation-only-verify.stderr"; then
+    printf 'an instrumentation row with no eligibility row verified\n' >&2
+    exit 1
+fi
+if ! grep -q 'names instrumentation pipeline-census-v3; a bundle carries serving builds alone' \
+    "$work_directory/instrumentation-only-verify.stderr"; then
+    printf 'the instrumentation-only verification refusal lost its instrumentation\n' >&2
+    exit 1
+fi
+report instrumentation_without_eligibility_refused accepted
+
+# An instrumented build that also declares itself servable is refused on the
+# instrumentation, so the eligibility spelling never admits the diagnostic.
+instrumented_servable_manifest=$work_directory/manifest-instrumented-servable.tsv
+{
+    printf 'instrumentation\tpipeline-census-v3\nserving_eligible\tyes\n'
+    cat "$forced_manifest"
+} >"$instrumented_servable_manifest"
+if "$builder" bundle-instrumented-servable "$forced_server" \
+    "$instrumented_servable_manifest" "$zero_ledger" "$deployment_root" \
+    >/dev/null 2>"$work_directory/instrumented-servable.stderr"; then
+    printf 'an instrumented manifest declaring serving_eligible yes assembled\n' >&2
+    exit 1
+fi
+if ! grep -q 'names instrumentation pipeline-census-v3; a bundle carries serving builds alone' \
+    "$work_directory/instrumented-servable.stderr"; then
+    printf 'the instrumented servable refusal lost its instrumentation\n' >&2
+    exit 1
+fi
+report instrumented_servable_refused accepted
 
 printf 'deployment_bundle=accepted checks=%s\n' "$checks"
