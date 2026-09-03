@@ -914,10 +914,15 @@ async function brokerSession(signal) {
 }
 
 async function postGrant(fields, secret, signal) {
+  // The bearer joins the session secret on the signing route because the
+  // broker requires it under the LAN exposure opt-in and ignores it on the
+  // loopback default, so one request shape serves both listeners.
   const response = await fetch(`${brokerOrigin()}/grant`, {
     method: 'POST',
     mode: 'cors',
-    headers: { 'Content-Type': 'application/json', [BROKER_SESSION_HEADER]: secret },
+    headers: authHeaders({
+      'Content-Type': 'application/json', [BROKER_SESSION_HEADER]: secret
+    }),
     body: JSON.stringify(fields),
     signal
   });
@@ -1219,10 +1224,13 @@ function renderImageApprovalFields(fields) {
 }
 
 async function postImageGrant(fields, secret, signal) {
+  // The bearer joins the session secret for the reason postGrant() sends it.
   const response = await fetch(`${brokerOrigin()}/grant-image`, {
     method: 'POST',
     mode: 'cors',
-    headers: { 'Content-Type': 'application/json', [BROKER_SESSION_HEADER]: secret },
+    headers: authHeaders({
+      'Content-Type': 'application/json', [BROKER_SESSION_HEADER]: secret
+    }),
     body: JSON.stringify(fields),
     signal
   });
