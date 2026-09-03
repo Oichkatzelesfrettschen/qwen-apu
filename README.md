@@ -346,6 +346,15 @@ unauthenticated LAN endpoint grants every client on the network the server
 process's file-reading capability. The startup summary lists real network
 interfaces; libvirt and Docker bridge addresses are labeled as such.
 
+`remote/qwen-lan-launch.sh` is the LAN bring-up in one command: it reads the
+address from the default route, serves the router on port 42069 with the
+approval broker and the artifact listener on the two ports above it, and
+prints the `<hostname>.local` name to open. Its default removes the Web UI
+bearer, so every peer on the network can chat and approve a search or a
+generation, while the approval dialog and the single-use grant stay the
+execution gate; `QWEN_WEB_LAN_OPEN=0` requires the bearer on every listener
+instead. `remote/qwen-teardown.sh` ends it.
+
 ## Lifecycle
 
 `remote/qwen-launch.sh` starts the appliance and returns once `/health`

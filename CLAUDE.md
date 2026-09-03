@@ -1281,6 +1281,12 @@ QWEN_BIND_HOST=0.0.0.0 \
 QWEN_ROUTER=1 QWEN_WEB_AUTHORIZER_READY=1 \
 QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
     ~/qwen-laptop-setup/remote/qwen-launch.sh low-async
+# The LAN bring-up states that whole environment once. It reads the address
+# from the default route, mints the broker signing key on the first run,
+# tears down a running session first, reads the image parameters from
+# ~/qwen-webui-state/image-parameters.json, and prints the name to open.
+# QWEN_WEB_LAN_OPEN=0 serves the same listeners with the bearer required.
+~/qwen-laptop-setup/remote/qwen-lan-launch.sh [low-async]
 ~/qwen-laptop-setup/remote/qwen-teardown.sh
 ~/qwen-laptop-setup/remote/qwen-webui-control.sh status
 

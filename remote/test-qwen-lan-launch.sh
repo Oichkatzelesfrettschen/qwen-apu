@@ -1,0 +1,235 @@
+#!/bin/sh
+set -eu
+
+# The LAN bring-up states the exposure environment once and hands it to
+# qwen-launch.sh. These checks run qwen-lan-launch.sh against recorders in
+# place of qwen-launch.sh and qwen-teardown.sh and read what each was handed:
+# the port, the derived address, the open opt-in, the minted signing key, and
+# the order in which a running session ends before the new one starts.
+
+if [ "$#" -ne 0 ]; then
+    printf 'usage: %s\n' "$0" >&2
+    exit 2
+fi
+
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+failures=0
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+
+report() {
+    printf '%s=%s\n' "$1" "$2"
+    [ "$2" = ok ] || failures=$((failures + 1))
+}
+
+harness=$work/harness
+mkdir -p "$harness/web-mcp"
+cp "$script_directory/qwen-lan-launch.sh" "$harness/qwen-lan-launch.sh"
+: >"$harness/web-mcp/server.py"
+
+# The launch recorder writes the environment it received and the session
+# record a real launch leaves behind, so the wrapper reads the name from the
+# same line the session writes.
+cat >"$harness/qwen-launch.sh" <<'EOF'
+#!/bin/sh
+set -eu
+{
+    printf 'profile=%s\n' "${1:-}"
+    env | grep '^QWEN_' | sort
+} >"$QWEN_TEST_LAUNCH_RECORD"
+mkdir -p "$QWEN_WEBUI_STATE_DIRECTORY"
+printf 'state=running server_pid=1 lan_exposure=1 lan_address=%s lan_name=%s lan_open=%s port=%s\n' \
+    "$QWEN_WEB_LAN_ADDRESS" "${QWEN_TEST_LAN_NAME:-}" "$QWEN_WEB_LAN_OPEN" "$QWEN_SERVER_PORT" \
+    >"$QWEN_WEBUI_STATE_DIRECTORY/session.status"
+exit "${QWEN_TEST_LAUNCH_STATUS:-0}"
+EOF
+cat >"$harness/qwen-teardown.sh" <<'EOF'
+#!/bin/sh
+set -eu
+printf 'teardown\n' >>"$QWEN_TEST_TEARDOWN_RECORD"
+rm -f "$QWEN_WEBUI_STATE_DIRECTORY/session.status"
+exit "${QWEN_TEST_TEARDOWN_STATUS:-0}"
+EOF
+cat >"$harness/probe-address" <<'EOF'
+#!/bin/sh
+printf '%s\n' "${QWEN_TEST_PROBE_ANSWER:-}"
+EOF
+chmod 755 "$harness/qwen-lan-launch.sh" "$harness/qwen-launch.sh" \
+    "$harness/qwen-teardown.sh" "$harness/probe-address"
+
+home=$work/home
+state=$home/qwen-webui-state
+mkdir -p "$state"
+printf '{}\n' >"$state/image-parameters.json"
+launch_record=$work/launch.record
+teardown_record=$work/teardown.record
+
+run_wrapper() {
+    rm -f "$launch_record"
+    HOME=$home \
+    QWEN_WEBUI_STATE_DIRECTORY=$state \
+    QWEN_TEST_LAUNCH_RECORD=$launch_record \
+    QWEN_TEST_TEARDOWN_RECORD=$teardown_record \
+    QWEN_TEST_LAN_NAME=laptop.local \
+    QWEN_LAN_ADDRESS_PROBE=$harness/probe-address \
+    QWEN_TEST_PROBE_ANSWER=${QWEN_TEST_PROBE_ANSWER-10.0.0.7} \
+        "$harness/qwen-lan-launch.sh" "$@"
+}
+
+recorded() {
+    grep -qx "$1" "$launch_record"
+}
+
+# Two positional arguments are a usage error.
+if run_wrapper low-async extra >"$work/usage.out" 2>"$work/usage.err"; then
+    report usage_refused fail
+else
+    [ "$?" -eq 2 ] && report usage_refused ok || report usage_refused fail
+fi
+
+# The first bring-up derives the address, mints the key, forwards the whole
+# exposure set, and prints the name from the session record.
+if run_wrapper >"$work/first.out" 2>"$work/first.err"; then
+    report first_launch_exit ok
+else
+    report first_launch_exit fail
+    cat "$work/first.err" >&2
+fi
+if recorded 'profile=low-async' &&
+    recorded 'QWEN_SERVER_PORT=42069' &&
+    recorded 'QWEN_WEB_LAN=1' &&
+    recorded 'QWEN_WEB_LAN_ADDRESS=10.0.0.7' &&
+    recorded 'QWEN_WEB_LAN_OPEN=1' &&
+    recorded 'QWEN_BIND_HOST=0.0.0.0' &&
+    recorded 'QWEN_ROUTER=1' &&
+    recorded 'QWEN_WEB_AUTHORIZER_READY=1' &&
+    recorded "QWEN_WEB_TOKEN_KEY_FILE=$home/qwen-web-token.key" &&
+    recorded "QWEN_WEB_MCP_SERVER=$harness/web-mcp/server.py" &&
+    recorded 'QWEN_WEB_PROVIDER=searxng' &&
+    recorded "QWEN_IMAGE_PROFILES_JSON=$state/image-parameters.json"; then
+    report exposure_environment_forwarded ok
+else
+    report exposure_environment_forwarded fail
+    cat "$launch_record" >&2
+fi
+if [ "$(stat -c %a "$home/qwen-web-token.key")" = 600 ] &&
+    [ "$(wc -c <"$home/qwen-web-token.key")" -eq 65 ] &&
+    grep -qx '[0-9a-f]\{64\}' "$home/qwen-web-token.key"; then
+    report signing_key_minted ok
+else
+    report signing_key_minted fail
+fi
+first_key=$(cat "$home/qwen-web-token.key")
+if grep -q '^prior_session=none$' "$work/first.out" &&
+    grep -q ' signing_key=minted ' "$work/first.out" &&
+    grep -q ' address_source=default-route ' "$work/first.out" &&
+    grep -qx 'open http://laptop.local:42069/ from any machine on this network' "$work/first.out" &&
+    grep -qx 'or http://10.0.0.7:42069/ by address while this lease holds' "$work/first.out" &&
+    [ ! -e "$teardown_record" ]; then
+    report first_launch_report ok
+else
+    report first_launch_report fail
+    cat "$work/first.out" >&2
+fi
+
+# The second bring-up finds the session running, tears it down first, and
+# reuses the key it minted.
+if run_wrapper paced-60 >"$work/second.out" 2>"$work/second.err"; then
+    report second_launch_exit ok
+else
+    report second_launch_exit fail
+    cat "$work/second.err" >&2
+fi
+if [ "$(cat "$home/qwen-web-token.key")" = "$first_key" ] &&
+    grep -q ' signing_key=present ' "$work/second.out" &&
+    grep -q '^prior_session=torn_down$' "$work/second.out" &&
+    [ "$(wc -l <"$teardown_record")" -eq 1 ] &&
+    recorded 'profile=paced-60'; then
+    report running_session_torn_down_first ok
+else
+    report running_session_torn_down_first fail
+    cat "$work/second.out" >&2
+fi
+
+# A teardown that leaves residue stops the bring-up before the launch.
+if QWEN_TEST_TEARDOWN_STATUS=1 run_wrapper >"$work/residue.out" 2>"$work/residue.err"; then
+    report teardown_residue_refused fail
+else
+    if [ "$?" -eq 1 ] && [ ! -e "$launch_record" ] &&
+        grep -q 'residue' "$work/residue.err"; then
+        report teardown_residue_refused ok
+    else
+        report teardown_residue_refused fail
+    fi
+fi
+rm -f "$state/session.status"
+
+# The caller's own address and the bearer mode reach the launch unchanged.
+if QWEN_WEB_LAN_ADDRESS=192.168.7.7 QWEN_WEB_LAN_OPEN=0 QWEN_SERVER_PORT=9000 \
+    run_wrapper >"$work/bearer.out" 2>"$work/bearer.err" &&
+    recorded 'QWEN_WEB_LAN_ADDRESS=192.168.7.7' &&
+    recorded 'QWEN_WEB_LAN_OPEN=0' &&
+    recorded 'QWEN_SERVER_PORT=9000' &&
+    grep -q ' address_source=caller ' "$work/bearer.out" &&
+    grep -q ' open=0 ' "$work/bearer.out"; then
+    report caller_address_and_bearer_mode ok
+else
+    report caller_address_and_bearer_mode fail
+    cat "$work/bearer.err" >&2
+fi
+rm -f "$state/session.status"
+
+# A machine with no default route names no address to serve.
+if QWEN_TEST_PROBE_ANSWER='' run_wrapper >"$work/noroute.out" 2>"$work/noroute.err"; then
+    report absent_route_refused fail
+else
+    if [ "$?" -eq 1 ] && [ ! -e "$launch_record" ] &&
+        grep -q 'no default route' "$work/noroute.err"; then
+        report absent_route_refused ok
+    else
+        report absent_route_refused fail
+    fi
+fi
+
+# The image parameters are a validated artifact the launch reads whole.
+if QWEN_IMAGE_PROFILES_JSON=$work/absent.json \
+    run_wrapper >"$work/params.out" 2>"$work/params.err"; then
+    report absent_parameters_refused fail
+else
+    if [ "$?" -eq 1 ] && [ ! -e "$launch_record" ] &&
+        grep -q 'QWEN_IMAGE_PROFILES_JSON names no readable file' "$work/params.err"; then
+        report absent_parameters_refused ok
+    else
+        report absent_parameters_refused fail
+    fi
+fi
+
+# A port with no room above it for the broker and artifact listeners, and a
+# non-numeric one, are argument errors.
+for bad_port in 65534 8x80 0; do
+    if QWEN_SERVER_PORT=$bad_port run_wrapper >/dev/null 2>"$work/port.err"; then
+        report "port_${bad_port}_refused" fail
+    else
+        [ "$?" -eq 2 ] && report "port_${bad_port}_refused" ok ||
+            report "port_${bad_port}_refused" fail
+    fi
+done
+
+# A symlinked key file is refused, since the key is read as a regular file.
+ln -s "$work/elsewhere" "$home/linked.key"
+if QWEN_WEB_TOKEN_KEY_FILE=$home/linked.key \
+    run_wrapper >/dev/null 2>"$work/symlink.err"; then
+    report symlinked_key_refused fail
+else
+    if [ "$?" -eq 1 ] && grep -q 'symlink' "$work/symlink.err"; then
+        report symlinked_key_refused ok
+    else
+        report symlinked_key_refused fail
+    fi
+fi
+
+if [ "$failures" -ne 0 ]; then
+    printf 'qwen_lan_launch=failed failures=%s\n' "$failures"
+    exit 1
+fi
+printf 'qwen_lan_launch=accepted\n'
