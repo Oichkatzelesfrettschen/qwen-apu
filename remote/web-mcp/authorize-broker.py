@@ -1045,6 +1045,13 @@ def run(argv):
     except KeyboardInterrupt:
         pass
     finally:
+        # The handlers raise, so a second terminating signal arriving while
+        # this block runs would unwind it before the unlink and leave the
+        # secret for the next launch to find, which is what qwen-teardown.sh
+        # reports as residue. Restoring the default disposition first makes
+        # the cleanup uninterruptible by the same means that started it.
+        for terminating_signal in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+            signal.signal(terminating_signal, signal.SIG_IGN)
         if service is not None:
             service.server_close()
         if os.path.lexists(secret_path):

@@ -51,7 +51,9 @@ refuse_web_lan_exposure() {
 # authorize-broker.py and image-service.py applies the identical rule, so one
 # address passes the launcher and both listeners; the second loopback address
 # 127.0.0.2 is admitted under it, which puts a served page at a non-loopback
-# origin in reach of a test on a host holding no LAN.
+# origin in reach of a test on a host holding no LAN. The IPv4-only character
+# class is what refuses ::1 here; an editor adding IPv6 support restores that
+# refusal explicitly, the way `exposed_host` states it against LOOPBACK_HOSTS.
 web_lan_address_is_literal() {
     case $1 in
         '' | *[!0-9.]* | 0.0.0.0 | 127.0.0.1) return 1 ;;
