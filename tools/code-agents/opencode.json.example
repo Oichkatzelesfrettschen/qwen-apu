@@ -1,0 +1,20 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "provider": {
+    "qwen-appliance": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Qwen APU appliance",
+      "options": {
+        "baseURL": "http://qwen-laptop:8080/v1",
+        "apiKey": "{env:QWEN_CODE_AGENT_KEY}"
+      },
+      "models": {
+        "qwen38-4b-distill": { "name": "Qwen3.8-4B Distill Q4_K_M" },
+        "qwen38-2b-distill": { "name": "Qwen3.8-2B Distill Q4_K_M" },
+        "qwen35-08b": { "name": "Qwen3.5-0.8B Q8_0" }
+      }
+    }
+  },
+  "model": "qwen-appliance/qwen38-4b-distill",
+  "small_model": "qwen-appliance/qwen38-2b-distill"
+}
