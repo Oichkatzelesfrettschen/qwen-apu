@@ -41,12 +41,24 @@ reachable independent of any model.
 | task-02-fix | not run | not run | - | - | - |
 | task-03-refactor | not run | not run | - | - | - |
 
-The three arms are `not run`. The appliance answered no `GET /health` for the
-whole session: `curl` returned exit 7 on every attempt against port 8080, and
-`tmux ls` on the laptop reported no server running on its socket, so the router
-was down rather than loading. This lane starts and stops the appliance through
-its own launch and teardown scripts alone, so the measurement waits for a launch
-rather than making one, and the wait ended with the session.
+The three arms are `not run`, and the appliance state that stopped them is
+specific rather than a bare outage. Every `GET http://qwen-laptop:8080/health`
+returned curl exit 7 for the whole session. The laptop's own view explains it in
+two steps: `tmux ls` reported no session for the first half, so the launch chain
+was down; a measurement campaign then started a server of its own, and
+`ss -ltnp` showed `llama-server` holding `127.0.0.1:8080` while `ps` showed it
+serving `Qwen3.8-2B-Q4_K_M.gguf` in single-model mode with
+`session.status` reading `router enabled=0`. A loopback listener answers the
+laptop alone, so the workstation reaches nothing, and the port that a router
+would bind is occupied for as long as that campaign runs.
+
+Both halves leave these arms unmeasurable rather than merely delayed. The
+required subject is `qwen38-4b-distill` through the router, which a
+single-model 2B server cannot answer, and the requests would enter another
+campaign's request sequence, which CLAUDE.md's own graded-suite result shows
+moves answers on this backend. This lane starts and stops the appliance through
+its launch and teardown scripts alone, so the measurement waits for a router
+launch rather than making one or displacing a running server.
 
 The paths the arms would have exercised are proven independently.
 `measure-code-agent-tasks.py --self-check` grades all three reference answers

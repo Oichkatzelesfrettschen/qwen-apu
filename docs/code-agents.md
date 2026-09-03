@@ -212,8 +212,13 @@ reachable before appliance time is spent on it.
 | task-03-refactor | not run | not run | - | - | - |
 
 The arms are `not run`: the appliance answered no `GET /health` while this lane
-was built, and the launch belongs to the appliance's own scripts rather than to
-a measurement. Wall time on this machine is a wall-clock observation of one turn
+was built, first with the launch chain down and then with a measurement
+campaign's own single-model 2B server holding `127.0.0.1:8080`, which serves the
+laptop alone and leaves the router's port occupied. The evidence README states
+the observation and its two mechanisms. Rerun the arms with
+`remote/measure-code-agent-tasks.py --origin http://qwen-laptop:8080 --key-file
+PATH --output-directory DIR` once a router launch answers `/health`. Wall time
+on this machine is a wall-clock observation of one turn
 rather than a rate, since CLAUDE.md measures 4% of spread at rest and 30.6%
 under desktop load on a repeated depth-0 rate; the token counts come from the
 server's own `usage` counters and are exact.
