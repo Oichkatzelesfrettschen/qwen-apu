@@ -391,6 +391,88 @@ else
     fi
 fi
 
+# The image marker and the section's own configuration are one claim, so the
+# policy reads both. The armed file passes with the image ledger the marker
+# names, and a configuration whose image server survives a marker the generator
+# withheld is the grant this rejoin exists to catch.
+run_image_policy() {
+    QWEN_MODEL_ROOT=$model_root \
+    QWEN_QUARANTINE_REGISTRY=$quarantine_registry \
+    QWEN_CTX_CHECKPOINT_LEDGER=$ctx_ledger \
+    QWEN_WEB_PROFILES=$web_profiles \
+    QWEN_WEB_AUTHORIZER_READY=1 \
+    QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$work/image-policy.out \
+    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$1 QWEN_ROUTER_MAX=1 \
+        "$policy" "$fake_server" \
+        "$model_root/Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf" 8192 18080
+}
+if run_image_policy "$imaged" >"$work/image-policy.log" \
+    2>"$work/image-policy.err"; then
+    report imaged_preset_admitted ok
+else
+    report imaged_preset_admitted failed
+    cat "$work/image-policy.err" >&2
+fi
+
+# The generation lane is the marker plus the configuration, so a preset whose
+# marker was withheld refuses the section that still carries an image server.
+unmarked=$work/unmarked.ini
+sed 's|^# qwen_image_profile=image-fixture-a$|# qwen_image_profile=-|' \
+    "$imaged" >"$unmarked"
+if run_image_policy "$unmarked" >"$work/unmarked.log" 2>"$work/unmarked.err"; then
+    report unmarked_image_server_refused admitted
+elif grep -q 'carries an image server where the preset names no image profile' \
+    "$work/unmarked.err"; then
+    report unmarked_image_server_refused ok
+else
+    report unmarked_image_server_refused wrong_reason
+    cat "$work/unmarked.err" >&2
+fi
+
+# A marker naming another profile than the one the child would arm is the same
+# divergence read from the other side.
+foreign=$work/foreign-image.ini
+sed 's|^# qwen_image_profile=image-fixture-a$|# qwen_image_profile=image-fixture-b|' \
+    "$imaged" >"$foreign"
+if run_image_policy "$foreign" >"$work/foreign.log" 2>"$work/foreign.err"; then
+    report foreign_image_profile_refused admitted
+elif grep -q 'arms image profile image-fixture-a where the preset names image-fixture-b' \
+    "$work/foreign.err"; then
+    report foreign_image_profile_refused ok
+else
+    report foreign_image_profile_refused wrong_reason
+    cat "$work/foreign.err" >&2
+fi
+
+# An image row moved to refused after generation revokes the lane, and the
+# ledger digest the preset binds is what reads the edit first.
+sed 's/\tvalidator-gated\t/\trefused\t/' "$image_profiles_gated" \
+    >"$work/image-revoked.tsv"
+mv -- "$work/image-revoked.tsv" "$image_profiles_gated"
+if run_image_policy "$imaged" >"$work/image-revoked.log" \
+    2>"$work/image-revoked.err"; then
+    report revoked_image_ledger_refused admitted
+elif grep -q 'image profile ledger identity changed' "$work/image-revoked.err"; then
+    report revoked_image_ledger_refused ok
+else
+    report revoked_image_ledger_refused wrong_reason
+    cat "$work/image-revoked.err" >&2
+fi
+rebound_image=$work/rebound-image.ini
+sed "s|^# qwen_image_profiles_sha256=.*|# qwen_image_profiles_sha256=$(sha256sum -- "$image_profiles_gated" | cut -d' ' -f1)|" \
+    "$imaged" >"$rebound_image"
+if run_image_policy "$rebound_image" >"$work/image-rebound.log" \
+    2>"$work/image-rebound.err"; then
+    report revoked_image_row_refused admitted
+elif grep -q 'carries execution_policy refused, and only validator-gated reaches a runtime' \
+    "$work/image-rebound.err"; then
+    report revoked_image_row_refused ok
+else
+    report revoked_image_row_refused wrong_reason
+    cat "$work/image-rebound.err" >&2
+fi
+
 # A web section whose ledger row loses its execution grant is a persisted
 # configuration the ledger no longer authorizes. The preset binds the ledger
 # path and digest, so an edit refuses there first; the arm reads that refusal
