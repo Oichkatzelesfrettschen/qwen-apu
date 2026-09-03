@@ -405,22 +405,13 @@ fi
 # every workload on this machine runs at and a request admitted between a
 # process reading and that write would land inside the rate this ledger claims.
 # The arms launch directly rather than through qwen-capacity-policy.sh, so no
-# child reads the lock and no external-lease proof is published.
-#
-# The lease is taken ahead of creating the output directory rather than after,
-# since census_workload_lease_take exits the whole script on contention: an
-# ordinary refusal here -- another workload already holds the device -- would
-# otherwise leave an empty output directory behind, and every replay of the
-# same command against the same requested path would then fail the "must be
-# absent" check below for a reason the ladder never actually ran into.
+# child reads the lock and no external-lease proof is published. This is also
+# the first of the still-refusable preflights, and the output directory is not
+# created until the last of them succeeds -- see the comment at that mkdir.
 workload_lease_state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
 workload_lease=$workload_lease_state_directory/vulkan-workload.lock
 census_workload_lease_take "$workload_lease"
 printf 'prefill_ladder_lease=held path=%s\n' "$workload_lease"
-
-umask 077
-mkdir -p "$output_directory"
-output_directory=$(CDPATH='' cd -- "$output_directory" && pwd)
 
 server_pid=''
 sidecar_pid=''
@@ -558,6 +549,16 @@ if [ "$sampler" = python ]; then
         sidecar_allowed_unavailable=pp_dpm_fclk_surface_mhz
     fi
 fi
+
+# The directory is created only once every preflight that can still refuse --
+# the lease, and under `manual` the DPM reads, the sudo cache, and the
+# selected-level confirmation -- has succeeded, since any of those exits the
+# whole script before an arm ever runs and an empty directory left behind
+# would fail the "must be absent" check above on a corrected replay against
+# the same requested path.
+umask 077
+mkdir -p "$output_directory"
+output_directory=$(CDPATH='' cd -- "$output_directory" && pwd)
 
 prompt_builder=$output_directory/build-prompt.py
 cat >"$prompt_builder" <<'PYTHON'
