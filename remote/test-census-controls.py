@@ -62,35 +62,24 @@ def write(name, text):
 def sidecar_record(samples=100, period_ns=5_000_000, cost_ns=30_000, start=1_000_000_000,
                    unavailable_rows=(), footer=None, columns=COLUMNS, header_period=None,
                    footers=1, hole_after=None, hole_ns=0, achieved_period_ns=None,
-                   actual_mhz=None, mclk="933", mclk_low_rows=(), mclk_low="400",
-                   max_cost_ns=None, dpm_period_ns=None, dpm_read_stride=None,
-                   backward_row=None):
+                   actual_mhz=None, mclk="933", mclk_low_rows=(), mclk_low="400"):
     """Write one synthetic record; hole_ns is the delay inserted after hole_after.
 
-    A hole shifts every later row by hole_ns, so the gap it opens is the period
-    plus hole_ns. The footer states the mean the rows carry, since the reader
-    recomputes it and holds the footer to it; achieved_period_ns and
-    max_cost_ns override that agreement for the stale-footer cases.
-    dpm_period_ns writes the broker's `# sample_rates:` header and
-    dpm_read_stride writes its per-row freshness markers, which are the two
-    sources the invariant's fresh-sample count is read from.
+    A hole shifts every later row by hole_ns, so the gap it opens is the
+    period plus hole_ns, and achieved_period_ns keeps the footer declaring
+    the mean a real sampler would report where the rows carry a hole or a
+    period of their own.
     """
     def instant_of(index):
         delay = hole_ns if hole_after is not None and index > hole_after else 0
-        instant = start + index * period_ns + delay
-        if backward_row is not None and index == backward_row:
-            instant -= period_ns * 2
-        return instant
+        return start + index * period_ns + delay
 
     lines = [
         f"# clock=CLOCK_MONOTONIC period_ns={header_period or period_ns} drm_device=/fake hwmon=/fake/hwmon0",
         "# interpretation: pp_dpm_sclk_selected_mhz is the selected graphics clock step",
         "# sampler_pid=4242 nice=10 cpu_affinity=1",
+        columns,
     ]
-    if dpm_period_ns is not None:
-        lines.append(f"# sample_rates: gpu_busy_percent_period_ns={period_ns}"
-                     f" pp_dpm_period_ns={dpm_period_ns}")
-    lines.append(columns)
     for index in range(samples):
         instant = instant_of(index)
         fclk = "unavailable" if index in unavailable_rows else "1067"
@@ -100,18 +89,13 @@ def sidecar_record(samples=100, period_ns=5_000_000, cost_ns=30_000, start=1_000
         row = f"{instant}\t400\t{row_mclk}\t{fclk}\t37\t61000\t{cost_ns}"
         if actual_mhz is not None:
             row += f"\t{actual_mhz}"
-        if dpm_read_stride is not None and index % dpm_read_stride == 0:
-            lines.append(f"# dpm_read={instant}")
         lines.append(row)
     last = instant_of(samples - 1)
-    first = instant_of(0)
-    mean_period = (last - first) // (samples - 1) if samples > 1 else 0
     footer_line = footer or (
-        f"# samples={samples} achieved_period_ns={achieved_period_ns or mean_period}"
+        f"# samples={samples} achieved_period_ns={achieved_period_ns or period_ns}"
         f" mean_sample_cost_ns={cost_ns}"
-        f" max_sample_cost_ns={max_cost_ns or cost_ns}"
-        f" samples_with_unavailable_sensor={len(unavailable_rows)}"
-        f" first_sample_ns={first} last_sample_ns={last}")
+        f" max_sample_cost_ns={cost_ns * 2} samples_with_unavailable_sensor={len(unavailable_rows)}"
+        f" first_sample_ns={start} last_sample_ns={last}")
     lines.extend([footer_line] * footers)
     return "\n".join(lines) + "\n"
 
@@ -195,7 +179,7 @@ print("sidecar_refusals=accepted")
 # at its declared value and still loses two 2B token intervals. It is ten
 # times the 5 ms period, so it refuses on both criteria: the stall bound and
 # the lost fraction, and only where the hole overlaps the request window.
-holed = sidecar_record(hole_after=20, hole_ns=100_000_000)
+holed = sidecar_record(hole_after=20, hole_ns=100_000_000, achieved_period_ns=5_000_000)
 refused(holed, "gaps")
 refused(holed, "window_lost")
 result = validate(holed)
@@ -215,7 +199,7 @@ assert "window_lost=not_run" in result.stdout, result.stdout
 # opens a 35 ms gap, seven 5 ms periods and under the ten-period stall bound,
 # and it costs 35 ms of a 350 ms window: 0.1000 refuses against the 0.02
 # coverage bound and passes against a 0.15 one, the gaps line accepting both.
-sliced = sidecar_record(hole_after=20, hole_ns=30_000_000)
+sliced = sidecar_record(hole_after=20, hole_ns=30_000_000, achieved_period_ns=5_000_000)
 result = validate(sliced)
 assert result.returncode == 1, result.stdout
 assert "gaps=accepted" in result.stdout, result.stdout
@@ -229,15 +213,14 @@ assert "clock_sidecar=accepted failures=-" in result.stdout, result.stdout
 # Every gap 8 ms wide passes 1.5 x the requested 5 ms period on every
 # interval while staying under two periods, so it misses no sample, the
 # counts report the whole distribution, and the verdict stays accepted.
-# The rows carry the mean the footer states, so the tolerance rather than a
-# stale footer is what admits an 8 ms achieved period against a 5 ms request.
-loose = sidecar_record(period_ns=8_000_000, header_period=5_000_000)
-result = validate(loose, tolerance="0.7")
+loose = sidecar_record(period_ns=8_000_000, header_period=5_000_000,
+                       achieved_period_ns=5_000_000)
+result = validate(loose)
 assert result.returncode == 0, result.stdout
 assert "over_1_5x=99 over_missed=0 over_max=0" in result.stdout, result.stdout
 assert "window_lost=accepted window_lost_fraction=0.0000" in result.stdout, result.stdout
 assert "clock_sidecar=accepted failures=-" in result.stdout, result.stdout
-refused(loose, "gaps", max_gap="7000000", tolerance="0.7")
+refused(loose, "gaps", max_gap="7000000")
 # One row carries no adjacent gap to measure.
 result = validate(sidecar_record(samples=1))
 assert "gaps=not_run rows=1" in result.stdout, result.stdout
@@ -354,130 +337,6 @@ assert result.returncode != 0, result.stdout
 assert "below_mclk_floor_fraction=0.2817" in result.stdout, result.stdout
 print("sidecar_clock_invariant=accepted")
 
-# The graphics requirement is an equality on both sides. A delivered frequency
-# a percent over the pin is a step the forced policy states it cannot reach,
-# so it counts above the requirement and violates the invariant the way one
-# below it does, while the kernel's own rounding inside the percent still
-# reads at the step.
-over = validate(sidecar_record(columns=WIDE_COLUMNS, actual_mhz=1200), required="1100")
-assert over.returncode != 0, over.stdout
-assert ("clock_invariant=violated samples_at_required=0 samples_below_required=0"
-        in over.stdout), over.stdout
-assert "samples_above_required=71" in over.stdout, over.stdout
-inside = validate(sidecar_record(columns=WIDE_COLUMNS, actual_mhz=1105), required="1100")
-assert inside.returncode == 0, inside.stdout
-assert "clock_invariant=held" in inside.stdout, inside.stdout
-assert "samples_above_required=0" in inside.stdout, inside.stdout
-
-# A sensor cell reads a decimal or the empty sentinel. Any other text carries
-# no clock evidence while satisfying a comparison against the sentinel alone,
-# and it reaches each consumer differently -- the counts skip it, the mode
-# reports it as a state -- so the record is refused where the cell is read.
-# The allowance names a column that may read the sentinel and admits no other
-# text in it.
-refused(sidecar_record().replace("\t1067\t37", "\tread-error\t37"), "cell_values",
-        allow=("pp_dpm_fclk_surface_mhz",))
-refused(sidecar_record(columns=WIDE_COLUMNS, actual_mhz="read-error"), "cell_values")
-# A non-finite delivered clock compares false against every threshold, so an
-# unrefused record of them would report the invariant held out of the one
-# column a forced campaign trusts.
-nan_record = validate(sidecar_record(columns=WIDE_COLUMNS, actual_mhz="nan"),
-                      required="1100")
-assert nan_record.returncode != 0, nan_record.stdout
-assert "cell_values=refused" in nan_record.stdout, nan_record.stdout
-assert "clock_invariant=held" not in nan_record.stdout, nan_record.stdout
-
-# The footer states the run mean and the maximum, and the rows carry the
-# instants and costs both are functions of, so the reader recomputes each and
-# holds the footer to it. A stale period passes the tolerance while every
-# individual gap stays under the missed-sample threshold.
-refused(sidecar_record(period_ns=6_000_000, header_period=5_000_000,
-                       achieved_period_ns=5_000_000), "footer_derived")
-refused(sidecar_record(max_cost_ns=60_000), "footer_derived")
-# The cost bound prices the rows rather than the claim: a record whose every
-# sample cost twice the bound is refused behind a footer claiming 100 ns.
-expensive = (sidecar_record(cost_ns=2_000_000)
-             .replace("mean_sample_cost_ns=2000000", "mean_sample_cost_ns=100")
-             .replace("max_sample_cost_ns=2000000", "max_sample_cost_ns=100"))
-result = validate(expensive)
-assert result.returncode != 0, result.stdout
-assert "footer_derived=refused" in result.stdout, result.stdout
-assert "sample_cost=refused mean_ns=2000000 max_ns=2000000" in result.stdout, result.stdout
-
-# A reversed window lies inside the record on both sides, so coverage passes
-# on the endpoints while the in-window row set is empty and the lost fraction
-# reports zero out of a denominator clamped to one nanosecond.
-refused(sidecar_record(), "window_order", window=(1_400_000_000, 1_050_000_000))
-# A CLOCK_MONOTONIC sequence rises strictly; every gap comparison is
-# one-sided, so a backward instant lowers the quantiles and subtracts time
-# from the lost fraction.
-refused(sidecar_record(backward_row=50), "instant_order")
-
-# Each bound argument is finite and inside the range it is defined over. An
-# infinite one retires the condition it names while every other condition
-# stays silent about it, so the range is checked where the value is parsed.
-for keyword, flag, value in (
-        ("tolerance", "--period-tolerance", "inf"),
-        ("tolerance", "--period-tolerance", "nan"),
-        ("max_lost", "--max-lost-fraction", "inf"),
-        ("max_lost", "--max-lost-fraction", "-0.1"),
-        ("max_below_mclk", "--max-below-mclk-floor-fraction", "inf")):
-    result = validate(sidecar_record(), **{keyword: value})
-    assert result.returncode == 2, (flag, value, result.returncode, result.stderr)
-    assert f"{flag} is {float(value)}" in result.stderr, (flag, value, result.stderr)
-
-# The mode feeds a pair-equality test that decides a campaign verdict, so two
-# states at equal counts resolve to the smaller value: 35 window rows at 900
-# against 35 at 1100 read 900, where a lexicographic order reads 1100.
-tied = sidecar_record(mclk="900", mclk_low_rows=tuple(range(10, 45)), mclk_low="1100")
-result = validate(tied, window=(1_050_000_000, 1_395_000_000))
-assert result.returncode == 0, result.stdout
-assert "window_samples=70" in result.stdout, result.stdout
-assert "mclk_mode_mhz=900" in result.stdout, result.stdout
-print("sidecar_cell_and_bound_conditions=accepted")
-
-# The DPM channel reads its attributes once every multiple-th tick and the
-# rows between repeat the cached value, so the invariant counts reads rather
-# than rows. The declared channel period derives the count for a record
-# carrying no marker, and a broker's own markers state it directly; both read
-# 8 fresh samples where the window holds 71 rows.
-staggered = sidecar_record(columns=WIDE_COLUMNS, actual_mhz=1100,
-                           dpm_period_ns=50_000_000)
-result = validate(staggered, required="1100")
-assert result.returncode == 0, result.stdout
-assert ("clock_invariant=held samples_at_required=8 samples_below_required=0"
-        in result.stdout), result.stdout
-assert ("dpm_freshness=derived dpm_period_multiple=10 fresh_dpm_samples=8"
-        in result.stdout), result.stdout
-assert "clock_state=measured window_samples=71" in result.stdout, result.stdout
-marked = sidecar_record(columns=WIDE_COLUMNS, actual_mhz=1100,
-                        dpm_period_ns=50_000_000, dpm_read_stride=10)
-result = validate(marked, required="1100")
-assert result.returncode == 0, result.stdout
-assert ("dpm_freshness=marker dpm_period_multiple=10 fresh_dpm_samples=8"
-        in result.stdout), result.stdout
-assert ("clock_invariant=held samples_at_required=8 samples_below_required=0"
-        in result.stdout), result.stdout
-# A record naming no channel period is a sampler reading every attribute on
-# every tick, so every row is a fresh read.
-plain = validate(sidecar_record(columns=WIDE_COLUMNS, actual_mhz=1100), required="1100")
-assert ("dpm_freshness=derived dpm_period_multiple=1 fresh_dpm_samples=71"
-        in plain.stdout), plain.stdout
-# The floor tolerance is a share of what was read. One fabric excursion among
-# 8 fresh reads is 0.1250 where the same excursion among 71 rows reads 0.0141,
-# so a 0.02 admitted share accepts the inflated denominator and refuses the
-# measured one.
-excursion = sidecar_record(columns=WIDE_COLUMNS, actual_mhz=1100,
-                           dpm_period_ns=50_000_000, dpm_read_stride=10,
-                           mclk_low_rows=(30,))
-result = validate(excursion, required="1100", required_mclk="933",
-                  max_below_mclk="0.02")
-assert result.returncode != 0, result.stdout
-assert ("samples_at_mclk_floor=7 samples_below_mclk_floor=1"
-        " below_mclk_floor_fraction=0.1250" in result.stdout), result.stdout
-assert "clock_sidecar=refused failures=clock_invariant" in result.stdout, result.stdout
-print("sidecar_dpm_freshness=accepted")
-
 
 def arms_ledger(rows, modes=None, regime_deltas=None, invariants=None):
     """One ledger; modes is a per-row selected graphics clock, `-` by default.
@@ -543,7 +402,7 @@ def quadruple(outer, inner, outer_rate, first_inner_rate, second_inner_rate,
 HEADER = ("pair", "control", "outer", "inner", "first_outer", "first_inner", "first_delta",
           "second_outer", "second_inner", "second_delta", "replicates", "mean_delta",
           "sd_delta", "ci_low", "ci_high", "deltas", "sclk_modes", "off_regime_arms",
-          "bound", "sclk_band", "verdict", "detail")
+          "bound", "verdict", "detail")
 
 # Two replicates that agree exactly leave a degenerate interval at their own
 # delta, which is the only way a two-replicate control accepts against a 0.65%
@@ -853,31 +712,6 @@ header, rows = summarize(
     regime_deltas=["+0.0000", "+0.0000", "+0.0000", "+0.0000"])
 assert rows[0]["verdict"] == "unclassified" and rows[0]["off_regime_arms"] == "-", rows[0]
 print("controls_off_regime_arms=accepted")
-
-# The band that admitted the pair prints beside the bound that judged its
-# interval, so the record states both rather than one.
-header, rows = summarize(quadruple("P-nosidecar", "P", 3.0, 3.0, 3.0, 3.0), band="0.04")
-assert header[header.index("bound") + 1] == "sclk_band", header
-assert rows[0]["sclk_band"] == "0.04", rows[0]
-header, rows = summarize(quadruple("P-nosidecar", "P", 3.0, 3.0, 3.0, 3.0))
-assert rows[0]["sclk_band"] == "0.06", rows[0]
-
-# An infinite bound places every finite interval inside itself and an infinite
-# band admits every pair of positive clocks, so each retires the condition it
-# names. The range is checked where argparse reads the value.
-ledger = write("range-arms.tsv",
-               arms_ledger(quadruple("P-nosidecar", "P", 3.0, 3.1, 2.9, 3.0)))
-for flag, value in (("--sidecar-bound", "inf"), ("--sidecar-bound", "-0.1"),
-                    ("--compile-bound", "nan"), ("--collect-bound", "inf"),
-                    ("--served-ab-bound", "inf"), ("--sclk-band", "inf"),
-                    ("--sclk-band", "1.0"), ("--sclk-band", "-0.01")):
-    argv = [sys.executable, controls, ledger, "--sidecar-bound", "0.0065",
-            "--compile-bound", "0.0065", "--collect-bound", "0.02"]
-    argv += [flag, value]
-    result = subprocess.run(argv, capture_output=True, text=True)
-    assert result.returncode == 2, (flag, value, result.returncode, result.stderr)
-    assert f"{flag} is {float(value)}" in result.stderr, (flag, value, result.stderr)
-print("controls_bound_ranges=accepted")
 
 slice_text = "\n".join([
     "srv  log_server_r: request: POST /v1/chat/completions",

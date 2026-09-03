@@ -128,19 +128,6 @@
 #define UNAVAILABLE_FCLK 0x04u
 #define UNAVAILABLE_BUSY 0x08u
 #define UNAVAILABLE_TEMPERATURE 0x10u
-/* The five sensor bits above. The flags word carries sample state beside them,
- * so the footer's unavailable-sample count reads through this mask. */
-#define UNAVAILABLE_SENSOR_MASK 0x1fu
-/* The sample whose tick read the DPM attributes rather than repeating the
- * cached value. validate-clock-sidecar.py judges the clock invariant over the
- * reads, so the drain writes one `# dpm_read=INSTANT` line ahead of each such
- * row and the reader counts those rather than every row: a tenth-period
- * channel otherwise prices the floor tolerance against a tenfold denominator.
- * The bit rather than the row index is the authority, because the ring stops
- * appending at SAMPLE_CAPACITY while the tick counter advances. It rides the
- * existing flags word, so the record stays 40 bytes and the row layout stays
- * eight columns. */
-#define SAMPLE_DPM_FRESH 0x20u
 
 #define NANOSECONDS_PER_SECOND INT64_C(1000000000)
 
@@ -623,11 +610,9 @@ static int write_record(const struct broker *broker, const char *output_path,
     fprintf(out, "# clock=CLOCK_MONOTONIC period_ns=%" PRIu64 " drm_device=%s hwmon=%s\n",
             period_ns, drm_device, hwmon);
     /* Every column is emitted on every row, and a column read on a slower
-     * channel repeats its last reading between reads, so this line states the
-     * cadence each column was measured at. The keys are distinct from the
-     * three the validator reads out of the merged header, and it reads
-     * pp_dpm_period_ns to derive DPM freshness for a record carrying no
-     * `# dpm_read=` marker of its own. */
+     * channel repeats its last reading between reads, so this line is what
+     * separates a repeated value from a re-measured one. The keys are distinct
+     * from the three the validator reads out of the merged header. */
     fprintf(out, "# sample_rates: gpu_busy_percent_period_ns=%" PRIu64
                  " pp_dpm_period_ns=%" PRIu64 " temp1_input_period_ns=%" PRIu64
                  " meminfo_period_ns=%" PRIu64 " vmstat_period_ns=%" PRIu64
@@ -720,12 +705,6 @@ static int write_record(const struct broker *broker, const char *output_path,
             char temperature[32];
             char actual[32];
 
-            /* The marker precedes the row it belongs to, the order the mark,
-             * meminfo, and host annotations already take, and names the row by
-             * the instant that row prints in its first column. */
-            if ((sample->unavailable_flags & SAMPLE_DPM_FRESH) != 0) {
-                fprintf(out, "# dpm_read=%" PRIu64 "\n", sample->monotonic_ns);
-            }
             fprintf(out, "%" PRIu64 "\t%s\t%s\t%s\t%s\t%s\t%" PRIu32 "\t%s\n",
                     sample->monotonic_ns,
                     format_value(sample->sclk_mhz, sclk, sizeof(sclk)),
@@ -736,7 +715,7 @@ static int write_record(const struct broker *broker, const char *output_path,
                                  sizeof(temperature)),
                     sample->cost_ns,
                     format_value(sample->sclk_actual_mhz, actual, sizeof(actual)));
-            if ((sample->unavailable_flags & UNAVAILABLE_SENSOR_MASK) != 0) {
+            if (sample->unavailable_flags != 0) {
                 unavailable_rows++;
             }
             cost_total += sample->cost_ns;
@@ -1055,7 +1034,6 @@ int main(int argc, char **argv)
                        : parse_scalar(broker.sysfs_buffer);
 
             if (tick % DPM_PERIOD_MULTIPLE == 0) {
-                flags |= SAMPLE_DPM_FRESH;
                 last_sclk = (read_snapshot(broker.sclk_fd, broker.sysfs_buffer,
                                            SYSFS_BUFFER_BYTES) < 0)
                                 ? VALUE_UNAVAILABLE

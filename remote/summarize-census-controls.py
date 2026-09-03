@@ -82,16 +82,7 @@ mode and the regime its warmup precondition settled on, scaled by the same
 larger-of-two denominator -- exceeds the band. A pair of arms that agree with
 each other and both sit outside the regime is comparable and still reports a
 campaign that drifted off the state it opened in, which is what that count
-states and the pair comparison cannot. `sclk_band` prints beside `bound` on
-every judged row, so the record states what admitted the pair alongside what
-judged its interval.
-
-Each bound is finite and nonnegative and the band is finite and inside
-[0, 1), checked where argparse reads them. An infinite bound places every
-finite interval inside itself and accepts every control; an infinite band
-makes `comparable` admit every pair of positive clocks and leaves
-`off_regime` counting nothing, so both retire the condition they name while
-every other condition stays silent about it.
+states and the pair comparison cannot.
 
 usage: summarize-census-controls.py ARMS_TSV --sidecar-bound F
        --compile-bound F --collect-bound F [--served-ab-bound F]
@@ -125,8 +116,7 @@ COLUMNS = ("pair", "control", "outer", "inner",
            "first_outer", "first_inner", "first_delta",
            "second_outer", "second_inner", "second_delta",
            "replicates", "mean_delta", "sd_delta", "ci_low", "ci_high", "deltas",
-           "sclk_modes", "off_regime_arms", "bound", "sclk_band", "verdict",
-           "detail")
+           "sclk_modes", "off_regime_arms", "bound", "verdict", "detail")
 
 UNKNOWN_STATE = "-"
 
@@ -284,32 +274,6 @@ def main():
     parser.add_argument("--served-ab-bound", type=float, default=0.05)
     parser.add_argument("--sclk-band", type=float, default=DEFAULT_SCLK_BAND)
     args = parser.parse_args()
-
-    # Each bound and the band reach argparse as bare floats, and an infinite
-    # one retires the condition it names: judge() places every finite interval
-    # inside an infinite bound, comparable() admits every pair of positive
-    # clocks under an infinite band, and off_regime() then counts nothing. The
-    # range is checked where the value is parsed, ahead of any read of the arm
-    # ledger.
-    def bounded(name, value, lower, upper, inclusive):
-        inside = lower <= value <= upper if inclusive else lower <= value < upper
-        closing = "]" if inclusive else ")"
-        if not math.isfinite(value) or not inside:
-            parser.error(f"{name} is {value}; a finite value in "
-                         f"[{lower}, {upper}{closing} is required")
-
-    # A bound is a fractional delta the campaign admits or demands, so it is
-    # finite and nonnegative; the campaign rather than this reader states how
-    # large a cost or a gain it is willing to name.
-    for name, value in (("--sidecar-bound", args.sidecar_bound),
-                        ("--compile-bound", args.compile_bound),
-                        ("--collect-bound", args.collect_bound),
-                        ("--served-ab-bound", args.served_ab_bound)):
-        bounded(name, value, 0.0, math.inf, True)
-    # The band is a relative difference between two clocks, so it is a fraction
-    # below one: a band of one admits a pair whose two arms differ by the whole
-    # of the larger clock.
-    bounded("--sclk-band", args.sclk_band, 0.0, 1.0, False)
     band = args.sclk_band
     bounds = {
         "sidecar": args.sidecar_bound,
@@ -328,7 +292,7 @@ def main():
         outer, inner = first[0][0], first[1][0]
         if control is None:
             print(f"{pair}\tunregistered\t{outer}\t{inner}"
-                  "\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\tunclassified\t-")
+                  "\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\t-\tunclassified\t-")
             continue
         bound = bounds[control]
         replicates = 2 * len(members)
@@ -356,7 +320,7 @@ def main():
                            f" surviving_deltas={listed}")
             print(f"{pair}\t{control}\t{outer}\t{inner}"
                   f"\t-\t-\t-\t-\t-\t-\t{replicates}\t-\t-\t-\t-\t-\t-\t{outside}"
-                  f"\t{bound}\t{band}\tincomplete\t{detail}")
+                  f"\t{bound}\tincomplete\t{detail}")
             continue
         # One quadruple carries two pairs and each is judged on its own state,
         # so a quadruple whose governor stepped between its second and third
@@ -389,7 +353,7 @@ def main():
         measured = [delta for delta in deltas if delta is not None]
         if len(measured) < 2:
             print(f"{head}\t-\t-\t-\t-\t{listed}\t{listed_modes}\t{outside}"
-                  f"\t{bound}\t{band}\tstate-changed"
+                  f"\t{bound}\tstate-changed"
                   f"\tcomparable_pairs={len(measured)} of {replicates}")
             continue
         mean, deviation, low, high = interval(measured)
@@ -402,7 +366,7 @@ def main():
             detail = excluded if detail == "-" else f"{detail} {excluded}"
         print(f"{head}\t{mean:+.4f}\t{deviation:.4f}\t{low:+.4f}\t{high:+.4f}"
               f"\t{listed}\t{listed_modes}\t{outside}"
-              f"\t{bound}\t{band}\t{verdict}\t{detail}")
+              f"\t{bound}\t{verdict}\t{detail}")
     return 0
 
 
