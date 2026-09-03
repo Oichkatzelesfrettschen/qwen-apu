@@ -1,7 +1,7 @@
 # The E4 correctness contract: decision margins over a held argmax
 
 ```text
-status=registered ahead of the holdout run
+status=registered ahead of the holdout run; run retained in margin-holdout-20260903T0456Z/, verdict differs as registered, identity-line scope re-registered below
 subject=census+E4 (741a0d76...) against census v7 (addcae10...), both Vulkan0
 model=qwen38-2b-distill under its registry tuple
 prompts=remote/witness-prompts/holdout-12.tsv, read by no earlier run
@@ -113,6 +113,27 @@ prompts_sha256=1b784918792edbfcfef38e187020d66b00af99e80ed72d63f49935be01516fdc
 | self-repeatability fails on either binary | the witness measured nondeterminism rather than E4; the run is discarded |
 | near-tie count grows across position | reported; a longitudinal amplification the discovery run did not see |
 | all rows held | `margin_robustness=held` on twelve prompts; the quality gate remains the last pending line |
+
+## The holdout result and what it refutes
+
+`../margin-holdout-20260903T0456Z/` reads `differs` as registered: ten
+prompts hold every line with a minimum retention of 0.786, and two prompts
+flip the argmax at control margins of 0.0001 and 0.0023 nat. Both flips
+sit far below the 0.1 nat near-tie threshold, so the identity line
+required agreement at a distance the calibration run shows only
+same-source builds deliver. The refuted element is the identity line's
+scope, and the rule that replaces it is written here ahead of any run that
+applies it:
+
+| property | re-registered rule |
+| --- | --- |
+| token id | identical at every position whose control margin is at or above 0.1 nat |
+| near-tie flips | a flip at a control margin below 0.1 nat is reported with both margins and ends identity reading for that sample, since the greedy continuation diverges from there; the count of such flips is the reported quantity and the graded suite judges the continuation |
+| everything else | unchanged: exact self-repeatability, positive candidate margin, retention 0.5, coverage by withheld UTF-8 entries |
+
+The holdout run is not re-read under this rule. A fresh holdout of twelve
+prompts no run has sent judges it, and a candidate that flips at a margin
+at or above the threshold on that set is refuted outright.
 
 ## What remains after the holdout
 
