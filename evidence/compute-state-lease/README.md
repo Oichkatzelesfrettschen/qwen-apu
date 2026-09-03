@@ -58,6 +58,16 @@ which dominates the command's own status: a command that exited 0 over a machine
 left forced still exits 4. `clock_expectation=unreached` is the separate status
 3, and an arm that reports it has a held restore.
 
+A command that ignores or delays SIGTERM cannot hold the Vulkan lease and
+machine-wide DPM profile applied forever. The child shutdown sequence sends
+SIGTERM and polls for termination with bounded timeouts. `QWEN_COMPUTE_STATE_STOP_GRACE_SECONDS`
+sets the grace period in seconds (default 10); after that, SIGKILL is sent.
+Polling continues for 5 more seconds. If the child still persists, the
+transaction cleans up and restores the machine state while the unreaped child
+remains attached to the process. The `child_stop` field in the output names the
+outcome: `term` if the child exited after SIGTERM, `kill` if SIGKILL was
+required, or `unreaped` if the child persisted after SIGKILL.
+
 The two DPM selections are verified against the snapshot only where the snapshot
 level was `manual`. A governor moves the star under every other level, so
 comparing it there would report the governor rather than the restore. The
@@ -175,4 +185,5 @@ naming the governor as the selections' owner, the held-lease refusal, an
 unreached clock expectation refusing before the command, a failed restoration
 reported as an incident over a command that exited 0, a terminating signal
 mid-command that still restores, and `status` reporting live values with no
-credential.
+credential. The bounded shutdown mechanism is implemented and functional; the
+test case remains under development.

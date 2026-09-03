@@ -527,10 +527,38 @@ apply_started=0
 restoration_finished=0
 restoration_failed=0
 clock_expectation=not_reached
+child_stop=''
+command_status=''
+command_name=''
 
 stop_child() {
     [ -n "$child_pid" ] || return 0
+    grace_seconds=${QWEN_COMPUTE_STATE_STOP_GRACE_SECONDS:-10}
     kill -TERM "$child_pid" 2>/dev/null || true
+    child_stop=term
+    stop_attempt=0
+    while [ "$stop_attempt" -lt $((grace_seconds * 5)) ]; do
+        kill -0 "$child_pid" 2>/dev/null || {
+            wait "$child_pid" 2>/dev/null || true
+            child_pid=''
+            return 0
+        }
+        stop_attempt=$((stop_attempt + 1))
+        sleep 0.2
+    done
+    kill -KILL "$child_pid" 2>/dev/null || true
+    child_stop=kill
+    stop_attempt=0
+    while [ "$stop_attempt" -lt 25 ]; do
+        kill -0 "$child_pid" 2>/dev/null || {
+            wait "$child_pid" 2>/dev/null || true
+            child_pid=''
+            return 0
+        }
+        stop_attempt=$((stop_attempt + 1))
+        sleep 0.2
+    done
+    child_stop=unreaped
     wait "$child_pid" 2>/dev/null || true
     child_pid=''
 }
@@ -632,6 +660,10 @@ cleanup() {
     stop_child
     finish_transaction
     remove_lease_proof
+    if [ -n "$command_name" ]; then
+        printf 'compute_state_command=%s status=%s profile=%s child_stop=%s\n' \
+            "$command_name" "${command_status:-interrupted}" "$profile_name" "$child_stop"
+    fi
     if [ "$restoration_failed" -eq 1 ]; then
         exit 4
     fi
@@ -714,6 +746,7 @@ printf 'clock_expectation=reached profile=%s gfxclk_mhz=%s fclk_mhz=%s\n' \
 # grandchild the command forked and left behind holds the inherited descriptor
 # until it exits, which is what a caller passing a command that backgrounds
 # work is choosing.
+command_name=$1
 (
     # shellcheck disable=SC2086  # the forward list is word-split by design
     census_arm_exec "$arm_environment_record" \
@@ -730,6 +763,4 @@ command_status=$?
 set -e
 child_pid=''
 
-printf 'compute_state_command=%s status=%s profile=%s\n' "$1" "$command_status" \
-    "$profile_name"
 exit "$command_status"

@@ -551,6 +551,11 @@ else
     cat "$term_output" >&2
 fi
 
+# A child that traps SIGTERM and sleeps requires SIGKILL to stop. The grace
+# period is bounded, so the shutdown sequence is TERM (grace_seconds), KILL
+# (5 more seconds), then wait, and the status line records child_stop=kill
+# proving the KILL was needed. The fixture state is restored and the lease is
+# released in all cases.
 # status reads and writes nothing, takes no credential, and reports the lease as
 # free without taking it. The wait is the transaction's own release: the
 # descriptor closes when its shell exits, and a case that read the lock before
