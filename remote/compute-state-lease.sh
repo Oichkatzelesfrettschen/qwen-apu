@@ -316,7 +316,19 @@ resolve_profile "$profile_name"
 
 # Every refusal that needs no write runs here, ahead of the lease and ahead of
 # the first sysfs write, so a transaction that cannot complete costs the machine
-# no state change at all.
+# no state change at all. stop_child reads this setting again inside the EXIT
+# trap, where `$((grace_seconds * 5))` on a non-integer value is a shell
+# arithmetic error that would abort the trap ahead of finish_transaction and
+# leave the applied DPM/KSM state unrestored, so it is validated here rather
+# than trusted at the point cleanup can no longer refuse.
+case ${QWEN_COMPUTE_STATE_STOP_GRACE_SECONDS:-10} in
+    '' | *[!0-9]*)
+        printf 'QWEN_COMPUTE_STATE_STOP_GRACE_SECONDS is not a non-negative integer: %s\n' \
+            "${QWEN_COMPUTE_STATE_STOP_GRACE_SECONDS:-10}" >&2
+        exit 2
+        ;;
+esac
+
 for required_command in flock "$renice_command" "$ionice_command" "$taskset_command"; do
     case $required_command in
         /*)
@@ -558,9 +570,14 @@ stop_child() {
         stop_attempt=$((stop_attempt + 1))
         sleep 0.2 || true
     done
+    # kill -0 still found the child alive after SIGKILL and the 5-second poll,
+    # which is a process the kernel cannot yet reap -- most likely uninterruptible
+    # I/O sleep -- rather than one that will exit shortly. `wait` blocks until the
+    # child is reaped, so calling it here would trade the bounded shutdown this
+    # function exists to provide for an unbounded one in exactly the case it is
+    # supposed to cover. Restoration runs over the leftover descendant instead;
+    # init reparents and eventually reaps it once it does exit.
     child_stop=unreaped
-    wait "$child_pid" 2>/dev/null || true
-    child_pid=''
 }
 
 remove_lease_proof() {

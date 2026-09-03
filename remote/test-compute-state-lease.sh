@@ -202,6 +202,24 @@ STUB
     printf 'ksm_run_node=%s\n' "$ksm_fixture/run"
     printf 'controls=%s\n' "$controls"
     cat <<'OBSERVER'
+observer_trap_term=$(awk -F'\t' '$1 == "observer_trap_term" { value = $2; found = 1 }
+    END { if (found) print value }' "$controls")
+# A command that traps SIGTERM and keeps running needs the bounded SIGKILL
+# escalation to stop it. The trap and the descriptor-8 close run before
+# anything else -- including the log write a caller polls for readiness on --
+# so a SIGTERM landing the instant the caller sees that readiness marker is
+# already ignored rather than racing the default disposition that would still
+# be armed if `trap` ran any later. Descriptor 8 carries the lease and `env -i`
+# leaves the descriptor table alone, so this process closes its own copy ahead
+# of the loop rather than after: a `sleep 1` forked from inside the loop would
+# otherwise inherit the open descriptor, and the SIGKILL that ends this process
+# reaches neither that grandchild nor the lease it is still holding, leaving
+# the lease held for up to the grandchild's own remaining sleep after this
+# process is gone.
+if [ "$observer_trap_term" = 1 ]; then
+    exec 8>&-
+    trap : TERM
+fi
 starred() {
     awk '/\*/ && match($0, /[0-9]+[Mm][Hh]z/) {
             entry = $1
@@ -224,19 +242,9 @@ own_nice=$(awk '{ line = $0; sub(/^.*[)] /, "", line); split(line, f, / /); prin
     printf 'observed_argument\t%s\n' "${1:-none}"
     env | sed 's/^/observed_environment\t/'
 } >>"$observer_log"
-observer_trap_term=$(awk -F'\t' '$1 == "observer_trap_term" { value = $2; found = 1 }
-    END { if (found) print value }' "$controls")
-# A command that traps SIGTERM and keeps running needs the bounded SIGKILL
-# escalation to stop it. Descriptor 8 carries the lease and `env -i` leaves the
-# descriptor table alone, so this process closes its own copy ahead of the loop
-# rather than after: a `sleep 1` forked from inside the loop would otherwise
-# inherit the open descriptor, and the SIGKILL that ends this process reaches
-# neither that grandchild nor the lease it is still holding, leaving the lease
-# held for up to the grandchild's own remaining sleep after this process is
-# gone.
+# The trap and the descriptor close already ran, ahead of the log write above;
+# this is the loop that keeps the process alive under it.
 if [ "$observer_trap_term" = 1 ]; then
-    exec 8>&-
-    trap : TERM
     while :; do
         sleep 1
     done
@@ -323,6 +331,27 @@ for prohibited_level in high profile_peak; do
     fi
 done
 report "$prohibition_failures" refuses_high_and_profile_peak_by_name
+
+# QWEN_COMPUTE_STATE_STOP_GRACE_SECONDS reaches `$((grace_seconds * 5))` inside
+# stop_child, which cleanup calls from the EXIT trap; a non-integer value there
+# is a shell arithmetic error that would abort the trap ahead of
+# finish_transaction and leave the applied DPM/KSM state unrestored. It is
+# refused here, before the first write, instead.
+reset_fixture
+grace_status=0
+QWEN_COMPUTE_STATE_STOP_GRACE_SECONDS=abc run_transaction measure-fixed \
+    "$stub_directory/observer" >"$temporary_directory/grace.log" 2>&1 ||
+    grace_status=$?
+if [ "$grace_status" -eq 2 ] &&
+    grep -q '^QWEN_COMPUTE_STATE_STOP_GRACE_SECONDS is not a non-negative integer: abc$' \
+        "$temporary_directory/grace.log" &&
+    [ ! -s "$observer_log" ] &&
+    [ "$(fixture_state)" = "$snapshot_fixture_state" ]; then
+    report 0 refuses_a_non_integer_stop_grace_before_the_first_write
+else
+    report 1 refuses_a_non_integer_stop_grace_before_the_first_write
+    cat "$temporary_directory/grace.log" >&2
+fi
 
 # The clean transaction: apply, prove the clocks, run, restore, verify.
 reset_fixture

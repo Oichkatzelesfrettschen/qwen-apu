@@ -176,17 +176,18 @@ while it runs, which is what makes the applied profile provable rather than only
 the state before and after it. The lease, its published proof, and
 `verify-external-vulkan-lease.py` run unstubbed against a real `flock`.
 
-Seventeen cases pass: the usage form, the `high` and `profile_peak` refusals, a
-clean apply-run-restore, the command's observation of the applied profile, its
-inherited affinity, the KSM 0-and-back round trip, the state record's snapshot
-rows, the closed arm environment carrying the lease proof, the serving profile
-accepting the clamped fabric level, an `auto` snapshot restoring the level and
-naming the governor as the selections' owner, the held-lease refusal, an
-unreached clock expectation refusing before the command, a failed restoration
-reported as an incident over a command that exited 0, a terminating signal
-mid-command that still restores, a child that traps SIGTERM and requires the
-SIGKILL escalation, the lease releasing once that child is gone, and `status`
-reporting live values with no credential.
+Eighteen cases pass: the usage form, the `high` and `profile_peak` refusals, a
+refused non-integer stop grace, a clean apply-run-restore, the command's
+observation of the applied profile, its inherited affinity, the KSM 0-and-back
+round trip, the state record's snapshot rows, the closed arm environment
+carrying the lease proof, the serving profile accepting the clamped fabric
+level, an `auto` snapshot restoring the level and naming the governor as the
+selections' owner, the held-lease refusal, an unreached clock expectation
+refusing before the command, a failed restoration reported as an incident over
+a command that exited 0, a terminating signal mid-command that still restores,
+a child that traps SIGTERM and requires the SIGKILL escalation, the lease
+releasing once that child is gone, and `status` reporting live values with no
+credential.
 
 The SIGKILL case is the harness's own deferred one. A command that traps
 SIGTERM and loops on `sleep 1` forks a new `sleep` each iteration, and each
@@ -195,6 +196,23 @@ fork inherits the open lease descriptor `env -i` carries into every command.
 moment is reparented and keeps running for the rest of its own second, holding
 the descriptor -- and the lease -- open after the transaction and its tracked
 child are both gone. The fixture closes its own copy of the descriptor
-(`exec 8>&-`) before it traps SIGTERM and starts looping, so no forked `sleep`
-ever holds it, and the lease reads free within one poll interval of the KILL
-rather than up to a second later.
+(`exec 8>&-`) and traps SIGTERM before it does anything else, including the log
+write a caller polls for readiness on, so a caller sending SIGTERM the instant
+it observes that readiness marker cannot race the default disposition a later
+trap install would still leave armed; the earlier commit's own placement did
+race it, killing the fixture on SIGTERM often enough to read `child_stop=term`
+where `kill` was expected. With the trap installed first, no forked `sleep`
+ever holds the descriptor and the lease reads free within one poll interval of
+the KILL rather than up to a second later.
+
+Two more findings came from an independent review of the shutdown sequence
+itself. `stop_child` no longer calls `wait` on a child still alive after
+SIGKILL and its own 5-second poll: `kill -0` succeeding there means the kernel
+cannot yet reap it, most likely an uninterruptible-sleep child, and `wait`
+blocks until it is reaped -- trading the bounded shutdown this function exists
+to provide for an unbounded one in exactly the case it is supposed to cover.
+`QWEN_COMPUTE_STATE_STOP_GRACE_SECONDS` is validated ahead of the first write
+rather than trusted at the point `stop_child` runs it through
+`$((grace_seconds * 5))` inside the EXIT trap: a non-integer value there is a
+shell arithmetic error that would abort the trap ahead of `finish_transaction`
+and leave the applied DPM/KSM state unrestored.
