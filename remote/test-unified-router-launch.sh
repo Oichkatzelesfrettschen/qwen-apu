@@ -695,6 +695,29 @@ rm -f "$api_key_file"
 printf 'fixture-api-key\n' >"$api_key_file"
 chmod 600 "$api_key_file"
 
+# A directory at the api.key path is refused the same way, before chmod runs
+# against it: `[ -L ... ]` alone admits a FIFO, device, or directory, and a
+# directory losing its own permissions to chmod 600 is exactly the kind of
+# damage the symlink check alone does not prevent.
+rm -f "$api_key_file"
+mkdir "$api_key_file"
+api_key_directory_mode=$(stat -c %a "$api_key_file")
+if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_OPEN=0 \
+    >"$work/lan-directory-key.log" 2>"$work/lan-directory-key.err"; then
+    report lan_api_key_non_regular_refused admitted
+else
+    outcome=ok
+    grep -q 'names neither nothing nor a regular file' \
+        "$work/lan-directory-key.err" || outcome=wrong_reason
+    [ "$(stat -c %a "$api_key_file")" = "$api_key_directory_mode" ] ||
+        outcome=target_chmodded
+    report lan_api_key_non_regular_refused "$outcome"
+fi
+rmdir "$api_key_file"
+printf 'fixture-api-key\n' >"$api_key_file"
+chmod 600 "$api_key_file"
+
 # The key line is guarded by the terminal test itself rather than by the
 # absence of a match above, so the arm reads the source for that guard.
 if grep -q '\[ -t 1 \] && \[ -s "\$state_directory/api.key" \]' \

@@ -242,6 +242,16 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
                     "$api_key_file" >&2
                 exit 1
             fi
+            # A FIFO would block openssl's write waiting for a reader; a
+            # device or a directory would have chmod change permissions
+            # neither this key nor anything meant to serve it should carry.
+            # An existing path that names neither nothing nor a regular file
+            # is refused before either operation touches it.
+            if [ -e "$api_key_file" ] && [ ! -f "$api_key_file" ]; then
+                printf 'the Web UI API key path names neither nothing nor a regular file: %s\n' \
+                    "$api_key_file" >&2
+                exit 1
+            fi
             if [ ! -s "$api_key_file" ]; then
                 if ! command -v openssl >/dev/null 2>&1; then
                     printf 'openssl is required to create the Web UI API key\n' >&2
