@@ -103,6 +103,8 @@ remote/test-fallback-webui-web-authorization.sh
 remote/test-fallback-webui-image-authorization.sh
 remote/test-web-tools-roundtrip.sh
 node remote/test-fallback-webui-model-state.mjs
+node remote/test-fallback-webui-conversations.mjs
+node remote/test-fallback-webui-ui-switch.mjs
 remote/test-measurement-harnesses.sh
 remote/test-run-fixed64-served-campaign.sh
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-signal-process-group.py

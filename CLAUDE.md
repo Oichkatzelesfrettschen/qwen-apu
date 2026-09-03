@@ -491,6 +491,28 @@ routable. A new API-key attempt clears the prior selection until the
 authenticated roster returns, and late responses from an older attempt never
 replace the newer state.
 
+The transcript outlives the page. A conversation is a record in IndexedDB, in
+localStorage where IndexedDB refuses, and in an in-memory Map where both do,
+addressed by a `#/c/<id>` route and listed in a side panel that opens, renames,
+and deletes one, and `history` is rebuilt from the record a reload restores.
+What is written is a projection -- role, content, the served model id each
+assistant message carries as its badge beside the roster tier, the tool call
+ids and arguments the transcript re-sends, and an artifact's digest, provenance
+route, seed, and geometry -- so a broker grant, the session secret, and the API
+key reach no store and a restored image is refetched by digest over the
+artifact listener's own credentialed route. Model selection and the Web and
+image toggles stay per turn, and the rounds of one turn render into one turn
+block so a generated image sits between the round that proposed it and the
+round that describes it. The `llama.cpp UI` tab opens a notice rather than a
+route: `server_http_context::init` mounts a `--path` directory at
+`api_prefix + "/"` where `public_path` carries a value
+(`tools/server/server-http.cpp:333-335`) and registers the compiled-in UI under
+the same prefix in its else branch (`:339-427`), one `--api-prefix` reaches
+whichever branch runs (`common/arg.cpp:3352-3356`), and `ctx_http.init(params)`
+runs ahead of the router branch (`tools/server/server.cpp:173` against
+`:188-232`), so `qwen-launch.sh` serves that UI on this same address and port
+while `qwen-web-launch.sh` serves this page.
+
 A web search reaches the network through one human approval, and the browser is
 the executor. llama-server reads `tools` from the client body alone and runs a
 wrapped MCP tool through the standalone `POST /tools` route, so the page
@@ -1383,6 +1405,9 @@ remote/test-run-image-standalone.sh
 remote/test-admit-image-router.sh
 remote/test-vulkan-workload-lease.sh
 remote/test-fallback-webui-image-authorization.sh
+node remote/test-fallback-webui-model-state.mjs
+node remote/test-fallback-webui-conversations.mjs
+node remote/test-fallback-webui-ui-switch.mjs
 python3 remote/test-image-protocol.py
 python3 remote/test-image-service.py
 python3 remote/image-mcp/test-image-mcp.py

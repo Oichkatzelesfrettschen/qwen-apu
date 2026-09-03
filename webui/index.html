@@ -39,11 +39,11 @@
   :root {
     color-scheme: light dark;
     --bg: #fbfaf8; --fg: #1a1a19; --dim: #6b6a66; --line: #e2e0da;
-    --mine: #eceae4; --warn: #8a5a00; --bad: #a03020;
+    --mine: #eceae4; --warn: #8a5a00; --bad: #a03020; --ok: #1f6032;
   }
   @media (prefers-color-scheme: dark) {
     :root { --bg:#16161a; --fg:#e6e5e2; --dim:#9a9892; --line:#2c2c32;
-            --mine:#23232a; --warn:#d0a040; --bad:#e08070; }
+            --mine:#23232a; --warn:#d0a040; --bad:#e08070; --ok:#7fc08f; }
   }
   * { box-sizing: border-box; }
   body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.55 system-ui,sans-serif;
@@ -52,6 +52,20 @@
            gap:1rem; align-items:center; flex-wrap:wrap; }
   header b { font-weight:600; }
   header span { color:var(--dim); font-size:13px; }
+  #workspace { flex:1; display:flex; min-height:0; }
+  aside#conversation-panel { width:15rem; flex:none; border-right:1px solid var(--line);
+           display:flex; flex-direction:column; min-height:0; }
+  #conversation-actions { padding:.5rem; border-bottom:1px solid var(--line); }
+  #conversation-list { flex:1; overflow-y:auto; padding:.3rem; }
+  #conversation-empty { color:var(--dim); font-size:12px; padding:.3rem; }
+  .conversation-row { display:flex; gap:.2rem; align-items:center; padding:.15rem .2rem; }
+  .conversation-row.selected { background:var(--mine); border-radius:.4rem; }
+  .conversation-row button { font:inherit; border:0; background:none; color:inherit;
+           cursor:pointer; }
+  .conversation-row button.open { flex:1; min-width:0; text-align:left; font-size:13px;
+           overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .conversation-row button.small { color:var(--dim); font-size:12px; padding:0 .2rem; }
+  #chat-column { flex:1; display:flex; flex-direction:column; min-width:0; min-height:0; }
   #log { flex:1; overflow-y:auto; padding:1rem; display:flex; flex-direction:column; gap:1rem; }
   .turn { max-width:min(52rem,100%); }
   .turn.me { align-self:flex-end; background:var(--mine); padding:.5rem .8rem; border-radius:.6rem; }
@@ -106,6 +120,23 @@
   .image-review li.fail { color:var(--bad); }
   .image-review-note { font-size:12px; }
   .image-review-note.bad { color:var(--bad); }
+  .tier-badge { font-size:11px; letter-spacing:.04em; text-transform:uppercase;
+             border:1px solid var(--line); border-radius:.35rem; padding:.1rem .35rem; }
+  .tier-badge.production { color:var(--ok); }
+  .tier-badge.candidate { color:var(--warn); }
+  .tier-badge.quarantine { color:var(--bad); }
+  .who .served-model { color:var(--fg); }
+  .who .tier-badge { margin-left:.35rem; }
+  nav.tabs { display:flex; gap:.2rem; padding:0 1rem; border-bottom:1px solid var(--line); }
+  nav.tabs button { font:inherit; font-size:13px; padding:.4rem .9rem; border:0;
+             background:none; color:var(--dim); cursor:pointer;
+             border-bottom:2px solid transparent; }
+  nav.tabs button[aria-selected=true] { color:var(--fg); border-bottom-color:var(--fg); }
+  section.notice { flex:1; overflow-y:auto; padding:1rem 1.2rem; }
+  section.notice h2 { font-size:15px; margin:0 0 .6rem; }
+  section.notice p, section.notice ul { max-width:44rem; }
+  section.notice code { background:var(--mine); border-radius:.25rem; padding:.05rem .3rem; }
+  section.notice .hint { color:var(--dim); font-size:13px; }
 </style>
 </head>
 
@@ -128,7 +159,41 @@
   <button class="act" id="clear">clear</button>
 </header>
 
-<div id="log"></div>
+<!--
+  One llama-server process serves one page at the root. `server_http_context::
+  init` mounts a `--path` directory at `api_prefix + "/"` when `public_path`
+  carries a value (tools/server/server-http.cpp:333-335) and registers the
+  compiled-in SvelteKit assets under the same `api_prefix` in its else branch
+  (:339-427, routes at :403-404 and :416-424), and `--api-prefix` supplies one
+  value to whichever branch runs (common/arg.cpp:3352-3356). Router mode changes
+  nothing here: `ctx_http.init(params)` runs ahead of the router branch
+  (tools/server/server.cpp:173 against :188-232) and `server-models.cpp`
+  registers no UI route at all. So the llama.cpp UI and this page are two
+  launches of one binary rather than two routes of one listener, and this tab
+  states that rather than linking to an address nothing answers.
+-->
+<nav class="tabs" id="tab-bar">
+  <button id="tab-chat" aria-selected="true">Chat</button>
+  <button id="tab-llama" aria-selected="false">llama.cpp UI</button>
+</nav>
+
+<!--
+  A conversation is a durable record with a URL. The side panel lists what the
+  conversation store holds, the `#/c/<id>` route names one of them, and the log
+  renders the record the route selects, so a reload returns to the transcript
+  the reader left rather than to an empty page. The model picker and the Web
+  and image toggles stay per turn, and the record states which model answered
+  each message so a reader sees where a switch landed.
+-->
+<div id="workspace">
+  <aside id="conversation-panel">
+    <div id="conversation-actions">
+      <button class="act" id="conversation-new">new conversation</button>
+    </div>
+    <div id="conversation-list"></div>
+  </aside>
+  <div id="chat-column">
+    <div id="log"></div>
 
 <!--
   The approval dialog is the boundary the web search tool is built around. The
@@ -185,6 +250,33 @@
     <button class="act" id="send">send</button>
   </div>
 </footer>
+  </div>
+</div>
+
+<section class="notice" id="llama-ui-panel" hidden>
+  <h2>The llama.cpp UI is served by the ordinary router launch</h2>
+  <p>llama-server serves one page at the root of one listener. This appliance
+    runs <code>qwen-web-launch.sh</code>, which passes <code>--path</code> at
+    the directory holding this page, and that same flag is what makes the
+    binary's own compiled-in llama.cpp UI go unregistered. Starting the
+    appliance through <code>qwen-launch.sh</code> instead leaves
+    <code>--path</code> unset, and the llama.cpp UI then answers at this same
+    address and port.</p>
+  <p>Three surfaces exist on this page alone, because each one is built here
+    rather than in the served binary: the approved web search, the approved
+    image generation with its artifact cards and vision review, and the feature
+    roster this page reads beside itself. A turn run in the llama.cpp UI reaches
+    the model and reaches none of them.</p>
+  <p>
+    <a id="llama-ui-link" href="/">open the root of this listener</a>
+    <span class="hint" id="llama-ui-origin"></span>
+  </p>
+  <p class="hint">A LAN launch requires the bearer on every route, so the
+    llama.cpp UI wants the same key this page holds.
+    <button class="act" id="copy-api-key">copy the API key</button>
+    <span id="copy-api-key-note"></span>
+  </p>
+</section>
 
 <script>
 const $ = s => document.querySelector(s);
@@ -301,6 +393,78 @@ async function refreshAttachmentTokens(selectedModel, generation) {
   }));
   if (modelStateMatches(selectedModel, generation)) renderAttached();
 }
+
+// ==== feature roster ========================================================
+/* remote/build-feature-roster.sh emits webui/roster.json from remote/models.tsv
+   and remote/feature-claims.tsv into the directory llama-server serves this
+   page from, so the tier badge and the support matrix read the same ledgers
+   the launch path reads rather than a second copy written here.
+
+   GET /v1/models stays the request-model authority. The roster decorates an id
+   the listener returned and contributes none: every render iterates the roster
+   ids and looks each one up, so a roster row for a model the server withheld
+   reaches neither the picker nor the matrix, and a served id the roster omits
+   keeps its option and renders an empty matrix row. An absent or malformed
+   roster leaves both surfaces off and the picker routing. */
+let featureRoster = null;
+
+async function loadFeatureRoster() {
+  try {
+    const response = await fetch('./roster.json', { headers: authHeaders() });
+    if (!response.ok) return null;
+    const roster = await response.json();
+    if (!roster || roster.schema !== 'qwen-feature-roster/1') return null;
+    if (!Array.isArray(roster.models) || !Array.isArray(roster.features)) return null;
+    return roster;
+  } catch {
+    return null;
+  }
+}
+
+function rosterModelRow(modelId) {
+  if (!featureRoster) return null;
+  return featureRoster.models.find(row => row && row.id === modelId) ?? null;
+}
+
+// The roster is read once, on the first badge a transcript renders, and the
+// promise rather than its result is memoized: a launch that serves no roster
+// answers 404 and every later badge reads that one answer instead of issuing a
+// request per assistant message. A turn that generates nothing reads nothing.
+let featureRosterRead = null;
+
+function featureRosterOnce() {
+  if (!featureRosterRead) {
+    featureRosterRead = loadFeatureRoster().then(roster => {
+      featureRoster = roster;
+      return roster;
+    });
+  }
+  return featureRosterRead;
+}
+
+async function appendModelBadge(whoElement, servedModel) {
+  /* Name the model that answered one assistant message, with its registry tier
+     where the roster carries the row.
+
+     The served id comes from the completion's own `model` key rather than from
+     the picker, so a badge states which child answered rather than which one
+     the picker names now. A roster the launch omits leaves the id alone. */
+  if (!whoElement || !servedModel) return;
+  const name = document.createElement('span');
+  name.className = 'served-model';
+  name.textContent = ` ${servedModel}`;
+  whoElement.append(name);
+  const roster = await featureRosterOnce();
+  if (!roster) return;
+  const row = rosterModelRow(servedModel);
+  const tier = row && typeof row.tier === 'string' ? row.tier : '';
+  if (!tier) return;
+  const badge = document.createElement('span');
+  badge.className = `tier-badge ${tier}`;
+  badge.textContent = tier;
+  whoElement.append(badge);
+}
+// ==== end feature roster ====================================================
 
 function selectRequestModel(selectedModel, persist = true) {
   const generation = ++modelStateGeneration;
@@ -2004,13 +2168,29 @@ function turn(who, cls) {
   d.append(w, b);
   logEl.append(d);
   logEl.scrollTop = logEl.scrollHeight;
-  return { root: d, body: b };
+  // `who` travels with the turn because the model badge writes into it: an
+  // assistant message names the served id beside the speaker rather than in a
+  // second row the reader has to pair up.
+  return { root: d, body: b, who: w };
 }
 
-$('#clear').onclick = () => {
-  conversationGeneration++;
-  history = []; toolCallSequence = 0; logEl.textContent = '';
-};
+function openRoundInTurn(root) {
+  // A continuation round appends its own speaker line and answer body to a turn
+  // that already holds an earlier round, so each round keeps its own model
+  // badge and its own timings while the reader sees one turn.
+  const w = document.createElement('div');
+  w.className = 'who';
+  w.textContent = 'qwen';
+  const b = document.createElement('div');
+  b.className = 'body';
+  root.append(w, b);
+  logEl.scrollTop = logEl.scrollHeight;
+  return { root, body: b, who: w };
+}
+
+// Clear opens a new conversation. The record the panel already holds keeps the
+// transcript this button leaves, so clearing the log discards nothing.
+$('#clear').onclick = () => { startNewConversation(); };
 
 $('#input').addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
@@ -2051,6 +2231,11 @@ async function streamCompletion(messages, view, webPermission, imagePermission) 
   const t0 = performance.now();
   let first = null, streamChunks = 0, completionTokens = null;
   let serverTimings = null, answer = '', reasoning = '', finish = null;
+  // Every chat.completion.chunk carries the id of the child that answered
+  // (`oaicompat_model`, tools/server/server-task.cpp:481), so the badge and the
+  // conversation record name the model that produced the tokens rather than the
+  // one the picker holds when the stream ends.
+  let servedModel = null;
   const toolCalls = {};
   const resp = await fetch('./v1/chat/completions', {
     method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
@@ -2073,6 +2258,7 @@ async function streamCompletion(messages, view, webPermission, imagePermission) 
       if (!line.startsWith('data: ')) continue;
       if (line === 'data: [DONE]') continue;
       let d; try { d = JSON.parse(line.slice(6)); } catch { continue; }
+      if (typeof d.model === 'string' && d.model) servedModel = d.model;
       if (d.usage?.completion_tokens !== undefined) completionTokens = d.usage.completion_tokens;
       if (d.timings) serverTimings = d.timings;
       const ch = d.choices?.[0]; if (!ch) continue;
@@ -2128,11 +2314,22 @@ async function streamCompletion(messages, view, webPermission, imagePermission) 
   if (finish && finish !== 'stop') bits.push(`ended on ${finish}`);
   if (!answer && reasoning) bits.push('the answer is empty; the model spent the budget reasoning');
   view.meta.textContent = bits.join(' | ');
-  return { answer, reasoning, calls };
+  // A chunk without the key leaves the picker's own value, so the badge names
+  // a model on every completed stream.
+  const model = servedModel || requestModel;
+  void appendModelBadge(view.turn.who, model);
+  return { answer, reasoning, calls, model };
 }
 
-function openTurnView() {
-  const t = turn('qwen');
+function openTurnView(sharedRoot) {
+  /* Open one round's view, inside an existing turn where the caller names one.
+
+     A turn that proposes a tool runs several completion rounds, and each round
+     is one assistant message. They share a turn block, so a generated image
+     sits between the round that proposed it and the round that describes it:
+     the artifact card appends to this root and the next round's speaker line,
+     answer, and meta append after it. */
+  const t = sharedRoot ? openRoundInTurn(sharedRoot) : turn('qwen');
   const think = document.createElement('details');
   think.className = 'think';
   const sum = document.createElement('summary');
@@ -2402,6 +2599,11 @@ async function renderImageArtifactCard(container, fields, result, lineage, signa
   });
   img.src = blobUrl;
   container.append(card);
+  // The conversation record keeps the digest and the provenance route the tool
+  // result named, so a later reader refetches these bytes by digest rather than
+  // reading them out of a store.
+  rememberArtifact(fields, result);
+  void saveConversation();
 }
 
 async function postCancelBestEffort(cancelToolName, model) {
@@ -2531,6 +2733,8 @@ function answerCall(callId, toolName, content, turnGeneration) {
   // replaced, and appending it here would land in the wrong transcript.
   if (turnGeneration !== conversationGeneration) return;
   history.push({ role: 'tool', tool_call_id: callId, name: toolName, content });
+  rememberToolMessage(callId, toolName, content);
+  void saveConversation();
 }
 
 async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetchBudget,
@@ -2776,6 +2980,7 @@ async function send() {
     ? '\n' + attachments.map(a => `[${a.name}]`).join(' ') : '');
   turn('you', 'me').body.textContent = shown;
   history.push({ role: 'user', content });
+  rememberUserMessage(content, shown);
   // Every later mutation of `history` in this turn checks against this
   // snapshot, so a Clear during an awaited stream, approval, or fetch
   // discards the turn's result instead of writing it into the conversation
@@ -2792,9 +2997,13 @@ async function send() {
   const fetchBudget = { remaining: WEB_FETCH_BUDGET_PER_TURN };
   const searchBudget = { remaining: WEB_SEARCH_BUDGET_PER_TURN };
   const imageBudget = { remaining: IMAGE_GENERATE_BUDGET_PER_TURN };
+  // Every round of this turn renders into one turn block, so a tool result's
+  // artifact card and the answer the next round writes about it stay together.
+  let turnRoot = null;
   try {
     for (let round = 0; round < CONTINUATION_CAP; round++) {
-      const view = openTurnView();
+      const view = openTurnView(turnRoot);
+      turnRoot = view.turn.root;
       // buildRequestBody reads `requestModel` at request time, so this
       // snapshot names the model that proposed whatever tool_calls the
       // stream returns; the approval and the executor both compare the
@@ -2824,6 +3033,8 @@ async function send() {
         }));
       }
       history.push(msg);
+      rememberAssistantMessage(msg, outcome.model, outcome.reasoning);
+      void saveConversation();
       if (!outcome.calls.length) return;
       // A cache hit: buildRequestBody() already populated this entry inside
       // streamCompletion() when imagePermission was on, so this call issues
@@ -2854,6 +3065,620 @@ async function send() {
     $('#input').focus();
   }
 }
+
+// ==== conversation store ====================================================
+/* A conversation is a durable record with a URL, and this block is the whole
+   authority for what reaches a browser store.
+
+   Three stores answer in order. IndexedDB holds a keyed record per
+   conversation; localStorage holds the same records under one key each beside
+   an index; an in-memory Map serves the page whose browser refuses both, so a
+   denial costs the reload rather than the panel. Every access sits inside a
+   try/catch and a refusal falls to the next store.
+
+   What is written is a projection rather than a live object: role, content, the
+   served model id, the tool call ids and arguments the transcript re-sends, and
+   an artifact's digest, provenance route, seed, and geometry. A broker grant, a
+   session secret, the API key, and the bearer travel in request bodies and
+   headers alone and reach no projection here, so the record a later reader
+   restores authorizes nothing. Image bytes stay out too: a restored card
+   refetches the artifact by its digest over the listener's credentialed route.
+
+   `history` is rebuilt from the record, so a restored conversation continues
+   against the same transcript the server already read. */
+const CONVERSATION_DATABASE_NAME = 'qwen-apu-conversations';
+const CONVERSATION_DATABASE_VERSION = 1;
+const CONVERSATION_OBJECT_STORE = 'conversations';
+const CONVERSATION_INDEX_KEY = 'qwen-apu-conversation-index';
+const CONVERSATION_RECORD_PREFIX = 'qwen-apu-conversation:';
+const CONVERSATION_SELECTED_KEY = 'qwen-apu-conversation-selected';
+const CONVERSATION_TITLE_CHARACTER_CAP = 60;
+const CONVERSATION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+let conversationId = null;
+let conversationTitle = '';
+let conversationMessages = [];
+// The assistant entry an artifact card attaches to, with the conversation
+// generation it was created under: a generation that has moved on means the
+// card belongs to a transcript this page no longer holds, so the digest is
+// dropped rather than written into the record now open.
+let activeAssistantEntry = null;
+let activeAssistantGeneration = -1;
+// A live card revokes its own blob URL from its remove button; a restored card
+// carries none, so the reset that clears the log owns the revocation and a
+// conversation switched away from releases every image it drew.
+const restoredArtifactBlobUrls = new Set();
+
+function conversationSummary(record) {
+  return {
+    id: record.id,
+    title: record.title || 'untitled',
+    updated: Number.isFinite(record.updated) ? record.updated : 0
+  };
+}
+
+function newConversationId() {
+  try {
+    if (typeof crypto !== 'undefined' && crypto && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID().replace(/-/g, '');
+    }
+  } catch { /* the clock and Math.random name the conversation instead */ }
+  return `c${Date.now().toString(36)}${Math.floor(Math.random() * 1e9).toString(36)}`;
+}
+
+function conversationRequestAsPromise(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('the store refused the request'));
+  });
+}
+
+async function openConversationDatabase() {
+  if (typeof indexedDB === 'undefined' || !indexedDB) {
+    throw new Error('this browser exposes no IndexedDB');
+  }
+  const request = indexedDB.open(CONVERSATION_DATABASE_NAME, CONVERSATION_DATABASE_VERSION);
+  request.onupgradeneeded = () => {
+    const database = request.result;
+    if (!database.objectStoreNames.contains(CONVERSATION_OBJECT_STORE)) {
+      database.createObjectStore(CONVERSATION_OBJECT_STORE, { keyPath: 'id' });
+    }
+  };
+  return conversationRequestAsPromise(request);
+}
+
+function indexedDatabaseConversationStore(database) {
+  const run = (mode, action) => new Promise((resolve, reject) => {
+    let transaction;
+    try {
+      transaction = database.transaction(CONVERSATION_OBJECT_STORE, mode);
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    transaction.onabort = () =>
+      reject(transaction.error || new Error('the transaction aborted'));
+    let request;
+    try {
+      request = action(transaction.objectStore(CONVERSATION_OBJECT_STORE));
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('the store refused the request'));
+  });
+  return {
+    name: 'indexeddb',
+    async list() {
+      const records = await run('readonly', store => store.getAll());
+      return (Array.isArray(records) ? records : []).map(conversationSummary);
+    },
+    async read(id) {
+      return (await run('readonly', store => store.get(id))) || null;
+    },
+    async write(record) { await run('readwrite', store => store.put(record)); },
+    async remove(id) { await run('readwrite', store => store.delete(id)); }
+  };
+}
+
+function browserStorageConversationStore() {
+  const readIndex = () => {
+    const raw = readBrowserStorage('localStorage', CONVERSATION_INDEX_KEY);
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter(entry =>
+        entry && typeof entry.id === 'string' && CONVERSATION_ID_PATTERN.test(entry.id));
+    } catch {
+      return [];
+    }
+  };
+  const writeIndex = entries => writeBrowserStorage(
+    'localStorage', CONVERSATION_INDEX_KEY, JSON.stringify(entries));
+  return {
+    name: 'localstorage',
+    async list() { return readIndex(); },
+    async read(id) {
+      const raw = readBrowserStorage('localStorage', CONVERSATION_RECORD_PREFIX + id);
+      if (!raw) return null;
+      try { return JSON.parse(raw); } catch { return null; }
+    },
+    async write(record) {
+      writeBrowserStorage(
+        'localStorage', CONVERSATION_RECORD_PREFIX + record.id, JSON.stringify(record));
+      const entries = readIndex().filter(entry => entry.id !== record.id);
+      entries.push(conversationSummary(record));
+      writeIndex(entries);
+    },
+    async remove(id) {
+      writeBrowserStorage('localStorage', CONVERSATION_RECORD_PREFIX + id, null);
+      writeIndex(readIndex().filter(entry => entry.id !== id));
+    }
+  };
+}
+
+function memoryConversationStore() {
+  const records = new Map();
+  return {
+    name: 'memory',
+    async list() { return [...records.values()].map(conversationSummary); },
+    async read(id) { return records.get(id) || null; },
+    async write(record) { records.set(record.id, record); },
+    async remove(id) { records.delete(id); }
+  };
+}
+
+async function resolveConversationStore() {
+  try {
+    const database = await openConversationDatabase();
+    const store = indexedDatabaseConversationStore(database);
+    // The list proves the object store answers, so a database that opened and
+    // then refuses every transaction falls through here rather than at the
+    // first save.
+    await store.list();
+    return store;
+  } catch { /* the next store answers where IndexedDB refuses */ }
+  try {
+    const probeKey = `${CONVERSATION_RECORD_PREFIX}probe`;
+    window.localStorage.setItem(probeKey, '1');
+    window.localStorage.removeItem(probeKey);
+    return browserStorageConversationStore();
+  } catch { /* a denied localStorage leaves the record in memory for this page */ }
+  return memoryConversationStore();
+}
+
+let conversationStoreRead = null;
+
+function conversationStore() {
+  if (!conversationStoreRead) conversationStoreRead = resolveConversationStore();
+  return conversationStoreRead;
+}
+
+async function readConversationRecord(id) {
+  try {
+    return await (await conversationStore()).read(id);
+  } catch {
+    return null;
+  }
+}
+
+function rememberSelectedConversation(id) {
+  writeBrowserStorage('localStorage', CONVERSATION_SELECTED_KEY, id || null);
+}
+
+function rememberUserMessage(content, shown) {
+  const entry = { role: 'user', content, shown };
+  conversationMessages.push(entry);
+  if (!conversationTitle) {
+    const heading = (shown || content || '').trim().replace(/\s+/g, ' ');
+    conversationTitle = heading
+      ? prefixAtWholeCodePoint(heading, CONVERSATION_TITLE_CHARACTER_CAP)
+      : 'untitled';
+  }
+  return entry;
+}
+
+function rememberAssistantMessage(message, servedModel, reasoning) {
+  const entry = {
+    role: 'assistant',
+    content: message.content || '',
+    model: servedModel || '',
+    reasoning: reasoning || '',
+    artifacts: []
+  };
+  if (Array.isArray(message.tool_calls) && message.tool_calls.length) {
+    entry.tool_calls = message.tool_calls.map(call => ({
+      id: call.id,
+      type: 'function',
+      function: { name: call.function.name, arguments: call.function.arguments }
+    }));
+  }
+  conversationMessages.push(entry);
+  activeAssistantEntry = entry;
+  activeAssistantGeneration = conversationGeneration;
+  return entry;
+}
+
+function rememberToolMessage(callId, toolName, content) {
+  conversationMessages.push({
+    role: 'tool', tool_call_id: callId, name: toolName, content
+  });
+}
+
+function rememberArtifact(fields, result) {
+  /* Record the two identifying fields the tool result carries and the geometry
+     the approval bound. The grant is spent inside the request that produced
+     this digest and reaches neither the record nor `history`. */
+  if (!activeAssistantEntry || activeAssistantGeneration !== conversationGeneration) return;
+  if (!Array.isArray(activeAssistantEntry.artifacts)) activeAssistantEntry.artifacts = [];
+  activeAssistantEntry.artifacts.push({
+    sha256: result.sha256,
+    provenanceUrl: result.provenanceUrl,
+    prompt: fields.prompt,
+    seed: fields.seed,
+    width: fields.width,
+    height: fields.height,
+    steps: fields.steps,
+    profile: fields.profile
+  });
+}
+
+async function saveConversation() {
+  if (!conversationId) return;
+  // The JSON round trip is the projection boundary: the record the store keeps
+  // shares no object with the live transcript, so a later mutation of a message
+  // reaches the store through a save rather than behind one.
+  let record;
+  try {
+    record = JSON.parse(JSON.stringify({
+      id: conversationId,
+      title: conversationTitle || 'untitled',
+      updated: Date.now(),
+      messages: conversationMessages
+    }));
+  } catch {
+    return;
+  }
+  try {
+    await (await conversationStore()).write(record);
+  } catch { /* a store that refuses the write leaves the live page authoritative */ }
+  await renderConversationList();
+}
+
+function restoredCallSequence(messages) {
+  /* Continue the call-id counter past every id the record already holds, so a
+     new tool call in a restored conversation names an id no earlier message
+     answered. */
+  let highest = -1;
+  for (const entry of messages) {
+    for (const call of (entry && entry.tool_calls) || []) {
+      const match = typeof call.id === 'string' && call.id.match(/^call_(\d+)$/);
+      if (match) highest = Math.max(highest, Number(match[1]));
+    }
+  }
+  return highest + 1;
+}
+
+function renderRestoredArtifactCard(container, artifact) {
+  /* Rebuild one artifact card from its digest. The card takes its place in the
+     turn while this call runs, so a restore that reads several artifacts over
+     the network keeps each one between the round that generated it and the
+     round that describes it; the bytes arrive into the card that is already
+     there.
+
+     The image comes back over the listener's own credentialed route rather
+     than out of the record, so a conversation costs the digest and the
+     geometry in the store whatever the image weighs. A listener this page
+     holds no origin for, or one that refuses the read, leaves the digest and
+     the provenance route on the card with the reason beside them. */
+  const card = document.createElement('figure');
+  card.className = 'image-artifact';
+  const caption = document.createElement('figcaption');
+  caption.textContent = [
+    `sha256 ${artifact.sha256}`,
+    `seed ${artifact.seed}`,
+    `${artifact.width}x${artifact.height}`,
+    `${artifact.steps} steps`,
+    artifact.profile
+  ].join(' | ');
+  card.append(caption);
+  container.append(card);
+  void (async () => {
+    let blobUrl = null;
+    try {
+      blobUrl = await loadArtifactBlobUrl(artifact.sha256, null);
+    } catch (error) {
+      const note = document.createElement('div');
+      note.className = 'meta bad';
+      note.textContent = `the artifact did not load: ${error.message || error}; ` +
+        `provenance ${artifact.provenanceUrl}`;
+      card.append(note);
+      return;
+    }
+    restoredArtifactBlobUrls.add(blobUrl);
+    const image = document.createElement('img');
+    image.alt = artifact.prompt || '';
+    image.src = blobUrl;
+    card.insertBefore(image, caption);
+  })();
+  return card;
+}
+
+function renderRestoredAssistantTurn(entry, sharedRoot) {
+  const view = sharedRoot ? openRoundInTurn(sharedRoot) : turn('qwen');
+  void appendModelBadge(view.who, entry.model);
+  view.body.textContent = entry.content || '';
+  if (entry.reasoning) {
+    const think = document.createElement('details');
+    think.className = 'think';
+    const summary = document.createElement('summary');
+    summary.textContent = 'reasoning';
+    const thinkBody = document.createElement('div');
+    thinkBody.className = 'body';
+    thinkBody.textContent = entry.reasoning;
+    think.append(summary, thinkBody);
+    view.root.insertBefore(think, view.body);
+  }
+  if (Array.isArray(entry.tool_calls) && entry.tool_calls.length) {
+    const proposal = document.createElement('pre');
+    proposal.className = 'tool';
+    proposal.textContent = entry.tool_calls
+      .map(call => `${call.function.name}(${call.function.arguments})`).join('\n');
+    view.root.append(proposal);
+  }
+  for (const artifact of entry.artifacts || []) {
+    renderRestoredArtifactCard(view.root, artifact);
+  }
+  return view.root;
+}
+
+function restoreTranscript() {
+  /* Rebuild `history` and the log from the record. A tool message restores into
+     `history` and renders nothing, which is what the live path shows: the log
+     carries the proposed call and the answer the model wrote after reading the
+     result. */
+  history = [];
+  // A tool-calling assistant message opens a turn its continuation rounds join,
+  // the grouping the live path renders, so a restored image keeps the answer
+  // that follows it under the same speaker.
+  let continuationRoot = null;
+  for (const entry of conversationMessages) {
+    if (!entry || typeof entry.role !== 'string') continue;
+    if (entry.role === 'user') {
+      history.push({ role: 'user', content: entry.content });
+      turn('you', 'me').body.textContent = entry.shown ?? entry.content;
+      continuationRoot = null;
+      continue;
+    }
+    if (entry.role === 'tool') {
+      history.push({
+        role: 'tool', tool_call_id: entry.tool_call_id,
+        name: entry.name, content: entry.content
+      });
+      continue;
+    }
+    const message = { role: 'assistant', content: entry.content };
+    if (Array.isArray(entry.tool_calls) && entry.tool_calls.length) {
+      message.tool_calls = entry.tool_calls;
+    }
+    history.push(message);
+    const root = renderRestoredAssistantTurn(entry, continuationRoot);
+    continuationRoot = message.tool_calls ? root : null;
+  }
+  toolCallSequence = restoredCallSequence(conversationMessages);
+}
+
+function resetConversationState() {
+  conversationGeneration++;
+  history = [];
+  toolCallSequence = 0;
+  conversationMessages = [];
+  activeAssistantEntry = null;
+  activeAssistantGeneration = -1;
+  for (const blobUrl of restoredArtifactBlobUrls) {
+    try { URL.revokeObjectURL(blobUrl); } catch { /* a released page keeps none */ }
+  }
+  restoredArtifactBlobUrls.clear();
+  logEl.textContent = '';
+}
+
+function conversationHashId() {
+  try {
+    const match = (window.location.hash || '').match(/^#\/c\/([A-Za-z0-9_-]{1,64})$/);
+    return match ? match[1] : null;
+  } catch {
+    // A context without a location leaves the conversation unrouted and the
+    // remembered selection authoritative.
+    return null;
+  }
+}
+
+function setConversationHash(id) {
+  try {
+    window.location.hash = id ? `#/c/${id}` : '';
+  } catch { /* an unrouted page keeps the selection in the store alone */ }
+}
+
+function startNewConversation(route = true) {
+  /* Open an empty conversation. The record reaches the store on the first
+     message rather than here, so a page opened and left alone adds no row to
+     the panel. */
+  resetConversationState();
+  conversationId = newConversationId();
+  conversationTitle = '';
+  rememberSelectedConversation(conversationId);
+  if (route) setConversationHash(conversationId);
+  void renderConversationList();
+  return conversationId;
+}
+
+async function switchConversation(id, route = true) {
+  if (busy || !CONVERSATION_ID_PATTERN.test(id)) {
+    // A hashchange lands after the address bar already moved, so a refused
+    // switch writes the route back to the conversation on screen rather than
+    // leaving the URL naming one this page never opened. The write raises one
+    // further hashchange whose id already matches, which ends there.
+    setConversationHash(conversationId);
+    return false;
+  }
+  const record = await readConversationRecord(id);
+  resetConversationState();
+  conversationId = id;
+  conversationTitle = (record && record.title) || '';
+  conversationMessages = record && Array.isArray(record.messages) ? record.messages : [];
+  rememberSelectedConversation(id);
+  if (route) setConversationHash(id);
+  restoreTranscript();
+  await renderConversationList();
+  return true;
+}
+
+async function renameConversation(id) {
+  const record = await readConversationRecord(id);
+  if (!record) return;
+  let proposed = null;
+  try {
+    proposed = window.prompt('Conversation name', record.title || '');
+  } catch {
+    proposed = null;
+  }
+  if (proposed === null) return;
+  const title = prefixAtWholeCodePoint(
+    proposed.trim().replace(/\s+/g, ' ') || 'untitled', CONVERSATION_TITLE_CHARACTER_CAP);
+  record.title = title;
+  if (id === conversationId) conversationTitle = title;
+  try {
+    await (await conversationStore()).write(record);
+  } catch { /* a store that refuses the rename leaves the stored title */ }
+  await renderConversationList();
+}
+
+async function deleteConversation(id) {
+  try {
+    await (await conversationStore()).remove(id);
+  } catch { /* a store that refuses the removal keeps the row */ }
+  if (id === conversationId) startNewConversation();
+  await renderConversationList();
+}
+
+async function renderConversationList() {
+  const list = $('#conversation-list');
+  let entries = [];
+  try {
+    entries = await (await conversationStore()).list();
+  } catch {
+    entries = [];
+  }
+  entries.sort((first, second) => (second.updated || 0) - (first.updated || 0));
+  list.textContent = '';
+  if (!entries.length) {
+    const empty = document.createElement('div');
+    empty.id = 'conversation-empty';
+    empty.textContent = 'this store holds no saved conversation yet';
+    list.append(empty);
+    return;
+  }
+  for (const entry of entries) {
+    const row = document.createElement('div');
+    row.className = 'conversation-row' + (entry.id === conversationId ? ' selected' : '');
+    const open = document.createElement('button');
+    open.className = 'open';
+    open.textContent = entry.title || 'untitled';
+    open.onclick = () => { void switchConversation(entry.id); };
+    const rename = document.createElement('button');
+    rename.className = 'small';
+    rename.textContent = 'rename';
+    rename.onclick = () => { void renameConversation(entry.id); };
+    const remove = document.createElement('button');
+    remove.className = 'small';
+    remove.textContent = 'delete';
+    remove.onclick = () => { void deleteConversation(entry.id); };
+    row.append(open, rename, remove);
+    list.append(row);
+  }
+}
+
+async function initConversations() {
+  /* The route names the conversation, the remembered selection names it where
+     the route is silent, and a name neither store answers for opens an empty
+     conversation instead of an error. */
+  const routed = conversationHashId();
+  const remembered = readBrowserStorage('localStorage', CONVERSATION_SELECTED_KEY);
+  const candidate = routed ||
+    (remembered && CONVERSATION_ID_PATTERN.test(remembered) ? remembered : null);
+  if (candidate && await readConversationRecord(candidate)) {
+    await switchConversation(candidate, routed === null);
+    return;
+  }
+  startNewConversation(false);
+  await renderConversationList();
+}
+
+$('#conversation-new').onclick = () => { startNewConversation(); };
+
+if (typeof window.addEventListener === 'function') {
+  window.addEventListener('hashchange', () => {
+    const routed = conversationHashId();
+    if (routed && routed !== conversationId) void switchConversation(routed, false);
+  });
+}
+
+void initConversations();
+// ==== end conversation store ================================================
+
+// ==== the llama.cpp UI tab ==================================================
+/* The two tabs name two launches of one binary rather than two routes of one
+   listener. `server_http_context::init` mounts a `--path` directory at
+   `api_prefix + "/"` where `public_path` carries a value
+   (tools/server/server-http.cpp:333-335) and registers the compiled-in UI
+   assets under the same prefix in its else branch (:339-427), and `--api-prefix`
+   supplies one value to whichever branch runs (common/arg.cpp:3352-3356), so
+   the embedded UI reaches no second prefix beside a served static path. Router
+   mode leaves that unchanged: `ctx_http.init(params)` runs ahead of the router
+   branch (tools/server/server.cpp:173 against :188-232). The tab therefore
+   opens a notice naming the launch that serves the other page, and the page
+   this notice belongs to keeps the surfaces the other one has none of. */
+function selectTab(name) {
+  const chatSelected = name !== 'llama';
+  $('#workspace').hidden = !chatSelected;
+  $('#llama-ui-panel').hidden = chatSelected;
+  $('#tab-chat').setAttribute('aria-selected', String(chatSelected));
+  $('#tab-llama').setAttribute('aria-selected', String(!chatSelected));
+}
+
+$('#tab-chat').onclick = () => selectTab('chat');
+$('#tab-llama').onclick = () => selectTab('llama');
+
+try {
+  // The link names the listener this page came from, which is the address the
+  // ordinary launch answers the llama.cpp UI on.
+  const pageOrigin = window.location.origin;
+  if (pageOrigin) {
+    $('#llama-ui-link').href = `${pageOrigin}/`;
+    $('#llama-ui-origin').textContent = ` -- ${pageOrigin}`;
+  }
+} catch { /* a page without a location keeps the relative root the markup names */ }
+
+$('#copy-api-key').onclick = async () => {
+  // The key stays in the header field and in sessionStorage; this copies the
+  // value the user already entered rather than reading any store of its own.
+  const note = $('#copy-api-key-note');
+  const key = $('#api-key').value.trim();
+  if (!key) {
+    note.textContent = ' this page holds no key to copy';
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(key);
+    note.textContent = ' copied';
+  } catch {
+    note.textContent =
+      ' the browser refused the clipboard; read the key from the header field';
+  }
+};
+// ==== end the llama.cpp UI tab ==============================================
 </script>
 </body>
 </html>
