@@ -381,10 +381,39 @@ row matching the sections it names. Requiring the record of every bundle
 refused `natural-boundary-13d05a0-r2` outright and left the appliance serving
 through the recovery form alone, where an explicit `QWEN_LLAMA_SERVER` beside
 `QWEN_ROUTER_PRESETS` outranks the deployment and reads no bundle at all; the
-resolution refusal now prints that form. The image lane
-stays on `qwen-image-launch.sh`, which owns the two-checkpoint resident
-arithmetic, the artifact listener, and the review-only section that a
-sixteen-section preset at `QWEN_ROUTER_MAX=1` supplies none of.
+resolution refusal now prints that form.
+
+The image lane rides the same file. `build-router-presets.sh` reads
+`remote/image-profiles.tsv` under the rules `build-web-presets.sh` applies, so a
+`validator-gated` row adds one `image` server to each web section's MCP
+configuration under `QWEN_WEB_AUTHORIZER_READY=1` and an all-refused ledger adds
+none, and the head marker `# qwen_image_profile=` names what emitted with `-`
+for a withheld lane, the reading a preset generated before the lane also
+carries. `qwen-capacity-policy.sh` holds every web section's own configuration
+to that marker in both directions -- a named profile requires an image server
+bound to that profile and to that section as its language profile, and a
+withheld marker requires none -- through `remote/read-image-mcp-server.py`, the
+one parser the policy and the launch read that file with. `qwen-launch.sh` then
+does what `qwen-image-launch.sh` does for the web-only preset, from
+`remote/image-launch-lib.sh`: it rejoins the ledger row, validates the parameter
+file the service runs a job under, proves the deadline stack ordered, exports
+`QWEN_IMAGE_SERVICE=1` with the five inputs so `qwen-webui-session.sh` starts
+the service as a guarded child beside the broker and the search instance, and
+adds the image runtime's mebibytes to the requirement the largest-servable
+selection computed. `--models-max 1` keeps the roster's sections from being
+co-resident, so the runtime is the whole addition and the reviewer is the
+registry row a request selects: this file already serves every vision row at its
+own tuple with its projector, a second section named for that model_id would be
+two sections of one name, and `# qwen_image_review_section=` names the roster
+row instead. That marker is written only where the reviewer resolves whole, and
+`lfm25-vl-16b` carries no `router-child` row in `remote/validated-tuples.tsv`
+with the projector loaded, so the shipped ledger arms generation and withholds
+the review marker beside the `probe-depth-projector.sh` command that measures
+the arm. The bundle records the lane in the column it already had:
+`web-mcp-manifest.tsv` gains an `image_server` field over the configuration it
+names by path and digest, and `verify-deployment-bundle.sh` compares that field
+against the marker without opening a file, so a three-column row written before
+this lane reads `-`.
 
 Router mode leaves depth, cache triple, and submission geometry off its own
 argv. `server-models.cpp` ends its preset assembly with
@@ -1211,9 +1240,22 @@ remote/model-registry.sh ctx-checkpoints | ctx-checkpoint MODEL_ID
 remote/measure-draft-pair.sh PAIR_ID OUTPUT_DIR
                                                 # snapshot-bound ABBA pairing
 remote/build-router-presets.sh [OUTPUT_INI]    # the picker, from the tier field
+# The roster plus its web section. The shipped image ledger carries one
+# validator-gated row, so a generation arming the web lane alone names an
+# all-refused image ledger the way remote/test-web-presets.sh does.
 QWEN_WEB_AUTHORIZER_READY=1 QWEN_WEB_MCP_SERVER=remote/web-mcp/server.py \
 QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
-    remote/build-router-presets.sh OUT.ini     # the roster plus its web section
+QWEN_IMAGE_PROFILES=remote/test-fixtures/image-profiles-refused.tsv \
+    remote/build-router-presets.sh OUT.ini
+# The roster plus its web section plus the image server that section carries.
+QWEN_WEB_AUTHORIZER_READY=1 QWEN_WEB_MCP_SERVER=remote/web-mcp/server.py \
+QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
+QWEN_IMAGE_MCP_SERVER=remote/image-mcp/server.py \
+QWEN_IMAGE_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
+QWEN_IMAGE_STATE_DIR=$HOME/qwen-webui-state/images \
+QWEN_IMAGE_SERVICE_SOCKET=$HOME/qwen-webui-state/images/image-service.sock \
+QWEN_IMAGE_PROFILES_JSON=$HOME/qwen-webui-state/image-parameters.json \
+    remote/build-router-presets.sh OUT.ini
 remote/build-web-presets.sh OUTPUT_INI         # web profiles, from the execution_policy field
 remote/fetch-candidate-artifact.sh REPO REV FILE DIR  # observed, not pinned
 remote/run-one-token-admission.sh RECORD [OUT]  # load every candidate once
