@@ -1345,8 +1345,8 @@ remote/summarize-perf-logger-slice.py OUT/arms/NN-S/server-log-request.slice \
 # Activation and rollback are the same atomic symlink transition, serialized
 # on descriptor 7 of .activate.lock under the root, which
 # open-verified-lock-descriptor.py opens without following a link or
-# truncating and holds exclusively for the activator and shared for the
-# resolver. An automatic launch resolves the bundle once:
+# truncating, refuses a leaf with more than one hard link, and holds
+# exclusively for the activator and shared for the resolver. An automatic launch resolves the bundle once:
 # resolve-active-deployment.sh follows deployment-current to one directory
 # immediately below the root, verifies it whole through
 # verify-deployment-bundle.sh, and the launchers and qwen-webui-control.sh
