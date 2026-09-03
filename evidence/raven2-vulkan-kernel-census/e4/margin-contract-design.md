@@ -62,7 +62,17 @@ The contract holds when every line below holds on every prompt:
 | candidate margin | `m1 > 0` at every read position |
 | retention | `r >= 0.5` at every position where `m0 >= 0.1` nat |
 | near ties | positions with `m0 < 0.1` nat are counted and their `m1` reported, and a ratio is not read over them |
-| coverage | at most two unread positions per sample, the server's own probability-array gap |
+| coverage | an unread position is a token the server withheld as an incomplete UTF-8 piece, and the reader admits it only when the following entry carries the multi-byte sequence |
+
+The coverage line was first written as "at most two unread positions per
+sample" from the discovery run's one gap. The first holdout attempt refused
+its third prompt at the reader, ahead of any margin being computed: the
+reply wrote `÷` three times and `process_token` in
+`tools/server/server-context.cpp` at f280b269 adds a probability entry only
+when the generated text ends in complete UTF-8, so the count of withheld
+entries follows content. The line above states the mechanism in place of a
+cap, and the change touches which positions are read rather than how any
+read position is judged.
 
 Reported and deciding nothing: the truncated total variation over the union
 of both top-10 lists with the remaining mass as one bucket each, a lower

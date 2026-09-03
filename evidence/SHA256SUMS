@@ -2147,7 +2147,7 @@ cbba7093a680275c83a55a756c25a89d5931bb798c79c86292d65e40e3f193ae  evidence/raven
 b4ff462f5673a2f6343f9395ab32efd74a62f2f374b48043ed3b889c4884c2b4  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-witness-20260903T0148Z/inputs.tsv
 f721f537366f79bfd1441834c59efda1cec28522625bbc5940d8b0d2a5d48542  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-witness-20260903T0148Z/prompts.tsv
 1d965883fc780f2941ec5032fcfdd54749950a4aef8099824a61bc53e5ff430c  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-witness-20260903T0148Z/summary.tsv
-3b9a10dcdd15f4d6ee61f4fd904f56693f8b17371016a889b5084c6b672b8395  evidence/raven2-vulkan-kernel-census/e4/margin-contract-design.md
+25e24152cd6ef8ce5abfe2c6e54bbcd5d617f59aad29d8ff1647fd937d432e49  evidence/raven2-vulkan-kernel-census/e4/margin-contract-design.md
 34051948c6d41c929773afe48c864562358fb9966000b3b131bea9f64dc931cd  evidence/raven2-vulkan-kernel-census/e4/served-ab-20260902T2032Z/README.md
 67416bd53cf77d2431e1fcd64646b3066a925780e3492ff820f7d489dd74c7db  evidence/raven2-vulkan-kernel-census/e4/served-ab-20260902T2032Z/arms.tsv
 9beb94940970245adc8dc2baf3f8c338feb6bbc6902503fe9331cae4752f2acd  evidence/raven2-vulkan-kernel-census/e4/served-ab-20260902T2032Z/arms/01-C/clock-sidecar-verdict.txt
