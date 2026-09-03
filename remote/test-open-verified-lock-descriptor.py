@@ -1,4 +1,9 @@
-"""Exercise private lock opening and same-owner legacy-mode tightening."""
+"""Exercise private lock opening and same-owner tightening of an owner-write mode.
+
+The lock leaf admits one writer, so a mode another user can write -- 0664 among
+them -- is refused with its bytes and mode intact, and a mode only its owner can
+write is tightened to 0600 through the open descriptor.
+"""
 
 from __future__ import annotations
 
@@ -110,7 +115,7 @@ def main() -> None:
         legacy_lock = temporary_directory / "legacy.lock"
         legacy_bytes = b"retained legacy lock bytes\n"
         legacy_lock.write_bytes(legacy_bytes)
-        legacy_lock.chmod(0o664)
+        legacy_lock.chmod(0o644)
         legacy_status = legacy_lock.stat()
         migrated_result = run_helper(
             helper_path,
@@ -139,7 +144,7 @@ def main() -> None:
         held_lock = temporary_directory / "held-legacy.lock"
         held_bytes = b"held legacy lock bytes\n"
         held_lock.write_bytes(held_bytes)
-        held_lock.chmod(0o664)
+        held_lock.chmod(0o644)
         held_descriptor = os.open(held_lock, os.O_RDWR)
         try:
             fcntl.flock(held_descriptor, fcntl.LOCK_EX)
@@ -155,13 +160,13 @@ def main() -> None:
             raise AssertionError("held legacy lock did not return refusal status 2")
         if "cannot be tightened while the lock is held" not in held_result.stderr:
             raise AssertionError("held legacy lock refusal reason is absent")
-        if stat.S_IMODE(held_lock.stat().st_mode) != 0o664:
+        if stat.S_IMODE(held_lock.stat().st_mode) != 0o644:
             raise AssertionError("held legacy lock mode changed before refusal")
         if held_lock.read_bytes() != held_bytes:
             raise AssertionError("held legacy lock bytes changed before refusal")
         checks_run += 1
 
-        for unadmitted_mode in (0o622, 0o666, 0o777):
+        for unadmitted_mode in (0o664, 0o622, 0o666, 0o777):
             unadmitted_lock = (
                 temporary_directory / f"unadmitted-{unadmitted_mode:o}.lock"
             )
@@ -184,7 +189,7 @@ def main() -> None:
         linked_legacy_lock = temporary_directory / "hard-linked-legacy.lock"
         linked_legacy_alias = temporary_directory / "hard-linked-legacy-alias.lock"
         linked_legacy_lock.write_bytes(b"hard-linked legacy bytes\n")
-        linked_legacy_lock.chmod(0o664)
+        linked_legacy_lock.chmod(0o644)
         os.link(linked_legacy_lock, linked_legacy_alias)
         linked_legacy_result = run_helper(
             helper_path,
@@ -194,7 +199,7 @@ def main() -> None:
         )
         if linked_legacy_result.returncode != 2:
             raise AssertionError("hard-linked legacy mode was normalized")
-        if stat.S_IMODE(linked_legacy_alias.stat().st_mode) != 0o664:
+        if stat.S_IMODE(linked_legacy_alias.stat().st_mode) != 0o644:
             raise AssertionError("hard-linked legacy mode changed on refusal")
         if linked_legacy_alias.read_bytes() != b"hard-linked legacy bytes\n":
             raise AssertionError("hard-linked legacy bytes changed on refusal")
@@ -248,6 +253,25 @@ def main() -> None:
             raise AssertionError("strict verification changed a legacy mode")
         checks_run += 1
 
+        # verify_status states the post-normalization invariant, so it refuses
+        # every mode reaching past the owner: the tightening branch admits 0644
+        # and this branch still requires 0600 by the time a descriptor is
+        # inherited.
+        readable_lock = temporary_directory / "strict-verify-readable.lock"
+        readable_lock.touch(mode=0o644)
+        readable_lock.chmod(0o644)
+        readable_descriptor = os.open(readable_lock, os.O_RDWR)
+        try:
+            require_rejection(
+                lambda: helper.verify_status(readable_lock, readable_descriptor),
+                helper.LockDescriptorError,
+            )
+        finally:
+            os.close(readable_descriptor)
+        if stat.S_IMODE(readable_lock.stat().st_mode) != 0o644:
+            raise AssertionError("strict verification changed an owner-write mode")
+        checks_run += 1
+
         foreign_lock = temporary_directory / "foreign-owner.lock"
         foreign_lock.touch(mode=0o664)
         foreign_lock.chmod(0o664)
@@ -279,7 +303,7 @@ def main() -> None:
         retired_lock = temporary_directory / "retired.lock"
         replacement_lock = temporary_directory / "replacement.lock"
         raced_lock.write_bytes(b"original raced bytes\n")
-        raced_lock.chmod(0o664)
+        raced_lock.chmod(0o644)
         replacement_lock.write_bytes(b"replacement bytes\n")
         replacement_lock.chmod(0o666)
         original_flock = helper.fcntl.flock
@@ -301,7 +325,7 @@ def main() -> None:
             raise AssertionError("pathname race changed replacement bytes")
         if stat.S_IMODE(raced_lock.stat().st_mode) != 0o666:
             raise AssertionError("pathname race changed replacement mode")
-        if stat.S_IMODE(retired_lock.stat().st_mode) != 0o664:
+        if stat.S_IMODE(retired_lock.stat().st_mode) != 0o644:
             raise AssertionError("pathname race changed retired inode mode")
         checks_run += 1
 
