@@ -18,6 +18,17 @@ state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
 bind_host=${QWEN_BIND_HOST:-127.0.0.1}
 server_port=${QWEN_SERVER_PORT:-8080}
 ready_attempts=${QWEN_READY_ATTEMPTS:-3000}
+# The readiness probe reaches the listener the server actually bound. A server
+# bound to one literal answers on that address alone, so a loopback probe
+# against a LAN bind waits out its whole budget and tears down a session that
+# came up correctly. The wildcard bind answers everywhere, which leaves the
+# loopback the shortest path to it.
+if [ "${QWEN_WEB_LAN:-0}" = 1 ] && [ -n "${QWEN_WEB_LAN_ADDRESS:-}" ] &&
+    [ "$bind_host" != 0.0.0.0 ]; then
+    health_probe_host=$QWEN_WEB_LAN_ADDRESS
+else
+    health_probe_host=127.0.0.1
+fi
 
 if pgrep -x llama-server >/dev/null 2>&1; then
     printf 'llama-server is already running; run qwen-teardown.sh first\n' >&2
@@ -361,7 +372,7 @@ while [ "$attempt" -lt "$ready_attempts" ]; do
         exit 1
     fi
     if grep -q 'state=running ' "$state_directory/session.status" 2>/dev/null && \
-       curl --silent --fail "http://127.0.0.1:$server_port/health" >/dev/null 2>&1; then
+       curl --silent --fail "http://$health_probe_host:$server_port/health" >/dev/null 2>&1; then
         break
     fi
     attempt=$((attempt + 1))
@@ -392,11 +403,19 @@ else
         printf 'reachable at http://%s:%s\n' "$address" "$server_port"
     done
 fi
-# The approval broker binds the loopback literal whatever the server's listener
-# is, so a LAN launch reaches it through an SSH forward rather than through the
-# addresses above. It is reported where the marker set it running.
+# The approval broker binds the loopback literal on an ordinary launch, so that
+# launch reaches it through an SSH forward rather than through the addresses
+# above. Under QWEN_WEB_LAN=1 it binds the wildcard and admits the exposure
+# literal in a Host header, so the address a page reaches it at is that literal
+# and the Web UI bearer is what it requires there. It is reported where the
+# marker set it running.
 if [ "${QWEN_WEB_BROKER:-0}" = 1 ]; then
-    printf 'approval broker at http://127.0.0.1:%s (loopback only)\n' \
-        "${QWEN_WEB_BROKER_PORT:-8571}"
+    if [ "${QWEN_WEB_LAN:-0}" = 1 ] && [ -n "${QWEN_WEB_LAN_ADDRESS:-}" ]; then
+        printf 'approval broker at http://%s:%s (bearer required)\n' \
+            "$QWEN_WEB_LAN_ADDRESS" "${QWEN_WEB_BROKER_PORT:-8571}"
+    else
+        printf 'approval broker at http://127.0.0.1:%s (loopback only)\n' \
+            "${QWEN_WEB_BROKER_PORT:-8571}"
+    fi
 fi
 printf 'stop it with %s/qwen-teardown.sh\n' "$script_directory"

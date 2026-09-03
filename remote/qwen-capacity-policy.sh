@@ -499,11 +499,25 @@ case $bind_host in
         ;;
 esac
 
-# The API key is optional at every bind address. A key authenticates callers on
-# a shared network; it grants no capability the model itself withholds, so a
-# trusted network serves without one and reaches the page directly.
+# The API key is optional at every bind address on the ordinary serving path. A
+# key authenticates callers on a shared network; it grants no capability the
+# model itself withholds, so a trusted network serves without one and reaches
+# the page directly.
 if [ -n "$api_key_file" ] && [ -z "$static_path" ]; then
     printf 'an API key file requires a static path\n' >&2
+    exit 2
+fi
+
+# The web and image lanes are the exception, and the guard stands here as well
+# as in the launcher because two paths construct this argv and a preset
+# persists across the launch that generated it. A section reaching the network
+# through its MCP server or the device through its image runtime serves an
+# exposed listener only behind the bearer, so the policy refuses to build the
+# tuple rather than warning about it.
+if [ "${QWEN_WEB_LAN:-0}" = 1 ] && [ -z "$api_key_file" ]; then
+    printf 'the LAN exposure serves an authenticated listener, and no API key file reaches this launch\n' >&2
+    printf 'the web and image launchers export QWEN_REQUIRE_API_KEY=1; a launch reaching here without one binds %s unauthenticated\n' \
+        "$bind_host" >&2
     exit 2
 fi
 
@@ -1357,6 +1371,13 @@ if [ "$router_enabled" = 1 ]; then
     # exposure it would create does not follow it.
     if [ "$quarantine_override_from_environment" = 1 ] ||
        [ "$quarantine_override_from_preset" = 1 ]; then
+        # Forcing the loopback under an exposure the operator asked for would
+        # bind one address while the launcher printed another, so the two
+        # settings refuse together rather than one silently winning.
+        if [ "${QWEN_WEB_LAN:-0}" = 1 ]; then
+            printf 'the quarantine override and the LAN exposure name different listeners; a checkpoint with a recorded device failure serves the loopback\n' >&2
+            exit 2
+        fi
         if [ "$bind_host" != 127.0.0.1 ]; then
             printf 'quarantine override forces the listener to loopback: %s -> 127.0.0.1\n' \
                 "$bind_host" >&2
@@ -1369,6 +1390,13 @@ if [ "$router_enabled" = 1 ]; then
     # ring reaches every host on the network from there. The bind host is forced
     # rather than refused, so the experiment the override exists for still runs.
     if [ "$web_depth_override_from_preset" = 1 ]; then
+        # The exposure and this override refuse together for the reason the
+        # quarantine pair does: the operator validates the depth rather than
+        # serving an unvalidated one on an address the launch announced.
+        if [ "${QWEN_WEB_LAN:-0}" = 1 ]; then
+            printf 'the unvalidated-depth override and the LAN exposure name different listeners; validate the depth or serve it on the loopback\n' >&2
+            exit 2
+        fi
         if [ "$bind_host" != 127.0.0.1 ]; then
             printf 'web preset unvalidated-depth override forces the listener to loopback: %s -> 127.0.0.1\n' \
                 "$bind_host" >&2
