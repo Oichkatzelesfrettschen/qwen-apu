@@ -10,6 +10,14 @@ set -eu
 # build-llama-preset.sh verifies the compiled tree against a replay of the
 # same selection through QWEN_LLAMA_CANDIDATE_SELECT.
 #
+# A caller who removes the previous tree and prepares the next one at the same
+# path keeps the build cache warm. The binary key is content-addressed and
+# crosses paths, so an unchanged selection reuses its executables from
+# anywhere; the shader pack additionally carries ninja's build and dependency
+# logs, whose command hashes and output keys name the source and build
+# directories absolutely, so it is stored per path pair and reused where that
+# pair repeats.
+#
 # usage: prepare-llama-census-source.sh BASE_SOURCE PATCHED_SOURCE PATCH [PATCH...]
 
 if [ "$#" -lt 3 ]; then

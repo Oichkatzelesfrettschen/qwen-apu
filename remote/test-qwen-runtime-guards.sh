@@ -119,6 +119,28 @@ grep -F 'reason=server_exited' "$temporary_directory/positive-telemetry.log" >/d
 grep -F 'guard_affinity=1 guard_nice=0' \
     "$temporary_directory/positive-telemetry.log" >/dev/null
 
+# The diagnostic profile is the census S arm's serialized shape, and the
+# monitor admits it under the low-serialized gate; a profile the monitor
+# leaves unnamed ends it at once and the session reports monitor_exited.
+start_test_process 19 5
+start_watchdog_process
+start_kernel_watchdog_process
+QWEN_GUARD_TEST_MODE=1 QWEN_GPU_DEVICE_DIRECTORY=$fake_gpu_directory \
+    run_guard_test "$script_directory/monitor-qwen-runtime.sh" \
+    "$test_pid" "$temporary_directory/diagnostic-telemetry.log" \
+    diagnostic "$watchdog_pid" "$kernel_watchdog_pid"
+wait "$test_pid" 2>/dev/null || true
+test_pid=""
+kill "$watchdog_pid" 2>/dev/null || true
+wait "$watchdog_pid" 2>/dev/null || true
+watchdog_pid=""
+kill "$kernel_watchdog_pid" 2>/dev/null || true
+wait "$kernel_watchdog_pid" 2>/dev/null || true
+kernel_watchdog_pid=""
+grep -F 'profile=diagnostic' "$temporary_directory/diagnostic-telemetry.log" >/dev/null
+grep -F 'reason=server_exited' "$temporary_directory/diagnostic-telemetry.log" >/dev/null
+printf 'diagnostic_profile_admitted=accepted\n'
+
 start_persistent_test_process 18
 start_watchdog_process
 start_kernel_watchdog_process
