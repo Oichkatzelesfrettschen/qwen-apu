@@ -193,9 +193,10 @@ fi
 # handle_count_tokens returns the whole tokenization from tokenize_mixed, while
 # to_json_anthropic sets input_tokens to n_prompt_tokens - n_prompt_tokens_cache
 # and puts the reused prefix in cache_read_input_tokens, so the invariant across
-# a warm cache is the sum rather than either term. A gap past the few tokens a
-# generation prompt adds around the turn says the router sent the two requests
-# to different children.
+# a warm cache is the sum rather than either term. The count route tokenizes the
+# message content while the messages route charges the rendered chat template,
+# so the charged figure runs a couple of tokens ahead of the counted one; a gap
+# past that says the router sent the two requests to different children.
 if [ "$counted" -gt 0 ] 2>/dev/null && [ "$messages_input" -ge 0 ] 2>/dev/null \
     && [ "$messages_cached" -ge 0 ] 2>/dev/null; then
     charged=$((messages_input + messages_cached))

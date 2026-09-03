@@ -96,8 +96,9 @@ The two prompt figures count different things and the summary carries both.
 `handle_count_tokens` returns the whole tokenization, while `to_json_anthropic`
 sets `input_tokens` to `n_prompt_tokens - n_prompt_tokens_cache` and reports the
 reused prefix separately, so `count_tokens_input_tokens` equals
-`input_tokens + cache_read_input_tokens`. The two-token gap on every row is the
-generation prompt the template adds around the turn.
+`input_tokens + cache_read_input_tokens`. The count route tokenizes the message
+content and the messages route charges the rendered chat template, which is the
+two-token gap on every row.
 
 `tests_passed` is the outcome the arms were built for, and it is binary per
 task: three of three.
