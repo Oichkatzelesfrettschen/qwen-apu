@@ -895,6 +895,15 @@ run_runner mode_name 'QWEN_CENSUS_MODE must be calibration, attribution, or cana
 run_runner sampler_name 'QWEN_CENSUS_SAMPLER must be broker or python' \
     QWEN_CENSUS_SAMPLER=bogus
 
+# The quiescence deadline decides the campaign, so a value await-quiescence.sh
+# would refuse as a usage error is refused here instead: a poller ending at
+# exit 2 prints no verdict, and the arm loop would end the run on that.
+run_runner cooldown_deadline_zero 'QWEN_CENSUS_COOLDOWN_S is a positive second count' \
+    QWEN_CENSUS_COOLDOWN_S=0
+
+run_runner cooldown_deadline_text 'QWEN_CENSUS_COOLDOWN_S is a positive second count' \
+    QWEN_CENSUS_COOLDOWN_S=thirty
+
 # An absent broker is built rather than refused, so the refusal belongs to the
 # build: CC names no compiler, build-telemetry-broker.sh ends on its own
 # command -v test, and the preflight reports the executable it still lacks.
@@ -1335,7 +1344,7 @@ env -i \
     QWEN_CENSUS_MODE=attribution \
     QWEN_CENSUS_CALIBRATION_RECEIPT="$signal_calibration" \
     QWEN_CENSUS_ARMS=I0 \
-    QWEN_CENSUS_COOLDOWN_S=0 \
+    QWEN_CENSUS_COOLDOWN_S=1 \
     SSH_CONNECTION="$signal_ssh_connection" \
     "$signal_runner" "$model_id" "$signal_output" \
     >"$temporary_directory/signal-stdout.txt" 2>"$signal_stderr" &
@@ -1599,8 +1608,26 @@ set -eu
 if [ -n "${QWEN_TEST_QUIESCENCE_ARGV:-}" ]; then
     printf '%s\n' "$*" >>"$QWEN_TEST_QUIESCENCE_ARGV"
 fi
-printf 'quiescence=timeout elapsed_ms=1234 llama_server=absent gpu_busy=0\n'
-exit 1
+# The converged boundary is the default, since every case reading an arm past
+# the first needs the campaign to reach one. QWEN_TEST_QUIESCENCE_VERDICT names
+# the other two outcomes: `timeout` prints the poller's deadline line and its
+# failing predicate list on stderr, and `unreported` prints a line carrying no
+# verdict at all, which is what a poller ending on a usage error leaves behind.
+case ${QWEN_TEST_QUIESCENCE_VERDICT:-reached} in
+    timeout)
+        printf 'quiescence=timeout elapsed_ms=1234 llama_server=absent gpu_busy=0\n'
+        printf 'quiescence_timeout_predicates=temp_rate,mem\n' >&2
+        exit 1
+        ;;
+    unreported)
+        printf 'await-quiescence stub printed no verdict line\n'
+        exit 2
+        ;;
+    *)
+        printf 'quiescence=reached elapsed_ms=800 llama_server=absent gpu_busy=0\n'
+        exit 0
+        ;;
+esac
 FAKE_QUIESCENCE
 chmod +x "$brick_directory/await-quiescence.sh"
 
@@ -1769,6 +1796,10 @@ run_brick_calibration() {
     # after which the checkpoint is replaced under the campaign.
     brick_refused_arms=${18:-}
     brick_replace_model=${19:-}
+    # The twentieth names the verdict the quiescence stub reports. A converged
+    # boundary is the default, since a campaign ends at the first that is not
+    # one, and `timeout` and `unreported` are the two states that end it.
+    brick_quiescence_verdict=${20:-reached}
     brick_drm=$signal_drm
     brick_sudo_log=$temporary_directory/sudo-$brick_case.log
     brick_quiescence_argv=$temporary_directory/quiescence-argv-$brick_case.log
@@ -1803,6 +1834,7 @@ run_brick_calibration() {
         QWEN_TEST_SUDO_REFUSE="$brick_sudo_refuse" \
         QWEN_TEST_SUDO_LOG="$brick_sudo_log" \
         QWEN_TEST_QUIESCENCE_ARGV="$brick_quiescence_argv" \
+        QWEN_TEST_QUIESCENCE_VERDICT="$brick_quiescence_verdict" \
         QWEN_CENSUS_ENGINE_CLOCK_POLICY="$brick_engine_clock_policy" \
         QWEN_CENSUS_MCLK_LEVEL="$brick_mclk_level" \
         QWEN_TEST_SUDO_MCLK_IGNORE="$brick_mclk_ignore" \
@@ -1817,7 +1849,7 @@ run_brick_calibration() {
         QWEN_CENSUS_BROKER="$broker_stub" \
         QWEN_HWMON_ROOT="$signal_hwmon" \
         QWEN_CENSUS_SIDECAR_CPU=0 \
-        QWEN_CENSUS_COOLDOWN_S=0 \
+        QWEN_CENSUS_COOLDOWN_S=1 \
         QWEN_CENSUS_REPLICATES=2 \
         QWEN_CENSUS_REGIME_MAX_ARMS="$brick_regime_max_arms" \
         QWEN_CENSUS_REGIME_MIN_SHARE="$brick_regime_min_share" \
@@ -1904,8 +1936,8 @@ diagnostic_file=
 printf 'sampler_broker_inputs=accepted\n'
 
 # Three bricks reused and C3 executed: the arm fails on its own served runner
-# and the quiescence poller reports a deadline, which the cooldown row records
-# and the terminal state counts rather than charging to the arm.
+# and every boundary converges, so the campaign runs its whole list and ends on
+# the arm failures alone.
 prior_three_bricks=$temporary_directory/prior-three-bricks
 write_prior_calibration "$prior_three_bricks"
 printf 'census=refuted\n' >"$prior_three_bricks/terminal-state.tsv"
@@ -1917,9 +1949,9 @@ if [ "$brick_status" -ne 1 ]; then
         "$brick_status" >&2
     exit 1
 fi
-if ! awk -F'\t' '$1 == "13" && $3 == "cooldown" && $6 == "quiescence=timeout elapsed_ms=1234 sclk_forced=0" { found = 1 }
+if ! awk -F'\t' '$1 == "13" && $3 == "cooldown" && $6 == "quiescence=reached elapsed_ms=800 sclk_forced=0 predicates=-" { found = 1 }
     END { exit found ? 0 : 1 }' "$brick_cooldown_output/wall-clock.tsv"; then
-    printf 'the cooldown row carries no quiescence verdict, elapsed time, and forced-clock state\n' >&2
+    printf 'the cooldown row carries no quiescence verdict, elapsed time, forced-clock state, and predicate list\n' >&2
     sed -n '1,10p' "$brick_cooldown_output/wall-clock.tsv" >&2
     exit 1
 fi
@@ -1962,7 +1994,7 @@ grep -q '^census_regime=unreached sclk_mhz=- arms=2$' \
     "$temporary_directory/quiescence_cooldown-stdout.txt"
 grep -qxF "$(printf 'regime_sclk_mhz\t-')" "$brick_cooldown_output/inputs.tsv"
 grep -qxF "$(printf 'regime_arms\t2')" "$brick_cooldown_output/inputs.tsv"
-grep -q '^cooldown_timeouts=3$' "$brick_cooldown_output/terminal-state.tsv"
+grep -q '^cooldown_timeouts=0$' "$brick_cooldown_output/terminal-state.tsv"
 grep -q '^arm_failures=3$' "$brick_cooldown_output/terminal-state.tsv"
 grep -q 'census_arm=failed slot=13 arm=S .* reason=served_runner' \
     "$temporary_directory/quiescence_cooldown-stdout.txt"
@@ -1980,32 +2012,88 @@ done
 diagnostic_file=
 printf 'quiescence_cooldown=accepted\n'
 
-# The same three bricks reused with every executed arm answering: the controls
-# are the reused ones, no arm fails, and the only defect left is the cooldown
-# that never converged, which is what the terminal decision reads. A campaign
-# that ignored the counter would accept this run.
+# The same three bricks reused with every executed arm answering, and one
+# boundary that never converges: the campaign would otherwise accept on its
+# three reused controls, so the boundary alone decides it. The first executed
+# arm is the opening warmup, so the run ends after slot 0a: arms.tsv carries the
+# boundary row naming the state, terminal-state.tsv names the slot, the arm, and
+# the predicates the poller reported false, no later arm ran, and neither the
+# controls summary nor a brick receipt nor a calibration root was written.
 active_fixture=cooldown_blocks_acceptance
 prior_settled=$temporary_directory/prior-settled
 write_prior_calibration "$prior_settled"
 brick_settled_output=$temporary_directory/out-cooldown-acceptance
 brick_status=$(run_brick_calibration cooldown_blocks_acceptance "$prior_settled" \
-    "$brick_settled_output" '' 800 2 '' '' '' '' auto '' '0a-W 0b-W 13-S')
-if [ "$brick_status" -ne 1 ]; then
-    printf 'a calibration whose cooldowns never converged exited %s where it fails\n' \
+    "$brick_settled_output" '' 800 2 '' '' '' '' auto '' '0a-W 0b-W 13-S' 0 - 0 '' '' '' \
+    timeout)
+if [ "$brick_status" -ne 5 ]; then
+    printf 'a calibration whose boundary never converged exited %s where it ends at 5\n' \
         "$brick_status" >&2
     sed -n '1,20p' "$temporary_directory/cooldown_blocks_acceptance-stdout.txt" >&2
     exit 1
 fi
-for settled_row in arm_failures=0 control_accepted=3 cooldown_timeouts=3 census=failed; do
+for settled_row in arm_failures=0 census=quiescence_unconverged cooldown_timeouts=1 \
+    control_accepted=- calibration_root_sha256=- terminal_slot=0a terminal_arm=W \
+    terminal_detail=temp_rate,mem; do
     if ! grep -qx "$settled_row" "$brick_settled_output/terminal-state.tsv"; then
-        printf 'the settled calibration terminal state carries no %s\n' "$settled_row" >&2
+        printf 'the terminated calibration terminal state carries no %s\n' "$settled_row" >&2
         cat "$brick_settled_output/terminal-state.tsv" >&2
         grep '^census_arm=' "$temporary_directory/cooldown_blocks_acceptance-stdout.txt" >&2
         exit 1
     fi
 done
+if ! awk -F'\t' '$1 == "0a" && $2 == "cooldown" && $10 == "quiescence_timeout" { found = 1 }
+    END { exit found ? 0 : 1 }' "$brick_settled_output/arms.tsv"; then
+    printf 'arms.tsv carries no boundary row naming the terminal state\n' >&2
+    cat "$brick_settled_output/arms.tsv" >&2
+    exit 1
+fi
+# Every row of arms.tsv is rectangular under one header, the boundary row
+# included, so a reader that splits on tabs reads the same arity everywhere.
+if ! awk -F'\t' 'NR == 1 { want = NF; next } NF != want { exit 1 }' \
+    "$brick_settled_output/arms.tsv"; then
+    printf 'the boundary row broke the arms ledger arity\n' >&2
+    exit 1
+fi
+if awk -F'\t' 'NR > 1 && $1 == "0b"' "$brick_settled_output/arms.tsv" | grep -q .; then
+    printf 'an arm ran past the boundary that ended the campaign\n' >&2
+    exit 1
+fi
+for withheld_member in summary.tsv calibration-root.tsv bricks; do
+    if [ -e "$brick_settled_output/$withheld_member" ]; then
+        printf 'the terminated calibration wrote %s over a truncated ledger\n' \
+            "$withheld_member" >&2
+        exit 1
+    fi
+done
+grep -q '^census_cooldown=terminal slot=0a arm=W verdict=timeout predicates=temp_rate,mem$' \
+    "$temporary_directory/cooldown_blocks_acceptance-stdout.txt"
 diagnostic_file=
 printf 'cooldown_blocks_acceptance=accepted\n'
+
+# A poller that printed no parseable verdict is the third boundary state, and
+# it ends the campaign the same way a deadline does under its own name.
+active_fixture=quiescence_unreported_terminal
+prior_unreported=$temporary_directory/prior-unreported
+write_prior_calibration "$prior_unreported"
+brick_unreported_output=$temporary_directory/out-quiescence-unreported
+brick_status=$(run_brick_calibration quiescence_unreported_terminal "$prior_unreported" \
+    "$brick_unreported_output" '' 800 2 '' '' '' '' auto '' '0a-W 0b-W 13-S' 0 - 0 '' '' '' \
+    unreported)
+if [ "$brick_status" -ne 5 ]; then
+    printf 'an unreported boundary exited %s where it ends at 5\n' "$brick_status" >&2
+    exit 1
+fi
+grep -qx 'census=quiescence_unconverged' "$brick_unreported_output/terminal-state.tsv"
+grep -qx 'terminal_detail=-' "$brick_unreported_output/terminal-state.tsv"
+if ! awk -F'\t' '$1 == "0a" && $2 == "cooldown" && $10 == "quiescence_unreported" { found = 1 }
+    END { exit found ? 0 : 1 }' "$brick_unreported_output/arms.tsv"; then
+    printf 'arms.tsv carries no boundary row for an unreported verdict\n' >&2
+    cat "$brick_unreported_output/arms.tsv" >&2
+    exit 1
+fi
+diagnostic_file=
+printf 'quiescence_unreported_terminal=accepted\n'
 
 # A receipt edited after its campaign still agrees with a ledger edited beside
 # it, so the root's own digest for that brick is what refuses the reuse and
@@ -2163,7 +2251,7 @@ fi
 # count and the generated list live there rather than in the contract digest.
 grep -q '^census_replicates	2$' "$brick_unresolved_output/inputs.tsv"
 grep -q '^census_arm_count	15$' "$brick_unresolved_output/inputs.tsv"
-grep -q '^predicted_arm_duration_s	19$' "$brick_unresolved_output/inputs.tsv"
+grep -q '^predicted_arm_duration_s	20$' "$brick_unresolved_output/inputs.tsv"
 grep -q '^regime_max_arms	2$' "$brick_unresolved_output/inputs.tsv"
 # Four reused bricks leave nothing to warm and nothing to settle, so the
 # precondition runs no arm and says so rather than leaving the rows absent.
@@ -2584,7 +2672,7 @@ if grep -qv -- '--sclk-forced' "$forced_quiescence_argv"; then
     cat "$forced_quiescence_argv" >&2
     exit 1
 fi
-if ! awk -F'\t' '$3 == "cooldown" && $6 ~ /sclk_forced=1$/ { found = 1 }
+if ! awk -F'\t' '$3 == "cooldown" && $6 ~ /sclk_forced=1 / { found = 1 }
     END { exit found ? 0 : 1 }' "$forced_output/wall-clock.tsv"; then
     printf 'no manual-clock cooldown row records sclk_forced=1\n' >&2
     sed -n '1,10p' "$forced_output/wall-clock.tsv" >&2
@@ -2736,7 +2824,7 @@ env -i \
     QWEN_CENSUS_MODE=attribution \
     QWEN_CENSUS_CALIBRATION_RECEIPT="$term_calibration" \
     QWEN_CENSUS_ARMS=I0 \
-    QWEN_CENSUS_COOLDOWN_S=0 \
+    QWEN_CENSUS_COOLDOWN_S=1 \
     QWEN_CENSUS_ENGINE_CLOCK_POLICY=manual \
     QWEN_TEST_SUDO_LOG="$temporary_directory/sudo-engine-clock-term.log" \
     SSH_CONNECTION="$signal_ssh_connection" \

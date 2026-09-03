@@ -1284,7 +1284,17 @@ remote/run-ctx-checkpoint-sweep.sh LABEL MODEL_ID OUT
 # the request window. Three quadruples carry a bound, P-nosidecar P P
 # P-nosidecar, P I0 I0 P, and I0 I1 I1 I0; any other is unclassified, and
 # a refuted control ends the campaign refuted with exit 3 whatever the
-# arms did. QWEN_CENSUS_MODE=calibration, the default, runs exactly the
+# arms did. The boundary between two arms is a campaign condition rather
+# than a counter: await-quiescence.sh reports reached only where its
+# process, occupancy, graphics step, step stability, absolute temperature,
+# thermal derivative, memory, swap-in, lease, and latency predicates held
+# together across the hold window, so any other verdict ends the campaign
+# quiescence_unconverged with exit 5 before the next arm starts, arms.tsv
+# carries a boundary row whose status names the state, terminal-state.tsv
+# names the slot, the arm, and the failing predicates, and no summary,
+# brick receipt, or calibration root is written over the truncated ledger.
+# --sclk-forced drops the step's position in the listed ladder alone.
+# QWEN_CENSUS_MODE=calibration, the default, runs exactly the
 # thirteen-arm sequence and accepts on exactly three accepted controls
 # with none unclassified; QWEN_CENSUS_MODE=attribution runs any registered
 # arm list and requires QWEN_CENSUS_CALIBRATION_RECEIPT to name the output

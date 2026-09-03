@@ -184,6 +184,19 @@ set -eu
 # refutation ends it as unresolved with exit 4; a failed arm ends it as failed
 # with exit 1; accepted alone exits 0.
 #
+# The boundary between two arms is a campaign condition rather than a counter.
+# await-quiescence.sh reports `reached` only where its process, GPU occupancy,
+# graphics step, step stability, absolute temperature, thermal derivative,
+# available memory, swap-in, lease, and latency predicates all held together
+# across the hold window, so any other verdict leaves the next arm a machine
+# state the arm before it chose. The campaign ends at that boundary, before the
+# next arm starts, as `quiescence_unconverged` with exit 5: arms.tsv carries a
+# boundary row whose status reads `quiescence_timeout` or
+# `quiescence_unreported`, the wall-clock cooldown row and terminal-state.tsv
+# name the predicates the poller reported false, and neither the controls
+# summary nor a brick receipt nor a calibration root is written, since a root
+# over half a campaign is what a later run's brick reuse would copy forward.
+#
 # usage: run-raven2-vulkan-kernel-census.sh MODEL_ID OUTPUT_DIRECTORY
 #   QWEN_CENSUS_PRODUCTION_SERVER    path of P (required where an arm names P or P-nosidecar)
 #   QWEN_CENSUS_PRODUCTION_RECEIPT   identity-check.tsv of the fixed-64 scoreboard sweep
@@ -203,7 +216,10 @@ set -eu
 #                                    "P-nosidecar P P P-nosidecar P I0 I0 P I0 I1 I1 I0 S"
 #   QWEN_CENSUS_REUSE_BRICKS         output directory of a prior calibration whose
 #                                    unchanged bricks this calibration reuses
-#   QWEN_CENSUS_COOLDOWN_S           idle seconds between arms, default 30
+#   QWEN_CENSUS_COOLDOWN_S           positive deadline in seconds the inter-arm
+#                                    quiescence poller runs under, default 30; a
+#                                    boundary the poller does not report reached
+#                                    inside it ends the campaign
 #   QWEN_CENSUS_LATENCY_PROBE        graphics latency probe the runner arms
 #   QWEN_CENSUS_RUNTIME_REMOTE       synced runtime tree the arms launch through,
 #                                    default ~/qwen-laptop-setup/remote
@@ -443,6 +459,23 @@ case $campaign_begin_ns in
         ;;
 esac
 cooldown_s=${QWEN_CENSUS_COOLDOWN_S:-30}
+# The deadline decides the campaign, so it is held to await-quiescence.sh's own
+# rule here rather than reaching the poller as a usage error. A zero or
+# non-numeric deadline exits that poller 2 with no verdict line, which the arm
+# loop reads as `unreported` and ends the campaign on: a caller's typo would
+# otherwise terminate the run under a state name that describes the machine.
+case $cooldown_s in
+    '' | *[!0-9]*)
+        printf 'QWEN_CENSUS_COOLDOWN_S is a positive second count: %s\n' \
+            "$cooldown_s" >&2
+        exit 2
+        ;;
+esac
+if [ "$cooldown_s" -le 0 ]; then
+    printf 'QWEN_CENSUS_COOLDOWN_S is a positive second count: %s\n' \
+        "$cooldown_s" >&2
+    exit 2
+fi
 production_server=${QWEN_CENSUS_PRODUCTION_SERVER:-}
 production_receipt=${QWEN_CENSUS_PRODUCTION_RECEIPT:-}
 instrumented_server=${QWEN_CENSUS_INSTRUMENTED_SERVER:-}
@@ -1781,6 +1814,13 @@ record_regime() {
 }
 arm_failures=0
 cooldown_timeouts=0
+# A campaign that ends inside the arm loop names the state it ended in, the
+# slot and arm it ended after, and the detail that decided it. An empty name
+# is a run that reached its own last arm.
+campaign_terminal=''
+terminal_slot=-
+terminal_arm=-
+terminal_detail=-
 canary_structure_failures=0
 canary_structure_ledger=$output_directory/canary-structure.tsv
 if [ "$census_mode" = canary ]; then
@@ -2292,9 +2332,15 @@ EOF
     # `flock -n -x`, and the campaign holds that lock exclusively from before
     # the clock write to its own exit, so the poll would read the campaign's
     # own exclusion as a foreign workload and spend every cooldown deadline.
-    # Holding the lease is the stronger form of the predicate the flag polls,
-    # and the cooldown row states that rather than leaving a reader of the
-    # ledger to infer why the predicate stopped being polled.
+    # Holding the lease exclusively is the strictly stronger form of the
+    # predicate the flag polls -- a lock this shell owns admits no other
+    # workload at all -- and the cooldown row states that rather than leaving a
+    # reader of the ledger to infer why the predicate stopped being polled.
+    # The latency predicate is left off for a different reason: it reads a
+    # `baseline_p90_us=` field the graphics probe log names on no line, so the
+    # poller reports it not_applicable and spends one summarize-probe.sh pass
+    # per 100 ms tick to do it. The criterion is live for a caller whose log
+    # grows that field.
     quiescence_line=$("$script_directory/await-quiescence.sh" \
         --max-seconds "$cooldown_s" \
         ${cooldown_sclk_forced_flag:+--sclk-forced} \
@@ -2310,10 +2356,17 @@ EOF
     # and timeout, and it is named rather than folded into either.
     [ -n "$quiescence_verdict" ] || quiescence_verdict=unreported
     [ -n "$quiescence_elapsed_ms" ] || quiescence_elapsed_ms=-
+    # The poller names every predicate that read false on its final tick, so a
+    # boundary that never converged states which of process, GPU occupancy,
+    # graphics step, step stability, absolute temperature, thermal derivative,
+    # available memory, swap-in, lease, or latency held it open.
+    quiescence_predicates=$(sed -n 's/^quiescence_timeout_predicates=//p' \
+        "$arm_directory/await-quiescence.stderr" | tail -n 1)
+    [ -n "$quiescence_predicates" ] || quiescence_predicates=-
     [ "$quiescence_verdict" = reached ] || cooldown_timeouts=$((cooldown_timeouts + 1))
-    printf 'census_cooldown=%s slot=%s arm=%s elapsed_ms=%s status=%s sclk_forced=%s lease=held-by-campaign\n' \
+    printf 'census_cooldown=%s slot=%s arm=%s elapsed_ms=%s status=%s sclk_forced=%s predicates=%s lease=held-by-campaign\n' \
         "$quiescence_verdict" "$slot" "$arm" "$quiescence_elapsed_ms" \
-        "$quiescence_status" "$cooldown_sclk_forced"
+        "$quiescence_status" "$cooldown_sclk_forced" "$quiescence_predicates"
     # An endpoint the run never observed reads `-` rather than borrowing a
     # neighbouring stamp, so a failed arm reports a missing boundary instead
     # of a mislabeled one.
@@ -2328,10 +2381,30 @@ EOF
         printf '%s\t%s\trequest\t%s\t%s\t-\n' "$slot" "$arm" "$request_begin_wall_ns" "$request_end_wall_ns"
         printf '%s\t%s\tteardown\t%s\t%s\t-\n' "$slot" "$arm" "$request_end_wall_ns" "$served_exit_ns"
         printf '%s\t%s\tanalysis\t%s\t%s\t-\n' "$slot" "$arm" "$served_exit_ns" "$analysis_end_ns"
-        printf '%s\t%s\tcooldown\t%s\t%s\tquiescence=%s elapsed_ms=%s sclk_forced=%s\n' \
+        printf '%s\t%s\tcooldown\t%s\t%s\tquiescence=%s elapsed_ms=%s sclk_forced=%s predicates=%s\n' \
             "$slot" "$arm" "$cooldown_begin_ns" "$cooldown_end_ns" \
-            "$quiescence_verdict" "$quiescence_elapsed_ms" "$cooldown_sclk_forced"
+            "$quiescence_verdict" "$quiescence_elapsed_ms" "$cooldown_sclk_forced" \
+            "$quiescence_predicates"
     } >>"$wall_clock_ledger"
+    # The boundary decides the campaign rather than a counter read after it.
+    # await-quiescence.sh reports `reached` only where the process, occupancy,
+    # graphics step and its stability, both temperature conditions, memory,
+    # swap-in, lease, and latency predicates held together across the whole
+    # hold window, so any other verdict leaves the next arm a machine state
+    # this arm chose. The campaign ends here, ahead of that arm, and arms.tsv
+    # carries the boundary row that names the state; --sclk-forced drops the
+    # step's position under a commanded clock and licenses none of the rest.
+    if [ "$quiescence_verdict" != reached ]; then
+        campaign_terminal=quiescence_unconverged
+        terminal_slot=$slot
+        terminal_arm=$arm
+        terminal_detail=$quiescence_predicates
+        printf '%s\tcooldown\t-\t-\t-\t-\t-\t-\t-\tquiescence_%s\t-\t-\t-\t-\t-\n' \
+            "$slot" "$quiescence_verdict" >>"$arms_ledger"
+        printf 'census_cooldown=terminal slot=%s arm=%s verdict=%s predicates=%s\n' \
+            "$slot" "$arm" "$quiescence_verdict" "$quiescence_predicates"
+        break
+    fi
 done
 # A calibration whose four bricks all reuse executes no arm at all, so the
 # precondition never met a named arm to report itself ahead of; the rows still
@@ -2339,6 +2412,39 @@ done
 # against and reads the unreached answer there.
 if [ "$census_mode" != canary ] && [ "$regime_reported" -eq 0 ]; then
     record_regime
+fi
+
+# A campaign that ended inside the arm loop reports the state that ended it and
+# stops. The controls summarizer is left unrun, since a truncated ledger holds
+# quadruples the registry never bound and a verdict over them would price the
+# arms that did run against pairs that never did; the brick receipts and the
+# calibration root are left unwritten for the stronger reason that a root over
+# half a campaign is exactly what a later run's reuse would copy forward.
+# terminal-state.tsv carries the row names the completed path writes, so the
+# attribution receipt reader counts them by name and refuses this run on its
+# census row rather than on a malformed record.
+if [ -n "$campaign_terminal" ]; then
+    case $campaign_terminal in
+        quiescence_unconverged) campaign_exit=5 ;;
+        *) campaign_exit=1 ;;
+    esac
+    {
+        printf 'census=%s\ncensus_mode=%s\narm_failures=%s\n' \
+            "$campaign_terminal" "$census_mode" "$arm_failures"
+        printf 'control_incomplete=-\ncontrol_refutations=-\ncontrol_unresolved=-\n'
+        printf 'control_state_changed=-\ncontrol_unclassified=-\ncontrol_accepted=-\n'
+        printf 'control_required=-\ncooldown_timeouts=%s\ncalibration_root_sha256=-\n' \
+            "$cooldown_timeouts"
+        printf 'terminal_slot=%s\nterminal_arm=%s\nterminal_detail=%s\n' \
+            "$terminal_slot" "$terminal_arm" "$terminal_detail"
+    } >"$output_directory/terminal-state.tsv"
+    printf -- '-\t-\tcampaign\t%s\t%s\t-\n' "$campaign_begin_ns" "$(date +%s%N)" \
+        >>"$wall_clock_ledger"
+    printf 'census=%s mode=%s model=%s terminal_slot=%s terminal_arm=%s terminal_detail=%s arm_failures=%s cooldown_timeouts=%s output=%s\n' \
+        "$campaign_terminal" "$census_mode" "$model_id" "$terminal_slot" \
+        "$terminal_arm" "$terminal_detail" "$arm_failures" "$cooldown_timeouts" \
+        "$output_directory"
+    exit "$campaign_exit"
 fi
 
 # Paired controls, one row per registered control over all its replicates;
@@ -2493,11 +2599,8 @@ if [ "$census_mode" = calibration ]; then
     } >"$output_directory/calibration-root.tsv"
     rm -f -- "$root_scratch"
 fi
-# A cooldown that never converged left the arm after it a machine state the arm
-# before it chose -- clock, temperature, memory, or the workload lease -- which
-# is the nuisance the boundary exists to remove, so the count decides the
-# campaign beside the arm failures rather than being printed next to a verdict
-# it contradicts.
+# The boundary ends the campaign where it fails, so a run reaching this line
+# converged after every arm and the count stands as the assertion that says so.
 if [ "$arm_failures" -ne 0 ] || [ "$control_incomplete" -ne 0 ] \
     || [ "$control_unclassified" -ne 0 ] || [ "$cooldown_timeouts" -ne 0 ]; then
     campaign=failed

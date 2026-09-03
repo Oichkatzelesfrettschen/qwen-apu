@@ -206,11 +206,13 @@ where the four agree to about 0.4%, which this tree's documented scatter
 does not promise. An unresolved campaign at four replicates is a reportable
 result stated ahead of the run rather than a defect of it.
 
-The campaign has four terminal states and the exit status follows them: a
+The campaign has five terminal states and the exit status follows them: a
 failed arm, an incomplete control, or an unclassified quadruple ends it
 `failed` with exit 1, a refuted registered control ends it `refuted` with
 exit 3 even where every arm completed, an unresolved control with no
-refutation ends it `unresolved` with exit 4, and `accepted` alone exits 0.
+refutation ends it `unresolved` with exit 4, an inter-arm boundary the
+quiescence poller does not report `reached` ends it `quiescence_unconverged`
+with exit 5 before the next arm starts, and `accepted` alone exits 0.
 An unresolved control neither accepts nor refutes, so its branch precedes
 the accepted-count test that an unresolved control would otherwise leave
 short. `terminal-state.tsv` gains `control_unresolved` beside the counts it
@@ -439,9 +441,43 @@ constant: `await-quiescence.sh` polls the submission, clock, thermal,
 reclaim, and lease predicates and reports the instant they have all held
 together, `QWEN_CENSUS_COOLDOWN_S` becomes its deadline, and the cooldown
 row's note carries `quiescence=reached|timeout|unreported` with the poller's
-own `elapsed_ms`. A deadline reached without convergence is counted in
-`cooldown_timeouts` rather than charged to the arm that already completed,
-because the state it left belongs to the arm that follows.
+own `elapsed_ms` and the predicates its final tick reported false.
+
+The boundary decides the campaign. `reached` requires the process, GPU
+occupancy, graphics step, step stability, absolute temperature, thermal
+derivative, available memory, swap-in, lease, and latency predicates to have
+held together across the whole hold window, so any other verdict leaves the
+next arm a machine state the arm before it chose -- clock, temperature,
+memory, or the lease -- which is the nuisance the boundary exists to remove.
+The campaign therefore ends at that boundary, ahead of the next arm, as
+`quiescence_unconverged` with exit 5. `arms.tsv` gains one boundary row at
+the same slot, its `arm` column reading `cooldown` and its `status` column
+`quiescence_timeout` or `quiescence_unreported`; `terminal-state.tsv` carries
+the campaign state, `terminal_slot`, `terminal_arm`, and `terminal_detail`
+naming the poller's own failing predicates, with every `control_*` count `-`
+and `calibration_root_sha256` `-`. Neither `summary.tsv` nor `bricks/` nor
+`calibration-root.tsv` is written, since the controls summarizer over a
+truncated ledger would judge quadruples the registry never bound and a root
+over half a campaign is what a later run's brick reuse would copy forward.
+`QWEN_CENSUS_COOLDOWN_S` is held to a positive integer at preflight for the
+same reason: a value the poller refuses as a usage error prints no verdict,
+and the run would end on `quiescence_unreported` where the defect is a typo.
+
+Two predicates the poller carries stay unpassed by the census. The lease is
+excluded because the campaign holds that lock exclusively from before the
+clock write to its own exit, so `flock -n -x` from the poller reads the
+campaign's own exclusion as a foreign workload; holding it exclusively is the
+strictly stronger form of the predicate, and the printed cooldown line states
+`lease=held-by-campaign`. The latency log is excluded because
+`latency_is_ok` reads a `baseline_p90_us=` field the raw probe log names on
+no line, so it reports `not_applicable` while spending one
+`summarize-probe.sh` pass per 100 ms tick. The criterion is live for any
+caller that passes `--latency-log` over a log carrying that field.
+`--sclk-forced` drops the graphics step's position in the listed ladder,
+which under a commanded clock reports the policy rather than the machine, and
+licenses nothing else: the step's own stability across the hold window, the
+busy floor, both temperature conditions, memory, swap-in, and the process
+reading all still decide `reached`.
 
 ## What P stands for and how it is bound
 
