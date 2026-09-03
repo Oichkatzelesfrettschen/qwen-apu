@@ -256,11 +256,13 @@ index 7b930a434..9b84a9602 100644
      }
  
      vk_subbuffer d_D = ggml_vk_tensor_subbuffer(ctx, cgraph->nodes[node_idx + ctx->num_additional_fused_ops]);
-@@ -10787,6 +10933,52 @@ static void ggml_vk_mul_mat_vec_q_f16(ggml_backend_vk_context * ctx, vk_context&
+@@ -10787,6 +10933,54 @@ static void ggml_vk_mul_mat_vec_q_f16(ggml_backend_vk_context * ctx, vk_context&
          fusion_flags |= MAT_VEC_FUSION_FLAGS_BIAS1;
      }
  
-+    vk_subbuffer d_S;
++    // Value-initialized because the dispatch below reads it only under the flag, which
++    // the compiler cannot prove across the branch.
++    vk_subbuffer d_S {};
 +    if (use_q4_k_sideplane) {
 +        // The consumer forms its sideplane index from j*batch_stride_b + b_offset, which
 +        // names an activation element, so the layout holds only while a token column is
