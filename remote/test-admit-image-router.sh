@@ -547,4 +547,37 @@ if [ "$locked_status" -eq 0 ] || \
     exit 1
 fi
 
+# A value outside 0/1 falls through every `= 1` comparison the lane resolution
+# runs, so a mistyped QWEN_WEB_LAN would otherwise report success for the
+# loopback lane while the operator believed the run measured the exposed one.
+# Both variables are refused before the run chooses origins.
+set +e
+env QWEN_WEBUI_STATE_DIRECTORY="$state_directory" \
+    QWEN_MODEL_REGISTRY="$model_registry" QWEN_ADMISSION_RESTORE=0 \
+    QWEN_WEB_LAN=yes \
+    "$harness/admit-image-router.sh" "$work/invalid-lan-output" \
+    >"$work/invalid-lan.stdout" 2>"$work/invalid-lan.stderr"
+invalid_lan_status=$?
+set -e
+if [ "$invalid_lan_status" -ne 2 ] || \
+   ! grep -q 'QWEN_WEB_LAN must be 0 or 1' "$work/invalid-lan.stderr"; then
+    printf 'test-admit-image-router: an invalid QWEN_WEB_LAN was not refused\n' >&2
+    cat "$work/invalid-lan.stderr" >&2
+    exit 1
+fi
+set +e
+env QWEN_WEBUI_STATE_DIRECTORY="$state_directory" \
+    QWEN_MODEL_REGISTRY="$model_registry" QWEN_ADMISSION_RESTORE=0 \
+    QWEN_WEB_LAN_OPEN=yes \
+    "$harness/admit-image-router.sh" "$work/invalid-lan-open-output" \
+    >"$work/invalid-lan-open.stdout" 2>"$work/invalid-lan-open.stderr"
+invalid_lan_open_status=$?
+set -e
+if [ "$invalid_lan_open_status" -ne 2 ] || \
+   ! grep -q 'QWEN_WEB_LAN_OPEN must be 0 or 1' "$work/invalid-lan-open.stderr"; then
+    printf 'test-admit-image-router: an invalid QWEN_WEB_LAN_OPEN was not refused\n' >&2
+    cat "$work/invalid-lan-open.stderr" >&2
+    exit 1
+fi
+
 printf 'test-admit-image-router: all checks passed\n'
