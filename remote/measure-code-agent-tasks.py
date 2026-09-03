@@ -187,6 +187,17 @@ def run_task(arguments, task_directory, key):
 
     record["outcome"] = "extracted"
     record["reply_lines"] = len(source_text.splitlines())
+    # A passing test says the produced file behaves; it says nothing about what
+    # the model wrote, and the refactor arm's whole question is whether the
+    # duplication went away. The source is retained beside the record so that
+    # reading is available after the fact rather than only through a rerun.
+    produced = arguments.output_directory_path / (record["task_id"] + ".produced.py")
+    produced.write_text(source_text, encoding="utf-8")
+    record["produced_file"] = produced.name
+    record["produced_matches_baseline"] = (
+        target_in_workspace.exists()
+        and target_in_workspace.read_text(encoding="utf-8") == source_text
+    )
     record.update(grade(task_directory, meta, source_text, arguments.python))
     if not record["tests_passed"]:
         record["reply_head"] = text[:400]
@@ -229,6 +240,7 @@ def main(argv):
 
     output_directory = pathlib.Path(arguments.output_directory)
     output_directory.mkdir(parents=True, exist_ok=True)
+    arguments.output_directory_path = output_directory
 
     records = []
     for task_id in task_ids:
@@ -277,6 +289,7 @@ def main(argv):
         "stop_reason",
         "baseline_target_lines",
         "reply_lines",
+        "produced_matches_baseline",
     )
     summary = output_directory / "summary.tsv"
     with summary.open("w", encoding="utf-8") as handle:

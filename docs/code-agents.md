@@ -205,19 +205,31 @@ string. Each fixture ships a hand-written reference answer, and `--self-check`
 grades that answer through the same path, which is how a fixture is proven
 reachable before appliance time is spent on it.
 
-| Task | Outcome | Tests | Wall s | Prompt tokens | Completion tokens |
-| --- | --- | --- | ---: | ---: | ---: |
-| task-01-write | not run | not run | - | - | - |
-| task-02-fix | not run | not run | - | - | - |
-| task-03-refactor | not run | not run | - | - | - |
+`qwen38-4b-distill` at `max_tokens` 2048, `temperature` 0, thinking off, run
+twice under identical flags minutes apart:
 
-The arms are `not run`: the appliance answered no `GET /health` while this lane
-was built, first with the launch chain down and then with a measurement
-campaign's own single-model 2B server holding `127.0.0.1:8080`, which serves the
-laptop alone and leaves the router's port occupied. The evidence README states
-the observation and its two mechanisms. Rerun the arms with
-`remote/measure-code-agent-tasks.py --origin http://qwen-laptop:8080 --key-file
-PATH --output-directory DIR` once a router launch answers `/health`. Wall time
+| Task | Outcome | Tests | Wall s | Wall s, repeat | Prompt tokens | Completion tokens |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| task-01-write | extracted | pass | 150.2 | 149.9 | 280 | 397 |
+| task-02-fix | extracted | pass | 113.5 | 110.3 | 726 | 211 |
+| task-03-refactor | extracted | pass | 231.0 | 228.8 | 1016 | 501 |
+
+Three of three pass their fixture's tests, every arm ends on
+`stop_reason=end_turn` inside the budget, and the token counts reproduce exactly
+across both sweeps. The retained sources show the work rather than only its
+result: `task-02-fix` returned the stated defect repaired and nothing else
+touched, and `task-03-refactor` returned a `_format(value, units, divisor)`
+helper with the three public functions delegating to it.
+
+`reasoning_emitted` is false on every arm, so
+`chat_template_kwargs.enable_thinking: false` does reach this model's template
+through `/v1/messages` and suppress the reasoning span. A scripted client can
+therefore spend its whole budget on code; Claude Code sends Anthropic's
+`thinking` block instead and leaves that span at the template's own default,
+which is what `MAX_THINKING_TOKENS=0` addresses from the other side.
+
+Rerun the arms with `remote/measure-code-agent-tasks.py --origin
+http://qwen-laptop:8080 --key-file PATH --output-directory DIR`. Wall time
 on this machine is a wall-clock observation of one turn
 rather than a rate, since CLAUDE.md measures 4% of spread at rest and 30.6%
 under desktop load on a repeated depth-0 rate; the token counts come from the

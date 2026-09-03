@@ -1,0 +1,42 @@
+{
+  "baseline_target_lines": 26,
+  "cache_read_input_tokens": 0,
+  "content_block_types": [
+    "text"
+  ],
+  "count_tokens_input_tokens": 724,
+  "input_tokens": 726,
+  "kind": "fix",
+  "max_tokens": 2048,
+  "model": "qwen38-4b-distill",
+  "outcome": "extracted",
+  "output_tokens": 211,
+  "produced_file": "task-02-fix.produced.py",
+  "produced_matches_baseline": false,
+  "prompt_characters": 2546,
+  "reasoning_emitted": false,
+  "reply_characters": 832,
+  "reply_lines": 26,
+  "reply_model": "qwen38-4b-distill",
+  "stop_reason": "end_turn",
+  "target_file": "window.py",
+  "task_id": "task-02-fix",
+  "test_output_tail": [
+    "test_means (test_window.RollingMeanTest.test_means) ... ok",
+    "test_oversized_window_is_empty (test_window.RollingMeanTest.test_oversized_window_is_empty) ... ok",
+    "test_rejects_nonpositive_size (test_window.RollingMeanTest.test_rejects_nonpositive_size) ... ok",
+    "test_rolling_max_unchanged (test_window.RollingMeanTest.test_rolling_max_unchanged) ... ok",
+    "test_size_equal_to_length (test_window.RollingMeanTest.test_size_equal_to_length) ... ok",
+    "test_size_one_returns_every_value (test_window.RollingMeanTest.test_size_one_returns_every_value) ... ok",
+    "test_window_count_matches_rolling_max (test_window.RollingMeanTest.test_window_count_matches_rolling_max) ... ok",
+    "",
+    "----------------------------------------------------------------------",
+    "Ran 7 tests in 0.000s",
+    "",
+    "OK"
+  ],
+  "test_returncode": 0,
+  "tests_passed": true,
+  "thinking": "off",
+  "wall_seconds": 113.537
+}
