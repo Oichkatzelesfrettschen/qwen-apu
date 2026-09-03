@@ -229,8 +229,8 @@ grep -F 'function configuredArtifactOrigin() {' "$fallback_ui" >/dev/null
 grep -F "searchParams.get('artifacts')" "$fallback_ui" >/dev/null
 grep -F 'meta[name="qwen-image-artifacts"]' "$fallback_ui" >/dev/null
 grep -F 'function trustedArtifactOrigin(configured) {' "$fallback_ui" >/dev/null
-# The admitted host set is the loopback pair plus the literal address the page
-# was served from, which is what the LAN exposure binds. The set is built from
+# The admitted host set is the loopback pair plus the exact host the page was
+# served from, which is what the LAN exposure binds. The set is built from
 # window.location.hostname rather than from an address pattern, so the
 # credential reaches the machine the page came from and no other.
 grep -F "const admittedHosts = ['127\\\\.0\\\\.0\\\\.1', '\\\\[::1\\\\]'];" \
@@ -352,14 +352,40 @@ for (const configured of [
         throw new Error("an untrusted artifact origin was admitted under the exposure: " + configured);
     }
 }
-// A page served from a name admits nothing on that ground, because a name
-// resolves through the resolver the literal comparison exists to keep out.
-globalThis.window = { location: { hostname: "qwen-laptop" } };
+// The exposure also advertises an mDNS name, so a page loaded at that name
+// derives its artifact origin there. The page host is admitted whether it is
+// an address or a name: the browser already resolved it to fetch the page and
+// the bearer is stored per page origin, so the credential returns to the
+// machine that served the page. Every other host stays refused.
+globalThis.window = { location: { hostname: "qwen-test.local" } };
+if (trustedArtifactOrigin("http://qwen-test.local:41249") !== "http://qwen-test.local:41249") {
+    throw new Error("the named artifact origin of the exposed page was refused");
+}
+if (trustedArtifactOrigin("http://127.0.0.1:8181") !== "http://127.0.0.1:8181") {
+    throw new Error("the loopback artifact origin was refused under the named exposure");
+}
+for (const configured of [
+    "http://qwen-other.local:41249", "http://192.168.1.10:41249",
+    "http://attacker.example:41249", "http://qwen-test.local:41249/path",
+    "http://qwen-test.local",
+]) {
+    let threw = false;
+    try { trustedArtifactOrigin(configured); } catch { threw = true; }
+    if (!threw) {
+        throw new Error("an untrusted artifact origin was admitted under the named exposure: " + configured);
+    }
+}
+// A page served from one name admits no neighbouring name, and a hyphen in
+// the page host is escaped rather than read as a character range.
+globalThis.window = { location: { hostname: "qwen-a-b.local" } };
+if (trustedArtifactOrigin("http://qwen-a-b.local:41249") !== "http://qwen-a-b.local:41249") {
+    throw new Error("a hyphenated page host was refused its own artifact origin");
+}
 {
     let threw = false;
-    try { trustedArtifactOrigin("http://qwen-laptop:41249"); } catch { threw = true; }
+    try { trustedArtifactOrigin("http://qwenaxb.local:41249"); } catch { threw = true; }
     if (!threw) {
-        throw new Error("a named page host admitted its own artifact origin");
+        throw new Error("the hyphen in the page host was read as a character range");
     }
 }
 delete globalThis.window;

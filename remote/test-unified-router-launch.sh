@@ -76,6 +76,8 @@ set -eu
     printf 'QWEN_REQUIRE_API_KEY=%s\n' "${QWEN_REQUIRE_API_KEY:-unset}"
     printf 'QWEN_WEB_LAN=%s\n' "${QWEN_WEB_LAN:-unset}"
     printf 'QWEN_WEB_LAN_ADDRESS=%s\n' "${QWEN_WEB_LAN_ADDRESS:-unset}"
+    printf 'QWEN_WEB_LAN_NAME=%s\n' "${QWEN_WEB_LAN_NAME:-unset}"
+    printf 'QWEN_WEB_LAN_OPEN=%s\n' "${QWEN_WEB_LAN_OPEN:-unset}"
     printf 'QWEN_IMAGE_SERVICE=%s\n' "${QWEN_IMAGE_SERVICE:-unset}"
     printf 'QWEN_IMAGE_SERVICE_PROGRAM=%s\n' "${QWEN_IMAGE_SERVICE_PROGRAM:-unset}"
     printf 'QWEN_IMAGE_PROFILE=%s\n' "${QWEN_IMAGE_PROFILE:-unset}"
@@ -293,8 +295,14 @@ run_launch() {
     QWEN_STATIC_PATH=$work/webui \
     QWEN_WEB_TOKEN_KEY_FILE=$token_key_file \
     QWEN_WEB_AUTHORIZER_READY=1 \
+    QWEN_WEB_LAN_NAME='' \
         env "$@" "$harness/qwen-launch.sh" low-async
 }
+# QWEN_WEB_LAN_NAME is set empty above rather than left unset, because an unset
+# value is the question web-lan-exposure.sh answers from this host's own avahi
+# state: an arm that inherited it would resolve a different name on a machine
+# running the daemon and would print that machine's hostname into a log. Every
+# name arm states its own synthetic value.
 
 # A preset holding registry sections alone starts no broker and no search
 # instance, so an ordinary roster launch reaches no network at all.
@@ -532,6 +540,130 @@ if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
 else
     report lan_exposure_admitted refused
     cat "$work/lan.err" >&2
+fi
+
+# The mDNS name joins the literal as a second admitted host, and the page URL
+# leads with it, because a DHCP lease moves the literal and the name does not.
+# The key line stays off a redirected stdout, which is what this arm's own
+# output file is.
+if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=qwen-test.local \
+    >"$work/lan-named.log" 2>"$work/lan-named.err"; then
+    outcome=ok
+    grep -qx 'QWEN_WEB_LAN_NAME=qwen-test.local' "$record" || outcome=name_dropped
+    grep -q 'lan_name=qwen-test.local' "$work/lan-named.log" ||
+        outcome=name_unreported
+    grep -q 'the page is at http://qwen-test.local:'"$health_port"'/ (and http://192.168.1.10:'"$health_port"'/)' \
+        "$work/lan-named.log" || outcome=page_url_unnamed
+    grep -q '#key=' "$work/lan-named.log" && outcome=key_on_redirected_stdout
+    report lan_exposure_admits_the_mdns_name "$outcome"
+else
+    report lan_exposure_admits_the_mdns_name refused
+    cat "$work/lan-named.err" >&2
+fi
+
+# The key line is guarded by the terminal test itself rather than by the
+# absence of a match above, so the arm reads the source for that guard.
+if grep -q '\[ -t 1 \] && \[ -s "\$state_directory/api.key" \]' \
+    "$script_directory/qwen-launch.sh"; then
+    report lan_key_line_guarded_by_a_terminal_test ok
+else
+    report lan_key_line_guarded_by_a_terminal_test guard_absent
+fi
+
+# The same launch over a pseudo-terminal prints the key, which is what makes
+# the arm above a measurement of the guard rather than of an absent feature.
+# `script` allocates that terminal; a host without it reports the arm as unrun.
+if command -v script >/dev/null 2>&1; then
+    cat >"$work/tty-launch.sh" <<TTY
+#!/bin/sh
+set -eu
+exec env QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \\
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=qwen-test.local \\
+    QWEN_WEBUI_STATE_DIRECTORY=$state_directory QWEN_LAUNCH_RECORD=$record \\
+    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$merged_preset \\
+    QWEN_MODEL_PATH=$model_root/Fixture-GGUF/production.gguf \\
+    QWEN_SERVER_PORT=$health_port QWEN_READY_ATTEMPTS=60 \\
+    QWEN_DEPLOYMENT_ROOT=$work/deployments \\
+    QWEN_LLAMA_SERVER=$harness/qwen-teardown.sh QWEN_MMPROJ='' \\
+    QWEN_STATIC_PATH=$work/webui QWEN_WEB_TOKEN_KEY_FILE=$token_key_file \\
+    QWEN_WEB_AUTHORIZER_READY=1 \\
+    $harness/qwen-launch.sh low-async
+TTY
+    chmod +x "$work/tty-launch.sh"
+    if script -qec "$work/tty-launch.sh" /dev/null \
+        >"$work/lan-tty.log" 2>"$work/lan-tty.err"; then
+        outcome=ok
+        grep -q "the page with the key is at http://qwen-test.local:$health_port/#key=fixture-api-key" \
+            "$work/lan-tty.log" || outcome=key_line_absent
+        report lan_key_line_printed_on_a_terminal "$outcome"
+    else
+        report lan_key_line_printed_on_a_terminal refused
+        cat "$work/lan-tty.err" "$work/lan-tty.log" >&2
+    fi
+else
+    printf 'lan_key_line_printed_on_a_terminal=not_run reason=script_absent\n'
+fi
+
+# A name outside the letter-digit-hyphen set names no host a browser resolves,
+# so the launch refuses it rather than adding an entry no request matches.
+if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME='qwen test.local' \
+    >"$work/lan-badname.log" 2>"$work/lan-badname.err"; then
+    report lan_exposure_name_refused admitted
+elif grep -q 'not a hostname a browser resolves on the link' \
+    "$work/lan-badname.err"; then
+    report lan_exposure_name_refused ok
+else
+    report lan_exposure_name_refused wrong_reason
+    cat "$work/lan-badname.err" >&2
+fi
+
+# QWEN_WEB_LAN_OPEN=1 removes a bearer from a listener the operator exposed,
+# so a launch exposing none refuses rather than serving an authenticated
+# loopback while the operator believes the credential is gone.
+if run_launch "$merged_preset" env -u QWEN_BIND_HOST QWEN_WEB_LAN_OPEN=1 \
+    >"$work/lan-open-alone.log" 2>"$work/lan-open-alone.err"; then
+    report lan_open_refused_without_exposure admitted
+elif grep -q 'removes the bearer from a LAN listener, and this launch exposes none' \
+    "$work/lan-open-alone.err"; then
+    report lan_open_refused_without_exposure ok
+else
+    report lan_open_refused_without_exposure wrong_reason
+    cat "$work/lan-open-alone.err" >&2
+fi
+
+# The admitted open exposure leaves QWEN_REQUIRE_API_KEY at 0 across the tmux
+# boundary and states on stdout what every peer on the network can then do.
+if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=qwen-test.local \
+    QWEN_WEB_LAN_OPEN=1 \
+    >"$work/lan-open.log" 2>"$work/lan-open.err"; then
+    outcome=ok
+    grep -qx 'QWEN_REQUIRE_API_KEY=0' "$record" || outcome=key_still_required
+    grep -qx 'QWEN_WEB_LAN_OPEN=1' "$record" || outcome=open_marker_dropped
+    grep -q 'lan_open=1 every peer on this network can chat, approve a search, and approve a generation' \
+        "$work/lan-open.log" || outcome=open_unreported
+    grep -q '#key=' "$work/lan-open.log" && outcome=key_line_printed
+    report lan_open_admitted "$outcome"
+else
+    report lan_open_admitted refused
+    cat "$work/lan-open.err" >&2
+fi
+
+# The open opt-in meets both research overrides on the exposure's own terms,
+# since it names the exposure and the exposure refuses each.
+if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_OPEN=1 \
+    QWEN_ROUTER_INCLUDE_QUARANTINE=1 \
+    >"$work/lan-open-quarantine.log" 2>"$work/lan-open-quarantine.err"; then
+    report lan_open_refuses_the_quarantine_override admitted
+elif grep -q 'recorded device failure serves the loopback' \
+    "$work/lan-open-quarantine.err"; then
+    report lan_open_refuses_the_quarantine_override ok
+else
+    report lan_open_refuses_the_quarantine_override wrong_reason
+    cat "$work/lan-open-quarantine.err" >&2
 fi
 
 if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \

@@ -68,6 +68,13 @@ cp "$script_directory/qwen-web-launch.sh" "$harness/qwen-web-launch.sh"
 # The launcher sources its listener policy from its own directory, so the
 # harness carries the tree's file rather than a stand-in.
 cp "$script_directory/web-lan-exposure.sh" "$harness/web-lan-exposure.sh"
+# An unset QWEN_WEB_LAN_NAME is the question the policy answers from this
+# host's own avahi state, so every arm below states an answer: the empty
+# default here, and a synthetic name where the arm measures one. Inheriting it
+# would resolve a different name on a machine running the daemon and would
+# print that machine's hostname into a log.
+QWEN_WEB_LAN_NAME=''
+export QWEN_WEB_LAN_NAME
 # The launcher resolves the active deployment before it reads a preset; the
 # harness holds no deployment root, so the resolver reports none and the
 # state directory preset applies.
@@ -97,6 +104,8 @@ set -eu
     printf 'QWEN_REQUIRE_API_KEY=%s\n' "${QWEN_REQUIRE_API_KEY:-unset}"
     printf 'QWEN_WEB_LAN=%s\n' "${QWEN_WEB_LAN:-unset}"
     printf 'QWEN_WEB_LAN_ADDRESS=%s\n' "${QWEN_WEB_LAN_ADDRESS:-unset}"
+    printf 'QWEN_WEB_LAN_NAME=%s\n' "${QWEN_WEB_LAN_NAME:-unset}"
+    printf 'QWEN_WEB_LAN_OPEN=%s\n' "${QWEN_WEB_LAN_OPEN:-unset}"
 } >"$QWEN_WEB_LAUNCH_RECORD"
 EOF
 chmod +x "$harness/qwen-launch.sh"
@@ -1096,6 +1105,105 @@ for lan_bind_case in literal:192.168.1.10 wildcard:0.0.0.0; do
         cat "$work/lan-ok.err" >&2
     fi
 done
+
+# The mDNS name is a second admitted host rather than a replacement, so the
+# wrapper forwards it beside the literal and names it on its own report line.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=qwen-test.local \
+    QWEN_BIND_HOST=0.0.0.0 \
+    "$launcher" >"$work/lan-named.log" 2>"$work/lan-named.err"; then
+    outcome=ok
+    grep -qx 'QWEN_WEB_LAN_NAME=qwen-test.local' "$record" || outcome=name_dropped
+    grep -qx 'QWEN_WEB_LAN_ADDRESS=192.168.1.10' "$record" ||
+        outcome=address_dropped
+    grep -q 'name=qwen-test.local' "$work/lan-named.log" || outcome=name_unreported
+    grep -q 'bearer=required' "$work/lan-named.log" || outcome=bearer_unreported
+    report lan_exposure_admits_the_mdns_name "$outcome"
+else
+    report lan_exposure_admits_the_mdns_name refused
+    cat "$work/lan-named.err" >&2
+fi
+
+# A name outside the letter-digit-hyphen set names no host a browser resolves.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME='qwen test.local' \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/lan-badname.log" 2>"$work/lan-badname.err"; then
+    report lan_exposure_name_refused admitted
+else
+    outcome=ok
+    grep -q 'not a hostname a browser resolves on the link' \
+        "$work/lan-badname.err" || outcome=missing_message
+    report lan_exposure_name_refused "$outcome"
+fi
+
+# QWEN_WEB_LAN_OPEN=1 removes a bearer from a listener the operator exposed, so
+# a loopback launch carrying it refuses rather than serving an authenticated
+# listener while the operator believes the credential is gone.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN_OPEN=1 \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/lan-open-alone.log" 2>"$work/lan-open-alone.err"; then
+    report lan_open_refused_without_exposure admitted
+else
+    outcome=ok
+    grep -q 'removes the bearer from a LAN listener, and this launch exposes none' \
+        "$work/lan-open-alone.err" || outcome=missing_message
+    report lan_open_refused_without_exposure "$outcome"
+fi
+
+# The admitted open exposure carries QWEN_REQUIRE_API_KEY=0 across the tmux
+# boundary and reports the removed bearer where the bearer mode reports a
+# required one. The API key file stays unread, so the arm holds it away.
+mv "$lan_api_key" "$work/api.key.open"
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=qwen-test.local \
+    QWEN_WEB_LAN_OPEN=1 QWEN_BIND_HOST=0.0.0.0 \
+    "$launcher" >"$work/lan-open.log" 2>"$work/lan-open.err"; then
+    outcome=ok
+    grep -qx 'QWEN_REQUIRE_API_KEY=0' "$record" || outcome=key_still_required
+    grep -qx 'QWEN_WEB_LAN_OPEN=1' "$record" || outcome=open_marker_dropped
+    grep -q 'lan_open=1' "$work/lan-open.log" || outcome=open_unreported
+    grep -q 'bearer=removed' "$work/lan-open.log" || outcome=bearer_state_unreported
+    report lan_open_admitted "$outcome"
+else
+    report lan_open_admitted refused
+    cat "$work/lan-open.err" >&2
+fi
+mv "$work/api.key.open" "$lan_api_key"
+
+# An open exposure that also asked for the bearer states two policies, so the
+# launch refuses rather than serving one of them.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_OPEN=1 \
+    QWEN_REQUIRE_API_KEY=1 QWEN_BIND_HOST=0.0.0.0 \
+    "$launcher" >"$work/lan-open-key.log" 2>"$work/lan-open-key.err"; then
+    report lan_open_refuses_a_requested_bearer admitted
+else
+    outcome=ok
+    grep -q 'removes the bearer, and QWEN_REQUIRE_API_KEY names 1' \
+        "$work/lan-open-key.err" || outcome=missing_message
+    report lan_open_refuses_a_requested_bearer "$outcome"
+fi
+
+# The open opt-in meets both research overrides on the exposure's own terms.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_OPEN=1 \
+    QWEN_ROUTER_INCLUDE_QUARANTINE=1 \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/lan-open-quarantine.log" 2>"$work/lan-open-quarantine.err"; then
+    report lan_open_refuses_the_quarantine_override admitted
+else
+    outcome=ok
+    grep -q 'recorded device failure serves the loopback' \
+        "$work/lan-open-quarantine.err" || outcome=missing_message
+    report lan_open_refuses_the_quarantine_override "$outcome"
+fi
 
 # The default launch prints the loopback exposure and refuses a LAN bind with
 # the message it already carried.
