@@ -39,7 +39,8 @@ for harness_member in qwen-launch.sh web-lan-exposure.sh \
     resolve-active-deployment.sh open-verified-lock-descriptor.py \
     select-projector.sh model-registry.sh models.tsv \
     image-launch-lib.sh read-image-mcp-server.py image-registry.sh \
-    image-artifacts.tsv image-models.tsv image-quarantine.tsv; do
+    image-artifacts.tsv image-models.tsv image-quarantine.tsv \
+    verify-deployment-bundle.sh verify-bundle-preset-ledger.sh; do
     cp "$script_directory/$harness_member" "$harness/$harness_member"
 done
 # remote/image-registry.sh resolves a retained evidence path against its own
@@ -414,6 +415,73 @@ if run_launch "$imaged_preset" env -u QWEN_BIND_HOST \
 else
     report inherited_image_lane_is_reported_once failed
     cat "$work/inherited.err" >&2
+fi
+
+# The launch reads the bundle's own web-mcp-manifest.tsv and compares each
+# recorded digest against the file the child will read, so the record's row
+# shape is a claim two programs make and this arm is where they meet. A record
+# whose fourth column the reader folded into the digest refused every image
+# bundle on the appliance while the bundle itself verified, which
+# remote/test-deployment-bundle.sh could not see: it exercises the writer and
+# the verifier, and neither reads the row the way the launcher does.
+bundle_root=$work/deployments
+mkdir -p "$bundle_root"
+bundle_registry=$work/bundle-models.tsv
+printf 'fixture-production\tfast-text\tFixture-GGUF/production.gguf\n' \
+    >"$bundle_registry"
+bundle_ledger=$work/bundle-ctx-checkpoints.tsv
+printf '# the fixture bundle admits no checkpoint count\n' >"$bundle_ledger"
+bundle_server=$work/bundle-llama-server
+printf '#!/bin/sh\nexit 0\n' >"$bundle_server"
+chmod 755 "$bundle_server"
+bundle_manifest=$work/bundle-artifact-manifest.tsv
+{
+    printf 'checkpoint_semantics\tforced-tail-v1\n'
+    printf 'executable\tllama-server\t%s\t%s\n' \
+        "$(wc -c <"$bundle_server" | tr -d ' ')" \
+        "$(sha256sum "$bundle_server" | cut -d ' ' -f 1)"
+} >"$bundle_manifest"
+if QWEN_MODEL_REGISTRY=$bundle_registry \
+    QWEN_MODEL_ROOT=$model_root \
+    QWEN_BUNDLE_ROUTER_PRESETS=$imaged_preset \
+    "$script_directory/build-deployment-bundle.sh" bundle-imaged \
+        "$bundle_server" "$bundle_manifest" "$bundle_ledger" "$bundle_root" \
+    >"$work/bundle.log" 2>"$work/bundle.err" &&
+    QWEN_MODEL_REGISTRY=$bundle_registry \
+    "$script_directory/activate-deployment-bundle.sh" bundle-imaged \
+        "$bundle_root" >"$work/activate.log" 2>"$work/activate.err"; then
+    recorded_row=$(grep '^web-fixture	' \
+        "$bundle_root/bundle-imaged/web-mcp-manifest.tsv")
+    outcome=ok
+    case $recorded_row in
+        *"	image") ;;
+        *) outcome=image_column_absent ;;
+    esac
+    # The launch resolves the bundle rather than reading the state directory,
+    # so QWEN_ROUTER_PRESETS and QWEN_LLAMA_SERVER are both withheld: an
+    # explicit server outranks the deployment and would read no bundle at all.
+    if QWEN_MODEL_REGISTRY=$bundle_registry \
+        QWEN_CTX_CHECKPOINT_LEDGER=$bundle_ledger \
+        run_launch "$imaged_preset" env -u QWEN_ROUTER_PRESETS \
+        -u QWEN_LLAMA_SERVER \
+        QWEN_DEPLOYMENT_ROOT="$bundle_root" \
+        QWEN_IMAGE_SERVICE_PROGRAM="$script_directory/image-service.py" \
+        QWEN_IMAGE_PROFILES_JSON="$image_parameters" \
+        QWEN_MEMORY_PREFLIGHT_PROGRAM="$memory_preflight" \
+        >"$work/bundle-launch.log" 2>"$work/bundle-launch.err"; then
+        grep -q "web_mcp_configurations=verified record=$bundle_root/bundle-imaged/web-mcp-manifest.tsv" \
+            "$work/bundle-launch.log" || outcome=record_unverified
+        grep -qx 'QWEN_IMAGE_SERVICE=1' "$record" || outcome=service_unarmed
+        grep -q 'changed since the bundle recorded it' \
+            "$work/bundle-launch.err" && outcome=digest_misread
+    else
+        outcome=launch_refused
+        cat "$work/bundle-launch.err" >&2
+    fi
+    report launch_accepts_the_image_bundle_record "$outcome"
+else
+    report launch_accepts_the_image_bundle_record bundle_failed
+    cat "$work/bundle.err" "$work/activate.err" >&2
 fi
 
 # An image row moved to refused after generation revokes the lane, and the

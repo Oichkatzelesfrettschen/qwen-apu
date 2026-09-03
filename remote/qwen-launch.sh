@@ -291,10 +291,30 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
         deployment_web_mcp_manifest=$active_deployment_directory/web-mcp-manifest.tsv
         if [ -n "$active_deployment_directory" ] &&
             [ -f "$deployment_web_mcp_manifest" ]; then
+            # A record row is profile_id, configuration_path, sha256, and
+            # image_server, the four fields build-deployment-bundle.sh writes
+            # in its own header line; a row written before the image lane
+            # carries the first three and reads image_server as empty. The
+            # fourth variable exists so the digest comparison reads the digest:
+            # `read` assigns the whole remainder to its last variable, so three
+            # variables over a four-field row measured a digest against
+            # `<sha256><TAB>image` and refused every image bundle at launch.
             while IFS='	' read -r recorded_section recorded_path \
-                recorded_sha256; do
+                recorded_sha256 recorded_image_server; do
                 case $recorded_section in
                     '#'* | '') continue ;;
+                esac
+                # A fifth field would land in the last variable the way the
+                # fourth did, so the vocabulary is what proves the row ended
+                # where the reader thinks it did.
+                case $recorded_image_server in
+                    '' | image | -) ;;
+                    *)
+                        printf 'the MCP record for %s carries image_server %s, which is outside the vocabulary\n' \
+                            "$recorded_section" "$recorded_image_server" >&2
+                        printf 'a row reads profile_id, configuration_path, sha256, and image_server over image and -\n' >&2
+                        exit 2
+                        ;;
                 esac
                 measured_sha256=$(sha256sum -- "$recorded_path" |
                     cut -d ' ' -f 1) || exit 1

@@ -189,6 +189,17 @@ fi
 # every bundle refused the whole roster on natural-boundary-13d05a0-r2, whose
 # preset carries no marker, and left the appliance serving through recovery
 # mode alone.
+#
+# One row shape serves every reader: `profile_id`, `configuration_path`,
+# `sha256`, `image_server`, tab-separated, with `image_server` over `image` and
+# `-`. The header line the record carries states it in the file itself.
+# verify-deployment-bundle.sh and qwen-launch.sh both parse four fields and read
+# a three-field row -- one written before the image lane -- as an absent
+# `image_server`, which is the withheld lane an unmarked preset also names. A
+# reader taking three fields measures the digest against `<sha256><TAB>image`,
+# which is what a fourth column added without its readers cost the appliance on
+# natural-boundary-13d05a0-r4-image: the bundle verified and every launch
+# refused.
 web_mcp_manifest_sha256=-
 if [ -n "$router_presets_path" ]; then
     preset_web_sections=$(sed -n 's/^# qwen_web_sections=//p' \
