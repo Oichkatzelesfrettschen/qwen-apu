@@ -1,0 +1,44 @@
+layer	control	candidate	state
+spirv_sha256	ab0d087f463e87e21cefb8707b0cd41a452074492293263db66cc642b32b48b4	7b425720b46ed355b8b1405df0237e386d063a21eed9ed4dec6f4e188f308c2c	changed
+nir_sha256	2e91537b30d0fe8162137b3a8e140db22cdd7c33048edc967a774efab80ecd4c	376770f6eaac7fdc5fbbb70ceba26fc3cd9e71a01f3faddcd97e716298a4e5ea	changed
+isa_sha256	bfce4a487ad718d6b397ead33d1d4014ae15537ac683d2cd056383da898d368e	ad9e672ec248f452e4af4e873976517ad9270475c70ce5731c50e9d32f325662	changed
+
+field	before	after	delta
+vgprs	64	64	+0
+sgprs	48	48	+0
+spilled_vgprs	0	0	+0
+spilled_sgprs	0	0	+0
+lds	1024	1024	+0
+scratch	0	0	+0
+code_size	7808	7536	-272
+waves_per_simd	-	-	-
+instruction_lines	1628	1559	-69
+valu	890	818	-72
+salu	411	412	+1
+vmem	56	56	+0
+smem	37	38	+1
+lds_instructions	134	134	+0
+waitcnt	136	138	+2
+barrier	0	0	+0
+v_cvt_f32_ubyte	192	192	+0
+v_bfe	2	2	+0
+v_lshrrev_b32	32	32	+0
+v_lshlrev_b32	23	23	+0
+v_and_b32	54	54	+0
+v_perm_b32	0	0	+0
+sdwa_operand_uses	16	16	+0
+dpp_uses	0	0	+0
+v_mul_lo_u32	0	0	+0
+v_mad_u32_u24	0	0	+0
+v_mad_i32_i24	0	0	+0
+v_mul_u32_u24	0	0	+0
+v_fma_f32	0	0	+0
+v_mac_f32	248	152	-96
+v_mad_mix_f32	0	0	+0
+v_pk_fma_f16	0	0	+0
+v_cvt_f32_f16	16	16	+0
+
+verdict	isa_changed
+first_divergence	spirv
+last_divergence	isa
+harness_alarm	-
