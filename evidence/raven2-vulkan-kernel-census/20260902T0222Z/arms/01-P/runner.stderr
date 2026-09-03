@@ -1,0 +1,36 @@
+runtime_tree=verified git_head=0259199002658a2d8b78ded9105fd87a295963f2 payload=55a54d7effb689c14b862b25ec78e933cd3e6b0bb3b539024c228c117edea1c3 files=289
+runtime_tree=verified git_head=0259199002658a2d8b78ded9105fd87a295963f2 payload=55a54d7effb689c14b862b25ec78e933cd3e6b0bb3b539024c228c117edea1c3 files=289
+runtime_tree=verified git_head=0259199002658a2d8b78ded9105fd87a295963f2 payload=55a54d7effb689c14b862b25ec78e933cd3e6b0bb3b539024c228c117edea1c3 files=289
+started tmux_socket=qwen-runtime tmux_session=qwen-webui profile=low-async host=127.0.0.1 port=8080 context=24576 latency_mode=observe model=/proc/2843692/fd/7 server=$HOME/qwen-deployments/natural-boundary-13d05a0-r2/llama-server
+speculation spec_type=off draft_n_max=default draft_p_min=default draft_backend_sampling=0 backend_sampling=0
+cache cache_type_k=q8_0 cache_type_v=q4_0 flash_attention=on override_context_ceiling=registry
+session reported failure
+state=failed reason=server_policy_not_active utc=2026-09-02T02:22:08Z
+device_name=AMD Radeon Graphics (RADV RAVEN2)
+device_vendor=0x1002
+device_id=0x15d8
+heap_0_size_bytes=5956993024
+heap_0_budget_bytes=5889671168
+heap_0_usage_bytes=0
+heap_0_available_bytes=5889671168
+heap_0_flags=0x0
+heap_1_size_bytes=11913986048
+heap_1_budget_bytes=11779334144
+heap_1_usage_bytes=0
+heap_1_available_bytes=11779334144
+heap_1_flags=0x1
+aggregate_budget_bytes=17669005312
+aggregate_usage_bytes=0
+aggregate_available_bytes=17669005312
+model_bytes=1312164224
+mem_available_bytes=28585189376
+required_host_bytes=9126805504
+desktop_reserve_bytes=4294967296
+required_vulkan_bytes=4831838208
+vulkan_margin_bytes=536870912
+required_vulkan_with_margin_bytes=5368709120
+swap_used_bytes=344223744
+host_memory_headroom=ample surplus_bytes=19458383872
+vulkan_budget_headroom=ample surplus_bytes=12300296192
+model_memory_preflight=observe
+descriptor-backed model path requires approved model identity

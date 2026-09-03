@@ -1,0 +1,13 @@
+served_ab=unresolved
+model_id=qwen38-2b-distill
+replicates=4
+bound=0.05
+mean_delta=+0.0150
+ci_low=-0.0529
+ci_high=+0.0828
+comparable_pairs=4
+arm_failures=0
+unclassified=0
+cooldown_timeouts=9
+control_server_sha256=5dd86b90154f6143a5303efd2590b9268a0a5e3e908c4d6791f1fde03a4782c2
+candidate_server_sha256=7d9df19f846f0696445b55fed138d7d743d8a315ac0e238d34d023c6f94026b7

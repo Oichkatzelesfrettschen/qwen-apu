@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-# Every evidence path the three ledgers name resolves to a file or directory in
+# Every evidence path the four ledgers name resolves to a file or directory in
 # this tree. The ledgers are read at launch on a host carrying remote/ and
 # patches/ alone, so their readers validate row shape -- a property of the row
 # -- and existence is a property of the tree, which this gate asserts where the
@@ -19,6 +19,7 @@ repository_root=$(CDPATH='' cd -- "$script_directory/.." && pwd -P)
 tuple_ledger=${QWEN_VALIDATED_TUPLES:-$script_directory/validated-tuples.tsv}
 draft_pair_ledger=${QWEN_DRAFT_PAIRS:-$script_directory/draft-pairs.tsv}
 ctx_checkpoint_ledger=${QWEN_CTX_CHECKPOINT_LEDGER:-$script_directory/ctx-checkpoints.tsv}
+feature_claim_ledger=${QWEN_FEATURE_CLAIMS:-$script_directory/feature-claims.tsv}
 
 failures=0
 checked=0
@@ -102,6 +103,7 @@ EOF
 check_ledger 'validated tuple ledger' "$tuple_ledger" 1 15
 check_ledger 'draft pair ledger' "$draft_pair_ledger" 1 11
 check_ledger 'context checkpoint ledger' "$ctx_checkpoint_ledger" 1 3
+check_ledger 'feature claim ledger' "$feature_claim_ledger" 1 4
 
 if [ "$failures" -eq 0 ]; then
     printf 'ledger_evidence=accepted paths=%s\n' "$checked"
