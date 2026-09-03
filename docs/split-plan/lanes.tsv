@@ -1,0 +1,122 @@
+lane	pattern	pr	merge_sha
+# One path pattern per row, matched in file order, first match wins. `lane`
+# names the successor branch the path belongs to; `shared` names a path whose
+# final content is assigned hunk by hunk from docs/split-plan/shared/, and
+# `dropped` names a path that belongs to no lane in this split. A pattern is a
+# shell glob against the repository-relative path, so a trailing /* covers a
+# whole tree.
+#
+# The four measurement instruments census-timing introduces -- census-arm-lib.sh,
+# telemetry-broker.c, the two clock-sidecar readers, and summarize-census-controls.py
+# -- are named here rather than in the lane that later changes them, because
+# run-raven2-vulkan-kernel-census.sh sources or invokes each of them and lane 1
+# runs nothing without them. dpm-telemetry and served-ab-harness carry their
+# deltas on top and stack on lane 1's tip for that reason.
+# An override row reads `COMMIT:PATTERN` and applies to that commit alone,
+# ahead of every plain pattern. It separates a file's introduction from a later
+# change to it. census-timing introduces telemetry-broker.c,
+# validate-clock-sidecar.py, and summarize-census-controls.py because the
+# census runner reads all three, and e0d179a's freshness column is the DPM
+# authority's own claim over them, so that commit's hunks travel to
+# dpm-telemetry while every earlier hunk stays where the files are introduced.
+dpm-telemetry	e0d179a:remote/telemetry-broker.c	-	-
+dpm-telemetry	e0d179a:remote/validate-clock-sidecar.py	-	-
+dpm-telemetry	e0d179a:remote/summarize-census-controls.py	-	-
+dpm-telemetry	e0d179a:remote/test-census-controls.py	-	-
+dpm-telemetry	e0d179a:remote/test-telemetry-broker.sh	-	-
+shared	CLAUDE.md	-	-
+shared	evidence/SHA256SUMS	-	-
+shared	evidence/raven2-vulkan-kernel-census/README.md	-	-
+shared	remote/repository-quality-gates.sh	-	-
+shared	remote/build-llama-preset.sh	-	-
+shared	remote/radv-low-priority-env.sh	-	-
+shared	remote/test-radv-low-priority-env.sh	-	-
+shared	remote/check-text-policy.py	-	-
+# PR #106 landed the activation-lock repairs in main after this branch left it,
+# so the branch's copy of each file below is the older one and replaying it
+# would revert that merge. deployment-followups is built by hand instead: it
+# takes main's shape and adds the census branch's own checks on top, which is
+# what `split_deployment_followups` in split-pr-105.sh reproduces.
+dropped	remote/activate-deployment-bundle.sh	-	-
+dropped	remote/deployment-bundle-name.sh	-	-
+dropped	remote/resolve-active-deployment.sh	-	-
+dropped	remote/test-open-verified-lock-descriptor.py	-	-
+dropped	remote/test-run-fixed64-served-campaign.sh	-	-
+deployment-followups	remote/build-deployment-bundle.sh	123	36d54a9
+deployment-followups	remote/verify-deployment-bundle.sh	123	36d54a9
+deployment-followups	remote/open-verified-lock-descriptor.py	123	36d54a9
+deployment-followups	remote/test-deployment-bundle.sh	123	36d54a9
+deployment-followups	remote/web-mcp/authorize-broker.py	123	36d54a9
+deployment-followups	remote/test-qwen-web-launch.sh	123	36d54a9
+deployment-followups	evidence/deployment-bundle-presets/*	123	36d54a9
+census-timing	patches/llama-vulkan-pipeline-census.patch	116	717dbef
+census-timing	remote/prepare-llama-census-source.sh	116	717dbef
+census-timing	remote/summarize-kernel-census.py	116	717dbef
+census-timing	remote/test-summarize-kernel-census.py	116	717dbef
+census-timing	remote/run-raven2-vulkan-kernel-census.sh	116	717dbef
+census-timing	remote/test-run-raven2-vulkan-kernel-census.sh	116	717dbef
+census-timing	remote/census-arm-lib.sh	116	717dbef
+census-timing	remote/await-quiescence.sh	116	717dbef
+census-timing	remote/test-await-quiescence.sh	116	717dbef
+census-timing	remote/telemetry-broker.c	116	717dbef
+census-timing	remote/build-telemetry-broker.sh	116	717dbef
+census-timing	remote/test-telemetry-broker.sh	116	717dbef
+census-timing	remote/sample-clock-sidecar.py	116	717dbef
+census-timing	remote/test-sample-clock-sidecar.py	116	717dbef
+census-timing	remote/validate-clock-sidecar.py	116	717dbef
+census-timing	remote/summarize-census-controls.py	116	717dbef
+census-timing	remote/test-census-controls.py	116	717dbef
+census-timing	remote/summarize-perf-logger-slice.py	116	717dbef
+census-timing	remote/test-summarize-perf-logger-slice.py	116	717dbef
+census-timing	remote/test-census-sha256.sh	116	717dbef
+census-timing	remote/test-census-replay-corpus.py	116	717dbef
+census-timing	remote/measure-served-decode.sh	116	717dbef
+census-timing	remote/monitor-qwen-runtime.sh	116	717dbef
+census-timing	remote/test-qwen-runtime-guards.sh	116	717dbef
+census-timing	remote/qwen-webui-control.sh	116	717dbef
+census-timing	evidence/raven2-vulkan-kernel-census/replay-corpus/*	116	717dbef
+census-timing	evidence/raven2-vulkan-kernel-census/decode-decomposition.md	116	717dbef
+census-timing	evidence/raven2-vulkan-kernel-census/state-preserving-campaign.md	116	717dbef
+build-cache-identity	remote/gate-cell-key.sh	-	-
+build-cache-identity	remote/test-repository-gate-cells.sh	-	-
+build-cache-identity	remote/build-cache-keys.sh	-	-
+build-cache-identity	remote/test-build-cache-keys.sh	-	-
+dpm-telemetry	remote/probe-dpm-authority.sh	-	-
+dpm-telemetry	remote/test-probe-dpm-authority.sh	-	-
+dpm-telemetry	evidence/raven2-vulkan-kernel-census/dpm-authority/*	-	-
+dpm-telemetry	evidence/raven2-vulkan-kernel-census/dpm-authority-design.md	-	-
+dpm-telemetry	evidence/raven2-vulkan-kernel-census/fclk-command-research.md	-	-
+dpm-telemetry	evidence/hardware/*	-	-
+shader-e4	patches/llama-vulkan-q4k-activation-group-sums.patch	-	-
+shader-e4	patches/llama-vulkan-q4k-activation-sideplane.patch	-	-
+shader-e4	remote/llama-patch-series.tsv	-	-
+shader-e4	remote/raven2-shader-lab/*	-	-
+shader-e4	remote/dump-radv-shader-isa.sh	-	-
+shader-e4	remote/summarize-radv-isa.py	-	-
+shader-e4	remote/test-summarize-radv-isa.py	-	-
+shader-e4	remote/isa-probes/*	-	-
+shader-e4	evidence/raven2-vulkan-kernel-census/e1/*	-	-
+shader-e4	evidence/raven2-vulkan-kernel-census/e4/e1-isa-e4-20260903T0140Z/*	-	-
+shader-e4	evidence/raven2-vulkan-kernel-census/e4/e4b-a-first-pass.md	-	-
+shader-e4	evidence/raven2-vulkan-kernel-census/e4/e4b-c-first-pass.md	-	-
+shader-e4	evidence/raven2-vulkan-kernel-census/e4/*.spvasm	-	-
+shader-e4	evidence/raven2-vulkan-kernel-census/e4/spirv-comparison.md	-	-
+shader-e4	evidence/raven2-vulkan-kernel-census/e4/traffic-balance.md	-	-
+correctness-witnesses	remote/run-kernel-delta-witness.sh	-	-
+correctness-witnesses	remote/test-run-kernel-delta-witness.sh	-	-
+correctness-witnesses	remote/summarize-margin-witness.py	-	-
+correctness-witnesses	remote/test-summarize-margin-witness.py	-	-
+correctness-witnesses	remote/witness-prompts/*	-	-
+correctness-witnesses	evidence/raven2-vulkan-kernel-census/e4/kernel-delta-design.md	-	-
+correctness-witnesses	evidence/raven2-vulkan-kernel-census/e4/margin-contract-design.md	-	-
+correctness-witnesses	evidence/raven2-vulkan-kernel-census/e4/kernel-delta-witness-20260903T0148Z/*	-	-
+correctness-witnesses	evidence/raven2-vulkan-kernel-census/e4/witness-calibration-20260903T0203Z/*	-	-
+correctness-witnesses	evidence/raven2-vulkan-kernel-census/e4/witness-cpu-reference-20260903T0220Z/*	-	-
+correctness-witnesses	evidence/raven2-vulkan-kernel-census/e4/margin-holdout-20260903T0456Z/*	-	-
+correctness-witnesses	evidence/raven2-vulkan-kernel-census/e4/quality-gate-20260903T0547Z/*	-	-
+served-ab-harness	remote/run-served-binary-ab.sh	-	-
+served-ab-harness	remote/test-run-served-binary-ab.sh	-	-
+served-ab-harness	remote/summarize-bracket-ab.py	-	-
+served-ab-harness	remote/test-summarize-bracket-ab.py	-	-
+served-ab-harness	evidence/raven2-vulkan-kernel-census/e4/served-ab-design.md	-	-
+retained-evidence	evidence/raven2-vulkan-kernel-census/*	-	-

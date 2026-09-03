@@ -1,0 +1,6 @@
+key	value
+runtime_payload_gate_head	d8a3e16a8536f357ab4639d90355a916c750e59b
+final_repository_head	7897410f2fe883b065cafb4199d1cc4c88308119
+runtime_payload_digest_equal	yes
+successor_paths	evidence/deployment-bundle-presets/20260901T2352Z/ evidence/deployment-bundle-presets/README.md evidence/SHA256SUMS
+evidence_only_successor_checks	check-ledger-evidence.sh refresh-evidence-manifest.sh
