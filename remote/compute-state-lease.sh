@@ -291,7 +291,9 @@ if [ "$1" = status ]; then
     else
         lease_state=held
     fi
-    printf 'compute_state=live dpm_level=%s sclk_level=%s sclk_mhz=%s mclk_level=%s mclk_mhz=%s gfxclk_delivered_mhz=%s ksm_run=%s lease=%s harness_nice=%s\n' \
+    # caller_nice is the invoking shell's own level, which this subcommand never
+    # changes; a profile's term is named on the transaction's own record.
+    printf 'compute_state=live dpm_level=%s sclk_level=%s sclk_mhz=%s mclk_level=%s mclk_mhz=%s gfxclk_delivered_mhz=%s ksm_run=%s lease=%s caller_nice=%s\n' \
         "$(read_dpm_level "$drm_device/power_dpm_force_performance_level")" \
         "$(read_sclk_index "$drm_device")" \
         "$(read_selected_field "$drm_device/pp_dpm_sclk" value)" \
@@ -584,7 +586,15 @@ finish_transaction() {
     # census_engine_clock_restore writes the two selections back only under a
     # `manual` snapshot, because a governor moves the star under every other
     # level and comparing it there reports the governor rather than the restore.
+    # Under every other snapshot the level word carries the whole claim:
+    # amdgpu_set_power_dpm_force_performance_level hands the level back to the
+    # governor, which owns both bounds from that point, and no sysfs surface
+    # reports a residual restriction beside the star the governor is moving. The
+    # restore line names which of the two it verified rather than printing a
+    # star it did not compare.
+    restored_selections=governor-owned
     if [ "$snapshot_dpm_level" = manual ]; then
+        restored_selections=verified
         if [ "$snapshot_sclk_index" != - ] &&
             ! restore_observed=$(await_restored_value read_sclk_index "$drm_device" \
                 "$snapshot_sclk_index"); then
@@ -608,9 +618,9 @@ finish_transaction() {
         printf 'restoration=failed profile=%s fields=%s record=%s\n' \
             "$profile_name" "${restoration_failures% }" "$state_record"
     else
-        printf 'restoration=held profile=%s dpm_level=%s sclk_level=%s mclk_level=%s ksm_run=%s\n' \
-            "$profile_name" "$snapshot_dpm_level" "$snapshot_sclk_index" \
-            "$snapshot_mclk_index" "$snapshot_ksm_run"
+        printf 'restoration=held profile=%s dpm_level=%s selections=%s sclk_level=%s mclk_level=%s ksm_run=%s\n' \
+            "$profile_name" "$snapshot_dpm_level" "$restored_selections" \
+            "$snapshot_sclk_index" "$snapshot_mclk_index" "$snapshot_ksm_run"
     fi
 }
 

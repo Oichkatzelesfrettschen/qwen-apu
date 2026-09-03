@@ -72,7 +72,9 @@ lease_fixture=$state_fixture/vulkan-workload.lock
 # fabric step selected, so both profiles move every authority they write and a
 # restore that missed one is visible in the table rather than only in a level
 # word. census_engine_clock_restore writes the two selections back under a
-# `manual` snapshot alone, which is the snapshot this fixture takes.
+# `manual` snapshot alone, which is the snapshot this fixture takes by default;
+# one case below replaces the level word with the appliance's own `auto` and
+# reads the other restore path.
 reset_fixture() {
     printf 'manual\n' >"$drm_fixture/power_dpm_force_performance_level"
     printf '0: 200Mhz\n1: 400Mhz *\n2: 1100Mhz\n' >"$drm_fixture/pp_dpm_sclk"
@@ -316,7 +318,7 @@ if [ "$clean_status" -eq 0 ] &&
         "$temporary_directory/clean.log" &&
     grep -q '^clock_expectation=reached profile=measure-fixed gfxclk_mhz=1100 fclk_mhz=933$' \
         "$temporary_directory/clean.log" &&
-    grep -q '^restoration=held profile=measure-fixed dpm_level=manual sclk_level=1 mclk_level=1 ksm_run=1$' \
+    grep -q '^restoration=held profile=measure-fixed dpm_level=manual selections=verified sclk_level=1 mclk_level=1 ksm_run=1$' \
         "$temporary_directory/clean.log" &&
     [ "$(fixture_state)" = "$snapshot_fixture_state" ]; then
     report 0 clean_apply_run_restore
@@ -408,6 +410,30 @@ if [ "$serving_status" -eq 0 ] &&
 else
     report 1 serving_profile_accepts_the_clamped_fabric_level
     cat "$temporary_directory/serving.log" >&2
+fi
+
+# The appliance presents an `auto` snapshot, since the launch chain writes no
+# performance level. census_engine_clock_restore hands the level back to the
+# governor there and writes neither selection, and this transaction verifies
+# neither star for the same reason, so the restore line states which of the two
+# it verified rather than printing a star it did not compare. The level word
+# carries the whole claim on that path, and this case is what proves it runs.
+reset_fixture
+printf 'auto\n' >"$drm_fixture/power_dpm_force_performance_level"
+auto_status=0
+run_transaction measure-fixed "$stub_directory/observer" auto-arm \
+    >"$temporary_directory/auto.log" 2>&1 || auto_status=$?
+if [ "$auto_status" -eq 0 ] &&
+    [ "$(observer_field observed_dpm_level)" = manual ] &&
+    [ "$(observer_field observed_sclk)" = '2:1100' ] &&
+    grep -q '^restoration=held profile=measure-fixed dpm_level=auto selections=governor-owned sclk_level=1 mclk_level=1 ksm_run=1$' \
+        "$temporary_directory/auto.log" &&
+    [ "$(cat "$drm_fixture/power_dpm_force_performance_level")" = auto ] &&
+    [ "$(cat "$ksm_fixture/run")" = 1 ]; then
+    report 0 auto_snapshot_restores_the_level_and_names_the_governor
+else
+    report 1 auto_snapshot_restores_the_level_and_names_the_governor
+    cat "$temporary_directory/auto.log" >&2
 fi
 
 # The lease: another Vulkan workload holding it means the level this transaction
@@ -515,7 +541,7 @@ term_status=0
 wait "$term_pid" || term_status=$?
 if [ "$term_status" -eq 143 ] &&
     grep -q '^observed_sclk	2:1100$' "$observer_log" &&
-    grep -q '^restoration=held profile=measure-fixed dpm_level=manual sclk_level=1 mclk_level=1 ksm_run=1$' \
+    grep -q '^restoration=held profile=measure-fixed dpm_level=manual selections=verified sclk_level=1 mclk_level=1 ksm_run=1$' \
         "$term_output" &&
     [ "$(fixture_state)" = "$snapshot_fixture_state" ]; then
     report 0 terminating_signal_still_restores
@@ -539,7 +565,7 @@ set_control refuse_credential 1
 status_status=0
 run_transaction status >"$temporary_directory/status.log" 2>&1 || status_status=$?
 if [ "$status_status" -eq 0 ] &&
-    grep -q '^compute_state=live dpm_level=manual sclk_level=1 sclk_mhz=400 mclk_level=1 mclk_mhz=400 gfxclk_delivered_mhz=400 ksm_run=1 lease=free harness_nice=' \
+    grep -q '^compute_state=live dpm_level=manual sclk_level=1 sclk_mhz=400 mclk_level=1 mclk_mhz=400 gfxclk_delivered_mhz=400 ksm_run=1 lease=free caller_nice=' \
         "$temporary_directory/status.log" &&
     [ "$(fixture_state)" = "$snapshot_fixture_state" ]; then
     report 0 status_reports_live_values_without_a_credential

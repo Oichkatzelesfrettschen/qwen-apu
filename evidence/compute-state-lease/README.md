@@ -60,7 +60,15 @@ left forced still exits 4. `clock_expectation=unreached` is the separate status
 
 The two DPM selections are verified against the snapshot only where the snapshot
 level was `manual`. A governor moves the star under every other level, so
-comparing it there would report the governor rather than the restore.
+comparing it there would report the governor rather than the restore. The
+appliance presents an `auto` snapshot, since the launch chain writes no
+performance level, and on that path the level word carries the whole claim:
+`amdgpu_set_power_dpm_force_performance_level` hands the level back to the
+governor, which owns both bounds from there, and no sysfs surface reports a
+residual restriction beside the star the governor is already moving. The restore
+line states which of the two it verified -- `selections=verified` under a
+`manual` snapshot and `selections=governor-owned` otherwise -- rather than
+printing a star it did not compare.
 
 The process terms leave with the process. The state record states what the
 command ran under, and the restore covers the two machine-persistent authorities.
@@ -158,11 +166,13 @@ while it runs, which is what makes the applied profile provable rather than only
 the state before and after it. The lease, its published proof, and
 `verify-external-vulkan-lease.py` run unstubbed against a real `flock`.
 
-Fourteen cases pass: the usage form, the `high` and `profile_peak` refusals, a
+Fifteen cases pass: the usage form, the `high` and `profile_peak` refusals, a
 clean apply-run-restore, the command's observation of the applied profile, its
 inherited affinity, the KSM 0-and-back round trip, the state record's snapshot
 rows, the closed arm environment carrying the lease proof, the serving profile
-accepting the clamped fabric level, the held-lease refusal, an unreached clock
-expectation refusing before the command, a failed restoration reported as an
-incident over a command that exited 0, a terminating signal mid-command that
-still restores, and `status` reporting live values with no credential.
+accepting the clamped fabric level, an `auto` snapshot restoring the level and
+naming the governor as the selections' owner, the held-lease refusal, an
+unreached clock expectation refusing before the command, a failed restoration
+reported as an incident over a command that exited 0, a terminating signal
+mid-command that still restores, and `status` reporting live values with no
+credential.
