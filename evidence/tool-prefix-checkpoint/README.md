@@ -193,6 +193,41 @@ digest collision moves no state. Within one server process the model, template,
 runtime, and build fields are constants, so they are recorded rather than
 enforced there; they are what a persisted pin would need.
 
+That division is why two further inputs are refused rather than keyed. A
+per-request lora scale map and a speculative draft context each decide the
+retained bytes while leaving the prefix tokens identical, and `covers` admits a
+restore on the tokens alone, so a key field naming either would label the pin
+without guarding it. The pin is process-scoped and `slot.lora` is per request:
+`construct_lora_list` at `server-context.cpp:1601` copies
+`params_base.lora_adapters` and rescales by index, `launch_slot_with_task` at
+1620 clears `slot.prompt` for a changed adapter set and leaves this pin
+standing, and the next request reproducing the tokens would restore a state
+computed under the previous scales. A draft context carries state the pin does
+not hold at all: `create_checkpoint` at 2247 saves `ctx_tgt`, `ctx_dft`, and the
+speculative boundary stash together and the restore at 3253 loads all three,
+while the pin holds `ctx_tgt` alone.
+
+The server therefore disarms the pin at startup where `ctx_dft` is non-null or
+`params_base.lora_adapters` is non-empty, states each condition on its own
+`SRV_WRN` line so a launch meeting both reports both, and restates the lora half
+per request through one predicate over `slot.lora` that the fill partition, the
+capture, and the restore all read, so the three sites cannot diverge. `ctx_dft`
+is the exact predicate for the speculative half:
+`common_speculative_impl_draft_eagle3` at `common/speculative.cpp:424` overrides
+`get_state` and `set_state` at 870 and 887 and is the only implementation that
+does, and `common_speculative_init` at 2461 admits every draft-loading
+implementation only where `params.draft.ctx_dft` is non-null. An n-gram
+speculator leaves `ctx_dft` null, returns no state from
+`common_speculative_get_state` at 2745, and has its drafts verified against the
+target, so it stays armed. `--spec-type draft-simple` and `draft-mtp` both set
+`ctx_dft`, so a `remote/draft-pairs.tsv` section and the pin are mutually
+exclusive inside one server process; in router mode `server-models.cpp` spawns
+every child from the `base_env` snapshot, so `QWEN_PREFIX_CHECKPOINT` reaches
+all of them and the draft-pair child alone disarms. An empty `slot.lora` leaves
+`alora_invocation_start` at -1, since `lora_all_alora` at
+`server-common.cpp:133` reports false over an empty list, so the same predicate
+carries the alora caching rule the restore previously stated for itself.
+
 `remote/test-prefix-checkpoint-key.sh` compiles the header out of the patch and
 checks the SHA-256 against the two standard vectors, the token digest against
 `hashlib` over the same little-endian packing, the key framing against an
@@ -226,10 +261,14 @@ else. A capture whose recurrent state sat one batch ahead of its own token array
 would restore an answer rather than fail.
 
 `QWEN_PREFIX_CHECKPOINT` arms it, and an unset, empty, or `0` value leaves every
-hook inert. The mechanism is independent of `--ctx-checkpoints`: the fill loop's
-break at the last user message is what puts a batch boundary at the pin's own
-boundary, and the patch admits that break when the pin is armed while leaving
-the `do_checkpoint` spacing rule at 3438 untouched.
+hook inert, as does a launch carrying a draft context or a loaded lora adapter,
+for the reasons the key section states. The mechanism is independent of
+`--ctx-checkpoints`: the fill loop's break at the last user message is what puts
+a batch boundary at the pin's own boundary, and the patch admits that break
+where the admission predicate holds while leaving the `do_checkpoint` spacing
+rule at 3438 untouched. The break reads that same predicate rather than the
+armed flag, so a refused configuration leaves the stock fill partition instead
+of adding a third execution shape that captures nothing.
 
 Arming the pin changes the fill partition where the checkpoint count is 0, since
 a batch then ends at a user start that would otherwise have run on. An armed run
@@ -346,6 +385,21 @@ alone becomes that class's profile setting.
   unmeasured; the capture line reports it in MiB at every capture, and a size
   that competes with the model's own residency ends the design rather than
   tuning it.
+- A server log carries `captured prefix checkpoint` or `restored prefix
+  checkpoint` while it also carries `prefix checkpoint refuses a draft context`
+  or `prefix checkpoint refuses N loaded lora adapter(s)`. The disarm is not
+  exact, and a restore then advanced `n_past` to the pinned prefix over state
+  the pin never held. The two refusals are logged from the same requested arm
+  rather than from a running total, so a process meeting both prints both lines
+  and each predicate is read on its own.
+- A launch that loaded no adapter and no draft model logs either refusal line.
+  The predicates are wider than the source says, and the arms measure the
+  unpinned path while reading as though they measured the pin. Every arm above
+  reads the arming and refusal lines before it reads a timing.
+- An arm against a `remote/draft-pairs.tsv` section reports `cache_n = |P|` with
+  `QWEN_PREFIX_CHECKPOINT` set. The pin is disarmed in that child, so the reuse
+  came from the context checkpoint the count already places and the arm
+  attributes it to the wrong mechanism.
 
 ## What did not run
 
@@ -359,3 +413,8 @@ alone becomes that class's profile setting.
 - The candidate build was compiled and linked in the workstation container and
   loaded no model. `llama-server` links, `libllama-server-impl.so` carries the
   key derivation and both log lines, and nothing executed.
+- Both refusals are read from the source rather than from a log. No launch
+  carrying a draft context or a loaded adapter has run against this build, so
+  the `SRV_WRN` lines the falsifiers above read are unobserved and the exactness
+  of `ctx_dft` and `params_base.lora_adapters` as predicates rests on the
+  reading of `common_speculative_init` and `construct_lora_list`.

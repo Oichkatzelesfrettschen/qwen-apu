@@ -76,6 +76,41 @@ armed run and an unarmed run are two execution shapes, so the control for a
 measurement is an armed run whose prefix the pin does not hold rather than an
 unarmed run.
 
+Two configurations disarm the pin, because each decides the retained bytes while
+leaving the prefix tokens identical and covers() admits a restore on the tokens
+alone. A key field naming either one would label the pin without guarding it, so
+the refusal is stated where the reason is still readable. Both are decided
+against the arming request rather than against the running total, so a process
+meeting both logs both reasons.
+
+A draft context is the first. create_checkpoint saves ctx_tgt, ctx_dft, and the
+speculative boundary stash together and the checkpoint restore loads all three,
+while the pin holds ctx_tgt alone, so a restore would advance n_past to the
+pinned prefix over a draft context and an eagle3 g_embd row still describing the
+previous prompt. common_speculative_impl_draft_eagle3 is the one implementation
+overriding get_state and set_state, and common_speculative_init admits every
+draft-loading implementation only where params.draft.ctx_dft is non-null, so
+ctx_dft names exactly the configurations carrying such state. --spec-type
+draft-simple and draft-mtp both set it, so a draft-pair section and the pin are
+mutually exclusive inside one server process, and a router child serving that
+section disarms while its siblings stay armed under the same environment. An
+n-gram speculator leaves ctx_dft null, returns no state
+from common_speculative_get_state, and has its drafts verified against the
+target, so it stays armed.
+
+A loaded lora adapter is the second. construct_lora_list copies
+params_base.lora_adapters and rescales by index, so a request body's lora map
+changes the scales the prefix state was computed under; launch_slot_with_task
+clears slot.prompt for that change and leaves this process-scoped pin standing,
+and covers() would accept the next request that reproduces the tokens. The arm
+refuses a non-empty params_base.lora_adapters, and one predicate over
+slot.lora restates it per request at the fill partition, the capture, and the
+restore, so the three sites cannot diverge. An empty slot.lora leaves
+alora_invocation_start at -1, since lora_all_alora reports false over an empty
+list, so that predicate carries the alora rule the restore previously stated for
+itself. The appliance launches with no adapter and no draft context, so both
+refusals leave the measured path armed.
+
 The hunk offsets encode the post-series line numbers, so the patch applies after
 llama-vulkan-low-priority, llama-no-cpu-fallback, llama-vulkan-duty-cycle,
 llama-vulkan-runtime-submit-limit, llama-vulkan-submit-trace,
@@ -83,7 +118,7 @@ llama-router-tools-proxy, llama-vulkan-view-alias-deps, and
 llama-server-natural-checkpoint-boundary, in that order.
 
 diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
-index cea23db99..9df842cc9 100644
+index cea23db99..5b96d2440 100644
 --- a/tools/server/server-context.cpp
 +++ b/tools/server/server-context.cpp
 @@ -6,6 +6,7 @@
@@ -195,7 +230,7 @@ index cea23db99..9df842cc9 100644
      server_metrics metrics;
  
      // queued prompt stats - llama_decode() is async, so the timing is only valid after a sync
-@@ -1280,6 +1368,23 @@ private:
+@@ -1280,6 +1368,70 @@ private:
          }
          SRV_TRC("%s", "for more info see https://github.com/ggml-org/llama.cpp/pull/16391\n");
  
@@ -203,13 +238,60 @@ index cea23db99..9df842cc9 100644
 +        // environment rather than an argument so the whole change stays inside
 +        // this file while the mechanism is under measurement, and an unset or
 +        // empty variable leaves every hook below inert.
++        //
++        // Two configurations disarm it here, where the reason is still readable
++        // beside the state that would have been retained.
++        //
++        // A draft context carries state the pin does not hold. create_checkpoint
++        // saves ctx_tgt, ctx_dft, and the speculative boundary stash together,
++        // and the checkpoint restore loads all three; the pin holds ctx_tgt
++        // alone, so restoring it would advance n_past to the pinned prefix over
++        // a draft context and an eagle3 g_embd row still describing the previous
++        // prompt. common_speculative_impl_draft_eagle3 is the one implementation
++        // overriding get_state and set_state, and every implementation that
++        // loads a draft model is admitted by common_speculative_init only where
++        // params.draft.ctx_dft is non-null, so ctx_dft names exactly the
++        // configurations that carry such state. An n-gram speculator leaves
++        // ctx_dft null, returns no state from common_speculative_get_state, and
++        // has its drafts verified against the target, so it stays armed.
++        //
++        // A loaded adapter makes the retained bytes a function of a setting the
++        // pin does not observe. construct_lora_list copies
++        // params_base.lora_adapters and rescales by index, so a per-request
++        // lora map changes the scales the prefix state was computed under while
++        // launch_slot_with_task clears slot.prompt alone and leaves this pin
++        // standing; covers() compares tokens and would accept it. Binding the
++        // adapter list into the key would label the pin rather than guard it,
++        // since the key is recorded and the token comparison is what admits a
++        // restore, so the pin refuses the whole configuration instead.
 +        {
 +            const char * prefix_checkpoint_env = getenv("QWEN_PREFIX_CHECKPOINT");
 +
-+            prefix_checkpoint.armed =
++            const bool prefix_checkpoint_requested =
 +                prefix_checkpoint_env != nullptr &&
 +                prefix_checkpoint_env[0] != '\0' &&
 +                strcmp(prefix_checkpoint_env, "0") != 0;
++
++            // Both refusals are decided against the request rather than against
++            // the running total, so a launch carrying a draft context and an
++            // adapter logs both reasons and a reader tests each predicate on its
++            // own line.
++            bool prefix_checkpoint_refused = false;
++
++            if (prefix_checkpoint_requested && ctx_dft != nullptr) {
++                SRV_WRN("%s", "prefix checkpoint refuses a draft context: speculative decoding carries "
++                        "draft and boundary state the pin does not hold\n");
++                prefix_checkpoint_refused = true;
++            }
++
++            if (prefix_checkpoint_requested && !params_base.lora_adapters.empty()) {
++                SRV_WRN("prefix checkpoint refuses %zu loaded lora adapter(s): the retained state depends "
++                        "on per-request adapter scales the pin does not observe\n",
++                        params_base.lora_adapters.size());
++                prefix_checkpoint_refused = true;
++            }
++
++            prefix_checkpoint.armed = prefix_checkpoint_requested && !prefix_checkpoint_refused;
 +
 +            if (prefix_checkpoint.armed) {
 +                SRV_INF("%s", "prefix checkpoint is armed by QWEN_PREFIX_CHECKPOINT\n");
@@ -219,10 +301,21 @@ index cea23db99..9df842cc9 100644
          if (params_base.n_ctx_checkpoints > 0) {
              SRV_TRC("context checkpoints enabled, max = %d, min spacing = %d\n",
                      params_base.n_ctx_checkpoints, params_base.checkpoint_min_step);
-@@ -2206,6 +2311,61 @@ private:
+@@ -2205,6 +2357,72 @@ private:
+         return true;
      }
  
-     // n_tokens_cur: the number of tokens added to the batch for the current slot
++    // One predicate for the fill partition, the capture, and the restore, so the
++    // three sites state the same admission. The arm decision above settles the
++    // process constants; slot.lora is per request, since a lora map in a request
++    // body rescales the adapter list construct_lora_list copies, and a prefix
++    // state computed under one set of scales describes no other. The list is
++    // empty on every launch that loaded no adapter, which is what leaves the
++    // measured appliance path armed.
++    bool prefix_checkpoint_admits(const server_slot & slot) const {
++        return prefix_checkpoint.armed && slot.lora.empty();
++    }
++
 +    // The key over every field the retained prefix bytes depend on. The chat
 +    // template renders tool schemas into the system message, so the system span
 +    // digest carries the tool set and the server observes no field that would
@@ -278,10 +371,10 @@ index cea23db99..9df842cc9 100644
 +        return prefix_checkpoint_key(fields);
 +    }
 +
+     // n_tokens_cur: the number of tokens added to the batch for the current slot
      void create_checkpoint(server_slot & slot, const int64_t n_tokens_cur, llama_pos pos_min, llama_pos pos_max) {
          const int id_task = slot.task->id;
- 
-@@ -3102,6 +3262,39 @@ private:
+@@ -3102,6 +3320,41 @@ private:
                                  // reuse any previously computed tokens that are common with the new prompt
                                  n_past = slot.prompt.tokens.get_common_prefix(input_tokens);
  
@@ -291,8 +384,10 @@ index cea23db99..9df842cc9 100644
 +                                // and the recurrent state; a partial checkpoint could not do this,
 +                                // because it carries the recurrent half alone and reads the rest
 +                                // out of a slot that a diverging request has already cleared.
-+                                if (prefix_checkpoint.armed &&
-+                                    slot.alora_invocation_start <= 0 &&
++                                // An empty slot.lora leaves alora_invocation_start at -1, since
++                                // lora_all_alora reports false over an empty list, so the
++                                // admission predicate covers the alora caching rule below.
++                                if (prefix_checkpoint_admits(slot) &&
 +                                    n_past < (int) prefix_checkpoint.n_tokens() &&
 +                                    prefix_checkpoint.covers(input_tokens)) {
 +                                    const int64_t t_start = ggml_time_us();
@@ -321,14 +416,14 @@ index cea23db99..9df842cc9 100644
                                  // if there is an alora invoked, don't cache after the invocation start
                                  if (slot.alora_invocation_start > 0) {
                                      SLT_DBG(slot, "only caching to alora invocation start (n_past = %d, alora_invocation_start = %d)\n", n_past, slot.alora_invocation_start);
-@@ -3431,11 +3624,17 @@ private:
+@@ -3431,11 +3684,17 @@ private:
                          slot.prompt.tokens.push_back(cur_tok);
  
                          // break at the last user message, or at user messages at least min step past the last checkpoint
 -                        if (do_checkpoint && spans.is_user_start(slot.prompt.n_tokens())) {
 +                        // the pinned prefix needs the same break at the last user message alone, so a batch starts
 +                        // exactly at its boundary and the memory holds the prefix whole when the capture reads it
-+                        if ((do_checkpoint || prefix_checkpoint.armed) && spans.is_user_start(slot.prompt.n_tokens())) {
++                        if ((do_checkpoint || prefix_checkpoint_admits(slot)) && spans.is_user_start(slot.prompt.n_tokens())) {
                              const auto pos = slot.prompt.n_tokens();
                              const auto & checkpoints = slot.prompt.checkpoints;
  
@@ -341,7 +436,7 @@ index cea23db99..9df842cc9 100644
                                  break;
                              }
                          }
-@@ -3504,6 +3703,38 @@ private:
+@@ -3504,6 +3763,38 @@ private:
                      if (do_checkpoint) {
                          create_checkpoint(slot, n_tokens_cur, pos_min, pos_max);
                      }
@@ -355,7 +450,7 @@ index cea23db99..9df842cc9 100644
 +                    // is derived again on every capture, so an edited system prompt, a changed
 +                    // tool set, another template, or another model replaces the pin rather than
 +                    // leaving bytes that no longer describe the prefix a request asks for.
-+                    if (prefix_checkpoint.armed && is_last_user_message && n_tokens_start > 0 &&
++                    if (prefix_checkpoint_admits(slot) && is_last_user_message && n_tokens_start > 0 &&
 +                        pos_min >= 0 && pos_max == (llama_pos) n_tokens_start - 1 && !has_mtmd &&
 +                        !slot.prompt.tokens.has_mtmd && !input_tokens.has_mtmd) {
 +                        const auto & prompt_tokens = slot.prompt.tokens.get_tokens();
@@ -382,10 +477,10 @@ index cea23db99..9df842cc9 100644
                  if (!slot_batched) {
 diff --git a/tools/server/server-prefix-checkpoint.h b/tools/server/server-prefix-checkpoint.h
 new file mode 100644
-index 000000000..10aa856fb
+index 000000000..6e2182153
 --- /dev/null
 +++ b/tools/server/server-prefix-checkpoint.h
-@@ -0,0 +1,231 @@
+@@ -0,0 +1,238 @@
 +#pragma once
 +
 +// Key derivation for the schema-bound prefix checkpoint.
@@ -408,6 +503,13 @@ index 000000000..10aa856fb
 +// server observes one system span rather than a system prompt and a tool set
 +// it could digest apart. system_span_digest therefore carries the tool
 +// schemas, and a caller that needs them separated supplies its own field.
++//
++// Two further inputs decide the retained bytes and are fields of no key below,
++// because a key labels a pin that the verbatim token comparison admits. A
++// per-request lora scale map and a speculative draft context each change what a
++// prefix state means while leaving the prefix tokens identical, so the server
++// refuses capture and restore over either configuration and states the reason
++// in its log rather than recording a field that would guard nothing.
 +
 +#include <cstddef>
 +#include <cstdint>
