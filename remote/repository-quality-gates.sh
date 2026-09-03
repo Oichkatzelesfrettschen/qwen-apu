@@ -149,6 +149,8 @@ remote/test-await-quiescence.sh
 remote/test-telemetry-broker.sh
 remote/test-census-sha256.sh
 remote/test-run-raven2-vulkan-kernel-census.sh
+PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-bracket-ab.py
+remote/test-run-served-binary-ab.sh
 remote/refresh-evidence-manifest.sh --check
 PYTHONDONTWRITEBYTECODE=1 python3 remote/check-text-policy.py
 
