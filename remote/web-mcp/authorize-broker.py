@@ -999,7 +999,11 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
 class BrokerServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     """Serve independent requests concurrently over per-handler ledgers."""
 
-    allow_reuse_address = False
+    # SO_REUSEADDR on Linux admits a bind over the TIME_WAIT remainders of a
+    # previous broker's own connections and still refuses a port held by a
+    # live listener, so a launch that follows a teardown by seconds binds
+    # while a second broker on the same port remains refused with EADDRINUSE.
+    allow_reuse_address = True
     daemon_threads = False
     block_on_close = True
 
