@@ -35,6 +35,9 @@ cp "$script_directory/resolve-active-deployment.sh" \
 cp "$script_directory/open-verified-lock-descriptor.py" \
     "$fixture_remote/open-verified-lock-descriptor.py"
 cp "$script_directory/check-runtime-tree.sh" "$fixture_remote/check-runtime-tree.sh"
+# The launcher reads the image markers of every router preset through this
+# library, so a router launch sources it whether or not the lane is armed.
+cp "$script_directory/image-launch-lib.sh" "$fixture_remote/image-launch-lib.sh"
 cp "$script_directory/qwen-teardown.sh" "$fixture_remote/qwen-teardown.sh"
 # The teardown proves the image lane left no service, runtime, partial
 # artifact, or held Vulkan workload lease, and it reads that proof from its own
