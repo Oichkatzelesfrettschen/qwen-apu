@@ -219,12 +219,13 @@ ssh eirikr@qwen-laptop
 sudo -v
 ~/qwen-laptop-setup/remote/qwen-teardown.sh
 out=~/evidence/prefill-ladder/$(date -u +%Y%m%dT%H%MZ)
-QWEN_CENSUS_MCLK_LEVEL=2 \
+{ QWEN_CENSUS_MCLK_LEVEL=2 \
     ~/qwen-laptop-setup/remote/run-prefill-ladder.sh \
     ~/deployments/CONTROL/llama-server \
     ~/builds/CANDIDATE/bin/llama-server \
     qwen38-2b-distill \
-    "$out" 2>&1 | tee "$out.log"
+    "$out"; printf 'ladder_exit=%s\n' "$?" >"$out.status"; } 2>&1 | tee "$out.log"
+cat "$out.status"
 
 # the clock the next workload inherits, read from the device rather than assumed
 grep dpm_restore= "$out.log" | tail -1
@@ -235,8 +236,11 @@ cat /sys/class/drm/card1/device/pp_dpm_mclk
 
 The runner retains `inputs.tsv`, `arms.tsv`, and `summary.tsv` under its output
 directory and writes `dpm_restore=` to stdout, which nothing captures on its own, so the
-`tee` above is what makes the line readable after the run. The runner refuses an output
-path that already exists, so `$out.log` is named beside that directory rather than
+`tee` above is what makes the line readable after the run while it still scrolls. A
+pipeline reports its last command's status, so `tee` would report success over a failed
+ladder; the braces record the runner's own status into `$out.status` before the pipe
+sees it, which is what `cat` reads back. The runner refuses an output path that already
+exists, so `$out.log` and `$out.status` are named beside that directory rather than
 inside it.
 
 The line reads `dpm_restore=restored level=X requested=X sclk_level=I mclk_level=J` when
