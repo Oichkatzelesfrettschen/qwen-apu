@@ -228,13 +228,26 @@ QWEN_CENSUS_MCLK_LEVEL=2 \
 # the clock the next workload inherits, read from the device rather than assumed
 grep dpm_restore= ~/evidence/prefill-ladder/*/run.log | tail -1
 cat /sys/class/drm/card1/device/power_dpm_force_performance_level
-# the line reads `dpm_restore=restored level=X requested=X` when the device is back in
-# the policy the run found it in, and `dpm_restore=mismatch level=Y requested=X` when it
-# is not. `requested=` is that pre-run policy, which census_engine_clock_snapshot took
-# before the first write, so it is `manual` for a device that was already forced and
-# `auto` otherwise. Compare the sysfs read against `requested=` rather than against a
-# fixed name: on a mismatch, sudo -v again and write `requested=`'s value back.
+cat /sys/class/drm/card1/device/pp_dpm_sclk
+cat /sys/class/drm/card1/device/pp_dpm_mclk
 ```
+
+The line reads `dpm_restore=restored level=X requested=X sclk_level=I mclk_level=J` when
+the policy node is back in the policy the run found it in, and `dpm_restore=mismatch`
+when it is not. `requested=` is that pre-run policy, which `census_engine_clock_snapshot`
+took before the first write, so it is `manual` for a device that was already forced and
+`auto` otherwise. Compare the policy read against `requested=` rather than against a
+fixed name, and write `requested=`'s value back on a mismatch.
+
+`restored` is necessary and not sufficient. `census_engine_clock_restore` writes the
+policy and, under `manual`, the two clock indices, and then compares the policy node
+alone. A device whose pre-run policy was already `manual` therefore reads back
+`level=manual requested=manual` and prints `restored` even when both index writes were
+refused, leaving the campaign's own highest `pp_dpm_sclk` and `pp_dpm_mclk` selections
+starred. The two `cat` reads above close that: the starred step in each table is the one
+the next workload runs at, and it has to be the `sclk_level=` and `mclk_level=` indices
+the same line names. Where it is not, `sudo -v` again and write those indices back to
+`pp_dpm_sclk` and `pp_dpm_mclk`.
 
 `../prefill-ladder/device-window-20260903-not-run.md` records the window this
 requirement was found in, and the campaign's own wall time is unmeasured, so the
