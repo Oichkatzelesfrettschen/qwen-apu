@@ -1428,6 +1428,12 @@ remote/measure-bench-repeatability.sh MODEL    # what a depth-0 rate repeats to
 remote/run-quality-suite.py ENDPOINT OUT_JSON --long-context-characters 24000
                                                 # the 75-row graded suite at explicit depth
 remote/run-quality-roster.sh [OUTPUT_DIR]      # that suite against every servable row
+QWEN_WEB_API_KEY_FILE=~/qwen-webui-state/api.key \
+    remote/run-conversational-suite.sh [OUTPUT_DIR] [MODEL_ID...]
+                                                # the suite web-off through the API and
+                                                # web-on through the served page, per
+                                                # servable checkpoint a web section
+                                                # reaches; evidence/conversational-suite/
 remote/generate-quality-images.py [DIR]        # the vision fixtures, and --check
 remote/regrade-quality-roster.py RECORD...     # a grader change over retained replies
 remote/sample-gpu-clocks.sh OUT_TSV [SECONDS]  # the DPM step a rate ran at
@@ -1718,6 +1724,8 @@ python3 remote/test-image-review.py
 python3 remote/web-mcp/test-fallback-page-image.py
 remote/test-quality-suite.py
 remote/test-quality-roster.sh
+python3 remote/test-conversational-suite-units.py
+remote/test-run-conversational-suite.sh
 remote/test-promote-llama-build.sh
 remote/test-classify-checkpoint-semantics.sh
 remote/test-prefix-checkpoint-key.sh
