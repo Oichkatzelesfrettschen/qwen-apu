@@ -741,6 +741,63 @@ fi
 grep -F 'context size exceeds the admitted ceiling for this cache policy: 24577 > 24576' \
     "$temporary_directory/context.stderr" >/dev/null
 
+# The LAN prompt and output bounds clamp --ctx-size to their combined budget
+# whenever that budget is narrower than the admitted context, and --n-predict
+# carries the output bound as the server's own default.
+lan_output=$temporary_directory/lan-policy.out
+QWEN_LAN_MAX_PROMPT_TOKENS=1000 QWEN_LAN_MAX_OUTPUT_TOKENS=200 \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$lan_output \
+    "$policy" "$fake_server" "$model_path" 24576 8080
+lan_arguments=$(sed -n 's/^argument=//p' "$lan_output" | tr '\n' ' ')
+case $lan_arguments in
+    *'--ctx-size 1200 '*'--n-predict 200 '*) ;;
+    *)
+        printf 'LAN bounds did not clamp ctx-size or set n-predict: %s\n' \
+            "$lan_arguments" >&2
+        exit 1
+        ;;
+esac
+
+# A combined budget at or above the admitted context leaves --ctx-size
+# unclamped, because the clamp only ever narrows the value every ceiling check
+# above already admitted.
+QWEN_LAN_MAX_PROMPT_TOKENS=20000 QWEN_LAN_MAX_OUTPUT_TOKENS=8192 \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$lan_output \
+    "$policy" "$fake_server" "$model_path" 24576 8080
+lan_arguments=$(sed -n 's/^argument=//p' "$lan_output" | tr '\n' ' ')
+case $lan_arguments in
+    *'--ctx-size 24576 '*) ;;
+    *)
+        printf 'a combined LAN budget above the admitted context narrowed it: %s\n' \
+            "$lan_arguments" >&2
+        exit 1
+        ;;
+esac
+
+# The two LAN bounds share one context window and are refused apart and
+# refused malformed.
+if QWEN_LAN_MAX_PROMPT_TOKENS=1000 QWEN_RADV_ICD=$fake_icd \
+    QWEN_POLICY_TEST_OUTPUT=$lan_output \
+    "$policy" "$fake_server" "$model_path" 24576 8080 \
+    >"$temporary_directory/lan-unpaired.stdout" \
+    2>"$temporary_directory/lan-unpaired.stderr"; then
+    printf 'policy accepted QWEN_LAN_MAX_PROMPT_TOKENS without its output bound\n' >&2
+    exit 1
+fi
+grep -F 'share one context window and are set together or not at all' \
+    "$temporary_directory/lan-unpaired.stderr" >/dev/null
+
+if QWEN_LAN_MAX_PROMPT_TOKENS=0 QWEN_LAN_MAX_OUTPUT_TOKENS=200 \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$lan_output \
+    "$policy" "$fake_server" "$model_path" 24576 8080 \
+    >"$temporary_directory/lan-zero.stdout" \
+    2>"$temporary_directory/lan-zero.stderr"; then
+    printf 'policy accepted QWEN_LAN_MAX_PROMPT_TOKENS=0\n' >&2
+    exit 1
+fi
+grep -F 'QWEN_LAN_MAX_PROMPT_TOKENS must be a positive integer: 0' \
+    "$temporary_directory/lan-zero.stderr" >/dev/null
+
 # Router mode replaces the single model with a preset file and a resident-model
 # limit, and drops the fixed alias because the preset supplies one per
 # checkpoint. Every guard flag stays, because llama-server cascades this argv
@@ -777,6 +834,22 @@ case $router_arguments in
         exit 1
         ;;
 esac
+
+# Neither LAN bound has a per-section preset field, so router mode refuses
+# both rather than pushing one prompt/output budget onto every served
+# checkpoint through common_preset::merge.
+if QWEN_LAN_MAX_PROMPT_TOKENS=1000 QWEN_LAN_MAX_OUTPUT_TOKENS=200 \
+    QWEN_MODEL_REGISTRY=$fabricated_registry QWEN_MODEL_ROOT=$router_model_root \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$router_output \
+    QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$router_presets QWEN_ROUTER_MAX=1 \
+    "$policy" "$fake_server" "$model_path" 4096 18080 \
+    >"$temporary_directory/lan-router.stdout" \
+    2>"$temporary_directory/lan-router.stderr"; then
+    printf 'router mode accepted the LAN prompt and output bounds\n' >&2
+    exit 1
+fi
+grep -F 'router mode refuses them rather than pushing one budget onto every served checkpoint' \
+    "$temporary_directory/lan-router.stderr" >/dev/null
 
 # Preset validation consumes the same router-child quarantine authority as
 # generation. A persisted section can match models.tsv exactly and still lose

@@ -119,6 +119,7 @@ class ServiceSession:
         open_lan=False,
         extra_origins=(),
         artifact_read_timeout_seconds=None,
+        extra_argv=None,
     ):
         self.directory = directory
         self.state_directory = os.path.join(directory, "state")
@@ -157,6 +158,8 @@ class ServiceSession:
             # path a keyless session passes rather than the fixture key.
             argv.extend(["--open-lan"])
             argv[argv.index("--api-key-file") + 1] = ""
+        if extra_argv:
+            argv.extend(extra_argv)
         for name, value in (runtime_environment or {}).items():
             argv.extend(["--runtime-env", f"{name}={value}"])
         if priority_wrapper is not None:
@@ -321,6 +324,7 @@ class ImageServiceTest(unittest.TestCase):
         open_lan=False,
         extra_origins=(),
         artifact_read_timeout_seconds=None,
+        extra_argv=None,
     ):
         directory = tempfile.mkdtemp(dir=self.temporary.name)
         if profiles is None:
@@ -338,6 +342,7 @@ class ImageServiceTest(unittest.TestCase):
             open_lan,
             extra_origins,
             artifact_read_timeout_seconds,
+            extra_argv,
         )
         self.sessions.append(session)
         self.addCleanup(self.quiet_stop, session)
@@ -463,6 +468,159 @@ class ImageServiceTest(unittest.TestCase):
             status, _, body = session.authorized_http(response["provenance_url"])
             self.assertEqual(status, 200)
             self.assertEqual(json.loads(body)["png_sha256"], response["sha256"])
+
+    def test_retention_expires_the_oldest_publication_past_the_count_bound(self):
+        """A count bound of 2 keeps the two newest jobs and drops the oldest."""
+        session = self.start(
+            extra_argv=["--artifact-max-count", "2", "--artifact-max-age-s", "999999"]
+        )
+        responses = [
+            session.control(generate_request(request_id=f"req-000{n}", seed=4242 + n))
+            for n in range(1, 4)
+        ]
+        digests = [response["sha256"] for response in responses]
+        self.assertEqual(len(set(digests)), 3, "three distinct seeds, three digests")
+        status, _, _ = session.authorized_http(f"/artifacts/{digests[0]}.png")
+        self.assertEqual(status, 404, "the oldest publication is expired")
+        for digest in digests[1:]:
+            status, _, _ = session.authorized_http(f"/artifacts/{digest}.png")
+            self.assertEqual(status, 200, digest)
+        markers = [
+            name
+            for name in os.listdir(session.artifact_directory())
+            if name.startswith(".publication-")
+        ]
+        self.assertEqual(len(markers), 2)
+
+    def test_retention_never_expires_the_job_that_just_completed(self):
+        """A count bound of 1 still leaves the finishing job's own artifact live."""
+        session = self.start(
+            extra_argv=["--artifact-max-count", "1", "--artifact-max-age-s", "999999"]
+        )
+        first = session.control(generate_request(seed=4242))
+        second = session.control(generate_request(request_id="req-0002", seed=4243))
+        status, _, _ = session.authorized_http(f"/artifacts/{first['sha256']}.png")
+        self.assertEqual(status, 404)
+        status, _, _ = session.authorized_http(f"/artifacts/{second['sha256']}.png")
+        self.assertEqual(status, 200)
+
+    def test_retention_expires_by_age_without_touching_a_shared_digest(self):
+        """A digest two live markers share survives one marker's own expiry.
+
+        Two identical requests (same seed, geometry, prompt) reproduce one
+        PNG's bytes, so their markers name the same png_sha256 the way
+        test_same_seed_reproduces_one_artifact_name observes. An age bound
+        that expires the older marker alone must not delete the digest the
+        surviving marker still names.
+        """
+        session = self.start(
+            extra_argv=["--artifact-max-count", "999999", "--artifact-max-age-s", "500"]
+        )
+        first = session.control(generate_request())
+        second = session.control(generate_request(request_id="req-0002"))
+        self.assertEqual(first["sha256"], second["sha256"])
+        marker_paths = [
+            os.path.join(session.artifact_directory(), name)
+            for name in os.listdir(session.artifact_directory())
+            if name.startswith(".publication-")
+        ]
+        self.assertEqual(len(marker_paths), 2)
+        # Age the first marker out without touching the second, then let a
+        # third generation's own retention pass observe the age bound.
+        aged = min(marker_paths, key=lambda path: os.path.getmtime(path))
+        old_time = time.time() - 1000
+        os.utime(aged, (old_time, old_time))
+        third = session.control(
+            generate_request(request_id="req-0003", seed=9999)
+        )
+        self.assertNotEqual(third["sha256"], first["sha256"])
+        status, _, _ = session.authorized_http(f"/artifacts/{first['sha256']}.png")
+        self.assertEqual(
+            status, 200, "the digest survives through the second marker"
+        )
+        self.assertEqual(
+            len(
+                [
+                    name
+                    for name in os.listdir(session.artifact_directory())
+                    if name.startswith(".publication-")
+                ]
+            ),
+            2,
+            "the aged marker for the shared digest is gone; its sibling and "
+            "the third job's own marker remain",
+        )
+
+    def test_a_max_pending_other_than_one_is_refused_at_startup(self):
+        """The job lock offers no queue, so a configured N other than 1 refuses."""
+        directory = tempfile.mkdtemp(dir=self.temporary.name)
+        profiles_path = os.path.join(directory, "profiles.json")
+        with open(profiles_path, "w", encoding="utf-8") as handle:
+            json.dump({"sdxs-512-a": build_profile(FAKE_RUNTIME_PATH)}, handle)
+        api_key_path = os.path.join(directory, "api.key")
+        with open(api_key_path, "w", encoding="ascii") as handle:
+            handle.write(API_KEY + "\n")
+        os.chmod(api_key_path, 0o600)
+        state_directory = os.path.join(directory, "state")
+        os.makedirs(state_directory, mode=0o700)
+        environment = dict(os.environ)
+        environment["QWEN_RADV_ICD"] = os.path.join(directory, "radv-icd.json")
+        with open(environment["QWEN_RADV_ICD"], "w", encoding="ascii") as handle:
+            handle.write("{}\n")
+        completed = subprocess.run(
+            [
+                sys.executable,
+                SERVICE_PATH,
+                "--state-dir",
+                state_directory,
+                "--profiles-json",
+                profiles_path,
+                "--api-key-file",
+                api_key_path,
+                "--origin",
+                PAGE_ORIGIN,
+                "--http-host",
+                "127.0.0.1",
+                "--http-port",
+                "0",
+                "--max-pending",
+                "2",
+            ],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=STARTUP_SECONDS,
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("offers no", completed.stderr)
+
+    def test_artifact_reads_are_bounded_per_client(self):
+        session = self.start(extra_argv=["--artifact-per-client-per-minute", "2"])
+        digest = session.control(generate_request())["sha256"]
+        for _ in range(2):
+            status, _, _ = session.authorized_http(f"/artifacts/{digest}.png")
+            self.assertEqual(status, 200)
+        status, headers, body = session.authorized_http(f"/artifacts/{digest}.png")
+        self.assertEqual(status, 429, body)
+        self.assertIn("Retry-After", headers)
+        self.assertTrue(0 < int(headers["Retry-After"]) <= 60)
+        # /health is unmetered: qwen-webui-session.sh and
+        # image-teardown-check.sh poll it and must not be throttled by
+        # artifact-read traffic.
+        status, _, _ = session.authorized_http("/health")
+        self.assertEqual(status, 200)
+        # An unauthenticated request never reaches the meter, so it answers
+        # the constant-cost 401 rather than a 429 that would leak whether
+        # this client is already being throttled.
+        status, _, _ = session.http(f"/artifacts/{digest}.png")
+        self.assertEqual(status, 401)
+
+    def test_artifact_listing_is_refused(self):
+        """The listener answers exact <sha256>.<png|json> routes and nothing else."""
+        session = self.start()
+        for path in ("/artifacts/", "/artifacts", "/artifacts?"):
+            status, _, _ = session.authorized_http(path)
+            self.assertEqual(status, 404, path)
 
     def test_runtime_environment_carries_the_radv_icd_pin(self):
         """The spawned runtime inherits VK_DRIVER_FILES and VK_ICD_FILENAMES.

@@ -855,6 +855,54 @@ if [ "$context_size" -eq 0 ]; then
     exit 2
 fi
 
+# An open household-LAN launch bounds prompt and output size through the two
+# arguments llama-server actually exposes. `--n-predict` sets
+# params_base.n_predict, which server-context.cpp reads only where a request's
+# own n_predict is -1 (tools/server/server-context.cpp:1718): a request naming
+# its own larger max_tokens overrides this default rather than being capped by
+# it, so this flag bounds an unspecified request and the page is what refuses
+# an oversized explicit one. No server argument bounds prompt tokens alone;
+# server-context.cpp refuses a request only once its prompt token count meets
+# or exceeds slot.n_ctx (the "exceeds the available context size" refusal),
+# which is --ctx-size itself once --parallel 1 makes the slot context equal to
+# it. --no-context-shift is already set above, so prompt and output share that
+# one window with no rollover: the two LAN variables bound the combined budget
+# QWEN_LAN_MAX_PROMPT_TOKENS + QWEN_LAN_MAX_OUTPUT_TOKENS, clamped against
+# --ctx-size below, rather than two independent ceilings. A prompt inside its
+# own bound always leaves at least the output bound of room; a larger prompt
+# spends into the output budget instead of being refused at the prompt
+# threshold by itself.
+lan_max_prompt_tokens=${QWEN_LAN_MAX_PROMPT_TOKENS:-}
+lan_max_output_tokens=${QWEN_LAN_MAX_OUTPUT_TOKENS:-}
+for lan_bound_name_value in \
+    "QWEN_LAN_MAX_PROMPT_TOKENS=$lan_max_prompt_tokens" \
+    "QWEN_LAN_MAX_OUTPUT_TOKENS=$lan_max_output_tokens"; do
+    lan_bound_value=${lan_bound_name_value#*=}
+    case $lan_bound_value in
+        '') continue ;;
+        *[!0-9]* | 0)
+            printf '%s must be a positive integer: %s\n' \
+                "${lan_bound_name_value%%=*}" "$lan_bound_value" >&2
+            exit 2
+            ;;
+    esac
+done
+if { [ -n "$lan_max_prompt_tokens" ] && [ -z "$lan_max_output_tokens" ]; } ||
+    { [ -z "$lan_max_prompt_tokens" ] && [ -n "$lan_max_output_tokens" ]; }; then
+    printf 'QWEN_LAN_MAX_PROMPT_TOKENS and QWEN_LAN_MAX_OUTPUT_TOKENS share one context window and are set together or not at all\n' >&2
+    exit 2
+fi
+# server-models.cpp overwrites every child section's key with the router
+# argv's own value of the same name (common_preset::merge), the mechanism that
+# already keeps --ctx-size and the checkpoint count off the router argv below.
+# Neither LAN bound has a per-section preset field, so admitting them here
+# would push one prompt/output budget onto every served checkpoint; router
+# mode refuses both rather than serving an unstated bound.
+if [ "$router_enabled" = 1 ] && { [ -n "$lan_max_prompt_tokens" ] || [ -n "$lan_max_output_tokens" ]; }; then
+    printf 'QWEN_LAN_MAX_PROMPT_TOKENS and QWEN_LAN_MAX_OUTPUT_TOKENS have no per-section preset field, so router mode refuses them rather than pushing one budget onto every served checkpoint\n' >&2
+    exit 2
+fi
+
 # Router children take their complete tuple from the preset file. The model path
 # supplied to this process is only the largest installed preflight subject, so
 # applying that one row's context ceiling to the router-wide listener rejects a
@@ -999,6 +1047,20 @@ else
     printf 'depth_validation admitted=%s validated=%s geometry=%s/%s\n' \
         "$context_size" "$registry_validated_depth" "$batch_size" \
         "$ubatch_size" >&2
+fi
+
+# The clamp only lowers context_size: it runs after every ceiling and
+# validated-depth check above has admitted the caller's own value, so a
+# combined LAN budget narrower than that value is still inside everything the
+# registry and the depth-validation ledger already cleared.
+if [ -n "$lan_max_prompt_tokens" ]; then
+    lan_combined_budget=$((lan_max_prompt_tokens + lan_max_output_tokens))
+    if [ "$lan_combined_budget" -lt "$context_size" ]; then
+        context_size=$lan_combined_budget
+    fi
+    printf 'lan_resource_bounds prompt_tokens=%s output_tokens=%s combined_budget=%s effective_context_size=%s\n' \
+        "$lan_max_prompt_tokens" "$lan_max_output_tokens" \
+        "$lan_combined_budget" "$context_size" >&2
 fi
 fi
 
@@ -2013,6 +2075,13 @@ if [ "$router_enabled" != 1 ]; then
         --flash-attn "$flash_attention" \
         --cache-type-k "$cache_type_k" \
         --cache-type-v "$cache_type_v"
+    # --n-predict sets the server's own default and never a cap: a request
+    # naming its own max_tokens overrides it (server-context.cpp:1718), so the
+    # page enforces the upper bound on an explicit request and this flag
+    # enforces it on a request that names none.
+    if [ -n "$lan_max_output_tokens" ]; then
+        set -- "$@" --n-predict "$lan_max_output_tokens"
+    fi
 fi
 
 # The appliance admits one active qwen-owned Vulkan workload, and
