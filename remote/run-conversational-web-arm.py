@@ -126,15 +126,36 @@ def run_row(page_driver, chromium, origin, profile_id, prompt, broker_origin,
         argv += ["--broker", broker_origin]
     if api_key_file:
         argv += ["--api-key-file", api_key_file]
+    # The driver's own wait_for() calls run one after another rather than
+    # concurrently -- the page load, then the dialog-or-turn-end wait, then
+    # the settle-on-busy-false wait -- so a row that legitimately spends
+    # close to every configured ceiling can spend their sum. A subprocess
+    # deadline short of that sum kills a row the driver's own timeouts would
+    # have let finish, and TimeoutExpired left uncaught here would exit this
+    # process without writing a JSON record for the row, taking down the
+    # rest of the arm and the later summarizer with it.
+    subprocess_timeout = load_timeout + dialog_timeout + turn_timeout + 60
     started = time.monotonic()
-    completed = subprocess.run(argv, capture_output=True, text=True, timeout=turn_timeout + load_timeout + 60)
+    try:
+        completed = subprocess.run(
+            argv, capture_output=True, text=True, timeout=subprocess_timeout)
+        stdout, stderr = completed.stdout, completed.stderr
+    except subprocess.TimeoutExpired as timeout_error:
+        stdout = (timeout_error.stdout or b"").decode("utf-8", "replace") \
+            if isinstance(timeout_error.stdout, bytes) else (timeout_error.stdout or "")
+        stderr = (timeout_error.stderr or b"").decode("utf-8", "replace") \
+            if isinstance(timeout_error.stderr, bytes) else (timeout_error.stderr or "")
+        wall_seconds = time.monotonic() - started
+        return {"error": {"type": "TimeoutExpired",
+                          "message": f"the page driver exceeded {subprocess_timeout}s "
+                                     f"stderr={stderr[:300]!r}"}}, wall_seconds
     wall_seconds = time.monotonic() - started
     try:
-        report = json.loads(completed.stdout)
+        report = json.loads(stdout)
     except (ValueError, TypeError):
         report = {"error": {"type": "DriverOutputError",
                             "message": f"stdout did not parse as JSON: "
-                                       f"{completed.stdout[:300]!r} stderr={completed.stderr[:300]!r}"}}
+                                       f"{stdout[:300]!r} stderr={stderr[:300]!r}"}}
     return report, wall_seconds
 
 

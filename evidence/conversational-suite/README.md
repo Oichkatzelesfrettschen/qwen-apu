@@ -136,6 +136,17 @@ serve (the launch ran without `QWEN_WEB_AUTHORIZER_READY=1`, or the preset
 predates the ledger row) records `web_on=unavailable
 reason=authorizer_not_ready` per model rather than failing the run.
 
+The manifest's `web_on_status` column carries the arm's actual outcome
+rather than only the ledger join's answer: `unavailable` where no web
+section reaches the model (the resolver's reason names why, `web_on_json`
+reads `-`), `completed` where the web-on arm ran every eligible row and
+wrote its record, or `failed` where the arm exited nonzero on a transport
+error partway through. `run-conversational-web-arm.py` writes its output
+file after the row loop regardless of the arm's own exit status, so a
+`failed` arm's partial record still folds into `conversational-summary.tsv`
+labelled `failed` rather than being read as a completed comparison or
+silently dropped.
+
 ## What is tested without a device
 
 `remote/test-quality-suite.py` checks the new `web:` attachment parsing, the

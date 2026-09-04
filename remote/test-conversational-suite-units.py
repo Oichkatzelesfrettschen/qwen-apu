@@ -266,7 +266,7 @@ with tempfile.TemporaryDirectory() as directory:
     manifest_path = os.path.join(directory, "manifest.tsv")
     with open(manifest_path, "w", encoding="utf-8") as handle:
         handle.write("model_id\tweb_off_json\tweb_on_status\tweb_on_reason\tweb_on_json\n")
-        handle.write(f"fixture-model\t{off_path}\tavailable\t-\t{on_path}\n")
+        handle.write(f"fixture-model\t{off_path}\tcompleted\t-\t{on_path}\n")
 
     output_directory = os.path.join(directory, "output")
     os.makedirs(output_directory)

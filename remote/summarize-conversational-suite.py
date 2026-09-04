@@ -2,12 +2,19 @@
 """Fold a web-off/web-on manifest into one TSV and one markdown report.
 
 remote/run-conversational-suite.sh writes one manifest row per model:
-web_off_json always exists, web_on_json exists only where web_on_status reads
-`available`. This reads both records per model, reports each arm's rows,
+web_off_json always exists, and web_on_status carries the arm's actual
+outcome rather than only the ledger join's availability -- `unavailable`
+where no web section reaches the model (web_on_json reads `-`), `completed`
+where the web-on arm ran and wrote its record, or `failed` where the arm
+exited nonzero after a transport error but still wrote a partial record.
+This reads both records per model, reports each arm's rows,
 correct-on-completed, category breakdown, tool-proposal rate, approvals, mean
 and p90 wall time, and the paired per-row delta web-on minus web-off computed
 only over row ids both arms actually graded -- the pairing count travels next
-to the delta so a partial pairing cannot read as a full-suite gain.
+to the delta so a partial pairing cannot read as a full-suite gain. A
+`failed` arm's partial record still folds into the report, labelled `failed`
+rather than `completed`, so a reader sees what ran before the row that broke
+it rather than losing the arm's evidence to a nonzero exit status.
 
 usage: summarize-conversational-suite.py MANIFEST_TSV OUTPUT_DIRECTORY
 """
@@ -112,8 +119,19 @@ def build_row(manifest_row):
     on = None
     paired_count = 0
     paired_delta_mean = None
-    if status == "available" and manifest_row["web_on_json"] != "-":
-        on_document = load_json(manifest_row["web_on_json"])
+    # web_on_json is written whenever the web-on arm ran at all, whether it
+    # finished (`completed`) or exited on a transport error partway through
+    # (`failed`) -- run-conversational-web-arm.py writes its output file
+    # after the row loop regardless of the arm's own exit status. `-` means
+    # the arm never ran (`unavailable`), which is the only case with nothing
+    # to fold in.
+    if manifest_row["web_on_json"] != "-":
+        try:
+            on_document = load_json(manifest_row["web_on_json"])
+        except OSError as error:
+            raise SystemExit(
+                f"{manifest_row['model_id']}: web_on_status={status!r} names "
+                f"{manifest_row['web_on_json']!r}, which is unreadable: {error}")
         on = summarize_on_arm(on_document)
         shared_ids = sorted(set(off["by_id"]) & set(on["by_id"]))
         deltas = [int(on["by_id"][i]) - int(off["by_id"][i]) for i in shared_ids]

@@ -193,13 +193,13 @@ for model_id in $model_ids; do
             set -- "$@" --categories "$categories"
         fi
         if "$web_arm_runner" "$@" >"$on_log" 2>&1; then
-            on_status=completed
+            status=completed
         else
-            on_status=failed
+            status=failed
             failed_arms=$((failed_arms + 1))
         fi
         tail -6 "$on_log"
-        printf 'arm=%s leg=web-on status=%s\n' "$model_id" "$on_status"
+        printf 'arm=%s leg=web-on status=%s\n' "$model_id" "$status"
     else
         reason=$second
         printf 'arm=%s leg=web-on status=unavailable reason=%s detail=%s\n' \
