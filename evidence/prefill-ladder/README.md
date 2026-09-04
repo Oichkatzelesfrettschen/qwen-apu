@@ -101,6 +101,80 @@ pair is what separates the mechanisms: a ratio that moves on time to first token
 while `prompt_tok_s` holds reports transport and scheduling, and a ratio that
 moves on both reports the fill.
 
+## The batch/ubatch table, and what it does not yet claim
+
+`--batch-ubatch-table PATH` on `remote/summarize-prefill-ladder.py` writes a
+second table beside `summary.tsv`, one row per depth: the registry row's own
+`batch` and `ubatch` -- one pair for the whole ladder, since the allocation is
+one context size for the whole run and `run-prefill-ladder.sh` now carries
+that pair on every `arms.tsv` row rather than in `inputs.tsv` alone -- beside
+the control and subject `prompt_tok_s` means at that depth and the
+recommendation rule `select batch and ubatch separately by prompt depth`.
+`run-prefill-ladder.sh` writes it to `batch-ubatch-recommendation.tsv` on
+every invocation.
+
+The table states what one run actually used, not a recommendation this ladder
+has measured. A submission geometry sized for a short prompt and one sized
+for a long one trade off differently -- a small `ubatch` amortizes launch
+overhead poorly at 32768 tokens and a large one wastes the KV write-back on a
+512-token prompt that never fills it -- but this ladder's own allocation is
+one context size and one submission geometry for every rung, by
+`run-prefill-ladder.sh`'s own design (`model_batch` and `model_ubatch` are
+read once from the registry row ahead of the depth loop and never revisited
+inside it), so no run of this ladder has ever varied the pair and none of its
+retained rows can rank one pair against another at a given depth. The rule
+column names the registry adoption this table would support once that
+measurement exists: `remote/models.tsv`'s `batch` and `ubatch` columns are one
+value per row today, and a depth-indexed registry field is a schema change
+this evidence directory does not make. `remote/test-summarize-prefill-ladder.py`
+proves the table states the pair a ledger actually carries, including the "no
+pair" case a skipped depth reads, rather than proving a recommendation the
+ladder has not yet earned.
+
+## A phase-aware submission arm, registered and unrun
+
+The submission profile every served rate in this repository runs under is
+`low-async`, chosen for decode: `radv-low-priority-env.sh` exports
+`GGML_VK_MAX_NODES_PER_SUBMIT=16` alone, and the profile carries a measured
+1.348 to 2.718 decode tok/s difference against `low-serialized`
+(`CLAUDE.md`'s own launch-chain section). That profile is a single choice for
+the whole request, prefill and decode together, and this ladder's own
+predictions ask whether prefill wants a different one: prediction 1 above
+expects prefill tokens per second to rise with depth and flatten toward the
+DDR4 controller's own ceiling, a shape decode's fixed generation length never
+exercises, so a submission setting tuned against decode's own workload is
+read rather than chosen for prefill.
+
+The design this section registers, unrun, is a **phase-aware submission arm**:
+bound or serialized submission during the prefill phase of one request,
+switched to `low-async` for the phase that follows once decode starts. Two
+mechanisms make that a coherent request rather than two requests glued
+together. `GGML_VK_MAX_NODES_PER_SUBMIT` and `GGML_VK_SERIALIZE_SUBMISSIONS`
+are read once at process start by every retained measurement in this
+repository, so switching between them mid-request needs either a second
+profile applied through a restart between the fill and the first decode step
+-- which this ladder's own request shape (one `/completion` call covering
+both phases) cannot express without changing what is measured -- or a change
+to `ggml-vulkan.cpp`'s submission policy that reads a phase flag per graph
+rather than an environment variable read once. Neither exists in this
+repository today; the design is registered as a follow-up on
+`radv-low-priority-env.sh`, the profile file this ladder's own header states
+it stays off of, rather than implemented here.
+
+*Falsifier, stated ahead of any run:* a phase-aware arm that bounds or
+serializes submission during prefill and reports a `prompt_tok_s` ratio
+against a fixed-`low-async` control whose interval sits wholly above 1.0 at
+any depth this ladder admits, with decode tok/s in the same request's tail
+unmoved (its own ratio's interval containing 1.0), confirms the design; an
+interval containing 1.0 on `prompt_tok_s` at every depth refutes the premise
+that prefill wants a submission setting decode does not, and a decode ratio
+whose interval sits below 1.0 alongside a prefill gain reports the phase
+switch costing what it saves rather than trading nothing for it. The
+falsifier is stated against this ladder's own two-metric design --
+`prompt_tok_s` and `decode_tok_s` read from one request -- so a phase-aware
+arm is a `run-prefill-ladder.sh` server pair rather than a new harness once
+the submission-policy change exists to drive it.
+
 ## Registered predictions and their falsifiers
 
 The predictions are stated ahead of the first appliance run. Each names what
@@ -316,12 +390,17 @@ operating point, the submission profile and its `GGML_VK_LOW_PRIORITY` and
 `GGML_VK_MAX_NODES_PER_SUBMIT` settings, the nice policy every arm's server is
 required to run under, the sampler geometry, and the lease path. `arms.tsv`
 carries one row per depth, quadruple, arm, and replicate with its own server
-digest, thread count, the nice value read back from `/proc` after the renice,
-tokenized count, served `prompt_n`, time to first token, `prompt_ms`, prompt
-tokens per second, tail decode rate, modal graphics clock, clock invariant,
-status, and reason. Each arm keeps its sealed environment record, written by
+digest, thread count, the registry row's own batch and ubatch (one pair for
+the whole ladder, carried on every row rather than in `inputs.tsv` alone,
+which is what lets a reader of `arms.tsv` state the submission geometry a
+depth ran under without a second file), the nice value read back from `/proc`
+after the renice, tokenized count, served `prompt_n`, time to first token,
+`prompt_ms`, prompt tokens per second, tail decode rate, modal graphics clock,
+clock invariant, status, and reason. Each arm keeps its sealed environment record, written by
 `census_arm_exec` from the same positional list the `env -i` was built from --
 which is where the applied `GGML_VK_LOW_PRIORITY`, `GGML_VK_MAX_NODES_PER_SUBMIT`,
 and `QWEN_VULKAN_PROFILE` assignments themselves land -- beside its server log,
 clock record, and validator verdict. `summary.tsv` carries the ratio, its
 interval, and its verdict per depth, quadruple, and metric.
+`batch-ubatch-recommendation.tsv` carries the batch/ubatch pair and the
+recommendation rule per depth, over the `binary` quadruple's own rows.

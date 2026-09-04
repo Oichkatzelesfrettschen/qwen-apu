@@ -185,6 +185,9 @@ gate_cell test-summarize-perf-logger-slice derive \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-perf-logger-slice.py'
 gate_cell test-summarize-prefill-ladder derive remote/test-summarize-prefill-ladder.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-prefill-ladder.py'
+gate_cell test-summarize-prefix-checkpoint-hits derive \
+    remote/test-summarize-prefix-checkpoint-hits.py \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-prefix-checkpoint-hits.py'
 gate_cell test-summarize-bracket-ab derive remote/test-summarize-bracket-ab.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-bracket-ab.py'
 gate_cell test-summarize-margin-witness derive remote/test-summarize-margin-witness.py \
@@ -266,6 +269,9 @@ gate_cell test-run-power-factorial-campaign derive \
     remote/test-run-power-factorial-campaign.sh
 gate_cell test-run-prefill-ladder derive remote/test-run-prefill-ladder.sh \
     remote/test-run-prefill-ladder.sh
+gate_cell test-measure-prefix-checkpoint-hits derive \
+    'remote/test-measure-prefix-checkpoint-hits.sh remote/test-fixtures/fake-prefix-checkpoint-server.py' \
+    remote/test-measure-prefix-checkpoint-hits.sh
 gate_cell test-feature-roster derive remote/test-feature-roster.sh \
     remote/test-feature-roster.sh
 gate_cell test-run-served-binary-ab derive remote/test-run-served-binary-ab.sh \
