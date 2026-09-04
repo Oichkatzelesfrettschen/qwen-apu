@@ -98,6 +98,16 @@ serving_ambient_output=$(GGML_VK_MEMORY_LOGGER=1 GGML_VK_SUBMIT_TRACE=1 \
 printf '%s\n' "$serving_ambient_output" | grep -Fx \
     'memory=unset trace=unset concurrent=unset stats=unset radv=unset' >/dev/null
 
+# The sideplane candidate reads its two names through getenv() != NULL, so the
+# value 0 enables the feature and its log where the scrub is what keeps a
+# control arm a control. The request carries 0 for that reason.
+sideplane_ambient_output=$(GGML_VK_Q4K_SIDEPLANE=0 GGML_VK_Q4K_SIDEPLANE_LOG=0 \
+    QWEN_VULKAN_PROFILE=low-async \
+    "$wrapper" sh -c 'printf "sideplane=%s sideplane_log=%s\n" \
+        "${GGML_VK_Q4K_SIDEPLANE-unset}" "${GGML_VK_Q4K_SIDEPLANE_LOG-unset}"')
+printf '%s\n' "$sideplane_ambient_output" | grep -Fx \
+    'sideplane=unset sideplane_log=unset' >/dev/null
+
 # QWEN_PERF_LOGGER states the logger's frequency as one positive integer, which
 # the diagnostic branch turns into the enable flag and the frequency together.
 perf_logger_output=$(QWEN_PERF_LOGGER=1 QWEN_VULKAN_PROFILE=diagnostic \

@@ -242,6 +242,31 @@ the chain. A healthy arm emits an appendable ledger line carrying
 `remote/validated-tuples.tsv`, because a `validated` row requires its evidence
 path to exist in the tree.
 
+`--runtime-mode router-child` measures that arm through the serving path a
+review-only vision section uses, since `build-web-presets.sh` joins an image
+row's `review_model` against the ledger on `runtime_mode=router-child` with
+`projector_state=loaded` and a standalone row leaves the section ungenerated.
+The harness generates a one-section preset with `build-router-presets.sh` over
+a one-row registry copy naming the arm's depth as `context_default`, stages the
+weights and the resolved projector as symlinks so `select-projector.sh` answers
+with the file the standalone arm attaches, and launches `--models-preset` with
+`--models-max 1`; depth, cache triple, submission geometry, checkpoint count,
+and the projector stay off that argv because `common_preset::merge` overwrites
+each section key with the router argv's value of the same name, and the
+generated section is read back before the server starts. Each request names the
+section in the body's `model` key, which `router_validate_model` resolves the
+child from. The emitted line reads `runtime_mode=router-child` with a `-router`
+`tuple_id` suffix and every other field equal to the standalone line, the mode
+reaches `projector-summary.tsv` and `wedge-metadata.tsv`, and an output
+directory therefore holds one mode. `check-validated-tuples.sh` reads the same
+join: a `validator-gated` image row whose reviewer holds no such tuple fails the
+gate and prints the probe command that measures it, and any other execution
+policy reports the absence as a warning, since it emits no section under every
+setting. The shipped tree fails that gate, because `image-sdxs-512-a` names
+`lfm25-vl-16b` and every retained projector arm is standalone;
+`evidence/depth-validation-32k-projector/README.md` states the appliance run
+that closes it.
+
 The `tier` field states what is claimed about a row and
 `remote/build-router-presets.sh` turns it into what the picker offers.
 `production` is a serving tuple measured safe and useful; `candidate` leaves
@@ -413,6 +438,47 @@ response leaves an explicit unknown value while the selected model remains
 routable. A new API-key attempt clears the prior selection until the
 authenticated roster returns, and late responses from an older attempt never
 replace the newer state.
+
+What a checkpoint can do is a claim per feature, and `remote/feature-claims.tsv`
+carries it as `subject_id`, `feature`, `status`, `evidence`, `note`. The feature
+decides the namespace the subject resolves in: `text-chat`, `vision`,
+`tool-selection`, `guarded-tool-execution`, `long-context`,
+`context-checkpoints`, and `quarantine` name a `remote/models.tsv` id,
+`draft-pair-speculation` a `remote/draft-pairs.tsv` pair_id, `web-search` a
+`remote/web-profiles.tsv` profile_id, and `image-generation` and `image-review`
+a `remote/image-profiles.tsv` profile_id, so one namespace per feature keeps the
+subject column free of a scope field a typo would put at odds with the id beside
+it. `status` is closed over `production`, `candidate`, `experimental`,
+`unstable`, and `unsupported`; the first, second, and fourth each assert a run
+and require an evidence path, and the other two admit `-` while their note names
+the run that moves them. A `(subject, feature)` pair absent from the file reads
+`unclaimed`, so a hole in the matrix is the absence of a claim rather than a
+denial.
+
+`remote/build-feature-roster.sh` validates every claim before it emits any row
+and writes `webui/roster.json` through one rename. It refuses a claim naming a
+subject outside its feature's ledger, a duplicate pair, an evidence path outside
+`evidence/`, a note carrying a quotation mark or a backslash, and a `production`
+claim over a checkpoint whose registry tier reads `quarantine` or whose id the
+quarantine authority names at model scope; the profile-scope rows stay out of
+that read, since a profile row removes one tuple of a checkpoint that otherwise
+serves. Models order by tier rank and then by the class policy -- the 2B class,
+the 0.8B class, the 4B class, and a row outside the three after them by id --
+and `archive` and `rejected` rows reach no picker, so they reach no roster.
+`remote/repository-quality-gates.sh` regenerates into a scratch directory and
+diffs the result against the committed document, so a ledger edit that leaves
+the page stale fails the gate.
+
+llama-server serves the page with `--path` over the `webui` directory, so
+`webui/index.html` fetches `./roster.json` beside itself and decorates the ids
+`GET /v1/models` returned. The roster contributes no id: each render iterates
+the served ids and looks each one up, so a roster row for a model the listener
+withheld reaches neither the picker nor the matrix and a served id the roster
+omits keeps its option. The picker option carries the row's tags, a badge names
+the selected row's tier, and a collapsible matrix holds one row per served
+rostered id over the model-scope features with each cell's status, evidence
+path, and note. An absent, malformed, or foreign-schema roster leaves both
+decorations off while the picker routes.
 
 A web search reaches the network through one human approval, and the browser is
 the executor. llama-server reads `tools` from the client body alone and runs a
@@ -1216,6 +1282,26 @@ remote/generate-quality-images.py [DIR]        # the vision fixtures, and --chec
 remote/regrade-quality-roster.py RECORD...     # a grader change over retained replies
 remote/sample-gpu-clocks.sh OUT_TSV [SECONDS]  # the DPM step a rate ran at
 remote/measure-dpm-force.sh MODEL [OUT]         # auto against global high governor
+remote/compute-state-lease.sh PROFILE COMMAND [ARG...]
+                                                # one reversible compute-state
+                                                # transaction: the shared Vulkan
+                                                # lease and its published proof,
+                                                # a snapshot of the DPM level
+                                                # with its two selections and
+                                                # the KSM run state, one named
+                                                # profile, a delivered clock
+                                                # proven before the command, and
+                                                # a verified restore after it.
+                                                # measure-fixed pins GFXCLK 1100
+                                                # with FCLK 933 at nice 19;
+                                                # serve-performance-candidate
+                                                # admits FCLK 933 or 1067 at
+                                                # nice 0. Exit 3 names an
+                                                # unreached clock and 4 a
+                                                # restoration incident, which
+                                                # dominates the command's own
+                                                # status.
+remote/compute-state-lease.sh status           # the live values, no credential, no write
 remote/model-registry.sh id|path SELECTOR [FIELD]
 remote/model-registry.sh draft-pairs | draft-pair PAIR_ID [FIELD]
 remote/model-registry.sh ctx-checkpoints | ctx-checkpoint MODEL_ID
@@ -1223,13 +1309,15 @@ remote/measure-draft-pair.sh PAIR_ID OUTPUT_DIR
                                                 # snapshot-bound ABBA pairing
 remote/build-router-presets.sh [OUTPUT_INI]    # the picker, from the tier field
 remote/build-web-presets.sh OUTPUT_INI         # web profiles, from the execution_policy field
+remote/build-feature-roster.sh [OUTPUT_JSON]   # webui/roster.json, from the feature claim ledger
 remote/fetch-candidate-artifact.sh REPO REV FILE DIR  # observed, not pinned
 remote/run-one-token-admission.sh RECORD [OUT]  # load every candidate once
 remote/run-representation-arm.sh LABEL CONTROL SUBJECT
                                                 # one value format against another, ABBA
 remote/admit-web-router-fake.sh OUTPUT_DIR      # the web router against the fake provider
 remote/admit-image-router.sh OUTPUT_DIR         # one approved generation through the router
-remote/probe-depth-projector.sh MODEL_ID OUT   # filled depth, projector loaded
+remote/probe-depth-projector.sh [--runtime-mode standalone|router-child] MODEL_ID OUT
+                                                # filled depth, projector loaded
 remote/image-registry.sh artifacts|models|profiles|bundle|profile
                                                 # the four image authorities, validated whole
 remote/run-image-standalone.sh OUT MODEL       # one image, no llama process resident
@@ -1340,6 +1428,14 @@ remote/validate-clock-sidecar.py OUT.tsv --sidecar-status 0 --period-ms 10 \
 remote/summarize-perf-logger-slice.py OUT/arms/NN-S/server-log-request.slice \
     --expected-decode-blocks 63
 
+# Rung 7 of the E4 ladder: two serving builds on one checkpoint, mirrored
+# C K K C quadruples under the production receipt binding, promoted on a
+# one-sided 5% paired bound.
+# evidence/raven2-vulkan-kernel-census/e4/served-ab-design.md registers the
+# falsifiers and the chain.
+QWEN_CENSUS_PRODUCTION_RECEIPT=RECEIPT remote/run-served-binary-ab.sh \
+    CONTROL_SERVER CANDIDATE_SERVER MODEL_ID OUT
+
 # Deployment bundles: the server, its manifest, the checkpoint ledger, and
 # the presets generated against that ledger as one activated unit.
 # Activation and rollback are the same atomic symlink transition, serialized
@@ -1409,6 +1505,8 @@ remote/test-qwen-runtime-guards.sh
 remote/test-radv-low-priority-env.sh
 remote/test-model-registry.sh
 remote/test-model-tiers.sh
+remote/test-feature-roster.sh
+node remote/test-fallback-webui-roster.mjs
 python3 remote/test-summarize-draft-pair.py
 remote/test-measure-draft-pair.sh
 remote/test-probe-depth-projector.sh
@@ -1429,6 +1527,7 @@ remote/test-quality-suite.py
 remote/test-quality-roster.sh
 remote/test-promote-llama-build.sh
 remote/test-classify-checkpoint-semantics.sh
+remote/test-run-served-binary-ab.sh
 remote/test-check-runtime-tree.sh
 remote/test-deployment-bundle.sh
 remote/generate-quality-images.py --check
@@ -1443,6 +1542,7 @@ python3 remote/test-census-controls.py
 python3 remote/test-sample-clock-sidecar.py
 python3 remote/test-summarize-perf-logger-slice.py
 remote/test-census-sha256.sh
+remote/test-compute-state-lease.sh
 remote/test-run-raven2-vulkan-kernel-census.sh
 remote/verify-llama-patch-series.sh
 QWEN_LLAMA_CANDIDATE_PATCHES=1 remote/verify-llama-patch-series.sh
