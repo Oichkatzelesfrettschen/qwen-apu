@@ -1087,6 +1087,19 @@ drafted by the 0.8B follows, the 2B's own prediction block at N=1 ranks beside
 the first, and the 0.8B as target takes n-gram or a smaller draft where one
 loads.
 
+The size ladder is the set of checkpoints that exist and serve, and the gap
+between the 2B and the 4B is empty by design. Qwen3.5 dense ships at 0.8B, 2B,
+4B, 9B, and 27B, and `empero-ai` distills the 2B, the 4B, and the 9B, so the
+ladder this tree reads is `0.8B -> 2B -> 4B -> 9B -> 27B`. The two 3B rows the
+registry once admitted are both in `remote/quarantine.tsv` at model scope:
+`nanbeige42-3b` for the pathological 44-loop, 22-weight execution recorded in
+`evidence/model-admission/nanbeige42-3b-admission.md`, and `ministral3-3b` for
+the graph assertion abort recorded in
+`evidence/model-admission/universal-candidate-ladder.md`. A Qwen3.8 3B distill
+is a checkpoint no publisher ships, and an experiment that wants a midpoint
+reads the 2B and the 4B rather than naming one; the optimizer follows measured
+checkpoints and manufactures none.
+
 The two leading pairings are second-tier serving options rather than experiment
 arms alone, and `remote/draft-pairs.tsv` carries them.
 `qwen38-2b-distill+qwen35-08b-draft` and `qwen38-4b-distill+qwen35-08b-draft`
