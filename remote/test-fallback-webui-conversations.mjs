@@ -112,16 +112,30 @@ function makeFakeIndexedDatabase() {
   /* A minimal IndexedDB over the four calls the page makes: open with one
      upgrade, getAll, get, put, and delete inside a named transaction. The
      databases map outlives one page context, so a second page load reads what
-     the first one wrote, which is what the hash route test needs. */
+     the first one wrote, which is what the hash route test needs.
+
+     A real transaction commits, and fires oncomplete, on its own task after
+     every request inside it has answered -- never inside the same task as a
+     request's own onsuccess. `settle()` reproduces that separation with a
+     second setImmediate hop rather than firing oncomplete synchronously
+     alongside onsuccess, which is what proves
+     indexedDatabaseConversationStore()'s run() waits for the commit instead
+     of resolving on the request alone. */
   const databases = new Map();
-  const settle = (request, produce) => {
+  const settle = (request, transaction, produce) => {
     setImmediate(() => {
       try {
         request.result = produce();
         if (request.onsuccess) request.onsuccess({ target: request });
+        setImmediate(() => {
+          if (transaction.oncomplete) transaction.oncomplete({ target: transaction });
+        });
       } catch (error) {
         request.error = error;
         if (request.onerror) request.onerror({ target: request });
+        setImmediate(() => {
+          if (transaction.onabort) transaction.onabort({ target: transaction });
+        });
       }
     });
     return request;
@@ -142,18 +156,18 @@ function makeFakeIndexedDatabase() {
           return {};
         },
         transaction(storeName) {
-          const transaction = { error: null, onabort: null };
+          const transaction = { error: null, onabort: null, oncomplete: null };
           transaction.objectStore = () => {
             const records = stores.get(storeName);
             if (!records) throw new Error(`no object store named ${storeName}`);
             return {
-              getAll: () => settle(newRequest(), () => [...records.values()]),
-              get: key => settle(newRequest(), () => records.get(key)),
-              put: value => settle(newRequest(), () => {
+              getAll: () => settle(newRequest(), transaction, () => [...records.values()]),
+              get: key => settle(newRequest(), transaction, () => records.get(key)),
+              put: value => settle(newRequest(), transaction, () => {
                 records.set(value.id, value);
                 return value.id;
               }),
-              delete: key => settle(newRequest(), () => {
+              delete: key => settle(newRequest(), transaction, () => {
                 records.delete(key);
                 return undefined;
               })
@@ -865,9 +879,10 @@ function makeFlakyIndexedDatabase(realDatabase, { failWrites }) {
 const failWrites = { active: true };
 const flakyDatabase = makeFakeIndexedDatabase();
 const flakyIndexedDatabase = makeFlakyIndexedDatabase(flakyDatabase, { failWrites });
+const flakyLocalStorage = makeFakeStorage();
 const flakyPage = newPage({
   indexedDatabase: flakyIndexedDatabase,
-  localStorage: makeFakeStorage(),
+  localStorage: flakyLocalStorage,
   sessionStorage: makeFakeStorage()
 });
 await answerBoot(flakyPage);
@@ -897,6 +912,26 @@ assert.equal(await flakyPage.api.storeName(), 'localstorage',
 const flakyFollowUp = await flakyPage.api.read(flakyId);
 assert.equal(flakyFollowUp.messages.at(-1).content,
   'a later save still avoids the demoted store');
+
+// The demotion survives a reload too: a fresh page sharing the same
+// localStorage -- and therefore the same qwen-apu-conversation-store-demoted
+// marker -- skips a since-recovered IndexedDB rather than reselecting it and
+// reading back whatever it still holds from before the failed write. Without
+// the persisted marker this page would read the IndexedDB record the
+// demoted write never reached, silently reverting the follow-up message
+// that only ever landed in localStorage.
+const reloadedFlakyPage = newPage({
+  indexedDatabase: makeFakeIndexedDatabase(), // a healthy IndexedDB this time
+  localStorage: flakyLocalStorage,
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(reloadedFlakyPage);
+assert.equal(await reloadedFlakyPage.api.storeName(), 'localstorage',
+  'a reload reselected a since-recovered IndexedDB despite the persisted demotion marker');
+const reloadedFlakyRecord = await reloadedFlakyPage.api.read(flakyId);
+assert.equal(reloadedFlakyRecord.messages.at(-1).content,
+  'a later save still avoids the demoted store',
+  'the reload read a stale record instead of the one localStorage actually holds');
 
 // The save loop keeps going past a second failing store: IndexedDB denied,
 // then localStorage's real write also refused (its own probe still answers,
@@ -1343,5 +1378,72 @@ pendingArtifactFetch.resolve({ ok: true, status: 200, async blob() { return { si
 await flushPromises();
 assert.equal(restoreRacePage.api.restoredBlobUrls(), 0,
   'a restore fetch that outran its own reset still registered a blob URL');
+
+// ---- a save resolves on the transaction's commit, not on the request ------
+
+function makeDeferredCommitIndexedDatabase(realDatabase, control) {
+  /* Wrap a real fake IndexedDB so a readwrite transaction's request answers
+     normally -- the record lands in the underlying store -- while
+     transaction.oncomplete stays withheld from the fake's own auto-fire
+     until the test calls control.release(). indexedDatabaseConversationStore
+     ()'s run() must still have an unsettled promise at that point: resolving
+     early, on request.onsuccess, is exactly the defect a reload racing a
+     write can observe, because the record the request already wrote can
+     still roll back if the transaction never commits. The property is
+     redefined as a getter/setter rather than a plain field so the fake's
+     `if (transaction.oncomplete)` auto-fire check reads null and skips its
+     own call, while the real handler run() assigned is retained for
+     control.release() to invoke by hand. Only a readwrite transaction is
+     intercepted: resolveConversationStore()'s own list() probe opens a
+     readonly transaction ahead of the write, and holding that one back too
+     would stall the store resolution the write is waiting on rather than
+     the write itself. */
+  return {
+    open(name) {
+      const request = realDatabase.open(name);
+      const database = request.result;
+      const originalTransaction = database.transaction.bind(database);
+      database.transaction = (...args) => {
+        const transaction = originalTransaction(...args);
+        if (args[1] !== 'readwrite') return transaction;
+        let heldHandler = null;
+        Object.defineProperty(transaction, 'oncomplete', {
+          get() { return null; },
+          set(handler) {
+            heldHandler = handler;
+            control.release = () => {
+              if (heldHandler) heldHandler({ target: transaction });
+            };
+          }
+        });
+        return transaction;
+      };
+      return request;
+    }
+  };
+}
+
+const commitControl = { release: null };
+const deferredDatabase = makeDeferredCommitIndexedDatabase(
+  makeFakeIndexedDatabase(), commitControl);
+const deferredPage = newPage({
+  indexedDatabase: deferredDatabase,
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(deferredPage);
+let deferredSaveSettled = false;
+const deferredSavePromise = deferredPage.api.runFixtureTurn(fixture)
+  .then(id => { deferredSaveSettled = true; return id; });
+await flushPromises();
+assert.equal(deferredSaveSettled, false,
+  'saveConversation() resolved before its IndexedDB transaction committed');
+assert.ok(commitControl.release, 'the write transaction never assigned oncomplete');
+commitControl.release();
+const deferredId = await deferredSavePromise;
+assert.equal(deferredSaveSettled, true);
+const deferredRecord = await deferredPage.api.read(deferredId);
+assert.ok(deferredRecord, 'the committed write is unreadable after the commit fired');
+assert.equal(deferredRecord.messages.length, 3);
 
 console.log('fallback_webui_conversations=accepted');

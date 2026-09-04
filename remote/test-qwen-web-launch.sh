@@ -1240,6 +1240,24 @@ else
     report lan_exposure_name_refused "$outcome"
 fi
 
+# A name outside the .local namespace resolves through the recursive
+# resolver like any other DNS name, so an attacker who controls its zone can
+# rebind it to this address; web_lan_name_is_valid() refuses it on syntax
+# alone rather than admitting it into the Host and Origin sets QWEN_WEB_LAN_
+# OPEN=1 would then serve with no bearer behind them.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=attacker.example \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/lan-foreign-namespace.log" 2>"$work/lan-foreign-namespace.err"; then
+    report lan_exposure_name_outside_local_refused admitted
+else
+    outcome=ok
+    grep -q 'not a hostname a browser resolves on the link' \
+        "$work/lan-foreign-namespace.err" || outcome=missing_message
+    report lan_exposure_name_outside_local_refused "$outcome"
+fi
+
 # QWEN_WEB_LAN_OPEN=1 removes a bearer from a listener the operator exposed, so
 # a loopback launch carrying it refuses rather than serving an authenticated
 # listener while the operator believes the credential is gone.

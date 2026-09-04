@@ -1,0 +1,11 @@
+decode_ms=3289.501
+decode_tok_per_second=19.15184096311264
+decode_tokens=64
+label=06-K
+prefill_ms=288.698
+prefill_tok_per_second=65.81271778813847
+prompt_tokens=19
+request_status=0
+teardown_status=0
+valid=True
+served_decode=completed label=06-K result_directory=$HOME/q4k-served-ab-08b-20260903T2004Z/arms/06-K

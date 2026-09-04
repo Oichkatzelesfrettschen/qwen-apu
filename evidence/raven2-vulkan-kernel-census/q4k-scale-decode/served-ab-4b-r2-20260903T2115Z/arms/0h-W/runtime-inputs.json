@@ -1,0 +1,21 @@
+{
+  "schema": "served-runtime-inputs-v1",
+  "model": {
+    "path": "$HOME/models/Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf",
+    "descriptor_path": "/proc/3014895/fd/7",
+    "device": 64512,
+    "inode": 13117796,
+    "bytes": 2783446304,
+    "sha256": "dec96e8cf2e11b613bb46513dec485377f9ca5a351e71712ee0e244f287c6790",
+    "artifact_model_id": "qwen38-4b-distill",
+    "artifact_model_file": "Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf"
+  },
+  "executable": {
+    "path": "$HOME/qwen-deployments/natural-boundary-13d05a0-r2/llama-server",
+    "descriptor_path": "/proc/3014895/fd/6",
+    "device": 64512,
+    "inode": 14816265,
+    "bytes": 57735736,
+    "sha256": "5dd86b90154f6143a5303efd2590b9268a0a5e3e908c4d6791f1fde03a4782c2"
+  }
+}

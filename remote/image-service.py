@@ -344,30 +344,37 @@ def exposed_name(value):
     publishes `<hostname>.local` on the link and a browser resolves that suffix
     by multicast to the hosts sharing the link, so a name an attacker controls
     in DNS resolves nowhere near this socket and the rebinding closure the
-    literal set provides holds for this entry too. `localhost` and an
-    all-numeric dotted form are refused by name: the first names the loopback
-    the set already holds and the second is an address `--lan-exposure` takes.
+    literal set provides holds for this entry too. That argument holds only
+    for the `.local` namespace, so a name outside it is refused rather than
+    admitted on syntax alone: an ordinary DNS name resolves through the
+    recursive resolver like any other, and an attacker who controls its zone
+    can rebind it to this appliance's address, where `--open-lan` would admit
+    the rebound request's Host and Origin with no bearer standing between it
+    and the broker. `localhost` is refused by name too, because it names the
+    loopback the set already holds; the `.local` requirement below already
+    refuses every all-numeric dotted form, since none ends in that label.
     """
     if not value:
         # argparse applies a string type to its own default, so the empty
         # default passes through as the absent opt-in.
         return ""
     lowered = value.lower()
-    if len(lowered) > 253 or lowered == "localhost" or lowered in LOOPBACK_HOSTS:
+    if (
+        len(lowered) > 253
+        or lowered == "localhost"
+        or lowered in LOOPBACK_HOSTS
+        or not lowered.endswith(".local")
+    ):
         raise argparse.ArgumentTypeError(
             f"the LAN exposure name is a hostname a browser resolves on the "
-            f"link; {value!r} is refused"
+            f"link by mDNS multicast, under the .local namespace alone; "
+            f"{value!r} is refused"
         )
     labels = lowered.split(".")
     if not all(label_is_admitted(label) for label in labels):
         raise argparse.ArgumentTypeError(
             f"the LAN exposure name carries a label outside the "
             f"letter-digit-hyphen set; {value!r} is refused"
-        )
-    if all(label.isdigit() for label in labels):
-        raise argparse.ArgumentTypeError(
-            f"the LAN exposure name is a dotted address rather than a name; "
-            f"{value!r} belongs in --lan-exposure"
         )
     return lowered
 
