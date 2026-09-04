@@ -678,6 +678,7 @@ fi
 rm -f "$api_key_file"
 if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
     QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_OPEN=0 \
+    QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 \
     >"$work/lan-fresh-key.log" 2>"$work/lan-fresh-key.err"; then
     outcome=ok
     [ -s "$api_key_file" ] || outcome=key_not_minted
@@ -862,6 +863,7 @@ fi
 # never typed.
 if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
     QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=LOCALHOST \
+    QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 \
     >"$work/lan-badname-case.log" 2>"$work/lan-badname-case.err"; then
     report lan_exposure_localhost_case_variant_refused admitted
 elif grep -q 'not a hostname a browser resolves on the link' \

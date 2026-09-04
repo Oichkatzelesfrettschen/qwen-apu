@@ -1161,6 +1161,7 @@ done
 if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
     QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
     QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=0.0.0.0 \
+    QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 \
     "$launcher" >"$work/lan-broker-port.log" 2>"$work/lan-broker-port.err"; then
     outcome=ok
     grep -qx 'QWEN_WEB_BROKER_PORT=8081' "$record" || outcome=wrong_broker_port
@@ -1176,6 +1177,7 @@ fi
 if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
     QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
     QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=0.0.0.0 \
+    QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 \
     QWEN_SERVER_PORT=9000 QWEN_WEB_BROKER_PORT=9001 \
     "$launcher" >"$work/lan-broker-port-override.log" \
     2>"$work/lan-broker-port-override.err"; then
@@ -1195,6 +1197,7 @@ fi
 if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
     QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
     QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=0.0.0.0 \
+    QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 \
     QWEN_WEB_BROKER_PORT=19000 \
     "$launcher" >"$work/lan-broker-port-mismatch.log" \
     2>"$work/lan-broker-port-mismatch.err"; then
@@ -1214,6 +1217,7 @@ fi
 if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
     QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
     QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=0.0.0.0 \
+    QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 \
     QWEN_SERVER_PORT=65535 \
     "$launcher" >"$work/lan-broker-port-overflow.log" \
     2>"$work/lan-broker-port-overflow.err"; then
