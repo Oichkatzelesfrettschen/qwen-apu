@@ -1,0 +1,16 @@
+device_name=AMD Ryzen 5 5600X3D 6-Core Processor (RADV RAVEN2)
+driver_name=radv
+driver_info=Mesa 26.2.1-arch3.1
+device_api_version=1.4.354
+subgroup_size_min=64
+subgroup_size_max=64
+spirv_bytes=6920
+spirv_capabilities=Shader
+features_enabled=subgroupSizeControl,computeFullSubgroups
+robust_buffer_access=off
+spec_constants=-
+bindings=3
+push_constant_bytes=0
+subgroup_size_requested=64
+pipeline_created=$REPOSITORY/remote/isa-probes/q4k-float-dot.spv
+environment_names=GGML_VK_LOW_PRIORITY,GGML_VK_MAX_NODES_PER_SUBMIT,RADV_DEBUG,VK_DRIVER_FILES,VK_ICD_FILENAMES

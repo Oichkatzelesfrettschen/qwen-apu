@@ -1,0 +1,6 @@
+num_rows	isa_sha256_head	valu	salu	vmem	smem	v_mac_f32	vgprs	sgprs	spilled_vgprs	spilled_sgprs	lds	scratch	code_size	longest_valu_chain	subgroups_per_simd	subgroups_per_simd_derived	body_valu	body_valu_per_row	body_vmem	body_bytes_per_lane_per_row	body_longest_chain	reduction_valu_per_row
+1	9388d4cc	275	220	20	14	38	36	48	0	0	0	0	2568	17	7	7	100	100.00	9	86.00	17	8.00
+2	80418d9c	456	287	32	22	76	48	48	0	0	0	0	3896	17	5	5	178	89.00	14	54.00	17	8.00
+4	29454587	810	414	56	38	152	64	48	0	0	0	0	6480	17	4	4	330	82.50	24	38.00	17	8.00
+8	299ef0ed	1520	667	104	70	304	64	48	0	0	0	0	11668	17	4	4	636	79.50	44	30.00	17	8.00
+16	e9da0563	2937	1170	200	134	608	64	48	0	0	0	0	22040	17	4	4	1245	77.81	84	26.00	17	8.00

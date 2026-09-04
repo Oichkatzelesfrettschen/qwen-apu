@@ -29,11 +29,19 @@ printf 'patch body\n' >"$tree/patches/repair.patch"
 chmod 644 "$tree/patches/repair.patch"
 # Underscore and hyphen collate differently between C and locale order, the
 # pair that made comm refuse a correctly synced 277-file tree, so the fixture
-# carries both and the first verification runs under a UTF-8 locale.
+# carries both and the first verification runs under a UTF-8 locale. The pair
+# has to disagree rather than merely differ in punctuation: C compares '-'
+# (0x2D) below '_' (0x5F) and puts image-teardown-check.sh first, while a UTF-8
+# collation ignores both at the first level and compares protocol against
+# teardown, which puts image_protocol.py first. image-fetch.sh keeps the same
+# position under both orders and cannot expose a comparison run in the wrong
+# locale.
 printf 'protocol module\n' >"$tree/remote/image_protocol.py"
 chmod 644 "$tree/remote/image_protocol.py"
 printf 'echo fetch\n' >"$tree/remote/image-fetch.sh"
 chmod 755 "$tree/remote/image-fetch.sh"
+printf 'echo teardown\n' >"$tree/remote/image-teardown-check.sh"
+chmod 755 "$tree/remote/image-teardown-check.sh"
 
 write_manifest() {
     payload_rows=$work_directory/payload-rows
@@ -194,6 +202,51 @@ if ! grep -q 'runtime_tree_stray=remote/stale-helper.sh' \
 fi
 report stray_file_refused accepted
 rm "$tree/remote/stale-helper.sh"
+
+# The stray comparison is where the two orders meet. Both lists are sorted
+# under LC_ALL=C, so the comparison runs there too: a comm under the invoking
+# locale reads the C order as unsorted the moment the lists differ, refuses the
+# whole check with `input is not in sorted order`, and turns a named stray into
+# an unexplained launch failure. An identical pair of lists hides the defect,
+# which is why this arm adds the stray and runs under a UTF-8 locale.
+printf 'bytecode\n' >"$tree/remote/stale-helper.sh"
+if LC_ALL=en_US.UTF-8 "$checker" "$tree" \
+    >/dev/null 2>"$work_directory/stray-locale.stderr"; then
+    printf 'a stray file escaped refusal under a UTF-8 locale\n' >&2
+    exit 1
+fi
+if grep -q 'not in sorted order' "$work_directory/stray-locale.stderr"; then
+    printf 'the stray comparison ran under the invoking locale\n' >&2
+    cat "$work_directory/stray-locale.stderr" >&2
+    exit 1
+fi
+if ! grep -q 'runtime_tree_stray=remote/stale-helper.sh' \
+    "$work_directory/stray-locale.stderr"; then
+    printf 'the stray refusal under a UTF-8 locale lost the file it names\n' >&2
+    cat "$work_directory/stray-locale.stderr" >&2
+    exit 1
+fi
+report stray_named_under_utf8_locale accepted
+rm "$tree/remote/stale-helper.sh"
+
+# Bytecode is the stray class a python child writes into the tree it was
+# launched from, so the check names it as such: the remedy is a child carrying
+# PYTHONDONTWRITEBYTECODE=1 rather than a re-sync.
+mkdir -p "$tree/remote/__pycache__"
+printf 'compiled\n' >"$tree/remote/__pycache__/image_protocol.cpython-314.pyc"
+if LC_ALL=en_US.UTF-8 "$checker" "$tree" \
+    >/dev/null 2>"$work_directory/bytecode.stderr"; then
+    printf 'stray bytecode escaped refusal\n' >&2
+    exit 1
+fi
+if ! grep -q 'runtime_tree_stray=remote/__pycache__/image_protocol.cpython-314.pyc class=bytecode' \
+    "$work_directory/bytecode.stderr"; then
+    printf 'the stray refusal did not name bytecode as its own class\n' >&2
+    cat "$work_directory/bytecode.stderr" >&2
+    exit 1
+fi
+report stray_bytecode_named_as_a_class accepted
+rm -r "$tree/remote/__pycache__"
 
 # A manifest whose payload digest rows contradict its own verified file rows
 # was assembled by something other than the sync.
