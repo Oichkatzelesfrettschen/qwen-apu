@@ -10,8 +10,15 @@ appliance's own glslc compile it: `evidence/web-admission-router-tools/build-rav
 records that toolchain printing `GL_EXT_integer_dot_product not supported by
 glslc`, so E5-M is the one q8_1 route that host can build today.
 
-It is the lane's control rather than its hypothesis because the receipts below
-measure it losing to the standard route by 318 VALU on identical silicon.
+It is the lane's control rather than its hypothesis because it is refuted, on
+the terms its own registration named. Falsifier 1 as first written refuted the
+arm where the pipeline holds `v_mul_lo_u32` or `v_cvt_f32_f16` in its inner
+loop; `../instruction-census.tsv` reads `v_cvt_f32_f16` at 56 here. The lane
+honors that rather than arguing the count into a pass, and two independent
+results agree with the verdict: the standard route compiles the same computation
+in 318 fewer VALU instructions, and the multiply-add fold this arm's design
+predicted never forms. A refuted arm can still be a control, which is the role
+it keeps.
 
 ## The mechanism, and the fold that does not form
 
@@ -24,22 +31,36 @@ so three independently toolchained runs agree on the executed instruction
 stream.
 
 ```text
-products reached        224, every one v_mul_u32_u24_sdwa with src0_sel and
-                        src1_sel byte selects; zero v_mul_lo_u32
+products reached        224 v_mul_u32_u24_sdwa and zero v_mul_lo_u32, so the
+                        24-bit multiplier is reached
+byte select absorbed    168 of those 224 fold a byte select into both operands
+                        and 56 read a whole DWORD on src0. E5-S0 and E5-S1 fold
+                        a select on both sources in all 224, so the manual
+                        expansion reaches the encoding it was written for on
+                        three quarters of its products where the compiler's own
+                        lowering reaches it on every one. An earlier reading of
+                        this arm claimed all 224 were dual-selected and is
+                        withdrawn.
 multiply-add fold       zero v_mad_u32_u24. SDWA rides VOP1 and VOP2 on GFX9
                         while v_mad_u32_u24 is VOP3, so ACO takes the byte
-                        select and cannot also take the fold; accumulation
-                        runs through v_add3_u32 instead
-v_cvt_f32_f16           56, the same count in the same places as the
-                        dotPacked4x8EXT build of this shader, so it reports the
-                        q8_1 scale decode rather than the replacement
+                        select and cannot also take the fold; accumulation runs
+                        through v_add3_u32 instead, 126 of them
+v_cvt_f32_f16           56, against 16 in the FP16 production anchor and 56 in
+                        both E5-S arms. The count is the q8_1 scale decode the
+                        whole family carries rather than this replacement's own
+                        arithmetic -- and it is nonetheless what falsifier 1 as
+                        registered names, which is why this arm reads refuted
+                        and why the lane replaced that clause before measuring
+                        E5-S0 and E5-S1 against it
 ```
 
 The design predicted the fold and the prediction is refuted. The 24-bit
-multiplier is reached exactly as intended and the arithmetic is exact by
-construction -- `../int24-equivalence.c` agrees with the signed reference over
-the whole single-lane domain and four million random word pairs -- so what E5-M
-costs is the expansion itself rather than a defect.
+multiplier is reached and the arithmetic is exact by construction --
+`../int24-equivalence.c` agrees with the signed reference over the whole
+single-lane domain and four million random word pairs -- so what E5-M costs is
+the expansion itself rather than a defect. Every count above comes from
+`../instruction-census.tsv`, which
+`remote/raven2-shader-lab/recount-isa.sh` derives from the retained listings.
 
 | receipt | valu | code_size | vgprs | blocks | longest_valu_chain |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -54,7 +75,9 @@ case that merge request rewrites; its sixteen products fold to `v_mul_u32_u24`
 through `aco_select_nir_alu.cpp`'s existing `nir_op_imul` handling. Mechanism
 and hash agree: `isa-across-2115/` compiles the identical SPIR-V through the
 commit immediately before the merge and through `origin/main` three merges past
-it and reads the same `8896269f54...` on both.
+it and reads the same `8896269f54...` on both. Those two runs retained a receipt
+and no listing, so each directory carries the file its own recorded digest names
+beside an `isa-provenance.txt` saying so.
 
 ## Scope
 
@@ -62,14 +85,17 @@ E5-M changes the mat-vec alone. The MMQ mat-mat and flash-attention int8
 shaders keep reading `GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT`, which an E5-M
 build leaves undefined, so `ggml_vk_get_mul_mat_mat_pipeline` finds an empty
 pipeline set, clears `quantize_y`, and prefill and attention run the production
-shape. An E5-S build compiled by an extension-capable toolchain admits those
-families too, which `../README.md` registers as the wider dispatch set that arm
-carries.
+shape. An E5-S build compiled by an extension-capable toolchain does compile
+those shaders, and they stay unreached anyway: the patch gates them on
+`integer_dot_accelerated`, which RADV reports false here, so the forced
+admission moves the q8_1 mat-vec alone under either toolchain and the three
+paths compare one dispatch family.
 
 ## Status
 
 | stage | state | where |
 | --- | --- | --- |
+| falsifier 1 as registered | **refuted** | `../instruction-census.tsv`, v_cvt_f32_f16 56 |
 | arithmetic equivalence | measured | `../int24-equivalence.c` |
 | SPIR-V receipt | measured | `../spirv/`, `../compile-matrix.tsv` |
 | ACO ISA, Arch toolchain | measured | `isa-arch-toolchain/` |

@@ -68,15 +68,19 @@ selection alone: `integer_dot_functional` from the extension,
 `integer_dot_accelerated` verbatim from the driver's own report with nothing in
 the build writing it, `integer_dot_software_lowered` as the build's own claim
 that the variable admits, and `integer_dot_pipeline_selected` as the disjunction
-the pipeline table and every `quantize_y` dispatch read. Every advertised Vulkan
-acceleration property reads exactly what RADV reported under every arm.
+the replacement q8_1 mat-vec pipelines and their two `quantize_y` dispatches
+read. Every advertised Vulkan acceleration property reads exactly what RADV
+reported under every arm.
 
-E5-S carries a wider dispatch set than E5-M. An extension-capable build defines
-`GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT`, which also gates the MMQ mat-mat and
-flash-attention int8 shaders and `ggml_vk_fa_scalar_uses_mmq`, so a comparison
-across E5-M and E5-S measures more than the mat-vec unless that set is held
-fixed. E5-S0 against E5-S1 shares the whole set and differs by the driver alone,
-which is why that pair is read first.
+The selection is scoped to the path the replacement exists for. The MMQ mat-mat
+families, the mat-mat `quantize_y`, and `ggml_vk_fa_scalar_uses_mmq` read
+`integer_dot_accelerated` instead, so a forced admission reaches the mat-vec and
+stops there whichever toolchain compiled the build. Without that scope an
+extension-capable E5-S build would have carried three dispatch families the lane
+measured no replacement for, and a bracket read across E5-M and E5-S would have
+compared different dispatch sets. E5-S0 against E5-S1 shares the whole set
+regardless and differs by the driver alone, which is why that pair is read
+first.
 
 ## The measurable served arm
 
@@ -108,32 +112,98 @@ through `low-async` would differ by node count as well -- worth 1.348 to 2.718
 decode tok/s by this tree's own measurement, larger than the effect E5 exists to
 resolve.
 
+## The original falsifier, honored: E5-M is refuted on its own terms
+
+The lane's first registration named falsifier 1 as: the candidate pipeline holds
+`v_mul_lo_u32` **or** `v_cvt_f32_f16` in its inner loop, and the hypothesis is
+refuted at the compiler. `instruction-census.tsv` reads `v_cvt_f32_f16` at 56 in
+the E5-M module. That clause is met, so E5-M is refuted as a hypothesis on the
+terms it registered, and this lane records it that way rather than arguing the
+count into a pass. It keeps its place as the negative control, which is a role a
+refuted arm can hold, and two independent results agree with the verdict: the
+extension form of the same shader compiles to 318 fewer VALU instructions, and
+the multiply-add fold E5-M's design predicted never forms.
+
+The corrected byte-select reading is the sharpest of the three, and it also
+cuts against E5-M. Of its 224 `v_mul_u32_u24_sdwa` products, 168 fold a byte
+select into both operands and 56 read a whole DWORD on `src0`, where E5-S0 and
+E5-S1 fold a byte select on both sources in all 224. The manual expansion
+therefore reaches the encoding it was written for on three quarters of its
+products and the compiler's own lowering reaches it on all of them. The earlier
+claim that all 224 were byte-selected on both sources is withdrawn.
+
+## The new hypothesis, registered before any further measurement
+
+The clause that refutes E5-M cannot be carried into E5-S0 and E5-S1 unchanged,
+because it discriminates nothing there. `instruction-census.tsv` reads
+`v_cvt_f32_f16` at 56 in all three q8_1 modules against 16 in the FP16
+production anchor, so the count reports the q8_1 scale decode the whole family
+shares rather than any path's own arithmetic. A falsifier that refutes every arm
+including both hypotheses measures the family, and it is replaced here rather
+than reinterpreted where it was written.
+
+```text
+hypothesis   The Q4_K x Q8_1 mat-vec reached through GL_EXT_integer_dot_product
+             and lowered by the driver -- generically in E5-S0, by merge request
+             2115's six-operation sequence in E5-S1 -- executes the Q4_K trunk in
+             a shorter combined graph envelope than the FP16 dequantize path,
+             where the envelope is the activation quantizer and its consumer read
+             together.
+scope        the q8_1 mat-vec family alone. The forced admission writes
+             integer_dot_software_lowered and the MMQ mat-mat and
+             flash-attention families read integer_dot_accelerated, so those
+             stay on the production shape under both hypothesis paths.
+withheld     nothing about the FP16 anchor follows from the instruction tables.
+             int8 through a software dot costs about 1.375 VALU per MAC where
+             FP16 dot2 with FP32 accumulation costs about 1.0, so the tables
+             order the three q8_1 paths against each other and decide nothing
+             against F0.
+```
+
 ## Falsifiers, registered ahead of any run
 
 The order is the order a failure stops the chain, and each one names what is
 measured rather than what is hoped.
 
-1. **ISA, E5-S1.** The executed gfx902 ACO ISA for
-   `mul_mat_vec_q4_k_q8_1_f32_subgroup_no_shmem` holds other than four
+1. **Pipeline creation.** The armed build creates no `mul_mat_vec_q4_k_q8_1_f32`
+   pipeline, or creates one for a family the scope excludes. Read from the
+   census instrument's own module dump and the info line's four states, before
+   any rate is taken.
+2. **Executed ISA.** The executed gfx902 ACO ISA holds other than four
    byte-extract-folded 24-bit multiplies plus two `v_add3_u32` per dot, or holds
-   `v_mul_lo_u32` in the inner loop. The mechanism is refuted at the compiler and
-   no device time is spent on the rung. The workstation has measured this through
-   a drm-shimmed RAVEN2 node; the appliance's own ACO answering differently is
-   what this falsifier is still open against.
-2. **Combined envelope.** Activation quantization and the integer Q4_K consumer
-   are measured as one graph envelope -- `quantize_q8_1_x4` beside
-   `mul_mat_vec_q4_k_q8_1_f32` -- against the best E4-plus-scale-word-select
-   candidate on the FP16 path. A q8_1 route whose consumer shortens while its
-   producer eats the gain is refuted here, and correctness and served arms run
-   only if the combined envelope is shorter. Reading the consumer alone is the
-   error this gate exists to prevent.
-3. **Correctness.** The margin witness reads `differs` under
+   `v_mul_lo_u32` in the inner loop. The mechanism is refuted at the compiler
+   and no further device time is spent. The workstation has measured this
+   through a drm-shimmed RAVEN2 node; the appliance's own ACO answering
+   differently is what the falsifier is open against.
+3. **Exact arithmetic.** The armed and unarmed binaries disagree on the Q4_K
+   dot over the operand domain the test drives. E5-M's own form is exact against
+   `dotPacked4x8EXT` by construction and `int24-equivalence.c` has measured it;
+   the E5-S paths compute the extension's own operation, so this arm tests the
+   driver's lowering rather than a rewrite.
+4. **Top-k margin witness.** The witness reads `differs` under
    `QWEN_WITNESS_CONTRACT=margin`. This measures q8_1 activation quantization,
    which the design accepted in advance as a numeric change, so the registered
-   contract decides rather than token identity. E5-M's own arithmetic is exact
-   against `dotPacked4x8EXT` by construction and contributes nothing here.
-4. **Whole token.** The served comparison under the scoreboard tuple leaves the
-   2B's 5% one-sided promotion bound unmet.
+   contract decides rather than token identity. The arm reaches the witness only
+   because `QWEN_WITNESS_CANDIDATE_FORCE_INTEGER_DOT=1` carries the selection
+   into that harness's closed environment; without it the witness compares one
+   shader against itself.
+5. **Kernel-delta bracket.** The exclusive GPU bracket of
+   `mul_mat_vec_q4_k_q8_1_f32` measured against the untouched null pipeline
+   reads `bracket-unchanged` or `lengthened`.
+6. **Whole-graph envelope.** `quantize_q8_1_x4` and its consumer read as one
+   envelope against the best E4-plus-scale-word-select candidate on the FP16
+   path. A route whose consumer shortens while its producer eats the gain is
+   refuted here. Reading the consumer alone is the error this gate exists to
+   prevent.
+7. **Served A/B, only if locally faster.** The served comparison under the
+   scoreboard tuple runs only where the envelope above is shorter, and it leaves
+   the 2B's 5% one-sided promotion bound unmet.
+
+That order is the device ladder: pipeline creation, executed ISA, the exact
+arithmetic test, the top-k margin witness, the kernel-delta bracket, the
+whole-graph envelope, and the served A/B last and conditional. Each rung costs
+more device time than the one above it and each answers a question the next one
+would otherwise attribute wrongly.
 
 Two standing cautions are registered as non-falsifiers, so a result that meets
 either is read as predicted rather than as a defect:
@@ -153,6 +223,24 @@ VALU per MAC       int8 through a software dot costs about 1.375 VALU per MAC
                    among the three paths and nothing about the FP16 anchor.
 ```
 
+## The instruction census, and why it is analysis rather than a re-run
+
+`instruction-census.tsv` carries every retained arm under one schema.
+`remote/raven2-shader-lab/recount-isa.sh` derives it from the `isa.s` each run
+retained, because `lab.sh` gained its `v_mul_i32_i24` and `v_add3_u32` fields
+after four of these arms were measured and two of the drivers that produced them
+are no longer installed. The measurement head and the analysis head are separate
+here by the repository's own rule: the listing is what the run produced and
+every count is a reader over it, so a field added later reaches every arm ever
+retained. The two byte-select columns have no receipt field at all and exist
+because the arm's mechanism is a claim about operand encoding rather than about
+opcode choice. `remote/raven2-shader-lab/test-recount-isa.sh` drives the reader
+against a fixture whose every count the fixture states.
+
+Every listing whose digest this lane cites is retained. The two E5-M arms across
+merge request 2115 kept a receipt and no listing, so each carries the file its
+own recorded digest names beside an `isa-provenance.txt` stating that it was
+carried in rather than retained by that run.
 ## The compiler plan, and the file that carries each step
 
 The appliance's distribution shaderc prints `GL_EXT_integer_dot_product not

@@ -30,9 +30,12 @@ question twice.
 | production FP16 dequantize | 882 | 6764 | 64 | 82 | 29 |
 
 The multiplier family is the same one E5-M reaches: 224 `v_mul_i32_i24_sdwa`
-against E5-M's 224 `v_mul_u32_u24_sdwa`, at identical register occupancy. What
-separates them is the surrounding expansion, and the standard route writes less
-of it.
+against E5-M's 224 `v_mul_u32_u24_sdwa`, at identical register occupancy. The
+encoding separates them before the surrounding expansion does. All 224 products
+here fold a byte select into both operands, where 56 of E5-M's read a whole
+DWORD on `src0`, so the compiler's own lowering absorbs the byte extraction on
+every product and the hand expansion does so on 168 of them.
+`../instruction-census.tsv` carries both counts.
 
 ## What blocks this route on the appliance, and what unblocks it
 
@@ -50,15 +53,17 @@ whose acceleration bits are all false. The patch's split capability state keeps
 that honest: the variable writes `integer_dot_software_lowered` and every
 advertised Vulkan acceleration property stays exactly what RADV reported.
 
-## Scope this arm carries that E5-M does not
+## Scope: one dispatch family, under either toolchain
 
 An extension-capable build defines `GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT`,
-which is also the gate on the MMQ mat-mat and flash-attention int8 shaders and
-on `ggml_vk_fa_scalar_uses_mmq`. An E5-S build therefore admits those families
-where E5-M leaves them absent, so a bracket or a served rate compared across the
-two measures more than the mat-vec unless the comparison holds that set fixed.
-The lane reads E5-S0 against E5-S1 first, which share the whole dispatch set and
-differ by the driver alone.
+which is also the compile gate on the MMQ mat-mat and flash-attention int8
+shaders and on `ggml_vk_fa_scalar_uses_mmq`, so an E5-S build compiles those
+where E5-M leaves them absent. They stay unreached: the patch gates each of them
+on `integer_dot_accelerated`, the driver's own report, which is false on this
+part, so the forced admission moves the q8_1 mat-vec alone and a bracket
+compared across E5-M and E5-S measures one dispatch family on both sides. E5-S0
+against E5-S1 shares the compiled set as well and differs by the driver alone,
+which is why that pair is read first.
 
 ## Status
 
