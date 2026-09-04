@@ -30,8 +30,10 @@ request_json=$5
 state_directory=$6
 timeout_seconds=$7
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 repository_directory=$(CDPATH='' cd -- "$script_directory/.." && pwd)
-llama_server=${QWEN_LLAMA_SERVER:-"${HOME:?}/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-server"}
+llama_server=${QWEN_LLAMA_SERVER:-"$qwen_home_llama_source/build-qwen-vulkan/bin/llama-server"}
 static_path=$repository_directory/webui
 session_pid=""
 

@@ -52,7 +52,13 @@
 
 gate_cell_root=${GATE_CELL_ROOT:-}
 gate_cell_driver_path=${GATE_CELL_DRIVER_PATH:-}
-gate_cell_cache_directory=${QWEN_GATE_CACHE_DIR:-$HOME/.cache/qwen-apu-gate}
+# The cache root follows the runtime root. A driver that sourced qwen-home.sh
+# already holds the value; a fixture driver that did not resolves it through
+# the command form beside itself.
+if [ -z "${qwen_home_gate_cache:-}" ] && [ -n "$gate_cell_driver_path" ]; then
+    qwen_home_gate_cache=$("$(dirname -- "$gate_cell_driver_path")/qwen-home.sh" print qwen_home_gate_cache)
+fi
+gate_cell_cache_directory=${QWEN_GATE_CACHE_DIR:-${qwen_home_gate_cache:?}}
 gate_cell_sparse=${QWEN_GATE_SPARSE:-1}
 gate_cell_directory_walk_limit=${QWEN_GATE_DIRECTORY_WALK_LIMIT:-64}
 gate_cell_tool_digest=''

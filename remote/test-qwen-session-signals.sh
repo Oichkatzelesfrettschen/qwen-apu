@@ -29,7 +29,7 @@ cleanup_fixture() {
 trap cleanup_fixture EXIT HUP INT TERM
 
 mkdir -p "$fixture_remote"
-cp "$script_directory/qwen-webui-session.sh" \
+cp "$script_directory/qwen-webui-session.sh" "$script_directory/qwen-home.sh" \
     "$script_directory/preserve-legacy-telemetry.sh" \
     "$fixture_remote/"
 cat >"$fixture_remote/run-qwen-capacity-server.sh" <<'SERVER'
@@ -585,6 +585,7 @@ fi
 # gone. Its control script is a fixture, so the arm leaves any tmux session on
 # this machine alone.
 cp "$script_directory/qwen-teardown.sh" "$fixture_remote/qwen-teardown.sh"
+cp "$script_directory/qwen-home.sh" "$fixture_remote/qwen-home.sh"
 # The teardown reads its image residue proof from its own directory, so the
 # fixture carries that script too and these arms measure a teardown whose
 # proof ran rather than one reporting the proof absent.

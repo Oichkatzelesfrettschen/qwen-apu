@@ -74,6 +74,7 @@ export QWEN_CTX_CHECKPOINT_LEDGER
 harness=$work/harness
 mkdir -p "$harness"
 cp "$script_directory/qwen-web-launch.sh" "$harness/qwen-web-launch.sh"
+cp "$script_directory/qwen-home.sh" "$harness/qwen-home.sh"
 # The launcher sources its listener policy from its own directory, so the
 # harness carries the tree's file rather than a stand-in.
 cp "$script_directory/web-lan-exposure.sh" "$harness/web-lan-exposure.sh"
@@ -168,6 +169,7 @@ control_bin=$work/control-bin
 mkdir -p "$control_harness" "$control_bin"
 cp "$script_directory/qwen-webui-control.sh" \
     "$control_harness/qwen-webui-control.sh"
+cp "$script_directory/qwen-home.sh" "$control_harness/qwen-home.sh"
 cp "$script_directory/open-verified-lock-descriptor.py" \
     "$control_harness/open-verified-lock-descriptor.py"
 cp "$script_directory/check-runtime-tree.sh" \

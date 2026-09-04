@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 # The primary universal candidate. Qwen publishes no GGUF for this checkpoint,
 # so the rung comes from a community conversion and passes the structural gate
@@ -18,7 +21,7 @@ if [ "$#" -gt 1 ]; then
     exit 2
 fi
 
-destination_directory=${1:-"${HOME:?}/models/Qwen3.5-2B-GGUF"}
+destination_directory=${1:-"$qwen_home_models/Qwen3.5-2B-GGUF"}
 artifact_name=Qwen3.5-2B-Q4_K_M.gguf
 artifact_path=$destination_directory/$artifact_name
 partial_path=$artifact_path.part

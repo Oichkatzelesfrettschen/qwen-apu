@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 # SD 1.5 as the quality control against SDXS-512 and LCM-4-step in the model
 # funnel evidence/image-appliance/stable-diffusion-cpp-pin.md's pin table
@@ -20,7 +23,7 @@ if [ "$#" -gt 1 ]; then
     exit 2
 fi
 
-destination_directory=${1:-"${HOME:?}/models/image/sd15-base"}
+destination_directory=${1:-"$qwen_home_models/image/sd15-base"}
 artifact_name=v1-5-pruned-emaonly.safetensors
 artifact_path=$destination_directory/$artifact_name
 partial_path=$artifact_path.part

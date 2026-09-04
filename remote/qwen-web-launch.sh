@@ -51,25 +51,28 @@ set -eu
 # decoded, and the authorizer setting says whether the generator admitted
 # validator-gated rows at all.
 
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
+
 if [ "$#" -gt 1 ]; then
     printf 'usage: %s [paced-60|low-serialized|low-async]\n' "$0" >&2
-    printf 'web preset file comes from QWEN_WEB_PRESETS, default $HOME/qwen-webui-state/web-presets.ini\n' >&2
+    printf 'web preset file comes from QWEN_WEB_PRESETS, default state/web-presets.ini under the runtime root (QWEN_HOME)\n' >&2
     printf 'the listener is 127.0.0.1; QWEN_BIND_HOST set to any other value refuses the launch\n' >&2
     printf 'QWEN_WEB_LAN=1 with QWEN_WEB_LAN_ADDRESS naming a routable IPv4 literal serves the network instead, with the Web UI bearer required on every route\n' >&2
     exit 2
 fi
 
 profile=${1:-low-async}
-script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 launcher=$script_directory/qwen-launch.sh
-state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
+state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"$qwen_home_state"}
 # The activated deployment bundle's web preset outranks the state directory's
 # for the same reason its router preset does in qwen-launch.sh: the sections'
 # checkpoint counts were generated against the bundled ledger. The bundle is
 # resolved once here and handed to the launcher as
 # QWEN_ACTIVE_DEPLOYMENT_DIRECTORY, so the preset read here and the server
 # and ledger read beyond the launcher come from one bundle.
-deployment_root=${QWEN_DEPLOYMENT_ROOT:-"${HOME:?}/qwen-deployments"}
+deployment_root=${QWEN_DEPLOYMENT_ROOT:-"$qwen_home_deployments"}
 # An explicit QWEN_LLAMA_SERVER outranks the deployment, the rule
 # qwen-webui-control.sh applies, so a launch naming its server reads no
 # bundle at all.
@@ -576,6 +579,9 @@ if [ "$preset_provider" = searxng ]; then
         printf 'stop it with remote/searxng-launch.sh stop, or remote/qwen-teardown.sh\n' >&2
         exit 2
     fi
+    # The instance is a runtime component, and its absence refuses here
+    # with the expected paths and the repair, ahead of the health gate.
+    "$script_directory/searxng-launch.sh" check >/dev/null || exit 2
     QWEN_WEB_SEARXNG=1
     QWEN_SEARXNG_PORT=$searxng_port
     export QWEN_WEB_SEARXNG QWEN_SEARXNG_PORT

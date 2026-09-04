@@ -50,7 +50,7 @@ mismatched_port=18890
 fake_instance=$script_directory/test-fixtures/fake-searxng-server.py
 
 mkdir -p "$fixture_remote/searxng"
-cp "$script_directory/qwen-webui-session.sh" \
+cp "$script_directory/qwen-webui-session.sh" "$script_directory/qwen-home.sh" \
     "$script_directory/preserve-legacy-telemetry.sh" \
     "$script_directory/searxng-launch.sh" \
     "$script_directory/qwen-teardown.sh" \
@@ -714,7 +714,7 @@ if env -u QWEN_SEARXNG_LAUNCH_COMMAND -u QWEN_SEARXNG_ROOT \
     "$fixture_remote/searxng-launch.sh" serve "$default_root_state" \
     >"$temporary_directory/default-root.log" 2>&1; then
     report default_root_is_installed_tree unexpectedly_present
-elif grep -q 'the SearXNG source tree is absent: /opt/searxng-qwen-apu/searxng-src' \
+elif grep -q 'component=searxng' \
     "$temporary_directory/default-root.log"; then
     report default_root_is_installed_tree ok
 else

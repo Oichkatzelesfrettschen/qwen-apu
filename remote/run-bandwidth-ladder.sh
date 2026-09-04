@@ -33,9 +33,11 @@ if [ "$#" -lt 1 ]; then
     exit 2
 fi
 
-output_directory=${QWEN_BANDWIDTH_OUTPUT:-"${HOME:?}/qwen-bandwidth-ladder"}
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-bench=${QWEN_LLAMA_BENCH:-"${HOME:?}/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-bench"}
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
+output_directory=${QWEN_BANDWIDTH_OUTPUT:-"$qwen_home_results/bandwidth-ladder"}
+bench=${QWEN_LLAMA_BENCH:-"$qwen_home_llama_bench"}
 census=${QWEN_TENSOR_CENSUS:-"$script_directory/gguf-tensor-census.py"}
 clock_sampler=${QWEN_CLOCK_SAMPLER:-"$script_directory/sample-gpu-clocks.sh"}
 generate_tokens=${QWEN_BENCH_GENERATE:-64}

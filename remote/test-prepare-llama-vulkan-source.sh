@@ -8,8 +8,10 @@
 set -eu
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 repository_directory=$(CDPATH='' cd -- "$script_directory/.." && pwd)
-base_source=${QWEN_LLAMA_BASE_SOURCE:-"${HOME:?}/src/llama.cpp"}
+base_source=${QWEN_LLAMA_BASE_SOURCE:-"$qwen_home_llama_upstream"}
 pinned_commit=f280b26983ad0fdb705a0d9ebf0503e76f2899b0
 
 if [ ! -d "$base_source/.git" ] || \

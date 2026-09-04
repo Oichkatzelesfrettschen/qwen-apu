@@ -41,7 +41,7 @@ set -eu
 if [ "$#" -ne 2 ]; then
     printf 'usage: %s PAIR_ID OUTPUT_DIRECTORY\n' "$0" >&2
     printf '  QWEN_PRODUCTION_BUILD_DIR names the promoted build (required)\n' >&2
-    printf '  QWEN_MODELS_DIRECTORY names the model root, default $HOME/models\n' >&2
+    printf '  QWEN_MODELS_DIRECTORY names the model root, default models/ under the runtime root (QWEN_HOME)\n' >&2
     printf '  QWEN_VULKAN_WORKLOAD_LOCK names the absolute shared lease (required)\n' >&2
     exit 2
 fi
@@ -49,6 +49,8 @@ fi
 pair_id=$1
 output_directory=$2
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 registry_source=$script_directory/model-registry.sh
 model_registry_source=${QWEN_MODEL_REGISTRY:-$script_directory/models.tsv}
 draft_pair_registry_source=${QWEN_DRAFT_PAIRS:-$script_directory/draft-pairs.tsv}
@@ -58,7 +60,7 @@ vulkan_profile_wrapper=${QWEN_DRAFT_PAIR_VULKAN_WRAPPER:-"$script_directory/radv
 vulkan_profile=${QWEN_DRAFT_PAIR_VULKAN_PROFILE:-low-async}
 measurement_runner_source=$script_directory/measure-draft-pair.sh
 summarizer_source=$script_directory/summarize-draft-pair.py
-models_directory=${QWEN_MODELS_DIRECTORY:-"${HOME:?}/models"}
+models_directory=${QWEN_MODELS_DIRECTORY:-"$qwen_home_models"}
 production_build_directory=${QWEN_PRODUCTION_BUILD_DIR:-}
 server_relative_path=${QWEN_DRAFT_PAIR_SERVER_RELATIVE:-bin/llama-server}
 server_port=${QWEN_DRAFT_PAIR_PORT:-8098}

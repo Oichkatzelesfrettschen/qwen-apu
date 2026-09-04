@@ -41,9 +41,13 @@ set -eu
 # reader of it. A `-` review_model leaves one section, and the review runs
 # through remote/image-review.py against a separate launch.
 
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
+
 if [ "$#" -gt 1 ]; then
     printf 'usage: %s [paced-60|low-serialized|low-async]\n' "$0" >&2
-    printf 'web preset file comes from QWEN_WEB_PRESETS, default $HOME/qwen-webui-state/web-presets.ini\n' >&2
+    printf 'web preset file comes from QWEN_WEB_PRESETS, default state/web-presets.ini under the runtime root (QWEN_HOME)\n' >&2
     printf 'the preset must name an image profile, which requires a validator-gated row in remote/image-profiles.tsv\n' >&2
     printf 'QWEN_IMAGE_PROFILES_JSON names the validated profile parameters the image service runs a job under\n' >&2
     printf 'QWEN_IMAGE_RUNTIME_RESIDENT_MIB is the image runtime cost charged against the Vulkan budget, default 480\n' >&2
@@ -55,10 +59,9 @@ if [ "$#" -gt 1 ]; then
 fi
 
 profile=${1:-low-async}
-script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 web_launcher=$script_directory/qwen-web-launch.sh
 image_service_program=${QWEN_IMAGE_SERVICE_PROGRAM:-$script_directory/image-service.py}
-state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
+state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"$qwen_home_state"}
 web_presets=${QWEN_WEB_PRESETS:-$state_directory/web-presets.ini}
 # The marker rejoin, the parameter comparison, the deadline stack, and the
 # device charge live in one file, because qwen-launch.sh arms the same lane from

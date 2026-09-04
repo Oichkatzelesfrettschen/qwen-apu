@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 # Build llama.cpp for the appliance on a workstation and ship plain binaries.
 #
@@ -25,7 +28,7 @@ usage() {
 
 [ "$#" -le 2 ] || usage
 
-source_directory=${1:-"${HOME:?}/src/llama.cpp-qwen-apu"}
+source_directory=${1:-"$qwen_home_llama_source"}
 destination_host=${2:-${QWEN_LAPTOP_HOST:-qwen-laptop}}
 destination_directory=${QWEN_DESTINATION_DIRECTORY:-src/llama.cpp-qwen-apu/build-qwen-vulkan/bin}
 container=${QWEN_CONTAINER:-podman}

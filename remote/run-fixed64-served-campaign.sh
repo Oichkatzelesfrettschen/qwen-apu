@@ -15,6 +15,8 @@ fi
 
 output_directory=$1
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 repository_root=$(git -C "$script_directory" rev-parse --show-toplevel)
 runner_source=${QWEN_SERVED_CAMPAIGN_RUNNER:-$script_directory/measure-served-decode.sh}
 summarizer_source=${QWEN_SERVED_CAMPAIGN_SUMMARIZER:-$script_directory/summarize-fixed64-served-campaign.py}
@@ -30,8 +32,8 @@ launch_source=${QWEN_SERVED_CAMPAIGN_LAUNCH_SCRIPT:-$script_directory/qwen-launc
 teardown_source=${QWEN_SERVED_CAMPAIGN_TEARDOWN_SCRIPT:-$script_directory/qwen-teardown.sh}
 signal_process_group_source=${QWEN_SERVED_CAMPAIGN_SIGNAL_PROCESS_GROUP:-$script_directory/signal-process-group.py}
 campaign_lock_descriptor_helper=$script_directory/open-verified-lock-descriptor.py
-models_directory=${QWEN_MODELS_DIRECTORY:-"${HOME:?}/models"}
-state_directory=${QWEN_SERVED_CAMPAIGN_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
+models_directory=${QWEN_MODELS_DIRECTORY:-"$qwen_home_models"}
+state_directory=${QWEN_SERVED_CAMPAIGN_STATE_DIRECTORY:-"$qwen_home_state"}
 cooldown_seconds=${QWEN_SERVED_CAMPAIGN_COOLDOWN_S:-30}
 radv_icd=${QWEN_SERVED_CAMPAIGN_RADV_ICD:-/usr/share/vulkan/icd.d/radeon_icd.x86_64.json}
 expected_workload_lock=$state_directory/vulkan-workload.lock
@@ -552,7 +554,7 @@ retained_signal_process_group=$configuration_directory/signal-process-group.py
 
 server_logical=${QWEN_SERVED_CAMPAIGN_SERVER:-${QWEN_LLAMA_SERVER:-}}
 if [ -z "$server_logical" ]; then
-    llama_source_directory=${QWEN_LLAMA_SOURCE_DIRECTORY:-"${HOME:?}/src/llama.cpp-qwen-apu"}
+    llama_source_directory=${QWEN_LLAMA_SOURCE_DIRECTORY:-"$qwen_home_llama_source"}
     server_logical=$llama_source_directory/build-appliance-current/bin/llama-server
     if [ ! -x "$server_logical" ]; then
         server_logical=$llama_source_directory/build-qwen-vulkan/bin/llama-server
@@ -1007,7 +1009,7 @@ emergency_teardown_failed_arm() {
         # verifies the holder, so a shell-level closure here can never pass
         # verification and the closure runs in the child instead.
         if env -i \
-            HOME="${HOME:?}" PATH="$campaign_path" TMPDIR=/tmp LC_ALL=C \
+            HOME="${HOME:?}" QWEN_HOME="${QWEN_HOME:?}" PATH="$campaign_path" TMPDIR=/tmp LC_ALL=C \
             PYTHONDONTWRITEBYTECODE=1 \
             QWEN_WEBUI_STATE_DIRECTORY="$state_directory" \
             QWEN_SERVER_PORT="$campaign_server_port" \
@@ -1127,7 +1129,7 @@ EOF
     active_arm_directory=$arm_directory
     set +e
     env -i \
-        HOME="${HOME:?}" PATH="$campaign_path" TMPDIR=/tmp LC_ALL=C \
+        HOME="${HOME:?}" QWEN_HOME="${QWEN_HOME:?}" PATH="$campaign_path" TMPDIR=/tmp LC_ALL=C \
         PYTHONDONTWRITEBYTECODE=1 \
         QWEN_MODEL_REGISTRY="$retained_registry" \
         QWEN_MODEL_ARTIFACTS="$retained_artifacts" \

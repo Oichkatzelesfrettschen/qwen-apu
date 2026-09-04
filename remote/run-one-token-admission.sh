@@ -40,15 +40,17 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
 fi
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 record=$1
-output_directory=${2:-"${HOME:?}/qwen-webui-state/one-token-admission"}
-llama_server=${QWEN_LLAMA_SERVER:-"${HOME:?}/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-server"}
+output_directory=${2:-"$qwen_home_state/one-token-admission"}
+llama_server=${QWEN_LLAMA_SERVER:-"$qwen_home_llama_source/build-qwen-vulkan/bin/llama-server"}
 # Staged artifacts sit beside the tier tree rather than inside it.
 # build-router-presets.sh owns $QWEN_MODEL_ROOT/candidates as the candidate tier
 # link directory and exits 1 on any real entry it finds there, so a fetch
 # staged into that path stops the picker from being regenerated at all.
-candidate_root=${QWEN_CANDIDATE_ROOT:-"${HOME:?}/models/candidate-staging"}
-control_model=${QWEN_CONTROL_MODEL:-"${HOME:?}/models/Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf"}
+candidate_root=${QWEN_CANDIDATE_ROOT:-"$qwen_home_models/candidate-staging"}
+control_model=${QWEN_CONTROL_MODEL:-"$qwen_home_models/Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf"}
 placement=${QWEN_PLACEMENT_CHECK:-$script_directory/test-strict-vulkan-placement.sh}
 fetch=${QWEN_CANDIDATE_FETCH:-$script_directory/fetch-candidate-artifact.sh}
 # `fetch` alone downloads without touching the device, which is what lets the

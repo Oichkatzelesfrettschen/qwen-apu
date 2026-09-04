@@ -686,7 +686,7 @@ run_harness_path=$run_directory/run-served-binary-ab.sh
 cp -- "$harness" "$run_harness_path"
 chmod +x "$run_harness_path"
 cp -- "$artifact_ledger" "$run_directory/model-artifacts.tsv"
-for linked_member in model-registry.sh models.tsv ctx-checkpoints.tsv \
+for linked_member in model-registry.sh qwen-home.sh models.tsv ctx-checkpoints.tsv \
     validated-tuples.tsv quarantine.tsv draft-pairs.tsv census-arm-lib.sh \
     summarize-census-controls.py summarize-bracket-ab.py sample-clock-sidecar.py \
     verify-external-vulkan-lease.py \

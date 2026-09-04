@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 # Measure the HIP and Vulkan backends from one binary, one phase at a time.
 #
@@ -29,12 +32,12 @@ usage() {
 
 [ "$#" -le 1 ] || usage
 
-output_path=${1:-"${HOME:?}/qwen-model-comparison/rocm-vulkan-matrix.txt"}
-model_path=${QWEN_MODEL_PATH:-"${HOME:?}/models/Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf"}
+output_path=${1:-"$qwen_home_results/model-comparison/rocm-vulkan-matrix.txt"}
+model_path=${QWEN_MODEL_PATH:-"$qwen_home_models/Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf"}
 phase_timeout=${QWEN_MATRIX_TIMEOUT:-600}
 repetitions=${QWEN_MATRIX_REPS:-1}
-binary_directory=${QWEN_DUAL_BIN:-"${HOME:?}/src/llama.cpp-qwen-apu/build-qwen-dual/bin"}
-rocm_path=${ROCM_PATH:-"${HOME:?}/.venvs/rocm-gfx900/lib/python3.12/site-packages/_rocm_sdk_devel"}
+binary_directory=${QWEN_DUAL_BIN:-"$qwen_home_llama_source/build-qwen-dual/bin"}
+rocm_path=${ROCM_PATH:-"$qwen_home_rocm"}
 
 [ -f "$model_path" ] || { printf 'checkpoint is absent: %s\n' "$model_path" >&2; exit 1; }
 [ -x "$binary_directory/llama-bench" ] || {
@@ -57,7 +60,7 @@ model_digest=$(sha256sum "$model_path" | cut -d' ' -f1)
 # version flag, so provenance reads from the source tree the binary came from.
 # The patch series this repository applies means the revision alone names a
 # different tree, and the worktree state travels with it.
-source_directory=${QWEN_LLAMA_SOURCE:-"${HOME:?}/src/llama.cpp-qwen-apu"}
+source_directory=${QWEN_LLAMA_SOURCE:-"$qwen_home_llama_source"}
 source_commit=$(git -C "$source_directory" rev-parse HEAD 2>/dev/null || echo unknown)
 source_worktree=clean
 if [ -n "$(git -C "$source_directory" status --porcelain 2>/dev/null)" ]; then
@@ -116,7 +119,7 @@ run_arm() {
 }
 
 hip_library_path=$rocm_path/lib:$rocm_path/lib64:${LD_LIBRARY_PATH:-}
-mmq_binary=${QWEN_MMQ_BIN:-"${HOME:?}/src/llama.cpp-qwen-apu/build-qwen-dual-gfx900-mmq/bin"}/llama-bench
+mmq_binary=${QWEN_MMQ_BIN:-"$qwen_home_llama_source/build-qwen-dual-gfx900-mmq/bin"}/llama-bench
 
 both_phases='-p_512_-n_0 -p_0_-n_64'
 decode_phase='-p_0_-n_64'

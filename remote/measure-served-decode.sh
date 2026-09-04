@@ -22,10 +22,12 @@ label=$1
 model_path=$2
 profile=${3:-low-async}
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 launch_script=${QWEN_LAUNCH_SCRIPT:-"$script_directory/qwen-launch.sh"}
 teardown_script=${QWEN_TEARDOWN_SCRIPT:-"$script_directory/qwen-teardown.sh"}
-state_directory=${QWEN_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
-result_directory=${QWEN_RESULT_DIRECTORY:-"${HOME:?}/qwen-served-decode/$label"}
+state_directory=${QWEN_STATE_DIRECTORY:-"$qwen_home_state"}
+result_directory=${QWEN_RESULT_DIRECTORY:-"$qwen_home_results/served-decode/$label"}
 external_lease_proof=${QWEN_VULKAN_EXTERNAL_LEASE_PROOF:-}
 external_lease_verifier=$script_directory/verify-external-vulkan-lease.py
 endpoint=http://127.0.0.1:${QWEN_SERVER_PORT:-8080}

@@ -2,8 +2,10 @@
 set -eu
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-llama_server=${1:-"${HOME:?}/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-server"}
-model_path=${2:-"${HOME:?}/models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf"}
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
+llama_server=${1:-"$qwen_home_llama_source/build-qwen-vulkan/bin/llama-server"}
+model_path=${2:-"$qwen_home_models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf"}
 static_path=${3:-"$script_directory/../webui"}
 # The 4K allocation rung consumes 2,724 MiB of measured Vulkan memory and uses
 # the admitted 4,096 MiB preflight gate. Interactive serving starts from that
@@ -11,7 +13,7 @@ static_path=${3:-"$script_directory/../webui"}
 context_size=${4:-4096}
 required_vulkan_mib=${5:-4096}
 server_port=${6:-8080}
-state_directory=${7:-"${HOME:?}/qwen-webui-state"}
+state_directory=${7:-"$qwen_home_state"}
 vulkan_profile=${8:-low-serialized}
 
 umask 077

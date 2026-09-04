@@ -30,6 +30,7 @@ export QWEN_DEPLOYMENT_ROOT
 fixture_bin=$temporary_directory/bin
 mkdir -p "$fixture_remote" "$fixture_bin"
 cp "$script_directory/qwen-launch.sh" "$fixture_remote/qwen-launch.sh"
+cp "$script_directory/qwen-home.sh" "$fixture_remote/qwen-home.sh"
 cp "$script_directory/resolve-active-deployment.sh" \
     "$fixture_remote/resolve-active-deployment.sh"
 cp "$script_directory/open-verified-lock-descriptor.py" \

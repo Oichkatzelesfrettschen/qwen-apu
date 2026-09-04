@@ -25,6 +25,7 @@ report() {
 harness=$work/harness
 mkdir -p "$harness/web-mcp"
 cp "$script_directory/qwen-lan-launch.sh" "$harness/qwen-lan-launch.sh"
+cp "$script_directory/qwen-home.sh" "$harness/qwen-home.sh"
 cp "$script_directory/read-image-mcp-server.py" "$harness/read-image-mcp-server.py"
 : >"$harness/web-mcp/server.py"
 

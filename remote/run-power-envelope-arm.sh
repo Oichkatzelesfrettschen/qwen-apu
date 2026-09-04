@@ -36,9 +36,11 @@ campaign_directory=$1
 arm_name=$2
 model_id=$3
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-state_directory=${QWEN_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
-models_directory=${QWEN_MODELS_DIRECTORY:-"${HOME:?}/models"}
-ryzenadj_command=${QWEN_RYZENADJ:-"${HOME:?}/.local/bin/ryzenadj"}
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
+state_directory=${QWEN_STATE_DIRECTORY:-"$qwen_home_state"}
+models_directory=${QWEN_MODELS_DIRECTORY:-"$qwen_home_models"}
+ryzenadj_command=${QWEN_RYZENADJ:-"$qwen_home_ryzenadj"}
 registry_reader=$script_directory/model-registry.sh
 energy_reader=$script_directory/read-package-energy.py
 clock_sidecar=$script_directory/sample-clock-sidecar.py

@@ -33,11 +33,13 @@ label=$1
 model_id=$2
 output_directory=$3
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 registry_script=${QWEN_MODEL_REGISTRY_SCRIPT:-"$script_directory/model-registry.sh"}
-models_directory=${QWEN_MODELS_DIRECTORY:-"${HOME:?}/models"}
+models_directory=${QWEN_MODELS_DIRECTORY:-"$qwen_home_models"}
 launch_script=${QWEN_LAUNCH_SCRIPT:-"$script_directory/qwen-launch.sh"}
 teardown_script=${QWEN_TEARDOWN_SCRIPT:-"$script_directory/qwen-teardown.sh"}
-state_directory=${QWEN_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
+state_directory=${QWEN_STATE_DIRECTORY:-"$qwen_home_state"}
 profile=${QWEN_VULKAN_PROFILE_ARM:-low-async}
 server_port=${QWEN_SERVER_PORT:-8080}
 endpoint=http://127.0.0.1:$server_port

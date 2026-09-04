@@ -23,8 +23,11 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
 fi
 
 model_path=$1
-output_directory=${2:-"${HOME:?}/qwen-kv-cache-factorial"}
-bench=${QWEN_LLAMA_BENCH:-"${HOME:?}/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-bench"}
+output_directory=${2:-"$qwen_home_results/kv-cache-factorial"}
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
+bench=${QWEN_LLAMA_BENCH:-"$qwen_home_llama_bench"}
 depths=${QWEN_FACTORIAL_DEPTHS:-"0 4096 16384"}
 QWEN_CELL_SUFFIX=''
 generate_tokens=${QWEN_BENCH_GENERATE:-64}
@@ -57,7 +60,6 @@ for depth in $depths; do
     esac
 done
 
-script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 clock_sampler=${QWEN_CLOCK_SAMPLER:-"$script_directory/sample-gpu-clocks.sh"}
 mkdir -p "$output_directory"
 summary=$output_directory/factorial-summary.tsv

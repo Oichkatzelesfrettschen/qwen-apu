@@ -1,0 +1,8 @@
+prefix	reason
+/etc/sudoers.d/90-qwen-agent	the one persistent root-owned object, installed from runtime/sudoers/90-qwen-agent
+/etc/os-release	distribution identity read by the capacity audit
+/usr/local/bin	PATH component of the closed campaign environment; nothing is written there
+/usr/local/sbin	PATH component of the closed campaign environment; nothing is written there
+/usr/local/include	read-only probe for the libpci header RyzenAdj links against
+/opt/rocm	named in a refusal message: the ROCm ladder reads its prefix from PREFIX alone
+$HOME/.config	clangd user configuration on the workstation, an editor setting rather than appliance storage

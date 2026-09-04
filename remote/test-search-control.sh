@@ -1,14 +1,13 @@
 #!/bin/sh
 set -eu
 
-# Exercises remote/searxng-control.sh and remote/yacy-control.sh against
+# Exercises remote/yacy-control.sh against `python3 -m http.server`
 # `python3 -m http.server` standing in for the real service, so this test
 # needs no SearXNG or YaCy install, no root, and no service account: both
 # control scripts run as the invoking user when QWEN_*_SERVICE_USER names
 # that user, and QWEN_*_LAUNCH_COMMAND replaces the real server invocation.
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-searxng_control=$script_directory/searxng-control.sh
 yacy_control=$script_directory/yacy-control.sh
 
 if ! command -v python3 >/dev/null 2>&1; then
@@ -18,10 +17,6 @@ fi
 
 work_directory=$(mktemp -d)
 cleanup() {
-    QWEN_SEARXNG_SERVICE_USER=$(id -un) \
-        QWEN_SEARXNG_RUN_DIRECTORY="$work_directory/searxng-run" \
-        QWEN_SEARXNG_PORT=$searxng_port \
-        "$searxng_control" stop >/dev/null 2>&1 || true
     QWEN_YACY_INSTALL_DIRECTORY="$work_directory/yacy" \
         QWEN_YACY_PID_FILE="$work_directory/yacy/yacy.pid" \
         QWEN_YACY_LOG_FILE="$work_directory/yacy/yacy.log" \
@@ -40,21 +35,9 @@ print(s.getsockname()[1])
 s.close()
 '
 }
-searxng_port=$(free_port)
 yacy_port=$(free_port)
 
-mkdir -p "$work_directory/searxng-run" "$work_directory/yacy"
-
-run_searxng_control() {
-    QWEN_SEARXNG_SERVICE_USER=$(id -un) \
-        QWEN_SEARXNG_RUN_DIRECTORY="$work_directory/searxng-run" \
-        QWEN_SEARXNG_PORT=$searxng_port \
-        QWEN_SEARXNG_BIND_ADDRESS=127.0.0.1 \
-        QWEN_SEARXNG_LAUNCH_COMMAND="python3 -m http.server $searxng_port --bind 127.0.0.1 --directory $work_directory" \
-        QWEN_SEARXNG_START_TIMEOUT=10 \
-        QWEN_SEARXNG_STOP_TIMEOUT=10 \
-        "$searxng_control" "$@"
-}
+mkdir -p "$work_directory/yacy"
 
 # No real stopYACY.sh exists against a fake listener, so
 # QWEN_YACY_STOP_COMMAND is the direct signal yacy-control.sh's own
@@ -117,7 +100,5 @@ check_control_lifecycle() {
     printf '%s: lifecycle checks passed\n' "$label"
 }
 
-check_control_lifecycle searxng-control run_searxng_control \
-    "$work_directory/searxng-run/server.pid" "$searxng_port"
 check_control_lifecycle yacy-control run_yacy_control \
     "$work_directory/yacy/yacy.pid" "$yacy_port"

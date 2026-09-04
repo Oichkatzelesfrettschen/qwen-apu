@@ -24,6 +24,7 @@ model_directory=$temporary_directory/models/matched
 state_directory=$temporary_directory/state
 mkdir -p "$fixture_remote" "$fixture_bin" "$model_directory" "$state_directory"
 cp "$script_directory/qwen-launch.sh" "$fixture_remote/qwen-launch.sh"
+cp "$script_directory/qwen-home.sh" "$fixture_remote/qwen-home.sh"
 cp "$script_directory/resolve-active-deployment.sh" \
     "$fixture_remote/resolve-active-deployment.sh"
 cp "$script_directory/open-verified-lock-descriptor.py" \

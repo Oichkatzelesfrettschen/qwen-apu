@@ -15,7 +15,9 @@ ssh_target=$1
 output_directory=$2
 decode_tokens=${3:-128}
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-remote_root=${QWEN_REMOTE_ROOT:-'$HOME/qwen-laptop-setup'}
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
+remote_root=${QWEN_REMOTE_ROOT:-'$qwen_tree_root'}
 base_url=${QWEN_BASE_URL:-http://qwen-laptop:8080}
 
 mkdir -p "$output_directory"

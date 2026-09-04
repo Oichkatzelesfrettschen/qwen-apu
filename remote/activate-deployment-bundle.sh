@@ -35,8 +35,10 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
 fi
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 selector=$1
-deployment_root=${2:-"${HOME:?}/qwen-deployments"}
+deployment_root=${2:-"$qwen_home_deployments"}
 state_link=$deployment_root/deployment-state
 previous_link=$deployment_root/deployment-previous
 

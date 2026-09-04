@@ -1,11 +1,14 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 renice -n 19 -p $$ >/dev/null
 taskset -pc 0 $$ >/dev/null
 ionice -c 3 -p $$
 
-evidence_directory=${1:-"${HOME:?}/qwen-apu/evidence"}
+evidence_directory=${1:-"$qwen_tree_root/evidence"}
 kernel_log=$evidence_directory/kernel-post-runtime.log
 hazard_log=$evidence_directory/kernel-post-runtime-hazards.log
 temporary_directory=$(mktemp -d)

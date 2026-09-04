@@ -49,9 +49,11 @@ deployment_root=$1
 output_tsv=$2
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 runtime_tree_root=${QWEN_RECEIPT_RUNTIME_TREE_ROOT:-$(CDPATH='' cd -- "$script_directory/.." && pwd)}
 model_registry=${QWEN_RECEIPT_MODEL_REGISTRY:-"$script_directory/models.tsv"}
-state_directory=${QWEN_RECEIPT_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
+state_directory=${QWEN_RECEIPT_STATE_DIRECTORY:-"$qwen_home_state"}
 
 for required_tool in sha256sum awk sed; do
     if ! command -v "$required_tool" >/dev/null 2>&1; then

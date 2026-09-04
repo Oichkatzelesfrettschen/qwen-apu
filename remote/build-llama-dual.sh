@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 # Configure llama.cpp with the Vulkan and HIP backends in one build tree.
 #
@@ -30,11 +33,11 @@ usage() {
 
 [ "$#" -le 1 ] || usage
 
-source_directory=${1:-"${HOME:?}/src/llama.cpp-qwen-apu"}
+source_directory=${1:-"$qwen_home_llama_source"}
 hip_target=${QWEN_HIP_TARGET:-gfx900}
 force_mmq=${QWEN_FORCE_MMQ:-OFF}
 build_jobs=${QWEN_BUILD_JOBS:-$(nproc 2>/dev/null || echo 1)}
-rocm_path=${ROCM_PATH:-"${HOME:?}/.venvs/rocm-gfx900/lib/python3.12/site-packages/_rocm_sdk_devel"}
+rocm_path=${ROCM_PATH:-"$qwen_home_rocm"}
 expected_commit=f280b26983ad0fdb705a0d9ebf0503e76f2899b0
 
 # The tree name carries the target and the kernel policy, so the arms of a

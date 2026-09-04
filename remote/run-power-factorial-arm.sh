@@ -57,10 +57,12 @@ campaign_directory=$1
 arm_name=$2
 model_id=$3
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 power_envelope_arm=${QWEN_POWER_ENVELOPE_ARM:-$script_directory/run-power-envelope-arm.sh}
 registry_reader=$script_directory/model-registry.sh
-models_directory=${QWEN_MODELS_DIRECTORY:-"${HOME:?}/models"}
-llama_bench=${QWEN_LLAMA_BENCH:-"${HOME:?}/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-bench"}
+models_directory=${QWEN_MODELS_DIRECTORY:-"$qwen_home_models"}
+llama_bench=${QWEN_LLAMA_BENCH:-"$qwen_home_llama_bench"}
 bench_generate=${QWEN_BENCH_GENERATE:-64}
 cpupower_command=${QWEN_CPUPOWER:-cpupower}
 cpu_list=${QWEN_POWER_FACTORIAL_CPU_LIST:-0 1}

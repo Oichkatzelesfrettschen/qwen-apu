@@ -4,15 +4,15 @@ set -eu
 # Run one SearXNG instance as the serving user, inside the state directory a
 # launch owns.
 #
-# The installed tree at /usr/local/searxng belongs to the searxng account:
-# /etc/searxng/settings.yml is root-owned and unreadable here, and the engine
-# caches the instance writes as /tmp/sxng_cache_*.db belong to that account
-# too. Both are supplied from the state directory instead, so the serving user
-# runs the same source tree under its own configuration and its own TMPDIR.
-# remote/searxng-control.sh administers the service-account instance; this
-# script owns one whose lifetime is a launch's. QWEN_SEARXNG_ROOT defaults to
-# /opt/searxng-qwen-apu, the tree remote/install-searxng.sh names when the
-# service account cannot traverse a caller's home directory.
+# The instance runs from the runtime root: `make install-searxng` clones the
+# pinned upstream commit into opt/searxng/src under QWEN_HOME and builds
+# opt/searxng/venv beside it as the serving user, so the source tree, the
+# interpreter, the rendered settings, and the engine caches all belong to the
+# user that launches the appliance and no system directory or service account
+# takes part. QWEN_SEARXNG_ROOT, QWEN_SEARXNG_SOURCE, and QWEN_SEARXNG_PYTHON
+# move each of the three independently; an absent component refuses here,
+# ahead of the health gate, naming the path expected and the make target that
+# creates it.
 #
 # `serve` renders the settings and replaces itself with the instance, so the
 # process the caller backgrounds is the instance itself and its PID stays the
@@ -35,16 +35,18 @@ set -eu
 # not name.
 
 if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
-    printf 'usage: %s serve|start|stop|status [STATE_DIRECTORY]\n' "$0" >&2
+    printf 'usage: %s serve|start|stop|status|check [STATE_DIRECTORY]\n' "$0" >&2
     exit 2
 fi
 action=$1
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-state_directory=${2:-${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}}
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
+state_directory=${2:-${QWEN_WEBUI_STATE_DIRECTORY:-"$qwen_home_state"}}
 
-instance_root=${QWEN_SEARXNG_ROOT:-/opt/searxng-qwen-apu}
-source_directory=${QWEN_SEARXNG_SOURCE:-$instance_root/searxng-src}
-instance_python=${QWEN_SEARXNG_PYTHON:-$instance_root/searx-pyenv/bin/python}
+instance_root=${QWEN_SEARXNG_ROOT:-"$qwen_home_searxng_root"}
+source_directory=${QWEN_SEARXNG_SOURCE:-$instance_root/src}
+instance_python=${QWEN_SEARXNG_PYTHON:-$instance_root/venv/bin/python}
 instance_module=${QWEN_SEARXNG_MODULE:-searx.webapp}
 settings_template=${QWEN_SEARXNG_SETTINGS_TEMPLATE:-"$script_directory/searxng/settings.template.yml"}
 expected_port=${QWEN_SEARXNG_PORT:-8888}
@@ -231,19 +233,30 @@ PY
     fi
 }
 
+# The instance is a runtime component, and its absence is reported as one:
+# the block names what was expected where and the make target that creates
+# it, so a launcher reading it ahead of the health gate refuses with the
+# repair rather than with a health endpoint that never answered.
+check_instance_components() {
+    [ -n "${QWEN_SEARXNG_LAUNCH_COMMAND:-}" ] && return 0
+    if [ ! -d "$source_directory" ] || [ ! -x "$instance_python" ]; then
+        printf 'runtime component absent:\n  component=searxng\n  expected_root=%s\n  expected_source=%s\n  expected_python=%s\n  repair=%s\n' \
+            "$instance_root" "$source_directory" "$instance_python" \
+            "'make install-searxng'" >&2
+        return 2
+    fi
+    return 0
+}
+
 case $action in
+    check)
+        check_instance_components
+        printf 'searxng_components=present root=%s\n' "$instance_root"
+        exit 0
+        ;;
     serve)
+        check_instance_components || exit 2
         if [ -z "${QWEN_SEARXNG_LAUNCH_COMMAND:-}" ]; then
-            if [ ! -d "$source_directory" ]; then
-                printf 'the SearXNG source tree is absent: %s\n' \
-                    "$source_directory" >&2
-                exit 2
-            fi
-            if [ ! -x "$instance_python" ]; then
-                printf 'the SearXNG interpreter is absent: %s\n' \
-                    "$instance_python" >&2
-                exit 2
-            fi
             cd "$source_directory"
         fi
         render_settings
@@ -363,7 +376,7 @@ case $action in
         ;;
 
     *)
-        printf 'usage: %s serve|start|stop|status [STATE_DIRECTORY]\n' "$0" >&2
+        printf 'usage: %s serve|start|stop|status|check [STATE_DIRECTORY]\n' "$0" >&2
         exit 2
         ;;
 esac

@@ -18,8 +18,10 @@ set -eu
 # lists it under what this script could not confirm rather than inventing one.
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
-install_directory=${1:-"${HOME:?}/opt/yacy"}
+install_directory=${1:-"$qwen_home_yacy"}
 
 # Read with `git ls-remote --tags --sort=-v:refname
 # https://github.com/yacy/yacy_search_server.git` on 2026-08-28: the highest

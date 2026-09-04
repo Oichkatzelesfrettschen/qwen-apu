@@ -24,8 +24,10 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
 fi
 
 preset=$1
-source_directory=${2:-"${HOME:?}/src/llama.cpp-qwen-apu"}
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
+source_directory=${2:-"$qwen_home_llama_source"}
 current_link=$source_directory/build-appliance-current
 previous_link=$source_directory/build-appliance-previous
 
@@ -222,8 +224,8 @@ EOF
 # Resolve every smoke input before either device workload begins. A promotion
 # with one absent input is already invalid, so the gate reports that deterministic
 # boundary without spending device time or masking it behind another smoke.
-promotion_model=${QWEN_PROMOTION_MODEL:-"${HOME:?}/models/Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf"}
-promotion_vision_model=${QWEN_PROMOTION_VISION_MODEL:-"${HOME:?}/models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf"}
+promotion_model=${QWEN_PROMOTION_MODEL:-"$qwen_home_models/Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf"}
+promotion_vision_model=${QWEN_PROMOTION_VISION_MODEL:-"$qwen_home_models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf"}
 promotion_image=${QWEN_PROMOTION_IMAGE:-$script_directory/quality-images/shapes.png}
 promotion_projector=''
 if [ -f "$promotion_vision_model" ]; then

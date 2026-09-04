@@ -9,9 +9,11 @@ fi
 ionice -c 3 -p $$
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 repository_directory=$(CDPATH='' cd -- "$script_directory/.." && pwd)
-base_source=${1:-"${HOME:?}/src/llama.cpp"}
-patched_source=${2:-"${HOME:?}/src/llama.cpp-qwen-apu"}
+base_source=${1:-"$qwen_home_llama_upstream"}
+patched_source=${2:-"$qwen_home_llama_source"}
 expected_commit=f280b26983ad0fdb705a0d9ebf0503e76f2899b0
 
 if [ ! -d "$base_source/.git" ]; then

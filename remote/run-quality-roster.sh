@@ -26,7 +26,9 @@ if [ "$#" -gt 1 ]; then
 fi
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-output_directory=${1:-"${HOME:?}/qwen-quality-roster"}
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
+output_directory=${1:-"$qwen_home_results/quality-roster"}
 endpoint=http://127.0.0.1:${QWEN_SERVER_PORT:-8080}
 suite_runner=$script_directory/run-quality-suite.py
 registry_script=$script_directory/model-registry.sh

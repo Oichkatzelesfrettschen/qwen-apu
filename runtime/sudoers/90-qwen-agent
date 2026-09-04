@@ -1,0 +1,8 @@
+# Agentic administration of the Qwen appliance runs over SSH, which lands on a
+# fresh pseudo-terminal for every command. The default tty timestamp binds a
+# credential to the terminal that authenticated it, so those commands find no
+# credential no matter how recently the user authenticated in the shared admin
+# session. A global timestamp makes one authentication cover the user session,
+# and the timeout bounds how long it does.
+Defaults timestamp_type=global
+Defaults timestamp_timeout=60

@@ -117,6 +117,8 @@ if [ "$#" -lt 1 ]; then
 fi
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 # shellcheck source=census-arm-lib.sh
 . "$script_directory/census-arm-lib.sh"
 
@@ -124,7 +126,7 @@ sysfs_root=${QWEN_SYSFS_ROOT:-/sys}
 drm_device=${QWEN_DRM_DEVICE:-$sysfs_root/class/drm/card1/device}
 hwmon_root=${QWEN_HWMON_ROOT:-$sysfs_root/class/hwmon}
 ksm_run_node=${QWEN_KSM_RUN_NODE:-$sysfs_root/kernel/mm/ksm/run}
-state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
+state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"$qwen_home_state"}
 workload_lease=${QWEN_VULKAN_WORKLOAD_LOCK:-$state_directory/vulkan-workload.lock}
 lease_verifier=${QWEN_EXTERNAL_LEASE_VERIFIER:-$script_directory/verify-external-vulkan-lease.py}
 power_envelope_command=${QWEN_POWER_ENVELOPE_COMMAND:-$script_directory/power-envelope.sh}

@@ -24,7 +24,7 @@ failures=0
 # ownership and source-revision recording remain production-identical.
 tool_directory=$work/tools
 mkdir -p "$tool_directory"
-cp -- "$script_directory/measure-draft-pair.sh" \
+cp -- "$script_directory/measure-draft-pair.sh" "$script_directory/qwen-home.sh" \
     "$script_directory/summarize-draft-pair.py" \
     "$script_directory/model-registry.sh" "$tool_directory/"
 chmod 0755 "$tool_directory/measure-draft-pair.sh" \
@@ -779,7 +779,7 @@ fi
 # mutation cannot replace the arithmetic that writes summary.txt.
 mutation_tool_directory=$work/mutation-tools
 mkdir -p "$mutation_tool_directory"
-cp -- "$script_directory/measure-draft-pair.sh" \
+cp -- "$script_directory/measure-draft-pair.sh" "$script_directory/qwen-home.sh" \
     "$script_directory/summarize-draft-pair.py" \
     "$script_directory/model-registry.sh" "$mutation_tool_directory/"
 chmod 0755 "$mutation_tool_directory/measure-draft-pair.sh" \
@@ -835,7 +835,7 @@ fi
 # retains that final decision separately.
 retained_mutation_tool_directory=$work/retained-mutation-tools
 mkdir -p "$retained_mutation_tool_directory"
-cp -- "$script_directory/measure-draft-pair.sh" \
+cp -- "$script_directory/measure-draft-pair.sh" "$script_directory/qwen-home.sh" \
     "$script_directory/summarize-draft-pair.py" \
     "$script_directory/model-registry.sh" "$retained_mutation_tool_directory/"
 chmod 0755 "$retained_mutation_tool_directory/measure-draft-pair.sh" \

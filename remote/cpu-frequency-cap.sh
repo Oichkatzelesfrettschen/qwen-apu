@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 # One reversible CPU-frequency term for the compute-state transaction.
 #
@@ -49,7 +52,7 @@ cpupower_command=${QWEN_CPUPOWER:-cpupower}
 sysfs_root=${QWEN_SYSFS_ROOT:-/sys}
 cpu_root=$sysfs_root/devices/system/cpu
 boost_node=${QWEN_CPU_BOOST_NODE:-$cpu_root/cpufreq/boost}
-state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
+state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"$qwen_home_state"}
 snapshot_file=${QWEN_CPU_FREQUENCY_CAP_SNAPSHOT:-$state_directory/cpu-frequency-cap-snapshot.tsv}
 cpu_list=${QWEN_CPU_FREQUENCY_CAP_CPU_LIST:-0 1}
 # A wrapping transaction (compute-state-lease.sh) names its own per-run

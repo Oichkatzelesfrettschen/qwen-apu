@@ -24,14 +24,16 @@ set -eu
 
 usage() {
     printf 'usage: %s [--source PATCHED_SOURCE] [--root REPOSITORY_ROOT] [--check]\n' "$0" >&2
-    printf 'PATCHED_SOURCE defaults to $HOME/src/llama.cpp-qwen-apu, the tree prepare-llama-vulkan-source.sh writes\n' >&2
+    printf 'PATCHED_SOURCE defaults to opt/llama.cpp under the runtime root (QWEN_HOME), the tree prepare-llama-vulkan-source.sh writes\n' >&2
     printf '%s\n' '--check prints the configuration without writing it' >&2
     exit 2
 }
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 repository_root=$(CDPATH='' cd -- "$script_directory/.." && pwd)
-patched_source=${HOME:?}/src/llama.cpp-qwen-apu
+patched_source=$qwen_home_llama_source
 check_only=0
 while [ "$#" -gt 0 ]; do
     case $1 in

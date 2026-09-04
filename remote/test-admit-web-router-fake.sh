@@ -29,6 +29,7 @@ printf 'header = "Authorization: Bearer %s"\n' "$retained_key" \
     >"$output_directory/keys/api-key.curl"
 cp "$script_directory/admit-web-router-fake.sh" \
     "$harness/admit-web-router-fake.sh"
+cp "$script_directory/qwen-home.sh" "$harness/qwen-home.sh"
 cp /usr/bin/sleep "$temporary_directory/llama-server"
 "$temporary_directory/llama-server" 300 &
 initial_server_pid=$!

@@ -11,9 +11,11 @@ taskset -pc 0 $$ >/dev/null
 ionice -c 3 -p $$
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 repository_directory=$(CDPATH='' cd -- "$script_directory/.." && pwd)
 binary_directory=${1:-"$repository_directory/artifacts/bin"}
-model_path=${2:-"${HOME:?}/models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf"}
+model_path=${2:-"$qwen_home_models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf"}
 
 verify_artifact() {
     artifact_path=$1

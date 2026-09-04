@@ -102,7 +102,7 @@ expect_refused(
     generate_request(protocol_version=True),
 )
 expect_refused(
-    "request_unknown_field", validate_request, generate_request(model_path="/etc/passwd")
+    "request_unknown_field", validate_request, generate_request(model_path="/etc/passwd")  # appliance-path: named
 )
 expect_refused("request_bad_action", validate_request, generate_request(action="render"))
 expect_refused(
@@ -257,7 +257,7 @@ expect_refused(
 expect_refused(
     "control_reply_unknown_observation",
     lambda message: validate_response(message, control_reply=True),
-    dict(control_reply, artifact_path="/home/user/out.png"),
+    dict(control_reply, artifact_path="/home/user/out.png"),  # appliance-path: named
 )
 
 expect_refused(
@@ -266,7 +266,7 @@ expect_refused(
 expect_refused(
     "response_unknown_field",
     validate_response,
-    completed_response(artifact_path="/home/user/out.png"),
+    completed_response(artifact_path="/home/user/out.png"),  # appliance-path: named
 )
 expect_refused(
     "completed_without_digest", validate_response, completed_response(sha256=None)

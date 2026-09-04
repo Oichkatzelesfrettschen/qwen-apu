@@ -41,8 +41,10 @@ fi
 output_directory=$1
 shift
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 registry_script=${QWEN_MODEL_REGISTRY_SCRIPT:-"$script_directory/model-registry.sh"}
-models_directory=${QWEN_MODELS_DIRECTORY:-"${HOME:?}/models"}
+models_directory=${QWEN_MODELS_DIRECTORY:-"$qwen_home_models"}
 server_relative_path=${QWEN_ALIAS_AB_SERVER_RELATIVE:-bin/llama-server}
 production_build_directory=${QWEN_PRODUCTION_BUILD_DIR:-}
 alias_build_directory=${QWEN_ALIAS_BUILD_DIR:-}

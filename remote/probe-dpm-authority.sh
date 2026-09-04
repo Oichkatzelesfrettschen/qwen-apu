@@ -56,6 +56,8 @@ fi
 output_directory=$1
 model_path=$2
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 # The decode arm runs under the closed environment census_arm_exec applies, so
 # an ambient GGML_VK_*, RADV_*, or LLAMA_* setting reaches no arm and each arm
 # keeps the record of what did. The lease descriptor survives it: `env -i`
@@ -63,7 +65,7 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # makes the exclusion span every arm.
 # shellcheck source=census-arm-lib.sh
 . "$script_directory/census-arm-lib.sh"
-bench=${3:-"${HOME:?}/src/llama.cpp-census-v7/build-raven2-vulkan-census/bin/llama-bench"}
+bench=${3:-"$qwen_home_llama_census_bench"}
 broker=${QWEN_TELEMETRY_BROKER:-"$script_directory/../build/telemetry-broker"}
 validator=${QWEN_CLOCK_VALIDATOR:-"$script_directory/validate-clock-sidecar.py"}
 drm_device=${QWEN_DRM_DEVICE:-/sys/class/drm/card1/device}
@@ -151,7 +153,7 @@ fi
 # the rate the receipt carries, so the shared lease is held from before the
 # first level write through the restore. The bench inherits the descriptor,
 # which is what makes the exclusion span every arm.
-workload_lease=${QWEN_VULKAN_WORKLOAD_LOCK:-"${HOME:?}/qwen-webui-state/vulkan-workload.lock"}
+workload_lease=${QWEN_VULKAN_WORKLOAD_LOCK:-"$qwen_home_state/vulkan-workload.lock"}
 if ! command -v flock >/dev/null 2>&1; then
     printf 'flock is required to hold the shared Vulkan lease\n' >&2
     exit 2

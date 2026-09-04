@@ -246,7 +246,7 @@ def validate(repository_root):
 
     staging_rows = [
         row for row in appliance_rows
-        if row["path"].startswith("$HOME/models/candidates/")
+        if row["path"].startswith("$HOME/models/candidates/")  # appliance-path: named
     ]
     return {
         "candidate_rows": len(ledger_rows),

@@ -21,17 +21,19 @@ set -eu
 # a symlink resolves content from outside the managed root, so a byte-identical
 # target would otherwise satisfy the digest while executing foreign bytes.
 #
-# usage: sync-runtime-tree.sh [DESTINATION]
-# DESTINATION defaults to eirikr@qwen-laptop:~/qwen-laptop-setup
+# usage: sync-runtime-tree.sh DESTINATION
+# DESTINATION is USER@HOST:PATH, the tree the appliance runs from; under the
+# runtime-root doctrine that is the appliance's own checkout, whose .runtime
+# sits beside the payload this sync writes.
 
-if [ "$#" -gt 1 ]; then
-    printf 'usage: %s [DESTINATION]\n' "$0" >&2
+if [ "$#" -ne 1 ]; then
+    printf 'usage: %s DESTINATION\n' "$0" >&2
     exit 2
 fi
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repository_directory=$(CDPATH='' cd -- "$script_directory/.." && pwd)
-destination=${1:-eirikr@qwen-laptop:~/qwen-laptop-setup}
+destination=$1
 
 symlink_population=$(cd "$repository_directory" && find remote patches -type l)
 if [ -n "$symlink_population" ]; then
@@ -180,7 +182,7 @@ destination_path=${destination#*:}
 # path relative to the remote home, which is where an unexpanded tilde points.
 # shellcheck disable=SC2088 # the literal two characters are matched, with no expansion intended
 case $destination_path in
-    '~/'*) destination_path=${destination_path#??} ;;
+    '~/'*) destination_path=${destination_path#??} ;;  # appliance-path: named
 esac
 ssh "$destination_host" \
     "sh '$destination_path/remote/check-runtime-tree.sh' '$destination_path'"

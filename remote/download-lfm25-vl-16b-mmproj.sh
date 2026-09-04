@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 # The vision encoder for the 1.6B, fetched into the language model's own
 # directory because remote/select-projector.sh searches there and a projector
@@ -16,7 +19,7 @@ if [ "$#" -gt 1 ]; then
     exit 2
 fi
 
-destination_directory=${1:-"${HOME:?}/models/LFM2.5-VL-1.6B-GGUF"}
+destination_directory=${1:-"$qwen_home_models/LFM2.5-VL-1.6B-GGUF"}
 artifact_name=mmproj-LFM2.5-VL-1.6b-Q8_0.gguf
 artifact_path=$destination_directory/$artifact_name
 partial_path=$artifact_path.part

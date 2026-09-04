@@ -11,8 +11,10 @@ if [ "$#" -gt 2 ]; then
 fi
 
 selected_variant=${1:-all}
-destination_directory=${2:-"${HOME:?}/models/Qwen3.8-27B-GGUF"}
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
+destination_directory=${2:-"$qwen_home_models/Qwen3.8-27B-GGUF"}
 manifest_path=$script_directory/../benchmarks/models/qwen38-27b-files.tsv
 source_revision=4ca720788d1e01f1bff70c033e0d0028fd02e502
 source_base=https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/$source_revision

@@ -24,7 +24,9 @@ if [ "$#" -gt 1 ]; then
 fi
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-prefix_root=${1:-${QWEN_SHADERC_PREFIX_ROOT:-"${HOME:?}/opt"}}
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
+prefix_root=${1:-${QWEN_SHADERC_PREFIX_ROOT:-"$qwen_home_shaderc_root"}}
 toolchain_ledger=${QWEN_SHADERC_LEDGER:-$script_directory/shaderc-toolchain.tsv}
 
 if [ ! -r "$toolchain_ledger" ]; then

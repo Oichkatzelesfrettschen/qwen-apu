@@ -227,7 +227,7 @@ if [ "$#" -ne 1 ]; then
     printf 'usage: %s OUTPUT_INI\n' "$0" >&2
     printf 'model registry comes from QWEN_MODEL_REGISTRY, default remote/models.tsv\n' >&2
     printf 'web profile ledger comes from QWEN_WEB_PROFILES, default remote/web-profiles.tsv\n' >&2
-    printf 'model root comes from QWEN_MODEL_ROOT, default $HOME/models\n' >&2
+    printf 'model root comes from QWEN_MODEL_ROOT, default models/ under the runtime root (QWEN_HOME)\n' >&2
     printf 'MCP server program path is required in QWEN_WEB_MCP_SERVER\n' >&2
     printf 'QWEN_WEB_PROVIDER exa (default) requires a search key file path in QWEN_WEB_SEARCH_KEY_FILE, emitted as QWEN_WEB_EXA_KEY_FILE\n' >&2
     printf 'QWEN_WEB_PROVIDER fake requires a fixture file path in QWEN_WEB_FAKE_FIXTURES, emitted unchanged, and reads no search key file\n' >&2
@@ -245,6 +245,8 @@ if [ "$#" -ne 1 ]; then
 fi
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 # The row rules and the MCP configuration writer live in one file, because
 # build-router-presets.sh emits the same sections into the merged preset and a
 # second copy would let the two generators disagree on what a ledger row means.
@@ -252,7 +254,7 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 . "$script_directory/web-preset-lib.sh"
 registry=${QWEN_MODEL_REGISTRY:-$script_directory/models.tsv}
 web_profiles=${QWEN_WEB_PROFILES:-$script_directory/web-profiles.tsv}
-model_root=${QWEN_MODEL_ROOT:-"${HOME:?}/models"}
+model_root=${QWEN_MODEL_ROOT:-"$qwen_home_models"}
 output_ini=$1
 allow_unvalidated_depth=${QWEN_WEB_ALLOW_UNVALIDATED_DEPTH:-0}
 case $allow_unvalidated_depth in
@@ -281,7 +283,7 @@ searxng_language=${QWEN_WEB_SEARXNG_LANGUAGE:-}
 searxng_safesearch=${QWEN_WEB_SEARXNG_SAFESEARCH:-}
 searxng_allow_remote=${QWEN_WEB_SEARXNG_ALLOW_REMOTE:-}
 token_key_file=${QWEN_WEB_TOKEN_KEY_FILE:-}
-web_state_directory=${QWEN_WEB_STATE_DIR:-"${HOME:?}/qwen-webui-state/web-mcp"}
+web_state_directory=${QWEN_WEB_STATE_DIR:-"$qwen_home_state/web-mcp"}
 # The checked-in profile ledger is the default provider authority. An explicit
 # environment value is an assertion that every row below must match, not a
 # second default that can drift from the file the generator consumes.
@@ -341,7 +343,7 @@ image_token_key_file=${QWEN_IMAGE_TOKEN_KEY_FILE:-}
 # QWEN_IMAGE_STATE_DIR or QWEN_IMAGE_SERVICE_SOCKET still overrides the
 # default; the runtime never reads either, so a value that diverges from the
 # launch's own derivation is caught at launch rather than served.
-image_state_directory=${QWEN_IMAGE_STATE_DIR:-"${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}/images"}
+image_state_directory=${QWEN_IMAGE_STATE_DIR:-"${QWEN_WEBUI_STATE_DIRECTORY:-"$qwen_home_state"}/images"}
 image_service_socket=${QWEN_IMAGE_SERVICE_SOCKET:-$image_state_directory/image-service.sock}
 # The MCP child states the served profile's geometry and ceilings in its own
 # tool schema, and it reads them from the parameter file image-service.py runs

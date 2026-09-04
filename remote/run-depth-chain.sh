@@ -15,12 +15,14 @@ set -eu
 # idle threshold for several consecutive samples.
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 if [ "$#" -lt 1 ]; then
     printf 'usage: %s MODEL_ID:REL_PATH [MODEL_ID:REL_PATH...]\n' "$0" >&2
-    printf 'REL_PATH resolves under $HOME unless it begins with /\n' >&2
+    printf 'REL_PATH resolves under the runtime root (QWEN_HOME) unless it begins with /\n' >&2
     printf 'each checkpoint runs %s/probe-depth-wedge.sh into\n' "$script_directory" >&2
-    printf 'OUTPUT_ROOT/MODEL_ID (default $HOME/qwen-depth-chain)\n' >&2
+    printf 'OUTPUT_ROOT/MODEL_ID (default results/depth-chain under the runtime root, QWEN_HOME)\n' >&2
     printf 'QWEN_DEPTH_CHAIN_OUTPUT_ROOT overrides OUTPUT_ROOT\n' >&2
     printf 'QWEN_DEPTH_CHAIN_PROBE overrides the probe-depth-wedge.sh path\n' >&2
     printf 'QWEN_DEPTH_CHAIN_IDLE_THRESHOLD_PERCENT overrides the busy\n' >&2
@@ -35,7 +37,7 @@ if [ "$#" -lt 1 ]; then
 fi
 
 probe=${QWEN_DEPTH_CHAIN_PROBE:-"$script_directory/probe-depth-wedge.sh"}
-output_root=${QWEN_DEPTH_CHAIN_OUTPUT_ROOT:-"${HOME:?}/qwen-depth-chain"}
+output_root=${QWEN_DEPTH_CHAIN_OUTPUT_ROOT:-"$qwen_home_results/depth-chain"}
 drm_device=${QWEN_DRM_DEVICE:-/sys/class/drm/card1/device}
 idle_threshold_percent=${QWEN_DEPTH_CHAIN_IDLE_THRESHOLD_PERCENT:-5}
 idle_samples_required=${QWEN_DEPTH_CHAIN_IDLE_SAMPLES:-3}
@@ -181,7 +183,7 @@ for entry in "$@"; do
     fi
     case $rel_path in
         /*) model_path=$rel_path ;;
-        *) model_path=${HOME:?}/$rel_path ;;
+        *) model_path=$qwen_home/$rel_path ;;
     esac
     if [ ! -f "$model_path" ]; then
         printf '%s: checkpoint %s model is absent: %s\n' \
@@ -196,7 +198,7 @@ for entry in "$@"; do
     rel_path=${entry#*:}
     case $rel_path in
         /*) model_path=$rel_path ;;
-        *) model_path=${HOME:?}/$rel_path ;;
+        *) model_path=$qwen_home/$rel_path ;;
     esac
     checkpoint_output=$output_root/$model_id
 

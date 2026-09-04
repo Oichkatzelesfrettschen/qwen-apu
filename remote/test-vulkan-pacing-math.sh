@@ -1,12 +1,15 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 if [ "$#" -gt 1 ]; then
     printf 'usage: %s [LLAMA_SOURCE]\n' "$0" >&2
     exit 2
 fi
 
-source_directory=${1:-"${HOME:?}/src/llama.cpp"}
+source_directory=${1:-"$qwen_home_llama_upstream"}
 header=$source_directory/ggml/src/ggml-vulkan/ggml-vulkan-pacing.h
 temporary_directory=$(mktemp -d)
 trap 'rm -rf "$temporary_directory"' EXIT HUP INT TERM

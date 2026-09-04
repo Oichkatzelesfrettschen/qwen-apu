@@ -1,5 +1,8 @@
 #!/bin/sh
 set -eu
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
 
 # Decode on this APU is bandwidth-bound, and the CPU and the iGPU do not reach
 # the same bandwidth. This sweep measures every placement of the same weights
@@ -9,15 +12,15 @@ set -eu
 # rather than the served rate, and the desktop cost of the winner is measured
 # separately through the latency probe.
 
-bench=${QWEN_LLAMA_BENCH:-"${HOME:?}/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-bench"}
-output=${1:-"${HOME:?}/qwen-model-comparison/placement-sweep.txt"}
+bench=${QWEN_LLAMA_BENCH:-"$qwen_home_llama_bench"}
+output=${1:-"$qwen_home_results/model-comparison/placement-sweep.txt"}
 prompt_tokens=${QWEN_BENCH_PROMPT:-512}
 generate_tokens=${QWEN_BENCH_GENERATE:-64}
 repetitions=${QWEN_BENCH_REPETITIONS:-2}
 
-base_model=${QWEN_BASE_MODEL:-"${HOME:?}/models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf"}
-distill_model=${QWEN_DISTILL_MODEL:-"${HOME:?}/models/Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf"}
-large_model=${QWEN_LARGE_MODEL:-"${HOME:?}/models/Qwen3.8-9B-Distill-GGUF/Qwen3.8-9B-Q4_K_M.gguf"}
+base_model=${QWEN_BASE_MODEL:-"$qwen_home_models/Qwen3.5-4B-GGUF/Qwen3.5-4B-Q4_K_M.gguf"}
+distill_model=${QWEN_DISTILL_MODEL:-"$qwen_home_models/Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf"}
+large_model=${QWEN_LARGE_MODEL:-"$qwen_home_models/Qwen3.8-9B-Distill-GGUF/Qwen3.8-9B-Q4_K_M.gguf"}
 
 if [ ! -x "$bench" ]; then
     printf 'llama-bench is not built at %s\n' "$bench" >&2

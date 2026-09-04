@@ -27,10 +27,12 @@ fi
 label=$1
 control_model=$2
 subject_model=$3
-output_directory=${4:-"${HOME:?}/qwen-representation-arm"}/$label
+output_directory=${4:-"$qwen_home_results/representation-arm"}/$label
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-bench=${QWEN_LLAMA_BENCH:-"${HOME:?}/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-bench"}
-cli=${QWEN_LLAMA_CLI:-"${HOME:?}/src/llama.cpp-qwen-apu/build-qwen-vulkan/bin/llama-cli"}
+# shellcheck source=remote/qwen-home.sh
+. "$script_directory/qwen-home.sh"
+bench=${QWEN_LLAMA_BENCH:-"$qwen_home_llama_bench"}
+cli=${QWEN_LLAMA_CLI:-"$qwen_home_llama_cli"}
 clock_sampler=${QWEN_CLOCK_SAMPLER:-$script_directory/sample-gpu-clocks.sh}
 census=${QWEN_TENSOR_CENSUS:-$script_directory/gguf-tensor-census.py}
 pair_check=${QWEN_REPRESENTATION_PAIR_CHECK:-$script_directory/verify-representation-pair.py}
@@ -80,7 +82,7 @@ trap 'stop_sampler' EXIT INT TERM
 # multi-token-prediction block the loader skips. File size counts that block, so
 # a ratio built from file sizes overstates what the device moves.
 streamed_bytes_of() {
-    census_output=$(GGUF_PY_PATH=${GGUF_PY_PATH:-"${HOME:?}/src/llama.cpp-qwen-apu/gguf-py"} \
+    census_output=$(GGUF_PY_PATH=${GGUF_PY_PATH:-"$qwen_home_gguf_py"} \
         "$census" --skip-hash "$1") || {
             printf 'tensor census failed: %s\n' "$1" >&2
             return 1
