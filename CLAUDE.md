@@ -345,9 +345,12 @@ refuses the launch rather than serving the persisted MCP configuration.
 decides emission: `refused` emits nothing under every setting, `validator-gated`
 emits a section carrying `LLAMA_ARG_MCP_SERVERS_CONFIG` only under
 `QWEN_WEB_AUTHORIZER_READY=1`, and `ui-mediated` emits a section naming no
-configuration because the UI performs the retrieval. Every checked-in row reads
-`refused`, so the generator against the shipped ledger emits nothing and says
-so. Every row still meets the registry join, the copied-field comparison, the
+configuration because the UI performs the retrieval. `web-open` is the one
+checked-in row carrying `validator-gated`, on the evidence of two retained live
+admissions, so the generator against the shipped ledger emits that section
+under `QWEN_WEB_AUTHORIZER_READY=1` and nothing without it; every other row
+reads `refused` and emits nothing under either setting. Every row still meets
+the registry join, the copied-field comparison, the
 tier rule, and the ceiling rule before that gate, so the ledger is validated
 whole and an edit to one row's `execution_policy` changes what emits rather
 than turning a previously successful ledger into an error. The `# qwen-web-presets: unvalidated-depth-override` marker forces the
@@ -539,6 +542,59 @@ source over one GET of the canonical URL its Result ID was signed over, and
 `PROVIDER_OPENER` ends a redirect at the response that requested it.
 `evidence/web-provider-contract.md` carries the flags, the profile columns, and
 what a run against a live instance still leaves unmeasured.
+
+The launch owns that instance. The installed tree at `/usr/local/searxng` is
+readable by the serving user and its configuration is not:
+`/etc/searxng/settings.yml` is root-owned and the engine caches under `/tmp`
+belong to the `searxng` account, so `remote/searxng-launch.sh` renders
+`remote/searxng/settings.template.yml` into the state directory at mode 0600
+with a fresh secret and runs `searx.webapp` under `SEARXNG_SETTINGS_PATH` and a
+`TMPDIR` of its own. The rendered file is the authority for the listener: the
+port and bind address are read back from it and required to equal the endpoint
+the launch serves. Six engines answer from this address -- bing, google, and
+wikipedia in `qwen-open`, joined by mdn, github, and stackoverflow in
+`qwen-broad` -- against duckduckgo, startpage, and qwant answering a CAPTCHA,
+brave rate-limiting, and mojeek and yep denying, at 66 to 78 MB of resident
+memory, 180 to 510 ms per query, and 18 to 20 results for `qwen-open` against
+37 for `qwen-broad`.
+`qwen-web-launch.sh` reads `searxng_url` from the launched profile's row,
+admits the loopback endpoint alone, requires the port free, and exports
+`QWEN_WEB_SEARXNG=1`; `qwen-webui-session.sh` then holds the instance as a
+guarded child beside the broker, records `searxng_pid=` on the `state=running`
+line and a `searxng_identity` line beside it, and proves `GET /healthz` and its
+own child's liveness together before `run-qwen-capacity-server.sh` runs, so a
+dead instance ends the launch ahead of the model load. The health gate lives
+there rather than in the launcher because the launcher ends in `exec` and the
+instance it starts exists one link later. `qwen-teardown.sh` compares the
+recorded start time with `/proc/PID/stat` before signalling, the rule it
+applies to the broker, and reports a surviving process or a listener on the
+recorded port as residue.
+
+`remote/admit-web-router-live.sh` is the live twin of the fake admission. It
+copies one `remote/web-profiles.tsv` row into a ledger under its own output
+directory with `execution_policy` alone moved to `validator-gated`, generates
+the preset under `QWEN_WEB_AUTHORIZER_READY=1`, launches through
+`qwen-web-launch.sh`, replays the page's requests with curl on the router port,
+drives the served page through `drive-fallback-page.py`, and retains per-query
+timing beside the instance's own resident memory and CPU ticks from `/proc`.
+The fake run stays the authority for the refusals, whose fixtures answer
+instantly; this run measures what only a live instance shows. A row moves to
+`validator-gated` by an operator edit after a run of this harness is retained
+under `evidence/`, and `web-open` is the one row that has made that move.
+`evidence/web-live/20260903T0724Z/` retains the first run, against
+`web-compact`: 29 rows, 24 passing, one grant, five results from bing in 1 s,
+one 12,347-character fetch by Result ID, and a page turn whose requests stay on
+the router and broker origins, at 66 MB of resident memory before the first
+query and 75 MB over five threads after it. Its two failures were the harness
+reading the search policy from the preset INI where the section names a
+configuration, and `check-runtime-tree.sh` comparing two `LC_ALL=C` lists under
+the invoking locale. `evidence/web-live/20260903T0810Z/` retains the `web-open`
+run under the repaired harness, where both of those pass: 25 of 29 rows pass,
+the search draws five results from bing and google in 1 s, and the one failure
+is a fetch of `https://www.vulkan.org/` that the provider's own 20 s deadline
+ended at HTTP 200 while the child's 30 s and the router's 3600 s were still
+waiting. Which origin the first Result ID names changes with the query, so a
+fetch arm that must pass whatever the network does belongs to the fake run.
 
 The integer dot product is advertised, functional, and unaccelerated, which
 decides how most of this tree's bytes execute. RADV reports
@@ -1315,6 +1371,10 @@ remote/run-one-token-admission.sh RECORD [OUT]  # load every candidate once
 remote/run-representation-arm.sh LABEL CONTROL SUBJECT
                                                 # one value format against another, ABBA
 remote/admit-web-router-fake.sh OUTPUT_DIR      # the web router against the fake provider
+remote/admit-web-router-live.sh OUTPUT_DIR [PROFILE_ID]
+                                                # the web router against the live SearXNG instance
+remote/searxng-launch.sh serve|start|stop|status [STATE_DIRECTORY]
+                                                # one instance as the serving user, loopback only
 remote/admit-image-router.sh OUTPUT_DIR         # one approved generation through the router
 remote/probe-depth-projector.sh [--runtime-mode standalone|router-child] MODEL_ID OUT
                                                 # filled depth, projector loaded
@@ -1512,6 +1572,7 @@ remote/test-measure-draft-pair.sh
 remote/test-probe-depth-projector.sh
 remote/test-web-presets.sh
 remote/test-qwen-web-launch.sh
+remote/test-web-search-live.sh
 remote/test-image-registry.sh
 remote/test-qwen-image-launch.sh
 remote/test-run-image-standalone.sh

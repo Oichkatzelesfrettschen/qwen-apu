@@ -454,6 +454,55 @@ if [ -n "${QWEN_WEB_PROVIDER:-}" ] && \
 fi
 QWEN_WEB_PROVIDER=$preset_provider
 export QWEN_WEB_PROFILE QWEN_WEB_PROVIDER
+
+# Provider searxng names one local instance, and this launch owns it. The
+# ledger row the preset was generated from carries the endpoint, so the URL is
+# read from the row rather than from an environment default, and the row is
+# required to name the loopback instance this chain starts: a remote endpoint
+# would put the appliance's searches on a host the launch neither started nor
+# tears down. The port has to be free here, because the session's readiness
+# gate reads a socket and a child process together and a foreign listener on
+# that port turns the launch into a refusal one link later, after the model has
+# begun loading.
+#
+# QWEN_WEB_SEARXNG travels to qwen-webui-session.sh through
+# qwen-webui-control.sh, which forwards it inside the tmux command string; the
+# session starts remote/searxng-launch.sh as a guarded child, proves GET
+# /healthz answers, and only then starts the capacity server, so a dead
+# instance ends the launch before any weight reaches the device.
+if [ "$preset_provider" = searxng ]; then
+    profile_searxng_url=$(awk -F'\t' -v profile="$QWEN_WEB_PROFILE" \
+        '$1 == profile { print $17; exit }' "$QWEN_WEB_PROFILES")
+    case $profile_searxng_url in
+        http://127.0.0.1:[0-9]*)
+            searxng_port=${profile_searxng_url#http://127.0.0.1:}
+            ;;
+        *)
+            searxng_port=''
+            ;;
+    esac
+    case $searxng_port in
+        '' | *[!0-9]*)
+            printf 'profile %s names searxng_url %s, and this launch starts the loopback instance alone\n' \
+                "$QWEN_WEB_PROFILE" "${profile_searxng_url:-<absent>}" >&2
+            printf 'set searxng_url to http://127.0.0.1:PORT in %s\n' \
+                "$QWEN_WEB_PROFILES" >&2
+            exit 2
+            ;;
+    esac
+    if command -v ss >/dev/null 2>&1 && \
+       ss -ltn "sport = :$searxng_port" 2>/dev/null | grep -q ":$searxng_port"; then
+        printf 'port %s already carries a listener, and this launch starts its own search instance there\n' \
+            "$searxng_port" >&2
+        printf 'stop it with remote/searxng-launch.sh stop, or remote/qwen-teardown.sh\n' >&2
+        exit 2
+    fi
+    QWEN_WEB_SEARXNG=1
+    QWEN_SEARXNG_PORT=$searxng_port
+    export QWEN_WEB_SEARXNG QWEN_SEARXNG_PORT
+    printf 'web_launch searxng=owned url=%s port=%s\n' \
+        "$profile_searxng_url" "$searxng_port"
+fi
 printf 'web_launch broker_port=%s broker_state_dir=%s signing_key=configured profile=%s provider=%s review_section=%s models_max=%s\n' \
     "$QWEN_WEB_BROKER_PORT" "$QWEN_WEB_STATE_DIR" "$QWEN_WEB_PROFILE" \
     "$QWEN_WEB_PROVIDER" "${review_section:--}" "$expected_section_count"

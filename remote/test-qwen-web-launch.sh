@@ -88,6 +88,8 @@ set -eu
     printf 'QWEN_WEB_PROFILE=%s\n' "${QWEN_WEB_PROFILE:-unset}"
     printf 'QWEN_WEB_PROVIDER=%s\n' "${QWEN_WEB_PROVIDER:-unset}"
     printf 'QWEN_WEB_PROFILES=%s\n' "${QWEN_WEB_PROFILES:-unset}"
+    printf 'QWEN_WEB_SEARXNG=%s\n' "${QWEN_WEB_SEARXNG:-unset}"
+    printf 'QWEN_SEARXNG_PORT=%s\n' "${QWEN_SEARXNG_PORT:-unset}"
     printf 'QWEN_STATIC_PATH=%s\n' "${QWEN_STATIC_PATH:-unset}"
     printf 'QWEN_REQUIRE_API_KEY=%s\n' "${QWEN_REQUIRE_API_KEY:-unset}"
 } >"$QWEN_WEB_LAUNCH_RECORD"
@@ -1414,6 +1416,90 @@ elif grep -q 'web profile ledger identity changed:' \
 else
     report wrapper_refuses_changed_ledger_identity missing_message
 fi
+
+# Provider searxng makes the launch the owner of one local instance. The
+# endpoint comes off the profile row, and the wrapper admits the loopback
+# instance this chain starts: a remote endpoint names a service the launch
+# neither starts nor tears down, and a busy port names one it cannot own.
+write_searxng_web_profiles() {
+    printf '# profile_id\tmodel_id\tweb_mode\tcontext\tvalidated_filled_depth\tmax_results\tmax_fetches\tmax_chars_per_fetch\tmulti_source\tvision_allowed\ttool_selection\texecution_policy\tprovider\tprimary_category\tfallback_category\tminimum_results\tsearxng_url\n' \
+        >"$2"
+    printf 'web-fixture\tfixture-production\tvalidator-gated\t8192\t16384\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\tsearxng\tqwen-open\tqwen-broad\t3\t%s\n' \
+        "$1" >>"$2"
+}
+
+searxng_arm() {
+    arm_name=$1
+    arm_url=$2
+    arm_expectation=$3
+    arm_message=${4:-}
+    arm_profiles=$work/web-profiles-$arm_name.tsv
+    arm_presets=$state_directory/web-presets-$arm_name.ini
+    write_searxng_web_profiles "$arm_url" "$arm_profiles"
+    arm_original_profiles=$web_profiles
+    web_profiles=$arm_profiles
+    write_web_preset "$arm_presets" unmarked searxng
+    web_profiles=$arm_original_profiles
+    if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+        QWEN_WEB_PRESETS=$arm_presets QWEN_WEB_LAUNCH_RECORD=$record \
+        env -u QWEN_BIND_HOST -u QWEN_WEB_PROFILES "$launcher" \
+        >"$work/$arm_name.log" 2>"$work/$arm_name.err"; then
+        if [ "$arm_expectation" = accepted ]; then
+            arm_outcome=ok
+            grep -qx 'QWEN_WEB_SEARXNG=1' "$record" || arm_outcome=marker_unset
+            grep -qx "QWEN_SEARXNG_PORT=${arm_url##*:}" "$record" ||
+                arm_outcome=port_underived
+            grep -q 'searxng=owned' "$work/$arm_name.log" ||
+                arm_outcome=ownership_unreported
+            report "$arm_name" "$arm_outcome"
+        else
+            report "$arm_name" accepted
+        fi
+    elif [ "$arm_expectation" = refused ]; then
+        if grep -q "$arm_message" "$work/$arm_name.err"; then
+            report "$arm_name" ok
+        else
+            report "$arm_name" missing_message
+        fi
+    else
+        report "$arm_name" refused
+        cat "$work/$arm_name.err" >&2
+    fi
+}
+
+searxng_arm searxng_launch_owns_loopback_instance \
+    http://127.0.0.1:18888 accepted
+searxng_arm searxng_remote_endpoint_refused \
+    http://searx.example.org:8888 refused \
+    'this launch starts the loopback instance alone'
+
+# The session's readiness gate reads a socket and its own child together, so a
+# listener already on the port makes the launch a refusal here rather than a
+# failure after the model has begun loading.
+python3 -c '
+import socket
+import sys
+import time
+
+listener = socket.socket()
+listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+listener.bind(("127.0.0.1", 18889))
+listener.listen(1)
+sys.stdout.write("bound\n")
+sys.stdout.flush()
+time.sleep(30)
+' >"$work/busy-port.marker" 2>/dev/null &
+busy_port_pid=$!
+wait_for_path "$work/busy-port.marker"
+attempt=0
+while [ "$attempt" -lt 300 ] && ! grep -q bound "$work/busy-port.marker"; do
+    attempt=$((attempt + 1))
+    sleep 0.1
+done
+searxng_arm searxng_busy_port_refused \
+    http://127.0.0.1:18889 refused 'already carries a listener'
+kill "$busy_port_pid" 2>/dev/null || true
+wait "$busy_port_pid" 2>/dev/null || true
 
 if [ "$failures" -ne 0 ]; then
     printf 'test-qwen-web-launch: %d check(s) failed\n' "$failures" >&2

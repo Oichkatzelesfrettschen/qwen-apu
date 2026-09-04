@@ -221,6 +221,10 @@ gate_cell test-classify-checkpoint-semantics derive \
     remote/test-classify-checkpoint-semantics.sh
 gate_cell test-check-trace-source-status derive \
     remote/test-check-trace-source-status.sh remote/test-check-trace-source-status.sh
+gate_cell test-sync-runtime-tree derive remote/test-sync-runtime-tree.sh \
+    remote/test-sync-runtime-tree.sh
+gate_cell test-web-search-live derive remote/test-web-search-live.sh \
+    remote/test-web-search-live.sh
 gate_cell test-compute-state-lease derive remote/test-compute-state-lease.sh \
     remote/test-compute-state-lease.sh
 gate_cell test-run-prefill-ladder derive remote/test-run-prefill-ladder.sh \
