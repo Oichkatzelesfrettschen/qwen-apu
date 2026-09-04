@@ -242,7 +242,13 @@ stop_samplers() {
 trap 'stop_samplers' EXIT HUP INT TERM
 
 set +e
+# The registry and the artifact ledger travel with the arm because the served
+# runner derives the approved model identity from them: it hands llama-server a
+# descriptor path rather than a mutable pathname, and qwen-capacity-policy.sh
+# refuses a descriptor-backed model that carries no publisher identity.
 env \
+    QWEN_MODEL_REGISTRY="$script_directory/models.tsv" \
+    QWEN_MODEL_ARTIFACTS="$script_directory/model-artifacts.tsv" \
     QWEN_MODELS_DIRECTORY="$models_directory" \
     QWEN_STATE_DIRECTORY="$state_directory" \
     QWEN_RESULT_DIRECTORY="$arm_directory" \
