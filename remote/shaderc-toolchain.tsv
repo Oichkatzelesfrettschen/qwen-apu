@@ -24,4 +24,3 @@ revision	-
 archive_url	-
 archive_sha256	-
 prefix	shaderc-pinned
-minimum_glslc_version	2023.2
