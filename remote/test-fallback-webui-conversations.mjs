@@ -462,6 +462,9 @@ const fixture = {
 
 async function answerBoot(page) {
   await flushPromises();
+  const featureRoster = takeRequest(page.pendingRequests,
+    request => request.url === './roster.json', 'feature roster');
+  featureRoster.resolve(jsonResponse(null, 404));
   const roster = takeRequest(page.pendingRequests,
     request => request.url === './v1/models', 'model roster');
   roster.resolve(jsonResponse({ data: [{ id: 'image-capable' }] }));

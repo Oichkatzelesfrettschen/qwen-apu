@@ -137,6 +137,18 @@
   section.notice p, section.notice ul { max-width:44rem; }
   section.notice code { background:var(--mine); border-radius:.25rem; padding:.05rem .3rem; }
   .hint { color:var(--dim); font-size:13px; }
+  details.roster { border-bottom:1px solid var(--line); padding:.4rem 1rem; font-size:12px; }
+  details.roster summary { cursor:pointer; color:var(--dim); }
+  details.roster table { border-collapse:collapse; margin-top:.5rem; }
+  details.roster th, details.roster td { border:1px solid var(--line); padding:.2rem .45rem;
+             text-align:left; vertical-align:top; }
+  details.roster th { color:var(--dim); font-weight:normal; }
+  details.roster td.production { color:var(--ok); }
+  details.roster td.candidate { color:var(--warn); }
+  details.roster td.experimental { color:var(--warn); }
+  details.roster td.unstable { color:var(--bad); }
+  details.roster .evidence { display:block; color:var(--dim); font-size:11px;
+             overflow-wrap:anywhere; }
 </style>
 </head>
 
@@ -146,6 +158,7 @@
   <b>qwen-apu</b>
   <span id="model">connecting</span>
   <select class="model-picker" id="model-picker" aria-label="Model" hidden></select>
+  <span class="tier-badge" id="model-tier" hidden></span>
   <span id="ctx">context pending</span>
   <span>Raven2 UMA | LOW-priority Vulkan | service-latency guarded</span>
   <input class="key" type="password" id="api-key" placeholder="API key" autocomplete="off" hidden>
@@ -194,6 +207,19 @@
     <div id="conversation-list"></div>
   </aside>
   <div id="chat-column">
+    <!--
+      The support matrix reports what remote/feature-claims.tsv claims for the
+      ids GET /v1/models returned, so a reader sees the tier and the
+      per-feature status of the row the picker is about to route to. The page
+      serves from the --path directory that holds it, and evidence/ is a
+      repository surface, so a cell names its evidence path for a reader to
+      open in the tree.
+    -->
+    <details class="roster" id="roster-matrix" hidden>
+      <summary id="roster-summary">feature support</summary>
+      <div id="roster-matrix-body"></div>
+    </details>
+
     <div id="log"></div>
 
 <!--
@@ -491,6 +517,9 @@ async function refreshAttachmentTokens(selectedModel, generation) {
    roster leaves both surfaces off and the picker routing. */
 let featureRoster = null;
 
+const ROSTER_STATUS_ORDER = ['production', 'candidate', 'experimental', 'unstable',
+  'unsupported', 'unclaimed'];
+
 async function loadFeatureRoster() {
   try {
     const response = await fetch('./roster.json', { headers: authHeaders() });
@@ -547,11 +576,100 @@ async function appendModelBadge(whoElement, servedModel) {
   badge.textContent = tier;
   whoElement.append(badge);
 }
+
+/* The tags the generator computed: the registry tier, `vision` where a vision
+   claim rests on a run, and `experimental` where some claim still names the run
+   that would move it. */
+function rosterTags(modelId) {
+  const row = rosterModelRow(modelId);
+  if (!row || !Array.isArray(row.tags)) return [];
+  return row.tags.filter(tag => typeof tag === 'string' && tag.length > 0);
+}
+
+function rosterOptionLabel(baseLabel, modelId) {
+  const tags = rosterTags(modelId);
+  return tags.length ? `${baseLabel} [${tags.join(' ')}]` : baseLabel;
+}
+
+function renderTierBadge(modelId) {
+  const badge = $('#model-tier');
+  const row = rosterModelRow(modelId);
+  const tier = row && typeof row.tier === 'string' ? row.tier : '';
+  badge.className = `tier-badge ${tier}`;
+  badge.textContent = tier;
+  badge.hidden = !tier;
+}
+
+/* One row per served id, one column per model-scope feature the roster
+   declares. A feature the roster carries for another scope -- a draft pair, a
+   web profile, an image profile -- names a subject that is no routable model
+   id, so it stays out of a matrix keyed by one. */
+function renderSupportMatrix(modelIds) {
+  const container = $('#roster-matrix-body');
+  const panel = $('#roster-matrix');
+  container.textContent = '';
+  const modelFeatures = featureRoster
+    ? featureRoster.features
+      .filter(entry => entry && entry.scope === 'model' &&
+        typeof entry.feature === 'string')
+      .map(entry => entry.feature)
+    : [];
+  const rows = modelIds.filter(modelId => rosterModelRow(modelId));
+  if (!rows.length || !modelFeatures.length) {
+    panel.hidden = true;
+    return;
+  }
+
+  const table = document.createElement('table');
+  const head = document.createElement('tr');
+  const corner = document.createElement('th');
+  corner.textContent = 'model';
+  head.append(corner);
+  for (const feature of modelFeatures) {
+    const heading = document.createElement('th');
+    heading.textContent = feature;
+    head.append(heading);
+  }
+  table.append(head);
+
+  for (const modelId of rows) {
+    const row = rosterModelRow(modelId);
+    const claims = Array.isArray(row.features) ? row.features : [];
+    const line = document.createElement('tr');
+    const name = document.createElement('th');
+    name.textContent = `${modelId} (${row.tier ?? 'unknown'})`;
+    line.append(name);
+    for (const feature of modelFeatures) {
+      const claim = claims.find(entry => entry && entry.feature === feature);
+      const status = claim && ROSTER_STATUS_ORDER.includes(claim.status)
+        ? claim.status : 'unclaimed';
+      const cell = document.createElement('td');
+      cell.className = status;
+      cell.append(status);
+      if (claim && typeof claim.evidence === 'string' && claim.evidence !== '-') {
+        const evidence = document.createElement('span');
+        evidence.className = 'evidence';
+        evidence.textContent = claim.evidence;
+        cell.append(evidence);
+      }
+      if (claim && typeof claim.note === 'string' && claim.note !== '-') {
+        cell.title = claim.note;
+      }
+      line.append(cell);
+    }
+    table.append(line);
+  }
+  container.append(table);
+  $('#roster-summary').textContent =
+    `feature support for ${rows.length} of ${modelIds.length} routable model${modelIds.length === 1 ? '' : 's'}`;
+  panel.hidden = false;
+}
 // ==== end feature roster ====================================================
 
 function selectRequestModel(selectedModel, persist = true) {
   const generation = ++modelStateGeneration;
   requestModel = selectedModel;
+  renderTierBadge(selectedModel);
   nctx = null;
   nctxModel = null;
   forgetWebTools();
@@ -2210,10 +2328,16 @@ async function boot() {
     attachment.tokenModel = null;
   });
   modelPicker.hidden = true;
+  $('#model-tier').hidden = true;
+  $('#roster-matrix').hidden = true;
   $('#ctx').textContent = 'context pending';
   renderAttached();
 
   try {
+    // The roster is a static file beside this page and the model list is a
+    // router route, so both requests are in flight together and the roster
+    // never delays the authority that decides what the picker may route to.
+    const featureRosterRequest = loadFeatureRoster();
     // The first request carries no Authorization header regardless of what
     // this browser remembers, so the response discovers the requirement
     // rather than assuming it: a 200 proves the backend open (a stale bearer
@@ -2274,6 +2398,9 @@ async function boot() {
     // route by model section, and a review row's section carries no MCP
     // configuration. `toolOffering` probes every row once so both the default
     // and each option's own label read the same evidence.
+    featureRoster = await featureRosterRequest;
+    if (generation !== modelStateGeneration) return;
+
     const toolOffering = {};
     if (modelIds.length > 1) {
       for (const modelId of modelIds) {
@@ -2292,12 +2419,15 @@ async function boot() {
     for (const modelId of modelIds) {
       const option = document.createElement('option');
       option.value = modelId;
-      option.textContent = toolOffering[modelId] === false ? `${modelId} (review)` : modelId;
+      const routingLabel =
+        toolOffering[modelId] === false ? `${modelId} (review)` : modelId;
+      option.textContent = rosterOptionLabel(routingLabel, modelId);
       option.dataset.toolOffering = String(toolOffering[modelId]);
       modelPicker.append(option);
     }
     modelPicker.value = selectedModel;
     modelPicker.hidden = false;
+    renderSupportMatrix(modelIds);
     $('#model').textContent = `${modelIds.length} model${modelIds.length === 1 ? '' : 's'} available`;
 
     selectRequestModel(selectedModel, selectionProven);
@@ -2305,6 +2435,8 @@ async function boot() {
     if (generation !== modelStateGeneration) return;
     requestModel = null;
     modelPicker.hidden = true;
+    $('#model-tier').hidden = true;
+    $('#roster-matrix').hidden = true;
     $('#model').textContent = `cannot load model roster: ${error.message || error}`;
   }
 }

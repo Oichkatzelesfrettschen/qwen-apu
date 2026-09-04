@@ -1,0 +1,23 @@
+sidecar_exit=accepted status=0
+record_readable=accepted path=$HOME/raven2-served-ab-e4-20260902T2222Z/arms/04-C/clock-sidecar.tsv
+clock=accepted clock=CLOCK_MONOTONIC
+period_declared=accepted declared=20000000 requested=20000000
+sampler_identity=accepted pid=1712447 nice=19 cpu_affinity=0,1
+columns=accepted columns=monotonic_ns	pp_dpm_sclk_selected_mhz	pp_dpm_mclk_surface_mhz	pp_dpm_fclk_surface_mhz	gpu_busy_percent	temp1_millidegrees	sample_cost_ns	sclk_actual_mhz width=8
+footer_cardinality=accepted footers=1
+footer_fields=accepted present=achieved_period_ns,first_sample_ns,last_sample_ns,max_sample_cost_ns,mean_sample_cost_ns,samples,samples_with_unavailable_sensor
+samples=accepted samples=1214 rows=1214
+row_arity=accepted columns=8
+achieved_period=accepted achieved_ns=21602086 requested_ns=20000000 tolerance=0.25
+sample_cost=refused mean_ns=1214695 max_ns=284977402 bound_ns=1000000
+allowed_columns=accepted allowed=pp_dpm_fclk_surface_mhz
+sensor_rows=accepted rows_with_unavailable=1214 footer=1214
+sensors=accepted unavailable_outside_allowance=- allowed=pp_dpm_fclk_surface_mhz
+footer_instants=accepted first=404800756177071 last=404826959508523
+window_coverage=accepted first=404800756177071 begin=404816339230866 end=404825713499715 last=404826959508523
+gaps=accepted median_ns=20001913 p95_ns=29828969 p99_ns=72617950 max_ns=305047253 over_1_5x=60 over_missed=35 over_max=1
+window_lost=refused window_lost_fraction=0.0730 bound=0.0300 missed_bound_ns=40000000
+gaps_in_window=0 begin=404816339230866 end=404825713499715 bound_ns=250000000 window_lost_fraction=0.0730
+clock_state=measured window_samples=443 sclk_mode_mhz=1100 sclk_share=1.0000 mclk_mode_mhz=933 temp_mean_c=81.8 temp_max_c=83.0 busy_mean=80.59
+clock_invariant=held samples_at_required=443 samples_below_required=0 below_required_fraction=0.0000 sclk_source=sclk_actual_mhz required_sclk_mhz=1100 required_mclk_mhz=933 max_below_mclk_floor_fraction=0.0100 samples_at_mclk_floor=443 samples_below_mclk_floor=0 below_mclk_floor_fraction=0.0000
+clock_sidecar=refused failures=sample_cost,window_lost
