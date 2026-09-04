@@ -23,10 +23,10 @@ if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
 fi
 
 model_path=$1
-output_directory=${2:-"$qwen_home_results/kv-cache-factorial"}
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck source=remote/qwen-home.sh
 . "$script_directory/qwen-home.sh"
+output_directory=${2:-"$qwen_home_results/kv-cache-factorial"}
 bench=${QWEN_LLAMA_BENCH:-"$qwen_home_llama_bench"}
 depths=${QWEN_FACTORIAL_DEPTHS:-"0 4096 16384"}
 QWEN_CELL_SUFFIX=''

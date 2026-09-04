@@ -1945,7 +1945,7 @@ printf 'fake model bytes\n' >"$chain_home/first.gguf"
 printf 'fake model bytes\n' >"$chain_home/second.gguf"
 active_fixture=depth-chain-success
 diagnostic_file=$temporary_directory/chain-success.stderr
-HOME=$chain_home QWEN_DEPTH_CHAIN_PROBE=$chain_fake_probe \
+HOME=$chain_home QWEN_HOME=$chain_home QWEN_DEPTH_CHAIN_PROBE=$chain_fake_probe \
 QWEN_DEPTH_CHAIN_OUTPUT_ROOT=$chain_output_root \
 QWEN_DRM_DEVICE=$chain_drm_device QWEN_DEPTH_CHAIN_IDLE_INTERVAL_S=1 \
     "$script_directory/run-depth-chain.sh" "first:$chain_home/first.gguf" \
@@ -1981,7 +1981,7 @@ chmod +x "$chain_failed_probe"
 chain_failed_output_root=$temporary_directory/depth-chain-failed-control
 active_fixture=depth-chain-failed-control
 diagnostic_file=$temporary_directory/chain-failed.stderr
-if HOME=$chain_home QWEN_DEPTH_CHAIN_PROBE=$chain_failed_probe \
+if HOME=$chain_home QWEN_HOME=$chain_home QWEN_DEPTH_CHAIN_PROBE=$chain_failed_probe \
     QWEN_DEPTH_CHAIN_OUTPUT_ROOT=$chain_failed_output_root \
     QWEN_DRM_DEVICE=$chain_drm_device QWEN_DEPTH_CHAIN_IDLE_INTERVAL_S=1 \
     "$script_directory/run-depth-chain.sh" "first:$chain_home/first.gguf" \
@@ -1999,7 +1999,7 @@ grep -F 'the previous checkpoint left a failed recovery control' \
 : >"$temporary_directory/chain-probe-calls"
 active_fixture=depth-chain-preflight-all-checkpoints
 diagnostic_file=$temporary_directory/chain-preflight.stderr
-if HOME=$chain_home QWEN_DEPTH_CHAIN_PROBE=$chain_fake_probe \
+if HOME=$chain_home QWEN_HOME=$chain_home QWEN_DEPTH_CHAIN_PROBE=$chain_fake_probe \
     QWEN_DEPTH_CHAIN_OUTPUT_ROOT=$temporary_directory/depth-chain-preflight \
     QWEN_DRM_DEVICE=$chain_drm_device QWEN_DEPTH_CHAIN_IDLE_INTERVAL_S=1 \
     "$script_directory/run-depth-chain.sh" "first:$chain_home/first.gguf" \
@@ -2021,7 +2021,7 @@ grep -F 'checkpoint 2 is not MODEL_ID:REL_PATH' \
 : >"$temporary_directory/chain-probe-calls"
 active_fixture=depth-chain-busy-node-required
 diagnostic_file=$temporary_directory/chain-busy-unavailable.stderr
-if HOME=$chain_home QWEN_DEPTH_CHAIN_PROBE=$chain_fake_probe \
+if HOME=$chain_home QWEN_HOME=$chain_home QWEN_DEPTH_CHAIN_PROBE=$chain_fake_probe \
     QWEN_DEPTH_CHAIN_OUTPUT_ROOT=$temporary_directory/depth-chain-busy-unavailable \
     QWEN_DRM_DEVICE=$temporary_directory/missing-drm-device \
     QWEN_DEPTH_CHAIN_IDLE_INTERVAL_S=1 \

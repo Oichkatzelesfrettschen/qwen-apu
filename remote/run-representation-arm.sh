@@ -27,10 +27,10 @@ fi
 label=$1
 control_model=$2
 subject_model=$3
-output_directory=${4:-"$qwen_home_results/representation-arm"}/$label
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck source=remote/qwen-home.sh
 . "$script_directory/qwen-home.sh"
+output_directory=${4:-"$qwen_home_results/representation-arm"}/$label
 bench=${QWEN_LLAMA_BENCH:-"$qwen_home_llama_bench"}
 cli=${QWEN_LLAMA_CLI:-"$qwen_home_llama_cli"}
 clock_sampler=${QWEN_CLOCK_SAMPLER:-$script_directory/sample-gpu-clocks.sh}

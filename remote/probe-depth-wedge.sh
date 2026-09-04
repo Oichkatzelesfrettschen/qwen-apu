@@ -46,10 +46,10 @@ fi
 ledger_version=3
 
 model_path=$1
-output_directory=${2:-"$qwen_home_results/depth-wedge"}
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck source=remote/qwen-home.sh
 . "$script_directory/qwen-home.sh"
+output_directory=${2:-"$qwen_home_results/depth-wedge"}
 bench=${QWEN_LLAMA_BENCH:-"$qwen_home_llama_bench"}
 clock_sampler=${QWEN_CLOCK_SAMPLER:-"$script_directory/sample-gpu-clocks.sh"}
 depths=${QWEN_WEDGE_DEPTHS:-"8192 16384"}
