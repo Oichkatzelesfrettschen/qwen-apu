@@ -1,0 +1,25 @@
+layer	control	candidate	state
+spirv_sha256	b192014bad6e1f83e8cf0e3612a80edea065581d87591b41cdfe3053b83e5c60	488a7723bb928d26f68be49b4627621d314a541a645f485f6728c249101ec71c	changed
+nir_sha256	9e9a90adc503c0553370abd5a2e5dfa3bb01dda961d038961ccfaa0a7bbbff17	3d6310f20f6faa1a15a29e5464a218b82e41e24451158cf09282014bad8a2834	changed
+isa_sha256	b26bab68c7df513ebdffb0b388e85302b5dfcef21d88b36fe4fa06d4e0073e6d	f2522e0f2423ca3880233cff3ee791e99e80d6e4d060fffea9e850d6b6bf1005	changed
+
+declaration	control	candidate	state
+bindings	3	3	same
+push_constant_bytes	0	0	same
+spirv_capabilities	Shader	Shader,Float16	changed
+features_enabled	subgroupSizeControl,computeFullSubgroups	shaderFloat16,subgroupSizeControl,computeFullSubgroups	changed
+
+field	before	after	delta
+vgprs	36	36	+0
+sgprs	16	16	+0
+spilled_vgprs	0	0	+0
+spilled_sgprs	0	0	+0
+lds	512	512	+0
+scratch	0	0	+0
+code_size	880	960	+80
+waves_per_simd	-	-	-
+
+verdict	isa_changed
+first_divergence	spirv
+last_divergence	isa
+harness_alarm	-

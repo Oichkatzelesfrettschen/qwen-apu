@@ -43,9 +43,25 @@ pass() {
 # directory to image-service.py as --state-dir and to qwen-capacity-policy.sh as
 # QWEN_WEBUI_STATE_DIRECTORY, so the two sides agree exactly when the policy's
 # basename equals image-service.py's LEASE_FILE_NAME.
-policy_lock_expression=$(sed -n \
-    's/^export QWEN_VULKAN_WORKLOAD_LOCK="\$workload_lease_state_directory\/\(.*\)"$/\1/p' \
-    "$script_directory/qwen-capacity-policy.sh")
+#
+# The export names a shell variable rather than spelling the path, so the
+# basename is read through one level of indirection: the export's right-hand
+# side names the variable, that variable's own assignment carries the path, and
+# the text after its last slash is the basename both sides must share. Reading
+# the export line alone returned an empty basename against every revision after
+# the policy stopped inlining the directory there, which failed this check open.
+policy_lock_variable=$(sed -n \
+    's/^[[:space:]]*export QWEN_VULKAN_WORKLOAD_LOCK=\$\([A-Za-z_][A-Za-z0-9_]*\)$/\1/p' \
+    "$script_directory/qwen-capacity-policy.sh" | sed -n 1p)
+if [ -n "$policy_lock_variable" ]; then
+    policy_lock_expression=$(sed -n \
+        "s|^[[:space:]]*$policy_lock_variable=.*/\([^/\"]*\)\"\{0,1\}$|\1|p" \
+        "$script_directory/qwen-capacity-policy.sh" | sed -n 1p)
+else
+    policy_lock_expression=$(sed -n \
+        's/^[[:space:]]*export QWEN_VULKAN_WORKLOAD_LOCK="\$[A-Za-z_][A-Za-z0-9_]*\/\(.*\)"$/\1/p' \
+        "$script_directory/qwen-capacity-policy.sh" | sed -n 1p)
+fi
 service_lock_name=$(sed -n 's/^LEASE_FILE_NAME = "\(.*\)"$/\1/p' \
     "$script_directory/image-service.py")
 if [ -z "$policy_lock_expression" ]; then

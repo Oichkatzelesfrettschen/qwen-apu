@@ -1,0 +1,3 @@
+# The policy ledger for web-enabled router presets. One row per profile;
+# profile_id	model_id	web_mode	context	validated_filled_depth	max_results	max_fetches	max_chars_per_fetch	multi_source	vision_allowed	tool_selection	execution_policy	provider	primary_category	fallback_category	minimum_results	searxng_url
+web-open	qwen38-4b-distill	validator-gated	32768	32768	5	2	12000	yes	no	9/10	validator-gated	searxng	qwen-open	-	1	http://127.0.0.1:8888
