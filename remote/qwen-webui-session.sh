@@ -74,16 +74,39 @@ lan_exposure=${QWEN_WEB_LAN:-0}
 lan_address=${QWEN_WEB_LAN_ADDRESS:-}
 lan_name=${QWEN_WEB_LAN_NAME:-}
 lan_open=${QWEN_WEB_LAN_OPEN:-0}
+lan_open_all_interfaces=${QWEN_WEB_LAN_OPEN_ALL_INTERFACES:-0}
+lan_ifindex=${QWEN_WEB_LAN_IFINDEX:-}
+lan_ifname=${QWEN_WEB_LAN_IFNAME:-}
+lan_mac=${QWEN_WEB_LAN_MAC:-}
+lan_prefixlen=${QWEN_WEB_LAN_PREFIXLEN:-}
+lan_nm_uuid=${QWEN_WEB_LAN_NM_UUID:-}
+lan_nm_name=${QWEN_WEB_LAN_NM_NAME:-}
 if [ "$lan_exposure" = 1 ] && [ -n "$lan_address" ]; then
-    lan_listen_host=0.0.0.0
+    # remote/web-lan-exposure.sh has already resolved QWEN_BIND_HOST to the
+    # exposure literal or, under the explicit all-interfaces opt-in, the
+    # wildcard; the router, the broker, and the artifact listener share that
+    # one bind so a peer and this session's own probes reach all three
+    # through the same address.
+    lan_listen_host=${QWEN_BIND_HOST:-$lan_address}
     lan_page_host=$lan_address
 else
     lan_exposure=0
     lan_address=''
     lan_name=''
     lan_open=0
+    lan_open_all_interfaces=0
+    lan_ifindex=''
+    lan_ifname=''
+    lan_mac=''
+    lan_prefixlen=''
+    lan_nm_uuid=''
+    lan_nm_name=''
     lan_listen_host=127.0.0.1
     lan_page_host=127.0.0.1
+fi
+lan_boundary=lan-authenticated
+if [ "$lan_exposure" = 1 ] && [ "$lan_open" = 1 ]; then
+    lan_boundary=lan-open-approved
 fi
 # The host a browser loaded the page from is the Origin it sends, so a launch
 # advertising two hosts admits two origins. authorize-broker.py reads
@@ -141,6 +164,10 @@ fi
 lan_open_flag=''
 if [ "$lan_open" = 1 ]; then
     lan_open_flag=--open-lan
+fi
+lan_all_interfaces_flag=''
+if [ "$lan_open_all_interfaces" = 1 ]; then
+    lan_all_interfaces_flag=--open-all-interfaces
 fi
 # Compose the page URL for one admitted host. The companions are named as
 # query parameters over that same host, so a page loaded by name reaches the
@@ -421,6 +448,7 @@ if [ "$broker_enabled" = 1 ]; then
         ${lan_address:+--lan-exposure "$lan_address"} \
         ${lan_name:+--lan-name "$lan_name"} \
         ${lan_open_flag:+"$lan_open_flag"} \
+        ${lan_all_interfaces_flag:+"$lan_all_interfaces_flag"} \
         --state-dir "$broker_state_directory" \
         --profile "$QWEN_WEB_PROFILE" \
         --image-profile "${QWEN_IMAGE_PROFILE:-}" \
@@ -468,8 +496,16 @@ if [ "$broker_enabled" = 1 ]; then
     # behind it is this launch's broker, serving this profile and provider and
     # signing with this key. A stale broker on the same port from an earlier
     # launch answers the line's grep and fails the pid comparison here.
-    broker_health=$(curl -sS --max-time 5 -H 'Host: 127.0.0.1' \
-        "http://127.0.0.1:$broker_port/health" 2>>"$broker_log" || true)
+    # The wildcard bind answers everywhere, so the loopback is the shortest
+    # path to it; a single-address bind answers on that address alone, and
+    # the loopback default already is that address.
+    if [ "$lan_listen_host" = 0.0.0.0 ]; then
+        broker_probe_host=127.0.0.1
+    else
+        broker_probe_host=$lan_listen_host
+    fi
+    broker_health=$(curl -sS --max-time 5 -H "Host: $broker_probe_host" \
+        "http://$broker_probe_host:$broker_port/health" 2>>"$broker_log" || true)
     health_field() {
         printf '%s' "$broker_health" | tr -d '\n' |
             sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\{0,1\}\([^\",}]*\)\"\{0,1\}.*/\1/p"
@@ -543,6 +579,7 @@ if [ "$image_service_enabled" = 1 ]; then
         ${lan_address:+--lan-exposure "$lan_address"} \
         ${lan_name:+--lan-name "$lan_name"} \
         ${lan_open_flag:+"$lan_open_flag"} \
+        ${lan_all_interfaces_flag:+"$lan_all_interfaces_flag"} \
         >"$image_service_log" 2>&1 &
     image_service_pid=$!
     image_service_ready=0
@@ -858,7 +895,7 @@ fi
 # reader consults for what this launch serves, and the address on the network
 # is the one field a teardown, a status query, and an operator all read.
 # lan_exposure=0 records the loopback default.
-broker_status_field="$broker_status_field lan_exposure=$lan_exposure lan_address=${lan_address:--} lan_name=${lan_name:--} lan_open=$lan_open"
+broker_status_field="$broker_status_field lan_exposure=$lan_exposure lan_address=${lan_address:--} lan_name=${lan_name:--} lan_open=$lan_open lan_boundary=$lan_boundary"
 printf 'state=running server_pid=%s monitor_pid=%s latency_watchdog_pid=%s kernel_hazard_watchdog_pid=%s%s profile=%s host=%s port=%s context=%s latency_mode=%s utc=%s\n' \
     "$server_pid" "$monitor_pid" "$latency_watchdog_pid" \
     "$kernel_hazard_watchdog_pid" "$broker_status_field" "$vulkan_profile" \
@@ -934,12 +971,20 @@ if [ "$lan_exposure" = 1 ]; then
         lan_primary_host=$lan_name
         lan_primary_page_url=$(compose_lan_page_url "$lan_name")
     fi
-    printf 'lan_exposure address=%s name=%s open=%s router=%s:%s broker=%s:%s artifacts=%s page=%s page_address=%s\n' \
-        "$lan_page_host" "${lan_name:--}" "$lan_open" \
+    printf 'lan_exposure address=%s name=%s open=%s boundary=%s router=%s:%s broker=%s:%s artifacts=%s page=%s page_address=%s\n' \
+        "$lan_page_host" "${lan_name:--}" "$lan_open" "$lan_boundary" \
         "$lan_primary_host" "$server_port" \
         "$lan_primary_host" "$broker_port" \
         "${image_service_listener:--}" \
         "$lan_primary_page_url" "$lan_page_url" >>"$status_file"
+    # The interface carrying the exposure literal identifies the link an
+    # operator plugged this appliance into, sanitized to <mac> wherever this
+    # line is copied into committed evidence; the NetworkManager fields read
+    # `-` where the host runs no NetworkManager connection for the interface.
+    printf 'lan_interface ifindex=%s ifname=%s mac=%s prefixlen=%s nm_uuid=%s nm_name=%s all_interfaces=%s\n' \
+        "${lan_ifindex:--}" "${lan_ifname:--}" "${lan_mac:--}" \
+        "${lan_prefixlen:--}" "${lan_nm_uuid:--}" "${lan_nm_name:--}" \
+        "$lan_open_all_interfaces" >>"$status_file"
     if [ "$lan_open" = 1 ]; then
         printf 'lan_open=1 every peer on this network can chat, approve a search, and approve a generation\n' \
             >>"$status_file"
