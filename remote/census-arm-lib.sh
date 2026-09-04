@@ -681,13 +681,21 @@ census_manifest_value() {
 
 # Writes the base-build identity of one manifest and server to OUTPUT: the
 # llama.cpp commit, the production patch series digest, the checkpoint patch
-# and source digests, the compiler flags, and the CMake flags with STRIP_FLAG
-# removed, closed by the compiler identity read from the executable's own
-# .comment section, since the manifest records flags rather than the toolchain.
-# Two servers that differ by one compile-time flag or one candidate patch write
-# the same file; two built from different sources or toolchains do not.
-# STRIP_FLAG empty removes nothing, which is the comparison two serving-shaped
-# builds want.
+# and source digests, the compiler flags, and the CMake flags with every
+# STRIP_FLAG member removed, closed by the compiler identity read from the
+# executable's own .comment section, since the manifest records flags rather
+# than the toolchain. Two servers that differ by one compile-time flag or one
+# candidate patch write the same file; two built from different sources or
+# toolchains do not.
+#
+# STRIP_FLAG is a whitespace-separated list of whole flags, each matched
+# against one CMake word rather than as a substring, and an empty list removes
+# nothing. A list is what a candidate-derived option requires: the option is
+# stated in both directions by build-candidate-flags.sh, so a candidate reads
+# `=ON` where a control built before the option existed carries the word
+# nowhere, and removing one value alone would still refuse the pair on the
+# other. The removal costs the comparison nothing, since candidate_series
+# proves which patch each binary carries and the option follows that patch.
 #
 # census_base_build_identity MANIFEST SERVER ROLE OUTPUT STRIP_FLAG
 census_base_build_identity() {
@@ -708,10 +716,10 @@ census_base_build_identity() {
         compiler_flags "$census_identity_role") || exit 2
     census_identity_cmake=$(census_manifest_value "$census_identity_manifest" \
         cmake_flags "$census_identity_role") || exit 2
-    if [ -n "$census_identity_strip" ]; then
+    for census_identity_strip_member in $census_identity_strip; do
         census_identity_cmake=$(printf '%s\n' "$census_identity_cmake" | tr ' ' '\n' \
-            | grep -vx -- "$census_identity_strip" | tr '\n' ' ' | sed 's/ *$//') || true
-    fi
+            | grep -vx -- "$census_identity_strip_member" | tr '\n' ' ' | sed 's/ *$//') || true
+    done
     census_identity_compiler=$(readelf -p .comment "$census_identity_server" 2>/dev/null \
         | sed -n 's/^ *\[ *[0-9]*\] *//p' | sort | tr '\n' ';')
     # Two empty compiler strings compare equal and prove nothing, so an

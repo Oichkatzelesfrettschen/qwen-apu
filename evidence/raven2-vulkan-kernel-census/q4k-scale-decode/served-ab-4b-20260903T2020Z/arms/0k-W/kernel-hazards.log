@@ -1,0 +1,4 @@
+watch_start_utc=2026-09-04T04:03:09Z server_pid=2782441 guard_affinity=1 guard_nice=0
+hazard_pattern=ring[^[:cntrl:]]*timeout|GPU reset|amdgpu[^[:cntrl:]]*reset|VM fault|device loss|device lost|out of memory|oom-kill
+watch_ready_utc=2026-09-04T04:03:09Z source=dmesg_follow_new reader_pid=2783058 guard_affinity=1 guard_nice=0
+watch_stop_utc=2026-09-04T04:03:30Z reason=server_exited
