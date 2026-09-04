@@ -23,13 +23,21 @@ if [ ! -r "$radv_icd" ]; then
 fi
 
 # The unset block below scrubs the ambient environment so a named profile
-# always means one thing. `custom` exists to vary submission settings one at a
-# time, so it alone reads caller-supplied values, and these copies survive the
-# scrub for its branch.
+# always means one thing. Two profiles read a caller-supplied value past that
+# scrub and these copies are what survive it for them: `custom` varies the
+# submission settings one at a time, and `diagnostic` carries the instrument
+# inputs a serving profile refuses. The four serving profiles read none of
+# them.
 requested_max_nodes_per_submit=${GGML_VK_MAX_NODES_PER_SUBMIT:-}
 requested_serialize_submissions=${GGML_VK_SERIALIZE_SUBMISSIONS:-}
 requested_allow_graphics_queue=${GGML_VK_ALLOW_GRAPHICS_QUEUE:-}
 requested_submit_trace=${GGML_VK_SUBMIT_TRACE:-}
+# The integer-dot admission variable survives the scrub for the diagnostic
+# profile, which is the one profile that restores an ambient GGML_VK_ value of
+# it. A serving arm reaches the same admission through QWEN_FORCE_INTEGER_DOT
+# below, which crosses the scrub under its own name and leaves the profile's
+# exports alone.
+requested_force_integer_dot=${GGML_VK_FORCE_INTEGER_DOT:-}
 # The scrub leaves QWEN_ names alone, so this copy carries the diagnostic
 # profile's frequency input in the same form as the GGML_VK_ copies beside it;
 # the value reaches the profile case either way.
@@ -69,6 +77,7 @@ unset GGML_VK_DISABLE_MULTI_ADD
 unset GGML_VK_DISABLE_OCP_FP4
 unset GGML_VK_DUTY_CYCLE_PERCENT
 unset GGML_VK_ENABLE_MEMORY_PRIORITY
+unset GGML_VK_FORCE_INTEGER_DOT
 unset GGML_VK_FORCE_MAX_ALLOCATION_SIZE
 unset GGML_VK_FORCE_MAX_BUFFER_SIZE
 unset GGML_VK_FORCE_MMVQ
@@ -135,7 +144,7 @@ case $vulkan_profile in
         # the shape the pinned perf logger imposes, so the profile fixes
         # serialization and states its whole diagnostic environment here.
         # QWEN_PERF_LOGGER carries the logger's frequency as one positive
-        # integer and is the profile's only input, so the arm's environment
+        # integer and is the profile's required input, so the arm's environment
         # follows from the profile name and that one number. The five unsets
         # below repeat names the scrub already removed, which keeps the
         # profile readable as one closed declaration rather than as a
@@ -158,6 +167,28 @@ case $vulkan_profile in
         unset GGML_VK_MEMORY_LOGGER
         unset GGML_VK_SUBMIT_TRACE
         unset RADV_DEBUG
+        # The int24 candidate build compiles the q8_1 mat-vec pipelines and
+        # admits them only under GGML_VK_FORCE_INTEGER_DOT, so one binary
+        # carries the arm and its control and this restore is what separates
+        # them. The diagnostic profile is the one profile that carries it: the
+        # four serving profiles leave it scrubbed beside the sideplane names,
+        # which keeps a promoted build on the FP16 mat-vec whatever the ambient
+        # environment holds, and an arm is asked for by naming this profile.
+        # ggml_vk_force_integer_dot() compares the value against "1", so a
+        # third value would run the control while the caller named the arm, and
+        # the profile refuses it the way it refuses a malformed frequency.
+        case $requested_force_integer_dot in
+            '')
+                ;;
+            1)
+                export GGML_VK_FORCE_INTEGER_DOT=$requested_force_integer_dot
+                ;;
+            *)
+                printf 'GGML_VK_FORCE_INTEGER_DOT admits 1 or an unset value: %s\n' \
+                    "$requested_force_integer_dot" >&2
+                exit 2
+                ;;
+        esac
         ;;
     custom)
         # The named profiles fix both submission settings together, which makes
@@ -189,6 +220,32 @@ export QWEN_VULKAN_PROFILE=$vulkan_profile
 # it; the promoted build carries no reader, and that build is never bundled.
 if [ -n "${QWEN_PIPELINE_CENSUS:-}" ]; then
     export GGML_VK_PIPELINE_CENSUS=$QWEN_PIPELINE_CENSUS
+fi
+# The served A/B measures the integer-dot arm against its control under the same
+# submission shape, and run-served-binary-ab.sh runs every arm under low-async,
+# so the admission crosses the scrub under a QWEN_ name the way the census
+# collection toggle above does. A named profile of its own would put a second
+# string into campaign-inputs.tsv's vulkan_profile field, which the scoreboard
+# receipt requires to read low-async; `custom` exports a submission setting only
+# where the caller supplies one, so an arm run through it and a control run
+# through low-async would differ by node count as well. This crossing leaves the
+# profile and its exports exactly what they are.
+#
+# The value is the one ggml_vk_force_integer_dot() accepts, so a third value
+# would run the control while the caller named the arm, and it is refused here
+# the way the diagnostic profile refuses it. Where the diagnostic profile has
+# already exported the same name, both paths admit 1 alone and agree.
+if [ -n "${QWEN_FORCE_INTEGER_DOT:-}" ]; then
+    case $QWEN_FORCE_INTEGER_DOT in
+        1)
+            export GGML_VK_FORCE_INTEGER_DOT=1
+            ;;
+        *)
+            printf 'QWEN_FORCE_INTEGER_DOT admits 1 or an unset value: %s\n' \
+                "$QWEN_FORCE_INTEGER_DOT" >&2
+            exit 2
+            ;;
+    esac
 fi
 
 exec "$@"
