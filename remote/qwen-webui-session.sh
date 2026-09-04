@@ -498,14 +498,25 @@ if [ "$broker_enabled" = 1 ]; then
     # launch answers the line's grep and fails the pid comparison here.
     # The wildcard bind answers everywhere, so the loopback is the shortest
     # path to it; a single-address bind answers on that address alone, and
-    # the loopback default already is that address.
+    # that address is not the loopback authorize-broker.py's own peer-address
+    # exemption reads. The probe therefore presents the Web UI bearer the same
+    # way a LAN reader would, through a curl config file on stdin rather than
+    # argv, so the key never reaches this process's own `/proc/PID/cmdline`.
+    # An unauthenticated launch (`api_key_file` empty) sends the same request
+    # with no config, which is the loopback probe's own request shape.
     if [ "$lan_listen_host" = 0.0.0.0 ]; then
         broker_probe_host=127.0.0.1
     else
         broker_probe_host=$lan_listen_host
     fi
-    broker_health=$(curl -sS --max-time 5 -H "Host: $broker_probe_host" \
-        "http://$broker_probe_host:$broker_port/health" 2>>"$broker_log" || true)
+    broker_health=$(
+        if [ -n "$api_key_file" ] && [ -s "$api_key_file" ]; then
+            printf 'header = "Authorization: Bearer %s"\n' "$(cat "$api_key_file")"
+        fi |
+            curl -sS --max-time 5 -H "Host: $broker_probe_host" -K - \
+                "http://$broker_probe_host:$broker_port/health" \
+                2>>"$broker_log" || true
+    )
     health_field() {
         printf '%s' "$broker_health" | tr -d '\n' |
             sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\{0,1\}\([^\",}]*\)\"\{0,1\}.*/\1/p"
