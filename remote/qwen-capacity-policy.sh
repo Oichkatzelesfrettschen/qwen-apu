@@ -45,7 +45,16 @@ validate_router_preset_tuples() {
     printf '%s\n' "$4" | awk -F'\t' -v model_root="$3" \
         -v include_quarantine="$5" -v web_profile_sections="${6:-0}" \
         -v web_depth_override="${7:-0}" -v draft_pair_ledger="${8:-}" \
-        -v ctx_checkpoint_ledger="${9:-}" '
+        -v ctx_checkpoint_ledger="${9:-}" -v web_section_list="${10:-}" '
+        # The merged preset holds registry sections and web sections in one
+        # file, so the web rules are selected per section rather than per file.
+        # $6 states that every section is a web profile, which is what
+        # build-web-presets.sh emits; $10 names the sections
+        # build-router-presets.sh folded into the roster preset, and every
+        # other section of that file takes the registry rules.
+        function is_web_section(name) {
+            return web_profile_sections == 1 || (name in web_sections)
+        }
         function reset_tuple(   draft_key_index) {
             for (draft_key_index = 1; draft_key_index <= draft_key_count;
                  draft_key_index++) {
@@ -61,6 +70,7 @@ validate_router_preset_tuples() {
             ubatch_count = 0
             checkpoint_count = 0
             tags_count = 0
+            mcp_count = 0
             model_value = ""
             context_value = ""
             cache_k_value = ""
@@ -148,7 +158,27 @@ validate_router_preset_tuples() {
             # carrying any of them is refused, because a section that gained a
             # draft outside the ledger loads a second checkpoint the resident-set
             # arithmetic never counted.
-            is_draft_pair = (web_profile_sections != 1 && (section in pair_target))
+            section_is_web = is_web_section(section)
+            # An MCP configuration is the execution grant. A section outside
+            # the list the head marker names carrying one would reach the
+            # network under rules the launch validated as tool-free, and a
+            # named web section holding none serves a toggle that returns
+            # nothing. The rule runs over the merged file alone: a whole-file
+            # web preset also carries the configuration-free ui-mediated and
+            # review-only shapes, whose grants the execution-policy rejoin and
+            # the tag rules already decide.
+            if (web_profile_sections == 1) {
+                # every section is a web profile and the shapes differ
+            } else if (section in web_sections) {
+                if (mcp_count != 1) {
+                    reject_key("LLAMA_ARG_MCP_SERVERS_CONFIG", mcp_count)
+                }
+            } else if (mcp_count != 0) {
+                printf "router preset section %s carries LLAMA_ARG_MCP_SERVERS_CONFIG outside the web section list\n", \
+                    section > "/dev/stderr"
+                rejected = 1
+            }
+            is_draft_pair = (!section_is_web && (section in pair_target))
             if (!is_draft_pair) {
                 for (draft_key_index = 1; draft_key_index <= draft_key_count;
                      draft_key_index++) {
@@ -184,7 +214,7 @@ validate_router_preset_tuples() {
                 check_draft_key("spec-draft-device", "Vulkan0")
                 check_draft_key("spec-draft-override-tensor", ".*=Vulkan0")
             }
-            if (web_profile_sections == 1) {
+            if (section_is_web) {
                 model_root_prefix = model_root "/"
                 if (model_count == 1 &&
                     substr(model_value, 1, length(model_root_prefix)) == model_root_prefix) {
@@ -237,7 +267,7 @@ validate_router_preset_tuples() {
                     expected_model)
             }
             if (context_count == 1) {
-                if (web_profile_sections == 1) {
+                if (section_is_web) {
                     if (context_value + 0 > registry_ceiling[registry_key] + 0) {
                         reject_registry_value("LLAMA_ARG_CTX_SIZE", context_value,
                             "at most " registry_ceiling[registry_key])
@@ -388,6 +418,12 @@ validate_router_preset_tuples() {
                 split(checkpoint_rows[checkpoint_row_index], checkpoint_fields, "\t")
                 ledger_checkpoints[checkpoint_fields[1]] = checkpoint_fields[2]
             }
+            web_section_count = split(web_section_list, web_section_names, ",")
+            for (web_section_index = 1; web_section_index <= web_section_count;
+                 web_section_index++) {
+                if (web_section_names[web_section_index] == "") continue
+                web_sections[web_section_names[web_section_index]] = 1
+            }
             reset_tuple()
         }
         FILENAME == "-" {
@@ -474,6 +510,8 @@ validate_router_preset_tuples() {
             } else if (key == "LLAMA_ARG_TAGS") {
                 tags_count++
                 tags_value = value
+            } else if (key == "LLAMA_ARG_MCP_SERVERS_CONFIG") {
+                mcp_count++
             } else if (is_draft_key[key]) {
                 draft_count[key]++
                 draft_value[key] = value
@@ -1000,6 +1038,9 @@ router_web_profiles_guard_path=-
 router_web_profiles_guard_sha256=-
 router_draft_pair_guard_path=-
 router_draft_pair_guard_sha256=-
+web_presets_from_preset=0
+web_sections_from_preset=
+router_web_mode=0
 router_max=${QWEN_ROUTER_MAX:-1}
 router_preset_expected_sha256=${QWEN_ROUTER_PRESET_SHA256:-}
 verify_router_preset_identity() {
@@ -1055,7 +1096,15 @@ measure_router_authority_identity() {
 # registries, whose digests qwen-router-exec-guard.sh remeasures after the
 # Vulkan wrapper configures the environment.
 validate_web_preset_execution_policies() {
-    awk -F'\t' -v ledger="$1" -v authorizer_ready="$3" '
+    awk -F'\t' -v ledger="$1" -v authorizer_ready="$3" \
+        -v web_all_sections="${4:-0}" -v web_section_list="${5:-}" '
+        # The merged preset holds registry sections beside the web one, and the
+        # web ledger holds a row for neither a registry id nor a pair id. The
+        # rejoin therefore runs over the sections the head marker names, and a
+        # section outside that list is validated by the tuple rules alone.
+        function is_web_section(name) {
+            return web_all_sections == 1 || (name in web_sections)
+        }
         function policy_from_tags(tags,   tag_count, tags_parts, tag_index) {
             tag_count = split(tags, tags_parts, ",")
             for (tag_index = 1; tag_index <= tag_count; tag_index++) {
@@ -1069,6 +1118,7 @@ validate_web_preset_execution_policies() {
         }
         function finish_section(   ledger_policy, section_policy) {
             if (section == "" || section == "*") return
+            if (!is_web_section(section)) return
             # A review-only section names a vision checkpoint rather than a web
             # profile, so the web ledger holds no row for it and the rejoin that
             # guards an execution grant has nothing to rejoin. What makes it
@@ -1109,6 +1159,14 @@ validate_web_preset_execution_policies() {
                 rejected = 1
             }
         }
+        BEGIN {
+            web_section_count = split(web_section_list, web_section_names, ",")
+            for (web_section_index = 1; web_section_index <= web_section_count;
+                 web_section_index++) {
+                if (web_section_names[web_section_index] == "") continue
+                web_sections[web_section_names[web_section_index]] = 1
+            }
+        }
         FILENAME == ledger {
             if ($0 ~ /^[[:space:]]*($|#)/) next
             ledger_execution_policy[$1] = $12
@@ -1143,7 +1201,7 @@ validate_web_preset_execution_policies() {
 }
 
 verify_web_profiles_identity() {
-    if [ "$web_presets_from_preset" != 1 ]; then
+    if [ "$router_web_mode" != 1 ]; then
         return 0
     fi
     if ! web_profiles_identity=$(sha256sum -- "$router_web_profiles"); then
@@ -1174,6 +1232,8 @@ validate_current_router_authorities() {
     # path resolves against an empty ledger and joins nothing.
     router_draft_pair_rows=''
     if [ "$web_presets_from_preset" != 1 ]; then
+        # The merged preset carries the pair sections beside the web one, so
+        # the ledger they are rejoined to is read for that shape too.
         if ! router_draft_pair_rows=$(
             "$script_directory/model-registry.sh" draft-pairs
         ); then
@@ -1194,12 +1254,12 @@ validate_current_router_authorities() {
         "$router_model_root" "$router_quarantine_rows" \
         "$quarantine_override_from_preset" "$web_presets_from_preset" \
         "$web_depth_override_from_preset" "$router_draft_pair_rows" \
-        "$router_ctx_checkpoint_rows"; then
+        "$router_ctx_checkpoint_rows" "$web_sections_from_preset"; then
         printf 'router presets do not carry complete admitted tuples: %s\n' \
             "$router_presets" >&2
         return 1
     fi
-    if [ "$web_presets_from_preset" = 1 ]; then
+    if [ "$router_web_mode" = 1 ]; then
         verify_web_profiles_identity || return 1
         if [ ! -r "$router_web_profiles" ]; then
             printf 'web profile ledger is unreadable: %s\n' \
@@ -1207,7 +1267,8 @@ validate_current_router_authorities() {
             return 1
         fi
         if ! validate_web_preset_execution_policies "$router_web_profiles" \
-            "$router_presets" "$router_web_authorizer_ready"; then
+            "$router_presets" "$router_web_authorizer_ready" \
+            "$web_presets_from_preset" "$web_sections_from_preset"; then
             printf 'web preset sections lost their ledger execution grant: %s\n' \
                 "$router_presets" >&2
             printf 'regenerate the preset tree with remote/build-web-presets.sh\n' >&2
@@ -1254,11 +1315,39 @@ if [ "$router_enabled" = 1 ]; then
             exit 2
             ;;
     esac
+    # build-router-presets.sh names the sections it folded into the roster
+    # preset, so the launch validates exactly those under the web rules and
+    # every other section under the registry rules. `-` states that the file
+    # holds registry sections alone, which is what a generation without the
+    # authorizer marker writes.
+    web_sections_from_preset=$(sed -n 's/^# qwen_web_sections=//p' \
+        "$router_presets")
+    case $web_sections_from_preset in
+        '' | '-') web_sections_from_preset='' ;;
+        *[!A-Za-z0-9_,-]* | ,* | *, | *,,*)
+            printf 'router presets carry a malformed web section list: %s\n' \
+                "$web_sections_from_preset" >&2
+            exit 2
+            ;;
+    esac
+    if [ "$web_presets_from_preset" = 1 ] &&
+        [ -n "$web_sections_from_preset" ]; then
+        printf 'router presets claim both a whole-file web provenance and a web section list: %s\n' \
+            "$router_presets" >&2
+        exit 2
+    fi
+    # Either provenance puts a section under the web rules, so the ledger
+    # identity markers are required and validated for both shapes.
+    router_web_mode=0
+    if [ "$web_presets_from_preset" = 1 ] ||
+        [ -n "$web_sections_from_preset" ]; then
+        router_web_mode=1
+    fi
     web_profiles_path_from_preset=$(sed -n \
         's/^# qwen_web_profiles_path=//p' "$router_presets")
     web_profiles_sha256_from_preset=$(sed -n \
         's/^# qwen_web_profiles_sha256=//p' "$router_presets")
-    if [ "$web_presets_from_preset" = 1 ]; then
+    if [ "$router_web_mode" = 1 ]; then
         case $web_profiles_path_from_preset in
             /*) ;;
             *)
@@ -1296,7 +1385,12 @@ if [ "$router_enabled" = 1 ]; then
                 exit 2
                 ;;
         esac
-    elif [ -n "$web_profiles_path_from_preset$web_profiles_sha256_from_preset" ]; then
+    elif [ -n "$(printf '%s%s' "$web_profiles_path_from_preset" \
+        "$web_profiles_sha256_from_preset" | tr -d '\n-')" ]; then
+        # A generation that armed no web lane writes `-` for both, so the
+        # markers state their own emptiness rather than being absent. A
+        # non-empty value under no web provenance is a preset whose ledger
+        # identity claims a grant no section carries.
         printf 'non-web router presets carry web profile ledger identity markers: %s\n' \
             "$router_presets" >&2
         exit 2

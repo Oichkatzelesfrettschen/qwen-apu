@@ -225,6 +225,72 @@ if [ -n "$web_presets_path" ]; then
         cut -d ' ' -f 1)
 fi
 
+# A merged router preset names one MCP configuration per web section, and that
+# configuration is session state rather than release state: its contents name
+# QWEN_WEB_STATE_DIR, the broker signing key, and the per-profile budgets, and
+# rewriting those paths to bundle-relative ones would change the preset bytes
+# the digest binds. The bundle records the path and the digest of each
+# configuration and leaves the file where the generator wrote it.
+#
+# The preset own `# qwen_web_sections=` marker decides whether a record exists
+# at all, so a bundle assembled from a registry preset carries none and a
+# bundle assembled from a merged one carries exactly the sections the marker
+# names. verify-deployment-bundle.sh applies the same rule, which is what lets
+# a deployment that predates this lane keep resolving: requiring the record of
+# every bundle refused the whole roster on natural-boundary-13d05a0-r2, whose
+# preset carries no marker, and left the appliance serving through recovery
+# mode alone.
+web_mcp_manifest_sha256=-
+if [ -n "$router_presets_path" ]; then
+    preset_web_sections=$(sed -n 's/^# qwen_web_sections=//p' \
+        "$staging_directory/router-presets.ini")
+    case $preset_web_sections in
+        '-') preset_web_sections='' ;;
+    esac
+    web_mcp_rows=$(awk '
+        /^[[:space:]]*\[/ {
+            section = $0
+            sub(/^[[:space:]]*\[/, "", section)
+            sub(/\][[:space:]]*$/, "", section)
+            next
+        }
+        /^[[:space:]]*LLAMA_ARG_MCP_SERVERS_CONFIG[[:space:]]*=/ {
+            value = $0
+            sub(/^[^=]*=[[:space:]]*/, "", value)
+            sub(/[[:space:]]+$/, "", value)
+            printf "%s\t%s\n", section, value
+        }
+    ' "$staging_directory/router-presets.ini")
+    if [ -z "$preset_web_sections" ] && [ -n "$web_mcp_rows" ]; then
+        printf 'bundle router preset names MCP configurations and its head marker names no web section: %s\n' \
+            "$router_presets_path" >&2
+        exit 1
+    fi
+    if [ -n "$preset_web_sections" ] && [ -z "$web_mcp_rows" ]; then
+        printf 'bundle router preset names web section %s and no section carries LLAMA_ARG_MCP_SERVERS_CONFIG: %s\n' \
+            "$preset_web_sections" "$router_presets_path" >&2
+        exit 1
+    fi
+    if [ -n "$preset_web_sections" ]; then
+        {
+            printf '# profile_id\tconfiguration_path\tsha256\n'
+            printf '%s\n' "$web_mcp_rows" |
+                while IFS='	' read -r web_section web_configuration; do
+                    if [ ! -r "$web_configuration" ]; then
+                        printf 'bundle preset section %s names an unreadable MCP configuration: %s\n' \
+                            "$web_section" "$web_configuration" >&2
+                        exit 1
+                    fi
+                    printf '%s\t%s\t%s\n' "$web_section" "$web_configuration" \
+                        "$(sha256sum -- "$web_configuration" | cut -d ' ' -f 1)"
+                done
+        } >"$staging_directory/web-mcp-manifest.tsv" || exit 1
+        chmod 600 "$staging_directory/web-mcp-manifest.tsv"
+        web_mcp_manifest_sha256=$(sha256sum \
+            "$staging_directory/web-mcp-manifest.tsv" | cut -d ' ' -f 1)
+    fi
+fi
+
 {
     printf 'bundle_name\t%s\n' "$bundle_name"
     printf 'created_utc\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -238,6 +304,7 @@ fi
         "$(sha256sum "$staging_directory/ctx-checkpoints.tsv" | cut -d ' ' -f 1)"
     printf 'router-presets.ini\t%s\n' "$router_presets_sha256"
     printf 'web-presets.ini\t%s\n' "$web_presets_sha256"
+    printf 'web-mcp-manifest.tsv\t%s\n' "$web_mcp_manifest_sha256"
 } >"$staging_directory/bundle-manifest.tsv"
 
 # The staged bundle passes the same verification an activation applies,
@@ -255,6 +322,7 @@ if [ -e "$bundle_directory" ] || [ -L "$bundle_directory" ]; then
     exit 1
 fi
 mv -T "$staging_directory" "$bundle_directory"
-printf 'deployment_bundle=%s semantics=%s maximum_count=%s server_sha256=%s router_presets=%s web_presets=%s\n' \
+printf 'deployment_bundle=%s semantics=%s maximum_count=%s server_sha256=%s router_presets=%s web_presets=%s web_mcp_manifest=%s\n' \
     "$bundle_directory" "$checkpoint_semantics" "$maximum_ledger_count" \
-    "$server_sha256" "$router_presets_sha256" "$web_presets_sha256"
+    "$server_sha256" "$router_presets_sha256" "$web_presets_sha256" \
+    "$web_mcp_manifest_sha256"
