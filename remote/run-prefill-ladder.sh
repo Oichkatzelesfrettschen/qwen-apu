@@ -760,7 +760,7 @@ measurement_field() {
 }
 
 arms_ledger=$output_directory/arms.tsv
-printf 'slot\tdepth\tquadruple\tarm\treplicate\tserver_role\tserver_sha256\tthreads\tserver_nice\tprompt_target\ttokenize_n\tprompt_n\tttft_ms\tprompt_ms\tprompt_tok_s\tpredicted_n\tdecode_tok_s\tsclk_mode_mhz\tclock_invariant\tstatus\treason\n' \
+printf 'slot\tdepth\tquadruple\tarm\treplicate\tserver_role\tserver_sha256\tthreads\tbatch\tubatch\tserver_nice\tprompt_target\ttokenize_n\tprompt_n\tttft_ms\tprompt_ms\tprompt_tok_s\tpredicted_n\tdecode_tok_s\tsclk_mode_mhz\tclock_invariant\tstatus\treason\n' \
     >"$arms_ledger"
 
 {
@@ -908,13 +908,23 @@ start_server() {
     return 1
 }
 
-# slot depth quadruple arm replicate server_role server_sha256 threads
-# server_nice prompt_target tokenize_n prompt_n ttft_ms prompt_ms prompt_tok_s
-# predicted_n decode_tok_s sclk_mode_mhz clock_invariant status reason
+# slot depth quadruple arm replicate server_role server_sha256 threads batch
+# ubatch server_nice prompt_target tokenize_n prompt_n ttft_ms prompt_ms
+# prompt_tok_s predicted_n decode_tok_s sclk_mode_mhz clock_invariant status
+# reason
+#
+# batch and ubatch are the registry row's own values, one pair for the whole
+# ladder rather than one pair per depth: the allocation is one context size
+# for the whole run, so a rung changes the prompt and leaves the submission
+# geometry alone the way it leaves the KV reservation alone. Carrying the pair
+# on every row, rather than in inputs.tsv alone, is what lets
+# summarize-prefill-ladder.py's --batch-ubatch-table read one self-contained
+# row per depth without a second file.
 record_arm() {
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$1" "$2" "$3" "$4" "$5" "$6" "$7" "$8" "$9" "${10}" "${11}" "${12}" \
         "${13}" "${14}" "${15}" "${16}" "${17}" "${18}" "${19}" "${20}" "${21}" \
+        "${22}" "${23}" \
         >>"$arms_ledger"
 }
 
@@ -926,8 +936,8 @@ for depth in $skipped_depths; do
     for quadruple in binary threads; do
         [ "$quadruple" != threads ] || [ "$thread_arms" = 1 ] || continue
         slot=$((slot + 1))
-        record_arm "$slot" "$depth" "$quadruple" - - - - - - "$depth" - - - - \
-            - - - - - skipped "$skip_reason"
+        record_arm "$slot" "$depth" "$quadruple" - - - - - "$model_batch" \
+            "$model_ubatch" - "$depth" - - - - - - - - - skipped "$skip_reason"
     done
     printf 'prefill_ladder_depth=skipped depth=%s reason=%s\n' "$depth" "$skip_reason"
 done
@@ -1143,7 +1153,8 @@ for depth in $admitted_depths; do
             fi
             [ "$status" = completed ] || arm_failures=$((arm_failures + 1))
             record_arm "$slot" "$depth" "$quadruple" "$arm" "$replicate" "$arm_role" \
-                "$arm_server_sha256" "$arm_threads" "$arm_server_nice" "$depth" \
+                "$arm_server_sha256" "$arm_threads" "$model_batch" "$model_ubatch" \
+                "$arm_server_nice" "$depth" \
                 "$tokenize_n" "$prompt_n" "$ttft_ms" "$prompt_ms" "$prompt_tok_s" \
                 "$predicted_n" "$decode_tok_s" "$sclk_mode_mhz" "$clock_invariant" \
                 "$status" "$reason"
@@ -1156,6 +1167,7 @@ for depth in $admitted_depths; do
 done
 
 python3 "$summarizer" "$arms_ledger" --sclk-band "$sclk_band" \
+    --batch-ubatch-table "$output_directory/batch-ubatch-recommendation.tsv" \
     >"$output_directory/summary.tsv"
 count_words() {
     set -- $1

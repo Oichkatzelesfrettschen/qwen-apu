@@ -226,6 +226,96 @@ report("an_infinite_band_is_refused", refused.returncode == 2, refused.stderr)
 ragged = summarize([resolved[0], "1\t512\tbinary"])
 report("a_ragged_ledger_row_is_refused", ragged.returncode != 0, ragged.stderr)
 
+
+def row_of_batch_table(rows, depth):
+    for entry in rows:
+        if entry["depth"] == str(depth):
+            return entry
+    return None
+
+
+def parse_tsv(text):
+    lines = [line for line in text.splitlines() if line.strip()]
+    header = lines[0].split("\t")
+    return [dict(zip(header, line.split("\t"))) for line in lines[1:]]
+
+
+HEADER_WITH_BATCH_UBATCH = (
+    "slot\tdepth\tquadruple\tarm\treplicate\tserver_role\tserver_sha256"
+    "\tthreads\tbatch\tubatch\tprompt_target\ttokenize_n\tprompt_n\tttft_ms"
+    "\tprompt_ms\tprompt_tok_s\tpredicted_n\tdecode_tok_s\tsclk_mode_mhz"
+    "\tclock_invariant\tstatus\treason")
+
+
+def arm_with_batch_ubatch(slot, depth, quadruple, label, replicate, ttft,
+                           prompt_ms, prompt_tok_s, batch="128", ubatch="32"):
+    role = "control" if label == "C" else "candidate"
+    digest = "c" * 64 if label == "C" else "k" * 64
+    threads = "1" if label != "T" else "2"
+    return "\t".join((
+        str(slot), str(depth), quadruple, label, str(replicate), role,
+        digest, threads, batch, ubatch, str(depth), str(depth), str(depth),
+        ttft, prompt_ms, prompt_tok_s, "16", "9.000", "1100", "held",
+        "completed", "-"))
+
+
+# --batch-ubatch-table writes the second table read-prefill-ladder.sh's own
+# run-prefill-ladder.sh feeds the registry row's batch and ubatch into, with
+# one row per depth and the recommendation rule stated on every row.
+with tempfile.TemporaryDirectory() as directory:
+    ledger = Path(directory) / "arms-with-batch.tsv"
+    ledger.write_text("\n".join((
+        HEADER_WITH_BATCH_UBATCH,
+        arm_with_batch_ubatch(1, 512, "binary", "C", 1, "1000.000", "900.000", "20.000"),
+        arm_with_batch_ubatch(2, 512, "binary", "K", 1, "800.000", "720.000", "25.000"),
+        arm_with_batch_ubatch(3, 512, "binary", "K", 2, "800.400", "720.300", "24.990"),
+        arm_with_batch_ubatch(4, 512, "binary", "C", 2, "1000.000", "900.000", "20.000"),
+        arm_with_batch_ubatch(5, 4096, "binary", "C", 1, "2000.000", "1900.000", "18.000"),
+        arm_with_batch_ubatch(6, 4096, "binary", "K", 1, "1900.000", "1800.000", "19.000"),
+        arm_with_batch_ubatch(7, 4096, "binary", "K", 2, "1900.400", "1800.300", "18.990"),
+        arm_with_batch_ubatch(8, 4096, "binary", "C", 2, "2000.000", "1900.000", "18.000"),
+    )) + "\n", encoding="utf-8")
+    table_path = Path(directory) / "batch-ubatch.tsv"
+    finished = subprocess.run(
+        [sys.executable, str(SUMMARIZER), str(ledger), "--batch-ubatch-table",
+         str(table_path)], capture_output=True, text=True, check=False)
+    report("batch_ubatch_table_run_exits_zero", finished.returncode == 0,
+           finished.stderr)
+    table_rows = parse_tsv(table_path.read_text(encoding="utf-8"))
+    row_512 = row_of_batch_table(table_rows, 512)
+    report("batch_ubatch_table_states_the_pair_that_ran",
+           row_512 is not None and row_512["batch"] == "128"
+           and row_512["ubatch"] == "32", row_512)
+    report("batch_ubatch_table_states_the_recommendation_rule",
+           row_512 is not None
+           and row_512["rule"] == "select batch and ubatch separately by prompt depth",
+           row_512)
+    report("batch_ubatch_table_carries_both_depths",
+           len(table_rows) == 2
+           and row_of_batch_table(table_rows, 4096) is not None, table_rows)
+
+# A depth the runner skipped carries no batch or ubatch, since no server ever
+# started for it, and the table states the skip reason rather than a pair.
+with tempfile.TemporaryDirectory() as directory:
+    ledger = Path(directory) / "arms-skipped.tsv"
+    skipped_row = "\t".join((
+        "1", "32768", "binary", "-", "-", "-", "-", "-", "-", "-", "32768",
+        "-", "-", "-", "-", "-", "-", "-", "-", "-", "skipped",
+        "above_validated_filled_depth"))
+    ledger.write_text(HEADER_WITH_BATCH_UBATCH + "\n" + skipped_row + "\n",
+                       encoding="utf-8")
+    table_path = Path(directory) / "batch-ubatch.tsv"
+    finished = subprocess.run(
+        [sys.executable, str(SUMMARIZER), str(ledger), "--batch-ubatch-table",
+         str(table_path)], capture_output=True, text=True, check=False)
+    table_rows = parse_tsv(table_path.read_text(encoding="utf-8"))
+    row_skipped = row_of_batch_table(table_rows, 32768)
+    report("a_skipped_depth_carries_no_batch_or_ubatch_pair",
+           row_skipped is not None and row_skipped["batch"] == "-"
+           and row_skipped["ubatch"] == "-"
+           and "above_validated_filled_depth" in row_skipped["detail"],
+           row_skipped)
+
 if failures:
     print(f"summarize_prefill_ladder_tests=failed failures={len(failures)}",
           file=sys.stderr)
