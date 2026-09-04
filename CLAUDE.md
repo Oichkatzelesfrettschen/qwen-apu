@@ -242,6 +242,31 @@ the chain. A healthy arm emits an appendable ledger line carrying
 `remote/validated-tuples.tsv`, because a `validated` row requires its evidence
 path to exist in the tree.
 
+`--runtime-mode router-child` measures that arm through the serving path a
+review-only vision section uses, since `build-web-presets.sh` joins an image
+row's `review_model` against the ledger on `runtime_mode=router-child` with
+`projector_state=loaded` and a standalone row leaves the section ungenerated.
+The harness generates a one-section preset with `build-router-presets.sh` over
+a one-row registry copy naming the arm's depth as `context_default`, stages the
+weights and the resolved projector as symlinks so `select-projector.sh` answers
+with the file the standalone arm attaches, and launches `--models-preset` with
+`--models-max 1`; depth, cache triple, submission geometry, checkpoint count,
+and the projector stay off that argv because `common_preset::merge` overwrites
+each section key with the router argv's value of the same name, and the
+generated section is read back before the server starts. Each request names the
+section in the body's `model` key, which `router_validate_model` resolves the
+child from. The emitted line reads `runtime_mode=router-child` with a `-router`
+`tuple_id` suffix and every other field equal to the standalone line, the mode
+reaches `projector-summary.tsv` and `wedge-metadata.tsv`, and an output
+directory therefore holds one mode. `check-validated-tuples.sh` reads the same
+join: a `validator-gated` image row whose reviewer holds no such tuple fails the
+gate and prints the probe command that measures it, and any other execution
+policy reports the absence as a warning, since it emits no section under every
+setting. The shipped tree fails that gate, because `image-sdxs-512-a` names
+`lfm25-vl-16b` and every retained projector arm is standalone;
+`evidence/depth-validation-32k-projector/README.md` states the appliance run
+that closes it.
+
 The `tier` field states what is claimed about a row and
 `remote/build-router-presets.sh` turns it into what the picker offers.
 `production` is a serving tuple measured safe and useful; `candidate` leaves
@@ -512,6 +537,47 @@ whichever branch runs (`common/arg.cpp:3352-3356`), and `ctx_http.init(params)`
 runs ahead of the router branch (`tools/server/server.cpp:173` against
 `:188-232`), so `qwen-launch.sh` serves that UI on this same address and port
 while `qwen-web-launch.sh` serves this page.
+
+What a checkpoint can do is a claim per feature, and `remote/feature-claims.tsv`
+carries it as `subject_id`, `feature`, `status`, `evidence`, `note`. The feature
+decides the namespace the subject resolves in: `text-chat`, `vision`,
+`tool-selection`, `guarded-tool-execution`, `long-context`,
+`context-checkpoints`, and `quarantine` name a `remote/models.tsv` id,
+`draft-pair-speculation` a `remote/draft-pairs.tsv` pair_id, `web-search` a
+`remote/web-profiles.tsv` profile_id, and `image-generation` and `image-review`
+a `remote/image-profiles.tsv` profile_id, so one namespace per feature keeps the
+subject column free of a scope field a typo would put at odds with the id beside
+it. `status` is closed over `production`, `candidate`, `experimental`,
+`unstable`, and `unsupported`; the first, second, and fourth each assert a run
+and require an evidence path, and the other two admit `-` while their note names
+the run that moves them. A `(subject, feature)` pair absent from the file reads
+`unclaimed`, so a hole in the matrix is the absence of a claim rather than a
+denial.
+
+`remote/build-feature-roster.sh` validates every claim before it emits any row
+and writes `webui/roster.json` through one rename. It refuses a claim naming a
+subject outside its feature's ledger, a duplicate pair, an evidence path outside
+`evidence/`, a note carrying a quotation mark or a backslash, and a `production`
+claim over a checkpoint whose registry tier reads `quarantine` or whose id the
+quarantine authority names at model scope; the profile-scope rows stay out of
+that read, since a profile row removes one tuple of a checkpoint that otherwise
+serves. Models order by tier rank and then by the class policy -- the 2B class,
+the 0.8B class, the 4B class, and a row outside the three after them by id --
+and `archive` and `rejected` rows reach no picker, so they reach no roster.
+`remote/repository-quality-gates.sh` regenerates into a scratch directory and
+diffs the result against the committed document, so a ledger edit that leaves
+the page stale fails the gate.
+
+llama-server serves the page with `--path` over the `webui` directory, so
+`webui/index.html` fetches `./roster.json` beside itself and decorates the ids
+`GET /v1/models` returned. The roster contributes no id: each render iterates
+the served ids and looks each one up, so a roster row for a model the listener
+withheld reaches neither the picker nor the matrix and a served id the roster
+omits keeps its option. The picker option carries the row's tags, a badge names
+the selected row's tier, and a collapsible matrix holds one row per served
+rostered id over the model-scope features with each cell's status, evidence
+path, and note. An absent, malformed, or foreign-schema roster leaves both
+decorations off while the picker routes.
 
 A web search reaches the network through one human approval, and the browser is
 the executor. llama-server reads `tools` from the client body alone and runs a
@@ -1483,6 +1549,26 @@ remote/generate-quality-images.py [DIR]        # the vision fixtures, and --chec
 remote/regrade-quality-roster.py RECORD...     # a grader change over retained replies
 remote/sample-gpu-clocks.sh OUT_TSV [SECONDS]  # the DPM step a rate ran at
 remote/measure-dpm-force.sh MODEL [OUT]         # auto against global high governor
+remote/compute-state-lease.sh PROFILE COMMAND [ARG...]
+                                                # one reversible compute-state
+                                                # transaction: the shared Vulkan
+                                                # lease and its published proof,
+                                                # a snapshot of the DPM level
+                                                # with its two selections and
+                                                # the KSM run state, one named
+                                                # profile, a delivered clock
+                                                # proven before the command, and
+                                                # a verified restore after it.
+                                                # measure-fixed pins GFXCLK 1100
+                                                # with FCLK 933 at nice 19;
+                                                # serve-performance-candidate
+                                                # admits FCLK 933 or 1067 at
+                                                # nice 0. Exit 3 names an
+                                                # unreached clock and 4 a
+                                                # restoration incident, which
+                                                # dominates the command's own
+                                                # status.
+remote/compute-state-lease.sh status           # the live values, no credential, no write
 remote/model-registry.sh id|path SELECTOR [FIELD]
 remote/model-registry.sh draft-pairs | draft-pair PAIR_ID [FIELD]
 remote/model-registry.sh ctx-checkpoints | ctx-checkpoint MODEL_ID
@@ -1506,6 +1592,7 @@ QWEN_IMAGE_SERVICE_SOCKET=$HOME/qwen-webui-state/images/image-service.sock \
 QWEN_IMAGE_PROFILES_JSON=$HOME/qwen-webui-state/image-parameters.json \
     remote/build-router-presets.sh OUT.ini
 remote/build-web-presets.sh OUTPUT_INI         # web profiles, from the execution_policy field
+remote/build-feature-roster.sh [OUTPUT_JSON]   # webui/roster.json, from the feature claim ledger
 remote/fetch-candidate-artifact.sh REPO REV FILE DIR  # observed, not pinned
 remote/run-one-token-admission.sh RECORD [OUT]  # load every candidate once
 remote/run-representation-arm.sh LABEL CONTROL SUBJECT
@@ -1516,7 +1603,8 @@ remote/admit-web-router-live.sh OUTPUT_DIR [PROFILE_ID]
 remote/searxng-launch.sh serve|start|stop|status [STATE_DIRECTORY]
                                                 # one instance as the serving user, loopback only
 remote/admit-image-router.sh OUTPUT_DIR         # one approved generation through the router
-remote/probe-depth-projector.sh MODEL_ID OUT   # filled depth, projector loaded
+remote/probe-depth-projector.sh [--runtime-mode standalone|router-child] MODEL_ID OUT
+                                                # filled depth, projector loaded
 remote/image-registry.sh artifacts|models|profiles|bundle|profile
                                                 # the four image authorities, validated whole
 remote/run-image-standalone.sh OUT MODEL       # one image, no llama process resident
@@ -1571,7 +1659,39 @@ remote/run-ctx-checkpoint-sweep.sh LABEL MODEL_ID OUT
 # the request window. Three quadruples carry a bound, P-nosidecar P P
 # P-nosidecar, P I0 I0 P, and I0 I1 I1 I0; any other is unclassified, and
 # a refuted control ends the campaign refuted with exit 3 whatever the
-# arms did. QWEN_CENSUS_MODE=calibration, the default, runs exactly the
+# arms did. The boundary between two arms is a campaign condition rather
+# than a counter: await-quiescence.sh reports reached only where its
+# process, occupancy, graphics step, step stability, absolute temperature,
+# thermal derivative, memory, swap-in, lease, and latency predicates held
+# together across the hold window, so any other verdict ends the campaign
+# quiescence_unconverged with exit 5 before the next arm starts. The last
+# arm a campaign executes polls no boundary, since the arm one would
+# prepare never runs. On a verdict that ends the run, arms.tsv
+# carries a boundary row whose status names the state, terminal-state.tsv
+# names the slot, the arm, and the failing predicates, and no summary,
+# brick receipt, or calibration root is written over the truncated ledger.
+# --sclk-forced drops the step's position in the listed ladder alone.
+# Runtime identity is bound at preflight and re-established by every arm:
+# arms/LABEL/runtime-identity.tsv carries the bound value beside the arm's
+# own reading of the model bytes and digest, the server bytes and digest,
+# the runtime tree's git head and both payload digests, one
+# check-runtime-tree.sh recompute over that tree, the artifact ledger
+# digest, the served runner digest, and the request digest the campaign
+# binds from the first body an arm sent. A field that moved ends the
+# campaign identity_incident with exit 6 naming that field, since every
+# later arm would measure a different experiment under one receipt.
+# QWEN_CENSUS_REUSE_BRICKS revalidates a retained brick in the epoch that
+# reuses it: the prior calibration root's own digest is recomputed from its
+# rows, each receipt is rehashed against the digest that root records, every
+# artifact row is rehashed against the bytes it names, and the current
+# readers that read a raw record are rerun over those bytes and must
+# accept, with paths resolved through the receipt's own reused_from chain
+# so a second generation reads the records the original arms wrote. A brick whose receipt
+# names no artifact, or whose arms retained no record a reader reads, is
+# measured again rather than copied forward on a historical completed
+# label, and the copied receipt states revalidation, revalidated_epoch,
+# revalidated_readers, and revalidated_artifacts.
+# QWEN_CENSUS_MODE=calibration, the default, runs exactly the
 # thirteen-arm sequence and accepts on exactly three accepted controls
 # with none unclassified; QWEN_CENSUS_MODE=attribution runs any registered
 # arm list and requires QWEN_CENSUS_CALIBRATION_RECEIPT to name the output
@@ -1626,6 +1746,14 @@ remote/validate-clock-sidecar.py OUT.tsv --sidecar-status 0 --period-ms 10 \
     --period-tolerance 0.25 --cost-bound-ns 1000000 --max-gap-ns 20000000
 remote/summarize-perf-logger-slice.py OUT/arms/NN-S/server-log-request.slice \
     --expected-decode-blocks 63
+
+# Rung 7 of the E4 ladder: two serving builds on one checkpoint, mirrored
+# C K K C quadruples under the production receipt binding, promoted on a
+# one-sided 5% paired bound.
+# evidence/raven2-vulkan-kernel-census/e4/served-ab-design.md registers the
+# falsifiers and the chain.
+QWEN_CENSUS_PRODUCTION_RECEIPT=RECEIPT remote/run-served-binary-ab.sh \
+    CONTROL_SERVER CANDIDATE_SERVER MODEL_ID OUT
 
 # Deployment bundles: the server, its manifest, the checkpoint ledger, and
 # the presets generated against that ledger as one activated unit.
@@ -1696,6 +1824,8 @@ remote/test-qwen-runtime-guards.sh
 remote/test-radv-low-priority-env.sh
 remote/test-model-registry.sh
 remote/test-model-tiers.sh
+remote/test-feature-roster.sh
+node remote/test-fallback-webui-roster.mjs
 python3 remote/test-summarize-draft-pair.py
 remote/test-measure-draft-pair.sh
 remote/test-probe-depth-projector.sh
@@ -1723,7 +1853,9 @@ remote/test-quality-suite.py
 remote/test-quality-roster.sh
 remote/test-promote-llama-build.sh
 remote/test-classify-checkpoint-semantics.sh
+remote/test-run-served-binary-ab.sh
 remote/test-check-runtime-tree.sh
+remote/test-write-clangd-config.sh
 remote/test-deployment-bundle.sh
 remote/generate-quality-images.py --check
 remote/test-gguf-tokenizer-identity.py
@@ -1737,6 +1869,7 @@ python3 remote/test-census-controls.py
 python3 remote/test-sample-clock-sidecar.py
 python3 remote/test-summarize-perf-logger-slice.py
 remote/test-census-sha256.sh
+remote/test-compute-state-lease.sh
 remote/test-run-raven2-vulkan-kernel-census.sh
 remote/verify-llama-patch-series.sh
 QWEN_LLAMA_CANDIDATE_PATCHES=1 remote/verify-llama-patch-series.sh
