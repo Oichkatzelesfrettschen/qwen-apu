@@ -1,0 +1,1 @@
+Check the string [{()}](<[]>){[}] one character at a time using a stack. After every character print the character, the action taken, and the stack contents. State the first position at which the string becomes invalid, if any, and whether the whole string is balanced.

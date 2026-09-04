@@ -1,0 +1,3 @@
+./text_encoder/model.safetensors
+./unet/diffusion_pytorch_model.safetensors
+./vae/diffusion_pytorch_model.safetensors

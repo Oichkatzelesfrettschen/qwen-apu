@@ -59,7 +59,8 @@ fi
 
 bundle_manifest=$bundle_directory/bundle-manifest.tsv
 for bundle_member in bundle-manifest.tsv llama-server artifact-manifest.tsv \
-    ctx-checkpoints.tsv router-presets.ini web-presets.ini; do
+    ctx-checkpoints.tsv router-presets.ini web-presets.ini \
+    web-mcp-manifest.tsv; do
     if [ -L "$bundle_directory/$bundle_member" ]; then
         printf 'bundle member is a symlink: %s\n' \
             "$bundle_directory/$bundle_member" >&2
@@ -81,6 +82,18 @@ for manifest_key in bundle_name checkpoint_semantics maximum_ledger_count \
         exit 1
     fi
 done
+# The web MCP record is the one key a bundle assembled before the merged preset
+# carries no row for, and such a bundle names no web section either. Requiring
+# the row of every bundle refused the whole roster on a deployment that predates
+# the lane, so the row is optional here and the marker below decides whether it
+# has to be there.
+web_mcp_manifest_rows=$(awk -F'\t' '$1 == "web-mcp-manifest.tsv" { count++ }
+    END { print count + 0 }' "$bundle_manifest")
+if [ "$web_mcp_manifest_rows" -gt 1 ]; then
+    printf 'bundle manifest carries %s rows for web-mcp-manifest.tsv; at most one is admitted: %s\n' \
+        "$web_mcp_manifest_rows" "$bundle_manifest" >&2
+    exit 1
+fi
 # The name a bundle was assembled under is the name it activates under: a
 # directory renamed onto another bundle's name would otherwise publish one
 # bundle's bytes under a role record naming another.
@@ -259,5 +272,130 @@ for preset_member in router-presets.ini web-presets.ini; do
         exit 1
     fi
 done
+# The MCP manifest is the record of what each web section names, and the
+# preset own `# qwen_web_sections=` marker decides whether it has to exist: a
+# bundle whose preset names no web section carries no configuration and no
+# record, which is every bundle assembled before the merged preset. The record
+# is compared against the preset rather than against the state directory -- a
+# resolution that read the named configurations would refuse every bundle on a
+# machine that has not generated a web preset, which turns a web-lane concern
+# into an outage on the whole roster. qwen-launch.sh reads the files and
+# compares these digests where it arms the lane.
+web_mcp_expected_sha256=$(awk -F'\t' '$1 == "web-mcp-manifest.tsv" { print $2; exit }' \
+    "$bundle_manifest")
+web_mcp_expected_sha256=${web_mcp_expected_sha256:--}
+preset_web_sections=''
+preset_mcp_rows=''
+if [ -f "$bundle_directory/router-presets.ini" ]; then
+    preset_web_sections=$(sed -n 's/^# qwen_web_sections=//p' \
+        "$bundle_directory/router-presets.ini")
+    case $preset_web_sections in
+        '-') preset_web_sections='' ;;
+    esac
+    preset_mcp_rows=$(awk '
+        /^[[:space:]]*\[/ {
+            section = $0
+            sub(/^[[:space:]]*\[/, "", section)
+            sub(/\][[:space:]]*$/, "", section)
+            next
+        }
+        /^[[:space:]]*LLAMA_ARG_MCP_SERVERS_CONFIG[[:space:]]*=/ {
+            value = $0
+            sub(/^[^=]*=[[:space:]]*/, "", value)
+            sub(/[[:space:]]+$/, "", value)
+            printf "%s\t%s\n", section, value
+        }
+    ' "$bundle_directory/router-presets.ini")
+fi
+if [ -z "$preset_web_sections" ]; then
+    # A preset naming no web section carries no execution grant, so a record or
+    # a configuration key here claims one the marker withholds.
+    if [ "$web_mcp_expected_sha256" != - ]; then
+        printf 'bundle manifest records web-mcp-manifest.tsv where its router preset names no web section\n' >&2
+        exit 1
+    fi
+    if [ -e "$bundle_directory/web-mcp-manifest.tsv" ]; then
+        printf 'bundle carries web-mcp-manifest.tsv that its manifest records as absent\n' >&2
+        exit 1
+    fi
+    if [ -n "$preset_mcp_rows" ]; then
+        printf 'bundle router preset names MCP configurations and its head marker names no web section\n' >&2
+        exit 1
+    fi
+    # An image server reaches the device from a section the web ledger emitted,
+    # so a lane armed over a preset naming none claims a grant no section
+    # carries.
+    if [ -f "$bundle_directory/router-presets.ini" ] &&
+        [ -n "$(sed -n 's/^# qwen_image_profile=//p' \
+            "$bundle_directory/router-presets.ini" | sed 's/^-$//')" ]; then
+        printf 'bundle router preset names an image profile and its head marker names no web section\n' >&2
+        exit 1
+    fi
+else
+    if [ "$web_mcp_expected_sha256" = - ]; then
+        printf 'bundle router preset names web section %s and its manifest records no web-mcp-manifest.tsv\n' \
+            "$preset_web_sections" >&2
+        printf 'assemble the bundle with remote/build-deployment-bundle.sh against that preset\n' >&2
+        exit 1
+    fi
+    if [ ! -r "$bundle_directory/web-mcp-manifest.tsv" ] || \
+        [ ! -f "$bundle_directory/web-mcp-manifest.tsv" ]; then
+        printf 'bundle member is unreadable: %s\n' \
+            "$bundle_directory/web-mcp-manifest.tsv" >&2
+        exit 1
+    fi
+    web_mcp_actual_sha256=$(sha256sum "$bundle_directory/web-mcp-manifest.tsv" |
+        cut -d ' ' -f 1)
+    if [ "$web_mcp_actual_sha256" != "$web_mcp_expected_sha256" ]; then
+        printf 'bundle member diverged: web-mcp-manifest.tsv expected=%s found=%s\n' \
+            "$web_mcp_expected_sha256" "$web_mcp_actual_sha256" >&2
+        exit 1
+    fi
+    # The image server rides inside the same configuration, so the record's
+    # fourth column states whether each section arms a generation and the
+    # preset own `# qwen_image_profile=` marker states whether it should. A row
+    # written before that column reads `-`, which is the withheld lane an
+    # unmarked preset also names, so an older bundle verifies unchanged.
+    preset_image_profile=$(sed -n 's/^# qwen_image_profile=//p' \
+        "$bundle_directory/router-presets.ini")
+    case $preset_image_profile in
+        '-') preset_image_profile='' ;;
+    esac
+    if [ -n "$preset_image_profile" ]; then
+        expected_image_column=image
+    else
+        expected_image_column=-
+    fi
+    recorded_mcp_rows=$(awk -F'\t' -v expected_image="$expected_image_column" '
+        /^[[:space:]]*($|#)/ { next }
+        {
+            if ((NF != 3 && NF != 4) || $1 == "" || $2 == "" ||
+                $3 !~ /^[0-9a-f]{64}$/) {
+                printf "web-mcp-manifest.tsv row is malformed: %s\n", $0 > "/dev/stderr"
+                failed = 1
+                next
+            }
+            image_column = (NF == 4) ? $4 : "-"
+            if (image_column != "image" && image_column != "-") {
+                printf "web-mcp-manifest.tsv row carries image_server %s: %s\n", \
+                    image_column, $0 > "/dev/stderr"
+                failed = 1
+                next
+            }
+            if (image_column != expected_image) {
+                printf "web-mcp-manifest.tsv records image_server %s for %s where the preset marker reads %s\n", \
+                    image_column, $1, expected_image > "/dev/stderr"
+                failed = 1
+                next
+            }
+            printf "%s\t%s\n", $1, $2
+        }
+        END { exit failed }
+    ' "$bundle_directory/web-mcp-manifest.tsv") || exit 1
+    if [ "$recorded_mcp_rows" != "$preset_mcp_rows" ]; then
+        printf 'web-mcp-manifest.tsv records configurations the bundled router preset does not name\n' >&2
+        exit 1
+    fi
+fi
 printf 'deployment_bundle_verified=%s directory=%s\n' \
     "$bundle_name" "$canonical_directory"
