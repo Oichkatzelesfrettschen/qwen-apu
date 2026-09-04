@@ -3113,6 +3113,10 @@ async function send() {
   turn('you', 'me').body.textContent = shown;
   history.push({ role: 'user', content });
   rememberUserMessage(content, shown);
+  // Persist the user turn ahead of the stream so a reload, a closed page, or a
+  // streaming error before the first assistant reply still finds it; the save
+  // after the assistant message below then carries the completed turn.
+  void saveConversation();
   // Every later mutation of `history` in this turn checks against this
   // snapshot, so a Clear during an awaited stream, approval, or fetch
   // discards the turn's result instead of writing it into the conversation
@@ -3366,10 +3370,13 @@ async function resolveConversationStore() {
   try {
     const database = await openConversationDatabase();
     const store = indexedDatabaseConversationStore(database);
-    // The list proves the object store answers, so a database that opened and
-    // then refuses every transaction falls through here rather than at the
-    // first save.
-    await store.list();
+    // A write-then-delete proves the object store accepts a readwrite
+    // transaction, not only a readonly one; a database that opens and lists
+    // but refuses every write (quota, private-browsing policy) falls through
+    // here rather than silently discarding every later save.
+    const probeId = `${CONVERSATION_RECORD_PREFIX}probe`;
+    await store.write({ id: probeId, title: '', updated: 0, messages: [] });
+    await store.remove(probeId);
     return store;
   } catch { /* the next store answers where IndexedDB refuses */ }
   try {
@@ -3744,7 +3751,11 @@ async function initConversations() {
     await switchConversation(candidate, routed === null);
     return;
   }
-  startNewConversation(false);
+  // A route naming an id neither store answers for is stale: routing the
+  // fresh conversation replaces it so the address bar names what is on
+  // screen, and a reload of that same URL opens the conversation it now
+  // holds instead of losing it behind an id the store never received.
+  startNewConversation(routed !== null);
   await renderConversationList();
 }
 

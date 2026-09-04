@@ -200,6 +200,7 @@ globalThis.webuiConversationTest = {
       messages: JSON.parse(JSON.stringify(conversationMessages)),
       history: JSON.parse(JSON.stringify(history)),
       toolCallSequence,
+      requestModel,
     };
   },
   secretsHeld() {
@@ -275,6 +276,16 @@ globalThis.webuiConversationTest = {
     if (!listener) throw new Error('the page registered no hashchange listener');
     listener();
   },
+  sendUserTurn(text) {
+    // Drives the page's own send() path rather than the fixture's manual
+    // rememberUserMessage()+saveConversation() pair, so the assertion covers
+    // what a keystroke and a click actually run. The call is fired and left
+    // unawaited: send() suspends on the chat/completions fetch this harness
+    // leaves pending, which is the interruption the test reads the store
+    // across.
+    $('#input').value = text;
+    $('#send').onclick().catch(error => { console.error('sendUserTurn failed', error); });
+  },
 };
 `;
 
@@ -300,6 +311,7 @@ function newPage({ indexedDatabase, localStorage, sessionStorage, hash = '' }) {
     console,
     crypto: { getRandomValues: array => { array[0] = 42; return array; } },
     document,
+    performance: { now: () => Date.now() },
     hashListeners,
     fetch(url, options = {}) {
       return new Promise((resolve, reject) => {
@@ -631,5 +643,121 @@ await answerBoot(reloadedDeniedPage);
 await flushPromises();
 assert.equal((await reloadedDeniedPage.api.list()).length, 0);
 assert.equal(reloadedDeniedPage.api.state().history.length, 0);
+
+// ---- a user turn persists ahead of the assistant's completion --------------
+
+const interruptedPage = newPage({
+  indexedDatabase: makeFakeIndexedDatabase(),
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(interruptedPage);
+const INTERRUPTED_TEXT = 'what does the chart on page 4 show';
+interruptedPage.api.sendUserTurn(INTERRUPTED_TEXT);
+await flushPromises();
+const interruptedId = interruptedPage.api.state().conversationId;
+assert.ok(interruptedId, 'sending a turn opened no conversation');
+takeRequest(interruptedPage.pendingRequests,
+  request => request.url === './v1/chat/completions',
+  'the chat completion the turn is still awaiting');
+const interruptedRecord = await interruptedPage.api.read(interruptedId);
+assert.ok(interruptedRecord,
+  'a reload before the assistant answered lost the whole conversation');
+assert.equal(interruptedRecord.messages.length, 1,
+  'the user turn did not persist ahead of the awaited completion');
+assert.equal(interruptedRecord.messages[0].role, 'user');
+assert.equal(interruptedRecord.messages[0].content, INTERRUPTED_TEXT,
+  'the persisted turn does not carry what was sent');
+
+// ---- store selection proves a write, not only a list ----------------------
+
+function makeWriteRefusingIndexedDatabase() {
+  /* Answers open, getAll, and get, and rejects every put -- the shape a quota
+     or a private-browsing policy leaves: the database opens and reads, and
+     every write throws. A store selection that trusts list() alone stops
+     here; one that also proves a write falls through to localStorage. */
+  const databases = new Map();
+  const settle = (request, produce) => {
+    setImmediate(() => {
+      try {
+        request.result = produce();
+        if (request.onsuccess) request.onsuccess({ target: request });
+      } catch (error) {
+        request.error = error;
+        if (request.onerror) request.onerror({ target: request });
+      }
+    });
+    return request;
+  };
+  const fail = request => {
+    setImmediate(() => {
+      request.error = new Error('write refused');
+      if (request.onerror) request.onerror({ target: request });
+    });
+    return request;
+  };
+  const newRequest = () => ({ result: undefined, error: null, onsuccess: null, onerror: null });
+  return {
+    databases,
+    open(name) {
+      const request = newRequest();
+      const fresh = !databases.has(name);
+      if (fresh) databases.set(name, new Map());
+      const stores = databases.get(name);
+      const database = {
+        name,
+        objectStoreNames: { contains: storeName => stores.has(storeName) },
+        createObjectStore(storeName) {
+          stores.set(storeName, new Map());
+          return {};
+        },
+        transaction(storeName) {
+          const transaction = { error: null, onabort: null };
+          transaction.objectStore = () => {
+            const records = stores.get(storeName);
+            if (!records) throw new Error(`no object store named ${storeName}`);
+            return {
+              getAll: () => settle(newRequest(), () => [...records.values()]),
+              get: key => settle(newRequest(), () => records.get(key)),
+              put: () => fail(newRequest()),
+              delete: () => fail(newRequest())
+            };
+          };
+          return transaction;
+        }
+      };
+      request.result = database;
+      setImmediate(() => {
+        if (fresh && request.onupgradeneeded) request.onupgradeneeded({ target: request });
+        if (request.onsuccess) request.onsuccess({ target: request });
+      });
+      return request;
+    }
+  };
+}
+
+const writeRefusingPage = newPage({
+  indexedDatabase: makeWriteRefusingIndexedDatabase(),
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(writeRefusingPage);
+assert.equal(await writeRefusingPage.api.storeName(), 'localstorage',
+  'a database that opens and lists but refuses every write stayed selected on IndexedDB');
+
+// ---- a route naming an id no store answers for is replaced -----------------
+
+const staleHashPage = newPage({
+  indexedDatabase: makeFakeIndexedDatabase(),
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage(),
+  hash: '#/c/absent0000'
+});
+await answerBoot(staleHashPage);
+await flushPromises();
+const staleOpenedId = staleHashPage.api.state().conversationId;
+assert.ok(staleOpenedId, 'an unresolved routed load opened no conversation');
+assert.equal(staleHashPage.location.hash, `#/c/${staleOpenedId}`,
+  'a stale route was left naming the absent conversation instead of the one now open');
 
 console.log('fallback_webui_conversations=accepted');
