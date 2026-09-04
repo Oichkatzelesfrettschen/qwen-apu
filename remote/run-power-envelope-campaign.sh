@@ -204,9 +204,15 @@ run_one_arm() {
     printf 'power_envelope_campaign=arm_start model=%s arm=%s profile=%s\n' \
         "$model_id" "$arm_name" "$lease_profile"
     set +e
+    # Each arm restores the governor before the next one starts, so every arm
+    # writes its manual mask onto a device sitting at the 400 MHz idle step.
+    # The firmware took 26.8 seconds to raise the delivered clock from there on
+    # this part, so the proof deadline is thirty seconds rather than the ten a
+    # warm device needs.
     env \
         PATH="$campaign_path" LC_ALL=C PYTHONDONTWRITEBYTECODE=1 \
         QWEN_COMPUTE_STATE_REVISION="$transaction_revision" \
+        QWEN_COMPUTE_STATE_CLOCK_DEADLINE_S=30 \
         "$lease_command" "$lease_profile" \
         "$arm_command" "$campaign_directory" "$arm_name" "$model_id" \
         >"$campaign_directory/arms/.$arm_name.stdout" \

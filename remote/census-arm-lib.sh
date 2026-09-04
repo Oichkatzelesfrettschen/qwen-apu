@@ -413,10 +413,14 @@ census_engine_clock_write_level() {
 census_engine_clock_select() {
     census_clock_table=$2/$1
     census_engine_clock_write "$3" "$census_clock_table"
-    # The firmware moves the starred level after the write returns: on the
-    # appliance a readback in the same instant still starred the idle step
-    # where one taken a second later starred the written one, so the readback
-    # polls for up to ten seconds before the selection is judged.
+    # The starred step follows the clock the part delivers rather than the mask
+    # the write set, and the SMU10 firmware raises that clock on its own
+    # schedule. From a cold 400 MHz idle the appliance held the idle step for
+    # 26.8 seconds after a manual level-2 mask reached pp_dpm_sclk and then
+    # starred level 2 with freq1_input at 1100 MHz, so a ten-second poll refuses
+    # or accepts by how long the device sat idle before the arm. The deadline is
+    # forty-five seconds, and a selection that lands early breaks out at once.
+    census_clock_deadline_s=${QWEN_COMPUTE_STATE_SELECT_DEADLINE_S:-45}
     census_clock_attempt=0
     while :; do
         census_clock_readback=$(census_engine_clock_selected "$census_clock_table") || {
@@ -425,7 +429,7 @@ census_engine_clock_select() {
             exit 2
         }
         if [ "$4" != 1 ] || [ "${census_clock_readback%% *}" = "$3" ] || \
-           [ "$census_clock_attempt" -ge 100 ]; then
+           [ "$census_clock_attempt" -ge "$((census_clock_deadline_s * 10))" ]; then
             break
         fi
         census_clock_attempt=$((census_clock_attempt + 1))
