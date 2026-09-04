@@ -172,6 +172,13 @@ const testApi = browserContext.webuiModelStateTest;
 const modelA = 'model-A';
 const modelB = 'model B/8k';
 
+// The page reads webui/roster.json from the directory it is served from and
+// tolerates its absence, so this harness answers 404 and every assertion below
+// holds against a picker decorated by nothing.
+const featureRosterRequest = takeRequest(
+  request => request.url === './roster.json', 'feature roster');
+featureRosterRequest.resolve(jsonResponse({ error: 'not found' }, 404));
+
 const rosterRequest = takeRequest(
   request => request.url === './v1/models', 'initial model roster');
 rosterRequest.resolve(jsonResponse({ data: [{ id: modelA }, { id: modelB }] }));

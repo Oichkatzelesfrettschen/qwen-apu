@@ -1,0 +1,10 @@
+arm	footer
+01-P	# samples=1027 achieved_period_ns=5000179 mean_sample_cost_ns=513442
+02-I0	# samples=994 achieved_period_ns=5000060 mean_sample_cost_ns=531757
+03-I0	# samples=991 achieved_period_ns=5000066 mean_sample_cost_ns=524236
+04-P	# samples=995 achieved_period_ns=5002170 mean_sample_cost_ns=511596
+05-I0	# samples=1001 achieved_period_ns=5000067 mean_sample_cost_ns=530838
+06-I1	# samples=1042 achieved_period_ns=5003199 mean_sample_cost_ns=545079
+07-I1	# samples=986 achieved_period_ns=5000062 mean_sample_cost_ns=505420
+08-I0	# samples=996 achieved_period_ns=5000066 mean_sample_cost_ns=518761
+09-S	# samples=6134 achieved_period_ns=5000144 mean_sample_cost_ns=614128
