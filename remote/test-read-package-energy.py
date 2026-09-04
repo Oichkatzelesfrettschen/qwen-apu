@@ -43,9 +43,8 @@ def create_powercap_fixture(base_directory, package_uj=1000000, core_uj=400000,
 
 def run_reader(arguments):
     return subprocess.run(
-        [sys.executable, READER] + arguments,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        [sys.executable, READER, *arguments],
+        capture_output=True,
         text=True,
         check=False,
     )
@@ -71,8 +70,10 @@ def write_sample_record(path, samples, period_ns=50000000,
         handle.write(f"core_wrap_uj\t{WRAP_MAX_UJ + 1}\n")
         handle.write("sampler_pid\t1\n")
         handle.write("monotonic_ns\tpackage_uj\tcore_uj\tsample_cost_ns\n")
-        for monotonic_ns, package_uj, core_uj in samples:
-            handle.write(f"{monotonic_ns}\t{package_uj}\t{core_uj}\t1000\n")
+        handle.writelines(
+            f"{monotonic_ns}\t{package_uj}\t{core_uj}\t1000\n"
+            for monotonic_ns, package_uj, core_uj in samples
+        )
         handle.write(f"footer_sample_count\t{len(samples)}\n")
         handle.write("footer_unreadable_count\t0\n")
         handle.write(f"footer_achieved_period_ns\t{period_ns}\n")

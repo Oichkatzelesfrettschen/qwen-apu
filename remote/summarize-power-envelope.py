@@ -6,7 +6,10 @@ arm measured: it joins the four arms of a checkpoint into one table, reads the
 two control arms against each other under the span criterion
 `evidence/power-envelope/README.md` registers, and reads each candidate against
 the control mean under the wider of that checkpoint's control spread and this
-machine's own retained spread.
+machine's own retained spread. An arm is read only where its served runner and
+its energy reader both returned zero and its window came back bracketed, so a
+refused arm reads `unresolved` rather than contributing the rate it still
+retains.
 
 The span criterion is 20% of the control mean, which is the single-arm span this
 tree carries. A checkpoint whose controls differ by more than that ends
@@ -49,6 +52,24 @@ def read_key_value(path):
     except OSError:
         return None
     return rows
+
+
+def readable_rate(rows):
+    """The rate of an arm that completed, or None.
+
+    An arm carries a decode rate whether or not the runner, the energy reader,
+    and the bracket selection accepted it, so a verdict that read the rate alone
+    could call a refused arm faster than its control. The three fields the arm
+    already retains are what admit it: the served runner's own status, the energy
+    reader's status, and the window coverage the bracket selection reported.
+    """
+    if rows is None:
+        return None
+    if rows.get("served_status") != "0" or rows.get("energy_status") != "0":
+        return None
+    if rows.get("window_coverage") != "bracketed":
+        return None
+    return as_float(rows.get("decode_tok_s"))
 
 
 def as_float(value):
@@ -94,9 +115,11 @@ def summarize(campaign_directory, summary_path):
     if not checkpoints:
         raise SystemExit(f"campaign holds no readable arm: {campaign_directory}")
     table_lines = [
-        "model_id\tarm\tprofile\tdecode_tok_s\tpackage_watts\tcore_watts\t"
-        "package_watts_outer\tgfxclk_delivered_mhz\tfclk_mhz\ttctl_peak_c\t"
-        "edge_peak_c\twindow_coverage"
+        (
+            "model_id\tarm\tprofile\tdecode_tok_s\tpackage_watts\tcore_watts\t"
+            "package_watts_outer\tgfxclk_delivered_mhz\tfclk_mhz\ttctl_peak_c\t"
+            "edge_peak_c\twindow_coverage"
+        )
     ]
     verdict_lines = []
     for model_id in sorted(checkpoints):
@@ -126,11 +149,12 @@ def summarize(campaign_directory, summary_path):
                     )
                 )
             )
-        opening = as_float((arms.get(ARM_ROLES[0]) or {}).get("decode_tok_s"))
-        closing = as_float((arms.get(ARM_ROLES[3]) or {}).get("decode_tok_s"))
+        opening = readable_rate(arms.get(ARM_ROLES[0]))
+        closing = readable_rate(arms.get(ARM_ROLES[3]))
         if opening is None or closing is None:
             verdict_lines.append(
-                f"{model_id}\tsweep\tunresolved\tone control arm carries no rate"
+                f"{model_id}\tsweep\tunresolved\tone control arm carries no "
+                "accepted rate"
             )
             continue
         control_mean = (opening + closing) / 2
@@ -148,10 +172,11 @@ def summarize(campaign_directory, summary_path):
         )
         for role in ARM_ROLES[1:3]:
             rows = arms.get(role)
-            candidate = as_float((rows or {}).get("decode_tok_s"))
+            candidate = readable_rate(rows)
             if candidate is None:
                 verdict_lines.append(
-                    f"{model_id}\t{role}\tunresolved\tthe arm carries no rate"
+                    f"{model_id}\t{role}\tunresolved\tthe arm carries no "
+                    "accepted rate"
                 )
                 continue
             relative = (candidate - control_mean) / control_mean
