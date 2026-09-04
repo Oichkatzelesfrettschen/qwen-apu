@@ -33,6 +33,12 @@ sys.path.insert(0, SERVICE_DIRECTORY)
 
 API_KEY = "image-api-key-TESTONLY7Q2X"
 PAGE_ORIGIN = "http://127.0.0.1:8080"
+# The exposure arms name a literal in the Host header while the socket stays on
+# the loopback, so the gate is measured on a host holding no second address.
+EXPOSED_ADDRESS = "192.0.2.10"
+# The name arms present a synthetic mDNS host in the Host header, so the arm
+# reads the admitted set rather than whatever this machine advertises.
+EXPOSED_NAME = "qwen-test.local"
 STARTUP_SECONDS = 20.0
 REQUEST_SECONDS = 60.0
 
@@ -107,6 +113,10 @@ class ServiceSession:
         lease_wait_seconds=None,
         priority_wrapper=None,
         procfs_root=None,
+        lan_exposure=None,
+        lan_name=None,
+        open_lan=False,
+        extra_origins=(),
     ):
         self.directory = directory
         self.state_directory = os.path.join(directory, "state")
@@ -134,6 +144,17 @@ class ServiceSession:
             "--http-port",
             "0",
         ]
+        if lan_exposure is not None:
+            argv.extend(["--lan-exposure", lan_exposure])
+        if lan_name is not None:
+            argv.extend(["--lan-name", lan_name])
+        for extra_origin in extra_origins:
+            argv.extend(["--origin", extra_origin])
+        if open_lan:
+            # The opt-in reads no key file, so the launch hands it the empty
+            # path a keyless session passes rather than the fixture key.
+            argv.extend(["--open-lan"])
+            argv[argv.index("--api-key-file") + 1] = ""
         for name, value in (runtime_environment or {}).items():
             argv.extend(["--runtime-env", f"{name}={value}"])
         if priority_wrapper is not None:
@@ -286,6 +307,10 @@ class ImageServiceTest(unittest.TestCase):
         lease_wait_seconds=None,
         priority_wrapper=None,
         procfs_root=None,
+        lan_exposure=None,
+        lan_name=None,
+        open_lan=False,
+        extra_origins=(),
     ):
         directory = tempfile.mkdtemp(dir=self.temporary.name)
         if profiles is None:
@@ -298,6 +323,10 @@ class ImageServiceTest(unittest.TestCase):
             lease_wait_seconds,
             priority_wrapper,
             procfs_root,
+            lan_exposure,
+            lan_name,
+            open_lan,
+            extra_origins,
         )
         self.sessions.append(session)
         self.addCleanup(self.quiet_stop, session)
@@ -1059,6 +1088,167 @@ class ImageServiceTest(unittest.TestCase):
         )
         self.assertEqual(status, 403)
         self.assertNotIn("Access-Control-Allow-Origin", headers)
+
+    def test_the_exposure_admits_its_literal_and_refuses_every_other_host(self):
+        """The Host set gains exactly one literal and the bearer still gates."""
+        session = self.start(lan_exposure=EXPOSED_ADDRESS)
+        for description, host_header, expected in (
+            ("loopback", f"127.0.0.1:{session.http_port}", 200),
+            ("exposed", f"{EXPOSED_ADDRESS}:{session.http_port}", 200),
+            ("foreign literal", f"198.51.100.7:{session.http_port}", 403),
+            ("resolved name", f"rebind.example.net:{session.http_port}", 403),
+        ):
+            with self.subTest(host=description):
+                status, _, body = session.authorized_http(
+                    "/health", {"Host": host_header}
+                )
+                self.assertEqual(status, expected, body)
+        # The credential rather than the address is the gate: an exposed reader
+        # holding no bearer reads 401 the way a loopback one does.
+        status, _, _ = session.http(
+            "/health", {"Host": f"{EXPOSED_ADDRESS}:{session.http_port}"}
+        )
+        self.assertEqual(status, 401)
+
+    def test_the_exposure_name_joins_the_admitted_host_set(self):
+        """The mDNS name is a second admitted host and the bearer still gates."""
+        session = self.start(
+            lan_exposure=EXPOSED_ADDRESS, lan_name=EXPOSED_NAME
+        )
+        for description, host_header, expected in (
+            ("exposed literal", f"{EXPOSED_ADDRESS}:{session.http_port}", 200),
+            ("exposed name", f"{EXPOSED_NAME}:{session.http_port}", 200),
+            ("exposed name uppercased", f"QWEN-TEST.LOCAL:{session.http_port}", 200),
+            ("foreign name", f"rebind.example.net:{session.http_port}", 403),
+        ):
+            with self.subTest(host=description):
+                status, _, body = session.authorized_http(
+                    "/health", {"Host": host_header}
+                )
+                self.assertEqual(status, expected, body)
+        status, _, _ = session.http(
+            "/health", {"Host": f"{EXPOSED_NAME}:{session.http_port}"}
+        )
+        self.assertEqual(status, 401)
+
+    def test_the_open_opt_in_reads_without_a_bearer_and_keeps_the_host_set(self):
+        """The bearer goes; the Host set and the Origin allowlist stay.
+
+        The launch hands an empty --api-key-file, which is what a keyless
+        session passes, so the arm also measures that the service reads no key
+        file under the opt-in rather than exiting on the unconfigured path.
+        """
+        session = self.start(
+            lan_exposure=EXPOSED_ADDRESS, lan_name=EXPOSED_NAME, open_lan=True
+        )
+        for description, host_header, expected in (
+            ("exposed literal", f"{EXPOSED_ADDRESS}:{session.http_port}", 200),
+            ("exposed name", f"{EXPOSED_NAME}:{session.http_port}", 200),
+            ("foreign name", f"rebind.example.net:{session.http_port}", 403),
+        ):
+            with self.subTest(host=description):
+                status, _, body = session.http("/health", {"Host": host_header})
+                self.assertEqual(status, expected, body)
+        # An empty bearer is what the page sends with no key stored, and the
+        # comparison it would have met is gone rather than trivially satisfied.
+        status, _, _ = session.http(
+            "/health",
+            {"Host": f"{EXPOSED_NAME}:{session.http_port}", "Authorization": "Bearer "},
+        )
+        self.assertEqual(status, 200)
+        status, headers, _ = session.http(
+            "/health",
+            {"Origin": "http://elsewhere.example"},
+            method="OPTIONS",
+        )
+        self.assertEqual(status, 403)
+        self.assertNotIn("Access-Control-Allow-Origin", headers)
+
+    def test_two_page_origins_are_admitted_for_one_appliance(self):
+        """A page reachable at both hosts sends either Origin."""
+        name_origin = f"http://{EXPOSED_NAME}:8080"
+        session = self.start(
+            lan_exposure=EXPOSED_ADDRESS,
+            lan_name=EXPOSED_NAME,
+            extra_origins=(name_origin,),
+        )
+        for origin, expected in (
+            (PAGE_ORIGIN, 204),
+            (name_origin, 204),
+            ("http://elsewhere.example", 403),
+        ):
+            with self.subTest(origin=origin):
+                status, headers, _ = session.http(
+                    "/health", {"Origin": origin}, method="OPTIONS"
+                )
+                self.assertEqual(status, expected)
+                if expected == 204:
+                    self.assertEqual(
+                        headers.get("Access-Control-Allow-Origin"), origin
+                    )
+
+    def test_the_open_opt_in_requires_the_exposure_it_opens(self):
+        """--open-lan removes a credential from a listener the operator exposed."""
+        directory = tempfile.mkdtemp(dir=self.temporary.name)
+        state_directory = os.path.join(directory, "state")
+        os.makedirs(state_directory, mode=0o700)
+        radv_icd_path = os.path.join(directory, "fake-radv-icd.json")
+        with open(radv_icd_path, "w", encoding="ascii") as handle:
+            handle.write("{}\n")
+        completed = subprocess.run(
+            [
+                sys.executable, SERVICE_PATH,
+                "--state-dir", state_directory,
+                "--api-key-file", "",
+                "--origin", PAGE_ORIGIN,
+                "--http-host", "127.0.0.1",
+                "--http-port", "0",
+                "--open-lan",
+            ],
+            env={**os.environ, "QWEN_RADV_ICD": radv_icd_path},
+            capture_output=True,
+            text=True,
+            timeout=STARTUP_SECONDS,
+        )
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("--lan-exposure", completed.stderr)
+
+    def test_the_default_refuses_the_exposed_literal_in_a_host_header(self):
+        """A launch naming no exposure keeps the loopback Host set."""
+        session = self.start()
+        status, _, _ = session.authorized_http(
+            "/health", {"Host": f"{EXPOSED_ADDRESS}:{session.http_port}"}
+        )
+        self.assertEqual(status, 403)
+
+    def test_the_wildcard_bind_requires_the_exposure_opt_in(self):
+        """--http-host 0.0.0.0 alone widens nothing."""
+        directory = tempfile.mkdtemp(dir=self.temporary.name)
+        state_directory = os.path.join(directory, "state")
+        os.makedirs(state_directory, mode=0o700)
+        api_key_path = os.path.join(directory, "api.key")
+        with open(api_key_path, "w", encoding="ascii") as handle:
+            handle.write(API_KEY + "\n")
+        os.chmod(api_key_path, 0o600)
+        radv_icd_path = os.path.join(directory, "fake-radv-icd.json")
+        with open(radv_icd_path, "w", encoding="ascii") as handle:
+            handle.write("{}\n")
+        completed = subprocess.run(
+            [
+                sys.executable, SERVICE_PATH,
+                "--state-dir", state_directory,
+                "--api-key-file", api_key_path,
+                "--origin", PAGE_ORIGIN,
+                "--http-host", "0.0.0.0",  # noqa: S104 -- the refusal under test
+                "--http-port", "0",
+            ],
+            env={**os.environ, "QWEN_RADV_ICD": radv_icd_path},
+            capture_output=True,
+            text=True,
+            timeout=STARTUP_SECONDS,
+        )
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("--lan-exposure", completed.stderr)
 
     def test_health_reports_the_service_state(self):
         session = self.start()

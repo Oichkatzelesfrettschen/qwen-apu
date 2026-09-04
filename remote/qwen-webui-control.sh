@@ -410,13 +410,20 @@ case $action in
                               QWEN_WEB_TOKEN_KEY_FILE QWEN_WEB_PROFILE \
                               QWEN_WEB_PROVIDER QWEN_WEB_PROFILES \
                               QWEN_WEB_BROKER_ORIGIN \
+                              QWEN_WEB_LAN QWEN_WEB_LAN_ADDRESS \
+                              QWEN_WEB_LAN_NAME QWEN_WEB_LAN_OPEN \
                               QWEN_REQUIRE_API_KEY \
                               QWEN_WEB_AUTHORIZER_READY \
+                              QWEN_WEB_SEARXNG QWEN_SEARXNG_PROGRAM \
+                              QWEN_SEARXNG_PORT QWEN_SEARXNG_SETTINGS_TEMPLATE \
+                              QWEN_SEARXNG_LAUNCH_COMMAND \
+                              QWEN_SEARXNG_START_TIMEOUT \
                               QWEN_IMAGE_SERVICE QWEN_IMAGE_SERVICE_PROGRAM \
                               QWEN_IMAGE_PROFILES_JSON QWEN_IMAGE_PAGE_ORIGIN \
                               QWEN_IMAGE_PROFILE QWEN_IMAGE_TOKEN_KEY_FILE \
                               QWEN_IMAGE_STATE_DIR \
                               QWEN_IMAGE_SERVICE_SOCKET \
+                              QWEN_IMAGE_HTTP_PORT \
                               QWEN_IMAGE_PRIORITY_WRAPPER \
                               QWEN_IMAGE_LEASE_WAIT_S \
                               QWEN_RADV_ICD \

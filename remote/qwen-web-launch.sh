@@ -2,17 +2,25 @@
 set -eu
 
 # Start the appliance in router mode against the web preset file that
-# remote/build-web-presets.sh produces, on the loopback alone.
+# remote/build-web-presets.sh produces, on the loopback by default.
 #
 # A web preset section reaches a network the appliance otherwise never touches:
 # a validator-gated section carries LLAMA_ARG_MCP_SERVERS_CONFIG, and the
 # configured server performs searches and fetches on the model's behalf. The
 # appliance binds 0.0.0.0 by default so the laptop serves the LAN, which would
 # put that retrieval capability on every host of that network. This wrapper
-# therefore sets QWEN_BIND_HOST=127.0.0.1 and refuses a caller who asked for any
-# other listener, rather than forcing the value silently: the operator who typed
-# 0.0.0.0 wants an exposure this launch declines to provide, and a refusal says
-# so where a rewrite would leave the request looking honoured.
+# therefore sets QWEN_BIND_HOST=127.0.0.1 by default and refuses a caller who
+# asked for any other listener without the opt-in below, rather than forcing the
+# value silently: the operator who typed 0.0.0.0 wants an exposure the default
+# declines to provide, and a refusal says so where a rewrite would leave the
+# request looking honoured.
+#
+# QWEN_WEB_LAN=1 with QWEN_WEB_LAN_ADDRESS naming a routable IPv4 literal is
+# that exposure, granted deliberately. remote/web-lan-exposure.sh holds the six
+# conditions it requires; the router, the approval broker, and the artifact
+# listener then reach the named address with the Web UI bearer required on every
+# route of each, and the single-use grant and the approval dialog stay the whole
+# execution gate.
 #
 # The wrapper reads every path its sections name, because a preset persists
 # across the generation that resolved it: an MCP configuration llama-server
@@ -47,6 +55,7 @@ if [ "$#" -gt 1 ]; then
     printf 'usage: %s [paced-60|low-serialized|low-async]\n' "$0" >&2
     printf 'web preset file comes from QWEN_WEB_PRESETS, default $HOME/qwen-webui-state/web-presets.ini\n' >&2
     printf 'the listener is 127.0.0.1; QWEN_BIND_HOST set to any other value refuses the launch\n' >&2
+    printf 'QWEN_WEB_LAN=1 with QWEN_WEB_LAN_ADDRESS naming a routable IPv4 literal serves the network instead, with the Web UI bearer required on every route\n' >&2
     exit 2
 fi
 
@@ -96,15 +105,32 @@ else
     web_presets=${QWEN_WEB_PRESETS:-$state_directory/web-presets.ini}
 fi
 
+# QWEN_WEB_LAN=1 is the operator's explicit decision to serve this lane on the
+# network; remote/web-lan-exposure.sh states what the decision requires and
+# admits it against the preset and the API key below, once both are resolved.
 # The caller's own listener request is read before it is replaced, so an
-# explicit LAN bind refuses rather than serving retrieval on the loopback while
-# the operator believes the LAN is listening.
-requested_bind_host=${QWEN_BIND_HOST:-127.0.0.1}
-if [ "$requested_bind_host" != 127.0.0.1 ]; then
-    printf 'web router mode serves the loopback alone, and QWEN_BIND_HOST requests %s\n' \
-        "$requested_bind_host" >&2
-    printf 'a web preset section reaches the network through its MCP server; unset QWEN_BIND_HOST or set it to 127.0.0.1\n' >&2
+# explicit LAN bind under the default refuses rather than serving retrieval on
+# the loopback while the operator believes the LAN is listening.
+web_lan_policy=$script_directory/web-lan-exposure.sh
+if [ ! -r "$web_lan_policy" ]; then
+    printf 'the LAN exposure policy is unreadable: %s\n' "$web_lan_policy" >&2
     exit 2
+fi
+# shellcheck source=remote/web-lan-exposure.sh
+. "$web_lan_policy"
+# The policy reads both decisions, so a loopback launch carrying the open
+# opt-in refuses here rather than at the listener it never widens.
+resolve_web_lan_mode
+web_lan_exposure=${QWEN_WEB_LAN:-0}
+web_lan_open=${QWEN_WEB_LAN_OPEN:-0}
+if [ "$web_lan_exposure" = 0 ]; then
+    requested_bind_host=${QWEN_BIND_HOST:-127.0.0.1}
+    if [ "$requested_bind_host" != 127.0.0.1 ]; then
+        printf 'web router mode serves the loopback alone, and QWEN_BIND_HOST requests %s\n' \
+            "$requested_bind_host" >&2
+        printf 'a web preset section reaches the network through its MCP server; unset QWEN_BIND_HOST or set it to 127.0.0.1, or set QWEN_WEB_LAN=1 to serve the network deliberately\n' >&2
+        exit 2
+    fi
 fi
 
 if [ ! -r "$web_presets" ]; then
@@ -225,8 +251,17 @@ if grep -qx '# qwen-web-presets: unvalidated-depth-override' "$web_presets"; the
 else
     depth_marker_state=absent
 fi
-printf 'web_launch presets=%s unvalidated_depth_marker=%s authorizer_ready=%s bind=127.0.0.1\n' \
-    "$web_presets" "$depth_marker_state" "${QWEN_WEB_AUTHORIZER_READY:-0}"
+# The exposure is admitted here rather than at the caller's first line because
+# it reads the preset's two research markers, and the preset is what the launch
+# just proved readable and provenance-marked.
+if [ "$web_lan_exposure" = 1 ]; then
+    admit_web_lan_exposure "$web_presets" "$state_directory/api.key"
+fi
+router_bind_host=${QWEN_BIND_HOST:-127.0.0.1}
+printf 'web_launch presets=%s unvalidated_depth_marker=%s authorizer_ready=%s bind=%s lan_exposure=%s lan_address=%s lan_name=%s lan_open=%s\n' \
+    "$web_presets" "$depth_marker_state" "${QWEN_WEB_AUTHORIZER_READY:-0}" \
+    "$router_bind_host" "$web_lan_exposure" "${QWEN_WEB_LAN_ADDRESS:--}" \
+    "${QWEN_WEB_LAN_NAME:--}" "$web_lan_open"
 
 # The approval broker's lifetime is this launch's. A section reaching the
 # network through its MCP server signs each search from one human approval, and
@@ -244,11 +279,55 @@ printf 'web_launch presets=%s unvalidated_depth_marker=%s authorizer_ready=%s bi
 # the refusal names the rule. The path alone crosses into the child; the
 # contents stay in the broker's address space.
 QWEN_WEB_BROKER=1
-# Browser calls and broker approvals share the server API key. Web mode always
-# creates or reuses the API key; callers cannot downgrade the session to the
-# unauthenticated default used by ordinary local serving.
-QWEN_REQUIRE_API_KEY=1
-QWEN_WEB_BROKER_PORT=${QWEN_WEB_BROKER_PORT:-8571}
+# Browser calls and broker approvals share the server API key, and web mode
+# creates or reuses it, so a caller cannot downgrade the session to the
+# unauthenticated default ordinary local serving takes. QWEN_WEB_LAN_OPEN=1 is
+# the one decision that removes it, and it removes it from the router, the
+# broker's signing routes, and the artifact listener together, so the three
+# listeners state one policy.
+if [ "$web_lan_open" = 1 ]; then
+    QWEN_REQUIRE_API_KEY=0
+else
+    QWEN_REQUIRE_API_KEY=1
+fi
+# A bare LAN page URL derives the broker and artifact origins as
+# router_port+1 and router_port+2 (webui/index.html's
+# BROKER_LAN_PORT_OFFSET/ARTIFACT_LAN_PORT_OFFSET), the same derivation
+# qwen-launch.sh applies to a direct LAN launch, so this wrapper matches it
+# rather than fixing 8571: a router port of 8080 pairing with broker 8571
+# leaves every web approval and artifact load on this launch targeting a port
+# the advertised URL never names.
+if [ "$web_lan_exposure" = 1 ]; then
+    router_server_port=${QWEN_SERVER_PORT:-8080}
+    # A derived pair overflows the valid port range above 65533, the same
+    # ceiling remote/qwen-lan-launch.sh caps QWEN_SERVER_PORT at and
+    # remote/qwen-launch.sh enforces on its own direct LAN path; this
+    # wrapper's own derivation reaches qwen-launch.sh with the value already
+    # set, which would otherwise bypass that later check.
+    if [ -z "${QWEN_WEB_BROKER_PORT:-}" ] && [ "$router_server_port" -gt 65533 ]; then
+        printf 'QWEN_SERVER_PORT leaves room for the broker and artifact ports above it: %s\n' \
+            "$router_server_port" >&2
+        exit 2
+    fi
+    # webui/index.html derives the broker and artifact origins from the page's
+    # own loaded port at fixed offsets (BROKER_LAN_PORT_OFFSET=1,
+    # ARTIFACT_LAN_PORT_OFFSET=2) whenever the page was reached at a bare LAN
+    # URL rather than one carrying an explicit `?broker=`/`?artifacts=` query
+    # parameter, and the bare URL is exactly what this launch advertises. An
+    # explicit override at another port would serve a broker and an artifact
+    # listener the advertised URL's own page cannot reach, so it is refused
+    # here rather than silently diverging from what the browser assumes.
+    if [ -n "${QWEN_WEB_BROKER_PORT:-}" ] &&
+        [ "$QWEN_WEB_BROKER_PORT" -ne $((router_server_port + 1)) ]; then
+        printf 'QWEN_WEB_BROKER_PORT names %s where the advertised page URL derives %s\n' \
+            "$QWEN_WEB_BROKER_PORT" "$((router_server_port + 1))" >&2
+        printf 'webui/index.html assumes the router port plus one for the broker and plus two for the artifact listener on a bare LAN URL; open the page with an explicit ?broker= query parameter to serve another port\n' >&2
+        exit 2
+    fi
+    QWEN_WEB_BROKER_PORT=${QWEN_WEB_BROKER_PORT:-$((router_server_port + 1))}
+else
+    QWEN_WEB_BROKER_PORT=${QWEN_WEB_BROKER_PORT:-8571}
+fi
 QWEN_WEB_STATE_DIR=${QWEN_WEB_STATE_DIR:-$state_directory/web-mcp}
 signing_key_file=${QWEN_WEB_TOKEN_KEY_FILE:-}
 refuse_signing_key() {
@@ -454,6 +533,55 @@ if [ -n "${QWEN_WEB_PROVIDER:-}" ] && \
 fi
 QWEN_WEB_PROVIDER=$preset_provider
 export QWEN_WEB_PROFILE QWEN_WEB_PROVIDER
+
+# Provider searxng names one local instance, and this launch owns it. The
+# ledger row the preset was generated from carries the endpoint, so the URL is
+# read from the row rather than from an environment default, and the row is
+# required to name the loopback instance this chain starts: a remote endpoint
+# would put the appliance's searches on a host the launch neither started nor
+# tears down. The port has to be free here, because the session's readiness
+# gate reads a socket and a child process together and a foreign listener on
+# that port turns the launch into a refusal one link later, after the model has
+# begun loading.
+#
+# QWEN_WEB_SEARXNG travels to qwen-webui-session.sh through
+# qwen-webui-control.sh, which forwards it inside the tmux command string; the
+# session starts remote/searxng-launch.sh as a guarded child, proves GET
+# /healthz answers, and only then starts the capacity server, so a dead
+# instance ends the launch before any weight reaches the device.
+if [ "$preset_provider" = searxng ]; then
+    profile_searxng_url=$(awk -F'\t' -v profile="$QWEN_WEB_PROFILE" \
+        '$1 == profile { print $17; exit }' "$QWEN_WEB_PROFILES")
+    case $profile_searxng_url in
+        http://127.0.0.1:[0-9]*)
+            searxng_port=${profile_searxng_url#http://127.0.0.1:}
+            ;;
+        *)
+            searxng_port=''
+            ;;
+    esac
+    case $searxng_port in
+        '' | *[!0-9]*)
+            printf 'profile %s names searxng_url %s, and this launch starts the loopback instance alone\n' \
+                "$QWEN_WEB_PROFILE" "${profile_searxng_url:-<absent>}" >&2
+            printf 'set searxng_url to http://127.0.0.1:PORT in %s\n' \
+                "$QWEN_WEB_PROFILES" >&2
+            exit 2
+            ;;
+    esac
+    if command -v ss >/dev/null 2>&1 && \
+       ss -ltn "sport = :$searxng_port" 2>/dev/null | grep -q ":$searxng_port"; then
+        printf 'port %s already carries a listener, and this launch starts its own search instance there\n' \
+            "$searxng_port" >&2
+        printf 'stop it with remote/searxng-launch.sh stop, or remote/qwen-teardown.sh\n' >&2
+        exit 2
+    fi
+    QWEN_WEB_SEARXNG=1
+    QWEN_SEARXNG_PORT=$searxng_port
+    export QWEN_WEB_SEARXNG QWEN_SEARXNG_PORT
+    printf 'web_launch searxng=owned url=%s port=%s\n' \
+        "$profile_searxng_url" "$searxng_port"
+fi
 printf 'web_launch broker_port=%s broker_state_dir=%s signing_key=configured profile=%s provider=%s review_section=%s models_max=%s\n' \
     "$QWEN_WEB_BROKER_PORT" "$QWEN_WEB_STATE_DIR" "$QWEN_WEB_PROFILE" \
     "$QWEN_WEB_PROVIDER" "${review_section:--}" "$expected_section_count"
@@ -485,9 +613,29 @@ QWEN_ROUTER_PRESETS=$web_presets
 # The router holds one child per admitted section, so a review section raises
 # the limit to the pair the launch already proved resident.
 QWEN_ROUTER_MAX=$expected_section_count
-QWEN_BIND_HOST=127.0.0.1
+QWEN_BIND_HOST=$router_bind_host
 export QWEN_ROUTER QWEN_ROUTER_PRESETS QWEN_ROUTER_MAX QWEN_BIND_HOST
 export QWEN_WEB_BROKER QWEN_WEB_BROKER_PORT QWEN_WEB_STATE_DIR
 export QWEN_REQUIRE_API_KEY
+
+# Every listener the exposure moves is named before the model loads, because
+# the load holds the readiness loop for up to 120 seconds and an operator who
+# reads the addresses after that window has already been serving them. The
+# artifact listener takes an ephemeral port, so the session prints its resolved
+# address and the page URL beside it once the service has bound.
+if [ "$web_lan_exposure" = 1 ]; then
+    if [ "$web_lan_open" = 1 ]; then
+        web_lan_bearer_state=removed
+    else
+        web_lan_bearer_state=required
+    fi
+    printf 'web_launch exposure=lan address=%s name=%s router=%s:%s broker=%s:%s bearer=%s\n' \
+        "$QWEN_WEB_LAN_ADDRESS" "${QWEN_WEB_LAN_NAME:--}" \
+        "$QWEN_BIND_HOST" "${QWEN_SERVER_PORT:-8080}" \
+        "$QWEN_BIND_HOST" "$QWEN_WEB_BROKER_PORT" "$web_lan_bearer_state"
+else
+    printf 'web_launch exposure=loopback router=127.0.0.1:%s broker=127.0.0.1:%s\n' \
+        "${QWEN_SERVER_PORT:-8080}" "$QWEN_WEB_BROKER_PORT"
+fi
 
 exec "$launcher" "$profile"

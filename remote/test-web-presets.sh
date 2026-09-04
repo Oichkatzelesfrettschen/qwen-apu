@@ -790,6 +790,11 @@ if [ "$mcp_outcome" = ok ]; then
         mcp_outcome=missing_state_dir
     grep -q '"QWEN_WEB_EXA_KEY_FILE"' "$gated_mcp_config" ||
         mcp_outcome=missing_key_file_path
+    # The MCP child imports remote/web-mcp modules from the runtime tree, so a
+    # configuration without this key leaves __pycache__ behind and the next
+    # check-runtime-tree.sh reads a stray.
+    grep -q '"PYTHONDONTWRITEBYTECODE": "1"' "$gated_mcp_config" ||
+        mcp_outcome=missing_bytecode_suppression
 fi
 report mcp_config_carries_profile_budgets "$mcp_outcome"
 
@@ -828,6 +833,9 @@ import json
 import sys
 
 admitted = {
+    # The child imports from the runtime tree, and bytecode written beside
+    # those modules is a stray the manifest never names.
+    "PYTHONDONTWRITEBYTECODE",
     "QWEN_WEB_PROFILE",
     "QWEN_WEB_PROVIDER",
     "QWEN_WEB_MAX_RESULTS",
@@ -1016,9 +1024,46 @@ if QWEN_MODEL_REGISTRY=$model_registry QWEN_WEB_PROFILES=$web_profiles_searxng \
         [ -z "$searxng_undeclared" ] || searxng_outcome=$searxng_undeclared
     fi
     report searxng_profile_row_carries_the_category_policy "$searxng_outcome"
+
+    # A reader resolves the policy through the section rather than by grepping
+    # the INI, which carries the configuration's path and none of its contents:
+    # a grep for QWEN_WEB_SEARXNG_URL over the preset finds nothing while the
+    # child is configured correctly, which is how a live admission reported a
+    # missing instance URL beside a search that had just run under
+    # category=qwen-open.
+    reader=$script_directory/read-mcp-server-env.sh
+    searxng_section=$(sed -n 's/^\[\([^]]*\)\]$/\1/p' "$presets_searxng" | sed -n '1p')
+    reader_outcome=ok
+    [ -x "$reader" ] || reader_outcome=reader_absent
+    if [ "$reader_outcome" = ok ]; then
+        [ "$("$reader" "$presets_searxng" "$searxng_section" web \
+            QWEN_WEB_SEARXNG_URL)" = 'http://127.0.0.1:8888' ] ||
+            reader_outcome=wrong_instance_url
+        [ "$("$reader" "$presets_searxng" "$searxng_section" web \
+            QWEN_WEB_SEARXNG_PRIMARY_CATEGORY)" = qwen-open ] ||
+            reader_outcome=wrong_primary_category
+        [ "$("$reader" "$presets_searxng" "$searxng_section" web \
+            QWEN_WEB_SEARXNG_FALLBACK_CATEGORY)" = qwen-broad ] ||
+            reader_outcome=wrong_fallback_category
+        [ "$("$reader" "$presets_searxng" "$searxng_section" web \
+            QWEN_WEB_SEARXNG_MINIMUM_RESULTS)" = 3 ] ||
+            reader_outcome=wrong_minimum_results
+        # An unset key is a refusal rather than an empty value, so a caller
+        # never reads an absent policy as a configured one.
+        if "$reader" "$presets_searxng" "$searxng_section" web \
+            QWEN_WEB_SEARXNG_LANGUAGE >/dev/null 2>&1; then
+            reader_outcome=absent_key_reported_as_value
+        fi
+        if "$reader" "$presets_searxng" no-such-section web \
+            QWEN_WEB_SEARXNG_URL >/dev/null 2>&1; then
+            reader_outcome=unknown_section_accepted
+        fi
+    fi
+    report mcp_server_env_reader_resolves_the_policy "$reader_outcome"
 else
     cat "$work/searxng-provider.err" >&2
     report searxng_profile_row_carries_the_category_policy build_failed
+    report mcp_server_env_reader_resolves_the_policy build_failed
 fi
 
 # A row naming no fallback carries the sentinel through to the child, which
@@ -1829,9 +1874,13 @@ if build "$web_profiles_ok" "$presets_image_gated" \
     if [ -r "$gated_config" ]; then
         python3 -c 'import json,sys; json.load(open(sys.argv[1]))' \
             "$gated_config" || outcome=configuration_is_not_json
+        # image-mcp/server.py imports remote/image_protocol.py from the runtime
+        # tree, so the image child carries the same bytecode suppression the
+        # web child does.
         for image_environment_name in QWEN_IMAGE_LANGUAGE_PROFILE \
             QWEN_IMAGE_PROFILE QWEN_IMAGE_TOKEN_KEY_FILE QWEN_IMAGE_STATE_DIR \
-            QWEN_IMAGE_SERVICE_SOCKET QWEN_IMAGE_PROFILES_JSON; do
+            QWEN_IMAGE_SERVICE_SOCKET QWEN_IMAGE_PROFILES_JSON \
+            PYTHONDONTWRITEBYTECODE; do
             grep -q "\"$image_environment_name\"" "$gated_config" ||
                 outcome=missing_$image_environment_name
         done
@@ -1938,6 +1987,54 @@ else
         report image_gated_row_requires_its_parameter_file ok
     else
         report image_gated_row_requires_its_parameter_file wrong_refusal
+    fi
+fi
+
+# A nonempty path is not a readable file: require_image_mcp_inputs only
+# checked for nonempty, so an unreadable QWEN_IMAGE_PROFILES_JSON armed the
+# preset here and refused only at the next qwen-launch.sh invocation, after
+# this generator had already replaced the last known-good preset.
+presets_image_unreadable=$work/presets-image-unreadable.ini
+if build "$web_profiles_ui" "$presets_image_unreadable" \
+    env QWEN_IMAGE_PROFILES="$image_profiles_gated" \
+    QWEN_IMAGE_MCP_SERVER="$image_mcp_server_program" \
+    QWEN_IMAGE_TOKEN_KEY_FILE="$image_token_key_file" \
+    QWEN_IMAGE_STATE_DIR="$image_state_directory" \
+    QWEN_IMAGE_SERVICE_SOCKET="$image_service_socket" \
+    QWEN_IMAGE_PROFILES_JSON="$work/no-such-parameters.json" \
+    >"$work/image-unreadable.log" 2>"$work/image-unreadable.err"; then
+    report image_gated_row_requires_a_readable_parameter_file accepted
+else
+    if grep -q 'QWEN_IMAGE_PROFILES_JSON names no readable file' \
+        "$work/image-unreadable.err"; then
+        report image_gated_row_requires_a_readable_parameter_file ok
+    else
+        report image_gated_row_requires_a_readable_parameter_file wrong_refusal
+    fi
+fi
+
+# emit_web_mcp_configuration converts QWEN_IMAGE_MCP_TIMEOUT_MS to
+# QWEN_IMAGE_MCP_TIMEOUT_S by integer division at /1000: a value that is not
+# an exact multiple of 1000 would generate a configuration
+# read-image-mcp-server.py's own millisecond/second agreement check then
+# refuses.
+presets_image_fractional_timeout=$work/presets-image-fractional-timeout.ini
+if build "$web_profiles_ui" "$presets_image_fractional_timeout" \
+    env QWEN_IMAGE_PROFILES="$image_profiles_gated" \
+    QWEN_IMAGE_MCP_SERVER="$image_mcp_server_program" \
+    QWEN_IMAGE_TOKEN_KEY_FILE="$image_token_key_file" \
+    QWEN_IMAGE_STATE_DIR="$image_state_directory" \
+    QWEN_IMAGE_SERVICE_SOCKET="$image_service_socket" \
+    QWEN_IMAGE_PROFILES_JSON="$image_profiles_json" \
+    QWEN_IMAGE_MCP_TIMEOUT_MS=360500 \
+    >"$work/image-fractional-timeout.log" 2>"$work/image-fractional-timeout.err"; then
+    report image_mcp_timeout_requires_a_whole_second accepted
+else
+    if grep -q 'must be an exact multiple of 1000' \
+        "$work/image-fractional-timeout.err"; then
+        report image_mcp_timeout_requires_a_whole_second ok
+    else
+        report image_mcp_timeout_requires_a_whole_second wrong_refusal
     fi
 fi
 

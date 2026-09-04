@@ -12,11 +12,21 @@ than the query a note in the context rewrote. `POST /grant` refuses a request
 naming no `profile_id`, or one that does not match this process's own
 `--profile`, with HTTP 400 before it signs anything.
 
-The service holds three boundaries. It binds a loopback literal alone and
+The service holds three boundaries. It binds a loopback literal by default and
 refuses any other host before the socket exists, so the grant endpoint reaches
 the machine that runs the router and nothing on the network; a browser on the
 SSH client machine reaches it through `ssh -L PORT:127.0.0.1:PORT` rather than
-through a wider bind. Every grant request carries a per-launch session secret
+through a wider bind. `--lan-exposure ADDRESS` is the operator's explicit
+opt-in: it admits `--host 0.0.0.0`, adds that one routable literal to the Host
+headers a request may name, and requires the Web UI bearer on both signing
+routes and on a health read that names it, so a LAN reader that never
+authenticated to the router signs nothing. `--lan-name NAME` adds the mDNS
+hostname beside that literal, compared casefolded, and the set stays a closed
+list of at most four entries. `--open-lan` is the second decision: it removes
+the bearer from the signing routes and the exposed health read, so every peer
+that reaches the page can approve, and it leaves the Host set, the Origin
+allowlist, the session secret, the single-use grant, and every schema rule
+exactly where they stand. Every grant request carries a per-launch session secret
 in a header and the broker compares the value with `hmac.compare_digest`.
 `GET /session` releases the secret only to an admitted Origin presenting the
 existing Web UI bearer API key. The signing key travels from its file into
@@ -67,6 +77,8 @@ import server  # noqa: E402
 import image_grant  # noqa: E402
 
 LOOPBACK_HOSTS = ("127.0.0.1", "::1")
+WILDCARD_HOST = "0.0.0.0"  # noqa: S104 -- the exposure opt-in binds it deliberately
+ASCII_LABEL_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
 SESSION_SECRET_FILE_NAME = "authorize-session.secret"
 SESSION_SECRET_BYTES = 32
 SESSION_HEADER = "X-Qwen-Web-Session"
@@ -100,23 +112,160 @@ def loopback_host(value):
     return value
 
 
-def host_header_is_loopback(header):
-    """Return whether a Host header names a loopback literal and no other name.
+def bind_host(value):
+    """Return a bind literal, admitting the wildcard for the exposure opt-in.
 
-    A browser that resolves an attacker-controlled name to 127.0.0.1 reaches
-    this socket with that name in the Host header, so the bind alone leaves
-    DNS rebinding open. Comparing the header against the same literals closes
-    it: a request whose Host is a name rather than an address is refused.
+    `run` pairs this with `--lan-exposure`: the wildcard is admitted here and
+    refused there unless the opt-in names the literal a LAN reader reaches, so
+    a caller cannot widen the bind by itself.
+    """
+    if value in LOOPBACK_HOSTS or value == WILDCARD_HOST:
+        return value
+    raise argparse.ArgumentTypeError(
+        f"the broker binds a loopback literal or {WILDCARD_HOST}; {value!r} is "
+        f"refused. Admitted hosts: {', '.join((*LOOPBACK_HOSTS, WILDCARD_HOST))}"
+    )
+
+
+def exposed_host(value):
+    """Return the non-loopback IPv4 literal the LAN exposure opt-in names.
+
+    The Host-header comparison and the CORS Origin both read this value, so it
+    is an address rather than a name: a name would send the comparison back
+    through the resolver the loopback rule exists to keep out. The wildcard
+    names no reachable address, so it belongs in `--host` and never here, and
+    the loopback default is what the opt-in departs from. Every other IPv4
+    literal is admitted, which puts the second loopback address 127.0.0.2 in
+    reach of a test that runs the exposed page on a host holding no LAN.
+    """
+    if not value:
+        # argparse applies a string type to its own default, so the empty
+        # default passes through as the absent opt-in.
+        return ""
+    parts = value.split(".")
+    if len(parts) != 4 or not all(
+        part.isdigit() and len(part) <= 3 and 0 <= int(part) <= 255 for part in parts
+    ):
+        raise argparse.ArgumentTypeError(
+            f"the LAN exposure address is an IPv4 literal; {value!r} is refused"
+        )
+    if value in LOOPBACK_HOSTS or value == WILDCARD_HOST:
+        raise argparse.ArgumentTypeError(
+            f"the LAN exposure address departs from the loopback default and "
+            f"names a reachable address; {value!r} is the default or the wildcard"
+        )
+    return value
+
+
+def exposed_name(value):
+    """Return the mDNS hostname the LAN exposure opt-in admits beside the literal.
+
+    A DHCP lease moves the address, so the name is what an operator bookmarks.
+    Admitting it keeps the set closed rather than reopening the resolver: avahi
+    publishes `<hostname>.local` on the link and a browser resolves that suffix
+    by multicast to the hosts sharing the link, so a name an attacker controls
+    in DNS resolves nowhere near this socket and the rebinding closure the
+    literal set provides holds for this entry too. That argument holds only
+    for the `.local` namespace, so a name outside it is refused rather than
+    admitted on syntax alone: an ordinary DNS name resolves through the
+    recursive resolver like any other, and an attacker who controls its zone
+    can rebind it to this appliance's address, where `--open-lan` would admit
+    the rebound request's Host and Origin with no bearer standing between it
+    and the broker. Each label is one to 63 characters of the
+    letter-digit-hyphen set with no leading or trailing hyphen; `localhost`
+    names the loopback the set already holds; the `.local` requirement below
+    already refuses every all-numeric dotted form, since none ends in that
+    label.
+    """
+    if not value:
+        # argparse applies a string type to its own default, so the empty
+        # default passes through as the absent opt-in.
+        return ""
+    lowered = value.lower()
+    if (
+        len(lowered) > 253
+        or lowered == "localhost"
+        or lowered in LOOPBACK_HOSTS
+        or not lowered.endswith(".local")
+    ):
+        raise argparse.ArgumentTypeError(
+            f"the LAN exposure name is a hostname a browser resolves on the "
+            f"link by mDNS multicast, under the .local namespace alone; "
+            f"{value!r} is refused"
+        )
+    labels = lowered.split(".")
+    if not all(label_is_admitted(label) for label in labels):
+        raise argparse.ArgumentTypeError(
+            f"the LAN exposure name carries a label outside the "
+            f"letter-digit-hyphen set; {value!r} is refused"
+        )
+    return lowered
+
+
+def label_is_admitted(label):
+    """Return whether one hostname label meets the ASCII letter-digit-hyphen rule.
+
+    The character set stays ASCII rather than reading `str.isalnum`, which
+    admits every Unicode letter: a browser sends an internationalized name in
+    its Punycode form, so a name outside ASCII is refused here rather than
+    admitted into a set no request ever matches.
+    """
+    return (
+        1 <= len(label) <= 63
+        and not label.startswith("-")
+        and not label.endswith("-")
+        and all(character in ASCII_LABEL_CHARACTERS for character in label)
+    )
+
+
+def admitted_hosts(exposure="", name=""):
+    """Return the Host-header names a request may present.
+
+    The loopback literals stand under every setting, because the session's own
+    probes and `image-review.py` reach this service over 127.0.0.1 whatever the
+    listener binds. The exposure adds exactly one literal and the name adds
+    exactly one lowercased hostname, so the set stays a closed list of two to
+    four entries.
+    """
+    admitted = list(LOOPBACK_HOSTS)
+    if exposure:
+        admitted.append(exposure)
+    if name:
+        admitted.append(name)
+    return tuple(admitted)
+
+
+def host_header_names(header, admitted):
+    """Return whether a Host header names one of the admitted entries.
+
+    A browser that resolves an attacker-controlled name to a bound address
+    reaches this socket with that name in the Host header, so the bind alone
+    leaves DNS rebinding open. Comparing the header against a closed set closes
+    it: a request whose Host is outside the set is refused, under the exposure
+    opt-in as under the loopback default. The comparison falls back to the
+    casefolded form because DNS names are case-insensitive and the admitted
+    name is stored lowercased; the literals hold digits and dots alone, so
+    lowering leaves them as they stand.
     """
     if not header:
-        return False
+        return ""
     value = header.strip()
     if value.startswith("["):
         closing = value.find("]")
         if closing < 0:
-            return False
-        return value[1:closing] in LOOPBACK_HOSTS
-    return value.split(":", 1)[0] in LOOPBACK_HOSTS
+            return ""
+        named = value[1:closing]
+    else:
+        named = value.split(":", 1)[0]
+    if named in admitted:
+        return named
+    lowered = named.lower()
+    return lowered if lowered in admitted else ""
+
+
+def host_header_is_loopback(header):
+    """Return whether a Host header names a loopback literal and no other name."""
+    return bool(host_header_names(header, LOOPBACK_HOSTS))
 
 
 def write_session_secret(state_directory):
@@ -239,6 +388,18 @@ class BrokerSettings:
         self.session_secret = ""
         self.signing_key_sha256 = ""
         self.start_time = 0
+        # The exposure literal decides two gates: the Host-header set a request
+        # may name, and whether a signing route reads the Web UI bearer. An
+        # empty value is the loopback default and leaves both as they stand.
+        # The exposure name joins the first gate and `--open-lan` removes the
+        # second, so a request naming either exposed host meets the closed Host
+        # set under both settings and reads the bearer under one.
+        self.exposure = arguments.lan_exposure
+        self.exposure_name = arguments.lan_name
+        self.open_lan = arguments.open_lan
+        self.admitted_hosts = admitted_hosts(
+            arguments.lan_exposure, arguments.lan_name
+        )
 
 
 def parse_request_arguments(payload):
@@ -591,11 +752,21 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def require_loopback_host(self):
-        if not host_header_is_loopback(self.headers.get("Host", "")):
+    def named_host(self):
+        """Return the admitted literal this request's Host names, or an empty string."""
+        return host_header_names(
+            self.headers.get("Host", ""), self.settings.admitted_hosts
+        )
+
+    def require_admitted_host(self):
+        """Require the Host header to name one admitted literal, and return it."""
+        named = self.named_host()
+        if not named:
             raise server.AuthorizationDenied(
-                "the request Host names something other than a loopback literal"
+                "the request Host names no admitted literal: "
+                f"{', '.join(self.settings.admitted_hosts)}"
             )
+        return named
 
     def require_session_secret(self):
         presented = self.headers.get(SESSION_HEADER, "")
@@ -607,6 +778,18 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
             )
 
     def require_api_key(self):
+        """Require the Web UI bearer, which `--open-lan` removes from the launch.
+
+        The open opt-in is the operator's decision that this appliance serves
+        its own network without a credential step, so the check returns where
+        it is set and the closed Host set, the Origin allowlist, the per-launch
+        session secret, and the single-use grant carry the gate. The key is
+        unread in that mode, so `settings.api_key` is empty and comparing
+        against `Bearer ` would admit exactly the header an unaware client
+        sends.
+        """
+        if self.settings.open_lan:
+            return
         authorization = self.headers.get("Authorization", "")
         expected = f"Bearer {self.settings.api_key}"
         if not authorization or not hmac.compare_digest(authorization, expected):
@@ -677,7 +860,7 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
             self.send_json(404, {"error": "no such endpoint"}, origin)
             return
         try:
-            self.require_loopback_host()
+            self.require_admitted_host()
             if not origin:
                 raise server.AuthorizationDenied(
                     "the request Origin is absent or outside the admitted set"
@@ -696,14 +879,22 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
         """Answer the launcher's own liveness probe, ahead of the router.
 
         `qwen-webui-session.sh` reads this with `curl` before the router
-        starts, so the check here is the loopback Host guard alone: neither
-        an Origin nor the per-launch session header is available to a shell
-        probe that never loads a page. Every field in the response is a
-        process or configuration identity; the signing key contributes its
-        digest and never its bytes.
+        starts, so a request naming a loopback Host meets the Host guard
+        alone: neither an Origin nor the per-launch session header is
+        available to a shell probe that never loads a page, and a bearer on
+        that command line would sit in a world-readable
+        `/proc/PID/cmdline`. A request naming either exposed host -- the
+        literal or the mDNS name -- presents the Web UI bearer instead,
+        because every field in the response is a process or configuration
+        identity -- pid, start time, state-directory dev:inode, and the
+        signing key's digest -- that a LAN reader holds no claim on. Under
+        `--open-lan` that requirement is the one the operator removed, and the
+        loopback probe reads the route the same way either way. The signing
+        key contributes its digest and never its bytes.
         """
         try:
-            self.require_loopback_host()
+            if self.require_admitted_host() not in LOOPBACK_HOSTS:
+                self.require_api_key()
         except server.ToolError as error:
             self.send_json(
                 HTTP_STATUS_FOR_TERM.get(error.status, 400),
@@ -762,7 +953,7 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
         try:
             ledger = server.Ledger(self.settings.state_directory)
             ledger.consume("authorize-minute", 60, self.settings.per_minute, started_at)
-            self.require_loopback_host()
+            self.require_admitted_host()
             # The session secret reaches a page through /session, which the
             # Origin allowlist gates, so a grant request from another origin
             # carries a secret that left the admitted page. The same allowlist
@@ -772,6 +963,14 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
                 raise server.AuthorizationDenied(
                     "the request Origin is absent or outside the admitted set"
                 )
+            # A signing route under the exposure opt-in reads the Web UI bearer
+            # beside the session secret, so a LAN reader that never
+            # authenticated to the router signs nothing here. The secret is
+            # per-launch and the key is per-launch too, and requiring both puts
+            # the same credential in front of a grant that stands in front of
+            # the router's own routes.
+            if self.settings.exposure:
+                self.require_api_key()
             self.require_session_secret()
             payload = self.read_body()
             if image:
@@ -845,8 +1044,27 @@ def build_parser():
         "image_profile matching --image-profile beside the generation fields "
         "it approves",
     )
-    parser.add_argument("--host", type=loopback_host, default="127.0.0.1")
+    parser.add_argument("--host", type=bind_host, default="127.0.0.1")
     parser.add_argument("--port", type=int, default=0)
+    parser.add_argument(
+        "--lan-exposure", type=exposed_host, default="",
+        help="the routable IPv4 literal this broker admits in a Host header "
+        "beside the loopback ones; naming it requires the Web UI bearer on "
+        "POST /grant, POST /grant-image, and a GET /health that names it",
+    )
+    parser.add_argument(
+        "--lan-name", type=exposed_name, default="",
+        help="the mDNS hostname this broker admits in a Host header beside the "
+        "exposure literal; it is compared casefolded and gates the bearer the "
+        "way the literal does",
+    )
+    parser.add_argument(
+        "--open-lan", action="store_true",
+        help="serve the exposed listener without the Web UI bearer, leaving "
+        "the admitted Host set, the Origin allowlist, the per-launch session "
+        "secret, and the single-use grant as the whole gate; requires "
+        "--lan-exposure",
+    )
     parser.add_argument(
         "--token-key-file", default=os.environ.get("QWEN_WEB_TOKEN_KEY_FILE", "")
     )
@@ -898,14 +1116,45 @@ def run(argv):
             "QWEN_WEB_BROKER_ORIGIN or --origin names the page that reads it\n"
         )
         return 2
+    # The wildcard bind belongs to the exposure opt-in and reaches the socket
+    # only beside the literal that gates the Host header and the bearer, so a
+    # caller cannot widen the listener by naming --host alone.
+    if arguments.host == WILDCARD_HOST and not arguments.lan_exposure:
+        sys.stderr.write(
+            f"--host {WILDCARD_HOST} serves the network, so --lan-exposure "
+            "names the routable literal a reader reaches and the Host header "
+            "and bearer are gated on\n"
+        )
+        return 2
+    # The name widens the Host set alone, and the open opt-in removes a
+    # credential from a listener the operator exposed, so each names the
+    # exposure it belongs to rather than standing on its own.
+    if arguments.lan_name and not arguments.lan_exposure:
+        sys.stderr.write(
+            "--lan-name adds a Host to the exposed set, so --lan-exposure "
+            "names the literal that set is built from\n"
+        )
+        return 2
+    if arguments.open_lan and not arguments.lan_exposure:
+        sys.stderr.write(
+            "--open-lan removes the Web UI bearer from an exposed listener, "
+            "so --lan-exposure names the address it exposes\n"
+        )
+        return 2
     signing_key_sha256 = validate_signing_key(arguments.token_key_file)
     if signing_key_sha256 is None:
         return 2
-    try:
-        api_key = server.read_secret_file(arguments.api_key_file, "Web UI API")
-    except server.ToolError as error:
-        sys.stderr.write(f"the broker cannot read the Web UI API key: {error}\n")
-        return 2
+    # The open opt-in reads no key file, because the bearer it would compare
+    # against is the one it removes and `read_secret_file` refuses an
+    # unconfigured path: a launch serving without a key hands this process an
+    # empty `--api-key-file` and would otherwise exit here.
+    api_key = ""
+    if not arguments.open_lan:
+        try:
+            api_key = server.read_secret_file(arguments.api_key_file, "Web UI API")
+        except server.ToolError as error:
+            sys.stderr.write(f"the broker cannot read the Web UI API key: {error}\n")
+            return 2
     settings = BrokerSettings(arguments)
     settings.api_key = api_key
     settings.signing_key_sha256 = signing_key_sha256
@@ -937,6 +1186,13 @@ def run(argv):
     except KeyboardInterrupt:
         pass
     finally:
+        # The handlers raise, so a second terminating signal arriving while
+        # this block runs would unwind it before the unlink and leave the
+        # secret for the next launch to find, which is what qwen-teardown.sh
+        # reports as residue. Restoring the default disposition first makes
+        # the cleanup uninterruptible by the same means that started it.
+        for terminating_signal in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+            signal.signal(terminating_signal, signal.SIG_IGN)
         if service is not None:
             service.server_close()
         if os.path.lexists(secret_path):

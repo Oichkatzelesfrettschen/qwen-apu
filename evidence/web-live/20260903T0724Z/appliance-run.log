@@ -1,0 +1,29 @@
+profile_row=observed model=qwen35-2b context=8192 max_results=5 max_fetches=2 primary=qwen-open fallback=- minimum=1 url=http://127.0.0.1:8888
+ordinary_router_recorded=pass running=1 server=5dd86b90154f6143
+ordinary_teardown=pass no residue
+depth_claim=observed context=8192 validated_filled_depth=- override=1
+preset_generated=pass 1 section
+preset_carries_search_policy=fail the emitted configuration names no instance URL or primary category
+web_launch=pass web_launch presets=$HOME/web-live-admission-20260903T0724Z/web-presets.ini unvalidated_depth_marker=present authorizer_ready=1 bind=127.0.0.1;web_launch searxng=owned url=http://127.0.0.1:8888 port=8888;web_launch broker_port=8571 broker_state_dir=$HOME/web-live-admission-20260903T0724Z/web-mcp signing_key=configured profile=web-compact provider=searxng review_section=- models_max=1;web_launch static_path=$HOME/qwen-laptop-setup/remote/../webui;
+api_key_minted=pass mode=600 path=$HOME/qwen-webui-state/api.key
+searxng_child_recorded=pass searxng_pid=1672056 start_time=47248785 port=8888
+searxng_listener_loopback=pass 127.0.0.1:8888,
+searxng_health=pass status=200
+router_roster=pass web-compact,
+tool_enumeration=pass web_fetch_exa,web_search_exa, via http://127.0.0.1:8080
+session_secret_issued=pass status=200
+grant_issued=pass status=200 bytes=448
+search_executed=pass results=5 sources=5 minimum=1 engines=bing, elapsed=1s
+fetch_by_result_id=pass chars=12347 elapsed=1s
+audit_names_category_and_holds_no_query=pass category=qwen-open rows=261
+browser_page_origin=pass origin=http://127.0.0.1:8080 model=web-compact
+browser_grant_from_broker=pass POST http://127.0.0.1:8571/grant count=1
+browser_search_via_router=pass POST /tools model=web-compact tool=web_search_exa grant=present
+browser_requests_stay_on_router_and_broker=pass every page request names http://127.0.0.1:8080 or http://127.0.0.1:8571
+browser_tool_result_in_transcript=pass Title: Home | Vulkan | Cross platform 3D Graphics URL: https://www.vulkan.org/ Published:  Author:  Result ID: eyJjYW5vb
+browser_final_answer=pass Based on the search results, here is a summary of the key points regarding Vulkan compute shader subgroup size:  **Key Findings:**  1.  **Vulkan API Definition:** Vulkan is a modern graphics and compu
+searxng_cost=observed after-browser-turn rss_kib=75576 peak_rss_kib=75576 threads=5 cpu_ticks=103 utc=2026-09-03T07:28:00Z
+secret_hygiene=pass key, grant, and session secret absent from process images, logs, and status
+web_teardown=pass torn down: no server, tmux session, probe, approval broker, image service, search instance, or router snapshot; port 8080 free
+absence_proved=pass router, child, broker, search instance, secret, and all three ports
+ordinary_restore=fail comm: input is not in sorted order

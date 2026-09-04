@@ -104,8 +104,27 @@ if [ "${QWEN_ADMISSION_LOCKED:-}" != "$admission_lock" ]; then
     fi
 fi
 
-router_origin=http://127.0.0.1:$server_port
-broker_origin=http://127.0.0.1:$broker_port
+# QWEN_WEB_LAN=1 runs this admission against the exposed lane rather than the
+# loopback one. The address is the operator's own literal on the appliance and
+# 127.0.0.2 in the workstation harness, which is non-loopback by the listeners'
+# own LOOPBACK_HOSTS definition and reachable without a second network, so the
+# arms below measure the exposed listeners rather than a simulation of them.
+# Every origin, Host header, and listener expectation reads this one value.
+#
+# QWEN_WEB_LAN_OPEN=1 runs the same exposed lane with the Web UI bearer removed,
+# which is the operator decision remote/web-lan-exposure.sh admits beside the
+# exposure. The arms read it rather than the credential state of any one
+# request, so one harness measures both listener policies.
+lane_exposure=${QWEN_WEB_LAN:-0}
+lane_open=${QWEN_WEB_LAN_OPEN:-0}
+if [ "$lane_exposure" = 1 ]; then
+    lane_host=${QWEN_WEB_LAN_ADDRESS:?QWEN_WEB_LAN=1 names QWEN_WEB_LAN_ADDRESS}
+else
+    lane_host=127.0.0.1
+    lane_open=0
+fi
+router_origin=http://$lane_host:$server_port
+broker_origin=http://$lane_host:$broker_port
 generation_prompt=${QWEN_ADMISSION_PROMPT:-'a fox in a snowy field'}
 generation_seed=${QWEN_ADMISSION_SEED:-20260829}
 
@@ -517,7 +536,30 @@ else
 fi
 
 # 3. Launch the image router.
-if QWEN_WEB_PRESETS=$web_presets QWEN_WEB_PROFILES=$web_ledger QWEN_WEB_PROVIDER=fake \
+#
+# The exposure requires the Web UI API key to exist before the listener does,
+# so an operator reads the credential out of a state directory ahead of the
+# socket rather than after it. The session mints one where the file is absent,
+# which is the loopback default; this run mints it here so the exposed launch
+# meets the rule it applies.
+lane_launch_environment=''
+if [ "$lane_exposure" = 1 ]; then
+    mkdir -p "$state_directory"
+    if [ ! -s "$state_directory/api.key" ]; then
+        openssl rand -hex 32 >"$state_directory/api.key"
+    fi
+    chmod 600 "$state_directory/api.key"
+    lane_launch_environment="QWEN_WEB_LAN=1 QWEN_WEB_LAN_ADDRESS=$lane_host QWEN_BIND_HOST=$lane_host QWEN_WEB_LAN_OPEN=$lane_open"
+    # The name defaults to whatever avahi advertises on the running host, and
+    # this harness measures the admitted set rather than that host, so an
+    # explicit empty value states the answer unless the caller named one.
+    lane_launch_environment="$lane_launch_environment QWEN_WEB_LAN_NAME=${QWEN_WEB_LAN_NAME:-}"
+fi
+# The list is built above and holds no field the shell must keep whole, so the
+# unquoted expansion is what turns it into separate env assignments.
+# shellcheck disable=SC2086
+if env $lane_launch_environment \
+    QWEN_WEB_PRESETS=$web_presets QWEN_WEB_PROFILES=$web_ledger QWEN_WEB_PROVIDER=fake \
     QWEN_WEB_TOKEN_KEY_FILE=$token_key_file QWEN_WEB_STATE_DIR=$output_directory/web-mcp \
     QWEN_WEB_BROKER_PORT=$broker_port QWEN_WEB_AUTHORIZER_READY=1 \
     QWEN_IMAGE_PROFILES_JSON=$image_parameters QWEN_MODEL_REGISTRY=$registry \
@@ -541,13 +583,23 @@ secret_file=$(sed -n 's/^broker secret_file=//p' "$output_directory/image-sessio
 # The artifact listener binds an ephemeral port, so its address is read from the
 # line the session recorded rather than assumed.
 artifact_listener=$(sed -n 's/^image_service_identity .*listener=//p' "$output_directory/image-session.status" | sed -n '1p')
-artifact_origin=http://$artifact_listener
+# The session records the address the service printed. Under the exposure that
+# is the wildcard, and the page reads the artifact route over the lane literal,
+# so the origin is composed from the recorded port and the lane host.
+artifact_port=${artifact_listener##*:}
+artifact_origin=http://$lane_host:$artifact_port
+if [ "$lane_exposure" = 1 ]; then
+    expected_artifact_listener="0.0.0.0:$artifact_port"
+else
+    expected_artifact_listener="127.0.0.1:$artifact_port"
+fi
 case $artifact_listener in
-    127.0.0.1:[0-9]*)
-        record artifact_listener_loopback accepted "$artifact_listener"
+    "$expected_artifact_listener")
+        record artifact_listener_bound accepted "$artifact_listener"
         ;;
     *)
-        record artifact_listener_loopback refused "listener=${artifact_listener:-absent}"
+        record artifact_listener_bound refused \
+            "listener=${artifact_listener:-absent} expected=$expected_artifact_listener"
         ;;
 esac
 case $image_service_pid in
@@ -555,10 +607,36 @@ case $image_service_pid in
     *) record image_service_recorded accepted "image_service_pid=$image_service_pid" ;;
 esac
 router_listener=$(ss -ltnp 2>/dev/null | grep ":$server_port " | grep -o '[0-9.:*]*:'"$server_port" | sort -u | tr '\n' ',')
+if [ "$lane_exposure" = 1 ]; then
+    expected_router_listener="$lane_host:$server_port,"
+else
+    expected_router_listener="127.0.0.1:$server_port,"
+fi
 case $router_listener in
-    "127.0.0.1:$server_port,") record router_listener_loopback accepted "$router_listener" ;;
-    *) record router_listener_loopback refused "${router_listener:-absent}" ;;
+    "$expected_router_listener") record router_listener_bound accepted "$router_listener" ;;
+    *) record router_listener_bound refused \
+        "${router_listener:-absent} expected=$expected_router_listener" ;;
 esac
+# The session records the exposure it bound, so the address the arms use is the
+# address the launch chose rather than the one this script asked for.
+session_lan_exposure=$(sed -n '1p' "$output_directory/image-session.status" |
+    tr ' ' '\n' | sed -n 's/^lan_exposure=//p')
+session_lan_address=$(sed -n '1p' "$output_directory/image-session.status" |
+    tr ' ' '\n' | sed -n 's/^lan_address=//p')
+if [ "$lane_exposure" = 1 ]; then
+    if [ "$session_lan_exposure" = 1 ] && [ "$session_lan_address" = "$lane_host" ]; then
+        record session_records_lan_exposure accepted \
+            "lan_exposure=1 lan_address=$session_lan_address"
+    else
+        record session_records_lan_exposure refused \
+            "lan_exposure=${session_lan_exposure:-absent} lan_address=${session_lan_address:-absent}"
+    fi
+elif [ "$session_lan_exposure" = 0 ]; then
+    record session_records_lan_exposure accepted "lan_exposure=0"
+else
+    record session_records_lan_exposure refused \
+        "lan_exposure=${session_lan_exposure:-absent}"
+fi
 
 api_key_file=$state_directory/api.key
 if [ -s "$api_key_file" ] && [ "$(stat -c %a "$api_key_file")" = 600 ]; then
@@ -637,14 +715,14 @@ fi
 # 5. The broker session and one grant, signed over the seed this script chose.
 # The seed is the field the protocol requires and the runtime never picks, so
 # the grant binds a value decided before the approval rather than after it.
-call broker-health GET "$broker_origin/health" '' -H "Host: 127.0.0.1:$broker_port"
+call broker-health GET "$broker_origin/health" '' -H "Host: $lane_host:$broker_port"
 health_image_profile=$(jq -r '.image_profile // empty' "$call_out" 2>/dev/null)
 if [ "$health_image_profile" = "$image_profile_id" ]; then
     record broker_signs_image_profile accepted "image_profile=$health_image_profile"
 else
     record broker_signs_image_profile refused "image_profile=${health_image_profile:-none}"
 fi
-call session GET "$broker_origin/session" '' -H "Origin: $router_origin" -H "Host: 127.0.0.1:$broker_port"
+call session GET "$broker_origin/session" '' -H "Origin: $router_origin" -H "Host: $lane_host:$broker_port"
 session_secret=$(jq -r '.session_secret // empty' "$call_out" 2>/dev/null)
 if [ "$call_status" = 200 ] && [ -n "$session_secret" ]; then
     record session_secret_issued accepted "status=$call_status"
@@ -664,7 +742,7 @@ grant_body=$(jq -cn --arg language "$profile_id" --arg image "$image_profile_id"
       conversation_generation: 0}')
 issue_grant() {
     call "$1" POST "$broker_origin/grant-image" "$grant_body" -H "Origin: $router_origin" \
-        -H "Host: 127.0.0.1:$broker_port" -H "X-Qwen-Web-Session: $session_secret"
+        -H "Host: $lane_host:$broker_port" -H "X-Qwen-Web-Session: $session_secret"
     issued_authorization=$(jq -r '.authorization // empty' "$call_out" 2>/dev/null)
 }
 issue_grant grant-image
@@ -676,7 +754,7 @@ else
 fi
 foreign_grant_body=$(printf '%s' "$grant_body" | jq -c '.image_profile = "image-other"')
 call grant-wrong-image-profile POST "$broker_origin/grant-image" "$foreign_grant_body" \
-    -H "Origin: $router_origin" -H "Host: 127.0.0.1:$broker_port" \
+    -H "Origin: $router_origin" -H "Host: $lane_host:$broker_port" \
     -H "X-Qwen-Web-Session: $session_secret"
 if [ "$call_status" != 200 ]; then
     record grant_wrong_image_profile_refused accepted "status=$call_status"
@@ -732,6 +810,60 @@ if [ "$call_status" = 200 ] && jq -e '.error' "$call_out" >/dev/null 2>&1; then
 else
     record grant_replay_refused refused "status=$call_status $(head -c 160 "$call_out")"
 fi
+# Under the exposure the Web UI bearer is what stands between a reader on the
+# network and each of the three listeners, so each refuses the same request
+# without it. The router and the broker are read here; the artifact listener's
+# own uncredentialed arm runs beside the artifact read below and holds under
+# both settings, because that route required the bearer before the exposure
+# existed.
+if [ "$lane_exposure" = 1 ] && [ "$lane_open" = 1 ]; then
+    # QWEN_WEB_LAN_OPEN=1 is the operator decision that removes the bearer, so
+    # the arms below measure the credential the lane still requires: the
+    # session secret on the signing route, which is what an approved
+    # generation actually rests on once the key is gone.
+    call_without_key=1 call router-no-credential GET \
+        "$router_origin/tools?model=$profile_id&autoload=true"
+    call_without_key=0
+    if [ "$call_status" = 200 ]; then
+        record open_router_serves_without_the_bearer accepted "status=200"
+    else
+        record open_router_serves_without_the_bearer refused "status=$call_status"
+    fi
+    call_without_key=1 call grant-no-session POST "$broker_origin/grant-image" \
+        "$grant_body" -H "Origin: $router_origin" \
+        -H "Host: $lane_host:$broker_port" \
+        -H "X-Qwen-Web-Session: a-secret-this-launch-never-signed"
+    call_without_key=0
+    if [ "$call_status" = 403 ] && grep -q 'stale_session_secret' "$call_out"; then
+        record open_grant_requires_the_session_secret accepted "status=403"
+    else
+        record open_grant_requires_the_session_secret refused \
+            "status=$call_status $(head -c 120 "$call_out")"
+    fi
+elif [ "$lane_exposure" = 1 ]; then
+    call_without_key=1 call router-no-credential GET \
+        "$router_origin/tools?model=$profile_id&autoload=true"
+    # A variable assignment preceding a function call persists in the shell
+    # after it, so the flag is cleared before the next credentialed request.
+    call_without_key=0
+    if [ "$call_status" = 401 ]; then
+        record exposed_router_requires_the_bearer accepted "status=401"
+    else
+        record exposed_router_requires_the_bearer refused "status=$call_status"
+    fi
+    call_without_key=1 call grant-no-credential POST "$broker_origin/grant-image" \
+        "$grant_body" -H "Origin: $router_origin" \
+        -H "Host: $lane_host:$broker_port" \
+        -H "X-Qwen-Web-Session: $session_secret"
+    call_without_key=0
+    if [ "$call_status" = 403 ] && grep -q 'bearer API key' "$call_out"; then
+        record exposed_grant_requires_the_bearer accepted \
+            "status=403 $(jq -r '.error' "$call_out" | head -c 100)"
+    else
+        record exposed_grant_requires_the_bearer refused \
+            "status=$call_status $(head -c 160 "$call_out")"
+    fi
+fi
 ungranted_params=$(printf '%s' "$generation_params" | jq -c 'del(.authorization)')
 call generate-no-grant POST "$router_origin/tools" "$(tool_body "$ungranted_params")"
 if [ "$call_status" = 200 ] && jq -e '.error' "$call_out" >/dev/null 2>&1; then
@@ -767,8 +899,17 @@ if [ "${#artifact_sha256}" -eq 64 ]; then
         record artifact_png_matches_digest refused "status=$call_status type=${artifact_type:-none} measured=$measured_sha256"
     fi
     call_without_key=1 call artifact-no-credential GET "$artifact_origin/artifacts/$artifact_sha256.png"
-    if [ "$call_status" = 401 ]; then
-        record artifact_without_credential_refused accepted 'status=401'
+    if [ "$lane_open" = 1 ]; then
+        # The open lane serves the artifact routes without the bearer by the
+        # operator decision, and the admitted Host set is what still refuses a
+        # reader; the foreign-Host arm above measures that.
+        artifact_credential_expectation=200
+    else
+        artifact_credential_expectation=401
+    fi
+    if [ "$call_status" = "$artifact_credential_expectation" ]; then
+        record artifact_without_credential_refused accepted \
+            "status=$call_status open=$lane_open"
     else
         record artifact_without_credential_refused refused "status=$call_status"
     fi

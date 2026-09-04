@@ -225,6 +225,150 @@ if [ -n "$web_presets_path" ]; then
         cut -d ' ' -f 1)
 fi
 
+# A merged router preset names one MCP configuration per web section, and that
+# configuration is session state rather than release state: its contents name
+# QWEN_WEB_STATE_DIR, the broker signing key, and the per-profile budgets, and
+# rewriting those paths to bundle-relative ones would change the preset bytes
+# the digest binds. The bundle records the path and the digest of each
+# configuration and leaves the file where the generator wrote it.
+#
+# The preset own `# qwen_web_sections=` marker decides whether a record exists
+# at all, so a bundle assembled from a registry preset carries none and a
+# bundle assembled from a merged one carries exactly the sections the marker
+# names. verify-deployment-bundle.sh applies the same rule, which is what lets
+# a deployment that predates this lane keep resolving: requiring the record of
+# every bundle refused the whole roster on natural-boundary-13d05a0-r2, whose
+# preset carries no marker, and left the appliance serving through recovery
+# mode alone.
+#
+# One row shape serves every reader: `profile_id`, `configuration_path`,
+# `sha256`, `image_server`, tab-separated, with `image_server` over `image` and
+# `-`. The header line the record carries states it in the file itself.
+# verify-deployment-bundle.sh and qwen-launch.sh both parse four fields and read
+# a three-field row -- one written before the image lane -- as an absent
+# `image_server`, which is the withheld lane an unmarked preset also names. A
+# reader taking three fields measures the digest against `<sha256><TAB>image`,
+# which is what a fourth column added without its readers cost the appliance on
+# natural-boundary-13d05a0-r4-image: the bundle verified and every launch
+# refused.
+web_mcp_manifest_sha256=-
+if [ -n "$router_presets_path" ]; then
+    preset_web_sections=$(sed -n 's/^# qwen_web_sections=//p' \
+        "$staging_directory/router-presets.ini")
+    case $preset_web_sections in
+        '-') preset_web_sections='' ;;
+    esac
+    web_mcp_rows=$(awk '
+        /^[[:space:]]*\[/ {
+            section = $0
+            sub(/^[[:space:]]*\[/, "", section)
+            sub(/\][[:space:]]*$/, "", section)
+            next
+        }
+        /^[[:space:]]*LLAMA_ARG_MCP_SERVERS_CONFIG[[:space:]]*=/ {
+            value = $0
+            sub(/^[^=]*=[[:space:]]*/, "", value)
+            sub(/[[:space:]]+$/, "", value)
+            printf "%s\t%s\n", section, value
+        }
+    ' "$staging_directory/router-presets.ini")
+    if [ -z "$preset_web_sections" ] && [ -n "$web_mcp_rows" ]; then
+        printf 'bundle router preset names MCP configurations and its head marker names no web section: %s\n' \
+            "$router_presets_path" >&2
+        exit 1
+    fi
+    if [ -n "$preset_web_sections" ] && [ -z "$web_mcp_rows" ]; then
+        printf 'bundle router preset names web section %s and no section carries LLAMA_ARG_MCP_SERVERS_CONFIG: %s\n' \
+            "$preset_web_sections" "$router_presets_path" >&2
+        exit 1
+    fi
+    # The image server lives inside the same per-section configuration, so the
+    # record gains a column rather than a file: `image` where that section arms
+    # a generation and `-` where it carries the search server alone. The preset
+    # own `# qwen_image_profile=` marker decides which the row has to read, and
+    # verify-deployment-bundle.sh compares the two without opening a file a
+    # machine that never armed the lane holds none of.
+    preset_image_profile=$(sed -n 's/^# qwen_image_profile=//p' \
+        "$staging_directory/router-presets.ini")
+    case $preset_image_profile in
+        '-') preset_image_profile='' ;;
+    esac
+    if [ -n "$preset_image_profile" ]; then
+        expected_image_column=image
+        if [ -z "$preset_web_sections" ]; then
+            printf 'bundle router preset names image profile %s and its head marker names no web section: %s\n' \
+                "$preset_image_profile" "$router_presets_path" >&2
+            exit 1
+        fi
+    else
+        expected_image_column=-
+    fi
+    if [ -n "$preset_web_sections" ]; then
+        {
+            printf '# profile_id\tconfiguration_path\tsha256\timage_server\n'
+            printf '%s\n' "$web_mcp_rows" |
+                while IFS='	' read -r web_section web_configuration; do
+                    if [ ! -r "$web_configuration" ]; then
+                        printf 'bundle preset section %s names an unreadable MCP configuration: %s\n' \
+                            "$web_section" "$web_configuration" >&2
+                        exit 1
+                    fi
+                    if ! image_server_report=$(
+                        "$script_directory/read-image-mcp-server.py" \
+                            "$web_configuration"
+                    ); then
+                        printf 'bundle preset section %s names an MCP configuration this record cannot read: %s\n' \
+                            "$web_section" "$web_configuration" >&2
+                        exit 1
+                    fi
+                    image_server_column=-
+                    if [ "$(printf '%s\n' "$image_server_report" |
+                        sed -n 's/^image_server=//p')" = present ]; then
+                        image_server_column=image
+                        recorded_image_profile=$(printf '%s\n' \
+                            "$image_server_report" |
+                            sed -n 's/^QWEN_IMAGE_PROFILE=//p')
+                        if [ "$recorded_image_profile" != "$preset_image_profile" ]; then
+                            printf 'bundle preset section %s arms image profile %s where its preset names %s\n' \
+                                "$web_section" "$recorded_image_profile" \
+                                "${preset_image_profile:--}" >&2
+                            exit 1
+                        fi
+                        # The grant binds the generation to the section that
+                        # proposed it, so a configuration copied or left stale
+                        # from another section's build is a language-profile
+                        # binding the bundle must not carry forward silently:
+                        # qwen-capacity-policy.sh rejoins
+                        # QWEN_IMAGE_LANGUAGE_PROFILE to the section at launch
+                        # and refuses the mismatch there, so the bundle would
+                        # verify and activate a manifest no launch can serve.
+                        recorded_language_profile=$(printf '%s\n' \
+                            "$image_server_report" |
+                            sed -n 's/^QWEN_IMAGE_LANGUAGE_PROFILE=//p')
+                        if [ "$recorded_language_profile" != "$web_section" ]; then
+                            printf 'bundle preset section %s carries an image server bound to language profile %s\n' \
+                                "$web_section" "$recorded_language_profile" >&2
+                            exit 1
+                        fi
+                    fi
+                    if [ "$image_server_column" != "$expected_image_column" ]; then
+                        printf 'bundle preset section %s reads image_server %s where its preset marker reads %s\n' \
+                            "$web_section" "$image_server_column" \
+                            "$expected_image_column" >&2
+                        exit 1
+                    fi
+                    printf '%s\t%s\t%s\t%s\n' "$web_section" \
+                        "$web_configuration" \
+                        "$(sha256sum -- "$web_configuration" | cut -d ' ' -f 1)" \
+                        "$image_server_column"
+                done
+        } >"$staging_directory/web-mcp-manifest.tsv" || exit 1
+        chmod 600 "$staging_directory/web-mcp-manifest.tsv"
+        web_mcp_manifest_sha256=$(sha256sum \
+            "$staging_directory/web-mcp-manifest.tsv" | cut -d ' ' -f 1)
+    fi
+fi
+
 {
     printf 'bundle_name\t%s\n' "$bundle_name"
     printf 'created_utc\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -238,6 +382,7 @@ fi
         "$(sha256sum "$staging_directory/ctx-checkpoints.tsv" | cut -d ' ' -f 1)"
     printf 'router-presets.ini\t%s\n' "$router_presets_sha256"
     printf 'web-presets.ini\t%s\n' "$web_presets_sha256"
+    printf 'web-mcp-manifest.tsv\t%s\n' "$web_mcp_manifest_sha256"
 } >"$staging_directory/bundle-manifest.tsv"
 
 # The staged bundle passes the same verification an activation applies,
@@ -255,6 +400,7 @@ if [ -e "$bundle_directory" ] || [ -L "$bundle_directory" ]; then
     exit 1
 fi
 mv -T "$staging_directory" "$bundle_directory"
-printf 'deployment_bundle=%s semantics=%s maximum_count=%s server_sha256=%s router_presets=%s web_presets=%s\n' \
+printf 'deployment_bundle=%s semantics=%s maximum_count=%s server_sha256=%s router_presets=%s web_presets=%s web_mcp_manifest=%s\n' \
     "$bundle_directory" "$checkpoint_semantics" "$maximum_ledger_count" \
-    "$server_sha256" "$router_presets_sha256" "$web_presets_sha256"
+    "$server_sha256" "$router_presets_sha256" "$web_presets_sha256" \
+    "$web_mcp_manifest_sha256"

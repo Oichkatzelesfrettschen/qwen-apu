@@ -45,7 +45,16 @@ validate_router_preset_tuples() {
     printf '%s\n' "$4" | awk -F'\t' -v model_root="$3" \
         -v include_quarantine="$5" -v web_profile_sections="${6:-0}" \
         -v web_depth_override="${7:-0}" -v draft_pair_ledger="${8:-}" \
-        -v ctx_checkpoint_ledger="${9:-}" '
+        -v ctx_checkpoint_ledger="${9:-}" -v web_section_list="${10:-}" '
+        # The merged preset holds registry sections and web sections in one
+        # file, so the web rules are selected per section rather than per file.
+        # $6 states that every section is a web profile, which is what
+        # build-web-presets.sh emits; $10 names the sections
+        # build-router-presets.sh folded into the roster preset, and every
+        # other section of that file takes the registry rules.
+        function is_web_section(name) {
+            return web_profile_sections == 1 || (name in web_sections)
+        }
         function reset_tuple(   draft_key_index) {
             for (draft_key_index = 1; draft_key_index <= draft_key_count;
                  draft_key_index++) {
@@ -61,6 +70,7 @@ validate_router_preset_tuples() {
             ubatch_count = 0
             checkpoint_count = 0
             tags_count = 0
+            mcp_count = 0
             model_value = ""
             context_value = ""
             cache_k_value = ""
@@ -148,7 +158,27 @@ validate_router_preset_tuples() {
             # carrying any of them is refused, because a section that gained a
             # draft outside the ledger loads a second checkpoint the resident-set
             # arithmetic never counted.
-            is_draft_pair = (web_profile_sections != 1 && (section in pair_target))
+            section_is_web = is_web_section(section)
+            # An MCP configuration is the execution grant. A section outside
+            # the list the head marker names carrying one would reach the
+            # network under rules the launch validated as tool-free, and a
+            # named web section holding none serves a toggle that returns
+            # nothing. The rule runs over the merged file alone: a whole-file
+            # web preset also carries the configuration-free ui-mediated and
+            # review-only shapes, whose grants the execution-policy rejoin and
+            # the tag rules already decide.
+            if (web_profile_sections == 1) {
+                # every section is a web profile and the shapes differ
+            } else if (section in web_sections) {
+                if (mcp_count != 1) {
+                    reject_key("LLAMA_ARG_MCP_SERVERS_CONFIG", mcp_count)
+                }
+            } else if (mcp_count != 0) {
+                printf "router preset section %s carries LLAMA_ARG_MCP_SERVERS_CONFIG outside the web section list\n", \
+                    section > "/dev/stderr"
+                rejected = 1
+            }
+            is_draft_pair = (!section_is_web && (section in pair_target))
             if (!is_draft_pair) {
                 for (draft_key_index = 1; draft_key_index <= draft_key_count;
                      draft_key_index++) {
@@ -184,7 +214,7 @@ validate_router_preset_tuples() {
                 check_draft_key("spec-draft-device", "Vulkan0")
                 check_draft_key("spec-draft-override-tensor", ".*=Vulkan0")
             }
-            if (web_profile_sections == 1) {
+            if (section_is_web) {
                 model_root_prefix = model_root "/"
                 if (model_count == 1 &&
                     substr(model_value, 1, length(model_root_prefix)) == model_root_prefix) {
@@ -237,7 +267,7 @@ validate_router_preset_tuples() {
                     expected_model)
             }
             if (context_count == 1) {
-                if (web_profile_sections == 1) {
+                if (section_is_web) {
                     if (context_value + 0 > registry_ceiling[registry_key] + 0) {
                         reject_registry_value("LLAMA_ARG_CTX_SIZE", context_value,
                             "at most " registry_ceiling[registry_key])
@@ -388,6 +418,12 @@ validate_router_preset_tuples() {
                 split(checkpoint_rows[checkpoint_row_index], checkpoint_fields, "\t")
                 ledger_checkpoints[checkpoint_fields[1]] = checkpoint_fields[2]
             }
+            web_section_count = split(web_section_list, web_section_names, ",")
+            for (web_section_index = 1; web_section_index <= web_section_count;
+                 web_section_index++) {
+                if (web_section_names[web_section_index] == "") continue
+                web_sections[web_section_names[web_section_index]] = 1
+            }
             reset_tuple()
         }
         FILENAME == "-" {
@@ -474,6 +510,8 @@ validate_router_preset_tuples() {
             } else if (key == "LLAMA_ARG_TAGS") {
                 tags_count++
                 tags_value = value
+            } else if (key == "LLAMA_ARG_MCP_SERVERS_CONFIG") {
+                mcp_count++
             } else if (is_draft_key[key]) {
                 draft_count[key]++
                 draft_value[key] = value
@@ -499,12 +537,42 @@ case $bind_host in
         ;;
 esac
 
-# The API key is optional at every bind address. A key authenticates callers on
-# a shared network; it grants no capability the model itself withholds, so a
-# trusted network serves without one and reaches the page directly.
+# The API key is optional at every bind address on the ordinary serving path. A
+# key authenticates callers on a shared network; it grants no capability the
+# model itself withholds, so a trusted network serves without one and reaches
+# the page directly.
 if [ -n "$api_key_file" ] && [ -z "$static_path" ]; then
     printf 'an API key file requires a static path\n' >&2
     exit 2
+fi
+
+# The web and image lanes are the exception, and the guard stands here as well
+# as in the launcher because two paths construct this argv and a preset
+# persists across the launch that generated it. A section reaching the network
+# through its MCP server or the device through its image runtime serves an
+# exposed listener only behind the bearer, so the policy refuses to build the
+# tuple rather than warning about it.
+#
+# QWEN_WEB_LAN_OPEN=1 is the operator's decision that this exposure serves
+# without that bearer, and it inverts the guard rather than lifting it: the
+# open lane refuses a key file and the bearer lane refuses its absence, so the
+# argv this policy builds carries the credential state the launch announced.
+# remote/web-lan-exposure.sh admits the opt-in beside QWEN_WEB_LAN=1 alone, so
+# the value reaching here is the one that passed that admission.
+if [ "${QWEN_WEB_LAN:-0}" = 1 ]; then
+    if [ "${QWEN_WEB_LAN_OPEN:-0}" = 1 ] && [ -n "$api_key_file" ]; then
+        printf 'the open LAN exposure serves without a bearer, and an API key file reaches this launch: %s\n' \
+            "$api_key_file" >&2
+        printf 'QWEN_WEB_LAN_OPEN=1 exports QWEN_REQUIRE_API_KEY=0; a launch reaching here with a key binds %s authenticated where the launch announced an open listener\n' \
+            "$bind_host" >&2
+        exit 2
+    fi
+    if [ "${QWEN_WEB_LAN_OPEN:-0}" = 0 ] && [ -z "$api_key_file" ]; then
+        printf 'the LAN exposure serves an authenticated listener, and no API key file reaches this launch\n' >&2
+        printf 'the web and image launchers export QWEN_REQUIRE_API_KEY=1; a launch reaching here without one binds %s unauthenticated\n' \
+            "$bind_host" >&2
+        exit 2
+    fi
 fi
 
 if [ ! -x "$llama_server" ]; then
@@ -986,6 +1054,14 @@ router_web_profiles_guard_path=-
 router_web_profiles_guard_sha256=-
 router_draft_pair_guard_path=-
 router_draft_pair_guard_sha256=-
+web_presets_from_preset=0
+web_sections_from_preset=
+# The image lane reads as withheld until a preset marker names it, which is what
+# a preset generated before the lane and a preset that armed nothing both say.
+router_image_profile=
+router_image_profiles=
+router_image_profiles_sha256=
+router_web_mode=0
 router_max=${QWEN_ROUTER_MAX:-1}
 router_preset_expected_sha256=${QWEN_ROUTER_PRESET_SHA256:-}
 verify_router_preset_identity() {
@@ -1041,7 +1117,15 @@ measure_router_authority_identity() {
 # registries, whose digests qwen-router-exec-guard.sh remeasures after the
 # Vulkan wrapper configures the environment.
 validate_web_preset_execution_policies() {
-    awk -F'\t' -v ledger="$1" -v authorizer_ready="$3" '
+    awk -F'\t' -v ledger="$1" -v authorizer_ready="$3" \
+        -v web_all_sections="${4:-0}" -v web_section_list="${5:-}" '
+        # The merged preset holds registry sections beside the web one, and the
+        # web ledger holds a row for neither a registry id nor a pair id. The
+        # rejoin therefore runs over the sections the head marker names, and a
+        # section outside that list is validated by the tuple rules alone.
+        function is_web_section(name) {
+            return web_all_sections == 1 || (name in web_sections)
+        }
         function policy_from_tags(tags,   tag_count, tags_parts, tag_index) {
             tag_count = split(tags, tags_parts, ",")
             for (tag_index = 1; tag_index <= tag_count; tag_index++) {
@@ -1055,6 +1139,7 @@ validate_web_preset_execution_policies() {
         }
         function finish_section(   ledger_policy, section_policy) {
             if (section == "" || section == "*") return
+            if (!is_web_section(section)) return
             # A review-only section names a vision checkpoint rather than a web
             # profile, so the web ledger holds no row for it and the rejoin that
             # guards an execution grant has nothing to rejoin. What makes it
@@ -1095,6 +1180,14 @@ validate_web_preset_execution_policies() {
                 rejected = 1
             }
         }
+        BEGIN {
+            web_section_count = split(web_section_list, web_section_names, ",")
+            for (web_section_index = 1; web_section_index <= web_section_count;
+                 web_section_index++) {
+                if (web_section_names[web_section_index] == "") continue
+                web_sections[web_section_names[web_section_index]] = 1
+            }
+        }
         FILENAME == ledger {
             if ($0 ~ /^[[:space:]]*($|#)/) next
             ledger_execution_policy[$1] = $12
@@ -1128,8 +1221,125 @@ validate_web_preset_execution_policies() {
     ' "$1" "$2"
 }
 
+# The image lane is the second execution grant a merged preset can carry, and
+# the section's own MCP configuration rather than the marker is what the child
+# spawns. The rejoin therefore runs in both directions: a preset naming an image
+# profile requires every web section's configuration to carry an image server
+# bound to that profile and to that section as its language profile, and a
+# preset naming none requires every configuration to carry no image server at
+# all. remote/read-image-mcp-server.py is the one parser both this policy and
+# the image launch library read that file with.
+#
+# A marker-free preset is one generated before this lane, so it reads as a
+# withheld lane and its sections are held to the same absence.
+router_section_mcp_configurations() {
+    awk '
+        /^[[:space:]]*($|[#;])/ { next }
+        /^[[:space:]]*\[/ {
+            section = $0
+            sub(/^[[:space:]]*\[/, "", section)
+            sub(/\][[:space:]]*$/, "", section)
+            next
+        }
+        {
+            if (section == "") next
+            separator = index($0, "=")
+            if (separator == 0) next
+            key = substr($0, 1, separator - 1)
+            value = substr($0, separator + 1)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+            if (key == "LLAMA_ARG_MCP_SERVERS_CONFIG") {
+                printf "%s\t%s\n", section, value
+            }
+        }
+    ' "$1"
+}
+
+validate_image_preset_lane() {
+    image_lane_rejected=0
+    image_lane_configurations=$(router_section_mcp_configurations \
+        "$router_presets")
+    while IFS='	' read -r image_lane_section image_lane_configuration; do
+        [ -n "$image_lane_section" ] || continue
+        if ! image_lane_report=$("$script_directory/read-image-mcp-server.py" \
+            "$image_lane_configuration"); then
+            printf 'router preset section %s names an MCP configuration this policy cannot read: %s\n' \
+                "$image_lane_section" "$image_lane_configuration" >&2
+            image_lane_rejected=1
+            continue
+        fi
+        image_lane_state=$(printf '%s\n' "$image_lane_report" |
+            sed -n 's/^image_server=//p')
+        if [ -z "$router_image_profile" ]; then
+            if [ "$image_lane_state" = present ]; then
+                printf 'router preset section %s carries an image server where the preset names no image profile\n' \
+                    "$image_lane_section" >&2
+                printf 'regenerate the preset tree with remote/build-router-presets.sh\n' >&2
+                image_lane_rejected=1
+            fi
+            continue
+        fi
+        if [ "$image_lane_state" != present ]; then
+            printf 'router preset names image profile %s and section %s carries no image server\n' \
+                "$router_image_profile" "$image_lane_section" >&2
+            image_lane_rejected=1
+            continue
+        fi
+        image_lane_profile=$(printf '%s\n' "$image_lane_report" |
+            sed -n 's/^QWEN_IMAGE_PROFILE=//p')
+        image_lane_language=$(printf '%s\n' "$image_lane_report" |
+            sed -n 's/^QWEN_IMAGE_LANGUAGE_PROFILE=//p')
+        if [ "$image_lane_profile" != "$router_image_profile" ]; then
+            printf 'router preset section %s arms image profile %s where the preset names %s\n' \
+                "$image_lane_section" "$image_lane_profile" \
+                "$router_image_profile" >&2
+            image_lane_rejected=1
+        fi
+        if [ "$image_lane_language" != "$image_lane_section" ]; then
+            printf 'router preset section %s carries an image server bound to language profile %s\n' \
+                "$image_lane_section" "$image_lane_language" >&2
+            printf 'the grant binds the language profile and the image profile together, so the section signs for itself\n' >&2
+            image_lane_rejected=1
+        fi
+    done <<IMAGE_LANE_CONFIGURATIONS
+$image_lane_configurations
+IMAGE_LANE_CONFIGURATIONS
+    [ "$image_lane_rejected" = 0 ] || return 1
+    [ -n "$router_image_profile" ] || return 0
+    # A preset persists across an edit to the image ledger, so the row it names
+    # is read again here: a row moved to `refused` or removed outright refuses
+    # the launch rather than serving a persisted configuration that still names
+    # it. The digest binds every row rather than only that one field.
+    if ! image_lane_identity=$(sha256sum -- "$router_image_profiles"); then
+        printf 'image profile ledger identity cannot be measured: %s\n' \
+            "$router_image_profiles" >&2
+        return 1
+    fi
+    image_lane_actual_sha256=${image_lane_identity%% *}
+    if [ "$image_lane_actual_sha256" != "$router_image_profiles_sha256" ]; then
+        printf 'image profile ledger identity changed: expected %s, measured %s\n' \
+            "$router_image_profiles_sha256" "$image_lane_actual_sha256" >&2
+        return 1
+    fi
+    if ! image_lane_row=$(QWEN_IMAGE_PROFILES=$router_image_profiles \
+        "$script_directory/image-registry.sh" profile \
+        "$router_image_profile" 2>/dev/null); then
+        printf 'the preset names image profile %s, which %s holds no row for\n' \
+            "$router_image_profile" "$router_image_profiles" >&2
+        return 1
+    fi
+    image_lane_policy=$(printf '%s\n' "$image_lane_row" |
+        sed -n 's/^execution_policy=//p')
+    if [ "$image_lane_policy" != validator-gated ]; then
+        printf 'image profile %s carries execution_policy %s, and only validator-gated reaches a runtime\n' \
+            "$router_image_profile" "${image_lane_policy:-<absent>}" >&2
+        return 1
+    fi
+}
+
 verify_web_profiles_identity() {
-    if [ "$web_presets_from_preset" != 1 ]; then
+    if [ "$router_web_mode" != 1 ]; then
         return 0
     fi
     if ! web_profiles_identity=$(sha256sum -- "$router_web_profiles"); then
@@ -1160,6 +1370,8 @@ validate_current_router_authorities() {
     # path resolves against an empty ledger and joins nothing.
     router_draft_pair_rows=''
     if [ "$web_presets_from_preset" != 1 ]; then
+        # The merged preset carries the pair sections beside the web one, so
+        # the ledger they are rejoined to is read for that shape too.
         if ! router_draft_pair_rows=$(
             "$script_directory/model-registry.sh" draft-pairs
         ); then
@@ -1180,12 +1392,12 @@ validate_current_router_authorities() {
         "$router_model_root" "$router_quarantine_rows" \
         "$quarantine_override_from_preset" "$web_presets_from_preset" \
         "$web_depth_override_from_preset" "$router_draft_pair_rows" \
-        "$router_ctx_checkpoint_rows"; then
+        "$router_ctx_checkpoint_rows" "$web_sections_from_preset"; then
         printf 'router presets do not carry complete admitted tuples: %s\n' \
             "$router_presets" >&2
         return 1
     fi
-    if [ "$web_presets_from_preset" = 1 ]; then
+    if [ "$router_web_mode" = 1 ]; then
         verify_web_profiles_identity || return 1
         if [ ! -r "$router_web_profiles" ]; then
             printf 'web profile ledger is unreadable: %s\n' \
@@ -1193,12 +1405,18 @@ validate_current_router_authorities() {
             return 1
         fi
         if ! validate_web_preset_execution_policies "$router_web_profiles" \
-            "$router_presets" "$router_web_authorizer_ready"; then
+            "$router_presets" "$router_web_authorizer_ready" \
+            "$web_presets_from_preset" "$web_sections_from_preset"; then
             printf 'web preset sections lost their ledger execution grant: %s\n' \
                 "$router_presets" >&2
             printf 'regenerate the preset tree with remote/build-web-presets.sh\n' >&2
             return 1
         fi
+    fi
+    if ! validate_image_preset_lane; then
+        printf 'the router preset image lane fails its own markers: %s\n' \
+            "$router_presets" >&2
+        return 1
     fi
 }
 if [ "$router_enabled" = 1 ]; then
@@ -1240,11 +1458,99 @@ if [ "$router_enabled" = 1 ]; then
             exit 2
             ;;
     esac
+    # build-router-presets.sh names the sections it folded into the roster
+    # preset, so the launch validates exactly those under the web rules and
+    # every other section under the registry rules. `-` states that the file
+    # holds registry sections alone, which is what a generation without the
+    # authorizer marker writes.
+    web_sections_from_preset=$(sed -n 's/^# qwen_web_sections=//p' \
+        "$router_presets")
+    case $web_sections_from_preset in
+        '' | '-') web_sections_from_preset='' ;;
+        *[!A-Za-z0-9_,-]* | ,* | *, | *,,*)
+            printf 'router presets carry a malformed web section list: %s\n' \
+                "$web_sections_from_preset" >&2
+            exit 2
+            ;;
+    esac
+    if [ "$web_presets_from_preset" = 1 ] &&
+        [ -n "$web_sections_from_preset" ]; then
+        printf 'router presets claim both a whole-file web provenance and a web section list: %s\n' \
+            "$router_presets" >&2
+        exit 2
+    fi
+    # Either provenance puts a section under the web rules, so the ledger
+    # identity markers are required and validated for both shapes.
+    router_web_mode=0
+    if [ "$web_presets_from_preset" = 1 ] ||
+        [ -n "$web_sections_from_preset" ]; then
+        router_web_mode=1
+    fi
+    # Both generators write `# qwen_image_profile=` and spell a withheld lane
+    # `-`, so an absent marker is a preset generated before the lane and reads
+    # the same way. A named profile requires the ledger path and digest beside
+    # it, since the rejoin that keeps a revoked row from serving reads that
+    # exact file.
+    router_image_profile=$(sed -n 's/^# qwen_image_profile=//p' \
+        "$router_presets")
+    case $router_image_profile in
+        '' | '-') router_image_profile='' ;;
+        [A-Za-z0-9]*)
+            # image-registry.sh's own identifier() admits a period after the
+            # first character, and a ledger-valid id such as sdxs.512-arm-a
+            # carries one, so this vocabulary matches identifier() exactly
+            # rather than rejecting a marker the ledger already accepted.
+            case $router_image_profile in
+                *[!A-Za-z0-9._-]*)
+                    printf 'router presets carry a malformed image profile marker: %s\n' \
+                        "$router_image_profile" >&2
+                    exit 2
+                    ;;
+            esac
+            ;;
+        *)
+            printf 'router presets carry a malformed image profile marker: %s\n' \
+                "$router_image_profile" >&2
+            exit 2
+            ;;
+    esac
+    router_image_profiles=$(sed -n 's/^# qwen_image_profiles_path=//p' \
+        "$router_presets")
+    router_image_profiles_sha256=$(sed -n \
+        's/^# qwen_image_profiles_sha256=//p' "$router_presets")
+    if [ -n "$router_image_profile" ]; then
+        case $router_image_profiles in
+            /*) ;;
+            *)
+                printf 'router presets name image profile %s and omit an absolute image ledger path: %s\n' \
+                    "$router_image_profile" "$router_presets" >&2
+                exit 2
+                ;;
+        esac
+        if [ "${#router_image_profiles_sha256}" -ne 64 ]; then
+            printf 'image preset ledger SHA-256 must hold 64 lowercase hexadecimal characters\n' >&2
+            exit 2
+        fi
+        case $router_image_profiles_sha256 in
+            *[!0-9a-f]*)
+                printf 'image preset ledger SHA-256 must hold 64 lowercase hexadecimal characters\n' >&2
+                exit 2
+                ;;
+        esac
+        # An image server reaches the device from a section the web ledger
+        # emitted, so a lane armed over a file naming no web section would sign
+        # a grant for a profile the launch never resolves.
+        if [ "$router_web_mode" != 1 ]; then
+            printf 'router presets name image profile %s and carry no web section\n' \
+                "$router_image_profile" >&2
+            exit 2
+        fi
+    fi
     web_profiles_path_from_preset=$(sed -n \
         's/^# qwen_web_profiles_path=//p' "$router_presets")
     web_profiles_sha256_from_preset=$(sed -n \
         's/^# qwen_web_profiles_sha256=//p' "$router_presets")
-    if [ "$web_presets_from_preset" = 1 ]; then
+    if [ "$router_web_mode" = 1 ]; then
         case $web_profiles_path_from_preset in
             /*) ;;
             *)
@@ -1282,7 +1588,12 @@ if [ "$router_enabled" = 1 ]; then
                 exit 2
                 ;;
         esac
-    elif [ -n "$web_profiles_path_from_preset$web_profiles_sha256_from_preset" ]; then
+    elif [ -n "$(printf '%s%s' "$web_profiles_path_from_preset" \
+        "$web_profiles_sha256_from_preset" | tr -d '\n-')" ]; then
+        # A generation that armed no web lane writes `-` for both, so the
+        # markers state their own emptiness rather than being absent. A
+        # non-empty value under no web provenance is a preset whose ledger
+        # identity claims a grant no section carries.
         printf 'non-web router presets carry web profile ledger identity markers: %s\n' \
             "$router_presets" >&2
         exit 2
@@ -1357,6 +1668,13 @@ if [ "$router_enabled" = 1 ]; then
     # exposure it would create does not follow it.
     if [ "$quarantine_override_from_environment" = 1 ] ||
        [ "$quarantine_override_from_preset" = 1 ]; then
+        # Forcing the loopback under an exposure the operator asked for would
+        # bind one address while the launcher printed another, so the two
+        # settings refuse together rather than one silently winning.
+        if [ "${QWEN_WEB_LAN:-0}" = 1 ]; then
+            printf 'the quarantine override and the LAN exposure name different listeners; a checkpoint with a recorded device failure serves the loopback\n' >&2
+            exit 2
+        fi
         if [ "$bind_host" != 127.0.0.1 ]; then
             printf 'quarantine override forces the listener to loopback: %s -> 127.0.0.1\n' \
                 "$bind_host" >&2
@@ -1369,6 +1687,13 @@ if [ "$router_enabled" = 1 ]; then
     # ring reaches every host on the network from there. The bind host is forced
     # rather than refused, so the experiment the override exists for still runs.
     if [ "$web_depth_override_from_preset" = 1 ]; then
+        # The exposure and this override refuse together for the reason the
+        # quarantine pair does: the operator validates the depth rather than
+        # serving an unvalidated one on an address the launch announced.
+        if [ "${QWEN_WEB_LAN:-0}" = 1 ]; then
+            printf 'the unvalidated-depth override and the LAN exposure name different listeners; validate the depth or serve it on the loopback\n' >&2
+            exit 2
+        fi
         if [ "$bind_host" != 127.0.0.1 ]; then
             printf 'web preset unvalidated-depth override forces the listener to loopback: %s -> 127.0.0.1\n' \
                 "$bind_host" >&2

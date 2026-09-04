@@ -65,6 +65,16 @@ export QWEN_CTX_CHECKPOINT_LEDGER
 harness=$work/harness
 mkdir -p "$harness"
 cp "$script_directory/qwen-web-launch.sh" "$harness/qwen-web-launch.sh"
+# The launcher sources its listener policy from its own directory, so the
+# harness carries the tree's file rather than a stand-in.
+cp "$script_directory/web-lan-exposure.sh" "$harness/web-lan-exposure.sh"
+# An unset QWEN_WEB_LAN_NAME is the question the policy answers from this
+# host's own avahi state, so every arm below states an answer: the empty
+# default here, and a synthetic name where the arm measures one. Inheriting it
+# would resolve a different name on a machine running the daemon and would
+# print that machine's hostname into a log.
+QWEN_WEB_LAN_NAME=''
+export QWEN_WEB_LAN_NAME
 # The launcher resolves the active deployment before it reads a preset; the
 # harness holds no deployment root, so the resolver reports none and the
 # state directory preset applies.
@@ -88,8 +98,14 @@ set -eu
     printf 'QWEN_WEB_PROFILE=%s\n' "${QWEN_WEB_PROFILE:-unset}"
     printf 'QWEN_WEB_PROVIDER=%s\n' "${QWEN_WEB_PROVIDER:-unset}"
     printf 'QWEN_WEB_PROFILES=%s\n' "${QWEN_WEB_PROFILES:-unset}"
+    printf 'QWEN_WEB_SEARXNG=%s\n' "${QWEN_WEB_SEARXNG:-unset}"
+    printf 'QWEN_SEARXNG_PORT=%s\n' "${QWEN_SEARXNG_PORT:-unset}"
     printf 'QWEN_STATIC_PATH=%s\n' "${QWEN_STATIC_PATH:-unset}"
     printf 'QWEN_REQUIRE_API_KEY=%s\n' "${QWEN_REQUIRE_API_KEY:-unset}"
+    printf 'QWEN_WEB_LAN=%s\n' "${QWEN_WEB_LAN:-unset}"
+    printf 'QWEN_WEB_LAN_ADDRESS=%s\n' "${QWEN_WEB_LAN_ADDRESS:-unset}"
+    printf 'QWEN_WEB_LAN_NAME=%s\n' "${QWEN_WEB_LAN_NAME:-unset}"
+    printf 'QWEN_WEB_LAN_OPEN=%s\n' "${QWEN_WEB_LAN_OPEN:-unset}"
 } >"$QWEN_WEB_LAUNCH_RECORD"
 EOF
 chmod +x "$harness/qwen-launch.sh"
@@ -971,6 +987,360 @@ else
     cat "$work/loopback.err" >&2
 fi
 
+# QWEN_WEB_LAN=1 is the operator's explicit exposure. The arms below measure
+# the six conditions remote/web-lan-exposure.sh applies, one refusal each, and
+# then the admitted launch that exports the address the session binds.
+lan_api_key=$state_directory/api.key
+printf 'fixture-api-key\n' >"$lan_api_key"
+chmod 600 "$lan_api_key"
+
+for lan_case in unset:'' loopback:127.0.0.1 wildcard:0.0.0.0 name:qwen-laptop \
+    short:192.168.1 wide:192.168.1.300; do
+    lan_case_name=${lan_case%%:*}
+    lan_case_address=${lan_case#*:}
+    if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+        QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+        QWEN_WEB_LAN_ADDRESS=$lan_case_address \
+        env -u QWEN_BIND_HOST "$launcher" \
+        >"$work/lan-address.log" 2>"$work/lan-address.err"; then
+        report "lan_exposure_address_refused_$lan_case_name" accepted
+    else
+        outcome=ok
+        grep -q 'not a routable IPv4 literal' "$work/lan-address.err" ||
+            outcome=missing_message
+        report "lan_exposure_address_refused_$lan_case_name" "$outcome"
+    fi
+done
+
+# The bind host is the exposure literal or the wildcard; a third address is a
+# launch that would print one listener and bind another.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=192.168.1.11 \
+    "$launcher" >"$work/lan-bind.log" 2>"$work/lan-bind.err"; then
+    report lan_exposure_refuses_a_third_bind_host accepted
+else
+    outcome=ok
+    grep -q 'QWEN_BIND_HOST is that literal or 0.0.0.0' "$work/lan-bind.err" ||
+        outcome=missing_message
+    report lan_exposure_refuses_a_third_bind_host "$outcome"
+fi
+
+# The bearer is what stands between a LAN reader and every route, so an absent
+# API key file refuses the exposure rather than being minted alongside it.
+mv "$lan_api_key" "$work/api.key.held"
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/lan-key.log" 2>"$work/lan-key.err"; then
+    report lan_exposure_requires_an_existing_api_key accepted
+else
+    outcome=ok
+    grep -q 'finds no Web UI API key file' "$work/lan-key.err" ||
+        outcome=missing_message
+    report lan_exposure_requires_an_existing_api_key "$outcome"
+fi
+mv "$work/api.key.held" "$lan_api_key"
+
+# A key a group or the world can read is a credential on a shared machine.
+chmod 644 "$lan_api_key"
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/lan-mode.log" 2>"$work/lan-mode.err"; then
+    report lan_exposure_requires_a_private_api_key accepted
+else
+    outcome=ok
+    grep -q 'at mode 644 rather than 0600' "$work/lan-mode.err" ||
+        outcome=missing_message
+    report lan_exposure_requires_a_private_api_key "$outcome"
+fi
+chmod 600 "$lan_api_key"
+
+# qwen-capacity-policy.sh forces the loopback for either research override, so
+# an exposure combined with one would print an address it never binds. Both are
+# refused here instead.
+lan_marked_presets=$state_directory/web-presets-lan-marked.ini
+write_web_preset "$lan_marked_presets" marked
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_PRESETS=$lan_marked_presets QWEN_WEB_LAUNCH_RECORD=$record \
+    QWEN_WEB_LAN=1 QWEN_WEB_LAN_ADDRESS=192.168.1.10 \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/lan-marked.log" 2>"$work/lan-marked.err"; then
+    report lan_exposure_refuses_the_unvalidated_depth_override accepted
+else
+    outcome=ok
+    grep -q 'a depth no run has filled and decoded' "$work/lan-marked.err" ||
+        outcome=missing_message
+    report lan_exposure_refuses_the_unvalidated_depth_override "$outcome"
+fi
+
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_ROUTER_INCLUDE_QUARANTINE=1 \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/lan-quarantine.log" 2>"$work/lan-quarantine.err"; then
+    report lan_exposure_refuses_the_quarantine_override accepted
+else
+    outcome=ok
+    grep -q 'recorded device failure serves the loopback' \
+        "$work/lan-quarantine.err" || outcome=missing_message
+    report lan_exposure_refuses_the_quarantine_override "$outcome"
+fi
+
+# The admitted exposure exports the literal and the bind host the session
+# reads, and names every listener before the model loads.
+for lan_bind_case in literal:192.168.1.10 wildcard:0.0.0.0; do
+    lan_bind_name=${lan_bind_case%%:*}
+    lan_bind_value=${lan_bind_case#*:}
+    if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+        QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+        QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=$lan_bind_value \
+        "$launcher" >"$work/lan-ok.log" 2>"$work/lan-ok.err"; then
+        outcome=ok
+        grep -qx 'QWEN_WEB_LAN=1' "$record" || outcome=marker_dropped
+        grep -qx 'QWEN_WEB_LAN_ADDRESS=192.168.1.10' "$record" ||
+            outcome=address_dropped
+        grep -qx "QWEN_BIND_HOST=$lan_bind_value" "$record" ||
+            outcome=wrong_bind_host
+        grep -qx 'QWEN_REQUIRE_API_KEY=1' "$record" || outcome=api_key_not_required
+        grep -q 'exposure=lan address=192.168.1.10' "$work/lan-ok.log" ||
+            outcome=exposure_unreported
+        grep -q 'bearer=required' "$work/lan-ok.log" || outcome=bearer_unreported
+        grep -q 'broker=' "$work/lan-ok.log" || outcome=broker_address_unreported
+        report "lan_exposure_admitted_$lan_bind_name" "$outcome"
+    else
+        report "lan_exposure_admitted_$lan_bind_name" refused
+        cat "$work/lan-ok.err" >&2
+    fi
+done
+
+# A bare LAN page URL derives the broker and artifact origins as
+# router_port+1 and router_port+2, so this wrapper matches that derivation on
+# a LAN exposure rather than fixing 8571: a router port of 8080 pairing with
+# a fixed broker 8571 would leave every web approval and artifact load
+# targeting a port the advertised URL never names.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=0.0.0.0 \
+    "$launcher" >"$work/lan-broker-port.log" 2>"$work/lan-broker-port.err"; then
+    outcome=ok
+    grep -qx 'QWEN_WEB_BROKER_PORT=8081' "$record" || outcome=wrong_broker_port
+    report lan_exposure_derives_the_broker_port "$outcome"
+else
+    report lan_exposure_derives_the_broker_port refused
+    cat "$work/lan-broker-port.err" >&2
+fi
+
+# An explicit QWEN_WEB_BROKER_PORT names its own value and is not derived, so
+# it still overrides the LAN derivation where it agrees with what a bare LAN
+# page URL would derive on its own.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=0.0.0.0 \
+    QWEN_SERVER_PORT=9000 QWEN_WEB_BROKER_PORT=9001 \
+    "$launcher" >"$work/lan-broker-port-override.log" \
+    2>"$work/lan-broker-port-override.err"; then
+    outcome=ok
+    grep -qx 'QWEN_WEB_BROKER_PORT=9001' "$record" || outcome=override_dropped
+    report lan_exposure_broker_port_override_wins "$outcome"
+else
+    report lan_exposure_broker_port_override_wins refused
+    cat "$work/lan-broker-port-override.err" >&2
+fi
+
+# webui/index.html derives the broker and artifact origins from the loaded
+# port at fixed offsets whenever the page was reached at a bare LAN URL, and
+# the bare URL is exactly what this launch advertises, so an override that
+# disagrees with that derivation would serve a broker the advertised page
+# cannot reach.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=0.0.0.0 \
+    QWEN_WEB_BROKER_PORT=19000 \
+    "$launcher" >"$work/lan-broker-port-mismatch.log" \
+    2>"$work/lan-broker-port-mismatch.err"; then
+    report lan_exposure_broker_port_mismatch_refused admitted
+elif grep -q 'names 19000 where the advertised page URL derives 8081' \
+    "$work/lan-broker-port-mismatch.err"; then
+    report lan_exposure_broker_port_mismatch_refused ok
+else
+    report lan_exposure_broker_port_mismatch_refused wrong_reason
+    cat "$work/lan-broker-port-mismatch.err" >&2
+fi
+
+# A derived broker port at or beyond the top of the valid TCP range overflows
+# when the session derives the artifact port one higher again, the same
+# overflow remote/qwen-lan-launch.sh's own 65533 cap on QWEN_SERVER_PORT
+# exists to keep out of its wrapper path.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=0.0.0.0 \
+    QWEN_SERVER_PORT=65535 \
+    "$launcher" >"$work/lan-broker-port-overflow.log" \
+    2>"$work/lan-broker-port-overflow.err"; then
+    report lan_exposure_broker_port_overflow_refused admitted
+elif grep -q 'leaves room for the broker and artifact ports above it' \
+    "$work/lan-broker-port-overflow.err"; then
+    report lan_exposure_broker_port_overflow_refused ok
+else
+    report lan_exposure_broker_port_overflow_refused wrong_reason
+    cat "$work/lan-broker-port-overflow.err" >&2
+fi
+
+# The mDNS name is a second admitted host rather than a replacement, so the
+# wrapper forwards it beside the literal and names it on its own report line.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=qwen-test.local \
+    QWEN_BIND_HOST=0.0.0.0 \
+    "$launcher" >"$work/lan-named.log" 2>"$work/lan-named.err"; then
+    outcome=ok
+    grep -qx 'QWEN_WEB_LAN_NAME=qwen-test.local' "$record" || outcome=name_dropped
+    grep -qx 'QWEN_WEB_LAN_ADDRESS=192.168.1.10' "$record" ||
+        outcome=address_dropped
+    grep -q 'name=qwen-test.local' "$work/lan-named.log" || outcome=name_unreported
+    grep -q 'bearer=required' "$work/lan-named.log" || outcome=bearer_unreported
+    report lan_exposure_admits_the_mdns_name "$outcome"
+else
+    report lan_exposure_admits_the_mdns_name refused
+    cat "$work/lan-named.err" >&2
+fi
+
+# One spelling reaches every reader: a browser lowercases the host in the Origin
+# it sends and both children compare an origin exactly, so a mixed-case name
+# would configure an allowlist entry no request presents.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=QWEN-Test.LOCAL \
+    QWEN_BIND_HOST=0.0.0.0 \
+    "$launcher" >"$work/lan-case.log" 2>"$work/lan-case.err"; then
+    outcome=ok
+    grep -qx 'QWEN_WEB_LAN_NAME=qwen-test.local' "$record" || outcome=name_not_lowercased
+    grep -q 'name=qwen-test.local' "$work/lan-case.log" || outcome=name_misreported
+    report lan_exposure_name_is_lowercased "$outcome"
+else
+    report lan_exposure_name_is_lowercased refused
+    cat "$work/lan-case.err" >&2
+fi
+
+# A name outside the letter-digit-hyphen set names no host a browser resolves.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME='qwen test.local' \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/lan-badname.log" 2>"$work/lan-badname.err"; then
+    report lan_exposure_name_refused admitted
+else
+    outcome=ok
+    grep -q 'not a hostname a browser resolves on the link' \
+        "$work/lan-badname.err" || outcome=missing_message
+    report lan_exposure_name_refused "$outcome"
+fi
+
+# A name outside the .local namespace resolves through the recursive
+# resolver like any other DNS name, so an attacker who controls its zone can
+# rebind it to this address; web_lan_name_is_valid() refuses it on syntax
+# alone rather than admitting it into the Host and Origin sets QWEN_WEB_LAN_
+# OPEN=1 would then serve with no bearer behind them.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=attacker.example \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/lan-foreign-namespace.log" 2>"$work/lan-foreign-namespace.err"; then
+    report lan_exposure_name_outside_local_refused admitted
+else
+    outcome=ok
+    grep -q 'not a hostname a browser resolves on the link' \
+        "$work/lan-foreign-namespace.err" || outcome=missing_message
+    report lan_exposure_name_outside_local_refused "$outcome"
+fi
+
+# QWEN_WEB_LAN_OPEN=1 removes a bearer from a listener the operator exposed, so
+# a loopback launch carrying it refuses rather than serving an authenticated
+# listener while the operator believes the credential is gone.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN_OPEN=1 \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/lan-open-alone.log" 2>"$work/lan-open-alone.err"; then
+    report lan_open_refused_without_exposure admitted
+else
+    outcome=ok
+    grep -q 'removes the bearer from a LAN listener, and this launch exposes none' \
+        "$work/lan-open-alone.err" || outcome=missing_message
+    report lan_open_refused_without_exposure "$outcome"
+fi
+
+# The admitted open exposure carries QWEN_REQUIRE_API_KEY=0 across the tmux
+# boundary and reports the removed bearer where the bearer mode reports a
+# required one. The API key file stays unread, so the arm holds it away.
+mv "$lan_api_key" "$work/api.key.open"
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=qwen-test.local \
+    QWEN_WEB_LAN_OPEN=1 QWEN_BIND_HOST=0.0.0.0 \
+    "$launcher" >"$work/lan-open.log" 2>"$work/lan-open.err"; then
+    outcome=ok
+    grep -qx 'QWEN_REQUIRE_API_KEY=0' "$record" || outcome=key_still_required
+    grep -qx 'QWEN_WEB_LAN_OPEN=1' "$record" || outcome=open_marker_dropped
+    grep -q 'lan_open=1' "$work/lan-open.log" || outcome=open_unreported
+    grep -q 'bearer=removed' "$work/lan-open.log" || outcome=bearer_state_unreported
+    report lan_open_admitted "$outcome"
+else
+    report lan_open_admitted refused
+    cat "$work/lan-open.err" >&2
+fi
+mv "$work/api.key.open" "$lan_api_key"
+
+# An open exposure that also asked for the bearer states two policies, so the
+# launch refuses rather than serving one of them.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_OPEN=1 \
+    QWEN_REQUIRE_API_KEY=1 QWEN_BIND_HOST=0.0.0.0 \
+    "$launcher" >"$work/lan-open-key.log" 2>"$work/lan-open-key.err"; then
+    report lan_open_refuses_a_requested_bearer admitted
+else
+    outcome=ok
+    grep -q 'removes the bearer, and QWEN_REQUIRE_API_KEY names 1' \
+        "$work/lan-open-key.err" || outcome=missing_message
+    report lan_open_refuses_a_requested_bearer "$outcome"
+fi
+
+# The open opt-in meets both research overrides on the exposure's own terms.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_OPEN=1 \
+    QWEN_ROUTER_INCLUDE_QUARANTINE=1 \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/lan-open-quarantine.log" 2>"$work/lan-open-quarantine.err"; then
+    report lan_open_refuses_the_quarantine_override admitted
+else
+    outcome=ok
+    grep -q 'recorded device failure serves the loopback' \
+        "$work/lan-open-quarantine.err" || outcome=missing_message
+    report lan_open_refuses_the_quarantine_override "$outcome"
+fi
+
+# The default launch prints the loopback exposure and refuses a LAN bind with
+# the message it already carried.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/loopback-report.log" 2>"$work/loopback-report.err"; then
+    outcome=ok
+    grep -q 'exposure=loopback router=127.0.0.1' "$work/loopback-report.log" ||
+        outcome=exposure_unreported
+    grep -qx 'QWEN_BIND_HOST=127.0.0.1' "$record" || outcome=wrong_bind_host
+    grep -qx 'QWEN_WEB_LAN=1' "$record" && outcome=marker_leaked
+    report default_launch_reports_loopback_exposure "$outcome"
+else
+    report default_launch_reports_loopback_exposure refused
+    cat "$work/loopback-report.err" >&2
+fi
+
 # A section naming an MCP configuration the launch cannot read refuses before
 # the listener comes up, where llama-server would report a child startup fault.
 absent_mcp_presets=$state_directory/web-presets-absent-mcp.ini
@@ -1414,6 +1784,90 @@ elif grep -q 'web profile ledger identity changed:' \
 else
     report wrapper_refuses_changed_ledger_identity missing_message
 fi
+
+# Provider searxng makes the launch the owner of one local instance. The
+# endpoint comes off the profile row, and the wrapper admits the loopback
+# instance this chain starts: a remote endpoint names a service the launch
+# neither starts nor tears down, and a busy port names one it cannot own.
+write_searxng_web_profiles() {
+    printf '# profile_id\tmodel_id\tweb_mode\tcontext\tvalidated_filled_depth\tmax_results\tmax_fetches\tmax_chars_per_fetch\tmulti_source\tvision_allowed\ttool_selection\texecution_policy\tprovider\tprimary_category\tfallback_category\tminimum_results\tsearxng_url\n' \
+        >"$2"
+    printf 'web-fixture\tfixture-production\tvalidator-gated\t8192\t16384\t5\t2\t12000\tyes\tno\t9/10\tvalidator-gated\tsearxng\tqwen-open\tqwen-broad\t3\t%s\n' \
+        "$1" >>"$2"
+}
+
+searxng_arm() {
+    arm_name=$1
+    arm_url=$2
+    arm_expectation=$3
+    arm_message=${4:-}
+    arm_profiles=$work/web-profiles-$arm_name.tsv
+    arm_presets=$state_directory/web-presets-$arm_name.ini
+    write_searxng_web_profiles "$arm_url" "$arm_profiles"
+    arm_original_profiles=$web_profiles
+    web_profiles=$arm_profiles
+    write_web_preset "$arm_presets" unmarked searxng
+    web_profiles=$arm_original_profiles
+    if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+        QWEN_WEB_PRESETS=$arm_presets QWEN_WEB_LAUNCH_RECORD=$record \
+        env -u QWEN_BIND_HOST -u QWEN_WEB_PROFILES "$launcher" \
+        >"$work/$arm_name.log" 2>"$work/$arm_name.err"; then
+        if [ "$arm_expectation" = accepted ]; then
+            arm_outcome=ok
+            grep -qx 'QWEN_WEB_SEARXNG=1' "$record" || arm_outcome=marker_unset
+            grep -qx "QWEN_SEARXNG_PORT=${arm_url##*:}" "$record" ||
+                arm_outcome=port_underived
+            grep -q 'searxng=owned' "$work/$arm_name.log" ||
+                arm_outcome=ownership_unreported
+            report "$arm_name" "$arm_outcome"
+        else
+            report "$arm_name" accepted
+        fi
+    elif [ "$arm_expectation" = refused ]; then
+        if grep -q "$arm_message" "$work/$arm_name.err"; then
+            report "$arm_name" ok
+        else
+            report "$arm_name" missing_message
+        fi
+    else
+        report "$arm_name" refused
+        cat "$work/$arm_name.err" >&2
+    fi
+}
+
+searxng_arm searxng_launch_owns_loopback_instance \
+    http://127.0.0.1:18888 accepted
+searxng_arm searxng_remote_endpoint_refused \
+    http://searx.example.org:8888 refused \
+    'this launch starts the loopback instance alone'
+
+# The session's readiness gate reads a socket and its own child together, so a
+# listener already on the port makes the launch a refusal here rather than a
+# failure after the model has begun loading.
+python3 -c '
+import socket
+import sys
+import time
+
+listener = socket.socket()
+listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+listener.bind(("127.0.0.1", 18889))
+listener.listen(1)
+sys.stdout.write("bound\n")
+sys.stdout.flush()
+time.sleep(30)
+' >"$work/busy-port.marker" 2>/dev/null &
+busy_port_pid=$!
+wait_for_path "$work/busy-port.marker"
+attempt=0
+while [ "$attempt" -lt 300 ] && ! grep -q bound "$work/busy-port.marker"; do
+    attempt=$((attempt + 1))
+    sleep 0.1
+done
+searxng_arm searxng_busy_port_refused \
+    http://127.0.0.1:18889 refused 'already carries a listener'
+kill "$busy_port_pid" 2>/dev/null || true
+wait "$busy_port_pid" 2>/dev/null || true
 
 if [ "$failures" -ne 0 ]; then
     printf 'test-qwen-web-launch: %d check(s) failed\n' "$failures" >&2

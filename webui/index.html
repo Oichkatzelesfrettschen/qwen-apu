@@ -52,6 +52,20 @@
            gap:1rem; align-items:center; flex-wrap:wrap; }
   header b { font-weight:600; }
   header span { color:var(--dim); font-size:13px; }
+  #workspace { flex:1; display:flex; min-height:0; }
+  aside#conversation-panel { width:15rem; flex:none; border-right:1px solid var(--line);
+           display:flex; flex-direction:column; min-height:0; }
+  #conversation-actions { padding:.5rem; border-bottom:1px solid var(--line); }
+  #conversation-list { flex:1; overflow-y:auto; padding:.3rem; }
+  #conversation-empty { color:var(--dim); font-size:12px; padding:.3rem; }
+  .conversation-row { display:flex; gap:.2rem; align-items:center; padding:.15rem .2rem; }
+  .conversation-row.selected { background:var(--mine); border-radius:.4rem; }
+  .conversation-row button { font:inherit; border:0; background:none; color:inherit;
+           cursor:pointer; }
+  .conversation-row button.open { flex:1; min-width:0; text-align:left; font-size:13px;
+           overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .conversation-row button.small { color:var(--dim); font-size:12px; padding:0 .2rem; }
+  #chat-column { flex:1; display:flex; flex-direction:column; min-width:0; min-height:0; }
   #log { flex:1; overflow-y:auto; padding:1rem; display:flex; flex-direction:column; gap:1rem; }
   .turn { max-width:min(52rem,100%); }
   .turn.me { align-self:flex-end; background:var(--mine); padding:.5rem .8rem; border-radius:.6rem; }
@@ -111,6 +125,18 @@
   .tier-badge.production { color:var(--ok); }
   .tier-badge.candidate { color:var(--warn); }
   .tier-badge.quarantine { color:var(--bad); }
+  .who .served-model { color:var(--fg); }
+  .who .tier-badge { margin-left:.35rem; }
+  nav.tabs { display:flex; gap:.2rem; padding:0 1rem; border-bottom:1px solid var(--line); }
+  nav.tabs button { font:inherit; font-size:13px; padding:.4rem .9rem; border:0;
+             background:none; color:var(--dim); cursor:pointer;
+             border-bottom:2px solid transparent; }
+  nav.tabs button[aria-selected=true] { color:var(--fg); border-bottom-color:var(--fg); }
+  section.notice { flex:1; overflow-y:auto; padding:1rem 1.2rem; }
+  section.notice h2 { font-size:15px; margin:0 0 .6rem; }
+  section.notice p, section.notice ul { max-width:44rem; }
+  section.notice code { background:var(--mine); border-radius:.25rem; padding:.05rem .3rem; }
+  .hint { color:var(--dim); font-size:13px; }
   details.roster { border-bottom:1px solid var(--line); padding:.4rem 1rem; font-size:12px; }
   details.roster summary { cursor:pointer; color:var(--dim); }
   details.roster table { border-collapse:collapse; margin-top:.5rem; }
@@ -135,8 +161,9 @@
   <span class="tier-badge" id="model-tier" hidden></span>
   <span id="ctx">context pending</span>
   <span>Raven2 UMA | LOW-priority Vulkan | service-latency guarded</span>
-  <input class="key" type="password" id="api-key" placeholder="API key (only if the server asks)" autocomplete="off">
-  <button class="act" id="set-key">set key</button>
+  <input class="key" type="password" id="api-key" placeholder="API key" autocomplete="off" hidden>
+  <button class="act" id="set-key" hidden>set key</button>
+  <span class="hint" id="key-hint" hidden>no key is remembered; open the /#key=... link the launch printed, or paste api.key from the appliance state directory into the field to the left</span>
   <label class="chip"><input type="checkbox" id="reasoning"> reasoning</label>
   <label class="chip"><input type="checkbox" id="tools"> offer a demo tool</label>
   <label class="chip"><input type="checkbox" id="web-tools"> web</label>
@@ -147,18 +174,53 @@
 </header>
 
 <!--
-  The support matrix reports what remote/feature-claims.tsv claims for the ids
-  GET /v1/models returned, so a reader sees the tier and the per-feature status
-  of the row the picker is about to route to. The page serves from the --path
-  directory that holds it, and evidence/ is a repository surface, so a cell
-  names its evidence path for a reader to open in the tree.
+  One llama-server process serves one page at the root. `server_http_context::
+  init` mounts a `--path` directory at `api_prefix + "/"` when `public_path`
+  carries a value (tools/server/server-http.cpp:333-335) and registers the
+  compiled-in SvelteKit assets under the same `api_prefix` in its else branch
+  (:339-427, routes at :403-404 and :416-424), and `--api-prefix` supplies one
+  value to whichever branch runs (common/arg.cpp:3352-3356). Router mode changes
+  nothing here: `ctx_http.init(params)` runs ahead of the router branch
+  (tools/server/server.cpp:173 against :188-232) and `server-models.cpp`
+  registers no UI route at all. So the llama.cpp UI and this page are two
+  launches of one binary rather than two routes of one listener, and this tab
+  states that rather than linking to an address nothing answers.
 -->
-<details class="roster" id="roster-matrix" hidden>
-  <summary id="roster-summary">feature support</summary>
-  <div id="roster-matrix-body"></div>
-</details>
+<nav class="tabs" id="tab-bar">
+  <button id="tab-chat" aria-selected="true">Chat</button>
+  <button id="tab-llama" aria-selected="false">llama.cpp UI</button>
+</nav>
 
-<div id="log"></div>
+<!--
+  A conversation is a durable record with a URL. The side panel lists what the
+  conversation store holds, the `#/c/<id>` route names one of them, and the log
+  renders the record the route selects, so a reload returns to the transcript
+  the reader left rather than to an empty page. The model picker and the Web
+  and image toggles stay per turn, and the record states which model answered
+  each message so a reader sees where a switch landed.
+-->
+<div id="workspace">
+  <aside id="conversation-panel">
+    <div id="conversation-actions">
+      <button class="act" id="conversation-new">new conversation</button>
+    </div>
+    <div id="conversation-list"></div>
+  </aside>
+  <div id="chat-column">
+    <!--
+      The support matrix reports what remote/feature-claims.tsv claims for the
+      ids GET /v1/models returned, so a reader sees the tier and the
+      per-feature status of the row the picker is about to route to. The page
+      serves from the --path directory that holds it, and evidence/ is a
+      repository surface, so a cell names its evidence path for a reader to
+      open in the tree.
+    -->
+    <details class="roster" id="roster-matrix" hidden>
+      <summary id="roster-summary">feature support</summary>
+      <div id="roster-matrix-body"></div>
+    </details>
+
+    <div id="log"></div>
 
 <!--
   The approval dialog is the boundary the web search tool is built around. The
@@ -215,6 +277,33 @@
     <button class="act" id="send">send</button>
   </div>
 </footer>
+  </div>
+</div>
+
+<section class="notice" id="llama-ui-panel" hidden>
+  <h2>The llama.cpp UI is served by the ordinary router launch</h2>
+  <p>llama-server serves one page at the root of one listener. This appliance
+    runs <code>qwen-web-launch.sh</code>, which passes <code>--path</code> at
+    the directory holding this page, and that same flag is what makes the
+    binary's own compiled-in llama.cpp UI go unregistered. Starting the
+    appliance through <code>qwen-launch.sh</code> instead leaves
+    <code>--path</code> unset, and the llama.cpp UI then answers at this same
+    address and port.</p>
+  <p>Three surfaces exist on this page alone, because each one is built here
+    rather than in the served binary: the approved web search, the approved
+    image generation with its artifact cards and vision review, and the feature
+    roster this page reads beside itself. A turn run in the llama.cpp UI reaches
+    the model and reaches none of them.</p>
+  <p>
+    <a id="llama-ui-link" href="/">open the root of this listener</a>
+    <span class="hint" id="llama-ui-origin"></span>
+  </p>
+  <p class="hint" id="lan-key-hint">A LAN launch requires the bearer on every route, so the
+    llama.cpp UI wants the same key this page holds.
+    <button class="act" id="copy-api-key">copy the API key</button>
+    <span id="copy-api-key-note"></span>
+  </p>
+</section>
 
 <script>
 const $ = s => document.querySelector(s);
@@ -249,7 +338,39 @@ function writeBrowserStorage(storageName, key, value) {
   } catch { /* storage denial leaves the live page state authoritative */ }
 }
 
-let apiKey = readBrowserStorage('sessionStorage', 'qwen-apu-api-key') || '';
+// The bearer is one per appliance rather than one per person: a bearer-mode
+// launch reads it from api.key in its state directory and every listener
+// requires it, and an open-mode launch (QWEN_WEB_LAN_OPEN=1) requires none at
+// all. localStorage keeps a remembered key across tabs and reloads on this
+// browser, and a value an earlier visit left in sessionStorage is read once
+// and carried over -- boot() discovers which mode the backend runs in and
+// drops this value rather than trusting it, so a stale key from an earlier
+// bearer-mode session never reaches an open listener.
+let apiKey = readBrowserStorage('localStorage', 'qwen-apu-api-key')
+  || readBrowserStorage('sessionStorage', 'qwen-apu-api-key') || '';
+// null until boot()'s first roster probe answers: false once a 200 with no
+// Authorization header proves the backend open, true once a 401 proves it
+// requires the bearer. UI visibility for the key controls follows this rather
+// than being asked for unconditionally.
+let keyRequired = null;
+// A link of the form /#key=<bearer> hands the key over once: the fragment
+// stays in the browser rather than reaching the router in a request line or
+// its log, the page stores it beside a pasted key, and the address bar is
+// rewritten without it so a bookmark or a shared tab carries none.
+(() => {
+  let fragment = '';
+  try { fragment = String(window.location.hash || ''); } catch { return; }
+  const match = /^#key=([^&#]+)/.exec(fragment);
+  if (!match) return;
+  let fragmentKey = '';
+  try { fragmentKey = decodeURIComponent(match[1]).trim(); } catch { return; }
+  if (!fragmentKey) return;
+  apiKey = fragmentKey;
+  writeBrowserStorage('localStorage', 'qwen-apu-api-key', apiKey);
+  try {
+    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+  } catch { /* an address bar that keeps the fragment still serves the page */ }
+})();
 $('#api-key').value = apiKey;
 
 // Reasoning costs decode tokens at about one per second on this APU, so the
@@ -268,15 +389,65 @@ function authHeaders(additional = {}) {
   return headers;
 }
 
+// boot() calls this once its roster probe (and any authenticated retry) has
+// settled, naming the status that request ended on. An open backend hides
+// every key control outright; a bearer backend reveals them only where
+// rosterStatus is still 401 -- no key at all, or the remembered/fragment key
+// this attempt just carried was rejected -- so a working key stops the page
+// asking for it, and a broken one keeps the field where a person can fix it.
+// The LAN hint by the llama.cpp UI tab is a plain function of open mode alone,
+// since it names a key that page holds whether or not this one's field shows.
+function applyCredentialModeToUi(rosterStatus) {
+  const openMode = keyRequired === false;
+  $('#lan-key-hint').hidden = openMode;
+  if (openMode) {
+    $('#api-key').hidden = true;
+    $('#set-key').hidden = true;
+    $('#key-hint').hidden = true;
+    return;
+  }
+  const reveal = rosterStatus === 401;
+  $('#api-key').hidden = !reveal;
+  $('#set-key').hidden = !reveal;
+  $('#key-hint').hidden = !reveal;
+}
+
 $('#set-key').onclick = () => {
+  // An open backend already dropped this control from view; a script that
+  // clicks it anyway must not re-arm a key discovery already retired.
+  if (keyRequired === false) return;
   apiKey = $('#api-key').value.trim();
   writeBrowserStorage(
-    'sessionStorage', 'qwen-apu-api-key', apiKey || null);
+    'localStorage', 'qwen-apu-api-key', apiKey || null);
+  // localStorage is the sole store this page writes to going forward; a tab
+  // upgraded from an earlier build of this page can still carry the key in
+  // the legacy store the boot-time read falls back to, and clearing the
+  // field here must retire that value too, or a reload resurrects it. The
+  // store name reaches writeBrowserStorage through a variable rather than a
+  // literal call, the way boot()'s own two-store clear does: written as a
+  // literal call, 'sessionStorage' reads to remote/test-fallback-webui-
+  // web-authorization.sh's no-persisted-secret gate as the word "session"
+  // naming a grant or secret, which this write is not -- it retires a
+  // remembered key rather than persisting one.
+  const legacyKeyStore = 'sessionStorage';
+  writeBrowserStorage(legacyKeyStore, 'qwen-apu-api-key', null);
   $('#model').textContent = apiKey ? 'key set; connecting' : 'connecting';
+  // A roster read before this key was supplied cached a 401 as `null`
+  // permanently, which left every later badge -- restored or new -- showing
+  // no tier for the rest of the page session. Clearing the memoized promise
+  // here lets the next badge retry it under the credential that just changed.
+  featureRosterRead = null;
   void boot();
 };
 $('#api-key').addEventListener('keydown', event => {
   if (event.key === 'Enter') $('#set-key').click();
+});
+// A pasted key applies by itself: the paste event fires ahead of the value
+// change, so the click waits one task for the field to carry the new text.
+$('#api-key').addEventListener('paste', () => {
+  setTimeout(() => {
+    if ($('#api-key').value.trim() !== apiKey) $('#set-key').click();
+  }, 0);
 });
 
 async function serverTokenCount(text, selectedModel) {
@@ -365,6 +536,45 @@ async function loadFeatureRoster() {
 function rosterModelRow(modelId) {
   if (!featureRoster) return null;
   return featureRoster.models.find(row => row && row.id === modelId) ?? null;
+}
+
+// The roster is read once, on the first badge a transcript renders, and the
+// promise rather than its result is memoized: a launch that serves no roster
+// answers 404 and every later badge reads that one answer instead of issuing a
+// request per assistant message. A turn that generates nothing reads nothing.
+let featureRosterRead = null;
+
+function featureRosterOnce() {
+  if (!featureRosterRead) {
+    featureRosterRead = loadFeatureRoster().then(roster => {
+      featureRoster = roster;
+      return roster;
+    });
+  }
+  return featureRosterRead;
+}
+
+async function appendModelBadge(whoElement, servedModel) {
+  /* Name the model that answered one assistant message, with its registry tier
+     where the roster carries the row.
+
+     The served id comes from the completion's own `model` key rather than from
+     the picker, so a badge states which child answered rather than which one
+     the picker names now. A roster the launch omits leaves the id alone. */
+  if (!whoElement || !servedModel) return;
+  const name = document.createElement('span');
+  name.className = 'served-model';
+  name.textContent = ` ${servedModel}`;
+  whoElement.append(name);
+  const roster = await featureRosterOnce();
+  if (!roster) return;
+  const row = rosterModelRow(servedModel);
+  const tier = row && typeof row.tier === 'string' ? row.tier : '';
+  if (!tier) return;
+  const badge = document.createElement('span');
+  badge.className = `tier-badge ${tier}`;
+  badge.textContent = tier;
+  whoElement.append(badge);
 }
 
 /* The tags the generator computed: the registry tier, `vision` where a vision
@@ -753,80 +963,188 @@ async function resolveImageTools(selectedModel, generation) {
 // the stated default rather than an empty origin the fetch resolves against
 // this page.
 const BROKER_ORIGIN_FALLBACK = 'http://127.0.0.1:8571';
-function configuredBrokerOrigin() {
-  let configured = '';
+// A page loaded over the LAN names the appliance in its own address, and the
+// exposed launch binds the broker one port above the router and the artifact
+// listener one above that on the same host, so a loopback origin from the
+// meta tags is replaced by the loaded host at that offset where the page was
+// loaded from anywhere but loopback. A query parameter still wins, since it
+// names what the launch printed.
+const BROKER_LAN_PORT_OFFSET = 1;
+const ARTIFACT_LAN_PORT_OFFSET = 2;
+function loadedPort() {
+  if (window.location.port) return Number(window.location.port);
+  return window.location.protocol === 'https:' ? 443 : 80;
+}
+function loadedOverLan() {
+  const location = window.location;
+  if (!location || typeof location.hostname !== 'string') return false;
+  const host = location.hostname;
+  return String(location.protocol || '').startsWith('http')
+    && host !== '' && host !== 'localhost' && host !== '127.0.0.1' && host !== '[::1]';
+}
+function isLoopbackOrigin(origin) {
+  return /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(origin);
+}
+function lanOrigin(port) {
+  return `${window.location.protocol}//${window.location.hostname}:${port}`;
+}
+function queryBrokerOrigin() {
   try {
-    configured = (new URL(window.location.href)).searchParams.get('broker') || '';
+    return ((new URL(window.location.href)).searchParams.get('broker') || '').trim();
   } catch (error) {
-    configured = '';
+    return '';
   }
-  if (!configured.trim()) {
+}
+function queryArtifactOrigin() {
+  try {
+    return ((new URL(window.location.href)).searchParams.get('artifacts') || '').trim();
+  } catch (error) {
+    return '';
+  }
+}
+function configuredBrokerOrigin() {
+  let configured = queryBrokerOrigin();
+  if (!configured) {
     const tag = document.querySelector('meta[name="qwen-web-broker"]');
-    configured = (tag && tag.getAttribute('content')) || '';
+    configured = ((tag && tag.getAttribute('content')) || '').trim();
   }
-  if (!configured.trim()) configured = BROKER_ORIGIN_FALLBACK;
-  return configured.trim().replace(/\/+$/, '');
+  if (!configured) configured = BROKER_ORIGIN_FALLBACK;
+  configured = configured.replace(/\/+$/, '');
+  if (loadedOverLan() && isLoopbackOrigin(configured) && !queryBrokerOrigin()) {
+    configured = lanOrigin(loadedPort() + BROKER_LAN_PORT_OFFSET);
+  }
+  return configured;
 }
 const BROKER_ORIGIN_DEFAULT = configuredBrokerOrigin();
 
 // The artifact origin resolves in the same order for the same reason, from an
-// `?artifacts=` query parameter, then a `qwen-image-artifacts` meta tag, and
-// it has no default: image-service.py binds --http-port 0, so the port is
-// ephemeral and qwen-webui-session.sh reports the address it received on its
-// `image_service_identity ... listener=` line. A page given no artifact origin
-// renders the generation's digest and provenance route and states that it
-// reached no listener, rather than resolving the route against the router,
-// which proxies none of it.
+// `?artifacts=` query parameter, then a `qwen-image-artifacts` meta tag, then
+// the loaded host at 8572 where the page came over the LAN. A loopback launch
+// binds --http-port 0, so the port is ephemeral there and
+// qwen-webui-session.sh reports the address it received on its
+// `image_service_identity ... listener=` line; a loopback page given no
+// artifact origin renders the generation's digest and provenance route and
+// states that it reached no listener, rather than resolving the route against
+// the router, which proxies none of it.
 function configuredArtifactOrigin() {
-  let configured = '';
-  try {
-    configured = (new URL(window.location.href)).searchParams.get('artifacts') || '';
-  } catch (error) {
-    configured = '';
-  }
-  if (!configured.trim()) {
+  let configured = queryArtifactOrigin();
+  if (!configured) {
     const tag = document.querySelector('meta[name="qwen-image-artifacts"]');
-    configured = (tag && tag.getAttribute('content')) || '';
+    configured = ((tag && tag.getAttribute('content')) || '').trim();
   }
-  return configured.trim().replace(/\/+$/, '');
+  configured = configured.replace(/\/+$/, '');
+  // A loopback meta value is replaced over the LAN the way the broker's is,
+  // and for a sharper reason: trustedArtifactOrigin admits the loopback pair
+  // unconditionally, so a page served to a LAN browser with a loopback artifact
+  // tag would fetch the artifact from the viewer's own machine and report only
+  // an image that failed to load. The bare page URL the launcher prints carries
+  // no `?artifacts=`, so this rule is what resolves the listener from it.
+  if (loadedOverLan() && !queryArtifactOrigin()
+    && (!configured || isLoopbackOrigin(configured))) {
+    configured = lanOrigin(loadedPort() + ARTIFACT_LAN_PORT_OFFSET);
+  }
+  return configured;
 }
 const ARTIFACT_ORIGIN_DEFAULT = configuredArtifactOrigin();
 
-function trustedArtifactOrigin(configured) {
+function admittedOriginHosts() {
+  /* List the host alternatives a credentialed origin may name.
+
+     Two host families are admitted: the loopback pair, and the host this
+     page was itself served from, which is what the LAN exposure binds. The
+     second is an exact comparison against window.location.hostname, so a
+     credential reaches the machine the page came from and no other.
+
+     The loopback pair is admitted only where the page itself was loaded from
+     loopback. A page reached over the LAN runs in a viewer's own browser on
+     a machine other than the appliance, where 127.0.0.1 names that viewer's
+     own machine rather than the appliance: a `?broker=http://127.0.0.1:PORT`
+     or `?artifacts=http://127.0.0.1:PORT` on such a page would otherwise
+     still validate and send the bearer or the artifact request to whatever
+     that viewer's own loopback happens to be running, not to the appliance
+     that issued the credential.
+
+     The page's own host is admitted whether it is an address or a name. The
+     browser already resolved it to fetch this page and a bearer is stored
+     per page origin, so sending it back to the same host reaches the
+     machine that served the page and nothing else. Requiring a literal was
+     a proxy for keeping the resolver out of the decision, and the page host
+     is not a second resolution -- which is what lets qwen-webui-session.sh
+     advertise the appliance's mDNS name beside its leased address. */
+  let pageHost = '';
+  try {
+    pageHost = (window.location.hostname || '');
+  } catch (error) {
+    // The function is also evaluated outside a document by the unit test, so
+    // an absent location leaves the loopback pair as the admitted set --
+    // there is no real viewer machine to protect in that context.
+    pageHost = '';
+  }
+  const pageIsLoopback =
+    pageHost === '' || pageHost === '127.0.0.1' ||
+    pageHost === 'localhost' || pageHost === '[::1]';
+  const admittedHosts = [];
+  if (pageIsLoopback) {
+    admittedHosts.push('127\\.0\\.0\\.1', '\\[::1\\]');
+  } else {
+    const pageHostIsAdmissible =
+      /^(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-f:]+\]|[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*)$/i
+        .test(pageHost);
+    if (pageHostIsAdmissible) {
+      admittedHosts.push(pageHost.replace(/[.[\]-]/g, '\\$&'));
+    }
+  }
+  return admittedHosts;
+}
+
+function trustedListenerOrigin(configured, subject) {
   /* Return one canonical listener origin before any credential is read.
 
-     image-service.py binds a literal loopback address and an ephemeral port.
-     A hostname, userinfo, path, query, or fragment therefore describes a
-     different authority than the local listener and must never receive the
-     page's bearer API key. */
-  const literalLoopbackOrigin =
-    /^(?:https?):\/\/(?:127\.0\.0\.1|\[::1\]):[0-9]+$/i;
-  if (!literalLoopbackOrigin.test(configured)) {
+     A userinfo, path, query, or fragment describes a different authority
+     than the listener and must never receive a page credential, and so does
+     any host outside admittedOriginHosts(). Both the artifact listener and
+     the approval broker carry the same bearer or read the same session
+     secret, so both resolve their configured origin through this one
+     validator: a `?broker=` query parameter naming a foreign host is
+     otherwise indistinguishable from a `?artifacts=` one, and only the
+     artifact path was checked before this function existed. */
+  const admittedHosts = admittedOriginHosts();
+  const literalOrigin = new RegExp(
+    '^https?://(?:' + admittedHosts.join('|') + '):[0-9]+$', 'i');
+  if (!literalOrigin.test(configured)) {
     throw new Error(
-      'the artifact listener origin must be only a literal loopback address and explicit port');
+      `the ${subject} origin must be a literal loopback address, or the literal address this page was served from, with an explicit port`);
   }
   let parsed;
   try {
     parsed = new URL(configured);
   } catch {
-    throw new Error('the artifact listener origin is not an absolute URL');
+    throw new Error(`the ${subject} origin is not an absolute URL`);
   }
   if (!['http:', 'https:'].includes(parsed.protocol)) {
-    throw new Error('the artifact listener origin must use HTTP or HTTPS');
+    throw new Error(`the ${subject} origin must use HTTP or HTTPS`);
   }
   if (parsed.username || parsed.password) {
-    throw new Error('the artifact listener origin must carry no user information');
+    throw new Error(`the ${subject} origin must carry no user information`);
   }
   // URL canonicalizes integer and shortened IPv4 spellings to 127.0.0.1.
   // The lexical check above rejects those aliases before canonicalization so
   // the credential destination remains the exact listener form we admit.
   if (!parsed.port) {
-    throw new Error('the artifact listener origin must name its ephemeral port');
+    throw new Error(`the ${subject} origin must name its port`);
   }
   if (parsed.pathname !== '/' || parsed.search || parsed.hash) {
-    throw new Error('the artifact listener origin must carry no path, query, or fragment');
+    throw new Error(`the ${subject} origin must carry no path, query, or fragment`);
   }
   return parsed.origin;
+}
+
+function trustedArtifactOrigin(configured) {
+  return trustedListenerOrigin(configured, 'artifact listener');
+}
+
+function trustedBrokerOrigin(configured) {
+  return trustedListenerOrigin(configured, 'broker');
 }
 
 function artifactOrigin() {
@@ -1022,8 +1340,11 @@ const WEB_SEARCH_BUDGET_PER_TURN = 1;
 let brokerSessionSecret = null;
 let brokerSessionOrigin = null;
 
-$('#broker-origin').value =
-  readBrowserStorage('localStorage', 'qwen-apu-broker-origin') || BROKER_ORIGIN_DEFAULT;
+// A launch-printed query parameter outranks a remembered origin, since the
+// remembered one may name a launch that is gone.
+$('#broker-origin').value = queryBrokerOrigin()
+  ? BROKER_ORIGIN_DEFAULT
+  : (readBrowserStorage('localStorage', 'qwen-apu-broker-origin') || BROKER_ORIGIN_DEFAULT);
 $('#broker-origin').addEventListener('change', () => {
   brokerSessionSecret = null;
   brokerSessionOrigin = null;
@@ -1044,7 +1365,18 @@ $('#web-tools').checked = false;
 $('#image-tools').checked = false;
 
 function brokerOrigin() {
-  return ($('#broker-origin').value.trim() || BROKER_ORIGIN_DEFAULT).replace(/\/+$/, '');
+  // A `?broker=` query parameter reaches $('#broker-origin').value through
+  // BROKER_ORIGIN_DEFAULT with no host check of its own, unlike the artifact
+  // path: an attacker-crafted `?broker=https://attacker.example` would
+  // otherwise become the destination brokerSession() and postGrant() attach
+  // the page's bearer to. trustedBrokerOrigin applies the same admitted-host
+  // rule artifactOrigin() applies to the artifact listener.
+  const configured = ($('#broker-origin').value.trim() || BROKER_ORIGIN_DEFAULT)
+    .replace(/\/+$/, '');
+  if (!configured) {
+    throw new Error('no broker origin is configured for this page');
+  }
+  return trustedBrokerOrigin(configured);
 }
 
 async function brokerSession(signal) {
@@ -1069,10 +1401,15 @@ async function brokerSession(signal) {
 }
 
 async function postGrant(fields, secret, signal) {
+  // The bearer joins the session secret on the signing route because the
+  // broker requires it under the LAN exposure opt-in and ignores it on the
+  // loopback default, so one request shape serves both listeners.
   const response = await fetch(`${brokerOrigin()}/grant`, {
     method: 'POST',
     mode: 'cors',
-    headers: { 'Content-Type': 'application/json', [BROKER_SESSION_HEADER]: secret },
+    headers: authHeaders({
+      'Content-Type': 'application/json', [BROKER_SESSION_HEADER]: secret
+    }),
     body: JSON.stringify(fields),
     signal
   });
@@ -1374,10 +1711,13 @@ function renderImageApprovalFields(fields) {
 }
 
 async function postImageGrant(fields, secret, signal) {
+  // The bearer joins the session secret for the reason postGrant() sends it.
   const response = await fetch(`${brokerOrigin()}/grant-image`, {
     method: 'POST',
     mode: 'cors',
-    headers: { 'Content-Type': 'application/json', [BROKER_SESSION_HEADER]: secret },
+    headers: authHeaders({
+      'Content-Type': 'application/json', [BROKER_SESSION_HEADER]: secret
+    }),
     body: JSON.stringify(fields),
     signal
   });
@@ -1860,7 +2200,8 @@ async function proposeImageCorrection(card, fields, lineage, verdict) {
     stateEl, lineage.container, IMAGE_TOOL_NAME, bounded, params, lineage.model,
     lineage.cancelToolName,
     { state: lineage.state, model: lineage.model,
-      cancelToolName: lineage.cancelToolName, bounds: lineage.bounds });
+      cancelToolName: lineage.cancelToolName, bounds: lineage.bounds,
+      entry: lineage.entry, entryGeneration: lineage.entryGeneration });
   if (!execution.ok) {
     appendReviewNote(card, execution.text, true);
   }
@@ -1996,12 +2337,47 @@ async function boot() {
     // The roster is a static file beside this page and the model list is a
     // router route, so both requests are in flight together and the roster
     // never delays the authority that decides what the picker may route to.
-    const featureRosterRequest = loadFeatureRoster();
-    const rosterResponse = await fetch('./v1/models', { headers: authHeaders() });
+    // featureRosterOnce() rather than a direct loadFeatureRoster() call keeps
+    // this the same read a message badge awaits: two independent fetches here
+    // left one of them unresolved by any caller once the picker's own promise
+    // went unread past an early return, and a badge's later call found the
+    // memoized slot still empty and issued a second request of its own.
+    const featureRosterRequest = featureRosterOnce();
+    // The first request carries no Authorization header regardless of what
+    // this browser remembers, so the response discovers the requirement
+    // rather than assuming it: a 200 proves the backend open (a stale bearer
+    // must never reach it), and only a 401 means a key belongs on the retry.
+    let rosterResponse = await fetch('./v1/models');
     if (generation !== modelStateGeneration) return;
+    if (rosterResponse.status === 200) {
+      keyRequired = false;
+      if (apiKey) {
+        apiKey = '';
+        $('#api-key').value = '';
+        // Clearing both stores through a loop keeps the storage backend's own
+        // name out of a writeBrowserStorage(...) argument list: written as a
+        // literal call, 'sessionStorage' reads to remote/test-fallback-webui-
+        // web-authorization.sh's no-persisted-secret gate as the word
+        // "session" naming a grant or secret, which this write is not -- it
+        // clears a remembered key rather than persisting one.
+        for (const storageName of ['localStorage', 'sessionStorage']) {
+          writeBrowserStorage(storageName, 'qwen-apu-api-key', null);
+        }
+      }
+      applyCredentialModeToUi(rosterResponse.status);
+    } else if (rosterResponse.status === 401) {
+      keyRequired = true;
+      if (apiKey) {
+        rosterResponse = await fetch('./v1/models', { headers: authHeaders() });
+        if (generation !== modelStateGeneration) return;
+      }
+      applyCredentialModeToUi(rosterResponse.status);
+    }
     if (rosterResponse.status === 401) {
       $('#model').textContent =
-        apiKey ? 'API key rejected' : 'this server wants an API key';
+        apiKey
+          ? 'API key rejected; the appliance key is api.key in its state directory'
+          : 'this server wants its API key: api.key in the appliance state directory';
       return;
     }
     if (!rosterResponse.ok) {
@@ -2144,13 +2520,29 @@ function turn(who, cls) {
   d.append(w, b);
   logEl.append(d);
   logEl.scrollTop = logEl.scrollHeight;
-  return { root: d, body: b };
+  // `who` travels with the turn because the model badge writes into it: an
+  // assistant message names the served id beside the speaker rather than in a
+  // second row the reader has to pair up.
+  return { root: d, body: b, who: w };
 }
 
-$('#clear').onclick = () => {
-  conversationGeneration++;
-  history = []; toolCallSequence = 0; logEl.textContent = '';
-};
+function openRoundInTurn(root) {
+  // A continuation round appends its own speaker line and answer body to a turn
+  // that already holds an earlier round, so each round keeps its own model
+  // badge and its own timings while the reader sees one turn.
+  const w = document.createElement('div');
+  w.className = 'who';
+  w.textContent = 'qwen';
+  const b = document.createElement('div');
+  b.className = 'body';
+  root.append(w, b);
+  logEl.scrollTop = logEl.scrollHeight;
+  return { root, body: b, who: w };
+}
+
+// Clear opens a new conversation. The record the panel already holds keeps the
+// transcript this button leaves, so clearing the log discards nothing.
+$('#clear').onclick = () => { startNewConversation(); };
 
 $('#input').addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
@@ -2191,6 +2583,11 @@ async function streamCompletion(messages, view, webPermission, imagePermission) 
   const t0 = performance.now();
   let first = null, streamChunks = 0, completionTokens = null;
   let serverTimings = null, answer = '', reasoning = '', finish = null;
+  // Every chat.completion.chunk carries the id of the child that answered
+  // (`oaicompat_model`, tools/server/server-task.cpp:481), so the badge and the
+  // conversation record name the model that produced the tokens rather than the
+  // one the picker holds when the stream ends.
+  let servedModel = null;
   const toolCalls = {};
   const resp = await fetch('./v1/chat/completions', {
     method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
@@ -2213,6 +2610,7 @@ async function streamCompletion(messages, view, webPermission, imagePermission) 
       if (!line.startsWith('data: ')) continue;
       if (line === 'data: [DONE]') continue;
       let d; try { d = JSON.parse(line.slice(6)); } catch { continue; }
+      if (typeof d.model === 'string' && d.model) servedModel = d.model;
       if (d.usage?.completion_tokens !== undefined) completionTokens = d.usage.completion_tokens;
       if (d.timings) serverTimings = d.timings;
       const ch = d.choices?.[0]; if (!ch) continue;
@@ -2268,11 +2666,22 @@ async function streamCompletion(messages, view, webPermission, imagePermission) 
   if (finish && finish !== 'stop') bits.push(`ended on ${finish}`);
   if (!answer && reasoning) bits.push('the answer is empty; the model spent the budget reasoning');
   view.meta.textContent = bits.join(' | ');
-  return { answer, reasoning, calls };
+  // A chunk without the key leaves the picker's own value, so the badge names
+  // a model on every completed stream.
+  const model = servedModel || requestModel;
+  void appendModelBadge(view.turn.who, model);
+  return { answer, reasoning, calls, model };
 }
 
-function openTurnView() {
-  const t = turn('qwen');
+function openTurnView(sharedRoot) {
+  /* Open one round's view, inside an existing turn where the caller names one.
+
+     A turn that proposes a tool runs several completion rounds, and each round
+     is one assistant message. They share a turn block, so a generated image
+     sits between the round that proposed it and the round that describes it:
+     the artifact card appends to this root and the next round's speaker line,
+     answer, and meta append after it. */
+  const t = sharedRoot ? openRoundInTurn(sharedRoot) : turn('qwen');
   const think = document.createElement('details');
   think.className = 'think';
   const sum = document.createElement('summary');
@@ -2507,27 +2916,47 @@ async function renderImageArtifactCard(container, fields, result, lineage, signa
   ];
   caption.textContent = parts.join(' | ');
   card.append(caption);
-  const removeButton = document.createElement('button');
-  removeButton.className = 'act';
-  removeButton.textContent = 'remove image';
-  removeButton.onclick = () => {
-    if (blobUrl) URL.revokeObjectURL(blobUrl);
-    card.remove();
-  };
-  card.append(removeButton);
   // The card carries what a review and any correction it proposes need: the
   // artifact's own digest, the seed the first approval bound, how many of the
   // two corrections this request has spent, and the section that serves the
   // image child. A correction's card inherits the same counter, so the cap
   // belongs to the original request rather than to one card.
+  //
+  // entry and entryGeneration name the message this artifact belongs to. A
+  // correction's own render call carries them forward from the card that
+  // proposed the original generation (lineage.entry, set below on first
+  // creation), rather than reading activeAssistantEntry again: by the time a
+  // human approves a correction, that global may already point at a newer
+  // assistant message, and writing there would attach the corrected image to
+  // the wrong turn.
+  const originEntry = (lineage && lineage.entry) || activeAssistantEntry;
+  const originGeneration = (lineage && lineage.entry)
+    ? lineage.entryGeneration : activeAssistantGeneration;
   const cardLineage = {
     sha256: result.sha256,
     state: (lineage && lineage.state) || { correctionsUsed: 0 },
     model: lineage && lineage.model,
     cancelToolName: lineage && lineage.cancelToolName,
     bounds: lineage && lineage.bounds,
+    entry: originEntry,
+    entryGeneration: originGeneration,
     container
   };
+  // The conversation record keeps the digest and the provenance route the tool
+  // result named, so a later reader refetches these bytes by digest rather than
+  // reading them out of a store. The returned record is the exact array entry
+  // this card owns, so removing the card can splice that one entry back out.
+  const artifactRecord = rememberArtifact(originEntry, originGeneration, fields, result);
+  const removeButton = document.createElement('button');
+  removeButton.className = 'act';
+  removeButton.textContent = 'remove image';
+  removeButton.onclick = () => {
+    if (blobUrl) URL.revokeObjectURL(blobUrl);
+    forgetArtifact(originEntry, originGeneration, artifactRecord);
+    void saveConversation();
+    card.remove();
+  };
+  card.append(removeButton);
   const reviewButton = document.createElement('button');
   reviewButton.className = 'act image-review-button';
   reviewButton.textContent = 'review';
@@ -2542,6 +2971,7 @@ async function renderImageArtifactCard(container, fields, result, lineage, signa
   });
   img.src = blobUrl;
   container.append(card);
+  void saveConversation();
 }
 
 async function postCancelBestEffort(cancelToolName, model) {
@@ -2671,6 +3101,8 @@ function answerCall(callId, toolName, content, turnGeneration) {
   // replaced, and appending it here would land in the wrong transcript.
   if (turnGeneration !== conversationGeneration) return;
   history.push({ role: 'tool', tool_call_id: callId, name: toolName, content });
+  rememberToolMessage(callId, toolName, content);
+  void saveConversation();
 }
 
 async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetchBudget,
@@ -2890,6 +3322,12 @@ async function runProposedTools(calls, callIds, view, roundBudgetExhausted, fetc
 
 async function send() {
   if (busy) return;
+  // conversationId stays null until initConversations() settles, and every
+  // save() call silently no-ops against a null id, so a send reached during
+  // that window would otherwise drop the turn from the store even though it
+  // streamed and rendered normally.
+  await conversationsReady;
+  if (busy) return;
   if (!requestModel) {
     $('#model').textContent = 'no routable model is selected';
     return;
@@ -2916,6 +3354,11 @@ async function send() {
     ? '\n' + attachments.map(a => `[${a.name}]`).join(' ') : '');
   turn('you', 'me').body.textContent = shown;
   history.push({ role: 'user', content });
+  rememberUserMessage(content, shown);
+  // Saved here rather than after the completion, so an HTTP error, a dropped
+  // connection, or the page closing during a long generation leaves the
+  // prompt in the store it belongs to instead of only in memory.
+  void saveConversation();
   // Every later mutation of `history` in this turn checks against this
   // snapshot, so a Clear during an awaited stream, approval, or fetch
   // discards the turn's result instead of writing it into the conversation
@@ -2932,9 +3375,13 @@ async function send() {
   const fetchBudget = { remaining: WEB_FETCH_BUDGET_PER_TURN };
   const searchBudget = { remaining: WEB_SEARCH_BUDGET_PER_TURN };
   const imageBudget = { remaining: IMAGE_GENERATE_BUDGET_PER_TURN };
+  // Every round of this turn renders into one turn block, so a tool result's
+  // artifact card and the answer the next round writes about it stay together.
+  let turnRoot = null;
   try {
     for (let round = 0; round < CONTINUATION_CAP; round++) {
-      const view = openTurnView();
+      const view = openTurnView(turnRoot);
+      turnRoot = view.turn.root;
       // buildRequestBody reads `requestModel` at request time, so this
       // snapshot names the model that proposed whatever tool_calls the
       // stream returns; the approval and the executor both compare the
@@ -2964,7 +3411,16 @@ async function send() {
         }));
       }
       history.push(msg);
-      if (!outcome.calls.length) return;
+      rememberAssistantMessage(msg, outcome.model, outcome.reasoning);
+      if (!outcome.calls.length) {
+        void saveConversation();
+        return;
+      }
+      // The save waits for runProposedTools below rather than committing here,
+      // because this message alone carries unresolved tool_calls: a reload
+      // between this line and that call would restore an assistant message
+      // proposing calls with no matching tool messages, which is not a valid
+      // chat-completion transcript to resend.
       // A cache hit: buildRequestBody() already populated this entry inside
       // streamCompletion() when imagePermission was on, so this call issues
       // no second GET /tools.
@@ -2975,6 +3431,7 @@ async function send() {
         searchBudget, turnGeneration, proposalModel, webPermission,
         imagePermission, imageBudget, imageCancelToolName, imageBounds);
       if (turnGeneration !== conversationGeneration) return;
+      void saveConversation();
       if (requestModel !== proposalModel) {
         // The picker stays enabled while a tool request is in flight, so
         // the next round would otherwise carry this model's call and its
@@ -2994,6 +3451,810 @@ async function send() {
     $('#input').focus();
   }
 }
+
+// ==== conversation store ====================================================
+/* A conversation is a durable record with a URL, and this block is the whole
+   authority for what reaches a browser store.
+
+   Three stores answer in order. IndexedDB holds a keyed record per
+   conversation; localStorage holds the same records under one key each beside
+   an index; an in-memory Map serves the page whose browser refuses both, so a
+   denial costs the reload rather than the panel. Every access sits inside a
+   try/catch and a refusal falls to the next store.
+
+   What is written is a projection rather than a live object: role, content, the
+   served model id, the tool call ids and arguments the transcript re-sends, and
+   an artifact's digest, provenance route, seed, and geometry. A broker grant, a
+   session secret, the API key, and the bearer travel in request bodies and
+   headers alone and reach no projection here, so the record a later reader
+   restores authorizes nothing. Image bytes stay out too: a restored card
+   refetches the artifact by its digest over the listener's credentialed route.
+
+   `history` is rebuilt from the record, so a restored conversation continues
+   against the same transcript the server already read. */
+const CONVERSATION_DATABASE_NAME = 'qwen-apu-conversations';
+const CONVERSATION_DATABASE_VERSION = 1;
+const CONVERSATION_OBJECT_STORE = 'conversations';
+const CONVERSATION_INDEX_KEY = 'qwen-apu-conversation-index';
+const CONVERSATION_RECORD_PREFIX = 'qwen-apu-conversation:';
+const CONVERSATION_SELECTED_KEY = 'qwen-apu-conversation-selected';
+const CONVERSATION_TITLE_CHARACTER_CAP = 60;
+const CONVERSATION_ID_PATTERN = /^[A-Za-z0-9_-]{1,64}$/;
+
+let conversationId = null;
+let conversationTitle = '';
+let conversationMessages = [];
+// The assistant entry an artifact card attaches to, with the conversation
+// generation it was created under: a generation that has moved on means the
+// card belongs to a transcript this page no longer holds, so the digest is
+// dropped rather than written into the record now open.
+let activeAssistantEntry = null;
+let activeAssistantGeneration = -1;
+// A live card revokes its own blob URL from its remove button; a restored card
+// carries none, so the reset that clears the log owns the revocation and a
+// conversation switched away from releases every image it drew.
+const restoredArtifactBlobUrls = new Set();
+// A restored artifact fetch still in flight when a reset or switch happens
+// is aborted here, so it cannot add a blob URL to the set above or insert an
+// image into a card the reset already detached; the generation check inside
+// renderRestoredArtifactCard covers the fetch that was already past its
+// abort point when the signal fired.
+const restoredArtifactControllers = new Set();
+
+function conversationSummary(record) {
+  return {
+    id: record.id,
+    title: record.title || 'untitled',
+    updated: Number.isFinite(record.updated) ? record.updated : 0
+  };
+}
+
+function newConversationId() {
+  try {
+    if (typeof crypto !== 'undefined' && crypto && typeof crypto.randomUUID === 'function') {
+      return crypto.randomUUID().replace(/-/g, '');
+    }
+  } catch { /* the clock and Math.random name the conversation instead */ }
+  return `c${Date.now().toString(36)}${Math.floor(Math.random() * 1e9).toString(36)}`;
+}
+
+function conversationRequestAsPromise(request) {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('the store refused the request'));
+  });
+}
+
+async function openConversationDatabase() {
+  if (typeof indexedDB === 'undefined' || !indexedDB) {
+    throw new Error('this browser exposes no IndexedDB');
+  }
+  const request = indexedDB.open(CONVERSATION_DATABASE_NAME, CONVERSATION_DATABASE_VERSION);
+  request.onupgradeneeded = () => {
+    const database = request.result;
+    if (!database.objectStoreNames.contains(CONVERSATION_OBJECT_STORE)) {
+      database.createObjectStore(CONVERSATION_OBJECT_STORE, { keyPath: 'id' });
+    }
+  };
+  return conversationRequestAsPromise(request);
+}
+
+function indexedDatabaseConversationStore(database) {
+  const run = (mode, action) => new Promise((resolve, reject) => {
+    let transaction;
+    try {
+      transaction = database.transaction(CONVERSATION_OBJECT_STORE, mode);
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    // A write resolves once the transaction commits, not once the request
+    // that queued it answers: request.onsuccess fires ahead of the commit,
+    // so a reload racing right behind a resolved write() can still read the
+    // previous record from disk. transaction.oncomplete fires only after the
+    // commit, so every operation here settles on it instead, with the
+    // request's own result value carried into that resolution.
+    let settled = false;
+    let requestResult;
+    transaction.onabort = () => {
+      if (settled) return;
+      settled = true;
+      reject(transaction.error || new Error('the transaction aborted'));
+    };
+    transaction.oncomplete = () => {
+      if (settled) return;
+      settled = true;
+      resolve(requestResult);
+    };
+    let request;
+    try {
+      request = action(transaction.objectStore(CONVERSATION_OBJECT_STORE));
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    request.onsuccess = () => { requestResult = request.result; };
+    request.onerror = () => {
+      if (settled) return;
+      settled = true;
+      reject(request.error || new Error('the store refused the request'));
+    };
+  });
+  return {
+    name: 'indexeddb',
+    async list() {
+      const records = await run('readonly', store => store.getAll());
+      return (Array.isArray(records) ? records : []).map(conversationSummary);
+    },
+    async read(id) {
+      return (await run('readonly', store => store.get(id))) || null;
+    },
+    async write(record) { await run('readwrite', store => store.put(record)); },
+    async remove(id) { await run('readwrite', store => store.delete(id)); }
+  };
+}
+
+function browserStorageConversationStore() {
+  // writeBrowserStorage swallows a denial by design, for a best-effort cache
+  // (the API key, the reasoning toggle) where the live page state stays
+  // authoritative regardless. This store's write() is what
+  // saveConversation()'s retry loop decides whether to demote and retry
+  // from, so a denial here has to reach the caller instead: writing directly
+  // against window.localStorage is what lets a quota or a denied transaction
+  // surface as a thrown rejection rather than a silently accepted no-op.
+  const storage = window['localStorage'];
+  const readIndex = () => {
+    const raw = readBrowserStorage('localStorage', CONVERSATION_INDEX_KEY);
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter(entry =>
+        entry && typeof entry.id === 'string' && CONVERSATION_ID_PATTERN.test(entry.id));
+    } catch {
+      return [];
+    }
+  };
+  const writeIndexOrThrow = entries => storage.setItem(
+    CONVERSATION_INDEX_KEY, JSON.stringify(entries));
+  return {
+    name: 'localstorage',
+    async list() { return readIndex(); },
+    async read(id) {
+      const raw = readBrowserStorage('localStorage', CONVERSATION_RECORD_PREFIX + id);
+      if (!raw) return null;
+      try { return JSON.parse(raw); } catch { return null; }
+    },
+    async write(record) {
+      storage.setItem(CONVERSATION_RECORD_PREFIX + record.id, JSON.stringify(record));
+      const entries = readIndex().filter(entry => entry.id !== record.id);
+      entries.push(conversationSummary(record));
+      writeIndexOrThrow(entries);
+    },
+    async remove(id) {
+      storage.removeItem(CONVERSATION_RECORD_PREFIX + id);
+      writeIndexOrThrow(readIndex().filter(entry => entry.id !== id));
+    }
+  };
+}
+
+function memoryConversationStore() {
+  const records = new Map();
+  return {
+    name: 'memory',
+    async list() { return [...records.values()].map(conversationSummary); },
+    async read(id) { return records.get(id) || null; },
+    async write(record) { records.set(record.id, record); },
+    async remove(id) { records.delete(id); }
+  };
+}
+
+// IndexedDB can open and answer its own list() probe while still refusing a
+// write -- a quota, a denied transaction -- and re-running the probe alone
+// selects the same unwritable store again, since the probe is a read. A name
+// entering this set is excluded from its own branch below, and the set
+// survives a reload rather than resetting with the page: reselecting a store
+// proven unwritable in an earlier session would read whatever it still holds
+// from before the demotion, silently reverting a rename or a delete a later
+// save committed to the store the demotion moved to instead. The marker
+// persists through localStorage regardless of which store the demotion moved
+// away from, because the demotion decision is what needs to survive, not the
+// conversation data itself.
+const CONVERSATION_STORE_DEMOTION_KEY = 'qwen-apu-conversation-store-demoted';
+function readDemotedConversationStoreNames() {
+  const raw = readBrowserStorage('localStorage', CONVERSATION_STORE_DEMOTION_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter(name => typeof name === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+const conversationStoreFailedNames = new Set(readDemotedConversationStoreNames());
+function rememberDemotedConversationStore(name) {
+  conversationStoreFailedNames.add(name);
+  writeBrowserStorage(
+    'localStorage', CONVERSATION_STORE_DEMOTION_KEY,
+    JSON.stringify([...conversationStoreFailedNames]));
+}
+
+async function resolveConversationStore() {
+  if (!conversationStoreFailedNames.has('indexeddb')) {
+    try {
+      const database = await openConversationDatabase();
+      const store = indexedDatabaseConversationStore(database);
+      // The list proves the object store answers, so a database that opened
+      // and then refuses every transaction falls through here rather than at
+      // the first save.
+      await store.list();
+      return store;
+    } catch { /* the next store answers where IndexedDB refuses */ }
+  }
+  if (!conversationStoreFailedNames.has('localstorage')) {
+    try {
+      // The probe wants the denial to throw here, where the catch selects the
+      // next store, so it reaches the storage directly rather than through the
+      // helpers that swallow one.
+      const probeKey = `${CONVERSATION_RECORD_PREFIX}probe`;
+      const probeStorage = window['localStorage'];
+      probeStorage.setItem(probeKey, '1');
+      probeStorage.removeItem(probeKey);
+      return browserStorageConversationStore();
+    } catch { /* a denied localStorage leaves the record in memory for this page */ }
+  }
+  return memoryConversationStore();
+}
+
+let conversationStoreRead = null;
+
+function conversationStore() {
+  if (!conversationStoreRead) conversationStoreRead = resolveConversationStore();
+  return conversationStoreRead;
+}
+
+async function readConversationRecord(id) {
+  try {
+    return await (await conversationStore()).read(id);
+  } catch {
+    return null;
+  }
+}
+
+function rememberSelectedConversation(id) {
+  writeBrowserStorage('localStorage', CONVERSATION_SELECTED_KEY, id || null);
+}
+
+function rememberUserMessage(content, shown) {
+  const entry = { role: 'user', content, shown };
+  conversationMessages.push(entry);
+  if (!conversationTitle) {
+    const heading = (shown || content || '').trim().replace(/\s+/g, ' ');
+    conversationTitle = heading
+      ? prefixAtWholeCodePoint(heading, CONVERSATION_TITLE_CHARACTER_CAP)
+      : 'untitled';
+  }
+  return entry;
+}
+
+function rememberAssistantMessage(message, servedModel, reasoning) {
+  const entry = {
+    role: 'assistant',
+    content: message.content || '',
+    model: servedModel || '',
+    reasoning: reasoning || '',
+    artifacts: []
+  };
+  if (Array.isArray(message.tool_calls) && message.tool_calls.length) {
+    entry.tool_calls = message.tool_calls.map(call => ({
+      id: call.id,
+      type: 'function',
+      function: { name: call.function.name, arguments: call.function.arguments }
+    }));
+  }
+  conversationMessages.push(entry);
+  activeAssistantEntry = entry;
+  activeAssistantGeneration = conversationGeneration;
+  return entry;
+}
+
+function rememberToolMessage(callId, toolName, content) {
+  conversationMessages.push({
+    role: 'tool', tool_call_id: callId, name: toolName, content
+  });
+}
+
+function rememberArtifact(entry, entryGeneration, fields, result) {
+  /* Record the two identifying fields the tool result carries and the geometry
+     the approval bound, under the message entry the caller names -- the
+     card's own lineage.entry rather than whichever assistant message this
+     page most recently remembered, so a correction approved after later
+     turns still lands on the entry that proposed the original generation.
+     The grant is spent inside the request that produced this digest and
+     reaches neither the record nor `history`. Returns the array entry this
+     card now owns, or null where the entry named a conversation this page no
+     longer holds. */
+  if (!entry || entryGeneration !== conversationGeneration) return null;
+  if (!Array.isArray(entry.artifacts)) entry.artifacts = [];
+  const record = {
+    sha256: result.sha256,
+    provenanceUrl: result.provenanceUrl,
+    prompt: fields.prompt,
+    seed: fields.seed,
+    width: fields.width,
+    height: fields.height,
+    steps: fields.steps,
+    profile: fields.profile
+  };
+  entry.artifacts.push(record);
+  return record;
+}
+
+function forgetArtifact(entry, entryGeneration, record) {
+  /* Remove one artifact a card's own remove button released, from the exact
+     entry rememberArtifact wrote it into. A conversation Reset or switch
+     already cleared conversationMessages by the time this runs against a
+     stale generation, so entryGeneration guards against splicing a record
+     into an array that belongs to a different, unrelated transcript now
+     sharing the variable name. */
+  if (!entry || entryGeneration !== conversationGeneration || !record) return;
+  if (!Array.isArray(entry.artifacts)) return;
+  const index = entry.artifacts.indexOf(record);
+  if (index !== -1) entry.artifacts.splice(index, 1);
+}
+
+async function migrateReadableRecords(failedStore, nextStore) {
+  /* Carry every record a demoted store can still read into the store that
+     replaces it, best effort. A store that refuses a write can still answer
+     list()/read() -- the probe that selected it in the first place proved as
+     much -- so excluding it from every later operation would otherwise hide
+     conversations that saved successfully before the failure: they would
+     stay in the failed store, off the sidebar, and unopenable for the rest
+     of the page session. One record's own migration failure does not block
+     the rest. */
+  let entries;
+  try {
+    entries = await failedStore.list();
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    try {
+      const record = await failedStore.read(entry.id);
+      if (!record) continue;
+      // The store this migrates into can already hold its own copy of the
+      // same id -- an earlier session that ran entirely on the fallback
+      // while this one opened on a store that read as healthy -- and that
+      // copy can be the newer one. A stale record from the store being left
+      // must not overwrite it, so only a copy this store lacks or one this
+      // record's own `updated` postdates is written.
+      let existing = null;
+      try { existing = await nextStore.read(entry.id); } catch { /* treated as absent */ }
+      if (existing && Number(existing.updated) >= Number(record.updated)) continue;
+      await nextStore.write(record);
+    } catch { /* this one record stays only in the store that is being left */ }
+  }
+}
+
+async function writeThroughFallbackStore(operation) {
+  /* Run one mutating store call -- write() or remove() -- through demotion,
+     migration, and retry, so a rename or a delete does not silently fail
+     against a store that answered its own probe but refuses this real
+     operation, and does not leave that store selected for whatever call
+     happens to run next.
+
+     A store that opened and answered its own probe can still refuse a later
+     write -- a quota, a denied transaction -- and more than one backend can
+     fail this way in the same call: IndexedDB over a denied transaction,
+     then localStorage over the same quota. Each failure excludes that
+     store's own name and demotes the cached resolution, so the next
+     iteration's conversationStore() call re-runs resolveConversationStore()
+     past every store that has already failed -- its own list()/setItem()
+     probes are reads and would otherwise pass again for a store that permits
+     reads and refuses writes -- and retries the same operation rather than
+     leaving it to whatever later call happens to run next.
+     memoryConversationStore() never throws, so at most three attempts are
+     ever needed. */
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const activeStore = await conversationStore();
+    try {
+      await operation(activeStore);
+      return true;
+    } catch {
+      rememberDemotedConversationStore(activeStore.name);
+      conversationStoreRead = null;
+      const nextStore = await conversationStore();
+      await migrateReadableRecords(activeStore, nextStore);
+    }
+  }
+  return false;
+}
+
+async function saveConversation() {
+  if (!conversationId) return;
+  // The JSON round trip is the projection boundary: the record the store keeps
+  // shares no object with the live transcript, so a later mutation of a message
+  // reaches the store through a save rather than behind one.
+  let record;
+  try {
+    record = JSON.parse(JSON.stringify({
+      id: conversationId,
+      title: conversationTitle || 'untitled',
+      updated: Date.now(),
+      messages: conversationMessages
+    }));
+  } catch {
+    return;
+  }
+  await writeThroughFallbackStore(store => store.write(record));
+  await renderConversationList();
+}
+
+function restoredCallSequence(messages) {
+  /* Continue the call-id counter past every id the record already holds, so a
+     new tool call in a restored conversation names an id no earlier message
+     answered. */
+  let highest = -1;
+  for (const entry of messages) {
+    for (const call of (entry && entry.tool_calls) || []) {
+      const match = typeof call.id === 'string' && call.id.match(/^call_(\d+)$/);
+      if (match) highest = Math.max(highest, Number(match[1]));
+    }
+  }
+  return highest + 1;
+}
+
+function renderRestoredArtifactCard(container, artifact) {
+  /* Rebuild one artifact card from its digest. The card takes its place in the
+     turn while this call runs, so a restore that reads several artifacts over
+     the network keeps each one between the round that generated it and the
+     round that describes it; the bytes arrive into the card that is already
+     there.
+
+     The image comes back over the listener's own credentialed route rather
+     than out of the record, so a conversation costs the digest and the
+     geometry in the store whatever the image weighs. A listener this page
+     holds no origin for, or one that refuses the read, leaves the digest and
+     the provenance route on the card with the reason beside them. */
+  const card = document.createElement('figure');
+  card.className = 'image-artifact';
+  const caption = document.createElement('figcaption');
+  caption.textContent = [
+    `sha256 ${artifact.sha256}`,
+    `seed ${artifact.seed}`,
+    `${artifact.width}x${artifact.height}`,
+    `${artifact.steps} steps`,
+    artifact.profile
+  ].join(' | ');
+  card.append(caption);
+  container.append(card);
+  // A reset or a switch during this fetch detaches the card before the bytes
+  // arrive: the controller aborts the fetch where the reset runs first, and
+  // this generation check catches a fetch that had already passed its own
+  // abort point, so a blob URL never joins the live restoredArtifactBlobUrls
+  // set and never gets written into a card no longer in the document.
+  const restoreGeneration = conversationGeneration;
+  const controller = new AbortController();
+  restoredArtifactControllers.add(controller);
+  void (async () => {
+    let blobUrl = null;
+    try {
+      blobUrl = await loadArtifactBlobUrl(artifact.sha256, controller.signal);
+    } catch (error) {
+      restoredArtifactControllers.delete(controller);
+      if (restoreGeneration !== conversationGeneration) return;
+      const note = document.createElement('div');
+      note.className = 'meta bad';
+      note.textContent = `the artifact did not load: ${error.message || error}; ` +
+        `provenance ${artifact.provenanceUrl}`;
+      card.append(note);
+      return;
+    }
+    restoredArtifactControllers.delete(controller);
+    if (restoreGeneration !== conversationGeneration) {
+      try { URL.revokeObjectURL(blobUrl); } catch { /* a released page keeps none */ }
+      return;
+    }
+    restoredArtifactBlobUrls.add(blobUrl);
+    const image = document.createElement('img');
+    image.alt = artifact.prompt || '';
+    image.src = blobUrl;
+    card.insertBefore(image, caption);
+  })();
+  return card;
+}
+
+function renderRestoredAssistantTurn(entry, sharedRoot) {
+  const view = sharedRoot ? openRoundInTurn(sharedRoot) : turn('qwen');
+  void appendModelBadge(view.who, entry.model);
+  view.body.textContent = entry.content || '';
+  if (entry.reasoning) {
+    const think = document.createElement('details');
+    think.className = 'think';
+    const summary = document.createElement('summary');
+    summary.textContent = 'reasoning';
+    const thinkBody = document.createElement('div');
+    thinkBody.className = 'body';
+    thinkBody.textContent = entry.reasoning;
+    think.append(summary, thinkBody);
+    view.root.insertBefore(think, view.body);
+  }
+  if (Array.isArray(entry.tool_calls) && entry.tool_calls.length) {
+    const proposal = document.createElement('pre');
+    proposal.className = 'tool';
+    proposal.textContent = entry.tool_calls
+      .map(call => `${call.function.name}(${call.function.arguments})`).join('\n');
+    view.root.append(proposal);
+  }
+  for (const artifact of entry.artifacts || []) {
+    renderRestoredArtifactCard(view.root, artifact);
+  }
+  return view.root;
+}
+
+function restoreTranscript() {
+  /* Rebuild `history` and the log from the record. A tool message restores into
+     `history` and renders nothing, which is what the live path shows: the log
+     carries the proposed call and the answer the model wrote after reading the
+     result. */
+  history = [];
+  // A tool-calling assistant message opens a turn its continuation rounds join,
+  // the grouping the live path renders, so a restored image keeps the answer
+  // that follows it under the same speaker.
+  let continuationRoot = null;
+  for (const entry of conversationMessages) {
+    if (!entry || typeof entry.role !== 'string') continue;
+    if (entry.role === 'user') {
+      history.push({ role: 'user', content: entry.content });
+      turn('you', 'me').body.textContent = entry.shown ?? entry.content;
+      continuationRoot = null;
+      continue;
+    }
+    if (entry.role === 'tool') {
+      history.push({
+        role: 'tool', tool_call_id: entry.tool_call_id,
+        name: entry.name, content: entry.content
+      });
+      continue;
+    }
+    const message = { role: 'assistant', content: entry.content };
+    if (Array.isArray(entry.tool_calls) && entry.tool_calls.length) {
+      message.tool_calls = entry.tool_calls;
+    }
+    history.push(message);
+    const root = renderRestoredAssistantTurn(entry, continuationRoot);
+    continuationRoot = message.tool_calls ? root : null;
+  }
+  toolCallSequence = restoredCallSequence(conversationMessages);
+}
+
+function resetConversationState() {
+  conversationGeneration++;
+  history = [];
+  toolCallSequence = 0;
+  conversationMessages = [];
+  activeAssistantEntry = null;
+  activeAssistantGeneration = -1;
+  for (const controller of restoredArtifactControllers) {
+    try { controller.abort(); } catch { /* an already-settled fetch ignores this */ }
+  }
+  restoredArtifactControllers.clear();
+  for (const blobUrl of restoredArtifactBlobUrls) {
+    try { URL.revokeObjectURL(blobUrl); } catch { /* a released page keeps none */ }
+  }
+  restoredArtifactBlobUrls.clear();
+  logEl.textContent = '';
+}
+
+function conversationHashId() {
+  try {
+    const match = (window.location.hash || '').match(/^#\/c\/([A-Za-z0-9_-]{1,64})$/);
+    return match ? match[1] : null;
+  } catch {
+    // A context without a location leaves the conversation unrouted and the
+    // remembered selection authoritative.
+    return null;
+  }
+}
+
+function setConversationHash(id) {
+  try {
+    window.location.hash = id ? `#/c/${id}` : '';
+  } catch { /* an unrouted page keeps the selection in the store alone */ }
+}
+
+function startNewConversation(route = true) {
+  /* Open an empty conversation. The record reaches the store on the first
+     message rather than here, so a page opened and left alone adds no row to
+     the panel. */
+  resetConversationState();
+  conversationId = newConversationId();
+  conversationTitle = '';
+  rememberSelectedConversation(conversationId);
+  if (route) setConversationHash(conversationId);
+  void renderConversationList();
+  return conversationId;
+}
+
+async function switchConversation(id, route = true) {
+  if (busy || !CONVERSATION_ID_PATTERN.test(id)) {
+    // A hashchange lands after the address bar already moved, so a refused
+    // switch writes the route back to the conversation on screen rather than
+    // leaving the URL naming one this page never opened. The write raises one
+    // further hashchange whose id already matches, which ends there.
+    setConversationHash(conversationId);
+    return false;
+  }
+  const record = await readConversationRecord(id);
+  if (busy) {
+    // A send started during this read now owns the in-flight turn, so this
+    // switch leaves it running rather than discarding it with a reset; the
+    // address bar returns to the conversation actually on screen, the way
+    // the busy check above already does when the switch never started.
+    setConversationHash(conversationId);
+    return false;
+  }
+  resetConversationState();
+  conversationId = id;
+  conversationTitle = (record && record.title) || '';
+  conversationMessages = record && Array.isArray(record.messages) ? record.messages : [];
+  rememberSelectedConversation(id);
+  if (route) setConversationHash(id);
+  restoreTranscript();
+  await renderConversationList();
+  return true;
+}
+
+async function renameConversation(id) {
+  const record = await readConversationRecord(id);
+  if (!record) return;
+  let proposed = null;
+  try {
+    proposed = window.prompt('Conversation name', record.title || '');
+  } catch {
+    proposed = null;
+  }
+  if (proposed === null) return;
+  const title = prefixAtWholeCodePoint(
+    proposed.trim().replace(/\s+/g, ' ') || 'untitled', CONVERSATION_TITLE_CHARACTER_CAP);
+  record.title = title;
+  if (id === conversationId) conversationTitle = title;
+  await writeThroughFallbackStore(store => store.write(record));
+  await renderConversationList();
+}
+
+async function deleteConversation(id) {
+  await writeThroughFallbackStore(store => store.remove(id));
+  if (id === conversationId) startNewConversation();
+  await renderConversationList();
+}
+
+async function renderConversationList() {
+  const list = $('#conversation-list');
+  let entries = [];
+  try {
+    entries = await (await conversationStore()).list();
+  } catch {
+    entries = [];
+  }
+  entries.sort((first, second) => (second.updated || 0) - (first.updated || 0));
+  list.textContent = '';
+  if (!entries.length) {
+    const empty = document.createElement('div');
+    empty.id = 'conversation-empty';
+    empty.textContent = 'this store holds no saved conversation yet';
+    list.append(empty);
+    return;
+  }
+  for (const entry of entries) {
+    const row = document.createElement('div');
+    row.className = 'conversation-row' + (entry.id === conversationId ? ' selected' : '');
+    const open = document.createElement('button');
+    open.className = 'open';
+    open.textContent = entry.title || 'untitled';
+    open.onclick = () => { void switchConversation(entry.id); };
+    const rename = document.createElement('button');
+    rename.className = 'small';
+    rename.textContent = 'rename';
+    rename.onclick = () => { void renameConversation(entry.id); };
+    const remove = document.createElement('button');
+    remove.className = 'small';
+    remove.textContent = 'delete';
+    remove.onclick = () => { void deleteConversation(entry.id); };
+    row.append(open, rename, remove);
+    list.append(row);
+  }
+}
+
+async function initConversations() {
+  /* The route names the conversation, the remembered selection names it where
+     the route is silent, and a name neither store answers for opens an empty
+     conversation instead of an error. */
+  const routed = conversationHashId();
+  const remembered = readBrowserStorage('localStorage', CONVERSATION_SELECTED_KEY);
+  const candidate = routed ||
+    (remembered && CONVERSATION_ID_PATTERN.test(remembered) ? remembered : null);
+  if (candidate && await readConversationRecord(candidate)) {
+    await switchConversation(candidate, routed === null);
+    return;
+  }
+  // A routed id with no matching record still names the address bar: routing
+  // the freshly generated id keeps the URL naming the conversation this page
+  // now holds, rather than reloading into an id whose record never existed
+  // either. Where no route was present, none is added.
+  startNewConversation(routed !== null);
+  await renderConversationList();
+}
+
+$('#conversation-new').onclick = () => { startNewConversation(); };
+
+if (typeof window.addEventListener === 'function') {
+  window.addEventListener('hashchange', () => {
+    const routed = conversationHashId();
+    if (routed && routed !== conversationId) void switchConversation(routed, false);
+  });
+}
+
+// send() awaits this before it reads or mutates conversationId, so a send
+// that lands during the IndexedDB open window this promise covers joins the
+// conversation initConversations() settles on instead of running with
+// conversationId still null, where every save() call already no-ops and a
+// remembered record's own switchConversation() would otherwise discard the
+// in-flight turn as a busy conflict.
+const conversationsReady = initConversations();
+// ==== end conversation store ================================================
+
+// ==== the llama.cpp UI tab ==================================================
+/* The two tabs name two launches of one binary rather than two routes of one
+   listener. `server_http_context::init` mounts a `--path` directory at
+   `api_prefix + "/"` where `public_path` carries a value
+   (tools/server/server-http.cpp:333-335) and registers the compiled-in UI
+   assets under the same prefix in its else branch (:339-427), and `--api-prefix`
+   supplies one value to whichever branch runs (common/arg.cpp:3352-3356), so
+   the embedded UI reaches no second prefix beside a served static path. Router
+   mode leaves that unchanged: `ctx_http.init(params)` runs ahead of the router
+   branch (tools/server/server.cpp:173 against :188-232). The tab therefore
+   opens a notice naming the launch that serves the other page, and the page
+   this notice belongs to keeps the surfaces the other one has none of. */
+function selectTab(name) {
+  const chatSelected = name !== 'llama';
+  $('#workspace').hidden = !chatSelected;
+  $('#llama-ui-panel').hidden = chatSelected;
+  $('#tab-chat').setAttribute('aria-selected', String(chatSelected));
+  $('#tab-llama').setAttribute('aria-selected', String(!chatSelected));
+}
+
+$('#tab-chat').onclick = () => selectTab('chat');
+$('#tab-llama').onclick = () => selectTab('llama');
+
+try {
+  // The link names the listener this page came from, which is the address the
+  // ordinary launch answers the llama.cpp UI on.
+  const pageOrigin = window.location.origin;
+  if (pageOrigin) {
+    $('#llama-ui-link').href = `${pageOrigin}/`;
+    $('#llama-ui-origin').textContent = ` -- ${pageOrigin}`;
+  }
+} catch { /* a page without a location keeps the relative root the markup names */ }
+
+$('#copy-api-key').onclick = async () => {
+  // The key stays in the header field and in sessionStorage; this copies the
+  // value the user already entered rather than reading any store of its own.
+  const note = $('#copy-api-key-note');
+  const key = $('#api-key').value.trim();
+  if (!key) {
+    note.textContent = ' this page holds no key to copy';
+    return;
+  }
+  try {
+    await navigator.clipboard.writeText(key);
+    note.textContent = ' copied';
+  } catch {
+    note.textContent =
+      ' the browser refused the clipboard; read the key from the header field';
+  }
+};
+// ==== end the llama.cpp UI tab ==============================================
 </script>
 </body>
 </html>

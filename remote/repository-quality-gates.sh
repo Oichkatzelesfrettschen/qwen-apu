@@ -15,7 +15,7 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repository_root=$(CDPATH='' cd -- "$script_directory/.." && pwd)
 cd "$repository_root"
 
-for required_command in bash node shellcheck ruff mypy python3 curl flock git ps sha256sum c++; do
+for required_command in bash node shellcheck ruff mypy python3 curl flock git ps sha256sum c++ bwrap; do
     if ! command -v "$required_command" >/dev/null 2>&1; then
         printf 'required quality-gate command is absent: %s\n' \
             "$required_command" >&2
@@ -37,6 +37,8 @@ if [ ! -f "$script_directory/gate-cell-key.sh" ]; then
 fi
 GATE_CELL_ROOT=$repository_root
 export GATE_CELL_ROOT
+GATE_CELL_DRIVER_PATH=$script_directory/$(basename -- "$0")
+export GATE_CELL_DRIVER_PATH
 # shellcheck source=remote/gate-cell-key.sh
 . "$script_directory/gate-cell-key.sh"
 
@@ -185,6 +187,9 @@ gate_cell test-summarize-radv-isa derive remote/test-summarize-radv-isa.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-radv-isa.py'
 gate_cell test-depth derive remote/raven2-shader-lab/test-depth.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/raven2-shader-lab/test-depth.py'
+gate_cell test-measure-code-agent-tasks derive \
+    remote/test-measure-code-agent-tasks.py \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-measure-code-agent-tasks.py'
 
 # Ledger readers and registry checks: shell, no fixture server.
 gate_cell check-validated-tuples derive remote/check-validated-tuples.sh \
@@ -221,8 +226,19 @@ gate_cell test-measure-draft-pair derive remote/test-measure-draft-pair.sh \
 gate_cell test-classify-checkpoint-semantics derive \
     remote/test-classify-checkpoint-semantics.sh \
     remote/test-classify-checkpoint-semantics.sh
+gate_cell test-write-clangd-config derive remote/test-write-clangd-config.sh \
+    remote/test-write-clangd-config.sh
 gate_cell test-check-trace-source-status derive \
     remote/test-check-trace-source-status.sh remote/test-check-trace-source-status.sh
+gate_cell test-qwen-lan-launch derive remote/test-qwen-lan-launch.sh \
+    remote/test-qwen-lan-launch.sh
+gate_cell test-prefix-checkpoint-key derive \
+    'remote/test-prefix-checkpoint-key.sh remote/test-fixtures/prefix-checkpoint-key-probe.cpp patches/llama-server-prefix-checkpoint.patch' \
+    remote/test-prefix-checkpoint-key.sh
+gate_cell test-sync-runtime-tree derive remote/test-sync-runtime-tree.sh \
+    remote/test-sync-runtime-tree.sh
+gate_cell test-web-search-live derive remote/test-web-search-live.sh \
+    remote/test-web-search-live.sh
 gate_cell test-compute-state-lease derive remote/test-compute-state-lease.sh \
     remote/test-compute-state-lease.sh
 gate_cell test-run-prefill-ladder derive remote/test-run-prefill-ladder.sh \
@@ -291,6 +307,12 @@ gate_cell test-run-raven2-vulkan-kernel-census derive \
 gate_cell test-fallback-webui-model-state derive \
     remote/test-fallback-webui-model-state.mjs \
     'node remote/test-fallback-webui-model-state.mjs'
+gate_cell test-fallback-webui-conversations derive remote/test-fallback-webui-conversations.mjs \
+    'node remote/test-fallback-webui-conversations.mjs'
+gate_cell test-fallback-webui-fragment-key derive remote/test-fallback-webui-fragment-key.mjs \
+    'node remote/test-fallback-webui-fragment-key.mjs'
+gate_cell test-fallback-webui-ui-switch derive remote/test-fallback-webui-ui-switch.mjs \
+    'node remote/test-fallback-webui-ui-switch.mjs'
 gate_cell test-fallback-webui-roster derive remote/test-fallback-webui-roster.mjs \
     'node remote/test-fallback-webui-roster.mjs'
 gate_cell test-fallback-webui-model-selection derive \
@@ -312,6 +334,9 @@ gate_cell test-admit-image-router derive remote/test-admit-image-router.sh \
 gate_cell test-fallback-page-image derive \
     remote/web-mcp/test-fallback-page-image.py \
     'PYTHONDONTWRITEBYTECODE=1 QWEN_CHROMIUM="$chromium_command" python3 remote/web-mcp/test-fallback-page-image.py'
+gate_cell test-code-agent-endpoint-fixture derive \
+    remote/test-code-agent-endpoint-fixture.sh \
+    remote/test-code-agent-endpoint-fixture.sh
 
 gate_cell_summary
 printf 'repository_quality_gates=accepted\n'
