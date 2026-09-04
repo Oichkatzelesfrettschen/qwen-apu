@@ -1551,7 +1551,39 @@ remote/run-ctx-checkpoint-sweep.sh LABEL MODEL_ID OUT
 # the request window. Three quadruples carry a bound, P-nosidecar P P
 # P-nosidecar, P I0 I0 P, and I0 I1 I1 I0; any other is unclassified, and
 # a refuted control ends the campaign refuted with exit 3 whatever the
-# arms did. QWEN_CENSUS_MODE=calibration, the default, runs exactly the
+# arms did. The boundary between two arms is a campaign condition rather
+# than a counter: await-quiescence.sh reports reached only where its
+# process, occupancy, graphics step, step stability, absolute temperature,
+# thermal derivative, memory, swap-in, lease, and latency predicates held
+# together across the hold window, so any other verdict ends the campaign
+# quiescence_unconverged with exit 5 before the next arm starts. The last
+# arm a campaign executes polls no boundary, since the arm one would
+# prepare never runs. On a verdict that ends the run, arms.tsv
+# carries a boundary row whose status names the state, terminal-state.tsv
+# names the slot, the arm, and the failing predicates, and no summary,
+# brick receipt, or calibration root is written over the truncated ledger.
+# --sclk-forced drops the step's position in the listed ladder alone.
+# Runtime identity is bound at preflight and re-established by every arm:
+# arms/LABEL/runtime-identity.tsv carries the bound value beside the arm's
+# own reading of the model bytes and digest, the server bytes and digest,
+# the runtime tree's git head and both payload digests, one
+# check-runtime-tree.sh recompute over that tree, the artifact ledger
+# digest, the served runner digest, and the request digest the campaign
+# binds from the first body an arm sent. A field that moved ends the
+# campaign identity_incident with exit 6 naming that field, since every
+# later arm would measure a different experiment under one receipt.
+# QWEN_CENSUS_REUSE_BRICKS revalidates a retained brick in the epoch that
+# reuses it: the prior calibration root's own digest is recomputed from its
+# rows, each receipt is rehashed against the digest that root records, every
+# artifact row is rehashed against the bytes it names, and the current
+# readers that read a raw record are rerun over those bytes and must
+# accept, with paths resolved through the receipt's own reused_from chain
+# so a second generation reads the records the original arms wrote. A brick whose receipt
+# names no artifact, or whose arms retained no record a reader reads, is
+# measured again rather than copied forward on a historical completed
+# label, and the copied receipt states revalidation, revalidated_epoch,
+# revalidated_readers, and revalidated_artifacts.
+# QWEN_CENSUS_MODE=calibration, the default, runs exactly the
 # thirteen-arm sequence and accepts on exactly three accepted controls
 # with none unclassified; QWEN_CENSUS_MODE=attribution runs any registered
 # arm list and requires QWEN_CENSUS_CALIBRATION_RECEIPT to name the output
@@ -1713,8 +1745,10 @@ remote/test-quality-suite.py
 remote/test-quality-roster.sh
 remote/test-promote-llama-build.sh
 remote/test-classify-checkpoint-semantics.sh
+remote/test-prefix-checkpoint-key.sh
 remote/test-run-served-binary-ab.sh
 remote/test-check-runtime-tree.sh
+remote/test-write-clangd-config.sh
 remote/test-deployment-bundle.sh
 remote/generate-quality-images.py --check
 remote/test-gguf-tokenizer-identity.py

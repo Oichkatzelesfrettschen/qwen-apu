@@ -206,11 +206,15 @@ where the four agree to about 0.4%, which this tree's documented scatter
 does not promise. An unresolved campaign at four replicates is a reportable
 result stated ahead of the run rather than a defect of it.
 
-The campaign has four terminal states and the exit status follows them: a
+The campaign has six terminal states and the exit status follows them: a
 failed arm, an incomplete control, or an unclassified quadruple ends it
 `failed` with exit 1, a refuted registered control ends it `refuted` with
 exit 3 even where every arm completed, an unresolved control with no
-refutation ends it `unresolved` with exit 4, and `accepted` alone exits 0.
+refutation ends it `unresolved` with exit 4, an inter-arm boundary the
+quiescence poller does not report `reached` ends it `quiescence_unconverged`
+with exit 5 before the next arm starts, a runtime identity that moved under
+the campaign ends it `identity_incident` with exit 6 at the arm that read it,
+and `accepted` alone exits 0.
 An unresolved control neither accepts nor refutes, so its branch precedes
 the accepted-count test that an unresolved control would otherwise leave
 short. `terminal-state.tsv` gains `control_unresolved` beside the counts it
@@ -257,9 +261,7 @@ overlap threshold, the latency probe digest, and the synced runtime tree's
 git head and two payload digests from the manifest the sync writes beside
 `remote/`, since the arms launch through that tree and a resync between
 calibration and attribution would otherwise pass both launches through
-trees that each satisfy their own check. Each arm's server is hashed after
-the arm and compared with the digest the preflight bound to its role, so a
-binary replaced mid-campaign fails the arm it served. Its SHA-256 is recorded as
+trees that each satisfy their own check. Its SHA-256 is recorded as
 `calibration_contract_sha256` in `inputs.tsv`, an attribution computes its
 own contract the same way and requires the receipt's digest to equal it,
 and a changed sidecar period or bound refuses by that one comparison
@@ -270,6 +272,59 @@ served runner and the sidecar together: the served runner runs as a job
 under `wait`, which a trap interrupts, and `cleanup_children` on EXIT,
 TERM, INT, and HUP signals and waits for both, so a runner ended mid-arm
 leaves no sampler writing into its arm directory.
+
+## Runtime identity is bound per arm
+
+The contract states what the campaign was configured with; the per-arm record
+states what each arm actually ran under. Every arm writes
+`arms/LABEL/runtime-identity.tsv` as `field expected observed state`, carrying
+the preflight's value beside its own reading of the checkpoint's byte count and
+digest, the served binary's byte count and digest for the role that arm plays,
+the runtime tree's `git_head` and both payload digests re-read from the
+manifest, one `check-runtime-tree.sh` recompute over that tree against the head
+and payload the preflight bound, the artifact ledger's digest, the served
+runner's own digest, and the request body's digest. The checkpoint reading
+comes from the arm's own `runtime-inputs.json`, which the served runner writes
+from the descriptor it pinned, so the comparison costs no second pass over the
+weights; the runtime tree reading comes from the same reader `qwen-launch.sh`
+runs inside the arm rather than a second hasher over the same bytes. That
+reader is resolved from the runner's own directory rather than from the tree it
+verifies, since a verifier read out of the population it checks would answer
+for its own replacement, and its digest is bound at preflight and re-read
+before its verdict as `runtime_tree_checker_sha256`, so a checker replaced
+between two arms names itself rather than being credited with the `verified` it
+prints. A field
+the arm never produced -- a reply it did not reach, a record it did not write
+-- reads `unobserved` and decides nothing; a file that is gone reads `absent`
+and is drift.
+
+The request body is the one identity the preflight cannot compute, because
+`measure-served-decode.sh` composes it and a second copy of that template here
+would be a second authority for the workload. The campaign binds the digest of
+the first body an arm actually sent, appends it to `inputs.tsv` as
+`request_sha256` the way the regime rows join it, and holds every later arm to
+it.
+
+A field that moved is an incident rather than one arm's failure. A runtime
+sync, a checkpoint replacement, an executable replacement, or a ledger edit
+changes what every arm after it measures, so the campaign ends at the arm that
+first read it as `identity_incident` with exit 6, `terminal_detail` names the
+field, and a `census_incident=identity` line carries the expected and observed
+values. The first field to differ is the one reported, so a sync that moves the
+head and both payload digests together names the head rather than whichever
+digest a later comparison reached. The arm's own `runtime-tree.txt` retains the
+recompute's output beside the record. A campaign already ending on an arm waits
+for no boundary after it, since the arm that boundary would prepare never runs,
+and its cooldown row reads `quiescence=skipped`.
+
+The two runtime-tree claims separate. `check-runtime-tree.sh` admits a head
+that advanced over a byte-identical payload as `head_divergence=payload-neutral`
+and exits 0, which is right for a launch and wrong for a campaign: the head is
+an acquisition-contract row, so the census compares the manifest rows itself and
+ends the run on `runtime_tree_git_head` while the recompute reads `verified`.
+An edit inside `remote/` moves the opposite way, leaving every manifest row
+where it stands and failing the recompute, which the record names as
+`runtime_tree_verified`.
 
 The expensive measurement and the reader that interprets it are two heads.
 A run is bound to the head that acquired it, and a later reader fix may
@@ -405,6 +460,64 @@ slot is what keeps the three quadruples where the parser finds them. A
 calibration whose four bricks all reuse launches no server and still writes
 a root; a partial reuse spends device time on the changed cell alone.
 
+A brick is a measurement rather than a label, so reuse revalidates it in the
+epoch that reuses it. The directory's `calibration-root.tsv` is read past its
+acquisition row: the digest it states is recomputed from the rows it carries
+-- the acquisition row followed by one `id digest` row per brick in file order,
+which is the input the writer hashed -- and a root whose stated value does not
+cover its own rows is an edited authority that every receipt digest below is
+bound to, so the whole directory is refused rather than filtered brick by
+brick. Each brick's receipt is then rehashed against the digest the root
+records for it, and every `artifact` row of that receipt is rehashed against
+the bytes it names.
+
+The current readers are then rerun over those bytes:
+`validate-clock-sidecar.py` over every retained `clock-sidecar.tsv` at its own
+arm's request window, `summarize-kernel-census.py` over every retained
+`pipeline-census.tsv` at that arm's `predicted_n - 1`, and
+`summarize-perf-logger-slice.py` over a retained
+`server-log-request.slice` at the same count, each under this run's own
+sidecar geometry, bounds, and clock-invariant flags. Every rerun must accept,
+which is what "the current analysis contract accepts this brick" means: these
+are the three of that contract's four readers that read a raw record, and
+`summarize-census-controls.py` reads `arms.tsv` rather than one, so it runs
+over the campaign's own ledger and not here. The sidecar rerun states
+`--sidecar-status 0` as the assumption the reuse rests on -- the record was
+accepted at acquisition, which is what a completed arm means, and the
+sampler's exit status is not retained separately.
+
+A brick whose receipt names no artifact, or whose arms retained no record any
+reader reads, is measured again: a historical `completed` label carried forward
+over nothing is the claim this revalidation exists to refuse. A reused
+receipt's copy therefore states which epoch licensed it -- `revalidation
+accepted`, `revalidated_epoch` naming this run's analysis contract digest,
+`revalidated_readers` naming the readers that ran, and `revalidated_artifacts`
+counting the files rehashed -- and the reruns' own output is retained under
+`revalidation/CN/` in the run's directory. Prior `revalidat*` rows are stripped
+from the copy, so `revalidated_epoch` always names the run that carries the
+receipt, while the `analysis_contract_sha256` row the original campaign wrote
+travels unchanged beside it: one names the head that first read the arms and
+the other the head that re-read them. The verdicts are taken before the output
+directory exists, since a preflight refusal leaves none behind, and move into
+it once it does.
+
+The receipt names its artifacts relative to the directory whose arms wrote
+them, and a calibration that reused a brick copies the receipt forward without
+those arm directories, so a second generation resolves the paths through the
+provenance the copy already carries: each hop reads the receipt the named
+directory holds for that brick and follows its own `reused_from` until the
+paths resolve, bounded at sixteen hops so a directory edit cannot make the
+chain circular. The `census_brick_reuse=revalidated` line names the directory
+that answered as `records=`.
+
+The boundary between two arms prepares the arm that follows it, so the last
+arm a campaign executes polls for none: a machine that never settled after the
+final measurement would otherwise retire a campaign whose every arm completed.
+The last executing named slot is known once the reuse set is decided, and a
+warmup always polls, since the precondition runs only where some brick still
+executes. The cooldown row of an arm nothing follows reads
+`quiescence=skipped` and its printed line carries `boundary_required=0`.
+
 `QWEN_CENSUS_MODE=canary` runs `P I0 I1 S` once each at
 `QWEN_BENCH_GENERATE=8` and judges the chain's structure rather than any
 rate. Eight generated tokens leave seven decode graphs, which is the
@@ -439,9 +552,43 @@ constant: `await-quiescence.sh` polls the submission, clock, thermal,
 reclaim, and lease predicates and reports the instant they have all held
 together, `QWEN_CENSUS_COOLDOWN_S` becomes its deadline, and the cooldown
 row's note carries `quiescence=reached|timeout|unreported` with the poller's
-own `elapsed_ms`. A deadline reached without convergence is counted in
-`cooldown_timeouts` rather than charged to the arm that already completed,
-because the state it left belongs to the arm that follows.
+own `elapsed_ms` and the predicates its final tick reported false.
+
+The boundary decides the campaign. `reached` requires the process, GPU
+occupancy, graphics step, step stability, absolute temperature, thermal
+derivative, available memory, swap-in, lease, and latency predicates to have
+held together across the whole hold window, so any other verdict leaves the
+next arm a machine state the arm before it chose -- clock, temperature,
+memory, or the lease -- which is the nuisance the boundary exists to remove.
+The campaign therefore ends at that boundary, ahead of the next arm, as
+`quiescence_unconverged` with exit 5. `arms.tsv` gains one boundary row at
+the same slot, its `arm` column reading `cooldown` and its `status` column
+`quiescence_timeout` or `quiescence_unreported`; `terminal-state.tsv` carries
+the campaign state, `terminal_slot`, `terminal_arm`, and `terminal_detail`
+naming the poller's own failing predicates, with every `control_*` count `-`
+and `calibration_root_sha256` `-`. Neither `summary.tsv` nor `bricks/` nor
+`calibration-root.tsv` is written, since the controls summarizer over a
+truncated ledger would judge quadruples the registry never bound and a root
+over half a campaign is what a later run's brick reuse would copy forward.
+`QWEN_CENSUS_COOLDOWN_S` is held to a positive integer at preflight for the
+same reason: a value the poller refuses as a usage error prints no verdict,
+and the run would end on `quiescence_unreported` where the defect is a typo.
+
+Two predicates the poller carries stay unpassed by the census. The lease is
+excluded because the campaign holds that lock exclusively from before the
+clock write to its own exit, so `flock -n -x` from the poller reads the
+campaign's own exclusion as a foreign workload; holding it exclusively is the
+strictly stronger form of the predicate, and the printed cooldown line states
+`lease=held-by-campaign`. The latency log is excluded because
+`latency_is_ok` reads a `baseline_p90_us=` field the raw probe log names on
+no line, so it reports `not_applicable` while spending one
+`summarize-probe.sh` pass per 100 ms tick. The criterion is live for any
+caller that passes `--latency-log` over a log carrying that field.
+`--sclk-forced` drops the graphics step's position in the listed ladder,
+which under a commanded clock reports the policy rather than the machine, and
+licenses nothing else: the step's own stability across the hold window, the
+busy floor, both temperature conditions, memory, swap-in, and the process
+reading all still decide `reached`.
 
 ## What P stands for and how it is bound
 
@@ -947,6 +1094,31 @@ its own clock and is read beside the sidecar rather than joined to it.
 Clock selection is an execution-shape axis here, because a faster or more
 fragmented shader can lower apparent demand and select a lower state that
 cancels part of its own gain.
+
+`validate-clock-sidecar.py` refuses a malformed cadence claim rather than
+reading it under a silent default. `--expected-nice` and
+`--expected-cpu-affinity` hold the header's own reported priority and CPU set
+to what the launcher configured, closing the gap between a header naming a
+niceness (`sampler_identity`) and a header naming the niceness the launcher
+asked for (`sampler_nice`, `sampler_affinity`). `channel_cadence` and
+`cadence_values` hold a `# sample_rates:` header to completeness --
+`gpu_busy_percent_period_ns` and `pp_dpm_period_ns` present -- and to
+arithmetic -- each declared cadence a positive multiple of the requested
+period, with the busy channel's equal to it exactly, since that channel is
+read on every sample. Where the header also carries `# dpm_read=` markers,
+`dpm_marker_cadence` compares the widest marker gap overlapping the request
+window against 1.5 times the declared DPM cadence, catching a sampler whose
+own freshness stamps drifted past what it declared -- the marker half of
+what keeps a cached value from being counted as a fresh observation; the row
+half already reads `dpm_period_multiple` over reads rather than rows and now
+carries a `temp1_period_multiple` beside it for the temperature channel.
+`sampler_format`, sample-clock-sidecar.py's own `native-fresh-v1` claim that
+every column here is read fresh on every sample, refuses an unrecognized
+value rather than reading a future record shape under today's rules. A
+window is supplied whole or not at all, each bound nonnegative, and
+`--cost-bound-ns`, `--max-gap-ns`, `--required-sclk-mhz`, and
+`--required-mclk-mhz` are positive where supplied, each checked where it is
+parsed ahead of any read of the record.
 
 ## Retained runs
 
