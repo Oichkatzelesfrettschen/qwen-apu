@@ -1,0 +1,11 @@
+decode_ms=6399.178
+decode_tok_per_second=9.845014469045868
+decode_tokens=64
+label=05-C
+prefill_ms=664.166
+prefill_tok_per_second=28.607306004824093
+prompt_tokens=19
+request_status=0
+teardown_status=0
+valid=True
+served_decode=completed label=05-C result_directory=$HOME/q4k-served-ab-20260903T1953Z/arms/05-C

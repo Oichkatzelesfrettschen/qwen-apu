@@ -1,0 +1,11 @@
+decode_ms=18643.768
+decode_tok_per_second=3.379145245746461
+decode_tokens=64
+label=0c-W
+prefill_ms=1621.683
+prefill_tok_per_second=11.71622320761826
+prompt_tokens=19
+request_status=0
+teardown_status=0
+valid=True
+served_decode=completed label=0c-W result_directory=$HOME/q4k-served-ab-4b-r2-20260903T2115Z/arms/0c-W

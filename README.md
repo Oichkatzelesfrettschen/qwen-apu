@@ -338,23 +338,53 @@ separately for that reason.
 | Profile | Binding | Key | Tools |
 | --- | --- | --- | --- |
 | Standalone, canonical | `127.0.0.1:8080`, `--offline` | none | permitted inside the OS sandbox |
-| LAN, explicit opt-in | `QWEN_BIND_HOST=0.0.0.0` | none on a trusted network | disabled unless authenticated or source-restricted |
+| LAN, `lan-authenticated` | the one exposure literal | required on every route | disabled unless authenticated or source-restricted |
+| LAN, `lan-open-approved` | the one exposure literal, or every interface under an explicit second opt-in | none on a declared-trusted connection | disabled unless authenticated or source-restricted |
 
-Loopback is the canonical address. A keyless LAN endpoint is a deliberate
-trusted-network test profile, and once local file tools are enabled an
-unauthenticated LAN endpoint grants every client on the network the server
-process's file-reading capability. The startup summary lists real network
-interfaces; libvirt and Docker bridge addresses are labeled as such.
+Loopback is the canonical address. `lan-open-approved` is a deliberate
+household opt-in for a network the operator has declared trusted by
+connection UUID, and once local file tools are enabled an unauthenticated
+LAN endpoint grants every client on the network the server process's
+file-reading capability. The startup summary lists real network interfaces;
+libvirt and Docker bridge addresses are labeled as such.
 
-`remote/qwen-lan-launch.sh` is the LAN bring-up in one command: it reads the
-address from the default route, reads the image parameters path from the
-active deployment's image server, serves the router on port 42069 with the
-approval broker and the artifact listener on the two ports above it, and
-prints the `<hostname>.local` name to open. Its default removes the Web UI
-bearer, so every peer on the network can chat and approve a search or a
-generation, while the approval dialog and the single-use grant stay the
-execution gate; `QWEN_WEB_LAN_OPEN=0` requires the bearer on every listener
-instead. `remote/qwen-teardown.sh` ends it.
+`remote/qwen-lan-launch.sh` is the LAN bring-up in one command, under one of
+two named security profiles. `lan-authenticated` is the default and the
+one-command fallback: it reads the address from the default route, binds
+the router, the approval broker, and the artifact listener to that one
+literal rather than every interface, reads the image parameters path from
+the active deployment's image server, serves the router on port 42069 with
+the broker and the artifact listener on the two ports above it, requires the
+Web UI bearer on every route, and prints the `<hostname>.local` name to open
+-- the admitted set holds exactly one lowercase mDNS label under `.local`, so
+a bare hostname, a public domain, or an uppercase or trailing-dot form is
+refused rather than opening the DNS rebinding surface the `.local`
+restriction closes. `lan-open-approved` is the explicit household opt-in:
+it removes the Web UI bearer, so every peer that reaches the page can chat,
+consume model time, and fetch a known artifact URL, while the approval
+dialog and the single-use grant stay the execution gate on search and image
+generation. It requires the exposed interface's own NetworkManager
+connection to appear in `QWEN_WEB_LAN_TRUSTED_CONNECTIONS` -- a
+colon-separated list of connection UUIDs from
+`nmcli -t -f UUID,NAME connection show --active` -- and refuses with no list
+declared, naming the command that declares one; `lan-authenticated` carries
+no such requirement, since the bearer already stands behind an undeclared
+connection. `QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1` is a third, separately
+printed opt-in that binds every interface instead of the one selected
+address, under either profile. Both profiles print the active boundary in
+capitals -- `LAN BOUNDARY: lan-authenticated` or
+`LAN BOUNDARY: lan-open-approved` -- at the end of the launch and as the
+first line of `remote/qwen-webui-control.sh status`, which is the session's
+own recorded state line. No unit file, crontab entry, or login hook starts
+either profile: `remote/qwen-teardown.sh` ends what the launch started, and
+a reboot leaves the machine with nothing listening.
+
+```sh
+remote/qwen-lan-launch.sh lan-authenticated              # the default, one command
+QWEN_WEB_LAN_TRUSTED_CONNECTIONS=$(nmcli -t -f UUID,DEVICE connection show --active | \
+    awk -F: '$2 == "eth0" { print $1 }') \
+    remote/qwen-lan-launch.sh lan-open-approved           # the explicit household opt-in
+```
 
 The page never assumes which mode it was launched under. `webui/index.html`
 probes `GET /v1/models` with no Authorization header on load: a 200 proves the
