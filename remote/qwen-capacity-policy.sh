@@ -1080,6 +1080,25 @@ if [ -n "$static_path" ] && [ ! -f "$static_path/index.html" ]; then
     printf 'static path must contain index.html: %s\n' "$static_path" >&2
     exit 2
 fi
+# The page's LAN bound tags describe what this argv enforces, and the two are
+# compared here rather than trusted: stage-webui-page.sh wrote them from the
+# same QWEN_LAN_MAX_PROMPT_TOKENS and QWEN_LAN_MAX_OUTPUT_TOKENS this policy
+# read above, so a page carrying a different value, a bound where the launch
+# names none, or none where it names one is a page some other launch or hand
+# wrote, and serving it would tell a browser a bound --ctx-size and --n-predict
+# do not hold. Router mode refuses both bounds above, so its page carries none.
+if [ -n "$static_path" ]; then
+    if ! page_bounds=$("$script_directory/stage-webui-page.sh" read "$static_path/index.html"); then
+        printf 'the served page under %s refuses the LAN bound read\n' "$static_path" >&2
+        exit 2
+    fi
+    launch_bounds="prompt_bound=${lan_max_prompt_tokens:--} output_bound=${lan_max_output_tokens:--}"
+    if [ "$page_bounds" != "$launch_bounds" ]; then
+        printf 'the served page states %s where this launch enforces %s: %s\n' \
+            "$page_bounds" "$launch_bounds" "$static_path/index.html" >&2
+        exit 2
+    fi
+fi
 
 if [ -n "$api_key_file" ] && [ ! -s "$api_key_file" ]; then
     printf 'API key file must be a non-empty regular file: %s\n' "$api_key_file" >&2

@@ -207,6 +207,21 @@ if [ -r "$session_status" ]; then
         open_lan_policy_source=$session_status
     fi
 fi
+# The served page line is read the same way: the digest of the copy the
+# session staged and the bound tags it carries, so the receipt binds the page a
+# browser was handed to the runtime bounds the argv enforced.
+served_page_identity=no-running-session
+served_page_source=-
+if [ -r "$session_status" ]; then
+    served_page_line=$(grep '^served_page ' "$session_status" | tail -n 1 || true)
+    if [ -n "$served_page_line" ]; then
+        served_page_identity=${served_page_line#served_page }
+        served_page_source=$session_status
+    elif [ -n "$(grep '^state=running' "$session_status" || true)" ]; then
+        served_page_identity=no-served-page-line
+        served_page_source=$session_status
+    fi
+fi
 
 staging_output=$(mktemp)
 trap 'rm -f "$staging_output"' EXIT HUP INT TERM
@@ -225,6 +240,8 @@ trap 'rm -f "$staging_output"' EXIT HUP INT TERM
     printf 'tool_prefix_identity\t%s\t%s\n' "$tool_prefix_identity" "$artifact_manifest"
     printf 'open_lan_policy_identity\t%s\t%s\n' "$open_lan_policy_identity" \
         "$open_lan_policy_source"
+    printf 'served_page_identity\t%s\t%s\n' "$served_page_identity" \
+        "$served_page_source"
 } >"$staging_output"
 receipt_sha256=$(sha256sum "$staging_output" | cut -d ' ' -f 1)
 

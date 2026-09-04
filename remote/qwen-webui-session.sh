@@ -670,6 +670,33 @@ fi
 loading_page_size=$(getconf PAGESIZE)
 loading_previous_pswpin=$(awk '$1 == "pswpin" { print $2 }' /proc/vmstat)
 
+# The page the server serves is a copy this launch writes, so the LAN bound
+# tags it carries are the launch's own QWEN_LAN_MAX_PROMPT_TOKENS and
+# QWEN_LAN_MAX_OUTPUT_TOKENS and nothing a checked-in file claimed. The copy
+# lives under the state directory, qwen-capacity-policy.sh reads its tags back
+# against the same two variables before it builds the argv, and the digest is
+# recorded on the `served_page` status line for the deployment receipt. An
+# empty static path serves no page and stages none, and a path carrying no
+# index.html passes through to the policy's own refusal of it.
+served_page_sha256=-
+served_page_bounds='prompt_bound=- output_bound=-'
+page_source_path=-
+if [ -n "$static_path" ] && [ -f "$static_path/index.html" ]; then
+    served_page_directory=$state_directory/webui-served
+    if ! staged_page_line=$("$script_directory/stage-webui-page.sh" stage \
+        "$static_path" "$served_page_directory"); then
+        printf 'state=failed reason=page_staging_refused source=%s utc=%s\n' \
+            "$static_path" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
+        exit 1
+    fi
+    served_page_sha256=${staged_page_line#*page_sha256=}
+    served_page_sha256=${served_page_sha256%% *}
+    served_page_bounds=${staged_page_line#* prompt_bound=}
+    served_page_bounds="prompt_bound=$served_page_bounds"
+    page_source_path=$static_path
+    static_path=$served_page_directory
+fi
+
 # The session owns the state directory, so it names the one the Vulkan workload
 # lease lives in; qwen-capacity-policy.sh derives the lock path from it and
 # image-service.py opens the same file under its own --state-dir.
@@ -971,6 +998,11 @@ printf 'cache cache_type_k=%s cache_type_v=%s flash_attention=%s override_contex
     "${QWEN_CACHE_TYPE_K:-registry}" "${QWEN_CACHE_TYPE_V:-registry}" \
     "${QWEN_FLASH_ATTN:-registry}" \
     "${QWEN_CACHE_OVERRIDE_CONTEXT_CEILING:-registry}" >>"$status_file"
+# The served page lands on its own line: the copy this launch staged, its
+# digest, and the bound tags it carries, which write-deployment-receipt.sh
+# binds as served_page_identity. A launch with no static path records `-`.
+printf 'served_page source=%s sha256=%s %s\n' \
+    "$page_source_path" "$served_page_sha256" "$served_page_bounds" >>"$status_file"
 # Router state lands on a fourth line. A router listener serves several
 # checkpoints behind one port and spawns a child process per loaded model, so a
 # retained status file that named only the default model would describe one of
