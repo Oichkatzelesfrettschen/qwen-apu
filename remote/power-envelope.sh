@@ -98,12 +98,15 @@ power_field_row() {
 # A profile is the list of fields it writes. `platform-default` writes nothing
 # and is the campaign's control arm: it still snapshots and still proves the
 # thermal ceiling, so a control arm and a candidate arm differ in the package
-# budget alone.
+# budget alone. The appliance's own baseline (evidence/power-envelope/
+# baseline-info.txt) reads STAPM 15 W, PPT fast 25 W, and PPT slow 20 W, so a
+# candidate holds the fast limit at that 25 W and moves STAPM and the slow
+# limit, which are the sustained terms a decode arm runs against.
 resolve_power_profile() {
     case $1 in
         platform-default) profile_fields='' ;;
         package-20w)
-            profile_fields='stapm_limit_mw=20000 fast_limit_mw=20000 slow_limit_mw=20000'
+            profile_fields='stapm_limit_mw=20000 fast_limit_mw=25000 slow_limit_mw=20000'
             ;;
         package-25w)
             profile_fields='stapm_limit_mw=25000 fast_limit_mw=25000 slow_limit_mw=25000'

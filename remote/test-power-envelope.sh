@@ -223,7 +223,7 @@ stdout_carries 'power_envelope_applied=package-20w' || case_status=1
 stdout_carries 'stapm_limit_mw=20000' || case_status=1
 stdout_carries 'tctl_limit_c=95' || case_status=1
 [ "$(firmware_field stapm_limit_mw)" = 20000 ] || case_status=1
-[ "$(firmware_field fast_limit_mw)" = 20000 ] || case_status=1
+[ "$(firmware_field fast_limit_mw)" = 25000 ] || case_status=1
 [ "$(firmware_field slow_limit_mw)" = 20000 ] || case_status=1
 grep -q -- '--stapm-limit=20000' "$invocation_log" || case_status=1
 grep -q 'snapshot_field	stapm_limit_mw	15000' "$snapshot_file" || case_status=1

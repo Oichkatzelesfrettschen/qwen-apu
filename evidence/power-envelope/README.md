@@ -78,8 +78,11 @@ does.
 
 ## The SMU adjusters this part accepts
 
-RyzenAdj selects `FAM_DALI` for CPUID family 0x17 model 32, which is this part
-(`lib/cpuid.c`, `case 32: return FAM_DALI;`, documented). Every adjuster below
+RyzenAdj selects `FAM_DALI` for CPUID family 0x17 model 32 (`lib/cpuid.c`,
+`case 32: return FAM_DALI;`, documented), and this part reports model 24
+(`lscpu`, observed), which the same table routes to `FAM_PICASSO`: the built
+binary prints `CPU Family: Picasso` on the appliance (`baseline-info.txt`,
+observed). Both families share the message table below. Every adjuster below
 reaches the MP1 mailbox at message address `0x3B10528` with its response at
 `0x3B10564` and its argument base at `0x3B10998` (`lib/nb_smu_ops.c`,
 documented). `_do_adjust` maps the mailbox reply onto three outcomes:
@@ -344,16 +347,27 @@ unresolved.
 degrees C, and records the reading on every apply, so an arm states the thermal
 ceiling it ran under rather than assuming it.
 
-### The 15 W expectation is pending a read
+### The platform baseline, read
 
 AMD publishes 15 W as the part's default TDP and 12 to 25 W as its configurable
-range (documented), and nothing read so far establishes what HP's F.69 firmware
-actually set. The arms above are named for the values they write, and the
-control arm's `--info` read is what states the baseline they are compared
-against. Class: conjecture that the platform default is 15 W. Falsifier: the
-control arm's own `STAPM LIMIT` row reporting another value, in which case the
-candidate values are re-registered against it before any candidate runs, and a
-platform already at 25 W voids the campaign.
+range (documented). `baseline-info.txt` retains the whole `--info` read taken
+on the appliance through the pinned build at idle, over `/dev/mem` since no
+`ryzen_smu` module is loaded. HP's F.69 firmware sets `STAPM LIMIT` 15 W,
+`PPT LIMIT FAST` 25 W, `PPT LIMIT SLOW` 20 W, `TDC LIMIT VDD` 35 A,
+`EDC LIMIT VDD` 45 A, `THM LIMIT CORE` 90 C, `StapmTimeConst` 200 s, and
+`SlowPPTTimeConst` 5 s, with the APU slow limit and both skin-temperature
+limits reading `nan` (observed). The 15 W conjecture held for STAPM, and the
+sustained figure is the one a decode arm runs against: the slow limit already
+sits at 20 W and the fast limit at 25 W, so the registered 20 W arm would
+lower the fast limit by 5 W while raising STAPM by 5 W, and the 25 W arm
+raises STAPM by 10 W and the slow limit by 5 W with the fast limit unchanged.
+The candidate arms are therefore re-registered as STAPM and slow-limit moves
+with the fast limit held at the platform's 25 W, so each arm moves the
+sustained budget alone; the profile definitions in
+`remote/compute-state-lease.sh` carry that change before the first candidate
+runs. `intel-rapl:0/energy_uj` answers a privileged read on the appliance
+(`package-0`, observed), which admits the differenced-energy instrument the
+next section names.
 
 ### Retained per arm
 

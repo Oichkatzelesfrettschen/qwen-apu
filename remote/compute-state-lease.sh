@@ -38,8 +38,9 @@ set -eu
 #                                it writes no limit, snapshots the baseline, and
 #                                proves the thermal ceiling. The campaign's
 #                                control arm.
-#   measure-fixed-package-20w    the same state with STAPM, PPT fast, and PPT
-#                                slow at 20000 mW.
+#   measure-fixed-package-20w    the same state with STAPM and PPT slow at
+#                                20000 mW and PPT fast held at the platform's
+#                                25000 mW.
 #   measure-fixed-package-25w    the same state at 25000 mW, the top of the
 #                                3050U's published 12 to 25 W cTDP range.
 #
