@@ -350,8 +350,11 @@ def exposed_name(value):
     dot are each refused by name rather than reshaped: any of them registers in
     the ordinary resolver, and a name an attacker controls there would resolve
     to this socket under DNS rebinding the way the closed literal set exists to
-    prevent. An all-numeric label names an address, which `--lan-exposure`
-    takes instead.
+    prevent. A single label carries no dot, so an all-numeric label such as
+    `123.local` names no four-octet IPv4 literal and is admitted the way
+    `web_lan_name_is_valid` in remote/web-lan-exposure.sh admits it; the
+    dotted-quad form belongs to `--lan-exposure` and never reaches this suffix
+    check at all.
     """
     if not value:
         # argparse applies a string type to its own default, so the empty
@@ -368,11 +371,6 @@ def exposed_name(value):
         raise argparse.ArgumentTypeError(
             f"the LAN exposure name carries a label outside the lowercase "
             f"letter-digit-hyphen set; {value!r} is refused"
-        )
-    if label.isdigit():
-        raise argparse.ArgumentTypeError(
-            f"the LAN exposure name is a dotted address rather than a name; "
-            f"{value!r} belongs in --lan-exposure"
         )
     return value
 

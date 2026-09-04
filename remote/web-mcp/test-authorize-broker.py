@@ -1079,6 +1079,10 @@ class BrokerTest(unittest.TestCase):
         self.assertEqual(
             broker_module.exposed_name("qwen-test.local"), "qwen-test.local"
         )
+        # A single label carries no dot, so an all-numeric label names no
+        # four-octet IPv4 literal and is admitted the way the shell validator
+        # in remote/web-lan-exposure.sh admits it.
+        self.assertEqual(broker_module.exposed_name("123.local"), "123.local")
         for refused in (
             "qwen-test",
             "attacker.example.com",
