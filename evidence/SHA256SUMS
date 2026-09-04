@@ -3097,9 +3097,13 @@ f90940873c5dd9f85359765bdb40c3aa54639c72e4451b09af7f73d3fa088879  evidence/raven
 a2f37ea69ba15f5e6b5751128c96a1bffc4a82bcce639081d039051ad9d519d6  evidence/raven2-vulkan-kernel-census/e5/E5-M/README.md
 9eec107966b5b3160700a7389d1b48a4633f4b01f61149609c1f244d1ccec5e4  evidence/raven2-vulkan-kernel-census/e5/E5-M/isa-across-2115/post-2115/block-counts.txt
 898fac3ce2098a684c106f066bd4e44d5cea0e3ca3fac342d0fa108d2840e237  evidence/raven2-vulkan-kernel-census/e5/E5-M/isa-across-2115/post-2115/harness.txt
+3f47ab6c2182c35648af4cb04d5538e93862fcdfabb291272e9ba6fc20955183  evidence/raven2-vulkan-kernel-census/e5/E5-M/isa-across-2115/post-2115/isa-provenance.txt
+8896269f54c86f1039a08740aaa1f1f3fdbef6080f8d9e7a1908ce84e2598f34  evidence/raven2-vulkan-kernel-census/e5/E5-M/isa-across-2115/post-2115/isa.s
 b8fbbc878d28605e8ff4435d7f64bfdea397c3bbf0b6c398526e13e9b3849481  evidence/raven2-vulkan-kernel-census/e5/E5-M/isa-across-2115/post-2115/receipt.tsv
 9eec107966b5b3160700a7389d1b48a4633f4b01f61149609c1f244d1ccec5e4  evidence/raven2-vulkan-kernel-census/e5/E5-M/isa-across-2115/pre-2115/block-counts.txt
 cd6eca686805117d77050fd2f57a8fccfb275e5a4c8545838c7fc0bbfb249208  evidence/raven2-vulkan-kernel-census/e5/E5-M/isa-across-2115/pre-2115/harness.txt
+3f47ab6c2182c35648af4cb04d5538e93862fcdfabb291272e9ba6fc20955183  evidence/raven2-vulkan-kernel-census/e5/E5-M/isa-across-2115/pre-2115/isa-provenance.txt
+8896269f54c86f1039a08740aaa1f1f3fdbef6080f8d9e7a1908ce84e2598f34  evidence/raven2-vulkan-kernel-census/e5/E5-M/isa-across-2115/pre-2115/isa.s
 97dc10495a4e89de5d680fa4a8162d8c9b74afa2d6a161e47005d003c9ea9ba2  evidence/raven2-vulkan-kernel-census/e5/E5-M/isa-across-2115/pre-2115/receipt.tsv
 9eec107966b5b3160700a7389d1b48a4633f4b01f61149609c1f244d1ccec5e4  evidence/raven2-vulkan-kernel-census/e5/E5-M/isa-arch-toolchain/block-counts.txt
 bb7bac110a27bd1f48d0d0ad59c435d6506e3bab6c45f78cfa15f85303355bd7  evidence/raven2-vulkan-kernel-census/e5/E5-M/isa-arch-toolchain/depth.tsv
@@ -3135,6 +3139,7 @@ a945d1c7ff5225a9cb37617c628aff3eca4781466000ed2fc414ccf5aed4fbfd  evidence/raven
 ac15ffb603946436c3e6b9f90a2bb660c231e2eda70002daee8e78c0d45717ad  evidence/raven2-vulkan-kernel-census/e5/E5-S1/mnemonic-comparison.tsv
 46fbc7d9c923073daf6523ba85354e379981d3045c2701f6c3c7ff8c6f7af7ac  evidence/raven2-vulkan-kernel-census/e5/README.md
 d362440ec3341a61050fa15df817291691cc2c53dbc2441708c49c487e515e45  evidence/raven2-vulkan-kernel-census/e5/compile-matrix.tsv
+20d4fae5d9e3e8dfe9b91084d049114a543c255d8685eba7a3199aa4fe9db76a  evidence/raven2-vulkan-kernel-census/e5/instruction-census.tsv
 e016821d075fb0bea2c26446337d152bf9ec9e2abb598c1068f38e142f72e987  evidence/raven2-vulkan-kernel-census/e5/int24-design.md
 bc09b61f4f4e826ff31d8dbeb768a1d41acc05ad1bc8efe356ce6665e5c76d23  evidence/raven2-vulkan-kernel-census/e5/int24-equivalence.c
 89b6d9160d75f3a0f965e4af9443c44e9269ba93953b11719eaf712e22159299  evidence/raven2-vulkan-kernel-census/e5/isa-shimmed-raven2/README.md
