@@ -1,0 +1,9 @@
+# An all-refused image profile ledger, for a preset generation that arms the web
+# lane alone. remote/image-profiles.tsv carries one validator-gated row, so a
+# generator run that names no image ledger requires the five image MCP inputs of
+# a lane the caller never meant to arm; naming this file withholds the lane and
+# leaves every other rule the generator applies unchanged. The row names the
+# checked-in bundle, because remote/image-registry.sh validates the profile
+# ledger against remote/image-models.tsv whole.
+# profile_id	model_id	placement	width	height	steps	sampler	cfg	max_steps	max_dimension	timeout_s	execution_policy	validated_evidence	review_model
+image-lane-withheld	sdxs-512	A	512	512	1	euler	1.0	4	512	300	refused	-	-
