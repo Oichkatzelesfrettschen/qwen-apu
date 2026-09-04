@@ -666,6 +666,32 @@ else
     cat "$temporary_directory/package.log" >&2
 fi
 
+# The served package arm carries the same clocks and the same budget and leaves
+# the child at nice 0, because monitor-qwen-runtime.sh renices itself to 0 and
+# ends its session where it cannot. A profile that reverted to 19 would wedge
+# every served arm ahead of its first request, so the record's own field is what
+# this case reads.
+reset_fixture
+served_status=0
+run_transaction serve-fixed-package-20w "$stub_directory/observer" served-arm \
+    >"$temporary_directory/served.log" 2>&1 || served_status=$?
+served_record=$state_fixture/compute-state-record.tsv
+if [ "$served_status" -eq 0 ] &&
+    grep -q '^compute_state_applied=serve-fixed-package-20w dpm_level=manual sclk=2 1100 mclk=2 933 ksm_run=0 power_envelope=package-20w$' \
+        "$temporary_directory/served.log" &&
+    grep -q '^restoration=held profile=serve-fixed-package-20w .* power_envelope=package-20w$' \
+        "$temporary_directory/served.log" &&
+    [ "$(record_field "$served_record" applied_child_nice)" = 0 ] &&
+    [ "$(record_field "$served_record" applied_child_io_class)" = best-effort ] &&
+    [ "$(record_field "$served_record" power_envelope)" = package-20w ] &&
+    [ ! -e "$power_envelope_snapshot_fixture" ] &&
+    [ "$(fixture_state)" = "$snapshot_fixture_state" ]; then
+    report 0 served_package_profile_holds_normal_priority
+else
+    report 1 served_package_profile_holds_normal_priority
+    cat "$temporary_directory/served.log" >&2
+fi
+
 # A term that cannot reach the SMU refuses the whole transaction ahead of the
 # lease, so a machine without ryzenadj costs no state change at all.
 reset_fixture

@@ -105,6 +105,21 @@ if [ ! -f "$model_path" ]; then
     exit 2
 fi
 
+# The served runner pins the executable on descriptor 6 and compares the running
+# process's mapped image against it, so an arm that named no server ends on
+# `approved executable identity is unreadable` after a complete decode. The
+# bundle the appliance would launch anyway is that server, resolved once here so
+# every arm of a checkpoint measures the same binary.
+approved_server=${QWEN_LLAMA_SERVER:-}
+if [ -z "$approved_server" ]; then
+    approved_server=$("$script_directory/resolve-active-deployment.sh" |
+        awk -F= '$1 == "active_deployment_server" { print $2; exit }')
+fi
+if [ ! -x "$approved_server" ]; then
+    printf 'reason=server_absent path=%s\n' "${approved_server:-absent}" >&2
+    exit 2
+fi
+
 # The k10temp Tctl sensor and the amdgpu edge sensor sit in different hwmon
 # instances whose numbers move across boots, so each is resolved by its name.
 resolve_hwmon_by_name() {
@@ -261,6 +276,7 @@ set +e
 # descriptor path rather than a mutable pathname, and qwen-capacity-policy.sh
 # refuses a descriptor-backed model that carries no publisher identity.
 env \
+    QWEN_LLAMA_SERVER="$approved_server" \
     QWEN_MODEL_REGISTRY="$script_directory/models.tsv" \
     QWEN_MODEL_ARTIFACTS="$script_directory/model-artifacts.tsv" \
     QWEN_MODELS_DIRECTORY="$models_directory" \
