@@ -7,7 +7,7 @@ set -eu
 # The campaign is one mirrored, control-bracketed sequence rather than one
 # pairwise comparison at a time, generalizing the mirrored quadruple
 # run-power-envelope-campaign.sh runs (control, 20 W, 25 W, control) to the
-# campaign's own nine-arm ladder: the uncontrolled baseline opens and closes
+# campaign's own eleven-arm ladder: the uncontrolled baseline opens and closes
 # the sequence, and P1 through P4 plus the three factor-pair alternates run
 # between them in registered order. The closing control's agreement with the
 # opening one is what licenses reading every arm between them as an effect of
@@ -23,12 +23,20 @@ set -eu
 # Every arm is one compute-state-lease.sh transaction running
 # run-power-factorial-arm.sh as its command, so the graphics clock, the
 # fabric clock, the memory scanner, the process priority, the CPU frequency
-# cap, and the package budget are one reversible state per arm. P0 is
-# `measure-auto-baseline`; P1 through P4 and the ksm/cap factor-pair
-# alternates are `measure-*` (nice 19); the nice factor-pair alternate is
-# `serve-fixed-cpu-capped-fclk-range-package-25w` (nice 0), the only arm in
-# this ladder that is not a `measure-*` profile, which is exactly the term the
-# arm pair isolates.
+# cap, and the package budget are one reversible state per arm. P0 through P4
+# and the CPU-cap and KSM factor-pair alternates all carry `serve-fixed-*`
+# profiles (nice 0, best-effort I/O) and run through the served-decode
+# harness (`--instrument served`), because monitor-qwen-runtime.sh
+# unconditionally self-renices to 0 and refuses `reason=monitor_exited`
+# under an inherited nice 19. The nice factor-pair cannot be measured through
+# that harness at all -- neither of its two arms can, since one of them is
+# exactly the nice-19 state the harness refuses -- so both of its arms run
+# `--instrument bench` instead, a direct llama-bench command outside the
+# guarded launch chain, the way evidence/raven2-vulkan-kernel-census/
+# dpm-authority/'s own nice-probe measured core 0 at nice 0 against nice 19.
+# Both bench arms carry P4's own clocks, cap, and package budget
+# (`measure-fixed-cpu-capped-fclk-range-package-25w` and its `-nice0`
+# counterpart) and differ in nice and I/O class alone.
 #
 # The served runner validates an execution proof at
 # `$QWEN_RESULT_DIRECTORY/../../campaign-inputs.tsv`, so the campaign
@@ -174,7 +182,7 @@ campaign_inputs_new=$campaign_directory/.campaign-inputs.tsv.new
     printf 'image_service\t0\n'
     printf 'generate_tokens\t64\n'
     printf 'sampling\ttemperature=0 top_k=1 seed=1 ignore_eos=true thinking=false\n'
-    printf 'arm_order\tcontrol-open(P0),P1,P2,P3,P4,P4-nice-alt,P4-ksm-alt,P4-cap-alt,control-close(P0)\n'
+    printf 'arm_order\tcontrol-open(P0),P1,P2,P3,P4,P4-cap-alt,P4-ksm-alt,P4-nice-bench-19,P4-nice-bench-0,control-close(P0)\n'
     printf 'cooldown_seconds\t%s\n' "$cooldown_seconds"
 } >"$campaign_inputs_new"
 if [ -e "$campaign_inputs" ]; then
@@ -198,6 +206,11 @@ run_one_arm() {
     arm_slot=$1
     arm_role=$2
     lease_profile=$3
+    # served (the default) runs the arm through measure-served-decode.sh's
+    # guarded launch chain; bench runs llama-bench directly. The nice
+    # factor-pair's two arms are the only bench arms in this ladder, since
+    # every other profile carries nice 0 and runs the served path cleanly.
+    arm_instrument=${4:-served}
     arm_name=$model_id-$arm_slot-$arm_role
     if [ -e "$envelope_snapshot" ]; then
         printf 'reason=envelope_snapshot_present path=%s; restore it under its own owner before the next arm\n' \
@@ -227,6 +240,7 @@ run_one_arm() {
         PATH="$campaign_path" LC_ALL=C PYTHONDONTWRITEBYTECODE=1 \
         QWEN_COMPUTE_STATE_REVISION="$transaction_revision" \
         QWEN_COMPUTE_STATE_CLOCK_DEADLINE_S=30 \
+        QWEN_POWER_FACTORIAL_INSTRUMENT="$arm_instrument" \
         "$lease_command" "$lease_profile" \
         "$arm_command" "$campaign_directory" "$arm_name" "$model_id" \
         >"$campaign_directory/arms/.$arm_name.stdout" \
@@ -253,15 +267,16 @@ run_one_arm() {
     fi
 }
 
-run_one_arm 01 control-open measure-auto-baseline
-run_one_arm 02 p1-gfx-fclk-pin measure-fixed
-run_one_arm 03 p2-cpu-capped measure-fixed-cpu-capped
-run_one_arm 04 p3-fclk-range measure-fixed-cpu-capped-fclk-range
-run_one_arm 05 p4-package-25w measure-fixed-cpu-capped-fclk-range-package-25w
-run_one_arm 06 p4-nice-alt serve-fixed-cpu-capped-fclk-range-package-25w
-run_one_arm 07 p4-ksm-alt measure-fixed-cpu-capped-fclk-range-package-25w-ksm-running
-run_one_arm 08 p4-cap-alt measure-fixed-fclk-range-package-25w
-run_one_arm 09 control-close measure-auto-baseline
+run_one_arm 01 control-open serve-auto-baseline
+run_one_arm 02 p1-gfx-fclk-pin serve-fixed-package-default
+run_one_arm 03 p2-cpu-capped serve-fixed-cpu-capped
+run_one_arm 04 p3-fclk-range serve-fixed-cpu-capped-fclk-range
+run_one_arm 05 p4-package-25w serve-fixed-cpu-capped-fclk-range-package-25w
+run_one_arm 06 p4-cap-alt serve-fixed-fclk-range-package-25w
+run_one_arm 07 p4-ksm-alt serve-fixed-cpu-capped-fclk-range-package-25w-ksm-running
+run_one_arm 08 p4-nice-bench-19 measure-fixed-cpu-capped-fclk-range-package-25w bench
+run_one_arm 09 p4-nice-bench-0 measure-fixed-cpu-capped-fclk-range-package-25w-nice0 bench
+run_one_arm 10 control-close serve-auto-baseline
 
 printf 'power_factorial_campaign=completed model=%s campaign_directory=%s\n' \
     "$model_id" "$campaign_directory"

@@ -42,7 +42,6 @@ model_id=$3
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 power_envelope_arm=${QWEN_POWER_ENVELOPE_ARM:-$script_directory/run-power-envelope-arm.sh}
 cpupower_command=${QWEN_CPUPOWER:-cpupower}
-cpu_root=${QWEN_CPUFREQ_CPU_ROOT:-/sys/devices/system/cpu}
 cpu_list=${QWEN_POWER_FACTORIAL_CPU_LIST:-0 1}
 cpuinfo_period_ms=${QWEN_POWER_FACTORIAL_CPUINFO_PERIOD_MS:-200}
 arm_directory=$campaign_directory/arms/$arm_name
