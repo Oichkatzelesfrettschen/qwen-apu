@@ -26,9 +26,11 @@ range v[2:3] expands to both of its registers on either side.
 A block ends at a branch, at s_endpgm, or before a label, and the wait
 accounting resets with it: an s_waitcnt constrains counters the disassembler
 prints as vmcnt(k) and lgkmcnt(k), and the memory operations counted in
-flight are the ones issued since the previous wait that constrained the same
-counter. A vmcnt argument above zero is the overlap the kernel keeps, so the
-arguments are retained beside the counts rather than reduced to a wait total.
+flight are the ones outstanding at that wait: a wait at vmcnt(k) retires the
+issues down to k and leaves k of them outstanding, so that residue carries
+into the next interval rather than the count restarting from zero. A vmcnt
+argument above zero is the overlap the kernel keeps, so the arguments are
+retained beside the counts rather than reduced to a wait total.
 
 usage: depth.py ISA_FILE DEPTH_TSV
 Writes DEPTH_TSV as one header row and one row per basic block: block,
@@ -218,10 +220,19 @@ def longest_valu_chain(block):
 
 
 def wait_accounting(block):
-    """Memory operations issued since the previous wait on the same counter,
-    taken at each wait, with the counter arguments retained."""
-    vmem_since_wait = 0
-    lgkm_since_wait = 0
+    """Memory operations outstanding at each wait on the same counter, with
+    the counter arguments retained.
+
+    An s_waitcnt stalls until the named counter falls to its argument, so a
+    wait at vmcnt(k) retires issues down to k and leaves k of them
+    outstanding. Clearing the count at every wait would credit the wave with an
+    empty pipeline it never reaches and undercount every later interval, which
+    is what a mat-vec body's descending vmcnt ladder consumes one entry at a
+    time; min(outstanding, k) carries into the next interval instead. The peak
+    is read at the wait ahead of that residue, so it is the count standing when
+    the wave stalls."""
+    vmem_outstanding = 0
+    lgkm_outstanding = 0
     max_vmem = 0
     max_lgkm = 0
     vmcnt_arguments = []
@@ -229,13 +240,13 @@ def wait_accounting(block):
     wait_count = 0
     for instruction in block:
         if instruction.is_vmem:
-            vmem_since_wait += 1
+            vmem_outstanding += 1
             continue
         if instruction.is_lds:
-            lgkm_since_wait += 1
+            lgkm_outstanding += 1
             continue
         if instruction.mnemonic.startswith(("s_load", "s_buffer_load")):
-            lgkm_since_wait += 1
+            lgkm_outstanding += 1
             continue
         if not instruction.is_wait:
             continue
@@ -244,13 +255,15 @@ def wait_accounting(block):
             (name, int(value)) for name, value in WAIT_COUNTER.findall(" ".join([instruction.mnemonic] + instruction.operands))
         )
         if "vmcnt" in counters or "vscnt" in counters:
-            max_vmem = max(max_vmem, vmem_since_wait)
-            vmem_since_wait = 0
-            vmcnt_arguments.append(str(counters.get("vmcnt", counters.get("vscnt"))))
+            retained = counters.get("vmcnt", counters.get("vscnt"))
+            max_vmem = max(max_vmem, vmem_outstanding)
+            vmem_outstanding = min(vmem_outstanding, retained)
+            vmcnt_arguments.append(str(retained))
         if "lgkmcnt" in counters:
-            max_lgkm = max(max_lgkm, lgkm_since_wait)
-            lgkm_since_wait = 0
-            lgkmcnt_arguments.append(str(counters["lgkmcnt"]))
+            retained = counters["lgkmcnt"]
+            max_lgkm = max(max_lgkm, lgkm_outstanding)
+            lgkm_outstanding = min(lgkm_outstanding, retained)
+            lgkmcnt_arguments.append(str(retained))
     return {
         "waitcnt": wait_count,
         "max_vmem_in_flight": max_vmem,

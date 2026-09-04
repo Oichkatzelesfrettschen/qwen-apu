@@ -11,7 +11,11 @@ and a second basic block entered at a label after a conditional branch. It
 also puts an accumulate form in the second block, where the destination is
 also the third source and a chain that ignored that would read one shorter,
 and a read of a register after a buffer_store names it, where treating the
-store's data operand as a definition would truncate the chain there.
+store's data operand as a definition would truncate the chain there. A third
+block exercises the partial wait: three loads, an s_waitcnt vmcnt(2) that
+leaves two of them outstanding, two further loads, and a closing vmcnt(0), so
+a reader that cleared the counter at the first wait reads a peak of three
+where four stand outstanding at the second.
 
 usage: test-depth.py
 Exits 0 where every field matches and non-zero naming the first that does not.
@@ -41,6 +45,17 @@ BB1:
 \tbuffer_store_dword v8, v1, s[0:3], 0 offen                  ; E0701000 80000801
 \tv_add_f32_e32 v10, v8, v8                                   ; 02141108
 \ts_endpgm                                                    ; BF810000
+
+BB2:
+\tbuffer_load_dword v11, v1, s[0:3], 0 offen                  ; E0501000 80000B01
+\tbuffer_load_dword v12, v1, s[0:3], 0 offen offset:4         ; E0501004 80000C01
+\tbuffer_load_dword v13, v1, s[0:3], 0 offen offset:8         ; E0501008 80000D01
+\ts_waitcnt vmcnt(2)                                          ; BF8C0F72
+\tbuffer_load_dword v14, v1, s[0:3], 0 offen offset:12        ; E050100C 80000E01
+\tbuffer_load_dword v15, v1, s[0:3], 0 offen offset:16        ; E0501010 80000F01
+\ts_waitcnt vmcnt(0)                                          ; BF8C0F70
+\tv_add_f32_e32 v16, v11, v12                                 ; 0220190B
+\ts_endpgm                                                    ; BF810000
 """
 
 EXPECTED_HEADER = (
@@ -61,9 +76,16 @@ EXPECTED_HEADER = (
 # names it extends that chain to 3. ds_read supplies v9 and counts against
 # lgkmcnt alone, and the store issues with no later wait, so nothing stands in
 # flight at a vmcnt boundary.
+#
+# Block 3 opens at the label on line 22 with its first instruction on line 23.
+# Three loads stand at the vmcnt(2) wait, which retires one and leaves two, so
+# the two loads after it bring the count to four at the vmcnt(0) wait and the
+# peak is 4. Clearing the counter at the first wait reads 3 instead. Its one
+# VALU reads two loaded registers, neither written by a VALU, so its chain is 1.
 EXPECTED_ROWS = (
     "1\t2\t11\ts_cbranch_scc1\t10\t4\t2\t0\t2\t2\t3\t2\t1\t1\t0",
     "2\t14\t20\ts_endpgm\t7\t3\t1\t1\t0\t1\t3\t0\t1\t-\t0",
+    "3\t23\t31\ts_endpgm\t9\t1\t5\t0\t0\t2\t1\t4\t0\t2,0\t-",
 )
 
 
