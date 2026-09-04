@@ -104,18 +104,32 @@ leaves the fabric clock unpinned, which is the one nuisance term this run does
 not control. `clock-state.tsv` is absent for the same reason: the forced-policy
 readback the census writes belongs to a policy this run did not apply.
 
+The scope of +1.83% follows from that state and is narrower than the number
+looks. Every arm ran at 1100 MHz on an idle appliance with the qemu tenant
+quiet, which is the boost regime the precondition declines rather than the
+sustained 762 to 857 MHz regime the harness's own header says the served
+appliance lives in. What this candidate is worth in the sustained regime is
+**unmeasured**: a lower graphics clock lengthens every issue slot while the
+DDR4 path it waits on is unchanged, so the issue-side saving this patch makes
+should be worth more there rather than less, and that direction is an argument
+rather than a measurement. Measuring it needs `manual` under a sudo window, or
+a warmup budget long enough for the machine to leave boost on its own.
+
 ## The deviation is the finding
 
 The compile receipt and the served rate disagree by about a factor of six, and
 the disagreement is the result.
 
 The body loses 46 of 395 instructions, 11.6%, and the whole shader loses 24 of
-810 VALU with VMEM falling 56 to 40. `decode-decomposition.md` places the Q4_K
-mat-vec family at about 52 of the 2B's 101 ms token. An issue-bound family
-converting an 11.6% body reduction at the full ratio would move the token about
-6%, and the occupancy step from 4 waves per SIMD to 5 is a 25% rise in
-available latency hiding on top of it. The measured +1.83% is under a third of
-the instruction-count reading alone.
+810 VALU with VMEM falling 56 to 40. The denominator comes from the file rather
+than from a share recalled: `gguf-tensor-census.py` over
+`Qwen3.8-2B-Q4_K_M.gguf` reads 641,802,240 bytes of Q4_K at 48.91% against
+657,162,240 of Q6_K at 50.08%, and `decode-decomposition.md` places the Q4_K
+mat-vec family at about 52 of the 2B's 101 ms token, which is the same half by a
+second route. An issue-bound family converting an 11.6% body reduction at the
+full ratio would move the token about 6%, and the occupancy step from 4 waves
+per SIMD to 5 is a 25% rise in available latency hiding on top of it. The
+measured +1.83% is under a third of the instruction-count reading alone.
 
 That places the served Q4_K decode well away from issue-bound, and it agrees
 with what this tree already measures elsewhere: the 2B streams 1.263 GB per
@@ -141,11 +155,14 @@ genuine, small, measurable gain.
 ## The 0.8B is the null this comparison needed
 
 The class policy runs the 0.8B second, and on this candidate that arm is a
-control rather than a second reading. `qwen35-08b` serves at Q8_0, so its
-weight tensors reach `mul_mat_vec_q8_0` and the patched Q4_K mat-vec is never
-dispatched. A candidate that changed only that shader must therefore measure
-zero on this checkpoint, and any nonzero result would say the patch reached
-something outside the shader it names.
+control rather than a second reading. A Q8_0 label states a recipe rather than a
+layout, so the claim is read from the file: `gguf-tensor-census.py` over
+`Qwen3.5-0.8B-Q8_0.gguf` reports 820,613,120 bytes of Q8_0 at 98.44% and no
+Q4_K row at all, with ffn, embedding, attention, gated_deltanet, and mtp each
+carrying Q8_0 alone. The patched `mul_mat_vec_q4_k` is therefore never
+dispatched on this checkpoint. A candidate that changed only that shader must
+measure zero here, and any nonzero result would say the patch reached something
+outside the shader it names.
 
 | slot | arm | tok/s |
 | ---: | --- | ---: |
