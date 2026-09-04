@@ -14,8 +14,8 @@ reader; neither does a query parameter, which the route ignores entirely.
 `--lan-exposure ADDRESS` is the operator's explicit opt-in: it admits
 `--http-host 0.0.0.0` and adds that one routable literal to the Host headers a
 request may name, and the bearer that already gates every route is what a LAN
-reader presents. `--lan-name NAME` adds the mDNS hostname beside that literal,
-compared casefolded, so the page is reachable at a host a DHCP lease does not
+reader presents. `--lan-name NAME` adds one mDNS label under `.local`
+beside that literal, so the page is reachable at a host a DHCP lease does not
 move. `--open-lan` removes the bearer from the artifact routes, which leaves
 the admitted Host set and the Origin allowlist carrying the gate.
 
@@ -105,6 +105,8 @@ SERVICE_JOB_DEADLINE_SECONDS = 330
 TERMINATION_GRACE_SECONDS = 5.0
 CONTROL_LINE_BYTE_CAP = protocol.MAX_LINE_BYTES
 CONTROL_READ_TIMEOUT_SECONDS = 30.0
+ARTIFACT_READ_TIMEOUT_SECONDS = 30.0
+ARTIFACT_MAX_CONCURRENT_CONNECTIONS = 8
 ARTIFACT_BYTE_CAP = 64 * 1024 * 1024
 MEMORY_SAMPLE_INTERVAL_SECONDS = 0.5
 LEASE_FILE_NAME = "vulkan-workload.lock"
@@ -337,46 +339,45 @@ def exposed_host(value):
 
 
 def exposed_name(value):
-    """Return the mDNS hostname the LAN exposure opt-in admits beside the literal.
+    """Return the mDNS label the LAN exposure opt-in admits beside the literal.
 
     A DHCP lease moves the address, so the name is what an operator bookmarks.
     Admitting it keeps the set closed rather than reopening the resolver: avahi
-    publishes `<hostname>.local` on the link and a browser resolves that suffix
-    by multicast to the hosts sharing the link, so a name an attacker controls
-    in DNS resolves nowhere near this socket and the rebinding closure the
-    literal set provides holds for this entry too. That argument holds only
-    for the `.local` namespace, so a name outside it is refused rather than
-    admitted on syntax alone: an ordinary DNS name resolves through the
-    recursive resolver like any other, and an attacker who controls its zone
-    can rebind it to this appliance's address, where `--open-lan` would admit
-    the rebound request's Host and Origin with no bearer standing between it
-    and the broker. `localhost` is refused by name too, because it names the
-    loopback the set already holds; the `.local` requirement below already
-    refuses every all-numeric dotted form, since none ends in that label.
+    publishes `<label>.local` on the link and a browser resolves that suffix by
+    multicast to the hosts sharing the link, so the admitted form is exactly
+    one lowercase RFC 1123 label under `.local`. A bare hostname, a public
+    domain, a second label under `.local`, an uppercase letter, and a trailing
+    dot are each refused by name rather than reshaped: any of them registers in
+    the ordinary resolver, and a name an attacker controls there would resolve
+    to this socket under DNS rebinding the way the closed literal set exists to
+    prevent -- the exact argument that holds only for the `.local` namespace,
+    since an ordinary DNS name resolves through the recursive resolver like any
+    other and `--open-lan` would then admit the rebound request's Host and
+    Origin with no bearer standing between it and the broker. `localhost` is
+    refused by name too, because it names the loopback the set already holds.
+    A single label carries no dot, so an all-numeric label such as
+    `123.local` names no four-octet IPv4 literal and is admitted the way
+    `web_lan_name_is_valid` in remote/web-lan-exposure.sh admits it; the
+    dotted-quad form belongs to `--lan-exposure` and never reaches this suffix
+    check at all.
     """
     if not value:
         # argparse applies a string type to its own default, so the empty
         # default passes through as the absent opt-in.
         return ""
-    lowered = value.lower()
-    if (
-        len(lowered) > 253
-        or lowered == "localhost"
-        or lowered in LOOPBACK_HOSTS
-        or not lowered.endswith(".local")
-    ):
+    if not value.endswith(".local"):
         raise argparse.ArgumentTypeError(
             f"the LAN exposure name is a hostname a browser resolves on the "
-            f"link by mDNS multicast, under the .local namespace alone; "
-            f"{value!r} is refused"
+            f"link; the admitted set holds exactly one lowercase mDNS label "
+            f"under .local; {value!r} is refused"
         )
-    labels = lowered.split(".")
-    if not all(label_is_admitted(label) for label in labels):
+    label = value[: -len(".local")]
+    if not label_is_admitted(label):
         raise argparse.ArgumentTypeError(
-            f"the LAN exposure name carries a label outside the "
+            f"the LAN exposure name carries a label outside the lowercase "
             f"letter-digit-hyphen set; {value!r} is refused"
         )
-    return lowered
+    return value
 
 
 def label_is_admitted(label):
@@ -747,6 +748,35 @@ def parse_png(raw, expected_width, expected_height):
         "color_type": color_type,
         "channels": channels,
     }
+
+
+def artifact_read_timeout_seconds_from_environment():
+    """Read the artifact listener's per-socket read timeout, refusing a bad value.
+
+    `QWEN_IMAGE_ARTIFACT_READ_TIMEOUT_S` lets a test shrink the bound the
+    wildcard listener otherwise holds an idle or partial-request connection
+    under for `ARTIFACT_READ_TIMEOUT_SECONDS`, the way
+    `QWEN_IMAGE_LEASE_WAIT_S` shrinks the lease wait; a malformed, non-positive,
+    or non-finite setting would silently become the default and hide a launch
+    that meant to configure it, so it raises instead. `inf` parses as a float
+    and clears every earlier check, but `socket.settimeout` raises
+    `OverflowError` on it, which would start the service successfully and then
+    fail every artifact connection at handler setup.
+    """
+    raw = os.environ.get("QWEN_IMAGE_ARTIFACT_READ_TIMEOUT_S", "")
+    if raw == "":
+        return ARTIFACT_READ_TIMEOUT_SECONDS
+    try:
+        seconds = float(raw)
+    except ValueError:
+        raise ServiceError(
+            f"QWEN_IMAGE_ARTIFACT_READ_TIMEOUT_S is not a number: {raw}"
+        ) from None
+    if seconds <= 0 or not math.isfinite(seconds):
+        raise ServiceError(
+            f"QWEN_IMAGE_ARTIFACT_READ_TIMEOUT_S is not a finite positive number: {raw}"
+        )
+    return seconds
 
 
 def lease_wait_seconds_from_environment():
@@ -2008,6 +2038,13 @@ class ArtifactHandler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "qwen-image-artifacts/1.0"
     sys_version = ""
+    # `socketserver.StreamRequestHandler.setup` applies this to the accepted
+    # socket, and `BaseHTTPRequestHandler.handle_one_request` already catches
+    # the resulting `socket.timeout` and closes the connection. Under the
+    # wildcard listener an unauthenticated peer that sends a partial request,
+    # or that holds an HTTP/1.1 connection open past a 401, is dropped after
+    # this many idle seconds rather than parking its thread indefinitely.
+    timeout = ARTIFACT_READ_TIMEOUT_SECONDS
 
     def log_message(self, fmt, *args):
         """Drop the default access log; the provenance record is the trail."""
@@ -2163,6 +2200,14 @@ class ArtifactHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+ARTIFACT_CONNECTION_LIMIT_RESPONSE = (
+    b"HTTP/1.1 503 Service Unavailable\r\n"
+    b"Connection: close\r\n"
+    b"Content-Length: 0\r\n"
+    b"\r\n"
+)
+
+
 class ArtifactServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     allow_reuse_address = False
     daemon_threads = True
@@ -2172,7 +2217,37 @@ class ArtifactServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
         self.address_family = socket.AF_INET6 if ":" in address[0] else socket.AF_INET
         self.image_settings = settings
         self.image_service = image_service
+        # `ThreadingMixIn.process_request` spawns a thread on every accepted
+        # connection before the Host or bearer checks run, so a wildcard bind
+        # lets an unauthenticated peer that holds many connections open
+        # exhaust threads ahead of any credential. This semaphore bounds the
+        # resident handler count independently of that check ordering.
+        self._connection_semaphore = threading.BoundedSemaphore(
+            ARTIFACT_MAX_CONCURRENT_CONNECTIONS
+        )
         super().__init__(address, ArtifactHandler)
+
+    def process_request(self, request, client_address):
+        """Refuse a connection past the concurrent cap rather than spawn for it."""
+        if not self._connection_semaphore.acquire(blocking=False):
+            with contextlib.suppress(OSError):
+                request.sendall(ARTIFACT_CONNECTION_LIMIT_RESPONSE)
+            with contextlib.suppress(OSError):
+                request.shutdown(socket.SHUT_RDWR)
+            request.close()
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._connection_semaphore.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        """Release the cap slot this connection's thread acquired, on every exit."""
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._connection_semaphore.release()
 
 
 class ServiceSettings:
@@ -2363,8 +2438,8 @@ def build_parser():
     )
     parser.add_argument(
         "--lan-name", type=exposed_name, default="",
-        help="the mDNS hostname this listener admits in a Host header beside "
-        "the exposure literal, compared casefolded",
+        help="one lowercase mDNS label under .local this listener admits in "
+        "a Host header beside the exposure literal",
     )
     parser.add_argument(
         "--open-lan", action="store_true",
@@ -2430,6 +2505,11 @@ def run(argv):
         if "=" not in entry:
             sys.stderr.write(f"--runtime-env takes NAME=VALUE; {entry!r} carries no =\n")
             return 2
+    try:
+        ArtifactHandler.timeout = artifact_read_timeout_seconds_from_environment()
+    except ServiceError as error:
+        sys.stderr.write(f"the artifact listener's read timeout is unusable: {error}\n")
+        return 2
     profiles = {}
     if arguments.profiles_json:
         try:

@@ -20,9 +20,9 @@ through a wider bind. `--lan-exposure ADDRESS` is the operator's explicit
 opt-in: it admits `--host 0.0.0.0`, adds that one routable literal to the Host
 headers a request may name, and requires the Web UI bearer on both signing
 routes and on a health read that names it, so a LAN reader that never
-authenticated to the router signs nothing. `--lan-name NAME` adds the mDNS
-hostname beside that literal, compared casefolded, and the set stays a closed
-list of at most four entries. `--open-lan` is the second decision: it removes
+authenticated to the router signs nothing. `--lan-name NAME` adds one mDNS
+label under `.local` beside that literal, and the set stays a closed list of
+at most four entries. `--open-lan` is the second decision: it removes
 the bearer from the signing routes and the exposed health read, so every peer
 that reaches the page can approve, and it leaves the Host set, the Origin
 allowlist, the session secret, the single-use grant, and every schema rule
@@ -158,48 +158,45 @@ def exposed_host(value):
 
 
 def exposed_name(value):
-    """Return the mDNS hostname the LAN exposure opt-in admits beside the literal.
+    """Return the mDNS label the LAN exposure opt-in admits beside the literal.
 
     A DHCP lease moves the address, so the name is what an operator bookmarks.
     Admitting it keeps the set closed rather than reopening the resolver: avahi
-    publishes `<hostname>.local` on the link and a browser resolves that suffix
-    by multicast to the hosts sharing the link, so a name an attacker controls
-    in DNS resolves nowhere near this socket and the rebinding closure the
-    literal set provides holds for this entry too. That argument holds only
-    for the `.local` namespace, so a name outside it is refused rather than
-    admitted on syntax alone: an ordinary DNS name resolves through the
-    recursive resolver like any other, and an attacker who controls its zone
-    can rebind it to this appliance's address, where `--open-lan` would admit
-    the rebound request's Host and Origin with no bearer standing between it
-    and the broker. Each label is one to 63 characters of the
-    letter-digit-hyphen set with no leading or trailing hyphen; `localhost`
-    names the loopback the set already holds; the `.local` requirement below
-    already refuses every all-numeric dotted form, since none ends in that
-    label.
+    publishes `<label>.local` on the link and a browser resolves that suffix by
+    multicast to the hosts sharing the link, so the admitted form is exactly
+    one lowercase RFC 1123 label under `.local`. A bare hostname, a public
+    domain, a second label under `.local`, an uppercase letter, and a trailing
+    dot are each refused by name rather than reshaped: any of them registers in
+    the ordinary resolver, and a name an attacker controls there would resolve
+    to this socket under DNS rebinding the way the closed literal set exists to
+    prevent -- the exact argument that holds only for the `.local` namespace,
+    since an ordinary DNS name resolves through the recursive resolver like any
+    other and `--open-lan` would then admit the rebound request's Host and
+    Origin with no bearer standing between it and the broker. `localhost` is
+    refused by name too, because it names the loopback the set already holds.
+    A single label carries no dot, so an all-numeric label such as
+    `123.local` names no four-octet IPv4 literal and is admitted the way
+    `web_lan_name_is_valid` in remote/web-lan-exposure.sh admits it; the
+    dotted-quad form belongs to `--lan-exposure` and never reaches this suffix
+    check at all.
     """
     if not value:
         # argparse applies a string type to its own default, so the empty
         # default passes through as the absent opt-in.
         return ""
-    lowered = value.lower()
-    if (
-        len(lowered) > 253
-        or lowered == "localhost"
-        or lowered in LOOPBACK_HOSTS
-        or not lowered.endswith(".local")
-    ):
+    if not value.endswith(".local"):
         raise argparse.ArgumentTypeError(
             f"the LAN exposure name is a hostname a browser resolves on the "
-            f"link by mDNS multicast, under the .local namespace alone; "
-            f"{value!r} is refused"
+            f"link; the admitted set holds exactly one lowercase mDNS label "
+            f"under .local; {value!r} is refused"
         )
-    labels = lowered.split(".")
-    if not all(label_is_admitted(label) for label in labels):
+    label = value[: -len(".local")]
+    if not label_is_admitted(label):
         raise argparse.ArgumentTypeError(
-            f"the LAN exposure name carries a label outside the "
+            f"the LAN exposure name carries a label outside the lowercase "
             f"letter-digit-hyphen set; {value!r} is refused"
         )
-    return lowered
+    return value
 
 
 def label_is_admitted(label):
@@ -883,17 +880,23 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
         alone: neither an Origin nor the per-launch session header is
         available to a shell probe that never loads a page, and a bearer on
         that command line would sit in a world-readable
-        `/proc/PID/cmdline`. A request naming either exposed host -- the
-        literal or the mDNS name -- presents the Web UI bearer instead,
-        because every field in the response is a process or configuration
-        identity -- pid, start time, state-directory dev:inode, and the
-        signing key's digest -- that a LAN reader holds no claim on. Under
-        `--open-lan` that requirement is the one the operator removed, and the
-        loopback probe reads the route the same way either way. The signing
-        key contributes its digest and never its bytes.
+        `/proc/PID/cmdline`. The bearer exemption reads `self.client_address`,
+        the peer address the kernel accepted the connection from, rather than
+        the caller-controlled `Host` header: a LAN peer that spells
+        `Host: 127.0.0.1` while connecting to the wildcard listener still
+        carries its own routable source address, so it still presents the Web
+        UI bearer. A request whose peer address falls outside
+        `LOOPBACK_HOSTS` presents the bearer, because every field in the
+        response is a process or configuration identity -- pid, start time,
+        state-directory dev:inode, and the signing key's digest -- that a LAN
+        reader holds no claim on. Under `--open-lan` that requirement is the
+        one the operator removed, and the loopback probe reads the route the
+        same way either way. The signing key contributes its digest and never
+        its bytes.
         """
         try:
-            if self.require_admitted_host() not in LOOPBACK_HOSTS:
+            self.require_admitted_host()
+            if self.client_address[0] not in LOOPBACK_HOSTS:
                 self.require_api_key()
         except server.ToolError as error:
             self.send_json(
@@ -927,12 +930,16 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
         Each admitted outcome writes one audit row under the nine-term
         vocabulary. The trail separates invalid session headers, malformed
         fields, exhausted buckets, and issued grants while every grant stays in
-        the response alone. The `authorize-minute` bucket is charged before the
-        loopback-host and session-header checks run, so a caller that holds
-        neither cannot reach `ledger.record` faster than the bucket admits;
-        without that ordering an unauthenticated loopback process floods the
-        session check alone. Exhausted refusals coalesce to one row per bucket
-        window, so post-limit connections cannot grow the audit trail.
+        the response alone. Under the exposure opt-in the Web UI bearer check
+        runs ahead of the `authorize-minute` bucket, so an unauthenticated LAN
+        peer draws no unit from the meter a bearer-holding caller also spends
+        from and cannot deny that caller's requests with 429. The bearer check
+        is a no-op where `self.settings.exposure` is unset, so a loopback-only
+        launch keeps `ledger.consume` in its original position ahead of the
+        Host and session-header checks -- without that ordering an
+        unauthenticated loopback process floods the session check alone.
+        Exhausted refusals coalesce to one row per bucket window, so
+        post-limit connections cannot grow the audit trail.
         """
         started_at = time.time()
         origin = self.allowed_origin()
@@ -951,6 +958,13 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
         ledger = None
         fields = None
         try:
+            # A signing route under the exposure opt-in reads the Web UI
+            # bearer beside the session secret, so a LAN reader that never
+            # authenticated to the router signs nothing here. The check runs
+            # ahead of the shared bucket so an unauthenticated caller is
+            # refused before it can spend a unit another caller needs.
+            if self.settings.exposure:
+                self.require_api_key()
             ledger = server.Ledger(self.settings.state_directory)
             ledger.consume("authorize-minute", 60, self.settings.per_minute, started_at)
             self.require_admitted_host()
@@ -963,14 +977,6 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
                 raise server.AuthorizationDenied(
                     "the request Origin is absent or outside the admitted set"
                 )
-            # A signing route under the exposure opt-in reads the Web UI bearer
-            # beside the session secret, so a LAN reader that never
-            # authenticated to the router signs nothing here. The secret is
-            # per-launch and the key is per-launch too, and requiring both puts
-            # the same credential in front of a grant that stands in front of
-            # the router's own routes.
-            if self.settings.exposure:
-                self.require_api_key()
             self.require_session_secret()
             payload = self.read_body()
             if image:
@@ -1054,9 +1060,9 @@ def build_parser():
     )
     parser.add_argument(
         "--lan-name", type=exposed_name, default="",
-        help="the mDNS hostname this broker admits in a Host header beside the "
-        "exposure literal; it is compared casefolded and gates the bearer the "
-        "way the literal does",
+        help="one lowercase mDNS label under .local this broker admits in a "
+        "Host header beside the exposure literal; it gates the bearer the way "
+        "the literal does",
     )
     parser.add_argument(
         "--open-lan", action="store_true",

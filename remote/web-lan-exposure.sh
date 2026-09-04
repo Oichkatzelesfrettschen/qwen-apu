@@ -25,14 +25,18 @@
 # and Host rule reads the literal.
 #
 # QWEN_WEB_LAN_NAME adds one mDNS name to that admitted set, and the set stays
-# closed. A DHCP lease moves the literal, so the name is what an operator
-# bookmarks; avahi advertises `<hostname>.local` on the link and a browser
-# resolves it by multicast to the hosts on that link rather than through a
-# recursive resolver, so the name an attacker controls in DNS never resolves
-# to this appliance and the rebinding closure the literal provides holds for
-# the name too. The default is this machine's own `hostname -s` under `.local`
-# where avahi-daemon runs, and an explicit empty value serves the literal
-# alone.
+# closed to exactly one lowercase label under `.local`. A DHCP lease moves the
+# literal, so the name is what an operator bookmarks; avahi advertises
+# `<label>.local` on the link and a browser resolves that suffix by multicast
+# to the hosts sharing the link rather than through a recursive resolver, so
+# the admitted form is what keeps a name an attacker controls in public DNS
+# from ever resolving to this appliance. A bare hostname, a public domain, a
+# name carrying more than one label under `.local`, an uppercase letter, and a
+# trailing dot are each refused by name rather than reshaped: any of them
+# would register in the ordinary resolver, and a name that resolves there
+# reopens the rebinding closure the literal address exists to hold shut. The
+# default is this machine's own `hostname -s` lowercased under `.local` where
+# avahi-daemon runs, and an explicit empty value serves the literal alone.
 #
 # The Web UI API key is required whole, at mode 0600 or tighter, owned by the
 # serving user and nonempty, because the bearer is what stands between a LAN
@@ -99,43 +103,24 @@ resolve_web_lan_mode() {
     export QWEN_WEB_LAN_OPEN
 }
 
-# Return success where the argument is a hostname a browser resolves on the
-# link. Each label is one to 63 characters of the letter-digit-hyphen set with
-# no leading or trailing hyphen, the whole name is at most 253 characters, and
-# the comparison downstream is casefolded because DNS names are
-# case-insensitive. Three forms are refused by name: an all-numeric dotted
-# form is an address, which belongs in QWEN_WEB_LAN_ADDRESS where the literal
-# rules apply to it; `localhost` names the loopback the admitted set already
-# holds; and a name outside the `.local` namespace is refused outright,
-# because the security argument for admitting a name at all rests on avahi
-# publishing `<hostname>.local` and a browser resolving it by link-local
-# multicast rather than through a recursive resolver. A name in an ordinary
-# DNS zone the operator does not control resolves through that resolver like
-# any other name, so an attacker who does control the zone can rebind it to
-# this appliance's address; QWEN_WEB_LAN_OPEN=1 would then admit that name's
-# Host and Origin with no bearer standing between the rebound request and the
-# broker. The caller lowercases the value before this check runs, so the
-# suffix comparison stays case-sensitive.
+# Return success where the argument is exactly one lowercase mDNS label under
+# `.local`. Every other DNS-resolvable form is refused by name here rather
+# than reshaped: a bare hostname, a public domain, a second label under
+# `.local`, an uppercase letter, and a trailing dot each name something the
+# ordinary resolver can answer, and admitting any of them reopens the DNS
+# rebinding closure the literal address and this restriction together hold
+# shut. The label follows RFC 1123: one to 63 characters of the lowercase
+# letter, digit, and hyphen set, with no leading or trailing hyphen.
 web_lan_name_is_valid() {
     case $1 in
-        '' | localhost | *[!0-9A-Za-z.-]* | .* | *. | -* | *-) return 1 ;;
-        *..*) return 1 ;;
         *.local) ;;
         *) return 1 ;;
     esac
-    [ "${#1}" -le 253 ] || return 1
-    case $1 in
-        *[!0-9.]*) ;;
-        *) return 1 ;;
+    web_lan_label=${1%.local}
+    case $web_lan_label in
+        '' | *[!a-z0-9-]* | -* | *-) return 1 ;;
     esac
-    printf '%s' "$1" | awk -F. '
-        {
-            for (label = 1; label <= NF; label++) {
-                if (length($label) < 1 || length($label) > 63) exit 1
-                if ($label ~ /^-/ || $label ~ /-$/) exit 1
-            }
-        }
-    '
+    [ "${#web_lan_label}" -le 63 ]
 }
 
 # Print the mDNS name this machine advertises, or nothing where it advertises
@@ -158,6 +143,8 @@ web_lan_default_name() {
     web_lan_short_hostname=$(hostname -s 2>/dev/null || hostname 2>/dev/null) ||
         return 0
     web_lan_short_hostname=${web_lan_short_hostname%%.*}
+    web_lan_short_hostname=$(printf '%s' "$web_lan_short_hostname" |
+        tr '[:upper:]' '[:lower:]')
     [ -n "$web_lan_short_hostname" ] || return 0
     printf '%s.local' "$web_lan_short_hostname"
 }
@@ -249,21 +236,16 @@ admit_web_lan_exposure() {
     else
         web_lan_name=$(web_lan_default_name)
     fi
-    # The name is lowercased before web_lan_name_is_valid runs, not after, so
-    # a case variant of a name the vocabulary excludes -- LOCALHOST against the
-    # localhost pattern -- is caught here rather than admitted here and
-    # rejected downstream. A browser also lowercases the host in the Origin it
-    # sends, and `allowed_origin` in authorize-broker.py and image-service.py
-    # compares an origin string exactly, so an operator's `MyLaptop.local`
-    # would otherwise configure an allowlist entry no request ever presents.
-    # web_lan_name_is_valid bounds the value to ASCII letters, digits,
-    # hyphens, and dots, so `tr` maps exactly the characters DNS treats as
-    # case-insensitive.
-    web_lan_name=$(printf '%s' "$web_lan_name" | tr '[:upper:]' '[:lower:]')
     if [ -n "$web_lan_name" ] && ! web_lan_name_is_valid "$web_lan_name"; then
         refuse_web_lan_exposure \
-            "names host $web_lan_name, which is not a hostname a browser resolves on the link"
+            "names host $web_lan_name, which is not a hostname a browser resolves on the link; the admitted set holds exactly one lowercase mDNS label under .local"
     fi
+    # web_lan_name_is_valid already requires the lowercase form, so this
+    # string is the one spelling authorize-broker.py's and image-service.py's
+    # own `exposed_name` admit and the one every Host and Origin comparison
+    # reads; an uppercase caller value is refused above rather than reshaped
+    # here, since silently downcasing it would configure an allowlist entry
+    # the operator never typed.
     if grep -qx '# qwen-web-presets: unvalidated-depth-override' "$web_lan_presets"; then
         refuse_web_lan_exposure \
             "meets a preset serving a depth no run has filled and decoded; validate the depth or serve it on the loopback"

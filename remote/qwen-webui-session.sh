@@ -94,6 +94,48 @@ lan_name_origin=''
 if [ -n "$lan_name" ]; then
     lan_name_origin="http://$lan_name:$server_port"
 fi
+# QWEN_WEB_BROKER_ORIGIN and QWEN_IMAGE_PAGE_ORIGIN let a caller replace the
+# derived origin, which connect-qwen-webui.sh's own recommended loopback value
+# does for its SSH tunnel. Under the LAN exposure that override names a page
+# the broker and the artifact listener never admit, since neither reads an
+# origin outside the set it was started with: the browser sends the exposed
+# host as its Origin, the listener answers 403, and no approval can complete.
+# The comparison is the exact origin string rather than the bare host, because
+# a scheme or port that departs from $lan_page_origin or $lan_name_origin --
+# `https://` in place of `http://`, or a port other than $server_port --
+# recreates the same 403 the derived origin never triggers. An override is
+# refused here rather than left to fail at the first request, and the check
+# runs only where the exposure is active, since a loopback launch has no
+# conflicting origin to name.
+require_lan_admitted_origin() {
+    if [ "$2" = "$lan_page_origin" ]; then
+        return 0
+    fi
+    if [ -n "$lan_name_origin" ] && [ "$2" = "$lan_name_origin" ]; then
+        return 0
+    fi
+    printf '%s names an origin the LAN exposure does not admit: %s\n' \
+        "$1" "$2" >&2
+    printf 'admitted origins: %s%s\n' \
+        "$lan_page_origin" "${lan_name_origin:+, $lan_name_origin}" >&2
+    printf 'set %s to one of them, or leave it unset so the session derives it\n' \
+        "$1" >&2
+    exit 2
+}
+if [ "$lan_exposure" = 1 ] && [ -n "${QWEN_WEB_BROKER_ORIGIN:-}" ]; then
+    lan_broker_origin_rest=$QWEN_WEB_BROKER_ORIGIN
+    while [ -n "$lan_broker_origin_rest" ]; do
+        lan_broker_origin_entry=${lan_broker_origin_rest%%,*}
+        case $lan_broker_origin_rest in
+            *,*) lan_broker_origin_rest=${lan_broker_origin_rest#*,} ;;
+            *) lan_broker_origin_rest='' ;;
+        esac
+        require_lan_admitted_origin QWEN_WEB_BROKER_ORIGIN "$lan_broker_origin_entry"
+    done
+fi
+if [ "$lan_exposure" = 1 ] && [ -n "${QWEN_IMAGE_PAGE_ORIGIN:-}" ]; then
+    require_lan_admitted_origin QWEN_IMAGE_PAGE_ORIGIN "$QWEN_IMAGE_PAGE_ORIGIN"
+fi
 # The open opt-in reaches both listeners as one flag, expanded from a variable
 # so an unset value contributes no empty argument under `set -u`.
 lan_open_flag=''

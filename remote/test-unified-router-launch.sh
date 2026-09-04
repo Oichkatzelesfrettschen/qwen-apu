@@ -775,11 +775,70 @@ else
     cat "$work/lan-badname.err" >&2
 fi
 
-# A case variant of localhost names the loopback the admitted set already
-# holds, so web_lan_name_is_valid refuses it the same way it refuses the
-# lowercase spelling; the check runs after lowercasing, not before, so
-# LOCALHOST cannot slip past the pattern and fail downstream in the
-# casefolded exposed_name() validators instead.
+# A bare hostname carries no .local suffix and registers in the ordinary
+# resolver, so the launch refuses it rather than admitting a name DNS
+# rebinding could steer to this address.
+if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=qwen-test \
+    >"$work/lan-barehost.log" 2>"$work/lan-barehost.err"; then
+    report lan_exposure_bare_hostname_refused admitted
+elif grep -q 'not a hostname a browser resolves on the link' \
+    "$work/lan-barehost.err"; then
+    report lan_exposure_bare_hostname_refused ok
+else
+    report lan_exposure_bare_hostname_refused wrong_reason
+    cat "$work/lan-barehost.err" >&2
+fi
+
+# A public domain resolves through the ordinary recursive resolver, which is
+# the DNS rebinding surface the closed .local set exists to close, so the
+# launch refuses it by name.
+if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=attacker.example.com \
+    >"$work/lan-publicdomain.log" 2>"$work/lan-publicdomain.err"; then
+    report lan_exposure_public_domain_refused admitted
+elif grep -q 'not a hostname a browser resolves on the link' \
+    "$work/lan-publicdomain.err"; then
+    report lan_exposure_public_domain_refused ok
+else
+    report lan_exposure_public_domain_refused wrong_reason
+    cat "$work/lan-publicdomain.err" >&2
+fi
+
+# An uppercase label registers in the ordinary resolver the way a lowercase
+# one does, so the launch refuses it rather than reshaping it into a name the
+# operator never typed.
+if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=QWEN-Test.LOCAL \
+    >"$work/lan-case.log" 2>"$work/lan-case.err"; then
+    report lan_exposure_name_refuses_uppercase admitted
+elif grep -q 'not a hostname a browser resolves on the link' \
+    "$work/lan-case.err"; then
+    report lan_exposure_name_refuses_uppercase ok
+else
+    report lan_exposure_name_refuses_uppercase wrong_reason
+    cat "$work/lan-case.err" >&2
+fi
+
+# A trailing dot names the DNS root explicitly, a form the multicast lookup
+# does not need, so the launch refuses it.
+if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=qwen-test.local. \
+    >"$work/lan-trailingdot.log" 2>"$work/lan-trailingdot.err"; then
+    report lan_exposure_trailing_dot_refused admitted
+elif grep -q 'not a hostname a browser resolves on the link' \
+    "$work/lan-trailingdot.err"; then
+    report lan_exposure_trailing_dot_refused ok
+else
+    report lan_exposure_trailing_dot_refused wrong_reason
+    cat "$work/lan-trailingdot.err" >&2
+fi
+
+# LOCALHOST carries no .local suffix under a case-sensitive comparison, so
+# web_lan_name_is_valid refuses it the same way it refuses any other bare
+# hostname; the check runs before any lowercasing, so an uppercase caller
+# value is refused by name rather than reshaped into a name the operator
+# never typed.
 if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
     QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=LOCALHOST \
     >"$work/lan-badname-case.log" 2>"$work/lan-badname-case.err"; then
