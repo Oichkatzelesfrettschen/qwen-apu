@@ -136,6 +136,18 @@ PROCFS_ROOT = os.environ.get("QWEN_IMAGE_PROCFS_ROOT", "/proc")
 # admits, since every response echoes an identifier the schema validates.
 UNIDENTIFIED_REQUEST = "unidentified"
 
+ARTIFACT_PER_CLIENT_PER_MINUTE_DEFAULT = 30
+# job_lock.acquire(blocking=False) in ImageService.handle_generate already
+# gives concurrency 1 and pending 0: a second request while one job runs is
+# refused at once rather than queued. QWEN_IMAGE_MAX_PENDING names that bound
+# explicitly so the launch and CLAUDE.md state it as policy rather than as an
+# implementation detail nobody configured, and `run` refuses any value other
+# than 1 rather than building a queue a configurable N would need to mean
+# anything.
+IMAGE_MAX_PENDING_DEFAULT = 1
+ARTIFACT_MAX_COUNT_DEFAULT = 200
+ARTIFACT_MAX_AGE_S_DEFAULT = 7 * 24 * 3600
+
 ACTION_GENERATE, ACTION_CANCEL, ACTION_STATUS = protocol.ACTIONS
 ACTIONS = protocol.ACTIONS
 
@@ -974,6 +986,95 @@ class ImageService:
             if isinstance(record, dict):
                 yield record
 
+    def publication_markers(self):
+        """Yield (marker_path, record, mtime) for every complete marker.
+
+        `mtime` stands in for completion time: a marker is written once by
+        `write_private_bytes` then `os.replace`, which preserves the
+        underlying inode and its timestamp, so the file is never touched
+        again after the transaction that created it.
+        """
+        try:
+            names = os.listdir(self.artifact_directory)
+        except OSError:
+            return
+        for name in names:
+            if not name.startswith(".publication-") or not name.endswith(".json"):
+                continue
+            path = os.path.join(self.artifact_directory, name)
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    record = json.load(handle)
+                mtime = os.stat(path).st_mtime
+            except OSError:
+                continue
+            except ValueError:
+                continue
+            if isinstance(record, dict):
+                yield path, record, mtime
+
+    def enforce_artifact_retention(self, just_published_job_id):
+        """Expire the oldest publications beyond count or age, digest-safe.
+
+        Two markers can name the same `png_sha256` or `provenance_sha256`,
+        because artifacts are content-addressed and a rerun of an identical
+        prompt, seed, and geometry reproduces identical bytes
+        (`recover_legacy_publications` even writes a marker where
+        `png_sha256 == provenance_sha256`). Removing a digest's bytes because
+        one marker naming it expired would break every other live marker
+        naming the same digest, so a digest's files are removed only once no
+        surviving marker names it. The marker this call's own job just wrote
+        is exempt, so the request that just finished can always fetch what it
+        produced.
+        """
+        max_count = self.settings.artifact_max_count
+        max_age = self.settings.artifact_max_age_s
+        now = time.time()
+        markers = sorted(self.publication_markers(), key=lambda entry: entry[2])
+        eligible = [
+            entry for entry in markers if entry[1].get("job_id") != just_published_job_id
+        ]
+        expire = set()
+        for path, _, mtime in eligible:
+            if now - mtime > max_age:
+                expire.add(path)
+        surplus = len(markers) - max_count
+        if surplus > 0:
+            for path, _, _ in eligible:
+                if len(expire) >= surplus:
+                    break
+                expire.add(path)
+        if not expire:
+            return
+        # A digest names one file per suffix, and the legacy shape sets
+        # png_sha256 == provenance_sha256 for a marker whose provenance file
+        # is named by the PNG's own digest rather than its own content hash,
+        # so the two survivor sets are kept apart by suffix rather than
+        # merged into one digest set a shared value could short-circuit.
+        surviving_png_digests = set()
+        surviving_provenance_digests = set()
+        for path, record, _ in markers:
+            if path in expire:
+                continue
+            surviving_png_digests.add(record.get("png_sha256", ""))
+            surviving_provenance_digests.add(record.get("provenance_sha256", ""))
+        for path, record, _ in markers:
+            if path not in expire:
+                continue
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+            png_digest = record.get("png_sha256", "")
+            provenance_digest = record.get("provenance_sha256", "")
+            if png_digest and png_digest not in surviving_png_digests:
+                with contextlib.suppress(OSError):
+                    os.unlink(os.path.join(self.artifact_directory, f"{png_digest}.png"))
+            if provenance_digest and provenance_digest not in surviving_provenance_digests:
+                with contextlib.suppress(OSError):
+                    os.unlink(
+                        os.path.join(self.artifact_directory, f"{provenance_digest}.json")
+                    )
+        fsync_directory(self.artifact_directory)
+
     def artifact_is_published(self, digest, suffix):
         """Return whether one atomic marker commits the requested pair."""
         key = "png_sha256" if suffix == "png" else "provenance_sha256"
@@ -1546,6 +1647,14 @@ class ImageService:
             for temporary_path in (provenance_part, publication_part):
                 with contextlib.suppress(OSError):
                     os.unlink(temporary_path)
+        # Retention runs after this job's own publication is durable and is
+        # never allowed to remove it, so a failure inside retention reaches
+        # the caller as a warning on stderr rather than as a failure of the
+        # generation that already completed.
+        try:
+            self.enforce_artifact_retention(job_id)
+        except OSError as error:
+            sys.stderr.write(f"artifact retention failed: {error}\n")
         ended_monotonic = time.monotonic()
         return {
             "status": "completed",
@@ -1928,6 +2037,37 @@ class ControlServer(socketserver.ThreadingUnixStreamServer):
         super().__init__(path, ControlHandler)
 
 
+class FixedWindowLimiter:
+    """An in-process fixed-window counter, one bucket per key.
+
+    The window arithmetic matches `authorize-broker.py`'s
+    `server.Ledger._consume_bucket`, so a 429 from either listener means the
+    same thing: the next admitted attempt lies within the current window's
+    close. This service holds no SQLite ledger and artifact reads carry
+    nothing worth auditing durably, so the counter lives in process memory
+    and resets with the service the way the broker's per-client buckets do
+    not survive its own restart either.
+    """
+
+    def __init__(self, window_seconds, limit):
+        self.window_seconds = window_seconds
+        self.limit = limit
+        self.lock = threading.Lock()
+        self.buckets = {}
+
+    def consume(self, key, now):
+        """Return (admitted, retry_after_seconds) and charge one unit if admitted."""
+        window_start = int(now) - int(now) % self.window_seconds
+        with self.lock:
+            stored_start, used = self.buckets.get(key, (window_start, 0))
+            if stored_start != window_start:
+                stored_start, used = window_start, 0
+            if used + 1 > self.limit:
+                return False, self.window_seconds - int(now) % self.window_seconds
+            self.buckets[key] = (stored_start, used + 1)
+            return True, 0
+
+
 class ArtifactHandler(http.server.BaseHTTPRequestHandler):
     """Serve health and completed immutable artifacts to a credentialed reader."""
 
@@ -1951,13 +2091,15 @@ class ArtifactHandler(http.server.BaseHTTPRequestHandler):
         origin = self.headers.get("Origin", "")
         return origin if origin and origin == self.settings.origin else ""
 
-    def send_json(self, http_status, payload, origin=""):
+    def send_json(self, http_status, payload, origin="", retry_after=None):
         body = json.dumps(payload).encode("utf-8")
         self.send_response(http_status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        if retry_after is not None:
+            self.send_header("Retry-After", str(retry_after))
         self.send_cors_headers(origin)
         self.end_headers()
         self.wfile.write(body)
@@ -2040,6 +2182,25 @@ class ArtifactHandler(http.server.BaseHTTPRequestHandler):
         prefix = "/artifacts/"
         if not path.startswith(prefix):
             self.send_json(404, {"error": "no such endpoint"}, origin)
+            return
+        # Metering runs after the bearer check and before the name lookup, so
+        # an unauthenticated flood always meets the constant-cost 401 rather
+        # than sometimes meeting a 429 that would leak whether this client is
+        # already being throttled, and a 429 never depends on whether the
+        # named artifact exists.
+        admitted, retry_after = self.settings.artifact_limiter.consume(
+            self.client_address[0], time.time()
+        )
+        if not admitted:
+            self.send_json(
+                429,
+                {
+                    "error": f"artifact reads from {self.client_address[0]} "
+                    "exceed the per-client rate"
+                },
+                origin,
+                retry_after,
+            )
             return
         match = ARTIFACT_NAME_PATTERN.match(path[len(prefix) :])
         if match is None:
@@ -2125,6 +2286,11 @@ class ServiceSettings:
                 f"the priority wrapper is not executable: {self.priority_wrapper}"
             )
         self.priority_wrapper_sha256 = sha256_file(self.priority_wrapper)
+        self.artifact_limiter = FixedWindowLimiter(
+            60, arguments.artifact_per_client_per_minute
+        )
+        self.artifact_max_count = arguments.artifact_max_count
+        self.artifact_max_age_s = arguments.artifact_max_age_s
 
     @staticmethod
     def device_telemetry():
@@ -2278,12 +2444,73 @@ def build_parser():
         metavar="NAME=VALUE",
         help="one environment entry the runtime receives beside PATH and HOME",
     )
+    parser.add_argument(
+        "--max-pending",
+        type=int,
+        default=int(
+            os.environ.get("QWEN_IMAGE_MAX_PENDING", IMAGE_MAX_PENDING_DEFAULT)
+        ),
+        help="the count of generations this service admits at once beyond "
+        "the one running; the non-blocking job lock offers no queue, so "
+        "`run` refuses any value other than 1",
+    )
+    parser.add_argument(
+        "--artifact-per-client-per-minute",
+        type=int,
+        default=int(
+            os.environ.get(
+                "QWEN_IMAGE_ARTIFACT_PER_CLIENT_PER_MINUTE",
+                ARTIFACT_PER_CLIENT_PER_MINUTE_DEFAULT,
+            )
+        ),
+        help="the GET /artifacts/... fixed-window bound for one client address",
+    )
+    parser.add_argument(
+        "--artifact-max-count",
+        type=int,
+        default=int(
+            os.environ.get("QWEN_IMAGE_ARTIFACT_MAX_COUNT", ARTIFACT_MAX_COUNT_DEFAULT)
+        ),
+        help="the retained publication count above which the oldest "
+        "publications are expired at job completion",
+    )
+    parser.add_argument(
+        "--artifact-max-age-s",
+        type=int,
+        default=int(
+            os.environ.get(
+                "QWEN_IMAGE_ARTIFACT_MAX_AGE_S", ARTIFACT_MAX_AGE_S_DEFAULT
+            )
+        ),
+        help="the age in seconds above which a publication is expired at "
+        "job completion",
+    )
     return parser
 
 
 def run(argv):
     """Serve until a terminating signal, then prove what the job left behind."""
     arguments = build_parser().parse_args(argv)
+    # The non-blocking job lock in ImageService.handle_generate gives
+    # concurrency 1 and pending 0 with no queue to widen, so a configured
+    # bound other than 1 would state a policy this service does not
+    # implement; refusing it here keeps the two in agreement rather than
+    # letting the argument silently mean nothing.
+    if arguments.max_pending != 1:
+        sys.stderr.write(
+            "the service holds one Vulkan workload lease and offers no "
+            f"queue, so --max-pending (QWEN_IMAGE_MAX_PENDING) admits only "
+            f"1: {arguments.max_pending}\n"
+        )
+        return 2
+    for name, value in (
+        ("--artifact-per-client-per-minute", arguments.artifact_per_client_per_minute),
+        ("--artifact-max-count", arguments.artifact_max_count),
+        ("--artifact-max-age-s", arguments.artifact_max_age_s),
+    ):
+        if value <= 0:
+            sys.stderr.write(f"{name} must be a positive integer: {value}\n")
+            return 2
     # The listener decision comes first, ahead of every profile and credential
     # check, because a caller who widened the bind by itself is refused on that
     # ground rather than on whichever input it happened to omit as well.
