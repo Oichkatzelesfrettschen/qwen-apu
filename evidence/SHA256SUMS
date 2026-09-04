@@ -1652,6 +1652,7 @@ e0ed121a2c1df4d51bfc33eb4fffb59c3c1a142d86539bcdf71611b6e97dc681  evidence/quali
 c9b9a753e5d8da85104a3bc50ee3ce8d25bd4d5d4bd269736ea526af2fb28188  evidence/quality-f16-pair/qwen35-08b.json
 1758f961163aee82b601eed5b0dc471cf5fd651024775dc258b588f486cf4d7e  evidence/quality-f16-pair/qwen35-08b.log
 01967fb53ab40cfe597b35b445a500b85c786e39d2a63bea10ec8be1cedc4d61  evidence/quality-f16-pair/summary.tsv
+b5f5bd7e2a26a1c6c515f2e7cce0fcfe497b58a91a9cec86e29b6622e9e6f03c  evidence/quality-gates/README.md
 a3587e86ecd3a079475559503babf3d8219dc9bf356b769a5e1f76988f9a9ae9  evidence/quality-gates/qwen-apu-quality-gates-all-core-rejected.log
 fdd8f34c7b82c1d99d2f5224c15dcb8159cec34dce347d78643aed2b5ad91554  evidence/quality-gates/qwen-apu-quality-gates-runtime-policy.log
 714c2c2c0e3a258c757271b08b5cae4860d121942b3153d98f0a3cada78f7133  evidence/quality-gates/qwen-apu-quality-gates-sentinel-bypass-rejected.log

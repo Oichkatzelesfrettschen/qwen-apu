@@ -322,6 +322,15 @@ if [ -z "$preset_web_sections" ]; then
         printf 'bundle router preset names MCP configurations and its head marker names no web section\n' >&2
         exit 1
     fi
+    # An image server reaches the device from a section the web ledger emitted,
+    # so a lane armed over a preset naming none claims a grant no section
+    # carries.
+    if [ -f "$bundle_directory/router-presets.ini" ] &&
+        [ -n "$(sed -n 's/^# qwen_image_profile=//p' \
+            "$bundle_directory/router-presets.ini" | sed 's/^-$//')" ]; then
+        printf 'bundle router preset names an image profile and its head marker names no web section\n' >&2
+        exit 1
+    fi
 else
     if [ "$web_mcp_expected_sha256" = - ]; then
         printf 'bundle router preset names web section %s and its manifest records no web-mcp-manifest.tsv\n' \
@@ -342,11 +351,40 @@ else
             "$web_mcp_expected_sha256" "$web_mcp_actual_sha256" >&2
         exit 1
     fi
-    recorded_mcp_rows=$(awk -F'\t' '
+    # The image server rides inside the same configuration, so the record's
+    # fourth column states whether each section arms a generation and the
+    # preset own `# qwen_image_profile=` marker states whether it should. A row
+    # written before that column reads `-`, which is the withheld lane an
+    # unmarked preset also names, so an older bundle verifies unchanged.
+    preset_image_profile=$(sed -n 's/^# qwen_image_profile=//p' \
+        "$bundle_directory/router-presets.ini")
+    case $preset_image_profile in
+        '-') preset_image_profile='' ;;
+    esac
+    if [ -n "$preset_image_profile" ]; then
+        expected_image_column=image
+    else
+        expected_image_column=-
+    fi
+    recorded_mcp_rows=$(awk -F'\t' -v expected_image="$expected_image_column" '
         /^[[:space:]]*($|#)/ { next }
         {
-            if (NF != 3 || $1 == "" || $2 == "" || $3 !~ /^[0-9a-f]{64}$/) {
+            if ((NF != 3 && NF != 4) || $1 == "" || $2 == "" ||
+                $3 !~ /^[0-9a-f]{64}$/) {
                 printf "web-mcp-manifest.tsv row is malformed: %s\n", $0 > "/dev/stderr"
+                failed = 1
+                next
+            }
+            image_column = (NF == 4) ? $4 : "-"
+            if (image_column != "image" && image_column != "-") {
+                printf "web-mcp-manifest.tsv row carries image_server %s: %s\n", \
+                    image_column, $0 > "/dev/stderr"
+                failed = 1
+                next
+            }
+            if (image_column != expected_image) {
+                printf "web-mcp-manifest.tsv records image_server %s for %s where the preset marker reads %s\n", \
+                    image_column, $1, expected_image > "/dev/stderr"
                 failed = 1
                 next
             }

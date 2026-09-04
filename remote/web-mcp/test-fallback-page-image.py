@@ -253,6 +253,25 @@ def make_handler(state, proposal=None, grant_status=200, grant_error=None,
             raw = self.rfile.read(length) if length else b""
             return json.loads(raw.decode("utf-8")) if raw else {}
 
+        def _authorized(self):
+            # A real deployment gates every route in a section together --
+            # llama-server checks --api-key on /v1/models, /props, and /tools
+            # the same way image-service.py checks the bearer on /artifacts/*
+            # -- so remote/test-fixtures/fake-router-server.py enforces one
+            # rule across its whole roster. This fixture carried the artifact
+            # check alone: an unauthenticated /v1/models answered 200, which
+            # told the served page's boot() it had reached an open backend
+            # and made it discard the API key the test had just supplied
+            # (webui/index.html clears `apiKey` once a roster probe sent with
+            # no Authorization header returns 200), so every later request in
+            # the turn ran with no bearer and the gated artifact fetch failed
+            # its own 401 check with the turn already approved. Gating every
+            # API route here the way the artifact route already was keeps the
+            # discovery probe answering 401 first, which is what sends
+            # webui/index.html's retry with the credential instead of
+            # dropping it.
+            return self.headers.get("Authorization", "") == "Bearer " + API_KEY
+
         def do_OPTIONS(self):  # noqa: N802
             self.send_response(204)
             self.send_header("Access-Control-Allow-Origin", "*")
@@ -269,6 +288,13 @@ def make_handler(state, proposal=None, grant_status=200, grant_error=None,
                 self.send_header("Content-Length", str(len(fallback_html)))
                 self.end_headers()
                 self.wfile.write(fallback_html)
+                return
+            if parsed_path != ARTIFACT_PATH and not self._authorized():
+                # The artifact route below keeps its own check and its own
+                # recorded-header bookkeeping, since several arms assert on
+                # state.artifact_auth_headers directly; every other route
+                # gates the same way fake-router-server.py's authorized() does.
+                self._send_json(401, {"error": "an API key is required"})
                 return
             if parsed_path == "/v1/models":
                 roster = [{"id": "image-test-profile"}]
@@ -321,6 +347,9 @@ def make_handler(state, proposal=None, grant_status=200, grant_error=None,
 
         def do_POST(self):  # noqa: N802
             parsed_path = self.path.split("?", 1)[0]
+            if not self._authorized():
+                self._send_json(401, {"error": "an API key is required"})
+                return
             if parsed_path == "/v1/chat/completions":
                 request_body = self._read_json_body()
                 if request_body.get("stream") is not True:
