@@ -39,7 +39,7 @@ equal() {
 # ownership and source-revision recording stay production-identical.
 tool_directory=$work/tools
 mkdir -p "$tool_directory"
-cp -- "$script_directory/measure-mtp-arm.sh" \
+cp -- "$script_directory/measure-mtp-arm.sh" "$script_directory/qwen-home.sh" \
     "$script_directory/summarize-speculation-breakeven.py" \
     "$script_directory/model-registry.sh" "$tool_directory/"
 chmod 0755 "$tool_directory/measure-mtp-arm.sh" \
