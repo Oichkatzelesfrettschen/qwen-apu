@@ -209,6 +209,21 @@ if [ -r "$session_status" ]; then
         open_lan_policy_source=$session_status
     fi
 fi
+# The served page line is read the same way: the digest of the copy the
+# session staged and the bound tags it carries, so the receipt binds the page a
+# browser was handed to the runtime bounds the argv enforced.
+served_page_identity=no-running-session
+served_page_source=-
+if [ -r "$session_status" ]; then
+    served_page_line=$(grep '^served_page ' "$session_status" | tail -n 1 || true)
+    if [ -n "$served_page_line" ]; then
+        served_page_identity=${served_page_line#served_page }
+        served_page_source=$session_status
+    elif [ -n "$(grep '^state=running' "$session_status" || true)" ]; then
+        served_page_identity=no-served-page-line
+        served_page_source=$session_status
+    fi
+fi
 
 # The runtime layout the launch ran under is part of the identity the
 # receipt binds: the root, the manifest runtime-root.sh writes over every
@@ -255,6 +270,8 @@ trap 'rm -f "$staging_output"' EXIT HUP INT TERM
     printf 'tool_prefix_identity\t%s\t%s\n' "$tool_prefix_identity" "$artifact_manifest"
     printf 'open_lan_policy_identity\t%s\t%s\n' "$open_lan_policy_identity" \
         "$open_lan_policy_source"
+    printf 'served_page_identity\t%s\t%s\n' "$served_page_identity" \
+        "$served_page_source"
     printf 'runtime_schema_version\t%s\t%s\n' 1 "$runtime_root/.qwen-runtime-root"
     printf 'qwen_home\t%s\t%s\n' "$runtime_root" "$script_directory/qwen-home.sh"
     printf 'runtime_manifest_sha256\t%s\t%s\n' "$runtime_manifest_sha256" "$runtime_manifest"
