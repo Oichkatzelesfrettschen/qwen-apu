@@ -52,7 +52,18 @@ boost_node=${QWEN_CPU_BOOST_NODE:-$cpu_root/cpufreq/boost}
 state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
 snapshot_file=${QWEN_CPU_FREQUENCY_CAP_SNAPSHOT:-$state_directory/cpu-frequency-cap-snapshot.tsv}
 cpu_list=${QWEN_CPU_FREQUENCY_CAP_CPU_LIST:-0 1}
-owner_token=${QWEN_CPU_FREQUENCY_CAP_OWNER:-cpu-frequency-cap.$$}
+# A wrapping transaction (compute-state-lease.sh) names its own per-run
+# token explicitly on both `apply` and `restore`, so two concurrent
+# transactions never restore each other's claim. A direct, standalone
+# invocation names neither: `apply` and `restore` are two separate processes
+# with two separate PIDs, so a PID-derived default here would make
+# `cpu-frequency-cap.sh restore` fail its own owner check against the
+# snapshot its own `apply` just claimed -- codex flagged exactly that defect
+# in power-envelope.sh's identical `power-envelope.$$` default. The fixed
+# literal below is what a standalone round trip needs; it carries no PID and
+# names no transaction, so it never collides with a wrapping transaction's own
+# random token.
+owner_token=${QWEN_CPU_FREQUENCY_CAP_OWNER:-cpu-frequency-cap.standalone}
 
 # A profile names the upper-bound frequency in kilohertz, the cpupower argument
 # that requests it, and the boost value the cap requires. `base-clock-cap` pins

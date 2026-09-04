@@ -372,6 +372,39 @@ run_term restore
 report "$case_status" 'a restore naming another owner is refused and the owner still returns the baseline'
 unset QWEN_TEST_OWNER
 
+# A standalone caller names no owner at all: apply and restore are separate
+# processes with separate PIDs, so the default owner must be a fixed literal
+# rather than PID-derived, or a bare `restore` would always mismatch the
+# `apply` that claimed the snapshot.
+reset_fixture
+case_status=0
+set +e
+env PATH="$stub_directory:$PATH" \
+    QWEN_CPUPOWER="$stub_directory/cpupower" \
+    QWEN_SYSFS_ROOT="$sysfs_fixture" \
+    QWEN_WEBUI_STATE_DIRECTORY="$state_fixture" \
+    QWEN_CPU_FREQUENCY_CAP_SNAPSHOT="$snapshot_file" \
+    "$cpu_cap" apply base-clock-cap >"$temporary_directory/standalone-apply.log" 2>&1
+standalone_apply_status=$?
+env PATH="$stub_directory:$PATH" \
+    QWEN_CPUPOWER="$stub_directory/cpupower" \
+    QWEN_SYSFS_ROOT="$sysfs_fixture" \
+    QWEN_WEBUI_STATE_DIRECTORY="$state_fixture" \
+    QWEN_CPU_FREQUENCY_CAP_SNAPSHOT="$snapshot_file" \
+    "$cpu_cap" restore >"$temporary_directory/standalone-restore.log" 2>&1
+standalone_restore_status=$?
+set -e
+[ "$standalone_apply_status" -eq 0 ] || case_status=1
+[ "$standalone_restore_status" -eq 0 ] || case_status=1
+grep -q 'cpu_frequency_cap_restored=held profile=base-clock-cap' \
+    "$temporary_directory/standalone-restore.log" || case_status=1
+[ ! -e "$snapshot_file" ] || case_status=1
+[ "$(sysfs_field "$cpu_root/cpu0/cpufreq/scaling_max_freq")" = 3200000 ] || case_status=1
+report "$case_status" 'a standalone apply and a separate standalone restore round-trip without an explicit owner'
+if [ "$case_status" -ne 0 ]; then
+    cat "$temporary_directory/standalone-apply.log" "$temporary_directory/standalone-restore.log" >&2
+fi
+
 if [ "$failures" -ne 0 ]; then
     printf 'cpu_frequency_cap_tests=failed failures=%s\n' "$failures" >&2
     exit 1
