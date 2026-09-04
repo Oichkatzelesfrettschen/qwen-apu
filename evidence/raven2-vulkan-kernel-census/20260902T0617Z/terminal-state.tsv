@@ -1,0 +1,8 @@
+census=failed
+census_mode=calibration
+arm_failures=10
+control_incomplete=3
+control_refutations=0
+control_unclassified=0
+control_accepted=0
+control_required=3

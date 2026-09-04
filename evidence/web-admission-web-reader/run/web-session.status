@@ -1,0 +1,7 @@
+state=running server_pid=2256242 monitor_pid=2256532 latency_watchdog_pid=2256496 kernel_hazard_watchdog_pid=2256521 broker_pid=2256164 searxng_pid=2256021 profile=low-async host=127.0.0.1 port=8080 context=24576 latency_mode=observe utc=2026-09-03T20:04:23Z
+speculation spec_type=off draft_n_max=default draft_p_min=default draft_backend_sampling=0 backend_sampling=0
+cache cache_type_k=registry cache_type_v=registry flash_attention=registry override_context_ceiling=registry
+router enabled=1 presets=$HOME/qwen-webui-state/.router-presets.active.ywjQnN preset_sha256=9609ec8c530603665c4120bae96c245f61ee7476ce90d2c032546545ebd99f42 models_max=1
+broker secret_file=$HOME/worktrees/qwen-apu/device-campaigns-20260903-web-search-live/evidence/web-admission-web-reader/run/web-mcp/authorize-session.secret
+broker_identity pid=2256164 start_time=51810209 profile=web-reader provider=searxng signing_key_sha256=cd4486d932b1c05c1fa06cebfe01f365d78ebb9e0aa452746df9cb7623e2cf4b
+searxng_identity pid=2256021 start_time=51810065 port=8888 url=http://127.0.0.1:8888
