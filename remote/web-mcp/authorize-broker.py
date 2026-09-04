@@ -1041,16 +1041,22 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
         Each admitted outcome writes one audit row under the nine-term
         vocabulary. The trail separates invalid session headers, malformed
         fields, exhausted buckets, and issued grants while every grant stays in
-        the response alone. Under the exposure opt-in the Web UI bearer check
-        runs ahead of the `authorize-minute` bucket, so an unauthenticated LAN
-        peer draws no unit from the meter a bearer-holding caller also spends
-        from and cannot deny that caller's requests with 429. The bearer check
-        is a no-op where `self.settings.exposure` is unset, so a loopback-only
-        launch keeps `ledger.consume` in its original position ahead of the
-        Host and session-header checks -- without that ordering an
-        unauthenticated loopback process floods the session check alone.
-        Exhausted refusals coalesce to one row per bucket window, so
-        post-limit connections cannot grow the audit trail.
+        the response alone. The Host check runs first, ahead of every bucket --
+        `image-service.py`'s own `do_GET` applies the same order to its
+        artifact meter: a request naming no admitted literal is a constant-cost
+        refusal that spends no unit, so a peer outside the admitted Host set --
+        reachable at all only under the wildcard bind -- cannot drain the
+        aggregate or per-client bucket a legitimate caller needs. The bearer
+        check follows, ahead of the `authorize-minute` bucket, so an
+        unauthenticated LAN peer under the exposure opt-in draws no unit from
+        the meter a bearer-holding caller also spends from and cannot deny
+        that caller's requests with 429; the check is a no-op where
+        `self.settings.exposure` is unset or `--open-lan` is set, so a
+        loopback-only or open launch keeps `ledger.consume` running ahead of
+        the session-header check alone -- without that ordering an
+        unauthenticated peer floods the session check alone. Exhausted
+        refusals coalesce to one row per bucket window, so post-limit
+        connections cannot grow the audit trail.
         """
         started_at = time.time()
         origin = self.allowed_origin()
@@ -1069,6 +1075,11 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
         ledger = None
         fields = None
         try:
+            # The Host check is a constant-cost refusal ahead of every meter,
+            # so a request outside the admitted set spends no bucket unit --
+            # the same order image-service.py's do_GET applies to its own
+            # artifact limiter.
+            self.require_admitted_host()
             # A signing route under the exposure opt-in reads the Web UI
             # bearer beside the session secret, so a LAN reader that never
             # authenticated to the router signs nothing here. The check runs
@@ -1096,7 +1107,6 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
                 else self.settings.grant_per_client_per_minute
             )
             ledger.consume(client_bucket, 60, client_limit, started_at)
-            self.require_admitted_host()
             # The session secret reaches a page through /session, which the
             # Origin allowlist gates, so a grant request from another origin
             # carries a secret that left the admitted page. The same allowlist

@@ -3388,9 +3388,25 @@ async function send() {
       .map(message => (typeof message.content === 'string' ? message.content : ''))
       .join('\n');
     let promptTokens = null;
+    let tokenizeFailure = null;
     try {
       promptTokens = await serverTokenCount(composedText, requestModel);
-    } catch { /* an unavailable tokenizer leaves the bound unenforced here; the server's own context-size refusal still applies */ }
+    } catch (error) {
+      // A configured bound this page cannot measure is a bound this page
+      // cannot honor, so an unavailable tokenizer refuses the turn rather
+      // than sending it unbounded; the server's own slot-context refusal is
+      // a backstop for an oversized request, not a substitute for admitting
+      // one this launch's own ceiling names.
+      tokenizeFailure = error;
+    }
+    if (tokenizeFailure != null) {
+      const note = turn('limit', '');
+      note.body.className = 'body meta bad';
+      note.body.textContent = 'This launch admits at most ' +
+        `${LAN_MAX_PROMPT_TOKENS} prompt tokens, and this page could not measure ` +
+        `this conversation's length (${tokenizeFailure.message}). Retry, or start a new conversation.`;
+      return;
+    }
     if (promptTokens != null && promptTokens > LAN_MAX_PROMPT_TOKENS) {
       const note = turn('limit', '');
       note.body.className = 'body meta bad';
