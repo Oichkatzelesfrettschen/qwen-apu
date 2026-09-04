@@ -1,0 +1,1 @@
+Start with the matrix rows [2 7 1], [9 3 8], [4 6 5]. Apply each transformation to the previous result and print the full matrix after each: transpose, rotate 90 degrees clockwise, swap the first and second columns, reverse each row, rotate 90 degrees counterclockwise, transpose. Then give the final matrix and the sum of its anti-diagonal.
