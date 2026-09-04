@@ -1,0 +1,8 @@
+field	value	stat_name
+sgprs	48	SGPRs
+vgprs	64	VGPRs
+spilled_sgprs	0	Spilled SGPRs
+spilled_vgprs	0	Spilled VGPRs
+code_size	6212	Code size
+lds	0	LDS size
+scratch	0	Scratch size

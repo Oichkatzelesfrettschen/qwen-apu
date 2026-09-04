@@ -144,6 +144,11 @@ fi
 # One digest line per file the candidate stage rewrites: server-context.cpp
 # first, since retained evidence quotes that line by position, then every
 # ledger path, then every other file the applied candidates touched.
+# `git diff --name-only` reports rewritten files alone, so a candidate that
+# adds a source file needs `ls-files --others` beside it; without that half,
+# llama-server-prefix-checkpoint.patch would contribute
+# tools/server/server-prefix-checkpoint.h to the compiled tree and no digest to
+# the identity a promotion moves into verify_source.
 candidate_digest_paths="tools/server/server-context.cpp"
 if [ "${QWEN_LLAMA_CANDIDATE_PATCHES:-0}" = 1 ]; then
     for candidate_name in $candidate_patch_names; do
@@ -160,7 +165,9 @@ if [ "${QWEN_LLAMA_CANDIDATE_PATCHES:-0}" = 1 ]; then
             *) candidate_digest_paths="$candidate_digest_paths $ledger_path" ;;
         esac
     done
-    for touched_path in $(git -C "$temporary_directory/llama.cpp" diff --name-only); do
+    for touched_path in \
+        $(git -C "$temporary_directory/llama.cpp" diff --name-only) \
+        $(git -C "$temporary_directory/llama.cpp" ls-files --others --exclude-standard); do
         case " $candidate_digest_paths " in
             *" $touched_path "*) ;;
             *) candidate_digest_paths="$candidate_digest_paths $touched_path" ;;

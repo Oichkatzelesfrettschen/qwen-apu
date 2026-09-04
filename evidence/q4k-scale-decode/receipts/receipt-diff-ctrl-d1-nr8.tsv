@@ -1,0 +1,53 @@
+layer	control	candidate	state
+spirv_sha256	d59fcb958e6d2e9feba6295581a67d8e77c8bd4539546f499481651af273018e	76aa75fc9adf2a11a69e4e8dbc234fc0b376ed15422fa2974468a3f423fb3e2d	changed
+nir_sha256	1de337f2aaee0c1912f890cf15b00d57485fb9375edd5478b0c86fc7e7a49820	582f2e7ddaf7ec5dfa8908dd0789364391b7256d69f816f89b1c6e6c572dd58c	changed
+isa_sha256	299ef0ed18c6795fa46d5e5ae386d72dfa2e62b4ba352dec4a4c1e0ef223906f	c197f9e23eeedc723157f6e6532eb3851eaa5ff3992ad2fe00057b7b0c5f70b6	changed
+
+declaration	control	candidate	state
+bindings	5	5	same
+push_constant_bytes	52	52	same
+spirv_capabilities	Shader,Int8,GroupNonUniform,GroupNonUniformArithmetic,StorageBuffer16BitAccess,StorageBuffer8BitAccess	Shader,Int8,GroupNonUniform,GroupNonUniformArithmetic,StorageBuffer16BitAccess,StorageBuffer8BitAccess	same
+features_enabled	shaderInt8,storageBuffer16BitAccess,storageBuffer8BitAccess,subgroupSizeControl,computeFullSubgroups	shaderInt8,storageBuffer16BitAccess,storageBuffer8BitAccess,subgroupSizeControl,computeFullSubgroups	same
+
+field	before	after	delta
+vgprs	64	64	+0
+sgprs	48	48	+0
+spilled_vgprs	0	0	+0
+spilled_sgprs	0	0	+0
+lds	0	0	+0
+scratch	0	0	+0
+code_size	11668	11792	+124
+waves_per_simd	-	-	-
+instruction_lines	2438	2473	+35
+valu	1520	1538	+18
+salu	667	678	+11
+vmem	104	104	+0
+smem	70	70	+0
+lds_instructions	0	0	+0
+waitcnt	145	152	+7
+barrier	0	0	+0
+v_cvt_f32_ubyte	384	384	+0
+v_bfe	2	2	+0
+v_lshrrev_b32	56	56	+0
+v_lshlrev_b32	24	24	+0
+v_and_b32	102	102	+0
+v_perm_b32	0	0	+0
+v_alignbyte_b32	32	32	+0
+v_bfi_b32	0	0	+0
+v_add_u32	140	140	+0
+sdwa_operand_uses	32	32	+0
+dpp_uses	64	64	+0
+v_mul_lo_u32	0	0	+0
+v_mad_u32_u24	0	0	+0
+v_mad_i32_i24	0	0	+0
+v_mul_u32_u24	0	0	+0
+v_fma_f32	0	0	+0
+v_mac_f32	304	304	+0
+v_mad_mix_f32	0	0	+0
+v_pk_fma_f16	0	0	+0
+v_cvt_f32_f16	32	32	+0
+
+verdict	isa_changed
+first_divergence	spirv
+last_divergence	isa
+harness_alarm	-

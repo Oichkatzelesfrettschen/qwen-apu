@@ -1,0 +1,53 @@
+The Q4_K mat-vec superblock loop is bottom-tested under an entry guard, which puts its body
+in a block that dominates the loop exit and so brings it inside nir_opt_licm's reach.
+nir_opt_licm.c's visit_cf_list calls visit_block only where current_block_dominates_exit
+holds, so that a hoist never speculates; a top-tested loop reaches its successor through the
+header's break, its body dominates nothing, and every loop-invariant value inside it stays
+inside. At the pinned commit that is the pair of buffer descriptors: radv_nir_lower_descriptors
+runs ahead of the LICM pass and emits their load at the use, so the body opens on
+s_load_dwordx8 s[24:31] and an s_waitcnt lgkmcnt(0) ahead of its first vector load, and
+depth.py records max_lgkm_in_flight 1 per iteration. The per-output-row block base
+(s_mul_i32 and two s_add_u32 against first_row and num_blocks_per_row) is loop-invariant
+for the same reason and stays inside for the same reason.
+
+The guard reproduces the top-tested loop's iteration set exactly: both run the body for
+i = ix, ix + it_size, ... while i < num_blocks_per_row, and both run it zero times where
+ix is already at or past that bound. No arithmetic moves, so the accumulated value is
+unchanged bit for bit.
+
+Measured on the RADV RAVEN2 shim at the served shape, spec constants 0:64 1:4 2:1, over the
+scale-word-select result this patch's preimage is: the loop body falls 365 to 349
+instructions, its scalar count 20 to 4, and max_lgkm_in_flight 1 to 0, against 24 more
+instructions across the whole shader, which is the entry guard, the bottom test, and the
+hoisted values in the preheaders of the two call sites compute_outputs is inlined at. The
+per-lane iteration count is ncols/1024 at BLOCK_SIZE 64, so the trade favours the hoist from
+two iterations up. The two patches share the hunk region because both edit compute_outputs'
+superblock loop, and the mechanisms are independent.
+evidence/q4k-scale-decode/ carries the receipts and the appliance arms that remain unrun.
+
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_q4_k.comp b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_q4_k.comp
+index c3cf5ffb6..f14026a2e 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_q4_k.comp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_q4_k.comp
+@@ -144,8 +144,19 @@ void compute_outputs(const uint32_t first_row, const uint32_t num_rows) {
+     const uint scale_shift = 16u * v_im;
+     const uint scale_shift_c = 16u - scale_shift;
+ 
+-    [[unroll]] for (uint i = ix; i < num_blocks_per_row; i += it_size)
+-        calc_superblock(a_offset, b_offset, v_im, scale_shift, scale_shift_c, q_offset, y_offset, i, num_blocks_per_row, first_row, num_rows);
++    // nir_opt_licm hoists only out of blocks that dominate the loop successor (nir_opt_licm.c,
++    // visit_cf_list), and a top-tested loop reaches its exit through the header break, so its
++    // body dominates nothing and every loop-invariant value inside it stays inside: the two
++    // buffer descriptors' s_load_dwordx8 and the s_waitcnt lgkmcnt(0) ahead of the iteration's
++    // first vector load among them. A bottom-tested loop under an entry guard puts the body in
++    // a block that does dominate the exit, over the same iteration set.
++    if (ix < num_blocks_per_row) {
++        uint i = ix;
++        do {
++            calc_superblock(a_offset, b_offset, v_im, scale_shift, scale_shift_c, q_offset, y_offset, i, num_blocks_per_row, first_row, num_rows);
++            i += it_size;
++        } while (i < num_blocks_per_row);
++    }
+ 
+     reduce_result(temp, d_offset, first_row, num_rows, tid);
+ }

@@ -16,5 +16,11 @@
     }
   },
   "model": "qwen-appliance/qwen38-4b-distill",
-  "small_model": "qwen-appliance/qwen38-2b-distill"
+  "small_model": "qwen-appliance/qwen38-2b-distill",
+  "permission": {
+    "bash": { "*": "deny" },
+    "edit": { "*": "deny" },
+    "webfetch": { "*": "deny" },
+    "external_directory": "deny"
+  }
 }
