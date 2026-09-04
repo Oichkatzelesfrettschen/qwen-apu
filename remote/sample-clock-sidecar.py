@@ -27,9 +27,12 @@ renice the sampler to this absolute niceness), --cpu LIST (optional; pin the sam
 to CPU N with os.sched_setaffinity).
 
 Header carries clock source, configured period in nanoseconds, drm device path, hwmon
-root or "-" when not found, sampler PID, absolute nice level, and CPU affinity. Footer
-carries sample count, achieved period, mean and max sample cost, count of samples
-with any unavailable sensor, and first and last monotonic instants.
+root or "-" when not found, sampler PID, absolute nice level, CPU affinity, and
+sampler_format=native-fresh-v1, the record-shape claim validate-clock-sidecar.py
+checks: every column here is read fresh on every sample, since this sampler opens no
+ring and caches nothing between samples, unlike telemetry-broker.c's multirate
+channels. Footer carries sample count, achieved period, mean and max sample cost,
+count of samples with any unavailable sensor, and first and last monotonic instants.
 
 SIGTERM or SIGINT ends the loop and writes the footer.
 
@@ -159,7 +162,8 @@ def main():
             out.write("# interpretation: pp_dpm_sclk_selected_mhz is the selected graphics clock step; pp_dpm_mclk_surface_mhz is the pp_dpm_mclk sysfs surface, which on SMU10 is a fabric-clock state rather than the trained DRAM speed; pp_dpm_fclk_surface_mhz is the pp_dpm_fclk sysfs surface\n")
             cpu_affinity_str = ",".join(str(c) for c in cpu_affinity) if cpu_affinity else ""
             current_nice = os.nice(0)
-            out.write("# sampler_pid=%d nice=%d cpu_affinity=%s\n" % (os.getpid(), current_nice, cpu_affinity_str))
+            out.write("# sampler_pid=%d nice=%d cpu_affinity=%s sampler_format=native-fresh-v1\n"
+                     % (os.getpid(), current_nice, cpu_affinity_str))
             out.write("monotonic_ns\tpp_dpm_sclk_selected_mhz\tpp_dpm_mclk_surface_mhz\tpp_dpm_fclk_surface_mhz\tgpu_busy_percent\ttemp1_millidegrees\tsample_cost_ns\n")
             out.flush()
 

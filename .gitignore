@@ -8,6 +8,14 @@ __pycache__/
 !evidence/**/*.log
 api.key
 *.key
+# Session scratch: runner scripts, review transcripts, and plans that carry
+# local paths and chronology; the repository keeps none of it.
+/scratchpad/
+# Editor configuration written by remote/write-clangd-config.sh carries the
+# workstation's own source paths.
+/.clangd
+/.clangd-include/
+/compile_commands.json
 # Private hardware captures contain DIMM serials and SMBIOS identifiers. The
 # sanitized RCA and artifact hashes live in the tracked evidence documents.
 /evidence/hp14-dk1xxx-memory-configuration/
