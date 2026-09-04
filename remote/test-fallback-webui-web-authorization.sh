@@ -231,7 +231,7 @@ grep -F "throw new Error(\`\${key} must be a non-negative integer\`);" "$fallbac
 # tool_calls entry pairs with a result before the round ends.
 grep -F "if (toolName !== WEB_SEARCH_TOOL_NAME) {" "$fallback_ui" >/dev/null
 grep -F 'The served path executes no tool named' "$fallback_ui" >/dev/null
-grep -F 'if (!outcome.calls.length) return;' "$fallback_ui" >/dev/null
+grep -F 'if (!outcome.calls.length) {' "$fallback_ui" >/dev/null
 
 # The turn snapshot governs execution after the visible control resets for
 # the next turn.

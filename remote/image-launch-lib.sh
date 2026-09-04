@@ -259,6 +259,7 @@ verify_image_deadline_stack() {
         "QWEN_IMAGE_PROFILE=$preset_image_profile" \
         "QWEN_IMAGE_LANGUAGE_PROFILE=$image_language_section" \
         "QWEN_IMAGE_PROFILES_JSON=$image_profiles_json" \
+        "QWEN_IMAGE_TOKEN_KEY_FILE=$QWEN_IMAGE_TOKEN_KEY_FILE" \
         "QWEN_IMAGE_STATE_DIR=$state_directory/images" \
         "QWEN_IMAGE_SERVICE_SOCKET=$state_directory/images/image-service.sock"; do
         image_server_name=${image_server_pair%%=*}

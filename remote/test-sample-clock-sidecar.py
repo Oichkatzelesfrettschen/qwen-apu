@@ -119,10 +119,12 @@ def test_basic():
         assert "pp_dpm_mclk_surface_mhz" in comment_lines[1]
         assert "pp_dpm_fclk_surface_mhz" in comment_lines[1]
 
-        # Check third comment line (sampler_pid, nice, cpu_affinity)
+        # Check third comment line (sampler_pid, nice, cpu_affinity, sampler_format)
         assert "sampler_pid=" in comment_lines[2], f"Third comment missing sampler_pid: {comment_lines[2]}"
         assert "nice=" in comment_lines[2]
         assert "cpu_affinity=" in comment_lines[2]
+        assert "sampler_format=native-fresh-v1" in comment_lines[2], \
+            f"Third comment missing sampler_format: {comment_lines[2]}"
 
         # Check data rows
         data_lines = lines[header_line_idx + 1:]

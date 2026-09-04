@@ -290,7 +290,44 @@ if [ "$web_lan_open" = 1 ]; then
 else
     QWEN_REQUIRE_API_KEY=1
 fi
-QWEN_WEB_BROKER_PORT=${QWEN_WEB_BROKER_PORT:-8571}
+# A bare LAN page URL derives the broker and artifact origins as
+# router_port+1 and router_port+2 (webui/index.html's
+# BROKER_LAN_PORT_OFFSET/ARTIFACT_LAN_PORT_OFFSET), the same derivation
+# qwen-launch.sh applies to a direct LAN launch, so this wrapper matches it
+# rather than fixing 8571: a router port of 8080 pairing with broker 8571
+# leaves every web approval and artifact load on this launch targeting a port
+# the advertised URL never names.
+if [ "$web_lan_exposure" = 1 ]; then
+    router_server_port=${QWEN_SERVER_PORT:-8080}
+    # A derived pair overflows the valid port range above 65533, the same
+    # ceiling remote/qwen-lan-launch.sh caps QWEN_SERVER_PORT at and
+    # remote/qwen-launch.sh enforces on its own direct LAN path; this
+    # wrapper's own derivation reaches qwen-launch.sh with the value already
+    # set, which would otherwise bypass that later check.
+    if [ -z "${QWEN_WEB_BROKER_PORT:-}" ] && [ "$router_server_port" -gt 65533 ]; then
+        printf 'QWEN_SERVER_PORT leaves room for the broker and artifact ports above it: %s\n' \
+            "$router_server_port" >&2
+        exit 2
+    fi
+    # webui/index.html derives the broker and artifact origins from the page's
+    # own loaded port at fixed offsets (BROKER_LAN_PORT_OFFSET=1,
+    # ARTIFACT_LAN_PORT_OFFSET=2) whenever the page was reached at a bare LAN
+    # URL rather than one carrying an explicit `?broker=`/`?artifacts=` query
+    # parameter, and the bare URL is exactly what this launch advertises. An
+    # explicit override at another port would serve a broker and an artifact
+    # listener the advertised URL's own page cannot reach, so it is refused
+    # here rather than silently diverging from what the browser assumes.
+    if [ -n "${QWEN_WEB_BROKER_PORT:-}" ] &&
+        [ "$QWEN_WEB_BROKER_PORT" -ne $((router_server_port + 1)) ]; then
+        printf 'QWEN_WEB_BROKER_PORT names %s where the advertised page URL derives %s\n' \
+            "$QWEN_WEB_BROKER_PORT" "$((router_server_port + 1))" >&2
+        printf 'webui/index.html assumes the router port plus one for the broker and plus two for the artifact listener on a bare LAN URL; open the page with an explicit ?broker= query parameter to serve another port\n' >&2
+        exit 2
+    fi
+    QWEN_WEB_BROKER_PORT=${QWEN_WEB_BROKER_PORT:-$((router_server_port + 1))}
+else
+    QWEN_WEB_BROKER_PORT=${QWEN_WEB_BROKER_PORT:-8571}
+fi
 QWEN_WEB_STATE_DIR=${QWEN_WEB_STATE_DIR:-$state_directory/web-mcp}
 signing_key_file=${QWEN_WEB_TOKEN_KEY_FILE:-}
 refuse_signing_key() {

@@ -112,6 +112,71 @@ defined over, checked where it is parsed: an infinite tolerance retires the
 period condition, an infinite lost fraction retires coverage, and an
 infinite floor share retires the fabric half of the invariant.
 
+`--expected-nice N` and `--expected-cpu-affinity LIST` state the priority and
+CPU set the launcher configured the sampler with, and `sampler_nice` and
+`sampler_affinity` refuse a header disagreeing with either; the header
+carries the sampler's own report of what it reached, so these two close the
+gap between "the sampler reports a niceness" (`sampler_identity`, unchanged)
+and "the sampler reports the niceness the launcher asked for." Neither
+carries a default, since a caller that states no expectation asks no
+question and both print `not_run`.
+
+A malformed cadence reaches no reader as a silent default. `--window-begin-ns`
+and `--window-end-ns` are supplied together or not at all, and each is a
+nonnegative `CLOCK_MONOTONIC` instant; `--cost-bound-ns`, `--max-gap-ns`,
+`--required-sclk-mhz`, and `--required-mclk-mhz` are positive where supplied.
+Every one of these is an argument defect rather than a record defect, so it
+is checked where it is parsed, ahead of any read of the record, the way the
+finite-range bounds already are.
+
+telemetry-broker.c's `# sample_rates:` header line names the period each
+column is read at, and a record carrying that line makes two further claims
+checkable: `channel_cadence` requires `gpu_busy_percent_period_ns` and
+`pp_dpm_period_ns` present, since those are the two channels a row column
+depends on; `cadence_values` requires each present cadence key -- those two
+and `temp1_input_period_ns` where the header carries it -- to parse as a
+positive integer multiple of the requested period, and requires
+`gpu_busy_percent_period_ns` to equal it exactly, since `gpu_busy_percent` is
+read on every sample. A record naming no `# sample_rates:` line makes neither
+claim and both conditions print `not_run`. Where the header also carries
+`# dpm_read=` markers, `dpm_read_markers` requires every marker's own instant
+to be a digit string, the same shape `monotonic_ns` is held to, ahead of any
+arithmetic on it, since a marker's prefix parsing cleanly states nothing
+about the text after it, and requires that instant to name a row the record
+actually carries, since a marker naming no row is a fabricated or misplaced
+timestamp that would otherwise shrink a `dpm_marker_cadence` gap without a
+real refresh behind it; `dpm_marker_cadence` then compares the widest gap
+between consecutive markers against the declared `pp_dpm_period_ns` times 1.5,
+the same jitter allowance the row-gap check already carries, and refuses a
+sampler whose own freshness stamps drifted past what it declared: this is the
+sampler's read-time claim checked against itself, the marker half of the two
+mechanisms that keep a cached value from being counted as a fresh
+observation. A record naming a cadence through row position alone -- no
+marker, one `pp_dpm_period_ns` -- is already read through
+`dpm_period_multiple` further down, over reads rather than rows, and a
+`temp1_period_multiple` beside it reads the temperature channel the same way;
+both print on the `dpm_freshness=` line so the count a mean or a mode rests on
+is stated beside it. `dpm_freshness_reads` and `temp1_freshness_reads` refuse
+the extreme of that count reading zero inside a supplied window while the
+channel declares a multiple above one, since every row in such a window then
+carries a value read before the window began and a mean or a mode over them
+would read a fresh observation where none exists; a requested invariant
+measured on no sample already reads `violated` on the same argument, and
+these two apply it unconditionally rather than only where a campaign asked
+for a pin. A channel declaring no multiple above one, or a window holding no
+rows to begin with, makes no claim either check can fail and both print
+`not_run`.
+
+`sampler_format`, present only where the sampler wrote it, states the record
+shape a producer is claiming: `native-fresh-v1` is
+`sample-clock-sidecar.py`'s own claim that every column is read fresh on
+every sample, since it opens no ring and caches nothing between samples. An
+unrecognized value refuses the record rather than reading it under an
+assumption the value does not state; a record naming no key makes no claim
+and the reader falls back to the legacy inference the `dpm_freshness=` line
+already documents. The field exists so a future record shape is refused by
+name rather than silently read under today's rules.
+
 usage: validate-clock-sidecar.py RECORD_TSV --sidecar-status N
        --period-ms F --period-tolerance F --cost-bound-ns N
        [--max-gap-ns N] [--max-lost-fraction F]
@@ -119,6 +184,7 @@ usage: validate-clock-sidecar.py RECORD_TSV --sidecar-status N
        [--allow-unavailable COLUMN ...]
        [--required-sclk-mhz N] [--required-mclk-mhz M]
        [--max-below-mclk-floor-fraction F]
+       [--expected-nice N] [--expected-cpu-affinity LIST]
 """
 import argparse
 import math
@@ -257,6 +323,43 @@ def count_against(rows, index, required, two_sided):
     return at_required, below_required, above_required
 
 
+# The sampler_format value sample-clock-sidecar.py stamps once it declares
+# its own record shape; an unrecognized value refuses the record rather than
+# reading it under an assumption the value does not state.
+KNOWN_SAMPLER_FORMATS = frozenset({"native-fresh-v1"})
+
+
+def declared_multiple(header, key, requested_period_ns, exact_required=False):
+    """Parse one `# sample_rates:` cadence key against the requested period.
+
+    Returns (multiple, reason): multiple is the whole number of requested
+    periods the key declares, and reason is None on either success or a key
+    absent from the header, since an absent key makes no claim about that
+    channel. reason names the defect on a non-integer, non-positive, or
+    non-multiple value, and multiple reads None beside it so a malformed
+    value never reaches a downstream computation as a silent 1.
+    exact_required refuses a declared cadence other than the requested period
+    itself, which is what gpu_busy_percent_period_ns must equal since that
+    channel is read on every sample.
+    """
+    text = header.get(key)
+    if text is None:
+        return None, None
+    try:
+        period_ns = int(text)
+    except ValueError:
+        return None, f"{key}={text} is not an integer"
+    if period_ns <= 0:
+        return None, f"{key}={period_ns} is not positive"
+    if period_ns % requested_period_ns != 0:
+        return None, (f"{key}={period_ns} is not a multiple of the "
+                      f"requested period {requested_period_ns}")
+    if exact_required and period_ns != requested_period_ns:
+        return None, (f"{key}={period_ns} disagrees with the requested "
+                      f"period {requested_period_ns}")
+    return period_ns // requested_period_ns, None
+
+
 def read_record(path):
     header_lines = []
     footer_lines = []
@@ -310,6 +413,11 @@ def main():
     # 1100 on every one.
     parser.add_argument("--max-below-mclk-floor-fraction", type=float,
                         default=0.01)
+    # Neither carries a default: a caller stating no expectation asks no
+    # question, and either default would turn every retained record into a
+    # verdict about a priority or affinity no launcher declared.
+    parser.add_argument("--expected-nice", type=int)
+    parser.add_argument("--expected-cpu-affinity", type=str)
     args = parser.parse_args()
 
     # Each bound reaches argparse as a bare float, and an infinite one retires
@@ -328,6 +436,32 @@ def main():
     bounded("--max-lost-fraction", args.max_lost_fraction, 0.0, 1.0)
     bounded("--max-below-mclk-floor-fraction",
             args.max_below_mclk_floor_fraction, 0.0, 1.0)
+
+    # An integer bound carries no infinity to retire a condition with, so the
+    # requirement is positivity alone, checked the same way and ahead of the
+    # same read of the record.
+    def positive(name, value):
+        if value is not None and value <= 0:
+            parser.error(f"{name} is {value}; a positive value is required")
+
+    positive("--cost-bound-ns", args.cost_bound_ns)
+    positive("--max-gap-ns", args.max_gap_ns)
+    positive("--required-sclk-mhz", args.required_sclk_mhz)
+    positive("--required-mclk-mhz", args.required_mclk_mhz)
+
+    # A CLOCK_MONOTONIC instant is nonnegative, and a window supplied on one
+    # side alone silently degrades coverage, the lost fraction, clock_state,
+    # and every fresh-row selection to not_run rather than refusing the
+    # asymmetry; both sides are required together and each is nonnegative.
+    if (args.window_begin_ns is None) != (args.window_end_ns is None):
+        parser.error("--window-begin-ns and --window-end-ns are supplied "
+                     "together or not at all")
+    if args.window_begin_ns is not None and args.window_begin_ns < 0:
+        parser.error(f"--window-begin-ns is {args.window_begin_ns}; "
+                     "a nonnegative value is required")
+    if args.window_end_ns is not None and args.window_end_ns < 0:
+        parser.error(f"--window-end-ns is {args.window_end_ns}; "
+                     "a nonnegative value is required")
 
     failures = []
 
@@ -355,6 +489,115 @@ def main():
           f"declared={header.get('period_ns', '-')} requested={requested_period_ns}")
     check("sampler_identity", "sampler_pid" in header and "nice" in header and "cpu_affinity" in header,
           f"pid={header.get('sampler_pid', '-')} nice={header.get('nice', '-')} cpu_affinity={header.get('cpu_affinity', '-')}")
+    # The header states what the sampler reached; these two hold it to what
+    # the launcher asked for, which sampler_identity alone cannot, since
+    # presence is silent about agreement.
+    if args.expected_nice is not None:
+        check("sampler_nice", header.get("nice") == str(args.expected_nice),
+              f"nice={header.get('nice', '-')} expected={args.expected_nice}")
+    else:
+        print("sampler_nice=not_run no --expected-nice supplied")
+    if args.expected_cpu_affinity is not None:
+        def cpu_set(text):
+            return {cpu.strip() for cpu in text.split(",") if cpu.strip() != ""}
+
+        observed_affinity = header.get("cpu_affinity")
+        affinity_held = (observed_affinity is not None
+                         and cpu_set(observed_affinity) == cpu_set(args.expected_cpu_affinity))
+        check("sampler_affinity", affinity_held,
+              f"cpu_affinity={observed_affinity or '-'} expected={args.expected_cpu_affinity}")
+    else:
+        print("sampler_affinity=not_run no --expected-cpu-affinity supplied")
+
+    sampler_format = header.get("sampler_format")
+    if sampler_format is not None:
+        check("sampler_format", sampler_format in KNOWN_SAMPLER_FORMATS,
+              f"sampler_format={sampler_format}")
+    else:
+        print("sampler_format=not_run no sampler_format header key")
+
+    # `# sample_rates:` is telemetry-broker.c's own signal that a channel is
+    # read on a cadence other than the requested period; a record naming no
+    # such line makes no cadence claim and both conditions below print
+    # not_run rather than refusing a python-sampler record for a declaration
+    # it never made.
+    sample_rates_declared = any(line.startswith("# sample_rates:") for line in header_lines)
+    dpm_multiple_declared, dpm_cadence_reason = declared_multiple(
+        header, "pp_dpm_period_ns", requested_period_ns)
+    temp_multiple_declared, temp_cadence_reason = declared_multiple(
+        header, "temp1_input_period_ns", requested_period_ns)
+    _, busy_cadence_reason = declared_multiple(
+        header, "gpu_busy_percent_period_ns", requested_period_ns, exact_required=True)
+    if sample_rates_declared:
+        missing_cadence = [key for key in
+                           ("gpu_busy_percent_period_ns", "pp_dpm_period_ns")
+                           if key not in header]
+        check("channel_cadence", not missing_cadence,
+              f"missing={','.join(missing_cadence) or '-'}")
+        cadence_reasons = [reason for reason in
+                           (busy_cadence_reason, dpm_cadence_reason, temp_cadence_reason)
+                           if reason is not None]
+        check("cadence_values", not cadence_reasons, "; ".join(cadence_reasons) or "-")
+    else:
+        print("channel_cadence=not_run no sample_rates header")
+        print("cadence_values=not_run no sample_rates header")
+
+    # A `# dpm_read=` marker carries an instant in the same digit-string shape
+    # every row's monotonic_ns column carries, and this is checked ahead of
+    # any int() conversion of it: a marker's own text is never assumed
+    # well-formed just because its prefix parsed, the way a sensor cell is
+    # never assumed decimal-or-unavailable just because it followed a tab. A
+    # marker also names the row its own read landed in, so one naming no row
+    # at all is a fabricated or misplaced timestamp that would otherwise
+    # shrink an adjacent marker_gaps entry without a real refresh behind it;
+    # telemetry-broker.c's own emission order (`# dpm_read=` immediately
+    # ahead of the row it belongs to) is what dpm_marker_joins_its_row proves
+    # for the broker, and this is the same claim proven over the record
+    # rather than over the writer.
+    row_instants = {row[0] for row in rows if row}
+    malformed_markers = sorted(
+        instant for instant in dpm_read_instants
+        if not instant.isdigit() or instant not in row_instants)
+    if dpm_read_instants:
+        check("dpm_read_markers", not malformed_markers,
+              f"invalid={','.join(malformed_markers) or '-'}")
+    else:
+        print("dpm_read_markers=not_run no dpm_read markers")
+
+    # The sampler's own claim about when it refreshed the DPM bundle, checked
+    # against the cadence it declared for that bundle: a marker gap wider
+    # than 1.5 declared periods is a freshness stamp presenting a cache as a
+    # read newer than it is, the same jitter allowance the row-gap check
+    # already carries. A PAUSE/RESUME span is a real hole in every channel at
+    # once, so this reads only the marker gaps overlapping the request
+    # window, the same overlap the row-gap check applies to `gaps_in_window`;
+    # a gap the window never touches costs the arm nothing here either.
+    if malformed_markers:
+        print("dpm_marker_cadence=not_run malformed dpm_read markers")
+    elif dpm_read_instants and dpm_multiple_declared is not None:
+        marker_instants = sorted(int(instant) for instant in dpm_read_instants)
+        if args.window_begin_ns is not None and args.window_end_ns is not None:
+            marker_gaps = [later - earlier for earlier, later in
+                           zip(marker_instants, marker_instants[1:])
+                           if later > args.window_begin_ns and earlier < args.window_end_ns]
+        else:
+            marker_gaps = [later - earlier for earlier, later in
+                           zip(marker_instants, marker_instants[1:])]
+        if marker_gaps:
+            declared_cadence_ns = dpm_multiple_declared * requested_period_ns
+            marker_bound_ns = declared_cadence_ns * 3 // 2
+            max_marker_gap_ns = max(marker_gaps)
+            check("dpm_marker_cadence", max_marker_gap_ns <= marker_bound_ns,
+                  f"max_gap_ns={max_marker_gap_ns} declared_ns={declared_cadence_ns}"
+                  f" bound_ns={marker_bound_ns}")
+        else:
+            print(f"dpm_marker_cadence=not_run markers={len(marker_instants)}"
+                 " overlapping the window")
+    elif dpm_read_instants:
+        print("dpm_marker_cadence=not_run no pp_dpm_period_ns declared")
+    else:
+        print("dpm_marker_cadence=not_run no dpm_read markers")
+
     wide = column_line == "\t".join(WIDE_COLUMNS)
     expected_columns = WIDE_COLUMNS if wide else COLUMNS
     check("columns", column_line in ("\t".join(COLUMNS), "\t".join(WIDE_COLUMNS)),
@@ -553,12 +796,12 @@ def main():
     # that carried a read. A marker is the authority because the ring stops
     # appending at its capacity while the tick counter advances; a record
     # carrying none is read through the declared channel period, and a header
-    # naming no such period is a sampler reading on every tick.
-    dpm_period_ns = header.get("pp_dpm_period_ns")
-    try:
-        dpm_multiple = max(1, int(dpm_period_ns) // requested_period_ns)
-    except (TypeError, ValueError, ZeroDivisionError):
-        dpm_multiple = 1
+    # naming no such period is a sampler reading on every tick. The multiple
+    # itself is the one channel_cadence and cadence_values already validated
+    # above, so a malformed pp_dpm_period_ns reaches here as the refused
+    # record's own failure rather than as a silent fall back to full
+    # freshness.
+    dpm_multiple = dpm_multiple_declared if dpm_multiple_declared is not None else 1
     if dpm_read_instants:
         freshness_source = "marker"
         fresh_rows = [row for row in window_rows if row[0] in dpm_read_instants]
@@ -567,9 +810,46 @@ def main():
         fresh_instants = {rows[index][0] for index in range(0, len(rows), dpm_multiple)} \
             if rows and row_arity else set()
         fresh_rows = [row for row in window_rows if row[0] in fresh_instants]
+    # The temperature channel carries the same multirate shape and no marker
+    # of its own, so its freshness is read through the declared period alone;
+    # the count sits beside the DPM one rather than folding into it, since
+    # DPM_PERIOD_MULTIPLE and TEMPERATURE_PERIOD_MULTIPLE are equal in
+    # telemetry-broker.c today by constant value rather than by any relation
+    # between the two channels.
+    temp_multiple = temp_multiple_declared if temp_multiple_declared is not None else 1
+    temp_fresh_instants = {rows[index][0] for index in range(0, len(rows), temp_multiple)} \
+        if rows and row_arity else set()
+    temp_fresh_rows = [row for row in window_rows if row[0] in temp_fresh_instants]
     freshness = (f"dpm_freshness={freshness_source}"
                  f" dpm_period_multiple={dpm_multiple}"
-                 f" fresh_dpm_samples={len(fresh_rows)}")
+                 f" fresh_dpm_samples={len(fresh_rows)}"
+                 f" temp1_period_multiple={temp_multiple}"
+                 f" fresh_temp1_samples={len(temp_fresh_rows)}")
+
+    # A DPM reading refreshed every ~200 ms must not count as ten fresh 20 ms
+    # observations, and the extreme of that is a channel that never refreshed
+    # at all inside the window: every one of window_rows then carries a value
+    # read before the window began, and a mean or a mode over them would read
+    # N independent observations where zero exist. A requested invariant
+    # measured on no sample already reads `violated` on the same argument --
+    # an empty count proves nothing -- and this is that argument applied
+    # unconditionally rather than only where a campaign asked for a pin. A
+    # channel with no declared multiple above 1, or a window holding no rows
+    # to begin with, makes no claim this check can fail.
+    def freshness_reads_check(name, multiple, fresh_count):
+        if not window_defined:
+            print(f"{name}=not_run no window supplied")
+        elif multiple <= 1:
+            print(f"{name}=not_run period_multiple=1")
+        elif not window_rows:
+            print(f"{name}=not_run window holds no rows")
+        else:
+            check(name, fresh_count > 0,
+                  f"fresh_samples={fresh_count} window_samples={len(window_rows)}"
+                  f" period_multiple={multiple}")
+
+    freshness_reads_check("dpm_freshness_reads", dpm_multiple, len(fresh_rows))
+    freshness_reads_check("temp1_freshness_reads", temp_multiple, len(temp_fresh_rows))
     # The invariant a forced clock policy replaces the regime taxonomy with. A
     # sample reading below the required step is the governor moving under a
     # policy that states it cannot, which is the one observation that costs the
