@@ -3129,12 +3129,13 @@ a4d5f709398a68f579b86f469d1226ca5dc2a9e9a3dfb7837be803299c35b595  evidence/raven
 54d0f2a14d13c1b01981dfa81048a35d7e8b12a5e305ce8428cd2681d00d3aa6  evidence/raven2-vulkan-kernel-census/e5/E5-S0/isa-pre-2115/stats.tsv
 2659f04ce6642572a017369606825384e267aaa709b222ef83b95624303ef2a1  evidence/raven2-vulkan-kernel-census/e5/E5-S0/shader-pack/2659f04ce6642572a017369606825384e267aaa709b222ef83b95624303ef2a1.spv
 11842ce40cbb473ee9e6bf459648e4579f26089f0c258f1fa8be20a5cdd03db9  evidence/raven2-vulkan-kernel-census/e5/E5-S0/shader-pack/2659f04ce6642572a017369606825384e267aaa709b222ef83b95624303ef2a1.spvasm
-0016fc80bc681f11e084b52b52da0b7c2689ce36a2a38dbff1b79d1c9b2b7de2  evidence/raven2-vulkan-kernel-census/e5/E5-S0/shader-pack/README.md
+200ef462116b540267f236fc65ae64b34ac26a13718e26b81787f63eb30ba3fb  evidence/raven2-vulkan-kernel-census/e5/E5-S0/shader-pack/README.md
 700ff500827745a3fa91f89c0a562f501fe2294cc468fa7cebf6cd76e2ee3905  evidence/raven2-vulkan-kernel-census/e5/E5-S0/shader-pack/dot-instruction-proof.tsv
 bd9eb510ca24f22811e5869a7e1dad22a6c9403a487e070d3246d8174db23ed0  evidence/raven2-vulkan-kernel-census/e5/E5-S0/shader-pack/glslc-version.txt
 733149b11611b2f380a491d700e06375da364520028d4277368fee342d6f4a00  evidence/raven2-vulkan-kernel-census/e5/E5-S0/shader-pack/lowering-recount.tsv
 1e34e8371cc08ea34c234e90c28bf40987bce8f56cad7b1013fb7ada1175ad57  evidence/raven2-vulkan-kernel-census/e5/E5-S0/shader-pack/pack-declaration.tsv
 bc72356868461a5c3c0b53c4c854b645660a64842f3426cbde5d1b1d004da3b4  evidence/raven2-vulkan-kernel-census/e5/E5-S0/shader-pack/pack-inputs.tsv
+a661b23afb390b63b6545b599fe8cb1f80038b713b732fa86cf0c4fc92001d4b  evidence/raven2-vulkan-kernel-census/e5/E5-S0/shader-pack/reduction-window.txt
 3322a9a1eaeb0809de2981b736ae7ea2cfa987d93b8caf474deb022d336722e6  evidence/raven2-vulkan-kernel-census/e5/E5-S0/shader-pack/shader-pack.tsv
 21cb9cd2576e84f9c5128426e9f76069be54632eda70cc78f73357f859220daa  evidence/raven2-vulkan-kernel-census/e5/E5-S1/README.md
 76a5a9e52603a0ac578cacef8a38d0dc10c575c5d9f7682080848f17a3a2fce6  evidence/raven2-vulkan-kernel-census/e5/E5-S1/aco-lowering-provenance.md
@@ -3146,7 +3147,7 @@ a945d1c7ff5225a9cb37617c628aff3eca4781466000ed2fc414ccf5aed4fbfd  evidence/raven
 4c435571184384c0247fc3f63572b5473781d02c6f6cde7cbba915bb6f4cbc1f  evidence/raven2-vulkan-kernel-census/e5/E5-S1/isa-post-2115/shaderstats.txt
 580160fa71f78b20e6c89c8bd4eb52221c8618225f711115c283ea4640438a26  evidence/raven2-vulkan-kernel-census/e5/E5-S1/isa-post-2115/stats.tsv
 ac15ffb603946436c3e6b9f90a2bb660c231e2eda70002daee8e78c0d45717ad  evidence/raven2-vulkan-kernel-census/e5/E5-S1/mnemonic-comparison.tsv
-23ecd3495de4e9862b97ce137b8d5e88d2805bdc221b131c0e58365ba7670ed8  evidence/raven2-vulkan-kernel-census/e5/README.md
+5daec19932d9caea25ff6f94b008cbac97bca549abe9da42bd4fcb1649e6f2b0  evidence/raven2-vulkan-kernel-census/e5/README.md
 d362440ec3341a61050fa15df817291691cc2c53dbc2441708c49c487e515e45  evidence/raven2-vulkan-kernel-census/e5/compile-matrix.tsv
 20d4fae5d9e3e8dfe9b91084d049114a543c255d8685eba7a3199aa4fe9db76a  evidence/raven2-vulkan-kernel-census/e5/instruction-census.tsv
 e016821d075fb0bea2c26446337d152bf9ec9e2abb598c1068f38e142f72e987  evidence/raven2-vulkan-kernel-census/e5/int24-design.md

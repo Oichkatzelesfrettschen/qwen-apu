@@ -301,7 +301,11 @@ the file that carries it, and the first three have run on the workstation.
    E5-S1's name; it writes an environment fragment naming `QWEN_RADV_ICD`,
    `QWEN_AMDGPU_DRM_SHIM`, and the library path, and
    `remote/test-build-isolated-radv.sh` drives every refusal against fake meson,
-   ninja, and git.
+   ninja, and git. `qwen-webui-control.sh:428` forwards `QWEN_RADV_ICD` across
+   the tmux boundary and forwards no library path, so the ICD's own absolute
+   `library_path` is what reaches the served process; a driver whose LLVM lives
+   beside it rather than on the system needs a forwarding line for
+   `LD_LIBRARY_PATH` that this lane has not added.
 5. **Read the executed ISA.** `RADV_DEBUG=shaders,shaderstats` through
    `remote/dump-radv-shader-isa.sh`, summarized by
    `remote/summarize-radv-isa.py`, against the module the census instrument

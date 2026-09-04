@@ -124,14 +124,25 @@ three E5-S listings under the current schema:
 | E5-S1, post-2115 | 224 | 140 | 90 | 0 |
 
 Both E5-S0 listings hash to `a4d5f70939...` and the E5-S1 listing to
-`b9f5b4e6e2...`, the digests those receipts record. The multiplier count is
+`b9f5b4e6e2...`, the digests those receipts record, and the three moved
+mnemonics reproduce the deltas `../../E5-S1/README.md` states: `v_add_u32`
+160 to 90, `v_add3_u32` 98 to 140, `v_mov_b32` 20 to 17. The multiplier count is
 identical across the merge and all 224 fold a byte select into both operands, so
-the four byte-extract-folded 24-bit multiplies are present under either driver;
-what moves is the reduction, from the generic expansion's unbalanced
-`v_add_u32, v_add3_u32, v_add_u32` chain to the two `v_add3_u32` of
-`emit_soft_idot_4x8`. The six-operation sequence is therefore recomputed from
-the E5-S1 listing and the generic seven from both E5-S0 listings; neither is a
-pipeline this session created.
+the four byte-extract-folded 24-bit multiplies are present under either driver
+and the reduction is the whole difference.
+
+A histogram counts a kernel rather than a dot, and this one does not decompose
+into one. 224 products is 56 dots, so a uniform seven-to-six trade would move
+`v_add_u32` by -112 and `v_add3_u32` by +56 where the listings move -70 and +42:
+ACO folds part of each reduction into the accumulate chain the dot feeds, so the
+aggregate understates the per-dot change and cannot be divided by 56.
+`reduction-window.txt` reads the sequence itself instead, cutting the same fifth
+product and the lines after it out of both listings. E5-S1 issues the four SDWA
+multiplies and reduces them through `v_add3_u32` pairs; E5-S0 issues the same
+four and reaches the first partial sum through `v_add_u32_e32` before its own
+`v_add3_u32`. The six-operation sequence is therefore observed in the retained
+E5-S1 listing and the generic seven in the E5-S0 listing; neither is a pipeline
+this session created.
 
 ## Files
 
@@ -145,3 +156,4 @@ pipeline this session created.
 | `2659f04c....spvasm` | its disassembly, by the pinned prefix's `spirv-dis` |
 | `dot-instruction-proof.tsv` | the extension, capability, and opcode counts read out of that disassembly |
 | `lowering-recount.tsv` | `recount-isa.sh` over the three retained E5-S listings |
+| `reduction-window.txt` | one reduction window per lowering, cut from those listings |

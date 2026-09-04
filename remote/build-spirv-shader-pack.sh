@@ -74,8 +74,11 @@ if [ -z "$glslc_program" ]; then
         printf 'QWEN_SHADER_PACK_GLSLC names the compiler directly\n' >&2
         exit 1
     fi
+    # The row shape is checked here the way fetch-shaderc-toolchain.sh checks
+    # it, so one ledger reads the same to both of its readers.
     toolchain_prefix_name=$(awk -F'\t' '
         /^#/ || NF == 0 { next }
+        NF != 2 { printf "malformed shaderc toolchain row: %s\n", $0 > "/dev/stderr"; exit 1 }
         $1 == "prefix" { print $2; found = 1 }
         END { exit found ? 0 : 1 }
     ' "$toolchain_ledger") || {
