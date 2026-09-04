@@ -192,6 +192,29 @@ Full evidence and percentile calculations are in
 | LibreChat | Strong multi-provider, multi-user, MCP, and authentication surface | Excess service and database scope for a one-slot laptop test |
 | LobeHub | Polished multi-provider self-hosted application | Excess container and database scope for the first test |
 
+The two UIs are two launches of one binary rather than two routes of one
+listener. `server_http_context::init` mounts a `--path` directory at
+`api_prefix + "/"` where `public_path` carries a value
+(`tools/server/server-http.cpp:333-335`) and registers the compiled-in llama.cpp
+UI under the same prefix in its else branch (`:339-427`), and `--api-prefix`
+supplies one value to whichever branch runs (`common/arg.cpp:3352-3356`). Router
+mode leaves that alone, since `ctx_http.init(params)` runs ahead of the router
+branch (`tools/server/server.cpp:173` against `:188-232`) and
+`server-models.cpp` registers no UI route. `qwen-web-launch.sh` passes
+`--path`, so it serves this page; `qwen-launch.sh` leaves it unset, so the same
+address and port answer the llama.cpp UI. The page's `llama.cpp UI` tab states
+that and links the listener root rather than a route nothing answers.
+
+The static panel carries the history the table credits to Open WebUI. A
+conversation is a record in IndexedDB, in localStorage where IndexedDB refuses,
+and in memory where both do, addressed by a `#/c/<id>` route and listed in a
+side panel that opens, renames, and deletes one. What is written is a
+projection -- role, content, the served model id each assistant message names in
+its badge, the tool call ids and arguments the transcript re-sends, and an
+artifact's digest, provenance route, seed, and geometry -- so a broker grant,
+the session secret, and the API key reach no store and a restored image is
+refetched by digest over the artifact listener's own credentialed route.
+
 Primary sources:
 
 - https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md

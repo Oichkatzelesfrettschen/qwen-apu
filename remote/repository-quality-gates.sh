@@ -122,6 +122,9 @@ gate_cell test-summarize-draft-pair derive remote/test-summarize-draft-pair.py \
 gate_cell test-build-cache-keys derive \
     'remote/test-build-cache-keys.sh remote/build-cache-keys.sh remote/build-llama-preset.sh' \
     remote/test-build-cache-keys.sh
+gate_cell test-build-llama-preset-flags derive \
+    'remote/test-build-llama-preset-flags.sh remote/build-candidate-flags.sh remote/build-llama-preset.sh remote/llama-patch-series.tsv' \
+    remote/test-build-llama-preset-flags.sh
 gate_cell test-summarize-fixed64-served-campaign derive \
     remote/test-summarize-fixed64-served-campaign.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-fixed64-served-campaign.py'
@@ -230,6 +233,8 @@ gate_cell test-write-clangd-config derive remote/test-write-clangd-config.sh \
     remote/test-write-clangd-config.sh
 gate_cell test-check-trace-source-status derive \
     remote/test-check-trace-source-status.sh remote/test-check-trace-source-status.sh
+gate_cell test-qwen-lan-launch derive remote/test-qwen-lan-launch.sh \
+    remote/test-qwen-lan-launch.sh
 gate_cell test-prefix-checkpoint-key derive \
     'remote/test-prefix-checkpoint-key.sh remote/test-fixtures/prefix-checkpoint-key-probe.cpp patches/llama-server-prefix-checkpoint.patch' \
     remote/test-prefix-checkpoint-key.sh
@@ -251,6 +256,15 @@ gate_cell test-receipt-diff derive remote/raven2-shader-lab/test-receipt-diff.sh
     remote/raven2-shader-lab/test-receipt-diff.sh
 gate_cell test-lab-replay derive remote/raven2-shader-lab/test-lab-replay.sh \
     remote/raven2-shader-lab/test-lab-replay.sh
+gate_cell test-count-i24-add3 derive \
+    remote/raven2-shader-lab/test-count-i24-add3.sh \
+    remote/raven2-shader-lab/test-count-i24-add3.sh
+gate_cell test-recount-isa derive \
+    'remote/raven2-shader-lab/test-recount-isa.sh remote/raven2-shader-lab/recount-isa.sh' \
+    remote/raven2-shader-lab/test-recount-isa.sh
+gate_cell test-build-spirv-shader-pack derive \
+    'remote/test-build-spirv-shader-pack.sh remote/build-spirv-shader-pack.sh' \
+    remote/test-build-spirv-shader-pack.sh
 gate_cell test-web-presets derive remote/test-web-presets.sh \
     remote/test-web-presets.sh
 gate_cell test-qwen-capacity-policy derive remote/test-qwen-capacity-policy.sh \
@@ -305,6 +319,12 @@ gate_cell test-run-raven2-vulkan-kernel-census derive \
 gate_cell test-fallback-webui-model-state derive \
     remote/test-fallback-webui-model-state.mjs \
     'node remote/test-fallback-webui-model-state.mjs'
+gate_cell test-fallback-webui-conversations derive remote/test-fallback-webui-conversations.mjs \
+    'node remote/test-fallback-webui-conversations.mjs'
+gate_cell test-fallback-webui-fragment-key derive remote/test-fallback-webui-fragment-key.mjs \
+    'node remote/test-fallback-webui-fragment-key.mjs'
+gate_cell test-fallback-webui-ui-switch derive remote/test-fallback-webui-ui-switch.mjs \
+    'node remote/test-fallback-webui-ui-switch.mjs'
 gate_cell test-fallback-webui-roster derive remote/test-fallback-webui-roster.mjs \
     'node remote/test-fallback-webui-roster.mjs'
 gate_cell test-fallback-webui-model-selection derive \

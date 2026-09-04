@@ -49,6 +49,8 @@ if [ "$#" -gt 1 ]; then
     printf 'QWEN_IMAGE_RUNTIME_RESIDENT_MIB is the image runtime cost charged against the Vulkan budget, default 480\n' >&2
     printf 'the listener is 127.0.0.1; QWEN_BIND_HOST set to any other value refuses the launch\n' >&2
     printf 'QWEN_WEB_LAN=1 with QWEN_WEB_LAN_ADDRESS naming a routable IPv4 literal serves the network instead, with the Web UI bearer required on every route\n' >&2
+    printf 'QWEN_WEB_LAN_NAME adds one mDNS hostname to the admitted set, defaulting to the short hostname under .local where avahi runs\n' >&2
+    printf 'QWEN_WEB_LAN_OPEN=1 removes that bearer, so every peer on the network can chat, approve a search, and approve a generation\n' >&2
     exit 2
 fi
 
@@ -58,26 +60,45 @@ web_launcher=$script_directory/qwen-web-launch.sh
 image_service_program=${QWEN_IMAGE_SERVICE_PROGRAM:-$script_directory/image-service.py}
 state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
 web_presets=${QWEN_WEB_PRESETS:-$state_directory/web-presets.ini}
+# The marker rejoin, the parameter comparison, the deadline stack, and the
+# device charge live in one file, because qwen-launch.sh arms the same lane from
+# the merged roster preset.
+# shellcheck source=remote/image-launch-lib.sh
+. "$script_directory/image-launch-lib.sh"
 
 # QWEN_WEB_LAN=1 is the operator's explicit decision to serve this lane on the
-# network. This wrapper checks the shape of the request and reports it; the six
-# conditions in remote/web-lan-exposure.sh are applied once, by the web
-# launcher this script execs into, so one authority admits both lanes.
+# network, and QWEN_WEB_LAN_OPEN=1 the second decision that removes the bearer
+# from it. resolve_web_lan_mode reads both here so the open opt-in against an
+# unexposed launch refuses at the first link rather than at the second; the
+# remaining conditions in remote/web-lan-exposure.sh are applied once, by the
+# web launcher this script execs into, so one authority admits both lanes.
+web_lan_policy=$script_directory/web-lan-exposure.sh
+if [ ! -r "$web_lan_policy" ]; then
+    printf 'the LAN exposure policy is unreadable: %s\n' "$web_lan_policy" >&2
+    exit 2
+fi
+# shellcheck source=remote/web-lan-exposure.sh
+. "$web_lan_policy"
+resolve_web_lan_mode
 web_lan_exposure=${QWEN_WEB_LAN:-0}
-case $web_lan_exposure in
-    0 | 1) ;;
-    *)
-        printf 'QWEN_WEB_LAN must be 0 or 1: %s\n' "$web_lan_exposure" >&2
-        exit 2
-        ;;
-esac
+web_lan_open=${QWEN_WEB_LAN_OPEN:-0}
 if [ "$web_lan_exposure" = 1 ]; then
     if [ -z "${QWEN_WEB_LAN_ADDRESS:-}" ]; then
         printf 'QWEN_WEB_LAN=1 requires QWEN_WEB_LAN_ADDRESS naming a routable IPv4 literal\n' >&2
         exit 2
     fi
-    printf 'image_launch exposure=lan address=%s bearer=required\n' \
-        "$QWEN_WEB_LAN_ADDRESS"
+    # The bearer state is read from the opt-in rather than asserted, so this
+    # line and the listener the web launcher builds state one policy. The name
+    # is reported unresolved where the caller left it unset, since
+    # admit_web_lan_exposure derives it one link later.
+    if [ "$web_lan_open" = 1 ]; then
+        image_lan_bearer_state=removed
+    else
+        image_lan_bearer_state=required
+    fi
+    printf 'image_launch exposure=lan address=%s name=%s bearer=%s\n' \
+        "$QWEN_WEB_LAN_ADDRESS" "${QWEN_WEB_LAN_NAME:--}" \
+        "$image_lan_bearer_state"
 else
     requested_bind_host=${QWEN_BIND_HOST:-127.0.0.1}
     if [ "$requested_bind_host" != 127.0.0.1 ]; then
@@ -98,92 +119,27 @@ fi
 # The generator records the image profile it emitted, the ledger it read, and
 # that ledger's digest, so the launch reads one authority out of the file it
 # launches rather than re-deriving it from an environment that may have moved.
-preset_image_profile=$(sed -n 's/^# qwen_image_profile=//p' "$web_presets")
-preset_image_profiles=$(sed -n 's/^# qwen_image_profiles_path=//p' "$web_presets")
-preset_image_profiles_sha256=$(sed -n \
-    's/^# qwen_image_profiles_sha256=//p' "$web_presets")
+# remote/image-launch-lib.sh holds those rules, because qwen-launch.sh arms the
+# same lane from the merged roster preset and a second copy would let the two
+# launchers disagree about what an armed lane is.
+read_image_preset_markers "$web_presets"
 if [ -z "$preset_image_profile" ]; then
     printf 'the preset carries no image markers: %s\n' "$web_presets" >&2
     printf 'regenerate it with a remote/build-web-presets.sh that reads remote/image-profiles.tsv\n' >&2
     exit 2
 fi
-if [ "$preset_image_profile" = '-' ]; then
+if [ "$image_lane_armed" != 1 ]; then
     printf 'every image profile in %s withholds an executing policy, so the preset arms no generation\n' \
         "${preset_image_profiles:-remote/image-profiles.tsv}" >&2
     printf 'every checked-in row reads refused; a validator-gated row is a measurement on the appliance and the only thing this launch runs\n' >&2
     printf 'launch the ordinary web router with remote/qwen-web-launch.sh\n' >&2
     exit 2
 fi
+require_image_ledger_row || exit 2
 
-case $preset_image_profiles in
-    /*) ;;
-    *)
-        printf 'the preset omits an absolute image profile ledger path: %s\n' \
-            "$web_presets" >&2
-        exit 2
-        ;;
-esac
-if [ "${#preset_image_profiles_sha256}" -ne 64 ]; then
-    printf 'image preset ledger SHA-256 must hold 64 lowercase hexadecimal characters\n' >&2
-    exit 2
-fi
-case $preset_image_profiles_sha256 in
-    *[!0-9a-f]*)
-        printf 'image preset ledger SHA-256 must hold 64 lowercase hexadecimal characters\n' >&2
-        exit 2
-        ;;
-esac
-if ! image_profiles_identity=$(sha256sum -- "$preset_image_profiles"); then
-    printf 'image profile ledger identity cannot be measured: %s\n' \
-        "$preset_image_profiles" >&2
-    exit 2
-fi
-image_profiles_actual_sha256=${image_profiles_identity%% *}
-if [ "$image_profiles_actual_sha256" != "$preset_image_profiles_sha256" ]; then
-    printf 'image profile ledger identity changed: expected %s, measured %s\n' \
-        "$preset_image_profiles_sha256" "$image_profiles_actual_sha256" >&2
-    printf 'regenerate the preset tree with remote/build-web-presets.sh\n' >&2
-    exit 2
-fi
-
-# A preset persists across an edit to the ledger, so the row it names is read
-# again here: a row moved to `refused` or removed outright refuses the launch
-# rather than serving a persisted MCP configuration that still names it.
-QWEN_IMAGE_PROFILES=$preset_image_profiles
-export QWEN_IMAGE_PROFILES
-if ! image_profile_row=$("$script_directory/image-registry.sh" profile \
-    "$preset_image_profile" 2>/dev/null); then
-    printf 'the preset names image profile %s, which %s holds no row for\n' \
-        "$preset_image_profile" "$preset_image_profiles" >&2
-    exit 2
-fi
-image_profile_field() {
-    printf '%s\n' "$image_profile_row" | sed -n "s/^$1=//p"
-}
-image_execution_policy=$(image_profile_field execution_policy)
-if [ "$image_execution_policy" != validator-gated ]; then
-    printf 'image profile %s carries execution_policy %s, and only validator-gated reaches a runtime\n' \
-        "$preset_image_profile" "${image_execution_policy:-<absent>}" >&2
-    exit 2
-fi
-
-# The reviewer is a property of the image row, so the preset's own marker is
-# rejoined to the ledger the way the image profile is: a row whose review_model
-# changed since generation refuses rather than serving a persisted section that
-# names a checkpoint the ledger no longer pairs with this shape.
-preset_review_model=$(sed -n 's/^# qwen_image_review_model=//p' "$web_presets")
-preset_review_section=$(sed -n 's/^# qwen_image_review_section=//p' "$web_presets")
 if [ -z "$preset_review_model" ] || [ -z "$preset_review_section" ]; then
     printf 'the preset carries no review markers: %s\n' "$web_presets" >&2
     printf 'regenerate it with a remote/build-web-presets.sh that reads review_model\n' >&2
-    exit 2
-fi
-ledger_review_model=$(image_profile_field review_model)
-if [ "$preset_review_model" != "$ledger_review_model" ]; then
-    printf 'image profile %s pairs review_model %s where the preset carries %s\n' \
-        "$preset_image_profile" "${ledger_review_model:-<absent>}" \
-        "$preset_review_model" >&2
-    printf 'regenerate the preset tree with remote/build-web-presets.sh\n' >&2
     exit 2
 fi
 if [ "$preset_review_model" = '-' ]; then
@@ -267,222 +223,23 @@ if [ "$authorizer_ready" != 1 ]; then
     exit 2
 fi
 
-# The approval broker is the only issuer of the grant an image call carries, so
-# a section armed for generation without one serves a tool every call is
-# refused. qwen-web-launch.sh applies every rule the signing key must meet;
-# this wrapper requires the file to be named, because the image MCP child reads
-# it under its own name and a launch that named none would reach the model as a
-# per-call refusal.
-signing_key_file=${QWEN_WEB_TOKEN_KEY_FILE:-}
-if [ -z "$signing_key_file" ]; then
-    printf 'the image grant signing key is unset\n' >&2
-    printf 'QWEN_WEB_TOKEN_KEY_FILE names a regular file at mode 0600, owned by this user, holding the HMAC key\n' >&2
-    exit 2
-fi
-QWEN_IMAGE_TOKEN_KEY_FILE=${QWEN_IMAGE_TOKEN_KEY_FILE:-$signing_key_file}
-if [ "$QWEN_IMAGE_TOKEN_KEY_FILE" != "$signing_key_file" ]; then
-    printf 'QWEN_IMAGE_TOKEN_KEY_FILE names %s where the broker signs with %s\n' \
-        "$QWEN_IMAGE_TOKEN_KEY_FILE" "$signing_key_file" >&2
-    printf 'one key signs both grant contexts, which the context string separates\n' >&2
-    exit 2
-fi
+require_image_signing_key || exit 2
+require_image_parameters || exit 2
 
-# The service runs a job under validated profile parameters rather than under
-# the ledger row, because the row names no runtime binary and no argv template.
-# The launch validates the file against the row it claims to serve, so a
-# parameter set naming another geometry, another ceiling, or another policy
-# refuses here rather than at the first approved generation.
-image_profiles_json=${QWEN_IMAGE_PROFILES_JSON:-}
-if [ ! -r "$image_profiles_json" ]; then
-    printf 'QWEN_IMAGE_PROFILES_JSON names no readable file: %s\n' \
-        "${image_profiles_json:-<unset>}" >&2
-    printf 'the file holds validated profile parameters keyed by profile_id, which image-service.py runs a job under\n' >&2
-    exit 2
-fi
-if ! image_parameters=$(python3 -c '
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as handle:
-    profiles = json.load(handle)
-profile = profiles.get(sys.argv[2])
-if not isinstance(profile, dict):
-    raise SystemExit("the parameter file holds no object for " + sys.argv[2])
-for name in ("model_id", "placement", "width", "height", "steps", "sampler",
-             "cfg", "max_steps", "max_dimension", "timeout_s",
-             "execution_policy", "runtime_path"):
-    if name not in profile:
-        raise SystemExit("the parameters omit " + name)
-    print("%s=%s" % (name, profile[name]))
-' "$image_profiles_json" "$preset_image_profile"); then
-    printf 'the image parameter file fails its own shape: %s\n' \
-        "$image_profiles_json" >&2
-    exit 2
-fi
-image_parameter_field() {
-    printf '%s\n' "$image_parameters" | sed -n "s/^$1=//p"
-}
-for compared_field in model_id placement width height steps sampler cfg \
-    max_steps max_dimension timeout_s execution_policy; do
-    ledger_value=$(image_profile_field "$compared_field")
-    parameter_value=$(image_parameter_field "$compared_field")
-    if [ "$ledger_value" != "$parameter_value" ]; then
-        printf 'image profile %s carries %s %s in %s and %s in %s\n' \
-            "$preset_image_profile" "$compared_field" "$ledger_value" \
-            "$preset_image_profiles" "$parameter_value" "$image_profiles_json" >&2
-        exit 2
-    fi
-done
-image_runtime_path=$(image_parameter_field runtime_path)
-if [ ! -x "$image_runtime_path" ]; then
-    printf 'the image runtime is absent or not executable: %s\n' \
-        "$image_runtime_path" >&2
-    exit 2
-fi
-
-# The deadline stack is verified from the value each layer is configured with,
-# because a number typed here would assert an ordering the system does not
-# have. Four layers configure one: the profile row and image-service.py's own
-# ceiling bound the runtime, image-service.py bounds the whole job, the
-# emitted MCP configuration bounds the tool call, and webui/index.html bounds
-# the page's wait. The router proxy configures none in this tree -- the patched
-# router proxies with llama-server's own read timeout, 3600 s -- so the launch
-# reads that default rather than claiming a 600 s bound nothing sets, and
-# QWEN_IMAGE_ROUTER_PROXY_TIMEOUT_S states another where a deployment sets one.
-# What the ordering buys is that the innermost deadline fires first: a stalled
-# generation is ended by the process that owns it, and the proxy outlasts the
-# tool call it is carrying.
-runtime_hard_timeout=$(sed -n \
-    's/^RUNTIME_HARD_TIMEOUT_SECONDS = \([0-9]\{1,\}\)$/\1/p' \
-    "$image_service_program")
-service_job_deadline=$(sed -n \
-    's/^SERVICE_JOB_DEADLINE_SECONDS = \([0-9]\{1,\}\)$/\1/p' \
-    "$image_service_program")
-image_profile_timeout=$(image_profile_field timeout_s)
-runtime_timeout=$image_profile_timeout
-if [ "$runtime_hard_timeout" -lt "$runtime_timeout" ]; then
-    runtime_timeout=$runtime_hard_timeout
-fi
-
-static_path=${QWEN_STATIC_PATH:-"$script_directory/../webui"}
-browser_timeout_ms=$(sed -n \
-    's/^const IMAGE_GENERATION_TIMEOUT_MS = \([0-9]\{1,\}\);$/\1/p' \
-    "$static_path/index.html")
-router_proxy_timeout=${QWEN_IMAGE_ROUTER_PROXY_TIMEOUT_S:-3600}
-
-# The tool deadline is read from the configuration llama-server hands the
-# child, rather than from the generator's own marker, because that file is what
-# the running child applies. The same read proves the section names the five
-# settings the child needs.
-image_mcp_configuration=$(sed -n \
-    's/^[[:space:]]*LLAMA_ARG_MCP_SERVERS_CONFIG[[:space:]]*=[[:space:]]*//p' \
-    "$web_presets" | sed -n '1p')
-if [ ! -r "${image_mcp_configuration:-}" ]; then
-    printf 'the preset names no readable MCP configuration: %s\n' \
-        "${image_mcp_configuration:-<absent>}" >&2
-    exit 2
-fi
-if ! image_mcp_timeout_ms=$(python3 -c '
-import json
-import sys
-
-with open(sys.argv[1], encoding="utf-8") as handle:
-    configuration = json.load(handle)
-image = configuration.get("mcpServers", {}).get("image")
-if not isinstance(image, dict):
-    raise SystemExit("the configuration names no image server")
-for name in ("QWEN_IMAGE_LANGUAGE_PROFILE", "QWEN_IMAGE_PROFILE",
-             "QWEN_IMAGE_TOKEN_KEY_FILE", "QWEN_IMAGE_STATE_DIR",
-             "QWEN_IMAGE_SERVICE_SOCKET", "QWEN_IMAGE_PROFILES_JSON",
-             "QWEN_IMAGE_MCP_TIMEOUT_S"):
-    if not image.get("env", {}).get(name):
-        raise SystemExit("the image server names no " + name)
-if image["env"]["QWEN_IMAGE_PROFILE"] != sys.argv[2]:
-    raise SystemExit("the image server names another profile")
-if image["env"]["QWEN_IMAGE_LANGUAGE_PROFILE"] != sys.argv[6]:
-    raise SystemExit("the image server names another language profile")
-if image["env"]["QWEN_IMAGE_PROFILES_JSON"] != sys.argv[3]:
-    raise SystemExit("the image server names another profile parameter file")
-if image["env"]["QWEN_IMAGE_STATE_DIR"] != sys.argv[4]:
-    raise SystemExit("the image server names another image state directory")
-if image["env"]["QWEN_IMAGE_SERVICE_SOCKET"] != sys.argv[5]:
-    raise SystemExit("the image server names another service socket")
-# The router bounds the call at timeout_ms and the child bounds its own socket
-# read at QWEN_IMAGE_MCP_TIMEOUT_S. Two numbers for one deadline let the router
-# wait past the point the child gave up, so the launch requires them to agree.
-router_limit = int(image["timeout_ms"])
-child_limit = float(image["env"]["QWEN_IMAGE_MCP_TIMEOUT_S"])
-if abs(router_limit / 1000.0 - child_limit) > 0.001:
-    raise SystemExit(
-        "the image server bounds its call at %d ms and its own read at %g s"
-        % (router_limit, child_limit)
-    )
-print(router_limit)
-' "$image_mcp_configuration" "$preset_image_profile" "$image_profiles_json" \
-    "$state_directory/images" "$state_directory/images/image-service.sock" \
-    "${QWEN_WEB_PROFILE:-$(sed -n 's/^\[\([^]]*\)\]$/\1/p' "$web_presets" | sed -n '1p')}"); then
-    printf 'the image MCP configuration is unusable: %s\n' \
-        "$image_mcp_configuration" >&2
-    exit 2
-fi
-runtime_timeout_ms=$((runtime_timeout * 1000))
-service_job_deadline_ms=$((service_job_deadline * 1000))
-router_proxy_timeout_ms=$((router_proxy_timeout * 1000))
-
-for measured_deadline in "$runtime_timeout_ms" "$service_job_deadline_ms" \
-    "$image_mcp_timeout_ms" "$router_proxy_timeout_ms" "$browser_timeout_ms"; do
-    case $measured_deadline in
-        '' | 0 | *[!0-9]*)
-            printf 'a deadline in the stack is unreadable: runtime=%s service=%s mcp=%s proxy=%s browser=%s\n' \
-                "$runtime_timeout_ms" "$service_job_deadline_ms" \
-                "$image_mcp_timeout_ms" "$router_proxy_timeout_ms" \
-                "$browser_timeout_ms" >&2
-            exit 2
-            ;;
-    esac
-done
-
-deadline_breach=''
-if [ "$runtime_timeout_ms" -ge "$service_job_deadline_ms" ]; then
-    deadline_breach='runtime>=service'
-elif [ "$service_job_deadline_ms" -ge "$image_mcp_timeout_ms" ]; then
-    deadline_breach='service>=mcp'
-elif [ "$image_mcp_timeout_ms" -ge "$browser_timeout_ms" ]; then
-    deadline_breach='mcp>=browser'
-elif [ "$image_mcp_timeout_ms" -ge "$router_proxy_timeout_ms" ]; then
-    deadline_breach='mcp>=proxy'
-fi
-if [ -n "$deadline_breach" ]; then
-    printf 'the image deadline stack is out of order at %s: runtime=%s service=%s mcp=%s proxy=%s browser=%s\n' \
-        "$deadline_breach" "$runtime_timeout_ms" "$service_job_deadline_ms" \
-        "$image_mcp_timeout_ms" "$router_proxy_timeout_ms" "$browser_timeout_ms" >&2
-    printf 'a stalled generation is ended by the process that owns it, so each deadline sits inside the one above it\n' >&2
-    exit 2
-fi
-printf 'image_launch timeouts runtime_ms=%s service_ms=%s mcp_ms=%s proxy_ms=%s browser_ms=%s proxy_source=%s\n' \
-    "$runtime_timeout_ms" "$service_job_deadline_ms" "$image_mcp_timeout_ms" \
-    "$router_proxy_timeout_ms" "$browser_timeout_ms" \
-    "${QWEN_IMAGE_ROUTER_PROXY_TIMEOUT_S:+configured}${QWEN_IMAGE_ROUTER_PROXY_TIMEOUT_S:-llama-server-default}"
+# The language profile is this file's first section, which is the one section
+# the broker signs for; the review section follows it and carries no
+# configuration of its own.
+image_language_section=${QWEN_WEB_PROFILE:-$(sed -n 's/^\[\([^]]*\)\]$/\1/p' \
+    "$web_presets" | sed -n '1p')}
+verify_image_deadline_stack "$web_presets" "$image_language_section" || exit 2
 
 # Two resident checkpoints and a running image runtime draw on one Vulkan
 # carve-out, so the requirement is summed from what the preset names and the
-# probe answers whether the device holds it. model-memory-preflight.sh reports
-# and admits every launch by design -- a prediction that a model will not fit
-# was wrong once and read as a hardware limit -- so this launch reads its
-# `vulkan_budget_headroom` line and makes the refusal its own, where the pair
-# is a configuration choice rather than the single load the report was written
-# for. The runtime's resident cost is a measured figure from the standalone
-# campaign rather than a derived one, and it is charged whole because a
-# generation runs while both children stay loaded.
-image_runtime_resident_mib=${QWEN_IMAGE_RUNTIME_RESIDENT_MIB:-480}
-case $image_runtime_resident_mib in
-    '' | *[!0-9]*)
-        printf 'QWEN_IMAGE_RUNTIME_RESIDENT_MIB must be a non-negative integer of MiB: %s\n' \
-            "$image_runtime_resident_mib" >&2
-        exit 2
-        ;;
-esac
-memory_preflight_program=${QWEN_MEMORY_PREFLIGHT_PROGRAM:-$script_directory/model-memory-preflight.sh}
+# probe answers whether the device holds it. This file serves one language
+# section and at most one reviewer, and qwen-web-launch.sh raises QWEN_ROUTER_MAX
+# to two where the reviewer exists, so every artifact it names can be resident at
+# once and the sum charges them all.
+read_image_runtime_resident_mib || exit 2
 # The named paths reach the loop through a file rather than through command
 # substitution, which field-splits a path holding a space, and the loop reads
 # from a redirection so its running total survives it.
@@ -522,13 +279,7 @@ required_vulkan_mib=$((resident_artifact_mib + image_runtime_resident_mib))
 preflight_subject=$(sed -n \
     's/^[[:space:]]*LLAMA_ARG_MODEL[[:space:]]*=[[:space:]]*//p' \
     "$web_presets" | sed -n '1p')
-if ! image_budget_report=$("$memory_preflight_program" "$preflight_subject" \
-    "$required_vulkan_mib"); then
-    printf 'the memory preflight failed to measure the device\n' >&2
-    printf '%s\n' "$image_budget_report" >&2
-    exit 2
-fi
-printf '%s\n' "$image_budget_report"
+run_image_memory_preflight "$preflight_subject" "$required_vulkan_mib" || exit 2
 printf 'image_launch budget artifacts_mib=%s runtime_mib=%s required_mib=%s sections=%s\n' \
     "$resident_artifact_mib" "$image_runtime_resident_mib" \
     "$required_vulkan_mib" "$preset_section_count"
@@ -557,14 +308,6 @@ if [ -n "$review_section" ]; then
     export QWEN_WEB_REVIEW_SECTION
 fi
 
-QWEN_IMAGE_SERVICE=1
-QWEN_IMAGE_SERVICE_PROGRAM=$image_service_program
-QWEN_IMAGE_PROFILES_JSON=$image_profiles_json
-QWEN_IMAGE_PROFILE=$preset_image_profile
-export QWEN_IMAGE_SERVICE QWEN_IMAGE_SERVICE_PROGRAM QWEN_IMAGE_PROFILES_JSON
-export QWEN_IMAGE_PROFILE QWEN_IMAGE_TOKEN_KEY_FILE
-printf 'image_launch profile=%s ledger=%s runtime=%s parameters=%s\n' \
-    "$preset_image_profile" "$preset_image_profiles" "$image_runtime_path" \
-    "$image_profiles_json"
+export_image_service_environment
 
 exec "$web_launcher" "$profile"

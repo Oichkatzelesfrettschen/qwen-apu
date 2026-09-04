@@ -6,17 +6,25 @@
 same buffer, so the claim that an arm changes the instruction stream and not the value is a
 question about two functions rather than one a device run answers.
 
-The whole space is 2**96 per value of `v_im` and it is closed by linearity rather than by
-sampling it. At a fixed `v_im` every formulation is built from constant shifts, constant
-masks, byte gathers, and unions of disjoint bit fields, and each of those is linear over
-GF(2): no operation takes the conjunction of two input bits and none carries. A linear map is
-determined by its image of a basis, so two linear maps that agree on the ninety-six
-single-bit inputs and send zero to zero agree on all 2**96. `check_superposition` establishes
-the premise the argument needs -- `f(0) == 0` and `f(a ^ b) == f(a) ^ f(b)` over random pairs,
-which fails loudly for any formulation that stops being linear -- and `check_basis` closes it.
-The random draws that follow are a redundant sample and prove nothing the basis has not.
+The whole space is 2**96 per value of `v_im`, and the argument that closes it is a basis
+argument resting on a linearity premise. At a fixed `v_im` every formulation below is written
+from constant shifts, constant masks, byte gathers, and unions of disjoint bit fields, and
+each of those is linear over GF(2): no operation takes the conjunction of two input bits and
+none carries. That premise comes from reading the expressions, and it holds for exactly as
+long as every formulation stays inside that vocabulary. A linear map is determined by its
+image of a basis, so two linear maps that agree on the ninety-six single-bit inputs and send
+zero to zero agree on all 2**96, and `check_basis` reads that image.
 
-Exit 0 where every arm is linear and matches the control on every case, 1 otherwise.
+`check_superposition` is a check on the premise rather than its proof. It draws random pairs
+and requires `f(0) == 0` and `f(a ^ b) == f(a) ^ f(b)`, which refutes a formulation that left
+the vocabulary and certifies none that stayed inside it: a nonlinear map can agree with a
+linear one on any finite sample and on every basis vector alike. A formulation added here
+earns its linearity from its own source, and a failing superposition column says that source
+was misread rather than that the draw was unlucky.
+
+Exit 0 where every arm passes the superposition check and matches the control on every basis
+case, 1 otherwise. An accepted run reports agreement over the whole space conditional on the
+linearity premise the expressions carry, which is the strongest reading the method supports.
 
 usage: scale-select-equivalence.py
 """

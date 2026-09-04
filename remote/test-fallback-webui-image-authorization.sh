@@ -226,14 +226,24 @@ grep -F 'The image did not run: ${imageOutcome.reason}.' "$fallback_ui" >/dev/nu
 # resolved against the page, and a page given none says so instead of asking
 # the router for a route it does not serve.
 grep -F 'function configuredArtifactOrigin() {' "$fallback_ui" >/dev/null
+# A loopback artifact tag is replaced over the LAN the way the broker tag is:
+# a page served to a LAN browser with that tag would otherwise read the
+# artifact from the viewing machine and show only an image that failed to
+# load.
+grep -F 'if (loadedOverLan() && !queryArtifactOrigin()' "$fallback_ui" >/dev/null
+grep -F '&& (!configured || isLoopbackOrigin(configured))) {' "$fallback_ui" >/dev/null
 grep -F "searchParams.get('artifacts')" "$fallback_ui" >/dev/null
 grep -F 'meta[name="qwen-image-artifacts"]' "$fallback_ui" >/dev/null
 grep -F 'function trustedArtifactOrigin(configured) {' "$fallback_ui" >/dev/null
-# The admitted host set is the loopback pair plus the literal address the page
-# was served from, which is what the LAN exposure binds. The set is built from
-# window.location.hostname rather than from an address pattern, so the
-# credential reaches the machine the page came from and no other.
-grep -F "const admittedHosts = ['127\\\\.0\\\\.0\\\\.1', '\\\\[::1\\\\]'];" \
+# The admitted host set is the loopback pair, where the page itself was
+# loaded from loopback, plus the exact host the page was served from, which
+# is what the LAN exposure binds. Loopback names the viewing machine rather
+# than the appliance on a LAN-loaded page, so it joins the set only there;
+# the page host is read from window.location.hostname rather than from an
+# address pattern, so the credential reaches the machine the page came from
+# and no other.
+grep -F 'const pageIsLoopback =' "$fallback_ui" >/dev/null
+grep -F "admittedHosts.push('127\\\\.0\\\\.0\\\\.1', '\\\\[::1\\\\]');" \
     "$fallback_ui" >/dev/null
 grep -F 'pageHost = (window.location.hostname' "$fallback_ui" >/dev/null
 grep -F '  return trustedArtifactOrigin(configured);' "$fallback_ui" >/dev/null
@@ -307,7 +317,7 @@ if (!promptCapMatch) throw new Error("the image prompt character cap is not decl
 const IMAGE_PROMPT_CHARACTER_CAP = Number(promptCapMatch[1]);
 
 eval(extract(
-    "function trustedArtifactOrigin(configured) {",
+    "function admittedOriginHosts() {",
     "\n\nfunction artifactOrigin() {"
 ));
 for (const [configured, expected] of [
@@ -332,19 +342,18 @@ for (const configured of [
     }
 }
 // Under the LAN exposure the page is served from a literal address and the
-// artifact listener binds the same one on its own port, so that origin joins
-// the loopback pair while every other host stays refused. The page host is
-// read from window.location, so the arm sets one.
+// artifact listener binds the same one on its own port, so that origin is
+// admitted. The page loopback is refused here: it names the viewing machine
+// rather than the appliance, and admitting it would let a crafted
+// ?artifacts=http://127.0.0.1:PORT reach a listener on the viewing machine
+// instead. The page host is read from window.location, so the arm sets one.
 globalThis.window = { location: { hostname: "192.168.1.10" } };
 if (trustedArtifactOrigin("http://192.168.1.10:41249") !== "http://192.168.1.10:41249") {
     throw new Error("the literal artifact origin of the exposed page was refused");
 }
-if (trustedArtifactOrigin("http://127.0.0.1:8181") !== "http://127.0.0.1:8181") {
-    throw new Error("the loopback artifact origin was refused under the exposure");
-}
 for (const configured of [
     "http://192.168.1.11:41249", "http://attacker.example:41249",
-    "http://192.168.1.10:41249/path",
+    "http://192.168.1.10:41249/path", "http://127.0.0.1:8181", "http://[::1]:8181",
 ]) {
     let threw = false;
     try { trustedArtifactOrigin(configured); } catch { threw = true; }
@@ -352,14 +361,48 @@ for (const configured of [
         throw new Error("an untrusted artifact origin was admitted under the exposure: " + configured);
     }
 }
-// A page served from a name admits nothing on that ground, because a name
-// resolves through the resolver the literal comparison exists to keep out.
-globalThis.window = { location: { hostname: "qwen-laptop" } };
+// The exposure also advertises an mDNS name, so a page loaded at that name
+// derives its artifact origin there. The page host is admitted whether it is
+// an address or a name: the browser already resolved it to fetch the page and
+// the bearer is stored per page origin, so the credential returns to the
+// machine that served the page. The page loopback is refused here for the
+// same reason it is under the literal exposure above, and every other host
+// stays refused too.
+globalThis.window = { location: { hostname: "qwen-test.local" } };
+if (trustedArtifactOrigin("http://qwen-test.local:41249") !== "http://qwen-test.local:41249") {
+    throw new Error("the named artifact origin of the exposed page was refused");
+}
+for (const configured of [
+    "http://qwen-other.local:41249", "http://192.168.1.10:41249",
+    "http://attacker.example:41249", "http://qwen-test.local:41249/path",
+    "http://qwen-test.local", "http://127.0.0.1:8181", "http://[::1]:8181",
+]) {
+    let threw = false;
+    try { trustedArtifactOrigin(configured); } catch { threw = true; }
+    if (!threw) {
+        throw new Error("an untrusted artifact origin was admitted under the named exposure: " + configured);
+    }
+}
+// A page served from loopback is what an ordinary, unexposed launch serves,
+// and there the loopback pair does name the appliance itself.
+globalThis.window = { location: { hostname: "127.0.0.1" } };
+if (trustedArtifactOrigin("http://127.0.0.1:8181") !== "http://127.0.0.1:8181") {
+    throw new Error("the loopback artifact origin was refused from a loopback page");
+}
+if (trustedArtifactOrigin("http://[::1]:8181") !== "http://[::1]:8181") {
+    throw new Error("the IPv6 loopback artifact origin was refused from a loopback page");
+}
+// A page served from one name admits no neighbouring name, and a hyphen in
+// the page host is escaped rather than read as a character range.
+globalThis.window = { location: { hostname: "qwen-a-b.local" } };
+if (trustedArtifactOrigin("http://qwen-a-b.local:41249") !== "http://qwen-a-b.local:41249") {
+    throw new Error("a hyphenated page host was refused its own artifact origin");
+}
 {
     let threw = false;
-    try { trustedArtifactOrigin("http://qwen-laptop:41249"); } catch { threw = true; }
+    try { trustedArtifactOrigin("http://qwenaxb.local:41249"); } catch { threw = true; }
     if (!threw) {
-        throw new Error("a named page host admitted its own artifact origin");
+        throw new Error("the hyphen in the page host was read as a character range");
     }
 }
 delete globalThis.window;
