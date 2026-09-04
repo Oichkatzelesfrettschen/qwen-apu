@@ -630,7 +630,7 @@ index 17d57d5a1..291a54a43 100644
          }
  #endif
  
-@@ -1246,7 +1270,7 @@ void write_output_files() {
+@@ -1246,6 +1270,6 @@ void write_output_files() {
  
      std::vector<std::string> btypes = {"f16", "f32"};
  
@@ -638,4 +638,3 @@ index 17d57d5a1..291a54a43 100644
 +#if defined(GGML_VULKAN_MMVQ_Q8_1_SHADERS)
      btypes.push_back("q8_1");
  #endif
- 
