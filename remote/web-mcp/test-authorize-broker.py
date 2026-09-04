@@ -985,6 +985,35 @@ class BrokerTest(unittest.TestCase):
         self.assertIn("Retry-After", headers)
         self.assertTrue(0 < int(headers["Retry-After"]) <= 60)
 
+    def test_concurrent_outstanding_image_grants_admit_exactly_the_limit(self):
+        """Two simultaneous requests cannot both pass a limit of one.
+
+        reserve_outstanding_image_grant holds one lock across the read and
+        the append, so two handler threads racing this check cannot both
+        observe zero outstanding grants before either records its own;
+        without that, both would be admitted against a limit meant to admit
+        one.
+        """
+        broker = self.launch(
+            **{
+                "--image-profile": "image-fixture-a",
+                "--image-max-outstanding-grants-per-client": 1,
+                "--lifetime": 60,
+            }
+        )
+        secret = self.session_secret()
+
+        def attempt(_index):
+            return broker.request(
+                "POST", "/grant-image", json.dumps(self.image_grant_body()),
+                self.grant_headers(secret))
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(attempt, range(8)))
+        statuses = [status for status, _, _ in results]
+        self.assertEqual(statuses.count(200), 1, statuses)
+        self.assertEqual(statuses.count(429), 7, statuses)
+
     def test_image_grant_refused_where_no_lane_is_armed(self):
         """A launch that armed no image lane signs no generation grant."""
         broker = self.launch()

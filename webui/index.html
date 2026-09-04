@@ -863,34 +863,24 @@ function artifactOrigin() {
 // qwen-capacity-policy.sh's QWEN_LAN_MAX_PROMPT_TOKENS and
 // QWEN_LAN_MAX_OUTPUT_TOKENS, which reach --n-predict (a default the
 // server applies only where a request omits max_tokens) and a clamped
-// --ctx-size. Neither bound is server-side push data the ordinary launch
-// carries, so this page reads them the way it reads the broker and
-// artifact origins: a query parameter first, then a meta tag, and no
-// numeric default when both are absent, which leaves an ordinary launch
-// sending exactly what it always sent. A caller may pass one bound
-// without the other from the URL; qwen-capacity-policy.sh requires the
-// server side to set both together, and this page bounds only the one it
-// was given.
-function configuredLanBound(paramName, metaName) {
-  let configured = '';
-  try {
-    configured = (new URL(window.location.href)).searchParams.get(paramName) || '';
-  } catch (error) {
-    configured = '';
-  }
-  if (!configured.trim()) {
-    const tag = document.querySelector(`meta[name="${metaName}"]`);
-    configured = (tag && tag.getAttribute('content')) || '';
-  }
-  configured = configured.trim();
+// --ctx-size. These two bounds are read from a meta tag alone, unlike the
+// broker and artifact origins: those two name a location the operator's own
+// browser chooses, so a query-parameter override is a same-machine
+// convenience, while a LAN token bound is a resource ceiling the launch
+// sets against every peer on the network. A query parameter is exactly the
+// input a peer being bounded controls from their own address bar, so
+// honoring one here would let the bound be raised by the traffic it exists
+// to limit; the meta tag the served page itself carries is what stays out
+// of a peer's reach.
+function configuredLanBound(metaName) {
+  const tag = document.querySelector(`meta[name="${metaName}"]`);
+  const configured = ((tag && tag.getAttribute('content')) || '').trim();
   if (!configured) return null;
   const parsed = Number.parseInt(configured, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
-const LAN_MAX_PROMPT_TOKENS =
-  configuredLanBound('lanMaxPromptTokens', 'qwen-lan-max-prompt-tokens');
-const LAN_MAX_OUTPUT_TOKENS =
-  configuredLanBound('lanMaxOutputTokens', 'qwen-lan-max-output-tokens');
+const LAN_MAX_PROMPT_TOKENS = configuredLanBound('qwen-lan-max-prompt-tokens');
+const LAN_MAX_OUTPUT_TOKENS = configuredLanBound('qwen-lan-max-output-tokens');
 
 const BROKER_SESSION_HEADER = 'X-Qwen-Web-Session';
 const STALE_SESSION_SECRET_CODE = 'stale_session_secret';
@@ -2975,21 +2965,29 @@ async function send() {
   // A LAN prompt bound is enforced here rather than left to the server: the
   // server refuses an over-large prompt only once its token count meets the
   // slot's own context (server-context.cpp), which would spend a full
-  // prefill pass finding that out. The composed prompt is what
-  // qwen-capacity-policy.sh's combined budget actually charges, so it is
-  // what this count measures, through the same ./tokenize route
-  // refreshAttachmentTokens already uses.
+  // prefill pass finding that out. The request llama-server actually
+  // processes carries every prior turn `history` already holds beside this
+  // one, so the count below concatenates all of it -- not the new turn
+  // alone, which a short message could always pass while an accumulated
+  // conversation had already grown past the bound. The concatenation omits
+  // the chat template and any tool-definition tokens the real request also
+  // carries, so it undercounts what the server sees; it is a conservative
+  // trigger for this page's own refusal rather than an exact figure, and the
+  // server's own slot-context refusal remains the final backstop.
   if (LAN_MAX_PROMPT_TOKENS != null) {
+    const composedText = [...history, { role: 'user', content }]
+      .map(message => (typeof message.content === 'string' ? message.content : ''))
+      .join('\n');
     let promptTokens = null;
     try {
-      promptTokens = await serverTokenCount(content, requestModel);
+      promptTokens = await serverTokenCount(composedText, requestModel);
     } catch { /* an unavailable tokenizer leaves the bound unenforced here; the server's own context-size refusal still applies */ }
     if (promptTokens != null && promptTokens > LAN_MAX_PROMPT_TOKENS) {
       const note = turn('limit', '');
       note.body.className = 'body meta bad';
-      note.body.textContent = `This prompt is ${promptTokens} tokens, above the ` +
-        `${LAN_MAX_PROMPT_TOKENS}-token bound this launch admits. Shorten it or ` +
-        'remove an attachment before sending.';
+      note.body.textContent = `This conversation is at least ${promptTokens} tokens, above the ` +
+        `${LAN_MAX_PROMPT_TOKENS}-token bound this launch admits. Shorten this message, ` +
+        'remove an attachment, or start a new conversation.';
       return;
     }
   }

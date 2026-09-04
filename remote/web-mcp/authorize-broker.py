@@ -49,6 +49,7 @@ one grade of approval and holds no standing permission.
 """
 
 import argparse
+import contextlib
 import hashlib
 import hmac
 import http.server
@@ -755,38 +756,47 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
                 "the session request carries no valid bearer API key"
             )
 
-    def require_outstanding_image_grant_capacity(self, now):
-        """Refuse a new image grant where the caller already holds one unexpired.
+    def reserve_outstanding_image_grant(self, now, expiry):
+        """Reserve one outstanding-grant slot, or refuse under one lock hold.
 
         image-service.py runs one generation at a time with no queue, so a
         second live grant from the same address only lets that address hold a
-        standing ticket ahead of every other peer's next job; this check runs
-        ahead of `issue_image_for_request` so a refused caller never spends the
-        per-minute buckets already charged on a grant this cap then discards.
+        standing ticket ahead of every other peer's next job. The check and
+        the reservation run inside one `with` block rather than as two
+        separate calls: two concurrent handler threads for the same client
+        would otherwise both read the same live count before either recorded
+        its own grant, and both would pass a limit of one. The reservation
+        assumes the grant it is about to sign succeeds; a caller that then
+        fails to sign or spend the buckets ahead of it must call
+        `release_outstanding_image_grant` with the same `expiry` to give the
+        slot back.
         """
         client = self.client_address[0]
         limit = self.settings.image_max_outstanding_grants_per_client
         with self.settings.outstanding_image_grants_lock:
             live = [
-                expiry
-                for expiry in self.settings.outstanding_image_grants.get(client, ())
-                if expiry > now
+                stored
+                for stored in self.settings.outstanding_image_grants.get(client, ())
+                if stored > now
             ]
-            self.settings.outstanding_image_grants[client] = live
             if len(live) >= limit:
+                self.settings.outstanding_image_grants[client] = live
                 retry_after = max(1, round(min(live) - now))
                 raise OutstandingImageGrantExhausted(
                     f"client {client} already holds {len(live)} outstanding "
                     f"image grant(s); {limit} is the limit until one expires",
                     retry_after,
                 )
+            live.append(expiry)
+            self.settings.outstanding_image_grants[client] = live
 
-    def record_outstanding_image_grant(self, expiry):
+    def release_outstanding_image_grant(self, expiry):
+        """Give back a reservation whose grant was never actually issued."""
         client = self.client_address[0]
         with self.settings.outstanding_image_grants_lock:
-            self.settings.outstanding_image_grants.setdefault(client, []).append(
-                expiry
-            )
+            live = self.settings.outstanding_image_grants.get(client, [])
+            with contextlib.suppress(ValueError):
+                live.remove(expiry)
 
     def read_body(self):
         try:
@@ -980,10 +990,14 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
             self.require_session_secret()
             payload = self.read_body()
             if image:
-                self.require_outstanding_image_grant_capacity(started_at)
-                fields = image_grant.parse_image_request(payload)
-                token = issue_image_for_request(self.settings, fields)
-                self.record_outstanding_image_grant(started_at + self.settings.lifetime)
+                reserved_expiry = started_at + self.settings.lifetime
+                self.reserve_outstanding_image_grant(started_at, reserved_expiry)
+                try:
+                    fields = image_grant.parse_image_request(payload)
+                    token = issue_image_for_request(self.settings, fields)
+                except BaseException:
+                    self.release_outstanding_image_grant(reserved_expiry)
+                    raise
             else:
                 fields = parse_request_arguments(payload)
                 token = issue_for_request(self.settings, fields)

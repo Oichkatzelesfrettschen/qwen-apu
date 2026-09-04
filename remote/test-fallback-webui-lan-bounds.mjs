@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 
 // The page reads QWEN_LAN_MAX_PROMPT_TOKENS and QWEN_LAN_MAX_OUTPUT_TOKENS
-// through the same query-parameter-then-meta-tag cascade it already uses for
-// the broker and artifact origins, with no built-in numeric default: an
-// ordinary launch names neither and this page must send exactly what it
-// always sent. This harness loads the inline script once per scenario, since
-// the two bounds are consts resolved once at script load from the page's own
-// location and meta tags.
+// from a meta tag alone -- unlike the broker and artifact origins, which also
+// admit a query-parameter override, these two bounds are a resource ceiling
+// against every peer on the network rather than a same-machine location
+// convenience, and a query parameter is exactly the input the peer being
+// bounded controls from their own address bar. This harness loads the inline
+// script once per scenario, since the two bounds are consts resolved once at
+// script load from the page's own meta tags.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -91,6 +92,9 @@ globalThis.webuiLanBoundsTest = {
     $('#input').value = text;
     await send();
   },
+  pushHistory(role, content) {
+    history.push({ role, content });
+  },
   logTexts() {
     return logEl.children.map(child => child.textContent);
   },
@@ -104,7 +108,7 @@ globalThis.webuiLanBoundsTest = {
 // does: the feature roster is absent, one model answers the tool probe, and its
 // properties name a 24576-token context. requestModel is model-A once boot
 // settles, which is what buildRequestBody and send() below read.
-async function loadPage({ locationHref, metaContents = {} }) {
+async function loadPage({ metaContents = {} } = {}) {
   const elements = new Map();
   const document = {
     createElement() {
@@ -145,7 +149,11 @@ async function loadPage({ locationHref, metaContents = {} }) {
       alert() {},
       localStorage: deniedStorage,
       sessionStorage: deniedStorage,
-      location: { href: locationHref },
+      // configuredLanBound reads no query parameter at all, so window.location
+      // carries none of the LAN bound state this harness varies; it is
+      // present only because other resolvers (broker and artifact origin)
+      // still read it.
+      location: { href: 'http://127.0.0.1:8080/' },
     },
   });
   vm.runInContext(`${inlineScript[1]}\n${testInterface}`, browserContext, {
@@ -168,12 +176,10 @@ async function loadPage({ locationHref, metaContents = {} }) {
 }
 
 // An ordinary launch names neither bound: the meta tags are absent (the page
-// ships none by default) and the URL carries no query parameter, so both
-// consts read null and buildRequestBody sends its unmodified default.
+// ships none by default), so both consts read null and buildRequestBody
+// sends its unmodified default.
 {
-  const { testApi } = await loadPage({
-    locationHref: 'http://127.0.0.1:8080/',
-  });
+  const { testApi } = await loadPage();
   { const bounds = testApi.bounds(); assert.equal(bounds.prompt, null); assert.equal(bounds.output, null); }
   const body = await testApi.requestBody();
   assert.equal(body.max_tokens, 512, 'no LAN bound leaves the page default');
@@ -182,7 +188,6 @@ async function loadPage({ locationHref, metaContents = {} }) {
 // A meta tag alone narrows the output bound below the page's own default.
 {
   const { testApi } = await loadPage({
-    locationHref: 'http://127.0.0.1:8080/',
     metaContents: {
       'qwen-lan-max-prompt-tokens': '1000',
       'qwen-lan-max-output-tokens': '100',
@@ -193,28 +198,22 @@ async function loadPage({ locationHref, metaContents = {} }) {
   assert.equal(body.max_tokens, 100, 'the LAN output bound narrows max_tokens');
 }
 
-// A query parameter overrides the meta tag default for one visit, and a
-// bound above the page's own default leaves that default in place.
+// A bound above the page's own default leaves that default in place.
 {
   const { testApi } = await loadPage({
-    locationHref:
-      'http://127.0.0.1:8080/?lanMaxOutputTokens=800&lanMaxPromptTokens=50',
-    metaContents: {
-      'qwen-lan-max-prompt-tokens': '1000',
-      'qwen-lan-max-output-tokens': '100',
-    },
+    metaContents: { 'qwen-lan-max-output-tokens': '800' },
   });
-  { const bounds = testApi.bounds(); assert.equal(bounds.prompt, 50); assert.equal(bounds.output, 800); }
   const body = await testApi.requestBody();
   assert.equal(body.max_tokens, 512, 'a bound above the page default leaves it unchanged');
 }
 
-// A malformed or non-positive value reads as no bound at all, on both the
-// query parameter and the meta tag path.
+// A malformed or non-positive meta tag value reads as no bound at all.
 {
   const { testApi } = await loadPage({
-    locationHref: 'http://127.0.0.1:8080/?lanMaxPromptTokens=not-a-number',
-    metaContents: { 'qwen-lan-max-output-tokens': '0' },
+    metaContents: {
+      'qwen-lan-max-prompt-tokens': 'not-a-number',
+      'qwen-lan-max-output-tokens': '0',
+    },
   });
   { const bounds = testApi.bounds(); assert.equal(bounds.prompt, null); assert.equal(bounds.output, null); }
 }
@@ -223,7 +222,6 @@ async function loadPage({ locationHref, metaContents = {} }) {
 // request is sent, and the refusal is visible in the transcript.
 {
   const { testApi, takeRequest } = await loadPage({
-    locationHref: 'http://127.0.0.1:8080/',
     metaContents: { 'qwen-lan-max-prompt-tokens': '10' },
   });
   const sendPromise = testApi.send('a prompt the fixture will count as oversized');
@@ -235,7 +233,7 @@ async function loadPage({ locationHref, metaContents = {} }) {
   assert.equal(testApi.historyLength(), 0, 'the oversized prompt never enters history');
   const texts = testApi.logTexts();
   assert.ok(
-    texts.some(text => text.includes('20 tokens') && text.includes('10-token bound')),
+    texts.some(text => text.includes('at least 20 tokens') && text.includes('10-token bound')),
     `no oversized-prompt refusal in the transcript: ${JSON.stringify(texts)}`
   );
 }
@@ -243,7 +241,6 @@ async function loadPage({ locationHref, metaContents = {} }) {
 // A prompt inside the bound proceeds to the chat completion request as usual.
 {
   const { testApi, takeRequest } = await loadPage({
-    locationHref: 'http://127.0.0.1:8080/',
     metaContents: { 'qwen-lan-max-prompt-tokens': '1000' },
   });
   const sendPromise = testApi.send('a short prompt');
@@ -257,6 +254,33 @@ async function loadPage({ locationHref, metaContents = {} }) {
   completionRequest.reject(new Error('the harness ends the turn here'));
   await sendPromise;
   assert.equal(testApi.historyLength(), 1, 'the admitted prompt enters history');
+}
+
+// A short new message is still refused when the accumulated conversation
+// history it joins has already grown past the bound: the count covers every
+// prior turn, not the new message alone.
+{
+  const { testApi, takeRequest } = await loadPage({
+    metaContents: { 'qwen-lan-max-prompt-tokens': '10' },
+  });
+  testApi.pushHistory('user', 'an earlier turn');
+  testApi.pushHistory('assistant', 'an earlier reply');
+  const historyBefore = testApi.historyLength();
+  const sendPromise = testApi.send('hi');
+  await flushPromises();
+  const tokenizeRequest = takeRequest(
+    request => request.url === './tokenize', 'prompt tokenization');
+  const tokenizedText = JSON.parse(tokenizeRequest.options.body).content;
+  assert.ok(
+    tokenizedText.includes('an earlier turn') && tokenizedText.includes('an earlier reply'),
+    `the tokenized text omits accumulated history: ${tokenizedText}`
+  );
+  tokenizeRequest.resolve(jsonResponse({ tokens: new Array(15).fill(1) }));
+  await sendPromise;
+  assert.equal(
+    testApi.historyLength(), historyBefore,
+    'a short new message is still refused once accumulated history exceeds the bound'
+  );
 }
 
 console.log('fallback_webui_lan_bounds=accepted');
