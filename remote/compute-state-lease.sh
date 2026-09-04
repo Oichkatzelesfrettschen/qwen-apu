@@ -19,8 +19,12 @@ set -eu
 # ends the transaction non-zero, because a machine left on a forced level is an
 # incident rather than a warning.
 #
-# Two profiles are defined, both against the measurements
-# evidence/raven2-vulkan-kernel-census/dpm-authority/ retains on this part:
+# Eight profiles are defined below the census and package-envelope campaigns'
+# own, plus the power/CPU/clock factorial campaign's nine profiles documented
+# where they are declared in resolve_profile and registered in
+# evidence/power-factorial/README.md. The first two rest on the measurements
+# evidence/raven2-vulkan-kernel-census/dpm-authority/ retains on this part, and
+# the six package arms on the campaign evidence/power-envelope/ registers:
 #
 #   measure-fixed                manual, pp_dpm_sclk level 2, pp_dpm_mclk level
 #                                2, delivered GFXCLK 1100 MHz, FCLK held at 933
@@ -32,6 +36,29 @@ set -eu
 #                                or 1067 MHz, and the child at nice 0. The
 #                                serving candidate that trades desktop headroom
 #                                for decode.
+#   measure-fixed-package-default   measure-fixed's execution state with the
+#                                power term arming on the platform's own budget:
+#                                it writes no limit, snapshots the baseline, and
+#                                proves the thermal ceiling. The campaign's
+#                                control arm.
+#   measure-fixed-package-20w    the same state with STAPM and PPT slow at
+#                                20000 mW and PPT fast held at the platform's
+#                                25000 mW.
+#   measure-fixed-package-25w    the same state at 25000 mW, the top of the
+#                                3050U's published 12 to 25 W cTDP range.
+#   serve-fixed-package-default, serve-fixed-package-20w,
+#   serve-fixed-package-25w      the same three budgets under the same clocks
+#                                with the child at nice 0 and I/O class
+#                                best-effort, for a command that drives the
+#                                guarded launch chain. That chain owns the
+#                                served process priorities itself:
+#                                qwen-capacity-policy.sh puts llama-server on
+#                                core 0 at nice 19, while
+#                                monitor-qwen-runtime.sh renices itself to 0 and
+#                                exits where it cannot, so a served command
+#                                started at nice 19 ends its own session with
+#                                reason=monitor_exited ahead of the first
+#                                request.
 #
 # Three prohibitions are encoded rather than documented. `high` and
 # `profile_peak` pin the delivered graphics clock at 1100 MHz and collapse the
@@ -43,6 +70,14 @@ set -eu
 # takes 2 to unmerge every merged page, which costs the host the sharing it
 # already paid for, so this transaction writes 0 alone and refuses to start
 # against a snapshot reading 2 rather than writing that value back at restore.
+#
+# The package budget is the one authority the SMU rather than the kernel owns.
+# `/sys/class/powercap` creates no `constraint_*` file on this part and the
+# amdgpu hwmon carries a `PPT` label with no `power1_cap` beside it, so a
+# sustained-power arm reaches the firmware through power-envelope.sh and its
+# ryzenadj binary. A profile that names no envelope leaves that term out of the
+# transaction entirely, which is what keeps the clock profiles runnable on a
+# machine where the binary is absent.
 #
 # `pp_dpm_mclk` is a misleading sysfs name on SMU10: the kernel obtains its
 # value with PPSMC_MSG_GetFclkFrequency, so its states are dynamic fabric clocks
@@ -68,6 +103,12 @@ usage() {
     printf 'usage: %s PROFILE COMMAND [ARG...]\n' "$0" >&2
     printf '       %s status\n' "$0" >&2
     printf 'profiles: measure-fixed serve-performance-candidate\n' >&2
+    printf '          measure-fixed-package-default measure-fixed-package-20w measure-fixed-package-25w\n' >&2
+    printf '          serve-fixed-package-default serve-fixed-package-20w serve-fixed-package-25w\n' >&2
+    printf '          serve-auto-baseline serve-fixed-cpu-capped serve-fixed-cpu-capped-fclk-range\n' >&2
+    printf '          serve-fixed-cpu-capped-fclk-range-ksm-running serve-fixed-fclk-range\n' >&2
+    printf '          measure-fixed-cpu-capped-fclk-range\n' >&2
+    printf '          serve-fixed-cpu-capped-fclk-range-package-25w\n' >&2
     exit 2
 }
 
@@ -86,6 +127,22 @@ ksm_run_node=${QWEN_KSM_RUN_NODE:-$sysfs_root/kernel/mm/ksm/run}
 state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
 workload_lease=${QWEN_VULKAN_WORKLOAD_LOCK:-$state_directory/vulkan-workload.lock}
 lease_verifier=${QWEN_EXTERNAL_LEASE_VERIFIER:-$script_directory/verify-external-vulkan-lease.py}
+power_envelope_command=${QWEN_POWER_ENVELOPE_COMMAND:-$script_directory/power-envelope.sh}
+power_envelope_snapshot=${QWEN_POWER_ENVELOPE_SNAPSHOT:-$state_directory/power-envelope-snapshot.tsv}
+# The envelope snapshot is claimed atomically by whoever creates it, and this
+# token is what marks the claim as this transaction's. The restore acts on a
+# snapshot carrying this token alone, so a concurrent campaign that claimed the
+# envelope between this transaction's preflight and its apply keeps its own
+# budget rather than having it returned by a transaction that never wrote it.
+power_envelope_owner=compute-state-lease.$$.$(LC_ALL=C od -An -N8 -tx1 /dev/urandom 2>/dev/null |
+    tr -d ' \n')
+cpu_frequency_cap_command=${QWEN_CPU_FREQUENCY_CAP_COMMAND:-$script_directory/cpu-frequency-cap.sh}
+cpu_frequency_cap_snapshot=${QWEN_CPU_FREQUENCY_CAP_SNAPSHOT:-$state_directory/cpu-frequency-cap-snapshot.tsv}
+# The cpu-frequency-cap snapshot is claimed the way the power-envelope
+# snapshot is: this token marks the claim as this transaction's, so its
+# restore acts on a snapshot carrying this token alone.
+cpu_frequency_cap_owner=cpu-frequency-cap.$$.$(LC_ALL=C od -An -N8 -tx1 /dev/urandom 2>/dev/null |
+    tr -d ' \n')
 renice_command=${QWEN_RENICE_COMMAND:-/usr/bin/renice}
 ionice_command=${QWEN_IONICE_COMMAND:-/usr/bin/ionice}
 taskset_command=${QWEN_TASKSET_COMMAND:-/usr/bin/taskset}
@@ -121,6 +178,21 @@ profile_level_field() {
 }
 
 resolve_profile() {
+    # The power envelope and the CPU frequency cap are the two terms a profile
+    # may leave unnamed. An empty value keeps the transaction to the clocks
+    # (and, for the cap, to whatever the platform holds), so a machine without
+    # ryzenadj or without cpupower still runs every profile that states no
+    # package budget or no cap; a named value makes the binary, the credential,
+    # and the read-back preconditions of the whole transaction.
+    profile_power_envelope=''
+    profile_cpu_frequency_cap=''
+    # `auto` leaves the governor selecting among the `_PSS` table on its own and
+    # writes no sclk/mclk level, so the clock-pinning writes and the clock-proof
+    # deadline both stay out of that profile's transaction; a profile states
+    # `profile_write_clock_selection=0` to take that path, and the flag is reset
+    # to 1 for every profile below it so a later addition does not inherit it by
+    # accident.
+    profile_write_clock_selection=1
     case $1 in
         measure-fixed)
             profile_dpm_level=manual
@@ -139,6 +211,203 @@ resolve_profile() {
             profile_child_io_class=best-effort
             profile_child_cpu_list=0,1
             profile_ksm_run=0
+            ;;
+        # The three package-budget arms share `measure-fixed`'s whole execution
+        # state and differ in the SMU's sustained and package power limits
+        # alone, so a pair of them measures the budget rather than the machine.
+        # The default arm names `platform-default`, which writes no limit and
+        # still snapshots the platform's own baseline and proves the thermal
+        # ceiling, so the control runs the same code path as the candidates.
+        measure-fixed-package-default)
+            profile_dpm_level=manual
+            profile_sclk_levels='2=1100'
+            profile_mclk_levels='2=933'
+            profile_child_nice=19
+            profile_child_io_class=idle
+            profile_child_cpu_list=0,1
+            profile_ksm_run=0
+            profile_power_envelope=platform-default
+            ;;
+        measure-fixed-package-20w)
+            profile_dpm_level=manual
+            profile_sclk_levels='2=1100'
+            profile_mclk_levels='2=933'
+            profile_child_nice=19
+            profile_child_io_class=idle
+            profile_child_cpu_list=0,1
+            profile_ksm_run=0
+            profile_power_envelope=package-20w
+            ;;
+        measure-fixed-package-25w)
+            profile_dpm_level=manual
+            profile_sclk_levels='2=1100'
+            profile_mclk_levels='2=933'
+            profile_child_nice=19
+            profile_child_io_class=idle
+            profile_child_cpu_list=0,1
+            profile_ksm_run=0
+            profile_power_envelope=package-25w
+            ;;
+        # The served package arms carry the same clocks, the same memory
+        # scanner, and the same three budgets and leave the child at nice 0,
+        # because the guarded launch chain rather than this transaction owns the
+        # served process priorities. `qwen-capacity-policy.sh` puts llama-server
+        # itself on core 0 at nice 19, and `monitor-qwen-runtime.sh` renices
+        # itself to 0 and exits where it cannot, so a served command started at
+        # nice 19 ends its own session with `reason=monitor_exited` before the
+        # first request. A harness that samples beside the server applies nice
+        # 19 to its own samplers rather than inheriting it from the transaction.
+        serve-fixed-package-default)
+            profile_dpm_level=manual
+            profile_sclk_levels='2=1100'
+            profile_mclk_levels='2=933'
+            profile_child_nice=0
+            profile_child_io_class=best-effort
+            profile_child_cpu_list=0,1
+            profile_ksm_run=0
+            profile_power_envelope=platform-default
+            ;;
+        serve-fixed-package-20w)
+            profile_dpm_level=manual
+            profile_sclk_levels='2=1100'
+            profile_mclk_levels='2=933'
+            profile_child_nice=0
+            profile_child_io_class=best-effort
+            profile_child_cpu_list=0,1
+            profile_ksm_run=0
+            profile_power_envelope=package-20w
+            ;;
+        serve-fixed-package-25w)
+            profile_dpm_level=manual
+            profile_sclk_levels='2=1100'
+            profile_mclk_levels='2=933'
+            profile_child_nice=0
+            profile_child_io_class=best-effort
+            profile_child_cpu_list=0,1
+            profile_ksm_run=0
+            profile_power_envelope=package-25w
+            ;;
+        # The coupled factorial campaign's P0 through P4, and the factor-pair
+        # alternates read against P4 as the campaign's best arm. Every rung
+        # that runs through run-power-envelope-arm.sh (measure-served-decode.sh,
+        # therefore qwen-launch.sh, therefore monitor-qwen-runtime.sh) carries
+        # nice 0: monitor-qwen-runtime.sh unconditionally renices itself to 0
+        # and exits where it cannot, and lowering a nice level needs
+        # CAP_SYS_NICE this transaction's unprivileged child does not hold, the
+        # same constraint serve-fixed-package-* is already built against. P1 is
+        # `serve-fixed-package-default` above -- GFX 1100, FCLK 933, no cap, the
+        # platform's own package limits, still snapshotted through
+        # `platform-default` so the SMU baseline is provable even where nothing
+        # is capped. P2 through P4 cap the two Zen+ cores near their `_PSS`
+        # base clock through cpu-frequency-cap.sh's `base-clock-cap` profile:
+        # `cpupower frequency-set -u 2.3GHz` on both cores plus the boost node
+        # written 0, both restored. The hypothesis this campaign runs against
+        # is that capping CPU boost during steady decode frees package and
+        # thermal budget for GFX/FCLK, registered with its falsifier in
+        # evidence/power-factorial/README.md; "CPU maximum plus GPU maximum" is
+        # not assumed here; evidence/raven2-vulkan-kernel-census/dpm-authority/
+        # already measured the opposite pairing (`high`/`profile_peak` pinning
+        # GFXCLK at 1100 MHz) collapse the starred pp_dpm_mclk fabric state to
+        # 400 MHz.
+        serve-auto-baseline)
+            profile_dpm_level=auto
+            profile_sclk_levels=''
+            profile_mclk_levels=''
+            profile_child_nice=0
+            profile_child_io_class=best-effort
+            profile_child_cpu_list=0,1
+            profile_ksm_run=0
+            profile_write_clock_selection=0
+            profile_power_envelope=platform-default
+            ;;
+        serve-fixed-cpu-capped)
+            profile_dpm_level=manual
+            profile_sclk_levels='2=1100'
+            profile_mclk_levels='2=933'
+            profile_child_nice=0
+            profile_child_io_class=best-effort
+            profile_child_cpu_list=0,1
+            profile_ksm_run=0
+            profile_cpu_frequency_cap=base-clock-cap
+            profile_power_envelope=platform-default
+            ;;
+        serve-fixed-cpu-capped-fclk-range)
+            profile_dpm_level=manual
+            profile_sclk_levels='2=1100'
+            profile_mclk_levels='2=933 3=1067'
+            profile_child_nice=0
+            profile_child_io_class=best-effort
+            profile_child_cpu_list=0,1
+            profile_ksm_run=0
+            profile_cpu_frequency_cap=base-clock-cap
+            profile_power_envelope=platform-default
+            ;;
+        # The KSM factor-pair: P3's own state with the scanner left running
+        # (1) instead of paused (0), read against P3 to isolate the scanner
+        # term alone. The pairs read against P3 rather than P4, because a
+        # package-limit increase is a scope change the operator gates on
+        # telemetry (see P4 below): P3 is the strongest arm this campaign
+        # runs unconditionally.
+        serve-fixed-cpu-capped-fclk-range-ksm-running)
+            profile_dpm_level=manual
+            profile_sclk_levels='2=1100'
+            profile_mclk_levels='2=933 3=1067'
+            profile_child_nice=0
+            profile_child_io_class=best-effort
+            profile_child_cpu_list=0,1
+            profile_ksm_run=1
+            profile_cpu_frequency_cap=base-clock-cap
+            profile_power_envelope=platform-default
+            ;;
+        # The CPU-cap factor-pair: P3's own state with no cap at all, read
+        # against P3 to isolate the cap term alone.
+        serve-fixed-fclk-range)
+            profile_dpm_level=manual
+            profile_sclk_levels='2=1100'
+            profile_mclk_levels='2=933 3=1067'
+            profile_child_nice=0
+            profile_child_io_class=best-effort
+            profile_child_cpu_list=0,1
+            profile_ksm_run=0
+            profile_power_envelope=platform-default
+            ;;
+        # The nice factor-pair alternate. Nice 19 cannot run through the
+        # served harness at all (monitor-qwen-runtime.sh's self-renice would
+        # refuse), so this rung is read against P3 through a direct
+        # llama-bench command instead of measure-served-decode.sh, the same
+        # substitution evidence/raven2-vulkan-kernel-census/dpm-authority/'s
+        # own nice-probe makes; run-power-factorial-arm.sh's `bench` instrument
+        # is what runs it. It is named with the `measure-` prefix that every
+        # other nice-19 profile in this file carries, rather than `serve-`,
+        # because nothing here drives the guarded launch chain.
+        measure-fixed-cpu-capped-fclk-range)
+            profile_dpm_level=manual
+            profile_sclk_levels='2=1100'
+            profile_mclk_levels='2=933 3=1067'
+            profile_child_nice=19
+            profile_child_io_class=idle
+            profile_child_cpu_list=0,1
+            profile_ksm_run=0
+            profile_cpu_frequency_cap=base-clock-cap
+            profile_power_envelope=platform-default
+            ;;
+        # P4: a package-limit increase over P3, run only where an earlier
+        # arm's own telemetry shows the platform's stock budget binding (a
+        # PPT value at its limit, or the STAPM value converging on 15 W over
+        # the 200 s averaging window during a sustained run). It is never a
+        # default arm; run-power-factorial-campaign.sh gates it behind
+        # QWEN_POWER_FACTORIAL_PACKAGE_RECEIPT and evidence/power-factorial/
+        # README.md registers the gate.
+        serve-fixed-cpu-capped-fclk-range-package-25w)
+            profile_dpm_level=manual
+            profile_sclk_levels='2=1100'
+            profile_mclk_levels='2=933 3=1067'
+            profile_child_nice=0
+            profile_child_io_class=best-effort
+            profile_child_cpu_list=0,1
+            profile_ksm_run=0
+            profile_cpu_frequency_cap=base-clock-cap
+            profile_power_envelope=package-25w
             ;;
         high | profile_peak)
             printf '%s pins the delivered graphics clock and collapses the starred pp_dpm_mclk fabric state to 400 MHz, which decoded below auto on this part; it is not a profile here\n' \
@@ -293,6 +562,18 @@ if [ "$1" = status ]; then
     fi
     # caller_nice is the invoking shell's own level, which this subcommand never
     # changes; a profile's term is named on the transaction's own record.
+    if [ -x "$power_envelope_command" ]; then
+        power_envelope_line=$(QWEN_POWER_ENVELOPE_SNAPSHOT="$power_envelope_snapshot" \
+            "$power_envelope_command" status 2>/dev/null) || power_envelope_line=''
+    else
+        power_envelope_line=''
+    fi
+    if [ -x "$cpu_frequency_cap_command" ]; then
+        cpu_frequency_cap_line=$(QWEN_CPU_FREQUENCY_CAP_SNAPSHOT="$cpu_frequency_cap_snapshot" \
+            "$cpu_frequency_cap_command" status 2>/dev/null) || cpu_frequency_cap_line=''
+    else
+        cpu_frequency_cap_line=''
+    fi
     printf 'compute_state=live dpm_level=%s sclk_level=%s sclk_mhz=%s mclk_level=%s mclk_mhz=%s gfxclk_delivered_mhz=%s ksm_run=%s lease=%s caller_nice=%s\n' \
         "$(read_dpm_level "$drm_device/power_dpm_force_performance_level")" \
         "$(read_sclk_index "$drm_device")" \
@@ -303,6 +584,8 @@ if [ "$1" = status ]; then
         "$(read_ksm_run "$ksm_run_node")" \
         "$lease_state" \
         "$(read_process_nice "$$")"
+    printf '%s\n' "${power_envelope_line:-power_envelope=unavailable reason=term_absent}"
+    printf '%s\n' "${cpu_frequency_cap_line:-cpu_frequency_cap=unavailable reason=term_absent}"
     exit 0
 fi
 
@@ -362,6 +645,64 @@ if ! command -v sudo >/dev/null 2>&1 || ! sudo -n true 2>/dev/null; then
     printf 'this transaction writes %s and %s through sudo -n and never prompts; run `sudo -v` first\n' \
         "$drm_device/power_dpm_force_performance_level" "$ksm_run_node" >&2
     exit 2
+fi
+
+# A profile that names a package budget makes the power term a precondition of
+# the whole transaction rather than a step inside it. The writer, the credential
+# it needs, and a readable power-metrics table are proven here, ahead of the
+# lease and ahead of the first clock write, so a machine that cannot carry the
+# budget costs no state change at all.
+if [ -n "$profile_power_envelope" ]; then
+    if [ ! -f "$power_envelope_command" ] || [ ! -x "$power_envelope_command" ]; then
+        printf 'profile %s names power envelope %s and the term is not executable: %s\n' \
+            "$profile_name" "$profile_power_envelope" "$power_envelope_command" >&2
+        exit 2
+    fi
+    power_envelope_preflight=$(QWEN_POWER_ENVELOPE_SNAPSHOT="$power_envelope_snapshot" \
+        "$power_envelope_command" status 2>&1) || power_envelope_preflight=''
+    case $power_envelope_preflight in
+        'power_envelope=live'*' snapshot=absent') ;;
+        'power_envelope=live'*' snapshot=present')
+            printf 'profile %s names power envelope %s and a snapshot from an earlier apply is still live: restore it with `%s restore` before starting another transaction (%s)\n' \
+                "$profile_name" "$profile_power_envelope" "$power_envelope_command" \
+                "$power_envelope_snapshot" >&2
+            exit 2
+            ;;
+        *)
+            printf 'profile %s names power envelope %s and the term answers: %s\n' \
+                "$profile_name" "$profile_power_envelope" \
+                "${power_envelope_preflight:-nothing}" >&2
+            exit 2
+            ;;
+    esac
+fi
+
+# A profile that names a CPU frequency cap makes the same kind of precondition
+# of the cap term: the writer, the credential, and the read-back preconditions
+# are proven here, ahead of the lease and ahead of the first clock write.
+if [ -n "$profile_cpu_frequency_cap" ]; then
+    if [ ! -f "$cpu_frequency_cap_command" ] || [ ! -x "$cpu_frequency_cap_command" ]; then
+        printf 'profile %s names CPU frequency cap %s and the term is not executable: %s\n' \
+            "$profile_name" "$profile_cpu_frequency_cap" "$cpu_frequency_cap_command" >&2
+        exit 2
+    fi
+    cpu_frequency_cap_preflight=$(QWEN_CPU_FREQUENCY_CAP_SNAPSHOT="$cpu_frequency_cap_snapshot" \
+        "$cpu_frequency_cap_command" status 2>&1) || cpu_frequency_cap_preflight=''
+    case $cpu_frequency_cap_preflight in
+        'cpu_frequency_cap=live'*' snapshot=absent') ;;
+        'cpu_frequency_cap=live'*' snapshot=present')
+            printf 'profile %s names CPU frequency cap %s and a snapshot from an earlier apply is still live: restore it with `%s restore` before starting another transaction (%s)\n' \
+                "$profile_name" "$profile_cpu_frequency_cap" "$cpu_frequency_cap_command" \
+                "$cpu_frequency_cap_snapshot" >&2
+            exit 2
+            ;;
+        *)
+            printf 'profile %s names CPU frequency cap %s and the term answers: %s\n' \
+                "$profile_name" "$profile_cpu_frequency_cap" \
+                "${cpu_frequency_cap_preflight:-nothing}" >&2
+            exit 2
+            ;;
+    esac
 fi
 
 for required_surface in power_dpm_force_performance_level pp_dpm_sclk pp_dpm_mclk; do
@@ -461,11 +802,18 @@ fi
 # The lease proof names this pid, this descriptor, and a revision the verifier
 # validates in its 40-hex form. The runtime tree carries its own manifest on the
 # appliance, where this tree is a copy rather than a checkout.
+# `sync-runtime-tree.sh` writes that manifest beside `remote/` rather than
+# inside it, so the parent is read as well as the script's own directory and a
+# runtime copy answers with the head it was synced from.
 transaction_revision=${QWEN_COMPUTE_STATE_REVISION:-}
-if [ -z "$transaction_revision" ] && [ -r "$script_directory/runtime-tree-manifest.tsv" ]; then
+for manifest_candidate in "$script_directory/runtime-tree-manifest.tsv" \
+    "$script_directory/../runtime-tree-manifest.tsv"; do
+    if [ -n "$transaction_revision" ] || [ ! -r "$manifest_candidate" ]; then
+        continue
+    fi
     transaction_revision=$(awk -F'\t' '$1 == "git_head" { print $2; exit }' \
-        "$script_directory/runtime-tree-manifest.tsv")
-fi
+        "$manifest_candidate")
+done
 if [ -z "$transaction_revision" ]; then
     transaction_revision=$(git -C "$script_directory" rev-parse HEAD 2>/dev/null) || \
         transaction_revision=''
@@ -534,6 +882,12 @@ state_record_new=$state_record.new
     printf 'applied_sclk_selection\t%s\n' "$profile_sclk_selection"
     printf 'applied_mclk_selection\t%s\n' "$profile_mclk_selection"
     printf 'applied_ksm_run\t%s\n' "$profile_ksm_run"
+    printf 'power_envelope\t%s\n' "${profile_power_envelope:--}"
+    printf 'power_envelope_owner\t%s\n' "${power_envelope_owner:--}"
+    printf 'power_envelope_snapshot\t%s\n' "$power_envelope_snapshot"
+    printf 'cpu_frequency_cap\t%s\n' "${profile_cpu_frequency_cap:--}"
+    printf 'cpu_frequency_cap_owner\t%s\n' "${cpu_frequency_cap_owner:--}"
+    printf 'cpu_frequency_cap_snapshot\t%s\n' "$cpu_frequency_cap_snapshot"
     printf 'applied_child_nice\t%s\n' "${harness_nice:-unreadable}"
     printf 'applied_child_cpu_list\t%s\n' "${harness_cpu_list:-unreadable}"
     printf 'applied_child_io_class\t%s\n' "${harness_io_class:-unreadable}"
@@ -629,13 +983,42 @@ finish_transaction() {
     restoration_finished=1
     [ "$apply_started" -eq 1 ] || return 0
 
+    restoration_failures=''
+    # The reversal runs in the reverse of the application order, so the package
+    # budget the SMU holds is returned ahead of the memory scanner and the
+    # performance level. power-envelope.sh owns its own snapshot and verifies
+    # its own read-back, so its status is the whole claim here; an apply that
+    # refused before writing the snapshot leaves nothing to reverse.
+    if [ -n "$profile_power_envelope" ] &&
+        [ "$(LC_ALL=C awk -F'\t' '$1 == "owner" { print $2; exit }' \
+            "$power_envelope_snapshot" 2>/dev/null)" = "$power_envelope_owner" ]; then
+        if ! QWEN_POWER_ENVELOPE_SNAPSHOT="$power_envelope_snapshot" \
+            QWEN_POWER_ENVELOPE_OWNER="$power_envelope_owner" \
+            "$power_envelope_command" restore >&2; then
+            restoration_failures="${restoration_failures}power_envelope=unreturned(profile=$profile_power_envelope) "
+        fi
+    fi
+
+    # The CPU cap returns ahead of the memory scanner and the performance
+    # level, the same position the package budget holds: cpu-frequency-cap.sh
+    # owns its own snapshot and read-back, so its status is the whole claim
+    # here.
+    if [ -n "$profile_cpu_frequency_cap" ] &&
+        [ "$(LC_ALL=C awk -F'\t' '$1 == "owner" { print $2; exit }' \
+            "$cpu_frequency_cap_snapshot" 2>/dev/null)" = "$cpu_frequency_cap_owner" ]; then
+        if ! QWEN_CPU_FREQUENCY_CAP_SNAPSHOT="$cpu_frequency_cap_snapshot" \
+            QWEN_CPU_FREQUENCY_CAP_OWNER="$cpu_frequency_cap_owner" \
+            "$cpu_frequency_cap_command" restore >&2; then
+            restoration_failures="${restoration_failures}cpu_frequency_cap=unreturned(profile=$profile_cpu_frequency_cap) "
+        fi
+    fi
+
     if [ "$snapshot_ksm_run" != "$profile_ksm_run" ]; then
         printf '%s\n' "$snapshot_ksm_run" | sudo -n tee "$ksm_run_node" \
             >/dev/null 2>&1 || true
     fi
     census_engine_clock_restore "$drm_device" "$snapshot_state"
 
-    restoration_failures=''
     if ! restore_observed=$(await_restored_value read_dpm_level \
         "$drm_device/power_dpm_force_performance_level" "$snapshot_dpm_level"); then
         restoration_failures="${restoration_failures}dpm_level=${restore_observed:-unreadable}(want=$snapshot_dpm_level) "
@@ -675,9 +1058,10 @@ finish_transaction() {
         printf 'restoration=failed profile=%s fields=%s record=%s\n' \
             "$profile_name" "${restoration_failures% }" "$state_record"
     else
-        printf 'restoration=held profile=%s dpm_level=%s selections=%s sclk_level=%s mclk_level=%s ksm_run=%s\n' \
+        printf 'restoration=held profile=%s dpm_level=%s selections=%s sclk_level=%s mclk_level=%s ksm_run=%s power_envelope=%s cpu_frequency_cap=%s\n' \
             "$profile_name" "$snapshot_dpm_level" "$restored_selections" \
-            "$snapshot_sclk_index" "$snapshot_mclk_index" "$snapshot_ksm_run"
+            "$snapshot_sclk_index" "$snapshot_mclk_index" "$snapshot_ksm_run" \
+            "${profile_power_envelope:--}" "${profile_cpu_frequency_cap:--}"
     fi
 }
 
@@ -705,58 +1089,96 @@ trap 'exit 143' TERM
 
 apply_started=1
 census_engine_clock_write_level "$profile_dpm_level" "$drm_device"
-applied_sclk=$(census_engine_clock_select pp_dpm_sclk "$drm_device" \
-    "$profile_sclk_selection" 1)
-# The fabric selection is written and read back rather than required: the
-# firmware caps a 1067 MHz hard minimum at 933 and stars what it chose, so the
-# expectation below is the set of frequencies the profile's levels name.
-applied_mclk=$(census_engine_clock_select pp_dpm_mclk "$drm_device" \
-    "$profile_mclk_selection" 0)
+if [ "$profile_write_clock_selection" -eq 1 ]; then
+    applied_sclk=$(census_engine_clock_select pp_dpm_sclk "$drm_device" \
+        "$profile_sclk_selection" 1)
+    # The fabric selection is written and read back rather than required: the
+    # firmware caps a 1067 MHz hard minimum at 933 and stars what it chose, so
+    # the expectation below is the set of frequencies the profile's levels
+    # name.
+    applied_mclk=$(census_engine_clock_select pp_dpm_mclk "$drm_device" \
+        "$profile_mclk_selection" 0)
+else
+    # `auto` writes the level word alone and leaves the governor to move the
+    # star on its own schedule, so neither table is written here.
+    applied_sclk=auto
+    applied_mclk=auto
+fi
 if [ "$snapshot_ksm_run" != "$profile_ksm_run" ]; then
     census_engine_clock_write "$profile_ksm_run" "$ksm_run_node"
 fi
-printf 'compute_state_applied=%s dpm_level=%s sclk=%s mclk=%s ksm_run=%s\n' \
+# The CPU cap is applied ahead of the package budget and the clock proof, so
+# both terms are live before the delivered graphics clock is read. A refusal
+# here ends the transaction through the trap, which returns the cap the apply
+# had already written.
+if [ -n "$profile_cpu_frequency_cap" ]; then
+    QWEN_CPU_FREQUENCY_CAP_SNAPSHOT="$cpu_frequency_cap_snapshot" \
+        QWEN_CPU_FREQUENCY_CAP_OWNER="$cpu_frequency_cap_owner" \
+        "$cpu_frequency_cap_command" apply "$profile_cpu_frequency_cap"
+fi
+# The package budget is applied ahead of the clock proof, so the delivered
+# graphics clock is read under the profile's whole state rather than under its
+# clock half. A refusal here ends the transaction through the trap, which
+# returns the budget the apply had already written.
+if [ -n "$profile_power_envelope" ]; then
+    QWEN_POWER_ENVELOPE_SNAPSHOT="$power_envelope_snapshot" \
+        QWEN_POWER_ENVELOPE_OWNER="$power_envelope_owner" \
+        "$power_envelope_command" apply "$profile_power_envelope"
+fi
+printf 'compute_state_applied=%s dpm_level=%s sclk=%s mclk=%s ksm_run=%s power_envelope=%s cpu_frequency_cap=%s\n' \
     "$profile_name" "$profile_dpm_level" "$applied_sclk" "$applied_mclk" \
-    "$profile_ksm_run"
+    "$profile_ksm_run" "${profile_power_envelope:--}" "${profile_cpu_frequency_cap:--}"
 
 # The profile is a claim about what the part delivers, so it is proven before
-# the command runs. The graphics half reads hwmon and the fabric half reads the
-# starred pp_dpm_mclk step, and each is named separately so a refusal states
-# which one missed.
+# the command runs, except under `auto`: the governor there is free to move
+# the star on its own schedule and no fixed frequency is a met or unmet
+# expectation, so the observed values are recorded rather than gated. The
+# graphics half reads hwmon and the fabric half reads the starred pp_dpm_mclk
+# step, and each is named separately so a refusal states which one missed.
 clock_attempt=0
 observed_gfxclk=unavailable
 observed_fclk=unavailable
-while :; do
+if [ "$profile_write_clock_selection" -eq 0 ]; then
     observed_gfxclk=$(read_delivered_gfxclk_mhz)
     observed_fclk=$(read_selected_field "$drm_device/pp_dpm_mclk" value)
-    gfxclk_ok=0
-    fclk_ok=0
-    if within_tolerance "$observed_gfxclk" "$profile_required_gfxclk_mhz" \
-        "$clock_tolerance"; then
-        gfxclk_ok=1
-    fi
-    if value_in_set "$observed_fclk" "$profile_required_fclk_mhz"; then
-        fclk_ok=1
-    fi
-    if [ "$gfxclk_ok" -eq 1 ] && [ "$fclk_ok" -eq 1 ]; then
-        clock_expectation=reached
-        break
-    fi
-    clock_attempt=$((clock_attempt + 1))
-    if [ "$clock_attempt" -ge "$((clock_deadline_s * 10))" ]; then
-        break
-    fi
-    sleep "$poll_interval_s"
-done
+    clock_expectation=unverified
+    printf 'clock_expectation=unverified profile=%s gfxclk_mhz=%s fclk_mhz=%s\n' \
+        "$profile_name" "$observed_gfxclk" "$observed_fclk"
+else
+    while :; do
+        observed_gfxclk=$(read_delivered_gfxclk_mhz)
+        observed_fclk=$(read_selected_field "$drm_device/pp_dpm_mclk" value)
+        gfxclk_ok=0
+        fclk_ok=0
+        if within_tolerance "$observed_gfxclk" "$profile_required_gfxclk_mhz" \
+            "$clock_tolerance"; then
+            gfxclk_ok=1
+        fi
+        if value_in_set "$observed_fclk" "$profile_required_fclk_mhz"; then
+            fclk_ok=1
+        fi
+        if [ "$gfxclk_ok" -eq 1 ] && [ "$fclk_ok" -eq 1 ]; then
+            clock_expectation=reached
+            break
+        fi
+        clock_attempt=$((clock_attempt + 1))
+        if [ "$clock_attempt" -ge "$((clock_deadline_s * 10))" ]; then
+            break
+        fi
+        sleep "$poll_interval_s"
+    done
+fi
 
-if [ "$clock_expectation" != reached ]; then
+if [ "$profile_write_clock_selection" -eq 1 ] && [ "$clock_expectation" != reached ]; then
     printf 'clock_expectation=unreached profile=%s gfxclk_mhz=%s required_gfxclk_mhz=%s fclk_mhz=%s required_fclk_mhz=%s deadline_s=%s\n' \
         "$profile_name" "$observed_gfxclk" "$profile_required_gfxclk_mhz" \
         "$observed_fclk" "$profile_required_fclk_mhz" "$clock_deadline_s" >&2
     exit 3
 fi
-printf 'clock_expectation=reached profile=%s gfxclk_mhz=%s fclk_mhz=%s\n' \
-    "$profile_name" "$observed_gfxclk" "$observed_fclk"
+if [ "$profile_write_clock_selection" -eq 1 ]; then
+    printf 'clock_expectation=reached profile=%s gfxclk_mhz=%s fclk_mhz=%s\n' \
+        "$profile_name" "$observed_gfxclk" "$observed_fclk"
+fi
 
 # The command runs under the closed environment census_arm_exec applies, so an
 # ambient GGML_VK_*, RADV_*, VK_*, LLAMA_*, or QWEN_* setting reaches no
