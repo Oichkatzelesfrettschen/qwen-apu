@@ -50,6 +50,27 @@ ln -s "$script_directory/../evidence" "$work/evidence"
 # check-runtime-tree.sh reads a manifest beside the tree root and passes an
 # unmanifested copy, which the harness is.
 cp "$script_directory/check-runtime-tree.sh" "$harness/check-runtime-tree.sh"
+
+# The interface-binding restriction reads ip -j addr and nmcli through
+# remote/web-lan-exposure.sh's own overridable probes, so every LAN exposure
+# arm below runs against a fixture interface carrying 192.168.1.10 rather
+# than this host's own network.
+lan_interface_probe=$harness/fake-ip
+cat >"$lan_interface_probe" <<'EOF'
+#!/bin/sh
+printf '[{"ifindex":9,"ifname":"eth-test","address":"aa:bb:cc:dd:ee:ff","addr_info":[{"family":"inet","local":"192.168.1.10","prefixlen":24}]}]\n'
+EOF
+lan_connection_probe=$harness/fake-nmcli
+cat >"$lan_connection_probe" <<'EOF'
+#!/bin/sh
+printf '11111111-1111-1111-1111-111111111111:test-lan:eth-test\n'
+EOF
+chmod 755 "$lan_interface_probe" "$lan_connection_probe"
+QWEN_LAN_INTERFACE_PROBE="$lan_interface_probe -j addr"
+QWEN_LAN_CONNECTION_PROBE="$lan_connection_probe -t -f UUID,NAME,DEVICE connection show --active"
+QWEN_WEB_LAN_TRUSTED_CONNECTIONS=11111111-1111-1111-1111-111111111111
+export QWEN_LAN_INTERFACE_PROBE QWEN_LAN_CONNECTION_PROBE \
+    QWEN_WEB_LAN_TRUSTED_CONNECTIONS
 cat >"$harness/qwen-teardown.sh" <<'EOF'
 #!/bin/sh
 exit 0
@@ -611,7 +632,7 @@ fi
 # The opt-in names one routable IPv4 literal and requires the bearer file
 # whole, which is the policy remote/web-lan-exposure.sh states for the web
 # launcher and this launch applies unchanged.
-if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
+if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 \
     QWEN_WEB_LAN_ADDRESS=192.168.1.10 \
     >"$work/lan.log" 2>"$work/lan.err"; then
     outcome=ok
@@ -630,7 +651,7 @@ fi
 # leads with it, because a DHCP lease moves the literal and the name does not.
 # The key line stays off a redirected stdout, which is what this arm's own
 # output file is.
-if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
+if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 \
     QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=qwen-test.local \
     >"$work/lan-named.log" 2>"$work/lan-named.err"; then
     outcome=ok
@@ -657,6 +678,7 @@ fi
 rm -f "$api_key_file"
 if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
     QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_OPEN=0 \
+    QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 \
     >"$work/lan-fresh-key.log" 2>"$work/lan-fresh-key.err"; then
     outcome=ok
     [ -s "$api_key_file" ] || outcome=key_not_minted
@@ -734,7 +756,7 @@ if command -v script >/dev/null 2>&1; then
     cat >"$work/tty-launch.sh" <<TTY
 #!/bin/sh
 set -eu
-exec env QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \\
+exec env QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 \\
     QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=qwen-test.local \\
     QWEN_WEBUI_STATE_DIRECTORY=$state_directory QWEN_LAUNCH_RECORD=$record \\
     QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$merged_preset \\
@@ -763,7 +785,7 @@ fi
 
 # A name outside the letter-digit-hyphen set names no host a browser resolves,
 # so the launch refuses it rather than adding an entry no request matches.
-if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
+if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 \
     QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME='qwen test.local' \
     >"$work/lan-badname.log" 2>"$work/lan-badname.err"; then
     report lan_exposure_name_refused admitted
@@ -778,7 +800,7 @@ fi
 # A bare hostname carries no .local suffix and registers in the ordinary
 # resolver, so the launch refuses it rather than admitting a name DNS
 # rebinding could steer to this address.
-if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
+if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 \
     QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=qwen-test \
     >"$work/lan-barehost.log" 2>"$work/lan-barehost.err"; then
     report lan_exposure_bare_hostname_refused admitted
@@ -793,7 +815,7 @@ fi
 # A public domain resolves through the ordinary recursive resolver, which is
 # the DNS rebinding surface the closed .local set exists to close, so the
 # launch refuses it by name.
-if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
+if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 \
     QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=attacker.example.com \
     >"$work/lan-publicdomain.log" 2>"$work/lan-publicdomain.err"; then
     report lan_exposure_public_domain_refused admitted
@@ -808,7 +830,7 @@ fi
 # An uppercase label registers in the ordinary resolver the way a lowercase
 # one does, so the launch refuses it rather than reshaping it into a name the
 # operator never typed.
-if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
+if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 \
     QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=QWEN-Test.LOCAL \
     >"$work/lan-case.log" 2>"$work/lan-case.err"; then
     report lan_exposure_name_refuses_uppercase admitted
@@ -822,7 +844,7 @@ fi
 
 # A trailing dot names the DNS root explicitly, a form the multicast lookup
 # does not need, so the launch refuses it.
-if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
+if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 \
     QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=qwen-test.local. \
     >"$work/lan-trailingdot.log" 2>"$work/lan-trailingdot.err"; then
     report lan_exposure_trailing_dot_refused admitted
@@ -841,6 +863,7 @@ fi
 # never typed.
 if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
     QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=LOCALHOST \
+    QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 \
     >"$work/lan-badname-case.log" 2>"$work/lan-badname-case.err"; then
     report lan_exposure_localhost_case_variant_refused admitted
 elif grep -q 'not a hostname a browser resolves on the link' \
@@ -884,7 +907,7 @@ fi
 
 # The admitted open exposure leaves QWEN_REQUIRE_API_KEY at 0 across the tmux
 # boundary and states on stdout what every peer on the network can then do.
-if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
+if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 \
     QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=qwen-test.local \
     QWEN_WEB_LAN_OPEN=1 \
     >"$work/lan-open.log" 2>"$work/lan-open.err"; then
@@ -902,7 +925,7 @@ fi
 
 # The open opt-in meets both research overrides on the exposure's own terms,
 # since it names the exposure and the exposure refuses each.
-if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
+if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 \
     QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_OPEN=1 \
     QWEN_ROUTER_INCLUDE_QUARANTINE=1 \
     >"$work/lan-open-quarantine.log" 2>"$work/lan-open-quarantine.err"; then
@@ -915,7 +938,7 @@ else
     cat "$work/lan-open-quarantine.err" >&2
 fi
 
-if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 \
+if run_launch "$merged_preset" QWEN_BIND_HOST=0.0.0.0 QWEN_WEB_LAN=1 QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 \
     QWEN_WEB_LAN_ADDRESS=qwen-laptop \
     >"$work/lan-name.log" 2>"$work/lan-name.err"; then
     report lan_address_name_refused admitted

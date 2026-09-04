@@ -602,13 +602,14 @@ secret_file=$(sed -n 's/^broker secret_file=//p' "$output_directory/image-sessio
 # The artifact listener binds an ephemeral port, so its address is read from the
 # line the session recorded rather than assumed.
 artifact_listener=$(sed -n 's/^image_service_identity .*listener=//p' "$output_directory/image-session.status" | sed -n '1p')
-# The session records the address the service printed. Under the exposure that
-# is the wildcard, and the page reads the artifact route over the lane literal,
-# so the origin is composed from the recorded port and the lane host.
+# The session records the address the service printed. remote/web-lan-exposure.sh
+# binds the router, the broker, and the artifact listener to the one exposure
+# literal rather than every interface, so under the exposure that is the lane
+# host itself, and the page reads the artifact route over that same literal.
 artifact_port=${artifact_listener##*:}
 artifact_origin=http://$lane_host:$artifact_port
 if [ "$lane_exposure" = 1 ]; then
-    expected_artifact_listener="0.0.0.0:$artifact_port"
+    expected_artifact_listener="$lane_host:$artifact_port"
 else
     expected_artifact_listener="127.0.0.1:$artifact_port"
 fi

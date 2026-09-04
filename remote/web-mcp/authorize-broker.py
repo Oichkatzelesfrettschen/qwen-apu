@@ -113,17 +113,27 @@ def loopback_host(value):
 
 
 def bind_host(value):
-    """Return a bind literal, admitting the wildcard for the exposure opt-in.
+    """Return a bind literal: a loopback literal, the wildcard, or an IPv4 literal.
 
-    `run` pairs this with `--lan-exposure`: the wildcard is admitted here and
-    refused there unless the opt-in names the literal a LAN reader reaches, so
-    a caller cannot widen the bind by itself.
+    `run` carries the cross-argument rule this type alone cannot state: the
+    wildcard reaches the socket only beside `--lan-exposure` and
+    `--open-all-interfaces` together, and any other non-loopback literal must
+    equal `--lan-exposure` exactly, so a caller cannot bind an address the
+    exposure opt-in never named. This admits the same IPv4 syntax
+    `exposed_host` admits, since the interface-binding restriction asks this
+    process to bind the exposure's own literal rather than every interface.
     """
     if value in LOOPBACK_HOSTS or value == WILDCARD_HOST:
         return value
+    parts = value.split(".")
+    if len(parts) == 4 and all(
+        part.isdigit() and len(part) <= 3 and 0 <= int(part) <= 255 for part in parts
+    ):
+        return value
     raise argparse.ArgumentTypeError(
-        f"the broker binds a loopback literal or {WILDCARD_HOST}; {value!r} is "
-        f"refused. Admitted hosts: {', '.join((*LOOPBACK_HOSTS, WILDCARD_HOST))}"
+        f"the broker binds a loopback literal, {WILDCARD_HOST}, or an IPv4 "
+        f"literal; {value!r} is refused. Admitted hosts: "
+        f"{', '.join((*LOOPBACK_HOSTS, WILDCARD_HOST))}, or an IPv4 literal"
     )
 
 
@@ -1072,6 +1082,12 @@ def build_parser():
         "--lan-exposure",
     )
     parser.add_argument(
+        "--open-all-interfaces", action="store_true",
+        help="admit --host 0.0.0.0, binding every interface rather than the "
+        "one --lan-exposure literal lives on; the ordinary exposure binds "
+        "that literal alone",
+    )
+    parser.add_argument(
         "--token-key-file", default=os.environ.get("QWEN_WEB_TOKEN_KEY_FILE", "")
     )
     parser.add_argument(
@@ -1130,6 +1146,29 @@ def run(argv):
             f"--host {WILDCARD_HOST} serves the network, so --lan-exposure "
             "names the routable literal a reader reaches and the Host header "
             "and bearer are gated on\n"
+        )
+        return 2
+    # The interface-binding restriction asks this process to bind the
+    # exposure's own literal rather than every interface; the wildcard is a
+    # second explicit decision beside naming the exposure, and any other
+    # literal binds an address the exposure never named.
+    if arguments.host == WILDCARD_HOST and not arguments.open_all_interfaces:
+        sys.stderr.write(
+            f"--host {WILDCARD_HOST} binds every interface, and only "
+            "--open-all-interfaces admits that rather than the "
+            "--lan-exposure literal alone\n"
+        )
+        return 2
+    if (
+        arguments.host not in LOOPBACK_HOSTS
+        and arguments.host != WILDCARD_HOST
+        and arguments.host != arguments.lan_exposure
+    ):
+        sys.stderr.write(
+            f"--host {arguments.host} binds an address --lan-exposure never "
+            f"named ({arguments.lan_exposure or '<unset>'}); the bind is a "
+            "loopback literal, that literal, or the wildcard under "
+            "--open-all-interfaces\n"
         )
         return 2
     # The name widens the Host set alone, and the open opt-in removes a

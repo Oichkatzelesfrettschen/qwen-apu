@@ -285,14 +285,17 @@ class BrokerTest(unittest.TestCase):
         self.fail(f"the server returned no tool result: {completed.stderr}")
 
     def test_the_broker_refuses_a_bind_outside_loopback(self):
-        """A literal outside the loopback pair and the wildcard binds nothing.
+        """A non-IPv4 host binds nothing; the type check refuses it outright.
 
         The wildcard has its own arm: it reaches the socket only beside
-        --lan-exposure, which test_the_wildcard_bind_requires_the_exposure_opt_in
-        measures, so the refusal there names the missing opt-in rather than the
-        admitted host set.
+        --lan-exposure and --open-all-interfaces, which
+        test_the_wildcard_bind_requires_the_exposure_opt_in measures, so the
+        refusal there names the missing opt-in rather than the admitted host
+        set. An IPv4 literal outside the loopback pair is syntactically valid
+        and its own arm below measures the cross-argument refusal it meets
+        instead: it names an address --lan-exposure never granted.
         """
-        for host in ("localhost", "192.168.1.10", "::"):
+        for host in ("localhost", "::"):
             with self.subTest(host=host):
                 completed = subprocess.run(
                     [
@@ -311,8 +314,33 @@ class BrokerTest(unittest.TestCase):
                     text=True,
                 )
                 self.assertEqual(completed.returncode, 2)
-                self.assertIn("binds a loopback literal or", completed.stderr)
+                self.assertIn(
+                    "binds a loopback literal, 0.0.0.0, or an IPv4 literal",
+                    completed.stderr,
+                )
                 self.assertEqual(completed.stdout, "")
+
+    def test_the_broker_refuses_a_literal_the_exposure_never_named(self):
+        """A syntactically valid IPv4 literal still binds nothing unannounced."""
+        completed = subprocess.run(
+            [
+                sys.executable,
+                BROKER_PATH,
+                "--host",
+                "192.168.1.10",
+                "--state-dir",
+                self.state_directory,
+                "--token-key-file",
+                self.token_key_path,
+                "--origin",
+                ORIGIN,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("--lan-exposure never named", completed.stderr)
+        self.assertEqual(completed.stdout, "")
 
     def run_broker_expecting_refusal(self, token_key_file, expected_message):
         completed = subprocess.run(
@@ -439,6 +467,11 @@ class BrokerTest(unittest.TestCase):
         for description, origin in (
             ("foreign", "http://localhost:8080"),
             ("absent", None),
+            # A cross-origin request from an opaque origin (a sandboxed
+            # iframe, a data: URL, a file: page) sends the literal string
+            # "null" rather than omitting the header, and it names no page
+            # this launch served.
+            ("null", "null"),
         ):
             with self.subTest(origin=description):
                 sent = self.grant_headers()
@@ -933,6 +966,26 @@ class BrokerTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 2, completed.stderr)
         self.assertIn("--lan-exposure", completed.stderr)
 
+    def test_the_wildcard_bind_requires_open_all_interfaces_beside_the_exposure(self):
+        """--lan-exposure alone still leaves the wildcard bind refused."""
+        completed = subprocess.run(
+            [
+                sys.executable, BROKER_PATH,
+                "--host", "0.0.0.0",  # noqa: S104 -- the refusal under test
+                "--lan-exposure", EXPOSED_ADDRESS,
+                "--state-dir", self.state_directory,
+                "--token-key-file", self.token_key_path,
+                "--api-key-file", self.api_key_path,
+                "--origin", ORIGIN,
+            ],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            timeout=STOP_WAIT_SECONDS,
+        )
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("--open-all-interfaces", completed.stderr)
+
     def test_the_exposure_admits_its_literal_and_refuses_every_other_host(self):
         """The Host set gains exactly one literal beside the loopback ones."""
         broker = self.launch(**{"--lan-exposure": EXPOSED_ADDRESS})
@@ -1258,7 +1311,11 @@ class BrokerTest(unittest.TestCase):
     def test_the_exposure_refuses_a_non_loopback_peer_spelling_the_loopback_host(self):
         """A spoofed loopback Host buys nothing once the peer is not loopback."""
         broker = self.launch(
-            **{"--lan-exposure": EXPOSED_ADDRESS, "--host": "0.0.0.0"}
+            **{
+                "--lan-exposure": EXPOSED_ADDRESS,
+                "--host": "0.0.0.0",
+                "--open-all-interfaces": True,
+            }
         )
         status, _, body = self.loopback_range_request(
             broker, "GET", "/health", {"Host": f"127.0.0.1:{broker.port}"}

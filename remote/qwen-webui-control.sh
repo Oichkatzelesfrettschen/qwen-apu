@@ -413,6 +413,10 @@ case $action in
                               QWEN_WEB_BROKER_ORIGIN \
                               QWEN_WEB_LAN QWEN_WEB_LAN_ADDRESS \
                               QWEN_WEB_LAN_NAME QWEN_WEB_LAN_OPEN \
+                              QWEN_WEB_LAN_OPEN_ALL_INTERFACES \
+                              QWEN_WEB_LAN_IFINDEX QWEN_WEB_LAN_IFNAME \
+                              QWEN_WEB_LAN_MAC QWEN_WEB_LAN_PREFIXLEN \
+                              QWEN_WEB_LAN_NM_UUID QWEN_WEB_LAN_NM_NAME \
                               QWEN_REQUIRE_API_KEY \
                               QWEN_WEB_AUTHORIZER_READY \
                               QWEN_WEB_SEARXNG QWEN_SEARXNG_PROGRAM \

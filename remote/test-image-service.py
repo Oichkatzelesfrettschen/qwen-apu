@@ -1282,6 +1282,19 @@ class ImageServiceTest(unittest.TestCase):
         )
         self.assertEqual(status, 403)
 
+    def test_the_artifact_listener_serves_no_state_changing_route(self):
+        """The listener registers GET and OPTIONS alone; POST reaches nothing.
+
+        The generation grant and the tool call travel through the router's
+        `/tools` proxy and this process's own control socket, not through this
+        HTTP listener, so there is no POST route here for an Origin allowlist
+        to gate: `BaseHTTPRequestHandler` answers an unimplemented verb with
+        501 rather than routing it to a handler.
+        """
+        session = self.start()
+        status, _, _ = session.authorized_http("/health", method="POST")
+        self.assertEqual(status, 501)
+
     def test_the_wildcard_bind_requires_the_exposure_opt_in(self):
         """--http-host 0.0.0.0 alone widens nothing."""
         directory = tempfile.mkdtemp(dir=self.temporary.name)
@@ -1310,6 +1323,66 @@ class ImageServiceTest(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 2, completed.stderr)
         self.assertIn("--lan-exposure", completed.stderr)
+
+    def test_the_wildcard_bind_requires_open_all_interfaces_beside_the_exposure(self):
+        """--lan-exposure alone still leaves the wildcard bind refused."""
+        directory = tempfile.mkdtemp(dir=self.temporary.name)
+        state_directory = os.path.join(directory, "state")
+        os.makedirs(state_directory, mode=0o700)
+        api_key_path = os.path.join(directory, "api.key")
+        with open(api_key_path, "w", encoding="ascii") as handle:
+            handle.write(API_KEY + "\n")
+        os.chmod(api_key_path, 0o600)
+        radv_icd_path = os.path.join(directory, "fake-radv-icd.json")
+        with open(radv_icd_path, "w", encoding="ascii") as handle:
+            handle.write("{}\n")
+        completed = subprocess.run(
+            [
+                sys.executable, SERVICE_PATH,
+                "--state-dir", state_directory,
+                "--api-key-file", api_key_path,
+                "--origin", PAGE_ORIGIN,
+                "--http-host", "0.0.0.0",  # noqa: S104 -- the refusal under test
+                "--http-port", "0",
+                "--lan-exposure", EXPOSED_ADDRESS,
+            ],
+            env={**os.environ, "QWEN_RADV_ICD": radv_icd_path},
+            capture_output=True,
+            text=True,
+            timeout=STARTUP_SECONDS,
+        )
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("--open-all-interfaces", completed.stderr)
+
+    def test_a_literal_the_exposure_never_named_is_refused(self):
+        """A syntactically valid IPv4 bind still needs the exposure's own say."""
+        directory = tempfile.mkdtemp(dir=self.temporary.name)
+        state_directory = os.path.join(directory, "state")
+        os.makedirs(state_directory, mode=0o700)
+        api_key_path = os.path.join(directory, "api.key")
+        with open(api_key_path, "w", encoding="ascii") as handle:
+            handle.write(API_KEY + "\n")
+        os.chmod(api_key_path, 0o600)
+        radv_icd_path = os.path.join(directory, "fake-radv-icd.json")
+        with open(radv_icd_path, "w", encoding="ascii") as handle:
+            handle.write("{}\n")
+        completed = subprocess.run(
+            [
+                sys.executable, SERVICE_PATH,
+                "--state-dir", state_directory,
+                "--api-key-file", api_key_path,
+                "--origin", PAGE_ORIGIN,
+                "--http-host", "192.0.2.11",
+                "--http-port", "0",
+                "--lan-exposure", EXPOSED_ADDRESS,
+            ],
+            env={**os.environ, "QWEN_RADV_ICD": radv_icd_path},
+            capture_output=True,
+            text=True,
+            timeout=STARTUP_SECONDS,
+        )
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("--lan-exposure never named", completed.stderr)
 
     def test_a_non_finite_artifact_read_timeout_is_refused(self):
         """inf parses as a float but socket.settimeout(inf) raises OverflowError."""

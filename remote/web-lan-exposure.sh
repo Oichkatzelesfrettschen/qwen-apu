@@ -66,6 +66,28 @@
 # checkpoint with a recorded device failure stays off the LAN, and a section
 # serving a depth no run has filled and decoded is validated rather than
 # exposed.
+#
+# The bind host defaults to the exposure literal alone, so the router, the
+# broker, and the artifact listener answer on the one interface that address
+# lives on. `QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1` is a third explicit decision
+# that widens the bind to every interface; naming it is what admits
+# `QWEN_BIND_HOST=0.0.0.0`, and the launcher prints the widened bind loudly
+# rather than folding it into the ordinary exposure line.
+#
+# The interface carrying the exposure literal is read through `ip -j addr`
+# and joined to its NetworkManager connection through
+# `nmcli -t -f UUID,NAME,DEVICE connection show --active`, so the exposure
+# line records the interface index, name, MAC, prefix length, and connection
+# UUID and name beside the literal a peer reaches. `QWEN_WEB_LAN_OPEN=1`
+# removes the bearer, so an operator who plugs the exposure literal onto an
+# untrusted link -- a hotel network, a phone hotspot -- would otherwise open
+# every route to it with nothing standing between a reader and the page.
+# `QWEN_WEB_LAN_TRUSTED_CONNECTIONS` closes that: a colon-separated list of
+# NetworkManager connection UUIDs an operator declares trusted. A declared
+# list gates both modes, so a bearer-protected launch on an interface outside
+# it still refuses; an absent list refuses the open opt-in alone, since the
+# bearer is what makes an authenticated launch on an undeclared connection
+# survive the same exposure.
 
 refuse_web_lan_exposure() {
     printf 'the LAN exposure opt-in %s\n' "$1" >&2
@@ -172,6 +194,99 @@ web_lan_address_is_literal() {
     '
 }
 
+# Print the interface identity carrying ADDRESS as key=value lines, or return
+# failure where no interface holds it. `ip -j addr` reports one JSON object
+# per interface with the link's own MAC under "address" and each configured
+# address under "addr_info"; `nmcli -t -f UUID,NAME,DEVICE` binds that
+# interface name to the NetworkManager connection carrying it, since the
+# trusted-connection list an operator declares names the connection rather
+# than the transient interface. `QWEN_LAN_INTERFACE_PROBE` and
+# `QWEN_LAN_CONNECTION_PROBE` name replacement commands so a test states the
+# answer instead of reading the host it runs on; an unmatched device or a
+# non-NetworkManager host prints empty nm_uuid and nm_name fields rather than
+# failing, since a declared trusted list is what turns that gap into a
+# refusal.
+web_lan_interface_report() {
+    web_lan_report_address=$1
+    web_lan_interface_probe=${QWEN_LAN_INTERFACE_PROBE:-'ip -j addr'}
+    web_lan_connection_probe=${QWEN_LAN_CONNECTION_PROBE:-'nmcli -t -f UUID,NAME,DEVICE connection show --active'}
+    web_lan_interface_json=$($web_lan_interface_probe 2>/dev/null) || return 1
+    web_lan_connection_lines=$($web_lan_connection_probe 2>/dev/null) || \
+        web_lan_connection_lines=''
+    python3 -c "$web_lan_interface_report_python" \
+        "$web_lan_report_address" "$web_lan_connection_lines" \
+        "$web_lan_interface_json"
+}
+
+web_lan_interface_report_python=$(cat <<'PYEOF'
+import json
+import sys
+
+address = sys.argv[1]
+connection_lines = sys.argv[2]
+raw_json = sys.argv[3]
+
+try:
+    interfaces = json.loads(raw_json)
+except ValueError:
+    sys.exit(1)
+
+match = None
+prefixlen = ""
+for interface in interfaces:
+    for entry in interface.get("addr_info", []):
+        if entry.get("family") == "inet" and entry.get("local") == address:
+            match = interface
+            prefixlen = str(entry.get("prefixlen", ""))
+            break
+    if match is not None:
+        break
+
+if match is None:
+    sys.exit(1)
+
+ifindex = match.get("ifindex", "")
+ifname = match.get("ifname", "")
+mac = match.get("address", "")
+
+nm_uuid = ""
+nm_name = ""
+for line in connection_lines.splitlines():
+    fields = line.split(":")
+    if len(fields) < 3:
+        continue
+    device = fields[-1]
+    uuid = fields[0]
+    name = ":".join(fields[1:-1])
+    if device == ifname:
+        nm_uuid = uuid
+        nm_name = name
+        break
+
+print("ifindex=%s" % ifindex)
+print("ifname=%s" % ifname)
+print("mac=%s" % mac)
+print("prefixlen=%s" % prefixlen)
+print("nm_uuid=%s" % nm_uuid)
+# The session's status file is space-delimited key=value fields, and a
+# NetworkManager connection name commonly carries a space of its own
+# ("Wired connection 1"), which would split into extra fields under that
+# convention and read as several keys rather than one. Run-fold every space
+# in the name to an underscore here, at the one place that reads it, so
+# every consumer of QWEN_WEB_LAN_NM_NAME and the recorded lan_interface line
+# reads the identical single token.
+print("nm_name=%s" % "_".join(nm_name.split()))
+PYEOF
+)
+
+# Return success where CANDIDATE names one entry of a colon-separated list.
+web_lan_connection_is_trusted() {
+    case ":$2:" in
+        *":$1:"*) [ -n "$1" ] ;;
+        *) return 1 ;;
+    esac
+}
+
 # Validate the opt-in against the preset and the API key file, then export the
 # three variables the launcher, qwen-webui-control.sh, and the session read.
 # The caller passes the preset path and the API key path it resolved itself.
@@ -182,11 +297,67 @@ admit_web_lan_exposure() {
         refuse_web_lan_exposure \
             "names address ${QWEN_WEB_LAN_ADDRESS:-<unset>}, which is not a routable IPv4 literal"
     fi
+    case ${QWEN_WEB_LAN_OPEN_ALL_INTERFACES:-0} in
+        0 | 1) ;;
+        *)
+            refuse_web_lan_exposure \
+                "reads QWEN_WEB_LAN_OPEN_ALL_INTERFACES=${QWEN_WEB_LAN_OPEN_ALL_INTERFACES}, which must be 0 or 1"
+            ;;
+    esac
+    web_lan_open_all_interfaces=${QWEN_WEB_LAN_OPEN_ALL_INTERFACES:-0}
     web_lan_bind_host=${QWEN_BIND_HOST:-$QWEN_WEB_LAN_ADDRESS}
-    if [ "$web_lan_bind_host" != "$QWEN_WEB_LAN_ADDRESS" ] &&
-        [ "$web_lan_bind_host" != 0.0.0.0 ]; then
+    if [ "$web_lan_bind_host" = 0.0.0.0 ]; then
+        if [ "$web_lan_open_all_interfaces" != 1 ]; then
+            refuse_web_lan_exposure \
+                "binds 0.0.0.0, and only QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 admits every interface rather than $QWEN_WEB_LAN_ADDRESS alone"
+        fi
+        printf 'QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 binds every interface; the ordinary exposure binds %s alone\n' \
+            "$QWEN_WEB_LAN_ADDRESS" >&2
+    elif [ "$web_lan_bind_host" != "$QWEN_WEB_LAN_ADDRESS" ]; then
         refuse_web_lan_exposure \
-            "binds $web_lan_bind_host where the exposure names $QWEN_WEB_LAN_ADDRESS; QWEN_BIND_HOST is that literal or 0.0.0.0"
+            "binds $web_lan_bind_host where the exposure names $QWEN_WEB_LAN_ADDRESS; QWEN_BIND_HOST is that literal, unset, or 0.0.0.0 under QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1"
+    fi
+    # A second loopback-range literal (127.0.0.2 and beyond) is the documented
+    # test convenience above, not a link this machine plugs into: the whole
+    # 127.0.0.0/8 block routes through `lo` without a per-address interface,
+    # so no `ip -j addr` row names one and no NetworkManager connection
+    # carries it. Interface identity and the trusted-connection gate apply to
+    # a routable literal alone.
+    case $QWEN_WEB_LAN_ADDRESS in
+        127.*) web_lan_loopback_range=1 ;;
+        *) web_lan_loopback_range=0 ;;
+    esac
+    if [ "$web_lan_loopback_range" = 1 ]; then
+        web_lan_ifindex=''
+        web_lan_ifname=loopback-range
+        web_lan_mac=''
+        web_lan_prefixlen=''
+        web_lan_nm_uuid=''
+        web_lan_nm_name=''
+    else
+        if ! web_lan_interface_report_output=$(web_lan_interface_report "$QWEN_WEB_LAN_ADDRESS"); then
+            refuse_web_lan_exposure \
+                "finds no interface carrying $QWEN_WEB_LAN_ADDRESS through ip -j addr"
+        fi
+        web_lan_ifindex=$(printf '%s\n' "$web_lan_interface_report_output" | sed -n 's/^ifindex=//p')
+        web_lan_ifname=$(printf '%s\n' "$web_lan_interface_report_output" | sed -n 's/^ifname=//p')
+        web_lan_mac=$(printf '%s\n' "$web_lan_interface_report_output" | sed -n 's/^mac=//p')
+        web_lan_prefixlen=$(printf '%s\n' "$web_lan_interface_report_output" | sed -n 's/^prefixlen=//p')
+        web_lan_nm_uuid=$(printf '%s\n' "$web_lan_interface_report_output" | sed -n 's/^nm_uuid=//p')
+        web_lan_nm_name=$(printf '%s\n' "$web_lan_interface_report_output" | sed -n 's/^nm_name=//p')
+        # A declared trusted list gates both modes; an absent one refuses the
+        # open opt-in alone, since the bearer is what an authenticated launch
+        # on an undeclared connection still stands behind.
+        web_lan_trusted=${QWEN_WEB_LAN_TRUSTED_CONNECTIONS:-}
+        if [ -n "$web_lan_trusted" ]; then
+            if ! web_lan_connection_is_trusted "$web_lan_nm_uuid" "$web_lan_trusted"; then
+                refuse_web_lan_exposure \
+                    "binds an interface (${web_lan_ifname:-<unresolved>}) whose NetworkManager connection (${web_lan_nm_uuid:-<none>}) is outside QWEN_WEB_LAN_TRUSTED_CONNECTIONS"
+            fi
+        elif [ "${QWEN_WEB_LAN_OPEN:-0}" = 1 ]; then
+            refuse_web_lan_exposure \
+                "removes the bearer with no QWEN_WEB_LAN_TRUSTED_CONNECTIONS declared; run nmcli -t -f UUID,NAME connection show --active and list this interface's connection UUID in a colon-separated QWEN_WEB_LAN_TRUSTED_CONNECTIONS to open it"
+        fi
     fi
     # The open opt-in and the bearer are the two states of one credential
     # decision, so each requires QWEN_REQUIRE_API_KEY to carry the value the
@@ -259,6 +430,15 @@ admit_web_lan_exposure() {
     QWEN_WEB_LAN=1
     QWEN_WEB_LAN_NAME=$web_lan_name
     QWEN_WEB_LAN_OPEN=${QWEN_WEB_LAN_OPEN:-0}
+    QWEN_WEB_LAN_OPEN_ALL_INTERFACES=$web_lan_open_all_interfaces
+    QWEN_WEB_LAN_IFINDEX=$web_lan_ifindex
+    QWEN_WEB_LAN_IFNAME=$web_lan_ifname
+    QWEN_WEB_LAN_MAC=$web_lan_mac
+    QWEN_WEB_LAN_PREFIXLEN=$web_lan_prefixlen
+    QWEN_WEB_LAN_NM_UUID=$web_lan_nm_uuid
+    QWEN_WEB_LAN_NM_NAME=$web_lan_nm_name
     export QWEN_BIND_HOST QWEN_WEB_LAN QWEN_WEB_LAN_ADDRESS QWEN_WEB_LAN_NAME \
-        QWEN_WEB_LAN_OPEN
+        QWEN_WEB_LAN_OPEN QWEN_WEB_LAN_OPEN_ALL_INTERFACES \
+        QWEN_WEB_LAN_IFINDEX QWEN_WEB_LAN_IFNAME QWEN_WEB_LAN_MAC \
+        QWEN_WEB_LAN_PREFIXLEN QWEN_WEB_LAN_NM_UUID QWEN_WEB_LAN_NM_NAME
 }
