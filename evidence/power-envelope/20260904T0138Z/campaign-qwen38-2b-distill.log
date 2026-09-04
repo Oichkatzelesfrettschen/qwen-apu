@@ -1,0 +1,9 @@
+power_envelope_campaign=arm_start model=qwen38-2b-distill arm=qwen38-2b-distill-01-control-open profile=serve-fixed-package-default
+power_envelope_campaign=arm_completed model=qwen38-2b-distill arm=qwen38-2b-distill-01-control-open
+power_envelope_campaign=arm_start model=qwen38-2b-distill arm=qwen38-2b-distill-02-package-20w profile=serve-fixed-package-20w
+power_envelope_campaign=arm_completed model=qwen38-2b-distill arm=qwen38-2b-distill-02-package-20w
+power_envelope_campaign=arm_start model=qwen38-2b-distill arm=qwen38-2b-distill-03-package-25w profile=serve-fixed-package-25w
+power_envelope_campaign=arm_completed model=qwen38-2b-distill arm=qwen38-2b-distill-03-package-25w
+power_envelope_campaign=arm_start model=qwen38-2b-distill arm=qwen38-2b-distill-04-control-close profile=serve-fixed-package-default
+power_envelope_campaign=arm_completed model=qwen38-2b-distill arm=qwen38-2b-distill-04-control-close
+power_envelope_campaign=completed model=qwen38-2b-distill campaign_directory=$HOME/power-envelope-campaign/20260904T0138Z

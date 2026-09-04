@@ -1100,18 +1100,27 @@ reading it under a silent default. `--expected-nice` and
 `--expected-cpu-affinity` hold the header's own reported priority and CPU set
 to what the launcher configured, closing the gap between a header naming a
 niceness (`sampler_identity`) and a header naming the niceness the launcher
-asked for (`sampler_nice`, `sampler_affinity`). `channel_cadence` and
-`cadence_values` hold a `# sample_rates:` header to completeness --
-`gpu_busy_percent_period_ns` and `pp_dpm_period_ns` present -- and to
-arithmetic -- each declared cadence a positive multiple of the requested
-period, with the busy channel's equal to it exactly, since that channel is
-read on every sample. Where the header also carries `# dpm_read=` markers,
-`dpm_marker_cadence` compares the widest marker gap overlapping the request
-window against 1.5 times the declared DPM cadence, catching a sampler whose
-own freshness stamps drifted past what it declared -- the marker half of
-what keeps a cached value from being counted as a fresh observation; the row
-half already reads `dpm_period_multiple` over reads rather than rows and now
-carries a `temp1_period_multiple` beside it for the temperature channel.
+asked for (`sampler_nice`, `sampler_affinity`); `run-served-binary-ab.sh` and
+`run-prefill-ladder.sh` pass both flags from the same `sidecar_nice` and
+`sidecar_cpu` values their own sampler invocation carries, so the check reads
+the priority and affinity each campaign actually configured rather than
+`not_run`. `channel_cadence` and `cadence_values` hold a `# sample_rates:`
+header to completeness -- `gpu_busy_percent_period_ns` and
+`pp_dpm_period_ns` present -- and to arithmetic -- each declared cadence a
+positive multiple of the requested period, with the busy channel's equal to
+it exactly, since that channel is read on every sample. Where the header
+also carries `# dpm_read=` markers, `dpm_marker_cadence` compares the widest
+gap against 1.5 times the declared DPM cadence over both the gaps between
+consecutive in-window markers and the terminal gap from the last in-window
+marker to the window's own end, catching a sampler whose own freshness
+stamps drifted past what it declared -- the marker half of what keeps a
+cached value from being counted as a fresh observation. The terminal gap
+closes the case a pairwise scan alone misses: one marker refreshed early in
+the window and none after it leaves no second marker to pair against, and a
+widest-pair check with nothing to compare read that channel `not_run` while
+it stayed stale for the rest of the window. The row half already reads
+`dpm_period_multiple` over reads rather than rows and now carries a
+`temp1_period_multiple` beside it for the temperature channel.
 `sampler_format`, sample-clock-sidecar.py's own `native-fresh-v1` claim that
 every column here is read fresh on every sample, refuses an unrecognized
 value rather than reading a future record shape under today's rules. A

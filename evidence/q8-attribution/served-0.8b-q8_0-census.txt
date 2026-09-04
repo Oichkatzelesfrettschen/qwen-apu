@@ -1,0 +1,109 @@
+path	$HOME/models/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf
+sha256	37ae482d336108d23516fa35e8e0c4126688d81018b87178a18d752a1357814f
+file_bytes	833592096
+index_bytes	10962453
+gguf_version	3
+architecture	qwen35
+tensor_count	335
+layer_count	25
+embeddings_tied	true
+embedding_bytes	270172160
+output_bytes	0
+num_loops	1
+looped_layer_bytes	530705664
+nextn_layers	1
+mtp_bytes	21747712
+streamed_bytes_per_token	800881920
+
+# architecture dimensions
+attention.head_count	8
+attention.head_count_kv	2
+attention.key_length	256
+attention.layer_norm_rms_epsilon	9.999999974752427e-07
+attention.value_length	256
+block_count	25
+context_length	262144
+embedding_length	1024
+feed_forward_length	3584
+full_attention_interval	4
+nextn_predict_layers	1
+rope.dimension_count	64
+rope.freq_base	10000000.0
+ssm.conv_kernel	4
+ssm.group_count	16
+ssm.inner_size	2048
+ssm.state_size	128
+ssm.time_step_rank	16
+
+# provenance
+general.base_model.0.repo_url	https://huggingface.co/Qwen/Qwen3.5-0.8B-Base
+general.quantization_version	2
+general.file_type	7
+general.size_label	773M
+general.license	apache-2.0
+absent	general.source.url general.source.huggingface.repository general.source.repo_url quantize.imatrix.file quantize.imatrix.dataset quantize.imatrix.entries_count quantize.imatrix.chunks_count general.version general.basename general.finetune
+
+# tokenizer identity
+chat_template_sha256	273d8e0e683b885071fb17e08d71e5f2a5ddfb5309756181681de4f5a1822d80
+chat_template_bytes	7755
+model	gpt2
+pre	qwen35
+eos_token_id	248046
+padding_token_id	248044
+add_bos_token	False
+vocabulary_size	248320
+tokens_sha256	5cf6b9d701d926cb509a0c7218d94a9f3b472d87715c344e676b8e93c99d2af9
+token_types_count	248320
+token_types_sha256	3d029ca0e4676dbd50a4a3938d7a7c3c861ac76724167de0fbd826486d439ebb
+merges_count	247587
+merges_sha256	fbaa00a42f82384e1a07f40ecea91c0e5b1cc47977c3f46ef06e4702166db930
+
+# bytes by ggml type
+Q8_0	820613120	98.44%
+F32	2016512	0.24%
+
+# bytes by operation family
+ffn	280756224	33.68%
+embedding	270172160	32.41%
+attention	207224832	24.86%
+gated_deltanet	42515712	5.10%
+mtp	21747712	2.61%
+norm	212992	0.03%
+
+# bytes by operation family and ggml type
+ffn/Q8_0	280756224
+embedding/Q8_0	270172160
+attention/Q8_0	207224832
+gated_deltanet/Q8_0	40734720
+mtp/Q8_0	21725184
+gated_deltanet/F32	1780992
+norm/F32	212992
+mtp/F32	22528
+
+# bytes by layer
+0	22981248
+1	22981248
+2	22981248
+3	19507200
+4	22981248
+5	22981248
+6	22981248
+7	19507200
+8	22981248
+9	22981248
+10	22981248
+11	19507200
+12	22981248
+13	22981248
+14	22981248
+15	19507200
+16	22981248
+17	22981248
+18	22981248
+19	19507200
+20	22981248
+21	22981248
+22	22981248
+23	19507200
+24	21747712
+unlayered	270176256

@@ -1,0 +1,9 @@
+compute_state_lease=held path=$HOME/qwen-webui-state/vulkan-workload.lock proof=$HOME/qwen-webui-state/.compute-state-external-lease.2199094.tsv
+compute_state_record=$HOME/qwen-webui-state/compute-state-record.tsv profile=serve-fixed-package-25w snapshot_dpm_level=auto snapshot_sclk_level=1 snapshot_mclk_level=2 snapshot_ksm_run=1
+power_envelope_applied=package-25w fields=stapm_limit_mw=25000 fast_limit_mw=25000 slow_limit_mw=25000 tctl_limit_c=90.000 snapshot=$HOME/qwen-webui-state/power-envelope-snapshot.tsv
+compute_state_applied=serve-fixed-package-25w dpm_level=manual sclk=2 1100 mclk=2 933 ksm_run=0 power_envelope=package-25w
+clock_expectation=reached profile=serve-fixed-package-25w gfxclk_mhz=1100 fclk_mhz=933
+power_envelope_arm=completed arm=qwen35-08b-03-package-25w model=qwen35-08b decode_tok_s=18.874142424877917
+compute_state_command=$HOME/qwen-laptop-setup/remote/run-power-envelope-arm.sh status=0 profile=serve-fixed-package-25w
+dpm_restore=restored level=auto requested=auto sclk_level=1 mclk_level=2 node=/sys/class/drm/card1/device/power_dpm_force_performance_level
+restoration=held profile=serve-fixed-package-25w dpm_level=auto selections=governor-owned sclk_level=1 mclk_level=2 ksm_run=1 power_envelope=package-25w

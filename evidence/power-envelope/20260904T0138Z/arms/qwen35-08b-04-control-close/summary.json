@@ -1,0 +1,12 @@
+{
+  "label": "qwen35-08b-04-control-close",
+  "request_status": 0,
+  "teardown_status": 0,
+  "prefill_tok_per_second": 84.06596080756417,
+  "prefill_ms": 226.013,
+  "decode_tok_per_second": 18.761323799007258,
+  "decode_ms": 3357.972,
+  "prompt_tokens": 19,
+  "decode_tokens": 64,
+  "valid": true
+}

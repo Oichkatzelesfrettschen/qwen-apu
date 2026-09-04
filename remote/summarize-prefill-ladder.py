@@ -37,7 +37,21 @@ surviving pairs reads `state-changed`; an arm that failed or carries a
 non-numeric metric reads `incomplete`; a depth the runner declined reads
 `skipped` and carries the runner's own reason.
 
+`--batch-ubatch-table PATH`, when given, writes a second table to that path:
+one row per depth naming the `batch` and `ubatch` the runner ran it under (a
+constant pair for the whole ladder, since the allocation is one context size
+for the whole run) beside the control and subject `prompt_tok_s` means and the
+recommendation rule `select batch and ubatch separately by prompt depth`. The
+ladder does not vary batch or ubatch by depth today -- that needs a runner
+change, not a summarizer one -- so the table documents what one run actually
+used at each depth rather than recommending a value; a future runner that
+sweeps the pair per depth would fill the same columns with depth-varying
+values, and this table's `batch`/`ubatch` columns are named for
+`remote/models.tsv`'s own `batch` and `ubatch` columns, which this table
+never edits.
+
 usage: summarize-prefill-ladder.py ARMS_TSV [--sclk-band F]
+                                    [--batch-ubatch-table PATH]
 """
 import argparse
 import math
@@ -74,6 +88,11 @@ COLUMNS = ("depth", "quadruple", "subject", "metric", "sense", "replicates",
            "verdict", "detail")
 
 REQUIRED_HEADER = ("depth", "quadruple", "arm", "replicate", "status")
+
+BATCH_UBATCH_RECOMMENDATION_RULE = "select batch and ubatch separately by prompt depth"
+
+BATCH_UBATCH_COLUMNS = ("depth", "batch", "ubatch", "control_prompt_tok_s_mean",
+                         "subject_prompt_tok_s_mean", "rule", "detail")
 
 
 def read_arms(path):
@@ -266,10 +285,83 @@ def summarize_depth(depth, quadruple, rows, band):
               verdict, detail))
 
 
+def batch_ubatch_field(row, name):
+    value = row.get(name)
+    return value if value not in (None, "") else UNKNOWN_STATE
+
+
+def mean_prompt_tok_s(rows, want_control):
+    values = []
+    for row in rows:
+        if row["status"] not in COMPLETED_STATUS:
+            continue
+        if (row["arm"] == "C") != want_control:
+            continue
+        value = numeric(row.get("prompt_tok_s"))
+        if value is not None:
+            values.append(value)
+    if not values:
+        return None
+    return sum(values) / len(values)
+
+
+def batch_ubatch_rows(rows):
+    """One row per depth, over the ledger's own `binary` quadruple rows.
+
+    The `binary` quadruple runs at every admitted depth and at the runner's own
+    skip placeholder for a declined one, so it is read here rather than
+    `threads`, which the runner omits entirely under
+    `QWEN_PREFILL_LADDER_THREAD_ARMS=0`.
+    """
+    depths_seen = []
+    by_depth = {}
+    for row in rows:
+        if row["quadruple"] != "binary":
+            continue
+        depth = row["depth"]
+        if depth not in by_depth:
+            depths_seen.append(depth)
+            by_depth[depth] = []
+        by_depth[depth].append(row)
+    emitted = []
+    for depth in depths_seen:
+        members = by_depth[depth]
+        if all(row["status"] == "skipped" for row in members):
+            reason = members[0].get("reason", UNKNOWN_STATE) or UNKNOWN_STATE
+            emitted.append((depth, UNKNOWN_STATE, UNKNOWN_STATE, UNKNOWN_STATE,
+                             UNKNOWN_STATE, BATCH_UBATCH_RECOMMENDATION_RULE,
+                             f"skipped reason={reason}"))
+            continue
+        batches = {batch_ubatch_field(row, "batch") for row in members}
+        ubatches = {batch_ubatch_field(row, "ubatch") for row in members}
+        detail = "-"
+        batch = next(iter(batches)) if len(batches) == 1 else UNKNOWN_STATE
+        ubatch = next(iter(ubatches)) if len(ubatches) == 1 else UNKNOWN_STATE
+        if len(batches) > 1 or len(ubatches) > 1:
+            detail = (f"depth carries more than one batch/ubatch pair:"
+                       f" batch={sorted(batches)} ubatch={sorted(ubatches)}")
+        control_mean = mean_prompt_tok_s(members, True)
+        subject_mean = mean_prompt_tok_s(members, False)
+        emitted.append((
+            depth, batch, ubatch,
+            f"{control_mean:.4f}" if control_mean is not None else UNKNOWN_STATE,
+            f"{subject_mean:.4f}" if subject_mean is not None else UNKNOWN_STATE,
+            BATCH_UBATCH_RECOMMENDATION_RULE, detail))
+    return emitted
+
+
+def write_batch_ubatch_table(rows, path):
+    with open(path, "w") as handle:
+        handle.write("\t".join(BATCH_UBATCH_COLUMNS) + "\n")
+        for fields in batch_ubatch_rows(rows):
+            handle.write("\t".join(str(field) for field in fields) + "\n")
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("arms")
     parser.add_argument("--sclk-band", type=float, default=DEFAULT_SCLK_BAND)
+    parser.add_argument("--batch-ubatch-table", default=None)
     args = parser.parse_args()
     # The band is a relative difference between two clocks, so it is a fraction
     # below one: a band of one admits a pair whose two arms differ by the whole
@@ -281,6 +373,8 @@ def main():
     print("\t".join(COLUMNS))
     for (depth, quadruple), members in group(rows):
         summarize_depth(depth, quadruple, members, args.sclk_band)
+    if args.batch_ubatch_table:
+        write_batch_ubatch_table(rows, args.batch_ubatch_table)
     return 0
 
 

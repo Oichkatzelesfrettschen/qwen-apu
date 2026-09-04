@@ -413,12 +413,19 @@ case $action in
                               QWEN_WEB_BROKER_ORIGIN \
                               QWEN_WEB_LAN QWEN_WEB_LAN_ADDRESS \
                               QWEN_WEB_LAN_NAME QWEN_WEB_LAN_OPEN \
+                              QWEN_WEB_LAN_OPEN_ALL_INTERFACES \
+                              QWEN_WEB_LAN_IFINDEX QWEN_WEB_LAN_IFNAME \
+                              QWEN_WEB_LAN_MAC QWEN_WEB_LAN_PREFIXLEN \
+                              QWEN_WEB_LAN_NM_UUID QWEN_WEB_LAN_NM_NAME \
                               QWEN_REQUIRE_API_KEY \
                               QWEN_WEB_AUTHORIZER_READY \
                               QWEN_WEB_SEARXNG QWEN_SEARXNG_PROGRAM \
                               QWEN_SEARXNG_PORT QWEN_SEARXNG_SETTINGS_TEMPLATE \
                               QWEN_SEARXNG_LAUNCH_COMMAND \
                               QWEN_SEARXNG_START_TIMEOUT \
+                              QWEN_SEARXNG_STOP_TIMEOUT \
+                              QWEN_SEARXNG_ROOT QWEN_SEARXNG_SOURCE \
+                              QWEN_SEARXNG_PYTHON \
                               QWEN_IMAGE_SERVICE QWEN_IMAGE_SERVICE_PROGRAM \
                               QWEN_IMAGE_PROFILES_JSON QWEN_IMAGE_PAGE_ORIGIN \
                               QWEN_IMAGE_PROFILE QWEN_IMAGE_TOKEN_KEY_FILE \

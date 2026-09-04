@@ -117,6 +117,25 @@ fi
 # request, so one harness measures both listener policies.
 lane_exposure=${QWEN_WEB_LAN:-0}
 lane_open=${QWEN_WEB_LAN_OPEN:-0}
+# A value outside 0/1 falls through every `= 1` comparison below to the
+# loopback arm, so a typo such as QWEN_WEB_LAN=yes would otherwise report
+# success for the ordinary lane while the operator believed the run measured
+# the exposed one. web-lan-exposure.sh's resolve_web_lan_mode validates the
+# same pair the same way ahead of the launchers it guards.
+case $lane_exposure in
+    0 | 1) ;;
+    *)
+        printf 'QWEN_WEB_LAN must be 0 or 1: %s\n' "$lane_exposure" >&2
+        exit 2
+        ;;
+esac
+case $lane_open in
+    0 | 1) ;;
+    *)
+        printf 'QWEN_WEB_LAN_OPEN must be 0 or 1: %s\n' "$lane_open" >&2
+        exit 2
+        ;;
+esac
 if [ "$lane_exposure" = 1 ]; then
     lane_host=${QWEN_WEB_LAN_ADDRESS:?QWEN_WEB_LAN=1 names QWEN_WEB_LAN_ADDRESS}
 else
@@ -583,13 +602,14 @@ secret_file=$(sed -n 's/^broker secret_file=//p' "$output_directory/image-sessio
 # The artifact listener binds an ephemeral port, so its address is read from the
 # line the session recorded rather than assumed.
 artifact_listener=$(sed -n 's/^image_service_identity .*listener=//p' "$output_directory/image-session.status" | sed -n '1p')
-# The session records the address the service printed. Under the exposure that
-# is the wildcard, and the page reads the artifact route over the lane literal,
-# so the origin is composed from the recorded port and the lane host.
+# The session records the address the service printed. remote/web-lan-exposure.sh
+# binds the router, the broker, and the artifact listener to the one exposure
+# literal rather than every interface, so under the exposure that is the lane
+# host itself, and the page reads the artifact route over that same literal.
 artifact_port=${artifact_listener##*:}
 artifact_origin=http://$lane_host:$artifact_port
 if [ "$lane_exposure" = 1 ]; then
-    expected_artifact_listener="0.0.0.0:$artifact_port"
+    expected_artifact_listener="$lane_host:$artifact_port"
 else
     expected_artifact_listener="127.0.0.1:$artifact_port"
 fi
