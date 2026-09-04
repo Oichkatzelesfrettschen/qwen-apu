@@ -23,13 +23,18 @@ if [ ! -r "$radv_icd" ]; then
 fi
 
 # The unset block below scrubs the ambient environment so a named profile
-# always means one thing. `custom` exists to vary submission settings one at a
-# time, so it alone reads caller-supplied values, and these copies survive the
-# scrub for its branch.
+# always means one thing. Two profiles read a caller-supplied value past that
+# scrub and these copies are what survive it for them: `custom` varies the
+# submission settings one at a time, and `diagnostic` carries the instrument
+# inputs a serving profile refuses. The four serving profiles read none of
+# them.
 requested_max_nodes_per_submit=${GGML_VK_MAX_NODES_PER_SUBMIT:-}
 requested_serialize_submissions=${GGML_VK_SERIALIZE_SUBMISSIONS:-}
 requested_allow_graphics_queue=${GGML_VK_ALLOW_GRAPHICS_QUEUE:-}
 requested_submit_trace=${GGML_VK_SUBMIT_TRACE:-}
+# The int24 candidate's admission variable survives the scrub for the
+# diagnostic profile, which is the one profile that restores it.
+requested_force_integer_dot=${GGML_VK_FORCE_INTEGER_DOT:-}
 # The scrub leaves QWEN_ names alone, so this copy carries the diagnostic
 # profile's frequency input in the same form as the GGML_VK_ copies beside it;
 # the value reaches the profile case either way.
@@ -69,6 +74,7 @@ unset GGML_VK_DISABLE_MULTI_ADD
 unset GGML_VK_DISABLE_OCP_FP4
 unset GGML_VK_DUTY_CYCLE_PERCENT
 unset GGML_VK_ENABLE_MEMORY_PRIORITY
+unset GGML_VK_FORCE_INTEGER_DOT
 unset GGML_VK_FORCE_MAX_ALLOCATION_SIZE
 unset GGML_VK_FORCE_MAX_BUFFER_SIZE
 unset GGML_VK_FORCE_MMVQ
@@ -135,7 +141,7 @@ case $vulkan_profile in
         # the shape the pinned perf logger imposes, so the profile fixes
         # serialization and states its whole diagnostic environment here.
         # QWEN_PERF_LOGGER carries the logger's frequency as one positive
-        # integer and is the profile's only input, so the arm's environment
+        # integer and is the profile's required input, so the arm's environment
         # follows from the profile name and that one number. The five unsets
         # below repeat names the scrub already removed, which keeps the
         # profile readable as one closed declaration rather than as a
@@ -158,6 +164,28 @@ case $vulkan_profile in
         unset GGML_VK_MEMORY_LOGGER
         unset GGML_VK_SUBMIT_TRACE
         unset RADV_DEBUG
+        # The int24 candidate build compiles the q8_1 mat-vec pipelines and
+        # admits them only under GGML_VK_FORCE_INTEGER_DOT, so one binary
+        # carries the arm and its control and this restore is what separates
+        # them. The diagnostic profile is the one profile that carries it: the
+        # four serving profiles leave it scrubbed beside the sideplane names,
+        # which keeps a promoted build on the FP16 mat-vec whatever the ambient
+        # environment holds, and an arm is asked for by naming this profile.
+        # ggml_vk_force_integer_dot() compares the value against "1", so a
+        # third value would run the control while the caller named the arm, and
+        # the profile refuses it the way it refuses a malformed frequency.
+        case $requested_force_integer_dot in
+            '')
+                ;;
+            1)
+                export GGML_VK_FORCE_INTEGER_DOT=$requested_force_integer_dot
+                ;;
+            *)
+                printf 'GGML_VK_FORCE_INTEGER_DOT admits 1 or an unset value: %s\n' \
+                    "$requested_force_integer_dot" >&2
+                exit 2
+                ;;
+        esac
         ;;
     custom)
         # The named profiles fix both submission settings together, which makes
