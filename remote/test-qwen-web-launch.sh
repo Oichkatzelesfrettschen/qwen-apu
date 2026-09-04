@@ -75,6 +75,31 @@ cp "$script_directory/web-lan-exposure.sh" "$harness/web-lan-exposure.sh"
 # print that machine's hostname into a log.
 QWEN_WEB_LAN_NAME=''
 export QWEN_WEB_LAN_NAME
+
+# The interface-binding restriction reads ip -j addr and nmcli through
+# remote/web-lan-exposure.sh's own overridable probes, so every LAN exposure
+# arm below runs against a fixture interface rather than this host's own
+# network. The fixture reports every LAN_ADDRESS this file's arms use as
+# living on one interface, carried by one NetworkManager connection, so an
+# authenticated-mode arm resolves it without further setup and an open-mode
+# arm needs only to declare that connection trusted.
+lan_interface_probe=$harness/fake-ip
+cat >"$lan_interface_probe" <<'EOF'
+#!/bin/sh
+printf '[{"ifindex":9,"ifname":"eth-test","address":"aa:bb:cc:dd:ee:ff","addr_info":[{"family":"inet","local":"192.168.1.10","prefixlen":24}]}]\n'
+EOF
+lan_connection_probe=$harness/fake-nmcli
+cat >"$lan_connection_probe" <<'EOF'
+#!/bin/sh
+printf '11111111-1111-1111-1111-111111111111:test-lan:eth-test\n'
+EOF
+chmod 755 "$lan_interface_probe" "$lan_connection_probe"
+QWEN_LAN_INTERFACE_PROBE="$lan_interface_probe -j addr"
+QWEN_LAN_CONNECTION_PROBE="$lan_connection_probe -t -f UUID,NAME,DEVICE connection show --active"
+QWEN_WEB_LAN_TRUSTED_CONNECTIONS=11111111-1111-1111-1111-111111111111
+export QWEN_LAN_INTERFACE_PROBE QWEN_LAN_CONNECTION_PROBE \
+    QWEN_WEB_LAN_TRUSTED_CONNECTIONS
+
 # The launcher resolves the active deployment before it reads a preset; the
 # harness holds no deployment root, so the resolver reports none and the
 # state directory preset applies.
@@ -106,6 +131,14 @@ set -eu
     printf 'QWEN_WEB_LAN_ADDRESS=%s\n' "${QWEN_WEB_LAN_ADDRESS:-unset}"
     printf 'QWEN_WEB_LAN_NAME=%s\n' "${QWEN_WEB_LAN_NAME:-unset}"
     printf 'QWEN_WEB_LAN_OPEN=%s\n' "${QWEN_WEB_LAN_OPEN:-unset}"
+    printf 'QWEN_WEB_LAN_OPEN_ALL_INTERFACES=%s\n' \
+        "${QWEN_WEB_LAN_OPEN_ALL_INTERFACES:-unset}"
+    printf 'QWEN_WEB_LAN_IFINDEX=%s\n' "${QWEN_WEB_LAN_IFINDEX:-unset}"
+    printf 'QWEN_WEB_LAN_IFNAME=%s\n' "${QWEN_WEB_LAN_IFNAME:-unset}"
+    printf 'QWEN_WEB_LAN_MAC=%s\n' "${QWEN_WEB_LAN_MAC:-unset}"
+    printf 'QWEN_WEB_LAN_PREFIXLEN=%s\n' "${QWEN_WEB_LAN_PREFIXLEN:-unset}"
+    printf 'QWEN_WEB_LAN_NM_UUID=%s\n' "${QWEN_WEB_LAN_NM_UUID:-unset}"
+    printf 'QWEN_WEB_LAN_NM_NAME=%s\n' "${QWEN_WEB_LAN_NM_NAME:-unset}"
 } >"$QWEN_WEB_LAUNCH_RECORD"
 EOF
 chmod +x "$harness/qwen-launch.sh"
@@ -1021,8 +1054,8 @@ if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
     report lan_exposure_refuses_a_third_bind_host accepted
 else
     outcome=ok
-    grep -q 'QWEN_BIND_HOST is that literal or 0.0.0.0' "$work/lan-bind.err" ||
-        outcome=missing_message
+    grep -q 'QWEN_BIND_HOST is that literal, unset, or 0.0.0.0 under QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1' \
+        "$work/lan-bind.err" || outcome=missing_message
     report lan_exposure_refuses_a_third_bind_host "$outcome"
 fi
 
@@ -1092,12 +1125,15 @@ fi
 
 # The admitted exposure exports the literal and the bind host the session
 # reads, and names every listener before the model loads.
-for lan_bind_case in literal:192.168.1.10 wildcard:0.0.0.0; do
+for lan_bind_case in literal:192.168.1.10:0 wildcard:0.0.0.0:1; do
     lan_bind_name=${lan_bind_case%%:*}
-    lan_bind_value=${lan_bind_case#*:}
+    lan_bind_rest=${lan_bind_case#*:}
+    lan_bind_value=${lan_bind_rest%%:*}
+    lan_bind_all_interfaces=${lan_bind_rest#*:}
     if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
         QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
         QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=$lan_bind_value \
+        QWEN_WEB_LAN_OPEN_ALL_INTERFACES=$lan_bind_all_interfaces \
         "$launcher" >"$work/lan-ok.log" 2>"$work/lan-ok.err"; then
         outcome=ok
         grep -qx 'QWEN_WEB_LAN=1' "$record" || outcome=marker_dropped
@@ -1122,7 +1158,7 @@ done
 if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
     QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
     QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=qwen-test.local \
-    QWEN_BIND_HOST=0.0.0.0 \
+    QWEN_BIND_HOST=192.168.1.10 \
     "$launcher" >"$work/lan-named.log" 2>"$work/lan-named.err"; then
     outcome=ok
     grep -qx 'QWEN_WEB_LAN_NAME=qwen-test.local' "$record" || outcome=name_dropped
@@ -1143,7 +1179,7 @@ fi
 if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
     QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
     QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=QWEN-Test.LOCAL \
-    QWEN_BIND_HOST=0.0.0.0 \
+    QWEN_BIND_HOST=192.168.1.10 \
     "$launcher" >"$work/lan-case.log" 2>"$work/lan-case.err"; then
     report lan_exposure_name_refuses_uppercase admitted
 else
@@ -1236,7 +1272,7 @@ mv "$lan_api_key" "$work/api.key.open"
 if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
     QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
     QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=qwen-test.local \
-    QWEN_WEB_LAN_OPEN=1 QWEN_BIND_HOST=0.0.0.0 \
+    QWEN_WEB_LAN_OPEN=1 QWEN_BIND_HOST=192.168.1.10 \
     "$launcher" >"$work/lan-open.log" 2>"$work/lan-open.err"; then
     outcome=ok
     grep -qx 'QWEN_REQUIRE_API_KEY=0' "$record" || outcome=key_still_required
@@ -1255,7 +1291,7 @@ mv "$work/api.key.open" "$lan_api_key"
 if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
     QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
     QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_OPEN=1 \
-    QWEN_REQUIRE_API_KEY=1 QWEN_BIND_HOST=0.0.0.0 \
+    QWEN_REQUIRE_API_KEY=1 QWEN_BIND_HOST=192.168.1.10 \
     "$launcher" >"$work/lan-open-key.log" 2>"$work/lan-open-key.err"; then
     report lan_open_refuses_a_requested_bearer admitted
 else
@@ -1278,6 +1314,100 @@ else
     grep -q 'recorded device failure serves the loopback' \
         "$work/lan-open-quarantine.err" || outcome=missing_message
     report lan_open_refuses_the_quarantine_override "$outcome"
+fi
+
+# The interface-binding restriction: the wildcard bind needs the explicit
+# all-interfaces opt-in beside the exposure, so naming --lan-exposure alone
+# still refuses QWEN_BIND_HOST=0.0.0.0.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=0.0.0.0 \
+    "$launcher" >"$work/lan-all-interfaces.log" 2>"$work/lan-all-interfaces.err"; then
+    report lan_wildcard_requires_all_interfaces_flag accepted
+else
+    outcome=ok
+    grep -q 'only QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 admits every interface' \
+        "$work/lan-all-interfaces.err" || outcome=missing_message
+    report lan_wildcard_requires_all_interfaces_flag "$outcome"
+fi
+
+# The flag admits it and prints the widened bind loudly.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=0.0.0.0 \
+    QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 \
+    "$launcher" >"$work/lan-all-interfaces-on.log" 2>"$work/lan-all-interfaces-on.err"; then
+    outcome=ok
+    grep -qx 'QWEN_BIND_HOST=0.0.0.0' "$record" || outcome=wrong_bind_host
+    grep -q 'binds every interface' "$work/lan-all-interfaces-on.err" ||
+        outcome=not_printed_loudly
+    report lan_all_interfaces_flag_admitted "$outcome"
+else
+    report lan_all_interfaces_flag_admitted refused
+    cat "$work/lan-all-interfaces-on.err" >&2
+fi
+
+# The interface identity reaches the session as QWEN_WEB_LAN_IFNAME and its
+# companions, resolved from the fixture ip -j addr and nmcli output.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/lan-interface.log" 2>"$work/lan-interface.err" &&
+    grep -qx 'QWEN_WEB_LAN_IFNAME=eth-test' "$record" &&
+    grep -qx 'QWEN_WEB_LAN_MAC=aa:bb:cc:dd:ee:ff' "$record" &&
+    grep -qx 'QWEN_WEB_LAN_NM_UUID=11111111-1111-1111-1111-111111111111' "$record"; then
+    report lan_interface_identity_resolved ok
+else
+    report lan_interface_identity_resolved fail
+    cat "$work/lan-interface.err" >&2
+fi
+
+# An interface ip -j addr cannot resolve refuses the exposure outright.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=203.0.113.9 \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/lan-no-interface.log" 2>"$work/lan-no-interface.err"; then
+    report lan_exposure_unresolved_interface_refused accepted
+else
+    outcome=ok
+    grep -q 'finds no interface carrying 203.0.113.9' \
+        "$work/lan-no-interface.err" || outcome=missing_message
+    report lan_exposure_unresolved_interface_refused "$outcome"
+fi
+
+# An open exposure with no trusted-connection list declared refuses, naming
+# the way to declare one; the authenticated launch above already proved that
+# an absent list does not block the bearer-protected mode.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_OPEN=1 \
+    QWEN_WEB_LAN_TRUSTED_CONNECTIONS='' \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/lan-open-untrusted.log" 2>"$work/lan-open-untrusted.err"; then
+    report lan_open_refuses_with_no_trusted_connections accepted
+else
+    outcome=ok
+    grep -q 'no QWEN_WEB_LAN_TRUSTED_CONNECTIONS declared' \
+        "$work/lan-open-untrusted.err" || outcome=missing_message
+    report lan_open_refuses_with_no_trusted_connections "$outcome"
+fi
+
+# A declared list that omits this interface's connection refuses even the
+# authenticated launch, since a declared list gates both modes.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 \
+    QWEN_WEB_LAN_TRUSTED_CONNECTIONS=99999999-9999-9999-9999-999999999999 \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/lan-wrong-trust.log" 2>"$work/lan-wrong-trust.err"; then
+    report lan_authenticated_refuses_untrusted_connection accepted
+else
+    outcome=ok
+    grep -q 'is outside QWEN_WEB_LAN_TRUSTED_CONNECTIONS' \
+        "$work/lan-wrong-trust.err" || outcome=missing_message
+    report lan_authenticated_refuses_untrusted_connection "$outcome"
 fi
 
 # The default launch prints the loopback exposure and refuses a LAN bind with
