@@ -66,19 +66,35 @@ that closes the package budget as a lever on this part.
 
 ## What the rate half can and cannot say
 
-The rate comparison resolves no direction, and the summarizer's own verdict
-line overstates what it resolves. The registered readability rule reads a
-candidate as a budget effect where it exceeds the same checkpoint's observed
-control-to-control spread, and with two control arms that spread collapsed to
-0.1 to 0.2%: the 2B's controls agreed to 0.1% and the 0.8B's to 0.2%. Under
-that rule a 0.4% difference reads as `slower` and a 0.6% difference as
-`faster`, both of which sit an order of magnitude below the roughly 4% of
-uncontrolled spread this tree already measures on a repeated depth-0 rate under
-identical flags. A two-point control spread is a difference rather than an
-uncertainty. The correct reading of the rate half is that every candidate lands
-inside the machine's own spread on every checkpoint, and the verdict above
-rests on the package watts, which are what a raised budget would have had to
-move first.
+The rate comparison resolves no direction on any checkpoint: the candidates
+land between -0.4% and +0.7% of their control mean, against roughly 4% of
+uncontrolled spread this tree measures on a repeated depth-0 rate under
+identical flags. The verdict above therefore rests on the package watts, which
+are what a raised budget would have had to move first.
+
+The readability estimator registered ahead of the run is corrected here, and
+the correction is what the arms exposed rather than what they preferred. The
+registered rule read a candidate as a budget effect where it exceeded the same
+checkpoint's observed control-to-control spread, and with two control arms that
+spread collapsed to 0.1 to 0.2%: the 2B's controls agreed to 0.1% and the 0.8B's
+to 0.2%. Under that rule a 0.4% difference read as `slower` and a 0.6%
+difference as `faster`, both an order of magnitude below the machine's own
+spread. A two-point control spread is a difference rather than an uncertainty,
+so `summarize-power-envelope.py` reads a candidate against the wider of that
+spread and a 4% floor taken from `evidence/measurement-state-and-memory-clock.md`,
+where one checkpoint under identical flags read 3.11 and 3.24 tok/s ten minutes
+apart. That figure comes from a run outside this campaign, so it cannot be tuned
+by the arms it judges, and under it every candidate on every checkpoint reads
+`unresolved`.
+
+The control arms land on a denominator a different harness measured on a
+different day. `evidence/fixed64-served-campaign/README.md` carries median
+rates of 18.257, 9.864, and 3.352 tok/s for `qwen35-08b`,
+`qwen38-2b-distill`, and `qwen38-4b-distill`; this campaign's control means read
+18.738, 9.838, and 3.382, which is 2.6%, 0.3%, and 0.9% away, and the 0.8B's own
+four slots there spanned 17.89%. The served path this campaign drives is
+therefore the path that denominator was measured on, which checks the whole
+chain rather than any one arm.
 
 ## The instrument, controlled
 
@@ -125,10 +141,9 @@ nice 0, because `qwen-capacity-policy.sh` puts llama-server itself on core 0 at
 nice 19 and the campaign contract already states that. The arm applies nice 19
 to its own three samplers rather than inheriting it.
 
-`arms/qwen38-2b-distill-01-control-open.attempt1.lease.stderr` under the earlier
-campaign directories is not retained here; the refusals above are recorded in
-this document and in the commit history rather than as arms, because an arm that
-refused ahead of its first request measured nothing.
+None of those three refusals is retained as an arm. Each ended ahead of its own
+request, so it measured nothing, and what it establishes is recorded in this
+document and in the commit that repaired it.
 
 ## Retained per arm
 

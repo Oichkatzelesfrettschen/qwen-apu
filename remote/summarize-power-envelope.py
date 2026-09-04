@@ -5,16 +5,26 @@ Each arm retains `arm-summary.tsv`, and this summarizer recomputes nothing the
 arm measured: it joins the four arms of a checkpoint into one table, reads the
 two control arms against each other under the span criterion
 `evidence/power-envelope/README.md` registers, and reads each candidate against
-the control mean under the same checkpoint's own observed control spread.
+the control mean under the wider of that checkpoint's control spread and this
+machine's own retained spread.
 
 The span criterion is 20% of the control mean, which is the single-arm span this
 tree carries. A checkpoint whose controls differ by more than that ends
 `unresolved` and its candidates are not read at all, because a sweep that cannot
-reproduce its own opening arm cannot attribute a difference to the budget. A
-candidate inside the observed control spread is `unresolved` in direction rather
-than null; outside it, the sign is reported with the package watts beside it,
-which is what separates a budget that was never drawn from one drawn to no
-effect.
+reproduce its own opening arm cannot attribute a difference to the budget.
+
+A candidate is then read against the wider of two bands, and the second one is
+what keeps a two-point control from asserting a direction it cannot carry. The
+first band is the checkpoint's own observed control-to-control difference, which
+at two arms is a difference rather than an uncertainty and collapses toward zero
+whenever the two controls happen to agree closely. The second is the 4% of
+uncontrolled spread `evidence/measurement-state-and-memory-clock.md` measures on
+this machine, where one checkpoint under identical flags read 3.11 and 3.24
+tok/s ten minutes apart; that figure comes from a run outside this campaign, so
+it cannot be tuned by the arms it judges. A candidate inside the wider band is
+`unresolved` in direction rather than null, and the reason column carries the
+raw percentage and the package watts either way, which is what separates a
+budget that was never drawn from one drawn to no effect.
 
 usage: summarize-power-envelope.py CAMPAIGN_DIRECTORY [SUMMARY_TSV]
 """
@@ -22,6 +32,9 @@ import os
 import sys
 
 SPAN_CRITERION = 0.20
+# evidence/measurement-state-and-memory-clock.md, 3.11 against 3.24 tok/s under
+# identical flags ten minutes apart on this machine.
+MACHINE_SPREAD_FLOOR = 0.04
 ARM_ROLES = ("01-control-open", "02-package-20w", "03-package-25w", "04-control-close")
 
 
@@ -142,17 +155,23 @@ def summarize(campaign_directory, summary_path):
                 )
                 continue
             relative = (candidate - control_mean) / control_mean
-            if abs(relative) <= control_spread:
+            readable_band = max(control_spread, MACHINE_SPREAD_FLOOR)
+            band_source = (
+                "control spread"
+                if control_spread >= MACHINE_SPREAD_FLOOR
+                else "machine spread floor"
+            )
+            if abs(relative) <= readable_band:
                 state = "unresolved"
                 reason = (
                     f"{relative:+.1%} against the control mean sits inside the "
-                    f"{control_spread:.1%} control spread"
+                    f"{readable_band:.1%} {band_source}"
                 )
             else:
                 state = "faster" if relative > 0 else "slower"
                 reason = (
                     f"{relative:+.1%} against the control mean exceeds the "
-                    f"{control_spread:.1%} control spread"
+                    f"{readable_band:.1%} {band_source}"
                 )
             control_watts = [
                 as_float((arms.get(control_role) or {}).get("package_watts"))

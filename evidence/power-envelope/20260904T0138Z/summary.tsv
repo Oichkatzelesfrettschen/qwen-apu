@@ -14,11 +14,11 @@ qwen38-4b-distill	04-control-close	serve-fixed-package-default	3.380	16.185	1.30
 
 model_id	arm	state	reason
 qwen35-08b	sweep	resolved	control spread 0.2% within the 20% span criterion, control mean 18.738 tok/s
-qwen35-08b	02-package-20w	faster	+0.6% against the control mean exceeds the 0.2% control spread; package 17.28 W against the control mean 17.18 W
-qwen35-08b	03-package-25w	faster	+0.7% against the control mean exceeds the 0.2% control spread; package 17.17 W against the control mean 17.18 W
+qwen35-08b	02-package-20w	unresolved	+0.6% against the control mean sits inside the 4.0% machine spread floor; package 17.28 W against the control mean 17.18 W
+qwen35-08b	03-package-25w	unresolved	+0.7% against the control mean sits inside the 4.0% machine spread floor; package 17.17 W against the control mean 17.18 W
 qwen38-2b-distill	sweep	resolved	control spread 0.1% within the 20% span criterion, control mean 9.838 tok/s
-qwen38-2b-distill	02-package-20w	slower	-0.4% against the control mean exceeds the 0.1% control spread; package 17.30 W against the control mean 17.38 W
-qwen38-2b-distill	03-package-25w	slower	-0.1% against the control mean exceeds the 0.1% control spread; package 17.30 W against the control mean 17.38 W
+qwen38-2b-distill	02-package-20w	unresolved	-0.4% against the control mean sits inside the 4.0% machine spread floor; package 17.30 W against the control mean 17.38 W
+qwen38-2b-distill	03-package-25w	unresolved	-0.1% against the control mean sits inside the 4.0% machine spread floor; package 17.30 W against the control mean 17.38 W
 qwen38-4b-distill	sweep	resolved	control spread 0.1% within the 20% span criterion, control mean 3.382 tok/s
-qwen38-4b-distill	02-package-20w	unresolved	-0.1% against the control mean sits inside the 0.1% control spread; package 16.16 W against the control mean 16.17 W
-qwen38-4b-distill	03-package-25w	unresolved	-0.1% against the control mean sits inside the 0.1% control spread; package 16.19 W against the control mean 16.17 W
+qwen38-4b-distill	02-package-20w	unresolved	-0.1% against the control mean sits inside the 4.0% machine spread floor; package 16.16 W against the control mean 16.17 W
+qwen38-4b-distill	03-package-25w	unresolved	-0.1% against the control mean sits inside the 4.0% machine spread floor; package 16.19 W against the control mean 16.17 W

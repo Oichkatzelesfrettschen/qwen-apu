@@ -16,6 +16,7 @@
 | View-metadata incremental patch | superseded retain | `patches/superseded/` | folded into `llama-no-cpu-fallback.patch` |
 | Raven2 diagnostic Web UI | adapted source asset | ordinary Git under `webui/` | qwen-lab 1.5.0 source plus APU-specific policy tests |
 | Generated image artifacts | raw exact-target evidence, one binary per admission | ordinary Git under `evidence/image-appliance/` | `evidence/SHA256SUMS`, and the profile, seed, and runtime the provenance record beside it names |
+| Package-power campaign arms | raw exact-target evidence | ordinary Git under `evidence/power-envelope/` | `evidence/SHA256SUMS`, `arm-status.tsv`, `campaign-inputs.tsv`, and each arm's own energy record, clock sidecar, device record, and power-metrics table at both endpoints |
 
 `remote/refresh-evidence-manifest.sh` regenerates `evidence/SHA256SUMS` from
 the tracked `benchmarks/` and `evidence/` trees, and `--check` exits non-zero on
