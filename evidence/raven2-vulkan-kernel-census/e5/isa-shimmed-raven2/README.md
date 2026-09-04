@@ -1,4 +1,11 @@
-# The E5-int24 ISA receipt, from a shimmed RAVEN2 on the workstation
+# The E5 ISA receipt, from a shimmed RAVEN2 on the workstation
+
+The lane's reframe moved two of the four arms this page describes into the paths
+that own them, byte for byte: `arms/int24/` is `../E5-M/isa-arch-toolchain/` and
+`arms/extension/` is `../E5-S0/isa-arch-toolchain/`. The two production anchors
+stay here, since all three paths are read against them, and every count, digest,
+and reading below is unchanged by the move. `../README.md` carries the reframed
+hypothesis and the three paths.
 
 Falsifier 1 reads which instructions ACO selects for
 `mul_mat_vec_q4_k_q8_1_f32`. ACO is a property of Mesa rather than of silicon,

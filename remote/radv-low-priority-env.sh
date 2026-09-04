@@ -32,8 +32,11 @@ requested_max_nodes_per_submit=${GGML_VK_MAX_NODES_PER_SUBMIT:-}
 requested_serialize_submissions=${GGML_VK_SERIALIZE_SUBMISSIONS:-}
 requested_allow_graphics_queue=${GGML_VK_ALLOW_GRAPHICS_QUEUE:-}
 requested_submit_trace=${GGML_VK_SUBMIT_TRACE:-}
-# The int24 candidate's admission variable survives the scrub for the
-# diagnostic profile, which is the one profile that restores it.
+# The integer-dot admission variable survives the scrub for the diagnostic
+# profile, which is the one profile that restores an ambient GGML_VK_ value of
+# it. A serving arm reaches the same admission through QWEN_FORCE_INTEGER_DOT
+# below, which crosses the scrub under its own name and leaves the profile's
+# exports alone.
 requested_force_integer_dot=${GGML_VK_FORCE_INTEGER_DOT:-}
 # The scrub leaves QWEN_ names alone, so this copy carries the diagnostic
 # profile's frequency input in the same form as the GGML_VK_ copies beside it;
@@ -241,6 +244,32 @@ if [ -n "${QWEN_Q4K_VARIANT:-}" ]; then
         *)
             printf 'QWEN_Q4K_VARIANT is e4, e4-scale, or e4-scale-licm over /2, /4, or /8: %s\n' \
                 "$QWEN_Q4K_VARIANT" >&2
+            exit 2
+            ;;
+    esac
+fi
+# The served A/B measures the integer-dot arm against its control under the same
+# submission shape, and run-served-binary-ab.sh runs every arm under low-async,
+# so the admission crosses the scrub under a QWEN_ name the way the census
+# collection toggle above does. A named profile of its own would put a second
+# string into campaign-inputs.tsv's vulkan_profile field, which the scoreboard
+# receipt requires to read low-async; `custom` exports a submission setting only
+# where the caller supplies one, so an arm run through it and a control run
+# through low-async would differ by node count as well. This crossing leaves the
+# profile and its exports exactly what they are.
+#
+# The value is the one ggml_vk_force_integer_dot() accepts, so a third value
+# would run the control while the caller named the arm, and it is refused here
+# the way the diagnostic profile refuses it. Where the diagnostic profile has
+# already exported the same name, both paths admit 1 alone and agree.
+if [ -n "${QWEN_FORCE_INTEGER_DOT:-}" ]; then
+    case $QWEN_FORCE_INTEGER_DOT in
+        1)
+            export GGML_VK_FORCE_INTEGER_DOT=1
+            ;;
+        *)
+            printf 'QWEN_FORCE_INTEGER_DOT admits 1 or an unset value: %s\n' \
+                "$QWEN_FORCE_INTEGER_DOT" >&2
             exit 2
             ;;
     esac

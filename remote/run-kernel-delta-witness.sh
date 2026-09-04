@@ -353,12 +353,37 @@ case $candidate_device in
         ;;
 esac
 
+# A candidate whose behavior is selected at run time rather than compiled in
+# reaches nothing through a closed environment unless the selection is named
+# here. The E5 arm is that shape: one binary carries the q8_1 mat-vec and its
+# control, and ggml_vk_force_integer_dot() decides which pipelines are created,
+# so a witness run without the key compares one shader against itself and
+# reports an agreement it never tested. The value is the exact "1" the backend
+# compares against and is refused otherwise, so a third value cannot run the
+# control under the arm's name, and it is admitted per role because the control
+# arm is the same binary with the key absent.
+witness_control_force_integer_dot=${QWEN_WITNESS_CONTROL_FORCE_INTEGER_DOT:-}
+witness_candidate_force_integer_dot=${QWEN_WITNESS_CANDIDATE_FORCE_INTEGER_DOT:-}
+for witness_force_integer_dot_value in \
+    "$witness_control_force_integer_dot" "$witness_candidate_force_integer_dot"; do
+    case $witness_force_integer_dot_value in
+        '' | 1) ;;
+        *)
+            printf 'QWEN_WITNESS_CONTROL_FORCE_INTEGER_DOT and QWEN_WITNESS_CANDIDATE_FORCE_INTEGER_DOT admit 1 or an unset value: %s\n' \
+                "$witness_force_integer_dot_value" >&2
+            exit 2
+            ;;
+    esac
+done
+
 start_server() {
     arm_server=$1
     arm_log=$2
     arm_device=$3
     arm_expected_sha256=$4
     arm_environment_record=$5
+    arm_force_integer_dot=$6
+    arm_experiment_key=$7
     # A run spans four model loads and the two paths stay writable throughout,
     # so the digest inputs.tsv records is re-read against the file about to be
     # executed rather than assumed to still describe it. A build landing on
@@ -378,6 +403,7 @@ start_server() {
         census_arm_exec "$arm_environment_record" \
             VK_DRIVER_FILES="$radv_icd" VK_ICD_FILENAMES="$radv_icd" \
             GGML_VK_Q4K_VARIANT="$arm_experiment_key" \
+            GGML_VK_FORCE_INTEGER_DOT="$arm_force_integer_dot" \
             -- \
             "$arm_server" \
             --model "$model_path" --host 127.0.0.1 --port "$server_port" \
@@ -393,6 +419,7 @@ start_server() {
             VK_DRIVER_FILES="$radv_icd" VK_ICD_FILENAMES="$radv_icd" \
             LLAMA_NO_CPU_FALLBACK=1 \
             GGML_VK_Q4K_VARIANT="$arm_experiment_key" \
+            GGML_VK_FORCE_INTEGER_DOT="$arm_force_integer_dot" \
             -- \
             "$arm_server" \
             --model "$model_path" \
@@ -460,6 +487,8 @@ candidate_server_sha256=$(sha256sum "$candidate_server" | cut -d ' ' -f 1)
     printf 'runs_per_start\t%s\npredict_tokens\t%s\nseed\t%s\nthreads\t%s\nlogprob_bound\t%s\n' \
         "$run_count" "$predict_tokens" "$sampling_seed" "$thread_count" "$logprob_bound"
     printf 'arm_order\tC K K C\ncontrol_device\tVulkan0\ncandidate_device\t%s\n' "$candidate_device"
+    printf 'control_force_integer_dot\t%s\ncandidate_force_integer_dot\t%s\n' \
+        "${witness_control_force_integer_dot:--}" "${witness_candidate_force_integer_dot:--}"
     printf 'contract\t%s\nn_probs\t%s\nnear_tie_nat\t%s\nmargin_retention\t%s\n' \
         "$contract" "$top_count" "$near_tie_nat" "$margin_retention"
     printf 'control_experiment_key\t%s\ncandidate_experiment_key\t%s\n' \
@@ -477,19 +506,23 @@ for arm in C K K C; do
             arm_device=Vulkan0
             arm_sha256=$control_server_sha256
             arm_experiment_key=$control_experiment_key
+            arm_force_integer_dot=$witness_control_force_integer_dot
             ;;
         *)
             arm_server=$candidate_server
             arm_device=$candidate_device
             arm_sha256=$candidate_server_sha256
             arm_experiment_key=$candidate_experiment_key
+            arm_force_integer_dot=$witness_candidate_force_integer_dot
             ;;
     esac
     arm_directory=$output_directory/arms/$slot-$arm
     mkdir -p "$arm_directory"
-    printf 'witness_arm=start slot=%s arm=%s server=%s device=%s\n' "$slot" "$arm" "$arm_server" "$arm_device"
+    printf 'witness_arm=start slot=%s arm=%s server=%s device=%s force_integer_dot=%s\n' \
+        "$slot" "$arm" "$arm_server" "$arm_device" "${arm_force_integer_dot:--}"
     start_server "$arm_server" "$arm_directory/server.log" "$arm_device" \
-        "$arm_sha256" "$arm_directory/arm-environment.tsv"
+        "$arm_sha256" "$arm_directory/arm-environment.tsv" "$arm_force_integer_dot" \
+        "$arm_experiment_key"
     run_index=1
     while [ "$run_index" -le "$run_count" ]; do
         while IFS="$(printf '\t')" read -r prompt_id prompt_text; do
