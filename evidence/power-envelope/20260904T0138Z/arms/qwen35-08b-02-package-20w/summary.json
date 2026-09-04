@@ -1,0 +1,12 @@
+{
+  "label": "qwen35-08b-02-package-20w",
+  "request_status": 0,
+  "teardown_status": 0,
+  "prefill_tok_per_second": 83.91744290301351,
+  "prefill_ms": 226.413,
+  "decode_tok_per_second": 18.855738040523676,
+  "decode_ms": 3341.158,
+  "prompt_tokens": 19,
+  "decode_tokens": 64,
+  "valid": true
+}

@@ -1,0 +1,11 @@
+decode_ms=6406.628
+decode_tok_per_second=9.833566113094129
+decode_tokens=64
+label=qwen38-2b-distill-01-control-open
+prefill_ms=605.536
+prefill_tok_per_second=31.377160069756382
+prompt_tokens=19
+request_status=0
+teardown_status=0
+valid=True
+served_decode=completed label=qwen38-2b-distill-01-control-open result_directory=$HOME/power-envelope-campaign/20260904T0138Z/arms/qwen38-2b-distill-01-control-open

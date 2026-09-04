@@ -10,6 +10,7 @@ fake provider, which is what proves the two paths agree on one canonical
 claim without reaching a network or a key of the operator's.
 """
 
+import argparse
 import hashlib
 import http.client
 import importlib.util
@@ -284,14 +285,17 @@ class BrokerTest(unittest.TestCase):
         self.fail(f"the server returned no tool result: {completed.stderr}")
 
     def test_the_broker_refuses_a_bind_outside_loopback(self):
-        """A literal outside the loopback pair and the wildcard binds nothing.
+        """A non-IPv4 host binds nothing; the type check refuses it outright.
 
         The wildcard has its own arm: it reaches the socket only beside
-        --lan-exposure, which test_the_wildcard_bind_requires_the_exposure_opt_in
-        measures, so the refusal there names the missing opt-in rather than the
-        admitted host set.
+        --lan-exposure and --open-all-interfaces, which
+        test_the_wildcard_bind_requires_the_exposure_opt_in measures, so the
+        refusal there names the missing opt-in rather than the admitted host
+        set. An IPv4 literal outside the loopback pair is syntactically valid
+        and its own arm below measures the cross-argument refusal it meets
+        instead: it names an address --lan-exposure never granted.
         """
-        for host in ("localhost", "192.168.1.10", "::"):
+        for host in ("localhost", "::"):
             with self.subTest(host=host):
                 completed = subprocess.run(
                     [
@@ -310,8 +314,33 @@ class BrokerTest(unittest.TestCase):
                     text=True,
                 )
                 self.assertEqual(completed.returncode, 2)
-                self.assertIn("binds a loopback literal or", completed.stderr)
+                self.assertIn(
+                    "binds a loopback literal, 0.0.0.0, or an IPv4 literal",
+                    completed.stderr,
+                )
                 self.assertEqual(completed.stdout, "")
+
+    def test_the_broker_refuses_a_literal_the_exposure_never_named(self):
+        """A syntactically valid IPv4 literal still binds nothing unannounced."""
+        completed = subprocess.run(
+            [
+                sys.executable,
+                BROKER_PATH,
+                "--host",
+                "192.168.1.10",
+                "--state-dir",
+                self.state_directory,
+                "--token-key-file",
+                self.token_key_path,
+                "--origin",
+                ORIGIN,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("--lan-exposure never named", completed.stderr)
+        self.assertEqual(completed.stdout, "")
 
     def run_broker_expecting_refusal(self, token_key_file, expected_message):
         completed = subprocess.run(
@@ -438,6 +467,11 @@ class BrokerTest(unittest.TestCase):
         for description, origin in (
             ("foreign", "http://localhost:8080"),
             ("absent", None),
+            # A cross-origin request from an opaque origin (a sandboxed
+            # iframe, a data: URL, a file: page) sends the literal string
+            # "null" rather than omitting the header, and it names no page
+            # this launch served.
+            ("null", "null"),
         ):
             with self.subTest(origin=description):
                 sent = self.grant_headers()
@@ -932,6 +966,26 @@ class BrokerTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 2, completed.stderr)
         self.assertIn("--lan-exposure", completed.stderr)
 
+    def test_the_wildcard_bind_requires_open_all_interfaces_beside_the_exposure(self):
+        """--lan-exposure alone still leaves the wildcard bind refused."""
+        completed = subprocess.run(
+            [
+                sys.executable, BROKER_PATH,
+                "--host", "0.0.0.0",  # noqa: S104 -- the refusal under test
+                "--lan-exposure", EXPOSED_ADDRESS,
+                "--state-dir", self.state_directory,
+                "--token-key-file", self.token_key_path,
+                "--api-key-file", self.api_key_path,
+                "--origin", ORIGIN,
+            ],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            timeout=STOP_WAIT_SECONDS,
+        )
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("--open-all-interfaces", completed.stderr)
+
     def test_the_exposure_admits_its_literal_and_refuses_every_other_host(self):
         """The Host set gains exactly one literal beside the loopback ones."""
         broker = self.launch(**{"--lan-exposure": EXPOSED_ADDRESS})
@@ -1057,10 +1111,13 @@ class BrokerTest(unittest.TestCase):
         )
         self.assertEqual(status, 403, body)
         self.assertIn("bearer API key", json.loads(body)["error"])
+        # /health reads the connection's peer address rather than the Host
+        # spelling, and this request's peer stays loopback, so the exposure
+        # name buys it no separate credential policy there either.
         status, _, body = broker.request(
             "GET", "/health", None, {"Host": f"{EXPOSED_NAME}:{broker.port}"}
         )
-        self.assertEqual(status, 403, body)
+        self.assertEqual(status, 200, body)
 
     def test_the_lan_name_requires_the_exposure_it_widens(self):
         """A name adds a Host to a set the exposure literal builds."""
@@ -1080,6 +1137,35 @@ class BrokerTest(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 2, completed.stderr)
         self.assertIn("--lan-exposure", completed.stderr)
+
+    def test_exposed_name_admits_only_one_local_label(self):
+        """The LAN name is exactly one lowercase RFC 1123 label under .local.
+
+        A bare hostname, a public domain, and a second label under .local each
+        register in the ordinary resolver, so a name an attacker controls there
+        would resolve to this socket under DNS rebinding were any of them
+        admitted; an uppercase letter and a trailing dot name the same
+        resolvable form under a different spelling.
+        """
+        self.assertEqual(broker_module.exposed_name(""), "")
+        self.assertEqual(
+            broker_module.exposed_name("qwen-test.local"), "qwen-test.local"
+        )
+        # A single label carries no dot, so an all-numeric label names no
+        # four-octet IPv4 literal and is admitted the way the shell validator
+        # in remote/web-lan-exposure.sh admits it.
+        self.assertEqual(broker_module.exposed_name("123.local"), "123.local")
+        for refused in (
+            "qwen-test",
+            "attacker.example.com",
+            "QWEN-Test.LOCAL",
+            "qwen-test.local.",
+            "a.b.local",
+            "192.168.1.5",
+            "localhost",
+        ):
+            with self.assertRaises(argparse.ArgumentTypeError, msg=refused):
+                broker_module.exposed_name(refused)
 
     def test_the_open_opt_in_requires_the_exposure_it_opens(self):
         """--open-lan removes a credential from a listener the operator exposed."""
@@ -1175,28 +1261,115 @@ class BrokerTest(unittest.TestCase):
         self.assertEqual(status, 200, payload)
         self.assertTrue(payload["authorization"])
 
-    def test_the_exposure_gates_health_on_the_host_the_reader_names(self):
-        """A shell probe on loopback keeps the bearer off its command line."""
+    def test_the_exposure_gates_health_on_the_peer_not_the_host_header(self):
+        """A shell probe on loopback keeps the bearer off its command line.
+
+        A loopback peer is exempt from the bearer whatever admitted Host it
+        names, since the exemption reads `self.client_address` -- the peer
+        address the kernel accepted the connection from -- rather than the
+        `Host` header a request controls. Naming the exposed literal from a
+        loopback peer therefore reads the identity too, the same as naming
+        the loopback literal does.
+        """
         broker = self.launch(**{"--lan-exposure": EXPOSED_ADDRESS})
-        status, _, body = broker.request(
-            "GET", "/health", None, {"Host": f"127.0.0.1:{broker.port}"}
+        for host_header in (
+            f"127.0.0.1:{broker.port}",
+            f"{EXPOSED_ADDRESS}:{broker.port}",
+        ):
+            with self.subTest(host=host_header):
+                status, _, body = broker.request(
+                    "GET", "/health", None, {"Host": host_header}
+                )
+                self.assertEqual(status, 200, body)
+                self.assertEqual(json.loads(body)["pid"], broker.process.pid)
+
+    def loopback_range_request(self, broker, method, path, headers=None):
+        """Connect from a loopback-range address distinct from 127.0.0.1.
+
+        Binding the client socket's source to 127.0.0.2 exercises the same
+        kernel-verified peer-address path a genuine LAN peer presents,
+        without a second host: the bind succeeds because the whole
+        127.0.0.0/8 block routes through `lo`, and the value disagrees with
+        every entry `LOOPBACK_HOSTS` names, so the handler reads a peer the
+        loopback exemption does not cover even while a spoofed Host header
+        claims the loopback literal.
+        """
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", broker.port, timeout=10, source_address=("127.0.0.2", 0)
         )
-        self.assertEqual(status, 200, body)
-        self.assertEqual(json.loads(body)["pid"], broker.process.pid)
-        status, _, body = broker.request(
-            "GET", "/health", None, {"Host": f"{EXPOSED_ADDRESS}:{broker.port}"}
+        try:
+            connection.request(method, path, None, headers or {})
+            response = connection.getresponse()
+            return (
+                response.status,
+                dict(response.getheaders()),
+                response.read().decode("utf-8"),
+            )
+        finally:
+            connection.close()
+
+    def test_the_exposure_refuses_a_non_loopback_peer_spelling_the_loopback_host(self):
+        """A spoofed loopback Host buys nothing once the peer is not loopback."""
+        broker = self.launch(
+            **{
+                "--lan-exposure": EXPOSED_ADDRESS,
+                "--host": "0.0.0.0",
+                "--open-all-interfaces": True,
+            }
+        )
+        status, _, body = self.loopback_range_request(
+            broker, "GET", "/health", {"Host": f"127.0.0.1:{broker.port}"}
         )
         self.assertEqual(status, 403, body)
         self.assertNotIn(TOKEN_SECRET, body)
-        status, _, body = broker.request(
-            "GET", "/health", None,
+        status, _, body = self.loopback_range_request(
+            broker,
+            "GET",
+            "/health",
             {
-                "Host": f"{EXPOSED_ADDRESS}:{broker.port}",
+                "Host": f"127.0.0.1:{broker.port}",
                 "Authorization": f"Bearer {API_KEY}",
             },
         )
         self.assertEqual(status, 200, body)
         self.assertEqual(json.loads(body)["pid"], broker.process.pid)
+
+    def test_the_exposure_bearer_check_precedes_the_shared_bucket(self):
+        """An unauthenticated LAN peer cannot exhaust the bucket a bearer holder needs.
+
+        Five bearer-less grant requests each fail at the bearer check ahead of
+        `ledger.consume`, so none of them spend the two-unit `authorize-minute`
+        bucket: a caller that then presents the bearer still clears both of
+        its own units.
+        """
+        broker = self.launch(
+            **{"--lan-exposure": EXPOSED_ADDRESS, "--per-minute": 2}
+        )
+        secret = self.session_secret()
+        host_header = f"{EXPOSED_ADDRESS}:{broker.port}"
+        payload = json.dumps(
+            {"query": "raven2 vulkan decode", "profile_id": "default"}
+        )
+        unauthenticated_headers = self.exposed_headers(
+            host_header, api_key=None, secret=secret
+        )
+        for _ in range(5):
+            status, _, body = broker.request(
+                "POST", "/grant", payload, unauthenticated_headers
+            )
+            self.assertEqual(status, 403, body)
+            self.assertIn("bearer API key", json.loads(body)["error"])
+        authenticated_headers = self.exposed_headers(host_header, secret=secret)
+        for _ in range(2):
+            status, _, body = broker.request(
+                "POST", "/grant", payload, authenticated_headers
+            )
+            self.assertEqual(status, 200, body)
+        status, _, body = broker.request(
+            "POST", "/grant", payload, authenticated_headers
+        )
+        self.assertEqual(status, 429, body)
+        self.assertIn("authorize-minute", json.loads(body)["error"])
 
     def text(self, message):
         return message["result"]["content"][0]["text"]

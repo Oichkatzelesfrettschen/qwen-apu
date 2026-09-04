@@ -26,7 +26,9 @@
 # The attachment column names what the request carries besides the prompt. `-`
 # is the prompt alone. `image:NAME` sends remote/quality-images/NAME.png or .jpg;
 # several names separated by `|` send several images in order. `tools:SET`
-# offers that set from remote/quality-tools.json.
+# offers that set from remote/quality-tools.json. `web:` names nothing; it
+# marks a `web_current` row whose expectation requires current external
+# information, graded by remote/run-conversational-suite.sh.
 #
 # The `vision` fixtures are drawn by remote/generate-quality-images.py and each
 # row grades against a fact that file declares, so the answer is known by
@@ -132,3 +134,25 @@ photo-06	photo	regex	\A(?![\s\S]*\bright\b)[\s\S]*\bleft\b	Is the animal facing 
 photo-07	photo	regex	\A(?![\s\S]*\b(?:full leaf|in leaf|leafy|foliage|verdant)\b)[\s\S]*\b(?:bare|leafless|no leaves|without leaves|dead)\b	Are the bushes and trees behind the animal bare or in full leaf? Answer with one word.	image:zebra
 photo-08	photo	regex	\A(?![\s\S]*\b(?:green|lush|verdant)\b)[\s\S]*\b(?:dry|dried|brown|golden|yellow|dead|parched)\b	Is the grass the animal stands in dry or green? Answer with one word.	image:zebra
 photo-09	photo	regex	\A(?![\s\S]*(?:\bhead[- ]?on\b|\bfrontal\b|\bfrom the front\b))[\s\S]*\b(?:side|profile|lateral|flank)\b	Is the animal photographed from the side or head-on? Answer with one word.	image:zebra
+#
+# The `web_current` category pins one already-resolved dated fact per row --
+# the event, not a "latest version" claim -- so the expectation stays true
+# forever once the event happened and a retained record stays comparable
+# across every later run. The `web:` attachment carries no name: it tells
+# remote/run-conversational-suite.sh to grade the web-off arm as an expected
+# failure and the web-on arm as the measured gain, over the same
+# contains_all grader every text row already uses. A row that starts passing
+# in the web-off arm reports that the fact reached training rather than that
+# the grader broke; evidence/conversational-suite/README.md registers that
+# reading and the operator step it calls for -- repin the row to a later
+# event.
+web-01	web_current	contains_all	2025-08-09	On what date was Debian 13, codenamed Trixie, officially released? Reply in YYYY-MM-DD form and nothing else.	web:
+web-02	web_current	contains_all	2024-10-07	On what date was Python 3.13.0 released? Reply in YYYY-MM-DD form and nothing else.	web:
+web-03	web_current	contains_all	2024-04-25	On what date was Ubuntu 24.04 LTS, codenamed Noble Numbat, released? Reply in YYYY-MM-DD form and nothing else.	web:
+web-04	web_current	contains_all	2024-09-26	On what date was PostgreSQL 17.0 released? Reply in YYYY-MM-DD form and nothing else.	web:
+web-05	web_current	contains_all	jod	What is the release codename of the Node.js 22 LTS line? Reply with the single word alone.	web:
+web-06	web_current	contains_all	2024-07-25	On what date was Rust 1.80.0 released? Reply in YYYY-MM-DD form and nothing else.	web:
+web-07	web_current	contains_all	2024-11-17	On what date was Linux kernel version 6.12 released? Reply in YYYY-MM-DD form and nothing else.	web:
+web-08	web_current	contains_all	2024-08-13	On what date was Go 1.23 released? Reply in YYYY-MM-DD form and nothing else.	web:
+web-09	web_current	contains_all	2024-10-29	On what date was Fedora Linux 41 released? Reply in YYYY-MM-DD form and nothing else.	web:
+web-10	web_current	contains_all	2024-09-18	On what date was GNOME 47.0 released? Reply in YYYY-MM-DD form and nothing else.	web:

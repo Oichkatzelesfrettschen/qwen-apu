@@ -252,6 +252,7 @@ globalThis.webuiConversationTest = {
       messages: JSON.parse(JSON.stringify(conversationMessages)),
       history: JSON.parse(JSON.stringify(history)),
       toolCallSequence,
+      requestModel,
       conversationGeneration,
     };
   },
@@ -354,6 +355,16 @@ globalThis.webuiConversationTest = {
     if (!listener) throw new Error('the page registered no hashchange listener');
     listener();
   },
+  sendUserTurn(text) {
+    // Drives the page's own send() path rather than the fixture's manual
+    // rememberUserMessage()+saveConversation() pair, so the assertion covers
+    // what a keystroke and a click actually run. The call is fired and left
+    // unawaited: send() suspends on the chat/completions fetch this harness
+    // leaves pending, which is the interruption the test reads the store
+    // across.
+    $('#input').value = text;
+    $('#send').onclick().catch(error => { console.error('sendUserTurn failed', error); });
+  },
 };
 `;
 
@@ -381,6 +392,7 @@ function newPage({ indexedDatabase, localStorage, sessionStorage, hash = '' }) {
     console,
     crypto: { getRandomValues: array => { array[0] = 42; return array; } },
     document,
+    performance: { now: () => Date.now() },
     hashListeners,
     fetch(url, options = {}) {
       return new Promise((resolve, reject) => {
@@ -756,6 +768,282 @@ await flushPromises();
 assert.equal((await reloadedDeniedPage.api.list()).length, 0);
 assert.equal(reloadedDeniedPage.api.state().history.length, 0);
 
+// ---- a user turn persists ahead of the assistant's completion --------------
+
+const interruptedPage = newPage({
+  indexedDatabase: makeFakeIndexedDatabase(),
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(interruptedPage);
+const INTERRUPTED_TEXT = 'what does the chart on page 4 show';
+interruptedPage.api.sendUserTurn(INTERRUPTED_TEXT);
+await flushPromises();
+const interruptedId = interruptedPage.api.state().conversationId;
+assert.ok(interruptedId, 'sending a turn opened no conversation');
+takeRequest(interruptedPage.pendingRequests,
+  request => request.url === './v1/chat/completions',
+  'the chat completion the turn is still awaiting');
+const interruptedRecord = await interruptedPage.api.read(interruptedId);
+assert.ok(interruptedRecord,
+  'a reload before the assistant answered lost the whole conversation');
+assert.equal(interruptedRecord.messages.length, 1,
+  'the user turn did not persist ahead of the awaited completion');
+assert.equal(interruptedRecord.messages[0].role, 'user');
+assert.equal(interruptedRecord.messages[0].content, INTERRUPTED_TEXT,
+  'the persisted turn does not carry what was sent');
+
+// ---- store selection proves a write, not only a list ----------------------
+
+function makeWriteRefusingIndexedDatabase() {
+  /* Answers open, getAll, and get, and rejects every put -- the shape a quota
+     or a private-browsing policy leaves: the database opens and reads, and
+     every write throws. A store selection that trusts list() alone stops
+     here; one that also proves a write falls through to localStorage.
+
+     indexedDatabaseConversationStore()'s run() settles a successful read on
+     transaction.oncomplete rather than the request's own onsuccess, so
+     settle() fires that too, on the second setImmediate hop
+     makeFakeIndexedDatabase() uses. */
+  const databases = new Map();
+  const settle = (request, transaction, produce) => {
+    setImmediate(() => {
+      try {
+        request.result = produce();
+        if (request.onsuccess) request.onsuccess({ target: request });
+        setImmediate(() => {
+          if (transaction.oncomplete) transaction.oncomplete({ target: transaction });
+        });
+      } catch (error) {
+        request.error = error;
+        if (request.onerror) request.onerror({ target: request });
+        setImmediate(() => {
+          if (transaction.onabort) transaction.onabort({ target: transaction });
+        });
+      }
+    });
+    return request;
+  };
+  const fail = (request, transaction) => {
+    setImmediate(() => {
+      request.error = new Error('write refused');
+      if (request.onerror) request.onerror({ target: request });
+      setImmediate(() => {
+        if (transaction.onabort) transaction.onabort({ target: transaction });
+      });
+    });
+    return request;
+  };
+  const newRequest = () => ({ result: undefined, error: null, onsuccess: null, onerror: null });
+  return {
+    databases,
+    open(name) {
+      const request = newRequest();
+      const fresh = !databases.has(name);
+      if (fresh) databases.set(name, new Map());
+      const stores = databases.get(name);
+      const database = {
+        name,
+        objectStoreNames: { contains: storeName => stores.has(storeName) },
+        createObjectStore(storeName) {
+          stores.set(storeName, new Map());
+          return {};
+        },
+        transaction(storeName) {
+          const transaction = { error: null, onabort: null, oncomplete: null };
+          transaction.objectStore = () => {
+            const records = stores.get(storeName);
+            if (!records) throw new Error(`no object store named ${storeName}`);
+            return {
+              getAll: () => settle(newRequest(), transaction, () => [...records.values()]),
+              get: key => settle(newRequest(), transaction, () => records.get(key)),
+              put: () => fail(newRequest(), transaction),
+              delete: () => fail(newRequest(), transaction)
+            };
+          };
+          return transaction;
+        }
+      };
+      request.result = database;
+      setImmediate(() => {
+        if (fresh && request.onupgradeneeded) request.onupgradeneeded({ target: request });
+        if (request.onsuccess) request.onsuccess({ target: request });
+      });
+      return request;
+    }
+  };
+}
+
+const writeRefusingPage = newPage({
+  indexedDatabase: makeWriteRefusingIndexedDatabase(),
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(writeRefusingPage);
+assert.equal(await writeRefusingPage.api.storeName(), 'localstorage',
+  'a database that opens and lists but refuses every write stayed selected on IndexedDB');
+
+// ---- a route naming an id no store answers for is replaced -----------------
+
+const staleHashPage = newPage({
+  indexedDatabase: makeFakeIndexedDatabase(),
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage(),
+  hash: '#/c/absent0000'
+});
+await answerBoot(staleHashPage);
+await flushPromises();
+const staleOpenedId = staleHashPage.api.state().conversationId;
+assert.ok(staleOpenedId, 'an unresolved routed load opened no conversation');
+assert.equal(staleHashPage.location.hash, `#/c/${staleOpenedId}`,
+  'a stale route was left naming the absent conversation instead of the one now open');
+
+// ---- a user action during boot wins over the pending route resolution ------
+
+const clickNewRaceSourceDatabase = makeFakeIndexedDatabase();
+const clickNewRaceSource = newPage({
+  indexedDatabase: clickNewRaceSourceDatabase,
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(clickNewRaceSource);
+const racedRoutedId = await clickNewRaceSource.api.runFixtureTurn(fixture);
+await flushPromises();
+
+const clickNewRacePage = newPage({
+  indexedDatabase: clickNewRaceSourceDatabase,
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage(),
+  hash: `#/c/${racedRoutedId}`
+});
+// initConversations() ran on load and is still awaiting the IndexedDB open
+// (the fake settles it on setImmediate, not synchronously), so this click
+// lands ahead of that resolution -- exactly the race a user opening a fresh
+// tab and immediately pressing New meets.
+clickNewRacePage.api.clickNew();
+const racedNewId = clickNewRacePage.api.state().conversationId;
+assert.ok(racedNewId, 'clicking New during boot opened no conversation');
+assert.notEqual(racedNewId, racedRoutedId);
+await flushPromises();
+assert.equal(clickNewRacePage.api.state().conversationId, racedNewId,
+  'the pending route resolution overwrote the conversation the user had already opened');
+assert.equal(clickNewRacePage.api.state().history.length, 0,
+  'the pending route resolution restored a transcript into the conversation the user opened');
+assert.equal(clickNewRacePage.location.hash, `#/c/${racedNewId}`,
+  'the address bar still names the conversation the pending route resolution opened');
+
+// ---- a write failure after selection falls through to the next store ------
+
+function makeQuotaIndexedDatabase() {
+  /* Answers every write until `state.failWrites` is set, the shape a quota
+     reached mid-session leaves: the write-verified probe at store selection
+     passes on an empty database, and every real write past that point fails
+     the same way a later probe would, so a retry has to fall through to the
+     next store rather than reselecting the one that just failed. Built from
+     scratch rather than wrapping makeFakeIndexedDatabase(), since patching an
+     already-open database's transaction() after the fact races the app's own
+     use of it across the fake's setImmediate settling.
+
+     indexedDatabaseConversationStore()'s run() settles on transaction.oncomplete
+     rather than the request's own onsuccess, so a successful settle() fires
+     that too, on the second setImmediate hop makeFakeIndexedDatabase() uses;
+     a fail() fires onabort instead, the way a real aborted transaction would. */
+  const databases = new Map();
+  const state = { failWrites: false };
+  const settle = (request, transaction, produce) => {
+    setImmediate(() => {
+      try {
+        request.result = produce();
+        if (request.onsuccess) request.onsuccess({ target: request });
+        setImmediate(() => {
+          if (transaction.oncomplete) transaction.oncomplete({ target: transaction });
+        });
+      } catch (error) {
+        request.error = error;
+        if (request.onerror) request.onerror({ target: request });
+        setImmediate(() => {
+          if (transaction.onabort) transaction.onabort({ target: transaction });
+        });
+      }
+    });
+    return request;
+  };
+  const fail = (request, transaction) => {
+    setImmediate(() => {
+      request.error = new Error('quota exceeded');
+      if (request.onerror) request.onerror({ target: request });
+      setImmediate(() => {
+        if (transaction.onabort) transaction.onabort({ target: transaction });
+      });
+    });
+    return request;
+  };
+  const newRequest = () => ({ result: undefined, error: null, onsuccess: null, onerror: null });
+  return {
+    state,
+    databases,
+    open(name) {
+      const request = newRequest();
+      const fresh = !databases.has(name);
+      if (fresh) databases.set(name, new Map());
+      const stores = databases.get(name);
+      const database = {
+        name,
+        objectStoreNames: { contains: storeName => stores.has(storeName) },
+        createObjectStore(storeName) {
+          stores.set(storeName, new Map());
+          return {};
+        },
+        transaction(storeName) {
+          const transaction = { error: null, onabort: null, oncomplete: null };
+          transaction.objectStore = () => {
+            const records = stores.get(storeName);
+            if (!records) throw new Error(`no object store named ${storeName}`);
+            return {
+              getAll: () => settle(newRequest(), transaction, () => [...records.values()]),
+              get: key => settle(newRequest(), transaction, () => records.get(key)),
+              put: value => state.failWrites
+                ? fail(newRequest(), transaction)
+                : settle(newRequest(), transaction,
+                    () => { records.set(value.id, value); return value.id; }),
+              delete: key => state.failWrites
+                ? fail(newRequest(), transaction)
+                : settle(newRequest(), transaction,
+                    () => { records.delete(key); return undefined; })
+            };
+          };
+          return transaction;
+        }
+      };
+      request.result = database;
+      setImmediate(() => {
+        if (fresh && request.onupgradeneeded) request.onupgradeneeded({ target: request });
+        if (request.onsuccess) request.onsuccess({ target: request });
+      });
+      return request;
+    }
+  };
+}
+
+const quotaDatabase = makeQuotaIndexedDatabase();
+const quotaPage = newPage({
+  indexedDatabase: quotaDatabase,
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(quotaPage);
+assert.equal(await quotaPage.api.storeName(), 'indexeddb',
+  'the quota fixture did not start selected on IndexedDB');
+quotaDatabase.state.failWrites = true;
+const quotaId = await quotaPage.api.runFixtureTurn(fixture);
+await flushPromises();
+assert.equal(await quotaPage.api.storeName(), 'localstorage',
+  'a write failure after selection left the page pinned to the backend that refuses every save');
+const quotaRecord = await quotaPage.api.read(quotaId);
+assert.ok(quotaRecord,
+  'the conversation was lost rather than falling through to the next store');
+assert.equal(quotaRecord.messages.length, 3);
+
 // ---- send() saves the user turn ahead of the completion, and commits a
 // tool-call round only once its tool answers exist -------------------------
 
@@ -876,7 +1164,10 @@ function makeFlakyIndexedDatabase(realDatabase, { failWrites }) {
   };
 }
 
-const failWrites = { active: true };
+// failWrites starts false so the write-then-delete selection probe below
+// still passes: the point of this arm is a write that starts refusing after
+// selection, not one the probe itself would already have caught.
+const failWrites = { active: false };
 const flakyDatabase = makeFakeIndexedDatabase();
 const flakyIndexedDatabase = makeFlakyIndexedDatabase(flakyDatabase, { failWrites });
 const flakyLocalStorage = makeFakeStorage();
@@ -887,6 +1178,7 @@ const flakyPage = newPage({
 });
 await answerBoot(flakyPage);
 assert.equal(await flakyPage.api.storeName(), 'indexeddb');
+failWrites.active = true;
 // The failed write is retried once against whatever the fallback chain now
 // resolves to, in the same saveConversation() call, so the record that
 // triggered the demotion is not lost until a later call happens to run.
@@ -937,11 +1229,14 @@ assert.equal(reloadedFlakyRecord.messages.at(-1).content,
 // then localStorage's real write also refused (its own probe still answers,
 // the quota shape above), and only the third attempt -- memory, which never
 // throws -- lands the record, all inside the one call that started it.
+// Both failWrites flags start false so the write-then-delete selection probe
+// below still passes for both stores; this arm's point is a write that
+// starts refusing after selection, on both backends in the same call.
 const cascadeDatabase = makeFakeIndexedDatabase();
-const cascadeIndexedFailWrites = { active: true };
+const cascadeIndexedFailWrites = { active: false };
 const cascadeIndexedDatabase =
   makeFlakyIndexedDatabase(cascadeDatabase, { failWrites: cascadeIndexedFailWrites });
-const cascadeLocalFailWrites = { active: true };
+const cascadeLocalFailWrites = { active: false };
 const cascadePage = newPage({
   indexedDatabase: cascadeIndexedDatabase,
   localStorage: makeFlakyStorage(cascadeLocalFailWrites),
@@ -949,6 +1244,8 @@ const cascadePage = newPage({
 });
 await answerBoot(cascadePage);
 assert.equal(await cascadePage.api.storeName(), 'indexeddb');
+cascadeIndexedFailWrites.active = true;
+cascadeLocalFailWrites.active = true;
 const cascadeId = await cascadePage.api.runFixtureTurn(fixture);
 await flushPromises();
 assert.equal(await cascadePage.api.storeName(), 'memory',
@@ -976,7 +1273,9 @@ await flushPromises();
 assert.ok((await priorPage.api.read(priorId)).messages.length,
   'the prior conversation did not save ahead of the migration arm');
 
-const migrationFailWrites = { active: true };
+// Starts false so the write-then-delete selection probe still passes;
+// this arm's point is a write that starts refusing after selection.
+const migrationFailWrites = { active: false };
 const migrationIndexedDatabase =
   makeFlakyIndexedDatabase(migrationDatabase, { failWrites: migrationFailWrites });
 const migrationLocalStorage = makeFakeStorage();
@@ -990,6 +1289,7 @@ assert.equal(await migrationPage.api.storeName(), 'indexeddb',
   'the prior conversation was not visible through IndexedDB before the failure');
 const migrationPriorList = await migrationPage.api.list();
 assert.equal(migrationPriorList.length, 1, 'IndexedDB reported no prior conversation');
+migrationFailWrites.active = true;
 const newId = await migrationPage.api.runFixtureTurn(fixture);
 await flushPromises();
 assert.equal(await migrationPage.api.storeName(), 'localstorage',
@@ -1020,7 +1320,9 @@ const staleId = await staleSourcePage.api.runFixtureTurn(fixture);
 await flushPromises();
 const staleRecord = await staleSourcePage.api.read(staleId);
 
-const staleFailWrites = { active: true };
+// Starts false so the write-then-delete selection probe still passes;
+// this arm's point is a write that starts refusing after selection.
+const staleFailWrites = { active: false };
 const staleIndexedDatabase =
   makeFlakyIndexedDatabase(staleDatabase, { failWrites: staleFailWrites });
 const staleLocalStorage = makeFakeStorage();
@@ -1043,6 +1345,7 @@ const stalePage = newPage({
 });
 await answerBoot(stalePage);
 assert.equal(await stalePage.api.storeName(), 'indexeddb');
+staleFailWrites.active = true;
 await stalePage.api.appendFollowUp('a write that triggers the migration', 'image-capable');
 await flushPromises();
 assert.equal(await stalePage.api.storeName(), 'localstorage');
@@ -1393,11 +1696,13 @@ function makeDeferredCommitIndexedDatabase(realDatabase, control) {
      redefined as a getter/setter rather than a plain field so the fake's
      `if (transaction.oncomplete)` auto-fire check reads null and skips its
      own call, while the real handler run() assigned is retained for
-     control.release() to invoke by hand. Only a readwrite transaction is
-     intercepted: resolveConversationStore()'s own list() probe opens a
-     readonly transaction ahead of the write, and holding that one back too
-     would stall the store resolution the write is waiting on rather than
-     the write itself. */
+     control.release() to invoke by hand. resolveConversationStore()'s own
+     selection probe now proves a write, not only a list(), so it opens a
+     readwrite transaction too, ahead of the real save; put()/delete() tag the
+     transaction against CONVERSATION_PROBE_KEY as soon as it is called,
+     strictly before the fake's own setImmediate hops read the property back,
+     and the getter auto-fires that one rather than holding it, so only the
+     real save's transaction ever stalls on control.release(). */
   return {
     open(name) {
       const request = realDatabase.open(name);
@@ -1407,8 +1712,23 @@ function makeDeferredCommitIndexedDatabase(realDatabase, control) {
         const transaction = originalTransaction(...args);
         if (args[1] !== 'readwrite') return transaction;
         let heldHandler = null;
+        const originalObjectStore = transaction.objectStore.bind(transaction);
+        transaction.objectStore = (...storeArgs) => {
+          const store = originalObjectStore(...storeArgs);
+          const originalPut = store.put.bind(store);
+          const originalDelete = store.delete.bind(store);
+          store.put = value => {
+            if (value && value.id === CONVERSATION_PROBE_KEY) transaction.isProbe = true;
+            return originalPut(value);
+          };
+          store.delete = key => {
+            if (key === CONVERSATION_PROBE_KEY) transaction.isProbe = true;
+            return originalDelete(key);
+          };
+          return store;
+        };
         Object.defineProperty(transaction, 'oncomplete', {
-          get() { return null; },
+          get() { return transaction.isProbe ? heldHandler : null; },
           set(handler) {
             heldHandler = handler;
             control.release = () => {
