@@ -2270,6 +2270,7 @@ ae4fe092e6b93e0e09564ac16810af9d43e36e12c03b592b405c42cbc7cc1310  evidence/raven
 6d58c43a246f3ef9fbbab26f1e0d83fb62b7fed100864cec9150bbe72b9726ff  evidence/raven2-vulkan-kernel-census/e4/e4.spvasm
 974de097a1f203787b8229d6859257e50dd0d486a10c87148cd96834a81a1662  evidence/raven2-vulkan-kernel-census/e4/e4b-a-first-pass.md
 c31ef5dfd06a95b9c98f9eff0d479dd86e7e60b23fc25c914e350156791027f7  evidence/raven2-vulkan-kernel-census/e4/e4b-c-first-pass.md
+95fdd876b8b9ab932d5f75fa0eef1f79f144cb49cfed81dbda9e0bd0218a2cdb  evidence/raven2-vulkan-kernel-census/e4/e4b-producer-canary.md
 03ea6b14b19b3c9ea25d1ae08f1d7659239c26f590c2ada8513ad5b682b405ad  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-20260902T2312Z/README.md
 f39af63fdac85c15e08eb4cca65eaf5884d8ed5fa77765a0874b2e9bdbaaeb64  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-20260902T2312Z/arms.tsv
 612defeb6d1864a693b1a4d46f6794f54719f3a0fb6d314bdc734bde5e1d5f79  evidence/raven2-vulkan-kernel-census/e4/kernel-delta-20260902T2312Z/arms/01-C/clock-sidecar-verdict.txt
