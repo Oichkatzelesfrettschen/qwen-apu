@@ -35,7 +35,11 @@ report() {
 # what those links are handed.
 harness=$work/harness
 mkdir -p "$harness"
-for harness_member in qwen-launch.sh web-lan-exposure.sh \
+# The launcher proves the SearXNG components ahead of the health gate; a
+# stand-in launch command satisfies that proof on a host holding no instance.
+QWEN_SEARXNG_LAUNCH_COMMAND=true
+export QWEN_SEARXNG_LAUNCH_COMMAND
+for harness_member in qwen-launch.sh qwen-home.sh searxng-launch.sh web-lan-exposure.sh \
     resolve-active-deployment.sh deployment-bundle-name.sh \
     open-verified-lock-descriptor.py \
     select-projector.sh model-registry.sh models.tsv \
