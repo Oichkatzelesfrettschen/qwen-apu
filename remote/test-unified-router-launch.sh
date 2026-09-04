@@ -118,7 +118,7 @@ chmod +x "$harness/qwen-webui-control.sh"
 
 # The launcher waits for /health on the listener it reports, so the harness
 # answers that route from a standard-library server for the duration of a run.
-health_port=18086
+health_port=$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')
 python3 - "$health_port" "$work/health.pid" <<'PY' &
 import http.server
 import socketserver
