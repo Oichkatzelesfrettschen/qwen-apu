@@ -274,7 +274,11 @@ status, error, table = run_case(PASSING, witness=write_witness)
 assert status == 0, error
 assert table["clock_state"]["verdict"] == "measured", table["clock_state"]
 assert table["clock_state"]["control_values"].split(" ")[0] == "1100/1.0000/933", table["clock_state"]
-assert table["clock_state"]["comparable_pairs"] == "8", table["clock_state"]
+# comparable_pairs is a pair count in every row of the table, so this row counts
+# a pair only where both its arms carried a readable state; the eight arms of
+# four quadruple halves are four pairs.
+assert table["clock_state"]["replicates"] == "4", table["clock_state"]
+assert table["clock_state"]["comparable_pairs"] == "4", table["clock_state"]
 assert "fclk_modes=933" in table["clock_state"]["detail"], table["clock_state"]
 assert "min_sclk_share=1.0000" in table["clock_state"]["detail"], table["clock_state"]
 assert table["token_identity"]["verdict"] == "held", table["token_identity"]
@@ -300,6 +304,7 @@ status, error, table = run_case(PASSING, witness=write_witness,
 assert status == 0, error
 assert table["clock_state"]["verdict"] == "unavailable", table["clock_state"]
 assert "arms_without_clock_state=8" in table["clock_state"]["detail"], table["clock_state"]
+assert table["clock_state"]["comparable_pairs"] == "0", table["clock_state"]
 
 # The witness is optional and its absence is stated rather than assumed passing.
 status, error, table = run_case(PASSING)

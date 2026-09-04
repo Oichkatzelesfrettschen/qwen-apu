@@ -386,7 +386,11 @@ def clock_row(pairs):
     shares = []
     fabric = set()
     unread = 0
+    # comparable_pairs is a pair count in every row of this table, so a pair
+    # counts here only where both of its arms carried a readable state.
+    readable_pairs = 0
     for control, candidate in pairs:
+        pair_readable = True
         for row, bucket in ((control, controls), (candidate, candidates)):
             sclk = row.get("sclk_mode_mhz", UNKNOWN_STATE) or UNKNOWN_STATE
             share = row.get("sclk_share", UNKNOWN_STATE) or UNKNOWN_STATE
@@ -394,12 +398,16 @@ def clock_row(pairs):
             bucket.append(f"{sclk}/{share}/{mclk}")
             if sclk == UNKNOWN_STATE or mclk == UNKNOWN_STATE:
                 unread += 1
+                pair_readable = False
                 continue
             fabric.add(mclk)
             try:
                 shares.append(float(share))
             except ValueError:
                 unread += 1
+                pair_readable = False
+        if pair_readable:
+            readable_pairs += 1
     if unread or not shares:
         verdict, detail = "unavailable", f"arms_without_clock_state={unread}"
     else:
@@ -407,7 +415,7 @@ def clock_row(pairs):
         detail = (f"min_sclk_share={min(shares):.4f} fclk_modes={' '.join(sorted(fabric))}"
                   f" arms={len(shares)}")
     return ["clock_state", "-", "sclk_mode_mhz/sclk_share/mclk_mode_mhz",
-            str(len(pairs)), str(len(shares)), "-", "-", "-", "-", "-",
+            str(len(pairs)), str(readable_pairs), "-", "-", "-", "-", "-",
             " ".join(controls), " ".join(candidates), "-", verdict, detail]
 
 
