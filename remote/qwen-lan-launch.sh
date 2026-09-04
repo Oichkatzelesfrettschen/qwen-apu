@@ -201,6 +201,32 @@ if [ ! -e "$signing_key_file" ]; then
     )
     signing_key_state=minted
 else
+    # An existing key meets the same rules qwen-launch.sh applies to it before
+    # this script tears down the running session: a key that fails one of
+    # them refuses here, ahead of the teardown, rather than after it, which is
+    # where qwen-launch.sh's own check runs and where the appliance would
+    # otherwise be left offline on an invalid relaunch configuration.
+    refuse_existing_signing_key() {
+        printf 'the grant signing key %s: %s\n' "$1" "$signing_key_file" >&2
+        printf 'QWEN_WEB_TOKEN_KEY_FILE names a regular file at mode 0600, owned by this user, holding the HMAC key\n' >&2
+        exit 1
+    }
+    [ -f "$signing_key_file" ] || refuse_existing_signing_key 'is not a regular file'
+    existing_signing_key_owner=$(stat -c %u "$signing_key_file" 2>/dev/null ||
+        echo unknown)
+    if [ "$existing_signing_key_owner" != "$(id -u)" ]; then
+        refuse_existing_signing_key \
+            "is owned by uid $existing_signing_key_owner rather than $(id -u)"
+    fi
+    [ -r "$signing_key_file" ] || refuse_existing_signing_key 'is unreadable'
+    [ -s "$signing_key_file" ] || refuse_existing_signing_key 'is empty'
+    existing_signing_key_mode=$(stat -c %a "$signing_key_file" 2>/dev/null ||
+        echo unknown)
+    case $existing_signing_key_mode in
+        400 | 600) ;;
+        *) refuse_existing_signing_key \
+            "carries mode $existing_signing_key_mode rather than 0600" ;;
+    esac
     signing_key_state=present
 fi
 

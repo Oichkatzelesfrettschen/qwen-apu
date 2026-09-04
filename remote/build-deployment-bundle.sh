@@ -334,6 +334,22 @@ if [ -n "$router_presets_path" ]; then
                                 "${preset_image_profile:--}" >&2
                             exit 1
                         fi
+                        # The grant binds the generation to the section that
+                        # proposed it, so a configuration copied or left stale
+                        # from another section's build is a language-profile
+                        # binding the bundle must not carry forward silently:
+                        # qwen-capacity-policy.sh rejoins
+                        # QWEN_IMAGE_LANGUAGE_PROFILE to the section at launch
+                        # and refuses the mismatch there, so the bundle would
+                        # verify and activate a manifest no launch can serve.
+                        recorded_language_profile=$(printf '%s\n' \
+                            "$image_server_report" |
+                            sed -n 's/^QWEN_IMAGE_LANGUAGE_PROFILE=//p')
+                        if [ "$recorded_language_profile" != "$web_section" ]; then
+                            printf 'bundle preset section %s carries an image server bound to language profile %s\n' \
+                                "$web_section" "$recorded_language_profile" >&2
+                            exit 1
+                        fi
                     fi
                     if [ "$image_server_column" != "$expected_image_column" ]; then
                         printf 'bundle preset section %s reads image_server %s where its preset marker reads %s\n' \

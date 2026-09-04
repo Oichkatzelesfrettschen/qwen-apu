@@ -17,6 +17,7 @@ numbers, exits 1 with the reason on stderr.
 """
 
 import json
+import math
 import sys
 
 REQUIRED_ENVIRONMENT = (
@@ -84,6 +85,19 @@ def main(argv):
     except (KeyError, TypeError, ValueError):
         print(
             "the image server bounds its call with no readable timeout_ms: %s"
+            % configuration_path,
+            file=sys.stderr,
+        )
+        return 1
+    # json.load admits NaN and Infinity as numeric literals by default, and
+    # every comparison against NaN is False, so the agreement check below
+    # would pass a non-finite deadline silently. resolve_timeout() in
+    # image-mcp/server.py rejects the same value at child startup, so this
+    # reader has to reject it here rather than report the configuration valid.
+    if not math.isfinite(router_limit) or not math.isfinite(child_limit) or \
+            router_limit <= 0 or child_limit <= 0:
+        print(
+            "the image server bounds its call with a non-finite or non-positive deadline: %s"
             % configuration_path,
             file=sys.stderr,
         )

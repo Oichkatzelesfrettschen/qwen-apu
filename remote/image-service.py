@@ -350,7 +350,12 @@ def exposed_name(value):
     dot are each refused by name rather than reshaped: any of them registers in
     the ordinary resolver, and a name an attacker controls there would resolve
     to this socket under DNS rebinding the way the closed literal set exists to
-    prevent. A single label carries no dot, so an all-numeric label such as
+    prevent -- the exact argument that holds only for the `.local` namespace,
+    since an ordinary DNS name resolves through the recursive resolver like any
+    other and `--open-lan` would then admit the rebound request's Host and
+    Origin with no bearer standing between it and the broker. `localhost` is
+    refused by name too, because it names the loopback the set already holds.
+    A single label carries no dot, so an all-numeric label such as
     `123.local` names no four-octet IPv4 literal and is admitted the way
     `web_lan_name_is_valid` in remote/web-lan-exposure.sh admits it; the
     dotted-quad form belongs to `--lan-exposure` and never reaches this suffix
