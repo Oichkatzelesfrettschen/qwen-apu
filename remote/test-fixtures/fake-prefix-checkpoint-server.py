@@ -29,11 +29,11 @@ Environment:
                                           and the log carries neither line, the
                                           shape an unarmed launch produces
 """
+
 import hashlib
 import json
 import os
 import sys
-import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 port = int(sys.argv[1])
@@ -114,24 +114,40 @@ class Handler(BaseHTTPRequestHandler):
         predict = int(body.get("n_predict") or 1)
         prompt_n = tokenize(prompt)
         prompt_ms = prompt_n * ms_per_token
-        self.respond({
-            "content": "raw reply",
-            "timings": {
-                "prompt_n": prompt_n, "prompt_ms": prompt_ms,
-                "prompt_per_second": (prompt_n / prompt_ms * 1000.0) if prompt_ms else 0.0,
-                "predicted_n": predict, "predicted_ms": predict * 10.0,
-                "predicted_per_second": 100.0,
-            },
-        })
+        self.respond(
+            {
+                "content": "raw reply",
+                "timings": {
+                    "prompt_n": prompt_n,
+                    "prompt_ms": prompt_ms,
+                    "prompt_per_second": (prompt_n / prompt_ms * 1000.0)
+                    if prompt_ms
+                    else 0.0,
+                    "predicted_n": predict,
+                    "predicted_ms": predict * 10.0,
+                    "predicted_per_second": 100.0,
+                },
+            }
+        )
 
     def chat_completion(self, body):
         messages = body.get("messages", [])
         system_prompt = next(
-            (message.get("content", "") for message in messages
-             if message.get("role") == "system"), "")
+            (
+                message.get("content", "")
+                for message in messages
+                if message.get("role") == "system"
+            ),
+            "",
+        )
         user_prompt = next(
-            (message.get("content", "") for message in messages
-             if message.get("role") == "user"), "")
+            (
+                message.get("content", "")
+                for message in messages
+                if message.get("role") == "user"
+            ),
+            "",
+        )
         tools = body.get("tools", [])
         predict = int(body.get("max_tokens") or body.get("n_predict") or 1)
 
@@ -142,12 +158,11 @@ class Handler(BaseHTTPRequestHandler):
 
         if armed and pinned["key"] == head_key:
             prompt_n = user_tokens
-            t0 = time.monotonic()
-            time.sleep(0)
             took_ms = operation_ms
             log_line(
                 f"slot restored prefix checkpoint, n_past = {pinned['n_tokens']}, "
-                f"size = {size_mib:.3f} MiB, took {took_ms:.2f} ms, key = {head_key}")
+                f"size = {size_mib:.3f} MiB, took {took_ms:.2f} ms, key = {head_key}"
+            )
         elif armed and pinned["key"] is None:
             # The first eligible request pins the head it met first; the pin
             # fills once and the capture logs before this same request is
@@ -158,7 +173,8 @@ class Handler(BaseHTTPRequestHandler):
             prompt_n = head_tokens + user_tokens
             log_line(
                 f"slot captured prefix checkpoint, n_tokens = {head_tokens}, "
-                f"size = {size_mib:.3f} MiB, took {operation_ms:.2f} ms, key = {head_key}")
+                f"size = {size_mib:.3f} MiB, took {operation_ms:.2f} ms, key = {head_key}"
+            )
         else:
             # A divergent head, or the mechanism disarmed outright: the
             # request recomputes everything and the log states neither line,
@@ -167,15 +183,21 @@ class Handler(BaseHTTPRequestHandler):
             prompt_n = head_tokens + user_tokens
 
         prompt_ms = prompt_n * ms_per_token
-        self.respond({
-            "choices": [{"message": {"role": "assistant", "content": "reply"}}],
-            "timings": {
-                "prompt_n": prompt_n, "prompt_ms": prompt_ms,
-                "prompt_per_second": (prompt_n / prompt_ms * 1000.0) if prompt_ms else 0.0,
-                "predicted_n": predict, "predicted_ms": predict * 10.0,
-                "predicted_per_second": 100.0,
-            },
-        })
+        self.respond(
+            {
+                "choices": [{"message": {"role": "assistant", "content": "reply"}}],
+                "timings": {
+                    "prompt_n": prompt_n,
+                    "prompt_ms": prompt_ms,
+                    "prompt_per_second": (prompt_n / prompt_ms * 1000.0)
+                    if prompt_ms
+                    else 0.0,
+                    "predicted_n": predict,
+                    "predicted_ms": predict * 10.0,
+                    "predicted_per_second": 100.0,
+                },
+            }
+        )
 
 
 HTTPServer(("127.0.0.1", port), Handler).serve_forever()
