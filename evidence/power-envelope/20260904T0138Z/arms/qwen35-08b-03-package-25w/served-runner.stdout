@@ -1,0 +1,11 @@
+decode_ms=3337.9
+decode_tok_per_second=18.874142424877917
+decode_tokens=64
+label=qwen35-08b-03-package-25w
+prefill_ms=225.686
+prefill_tok_per_second=84.18776530223408
+prompt_tokens=19
+request_status=0
+teardown_status=0
+valid=True
+served_decode=completed label=qwen35-08b-03-package-25w result_directory=$HOME/power-envelope-campaign/20260904T0138Z/arms/qwen35-08b-03-package-25w

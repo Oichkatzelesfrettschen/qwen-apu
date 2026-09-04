@@ -97,6 +97,30 @@ fi
 report untracked_payload_refused accepted
 rm "$source_repository/remote/untracked-helper.sh"
 
+# An ignored non-bytecode artifact -- *.tmp, *.part, api.key, *.key --
+# ships through rsync and carries no manifest row the same way an untracked
+# one does, but --exclude-standard hides it from the untracked check the same
+# way it hides one from `git status`: the refusal names the file whether or
+# not .gitignore also names it.
+printf '*.tmp\n*.part\napi.key\n*.key\n' >"$source_repository/.gitignore"
+git -C "$source_repository" add .gitignore
+git -C "$source_repository" \
+    -c user.email=fixture@example.invalid -c user.name=fixture \
+    commit -q -m 'ignore rules'
+printf 'stray\n' >"$source_repository/remote/leftover.tmp"
+if "$source_repository/remote/sync-runtime-tree.sh" "$destination" \
+    >"$work_directory/ignored.log" 2>&1; then
+    printf 'an ignored payload file synced without a manifest row\n' >&2
+    exit 1
+fi
+if ! grep -q 'remote/leftover.tmp' "$work_directory/ignored.log"; then
+    printf 'the ignored-file refusal lost the file it names\n' >&2
+    cat "$work_directory/ignored.log" >&2
+    exit 1
+fi
+report ignored_payload_refused accepted
+rm "$source_repository/remote/leftover.tmp"
+
 # A tracked file removed from the working tree would leave a manifest row
 # naming a file the destination never receives, which reads as a partial sync
 # there rather than as a deletion here.

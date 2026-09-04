@@ -1,0 +1,8 @@
+key	value
+endpoint	start
+utc	2026-09-04T01:43:00Z
+monotonic_ns	503125043702716
+tctl_millidegrees	55125
+edge_millidegrees	55000
+freq1_hz	1100000000
+load1	0.12

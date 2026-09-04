@@ -100,6 +100,28 @@ if [ -n "$untracked_payload_files" ]; then
     printf 'commit them or remove them before syncing\n' >&2
     exit 1
 fi
+# --exclude-standard above hides an ignored file from the untracked check the
+# same way it hides one from `git status`, so a non-bytecode artifact
+# .gitignore names -- *.part, *.tmp, api.key, *.key -- is invisible there while
+# rsync still copies it: payload_exclusions below names bytecode alone.
+# Ignored bytecode is the one population both this check and the rsync
+# exclusion agree to leave behind, so it is exempted here the same way.
+ignored_payload_files=$(
+    cd "$repository_directory"
+    git ls-files --others --ignored --exclude-standard -z -- remote patches |
+        tr '\0' '\n' | while IFS= read -r file; do
+            case $file in
+                */__pycache__/* | *.pyc | *.pyo) continue ;;
+            esac
+            printf '%s\n' "$file"
+        done
+)
+if [ -n "$ignored_payload_files" ]; then
+    printf 'ignored payload files ship through rsync and carry no manifest row:\n%s\n' \
+        "$ignored_payload_files" >&2
+    printf 'commit them, remove them, or exclude them from the sync before syncing\n' >&2
+    exit 1
+fi
 
 remote_rows=$(mktemp)
 patches_rows=$(mktemp)

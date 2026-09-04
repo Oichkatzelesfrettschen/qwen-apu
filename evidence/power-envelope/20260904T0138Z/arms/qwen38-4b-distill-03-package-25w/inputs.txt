@@ -1,0 +1,9 @@
+label=qwen38-4b-distill-03-package-25w
+model=$HOME/models/Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf
+profile=low-async
+cache_type_k=q8_0
+cache_type_v=q4_0
+flash_attention=on
+ctx_checkpoints=2
+checkpoint_min_step=registry
+generate_tokens=64

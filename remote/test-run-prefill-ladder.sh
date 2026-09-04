@@ -501,6 +501,92 @@ refuses clamped_depth_collision \
     'which a shallower requested depth already admitted' \
     QWEN_PREFILL_LADDER_DEPTHS='100 120'
 
+# The python sampler configures the sidecar at nice 19 and at sidecar_cpu, and
+# the validator invocation is where that configuration either reaches the
+# check or silently drops it. A copy of the ladder stands beside stub
+# sample-clock-sidecar.py and validate-clock-sidecar.py scripts, since both
+# names resolve against the ladder's own directory rather than through an
+# overridable variable; the stub sampler holds until terminated so
+# sidecar_status differs from `-`, and the stub validator records its own argv
+# ahead of printing an acceptance the ladder reads nothing else from.
+sampler_run=$root/sampler-run
+mkdir -p "$sampler_run"
+cp -- "$ladder" "$sampler_run/run-prefill-ladder.sh"
+chmod +x "$sampler_run/run-prefill-ladder.sh"
+ln -s -- "$script_directory/census-arm-lib.sh" "$sampler_run/census-arm-lib.sh"
+ln -s -- "$script_directory/summarize-prefill-ladder.py" \
+    "$sampler_run/summarize-prefill-ladder.py"
+validator_argv_log=$root/validator-argv.log
+: >"$validator_argv_log"
+cat >"$sampler_run/sample-clock-sidecar.py" <<'SAMPLER_STUB'
+#!/usr/bin/env python3
+# A stub standing in for the real sampler: it opens the record path the
+# ladder names and holds until SIGTERM, the same shutdown the ladder drives
+# every arm's real sampler through, so sidecar_status reads a real exit
+# status rather than the sentinel a sampler that never started leaves.
+import signal
+import sys
+import time
+
+open(sys.argv[1], "w").close()
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+while True:
+    time.sleep(3600)
+SAMPLER_STUB
+chmod +x "$sampler_run/sample-clock-sidecar.py"
+cat >"$sampler_run/validate-clock-sidecar.py" <<'VALIDATOR_STUB'
+#!/usr/bin/env python3
+# The stub records its own argv ahead of the verdict it prints, so a case
+# reads whether the harness's own configured priority and CPU set reached
+# this invocation rather than being read back from a header it never wrote.
+import os
+import sys
+
+argv_log = os.environ.get("QWEN_TEST_VALIDATOR_ARGV")
+if argv_log:
+    with open(argv_log, "a") as handle:
+        handle.write(" ".join(sys.argv[1:]) + "\n")
+print("clock_sidecar=accepted failures=-")
+VALIDATOR_STUB
+chmod +x "$sampler_run/validate-clock-sidecar.py"
+sampler_output=$root/sampler-output
+sampler_status=0
+env PATH="$root/stubs:$PATH" \
+    QWEN_MODEL_REGISTRY_SCRIPT="$root/model-registry.sh" \
+    QWEN_MODELS_DIRECTORY="$root/models" \
+    QWEN_RADV_ICD="$root/radeon_icd.x86_64.json" \
+    QWEN_WEBUI_STATE_DIRECTORY="$root/state" \
+    QWEN_PREFILL_LADDER_PORT=18097 QWEN_SERVER_PORT=18096 \
+    QWEN_PREFILL_LADDER_ENGINE_CLOCK_POLICY=auto \
+    QWEN_PREFILL_LADDER_SAMPLER=python \
+    QWEN_PREFILL_LADDER_DEPTHS=8 \
+    QWEN_PREFILL_LADDER_GENERATE=2 \
+    QWEN_PREFILL_LADDER_TAIL_RESERVE=4 \
+    QWEN_PREFILL_LADDER_READY_SECONDS=30 \
+    QWEN_PREFILL_LADDER_COOLDOWN_S=0 \
+    QWEN_PREFILL_LADDER_PROMPT_N_SLACK=0 \
+    QWEN_TEST_VALIDATOR_ARGV="$validator_argv_log" \
+    "$sampler_run/run-prefill-ladder.sh" "$root/control-server" "$root/candidate-server" \
+    model-id "$sampler_output" >"$sampler_output.log" 2>&1 || sampler_status=$?
+sampler_state=0
+if [ ! -s "$validator_argv_log" ]; then
+    sampler_state=1
+    printf 'the validator stub recorded no invocation (ladder status %s)\n' \
+        "$sampler_status" >&2
+    sed -n '1,40p' "$sampler_output.log" >&2
+fi
+if ! grep -qE -- '--expected-nice 19( |$)' "$validator_argv_log" 2>/dev/null; then
+    sampler_state=1
+    printf 'no validator invocation carried --expected-nice 19\n' >&2
+    cat "$validator_argv_log" >&2
+fi
+if ! grep -qE -- '--expected-cpu-affinity 0,1( |$)' "$validator_argv_log" 2>/dev/null; then
+    sampler_state=1
+    printf 'no validator invocation carried --expected-cpu-affinity 0,1\n' >&2
+    cat "$validator_argv_log" >&2
+fi
+report "$sampler_state" python_sampler_declares_nice_and_affinity_to_the_validator
+
 if [ "$failures" -ne 0 ]; then
     printf 'run_prefill_ladder_tests=failed failures=%s\n' "$failures" >&2
     exit 1
