@@ -1720,6 +1720,7 @@ remote/test-quality-suite.py
 remote/test-quality-roster.sh
 remote/test-promote-llama-build.sh
 remote/test-classify-checkpoint-semantics.sh
+remote/test-prefix-checkpoint-key.sh
 remote/test-run-served-binary-ab.sh
 remote/test-check-runtime-tree.sh
 remote/test-write-clangd-config.sh
