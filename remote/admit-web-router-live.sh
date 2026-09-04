@@ -248,10 +248,34 @@ record profile_row observed \
 printf 'admission_start utc=%s host=%s profile=%s\n' "$(utc)" "$(uname -n)" \
     "$profile_id" >"$output_directory/run.log"
 cp "$state_directory/session.status" "$output_directory/ordinary-session.status" 2>/dev/null || true
+# The bind host and the profile are read back from the copy of the ordinary
+# session's own status line taken above, rather than assumed, so a router the
+# operator bound to the LAN or ran under a non-default profile is probed and
+# later restored the way it was found instead of at loopback under
+# low-async. Both the as-found probe below and restore_ordinary's own probe
+# read this one derivation, so a LAN-only router is never probed at the
+# loopback origin its socket never bound.
+ordinary_host=$(sed -n '1p' "$output_directory/ordinary-session.status" 2>/dev/null |
+    tr ' ' '\n' | sed -n 's/^host=//p')
+ordinary_profile=$(sed -n '1p' "$output_directory/ordinary-session.status" 2>/dev/null |
+    tr ' ' '\n' | sed -n 's/^profile=//p')
+case $ordinary_host in
+    '') ordinary_host=127.0.0.1 ;;
+esac
+case $ordinary_profile in
+    paced-60 | low-serialized | low-async) ;;
+    *) ordinary_profile=low-async ;;
+esac
+ordinary_lan=0
+case $ordinary_host in
+    127.0.0.1 | localhost | 0.0.0.0) ;;
+    *) ordinary_lan=1 ;;
+esac
+ordinary_router_origin=http://$ordinary_host:$server_port
 ordinary_running=0
 if pgrep -x llama-server >/dev/null 2>&1; then
     ordinary_running=1
-    call ordinary-models GET "$router_origin/v1/models"
+    call ordinary-models GET "$ordinary_router_origin/v1/models"
     jq -r '.data[].id' "$call_out" 2>/dev/null | sort >"$output_directory/ordinary-model-ids.txt" || true
     ordinary_server=$(readlink -f "/proc/$(pgrep -x llama-server | head -1)/exe")
 else
@@ -285,22 +309,11 @@ restore_ordinary() {
         record ordinary_restore pass 'no ordinary router was running at admission start'
         return 0
     fi
-    # The bind host and the profile are read back from the copy of the
-    # ordinary session's own status line taken before this run touched
-    # anything, rather than assumed, so a router the operator bound to the LAN
-    # or ran under a non-default profile comes back the way it was found
-    # instead of loopback under low-async.
-    ordinary_host=$(sed -n '1p' "$output_directory/ordinary-session.status" 2>/dev/null |
-        tr ' ' '\n' | sed -n 's/^host=//p')
-    ordinary_profile=$(sed -n '1p' "$output_directory/ordinary-session.status" 2>/dev/null |
-        tr ' ' '\n' | sed -n 's/^profile=//p')
-    case $ordinary_host in
-        '') ordinary_host=127.0.0.1 ;;
-    esac
-    case $ordinary_profile in
-        paced-60 | low-serialized | low-async) ;;
-        *) ordinary_profile=low-async ;;
-    esac
+    # ordinary_host, ordinary_profile, and ordinary_lan were derived once,
+    # above, from the copy of the ordinary session's own status line taken
+    # before this run touched anything, so the restored router is relaunched
+    # the way it was found instead of at loopback under low-async.
+    #
     # qwen-launch.sh's own readiness probe reaches 127.0.0.1 unless
     # QWEN_WEB_LAN=1 names QWEN_WEB_LAN_ADDRESS, which a plain non-web restore
     # never sets; a server bound to the wildcard or to loopback still answers
@@ -310,17 +323,12 @@ restore_ordinary() {
     # Naming the literal here reaches only that probe: the router-side LAN
     # admission gate at qwen-launch.sh's web-section branch is not reached by
     # a preset carrying none.
-    ordinary_lan=0
-    case $ordinary_host in
-        127.0.0.1 | localhost | 0.0.0.0) ;;
-        *) ordinary_lan=1 ;;
-    esac
     if QWEN_LLAMA_SERVER=$ordinary_server QWEN_ROUTER=1 QWEN_BIND_HOST=$ordinary_host \
         QWEN_WEB_LAN=$ordinary_lan QWEN_WEB_LAN_ADDRESS=$ordinary_host \
         "$script_directory/qwen-launch.sh" "$ordinary_profile" \
         >"$output_directory/ordinary-restore.log" 2>&1; then
         restored_server=$(readlink -f "/proc/$(pgrep -x llama-server | head -1)/exe" 2>/dev/null || true)
-        call restored-models GET "$router_origin/v1/models"
+        call restored-models GET "$ordinary_router_origin/v1/models"
         jq -r '.data[].id' "$call_out" 2>/dev/null | sort >"$output_directory/restored-model-ids.txt" || true
         if [ "$restored_server" != "$ordinary_server" ]; then
             record ordinary_restore fail \
