@@ -219,6 +219,8 @@ gate_cell test-measure-draft-pair derive remote/test-measure-draft-pair.sh \
 gate_cell test-classify-checkpoint-semantics derive \
     remote/test-classify-checkpoint-semantics.sh \
     remote/test-classify-checkpoint-semantics.sh
+gate_cell test-write-clangd-config derive remote/test-write-clangd-config.sh \
+    remote/test-write-clangd-config.sh
 gate_cell test-check-trace-source-status derive \
     remote/test-check-trace-source-status.sh remote/test-check-trace-source-status.sh
 gate_cell test-sync-runtime-tree derive remote/test-sync-runtime-tree.sh \

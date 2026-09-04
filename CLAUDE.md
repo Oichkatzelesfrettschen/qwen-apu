@@ -1690,6 +1690,7 @@ remote/test-promote-llama-build.sh
 remote/test-classify-checkpoint-semantics.sh
 remote/test-run-served-binary-ab.sh
 remote/test-check-runtime-tree.sh
+remote/test-write-clangd-config.sh
 remote/test-deployment-bundle.sh
 remote/generate-quality-images.py --check
 remote/test-gguf-tokenizer-identity.py
