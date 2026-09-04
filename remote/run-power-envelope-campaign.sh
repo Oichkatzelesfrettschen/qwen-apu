@@ -13,9 +13,13 @@ set -eu
 #
 # Every arm is one compute-state-lease.sh transaction, so the graphics clock,
 # the fabric clock, the memory scanner, the process priority, and the package
-# budget are one reversible state. The three package profiles share
-# `measure-fixed`'s whole execution state and differ in the SMU's sustained and
-# package power limits alone.
+# budget are one reversible state. The three `serve-fixed-package-*` profiles
+# carry `measure-fixed`'s clocks, memory scanner, and cores and differ in the
+# SMU's sustained and package power limits alone; they leave the child at nice
+# 0 because the guarded launch chain sets the served process priorities itself,
+# putting llama-server on core 0 at nice 19 while its runtime monitor requires
+# nice 0. The arm applies nice 19 to its own samplers rather than inheriting
+# it.
 #
 # The served runner validates an execution proof at
 # `$QWEN_RESULT_DIRECTORY/../../campaign-inputs.tsv`, so the campaign directory
@@ -229,10 +233,10 @@ run_one_arm() {
     fi
 }
 
-run_one_arm 01 control-open measure-fixed-package-default
-run_one_arm 02 package-20w measure-fixed-package-20w
-run_one_arm 03 package-25w measure-fixed-package-25w
-run_one_arm 04 control-close measure-fixed-package-default
+run_one_arm 01 control-open serve-fixed-package-default
+run_one_arm 02 package-20w serve-fixed-package-20w
+run_one_arm 03 package-25w serve-fixed-package-25w
+run_one_arm 04 control-close serve-fixed-package-default
 
 printf 'power_envelope_campaign=completed model=%s campaign_directory=%s\n' \
     "$model_id" "$campaign_directory"

@@ -154,11 +154,12 @@ retain_endpoint_state() {
 
 retain_endpoint_state start
 
-# The energy sampler is one privileged process for the whole arm rather than a
-# sudo per sample, and it records its own pid so this arm ends it by name as
-# well as through the job it started.
-sudo -n python3 "$energy_reader" sample "$arm_directory/energy-samples.tsv" \
-    --period-ms "$energy_period_ms" &
+# The transaction leaves this arm at nice 0 because the guarded launch chain
+# owns the served process priorities, so each sampler takes nice 19 here rather
+# than inheriting it: a sampler beside the server competes for the same two
+# cores the decode runs on.
+sudo -n nice -n 19 python3 "$energy_reader" sample \
+    "$arm_directory/energy-samples.tsv" --period-ms "$energy_period_ms" &
 energy_job_pid=$!
 python3 "$clock_sidecar" "$arm_directory/clock-samples.tsv" \
     --period-ms "$clock_period_ms" --nice 19 &
@@ -171,7 +172,7 @@ clock_job_pid=$!
 # quantity, and the loop is one process rather than a fork per sample, so its
 # own cost stays out of the rate the arm measures.
 temperature_record=$arm_directory/device-samples.tsv
-python3 - "$temperature_record" "$temperature_period_s" \
+nice -n 19 python3 - "$temperature_record" "$temperature_period_s" \
     "${k10temp_hwmon:-/nonexistent}/temp1_input" \
     "${amdgpu_hwmon:-/nonexistent}/temp1_input" \
     "${amdgpu_hwmon:-/nonexistent}/freq1_input" <<'PY' &
@@ -239,7 +240,20 @@ stop_samplers() {
         energy_job_pid=''
     fi
 }
-trap 'stop_samplers' EXIT HUP INT TERM
+served_runner_pid=''
+stop_served_runner() {
+    if [ -n "${served_runner_pid:-}" ]; then
+        kill -TERM "$served_runner_pid" 2>/dev/null || true
+        wait "$served_runner_pid" 2>/dev/null || true
+        served_runner_pid=''
+    fi
+}
+# The runner is a background job this shell waits on, so a terminating signal
+# reaches it through the trap rather than after curl's own 900 second deadline.
+trap 'stop_samplers' EXIT
+trap 'stop_served_runner; stop_samplers; exit 143' TERM
+trap 'stop_served_runner; stop_samplers; exit 130' INT
+trap 'stop_served_runner; stop_samplers; exit 129' HUP
 
 set +e
 # The registry and the artifact ledger travel with the arm because the served
@@ -272,8 +286,11 @@ env \
     QWEN_EXECUTION_PROOF_SHA256="$campaign_inputs_sha256" \
     QWEN_BENCH_GENERATE="$generate_tokens" \
     "$served_runner" "$arm_name" "$model_path" low-async \
-    >"$arm_directory/served-runner.stdout" 2>"$arm_directory/served-runner.stderr"
+    >"$arm_directory/served-runner.stdout" 2>"$arm_directory/served-runner.stderr" &
+served_runner_pid=$!
+wait "$served_runner_pid"
 served_status=$?
+served_runner_pid=''
 set -e
 
 stop_samplers

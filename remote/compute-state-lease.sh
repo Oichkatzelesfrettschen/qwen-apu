@@ -19,9 +19,9 @@ set -eu
 # ends the transaction non-zero, because a machine left on a forced level is an
 # incident rather than a warning.
 #
-# Five profiles are defined. The first two rest on the measurements
+# Eight profiles are defined. The first two rest on the measurements
 # evidence/raven2-vulkan-kernel-census/dpm-authority/ retains on this part, and
-# the three package arms on the campaign evidence/power-envelope/ registers:
+# the six package arms on the campaign evidence/power-envelope/ registers:
 #
 #   measure-fixed                manual, pp_dpm_sclk level 2, pp_dpm_mclk level
 #                                2, delivered GFXCLK 1100 MHz, FCLK held at 933
@@ -43,6 +43,19 @@ set -eu
 #                                25000 mW.
 #   measure-fixed-package-25w    the same state at 25000 mW, the top of the
 #                                3050U's published 12 to 25 W cTDP range.
+#   serve-fixed-package-default, serve-fixed-package-20w,
+#   serve-fixed-package-25w      the same three budgets under the same clocks
+#                                with the child at nice 0 and I/O class
+#                                best-effort, for a command that drives the
+#                                guarded launch chain. That chain owns the
+#                                served process priorities itself:
+#                                qwen-capacity-policy.sh puts llama-server on
+#                                core 0 at nice 19, while
+#                                monitor-qwen-runtime.sh renices itself to 0 and
+#                                exits where it cannot, so a served command
+#                                started at nice 19 ends its own session with
+#                                reason=monitor_exited ahead of the first
+#                                request.
 #
 # Three prohibitions are encoded rather than documented. `high` and
 # `profile_peak` pin the delivered graphics clock at 1100 MHz and collapse the
@@ -88,6 +101,7 @@ usage() {
     printf '       %s status\n' "$0" >&2
     printf 'profiles: measure-fixed serve-performance-candidate\n' >&2
     printf '          measure-fixed-package-default measure-fixed-package-20w measure-fixed-package-25w\n' >&2
+    printf '          serve-fixed-package-default serve-fixed-package-20w serve-fixed-package-25w\n' >&2
     exit 2
 }
 
@@ -207,6 +221,45 @@ resolve_profile() {
             profile_mclk_levels='2=933'
             profile_child_nice=19
             profile_child_io_class=idle
+            profile_child_cpu_list=0,1
+            profile_ksm_run=0
+            profile_power_envelope=package-25w
+            ;;
+        # The served package arms carry the same clocks, the same memory
+        # scanner, and the same three budgets and leave the child at nice 0,
+        # because the guarded launch chain rather than this transaction owns the
+        # served process priorities. `qwen-capacity-policy.sh` puts llama-server
+        # itself on core 0 at nice 19, and `monitor-qwen-runtime.sh` renices
+        # itself to 0 and exits where it cannot, so a served command started at
+        # nice 19 ends its own session with `reason=monitor_exited` before the
+        # first request. A harness that samples beside the server applies nice
+        # 19 to its own samplers rather than inheriting it from the transaction.
+        serve-fixed-package-default)
+            profile_dpm_level=manual
+            profile_sclk_levels='2=1100'
+            profile_mclk_levels='2=933'
+            profile_child_nice=0
+            profile_child_io_class=best-effort
+            profile_child_cpu_list=0,1
+            profile_ksm_run=0
+            profile_power_envelope=platform-default
+            ;;
+        serve-fixed-package-20w)
+            profile_dpm_level=manual
+            profile_sclk_levels='2=1100'
+            profile_mclk_levels='2=933'
+            profile_child_nice=0
+            profile_child_io_class=best-effort
+            profile_child_cpu_list=0,1
+            profile_ksm_run=0
+            profile_power_envelope=package-20w
+            ;;
+        serve-fixed-package-25w)
+            profile_dpm_level=manual
+            profile_sclk_levels='2=1100'
+            profile_mclk_levels='2=933'
+            profile_child_nice=0
+            profile_child_io_class=best-effort
             profile_child_cpu_list=0,1
             profile_ksm_run=0
             profile_power_envelope=package-25w
