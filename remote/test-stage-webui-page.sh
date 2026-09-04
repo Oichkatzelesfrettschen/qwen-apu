@@ -47,17 +47,15 @@ report tags_follow_the_broker_tag
 [ -f "$temporary_directory/served/roster.json" ]
 report sibling_files_copied
 # Everything else in the page is byte-identical to the source.
-diff <(grep -v '^<meta name="qwen-lan-max-' "$temporary_directory/served/index.html") \
-    "$source_page/index.html" >/dev/null 2>&1 || {
-    sed '/^<meta name="qwen-lan-max-/d' "$temporary_directory/served/index.html" \
-        >"$temporary_directory/stripped.html"
-    cmp "$temporary_directory/stripped.html" "$source_page/index.html"
-}
+sed '/^<meta name="qwen-lan-max-/d' "$temporary_directory/served/index.html" \
+    >"$temporary_directory/stripped.html"
+cmp "$temporary_directory/stripped.html" "$source_page/index.html"
 report page_otherwise_identical
 [ "$("$stager" read "$temporary_directory/served/index.html")" = 'prompt_bound=1000 output_bound=200' ]
 report read_returns_what_stage_wrote
-ls -a "$temporary_directory" | grep -q '^\.webui-staging\.' && {
-    printf 'staging directory left behind\n' >&2; exit 1; }
+for leftover in "$temporary_directory"/.webui-staging.*; do
+    [ -e "$leftover" ] && { printf 'staging directory left behind: %s\n' "$leftover" >&2; exit 1; }
+done
 report staging_directory_renamed_away
 
 # ---- no bounds: an identical copy, no tags -------------------------------------
