@@ -140,9 +140,7 @@ class Handler(BaseHTTPRequestHandler):
         head_tokens = tokenize(head_text)
         user_tokens = tokenize(user_prompt)
 
-        hit = False
         if armed and pinned["key"] == head_key:
-            hit = True
             prompt_n = user_tokens
             t0 = time.monotonic()
             time.sleep(0)
