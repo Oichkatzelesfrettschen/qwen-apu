@@ -798,6 +798,76 @@ fi
 grep -F 'QWEN_LAN_MAX_PROMPT_TOKENS must be a positive integer: 0' \
     "$temporary_directory/lan-zero.stderr" >/dev/null
 
+# The served page's bound tags are compared against the launch's own bounds:
+# stage-webui-page.sh writes the copy from the same two variables, and a page
+# that states another value, states a bound where the launch names none, or
+# states none where the launch names one is refused ahead of the argv.
+stager=$script_directory/stage-webui-page.sh
+page_source=$script_directory/../webui
+lan_page=$temporary_directory/lan-page
+QWEN_LAN_MAX_PROMPT_TOKENS=1000 QWEN_LAN_MAX_OUTPUT_TOKENS=200 \
+    "$stager" stage "$page_source" "$lan_page" >/dev/null
+QWEN_LAN_MAX_PROMPT_TOKENS=1000 QWEN_LAN_MAX_OUTPUT_TOKENS=200 \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$lan_output \
+    "$policy" "$fake_server" "$model_path" 24576 8080 "$lan_page" "$api_key_file"
+lan_arguments=$(sed -n 's/^argument=//p' "$lan_output" | tr '\n' ' ')
+case $lan_arguments in
+    *"--path $lan_page "*'--ctx-size 1200 '*'--n-predict 200 '*) ;;
+    *)
+        printf 'a page stating the launch bounds was not served with them: %s\n' \
+            "$lan_arguments" >&2
+        exit 1
+        ;;
+esac
+for forged_pair in 900/200 2000/200 1000/100; do
+    forged_page=$temporary_directory/lan-page-${forged_pair%/*}-${forged_pair#*/}
+    QWEN_LAN_MAX_PROMPT_TOKENS=${forged_pair%/*} QWEN_LAN_MAX_OUTPUT_TOKENS=${forged_pair#*/} \
+        "$stager" stage "$page_source" "$forged_page" >/dev/null
+    if QWEN_LAN_MAX_PROMPT_TOKENS=1000 QWEN_LAN_MAX_OUTPUT_TOKENS=200 \
+        QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$lan_output \
+        "$policy" "$fake_server" "$model_path" 24576 8080 "$forged_page" "$api_key_file" \
+        >"$temporary_directory/lan-forged.stdout" 2>"$temporary_directory/lan-forged.stderr"; then
+        printf 'policy served a page stating %s under a 1000/200 launch\n' "$forged_pair" >&2
+        exit 1
+    fi
+    grep -F 'the served page states' "$temporary_directory/lan-forged.stderr" >/dev/null
+done
+# Bounds named, page carrying none.
+plain_page=$temporary_directory/lan-page-plain
+"$stager" stage "$page_source" "$plain_page" >/dev/null
+if QWEN_LAN_MAX_PROMPT_TOKENS=1000 QWEN_LAN_MAX_OUTPUT_TOKENS=200 \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$lan_output \
+    "$policy" "$fake_server" "$model_path" 24576 8080 "$plain_page" "$api_key_file" \
+    >"$temporary_directory/lan-plain.stdout" 2>"$temporary_directory/lan-plain.stderr"; then
+    printf 'policy served an untagged page under a bounded launch\n' >&2
+    exit 1
+fi
+grep -F 'states prompt_bound=- output_bound=- where this launch enforces prompt_bound=1000 output_bound=200' \
+    "$temporary_directory/lan-plain.stderr" >/dev/null
+# No bounds named, page carrying some.
+if QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$lan_output \
+    "$policy" "$fake_server" "$model_path" 24576 8080 "$lan_page" "$api_key_file" \
+    >"$temporary_directory/lan-claim.stdout" 2>"$temporary_directory/lan-claim.stderr"; then
+    printf 'policy served a bounded page under an unbounded launch\n' >&2
+    exit 1
+fi
+grep -F 'where this launch enforces prompt_bound=- output_bound=-' \
+    "$temporary_directory/lan-claim.stderr" >/dev/null
+# A page carrying a malformed tag is refused by the reader.
+sed '/^<meta name="qwen-lan-max-output-tokens"/d' "$lan_page/index.html" \
+    >"$temporary_directory/lan-page-half.html"
+mkdir -p "$temporary_directory/lan-page-half"
+mv "$temporary_directory/lan-page-half.html" "$temporary_directory/lan-page-half/index.html"
+if QWEN_LAN_MAX_PROMPT_TOKENS=1000 QWEN_LAN_MAX_OUTPUT_TOKENS=200 \
+    QWEN_RADV_ICD=$fake_icd QWEN_POLICY_TEST_OUTPUT=$lan_output \
+    "$policy" "$fake_server" "$model_path" 24576 8080 "$temporary_directory/lan-page-half" "$api_key_file" \
+    >"$temporary_directory/lan-half.stdout" 2>"$temporary_directory/lan-half.stderr"; then
+    printf 'policy served a page carrying one bound tag\n' >&2
+    exit 1
+fi
+grep -F 'refuses the LAN bound read' "$temporary_directory/lan-half.stderr" >/dev/null
+printf 'served page bounds compared against the launch bounds\n'
+
 # Router mode replaces the single model with a preset file and a resident-model
 # limit, and drops the fixed alias because the preset supplies one per
 # checkpoint. Every guard flag stays, because llama-server cascades this argv

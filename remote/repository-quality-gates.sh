@@ -295,6 +295,8 @@ gate_cell test-web-presets derive remote/test-web-presets.sh \
     remote/test-web-presets.sh
 gate_cell test-qwen-capacity-policy derive remote/test-qwen-capacity-policy.sh \
     remote/test-qwen-capacity-policy.sh
+gate_cell test-stage-webui-page derive remote/test-stage-webui-page.sh \
+    remote/test-stage-webui-page.sh
 gate_cell test-qwen-launch-router-preflight derive \
     remote/test-qwen-launch-router-preflight.sh \
     remote/test-qwen-launch-router-preflight.sh

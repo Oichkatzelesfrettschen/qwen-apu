@@ -1585,6 +1585,29 @@ the smaller of its 512-token default and the configured output bound, which is
 what actually bounds output given the server's default-only reading of
 `--n-predict`.
 
+The checked-in page carries neither tag, because a bound is a property of a
+launch rather than of the file, so the page the server serves is a copy the
+launch writes. `remote/stage-webui-page.sh stage SOURCE OUT` copies the page
+directory whole into a staging directory beside the target and renames it into
+place, inserting the two tags after the `qwen-web-broker` meta from the same
+`QWEN_LAN_MAX_PROMPT_TOKENS` and `QWEN_LAN_MAX_OUTPUT_TOKENS` the policy reads
+and inserting none where the launch names none; a source page that already
+carries either tag is refused, since the launch alone writes them.
+`qwen-webui-session.sh` stages into `~/qwen-webui-state/webui-served` ahead of
+the server and records the source, the copy's SHA-256, and both bounds on a
+`served_page` status line. `qwen-capacity-policy.sh` then reads the served
+page's tags back through the same script's `read` command and requires them to
+equal its own two bounds, `-` against `-` where the launch names none, so a
+page stating another value, a bound the launch never set, or none where it set
+one is refused ahead of the argv rather than handed to a browser as a
+description of an enforcement the server does not perform. The tags describe
+and the server enforces: a browser that strips or edits them gains nothing,
+because `--ctx-size` and `--n-predict` are what refuse the request.
+`write-deployment-receipt.sh` copies the `served_page` line into
+`served_page_identity`, so a receipt binds the page a peer was handed to the
+bounds the argv held. Router mode refuses both bounds, so its served page
+carries no tag and the comparison holds `-` against `-`.
+
 `remote/web-mcp/authorize-broker.py` metes `POST /grant` and
 `POST /grant-image` per client address on top of the existing aggregate
 `authorize-minute` bucket (`QWEN_WEB_AUTHORIZE_PER_MINUTE`, default 6, shared
