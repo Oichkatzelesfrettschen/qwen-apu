@@ -1,0 +1,11 @@
+decode_ms=18649.37
+decode_tok_per_second=3.3781301995724253
+decode_tokens=64
+label=07-K
+prefill_ms=1626.488
+prefill_tok_per_second=11.681610931036687
+prompt_tokens=19
+request_status=0
+teardown_status=0
+valid=True
+served_decode=completed label=07-K result_directory=$HOME/q4k-served-ab-4b-r2-20260903T2115Z/arms/07-K

@@ -1,0 +1,9 @@
+label=qwen35-08b-03-package-25w
+model=$HOME/models/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf
+profile=low-async
+cache_type_k=q8_0
+cache_type_v=q4_0
+flash_attention=on
+ctx_checkpoints=2
+checkpoint_min_step=registry
+generate_tokens=64

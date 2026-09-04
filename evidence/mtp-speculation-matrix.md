@@ -280,6 +280,13 @@ on code. The configuration fails the all-prompt target. The remaining path combi
 cheaper verification pass with a cheaper draft pass or another independently
 measured gain; byte reduction alone already failed in the low-bit ladder.
 
+`evidence/4b-temporal-amortization/README.md` generalizes that arithmetic over
+draft length and mechanism from the column costs this file measures. Its
+decisive reading is that the ceiling belongs to the verification pass rather
+than to the drafter: a draft costing nothing at perfect acceptance reaches
+5.109 tok/s at three drafted tokens, so no acceptance and no depth inside the
+measured flat region reaches 5.25 without a cheaper `v(N+1)`.
+
 ## The candidate the decomposition names
 
 `smin` in `mul_mat_vec_q4_k.comp` is a sixteen-instruction dependency chain of

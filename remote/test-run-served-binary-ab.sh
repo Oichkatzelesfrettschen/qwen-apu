@@ -774,6 +774,16 @@ import os
 import pathlib
 import sys
 
+# The stub records its own argv beside the verdict it prints, so a case reads
+# which priority and affinity the harness declared to the validator; a
+# printed verdict alone would leave --expected-nice and --expected-cpu-affinity
+# unobservable, and those two are what close the P2 gap where a configured
+# sampler priority never reached the validator invocation at all.
+argv_log = os.environ.get("QWEN_TEST_VALIDATOR_ARGV")
+if argv_log:
+    with open(argv_log, "a") as handle:
+        handle.write(" ".join(sys.argv[1:]) + "\n")
+
 label = pathlib.Path(sys.argv[1]).parent.name
 # The invariant the campaign requests under a forced clock policy. The table
 # QWEN_TEST_AB_VIOLATED names the arms whose window carried a step below the
@@ -991,10 +1001,17 @@ run_ab() {
     ab_replies=${case_replies:-}
     ab_replace_model=${case_replace_model:-}
     ab_replace_tree=${case_replace_tree:-}
+    # The integer-dot admission is a per-role campaign input, so a case names
+    # what each role runs under and the call clears both the way it clears the
+    # reply table.
+    ab_control_force_dot=${case_control_force_integer_dot:-}
+    ab_candidate_force_dot=${case_candidate_force_integer_dot:-}
     ab_arm_env=$temporary_directory/arm-env-$ab_case.tsv
     ab_drm=$fixture_drm
     ab_sudo_log=$temporary_directory/sudo-$ab_case.log
     ab_quiescence_argv=$temporary_directory/quiescence-argv-$ab_case.log
+    ab_validator_argv=$temporary_directory/validator-argv-$ab_case.log
+    : >"$ab_validator_argv"
     if [ "$ab_engine_clock_policy" != auto ]; then
         ab_drm=$temporary_directory/drm-$ab_case
         cp -R -- "$fixture_drm" "$ab_drm"
@@ -1033,11 +1050,14 @@ run_ab() {
         QWEN_TEST_AB_CLOCK_SOURCE="$ab_clock_source" \
         QWEN_TEST_SUDO_LOG="$ab_sudo_log" \
         QWEN_TEST_QUIESCENCE_ARGV="$ab_quiescence_argv" \
+        QWEN_TEST_VALIDATOR_ARGV="$ab_validator_argv" \
         QWEN_TEST_QUIESCENCE_VERDICT="$ab_quiescence_verdict" \
         QWEN_CENSUS_ENGINE_CLOCK_POLICY="$ab_engine_clock_policy" \
         QWEN_CENSUS_MCLK_LEVEL="$ab_mclk_level" \
         QWEN_TEST_SUDO_MCLK_IGNORE="$ab_mclk_ignore" \
         QWEN_CENSUS_REGIME_MAX_ARMS="$ab_regime_max_arms" \
+        QWEN_AB_CONTROL_FORCE_INTEGER_DOT="$ab_control_force_dot" \
+        QWEN_AB_CANDIDATE_FORCE_INTEGER_DOT="$ab_candidate_force_dot" \
         "$run_harness_path" "$control_server" "$candidate_server" "$model_id" \
         "$ab_output" \
         >"$temporary_directory/$ab_case-stdout.txt" 2>"$diagnostic_file"
@@ -1047,6 +1067,8 @@ run_ab() {
     case_replies=
     case_replace_model=
     case_replace_tree=
+    case_control_force_integer_dot=
+    case_candidate_force_integer_dot=
     if [ "$ab_status" -ne "$ab_expected_status" ]; then
         printf 'expected exit %s, observed %s\n' "$ab_expected_status" "$ab_status" >&2
         sed -n '1,20p' "$temporary_directory/$ab_case-stdout.txt" >&2
@@ -1068,6 +1090,7 @@ run_ab() {
     printf '%s=accepted exit=%s\n' "$ab_case" "$ab_status"
     diagnostic_file=
     ab_last_output=$ab_output
+    ab_last_validator_argv=$ab_validator_argv
 }
 
 # Every arm holds the sustained regime's own clock at its own modal share --
@@ -1083,6 +1106,27 @@ promoted_rates=$temporary_directory/rates-promoted
 write_rates "$promoted_rates" 10.000 11.000 11.000
 run_ab verdict_promoted 0 promoted "$promoted_rates" "$one_clock"
 active_fixture=arms_ledger_columns
+# The harness pins the sampler to nice 19 and to the CPU set
+# QWEN_CENSUS_SIDECAR_CPU names, so every validator invocation carries
+# --expected-nice and --expected-cpu-affinity; a campaign that configured a
+# priority and never named it to the validator would read that check
+# not_run rather than proving the sampler held it.
+if [ ! -s "$ab_last_validator_argv" ]; then
+    printf 'the validator stub recorded no invocation\n' >&2
+    exit 1
+fi
+if ! awk '/--expected-nice 19( |$)/ { found = 1 } END { exit !found }' \
+        "$ab_last_validator_argv"; then
+    printf 'no validator invocation carried --expected-nice 19\n' >&2
+    cat "$ab_last_validator_argv" >&2
+    exit 1
+fi
+if ! awk '/--expected-cpu-affinity 0( |$)/ { found = 1 } END { exit !found }' \
+        "$ab_last_validator_argv"; then
+    printf 'no validator invocation carried --expected-cpu-affinity 0\n' >&2
+    cat "$ab_last_validator_argv" >&2
+    exit 1
+fi
 [ "$(head -n 1 "$ab_last_output/arms.tsv")" = "$(printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\tsidecar\townership\tstatus\tsclk_mode_mhz\tsclk_share\tregime_delta\tclock_invariant\tbelow_required_fraction')" ]
 awk -F'\t' 'NF != 15 { exit 1 }' "$ab_last_output/arms.tsv"
 # The clock columns trail the ledger and read the unknown value under the
@@ -1170,6 +1214,92 @@ if [ "$(awk -F'\t' -v head="$runtime_git_head" -v payload="$expected_payload_sha
 fi
 [ "$(awk 'END { print NR }' "$temporary_directory/arm-env-verdict_promoted.tsv")" = 10 ]
 printf 'bound_identities_recorded=accepted\n'
+
+# The default campaign admits no q8_1 pipeline on either role, so every arm
+# record carries the name with an empty value and the receipt states `-` twice.
+# The name is required rather than merely admitted, since an arm that inherited
+# the admission instead of being handed it would leave the record silent about
+# which path it measured.
+active_fixture=force_integer_dot_absent
+for arm_record in "$ab_last_output"/arms/*/arm-environment.tsv; do
+    [ -r "$arm_record" ] || continue
+    if ! cut -f1 "$arm_record" | grep -qx QWEN_FORCE_INTEGER_DOT; then
+        printf 'arm environment record omits QWEN_FORCE_INTEGER_DOT: %s\n' \
+            "$arm_record" >&2
+        exit 1
+    fi
+    recorded_force_dot=$(awk -F'\t' '$1 == "QWEN_FORCE_INTEGER_DOT" { print $2 }' \
+        "$arm_record")
+    if [ -n "$recorded_force_dot" ]; then
+        printf 'an unarmed campaign handed an arm QWEN_FORCE_INTEGER_DOT=%s: %s\n' \
+            "$recorded_force_dot" "$arm_record" >&2
+        exit 1
+    fi
+done
+grep -qxF "$(printf 'control_force_integer_dot\t-')" "$ab_last_output/inputs.tsv"
+grep -qxF "$(printf 'candidate_force_integer_dot\t-')" "$ab_last_output/inputs.tsv"
+grep -qxF "$(printf 'candidate_force_integer_dot\t-')" \
+    "$ab_last_output/campaign-inputs.tsv"
+printf 'force_integer_dot_absent=accepted\n'
+
+# One binary carries the E5 arm and its control, so the admission is what
+# separates them: the K arms run with it and every C arm and warmup runs
+# without. The profile stays low-async on both sides, which is the field the
+# scoreboard receipt requires, so the pair differs by the admission alone.
+active_fixture=force_integer_dot_per_arm
+case_candidate_force_integer_dot=1
+run_ab force_integer_dot_per_arm 0 promoted "$promoted_rates" "$one_clock"
+grep -q '^served_ab_arm=start slot=2 arm=K .* force_integer_dot=1$' \
+    "$temporary_directory/force_integer_dot_per_arm-stdout.txt"
+grep -q '^served_ab_arm=start slot=1 arm=C .* force_integer_dot=-$' \
+    "$temporary_directory/force_integer_dot_per_arm-stdout.txt"
+grep -qxF "$(printf 'control_force_integer_dot\t-')" "$ab_last_output/inputs.tsv"
+grep -qxF "$(printf 'candidate_force_integer_dot\t1')" "$ab_last_output/inputs.tsv"
+grep -qxF "$(printf 'candidate_force_integer_dot\t1')" \
+    "$ab_last_output/campaign-inputs.tsv"
+grep -qxF "$(printf 'vulkan_profile\tlow-async')" \
+    "$ab_last_output/campaign-inputs.tsv"
+force_integer_dot_failures=0
+for arm_record in "$ab_last_output"/arms/*/arm-environment.tsv; do
+    [ -r "$arm_record" ] || continue
+    recorded_force_dot=$(awk -F'\t' '$1 == "QWEN_FORCE_INTEGER_DOT" { print $2 }' \
+        "$arm_record")
+    case ${arm_record%/arm-environment.tsv} in
+        *-K)
+            [ "$recorded_force_dot" = 1 ] || force_integer_dot_failures=1
+            ;;
+        *)
+            [ -z "$recorded_force_dot" ] || force_integer_dot_failures=1
+            ;;
+    esac
+done
+if [ "$force_integer_dot_failures" -ne 0 ]; then
+    printf 'an arm carried an admission its role never asked for\n' >&2
+    exit 1
+fi
+printf 'force_integer_dot_per_arm=accepted\n'
+
+# ggml_vk_force_integer_dot() compares the value against "1", so a third value
+# would run the control while the receipt named the arm, and the campaign
+# refuses it ahead of the first server.
+active_fixture=force_integer_dot_value
+run_index=$((run_index + 1))
+set +e
+env -i PATH="$execution_path" HOME="$home_directory" \
+    QWEN_MODELS_DIRECTORY="$models_directory" \
+    QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+    QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+    QWEN_DRM_DEVICE="$fixture_drm" QWEN_HWMON_ROOT="$fixture_hwmon" \
+    QWEN_CENSUS_BROKER="$broker_stub" QWEN_AB_CANDIDATE_FORCE_INTEGER_DOT=0 \
+    "$harness" "$control_server" "$candidate_server" "$model_id" \
+    "$temporary_directory/out-$run_index" \
+    >/dev/null 2>"$temporary_directory/force-integer-dot-stderr.txt"
+force_integer_dot_status=$?
+set -e
+[ "$force_integer_dot_status" -eq 2 ]
+grep -q 'QWEN_AB_CONTROL_FORCE_INTEGER_DOT and QWEN_AB_CANDIDATE_FORCE_INTEGER_DOT admit 1 or an unset value: 0' \
+    "$temporary_directory/force-integer-dot-stderr.txt"
+printf 'force_integer_dot_value=accepted\n'
 
 # The reply is what makes a rate a comparison. A candidate that answers
 # differently while decoding 10% faster carries the promoted interval and is

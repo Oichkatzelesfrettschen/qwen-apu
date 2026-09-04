@@ -1,0 +1,20 @@
+0.02.294.651 I srv  server_strea: conv_id= (empty=1)
+0.02.295.119 I srv    operator(): chat format: peg-native
+0.02.296.620 I slot get_availabl: id  0 | task -1 |  - skipping, slot is empty
+0.02.296.625 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = -1
+0.02.296.762 I slot launch_slot_: id  0 | task -1 | sampler chain: logits -> logit-bias -> ?penalties -> ?dry -> ?top-n-sigma -> top-k -> ?typical -> top-p -> min-p -> ?xtc -> temp-ext -> dist 
+0.02.296.779 I slot launch_slot_: id  0 | task -1 | sampler params: 
+	repeat_last_n = 64, repeat_penalty = 1.000, frequency_penalty = 0.000, presence_penalty = 0.000
+	dry_multiplier = 0.000, dry_base = 1.750, dry_allowed_length = 2, dry_penalty_last_n = 64
+	top_k = 1, top_p = 0.950, min_p = 0.050, xtc_probability = 0.000, xtc_threshold = 0.100, typical_p = 1.000, top_n_sigma = -1.000, temp = 0.000
+	mirostat = 0, mirostat_lr = 0.100, mirostat_ent = 5.000, adaptive_target = -1.000, adaptive_decay = 0.900
+0.02.296.782 I slot launch_slot_: id  0 | task 0 | processing task, is_child = 0
+0.02.296.792 I slot   operator(): id  0 | task 0 | new prompt, n_ctx_slot = 24576, n_keep = 0, task.n_tokens = 19
+0.02.296.795 I slot   operator(): id  0 | task 0 | cached n_tokens = 0, memory_seq_rm [0, end)
+0.02.296.849 I slot init_sampler: id  0 | task 0 | init sampler, took 0.01 ms, tokens: text = 19, total = 19
+0.09.308.975 I slot print_timing: id  0 | task 0 | prompt eval time =     605.54 ms /    19 tokens (   31.87 ms per token,    31.38 tokens per second)
+0.09.309.035 I slot print_timing: id  0 | task 0 |        eval time =    6406.63 ms /    64 tokens (  101.69 ms per token,     9.83 tokens per second)
+0.09.309.058 I slot print_timing: id  0 | task 0 |       total time =    7012.16 ms /    83 tokens
+0.09.309.079 I slot print_timing: id  0 | task 0 |    graphs reused =         63
+0.09.309.454 I slot      release: id  0 | task 0 | stop processing: n_tokens = 82, truncated = 0
+0.09.309.494 I srv  update_slots: all slots are idle

@@ -1,0 +1,670 @@
+The E5 q8_1 mat-vec arm: the Q4_K x Q8_1 dot product reached without a dot
+instruction, onto f280b26983ad0fdb705a0d9ebf0503e76f2899b0 after the eight-patch
+production series. The manual int24 GLSL this patch carries is E5-M, the lane's
+negative control; E5-S0 and E5-S1 reach the same dot product through
+GL_EXT_integer_dot_product and are what the lane now measures against it.
+
+RADV reports VK_KHR_shader_integer_dot_product functional and every
+integerDotProduct*Accelerated bit false on RAVEN2, and ggml-vulkan.cpp gates one
+bool named integer_dot_product on integerDotProduct4x8BitPackedSignedAccelerated
+alone, so the pinned build compiles no _q8_1 mat-vec pipeline and the whole Q4_K
+trunk streams through the FP16 dequantize-then-dot family.
+
+That one bool carries four separable claims, and this patch names each of them,
+because an environment variable that moves a field spelled after hardware
+acceleration states something about the silicon that stays false:
+
+    integer_dot_functional          the extension is present and its
+                                    shaderIntegerDotProduct feature is true; the
+                                    driver alone writes it, and it decides which
+                                    property struct is chained and whether the
+                                    device extension is enabled
+    integer_dot_accelerated         integerDotProduct4x8BitPackedSignedAccelerated
+                                    verbatim from the driver; nothing in this
+                                    build writes it, so every advertised Vulkan
+                                    acceleration property reads what RADV reported
+    integer_dot_software_lowered    this build computes the packed dot without a
+                                    dot instruction, by the replacement GLSL here
+                                    or by the driver expanding OpSDotKHR;
+                                    GGML_VK_FORCE_INTEGER_DOT=1 writes this field
+                                    and only this field
+    integer_dot_pipeline_selected   accelerated or software lowered, read by the
+                                    replacement q8_1 mat-vec pipelines and their
+                                    two quantize_y dispatches alone
+
+The selection is scoped to the path the replacement exists for. The MMQ mat-mat
+families, the mat-mat quantize_y, and ggml_vk_fa_scalar_uses_mmq read
+integer_dot_accelerated instead, because those consume the extension's own
+lowering and no replacement was measured for them, so a forced admission reaches
+the mat-vec and stops there. On a device the driver reports accelerated the two
+fields are equal and the scope changes nothing. Where the arm is unarmed the
+selection equals the pinned build's own flag, so the split renames the pinned
+behavior rather than changing it.
+
+E5-M's own shader: mul_mat_vecq_funcs.glsl gains dot_packed_4x8_int24 under
+GGML_VK_INT24_DOT, which biases both operands into 0..255 and removes the bias
+once per call through sum((au-128)*(bu-128)) = sum(au*bu) - 128*(sum au + sum bu)
++ 65536, and a macro puts it behind the extension's own spelling so all forty
+call sites read the same. The Q4_K and Q5_K mmvq_dot_product specializes further:
+repack4 masks its quant bytes to 0..15, and Q5_K merges one bit above that, so
+only the activation byte needs the bias and the correction rides two accumulators
+over sixteen values as one shift. Those sixteen products are written straight-line
+with literal shifts and literal masks, the way the pinned function writes four
+explicit dot calls, so the module holds sixteen multiplies of constant-masked
+bytes and indexes the quant vector statically: the compiled Q4_K variant reaches
+46 OpIMul against the extension branch's 30 and the same 73 OpAccessChain. The
+FP32 tail is byte-identical to the pinned function, so the replacement is exact
+against dotPacked4x8EXT rather than approximate: a C model of both forms agrees
+with the signed reference over the whole single-lane domain and four million
+random word pairs. mul_mat_vecq.comp requires GL_EXT_integer_dot_product under
+the opposite branch of the same define, so the arm compiles on a glslc that
+rejects the extension.
+
+That control's measured cost is why it is a control:
+evidence/raven2-vulkan-kernel-census/e5/E5-M/ records ACO emitting 224
+v_mul_u32_u24_sdwa products and zero v_mad_u32_u24, since SDWA byte select rides
+VOP2 on GFX9 while the multiply-add is VOP3 and the two encodings cannot share an
+instruction, and the extension form of the same shader compiles to 1328 VALU
+against this one's 1646.
+
+GGML_VULKAN_INT24_DOT is a CMake option that reaches both the backend and
+vulkan-shaders-gen through the forwarding the extension probes already use, and
+both derive GGML_VULKAN_MMVQ_Q8_1_SHADERS from it, so a definition that lands on
+one side alone fails at link on arr_dmmv_q4_k_q8_1_f32_data rather than at device
+creation. The MMQ and flash-attention int8 shaders have no replacement and keep
+reading GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT; where they are absent,
+ggml_vk_get_mul_mat_mat_pipeline finds an empty pipeline set and clears
+quantize_y, so the mat-mat and flash-attention paths stay on the production shape
+and E5-M changes the mat-vec alone. Where an extension-capable toolchain does
+compile them, they are gated on integer_dot_accelerated rather than on the
+selection, so a forced admission still leaves them on the production shape and
+the arm is one dispatch family wide under either toolchain.
+
+The generator is configured in a build directory of its own and CMake keeps a
+cached option across every later configuration of that directory, so
+GGML_VULKAN_INT24_DOT is forwarded in both directions: a directory configured
+once with the arm would otherwise generate the arm's shaders for every later
+control while the manifest recorded none.
+
+GGML_VK_FORCE_INTEGER_DOT=1 admits that mat-vec on a device reporting no
+acceleration. It is read once per process, requires an exact "1", and reaches the
+software-lowered field and the info line the same way, so one binary runs both
+arms and the control is that binary with the variable unset.
+remote/radv-low-priority-env.sh scrubs the variable under every serving profile;
+QWEN_FORCE_INTEGER_DOT carries it past that scrub for a served arm that keeps
+low-async's own submission shape.
+diff --git a/ggml/CMakeLists.txt b/ggml/CMakeLists.txt
+index 78f9f3fb0..ebdd9dd5e 100644
+--- a/ggml/CMakeLists.txt
++++ b/ggml/CMakeLists.txt
+@@ -228,6 +228,7 @@ option(GGML_VULKAN_PIPELINE_CENSUS          "ggml: compile the Vulkan pipeline c
+ option(GGML_VULKAN_SHADER_DEBUG_INFO        "ggml: enable Vulkan shader debug info"           OFF)
+ option(GGML_VULKAN_VALIDATE                 "ggml: enable Vulkan validation"                  OFF)
+ option(GGML_VULKAN_RUN_TESTS                "ggml: run Vulkan tests"                          OFF)
++option(GGML_VULKAN_INT24_DOT                "ggml: compile the Vulkan int24 packed dot product" OFF)
+ option(GGML_WEBGPU                          "ggml: use WebGPU"                                OFF)
+ option(GGML_WEBGPU_DEBUG                    "ggml: enable WebGPU debug output"                OFF)
+ option(GGML_WEBGPU_CPU_PROFILE              "ggml: enable WebGPU profiling (CPU)"             OFF)
+diff --git a/ggml/src/ggml-vulkan/CMakeLists.txt b/ggml/src/ggml-vulkan/CMakeLists.txt
+index 70e4e5fe0..4dd1e326d 100644
+--- a/ggml/src/ggml-vulkan/CMakeLists.txt
++++ b/ggml/src/ggml-vulkan/CMakeLists.txt
+@@ -109,6 +109,26 @@ if (Vulkan_FOUND)
+         "GGML_VULKAN_FLOAT_E4M3_GLSLC_SUPPORT"
+     )
+ 
++    # The int24 arm computes the packed 4x8 dot product from masked bytes and a
++    # 24-bit multiply, so the q8_1 mat-vec shaders and the pipeline table that
++    # names them reach a device whose driver reports no dot-product
++    # acceleration and a glslc that rejects GL_EXT_integer_dot_product. The
++    # definition rides the same forwarding the extension probes use, because a
++    # definition landing on the backend alone builds a pipeline table naming
++    # shaders the generator never wrote.
++    if (GGML_VULKAN_INT24_DOT)
++        message(STATUS "Enabling the int24 packed dot product")
++        add_compile_definitions(GGML_VULKAN_INT24_DOT)
++    endif()
++    # The generator is configured in a build directory of its own, and CMake
++    # keeps a cached option across every later configuration of that directory,
++    # so a value forwarded in one direction alone leaves a directory configured
++    # once with the arm generating the arm's shaders for every later control.
++    # Both directions are stated, which makes the generator's cache follow this
++    # build rather than the first one that ever configured it.
++    list(APPEND VULKAN_SHADER_GEN_CMAKE_ARGS
++        -DGGML_VULKAN_INT24_DOT=${GGML_VULKAN_INT24_DOT})
++
+     target_link_libraries(ggml-vulkan PRIVATE Vulkan::Vulkan)
+     target_include_directories(ggml-vulkan PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+ 
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index 7b930a434..caf79d9aa 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -99,6 +99,17 @@ typedef struct VkPhysicalDeviceCooperativeMatrixDecodeVectorFeaturesNV {
+ #define YIELD()
+ #endif
+ 
++// The q8_1 mat-vec pipelines reach a device two ways: GL_EXT_integer_dot_product
++// where glslc compiles it, and the int24 replacement in
++// mul_mat_vecq_funcs.glsl where it does not. vulkan-shaders-gen.cpp derives the
++// same name from the same two definitions and emits the shader set under it, so
++// a definition reaching one side alone fails at link rather than at device
++// creation. The MMQ and flash-attention int8 pipelines have no replacement and
++// keep reading the extension's own name.
++#if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT) || defined(GGML_VULKAN_INT24_DOT)
++#define GGML_VULKAN_MMVQ_Q8_1_SHADERS
++#endif
++
+ #include "ggml-impl.h"
+ #include "ggml-backend-impl.h"
+ 
+@@ -869,7 +880,27 @@ struct vk_device_struct {
+ 
+     bool shader_64b_indexing;
+ 
+-    bool integer_dot_product;
++    // Four states the pinned build reads as one bool. `functional` is
++    // VK_KHR_shader_integer_dot_product being present and its shaderIntegerDotProduct
++    // feature true; `accelerated` is integerDotProduct4x8BitPackedSignedAccelerated,
++    // which the driver alone writes; `software_lowered` is this build computing the
++    // same packed dot without a dot instruction, admitted by GGML_VK_FORCE_INTEGER_DOT
++    // on a functional device the driver reports unaccelerated; `pipeline_selected` is
++    // the disjunction the q8_1 pipeline table and every quantize_y dispatch read.
++    // Keeping them apart means the environment moves the selection alone and every
++    // advertised Vulkan acceleration property still reads exactly what RADV
++    // reported. The selection is scoped to the replacement path it belongs to:
++    // the q8_1 mat-vec pipelines and their two quantize_y dispatches read
++    // `pipeline_selected`, while the MMQ mat-mat families, the mat-mat
++    // quantize_y, and ggml_vk_fa_scalar_uses_mmq read `accelerated`, since those
++    // consume the extension's own lowering and no replacement was measured for
++    // them. On a device the driver reports accelerated the two are equal, so the
++    // scope changes nothing there and bounds what the forced admission reaches
++    // here.
++    bool integer_dot_functional;
++    bool integer_dot_accelerated;
++    bool integer_dot_software_lowered;
++    bool integer_dot_pipeline_selected;
+     // 0: default, 1: force mmvq, -1: disable mmvq
+     int32_t mmvq_mode;
+ 
+@@ -5084,7 +5115,7 @@ static bool ggml_vk_fa_type_needs_shmem(ggml_type type) {
+ 
+ static bool ggml_vk_fa_scalar_uses_mmq(const vk_device& device, ggml_type k_type, ggml_type v_type) {
+ #if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
+-    return device->integer_dot_product && device->subgroup_clustered &&
++    return device->integer_dot_accelerated && device->subgroup_clustered &&
+            !ggml_vk_fa_type_needs_shmem(v_type) &&
+            (k_type == GGML_TYPE_Q4_0 || k_type == GGML_TYPE_Q4_1 ||
+             k_type == GGML_TYPE_Q5_0 || k_type == GGML_TYPE_Q5_1 ||
+@@ -5861,7 +5892,7 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+         CREATE_MM2(GGML_TYPE_NVFP4,   pipeline_dequant_mul_mat_mat[GGML_TYPE_NVFP4],   matmul_nvfp4_f32,   mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, , 0);
+ 
+ #if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
+-        if (device->integer_dot_product) {
++        if (device->integer_dot_accelerated) {
+             CREATE_MMQ(GGML_TYPE_Q2_0, pipeline_dequant_mul_mat_mat_q8_1[GGML_TYPE_Q2_0], matmul_q2_0_q8_1, mmq_wg_denoms, warptile_mmq_int, vk_mat_mat_push_constants, 3, , 0);
+             CREATE_MMQ(GGML_TYPE_Q4_0, pipeline_dequant_mul_mat_mat_q8_1[GGML_TYPE_Q4_0], matmul_q4_0_q8_1, mmq_wg_denoms, warptile_mmq_int, vk_mat_mat_push_constants, 3, , 0);
+             CREATE_MMQ(GGML_TYPE_Q4_1, pipeline_dequant_mul_mat_mat_q8_1[GGML_TYPE_Q4_1], matmul_q4_1_q8_1, mmq_wg_denoms, warptile_mmq_int, vk_mat_mat_push_constants, 3, , 0);
+@@ -5910,7 +5941,7 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+             CREATE_MM2(GGML_TYPE_NVFP4,   pipeline_dequant_mul_mat_mat_id[GGML_TYPE_NVFP4],   matmul_id_subgroup_nvfp4_f32,   mmq_wg_denoms, warptile_mmqid, vk_mat_mat_id_push_constants, mul_mat_id_param_count, _id, mul_mat_subgroup_size);
+ 
+ #if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
+-            if (device->integer_dot_product) {
++            if (device->integer_dot_accelerated) {
+                 CREATE_MMQ(GGML_TYPE_Q2_0, pipeline_dequant_mul_mat_mat_id_q8_1[GGML_TYPE_Q2_0], matmul_id_subgroup_q2_0_q8_1, mmq_wg_denoms, warptile_mmqid_int,   vk_mat_mat_id_push_constants, mul_mat_id_param_count, _id, mul_mat_subgroup_size);
+                 CREATE_MMQ(GGML_TYPE_Q4_0, pipeline_dequant_mul_mat_mat_id_q8_1[GGML_TYPE_Q4_0], matmul_id_subgroup_q4_0_q8_1, mmq_wg_denoms, warptile_mmqid_int,   vk_mat_mat_id_push_constants, mul_mat_id_param_count, _id, mul_mat_subgroup_size);
+                 CREATE_MMQ(GGML_TYPE_Q4_1, pipeline_dequant_mul_mat_mat_id_q8_1[GGML_TYPE_Q4_1], matmul_id_subgroup_q4_1_q8_1, mmq_wg_denoms, warptile_mmqid_int,   vk_mat_mat_id_push_constants, mul_mat_id_param_count, _id, mul_mat_subgroup_size);
+@@ -5958,7 +5989,7 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+             CREATE_MM2(GGML_TYPE_NVFP4,   pipeline_dequant_mul_mat_mat_id[GGML_TYPE_NVFP4],   matmul_id_nvfp4_f32,   mmq_wg_denoms, warptile_mmqid, vk_mat_mat_id_push_constants, mul_mat_id_param_count, _id, 0);
+ 
+ #if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
+-            if (device->integer_dot_product) {
++            if (device->integer_dot_accelerated) {
+                 CREATE_MMQ(GGML_TYPE_Q2_0, pipeline_dequant_mul_mat_mat_id_q8_1[GGML_TYPE_Q2_0], matmul_id_q2_0_q8_1, mmq_wg_denoms, warptile_mmqid_int,   vk_mat_mat_id_push_constants, mul_mat_id_param_count, _id, 0);
+                 CREATE_MMQ(GGML_TYPE_Q4_0, pipeline_dequant_mul_mat_mat_id_q8_1[GGML_TYPE_Q4_0], matmul_id_q4_0_q8_1, mmq_wg_denoms, warptile_mmqid_int,   vk_mat_mat_id_push_constants, mul_mat_id_param_count, _id, 0);
+                 CREATE_MMQ(GGML_TYPE_Q4_1, pipeline_dequant_mul_mat_mat_id_q8_1[GGML_TYPE_Q4_1], matmul_id_q4_1_q8_1, mmq_wg_denoms, warptile_mmqid_int,   vk_mat_mat_id_push_constants, mul_mat_id_param_count, _id, 0);
+@@ -6038,7 +6069,7 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+         CREATE_MM(GGML_TYPE_NVFP4,   pipeline_dequant_mul_mat_mat[GGML_TYPE_NVFP4].f32acc,   matmul_nvfp4_f32,   , mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, , 0);
+ 
+ #if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
+-        if (device->integer_dot_product) {
++        if (device->integer_dot_accelerated) {
+             CREATE_MMQ(GGML_TYPE_Q2_0, pipeline_dequant_mul_mat_mat_q8_1[GGML_TYPE_Q2_0].f32acc, matmul_q2_0_q8_1, mmq_wg_denoms, warptile_mmq_int, vk_mat_mat_push_constants, 3, );
+             CREATE_MMQ(GGML_TYPE_Q4_0, pipeline_dequant_mul_mat_mat_q8_1[GGML_TYPE_Q4_0].f32acc, matmul_q4_0_q8_1, mmq_wg_denoms, warptile_mmq_int, vk_mat_mat_push_constants, 3, );
+             CREATE_MMQ(GGML_TYPE_Q4_1, pipeline_dequant_mul_mat_mat_q8_1[GGML_TYPE_Q4_1].f32acc, matmul_q4_1_q8_1, mmq_wg_denoms, warptile_mmq_int, vk_mat_mat_push_constants, 3, );
+@@ -6247,8 +6278,8 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+             ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f16_f32[w][GGML_TYPE_MXFP4][i],   "mul_mat_vec_mxfp4_f16_f32",   OCP_DMMV_LEN(arr_dmmv_mxfp4_f16_f32, reduc16), OCP_DMMV_DATA(arr_dmmv_mxfp4_f16_f32, reduc16), "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_iq, 1, 1}, {wg_size_subgroup16, rm_iq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
+             ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f16_f32[w][GGML_TYPE_NVFP4][i],   "mul_mat_vec_nvfp4_f16_f32",   OCP_DMMV_LEN(arr_dmmv_nvfp4_f16_f32, reduc16), OCP_DMMV_DATA(arr_dmmv_nvfp4_f16_f32, reduc16), "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_iq, 1, 1}, {wg_size_subgroup16, rm_iq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
+ 
+-#if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
+-            if (device->integer_dot_product) {
++#if defined(GGML_VULKAN_MMVQ_Q8_1_SHADERS)
++            if (device->integer_dot_pipeline_selected) {
+                 const uint32_t subgroup_size_int = (device->vendor_id == VK_VENDOR_ID_INTEL && device->subgroup_size_control) ? device->subgroup_min_size : device->subgroup_size;
+                 const uint32_t wg_size_subgroup_int = (w == DMMV_WG_SIZE_SUBGROUP) ? subgroup_size_int : (subgroup_size_int * 4);
+ 
+@@ -6271,7 +6302,7 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+                 ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_q8_1_f32[w][GGML_TYPE_IQ1_M][i], "mul_mat_vec_iq1_m_q8_1_f32", arr_dmmv_iq1_m_q8_1_f32_len[reduc], arr_dmmv_iq1_m_q8_1_f32_data[reduc], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {1*rm_iq_int(i), 1, 1}, {wg_size_subgroup_int, 1*rm_iq_int(i), i+1}, 1, true, use_subgroups, subgroup_size_int);
+ 
+             }
+-#endif // GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT
++#endif // GGML_VULKAN_MMVQ_Q8_1_SHADERS
+         }
+ 
+         ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_f32[w][GGML_TYPE_F32 ], "mul_mat_vec_id_f32_f32",        arr_dmmv_id_f32_f32_f32_len[reduc],     arr_dmmv_id_f32_f32_f32_data[reduc],     "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {1, 1, 1}, {wg_size_subgroup, 1}, 1, false, use_subgroups, force_subgroup_size);
+@@ -6302,8 +6333,8 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+         ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_f32[w][GGML_TYPE_MXFP4],   "mul_mat_vec_id_mxfp4_f32",   OCP_DMMV_LEN(arr_dmmv_id_mxfp4_f32_f32, reduc16), OCP_DMMV_DATA(arr_dmmv_id_mxfp4_f32_f32, reduc16), "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {rm_iq, 1, 1}, {wg_size_subgroup16, rm_iq}, 1, true, use_subgroups16, force_subgroup_size16);
+         ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_f32[w][GGML_TYPE_NVFP4],   "mul_mat_vec_id_nvfp4_f32",   OCP_DMMV_LEN(arr_dmmv_id_nvfp4_f32_f32, reduc16), OCP_DMMV_DATA(arr_dmmv_id_nvfp4_f32_f32, reduc16), "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {rm_iq, 1, 1}, {wg_size_subgroup16, rm_iq}, 1, true, use_subgroups16, force_subgroup_size16);
+ 
+-#if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
+-        if (device->integer_dot_product) {
++#if defined(GGML_VULKAN_MMVQ_Q8_1_SHADERS)
++        if (device->integer_dot_pipeline_selected) {
+             const uint32_t subgroup_size_int = (device->vendor_id == VK_VENDOR_ID_INTEL && device->subgroup_size_control) ? device->subgroup_min_size : device->subgroup_size;
+             const uint32_t wg_size_subgroup_int = (w == DMMV_WG_SIZE_SUBGROUP) ? subgroup_size_int : (subgroup_size_int * 4);
+ 
+@@ -6325,13 +6356,13 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+             ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_q8_1_f32[w][GGML_TYPE_IQ1_S], "mul_mat_vec_id_iq1_s_q8_1_f32", arr_dmmv_id_iq1_s_q8_1_f32_len[reduc], arr_dmmv_id_iq1_s_q8_1_f32_data[reduc], "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {1*rm_iq_int(0), 1, 1}, {wg_size_subgroup_int, 1*rm_iq_int(0)}, 1, true, use_subgroups, subgroup_size_int);
+             ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_q8_1_f32[w][GGML_TYPE_IQ1_M], "mul_mat_vec_id_iq1_m_q8_1_f32", arr_dmmv_id_iq1_m_q8_1_f32_len[reduc], arr_dmmv_id_iq1_m_q8_1_f32_data[reduc], "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {1*rm_iq_int(0), 1, 1}, {wg_size_subgroup_int, 1*rm_iq_int(0)}, 1, true, use_subgroups, subgroup_size_int);
+         }
+-#endif // GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT
++#endif // GGML_VULKAN_MMVQ_Q8_1_SHADERS
+     }
+ 
+ #undef OCP_DMMV_DATA
+ #undef OCP_DMMV_LEN
+ 
+-#if !defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
++#if !defined(GGML_VULKAN_MMVQ_Q8_1_SHADERS)
+     GGML_UNUSED(rm_stdq_int);
+     GGML_UNUSED(rm_kq_int);
+     GGML_UNUSED(rm_iq_int);
+@@ -7111,6 +7142,21 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+ static bool ggml_vk_khr_cooperative_matrix_support(const vk::PhysicalDeviceProperties& props, const vk::PhysicalDeviceDriverProperties& driver_props, vk_device_architecture arch);
+ static uint32_t ggml_vk_intel_shader_core_count(const vk::PhysicalDevice& vkdev);
+ 
++// GGML_VK_FORCE_INTEGER_DOT=1 admits the q8_1 mat-vec on a device that reports
++// VK_KHR_shader_integer_dot_product functional and every
++// integerDotProduct*Accelerated bit false, by writing
++// integer_dot_software_lowered rather than any state named for acceleration.
++// The value is read once per process, because a flag re-read per device would
++// let one process hold two pipeline tables for one shader set, and an exact "1"
++// is required so an accidental "0" reads as the default rather than as an arm.
++static bool ggml_vk_force_integer_dot() {
++    static const bool forced = []() -> bool {
++        const char * value = getenv("GGML_VK_FORCE_INTEGER_DOT");
++        return value != nullptr && strcmp(value, "1") == 0;
++    }();
++    return forced;
++}
++
+ static vk_device ggml_vk_get_device(size_t idx) {
+     VK_LOG_DEBUG("ggml_vk_get_device(" << idx << ")");
+ 
+@@ -7161,7 +7207,10 @@ static vk_device ggml_vk_get_device(size_t idx) {
+         bool global_priority_support = false;
+ #endif
+         device->coopmat_support = false;
+-        device->integer_dot_product = false;
++        device->integer_dot_functional = false;
++        device->integer_dot_accelerated = false;
++        device->integer_dot_software_lowered = false;
++        device->integer_dot_pipeline_selected = false;
+         device->shader_64b_indexing = false;
+         bool bfloat16_support = false;
+         bool dot2_f16_support = false;
+@@ -7199,10 +7248,10 @@ static vk_device ggml_vk_get_device(size_t idx) {
+             } else if (strcmp(VK_NV_COOPERATIVE_MATRIX_DECODE_VECTOR_EXTENSION_NAME, properties.extensionName) == 0 &&
+                        !getenv("GGML_VK_DISABLE_COOPMAT2_DECODE_VECTOR")) {
+                 coopmat2_decode_vector_support = true;
+-#if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
++#if defined(GGML_VULKAN_MMVQ_Q8_1_SHADERS)
+             } else if (strcmp("VK_KHR_shader_integer_dot_product", properties.extensionName) == 0 &&
+                        !getenv("GGML_VK_DISABLE_INTEGER_DOT_PRODUCT")) {
+-                device->integer_dot_product = true;
++                device->integer_dot_functional = true;
+ #endif
+ #if defined(GGML_VULKAN_BFLOAT16_GLSLC_SUPPORT)
+             } else if (strcmp("VK_KHR_shader_bfloat16", properties.extensionName) == 0 &&
+@@ -7288,7 +7337,7 @@ static vk_device ggml_vk_get_device(size_t idx) {
+         }
+ #endif
+ 
+-        if (device->integer_dot_product) {
++        if (device->integer_dot_functional) {
+             last_struct->pNext = (VkBaseOutStructure *)&shader_integer_dot_product_props;
+             last_struct = (VkBaseOutStructure *)&shader_integer_dot_product_props;
+         }
+@@ -7414,7 +7463,28 @@ static vk_device ggml_vk_get_device(size_t idx) {
+             device->coopmat_support = false;
+         }
+ 
+-        device->integer_dot_product = device->integer_dot_product && shader_integer_dot_product_props.integerDotProduct4x8BitPackedSignedAccelerated;
++        // integerDotProduct4x8BitPackedSignedAccelerated states that the driver
++        // lowers dotPacked4x8EXT onto a dot instruction. gfx902 holds no V_DOT4
++        // and RADV reports the bit false, so the accelerated state is copied from
++        // the driver's own report and nothing in this build writes it.
++        device->integer_dot_accelerated = device->integer_dot_functional &&
++            shader_integer_dot_product_props.integerDotProduct4x8BitPackedSignedAccelerated;
++
++        // The software-lowered state is this build's own claim: a packed dot
++        // computed without a dot instruction, either by the replacement GLSL or by
++        // the driver expanding OpSDotKHR. GGML_VK_FORCE_INTEGER_DOT=1 admits it on
++        // a functional device the driver reports unaccelerated, so the variable
++        // moves this field alone and leaves every advertised acceleration property
++        // reading what RADV reported.
++        device->integer_dot_software_lowered = device->integer_dot_functional &&
++            !device->integer_dot_accelerated && ggml_vk_force_integer_dot();
++
++        // The replacement q8_1 mat-vec pipelines and their quantize_y dispatches
++        // read this disjunction, which equals the pinned build's own flag
++        // wherever the arm is unarmed and equals `accelerated` on any device the
++        // driver reports accelerated.
++        device->integer_dot_pipeline_selected = device->integer_dot_accelerated ||
++            device->integer_dot_software_lowered;
+ 
+         device->min_imported_host_pointer_alignment = external_memory_host_props.minImportedHostPointerAlignment;
+ 
+@@ -7586,7 +7656,7 @@ static vk_device ggml_vk_get_device(size_t idx) {
+ 
+         VkPhysicalDeviceShaderIntegerDotProductFeaturesKHR shader_integer_dot_product_features {};
+         shader_integer_dot_product_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_INTEGER_DOT_PRODUCT_FEATURES_KHR;
+-        if (device->integer_dot_product) {
++        if (device->integer_dot_functional) {
+             last_struct->pNext = (VkBaseOutStructure *)&shader_integer_dot_product_features;
+             last_struct = (VkBaseOutStructure *)&shader_integer_dot_product_features;
+             device_extensions.push_back("VK_KHR_shader_integer_dot_product");
+@@ -8174,7 +8244,7 @@ static void ggml_vk_print_gpu_info(size_t idx) {
+         } else if (strcmp(VK_NV_COOPERATIVE_MATRIX_DECODE_VECTOR_EXTENSION_NAME, properties.extensionName) == 0 &&
+                    !getenv("GGML_VK_DISABLE_COOPMAT2_DECODE_VECTOR")) {
+             coopmat2_decode_vector_support = true;
+-#if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
++#if defined(GGML_VULKAN_MMVQ_Q8_1_SHADERS)
+         } else if (strcmp("VK_KHR_shader_integer_dot_product", properties.extensionName) == 0 &&
+                     !getenv("GGML_VK_DISABLE_INTEGER_DOT_PRODUCT")) {
+             integer_dot_product = true;
+@@ -8321,9 +8391,18 @@ static void ggml_vk_print_gpu_info(size_t idx) {
+     const size_t subgroup_size = (default_subgroup_size != 0) ? default_subgroup_size : subgroup_props.subgroupSize;
+     const bool uma = props2.properties.deviceType == vk::PhysicalDeviceType::eIntegratedGpu;
+ 
+-    integer_dot_product = integer_dot_product
+-                       && shader_integer_dot_product_props.integerDotProduct4x8BitPackedSignedAccelerated
+-                       && shader_integer_dot_product_features.shaderIntegerDotProduct;
++    // The info line names the four states the device fields carry, so a reader
++    // of one log line separates what the driver reported from what this process
++    // selected. The leading number stays the pipeline selection, which is the
++    // value the pinned build printed.
++    const bool integer_dot_functional = integer_dot_product
++                                     && shader_integer_dot_product_features.shaderIntegerDotProduct;
++    const bool integer_dot_accelerated = integer_dot_functional
++                                      && shader_integer_dot_product_props.integerDotProduct4x8BitPackedSignedAccelerated;
++    const bool integer_dot_software_lowered = integer_dot_functional
++                                           && !integer_dot_accelerated
++                                           && ggml_vk_force_integer_dot();
++    integer_dot_product = integer_dot_accelerated || integer_dot_software_lowered;
+ 
+     coopmat_support = coopmat_support
+ #if defined(GGML_VULKAN_COOPMAT_GLSLC_SUPPORT)
+@@ -8366,9 +8445,11 @@ static void ggml_vk_print_gpu_info(size_t idx) {
+ #endif
+ 
+     std::string device_name = props2.properties.deviceName.data();
+-    GGML_LOG_DEBUG("ggml_vulkan: %zu = %s (%s) | uma: %d | fp16: %s | bf16: %d | fp4: %d | warp size: %zu | shared memory: %d | int dot: %d | matrix cores: %s\n",
++    GGML_LOG_DEBUG("ggml_vulkan: %zu = %s (%s) | uma: %d | fp16: %s | bf16: %d | fp4: %d | warp size: %zu | shared memory: %d | int dot: %d (functional %d, accelerated %d, software lowered %d) | matrix cores: %s\n",
+               idx, device_name.c_str(), driver_props.driverName.data(), uma, fp16_str, bf16, fp4, subgroup_size,
+-              props2.properties.limits.maxComputeSharedMemorySize, integer_dot_product, matrix_cores.c_str());
++              props2.properties.limits.maxComputeSharedMemorySize, integer_dot_product,
++              integer_dot_functional, integer_dot_accelerated, integer_dot_software_lowered,
++              matrix_cores.c_str());
+ 
+     if (props2.properties.deviceType == vk::PhysicalDeviceType::eCpu) {
+         GGML_LOG_DEBUG("ggml_vulkan: Warning: Device type is CPU. This is probably not the device you want.\n");
+@@ -10282,7 +10363,7 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
+ 
+     const bool y_f32_kernel = src1->type == GGML_TYPE_F32 && !y_non_contig;
+ 
+-    bool quantize_y = ctx->device->integer_dot_product && src1->type == GGML_TYPE_F32 && ggml_is_contiguous(src1) && !y_non_contig && (ne11 * ne10) % 4 == 0;
++    bool quantize_y = ctx->device->integer_dot_accelerated && src1->type == GGML_TYPE_F32 && ggml_is_contiguous(src1) && !y_non_contig && (ne11 * ne10) % 4 == 0;
+ 
+     // Check for mmq first
+     vk_matmul_pipeline mmp = quantize_y ? ggml_vk_get_mul_mat_mat_pipeline(ctx, src0->type, GGML_TYPE_Q8_1, (ggml_prec)dst->op_params[0]) : nullptr;
+@@ -10615,7 +10696,7 @@ static void ggml_vk_mul_mat_vec_q_f16(ggml_backend_vk_context * ctx, vk_context&
+     const bool y_non_contig = !ggml_vk_dim01_contiguous(src1);
+ 
+     const bool f16_f32_kernel = src1->type == GGML_TYPE_F32;
+-    bool quantize_y = ctx->device->integer_dot_product && src1->type == GGML_TYPE_F32 && ggml_is_contiguous(src1) && !y_non_contig && (ne11 * ne10) % 4 == 0 && ggml_vk_should_use_mmvq(ctx->device, ne01, ne11, ne10, src0->type);
++    bool quantize_y = ctx->device->integer_dot_pipeline_selected && src1->type == GGML_TYPE_F32 && ggml_is_contiguous(src1) && !y_non_contig && (ne11 * ne10) % 4 == 0 && ggml_vk_should_use_mmvq(ctx->device, ne01, ne11, ne10, src0->type);
+ 
+     vk_pipeline to_fp16_vk_0 = nullptr;
+     vk_pipeline to_fp16_vk_1 = nullptr;
+@@ -11218,7 +11299,7 @@ static void ggml_vk_mul_mat_id_q_f16(ggml_backend_vk_context * ctx, vk_context&
+ 
+     const bool y_f32_kernel = src1->type == GGML_TYPE_F32 && !y_non_contig;
+ 
+-    bool quantize_y = ctx->device->integer_dot_product && src1->type == GGML_TYPE_F32 && ggml_is_contiguous(src1) && !y_non_contig && (ne11 * ne10) % 4 == 0;
++    bool quantize_y = ctx->device->integer_dot_accelerated && src1->type == GGML_TYPE_F32 && ggml_is_contiguous(src1) && !y_non_contig && (ne11 * ne10) % 4 == 0;
+ 
+     // Check for mmq first
+     vk_matmul_pipeline mmp = quantize_y ? ggml_vk_get_mul_mat_mat_id_pipeline(ctx, src0->type, GGML_TYPE_Q8_1, (ggml_prec)dst->op_params[0]) : nullptr;
+@@ -11514,7 +11595,7 @@ static void ggml_vk_mul_mat_vec_id_q_f16(ggml_backend_vk_context * ctx, vk_conte
+     const bool y_non_contig = !ggml_vk_dim01_contiguous(src1);
+ 
+     const bool f16_f32_kernel = src1->type == GGML_TYPE_F32;
+-    bool quantize_y = ctx->device->integer_dot_product && src1->type == GGML_TYPE_F32 && ggml_is_contiguous(src1) && !y_non_contig && (ne11 * ne10) % 4 == 0 && ggml_vk_should_use_mmvq(ctx->device, ne01, ne12, ne10, src0->type);
++    bool quantize_y = ctx->device->integer_dot_pipeline_selected && src1->type == GGML_TYPE_F32 && ggml_is_contiguous(src1) && !y_non_contig && (ne11 * ne10) % 4 == 0 && ggml_vk_should_use_mmvq(ctx->device, ne01, ne12, ne10, src0->type);
+ 
+     vk_pipeline to_fp16_vk_0 = nullptr;
+     vk_pipeline to_fp16_vk_1 = nullptr;
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/CMakeLists.txt b/ggml/src/ggml-vulkan/vulkan-shaders/CMakeLists.txt
+index cbe7a68bf..c3fbe5053 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/CMakeLists.txt
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/CMakeLists.txt
+@@ -19,6 +19,10 @@ if (GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
+     add_compile_definitions(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
+     message(STATUS "Enabling dot glslc support")
+ endif()
++if (GGML_VULKAN_INT24_DOT)
++    add_compile_definitions(GGML_VULKAN_INT24_DOT)
++    message(STATUS "Enabling the int24 packed dot product")
++endif()
+ if (GGML_VULKAN_BFLOAT16_GLSLC_SUPPORT)
+     add_compile_definitions(GGML_VULKAN_BFLOAT16_GLSLC_SUPPORT)
+     message(STATUS "Enabling bfloat16 glslc support")
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq.comp b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq.comp
+index 18d441ead..12d78c5a6 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq.comp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq.comp
+@@ -1,7 +1,9 @@
+ #version 450
+ 
+ #extension GL_EXT_shader_explicit_arithmetic_types_int32 : require
++#if !defined(GGML_VK_INT24_DOT)
+ #extension GL_EXT_integer_dot_product : require
++#endif
+ 
+ #define MMQ
+ #define NEEDS_IQ1S_GRID_GPU
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq_funcs.glsl b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq_funcs.glsl
+index a5403ac82..4a346bf9c 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq_funcs.glsl
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vecq_funcs.glsl
+@@ -4,6 +4,46 @@
+ 
+ #include "types.glsl"
+ 
++#if defined(GGML_VK_INT24_DOT)
++// gfx902 advertises VK_KHR_shader_integer_dot_product and reports every
++// integerDotProduct*Accelerated bit false, so dotPacked4x8EXT lowers to a
++// generic 32-bit multiply chain while v_mul_u32_u24 and v_mad_u32_u24 run at
++// full rate on the same silicon. ACO selects those for nir_op_imul where
++// nir_unsigned_upper_bound proves both sources at most 0xffffff
++// (src/amd/compiler/instruction_selection/aco_select_nir_alu.cpp, nir_op_imul),
++// which a byte masked out of a 32-bit word satisfies and a sign-extended int8
++// does not, its unsigned bound being 0xffffffff. Each operand is therefore
++// biased into 0..255 and the bias is removed once per call, from
++// sum((au - 128) * (bu - 128)) = sum(au*bu) - 128*(sum au + sum bu) + 4*128*128.
++// Every intermediate stays unsigned and below 2^19, so each conversion back to
++// int is of a value the signed type represents.
++int32_t dot_packed_4x8_int24(const int32_t packed_a, const int32_t packed_b) {
++    const uint au = uint(packed_a) ^ 0x80808080u;
++    const uint bu = uint(packed_b) ^ 0x80808080u;
++
++    const uint a0 =  au        & 0xFFu;
++    const uint a1 = (au >>  8) & 0xFFu;
++    const uint a2 = (au >> 16) & 0xFFu;
++    const uint a3 = (au >> 24) & 0xFFu;
++
++    const uint b0 =  bu        & 0xFFu;
++    const uint b1 = (bu >>  8) & 0xFFu;
++    const uint b2 = (bu >> 16) & 0xFFu;
++    const uint b3 = (bu >> 24) & 0xFFu;
++
++    const uint sum_ab = a0 * b0 + a1 * b1 + a2 * b2 + a3 * b3;
++    const uint sum_a  = a0 + a1 + a2 + a3;
++    const uint sum_b  = b0 + b1 + b2 + b3;
++
++    return int32_t(sum_ab) - int32_t(128u * (sum_a + sum_b)) + 65536;
++}
++
++// The call sites keep the extension's spelling, so one name states which
++// implementation a variant compiled against and the shader body reads the same
++// either way.
++#define dotPacked4x8EXT dot_packed_4x8_int24
++#endif
++
+ #if defined(DATA_A_Q2_0)
+ FLOAT_TYPE get_dm(uint ib) {
+     return FLOAT_TYPE(data_a[ib / 2].d);
+@@ -371,10 +411,66 @@ FLOAT_TYPE mmvq_dot_product(const uint ib_a, const uint iqs) {
+     const i32vec4 qs_a = repack4(ib_a, iqs * 4);
+     const vec2 dm_scale = get_dm_scale(ib_a, iqs * 4);
+ 
++#if defined(GGML_VK_INT24_DOT)
++    // repack4 masks the quant bytes with 0x0F0F0F0F, and Q5_K merges one bit
++    // plane above that, so each one is already unsigned and at most 31: the
++    // activation byte alone carries the bias. Summing n * bu over all sixteen
++    // values beside sum(n) pays the 128 * sum(n) correction once per call as a
++    // shift rather than once per product. The products bound at 31 * 255 and
++    // their sum at 126480, so the uint accumulators stay exact.
++    //
++    // Every product is written out with a literal shift and a literal mask,
++    // the way the pinned function writes four explicit dot calls: each
++    // multiplicand then reaches ACO as a constant-masked byte of a value held
++    // unsigned, which is the bound v_mul_u32_u24 selection reads and the byte
++    // select SDWA folds into the operand. A loop over the four words would
++    // index qs_a through a pointer and leave one multiply in the module, which
++    // states neither.
++    const uint quants_x = uint(qs_a.x);
++    const uint quants_y = uint(qs_a.y);
++    const uint quants_z = uint(qs_a.z);
++    const uint quants_w = uint(qs_a.w);
++
++    const uint biased_x = uint(cache_b_qs[0]) ^ 0x80808080u;
++    const uint biased_y = uint(cache_b_qs[1]) ^ 0x80808080u;
++    const uint biased_z = uint(cache_b_qs[2]) ^ 0x80808080u;
++    const uint biased_w = uint(cache_b_qs[3]) ^ 0x80808080u;
++
++    const uint sum_nb =
++        ( quants_x        & 0xFFu) * ( biased_x        & 0xFFu) +
++        ((quants_x >>  8) & 0xFFu) * ((biased_x >>  8) & 0xFFu) +
++        ((quants_x >> 16) & 0xFFu) * ((biased_x >> 16) & 0xFFu) +
++        ((quants_x >> 24) & 0xFFu) * ((biased_x >> 24) & 0xFFu) +
++        ( quants_y        & 0xFFu) * ( biased_y        & 0xFFu) +
++        ((quants_y >>  8) & 0xFFu) * ((biased_y >>  8) & 0xFFu) +
++        ((quants_y >> 16) & 0xFFu) * ((biased_y >> 16) & 0xFFu) +
++        ((quants_y >> 24) & 0xFFu) * ((biased_y >> 24) & 0xFFu) +
++        ( quants_z        & 0xFFu) * ( biased_z        & 0xFFu) +
++        ((quants_z >>  8) & 0xFFu) * ((biased_z >>  8) & 0xFFu) +
++        ((quants_z >> 16) & 0xFFu) * ((biased_z >> 16) & 0xFFu) +
++        ((quants_z >> 24) & 0xFFu) * ((biased_z >> 24) & 0xFFu) +
++        ( quants_w        & 0xFFu) * ( biased_w        & 0xFFu) +
++        ((quants_w >>  8) & 0xFFu) * ((biased_w >>  8) & 0xFFu) +
++        ((quants_w >> 16) & 0xFFu) * ((biased_w >> 16) & 0xFFu) +
++        ((quants_w >> 24) & 0xFFu) * ((biased_w >> 24) & 0xFFu);
++
++    const uint sum_n =
++        ( quants_x        & 0xFFu) + ((quants_x >>  8) & 0xFFu) +
++        ((quants_x >> 16) & 0xFFu) + ((quants_x >> 24) & 0xFFu) +
++        ( quants_y        & 0xFFu) + ((quants_y >>  8) & 0xFFu) +
++        ((quants_y >> 16) & 0xFFu) + ((quants_y >> 24) & 0xFFu) +
++        ( quants_z        & 0xFFu) + ((quants_z >>  8) & 0xFFu) +
++        ((quants_z >> 16) & 0xFFu) + ((quants_z >> 24) & 0xFFu) +
++        ( quants_w        & 0xFFu) + ((quants_w >>  8) & 0xFFu) +
++        ((quants_w >> 16) & 0xFFu) + ((quants_w >> 24) & 0xFFu);
++
++    q_sum = int32_t(sum_nb) - int32_t(sum_n << 7);
++#else
+     q_sum += dotPacked4x8EXT(qs_a.x, cache_b_qs[0]);
+     q_sum += dotPacked4x8EXT(qs_a.y, cache_b_qs[1]);
+     q_sum += dotPacked4x8EXT(qs_a.z, cache_b_qs[2]);
+     q_sum += dotPacked4x8EXT(qs_a.w, cache_b_qs[3]);
++#endif
+ 
+     return FLOAT_TYPE(float(cache_b_ds.x) * float(dm_scale.x) * float(q_sum) - float(dm_scale.y) * float(cache_b_ds.y / 2));
+ }
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp b/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+index 17d57d5a1..291a54a43 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+@@ -21,6 +21,17 @@
+ #include <sys/types.h>
+ #include <filesystem>
+ 
++// The q8_1 mat-vec shaders reach a device two ways: GL_EXT_integer_dot_product
++// where glslc compiles it, and the int24 replacement where it does not. Both
++// emit the same shader names, so the generator and ggml-vulkan.cpp read one
++// condition and a definition that reached only one of them fails at link on
++// arr_dmmv_q4_k_q8_1_f32_data rather than at device creation. The MMQ and
++// flash-attention int8 shaders have no replacement and keep reading the
++// extension's own name.
++#if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT) || defined(GGML_VULKAN_INT24_DOT)
++#define GGML_VULKAN_MMVQ_Q8_1_SHADERS
++#endif
++
+ #ifdef _WIN32
+     #define NOMINMAX
+     #include <windows.h>
+@@ -764,15 +775,28 @@ void process_shaders() {
+         string_to_spv("mul_mat_vec_id_" + tname + "_f32_f32_subgroup_no_shmem", shader, merge_maps(base_dict, {{"MUL_MAT_ID", "1"}, {data_a_key, "1"}, {"B_TYPE", "float"}, {"B_TYPEV2", "vec2"}, {"B_TYPEV4", "vec4"}, {"D_TYPE", "float"}, {"USE_SUBGROUP_ADD_NO_SHMEM", "1"}}));
+ 
+         // mul mat vec with integer dot product
+-#if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
++#if defined(GGML_VULKAN_MMVQ_Q8_1_SHADERS)
+         if (is_legacy_quant(tname) || tname == "mxfp4" || is_k_quant(tname) || tname == "iq1_s" || tname == "iq1_m") {
+-            string_to_spv("mul_mat_vec_" + tname + "_q8_1_f32", "mul_mat_vecq.comp", merge_maps(base_dict, {{data_a_key, "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}, {"FLOAT_TYPEV2", "vec2"}, {"ACC_TYPE", "float"}}));
+-            string_to_spv("mul_mat_vec_" + tname + "_q8_1_f32_subgroup", "mul_mat_vecq.comp", merge_maps(base_dict, {{data_a_key, "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}, {"FLOAT_TYPEV2", "vec2"}, {"ACC_TYPE", "float"}, {"USE_SUBGROUP_ADD", "1"}}));
+-            string_to_spv("mul_mat_vec_" + tname + "_q8_1_f32_subgroup_no_shmem", "mul_mat_vecq.comp", merge_maps(base_dict, {{data_a_key, "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}, {"FLOAT_TYPEV2", "vec2"}, {"ACC_TYPE", "float"}, {"USE_SUBGROUP_ADD_NO_SHMEM", "1"}}));
++            // GGML_VK_INT24_DOT selects the masked-byte replacement inside
++            // mul_mat_vecq_funcs.glsl and takes the extension line out of
++            // mul_mat_vecq.comp. Where both definitions are set the arm wins,
++            // so the shader a receipt is read from is the same file on a
++            // toolchain that has the extension and one that rejects it.
++            const std::map<std::string, std::string> mmvq_dict = merge_maps(base_dict,
++#if defined(GGML_VULKAN_INT24_DOT)
++                {{"GGML_VK_INT24_DOT", "1"}}
++#else
++                {}
++#endif
++            );
+ 
+-            string_to_spv("mul_mat_vec_id_" + tname + "_q8_1_f32", "mul_mat_vecq.comp", merge_maps(base_dict, {{"MUL_MAT_ID", "1"}, {data_a_key, "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}, {"FLOAT_TYPEV2", "vec2"}, {"ACC_TYPE", "float"}}));
+-            string_to_spv("mul_mat_vec_id_" + tname + "_q8_1_f32_subgroup", "mul_mat_vecq.comp", merge_maps(base_dict, {{"MUL_MAT_ID", "1"}, {data_a_key, "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}, {"FLOAT_TYPEV2", "vec2"}, {"ACC_TYPE", "float"}, {"USE_SUBGROUP_ADD", "1"}}));
+-            string_to_spv("mul_mat_vec_id_" + tname + "_q8_1_f32_subgroup_no_shmem", "mul_mat_vecq.comp", merge_maps(base_dict, {{"MUL_MAT_ID", "1"}, {data_a_key, "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}, {"FLOAT_TYPEV2", "vec2"}, {"ACC_TYPE", "float"}, {"USE_SUBGROUP_ADD_NO_SHMEM", "1"}}));
++            string_to_spv("mul_mat_vec_" + tname + "_q8_1_f32", "mul_mat_vecq.comp", merge_maps(mmvq_dict, {{data_a_key, "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}, {"FLOAT_TYPEV2", "vec2"}, {"ACC_TYPE", "float"}}));
++            string_to_spv("mul_mat_vec_" + tname + "_q8_1_f32_subgroup", "mul_mat_vecq.comp", merge_maps(mmvq_dict, {{data_a_key, "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}, {"FLOAT_TYPEV2", "vec2"}, {"ACC_TYPE", "float"}, {"USE_SUBGROUP_ADD", "1"}}));
++            string_to_spv("mul_mat_vec_" + tname + "_q8_1_f32_subgroup_no_shmem", "mul_mat_vecq.comp", merge_maps(mmvq_dict, {{data_a_key, "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}, {"FLOAT_TYPEV2", "vec2"}, {"ACC_TYPE", "float"}, {"USE_SUBGROUP_ADD_NO_SHMEM", "1"}}));
++
++            string_to_spv("mul_mat_vec_id_" + tname + "_q8_1_f32", "mul_mat_vecq.comp", merge_maps(mmvq_dict, {{"MUL_MAT_ID", "1"}, {data_a_key, "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}, {"FLOAT_TYPEV2", "vec2"}, {"ACC_TYPE", "float"}}));
++            string_to_spv("mul_mat_vec_id_" + tname + "_q8_1_f32_subgroup", "mul_mat_vecq.comp", merge_maps(mmvq_dict, {{"MUL_MAT_ID", "1"}, {data_a_key, "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}, {"FLOAT_TYPEV2", "vec2"}, {"ACC_TYPE", "float"}, {"USE_SUBGROUP_ADD", "1"}}));
++            string_to_spv("mul_mat_vec_id_" + tname + "_q8_1_f32_subgroup_no_shmem", "mul_mat_vecq.comp", merge_maps(mmvq_dict, {{"MUL_MAT_ID", "1"}, {data_a_key, "1"}, {"D_TYPE", "float"}, {"FLOAT_TYPE", "float"}, {"FLOAT_TYPEV2", "vec2"}, {"ACC_TYPE", "float"}, {"USE_SUBGROUP_ADD_NO_SHMEM", "1"}}));
+         }
+ #endif
+ 
+@@ -1246,6 +1270,6 @@ void write_output_files() {
+ 
+     std::vector<std::string> btypes = {"f16", "f32"};
+ 
+-#if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
++#if defined(GGML_VULKAN_MMVQ_Q8_1_SHADERS)
+     btypes.push_back("q8_1");
+ #endif
