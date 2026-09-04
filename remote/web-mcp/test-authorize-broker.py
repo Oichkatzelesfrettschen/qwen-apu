@@ -52,6 +52,10 @@ ORIGIN = "http://127.0.0.1:8080"
 # The exposure arms name a literal in the Host header while the socket stays on
 # the loopback, so the gate is measured on a host holding no second address.
 EXPOSED_ADDRESS = "192.0.2.10"
+# The name arms present a synthetic mDNS host in the Host header, so the arm
+# reads the admitted set rather than whatever this machine advertises.
+EXPOSED_NAME = "qwen-test.local"
+NAME_ORIGIN = "http://qwen-test.local:8080"
 START_WAIT_SECONDS = 15.0
 STOP_WAIT_SECONDS = 5.0
 # What the broker's own shutdown sequence costs. A terminating signal raises
@@ -99,7 +103,11 @@ class BrokerProcess:
         arguments.update(overrides)
         argv = [sys.executable, BROKER_PATH]
         for option, value in arguments.items():
-            if value is not None:
+            # A True value is a bare store_true flag such as --open-lan; a None
+            # value withholds the option entirely.
+            if value is True:
+                argv.append(option)
+            elif value is not None:
                 argv += [option, str(value)]
         self.process = subprocess.Popen(
             argv,
@@ -977,6 +985,184 @@ class BrokerTest(unittest.TestCase):
                 )
                 self.assertEqual(status, 200, body)
                 self.assertTrue(json.loads(body)["authorization"])
+
+    def test_the_exposure_name_joins_the_admitted_host_set(self):
+        """The mDNS name is a second admitted host, compared casefolded."""
+        broker = self.launch(
+            **{
+                "--lan-exposure": EXPOSED_ADDRESS,
+                "--lan-name": EXPOSED_NAME,
+                "--origin": NAME_ORIGIN,
+                # Nine subTest requests share this broker's authorize-minute
+                # bucket, which the near-miss Host rows below charge the same
+                # as every admitted one; the default of 6 would starve the
+                # later rows on a rate refusal rather than the Host check
+                # this test states.
+                "--per-minute": 20,
+            }
+        )
+        secret = self.session_secret()
+        for description, host_header, expected in (
+            ("loopback", f"127.0.0.1:{broker.port}", 200),
+            ("exposed literal", f"{EXPOSED_ADDRESS}:{broker.port}", 200),
+            ("exposed name", f"{EXPOSED_NAME}:{broker.port}", 200),
+            ("exposed name uppercased", f"QWEN-TEST.LOCAL:{broker.port}", 200),
+            ("foreign name", f"rebind.example.net:{broker.port}", 403),
+            # host_header_names() compares the Host header against the
+            # admitted set by exact string equality (case-folded), never by
+            # prefix or suffix, so a name that merely shares the admitted
+            # name's label -- prepended, appended, or carrying it as a
+            # sub-label -- names no admitted entry and is refused the same
+            # way an unrelated name is. These four are the near-miss forms a
+            # suffix or substring comparison would wrongly admit; a bare
+            # "foreign name" test shares no substring with EXPOSED_NAME and
+            # so never exercised that boundary.
+            ("name with a prepended label", f"evil-{EXPOSED_NAME}:{broker.port}", 403),
+            ("name with an appended label", f"{EXPOSED_NAME}.evil.example:{broker.port}", 403),
+            ("name as a sub-label", f"sub.{EXPOSED_NAME}:{broker.port}", 403),
+            ("name with no label boundary", f"x{EXPOSED_NAME}:{broker.port}", 403),
+        ):
+            with self.subTest(host=description):
+                headers = self.exposed_headers(host_header, secret=secret)
+                headers["Origin"] = NAME_ORIGIN
+                status, _, body = broker.request(
+                    "POST",
+                    "/grant",
+                    json.dumps(
+                        {"query": "raven2 vulkan decode", "profile_id": "default"}
+                    ),
+                    headers,
+                )
+                self.assertEqual(status, expected, body)
+
+    def test_the_exposure_name_requires_the_bearer_the_literal_requires(self):
+        """A second admitted host is not a second credential policy."""
+        broker = self.launch(
+            **{
+                "--lan-exposure": EXPOSED_ADDRESS,
+                "--lan-name": EXPOSED_NAME,
+                "--origin": NAME_ORIGIN,
+            }
+        )
+        secret = self.session_secret()
+        headers = self.exposed_headers(
+            f"{EXPOSED_NAME}:{broker.port}", api_key=None, secret=secret
+        )
+        headers["Origin"] = NAME_ORIGIN
+        status, _, body = broker.request(
+            "POST",
+            "/grant",
+            json.dumps({"query": "raven2 vulkan decode", "profile_id": "default"}),
+            headers,
+        )
+        self.assertEqual(status, 403, body)
+        self.assertIn("bearer API key", json.loads(body)["error"])
+        status, _, body = broker.request(
+            "GET", "/health", None, {"Host": f"{EXPOSED_NAME}:{broker.port}"}
+        )
+        self.assertEqual(status, 403, body)
+
+    def test_the_lan_name_requires_the_exposure_it_widens(self):
+        """A name adds a Host to a set the exposure literal builds."""
+        completed = subprocess.run(
+            [
+                sys.executable, BROKER_PATH,
+                "--state-dir", self.state_directory,
+                "--token-key-file", self.token_key_path,
+                "--api-key-file", self.api_key_path,
+                "--origin", ORIGIN,
+                "--lan-name", EXPOSED_NAME,
+            ],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            timeout=STOP_WAIT_SECONDS,
+        )
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("--lan-exposure", completed.stderr)
+
+    def test_the_open_opt_in_requires_the_exposure_it_opens(self):
+        """--open-lan removes a credential from a listener the operator exposed."""
+        completed = subprocess.run(
+            [
+                sys.executable, BROKER_PATH,
+                "--state-dir", self.state_directory,
+                "--token-key-file", self.token_key_path,
+                "--api-key-file", self.api_key_path,
+                "--origin", ORIGIN,
+                "--open-lan",
+            ],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            timeout=STOP_WAIT_SECONDS,
+        )
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("--lan-exposure", completed.stderr)
+
+    def test_the_open_opt_in_signs_without_a_bearer_and_keeps_the_host_set(self):
+        """The bearer goes; the Host set, Origin, and session secret stay.
+
+        The launch hands an empty --api-key-file, which is what a keyless
+        session passes, so the arm also measures that the broker reads no key
+        file under the opt-in rather than exiting on the unconfigured path.
+        """
+        broker = self.launch(
+            **{
+                "--lan-exposure": EXPOSED_ADDRESS,
+                "--lan-name": EXPOSED_NAME,
+                "--open-lan": True,
+                "--api-key-file": "",
+                "--origin": NAME_ORIGIN,
+            }
+        )
+        self.assertEqual(broker.port and 1, 1, "the broker never printed a listener")
+        secret = self.session_secret()
+        for description, host_header, expected in (
+            ("exposed literal", f"{EXPOSED_ADDRESS}:{broker.port}", 200),
+            ("exposed name", f"{EXPOSED_NAME}:{broker.port}", 200),
+            ("foreign name", f"rebind.example.net:{broker.port}", 403),
+        ):
+            with self.subTest(host=description):
+                headers = self.exposed_headers(
+                    host_header, api_key=None, secret=secret
+                )
+                headers["Origin"] = NAME_ORIGIN
+                status, _, body = broker.request(
+                    "POST",
+                    "/grant",
+                    json.dumps(
+                        {"query": "raven2 vulkan decode", "profile_id": "default"}
+                    ),
+                    headers,
+                )
+                self.assertEqual(status, expected, body)
+        # The session secret is the gate the opt-in leaves standing, so a
+        # request presenting none is refused with the bearer already gone.
+        headers = self.exposed_headers(
+            f"{EXPOSED_NAME}:{broker.port}", api_key=None, secret="a-stale-secret"
+        )
+        headers["Origin"] = NAME_ORIGIN
+        status, _, body = broker.request(
+            "POST",
+            "/grant",
+            json.dumps({"query": "raven2 vulkan decode", "profile_id": "default"}),
+            headers,
+        )
+        self.assertEqual(status, 403, body)
+        self.assertEqual(json.loads(body)["code"], "stale_session_secret")
+        # An Origin outside the allowlist reads no session secret either.
+        status, _, body = broker.request(
+            "GET", "/session", None, {"Origin": "http://attacker.example"}
+        )
+        self.assertEqual(status, 403, body)
+        # The exposed health read carries no bearer requirement under the
+        # opt-in, which is what the session's identity probe reads.
+        status, _, body = broker.request(
+            "GET", "/health", None, {"Host": f"{EXPOSED_NAME}:{broker.port}"}
+        )
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["pid"], broker.process.pid)
 
     def test_the_default_signs_a_grant_carrying_no_bearer(self):
         """The loopback default stays exactly as it stands."""
