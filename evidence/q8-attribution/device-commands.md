@@ -6,11 +6,23 @@ script edited here changes nothing there until it is copied. Every command
 below runs on the laptop, in a teardown window (the appliance server is not
 serving while `lab.sh` or the census harness holds the device).
 
-## 0. Sync this branch's scripts and patches
+## 0. Sync this branch's scripts, patches, and retained evidence
+
+`CLAUDE.md`'s own sync command names `remote/` and `patches/` alone, because
+those are the two directories every appliance script reads at a fixed
+relative path. This branch's Section 3 additionally reads a workstation-built
+digest (`evidence/q8-attribution/spirv/manifest.tsv`) and Section 2's own
+comparison reads the retained Q4_K receipt
+(`evidence/raven2-vulkan-kernel-census/e1/receipts/q4k-exec-receipt.tsv`), so
+the evidence tree crosses too, on top of the standing sync:
 
 ```sh
 rsync -a remote/ eirikr@qwen-laptop:~/qwen-laptop-setup/remote/
 rsync -a --delete patches/ eirikr@qwen-laptop:~/qwen-laptop-setup/patches/
+rsync -a evidence/q8-attribution/ \
+    eirikr@qwen-laptop:~/qwen-laptop-setup/evidence/q8-attribution/
+rsync -a evidence/raven2-vulkan-kernel-census/e1/receipts/ \
+    eirikr@qwen-laptop:~/qwen-laptop-setup/evidence/raven2-vulkan-kernel-census/e1/receipts/
 ```
 
 ## 1. Reproduce the Q8_0 SPIR-V from the pinned source tree
@@ -64,14 +76,29 @@ cannot be closed from it.
 ## 3. Fill the comparison table
 
 ```sh
-paste evidence/raven2-vulkan-kernel-census/e1/receipts/q4k-exec-receipt.tsv \
-      ~/q8-receipts-laptop/mul_mat_vec_q8_0_f32_f32_subgroup/receipt.tsv \
-    | awk -F'\t' '{print $1"\t"$2"\t"$6}'
+awk -F'\t' '
+    NR == FNR { q4k_value[$1] = $2; q4k_per_superblock[$1] = $3; next }
+    { q8_value[$1] = $2; q8_per_superblock[$1] = $3; seen[$1] = 1 }
+    END {
+        n = split("vgprs sgprs spilled_vgprs spilled_sgprs lds scratch code_size waves_per_simd valu salu vmem smem lds_instructions waitcnt", field_list, " ")
+        printf "field\tq4k_value\tq4k_per_superblock\tq8_value\tq8_per_superblock\n"
+        for (i = 1; i <= n; i++) {
+            f = field_list[i]
+            printf "%s\t%s\t%s\t%s\t%s\n", f, \
+                (f in q4k_value ? q4k_value[f] : "-"), (f in q4k_per_superblock ? q4k_per_superblock[f] : "-"), \
+                (f in q8_value ? q8_value[f] : "-"), (f in q8_per_superblock ? q8_per_superblock[f] : "-")
+        }
+    }
+' evidence/raven2-vulkan-kernel-census/e1/receipts/q4k-exec-receipt.tsv \
+  ~/q8-receipts-laptop/mul_mat_vec_q8_0_f32_f32_subgroup/receipt.tsv
 ```
 
-reads the two receipts' `field`/`value` columns side by side (`receipt.tsv`
-is a fixed-row TSV, so `paste` aligns by field name without a join). Copy the
-`vgprs`, `sgprs`, `spilled_vgprs`, `spilled_sgprs`, `lds`, `scratch`,
+joins the two receipts by their `field` column (the first field) rather than
+by row position. A positional `paste` is wrong here because the retained
+Q4_K receipt predates the `environment_names` row `lab.sh` now writes, so the
+two files' row counts and row order already diverge before any field this
+table needs; a join on `$1` is what "aligns by field name" actually requires.
+Copy the `vgprs`, `sgprs`, `spilled_vgprs`, `spilled_sgprs`, `lds`, `scratch`,
 `code_size`, `waves_per_simd`, `valu`, `salu`, `vmem`, `smem`,
 `lds_instructions`, and `waitcnt` rows, both raw and `per_superblock`
 (divided by 32 for Q8_0, by 256 for Q4_K -- see `shape-and-receipts.md`'s
