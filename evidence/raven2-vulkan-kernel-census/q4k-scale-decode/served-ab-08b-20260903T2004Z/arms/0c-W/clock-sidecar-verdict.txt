@@ -1,0 +1,27 @@
+sidecar_exit=accepted status=0
+record_readable=accepted path=$HOME/q4k-served-ab-08b-20260903T2004Z/arms/0c-W/clock-sidecar.tsv
+clock=accepted clock=CLOCK_MONOTONIC
+period_declared=accepted declared=20000000 requested=20000000
+sampler_identity=accepted pid=2485609 nice=19 cpu_affinity=0,1
+columns=accepted columns=monotonic_ns	pp_dpm_sclk_selected_mhz	pp_dpm_mclk_surface_mhz	pp_dpm_fclk_surface_mhz	gpu_busy_percent	temp1_millidegrees	sample_cost_ns	sclk_actual_mhz width=8
+footer_cardinality=accepted footers=1
+footer_fields=accepted present=achieved_period_ns,first_sample_ns,last_sample_ns,max_sample_cost_ns,mean_sample_cost_ns,samples,samples_with_unavailable_sensor
+samples=accepted samples=540 rows=540
+row_arity=accepted columns=8
+cell_values=accepted nonnumeric_columns=-
+footer_derived=accepted achieved_ns=20000129 footer_achieved_ns=20000129 mean_cost_ns=196066 footer_mean_cost_ns=196066 max_cost_ns=2385522 footer_max_cost_ns=2385522
+achieved_period=accepted achieved_ns=20000129 requested_ns=20000000 tolerance=0.25
+sample_cost=accepted mean_ns=196066 max_ns=2385522 bound_ns=1000000
+allowed_columns=accepted allowed=pp_dpm_fclk_surface_mhz
+sensor_rows=accepted rows_with_unavailable=540 footer=540
+sensors=accepted unavailable_outside_allowance=- allowed=pp_dpm_fclk_surface_mhz
+footer_instants=accepted first=508403689680756 last=508414469750604
+instant_order=accepted first=508403689680756 last=508414469750604 rows=540
+window_order=accepted begin=508409943624241 end=508413583964752
+window_coverage=accepted first=508403689680756 begin=508409943624241 end=508413583964752 last=508414469750604
+gaps=accepted median_ns=19999731 p95_ns=20479203 p99_ns=21339358 max_ns=28834720 over_1_5x=0 over_missed=0 over_max=0
+window_lost=accepted window_lost_fraction=0.0000 bound=0.0300 missed_bound_ns=40000000
+gaps_in_window=0 begin=508409943624241 end=508413583964752 bound_ns=100000000 window_lost_fraction=0.0000
+clock_state=measured window_samples=182 sclk_mode_mhz=1100 sclk_share=0.7967 mclk_mode_mhz=933 temp_mean_c=71.0 temp_max_c=72.0 busy_mean=88.92
+clock_invariant=not_requested dpm_freshness=marker dpm_period_multiple=10 fresh_dpm_samples=18
+clock_sidecar=accepted failures=-

@@ -1,0 +1,15 @@
+The listing beside this note is the ISA this arm's receipt records, restored
+from its own digest rather than from the run's retained output: the run kept
+receipt.tsv, harness.txt, and block-counts.txt and no isa.s, so the file was
+carried in from the arm whose bytes hash to the same value.
+
+receipt isa_sha256   8896269f54c86f1039a08740aaa1f1f3fdbef6080f8d9e7a1908ce84e2598f34
+isa.s sha256         8896269f54c86f1039a08740aaa1f1f3fdbef6080f8d9e7a1908ce84e2598f34
+carried from         ../../isa-arch-toolchain/isa.s
+
+The two are the same file by the digest's own meaning, and the three E5-M arms
+agree on it, which is the result E5-M/README.md reads: the manual expansion is
+untouched by Mesa merge request 2115 by mechanism and by hash. What this note
+withholds is any claim that the pre-2115 and post-2115 runs retained a listing
+of their own; they did not, and remote/raven2-shader-lab/recount-isa.sh reads
+this file the way it reads every other retained listing.

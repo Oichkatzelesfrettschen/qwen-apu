@@ -1,0 +1,5 @@
+stopped tmux_socket=qwen-runtime tmux_session=qwen-webui
+external_vulkan_lease=accepted proof=$HOME/qwen-webui-state/.fixed64-vulkan-external-lease.2291175.tsv lock=$HOME/qwen-webui-state/vulkan-workload.lock
+vulkan workload lease has a verified external owner: $HOME/qwen-webui-state/vulkan-workload.lock
+image teardown verified: no service, no runtime, no partial artifact, lease free or verified campaign-owned
+torn down: no server, tmux session, probe, approval broker, image service, search instance, or router snapshot; port 8080 free
