@@ -55,6 +55,7 @@ one grade of approval and holds no standing permission.
 """
 
 import argparse
+import contextlib
 import hashlib
 import hmac
 import http.server
@@ -86,6 +87,23 @@ REQUEST_BODY_BYTE_CAP = 16384
 REQUEST_READ_TIMEOUT_DEFAULT_SECONDS = 5.0
 REQUEST_READ_TIMEOUT_MAX_SECONDS = 30.0
 AUTHORIZE_PER_MINUTE_DEFAULT = 6
+# An open household-LAN launch has many peers behind the one aggregate bucket
+# above, so a second bucket is keyed by client address rather than replacing
+# the aggregate one: two `Ledger.consume` calls spend the aggregate bucket
+# even where the per-client one then refuses, which keeps the aggregate bound
+# a per-client allowance cannot widen. Both defaults sit under the aggregate
+# rate, since a per-client bucket that admitted the whole aggregate rate to
+# one peer would state a limit it does nothing to enforce.
+GRANT_PER_CLIENT_PER_MINUTE_DEFAULT = 3
+IMAGE_GRANT_PER_CLIENT_PER_MINUTE_DEFAULT = 2
+# image-service.py already runs one generation at a time and refuses a second
+# without queueing (ImageService.handle_generate takes job_lock non-blocking),
+# so a second unspent grant from the same client buys that client nothing but
+# a standing ticket ahead of every other peer's next job. "Outstanding" is
+# expiry-based rather than spend-based: the grants table has no client column,
+# so this broker counts grants it signed for one address whose own lifetime
+# has not yet elapsed, and a spent grant still counts until its term runs out.
+IMAGE_MAX_OUTSTANDING_GRANTS_PER_CLIENT_DEFAULT = 1
 GRANT_PATH = "/grant"
 IMAGE_GRANT_PATH = "/grant-image"
 SESSION_PATH = "/session"
@@ -165,6 +183,17 @@ def exposed_host(value):
             f"names a reachable address; {value!r} is the default or the wildcard"
         )
     return value
+
+
+def retry_after_seconds(window_seconds, now):
+    """Return the seconds until a fixed window closing at this instant refills.
+
+    `server.Ledger._consume_bucket` is a fixed window
+    (`window_start = int(now) - int(now) % window_seconds`) rather than a
+    rolling token bucket, so the caller's next admitted attempt is bounded by
+    the window's own close rather than by a smoothed refill rate.
+    """
+    return window_seconds - int(now) % window_seconds
 
 
 def exposed_name(value):
@@ -391,6 +420,20 @@ class BrokerSettings:
         self.lifetime = arguments.lifetime
         self.origins = tuple(arguments.origin)
         self.per_minute = arguments.per_minute
+        self.grant_per_client_per_minute = arguments.grant_per_client_per_minute
+        self.image_grant_per_client_per_minute = (
+            arguments.image_grant_per_client_per_minute
+        )
+        self.image_max_outstanding_grants_per_client = (
+            arguments.image_max_outstanding_grants_per_client
+        )
+        # Keyed by client address to a list of the grant expiry epochs this
+        # broker signed for it that have not yet elapsed; process memory is
+        # the whole authority, so a restarted broker starts every client at
+        # zero outstanding grants rather than reading state a killed process
+        # left behind.
+        self.outstanding_image_grants = {}
+        self.outstanding_image_grants_lock = threading.Lock()
         self.request_read_timeout = arguments.request_read_timeout
         self.session_secret = ""
         self.signing_key_sha256 = ""
@@ -616,6 +659,20 @@ class StaleSessionSecret(server.AuthorizationDenied):
     """A grant request presents authority from another broker launch."""
 
 
+class OutstandingImageGrantExhausted(server.BudgetExhausted):
+    """A client already holds its full quota of unexpired image grants.
+
+    The quota decays with the oldest outstanding grant's own expiry rather
+    than with a fixed 60-second window, so `retry_after` carries the number of
+    seconds until that grant ages out instead of the fixed-window arithmetic
+    the per-minute buckets use.
+    """
+
+    def __init__(self, message, retry_after):
+        super().__init__(message)
+        self.retry_after = retry_after
+
+
 def record_audit(
     ledger, row, coalesce_window_seconds=None, coalesce_epoch=None
 ):
@@ -741,7 +798,7 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
         origin = self.headers.get("Origin", "")
         return origin if origin and origin in self.settings.origins else ""
 
-    def send_json(self, http_status, payload, origin=""):
+    def send_json(self, http_status, payload, origin="", retry_after=None):
         self.finish_request_read()
         body = json.dumps(payload).encode("utf-8")
         self.send_response(http_status)
@@ -749,6 +806,8 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
+        if retry_after is not None:
+            self.send_header("Retry-After", str(retry_after))
         if origin:
             # The echoed value is one entry of the configured allowlist, so a
             # wildcard never reaches a response, and credentials stay
@@ -803,6 +862,48 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
             raise server.AuthorizationDenied(
                 "the session request carries no valid bearer API key"
             )
+
+    def reserve_outstanding_image_grant(self, now, expiry):
+        """Reserve one outstanding-grant slot, or refuse under one lock hold.
+
+        image-service.py runs one generation at a time with no queue, so a
+        second live grant from the same address only lets that address hold a
+        standing ticket ahead of every other peer's next job. The check and
+        the reservation run inside one `with` block rather than as two
+        separate calls: two concurrent handler threads for the same client
+        would otherwise both read the same live count before either recorded
+        its own grant, and both would pass a limit of one. The reservation
+        assumes the grant it is about to sign succeeds; a caller that then
+        fails to sign or spend the buckets ahead of it must call
+        `release_outstanding_image_grant` with the same `expiry` to give the
+        slot back.
+        """
+        client = self.client_address[0]
+        limit = self.settings.image_max_outstanding_grants_per_client
+        with self.settings.outstanding_image_grants_lock:
+            live = [
+                stored
+                for stored in self.settings.outstanding_image_grants.get(client, ())
+                if stored > now
+            ]
+            if len(live) >= limit:
+                self.settings.outstanding_image_grants[client] = live
+                retry_after = max(1, round(min(live) - now))
+                raise OutstandingImageGrantExhausted(
+                    f"client {client} already holds {len(live)} outstanding "
+                    f"image grant(s); {limit} is the limit until one expires",
+                    retry_after,
+                )
+            live.append(expiry)
+            self.settings.outstanding_image_grants[client] = live
+
+    def release_outstanding_image_grant(self, expiry):
+        """Give back a reservation whose grant was never actually issued."""
+        client = self.client_address[0]
+        with self.settings.outstanding_image_grants_lock:
+            live = self.settings.outstanding_image_grants.get(client, [])
+            with contextlib.suppress(ValueError):
+                live.remove(expiry)
 
     def read_body(self):
         try:
@@ -940,16 +1041,22 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
         Each admitted outcome writes one audit row under the nine-term
         vocabulary. The trail separates invalid session headers, malformed
         fields, exhausted buckets, and issued grants while every grant stays in
-        the response alone. Under the exposure opt-in the Web UI bearer check
-        runs ahead of the `authorize-minute` bucket, so an unauthenticated LAN
-        peer draws no unit from the meter a bearer-holding caller also spends
-        from and cannot deny that caller's requests with 429. The bearer check
-        is a no-op where `self.settings.exposure` is unset, so a loopback-only
-        launch keeps `ledger.consume` in its original position ahead of the
-        Host and session-header checks -- without that ordering an
-        unauthenticated loopback process floods the session check alone.
-        Exhausted refusals coalesce to one row per bucket window, so
-        post-limit connections cannot grow the audit trail.
+        the response alone. The Host check runs first, ahead of every bucket --
+        `image-service.py`'s own `do_GET` applies the same order to its
+        artifact meter: a request naming no admitted literal is a constant-cost
+        refusal that spends no unit, so a peer outside the admitted Host set --
+        reachable at all only under the wildcard bind -- cannot drain the
+        aggregate or per-client bucket a legitimate caller needs. The bearer
+        check follows, ahead of the `authorize-minute` bucket, so an
+        unauthenticated LAN peer under the exposure opt-in draws no unit from
+        the meter a bearer-holding caller also spends from and cannot deny
+        that caller's requests with 429; the check is a no-op where
+        `self.settings.exposure` is unset or `--open-lan` is set, so a
+        loopback-only or open launch keeps `ledger.consume` running ahead of
+        the session-header check alone -- without that ordering an
+        unauthenticated peer floods the session check alone. Exhausted
+        refusals coalesce to one row per bucket window, so post-limit
+        connections cannot grow the audit trail.
         """
         started_at = time.time()
         origin = self.allowed_origin()
@@ -968,6 +1075,11 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
         ledger = None
         fields = None
         try:
+            # The Host check is a constant-cost refusal ahead of every meter,
+            # so a request outside the admitted set spends no bucket unit --
+            # the same order image-service.py's do_GET applies to its own
+            # artifact limiter.
+            self.require_admitted_host()
             # A signing route under the exposure opt-in reads the Web UI
             # bearer beside the session secret, so a LAN reader that never
             # authenticated to the router signs nothing here. The check runs
@@ -977,7 +1089,24 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
                 self.require_api_key()
             ledger = server.Ledger(self.settings.state_directory)
             ledger.consume("authorize-minute", 60, self.settings.per_minute, started_at)
-            self.require_admitted_host()
+            # The aggregate bucket above bounds every caller together; this one
+            # bounds one peer, keyed by `self.client_address[0]` rather than a
+            # header a caller chooses, since the broker is reached directly
+            # rather than behind a proxy that would rewrite the connection
+            # address. It is a second `consume` call rather than a shared
+            # transaction with the one above, so it spends the aggregate
+            # bucket even where it then refuses -- an open household LAN
+            # cannot use a busy peer to buy other peers a wider aggregate rate.
+            client_bucket = (
+                f"{'grant-image' if image else 'grant'}-client-minute:"
+                f"{self.client_address[0]}"
+            )
+            client_limit = (
+                self.settings.image_grant_per_client_per_minute
+                if image
+                else self.settings.grant_per_client_per_minute
+            )
+            ledger.consume(client_bucket, 60, client_limit, started_at)
             # The session secret reaches a page through /session, which the
             # Origin allowlist gates, so a grant request from another origin
             # carries a secret that left the admitted page. The same allowlist
@@ -990,8 +1119,14 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
             self.require_session_secret()
             payload = self.read_body()
             if image:
-                fields = image_grant.parse_image_request(payload)
-                token = issue_image_for_request(self.settings, fields)
+                reserved_expiry = started_at + self.settings.lifetime
+                self.reserve_outstanding_image_grant(started_at, reserved_expiry)
+                try:
+                    fields = image_grant.parse_image_request(payload)
+                    token = issue_image_for_request(self.settings, fields)
+                except BaseException:
+                    self.release_outstanding_image_grant(reserved_expiry)
+                    raise
             else:
                 fields = parse_request_arguments(payload)
                 token = issue_for_request(self.settings, fields)
@@ -1007,10 +1142,17 @@ class BrokerHandler(http.server.BaseHTTPRequestHandler):
             payload = {"error": str(error)}
             if isinstance(error, StaleSessionSecret):
                 payload["code"] = STALE_SESSION_SECRET_CODE
+            if isinstance(error, OutstandingImageGrantExhausted):
+                retry_after = error.retry_after
+            elif error.status in ("rate_limited", "budget_exhausted"):
+                retry_after = retry_after_seconds(60, started_at)
+            else:
+                retry_after = None
             self.send_json(
                 HTTP_STATUS_FOR_TERM.get(error.status, 400),
                 payload,
                 origin,
+                retry_after,
             )
             return
         finally:
@@ -1109,7 +1251,33 @@ def build_parser():
     parser.add_argument(
         "--lifetime", type=int, default=server.TOKEN_LIFETIME_DEFAULT_SECONDS
     )
-    parser.add_argument("--per-minute", type=int, default=AUTHORIZE_PER_MINUTE_DEFAULT)
+    parser.add_argument("--per-minute", type=int, default=None)
+    parser.add_argument(
+        "--grant-per-client-per-minute",
+        type=int,
+        default=None,
+        help="the POST /grant fixed-window bound for one client address, "
+        "beside the aggregate --per-minute bound every caller shares; "
+        f"QWEN_WEB_GRANT_PER_CLIENT_PER_MINUTE or "
+        f"{GRANT_PER_CLIENT_PER_MINUTE_DEFAULT} by default",
+    )
+    parser.add_argument(
+        "--image-grant-per-client-per-minute",
+        type=int,
+        default=None,
+        help="the POST /grant-image fixed-window bound for one client "
+        "address; QWEN_WEB_IMAGE_GRANT_PER_CLIENT_PER_MINUTE or "
+        f"{IMAGE_GRANT_PER_CLIENT_PER_MINUTE_DEFAULT} by default",
+    )
+    parser.add_argument(
+        "--image-max-outstanding-grants-per-client",
+        type=int,
+        default=None,
+        help="the count of this client's own unexpired image grants that "
+        "refuses a further POST /grant-image; "
+        "QWEN_IMAGE_MAX_OUTSTANDING_GRANTS_PER_CLIENT or "
+        f"{IMAGE_MAX_OUTSTANDING_GRANTS_PER_CLIENT_DEFAULT} by default",
+    )
     parser.add_argument(
         "--request-read-timeout",
         type=positive_seconds,
@@ -1126,6 +1294,48 @@ def run(argv):
     if arguments.origin is None:
         configured = os.environ.get("QWEN_WEB_BROKER_ORIGIN", "")
         arguments.origin = [entry for entry in configured.split(",") if entry]
+    for attribute, env_name, default in (
+        ("per_minute", "QWEN_WEB_AUTHORIZE_PER_MINUTE", AUTHORIZE_PER_MINUTE_DEFAULT),
+        (
+            "grant_per_client_per_minute",
+            "QWEN_WEB_GRANT_PER_CLIENT_PER_MINUTE",
+            GRANT_PER_CLIENT_PER_MINUTE_DEFAULT,
+        ),
+        (
+            "image_grant_per_client_per_minute",
+            "QWEN_WEB_IMAGE_GRANT_PER_CLIENT_PER_MINUTE",
+            IMAGE_GRANT_PER_CLIENT_PER_MINUTE_DEFAULT,
+        ),
+        (
+            "image_max_outstanding_grants_per_client",
+            "QWEN_IMAGE_MAX_OUTSTANDING_GRANTS_PER_CLIENT",
+            IMAGE_MAX_OUTSTANDING_GRANTS_PER_CLIENT_DEFAULT,
+        ),
+    ):
+        if getattr(arguments, attribute) is not None:
+            continue
+        raw = os.environ.get(env_name, "")
+        if not raw:
+            setattr(arguments, attribute, default)
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            sys.stderr.write(f"{env_name} is not an integer: {raw}\n")
+            return 2
+        setattr(arguments, attribute, value)
+    for attribute in (
+        "per_minute",
+        "grant_per_client_per_minute",
+        "image_grant_per_client_per_minute",
+        "image_max_outstanding_grants_per_client",
+    ):
+        if getattr(arguments, attribute) <= 0:
+            sys.stderr.write(
+                f"--{attribute.replace('_', '-')} must be a positive integer: "
+                f"{getattr(arguments, attribute)}\n"
+            )
+            return 2
     if not arguments.state_dir:
         sys.stderr.write(
             "the broker meters and audits through the ledger, so "

@@ -575,7 +575,15 @@ if [ "$lane_exposure" = 1 ]; then
     lane_launch_environment="$lane_launch_environment QWEN_WEB_LAN_NAME=${QWEN_WEB_LAN_NAME:-}"
 fi
 # The list is built above and holds no field the shell must keep whole, so the
-# unquoted expansion is what turns it into separate env assignments.
+# unquoted expansion is what turns it into separate env assignments. The
+# ordinary arm alone posts three /grant-image calls from one client address --
+# the admin-issued grant, the wrong-profile refusal, and the browser's own
+# approval -- past authorize-broker.py's per-client-per-minute default of 2,
+# and the exposure arms this script also drives add a fourth
+# (grant-no-session or grant-no-credential); two of the ordinary arm's calls
+# succeed past the outstanding-grant default of 1, so both bounds are raised
+# for the harness's one client rather than left at the operator default a
+# real approval flow never approaches.
 # shellcheck disable=SC2086
 if env $lane_launch_environment \
     QWEN_WEB_PRESETS=$web_presets QWEN_WEB_PROFILES=$web_ledger QWEN_WEB_PROVIDER=fake \
@@ -583,6 +591,9 @@ if env $lane_launch_environment \
     QWEN_WEB_BROKER_PORT=$broker_port QWEN_WEB_AUTHORIZER_READY=1 \
     QWEN_IMAGE_PROFILES_JSON=$image_parameters QWEN_MODEL_REGISTRY=$registry \
     QWEN_MODEL_ROOT=$model_root QWEN_MODEL_PATH=$control_model_path \
+    QWEN_WEB_GRANT_PER_CLIENT_PER_MINUTE=20 \
+    QWEN_WEB_IMAGE_GRANT_PER_CLIENT_PER_MINUTE=20 \
+    QWEN_IMAGE_MAX_OUTSTANDING_GRANTS_PER_CLIENT=10 \
     "$script_directory/qwen-image-launch.sh" low-async \
     >"$output_directory/image-launch.log" 2>&1; then
     record image_launch accepted "$(grep '^image_launch timeouts' "$output_directory/image-launch.log" | tr '\n' ';')"

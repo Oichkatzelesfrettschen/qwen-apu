@@ -1,0 +1,27 @@
+# One reduction window per lowering, cut from the retained listings.
+#
+# recount-isa.sh counts a whole kernel, so it states the mnemonic deltas and
+# not the per-dot sequence. These two windows are the sequence itself: the
+# same fifth v_mul_i32_i24_sdwa product and the lines that follow it in each
+# listing, with the encoding words cut off at column 62.
+
+== E5-S1, evidence/raven2-vulkan-kernel-census/e5/E5-S1/isa-post-2115/isa.s ==
+	v_mul_i32_i24_sdwa v11, sext(v17), sext(v13) dst_sel:DWORD ds
+	v_mul_i32_i24_sdwa v17, sext(v17), sext(v13) dst_sel:DWORD ds
+	v_mul_i32_i24_sdwa v13, sext(v16), sext(v12) dst_sel:DWORD ds
+	v_mul_i32_i24_sdwa v16, sext(v16), sext(v12) dst_sel:DWORD ds
+	v_add3_u32 v11, v11, v19, v21                               ;
+	v_add_u32_e32 v21, 0x800, v1                                ;
+	v_mul_i32_i24_sdwa v19, sext(v18), sext(v14) dst_sel:DWORD ds
+	v_add3_u32 v26, v26, v9, v13                                ;
+
+== E5-S0, evidence/raven2-vulkan-kernel-census/e5/E5-S0/isa-arch-toolchain/isa.s ==
+	v_mul_i32_i24_sdwa v11, sext(v17), sext(v13) dst_sel:DWORD ds
+	v_mul_i32_i24_sdwa v17, sext(v17), sext(v13) dst_sel:DWORD ds
+	v_mul_i32_i24_sdwa v13, sext(v16), sext(v12) dst_sel:DWORD ds
+	v_mul_i32_i24_sdwa v16, sext(v16), sext(v12) dst_sel:DWORD ds
+	v_add_u32_e32 v11, v11, v19                                 ;
+	v_mul_i32_i24_sdwa v19, sext(v18), sext(v14) dst_sel:DWORD ds
+	v_add3_u32 v26, v26, v13, v16                               ;
+	v_mul_i32_i24_sdwa v16, sext(v18), sext(v14) dst_sel:DWORD ds
+	v_add3_u32 v11, v11, v21, v17                               ;
