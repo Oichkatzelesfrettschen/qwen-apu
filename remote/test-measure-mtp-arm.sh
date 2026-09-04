@@ -327,6 +327,8 @@ refusal refuse_zero_draft_length 2 \
     run_harness "$work/zero" draft-mtp fake-target QWEN_MTP_ARM_N_MAX='0'
 refusal refuse_draft_length_past_step 2 \
     run_harness "$work/deep" draft-mtp fake-target QWEN_MTP_ARM_N_MAX='1 4'
+refusal refuse_repeated_draft_length 2 \
+    run_harness "$work/repeat" draft-mtp fake-target QWEN_MTP_ARM_N_MAX='1 1'
 refusal refuse_existing_output 2 \
     run_harness "$healthy" draft-mtp fake-target QWEN_MTP_ARM_N_MAX='1'
 refusal refuse_quarantined_pair 1 \

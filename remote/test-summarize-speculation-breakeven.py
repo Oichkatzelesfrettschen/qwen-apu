@@ -82,6 +82,7 @@ def write_run(
     omit_metrics=False,
     omit_timings_draft=False,
     metrics_lag=False,
+    predicted_ms_scale=None,
 ):
     root.mkdir(parents=True, exist_ok=True)
     prompt_path = root / "prompts.tsv"
@@ -127,12 +128,20 @@ def write_run(
                 (arm / f"{name}.request.json").write_text(
                     json.dumps(request), encoding="utf-8"
                 )
+                # The reported rate and the elapsed time are separate fields, so
+                # a scale here decouples the round time from the rate and lets
+                # one depth pass the performance gate while another passes the
+                # acceptance gate. A served response never disagrees with itself
+                # this way; the branch it reaches does exist.
+                scale = 1.0
+                if predicted_ms_scale is not None and mode == "spec":
+                    scale = predicted_ms_scale.get(draft_n_max, 1.0)
                 timings = {
                     "prompt_n": 3,
                     "prompt_ms": 1000.0,
                     "prompt_per_second": 20.0,
                     "predicted_n": PREDICT,
-                    "predicted_ms": (PREDICT - 1) * 1000.0 / rate,
+                    "predicted_ms": (PREDICT - 1) * 1000.0 / rate * scale,
                     "predicted_per_second": rate,
                 }
                 drafted, accepted, steps = (0, 0, 0)
@@ -432,6 +441,41 @@ with tempfile.TemporaryDirectory() as workspace:
         "lagging_metrics_leave_the_traversal_intact",
         close(float(lag_row["tokens_per_traversal"]), 1.90, 0.03),
         lag_row["tokens_per_traversal"],
+    )
+
+    # One serving tuple is one draft length, so a run where one depth beats its
+    # controls and a different depth clears break-even names no configuration
+    # anyone can serve and the admission gate rejects.
+    disjoint = write_run(
+        work / "disjoint",
+        [1, 2],
+        3.10,
+        {1: 3.60, 2: 2.80},
+        {1: 0.50, 2: 0.95},
+        acceptance_floor="0.900",
+        predicted_ms_scale={2: 0.4},
+    )
+    report("disjoint_exit", summarizer.main([str(disjoint)]) == 0)
+    disjoint_fields = summary_fields(disjoint)
+    report(
+        "admission_requires_one_depth_passing_both",
+        disjoint_fields.get("performance_gate") == "accepted"
+        and disjoint_fields.get("acceptance_gate") == "accepted"
+        and disjoint_fields.get("performance_depths") == "1"
+        and disjoint_fields.get("acceptance_depths") == "2"
+        and disjoint_fields.get("admission_depths") == "-"
+        and disjoint_fields.get("admission_gate") == "rejected",
+        str(disjoint_fields),
+    )
+    report(
+        "admission_accepts_one_depth_passing_both",
+        summary_fields(healthy).get("admission_gate") == "accepted"
+        and summary_fields(healthy).get("admission_depths") == "1,2",
+        str(summary_fields(healthy)),
+    )
+    report(
+        "admission_follows_token_identity",
+        summary_fields(diverged).get("admission_gate") == "rejected",
     )
 
     # A retained directory read after the state directory the run named is gone

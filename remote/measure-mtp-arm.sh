@@ -108,6 +108,7 @@ done
 # verified column bounds the other end: a draft of 4 verifies five columns and
 # both arms past it decoded slower than no speculation at all.
 draft_length_count=0
+seen_draft_lengths=
 for draft_length in $draft_length_list; do
     case $draft_length in
         '' | *[!0-9]* | 0)
@@ -121,6 +122,17 @@ for draft_length in $draft_length_list; do
             "$draft_length" >&2
         exit 2
     fi
+    # An arm directory is named for its draft length, so a repeated length
+    # writes its second quadruple over the first while the summary reads the
+    # surviving files once per listed occurrence and weights them twice.
+    case " $seen_draft_lengths " in
+        *" $draft_length "*)
+            printf 'QWEN_MTP_ARM_N_MAX repeats draft length %s\n' \
+                "$draft_length" >&2
+            exit 2
+            ;;
+    esac
+    seen_draft_lengths="$seen_draft_lengths $draft_length"
     draft_length_count=$((draft_length_count + 1))
 done
 if [ "$draft_length_count" -eq 0 ]; then

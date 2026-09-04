@@ -798,6 +798,9 @@ def summarize(
     agreement_states = {
         steps_agreement(item) for item in measurements if item.mode == "spec"
     }
+    admission_depths = [
+        depth for depth in performance_depths if depth in set(acceptance_depths)
+    ]
     best_rate = max(
         (
             gates["spec_rate"]
@@ -826,12 +829,15 @@ def summarize(
         ),
         # The same field summarize-draft-pair.py publishes, so one word decides
         # eligibility for the device-level promotion review across both
-        # harnesses. The gate never edits a ledger tier.
+        # harnesses. The gate never edits a ledger tier. One serving tuple is
+        # one draft length, so the gate reads the depths that pass performance
+        # and acceptance together rather than the two lists separately: a depth
+        # that beats its controls while accepting below break-even and another
+        # that does the reverse name no configuration anyone can serve.
+        ("admission_depths", ",".join(admission_depths) or "-"),
         (
             "admission_gate",
-            "accepted"
-            if performance_depths and acceptance_depths and not identity_failures
-            else "rejected",
+            "accepted" if admission_depths and not identity_failures else "rejected",
         ),
     )
     return write_summary(summary_path, rows)
