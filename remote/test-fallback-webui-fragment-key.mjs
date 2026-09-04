@@ -49,7 +49,19 @@ async function flushPromises(turns = 10) {
 // repeats for any call past the end of the list. Every other route answers a
 // harmless empty 200 so a fire-and-forget request boot() issues once a model
 // is selected (props, a tool probe) settles without throwing.
-async function loadPage({ hash, remembered, responses }) {
+function makeStore(initial) {
+  const store = new Map(initial ? [['qwen-apu-api-key', initial]] : []);
+  return {
+    store,
+    api: {
+      getItem(key) { return store.has(key) ? store.get(key) : null; },
+      setItem(key, value) { store.set(key, String(value)); },
+      removeItem(key) { store.delete(key); },
+    },
+  };
+}
+
+async function loadPage({ hash, remembered, sessionRemembered, responses }) {
   const elements = new Map();
   const document = {
     createElement() { return new FakeElement(); },
@@ -58,12 +70,12 @@ async function loadPage({ hash, remembered, responses }) {
       return elements.get(selector);
     },
   };
-  const stored = new Map(remembered ? [['qwen-apu-api-key', remembered]] : []);
-  const localStorage = {
-    getItem(key) { return stored.has(key) ? stored.get(key) : null; },
-    setItem(key, value) { stored.set(key, String(value)); },
-    removeItem(key) { stored.delete(key); },
-  };
+  const local = makeStore(remembered);
+  const session = makeStore(sessionRemembered);
+  const stored = local.store;
+  const sessionStored = session.store;
+  const localStorage = local.api;
+  const sessionStorage = session.api;
   const requests = [];
   const replaced = [];
   const location = {
@@ -93,7 +105,7 @@ async function loadPage({ hash, remembered, responses }) {
     window: {
       alert() {},
       localStorage,
-      sessionStorage: localStorage,
+      sessionStorage,
       location,
       history: { replaceState(state, title, url) { replaced.push(url); } },
     },
@@ -101,7 +113,7 @@ async function loadPage({ hash, remembered, responses }) {
   vm.runInContext(inlineScript[1], context, { filename: webuiPath.pathname });
   await flushPromises();
   const rosterRequests = requests.filter(request => request.url === './v1/models');
-  return { stored, requests, rosterRequests, replaced, elements };
+  return { stored, sessionStored, requests, rosterRequests, replaced, elements };
 }
 
 {
@@ -183,6 +195,30 @@ async function loadPage({ hash, remembered, responses }) {
   assert.equal(page.elements.get('#key-hint').hidden, false);
   assert.equal(page.elements.get('#lan-key-hint').hidden, false);
   console.log('bearer_listener_with_no_key_reveals_input=accepted');
+}
+
+// A tab upgraded from an earlier build of this page can still carry the key
+// in sessionStorage, the store the old code wrote to and this build only
+// reads as a fallback. Setting a fresh key must retire that legacy value
+// too, or a reload resurrects it through the same fallback read.
+{
+  const page = await loadPage({
+    hash: '', remembered: null, sessionRemembered: 'legacy-session-key',
+    responses: [
+      { status: 401 }, { status: 200, body: { data: [{ id: 'test-model' }] } },
+      { status: 401 }, { status: 200, body: { data: [{ id: 'test-model' }] } },
+    ],
+  });
+  assert.equal(page.sessionStored.get('qwen-apu-api-key'), 'legacy-session-key',
+    'the fixture did not seed the legacy session key');
+  page.elements.get('#api-key').value = 'a-fresh-key';
+  page.elements.get('#set-key').onclick();
+  await flushPromises();
+  assert.equal(page.stored.get('qwen-apu-api-key'), 'a-fresh-key',
+    'the new key did not reach localStorage');
+  assert.equal(page.sessionStored.has('qwen-apu-api-key'), false,
+    'the legacy session key survived a fresh key being set');
+  console.log('set_key_retires_the_legacy_session_store=accepted');
 }
 
 console.log('fallback_webui_fragment_key=accepted');

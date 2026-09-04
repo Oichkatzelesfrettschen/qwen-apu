@@ -129,7 +129,7 @@ write_configuration() {
       "env": {
         "QWEN_IMAGE_LANGUAGE_PROFILE": "web-fixture",
         "QWEN_IMAGE_PROFILE": "image-fixture-a",
-        "QWEN_IMAGE_TOKEN_KEY_FILE": "$signing_key_file",
+        "QWEN_IMAGE_TOKEN_KEY_FILE": "${3:-$signing_key_file}",
         "QWEN_IMAGE_STATE_DIR": "$state_directory/images",
         "QWEN_IMAGE_SERVICE_SOCKET": "$state_directory/images/image-service.sock",
         "QWEN_IMAGE_PROFILES_JSON": "$image_parameters",
@@ -328,6 +328,47 @@ else
         report split_tool_deadline_refuses_the_launch ok
     else
         report split_tool_deadline_refuses_the_launch wrong_refusal
+    fi
+fi
+write_configuration
+
+# float() parses "nan" without error and every comparison with NaN is False,
+# so a non-finite child deadline must not pass the agreement check silently:
+# image-mcp/server.py::resolve_timeout() refuses the same value at child
+# startup.
+write_configuration 360000 nan
+if run_launch "$presets_armed" env \
+    >"$work/nan-deadline.log" 2>"$work/nan-deadline.err"; then
+    report nan_tool_deadline_refuses_the_launch accepted
+else
+    if grep -q 'non-finite or non-positive deadline' \
+        "$work/nan-deadline.err"; then
+        report nan_tool_deadline_refuses_the_launch ok
+    else
+        report nan_tool_deadline_refuses_the_launch wrong_refusal
+    fi
+fi
+write_configuration
+
+# The rejoin loop compares every name the image MCP child reads against what
+# this launch serves, and QWEN_IMAGE_TOKEN_KEY_FILE is one of those five
+# names: a configuration generated against one key path and launched under
+# QWEN_WEB_TOKEN_KEY_FILE naming another would otherwise pass this check
+# while the broker signs grants with the new key and the child verifies them
+# with the old one.
+other_signing_key_file=$work/private/other-token.key
+printf 'fixture-other-token-secret\n' >"$other_signing_key_file"
+chmod 600 "$other_signing_key_file"
+write_configuration 360000 360 "$other_signing_key_file"
+if run_launch "$presets_armed" env \
+    >"$work/key-mismatch.log" 2>"$work/key-mismatch.err"; then
+    report mismatched_token_key_refuses_the_launch accepted
+else
+    if grep -q 'names QWEN_IMAGE_TOKEN_KEY_FILE' \
+        "$work/key-mismatch.err"; then
+        report mismatched_token_key_refuses_the_launch ok
+    else
+        report mismatched_token_key_refuses_the_launch wrong_refusal
     fi
 fi
 write_configuration

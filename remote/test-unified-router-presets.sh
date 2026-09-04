@@ -238,6 +238,37 @@ else
     cat "$work/imaged.err" >&2
 fi
 
+# resolve_image_profile runs ahead of the web loop and used to leave
+# image_profile_id armed whether or not any web row went on to emit, so a
+# ledger whose sole validator-gated web row is refused (or has its weights
+# absent) would have landed a preset naming an image profile over an empty
+# `# qwen_web_sections=-` list -- exactly the combination
+# qwen-capacity-policy.sh refuses at launch. The generator refuses it here
+# instead of replacing the last known-good preset.
+web_profiles_refused_row=$work/web-profiles-refused-row.tsv
+awk -F'\t' -v OFS='\t' '$1 == "web-open" { $12 = "refused" } { print }' \
+    "$web_profiles" >"$web_profiles_refused_row"
+if build_presets "$work/image-without-web.ini" QWEN_WEB_AUTHORIZER_READY=1 \
+    "QWEN_WEB_MCP_SERVER=$mcp_server_program" \
+    "QWEN_WEB_TOKEN_KEY_FILE=$token_key_file" \
+    "QWEN_WEB_STATE_DIR=$work/web-mcp" \
+    "QWEN_WEB_PROFILES=$web_profiles_refused_row" \
+    "QWEN_IMAGE_PROFILES=$image_profiles_gated" \
+    "QWEN_IMAGE_MCP_SERVER=$image_mcp_server_program" \
+    "QWEN_IMAGE_TOKEN_KEY_FILE=$token_key_file" \
+    "QWEN_IMAGE_STATE_DIR=$work/image-state" \
+    "QWEN_IMAGE_SERVICE_SOCKET=$work/image-state/image-service.sock" \
+    "QWEN_IMAGE_PROFILES_JSON=$image_profiles_json" \
+    >"$work/image-without-web.log" 2>"$work/image-without-web.err"; then
+    report image_marker_refused_over_empty_web_section_list admitted
+elif grep -q 'is armed and no web section emitted' \
+    "$work/image-without-web.err"; then
+    report image_marker_refused_over_empty_web_section_list ok
+else
+    report image_marker_refused_over_empty_web_section_list wrong_reason
+    cat "$work/image-without-web.err" >&2
+fi
+
 # The reviewer is a roster section rather than a section of its own, and the
 # marker is written only where remote/validated-tuples.tsv carries a validated
 # router-child tuple with the projector loaded. The checked-in ledger carries
