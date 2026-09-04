@@ -1,0 +1,1 @@
+Run-length encode the string BBWWWWBBBAACCCCCCADDBBBBW. Walk the string character by character, keeping the current run letter and count, and print them after every character. Then give the encoded form as letter-count pairs and the total number of pairs.

@@ -152,11 +152,31 @@ for population_directory in remote patches; do
             sed "s|^$tree_root/||"
     fi
 done | LC_ALL=C sort >"$present_paths"
-unmanifested=$(comm -13 "$manifest_paths" "$present_paths")
+# Both lists are sorted under LC_ALL=C, so the comparison runs there too. A
+# comm under the invoking locale reads that order as unsorted wherever the two
+# lists differ -- en_US.UTF-8 ignores '-' and '_' at the first level and orders
+# image_protocol.py ahead of image-teardown-check.sh where C does the reverse
+# -- and refuses the whole check with `input is not in sorted order`, which
+# turns a named stray into an unexplained launch failure.
+unmanifested=$(LC_ALL=C comm -13 "$manifest_paths" "$present_paths")
 if [ -n "$unmanifested" ]; then
+    # Bytecode is its own stray class, because a python child launched from the
+    # tree writes it there and no re-sync removes it: the remedy is
+    # PYTHONDONTWRITEBYTECODE=1 in the launch that spawned the child.
     printf '%s\n' "$unmanifested" | while IFS= read -r stray_path; do
-        printf 'runtime_tree_stray=%s\n' "$stray_path" >&2
+        case $stray_path in
+            */__pycache__/* | *.pyc | *.pyo)
+                printf 'runtime_tree_stray=%s class=bytecode\n' "$stray_path" >&2
+                ;;
+            *)
+                printf 'runtime_tree_stray=%s\n' "$stray_path" >&2
+                ;;
+        esac
     done
+    if printf '%s\n' "$unmanifested" | grep -q -e '/__pycache__/' -e '\.pyc$' \
+        -e '\.pyo$'; then
+        printf 'bytecode in the runtime tree is written by a python child, so remove it and give that child PYTHONDONTWRITEBYTECODE=1\n' >&2
+    fi
     failure_count=$((failure_count + $(printf '%s\n' "$unmanifested" | grep -c .)))
 fi
 
