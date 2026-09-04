@@ -191,17 +191,21 @@ spanned the scale block and a `qs` dword would need a role per destination compo
 `classify-loop-phases.py` states one per load.
 
 **Equivalence.** `scale-select-equivalence.py` beside this file closes the whole 2**96 input
-space per value of `v_im` by linearity rather than sampling it. At a fixed `v_im` every
-formulation is constant shifts, constant masks, byte gathers, and unions of disjoint bit
-fields, none of which takes the conjunction of two input bits or carries, so each is linear
-over GF(2); a linear map is determined by its image of a basis, so two such maps that send
-zero to zero and agree on the ninety-six single-bit inputs agree everywhere. The script
-establishes that premise for each arm and for the control -- `f(0) == 0` and
+space per value of `v_im` with a basis argument, conditional on one premise the source
+carries rather than the script. At a fixed `v_im` every formulation is constant shifts,
+constant masks, byte gathers, and unions of disjoint bit fields, none of which takes the
+conjunction of two input bits or carries, so each is linear over GF(2); a linear map is
+determined by its image of a basis, so two such maps that send zero to zero and agree on the
+ninety-six single-bit inputs agree everywhere. The premise is established by reading the
+expressions, and the script checks it for each arm and for the control -- `f(0) == 0` and
 `f(a ^ b) == f(a) ^ f(b)` over 20,000 random pairs -- then reads the basis, and reports
-`linear=yes basis_agrees=yes` on all twelve arm-and-`v_im` rows. Two hundred thousand random
-draws follow as a redundant sample and add nothing the basis has not settled. A byte-swap
-defect in the shipped arm is refused on the basis and a conjunction added to it is refused on
-superposition. The float arithmetic is untouched, so the accumulated value is unchanged bit
+`linear=yes basis_agrees=yes` on all twelve arm-and-`v_im` rows. Mark the evidence class
+exactly: a finite sample refutes a formulation that left the linear vocabulary and certifies
+none that stayed inside it, since a nonlinear map can match a linear one on any sample and on
+every basis vector, so the reported closure is exhaustive given the premise and no stronger.
+Two hundred thousand random draws follow and add nothing the basis has not settled. A
+byte-swap defect in the shipped arm is refused on the basis and a conjunction added to it is
+refused on superposition. The float arithmetic is untouched, so the accumulated value is unchanged bit
 for bit and the appliance arm predicts token identity rather than a tolerance.
 
 **The five formulations, and the four this one was chosen over.** Whole-shader at

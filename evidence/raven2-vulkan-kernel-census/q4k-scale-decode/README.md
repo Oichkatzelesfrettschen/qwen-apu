@@ -45,10 +45,10 @@ The served run carries the same claim through a second route:
 over 4 pairs, so every arm's reply agreed with its partner's.
 
 Bit-identical output is what the equivalence argument predicts.
-`scale-select-equivalence.py` closes the scale selection over GF(2) by
-linearity rather than by sampling, and the loop restructure moves a descriptor
-load and twelve row-base additions out of the body without touching the
-arithmetic. The witness turns that argument into a measurement on the device.
+`scale-select-equivalence.py` closes the scale selection with a basis argument
+over GF(2), conditional on a linearity premise the expressions carry, and the
+loop restructure moves a descriptor load and twelve row-base additions out of
+the body without touching the arithmetic. The witness turns that argument into a measurement on the device.
 
 ## The measurement
 
