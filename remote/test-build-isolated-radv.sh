@@ -52,6 +52,10 @@ fi
 [ "${1:-}" = -C ] || exit 1
 fake_build_directory=$2
 shift 2
+if [ -n "${FAKE_NINJA_FAIL:-}" ]; then
+    printf 'fake ninja: the build failed\n' >&2
+    exit 1
+fi
 mkdir -p "$fake_build_directory/src/amd/vulkan" "$fake_build_directory/src/amd/drm-shim"
 printf 'fake radv\n' >"$fake_build_directory/src/amd/vulkan/libvulkan_radeon.so"
 printf 'fake drm-shim\n' >"$fake_build_directory/src/amd/drm-shim/libamdgpu_noop_drm_shim.so"
@@ -70,14 +74,28 @@ set -eu
 [ "${1:-}" = -C ] || exit 1
 fake_source_root=$2
 shift 2
+# A linked worktree carries .git as a file naming its gitdir, so the fake
+# resolves either shape the way git does.
+fake_git_directory() {
+    if [ -d "$fake_source_root/.git" ]; then
+        printf '%s\n' "$fake_source_root/.git"
+    else
+        sed -n 's/^gitdir: //p' "$fake_source_root/.git"
+    fi
+}
 case ${1:-} in
     rev-parse)
-        cat "$fake_source_root/.git/fake-head"
+        if [ "${2:-}" = --git-dir ]; then
+            [ -e "$fake_source_root/.git" ] || exit 1
+            fake_git_directory
+            exit 0
+        fi
+        cat "$(fake_git_directory)/fake-head"
         ;;
     merge-base)
         # `merge-base --is-ancestor ANCESTOR REVISION` answers zero where the
         # checkout declares the ancestor, which is what the pin's own file says.
-        grep -qxF "$3" "$fake_source_root/.git/fake-ancestors"
+        grep -qxF "$3" "$(fake_git_directory)/fake-ancestors"
         ;;
     *)
         exit 1
@@ -183,6 +201,32 @@ run_refusal head_matches_pin 1 'the checkout is at' \
 
 run_refusal source_is_a_checkout 1 'the source directory is a Mesa git checkout' \
     "$temporary_directory" "$temporary_directory/prefix-root-4"
+
+# A linked worktree carries .git as a file, and it is the layout this repository
+# builds every branch in, so the checkout test asks git rather than the layout.
+worktree_source=$temporary_directory/mesa-worktree
+worktree_gitdir=$temporary_directory/mesa-worktree-gitdir
+mkdir -p "$worktree_source" "$worktree_gitdir"
+printf 'gitdir: %s\n' "$worktree_gitdir" >"$worktree_source/.git"
+printf '%s\n' "$pinned_revision" >"$worktree_gitdir/fake-head"
+printf '%s\n' "$lowering_merge" >"$worktree_gitdir/fake-ancestors"
+run_builder "$worktree_source" "$temporary_directory/prefix-root-worktree" \
+    >"$temporary_directory/worktree.log"
+grep -q '^radv_build=installed ' "$temporary_directory/worktree.log"
+printf 'linked_worktree=accepted\n'
+
+# A build that fails leaves no prefix behind, so the next attempt reaches the
+# build rather than the existence refusal.
+failed_prefix_root=$temporary_directory/prefix-root-failed
+failed_status=0
+FAKE_NINJA_FAIL=1 run_builder "$source_directory" "$failed_prefix_root" \
+    >/dev/null 2>"$temporary_directory/ninja-failure.log" || failed_status=$?
+[ "$failed_status" -ne 0 ]
+[ ! -e "$failed_prefix_root/qwen-radv-9ae8ce550453" ]
+run_builder "$source_directory" "$failed_prefix_root" \
+    >"$temporary_directory/retry.log"
+grep -q '^radv_build=installed ' "$temporary_directory/retry.log"
+printf 'failed_build_leaves_no_prefix=accepted\n'
 
 revision_status=0
 QWEN_MESON=$fake_bin/meson QWEN_NINJA=$fake_bin/ninja QWEN_GIT=$fake_bin/git \

@@ -13,7 +13,10 @@ set -eu
 # rather than read from the publisher is a fabricated pin.
 #
 # usage: fetch-shaderc-toolchain.sh [PREFIX_ROOT]
-#   PREFIX_ROOT   directory the prefix is created under, default ~/opt
+#   PREFIX_ROOT   directory the prefix is created under, default ~/opt or
+#                 QWEN_SHADERC_PREFIX_ROOT. build-spirv-shader-pack.sh resolves
+#                 its own default compiler through the same variable and the
+#                 same ledger row, so the two agree on where the fetch put it.
 
 if [ "$#" -gt 1 ]; then
     printf 'usage: %s [PREFIX_ROOT]\n' "$0" >&2
@@ -21,7 +24,7 @@ if [ "$#" -gt 1 ]; then
 fi
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-prefix_root=${1:-"${HOME:?}/opt"}
+prefix_root=${1:-${QWEN_SHADERC_PREFIX_ROOT:-"${HOME:?}/opt"}}
 toolchain_ledger=${QWEN_SHADERC_LEDGER:-$script_directory/shaderc-toolchain.tsv}
 
 if [ ! -r "$toolchain_ledger" ]; then

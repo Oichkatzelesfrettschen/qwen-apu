@@ -62,11 +62,18 @@ for required_program in "$meson_program" "$ninja_program" "$git_program"; do
     fi
 done
 
-if [ ! -d "$source_directory/.git" ]; then
-    printf 'the source directory is a Mesa git checkout: %s\n' "$source_directory" >&2
+if [ ! -d "$source_directory" ]; then
+    printf 'the source directory is missing: %s\n' "$source_directory" >&2
     exit 1
 fi
 source_root=$(CDPATH='' cd -- "$source_directory" && pwd)
+# git answers for the checkout rather than the layout: a linked worktree carries
+# `.git` as a file naming its gitdir, so a directory test would refuse the
+# arrangement this repository's own branches are built in.
+if ! "$git_program" -C "$source_root" rev-parse --git-dir >/dev/null 2>&1; then
+    printf 'the source directory is a Mesa git checkout: %s\n' "$source_root" >&2
+    exit 1
+fi
 
 case $pinned_revision in
     *[!0-9a-f]* | '')
@@ -100,7 +107,20 @@ if [ -e "$prefix_directory" ]; then
         "$prefix_directory" >&2
     exit 1
 fi
+# meson writes this build directory's absolute path into the devenv ICD's own
+# library_path, so a staged prefix renamed on success would ship a json naming a
+# directory that no longer exists. The prefix is therefore created where it will
+# live and removed on any failure, which is what keeps a broken build from
+# refusing every retry through the existence check above.
+incomplete_prefix=''
+remove_incomplete_prefix() {
+    if [ -n "$incomplete_prefix" ]; then
+        rm -rf -- "$incomplete_prefix"
+    fi
+}
+trap remove_incomplete_prefix EXIT HUP INT TERM
 mkdir -p "$prefix_directory"
+incomplete_prefix=$prefix_directory
 build_directory=$prefix_directory/build
 
 printf 'radv_build=start revision=%s prefix=%s\n' \
@@ -181,5 +201,6 @@ build_receipt=$prefix_directory/radv-build.tsv
     printf 'icd_sha256\t%s\n' "$(sha256sum "$driver_icd" | cut -d ' ' -f 1)"
 } >"$build_receipt"
 
+incomplete_prefix=''
 printf 'radv_build=installed revision=%s environment=%s receipt=%s\n' \
     "$pinned_revision" "$environment_fragment" "$build_receipt"

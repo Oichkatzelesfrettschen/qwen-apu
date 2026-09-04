@@ -281,6 +281,35 @@ grep -q 'the target environment is vulkan1.0 through vulkan1.3' \
     "$temporary_directory/target-env.log"
 printf 'target_env_shape=accepted\n'
 
+# With no compiler named, the default is the one fetch-shaderc-toolchain.sh
+# installs: the ledger's own prefix row under QWEN_SHADERC_PREFIX_ROOT. The two
+# scripts read one row, so the documented fetch-then-pack sequence cannot point
+# the producer and the consumer at two directories.
+ledger_prefix_root=$temporary_directory/prefix-root
+mkdir -p "$ledger_prefix_root/shaderc-from-the-ledger/bin"
+cp "$fake_bin/glslc" "$ledger_prefix_root/shaderc-from-the-ledger/bin/glslc"
+fixture_ledger=$temporary_directory/shaderc-toolchain.tsv
+{
+    printf '# key\tvalue\n'
+    printf 'project\tgoogle/shaderc\n'
+    printf 'prefix\tshaderc-from-the-ledger\n'
+} >"$fixture_ledger"
+QWEN_SHADERC_LEDGER=$fixture_ledger QWEN_SHADERC_PREFIX_ROOT=$ledger_prefix_root \
+    "$builder" "$declaration" "$source_directory" "$temporary_directory/pack-default-glslc" \
+    >"$temporary_directory/default-glslc.log"
+grep -qxF "$(printf 'glslc_sha256\t%s' \
+    "$(sha256sum "$ledger_prefix_root/shaderc-from-the-ledger/bin/glslc" | cut -d ' ' -f 1)")" \
+    "$temporary_directory/pack-default-glslc/pack-inputs.tsv"
+printf 'ledger_default_compiler=accepted\n'
+
+ledger_absent_status=0
+QWEN_SHADERC_LEDGER=$temporary_directory/absent-ledger "$builder" \
+    "$declaration" "$source_directory" "$temporary_directory/pack-no-ledger" \
+    >/dev/null 2>"$temporary_directory/no-ledger.log" || ledger_absent_status=$?
+[ "$ledger_absent_status" -eq 1 ]
+grep -q 'the shaderc toolchain ledger is unreadable' "$temporary_directory/no-ledger.log"
+printf 'ledger_required_for_default=accepted\n'
+
 missing_glslc_status=0
 QWEN_SHADER_PACK_GLSLC=$temporary_directory/absent-glslc "$builder" \
     "$declaration" "$source_directory" "$temporary_directory/pack-no-glslc" \

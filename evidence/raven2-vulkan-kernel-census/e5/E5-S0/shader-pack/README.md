@@ -15,6 +15,14 @@ the source digest, the module digest, and the validator's verdict.
 `https://github.com/google/shaderc/archive/refs/tags/v2026.3.tar.gz` at
 `ee493ccf1b3038b4ef2fe024664c5eb2dc4bcc1f6b05b33e3909de0e19c81024`, measured
 over the download rather than recalled.
+`remote/fetch-shaderc-toolchain.sh` installs into that ledger row's `prefix`
+under its own `PREFIX_ROOT`, and `build-spirv-shader-pack.sh` resolves its
+default compiler through the same row and the same
+`QWEN_SHADERC_PREFIX_ROOT`, so the fetch and the pack cannot name two
+directories. This run passed `$HOME/.local` as the root, which is where
+`qwen-shaderc-v2026.3` lives on the workstation; a run leaving the root unset
+puts it under `$HOME/opt`.
+
 `remote/fetch-shaderc-toolchain.sh "$HOME/.local"` verified that digest, ran
 `utils/git-sync-deps` for the revision's own glslang and SPIRV-Tools, installed
 into `qwen-shaderc-v2026.3`, and compiled its extension probe:

@@ -23,7 +23,13 @@ set -eu
 # that reads as a pass is the failure mode this column exists to remove.
 #
 # usage: build-spirv-shader-pack.sh DECLARATION SOURCE_DIRECTORY OUTPUT_DIRECTORY
-#   QWEN_SHADER_PACK_GLSLC       the pinned glslc, default ~/opt/shaderc-pinned/bin/glslc
+#   QWEN_SHADER_PACK_GLSLC       the pinned glslc, default the compiler
+#                                fetch-shaderc-toolchain.sh installs: the
+#                                `prefix` row of shaderc-toolchain.tsv under
+#                                QWEN_SHADERC_PREFIX_ROOT, ~/opt by default.
+#                                Both scripts read the one ledger row, so the
+#                                fetch and the pack cannot name two prefixes.
+#   QWEN_SHADERC_LEDGER          that ledger, default beside this script
 #   QWEN_SHADER_PACK_SPIRV_VAL   spirv-val, default beside that glslc
 #   QWEN_SHADER_PACK_TARGET_ENV  --target-env value, default vulkan1.2
 #   QWEN_SHADER_PACK_OPTIMIZE    1 adds -O, default 0
@@ -58,7 +64,27 @@ if [ -e "$output_directory" ]; then
     exit 1
 fi
 
-glslc_program=${QWEN_SHADER_PACK_GLSLC:-"${HOME:?}/opt/shaderc-pinned/bin/glslc"}
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+glslc_program=${QWEN_SHADER_PACK_GLSLC:-}
+if [ -z "$glslc_program" ]; then
+    toolchain_ledger=${QWEN_SHADERC_LEDGER:-$script_directory/shaderc-toolchain.tsv}
+    if [ ! -r "$toolchain_ledger" ]; then
+        printf 'the shaderc toolchain ledger is unreadable, so no default compiler resolves: %s\n' \
+            "$toolchain_ledger" >&2
+        printf 'QWEN_SHADER_PACK_GLSLC names the compiler directly\n' >&2
+        exit 1
+    fi
+    toolchain_prefix_name=$(awk -F'\t' '
+        /^#/ || NF == 0 { next }
+        $1 == "prefix" { print $2; found = 1 }
+        END { exit found ? 0 : 1 }
+    ' "$toolchain_ledger") || {
+        printf 'the shaderc toolchain ledger names no prefix: %s\n' \
+            "$toolchain_ledger" >&2
+        exit 1
+    }
+    glslc_program=${QWEN_SHADERC_PREFIX_ROOT:-"${HOME:?}/opt"}/$toolchain_prefix_name/bin/glslc
+fi
 if [ ! -x "$glslc_program" ]; then
     printf 'the pinned glslc is missing or not executable: %s\n' "$glslc_program" >&2
     printf 'remote/fetch-shaderc-toolchain.sh installs it into a prefix of its own\n' >&2
