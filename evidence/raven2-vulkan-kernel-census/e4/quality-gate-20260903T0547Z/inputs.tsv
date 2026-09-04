@@ -1,0 +1,9 @@
+control_server	$HOME/src/llama.cpp-census-v7/build-raven2-vulkan-census/bin/llama-server	addcae10bc3683a5700a981e4239061e719ecce92dc11ee436f96337b39f9a22
+candidate_server	$HOME/src/llama.cpp-census-e4/build-raven2-vulkan-census/bin/llama-server	741a0d7625625ebbc98a37078eadf5ee87a5368d3212a9475a7e7748dcbb5178
+model	$HOME/models/Qwen3.8-2B-Distill-GGUF/Qwen3.8-2B-Q4_K_M.gguf	4aa0fb13c431514262f259d420ecc95a8714df58ac2a2384514e20b93983f0ff
+tuple	ctx=24576 batch=128 ubatch=32 k=q8_0 v=q4_0 fa=on
+categories	arithmetic,screen,word_problem,termination,format,tool,long_context,code
+max_tokens	1024
+thinking	off
+long_context_characters	24000
+order	C K K C

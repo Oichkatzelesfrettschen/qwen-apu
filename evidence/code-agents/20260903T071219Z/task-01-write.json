@@ -1,0 +1,41 @@
+{
+  "baseline_target_lines": 0,
+  "cache_read_input_tokens": 0,
+  "content_block_types": [
+    "text"
+  ],
+  "count_tokens_input_tokens": 278,
+  "input_tokens": 280,
+  "kind": "write",
+  "max_tokens": 2048,
+  "model": "qwen38-4b-distill",
+  "outcome": "extracted",
+  "output_tokens": 397,
+  "produced_file": "task-01-write.produced.py",
+  "produced_matches_baseline": false,
+  "prompt_characters": 968,
+  "reasoning_emitted": false,
+  "reply_characters": 1520,
+  "reply_lines": 52,
+  "reply_model": "qwen38-4b-distill",
+  "stop_reason": "end_turn",
+  "target_file": "duration.py",
+  "task_id": "task-01-write",
+  "test_output_tail": [
+    "test_combined_units (test_duration.ParseDurationTest.test_combined_units) ... ok",
+    "test_multi_digit_groups (test_duration.ParseDurationTest.test_multi_digit_groups) ... ok",
+    "test_rejects_malformed (test_duration.ParseDurationTest.test_rejects_malformed) ... ok",
+    "test_rejects_repeated_unit (test_duration.ParseDurationTest.test_rejects_repeated_unit) ... ok",
+    "test_single_units (test_duration.ParseDurationTest.test_single_units) ... ok",
+    "test_surrounding_whitespace (test_duration.ParseDurationTest.test_surrounding_whitespace) ... ok",
+    "",
+    "----------------------------------------------------------------------",
+    "Ran 6 tests in 0.000s",
+    "",
+    "OK"
+  ],
+  "test_returncode": 0,
+  "tests_passed": true,
+  "thinking": "off",
+  "wall_seconds": 150.161
+}
