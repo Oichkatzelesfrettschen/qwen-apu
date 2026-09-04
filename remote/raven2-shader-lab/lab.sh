@@ -293,6 +293,13 @@ read_stat() {
 # mnemonic, since both ride on an ordinary VOP1 or VOP2 opcode. SMEM is a
 # named subset of SALU rather than a sibling of it, so an s_load counts in
 # both columns.
+#
+# v_alignbyte_b32, v_bfi_b32, and v_add_u32 join the list because the Q4_K
+# scale decode's halfword selection is read from them: the two-byte-aligned
+# scale pair reaches ACO as nir_op_alignbyte_amd from
+# nir_lower_mem_access_bit_sizes, a bitfield-select formulation reaches it as
+# v_bfi_b32, and the shift operand each alignbyte takes costs its own address
+# add. evidence/q4k-scale-decode/ reads all three.
 count_instruction_classes() {
     awk '
         {
@@ -314,6 +321,9 @@ count_instruction_classes() {
             if (mnemonic ~ /^v_lshlrev_b32/) lshlrev++
             if (mnemonic ~ /^v_and_b32/) and_b32++
             if (mnemonic ~ /^v_perm_b32/) perm_b32++
+            if (mnemonic ~ /^v_alignbyte_b32/) alignbyte_b32++
+            if (mnemonic ~ /^v_bfi_b32/) bfi_b32++
+            if (mnemonic ~ /^v_add_u32/) add_u32++
             if (mnemonic ~ /^v_mul_lo_u32/) mul_lo_u32++
             if (mnemonic ~ /^v_mad_u32_u24/) mad_u32_u24++
             if (mnemonic ~ /^v_mad_i32_i24/) mad_i32_i24++
@@ -341,6 +351,9 @@ count_instruction_classes() {
             printf "v_lshlrev_b32\t%d\n", lshlrev
             printf "v_and_b32\t%d\n", and_b32
             printf "v_perm_b32\t%d\n", perm_b32
+            printf "v_alignbyte_b32\t%d\n", alignbyte_b32
+            printf "v_bfi_b32\t%d\n", bfi_b32
+            printf "v_add_u32\t%d\n", add_u32
             printf "sdwa_operand_uses\t%d\n", sdwa
             printf "dpp_uses\t%d\n", dpp
             printf "v_mul_lo_u32\t%d\n", mul_lo_u32
