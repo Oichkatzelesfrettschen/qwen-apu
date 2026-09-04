@@ -879,9 +879,10 @@ function makeFlakyIndexedDatabase(realDatabase, { failWrites }) {
 const failWrites = { active: true };
 const flakyDatabase = makeFakeIndexedDatabase();
 const flakyIndexedDatabase = makeFlakyIndexedDatabase(flakyDatabase, { failWrites });
+const flakyLocalStorage = makeFakeStorage();
 const flakyPage = newPage({
   indexedDatabase: flakyIndexedDatabase,
-  localStorage: makeFakeStorage(),
+  localStorage: flakyLocalStorage,
   sessionStorage: makeFakeStorage()
 });
 await answerBoot(flakyPage);
@@ -911,6 +912,26 @@ assert.equal(await flakyPage.api.storeName(), 'localstorage',
 const flakyFollowUp = await flakyPage.api.read(flakyId);
 assert.equal(flakyFollowUp.messages.at(-1).content,
   'a later save still avoids the demoted store');
+
+// The demotion survives a reload too: a fresh page sharing the same
+// localStorage -- and therefore the same qwen-apu-conversation-store-demoted
+// marker -- skips a since-recovered IndexedDB rather than reselecting it and
+// reading back whatever it still holds from before the failed write. Without
+// the persisted marker this page would read the IndexedDB record the
+// demoted write never reached, silently reverting the follow-up message
+// that only ever landed in localStorage.
+const reloadedFlakyPage = newPage({
+  indexedDatabase: makeFakeIndexedDatabase(), // a healthy IndexedDB this time
+  localStorage: flakyLocalStorage,
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(reloadedFlakyPage);
+assert.equal(await reloadedFlakyPage.api.storeName(), 'localstorage',
+  'a reload reselected a since-recovered IndexedDB despite the persisted demotion marker');
+const reloadedFlakyRecord = await reloadedFlakyPage.api.read(flakyId);
+assert.equal(reloadedFlakyRecord.messages.at(-1).content,
+  'a later save still avoids the demoted store',
+  'the reload read a stale record instead of the one localStorage actually holds');
 
 // The save loop keeps going past a second failing store: IndexedDB denied,
 // then localStorage's real write also refused (its own probe still answers,

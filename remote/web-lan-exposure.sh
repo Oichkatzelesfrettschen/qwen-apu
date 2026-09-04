@@ -103,14 +103,25 @@ resolve_web_lan_mode() {
 # link. Each label is one to 63 characters of the letter-digit-hyphen set with
 # no leading or trailing hyphen, the whole name is at most 253 characters, and
 # the comparison downstream is casefolded because DNS names are
-# case-insensitive. Two forms are refused by name: an all-numeric dotted form
-# is an address, which belongs in QWEN_WEB_LAN_ADDRESS where the literal rules
-# apply to it, and `localhost` names the loopback the admitted set already
-# holds.
+# case-insensitive. Three forms are refused by name: an all-numeric dotted
+# form is an address, which belongs in QWEN_WEB_LAN_ADDRESS where the literal
+# rules apply to it; `localhost` names the loopback the admitted set already
+# holds; and a name outside the `.local` namespace is refused outright,
+# because the security argument for admitting a name at all rests on avahi
+# publishing `<hostname>.local` and a browser resolving it by link-local
+# multicast rather than through a recursive resolver. A name in an ordinary
+# DNS zone the operator does not control resolves through that resolver like
+# any other name, so an attacker who does control the zone can rebind it to
+# this appliance's address; QWEN_WEB_LAN_OPEN=1 would then admit that name's
+# Host and Origin with no bearer standing between the rebound request and the
+# broker. The caller lowercases the value before this check runs, so the
+# suffix comparison stays case-sensitive.
 web_lan_name_is_valid() {
     case $1 in
         '' | localhost | *[!0-9A-Za-z.-]* | .* | *. | -* | *-) return 1 ;;
         *..*) return 1 ;;
+        *.local) ;;
+        *) return 1 ;;
     esac
     [ "${#1}" -le 253 ] || return 1
     case $1 in

@@ -3652,10 +3652,32 @@ function memoryConversationStore() {
 // IndexedDB can open and answer its own list() probe while still refusing a
 // write -- a quota, a denied transaction -- and re-running the probe alone
 // selects the same unwritable store again, since the probe is a read. A name
-// entering this set is excluded from its own branch below until the page
-// reloads, so a write failure demotes the store for the rest of the session
-// rather than only for one save.
-const conversationStoreFailedNames = new Set();
+// entering this set is excluded from its own branch below, and the set
+// survives a reload rather than resetting with the page: reselecting a store
+// proven unwritable in an earlier session would read whatever it still holds
+// from before the demotion, silently reverting a rename or a delete a later
+// save committed to the store the demotion moved to instead. The marker
+// persists through localStorage regardless of which store the demotion moved
+// away from, because the demotion decision is what needs to survive, not the
+// conversation data itself.
+const CONVERSATION_STORE_DEMOTION_KEY = 'qwen-apu-conversation-store-demoted';
+function readDemotedConversationStoreNames() {
+  const raw = readBrowserStorage('localStorage', CONVERSATION_STORE_DEMOTION_KEY);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter(name => typeof name === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+const conversationStoreFailedNames = new Set(readDemotedConversationStoreNames());
+function rememberDemotedConversationStore(name) {
+  conversationStoreFailedNames.add(name);
+  writeBrowserStorage(
+    'localStorage', CONVERSATION_STORE_DEMOTION_KEY,
+    JSON.stringify([...conversationStoreFailedNames]));
+}
 
 async function resolveConversationStore() {
   if (!conversationStoreFailedNames.has('indexeddb')) {
@@ -3839,7 +3861,7 @@ async function writeThroughFallbackStore(operation) {
       await operation(activeStore);
       return true;
     } catch {
-      conversationStoreFailedNames.add(activeStore.name);
+      rememberDemotedConversationStore(activeStore.name);
       conversationStoreRead = null;
       const nextStore = await conversationStore();
       await migrateReadableRecords(activeStore, nextStore);
