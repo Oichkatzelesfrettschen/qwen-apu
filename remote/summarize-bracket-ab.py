@@ -39,12 +39,15 @@ served rate. The rows, each read by its `role`:
                      control per pair. Two token sequences can share a
                      string, so this is the reply's identity and not the
                      token array's; run-kernel-delta-witness.sh reads the ids
-    clock_state      the modal graphics and fabric clocks each arm's sidecar
-                     recorded over its own request window, with the graphics
-                     share beside them. A device timestamp duration scales
-                     with the graphics clock, so this row states the execution
-                     state every bracket above was measured at rather than
-                     leaving it to the arms ledger
+    clock_state      the modal graphics clock and the modal `pp_dpm_mclk`
+                     selection each arm's sidecar recorded over its own request
+                     window, with the graphics share beside them. A device
+                     timestamp duration scales with the graphics clock, so this
+                     row states the execution state every bracket above was
+                     measured at rather than leaving it to the arms ledger. The
+                     second value is reported under the attribute's own name,
+                     since what that attribute selects is a property of the
+                     part rather than of this reader
     token_identity   the generated token ids, candidate against control, from
                      the margin witness `--witness` names. A reply can carry
                      one string over two token arrays, so the ids are what the
@@ -412,7 +415,14 @@ def clock_row(pairs):
         verdict, detail = "unavailable", f"arms_without_clock_state={unread}"
     else:
         verdict = "measured"
-        detail = (f"min_sclk_share={min(shares):.4f} fclk_modes={' '.join(sorted(fabric))}"
+        # The column is named for the attribute it was read from,
+        # `pp_dpm_mclk`, and reported under that name. What that attribute
+        # selects is a device question rather than a reader's: on the SMU10
+        # path it answers with the fabric clock, and a part exposing distinct
+        # memory and fabric domains would answer with the memory clock, so a
+        # row calling it the fabric clock would claim an observation this
+        # reader cannot make.
+        detail = (f"min_sclk_share={min(shares):.4f} mclk_modes={' '.join(sorted(fabric))}"
                   f" arms={len(shares)}")
     return ["clock_state", "-", "sclk_mode_mhz/sclk_share/mclk_mode_mhz",
             str(len(pairs)), str(readable_pairs), "-", "-", "-", "-", "-",

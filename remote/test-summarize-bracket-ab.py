@@ -279,7 +279,7 @@ assert table["clock_state"]["control_values"].split(" ")[0] == "1100/1.0000/933"
 # four quadruple halves are four pairs.
 assert table["clock_state"]["replicates"] == "4", table["clock_state"]
 assert table["clock_state"]["comparable_pairs"] == "4", table["clock_state"]
-assert "fclk_modes=933" in table["clock_state"]["detail"], table["clock_state"]
+assert "mclk_modes=933" in table["clock_state"]["detail"], table["clock_state"]
 assert "min_sclk_share=1.0000" in table["clock_state"]["detail"], table["clock_state"]
 assert table["token_identity"]["verdict"] == "held", table["token_identity"]
 assert table["token_identity"]["comparable_pairs"] == "2", table["token_identity"]
@@ -287,14 +287,15 @@ assert "witness=" in table["token_identity"]["detail"], table["token_identity"]
 assert table["margin_contract"]["verdict"] == "held", table["margin_contract"]
 print("bracket_reporting_rows=accepted")
 
-# A run whose two arms of a pair held different fabric clocks still reports the
-# state rather than refusing: the graphics band decides comparability and the
-# fabric mode is a nuisance term this row names for a reader to weigh.
+# A run whose two arms of a pair held different pp_dpm_mclk selections still
+# reports the state rather than refusing: the graphics band decides
+# comparability and that selection is a nuisance term this row names for a
+# reader to weigh.
 status, error, table = run_case(PASSING, witness=write_witness,
                                 arm_options={"mclk_mode": "1067"})
 assert status == 0, error
 assert table["clock_state"]["verdict"] == "measured", table["clock_state"]
-assert "fclk_modes=1067" in table["clock_state"]["detail"], table["clock_state"]
+assert "mclk_modes=1067" in table["clock_state"]["detail"], table["clock_state"]
 
 # An arm whose sidecar recorded no clock state leaves the row unavailable, since
 # an unread arm is a state the row cannot show rather than one it can average

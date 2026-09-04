@@ -1133,9 +1133,9 @@ awk -F'\t' 'NF != 16 { exit 1 }' "$ab_last_output/arms.tsv"
 # The clock columns trail the ledger and read the unknown value under the
 # appliance's own governor, where the validator requests no invariant.
 [ "$(awk -F'\t' 'NR > 1 && ($15 != "-" || $16 != "-")' "$ab_last_output/arms.tsv" | wc -l | tr -d ' ')" = 0 ]
-# The fabric mode comes off the same clock_state line as the graphics mode and
-# is reported rather than compared, so every sampled arm carries the value the
-# validator printed and a warmup carries it too.
+# The pp_dpm_mclk selection comes off the same clock_state line as the graphics
+# mode and is reported rather than compared, so every sampled arm carries the
+# value the validator printed and a warmup carries it too.
 [ "$(awk -F'\t' 'NR > 1 && $13 != "1067"' "$ab_last_output/arms.tsv" | wc -l | tr -d ' ')" = 0 ]
 # Every arm of the one-clock table holds 800 MHz at a share of 0.1400, inside
 # the sustained regime's own window, so the precondition settles on the second
