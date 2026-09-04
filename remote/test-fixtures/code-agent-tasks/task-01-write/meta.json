@@ -1,0 +1,7 @@
+{
+  "task_id": "task-01-write",
+  "kind": "write",
+  "target_file": "duration.py",
+  "context_files": [],
+  "reference_file": "reference/duration.py"
+}

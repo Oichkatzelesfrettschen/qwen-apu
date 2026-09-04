@@ -1,0 +1,17 @@
+web_launch presets=$HOME/web-live-admission-20260903T0724Z/web-presets.ini unvalidated_depth_marker=present authorizer_ready=1 bind=127.0.0.1
+web_launch searxng=owned url=http://127.0.0.1:8888 port=8888
+web_launch broker_port=8571 broker_state_dir=$HOME/web-live-admission-20260903T0724Z/web-mcp signing_key=configured profile=web-compact provider=searxng review_section=- models_max=1
+web_launch static_path=$HOME/qwen-laptop-setup/remote/../webui
+runtime_tree=verified git_head=d7b72f470e78fe43771145497fb47ed261e5d07e payload=71d59e9b5d218353248e8dbdd6bcb0dc647a8a434056d23eae647259c909fd2f files=294
+active_deployment=natural-boundary-13d05a0-r2 directory=$HOME/qwen-deployments/natural-boundary-13d05a0-r2
+router_preflight_subject=Qwen3.5-2B-Q4_K_M.gguf bytes=1396198496
+projector=mmproj-Qwen3.5-2B-f16.gguf
+runtime_tree=verified git_head=d7b72f470e78fe43771145497fb47ed261e5d07e payload=71d59e9b5d218353248e8dbdd6bcb0dc647a8a434056d23eae647259c909fd2f files=294
+runtime_tree=verified git_head=d7b72f470e78fe43771145497fb47ed261e5d07e payload=71d59e9b5d218353248e8dbdd6bcb0dc647a8a434056d23eae647259c909fd2f files=294
+started tmux_socket=qwen-runtime tmux_session=qwen-webui profile=low-async host=127.0.0.1 port=8080 context=24576 latency_mode=observe model=$HOME/models/Qwen3.5-2B-GGUF/Qwen3.5-2B-Q4_K_M.gguf server=$HOME/qwen-deployments/natural-boundary-13d05a0-r2/llama-server
+speculation spec_type=off draft_n_max=default draft_p_min=default draft_backend_sampling=0 backend_sampling=0
+cache cache_type_k=registry cache_type_v=registry flash_attention=registry override_context_ceiling=registry
+state=running server_pid=1672257 monitor_pid=1672493 latency_watchdog_pid=1672457 kernel_hazard_watchdog_pid=1672482 broker_pid=1672183 searxng_pid=1672056 profile=low-async host=127.0.0.1 port=8080 context=24576 latency_mode=observe utc=2026-09-03T07:24:10Z
+reachable at http://127.0.0.1:8080 (loopback only)
+approval broker at http://127.0.0.1:8571 (loopback only)
+stop it with $HOME/qwen-laptop-setup/remote/qwen-teardown.sh

@@ -1,0 +1,42 @@
+{
+  "baseline_target_lines": 64,
+  "cache_read_input_tokens": 0,
+  "content_block_types": [
+    "text"
+  ],
+  "count_tokens_input_tokens": 1014,
+  "input_tokens": 1016,
+  "kind": "refactor",
+  "max_tokens": 2048,
+  "model": "qwen38-4b-distill",
+  "outcome": "extracted",
+  "output_tokens": 501,
+  "produced_file": "task-03-refactor.produced.py",
+  "produced_matches_baseline": false,
+  "prompt_characters": 3423,
+  "reasoning_emitted": false,
+  "reply_characters": 1671,
+  "reply_lines": 64,
+  "reply_model": "qwen38-4b-distill",
+  "stop_reason": "end_turn",
+  "target_file": "report.py",
+  "task_id": "task-03-refactor",
+  "test_output_tail": [
+    "test_bytes (test_report.FormatTest.test_bytes) ... ok",
+    "test_main_accepts_three_arguments (test_report.FormatTest.test_main_accepts_three_arguments) ... ok",
+    "test_main_rejects_wrong_argument_count (test_report.FormatTest.test_main_rejects_wrong_argument_count) ... usage: report.py BYTES SECONDS RATE",
+    "ok",
+    "test_rate (test_report.FormatTest.test_rate) ... ok",
+    "test_seconds (test_report.FormatTest.test_seconds) ... ok",
+    "test_summary_line (test_report.FormatTest.test_summary_line) ... ok",
+    "",
+    "----------------------------------------------------------------------",
+    "Ran 6 tests in 0.000s",
+    "",
+    "OK"
+  ],
+  "test_returncode": 0,
+  "tests_passed": true,
+  "thinking": "off",
+  "wall_seconds": 231.029
+}

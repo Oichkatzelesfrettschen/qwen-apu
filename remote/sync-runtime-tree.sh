@@ -46,17 +46,60 @@ if [ -n "$(git -C "$repository_directory" status --porcelain -- remote patches)"
     worktree_state=dirty
 fi
 
+# The payload is what git tracks. A directory walk adopts whatever a python
+# child left beside the scripts it imported: bytecode under __pycache__ entered
+# the manifest, rsync's exclusion left it on the workstation, and the appliance
+# read a row naming a file it never received. Both sides now exclude bytecode
+# and the manifest enumerates tracked paths, so the two populations agree.
+payload_exclusions='--exclude=__pycache__/ --exclude=*.pyc --exclude=*.pyo'
 payload_rows() {
     (
         cd "$repository_directory"
-        find "$1" -type f | LC_ALL=C sort | while IFS= read -r file; do
-            mode_class=-
-            [ -x "$file" ] && mode_class=x
-            printf '%s\t%s\t%s\n' "$file" \
-                "$(sha256sum "$file" | cut -d ' ' -f 1)" "$mode_class"
-        done
+        git ls-files -z -- "$1" | tr '\0' '\n' | LC_ALL=C sort | \
+            while IFS= read -r file; do
+                case $file in
+                    */__pycache__/* | *.pyc | *.pyo) continue ;;
+                esac
+                mode_class=-
+                [ -x "$file" ] && mode_class=x
+                printf '%s\t%s\t%s\n' "$file" \
+                    "$(sha256sum "$file" | cut -d ' ' -f 1)" "$mode_class"
+            done
     )
 }
+
+# A tracked file absent from the working tree would leave a manifest row naming
+# a file the destination never receives, which reads there as a partial sync.
+# An untracked file is the other direction: rsync ships it and no row names it,
+# so the destination reads a stray. Both refuse here, where the path has an
+# author.
+absent_tracked_files=$(
+    cd "$repository_directory"
+    git ls-files -z -- remote patches | tr '\0' '\n' | while IFS= read -r file; do
+        [ -f "$file" ] || printf '%s\n' "$file"
+    done
+)
+if [ -n "$absent_tracked_files" ]; then
+    printf 'tracked payload files are absent from the working tree:\n%s\n' \
+        "$absent_tracked_files" >&2
+    exit 1
+fi
+untracked_payload_files=$(
+    cd "$repository_directory"
+    git ls-files --others --exclude-standard -z -- remote patches |
+        tr '\0' '\n' | while IFS= read -r file; do
+            case $file in
+                */__pycache__/* | *.pyc | *.pyo) continue ;;
+            esac
+            printf '%s\n' "$file"
+        done
+)
+if [ -n "$untracked_payload_files" ]; then
+    printf 'untracked payload files ship through rsync and carry no manifest row:\n%s\n' \
+        "$untracked_payload_files" >&2
+    printf 'commit them or remove them before syncing\n' >&2
+    exit 1
+fi
 
 remote_rows=$(mktemp)
 patches_rows=$(mktemp)
@@ -82,8 +125,15 @@ patches_payload_tree_sha256=$(sha256sum "$patches_rows" | cut -d ' ' -f 1)
 } >"$manifest"
 runtime_manifest_sha256=$(sha256sum "$manifest" | cut -d ' ' -f 1)
 
-rsync -a --delete "$repository_directory/remote/" "$destination/remote/"
-rsync -a --delete "$repository_directory/patches/" "$destination/patches/"
+# --delete-excluded removes bytecode the destination already holds, so an
+# appliance carrying it from an earlier sync or from a child of its own comes
+# back to the tracked population rather than reading strays at the next launch.
+# shellcheck disable=SC2086 # the exclusion list is three separate arguments
+rsync -a --delete --delete-excluded $payload_exclusions \
+    "$repository_directory/remote/" "$destination/remote/"
+# shellcheck disable=SC2086 # the exclusion list is three separate arguments
+rsync -a --delete --delete-excluded $payload_exclusions \
+    "$repository_directory/patches/" "$destination/patches/"
 rsync -a "$manifest" "$destination/runtime-tree-manifest.tsv"
 
 printf 'source_commit=%s worktree=%s\n' "$git_head" "$worktree_state"
@@ -93,7 +143,15 @@ printf 'runtime_manifest_sha256=%s\n' "$runtime_manifest_sha256"
 
 # The check runs on the destination over the bytes rsync actually left, so a
 # partial transfer or a concurrent edit is caught here rather than at the
-# next launch.
+# next launch. A destination naming no host is a path on this machine, which
+# the check reads directly.
+case $destination in
+    *:*) ;;
+    *)
+        sh "$destination/remote/check-runtime-tree.sh" "$destination"
+        exit 0
+        ;;
+esac
 destination_host=${destination%%:*}
 destination_path=${destination#*:}
 # A leading ~/ stays literal inside the quoted remote command, so it becomes a

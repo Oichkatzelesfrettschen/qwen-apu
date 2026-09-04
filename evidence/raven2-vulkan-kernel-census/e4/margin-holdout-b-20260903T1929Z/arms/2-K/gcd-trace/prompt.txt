@@ -1,0 +1,1 @@
+Compute gcd(1547, 560) by the Euclidean algorithm and show every division step as dividend, divisor, quotient, remainder. Then compute gcd(3059, 1729) the same way, then gcd(1729, 611). Finally report all three results and their sum.

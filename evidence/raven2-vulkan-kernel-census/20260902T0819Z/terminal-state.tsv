@@ -1,0 +1,10 @@
+census=refuted
+census_mode=calibration
+arm_failures=0
+control_incomplete=0
+control_refutations=2
+control_unclassified=0
+control_accepted=1
+control_required=3
+cooldown_timeouts=14
+calibration_root_sha256=ced50cc910689fe089e76619fb5e7810222a666567e5160c1bce61f87d44e9c7

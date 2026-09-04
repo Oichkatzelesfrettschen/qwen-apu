@@ -1,0 +1,1 @@
+Count from 45 to 58 in binary using 6 bits. For each number print the decimal, the 6-bit binary, and the number of 1 bits. Then report how many of the fourteen numbers have an odd count of 1 bits and which number in the range has the fewest 1 bits.
