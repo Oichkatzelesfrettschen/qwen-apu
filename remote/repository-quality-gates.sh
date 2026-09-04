@@ -255,6 +255,9 @@ gate_cell test-lab-replay derive remote/raven2-shader-lab/test-lab-replay.sh \
 gate_cell test-count-i24-add3 derive \
     remote/raven2-shader-lab/test-count-i24-add3.sh \
     remote/raven2-shader-lab/test-count-i24-add3.sh
+gate_cell test-build-spirv-shader-pack derive \
+    'remote/test-build-spirv-shader-pack.sh remote/build-spirv-shader-pack.sh' \
+    remote/test-build-spirv-shader-pack.sh
 gate_cell test-web-presets derive remote/test-web-presets.sh \
     remote/test-web-presets.sh
 gate_cell test-qwen-capacity-policy derive remote/test-qwen-capacity-policy.sh \
