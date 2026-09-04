@@ -774,6 +774,16 @@ import os
 import pathlib
 import sys
 
+# The stub records its own argv beside the verdict it prints, so a case reads
+# which priority and affinity the harness declared to the validator; a
+# printed verdict alone would leave --expected-nice and --expected-cpu-affinity
+# unobservable, and those two are what close the P2 gap where a configured
+# sampler priority never reached the validator invocation at all.
+argv_log = os.environ.get("QWEN_TEST_VALIDATOR_ARGV")
+if argv_log:
+    with open(argv_log, "a") as handle:
+        handle.write(" ".join(sys.argv[1:]) + "\n")
+
 label = pathlib.Path(sys.argv[1]).parent.name
 # The invariant the campaign requests under a forced clock policy. The table
 # QWEN_TEST_AB_VIOLATED names the arms whose window carried a step below the
@@ -995,6 +1005,8 @@ run_ab() {
     ab_drm=$fixture_drm
     ab_sudo_log=$temporary_directory/sudo-$ab_case.log
     ab_quiescence_argv=$temporary_directory/quiescence-argv-$ab_case.log
+    ab_validator_argv=$temporary_directory/validator-argv-$ab_case.log
+    : >"$ab_validator_argv"
     if [ "$ab_engine_clock_policy" != auto ]; then
         ab_drm=$temporary_directory/drm-$ab_case
         cp -R -- "$fixture_drm" "$ab_drm"
@@ -1033,6 +1045,7 @@ run_ab() {
         QWEN_TEST_AB_CLOCK_SOURCE="$ab_clock_source" \
         QWEN_TEST_SUDO_LOG="$ab_sudo_log" \
         QWEN_TEST_QUIESCENCE_ARGV="$ab_quiescence_argv" \
+        QWEN_TEST_VALIDATOR_ARGV="$ab_validator_argv" \
         QWEN_TEST_QUIESCENCE_VERDICT="$ab_quiescence_verdict" \
         QWEN_CENSUS_ENGINE_CLOCK_POLICY="$ab_engine_clock_policy" \
         QWEN_CENSUS_MCLK_LEVEL="$ab_mclk_level" \
@@ -1068,6 +1081,7 @@ run_ab() {
     printf '%s=accepted exit=%s\n' "$ab_case" "$ab_status"
     diagnostic_file=
     ab_last_output=$ab_output
+    ab_last_validator_argv=$ab_validator_argv
 }
 
 # Every arm holds the sustained regime's own clock at its own modal share --
@@ -1083,6 +1097,27 @@ promoted_rates=$temporary_directory/rates-promoted
 write_rates "$promoted_rates" 10.000 11.000 11.000
 run_ab verdict_promoted 0 promoted "$promoted_rates" "$one_clock"
 active_fixture=arms_ledger_columns
+# The harness pins the sampler to nice 19 and to the CPU set
+# QWEN_CENSUS_SIDECAR_CPU names, so every validator invocation carries
+# --expected-nice and --expected-cpu-affinity; a campaign that configured a
+# priority and never named it to the validator would read that check
+# not_run rather than proving the sampler held it.
+if [ ! -s "$ab_last_validator_argv" ]; then
+    printf 'the validator stub recorded no invocation\n' >&2
+    exit 1
+fi
+if ! awk '/--expected-nice 19( |$)/ { found = 1 } END { exit !found }' \
+        "$ab_last_validator_argv"; then
+    printf 'no validator invocation carried --expected-nice 19\n' >&2
+    cat "$ab_last_validator_argv" >&2
+    exit 1
+fi
+if ! awk '/--expected-cpu-affinity 0( |$)/ { found = 1 } END { exit !found }' \
+        "$ab_last_validator_argv"; then
+    printf 'no validator invocation carried --expected-cpu-affinity 0\n' >&2
+    cat "$ab_last_validator_argv" >&2
+    exit 1
+fi
 [ "$(head -n 1 "$ab_last_output/arms.tsv")" = "$(printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\tsidecar\townership\tstatus\tsclk_mode_mhz\tsclk_share\tregime_delta\tclock_invariant\tbelow_required_fraction')" ]
 awk -F'\t' 'NF != 15 { exit 1 }' "$ab_last_output/arms.tsv"
 # The clock columns trail the ledger and read the unknown value under the
