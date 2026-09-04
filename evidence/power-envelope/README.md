@@ -307,10 +307,12 @@ back to `/dev/mem` otherwise (documented); it is not installed here.
 
 ## The registered campaign
 
-Status: `not run`. The appliance is held by another agent's device campaign,
-and every arm below needs a teardown window, a `sudo -v` credential, and the
-operator's authorization. This section registers the design and its falsifiers
-ahead of any measurement, which is what makes a deviation a finding.
+Status: `registered`. This section registers the design and its falsifiers ahead
+of any measurement, which is what makes a deviation a finding. Every arm needs a
+teardown window, a `sudo -v` credential, and the operator's authorization.
+`remote/run-power-envelope-campaign.sh MODEL_ID CAMPAIGN_DIRECTORY` runs one
+checkpoint's four arms and `remote/run-power-envelope-arm.sh` is the command each
+`compute-state-lease.sh` transaction wraps.
 
 ### Subject and instrument
 
@@ -342,6 +344,19 @@ effects rather than as position in a sequence; a closing control differing from
 its opener by more than the sweep's own span criterion ends the sweep
 unresolved.
 
+The span criterion is named here ahead of the run, because choosing it after the
+closing controls are read is the trap this document exists to avoid. A sweep
+resolves where the two control arms of one checkpoint differ by 20% or less of
+their mean, which is the single-arm span this tree already carries: a repeated
+depth-0 rate on this machine spans about 4% under identical flags ten minutes
+apart and 30.6% under desktop load, and the repository reads a difference below
+about 20% quoted from single arms as queue position. A candidate arm is then
+read as a budget effect only where its difference from the control mean exceeds
+the same checkpoint's own observed control-to-control spread; below that spread
+the direction is unresolved rather than null, and the package watts beside the
+rate are what separate "no additional budget was drawn" from "the budget rose
+and bought no throughput".
+
 `tctl-temp` is held at whatever the platform set and is written by no arm.
 `power-envelope.sh` reads `THM LIMIT CORE`, refuses the transaction above 95
 degrees C, and records the reading on every apply, so an arm states the thermal
@@ -372,13 +387,32 @@ next section names.
 ### Retained per arm
 
 Package watts from `intel-rapl:0/energy_uj` differenced across the request
-window, and core watts from `intel-rapl:0:0` beside it. That reader does not yet
-exist in this tree and is a step the campaign needs before its first arm:
-`sample-clock-sidecar.py` and the telemetry broker sample clocks and run as
-unprivileged nice-19 children, while `energy_uj` is mode 0400, so the energy
-figure is two privileged reads at the window boundaries under the same
-`sudo -n` credential the SMU writer already holds rather than an in-window
-sample. Delivered graphics clock
+window, and core watts from `intel-rapl:0:0` beside it.
+`remote/read-package-energy.py` is that reader, and it runs under the same
+`sudo -n` credential the SMU writer holds because `energy_uj` is mode 0400 while
+`sample-clock-sidecar.py` and the telemetry broker sample readable files as
+unprivileged nice-19 children.
+
+Where the two boundary reads come from is a correction to this section, stated
+before the first arm rather than after it. `measure-served-decode.sh` exposes no
+request-boundary hook: it stamps `request-window.tsv` with `time.monotonic_ns()`
+immediately before curl and immediately after it returns, and it owns its own
+launch and teardown, so a pair of reads around the runner would difference a 120
+second model load together with a 7 second decode and report the load. The
+reader therefore samples both domains inside one privileged process across the
+arm at a 50 ms period, and its `window` mode selects the two boundary reads out
+of that record afterwards. The reported figure is still two reads differenced
+across the request window; the record is how those two reads are obtained
+without a hook.
+
+The window is bracketed twice for the same reason a delivered clock is read
+rather than asserted. The inner bracket runs from the first sample at or after
+the window's beginning to the last sample at or before its end, so its whole
+interval lies inside the request and it is the arm's reading; the outer bracket
+runs from the last sample at or before the beginning to the first sample at or
+after the end, so the request lies inside it and it bounds the reading. The two
+agree to the sampling period at each edge, which on the shortest window this
+campaign runs is under 2% of it. Delivered graphics clock
 from the amdgpu hwmon `freq1_input` and the starred `pp_dpm_mclk` fabric step,
 sampled by `remote/sample-clock-sidecar.py` and validated by
 `remote/validate-clock-sidecar.py`. Tctl from k10temp and the amdgpu edge

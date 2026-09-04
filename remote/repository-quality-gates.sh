@@ -142,6 +142,7 @@ remote/test-qwen-runtime-guards.sh
 remote/test-telemetry-session-records.sh
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-kernel-census.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-sample-clock-sidecar.py
+PYTHONDONTWRITEBYTECODE=1 python3 remote/test-read-package-energy.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-census-controls.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-census-replay-corpus.py
 PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-perf-logger-slice.py

@@ -545,11 +545,18 @@ fi
 # The lease proof names this pid, this descriptor, and a revision the verifier
 # validates in its 40-hex form. The runtime tree carries its own manifest on the
 # appliance, where this tree is a copy rather than a checkout.
+# `sync-runtime-tree.sh` writes that manifest beside `remote/` rather than
+# inside it, so the parent is read as well as the script's own directory and a
+# runtime copy answers with the head it was synced from.
 transaction_revision=${QWEN_COMPUTE_STATE_REVISION:-}
-if [ -z "$transaction_revision" ] && [ -r "$script_directory/runtime-tree-manifest.tsv" ]; then
+for manifest_candidate in "$script_directory/runtime-tree-manifest.tsv" \
+    "$script_directory/../runtime-tree-manifest.tsv"; do
+    if [ -n "$transaction_revision" ] || [ ! -r "$manifest_candidate" ]; then
+        continue
+    fi
     transaction_revision=$(awk -F'\t' '$1 == "git_head" { print $2; exit }' \
-        "$script_directory/runtime-tree-manifest.tsv")
-fi
+        "$manifest_candidate")
+done
 if [ -z "$transaction_revision" ]; then
     transaction_revision=$(git -C "$script_directory" rev-parse HEAD 2>/dev/null) || \
         transaction_revision=''
