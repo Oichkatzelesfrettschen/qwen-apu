@@ -447,7 +447,31 @@ resolve_profile "$profile_name"
 
 # Every refusal that needs no write runs here, ahead of the lease and ahead of
 # the first sysfs write, so a transaction that cannot complete costs the machine
-# no state change at all.
+# no state change at all. stop_child reads this setting again inside the EXIT
+# trap, where `$((grace_seconds * 5))` on a non-integer value is a shell
+# arithmetic error that would abort the trap ahead of finish_transaction and
+# leave the applied DPM/KSM state unrestored, so it is validated here rather
+# than trusted at the point cleanup can no longer refuse. The upper bound holds
+# the same promise: a merely large value is valid arithmetic but turns the
+# bounded shutdown this setting exists to provide into an effectively unbounded
+# one. The nearest comparable settings in this tree are far smaller --
+# image-service.py's own TERMINATION_GRACE_SECONDS is 5, and its
+# QWEN_IMAGE_LEASE_WAIT_S default is 60 -- so an hour is a generous ceiling
+# rather than one measured against a peer.
+stop_grace_seconds_maximum=3600
+case ${QWEN_COMPUTE_STATE_STOP_GRACE_SECONDS:-10} in
+    '' | *[!0-9]*)
+        printf 'QWEN_COMPUTE_STATE_STOP_GRACE_SECONDS is not a non-negative integer: %s\n' \
+            "${QWEN_COMPUTE_STATE_STOP_GRACE_SECONDS:-10}" >&2
+        exit 2
+        ;;
+esac
+if [ "${QWEN_COMPUTE_STATE_STOP_GRACE_SECONDS:-10}" -gt "$stop_grace_seconds_maximum" ]; then
+    printf 'QWEN_COMPUTE_STATE_STOP_GRACE_SECONDS exceeds the %s second maximum: %s\n' \
+        "$stop_grace_seconds_maximum" "${QWEN_COMPUTE_STATE_STOP_GRACE_SECONDS:-10}" >&2
+    exit 2
+fi
+
 for required_command in flock "$renice_command" "$ionice_command" "$taskset_command"; do
     case $required_command in
         /*)
@@ -698,12 +722,45 @@ apply_started=0
 restoration_finished=0
 restoration_failed=0
 clock_expectation=not_reached
+child_stop=''
+command_status=''
+command_name=''
 
 stop_child() {
     [ -n "$child_pid" ] || return 0
+    grace_seconds=${QWEN_COMPUTE_STATE_STOP_GRACE_SECONDS:-10}
     kill -TERM "$child_pid" 2>/dev/null || true
-    wait "$child_pid" 2>/dev/null || true
-    child_pid=''
+    child_stop=term
+    stop_attempt=0
+    while [ "$stop_attempt" -lt $((grace_seconds * 5)) ]; do
+        kill -0 "$child_pid" 2>/dev/null || {
+            wait "$child_pid" 2>/dev/null || true
+            child_pid=''
+            return 0
+        }
+        stop_attempt=$((stop_attempt + 1))
+        sleep 0.2 || true
+    done
+    kill -KILL "$child_pid" 2>/dev/null || true
+    child_stop='kill'
+    stop_attempt=0
+    while [ "$stop_attempt" -lt 25 ]; do
+        kill -0 "$child_pid" 2>/dev/null || {
+            wait "$child_pid" 2>/dev/null || true
+            child_pid=''
+            return 0
+        }
+        stop_attempt=$((stop_attempt + 1))
+        sleep 0.2 || true
+    done
+    # kill -0 still found the child alive after SIGKILL and the 5-second poll,
+    # which is a process the kernel cannot yet reap -- most likely uninterruptible
+    # I/O sleep -- rather than one that will exit shortly. `wait` blocks until the
+    # child is reaped, so calling it here would trade the bounded shutdown this
+    # function exists to provide for an unbounded one in exactly the case it is
+    # supposed to cover. Restoration runs over the leftover descendant instead;
+    # init reparents and eventually reaps it once it does exit.
+    child_stop=unreaped
 }
 
 remove_lease_proof() {
@@ -819,6 +876,10 @@ cleanup() {
     stop_child
     finish_transaction
     remove_lease_proof
+    if [ -n "$command_name" ]; then
+        printf 'compute_state_command=%s status=%s profile=%s child_stop=%s\n' \
+            "$command_name" "${command_status:-interrupted}" "$profile_name" "$child_stop"
+    fi
     if [ "$restoration_failed" -eq 1 ]; then
         exit 4
     fi
@@ -910,6 +971,7 @@ printf 'clock_expectation=reached profile=%s gfxclk_mhz=%s fclk_mhz=%s\n' \
 # grandchild the command forked and left behind holds the inherited descriptor
 # until it exits, which is what a caller passing a command that backgrounds
 # work is choosing.
+command_name=$1
 (
     # shellcheck disable=SC2086  # the forward list is word-split by design
     census_arm_exec "$arm_environment_record" \
@@ -926,6 +988,4 @@ command_status=$?
 set -e
 child_pid=''
 
-printf 'compute_state_command=%s status=%s profile=%s\n' "$1" "$command_status" \
-    "$profile_name"
 exit "$command_status"

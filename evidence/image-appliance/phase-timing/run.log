@@ -1,0 +1,12 @@
+runtime=$HOME/src/stable-diffusion.cpp-qwen-apu/build-raven2/bin/sd-cli binary_sha256=4eb6d155c8b1e077de5613a7282410d78c2fc984e9c3aedf9287c0aa788817c8 model_sha256=deferred-until-after-cold-arm device_name=Vulkan0 backend=te=Vulkan0,vae=Vulkan0,diffusion=Vulkan0 mesa_radv=unavailable kernel=7.0.0-29-generic amdgpu_module=unavailable
+device_refusal_control=accepted exit_status=1 device=Vulkan0_refusal_control_2426884
+arm=cold status=completed exit_status=0 wall_s=12.430 png=$HOME/worktrees/qwen-apu/device-campaigns-20260903/evidence/image-appliance/phase-timing/invocation-1/cold.png
+arm=warm status=completed exit_status=0 wall_s=11.632 png=$HOME/worktrees/qwen-apu/device-campaigns-20260903/evidence/image-appliance/phase-timing/invocation-1/warm.png
+cpu_tensor_rejection=accepted cpu_graph_rejection=accepted strict_vulkan_completion=accepted duty_cycle=60 low_priority=accepted
+summary=$HOME/worktrees/qwen-apu/device-campaigns-20260903/evidence/image-appliance/phase-timing/invocation-1/summary.tsv
+runtime=$HOME/src/stable-diffusion.cpp-qwen-apu/build-raven2/bin/sd-cli binary_sha256=4eb6d155c8b1e077de5613a7282410d78c2fc984e9c3aedf9287c0aa788817c8 model_sha256=deferred-until-after-cold-arm device_name=Vulkan0 backend=te=Vulkan0,vae=Vulkan0,diffusion=Vulkan0 mesa_radv=unavailable kernel=7.0.0-29-generic amdgpu_module=unavailable
+device_refusal_control=accepted exit_status=1 device=Vulkan0_refusal_control_2428006
+arm=cold status=completed exit_status=0 wall_s=11.935 png=$HOME/worktrees/qwen-apu/device-campaigns-20260903/evidence/image-appliance/phase-timing/invocation-2/cold.png
+arm=warm status=completed exit_status=0 wall_s=12.456 png=$HOME/worktrees/qwen-apu/device-campaigns-20260903/evidence/image-appliance/phase-timing/invocation-2/warm.png
+cpu_tensor_rejection=accepted cpu_graph_rejection=accepted strict_vulkan_completion=accepted duty_cycle=60 low_priority=accepted
+summary=$HOME/worktrees/qwen-apu/device-campaigns-20260903/evidence/image-appliance/phase-timing/invocation-2/summary.tsv

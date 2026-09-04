@@ -1,0 +1,1 @@
+Sort the list [9, 4, 11, 2, 7, 13, 5, 8] with bubble sort. For every comparison state the two elements compared, whether they swap, and the whole list after the comparison. After each full pass state the pass number and the list. Stop when a pass makes no swap and report the sorted list and the total number of swaps.

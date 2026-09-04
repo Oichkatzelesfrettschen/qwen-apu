@@ -1,0 +1,15 @@
+lfm25-vl-16b
+qwen35-08b
+qwen35-08b-f16
+qwen35-08b-unsloth-unc
+qwen35-2b
+qwen35-2b-hauhau
+qwen35-2b-heretic
+qwen35-2b-unredacted
+qwen35-4b-base
+qwen38-2b-distill
+qwen38-2b-distill+qwen35-08b-draft
+qwen38-2b-uncensored
+qwen38-4b-distill
+qwen38-4b-distill+qwen35-08b-draft
+qwenseer-2b

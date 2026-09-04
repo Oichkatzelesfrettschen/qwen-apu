@@ -82,15 +82,45 @@ if [ "$named_rows" -ne 1 ]; then
 fi
 # A diagnostic build names its instrumentation and declares itself unfit to
 # serve; the bundle is the unit an activation makes the appliance's server,
-# so the declaration is honored here rather than trusted to an operator.
-serving_eligible=$(awk -F'\t' '$1 == "serving_eligible" { print $2; exit }' \
-    "$manifest_path")
-if [ -n "$serving_eligible" ] && [ "$serving_eligible" != yes ]; then
-    printf 'artifact manifest declares serving_eligible %s (instrumentation %s); a bundle carries serving builds alone: %s\n' \
-        "$serving_eligible" \
-        "$(awk -F'\t' '$1 == "instrumentation" { print $2; exit }' "$manifest_path")" \
-        "$manifest_path" >&2
+# so the declaration is honored here rather than trusted to an operator. The
+# eligibility grammar admits two shapes and refuses the rest. A manifest
+# carrying zero serving_eligible rows is the legacy shape, admitted only where
+# it also names no instrumentation. A manifest carrying exactly one row is
+# admitted where that row's value is exactly `yes`, so an empty value -- a
+# present declaration stating nothing -- is refused by its own reading rather
+# than by falling through the legacy branch. A second row of either kind is
+# refused on cardinality ahead of both, since a first-row reading of a
+# manifest that declares twice reports one of two answers. An instrumentation
+# row refuses the bundle at whatever eligibility spelling accompanies it, and
+# that refusal precedes the eligibility reading so a diagnostic manifest names
+# the instrumentation that identifies it however its eligibility row is
+# spelled or deleted.
+declaration_rows=$(awk -F'\t' '
+    $1 == "serving_eligible" { eligible++ }
+    $1 == "instrumentation" { instrumentation++ }
+    END { print eligible + 0, instrumentation + 0 }' "$manifest_path")
+serving_rows=${declaration_rows%% *}
+instrumentation_rows=${declaration_rows##* }
+if [ "$serving_rows" -gt 1 ] || [ "$instrumentation_rows" -gt 1 ]; then
+    printf 'artifact manifest holds %s serving_eligible rows and %s instrumentation rows, at most one of each: %s\n' \
+        "$serving_rows" "$instrumentation_rows" "$manifest_path" >&2
     exit 1
+fi
+if [ "$instrumentation_rows" -eq 1 ]; then
+    declared_instrumentation=$(awk -F'\t' \
+        '$1 == "instrumentation" { print $2; exit }' "$manifest_path")
+    printf 'artifact manifest names instrumentation %s; a bundle carries serving builds alone: %s\n' \
+        "${declared_instrumentation:-<empty>}" "$manifest_path" >&2
+    exit 1
+fi
+if [ "$serving_rows" -eq 1 ]; then
+    serving_eligible=$(awk -F'\t' '$1 == "serving_eligible" { print $2; exit }' \
+        "$manifest_path")
+    if [ "$serving_eligible" != yes ]; then
+        printf 'artifact manifest declares serving_eligible %s; a bundle carries serving builds alone: %s\n' \
+            "${serving_eligible:-<empty>}" "$manifest_path" >&2
+        exit 1
+    fi
 fi
 
 executable_rows=$(awk -F'\t' -v bytes="$server_bytes" -v digest="$server_sha256" '
@@ -195,6 +225,72 @@ if [ -n "$web_presets_path" ]; then
         cut -d ' ' -f 1)
 fi
 
+# A merged router preset names one MCP configuration per web section, and that
+# configuration is session state rather than release state: its contents name
+# QWEN_WEB_STATE_DIR, the broker signing key, and the per-profile budgets, and
+# rewriting those paths to bundle-relative ones would change the preset bytes
+# the digest binds. The bundle records the path and the digest of each
+# configuration and leaves the file where the generator wrote it.
+#
+# The preset own `# qwen_web_sections=` marker decides whether a record exists
+# at all, so a bundle assembled from a registry preset carries none and a
+# bundle assembled from a merged one carries exactly the sections the marker
+# names. verify-deployment-bundle.sh applies the same rule, which is what lets
+# a deployment that predates this lane keep resolving: requiring the record of
+# every bundle refused the whole roster on natural-boundary-13d05a0-r2, whose
+# preset carries no marker, and left the appliance serving through recovery
+# mode alone.
+web_mcp_manifest_sha256=-
+if [ -n "$router_presets_path" ]; then
+    preset_web_sections=$(sed -n 's/^# qwen_web_sections=//p' \
+        "$staging_directory/router-presets.ini")
+    case $preset_web_sections in
+        '-') preset_web_sections='' ;;
+    esac
+    web_mcp_rows=$(awk '
+        /^[[:space:]]*\[/ {
+            section = $0
+            sub(/^[[:space:]]*\[/, "", section)
+            sub(/\][[:space:]]*$/, "", section)
+            next
+        }
+        /^[[:space:]]*LLAMA_ARG_MCP_SERVERS_CONFIG[[:space:]]*=/ {
+            value = $0
+            sub(/^[^=]*=[[:space:]]*/, "", value)
+            sub(/[[:space:]]+$/, "", value)
+            printf "%s\t%s\n", section, value
+        }
+    ' "$staging_directory/router-presets.ini")
+    if [ -z "$preset_web_sections" ] && [ -n "$web_mcp_rows" ]; then
+        printf 'bundle router preset names MCP configurations and its head marker names no web section: %s\n' \
+            "$router_presets_path" >&2
+        exit 1
+    fi
+    if [ -n "$preset_web_sections" ] && [ -z "$web_mcp_rows" ]; then
+        printf 'bundle router preset names web section %s and no section carries LLAMA_ARG_MCP_SERVERS_CONFIG: %s\n' \
+            "$preset_web_sections" "$router_presets_path" >&2
+        exit 1
+    fi
+    if [ -n "$preset_web_sections" ]; then
+        {
+            printf '# profile_id\tconfiguration_path\tsha256\n'
+            printf '%s\n' "$web_mcp_rows" |
+                while IFS='	' read -r web_section web_configuration; do
+                    if [ ! -r "$web_configuration" ]; then
+                        printf 'bundle preset section %s names an unreadable MCP configuration: %s\n' \
+                            "$web_section" "$web_configuration" >&2
+                        exit 1
+                    fi
+                    printf '%s\t%s\t%s\n' "$web_section" "$web_configuration" \
+                        "$(sha256sum -- "$web_configuration" | cut -d ' ' -f 1)"
+                done
+        } >"$staging_directory/web-mcp-manifest.tsv" || exit 1
+        chmod 600 "$staging_directory/web-mcp-manifest.tsv"
+        web_mcp_manifest_sha256=$(sha256sum \
+            "$staging_directory/web-mcp-manifest.tsv" | cut -d ' ' -f 1)
+    fi
+fi
+
 {
     printf 'bundle_name\t%s\n' "$bundle_name"
     printf 'created_utc\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -208,6 +304,7 @@ fi
         "$(sha256sum "$staging_directory/ctx-checkpoints.tsv" | cut -d ' ' -f 1)"
     printf 'router-presets.ini\t%s\n' "$router_presets_sha256"
     printf 'web-presets.ini\t%s\n' "$web_presets_sha256"
+    printf 'web-mcp-manifest.tsv\t%s\n' "$web_mcp_manifest_sha256"
 } >"$staging_directory/bundle-manifest.tsv"
 
 # The staged bundle passes the same verification an activation applies,
@@ -225,6 +322,7 @@ if [ -e "$bundle_directory" ] || [ -L "$bundle_directory" ]; then
     exit 1
 fi
 mv -T "$staging_directory" "$bundle_directory"
-printf 'deployment_bundle=%s semantics=%s maximum_count=%s server_sha256=%s router_presets=%s web_presets=%s\n' \
+printf 'deployment_bundle=%s semantics=%s maximum_count=%s server_sha256=%s router_presets=%s web_presets=%s web_mcp_manifest=%s\n' \
     "$bundle_directory" "$checkpoint_semantics" "$maximum_ledger_count" \
-    "$server_sha256" "$router_presets_sha256" "$web_presets_sha256"
+    "$server_sha256" "$router_presets_sha256" "$web_presets_sha256" \
+    "$web_mcp_manifest_sha256"

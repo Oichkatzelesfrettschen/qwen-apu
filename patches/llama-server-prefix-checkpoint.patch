@@ -1,0 +1,752 @@
+The schema-bound prefix checkpoint, on
+f280b26983ad0fdb705a0d9ebf0503e76f2899b0 after the eight-patch production
+series.
+
+A served web turn carries a stable head: the chat template's preamble, the
+system prompt, and the tool schemas the page composes from GET /tools. At
+f280b269 that head is reused across turns of one conversation and, under narrow
+conditions, across conversations that meet the same slot in sequence. The
+narrowness is the whole subject. Qwen3.5 is hybrid, so
+llama_memory_hybrid::seq_pos_min returns the max over its two halves and the
+recurrent half reports one cell at the latest position; the rollback
+update_slots needs therefore always enters the checkpoint search at
+server-context.cpp:3233, and the only thing that keeps a diverging request off
+the do_reset branch at 3263 is a surviving checkpoint at or below the
+divergence point. Those checkpoints are saved with
+LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY (2247), so each carries the recurrent half
+alone and reads the attention cells below its boundary out of a slot that still
+holds them, and the erase loop at 3274 removes every checkpoint above pos_next.
+One request whose prefix diverges below the head therefore takes the whole head
+with it: pos_next reaches 0, every checkpoint is erased, the memory is cleared
+at 3328, and the next request that shares the head reprefills it from token 0.
+
+This patch retains one whole sequence state at the boundary of the last user
+message and restores it for a later request whose token array starts with the
+pinned prefix and extends it. It is saved with LLAMA_STATE_SEQ_FLAGS_NONE, so it
+carries the attention cells and the recurrent state together and a restore
+reconstructs the prefix from the blob rather than from what the slot happens to
+still hold. The restore therefore runs after slot.prompt_clear(), which makes
+the sequence empty before the blob is written and leaves an empty sequence
+rather than a mixed one where the write fails.
+
+The capture proves its own invariant rather than inheriting one. A blob is only
+the prefix's state where the memory holds exactly the tokens the pinned array
+will carry, so the capture requires llama_memory_seq_pos_max to equal
+n_tokens_start - 1 at the site where create_checkpoint settles for a pos_min and
+pos_max that are merely consistent with each other. A capture whose recurrent
+state sat one batch ahead of its own token array would restore an answer rather
+than fail, which is the hazard the whole-state save exists to close.
+
+The pin fills once and holds for the life of the process. Every chat request
+carrying message spans reaches a last-user boundary of its own, so a newest-wins
+rule would hand the pin to exactly the unrelated request the mechanism exists to
+survive: the sequence head, other head, head evicts the head between its two
+uses and reprefills it, which is the behavior at f280b269 the patch is written
+against. Holding the first captured prefix pins the head and leaves the recent
+prompt to the slot, which already carries it. The cost is that an edited system
+prompt or a changed tool set is pinned at the next process start rather than at
+its first request, and that the first eligible request decides what a process
+holds. A failed capture clears the pin, so the next eligible request retries.
+
+The key is a SHA-256 over the fields the retained bytes depend on: the model
+path and the loader's description of what it holds, a digest of the chat
+template's default and tool_use sources, the tuple that decides the layout of
+the state bytes (n_ctx, n_batch, n_ubatch, both cache types, the flash attention
+setting, the checkpoint count and its minimum spacing), the build identity, a
+digest of the tokens of the system span, and a digest of the whole prefix token
+array beside its length. Each field is length-prefixed, so a byte moved across a
+field boundary changes the key. The key labels the pin and the verbatim token
+comparison in server_prefix_checkpoint::covers guards it, so a digest collision
+moves no state. The tool schemas enter the token array through the Jinja
+template and reach no field of their own: where the template renders them inside
+the system block the system span digest carries them, and where it renders them
+elsewhere the prefix token digest does. Both are fields of the key.
+
+Message spans decide whether the mechanism engages at all. server-context.cpp
+reads message_delimiters out of the request body, server-common.cpp writes it
+there from chat_params.message_delimiters on the OAI-compatible chat path alone,
+and the specialized template handlers in common/chat.cpp fill that field. A
+request carrying no delimiters places no user start anywhere, so no batch
+boundary lands at the head, and this patch captures nothing and restores
+nothing. It shares that dependence with the context checkpoints already in the
+file.
+
+QWEN_PREFIX_CHECKPOINT arms it. An unset, empty, or "0" value leaves every hook
+inert and the file behaves as it did, which is the state of every llama-bench,
+probe, and harness in this tree. The mechanism is independent of
+--ctx-checkpoints: the fill loop's break at the last user message is what puts a
+batch boundary at the pin's own boundary, and the patch admits that break when
+the pin is armed while leaving the do_checkpoint spacing rule untouched. A build
+carrying this patch therefore measures the pin at --ctx-checkpoints 0, which is
+what qwen-capacity-policy.sh admits for a build whose server-context.cpp digest
+moves the checkpoint_semantics declaration to unknown.
+
+Arming the pin changes the prompt fill partition where the count is 0, since a
+batch then ends at the last user message that would otherwise have run on. An
+armed run and an unarmed run are two execution shapes, so the control for a
+measurement is an armed run whose prefix the pin does not hold rather than an
+unarmed run.
+
+Two configurations disarm the pin, because each decides the retained bytes while
+leaving the prefix tokens identical and covers() admits a restore on the tokens
+alone. A key field naming either one would label the pin without guarding it, so
+the refusal is stated where the reason is still readable. Both are decided
+against the arming request rather than against the running total, so a process
+meeting both logs both reasons.
+
+A draft context is the first. create_checkpoint saves ctx_tgt, ctx_dft, and the
+speculative boundary stash together and the checkpoint restore loads all three,
+while the pin holds ctx_tgt alone, so a restore would advance n_past to the
+pinned prefix over a draft context and an eagle3 g_embd row still describing the
+previous prompt. common_speculative_impl_draft_eagle3 is the one implementation
+overriding get_state and set_state, and common_speculative_init admits every
+draft-loading implementation only where params.draft.ctx_dft is non-null, so
+ctx_dft names exactly the configurations carrying such state. --spec-type
+draft-simple and draft-mtp both set it, so a draft-pair section and the pin are
+mutually exclusive inside one server process, and a router child serving that
+section disarms while its siblings stay armed under the same environment. An
+n-gram speculator leaves ctx_dft null, returns no state
+from common_speculative_get_state, and has its drafts verified against the
+target, so it stays armed.
+
+A loaded lora adapter is the second. construct_lora_list copies
+params_base.lora_adapters and rescales by index, so a request body's lora map
+changes the scales the prefix state was computed under; launch_slot_with_task
+clears slot.prompt for that change and leaves this process-scoped pin standing,
+and covers() would accept the next request that reproduces the tokens. The arm
+refuses a non-empty params_base.lora_adapters, and one predicate over
+slot.lora restates it per request at the fill partition, the capture, and the
+restore, so the three sites cannot diverge. An empty slot.lora leaves
+alora_invocation_start at -1, since lora_all_alora reports false over an empty
+list, so that predicate carries the alora rule the restore previously stated for
+itself. The appliance launches with no adapter and no draft context, so both
+refusals leave the measured path armed.
+
+The hunk offsets encode the post-series line numbers, so the patch applies after
+llama-vulkan-low-priority, llama-no-cpu-fallback, llama-vulkan-duty-cycle,
+llama-vulkan-runtime-submit-limit, llama-vulkan-submit-trace,
+llama-router-tools-proxy, llama-vulkan-view-alias-deps, and
+llama-server-natural-checkpoint-boundary, in that order.
+
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index cea23db99..a951c346a 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -6,6 +6,7 @@
+ #include "server-queue.h"
+ #include "server-schema.h"
+ #include "server-stream.h"
++#include "server-prefix-checkpoint.h"
+ 
+ #include "build-info.h"
+ #include "common.h"
+@@ -37,6 +38,94 @@
+ 
+ constexpr int HTTP_POLLING_SECONDS = 1;
+ 
++// One retained sequence state at the boundary of the last user message, held
++// across conversations rather than across turns of one.
++//
++// A context checkpoint in slot.prompt.checkpoints is saved with
++// LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY, so it carries the recurrent state alone
++// and reads the attention cells below its boundary out of a slot that still
++// holds them; update_slots erases every such checkpoint above the divergence
++// point, and a request that diverges below all of them clears the slot
++// outright. This pin is saved with LLAMA_STATE_SEQ_FLAGS_NONE, so it carries
++// both halves and a restore reconstructs the whole prefix from the blob rather
++// than from what the slot happens to still hold.
++//
++// The pin lives in the server process and one process serves one model under
++// one tuple, so the model, template, runtime, and build fields of its key are
++// constant while it lives. They are derived and logged so the key states what
++// the retained bytes claim to be, and the prefix token array is the field that
++// distinguishes one process's pin from another's.
++//
++// One state fills the pin and holds it, because every chat request reaches a
++// last-user boundary of its own and a newest-wins rule would hand the pin to
++// the unrelated request the mechanism exists to survive.
++struct server_prefix_checkpoint {
++    bool armed = false;
++
++    std::string          key;
++    llama_tokens         tokens;
++    std::vector<uint8_t> data;
++
++    size_t n_tokens() const { return tokens.size(); }
++
++    bool empty() const { return data.empty() || tokens.empty(); }
++
++    void clear() {
++        key.clear();
++        tokens.clear();
++        data.clear();
++        data.shrink_to_fit();
++    }
++
++    // The key labels the pin and this comparison guards it: a request restores
++    // the state only where its own tokens reproduce the pinned array element
++    // by element, so a digest collision moves no state.
++    bool covers(const server_tokens & request) const {
++        if (empty() || request.has_mtmd || request.size() <= tokens.size()) {
++            return false;
++        }
++
++        for (size_t i = 0; i < tokens.size(); i++) {
++            if (request[i] != tokens[i]) {
++                return false;
++            }
++        }
++
++        return true;
++    }
++
++    bool capture(
++            llama_context      * ctx,
++            llama_seq_id         seq_id,
++            const llama_tokens & prefix,
++            const std::string  & prefix_key) {
++        const size_t size = llama_state_seq_get_size_ext(ctx, seq_id, LLAMA_STATE_SEQ_FLAGS_NONE);
++
++        std::vector<uint8_t> buffer;
++        try {
++            buffer.resize(size);
++        } catch (const std::bad_alloc & e) {
++            SRV_WRN("prefix checkpoint: allocation of %zu bytes failed: %s\n", size, e.what());
++            return false;
++        }
++
++        if (llama_state_seq_get_data_ext(ctx, buffer.data(), size, seq_id, LLAMA_STATE_SEQ_FLAGS_NONE) != size) {
++            SRV_WRN("prefix checkpoint: state read returned a short count for %zu bytes\n", size);
++            return false;
++        }
++
++        key    = prefix_key;
++        tokens = prefix;
++        data   = std::move(buffer);
++
++        return true;
++    }
++
++    bool restore(llama_context * ctx, llama_seq_id seq_id) const {
++        return llama_state_seq_set_data_ext(ctx, data.data(), data.size(), seq_id, LLAMA_STATE_SEQ_FLAGS_NONE) == data.size();
++    }
++};
++
+ static common_speculative_output_limits server_output_limits(const common_params & params) {
+     if (params.embedding ||
+             (params.pooling_type != LLAMA_POOLING_TYPE_UNSPECIFIED && params.pooling_type != LLAMA_POOLING_TYPE_NONE)) {
+@@ -866,6 +955,9 @@ private:
+ 
+     std::unique_ptr<server_prompt_cache> prompt_cache;
+ 
++    // env: QWEN_PREFIX_CHECKPOINT
++    server_prefix_checkpoint prefix_checkpoint;
++
+     server_metrics metrics;
+ 
+     // queued prompt stats - llama_decode() is async, so the timing is only valid after a sync
+@@ -1280,6 +1372,70 @@ private:
+         }
+         SRV_TRC("%s", "for more info see https://github.com/ggml-org/llama.cpp/pull/16391\n");
+ 
++        // QWEN_PREFIX_CHECKPOINT arms the schema-bound prefix pin. It reads the
++        // environment rather than an argument so the whole change stays inside
++        // this file while the mechanism is under measurement, and an unset or
++        // empty variable leaves every hook below inert.
++        //
++        // Two configurations disarm it here, where the reason is still readable
++        // beside the state that would have been retained.
++        //
++        // A draft context carries state the pin does not hold. create_checkpoint
++        // saves ctx_tgt, ctx_dft, and the speculative boundary stash together,
++        // and the checkpoint restore loads all three; the pin holds ctx_tgt
++        // alone, so restoring it would advance n_past to the pinned prefix over
++        // a draft context and an eagle3 g_embd row still describing the previous
++        // prompt. common_speculative_impl_draft_eagle3 is the one implementation
++        // overriding get_state and set_state, and every implementation that
++        // loads a draft model is admitted by common_speculative_init only where
++        // params.draft.ctx_dft is non-null, so ctx_dft names exactly the
++        // configurations that carry such state. An n-gram speculator leaves
++        // ctx_dft null, returns no state from common_speculative_get_state, and
++        // has its drafts verified against the target, so it stays armed.
++        //
++        // A loaded adapter makes the retained bytes a function of a setting the
++        // pin does not observe. construct_lora_list copies
++        // params_base.lora_adapters and rescales by index, so a per-request
++        // lora map changes the scales the prefix state was computed under while
++        // launch_slot_with_task clears slot.prompt alone and leaves this pin
++        // standing; covers() compares tokens and would accept it. Binding the
++        // adapter list into the key would label the pin rather than guard it,
++        // since the key is recorded and the token comparison is what admits a
++        // restore, so the pin refuses the whole configuration instead.
++        {
++            const char * prefix_checkpoint_env = getenv("QWEN_PREFIX_CHECKPOINT");
++
++            const bool prefix_checkpoint_requested =
++                prefix_checkpoint_env != nullptr &&
++                prefix_checkpoint_env[0] != '\0' &&
++                strcmp(prefix_checkpoint_env, "0") != 0;
++
++            // Both refusals are decided against the request rather than against
++            // the running total, so a launch carrying a draft context and an
++            // adapter logs both reasons and a reader tests each predicate on its
++            // own line.
++            bool prefix_checkpoint_refused = false;
++
++            if (prefix_checkpoint_requested && ctx_dft != nullptr) {
++                SRV_WRN("%s", "prefix checkpoint refuses a draft context: speculative decoding carries "
++                        "draft and boundary state the pin does not hold\n");
++                prefix_checkpoint_refused = true;
++            }
++
++            if (prefix_checkpoint_requested && !params_base.lora_adapters.empty()) {
++                SRV_WRN("prefix checkpoint refuses %zu loaded lora adapter(s): the retained state depends "
++                        "on per-request adapter scales the pin does not observe\n",
++                        params_base.lora_adapters.size());
++                prefix_checkpoint_refused = true;
++            }
++
++            prefix_checkpoint.armed = prefix_checkpoint_requested && !prefix_checkpoint_refused;
++
++            if (prefix_checkpoint.armed) {
++                SRV_INF("%s", "prefix checkpoint is armed by QWEN_PREFIX_CHECKPOINT\n");
++            }
++        }
++
+         if (params_base.n_ctx_checkpoints > 0) {
+             SRV_TRC("context checkpoints enabled, max = %d, min spacing = %d\n",
+                     params_base.n_ctx_checkpoints, params_base.checkpoint_min_step);
+@@ -2205,6 +2361,72 @@ private:
+         return true;
+     }
+ 
++    // One predicate for the fill partition, the capture, and the restore, so the
++    // three sites state the same admission. The arm decision above settles the
++    // process constants; slot.lora is per request, since a lora map in a request
++    // body rescales the adapter list construct_lora_list copies, and a prefix
++    // state computed under one set of scales describes no other. The list is
++    // empty on every launch that loaded no adapter, which is what leaves the
++    // measured appliance path armed.
++    bool prefix_checkpoint_admits(const server_slot & slot) const {
++        return prefix_checkpoint.armed && slot.lora.empty();
++    }
++
++    // The key over every field the retained prefix bytes depend on. The chat
++    // template renders tool schemas into the system message, so the system span
++    // digest carries the tool set and the server observes no field that would
++    // separate the two; a caller needing them apart supplies its own.
++    std::string prefix_checkpoint_key_of(const server_slot & slot, const llama_tokens & prefix) const {
++        prefix_checkpoint_key_fields fields;
++
++        char model_desc[256] = { 0 };
++        llama_model_desc(model_tgt, model_desc, sizeof(model_desc));
++
++        fields.model_identity =
++            params_base.model.path + "|" + model_desc + "|" +
++            std::to_string(llama_model_n_params(model_tgt));
++
++        fields.chat_template = prefix_checkpoint_digest(
++            common_chat_templates_source(chat_params.tmpls.get(), "") + "\n" +
++            common_chat_templates_source(chat_params.tmpls.get(), "tool_use"));
++
++        // the tuple that decides the layout of the bytes the state call writes
++        fields.runtime_tuple =
++            std::to_string(slot.n_ctx)                         + "," +
++            std::to_string(params_base.n_batch)                + "," +
++            std::to_string(params_base.n_ubatch)               + "," +
++            std::to_string((int) params_base.cache_type_k)     + "," +
++            std::to_string((int) params_base.cache_type_v)     + "," +
++            std::to_string((int) params_base.flash_attn_type)  + "," +
++            std::to_string(params_base.n_ctx_checkpoints)      + "," +
++            std::to_string(params_base.checkpoint_min_step);
++
++        fields.build_identity =
++            std::string(llama_commit()) + "-" + std::to_string(llama_build_number());
++
++        size_t system_pos = 0;
++        size_t system_len = 0;
++        for (const auto & span : slot.task->params.message_spans.spans) {
++            if (span.role == COMMON_CHAT_ROLE_SYSTEM) {
++                system_pos = span.pos;
++                system_len = span.len;
++                break;
++            }
++        }
++        if (system_pos > prefix.size()) {
++            system_pos = prefix.size();
++        }
++        if (system_pos + system_len > prefix.size()) {
++            system_len = prefix.size() - system_pos;
++        }
++
++        fields.system_span_digest  = prefix_checkpoint_token_digest(prefix.data() + system_pos, system_len);
++        fields.prefix_token_digest = prefix_checkpoint_token_digest(prefix.data(), prefix.size());
++        fields.n_prefix_tokens     = prefix.size();
++
++        return prefix_checkpoint_key(fields);
++    }
++
+     // n_tokens_cur: the number of tokens added to the batch for the current slot
+     void create_checkpoint(server_slot & slot, const int64_t n_tokens_cur, llama_pos pos_min, llama_pos pos_max) {
+         const int id_task = slot.task->id;
+@@ -3102,6 +3324,41 @@ private:
+                                 // reuse any previously computed tokens that are common with the new prompt
+                                 n_past = slot.prompt.tokens.get_common_prefix(input_tokens);
+ 
++                                // Restore the pinned prefix where the slot reaches less far than
++                                // the pin does. The pin holds a whole sequence state, so the slot
++                                // is cleared first and the blob supplies both the attention cells
++                                // and the recurrent state; a partial checkpoint could not do this,
++                                // because it carries the recurrent half alone and reads the rest
++                                // out of a slot that a diverging request has already cleared.
++                                // An empty slot.lora leaves alora_invocation_start at -1, since
++                                // lora_all_alora reports false over an empty list, so the
++                                // admission predicate covers the alora caching rule below.
++                                if (prefix_checkpoint_admits(slot) &&
++                                    n_past < (int) prefix_checkpoint.n_tokens() &&
++                                    prefix_checkpoint.covers(input_tokens)) {
++                                    const int64_t t_start = ggml_time_us();
++
++                                    slot.prompt_clear();
++
++                                    if (prefix_checkpoint.restore(ctx_tgt, slot.id)) {
++                                        slot.prompt.tokens = server_tokens(prefix_checkpoint.tokens, false);
++
++                                        n_past = (int) prefix_checkpoint.n_tokens();
++
++                                        SLT_INF(slot, "restored prefix checkpoint, n_past = %d, size = %.3f MiB, took %.2f ms, key = %s\n",
++                                                n_past, prefix_checkpoint.data.size() / (1024.0 * 1024.0),
++                                                (ggml_time_us() - t_start) / 1000.0, prefix_checkpoint.key.c_str());
++                                    } else {
++                                        // the slot is already cleared, so a failed restore leaves
++                                        // an empty sequence rather than a half-written one
++                                        SLT_WRN(slot, "%s", "prefix checkpoint restore failed, reprocessing the whole prompt\n");
++
++                                        prefix_checkpoint.clear();
++
++                                        n_past = 0;
++                                    }
++                                }
++
+                                 // if there is an alora invoked, don't cache after the invocation start
+                                 if (slot.alora_invocation_start > 0) {
+                                     SLT_DBG(slot, "only caching to alora invocation start (n_past = %d, alora_invocation_start = %d)\n", n_past, slot.alora_invocation_start);
+@@ -3431,11 +3688,17 @@ private:
+                         slot.prompt.tokens.push_back(cur_tok);
+ 
+                         // break at the last user message, or at user messages at least min step past the last checkpoint
+-                        if (do_checkpoint && spans.is_user_start(slot.prompt.n_tokens())) {
++                        // the pinned prefix needs the same break at the last user message alone, so a batch starts
++                        // exactly at its boundary and the memory holds the prefix whole when the capture reads it
++                        if ((do_checkpoint || prefix_checkpoint_admits(slot)) && spans.is_user_start(slot.prompt.n_tokens())) {
+                             const auto pos = slot.prompt.n_tokens();
+                             const auto & checkpoints = slot.prompt.checkpoints;
+ 
+-                            if (pos == last_user_pos || checkpoints.empty() || pos > checkpoints.back().n_tokens + params_base.checkpoint_min_step) {
++                            if (pos == last_user_pos) {
++                                break;
++                            }
++
++                            if (do_checkpoint && (checkpoints.empty() || pos > checkpoints.back().n_tokens + params_base.checkpoint_min_step)) {
+                                 break;
+                             }
+                         }
+@@ -3504,6 +3767,46 @@ private:
+                     if (do_checkpoint) {
+                         create_checkpoint(slot, n_tokens_cur, pos_min, pos_max);
+                     }
++
++                    // Capture the pin where the fill loop stopped exactly at the last user
++                    // message: the memory then holds [0, n_tokens_start) whole and none of the
++                    // current batch. The blob needs that equality rather than the internal
++                    // consistency create_checkpoint settles for, so pos_max is compared against
++                    // the token count the array will carry: a capture whose recurrent state sits
++                    // ahead of its own tokens would restore an answer rather than fail.
++                    //
++                    // The pin fills once and holds. Every chat request reaches this boundary
++                    // with a prefix of its own, so replacing the pin with the newest one would
++                    // hand it to the unrelated request the mechanism exists to survive: the
++                    // sequence head, other head, head would evict the head between its two
++                    // uses and reprefill it. Holding the first captured prefix pins the head
++                    // and leaves the recent prompt to the slot, which already carries it. The
++                    // cost is that an edited system prompt or a changed tool set is pinned at
++                    // the next process start rather than at its first request, and a failed
++                    // capture clears the pin so the next eligible request retries.
++                    if (prefix_checkpoint_admits(slot) && prefix_checkpoint.empty() &&
++                        is_last_user_message && n_tokens_start > 0 &&
++                        pos_min >= 0 && pos_max == (llama_pos) n_tokens_start - 1 && !has_mtmd &&
++                        !slot.prompt.tokens.has_mtmd && !input_tokens.has_mtmd) {
++                        const auto & prompt_tokens = slot.prompt.tokens.get_tokens();
++
++                        const llama_tokens prefix(
++                            prompt_tokens.begin(), prompt_tokens.begin() + n_tokens_start);
++
++                        const std::string prefix_key = prefix_checkpoint_key_of(slot, prefix);
++
++                        {
++                            const int64_t t_start = ggml_time_us();
++
++                            if (prefix_checkpoint.capture(ctx_tgt, slot.id, prefix, prefix_key)) {
++                                SLT_INF(slot, "captured prefix checkpoint, n_tokens = %d, size = %.3f MiB, took %.2f ms, key = %s\n",
++                                        (int) n_tokens_start, prefix_checkpoint.data.size() / (1024.0 * 1024.0),
++                                        (ggml_time_us() - t_start) / 1000.0, prefix_key.c_str());
++                            } else {
++                                prefix_checkpoint.clear();
++                            }
++                        }
++                    }
+                 }
+ 
+                 if (!slot_batched) {
+diff --git a/tools/server/server-prefix-checkpoint.h b/tools/server/server-prefix-checkpoint.h
+new file mode 100644
+index 000000000..174aa5c7f
+--- /dev/null
++++ b/tools/server/server-prefix-checkpoint.h
+@@ -0,0 +1,246 @@
++#pragma once
++
++// Key derivation for the schema-bound prefix checkpoint.
++//
++// The server retains one full sequence state captured at the boundary of the
++// last user message and restores it for any later request whose token array
++// starts with the same prefix, whatever conversation that request belongs to.
++// A state is only the state a prefix would produce while the model, the chat
++// template, the runtime tuple that decides the state layout, and the prefix
++// tokens themselves all hold, so the key is a digest over exactly those fields
++// and states what the retained bytes claim to be. The pin fills once and holds
++// for the life of the process, so the key is derived at the one capture and
++// read back from the log rather than compared against a later candidate.
++//
++// The digest labels the pin and the verbatim token comparison guards it:
++// prefix_checkpoint_key names what the retained state claims to be, and the
++// restore path still compares the pinned token array element by element
++// against the request before it loads anything, so a digest collision moves no
++// state.
++//
++// The chat template renders tool schemas into the system message, so the
++// server observes one system span rather than a system prompt and a tool set
++// it could digest apart. system_span_digest therefore carries the tool
++// schemas, and a caller that needs them separated supplies its own field.
++//
++// Two further inputs decide the retained bytes and are fields of no key below,
++// because a key labels a pin that the verbatim token comparison admits. A
++// per-request lora scale map and a speculative draft context each change what a
++// prefix state means while leaving the prefix tokens identical, so the server
++// refuses capture and restore over either configuration and states the reason
++// in its log rather than recording a field that would guard nothing.
++
++#include <cstddef>
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++#include <string>
++#include <vector>
++
++struct prefix_checkpoint_sha256 {
++    uint32_t state[8];
++    uint64_t n_bits;
++    uint8_t  block[64];
++    size_t   n_block;
++
++    prefix_checkpoint_sha256() { reset(); }
++
++    void reset() {
++        state[0] = 0x6a09e667u; state[1] = 0xbb67ae85u;
++        state[2] = 0x3c6ef372u; state[3] = 0xa54ff53au;
++        state[4] = 0x510e527fu; state[5] = 0x9b05688cu;
++        state[6] = 0x1f83d9abu; state[7] = 0x5be0cd19u;
++        n_bits  = 0;
++        n_block = 0;
++    }
++
++    static uint32_t rotr(uint32_t x, uint32_t n) { return (x >> n) | (x << (32 - n)); }
++
++    void compress(const uint8_t * p) {
++        static const uint32_t k[64] = {
++            0x428a2f98u, 0x71374491u, 0xb5c0fbcfu, 0xe9b5dba5u,
++            0x3956c25bu, 0x59f111f1u, 0x923f82a4u, 0xab1c5ed5u,
++            0xd807aa98u, 0x12835b01u, 0x243185beu, 0x550c7dc3u,
++            0x72be5d74u, 0x80deb1feu, 0x9bdc06a7u, 0xc19bf174u,
++            0xe49b69c1u, 0xefbe4786u, 0x0fc19dc6u, 0x240ca1ccu,
++            0x2de92c6fu, 0x4a7484aau, 0x5cb0a9dcu, 0x76f988dau,
++            0x983e5152u, 0xa831c66du, 0xb00327c8u, 0xbf597fc7u,
++            0xc6e00bf3u, 0xd5a79147u, 0x06ca6351u, 0x14292967u,
++            0x27b70a85u, 0x2e1b2138u, 0x4d2c6dfcu, 0x53380d13u,
++            0x650a7354u, 0x766a0abbu, 0x81c2c92eu, 0x92722c85u,
++            0xa2bfe8a1u, 0xa81a664bu, 0xc24b8b70u, 0xc76c51a3u,
++            0xd192e819u, 0xd6990624u, 0xf40e3585u, 0x106aa070u,
++            0x19a4c116u, 0x1e376c08u, 0x2748774cu, 0x34b0bcb5u,
++            0x391c0cb3u, 0x4ed8aa4au, 0x5b9cca4fu, 0x682e6ff3u,
++            0x748f82eeu, 0x78a5636fu, 0x84c87814u, 0x8cc70208u,
++            0x90befffau, 0xa4506cebu, 0xbef9a3f7u, 0xc67178f2u,
++        };
++
++        uint32_t w[64];
++        for (int i = 0; i < 16; i++) {
++            w[i] = ((uint32_t) p[4*i + 0] << 24) | ((uint32_t) p[4*i + 1] << 16) |
++                   ((uint32_t) p[4*i + 2] <<  8) | ((uint32_t) p[4*i + 3]);
++        }
++        for (int i = 16; i < 64; i++) {
++            const uint32_t s0 = rotr(w[i - 15],  7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>  3);
++            const uint32_t s1 = rotr(w[i -  2], 17) ^ rotr(w[i -  2], 19) ^ (w[i -  2] >> 10);
++            w[i] = w[i - 16] + s0 + w[i - 7] + s1;
++        }
++
++        uint32_t a = state[0];
++        uint32_t b = state[1];
++        uint32_t c = state[2];
++        uint32_t d = state[3];
++        uint32_t e = state[4];
++        uint32_t f = state[5];
++        uint32_t g = state[6];
++        uint32_t h = state[7];
++
++        for (int i = 0; i < 64; i++) {
++            const uint32_t s1    = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
++            const uint32_t ch    = (e & f) ^ ((~e) & g);
++            const uint32_t temp1 = h + s1 + ch + k[i] + w[i];
++            const uint32_t s0    = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
++            const uint32_t maj   = (a & b) ^ (a & c) ^ (b & c);
++            const uint32_t temp2 = s0 + maj;
++
++            h = g; g = f; f = e; e = d + temp1;
++            d = c; c = b; b = a; a = temp1 + temp2;
++        }
++
++        state[0] += a; state[1] += b; state[2] += c; state[3] += d;
++        state[4] += e; state[5] += f; state[6] += g; state[7] += h;
++    }
++
++    void update(const void * data, size_t n) {
++        const uint8_t * p = (const uint8_t *) data;
++
++        n_bits += (uint64_t) n * 8;
++
++        while (n > 0) {
++            const size_t take = (64 - n_block) < n ? (64 - n_block) : n;
++            memcpy(block + n_block, p, take);
++            n_block += take;
++            p       += take;
++            n       -= take;
++
++            if (n_block == 64) {
++                compress(block);
++                n_block = 0;
++            }
++        }
++    }
++
++    void update(const std::string & s) { update(s.data(), s.size()); }
++
++    std::string hex() {
++        uint8_t pad[72];
++        size_t  n_pad = 0;
++
++        pad[n_pad++] = 0x80;
++        while ((n_block + n_pad) % 64 != 56) {
++            pad[n_pad++] = 0x00;
++        }
++
++        const uint64_t bits = n_bits;
++        for (int i = 7; i >= 0; i--) {
++            pad[n_pad++] = (uint8_t) ((bits >> (8*i)) & 0xff);
++        }
++        update(pad, n_pad);
++
++        char out[65];
++        for (int i = 0; i < 8; i++) {
++            snprintf(out + 8*i, 9, "%08x", state[i]);
++        }
++
++        return std::string(out, 64);
++    }
++};
++
++inline std::string prefix_checkpoint_digest(const void * data, size_t n) {
++    prefix_checkpoint_sha256 h;
++    h.update(data, n);
++    return h.hex();
++}
++
++inline std::string prefix_checkpoint_digest(const std::string & s) {
++    return prefix_checkpoint_digest(s.data(), s.size());
++}
++
++// A token array digests as its little-endian 32-bit elements, so the digest is
++// the same on every host that agrees on the tokenizer rather than on the
++// compiler's own vector padding.
++inline std::string prefix_checkpoint_token_digest(const int32_t * tokens, size_t n_tokens) {
++    prefix_checkpoint_sha256 h;
++
++    for (size_t i = 0; i < n_tokens; i++) {
++        const uint32_t v = (uint32_t) tokens[i];
++        const uint8_t  b[4] = {
++            (uint8_t) ( v        & 0xff),
++            (uint8_t) ((v >>  8) & 0xff),
++            (uint8_t) ((v >> 16) & 0xff),
++            (uint8_t) ((v >> 24) & 0xff),
++        };
++        h.update(b, 4);
++    }
++
++    return h.hex();
++}
++
++// Every field a retained prefix state depends on, in one place, so a reader
++// checks the key against the list rather than against the call site.
++struct prefix_checkpoint_key_fields {
++    // model file path and the loader's own description of what it holds
++    std::string model_identity;
++
++    // the chat template text the server resolved for this model
++    std::string chat_template;
++
++    // n_ctx, n_batch, n_ubatch, cache type K, cache type V, flash attention,
++    // and the context checkpoint count: the tuple that decides the layout of
++    // the bytes llama_state_seq_get_data_ext writes
++    std::string runtime_tuple;
++
++    // the build the state was produced by, since a state blob is a private
++    // encoding rather than a stable format
++    std::string build_identity;
++
++    // digest of the tokens of the system span, which carries the tool schemas
++    std::string system_span_digest;
++
++    // digest of the whole retained prefix token array
++    std::string prefix_token_digest;
++
++    // length of that array, stated beside its digest so a truncation is a
++    // different key rather than a different reading of the same one
++    size_t n_prefix_tokens = 0;
++};
++
++// The key is a digest over length-prefixed fields, so a byte moved from one
++// field into the next changes the key rather than leaving it alone.
++inline std::string prefix_checkpoint_key(const prefix_checkpoint_key_fields & fields) {
++    prefix_checkpoint_sha256 h;
++
++    const auto add = [&h](const char * name, const std::string & value) {
++        char header[64];
++        const int n = snprintf(header, sizeof(header), "%s:%zu:", name, value.size());
++        h.update(header, (size_t) (n > 0 ? n : 0));
++        h.update(value);
++        h.update("\n", 1);
++    };
++
++    h.update("qwen-prefix-checkpoint-v1\n");
++
++    add("model",    fields.model_identity);
++    add("template", fields.chat_template);
++    add("runtime",  fields.runtime_tuple);
++    add("build",    fields.build_identity);
++    add("system",   fields.system_span_digest);
++    add("prefix",   fields.prefix_token_digest);
++
++    char count[64];
++    const int n = snprintf(count, sizeof(count), "n_prefix_tokens:%zu\n", fields.n_prefix_tokens);
++    h.update(count, (size_t) (n > 0 ? n : 0));
++
++    return h.hex();
++}
