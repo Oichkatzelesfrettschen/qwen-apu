@@ -11,7 +11,9 @@ in runtime/appliance-path-allowlist.tsv names the first class by prefix with
 its reason; everything else fails. A line carrying `appliance-path: named`
 names a path outside the root on purpose -- the doctor's legacy table, a
 sanitized ledger string, a fixture proving a foreign path is refused -- and
-is admitted by that marker alone.
+is admitted by that marker alone. A file whose first five lines carry
+`appliance-path: fixtures` is the ratchet's own test, whose fixtures are the
+violations it proves are caught, and is skipped whole.
 
 usage: check-appliance-paths.py [--root DIR]
 """
@@ -25,8 +27,9 @@ import sys
 from pathlib import Path
 
 ABSOLUTE = re.compile(r"(?<![\w.$/{}])(/(?:usr/local|opt|etc|var|srv|home)/[\w./$@{}-]*)")
-HOME_ANCHORED = re.compile(r"(\$\{?HOME[^}/]*\}?/[\w./$@{}-]*|(?<![\w/])~/[\w./$@{}-]*)")
+HOME_ANCHORED = re.compile(r"(\$\{?HOME[^}/]*\}?/[\w./$@{}-]*|(?<![\w/])~/[\w./$@{}-]*)")  # appliance-path: named
 NAMED_MARKER = "appliance-path: named"
+FIXTURES_MARKER = "appliance-path: fixtures"
 SCANNED_SUFFIXES = {".sh", ".py"}
 
 
@@ -98,6 +101,10 @@ def main() -> int:
     findings: list[str] = []
     scanned = 0
     for path in tracked_files(root):
+        with path.open(encoding="utf-8", errors="replace") as handle:
+            head = [handle.readline() for _ in range(5)]
+        if any(FIXTURES_MARKER in line for line in head):
+            continue
         scanned += 1
         for number, line in code_lines(path):
             if NAMED_MARKER in line:

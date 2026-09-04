@@ -1,4 +1,5 @@
 #!/bin/sh
+# appliance-path: fixtures -- every path below is a violation this test proves caught.
 # The path ratchet over a scratch repository: the shipped tree is clean, a
 # script naming /usr/local, /opt, /etc, $HOME, or ~/ storage fails with the
 # file and line, an allowlisted prefix passes, a comment passes, a marked line

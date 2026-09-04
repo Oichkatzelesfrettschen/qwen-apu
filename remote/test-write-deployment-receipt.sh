@@ -92,7 +92,7 @@ state_directory=$work_directory/state
 mkdir -p "$state_directory"
 printf 'state=running server_pid=1 profile=low-async lan_exposure=1 lan_address=192.0.2.10 lan_name=qwen-laptop.local lan_open=1\n' \
     >"$state_directory/session.status"
-printf 'served_page source=$HOME/qwen-laptop-setup/webui sha256=%s prompt_bound=1000 output_bound=200\n' \
+printf 'served_page source=/tmp/qwen-apu/webui sha256=%s prompt_bound=1000 output_bound=200\n' \
     "$(printf 'page' | sha256sum | cut -d ' ' -f 1)" >>"$state_directory/session.status"
 
 run_writer() {
@@ -130,7 +130,7 @@ else
     exit 1
 fi
 case $(field served_page_identity) in
-    "source=\$HOME/qwen-laptop-setup/webui sha256=$(printf 'page' | sha256sum | cut -d ' ' -f 1) prompt_bound=1000 output_bound=200")
+    "source=/tmp/qwen-apu/webui sha256=$(printf 'page' | sha256sum | cut -d ' ' -f 1) prompt_bound=1000 output_bound=200")
         report served_page_identity_field accepted ;;
     *)
         printf 'served_page_identity field did not read the session served_page line: %s\n' \

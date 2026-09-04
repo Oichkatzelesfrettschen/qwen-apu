@@ -14,13 +14,13 @@ report() {
 default_home=$(env -u QWEN_HOME "$resolver" print qwen_home)
 [ "$default_home" = "$tree_root/.runtime" ] && report default_is_repo_local ok || report default_is_repo_local "$default_home"
 case $default_home in
-    "${HOME:?}"/qwen-* | "$HOME"/.runtime) report default_is_not_a_home_sibling "$default_home" ;;
+    "${HOME:?}"/qwen-* | "$HOME"/.runtime) report default_is_not_a_home_sibling "$default_home" ;;  # appliance-path: named
     *) report default_is_not_a_home_sibling ok ;;
 esac
 
 # ---- every declared path sits under the root ----
 paths_under_root=ok
-"$resolver" paths | while IFS="$(printf '\t')" read -r name value; do
+env -u QWEN_HOME "$resolver" paths | while IFS="$(printf '\t')" read -r name value; do
     case $name in
         qwen_tree_root) [ "$value" = "$tree_root" ] || { printf 'tree root %s\n' "$value"; exit 1; } ;;
         *) case $value in "$tree_root/.runtime"*) ;; *) printf '%s outside the root: %s\n' "$name" "$value"; exit 1 ;; esac ;;
