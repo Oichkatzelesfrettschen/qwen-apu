@@ -397,6 +397,7 @@ case $action in
                               QWEN_VALIDATED_TUPLES QWEN_CTX_CHECKPOINT_LEDGER \
                               QWEN_ACTIVE_DEPLOYMENT_DIRECTORY \
                               QWEN_PIPELINE_CENSUS QWEN_PERF_LOGGER \
+                              QWEN_FORCE_INTEGER_DOT \
                               QWEN_BATCH_SIZE QWEN_UBATCH_SIZE \
                               QWEN_CACHE_TYPE_K QWEN_CACHE_TYPE_V \
                               QWEN_FLASH_ATTN \

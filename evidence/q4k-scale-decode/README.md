@@ -191,17 +191,21 @@ spanned the scale block and a `qs` dword would need a role per destination compo
 `classify-loop-phases.py` states one per load.
 
 **Equivalence.** `scale-select-equivalence.py` beside this file closes the whole 2**96 input
-space per value of `v_im` by linearity rather than sampling it. At a fixed `v_im` every
-formulation is constant shifts, constant masks, byte gathers, and unions of disjoint bit
-fields, none of which takes the conjunction of two input bits or carries, so each is linear
-over GF(2); a linear map is determined by its image of a basis, so two such maps that send
-zero to zero and agree on the ninety-six single-bit inputs agree everywhere. The script
-establishes that premise for each arm and for the control -- `f(0) == 0` and
+space per value of `v_im` with a basis argument, conditional on one premise the source
+carries rather than the script. At a fixed `v_im` every formulation is constant shifts,
+constant masks, byte gathers, and unions of disjoint bit fields, none of which takes the
+conjunction of two input bits or carries, so each is linear over GF(2); a linear map is
+determined by its image of a basis, so two such maps that send zero to zero and agree on the
+ninety-six single-bit inputs agree everywhere. The premise is established by reading the
+expressions, and the script checks it for each arm and for the control -- `f(0) == 0` and
 `f(a ^ b) == f(a) ^ f(b)` over 20,000 random pairs -- then reads the basis, and reports
-`linear=yes basis_agrees=yes` on all twelve arm-and-`v_im` rows. Two hundred thousand random
-draws follow as a redundant sample and add nothing the basis has not settled. A byte-swap
-defect in the shipped arm is refused on the basis and a conjunction added to it is refused on
-superposition. The float arithmetic is untouched, so the accumulated value is unchanged bit
+`linear=yes basis_agrees=yes` on all twelve arm-and-`v_im` rows. Mark the evidence class
+exactly: a finite sample refutes a formulation that left the linear vocabulary and certifies
+none that stayed inside it, since a nonlinear map can match a linear one on any sample and on
+every basis vector, so the reported closure is exhaustive given the premise and no stronger.
+Two hundred thousand random draws follow and add nothing the basis has not settled. A
+byte-swap defect in the shipped arm is refused on the basis and a conjunction added to it is
+refused on superposition. The float arithmetic is untouched, so the accumulated value is unchanged bit
 for bit and the appliance arm predicts token identity rather than a tolerance.
 
 **The five formulations, and the four this one was chosen over.** Whole-shader at
@@ -426,11 +430,52 @@ directory, the convention `evidence/e4b-summary-producer/` sets. Each receipt re
 first: another driver compiles the same SPIR-V with another compiler and answers a question
 about that compiler.
 
+## The device answered, and the answer is smaller than this page predicts
+
+`evidence/raven2-vulkan-kernel-census/q4k-scale-decode/` carries the served run of both
+patches together on all three runtime classes, each refuted on its own interval:
+
+| class | recipe | mean paired delta | nominal 95% interval |
+| --- | --- | ---: | --- |
+| `qwen38-2b-distill` | Q4_K_M, 48.91% Q4_K by byte | +1.83% | +1.63% to +2.04% |
+| `qwen35-08b` | Q8_0, no Q4_K bytes | +0.26% | -0.28% to +0.80% |
+| `qwen38-4b-distill` | Q4_K_M | -0.02% | -0.10% to +0.06% |
+
+Four comparable pairs and zero arm failures on each, one selected graphics clock on every
+arm. Every interval sits below the +5% promotion bound, so the served verdict is `refuted`
+and the candidates stay in this lane rather than reaching the serving preset.
+
+The two Q4_K_M rows are the result this page did not predict. Both dispatch the shader these
+patches rewrite, both ran against one control from one binary, and they separate by 1.85
+points with intervals nowhere near touching. What the shorter mat-vec is worth is a property
+of the checkpoint rather than of the shader, and the ordering candidate is memory-boundness:
+the 2B achieves 10.41 GB/s where the 4B achieves 8.11, and the further a checkpoint sits from
+issue-bound the less an issue-side saving returns.
+
+Correctness held exactly. `run-kernel-delta-witness.sh` under the `margin` contract returned
+the control's token-id array bit-for-bit on all six prompts, with margin retention 1 and a
+maximum absolute log-probability delta of 0, which is the runtime form of the GF(2)
+equivalence `scale-select-equivalence.py` closes above.
+
+The gap between this page and that one is the finding. The body loses 46 of its 395
+instructions and the driver's occupancy statistic rises from 4 subgroups per SIMD to 5, and
+the served token moved under a third of what the instruction count alone reads. The served
+Q4_K decode is therefore not issue-bound to the degree these receipts imply, which is what
+the tensor-type audit's streaming figures already suggested and what no compile receipt can
+settle.
+
+Table 2's eight-row shape has no served arm and acquires none here. `ggml-vulkan.cpp` passes
+`rm_kq = 4` on its `AMD_GCN` branch and the decode ledger records `constants=64,4,1`, so this
+device dispatches the four-row pipeline and selects the eight-row one never. Table 2 stays a
+compile receipt, and measuring it needs a host change that makes the device select that
+shape, which is a different candidate.
+
 ## What did not run
 
-- **Every device arm.** No submission executed; the shimmed node ends at pipeline creation and
-  no figure here is a time. The served kernel-delta A/B, the margin witness, and the Q6_K null
-  all need the appliance and a teardown window, and the laptop belongs to another lane.
+- **The Q6_K null and the kernel-delta bracket.** The served A/B answered the whole-token
+  question and reports its bracket columns as `ledger-missing`, since a served arm collects no
+  pipeline census. Both need the census build through `QWEN_CENSUS_AB_MODE=kernel-delta`,
+  which is its own device window.
 - **A build of the whole binary.** The candidate trees prepare and every Q4_K variant
   `vulkan-shaders-gen` emits compiles; no `build-llama-preset.sh` run and no manifest was
   produced here, because the arm's build belongs to the appliance chain that measures it, and
