@@ -311,6 +311,18 @@ and the accumulated value is unchanged bit for bit.
 *Falsifier.* `v_perm_b32` staying at 0 in the receipt with `v_alignbyte_b32`
 unchanged says GLSL cannot reach the byte permute on this chain, which closes
 the candidate at the compiler and restates E2b's finding on a second chain.
+*Result.* `evidence/q4k-scale-decode/` compiles five formulations and the
+falsifier's first half is met on all five. `nir_op_byte_perm_amd` has no
+producer in `nir_opt_algebraic.py` and ACO's `do_pack_2x16` reaches
+`v_perm_b32` only at `gfx_level >= GFX10`, so no GLSL reaches the instruction
+on gfx902. The mechanism above is corrected there: the two `v_alignbyte_b32`
+come from `nir_lower_mem_access_bit_sizes.c`'s unaligned 16-bit load lowering
+rather than from a merge ACO undoes, so reading the twelve scale bytes as the
+three four-byte-aligned words of the packed32 view removes them without a
+permute. The measured saving is -4.25 per row against the -3 predicted here,
+split -1.00 of scale decode and -3.25 of address, and it takes the VGPR
+allocation 64 to 48 at the served shape, which the driver reports as 5
+subgroups per SIMD against 4.
 
 **3. The address rebase through the buffer `soffset` field.** The block byte
 address is `(ib0(n) + i) * 144`, where `ib0(n)` is workgroup-uniform and `i` is
@@ -335,6 +347,14 @@ It removes no VALU and one serialization point per iteration.
 *Falsifier.* SGPR pressure. The shader allocates 48 SGPRs and reuses `s[0:1]`
 for the exec save, which is why ACO rematerializes the descriptor pointer; a
 receipt showing `spilled_sgprs` above 0 refutes the form.
+*Result.* `evidence/q4k-scale-decode/` compiles it as a bottom-tested loop under
+an entry guard and the load leaves the body: `max_lgkm_in_flight` falls 1 to 0
+and the body's scalar count 19 to 4. `nir_opt_licm.c` visits only blocks that
+dominate the loop successor, so a top-tested loop's body is where a
+loop-invariant value stays, and the per-output-row block base leaves with the
+descriptor. Nothing spills at either shape, so the falsifier registered here is
+not the one that binds; the VGPR side is, since the served shape sits at exactly
+64 and 65 would drop the occupancy step.
 
 **5. The packed-FP16 dot: refuted on the compile side, not scheduled.** The
 probes above are the whole reason, and a device arm would measure the +11

@@ -1,0 +1,26 @@
+Driver pipeline hash: 6368264150270813794
+SGPRs: 48
+VGPRs: 64
+Spilled SGPRs: 0
+Spilled VGPRs: 0
+Code size: 11160
+LDS size: 0
+Scratch size: 0
+Subgroups per SIMD: 4
+Combined inputs: 0
+Combined outputs: 0
+Hash: 4014795474
+Instructions: 2346
+Copies: 180
+Branches: 96
+Latency: 15876
+Inverse Throughput: 10796
+VMEM Clause: 34
+SMEM Clause: 70
+Pre-Sched SGPRs: 22
+Pre-Sched VGPRs: 44
+VALU: 1472
+SALU: 413
+VMEM: 72
+SMEM: 70
+VOPD: 0
