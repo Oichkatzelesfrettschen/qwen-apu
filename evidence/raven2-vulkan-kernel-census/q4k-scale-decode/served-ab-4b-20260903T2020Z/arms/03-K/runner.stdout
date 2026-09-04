@@ -1,0 +1,11 @@
+decode_ms=18640.397
+decode_tok_per_second=3.3797563431723048
+decode_tokens=64
+label=03-K
+prefill_ms=1622.617
+prefill_tok_per_second=11.709479193179906
+prompt_tokens=19
+request_status=0
+teardown_status=0
+valid=True
+served_decode=completed label=03-K result_directory=$HOME/q4k-served-ab-4b-20260903T2020Z/arms/03-K

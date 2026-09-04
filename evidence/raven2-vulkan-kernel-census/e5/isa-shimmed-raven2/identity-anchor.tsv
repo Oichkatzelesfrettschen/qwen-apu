@@ -1,0 +1,22 @@
+pipeline	field	appliance	shimmed_workstation
+mul_mat_vec_q4_k_f32_f32_subgroup_no_shmem	source	evidence/raven2-vulkan-kernel-census/e1/receipts/e4-control-nsh-receipt.tsv	arms/production/receipt.tsv
+mul_mat_vec_q4_k_f32_f32_subgroup_no_shmem	spec_constants	0:64,1:4,2:1	0:64,1:4,2:1
+mul_mat_vec_q4_k_f32_f32_subgroup_no_shmem	spirv_sha256	5b149b211ed2739f170d764efb9782c6a3bb6ae8399512ba8dc0c681c62cfdc8	85bf7a2555dfb3567377fda75b5cd6ee9c988e77c9b21b03031c4394c2ea0827
+mul_mat_vec_q4_k_f32_f32_subgroup_no_shmem	spirv_bytes	17320	17404
+mul_mat_vec_q4_k_f32_f32_subgroup_no_shmem	nir_sha256	7ace068a9ca4c82d55671259d88b1745de28a84c23ee2cd757ed0a68106a39bd	ea0bd8b13f35471c541cd81fb8f3b9b5ae902d2c1e2459527ad2fd76c62c147d
+mul_mat_vec_q4_k_f32_f32_subgroup_no_shmem	isa_sha256	ad837848d58d6167f3638a9d2bbbbe276f37b4cd282559f77ef42c7d03af2f61	ad837848d58d6167f3638a9d2bbbbe276f37b4cd282559f77ef42c7d03af2f61
+mul_mat_vec_q4_k_f32_f32_subgroup_no_shmem	served_isa_artifact	evidence/raven2-vulkan-kernel-census/e1/isa/mul_mat_vec_q4_k_f32_f32.s	arms/production/isa.s
+mul_mat_vec_q4_k_f32_f32_subgroup_no_shmem	served_isa_diff	1 line, the retained leading "Compute Shader" stage-name line; the remainder hashes to ad837848	-
+mul_mat_vec_q6_k_f32_f32_subgroup_no_shmem	source	evidence/raven2-vulkan-kernel-census/e1/receipts/q6k-exec-receipt.tsv	arms/production-q6k/receipt.tsv
+mul_mat_vec_q6_k_f32_f32_subgroup_no_shmem	spec_constants	0:64,1:4,2:1	0:64,1:4,2:1
+mul_mat_vec_q6_k_f32_f32_subgroup_no_shmem	spirv_sha256	d584d6b41c26085ac1bef3236b4c24e71f0e98ddcf63ff12da46381b0c12c779	a8e565e7d189c5e62f220dcd5d5cc6230571c6e9320e2d97b5c5d1858407ac81
+mul_mat_vec_q6_k_f32_f32_subgroup_no_shmem	spirv_bytes	25416	25412
+mul_mat_vec_q6_k_f32_f32_subgroup_no_shmem	nir_sha256	18ef01b2916ec9f51b6733ae9e4484ba51539b7d269c12abc45d4e29c4bc1e78	6374adee59d080fbd7fa86317568399b25e2329d421a2e98fea9a393c9feeeb3
+mul_mat_vec_q6_k_f32_f32_subgroup_no_shmem	isa_sha256	0d5c764334d364f5cf078d7507dcab32a82d5519cf9332be3558cc4bbe2a62ab	0d5c764334d364f5cf078d7507dcab32a82d5519cf9332be3558cc4bbe2a62ab
+mul_mat_vec_q6_k_f32_f32_subgroup_no_shmem	served_isa_artifact	evidence/raven2-vulkan-kernel-census/e1/isa/mul_mat_vec_q6_k_f32_f32.s	arms/production-q6k/isa.s
+mul_mat_vec_q6_k_f32_f32_subgroup_no_shmem	served_isa_diff	1 line, the same stage-name line; the remainder hashes to 0d5c7643	-
+-	device_name	AMD Radeon Graphics (RADV RAVEN2)	AMD Ryzen 5 5600X3D 6-Core Processor (RADV RAVEN2)
+-	driver_info	Mesa 26.2.1+git2608201115.88947685514~n~mesarc0	Mesa 26.2.1-arch3.1
+-	workstation_glslc	-	2026.3
+-	workstation_spirv_tools	-	1:1.4.357.0
+-	anchor_scope	two pinned FP16 mat-vec pipelines; no retained appliance artifact compiles OpSDot or emits an SDWA byte select, so the integer-dot path this arm exercises is outside the matched set	-

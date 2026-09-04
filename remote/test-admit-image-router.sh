@@ -263,6 +263,8 @@ env -u QWEN_IMAGE_PROFILES -u QWEN_IMAGE_PROFILE \
     QWEN_ADMISSION_RESTORE=0 \
     QWEN_WEB_LAN=1 \
     QWEN_WEB_LAN_ADDRESS=127.0.0.2 \
+    QWEN_WEB_LAN_OPEN=0 \
+    QWEN_WEB_LAN_NAME='' \
     QWEN_LLAMA_SERVER="$script_directory/test-fixtures/fake-router-server.py" \
     QWEN_VULKAN_LATENCY_PROBE="$latency_probe" \
     QWEN_IMAGE_RUNTIME="$script_directory/test-fixtures/fake-image-runtime.sh" \
@@ -270,7 +272,7 @@ env -u QWEN_IMAGE_PROFILES -u QWEN_IMAGE_PROFILE \
     QWEN_IMAGE_MODEL_PATH="$image_model_directory" \
     QWEN_RADV_ICD="$fixture_icd" \
     QWEN_SERVER_PORT=18082 \
-    QWEN_WEB_BROKER_PORT=18573 \
+    QWEN_WEB_BROKER_PORT=18083 \
     "$harness/admit-image-router.sh" "$lan_output" \
     >"$work/lan.stdout" 2>"$work/lan.stderr"
 lan_status=$?
@@ -313,6 +315,74 @@ if grep -q 'http://127.0.0.1:' "$lan_output/summary.tsv"; then
     keep_on_failure=1
     printf 'test-admit-image-router: the LAN run names a loopback origin\n' >&2
     grep 'http://127.0.0.1:' "$lan_output/summary.tsv" >&2 || true
+    exit 1
+fi
+
+# QWEN_WEB_LAN_OPEN=1 runs the same exposed lane with the bearer removed, which
+# is what an operator serving their own network without a key step launches. The
+# arm reads the three rows that change: the router answers a keyless read, the
+# artifact route answers one too, and the signing route still refuses a request
+# whose session secret this launch never wrote. Every other claim -- the bound
+# listeners, the single grant, the page origins, the fetched artifact -- holds
+# unchanged, which is what makes the open decision a credential change rather
+# than a gate removal.
+open_output=$work/output-lan-open
+mkdir -p "$open_output"
+open_state=$work/state-lan-open
+mkdir -p "$open_state"
+set +e
+env -u QWEN_IMAGE_PROFILES -u QWEN_IMAGE_PROFILE \
+    QWEN_WEBUI_STATE_DIRECTORY="$open_state" \
+    QWEN_MODEL_REGISTRY="$model_registry" \
+    QWEN_MODEL_ROOT="$model_root" \
+    QWEN_ADMISSION_MODEL_ID=image-admission-fixture \
+    QWEN_ADMISSION_CONTEXT=4096 \
+    QWEN_ADMISSION_RESTORE=0 \
+    QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=127.0.0.2 \
+    QWEN_WEB_LAN_OPEN=1 \
+    QWEN_WEB_LAN_NAME='' \
+    QWEN_LLAMA_SERVER="$script_directory/test-fixtures/fake-router-server.py" \
+    QWEN_VULKAN_LATENCY_PROBE="$latency_probe" \
+    QWEN_IMAGE_RUNTIME="$script_directory/test-fixtures/fake-image-runtime.sh" \
+    QWEN_IMAGE_RUNTIME_TEMPLATE=fixture \
+    QWEN_IMAGE_MODEL_PATH="$image_model_directory" \
+    QWEN_RADV_ICD="$fixture_icd" \
+    QWEN_SERVER_PORT=18090 \
+    QWEN_WEB_BROKER_PORT=18091 \
+    "$harness/admit-image-router.sh" "$open_output" \
+    >"$work/lan-open.stdout" 2>"$work/lan-open.stderr"
+open_status=$?
+set -e
+cat "$work/lan-open.stdout"
+if [ "$open_status" -ne 0 ]; then
+    keep_on_failure=1
+    printf 'test-admit-image-router: the open LAN admission refused\n' >&2
+    awk -F'\t' '$2 != "accepted" && $2 != "observed" && $2 != "skipped" { print }' \
+        "$open_output/summary.tsv" >&2 2>/dev/null || true
+    tail -c 2000 "$work/lan-open.stderr" >&2
+    exit 1
+fi
+for open_check in router_listener_bound artifact_listener_bound \
+    session_records_lan_exposure open_router_serves_without_the_bearer \
+    open_grant_requires_the_session_secret artifact_without_credential_refused \
+    browser_page_origin browser_grant_posted_once browser_generation_via_router \
+    browser_requests_stay_on_known_origins browser_artifact_fetched; do
+    if ! awk -F'\t' -v name="$open_check" \
+        '$1 == name && $2 == "accepted" { found = 1 } END { exit found ? 0 : 1 }' \
+        "$open_output/summary.tsv"; then
+        keep_on_failure=1
+        printf 'test-admit-image-router: %s was not accepted in the open LAN run\n' \
+            "$open_check" >&2
+        grep "^$open_check	" "$open_output/summary.tsv" >&2 || true
+        exit 1
+    fi
+done
+if ! grep -q '^artifact_without_credential_refused	accepted	status=200 open=1' \
+    "$open_output/summary.tsv"; then
+    keep_on_failure=1
+    printf 'test-admit-image-router: the open artifact route did not answer a keyless read\n' >&2
+    grep '^artifact_without_credential_refused	' "$open_output/summary.tsv" >&2 || true
     exit 1
 fi
 

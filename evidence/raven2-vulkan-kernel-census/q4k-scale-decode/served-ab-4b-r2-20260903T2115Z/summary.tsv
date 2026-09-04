@@ -1,0 +1,2 @@
+pair	control	outer	inner	first_outer	first_inner	first_delta	second_outer	second_inner	second_delta	replicates	mean_delta	sd_delta	ci_low	ci_high	deltas	sclk_modes	off_regime_arms	bound	sclk_band	verdict	detail
+1	served-ab	C	K	3.381	3.380	-0.0003	3.378	3.379	+0.0003	4	-0.0002	0.0005	-0.0010	+0.0006	-0.0003 +0.0003 +0.0000 -0.0009	1100/1100 1100/1100 1100/1100 1100/1100	0	0.05	0.06	refuted	below bound=0.05 ci=[-0.0010,+0.0006]
