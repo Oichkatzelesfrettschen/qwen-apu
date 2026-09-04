@@ -259,13 +259,61 @@ An `isa_sha256` equal to
 identity outright. A different value makes the appliance's own receipt the
 authority and this one a compiler study.
 
+## The served A/B reaches no int24 arm, and the profile scrub is why
+
+The device window that measured the q4k scale-decode candidates
+(`../q4k-scale-decode/README.md`) left this candidate **unmeasured**, on a
+mechanism in this tree rather than on time or on the toolchain.
+
+`ggml_vk_force_integer_dot()` is the admission. `ggml-vulkan.cpp` reads
+`integerDotProduct4x8BitPackedSignedAccelerated || ggml_vk_force_integer_dot()`
+and RADV reports that property false on RAVEN2, so a build carrying
+`-DGGML_VULKAN_INT24_DOT=ON` executes the production FP16 mat-vec until
+`GGML_VK_FORCE_INTEGER_DOT=1` reaches the server's environment.
+
+`radv-low-priority-env.sh` restores that variable past its scrub under the
+`diagnostic` profile alone, which is this branch's own design: the four serving
+profiles leave it scrubbed so a promoted build stays on the FP16 mat-vec
+whatever the ambient environment holds. `run-served-binary-ab.sh` passes
+`low-async` to every arm it launches. An int24 candidate and its control would
+therefore execute one shader, and the harness would report the difference
+between two runs of the same code. The comparison is not refused; it completes
+and reports zero, which is the worse of the two failures.
+
+The binding above it agrees rather than offering a way around. The served A/B
+requires the control to be the one accepted server row of the fixed-64
+scoreboard receipt and requires that receipt's `campaign-inputs.tsv` to state
+every setting the arms rerun under, and that file reads
+`vulkan_profile low-async`. A diagnostic-profile arm refuses at the receipt
+binding, so the profile is fixed inside this harness rather than chosen by a
+caller.
+
+The appliance glslc is a separate question and it is settled in the arm's
+favor. `mul_mat_vecq.comp` requires `GL_EXT_integer_dot_product` under the
+opposite branch of `GGML_VULKAN_MMVQ_Q8_1_SHADERS`, so shaderc 2023.8 compiles
+the int24 module and the appliance builds this candidate. The admission is what
+is absent, not the binary.
+
+What measures it is an arm-level admission the serving profiles are written to
+withhold: a serving profile that exports `GGML_VK_FORCE_INTEGER_DOT=1` and is
+otherwise `low-async`, carried by a scoreboard receipt of its own, so the
+control and the candidate differ by the shader rather than by the profile. That
+is a change to the profile ledger and to the receipt binding together, and it
+is registered here as the next rung rather than made underneath a measurement.
+
 ## Not run
 
 ```text
 runtime equality        claim A is exact by construction and unmeasured on the
                         device: the arm and its control answering one prompt
                         bit-for-bit is what turns it into a measurement.
-every device arm        falsifiers 2, 3, and 4 need the appliance, which serves
-                        while this branch was written. The four commands are
-                        under "The appliance chain" above.
+falsifier 4             blocked by the profile scrub above rather than by
+                        device availability. The served A/B admits the binary
+                        and runs the control's shader inside it.
+falsifiers 2 and 3      run-kernel-delta-witness.sh and the kernel-delta
+                        bracket pass the same serving profile, so each reaches
+                        the arm only behind the same admission.
+appliance module        the isa_sha256 comparison under "The appliance chain"
+identity                reads the census instrument's module dump, which the
+                        bundle layer refuses on a serving build.
 ```
