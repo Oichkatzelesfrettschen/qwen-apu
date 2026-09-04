@@ -1,0 +1,12 @@
+{
+  "label": "0j-W",
+  "request_status": 0,
+  "teardown_status": 0,
+  "prefill_tok_per_second": 66.25403190654696,
+  "prefill_ms": 286.775,
+  "decode_tok_per_second": 18.97589789882593,
+  "decode_ms": 3320.001,
+  "prompt_tokens": 19,
+  "decode_tokens": 64,
+  "valid": true
+}

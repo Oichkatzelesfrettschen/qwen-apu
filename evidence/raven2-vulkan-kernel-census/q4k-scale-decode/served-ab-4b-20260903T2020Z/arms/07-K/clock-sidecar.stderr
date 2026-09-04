@@ -1,0 +1,2 @@
+telemetry_broker=ready pid=2912981 period_ns=20000000 nice=19 cpu_affinity=0,1 ring_samples=262144 ring_bytes=10485760
+telemetry_broker=drained samples=1594 marks=0 memory_readings=16 host_readings=16 mean_sample_cost_ns=326777 max_sample_cost_ns=47965167 fast_path_surfaces=gpu_busy_percent fast_path_samples=1434 fast_path_mean_cost_ns=292664 fast_path_max_cost_ns=25981900 marks_rejected=0 ring_full=0

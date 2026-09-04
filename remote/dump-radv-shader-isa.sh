@@ -12,7 +12,12 @@ set -eu
 #
 # The run goes through remote/radv-low-priority-env.sh under the low-async
 # serving profile, so the scrub that gives a profile name one meaning applies
-# here too and `env` reintroduces RADV_DEBUG after it.
+# here too and `env` reintroduces RADV_DEBUG after it. GGML_VK_FORCE_INTEGER_DOT
+# travels the same way: the four serving profiles scrub it, so an ambient value
+# would reach the server as absent and collect the control under the arm's name,
+# and the collector forwards the caller's own value past the scrub instead. The
+# forward is conditional because the two arms of the ISA receipt differ in that
+# variable alone, and an unconditional assignment would arm the control.
 # remote/run-raven2-vulkan-kernel-census.sh binds the census I0 arm to
 # context 24576, batch 128, ubatch 32, cache-type-k q8_0, cache-type-v q4_0,
 # and flash attention on; the invocation below states that tuple literally
@@ -40,6 +45,26 @@ model_path=$3
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 summarizer=$script_directory/summarize-radv-isa.py
+
+# The int24 candidate admits its q8_1 mat-vec pipelines under this name alone,
+# so the value the caller supplied names which arm this collection is. It is
+# read here, ahead of the wrapper, because the wrapper's serving profile scrubs
+# it. ggml_vk_force_integer_dot() compares the value against "1" with strcmp,
+# so every other value leaves the device flag at its hardware-derived false and
+# the run is the control. A collection labelled from emptiness alone would file
+# control-path ISA under the forced arm's name for a caller who wrote 0, so the
+# arm follows the backend's own comparison and any third value is refused
+# rather than guessed at.
+requested_force_integer_dot=${GGML_VK_FORCE_INTEGER_DOT:-}
+case $requested_force_integer_dot in
+    '') integer_dot_arm=control ;;
+    1) integer_dot_arm=forced ;;
+    *)
+        printf 'GGML_VK_FORCE_INTEGER_DOT admits 1 or an unset value: %s\n' \
+            "$requested_force_integer_dot" >&2
+        exit 2
+        ;;
+esac
 
 # The census runner and the served-decode harness both bind their device work
 # to the measured host, because a device probe run over an inherited SSH
@@ -118,11 +143,11 @@ trap 'exit 143' TERM
 # which is what this collector needs set, so `env` reintroduces it after the
 # scrub and ahead of the server. The wrapper's own nice 19, single-core
 # affinity, and idle I/O class change which cycles the run takes rather than
-# which pipelines RADV compiles.
+# which pipelines RADV compiles. The forced arm carries one further assignment
+# on that same `env`, so the two arms share one server argv and differ in the
+# variable the receipt is a claim about.
 (
-    exec env QWEN_VULKAN_PROFILE=low-async QWEN_RADV_ICD="$radv_icd" \
-        "$script_directory/radv-low-priority-env.sh" \
-        env RADV_DEBUG=shaders,shaderstats \
+    set -- \
         "$server_executable" \
         --host 127.0.0.1 \
         --port "$server_port" \
@@ -137,6 +162,17 @@ trap 'exit 143' TERM
         --n-gpu-layers all \
         --override-tensor '.*=Vulkan0' \
         --threads 1
+    if [ -n "$requested_force_integer_dot" ]; then
+        exec env QWEN_VULKAN_PROFILE=low-async QWEN_RADV_ICD="$radv_icd" \
+            "$script_directory/radv-low-priority-env.sh" \
+            env RADV_DEBUG=shaders,shaderstats \
+            GGML_VK_FORCE_INTEGER_DOT="$requested_force_integer_dot" \
+            "$@"
+    fi
+    exec env QWEN_VULKAN_PROFILE=low-async QWEN_RADV_ICD="$radv_icd" \
+        "$script_directory/radv-low-priority-env.sh" \
+        env RADV_DEBUG=shaders,shaderstats \
+        "$@"
 ) >"$log_file" 2>&1 &
 server_pid=$!
 
@@ -177,5 +213,6 @@ teardown_server
 
 python3 "$summarizer" "$log_file" "$output_directory/isa" "$output_directory/isa-index.tsv"
 
-printf 'radv_shader_isa_dump=complete log=%s isa_directory=%s index=%s\n' \
-    "$log_file" "$output_directory/isa" "$output_directory/isa-index.tsv"
+printf 'radv_shader_isa_dump=complete integer_dot_arm=%s log=%s isa_directory=%s index=%s\n' \
+    "$integer_dot_arm" "$log_file" "$output_directory/isa" \
+    "$output_directory/isa-index.tsv"

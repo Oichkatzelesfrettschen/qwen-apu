@@ -1,0 +1,9 @@
+isa_path	isa_sha256	v_mul_lo_u32	v_mul_u32_u24	v_mul_i32_i24	v_mad_u32_u24	v_mad_i32_i24	v_add3_u32	v_add_u32	v_mov_b32	v_perm_b32	v_bfe_u32	v_cvt_f32_f16	v_cvt_f32_ubyte0	v_mad_mix_f32	v_fma_f32	v_mac_f32	v_pk_fma_f16	sdwa_operand_uses	mul24_dual_byte_select	mul24_dword_by_byte_select
+evidence/raven2-vulkan-kernel-census/e5/isa-shimmed-raven2/arms/production/isa.s	ad837848d58d6167f3638a9d2bbbbe276f37b4cd282559f77ef42c7d03af2f61	0	0	0	0	0	0	76	28	0	2	16	48	0	0	248	0	16	0	0
+evidence/raven2-vulkan-kernel-census/e5/isa-shimmed-raven2/arms/production-q6k/isa.s	0d5c764334d364f5cf078d7507dcab32a82d5519cf9332be3558cc4bbe2a62ab	0	0	0	0	0	54	117	22	0	0	16	64	0	0	255	0	0	0	0
+evidence/raven2-vulkan-kernel-census/e5/E5-M/isa-arch-toolchain/isa.s	8896269f54c86f1039a08740aaa1f1f3fdbef6080f8d9e7a1908ce84e2598f34	0	224	0	0	0	126	314	16	0	42	56	28	0	0	14	0	420	168	56
+evidence/raven2-vulkan-kernel-census/e5/E5-M/isa-across-2115/pre-2115/isa.s	8896269f54c86f1039a08740aaa1f1f3fdbef6080f8d9e7a1908ce84e2598f34	0	224	0	0	0	126	314	16	0	42	56	28	0	0	14	0	420	168	56
+evidence/raven2-vulkan-kernel-census/e5/E5-M/isa-across-2115/post-2115/isa.s	8896269f54c86f1039a08740aaa1f1f3fdbef6080f8d9e7a1908ce84e2598f34	0	224	0	0	0	126	314	16	0	42	56	28	0	0	14	0	420	168	56
+evidence/raven2-vulkan-kernel-census/e5/E5-S0/isa-arch-toolchain/isa.s	a4d5f709398a68f579b86f469d1226ca5dc2a9e9a3dfb7837be803299c35b595	0	0	224	0	0	98	160	20	0	42	56	28	0	0	14	0	252	224	0
+evidence/raven2-vulkan-kernel-census/e5/E5-S0/isa-pre-2115/isa.s	a4d5f709398a68f579b86f469d1226ca5dc2a9e9a3dfb7837be803299c35b595	0	0	224	0	0	98	160	20	0	42	56	28	0	0	14	0	252	224	0
+evidence/raven2-vulkan-kernel-census/e5/E5-S1/isa-post-2115/isa.s	b9f5b4e6e25cd4ba611ba74c6d4484178b4e2100fd76b9ed8a17dcccd7724f5d	0	0	224	0	0	140	90	17	0	42	56	28	0	0	14	0	252	224	0
