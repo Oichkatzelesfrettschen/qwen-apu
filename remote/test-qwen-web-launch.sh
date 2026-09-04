@@ -1136,21 +1136,21 @@ else
     cat "$work/lan-named.err" >&2
 fi
 
-# One spelling reaches every reader: a browser lowercases the host in the Origin
-# it sends and both children compare an origin exactly, so a mixed-case name
-# would configure an allowlist entry no request presents.
+# A mixed-case name registers in the ordinary resolver the way a lowercase one
+# does, and a browser lowercases the host in the Origin it sends while both
+# children compare an origin exactly, so the launch refuses an uppercase form
+# rather than reshaping it into an allowlist entry the operator never typed.
 if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
     QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
     QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=QWEN-Test.LOCAL \
     QWEN_BIND_HOST=0.0.0.0 \
     "$launcher" >"$work/lan-case.log" 2>"$work/lan-case.err"; then
-    outcome=ok
-    grep -qx 'QWEN_WEB_LAN_NAME=qwen-test.local' "$record" || outcome=name_not_lowercased
-    grep -q 'name=qwen-test.local' "$work/lan-case.log" || outcome=name_misreported
-    report lan_exposure_name_is_lowercased "$outcome"
+    report lan_exposure_name_refuses_uppercase admitted
 else
-    report lan_exposure_name_is_lowercased refused
-    cat "$work/lan-case.err" >&2
+    outcome=ok
+    grep -q 'not a hostname a browser resolves on the link' \
+        "$work/lan-case.err" || outcome=missing_message
+    report lan_exposure_name_refuses_uppercase "$outcome"
 fi
 
 # A name outside the letter-digit-hyphen set names no host a browser resolves.
@@ -1165,6 +1165,53 @@ else
     grep -q 'not a hostname a browser resolves on the link' \
         "$work/lan-badname.err" || outcome=missing_message
     report lan_exposure_name_refused "$outcome"
+fi
+
+# A bare hostname carries no .local suffix, so it registers in the ordinary
+# resolver rather than resolving by multicast on this link, and the launch
+# refuses it by name.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=qwen-test \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/lan-barehost.log" 2>"$work/lan-barehost.err"; then
+    report lan_exposure_bare_hostname_refused admitted
+else
+    outcome=ok
+    grep -q 'not a hostname a browser resolves on the link' \
+        "$work/lan-barehost.err" || outcome=missing_message
+    report lan_exposure_bare_hostname_refused "$outcome"
+fi
+
+# A public domain resolves through the ordinary recursive resolver, which is
+# exactly the DNS rebinding surface the closed .local set exists to close, so
+# the launch refuses it by name.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=attacker.example.com \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/lan-publicdomain.log" 2>"$work/lan-publicdomain.err"; then
+    report lan_exposure_public_domain_refused admitted
+else
+    outcome=ok
+    grep -q 'not a hostname a browser resolves on the link' \
+        "$work/lan-publicdomain.err" || outcome=missing_message
+    report lan_exposure_public_domain_refused "$outcome"
+fi
+
+# A trailing dot names the DNS root explicitly, which is a form the resolver
+# accepts and the multicast lookup does not need, so the launch refuses it.
+if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+    QWEN_WEB_LAUNCH_RECORD=$record QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=qwen-test.local. \
+    env -u QWEN_BIND_HOST "$launcher" \
+    >"$work/lan-trailingdot.log" 2>"$work/lan-trailingdot.err"; then
+    report lan_exposure_trailing_dot_refused admitted
+else
+    outcome=ok
+    grep -q 'not a hostname a browser resolves on the link' \
+        "$work/lan-trailingdot.err" || outcome=missing_message
+    report lan_exposure_trailing_dot_refused "$outcome"
 fi
 
 # QWEN_WEB_LAN_OPEN=1 removes a bearer from a listener the operator exposed, so

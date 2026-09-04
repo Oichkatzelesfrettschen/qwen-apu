@@ -656,18 +656,24 @@ the wrapper enforces, and the one human approval per network-reaching call stay
 exactly what they are, and every checked-in `execution_policy` still reads
 `refused`.
 
-A DHCP lease moves that literal, so `QWEN_WEB_LAN_NAME` adds one mDNS hostname
-to the admitted set and the set stays closed. It defaults to this machine's own
-`hostname -s` under `.local` where avahi-daemon runs and an explicit empty value
+A DHCP lease moves that literal, so `QWEN_WEB_LAN_NAME` adds one mDNS label to
+the admitted set and the set stays closed to exactly one lowercase RFC 1123
+label under `.local`. It defaults to this machine's own `hostname -s`
+lowercased under `.local` where avahi-daemon runs and an explicit empty value
 serves the literal alone. The rebinding closure holds for the name because a
 browser resolves a `.local` name by multicast to the hosts sharing the link
-rather than through a recursive resolver, so a name an attacker controls in DNS
-reaches neither socket; `authorize-broker.py --lan-name` and
-`image-service.py --lan-name` compare it casefolded beside the literal, each
-listener admits both page origins through CORS, and `trustedArtifactOrigin`
-admits the page's own hostname whether address or name -- the browser already
-resolved that host to fetch the page and the bearer is stored per page origin,
-so the credential returns to the machine that served the page and no other. The
+rather than through a recursive resolver, so a bare hostname, a public domain,
+a second label under `.local`, an uppercase letter, and a trailing dot are each
+refused by name: every one of them registers in the ordinary resolver, and
+admitting one would let a name an attacker controls in public DNS resolve to
+this socket under DNS rebinding. `web_lan_name_is_valid` in
+`remote/web-lan-exposure.sh` and `exposed_name` in `authorize-broker.py --lan-name`
+and `image-service.py --lan-name` apply the identical rule, so a name the
+launcher admits is a name both children admit too; each listener adds both page
+origins to its CORS allowlist, and `trustedArtifactOrigin` admits the page's own
+hostname whether address or name -- the browser already resolved that host to
+fetch the page and the bearer is stored per page origin, so the credential
+returns to the machine that served the page and no other. The
 launcher names the page by the name with the literal beside it, since the name
 outlives the lease.
 

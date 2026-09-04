@@ -350,7 +350,10 @@ interfaces; libvirt and Docker bridge addresses are labeled as such.
 address from the default route, reads the image parameters path from the
 active deployment's image server, serves the router on port 42069 with the
 approval broker and the artifact listener on the two ports above it, and
-prints the `<hostname>.local` name to open. Its default removes the Web UI
+prints the `<hostname>.local` name to open -- the admitted set holds exactly
+one lowercase mDNS label under `.local`, so a bare hostname, a public domain,
+or an uppercase or trailing-dot form is refused rather than opening the DNS
+rebinding surface the `.local` restriction closes. Its default removes the Web UI
 bearer, so every peer on the network can chat and approve a search or a
 generation, while the approval dialog and the single-use grant stay the
 execution gate; `QWEN_WEB_LAN_OPEN=0` requires the bearer on every listener

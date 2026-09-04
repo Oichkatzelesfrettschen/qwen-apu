@@ -9,6 +9,7 @@ success arm, every refusal, the timeout, and the cancellation all run without a
 device and without a downloaded checkpoint.
 """
 
+import argparse
 import hashlib
 import http.client
 import json
@@ -1707,6 +1708,34 @@ class PngValidatorTest(unittest.TestCase):
                 self.valid_png(trailing_pixels=b"compressed expansion" * 64), 4, 3
             )
         self.assertEqual(caught.exception.detail, "decode")
+
+
+class LanNameValidationTest(unittest.TestCase):
+    def test_exposed_name_admits_only_one_local_label(self):
+        """The LAN name is exactly one lowercase RFC 1123 label under .local.
+
+        A bare hostname, a public domain, and a second label under .local each
+        register in the ordinary resolver, so a name an attacker controls there
+        would resolve to this socket under DNS rebinding were any of them
+        admitted; an uppercase letter and a trailing dot name the same
+        resolvable form under a different spelling.
+        """
+        self.assertEqual(service_module.exposed_name(""), "")
+        self.assertEqual(
+            service_module.exposed_name("qwen-test.local"), "qwen-test.local"
+        )
+        for refused in (
+            "qwen-test",
+            "attacker.example.com",
+            "QWEN-Test.LOCAL",
+            "qwen-test.local.",
+            "a.b.local",
+            "192.168.1.5",
+            "localhost",
+        ):
+            with self.subTest(refused=refused):
+                with self.assertRaises(argparse.ArgumentTypeError):
+                    service_module.exposed_name(refused)
 
 
 class ProfileValidationTest(unittest.TestCase):

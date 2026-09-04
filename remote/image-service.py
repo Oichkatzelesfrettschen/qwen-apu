@@ -14,8 +14,8 @@ reader; neither does a query parameter, which the route ignores entirely.
 `--lan-exposure ADDRESS` is the operator's explicit opt-in: it admits
 `--http-host 0.0.0.0` and adds that one routable literal to the Host headers a
 request may name, and the bearer that already gates every route is what a LAN
-reader presents. `--lan-name NAME` adds the mDNS hostname beside that literal,
-compared casefolded, so the page is reachable at a host a DHCP lease does not
+reader presents. `--lan-name NAME` adds one mDNS label under `.local`
+beside that literal, so the page is reachable at a host a DHCP lease does not
 move. `--open-lan` removes the bearer from the artifact routes, which leaves
 the admitted Host set and the Origin allowlist carrying the gate.
 
@@ -339,39 +339,42 @@ def exposed_host(value):
 
 
 def exposed_name(value):
-    """Return the mDNS hostname the LAN exposure opt-in admits beside the literal.
+    """Return the mDNS label the LAN exposure opt-in admits beside the literal.
 
     A DHCP lease moves the address, so the name is what an operator bookmarks.
     Admitting it keeps the set closed rather than reopening the resolver: avahi
-    publishes `<hostname>.local` on the link and a browser resolves that suffix
-    by multicast to the hosts sharing the link, so a name an attacker controls
-    in DNS resolves nowhere near this socket and the rebinding closure the
-    literal set provides holds for this entry too. `localhost` and an
-    all-numeric dotted form are refused by name: the first names the loopback
-    the set already holds and the second is an address `--lan-exposure` takes.
+    publishes `<label>.local` on the link and a browser resolves that suffix by
+    multicast to the hosts sharing the link, so the admitted form is exactly
+    one lowercase RFC 1123 label under `.local`. A bare hostname, a public
+    domain, a second label under `.local`, an uppercase letter, and a trailing
+    dot are each refused by name rather than reshaped: any of them registers in
+    the ordinary resolver, and a name an attacker controls there would resolve
+    to this socket under DNS rebinding the way the closed literal set exists to
+    prevent. An all-numeric label names an address, which `--lan-exposure`
+    takes instead.
     """
     if not value:
         # argparse applies a string type to its own default, so the empty
         # default passes through as the absent opt-in.
         return ""
-    lowered = value.lower()
-    if len(lowered) > 253 or lowered == "localhost" or lowered in LOOPBACK_HOSTS:
+    if not value.endswith(".local"):
         raise argparse.ArgumentTypeError(
             f"the LAN exposure name is a hostname a browser resolves on the "
-            f"link; {value!r} is refused"
+            f"link; the admitted set holds exactly one lowercase mDNS label "
+            f"under .local; {value!r} is refused"
         )
-    labels = lowered.split(".")
-    if not all(label_is_admitted(label) for label in labels):
+    label = value[: -len(".local")]
+    if not label_is_admitted(label):
         raise argparse.ArgumentTypeError(
-            f"the LAN exposure name carries a label outside the "
+            f"the LAN exposure name carries a label outside the lowercase "
             f"letter-digit-hyphen set; {value!r} is refused"
         )
-    if all(label.isdigit() for label in labels):
+    if label.isdigit():
         raise argparse.ArgumentTypeError(
             f"the LAN exposure name is a dotted address rather than a name; "
             f"{value!r} belongs in --lan-exposure"
         )
-    return lowered
+    return value
 
 
 def label_is_admitted(label):
@@ -2432,8 +2435,8 @@ def build_parser():
     )
     parser.add_argument(
         "--lan-name", type=exposed_name, default="",
-        help="the mDNS hostname this listener admits in a Host header beside "
-        "the exposure literal, compared casefolded",
+        help="one lowercase mDNS label under .local this listener admits in "
+        "a Host header beside the exposure literal",
     )
     parser.add_argument(
         "--open-lan", action="store_true",

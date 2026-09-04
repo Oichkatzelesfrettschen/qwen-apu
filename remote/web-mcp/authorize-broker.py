@@ -20,9 +20,9 @@ through a wider bind. `--lan-exposure ADDRESS` is the operator's explicit
 opt-in: it admits `--host 0.0.0.0`, adds that one routable literal to the Host
 headers a request may name, and requires the Web UI bearer on both signing
 routes and on a health read that names it, so a LAN reader that never
-authenticated to the router signs nothing. `--lan-name NAME` adds the mDNS
-hostname beside that literal, compared casefolded, and the set stays a closed
-list of at most four entries. `--open-lan` is the second decision: it removes
+authenticated to the router signs nothing. `--lan-name NAME` adds one mDNS
+label under `.local` beside that literal, and the set stays a closed list of
+at most four entries. `--open-lan` is the second decision: it removes
 the bearer from the signing routes and the exposed health read, so every peer
 that reaches the page can approve, and it leaves the Host set, the Origin
 allowlist, the session secret, the single-use grant, and every schema rule
@@ -158,41 +158,42 @@ def exposed_host(value):
 
 
 def exposed_name(value):
-    """Return the mDNS hostname the LAN exposure opt-in admits beside the literal.
+    """Return the mDNS label the LAN exposure opt-in admits beside the literal.
 
     A DHCP lease moves the address, so the name is what an operator bookmarks.
     Admitting it keeps the set closed rather than reopening the resolver: avahi
-    publishes `<hostname>.local` on the link and a browser resolves that suffix
-    by multicast to the hosts sharing the link, so a name an attacker controls
-    in DNS resolves nowhere near this socket and the rebinding closure the
-    literal set provides holds for this entry too. Each label is one to 63
-    characters of the letter-digit-hyphen set with no leading or trailing
-    hyphen; `localhost` and an all-numeric dotted form are refused by name,
-    because the first names the loopback the set already holds and the second
-    is an address that belongs in `--lan-exposure`.
+    publishes `<label>.local` on the link and a browser resolves that suffix by
+    multicast to the hosts sharing the link, so the admitted form is exactly
+    one lowercase RFC 1123 label under `.local`. A bare hostname, a public
+    domain, a second label under `.local`, an uppercase letter, and a trailing
+    dot are each refused by name rather than reshaped: any of them registers in
+    the ordinary resolver, and a name an attacker controls there would resolve
+    to this socket under DNS rebinding the way the closed literal set exists to
+    prevent. An all-numeric label names an address, which belongs in
+    `--lan-exposure` where the literal rules apply to it.
     """
     if not value:
         # argparse applies a string type to its own default, so the empty
         # default passes through as the absent opt-in.
         return ""
-    lowered = value.lower()
-    if len(lowered) > 253 or lowered == "localhost" or lowered in LOOPBACK_HOSTS:
+    if not value.endswith(".local"):
         raise argparse.ArgumentTypeError(
             f"the LAN exposure name is a hostname a browser resolves on the "
-            f"link; {value!r} is refused"
+            f"link; the admitted set holds exactly one lowercase mDNS label "
+            f"under .local; {value!r} is refused"
         )
-    labels = lowered.split(".")
-    if not all(label_is_admitted(label) for label in labels):
+    label = value[: -len(".local")]
+    if not label_is_admitted(label):
         raise argparse.ArgumentTypeError(
-            f"the LAN exposure name carries a label outside the "
+            f"the LAN exposure name carries a label outside the lowercase "
             f"letter-digit-hyphen set; {value!r} is refused"
         )
-    if all(label.isdigit() for label in labels):
+    if label.isdigit():
         raise argparse.ArgumentTypeError(
             f"the LAN exposure name is a dotted address rather than a name; "
             f"{value!r} belongs in --lan-exposure"
         )
-    return lowered
+    return value
 
 
 def label_is_admitted(label):
@@ -1056,9 +1057,9 @@ def build_parser():
     )
     parser.add_argument(
         "--lan-name", type=exposed_name, default="",
-        help="the mDNS hostname this broker admits in a Host header beside the "
-        "exposure literal; it is compared casefolded and gates the bearer the "
-        "way the literal does",
+        help="one lowercase mDNS label under .local this broker admits in a "
+        "Host header beside the exposure literal; it gates the bearer the way "
+        "the literal does",
     )
     parser.add_argument(
         "--open-lan", action="store_true",

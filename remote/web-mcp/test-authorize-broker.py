@@ -10,6 +10,7 @@ fake provider, which is what proves the two paths agree on one canonical
 claim without reaching a network or a key of the operator's.
 """
 
+import argparse
 import hashlib
 import http.client
 import importlib.util
@@ -1064,6 +1065,31 @@ class BrokerTest(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 2, completed.stderr)
         self.assertIn("--lan-exposure", completed.stderr)
+
+    def test_exposed_name_admits_only_one_local_label(self):
+        """The LAN name is exactly one lowercase RFC 1123 label under .local.
+
+        A bare hostname, a public domain, and a second label under .local each
+        register in the ordinary resolver, so a name an attacker controls there
+        would resolve to this socket under DNS rebinding were any of them
+        admitted; an uppercase letter and a trailing dot name the same
+        resolvable form under a different spelling.
+        """
+        self.assertEqual(broker_module.exposed_name(""), "")
+        self.assertEqual(
+            broker_module.exposed_name("qwen-test.local"), "qwen-test.local"
+        )
+        for refused in (
+            "qwen-test",
+            "attacker.example.com",
+            "QWEN-Test.LOCAL",
+            "qwen-test.local.",
+            "a.b.local",
+            "192.168.1.5",
+            "localhost",
+        ):
+            with self.assertRaises(argparse.ArgumentTypeError, msg=refused):
+                broker_module.exposed_name(refused)
 
     def test_the_open_opt_in_requires_the_exposure_it_opens(self):
         """--open-lan removes a credential from a listener the operator exposed."""
