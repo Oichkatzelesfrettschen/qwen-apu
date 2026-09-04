@@ -45,6 +45,9 @@ cp "$script_directory/qwen-teardown.sh" "$fixture_remote/qwen-teardown.sh"
 # measures a teardown that reports an absent proof rather than a clean stop.
 cp "$script_directory/image-teardown-check.sh" \
     "$fixture_remote/image-teardown-check.sh"
+# The merged roster preset shape carries a web section, and qwen-launch.sh
+# sources this policy the moment it sees one, ahead of any image-lane check.
+cp "$script_directory/web-lan-exposure.sh" "$fixture_remote/web-lan-exposure.sh"
 
 cat >"$fixture_bin/pgrep" <<'PGREP'
 #!/bin/sh
@@ -325,6 +328,141 @@ grep -Fx 'router_preflight_subject=small.gguf bytes=7 draft=draft.gguf draft_byt
     "$temporary_directory/pair-launch.stdout" >/dev/null
 grep -Fx 'router_preflight_requirement mib=2049 draft_mib=1' \
     "$temporary_directory/pair-launch.stdout" >/dev/null
+
+# An image profile marker resolves its web section from either of two
+# preset shapes: the merged roster preset's `# qwen_web_sections=` list, or
+# the standalone web preset's `# qwen_web_presets=1` head marker over its one
+# section. Both shapes carry the check past "carries no web section" and on
+# to the next rule, require_image_ledger_row's own refusal of a relative
+# ledger path, because this fixture names no ledger. A preset carrying
+# neither marker is the shape the check itself refuses: an image profile
+# marker with nothing that could arm it.
+image_lane_real_stat=$(command -v stat)
+export image_lane_real_stat
+
+# The merged shape's own `-n "$web_sections"` block runs the authorizer-ready
+# and LAN-exposure gates ahead of any image-lane check, so this arm proves
+# the image lane no longer refuses the shape for want of a section by reading
+# past that gate rather than by reaching the image ledger rejoin: the ledger
+# path check the standalone arm below reaches is unremarkable for a shape
+# that was never the bug, so a later, unrelated refusal is what a fixed
+# check is expected to produce here.
+printf '%s\n' \
+    '# qwen_web_sections=lang' \
+    '# qwen_image_profile=demo' \
+    '[lang]' \
+    "LLAMA_ARG_MODEL = $temporary_directory/models/Normal/small.gguf" \
+    >"$source_router_presets"
+set +e
+QWEN_ROUTER=1 QWEN_IMAGE_SERVICE=1 QWEN_IMAGE_PROFILE=demo \
+QWEN_WEB_AUTHORIZER_READY=1 \
+QWEN_MODEL_PATH=$temporary_directory/models/Normal/small.gguf \
+QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+FIXTURE_SOURCE_PRESET=$source_router_presets \
+FIXTURE_MUTATION_MARKER=$temporary_directory/image-lane-merged-no-mutation \
+FIXTURE_REAL_STAT=$image_lane_real_stat \
+PATH="$fixture_bin:$PATH" HOME=$temporary_directory \
+    "$fixture_remote/qwen-launch.sh" \
+    >"$temporary_directory/image-lane-merged.stdout" \
+    2>"$temporary_directory/image-lane-merged.stderr"
+image_lane_merged_status=$?
+set -e
+if [ "$image_lane_merged_status" -eq 0 ]; then
+    printf 'image lane launch over an incomplete ledger reported success\n' >&2
+    exit 1
+fi
+if grep -qF 'carries no web section' \
+    "$temporary_directory/image-lane-merged.stderr"; then
+    printf 'the merged roster preset shape was refused for carrying no web section: %s\n' \
+        "$(cat "$temporary_directory/image-lane-merged.stderr")" >&2
+    exit 1
+fi
+
+printf '%s\n' \
+    '# qwen_web_presets=1' \
+    '# qwen_image_profile=demo' \
+    '[lang]' \
+    "LLAMA_ARG_MODEL = $temporary_directory/models/Normal/small.gguf" \
+    >"$source_router_presets"
+set +e
+QWEN_ROUTER=1 QWEN_IMAGE_SERVICE=1 QWEN_IMAGE_PROFILE=demo \
+QWEN_MODEL_PATH=$temporary_directory/models/Normal/small.gguf \
+QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+FIXTURE_SOURCE_PRESET=$source_router_presets \
+FIXTURE_MUTATION_MARKER=$temporary_directory/image-lane-standalone-no-mutation \
+FIXTURE_REAL_STAT=$image_lane_real_stat \
+PATH="$fixture_bin:$PATH" HOME=$temporary_directory \
+    "$fixture_remote/qwen-launch.sh" \
+    >"$temporary_directory/image-lane-standalone.stdout" \
+    2>"$temporary_directory/image-lane-standalone.stderr"
+image_lane_standalone_status=$?
+set -e
+if [ "$image_lane_standalone_status" -eq 0 ]; then
+    printf 'image lane launch over an incomplete ledger reported success\n' >&2
+    exit 1
+fi
+if grep -qF 'carries no web section' \
+    "$temporary_directory/image-lane-standalone.stderr"; then
+    printf 'the standalone web preset shape was refused for carrying no web section: %s\n' \
+        "$(cat "$temporary_directory/image-lane-standalone.stderr")" >&2
+    exit 1
+fi
+grep -F 'omits an absolute image profile ledger path' \
+    "$temporary_directory/image-lane-standalone.stderr" >/dev/null
+
+printf '%s\n' \
+    '# qwen_image_profile=demo' \
+    '[lang]' \
+    "LLAMA_ARG_MODEL = $temporary_directory/models/Normal/small.gguf" \
+    >"$source_router_presets"
+set +e
+QWEN_ROUTER=1 QWEN_IMAGE_SERVICE=1 QWEN_IMAGE_PROFILE=demo \
+QWEN_MODEL_PATH=$temporary_directory/models/Normal/small.gguf \
+QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+FIXTURE_SOURCE_PRESET=$source_router_presets \
+FIXTURE_MUTATION_MARKER=$temporary_directory/image-lane-unmarked-no-mutation \
+FIXTURE_REAL_STAT=$image_lane_real_stat \
+PATH="$fixture_bin:$PATH" HOME=$temporary_directory \
+    "$fixture_remote/qwen-launch.sh" \
+    >"$temporary_directory/image-lane-unmarked.stdout" \
+    2>"$temporary_directory/image-lane-unmarked.stderr"
+image_lane_unmarked_status=$?
+set -e
+if [ "$image_lane_unmarked_status" -eq 0 ]; then
+    printf 'image lane launch over a preset naming no web provenance reported success\n' >&2
+    exit 1
+fi
+grep -F 'carries no web section' \
+    "$temporary_directory/image-lane-unmarked.stderr" >/dev/null
+
+# The elif branch resolves the lane for a direct launch rather than trusting
+# a wrapper's claim, so a standalone-shaped preset reaching it without
+# QWEN_IMAGE_SERVICE=1 is refused: only the merged roster preset's own
+# broker-arming block runs its safety net before this branch is reached.
+printf '%s\n' \
+    '# qwen_web_presets=1' \
+    '# qwen_image_profile=demo' \
+    '[lang]' \
+    "LLAMA_ARG_MODEL = $temporary_directory/models/Normal/small.gguf" \
+    >"$source_router_presets"
+set +e
+QWEN_ROUTER=1 QWEN_MODEL_PATH=$temporary_directory/models/Normal/small.gguf \
+QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
+FIXTURE_SOURCE_PRESET=$source_router_presets \
+FIXTURE_MUTATION_MARKER=$temporary_directory/image-lane-elif-no-mutation \
+FIXTURE_REAL_STAT=$image_lane_real_stat \
+PATH="$fixture_bin:$PATH" HOME=$temporary_directory \
+    "$fixture_remote/qwen-launch.sh" \
+    >"$temporary_directory/image-lane-elif.stdout" \
+    2>"$temporary_directory/image-lane-elif.stderr"
+image_lane_elif_status=$?
+set -e
+if [ "$image_lane_elif_status" -eq 0 ]; then
+    printf 'a direct launch armed the image lane over an unvetted standalone preset\n' >&2
+    exit 1
+fi
+grep -F 'carries no web section' \
+    "$temporary_directory/image-lane-elif.stderr" >/dev/null
 
 # Restore the single-section preset the signal fixtures below are written for.
 printf '%s\n' \

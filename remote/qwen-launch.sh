@@ -656,6 +656,35 @@ EOF
     # shellcheck source=remote/image-launch-lib.sh
     . "$script_directory/image-launch-lib.sh"
     read_image_preset_markers "$router_presets"
+    # Two preset shapes carry a web section an image grant can bind to. The
+    # merged roster preset build-router-presets.sh writes names its emitting
+    # sections on the `# qwen_web_sections=` line this script already read
+    # into web_sections, and a direct launch over that shape has already run
+    # the broker-arming and loopback-enforcement block above, which is gated
+    # on that same line. The standalone preset build-web-presets.sh writes
+    # carries no such line; its head marker `# qwen_web_presets=1` states
+    # instead that the whole file is one generated web preset, whose one
+    # language section is the shape qwen-web-launch.sh always resolves and
+    # arms -- through the QWEN_WEB_BROKER, loopback, and authorizer-ready
+    # rules in its own body -- before it sets QWEN_IMAGE_SERVICE=1 and execs
+    # this script. image_web_presets_section therefore reads the standalone
+    # shape's one section from the file itself, the way
+    # qwen-capacity-policy.sh's own web_presets_from_preset rejoin does, but
+    # only the QWEN_IMAGE_SERVICE=1 branch below trusts it: that flag is the
+    # wrapper's own claim to have applied its safety net, and the elif branch
+    # below serves a preset this process resolves for itself, so it stays on
+    # web_sections alone rather than accepting a standalone-shaped file no
+    # wrapper has vetted.
+    image_web_presets_marker=$(sed -n \
+        's/^# qwen_web_presets=\([01]\)$/\1/p' "$router_presets")
+    case $image_web_presets_marker in
+        '') image_web_presets_marker=0 ;;
+    esac
+    image_web_presets_section=
+    if [ "$image_web_presets_marker" = 1 ]; then
+        image_web_presets_section=$(sed -n \
+            's/^\[\([^]]*\)\]$/\1/p' "$router_presets" | sed -n '1p')
+    fi
     if [ "${QWEN_IMAGE_SERVICE:-0}" = 1 ]; then
         # qwen-web-launch.sh execs this script, so a launch that came through
         # qwen-image-launch.sh arrives with the lane already resolved: that
@@ -677,23 +706,34 @@ EOF
                 "${QWEN_IMAGE_PROFILE:-<unset>}" "$preset_image_profile" >&2
             exit 2
         fi
-        if [ -z "$web_sections" ]; then
+        # This branch trusts QWEN_IMAGE_SERVICE=1 as the wrapper's own claim
+        # to have armed the lane, so it accepts either shape: the merged
+        # roster preset's web_sections, or the standalone web preset's
+        # image_web_presets_section. Neither resolving leaves the marker
+        # with nothing that could arm it.
+        image_web_section=${web_sections:-$image_web_presets_section}
+        if [ -z "$image_web_section" ]; then
             printf 'the preset names image profile %s and carries no web section\n' \
                 "$preset_image_profile" >&2
-            printf 'regenerate the preset tree with remote/build-router-presets.sh\n' >&2
+            printf 'regenerate the preset tree with remote/build-router-presets.sh, or the standalone web preset with remote/build-web-presets.sh\n' >&2
             exit 2
         fi
         require_image_ledger_row || exit 2
         require_image_signing_key || exit 2
         require_image_parameters || exit 2
-        verify_image_deadline_stack "$router_presets" "$web_sections" || exit 2
+        verify_image_deadline_stack "$router_presets" "$image_web_section" || exit 2
         printf 'image_launch owner=qwen-image-launch.sh profile=%s required_mib=%s\n' \
             "${QWEN_IMAGE_PROFILE:--}" "${QWEN_REQUIRED_VULKAN_MIB:--}"
     elif [ "$image_lane_armed" = 1 ]; then
         # An image server reaches the device from the section the web ledger
         # emitted, and the grant binds that language profile to the image
         # profile, so a lane armed over a preset naming no web section would
-        # sign for a profile this launch never resolved.
+        # sign for a profile this launch never resolved. This branch resolves
+        # the lane for itself rather than trusting a wrapper's claim, so it
+        # stays on web_sections alone: the merged roster preset's own
+        # broker-arming and loopback-enforcement block above is gated on that
+        # same line, and a standalone-shaped file reaching this branch has
+        # bypassed qwen-web-launch.sh's safety net rather than run it.
         if [ -z "$web_sections" ]; then
             printf 'the preset names image profile %s and carries no web section\n' \
                 "$preset_image_profile" >&2
