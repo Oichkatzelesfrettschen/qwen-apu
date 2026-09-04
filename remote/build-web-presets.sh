@@ -331,7 +331,17 @@ image_profiles=${QWEN_IMAGE_PROFILES:-$script_directory/image-profiles.tsv}
 image_quarantine=${QWEN_IMAGE_QUARANTINE:-$script_directory/image-quarantine.tsv}
 image_mcp_server=${QWEN_IMAGE_MCP_SERVER:-}
 image_token_key_file=${QWEN_IMAGE_TOKEN_KEY_FILE:-}
-image_state_directory=${QWEN_IMAGE_STATE_DIR:-"${HOME:?}/qwen-webui-state/images"}
+# image-service.py always derives its images directory and its
+# image-service.sock name from --state-dir, and qwen-webui-session.sh always
+# passes the session's own state directory there regardless of what this
+# generator was told, so the default here follows QWEN_WEBUI_STATE_DIRECTORY
+# rather than assuming $HOME: a deployment with a nondefault session state
+# directory then generates a preset the launch verifier's rejoin admits by
+# default, without needing QWEN_IMAGE_STATE_DIR named explicitly. An explicit
+# QWEN_IMAGE_STATE_DIR or QWEN_IMAGE_SERVICE_SOCKET still overrides the
+# default; the runtime never reads either, so a value that diverges from the
+# launch's own derivation is caught at launch rather than served.
+image_state_directory=${QWEN_IMAGE_STATE_DIR:-"${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}/images"}
 image_service_socket=${QWEN_IMAGE_SERVICE_SOCKET:-$image_state_directory/image-service.sock}
 # The MCP child states the served profile's geometry and ceilings in its own
 # tool schema, and it reads them from the parameter file image-service.py runs
@@ -344,6 +354,18 @@ image_mcp_timeout_ms=${QWEN_IMAGE_MCP_TIMEOUT_MS:-360000}
 case $image_mcp_timeout_ms in
     '' | 0* | *[!0-9]*)
         printf 'QWEN_IMAGE_MCP_TIMEOUT_MS must be a positive decimal integer: %s\n' \
+            "$image_mcp_timeout_ms" >&2
+        exit 2
+        ;;
+esac
+# emit_web_mcp_configuration converts this to QWEN_IMAGE_MCP_TIMEOUT_S by
+# integer division at /1000, so a value that is not an exact multiple of 1000
+# would let generation succeed while read-image-mcp-server.py's own
+# millisecond/second agreement check then refuses the configuration it wrote.
+case $((image_mcp_timeout_ms % 1000)) in
+    0) ;;
+    *)
+        printf 'QWEN_IMAGE_MCP_TIMEOUT_MS must be an exact multiple of 1000 (whole seconds): %s\n' \
             "$image_mcp_timeout_ms" >&2
         exit 2
         ;;
@@ -386,94 +408,14 @@ web_profiles_identity=$(sha256sum -- "$web_profiles")
 web_profiles_sha256=${web_profiles_identity%% *}
 
 # The image lane is a second execution grant over the same sections, so it is
-# resolved once before any section emits. remote/image-registry.sh validates
-# the four image authorities whole and prints the profile rows validation
-# returned, which is the discipline model-registry.sh applies on the language
-# side: a caller acting on one row cannot act on a ledger a sibling row has
-# made unsafe to read. The emission rule mirrors the web one exactly --
-# `refused` emits nothing under every setting and every checked-in row carries
-# it, `validator-gated` emits only under QWEN_WEB_AUTHORIZER_READY=1 -- because
-# an image generation reaches the device through the same argument-authorizing
-# runtime a search reaches the network through.
-#
-# One image profile emits. A section carries one `mcpServers` object and the
-# image server is one key in it, so two emitting rows would write two servers
-# of one name and the second would own the first's budgets; the run stops and
-# names both rather than choosing.
-image_profile_id=
-image_profile_model=
-image_profile_review_model=
-image_registry_tab=$(printf '\t')
-if ! image_profile_rows=$("$script_directory/image-registry.sh" profiles); then
-    printf 'the image profile ledger fails validation: %s\n' "$image_profiles" >&2
-    exit 1
-fi
-image_quarantine_rows=$(sed -n '/^[^#]/p' "$image_quarantine")
-
-# A quarantine row removes a bundle at `model` scope and one shape at `profile`
-# scope, so the subject is compared against whichever the row's scope names.
-image_profile_quarantined() {
-    quarantine_profile=$1
-    quarantine_model=$2
-    printf '%s\n' "$image_quarantine_rows" |
-        awk -F'\t' -v profile="$quarantine_profile" -v model="$quarantine_model" '
-            $2 == "model" && $3 == model { found = 1 }
-            $2 == "profile" && $3 == profile { found = 1 }
-            END { exit !found }
-        '
-}
-
-while IFS="$image_registry_tab" read -r row_image_profile row_image_model \
-    _row_image_placement _row_image_width _row_image_height _row_image_steps \
-    _row_image_sampler _row_image_cfg _row_image_max_steps \
-    _row_image_max_dimension _row_image_timeout row_image_policy \
-    _row_image_evidence row_image_review_model; do
-    [ -n "$row_image_profile" ] || continue
-    case $row_image_policy in
-        refused)
-            printf 'image_preset_skipped profile=%s execution_policy=refused\n' \
-                "$row_image_profile" >&2
-            continue
-            ;;
-        validator-gated) ;;
-        *)
-            printf 'image profile %s carries execution_policy %s, which is outside the vocabulary\n' \
-                "$row_image_profile" "${row_image_policy:-<absent>}" >&2
-            printf 'admitted values are refused and validator-gated\n' >&2
-            exit 1
-            ;;
-    esac
-    if [ "$authorizer_ready" != 1 ]; then
-        printf 'image_preset_skipped profile=%s execution_policy=validator-gated authorizer=absent\n' \
-            "$row_image_profile" >&2
-        continue
-    fi
-    if image_profile_quarantined "$row_image_profile" "$row_image_model"; then
-        printf 'image_preset_skipped profile=%s reason=quarantine model=%s\n' \
-            "$row_image_profile" "$row_image_model" >&2
-        continue
-    fi
-    if [ -n "$image_profile_id" ]; then
-        printf 'image profiles %s and %s both emit, and a section carries one image server\n' \
-            "$image_profile_id" "$row_image_profile" >&2
-        printf 'leave one validator-gated row in %s and refuse the rest\n' \
-            "$image_profiles" >&2
-        exit 1
-    fi
-    image_profile_id=$row_image_profile
-    image_profile_model=$row_image_model
-    image_profile_review_model=$row_image_review_model
-done <<IMAGE_PROFILE_ROWS
-$image_profile_rows
-IMAGE_PROFILE_ROWS
-
-# The ledger binds the generated preset the way the web ledger does, so
-# qwen-image-launch.sh reads one authority out of the file it launches.
-image_profiles_directory=$(dirname -- "$image_profiles")
-image_profiles_directory=$(CDPATH='' cd -- "$image_profiles_directory" && pwd)
-image_profiles=$image_profiles_directory/$(basename -- "$image_profiles")
-image_profiles_identity=$(sha256sum -- "$image_profiles")
-image_profiles_sha256=${image_profiles_identity%% *}
+# resolved once before any section emits. The emission rule mirrors the web one
+# exactly -- `refused` emits nothing under every setting and every checked-in
+# row carries it, `validator-gated` emits only under QWEN_WEB_AUTHORIZER_READY=1
+# -- because an image generation reaches the device through the same
+# argument-authorizing runtime a search reaches the network through, and
+# remote/web-preset-lib.sh holds that rule for both generators.
+resolve_image_profile
+bind_image_profiles_identity
 
 # A persisted review section remains authorized only while the exact
 # validated-tuple ledger used to generate it remains unchanged. Canonicalize
@@ -536,32 +478,6 @@ ledger_ctx_checkpoints() {
     '
 }
 
-# Every name the image MCP child reads is required before a section names it,
-# because a configuration missing one reaches the model as a per-call refusal
-# long after the listener reports ready.
-require_image_mcp_inputs() {
-    for image_input_name in QWEN_IMAGE_MCP_SERVER QWEN_IMAGE_TOKEN_KEY_FILE \
-        QWEN_IMAGE_STATE_DIR QWEN_IMAGE_SERVICE_SOCKET QWEN_IMAGE_PROFILES_JSON; do
-        case $image_input_name in
-            QWEN_IMAGE_MCP_SERVER) image_input_value=$image_mcp_server ;;
-            QWEN_IMAGE_TOKEN_KEY_FILE) image_input_value=$image_token_key_file ;;
-            QWEN_IMAGE_STATE_DIR) image_input_value=$image_state_directory ;;
-            QWEN_IMAGE_PROFILES_JSON) image_input_value=$image_profiles_json ;;
-            *) image_input_value=$image_service_socket ;;
-        esac
-        if [ -z "$image_input_value" ]; then
-            printf 'image profile %s emits a configuration and %s names nothing\n' \
-                "$image_profile_id" "$image_input_name" >&2
-            exit 1
-        fi
-        require_json_safe_path "$image_input_name" "$image_input_value"
-    done
-    if [ ! -f "$image_mcp_server" ]; then
-        printf 'QWEN_IMAGE_MCP_SERVER names no regular file: %s\n' \
-            "$image_mcp_server" >&2
-        exit 1
-    fi
-}
 if [ -n "$image_profile_id" ]; then
     require_image_mcp_inputs
 fi
@@ -570,97 +486,12 @@ fi
 # image profile is: it is one more claim over the whole file, and a run that
 # discovered it unusable after writing half the sections would land a preset
 # whose Review button reaches a section that never emitted. `-` leaves the
-# review to a second launch, which is what every checked-in row reads.
-review_section=
-review_model_path=
-review_projector_path=
-review_context=
-review_cache_k=
-review_cache_v=
-review_flash=
-review_batch=
-review_ubatch=
-if [ -n "$image_profile_review_model" ] &&
-    [ "$image_profile_review_model" != '-' ]; then
-    if ! review_registry_row=$("$script_directory/model-registry.sh" id \
-        "$image_profile_review_model"); then
-        printf 'image profile %s names review_model %s, which the model registry holds no row for\n' \
-            "$image_profile_id" "$image_profile_review_model" >&2
-        exit 1
-    fi
-    review_section=$image_profile_review_model
-    review_projector=$(registry_field "$review_registry_row" projector)
-    if [ "$review_projector" != required ]; then
-        printf 'review_model %s carries projector %s, and a reviewer reads an image through its own projector\n' \
-            "$image_profile_review_model" "$review_projector" >&2
-        exit 1
-    fi
-    review_tier=$(registry_field "$review_registry_row" tier)
-    case $review_tier in
-        production | candidate) ;;
-        *)
-            printf 'review_model %s is tiered %s, which is not production or candidate\n' \
-                "$image_profile_review_model" "$review_tier" >&2
-            exit 1
-            ;;
-    esac
-    review_model_file=$(registry_field "$review_registry_row" model_file)
-    review_model_path=$model_root/$review_model_file
-    if [ ! -f "$review_model_path" ]; then
-        printf 'review_model %s names weights this machine holds no file for: %s\n' \
-            "$image_profile_review_model" "$review_model_path" >&2
-        exit 1
-    fi
-    # select-projector.sh prints nothing for both the absent and the ambiguous
-    # case, so an empty result rather than the exit status discriminates. A
-    # review section emitted text-only would answer from an image it never read.
-    review_projector_path=$("$script_directory/select-projector.sh" \
-        "$review_model_path" 2>/dev/null) || review_projector_path=''
-    if [ -z "$review_projector_path" ]; then
-        printf 'review_model %s resolves no projector inside %s\n' \
-            "$image_profile_review_model" "$(dirname -- "$review_model_path")" >&2
-        exit 1
-    fi
-    # The reviewer serves at its registry default depth rather than at a depth a
-    # profile chooses, because the tuple has to be one remote/validated-tuples.tsv
-    # already carries with the projector loaded: llama-bench allocates no
-    # projector buffers, so a `none` row measures a different allocation than the
-    # one this section makes.
-    review_context=$(registry_field "$review_registry_row" context_default)
-    review_cache_k=$(registry_field "$review_registry_row" cache_type_k)
-    review_cache_v=$(registry_field "$review_registry_row" cache_type_v)
-    review_flash=$(registry_field "$review_registry_row" flash_attention)
-    review_batch=$(registry_field "$review_registry_row" batch)
-    review_ubatch=$(registry_field "$review_registry_row" ubatch)
-    review_ctx_checkpoints=$(ledger_ctx_checkpoints "$image_profile_review_model")
-    for review_numeric_field in "$review_context" "$review_batch" \
-        "$review_ubatch"; do
-        case $review_numeric_field in
-            '' | *[!0-9]* | 0*)
-                printf 'review_model %s carries a tuple field outside canonical positive decimal form: %s\n' \
-                    "$image_profile_review_model" "$review_numeric_field" >&2
-                exit 1
-                ;;
-        esac
-    done
-    if ! "$script_directory/model-registry.sh" tuples \
-        "$image_profile_review_model" |
-        awk -F'\t' -v depth="$review_context" -v batch="$review_batch" \
-            -v ubatch="$review_ubatch" -v cache_k="$review_cache_k" \
-            -v cache_v="$review_cache_v" -v flash="$review_flash" '
-            $3 == "router-child" && $4 == depth && $5 == batch &&
-            $6 == ubatch && $7 == cache_k &&
-            $8 == cache_v && $9 == flash && $12 == "loaded" &&
-            $13 == "vulkan" && $14 == "validated" { found = 1 }
-            END { exit !found }
-        '; then
-        printf 'review_model %s carries no validated tuple at depth %s, %s/%s, %s/%s, flash %s with the projector loaded\n' \
-            "$image_profile_review_model" "$review_context" "$review_batch" \
-            "$review_ubatch" "$review_cache_k" "$review_cache_v" \
-            "$review_flash" >&2
-        printf 'remote/probe-depth-projector.sh measures that arm\n' >&2
-        exit 1
-    fi
+# review to a second launch, which is what every checked-in row reads. This file
+# is the one an image launch serves, so an unusable reviewer ends the run rather
+# than being withheld: two sections are the whole preset and the operator asked
+# for both.
+if ! resolve_image_review_model; then
+    exit 1
 fi
 
 # A section's MCP configuration path is read by qwen-web-launch.sh and by the

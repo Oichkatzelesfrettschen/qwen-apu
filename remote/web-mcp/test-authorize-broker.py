@@ -10,6 +10,7 @@ fake provider, which is what proves the two paths agree on one canonical
 claim without reaching a network or a key of the operator's.
 """
 
+import argparse
 import hashlib
 import http.client
 import importlib.util
@@ -52,6 +53,10 @@ ORIGIN = "http://127.0.0.1:8080"
 # The exposure arms name a literal in the Host header while the socket stays on
 # the loopback, so the gate is measured on a host holding no second address.
 EXPOSED_ADDRESS = "192.0.2.10"
+# The name arms present a synthetic mDNS host in the Host header, so the arm
+# reads the admitted set rather than whatever this machine advertises.
+EXPOSED_NAME = "qwen-test.local"
+NAME_ORIGIN = "http://qwen-test.local:8080"
 START_WAIT_SECONDS = 15.0
 STOP_WAIT_SECONDS = 5.0
 # What the broker's own shutdown sequence costs. A terminating signal raises
@@ -64,6 +69,10 @@ STOP_WAIT_SECONDS = 5.0
 # loaded runner, and it exists so the wait never ends in a SIGKILL: a killed
 # broker skips the unlink, which is the property the residue arm measures.
 BROKER_SHUTDOWN_WAIT_SECONDS = 30.0
+# Every test in this module runs its requests from one loopback client
+# address, so the default per-client bucket admits comfortably more than any
+# arm sends unless the arm overrides it to measure the bound itself.
+PER_CLIENT_LIMIT_UNMETERED = 1000
 
 FIXTURES = {
     "search": {
@@ -95,11 +104,18 @@ class BrokerProcess:
             "--provider": "fake",
             "--profile": "default",
             "--origin": ORIGIN,
+            "--grant-per-client-per-minute": PER_CLIENT_LIMIT_UNMETERED,
+            "--image-grant-per-client-per-minute": PER_CLIENT_LIMIT_UNMETERED,
+            "--image-max-outstanding-grants-per-client": PER_CLIENT_LIMIT_UNMETERED,
         }
         arguments.update(overrides)
         argv = [sys.executable, BROKER_PATH]
         for option, value in arguments.items():
-            if value is not None:
+            # A True value is a bare store_true flag such as --open-lan; a None
+            # value withholds the option entirely.
+            if value is True:
+                argv.append(option)
+            elif value is not None:
                 argv += [option, str(value)]
         self.process = subprocess.Popen(
             argv,
@@ -276,14 +292,17 @@ class BrokerTest(unittest.TestCase):
         self.fail(f"the server returned no tool result: {completed.stderr}")
 
     def test_the_broker_refuses_a_bind_outside_loopback(self):
-        """A literal outside the loopback pair and the wildcard binds nothing.
+        """A non-IPv4 host binds nothing; the type check refuses it outright.
 
         The wildcard has its own arm: it reaches the socket only beside
-        --lan-exposure, which test_the_wildcard_bind_requires_the_exposure_opt_in
-        measures, so the refusal there names the missing opt-in rather than the
-        admitted host set.
+        --lan-exposure and --open-all-interfaces, which
+        test_the_wildcard_bind_requires_the_exposure_opt_in measures, so the
+        refusal there names the missing opt-in rather than the admitted host
+        set. An IPv4 literal outside the loopback pair is syntactically valid
+        and its own arm below measures the cross-argument refusal it meets
+        instead: it names an address --lan-exposure never granted.
         """
-        for host in ("localhost", "192.168.1.10", "::"):
+        for host in ("localhost", "::"):
             with self.subTest(host=host):
                 completed = subprocess.run(
                     [
@@ -302,8 +321,33 @@ class BrokerTest(unittest.TestCase):
                     text=True,
                 )
                 self.assertEqual(completed.returncode, 2)
-                self.assertIn("binds a loopback literal or", completed.stderr)
+                self.assertIn(
+                    "binds a loopback literal, 0.0.0.0, or an IPv4 literal",
+                    completed.stderr,
+                )
                 self.assertEqual(completed.stdout, "")
+
+    def test_the_broker_refuses_a_literal_the_exposure_never_named(self):
+        """A syntactically valid IPv4 literal still binds nothing unannounced."""
+        completed = subprocess.run(
+            [
+                sys.executable,
+                BROKER_PATH,
+                "--host",
+                "192.168.1.10",
+                "--state-dir",
+                self.state_directory,
+                "--token-key-file",
+                self.token_key_path,
+                "--origin",
+                ORIGIN,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(completed.returncode, 2)
+        self.assertIn("--lan-exposure never named", completed.stderr)
+        self.assertEqual(completed.stdout, "")
 
     def run_broker_expecting_refusal(self, token_key_file, expected_message):
         completed = subprocess.run(
@@ -430,6 +474,11 @@ class BrokerTest(unittest.TestCase):
         for description, origin in (
             ("foreign", "http://localhost:8080"),
             ("absent", None),
+            # A cross-origin request from an opaque origin (a sandboxed
+            # iframe, a data: URL, a file: page) sends the literal string
+            # "null" rather than omitting the header, and it names no page
+            # this launch served.
+            ("null", "null"),
         ):
             with self.subTest(origin=description):
                 sent = self.grant_headers()
@@ -639,11 +688,120 @@ class BrokerTest(unittest.TestCase):
 
         with ThreadPoolExecutor(max_workers=5) as executor:
             refusals = list(executor.map(exhaust, range(5)))
-        for status, _, payload in refusals:
+        for status, headers, payload in refusals:
             self.assertEqual(status, 429)
             self.assertIn("authorize-minute", payload["error"])
+            self.assertIn("Retry-After", headers)
+            self.assertTrue(0 <= int(headers["Retry-After"]) <= 60)
         statuses = [row[8] for row in self.audit_rows()]
         self.assertEqual(statuses.count("rate_limited"), 1)
+
+    def test_a_per_client_bucket_bounds_one_address_beneath_the_aggregate(self):
+        """The client-address bucket refuses one peer while the aggregate rate remains.
+
+        The aggregate `--per-minute` bucket is set far above what this arm
+        sends, so a 429 here can only come from the per-client bucket, and its
+        error names the bucket that refused rather than the aggregate one.
+        """
+        broker = self.launch(
+            **{
+                "--per-minute": 100,
+                "--grant-per-client-per-minute": 2,
+                "--image-grant-per-client-per-minute": 100,
+            }
+        )
+        for _ in range(2):
+            status, _, _ = self.post_grant(
+                broker, {"query": "raven2 vulkan decode", "profile_id": "default"}
+            )
+            self.assertEqual(status, 200)
+        status, headers, payload = self.post_grant(
+            broker, {"query": "raven2 vulkan decode", "profile_id": "default"}
+        )
+        self.assertEqual(status, 429)
+        self.assertIn("grant-client-minute:127.0.0.1", payload["error"])
+        self.assertIn("Retry-After", headers)
+        statuses = [row[8] for row in self.audit_rows()]
+        self.assertEqual(statuses.count("rate_limited"), 1)
+
+    def test_the_per_client_rate_names_come_from_the_environment(self):
+        state_directory = tempfile.mkdtemp()
+        token_key_path = os.path.join(state_directory, "token.key")
+        api_key_path = os.path.join(state_directory, "api.key")
+        with open(token_key_path, "w", encoding="ascii") as handle:
+            handle.write(TOKEN_SECRET + "\n")
+        os.chmod(token_key_path, 0o600)
+        with open(api_key_path, "w", encoding="ascii") as handle:
+            handle.write(API_KEY + "\n")
+        os.chmod(api_key_path, 0o600)
+        argv = [
+            sys.executable,
+            BROKER_PATH,
+            "--state-dir",
+            state_directory,
+            "--token-key-file",
+            token_key_path,
+            "--api-key-file",
+            api_key_path,
+            "--provider",
+            "fake",
+            "--profile",
+            "default",
+            "--origin",
+            ORIGIN,
+        ]
+        process = subprocess.Popen(
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env={
+                **os.environ,
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "QWEN_WEB_GRANT_PER_CLIENT_PER_MINUTE": "1",
+                "QWEN_WEB_IMAGE_GRANT_PER_CLIENT_PER_MINUTE": "1",
+            },
+        )
+        try:
+            line = process.stdout.readline()
+            parts = line.split()
+            self.assertEqual(len(parts), 3)
+            host, port = parts[1], int(parts[2])
+            connection = http.client.HTTPConnection(host, port, timeout=10)
+            secret_path = os.path.join(state_directory, SESSION_SECRET_FILE_NAME)
+            deadline = time.time() + START_WAIT_SECONDS
+            while time.time() < deadline and not os.path.exists(secret_path):
+                time.sleep(0.05)
+            with open(secret_path, encoding="ascii") as handle:
+                secret = handle.read().strip()
+            headers = {
+                "Content-Type": "application/json",
+                "Origin": ORIGIN,
+                SESSION_HEADER: secret,
+            }
+            payload = json.dumps(
+                {"query": "raven2 vulkan decode", "profile_id": "default"}
+            )
+            connection.request("POST", "/grant", payload, headers)
+            first = connection.getresponse()
+            self.assertEqual(first.status, 200)
+            first.read()
+            connection.request("POST", "/grant", payload, headers)
+            second = connection.getresponse()
+            self.assertEqual(second.status, 429)
+            body = json.loads(second.read().decode("utf-8"))
+            self.assertIn("grant-client-minute", body["error"])
+            connection.close()
+        finally:
+            if process.poll() is None:
+                process.terminate()
+            try:
+                process.wait(timeout=STOP_WAIT_SECONDS)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=STOP_WAIT_SECONDS)
+            process.stdout.close()
+            process.stderr.close()
 
     def test_a_stale_session_refusal_has_an_explicit_retry_code(self):
         broker = self.launch()
@@ -840,6 +998,64 @@ class BrokerTest(unittest.TestCase):
             self.assertEqual(status, 400, body)
             self.assertIn(named, json.loads(body)["error"])
 
+    def test_a_second_outstanding_image_grant_is_refused_until_the_first_expires(self):
+        """image-service.py runs one job at a time with no queue.
+
+        A second unexpired grant from the same client buys that client a
+        standing ticket ahead of every other peer's next job, so the broker
+        refuses it rather than signing it; the refusal reads distinctly from
+        the per-minute buckets, which stay wide open here.
+        """
+        broker = self.launch(
+            **{
+                "--image-profile": "image-fixture-a",
+                "--image-max-outstanding-grants-per-client": 1,
+                "--lifetime": 60,
+            }
+        )
+        secret = self.session_secret()
+        status, _, body = broker.request(
+            "POST", "/grant-image", json.dumps(self.image_grant_body()),
+            self.grant_headers(secret))
+        self.assertEqual(status, 200, body)
+        status, headers, body = broker.request(
+            "POST", "/grant-image", json.dumps(self.image_grant_body()),
+            self.grant_headers(secret))
+        self.assertEqual(status, 429, body)
+        payload = json.loads(body)
+        self.assertIn("outstanding", payload["error"])
+        self.assertIn("Retry-After", headers)
+        self.assertTrue(0 < int(headers["Retry-After"]) <= 60)
+
+    def test_concurrent_outstanding_image_grants_admit_exactly_the_limit(self):
+        """Two simultaneous requests cannot both pass a limit of one.
+
+        reserve_outstanding_image_grant holds one lock across the read and
+        the append, so two handler threads racing this check cannot both
+        observe zero outstanding grants before either records its own;
+        without that, both would be admitted against a limit meant to admit
+        one.
+        """
+        broker = self.launch(
+            **{
+                "--image-profile": "image-fixture-a",
+                "--image-max-outstanding-grants-per-client": 1,
+                "--lifetime": 60,
+            }
+        )
+        secret = self.session_secret()
+
+        def attempt(_index):
+            return broker.request(
+                "POST", "/grant-image", json.dumps(self.image_grant_body()),
+                self.grant_headers(secret))
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(attempt, range(8)))
+        statuses = [status for status, _, _ in results]
+        self.assertEqual(statuses.count(200), 1, statuses)
+        self.assertEqual(statuses.count(429), 7, statuses)
+
     def test_image_grant_refused_where_no_lane_is_armed(self):
         """A launch that armed no image lane signs no generation grant."""
         broker = self.launch()
@@ -924,6 +1140,26 @@ class BrokerTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 2, completed.stderr)
         self.assertIn("--lan-exposure", completed.stderr)
 
+    def test_the_wildcard_bind_requires_open_all_interfaces_beside_the_exposure(self):
+        """--lan-exposure alone still leaves the wildcard bind refused."""
+        completed = subprocess.run(
+            [
+                sys.executable, BROKER_PATH,
+                "--host", "0.0.0.0",  # noqa: S104 -- the refusal under test
+                "--lan-exposure", EXPOSED_ADDRESS,
+                "--state-dir", self.state_directory,
+                "--token-key-file", self.token_key_path,
+                "--api-key-file", self.api_key_path,
+                "--origin", ORIGIN,
+            ],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            timeout=STOP_WAIT_SECONDS,
+        )
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("--open-all-interfaces", completed.stderr)
+
     def test_the_exposure_admits_its_literal_and_refuses_every_other_host(self):
         """The Host set gains exactly one literal beside the loopback ones."""
         broker = self.launch(**{"--lan-exposure": EXPOSED_ADDRESS})
@@ -978,6 +1214,216 @@ class BrokerTest(unittest.TestCase):
                 self.assertEqual(status, 200, body)
                 self.assertTrue(json.loads(body)["authorization"])
 
+    def test_the_exposure_name_joins_the_admitted_host_set(self):
+        """The mDNS name is a second admitted host, compared casefolded."""
+        broker = self.launch(
+            **{
+                "--lan-exposure": EXPOSED_ADDRESS,
+                "--lan-name": EXPOSED_NAME,
+                "--origin": NAME_ORIGIN,
+                # Nine subTest requests share this broker's authorize-minute
+                # bucket, which the near-miss Host rows below charge the same
+                # as every admitted one; the default of 6 would starve the
+                # later rows on a rate refusal rather than the Host check
+                # this test states.
+                "--per-minute": 20,
+            }
+        )
+        secret = self.session_secret()
+        for description, host_header, expected in (
+            ("loopback", f"127.0.0.1:{broker.port}", 200),
+            ("exposed literal", f"{EXPOSED_ADDRESS}:{broker.port}", 200),
+            ("exposed name", f"{EXPOSED_NAME}:{broker.port}", 200),
+            ("exposed name uppercased", f"QWEN-TEST.LOCAL:{broker.port}", 200),
+            ("foreign name", f"rebind.example.net:{broker.port}", 403),
+            # host_header_names() compares the Host header against the
+            # admitted set by exact string equality (case-folded), never by
+            # prefix or suffix, so a name that merely shares the admitted
+            # name's label -- prepended, appended, or carrying it as a
+            # sub-label -- names no admitted entry and is refused the same
+            # way an unrelated name is. These four are the near-miss forms a
+            # suffix or substring comparison would wrongly admit; a bare
+            # "foreign name" test shares no substring with EXPOSED_NAME and
+            # so never exercised that boundary.
+            ("name with a prepended label", f"evil-{EXPOSED_NAME}:{broker.port}", 403),
+            ("name with an appended label", f"{EXPOSED_NAME}.evil.example:{broker.port}", 403),
+            ("name as a sub-label", f"sub.{EXPOSED_NAME}:{broker.port}", 403),
+            ("name with no label boundary", f"x{EXPOSED_NAME}:{broker.port}", 403),
+        ):
+            with self.subTest(host=description):
+                headers = self.exposed_headers(host_header, secret=secret)
+                headers["Origin"] = NAME_ORIGIN
+                status, _, body = broker.request(
+                    "POST",
+                    "/grant",
+                    json.dumps(
+                        {"query": "raven2 vulkan decode", "profile_id": "default"}
+                    ),
+                    headers,
+                )
+                self.assertEqual(status, expected, body)
+
+    def test_the_exposure_name_requires_the_bearer_the_literal_requires(self):
+        """A second admitted host is not a second credential policy."""
+        broker = self.launch(
+            **{
+                "--lan-exposure": EXPOSED_ADDRESS,
+                "--lan-name": EXPOSED_NAME,
+                "--origin": NAME_ORIGIN,
+            }
+        )
+        secret = self.session_secret()
+        headers = self.exposed_headers(
+            f"{EXPOSED_NAME}:{broker.port}", api_key=None, secret=secret
+        )
+        headers["Origin"] = NAME_ORIGIN
+        status, _, body = broker.request(
+            "POST",
+            "/grant",
+            json.dumps({"query": "raven2 vulkan decode", "profile_id": "default"}),
+            headers,
+        )
+        self.assertEqual(status, 403, body)
+        self.assertIn("bearer API key", json.loads(body)["error"])
+        # /health reads the connection's peer address rather than the Host
+        # spelling, and this request's peer stays loopback, so the exposure
+        # name buys it no separate credential policy there either.
+        status, _, body = broker.request(
+            "GET", "/health", None, {"Host": f"{EXPOSED_NAME}:{broker.port}"}
+        )
+        self.assertEqual(status, 200, body)
+
+    def test_the_lan_name_requires_the_exposure_it_widens(self):
+        """A name adds a Host to a set the exposure literal builds."""
+        completed = subprocess.run(
+            [
+                sys.executable, BROKER_PATH,
+                "--state-dir", self.state_directory,
+                "--token-key-file", self.token_key_path,
+                "--api-key-file", self.api_key_path,
+                "--origin", ORIGIN,
+                "--lan-name", EXPOSED_NAME,
+            ],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            timeout=STOP_WAIT_SECONDS,
+        )
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("--lan-exposure", completed.stderr)
+
+    def test_exposed_name_admits_only_one_local_label(self):
+        """The LAN name is exactly one lowercase RFC 1123 label under .local.
+
+        A bare hostname, a public domain, and a second label under .local each
+        register in the ordinary resolver, so a name an attacker controls there
+        would resolve to this socket under DNS rebinding were any of them
+        admitted; an uppercase letter and a trailing dot name the same
+        resolvable form under a different spelling.
+        """
+        self.assertEqual(broker_module.exposed_name(""), "")
+        self.assertEqual(
+            broker_module.exposed_name("qwen-test.local"), "qwen-test.local"
+        )
+        # A single label carries no dot, so an all-numeric label names no
+        # four-octet IPv4 literal and is admitted the way the shell validator
+        # in remote/web-lan-exposure.sh admits it.
+        self.assertEqual(broker_module.exposed_name("123.local"), "123.local")
+        for refused in (
+            "qwen-test",
+            "attacker.example.com",
+            "QWEN-Test.LOCAL",
+            "qwen-test.local.",
+            "a.b.local",
+            "192.168.1.5",
+            "localhost",
+        ):
+            with self.assertRaises(argparse.ArgumentTypeError, msg=refused):
+                broker_module.exposed_name(refused)
+
+    def test_the_open_opt_in_requires_the_exposure_it_opens(self):
+        """--open-lan removes a credential from a listener the operator exposed."""
+        completed = subprocess.run(
+            [
+                sys.executable, BROKER_PATH,
+                "--state-dir", self.state_directory,
+                "--token-key-file", self.token_key_path,
+                "--api-key-file", self.api_key_path,
+                "--origin", ORIGIN,
+                "--open-lan",
+            ],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            timeout=STOP_WAIT_SECONDS,
+        )
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("--lan-exposure", completed.stderr)
+
+    def test_the_open_opt_in_signs_without_a_bearer_and_keeps_the_host_set(self):
+        """The bearer goes; the Host set, Origin, and session secret stay.
+
+        The launch hands an empty --api-key-file, which is what a keyless
+        session passes, so the arm also measures that the broker reads no key
+        file under the opt-in rather than exiting on the unconfigured path.
+        """
+        broker = self.launch(
+            **{
+                "--lan-exposure": EXPOSED_ADDRESS,
+                "--lan-name": EXPOSED_NAME,
+                "--open-lan": True,
+                "--api-key-file": "",
+                "--origin": NAME_ORIGIN,
+            }
+        )
+        self.assertEqual(broker.port and 1, 1, "the broker never printed a listener")
+        secret = self.session_secret()
+        for description, host_header, expected in (
+            ("exposed literal", f"{EXPOSED_ADDRESS}:{broker.port}", 200),
+            ("exposed name", f"{EXPOSED_NAME}:{broker.port}", 200),
+            ("foreign name", f"rebind.example.net:{broker.port}", 403),
+        ):
+            with self.subTest(host=description):
+                headers = self.exposed_headers(
+                    host_header, api_key=None, secret=secret
+                )
+                headers["Origin"] = NAME_ORIGIN
+                status, _, body = broker.request(
+                    "POST",
+                    "/grant",
+                    json.dumps(
+                        {"query": "raven2 vulkan decode", "profile_id": "default"}
+                    ),
+                    headers,
+                )
+                self.assertEqual(status, expected, body)
+        # The session secret is the gate the opt-in leaves standing, so a
+        # request presenting none is refused with the bearer already gone.
+        headers = self.exposed_headers(
+            f"{EXPOSED_NAME}:{broker.port}", api_key=None, secret="a-stale-secret"
+        )
+        headers["Origin"] = NAME_ORIGIN
+        status, _, body = broker.request(
+            "POST",
+            "/grant",
+            json.dumps({"query": "raven2 vulkan decode", "profile_id": "default"}),
+            headers,
+        )
+        self.assertEqual(status, 403, body)
+        self.assertEqual(json.loads(body)["code"], "stale_session_secret")
+        # An Origin outside the allowlist reads no session secret either.
+        status, _, body = broker.request(
+            "GET", "/session", None, {"Origin": "http://attacker.example"}
+        )
+        self.assertEqual(status, 403, body)
+        # The exposed health read carries no bearer requirement under the
+        # opt-in, which is what the session's identity probe reads.
+        status, _, body = broker.request(
+            "GET", "/health", None, {"Host": f"{EXPOSED_NAME}:{broker.port}"}
+        )
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["pid"], broker.process.pid)
+
     def test_the_default_signs_a_grant_carrying_no_bearer(self):
         """The loopback default stays exactly as it stands."""
         broker = self.launch()
@@ -989,28 +1435,115 @@ class BrokerTest(unittest.TestCase):
         self.assertEqual(status, 200, payload)
         self.assertTrue(payload["authorization"])
 
-    def test_the_exposure_gates_health_on_the_host_the_reader_names(self):
-        """A shell probe on loopback keeps the bearer off its command line."""
+    def test_the_exposure_gates_health_on_the_peer_not_the_host_header(self):
+        """A shell probe on loopback keeps the bearer off its command line.
+
+        A loopback peer is exempt from the bearer whatever admitted Host it
+        names, since the exemption reads `self.client_address` -- the peer
+        address the kernel accepted the connection from -- rather than the
+        `Host` header a request controls. Naming the exposed literal from a
+        loopback peer therefore reads the identity too, the same as naming
+        the loopback literal does.
+        """
         broker = self.launch(**{"--lan-exposure": EXPOSED_ADDRESS})
-        status, _, body = broker.request(
-            "GET", "/health", None, {"Host": f"127.0.0.1:{broker.port}"}
+        for host_header in (
+            f"127.0.0.1:{broker.port}",
+            f"{EXPOSED_ADDRESS}:{broker.port}",
+        ):
+            with self.subTest(host=host_header):
+                status, _, body = broker.request(
+                    "GET", "/health", None, {"Host": host_header}
+                )
+                self.assertEqual(status, 200, body)
+                self.assertEqual(json.loads(body)["pid"], broker.process.pid)
+
+    def loopback_range_request(self, broker, method, path, headers=None):
+        """Connect from a loopback-range address distinct from 127.0.0.1.
+
+        Binding the client socket's source to 127.0.0.2 exercises the same
+        kernel-verified peer-address path a genuine LAN peer presents,
+        without a second host: the bind succeeds because the whole
+        127.0.0.0/8 block routes through `lo`, and the value disagrees with
+        every entry `LOOPBACK_HOSTS` names, so the handler reads a peer the
+        loopback exemption does not cover even while a spoofed Host header
+        claims the loopback literal.
+        """
+        connection = http.client.HTTPConnection(
+            "127.0.0.1", broker.port, timeout=10, source_address=("127.0.0.2", 0)
         )
-        self.assertEqual(status, 200, body)
-        self.assertEqual(json.loads(body)["pid"], broker.process.pid)
-        status, _, body = broker.request(
-            "GET", "/health", None, {"Host": f"{EXPOSED_ADDRESS}:{broker.port}"}
+        try:
+            connection.request(method, path, None, headers or {})
+            response = connection.getresponse()
+            return (
+                response.status,
+                dict(response.getheaders()),
+                response.read().decode("utf-8"),
+            )
+        finally:
+            connection.close()
+
+    def test_the_exposure_refuses_a_non_loopback_peer_spelling_the_loopback_host(self):
+        """A spoofed loopback Host buys nothing once the peer is not loopback."""
+        broker = self.launch(
+            **{
+                "--lan-exposure": EXPOSED_ADDRESS,
+                "--host": "0.0.0.0",
+                "--open-all-interfaces": True,
+            }
+        )
+        status, _, body = self.loopback_range_request(
+            broker, "GET", "/health", {"Host": f"127.0.0.1:{broker.port}"}
         )
         self.assertEqual(status, 403, body)
         self.assertNotIn(TOKEN_SECRET, body)
-        status, _, body = broker.request(
-            "GET", "/health", None,
+        status, _, body = self.loopback_range_request(
+            broker,
+            "GET",
+            "/health",
             {
-                "Host": f"{EXPOSED_ADDRESS}:{broker.port}",
+                "Host": f"127.0.0.1:{broker.port}",
                 "Authorization": f"Bearer {API_KEY}",
             },
         )
         self.assertEqual(status, 200, body)
         self.assertEqual(json.loads(body)["pid"], broker.process.pid)
+
+    def test_the_exposure_bearer_check_precedes_the_shared_bucket(self):
+        """An unauthenticated LAN peer cannot exhaust the bucket a bearer holder needs.
+
+        Five bearer-less grant requests each fail at the bearer check ahead of
+        `ledger.consume`, so none of them spend the two-unit `authorize-minute`
+        bucket: a caller that then presents the bearer still clears both of
+        its own units.
+        """
+        broker = self.launch(
+            **{"--lan-exposure": EXPOSED_ADDRESS, "--per-minute": 2}
+        )
+        secret = self.session_secret()
+        host_header = f"{EXPOSED_ADDRESS}:{broker.port}"
+        payload = json.dumps(
+            {"query": "raven2 vulkan decode", "profile_id": "default"}
+        )
+        unauthenticated_headers = self.exposed_headers(
+            host_header, api_key=None, secret=secret
+        )
+        for _ in range(5):
+            status, _, body = broker.request(
+                "POST", "/grant", payload, unauthenticated_headers
+            )
+            self.assertEqual(status, 403, body)
+            self.assertIn("bearer API key", json.loads(body)["error"])
+        authenticated_headers = self.exposed_headers(host_header, secret=secret)
+        for _ in range(2):
+            status, _, body = broker.request(
+                "POST", "/grant", payload, authenticated_headers
+            )
+            self.assertEqual(status, 200, body)
+        status, _, body = broker.request(
+            "POST", "/grant", payload, authenticated_headers
+        )
+        self.assertEqual(status, 429, body)
+        self.assertIn("authorize-minute", json.loads(body)["error"])
 
     def text(self, message):
         return message["result"]["content"][0]["text"]

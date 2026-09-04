@@ -1,0 +1,12 @@
+{
+  "label": "qwen38-4b-distill-02-package-20w",
+  "request_status": 0,
+  "teardown_status": 0,
+  "prefill_tok_per_second": 12.134426453560593,
+  "prefill_ms": 1565.793,
+  "decode_tok_per_second": 3.3785981466941197,
+  "decode_ms": 18646.787,
+  "prompt_tokens": 19,
+  "decode_tokens": 64,
+  "valid": true
+}

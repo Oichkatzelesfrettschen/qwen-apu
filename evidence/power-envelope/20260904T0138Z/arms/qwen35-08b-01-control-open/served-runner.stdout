@@ -1,0 +1,11 @@
+decode_ms=3366.311
+decode_tok_per_second=18.714848390419064
+decode_tokens=64
+label=qwen35-08b-01-control-open
+prefill_ms=235.687
+prefill_tok_per_second=80.61539244845919
+prompt_tokens=19
+request_status=0
+teardown_status=0
+valid=True
+served_decode=completed label=qwen35-08b-01-control-open result_directory=$HOME/power-envelope-campaign/20260904T0138Z/arms/qwen35-08b-01-control-open

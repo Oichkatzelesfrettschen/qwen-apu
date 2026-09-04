@@ -179,6 +179,10 @@ write_manifest() {
     # The eighth names the series digest the manifest records, which a case
     # moves to stand for a candidate built before its patch changed.
     manifest_series_digest=${8:-}
+    # The ninth names the Q4_K arms the build admits. A build carrying the
+    # variant-select member declares all nine keys; every other build declares
+    # none, which is the `-` the manifest writer emits for it.
+    manifest_q4k_variants=${9:--}
     if [ -z "$manifest_series_digest" ]; then
         if [ "$manifest_series" = - ]; then
             manifest_series_digest=-
@@ -197,6 +201,7 @@ write_manifest() {
         printf 'compiler_flags\t%s\n' "$manifest_compiler"
         printf 'cmake_flags\t%s\n' "$manifest_cmake"
         printf 'checkpoint_series_tree\t%s\n' "$manifest_tree"
+        printf 'q4k_variants\t%s\n' "$manifest_q4k_variants"
         printf 'candidate_series\t%s\n' "$manifest_series"
         printf 'candidate_series_sha256\t%s\n' "$manifest_series_digest"
     } >"$manifest_path"
@@ -604,6 +609,31 @@ set -e
 grep -q 'QWEN_AB_BOUND must exceed zero' "$temporary_directory/zero-bound-stderr.txt"
 printf 'zero_bound=accepted\n'
 
+# The witness directory names a separate campaign's output, and the summary
+# reports its token identity and margin contract beside the paired bound. A
+# directory carrying no margin summary is refused before any arm runs rather
+# than reported as unavailable after one, since a caller who named a witness
+# asked for those two rows.
+active_fixture=witness_directory_unreadable
+run_index=$((run_index + 1))
+set +e
+env -i PATH="$execution_path" HOME="$home_directory" \
+    QWEN_MODELS_DIRECTORY="$models_directory" \
+    QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+    QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+    QWEN_DRM_DEVICE="$fixture_drm" QWEN_HWMON_ROOT="$fixture_hwmon" \
+    QWEN_CENSUS_BROKER="$broker_stub" \
+    QWEN_AB_WITNESS_DIRECTORY="$temporary_directory/no-such-witness" \
+    "$harness" "$control_server" "$candidate_server" "$model_id" \
+    "$temporary_directory/out-$run_index" \
+    >/dev/null 2>"$temporary_directory/witness-stderr.txt"
+witness_status=$?
+set -e
+[ "$witness_status" -eq 2 ]
+grep -q 'QWEN_AB_WITNESS_DIRECTORY names a run-kernel-delta-witness.sh output directory' \
+    "$temporary_directory/witness-stderr.txt"
+printf 'witness_directory_unreadable=accepted\n'
+
 # The arm list is generated from the replicate count rather than written down,
 # so the plan print states what a run would execute: one mirrored quadruple per
 # two replicates, opened by the warmup arm.
@@ -773,6 +803,16 @@ cat >"$run_directory/validate-clock-sidecar.py" <<'VALIDATOR_STUB'
 import os
 import pathlib
 import sys
+
+# The stub records its own argv beside the verdict it prints, so a case reads
+# which priority and affinity the harness declared to the validator; a
+# printed verdict alone would leave --expected-nice and --expected-cpu-affinity
+# unobservable, and those two are what close the P2 gap where a configured
+# sampler priority never reached the validator invocation at all.
+argv_log = os.environ.get("QWEN_TEST_VALIDATOR_ARGV")
+if argv_log:
+    with open(argv_log, "a") as handle:
+        handle.write(" ".join(sys.argv[1:]) + "\n")
 
 label = pathlib.Path(sys.argv[1]).parent.name
 # The invariant the campaign requests under a forced clock policy. The table
@@ -957,6 +997,11 @@ case_quiescence=reached
 case_replies=
 case_replace_model=
 case_replace_tree=
+case_control_key=
+case_candidate_key=
+case_control_server=
+case_candidate_server=
+case_witness=
 
 run_ab() {
     ab_case=$1
@@ -1000,6 +1045,8 @@ run_ab() {
     ab_drm=$fixture_drm
     ab_sudo_log=$temporary_directory/sudo-$ab_case.log
     ab_quiescence_argv=$temporary_directory/quiescence-argv-$ab_case.log
+    ab_validator_argv=$temporary_directory/validator-argv-$ab_case.log
+    : >"$ab_validator_argv"
     if [ "$ab_engine_clock_policy" != auto ]; then
         ab_drm=$temporary_directory/drm-$ab_case
         cp -R -- "$fixture_drm" "$ab_drm"
@@ -1024,6 +1071,10 @@ run_ab() {
         SSH_CONNECTION="$run_ssh_connection" \
         GGML_VK_Q4K_SIDEPLANE=0 \
         QWEN_CACHE_OVERRIDE_CONTEXT_CEILING=65536 \
+        GGML_VK_Q4K_VARIANT=e4/8 \
+        QWEN_AB_WITNESS_DIRECTORY="${case_witness:-}" \
+        QWEN_AB_CONTROL_EXPERIMENT_KEY="${case_control_key:-}" \
+        QWEN_AB_CANDIDATE_EXPERIMENT_KEY="${case_candidate_key:-}" \
         QWEN_MODELS_DIRECTORY="$models_directory" \
         QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
         QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
@@ -1038,6 +1089,7 @@ run_ab() {
         QWEN_TEST_AB_CLOCK_SOURCE="$ab_clock_source" \
         QWEN_TEST_SUDO_LOG="$ab_sudo_log" \
         QWEN_TEST_QUIESCENCE_ARGV="$ab_quiescence_argv" \
+        QWEN_TEST_VALIDATOR_ARGV="$ab_validator_argv" \
         QWEN_TEST_QUIESCENCE_VERDICT="$ab_quiescence_verdict" \
         QWEN_CENSUS_ENGINE_CLOCK_POLICY="$ab_engine_clock_policy" \
         QWEN_CENSUS_MCLK_LEVEL="$ab_mclk_level" \
@@ -1045,7 +1097,8 @@ run_ab() {
         QWEN_CENSUS_REGIME_MAX_ARMS="$ab_regime_max_arms" \
         QWEN_AB_CONTROL_FORCE_INTEGER_DOT="$ab_control_force_dot" \
         QWEN_AB_CANDIDATE_FORCE_INTEGER_DOT="$ab_candidate_force_dot" \
-        "$run_harness_path" "$control_server" "$candidate_server" "$model_id" \
+        "$run_harness_path" "${case_control_server:-$control_server}" \
+        "${case_candidate_server:-$candidate_server}" "$model_id" \
         "$ab_output" \
         >"$temporary_directory/$ab_case-stdout.txt" 2>"$diagnostic_file"
     ab_status=$?
@@ -1054,6 +1107,11 @@ run_ab() {
     case_replies=
     case_replace_model=
     case_replace_tree=
+    case_control_key=
+    case_candidate_key=
+    case_control_server=
+    case_candidate_server=
+    case_witness=
     case_control_force_integer_dot=
     case_candidate_force_integer_dot=
     if [ "$ab_status" -ne "$ab_expected_status" ]; then
@@ -1077,6 +1135,7 @@ run_ab() {
     printf '%s=accepted exit=%s\n' "$ab_case" "$ab_status"
     diagnostic_file=
     ab_last_output=$ab_output
+    ab_last_validator_argv=$ab_validator_argv
 }
 
 # Every arm holds the sustained regime's own clock at its own modal share --
@@ -1092,11 +1151,36 @@ promoted_rates=$temporary_directory/rates-promoted
 write_rates "$promoted_rates" 10.000 11.000 11.000
 run_ab verdict_promoted 0 promoted "$promoted_rates" "$one_clock"
 active_fixture=arms_ledger_columns
-[ "$(head -n 1 "$ab_last_output/arms.tsv")" = "$(printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\tsidecar\townership\tstatus\tsclk_mode_mhz\tsclk_share\tregime_delta\tclock_invariant\tbelow_required_fraction')" ]
-awk -F'\t' 'NF != 15 { exit 1 }' "$ab_last_output/arms.tsv"
+# The harness pins the sampler to nice 19 and to the CPU set
+# QWEN_CENSUS_SIDECAR_CPU names, so every validator invocation carries
+# --expected-nice and --expected-cpu-affinity; a campaign that configured a
+# priority and never named it to the validator would read that check
+# not_run rather than proving the sampler held it.
+if [ ! -s "$ab_last_validator_argv" ]; then
+    printf 'the validator stub recorded no invocation\n' >&2
+    exit 1
+fi
+if ! awk '/--expected-nice 19( |$)/ { found = 1 } END { exit !found }' \
+        "$ab_last_validator_argv"; then
+    printf 'no validator invocation carried --expected-nice 19\n' >&2
+    cat "$ab_last_validator_argv" >&2
+    exit 1
+fi
+if ! awk '/--expected-cpu-affinity 0( |$)/ { found = 1 } END { exit !found }' \
+        "$ab_last_validator_argv"; then
+    printf 'no validator invocation carried --expected-cpu-affinity 0\n' >&2
+    cat "$ab_last_validator_argv" >&2
+    exit 1
+fi
+[ "$(head -n 1 "$ab_last_output/arms.tsv")" = "$(printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\tsidecar\townership\tstatus\tsclk_mode_mhz\tsclk_share\tmclk_mode_mhz\tregime_delta\tclock_invariant\tbelow_required_fraction')" ]
+awk -F'\t' 'NF != 16 { exit 1 }' "$ab_last_output/arms.tsv"
 # The clock columns trail the ledger and read the unknown value under the
 # appliance's own governor, where the validator requests no invariant.
-[ "$(awk -F'\t' 'NR > 1 && ($14 != "-" || $15 != "-")' "$ab_last_output/arms.tsv" | wc -l | tr -d ' ')" = 0 ]
+[ "$(awk -F'\t' 'NR > 1 && ($15 != "-" || $16 != "-")' "$ab_last_output/arms.tsv" | wc -l | tr -d ' ')" = 0 ]
+# The pp_dpm_mclk selection comes off the same clock_state line as the graphics
+# mode and is reported rather than compared, so every sampled arm carries the
+# value the validator printed and a warmup carries it too.
+[ "$(awk -F'\t' 'NR > 1 && $13 != "1067"' "$ab_last_output/arms.tsv" | wc -l | tr -d ' ')" = 0 ]
 # Every arm of the one-clock table holds 800 MHz at a share of 0.1400, inside
 # the sustained regime's own window, so the precondition settles on the second
 # warmup and the ledger carries the header, two warmups, and the eight paired
@@ -1105,10 +1189,10 @@ awk -F'\t' 'NF != 15 { exit 1 }' "$ab_last_output/arms.tsv"
 # The warmups open the ledger at the lettered slots with the sampler on,
 # because their clock state is what the precondition reads, and enter no pair;
 # the summarizer's own filter is what keeps them out.
-[ "$(awk -F'\t' 'NR == 2 { print $1, $2, $8, $11, $13 }' "$ab_last_output/arms.tsv")" = '0a W on 800 -' ]
-[ "$(awk -F'\t' 'NR == 3 { print $1, $2, $8, $11, $13 }' "$ab_last_output/arms.tsv")" = '0b W on 800 -' ]
+[ "$(awk -F'\t' 'NR == 2 { print $1, $2, $8, $11, $14 }' "$ab_last_output/arms.tsv")" = '0a W on 800 -' ]
+[ "$(awk -F'\t' 'NR == 3 { print $1, $2, $8, $11, $14 }' "$ab_last_output/arms.tsv")" = '0b W on 800 -' ]
 [ "$(awk -F'\t' 'NR == 4 { print $1, $2, $8, $11, $12 }' "$ab_last_output/arms.tsv")" = '1 C on 800 0.1400' ]
-[ "$(awk -F'\t' 'NR == 4 { print $7, $9, $13 }' "$ab_last_output/arms.tsv")" = '- - +0.0000' ]
+[ "$(awk -F'\t' 'NR == 4 { print $7, $9, $14 }' "$ab_last_output/arms.tsv")" = '- - +0.0000' ]
 # The governor policy releases the graphics step on its own, so the position
 # predicate still describes idle, the campaign passes no --sclk-forced, and
 # every cooldown row records the state it ran under.
@@ -1339,8 +1423,8 @@ active_fixture=off_regime_arms
 [ "$(awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
     $(column["control"]) == "served-ab" { print $(column["off_regime_arms"]) }' \
     "$ab_last_output/summary.tsv")" = 4 ]
-[ "$(awk -F'\t' '$1 == "2" { print $13 }' "$ab_last_output/arms.tsv")" = '+0.2727' ]
-[ "$(awk -F'\t' '$1 == "1" { print $13 }' "$ab_last_output/arms.tsv")" = '+0.0000' ]
+[ "$(awk -F'\t' '$1 == "2" { print $14 }' "$ab_last_output/arms.tsv")" = '+0.2727' ]
+[ "$(awk -F'\t' '$1 == "1" { print $14 }' "$ab_last_output/arms.tsv")" = '+0.0000' ]
 printf 'off_regime_arms=accepted count=4\n'
 
 # The precondition spends the cap and settles nothing where no two consecutive
@@ -1370,7 +1454,7 @@ grep -qxF "$(printf 'regime_arms\t4')" "$ab_last_output/inputs.tsv"
 [ "$(awk -F'\t' '$1 == "0d" { print $11, $12 }' "$ab_last_output/arms.tsv")" = '812 0.62' ]
 # An unreached regime leaves every named arm without a distance to it, and the
 # control counts no arm outside a band it has no centre for.
-[ "$(awk -F'\t' 'NR > 1 && $2 != "W" && $13 != "-"' "$ab_last_output/arms.tsv" | wc -l | tr -d ' ')" = 0 ]
+[ "$(awk -F'\t' 'NR > 1 && $2 != "W" && $14 != "-"' "$ab_last_output/arms.tsv" | wc -l | tr -d ' ')" = 0 ]
 [ "$(awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
     $(column["control"]) == "served-ab" { print $(column["off_regime_arms"]) }' \
     "$ab_last_output/summary.tsv")" = 0 ]
@@ -1553,9 +1637,9 @@ done
 # One priming warmup opens the ledger, the named arms keep their own slots, and
 # every arm carries the invariant the forced policy asked for.
 [ "$(awk -F'\t' 'NR > 1 && $2 == "W"' "$ab_last_output/arms.tsv" | wc -l | tr -d ' ')" = 1 ]
-[ "$(awk -F'\t' 'NR == 2 { print $1, $2, $14, $15 }' "$ab_last_output/arms.tsv")" \
+[ "$(awk -F'\t' 'NR == 2 { print $1, $2, $15, $16 }' "$ab_last_output/arms.tsv")" \
     = '0a W held 0.0000' ]
-[ "$(awk -F'\t' 'NR > 1 && $14 != "held"' "$ab_last_output/arms.tsv" | wc -l | tr -d ' ')" = 0 ]
+[ "$(awk -F'\t' 'NR > 1 && $15 != "held"' "$ab_last_output/arms.tsv" | wc -l | tr -d ' ')" = 0 ]
 # The performance level, the graphics level, and the restore are the three sudo
 # writes the campaign makes, in that order, and the fixture is left where the
 # campaign found it.
@@ -1618,7 +1702,7 @@ run_ab engine_clock_invariant_violated 1 failed "$promoted_rates" "$one_clock" 1
 active_fixture=engine_clock_invariant_ledger
 grep -q '^served_ab_arm=failed slot=2 arm=K .* clock_invariant=violated reason=clock_invariant$' \
     "$temporary_directory/engine_clock_invariant_violated-stdout.txt"
-[ "$(awk -F'\t' '$1 == "2" { print $14, $15 }' "$ab_last_output/arms.tsv")" = 'violated 0.1429' ]
+[ "$(awk -F'\t' '$1 == "2" { print $15, $16 }' "$ab_last_output/arms.tsv")" = 'violated 0.1429' ]
 [ "$(awk -F'=' '$1 == "arm_failures" { print $2 }' "$ab_last_output/terminal-state.tsv")" = 1 ]
 printf 'engine_clock_invariant_violated=accepted\n'
 
@@ -1633,7 +1717,7 @@ grep -q '^served_ab_clock_source=refused slot=1 arm=C source=pp_dpm_sclk_selecte
     "$temporary_directory/engine_clock_dpm_source-stdout.txt"
 grep -q '^served_ab_arm=failed slot=1 arm=C .* reason=clock_source$' \
     "$temporary_directory/engine_clock_dpm_source-stdout.txt"
-[ "$(awk -F'\t' '$1 == "1" { print $14, $15 }' "$ab_last_output/arms.tsv")" = 'held 0.0000' ]
+[ "$(awk -F'\t' '$1 == "1" { print $15, $16 }' "$ab_last_output/arms.tsv")" = 'held 0.0000' ]
 printf 'engine_clock_dpm_source=accepted\n'
 
 # An expired sudo credential is refused ahead of the first arm and names the
@@ -1914,6 +1998,210 @@ done
 [ "$arm_environment_failures" -eq 0 ]
 printf 'arm_environment_closed=accepted records=%s\n' \
     "$(printf '%s\n' "$arm_records" | grep -c .)"
+
+# The sealed key binds the arm into its own receipt. Two arms of one executable
+# differ by the algorithm and the row count alone, so each arm's record carries
+# the key its role was asked for and the ambient GGML_VK_Q4K_VARIANT reaches
+# neither; the run's inputs state the pair.
+# The keyed build: one executable both roles name, whose manifest declares the
+# nine keys. A keyed comparison isolates its arm through the pipeline the device
+# creates, so the series rule the two-binary comparison applies is replaced by
+# equal digests and a key the manifest admits.
+keyed_variants=e4/2,e4/4,e4/8,e4-scale/2,e4-scale/4,e4-scale/8,e4-scale-licm/2,e4-scale-licm/4,e4-scale-licm/8
+keyed_root=$temporary_directory/keyed-build
+mkdir -p "$keyed_root/bin"
+cp -- "$control_server" "$keyed_root/bin/llama-server"
+chmod +x "$keyed_root/bin/llama-server"
+keyed_server=$keyed_root/bin/llama-server
+keyed_bytes=$(wc -c <"$keyed_server" | tr -d ' ')
+keyed_sha256=$(sha256sum "$keyed_server" | cut -d ' ' -f 1)
+# A keyed build is a candidate tree: it carries the variant-select member, so
+# its manifest reads verified-candidate and names the member the way any other
+# candidate manifest does. What the keyed comparison drops is the series
+# equality between the two roles, since both roles are this one build.
+write_manifest "$keyed_root/artifact-manifest.tsv" "$keyed_bytes" "$keyed_sha256" \
+    "$candidate_patch" verified-candidate "$serving_cmake" "$serving_compiler" '' \
+    "$keyed_variants"
+
+experiment_rates=$temporary_directory/rates-experiment
+write_rates "$experiment_rates" 10.000 11.000 11.000
+case_control_key=e4/4
+case_candidate_key=e4-scale-licm/4
+case_control_server=$keyed_server
+case_candidate_server=$keyed_server
+run_ab experiment_key_bound 0 promoted "$experiment_rates" "$one_clock"
+active_fixture=experiment_key_bound
+[ "$(awk -F'\t' '$1 == "control_experiment_key" { print $2 }' "$ab_last_output/inputs.tsv")" = 'e4/4' ]
+[ "$(awk -F'\t' '$1 == "candidate_experiment_key" { print $2 }' "$ab_last_output/inputs.tsv")" \
+    = 'e4-scale-licm/4' ]
+experiment_key_failures=0
+for arm_record in "$ab_last_output"/arms/*/arm-environment.tsv; do
+    [ -f "$arm_record" ] || continue
+    arm_role=$(basename "$(dirname "$arm_record")")
+    arm_key=$(awk -F'\t' '$1 == "QWEN_Q4K_VARIANT" { print $2 }' "$arm_record")
+    case $arm_role in
+        *-K) arm_expected=e4-scale-licm/4 ;;
+        *) arm_expected=e4/4 ;;
+    esac
+    if [ "$arm_key" != "$arm_expected" ]; then
+        printf 'arm %s carries experiment key %s where %s was asked for\n' \
+            "$arm_role" "${arm_key:--}" "$arm_expected" >&2
+        experiment_key_failures=1
+    fi
+done
+[ "$experiment_key_failures" -eq 0 ]
+printf 'experiment_key_bound=accepted\n'
+
+# A key naming no buildable arm, and a pair naming one arm twice, are each
+# refused before an arm runs.
+run_refusal_servers() {
+    refusal_case=$1
+    refusal_message=$2
+    refusal_control=$3
+    refusal_candidate=$4
+    shift 4
+    run_index=$((run_index + 1))
+    active_fixture=$refusal_case
+    set +e
+    env -i PATH="$execution_path" HOME="$home_directory" \
+        QWEN_MODELS_DIRECTORY="$models_directory" \
+        QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+        QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+        QWEN_DRM_DEVICE="$fixture_drm" QWEN_HWMON_ROOT="$fixture_hwmon" \
+        QWEN_CENSUS_BROKER="$broker_stub" "$@" \
+        "$harness" "$refusal_control" "$refusal_candidate" "$model_id" \
+        "$temporary_directory/out-$run_index" \
+        >/dev/null 2>"$temporary_directory/$refusal_case-stderr.txt"
+    refusal_status=$?
+    set -e
+    [ "$refusal_status" -eq 2 ]
+    grep -q "$refusal_message" "$temporary_directory/$refusal_case-stderr.txt"
+    printf '%s=accepted\n' "$refusal_case"
+}
+
+run_refusal() {
+    refusal_case=$1
+    refusal_message=$2
+    shift 2
+    run_index=$((run_index + 1))
+    active_fixture=$refusal_case
+    set +e
+    env -i PATH="$execution_path" HOME="$home_directory" \
+        QWEN_MODELS_DIRECTORY="$models_directory" \
+        QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+        QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+        QWEN_DRM_DEVICE="$fixture_drm" QWEN_HWMON_ROOT="$fixture_hwmon" \
+        QWEN_CENSUS_BROKER="$broker_stub" "$@" \
+        "$harness" "$control_server" "$candidate_server" "$model_id" \
+        "$temporary_directory/out-$run_index" \
+        >/dev/null 2>"$temporary_directory/$refusal_case-stderr.txt"
+    refusal_status=$?
+    set -e
+    [ "$refusal_status" -eq 2 ]
+    grep -q "$refusal_message" "$temporary_directory/$refusal_case-stderr.txt"
+    printf '%s=accepted\n' "$refusal_case"
+}
+run_refusal experiment_key_unknown \
+    'an experiment key is e4, e4-scale, or e4-scale-licm over /2, /4, or /8' \
+    QWEN_AB_CANDIDATE_EXPERIMENT_KEY=e5-scale/4
+run_refusal experiment_key_rowless \
+    'an experiment key is e4, e4-scale, or e4-scale-licm over /2, /4, or /8' \
+    QWEN_AB_CANDIDATE_EXPERIMENT_KEY=e4-scale-licm
+run_refusal experiment_key_identical \
+    'the two experiment keys name one arm' \
+    QWEN_AB_CONTROL_EXPERIMENT_KEY=e4/4 QWEN_AB_CANDIDATE_EXPERIMENT_KEY=e4/4
+# A half-keyed run would leave the unkeyed role at the build's own default while
+# its receipt named an arm.
+run_refusal experiment_key_half \
+    'a keyed comparison names an experiment key for both roles' \
+    QWEN_AB_CANDIDATE_EXPERIMENT_KEY=e4-scale-licm/4
+# Two binaries under a keyed comparison measure the build beside the arm.
+run_refusal experiment_key_two_binaries \
+    'a keyed comparison names one executable twice' \
+    QWEN_AB_CONTROL_EXPERIMENT_KEY=e4/4 \
+    QWEN_AB_CANDIDATE_EXPERIMENT_KEY=e4-scale-licm/4
+# A build whose manifest declares no q4k_variants ignores the key and runs its
+# default shader, so the receipt would name an arm the device never created.
+run_refusal_servers experiment_key_undeclared \
+    'the manifest declares no q4k_variants' \
+    "$control_server" "$control_server" \
+    QWEN_AB_CONTROL_EXPERIMENT_KEY=e4/4 \
+    QWEN_AB_CANDIDATE_EXPERIMENT_KEY=e4-scale-licm/4
+# A key the shape rule admits and the build does not names an arm this
+# executable cannot create, which a build declaring one key stands for.
+narrow_root=$temporary_directory/keyed-build-narrow
+mkdir -p "$narrow_root/bin"
+cp -- "$keyed_server" "$narrow_root/bin/llama-server"
+chmod +x "$narrow_root/bin/llama-server"
+write_manifest "$narrow_root/artifact-manifest.tsv" "$keyed_bytes" "$keyed_sha256" \
+    "$candidate_patch" verified-candidate "$serving_cmake" "$serving_compiler" '' e4/4
+run_refusal_servers experiment_key_unadmitted \
+    'the manifest does not admit experiment key e4-scale-licm/4' \
+    "$narrow_root/bin/llama-server" "$narrow_root/bin/llama-server" \
+    QWEN_AB_CONTROL_EXPERIMENT_KEY=e4/4 \
+    QWEN_AB_CANDIDATE_EXPERIMENT_KEY=e4-scale-licm/4
+
+# The witness reports another run's ids, so it is admitted only where that run
+# was this comparison: its own inputs name the model and both server digests.
+witness_foreign=$temporary_directory/witness-foreign
+mkdir -p "$witness_foreign"
+: >"$witness_foreign/margin-summary.tsv"
+{
+    printf 'model_id\tsome-other-model\n'
+    printf 'control_server_sha256\t%s\n' "$control_sha256"
+    printf 'candidate_server_sha256\t%s\n' "$candidate_sha256"
+    printf 'control_experiment_key\t-\ncandidate_experiment_key\t-\n'
+} >"$witness_foreign/inputs.tsv"
+run_refusal witness_foreign_model \
+    'the witness names model_id some-other-model where this campaign runs' \
+    QWEN_AB_WITNESS_DIRECTORY="$witness_foreign"
+witness_stale=$temporary_directory/witness-stale
+mkdir -p "$witness_stale"
+: >"$witness_stale/margin-summary.tsv"
+{
+    printf 'model_id\t%s\n' "$model_id"
+    printf 'control_server_sha256\t%s\n' "$control_sha256"
+    printf 'candidate_server_sha256\tstaledigest\n'
+    printf 'control_experiment_key\t-\ncandidate_experiment_key\t-\n'
+} >"$witness_stale/inputs.tsv"
+run_refusal witness_stale_candidate \
+    'the witness names candidate_server_sha256 staledigest where this campaign runs' \
+    QWEN_AB_WITNESS_DIRECTORY="$witness_stale"
+witness_matching=$temporary_directory/witness-matching
+mkdir -p "$witness_matching"
+: >"$witness_matching/margin-summary.tsv"
+{
+    printf 'model_id\t%s\n' "$model_id"
+    printf 'control_server_sha256\t%s\n' "$control_sha256"
+    printf 'candidate_server_sha256\t%s\n' "$candidate_sha256"
+    printf 'control_experiment_key\t-\ncandidate_experiment_key\t-\n'
+} >"$witness_matching/inputs.tsv"
+witness_keyed=$temporary_directory/witness-keyed
+mkdir -p "$witness_keyed"
+: >"$witness_keyed/margin-summary.tsv"
+{
+    printf 'model_id\t%s\n' "$model_id"
+    printf 'control_server_sha256\t%s\n' "$keyed_sha256"
+    printf 'candidate_server_sha256\t%s\n' "$keyed_sha256"
+    printf 'control_experiment_key\te4/2\n'
+    printf 'candidate_experiment_key\te4-scale-licm/2\n'
+} >"$witness_keyed/inputs.tsv"
+# One executable serves every keyed arm, so the digests match whatever pair the
+# witness ran; the keys are the only field that separates them.
+run_refusal_servers witness_other_arm_pair \
+    'the witness names control_experiment_key e4/2 where this campaign runs e4/4' \
+    "$keyed_server" "$keyed_server" \
+    QWEN_AB_CONTROL_EXPERIMENT_KEY=e4/4 \
+    QWEN_AB_CANDIDATE_EXPERIMENT_KEY=e4-scale-licm/4 \
+    QWEN_AB_WITNESS_DIRECTORY="$witness_keyed"
+
+witness_rates=$temporary_directory/rates-witness
+write_rates "$witness_rates" 10.000 11.000 11.000
+case_witness=$witness_matching
+run_ab witness_bound 0 promoted "$witness_rates" "$one_clock"
+active_fixture=witness_bound
+[ "$(awk -F'\t' '$1 == "witness_directory" { print $2 }' \
+    "$ab_last_output/terminal-state.tsv")" = "$witness_matching" ]
 
 # The lease as the clock's own authority. A campaign forces a DPM level every
 # workload on the machine then runs at, so it takes the shared Vulkan lease

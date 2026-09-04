@@ -1,0 +1,8 @@
+runtime_tree=verified git_head=f062aae530ddb789ff0aedbcf4c75f17732abfa8 payload=93b76068da9eac2ce56c07eb4b53146ebcdf48726f282b75f6e31e0adb8b5264 files=317
+runtime_tree=verified git_head=f062aae530ddb789ff0aedbcf4c75f17732abfa8 payload=93b76068da9eac2ce56c07eb4b53146ebcdf48726f282b75f6e31e0adb8b5264 files=317
+started tmux_socket=qwen-runtime tmux_session=qwen-webui profile=low-async host=127.0.0.1 port=8080 context=24576 latency_mode=observe model=/proc/2209717/fd/7 server=$HOME/qwen-deployments/natural-boundary-13d05a0-r4-image/llama-server
+speculation spec_type=off draft_n_max=default draft_p_min=default draft_backend_sampling=0 backend_sampling=0
+cache cache_type_k=q8_0 cache_type_v=q4_0 flash_attention=on override_context_ceiling=registry
+state=running server_pid=2213165 monitor_pid=2213679 latency_watchdog_pid=2213667 kernel_hazard_watchdog_pid=2213676 profile=low-async host=127.0.0.1 port=8080 context=24576 latency_mode=observe utc=2026-09-04T01:46:10Z
+reachable at http://127.0.0.1:8080 (loopback only)
+stop it with $HOME/qwen-laptop-setup/remote/qwen-teardown.sh

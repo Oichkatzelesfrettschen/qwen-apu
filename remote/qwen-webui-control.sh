@@ -372,9 +372,15 @@ case $action in
         # registry filename, and object tuple through the tmux boundary. The
         # capacity policy re-stats the descriptor before selecting one row.
         # The approval broker's marker, port, program, state directory, signing
-        # key path, profile, API-key requirement, and readiness decision cross
-        # with them. qwen-web-launch.sh exports the values into the control
-        # shell, and the session script starts the broker beyond the boundary.
+        # key path, profile, API-key requirement, readiness decision, and its
+        # four rate bounds -- the aggregate authorize-minute bucket, the
+        # per-client grant and image-grant buckets, and the outstanding
+        # image-grant cap -- cross with them. authorize-broker.py falls back
+        # to its own hard-coded default for a bound left unforwarded, so a
+        # caller whose own environment named one reaches the broker only
+        # through this list. qwen-web-launch.sh exports the values into the
+        # control shell, and the session script starts the broker beyond the
+        # boundary.
         # The image service's marker, program, profile parameters, page origin,
         # and the three names its MCP child reads cross the same way, because
         # qwen-image-launch.sh exports them into this shell and the session
@@ -382,7 +388,17 @@ case $action in
         # crosses with them: image-service.py pins VK_DRIVER_FILES and
         # VK_ICD_FILENAMES for every runtime it spawns and derives both from
         # that name, and a value that stopped at this boundary would leave the
-        # service deriving from the default path instead.
+        # service deriving from the default path instead. Its pending-job
+        # bound and its three artifact limits -- the per-client
+        # GET /artifacts/... bucket, the retained-publication count, and the
+        # publication age -- cross the same way, since image-service.py reads
+        # each from os.environ with no argv flag from this script naming it,
+        # so an unforwarded value always falls back to the service's own
+        # default regardless of what the launch exported. The two LAN token
+        # bounds cross with the model selection above rather than with the
+        # web lane, because qwen-capacity-policy.sh reads
+        # QWEN_LAN_MAX_PROMPT_TOKENS and QWEN_LAN_MAX_OUTPUT_TOKENS for every
+        # launch mode that sets them, not only a web-broker launch.
         for forwarded_name in QWEN_MMPROJ QWEN_MMPROJ_OFFLOAD QWEN_IMAGE_MAX_TOKENS \
                               QWEN_INFERENCE_CPU QWEN_SPEC_TYPE \
                               QWEN_SPEC_DRAFT_N_MAX QWEN_SPEC_DRAFT_P_MIN \
@@ -402,6 +418,8 @@ case $action in
                               QWEN_CACHE_TYPE_K QWEN_CACHE_TYPE_V \
                               QWEN_FLASH_ATTN \
                               QWEN_CACHE_OVERRIDE_CONTEXT_CEILING \
+                              QWEN_LAN_MAX_PROMPT_TOKENS \
+                              QWEN_LAN_MAX_OUTPUT_TOKENS \
                               QWEN_ROUTER QWEN_ROUTER_PRESETS \
                               QWEN_ROUTER_PRESET_SHA256 \
                               QWEN_ROUTER_INCLUDE_QUARANTINE \
@@ -411,20 +429,37 @@ case $action in
                               QWEN_WEB_TOKEN_KEY_FILE QWEN_WEB_PROFILE \
                               QWEN_WEB_PROVIDER QWEN_WEB_PROFILES \
                               QWEN_WEB_BROKER_ORIGIN \
+                              QWEN_WEB_AUTHORIZE_PER_MINUTE \
+                              QWEN_WEB_GRANT_PER_CLIENT_PER_MINUTE \
+                              QWEN_WEB_IMAGE_GRANT_PER_CLIENT_PER_MINUTE \
+                              QWEN_IMAGE_MAX_OUTSTANDING_GRANTS_PER_CLIENT \
                               QWEN_WEB_LAN QWEN_WEB_LAN_ADDRESS \
+                              QWEN_WEB_LAN_NAME QWEN_WEB_LAN_OPEN \
+                              QWEN_WEB_LAN_OPEN_ALL_INTERFACES \
+                              QWEN_WEB_LAN_IFINDEX QWEN_WEB_LAN_IFNAME \
+                              QWEN_WEB_LAN_MAC QWEN_WEB_LAN_PREFIXLEN \
+                              QWEN_WEB_LAN_NM_UUID QWEN_WEB_LAN_NM_NAME \
                               QWEN_REQUIRE_API_KEY \
                               QWEN_WEB_AUTHORIZER_READY \
                               QWEN_WEB_SEARXNG QWEN_SEARXNG_PROGRAM \
                               QWEN_SEARXNG_PORT QWEN_SEARXNG_SETTINGS_TEMPLATE \
                               QWEN_SEARXNG_LAUNCH_COMMAND \
                               QWEN_SEARXNG_START_TIMEOUT \
+                              QWEN_SEARXNG_STOP_TIMEOUT \
+                              QWEN_SEARXNG_ROOT QWEN_SEARXNG_SOURCE \
+                              QWEN_SEARXNG_PYTHON \
                               QWEN_IMAGE_SERVICE QWEN_IMAGE_SERVICE_PROGRAM \
                               QWEN_IMAGE_PROFILES_JSON QWEN_IMAGE_PAGE_ORIGIN \
                               QWEN_IMAGE_PROFILE QWEN_IMAGE_TOKEN_KEY_FILE \
                               QWEN_IMAGE_STATE_DIR \
                               QWEN_IMAGE_SERVICE_SOCKET \
+                              QWEN_IMAGE_HTTP_PORT \
                               QWEN_IMAGE_PRIORITY_WRAPPER \
                               QWEN_IMAGE_LEASE_WAIT_S \
+                              QWEN_IMAGE_MAX_PENDING \
+                              QWEN_IMAGE_ARTIFACT_PER_CLIENT_PER_MINUTE \
+                              QWEN_IMAGE_ARTIFACT_MAX_COUNT \
+                              QWEN_IMAGE_ARTIFACT_MAX_AGE_S \
                               QWEN_RADV_ICD \
                               QWEN_VULKAN_LATENCY_PROBE \
                               QWEN_VULKAN_EXTERNAL_LEASE_PROOF; do

@@ -15,7 +15,7 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repository_root=$(CDPATH='' cd -- "$script_directory/.." && pwd)
 cd "$repository_root"
 
-for required_command in bash node shellcheck ruff mypy python3 curl flock git ps sha256sum c++ bwrap; do
+for required_command in bash node shellcheck ruff mypy python3 curl flock git ps sha256sum c++ ss bwrap; do
     if ! command -v "$required_command" >/dev/null 2>&1; then
         printf 'required quality-gate command is absent: %s\n' \
             "$required_command" >&2
@@ -37,6 +37,8 @@ if [ ! -f "$script_directory/gate-cell-key.sh" ]; then
 fi
 GATE_CELL_ROOT=$repository_root
 export GATE_CELL_ROOT
+GATE_CELL_DRIVER_PATH=$script_directory/$(basename -- "$0")
+export GATE_CELL_DRIVER_PATH
 # shellcheck source=remote/gate-cell-key.sh
 . "$script_directory/gate-cell-key.sh"
 
@@ -117,6 +119,9 @@ gate_cell test-image-protocol derive remote/test-image-protocol.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-image-protocol.py'
 gate_cell test-summarize-draft-pair derive remote/test-summarize-draft-pair.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-draft-pair.py'
+gate_cell test-summarize-speculation-breakeven derive \
+    'remote/test-summarize-speculation-breakeven.py remote/summarize-speculation-breakeven.py' \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-speculation-breakeven.py'
 gate_cell test-build-cache-keys derive \
     'remote/test-build-cache-keys.sh remote/build-cache-keys.sh remote/build-llama-preset.sh' \
     remote/test-build-cache-keys.sh
@@ -180,6 +185,9 @@ gate_cell test-summarize-perf-logger-slice derive \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-perf-logger-slice.py'
 gate_cell test-summarize-prefill-ladder derive remote/test-summarize-prefill-ladder.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-prefill-ladder.py'
+gate_cell test-summarize-prefix-checkpoint-hits derive \
+    remote/test-summarize-prefix-checkpoint-hits.py \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-prefix-checkpoint-hits.py'
 gate_cell test-summarize-bracket-ab derive remote/test-summarize-bracket-ab.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-bracket-ab.py'
 gate_cell test-summarize-margin-witness derive remote/test-summarize-margin-witness.py \
@@ -224,6 +232,9 @@ gate_cell test-one-token-admission derive remote/test-one-token-admission.sh \
     remote/test-one-token-admission.sh
 gate_cell test-measure-draft-pair derive remote/test-measure-draft-pair.sh \
     remote/test-measure-draft-pair.sh
+gate_cell test-measure-mtp-arm derive \
+    'remote/test-measure-mtp-arm.sh remote/measure-mtp-arm.sh remote/test-fixtures/fake-mtp-server.sh' \
+    remote/test-measure-mtp-arm.sh
 gate_cell test-classify-checkpoint-semantics derive \
     remote/test-classify-checkpoint-semantics.sh \
     remote/test-classify-checkpoint-semantics.sh
@@ -231,17 +242,36 @@ gate_cell test-write-clangd-config derive remote/test-write-clangd-config.sh \
     remote/test-write-clangd-config.sh
 gate_cell test-check-trace-source-status derive \
     remote/test-check-trace-source-status.sh remote/test-check-trace-source-status.sh
+gate_cell test-admit-web-router-live derive \
+    remote/test-admit-web-router-live.sh remote/test-admit-web-router-live.sh
+gate_cell test-qwen-lan-launch derive remote/test-qwen-lan-launch.sh \
+    remote/test-qwen-lan-launch.sh
 gate_cell test-prefix-checkpoint-key derive \
     'remote/test-prefix-checkpoint-key.sh remote/test-fixtures/prefix-checkpoint-key-probe.cpp patches/llama-server-prefix-checkpoint.patch' \
     remote/test-prefix-checkpoint-key.sh
 gate_cell test-sync-runtime-tree derive remote/test-sync-runtime-tree.sh \
     remote/test-sync-runtime-tree.sh
-gate_cell test-web-search-live derive remote/test-web-search-live.sh \
+gate_cell test-web-search-live derive \
+    'remote/test-web-search-live.sh remote/test-fixtures/fake-searxng-server.py remote/test-fixtures/fabricate-zombie.py' \
     remote/test-web-search-live.sh
 gate_cell test-compute-state-lease derive remote/test-compute-state-lease.sh \
     remote/test-compute-state-lease.sh
+gate_cell test-read-package-energy derive remote/test-read-package-energy.py \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-read-package-energy.py'
+gate_cell test-summarize-power-envelope derive remote/test-summarize-power-envelope.py \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-power-envelope.py'
+gate_cell test-power-envelope derive remote/test-power-envelope.sh \
+    remote/test-power-envelope.sh
+gate_cell test-cpu-frequency-cap derive remote/test-cpu-frequency-cap.sh \
+    remote/test-cpu-frequency-cap.sh
+gate_cell test-run-power-factorial-campaign derive \
+    'remote/test-run-power-factorial-campaign.sh remote/test-fixtures/fake-cpupower.sh remote/test-fixtures/fake-ryzenadj.sh remote/test-fixtures/fake-sysfs-lib.sh' \
+    remote/test-run-power-factorial-campaign.sh
 gate_cell test-run-prefill-ladder derive remote/test-run-prefill-ladder.sh \
     remote/test-run-prefill-ladder.sh
+gate_cell test-measure-prefix-checkpoint-hits derive \
+    'remote/test-measure-prefix-checkpoint-hits.sh remote/test-fixtures/fake-prefix-checkpoint-server.py' \
+    remote/test-measure-prefix-checkpoint-hits.sh
 gate_cell test-feature-roster derive remote/test-feature-roster.sh \
     remote/test-feature-roster.sh
 gate_cell test-run-served-binary-ab derive remote/test-run-served-binary-ab.sh \
@@ -315,6 +345,12 @@ gate_cell test-run-raven2-vulkan-kernel-census derive \
 gate_cell test-fallback-webui-model-state derive \
     remote/test-fallback-webui-model-state.mjs \
     'node remote/test-fallback-webui-model-state.mjs'
+gate_cell test-fallback-webui-conversations derive remote/test-fallback-webui-conversations.mjs \
+    'node remote/test-fallback-webui-conversations.mjs'
+gate_cell test-fallback-webui-fragment-key derive remote/test-fallback-webui-fragment-key.mjs \
+    'node remote/test-fallback-webui-fragment-key.mjs'
+gate_cell test-fallback-webui-ui-switch derive remote/test-fallback-webui-ui-switch.mjs \
+    'node remote/test-fallback-webui-ui-switch.mjs'
 gate_cell test-fallback-webui-roster derive remote/test-fallback-webui-roster.mjs \
     'node remote/test-fallback-webui-roster.mjs'
 gate_cell test-fallback-webui-model-selection derive \

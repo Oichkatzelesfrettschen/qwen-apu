@@ -92,6 +92,15 @@ set -eu
 #   QWEN_AB_CANDIDATE_PATCH          the one candidate series member the candidate
 #                                    carries, default
 #                                    llama-vulkan-q4k-activation-group-sums.patch
+#   QWEN_AB_CONTROL_EXPERIMENT_KEY   the Q4_K mat-vec arm the control server is asked for,
+#   QWEN_AB_CANDIDATE_EXPERIMENT_KEY and the arm the candidate is asked for: an algorithm over
+#                                    e4, e4-scale, and e4-scale-licm with a row count of /2,
+#                                    /4, or /8. Each reaches its arm as QWEN_Q4K_VARIANT and is
+#                                    recorded in that arm's own arm-environment.tsv; an empty
+#                                    value leaves the build's default
+#   QWEN_AB_WITNESS_DIRECTORY        a run-kernel-delta-witness.sh output directory whose
+#                                    token identity and margin contract the summary reports
+#                                    beside the paired bound
 #   QWEN_AB_CONTROL_FORCE_INTEGER_DOT   1 arms GGML_VK_FORCE_INTEGER_DOT on every
 #                                    control arm, the warmups included; absent by default
 #   QWEN_AB_CANDIDATE_FORCE_INTEGER_DOT 1 arms it on every K arm; absent by default
@@ -234,6 +243,60 @@ bracket_summarizer=$script_directory/summarize-bracket-ab.py
 bracket_subject=${QWEN_AB_BRACKET_SUBJECT:-mul_mat_vec_q4_k_f32_f32}
 bracket_null=${QWEN_AB_BRACKET_NULL:-mul_mat_vec_q6_k_f32_f32}
 bracket_bound=${QWEN_AB_BRACKET_BOUND:-0.02}
+# The token-id and margin witness is a separate campaign over its own prompts,
+# so its directory is named rather than derived: the summary reports its two
+# rows beside the paired bound and carries the directory on each, which is what
+# keeps one run's evidence from reading as another's. An absent directory
+# leaves both rows unavailable and decides nothing.
+# The Q4_K arm the binary is asked for. A sealed key selects the mat-vec
+# algorithm and its row count at pipeline creation, so a comparison of two arms
+# of one executable names that executable twice and differs by these two values
+# alone. Each reaches its arm inside the closed environment census_arm_exec
+# writes, so arm-environment.tsv states the key the arm ran under rather than
+# leaving it to the invoking shell, and inputs.tsv states the pair. An empty
+# value leaves the build's own default, which is what an ordinary two-binary
+# comparison uses.
+control_experiment_key=${QWEN_AB_CONTROL_EXPERIMENT_KEY:-}
+candidate_experiment_key=${QWEN_AB_CANDIDATE_EXPERIMENT_KEY:-}
+for experiment_key_value in "$control_experiment_key" "$candidate_experiment_key"; do
+    case $experiment_key_value in
+        '' | e4/2 | e4/4 | e4/8 | e4-scale/2 | e4-scale/4 | e4-scale/8 | \
+        e4-scale-licm/2 | e4-scale-licm/4 | e4-scale-licm/8) ;;
+        *)
+            printf 'an experiment key is e4, e4-scale, or e4-scale-licm over /2, /4, or /8: %s\n' \
+                "$experiment_key_value" >&2
+            exit 2
+            ;;
+    esac
+done
+# A keyed comparison is one executable asked for two arms, so both roles name a
+# key or neither does. A half-keyed run would leave the unkeyed role at the
+# build's own default while its receipt named an arm, which is the mislabeling
+# the sealed key exists to remove.
+experiment_key_mode=0
+if [ -n "$control_experiment_key" ] || [ -n "$candidate_experiment_key" ]; then
+    experiment_key_mode=1
+    if [ -z "$control_experiment_key" ] || [ -z "$candidate_experiment_key" ]; then
+        printf 'a keyed comparison names an experiment key for both roles: control=%s candidate=%s\n' \
+            "${control_experiment_key:--}" "${candidate_experiment_key:--}" >&2
+        exit 2
+    fi
+    if [ "$control_experiment_key" = "$candidate_experiment_key" ]; then
+        printf 'the two experiment keys name one arm, so the comparison has no candidate: %s\n' \
+            "$control_experiment_key" >&2
+        exit 2
+    fi
+fi
+witness_directory=${QWEN_AB_WITNESS_DIRECTORY:-}
+if [ -n "$witness_directory" ]; then
+    for witness_required in margin-summary.tsv inputs.tsv; do
+        if [ ! -r "$witness_directory/$witness_required" ]; then
+            printf 'QWEN_AB_WITNESS_DIRECTORY names a run-kernel-delta-witness.sh output directory: %s\n' \
+                "$witness_directory" >&2
+            exit 2
+        fi
+    done
+fi
 overlap_threshold=${QWEN_CENSUS_OVERLAP_THRESHOLD:-0.05}
 if [ "$ab_mode" = kernel-delta ]; then
     for required_summarizer in "$census_summarizer" "$bracket_summarizer"; do
@@ -623,7 +686,11 @@ IFS="$(printf '\t')" read -r candidate_sha256 candidate_bytes candidate_manifest
     candidate_semantics candidate_series <<EOF
 $candidate_binding
 EOF
-if [ "$control_sha256" = "$candidate_sha256" ]; then
+# Two builds compared as two binaries must differ, since one named twice
+# measures the machine. A keyed comparison inverts that: the arm is the pipeline
+# the device creates from one executable, so the two roles are required to be
+# one binary and the section below proves the manifest admits both keys.
+if [ "$experiment_key_mode" -eq 0 ] && [ "$control_sha256" = "$candidate_sha256" ]; then
     printf 'the control and the candidate are one executable: %s\n' "$control_sha256" >&2
     exit 2
 fi
@@ -790,12 +857,80 @@ case $ab_mode in
         expected_candidate_series=$candidate_patch
         ;;
 esac
-if [ "$control_candidate_series" != "$expected_control_series" ]; then
+# A witness reports the ids two binaries generated, so the ids it reports are
+# evidence about this comparison only where it ran this comparison. Its own
+# inputs.tsv names the model and both server digests, and each must equal this
+# campaign's; a stale directory otherwise contributes authoritative-looking
+# verdict rows about a different experiment. The check runs here because it
+# needs the server digests, and it refuses rather than reporting unavailable,
+# since a caller who named a witness asked for those two rows.
+if [ -n "$witness_directory" ]; then
+    witness_field() {
+        awk -F'\t' -v name="$1" '$1 == name { rows++; value = $2 }
+            END { if (rows != 1) exit 1; print value }' "$witness_directory/inputs.tsv"
+    }
+    # Under a keyed comparison both roles are one executable by construction, so
+    # the two server digests separate no arm pair and the keys are what a
+    # witness is joined by; run-kernel-delta-witness.sh records the pair it ran
+    # and an unkeyed run records `-` on both sides, which is what this compares
+    # against for a two-binary comparison.
+    for witness_binding in "model_id=$model_id" \
+        "control_server_sha256=$control_sha256" \
+        "candidate_server_sha256=$candidate_sha256" \
+        "control_experiment_key=${control_experiment_key:--}" \
+        "candidate_experiment_key=${candidate_experiment_key:--}"; do
+        witness_name=${witness_binding%%=*}
+        witness_expected=${witness_binding#*=}
+        witness_observed=$(witness_field "$witness_name") || witness_observed=
+        if [ "$witness_observed" != "$witness_expected" ]; then
+            printf 'the witness names %s %s where this campaign runs %s: %s\n' \
+                "$witness_name" "${witness_observed:--}" "$witness_expected" \
+                "$witness_directory" >&2
+            exit 2
+        fi
+    done
+fi
+
+# A keyed comparison isolates its patch through the pipeline the device creates
+# rather than through the series two builds carry, so the series rule is
+# replaced by a stricter one: the two roles are one executable, proven by equal
+# server and manifest digests, and each role's key must appear in that
+# manifest's own q4k_variants declaration. A build that admits no key would
+# ignore GGML_VK_Q4K_VARIANT and run its default shader under an arm's name,
+# which is exactly the mislabeling the key exists to remove.
+if [ "$experiment_key_mode" -eq 1 ]; then
+    if [ "$control_sha256" != "$candidate_sha256" ]; then
+        printf 'a keyed comparison names one executable twice: control=%s candidate=%s\n' \
+            "$control_sha256" "$candidate_sha256" >&2
+        exit 2
+    fi
+    if [ "$control_manifest_sha256" != "$candidate_manifest_sha256" ]; then
+        printf 'a keyed comparison reads one artifact manifest twice: control=%s candidate=%s\n' \
+            "$control_manifest_sha256" "$candidate_manifest_sha256" >&2
+        exit 2
+    fi
+    declared_variants=$(awk -F'\t' '$1 == "q4k_variants" { rows++; value = $2 }
+        END { if (rows != 1) exit 1; print value }' "$control_manifest") || declared_variants=
+    if [ -z "$declared_variants" ] || [ "$declared_variants" = - ]; then
+        printf 'the manifest declares no q4k_variants, so it admits no experiment key: %s\n' \
+            "$control_manifest" >&2
+        exit 2
+    fi
+    for experiment_key_value in "$control_experiment_key" "$candidate_experiment_key"; do
+        if ! printf '%s\n' "$declared_variants" | tr ',' '\n' \
+            | grep -qxF "$experiment_key_value"; then
+            printf 'the manifest does not admit experiment key %s: q4k_variants=%s\n' \
+                "$experiment_key_value" "$declared_variants" >&2
+            exit 2
+        fi
+    done
+elif [ "$control_candidate_series" != "$expected_control_series" ]; then
     printf 'the control manifest must name candidate_series %s alone under %s: %s\n' \
         "$expected_control_series" "$ab_mode" "$control_candidate_series" >&2
     exit 2
 fi
-if [ "$candidate_candidate_series" != "$expected_candidate_series" ]; then
+if [ "$experiment_key_mode" -eq 0 ] &&
+    [ "$candidate_candidate_series" != "$expected_candidate_series" ]; then
     printf 'the candidate manifest must name candidate_series %s alone under %s: %s\n' \
         "$expected_candidate_series" "$ab_mode" "$candidate_candidate_series" >&2
     exit 2
@@ -1037,7 +1172,7 @@ execution_proof_sha256=$(sha256sum "$execution_proof" | cut -d ' ' -f 1)
 # clock_invariant and below_required_fraction trail them, carrying the sidecar
 # validator's verdict on a forced clock policy; both read `-` under `auto` and
 # on an unsampled arm.
-printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\tsidecar\townership\tstatus\tsclk_mode_mhz\tsclk_share\tregime_delta\tclock_invariant\tbelow_required_fraction\n' \
+printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\tsidecar\townership\tstatus\tsclk_mode_mhz\tsclk_share\tmclk_mode_mhz\tregime_delta\tclock_invariant\tbelow_required_fraction\n' \
     >"$arms_ledger"
 {
     printf 'model_id\t%s\nmodel_path\t%s\ncontext\t%s\nbatch\t%s\nubatch\t%s\n' \
@@ -1084,6 +1219,8 @@ printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\
         "$candidate_candidate_series" "$candidate_patch"
     printf 'ab_mode\t%s\ninstrumentation\t%s\nbracket_subject\t%s\nbracket_null\t%s\nbracket_bound\t%s\n' \
         "$ab_mode" "$control_instrumentation" "$bracket_subject" "$bracket_null" "$bracket_bound"
+    printf 'control_experiment_key\t%s\ncandidate_experiment_key\t%s\n' \
+        "${control_experiment_key:--}" "${candidate_experiment_key:--}"
     printf 'denominator_server\t%s\ndenominator_server_sha256\t%s\n' \
         "$denominator_server" "$denominator_sha256"
     printf 'base_build_identity_sha256\t%s\n' "$base_build_identity_sha256"
@@ -1222,8 +1359,12 @@ for arm in $execution_arms; do
     # A warmup's clock state is what the regime precondition reads, so it runs
     # the control server under the sampler the named arms run under.
     case $arm in
-        K) server=$candidate_server ;;
-        *) server=$control_server ;;
+        K) server=$candidate_server; arm_experiment_key=$candidate_experiment_key ;;
+        # A warmup opens the list on the control server, so it opens on the
+        # control's own arm: a warmup that primed the candidate's pipeline
+        # would leave the first paired arm reading a cache the other never
+        # filled.
+        *) server=$control_server; arm_experiment_key=$control_experiment_key ;;
     esac
     # The integer-dot admission follows the same role selection the server
     # follows, so a warmup carries the control's value and the arm-environment
@@ -1314,6 +1455,7 @@ for arm in $execution_arms; do
             QWEN_EXECUTION_PROOF_SHA256="$execution_proof_sha256" \
             QWEN_BENCH_GENERATE="$ab_generate" \
             QWEN_PIPELINE_CENSUS="$census_file" \
+            QWEN_Q4K_VARIANT="$arm_experiment_key" \
             QWEN_FORCE_INTEGER_DOT="$arm_force_integer_dot" \
             QWEN_VULKAN_EXTERNAL_LEASE_PROOF="$workload_lease_proof" \
             QWEN_STATE_DIRECTORY="$workload_lease_state_directory" \
@@ -1459,6 +1601,7 @@ EOF
     # every sensor present, and the request window covered.
     sclk_mode_mhz=-
     sclk_share=-
+    mclk_mode_mhz=-
     clock_invariant_state=-
     below_required_fraction=-
     if [ "$sidecar_state" = on ]; then
@@ -1474,6 +1617,7 @@ EOF
                 ${engine_clock_required_flag:+--required-sclk-mhz "$engine_clock_required_flag"} \
                 ${engine_clock_mclk_flag:+--required-mclk-mhz "$engine_clock_mclk_flag"} \
                 ${engine_clock_mclk_fraction_flag:+--max-below-mclk-floor-fraction "$engine_clock_mclk_fraction_flag"} \
+                --expected-nice "$sidecar_nice" --expected-cpu-affinity "$sidecar_cpu" \
                 >"$arm_directory/clock-sidecar-verdict.txt" 2>&1
         else
             python3 "$sidecar_validator" "$arm_directory/clock-sidecar.tsv" \
@@ -1485,6 +1629,7 @@ EOF
                 ${engine_clock_required_flag:+--required-sclk-mhz "$engine_clock_required_flag"} \
                 ${engine_clock_mclk_flag:+--required-mclk-mhz "$engine_clock_mclk_flag"} \
                 ${engine_clock_mclk_fraction_flag:+--max-below-mclk-floor-fraction "$engine_clock_mclk_fraction_flag"} \
+                --expected-nice "$sidecar_nice" --expected-cpu-affinity "$sidecar_cpu" \
                 >"$arm_directory/clock-sidecar-verdict.txt" 2>&1
         fi
         sidecar_verdict=$?
@@ -1521,8 +1666,11 @@ EOF
                 | awk '{ for (i = 1; i <= NF; i++) if (index($i, "sclk_mode_mhz=") == 1) print substr($i, 15) }')
             sclk_share=$(printf '%s\n' "$clock_state_line" \
                 | awk '{ for (i = 1; i <= NF; i++) if (index($i, "sclk_share=") == 1) print substr($i, 12) }')
+            mclk_mode_mhz=$(printf '%s\n' "$clock_state_line" \
+                | awk '{ for (i = 1; i <= NF; i++) if (index($i, "mclk_mode_mhz=") == 1) print substr($i, 15) }')
             [ -n "$sclk_mode_mhz" ] || sclk_mode_mhz=-
             [ -n "$sclk_share" ] || sclk_share=-
+            [ -n "$mclk_mode_mhz" ] || mclk_mode_mhz=-
         fi
         if [ "$sidecar_verdict" -ne 0 ]; then
             sidecar_state=refused
@@ -1663,10 +1811,10 @@ EOF
     fi
     [ "$status" = completed ] || arm_failures=$((arm_failures + 1))
     analysis_end_ns=$(date +%s%N)
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$slot" "$arm" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$slot" "$arm" \
         "$server_sha256" "$predicted_n" "$predicted_ms" "$tok_s" "$census_rows" "$sidecar_state" \
         "$ownership" "$status" \
-        "$sclk_mode_mhz" "$sclk_share" "$regime_delta" "$clock_invariant_state" \
+        "$sclk_mode_mhz" "$sclk_share" "$mclk_mode_mhz" "$regime_delta" "$clock_invariant_state" \
         "$below_required_fraction" >>"$arms_ledger"
     printf 'served_ab_arm=%s slot=%s arm=%s tok_s=%s sidecar=%s sclk_mode_mhz=%s regime_delta=%s clock_invariant=%s reason=%s\n' \
         "$status" "$slot" "$arm" "$tok_s" "$sidecar_state" "$sclk_mode_mhz" \
@@ -1782,7 +1930,7 @@ if [ "$ab_mode" = served ]; then
     set +e
     python3 "$bracket_summarizer" "$arms_ledger" "$output_directory/arms" \
         --subject "$bracket_subject" --null "$bracket_null" --bound "$bracket_bound" \
-        --sclk-band "$sclk_band" \
+        --sclk-band "$sclk_band" ${witness_directory:+--witness "$witness_directory"} \
         >"$output_directory/response-summary.tsv" 2>"$output_directory/response-summary.stderr"
     response_status=$?
     set -e
@@ -1852,6 +2000,15 @@ null_mean_delta=-
 null_union_verdict=-
 null_pairs=-
 module_identity=-
+# The reporting rows the summary carries beside the paired bound: the execution
+# state every bracket was measured at, and the separate witness run's token
+# identity and margin contract. Each states what it read rather than deciding
+# the campaign, so a run without a witness directory reports unavailable and
+# exits on the bracket rows alone.
+clock_state=-
+graph_span_delta=-
+token_identity=-
+margin_contract=-
 if [ "$ab_mode" = kernel-delta ]; then
     set +e
     # The band reaches the bracket the way it reaches the served rate: a device
@@ -1860,7 +2017,7 @@ if [ "$ab_mode" = kernel-delta ]; then
     # between them and their pair leaves the interval.
     python3 "$bracket_summarizer" "$arms_ledger" "$output_directory/arms" \
         --subject "$bracket_subject" --null "$bracket_null" --bound "$bracket_bound" \
-        --sclk-band "$sclk_band" \
+        --sclk-band "$sclk_band" ${witness_directory:+--witness "$witness_directory"} \
         >"$output_directory/bracket-summary.tsv" 2>"$output_directory/bracket-summary.stderr"
     bracket_status=$?
     set -e
@@ -1881,6 +2038,10 @@ if [ "$ab_mode" = kernel-delta ]; then
         module_identity=$(read_bracket_row module_identity verdict) || module_identity=-
         response_identity=$(read_bracket_row response_identity verdict) || response_identity=-
         response_pairs=$(read_bracket_row response_identity comparable_pairs) || response_pairs=-
+        clock_state=$(read_bracket_row clock_state detail) || clock_state=-
+        graph_span_delta=$(read_bracket_row graph-span mean_delta) || graph_span_delta=-
+        token_identity=$(read_bracket_row token_identity verdict) || token_identity=-
+        margin_contract=$(read_bracket_row margin_contract verdict) || margin_contract=-
     else
         printf 'bracket_summary=refused reason=%s\n' \
             "$(sed -n '1p' "$output_directory/bracket-summary.stderr")"
@@ -1921,6 +2082,9 @@ printf 'served_ab=%s\nmodel_id=%s\nreplicates=%s\nbound=%s\nmean_delta=%s\nci_lo
     "$campaign" "$model_id" "$ab_replicates" "$ab_bound" "$mean_delta" "$ci_low" "$ci_high" \
     "$comparable_pairs" "$arm_failures" "$unclassified" "$cooldown_timeouts" \
     "$control_sha256" "$candidate_sha256" >"$output_directory/terminal-state.tsv"
+printf 'clock_state\t%s\ngraph_span_mean_delta\t%s\ntoken_identity\t%s\nmargin_contract\t%s\nwitness_directory\t%s\n' \
+    "$clock_state" "$graph_span_delta" "$token_identity" "$margin_contract" \
+    "${witness_directory:--}" >>"$output_directory/terminal-state.tsv"
 printf 'ab_mode\t%s\nbracket_subject\t%s\nbracket_verdict\t%s\nbracket_mean_delta\t%s\nbracket_ci_low\t%s\nbracket_ci_high\t%s\nbracket_pairs\t%s\nbracket_union_verdict\t%s\nbracket_bound\t%s\nnull_pipeline\t%s\nnull_verdict\t%s\nnull_union_verdict\t%s\nnull_mean_delta\t%s\nnull_pairs\t%s\nmodule_identity\t%s\nresponse_identity\t%s\nresponse_pairs\t%s\n' \
     "$ab_mode" "$bracket_subject" "$bracket_verdict" "$bracket_mean_delta" "$bracket_ci_low" \
     "$bracket_ci_high" "$bracket_pairs" "$bracket_union_verdict" "$bracket_bound" "$bracket_null" \
@@ -1935,5 +2099,11 @@ if [ "$ab_mode" = kernel-delta ]; then
         "$campaign" "$bracket_subject" "$bracket_mean_delta" "$bracket_ci_low" "$bracket_ci_high" \
         "$bracket_pairs" "$bracket_union_verdict" "$bracket_null" "$null_verdict" "$null_union_verdict" \
         "$null_mean_delta" "$module_identity" "$response_identity" "$cooldown_timeouts"
+    # Reported beside the bound rather than folded into it: the whole-graph span
+    # the families move with, the clocks the brackets were timed at, and the
+    # separate witness run's two verdicts.
+    printf 'kernel_delta_reported=%s graph_span_mean_delta=%s clock_state="%s" token_identity=%s margin_contract=%s witness=%s\n' \
+        "$campaign" "$graph_span_delta" "$clock_state" "$token_identity" "$margin_contract" \
+        "${witness_directory:--}"
 fi
 exit "$campaign_exit"

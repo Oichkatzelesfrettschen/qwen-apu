@@ -58,7 +58,11 @@ hwmon_fixture=$sysfs_fixture/class/hwmon
 ksm_fixture=$sysfs_fixture/kernel/mm/ksm
 state_fixture=$temporary_directory/state
 stub_directory=$temporary_directory/stubs
+power_envelope_snapshot_fixture=$state_fixture/power-envelope-snapshot.tsv
+cpu_frequency_cap_snapshot_fixture=$state_fixture/cpu-frequency-cap-snapshot.tsv
 controls=$temporary_directory/firmware-controls.tsv
+power_envelope_log=$temporary_directory/power-envelope.log
+cpu_frequency_cap_log=$temporary_directory/cpu-frequency-cap.log
 observer_log=$temporary_directory/observer.log
 mkdir -p "$drm_fixture" "$hwmon_fixture/hwmon0" "$hwmon_fixture/hwmon1" \
     "$ksm_fixture" "$state_fixture" "$stub_directory"
@@ -83,6 +87,9 @@ reset_fixture() {
     printf '1\n' >"$ksm_fixture/run"
     : >"$controls"
     : >"$observer_log"
+    : >"$power_envelope_log"
+    : >"$cpu_frequency_cap_log"
+    rm -f -- "$power_envelope_snapshot_fixture" "$cpu_frequency_cap_snapshot_fixture"
 }
 
 printf 'nvme\n' >"$hwmon_fixture/hwmon0/name"
@@ -262,7 +269,121 @@ exit 0
 OBSERVER
 } >"$stub_directory/observer"
 
-chmod +x "$stub_directory/sudo" "$stub_directory/observer"
+# The power term stands in for power-envelope.sh so the lease's optional term is
+# driven without ryzenadj and without a credential. It answers `status` from the
+# control file, records every subcommand, and owns a snapshot file the way the
+# real term does, which is what lets a refused restore be an incident here.
+{
+    printf '#!/bin/sh\nset -eu\n'
+    printf 'controls=%s\n' "$controls"
+    printf 'power_envelope_log=%s\n' "$power_envelope_log"
+    printf 'snapshot=%s\n' "$power_envelope_snapshot_fixture"
+    cat <<'POWERTERM'
+control() {
+    awk -F'\t' -v key="$1" '$1 == key { value = $2 } END { print value }' "$controls"
+}
+printf '%s\n' "$*" >>"$power_envelope_log"
+case ${1:-} in
+    status)
+        if [ "$(control power_term_unavailable)" = 1 ]; then
+            printf 'power_envelope=unavailable reason=ryzenadj_absent path=absent snapshot=absent\n'
+            exit 0
+        fi
+        if [ -e "$snapshot" ] && [ "$(control power_status_snapshot_absent)" != 1 ]; then
+            snapshot_state=present
+        else
+            snapshot_state=absent
+        fi
+        printf 'power_envelope=live stapm_limit_mw=15000 fast_limit_mw=15000 slow_limit_mw=15000 vrm_current_ma=30000 vrmmax_current_ma=45000 tctl_limit_c=95 snapshot=%s\n' \
+            "$snapshot_state"
+        exit 0
+        ;;
+    apply)
+        if [ "$(control power_apply_refuses_foreign)" = 1 ]; then
+            printf 'reason=snapshot_present path=%s\n' "$snapshot" >&2
+            exit 2
+        fi
+        {
+            printf 'schema\tpower-envelope-snapshot-v1\t-\n'
+            printf 'owner\t%s\t-\n' "${QWEN_POWER_ENVELOPE_OWNER:-}"
+        } >"$snapshot"
+        if [ "$(control power_apply_refuses)" = 1 ]; then
+            printf 'power_envelope_applied=unreached profile=%s\n' "${2:-}" >&2
+            exit 3
+        fi
+        printf 'power_envelope_applied=%s fields=stapm_limit_mw=20000\n' "${2:-}"
+        exit 0
+        ;;
+    restore)
+        if [ "$(control power_restore_refuses)" = 1 ]; then
+            printf 'power_envelope_restored=failed profile=stub\n' >&2
+            exit 4
+        fi
+        rm -f -- "$snapshot"
+        printf 'power_envelope_restored=held profile=stub\n'
+        exit 0
+        ;;
+esac
+exit 2
+POWERTERM
+} >"$stub_directory/power-envelope"
+
+# The CPU-frequency-cap term is stubbed the same way the power term is: it
+# answers `status` from the control file, records every subcommand, and owns
+# its own snapshot file, so a refused restore there is an incident here too.
+{
+    printf '#!/bin/sh\nset -eu\n'
+    printf 'controls=%s\n' "$controls"
+    printf 'cpu_frequency_cap_log=%s\n' "$cpu_frequency_cap_log"
+    printf 'snapshot=%s\n' "$cpu_frequency_cap_snapshot_fixture"
+    cat <<'CPUTERM'
+control() {
+    awk -F'\t' -v key="$1" '$1 == key { value = $2 } END { print value }' "$controls"
+}
+printf '%s\n' "$*" >>"$cpu_frequency_cap_log"
+case ${1:-} in
+    status)
+        if [ "$(control cpu_cap_term_unavailable)" = 1 ]; then
+            printf 'cpu_frequency_cap=unavailable reason=cpupower_absent path=absent snapshot=absent\n'
+            exit 0
+        fi
+        if [ -e "$snapshot" ] && [ "$(control cpu_cap_status_snapshot_absent)" != 1 ]; then
+            snapshot_state=present
+        else
+            snapshot_state=absent
+        fi
+        printf 'cpu_frequency_cap=live cpu0_max_khz=2300000 boost=0 snapshot=%s\n' \
+            "$snapshot_state"
+        exit 0
+        ;;
+    apply)
+        {
+            printf 'schema\tcpu-frequency-cap-snapshot-v1\t-\n'
+            printf 'owner\t%s\t-\n' "${QWEN_CPU_FREQUENCY_CAP_OWNER:-}"
+        } >"$snapshot"
+        if [ "$(control cpu_cap_apply_refuses)" = 1 ]; then
+            printf 'cpu_frequency_cap_applied=unreached profile=%s\n' "${2:-}" >&2
+            exit 3
+        fi
+        printf 'cpu_frequency_cap_applied=%s upper_khz=2300000 boost=0\n' "${2:-}"
+        exit 0
+        ;;
+    restore)
+        if [ "$(control cpu_cap_restore_refuses)" = 1 ]; then
+            printf 'cpu_frequency_cap_restored=failed profile=stub\n' >&2
+            exit 4
+        fi
+        rm -f -- "$snapshot"
+        printf 'cpu_frequency_cap_restored=held profile=stub\n'
+        exit 0
+        ;;
+esac
+exit 2
+CPUTERM
+} >"$stub_directory/cpu-frequency-cap"
+
+chmod +x "$stub_directory/sudo" "$stub_directory/observer" "$stub_directory/power-envelope" \
+    "$stub_directory/cpu-frequency-cap"
 
 exec_transaction() {
     exec env PATH="$stub_directory:$PATH" \
@@ -273,6 +394,10 @@ exec_transaction() {
         QWEN_COMPUTE_STATE_REVISION=0123456789abcdef0123456789abcdef01234567 \
         QWEN_COMPUTE_STATE_CLOCK_DEADLINE_S=1 \
         QWEN_COMPUTE_STATE_RESTORE_DEADLINE_S=1 \
+        QWEN_POWER_ENVELOPE_COMMAND="${QWEN_TEST_POWER_ENVELOPE_COMMAND:-$stub_directory/power-envelope}" \
+        QWEN_POWER_ENVELOPE_SNAPSHOT="$power_envelope_snapshot_fixture" \
+        QWEN_CPU_FREQUENCY_CAP_COMMAND="${QWEN_TEST_CPU_FREQUENCY_CAP_COMMAND:-$stub_directory/cpu-frequency-cap}" \
+        QWEN_CPU_FREQUENCY_CAP_SNAPSHOT="$cpu_frequency_cap_snapshot_fixture" \
         "$transaction" "$@"
 }
 
@@ -379,11 +504,11 @@ run_transaction measure-fixed "$stub_directory/observer" clean-arm \
     >"$temporary_directory/clean.log" 2>&1 || clean_status=$?
 if [ "$clean_status" -eq 0 ] &&
     grep -q '^compute_state_lease=held ' "$temporary_directory/clean.log" &&
-    grep -q '^compute_state_applied=measure-fixed dpm_level=manual sclk=2 1100 mclk=2 933 ksm_run=0$' \
+    grep -q '^compute_state_applied=measure-fixed dpm_level=manual sclk=2 1100 mclk=2 933 ksm_run=0 power_envelope=- cpu_frequency_cap=-$' \
         "$temporary_directory/clean.log" &&
     grep -q '^clock_expectation=reached profile=measure-fixed gfxclk_mhz=1100 fclk_mhz=933$' \
         "$temporary_directory/clean.log" &&
-    grep -q '^restoration=held profile=measure-fixed dpm_level=manual selections=verified sclk_level=1 mclk_level=1 ksm_run=1$' \
+    grep -q '^restoration=held profile=measure-fixed dpm_level=manual selections=verified sclk_level=1 mclk_level=1 ksm_run=1 power_envelope=- cpu_frequency_cap=-$' \
         "$temporary_directory/clean.log" &&
     [ "$(grep -c '^compute_state_command=' "$temporary_directory/clean.log")" -eq 1 ] &&
     grep -q ' status=0 profile=measure-fixed child_stop=$' "$temporary_directory/clean.log" &&
@@ -467,7 +592,7 @@ serving_status=0
 run_transaction serve-performance-candidate "$stub_directory/observer" \
     >"$temporary_directory/serving.log" 2>&1 || serving_status=$?
 if [ "$serving_status" -eq 0 ] &&
-    grep -q '^compute_state_applied=serve-performance-candidate dpm_level=manual sclk=2 1100 mclk=2 933 ksm_run=0$' \
+    grep -q '^compute_state_applied=serve-performance-candidate dpm_level=manual sclk=2 1100 mclk=2 933 ksm_run=0 power_envelope=- cpu_frequency_cap=-$' \
         "$temporary_directory/serving.log" &&
     grep -q '^clock_expectation=reached profile=serve-performance-candidate gfxclk_mhz=1100 fclk_mhz=933$' \
         "$temporary_directory/serving.log" &&
@@ -493,7 +618,7 @@ run_transaction measure-fixed "$stub_directory/observer" auto-arm \
 if [ "$auto_status" -eq 0 ] &&
     [ "$(observer_field observed_dpm_level)" = manual ] &&
     [ "$(observer_field observed_sclk)" = '2:1100' ] &&
-    grep -q '^restoration=held profile=measure-fixed dpm_level=auto selections=governor-owned sclk_level=1 mclk_level=1 ksm_run=1$' \
+    grep -q '^restoration=held profile=measure-fixed dpm_level=auto selections=governor-owned sclk_level=1 mclk_level=1 ksm_run=1 power_envelope=- cpu_frequency_cap=-$' \
         "$temporary_directory/auto.log" &&
     [ "$(cat "$drm_fixture/power_dpm_force_performance_level")" = auto ] &&
     [ "$(cat "$ksm_fixture/run")" = 1 ]; then
@@ -608,7 +733,7 @@ term_status=0
 wait "$term_pid" || term_status=$?
 if [ "$term_status" -eq 143 ] &&
     grep -q '^observed_sclk	2:1100$' "$observer_log" &&
-    grep -q '^restoration=held profile=measure-fixed dpm_level=manual selections=verified sclk_level=1 mclk_level=1 ksm_run=1$' \
+    grep -q '^restoration=held profile=measure-fixed dpm_level=manual selections=verified sclk_level=1 mclk_level=1 ksm_run=1 power_envelope=- cpu_frequency_cap=-$' \
         "$term_output" &&
     [ "$(grep -c '^compute_state_command=' "$term_output")" -eq 1 ] &&
     grep -q ' status=interrupted profile=measure-fixed child_stop=term$' "$term_output" &&
@@ -647,7 +772,7 @@ kill -TERM "$kill_pid" 2>/dev/null || true
 kill_status=0
 wait "$kill_pid" || kill_status=$?
 if [ "$kill_status" -eq 143 ] &&
-    grep -q '^restoration=held profile=measure-fixed dpm_level=manual selections=verified sclk_level=1 mclk_level=1 ksm_run=1$' \
+    grep -q '^restoration=held profile=measure-fixed dpm_level=manual selections=verified sclk_level=1 mclk_level=1 ksm_run=1 power_envelope=- cpu_frequency_cap=-$' \
         "$kill_output" &&
     [ "$(grep -c '^compute_state_command=' "$kill_output")" -eq 1 ] &&
     grep -q ' status=interrupted profile=measure-fixed child_stop=kill$' "$kill_output" &&
@@ -694,6 +819,367 @@ if [ "$status_status" -eq 0 ] &&
 else
     report 1 status_reports_live_values_without_a_credential
     cat "$temporary_directory/status.log" >&2
+fi
+
+# The package arm is the same transaction with one more authority. The power
+# term runs after the clock writes and ahead of the clock proof, its restore
+# runs ahead of every other restore, and the record names which envelope the
+# command ran under.
+reset_fixture
+package_status=0
+run_transaction measure-fixed-package-20w "$stub_directory/observer" package-arm \
+    >"$temporary_directory/package.log" 2>&1 || package_status=$?
+if [ "$package_status" -eq 0 ] &&
+    grep -q '^compute_state_applied=measure-fixed-package-20w dpm_level=manual sclk=2 1100 mclk=2 933 ksm_run=0 power_envelope=package-20w cpu_frequency_cap=-$' \
+        "$temporary_directory/package.log" &&
+    grep -q '^clock_expectation=reached profile=measure-fixed-package-20w ' \
+        "$temporary_directory/package.log" &&
+    grep -q '^restoration=held profile=measure-fixed-package-20w .* power_envelope=package-20w cpu_frequency_cap=-$' \
+        "$temporary_directory/package.log" &&
+    grep -q '^status$' "$power_envelope_log" &&
+    grep -q '^apply package-20w$' "$power_envelope_log" &&
+    grep -q '^restore$' "$power_envelope_log" &&
+    [ "$(record_field "$state_fixture/compute-state-record.tsv" power_envelope)" = package-20w ] &&
+    [ ! -e "$power_envelope_snapshot_fixture" ] &&
+    [ "$(fixture_state)" = "$snapshot_fixture_state" ]; then
+    report 0 package_profile_applies_and_returns_the_envelope
+else
+    report 1 package_profile_applies_and_returns_the_envelope
+    cat "$temporary_directory/package.log" >&2
+fi
+
+# The served package arm carries the same clocks and the same budget and leaves
+# the child at nice 0, because monitor-qwen-runtime.sh renices itself to 0 and
+# ends its session where it cannot. A profile that reverted to 19 would wedge
+# every served arm ahead of its first request, so the record's own field is what
+# this case reads.
+reset_fixture
+served_status=0
+run_transaction serve-fixed-package-20w "$stub_directory/observer" served-arm \
+    >"$temporary_directory/served.log" 2>&1 || served_status=$?
+served_record=$state_fixture/compute-state-record.tsv
+if [ "$served_status" -eq 0 ] &&
+    grep -q '^compute_state_applied=serve-fixed-package-20w dpm_level=manual sclk=2 1100 mclk=2 933 ksm_run=0 power_envelope=package-20w cpu_frequency_cap=-$' \
+        "$temporary_directory/served.log" &&
+    grep -q '^restoration=held profile=serve-fixed-package-20w .* power_envelope=package-20w cpu_frequency_cap=-$' \
+        "$temporary_directory/served.log" &&
+    [ "$(record_field "$served_record" applied_child_nice)" = 0 ] &&
+    [ "$(record_field "$served_record" applied_child_io_class)" = best-effort ] &&
+    [ "$(record_field "$served_record" power_envelope)" = package-20w ] &&
+    [ ! -e "$power_envelope_snapshot_fixture" ] &&
+    [ "$(fixture_state)" = "$snapshot_fixture_state" ]; then
+    report 0 served_package_profile_holds_normal_priority
+else
+    report 1 served_package_profile_holds_normal_priority
+    cat "$temporary_directory/served.log" >&2
+fi
+
+# A term that cannot reach the SMU refuses the whole transaction ahead of the
+# lease, so a machine without ryzenadj costs no state change at all.
+reset_fixture
+set_control power_term_unavailable 1
+unavailable_status=0
+run_transaction measure-fixed-package-25w "$stub_directory/observer" \
+    >"$temporary_directory/power-unavailable.log" 2>&1 || unavailable_status=$?
+if [ "$unavailable_status" -eq 2 ] &&
+    grep -q 'names power envelope package-25w and the term answers: power_envelope=unavailable' \
+        "$temporary_directory/power-unavailable.log" &&
+    ! grep -q '^apply' "$power_envelope_log" &&
+    [ "$(fixture_state)" = "$snapshot_fixture_state" ]; then
+    report 0 an_unavailable_power_term_refuses_before_any_write
+else
+    report 1 an_unavailable_power_term_refuses_before_any_write
+    cat "$temporary_directory/power-unavailable.log" >&2
+fi
+
+# A profile that names no envelope never reaches the term, which is what keeps
+# the clock profiles runnable where the binary is absent.
+reset_fixture
+set_control power_term_unavailable 1
+silent_status=0
+run_transaction measure-fixed "$stub_directory/observer" \
+    >"$temporary_directory/power-silent.log" 2>&1 || silent_status=$?
+if [ "$silent_status" -eq 0 ] &&
+    [ ! -s "$power_envelope_log" ] &&
+    [ "$(fixture_state)" = "$snapshot_fixture_state" ]; then
+    report 0 a_profile_without_an_envelope_never_reaches_the_term
+else
+    report 1 a_profile_without_an_envelope_never_reaches_the_term
+    cat "$temporary_directory/power-silent.log" >&2
+fi
+
+# A package budget left on the machine is an incident, so a refused power
+# restore ends the transaction non-zero and names the field.
+reset_fixture
+set_control power_restore_refuses 1
+power_incident_status=0
+run_transaction measure-fixed-package-20w "$stub_directory/observer" \
+    >"$temporary_directory/power-incident.log" 2>&1 || power_incident_status=$?
+if [ "$power_incident_status" -eq 4 ] &&
+    grep -q '^restoration=failed profile=measure-fixed-package-20w fields=power_envelope=unreturned(profile=package-20w) ' \
+        "$temporary_directory/power-incident.log" &&
+    [ "$(fixture_state)" = "$snapshot_fixture_state" ]; then
+    report 0 a_refused_power_restore_is_an_incident
+else
+    report 1 a_refused_power_restore_is_an_incident
+    cat "$temporary_directory/power-incident.log" >&2
+fi
+
+# A snapshot another transaction claimed between this one's preflight and its
+# apply belongs to that campaign, so the refusal stands and the trap leaves the
+# foreign envelope where it is.
+reset_fixture
+{
+    printf 'schema\tpower-envelope-snapshot-v1\t-\n'
+    printf 'owner\tanother-campaign\t-\n'
+} >"$power_envelope_snapshot_fixture"
+set_control power_status_snapshot_absent 1
+set_control power_apply_refuses_foreign 1
+foreign_status=0
+run_transaction measure-fixed-package-20w "$stub_directory/observer" \
+    >"$temporary_directory/power-foreign.log" 2>&1 || foreign_status=$?
+if [ "$foreign_status" -eq 2 ] &&
+    ! grep -q '^restore$' "$power_envelope_log" &&
+    [ "$(record_field "$power_envelope_snapshot_fixture" owner)" = another-campaign ] &&
+    [ "$(fixture_state)" = "$snapshot_fixture_state" ]; then
+    report 0 a_foreign_envelope_snapshot_is_left_alone
+else
+    report 1 a_foreign_envelope_snapshot_is_left_alone
+    cat "$temporary_directory/power-foreign.log" >&2
+fi
+rm -f -- "$power_envelope_snapshot_fixture"
+
+# The transaction's own claim carries its token, which is what makes the restore
+# above act on this transaction's envelope alone.
+reset_fixture
+owner_status=0
+run_transaction measure-fixed-package-20w "$stub_directory/observer" \
+    >"$temporary_directory/power-owner.log" 2>&1 || owner_status=$?
+recorded_owner=$(record_field "$state_fixture/compute-state-record.tsv" power_envelope_owner)
+if [ "$owner_status" -eq 0 ] &&
+    grep -q '^restore$' "$power_envelope_log" &&
+    case $recorded_owner in compute-state-lease.*) true ;; *) false ;; esac; then
+    report 0 the_transaction_claims_the_envelope_under_its_own_token
+else
+    report 1 the_transaction_claims_the_envelope_under_its_own_token
+    cat "$temporary_directory/power-owner.log" >&2
+fi
+
+# P0: serve-auto-baseline writes the level word alone, at nice 0 the same way
+# every rung the served harness runs carries, and reports its clock
+# expectation as unverified rather than gating on it, since the governor is
+# free to move the star on its own schedule under `auto`.
+reset_fixture
+auto_baseline_status=0
+run_transaction serve-auto-baseline "$stub_directory/observer" auto-baseline-arm \
+    >"$temporary_directory/auto-baseline.log" 2>&1 || auto_baseline_status=$?
+if [ "$auto_baseline_status" -eq 0 ] &&
+    grep -q '^compute_state_applied=serve-auto-baseline dpm_level=auto sclk=auto mclk=auto ksm_run=0 power_envelope=platform-default cpu_frequency_cap=-$' \
+        "$temporary_directory/auto-baseline.log" &&
+    grep -q '^clock_expectation=unverified profile=serve-auto-baseline gfxclk_mhz=400 fclk_mhz=400$' \
+        "$temporary_directory/auto-baseline.log" &&
+    ! grep -q '^clock_expectation=reached' "$temporary_directory/auto-baseline.log" &&
+    [ "$(observer_field observed_dpm_level)" = auto ] &&
+    [ "$(observer_field observed_nice)" = 0 ] &&
+    grep -q '^restoration=held profile=serve-auto-baseline dpm_level=manual selections=verified sclk_level=1 mclk_level=1 ksm_run=1 power_envelope=platform-default cpu_frequency_cap=-$' \
+        "$temporary_directory/auto-baseline.log"; then
+    report 0 auto_baseline_writes_the_level_alone_at_nice_zero_and_leaves_the_expectation_unverified
+else
+    report 1 auto_baseline_writes_the_level_alone_at_nice_zero_and_leaves_the_expectation_unverified
+    cat "$temporary_directory/auto-baseline.log" >&2
+fi
+
+# P2: serve-fixed-cpu-capped reaches cpu-frequency-cap.sh ahead of the power
+# term and ahead of the clock proof, and the record names the cap the command
+# ran under.
+reset_fixture
+cpu_capped_status=0
+run_transaction serve-fixed-cpu-capped "$stub_directory/observer" cpu-capped-arm \
+    >"$temporary_directory/cpu-capped.log" 2>&1 || cpu_capped_status=$?
+if [ "$cpu_capped_status" -eq 0 ] &&
+    grep -q '^compute_state_applied=serve-fixed-cpu-capped dpm_level=manual sclk=2 1100 mclk=2 933 ksm_run=0 power_envelope=platform-default cpu_frequency_cap=base-clock-cap$' \
+        "$temporary_directory/cpu-capped.log" &&
+    grep -q '^clock_expectation=reached profile=serve-fixed-cpu-capped ' \
+        "$temporary_directory/cpu-capped.log" &&
+    grep -q '^restoration=held profile=serve-fixed-cpu-capped .* cpu_frequency_cap=base-clock-cap$' \
+        "$temporary_directory/cpu-capped.log" &&
+    grep -q '^status$' "$cpu_frequency_cap_log" &&
+    grep -q '^apply base-clock-cap$' "$cpu_frequency_cap_log" &&
+    grep -q '^restore$' "$cpu_frequency_cap_log" &&
+    [ "$(record_field "$state_fixture/compute-state-record.tsv" cpu_frequency_cap)" = base-clock-cap ] &&
+    [ ! -e "$cpu_frequency_cap_snapshot_fixture" ] &&
+    [ "$(fixture_state)" = "$snapshot_fixture_state" ]; then
+    report 0 cpu_capped_profile_applies_and_returns_the_cap
+else
+    report 1 cpu_capped_profile_applies_and_returns_the_cap
+    cat "$temporary_directory/cpu-capped.log" >&2
+fi
+
+# P3: the fclk-range variant carries the cap beside the serving fabric range.
+reset_fixture
+set_control pp_dpm_mclk_cap 2
+cpu_capped_range_status=0
+run_transaction serve-fixed-cpu-capped-fclk-range "$stub_directory/observer" \
+    >"$temporary_directory/cpu-capped-range.log" 2>&1 || cpu_capped_range_status=$?
+if [ "$cpu_capped_range_status" -eq 0 ] &&
+    grep -q '^compute_state_applied=serve-fixed-cpu-capped-fclk-range dpm_level=manual sclk=2 1100 mclk=2 933 ksm_run=0 power_envelope=platform-default cpu_frequency_cap=base-clock-cap$' \
+        "$temporary_directory/cpu-capped-range.log" &&
+    grep -q '^apply base-clock-cap$' "$cpu_frequency_cap_log"; then
+    report 0 fclk_range_profile_carries_the_cap
+else
+    report 1 fclk_range_profile_carries_the_cap
+    cat "$temporary_directory/cpu-capped-range.log" >&2
+fi
+
+# P4: a package-limit increase over P3, gated on device telemetry showing the
+# stock budget binding, so it is never a campaign default. The profile still
+# carries the cap beside the fabric range and the power envelope, and the CPU
+# cap restores ahead of the power envelope, which restores ahead of the
+# memory scanner and the performance level.
+reset_fixture
+set_control pp_dpm_mclk_cap 2
+p4_status=0
+run_transaction serve-fixed-cpu-capped-fclk-range-package-25w "$stub_directory/observer" \
+    >"$temporary_directory/p4.log" 2>&1 || p4_status=$?
+if [ "$p4_status" -eq 0 ] &&
+    grep -q '^compute_state_applied=serve-fixed-cpu-capped-fclk-range-package-25w dpm_level=manual sclk=2 1100 mclk=2 933 ksm_run=0 power_envelope=package-25w cpu_frequency_cap=base-clock-cap$' \
+        "$temporary_directory/p4.log" &&
+    grep -q '^apply base-clock-cap$' "$cpu_frequency_cap_log" &&
+    grep -q '^apply package-25w$' "$power_envelope_log"; then
+    report 0 p4_carries_the_cap_the_range_and_the_envelope_together
+else
+    report 1 p4_carries_the_cap_the_range_and_the_envelope_together
+    cat "$temporary_directory/p4.log" >&2
+fi
+
+# The nice factor-pair alternate cannot run through the served harness at
+# nice 19 (monitor-qwen-runtime.sh's self-renice would refuse), so it carries
+# the `measure-` prefix every other nice-19 profile in this file uses and is
+# read against P3 through a direct command (run-power-factorial-arm.sh's
+# `bench` instrument) rather than through run-power-envelope-arm.sh. Here it
+# is exercised the same way every other profile is: through the observer.
+reset_fixture
+set_control pp_dpm_mclk_cap 2
+nice_pair_status=0
+run_transaction measure-fixed-cpu-capped-fclk-range "$stub_directory/observer" \
+    >"$temporary_directory/nice-pair.log" 2>&1 || nice_pair_status=$?
+nice_pair_record=$state_fixture/compute-state-record.tsv
+if [ "$nice_pair_status" -eq 0 ] &&
+    [ "$(record_field "$nice_pair_record" applied_child_nice)" = 19 ] &&
+    [ "$(record_field "$nice_pair_record" cpu_frequency_cap)" = base-clock-cap ] &&
+    [ "$(record_field "$nice_pair_record" power_envelope)" = platform-default ]; then
+    report 0 the_nice_factor_pair_alternate_carries_every_other_term_equal_to_p3
+else
+    report 1 the_nice_factor_pair_alternate_carries_every_other_term_equal_to_p3
+    cat "$temporary_directory/nice-pair.log" >&2
+fi
+
+# The KSM factor-pair alternate leaves the scanner running with every other
+# term equal to P3.
+reset_fixture
+set_control pp_dpm_mclk_cap 2
+ksm_pair_status=0
+run_transaction serve-fixed-cpu-capped-fclk-range-ksm-running \
+    "$stub_directory/observer" >"$temporary_directory/ksm-pair.log" 2>&1 || ksm_pair_status=$?
+if [ "$ksm_pair_status" -eq 0 ] &&
+    [ "$(observer_field observed_ksm_run)" = 1 ] &&
+    grep -q '^apply base-clock-cap$' "$cpu_frequency_cap_log" &&
+    grep -q '^apply platform-default$' "$power_envelope_log"; then
+    report 0 the_ksm_factor_pair_alternate_leaves_every_other_term_equal_to_p3
+else
+    report 1 the_ksm_factor_pair_alternate_leaves_every_other_term_equal_to_p3
+    cat "$temporary_directory/ksm-pair.log" >&2
+fi
+
+# The CPU-cap factor-pair alternate names no cap at all with every other term
+# equal to P3.
+reset_fixture
+set_control pp_dpm_mclk_cap 2
+nocap_pair_status=0
+run_transaction serve-fixed-fclk-range "$stub_directory/observer" \
+    >"$temporary_directory/nocap-pair.log" 2>&1 || nocap_pair_status=$?
+if [ "$nocap_pair_status" -eq 0 ] &&
+    grep -q '^compute_state_applied=serve-fixed-fclk-range dpm_level=manual sclk=2 1100 mclk=2 933 ksm_run=0 power_envelope=platform-default cpu_frequency_cap=-$' \
+        "$temporary_directory/nocap-pair.log" &&
+    [ ! -s "$cpu_frequency_cap_log" ] &&
+    grep -q '^apply platform-default$' "$power_envelope_log"; then
+    report 0 the_cpu_cap_factor_pair_alternate_names_no_cap
+else
+    report 1 the_cpu_cap_factor_pair_alternate_names_no_cap
+    cat "$temporary_directory/nocap-pair.log" >&2
+fi
+
+# A refused CPU-cap restore is an incident over a successful command, the same
+# way a refused power-envelope restore is.
+reset_fixture
+set_control cpu_cap_restore_refuses 1
+cpu_cap_incident_status=0
+run_transaction serve-fixed-cpu-capped "$stub_directory/observer" \
+    >"$temporary_directory/cpu-cap-incident.log" 2>&1 || cpu_cap_incident_status=$?
+if [ "$cpu_cap_incident_status" -eq 4 ] &&
+    grep -q '^restoration=failed profile=serve-fixed-cpu-capped fields=cpu_frequency_cap=unreturned(profile=base-clock-cap) ' \
+        "$temporary_directory/cpu-cap-incident.log" &&
+    [ "$(fixture_state)" = "$snapshot_fixture_state" ]; then
+    report 0 a_refused_cpu_cap_restore_is_an_incident
+else
+    report 1 a_refused_cpu_cap_restore_is_an_incident
+    cat "$temporary_directory/cpu-cap-incident.log" >&2
+fi
+
+# A profile that names no CPU cap never reaches the term, which is what keeps
+# every clock-only profile runnable where cpupower is absent.
+reset_fixture
+set_control cpu_cap_term_unavailable 1
+cpu_cap_silent_status=0
+run_transaction measure-fixed "$stub_directory/observer" \
+    >"$temporary_directory/cpu-cap-silent.log" 2>&1 || cpu_cap_silent_status=$?
+if [ "$cpu_cap_silent_status" -eq 0 ] &&
+    [ ! -s "$cpu_frequency_cap_log" ] &&
+    [ "$(fixture_state)" = "$snapshot_fixture_state" ]; then
+    report 0 a_profile_without_a_cpu_cap_never_reaches_the_term
+else
+    report 1 a_profile_without_a_cpu_cap_never_reaches_the_term
+    cat "$temporary_directory/cpu-cap-silent.log" >&2
+fi
+
+# The transaction refuses to start against any profile without first taking
+# the shared Vulkan lease, which the generic lease-held case above already
+# proves for the transaction as a whole; the same refusal covers every new
+# profile, since resolve_profile runs before the lease is taken.
+reset_fixture
+lease_flag_p4=$temporary_directory/lease-held-p4
+: >"$lease_flag_p4"
+(
+    exec 7>"$lease_fixture"
+    flock 7
+    while [ -e "$lease_flag_p4" ]; do
+        sleep 0.05
+    done
+) &
+lease_holder_pid_p4=$!
+lease_attempt=0
+while [ "$lease_attempt" -lt 200 ] && ! lease_held; do
+    lease_attempt=$((lease_attempt + 1))
+    sleep 0.05
+done
+p4_held_status=0
+run_transaction serve-fixed-cpu-capped-fclk-range-package-25w "$stub_directory/observer" \
+    >"$temporary_directory/p4-held.log" 2>&1 || p4_held_status=$?
+rm -f -- "$lease_flag_p4"
+wait "$lease_holder_pid_p4" 2>/dev/null || true
+lease_attempt=0
+while [ "$lease_attempt" -lt 200 ] && lease_held; do
+    lease_attempt=$((lease_attempt + 1))
+    sleep 0.05
+done
+if [ "$p4_held_status" -eq 2 ] &&
+    grep -q 'another Vulkan workload holds the shared lease' "$temporary_directory/p4-held.log" &&
+    ! grep -q '^apply' "$cpu_frequency_cap_log" &&
+    [ "$(fixture_state)" = "$snapshot_fixture_state" ]; then
+    report 0 the_gated_p4_profile_also_refuses_without_the_lease
+else
+    report 1 the_gated_p4_profile_also_refuses_without_the_lease
+    cat "$temporary_directory/p4-held.log" >&2
 fi
 
 if [ "$failures" -ne 0 ]; then
