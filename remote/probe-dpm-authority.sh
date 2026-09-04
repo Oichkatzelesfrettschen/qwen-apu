@@ -513,6 +513,7 @@ run_level() {
             --period-tolerance 0.25 --cost-bound-ns 1000000 \
             --window-begin-ns "$window_begin" --window-end-ns "$window_end" \
             --required-sclk-mhz "$sclk_ceiling" \
+            --expected-nice 19 --expected-cpu-affinity "$sidecar_cpu" \
             >"$arm_directory/clock-state.txt" 2>&1
         set -e
         residual_failures=$(reported_value "$arm_directory/clock-state.txt" \
