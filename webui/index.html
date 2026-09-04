@@ -2337,7 +2337,12 @@ async function boot() {
     // The roster is a static file beside this page and the model list is a
     // router route, so both requests are in flight together and the roster
     // never delays the authority that decides what the picker may route to.
-    const featureRosterRequest = loadFeatureRoster();
+    // featureRosterOnce() rather than a direct loadFeatureRoster() call keeps
+    // this the same read a message badge awaits: two independent fetches here
+    // left one of them unresolved by any caller once the picker's own promise
+    // went unread past an early return, and a badge's later call found the
+    // memoized slot still empty and issued a second request of its own.
+    const featureRosterRequest = featureRosterOnce();
     // The first request carries no Authorization header regardless of what
     // this browser remembers, so the response discovers the requirement
     // rather than assuming it: a 200 proves the backend open (a stale bearer

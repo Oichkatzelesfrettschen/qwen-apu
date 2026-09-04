@@ -482,7 +482,26 @@ const first = newPage({
   localStorage: makeFakeStorage(),
   sessionStorage: makeFakeStorage()
 });
-await answerBoot(first);
+// boot() and a message badge share one memoized roster read, so this page
+// resolves the single request boot() issues with the tier data a later badge
+// decorates from -- a second, independent fetch here would be the two-path
+// defect the memoized read exists to remove.
+await flushPromises();
+const bootFeatureRoster = takeRequest(first.pendingRequests,
+  request => request.url === './roster.json', 'feature roster');
+bootFeatureRoster.resolve(jsonResponse({
+  schema: 'qwen-feature-roster/1',
+  features: [{ feature: 'text-chat', scope: 'model' }],
+  models: [{ id: 'image-capable', tier: 'production', tags: ['production'], features: [] }]
+}));
+const bootModelRoster = takeRequest(first.pendingRequests,
+  request => request.url === './v1/models', 'model roster');
+bootModelRoster.resolve(jsonResponse({ data: [{ id: 'image-capable' }] }));
+await flushPromises();
+const bootProps = takeRequest(first.pendingRequests,
+  request => String(request.url).startsWith('./props?model='), 'model properties');
+bootProps.resolve(jsonResponse({ n_ctx: 4096 }));
+await flushPromises();
 first.document.querySelector('#artifact-origin').value = ARTIFACT_ORIGIN;
 
 assert.equal(await first.api.storeName(), 'indexeddb',
@@ -559,21 +578,16 @@ artifactRequest.resolve({
 });
 await flushPromises();
 
-// The badge reads the roster once, on the first assistant message a transcript
-// renders, and decorates a served id the roster carries. A launch that serves
-// no roster leaves the id alone, which is what every other page here shows by
-// leaving this request unanswered.
-const rosterRequest = takeRequest(first.pendingRequests,
-  request => String(request.url) === './roster.json', 'the feature roster read');
-rosterRequest.resolve(jsonResponse({
-  schema: 'qwen-feature-roster/1',
-  features: [{ feature: 'text-chat', scope: 'model' }],
-  models: [{ id: 'image-capable', tier: 'production', tags: ['production'], features: [] }]
-}));
+// The badge reads the roster once, on the first assistant message a
+// transcript renders, and decorates a served id the roster carries. It reuses
+// the read boot() already resolved above rather than issuing a fetch of its
+// own: a restored turn's badge is the second render this page produces (the
+// fixture turn's own assistant message was the first), and neither one moves
+// the memoized promise off the cached tier data.
 await flushPromises();
 assert.equal(
   first.pendingRequests.filter(request => String(request.url) === './roster.json').length, 0,
-  'the badge read the roster more than once');
+  'the badge issued a roster fetch of its own instead of reusing boot()\'s read');
 
 const restoredTranscript = first.api.transcript();
 assert.equal(restoredTranscript.length, 2, 'the restore rendered no user and assistant turn');
@@ -1241,11 +1255,18 @@ assert.equal(
   rosterPage.pendingRequests.filter(r => r.url === './roster.json').length, 0,
   'a repeated call issued a second roster fetch ahead of any key change');
 
-// Supplying the key clears the memoized promise, so the next badge retries
-// the roster read under the credential that just arrived rather than
-// carrying the pre-key 401 for the rest of the page session.
+// Supplying the key clears the memoized promise, so boot() retries the
+// roster read under the credential that just arrived rather than carrying
+// the pre-key 401 for the rest of the page session. boot() fires that read
+// itself, ahead of any badge, since the picker's own labels and support
+// matrix wait on the same memoized promise a badge would.
 rosterPage.api.clickSetKey('a-fresh-key');
 await flushPromises();
+const retriedRosterFetch = takeRequest(rosterPage.pendingRequests,
+  request => request.url === './roster.json',
+  'the roster read did not retry after the key was set');
+assert.equal(retriedRosterFetch.options.headers.Authorization, 'Bearer a-fresh-key',
+  'the retried roster read carried no bearer even though one was just supplied');
 // boot() always opens on an anonymous probe; only the retry carries the key
 // this click just supplied.
 takeRequest(rosterPage.pendingRequests,
@@ -1259,23 +1280,26 @@ takeRequest(rosterPage.pendingRequests,
   'the authenticated roster retry')
   .resolve(jsonResponse({ data: [{ id: 'image-capable' }] }));
 await flushPromises();
+// boot() awaits the memoized roster read before it builds the picker's
+// labels and matrix, so that promise must settle before boot() reaches the
+// props fetch below.
+retriedRosterFetch.resolve(jsonResponse({
+  schema: 'qwen-feature-roster/1', features: [], models: []
+}));
+await flushPromises();
 takeRequest(rosterPage.pendingRequests,
   request => String(request.url).startsWith('./props?model='),
   'model properties after the key was set')
   .resolve(jsonResponse({ n_ctx: 4096 }));
 await flushPromises();
 
+// A badge rendered after boot() settles reuses the same memoized read rather
+// than retrying it a second time under the same credential.
 void rosterPage.api.featureRosterOnce();
 await flushPromises();
-const secondRosterFetch = takeRequest(rosterPage.pendingRequests,
-  request => request.url === './roster.json',
-  'the roster read did not retry after the key was set');
-assert.equal(secondRosterFetch.options.headers.Authorization, 'Bearer a-fresh-key',
-  'the retried roster read carried no bearer even though one was just supplied');
-secondRosterFetch.resolve(jsonResponse({
-  schema: 'qwen-feature-roster/1', features: [], models: []
-}));
-await flushPromises();
+assert.equal(
+  rosterPage.pendingRequests.filter(r => r.url === './roster.json').length, 0,
+  'a badge retried the roster read a second time under the same key');
 
 // ---- a reset aborts a restored artifact fetch still in flight -------------
 
