@@ -35,7 +35,8 @@ harness=$work/harness
 mkdir -p "$harness"
 cp "$script_directory/qwen-image-launch.sh" "$harness/qwen-image-launch.sh"
 for linked_name in image-registry.sh image-service.py image-artifacts.tsv \
-    image-models.tsv image-quarantine.tsv; do
+    image-models.tsv image-quarantine.tsv image-launch-lib.sh \
+    web-lan-exposure.sh read-image-mcp-server.py; do
     ln -s "$script_directory/$linked_name" "$harness/$linked_name"
 done
 cat >"$harness/qwen-web-launch.sh" <<'EOF'
@@ -55,6 +56,11 @@ set -eu
 EOF
 chmod +x "$harness/qwen-web-launch.sh"
 launcher=$harness/qwen-image-launch.sh
+# An unset QWEN_WEB_LAN_NAME is the question web-lan-exposure.sh answers from
+# this host's own avahi state, so the arms state the empty answer and a name
+# arm states its own synthetic value.
+QWEN_WEB_LAN_NAME=''
+export QWEN_WEB_LAN_NAME
 
 # The ledger fixture names the checked-in bundle and differs from the shipped
 # row in execution_policy alone, so remote/image-registry.sh validates it whole
@@ -123,7 +129,7 @@ write_configuration() {
       "env": {
         "QWEN_IMAGE_LANGUAGE_PROFILE": "web-fixture",
         "QWEN_IMAGE_PROFILE": "image-fixture-a",
-        "QWEN_IMAGE_TOKEN_KEY_FILE": "$signing_key_file",
+        "QWEN_IMAGE_TOKEN_KEY_FILE": "${3:-$signing_key_file}",
         "QWEN_IMAGE_STATE_DIR": "$state_directory/images",
         "QWEN_IMAGE_SERVICE_SOCKET": "$state_directory/images/image-service.sock",
         "QWEN_IMAGE_PROFILES_JSON": "$image_parameters",
@@ -326,6 +332,47 @@ else
 fi
 write_configuration
 
+# float() parses "nan" without error and every comparison with NaN is False,
+# so a non-finite child deadline must not pass the agreement check silently:
+# image-mcp/server.py::resolve_timeout() refuses the same value at child
+# startup.
+write_configuration 360000 nan
+if run_launch "$presets_armed" env \
+    >"$work/nan-deadline.log" 2>"$work/nan-deadline.err"; then
+    report nan_tool_deadline_refuses_the_launch accepted
+else
+    if grep -q 'non-finite or non-positive deadline' \
+        "$work/nan-deadline.err"; then
+        report nan_tool_deadline_refuses_the_launch ok
+    else
+        report nan_tool_deadline_refuses_the_launch wrong_refusal
+    fi
+fi
+write_configuration
+
+# The rejoin loop compares every name the image MCP child reads against what
+# this launch serves, and QWEN_IMAGE_TOKEN_KEY_FILE is one of those five
+# names: a configuration generated against one key path and launched under
+# QWEN_WEB_TOKEN_KEY_FILE naming another would otherwise pass this check
+# while the broker signs grants with the new key and the child verifies them
+# with the old one.
+other_signing_key_file=$work/private/other-token.key
+printf 'fixture-other-token-secret\n' >"$other_signing_key_file"
+chmod 600 "$other_signing_key_file"
+write_configuration 360000 360 "$other_signing_key_file"
+if run_launch "$presets_armed" env \
+    >"$work/key-mismatch.log" 2>"$work/key-mismatch.err"; then
+    report mismatched_token_key_refuses_the_launch accepted
+else
+    if grep -q 'names QWEN_IMAGE_TOKEN_KEY_FILE' \
+        "$work/key-mismatch.err"; then
+        report mismatched_token_key_refuses_the_launch ok
+    else
+        report mismatched_token_key_refuses_the_launch wrong_refusal
+    fi
+fi
+write_configuration
+
 # A preset persists across an edit to the ledger, so the digest is measured
 # again at launch.
 printf '# an edit after generation\n' >>"$image_profiles_gated"
@@ -419,6 +466,34 @@ if run_launch "$presets_armed" env QWEN_WEB_LAN=1 \
 else
     report lan_exposure_admitted refused
     cat "$work/lan-named.err" >&2
+fi
+
+# The open opt-in reports a removed bearer and names the mDNS host beside the
+# literal, so this wrapper states the policy the web launcher then builds.
+if run_launch "$presets_armed" env QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_NAME=qwen-test.local \
+    QWEN_WEB_LAN_OPEN=1 QWEN_BIND_HOST=0.0.0.0 \
+    >"$work/lan-open.log" 2>"$work/lan-open.err"; then
+    lan_open_outcome=ok
+    grep -q 'image_launch exposure=lan address=192.168.1.10 name=qwen-test.local bearer=removed' \
+        "$work/lan-open.log" || lan_open_outcome=exposure_misreported
+    report lan_open_admitted "$lan_open_outcome"
+else
+    report lan_open_admitted refused
+    cat "$work/lan-open.err" >&2
+fi
+
+# The open opt-in names the exposure it opens, so a loopback launch carrying it
+# refuses at this wrapper rather than one link later.
+if run_launch "$presets_armed" env QWEN_WEB_LAN_OPEN=1 \
+    >"$work/lan-open-alone.log" 2>"$work/lan-open-alone.err"; then
+    report lan_open_refused_without_exposure accepted
+elif grep -q 'removes the bearer from a LAN listener, and this launch exposes none' \
+    "$work/lan-open-alone.err"; then
+    report lan_open_refused_without_exposure ok
+else
+    report lan_open_refused_without_exposure wrong_refusal
+    cat "$work/lan-open-alone.err" >&2
 fi
 
 # The default launch names the loopback exposure it serves.

@@ -346,6 +346,25 @@ unauthenticated LAN endpoint grants every client on the network the server
 process's file-reading capability. The startup summary lists real network
 interfaces; libvirt and Docker bridge addresses are labeled as such.
 
+`remote/qwen-lan-launch.sh` is the LAN bring-up in one command: it reads the
+address from the default route, reads the image parameters path from the
+active deployment's image server, serves the router on port 42069 with the
+approval broker and the artifact listener on the two ports above it, and
+prints the `<hostname>.local` name to open. Its default removes the Web UI
+bearer, so every peer on the network can chat and approve a search or a
+generation, while the approval dialog and the single-use grant stay the
+execution gate; `QWEN_WEB_LAN_OPEN=0` requires the bearer on every listener
+instead. `remote/qwen-teardown.sh` ends it.
+
+The page never assumes which mode it was launched under. `webui/index.html`
+probes `GET /v1/models` with no Authorization header on load: a 200 proves the
+router open and the page hides the key field, the LAN hint, and the copy
+button outright, dropping any key this browser remembered from an earlier
+bearer-mode session rather than risk sending it; a 401 proves the router
+requires the bearer, and the page retries once with a remembered or
+`#key=`-fragment key if one exists, revealing the field with a one-line hint
+only where neither exists or the retry itself comes back rejected.
+
 ## Lifecycle
 
 `remote/qwen-launch.sh` starts the appliance and returns once `/health`

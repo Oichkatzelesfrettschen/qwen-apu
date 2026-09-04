@@ -230,6 +230,8 @@ gate_cell test-write-clangd-config derive remote/test-write-clangd-config.sh \
     remote/test-write-clangd-config.sh
 gate_cell test-check-trace-source-status derive \
     remote/test-check-trace-source-status.sh remote/test-check-trace-source-status.sh
+gate_cell test-qwen-lan-launch derive remote/test-qwen-lan-launch.sh \
+    remote/test-qwen-lan-launch.sh
 gate_cell test-prefix-checkpoint-key derive \
     'remote/test-prefix-checkpoint-key.sh remote/test-fixtures/prefix-checkpoint-key-probe.cpp patches/llama-server-prefix-checkpoint.patch' \
     remote/test-prefix-checkpoint-key.sh
@@ -307,6 +309,8 @@ gate_cell test-fallback-webui-model-state derive \
     'node remote/test-fallback-webui-model-state.mjs'
 gate_cell test-fallback-webui-conversations derive remote/test-fallback-webui-conversations.mjs \
     'node remote/test-fallback-webui-conversations.mjs'
+gate_cell test-fallback-webui-fragment-key derive remote/test-fallback-webui-fragment-key.mjs \
+    'node remote/test-fallback-webui-fragment-key.mjs'
 gate_cell test-fallback-webui-ui-switch derive remote/test-fallback-webui-ui-switch.mjs \
     'node remote/test-fallback-webui-ui-switch.mjs'
 gate_cell test-fallback-webui-roster derive remote/test-fallback-webui-roster.mjs \
