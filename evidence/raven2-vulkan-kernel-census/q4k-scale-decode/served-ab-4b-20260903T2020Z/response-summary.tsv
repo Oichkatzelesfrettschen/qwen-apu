@@ -1,0 +1,9 @@
+role	pipeline	column	replicates	comparable_pairs	mean_delta	sd_delta	ci_low	ci_high	deltas	control_values	candidate_values	bound	verdict	detail
+subject	mul_mat_vec_q4_k_f32_f32	exclusive_bracket_ms	4	0	-	-	-	-	ledger-missing ledger-missing arm-failed ledger-missing	- - - -	- - - -	0.02	incomplete	comparable_pairs=0 of 4
+subject-union	mul_mat_vec_q4_k_f32_f32	pipeline_bracket_union_ms	4	0	-	-	-	-	ledger-missing ledger-missing arm-failed ledger-missing	- - - -	- - - -	0.02	incomplete	comparable_pairs=0 of 4
+null	mul_mat_vec_q6_k_f32_f32	exclusive_bracket_ms	4	0	-	-	-	-	ledger-missing ledger-missing arm-failed ledger-missing	- - - -	- - - -	0.02	incomplete	comparable_pairs=0 of 4
+null-union	mul_mat_vec_q6_k_f32_f32	pipeline_bracket_union_ms	4	0	-	-	-	-	ledger-missing ledger-missing arm-failed ledger-missing	- - - -	- - - -	0.02	incomplete	comparable_pairs=0 of 4
+graph-span	-	queue_completion_span_ms_per_graph	4	0	-	-	-	-	ledger-missing ledger-missing arm-failed ledger-missing	- - - -	- - - -	0.02	incomplete	comparable_pairs=0 of 4
+ratio	mul_mat_vec_q4_k_f32_f32/mul_mat_vec_q6_k_f32_f32	exclusive_bracket_ms	4	0	-	-	-	-	ledger-missing ledger-missing arm-failed ledger-missing	- - - -	- - - -	0.02	incomplete	comparable_pairs=0 of 4
+module_identity	mul_mat_vec_q4_k_f32_f32	spirv_executed_sha256	4	4	-	-	-	-	-	-	-	-	unavailable	arms_without_digest=7 null_module=-
+response_identity	-	content,predicted_n	4	4	-	-	-	-	-	-	-	-	held	pair1=equal pair2=equal pair3=equal pair4=equal

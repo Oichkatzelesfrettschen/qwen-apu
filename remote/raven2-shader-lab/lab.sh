@@ -328,6 +328,8 @@ count_instruction_classes() {
             if (mnemonic ~ /^v_mad_u32_u24/) mad_u32_u24++
             if (mnemonic ~ /^v_mad_i32_i24/) mad_i32_i24++
             if (mnemonic ~ /^v_mul_u32_u24/) mul_u32_u24++
+            if (mnemonic ~ /^v_mul_i32_i24/) mul_i32_i24++
+            if (mnemonic ~ /^v_add3_u32/) add3_u32++
             if (mnemonic ~ /^v_fma_f32/) fma_f32++
             if (mnemonic ~ /^v_mac_f32/) mac_f32++
             if (mnemonic ~ /^v_mad_mix_f32/) mad_mix_f32++
@@ -360,6 +362,8 @@ count_instruction_classes() {
             printf "v_mad_u32_u24\t%d\n", mad_u32_u24
             printf "v_mad_i32_i24\t%d\n", mad_i32_i24
             printf "v_mul_u32_u24\t%d\n", mul_u32_u24
+            printf "v_mul_i32_i24\t%d\n", mul_i32_i24
+            printf "v_add3_u32\t%d\n", add3_u32
             printf "v_fma_f32\t%d\n", fma_f32
             printf "v_mac_f32\t%d\n", mac_f32
             printf "v_mad_mix_f32\t%d\n", mad_mix_f32

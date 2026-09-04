@@ -1,0 +1,9 @@
+label=0f-W
+model=$HOME/models/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf
+profile=low-async
+cache_type_k=q8_0
+cache_type_v=q4_0
+flash_attention=on
+ctx_checkpoints=2
+checkpoint_min_step=8192
+generate_tokens=64

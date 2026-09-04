@@ -1,0 +1,4 @@
+state=running server_pid=3199151 monitor_pid=3199724 latency_watchdog_pid=3199712 kernel_hazard_watchdog_pid=3199721 lan_exposure=0 lan_address=- profile=low-async host=127.0.0.1 port=8080 context=24576 latency_mode=observe utc=2026-09-04T04:31:44Z
+speculation spec_type=off draft_n_max=default draft_p_min=default draft_backend_sampling=0 backend_sampling=0
+cache cache_type_k=q8_0 cache_type_v=q4_0 flash_attention=on override_context_ceiling=registry
+router enabled=0 presets=default preset_sha256=unbound models_max=1

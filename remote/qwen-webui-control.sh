@@ -397,6 +397,7 @@ case $action in
                               QWEN_VALIDATED_TUPLES QWEN_CTX_CHECKPOINT_LEDGER \
                               QWEN_ACTIVE_DEPLOYMENT_DIRECTORY \
                               QWEN_PIPELINE_CENSUS QWEN_PERF_LOGGER \
+                              QWEN_FORCE_INTEGER_DOT \
                               QWEN_BATCH_SIZE QWEN_UBATCH_SIZE \
                               QWEN_CACHE_TYPE_K QWEN_CACHE_TYPE_V \
                               QWEN_FLASH_ATTN \
@@ -411,6 +412,7 @@ case $action in
                               QWEN_WEB_PROVIDER QWEN_WEB_PROFILES \
                               QWEN_WEB_BROKER_ORIGIN \
                               QWEN_WEB_LAN QWEN_WEB_LAN_ADDRESS \
+                              QWEN_WEB_LAN_NAME QWEN_WEB_LAN_OPEN \
                               QWEN_REQUIRE_API_KEY \
                               QWEN_WEB_AUTHORIZER_READY \
                               QWEN_WEB_SEARXNG QWEN_SEARXNG_PROGRAM \
@@ -422,6 +424,7 @@ case $action in
                               QWEN_IMAGE_PROFILE QWEN_IMAGE_TOKEN_KEY_FILE \
                               QWEN_IMAGE_STATE_DIR \
                               QWEN_IMAGE_SERVICE_SOCKET \
+                              QWEN_IMAGE_HTTP_PORT \
                               QWEN_IMAGE_PRIORITY_WRAPPER \
                               QWEN_IMAGE_LEASE_WAIT_S \
                               QWEN_RADV_ICD \
