@@ -1,5 +1,14 @@
 # SearXNG and YaCy native install provenance
 
+The service-account form this file records is retired. `remote/install-searxng.sh`
+now installs the same pinned commit as the serving user under `opt/searxng` of
+the runtime root, with the environment proven against
+`toolchains/searxng/requirements.lock`, and `remote/searxng-control.sh` is
+removed with the `searxng` account, `/etc/searxng`, and `/usr/local/searxng`
+it administered; `evidence/runtime-root/README.md` carries the layout and the
+migration. The record below is retained as the provenance of the pin and the
+engine table, which the user-owned install inherits unchanged.
+
 This file is a template. `remote/install-searxng.sh` and `remote/install-yacy.sh`
 run on the laptop, not on the workstation this tree is edited from, so every
 field below reads `-` until a laptop run fills it in. A field left `-` after a

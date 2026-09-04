@@ -75,6 +75,7 @@ harness=$work/harness
 mkdir -p "$harness"
 cp "$script_directory/qwen-web-launch.sh" "$harness/qwen-web-launch.sh"
 cp "$script_directory/qwen-home.sh" "$harness/qwen-home.sh"
+cp "$script_directory/searxng-launch.sh" "$harness/searxng-launch.sh"
 # The launcher sources its listener policy from its own directory, so the
 # harness carries the tree's file rather than a stand-in.
 cp "$script_directory/web-lan-exposure.sh" "$harness/web-lan-exposure.sh"
@@ -2000,8 +2001,12 @@ searxng_arm() {
     web_profiles=$arm_profiles
     write_web_preset "$arm_presets" unmarked searxng
     web_profiles=$arm_original_profiles
+    # The launcher proves the SearXNG components ahead of the health gate;
+    # a stand-in launch command satisfies that proof on a host holding no
+    # instance, the way the session test drives searxng-launch.sh.
     if QWEN_WEBUI_STATE_DIRECTORY=$state_directory \
         QWEN_WEB_PRESETS=$arm_presets QWEN_WEB_LAUNCH_RECORD=$record \
+        QWEN_SEARXNG_LAUNCH_COMMAND=true \
         env -u QWEN_BIND_HOST -u QWEN_WEB_PROFILES "$launcher" \
         >"$work/$arm_name.log" 2>"$work/$arm_name.err"; then
         if [ "$arm_expectation" = accepted ]; then

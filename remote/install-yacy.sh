@@ -1,6 +1,6 @@
 #!/bin/sh
 set -eu
-
+# Installs YaCy natively under opt/yacy of the runtime root from a pinned upstream tag and
 # Installs YaCy natively under $HOME/opt/yacy from a pinned upstream tag and
 # writes the loopback, on-demand overrides remote/yacy-control.sh and
 # remote/searxng-settings.yml's yacy engine both depend on.

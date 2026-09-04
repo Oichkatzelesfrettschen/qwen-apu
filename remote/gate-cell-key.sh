@@ -55,10 +55,15 @@ gate_cell_driver_path=${GATE_CELL_DRIVER_PATH:-}
 # The cache root follows the runtime root. A driver that sourced qwen-home.sh
 # already holds the value; a fixture driver that did not resolves it through
 # the command form beside itself.
-if [ -z "${qwen_home_gate_cache:-}" ] && [ -n "$gate_cell_driver_path" ]; then
-    qwen_home_gate_cache=$("$(dirname -- "$gate_cell_driver_path")/qwen-home.sh" print qwen_home_gate_cache)
+if [ -z "${qwen_home_gate_cache:-}" ]; then
+    for gate_cell_resolver_directory in "${script_directory:-}" "${gate_cell_driver_path%/*}"; do
+        [ -n "$gate_cell_resolver_directory" ] || continue
+        [ -x "$gate_cell_resolver_directory/qwen-home.sh" ] || continue
+        qwen_home_gate_cache=$("$gate_cell_resolver_directory/qwen-home.sh" print qwen_home_gate_cache)
+        break
+    done
 fi
-gate_cell_cache_directory=${QWEN_GATE_CACHE_DIR:-${qwen_home_gate_cache:?}}
+gate_cell_cache_directory=${QWEN_GATE_CACHE_DIR:-${qwen_home_gate_cache:-}}
 gate_cell_sparse=${QWEN_GATE_SPARSE:-1}
 gate_cell_directory_walk_limit=${QWEN_GATE_DIRECTORY_WALK_LIMIT:-64}
 gate_cell_tool_digest=''
@@ -122,6 +127,10 @@ gate_cell_identity_line() {
 gate_cell_init() {
     if [ -z "$gate_cell_root" ]; then
         printf 'gate_cell_root is unset\n' >&2
+        return 2
+    fi
+    if [ -z "$gate_cell_cache_directory" ]; then
+        printf 'gate cache root is unresolved: source qwen-home.sh ahead of gate-cell-key.sh or export GATE_CELL_DRIVER_PATH beside it\n' >&2
         return 2
     fi
     if [ -z "$gate_cell_driver_path" ]; then

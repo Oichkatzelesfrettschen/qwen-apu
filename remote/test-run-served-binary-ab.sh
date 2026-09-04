@@ -93,7 +93,7 @@ models_directory=$temporary_directory/models
 mkdir -p "$home_directory"
 # The campaign holds its state directory's own lease and refuses any other
 # path, so the fixture home carries that directory.
-workload_lease_directory=$home_directory/qwen-webui-state
+workload_lease_directory=$temporary_directory/.runtime/state
 mkdir -p "$workload_lease_directory"
 workload_lease=$workload_lease_directory/vulkan-workload.lock
 model_file=$("$registry_reader" id "$model_id" model_file)
@@ -1117,6 +1117,7 @@ run_ab() {
     if [ "$ab_status" -ne "$ab_expected_status" ]; then
         printf 'expected exit %s, observed %s\n' "$ab_expected_status" "$ab_status" >&2
         sed -n '1,20p' "$temporary_directory/$ab_case-stdout.txt" >&2
+        sed -n '1,20p' "$diagnostic_file" >&2
         return 1
     fi
     ab_observed_verdict=$(awk -F'=' '$1 == "served_ab" { print $2 }' \
