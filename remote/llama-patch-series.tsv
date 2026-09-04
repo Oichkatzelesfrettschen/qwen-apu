@@ -22,3 +22,5 @@ candidate	llama-server-vulkan-workload-lease.patch
 candidate	llama-vulkan-pipeline-census.patch
 candidate	llama-vulkan-q4k-activation-group-sums.patch
 candidate	llama-vulkan-q4k-activation-sideplane.patch
+candidate	llama-vulkan-q4k-scale-word-select.patch
+candidate	llama-vulkan-q4k-superblock-loop-licm.patch
