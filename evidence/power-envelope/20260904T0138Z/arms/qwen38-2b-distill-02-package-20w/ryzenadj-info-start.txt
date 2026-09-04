@@ -1,0 +1,33 @@
+no compatible ryzen_smu kernel module found, fallback to /dev/mem
+CPU Family: Picasso
+SMU BIOS Interface Version: 12
+Version: v0.19.0 
+PM Table Version: 1e0005
+|        Name         |   Value   |     Parameter      |
+|---------------------|-----------|--------------------|
+| STAPM LIMIT         |    20.000 | stapm-limit        |
+| STAPM VALUE         |     3.740 |                    |
+| PPT LIMIT FAST      |    25.000 | fast-limit         |
+| PPT VALUE FAST      |    10.284 |                    |
+| PPT LIMIT SLOW      |    20.000 | slow-limit         |
+| PPT VALUE SLOW      |     3.403 |                    |
+| StapmTimeConst      |   200.000 | stapm-time         |
+| SlowPPTTimeConst    |     5.000 | slow-time          |
+| PPT LIMIT APU       |       nan | apu-slow-limit     |
+| PPT VALUE APU       |       nan |                    |
+| TDC LIMIT VDD       |    35.000 | vrm-current        |
+| TDC VALUE VDD       |     1.714 |                    |
+| TDC LIMIT SOC       |    10.000 | vrmsoc-current     |
+| TDC VALUE SOC       |     1.660 |                    |
+| EDC LIMIT VDD       |    45.000 | vrmmax-current     |
+| EDC VALUE VDD       |    28.205 |                    |
+| EDC LIMIT SOC       |    13.000 | vrmsocmax-current  |
+| EDC VALUE SOC       |     3.556 |                    |
+| THM LIMIT CORE      |    90.000 | tctl-temp          |
+| THM VALUE CORE      |    53.707 |                    |
+| STT LIMIT APU       |       nan | apu-skin-temp      |
+| STT VALUE APU       |       nan |                    |
+| STT LIMIT dGPU      |       nan | dgpu-skin-temp     |
+| STT VALUE dGPU      |       nan |                    |
+| CCLK Boost SETPOINT |    50.000 | power-saving /     |
+| CCLK BUSY VALUE     |    60.868 | max-performance    |

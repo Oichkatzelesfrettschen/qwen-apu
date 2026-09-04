@@ -250,6 +250,22 @@ def case_dpm_marker_cadence():
     result = validate(record, period_ns=period_ns, window=(start, last))
     assert "dpm_marker_cadence=not_run no dpm_read markers" in result.stdout, result.stdout
     assert result.returncode == 0, result.stdout
+
+    # One marker at the very start of the window and none after it: the
+    # pairwise scan over consecutive markers has nothing to compare (a
+    # single instant zips to no pair) and would report not_run while the
+    # channel stays stale for the entire rest of the window -- the P1 gap a
+    # terminal marker-to-window-end check closes. dpm_read_stride wider than
+    # the sample count leaves only the index-0 marker.
+    record, start, last = sidecar_record(
+        samples=40, period_ns=period_ns, dpm_read_stride=1000,
+        sample_rates={"gpu_busy_percent_period_ns": period_ns,
+                      "pp_dpm_period_ns": declared})
+    result = refused(record, "dpm_marker_cadence",
+                     period_ns=period_ns, window=(start, last))
+    terminal_gap = last - start
+    assert f"max_gap_ns={terminal_gap}" in result.stdout, result.stdout
+    assert "failures=dpm_marker_cadence" in result.stdout, result.stdout
     print("case=dpm_marker_cadence verdict=accepted")
 
 

@@ -15,7 +15,7 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repository_root=$(CDPATH='' cd -- "$script_directory/.." && pwd)
 cd "$repository_root"
 
-for required_command in bash node shellcheck ruff mypy python3 curl flock git ps sha256sum c++ bwrap; do
+for required_command in bash node shellcheck ruff mypy python3 curl flock git ps sha256sum c++ ss bwrap; do
     if ! command -v "$required_command" >/dev/null 2>&1; then
         printf 'required quality-gate command is absent: %s\n' \
             "$required_command" >&2
@@ -119,6 +119,9 @@ gate_cell test-image-protocol derive remote/test-image-protocol.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-image-protocol.py'
 gate_cell test-summarize-draft-pair derive remote/test-summarize-draft-pair.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-draft-pair.py'
+gate_cell test-summarize-speculation-breakeven derive \
+    'remote/test-summarize-speculation-breakeven.py remote/summarize-speculation-breakeven.py' \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-speculation-breakeven.py'
 gate_cell test-build-cache-keys derive \
     'remote/test-build-cache-keys.sh remote/build-cache-keys.sh remote/build-llama-preset.sh' \
     remote/test-build-cache-keys.sh
@@ -226,6 +229,9 @@ gate_cell test-one-token-admission derive remote/test-one-token-admission.sh \
     remote/test-one-token-admission.sh
 gate_cell test-measure-draft-pair derive remote/test-measure-draft-pair.sh \
     remote/test-measure-draft-pair.sh
+gate_cell test-measure-mtp-arm derive \
+    'remote/test-measure-mtp-arm.sh remote/measure-mtp-arm.sh remote/test-fixtures/fake-mtp-server.sh' \
+    remote/test-measure-mtp-arm.sh
 gate_cell test-classify-checkpoint-semantics derive \
     remote/test-classify-checkpoint-semantics.sh \
     remote/test-classify-checkpoint-semantics.sh
@@ -233,6 +239,8 @@ gate_cell test-write-clangd-config derive remote/test-write-clangd-config.sh \
     remote/test-write-clangd-config.sh
 gate_cell test-check-trace-source-status derive \
     remote/test-check-trace-source-status.sh remote/test-check-trace-source-status.sh
+gate_cell test-admit-web-router-live derive \
+    remote/test-admit-web-router-live.sh remote/test-admit-web-router-live.sh
 gate_cell test-qwen-lan-launch derive remote/test-qwen-lan-launch.sh \
     remote/test-qwen-lan-launch.sh
 gate_cell test-prefix-checkpoint-key derive \
@@ -240,10 +248,22 @@ gate_cell test-prefix-checkpoint-key derive \
     remote/test-prefix-checkpoint-key.sh
 gate_cell test-sync-runtime-tree derive remote/test-sync-runtime-tree.sh \
     remote/test-sync-runtime-tree.sh
-gate_cell test-web-search-live derive remote/test-web-search-live.sh \
+gate_cell test-web-search-live derive \
+    'remote/test-web-search-live.sh remote/test-fixtures/fake-searxng-server.py remote/test-fixtures/fabricate-zombie.py' \
     remote/test-web-search-live.sh
 gate_cell test-compute-state-lease derive remote/test-compute-state-lease.sh \
     remote/test-compute-state-lease.sh
+gate_cell test-read-package-energy derive remote/test-read-package-energy.py \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-read-package-energy.py'
+gate_cell test-summarize-power-envelope derive remote/test-summarize-power-envelope.py \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-power-envelope.py'
+gate_cell test-power-envelope derive remote/test-power-envelope.sh \
+    remote/test-power-envelope.sh
+gate_cell test-cpu-frequency-cap derive remote/test-cpu-frequency-cap.sh \
+    remote/test-cpu-frequency-cap.sh
+gate_cell test-run-power-factorial-campaign derive \
+    'remote/test-run-power-factorial-campaign.sh remote/test-fixtures/fake-cpupower.sh remote/test-fixtures/fake-ryzenadj.sh remote/test-fixtures/fake-sysfs-lib.sh' \
+    remote/test-run-power-factorial-campaign.sh
 gate_cell test-run-prefill-ladder derive remote/test-run-prefill-ladder.sh \
     remote/test-run-prefill-ladder.sh
 gate_cell test-feature-roster derive remote/test-feature-roster.sh \
