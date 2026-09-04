@@ -88,11 +88,18 @@ partway through, and this run crossed nothing: all twenty-four arms held one
 modal clock and the eight measured arms separate into two bands 1.8% apart
 with no overlap. The measurement is therefore read on its own pair
 comparability, which is the fallback the harness states for an unreached
-regime, and the interval it produced is the tightest this tree has recorded --
-+/-0.2% where the machine's documented uncontrolled spread on a repeated
-depth-0 rate is about 4%. An idle appliance under boost is a better comparison
-condition than the served regime and a worse model of it, and both halves of
-that belong to the reading below.
+regime, and the interval it produced is the tightest this tree has recorded.
+`e4/served-ab-20260902T2032Z` is the only earlier served A/B that reached a
+verdict with an interval, at `+0.0150` over `[-0.0529, +0.0828]`, a half-width
+of 6.8% where this run's is 0.2%. An idle appliance under boost is a better
+comparison condition than the served regime and a worse model of it, and both
+halves of that belong to the reading below.
+
+The two E4-family shader candidates land in one small band from opposite
+measurement conditions: E4's activation-group-sums arm read +1.50% and this pair
+reads +1.83%. E4's interval spans zero and settles nothing on its own, so the
+agreement is a coincidence of two central values rather than a replication, and
+it is recorded here as such.
 
 The run held `power_dpm_force_performance_level` at `auto` throughout and wrote
 the attribute never, so no compute-state transaction was opened and the
