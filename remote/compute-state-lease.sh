@@ -342,17 +342,6 @@ resolve_profile() {
             profile_cpu_frequency_cap=base-clock-cap
             profile_power_envelope=platform-default
             ;;
-        serve-fixed-cpu-capped-fclk-range-package-25w)
-            profile_dpm_level=manual
-            profile_sclk_levels='2=1100'
-            profile_mclk_levels='2=933 3=1067'
-            profile_child_nice=0
-            profile_child_io_class=best-effort
-            profile_child_cpu_list=0,1
-            profile_ksm_run=0
-            profile_cpu_frequency_cap=base-clock-cap
-            profile_power_envelope=package-25w
-            ;;
         # The KSM factor-pair: P3's own state with the scanner left running
         # (1) instead of paused (0), read against P3 to isolate the scanner
         # term alone. The pairs read against P3 rather than P4, because a
