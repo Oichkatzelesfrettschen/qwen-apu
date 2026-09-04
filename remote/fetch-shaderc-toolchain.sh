@@ -13,7 +13,10 @@ set -eu
 # rather than read from the publisher is a fabricated pin.
 #
 # usage: fetch-shaderc-toolchain.sh [PREFIX_ROOT]
-#   PREFIX_ROOT   directory the prefix is created under, default ~/opt
+#   PREFIX_ROOT   directory the prefix is created under, default ~/opt or
+#                 QWEN_SHADERC_PREFIX_ROOT. build-spirv-shader-pack.sh resolves
+#                 its own default compiler through the same variable and the
+#                 same ledger row, so the two agree on where the fetch put it.
 
 if [ "$#" -gt 1 ]; then
     printf 'usage: %s [PREFIX_ROOT]\n' "$0" >&2
@@ -21,7 +24,7 @@ if [ "$#" -gt 1 ]; then
 fi
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-prefix_root=${1:-"${HOME:?}/opt"}
+prefix_root=${1:-${QWEN_SHADERC_PREFIX_ROOT:-"${HOME:?}/opt"}}
 toolchain_ledger=${QWEN_SHADERC_LEDGER:-$script_directory/shaderc-toolchain.tsv}
 
 if [ ! -r "$toolchain_ledger" ]; then
@@ -77,7 +80,10 @@ if [ -e "$prefix_directory" ]; then
     exit 1
 fi
 
-for required_program in curl cmake ninja sha256sum tar; do
+# git and python3 are the two utils/git-sync-deps runs on: it reads the
+# revision's own DEPS with python3 and clones each dependency with git, so their
+# absence fails after the archive is verified rather than before the fetch.
+for required_program in curl cmake ninja sha256sum tar git python3; do
     if ! command -v "$required_program" >/dev/null 2>&1; then
         printf 'the toolchain build requires %s\n' "$required_program" >&2
         exit 1

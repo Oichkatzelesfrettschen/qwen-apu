@@ -1,0 +1,11 @@
+key	value
+schema	spirv-shader-pack-v1
+declaration_sha256	1e34e8371cc08ea34c234e90c28bf40987bce8f56cad7b1013fb7ada1175ad57
+glslc_version	shaderc v2026.3 unknown hash, 2026-09-03
+glslc_sha256	f0e11abb8ffc745bf3fc4346dd4077c726fd8b82a95576bc75ab1cfe90c956ac
+spirv_val	SPIRV-Tools v2026.3 v2026.3-0-gb707790a
+spirv_val_sha256	e9bce1b49be5d1144f051e3b629d9bcc7ed7deeebc691594fdff881fec54fedc
+target_env	vulkan1.2
+optimize	1
+modules	1
+pack_sha256	3322a9a1eaeb0809de2981b736ae7ea2cfa987d93b8caf474deb022d336722e6

@@ -23,9 +23,23 @@ set -eu
 # that reads as a pass is the failure mode this column exists to remove.
 #
 # usage: build-spirv-shader-pack.sh DECLARATION SOURCE_DIRECTORY OUTPUT_DIRECTORY
-#   QWEN_SHADER_PACK_GLSLC       the pinned glslc, default ~/opt/shaderc-pinned/bin/glslc
+#   QWEN_SHADER_PACK_GLSLC       the pinned glslc, default the compiler
+#                                fetch-shaderc-toolchain.sh installs: the
+#                                `prefix` row of shaderc-toolchain.tsv under
+#                                QWEN_SHADERC_PREFIX_ROOT, ~/opt by default.
+#                                Both scripts read the one ledger row, so the
+#                                fetch and the pack cannot name two prefixes.
+#   QWEN_SHADERC_LEDGER          that ledger, default beside this script
 #   QWEN_SHADER_PACK_SPIRV_VAL   spirv-val, default beside that glslc
 #   QWEN_SHADER_PACK_TARGET_ENV  --target-env value, default vulkan1.2
+#   QWEN_SHADER_PACK_OPTIMIZE    1 adds -O, default 0
+#
+# The optimization setting belongs to the pack rather than to a row, the way the
+# target environment does, and it changes the module: `vulkan-shaders-gen`
+# compiles every ggml shader with `-O`, so a pack meant to reproduce a module a
+# served build executed sets it and a pack meant to read the unoptimized form
+# leaves it off. pack-inputs.tsv records which, and the recorded command line
+# carries the flag.
 
 if [ "$#" -ne 3 ]; then
     printf 'usage: %s DECLARATION SOURCE_DIRECTORY OUTPUT_DIRECTORY\n' "$0" >&2
@@ -50,7 +64,30 @@ if [ -e "$output_directory" ]; then
     exit 1
 fi
 
-glslc_program=${QWEN_SHADER_PACK_GLSLC:-"${HOME:?}/opt/shaderc-pinned/bin/glslc"}
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+glslc_program=${QWEN_SHADER_PACK_GLSLC:-}
+if [ -z "$glslc_program" ]; then
+    toolchain_ledger=${QWEN_SHADERC_LEDGER:-$script_directory/shaderc-toolchain.tsv}
+    if [ ! -r "$toolchain_ledger" ]; then
+        printf 'the shaderc toolchain ledger is unreadable, so no default compiler resolves: %s\n' \
+            "$toolchain_ledger" >&2
+        printf 'QWEN_SHADER_PACK_GLSLC names the compiler directly\n' >&2
+        exit 1
+    fi
+    # The row shape is checked here the way fetch-shaderc-toolchain.sh checks
+    # it, so one ledger reads the same to both of its readers.
+    toolchain_prefix_name=$(awk -F'\t' '
+        /^#/ || NF == 0 { next }
+        NF != 2 { printf "malformed shaderc toolchain row: %s\n", $0 > "/dev/stderr"; exit 1 }
+        $1 == "prefix" { print $2; found = 1 }
+        END { exit found ? 0 : 1 }
+    ' "$toolchain_ledger") || {
+        printf 'the shaderc toolchain ledger names no prefix: %s\n' \
+            "$toolchain_ledger" >&2
+        exit 1
+    }
+    glslc_program=${QWEN_SHADERC_PREFIX_ROOT:-"${HOME:?}/opt"}/$toolchain_prefix_name/bin/glslc
+fi
 if [ ! -x "$glslc_program" ]; then
     printf 'the pinned glslc is missing or not executable: %s\n' "$glslc_program" >&2
     printf 'remote/fetch-shaderc-toolchain.sh installs it into a prefix of its own\n' >&2
@@ -64,6 +101,16 @@ case $target_env in
     *)
         printf 'the target environment is vulkan1.0 through vulkan1.3: %s\n' \
             "$target_env" >&2
+        exit 2
+        ;;
+esac
+optimize_setting=${QWEN_SHADER_PACK_OPTIMIZE:-0}
+optimize_arguments=''
+case $optimize_setting in
+    0) ;;
+    1) optimize_arguments=' -O' ;;
+    *)
+        printf 'the optimization setting is 0 or 1: %s\n' "$optimize_setting" >&2
         exit 2
         ;;
 esac
@@ -148,10 +195,10 @@ while IFS='	' read -r module_name module_source module_defines module_excess; do
     # The recorded command names the compiler as `glslc` and the source
     # relative to the declared root, so the record states the invocation
     # without carrying this host's own paths.
-    recorded_command="glslc --target-env=$target_env -fshader-stage=compute -I .$define_arguments -o - $module_source"
+    recorded_command="glslc --target-env=$target_env -fshader-stage=compute$optimize_arguments -I .$define_arguments -o - $module_source"
     # shellcheck disable=SC2086
     if ! "$glslc_program" --target-env="$target_env" -fshader-stage=compute \
-        -I "$source_root" $define_arguments \
+        $optimize_arguments -I "$source_root" $define_arguments \
         -o "$module_object" "$source_root/$module_source" \
         >"$output_directory/modules/$module_name.log" 2>&1; then
         printf 'the pinned compiler refused %s\n' "$module_name" >&2
@@ -210,6 +257,7 @@ pack_sha256=$(sha256sum "$pack_ledger" | cut -d ' ' -f 1)
     printf 'spirv_val\t%s\n' "$spirv_val_identity"
     printf 'spirv_val_sha256\t%s\n' "$spirv_val_sha256"
     printf 'target_env\t%s\n' "$target_env"
+    printf 'optimize\t%s\n' "$optimize_setting"
     printf 'modules\t%s\n' "$declared_rows"
     printf 'pack_sha256\t%s\n' "$pack_sha256"
 } >"$pack_inputs"
