@@ -1,271 +1,243 @@
-# E5-int24: falsifiers, arms, and what the workstation could already answer
+# E5: the Q4_K x Q8_1 mat-vec without a dot instruction, in three paths
 
-`int24-design.md` beside this file is the registration, verbatim from before a
-line of shader existed. This file states the arm the design became, the
-commands the appliance runs, and the four falsifiers in the order a failure
-stops the chain. `patches/llama-vulkan-q4k-int24-mmvq.patch` is the subject and
-`remote/llama-patch-series.tsv` carries it at the `candidate` stage.
+gfx902 holds no `V_DOT4`, RADV reports every `integerDotProduct*Accelerated` bit
+false, and `ggml-vulkan.cpp` builds no `_q8_1` mat-vec pipeline here, so the 2B
+distill's Q4_K trunk streams through the FP16 dequantize-then-dot family. The
+same silicon runs `v_mul_u32_u24` and `v_mul_i32_i24` at full rate where
+`v_mul_lo_u32` is quarter rate. E5 asks whether a packed 8-bit dot built on that
+multiplier beats the FP16 path on the device, and it now asks it through the
+standard interface rather than through a rewrite.
 
-## Two claims, kept apart
+## The hypothesis, and what it replaced
 
-The arm changes two things at once and the evidence separates them, because a
-witness result attributed to the wrong half reads as a shader defect.
+The lane opened by writing its own GLSL: sixteen straight-line masked-byte
+products in place of `dotPacked4x8EXT`, because the appliance's own glslc
+rejects `GL_EXT_integer_dot_product`. That rewrite works and is exact, and the
+ISA receipts measure it losing to the compiler's own lowering of the same
+computation by 318 VALU instructions on identical silicon. The registration is
+therefore inverted: the standard route is the hypothesis and the rewrite is the
+control it is read against.
 
 ```text
-claim A   int24 against dotPacked4x8EXT, same operands
-          exact by construction: repack4 masks Q4_K quant bytes with
-          0x0F0F0F0F and Q5_K merges one bit above that, so the signed dot
-          equals the unsigned one, the bias correction is algebraic, and the
-          FP32 tail is byte-identical to the pinned function
-claim B   q8_1 activations against the FP16 mat-vec
-          the numeric movement the design's second falsifier anticipates,
-          which the pinned upstream path owns and the int24 shader contributes
-          nothing to
+E5-M    manual, hand-expanded int24 GLSL          the negative control
+        no dotPacked4x8EXT, no OpSDotKHR; 1646 VALU, 11704 code bytes
+        the one route the appliance's own toolchain can build today
+
+E5-S0   the standard packed dot, stock driver     the hypothesis
+        GLSL dotPacked4x8EXT -> SPIR-V OpSDotKHR -> NIR sdot_4x8_iadd ->
+        ACO's generic GFX9 expansion; 1328 VALU, 9496 code bytes
+
+E5-S1   the same SPIR-V, target-aware driver      the hypothesis, sharpened
+        the identical module through an isolated RADV carrying Mesa merge
+        request 2115's ACO lowering: four byte-extract-folded 24-bit multiplies
+        plus two v_add3_u32, six operations against the generic seven;
+        1297 VALU, 9540 code bytes
 ```
 
-The margin witness measures claim B. A `differs` verdict is read against the
-registered contract rather than against token identity, and it says nothing
-about the replacement arithmetic unless claim A's runtime equality arm also
-moves.
+The caller interface stays standard the whole way down, which is the point:
+`dotPacked4x8EXT` in GLSL, `OpSDotKHR` in SPIR-V, `nir_op_sdot_4x8_iadd` in NIR,
+and a gfx902 software sequence in ACO. Nothing in this repository rewrites a
+shader for E5-S0 or E5-S1; what it supplies is a producer that can emit the
+module and a driver that lowers it well.
 
-## What the arm can reach
+`E5-M/README.md`, `E5-S0/README.md`, and `E5-S1/README.md` carry each path's own
+receipts, mechanism, and status. `int24-design.md` is the lane's original
+registration, verbatim from before a line of shader existed;
+`int24-equivalence.c`, `compile-matrix.tsv`, `spirv/`, and
+`isa-shimmed-raven2/` hold the arithmetic, the compile matrix, the SPIR-V
+receipts, and the two production anchors all three paths are read against.
+
+| path | valu | code_size | vgprs | blocks | longest_valu_chain | isa_sha256 |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| production FP16 dequantize | 882 | 6764 | 64 | 82 | 29 | `ad837848d5...` |
+| E5-S1 | 1297 | 9540 | 36 | 54 | 24 | `b9f5b4e6e2...` |
+| E5-S0 | 1328 | 9496 | 36 | 54 | 23 | `a4d5f70939...` |
+| E5-M | 1646 | 11704 | 36 | 54 | 35 | `8896269f54...` |
+
+## What the arm can reach, and what admits it
 
 `ggml_vk_should_use_mmvq` returns false on AMD below `k = 2048` and false for
 Q6_K on every vendor but Intel, so the 2B distill's Q4_K trunk is the family
-this arm touches and its 50.08% Q6_K by byte stays on the FP16 path. The
+this lane touches and its 50.08% Q6_K by byte stays on the FP16 path. The
 whole-token ceiling is that share rather than the 83% the FP16 family holds.
-`GGML_VK_FORCE_MMVQ=1` would extend the path to Q6_K and moves two things at
-once, so it belongs to a separate arm.
 
-The mat-mat and flash-attention q8_1 shaders keep the extension's own compile
-gate. Where they are absent, `ggml_vk_get_mul_mat_mat_pipeline` finds an empty
-pipeline set and clears `quantize_y`, so prefill and attention run the
-production shape and the mat-vec is the single changed dispatch.
+`GGML_VK_FORCE_INTEGER_DOT=1` admits the pipelines on a device reporting no
+acceleration. `patches/llama-vulkan-q4k-int24-mmvq.patch` splits the backend's
+one `integer_dot_product` bool into four fields so the variable moves the
+selection alone: `integer_dot_functional` from the extension,
+`integer_dot_accelerated` verbatim from the driver's own report with nothing in
+the build writing it, `integer_dot_software_lowered` as the build's own claim
+that the variable admits, and `integer_dot_pipeline_selected` as the disjunction
+the pipeline table and every `quantize_y` dispatch read. Every advertised Vulkan
+acceleration property reads exactly what RADV reported under every arm.
 
-## The control is the same binary
+E5-S carries a wider dispatch set than E5-M. An extension-capable build defines
+`GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT`, which also gates the MMQ mat-mat and
+flash-attention int8 shaders and `ggml_vk_fa_scalar_uses_mmq`, so a comparison
+across E5-M and E5-S measures more than the mat-vec unless that set is held
+fixed. E5-S0 against E5-S1 shares the whole set and differs by the driver alone,
+which is why that pair is read first.
 
-`GGML_VK_FORCE_INTEGER_DOT=1` admits the pipelines and its absence leaves
-`integer_dot_product` false on RAVEN2, so no q8_1 pipeline is created and
-dispatch takes the production FP16 mat-vec. One build therefore carries the arm
-and its control, and the code-layout difference `P I0 I0 P` exists to separate
-is absent by construction. The residual difference is the unused q8_1 SPIR-V
-linked into the binary and the pipeline table entries that name it.
-`remote/radv-low-priority-env.sh` scrubs the variable under all four serving
-profiles, `custom` among them, and restores it under `diagnostic` alone, so an
-arm is asked for explicitly and a promoted build stays on the FP16 mat-vec
-whatever the ambient environment holds. `remote/dump-radv-shader-isa.sh` runs
-the `low-async` serving profile, so it forwards the caller's own value past
-that scrub on the same `env` that reintroduces `RADV_DEBUG`, conditionally:
-the two arms of the ISA receipt share one server argv and differ in that
-assignment, and its completion line names the arm it collected.
+## The measurable served arm
 
-## The appliance chain
+Every arm of `remote/run-served-binary-ab.sh` runs under `low-async`, and
+`remote/radv-low-priority-env.sh` unsets every `GGML_VK_*` name before its
+profile case, so `GGML_VK_FORCE_INTEGER_DOT` reached no server and the served
+comparison was structurally unmeasurable. `QWEN_FORCE_INTEGER_DOT` crosses that
+scrub under its own name the way `QWEN_PIPELINE_CENSUS` does, admitting the
+exact `1` the backend compares against and refusing any other value;
+`qwen-webui-control.sh` forwards it across the tmux boundary. The campaign
+admits it per role:
 
 ```sh
-# The candidate serving tree and its binary. build-llama-preset.sh adds
-# -DGGML_VULKAN_INT24_DOT=ON exactly when the selection names the patch.
-remote/prepare-llama-census-source.sh ~/src/llama.cpp ~/src/llama.cpp-int24 \
-    llama-vulkan-q4k-int24-mmvq.patch
-QWEN_LLAMA_CANDIDATE_SELECT=llama-vulkan-q4k-int24-mmvq.patch \
-    remote/build-llama-preset.sh raven2-vulkan-production ~/src/llama.cpp-int24
-
-# Falsifier 1, the ISA receipt: the candidate binary under
-# RADV_DEBUG=shaders,shaderstats, once with the arm armed and once without.
-GGML_VK_FORCE_INTEGER_DOT=1 remote/dump-radv-shader-isa.sh \
-    ~/qwen-evidence/e5-isa-int24 BUILD/bin/llama-server MODEL_PATH
-remote/dump-radv-shader-isa.sh \
-    ~/qwen-evidence/e5-isa-control BUILD/bin/llama-server MODEL_PATH
-remote/summarize-radv-isa.py ~/qwen-evidence/e5-isa-int24/radv-shaders.log
-
-# Falsifier 3, the bracket: two census-instrumented builds differing by this
-# patch alone, judged on the exclusive GPU bracket of the Q4_K mat-vec against
-# a pipeline the patch leaves untouched.
-remote/prepare-llama-census-source.sh ~/src/llama.cpp ~/src/llama.cpp-census-int24 \
-    llama-vulkan-pipeline-census.patch llama-vulkan-q4k-int24-mmvq.patch
-QWEN_LLAMA_CANDIDATE_SELECT='llama-vulkan-pipeline-census.patch llama-vulkan-q4k-int24-mmvq.patch' \
-    remote/build-llama-preset.sh raven2-vulkan-census ~/src/llama.cpp-census-int24
-QWEN_CENSUS_AB_MODE=kernel-delta \
-QWEN_AB_CANDIDATE_PATCH=llama-vulkan-q4k-int24-mmvq.patch \
-QWEN_AB_BRACKET_SUBJECT=mul_mat_vec_q4_k_q8_1_f32 \
-QWEN_AB_BRACKET_NULL=mul_mat_vec_q6_k_f32_f32 \
-QWEN_CENSUS_ENGINE_CLOCK_POLICY=manual \
-    remote/run-served-binary-ab.sh CENSUS_CONTROL_SERVER CENSUS_INT24_SERVER \
-    qwen38-2b-distill ~/qwen-evidence/e5-kernel-delta
-
-# Falsifier 2, the margin witness, over the same pair.
-QWEN_WITNESS_CONTRACT=margin QWEN_WITNESS_N_PROBS=2 \
-    remote/run-kernel-delta-witness.sh CONTROL_SERVER INT24_SERVER \
-    qwen38-2b-distill ~/qwen-evidence/e5-witness
-
-# Falsifier 4, the whole token, under the scoreboard tuple.
 QWEN_CENSUS_AB_MODE=served \
+QWEN_AB_CANDIDATE_FORCE_INTEGER_DOT=1 \
 QWEN_AB_CANDIDATE_PATCH=llama-vulkan-q4k-int24-mmvq.patch \
-QWEN_CENSUS_PRODUCTION_RECEIPT=evidence/fixed64-served-campaign/20260901T2011Z/identity-check.tsv \
-    remote/run-served-binary-ab.sh CONTROL_SERVER INT24_SERVER \
-    qwen38-2b-distill ~/qwen-evidence/e5-served
+QWEN_CENSUS_PRODUCTION_RECEIPT=RECEIPT/identity-check.tsv \
+    remote/run-served-binary-ab.sh CONTROL_SERVER ARM_SERVER \
+    qwen38-2b-distill OUT
 ```
 
-`dump-radv-shader-isa.sh`, `run-served-binary-ab.sh`,
-`run-kernel-delta-witness.sh`, `summarize-radv-isa.py`,
-`summarize-bracket-ab.py`, and `summarize-census-controls.py` are the census
-bracket harness. They reach the appliance with the runtime tree the campaign
-syncs, and each refuses to run anywhere but the measured host, so every command
-above states a precondition for the run rather than a step this workstation
-took.
+`inputs.tsv` and `campaign-inputs.tsv` carry `control_force_integer_dot` and
+`candidate_force_integer_dot`, each arm's `arm-environment.tsv` carries the value
+its role asked for, and `vulkan_profile` still reads `low-async`, which is the
+field the scoreboard receipt requires. A named profile of its own would have put
+a second string in that field, and `custom` exports a submission setting only
+where the caller supplies one, so an arm run through it and a control run
+through `low-async` would differ by node count as well -- worth 1.348 to 2.718
+decode tok/s by this tree's own measurement, larger than the effect E5 exists to
+resolve.
 
-Both `run-served-binary-ab.sh` modes require the two binaries to share one base
-build identity and to differ by exactly the named candidate. The int24
-candidate meets that as the whole difference, since the CMake option travels
-with the patch.
+## Falsifiers, registered ahead of any run
 
-## Falsifiers, in the order a failure stops the chain
+The order is the order a failure stops the chain, and each one names what is
+measured rather than what is hoped.
 
-1. ISA. The candidate `mul_mat_vec_q4_k_q8_1_f32` pipeline holds
-   `v_mul_lo_u32` or `v_cvt_f32_f16` in its inner loop, or fewer
-   `v_mad_u32_u24` and `v_mul_u32_u24` than sixteen products per call predict.
-   The hypothesis is refuted at the compiler before device time is spent, and
-   the receipt names ACO's selection rather than the shader's intent.
-   `isa-shimmed-raven2/` answers this without the appliance, and the answer is
-   split three ways: `v_mul_lo_u32` is absent while all 224 products land on
-   `v_mul_u32_u24` with SDWA byte selects, `v_mad_u32_u24` is absent because
-   the byte select occupies the VOP2 encoding the VOP3 multiply-add cannot
-   share, and `v_cvt_f32_f16` stands at 56 -- the same count, in the same
-   places, as the `dotPacked4x8EXT` build of the same shader, so it reports the
-   q8_1 scale decode rather than the replacement.
-2. Correctness. The margin witness reads `differs` under
-   `QWEN_WITNESS_CONTRACT=margin`. This is claim B: q8_1 activation
-   quantization is a numeric change the design accepted in advance, so the
-   registered contract decides rather than token identity.
-3. Bracket. The kernel-delta comparison reads `bracket-unchanged` or
-   `lengthened` on `mul_mat_vec_q4_k_q8_1_f32` measured against the untouched
-   null pipeline, or the `quantize_q8_1_x4` producer eats the mat-vec's gain
-   when the two are read as one envelope.
-4. Whole token. The served comparison under the scoreboard tuple leaves the
-   2B's 5% promotion bound unmet, which is the rule that decides whether the
-   arm is kept.
+1. **ISA, E5-S1.** The executed gfx902 ACO ISA for
+   `mul_mat_vec_q4_k_q8_1_f32_subgroup_no_shmem` holds other than four
+   byte-extract-folded 24-bit multiplies plus two `v_add3_u32` per dot, or holds
+   `v_mul_lo_u32` in the inner loop. The mechanism is refuted at the compiler and
+   no device time is spent on the rung. The workstation has measured this through
+   a drm-shimmed RAVEN2 node; the appliance's own ACO answering differently is
+   what this falsifier is still open against.
+2. **Combined envelope.** Activation quantization and the integer Q4_K consumer
+   are measured as one graph envelope -- `quantize_q8_1_x4` beside
+   `mul_mat_vec_q4_k_q8_1_f32` -- against the best E4-plus-scale-word-select
+   candidate on the FP16 path. A q8_1 route whose consumer shortens while its
+   producer eats the gain is refuted here, and correctness and served arms run
+   only if the combined envelope is shorter. Reading the consumer alone is the
+   error this gate exists to prevent.
+3. **Correctness.** The margin witness reads `differs` under
+   `QWEN_WITNESS_CONTRACT=margin`. This measures q8_1 activation quantization,
+   which the design accepted in advance as a numeric change, so the registered
+   contract decides rather than token identity. E5-M's own arithmetic is exact
+   against `dotPacked4x8EXT` by construction and contributes nothing here.
+4. **Whole token.** The served comparison under the scoreboard tuple leaves the
+   2B's 5% one-sided promotion bound unmet.
 
-## What ran on the workstation
+Two standing cautions are registered as non-falsifiers, so a result that meets
+either is read as predicted rather than as a defect:
 
 ```text
-patch series        verify-llama-patch-series.sh replays the eight production
-                    members and all three candidates in ledger order:
-                    candidate_patch=llama-vulkan-q4k-int24-mmvq.patch applies=yes
-shader compile      compile-matrix.tsv, thirteen quantizations x two branches of
-                    GGML_VK_INT24_DOT, glslc 2026.3 / SPIR-V 1.4.357.0, all ok
-SPIR-V receipt      spirv/, the Q4_K q8_1 mat-vec disassembled on both branches
-                    with spirv-val passing on all six modules
-arithmetic          int24-equivalence.c, both forms against the signed reference:
-                    exact over the whole single-lane domain, four million random
-                    word pairs for the general form, two million random calls for
-                    the Q4_K and Q5_K form over quant bytes 0 to 31
-backend compile     ggml-vulkan.cpp parses and type-checks under all four
-                    combinations of GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT and
-                    GGML_VULKAN_INT24_DOT, and vulkan-shaders-gen.cpp compiles
-                    under the same four at -Wall -Wextra
-environment         test-radv-low-priority-env.sh gains seven
-                    GGML_VK_FORCE_INTEGER_DOT arms -- one per serving profile,
-                    the diagnostic profile armed and unarmed, and the
-                    diagnostic profile refusing a value other than 1 -- beside
-                    a structural check that the ISA collector still forwards
-                    the value past the scrub and an executed check that the
-                    collector refuses that same third value. The wrapper
-                    refuses this workstation for want of a RADV ICD, so the
-                    arms ran against a stand-in ICD and answered unset four
-                    times, then 1, unset, and exit 2
-ACO ISA receipt     isa-shimmed-raven2/, the int24 module, its dotPacked4x8EXT
-                    counterpart, and the pinned Q4_K and Q6_K mat-vecs compiled
-                    through RADV on a drm-shimmed RAVEN2 node; the two pinned
-                    arms hash to the appliance's own ad837848 and 0d5c7643, so
-                    this host's ACO answers the appliance's on the mat-vec
-                    family. Both anchors take the FP16 path, so the integer-dot
-                    lowering the arm rests on is outside the matched set
+chain depth        E5-S1's longest dependent-VALU chain is 24 against E5-S0's
+                   23 across identical 54 blocks. Trading an add tree for two
+                   serially dependent v_add3_u32 reductions removes one
+                   instruction and adds one to the longest path, so a bracket
+                   that fails to shorten while VALU falls 2.3% refutes nothing
+                   on its own.
+VALU per MAC       int8 through a software dot costs about 1.375 VALU per MAC
+                   where FP16 dot2 with FP32 accumulation through
+                   v_mad_mix_f32 costs about 1.0. Every q8_1 path here must
+                   therefore win on bracket time rather than on instruction
+                   count, and the instruction tables above decide the ordering
+                   among the three paths and nothing about the FP16 anchor.
 ```
 
-`spirv-summary.tsv` carries the compile receipt. The extension branch holds
-four `OpSDot`, the `DotProduct` capability, and the `SPV_KHR_integer_dot_product`
-extension; the int24 branch holds none of the three and reaches 46 `OpIMul`
-against 30, which is the sixteen products the design predicts, on all three
-workgroup variants. Both branches hold 73 `OpAccessChain` and zero
-`OpVectorExtractDynamic`, so the replacement indexes the quant vector
-statically and asks ACO for sixteen multiplies of constant-masked bytes. These
-are SPIR-V operations at glslc's default optimization: they state which
-arithmetic the module asks for and count no VALU instruction, which is what
-falsifier 1 measures.
+## The compiler plan, and the file that carries each step
 
-## The ISA receipt, and what it says about the arm
+The appliance's distribution shaderc prints `GL_EXT_integer_dot_product not
+supported by glslc`
+(`evidence/web-admission-router-tools/build-raven2-vulkan-production.log:33`), so
+that host emits no `OpSDotKHR` at all. The gate sits in the SPIR-V producer, and
+the driver on the appliance consumes whatever module it is handed, so the plan
+separates producing the module from executing it. Each step names the file that
+carries it; none of them has run.
 
-`isa-shimmed-raven2/README.md` carries the whole reading; three results decide
-what the remaining device stages are worth spending time on.
-
-The 24-bit multiplier is reached exactly as designed: 224 products, every one
-`v_mul_u32_u24_sdwa` with `src0_sel`/`src1_sel` byte selects, and zero
-`v_mul_lo_u32`.
-
-The multiply-add fold the design predicted does not happen, and neither arm
-loses by it. Both q8_1 arms emit zero `v_mad_u32_u24` and accumulate through
-`v_add3_u32`; SDWA rides VOP1 and VOP2 on GFX9 while `v_mad_u32_u24` is VOP3,
-so ACO takes the byte select and cannot also take the fold.
-
-`dotPacked4x8EXT` reaches the same multiplier family on this part. The
-extension build of the same shader compiles to 224 `v_mul_i32_i24_sdwa` in
-1328 VALU against the rewrite's 1646, so the rewrite costs 318 VALU and 2208
-bytes of code at identical registers. That is the price of the appliance's own
-toolchain rather than of the arithmetic:
-`evidence/web-admission-router-tools/build-raven2-vulkan-production.log:33`
-records the appliance's build printing `GL_EXT_integer_dot_product not
-supported by glslc` under Vulkan 1.3.275, so the extension form compiles
-nowhere on that host and the rewrite is the only route to a `_q8_1` pipeline
-there. The measurement opens a route the ladder never registered: a glslc that
-accepts the extension, or SPIR-V compiled elsewhere and shipped, reaches the
-24-bit multiplier in 318 fewer VALU instructions on the same silicon. No arm
-has costed it.
+1. **Pin the producer.** `remote/shaderc-toolchain.tsv` states the project, the
+   revision, the release archive, and its SHA-256. It ships with `revision`,
+   `archive_url`, and `archive_sha256` reading `-`, because a digest recalled
+   rather than read from the publisher is a fabricated pin, and
+   `remote/fetch-shaderc-toolchain.sh` refuses an unfilled row rather than
+   downloading whatever the tag points at today. Filling those three fields from
+   the upstream release is step one.
+2. **Build it into a prefix of its own.**
+   `remote/fetch-shaderc-toolchain.sh [PREFIX_ROOT]` verifies the archive against
+   the pin, syncs shaderc's own vendored glslang and SPIRV-Tools revisions,
+   installs under `PREFIX_ROOT/shaderc-pinned`, refuses a prefix that already
+   exists, and compiles a one-line probe that requires the extension, so the
+   fetch proves the installed compiler accepts what the pack exists to reach.
+   The system toolchain is untouched.
+3. **Generate the pack.**
+   `remote/build-spirv-shader-pack.sh DECLARATION SOURCE_DIRECTORY OUTPUT` reads
+   one declaration row per module -- module name, source relative to the source
+   directory, and its define list -- and writes `modules/<spirv_sha256>.spv`
+   with a named symbolic link beside it, so two declarations compiling to one
+   module store one file. `shader-pack.tsv` carries the module name, the
+   relative source and its digest, the defines, the target environment, the
+   recorded command line, the module's byte count and digest, and the `spirv-val`
+   verdict; `pack-inputs.tsv` carries the compiler's own version string and
+   digest, the validator's, the declaration digest, and one digest over the
+   ledger. No absolute path enters either file: the compiler is recorded as
+   `glslc` and every source relative, so a pack record is comparable between
+   hosts and commits clean. A validator that is absent leaves
+   `not_run:validator_absent` rather than an empty verdict, and one that refuses
+   a module ends the pack. `remote/test-build-spirv-shader-pack.sh` drives the
+   whole format against a fake `glslc` and a fake `spirv-val`, with no toolchain
+   and no device.
+4. **Deploy the isolated driver.** E5-S1 reaches the device through
+   `radeon_devenv_icd.x86_64.json`, a meson target whose `library_path` names the
+   build directory, so `VK_ICD_FILENAMES` and the library path select it and
+   nothing is installed over the system driver. `radv-low-priority-env.sh` reads
+   `QWEN_RADV_ICD`, which is the one name that selects it, and the appliance's
+   own `vulkan-radeon` keeps serving everything else. `-Dllvm=enabled` is
+   required for the disassembler rather than for ACO: without it RADV falls back
+   to printing pre-RA IR that the lab's mnemonic counter reads as zero in every
+   field, which is a silently worthless receipt.
+5. **Read the executed ISA.** `RADV_DEBUG=shaders,shaderstats` through
+   `remote/dump-radv-shader-isa.sh`, summarized by
+   `remote/summarize-radv-isa.py`, against the module the census instrument
+   dumped under its own digest. Falsifier 1 is decided here.
+6. **Run a short kernel-delta arm, only on a matching ISA.** Where the ISA holds
+   the six-operation sequence, `QWEN_CENSUS_AB_MODE=kernel-delta` over the
+   subject and the untouched null pipeline; where it does not, the rung ends and
+   the device time is not spent.
+7. **Measure the combined envelope.** `quantize_q8_1_x4` and
+   `mul_mat_vec_q4_k_q8_1_f32` read as one graph envelope against the best
+   E4-plus-scale-word-select candidate. Falsifier 2 is decided here.
+8. **Run correctness and the served comparison, only if that envelope is
+   shorter.** `remote/run-kernel-delta-witness.sh` under
+   `QWEN_WITNESS_CONTRACT=margin`, then `run-served-binary-ab.sh` in `served`
+   mode with `QWEN_AB_CANDIDATE_FORCE_INTEGER_DOT=1` under the scoreboard tuple.
+   Falsifiers 3 and 4 are decided here.
 
 ## Stage status
 
 | stage | state | where |
 | --- | --- | --- |
-| patch series replay | measured | `verify-llama-patch-series.sh`, workstation |
+| patch series replay, whole candidate stage | measured | `verify-llama-patch-series.sh`, workstation |
+| capability split, four define combinations | measured | workstation, type-check only |
 | shader compile matrix | measured | `compile-matrix.tsv`, workstation |
-| SPIR-V receipt | measured | `spirv/`, workstation |
-| arithmetic equivalence | measured | `int24-equivalence.c`, workstation |
-| backend compile | measured | workstation |
-| falsifier 1, ACO ISA | measured | `isa-shimmed-raven2/`, shimmed RAVEN2 on the workstation |
-| appliance build produces this module | unrun | the appliance's own glslc, see below |
-| runtime equality, claim A | unrun | appliance |
-| falsifier 2, margin witness | unrun | appliance |
-| falsifier 3, kernel-delta bracket | unrun | appliance |
-| falsifier 4, whole token | unrun | appliance |
-
-Falsifier 1's ISA question is answered and one identity question behind it is
-not. The receipt compiled `mul_mat_vecq.comp` with glslc 2026.3, and the
-appliance compiles it with the shaderc its distribution ships. Those two
-toolchains produced different SPIR-V for the pinned `mul_mat_vec_q4_k_f32_f32`
-and ACO emitted one identical instruction stream from both, which is the
-anchor `identity-anchor.tsv` records; whether the same holds for the int24
-module is a one-command check on the appliance rather than an inference:
-
-```sh
-# On the appliance, after the candidate build. The census instrument writes the
-# executed module under its own digest, and the lab compiles that module.
-GGML_VK_FORCE_INTEGER_DOT=1 GGML_VK_PIPELINE_CENSUS_DUMP=$HOME/e5-modules \
-    BUILD/bin/llama-server --model MODEL_PATH ...   # one request, then teardown
-remote/raven2-shader-lab/lab.sh $HOME/e5-modules/DIGEST.spv $HOME/e5-isa-int24 \
-    --spec 0:64 --spec 1:1 --spec 2:1 --subgroup 64 \
-    --bindings 5 --push-constants 52 --per-superblock 256
-```
-
-An `isa_sha256` equal to
-`8896269f54c86f1039a08740aaa1f1f3fdbef6080f8d9e7a1908ce84e2598f34` closes the
-identity outright. A different value makes the appliance's own receipt the
-authority and this one a compiler study.
-
-## Not run
-
-```text
-runtime equality        claim A is exact by construction and unmeasured on the
-                        device: the arm and its control answering one prompt
-                        bit-for-bit is what turns it into a measurement.
-every device arm        falsifiers 2, 3, and 4 need the appliance, which serves
-                        while this branch was written. The four commands are
-                        under "The appliance chain" above.
-```
+| SPIR-V receipt, both branches | measured | `spirv/`, workstation |
+| arithmetic equivalence, E5-M | measured | `int24-equivalence.c`, workstation |
+| E5-M ISA, three toolchains, one hash | measured | `E5-M/` |
+| E5-S0 ISA, package and from-source drivers | measured | `E5-S0/` |
+| E5-S1 ISA, target-aware lowering | measured | `E5-S1/` |
+| served arm carries the admission | measured | `test-run-served-binary-ab.sh`, workstation |
+| shader pack format and refusals | measured | `test-build-spirv-shader-pack.sh`, fake toolchain |
+| producer pinned and fetched | unrun | step 1 and 2 above |
+| pack generated from the real shaders | unrun | step 3 above |
+| isolated ICD on the appliance | unrun | step 4 above |
+| executed ACO ISA on the appliance | unrun | step 5, falsifier 1 |
+| kernel-delta bracket | unrun | step 6 |
+| combined envelope | unrun | step 7, falsifier 2 |
+| margin witness and served rate | unrun | step 8, falsifiers 3 and 4 |
