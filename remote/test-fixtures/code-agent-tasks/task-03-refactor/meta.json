@@ -1,0 +1,7 @@
+{
+  "task_id": "task-03-refactor",
+  "kind": "refactor",
+  "target_file": "report.py",
+  "context_files": ["report.py", "tests/test_report.py"],
+  "reference_file": "reference/report.py"
+}
