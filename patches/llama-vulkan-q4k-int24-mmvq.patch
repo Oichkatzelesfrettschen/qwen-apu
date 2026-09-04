@@ -28,12 +28,18 @@ acceleration states something about the silicon that stays false:
                                     or by the driver expanding OpSDotKHR;
                                     GGML_VK_FORCE_INTEGER_DOT=1 writes this field
                                     and only this field
-    integer_dot_pipeline_selected   accelerated or software lowered, which the
-                                    q8_1 pipeline table, the flash-attention MMQ
-                                    selection, and every quantize_y dispatch read
+    integer_dot_pipeline_selected   accelerated or software lowered, read by the
+                                    replacement q8_1 mat-vec pipelines and their
+                                    two quantize_y dispatches alone
 
-Where the arm is unarmed the selection equals the pinned build's own flag, so the
-split renames the pinned behavior rather than changing it.
+The selection is scoped to the path the replacement exists for. The MMQ mat-mat
+families, the mat-mat quantize_y, and ggml_vk_fa_scalar_uses_mmq read
+integer_dot_accelerated instead, because those consume the extension's own
+lowering and no replacement was measured for them, so a forced admission reaches
+the mat-vec and stops there. On a device the driver reports accelerated the two
+fields are equal and the scope changes nothing. Where the arm is unarmed the
+selection equals the pinned build's own flag, so the split renames the pinned
+behavior rather than changing it.
 
 E5-M's own shader: mul_mat_vecq_funcs.glsl gains dot_packed_4x8_int24 under
 GGML_VK_INT24_DOT, which biases both operands into 0..255 and removes the bias
@@ -69,9 +75,16 @@ creation. The MMQ and flash-attention int8 shaders have no replacement and keep
 reading GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT; where they are absent,
 ggml_vk_get_mul_mat_mat_pipeline finds an empty pipeline set and clears
 quantize_y, so the mat-mat and flash-attention paths stay on the production shape
-and E5-M changes the mat-vec alone. An E5-S build compiled by an
-extension-capable toolchain admits those families too, which the lane's README
-registers as the wider dispatch set that arm carries.
+and E5-M changes the mat-vec alone. Where an extension-capable toolchain does
+compile them, they are gated on integer_dot_accelerated rather than on the
+selection, so a forced admission still leaves them on the production shape and
+the arm is one dispatch family wide under either toolchain.
+
+The generator is configured in a build directory of its own and CMake keeps a
+cached option across every later configuration of that directory, so
+GGML_VULKAN_INT24_DOT is forwarded in both directions: a directory configured
+once with the arm would otherwise generate the arm's shaders for every later
+control while the manifest recorded none.
 
 GGML_VK_FORCE_INTEGER_DOT=1 admits that mat-vec on a device reporting no
 acceleration. It is read once per process, requires an exact "1", and reaches the
@@ -93,10 +106,10 @@ index 78f9f3fb0..ebdd9dd5e 100644
  option(GGML_WEBGPU_DEBUG                    "ggml: enable WebGPU debug output"                OFF)
  option(GGML_WEBGPU_CPU_PROFILE              "ggml: enable WebGPU profiling (CPU)"             OFF)
 diff --git a/ggml/src/ggml-vulkan/CMakeLists.txt b/ggml/src/ggml-vulkan/CMakeLists.txt
-index 70e4e5fe0..ba7e5f850 100644
+index 70e4e5fe0..4dd1e326d 100644
 --- a/ggml/src/ggml-vulkan/CMakeLists.txt
 +++ b/ggml/src/ggml-vulkan/CMakeLists.txt
-@@ -109,6 +109,19 @@ if (Vulkan_FOUND)
+@@ -109,6 +109,26 @@ if (Vulkan_FOUND)
          "GGML_VULKAN_FLOAT_E4M3_GLSLC_SUPPORT"
      )
  
@@ -110,14 +123,21 @@ index 70e4e5fe0..ba7e5f850 100644
 +    if (GGML_VULKAN_INT24_DOT)
 +        message(STATUS "Enabling the int24 packed dot product")
 +        add_compile_definitions(GGML_VULKAN_INT24_DOT)
-+        list(APPEND VULKAN_SHADER_GEN_CMAKE_ARGS -DGGML_VULKAN_INT24_DOT=ON)
 +    endif()
++    # The generator is configured in a build directory of its own, and CMake
++    # keeps a cached option across every later configuration of that directory,
++    # so a value forwarded in one direction alone leaves a directory configured
++    # once with the arm generating the arm's shaders for every later control.
++    # Both directions are stated, which makes the generator's cache follow this
++    # build rather than the first one that ever configured it.
++    list(APPEND VULKAN_SHADER_GEN_CMAKE_ARGS
++        -DGGML_VULKAN_INT24_DOT=${GGML_VULKAN_INT24_DOT})
 +
      target_link_libraries(ggml-vulkan PRIVATE Vulkan::Vulkan)
      target_include_directories(ggml-vulkan PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
  
 diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
-index 7b930a434..113b2942d 100644
+index 7b930a434..caf79d9aa 100644
 --- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
 +++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
 @@ -99,6 +99,17 @@ typedef struct VkPhysicalDeviceCooperativeMatrixDecodeVectorFeaturesNV {
@@ -138,7 +158,7 @@ index 7b930a434..113b2942d 100644
  #include "ggml-impl.h"
  #include "ggml-backend-impl.h"
  
-@@ -869,7 +880,19 @@ struct vk_device_struct {
+@@ -869,7 +880,27 @@ struct vk_device_struct {
  
      bool shader_64b_indexing;
  
@@ -151,7 +171,15 @@ index 7b930a434..113b2942d 100644
 +    // on a functional device the driver reports unaccelerated; `pipeline_selected` is
 +    // the disjunction the q8_1 pipeline table and every quantize_y dispatch read.
 +    // Keeping them apart means the environment moves the selection alone and every
-+    // advertised Vulkan acceleration property still reads exactly what RADV reported.
++    // advertised Vulkan acceleration property still reads exactly what RADV
++    // reported. The selection is scoped to the replacement path it belongs to:
++    // the q8_1 mat-vec pipelines and their two quantize_y dispatches read
++    // `pipeline_selected`, while the MMQ mat-mat families, the mat-mat
++    // quantize_y, and ggml_vk_fa_scalar_uses_mmq read `accelerated`, since those
++    // consume the extension's own lowering and no replacement was measured for
++    // them. On a device the driver reports accelerated the two are equal, so the
++    // scope changes nothing there and bounds what the forced admission reaches
++    // here.
 +    bool integer_dot_functional;
 +    bool integer_dot_accelerated;
 +    bool integer_dot_software_lowered;
@@ -159,52 +187,52 @@ index 7b930a434..113b2942d 100644
      // 0: default, 1: force mmvq, -1: disable mmvq
      int32_t mmvq_mode;
  
-@@ -5084,7 +5107,7 @@ static bool ggml_vk_fa_type_needs_shmem(ggml_type type) {
+@@ -5084,7 +5115,7 @@ static bool ggml_vk_fa_type_needs_shmem(ggml_type type) {
  
  static bool ggml_vk_fa_scalar_uses_mmq(const vk_device& device, ggml_type k_type, ggml_type v_type) {
  #if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
 -    return device->integer_dot_product && device->subgroup_clustered &&
-+    return device->integer_dot_pipeline_selected && device->subgroup_clustered &&
++    return device->integer_dot_accelerated && device->subgroup_clustered &&
             !ggml_vk_fa_type_needs_shmem(v_type) &&
             (k_type == GGML_TYPE_Q4_0 || k_type == GGML_TYPE_Q4_1 ||
              k_type == GGML_TYPE_Q5_0 || k_type == GGML_TYPE_Q5_1 ||
-@@ -5861,7 +5884,7 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+@@ -5861,7 +5892,7 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
          CREATE_MM2(GGML_TYPE_NVFP4,   pipeline_dequant_mul_mat_mat[GGML_TYPE_NVFP4],   matmul_nvfp4_f32,   mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, , 0);
  
  #if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
 -        if (device->integer_dot_product) {
-+        if (device->integer_dot_pipeline_selected) {
++        if (device->integer_dot_accelerated) {
              CREATE_MMQ(GGML_TYPE_Q2_0, pipeline_dequant_mul_mat_mat_q8_1[GGML_TYPE_Q2_0], matmul_q2_0_q8_1, mmq_wg_denoms, warptile_mmq_int, vk_mat_mat_push_constants, 3, , 0);
              CREATE_MMQ(GGML_TYPE_Q4_0, pipeline_dequant_mul_mat_mat_q8_1[GGML_TYPE_Q4_0], matmul_q4_0_q8_1, mmq_wg_denoms, warptile_mmq_int, vk_mat_mat_push_constants, 3, , 0);
              CREATE_MMQ(GGML_TYPE_Q4_1, pipeline_dequant_mul_mat_mat_q8_1[GGML_TYPE_Q4_1], matmul_q4_1_q8_1, mmq_wg_denoms, warptile_mmq_int, vk_mat_mat_push_constants, 3, , 0);
-@@ -5910,7 +5933,7 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+@@ -5910,7 +5941,7 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
              CREATE_MM2(GGML_TYPE_NVFP4,   pipeline_dequant_mul_mat_mat_id[GGML_TYPE_NVFP4],   matmul_id_subgroup_nvfp4_f32,   mmq_wg_denoms, warptile_mmqid, vk_mat_mat_id_push_constants, mul_mat_id_param_count, _id, mul_mat_subgroup_size);
  
  #if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
 -            if (device->integer_dot_product) {
-+            if (device->integer_dot_pipeline_selected) {
++            if (device->integer_dot_accelerated) {
                  CREATE_MMQ(GGML_TYPE_Q2_0, pipeline_dequant_mul_mat_mat_id_q8_1[GGML_TYPE_Q2_0], matmul_id_subgroup_q2_0_q8_1, mmq_wg_denoms, warptile_mmqid_int,   vk_mat_mat_id_push_constants, mul_mat_id_param_count, _id, mul_mat_subgroup_size);
                  CREATE_MMQ(GGML_TYPE_Q4_0, pipeline_dequant_mul_mat_mat_id_q8_1[GGML_TYPE_Q4_0], matmul_id_subgroup_q4_0_q8_1, mmq_wg_denoms, warptile_mmqid_int,   vk_mat_mat_id_push_constants, mul_mat_id_param_count, _id, mul_mat_subgroup_size);
                  CREATE_MMQ(GGML_TYPE_Q4_1, pipeline_dequant_mul_mat_mat_id_q8_1[GGML_TYPE_Q4_1], matmul_id_subgroup_q4_1_q8_1, mmq_wg_denoms, warptile_mmqid_int,   vk_mat_mat_id_push_constants, mul_mat_id_param_count, _id, mul_mat_subgroup_size);
-@@ -5958,7 +5981,7 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+@@ -5958,7 +5989,7 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
              CREATE_MM2(GGML_TYPE_NVFP4,   pipeline_dequant_mul_mat_mat_id[GGML_TYPE_NVFP4],   matmul_id_nvfp4_f32,   mmq_wg_denoms, warptile_mmqid, vk_mat_mat_id_push_constants, mul_mat_id_param_count, _id, 0);
  
  #if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
 -            if (device->integer_dot_product) {
-+            if (device->integer_dot_pipeline_selected) {
++            if (device->integer_dot_accelerated) {
                  CREATE_MMQ(GGML_TYPE_Q2_0, pipeline_dequant_mul_mat_mat_id_q8_1[GGML_TYPE_Q2_0], matmul_id_q2_0_q8_1, mmq_wg_denoms, warptile_mmqid_int,   vk_mat_mat_id_push_constants, mul_mat_id_param_count, _id, 0);
                  CREATE_MMQ(GGML_TYPE_Q4_0, pipeline_dequant_mul_mat_mat_id_q8_1[GGML_TYPE_Q4_0], matmul_id_q4_0_q8_1, mmq_wg_denoms, warptile_mmqid_int,   vk_mat_mat_id_push_constants, mul_mat_id_param_count, _id, 0);
                  CREATE_MMQ(GGML_TYPE_Q4_1, pipeline_dequant_mul_mat_mat_id_q8_1[GGML_TYPE_Q4_1], matmul_id_q4_1_q8_1, mmq_wg_denoms, warptile_mmqid_int,   vk_mat_mat_id_push_constants, mul_mat_id_param_count, _id, 0);
-@@ -6038,7 +6061,7 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+@@ -6038,7 +6069,7 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
          CREATE_MM(GGML_TYPE_NVFP4,   pipeline_dequant_mul_mat_mat[GGML_TYPE_NVFP4].f32acc,   matmul_nvfp4_f32,   , mmq_wg_denoms, warptile_mmq, vk_mat_mat_push_constants, 3, , 0);
  
  #if defined(GGML_VULKAN_INTEGER_DOT_GLSLC_SUPPORT)
 -        if (device->integer_dot_product) {
-+        if (device->integer_dot_pipeline_selected) {
++        if (device->integer_dot_accelerated) {
              CREATE_MMQ(GGML_TYPE_Q2_0, pipeline_dequant_mul_mat_mat_q8_1[GGML_TYPE_Q2_0].f32acc, matmul_q2_0_q8_1, mmq_wg_denoms, warptile_mmq_int, vk_mat_mat_push_constants, 3, );
              CREATE_MMQ(GGML_TYPE_Q4_0, pipeline_dequant_mul_mat_mat_q8_1[GGML_TYPE_Q4_0].f32acc, matmul_q4_0_q8_1, mmq_wg_denoms, warptile_mmq_int, vk_mat_mat_push_constants, 3, );
              CREATE_MMQ(GGML_TYPE_Q4_1, pipeline_dequant_mul_mat_mat_q8_1[GGML_TYPE_Q4_1].f32acc, matmul_q4_1_q8_1, mmq_wg_denoms, warptile_mmq_int, vk_mat_mat_push_constants, 3, );
-@@ -6247,8 +6270,8 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+@@ -6247,8 +6278,8 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
              ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f16_f32[w][GGML_TYPE_MXFP4][i],   "mul_mat_vec_mxfp4_f16_f32",   OCP_DMMV_LEN(arr_dmmv_mxfp4_f16_f32, reduc16), OCP_DMMV_DATA(arr_dmmv_mxfp4_f16_f32, reduc16), "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_iq, 1, 1}, {wg_size_subgroup16, rm_iq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
              ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f16_f32[w][GGML_TYPE_NVFP4][i],   "mul_mat_vec_nvfp4_f16_f32",   OCP_DMMV_LEN(arr_dmmv_nvfp4_f16_f32, reduc16), OCP_DMMV_DATA(arr_dmmv_nvfp4_f16_f32, reduc16), "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_iq, 1, 1}, {wg_size_subgroup16, rm_iq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
  
@@ -215,7 +243,7 @@ index 7b930a434..113b2942d 100644
                  const uint32_t subgroup_size_int = (device->vendor_id == VK_VENDOR_ID_INTEL && device->subgroup_size_control) ? device->subgroup_min_size : device->subgroup_size;
                  const uint32_t wg_size_subgroup_int = (w == DMMV_WG_SIZE_SUBGROUP) ? subgroup_size_int : (subgroup_size_int * 4);
  
-@@ -6271,7 +6294,7 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+@@ -6271,7 +6302,7 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
                  ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_q8_1_f32[w][GGML_TYPE_IQ1_M][i], "mul_mat_vec_iq1_m_q8_1_f32", arr_dmmv_iq1_m_q8_1_f32_len[reduc], arr_dmmv_iq1_m_q8_1_f32_data[reduc], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {1*rm_iq_int(i), 1, 1}, {wg_size_subgroup_int, 1*rm_iq_int(i), i+1}, 1, true, use_subgroups, subgroup_size_int);
  
              }
@@ -224,7 +252,7 @@ index 7b930a434..113b2942d 100644
          }
  
          ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_f32[w][GGML_TYPE_F32 ], "mul_mat_vec_id_f32_f32",        arr_dmmv_id_f32_f32_f32_len[reduc],     arr_dmmv_id_f32_f32_f32_data[reduc],     "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {1, 1, 1}, {wg_size_subgroup, 1}, 1, false, use_subgroups, force_subgroup_size);
-@@ -6302,8 +6325,8 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+@@ -6302,8 +6333,8 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
          ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_f32[w][GGML_TYPE_MXFP4],   "mul_mat_vec_id_mxfp4_f32",   OCP_DMMV_LEN(arr_dmmv_id_mxfp4_f32_f32, reduc16), OCP_DMMV_DATA(arr_dmmv_id_mxfp4_f32_f32, reduc16), "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {rm_iq, 1, 1}, {wg_size_subgroup16, rm_iq}, 1, true, use_subgroups16, force_subgroup_size16);
          ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_f32[w][GGML_TYPE_NVFP4],   "mul_mat_vec_id_nvfp4_f32",   OCP_DMMV_LEN(arr_dmmv_id_nvfp4_f32_f32, reduc16), OCP_DMMV_DATA(arr_dmmv_id_nvfp4_f32_f32, reduc16), "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {rm_iq, 1, 1}, {wg_size_subgroup16, rm_iq}, 1, true, use_subgroups16, force_subgroup_size16);
  
@@ -235,7 +263,7 @@ index 7b930a434..113b2942d 100644
              const uint32_t subgroup_size_int = (device->vendor_id == VK_VENDOR_ID_INTEL && device->subgroup_size_control) ? device->subgroup_min_size : device->subgroup_size;
              const uint32_t wg_size_subgroup_int = (w == DMMV_WG_SIZE_SUBGROUP) ? subgroup_size_int : (subgroup_size_int * 4);
  
-@@ -6325,13 +6348,13 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+@@ -6325,13 +6356,13 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
              ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_q8_1_f32[w][GGML_TYPE_IQ1_S], "mul_mat_vec_id_iq1_s_q8_1_f32", arr_dmmv_id_iq1_s_q8_1_f32_len[reduc], arr_dmmv_id_iq1_s_q8_1_f32_data[reduc], "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {1*rm_iq_int(0), 1, 1}, {wg_size_subgroup_int, 1*rm_iq_int(0)}, 1, true, use_subgroups, subgroup_size_int);
              ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_id_q8_1_f32[w][GGML_TYPE_IQ1_M], "mul_mat_vec_id_iq1_m_q8_1_f32", arr_dmmv_id_iq1_m_q8_1_f32_len[reduc], arr_dmmv_id_iq1_m_q8_1_f32_data[reduc], "main", mul_mat_vec_id_num_bindings, sizeof(vk_mat_vec_id_push_constants), {1*rm_iq_int(0), 1, 1}, {wg_size_subgroup_int, 1*rm_iq_int(0)}, 1, true, use_subgroups, subgroup_size_int);
          }
@@ -251,7 +279,7 @@ index 7b930a434..113b2942d 100644
      GGML_UNUSED(rm_stdq_int);
      GGML_UNUSED(rm_kq_int);
      GGML_UNUSED(rm_iq_int);
-@@ -7111,6 +7134,21 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+@@ -7111,6 +7142,21 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
  static bool ggml_vk_khr_cooperative_matrix_support(const vk::PhysicalDeviceProperties& props, const vk::PhysicalDeviceDriverProperties& driver_props, vk_device_architecture arch);
  static uint32_t ggml_vk_intel_shader_core_count(const vk::PhysicalDevice& vkdev);
  
@@ -273,7 +301,7 @@ index 7b930a434..113b2942d 100644
  static vk_device ggml_vk_get_device(size_t idx) {
      VK_LOG_DEBUG("ggml_vk_get_device(" << idx << ")");
  
-@@ -7161,7 +7199,10 @@ static vk_device ggml_vk_get_device(size_t idx) {
+@@ -7161,7 +7207,10 @@ static vk_device ggml_vk_get_device(size_t idx) {
          bool global_priority_support = false;
  #endif
          device->coopmat_support = false;
@@ -285,7 +313,7 @@ index 7b930a434..113b2942d 100644
          device->shader_64b_indexing = false;
          bool bfloat16_support = false;
          bool dot2_f16_support = false;
-@@ -7199,10 +7240,10 @@ static vk_device ggml_vk_get_device(size_t idx) {
+@@ -7199,10 +7248,10 @@ static vk_device ggml_vk_get_device(size_t idx) {
              } else if (strcmp(VK_NV_COOPERATIVE_MATRIX_DECODE_VECTOR_EXTENSION_NAME, properties.extensionName) == 0 &&
                         !getenv("GGML_VK_DISABLE_COOPMAT2_DECODE_VECTOR")) {
                  coopmat2_decode_vector_support = true;
@@ -298,7 +326,7 @@ index 7b930a434..113b2942d 100644
  #endif
  #if defined(GGML_VULKAN_BFLOAT16_GLSLC_SUPPORT)
              } else if (strcmp("VK_KHR_shader_bfloat16", properties.extensionName) == 0 &&
-@@ -7288,7 +7329,7 @@ static vk_device ggml_vk_get_device(size_t idx) {
+@@ -7288,7 +7337,7 @@ static vk_device ggml_vk_get_device(size_t idx) {
          }
  #endif
  
@@ -307,7 +335,7 @@ index 7b930a434..113b2942d 100644
              last_struct->pNext = (VkBaseOutStructure *)&shader_integer_dot_product_props;
              last_struct = (VkBaseOutStructure *)&shader_integer_dot_product_props;
          }
-@@ -7414,7 +7455,26 @@ static vk_device ggml_vk_get_device(size_t idx) {
+@@ -7414,7 +7463,28 @@ static vk_device ggml_vk_get_device(size_t idx) {
              device->coopmat_support = false;
          }
  
@@ -328,14 +356,16 @@ index 7b930a434..113b2942d 100644
 +        device->integer_dot_software_lowered = device->integer_dot_functional &&
 +            !device->integer_dot_accelerated && ggml_vk_force_integer_dot();
 +
-+        // The pipeline table and every quantize_y dispatch read this disjunction,
-+        // which equals the pinned build's own flag wherever the arm is unarmed.
++        // The replacement q8_1 mat-vec pipelines and their quantize_y dispatches
++        // read this disjunction, which equals the pinned build's own flag
++        // wherever the arm is unarmed and equals `accelerated` on any device the
++        // driver reports accelerated.
 +        device->integer_dot_pipeline_selected = device->integer_dot_accelerated ||
 +            device->integer_dot_software_lowered;
  
          device->min_imported_host_pointer_alignment = external_memory_host_props.minImportedHostPointerAlignment;
  
-@@ -7586,7 +7646,7 @@ static vk_device ggml_vk_get_device(size_t idx) {
+@@ -7586,7 +7656,7 @@ static vk_device ggml_vk_get_device(size_t idx) {
  
          VkPhysicalDeviceShaderIntegerDotProductFeaturesKHR shader_integer_dot_product_features {};
          shader_integer_dot_product_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_INTEGER_DOT_PRODUCT_FEATURES_KHR;
@@ -344,7 +374,7 @@ index 7b930a434..113b2942d 100644
              last_struct->pNext = (VkBaseOutStructure *)&shader_integer_dot_product_features;
              last_struct = (VkBaseOutStructure *)&shader_integer_dot_product_features;
              device_extensions.push_back("VK_KHR_shader_integer_dot_product");
-@@ -8174,7 +8234,7 @@ static void ggml_vk_print_gpu_info(size_t idx) {
+@@ -8174,7 +8244,7 @@ static void ggml_vk_print_gpu_info(size_t idx) {
          } else if (strcmp(VK_NV_COOPERATIVE_MATRIX_DECODE_VECTOR_EXTENSION_NAME, properties.extensionName) == 0 &&
                     !getenv("GGML_VK_DISABLE_COOPMAT2_DECODE_VECTOR")) {
              coopmat2_decode_vector_support = true;
@@ -353,7 +383,7 @@ index 7b930a434..113b2942d 100644
          } else if (strcmp("VK_KHR_shader_integer_dot_product", properties.extensionName) == 0 &&
                      !getenv("GGML_VK_DISABLE_INTEGER_DOT_PRODUCT")) {
              integer_dot_product = true;
-@@ -8321,9 +8381,18 @@ static void ggml_vk_print_gpu_info(size_t idx) {
+@@ -8321,9 +8391,18 @@ static void ggml_vk_print_gpu_info(size_t idx) {
      const size_t subgroup_size = (default_subgroup_size != 0) ? default_subgroup_size : subgroup_props.subgroupSize;
      const bool uma = props2.properties.deviceType == vk::PhysicalDeviceType::eIntegratedGpu;
  
@@ -375,7 +405,7 @@ index 7b930a434..113b2942d 100644
  
      coopmat_support = coopmat_support
  #if defined(GGML_VULKAN_COOPMAT_GLSLC_SUPPORT)
-@@ -8366,9 +8435,11 @@ static void ggml_vk_print_gpu_info(size_t idx) {
+@@ -8366,9 +8445,11 @@ static void ggml_vk_print_gpu_info(size_t idx) {
  #endif
  
      std::string device_name = props2.properties.deviceName.data();
@@ -389,16 +419,16 @@ index 7b930a434..113b2942d 100644
  
      if (props2.properties.deviceType == vk::PhysicalDeviceType::eCpu) {
          GGML_LOG_DEBUG("ggml_vulkan: Warning: Device type is CPU. This is probably not the device you want.\n");
-@@ -10282,7 +10353,7 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
+@@ -10282,7 +10363,7 @@ static void ggml_vk_mul_mat_q_f16(ggml_backend_vk_context * ctx, vk_context& sub
  
      const bool y_f32_kernel = src1->type == GGML_TYPE_F32 && !y_non_contig;
  
 -    bool quantize_y = ctx->device->integer_dot_product && src1->type == GGML_TYPE_F32 && ggml_is_contiguous(src1) && !y_non_contig && (ne11 * ne10) % 4 == 0;
-+    bool quantize_y = ctx->device->integer_dot_pipeline_selected && src1->type == GGML_TYPE_F32 && ggml_is_contiguous(src1) && !y_non_contig && (ne11 * ne10) % 4 == 0;
++    bool quantize_y = ctx->device->integer_dot_accelerated && src1->type == GGML_TYPE_F32 && ggml_is_contiguous(src1) && !y_non_contig && (ne11 * ne10) % 4 == 0;
  
      // Check for mmq first
      vk_matmul_pipeline mmp = quantize_y ? ggml_vk_get_mul_mat_mat_pipeline(ctx, src0->type, GGML_TYPE_Q8_1, (ggml_prec)dst->op_params[0]) : nullptr;
-@@ -10615,7 +10686,7 @@ static void ggml_vk_mul_mat_vec_q_f16(ggml_backend_vk_context * ctx, vk_context&
+@@ -10615,7 +10696,7 @@ static void ggml_vk_mul_mat_vec_q_f16(ggml_backend_vk_context * ctx, vk_context&
      const bool y_non_contig = !ggml_vk_dim01_contiguous(src1);
  
      const bool f16_f32_kernel = src1->type == GGML_TYPE_F32;
@@ -407,16 +437,16 @@ index 7b930a434..113b2942d 100644
  
      vk_pipeline to_fp16_vk_0 = nullptr;
      vk_pipeline to_fp16_vk_1 = nullptr;
-@@ -11218,7 +11289,7 @@ static void ggml_vk_mul_mat_id_q_f16(ggml_backend_vk_context * ctx, vk_context&
+@@ -11218,7 +11299,7 @@ static void ggml_vk_mul_mat_id_q_f16(ggml_backend_vk_context * ctx, vk_context&
  
      const bool y_f32_kernel = src1->type == GGML_TYPE_F32 && !y_non_contig;
  
 -    bool quantize_y = ctx->device->integer_dot_product && src1->type == GGML_TYPE_F32 && ggml_is_contiguous(src1) && !y_non_contig && (ne11 * ne10) % 4 == 0;
-+    bool quantize_y = ctx->device->integer_dot_pipeline_selected && src1->type == GGML_TYPE_F32 && ggml_is_contiguous(src1) && !y_non_contig && (ne11 * ne10) % 4 == 0;
++    bool quantize_y = ctx->device->integer_dot_accelerated && src1->type == GGML_TYPE_F32 && ggml_is_contiguous(src1) && !y_non_contig && (ne11 * ne10) % 4 == 0;
  
      // Check for mmq first
      vk_matmul_pipeline mmp = quantize_y ? ggml_vk_get_mul_mat_mat_id_pipeline(ctx, src0->type, GGML_TYPE_Q8_1, (ggml_prec)dst->op_params[0]) : nullptr;
-@@ -11514,7 +11585,7 @@ static void ggml_vk_mul_mat_vec_id_q_f16(ggml_backend_vk_context * ctx, vk_conte
+@@ -11514,7 +11595,7 @@ static void ggml_vk_mul_mat_vec_id_q_f16(ggml_backend_vk_context * ctx, vk_conte
      const bool y_non_contig = !ggml_vk_dim01_contiguous(src1);
  
      const bool f16_f32_kernel = src1->type == GGML_TYPE_F32;
