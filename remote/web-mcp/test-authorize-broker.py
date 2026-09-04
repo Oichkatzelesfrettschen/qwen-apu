@@ -993,6 +993,12 @@ class BrokerTest(unittest.TestCase):
                 "--lan-exposure": EXPOSED_ADDRESS,
                 "--lan-name": EXPOSED_NAME,
                 "--origin": NAME_ORIGIN,
+                # Nine subTest requests share this broker's authorize-minute
+                # bucket, which the near-miss Host rows below charge the same
+                # as every admitted one; the default of 6 would starve the
+                # later rows on a rate refusal rather than the Host check
+                # this test states.
+                "--per-minute": 20,
             }
         )
         secret = self.session_secret()
@@ -1002,6 +1008,19 @@ class BrokerTest(unittest.TestCase):
             ("exposed name", f"{EXPOSED_NAME}:{broker.port}", 200),
             ("exposed name uppercased", f"QWEN-TEST.LOCAL:{broker.port}", 200),
             ("foreign name", f"rebind.example.net:{broker.port}", 403),
+            # host_header_names() compares the Host header against the
+            # admitted set by exact string equality (case-folded), never by
+            # prefix or suffix, so a name that merely shares the admitted
+            # name's label -- prepended, appended, or carrying it as a
+            # sub-label -- names no admitted entry and is refused the same
+            # way an unrelated name is. These four are the near-miss forms a
+            # suffix or substring comparison would wrongly admit; a bare
+            # "foreign name" test shares no substring with EXPOSED_NAME and
+            # so never exercised that boundary.
+            ("name with a prepended label", f"evil-{EXPOSED_NAME}:{broker.port}", 403),
+            ("name with an appended label", f"{EXPOSED_NAME}.evil.example:{broker.port}", 403),
+            ("name as a sub-label", f"sub.{EXPOSED_NAME}:{broker.port}", 403),
+            ("name with no label boundary", f"x{EXPOSED_NAME}:{broker.port}", 403),
         ):
             with self.subTest(host=description):
                 headers = self.exposed_headers(host_header, secret=secret)
