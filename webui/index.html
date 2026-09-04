@@ -3482,7 +3482,17 @@ async function saveConversation() {
   }
   try {
     await (await conversationStore()).write(record);
-  } catch { /* a store that refuses the write leaves the live page authoritative */ }
+  } catch {
+    // The selected store answered its own write probe at startup and has now
+    // refused a write anyway -- a quota reached mid-session, for one -- so
+    // this save re-resolves the store from IndexedDB down through the same
+    // write-verified probe rather than leaving every later save discarded
+    // against a backend that no longer accepts them.
+    conversationStoreRead = null;
+    try {
+      await (await conversationStore()).write(record);
+    } catch { /* every store refuses; the live page stays authoritative */ }
+  }
   await renderConversationList();
 }
 
@@ -3743,11 +3753,19 @@ async function initConversations() {
   /* The route names the conversation, the remembered selection names it where
      the route is silent, and a name neither store answers for opens an empty
      conversation instead of an error. */
+  // The store lookup below awaits IndexedDB's own async open, which a click on
+  // New or a routed switch can land inside; either bumps conversationGeneration
+  // through resetConversationState(). This resumption then applies against a
+  // generation the page has already left, which would replace the
+  // user-opened conversation with the one this boot was resolving.
+  const initGeneration = conversationGeneration;
   const routed = conversationHashId();
   const remembered = readBrowserStorage('localStorage', CONVERSATION_SELECTED_KEY);
   const candidate = routed ||
     (remembered && CONVERSATION_ID_PATTERN.test(remembered) ? remembered : null);
-  if (candidate && await readConversationRecord(candidate)) {
+  const record = candidate ? await readConversationRecord(candidate) : null;
+  if (conversationGeneration !== initGeneration) return;
+  if (candidate && record) {
     await switchConversation(candidate, routed === null);
     return;
   }

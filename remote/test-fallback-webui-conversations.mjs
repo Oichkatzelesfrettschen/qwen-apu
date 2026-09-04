@@ -760,4 +760,134 @@ assert.ok(staleOpenedId, 'an unresolved routed load opened no conversation');
 assert.equal(staleHashPage.location.hash, `#/c/${staleOpenedId}`,
   'a stale route was left naming the absent conversation instead of the one now open');
 
+// ---- a user action during boot wins over the pending route resolution ------
+
+const raceSourceDatabase = makeFakeIndexedDatabase();
+const raceSource = newPage({
+  indexedDatabase: raceSourceDatabase,
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(raceSource);
+const racedRoutedId = await raceSource.api.runFixtureTurn(fixture);
+await flushPromises();
+
+const racePage = newPage({
+  indexedDatabase: raceSourceDatabase,
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage(),
+  hash: `#/c/${racedRoutedId}`
+});
+// initConversations() ran on load and is still awaiting the IndexedDB open
+// (the fake settles it on setImmediate, not synchronously), so this click
+// lands ahead of that resolution -- exactly the race a user opening a fresh
+// tab and immediately pressing New meets.
+racePage.api.clickNew();
+const racedNewId = racePage.api.state().conversationId;
+assert.ok(racedNewId, 'clicking New during boot opened no conversation');
+assert.notEqual(racedNewId, racedRoutedId);
+await flushPromises();
+assert.equal(racePage.api.state().conversationId, racedNewId,
+  'the pending route resolution overwrote the conversation the user had already opened');
+assert.equal(racePage.api.state().history.length, 0,
+  'the pending route resolution restored a transcript into the conversation the user opened');
+assert.equal(racePage.location.hash, `#/c/${racedNewId}`,
+  'the address bar still names the conversation the pending route resolution opened');
+
+// ---- a write failure after selection falls through to the next store ------
+
+function makeQuotaIndexedDatabase() {
+  /* Answers every write until `state.failWrites` is set, the shape a quota
+     reached mid-session leaves: the write-verified probe at store selection
+     passes on an empty database, and every real write past that point fails
+     the same way a later probe would, so a retry has to fall through to the
+     next store rather than reselecting the one that just failed. Built from
+     scratch rather than wrapping makeFakeIndexedDatabase(), since patching an
+     already-open database's transaction() after the fact races the app's own
+     use of it across the fake's setImmediate settling. */
+  const databases = new Map();
+  const state = { failWrites: false };
+  const settle = (request, produce) => {
+    setImmediate(() => {
+      try {
+        request.result = produce();
+        if (request.onsuccess) request.onsuccess({ target: request });
+      } catch (error) {
+        request.error = error;
+        if (request.onerror) request.onerror({ target: request });
+      }
+    });
+    return request;
+  };
+  const fail = request => {
+    setImmediate(() => {
+      request.error = new Error('quota exceeded');
+      if (request.onerror) request.onerror({ target: request });
+    });
+    return request;
+  };
+  const newRequest = () => ({ result: undefined, error: null, onsuccess: null, onerror: null });
+  return {
+    state,
+    databases,
+    open(name) {
+      const request = newRequest();
+      const fresh = !databases.has(name);
+      if (fresh) databases.set(name, new Map());
+      const stores = databases.get(name);
+      const database = {
+        name,
+        objectStoreNames: { contains: storeName => stores.has(storeName) },
+        createObjectStore(storeName) {
+          stores.set(storeName, new Map());
+          return {};
+        },
+        transaction(storeName) {
+          const transaction = { error: null, onabort: null };
+          transaction.objectStore = () => {
+            const records = stores.get(storeName);
+            if (!records) throw new Error(`no object store named ${storeName}`);
+            return {
+              getAll: () => settle(newRequest(), () => [...records.values()]),
+              get: key => settle(newRequest(), () => records.get(key)),
+              put: value => state.failWrites
+                ? fail(newRequest())
+                : settle(newRequest(), () => { records.set(value.id, value); return value.id; }),
+              delete: key => state.failWrites
+                ? fail(newRequest())
+                : settle(newRequest(), () => { records.delete(key); return undefined; })
+            };
+          };
+          return transaction;
+        }
+      };
+      request.result = database;
+      setImmediate(() => {
+        if (fresh && request.onupgradeneeded) request.onupgradeneeded({ target: request });
+        if (request.onsuccess) request.onsuccess({ target: request });
+      });
+      return request;
+    }
+  };
+}
+
+const quotaDatabase = makeQuotaIndexedDatabase();
+const quotaPage = newPage({
+  indexedDatabase: quotaDatabase,
+  localStorage: makeFakeStorage(),
+  sessionStorage: makeFakeStorage()
+});
+await answerBoot(quotaPage);
+assert.equal(await quotaPage.api.storeName(), 'indexeddb',
+  'the quota fixture did not start selected on IndexedDB');
+quotaDatabase.state.failWrites = true;
+const quotaId = await quotaPage.api.runFixtureTurn(fixture);
+await flushPromises();
+assert.equal(await quotaPage.api.storeName(), 'localstorage',
+  'a write failure after selection left the page pinned to the backend that refuses every save');
+const quotaRecord = await quotaPage.api.read(quotaId);
+assert.ok(quotaRecord,
+  'the conversation was lost rather than falling through to the next store');
+assert.equal(quotaRecord.messages.length, 3);
+
 console.log('fallback_webui_conversations=accepted');
