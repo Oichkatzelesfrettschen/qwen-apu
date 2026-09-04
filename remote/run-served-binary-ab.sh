@@ -244,17 +244,33 @@ for experiment_key_value in "$control_experiment_key" "$candidate_experiment_key
             ;;
     esac
 done
-if [ "$control_experiment_key" = "$candidate_experiment_key" ] &&
-    [ -n "$control_experiment_key" ]; then
-    printf 'the two experiment keys name one arm, so the comparison has no candidate: %s\n' \
-        "$control_experiment_key" >&2
-    exit 2
+# A keyed comparison is one executable asked for two arms, so both roles name a
+# key or neither does. A half-keyed run would leave the unkeyed role at the
+# build's own default while its receipt named an arm, which is the mislabeling
+# the sealed key exists to remove.
+experiment_key_mode=0
+if [ -n "$control_experiment_key" ] || [ -n "$candidate_experiment_key" ]; then
+    experiment_key_mode=1
+    if [ -z "$control_experiment_key" ] || [ -z "$candidate_experiment_key" ]; then
+        printf 'a keyed comparison names an experiment key for both roles: control=%s candidate=%s\n' \
+            "${control_experiment_key:--}" "${candidate_experiment_key:--}" >&2
+        exit 2
+    fi
+    if [ "$control_experiment_key" = "$candidate_experiment_key" ]; then
+        printf 'the two experiment keys name one arm, so the comparison has no candidate: %s\n' \
+            "$control_experiment_key" >&2
+        exit 2
+    fi
 fi
 witness_directory=${QWEN_AB_WITNESS_DIRECTORY:-}
-if [ -n "$witness_directory" ] && [ ! -r "$witness_directory/margin-summary.tsv" ]; then
-    printf 'QWEN_AB_WITNESS_DIRECTORY names a run-kernel-delta-witness.sh output directory: %s\n' \
-        "$witness_directory" >&2
-    exit 2
+if [ -n "$witness_directory" ]; then
+    for witness_required in margin-summary.tsv inputs.tsv; do
+        if [ ! -r "$witness_directory/$witness_required" ]; then
+            printf 'QWEN_AB_WITNESS_DIRECTORY names a run-kernel-delta-witness.sh output directory: %s\n' \
+                "$witness_directory" >&2
+            exit 2
+        fi
+    done
 fi
 overlap_threshold=${QWEN_CENSUS_OVERLAP_THRESHOLD:-0.05}
 if [ "$ab_mode" = kernel-delta ]; then
@@ -645,7 +661,11 @@ IFS="$(printf '\t')" read -r candidate_sha256 candidate_bytes candidate_manifest
     candidate_semantics candidate_series <<EOF
 $candidate_binding
 EOF
-if [ "$control_sha256" = "$candidate_sha256" ]; then
+# Two builds compared as two binaries must differ, since one named twice
+# measures the machine. A keyed comparison inverts that: the arm is the pipeline
+# the device creates from one executable, so the two roles are required to be
+# one binary and the section below proves the manifest admits both keys.
+if [ "$experiment_key_mode" -eq 0 ] && [ "$control_sha256" = "$candidate_sha256" ]; then
     printf 'the control and the candidate are one executable: %s\n' "$control_sha256" >&2
     exit 2
 fi
@@ -812,12 +832,73 @@ case $ab_mode in
         expected_candidate_series=$candidate_patch
         ;;
 esac
-if [ "$control_candidate_series" != "$expected_control_series" ]; then
+# A witness reports the ids two binaries generated, so the ids it reports are
+# evidence about this comparison only where it ran this comparison. Its own
+# inputs.tsv names the model and both server digests, and each must equal this
+# campaign's; a stale directory otherwise contributes authoritative-looking
+# verdict rows about a different experiment. The check runs here because it
+# needs the server digests, and it refuses rather than reporting unavailable,
+# since a caller who named a witness asked for those two rows.
+if [ -n "$witness_directory" ]; then
+    witness_field() {
+        awk -F'\t' -v name="$1" '$1 == name { rows++; value = $2 }
+            END { if (rows != 1) exit 1; print value }' "$witness_directory/inputs.tsv"
+    }
+    for witness_binding in "model_id=$model_id" \
+        "control_server_sha256=$control_sha256" \
+        "candidate_server_sha256=$candidate_sha256"; do
+        witness_name=${witness_binding%%=*}
+        witness_expected=${witness_binding#*=}
+        witness_observed=$(witness_field "$witness_name") || witness_observed=
+        if [ "$witness_observed" != "$witness_expected" ]; then
+            printf 'the witness names %s %s where this campaign runs %s: %s\n' \
+                "$witness_name" "${witness_observed:--}" "$witness_expected" \
+                "$witness_directory" >&2
+            exit 2
+        fi
+    done
+fi
+
+# A keyed comparison isolates its patch through the pipeline the device creates
+# rather than through the series two builds carry, so the series rule is
+# replaced by a stricter one: the two roles are one executable, proven by equal
+# server and manifest digests, and each role's key must appear in that
+# manifest's own q4k_variants declaration. A build that admits no key would
+# ignore GGML_VK_Q4K_VARIANT and run its default shader under an arm's name,
+# which is exactly the mislabeling the key exists to remove.
+if [ "$experiment_key_mode" -eq 1 ]; then
+    if [ "$control_sha256" != "$candidate_sha256" ]; then
+        printf 'a keyed comparison names one executable twice: control=%s candidate=%s\n' \
+            "$control_sha256" "$candidate_sha256" >&2
+        exit 2
+    fi
+    if [ "$control_manifest_sha256" != "$candidate_manifest_sha256" ]; then
+        printf 'a keyed comparison reads one artifact manifest twice: control=%s candidate=%s\n' \
+            "$control_manifest_sha256" "$candidate_manifest_sha256" >&2
+        exit 2
+    fi
+    declared_variants=$(awk -F'\t' '$1 == "q4k_variants" { rows++; value = $2 }
+        END { if (rows != 1) exit 1; print value }' "$control_manifest") || declared_variants=
+    if [ -z "$declared_variants" ] || [ "$declared_variants" = - ]; then
+        printf 'the manifest declares no q4k_variants, so it admits no experiment key: %s\n' \
+            "$control_manifest" >&2
+        exit 2
+    fi
+    for experiment_key_value in "$control_experiment_key" "$candidate_experiment_key"; do
+        if ! printf '%s\n' "$declared_variants" | tr ',' '\n' \
+            | grep -qxF "$experiment_key_value"; then
+            printf 'the manifest does not admit experiment key %s: q4k_variants=%s\n' \
+                "$experiment_key_value" "$declared_variants" >&2
+            exit 2
+        fi
+    done
+elif [ "$control_candidate_series" != "$expected_control_series" ]; then
     printf 'the control manifest must name candidate_series %s alone under %s: %s\n' \
         "$expected_control_series" "$ab_mode" "$control_candidate_series" >&2
     exit 2
 fi
-if [ "$candidate_candidate_series" != "$expected_candidate_series" ]; then
+if [ "$experiment_key_mode" -eq 0 ] &&
+    [ "$candidate_candidate_series" != "$expected_candidate_series" ]; then
     printf 'the candidate manifest must name candidate_series %s alone under %s: %s\n' \
         "$expected_candidate_series" "$ab_mode" "$candidate_candidate_series" >&2
     exit 2

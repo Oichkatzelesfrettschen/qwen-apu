@@ -567,10 +567,22 @@ than serving the default under an arm's name.
 The build states what it admits and the arm states what it ran. `build-llama-preset.sh` derives
 a `q4k_variants` manifest row from the compiled source the way it derives
 `checkpoint_semantics` -- the multiplexed shader and the host reader together, `-` where either
-is absent, since one half alone answers every key with the default --  and
+is absent, since one half alone answers every key with the default -- and
 `run-served-binary-ab.sh` passes each arm's own key into the closed environment
 `census_arm_exec` records, so `arm-environment.tsv` states the arm rather than the invoking
 shell and `inputs.tsv` states the pair.
+
+A keyed comparison replaces the series rule rather than adding to it. The two-binary comparison
+requires the control manifest to name the empty candidate selection and the candidate's to name
+one member, which is what isolates a patch across two builds; a keyed comparison isolates the
+arm inside one build, so it requires equal server and manifest digests instead, requires the
+manifest's `q4k_variants` to admit both keys, and requires both roles to carry a key. Each of
+those refusals removes a way for a receipt to name an arm the device never created: a build
+declaring no keys ignores the environment and runs its default shader, a half-keyed run leaves
+one role at that default, and two binaries under one key measure the build beside the arm.
+The witness is bound the same way: its own `inputs.tsv` must name this campaign's model and
+both server digests before its token-identity and margin rows are reported, since a stale
+directory would otherwise contribute an authoritative-looking verdict about another experiment.
 
 `remote/radv-low-priority-env.sh` scrubs `GGML_VK_Q4K_VARIANT` on every profile and forwards
 `QWEN_Q4K_VARIANT` past the scrub after the profile case, the route `QWEN_PIPELINE_CENSUS`

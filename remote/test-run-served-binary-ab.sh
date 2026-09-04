@@ -179,6 +179,10 @@ write_manifest() {
     # The eighth names the series digest the manifest records, which a case
     # moves to stand for a candidate built before its patch changed.
     manifest_series_digest=${8:-}
+    # The ninth names the Q4_K arms the build admits. A build carrying the
+    # variant-select member declares all nine keys; every other build declares
+    # none, which is the `-` the manifest writer emits for it.
+    manifest_q4k_variants=${9:--}
     if [ -z "$manifest_series_digest" ]; then
         if [ "$manifest_series" = - ]; then
             manifest_series_digest=-
@@ -197,6 +201,7 @@ write_manifest() {
         printf 'compiler_flags\t%s\n' "$manifest_compiler"
         printf 'cmake_flags\t%s\n' "$manifest_cmake"
         printf 'checkpoint_series_tree\t%s\n' "$manifest_tree"
+        printf 'q4k_variants\t%s\n' "$manifest_q4k_variants"
         printf 'candidate_series\t%s\n' "$manifest_series"
         printf 'candidate_series_sha256\t%s\n' "$manifest_series_digest"
     } >"$manifest_path"
@@ -984,6 +989,9 @@ case_replace_model=
 case_replace_tree=
 case_control_key=
 case_candidate_key=
+case_control_server=
+case_candidate_server=
+case_witness=
 
 run_ab() {
     ab_case=$1
@@ -1047,6 +1055,7 @@ run_ab() {
         GGML_VK_Q4K_SIDEPLANE=0 \
         QWEN_CACHE_OVERRIDE_CONTEXT_CEILING=65536 \
         GGML_VK_Q4K_VARIANT=e4/8 \
+        QWEN_AB_WITNESS_DIRECTORY="${case_witness:-}" \
         QWEN_AB_CONTROL_EXPERIMENT_KEY="${case_control_key:-}" \
         QWEN_AB_CANDIDATE_EXPERIMENT_KEY="${case_candidate_key:-}" \
         QWEN_MODELS_DIRECTORY="$models_directory" \
@@ -1068,7 +1077,8 @@ run_ab() {
         QWEN_CENSUS_MCLK_LEVEL="$ab_mclk_level" \
         QWEN_TEST_SUDO_MCLK_IGNORE="$ab_mclk_ignore" \
         QWEN_CENSUS_REGIME_MAX_ARMS="$ab_regime_max_arms" \
-        "$run_harness_path" "$control_server" "$candidate_server" "$model_id" \
+        "$run_harness_path" "${case_control_server:-$control_server}" \
+        "${case_candidate_server:-$candidate_server}" "$model_id" \
         "$ab_output" \
         >"$temporary_directory/$ab_case-stdout.txt" 2>"$diagnostic_file"
     ab_status=$?
@@ -1079,6 +1089,9 @@ run_ab() {
     case_replace_tree=
     case_control_key=
     case_candidate_key=
+    case_control_server=
+    case_candidate_server=
+    case_witness=
     if [ "$ab_status" -ne "$ab_expected_status" ]; then
         printf 'expected exit %s, observed %s\n' "$ab_expected_status" "$ab_status" >&2
         sed -n '1,20p' "$temporary_directory/$ab_case-stdout.txt" >&2
@@ -1860,10 +1873,32 @@ printf 'arm_environment_closed=accepted records=%s\n' \
 # differ by the algorithm and the row count alone, so each arm's record carries
 # the key its role was asked for and the ambient GGML_VK_Q4K_VARIANT reaches
 # neither; the run's inputs state the pair.
+# The keyed build: one executable both roles name, whose manifest declares the
+# nine keys. A keyed comparison isolates its arm through the pipeline the device
+# creates, so the series rule the two-binary comparison applies is replaced by
+# equal digests and a key the manifest admits.
+keyed_variants=e4/2,e4/4,e4/8,e4-scale/2,e4-scale/4,e4-scale/8,e4-scale-licm/2,e4-scale-licm/4,e4-scale-licm/8
+keyed_root=$temporary_directory/keyed-build
+mkdir -p "$keyed_root/bin"
+cp -- "$control_server" "$keyed_root/bin/llama-server"
+chmod +x "$keyed_root/bin/llama-server"
+keyed_server=$keyed_root/bin/llama-server
+keyed_bytes=$(wc -c <"$keyed_server" | tr -d ' ')
+keyed_sha256=$(sha256sum "$keyed_server" | cut -d ' ' -f 1)
+# A keyed build is a candidate tree: it carries the variant-select member, so
+# its manifest reads verified-candidate and names the member the way any other
+# candidate manifest does. What the keyed comparison drops is the series
+# equality between the two roles, since both roles are this one build.
+write_manifest "$keyed_root/artifact-manifest.tsv" "$keyed_bytes" "$keyed_sha256" \
+    "$candidate_patch" verified-candidate "$serving_cmake" "$serving_compiler" '' \
+    "$keyed_variants"
+
 experiment_rates=$temporary_directory/rates-experiment
 write_rates "$experiment_rates" 10.000 11.000 11.000
 case_control_key=e4/4
 case_candidate_key=e4-scale-licm/4
+case_control_server=$keyed_server
+case_candidate_server=$keyed_server
 run_ab experiment_key_bound 0 promoted "$experiment_rates" "$one_clock"
 active_fixture=experiment_key_bound
 [ "$(awk -F'\t' '$1 == "control_experiment_key" { print $2 }' "$ab_last_output/inputs.tsv")" = 'e4/4' ]
@@ -1889,6 +1924,31 @@ printf 'experiment_key_bound=accepted\n'
 
 # A key naming no buildable arm, and a pair naming one arm twice, are each
 # refused before an arm runs.
+run_refusal_servers() {
+    refusal_case=$1
+    refusal_message=$2
+    refusal_control=$3
+    refusal_candidate=$4
+    shift 4
+    run_index=$((run_index + 1))
+    active_fixture=$refusal_case
+    set +e
+    env -i PATH="$execution_path" HOME="$home_directory" \
+        QWEN_MODELS_DIRECTORY="$models_directory" \
+        QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+        QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+        QWEN_DRM_DEVICE="$fixture_drm" QWEN_HWMON_ROOT="$fixture_hwmon" \
+        QWEN_CENSUS_BROKER="$broker_stub" "$@" \
+        "$harness" "$refusal_control" "$refusal_candidate" "$model_id" \
+        "$temporary_directory/out-$run_index" \
+        >/dev/null 2>"$temporary_directory/$refusal_case-stderr.txt"
+    refusal_status=$?
+    set -e
+    [ "$refusal_status" -eq 2 ]
+    grep -q "$refusal_message" "$temporary_directory/$refusal_case-stderr.txt"
+    printf '%s=accepted\n' "$refusal_case"
+}
+
 run_refusal() {
     refusal_case=$1
     refusal_message=$2
@@ -1920,6 +1980,76 @@ run_refusal experiment_key_rowless \
 run_refusal experiment_key_identical \
     'the two experiment keys name one arm' \
     QWEN_AB_CONTROL_EXPERIMENT_KEY=e4/4 QWEN_AB_CANDIDATE_EXPERIMENT_KEY=e4/4
+# A half-keyed run would leave the unkeyed role at the build's own default while
+# its receipt named an arm.
+run_refusal experiment_key_half \
+    'a keyed comparison names an experiment key for both roles' \
+    QWEN_AB_CANDIDATE_EXPERIMENT_KEY=e4-scale-licm/4
+# Two binaries under a keyed comparison measure the build beside the arm.
+run_refusal experiment_key_two_binaries \
+    'a keyed comparison names one executable twice' \
+    QWEN_AB_CONTROL_EXPERIMENT_KEY=e4/4 \
+    QWEN_AB_CANDIDATE_EXPERIMENT_KEY=e4-scale-licm/4
+# A build whose manifest declares no q4k_variants ignores the key and runs its
+# default shader, so the receipt would name an arm the device never created.
+run_refusal_servers experiment_key_undeclared \
+    'the manifest declares no q4k_variants' \
+    "$control_server" "$control_server" \
+    QWEN_AB_CONTROL_EXPERIMENT_KEY=e4/4 \
+    QWEN_AB_CANDIDATE_EXPERIMENT_KEY=e4-scale-licm/4
+# A key the shape rule admits and the build does not names an arm this
+# executable cannot create, which a build declaring one key stands for.
+narrow_root=$temporary_directory/keyed-build-narrow
+mkdir -p "$narrow_root/bin"
+cp -- "$keyed_server" "$narrow_root/bin/llama-server"
+chmod +x "$narrow_root/bin/llama-server"
+write_manifest "$narrow_root/artifact-manifest.tsv" "$keyed_bytes" "$keyed_sha256" \
+    "$candidate_patch" verified-candidate "$serving_cmake" "$serving_compiler" '' e4/4
+run_refusal_servers experiment_key_unadmitted \
+    'the manifest does not admit experiment key e4-scale-licm/4' \
+    "$narrow_root/bin/llama-server" "$narrow_root/bin/llama-server" \
+    QWEN_AB_CONTROL_EXPERIMENT_KEY=e4/4 \
+    QWEN_AB_CANDIDATE_EXPERIMENT_KEY=e4-scale-licm/4
+
+# The witness reports another run's ids, so it is admitted only where that run
+# was this comparison: its own inputs name the model and both server digests.
+witness_foreign=$temporary_directory/witness-foreign
+mkdir -p "$witness_foreign"
+: >"$witness_foreign/margin-summary.tsv"
+{
+    printf 'model_id\tsome-other-model\n'
+    printf 'control_server_sha256\t%s\n' "$control_sha256"
+    printf 'candidate_server_sha256\t%s\n' "$candidate_sha256"
+} >"$witness_foreign/inputs.tsv"
+run_refusal witness_foreign_model \
+    'the witness names model_id some-other-model where this campaign runs' \
+    QWEN_AB_WITNESS_DIRECTORY="$witness_foreign"
+witness_stale=$temporary_directory/witness-stale
+mkdir -p "$witness_stale"
+: >"$witness_stale/margin-summary.tsv"
+{
+    printf 'model_id\t%s\n' "$model_id"
+    printf 'control_server_sha256\t%s\n' "$control_sha256"
+    printf 'candidate_server_sha256\tstaledigest\n'
+} >"$witness_stale/inputs.tsv"
+run_refusal witness_stale_candidate \
+    'the witness names candidate_server_sha256 staledigest where this campaign runs' \
+    QWEN_AB_WITNESS_DIRECTORY="$witness_stale"
+witness_matching=$temporary_directory/witness-matching
+mkdir -p "$witness_matching"
+: >"$witness_matching/margin-summary.tsv"
+{
+    printf 'model_id\t%s\n' "$model_id"
+    printf 'control_server_sha256\t%s\n' "$control_sha256"
+    printf 'candidate_server_sha256\t%s\n' "$candidate_sha256"
+} >"$witness_matching/inputs.tsv"
+witness_rates=$temporary_directory/rates-witness
+write_rates "$witness_rates" 10.000 11.000 11.000
+case_witness=$witness_matching
+run_ab witness_bound 0 promoted "$witness_rates" "$one_clock"
+active_fixture=witness_bound
+[ "$(awk -F'\t' '$1 == "witness_directory" { print $2 }' \
+    "$ab_last_output/terminal-state.tsv")" = "$witness_matching" ]
 
 # The lease as the clock's own authority. A campaign forces a DPM level every
 # workload on the machine then runs at, so it takes the shared Vulkan lease
