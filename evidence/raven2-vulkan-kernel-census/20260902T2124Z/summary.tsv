@@ -1,0 +1,4 @@
+pair	control	outer	inner	first_outer	first_inner	first_delta	second_outer	second_inner	second_delta	replicates	mean_delta	sd_delta	ci_low	ci_high	deltas	sclk_modes	off_regime_arms	bound	verdict	detail
+1	sidecar	P-nosidecar	P	-	-	-	-	-	-	4	-	-	-	-	-	-	0	0.0065	incomplete	-
+2	compile	P	I0	9.355	9.564	+0.0223	9.279	9.569	+0.0313	4	+0.0342	0.0348	-0.0211	+0.0895	+0.0223 +0.0313 +0.0826 +0.0005	1100/1100 1100/1100 1100/1100 1100/1100	0	0.0065	unresolved	spans bound=0.0065 ci=[-0.0211,+0.0895]
+3	collect	I0	I1	9.771	9.673	-0.0100	9.457	9.401	-0.0059	4	-0.0114	0.0064	-0.0215	-0.0012	-0.0100 -0.0059 -0.0206 -0.0089	1100/1100 1100/1100 1100/1100 1100/1100	0	0.02	unresolved	spans bound=0.02 ci=[-0.0215,-0.0012]

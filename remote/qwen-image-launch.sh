@@ -15,9 +15,11 @@ set -eu
 # command string, and qwen-webui-session.sh starts the service as a guarded
 # child and records its pid on the session status line.
 #
-# The listener is 127.0.0.1 and a caller asking for any other one is refused
-# rather than silently rewritten, for the reason qwen-web-launch.sh states: an
-# operator who typed 0.0.0.0 wants an exposure this launch declines to provide.
+# The listener is 127.0.0.1 by default and a caller asking for any other one is
+# refused rather than silently rewritten, for the reason qwen-web-launch.sh
+# states: an operator who typed 0.0.0.0 wants an exposure this launch declines
+# to provide. QWEN_WEB_LAN=1 with QWEN_WEB_LAN_ADDRESS is that exposure granted
+# deliberately, and remote/web-lan-exposure.sh holds its conditions.
 #
 # One checked-in row of remote/image-profiles.tsv reads `validator-gated`, so
 # the preset a generator writes against the shipped ledger under
@@ -46,6 +48,7 @@ if [ "$#" -gt 1 ]; then
     printf 'QWEN_IMAGE_PROFILES_JSON names the validated profile parameters the image service runs a job under\n' >&2
     printf 'QWEN_IMAGE_RUNTIME_RESIDENT_MIB is the image runtime cost charged against the Vulkan budget, default 480\n' >&2
     printf 'the listener is 127.0.0.1; QWEN_BIND_HOST set to any other value refuses the launch\n' >&2
+    printf 'QWEN_WEB_LAN=1 with QWEN_WEB_LAN_ADDRESS naming a routable IPv4 literal serves the network instead, with the Web UI bearer required on every route\n' >&2
     exit 2
 fi
 
@@ -56,12 +59,34 @@ image_service_program=${QWEN_IMAGE_SERVICE_PROGRAM:-$script_directory/image-serv
 state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
 web_presets=${QWEN_WEB_PRESETS:-$state_directory/web-presets.ini}
 
-requested_bind_host=${QWEN_BIND_HOST:-127.0.0.1}
-if [ "$requested_bind_host" != 127.0.0.1 ]; then
-    printf 'image router mode serves the loopback alone, and QWEN_BIND_HOST requests %s\n' \
-        "$requested_bind_host" >&2
-    printf 'an image section spawns a device runtime through its MCP server; unset QWEN_BIND_HOST or set it to 127.0.0.1\n' >&2
-    exit 2
+# QWEN_WEB_LAN=1 is the operator's explicit decision to serve this lane on the
+# network. This wrapper checks the shape of the request and reports it; the six
+# conditions in remote/web-lan-exposure.sh are applied once, by the web
+# launcher this script execs into, so one authority admits both lanes.
+web_lan_exposure=${QWEN_WEB_LAN:-0}
+case $web_lan_exposure in
+    0 | 1) ;;
+    *)
+        printf 'QWEN_WEB_LAN must be 0 or 1: %s\n' "$web_lan_exposure" >&2
+        exit 2
+        ;;
+esac
+if [ "$web_lan_exposure" = 1 ]; then
+    if [ -z "${QWEN_WEB_LAN_ADDRESS:-}" ]; then
+        printf 'QWEN_WEB_LAN=1 requires QWEN_WEB_LAN_ADDRESS naming a routable IPv4 literal\n' >&2
+        exit 2
+    fi
+    printf 'image_launch exposure=lan address=%s bearer=required\n' \
+        "$QWEN_WEB_LAN_ADDRESS"
+else
+    requested_bind_host=${QWEN_BIND_HOST:-127.0.0.1}
+    if [ "$requested_bind_host" != 127.0.0.1 ]; then
+        printf 'image router mode serves the loopback alone, and QWEN_BIND_HOST requests %s\n' \
+            "$requested_bind_host" >&2
+        printf 'an image section spawns a device runtime through its MCP server; unset QWEN_BIND_HOST or set it to 127.0.0.1, or set QWEN_WEB_LAN=1 to serve the network deliberately\n' >&2
+        exit 2
+    fi
+    printf 'image_launch exposure=loopback\n'
 fi
 
 if [ ! -r "$web_presets" ]; then

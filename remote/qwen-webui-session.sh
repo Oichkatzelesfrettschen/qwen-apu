@@ -15,6 +15,14 @@ state_directory=${7:-"${HOME:?}/qwen-webui-state"}
 vulkan_profile=${8:-low-serialized}
 
 umask 077
+# Every python child of this session imports its modules from the runtime tree,
+# and an import writes bytecode beside them, which check-runtime-tree.sh reads
+# as a stray at the next launch: the manifest names tracked files alone, so no
+# sync ships or removes a .pyc. The session exports the setting for the broker,
+# the image service, the search instance, and the capacity server, and
+# llama-server passes its own environment to the MCP child it spawns.
+PYTHONDONTWRITEBYTECODE=1
+export PYTHONDONTWRITEBYTECODE
 mkdir -p "$state_directory"
 mkdir -p "$state_directory/telemetry"
 server_log=$state_directory/server.log
@@ -46,7 +54,44 @@ broker_program=${QWEN_WEB_BROKER_PROGRAM:-"$script_directory/web-mcp/authorize-b
 broker_port=${QWEN_WEB_BROKER_PORT:-8571}
 broker_state_directory=${QWEN_WEB_STATE_DIR:-"$state_directory/web-mcp"}
 broker_log=$state_directory/authorize-broker.log
-broker_origin=${QWEN_WEB_BROKER_ORIGIN:-"http://${QWEN_BIND_HOST:-127.0.0.1}:$server_port"}
+# QWEN_WEB_LAN=1 with QWEN_WEB_LAN_ADDRESS is the operator's explicit decision
+# to serve this lane on the network, admitted by remote/web-lan-exposure.sh
+# before the launch reached this session. The literal rather than QWEN_BIND_HOST
+# is what every derived value reads: the router may bind the wildcard, which
+# names no address a browser sends as an Origin and no address a Host header
+# comparison can admit. The broker and the artifact listener bind the wildcard
+# under the exposure, so the loopback stays reachable for this session's own
+# probes and for remote/image-review.py, while their Host and bearer gates
+# carry the policy.
+lan_exposure=${QWEN_WEB_LAN:-0}
+lan_address=${QWEN_WEB_LAN_ADDRESS:-}
+if [ "$lan_exposure" = 1 ] && [ -n "$lan_address" ]; then
+    lan_listen_host=0.0.0.0
+    lan_page_host=$lan_address
+else
+    lan_exposure=0
+    lan_address=''
+    lan_listen_host=127.0.0.1
+    lan_page_host=127.0.0.1
+fi
+broker_origin=${QWEN_WEB_BROKER_ORIGIN:-"http://$lan_page_host:$server_port"}
+# The general-search endpoint is one local SearXNG instance, and it holds no
+# device and reaches the network only for a search the broker already signed,
+# so it is a guarded child of this session beside the broker.
+# qwen-web-launch.sh sets QWEN_WEB_SEARXNG=1 for a profile whose provider
+# column reads searxng; every other launch leaves it unset and starts none.
+searxng_pid=""
+searxng_enabled=${QWEN_WEB_SEARXNG:-0}
+searxng_program=${QWEN_SEARXNG_PROGRAM:-"$script_directory/searxng-launch.sh"}
+searxng_port=${QWEN_SEARXNG_PORT:-8888}
+searxng_log=$state_directory/searxng.log
+# The instance loads its engine set before it answers, and the same deadline
+# bounds remote/searxng-launch.sh's own start path, so one variable states how
+# long a launch waits for it.
+searxng_start_timeout=${QWEN_SEARXNG_START_TIMEOUT:-120}
+case $searxng_start_timeout in
+    '' | *[!0-9]*) searxng_start_timeout=120 ;;
+esac
 # The image service owns the Vulkan workload lease and the pinned image
 # runtime, and it allocates nothing on the device until a job arrives, so it is
 # a guarded child of this session beside the broker. qwen-image-launch.sh sets
@@ -55,7 +100,7 @@ image_service_pid=""
 image_service_enabled=${QWEN_IMAGE_SERVICE:-0}
 image_service_program=${QWEN_IMAGE_SERVICE_PROGRAM:-"$script_directory/image-service.py"}
 image_service_profiles_json=${QWEN_IMAGE_PROFILES_JSON:-}
-image_service_origin=${QWEN_IMAGE_PAGE_ORIGIN:-"http://${QWEN_BIND_HOST:-127.0.0.1}:$server_port"}
+image_service_origin=${QWEN_IMAGE_PAGE_ORIGIN:-"http://$lan_page_host:$server_port"}
 image_service_log=$state_directory/image-service.log
 case ${QWEN_ROUTER_PRESETS:-} in
     "$state_directory"/.router-presets.active.*)
@@ -94,6 +139,13 @@ cleanup() {
         kill "$image_service_pid" 2>/dev/null || true
         wait "$image_service_pid" 2>/dev/null || true
     fi
+    # The instance holds the loopback port the next launch's own health gate
+    # reads, so it is signalled and waited for rather than left to the process
+    # group.
+    if [ -n "$searxng_pid" ]; then
+        kill "$searxng_pid" 2>/dev/null || true
+        wait "$searxng_pid" 2>/dev/null || true
+    fi
     if [ -n "$router_preset_snapshot" ]; then
         rm -f -- "$router_preset_snapshot"
         router_preset_snapshot=''
@@ -129,6 +181,11 @@ require_broker_running() {
         ! process_running "$image_service_pid"; then
         printf 'state=failed reason=image_service_exited image_service_pid=%s utc=%s\n' \
             "$image_service_pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
+        exit 1
+    fi
+    if [ "$searxng_enabled" = 1 ] && ! process_running "$searxng_pid"; then
+        printf 'state=failed reason=searxng_exited searxng_pid=%s utc=%s\n' \
+            "$searxng_pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
         exit 1
     fi
 }
@@ -173,6 +230,68 @@ printf 'state=starting utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file
 # setting: the served page is the one this session binds, so its origin comes
 # from QWEN_BIND_HOST and the served port. The signing key travels as a path in
 # the environment and its contents stay in the broker's own address space.
+# The search instance starts ahead of the broker and the capacity server for
+# the reason the broker does, and it needs the head start most: it loads its
+# engine set over the two cores this machine has, in about 1.3 CPU-seconds
+# measured over startup and six queries.
+#
+# Readiness is the two facts together. `GET /healthz` proves a socket answers
+# on the port the profile row names, and process liveness proves the socket
+# belongs to this launch's own child: a foreign instance already on the port
+# answers the route while the child leaves on EADDRINUSE, and the pair refuses
+# that launch rather than recording a PID nothing owns. qwen-web-launch.sh
+# requires the port free before it reaches this session, so the race is
+# ordinarily a refusal one link earlier.
+searxng_start_time=''
+searxng_url="http://127.0.0.1:$searxng_port"
+if [ "$searxng_enabled" = 1 ]; then
+    if [ ! -x "$searxng_program" ]; then
+        printf 'state=failed reason=searxng_unavailable path=%s utc=%s\n' \
+            "$searxng_program" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
+        exit 1
+    fi
+    : >"$searxng_log"
+    chmod 600 "$searxng_log"
+    QWEN_SEARXNG_PORT=$searxng_port \
+        "$searxng_program" serve "$state_directory" \
+        >"$searxng_log" 2>&1 &
+    searxng_pid=$!
+    if ! process_running "$searxng_pid"; then
+        printf 'state=failed reason=searxng_exited searxng_pid=%s utc=%s\n' \
+            "$searxng_pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
+        exit 1
+    fi
+    searxng_start_time=$(sed 's/^.*) //' "/proc/$searxng_pid/stat" |
+        awk '{ print $20 }')
+    searxng_ready=0
+    attempt=0
+    # `curl -f` reads the status line: an instance that binds its port and
+    # answers 503 is one the launch waits out rather than admits.
+    while [ "$attempt" -lt $((searxng_start_timeout * 10)) ]; do
+        if ! kill -0 "$searxng_pid" 2>/dev/null; then
+            break
+        fi
+        if curl -fsS --max-time 5 -o /dev/null "$searxng_url/healthz" \
+            2>/dev/null; then
+            searxng_ready=1
+            break
+        fi
+        attempt=$((attempt + 1))
+        sleep 0.1
+    done
+    if [ "$searxng_ready" -ne 1 ]; then
+        printf 'state=failed reason=searxng_not_answering port=%s utc=%s\n' \
+            "$searxng_port" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
+        exit 1
+    fi
+    {
+        printf 'state=starting searxng_pid=%s utc=%s\n' \
+            "$searxng_pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf 'searxng_identity pid=%s start_time=%s port=%s url=%s\n' \
+            "$searxng_pid" "$searxng_start_time" "$searxng_port" "$searxng_url"
+    } >"$status_file"
+fi
+
 broker_start_time=''
 broker_signing_key_sha256=''
 if [ "$broker_enabled" = 1 ]; then
@@ -204,7 +323,8 @@ if [ "$broker_enabled" = 1 ]; then
     chmod 600 "$broker_log"
     QWEN_WEB_STATE_DIR=$broker_state_directory \
     QWEN_WEB_BROKER_ORIGIN=$broker_origin \
-        "$broker_program" --host 127.0.0.1 --port "$broker_port" \
+        "$broker_program" --host "$lan_listen_host" --port "$broker_port" \
+        ${lan_address:+--lan-exposure "$lan_address"} \
         --state-dir "$broker_state_directory" \
         --profile "$QWEN_WEB_PROFILE" \
         --image-profile "${QWEN_IMAGE_PROFILE:-}" \
@@ -232,7 +352,7 @@ if [ "$broker_enabled" = 1 ]; then
     broker_ready=0
     attempt=0
     while [ "$attempt" -lt 300 ]; do
-        if grep -F "listening 127.0.0.1 $broker_port" "$broker_log" \
+        if grep -F "listening $lan_listen_host $broker_port" "$broker_log" \
             >/dev/null 2>&1; then
             broker_ready=1
             break
@@ -321,7 +441,8 @@ if [ "$image_service_enabled" = 1 ]; then
         --verifier image_signed_verifier:verify \
         --api-key-file "$api_key_file" \
         --origin "$image_service_origin" \
-        --http-host 127.0.0.1 \
+        --http-host "$lan_listen_host" \
+        ${lan_address:+--lan-exposure "$lan_address"} \
         >"$image_service_log" 2>&1 &
     image_service_pid=$!
     image_service_ready=0
@@ -627,6 +748,17 @@ fi
 if [ -n "$image_service_pid" ]; then
     broker_status_field="$broker_status_field image_service_pid=$image_service_pid"
 fi
+# searxng_pid joins them for the same reason: the teardown reads the first line
+# to signal the process, and the port it holds is what the next launch's health
+# gate meets.
+if [ -n "$searxng_pid" ]; then
+    broker_status_field="$broker_status_field searxng_pid=$searxng_pid"
+fi
+# The exposure joins the same line because the status file is what a later
+# reader consults for what this launch serves, and the address on the network
+# is the one field a teardown, a status query, and an operator all read.
+# lan_exposure=0 records the loopback default.
+broker_status_field="$broker_status_field lan_exposure=$lan_exposure lan_address=${lan_address:--}"
 printf 'state=running server_pid=%s monitor_pid=%s latency_watchdog_pid=%s kernel_hazard_watchdog_pid=%s%s profile=%s host=%s port=%s context=%s latency_mode=%s utc=%s\n' \
     "$server_pid" "$monitor_pid" "$latency_watchdog_pid" \
     "$kernel_hazard_watchdog_pid" "$broker_status_field" "$vulkan_profile" \
@@ -683,6 +815,33 @@ if [ -n "$image_service_pid" ]; then
         "${image_service_socket:-unrecorded}" \
         "${image_service_listener:-unrecorded}" >>"$status_file"
 fi
+# The exposure lands as a page URL rather than a list of addresses, because the
+# page resolves the broker and the artifact origins from `?broker=` and
+# `?artifacts=` before it reads its meta tags, and those tags name the loopback:
+# a LAN browser handed the bare router address would point both back at its own
+# machine. The artifact listener takes an ephemeral port, so this line is the
+# first place all three addresses are known together.
+if [ "$lan_exposure" = 1 ]; then
+    lan_page_url="http://$lan_page_host:$server_port/?broker=$(printf 'http%%3A%%2F%%2F%s%%3A%s' \
+        "$lan_page_host" "$broker_port")"
+    if [ -n "$image_service_listener" ]; then
+        lan_page_url="$lan_page_url&artifacts=$(printf 'http%%3A%%2F%%2F%s%%3A%s' \
+            "$lan_page_host" "${image_service_listener##*:}")"
+    fi
+    printf 'lan_exposure address=%s router=%s:%s broker=%s:%s artifacts=%s page=%s\n' \
+        "$lan_page_host" "$lan_page_host" "$server_port" \
+        "$lan_page_host" "$broker_port" \
+        "${image_service_listener:--}" "$lan_page_url" >>"$status_file"
+fi
+# The search instance's identity lands after the same truncating write. The
+# start time binds the pid to the process a teardown signals, and the port is
+# recorded rather than re-derived, so the teardown proves the listener this
+# session started is gone rather than whichever port a later default names.
+if [ -n "$searxng_pid" ]; then
+    printf 'searxng_identity pid=%s start_time=%s port=%s url=%s\n' \
+        "$searxng_pid" "$searxng_start_time" "$searxng_port" \
+        "$searxng_url" >>"$status_file"
+fi
 
 supervised_component=server
 while process_running "$server_pid"; do
@@ -702,6 +861,10 @@ while process_running "$server_pid"; do
         supervised_component=authorization_broker
         break
     fi
+    if [ -n "$searxng_pid" ] && ! process_running "$searxng_pid"; then
+        supervised_component=searxng
+        break
+    fi
     sleep 0.1
 done
 if [ "$supervised_component" != server ]; then
@@ -713,7 +876,7 @@ fi
 # can suppress its terminal watch_stop marker. Stop every other component, then
 # wait for the watcher to observe server exit and finish its own drain.
 for supervised_pid in "$server_pid" "$monitor_pid" "$latency_watchdog_pid" \
-        "$broker_pid"; do
+        "$broker_pid" "$searxng_pid"; do
     [ -n "$supervised_pid" ] || continue
     kill "$supervised_pid" 2>/dev/null || true
 done
@@ -731,12 +894,18 @@ if [ -n "$broker_pid" ]; then
     wait "$broker_pid"
     broker_status=$?
 fi
+searxng_status=0
+if [ -n "$searxng_pid" ]; then
+    wait "$searxng_pid"
+    searxng_status=$?
+fi
 set -e
 server_pid=""
 monitor_pid=""
 latency_watchdog_pid=""
 kernel_hazard_watchdog_pid=""
 broker_pid=""
+searxng_pid=""
 session_status=$server_status
 if [ "$supervised_component" != server ]; then
     session_status=1
@@ -789,9 +958,10 @@ printf 'session=%s telemetry_record=%s summary=%s seal=%s loading_seal=%s runtim
     "$telemetry_loading_seal_status" "$session_status" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     >>"$state_directory/telemetry-finalization.log" || :
-printf 'state=stopped server_status=%s monitor_status=%s latency_status=%s kernel_hazard_status=%s broker_status=%s stopped_component=%s profile=%s utc=%s\n' \
+printf 'state=stopped server_status=%s monitor_status=%s latency_status=%s kernel_hazard_status=%s broker_status=%s searxng_status=%s stopped_component=%s profile=%s utc=%s\n' \
     "$server_status" "$monitor_status" "$latency_status" \
-    "$kernel_hazard_status" "$broker_status" "$supervised_component" \
+    "$kernel_hazard_status" "$broker_status" "$searxng_status" \
+    "$supervised_component" \
     "$vulkan_profile" \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     >"$status_file"

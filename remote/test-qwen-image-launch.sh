@@ -383,6 +383,57 @@ else
     fi
 fi
 
+# QWEN_WEB_LAN=1 is the operator's explicit exposure, and this wrapper checks
+# the shape of the request before it hands the launch to the web launcher that
+# applies the six conditions. An opt-in naming no address is refused here.
+if run_launch "$presets_armed" env QWEN_WEB_LAN=1 \
+    >"$work/lan-unnamed.log" 2>"$work/lan-unnamed.err"; then
+    report lan_exposure_requires_an_address accepted
+elif grep -q 'requires QWEN_WEB_LAN_ADDRESS' "$work/lan-unnamed.err"; then
+    report lan_exposure_requires_an_address ok
+else
+    report lan_exposure_requires_an_address wrong_refusal
+fi
+
+# QWEN_WEB_LAN outside 0 and 1 names no setting this wrapper has.
+if run_launch "$presets_armed" env QWEN_WEB_LAN=yes \
+    >"$work/lan-value.log" 2>"$work/lan-value.err"; then
+    report lan_exposure_refuses_a_foreign_value accepted
+elif grep -q 'QWEN_WEB_LAN must be 0 or 1' "$work/lan-value.err"; then
+    report lan_exposure_refuses_a_foreign_value ok
+else
+    report lan_exposure_refuses_a_foreign_value wrong_refusal
+fi
+
+# A named exposure reports the address and carries the LAN bind past the
+# refusal the default applies to it.
+if run_launch "$presets_armed" env QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=0.0.0.0 \
+    >"$work/lan-named.log" 2>"$work/lan-named.err"; then
+    lan_named_outcome=ok
+    grep -q 'image_launch exposure=lan address=192.168.1.10' \
+        "$work/lan-named.log" || lan_named_outcome=exposure_unreported
+    grep -q 'bearer=required' "$work/lan-named.log" ||
+        lan_named_outcome=bearer_unreported
+    report lan_exposure_admitted "$lan_named_outcome"
+else
+    report lan_exposure_admitted refused
+    cat "$work/lan-named.err" >&2
+fi
+
+# The default launch names the loopback exposure it serves.
+if run_launch "$presets_armed" env -u QWEN_BIND_HOST \
+    >"$work/loopback-report.log" 2>"$work/loopback-report.err"; then
+    if grep -q 'image_launch exposure=loopback' "$work/loopback-report.log"; then
+        report default_launch_reports_loopback_exposure ok
+    else
+        report default_launch_reports_loopback_exposure exposure_unreported
+    fi
+else
+    report default_launch_reports_loopback_exposure refused
+    cat "$work/loopback-report.err" >&2
+fi
+
 # The authorizer marker gates the image grant the way it gates the web one.
 if env QWEN_IMAGE_LAUNCH_RECORD="$launch_record" \
     QWEN_WEB_PRESETS="$presets_armed" \

@@ -1,0 +1,12 @@
+HTTP/1.0 200 OK
+Server: Werkzeug/3.1.8 Python/3.12.3
+Date: Thu, 03 Sep 2026 20:15:28 GMT
+Content-Type: text/plain; charset=utf-8
+Content-Length: 2
+Server-Timing: total;dur=1.245, render;dur=0
+X-Content-Type-Options: nosniff
+X-Download-Options: noopen
+X-Robots-Tag: noindex, nofollow
+Referrer-Policy: no-referrer
+Connection: close
+

@@ -206,11 +206,15 @@ where the four agree to about 0.4%, which this tree's documented scatter
 does not promise. An unresolved campaign at four replicates is a reportable
 result stated ahead of the run rather than a defect of it.
 
-The campaign has four terminal states and the exit status follows them: a
+The campaign has six terminal states and the exit status follows them: a
 failed arm, an incomplete control, or an unclassified quadruple ends it
 `failed` with exit 1, a refuted registered control ends it `refuted` with
 exit 3 even where every arm completed, an unresolved control with no
-refutation ends it `unresolved` with exit 4, and `accepted` alone exits 0.
+refutation ends it `unresolved` with exit 4, an inter-arm boundary the
+quiescence poller does not report `reached` ends it `quiescence_unconverged`
+with exit 5 before the next arm starts, a runtime identity that moved under
+the campaign ends it `identity_incident` with exit 6 at the arm that read it,
+and `accepted` alone exits 0.
 An unresolved control neither accepts nor refutes, so its branch precedes
 the accepted-count test that an unresolved control would otherwise leave
 short. `terminal-state.tsv` gains `control_unresolved` beside the counts it
@@ -257,9 +261,7 @@ overlap threshold, the latency probe digest, and the synced runtime tree's
 git head and two payload digests from the manifest the sync writes beside
 `remote/`, since the arms launch through that tree and a resync between
 calibration and attribution would otherwise pass both launches through
-trees that each satisfy their own check. Each arm's server is hashed after
-the arm and compared with the digest the preflight bound to its role, so a
-binary replaced mid-campaign fails the arm it served. Its SHA-256 is recorded as
+trees that each satisfy their own check. Its SHA-256 is recorded as
 `calibration_contract_sha256` in `inputs.tsv`, an attribution computes its
 own contract the same way and requires the receipt's digest to equal it,
 and a changed sidecar period or bound refuses by that one comparison
@@ -270,6 +272,59 @@ served runner and the sidecar together: the served runner runs as a job
 under `wait`, which a trap interrupts, and `cleanup_children` on EXIT,
 TERM, INT, and HUP signals and waits for both, so a runner ended mid-arm
 leaves no sampler writing into its arm directory.
+
+## Runtime identity is bound per arm
+
+The contract states what the campaign was configured with; the per-arm record
+states what each arm actually ran under. Every arm writes
+`arms/LABEL/runtime-identity.tsv` as `field expected observed state`, carrying
+the preflight's value beside its own reading of the checkpoint's byte count and
+digest, the served binary's byte count and digest for the role that arm plays,
+the runtime tree's `git_head` and both payload digests re-read from the
+manifest, one `check-runtime-tree.sh` recompute over that tree against the head
+and payload the preflight bound, the artifact ledger's digest, the served
+runner's own digest, and the request body's digest. The checkpoint reading
+comes from the arm's own `runtime-inputs.json`, which the served runner writes
+from the descriptor it pinned, so the comparison costs no second pass over the
+weights; the runtime tree reading comes from the same reader `qwen-launch.sh`
+runs inside the arm rather than a second hasher over the same bytes. That
+reader is resolved from the runner's own directory rather than from the tree it
+verifies, since a verifier read out of the population it checks would answer
+for its own replacement, and its digest is bound at preflight and re-read
+before its verdict as `runtime_tree_checker_sha256`, so a checker replaced
+between two arms names itself rather than being credited with the `verified` it
+prints. A field
+the arm never produced -- a reply it did not reach, a record it did not write
+-- reads `unobserved` and decides nothing; a file that is gone reads `absent`
+and is drift.
+
+The request body is the one identity the preflight cannot compute, because
+`measure-served-decode.sh` composes it and a second copy of that template here
+would be a second authority for the workload. The campaign binds the digest of
+the first body an arm actually sent, appends it to `inputs.tsv` as
+`request_sha256` the way the regime rows join it, and holds every later arm to
+it.
+
+A field that moved is an incident rather than one arm's failure. A runtime
+sync, a checkpoint replacement, an executable replacement, or a ledger edit
+changes what every arm after it measures, so the campaign ends at the arm that
+first read it as `identity_incident` with exit 6, `terminal_detail` names the
+field, and a `census_incident=identity` line carries the expected and observed
+values. The first field to differ is the one reported, so a sync that moves the
+head and both payload digests together names the head rather than whichever
+digest a later comparison reached. The arm's own `runtime-tree.txt` retains the
+recompute's output beside the record. A campaign already ending on an arm waits
+for no boundary after it, since the arm that boundary would prepare never runs,
+and its cooldown row reads `quiescence=skipped`.
+
+The two runtime-tree claims separate. `check-runtime-tree.sh` admits a head
+that advanced over a byte-identical payload as `head_divergence=payload-neutral`
+and exits 0, which is right for a launch and wrong for a campaign: the head is
+an acquisition-contract row, so the census compares the manifest rows itself and
+ends the run on `runtime_tree_git_head` while the recompute reads `verified`.
+An edit inside `remote/` moves the opposite way, leaving every manifest row
+where it stands and failing the recompute, which the record names as
+`runtime_tree_verified`.
 
 The expensive measurement and the reader that interprets it are two heads.
 A run is bound to the head that acquired it, and a later reader fix may
@@ -405,6 +460,64 @@ slot is what keeps the three quadruples where the parser finds them. A
 calibration whose four bricks all reuse launches no server and still writes
 a root; a partial reuse spends device time on the changed cell alone.
 
+A brick is a measurement rather than a label, so reuse revalidates it in the
+epoch that reuses it. The directory's `calibration-root.tsv` is read past its
+acquisition row: the digest it states is recomputed from the rows it carries
+-- the acquisition row followed by one `id digest` row per brick in file order,
+which is the input the writer hashed -- and a root whose stated value does not
+cover its own rows is an edited authority that every receipt digest below is
+bound to, so the whole directory is refused rather than filtered brick by
+brick. Each brick's receipt is then rehashed against the digest the root
+records for it, and every `artifact` row of that receipt is rehashed against
+the bytes it names.
+
+The current readers are then rerun over those bytes:
+`validate-clock-sidecar.py` over every retained `clock-sidecar.tsv` at its own
+arm's request window, `summarize-kernel-census.py` over every retained
+`pipeline-census.tsv` at that arm's `predicted_n - 1`, and
+`summarize-perf-logger-slice.py` over a retained
+`server-log-request.slice` at the same count, each under this run's own
+sidecar geometry, bounds, and clock-invariant flags. Every rerun must accept,
+which is what "the current analysis contract accepts this brick" means: these
+are the three of that contract's four readers that read a raw record, and
+`summarize-census-controls.py` reads `arms.tsv` rather than one, so it runs
+over the campaign's own ledger and not here. The sidecar rerun states
+`--sidecar-status 0` as the assumption the reuse rests on -- the record was
+accepted at acquisition, which is what a completed arm means, and the
+sampler's exit status is not retained separately.
+
+A brick whose receipt names no artifact, or whose arms retained no record any
+reader reads, is measured again: a historical `completed` label carried forward
+over nothing is the claim this revalidation exists to refuse. A reused
+receipt's copy therefore states which epoch licensed it -- `revalidation
+accepted`, `revalidated_epoch` naming this run's analysis contract digest,
+`revalidated_readers` naming the readers that ran, and `revalidated_artifacts`
+counting the files rehashed -- and the reruns' own output is retained under
+`revalidation/CN/` in the run's directory. Prior `revalidat*` rows are stripped
+from the copy, so `revalidated_epoch` always names the run that carries the
+receipt, while the `analysis_contract_sha256` row the original campaign wrote
+travels unchanged beside it: one names the head that first read the arms and
+the other the head that re-read them. The verdicts are taken before the output
+directory exists, since a preflight refusal leaves none behind, and move into
+it once it does.
+
+The receipt names its artifacts relative to the directory whose arms wrote
+them, and a calibration that reused a brick copies the receipt forward without
+those arm directories, so a second generation resolves the paths through the
+provenance the copy already carries: each hop reads the receipt the named
+directory holds for that brick and follows its own `reused_from` until the
+paths resolve, bounded at sixteen hops so a directory edit cannot make the
+chain circular. The `census_brick_reuse=revalidated` line names the directory
+that answered as `records=`.
+
+The boundary between two arms prepares the arm that follows it, so the last
+arm a campaign executes polls for none: a machine that never settled after the
+final measurement would otherwise retire a campaign whose every arm completed.
+The last executing named slot is known once the reuse set is decided, and a
+warmup always polls, since the precondition runs only where some brick still
+executes. The cooldown row of an arm nothing follows reads
+`quiescence=skipped` and its printed line carries `boundary_required=0`.
+
 `QWEN_CENSUS_MODE=canary` runs `P I0 I1 S` once each at
 `QWEN_BENCH_GENERATE=8` and judges the chain's structure rather than any
 rate. Eight generated tokens leave seven decode graphs, which is the
@@ -439,9 +552,43 @@ constant: `await-quiescence.sh` polls the submission, clock, thermal,
 reclaim, and lease predicates and reports the instant they have all held
 together, `QWEN_CENSUS_COOLDOWN_S` becomes its deadline, and the cooldown
 row's note carries `quiescence=reached|timeout|unreported` with the poller's
-own `elapsed_ms`. A deadline reached without convergence is counted in
-`cooldown_timeouts` rather than charged to the arm that already completed,
-because the state it left belongs to the arm that follows.
+own `elapsed_ms` and the predicates its final tick reported false.
+
+The boundary decides the campaign. `reached` requires the process, GPU
+occupancy, graphics step, step stability, absolute temperature, thermal
+derivative, available memory, swap-in, lease, and latency predicates to have
+held together across the whole hold window, so any other verdict leaves the
+next arm a machine state the arm before it chose -- clock, temperature,
+memory, or the lease -- which is the nuisance the boundary exists to remove.
+The campaign therefore ends at that boundary, ahead of the next arm, as
+`quiescence_unconverged` with exit 5. `arms.tsv` gains one boundary row at
+the same slot, its `arm` column reading `cooldown` and its `status` column
+`quiescence_timeout` or `quiescence_unreported`; `terminal-state.tsv` carries
+the campaign state, `terminal_slot`, `terminal_arm`, and `terminal_detail`
+naming the poller's own failing predicates, with every `control_*` count `-`
+and `calibration_root_sha256` `-`. Neither `summary.tsv` nor `bricks/` nor
+`calibration-root.tsv` is written, since the controls summarizer over a
+truncated ledger would judge quadruples the registry never bound and a root
+over half a campaign is what a later run's brick reuse would copy forward.
+`QWEN_CENSUS_COOLDOWN_S` is held to a positive integer at preflight for the
+same reason: a value the poller refuses as a usage error prints no verdict,
+and the run would end on `quiescence_unreported` where the defect is a typo.
+
+Two predicates the poller carries stay unpassed by the census. The lease is
+excluded because the campaign holds that lock exclusively from before the
+clock write to its own exit, so `flock -n -x` from the poller reads the
+campaign's own exclusion as a foreign workload; holding it exclusively is the
+strictly stronger form of the predicate, and the printed cooldown line states
+`lease=held-by-campaign`. The latency log is excluded because
+`latency_is_ok` reads a `baseline_p90_us=` field the raw probe log names on
+no line, so it reports `not_applicable` while spending one
+`summarize-probe.sh` pass per 100 ms tick. The criterion is live for any
+caller that passes `--latency-log` over a log carrying that field.
+`--sclk-forced` drops the graphics step's position in the listed ladder,
+which under a commanded clock reports the policy rather than the machine, and
+licenses nothing else: the step's own stability across the hold window, the
+busy floor, both temperature conditions, memory, swap-in, and the process
+reading all still decide `reached`.
 
 ## What P stands for and how it is bound
 
@@ -505,6 +652,133 @@ diagnostic manifest leaves nothing a bundle admits. The contract stops
 there: an explicit `QWEN_LLAMA_SERVER` launch is the bundle layer's
 recovery mode and reads no bundle, so it is also the one path a diagnostic
 binary reaches the device through, and the census runner is its caller.
+
+`QWEN_CENSUS_ENGINE_CLOCK_POLICY` retires that taxonomy by removing what
+it classifies. The kernel's `power_dpm_force_performance_level` takes
+`high` for the highest power state, `profile_peak` for peak clocks with
+gating disabled, and `manual` for the level indices written to
+`pp_dpm_sclk` and `pp_dpm_mclk`, and `auto` is the governor everything
+above measures: the clock read 1100 MHz for nine arms, then 750 to 857,
+then 658 after a CPU build, and decode followed it linearly, a 97 ms GPU
+bracket scaled by 1100/658 plus 3.4 ms of host time predicting 6.04 tok/s
+against 5.7 to 6.1 measured. E4's whole-token effect is about 4% where that
+nuisance is 67%, so a campaign that can pin the clock pins it.
+
+Which level to pin is a measurement rather than a choice, and the first
+answer was wrong. Under `high` and `profile_peak` the starred graphics step
+and the hwmon `freq1_input` frequency both read exactly 1100 MHz for whole
+arms and decode still fell, to 6.3 to 7.0 tok/s against `auto`'s 6.8 to
+8.2, because both levels left the starred `pp_dpm_mclk` fabric state at
+400 MHz where the governor selected 933 to 1067. The delivered graphics
+clock is not the operating point; the fabric clock decides more of decode
+than it does. `manual` with the graphics level selected decoded 9.58, 8.91,
+and 9.23 tok/s across three arms against interleaved `auto` arms at 8.22
+and 7.94, so `manual` is the campaign policy and `high` and `profile_peak`
+remain admitted names that measure the fabric fall. The fabric selection
+itself is inert: the starred `pp_dpm_mclk` level read 933 MHz whether
+level 3 at 1067 or level 2 at 933 was written, and every arm ran there, so
+the write is recorded with its readback and 933 is the floor the invariant
+holds the fabric to.
+
+Both campaigns therefore require `sudo -n true` and name `sudo -v` where it
+fails, snapshot the level and its two selections, write the policy through
+`sudo -n tee`, require the readback to equal it, and under `manual` write
+`QWEN_CENSUS_SCLK_LEVEL` -- the highest level `pp_dpm_sclk` lists where the
+caller names none, level 2 at 1100 MHz on this device -- requiring the
+starred level to be the one written, and `QWEN_CENSUS_MCLK_LEVEL` where one
+is named, recording its readback. The snapshot is restored under the same
+cleanup trap the sampler and served child unwind through, on EXIT and on
+TERM, INT, or HUP, a `manual` snapshot restoring its own level selections
+after the level, and the restore prints the level it read back as
+`dpm_restore=`. The regime precondition becomes exactly one priming warmup,
+sampled and outside every pair, and the run prints `census_regime=retired
+policy=.. required_sclk_mhz=.. mclk_floor_mhz=.. arms=1`.
+
+The invariant is over delivered clocks rather than the DPM state, which is
+what the `high` arms make necessary. `telemetry-broker.c` reads hwmon
+`freq1_input` on the same 100 ms channel as the DPM steps and writes it as
+`sclk_actual_mhz`, an eighth column after `sample_cost_ns`;
+`validate-clock-sidecar.py` accepts the seven-column and eight-column
+records alike, so the replay corpus reads unchanged, and
+`--required-sclk-mhz N` counts over `sclk_actual_mhz` where the record
+carries it and over the selected step otherwise while `--required-mclk-mhz
+M` counts over `pp_dpm_mclk_surface_mhz` as a floor. The line reads
+`clock_invariant=held|violated samples_at_required=..
+samples_below_required=.. below_required_fraction=..` with the source and
+the fabric counts beside it, and `held` requires both. An arm whose
+invariant is violated fails with reason `clock_invariant`, `arms.tsv`
+carries `clock_invariant` and `below_required_fraction`, and
+`summarize-census-controls.py` drops that arm's pair as `clock-violated`
+the way it drops a governor step as `state-changed`. The policy, the two
+level selections, the required graphics step, the fabric floor, the
+admitted `clock_below_required_fraction` of 0, and the admitted
+`clock_below_mclk_floor_fraction` of 0.01 enter `inputs.tsv` on every run
+and `acquisition-contract.tsv` only where a policy is forced, since a
+governor run applied no control and a row stating that would be a default
+rather than a setting.
+
+The two clocks carry two admitted shares because they answer a forced
+policy differently. A pinned graphics step reports one value on every
+sample, so its share stays 0 and a sample below it is the governor moving
+under a policy that states it cannot. The fabric hovers: arm 03-P of the
+20260902T2011Z calibration read 933 MHz on 356 of 358 window samples, with
+excursions to 1067 above its selection and two samples below, while the
+graphics clock held the pinned 1100 on all 358, and a floor admitting
+nothing refused that arm as `clock_invariant` violated.
+`--max-below-mclk-floor-fraction`, 0.01 by default and carried as the
+`clock_below_mclk_floor_fraction` contract row, prices that hover and
+leaves a fabric that spent a tenth of a window below its floor refused. The
+line keeps printing `samples_at_mclk_floor`, `samples_below_mclk_floor`,
+and `below_mclk_floor_fraction` whatever the bound admits.
+
+The invariant is a verdict over one column, so an arm states which column
+it was counted over. Under a forced policy the delivered frequency is the
+only answer: `pp_dpm_sclk_selected_mhz` repeats the selection the campaign
+itself wrote, so an arm reading it held has agreed with the campaign rather
+than measured the device. Both runners refuse such an arm with reason
+`clock_source`, ahead of `clock_invariant`, which is a verdict over the
+same disqualified reading. The 20260902T2011Z calibration is what makes the
+condition necessary: it ran `sclk_source=pp_dpm_sclk_selected_mhz` on every
+arm because the broker beside it predated the eighth column, and the
+preflight built a broker only where the executable was absent.
+`build-telemetry-broker.sh` records the source digest it compiled as
+`<broker>.source-sha256`, and `census_prepare_broker` in
+`census-arm-lib.sh` rebuilds wherever the executable is absent, that record
+is absent, or the digest it holds differs from the tree's own, then reads
+the record again so a builder that compiled without recording is refused
+rather than rebuilt on every run. `sidecar_binary_sha256` and
+`sidecar_source_sha256` stay the two `inputs.tsv` rows naming the
+instrument a record was acquired with.
+
+The eighth column retires the retained receipts by itself, and that is the
+right outcome rather than a cost of the conditional rows.
+`sidecar_binary_sha256` and `sidecar_source_sha256` are acquisition-contract
+rows, so a change to `telemetry-broker.c` moves the digest of every contract
+the tree computes, `auto` runs included: no calibration retained under
+`20260902*/` answers an attribution across this change, and
+`QWEN_CENSUS_REUSE_BRICKS` reuses no brick across it. A brick measured under
+the seven-column sampler was measured under a different instrument, which is
+what the digest comparison exists to catch.
+
+The calibration brackets retire them a second time, and each of the three
+moves the digest on its own. `clock_below_mclk_floor_fraction` is a new
+contract row, `sidecar_max_lost_fraction` carries 0.03 where it carried
+0.02, and a rebuilt broker carries a `sidecar_binary_sha256` its stale
+predecessor never had. No calibration retained under `20260902*/` answers
+an attribution across this change and `QWEN_CENSUS_REUSE_BRICKS` reuses no
+brick across it, which is the same outcome for the same reason: the arms
+those receipts hold were acquired under another instrument and judged
+against other bounds.
+
+One falsifier stands against the mechanism the policy assumes. A forced
+level that still reads 658 MHz after a CPU build falsifies the governor as
+the cause of the fall and moves the investigation to package power, where a
+shared thermal and current budget rather than a DPM decision sets the
+clock; the run reports it as a refusal at the `pp_dpm_sclk` confirmation or
+as `clock_invariant=violated` on every arm, both of which name the
+observation rather than absorbing it. The `high` arms are that falsifier
+half met already: the level held its graphics clock and lost the throughput
+anyway, which is why the invariant reads two clocks rather than one.
 
 ## What the pinned build already carries, and why it is the serialized arm
 
@@ -820,6 +1094,128 @@ its own clock and is read beside the sidecar rather than joined to it.
 Clock selection is an execution-shape axis here, because a faster or more
 fragmented shader can lower apparent demand and select a lower state that
 cancels part of its own gain.
+
+## Retained runs
+
+`20260902T0222Z/` retains the chain run on head 7e9e09b with the v2
+instrument, ahead of the review that produced v3. It is classified
+`measurement_status=diagnostic instrument_version=pipeline-census-v2-pre-review
+merge_authority=no ownership_authority=no`. Its eight served arms refused
+at launch on `descriptor-backed model path requires approved model
+identity`, because the runner passed no artifact ledger and the served
+harness derives the approved identity from that ledger alone; the runner
+now requires the ledger and records its digest. The S arm completed at
+2.485 tok/s with 66 logger blocks under the serialized profile, and the
+sidecar held a 5.0001 ms period at a mean cost of 614 microseconds per
+sample on the appliance, which is the figure the sampler control exists
+to bound. No bracket, overlap, or ownership figure exists from that run.
+
+The first v3 calibration on head e18b840 was stopped after three arms and
+is retained on the appliance alone. Its `P-nosidecar` arm completed at
+8.379 tok/s and both `P` arms measured 9.9 tok/s and failed on
+`sensors=refused unavailable_outside_allowance=pp_dpm_fclk_surface_mhz
+allowed=-`: the runner decided the FCLK allowance with a size test, and
+sysfs reports every attribute at one page in `stat`, so the empty
+`pp_dpm_fclk` read as full and the allowance stayed off. The runner now
+reads the attribute and grants the allowance on an empty read. The
+sidecar itself held a 5.033 ms period at a mean cost of 603 microseconds
+over 3113 samples, inside both bounds.
+
+`20260902T0426Z/` retains the first calibration on the v3 head 34de93f,
+classified `measurement_status=diagnostic calibration_verdict=failed
+ownership_authority=provisional`. Every arm launched and every rate was
+measured; the run failed on the sidecar gap bound at nice 10, on the
+reader's refusal of the two-context file, on the reader classifying every
+graph as prefill through the f32 chunk products, and on the runtime monitor
+refusing the diagnostic profile. Its two I1 ledgers, read by the analysis
+head, are the first census records: 91% of a 97 ms decode graph inside the
+two mat-vec families, 3.4 ms of queue idle and residual, ownership
+conclusive at a 1% overlap, and the reproducibility build R byte-identical
+to P. `decode-decomposition.md` reads the ledgers against the predictions
+it registered ahead of them.
+
+`20260902T0525Z/` retains the second calibration on head 59c03c8, again
+`calibration_verdict=failed`, and closes two of the four failures: the S
+arm ran under the admitted diagnostic profile at 2.458 tok/s with 64
+logger blocks and its server exited cleanly, and the first I1 arm accepted
+whole with `ownership=conclusive`. The sampler at nice 19 on core 1 still
+opened holes up to 42 ms about once a second, the cadence of the guards
+that sample on that core at nice 0, so it is now confined to both cores.
+The two I1 arms sat 2.5% and 1.9% under their I0 neighbors, one outside
+the 2% collection bound, which is what the deferred emission below exists
+to remove.
+
+`20260902T0617Z/` retains the third calibration on head e4c148a, still
+`calibration_verdict=failed`: the I1 arm's per-graph emission moved to a
+preallocated binary buffer drained at context close, and both I1 slots then
+sat 0.9 to 1.9% under their I0 neighbors, inside the 0.02 collect bound for
+the first time. The sampler moved from core 1 alone to both cores and still
+opens gaps in every sampled arm, three to five per window on five of the
+eight P and I0 records, so the sidecar and compile pairs stay `incomplete`
+in `summary.tsv` and the next instrument change targets the sampler itself
+rather than the census path.
+
+`20260902T0819Z/` retains the fourth calibration on head f5f92d8e,
+`calibration_verdict=refuted`: the sampler moves to a standalone C
+telemetry broker on a 100 ms `pp_dpm_*` channel and clears its own bound on
+every one of fourteen completed arms, with the two collect slots again
+inside the 0.02 bound, but the sidecar and compile pairs both refute on
+replicates that disagree in sign, which reads as arm-to-arm scatter rather
+than the mechanism under test and moves the next chain link to a
+replicated-pair, paired-mean verdict.
+
+`20260902T1302Z/` retains the fifth calibration on head d490a39d,
+`calibration_verdict=unresolved`: four replicates per control move all
+three intervals to spanning their bound rather than refuting or
+accepting, but the selected graphics clock inside the request window
+steps from 1100 MHz to between 775 and 857 MHz across slots 9 to 12 while
+temperature falls rather than rises, so the decode-rate step this run
+also shows is a DPM selection and not a thermal ceiling, and a control
+pair straddling that step needs a per-arm clock-state check before its
+next paired-mean verdict.
+
+`20260902T1417Z/` retains the sixth calibration on head b7a3612f,
+`calibration_verdict=failed`: `arms.tsv` and `summary.tsv` now carry the
+per-arm clock state the prior link registered as a remedy, and the
+regime step reproduces on slot 10, whose sidecar refuses on
+`window_lost_fraction=0.0326` and turns the compile control
+`incomplete`, while the collect control's exact-mode rule reads every
+comparable pair as state-changed inside the sustained low regime the
+appliance actually serves under, so the next chain link moves that rule
+to a comparability band and a regime precondition ahead of slot 1.
+
+`20260902T1556Z/` retains the seventh calibration on head 05bd95f0, the
+first to run the regime precondition: three warmup arms settle the sidecar
+at a 658 MHz regime, a third band below the two prior runs' 750 to 857 MHz,
+and eleven of twenty-five named arms then refuse on `window_lost_fraction`
+between 0.0211 and 0.0625 against the 0.02 bound, leaving all three controls
+`incomplete`. The campaign starts one second after a twenty-minute build on
+the laptop's own two CPU cores, which is the registered explanation for a
+regime this much lower, and the served A/B still refuses at launch on an
+empty `candidate_series` selection the harness reads as a manifest error
+rather than as the empty set.
+
+`20260902T2011Z/` retains the eighth calibration on head 239af705, the first
+under a commanded engine clock (`sclk_level=2`, 1100 MHz, mclk floor 933 MHz)
+in place of the regime precondition: twenty-two of twenty-six arms complete,
+three failing on `clock_invariant`'s mclk floor and one on `clock_sidecar`'s
+`window_lost` bound, the sidecar and compile controls `incomplete` on the
+same failures and the collect control `unresolved` at a mean of +0.0294
+across four clean `1100/1100` pairs. Every cooldown times out
+(`cooldown_timeouts=26`) because the quiescence predicate wants a clock step
+below the regime's highest and the manual policy pins the highest, and the
+sibling E1 ISA dump at 20260902T2039Z reproduces the same 28-module set the
+20260902T1312Z dump recorded.
+
+`e4/served-ab-20260902T2032Z/` retains the first E4 served A/B to complete
+against a production control, comparing the pinned production `llama-server`
+(`5dd86b90...`) against the E4 candidate build (`7d9df19f...`) over four
+`C K` pairs under the same manual 1100/933 clock: `served_ab=unresolved` at a
+mean delta of +0.0150 (sd 0.0426, ci [-0.0529, +0.0828]), an interval wide
+enough to contain the design's registered +3.5% to +4.2% band without
+excluding zero, so the run neither confirms nor refutes the Q4_K
+activation-group-sums prediction and a higher replicate count or an
+identified scatter source is what would separate them.
 
 ## Order and falsifiers
 

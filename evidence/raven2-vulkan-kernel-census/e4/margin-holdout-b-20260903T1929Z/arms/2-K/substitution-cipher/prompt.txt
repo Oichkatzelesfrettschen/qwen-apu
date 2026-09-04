@@ -1,0 +1,1 @@
+Encrypt the word HARDWARE letter by letter with a Caesar shift of 11. For each letter print the plaintext letter, its position in the alphabet counted from A as 0, the shifted position, and the ciphertext letter. Then decrypt the result letter by letter with the same layout and confirm the round trip.

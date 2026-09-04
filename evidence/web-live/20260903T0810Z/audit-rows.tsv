@@ -1,0 +1,15 @@
+buckets	authorize-minute	1788423060	1
+buckets	search-minute	1788423060	1
+buckets	pages-day	1788393600	6
+buckets	provider-day	1788393600	2
+buckets	fetch-minute	1788423060	1
+audit	2026-09-03T08:11:03Z	web-open	authorize	74bf9345205a7006e5f9a5086489f112d8a4e56433996f4f3a631188a3180f37		5		0	0	43	success	1788423063						0	0
+audit	2026-09-03T08:11:03Z	web-open	search	74bf9345205a7006e5f9a5086489f112d8a4e56433996f4f3a631188a3180f37		5		13838	3612	1238	success	1788423063	sd19TxrOMcV3	qwen-open	bing,google	bing,google		0	20
+audit	2026-09-03T08:11:04Z	web-open	fetch			0	www.vulkan.org	0	0	20066	provider_http_error	1788423064						0	0
+grants	FqjlYSgEkKOLIEm-	web-open	searxng	1788423063	1788423963
+searches	sd19TxrOMcV3	web-open	searxng	1	2	1788423963
+search_results	sd19TxrOMcV3	https://www.vulkan.org/	
+search_results	sd19TxrOMcV3	https://www.khronos.org/blog/vulkan-subgroup-tutorial	
+search_results	sd19TxrOMcV3	https://en.wikipedia.org/wiki/Vulkan	
+search_results	sd19TxrOMcV3	https://docs.vulkan.org/guide/latest/subgroups.html	
+search_results	sd19TxrOMcV3	https://www.vulkan.org/news/auto-22673-229d92948e8573d319277a87e8c9c59e	
