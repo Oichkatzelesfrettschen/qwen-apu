@@ -2,7 +2,7 @@
 """Judge a kernel-delta comparison by one pipeline's GPU bracket.
 
 usage: summarize-bracket-ab.py ARMS_TSV ARMS_DIRECTORY --subject PIPELINE
-           --null PIPELINE [--bound F]
+           --null PIPELINE [--bound F] [--witness DIRECTORY]
 
 The arms ledger carries `C K K C` quadruples the way run-served-binary-ab.sh
 writes them, and every completed arm's directory holds the decode ledger the
@@ -39,6 +39,28 @@ served rate. The rows, each read by its `role`:
                      control per pair. Two token sequences can share a
                      string, so this is the reply's identity and not the
                      token array's; run-kernel-delta-witness.sh reads the ids
+    clock_state      the modal graphics clock and the modal `pp_dpm_mclk`
+                     selection each arm's sidecar recorded over its own request
+                     window, with the graphics share beside them. A device
+                     timestamp duration scales with the graphics clock, so this
+                     row states the execution state every bracket above was
+                     measured at rather than leaving it to the arms ledger. The
+                     second value is reported under the attribute's own name,
+                     since what that attribute selects is a property of the
+                     part rather than of this reader
+    token_identity   the generated token ids, candidate against control, from
+                     the margin witness `--witness` names. A reply can carry
+                     one string over two token arrays, so the ids are what the
+                     equivalence claim is read on and they come from a
+                     separate run
+    margin_contract  that witness's own overall verdict: positive candidate
+                     margins everywhere and the registered retention held
+                     wherever the control's margin clears the near-tie floor
+
+The three rows below the response identity report beside the paired bound and
+decide nothing: the campaign's exit follows the bracket rows, the null, and the
+two identity rows the arms themselves carry, so a witness directory absent from
+an invocation leaves its two rows `unavailable` rather than failing the run.
 
 A pair is read over the execution state and the attribution its two arms
 shared, the way summarize-census-controls.py reads a served pair. Two modal
@@ -83,6 +105,8 @@ EXCLUSIVE = "exclusive_bracket_ms"
 UNION = "pipeline_bracket_union_ms"
 DIGEST = "spirv_executed_sha256"
 SPAN = "queue_completion_span_ms_per_graph"
+WITNESS_SUMMARY = "margin-summary.tsv"
+WITNESS_COMPARISON = "candidate-vs-control"
 
 
 def read_arms(path):
@@ -350,6 +374,110 @@ def response_row(pairs, root):
             "-", "-", "-", "-", "-", "-", "-", "-", verdict, " ".join(details) or "-"]
 
 
+def clock_row(pairs):
+    """The execution state each arm's request window ran at, reported.
+
+    The sidecar validator prints one `clock_state=measured` line per arm and
+    run-served-binary-ab.sh carries its modal graphics clock, that mode's
+    share, and its modal fabric clock into the arms ledger. A bracket is a
+    device timestamp duration and scales with the graphics clock, so the state
+    belongs beside every row above; the pair comparability test one_clock_state
+    already refuses a pair that straddled a graphics step, which is why this
+    row states values rather than a bound.
+    """
+    controls, candidates = [], []
+    shares = []
+    fabric = set()
+    unread = 0
+    # comparable_pairs is a pair count in every row of this table, so a pair
+    # counts here only where both of its arms carried a readable state.
+    readable_pairs = 0
+    for control, candidate in pairs:
+        pair_readable = True
+        for row, bucket in ((control, controls), (candidate, candidates)):
+            sclk = row.get("sclk_mode_mhz", UNKNOWN_STATE) or UNKNOWN_STATE
+            share = row.get("sclk_share", UNKNOWN_STATE) or UNKNOWN_STATE
+            mclk = row.get("mclk_mode_mhz", UNKNOWN_STATE) or UNKNOWN_STATE
+            bucket.append(f"{sclk}/{share}/{mclk}")
+            if sclk == UNKNOWN_STATE or mclk == UNKNOWN_STATE:
+                unread += 1
+                pair_readable = False
+                continue
+            fabric.add(mclk)
+            try:
+                shares.append(float(share))
+            except ValueError:
+                unread += 1
+                pair_readable = False
+        if pair_readable:
+            readable_pairs += 1
+    if unread or not shares:
+        verdict, detail = "unavailable", f"arms_without_clock_state={unread}"
+    else:
+        verdict = "measured"
+        # The column is named for the attribute it was read from,
+        # `pp_dpm_mclk`, and reported under that name. What that attribute
+        # selects is a device question rather than a reader's: on the SMU10
+        # path it answers with the fabric clock, and a part exposing distinct
+        # memory and fabric domains would answer with the memory clock, so a
+        # row calling it the fabric clock would claim an observation this
+        # reader cannot make.
+        detail = (f"min_sclk_share={min(shares):.4f} mclk_modes={' '.join(sorted(fabric))}"
+                  f" arms={len(shares)}")
+    return ["clock_state", "-", "sclk_mode_mhz/sclk_share/mclk_mode_mhz",
+            str(len(pairs)), str(readable_pairs), "-", "-", "-", "-", "-",
+            " ".join(controls), " ".join(candidates), "-", verdict, detail]
+
+
+def read_witness(directory):
+    """The margin witness's per-prompt rows and its overall verdict."""
+    path = os.path.join(directory, WITNESS_SUMMARY)
+    try:
+        with open(path) as handle:
+            rows = list(csv.DictReader(handle, delimiter="\t"))
+    except OSError:
+        return None
+    if not rows or "comparison" not in rows[0] or "verdict" not in rows[0]:
+        return None
+    return rows
+
+
+def witness_rows(directory):
+    """Token identity and the margin contract, each from the witness run.
+
+    The witness is its own campaign over its own prompts, so both rows carry
+    the directory they were read from: a summary that implied these arms
+    generated the ids would attribute one run's evidence to another.
+    """
+    head_identity = ["token_identity", "-", "id_identity"]
+    head_margin = ["margin_contract", "-", "verdict"]
+    if directory is None:
+        blank = ["-"] * 9 + ["-", "unavailable", "no --witness directory"]
+        return [head_identity + blank, head_margin + blank]
+    rows = read_witness(directory)
+    if rows is None:
+        blank = ["-"] * 9 + ["-", "unavailable", f"witness={directory} unreadable"]
+        return [head_identity + blank, head_margin + blank]
+    compared = [row for row in rows if row["comparison"] == WITNESS_COMPARISON]
+    identities = {row.get("id_identity", UNKNOWN_STATE) for row in compared}
+    overall = [row["verdict"] for row in rows if row["comparison"] == "overall"]
+    if not compared or identities != {"held"}:
+        identity_verdict = "differs" if compared else "unavailable"
+        identity_detail = f"prompts={len(compared)} id_identity={' '.join(sorted(identities)) or '-'}"
+    else:
+        identity_verdict, identity_detail = "held", f"prompts={len(compared)}"
+    if len(overall) != 1:
+        margin_verdict, margin_detail = "unavailable", f"overall_rows={len(overall)}"
+    else:
+        margin_verdict = overall[0]
+        margin_detail = f"prompts={len(compared)}"
+    identity_row = head_identity + [str(len(compared)), str(len(compared))] + ["-"] * 8 + \
+        [identity_verdict, f"{identity_detail} witness={directory}"]
+    margin_row = head_margin + [str(len(compared)), str(len(compared))] + ["-"] * 8 + \
+        [margin_verdict, f"{margin_detail} witness={directory}"]
+    return [identity_row, margin_row]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("arms")
@@ -358,6 +486,7 @@ def main():
     parser.add_argument("--null", required=True, dest="null_pipeline")
     parser.add_argument("--bound", type=float, default=0.02)
     parser.add_argument("--sclk-band", type=float, default=DEFAULT_SCLK_BAND)
+    parser.add_argument("--witness", help="a run-kernel-delta-witness.sh output directory")
     args = parser.parse_args()
     if args.bound <= 0:
         raise SystemExit("--bound must exceed zero")
@@ -412,7 +541,8 @@ def main():
                   values(ratio), bound, states),
         module_row(pairs, ledgers, subject, null_pipeline),
         response_row(pairs, args.arms_directory),
-    ]
+        clock_row(pairs),
+    ] + witness_rows(args.witness)
     for row in rows:
         print("\t".join(row))
     return 0

@@ -417,6 +417,22 @@ checkpoint_source_sha256=$(printf '%s\n' "$classifier_output" |
 checkpoint_patch_sha256=$(printf '%s\n' "$classifier_output" |
     awk -F= '$1 == "checkpoint_patch_sha256" { print $2 }')
 
+# What Q4_K mat-vec arms this build can be asked for. The variant-select
+# candidate compiles every formulation into the executable and reads
+# GGML_VK_Q4K_VARIANT at pipeline creation, so an arm is a key rather than a
+# build; the manifest states the admitted keys the way it states the checkpoint
+# semantics, from the source the build compiled rather than from a caller's
+# claim. A tree carrying the multiplexed shader without the host reader, or the
+# reader without the shader, admits no key and reads `-`, since one half alone
+# would answer every key with the default.
+q4k_shader_source=$source_directory/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_q4_k.comp
+q4k_host_source=$source_directory/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+q4k_variants=-
+if grep -q '^#ifndef Q4K_VARIANT$' "$q4k_shader_source" 2>/dev/null &&
+    grep -q 'getenv("GGML_VK_Q4K_VARIANT")' "$q4k_host_source" 2>/dev/null; then
+    q4k_variants=e4/2,e4/4,e4/8,e4-scale/2,e4-scale/4,e4-scale/8,e4-scale-licm/2,e4-scale-licm/4,e4-scale-licm/8
+fi
+
 # The ordered production series, digested the way verify-llama-patch-series.sh
 # digests it: each member's own digest concatenated in ledger order, so a
 # reordering and a substitution are both visible in one field.
@@ -656,6 +672,7 @@ manifest_path=$build_directory/artifact-manifest.tsv
     printf 'checkpoint_source_sha256\t%s\n' "$checkpoint_source_sha256"
     printf 'checkpoint_patch_series_sha256\t%s\n' "$patch_series_sha256"
     printf 'checkpoint_series_tree\t%s\n' "$checkpoint_series_tree"
+    printf 'q4k_variants\t%s\n' "$q4k_variants"
     printf 'candidate_series\t%s\n' "$candidate_series"
     printf 'candidate_series_sha256\t%s\n' "$candidate_series_sha256"
     printf 'checkpoint_series_tree_sha256\t%s\n' "$checkpoint_series_tree_sha256"
