@@ -453,6 +453,37 @@ run_term restore
 report "$case_status" 'a restore naming another owner is refused and the owner still returns the baseline'
 unset QWEN_TEST_OWNER
 
+# A standalone caller names no owner at all: apply and restore are separate
+# processes with separate PIDs, so the default owner must be a fixed literal
+# rather than PID-derived, or a bare `restore` would always mismatch the
+# `apply` that claimed the snapshot.
+reset_fixture
+case_status=0
+set +e
+env PATH="$stub_directory:$PATH" \
+    QWEN_RYZENADJ="$stub_directory/ryzenadj" \
+    QWEN_WEBUI_STATE_DIRECTORY="$state_fixture" \
+    QWEN_POWER_ENVELOPE_SNAPSHOT="$snapshot_file" \
+    "$power_envelope" apply package-20w >"$temporary_directory/standalone-apply.log" 2>&1
+standalone_apply_status=$?
+env PATH="$stub_directory:$PATH" \
+    QWEN_RYZENADJ="$stub_directory/ryzenadj" \
+    QWEN_WEBUI_STATE_DIRECTORY="$state_fixture" \
+    QWEN_POWER_ENVELOPE_SNAPSHOT="$snapshot_file" \
+    "$power_envelope" restore >"$temporary_directory/standalone-restore.log" 2>&1
+standalone_restore_status=$?
+set -e
+[ "$standalone_apply_status" -eq 0 ] || case_status=1
+[ "$standalone_restore_status" -eq 0 ] || case_status=1
+grep -q 'power_envelope_restored=held profile=package-20w' \
+    "$temporary_directory/standalone-restore.log" || case_status=1
+[ ! -e "$snapshot_file" ] || case_status=1
+[ "$(firmware_field stapm_limit_mw)" = 15000 ] || case_status=1
+report "$case_status" 'a standalone apply and a separate standalone restore round-trip without an explicit owner'
+if [ "$case_status" -ne 0 ]; then
+    cat "$temporary_directory/standalone-apply.log" "$temporary_directory/standalone-restore.log" >&2
+fi
+
 if [ "$failures" -ne 0 ]; then
     printf 'power_envelope_tests=failed failures=%s\n' "$failures" >&2
     exit 1

@@ -74,9 +74,16 @@ tctl_ceiling_c=${QWEN_POWER_ENVELOPE_TCTL_CEILING_C:-95}
 # absolute band in the field's own write unit. A tenth of a watt is two orders
 # below the smallest step any registered profile moves.
 readback_tolerance=${QWEN_POWER_ENVELOPE_TOLERANCE:-100}
-# A caller that owns a wider transaction names itself here, so its restore acts
-# on its own claim alone. A direct invocation owns its snapshot by process.
-owner_token=${QWEN_POWER_ENVELOPE_OWNER:-power-envelope.$$}
+# A wrapping transaction (compute-state-lease.sh) names its own per-run
+# token explicitly on both `apply` and `restore`, so two concurrent
+# transactions never restore each other's claim. A direct, standalone
+# invocation names neither: `apply` and `restore` are two separate processes
+# with two separate PIDs, so a PID-derived default here would make
+# `power-envelope.sh restore` fail its own owner check against the
+# snapshot its own `apply` just claimed. The fixed literal below is what a
+# standalone round trip needs; it carries no PID and names no transaction, so
+# it never collides with a wrapping transaction's own random token.
+owner_token=${QWEN_POWER_ENVELOPE_OWNER:-power-envelope.standalone}
 
 # Each field names the power-metrics row it is read from, the set option it is
 # written with, and the factor that converts the printed reading into the write
