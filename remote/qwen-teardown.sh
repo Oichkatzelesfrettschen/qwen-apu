@@ -51,10 +51,23 @@ if [ -r "$status_file" ]; then
     image_service_start_time=$(sed -n \
         's/^image_service_identity .*start_time=\([0-9]*\).*/\1/p' \
         "$status_file")
+    # The search instance is read the same way, and its port comes off the
+    # identity line rather than from a default here: the session bound the
+    # listener the profile row names, and a teardown re-deriving 8888 would
+    # prove the absence of a listener another launch placed elsewhere.
+    searxng_pid=$(sed -n '1p' "$status_file" | tr ' ' '\n' |
+        sed -n 's/^searxng_pid=//p')
+    searxng_start_time=$(sed -n \
+        's/^searxng_identity .*start_time=\([0-9]*\) .*/\1/p' "$status_file")
+    searxng_port=$(sed -n \
+        's/^searxng_identity .*port=\([0-9]*\) .*/\1/p' "$status_file")
 fi
 broker_start_time=${broker_start_time:-}
 image_service_pid=${image_service_pid:-}
 image_service_start_time=${image_service_start_time:-}
+searxng_pid=${searxng_pid:-}
+searxng_start_time=${searxng_start_time:-}
+searxng_port=${searxng_port:-}
 
 "$script_directory/qwen-webui-control.sh" stop || true
 
@@ -203,6 +216,49 @@ if [ -n "$image_service_pid" ] && kill -0 "$image_service_pid" 2>/dev/null; then
         sleep 0.1
     done
 fi
+# The search instance is signalled after the same start-time comparison, and
+# its absence covers a process and a listener: a surviving instance holds the
+# port the next launch's health gate reads, and that gate would then admit a
+# launch whose own child had left.
+searxng_residue=0
+case $searxng_pid in
+    '' | *[!0-9]*) searxng_pid='' ;;
+esac
+if [ -n "$searxng_pid" ]; then
+    if [ -z "$searxng_start_time" ] || [ ! -r "/proc/$searxng_pid/stat" ]; then
+        printf 'pid %s carries no recorded start time, so the search instance is left to the residue proof\n' \
+            "$searxng_pid" >&2
+        searxng_pid=''
+    else
+        live_searxng_start_time=$(sed 's/^.*) //' "/proc/$searxng_pid/stat" |
+            awk '{ print $20 }')
+        if [ "$live_searxng_start_time" != "$searxng_start_time" ]; then
+            printf 'pid %s now belongs to another process (start %s recorded, %s live); the search instance is gone\n' \
+                "$searxng_pid" "$searxng_start_time" \
+                "$live_searxng_start_time" >&2
+            searxng_pid=''
+        fi
+    fi
+fi
+if [ -n "$searxng_pid" ] && kill -0 "$searxng_pid" 2>/dev/null; then
+    printf 'stopping search instance pid %s\n' "$searxng_pid"
+    kill -TERM "$searxng_pid" 2>/dev/null || true
+    attempt=0
+    while [ "$attempt" -lt 200 ] && kill -0 "$searxng_pid" 2>/dev/null; do
+        attempt=$((attempt + 1))
+        sleep 0.1
+    done
+    if kill -0 "$searxng_pid" 2>/dev/null; then
+        printf 'search instance still running: %s\n' "$searxng_pid" >&2
+        searxng_residue=1
+    fi
+fi
+if [ -n "$searxng_port" ] && command -v ss >/dev/null 2>&1 && \
+   ss -ltn "sport = :$searxng_port" 2>/dev/null | grep -q ":$searxng_port"; then
+    printf 'search instance port %s still has a listener\n' "$searxng_port" >&2
+    searxng_residue=1
+fi
+
 image_residue=0
 image_residue_prover=$script_directory/image-teardown-check.sh
 if [ ! -x "$image_residue_prover" ]; then
@@ -222,6 +278,9 @@ if [ "$broker_residue" -ne 0 ]; then
     residue=1
 fi
 if [ "$image_residue" -ne 0 ]; then
+    residue=1
+fi
+if [ "$searxng_residue" -ne 0 ]; then
     residue=1
 fi
 if pgrep -x llama-server >/dev/null 2>&1; then
@@ -246,7 +305,7 @@ fi
 
 rm -f "$state_directory/server.pid"
 if [ "$residue" -eq 0 ]; then
-    printf 'torn down: no server, tmux session, probe, approval broker, image service, or router snapshot; port %s free\n' \
+    printf 'torn down: no server, tmux session, probe, approval broker, image service, search instance, or router snapshot; port %s free\n' \
         "$server_port"
 else
     printf 'teardown incomplete\n' >&2

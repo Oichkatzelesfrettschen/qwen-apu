@@ -4,13 +4,17 @@
 Two sockets carry two different authorities. A Unix socket in the private state
 directory takes `image_generate`, `cancel`, and `status` as JSON lines, because
 a control channel that starts GPU work belongs to the filesystem permissions of
-the serving user rather than to a port. A 127.0.0.1 HTTP listener serves
+the serving user rather than to a port. A loopback HTTP listener serves
 completed immutable artifacts alone: `GET /health`,
 `GET /artifacts/<sha256>.png`, and `GET /artifacts/<sha256>.json` each require
 the same bearer API key the fallback Web UI sends on every request, and the
 bearer check runs ahead of the artifact lookup so a present and an absent hash
 answer 401 alike. The hash identifies an artifact and never authenticates a
 reader; neither does a query parameter, which the route ignores entirely.
+`--lan-exposure ADDRESS` is the operator's explicit opt-in: it admits
+`--http-host 0.0.0.0` and adds that one routable literal to the Host headers a
+request may name, and the bearer that already gates every route is what a LAN
+reader presents.
 
 The job pipeline is one sequence with one owner: parse the request, hand it to
 the injected verifier for its profile parameters, refuse every cap violation,
@@ -91,6 +95,7 @@ import image_protocol as protocol  # noqa: E402
 
 PROTOCOL_VERSION = protocol.PROTOCOL_VERSION
 LOOPBACK_HOSTS = ("127.0.0.1", "::1")
+WILDCARD_HOST = "0.0.0.0"  # noqa: S104 -- the exposure opt-in binds it deliberately
 RUNTIME_HARD_TIMEOUT_SECONDS = 300
 SERVICE_JOB_DEADLINE_SECONDS = 330
 TERMINATION_GRACE_SECONDS = 5.0
@@ -288,32 +293,79 @@ def loopback_host(value):
 
     The refusal runs against the configured string before the socket exists, so
     a wider bind fails at startup rather than serving artifacts to the network
-    until somebody reads the listening address.
+    until somebody reads the listening address. `--lan-exposure` widens this to
+    the wildcard, and `main` pairs the two.
     """
-    if value not in LOOPBACK_HOSTS:
+    if value in LOOPBACK_HOSTS or value == WILDCARD_HOST:
+        return value
+    raise argparse.ArgumentTypeError(
+        f"the artifact listener binds a loopback literal or {WILDCARD_HOST}; "
+        f"{value!r} is refused. Admitted hosts: "
+        f"{', '.join((*LOOPBACK_HOSTS, WILDCARD_HOST))}"
+    )
+
+
+def exposed_host(value):
+    """Return the IPv4 literal the LAN exposure opt-in admits in a Host header.
+
+    The comparison stays literal, so the DNS rebinding defense survives the
+    opt-in: a name resolving to the bound address is refused under the exposure
+    the way it is under the loopback default. The wildcard names no address a
+    reader reaches, so it belongs in `--http-host` and never here.
+    """
+    if not value:
+        # argparse applies a string type to its own default, so the empty
+        # default passes through as the absent opt-in.
+        return ""
+    parts = value.split(".")
+    if len(parts) != 4 or not all(
+        part.isdigit() and len(part) <= 3 and 0 <= int(part) <= 255 for part in parts
+    ):
         raise argparse.ArgumentTypeError(
-            f"the artifact listener binds a loopback literal alone; {value!r} "
-            f"is refused. Admitted hosts: {', '.join(LOOPBACK_HOSTS)}"
+            f"the LAN exposure address is an IPv4 literal; {value!r} is refused"
+        )
+    if value in LOOPBACK_HOSTS or value == WILDCARD_HOST:
+        raise argparse.ArgumentTypeError(
+            f"the LAN exposure address departs from the loopback default and "
+            f"names a reachable address; {value!r} is the default or the wildcard"
         )
     return value
 
 
-def host_header_is_loopback(header):
-    """Return whether a Host header names a loopback literal and no other name.
+def admitted_hosts(exposure=""):
+    """Return the Host-header literals a request may name.
 
-    A browser that resolves an attacker-controlled name to 127.0.0.1 reaches
-    this socket with that name in the Host header, so the bind alone leaves DNS
-    rebinding open; comparing the header against the same literals closes it.
+    The loopback literals stand under every setting, because `image-review.py`
+    and the teardown check reach this listener over 127.0.0.1 whatever the
+    socket binds. The exposure adds exactly one literal.
+    """
+    return (*LOOPBACK_HOSTS, exposure) if exposure else LOOPBACK_HOSTS
+
+
+def host_header_names(header, admitted):
+    """Return whether a Host header names one of the admitted literals.
+
+    A browser that resolves an attacker-controlled name to a bound address
+    reaches this socket with that name in the Host header, so the bind alone
+    leaves DNS rebinding open; comparing the header against a literal set
+    closes it.
     """
     if not header:
-        return False
+        return ""
     value = header.strip()
     if value.startswith("["):
         closing = value.find("]")
         if closing < 0:
-            return False
-        return value[1:closing] in LOOPBACK_HOSTS
-    return value.split(":", 1)[0] in LOOPBACK_HOSTS
+            return ""
+        named = value[1:closing]
+    else:
+        named = value.split(":", 1)[0]
+    return named if named in admitted else ""
+
+
+def host_header_is_loopback(header):
+    """Return whether a Host header names a loopback literal and no other name."""
+    return bool(host_header_names(header, LOOPBACK_HOSTS))
 
 
 def derive_radv_icd_environment():
@@ -1949,8 +2001,16 @@ class ArtifactHandler(http.server.BaseHTTPRequestHandler):
         404-against-401 split would turn the route into an existence oracle.
         """
         origin = self.allowed_origin()
-        if not host_header_is_loopback(self.headers.get("Host", "")):
-            self.send_json(403, {"error": "the request Host names no loopback literal"})
+        if not host_header_names(
+            self.headers.get("Host", ""), self.settings.admitted_hosts
+        ):
+            self.send_json(
+                403,
+                {
+                    "error": "the request Host names no admitted literal: "
+                    + ", ".join(self.settings.admitted_hosts)
+                },
+            )
             return
         if not self.authorized():
             self.send_response(401)
@@ -2043,6 +2103,12 @@ class ServiceSettings:
         self.verifier = verifier
         self.api_key = api_key
         self.origin = arguments.origin
+        # The exposure literal widens the Host-header set by exactly one entry
+        # and changes nothing else: the bearer already gates every route this
+        # listener serves, so the credential the page holds is the credential a
+        # LAN reader presents.
+        self.exposure = arguments.lan_exposure
+        self.admitted_hosts = admitted_hosts(arguments.lan_exposure)
         self.runtime_environment = dict(
             entry.split("=", 1) for entry in arguments.runtime_env
         )
@@ -2199,6 +2265,11 @@ def build_parser():
         "this file",
     )
     parser.add_argument("--http-host", type=loopback_host, default="127.0.0.1")
+    parser.add_argument(
+        "--lan-exposure", type=exposed_host, default="",
+        help="the routable IPv4 literal this listener admits in a Host header "
+        "beside the loopback ones; the Web UI bearer already gates every route",
+    )
     parser.add_argument("--http-port", type=int, default=0)
     parser.add_argument(
         "--runtime-env",
@@ -2213,6 +2284,15 @@ def build_parser():
 def run(argv):
     """Serve until a terminating signal, then prove what the job left behind."""
     arguments = build_parser().parse_args(argv)
+    # The listener decision comes first, ahead of every profile and credential
+    # check, because a caller who widened the bind by itself is refused on that
+    # ground rather than on whichever input it happened to omit as well.
+    if arguments.http_host == WILDCARD_HOST and not arguments.lan_exposure:
+        sys.stderr.write(
+            f"--http-host {WILDCARD_HOST} serves the network, so --lan-exposure "
+            "names the routable literal the Host header is gated on\n"
+        )
+        return 2
     if not arguments.state_dir:
         sys.stderr.write(
             "the service keeps its lease, socket, and artifacts under one "

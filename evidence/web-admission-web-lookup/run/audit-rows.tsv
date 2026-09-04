@@ -1,0 +1,259 @@
+buckets	authorize-minute	1788466500	1
+buckets	search-minute	1788466500	1
+buckets	pages-day	1788393600	4
+buckets	provider-day	1788393600	2
+buckets	fetch-minute	1788466500	1
+audit	2026-09-03T20:15:32Z	web-lookup	authorize	74bf9345205a7006e5f9a5086489f112d8a4e56433996f4f3a631188a3180f37		3		0	0	34	success	1788466532						0	0
+audit	2026-09-03T20:15:32Z	web-lookup	search	74bf9345205a7006e5f9a5086489f112d8a4e56433996f4f3a631188a3180f37		3		5414	2085	584	success	1788466532	uR3IsRpv8tQa	qwen-open	bing	bing		0	10
+audit	2026-09-03T20:15:33Z	web-lookup	fetch			1	www.vulkan.org	86603	12000	2342	success	1788466533						0	0
+grants	5VCwxdAhZjyQFugl	web-lookup	searxng	1788466532	1788467432
+searches	uR3IsRpv8tQa	web-lookup	searxng	1	1	1788467432
+search_results	uR3IsRpv8tQa	https://www.vulkan.org/	
+search_results	uR3IsRpv8tQa	https://en.wikipedia.org/wiki/Vulkan	
+search_results	uR3IsRpv8tQa	https://www.vulkan.org/news/auto-22673-229d92948e8573d319277a87e8c9c59e	
+content	89ecb7c227bca55aada406a60ae40ea8f535fecf147f59850f58dfd45a954fe9	uR3IsRpv8tQa	https://www.vulkan.org/	Home
+Latest Vulkan Developments
+Community
+Latest Projects
+Events
+News
+Contributing
+Learn
+Resources
+Tutorials
+Videos
+Blogs
+Best Practices
+Beginner Resources
+Tools
+Drivers
+SDK
+Profiling/Debugging
+Shader Tools
+Engines
+Frameworks
+Language Bindings
+Vulkan Profiles
+Porting
+Vulkan Porting Layers
+Vulkan Portability
+Made with Vulkan
+Events
+News
+Close
+Home
+Latest Vulkan Developments
+Community
+Latest Projects
+Events
+News
+Contributing
+Learn
+Resources
+Tutorials
+Videos
+Blogs
+Best Practices
+Beginner Resources
+Tools
+Drivers
+SDK
+Profiling/Debugging
+Shader Tools
+Engines
+Frameworks
+Language Bindings
+Vulkan Profiles
+Porting
+Vulkan Porting Layers
+Vulkan Portability
+Made with Vulkan
+Events
+News
+February 9-11 | San Diego, USA
+Vulkanised 2026 - Presentations Now Available!
+The premier conference for Vulkan developers
+Presentations available on the EVENT PAGE
+Announcing the release of Vulkan 1.4
+Vulkan 1.4
+Khronos Streamlines Development and Deployment of GPU-Accelerated Applications. Vulkan 1.4 integrates and mandates support for many proven features into its core specification, expanding the functionality that is consistently available to developers, greatly simplifying application development and deployment across multiple platforms
+Vulkan 1.4 Press Release
+Half Life: Alyx - Valve
+Vulkan for VR
+Half-Life: Alyx
+Half-Life: Alyx is Valve’s VR return to the Half-Life series. It’s the story of an impossible fight against a vicious alien race known as the Combine, set between the events of Half-Life and Half-Life 2. Playing as Alyx Vance, you are humanity’s only chance for survival.
+Learn More
+Path of Exile - Grinding Gear Games
+Available on PC and macOS with Vulkan
+Path of Exile
+Path of Exile is a free-to-play online Action RPG set in the dark fantasy world of Wraeclast. Available on PC, macOS with Vulkan.
+Learn More
+Specification
+SDK
+Drivers
+Code Samples
+Guide
+Communities
+Porting Layers
+Vulkan Profiles
+Khronos welcomes community contributions
+Contributing
+There are many ways community members can contribute to Vulkan ranging from joining Khronos as a member, making suggestions for the Vulkan spec via Github or contributing to the many open source software and tools projects. Here are a few pointers to how to get started:
+Khronos welcomes community contributions
+Contributing
+There are many ways community members can contribute to Vulkan ranging from joining Khronos as a member, making suggestions for the Vulkan spec via Github or contributing to the many open source software and tools projects. Here are a few pointers to how to get started:
+Join Khronos as a Member
+Promoter/contributor levels: Directly influence the Vulkan spec (with voting rights)
+Associate/Academic/Not-for-Profit levels: Advise the Working Group on future evolution topics (no voting rights)
+Find Out More
+Vulkan on GitHub
+Khronos maintains several public GitHub repos for Vulkan - please follow the contributing and licensing guidelines listed on the repos:
+The Vulkan specification (Vulkan_docs)
+Vulkan Guide (vulkan_guide)
+Khronos Vulkan Tutorial (vulkan_tutorial)
+Vulkan samples (vulkan_samples)
+docs.vulkan.org website (vulkan_site)
+Many tools, layers, profiles, etc.
+The public community can contribute via
+Submitting issues
+Suggesting improvements
+Find Out More
+Contribute to the many community supported open source Vulkan projects
+Engines
+Frameworks
+Libraries
+Language bindings
+Find Out More
+Roadmap Suggestions
+Vulkan Roadmap "proposal" (for background on Vulkan Roadmaps)
+The Vulkan working group welcomes input from the developer community on challenges that you would like to see targeted in future Vulkan Roadmap milestones. If you have significant problems you’d like to see solved, major pain points that need addressing, improvements to streamline development, etc., your feedback will help guide the development of new solutions.
+Submit a "Roadmap Feedback" issue on Vulkan-Docs
+Open an issue (or comment on an existing Roadmap Feedback issue) on the Vulkan-Docs Github repo using the Roadmap Feedback issue template. See issue #2220 for an example.
+Discord channel for roadmap ideas
+Go to #vulkan-roadmap-discussions on the official Vulkan Discord and post suggested roadmap improvements to seed discussions with other Vulkan developers and Work Group members
+Vulkan Platform Support
+Vulkan is a cross-platform industry standard enabling developers to target a wide range of devices with the same graphics API.
+Vulkan Developments
+Latest Extensions
+Vulkan is constantly evolving to bring new capabilities and improvements to the API. Here are some of the most recent developments
+Baldur's Gate 3 - Larian Studios
+Vulkan Developments
+Latest Extensions
+Vulkan is constantly evolving to bring new capabilities and improvements to the API. Here are some of the most recent developments
+Vulkan 1.4 Specification
+Vulkan 1.4 Specification
+The Vulkan 1.4 specification consolidates numerous previously optional extensions, features, and increased minimum hardware limits, many of which were defined in the Vulkan Roadmap 2022 and 2024 milestones and associated profiles
+Read the press release
+Khronos Streamlines Development and Deployment of GPU-Accelerated Applications with Vulkan 1.4
+Vulkan Roadmap 2026 Released
+Press Release
+The Vulkan Working Group has released two important updates to the API and ecosystem: an entirely new Descriptor system and the Vulkan Roadmap 2026 Milestone.
+Roadmap 2026 Specification
+This milestone raises the baseline feature support of Vulkan implementations as with prior milestones. In addition, this milestone makes guarantees about swapchain and presentation support for implementations.
+Descriptor Heaps
+Read the blog
+The new VK_EXT_descriptor_heap extension represents a complete overhaul of the current Vulkan descriptor system, providing direct access to descriptor memory while preserving compatibility with legacy descriptor sets and other APIs.
+Spec Proposal Document
+This document outlines a proposal to make the management of descriptor memory more explicit, allowing descriptors to be present in buffer memory, allowing the data and memory to be managed alongside other buffer objects.
+Video - Finalized Extensions Released!
+Press Release
+Khronos has released finalized extensions, collectively called ‘Vulkan Video’, for seamlessly integrating hardware-accelerated video compression and decompression into the Vulkan API. This API incorporates industry feedback and exposes core decode Vulkan Video functionality to provide fully accelerated H.264 and H.265 decode.
+Vulkan Video Blog - Decode
+Vulkan Video adheres to the Vulkan philosophy of providing applications flexible, fine-grained control over scheduling, synchronization, and memory allocation. By leveraging the existing Vulkan API framework, the Vulkan Video extensions enable efficient, low-latency, low-overhead use of processing resources for accelerated video processing.
+Vulkan Video Blog - Encode
+With the release of Vulkan 1.3.274, Khronos has finalized the extensions to enable encoding of H.264 and H.265 video streams.
+Vulkan Video Blog - AV1 Decode
+Khronos Releases AV1 Decode in Vulkan Video with SDK Support for H.264/H.265 Encode
+Synchronization 2
+Overview Blog
+The newly released VK_KHR_synchronization2 extension brings extensive improvements to Vulkan queue submission, events, and pipeline barriers to significantly improve API usability for developers.
+Technical Blog
+The goal of this article is to help developers easily understand and not be intimidated or confused by one of the toughest aspects of Vulkan: Synchronization.
+Synchronization 2 in the Vulkan Guide
+See this chapter in the Vulkan Guide for an overview of the latest Vulkan synchronization capabilities
+Specification
+See the details of VK_KHR_synchronization2 in the Vulkan specification
+Synchronization 2 code sample
+Demonstrates the use of the reworked synchronization api introduced with VK_KHR_synchronization2. This sample uses the new extension to streamline memory barriers used for compute and graphics work submissions.
+Ray Tracing
+Read the Blog
+Khronos® has released the final versions of the set of Vulkan®, GLSL and SPIR-V extension specifications that seamlessly integrate ray tracing into the existing Vulkan framework.
+Ray Tracing in the Vulkan Guide
+For an overview of Ray Tracing in Vulkan, check out this chapter in the Vulkan Guide
+Specification
+Start with the Ray Traversal and Ray Tracing sections of the Vulkan Spec for more details
+Ray Tracing code sample
+Render a basic scene using the official cross-vendor ray tracing extension. Shows how to setup all data structures required for ray tracing
+Timeline Semaphores
+Read the Blog
+The new timeline semaphore synchronization API defines a primitive containing a superset of both the original VkSemaphore and VkFence primitives while simultaneously eliminating many of the most painful limitations of the previous APIs
+Specification
+See detials for Timeline Semaphore in the Vulkan Specification
+Timeline Semaphore code sample
+Demonstrates various use cases which are enabled with timeline semaphores. The sample implements "Game of Life" using out-of-order signal and wait, multiple waits on same semaphore in different queues, waiting and signalling semaphore on host.
+Fragment Shading Rate
+Read the blog
+The VK_KHR_fragment_shading_rate extension provides a new, flexible technique to control the fragment shading rate, enabling developers to perform shading at a lower resolution than the render targets.
+Specification
+See detials for VK_KHR_fragment_shading_rate in the Vulkan Specification
+Fragment Shading Rate code sample
+Uses a special framebuffer attachment to control fragment shading rates for different framebuffer regions. This allows explicit control over the number of fragment shader invocations for each pixel covered by a fragment
+Descriptor Indexing for Mobile
+Read the blog
+Android is enabling a host of useful new Vulkan extensions for mobile. These new extensions are set to improve the state of graphics APIs for modern applications, enabling new use cases and changing how developers can design graphics renderers going forward.
+Specification
+See details for Descriptor Indexing in the Vulkan Specification
+Descriptor Indexing code sample
+Demonstrates how to use descriptor indexing to enable update-after-bind and non-dynamically uniform indexing of descriptors
+New to Graphics Programming?
+If you're just starting out in your Graphics Programming journey, we've listed a few recommended resources to help get you spun up on the basics.
+Learn more
+Marek Okon - Unsplash
+Community
+Join Our Community
+There are several ways to follow the latest Vulkan developments, get questions answered and make suggestions for improvement.
+You'll find thriving Vulkan community discussions on several forums and social media platforms below. It's a great way to get involved!
+Latest project
+Vulkan Portability
+Vulkan® Portability™ aims to counter platform fragmentation by encouraging layered implementations of Vulkan functionality over Metal, DX12 and other APIs. Vulkan Portability enables Vulkan applications to be reliably deployed across diverse platforms
+Learn more
+Latest project
+Vulkan SC
+The release of the Vulkan SC 1.0 specification on March 1, 2022 marked an important milestone in delivering a new generation of safety-critical APIs. Based on the Vulkan 1.2 API, Vulkan SC meets the needs of safety-critical systems to leverage the performance of modern GPUs to satisfy their graphics and compute requirements.
+Learn more
+Events
+Upcoming Events
+See more events
+Vulkanised 2027
+February 8, 2027 - February 10, 2027
+Read More
+News
+The Latest on Vulkan
+Find out more
+Khronos at SIGGRAPH 2026: Open Standards Reach New Heights
+SIGGRAPH 2026 in Los Angeles delivered a clear snapshot of the future of graphics and spatial computing—and Khronos was at the center of it. The organization presented more than 20 sessions spanning hands-on courses and in-depth Birds of a Feather (BOF) discussions on neural graphics, XR, 3D assets, rendering, and real-time shading. Wednesday, July 22 served as the dedicated Khronos Developer Day, with status updates from the Vulkan, glTF, WebGL/WebGPU, OpenXR, ANARI, and Slang Working Groups, plus the Machine Learning Council, followed by a networking reception for members and guests. Click through for a full recap of activities.
+August 21st at 5:29pm
+Read More
+LunarG Releases SDK 1.4.357
+Highlights of SDK 1.4.357:• Major KosmicKrisp performance gains (up to ~2.35× faster) + full Vulkan 1.4 exposure on Apple platforms• 13 new extensions• Scoped GPU-AV + new GPU Dump tool in the Validation Layers• Available now for Linux, Windows & macOS
+August 2nd at 11:02pm
+Read More
+Khronos Announces Vulkanised 2027 and Real-Time Shading Symposium 2027
+The Khronos Group today announced dates and venue for two co-located events in Kortrijk, Belgium: Vulkanised 2027 (February 8–10) and the Real-Time Shading Symposium 2027 (February 11–12). Both events will be hosted at Howest University of Applied Sciences' The Penta facility, with Howest serving as venue sponsor.
+July 16th at 2:06pm
+Read More
+Vulkan Ray Tracing: Deprecating Host-Side Acceleration Structure Builds
+Vulkan is deprecating host-side ray tracing acceleration structure build commands in favor of a single, device-address-based path. This aligns Vulkan Ray Tracing with the direction of DirectX Raytracing, modern engine architecture, and hardware trends.In the six years since Vulkan Ray Tracing launched, the host-side path has seen limited adoption. Developers generally found it more cumbersome than helpful, while implementers had to maintain parallel host/GPU command models that increased complexity and created friction for future ray tracing API evolution.
+July 8th at 2:35pm
+Read More
+Join the conversation:
+Links:
+Home
+Learn
+Tools
+Made with Vulkan
+News
+Portability
+Website Feedback
+Powered by
+© The Khronos® Group Inc. 2026. All rights reserved. Legal Notices | Privacy Policy | Manage cookie preferences	e3b3385979545b1889ee21d6252579496c9faf213405811d53389e5714e5792d	0	success	1788466533	1788467432

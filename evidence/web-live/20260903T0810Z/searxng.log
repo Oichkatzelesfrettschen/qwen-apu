@@ -1,0 +1,6 @@
+2026-09-03 01:10:56,480 WARNING:searx.cache: [DATA_CACHE] hash token changed: truncate all cache tables
+2026-09-03 01:10:56,515 WARNING:searx.cache: [ENGINES_CACHE] hash token changed: truncate all cache tables
+2026-09-03 01:10:56,564 WARNING:searx.botdetection.config: missing config file: $HOME/qwen-webui-state/searxng/limiter.toml
+ * Serving Flask app 'webapp'
+ * Debug mode: off
+2026-09-03 01:10:56,648 ERROR:searx.botdetection: X-Forwarded-For nor X-Real-IP header is set!
