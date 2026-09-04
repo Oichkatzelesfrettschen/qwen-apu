@@ -58,18 +58,44 @@ set -eu
 #
 # qwen-teardown.sh ends what this script starts.
 
-if [ "$#" -gt 1 ]; then
-    printf 'usage: %s [paced-60|low-serialized|low-async]\n' "$0" >&2
+usage() {
+    printf 'usage: %s [lan-authenticated|lan-open-approved] [paced-60|low-serialized|low-async]\n' \
+        "$0" >&2
+    printf 'lan-authenticated (the default) requires the Web UI bearer on every route; lan-open-approved removes it, so every peer that reaches the page can chat, approve a search, and approve a generation\n' >&2
     printf 'QWEN_SERVER_PORT names the router port, default 42069; the broker and artifact listeners take the next two\n' >&2
     printf 'QWEN_WEB_LAN_ADDRESS names the IPv4 literal to serve; the default is the source address of the default route\n' >&2
-    printf 'QWEN_WEB_LAN_OPEN=0 requires the Web UI bearer on every listener; the default 1 serves every peer without one\n' >&2
+    printf 'QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 binds every interface rather than the one QWEN_WEB_LAN_ADDRESS names; the launch prints it loudly\n' >&2
+    printf 'QWEN_WEB_LAN_TRUSTED_CONNECTIONS names a colon-separated list of NetworkManager connection UUIDs; lan-open-approved refuses with none declared\n' >&2
     printf 'QWEN_WEB_TOKEN_KEY_FILE names the broker signing key, default $HOME/qwen-web-token.key, minted when absent\n' >&2
     printf 'QWEN_IMAGE_PROFILES_JSON names the validated image parameters; the default is the path the active deployment image server carries\n' >&2
     exit 2
-fi
+}
+
+# The security profile and the performance profile are two independent
+# decisions, so each argument is read by which vocabulary it matches rather
+# than by position; a name outside both is a usage error rather than a guess.
+security_profile=lan-authenticated
+profile=low-async
+security_profile_set=0
+performance_profile_set=0
+for launch_argument in "$@"; do
+    case $launch_argument in
+        lan-authenticated | lan-open-approved)
+            [ "$security_profile_set" = 0 ] || usage
+            security_profile=$launch_argument
+            security_profile_set=1
+            ;;
+        paced-60 | low-serialized | low-async)
+            [ "$performance_profile_set" = 0 ] || usage
+            profile=$launch_argument
+            performance_profile_set=1
+            ;;
+        *) usage ;;
+    esac
+done
+[ "$#" -le 2 ] || usage
 
 script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-profile=${1:-low-async}
 state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
 server_port=${QWEN_SERVER_PORT:-42069}
 signing_key_file=${QWEN_WEB_TOKEN_KEY_FILE:-"$HOME/qwen-web-token.key"}
@@ -88,14 +114,43 @@ if [ "$server_port" -lt 1 ] || [ "$server_port" -gt 65533 ]; then
     exit 2
 fi
 
-case ${QWEN_WEB_LAN_OPEN:-1} in
+# The named profile decides the bearer; QWEN_WEB_LAN_OPEN is read here only to
+# catch a caller naming both a profile and a conflicting override, since
+# stating two answers to the one question this argument settles is a usage
+# error rather than a value one of them silently wins.
+case ${security_profile} in
+    lan-authenticated) lan_open_default=0 ;;
+    lan-open-approved) lan_open_default=1 ;;
+esac
+if [ -n "${QWEN_WEB_LAN_OPEN:-}" ]; then
+    case $QWEN_WEB_LAN_OPEN in
+        0 | 1) ;;
+        *)
+            printf 'QWEN_WEB_LAN_OPEN must be 0 or 1: %s\n' "$QWEN_WEB_LAN_OPEN" >&2
+            exit 2
+            ;;
+    esac
+    if [ "$QWEN_WEB_LAN_OPEN" != "$lan_open_default" ]; then
+        printf 'the %s profile and QWEN_WEB_LAN_OPEN=%s name two different bearer policies\n' \
+            "$security_profile" "$QWEN_WEB_LAN_OPEN" >&2
+        printf 'name the profile that matches, or leave QWEN_WEB_LAN_OPEN unset and let the profile argument decide\n' >&2
+        exit 2
+    fi
+fi
+lan_open=$lan_open_default
+
+case ${QWEN_WEB_LAN_OPEN_ALL_INTERFACES:-0} in
     0 | 1) ;;
     *)
-        printf 'QWEN_WEB_LAN_OPEN must be 0 or 1: %s\n' "$QWEN_WEB_LAN_OPEN" >&2
+        printf 'QWEN_WEB_LAN_OPEN_ALL_INTERFACES must be 0 or 1: %s\n' \
+            "$QWEN_WEB_LAN_OPEN_ALL_INTERFACES" >&2
         exit 2
         ;;
 esac
-lan_open=${QWEN_WEB_LAN_OPEN:-1}
+lan_open_all_interfaces=${QWEN_WEB_LAN_OPEN_ALL_INTERFACES:-0}
+if [ "$lan_open_all_interfaces" = 1 ]; then
+    printf 'QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 binds every interface rather than the selected address alone\n' >&2
+fi
 
 # Print the source address of the default route. QWEN_LAN_ADDRESS_PROBE names
 # another command so a test states the answer instead of reading the host it
@@ -246,10 +301,10 @@ else
     printf 'prior_session=none\n'
 fi
 
-printf 'lan_launch port=%s address=%s address_source=%s open=%s signing_key=%s provider=%s image_parameters=%s image_parameters_source=%s\n' \
-    "$server_port" "$lan_address" "$lan_address_source" "$lan_open" \
-    "$signing_key_state" "$web_provider" "${image_profiles_json:--}" \
-    "$image_parameters_source"
+printf 'lan_launch port=%s address=%s address_source=%s security_profile=%s open=%s all_interfaces=%s signing_key=%s provider=%s image_parameters=%s image_parameters_source=%s\n' \
+    "$server_port" "$lan_address" "$lan_address_source" "$security_profile" \
+    "$lan_open" "$lan_open_all_interfaces" "$signing_key_state" \
+    "$web_provider" "${image_profiles_json:--}" "$image_parameters_source"
 
 # An empty parameters path stays out of the environment, since the launch
 # reads the variable's presence as the lane's own claim.
@@ -257,11 +312,17 @@ if [ -n "$image_profiles_json" ]; then
     QWEN_IMAGE_PROFILES_JSON=$image_profiles_json
     export QWEN_IMAGE_PROFILES_JSON
 fi
+# QWEN_BIND_HOST is left unset here rather than forced to a default: an unset
+# value lets remote/web-lan-exposure.sh bind the one address this launch
+# selected, and QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 is the explicit decision
+# that widens it to every interface. A caller's own QWEN_BIND_HOST still
+# reaches that policy unchanged.
 QWEN_SERVER_PORT=$server_port \
 QWEN_WEB_LAN=1 \
 QWEN_WEB_LAN_ADDRESS=$lan_address \
 QWEN_WEB_LAN_OPEN=$lan_open \
-QWEN_BIND_HOST=${QWEN_BIND_HOST:-0.0.0.0} \
+QWEN_WEB_LAN_OPEN_ALL_INTERFACES=$lan_open_all_interfaces \
+QWEN_WEB_LAN_TRUSTED_CONNECTIONS=${QWEN_WEB_LAN_TRUSTED_CONNECTIONS:-} \
 QWEN_ROUTER=1 \
 QWEN_WEB_AUTHORIZER_READY=1 \
 QWEN_WEB_TOKEN_KEY_FILE=$signing_key_file \
@@ -275,10 +336,17 @@ lan_name=""
 if [ -f "$session_status" ]; then
     lan_name=$(sed -n 's/^state=running.* lan_name=\([^ ]*\).*/\1/p' "$session_status" | head -n 1)
 fi
+if [ "$lan_open" = 1 ]; then
+    printf 'LAN BOUNDARY: lan-open-approved -- every reachable peer chats, consumes model time, and fetches artifacts with no bearer\n'
+else
+    printf 'LAN BOUNDARY: lan-authenticated -- the Web UI bearer is required on every route\n'
+fi
 if [ -n "$lan_name" ]; then
     printf 'open http://%s:%s/ from any machine on this network\n' \
         "$lan_name" "$server_port"
 fi
 printf 'or http://%s:%s/ by address while this lease holds\n' \
     "$lan_address" "$server_port"
+printf 'fall back to the authenticated boundary with %s lan-authenticated\n' \
+    "$0"
 printf 'end it with %s/qwen-teardown.sh\n' "$script_directory"

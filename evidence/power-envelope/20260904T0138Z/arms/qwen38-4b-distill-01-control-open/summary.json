@@ -1,0 +1,12 @@
+{
+  "label": "qwen38-4b-distill-01-control-open",
+  "request_status": 0,
+  "teardown_status": 0,
+  "prefill_tok_per_second": 12.146861954110435,
+  "prefill_ms": 1564.19,
+  "decode_tok_per_second": 3.384060035158772,
+  "decode_ms": 18616.691,
+  "prompt_tokens": 19,
+  "decode_tokens": 64,
+  "valid": true
+}

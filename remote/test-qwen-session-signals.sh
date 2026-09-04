@@ -105,6 +105,112 @@ for signal_and_status in HUP:129 INT:130 TERM:143; do
     fi
 done
 
+# QWEN_WEB_BROKER_ORIGIN and QWEN_IMAGE_PAGE_ORIGIN let a caller replace the
+# derived origin, and connect-qwen-webui.sh's own recommended loopback value
+# is exactly the override a LAN exposure conflicts with: neither listener
+# admits a request naming a host outside the exposure's literal or name, so an
+# override naming another host is refused before the session starts a server.
+state_directory=$temporary_directory/state-origin-conflict
+mkdir -p "$state_directory"
+set +e
+QWEN_WEB_LAN=1 QWEN_WEB_LAN_ADDRESS=192.168.1.10 \
+    QWEN_WEB_BROKER_ORIGIN=http://127.0.0.1:8080 \
+    "$fixture_remote/qwen-webui-session.sh" \
+        "$temporary_directory/fake-server" \
+        "$temporary_directory/fake-model" \
+        "$temporary_directory/fake-static" 4096 4096 18080 \
+        "$state_directory" low-serialized \
+    >"$state_directory/session.stdout" 2>"$state_directory/session.stderr"
+conflict_status=$?
+set -e
+if [ "$conflict_status" -ne 2 ] || \
+   ! grep -q 'QWEN_WEB_BROKER_ORIGIN names an origin the LAN exposure does not admit' \
+       "$state_directory/session.stderr"; then
+    printf 'a conflicting QWEN_WEB_BROKER_ORIGIN was not refused\n' >&2
+    cat "$state_directory/session.stderr" >&2
+    exit 1
+fi
+
+# A host that matches the exposure's literal is still refused where the
+# scheme or the port departs from the derived origin, since the broker and
+# the artifact listener compare the whole Origin header rather than its host.
+state_directory=$temporary_directory/state-origin-port-conflict
+mkdir -p "$state_directory"
+set +e
+QWEN_WEB_LAN=1 QWEN_WEB_LAN_ADDRESS=192.168.1.10 \
+    QWEN_WEB_BROKER_ORIGIN=http://192.168.1.10:9999 \
+    "$fixture_remote/qwen-webui-session.sh" \
+        "$temporary_directory/fake-server" \
+        "$temporary_directory/fake-model" \
+        "$temporary_directory/fake-static" 4096 4096 18080 \
+        "$state_directory" low-serialized \
+    >"$state_directory/session.stdout" 2>"$state_directory/session.stderr"
+port_conflict_status=$?
+set -e
+if [ "$port_conflict_status" -ne 2 ] || \
+   ! grep -q 'QWEN_WEB_BROKER_ORIGIN names an origin the LAN exposure does not admit' \
+       "$state_directory/session.stderr"; then
+    printf 'a QWEN_WEB_BROKER_ORIGIN naming the right host and the wrong port was not refused\n' >&2
+    cat "$state_directory/session.stderr" >&2
+    exit 1
+fi
+
+state_directory=$temporary_directory/state-image-origin-conflict
+mkdir -p "$state_directory"
+set +e
+QWEN_WEB_LAN=1 QWEN_WEB_LAN_ADDRESS=192.168.1.10 \
+    QWEN_IMAGE_PAGE_ORIGIN=http://127.0.0.1:8080 \
+    "$fixture_remote/qwen-webui-session.sh" \
+        "$temporary_directory/fake-server" \
+        "$temporary_directory/fake-model" \
+        "$temporary_directory/fake-static" 4096 4096 18080 \
+        "$state_directory" low-serialized \
+    >"$state_directory/session.stdout" 2>"$state_directory/session.stderr"
+image_conflict_status=$?
+set -e
+if [ "$image_conflict_status" -ne 2 ] || \
+   ! grep -q 'QWEN_IMAGE_PAGE_ORIGIN names an origin the LAN exposure does not admit' \
+       "$state_directory/session.stderr"; then
+    printf 'a conflicting QWEN_IMAGE_PAGE_ORIGIN was not refused\n' >&2
+    cat "$state_directory/session.stderr" >&2
+    exit 1
+fi
+
+# An override naming the exposure's own literal is admitted rather than
+# refused, so the check above does not also catch the host it exists to admit.
+state_directory=$temporary_directory/state-origin-admitted
+server_pid_marker=$temporary_directory/server-origin-admitted.pid
+router_snapshot=$state_directory/.router-presets.active.origin
+mkdir -p "$state_directory"
+: >"$router_snapshot"
+QWEN_ROUTER=1 QWEN_ROUTER_PRESETS=$router_snapshot \
+    QWEN_TEST_SERVER_PID_MARKER=$server_pid_marker \
+    QWEN_WEB_LAN=1 QWEN_WEB_LAN_ADDRESS=192.168.1.10 \
+    QWEN_WEB_BROKER_ORIGIN=http://192.168.1.10:18080 \
+    python3 "$fixture_remote/signal-reset-exec.py" \
+        "$fixture_remote/qwen-webui-session.sh" \
+            "$temporary_directory/fake-server" \
+            "$temporary_directory/fake-model" \
+            "$temporary_directory/fake-static" 4096 4096 18080 \
+            "$state_directory" low-serialized \
+    >"$state_directory/session.stdout" 2>"$state_directory/session.stderr" &
+session_pid=$!
+attempt=0
+while [ ! -s "$server_pid_marker" ] && [ "$attempt" -lt 100 ]; do
+    attempt=$((attempt + 1))
+    sleep 0.01
+done
+if [ ! -s "$server_pid_marker" ]; then
+    printf 'an admitted QWEN_WEB_BROKER_ORIGIN did not reach the server fixture\n' >&2
+    cat "$state_directory/session.stderr" >&2
+    exit 1
+fi
+server_pid=$(sed -n '1p' "$server_pid_marker")
+kill -TERM "$session_pid"
+wait "$session_pid" 2>/dev/null || true
+session_pid=''
+server_pid=''
+
 # The approval broker is a guarded child of the same session, so the arms below
 # drive a complete startup rather than the readiness loop the signal arms stop
 # inside: session.status carries broker_pid only after state=running, and the

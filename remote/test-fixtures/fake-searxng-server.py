@@ -11,7 +11,15 @@ install and reaching no network.
 `--results` states how many records each category answers with, which is what
 lets a test place a category below a profile's `minimum_results`. `--fail-health`
 answers `/healthz` with 503 while the process keeps running, the shape of an
-instance that binds its port and never becomes usable.
+instance that binds its port and never becomes usable. `--delay-ready` answers
+503 until the given number of seconds have elapsed since the process started,
+then 200, the shape of an instance still loading its engine set: a test reads
+the session's status file inside that window to prove the pid and start time
+land there before health succeeds. `--stall-health` sleeps inside the
+`/healthz` handler before answering 200, the shape of a connection that is
+accepted and then stalls rather than one that answers immediately: a readiness
+loop that counts attempts instead of elapsed wall-clock time multiplies its
+budget by whatever each stalled request costs it.
 """
 
 import argparse
@@ -20,6 +28,7 @@ import json
 import os
 import signal
 import sys
+import time
 import urllib.parse
 
 ENGINES_BY_CATEGORY = {
@@ -51,9 +60,21 @@ def build_arguments():
     parser.add_argument("--log", default="", help="one line per request")
     parser.add_argument("--fail-health", action="store_true")
     parser.add_argument(
+        "--delay-ready",
+        type=float,
+        default=0.0,
+        help="seconds after start before /healthz answers 200 rather than 503",
+    )
+    parser.add_argument(
         "--ignore-term",
         action="store_true",
         help="retain SIGTERM, so a teardown meets a survivor and reports residue",
+    )
+    parser.add_argument(
+        "--stall-health",
+        type=float,
+        default=0.0,
+        help="seconds the /healthz handler sleeps before answering 200",
     )
     return parser.parse_args()
 
@@ -61,6 +82,7 @@ def build_arguments():
 def main():
     arguments = build_arguments()
     counts = parse_counts(arguments.results)
+    started_monotonic = time.monotonic()
 
     def note(line):
         if not arguments.log:
@@ -96,7 +118,17 @@ def main():
             fields = urllib.parse.parse_qs(parsed.query)
             if parsed.path == "/healthz":
                 note("healthz")
+                if arguments.stall_health:
+                    # ThreadingHTTPServer gives each request its own thread,
+                    # so this blocks only the caller waiting on it rather than
+                    # the whole listener.
+                    time.sleep(arguments.stall_health)
                 if arguments.fail_health:
+                    self.answer(503, "unavailable", "text/plain")
+                elif (
+                    arguments.delay_ready
+                    and time.monotonic() - started_monotonic < arguments.delay_ready
+                ):
                     self.answer(503, "unavailable", "text/plain")
                 else:
                     self.answer(200, "OK", "text/plain")

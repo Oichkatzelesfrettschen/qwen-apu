@@ -149,8 +149,9 @@ if recorded 'profile=low-async' &&
     recorded 'QWEN_SERVER_PORT=42069' &&
     recorded 'QWEN_WEB_LAN=1' &&
     recorded 'QWEN_WEB_LAN_ADDRESS=10.0.0.7' &&
-    recorded 'QWEN_WEB_LAN_OPEN=1' &&
-    recorded 'QWEN_BIND_HOST=0.0.0.0' &&
+    recorded 'QWEN_WEB_LAN_OPEN=0' &&
+    recorded 'QWEN_WEB_LAN_OPEN_ALL_INTERFACES=0' &&
+    ! grep -qx 'QWEN_BIND_HOST=.*' "$launch_record" &&
     recorded 'QWEN_ROUTER=1' &&
     recorded 'QWEN_WEB_AUTHORIZER_READY=1' &&
     recorded "QWEN_WEB_TOKEN_KEY_FILE=$home/qwen-web-token.key" &&
@@ -229,6 +230,89 @@ else
     cat "$work/bearer.err" >&2
 fi
 rm -f "$state/session.status"
+
+# The lan-open-approved profile is the explicit opt-in; it removes the
+# bearer and reports the household boundary the operator chose.
+if run_wrapper lan-open-approved >"$work/open-profile.out" 2>"$work/open-profile.err" &&
+    recorded 'QWEN_WEB_LAN_OPEN=1' &&
+    grep -q ' security_profile=lan-open-approved ' "$work/open-profile.out" &&
+    grep -qx 'LAN BOUNDARY: lan-open-approved -- every reachable peer chats, consumes model time, and fetches artifacts with no bearer' \
+        "$work/open-profile.out"; then
+    report open_approved_profile ok
+else
+    report open_approved_profile fail
+    cat "$work/open-profile.err" >&2
+fi
+rm -f "$state/session.status"
+
+# The lan-authenticated profile is the one-command fallback: naming it
+# explicitly reaches the same bearer-required launch the bare default does.
+if run_wrapper lan-authenticated low-async >"$work/auth-profile.out" 2>"$work/auth-profile.err" &&
+    recorded 'QWEN_WEB_LAN_OPEN=0' &&
+    grep -q ' security_profile=lan-authenticated ' "$work/auth-profile.out" &&
+    grep -qx 'LAN BOUNDARY: lan-authenticated -- the Web UI bearer is required on every route' \
+        "$work/auth-profile.out"; then
+    report authenticated_profile_explicit ok
+else
+    report authenticated_profile_explicit fail
+    cat "$work/auth-profile.err" >&2
+fi
+rm -f "$state/session.status"
+
+# A profile argument and a conflicting QWEN_WEB_LAN_OPEN name two different
+# bearer policies, so the launch refuses rather than picking one silently.
+if QWEN_WEB_LAN_OPEN=1 run_wrapper lan-authenticated \
+    >/dev/null 2>"$work/conflict.err"; then
+    report conflicting_profile_and_override_refused fail
+else
+    if [ "$?" -eq 2 ] && [ ! -e "$launch_record" ] &&
+        grep -q 'two different bearer policies' "$work/conflict.err"; then
+        report conflicting_profile_and_override_refused ok
+    else
+        report conflicting_profile_and_override_refused fail
+    fi
+fi
+rm -f "$state/session.status"
+
+# Two security-profile names in one invocation are a usage error, the way a
+# repeated performance profile is.
+if run_wrapper lan-authenticated lan-open-approved \
+    >/dev/null 2>"$work/two-security.err"; then
+    report two_security_profiles_refused fail
+else
+    [ "$?" -eq 2 ] && report two_security_profiles_refused ok ||
+        report two_security_profiles_refused fail
+fi
+
+# QWEN_WEB_LAN_OPEN_ALL_INTERFACES and QWEN_WEB_LAN_TRUSTED_CONNECTIONS reach
+# the launch unchanged, and the flag prints loudly when it is set.
+if QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 \
+    QWEN_WEB_LAN_TRUSTED_CONNECTIONS=11111111-1111-1111-1111-111111111111 \
+    run_wrapper lan-open-approved \
+    >"$work/all-interfaces.out" 2>"$work/all-interfaces.err" &&
+    recorded 'QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1' &&
+    recorded 'QWEN_WEB_LAN_TRUSTED_CONNECTIONS=11111111-1111-1111-1111-111111111111' &&
+    grep -q 'binds every interface' "$work/all-interfaces.err"; then
+    report all_interfaces_flag_forwarded ok
+else
+    report all_interfaces_flag_forwarded fail
+    cat "$work/all-interfaces.err" >&2
+fi
+rm -f "$state/session.status"
+
+# A malformed QWEN_WEB_LAN_OPEN_ALL_INTERFACES is an argument error.
+if QWEN_WEB_LAN_OPEN_ALL_INTERFACES=maybe run_wrapper \
+    >/dev/null 2>"$work/bad-all-interfaces.err"; then
+    report malformed_all_interfaces_refused fail
+else
+    if [ "$?" -eq 2 ] &&
+        grep -q 'QWEN_WEB_LAN_OPEN_ALL_INTERFACES must be 0 or 1' \
+            "$work/bad-all-interfaces.err"; then
+        report malformed_all_interfaces_refused ok
+    else
+        report malformed_all_interfaces_refused fail
+    fi
+fi
 
 # The caller's own parameters path replaces the deployment's.
 printf '{}\n' >"$work/caller-parameters.json"
@@ -329,6 +413,21 @@ else
     else
         report symlinked_key_refused fail
     fi
+fi
+
+# No boot-time path starts either LAN profile: the service starts and stops
+# through the launch and teardown scripts alone, so a reboot leaves the
+# machine with nothing listening. The repository ships no systemd unit or
+# timer, no crontab, and no XDG autostart entry that could start one on its
+# own; find over the whole tree (excluding .git) is what proves the absence
+# rather than a name search that a documentation mention would false-positive.
+if find "$script_directory/.." -path '*/.git' -prune -o -type f \
+    \( -name '*.service' -o -name '*.timer' -o -name 'crontab' \
+       -o -path '*/autostart/*' -o -path '*/cron.d/*' \) \
+    -print 2>/dev/null | grep -q .; then
+    report no_boot_time_launch_artifact fail
+else
+    report no_boot_time_launch_artifact ok
 fi
 
 if [ "$failures" -ne 0 ]; then

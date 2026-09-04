@@ -1129,6 +1129,7 @@ for depth in $admitted_depths; do
                     ${engine_clock_required_flag:+--required-sclk-mhz "$engine_clock_required_flag"} \
                     ${engine_clock_mclk_flag:+--required-mclk-mhz "$engine_clock_mclk_flag"} \
                     ${engine_clock_mclk_fraction_flag:+--max-below-mclk-floor-fraction "$engine_clock_mclk_fraction_flag"} \
+                    --expected-nice "$sidecar_nice" --expected-cpu-affinity "$sidecar_cpu" \
                     >"$arm_directory/clock-sidecar-verdict.txt" 2>&1
                 sidecar_verdict=$?
                 set -e
