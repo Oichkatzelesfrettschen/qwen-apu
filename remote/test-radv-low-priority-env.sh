@@ -155,6 +155,126 @@ serving_plain_output=$(GGML_VK_PIPELINE_CENSUS=stale QWEN_VULKAN_PROFILE=low-asy
     "$wrapper" sh -c 'printf "census=%s\n" "${GGML_VK_PIPELINE_CENSUS-unset}"')
 printf '%s\n' "$serving_plain_output" | grep -Fx 'census=unset' >/dev/null
 
+# The int24 candidate admits its q8_1 mat-vec pipelines under
+# GGML_VK_FORCE_INTEGER_DOT, so every serving profile scrubs it the way it
+# scrubs the sideplane names and the diagnostic profile alone restores what the
+# caller asked for. The scrub is what keeps the arm and its control apart on one
+# binary, and `custom` is a serving profile: it varies the submission settings,
+# which leaves a rate it measures comparable with a rate the appliance serves.
+for serving_profile in paced-60 low-serialized low-async custom; do
+    # The nested shell expands its own runtime environment after the wrapper runs.
+    # shellcheck disable=SC2016
+    serving_force_dot_output=$(GGML_VK_FORCE_INTEGER_DOT=1 \
+        QWEN_VULKAN_PROFILE=$serving_profile \
+        "$wrapper" sh -c 'printf "force_integer_dot=%s\n" "${GGML_VK_FORCE_INTEGER_DOT-unset}"')
+    if ! printf '%s\n' "$serving_force_dot_output" | grep -Fx \
+        'force_integer_dot=unset' >/dev/null; then
+        printf 'the %s profile carried GGML_VK_FORCE_INTEGER_DOT: %s\n' \
+            "$serving_profile" "$serving_force_dot_output" >&2
+        exit 1
+    fi
+done
+diagnostic_force_dot_output=$(GGML_VK_FORCE_INTEGER_DOT=1 QWEN_PERF_LOGGER=4 \
+    QWEN_VULKAN_PROFILE=diagnostic \
+    "$wrapper" sh -c 'printf "force_integer_dot=%s\n" "${GGML_VK_FORCE_INTEGER_DOT-unset}"')
+printf '%s\n' "$diagnostic_force_dot_output" | grep -Fx 'force_integer_dot=1' >/dev/null
+# The control arm of the ISA receipt names the same profile and supplies no
+# value, so the restore is what separates the two rather than the profile name.
+diagnostic_control_output=$(QWEN_PERF_LOGGER=4 QWEN_VULKAN_PROFILE=diagnostic \
+    "$wrapper" sh -c 'printf "force_integer_dot=%s\n" "${GGML_VK_FORCE_INTEGER_DOT-unset}"')
+printf '%s\n' "$diagnostic_control_output" | grep -Fx 'force_integer_dot=unset' >/dev/null
+# ggml_vk_force_integer_dot() compares the value against "1", so a third value
+# runs the control under a name that claims the arm and the profile refuses it.
+diagnostic_force_dot_status=0
+diagnostic_force_dot_error=$(GGML_VK_FORCE_INTEGER_DOT=0 QWEN_PERF_LOGGER=4 \
+    QWEN_VULKAN_PROFILE=diagnostic "$wrapper" true 2>&1 >/dev/null) ||
+    diagnostic_force_dot_status=$?
+if [ "$diagnostic_force_dot_status" -ne 2 ]; then
+    printf 'the diagnostic profile accepted GGML_VK_FORCE_INTEGER_DOT=0\n' >&2
+    exit 1
+fi
+printf '%s\n' "$diagnostic_force_dot_error" | grep -Fx \
+    'GGML_VK_FORCE_INTEGER_DOT admits 1 or an unset value: 0' >/dev/null
+
+# remote/dump-radv-shader-isa.sh runs a serving profile and reaches the arm by
+# forwarding the caller's value past the scrub on its own `env`, so the two arms
+# of the receipt differ in that assignment. A collector that dropped the forward
+# would collect the control under the arm's name.
+collector=$script_directory/dump-radv-shader-isa.sh
+if ! grep -q 'GGML_VK_FORCE_INTEGER_DOT="\$requested_force_integer_dot"' \
+    "$collector"; then
+    printf 'the ISA collector no longer forwards the force flag past the scrub\n' >&2
+    exit 1
+fi
+# The collector names its arm from the same comparison the backend makes, and
+# it refuses a third value ahead of the measured-host check, so this arm runs
+# on any host.
+collector_force_dot_status=0
+collector_force_dot_error=$(GGML_VK_FORCE_INTEGER_DOT=0 "$collector" \
+    /nonexistent/output /nonexistent/server /nonexistent/model 2>&1 >/dev/null) ||
+    collector_force_dot_status=$?
+if [ "$collector_force_dot_status" -ne 2 ]; then
+    printf 'the ISA collector accepted GGML_VK_FORCE_INTEGER_DOT=0\n' >&2
+    exit 1
+fi
+printf '%s\n' "$collector_force_dot_error" | grep -Fx \
+    'GGML_VK_FORCE_INTEGER_DOT admits 1 or an unset value: 0' >/dev/null
+
+# A served A/B arm reaches the same admission under its serving profile, since
+# run-served-binary-ab.sh runs every arm under low-async and a profile of its
+# own would put a second string into the field the scoreboard receipt requires
+# to read low-async. QWEN_FORCE_INTEGER_DOT crosses the scrub under its own name
+# the way the census toggle does, and the profile's own exports stay what they
+# are: low-async keeps max_nodes 16 and leaves serialization absent.
+for serving_profile in paced-60 low-serialized low-async custom; do
+    # The nested shell expands its own runtime environment after the wrapper runs.
+    # shellcheck disable=SC2016
+    crossing_output=$(GGML_VK_FORCE_INTEGER_DOT=stale \
+        QWEN_FORCE_INTEGER_DOT=1 QWEN_VULKAN_PROFILE=$serving_profile \
+        "$wrapper" sh -c 'printf "force_integer_dot=%s\n" "${GGML_VK_FORCE_INTEGER_DOT-unset}"')
+    if ! printf '%s\n' "$crossing_output" | grep -Fx \
+        'force_integer_dot=1' >/dev/null; then
+        printf 'the %s profile dropped QWEN_FORCE_INTEGER_DOT: %s\n' \
+            "$serving_profile" "$crossing_output" >&2
+        exit 1
+    fi
+done
+# The crossing carries the admission and nothing else, so low-async's whole
+# GGML_VK_ set is the wrapper-wide flag, its own node count, and that one name.
+crossing_environment=$(QWEN_FORCE_INTEGER_DOT=1 QWEN_VULKAN_PROFILE=low-async \
+    "$wrapper" sh -c 'env | grep "^GGML_VK_" | sort')
+crossing_expected='GGML_VK_FORCE_INTEGER_DOT=1
+GGML_VK_LOW_PRIORITY=1
+GGML_VK_MAX_NODES_PER_SUBMIT=16'
+if [ "$crossing_environment" != "$crossing_expected" ]; then
+    printf 'the low-async crossing exported an environment beyond its declaration: %s\n' \
+        "$crossing_environment" >&2
+    exit 1
+fi
+# An absent request leaves the scrub answering, which is what makes the control
+# arm of a served pair a control.
+crossing_absent_output=$(GGML_VK_FORCE_INTEGER_DOT=1 QWEN_VULKAN_PROFILE=low-async \
+    "$wrapper" sh -c 'printf "force_integer_dot=%s\n" "${GGML_VK_FORCE_INTEGER_DOT-unset}"')
+printf '%s\n' "$crossing_absent_output" | grep -Fx 'force_integer_dot=unset' >/dev/null
+# ggml_vk_force_integer_dot() compares against "1", so the crossing refuses a
+# third value rather than running the control under the arm's name.
+crossing_status=0
+crossing_error=$(QWEN_FORCE_INTEGER_DOT=0 QWEN_VULKAN_PROFILE=low-async \
+    "$wrapper" true 2>&1 >/dev/null) || crossing_status=$?
+if [ "$crossing_status" -ne 2 ]; then
+    printf 'the serving crossing accepted QWEN_FORCE_INTEGER_DOT=0\n' >&2
+    exit 1
+fi
+printf '%s\n' "$crossing_error" | grep -Fx \
+    'QWEN_FORCE_INTEGER_DOT admits 1 or an unset value: 0' >/dev/null
+# The value crosses the tmux boundary only where qwen-webui-control.sh forwards
+# it, so a launch that dropped the name would serve the control under the arm's
+# own receipt.
+if ! grep -q 'QWEN_FORCE_INTEGER_DOT' "$script_directory/qwen-webui-control.sh"; then
+    printf 'the session control no longer forwards QWEN_FORCE_INTEGER_DOT\n' >&2
+    exit 1
+fi
+
 environment_output=$(capture_environment low-async)
 printf '%s\n' "$environment_output" | grep -F \
     'profile=low-async low=1 duty=unset serialized=unset max_nodes=16 strict=1' >/dev/null

@@ -1,0 +1,11 @@
+decode_ms=3316.21
+decode_tok_per_second=18.997590623030508
+decode_tokens=64
+label=08-C
+prefill_ms=286.776
+prefill_tok_per_second=66.25380087594499
+prompt_tokens=19
+request_status=0
+teardown_status=0
+valid=True
+served_decode=completed label=08-C result_directory=$HOME/q4k-served-ab-08b-20260903T2004Z/arms/08-C

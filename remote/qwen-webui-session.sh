@@ -63,18 +63,60 @@ broker_log=$state_directory/authorize-broker.log
 # under the exposure, so the loopback stays reachable for this session's own
 # probes and for remote/image-review.py, while their Host and bearer gates
 # carry the policy.
+#
+# QWEN_WEB_LAN_NAME carries the mDNS name beside the literal, and the page is
+# reachable at either, so the broker and the artifact listener admit both in a
+# Host header and admit both page origins through CORS. QWEN_WEB_LAN_OPEN=1
+# removes the Web UI bearer from all three listeners together, which leaves the
+# closed Host set, the Origin allowlist, the per-launch session secret, and the
+# single-use grant carrying the whole gate.
 lan_exposure=${QWEN_WEB_LAN:-0}
 lan_address=${QWEN_WEB_LAN_ADDRESS:-}
+lan_name=${QWEN_WEB_LAN_NAME:-}
+lan_open=${QWEN_WEB_LAN_OPEN:-0}
 if [ "$lan_exposure" = 1 ] && [ -n "$lan_address" ]; then
     lan_listen_host=0.0.0.0
     lan_page_host=$lan_address
 else
     lan_exposure=0
     lan_address=''
+    lan_name=''
+    lan_open=0
     lan_listen_host=127.0.0.1
     lan_page_host=127.0.0.1
 fi
-broker_origin=${QWEN_WEB_BROKER_ORIGIN:-"http://$lan_page_host:$server_port"}
+# The host a browser loaded the page from is the Origin it sends, so a launch
+# advertising two hosts admits two origins. authorize-broker.py reads
+# QWEN_WEB_BROKER_ORIGIN as a comma-separated list and image-service.py takes
+# one --origin per entry.
+lan_page_origin="http://$lan_page_host:$server_port"
+lan_name_origin=''
+if [ -n "$lan_name" ]; then
+    lan_name_origin="http://$lan_name:$server_port"
+fi
+# The open opt-in reaches both listeners as one flag, expanded from a variable
+# so an unset value contributes no empty argument under `set -u`.
+lan_open_flag=''
+if [ "$lan_open" = 1 ]; then
+    lan_open_flag=--open-lan
+fi
+# Compose the page URL for one admitted host. The companions are named as
+# query parameters over that same host, so a page loaded by name reaches the
+# broker and the artifact listener by name and a page loaded by address reaches
+# them by address; each stays inside the Host set and the Origin allowlist the
+# two listeners were started with.
+compose_lan_page_url() {
+    compose_lan_host=$1
+    compose_lan_url="http://$compose_lan_host:$server_port/?broker=$(printf \
+        'http%%3A%%2F%%2F%s%%3A%s' "$compose_lan_host" "$broker_port")"
+    if [ -n "$image_service_listener" ]; then
+        compose_lan_url="$compose_lan_url&artifacts=$(printf \
+            'http%%3A%%2F%%2F%s%%3A%s' "$compose_lan_host" \
+            "${image_service_listener##*:}")"
+    fi
+    printf '%s' "$compose_lan_url"
+}
+broker_origin=${QWEN_WEB_BROKER_ORIGIN:-"$lan_page_origin${lan_name_origin:+,$lan_name_origin}"}
 # The general-search endpoint is one local SearXNG instance, and it holds no
 # device and reaches the network only for a search the broker already signed,
 # so it is a guarded child of this session beside the broker.
@@ -100,7 +142,17 @@ image_service_pid=""
 image_service_enabled=${QWEN_IMAGE_SERVICE:-0}
 image_service_program=${QWEN_IMAGE_SERVICE_PROGRAM:-"$script_directory/image-service.py"}
 image_service_profiles_json=${QWEN_IMAGE_PROFILES_JSON:-}
-image_service_origin=${QWEN_IMAGE_PAGE_ORIGIN:-"http://$lan_page_host:$server_port"}
+image_service_origin=${QWEN_IMAGE_PAGE_ORIGIN:-"$lan_page_origin"}
+# The artifact listener takes an ephemeral port on a loopback launch, where the
+# session's own status line is the reader. An exposed launch binds one port
+# above the broker unless the caller names another, so the page URL a LAN
+# browser keeps stays the same across relaunches and the page derives the
+# artifact origin from the address it was loaded over.
+if [ "${QWEN_WEB_LAN:-0}" = 1 ]; then
+    image_service_http_port=${QWEN_IMAGE_HTTP_PORT:-$((${QWEN_WEB_BROKER_PORT:-8571} + 1))}
+else
+    image_service_http_port=${QWEN_IMAGE_HTTP_PORT:-0}
+fi
 image_service_log=$state_directory/image-service.log
 case ${QWEN_ROUTER_PRESETS:-} in
     "$state_directory"/.router-presets.active.*)
@@ -325,6 +377,8 @@ if [ "$broker_enabled" = 1 ]; then
     QWEN_WEB_BROKER_ORIGIN=$broker_origin \
         "$broker_program" --host "$lan_listen_host" --port "$broker_port" \
         ${lan_address:+--lan-exposure "$lan_address"} \
+        ${lan_name:+--lan-name "$lan_name"} \
+        ${lan_open_flag:+"$lan_open_flag"} \
         --state-dir "$broker_state_directory" \
         --profile "$QWEN_WEB_PROFILE" \
         --image-profile "${QWEN_IMAGE_PROFILE:-}" \
@@ -441,8 +495,12 @@ if [ "$image_service_enabled" = 1 ]; then
         --verifier image_signed_verifier:verify \
         --api-key-file "$api_key_file" \
         --origin "$image_service_origin" \
+        ${lan_name_origin:+--origin "$lan_name_origin"} \
         --http-host "$lan_listen_host" \
+        --http-port "$image_service_http_port" \
         ${lan_address:+--lan-exposure "$lan_address"} \
+        ${lan_name:+--lan-name "$lan_name"} \
+        ${lan_open_flag:+"$lan_open_flag"} \
         >"$image_service_log" 2>&1 &
     image_service_pid=$!
     image_service_ready=0
@@ -758,7 +816,7 @@ fi
 # reader consults for what this launch serves, and the address on the network
 # is the one field a teardown, a status query, and an operator all read.
 # lan_exposure=0 records the loopback default.
-broker_status_field="$broker_status_field lan_exposure=$lan_exposure lan_address=${lan_address:--}"
+broker_status_field="$broker_status_field lan_exposure=$lan_exposure lan_address=${lan_address:--} lan_name=${lan_name:--} lan_open=$lan_open"
 printf 'state=running server_pid=%s monitor_pid=%s latency_watchdog_pid=%s kernel_hazard_watchdog_pid=%s%s profile=%s host=%s port=%s context=%s latency_mode=%s utc=%s\n' \
     "$server_pid" "$monitor_pid" "$latency_watchdog_pid" \
     "$kernel_hazard_watchdog_pid" "$broker_status_field" "$vulkan_profile" \
@@ -821,17 +879,29 @@ fi
 # a LAN browser handed the bare router address would point both back at its own
 # machine. The artifact listener takes an ephemeral port, so this line is the
 # first place all three addresses are known together.
+#
+# The mDNS name leads where the launch resolved one, because a DHCP lease moves
+# the literal and the name a browser bookmarks outlives it. Both hosts are
+# admitted, so the literal follows on its own field and each URL names its own
+# host in every parameter it carries.
 if [ "$lan_exposure" = 1 ]; then
-    lan_page_url="http://$lan_page_host:$server_port/?broker=$(printf 'http%%3A%%2F%%2F%s%%3A%s' \
-        "$lan_page_host" "$broker_port")"
-    if [ -n "$image_service_listener" ]; then
-        lan_page_url="$lan_page_url&artifacts=$(printf 'http%%3A%%2F%%2F%s%%3A%s' \
-            "$lan_page_host" "${image_service_listener##*:}")"
+    lan_page_url=$(compose_lan_page_url "$lan_page_host")
+    lan_primary_host=$lan_page_host
+    lan_primary_page_url=$lan_page_url
+    if [ -n "$lan_name" ]; then
+        lan_primary_host=$lan_name
+        lan_primary_page_url=$(compose_lan_page_url "$lan_name")
     fi
-    printf 'lan_exposure address=%s router=%s:%s broker=%s:%s artifacts=%s page=%s\n' \
-        "$lan_page_host" "$lan_page_host" "$server_port" \
-        "$lan_page_host" "$broker_port" \
-        "${image_service_listener:--}" "$lan_page_url" >>"$status_file"
+    printf 'lan_exposure address=%s name=%s open=%s router=%s:%s broker=%s:%s artifacts=%s page=%s page_address=%s\n' \
+        "$lan_page_host" "${lan_name:--}" "$lan_open" \
+        "$lan_primary_host" "$server_port" \
+        "$lan_primary_host" "$broker_port" \
+        "${image_service_listener:--}" \
+        "$lan_primary_page_url" "$lan_page_url" >>"$status_file"
+    if [ "$lan_open" = 1 ]; then
+        printf 'lan_open=1 every peer on this network can chat, approve a search, and approve a generation\n' \
+            >>"$status_file"
+    fi
 fi
 # The search instance's identity lands after the same truncating write. The
 # start time binds the pid to the process a teardown signals, and the port is
