@@ -426,11 +426,38 @@ directory, the convention `evidence/e4b-summary-producer/` sets. Each receipt re
 first: another driver compiles the same SPIR-V with another compiler and answers a question
 about that compiler.
 
+## The device answered, and the answer is smaller than this page predicts
+
+`evidence/raven2-vulkan-kernel-census/q4k-scale-decode/` carries the served run of both
+patches together on `qwen38-2b-distill`: **+1.83%**, nominal 95% interval **+1.63% to
++2.04%**, four comparable pairs, zero arm failures, one selected graphics clock on every arm.
+The whole interval sits below the +5% promotion bound, so the served verdict is `refuted` and
+the candidates stay in this lane rather than reaching the serving preset.
+
+Correctness held exactly. `run-kernel-delta-witness.sh` under the `margin` contract returned
+the control's token-id array bit-for-bit on all six prompts, with margin retention 1 and a
+maximum absolute log-probability delta of 0, which is the runtime form of the GF(2)
+equivalence `scale-select-equivalence.py` closes above.
+
+The gap between this page and that one is the finding. The body loses 46 of its 395
+instructions and the driver's occupancy statistic rises from 4 subgroups per SIMD to 5, and
+the served token moved under a third of what the instruction count alone reads. The served
+Q4_K decode is therefore not issue-bound to the degree these receipts imply, which is what
+the tensor-type audit's streaming figures already suggested and what no compile receipt can
+settle.
+
+Table 2's eight-row shape has no served arm and acquires none here. `ggml-vulkan.cpp` passes
+`rm_kq = 4` on its `AMD_GCN` branch and the decode ledger records `constants=64,4,1`, so this
+device dispatches the four-row pipeline and selects the eight-row one never. Table 2 stays a
+compile receipt, and measuring it needs a host change that makes the device select that
+shape, which is a different candidate.
+
 ## What did not run
 
-- **Every device arm.** No submission executed; the shimmed node ends at pipeline creation and
-  no figure here is a time. The served kernel-delta A/B, the margin witness, and the Q6_K null
-  all need the appliance and a teardown window, and the laptop belongs to another lane.
+- **The Q6_K null and the kernel-delta bracket.** The served A/B answered the whole-token
+  question and reports its bracket columns as `ledger-missing`, since a served arm collects no
+  pipeline census. Both need the census build through `QWEN_CENSUS_AB_MODE=kernel-delta`,
+  which is its own device window.
 - **A build of the whole binary.** The candidate trees prepare and every Q4_K variant
   `vulkan-shaders-gen` emits compiles; no `build-llama-preset.sh` run and no manifest was
   produced here, because the arm's build belongs to the appliance chain that measures it, and

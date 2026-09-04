@@ -138,6 +138,38 @@ genuine, small, measurable gain.
 | comparable pairs | 4 of 4 at one selected graphics clock | met: 4 of 4, 1100 MHz on every arm |
 | token identity | held | met, bit-for-bit, with zero logprob movement |
 
+## The 0.8B is the null this comparison needed
+
+The class policy runs the 0.8B second, and on this candidate that arm is a
+control rather than a second reading. `qwen35-08b` serves at Q8_0, so its
+weight tensors reach `mul_mat_vec_q8_0` and the patched Q4_K mat-vec is never
+dispatched. A candidate that changed only that shader must therefore measure
+zero on this checkpoint, and any nonzero result would say the patch reached
+something outside the shader it names.
+
+| slot | arm | tok/s |
+| ---: | --- | ---: |
+| 1 | C | 19.059 |
+| 2 | K | 19.073 |
+| 3 | K | 18.990 |
+| 4 | C | 19.011 |
+| 5 | C | 19.032 |
+| 6 | K | 19.152 |
+| 7 | K | 19.084 |
+| 8 | C | 18.998 |
+
+`served_ab=refuted mean_delta=+0.0026 ci=[-0.0028,+0.0080] comparable_pairs=4
+arm_failures=0`, with the four deltas `+0.0007 -0.0011 +0.0063 +0.0045`
+straddling zero and every arm again at 1100 MHz. The witness holds token
+identity on this class too.
+
+The interval spans zero, so the null is met, and it does a second job the 2B arm
+cannot do for itself: it measures this harness's own noise floor on this idle
+machine at about +/-0.5% of a paired mean. The 2B's +1.83% with an interval of
++1.63% to +2.04% sits clear of that floor by more than a factor of three, so the
+Q4_K arm's gain is an effect rather than a scheduling artifact. Reading the two
+arms together is what licenses that statement; neither reads it alone.
+
 ## The eight-row shape is not a served arm
 
 `evidence/q4k-scale-decode/README.md` Table 2 compiles the same two candidates
@@ -157,6 +189,9 @@ kernel-delta-witness-20260903T1941Z/   six prompts, C K K C, margin contract,
                                        qwen38-2b-distill
 served-ab-20260903T1953Z/              16 warmups and 8 arms, policy auto,
                                        qwen38-2b-distill
+kernel-delta-witness-08b-20260903T2004Z/  the same six prompts, qwen35-08b
+served-ab-08b-20260903T2004Z/          16 warmups and 8 arms, policy auto,
+                                       qwen35-08b, the Q8_0 null
 ```
 
 Paths in every retained record carry `$HOME` for the serving user's home and
