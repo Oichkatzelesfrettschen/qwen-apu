@@ -596,6 +596,35 @@ ended at HTTP 200 while the child's 30 s and the router's 3600 s were still
 waiting. Which origin the first Result ID names changes with the query, so a
 fetch arm that must pass whatever the network does belongs to the fake run.
 
+`QWEN_WEB_LAN=1` moves the loopback boundary by an operator's explicit
+decision, and `remote/web-lan-exposure.sh` holds what the decision costs.
+`QWEN_WEB_LAN_ADDRESS` names one routable IPv4 literal, because the broker and
+the artifact listener close DNS rebinding by comparing a request's Host header
+against a literal set and a name would send that comparison back through the
+resolver; `QWEN_BIND_HOST` is the router's own listener and is that literal or
+`0.0.0.0`, while every derived origin and Host rule reads the literal. The
+exposure then reaches three listeners: llama-server binds the address with
+`QWEN_REQUIRE_API_KEY=1`, `authorize-broker.py` binds the wildcard and adds the
+literal to its admitted Host set, and `image-service.py` does the same for
+`GET /artifacts/<sha256>.<png|json>`. The Web UI bearer becomes the credential
+each one requires -- `--lan-exposure` makes the broker read it on
+`POST /grant`, `POST /grant-image`, and a `GET /health` naming the literal,
+where a loopback Host keeps `/health` open so the session's own `curl` probe
+holds the key off a world-readable `/proc/PID/cmdline`, and the artifact
+listener already read it ahead of every lookup. The launch requires the key
+file to exist at mode 0600 owned by the serving user rather than minting one
+beside the socket, and refuses the exposure against either research override,
+since `qwen-capacity-policy.sh` forces 127.0.0.1 for the quarantine override
+and the unvalidated-depth marker and an exposure combined with one would print
+an address it never binds. `qwen-webui-session.sh` records `lan_exposure=` and
+`lan_address=` on its `state=running` line and prints the page URL carrying
+`?broker=` and `?artifacts=`, because the page's meta tags name the loopback
+and a LAN browser handed the bare router address would point both back at its
+own machine. What the exposure changes is who reaches the approval dialog. The
+single-use grant the dialog signs, the schema the wrapper enforces, and the
+one human approval per network-reaching call stay exactly what they are, and
+every checked-in `execution_policy` still reads `refused`.
+
 The integer dot product is advertised, functional, and unaccelerated, which
 decides how most of this tree's bytes execute. RADV reports
 `shaderIntegerDotProduct = true` and sets all thirty of its `*Accelerated`
@@ -1309,8 +1338,21 @@ a wrong answer for an outage nobody chose.
 ```sh
 # Start and stop the appliance (run on the laptop)
 ~/qwen-laptop-setup/remote/qwen-launch.sh [paced-60|low-serialized|low-async]
-~/qwen-laptop-setup/remote/qwen-web-launch.sh [PROFILE]   # web presets, loopback only
+~/qwen-laptop-setup/remote/qwen-web-launch.sh [PROFILE]   # web presets, loopback by default
 ~/qwen-laptop-setup/remote/qwen-image-launch.sh [PROFILE] # web presets with the image lane armed
+
+# The web lane on the operator's own network, bearer required on every route.
+# The key exists before the listener does, so it is minted once and read out of
+# the state directory ahead of the launch rather than after the socket is up.
+openssl rand -hex 32 >~/qwen-webui-state/api.key
+chmod 600 ~/qwen-webui-state/api.key
+QWEN_WEB_LAN=1 QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=0.0.0.0 \
+QWEN_WEB_AUTHORIZER_READY=1 \
+QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
+    ~/qwen-laptop-setup/remote/qwen-web-launch.sh low-async
+# The session's `lan_exposure` line in ~/qwen-webui-state/session.status names
+# the page URL, which carries ?broker= and ?artifacts= because the page's meta
+# tags name the loopback.
 ~/qwen-laptop-setup/remote/qwen-teardown.sh
 ~/qwen-laptop-setup/remote/qwen-webui-control.sh status
 
@@ -1963,7 +2005,11 @@ reserved for human co-authors.
 - `docker compose` (v2) rather than legacy `docker-compose`.
 - `--tools all` grants shell execution and file writing to a prompt-injectable
   model. The read-only set is `read_file,file_glob_search,grep_search`, and a
-  tool-enabled server stays off the LAN.
+  server holding that grant stays off the LAN. The web and image lanes reach
+  the LAN through `QWEN_WEB_LAN=1` alone, where the model executes nothing on
+  its own: every network-reaching and device-reaching call passes one human
+  approval and a single-use grant, and the Web UI bearer gates the router, the
+  broker's signing routes, and the artifact listener.
 - The service starts and stops through the launch and teardown scripts alone.
   No unit file, crontab entry, or login hook starts it, so a reboot leaves the
   laptop with nothing listening.

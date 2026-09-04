@@ -49,6 +49,9 @@ SESSION_SECRET_FILE_NAME = broker_module.SESSION_SECRET_FILE_NAME
 TOKEN_SECRET = "broker-token-secret-QJ4LZP"
 API_KEY = "web-ui-api-key-V8N2QK"
 ORIGIN = "http://127.0.0.1:8080"
+# The exposure arms name a literal in the Host header while the socket stays on
+# the loopback, so the gate is measured on a host holding no second address.
+EXPOSED_ADDRESS = "192.0.2.10"
 START_WAIT_SECONDS = 15.0
 STOP_WAIT_SECONDS = 5.0
 # What the broker's own shutdown sequence costs. A terminating signal raises
@@ -273,7 +276,14 @@ class BrokerTest(unittest.TestCase):
         self.fail(f"the server returned no tool result: {completed.stderr}")
 
     def test_the_broker_refuses_a_bind_outside_loopback(self):
-        for host in ("0.0.0.0", "localhost", "192.168.1.10", "::"):
+        """A literal outside the loopback pair and the wildcard binds nothing.
+
+        The wildcard has its own arm: it reaches the socket only beside
+        --lan-exposure, which test_the_wildcard_bind_requires_the_exposure_opt_in
+        measures, so the refusal there names the missing opt-in rather than the
+        admitted host set.
+        """
+        for host in ("localhost", "192.168.1.10", "::"):
             with self.subTest(host=host):
                 completed = subprocess.run(
                     [
@@ -292,7 +302,7 @@ class BrokerTest(unittest.TestCase):
                     text=True,
                 )
                 self.assertEqual(completed.returncode, 2)
-                self.assertIn("loopback literal alone", completed.stderr)
+                self.assertIn("binds a loopback literal or", completed.stderr)
                 self.assertEqual(completed.stdout, "")
 
     def run_broker_expecting_refusal(self, token_key_file, expected_message):
@@ -492,7 +502,7 @@ class BrokerTest(unittest.TestCase):
             broker, {"query": "raven2 vulkan decode"}, headers
         )
         self.assertEqual(status, 403)
-        self.assertIn("loopback literal", payload["error"])
+        self.assertIn("no admitted literal", payload["error"])
 
     def test_the_issued_grant_admits_the_search_exactly_once(self):
         broker = self.launch()
@@ -886,6 +896,121 @@ class BrokerTest(unittest.TestCase):
         status, _, body = broker.request("GET", "/health")
         self.assertEqual(status, 200)
         self.assertNotIn(TOKEN_SECRET, body)
+
+    def exposed_headers(self, path_host, api_key=API_KEY, secret=None):
+        """Return grant headers naming an exposed Host, with or without the bearer."""
+        headers = self.grant_headers(secret)
+        headers["Host"] = path_host
+        if api_key is not None:
+            headers["Authorization"] = f"Bearer {api_key}"
+        return headers
+
+    def test_the_wildcard_bind_requires_the_exposure_opt_in(self):
+        """--host 0.0.0.0 alone widens nothing; the opt-in names the literal."""
+        completed = subprocess.run(
+            [
+                sys.executable, BROKER_PATH,
+                "--host", "0.0.0.0",  # noqa: S104 -- the refusal under test
+                "--state-dir", self.state_directory,
+                "--token-key-file", self.token_key_path,
+                "--api-key-file", self.api_key_path,
+                "--origin", ORIGIN,
+            ],
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            timeout=STOP_WAIT_SECONDS,
+        )
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("--lan-exposure", completed.stderr)
+
+    def test_the_exposure_admits_its_literal_and_refuses_every_other_host(self):
+        """The Host set gains exactly one literal beside the loopback ones."""
+        broker = self.launch(**{"--lan-exposure": EXPOSED_ADDRESS})
+        secret = self.session_secret()
+        for description, host_header, expected in (
+            ("loopback", f"127.0.0.1:{broker.port}", 200),
+            ("exposed", f"{EXPOSED_ADDRESS}:{broker.port}", 200),
+            ("foreign literal", f"198.51.100.7:{broker.port}", 403),
+            ("resolved name", f"rebind.example.net:{broker.port}", 403),
+        ):
+            with self.subTest(host=description):
+                status, _, body = broker.request(
+                    "POST",
+                    "/grant",
+                    json.dumps(
+                        {"query": "raven2 vulkan decode", "profile_id": "default"}
+                    ),
+                    self.exposed_headers(host_header, secret=secret),
+                )
+                self.assertEqual(status, expected, body)
+
+    def test_the_exposure_requires_the_bearer_on_both_signing_routes(self):
+        """A LAN reader that never authenticated to the router signs nothing."""
+        broker = self.launch(
+            **{"--lan-exposure": EXPOSED_ADDRESS, "--image-profile": "image-fixture-a"}
+        )
+        secret = self.session_secret()
+        host_header = f"{EXPOSED_ADDRESS}:{broker.port}"
+        for route, payload in (
+            ("/grant", {"query": "raven2 vulkan decode", "profile_id": "default"}),
+            ("/grant-image", self.image_grant_body()),
+        ):
+            for description, api_key in (
+                ("absent", None),
+                ("wrong", "a-key-this-launch-never-minted"),
+            ):
+                with self.subTest(route=route, bearer=description):
+                    headers = self.exposed_headers(
+                        host_header, api_key=api_key, secret=secret
+                    )
+                    status, _, body = broker.request(
+                        "POST", route, json.dumps(payload), headers
+                    )
+                    self.assertEqual(status, 403, body)
+                    self.assertIn("bearer API key", json.loads(body)["error"])
+                    self.assertNotIn("authorization", json.loads(body))
+            with self.subTest(route=route, bearer="present"):
+                status, _, body = broker.request(
+                    "POST", route, json.dumps(payload),
+                    self.exposed_headers(host_header, secret=secret),
+                )
+                self.assertEqual(status, 200, body)
+                self.assertTrue(json.loads(body)["authorization"])
+
+    def test_the_default_signs_a_grant_carrying_no_bearer(self):
+        """The loopback default stays exactly as it stands."""
+        broker = self.launch()
+        headers = self.grant_headers()
+        self.assertNotIn("Authorization", headers)
+        status, _, payload = self.post_grant(
+            broker, {"query": "raven2 vulkan decode", "profile_id": "default"}, headers
+        )
+        self.assertEqual(status, 200, payload)
+        self.assertTrue(payload["authorization"])
+
+    def test_the_exposure_gates_health_on_the_host_the_reader_names(self):
+        """A shell probe on loopback keeps the bearer off its command line."""
+        broker = self.launch(**{"--lan-exposure": EXPOSED_ADDRESS})
+        status, _, body = broker.request(
+            "GET", "/health", None, {"Host": f"127.0.0.1:{broker.port}"}
+        )
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["pid"], broker.process.pid)
+        status, _, body = broker.request(
+            "GET", "/health", None, {"Host": f"{EXPOSED_ADDRESS}:{broker.port}"}
+        )
+        self.assertEqual(status, 403, body)
+        self.assertNotIn(TOKEN_SECRET, body)
+        status, _, body = broker.request(
+            "GET", "/health", None,
+            {
+                "Host": f"{EXPOSED_ADDRESS}:{broker.port}",
+                "Authorization": f"Bearer {API_KEY}",
+            },
+        )
+        self.assertEqual(status, 200, body)
+        self.assertEqual(json.loads(body)["pid"], broker.process.pid)
 
     def text(self, message):
         return message["result"]["content"][0]["text"]

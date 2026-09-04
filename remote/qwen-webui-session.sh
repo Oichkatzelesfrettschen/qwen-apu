@@ -54,7 +54,27 @@ broker_program=${QWEN_WEB_BROKER_PROGRAM:-"$script_directory/web-mcp/authorize-b
 broker_port=${QWEN_WEB_BROKER_PORT:-8571}
 broker_state_directory=${QWEN_WEB_STATE_DIR:-"$state_directory/web-mcp"}
 broker_log=$state_directory/authorize-broker.log
-broker_origin=${QWEN_WEB_BROKER_ORIGIN:-"http://${QWEN_BIND_HOST:-127.0.0.1}:$server_port"}
+# QWEN_WEB_LAN=1 with QWEN_WEB_LAN_ADDRESS is the operator's explicit decision
+# to serve this lane on the network, admitted by remote/web-lan-exposure.sh
+# before the launch reached this session. The literal rather than QWEN_BIND_HOST
+# is what every derived value reads: the router may bind the wildcard, which
+# names no address a browser sends as an Origin and no address a Host header
+# comparison can admit. The broker and the artifact listener bind the wildcard
+# under the exposure, so the loopback stays reachable for this session's own
+# probes and for remote/image-review.py, while their Host and bearer gates
+# carry the policy.
+lan_exposure=${QWEN_WEB_LAN:-0}
+lan_address=${QWEN_WEB_LAN_ADDRESS:-}
+if [ "$lan_exposure" = 1 ] && [ -n "$lan_address" ]; then
+    lan_listen_host=0.0.0.0
+    lan_page_host=$lan_address
+else
+    lan_exposure=0
+    lan_address=''
+    lan_listen_host=127.0.0.1
+    lan_page_host=127.0.0.1
+fi
+broker_origin=${QWEN_WEB_BROKER_ORIGIN:-"http://$lan_page_host:$server_port"}
 # The general-search endpoint is one local SearXNG instance, and it holds no
 # device and reaches the network only for a search the broker already signed,
 # so it is a guarded child of this session beside the broker.
@@ -80,7 +100,7 @@ image_service_pid=""
 image_service_enabled=${QWEN_IMAGE_SERVICE:-0}
 image_service_program=${QWEN_IMAGE_SERVICE_PROGRAM:-"$script_directory/image-service.py"}
 image_service_profiles_json=${QWEN_IMAGE_PROFILES_JSON:-}
-image_service_origin=${QWEN_IMAGE_PAGE_ORIGIN:-"http://${QWEN_BIND_HOST:-127.0.0.1}:$server_port"}
+image_service_origin=${QWEN_IMAGE_PAGE_ORIGIN:-"http://$lan_page_host:$server_port"}
 image_service_log=$state_directory/image-service.log
 case ${QWEN_ROUTER_PRESETS:-} in
     "$state_directory"/.router-presets.active.*)
@@ -303,7 +323,8 @@ if [ "$broker_enabled" = 1 ]; then
     chmod 600 "$broker_log"
     QWEN_WEB_STATE_DIR=$broker_state_directory \
     QWEN_WEB_BROKER_ORIGIN=$broker_origin \
-        "$broker_program" --host 127.0.0.1 --port "$broker_port" \
+        "$broker_program" --host "$lan_listen_host" --port "$broker_port" \
+        ${lan_address:+--lan-exposure "$lan_address"} \
         --state-dir "$broker_state_directory" \
         --profile "$QWEN_WEB_PROFILE" \
         --image-profile "${QWEN_IMAGE_PROFILE:-}" \
@@ -331,7 +352,7 @@ if [ "$broker_enabled" = 1 ]; then
     broker_ready=0
     attempt=0
     while [ "$attempt" -lt 300 ]; do
-        if grep -F "listening 127.0.0.1 $broker_port" "$broker_log" \
+        if grep -F "listening $lan_listen_host $broker_port" "$broker_log" \
             >/dev/null 2>&1; then
             broker_ready=1
             break
@@ -420,7 +441,8 @@ if [ "$image_service_enabled" = 1 ]; then
         --verifier image_signed_verifier:verify \
         --api-key-file "$api_key_file" \
         --origin "$image_service_origin" \
-        --http-host 127.0.0.1 \
+        --http-host "$lan_listen_host" \
+        ${lan_address:+--lan-exposure "$lan_address"} \
         >"$image_service_log" 2>&1 &
     image_service_pid=$!
     image_service_ready=0
@@ -732,6 +754,11 @@ fi
 if [ -n "$searxng_pid" ]; then
     broker_status_field="$broker_status_field searxng_pid=$searxng_pid"
 fi
+# The exposure joins the same line because the status file is what a later
+# reader consults for what this launch serves, and the address on the network
+# is the one field a teardown, a status query, and an operator all read.
+# lan_exposure=0 records the loopback default.
+broker_status_field="$broker_status_field lan_exposure=$lan_exposure lan_address=${lan_address:--}"
 printf 'state=running server_pid=%s monitor_pid=%s latency_watchdog_pid=%s kernel_hazard_watchdog_pid=%s%s profile=%s host=%s port=%s context=%s latency_mode=%s utc=%s\n' \
     "$server_pid" "$monitor_pid" "$latency_watchdog_pid" \
     "$kernel_hazard_watchdog_pid" "$broker_status_field" "$vulkan_profile" \
@@ -787,6 +814,24 @@ if [ -n "$image_service_pid" ]; then
         "$image_service_pid" "$image_service_start_time" \
         "${image_service_socket:-unrecorded}" \
         "${image_service_listener:-unrecorded}" >>"$status_file"
+fi
+# The exposure lands as a page URL rather than a list of addresses, because the
+# page resolves the broker and the artifact origins from `?broker=` and
+# `?artifacts=` before it reads its meta tags, and those tags name the loopback:
+# a LAN browser handed the bare router address would point both back at its own
+# machine. The artifact listener takes an ephemeral port, so this line is the
+# first place all three addresses are known together.
+if [ "$lan_exposure" = 1 ]; then
+    lan_page_url="http://$lan_page_host:$server_port/?broker=$(printf 'http%%3A%%2F%%2F%s%%3A%s' \
+        "$lan_page_host" "$broker_port")"
+    if [ -n "$image_service_listener" ]; then
+        lan_page_url="$lan_page_url&artifacts=$(printf 'http%%3A%%2F%%2F%s%%3A%s' \
+            "$lan_page_host" "${image_service_listener##*:}")"
+    fi
+    printf 'lan_exposure address=%s router=%s:%s broker=%s:%s artifacts=%s page=%s\n' \
+        "$lan_page_host" "$lan_page_host" "$server_port" \
+        "$lan_page_host" "$broker_port" \
+        "${image_service_listener:--}" "$lan_page_url" >>"$status_file"
 fi
 # The search instance's identity lands after the same truncating write. The
 # start time binds the pid to the process a teardown signals, and the port is
