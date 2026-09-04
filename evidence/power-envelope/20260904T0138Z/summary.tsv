@@ -1,0 +1,24 @@
+model_id	arm	profile	decode_tok_s	package_watts	core_watts	package_watts_outer	gfxclk_delivered_mhz	fclk_mhz	tctl_peak_c	edge_peak_c	window_coverage
+qwen35-08b	01-control-open	serve-fixed-package-default	18.715	17.084	1.823	16.963	1100.0	933	67.0	67.0	bracketed
+qwen35-08b	02-package-20w	serve-fixed-package-20w	18.856	17.276	1.869	17.190	1100.0	933	59.6	59.0	bracketed
+qwen35-08b	03-package-25w	serve-fixed-package-25w	18.874	17.166	1.894	17.096	1100.0	933	63.4	63.0	bracketed
+qwen35-08b	04-control-close	serve-fixed-package-default	18.761	17.280	1.902	17.245	1100.0	933	64.6	64.0	bracketed
+qwen38-2b-distill	01-control-open	serve-fixed-package-default	9.834	17.248	1.581	17.180	1100.0	933	59.2	59.0	bracketed
+qwen38-2b-distill	02-package-20w	serve-fixed-package-20w	9.802	17.301	1.557	17.214	1100.0	933	62.5	62.0	bracketed
+qwen38-2b-distill	03-package-25w	serve-fixed-package-25w	9.826	17.302	1.568	17.261	1100.0	933	63.2	63.0	bracketed
+qwen38-2b-distill	04-control-close	serve-fixed-package-default	9.843	17.515	1.587	17.443	1100.0	933	62.8	62.0	bracketed
+qwen38-4b-distill	01-control-open	serve-fixed-package-default	3.384	16.162	1.288	16.152	1100.0	933	74.0	74.0	bracketed
+qwen38-4b-distill	02-package-20w	serve-fixed-package-20w	3.379	16.158	1.306	16.149	1100.0	933	66.2	66.0	bracketed
+qwen38-4b-distill	03-package-25w	serve-fixed-package-25w	3.380	16.187	1.318	16.183	1100.0	933	77.8	77.0	bracketed
+qwen38-4b-distill	04-control-close	serve-fixed-package-default	3.380	16.185	1.305	16.162	1100.0	933	75.8	75.0	bracketed
+
+model_id	arm	state	reason
+qwen35-08b	sweep	resolved	control spread 0.2% within the 20% span criterion, control mean 18.738 tok/s
+qwen35-08b	02-package-20w	faster	+0.6% against the control mean exceeds the 0.2% control spread; package 17.28 W against the control mean 17.18 W
+qwen35-08b	03-package-25w	faster	+0.7% against the control mean exceeds the 0.2% control spread; package 17.17 W against the control mean 17.18 W
+qwen38-2b-distill	sweep	resolved	control spread 0.1% within the 20% span criterion, control mean 9.838 tok/s
+qwen38-2b-distill	02-package-20w	slower	-0.4% against the control mean exceeds the 0.1% control spread; package 17.30 W against the control mean 17.38 W
+qwen38-2b-distill	03-package-25w	slower	-0.1% against the control mean exceeds the 0.1% control spread; package 17.30 W against the control mean 17.38 W
+qwen38-4b-distill	sweep	resolved	control spread 0.1% within the 20% span criterion, control mean 3.382 tok/s
+qwen38-4b-distill	02-package-20w	unresolved	-0.1% against the control mean sits inside the 0.1% control spread; package 16.16 W against the control mean 16.17 W
+qwen38-4b-distill	03-package-25w	unresolved	-0.1% against the control mean sits inside the 0.1% control spread; package 16.19 W against the control mean 16.17 W

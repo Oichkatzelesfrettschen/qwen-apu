@@ -307,12 +307,35 @@ back to `/dev/mem` otherwise (documented); it is not installed here.
 
 ## The registered campaign
 
-Status: `registered`. This section registers the design and its falsifiers ahead
-of any measurement, which is what makes a deviation a finding. Every arm needs a
-teardown window, a `sudo -v` credential, and the operator's authorization.
+Status: `run`, and the package budget is closed as a lever.
+`20260904T0138Z/` retains all twelve arms and states the verdict against each
+falsifier below; the sections after it stay as they were registered, ahead of
+the run.
+
+Package draw spans 16.16 to 17.52 W across the three checkpoints and the three
+budgets, and inside one checkpoint a STAPM raised by 10 W moves it by 0.27 W at
+most. The null prediction is met and the mechanism registered for it is refuted:
+Tctl peaked between 59.2 and 77.8 C against the platform's 90 C limit, so no arm
+approached the thermal ceiling either, and the part draws about 17 W under a 15 W
+STAPM while declining to draw more under a 25 W one. Every arm delivered a
+1100.0 MHz mean graphics clock with FCLK at 933, so nothing refutes the
+firmware-query section above. The boost-residency prediction is `not run`: the
+campaign retained no per-core delivered-frequency record. The rate half resolves
+no direction, because every candidate lands inside the roughly 4% of
+uncontrolled spread this machine carries on a repeated depth-0 rate.
+
 `remote/run-power-envelope-campaign.sh MODEL_ID CAMPAIGN_DIRECTORY` runs one
-checkpoint's four arms and `remote/run-power-envelope-arm.sh` is the command each
-`compute-state-lease.sh` transaction wraps.
+checkpoint's four arms, `remote/run-power-envelope-arm.sh` is the command each
+`compute-state-lease.sh` transaction wraps, and
+`remote/summarize-power-envelope.py` reads a campaign directory into the table
+and the verdict. The arms run under `serve-fixed-package-default`,
+`serve-fixed-package-20w`, and `serve-fixed-package-25w` rather than the
+`measure-fixed-package-*` names registered below: those carry `measure-fixed`'s
+nice 19, and `monitor-qwen-runtime.sh` renices itself to 0 and ends its session
+where it cannot, so a served command started at nice 19 wedges its own session
+ahead of the first request. The served profiles carry the same clocks, memory
+scanner, cores, and three budgets with the child at nice 0, and
+`qwen-capacity-policy.sh` still puts llama-server itself on core 0 at nice 19.
 
 ### Subject and instrument
 
