@@ -345,6 +345,17 @@ controls. `acceptance` compares the weighted acceptance against both the pair
 ledger's `acceptance_floor` and the calculated break-even the table above
 registers.
 
+Those two are less independent than they look, and the algebra says how much.
+Round time is derived as `predicted_ms / steps` from the same response the rate
+comes from, so the break-even acceptance falls below the measured acceptance
+exactly when the speculative rate exceeds the control rate. Against break-even
+alone the acceptance gate therefore restates the performance gate, and the
+ledger's floor is the whole of its independent content. `admission_gate` reads
+the depths passing both together rather than the two lists separately, since one
+serving tuple is one draft length: a depth that beats its controls while
+sitting under the floor and another that clears the floor while decoding slower
+name no configuration anyone can serve.
+
 ## The device sequence
 
 The class policy runs the current 2B first, the current 0.8B second, and the
