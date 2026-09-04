@@ -64,6 +64,27 @@ and `(0x20 / 3) x 200` is 2133.33 MT/s. Their timing registers decode to
 CT16G4SFD8213 SPD EEPROMs. Rank derating and an HP firmware speed cap are ruled
 out for the installed population.
 
+The SMU firmware rather than the driver or the VBIOS sets the graphics ceiling.
+`smu10_emit_clock_levels` obtains both `OD_RANGE` bounds with
+`PPSMC_MSG_GetMinGfxclkFrequency` and `PPSMC_MSG_GetMaxGfxclkFrequency` on every
+read, and `smu10_set_fine_grain_clk_vol` rejects an overdrive maximum above that
+same reply, so the 200 and 1100 MHz this part prints are the firmware's own
+answers and a write above 1100 is refused before any message leaves the kernel.
+`amdgpu.ppfeaturemask` decides nothing here: `0xfff7bfff` is amdgpu's own
+default, it clears `PP_OVERDRIVE_MASK`, and `smu10_hwmgr_backend_init` then sets
+`od_enabled` to 1 unconditionally during `hw_init`, which is why
+`pp_od_clk_voltage` prints at all. The board's decomposed VBIOS carries a
+`powerplayinfo` table whose 1020 body bytes are zero and no `setengineclock`
+command, so there is no clock table or voltage curve in the image to raise.
+Boost is the CPU half of the same picture: AMD publishes 3.2 GHz for this part,
+`cpufreq/boost` reads 1 over an ACPI P0 of 2.3 GHz, and both cores were observed
+at 3.15 to 3.19 GHz under load. The package budget is the one power authority
+that is writable, and it reaches the SMU through `remote/power-envelope.sh`,
+since `/sys/class/powercap` creates no `constraint_*` file and the amdgpu hwmon
+names a `PPT` label with no `power1_cap` beside it.
+`evidence/power-envelope/README.md` carries the message table and registers the
+package-budget campaign.
+
 On this SMU10 path, `pp_dpm_mclk` is a misleading sysfs name: the kernel obtains
 its selected value with `PPSMC_MSG_GetFclkFrequency`. The 933 and 1067 MHz
 entries are dynamic fabric-clock states, not alternate DRAM training results,
@@ -1708,6 +1729,12 @@ remote/measure-bench-repeatability.sh MODEL    # what a depth-0 rate repeats to
 remote/run-quality-suite.py ENDPOINT OUT_JSON --long-context-characters 24000
                                                 # the 75-row graded suite at explicit depth
 remote/run-quality-roster.sh [OUTPUT_DIR]      # that suite against every servable row
+QWEN_WEB_API_KEY_FILE=~/qwen-webui-state/api.key \
+    remote/run-conversational-suite.sh [OUTPUT_DIR] [MODEL_ID...]
+                                                # the suite web-off through the API and
+                                                # web-on through the served page, per
+                                                # servable checkpoint a web section
+                                                # reaches; evidence/conversational-suite/
 remote/generate-quality-images.py [DIR]        # the vision fixtures, and --check
 remote/regrade-quality-roster.py RECORD...     # a grader change over retained replies
 remote/sample-gpu-clocks.sh OUT_TSV [SECONDS]  # the DPM step a rate ran at
@@ -1732,6 +1759,37 @@ remote/compute-state-lease.sh PROFILE COMMAND [ARG...]
                                                 # dominates the command's own
                                                 # status.
 remote/compute-state-lease.sh status           # the live values, no credential, no write
+                                                # measure-fixed-package-default,
+                                                # -20w, and -25w add the power
+                                                # term to that same state.
+remote/power-envelope.sh apply PROFILE          # the SMU package budget, one
+                                                # reversible term: ryzenadj
+                                                # --info is the snapshot, a
+                                                # profile writes the fields it
+                                                # names in milliwatts, the
+                                                # read-back is the proof, and
+                                                # THM LIMIT CORE bounds the term
+                                                # rather than being written.
+                                                # platform-default writes
+                                                # nothing and still snapshots.
+                                                # A failure part way through a
+                                                # profile rolls the limits it
+                                                # already wrote back from the
+                                                # snapshot, so exit 3 names an
+                                                # arm refused with the baseline
+                                                # returned and 4 a budget the
+                                                # platform would not return.
+                                                # The snapshot path is the
+                                                # claim: it is created under
+                                                # set -C, so one concurrent
+                                                # apply wins, and restore acts
+                                                # on the owner token that claim
+                                                # recorded alone.
+remote/power-envelope.sh restore | status       # the reversal, and the live
+                                                # limits with no write
+remote/build-ryzenadj.sh [SOURCE_DIRECTORY]    # the pinned RyzenAdj into
+                                                # ~/.local/bin; needs cmake and
+                                                # libpci-dev and no privilege
 remote/model-registry.sh id|path SELECTOR [FIELD]
 remote/model-registry.sh draft-pairs | draft-pair PAIR_ID [FIELD]
 remote/model-registry.sh ctx-checkpoints | ctx-checkpoint MODEL_ID
@@ -2015,6 +2073,8 @@ python3 remote/test-image-review.py
 python3 remote/web-mcp/test-fallback-page-image.py
 remote/test-quality-suite.py
 remote/test-quality-roster.sh
+python3 remote/test-conversational-suite-units.py
+remote/test-run-conversational-suite.sh
 remote/test-promote-llama-build.sh
 remote/test-classify-checkpoint-semantics.sh
 remote/test-prefix-checkpoint-key.sh
@@ -2035,6 +2095,7 @@ python3 remote/test-sample-clock-sidecar.py
 python3 remote/test-summarize-perf-logger-slice.py
 remote/test-census-sha256.sh
 remote/test-compute-state-lease.sh
+remote/test-power-envelope.sh
 remote/test-run-raven2-vulkan-kernel-census.sh
 remote/verify-llama-patch-series.sh
 QWEN_LLAMA_CANDIDATE_PATCHES=1 remote/verify-llama-patch-series.sh

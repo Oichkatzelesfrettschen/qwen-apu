@@ -1,0 +1,11 @@
+decode_ms=6411.717
+decode_tok_per_second=9.825761180663465
+decode_tokens=64
+label=qwen38-2b-distill-03-package-25w
+prefill_ms=604.962
+prefill_tok_per_second=31.406931344448083
+prompt_tokens=19
+request_status=0
+teardown_status=0
+valid=True
+served_decode=completed label=qwen38-2b-distill-03-package-25w result_directory=$HOME/power-envelope-campaign/20260904T0138Z/arms/qwen38-2b-distill-03-package-25w

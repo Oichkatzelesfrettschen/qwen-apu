@@ -338,6 +338,15 @@ function writeBrowserStorage(storageName, key, value) {
   } catch { /* storage denial leaves the live page state authoritative */ }
 }
 
+function probeBrowserStorageWrite(storageName, key) {
+  // A store-selection probe wants the denial to throw, where the caller's
+  // own catch selects the next store, so this reaches the storage through
+  // one indirection rather than the swallowing helpers above, which exist
+  // for callers that want a denial absorbed instead of propagated.
+  window[storageName].setItem(key, '1');
+  window[storageName].removeItem(key);
+}
+
 // The bearer is one per appliance rather than one per person: a bearer-mode
 // launch reads it from api.key in its state directory and every listener
 // requires it, and an open-mode launch (QWEN_WEB_LAN_OPEN=1) requires none at
@@ -3756,30 +3765,40 @@ function rememberDemotedConversationStore(name) {
 }
 
 async function resolveConversationStore() {
+  // A store this call opens but does not select still answers list()/read()
+  // where the probe below proves only its write refused, so any record it
+  // already holds from an earlier session is migrated into whichever store
+  // this call does select rather than left stranded off the sidebar and
+  // unopenable for the rest of the page session.
+  let unselectedIndexedStore = null;
   if (!conversationStoreFailedNames.has('indexeddb')) {
     try {
       const database = await openConversationDatabase();
       const store = indexedDatabaseConversationStore(database);
-      // The list proves the object store answers, so a database that opened
-      // and then refuses every transaction falls through here rather than at
-      // the first save.
-      await store.list();
+      unselectedIndexedStore = store;
+      // A write-then-delete proves the object store accepts a readwrite
+      // transaction, not only a readonly one; a database that opens and
+      // lists but refuses every write (quota, private-browsing policy)
+      // falls through here rather than silently discarding every later
+      // save.
+      const probeId = `${CONVERSATION_RECORD_PREFIX}probe`;
+      await store.write({ id: probeId, title: '', updated: 0, messages: [] });
+      await store.remove(probeId);
       return store;
     } catch { /* the next store answers where IndexedDB refuses */ }
   }
   if (!conversationStoreFailedNames.has('localstorage')) {
     try {
-      // The probe wants the denial to throw here, where the catch selects the
-      // next store, so it reaches the storage directly rather than through the
-      // helpers that swallow one.
       const probeKey = `${CONVERSATION_RECORD_PREFIX}probe`;
-      const probeStorage = window['localStorage'];
-      probeStorage.setItem(probeKey, '1');
-      probeStorage.removeItem(probeKey);
-      return browserStorageConversationStore();
+      probeBrowserStorageWrite('localStorage', probeKey);
+      const store = browserStorageConversationStore();
+      if (unselectedIndexedStore) await migrateReadableRecords(unselectedIndexedStore, store);
+      return store;
     } catch { /* a denied localStorage leaves the record in memory for this page */ }
   }
-  return memoryConversationStore();
+  const store = memoryConversationStore();
+  if (unselectedIndexedStore) await migrateReadableRecords(unselectedIndexedStore, store);
+  return store;
 }
 
 let conversationStoreRead = null;
@@ -4246,11 +4265,19 @@ async function initConversations() {
   /* The route names the conversation, the remembered selection names it where
      the route is silent, and a name neither store answers for opens an empty
      conversation instead of an error. */
+  // The store lookup below awaits IndexedDB's own async open, which a click on
+  // New or a routed switch can land inside; either bumps conversationGeneration
+  // through resetConversationState(). This resumption then applies against a
+  // generation the page has already left, which would replace the
+  // user-opened conversation with the one this boot was resolving.
+  const initGeneration = conversationGeneration;
   const routed = conversationHashId();
   const remembered = readBrowserStorage('localStorage', CONVERSATION_SELECTED_KEY);
   const candidate = routed ||
     (remembered && CONVERSATION_ID_PATTERN.test(remembered) ? remembered : null);
-  if (candidate && await readConversationRecord(candidate)) {
+  const record = candidate ? await readConversationRecord(candidate) : null;
+  if (conversationGeneration !== initGeneration) return;
+  if (candidate && record) {
     await switchConversation(candidate, routed === null);
     return;
   }

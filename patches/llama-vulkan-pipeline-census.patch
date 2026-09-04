@@ -29,7 +29,7 @@ diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vu
 index 15075c0fa..7b930a434 100644
 --- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
 +++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
-@@ -4,6 +4,12 @@
+@@ -4,6 +4,14 @@
  #include "ggml-vulkan-submit-trace.h"
  #include <vulkan/vulkan_core.h>
  #include <chrono>
@@ -38,6 +38,8 @@ index 15075c0fa..7b930a434 100644
 +#include <cstring>
 +#include <cinttypes>
 +#include <ctime>
++#include <cerrno>
++#include <sys/stat.h>
 +#endif
  #if defined(GGML_VULKAN_RUN_TESTS) || defined(GGML_VULKAN_CHECK_RESULTS)
  #include "ggml-cpu.h"
@@ -386,7 +388,7 @@ index 15075c0fa..7b930a434 100644
      vk::ShaderModuleCreateInfo shader_module_create_info({}, spv_size, reinterpret_cast<const uint32_t *>(spv_data));
  
      // Patch SPIR-V to enable supported FP16 float controls, avoiding the need
-@@ -3008,6 +3323,36 @@ static void ggml_vk_create_pipeline_func(vk_device& device, vk_pipeline& pipelin
+@@ -3008,6 +3323,47 @@ static void ggml_vk_create_pipeline_func(vk_device& device, vk_pipeline& pipelin
      }
  #endif
  
@@ -404,6 +406,17 @@ index 15075c0fa..7b930a434 100644
 +    if (const char * census_dump_dir = getenv("GGML_VK_PIPELINE_CENSUS_DUMP")) {
 +        if (census_dump_dir[0] != '/') {
 +            throw std::runtime_error("GGML_VK_PIPELINE_CENSUS_DUMP names an absolute directory");
++        }
++        // The directory is created here rather than required. The first
++        // pipeline is created inside the model load, before any harness step
++        // could have made it, and an fopen into an absent directory throws out
++        // of vkCreateShaderModule and takes the load down rather than losing one
++        // module: the dump is armed by an environment variable and the run then
++        // ends with no evidence and no server. mkdir costs one syscall against a
++        // pipeline creation and an existing directory is the ordinary success.
++        if (mkdir(census_dump_dir, 0700) != 0 && errno != EEXIST) {
++            throw std::runtime_error("GGML_VK_PIPELINE_CENSUS_DUMP directory is uncreatable: " +
++                                     std::string(census_dump_dir));
 +        }
 +        const std::string module_path =
 +            std::string(census_dump_dir) + "/" + pipeline->census_spirv_executed_sha256 + ".spv";

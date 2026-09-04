@@ -1,0 +1,1 @@
+power_envelope_restored=held profile=package-25w fields=stapm_limit_mw=15000 fast_limit_mw=25000 slow_limit_mw=20000
