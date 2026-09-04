@@ -119,6 +119,9 @@ gate_cell test-image-protocol derive remote/test-image-protocol.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-image-protocol.py'
 gate_cell test-summarize-draft-pair derive remote/test-summarize-draft-pair.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-draft-pair.py'
+gate_cell test-summarize-speculation-breakeven derive \
+    'remote/test-summarize-speculation-breakeven.py remote/summarize-speculation-breakeven.py' \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-speculation-breakeven.py'
 gate_cell test-build-cache-keys derive \
     'remote/test-build-cache-keys.sh remote/build-cache-keys.sh remote/build-llama-preset.sh' \
     remote/test-build-cache-keys.sh
@@ -226,6 +229,9 @@ gate_cell test-one-token-admission derive remote/test-one-token-admission.sh \
     remote/test-one-token-admission.sh
 gate_cell test-measure-draft-pair derive remote/test-measure-draft-pair.sh \
     remote/test-measure-draft-pair.sh
+gate_cell test-measure-mtp-arm derive \
+    'remote/test-measure-mtp-arm.sh remote/measure-mtp-arm.sh remote/test-fixtures/fake-mtp-server.sh' \
+    remote/test-measure-mtp-arm.sh
 gate_cell test-classify-checkpoint-semantics derive \
     remote/test-classify-checkpoint-semantics.sh \
     remote/test-classify-checkpoint-semantics.sh
