@@ -14,7 +14,10 @@ reader; neither does a query parameter, which the route ignores entirely.
 `--lan-exposure ADDRESS` is the operator's explicit opt-in: it admits
 `--http-host 0.0.0.0` and adds that one routable literal to the Host headers a
 request may name, and the bearer that already gates every route is what a LAN
-reader presents.
+reader presents. `--lan-name NAME` adds one mDNS label under `.local`
+beside that literal, so the page is reachable at a host a DHCP lease does not
+move. `--open-lan` removes the bearer from the artifact routes, which leaves
+the admitted Host set and the Origin allowlist carrying the gate.
 
 The job pipeline is one sequence with one owner: parse the request, hand it to
 the injected verifier for its profile parameters, refuse every cap violation,
@@ -95,12 +98,15 @@ import image_protocol as protocol  # noqa: E402
 
 PROTOCOL_VERSION = protocol.PROTOCOL_VERSION
 LOOPBACK_HOSTS = ("127.0.0.1", "::1")
+ASCII_LABEL_CHARACTERS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789-")
 WILDCARD_HOST = "0.0.0.0"  # noqa: S104 -- the exposure opt-in binds it deliberately
 RUNTIME_HARD_TIMEOUT_SECONDS = 300
 SERVICE_JOB_DEADLINE_SECONDS = 330
 TERMINATION_GRACE_SECONDS = 5.0
 CONTROL_LINE_BYTE_CAP = protocol.MAX_LINE_BYTES
 CONTROL_READ_TIMEOUT_SECONDS = 30.0
+ARTIFACT_READ_TIMEOUT_SECONDS = 30.0
+ARTIFACT_MAX_CONCURRENT_CONNECTIONS = 8
 ARTIFACT_BYTE_CAP = 64 * 1024 * 1024
 MEMORY_SAMPLE_INTERVAL_SECONDS = 0.5
 LEASE_FILE_NAME = "vulkan-workload.lock"
@@ -301,19 +307,28 @@ def load_verifier(specification):
 
 
 def loopback_host(value):
-    """Return a host the HTTP listener admits, or raise for any other.
+    """Return a bind literal: a loopback literal, the wildcard, or an IPv4 literal.
 
     The refusal runs against the configured string before the socket exists, so
     a wider bind fails at startup rather than serving artifacts to the network
-    until somebody reads the listening address. `--lan-exposure` widens this to
-    the wildcard, and `main` pairs the two.
+    until somebody reads the listening address. `run` carries the
+    cross-argument rule this type alone cannot state: the wildcard reaches the
+    socket only beside `--lan-exposure` and `--open-all-interfaces` together,
+    and any other non-loopback literal must equal `--lan-exposure` exactly, so
+    the interface-binding restriction asks this process to bind the exposure's
+    own literal rather than every interface.
     """
     if value in LOOPBACK_HOSTS or value == WILDCARD_HOST:
         return value
+    parts = value.split(".")
+    if len(parts) == 4 and all(
+        part.isdigit() and len(part) <= 3 and 0 <= int(part) <= 255 for part in parts
+    ):
+        return value
     raise argparse.ArgumentTypeError(
-        f"the artifact listener binds a loopback literal or {WILDCARD_HOST}; "
-        f"{value!r} is refused. Admitted hosts: "
-        f"{', '.join((*LOOPBACK_HOSTS, WILDCARD_HOST))}"
+        f"the artifact listener binds a loopback literal, {WILDCARD_HOST}, or "
+        f"an IPv4 literal; {value!r} is refused. Admitted hosts: "
+        f"{', '.join((*LOOPBACK_HOSTS, WILDCARD_HOST))}, or an IPv4 literal"
     )
 
 
@@ -344,23 +359,89 @@ def exposed_host(value):
     return value
 
 
-def admitted_hosts(exposure=""):
-    """Return the Host-header literals a request may name.
+def exposed_name(value):
+    """Return the mDNS label the LAN exposure opt-in admits beside the literal.
+
+    A DHCP lease moves the address, so the name is what an operator bookmarks.
+    Admitting it keeps the set closed rather than reopening the resolver: avahi
+    publishes `<label>.local` on the link and a browser resolves that suffix by
+    multicast to the hosts sharing the link, so the admitted form is exactly
+    one lowercase RFC 1123 label under `.local`. A bare hostname, a public
+    domain, a second label under `.local`, an uppercase letter, and a trailing
+    dot are each refused by name rather than reshaped: any of them registers in
+    the ordinary resolver, and a name an attacker controls there would resolve
+    to this socket under DNS rebinding the way the closed literal set exists to
+    prevent -- the exact argument that holds only for the `.local` namespace,
+    since an ordinary DNS name resolves through the recursive resolver like any
+    other and `--open-lan` would then admit the rebound request's Host and
+    Origin with no bearer standing between it and the broker. `localhost` is
+    refused by name too, because it names the loopback the set already holds.
+    A single label carries no dot, so an all-numeric label such as
+    `123.local` names no four-octet IPv4 literal and is admitted the way
+    `web_lan_name_is_valid` in remote/web-lan-exposure.sh admits it; the
+    dotted-quad form belongs to `--lan-exposure` and never reaches this suffix
+    check at all.
+    """
+    if not value:
+        # argparse applies a string type to its own default, so the empty
+        # default passes through as the absent opt-in.
+        return ""
+    if not value.endswith(".local"):
+        raise argparse.ArgumentTypeError(
+            f"the LAN exposure name is a hostname a browser resolves on the "
+            f"link; the admitted set holds exactly one lowercase mDNS label "
+            f"under .local; {value!r} is refused"
+        )
+    label = value[: -len(".local")]
+    if not label_is_admitted(label):
+        raise argparse.ArgumentTypeError(
+            f"the LAN exposure name carries a label outside the lowercase "
+            f"letter-digit-hyphen set; {value!r} is refused"
+        )
+    return value
+
+
+def label_is_admitted(label):
+    """Return whether one hostname label meets the ASCII letter-digit-hyphen rule.
+
+    The character set stays ASCII rather than reading `str.isalnum`, which
+    admits every Unicode letter: a browser sends an internationalized name in
+    its Punycode form, so a name outside ASCII is refused here rather than
+    admitted into a set no request ever matches.
+    """
+    return (
+        1 <= len(label) <= 63
+        and not label.startswith("-")
+        and not label.endswith("-")
+        and all(character in ASCII_LABEL_CHARACTERS for character in label)
+    )
+
+
+def admitted_hosts(exposure="", name=""):
+    """Return the Host-header names a request may present.
 
     The loopback literals stand under every setting, because `image-review.py`
     and the teardown check reach this listener over 127.0.0.1 whatever the
-    socket binds. The exposure adds exactly one literal.
+    socket binds. The exposure adds exactly one literal and the name adds
+    exactly one lowercased hostname, so the set stays a closed list.
     """
-    return (*LOOPBACK_HOSTS, exposure) if exposure else LOOPBACK_HOSTS
+    admitted = list(LOOPBACK_HOSTS)
+    if exposure:
+        admitted.append(exposure)
+    if name:
+        admitted.append(name)
+    return tuple(admitted)
 
 
 def host_header_names(header, admitted):
-    """Return whether a Host header names one of the admitted literals.
+    """Return whether a Host header names one of the admitted entries.
 
     A browser that resolves an attacker-controlled name to a bound address
     reaches this socket with that name in the Host header, so the bind alone
-    leaves DNS rebinding open; comparing the header against a literal set
-    closes it.
+    leaves DNS rebinding open; comparing the header against a closed set closes
+    it. The comparison falls back to the casefolded form because DNS names are
+    case-insensitive and the admitted name is stored lowercased, while the
+    literals hold digits and dots alone.
     """
     if not header:
         return ""
@@ -372,7 +453,10 @@ def host_header_names(header, admitted):
         named = value[1:closing]
     else:
         named = value.split(":", 1)[0]
-    return named if named in admitted else ""
+    if named in admitted:
+        return named
+    lowered = named.lower()
+    return lowered if lowered in admitted else ""
 
 
 def host_header_is_loopback(header):
@@ -685,6 +769,35 @@ def parse_png(raw, expected_width, expected_height):
         "color_type": color_type,
         "channels": channels,
     }
+
+
+def artifact_read_timeout_seconds_from_environment():
+    """Read the artifact listener's per-socket read timeout, refusing a bad value.
+
+    `QWEN_IMAGE_ARTIFACT_READ_TIMEOUT_S` lets a test shrink the bound the
+    wildcard listener otherwise holds an idle or partial-request connection
+    under for `ARTIFACT_READ_TIMEOUT_SECONDS`, the way
+    `QWEN_IMAGE_LEASE_WAIT_S` shrinks the lease wait; a malformed, non-positive,
+    or non-finite setting would silently become the default and hide a launch
+    that meant to configure it, so it raises instead. `inf` parses as a float
+    and clears every earlier check, but `socket.settimeout` raises
+    `OverflowError` on it, which would start the service successfully and then
+    fail every artifact connection at handler setup.
+    """
+    raw = os.environ.get("QWEN_IMAGE_ARTIFACT_READ_TIMEOUT_S", "")
+    if raw == "":
+        return ARTIFACT_READ_TIMEOUT_SECONDS
+    try:
+        seconds = float(raw)
+    except ValueError:
+        raise ServiceError(
+            f"QWEN_IMAGE_ARTIFACT_READ_TIMEOUT_S is not a number: {raw}"
+        ) from None
+    if seconds <= 0 or not math.isfinite(seconds):
+        raise ServiceError(
+            f"QWEN_IMAGE_ARTIFACT_READ_TIMEOUT_S is not a finite positive number: {raw}"
+        )
+    return seconds
 
 
 def lease_wait_seconds_from_environment():
@@ -2074,6 +2187,13 @@ class ArtifactHandler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "qwen-image-artifacts/1.0"
     sys_version = ""
+    # `socketserver.StreamRequestHandler.setup` applies this to the accepted
+    # socket, and `BaseHTTPRequestHandler.handle_one_request` already catches
+    # the resulting `socket.timeout` and closes the connection. Under the
+    # wildcard listener an unauthenticated peer that sends a partial request,
+    # or that holds an HTTP/1.1 connection open past a 401, is dropped after
+    # this many idle seconds rather than parking its thread indefinitely.
+    timeout = ARTIFACT_READ_TIMEOUT_SECONDS
 
     def log_message(self, fmt, *args):
         """Drop the default access log; the provenance record is the trail."""
@@ -2085,11 +2205,13 @@ class ArtifactHandler(http.server.BaseHTTPRequestHandler):
     def allowed_origin(self):
         """Return the request Origin when the launch admits it, or an empty string.
 
-        One page origin is configured and echoed back exactly, so a wildcard
-        never reaches a response and a second page reads no artifact.
+        The configured origins are echoed back exactly, so a wildcard never
+        reaches a response and a page outside the list reads no artifact. The
+        list holds the exposure literal's page origin and the exposure name's,
+        because one appliance page is reachable at either host.
         """
         origin = self.headers.get("Origin", "")
-        return origin if origin and origin == self.settings.origin else ""
+        return origin if origin and origin in self.settings.origins else ""
 
     def send_json(self, http_status, payload, origin="", retry_after=None):
         body = json.dumps(payload).encode("utf-8")
@@ -2115,8 +2237,13 @@ class ArtifactHandler(http.server.BaseHTTPRequestHandler):
         The fallback Web UI sends `Authorization: Bearer <key>` on every
         request it makes, so an artifact reaches the page through the header it
         already holds. The comparison runs in constant time and precedes every
-        lookup below; a query parameter carries no authority at all.
+        lookup below; a query parameter carries no authority at all. Under
+        `--open-lan` the launch read no key, so the comparison would stand
+        against an empty expectation and the check returns admitted instead:
+        the Host set and the Origin allowlist are what remain.
         """
+        if self.settings.open_lan:
+            return True
         presented = self.headers.get("Authorization", "")
         expected = f"Bearer {self.settings.api_key}"
         return bool(presented) and hmac.compare_digest(presented, expected)
@@ -2243,6 +2370,14 @@ class ArtifactHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+ARTIFACT_CONNECTION_LIMIT_RESPONSE = (
+    b"HTTP/1.1 503 Service Unavailable\r\n"
+    b"Connection: close\r\n"
+    b"Content-Length: 0\r\n"
+    b"\r\n"
+)
+
+
 class ArtifactServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     allow_reuse_address = False
     daemon_threads = True
@@ -2252,7 +2387,37 @@ class ArtifactServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
         self.address_family = socket.AF_INET6 if ":" in address[0] else socket.AF_INET
         self.image_settings = settings
         self.image_service = image_service
+        # `ThreadingMixIn.process_request` spawns a thread on every accepted
+        # connection before the Host or bearer checks run, so a wildcard bind
+        # lets an unauthenticated peer that holds many connections open
+        # exhaust threads ahead of any credential. This semaphore bounds the
+        # resident handler count independently of that check ordering.
+        self._connection_semaphore = threading.BoundedSemaphore(
+            ARTIFACT_MAX_CONCURRENT_CONNECTIONS
+        )
         super().__init__(address, ArtifactHandler)
+
+    def process_request(self, request, client_address):
+        """Refuse a connection past the concurrent cap rather than spawn for it."""
+        if not self._connection_semaphore.acquire(blocking=False):
+            with contextlib.suppress(OSError):
+                request.sendall(ARTIFACT_CONNECTION_LIMIT_RESPONSE)
+            with contextlib.suppress(OSError):
+                request.shutdown(socket.SHUT_RDWR)
+            request.close()
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self._connection_semaphore.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        """Release the cap slot this connection's thread acquired, on every exit."""
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._connection_semaphore.release()
 
 
 class ServiceSettings:
@@ -2263,13 +2428,20 @@ class ServiceSettings:
         self.image_directory = os.path.join(arguments.state_dir, IMAGE_DIRECTORY_NAME)
         self.verifier = verifier
         self.api_key = api_key
-        self.origin = arguments.origin
+        # A page reachable at two hosts sends two Origins, so the allowlist is
+        # a tuple and `allowed_origin` echoes back the one entry it matched.
+        self.origins = tuple(arguments.origin)
         # The exposure literal widens the Host-header set by exactly one entry
-        # and changes nothing else: the bearer already gates every route this
-        # listener serves, so the credential the page holds is the credential a
-        # LAN reader presents.
+        # and the exposure name by one more. The bearer already gates every
+        # route this listener serves, so the credential the page holds is the
+        # credential a LAN reader presents, and `--open-lan` is the operator's
+        # decision to serve the artifact routes without one.
         self.exposure = arguments.lan_exposure
-        self.admitted_hosts = admitted_hosts(arguments.lan_exposure)
+        self.exposure_name = arguments.lan_name
+        self.open_lan = arguments.open_lan
+        self.admitted_hosts = admitted_hosts(
+            arguments.lan_exposure, arguments.lan_name
+        )
         self.runtime_environment = dict(
             entry.split("=", 1) for entry in arguments.runtime_env
         )
@@ -2420,8 +2592,11 @@ def build_parser():
     )
     parser.add_argument(
         "--origin",
-        default=os.environ.get("QWEN_IMAGE_PAGE_ORIGIN", ""),
-        help="the one page origin the artifact routes admit through CORS",
+        action="append",
+        default=None,
+        help="one page origin the artifact routes admit through CORS; repeat "
+        "it for a page reachable at both the exposure literal and the "
+        "exposure name",
     )
     parser.add_argument(
         "--priority-wrapper",
@@ -2435,6 +2610,23 @@ def build_parser():
         "--lan-exposure", type=exposed_host, default="",
         help="the routable IPv4 literal this listener admits in a Host header "
         "beside the loopback ones; the Web UI bearer already gates every route",
+    )
+    parser.add_argument(
+        "--lan-name", type=exposed_name, default="",
+        help="one lowercase mDNS label under .local this listener admits in "
+        "a Host header beside the exposure literal",
+    )
+    parser.add_argument(
+        "--open-lan", action="store_true",
+        help="serve the artifact routes without the Web UI bearer, leaving the "
+        "admitted Host set and the Origin allowlist as the gate; requires "
+        "--lan-exposure",
+    )
+    parser.add_argument(
+        "--open-all-interfaces", action="store_true",
+        help="admit --http-host 0.0.0.0, binding every interface rather than "
+        "the one --lan-exposure literal lives on; the ordinary exposure binds "
+        "that literal alone",
     )
     parser.add_argument("--http-port", type=int, default=0)
     parser.add_argument(
@@ -2520,6 +2712,47 @@ def run(argv):
             "names the routable literal the Host header is gated on\n"
         )
         return 2
+    # The interface-binding restriction asks this process to bind the
+    # exposure's own literal rather than every interface; the wildcard is a
+    # second explicit decision beside naming the exposure, and any other
+    # literal binds an address the exposure never named.
+    if arguments.http_host == WILDCARD_HOST and not arguments.open_all_interfaces:
+        sys.stderr.write(
+            f"--http-host {WILDCARD_HOST} binds every interface, and only "
+            "--open-all-interfaces admits that rather than the "
+            "--lan-exposure literal alone\n"
+        )
+        return 2
+    if (
+        arguments.http_host not in LOOPBACK_HOSTS
+        and arguments.http_host != WILDCARD_HOST
+        and arguments.http_host != arguments.lan_exposure
+    ):
+        sys.stderr.write(
+            f"--http-host {arguments.http_host} binds an address "
+            f"--lan-exposure never named ({arguments.lan_exposure or '<unset>'}); "
+            "the bind is a loopback literal, that literal, or the wildcard "
+            "under --open-all-interfaces\n"
+        )
+        return 2
+    # The name widens the exposed Host set and the open opt-in removes a
+    # credential from an exposed listener, so each names the exposure it
+    # belongs to rather than standing on its own.
+    if arguments.lan_name and not arguments.lan_exposure:
+        sys.stderr.write(
+            "--lan-name adds a Host to the exposed set, so --lan-exposure "
+            "names the literal that set is built from\n"
+        )
+        return 2
+    if arguments.open_lan and not arguments.lan_exposure:
+        sys.stderr.write(
+            "--open-lan removes the Web UI bearer from an exposed listener, "
+            "so --lan-exposure names the address it exposes\n"
+        )
+        return 2
+    if arguments.origin is None:
+        configured = os.environ.get("QWEN_IMAGE_PAGE_ORIGIN", "")
+        arguments.origin = [entry for entry in configured.split(",") if entry]
     if not arguments.state_dir:
         sys.stderr.write(
             "the service keeps its lease, socket, and artifacts under one "
@@ -2537,6 +2770,11 @@ def run(argv):
         if "=" not in entry:
             sys.stderr.write(f"--runtime-env takes NAME=VALUE; {entry!r} carries no =\n")
             return 2
+    try:
+        ArtifactHandler.timeout = artifact_read_timeout_seconds_from_environment()
+    except ServiceError as error:
+        sys.stderr.write(f"the artifact listener's read timeout is unusable: {error}\n")
+        return 2
     profiles = {}
     if arguments.profiles_json:
         try:
@@ -2552,11 +2790,17 @@ def run(argv):
             return 2
     else:
         verifier = shape_only_verifier(profiles)
-    try:
-        api_key = read_secret_file(arguments.api_key_file, "Web UI API")
-    except ServiceError as error:
-        sys.stderr.write(f"the service cannot read the Web UI API key: {error}\n")
-        return 2
+    # The open opt-in reads no key file, because the bearer it would compare
+    # against is the one it removes and `read_secret_file` refuses an
+    # unconfigured path: a launch serving without a key hands this process an
+    # empty `--api-key-file` and would otherwise exit here.
+    api_key = ""
+    if not arguments.open_lan:
+        try:
+            api_key = read_secret_file(arguments.api_key_file, "Web UI API")
+        except ServiceError as error:
+            sys.stderr.write(f"the service cannot read the Web UI API key: {error}\n")
+            return 2
     os.makedirs(arguments.state_dir, mode=PRIVATE_DIRECTORY_MODE, exist_ok=True)
     image_directory = os.path.join(arguments.state_dir, IMAGE_DIRECTORY_NAME)
     os.makedirs(image_directory, mode=PRIVATE_DIRECTORY_MODE, exist_ok=True)

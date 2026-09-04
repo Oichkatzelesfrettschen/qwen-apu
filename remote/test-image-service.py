@@ -9,6 +9,7 @@ success arm, every refusal, the timeout, and the cancellation all run without a
 device and without a downloaded checkpoint.
 """
 
+import argparse
 import hashlib
 import http.client
 import json
@@ -36,6 +37,9 @@ PAGE_ORIGIN = "http://127.0.0.1:8080"
 # The exposure arms name a literal in the Host header while the socket stays on
 # the loopback, so the gate is measured on a host holding no second address.
 EXPOSED_ADDRESS = "192.0.2.10"
+# The name arms present a synthetic mDNS host in the Host header, so the arm
+# reads the admitted set rather than whatever this machine advertises.
+EXPOSED_NAME = "qwen-test.local"
 STARTUP_SECONDS = 20.0
 REQUEST_SECONDS = 60.0
 
@@ -111,6 +115,10 @@ class ServiceSession:
         priority_wrapper=None,
         procfs_root=None,
         lan_exposure=None,
+        lan_name=None,
+        open_lan=False,
+        extra_origins=(),
+        artifact_read_timeout_seconds=None,
         extra_argv=None,
     ):
         self.directory = directory
@@ -141,6 +149,15 @@ class ServiceSession:
         ]
         if lan_exposure is not None:
             argv.extend(["--lan-exposure", lan_exposure])
+        if lan_name is not None:
+            argv.extend(["--lan-name", lan_name])
+        for extra_origin in extra_origins:
+            argv.extend(["--origin", extra_origin])
+        if open_lan:
+            # The opt-in reads no key file, so the launch hands it the empty
+            # path a keyless session passes rather than the fixture key.
+            argv.extend(["--open-lan"])
+            argv[argv.index("--api-key-file") + 1] = ""
         if extra_argv:
             argv.extend(extra_argv)
         for name, value in (runtime_environment or {}).items():
@@ -167,6 +184,13 @@ class ServiceSession:
         # an empty directory reaches the unreadable arm without root.
         if procfs_root is not None:
             environment["QWEN_IMAGE_PROCFS_ROOT"] = procfs_root
+        # The artifact listener's read timeout defaults to a bound too long
+        # for a test to wait out, so an arm that means to observe it shrinks
+        # this the way lease_wait_seconds shrinks the lease wait above.
+        if artifact_read_timeout_seconds is not None:
+            environment["QWEN_IMAGE_ARTIFACT_READ_TIMEOUT_S"] = str(
+                artifact_read_timeout_seconds
+            )
         self.process = subprocess.Popen(
             argv,
             stdout=subprocess.PIPE,
@@ -296,6 +320,10 @@ class ImageServiceTest(unittest.TestCase):
         priority_wrapper=None,
         procfs_root=None,
         lan_exposure=None,
+        lan_name=None,
+        open_lan=False,
+        extra_origins=(),
+        artifact_read_timeout_seconds=None,
         extra_argv=None,
     ):
         directory = tempfile.mkdtemp(dir=self.temporary.name)
@@ -310,6 +338,10 @@ class ImageServiceTest(unittest.TestCase):
             priority_wrapper,
             procfs_root,
             lan_exposure,
+            lan_name,
+            open_lan,
+            extra_origins,
+            artifact_read_timeout_seconds,
             extra_argv,
         )
         self.sessions.append(session)
@@ -1212,6 +1244,56 @@ class ImageServiceTest(unittest.TestCase):
             status, _, _ = session.authorized_http(path)
             self.assertEqual(status, 404, path)
 
+    def test_artifact_read_timeout_closes_a_partial_request(self):
+        """A connection that never finishes its request line is dropped on a bound."""
+        session = self.start(artifact_read_timeout_seconds=0.5)
+        connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        connection.settimeout(5.0)
+        connection.connect(("127.0.0.1", session.http_port))
+        try:
+            # No terminating blank line follows, so the handler's readline
+            # blocks on the socket's own read timeout rather than parsing a
+            # request.
+            connection.sendall(b"GET /health HTTP/1.1\r\n")
+            started = time.monotonic()
+            received = connection.recv(4096)
+            elapsed = time.monotonic() - started
+        finally:
+            connection.close()
+        self.assertEqual(received, b"")
+        self.assertLess(elapsed, 5.0)
+
+    def test_artifact_connection_cap_refuses_the_next_connection(self):
+        """A connection past the concurrent cap is refused rather than queued."""
+        session = self.start(artifact_read_timeout_seconds=5.0)
+        limit = service_module.ARTIFACT_MAX_CONCURRENT_CONNECTIONS
+        held = []
+        try:
+            for _ in range(limit):
+                connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                connection.settimeout(5.0)
+                connection.connect(("127.0.0.1", session.http_port))
+                held.append(connection)
+            # The accept loop runs in the server's own thread and spawns a
+            # handler thread per connection almost immediately, so this gives
+            # it room to have claimed every held connection's cap slot before
+            # the probe below tests the limit.
+            time.sleep(0.3)
+            overflow = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            overflow.settimeout(5.0)
+            overflow.connect(("127.0.0.1", session.http_port))
+            try:
+                response = overflow.recv(4096)
+            finally:
+                overflow.close()
+        finally:
+            for connection in held:
+                connection.close()
+        self.assertIn(b"503", response)
+        # Freeing a held slot admits the next connection normally again.
+        status, _, _ = session.http("/health")
+        self.assertEqual(status, 401)
+
     def test_admitted_origin_answers_the_preflight(self):
         session = self.start()
         status, headers, _ = session.http(
@@ -1247,6 +1329,109 @@ class ImageServiceTest(unittest.TestCase):
         )
         self.assertEqual(status, 401)
 
+    def test_the_exposure_name_joins_the_admitted_host_set(self):
+        """The mDNS name is a second admitted host and the bearer still gates."""
+        session = self.start(
+            lan_exposure=EXPOSED_ADDRESS, lan_name=EXPOSED_NAME
+        )
+        for description, host_header, expected in (
+            ("exposed literal", f"{EXPOSED_ADDRESS}:{session.http_port}", 200),
+            ("exposed name", f"{EXPOSED_NAME}:{session.http_port}", 200),
+            ("exposed name uppercased", f"QWEN-TEST.LOCAL:{session.http_port}", 200),
+            ("foreign name", f"rebind.example.net:{session.http_port}", 403),
+        ):
+            with self.subTest(host=description):
+                status, _, body = session.authorized_http(
+                    "/health", {"Host": host_header}
+                )
+                self.assertEqual(status, expected, body)
+        status, _, _ = session.http(
+            "/health", {"Host": f"{EXPOSED_NAME}:{session.http_port}"}
+        )
+        self.assertEqual(status, 401)
+
+    def test_the_open_opt_in_reads_without_a_bearer_and_keeps_the_host_set(self):
+        """The bearer goes; the Host set and the Origin allowlist stay.
+
+        The launch hands an empty --api-key-file, which is what a keyless
+        session passes, so the arm also measures that the service reads no key
+        file under the opt-in rather than exiting on the unconfigured path.
+        """
+        session = self.start(
+            lan_exposure=EXPOSED_ADDRESS, lan_name=EXPOSED_NAME, open_lan=True
+        )
+        for description, host_header, expected in (
+            ("exposed literal", f"{EXPOSED_ADDRESS}:{session.http_port}", 200),
+            ("exposed name", f"{EXPOSED_NAME}:{session.http_port}", 200),
+            ("foreign name", f"rebind.example.net:{session.http_port}", 403),
+        ):
+            with self.subTest(host=description):
+                status, _, body = session.http("/health", {"Host": host_header})
+                self.assertEqual(status, expected, body)
+        # An empty bearer is what the page sends with no key stored, and the
+        # comparison it would have met is gone rather than trivially satisfied.
+        status, _, _ = session.http(
+            "/health",
+            {"Host": f"{EXPOSED_NAME}:{session.http_port}", "Authorization": "Bearer "},
+        )
+        self.assertEqual(status, 200)
+        status, headers, _ = session.http(
+            "/health",
+            {"Origin": "http://elsewhere.example"},
+            method="OPTIONS",
+        )
+        self.assertEqual(status, 403)
+        self.assertNotIn("Access-Control-Allow-Origin", headers)
+
+    def test_two_page_origins_are_admitted_for_one_appliance(self):
+        """A page reachable at both hosts sends either Origin."""
+        name_origin = f"http://{EXPOSED_NAME}:8080"
+        session = self.start(
+            lan_exposure=EXPOSED_ADDRESS,
+            lan_name=EXPOSED_NAME,
+            extra_origins=(name_origin,),
+        )
+        for origin, expected in (
+            (PAGE_ORIGIN, 204),
+            (name_origin, 204),
+            ("http://elsewhere.example", 403),
+        ):
+            with self.subTest(origin=origin):
+                status, headers, _ = session.http(
+                    "/health", {"Origin": origin}, method="OPTIONS"
+                )
+                self.assertEqual(status, expected)
+                if expected == 204:
+                    self.assertEqual(
+                        headers.get("Access-Control-Allow-Origin"), origin
+                    )
+
+    def test_the_open_opt_in_requires_the_exposure_it_opens(self):
+        """--open-lan removes a credential from a listener the operator exposed."""
+        directory = tempfile.mkdtemp(dir=self.temporary.name)
+        state_directory = os.path.join(directory, "state")
+        os.makedirs(state_directory, mode=0o700)
+        radv_icd_path = os.path.join(directory, "fake-radv-icd.json")
+        with open(radv_icd_path, "w", encoding="ascii") as handle:
+            handle.write("{}\n")
+        completed = subprocess.run(
+            [
+                sys.executable, SERVICE_PATH,
+                "--state-dir", state_directory,
+                "--api-key-file", "",
+                "--origin", PAGE_ORIGIN,
+                "--http-host", "127.0.0.1",
+                "--http-port", "0",
+                "--open-lan",
+            ],
+            env={**os.environ, "QWEN_RADV_ICD": radv_icd_path},
+            capture_output=True,
+            text=True,
+            timeout=STARTUP_SECONDS,
+        )
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("--lan-exposure", completed.stderr)
+
     def test_the_default_refuses_the_exposed_literal_in_a_host_header(self):
         """A launch naming no exposure keeps the loopback Host set."""
         session = self.start()
@@ -1254,6 +1439,19 @@ class ImageServiceTest(unittest.TestCase):
             "/health", {"Host": f"{EXPOSED_ADDRESS}:{session.http_port}"}
         )
         self.assertEqual(status, 403)
+
+    def test_the_artifact_listener_serves_no_state_changing_route(self):
+        """The listener registers GET and OPTIONS alone; POST reaches nothing.
+
+        The generation grant and the tool call travel through the router's
+        `/tools` proxy and this process's own control socket, not through this
+        HTTP listener, so there is no POST route here for an Origin allowlist
+        to gate: `BaseHTTPRequestHandler` answers an unimplemented verb with
+        501 rather than routing it to a handler.
+        """
+        session = self.start()
+        status, _, _ = session.authorized_http("/health", method="POST")
+        self.assertEqual(status, 501)
 
     def test_the_wildcard_bind_requires_the_exposure_opt_in(self):
         """--http-host 0.0.0.0 alone widens nothing."""
@@ -1283,6 +1481,107 @@ class ImageServiceTest(unittest.TestCase):
         )
         self.assertEqual(completed.returncode, 2, completed.stderr)
         self.assertIn("--lan-exposure", completed.stderr)
+
+    def test_the_wildcard_bind_requires_open_all_interfaces_beside_the_exposure(self):
+        """--lan-exposure alone still leaves the wildcard bind refused."""
+        directory = tempfile.mkdtemp(dir=self.temporary.name)
+        state_directory = os.path.join(directory, "state")
+        os.makedirs(state_directory, mode=0o700)
+        api_key_path = os.path.join(directory, "api.key")
+        with open(api_key_path, "w", encoding="ascii") as handle:
+            handle.write(API_KEY + "\n")
+        os.chmod(api_key_path, 0o600)
+        radv_icd_path = os.path.join(directory, "fake-radv-icd.json")
+        with open(radv_icd_path, "w", encoding="ascii") as handle:
+            handle.write("{}\n")
+        completed = subprocess.run(
+            [
+                sys.executable, SERVICE_PATH,
+                "--state-dir", state_directory,
+                "--api-key-file", api_key_path,
+                "--origin", PAGE_ORIGIN,
+                "--http-host", "0.0.0.0",  # noqa: S104 -- the refusal under test
+                "--http-port", "0",
+                "--lan-exposure", EXPOSED_ADDRESS,
+            ],
+            env={**os.environ, "QWEN_RADV_ICD": radv_icd_path},
+            capture_output=True,
+            text=True,
+            timeout=STARTUP_SECONDS,
+        )
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("--open-all-interfaces", completed.stderr)
+
+    def test_a_literal_the_exposure_never_named_is_refused(self):
+        """A syntactically valid IPv4 bind still needs the exposure's own say."""
+        directory = tempfile.mkdtemp(dir=self.temporary.name)
+        state_directory = os.path.join(directory, "state")
+        os.makedirs(state_directory, mode=0o700)
+        api_key_path = os.path.join(directory, "api.key")
+        with open(api_key_path, "w", encoding="ascii") as handle:
+            handle.write(API_KEY + "\n")
+        os.chmod(api_key_path, 0o600)
+        radv_icd_path = os.path.join(directory, "fake-radv-icd.json")
+        with open(radv_icd_path, "w", encoding="ascii") as handle:
+            handle.write("{}\n")
+        completed = subprocess.run(
+            [
+                sys.executable, SERVICE_PATH,
+                "--state-dir", state_directory,
+                "--api-key-file", api_key_path,
+                "--origin", PAGE_ORIGIN,
+                "--http-host", "192.0.2.11",
+                "--http-port", "0",
+                "--lan-exposure", EXPOSED_ADDRESS,
+            ],
+            env={**os.environ, "QWEN_RADV_ICD": radv_icd_path},
+            capture_output=True,
+            text=True,
+            timeout=STARTUP_SECONDS,
+        )
+        self.assertEqual(completed.returncode, 2, completed.stderr)
+        self.assertIn("--lan-exposure never named", completed.stderr)
+
+    def test_a_non_finite_artifact_read_timeout_is_refused(self):
+        """inf parses as a float but socket.settimeout(inf) raises OverflowError."""
+        directory = tempfile.mkdtemp(dir=self.temporary.name)
+        state_directory = os.path.join(directory, "state")
+        os.makedirs(state_directory, mode=0o700)
+        api_key_path = os.path.join(directory, "api.key")
+        with open(api_key_path, "w", encoding="ascii") as handle:
+            handle.write(API_KEY + "\n")
+        os.chmod(api_key_path, 0o600)
+        radv_icd_path = os.path.join(directory, "fake-radv-icd.json")
+        with open(radv_icd_path, "w", encoding="ascii") as handle:
+            handle.write("{}\n")
+        profiles_path = os.path.join(directory, "profiles.json")
+        with open(profiles_path, "w", encoding="ascii") as handle:
+            handle.write("{}\n")
+        for bad_value in ("inf", "-inf", "nan", "-5"):
+            with self.subTest(value=bad_value):
+                completed = subprocess.run(
+                    [
+                        sys.executable, SERVICE_PATH,
+                        "--state-dir", state_directory,
+                        "--profiles-json", profiles_path,
+                        "--api-key-file", api_key_path,
+                        "--origin", PAGE_ORIGIN,
+                        "--http-host", "127.0.0.1",
+                        "--http-port", "0",
+                    ],
+                    env={
+                        **os.environ,
+                        "QWEN_RADV_ICD": radv_icd_path,
+                        "QWEN_IMAGE_ARTIFACT_READ_TIMEOUT_S": bad_value,
+                    },
+                    capture_output=True,
+                    text=True,
+                    timeout=STARTUP_SECONDS,
+                )
+                self.assertEqual(completed.returncode, 2, completed.stderr)
+                self.assertIn(
+                    "QWEN_IMAGE_ARTIFACT_READ_TIMEOUT_S", completed.stderr
+                )
 
     def test_health_reports_the_service_state(self):
         session = self.start()
@@ -1640,6 +1939,38 @@ class PngValidatorTest(unittest.TestCase):
                 self.valid_png(trailing_pixels=b"compressed expansion" * 64), 4, 3
             )
         self.assertEqual(caught.exception.detail, "decode")
+
+
+class LanNameValidationTest(unittest.TestCase):
+    def test_exposed_name_admits_only_one_local_label(self):
+        """The LAN name is exactly one lowercase RFC 1123 label under .local.
+
+        A bare hostname, a public domain, and a second label under .local each
+        register in the ordinary resolver, so a name an attacker controls there
+        would resolve to this socket under DNS rebinding were any of them
+        admitted; an uppercase letter and a trailing dot name the same
+        resolvable form under a different spelling.
+        """
+        self.assertEqual(service_module.exposed_name(""), "")
+        self.assertEqual(
+            service_module.exposed_name("qwen-test.local"), "qwen-test.local"
+        )
+        # A single label carries no dot, so an all-numeric label names no
+        # four-octet IPv4 literal and is admitted the way the shell validator
+        # in remote/web-lan-exposure.sh admits it.
+        self.assertEqual(service_module.exposed_name("123.local"), "123.local")
+        for refused in (
+            "qwen-test",
+            "attacker.example.com",
+            "QWEN-Test.LOCAL",
+            "qwen-test.local.",
+            "a.b.local",
+            "192.168.1.5",
+            "localhost",
+        ):
+            with self.subTest(refused=refused):
+                with self.assertRaises(argparse.ArgumentTypeError):
+                    service_module.exposed_name(refused)
 
 
 class ProfileValidationTest(unittest.TestCase):

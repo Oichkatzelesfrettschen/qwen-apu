@@ -552,11 +552,27 @@ fi
 # through its MCP server or the device through its image runtime serves an
 # exposed listener only behind the bearer, so the policy refuses to build the
 # tuple rather than warning about it.
-if [ "${QWEN_WEB_LAN:-0}" = 1 ] && [ -z "$api_key_file" ]; then
-    printf 'the LAN exposure serves an authenticated listener, and no API key file reaches this launch\n' >&2
-    printf 'the web and image launchers export QWEN_REQUIRE_API_KEY=1; a launch reaching here without one binds %s unauthenticated\n' \
-        "$bind_host" >&2
-    exit 2
+#
+# QWEN_WEB_LAN_OPEN=1 is the operator's decision that this exposure serves
+# without that bearer, and it inverts the guard rather than lifting it: the
+# open lane refuses a key file and the bearer lane refuses its absence, so the
+# argv this policy builds carries the credential state the launch announced.
+# remote/web-lan-exposure.sh admits the opt-in beside QWEN_WEB_LAN=1 alone, so
+# the value reaching here is the one that passed that admission.
+if [ "${QWEN_WEB_LAN:-0}" = 1 ]; then
+    if [ "${QWEN_WEB_LAN_OPEN:-0}" = 1 ] && [ -n "$api_key_file" ]; then
+        printf 'the open LAN exposure serves without a bearer, and an API key file reaches this launch: %s\n' \
+            "$api_key_file" >&2
+        printf 'QWEN_WEB_LAN_OPEN=1 exports QWEN_REQUIRE_API_KEY=0; a launch reaching here with a key binds %s authenticated where the launch announced an open listener\n' \
+            "$bind_host" >&2
+        exit 2
+    fi
+    if [ "${QWEN_WEB_LAN_OPEN:-0}" = 0 ] && [ -z "$api_key_file" ]; then
+        printf 'the LAN exposure serves an authenticated listener, and no API key file reaches this launch\n' >&2
+        printf 'the web and image launchers export QWEN_REQUIRE_API_KEY=1; a launch reaching here without one binds %s unauthenticated\n' \
+            "$bind_host" >&2
+        exit 2
+    fi
 fi
 
 if [ ! -x "$llama_server" ]; then
@@ -1102,6 +1118,11 @@ router_draft_pair_guard_path=-
 router_draft_pair_guard_sha256=-
 web_presets_from_preset=0
 web_sections_from_preset=
+# The image lane reads as withheld until a preset marker names it, which is what
+# a preset generated before the lane and a preset that armed nothing both say.
+router_image_profile=
+router_image_profiles=
+router_image_profiles_sha256=
 router_web_mode=0
 router_max=${QWEN_ROUTER_MAX:-1}
 router_preset_expected_sha256=${QWEN_ROUTER_PRESET_SHA256:-}
@@ -1262,6 +1283,123 @@ validate_web_preset_execution_policies() {
     ' "$1" "$2"
 }
 
+# The image lane is the second execution grant a merged preset can carry, and
+# the section's own MCP configuration rather than the marker is what the child
+# spawns. The rejoin therefore runs in both directions: a preset naming an image
+# profile requires every web section's configuration to carry an image server
+# bound to that profile and to that section as its language profile, and a
+# preset naming none requires every configuration to carry no image server at
+# all. remote/read-image-mcp-server.py is the one parser both this policy and
+# the image launch library read that file with.
+#
+# A marker-free preset is one generated before this lane, so it reads as a
+# withheld lane and its sections are held to the same absence.
+router_section_mcp_configurations() {
+    awk '
+        /^[[:space:]]*($|[#;])/ { next }
+        /^[[:space:]]*\[/ {
+            section = $0
+            sub(/^[[:space:]]*\[/, "", section)
+            sub(/\][[:space:]]*$/, "", section)
+            next
+        }
+        {
+            if (section == "") next
+            separator = index($0, "=")
+            if (separator == 0) next
+            key = substr($0, 1, separator - 1)
+            value = substr($0, separator + 1)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+            if (key == "LLAMA_ARG_MCP_SERVERS_CONFIG") {
+                printf "%s\t%s\n", section, value
+            }
+        }
+    ' "$1"
+}
+
+validate_image_preset_lane() {
+    image_lane_rejected=0
+    image_lane_configurations=$(router_section_mcp_configurations \
+        "$router_presets")
+    while IFS='	' read -r image_lane_section image_lane_configuration; do
+        [ -n "$image_lane_section" ] || continue
+        if ! image_lane_report=$("$script_directory/read-image-mcp-server.py" \
+            "$image_lane_configuration"); then
+            printf 'router preset section %s names an MCP configuration this policy cannot read: %s\n' \
+                "$image_lane_section" "$image_lane_configuration" >&2
+            image_lane_rejected=1
+            continue
+        fi
+        image_lane_state=$(printf '%s\n' "$image_lane_report" |
+            sed -n 's/^image_server=//p')
+        if [ -z "$router_image_profile" ]; then
+            if [ "$image_lane_state" = present ]; then
+                printf 'router preset section %s carries an image server where the preset names no image profile\n' \
+                    "$image_lane_section" >&2
+                printf 'regenerate the preset tree with remote/build-router-presets.sh\n' >&2
+                image_lane_rejected=1
+            fi
+            continue
+        fi
+        if [ "$image_lane_state" != present ]; then
+            printf 'router preset names image profile %s and section %s carries no image server\n' \
+                "$router_image_profile" "$image_lane_section" >&2
+            image_lane_rejected=1
+            continue
+        fi
+        image_lane_profile=$(printf '%s\n' "$image_lane_report" |
+            sed -n 's/^QWEN_IMAGE_PROFILE=//p')
+        image_lane_language=$(printf '%s\n' "$image_lane_report" |
+            sed -n 's/^QWEN_IMAGE_LANGUAGE_PROFILE=//p')
+        if [ "$image_lane_profile" != "$router_image_profile" ]; then
+            printf 'router preset section %s arms image profile %s where the preset names %s\n' \
+                "$image_lane_section" "$image_lane_profile" \
+                "$router_image_profile" >&2
+            image_lane_rejected=1
+        fi
+        if [ "$image_lane_language" != "$image_lane_section" ]; then
+            printf 'router preset section %s carries an image server bound to language profile %s\n' \
+                "$image_lane_section" "$image_lane_language" >&2
+            printf 'the grant binds the language profile and the image profile together, so the section signs for itself\n' >&2
+            image_lane_rejected=1
+        fi
+    done <<IMAGE_LANE_CONFIGURATIONS
+$image_lane_configurations
+IMAGE_LANE_CONFIGURATIONS
+    [ "$image_lane_rejected" = 0 ] || return 1
+    [ -n "$router_image_profile" ] || return 0
+    # A preset persists across an edit to the image ledger, so the row it names
+    # is read again here: a row moved to `refused` or removed outright refuses
+    # the launch rather than serving a persisted configuration that still names
+    # it. The digest binds every row rather than only that one field.
+    if ! image_lane_identity=$(sha256sum -- "$router_image_profiles"); then
+        printf 'image profile ledger identity cannot be measured: %s\n' \
+            "$router_image_profiles" >&2
+        return 1
+    fi
+    image_lane_actual_sha256=${image_lane_identity%% *}
+    if [ "$image_lane_actual_sha256" != "$router_image_profiles_sha256" ]; then
+        printf 'image profile ledger identity changed: expected %s, measured %s\n' \
+            "$router_image_profiles_sha256" "$image_lane_actual_sha256" >&2
+        return 1
+    fi
+    if ! image_lane_row=$(QWEN_IMAGE_PROFILES=$router_image_profiles \
+        "$script_directory/image-registry.sh" profile \
+        "$router_image_profile" 2>/dev/null); then
+        printf 'the preset names image profile %s, which %s holds no row for\n' \
+            "$router_image_profile" "$router_image_profiles" >&2
+        return 1
+    fi
+    image_lane_policy=$(printf '%s\n' "$image_lane_row" |
+        sed -n 's/^execution_policy=//p')
+    if [ "$image_lane_policy" != validator-gated ]; then
+        printf 'image profile %s carries execution_policy %s, and only validator-gated reaches a runtime\n' \
+            "$router_image_profile" "${image_lane_policy:-<absent>}" >&2
+        return 1
+    fi
+}
+
 verify_web_profiles_identity() {
     if [ "$router_web_mode" != 1 ]; then
         return 0
@@ -1337,6 +1475,11 @@ validate_current_router_authorities() {
             return 1
         fi
     fi
+    if ! validate_image_preset_lane; then
+        printf 'the router preset image lane fails its own markers: %s\n' \
+            "$router_presets" >&2
+        return 1
+    fi
 }
 if [ "$router_enabled" = 1 ]; then
     if [ ! -r "$router_presets" ]; then
@@ -1404,6 +1547,66 @@ if [ "$router_enabled" = 1 ]; then
     if [ "$web_presets_from_preset" = 1 ] ||
         [ -n "$web_sections_from_preset" ]; then
         router_web_mode=1
+    fi
+    # Both generators write `# qwen_image_profile=` and spell a withheld lane
+    # `-`, so an absent marker is a preset generated before the lane and reads
+    # the same way. A named profile requires the ledger path and digest beside
+    # it, since the rejoin that keeps a revoked row from serving reads that
+    # exact file.
+    router_image_profile=$(sed -n 's/^# qwen_image_profile=//p' \
+        "$router_presets")
+    case $router_image_profile in
+        '' | '-') router_image_profile='' ;;
+        [A-Za-z0-9]*)
+            # image-registry.sh's own identifier() admits a period after the
+            # first character, and a ledger-valid id such as sdxs.512-arm-a
+            # carries one, so this vocabulary matches identifier() exactly
+            # rather than rejecting a marker the ledger already accepted.
+            case $router_image_profile in
+                *[!A-Za-z0-9._-]*)
+                    printf 'router presets carry a malformed image profile marker: %s\n' \
+                        "$router_image_profile" >&2
+                    exit 2
+                    ;;
+            esac
+            ;;
+        *)
+            printf 'router presets carry a malformed image profile marker: %s\n' \
+                "$router_image_profile" >&2
+            exit 2
+            ;;
+    esac
+    router_image_profiles=$(sed -n 's/^# qwen_image_profiles_path=//p' \
+        "$router_presets")
+    router_image_profiles_sha256=$(sed -n \
+        's/^# qwen_image_profiles_sha256=//p' "$router_presets")
+    if [ -n "$router_image_profile" ]; then
+        case $router_image_profiles in
+            /*) ;;
+            *)
+                printf 'router presets name image profile %s and omit an absolute image ledger path: %s\n' \
+                    "$router_image_profile" "$router_presets" >&2
+                exit 2
+                ;;
+        esac
+        if [ "${#router_image_profiles_sha256}" -ne 64 ]; then
+            printf 'image preset ledger SHA-256 must hold 64 lowercase hexadecimal characters\n' >&2
+            exit 2
+        fi
+        case $router_image_profiles_sha256 in
+            *[!0-9a-f]*)
+                printf 'image preset ledger SHA-256 must hold 64 lowercase hexadecimal characters\n' >&2
+                exit 2
+                ;;
+        esac
+        # An image server reaches the device from a section the web ledger
+        # emitted, so a lane armed over a file naming no web section would sign
+        # a grant for a profile the launch never resolves.
+        if [ "$router_web_mode" != 1 ]; then
+            printf 'router presets name image profile %s and carry no web section\n' \
+                "$router_image_profile" >&2
+            exit 2
+        fi
     fi
     web_profiles_path_from_preset=$(sed -n \
         's/^# qwen_web_profiles_path=//p' "$router_presets")

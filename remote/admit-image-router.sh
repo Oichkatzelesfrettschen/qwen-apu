@@ -110,11 +110,37 @@ fi
 # own LOOPBACK_HOSTS definition and reachable without a second network, so the
 # arms below measure the exposed listeners rather than a simulation of them.
 # Every origin, Host header, and listener expectation reads this one value.
+#
+# QWEN_WEB_LAN_OPEN=1 runs the same exposed lane with the Web UI bearer removed,
+# which is the operator decision remote/web-lan-exposure.sh admits beside the
+# exposure. The arms read it rather than the credential state of any one
+# request, so one harness measures both listener policies.
 lane_exposure=${QWEN_WEB_LAN:-0}
+lane_open=${QWEN_WEB_LAN_OPEN:-0}
+# A value outside 0/1 falls through every `= 1` comparison below to the
+# loopback arm, so a typo such as QWEN_WEB_LAN=yes would otherwise report
+# success for the ordinary lane while the operator believed the run measured
+# the exposed one. web-lan-exposure.sh's resolve_web_lan_mode validates the
+# same pair the same way ahead of the launchers it guards.
+case $lane_exposure in
+    0 | 1) ;;
+    *)
+        printf 'QWEN_WEB_LAN must be 0 or 1: %s\n' "$lane_exposure" >&2
+        exit 2
+        ;;
+esac
+case $lane_open in
+    0 | 1) ;;
+    *)
+        printf 'QWEN_WEB_LAN_OPEN must be 0 or 1: %s\n' "$lane_open" >&2
+        exit 2
+        ;;
+esac
 if [ "$lane_exposure" = 1 ]; then
     lane_host=${QWEN_WEB_LAN_ADDRESS:?QWEN_WEB_LAN=1 names QWEN_WEB_LAN_ADDRESS}
 else
     lane_host=127.0.0.1
+    lane_open=0
 fi
 router_origin=http://$lane_host:$server_port
 broker_origin=http://$lane_host:$broker_port
@@ -542,7 +568,11 @@ if [ "$lane_exposure" = 1 ]; then
         openssl rand -hex 32 >"$state_directory/api.key"
     fi
     chmod 600 "$state_directory/api.key"
-    lane_launch_environment="QWEN_WEB_LAN=1 QWEN_WEB_LAN_ADDRESS=$lane_host QWEN_BIND_HOST=$lane_host"
+    lane_launch_environment="QWEN_WEB_LAN=1 QWEN_WEB_LAN_ADDRESS=$lane_host QWEN_BIND_HOST=$lane_host QWEN_WEB_LAN_OPEN=$lane_open"
+    # The name defaults to whatever avahi advertises on the running host, and
+    # this harness measures the admitted set rather than that host, so an
+    # explicit empty value states the answer unless the caller named one.
+    lane_launch_environment="$lane_launch_environment QWEN_WEB_LAN_NAME=${QWEN_WEB_LAN_NAME:-}"
 fi
 # The list is built above and holds no field the shell must keep whole, so the
 # unquoted expansion is what turns it into separate env assignments.
@@ -572,13 +602,14 @@ secret_file=$(sed -n 's/^broker secret_file=//p' "$output_directory/image-sessio
 # The artifact listener binds an ephemeral port, so its address is read from the
 # line the session recorded rather than assumed.
 artifact_listener=$(sed -n 's/^image_service_identity .*listener=//p' "$output_directory/image-session.status" | sed -n '1p')
-# The session records the address the service printed. Under the exposure that
-# is the wildcard, and the page reads the artifact route over the lane literal,
-# so the origin is composed from the recorded port and the lane host.
+# The session records the address the service printed. remote/web-lan-exposure.sh
+# binds the router, the broker, and the artifact listener to the one exposure
+# literal rather than every interface, so under the exposure that is the lane
+# host itself, and the page reads the artifact route over that same literal.
 artifact_port=${artifact_listener##*:}
 artifact_origin=http://$lane_host:$artifact_port
 if [ "$lane_exposure" = 1 ]; then
-    expected_artifact_listener="0.0.0.0:$artifact_port"
+    expected_artifact_listener="$lane_host:$artifact_port"
 else
     expected_artifact_listener="127.0.0.1:$artifact_port"
 fi
@@ -805,7 +836,31 @@ fi
 # own uncredentialed arm runs beside the artifact read below and holds under
 # both settings, because that route required the bearer before the exposure
 # existed.
-if [ "$lane_exposure" = 1 ]; then
+if [ "$lane_exposure" = 1 ] && [ "$lane_open" = 1 ]; then
+    # QWEN_WEB_LAN_OPEN=1 is the operator decision that removes the bearer, so
+    # the arms below measure the credential the lane still requires: the
+    # session secret on the signing route, which is what an approved
+    # generation actually rests on once the key is gone.
+    call_without_key=1 call router-no-credential GET \
+        "$router_origin/tools?model=$profile_id&autoload=true"
+    call_without_key=0
+    if [ "$call_status" = 200 ]; then
+        record open_router_serves_without_the_bearer accepted "status=200"
+    else
+        record open_router_serves_without_the_bearer refused "status=$call_status"
+    fi
+    call_without_key=1 call grant-no-session POST "$broker_origin/grant-image" \
+        "$grant_body" -H "Origin: $router_origin" \
+        -H "Host: $lane_host:$broker_port" \
+        -H "X-Qwen-Web-Session: a-secret-this-launch-never-signed"
+    call_without_key=0
+    if [ "$call_status" = 403 ] && grep -q 'stale_session_secret' "$call_out"; then
+        record open_grant_requires_the_session_secret accepted "status=403"
+    else
+        record open_grant_requires_the_session_secret refused \
+            "status=$call_status $(head -c 120 "$call_out")"
+    fi
+elif [ "$lane_exposure" = 1 ]; then
     call_without_key=1 call router-no-credential GET \
         "$router_origin/tools?model=$profile_id&autoload=true"
     # A variable assignment preceding a function call persists in the shell
@@ -864,8 +919,17 @@ if [ "${#artifact_sha256}" -eq 64 ]; then
         record artifact_png_matches_digest refused "status=$call_status type=${artifact_type:-none} measured=$measured_sha256"
     fi
     call_without_key=1 call artifact-no-credential GET "$artifact_origin/artifacts/$artifact_sha256.png"
-    if [ "$call_status" = 401 ]; then
-        record artifact_without_credential_refused accepted 'status=401'
+    if [ "$lane_open" = 1 ]; then
+        # The open lane serves the artifact routes without the bearer by the
+        # operator decision, and the admitted Host set is what still refuses a
+        # reader; the foreign-Host arm above measures that.
+        artifact_credential_expectation=200
+    else
+        artifact_credential_expectation=401
+    fi
+    if [ "$call_status" = "$artifact_credential_expectation" ]; then
+        record artifact_without_credential_refused accepted \
+            "status=$call_status open=$lane_open"
     else
         record artifact_without_credential_refused refused "status=$call_status"
     fi
