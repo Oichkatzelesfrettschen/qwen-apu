@@ -92,6 +92,9 @@ set -eu
 #   QWEN_AB_CANDIDATE_PATCH          the one candidate series member the candidate
 #                                    carries, default
 #                                    llama-vulkan-q4k-activation-group-sums.patch
+#   QWEN_AB_WITNESS_DIRECTORY        a run-kernel-delta-witness.sh output directory whose
+#                                    token identity and margin contract the summary reports
+#                                    beside the paired bound
 #   QWEN_AB_COOLDOWN_S               quiescence deadline between arms, default 30
 #   QWEN_CENSUS_ENGINE_CLOCK_POLICY  auto (default), high, profile_peak, or manual; a
 #                                    forced policy pins power_dpm_force_performance_level
@@ -209,6 +212,17 @@ bracket_summarizer=$script_directory/summarize-bracket-ab.py
 bracket_subject=${QWEN_AB_BRACKET_SUBJECT:-mul_mat_vec_q4_k_f32_f32}
 bracket_null=${QWEN_AB_BRACKET_NULL:-mul_mat_vec_q6_k_f32_f32}
 bracket_bound=${QWEN_AB_BRACKET_BOUND:-0.02}
+# The token-id and margin witness is a separate campaign over its own prompts,
+# so its directory is named rather than derived: the summary reports its two
+# rows beside the paired bound and carries the directory on each, which is what
+# keeps one run's evidence from reading as another's. An absent directory
+# leaves both rows unavailable and decides nothing.
+witness_directory=${QWEN_AB_WITNESS_DIRECTORY:-}
+if [ -n "$witness_directory" ] && [ ! -r "$witness_directory/margin-summary.tsv" ]; then
+    printf 'QWEN_AB_WITNESS_DIRECTORY names a run-kernel-delta-witness.sh output directory: %s\n' \
+        "$witness_directory" >&2
+    exit 2
+fi
 overlap_threshold=${QWEN_CENSUS_OVERLAP_THRESHOLD:-0.05}
 if [ "$ab_mode" = kernel-delta ]; then
     for required_summarizer in "$census_summarizer" "$bracket_summarizer"; do
@@ -1005,7 +1019,7 @@ execution_proof_sha256=$(sha256sum "$execution_proof" | cut -d ' ' -f 1)
 # clock_invariant and below_required_fraction trail them, carrying the sidecar
 # validator's verdict on a forced clock policy; both read `-` under `auto` and
 # on an unsampled arm.
-printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\tsidecar\townership\tstatus\tsclk_mode_mhz\tsclk_share\tregime_delta\tclock_invariant\tbelow_required_fraction\n' \
+printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\tsidecar\townership\tstatus\tsclk_mode_mhz\tsclk_share\tmclk_mode_mhz\tregime_delta\tclock_invariant\tbelow_required_fraction\n' \
     >"$arms_ledger"
 {
     printf 'model_id\t%s\nmodel_path\t%s\ncontext\t%s\nbatch\t%s\nubatch\t%s\n' \
@@ -1417,6 +1431,7 @@ EOF
     # every sensor present, and the request window covered.
     sclk_mode_mhz=-
     sclk_share=-
+    mclk_mode_mhz=-
     clock_invariant_state=-
     below_required_fraction=-
     if [ "$sidecar_state" = on ]; then
@@ -1479,8 +1494,11 @@ EOF
                 | awk '{ for (i = 1; i <= NF; i++) if (index($i, "sclk_mode_mhz=") == 1) print substr($i, 15) }')
             sclk_share=$(printf '%s\n' "$clock_state_line" \
                 | awk '{ for (i = 1; i <= NF; i++) if (index($i, "sclk_share=") == 1) print substr($i, 12) }')
+            mclk_mode_mhz=$(printf '%s\n' "$clock_state_line" \
+                | awk '{ for (i = 1; i <= NF; i++) if (index($i, "mclk_mode_mhz=") == 1) print substr($i, 15) }')
             [ -n "$sclk_mode_mhz" ] || sclk_mode_mhz=-
             [ -n "$sclk_share" ] || sclk_share=-
+            [ -n "$mclk_mode_mhz" ] || mclk_mode_mhz=-
         fi
         if [ "$sidecar_verdict" -ne 0 ]; then
             sidecar_state=refused
@@ -1621,10 +1639,10 @@ EOF
     fi
     [ "$status" = completed ] || arm_failures=$((arm_failures + 1))
     analysis_end_ns=$(date +%s%N)
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$slot" "$arm" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$slot" "$arm" \
         "$server_sha256" "$predicted_n" "$predicted_ms" "$tok_s" "$census_rows" "$sidecar_state" \
         "$ownership" "$status" \
-        "$sclk_mode_mhz" "$sclk_share" "$regime_delta" "$clock_invariant_state" \
+        "$sclk_mode_mhz" "$sclk_share" "$mclk_mode_mhz" "$regime_delta" "$clock_invariant_state" \
         "$below_required_fraction" >>"$arms_ledger"
     printf 'served_ab_arm=%s slot=%s arm=%s tok_s=%s sidecar=%s sclk_mode_mhz=%s regime_delta=%s clock_invariant=%s reason=%s\n' \
         "$status" "$slot" "$arm" "$tok_s" "$sidecar_state" "$sclk_mode_mhz" \
@@ -1740,7 +1758,7 @@ if [ "$ab_mode" = served ]; then
     set +e
     python3 "$bracket_summarizer" "$arms_ledger" "$output_directory/arms" \
         --subject "$bracket_subject" --null "$bracket_null" --bound "$bracket_bound" \
-        --sclk-band "$sclk_band" \
+        --sclk-band "$sclk_band" ${witness_directory:+--witness "$witness_directory"} \
         >"$output_directory/response-summary.tsv" 2>"$output_directory/response-summary.stderr"
     response_status=$?
     set -e
@@ -1810,6 +1828,15 @@ null_mean_delta=-
 null_union_verdict=-
 null_pairs=-
 module_identity=-
+# The reporting rows the summary carries beside the paired bound: the execution
+# state every bracket was measured at, and the separate witness run's token
+# identity and margin contract. Each states what it read rather than deciding
+# the campaign, so a run without a witness directory reports unavailable and
+# exits on the bracket rows alone.
+clock_state=-
+graph_span_delta=-
+token_identity=-
+margin_contract=-
 if [ "$ab_mode" = kernel-delta ]; then
     set +e
     # The band reaches the bracket the way it reaches the served rate: a device
@@ -1818,7 +1845,7 @@ if [ "$ab_mode" = kernel-delta ]; then
     # between them and their pair leaves the interval.
     python3 "$bracket_summarizer" "$arms_ledger" "$output_directory/arms" \
         --subject "$bracket_subject" --null "$bracket_null" --bound "$bracket_bound" \
-        --sclk-band "$sclk_band" \
+        --sclk-band "$sclk_band" ${witness_directory:+--witness "$witness_directory"} \
         >"$output_directory/bracket-summary.tsv" 2>"$output_directory/bracket-summary.stderr"
     bracket_status=$?
     set -e
@@ -1839,6 +1866,10 @@ if [ "$ab_mode" = kernel-delta ]; then
         module_identity=$(read_bracket_row module_identity verdict) || module_identity=-
         response_identity=$(read_bracket_row response_identity verdict) || response_identity=-
         response_pairs=$(read_bracket_row response_identity comparable_pairs) || response_pairs=-
+        clock_state=$(read_bracket_row clock_state detail) || clock_state=-
+        graph_span_delta=$(read_bracket_row graph-span mean_delta) || graph_span_delta=-
+        token_identity=$(read_bracket_row token_identity verdict) || token_identity=-
+        margin_contract=$(read_bracket_row margin_contract verdict) || margin_contract=-
     else
         printf 'bracket_summary=refused reason=%s\n' \
             "$(sed -n '1p' "$output_directory/bracket-summary.stderr")"
@@ -1879,6 +1910,9 @@ printf 'served_ab=%s\nmodel_id=%s\nreplicates=%s\nbound=%s\nmean_delta=%s\nci_lo
     "$campaign" "$model_id" "$ab_replicates" "$ab_bound" "$mean_delta" "$ci_low" "$ci_high" \
     "$comparable_pairs" "$arm_failures" "$unclassified" "$cooldown_timeouts" \
     "$control_sha256" "$candidate_sha256" >"$output_directory/terminal-state.tsv"
+printf 'clock_state\t%s\ngraph_span_mean_delta\t%s\ntoken_identity\t%s\nmargin_contract\t%s\nwitness_directory\t%s\n' \
+    "$clock_state" "$graph_span_delta" "$token_identity" "$margin_contract" \
+    "${witness_directory:--}" >>"$output_directory/terminal-state.tsv"
 printf 'ab_mode\t%s\nbracket_subject\t%s\nbracket_verdict\t%s\nbracket_mean_delta\t%s\nbracket_ci_low\t%s\nbracket_ci_high\t%s\nbracket_pairs\t%s\nbracket_union_verdict\t%s\nbracket_bound\t%s\nnull_pipeline\t%s\nnull_verdict\t%s\nnull_union_verdict\t%s\nnull_mean_delta\t%s\nnull_pairs\t%s\nmodule_identity\t%s\nresponse_identity\t%s\nresponse_pairs\t%s\n' \
     "$ab_mode" "$bracket_subject" "$bracket_verdict" "$bracket_mean_delta" "$bracket_ci_low" \
     "$bracket_ci_high" "$bracket_pairs" "$bracket_union_verdict" "$bracket_bound" "$bracket_null" \
@@ -1893,5 +1927,11 @@ if [ "$ab_mode" = kernel-delta ]; then
         "$campaign" "$bracket_subject" "$bracket_mean_delta" "$bracket_ci_low" "$bracket_ci_high" \
         "$bracket_pairs" "$bracket_union_verdict" "$bracket_null" "$null_verdict" "$null_union_verdict" \
         "$null_mean_delta" "$module_identity" "$response_identity" "$cooldown_timeouts"
+    # Reported beside the bound rather than folded into it: the whole-graph span
+    # the families move with, the clocks the brackets were timed at, and the
+    # separate witness run's two verdicts.
+    printf 'kernel_delta_reported=%s graph_span_mean_delta=%s clock_state="%s" token_identity=%s margin_contract=%s witness=%s\n' \
+        "$campaign" "$graph_span_delta" "$clock_state" "$token_identity" "$margin_contract" \
+        "${witness_directory:--}"
 fi
 exit "$campaign_exit"

@@ -604,6 +604,31 @@ set -e
 grep -q 'QWEN_AB_BOUND must exceed zero' "$temporary_directory/zero-bound-stderr.txt"
 printf 'zero_bound=accepted\n'
 
+# The witness directory names a separate campaign's output, and the summary
+# reports its token identity and margin contract beside the paired bound. A
+# directory carrying no margin summary is refused before any arm runs rather
+# than reported as unavailable after one, since a caller who named a witness
+# asked for those two rows.
+active_fixture=witness_directory_unreadable
+run_index=$((run_index + 1))
+set +e
+env -i PATH="$execution_path" HOME="$home_directory" \
+    QWEN_MODELS_DIRECTORY="$models_directory" \
+    QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+    QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+    QWEN_DRM_DEVICE="$fixture_drm" QWEN_HWMON_ROOT="$fixture_hwmon" \
+    QWEN_CENSUS_BROKER="$broker_stub" \
+    QWEN_AB_WITNESS_DIRECTORY="$temporary_directory/no-such-witness" \
+    "$harness" "$control_server" "$candidate_server" "$model_id" \
+    "$temporary_directory/out-$run_index" \
+    >/dev/null 2>"$temporary_directory/witness-stderr.txt"
+witness_status=$?
+set -e
+[ "$witness_status" -eq 2 ]
+grep -q 'QWEN_AB_WITNESS_DIRECTORY names a run-kernel-delta-witness.sh output directory' \
+    "$temporary_directory/witness-stderr.txt"
+printf 'witness_directory_unreadable=accepted\n'
+
 # The arm list is generated from the replicate count rather than written down,
 # so the plan print states what a run would execute: one mirrored quadruple per
 # two replicates, opened by the warmup arm.
@@ -1083,11 +1108,15 @@ promoted_rates=$temporary_directory/rates-promoted
 write_rates "$promoted_rates" 10.000 11.000 11.000
 run_ab verdict_promoted 0 promoted "$promoted_rates" "$one_clock"
 active_fixture=arms_ledger_columns
-[ "$(head -n 1 "$ab_last_output/arms.tsv")" = "$(printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\tsidecar\townership\tstatus\tsclk_mode_mhz\tsclk_share\tregime_delta\tclock_invariant\tbelow_required_fraction')" ]
-awk -F'\t' 'NF != 15 { exit 1 }' "$ab_last_output/arms.tsv"
+[ "$(head -n 1 "$ab_last_output/arms.tsv")" = "$(printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\tsidecar\townership\tstatus\tsclk_mode_mhz\tsclk_share\tmclk_mode_mhz\tregime_delta\tclock_invariant\tbelow_required_fraction')" ]
+awk -F'\t' 'NF != 16 { exit 1 }' "$ab_last_output/arms.tsv"
 # The clock columns trail the ledger and read the unknown value under the
 # appliance's own governor, where the validator requests no invariant.
-[ "$(awk -F'\t' 'NR > 1 && ($14 != "-" || $15 != "-")' "$ab_last_output/arms.tsv" | wc -l | tr -d ' ')" = 0 ]
+[ "$(awk -F'\t' 'NR > 1 && ($15 != "-" || $16 != "-")' "$ab_last_output/arms.tsv" | wc -l | tr -d ' ')" = 0 ]
+# The fabric mode comes off the same clock_state line as the graphics mode and
+# is reported rather than compared, so every sampled arm carries the value the
+# validator printed and a warmup carries it too.
+[ "$(awk -F'\t' 'NR > 1 && $13 != "1067"' "$ab_last_output/arms.tsv" | wc -l | tr -d ' ')" = 0 ]
 # Every arm of the one-clock table holds 800 MHz at a share of 0.1400, inside
 # the sustained regime's own window, so the precondition settles on the second
 # warmup and the ledger carries the header, two warmups, and the eight paired
@@ -1096,10 +1125,10 @@ awk -F'\t' 'NF != 15 { exit 1 }' "$ab_last_output/arms.tsv"
 # The warmups open the ledger at the lettered slots with the sampler on,
 # because their clock state is what the precondition reads, and enter no pair;
 # the summarizer's own filter is what keeps them out.
-[ "$(awk -F'\t' 'NR == 2 { print $1, $2, $8, $11, $13 }' "$ab_last_output/arms.tsv")" = '0a W on 800 -' ]
-[ "$(awk -F'\t' 'NR == 3 { print $1, $2, $8, $11, $13 }' "$ab_last_output/arms.tsv")" = '0b W on 800 -' ]
+[ "$(awk -F'\t' 'NR == 2 { print $1, $2, $8, $11, $14 }' "$ab_last_output/arms.tsv")" = '0a W on 800 -' ]
+[ "$(awk -F'\t' 'NR == 3 { print $1, $2, $8, $11, $14 }' "$ab_last_output/arms.tsv")" = '0b W on 800 -' ]
 [ "$(awk -F'\t' 'NR == 4 { print $1, $2, $8, $11, $12 }' "$ab_last_output/arms.tsv")" = '1 C on 800 0.1400' ]
-[ "$(awk -F'\t' 'NR == 4 { print $7, $9, $13 }' "$ab_last_output/arms.tsv")" = '- - +0.0000' ]
+[ "$(awk -F'\t' 'NR == 4 { print $7, $9, $14 }' "$ab_last_output/arms.tsv")" = '- - +0.0000' ]
 # The governor policy releases the graphics step on its own, so the position
 # predicate still describes idle, the campaign passes no --sclk-forced, and
 # every cooldown row records the state it ran under.
@@ -1244,8 +1273,8 @@ active_fixture=off_regime_arms
 [ "$(awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
     $(column["control"]) == "served-ab" { print $(column["off_regime_arms"]) }' \
     "$ab_last_output/summary.tsv")" = 4 ]
-[ "$(awk -F'\t' '$1 == "2" { print $13 }' "$ab_last_output/arms.tsv")" = '+0.2727' ]
-[ "$(awk -F'\t' '$1 == "1" { print $13 }' "$ab_last_output/arms.tsv")" = '+0.0000' ]
+[ "$(awk -F'\t' '$1 == "2" { print $14 }' "$ab_last_output/arms.tsv")" = '+0.2727' ]
+[ "$(awk -F'\t' '$1 == "1" { print $14 }' "$ab_last_output/arms.tsv")" = '+0.0000' ]
 printf 'off_regime_arms=accepted count=4\n'
 
 # The precondition spends the cap and settles nothing where no two consecutive
@@ -1275,7 +1304,7 @@ grep -qxF "$(printf 'regime_arms\t4')" "$ab_last_output/inputs.tsv"
 [ "$(awk -F'\t' '$1 == "0d" { print $11, $12 }' "$ab_last_output/arms.tsv")" = '812 0.62' ]
 # An unreached regime leaves every named arm without a distance to it, and the
 # control counts no arm outside a band it has no centre for.
-[ "$(awk -F'\t' 'NR > 1 && $2 != "W" && $13 != "-"' "$ab_last_output/arms.tsv" | wc -l | tr -d ' ')" = 0 ]
+[ "$(awk -F'\t' 'NR > 1 && $2 != "W" && $14 != "-"' "$ab_last_output/arms.tsv" | wc -l | tr -d ' ')" = 0 ]
 [ "$(awk -F'\t' 'NR == 1 { for (i = 1; i <= NF; i++) column[$i] = i; next }
     $(column["control"]) == "served-ab" { print $(column["off_regime_arms"]) }' \
     "$ab_last_output/summary.tsv")" = 0 ]
@@ -1458,9 +1487,9 @@ done
 # One priming warmup opens the ledger, the named arms keep their own slots, and
 # every arm carries the invariant the forced policy asked for.
 [ "$(awk -F'\t' 'NR > 1 && $2 == "W"' "$ab_last_output/arms.tsv" | wc -l | tr -d ' ')" = 1 ]
-[ "$(awk -F'\t' 'NR == 2 { print $1, $2, $14, $15 }' "$ab_last_output/arms.tsv")" \
+[ "$(awk -F'\t' 'NR == 2 { print $1, $2, $15, $16 }' "$ab_last_output/arms.tsv")" \
     = '0a W held 0.0000' ]
-[ "$(awk -F'\t' 'NR > 1 && $14 != "held"' "$ab_last_output/arms.tsv" | wc -l | tr -d ' ')" = 0 ]
+[ "$(awk -F'\t' 'NR > 1 && $15 != "held"' "$ab_last_output/arms.tsv" | wc -l | tr -d ' ')" = 0 ]
 # The performance level, the graphics level, and the restore are the three sudo
 # writes the campaign makes, in that order, and the fixture is left where the
 # campaign found it.
@@ -1523,7 +1552,7 @@ run_ab engine_clock_invariant_violated 1 failed "$promoted_rates" "$one_clock" 1
 active_fixture=engine_clock_invariant_ledger
 grep -q '^served_ab_arm=failed slot=2 arm=K .* clock_invariant=violated reason=clock_invariant$' \
     "$temporary_directory/engine_clock_invariant_violated-stdout.txt"
-[ "$(awk -F'\t' '$1 == "2" { print $14, $15 }' "$ab_last_output/arms.tsv")" = 'violated 0.1429' ]
+[ "$(awk -F'\t' '$1 == "2" { print $15, $16 }' "$ab_last_output/arms.tsv")" = 'violated 0.1429' ]
 [ "$(awk -F'=' '$1 == "arm_failures" { print $2 }' "$ab_last_output/terminal-state.tsv")" = 1 ]
 printf 'engine_clock_invariant_violated=accepted\n'
 
@@ -1538,7 +1567,7 @@ grep -q '^served_ab_clock_source=refused slot=1 arm=C source=pp_dpm_sclk_selecte
     "$temporary_directory/engine_clock_dpm_source-stdout.txt"
 grep -q '^served_ab_arm=failed slot=1 arm=C .* reason=clock_source$' \
     "$temporary_directory/engine_clock_dpm_source-stdout.txt"
-[ "$(awk -F'\t' '$1 == "1" { print $14, $15 }' "$ab_last_output/arms.tsv")" = 'held 0.0000' ]
+[ "$(awk -F'\t' '$1 == "1" { print $15, $16 }' "$ab_last_output/arms.tsv")" = 'held 0.0000' ]
 printf 'engine_clock_dpm_source=accepted\n'
 
 # An expired sudo credential is refused ahead of the first arm and names the
