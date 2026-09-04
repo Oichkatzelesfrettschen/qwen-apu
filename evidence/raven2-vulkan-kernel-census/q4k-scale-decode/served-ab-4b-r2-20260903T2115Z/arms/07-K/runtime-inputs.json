@@ -1,0 +1,21 @@
+{
+  "schema": "served-runtime-inputs-v1",
+  "model": {
+    "path": "$HOME/models/Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf",
+    "descriptor_path": "/proc/3183663/fd/7",
+    "device": 64512,
+    "inode": 13117796,
+    "bytes": 2783446304,
+    "sha256": "dec96e8cf2e11b613bb46513dec485377f9ca5a351e71712ee0e244f287c6790",
+    "artifact_model_id": "qwen38-4b-distill",
+    "artifact_model_file": "Qwen3.8-4B-Distill-GGUF/Qwen3.8-4B-Q4_K_M.gguf"
+  },
+  "executable": {
+    "path": "$HOME/src/llama.cpp-q4k-scale/build-raven2-vulkan-production/bin/llama-server",
+    "descriptor_path": "/proc/3183663/fd/6",
+    "device": 64512,
+    "inode": 15349186,
+    "bytes": 57731640,
+    "sha256": "2955d6dd653f3a5cfee6573c1361cf8b694c066905cae1622e4de0d6cb47e98b"
+  }
+}

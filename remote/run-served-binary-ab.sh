@@ -729,14 +729,24 @@ production_receipt_sha256=$(sha256sum "$production_receipt" | cut -d ' ' -f 1)
 
 # The two servers differ by one candidate patch and that is proven rather than
 # named. Each manifest yields a base build identity from the rows both carry,
-# and nothing is stripped from either CMake string, since both are the
-# serving preset's own flags: a candidate configured at another optimization
-# level or another target writes a different file and refuses here.
+# and the serving preset's own flags stay in that identity, so a candidate
+# configured at another optimization level or another target refuses here.
+#
+# The candidate-derived options of build-candidate-flags.sh are the exception,
+# and they leave the identity because they are the candidate rather than the
+# base. That file states each such option in both directions so a CMake cache
+# never supplies a value the manifest does not record, which puts
+# `-DGGML_VULKAN_INT24_DOT=OFF` on every build made after the option existed
+# and the word nowhere on a control built before it. Comparing the word would
+# refuse every candidate against the receipt-bound control on a difference the
+# candidate_series row below already proves exactly, so both values are removed
+# from both sides and the patch name carries the claim.
+census_candidate_cmake_flags='-DGGML_VULKAN_INT24_DOT=ON -DGGML_VULKAN_INT24_DOT=OFF'
 identity_scratch=$(mktemp -d)
 census_base_build_identity "$control_manifest" "$control_server" control \
-    "$identity_scratch/control" ''
+    "$identity_scratch/control" "$census_candidate_cmake_flags"
 census_base_build_identity "$candidate_manifest" "$candidate_server" candidate \
-    "$identity_scratch/candidate" ''
+    "$identity_scratch/candidate" "$census_candidate_cmake_flags"
 if ! cmp -s "$identity_scratch/control" "$identity_scratch/candidate"; then
     printf 'the control and candidate servers descend from different base builds:\n' >&2
     diff -- "$identity_scratch/control" "$identity_scratch/candidate" >&2 || true
