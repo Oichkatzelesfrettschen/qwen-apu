@@ -427,10 +427,39 @@ row matching the sections it names. Requiring the record of every bundle
 refused `natural-boundary-13d05a0-r2` outright and left the appliance serving
 through the recovery form alone, where an explicit `QWEN_LLAMA_SERVER` beside
 `QWEN_ROUTER_PRESETS` outranks the deployment and reads no bundle at all; the
-resolution refusal now prints that form. The image lane
-stays on `qwen-image-launch.sh`, which owns the two-checkpoint resident
-arithmetic, the artifact listener, and the review-only section that a
-sixteen-section preset at `QWEN_ROUTER_MAX=1` supplies none of.
+resolution refusal now prints that form.
+
+The image lane rides the same file. `build-router-presets.sh` reads
+`remote/image-profiles.tsv` under the rules `build-web-presets.sh` applies, so a
+`validator-gated` row adds one `image` server to each web section's MCP
+configuration under `QWEN_WEB_AUTHORIZER_READY=1` and an all-refused ledger adds
+none, and the head marker `# qwen_image_profile=` names what emitted with `-`
+for a withheld lane, the reading a preset generated before the lane also
+carries. `qwen-capacity-policy.sh` holds every web section's own configuration
+to that marker in both directions -- a named profile requires an image server
+bound to that profile and to that section as its language profile, and a
+withheld marker requires none -- through `remote/read-image-mcp-server.py`, the
+one parser the policy and the launch read that file with. `qwen-launch.sh` then
+does what `qwen-image-launch.sh` does for the web-only preset, from
+`remote/image-launch-lib.sh`: it rejoins the ledger row, validates the parameter
+file the service runs a job under, proves the deadline stack ordered, exports
+`QWEN_IMAGE_SERVICE=1` with the five inputs so `qwen-webui-session.sh` starts
+the service as a guarded child beside the broker and the search instance, and
+adds the image runtime's mebibytes to the requirement the largest-servable
+selection computed. `--models-max 1` keeps the roster's sections from being
+co-resident, so the runtime is the whole addition and the reviewer is the
+registry row a request selects: this file already serves every vision row at its
+own tuple with its projector, a second section named for that model_id would be
+two sections of one name, and `# qwen_image_review_section=` names the roster
+row instead. That marker is written only where the reviewer resolves whole, and
+`lfm25-vl-16b` carries no `router-child` row in `remote/validated-tuples.tsv`
+with the projector loaded, so the shipped ledger arms generation and withholds
+the review marker beside the `probe-depth-projector.sh` command that measures
+the arm. The bundle records the lane in the column it already had:
+`web-mcp-manifest.tsv` gains an `image_server` field over the configuration it
+names by path and digest, and `verify-deployment-bundle.sh` compares that field
+against the marker without opening a file, so a three-column row written before
+this lane reads `-`.
 
 Router mode leaves depth, cache triple, and submission geometry off its own
 argv. `server-models.cpp` ends its preset assembly with
@@ -507,6 +536,28 @@ response leaves an explicit unknown value while the selected model remains
 routable. A new API-key attempt clears the prior selection until the
 authenticated roster returns, and late responses from an older attempt never
 replace the newer state.
+
+The transcript outlives the page. A conversation is a record in IndexedDB, in
+localStorage where IndexedDB refuses, and in an in-memory Map where both do,
+addressed by a `#/c/<id>` route and listed in a side panel that opens, renames,
+and deletes one, and `history` is rebuilt from the record a reload restores.
+What is written is a projection -- role, content, the served model id each
+assistant message carries as its badge beside the roster tier, the tool call
+ids and arguments the transcript re-sends, and an artifact's digest, provenance
+route, seed, and geometry -- so a broker grant, the session secret, and the API
+key reach no store and a restored image is refetched by digest over the
+artifact listener's own credentialed route. Model selection and the Web and
+image toggles stay per turn, and the rounds of one turn render into one turn
+block so a generated image sits between the round that proposed it and the
+round that describes it. The `llama.cpp UI` tab opens a notice rather than a
+route: `server_http_context::init` mounts a `--path` directory at
+`api_prefix + "/"` where `public_path` carries a value
+(`tools/server/server-http.cpp:333-335`) and registers the compiled-in UI under
+the same prefix in its else branch (`:339-427`), one `--api-prefix` reaches
+whichever branch runs (`common/arg.cpp:3352-3356`), and `ctx_http.init(params)`
+runs ahead of the router branch (`tools/server/server.cpp:173` against
+`:188-232`), so `qwen-launch.sh` serves that UI on this same address and port
+while `qwen-web-launch.sh` serves this page.
 
 What a checkpoint can do is a claim per feature, and `remote/feature-claims.tsv`
 carries it as `subject_id`, `feature`, `status`, `evidence`, `note`. The feature
@@ -682,14 +733,57 @@ file to exist at mode 0600 owned by the serving user rather than minting one
 beside the socket, and refuses the exposure against either research override,
 since `qwen-capacity-policy.sh` forces 127.0.0.1 for the quarantine override
 and the unvalidated-depth marker and an exposure combined with one would print
-an address it never binds. `qwen-webui-session.sh` records `lan_exposure=` and
-`lan_address=` on its `state=running` line and prints the page URL carrying
-`?broker=` and `?artifacts=`, because the page's meta tags name the loopback
-and a LAN browser handed the bare router address would point both back at its
-own machine. What the exposure changes is who reaches the approval dialog. The
-single-use grant the dialog signs, the schema the wrapper enforces, and the
-one human approval per network-reaching call stay exactly what they are, and
-every checked-in `execution_policy` still reads `refused`.
+an address it never binds. `qwen-webui-session.sh` records `lan_exposure=`,
+`lan_address=`, `lan_name=`, and `lan_open=` on its `state=running` line and
+prints the page URL carrying `?broker=` and `?artifacts=`, because the page's
+meta tags name the loopback and a LAN browser handed the bare router address
+would point both back at its own machine. What the exposure changes is who
+reaches the approval dialog. The single-use grant the dialog signs, the schema
+the wrapper enforces, and the one human approval per network-reaching call stay
+exactly what they are, and every checked-in `execution_policy` still reads
+`refused`.
+
+A DHCP lease moves that literal, so `QWEN_WEB_LAN_NAME` adds one mDNS hostname
+to the admitted set and the set stays closed. It defaults to this machine's own
+`hostname -s` under `.local` where avahi-daemon runs and an explicit empty value
+serves the literal alone. The rebinding closure holds for the name because a
+browser resolves a `.local` name by multicast to the hosts sharing the link
+rather than through a recursive resolver, so a name an attacker controls in DNS
+reaches neither socket; `authorize-broker.py --lan-name` and
+`image-service.py --lan-name` compare it casefolded beside the literal, each
+listener admits both page origins through CORS, and `trustedArtifactOrigin`
+admits the page's own hostname whether address or name -- the browser already
+resolved that host to fetch the page and the bearer is stored per page origin,
+so the credential returns to the machine that served the page and no other. The
+launcher names the page by the name with the literal beside it, since the name
+outlives the lease.
+
+`QWEN_WEB_LAN_OPEN=1` is the second explicit decision and it removes that
+bearer. The router serves with `QWEN_REQUIRE_API_KEY` at 0, `--open-lan` makes
+the broker sign `POST /grant` and `POST /grant-image` and answer an exposed
+`GET /health` for a request presenting the session secret alone, and the
+artifact listener reads an artifact for any admitted Host; both children read
+no key file under the flag, because `read_secret_file` refuses the empty path a
+keyless launch hands them. Every peer on the network can then chat, approve a
+search, and approve a generation, and the launcher and `session.status` say so
+on a `lan_open=1` line. What stands is every gate that is not the bearer: the
+closed Host set, the Origin allowlist, the per-launch session secret, the
+single-use grant, each wrapped tool's schema, and one human approval per
+network-reaching and device-reaching call. The opt-in requires
+`QWEN_WEB_LAN=1`, since a listener the operator never exposed has no bearer to
+remove, and it meets both research-override refusals on the exposure's own
+terms. Under the bearer mode the launcher prints the page link carrying
+`#key=<bearer>` only where `[ -t 1 ]` finds stdout on a terminal, so the key
+stays out of a redirected log; the page reads that fragment once, stores it,
+and rewrites the address bar without it. `webui/index.html` never asks for the
+key unconditionally: `boot()` probes `GET /v1/models` with no Authorization
+header first, and a 200 there proves the router open, hiding the key field,
+the LAN hint, and the copy button outright and dropping any key this browser
+remembered rather than send a stale bearer to a listener that wants none. A
+401 proves the router requires the bearer, and only then does an authenticated
+retry carry a remembered or fragment key; the field reveals itself with a
+one-line hint naming the launcher's printed link only where no such key exists
+or the retry itself came back rejected.
 
 The integer dot product is advertised, functional, and unaccelerated, which
 decides how most of this tree's bytes execute. RADV reports
@@ -1422,10 +1516,33 @@ QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
 # One router serving the whole roster on the LAN: the registry sections stay
 # tool-free and the web section carries the search tools, so the ordinary
 # launcher arms the broker and the search instance from the preset itself.
+# QWEN_SERVER_PORT picks the router port; under the exposure the broker
+# binds one above it and the artifact listener one above that, so a page
+# loaded over the LAN derives both companions from its own address and the
+# bare router URL is the whole thing a browser needs.
+QWEN_SERVER_PORT=42069 \
 QWEN_WEB_LAN=1 QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=0.0.0.0 \
 QWEN_ROUTER=1 QWEN_WEB_AUTHORIZER_READY=1 \
 QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
     ~/qwen-laptop-setup/remote/qwen-launch.sh low-async
+# The same lane at one permanent address with no key step. QWEN_WEB_LAN_NAME
+# defaults to this machine's own `hostname -s` under `.local` where avahi
+# advertises it, so the operator bookmarks a name a DHCP lease does not move.
+# QWEN_WEB_LAN_OPEN=1 removes the Web UI bearer from the router, the broker,
+# and the artifact listener: every peer on this network can chat, approve a
+# search, and approve a generation.
+QWEN_SERVER_PORT=42069 \
+QWEN_WEB_LAN=1 QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_OPEN=1 \
+QWEN_BIND_HOST=0.0.0.0 \
+QWEN_ROUTER=1 QWEN_WEB_AUTHORIZER_READY=1 \
+QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
+    ~/qwen-laptop-setup/remote/qwen-launch.sh low-async
+# The LAN bring-up states that whole environment once. It reads the address
+# from the default route, mints the broker signing key on the first run,
+# tears down a running session first, reads the image parameters path from
+# the active deployment's own image server, and prints the name to open.
+# QWEN_WEB_LAN_OPEN=0 serves the same listeners with the bearer required.
+~/qwen-laptop-setup/remote/qwen-lan-launch.sh [low-async]
 ~/qwen-laptop-setup/remote/qwen-teardown.sh
 ~/qwen-laptop-setup/remote/qwen-webui-control.sh status
 
@@ -1510,9 +1627,22 @@ remote/model-registry.sh ctx-checkpoints | ctx-checkpoint MODEL_ID
 remote/measure-draft-pair.sh PAIR_ID OUTPUT_DIR
                                                 # snapshot-bound ABBA pairing
 remote/build-router-presets.sh [OUTPUT_INI]    # the picker, from the tier field
+# The roster plus its web section. The shipped image ledger carries one
+# validator-gated row, so a generation arming the web lane alone names an
+# all-refused image ledger the way remote/test-web-presets.sh does.
 QWEN_WEB_AUTHORIZER_READY=1 QWEN_WEB_MCP_SERVER=remote/web-mcp/server.py \
 QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
-    remote/build-router-presets.sh OUT.ini     # the roster plus its web section
+QWEN_IMAGE_PROFILES=remote/test-fixtures/image-profiles-refused.tsv \
+    remote/build-router-presets.sh OUT.ini
+# The roster plus its web section plus the image server that section carries.
+QWEN_WEB_AUTHORIZER_READY=1 QWEN_WEB_MCP_SERVER=remote/web-mcp/server.py \
+QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
+QWEN_IMAGE_MCP_SERVER=remote/image-mcp/server.py \
+QWEN_IMAGE_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
+QWEN_IMAGE_STATE_DIR=$HOME/qwen-webui-state/images \
+QWEN_IMAGE_SERVICE_SOCKET=$HOME/qwen-webui-state/images/image-service.sock \
+QWEN_IMAGE_PROFILES_JSON=$HOME/qwen-webui-state/image-parameters.json \
+    remote/build-router-presets.sh OUT.ini
 remote/build-web-presets.sh OUTPUT_INI         # web profiles, from the execution_policy field
 remote/build-feature-roster.sh [OUTPUT_JSON]   # webui/roster.json, from the feature claim ledger
 remote/fetch-candidate-artifact.sh REPO REV FILE DIR  # observed, not pinned
@@ -1763,6 +1893,9 @@ remote/test-run-image-standalone.sh
 remote/test-admit-image-router.sh
 remote/test-vulkan-workload-lease.sh
 remote/test-fallback-webui-image-authorization.sh
+node remote/test-fallback-webui-model-state.mjs
+node remote/test-fallback-webui-conversations.mjs
+node remote/test-fallback-webui-ui-switch.mjs
 python3 remote/test-image-protocol.py
 python3 remote/test-image-service.py
 python3 remote/image-mcp/test-image-mcp.py
@@ -2151,10 +2284,16 @@ reserved for human co-authors.
 - `--tools all` grants shell execution and file writing to a prompt-injectable
   model. The read-only set is `read_file,file_glob_search,grep_search`, and a
   server holding that grant stays off the LAN. The web and image lanes reach
-  the LAN through `QWEN_WEB_LAN=1` alone, where the model executes nothing on
-  its own: every network-reaching and device-reaching call passes one human
-  approval and a single-use grant, and the Web UI bearer gates the router, the
-  broker's signing routes, and the artifact listener.
+  the LAN through `QWEN_WEB_LAN=1` alone, which admits one IPv4 literal and,
+  through `QWEN_WEB_LAN_NAME`, one mDNS name in a closed Host set. The model
+  executes nothing on its own there: every network-reaching and
+  device-reaching call passes one human approval and a single-use grant, and
+  the Web UI bearer gates the router, the broker's signing routes, and the
+  artifact listener. `QWEN_WEB_LAN_OPEN=1` removes that bearer from all three
+  by the operator's explicit decision, which puts chat, search approval, and
+  generation approval in reach of every peer on the network and leaves the
+  Host set, the Origin allowlist, the session secret, the single-use grant,
+  and the one human approval per call carrying the whole gate.
 - The service starts and stops through the launch and teardown scripts alone.
   No unit file, crontab entry, or login hook starts it, so a reboot leaves the
   laptop with nothing listening.

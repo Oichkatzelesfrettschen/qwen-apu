@@ -17,6 +17,16 @@ control=$script_directory/qwen-webui-control.sh
 state_directory=${QWEN_WEBUI_STATE_DIRECTORY:-"${HOME:?}/qwen-webui-state"}
 bind_host=${QWEN_BIND_HOST:-127.0.0.1}
 server_port=${QWEN_SERVER_PORT:-8080}
+case $server_port in
+    '' | *[!0-9]* | 0*)
+        printf 'QWEN_SERVER_PORT is a positive decimal port: %s\n' "$server_port" >&2
+        exit 2
+        ;;
+esac
+if [ "$server_port" -lt 1 ] || [ "$server_port" -gt 65535 ]; then
+    printf 'QWEN_SERVER_PORT must name a TCP port: %s\n' "$server_port" >&2
+    exit 2
+fi
 ready_attempts=${QWEN_READY_ATTEMPTS:-3000}
 # The readiness probe reaches the listener the server actually bound. A server
 # bound to one literal answers on that address alone, so a loopback probe
@@ -188,12 +198,94 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
             exit 2
         fi
         QWEN_WEB_PROFILE=$web_sections
+        # The listener policy is read here, ahead of the credential decision it
+        # governs: QWEN_WEB_LAN_OPEN=1 removes the bearer from all three
+        # listeners and requires the exposure it opens, so a loopback launch
+        # carrying it refuses before this launch mints a key it would not use.
+        web_lan_policy=$script_directory/web-lan-exposure.sh
+        if [ ! -r "$web_lan_policy" ]; then
+            printf 'the LAN exposure policy is unreadable: %s\n' \
+                "$web_lan_policy" >&2
+            exit 2
+        fi
+        # shellcheck source=remote/web-lan-exposure.sh
+        . "$web_lan_policy"
+        resolve_web_lan_mode
         # Browser calls and broker approvals share the server API key, so a
         # tool-bearing section serves an authenticated listener whatever the
-        # caller asked for.
-        QWEN_REQUIRE_API_KEY=1
+        # caller asked for, and the open opt-in is the one decision that serves
+        # the LAN without one.
+        if [ "${QWEN_WEB_LAN_OPEN:-0}" = 1 ]; then
+            QWEN_REQUIRE_API_KEY=0
+        else
+            QWEN_REQUIRE_API_KEY=1
+        fi
+        # admit_web_lan_exposure below requires this file whole before it
+        # admits an authenticated LAN exposure, and qwen-webui-session.sh's
+        # own minting runs deep inside the tmux session this launch has not
+        # started yet, so a fresh state directory refused there before the
+        # session that mints the key ever ran. The same rule
+        # qwen-webui-session.sh applies -- 32 random bytes as 64 hex
+        # characters at mode 0600 -- mints it here instead, idempotently, so
+        # the session's own `[ ! -s "$api_key_file" ]` check finds the file
+        # already present and does nothing.
+        if [ "$QWEN_REQUIRE_API_KEY" = 1 ]; then
+            api_key_file=$state_directory/api.key
+            # A symlink here would have openssl and chmod follow it: `-s`
+            # reports on the link's target, so an empty or missing target
+            # gets overwritten and the target's own mode gets changed before
+            # admit_web_lan_exposure's own `[ -L ... ]` check ever runs. This
+            # refuses the symlink outright, the way the broker signing key's
+            # own admission already does, rather than writing through it.
+            if [ -L "$api_key_file" ]; then
+                printf 'the Web UI API key path names a symlink, and the key is a regular file: %s\n' \
+                    "$api_key_file" >&2
+                exit 1
+            fi
+            # A FIFO would block openssl's write waiting for a reader; a
+            # device or a directory would have chmod change permissions
+            # neither this key nor anything meant to serve it should carry.
+            # An existing path that names neither nothing nor a regular file
+            # is refused before either operation touches it.
+            if [ -e "$api_key_file" ] && [ ! -f "$api_key_file" ]; then
+                printf 'the Web UI API key path names neither nothing nor a regular file: %s\n' \
+                    "$api_key_file" >&2
+                exit 1
+            fi
+            if [ ! -s "$api_key_file" ]; then
+                if ! command -v openssl >/dev/null 2>&1; then
+                    printf 'openssl is required to create the Web UI API key\n' >&2
+                    exit 1
+                fi
+                (
+                    umask 077
+                    openssl rand -hex 32 >"$api_key_file"
+                )
+            fi
+            chmod 600 "$api_key_file"
+        fi
         QWEN_WEB_BROKER=1
-        QWEN_WEB_BROKER_PORT=${QWEN_WEB_BROKER_PORT:-8571}
+        # An exposed launch places the broker one port above the router, and
+        # the session places the artifact listener one above that, so a LAN
+        # page derives both from the one address it was loaded over and a
+        # router port chosen clear of other services carries its companions
+        # with it. A loopback launch keeps the 8571 the meta tags name.
+        if [ "${QWEN_WEB_LAN:-0}" = 1 ]; then
+            # A derived pair overflows the valid port range above 65533, the
+            # same ceiling remote/qwen-lan-launch.sh caps QWEN_SERVER_PORT at
+            # for its own wrapper path; an explicit QWEN_WEB_BROKER_PORT
+            # names its own value and is not derived, so it carries no such
+            # bound here.
+            if [ -z "${QWEN_WEB_BROKER_PORT:-}" ] &&
+                [ "$server_port" -gt 65533 ]; then
+                printf 'QWEN_SERVER_PORT leaves room for the broker and artifact ports above it: %s\n' \
+                    "$server_port" >&2
+                exit 2
+            fi
+            QWEN_WEB_BROKER_PORT=${QWEN_WEB_BROKER_PORT:-$((server_port + 1))}
+        else
+            QWEN_WEB_BROKER_PORT=${QWEN_WEB_BROKER_PORT:-8571}
+        fi
         QWEN_WEB_STATE_DIR=${QWEN_WEB_STATE_DIR:-$state_directory/web-mcp}
         export QWEN_WEB_PROFILE QWEN_REQUIRE_API_KEY QWEN_WEB_BROKER \
             QWEN_WEB_BROKER_PORT QWEN_WEB_STATE_DIR
@@ -291,10 +383,30 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
         deployment_web_mcp_manifest=$active_deployment_directory/web-mcp-manifest.tsv
         if [ -n "$active_deployment_directory" ] &&
             [ -f "$deployment_web_mcp_manifest" ]; then
+            # A record row is profile_id, configuration_path, sha256, and
+            # image_server, the four fields build-deployment-bundle.sh writes
+            # in its own header line; a row written before the image lane
+            # carries the first three and reads image_server as empty. The
+            # fourth variable exists so the digest comparison reads the digest:
+            # `read` assigns the whole remainder to its last variable, so three
+            # variables over a four-field row measured a digest against
+            # `<sha256><TAB>image` and refused every image bundle at launch.
             while IFS='	' read -r recorded_section recorded_path \
-                recorded_sha256; do
+                recorded_sha256 recorded_image_server; do
                 case $recorded_section in
                     '#'* | '') continue ;;
+                esac
+                # A fifth field would land in the last variable the way the
+                # fourth did, so the vocabulary is what proves the row ended
+                # where the reader thinks it did.
+                case $recorded_image_server in
+                    '' | image | -) ;;
+                    *)
+                        printf 'the MCP record for %s carries image_server %s, which is outside the vocabulary\n' \
+                            "$recorded_section" "$recorded_image_server" >&2
+                        printf 'a row reads profile_id, configuration_path, sha256, and image_server over image and -\n' >&2
+                        exit 2
+                        ;;
                 esac
                 measured_sha256=$(sha256sum -- "$recorded_path" |
                     cut -d ' ' -f 1) || exit 1
@@ -368,14 +480,6 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
         # operator decided otherwise, so an ordinary launch on 0.0.0.0 with a
         # search section is exactly as guarded as the web launch on the LAN.
         if [ "${QWEN_WEB_LAN:-0}" = 1 ]; then
-            web_lan_policy=$script_directory/web-lan-exposure.sh
-            if [ ! -r "$web_lan_policy" ]; then
-                printf 'the LAN exposure policy is unreadable: %s\n' \
-                    "$web_lan_policy" >&2
-                exit 2
-            fi
-            # shellcheck source=remote/web-lan-exposure.sh
-            . "$web_lan_policy"
             admit_web_lan_exposure "$router_presets" "$state_directory/api.key"
             bind_host=$QWEN_BIND_HOST
             health_probe_host=$QWEN_WEB_LAN_ADDRESS
@@ -386,10 +490,11 @@ if [ "${QWEN_ROUTER:-0}" = 1 ]; then
             printf 'a web section reaches the network through its MCP server; serve 127.0.0.1, or set QWEN_WEB_LAN=1 with QWEN_WEB_LAN_ADDRESS to serve the network deliberately\n' >&2
             exit 2
         fi
-        printf 'web_section=%s provider=%s broker_port=%s searxng=%s static_path=%s bind=%s lan_exposure=%s\n' \
+        printf 'web_section=%s provider=%s broker_port=%s searxng=%s static_path=%s bind=%s lan_exposure=%s lan_name=%s lan_open=%s\n' \
             "$web_sections" "$web_provider" "$QWEN_WEB_BROKER_PORT" \
             "${QWEN_WEB_SEARXNG:-0}" "$QWEN_STATIC_PATH" "$bind_host" \
-            "${QWEN_WEB_LAN:-0}"
+            "${QWEN_WEB_LAN:-0}" "${QWEN_WEB_LAN_NAME:--}" \
+            "${QWEN_WEB_LAN_OPEN:-0}"
     fi
 fi
 
@@ -534,6 +639,133 @@ EOF
         fi
         model_path=$largest_servable
     fi
+
+    # The image lane is armed from the same preset the web lane is, and it is
+    # resolved after the subject selection because its cost composes with what
+    # that selection charged rather than replacing it.
+    # remote/image-launch-lib.sh holds the rules qwen-image-launch.sh applies to
+    # the web-only preset, so one reader decides what an armed lane is.
+    # shellcheck disable=SC2034  # the library reads it by name
+    image_service_program=${QWEN_IMAGE_SERVICE_PROGRAM:-$script_directory/image-service.py}
+    # A withheld lane is the state a preset generated before it carries, so the
+    # names the library writes start at that reading.
+    image_lane_armed=0
+    preset_image_profile=
+    preset_review_section=-
+    image_runtime_resident_mib=0
+    # shellcheck source=remote/image-launch-lib.sh
+    . "$script_directory/image-launch-lib.sh"
+    read_image_preset_markers "$router_presets"
+    # Two preset shapes carry a web section an image grant can bind to. The
+    # merged roster preset build-router-presets.sh writes names its emitting
+    # sections on the `# qwen_web_sections=` line this script already read
+    # into web_sections, and a direct launch over that shape has already run
+    # the broker-arming and loopback-enforcement block above, which is gated
+    # on that same line. The standalone preset build-web-presets.sh writes
+    # carries no such line; its head marker `# qwen_web_presets=1` states
+    # instead that the whole file is one generated web preset, whose one
+    # language section is the shape qwen-web-launch.sh always resolves and
+    # arms -- through the QWEN_WEB_BROKER, loopback, and authorizer-ready
+    # rules in its own body -- before it sets QWEN_IMAGE_SERVICE=1 and execs
+    # this script. image_web_presets_section therefore reads the standalone
+    # shape's one section from the file itself, the way
+    # qwen-capacity-policy.sh's own web_presets_from_preset rejoin does, but
+    # only the QWEN_IMAGE_SERVICE=1 branch below trusts it: that flag is the
+    # wrapper's own claim to have applied its safety net, and the elif branch
+    # below serves a preset this process resolves for itself, so it stays on
+    # web_sections alone rather than accepting a standalone-shaped file no
+    # wrapper has vetted.
+    image_web_presets_marker=$(sed -n \
+        's/^# qwen_web_presets=\([01]\)$/\1/p' "$router_presets")
+    case $image_web_presets_marker in
+        '') image_web_presets_marker=0 ;;
+    esac
+    image_web_presets_section=
+    if [ "$image_web_presets_marker" = 1 ]; then
+        image_web_presets_section=$(sed -n \
+            's/^\[\([^]]*\)\]$/\1/p' "$router_presets" | sed -n '1p')
+    fi
+    if [ "${QWEN_IMAGE_SERVICE:-0}" = 1 ]; then
+        # qwen-web-launch.sh execs this script, so a launch that came through
+        # qwen-image-launch.sh arrives with the lane already resolved: that
+        # wrapper read the same markers, ran the same library, and charged the
+        # web preset's own two-checkpoint arithmetic. One owner charges the
+        # budget, so this branch does not repeat that arithmetic, but the claim
+        # is validated rather than trusted: any shell can set
+        # QWEN_IMAGE_SERVICE=1 ahead of a direct launch, or carry it over from
+        # an earlier session, so this rejoins it to a fresh read of this
+        # launch's own preset before reusing the wrapper's budget.
+        if [ "$image_lane_armed" != 1 ]; then
+            printf 'QWEN_IMAGE_SERVICE=1 is set and this preset names no image profile: %s\n' \
+                "$router_presets" >&2
+            printf 'the image lane is resolved from the preset a launch reads; an inherited flag over a preset naming none is refused\n' >&2
+            exit 2
+        fi
+        if [ "${QWEN_IMAGE_PROFILE:-}" != "$preset_image_profile" ]; then
+            printf 'QWEN_IMAGE_SERVICE=1 names profile %s where this preset resolves %s\n' \
+                "${QWEN_IMAGE_PROFILE:-<unset>}" "$preset_image_profile" >&2
+            exit 2
+        fi
+        # This branch trusts QWEN_IMAGE_SERVICE=1 as the wrapper's own claim
+        # to have armed the lane, so it accepts either shape: the merged
+        # roster preset's web_sections, or the standalone web preset's
+        # image_web_presets_section. Neither resolving leaves the marker
+        # with nothing that could arm it.
+        image_web_section=${web_sections:-$image_web_presets_section}
+        if [ -z "$image_web_section" ]; then
+            printf 'the preset names image profile %s and carries no web section\n' \
+                "$preset_image_profile" >&2
+            printf 'regenerate the preset tree with remote/build-router-presets.sh, or the standalone web preset with remote/build-web-presets.sh\n' >&2
+            exit 2
+        fi
+        require_image_ledger_row || exit 2
+        require_image_signing_key || exit 2
+        require_image_parameters || exit 2
+        verify_image_deadline_stack "$router_presets" "$image_web_section" || exit 2
+        printf 'image_launch owner=qwen-image-launch.sh profile=%s required_mib=%s\n' \
+            "${QWEN_IMAGE_PROFILE:--}" "${QWEN_REQUIRED_VULKAN_MIB:--}"
+    elif [ "$image_lane_armed" = 1 ]; then
+        # An image server reaches the device from the section the web ledger
+        # emitted, and the grant binds that language profile to the image
+        # profile, so a lane armed over a preset naming no web section would
+        # sign for a profile this launch never resolved. This branch resolves
+        # the lane for itself rather than trusting a wrapper's claim, so it
+        # stays on web_sections alone: the merged roster preset's own
+        # broker-arming and loopback-enforcement block above is gated on that
+        # same line, and a standalone-shaped file reaching this branch has
+        # bypassed qwen-web-launch.sh's safety net rather than run it.
+        if [ -z "$web_sections" ]; then
+            printf 'the preset names image profile %s and carries no web section\n' \
+                "$preset_image_profile" >&2
+            printf 'regenerate the preset tree with remote/build-router-presets.sh\n' >&2
+            exit 2
+        fi
+        require_image_ledger_row || exit 2
+        require_image_signing_key || exit 2
+        require_image_parameters || exit 2
+        verify_image_deadline_stack "$router_presets" "$web_sections" || exit 2
+        read_image_runtime_resident_mib || exit 2
+        # `--models-max 1` unloads the resident child before loading the next,
+        # so the roster's sections are never co-resident and the reviewer the
+        # marker names is the registry row a request selects rather than a
+        # second load. What the lane adds to the requirement is the image
+        # runtime, which runs while the language child stays loaded.
+        router_required_vulkan_mib=${QWEN_REQUIRED_VULKAN_MIB:-4608}
+        QWEN_REQUIRED_VULKAN_MIB=$((router_required_vulkan_mib +
+            image_runtime_resident_mib))
+        export QWEN_REQUIRED_VULKAN_MIB
+        run_image_memory_preflight "$model_path" \
+            "$QWEN_REQUIRED_VULKAN_MIB" || exit 2
+        # model-memory-preflight.sh reports and admits every launch, and this
+        # shape is the one section plus the runtime that
+        # evidence/image-appliance/served-turn-admission/ ran and passed, so the
+        # figure is reported rather than gated on. The pairing refusal belongs
+        # to qwen-image-launch.sh, where a second checkpoint is resident.
+        printf 'image_launch budget subject_mib=%s runtime_mib=%s required_mib=%s review_section=%s\n' \
+            "$router_required_vulkan_mib" "$image_runtime_resident_mib" \
+            "$QWEN_REQUIRED_VULKAN_MIB" "${preset_review_section:--}"
+        export_image_service_environment
+    fi
 fi
 
 # GGUF weights live outside Git because their size exceeds what Git LFS carries
@@ -636,6 +868,35 @@ router_snapshot_owned=''
 control_start_entered=0
 
 sed -n '1p' "$state_directory/session.status"
+# The exposure names the page by the host an operator keeps rather than by the
+# whole set of addresses this machine answers on. The mDNS name outlives a DHCP
+# lease, so it leads and the leased literal follows it; a launch that resolved
+# no name prints the literal alone.
+if [ "${QWEN_WEB_LAN:-0}" = 1 ] && [ -n "${QWEN_WEB_LAN_ADDRESS:-}" ]; then
+    if [ -n "${QWEN_WEB_LAN_NAME:-}" ]; then
+        printf 'the page is at http://%s:%s/ (and http://%s:%s/)\n' \
+            "$QWEN_WEB_LAN_NAME" "$server_port" \
+            "$QWEN_WEB_LAN_ADDRESS" "$server_port"
+        lan_page_link_host=$QWEN_WEB_LAN_NAME
+    else
+        printf 'the page is at http://%s:%s/\n' \
+            "$QWEN_WEB_LAN_ADDRESS" "$server_port"
+        lan_page_link_host=$QWEN_WEB_LAN_ADDRESS
+    fi
+    if [ "${QWEN_WEB_LAN_OPEN:-0}" = 1 ]; then
+        printf 'lan_open=1 every peer on this network can chat, approve a search, and approve a generation\n'
+    else
+        # The key travels in a fragment, which the browser keeps out of the
+        # request line and every server log, and this line prints only where
+        # stdout is a terminal, so a launch whose output is redirected or piped
+        # leaves the bearer out of the file it wrote.
+        if [ -t 1 ] && [ -s "$state_directory/api.key" ]; then
+            printf 'the page with the key is at http://%s:%s/#key=%s\n' \
+                "$lan_page_link_host" "$server_port" \
+                "$(sed -n '1p' "$state_directory/api.key")"
+        fi
+    fi
+fi
 if [ "$bind_host" = 127.0.0.1 ] || [ "$bind_host" = localhost ]; then
     printf 'reachable at http://127.0.0.1:%s (loopback only)\n' "$server_port"
 else
@@ -655,8 +916,15 @@ fi
 # marker set it running.
 if [ "${QWEN_WEB_BROKER:-0}" = 1 ]; then
     if [ "${QWEN_WEB_LAN:-0}" = 1 ] && [ -n "${QWEN_WEB_LAN_ADDRESS:-}" ]; then
-        printf 'approval broker at http://%s:%s (bearer required)\n' \
-            "$QWEN_WEB_LAN_ADDRESS" "${QWEN_WEB_BROKER_PORT:-8571}"
+        if [ "${QWEN_WEB_LAN_OPEN:-0}" = 1 ]; then
+            printf 'approval broker at http://%s:%s (session secret, no bearer)\n' \
+                "${QWEN_WEB_LAN_NAME:-$QWEN_WEB_LAN_ADDRESS}" \
+                "${QWEN_WEB_BROKER_PORT:-8571}"
+        else
+            printf 'approval broker at http://%s:%s (bearer required)\n' \
+                "${QWEN_WEB_LAN_NAME:-$QWEN_WEB_LAN_ADDRESS}" \
+                "${QWEN_WEB_BROKER_PORT:-8571}"
+        fi
     else
         printf 'approval broker at http://127.0.0.1:%s (loopback only)\n' \
             "${QWEN_WEB_BROKER_PORT:-8571}"
