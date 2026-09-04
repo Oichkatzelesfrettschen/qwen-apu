@@ -101,6 +101,18 @@ second copy. Three admissions at that seed produced that one digest, so
 `evidence/image-appliance/paired-review-admission/` retains no PNG at all and
 its own capture carries the identity line pointing at the file above.
 
+A live web admission retains its exchanges and withholds what authorizes one.
+`remote/admit-web-router-live.sh` writes its own HMAC signing key under
+`keys/` and its grant ledger under `web-mcp/`, and neither directory reaches
+the tree. Inside the retained exchanges the grant value and the session secret
+are replaced by `<redacted-grant>` and `<redacted-session-secret>`, so
+`evidence/web-live/20260903T0724Z/` carries the request and response bodies
+that make each check readable while carrying no token that would sign or spend
+one. Its `PRE_SANITIZATION_SHA256SUMS` digests that redacted state ahead of the
+identifier pass, since the pre-redaction bytes are retained nowhere, and its
+`http/*.headers` are stored with the LF git writes rather than the CRLF an HTTP
+response carries.
+
 `benchmarks/models/qwen38-27b-files.tsv` is the replay authority for the four
 external Qwen3.8-27B benchmark files. Those 9.83 GB through 14.25 GB files stay
 outside Git LFS.

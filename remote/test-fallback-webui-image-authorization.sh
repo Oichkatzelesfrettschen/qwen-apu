@@ -229,8 +229,13 @@ grep -F 'function configuredArtifactOrigin() {' "$fallback_ui" >/dev/null
 grep -F "searchParams.get('artifacts')" "$fallback_ui" >/dev/null
 grep -F 'meta[name="qwen-image-artifacts"]' "$fallback_ui" >/dev/null
 grep -F 'function trustedArtifactOrigin(configured) {' "$fallback_ui" >/dev/null
-grep -F '/^(?:https?):\/\/(?:127\.0\.0\.1|\[::1\]):[0-9]+$/i;' \
+# The admitted host set is the loopback pair plus the literal address the page
+# was served from, which is what the LAN exposure binds. The set is built from
+# window.location.hostname rather than from an address pattern, so the
+# credential reaches the machine the page came from and no other.
+grep -F "const admittedHosts = ['127\\\\.0\\\\.0\\\\.1', '\\\\[::1\\\\]'];" \
     "$fallback_ui" >/dev/null
+grep -F 'pageHost = (window.location.hostname' "$fallback_ui" >/dev/null
 grep -F '  return trustedArtifactOrigin(configured);' "$fallback_ui" >/dev/null
 grep -F "throw new Error('no artifact listener origin is configured for this page');" \
     "$fallback_ui" >/dev/null
@@ -326,6 +331,38 @@ for (const configured of [
         throw new Error("an untrusted artifact origin was admitted: " + configured);
     }
 }
+// Under the LAN exposure the page is served from a literal address and the
+// artifact listener binds the same one on its own port, so that origin joins
+// the loopback pair while every other host stays refused. The page host is
+// read from window.location, so the arm sets one.
+globalThis.window = { location: { hostname: "192.168.1.10" } };
+if (trustedArtifactOrigin("http://192.168.1.10:41249") !== "http://192.168.1.10:41249") {
+    throw new Error("the literal artifact origin of the exposed page was refused");
+}
+if (trustedArtifactOrigin("http://127.0.0.1:8181") !== "http://127.0.0.1:8181") {
+    throw new Error("the loopback artifact origin was refused under the exposure");
+}
+for (const configured of [
+    "http://192.168.1.11:41249", "http://attacker.example:41249",
+    "http://192.168.1.10:41249/path",
+]) {
+    let threw = false;
+    try { trustedArtifactOrigin(configured); } catch { threw = true; }
+    if (!threw) {
+        throw new Error("an untrusted artifact origin was admitted under the exposure: " + configured);
+    }
+}
+// A page served from a name admits nothing on that ground, because a name
+// resolves through the resolver the literal comparison exists to keep out.
+globalThis.window = { location: { hostname: "qwen-laptop" } };
+{
+    let threw = false;
+    try { trustedArtifactOrigin("http://qwen-laptop:41249"); } catch { threw = true; }
+    if (!threw) {
+        throw new Error("a named page host admitted its own artifact origin");
+    }
+}
+delete globalThis.window;
 
 eval(extract(
     "const IMAGE_GRANT_CONTEXT = ",

@@ -1,0 +1,7 @@
+{
+  "task_id": "task-02-fix",
+  "kind": "fix",
+  "target_file": "window.py",
+  "context_files": ["window.py", "tests/test_window.py"],
+  "reference_file": "reference/window.py"
+}

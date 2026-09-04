@@ -38,12 +38,25 @@
 # web_mode is `validator-gated` where a later validator is expected to compare
 # emitted tool arguments against the user's own authorization before a fetch
 # executes, and `ui-mediated` where the web-UI surfaces the model's proposed
-# query or URL for the operator to run by hand. execution_policy is `refused`
-# on every row because tool-08 in evidence/model-admission/vision-and-tool-sweep.md
-# carried an injected instruction into the tool call on all six measured
-# checkpoints, and this tree holds no validator that would justify a
-# validator-gated or unguarded execution_policy yet; web_mode names the
-# intended future path and execution_policy names what is authorized now.
+# query or URL for the operator to run by hand. execution_policy names what is
+# authorized now, where web_mode names the intended path.
+#
+# web-open carries `validator-gated`, and the validator it names is the human
+# at the approval dialog: the broker signs one grant over the exact query,
+# result count, and domain lists a person read, `POST /tools` spends that grant
+# once, and web_fetch_exa runs against a Result ID the same search signed. That
+# is what tool-08 in evidence/model-admission/vision-and-tool-sweep.md requires,
+# since an injected instruction reached the emitted arguments on all six
+# measured checkpoints and no runtime here compares those arguments against the
+# user's own authorization. Two live admissions exercised that path whole --
+# evidence/web-live/20260903T0724Z/ for web-compact and
+# evidence/web-live/20260903T0810Z/ for this row -- including the refusals a
+# replayed grant, an ungranted call, and a foreign origin each meet in
+# evidence/web-admission-router-tools.md.
+#
+# Every other row stays `refused`: the ledger admits one emitting section at a
+# time, since remote/qwen-web-launch.sh starts one broker for one profile, and
+# a row earns the move on its own retained run rather than on this one.
 #
 # multi_source reads yes exactly where max_fetches exceeds 1, and
 # remote/build-web-presets.sh refuses a row that breaks either direction: the
@@ -76,7 +89,7 @@ web-balanced	qwen38-4b-distill	validator-gated	32768	32768	8	3	12000	yes	no	9/10
 web-compact	qwen35-2b	validator-gated	8192	-	5	2	12000	yes	yes	9/10	refused	searxng	qwen-open	-	1	http://127.0.0.1:8888
 web-fast-vl	lfm25-vl-16b	validator-gated	8192	-	5	2	12000	yes	yes	8/10	refused	searxng	qwen-open	-	1	http://127.0.0.1:8888
 web-lookup	qwen35-08b	ui-mediated	8192	32768	3	1	12000	no	no	9/10	refused	searxng	qwen-open	-	1	http://127.0.0.1:8888
-web-open	qwen38-4b-distill	validator-gated	32768	32768	5	2	12000	yes	no	9/10	refused	searxng	qwen-open	-	1	http://127.0.0.1:8888
+web-open	qwen38-4b-distill	validator-gated	32768	32768	5	2	12000	yes	no	9/10	validator-gated	searxng	qwen-open	-	1	http://127.0.0.1:8888
 web-reader	qwen38-2b-distill	ui-mediated	32768	32768	5	2	12000	yes	no	2/10	refused	searxng	qwen-open	-	1	http://127.0.0.1:8888
 web-sovereign	qwen38-4b-distill	validator-gated	32768	32768	5	2	12000	yes	no	9/10	refused	searxng	qwen-yacy	-	1	http://127.0.0.1:8888
 web-vision	qwen35-4b-base	ui-mediated	24576	-	5	2	12000	yes	yes	8/10	refused	searxng	qwen-open	-	1	http://127.0.0.1:8888

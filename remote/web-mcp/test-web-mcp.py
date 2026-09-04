@@ -1700,6 +1700,41 @@ class WebMcpServerTest(unittest.TestCase):
         self.assertEqual(provider.provenance()["fallback_used"], 1)
         self.assertEqual(len(fixture.requests), 2)
 
+    def test_the_fallback_category_runs_once_and_in_order(self):
+        """The two queries name the profile's own categories, primary first.
+
+        The profile ledger names primary_category and fallback_category, and
+        the appliance's instance holds qwen-open inside qwen-broad, so the
+        order decides which engine population answers first. One fallback
+        query runs however short the second answer is: the instance suspends a
+        failing engine on its own, and a retry here would spend the approval on
+        an outage the instance is already routing around.
+        """
+        fixture, provider = self.searxng_provider(
+            fallback_category="qwen-broad", minimum_results=4
+        )
+        fixture.search_document(
+            [
+                {"url": "https://example.org/one", "engines": ["bing"]},
+                {"url": "https://example.net/two", "engines": ["google", "mdn"]},
+            ]
+        )
+        results = provider.search("raven2", 5, self.unconstrained())
+        self.assertEqual(len(fixture.requests), 2)
+        self.assertEqual(
+            [request["query"]["categories"][0] for request in fixture.requests],
+            ["qwen-open", "qwen-broad"],
+        )
+        self.assertEqual(provider.categories_issued, ["qwen-open", "qwen-broad"])
+        provenance = provider.provenance()
+        self.assertEqual(provenance["category"], "qwen-open")
+        self.assertEqual(provenance["fallback_used"], 1)
+        # The fallback answers the same two URLs, which one `issued` set drops,
+        # so the reply carries two blocks and the audit counts two.
+        self.assertEqual(len(results), 2)
+        self.assertEqual(provenance["usable_results"], 2)
+        self.assertEqual(provenance["engines_answered"], "bing,google,mdn")
+
     def test_an_absent_fallback_leaves_a_short_answer_as_it_stands(self):
         fixture, provider = self.searxng_provider(minimum_results=5)
         fixture.search_document([{"url": "https://example.org/one"}])

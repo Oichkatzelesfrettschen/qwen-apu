@@ -242,6 +242,31 @@ the chain. A healthy arm emits an appendable ledger line carrying
 `remote/validated-tuples.tsv`, because a `validated` row requires its evidence
 path to exist in the tree.
 
+`--runtime-mode router-child` measures that arm through the serving path a
+review-only vision section uses, since `build-web-presets.sh` joins an image
+row's `review_model` against the ledger on `runtime_mode=router-child` with
+`projector_state=loaded` and a standalone row leaves the section ungenerated.
+The harness generates a one-section preset with `build-router-presets.sh` over
+a one-row registry copy naming the arm's depth as `context_default`, stages the
+weights and the resolved projector as symlinks so `select-projector.sh` answers
+with the file the standalone arm attaches, and launches `--models-preset` with
+`--models-max 1`; depth, cache triple, submission geometry, checkpoint count,
+and the projector stay off that argv because `common_preset::merge` overwrites
+each section key with the router argv's value of the same name, and the
+generated section is read back before the server starts. Each request names the
+section in the body's `model` key, which `router_validate_model` resolves the
+child from. The emitted line reads `runtime_mode=router-child` with a `-router`
+`tuple_id` suffix and every other field equal to the standalone line, the mode
+reaches `projector-summary.tsv` and `wedge-metadata.tsv`, and an output
+directory therefore holds one mode. `check-validated-tuples.sh` reads the same
+join: a `validator-gated` image row whose reviewer holds no such tuple fails the
+gate and prints the probe command that measures it, and any other execution
+policy reports the absence as a warning, since it emits no section under every
+setting. The shipped tree fails that gate, because `image-sdxs-512-a` names
+`lfm25-vl-16b` and every retained projector arm is standalone;
+`evidence/depth-validation-32k-projector/README.md` states the appliance run
+that closes it.
+
 The `tier` field states what is claimed about a row and
 `remote/build-router-presets.sh` turns it into what the picker offers.
 `production` is a serving tuple measured safe and useful; `candidate` leaves
@@ -320,9 +345,12 @@ refuses the launch rather than serving the persisted MCP configuration.
 decides emission: `refused` emits nothing under every setting, `validator-gated`
 emits a section carrying `LLAMA_ARG_MCP_SERVERS_CONFIG` only under
 `QWEN_WEB_AUTHORIZER_READY=1`, and `ui-mediated` emits a section naming no
-configuration because the UI performs the retrieval. Every checked-in row reads
-`refused`, so the generator against the shipped ledger emits nothing and says
-so. Every row still meets the registry join, the copied-field comparison, the
+configuration because the UI performs the retrieval. `web-open` is the one
+checked-in row carrying `validator-gated`, on the evidence of two retained live
+admissions, so the generator against the shipped ledger emits that section
+under `QWEN_WEB_AUTHORIZER_READY=1` and nothing without it; every other row
+reads `refused` and emits nothing under either setting. Every row still meets
+the registry join, the copied-field comparison, the
 tier rule, and the ceiling rule before that gate, so the ledger is validated
 whole and an edit to one row's `execution_policy` changes what emits rather
 than turning a previously successful ledger into an error. The `# qwen-web-presets: unvalidated-depth-override` marker forces the
@@ -337,6 +365,51 @@ since router mode reads a projector only when a request selects that child.
 so the review section is subtracted before the profile is read.
 `multi_source` reads `yes` exactly where `max_fetches` exceeds one, because the
 emitted configuration carries the fetch budget alone.
+
+One router serves the whole roster, and the head marker
+`# qwen_web_sections=web-open` is what makes that safe.
+`remote/build-router-presets.sh` reads `remote/web-profiles.tsv` through
+`remote/web-preset-lib.sh`, the file that holds the registry join, the
+copied-field comparison, the search policy, and the MCP configuration writer
+once for both generators, and emits one section per `validator-gated` row
+beside the registry and draft-pair sections: the thirteen servable rows and the
+two pairings stay tool-free and `web-open` carries
+`LLAMA_ARG_MCP_SERVERS_CONFIG` with the six tuple keys and
+`LLAMA_ARG_CTX_CHECKPOINTS`, named for its `profile_id` and resolving to its
+checkpoint through `LLAMA_ARG_MODEL`. `qwen-capacity-policy.sh` reads the
+marker into a section set and selects the rules per section rather than per
+file -- resolution through the model file, the depth bounded by
+`context_ceiling` and `validated_filled_depth`, and the rejoin to the bound
+ledger by `profile_id` -- while refusing an MCP key in any section the marker
+never named and a draft key in any section the pair ledger never named.
+`QWEN_WEB_AUTHORIZER_READY=1` admits the rows and its absence emits the fifteen
+registry sections alone and says so; an unvalidated depth is refused outright
+here, because this is the file an ordinary launch binds `0.0.0.0` with and
+`build-web-presets.sh` keeps the experimental path on its own loopback-forced
+file. `qwen-launch.sh` reads the marker off the snapshot it already took, so an
+activation between the two reads cannot change what the broker signs for: one
+named section becomes `QWEN_WEB_PROFILE` and arms `QWEN_WEB_BROKER=1`,
+`QWEN_REQUIRE_API_KEY=1`, and `QWEN_WEB_SEARXNG=1` at the port the ledger row
+names, the launch serves `webui/index.html`, and a second web section, an
+unreadable signing key, an absent MCP configuration, or a non-loopback bind
+without `QWEN_WEB_LAN=1` each refuse. The MCP configuration is session state --
+its contents name the state directory, the signing key, and the per-profile
+budgets -- so `build-deployment-bundle.sh` records its path and SHA-256 in
+`web-mcp-manifest.tsv` rather than copying it, `verify-deployment-bundle.sh`
+compares that record against the preset alone, since a resolution reading the
+named files would refuse every bundle on a machine that never armed the lane,
+and `qwen-launch.sh` compares the digests where it arms it. The same marker
+decides whether the record exists: a bundle whose preset names no web section
+carries none and verifies with zero rows, which is every bundle assembled
+before this lane, and one whose preset carries the marker requires exactly one
+row matching the sections it names. Requiring the record of every bundle
+refused `natural-boundary-13d05a0-r2` outright and left the appliance serving
+through the recovery form alone, where an explicit `QWEN_LLAMA_SERVER` beside
+`QWEN_ROUTER_PRESETS` outranks the deployment and reads no bundle at all; the
+resolution refusal now prints that form. The image lane
+stays on `qwen-image-launch.sh`, which owns the two-checkpoint resident
+arithmetic, the artifact listener, and the review-only section that a
+sixteen-section preset at `QWEN_ROUTER_MAX=1` supplies none of.
 
 Router mode leaves depth, cache triple, and submission geometry off its own
 argv. `server-models.cpp` ends its preset assembly with
@@ -414,6 +487,47 @@ routable. A new API-key attempt clears the prior selection until the
 authenticated roster returns, and late responses from an older attempt never
 replace the newer state.
 
+What a checkpoint can do is a claim per feature, and `remote/feature-claims.tsv`
+carries it as `subject_id`, `feature`, `status`, `evidence`, `note`. The feature
+decides the namespace the subject resolves in: `text-chat`, `vision`,
+`tool-selection`, `guarded-tool-execution`, `long-context`,
+`context-checkpoints`, and `quarantine` name a `remote/models.tsv` id,
+`draft-pair-speculation` a `remote/draft-pairs.tsv` pair_id, `web-search` a
+`remote/web-profiles.tsv` profile_id, and `image-generation` and `image-review`
+a `remote/image-profiles.tsv` profile_id, so one namespace per feature keeps the
+subject column free of a scope field a typo would put at odds with the id beside
+it. `status` is closed over `production`, `candidate`, `experimental`,
+`unstable`, and `unsupported`; the first, second, and fourth each assert a run
+and require an evidence path, and the other two admit `-` while their note names
+the run that moves them. A `(subject, feature)` pair absent from the file reads
+`unclaimed`, so a hole in the matrix is the absence of a claim rather than a
+denial.
+
+`remote/build-feature-roster.sh` validates every claim before it emits any row
+and writes `webui/roster.json` through one rename. It refuses a claim naming a
+subject outside its feature's ledger, a duplicate pair, an evidence path outside
+`evidence/`, a note carrying a quotation mark or a backslash, and a `production`
+claim over a checkpoint whose registry tier reads `quarantine` or whose id the
+quarantine authority names at model scope; the profile-scope rows stay out of
+that read, since a profile row removes one tuple of a checkpoint that otherwise
+serves. Models order by tier rank and then by the class policy -- the 2B class,
+the 0.8B class, the 4B class, and a row outside the three after them by id --
+and `archive` and `rejected` rows reach no picker, so they reach no roster.
+`remote/repository-quality-gates.sh` regenerates into a scratch directory and
+diffs the result against the committed document, so a ledger edit that leaves
+the page stale fails the gate.
+
+llama-server serves the page with `--path` over the `webui` directory, so
+`webui/index.html` fetches `./roster.json` beside itself and decorates the ids
+`GET /v1/models` returned. The roster contributes no id: each render iterates
+the served ids and looks each one up, so a roster row for a model the listener
+withheld reaches neither the picker nor the matrix and a served id the roster
+omits keeps its option. The picker option carries the row's tags, a badge names
+the selected row's tier, and a collapsible matrix holds one row per served
+rostered id over the model-scope features with each cell's status, evidence
+path, and note. An absent, malformed, or foreign-schema roster leaves both
+decorations off while the picker routes.
+
 A web search reaches the network through one human approval, and the browser is
 the executor. llama-server reads `tools` from the client body alone and runs a
 wrapped MCP tool through the standalone `POST /tools` route, so the page
@@ -473,6 +587,88 @@ source over one GET of the canonical URL its Result ID was signed over, and
 `PROVIDER_OPENER` ends a redirect at the response that requested it.
 `evidence/web-provider-contract.md` carries the flags, the profile columns, and
 what a run against a live instance still leaves unmeasured.
+
+The launch owns that instance. The installed tree at `/usr/local/searxng` is
+readable by the serving user and its configuration is not:
+`/etc/searxng/settings.yml` is root-owned and the engine caches under `/tmp`
+belong to the `searxng` account, so `remote/searxng-launch.sh` renders
+`remote/searxng/settings.template.yml` into the state directory at mode 0600
+with a fresh secret and runs `searx.webapp` under `SEARXNG_SETTINGS_PATH` and a
+`TMPDIR` of its own. The rendered file is the authority for the listener: the
+port and bind address are read back from it and required to equal the endpoint
+the launch serves. Six engines answer from this address -- bing, google, and
+wikipedia in `qwen-open`, joined by mdn, github, and stackoverflow in
+`qwen-broad` -- against duckduckgo, startpage, and qwant answering a CAPTCHA,
+brave rate-limiting, and mojeek and yep denying, at 66 to 78 MB of resident
+memory, 180 to 510 ms per query, and 18 to 20 results for `qwen-open` against
+37 for `qwen-broad`.
+`qwen-web-launch.sh` reads `searxng_url` from the launched profile's row,
+admits the loopback endpoint alone, requires the port free, and exports
+`QWEN_WEB_SEARXNG=1`; `qwen-webui-session.sh` then holds the instance as a
+guarded child beside the broker, records `searxng_pid=` on the `state=running`
+line and a `searxng_identity` line beside it, and proves `GET /healthz` and its
+own child's liveness together before `run-qwen-capacity-server.sh` runs, so a
+dead instance ends the launch ahead of the model load. The health gate lives
+there rather than in the launcher because the launcher ends in `exec` and the
+instance it starts exists one link later. `qwen-teardown.sh` compares the
+recorded start time with `/proc/PID/stat` before signalling, the rule it
+applies to the broker, and reports a surviving process or a listener on the
+recorded port as residue.
+
+`remote/admit-web-router-live.sh` is the live twin of the fake admission. It
+copies one `remote/web-profiles.tsv` row into a ledger under its own output
+directory with `execution_policy` alone moved to `validator-gated`, generates
+the preset under `QWEN_WEB_AUTHORIZER_READY=1`, launches through
+`qwen-web-launch.sh`, replays the page's requests with curl on the router port,
+drives the served page through `drive-fallback-page.py`, and retains per-query
+timing beside the instance's own resident memory and CPU ticks from `/proc`.
+The fake run stays the authority for the refusals, whose fixtures answer
+instantly; this run measures what only a live instance shows. A row moves to
+`validator-gated` by an operator edit after a run of this harness is retained
+under `evidence/`, and `web-open` is the one row that has made that move.
+`evidence/web-live/20260903T0724Z/` retains the first run, against
+`web-compact`: 29 rows, 24 passing, one grant, five results from bing in 1 s,
+one 12,347-character fetch by Result ID, and a page turn whose requests stay on
+the router and broker origins, at 66 MB of resident memory before the first
+query and 75 MB over five threads after it. Its two failures were the harness
+reading the search policy from the preset INI where the section names a
+configuration, and `check-runtime-tree.sh` comparing two `LC_ALL=C` lists under
+the invoking locale. `evidence/web-live/20260903T0810Z/` retains the `web-open`
+run under the repaired harness, where both of those pass: 25 of 29 rows pass,
+the search draws five results from bing and google in 1 s, and the one failure
+is a fetch of `https://www.vulkan.org/` that the provider's own 20 s deadline
+ended at HTTP 200 while the child's 30 s and the router's 3600 s were still
+waiting. Which origin the first Result ID names changes with the query, so a
+fetch arm that must pass whatever the network does belongs to the fake run.
+
+`QWEN_WEB_LAN=1` moves the loopback boundary by an operator's explicit
+decision, and `remote/web-lan-exposure.sh` holds what the decision costs.
+`QWEN_WEB_LAN_ADDRESS` names one routable IPv4 literal, because the broker and
+the artifact listener close DNS rebinding by comparing a request's Host header
+against a literal set and a name would send that comparison back through the
+resolver; `QWEN_BIND_HOST` is the router's own listener and is that literal or
+`0.0.0.0`, while every derived origin and Host rule reads the literal. The
+exposure then reaches three listeners: llama-server binds the address with
+`QWEN_REQUIRE_API_KEY=1`, `authorize-broker.py` binds the wildcard and adds the
+literal to its admitted Host set, and `image-service.py` does the same for
+`GET /artifacts/<sha256>.<png|json>`. The Web UI bearer becomes the credential
+each one requires -- `--lan-exposure` makes the broker read it on
+`POST /grant`, `POST /grant-image`, and a `GET /health` naming the literal,
+where a loopback Host keeps `/health` open so the session's own `curl` probe
+holds the key off a world-readable `/proc/PID/cmdline`, and the artifact
+listener already read it ahead of every lookup. The launch requires the key
+file to exist at mode 0600 owned by the serving user rather than minting one
+beside the socket, and refuses the exposure against either research override,
+since `qwen-capacity-policy.sh` forces 127.0.0.1 for the quarantine override
+and the unvalidated-depth marker and an exposure combined with one would print
+an address it never binds. `qwen-webui-session.sh` records `lan_exposure=` and
+`lan_address=` on its `state=running` line and prints the page URL carrying
+`?broker=` and `?artifacts=`, because the page's meta tags name the loopback
+and a LAN browser handed the bare router address would point both back at its
+own machine. What the exposure changes is who reaches the approval dialog. The
+single-use grant the dialog signs, the schema the wrapper enforces, and the
+one human approval per network-reaching call stay exactly what they are, and
+every checked-in `execution_policy` still reads `refused`.
 
 The integer dot product is advertised, functional, and unaccelerated, which
 decides how most of this tree's bytes execute. RADV reports
@@ -1187,8 +1383,28 @@ a wrong answer for an outage nobody chose.
 ```sh
 # Start and stop the appliance (run on the laptop)
 ~/qwen-laptop-setup/remote/qwen-launch.sh [paced-60|low-serialized|low-async]
-~/qwen-laptop-setup/remote/qwen-web-launch.sh [PROFILE]   # web presets, loopback only
+~/qwen-laptop-setup/remote/qwen-web-launch.sh [PROFILE]   # web presets, loopback by default
 ~/qwen-laptop-setup/remote/qwen-image-launch.sh [PROFILE] # web presets with the image lane armed
+
+# The web lane on the operator's own network, bearer required on every route.
+# The key exists before the listener does, so it is minted once and read out of
+# the state directory ahead of the launch rather than after the socket is up.
+openssl rand -hex 32 >~/qwen-webui-state/api.key
+chmod 600 ~/qwen-webui-state/api.key
+QWEN_WEB_LAN=1 QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=0.0.0.0 \
+QWEN_WEB_AUTHORIZER_READY=1 \
+QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
+    ~/qwen-laptop-setup/remote/qwen-web-launch.sh low-async
+# The session's `lan_exposure` line in ~/qwen-webui-state/session.status names
+# the page URL, which carries ?broker= and ?artifacts= because the page's meta
+# tags name the loopback.
+# One router serving the whole roster on the LAN: the registry sections stay
+# tool-free and the web section carries the search tools, so the ordinary
+# launcher arms the broker and the search instance from the preset itself.
+QWEN_WEB_LAN=1 QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=0.0.0.0 \
+QWEN_ROUTER=1 QWEN_WEB_AUTHORIZER_READY=1 \
+QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
+    ~/qwen-laptop-setup/remote/qwen-launch.sh low-async
 ~/qwen-laptop-setup/remote/qwen-teardown.sh
 ~/qwen-laptop-setup/remote/qwen-webui-control.sh status
 
@@ -1242,14 +1458,23 @@ remote/model-registry.sh ctx-checkpoints | ctx-checkpoint MODEL_ID
 remote/measure-draft-pair.sh PAIR_ID OUTPUT_DIR
                                                 # snapshot-bound ABBA pairing
 remote/build-router-presets.sh [OUTPUT_INI]    # the picker, from the tier field
+QWEN_WEB_AUTHORIZER_READY=1 QWEN_WEB_MCP_SERVER=remote/web-mcp/server.py \
+QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
+    remote/build-router-presets.sh OUT.ini     # the roster plus its web section
 remote/build-web-presets.sh OUTPUT_INI         # web profiles, from the execution_policy field
+remote/build-feature-roster.sh [OUTPUT_JSON]   # webui/roster.json, from the feature claim ledger
 remote/fetch-candidate-artifact.sh REPO REV FILE DIR  # observed, not pinned
 remote/run-one-token-admission.sh RECORD [OUT]  # load every candidate once
 remote/run-representation-arm.sh LABEL CONTROL SUBJECT
                                                 # one value format against another, ABBA
 remote/admit-web-router-fake.sh OUTPUT_DIR      # the web router against the fake provider
+remote/admit-web-router-live.sh OUTPUT_DIR [PROFILE_ID]
+                                                # the web router against the live SearXNG instance
+remote/searxng-launch.sh serve|start|stop|status [STATE_DIRECTORY]
+                                                # one instance as the serving user, loopback only
 remote/admit-image-router.sh OUTPUT_DIR         # one approved generation through the router
-remote/probe-depth-projector.sh MODEL_ID OUT   # filled depth, projector loaded
+remote/probe-depth-projector.sh [--runtime-mode standalone|router-child] MODEL_ID OUT
+                                                # filled depth, projector loaded
 remote/image-registry.sh artifacts|models|profiles|bundle|profile
                                                 # the four image authorities, validated whole
 remote/run-image-standalone.sh OUT MODEL       # one image, no llama process resident
@@ -1304,7 +1529,39 @@ remote/run-ctx-checkpoint-sweep.sh LABEL MODEL_ID OUT
 # the request window. Three quadruples carry a bound, P-nosidecar P P
 # P-nosidecar, P I0 I0 P, and I0 I1 I1 I0; any other is unclassified, and
 # a refuted control ends the campaign refuted with exit 3 whatever the
-# arms did. QWEN_CENSUS_MODE=calibration, the default, runs exactly the
+# arms did. The boundary between two arms is a campaign condition rather
+# than a counter: await-quiescence.sh reports reached only where its
+# process, occupancy, graphics step, step stability, absolute temperature,
+# thermal derivative, memory, swap-in, lease, and latency predicates held
+# together across the hold window, so any other verdict ends the campaign
+# quiescence_unconverged with exit 5 before the next arm starts. The last
+# arm a campaign executes polls no boundary, since the arm one would
+# prepare never runs. On a verdict that ends the run, arms.tsv
+# carries a boundary row whose status names the state, terminal-state.tsv
+# names the slot, the arm, and the failing predicates, and no summary,
+# brick receipt, or calibration root is written over the truncated ledger.
+# --sclk-forced drops the step's position in the listed ladder alone.
+# Runtime identity is bound at preflight and re-established by every arm:
+# arms/LABEL/runtime-identity.tsv carries the bound value beside the arm's
+# own reading of the model bytes and digest, the server bytes and digest,
+# the runtime tree's git head and both payload digests, one
+# check-runtime-tree.sh recompute over that tree, the artifact ledger
+# digest, the served runner digest, and the request digest the campaign
+# binds from the first body an arm sent. A field that moved ends the
+# campaign identity_incident with exit 6 naming that field, since every
+# later arm would measure a different experiment under one receipt.
+# QWEN_CENSUS_REUSE_BRICKS revalidates a retained brick in the epoch that
+# reuses it: the prior calibration root's own digest is recomputed from its
+# rows, each receipt is rehashed against the digest that root records, every
+# artifact row is rehashed against the bytes it names, and the current
+# readers that read a raw record are rerun over those bytes and must
+# accept, with paths resolved through the receipt's own reused_from chain
+# so a second generation reads the records the original arms wrote. A brick whose receipt
+# names no artifact, or whose arms retained no record a reader reads, is
+# measured again rather than copied forward on a historical completed
+# label, and the copied receipt states revalidation, revalidated_epoch,
+# revalidated_readers, and revalidated_artifacts.
+# QWEN_CENSUS_MODE=calibration, the default, runs exactly the
 # thirteen-arm sequence and accepts on exactly three accepted controls
 # with none unclassified; QWEN_CENSUS_MODE=attribution runs any registered
 # arm list and requires QWEN_CENSUS_CALIBRATION_RECEIPT to name the output
@@ -1360,13 +1617,21 @@ remote/validate-clock-sidecar.py OUT.tsv --sidecar-status 0 --period-ms 10 \
 remote/summarize-perf-logger-slice.py OUT/arms/NN-S/server-log-request.slice \
     --expected-decode-blocks 63
 
+# Rung 7 of the E4 ladder: two serving builds on one checkpoint, mirrored
+# C K K C quadruples under the production receipt binding, promoted on a
+# one-sided 5% paired bound.
+# evidence/raven2-vulkan-kernel-census/e4/served-ab-design.md registers the
+# falsifiers and the chain.
+QWEN_CENSUS_PRODUCTION_RECEIPT=RECEIPT remote/run-served-binary-ab.sh \
+    CONTROL_SERVER CANDIDATE_SERVER MODEL_ID OUT
+
 # Deployment bundles: the server, its manifest, the checkpoint ledger, and
 # the presets generated against that ledger as one activated unit.
 # Activation and rollback are the same atomic symlink transition, serialized
 # on descriptor 7 of .activate.lock under the root, which
 # open-verified-lock-descriptor.py opens without following a link or
-# truncating and holds exclusively for the activator and shared for the
-# resolver. An automatic launch resolves the bundle once:
+# truncating, refuses a leaf with more than one hard link, and holds
+# exclusively for the activator and shared for the resolver. An automatic launch resolves the bundle once:
 # resolve-active-deployment.sh follows deployment-current to one directory
 # immediately below the root, verifies it whole through
 # verify-deployment-bundle.sh, and the launchers and qwen-webui-control.sh
@@ -1429,11 +1694,17 @@ remote/test-qwen-runtime-guards.sh
 remote/test-radv-low-priority-env.sh
 remote/test-model-registry.sh
 remote/test-model-tiers.sh
+remote/test-feature-roster.sh
+node remote/test-fallback-webui-roster.mjs
 python3 remote/test-summarize-draft-pair.py
 remote/test-measure-draft-pair.sh
 remote/test-probe-depth-projector.sh
 remote/test-web-presets.sh
+remote/test-unified-router-presets.sh
+remote/test-unified-router-launch.sh
+node remote/test-fallback-webui-mixed-roster.mjs
 remote/test-qwen-web-launch.sh
+remote/test-web-search-live.sh
 remote/test-image-registry.sh
 remote/test-qwen-image-launch.sh
 remote/test-run-image-standalone.sh
@@ -1449,7 +1720,9 @@ remote/test-quality-suite.py
 remote/test-quality-roster.sh
 remote/test-promote-llama-build.sh
 remote/test-classify-checkpoint-semantics.sh
+remote/test-run-served-binary-ab.sh
 remote/test-check-runtime-tree.sh
+remote/test-write-clangd-config.sh
 remote/test-deployment-bundle.sh
 remote/generate-quality-images.py --check
 remote/test-gguf-tokenizer-identity.py
@@ -1823,7 +2096,11 @@ reserved for human co-authors.
 - `docker compose` (v2) rather than legacy `docker-compose`.
 - `--tools all` grants shell execution and file writing to a prompt-injectable
   model. The read-only set is `read_file,file_glob_search,grep_search`, and a
-  tool-enabled server stays off the LAN.
+  server holding that grant stays off the LAN. The web and image lanes reach
+  the LAN through `QWEN_WEB_LAN=1` alone, where the model executes nothing on
+  its own: every network-reaching and device-reaching call passes one human
+  approval and a single-use grant, and the Web UI bearer gates the router, the
+  broker's signing routes, and the artifact listener.
 - The service starts and stops through the launch and teardown scripts alone.
   No unit file, crontab entry, or login hook starts it, so a reboot leaves the
   laptop with nothing listening.

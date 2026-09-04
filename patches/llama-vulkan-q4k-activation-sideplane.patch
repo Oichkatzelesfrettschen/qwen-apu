@@ -1,0 +1,560 @@
+E4b-A, the activation summary producer: one pre-pass writes the Q4_K activation group
+sums that every output-row workgroup of every projection consuming that activation reads,
+where llama-vulkan-q4k-activation-group-sums.patch (E4) forms them once per column per
+superblock inside each workgroup. This patch stacks on E4 rather than replacing it. Its
+mul_mat_vec_q4_k.comp preimage is the E4 result at blob 48778a3e8, so the ledger applies
+E4 first and this patch second, and E4's own form survives verbatim as the
+Q4K_SIDEPLANE-clear branch here, which is why a flag-clear arm reproduces E4 bit for bit.
+E4's mul_mat_vec_q5_k.comp hunk reaches no file this patch touches, so the Q5_K hoist is
+E4's alone under either selection.
+
+mul_mat_vec_q4_k_prepass.comp writes 64 f32 sums per 256-element superblock and token
+column in exactly the lane-chunk layout E4's by_group_sum uses, over the same four
+left-associated addition chains, so the accumulated value is unchanged bit for bit and
+the sideplane is a quarter-scale image of the activation region: a column of K f32
+elements produces K/4 f32 sums, K bytes against the column's 4K. The consumer and the
+producer index that layout through one relation rather than two permutations that have
+to agree: SIDEPLANE_CHUNK(y_offset) = 8*v_im + 2*ir + v_in in mul_mat_vec_q4_k.comp,
+and y_offset = 64*(chunk/8) + 4*(chunk%8), its exact inverse, in the pre-pass.
+Q4K_SIDEPLANE selects the reading branch, so one source builds both the E4 variant and
+this one, and the served pipeline keeps its spec constants 0:64 1:4 2:1.
+
+ggml_vk_mul_mat_vec_q_f16 admits the feature for a Q4_K src0 with an f32 contiguous
+src1 on the dequantize-then-dot path, outside MUL_MAT_ID, q8_1 quantization, and the
+64-bit indexing substitution, and it identifies the pipeline it is replacing by pointer
+against both DMMV workgroup-size entries rather than by repeating the selection
+heuristic, so an upstream change to that heuristic declines the feature instead of
+mispairing it. ggml_vk_q4_k_sideplane_max_columns() confines it to a decode submission:
+ne11 * ne12 * ne13 is the token columns one dispatch carries and the pre-pass writes
+sums for every one of them, so the bound is 1, the shape every retained measurement was
+made at, and GGML_VK_Q4K_SIDEPLANE_MAX_COLUMNS raises it as far as mul_mat_vec_max_cols
+for the arm that measures a wider one.
+
+The invalidation key is the activation tensor, its buffer, its offset, K, the token
+column count, and a graph epoch. The tensor rather than its address is the identity:
+ggml's graph allocator hands one buffer offset to many tensors in turn, and a key over
+the address alone reads a superseded activation's sums as current, which is what a 2B
+decode graph does at offset 0 for attn_norm-1, final_output-1, attn_post_norm-1, and
+attn_norm-3 alike. The sideplane holds one activation at a time, so a consumer whose key
+differs from the resident one pays a fresh pre-pass between two full memory barriers, one
+for the readers of the sums being overwritten and one for the write;
+GGML_VK_Q4K_SIDEPLANE_LOG=1 prints the achieved and offered reuse per graph and the
+consumer count per key, so the projection fan-out is measured rather than assumed.
+GGML_VK_Q4K_SIDEPLANE=1 gates the whole feature at runtime, so one binary serves the
+control.
+
+evidence/e4b-summary-producer/README.md registers the hypothesis, the invalidation key,
+the appliance arm order, and the falsifiers, and carries the ACO receipts.
+evidence/raven2-vulkan-kernel-census/e4/e4b-a-first-pass.md carries the token identity
+result, the negative control, the reuse table, and the operation and traffic table.
+
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index 7b930a434..9b84a9602 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -104,6 +104,21 @@ typedef struct VkPhysicalDeviceCooperativeMatrixDecodeVectorFeaturesNV {
+ 
+ #include "ggml-vulkan-shaders.hpp"
+ 
++// The Q4_K sideplane consumer's three reduction variants, in the order the generator's
++// own arr_dmmv_ tables use: shared memory, subgroup add, subgroup add without shared
++// memory. The generator emits its tables for a fixed name list, so this candidate's
++// variant carries its own.
++static const void * arr_dmmv_q4_k_sideplane_f32_f32_data[3] = {
++    mul_mat_vec_q4_k_sideplane_f32_f32_data,
++    mul_mat_vec_q4_k_sideplane_f32_f32_subgroup_data,
++    mul_mat_vec_q4_k_sideplane_f32_f32_subgroup_no_shmem_data,
++};
++static const uint64_t arr_dmmv_q4_k_sideplane_f32_f32_len[3] = {
++    mul_mat_vec_q4_k_sideplane_f32_f32_len,
++    mul_mat_vec_q4_k_sideplane_f32_f32_subgroup_len,
++    mul_mat_vec_q4_k_sideplane_f32_f32_subgroup_no_shmem_len,
++};
++
+ // remove this once it's more widely available in the SDK
+ #if !defined(VK_KHR_shader_bfloat16)
+ 
+@@ -967,6 +982,11 @@ struct vk_device_struct {
+     vk_pipeline pipeline_dequant_mul_mat_vec_q8_1_f32[DMMV_WG_SIZE_COUNT][GGML_TYPE_COUNT][mul_mat_vec_max_cols];
+     vk_pipeline pipeline_dequant_mul_mat_vec_id_q8_1_f32[DMMV_WG_SIZE_COUNT][GGML_TYPE_COUNT];
+ 
++    // GGML_VK_Q4K_SIDEPLANE=1 serves the Q4_K dequantize-then-dot mat-vec from these:
++    // one pre-pass writes the activation group sums and the consumer reads them.
++    vk_pipeline pipeline_dequant_mul_mat_vec_q4_k_sideplane_f32_f32[DMMV_WG_SIZE_COUNT][mul_mat_vec_max_cols];
++    vk_pipeline pipeline_q4_k_activation_prepass;
++
+     vk_pipeline pipeline_mul_mat_vec_p021_f16_f32[p021_max_gqa_ratio];
+     vk_pipeline pipeline_mul_mat_vec_nc_f16_f32;
+     vk_pipeline pipeline_get_rows[GGML_TYPE_COUNT];
+@@ -1344,6 +1364,75 @@ struct vk_mat_vec_push_constants {
+     uint32_t broadcast3;
+ };
+ 
++// The Q4_K superblock, which is the sideplane's unit: 256 activation elements produce
++// 64 four-element sums.
++static constexpr uint32_t q4_k_sideplane_quant_k = 256;
++
++struct vk_q4_k_prepass_push_constants {
++    uint32_t num_blocks_per_row;
++    uint32_t num_columns;
++    uint32_t batch_stride_b;
++};
++
++// The Q4_K activation group-sum sideplane is a candidate behind GGML_VK_Q4K_SIDEPLANE=1,
++// so one binary serves both arms and the flag is read once per process.
++static bool ggml_vk_q4_k_sideplane_enabled() {
++    static const bool enabled = getenv("GGML_VK_Q4K_SIDEPLANE") != nullptr;
++    return enabled;
++}
++
++static bool ggml_vk_q4_k_sideplane_log_enabled() {
++    static const bool enabled = getenv("GGML_VK_Q4K_SIDEPLANE_LOG") != nullptr;
++    return enabled;
++}
++
++// The token columns one dispatch may carry and still take the sideplane. One column is
++// the decode step's own shape and the shape every retained sideplane measurement was
++// made at, so the feature declines a prefill or verification submission that reaches
++// the mat-vec path at ne11 up to mul_mat_vec_max_cols rather than serving a column
++// count no arm has read. GGML_VK_Q4K_SIDEPLANE_MAX_COLUMNS raises the bound for the
++// arm that measures a wider one, and mul_mat_vec_max_cols is where it stops: past that
++// the mat-vec pipelines carry no entry to select.
++static uint32_t ggml_vk_q4_k_sideplane_max_columns() {
++    static const uint32_t columns = [] {
++        const char * requested = getenv("GGML_VK_Q4K_SIDEPLANE_MAX_COLUMNS");
++        if (requested == nullptr) {
++            return 1u;
++        }
++        const long parsed = strtol(requested, nullptr, 10);
++        if (parsed < 1) {
++            return 1u;
++        }
++        return std::min((uint32_t) parsed, mul_mat_vec_max_cols);
++    }();
++    return columns;
++}
++
++// The activation a Q4_K mat-vec consumes, named by what makes its sideplane valid. The
++// key holds no layer index and no token number: two mat-vecs share a pre-pass exactly
++// when they read the same activation tensor at the same K and column count within one
++// graph, which is what the FFN gate and up pair and a recurrent layer's projections do.
++// The tensor rather than its address is the identity, because ggml's graph allocator
++// hands one buffer offset to many tensors in turn and a key over the address alone reads
++// a superseded activation's sums as current.
++struct vk_q4_k_sideplane_key {
++    const ggml_tensor * activation {};
++    const void * buffer {};
++    uint64_t     offset {};
++    uint32_t     k {};
++    uint32_t     columns {};
++    uint64_t     epoch {};
++
++    bool operator==(const vk_q4_k_sideplane_key & other) const {
++        return activation == other.activation && buffer == other.buffer && offset == other.offset &&
++               k == other.k && columns == other.columns && epoch == other.epoch;
++    }
++    bool operator<(const vk_q4_k_sideplane_key & other) const {
++        return std::tie(activation, buffer, offset, k, columns, epoch) <
++               std::tie(other.activation, other.buffer, other.offset, other.k, other.columns, other.epoch);
++    }
++};
++
+ struct vk_mat_vec_p021_push_constants {
+     uint32_t ncols_x;
+     uint32_t nrows_x;
+@@ -2716,6 +2805,20 @@ struct ggml_backend_vk_context {
+     // and set to true after the buffer contents are consumed.
+     bool prealloc_x_need_sync, prealloc_y_need_sync, prealloc_split_k_need_sync;
+ 
++    // The Q4_K activation group-sum sideplane, and the accounting that measures its reuse.
++    // The buffer holds one activation's sums at a time, so a consumer whose key differs
++    // from the resident one pays a fresh pre-pass; the per-key consumer counts record the
++    // fan-out the graph offers whether or not this one-slot policy captures it.
++    vk_buffer prealloc_q4_k_sideplane;
++    size_t    prealloc_size_q4_k_sideplane {};
++    vk_q4_k_sideplane_key q4_k_sideplane_resident {};
++    bool      q4_k_sideplane_resident_valid {};
++    uint64_t  q4_k_sideplane_epoch {};
++    std::map<vk_q4_k_sideplane_key, uint32_t> q4_k_sideplane_consumers;
++    uint32_t  q4_k_sideplane_prepass_dispatches {};
++    uint32_t  q4_k_sideplane_consumer_dispatches {};
++    uint32_t  q4_k_sideplane_hits {};
++
+     vk_context_ref compute_ctx;
+ 
+     vk_context_ref transfer_ctx;
+@@ -6178,6 +6281,10 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+ #define OCP_DMMV_DATA(NAME, REDUC) NAME ## _data[REDUC]
+ #endif
+ 
++    // One invocation forms the four sums of one lane chunk, so the dispatch counts
++    // superblocks times 16 lane chunks times token columns.
++    ggml_vk_create_pipeline(device, device->pipeline_q4_k_activation_prepass, "mul_mat_vec_q4_k_prepass_f32", mul_mat_vec_q4_k_prepass_f32_len, mul_mat_vec_q4_k_prepass_f32_data, "main", 2, sizeof(vk_q4_k_prepass_push_constants), {64, 1, 1}, {}, 1);
++
+     for (uint32_t w = 0; w < DMMV_WG_SIZE_COUNT; ++w) {
+         const uint32_t wg_size_subgroup   = (w == DMMV_WG_SIZE_SUBGROUP) ? subgroup_size : (subgroup_size * 4);
+         const uint32_t wg_size_subgroup16 = (w == DMMV_WG_SIZE_SUBGROUP) ? subgroup_size16 : (subgroup_size16 * 4);
+@@ -6205,6 +6312,7 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+             ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f32_f32[w][GGML_TYPE_TQ2_0][i], "mul_mat_vec_tq2_0_f32_f32", arr_dmmv_tq2_0_f32_f32_len[reduc16], arr_dmmv_tq2_0_f32_f32_data[reduc16], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
+             ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f32_f32[w][GGML_TYPE_Q3_K][i], "mul_mat_vec_q3_k_f32_f32", arr_dmmv_q3_k_f32_f32_len[reduc16], arr_dmmv_q3_k_f32_f32_data[reduc16], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
+             ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f32_f32[w][GGML_TYPE_Q4_K][i], "mul_mat_vec_q4_k_f32_f32", arr_dmmv_q4_k_f32_f32_len[reduc16], arr_dmmv_q4_k_f32_f32_data[reduc16], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
++            ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_q4_k_sideplane_f32_f32[w][i], "mul_mat_vec_q4_k_sideplane_f32_f32", arr_dmmv_q4_k_sideplane_f32_f32_len[reduc16], arr_dmmv_q4_k_sideplane_f32_f32_data[reduc16], "main", mul_mat_vec_num_bindings + 1, sizeof(vk_mat_vec_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
+             ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f32_f32[w][GGML_TYPE_Q5_K][i], "mul_mat_vec_q5_k_f32_f32", arr_dmmv_q5_k_f32_f32_len[reduc16], arr_dmmv_q5_k_f32_f32_data[reduc16], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
+             ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f32_f32[w][GGML_TYPE_Q6_K][i], "mul_mat_vec_q6_k_f32_f32", arr_dmmv_q6_k_f32_f32_len[reduc16], arr_dmmv_q6_k_f32_f32_data[reduc16], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
+             ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f32_f32[w][GGML_TYPE_IQ1_S][i],   "mul_mat_vec_iq1_s_f32_f32",   arr_dmmv_iq1_s_f32_f32_len[reduc16],   arr_dmmv_iq1_s_f32_f32_data[reduc16],   "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_iq, 1, 1}, {wg_size_subgroup16, rm_iq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
+@@ -10642,7 +10750,36 @@ static void ggml_vk_mul_mat_vec_q_f16(ggml_backend_vk_context * ctx, vk_context&
+         to_q8_1 = ggml_vk_get_quantize_pipeline(ctx, GGML_TYPE_Q8_1);
+     }
+ 
+-    if (ggml_nbytes(src0) > ctx->device->properties.limits.maxStorageBufferRange) {
++    const bool oversized_src0 = ggml_nbytes(src0) > ctx->device->properties.limits.maxStorageBufferRange;
++
++    // The sideplane serves the Q4_K dequantize-then-dot mat-vec alone: f32 activations,
++    // contiguous, no expert indirection, no q8_1 quantization, and a column base that is
++    // a whole multiple of K, which is what makes the consumer's own column base index the
++    // sideplane. Every other tuple keeps the pipeline it already had. The chosen pipeline
++    // is identified by pointer against the two workgroup-size entries rather than by
++    // repeating the selection heuristic, so an upstream change to that heuristic declines
++    // the feature instead of mispairing it. The column bound is what confines it to a
++    // decode submission: ne11 * ne12 * ne13 is the token columns this dispatch carries,
++    // and the pre-pass writes sums for every one of them.
++    const uint64_t q4_k_sideplane_columns = (uint64_t) ne11 * ne12 * ne13;
++    bool use_q4_k_sideplane = false;
++    uint32_t q4_k_sideplane_wg = 0;
++    if (ggml_vk_q4_k_sideplane_enabled() &&
++        src0->type == GGML_TYPE_Q4_K && src1->type == GGML_TYPE_F32 &&
++        !quantize_y && !x_non_contig && !y_non_contig && !oversized_src0 &&
++        ne00 == ne10 && ne00 % q4_k_sideplane_quant_k == 0 &&
++        q4_k_sideplane_columns <= ggml_vk_q4_k_sideplane_max_columns() &&
++        ggml_vk_dim01_contiguous(src1)) {
++        for (uint32_t w = 0; w < DMMV_WG_SIZE_COUNT; ++w) {
++            if (dmmv == ctx->device->pipeline_dequant_mul_mat_vec_f32_f32[w][GGML_TYPE_Q4_K][ne11 - 1]) {
++                use_q4_k_sideplane = true;
++                q4_k_sideplane_wg = w;
++                break;
++            }
++        }
++    }
++
++    if (oversized_src0) {
+         dmmv = ggml_vk_get_64b_indexing_pipeline(ctx, dmmv);
+     }
+ 
+@@ -10689,6 +10826,15 @@ static void ggml_vk_mul_mat_vec_q_f16(ggml_backend_vk_context * ctx, vk_context&
+         if (quantize_y) {
+             ggml_pipeline_request_descriptor_sets(ctx, to_q8_1, 1);
+         }
++        // Four f32 activation elements produce one f32 sum, so the sideplane is a quarter
++        // of the activation region in bytes: y_ne floats of activation, y_ne / 4 of sums.
++        if (use_q4_k_sideplane) {
++            const uint64_t sideplane_sz = sizeof(float) * y_ne / 4;
++            if (ctx->prealloc_size_q4_k_sideplane < sideplane_sz) {
++                ctx->prealloc_size_q4_k_sideplane = sideplane_sz;
++                ggml_vk_preallocate_buffers(ctx, subctx);
++            }
++        }
+     }
+ 
+     vk_subbuffer d_D = ggml_vk_tensor_subbuffer(ctx, cgraph->nodes[node_idx + ctx->num_additional_fused_ops]);
+@@ -10787,6 +10933,54 @@ static void ggml_vk_mul_mat_vec_q_f16(ggml_backend_vk_context * ctx, vk_context&
+         fusion_flags |= MAT_VEC_FUSION_FLAGS_BIAS1;
+     }
+ 
++    // Value-initialized because the dispatch below reads it only under the flag, which
++    // the compiler cannot prove across the branch.
++    vk_subbuffer d_S {};
++    if (use_q4_k_sideplane) {
++        // The consumer forms its sideplane index from j*batch_stride_b + b_offset, which
++        // names an activation element, so the layout holds only while a token column is
++        // exactly ne10 elements from the previous one.
++        GGML_ASSERT(stride_batch_y == (uint32_t)ne10);
++
++        const uint64_t columns = q4_k_sideplane_columns;
++        const vk_q4_k_sideplane_key key = {
++            src1, (const void *) d_Y.buffer.get(), d_Y.offset,
++            (uint32_t) ne00, (uint32_t) columns, ctx->q4_k_sideplane_epoch,
++        };
++
++        d_S = { ctx->prealloc_q4_k_sideplane, 0, sizeof(float) * y_ne / 4 };
++
++        ctx->q4_k_sideplane_consumers[key]++;
++        ctx->q4_k_sideplane_consumer_dispatches++;
++
++        if (ctx->q4_k_sideplane_resident_valid && ctx->q4_k_sideplane_resident == key) {
++            ctx->q4_k_sideplane_hits++;
++        } else {
++            // The buffer holds one activation at a time, so the fresh pre-pass waits for
++            // the readers of the resident sums before it overwrites them, and the consumer
++            // waits for the write.
++            ggml_vk_sync_buffers(ctx, subctx);
++
++            ggml_pipeline_request_descriptor_sets(ctx, ctx->device->pipeline_q4_k_activation_prepass, 1);
++            const vk_q4_k_prepass_push_constants prepass_pc = {
++                (uint32_t)(ne00 / q4_k_sideplane_quant_k),
++                (uint32_t) columns,
++                stride_batch_y,
++            };
++            const uint32_t prepass_entries = prepass_pc.num_blocks_per_row * 16 * prepass_pc.num_columns;
++            ggml_vk_dispatch_pipeline(ctx, subctx, ctx->device->pipeline_q4_k_activation_prepass,
++                                      { d_Y, d_S }, prepass_pc, { prepass_entries, 1, 1 });
++
++            ggml_vk_sync_buffers(ctx, subctx);
++
++            ctx->q4_k_sideplane_resident = key;
++            ctx->q4_k_sideplane_resident_valid = true;
++            ctx->q4_k_sideplane_prepass_dispatches++;
++        }
++
++        dmmv = ctx->device->pipeline_dequant_mul_mat_vec_q4_k_sideplane_f32_f32[q4_k_sideplane_wg][ne11 - 1];
++    }
++
+     ggml_pipeline_request_descriptor_sets(ctx, dmmv, CEIL_DIV(ne12 * ne13, ctx->device->properties.limits.maxComputeWorkGroupCount[1]));
+ 
+     uint32_t base_work_group_y = 0;
+@@ -10799,7 +10991,12 @@ static void ggml_vk_mul_mat_vec_q_f16(ggml_backend_vk_context * ctx, vk_context&
+             fusion_flags, base_work_group_y,
+             (uint32_t)ne02, (uint32_t)ne12, (uint32_t)r2, (uint32_t)r3,
+         };
+-        ggml_vk_dispatch_pipeline(ctx, subctx, dmmv,
++        if (use_q4_k_sideplane) {
++            ggml_vk_dispatch_pipeline(ctx, subctx, dmmv,
++                                      { d_X, d_Y, d_D, d_F0, d_F1, d_S },
++                                      pc, { groups_x, groups_y, groups_z });
++        } else {
++            ggml_vk_dispatch_pipeline(ctx, subctx, dmmv,
+                                   {
+                                     d_X,
+                                     d_Y,
+@@ -10808,6 +11005,7 @@ static void ggml_vk_mul_mat_vec_q_f16(ggml_backend_vk_context * ctx, vk_context&
+                                     d_F1,
+                                   },
+                                   pc, { groups_x, groups_y, groups_z });
++        }
+         base_work_group_y += groups_y;
+     }
+ 
+@@ -16349,6 +16547,15 @@ static void ggml_vk_preallocate_buffers(ggml_backend_vk_context * ctx, vk_contex
+         }
+         ctx->prealloc_add_rms_partials = ggml_vk_create_buffer_device(ctx->device, ctx->prealloc_size_add_rms_partials);
+     }
++    if (ctx->prealloc_size_q4_k_sideplane > 0 &&
++        (ctx->prealloc_q4_k_sideplane == nullptr || ctx->prealloc_q4_k_sideplane->size < ctx->prealloc_size_q4_k_sideplane)) {
++        VK_LOG_MEMORY("ggml_vk_preallocate_buffers(q4_k_sideplane_size: " << ctx->prealloc_size_q4_k_sideplane << ")");
++        if (ctx->prealloc_q4_k_sideplane != nullptr) {
++            ggml_vk_destroy_buffer(ctx->prealloc_q4_k_sideplane);
++        }
++        ctx->prealloc_q4_k_sideplane = ggml_vk_create_buffer_device(ctx->device, ctx->prealloc_size_q4_k_sideplane);
++        ctx->q4_k_sideplane_resident_valid = false;
++    }
+ }
+ 
+ static void ggml_vk_compute_forward(ggml_backend_vk_context* ctx, ggml_cgraph * cgraph, ggml_tensor* tensor, int tensor_idx, bool almost_ready);
+@@ -18184,6 +18391,15 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
+     ctx->do_add_rms_partials = false;
+     ctx->do_add_rms_partials_offset_calculation = false;
+ 
++    // A new graph is a new epoch: an activation buffer reused at the same offset holds
++    // other values now, so a key from the previous graph never matches this one.
++    ctx->q4_k_sideplane_epoch++;
++    ctx->q4_k_sideplane_resident_valid = false;
++    ctx->q4_k_sideplane_consumers.clear();
++    ctx->q4_k_sideplane_prepass_dispatches = 0;
++    ctx->q4_k_sideplane_consumer_dispatches = 0;
++    ctx->q4_k_sideplane_hits = 0;
++
+     int last_node = cgraph->n_nodes - 1;
+ 
+     // If the last op in the cgraph isn't backend GPU, the command buffer doesn't get closed properly
+@@ -18646,6 +18862,35 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
+         ggml_vk_synchronize(ctx);
+     }
+ 
++    // The reuse factor is measured rather than assumed: the achieved figure is what the
++    // one-slot sideplane delivered, and the offered figure is the fan-out the graph holds,
++    // which is what a multi-slot arena could reach.
++    if (ggml_vk_q4_k_sideplane_log_enabled() && ctx->q4_k_sideplane_consumer_dispatches > 0) {
++        std::cerr << "q4k_sideplane epoch=" << ctx->q4_k_sideplane_epoch
++                  << " nodes=" << cgraph->n_nodes
++                  << " distinct_keys=" << ctx->q4_k_sideplane_consumers.size()
++                  << " prepass_dispatches=" << ctx->q4_k_sideplane_prepass_dispatches
++                  << " consumer_dispatches=" << ctx->q4_k_sideplane_consumer_dispatches
++                  << " hits=" << ctx->q4_k_sideplane_hits
++                  << " misses=" << ctx->q4_k_sideplane_prepass_dispatches
++                  << " achieved_reuse=" << (double)ctx->q4_k_sideplane_consumer_dispatches /
++                                           (double)std::max(1u, ctx->q4_k_sideplane_prepass_dispatches)
++                  << " offered_reuse=" << (double)ctx->q4_k_sideplane_consumer_dispatches /
++                                          (double)std::max<size_t>(1, ctx->q4_k_sideplane_consumers.size())
++                  << '\n';
++        for (const auto & entry : ctx->q4_k_sideplane_consumers) {
++            std::cerr << "q4k_sideplane_key epoch=" << ctx->q4_k_sideplane_epoch
++                      << " activation=" << (const void *) entry.first.activation
++                      << " name=" << (entry.first.activation ? entry.first.activation->name : "-")
++                      << " buffer=" << entry.first.buffer
++                      << " offset=" << entry.first.offset
++                      << " k=" << entry.first.k
++                      << " columns=" << entry.first.columns
++                      << " consumers=" << entry.second
++                      << '\n';
++        }
++    }
++
+     return GGML_STATUS_SUCCESS;
+ 
+     UNUSED(backend);
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_q4_k.comp b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_q4_k.comp
+index 48778a3e8..8a96d80bc 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_q4_k.comp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_q4_k.comp
+@@ -4,6 +4,17 @@
+ 
+ #include "mul_mat_vec_base.glsl"
+ 
++#ifdef Q4K_SIDEPLANE
++// mul_mat_vec_q4_k_prepass.comp writes the activation group sums this variant reads.
++// Binding 5 is free outside MUL_MAT_ID, and the host binds the sideplane over the same
++// activation subbuffer base as binding 1, so the column base indexes both alike.
++layout (binding = 5) readonly buffer SIDEPLANE {vec4 data_sideplane_v4[];};
++
++// y_offset is 64*v_im + 4*(2*ir + v_in), a bijection of the 16 lanes that tile one
++// superblock, so this recovers the lane's chunk index without threading itid through.
++#define SIDEPLANE_CHUNK(y_offset) (((y_offset) >> 6) * 8 + (((y_offset) & 63) >> 2))
++#endif
++
+ layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
+ 
+ FLOAT_TYPE temp[NUM_COLS][NUM_ROWS];
+@@ -14,9 +25,22 @@ void calc_superblock(const uint a_offset, const uint b_offset, const uint v_im,
+ 
+     // The minimum term is four scales against the sums of four 32-element groups of the
+     // activation vector, so each group sum belongs to the column and every row reads it.
++    FLOAT_TYPE by_group_sum[NUM_COLS][4];
++#ifdef Q4K_SIDEPLANE
++    // The pre-pass already formed these four sums for this column, superblock, and lane,
++    // in this addition order, so one vec4 read replaces twelve adds and four vec4 loads
++    // and the accumulated value is unchanged bit for bit.
++    [[unroll]] for (uint j = 0; j < NUM_COLS; ++j) {
++        const vec4 sums = data_sideplane_v4[(j*p.batch_stride_b + b_offset) / 16
++                                            + i * 16 + SIDEPLANE_CHUNK(y_offset)];
++        by_group_sum[j][0] = FLOAT_TYPE(sums.x);
++        by_group_sum[j][1] = FLOAT_TYPE(sums.y);
++        by_group_sum[j][2] = FLOAT_TYPE(sums.z);
++        by_group_sum[j][3] = FLOAT_TYPE(sums.w);
++    }
++#else
+     // Forming them ahead of the row loop turns sixteen fused multiply-adds per row into
+     // twelve adds per column plus four per row.
+-    FLOAT_TYPE by_group_sum[NUM_COLS][4];
+     [[unroll]] for (uint j = 0; j < NUM_COLS; ++j) {
+         const vec4 by10 =  vec4(data_b_v4[(j*p.batch_stride_b + b_offset + y1_idx) / 4    ]);
+         const vec4 by132 = vec4(data_b_v4[(j*p.batch_stride_b + b_offset + y1_idx) / 4 + 8]);
+@@ -28,6 +52,7 @@ void calc_superblock(const uint a_offset, const uint b_offset, const uint v_im,
+         by_group_sum[j][2] = FLOAT_TYPE(by20.x)  + FLOAT_TYPE(by20.y)  + FLOAT_TYPE(by20.z)  + FLOAT_TYPE(by20.w);
+         by_group_sum[j][3] = FLOAT_TYPE(by232.x) + FLOAT_TYPE(by232.y) + FLOAT_TYPE(by232.z) + FLOAT_TYPE(by232.w);
+     }
++#endif
+ 
+     [[unroll]] for (uint n = 0; n < num_rows; ++n) {
+         const uint ib0 = a_offset + (first_row+n)*num_blocks_per_row;
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_q4_k_prepass.comp b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_q4_k_prepass.comp
+new file mode 100644
+index 000000000..9fa5cba1d
+--- /dev/null
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_q4_k_prepass.comp
+@@ -0,0 +1,73 @@
++#version 450
++
++#extension GL_EXT_control_flow_attributes : enable
++
++// The activation group-sum sideplane for the Q4_K dequantize-then-dot mat-vec.
++//
++// mul_mat_vec_q4_k.comp forms four activation partial sums per lane per 256-element
++// superblock, and every output-row workgroup consuming that activation column forms
++// them again. This pre-pass writes them once, in exactly the lane-chunk layout
++// mul_mat_vec_q4_k.comp's by_group_sum uses, so the consumer's addition order is
++// unchanged and the accumulated value stays bit-for-bit what the in-shader hoist
++// produced.
++//
++// The layout follows from the consumer's own indexing. The 16 lanes that tile one
++// superblock each read the four-element chunks at y1_idx, y1_idx + 32, y2_idx, and
++// y2_idx + 32, where y_offset = 64*v_im + 4*(2*ir + v_in) is a function of the lane
++// alone, so the sideplane holds 64 sums per superblock and token column. The chunk
++// index is the consumer's SIDEPLANE_CHUNK(y_offset) = 8*v_im + 2*ir + v_in, and this
++// shader walks it directly and inverts it into y_offset, which makes the two
++// expressions one relation rather than two permutations that have to agree.
++// The result is a quarter-scale image of the activation region: a token column of K
++// f32 elements produces K/4 f32 sums, K bytes against the column's 4K.
++
++layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
++
++layout (binding = 0) readonly buffer BV4 {vec4 data_b_v4[];};
++layout (binding = 1) writeonly buffer S {vec4 data_s_v4[];};
++
++layout (push_constant) uniform parameter
++{
++    uint num_blocks_per_row;  // K / 256
++    uint num_columns;         // token columns covered by this dispatch
++    uint batch_stride_b;      // activation elements between columns, equal to K
++} p;
++
++#define QUANT_K 256
++
++void main() {
++    const uint idx = gl_GlobalInvocationID.x;
++    const uint entries_per_column = p.num_blocks_per_row * 16;
++
++    if (idx >= entries_per_column * p.num_columns) {
++        return;
++    }
++
++    const uint column = idx / entries_per_column;
++    const uint rem = idx - column * entries_per_column;
++    const uint i = rem / 16;
++    const uint chunk = rem - i * 16;
++
++    // The inverse of the consumer's SIDEPLANE_CHUNK: v_im is the high bit triple and
++    // 2*ir + v_in is the low three bits, which is exactly l0 / 4.
++    const uint y_offset = 64 * (chunk / 8) + 4 * (chunk % 8);
++
++    const uint column_base = column * p.batch_stride_b;
++    const uint y1_idx = i * QUANT_K + y_offset;
++    const uint y2_idx = y1_idx + 128;
++
++    const vec4 by10 =  data_b_v4[(column_base + y1_idx) / 4    ];
++    const vec4 by132 = data_b_v4[(column_base + y1_idx) / 4 + 8];
++    const vec4 by20 =  data_b_v4[(column_base + y2_idx) / 4    ];
++    const vec4 by232 = data_b_v4[(column_base + y2_idx) / 4 + 8];
++
++    // The same four left-associated chains mul_mat_vec_q4_k.comp forms, so the stored
++    // f32 equals the value the consumer would have built in registers.
++    vec4 sums;
++    sums.x = float(by10.x)  + float(by10.y)  + float(by10.z)  + float(by10.w);
++    sums.y = float(by132.x) + float(by132.y) + float(by132.z) + float(by132.w);
++    sums.z = float(by20.x)  + float(by20.y)  + float(by20.z)  + float(by20.w);
++    sums.w = float(by232.x) + float(by232.y) + float(by232.z) + float(by232.w);
++
++    data_s_v4[column_base / 16 + i * 16 + chunk] = sums;
++}
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp b/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+index 17d57d5a1..542b62957 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+@@ -745,6 +745,19 @@ void process_shaders() {
+         string_to_spv("mul_mat_vec_" + tname + "_f32_f32_subgroup_no_shmem", shader, merge_maps(base_dict, {{data_a_key, "1"}, {"B_TYPE", "float"}, {"B_TYPEV2", "vec2"}, {"B_TYPEV4", "vec4"}, {"D_TYPE", "float"}, {"USE_SUBGROUP_ADD_NO_SHMEM", "1"}}));
+         string_to_spv("mul_mat_vec_" + tname + "_f16_f32_subgroup_no_shmem", shader, merge_maps(base_dict, {{data_a_key, "1"}, {"B_TYPE", "float16_t"}, {"B_TYPEV2", "f16vec2"}, {"B_TYPEV4", "f16vec4"}, {"D_TYPE", "float"}, {"USE_SUBGROUP_ADD_NO_SHMEM", "1"}}));
+ 
++        // The Q4_K activation group-sum sideplane consumer: the same source and the same
++        // specialization constants, with Q4K_SIDEPLANE replacing the in-shader group sums
++        // by a read of what mul_mat_vec_q4_k_prepass.comp wrote. The f32 activation and
++        // the non-MUL_MAT_ID form are the whole scope, and every other tuple keeps the
++        // ordinary pipeline.
++        if (tname == "q4_k") {
++            const std::map<std::string, std::string> sideplane_dict = merge_maps(base_dict, {{data_a_key, "1"}, {"B_TYPE", "float"}, {"B_TYPEV2", "vec2"}, {"B_TYPEV4", "vec4"}, {"D_TYPE", "float"}, {"Q4K_SIDEPLANE", "1"}});
++            string_to_spv("mul_mat_vec_q4_k_sideplane_f32_f32", shader, sideplane_dict);
++            string_to_spv("mul_mat_vec_q4_k_sideplane_f32_f32_subgroup", shader, merge_maps(sideplane_dict, {{"USE_SUBGROUP_ADD", "1"}}));
++            string_to_spv("mul_mat_vec_q4_k_sideplane_f32_f32_subgroup_no_shmem", shader, merge_maps(sideplane_dict, {{"USE_SUBGROUP_ADD_NO_SHMEM", "1"}}));
++            string_to_spv("mul_mat_vec_q4_k_prepass_f32", "mul_mat_vec_q4_k_prepass.comp", {});
++        }
++
+ #if defined(GGML_VULKAN_FLOAT_E2M1_GLSLC_SUPPORT) && defined(GGML_VULKAN_FLOAT_E4M3_GLSLC_SUPPORT)
+         if (tname == "mxfp4" || tname == "nvfp4") {
+             string_to_spv("mul_mat_vec_" + tname + "_f32_f32_ocp", shader, merge_maps(base_dict, {{data_a_key, "1"}, {"USE_OCP_FP4", "1"}, {"B_TYPE", "float"}, {"B_TYPEV2", "vec2"}, {"B_TYPEV4", "vec4"}, {"D_TYPE", "float"}}));

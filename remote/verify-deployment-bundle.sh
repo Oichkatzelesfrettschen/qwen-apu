@@ -59,7 +59,8 @@ fi
 
 bundle_manifest=$bundle_directory/bundle-manifest.tsv
 for bundle_member in bundle-manifest.tsv llama-server artifact-manifest.tsv \
-    ctx-checkpoints.tsv router-presets.ini web-presets.ini; do
+    ctx-checkpoints.tsv router-presets.ini web-presets.ini \
+    web-mcp-manifest.tsv; do
     if [ -L "$bundle_directory/$bundle_member" ]; then
         printf 'bundle member is a symlink: %s\n' \
             "$bundle_directory/$bundle_member" >&2
@@ -81,6 +82,18 @@ for manifest_key in bundle_name checkpoint_semantics maximum_ledger_count \
         exit 1
     fi
 done
+# The web MCP record is the one key a bundle assembled before the merged preset
+# carries no row for, and such a bundle names no web section either. Requiring
+# the row of every bundle refused the whole roster on a deployment that predates
+# the lane, so the row is optional here and the marker below decides whether it
+# has to be there.
+web_mcp_manifest_rows=$(awk -F'\t' '$1 == "web-mcp-manifest.tsv" { count++ }
+    END { print count + 0 }' "$bundle_manifest")
+if [ "$web_mcp_manifest_rows" -gt 1 ]; then
+    printf 'bundle manifest carries %s rows for web-mcp-manifest.tsv; at most one is admitted: %s\n' \
+        "$web_mcp_manifest_rows" "$bundle_manifest" >&2
+    exit 1
+fi
 # The name a bundle was assembled under is the name it activates under: a
 # directory renamed onto another bundle's name would otherwise publish one
 # bundle's bytes under a role record naming another.
@@ -146,12 +159,45 @@ if [ "$executable_rows" -ne 1 ]; then
     printf 'artifact manifest executable llama-server row does not match the bundled server\n' >&2
     exit 1
 fi
-serving_eligible=$(awk -F'\t' '$1 == "serving_eligible" { print $2; exit }' \
-    "$bundle_directory/artifact-manifest.tsv")
-if [ -n "$serving_eligible" ] && [ "$serving_eligible" != yes ]; then
-    printf 'bundle artifact manifest declares serving_eligible %s; a diagnostic build stays inactive\n' \
-        "$serving_eligible" >&2
+# The eligibility grammar is the one assembly applies, restated here because a
+# manifest reaches a bundle directory by other routes than the builder. Zero
+# serving_eligible rows is the legacy shape and holds only beside zero
+# instrumentation rows; exactly one row must read exactly `yes`, so a present
+# row with an empty value is refused by its own reading rather than passing as
+# an absent declaration; a second row of either kind is refused on cardinality
+# ahead of both. An instrumentation row refuses the bundle at whatever
+# eligibility spelling accompanies it, and that refusal precedes the
+# eligibility reading so a diagnostic manifest names its instrumentation
+# however its eligibility row is spelled or deleted.
+declaration_rows=$(awk -F'\t' '
+    $1 == "serving_eligible" { eligible++ }
+    $1 == "instrumentation" { instrumentation++ }
+    END { print eligible + 0, instrumentation + 0 }' "$bundle_directory/artifact-manifest.tsv")
+serving_rows=${declaration_rows%% *}
+instrumentation_rows=${declaration_rows##* }
+if [ "$serving_rows" -gt 1 ] || [ "$instrumentation_rows" -gt 1 ]; then
+    printf 'artifact manifest holds %s serving_eligible rows and %s instrumentation rows, at most one of each: %s\n' \
+        "$serving_rows" "$instrumentation_rows" "$bundle_directory/artifact-manifest.tsv" >&2
     exit 1
+fi
+if [ "$instrumentation_rows" -eq 1 ]; then
+    declared_instrumentation=$(awk -F'\t' \
+        '$1 == "instrumentation" { print $2; exit }' \
+        "$bundle_directory/artifact-manifest.tsv")
+    printf 'artifact manifest names instrumentation %s; a bundle carries serving builds alone: %s\n' \
+        "${declared_instrumentation:-<empty>}" \
+        "$bundle_directory/artifact-manifest.tsv" >&2
+    exit 1
+fi
+if [ "$serving_rows" -eq 1 ]; then
+    serving_eligible=$(awk -F'\t' '$1 == "serving_eligible" { print $2; exit }' \
+        "$bundle_directory/artifact-manifest.tsv")
+    if [ "$serving_eligible" != yes ]; then
+        printf 'artifact manifest declares serving_eligible %s; a bundle carries serving builds alone: %s\n' \
+            "${serving_eligible:-<empty>}" \
+            "$bundle_directory/artifact-manifest.tsv" >&2
+        exit 1
+    fi
 fi
 recomputed_semantics=$(awk -F'\t' \
     '$1 == "checkpoint_semantics" { count++; value = $2 }
@@ -226,5 +272,92 @@ for preset_member in router-presets.ini web-presets.ini; do
         exit 1
     fi
 done
+# The MCP manifest is the record of what each web section names, and the
+# preset own `# qwen_web_sections=` marker decides whether it has to exist: a
+# bundle whose preset names no web section carries no configuration and no
+# record, which is every bundle assembled before the merged preset. The record
+# is compared against the preset rather than against the state directory -- a
+# resolution that read the named configurations would refuse every bundle on a
+# machine that has not generated a web preset, which turns a web-lane concern
+# into an outage on the whole roster. qwen-launch.sh reads the files and
+# compares these digests where it arms the lane.
+web_mcp_expected_sha256=$(awk -F'\t' '$1 == "web-mcp-manifest.tsv" { print $2; exit }' \
+    "$bundle_manifest")
+web_mcp_expected_sha256=${web_mcp_expected_sha256:--}
+preset_web_sections=''
+preset_mcp_rows=''
+if [ -f "$bundle_directory/router-presets.ini" ]; then
+    preset_web_sections=$(sed -n 's/^# qwen_web_sections=//p' \
+        "$bundle_directory/router-presets.ini")
+    case $preset_web_sections in
+        '-') preset_web_sections='' ;;
+    esac
+    preset_mcp_rows=$(awk '
+        /^[[:space:]]*\[/ {
+            section = $0
+            sub(/^[[:space:]]*\[/, "", section)
+            sub(/\][[:space:]]*$/, "", section)
+            next
+        }
+        /^[[:space:]]*LLAMA_ARG_MCP_SERVERS_CONFIG[[:space:]]*=/ {
+            value = $0
+            sub(/^[^=]*=[[:space:]]*/, "", value)
+            sub(/[[:space:]]+$/, "", value)
+            printf "%s\t%s\n", section, value
+        }
+    ' "$bundle_directory/router-presets.ini")
+fi
+if [ -z "$preset_web_sections" ]; then
+    # A preset naming no web section carries no execution grant, so a record or
+    # a configuration key here claims one the marker withholds.
+    if [ "$web_mcp_expected_sha256" != - ]; then
+        printf 'bundle manifest records web-mcp-manifest.tsv where its router preset names no web section\n' >&2
+        exit 1
+    fi
+    if [ -e "$bundle_directory/web-mcp-manifest.tsv" ]; then
+        printf 'bundle carries web-mcp-manifest.tsv that its manifest records as absent\n' >&2
+        exit 1
+    fi
+    if [ -n "$preset_mcp_rows" ]; then
+        printf 'bundle router preset names MCP configurations and its head marker names no web section\n' >&2
+        exit 1
+    fi
+else
+    if [ "$web_mcp_expected_sha256" = - ]; then
+        printf 'bundle router preset names web section %s and its manifest records no web-mcp-manifest.tsv\n' \
+            "$preset_web_sections" >&2
+        printf 'assemble the bundle with remote/build-deployment-bundle.sh against that preset\n' >&2
+        exit 1
+    fi
+    if [ ! -r "$bundle_directory/web-mcp-manifest.tsv" ] || \
+        [ ! -f "$bundle_directory/web-mcp-manifest.tsv" ]; then
+        printf 'bundle member is unreadable: %s\n' \
+            "$bundle_directory/web-mcp-manifest.tsv" >&2
+        exit 1
+    fi
+    web_mcp_actual_sha256=$(sha256sum "$bundle_directory/web-mcp-manifest.tsv" |
+        cut -d ' ' -f 1)
+    if [ "$web_mcp_actual_sha256" != "$web_mcp_expected_sha256" ]; then
+        printf 'bundle member diverged: web-mcp-manifest.tsv expected=%s found=%s\n' \
+            "$web_mcp_expected_sha256" "$web_mcp_actual_sha256" >&2
+        exit 1
+    fi
+    recorded_mcp_rows=$(awk -F'\t' '
+        /^[[:space:]]*($|#)/ { next }
+        {
+            if (NF != 3 || $1 == "" || $2 == "" || $3 !~ /^[0-9a-f]{64}$/) {
+                printf "web-mcp-manifest.tsv row is malformed: %s\n", $0 > "/dev/stderr"
+                failed = 1
+                next
+            }
+            printf "%s\t%s\n", $1, $2
+        }
+        END { exit failed }
+    ' "$bundle_directory/web-mcp-manifest.tsv") || exit 1
+    if [ "$recorded_mcp_rows" != "$preset_mcp_rows" ]; then
+        printf 'web-mcp-manifest.tsv records configurations the bundled router preset does not name\n' >&2
+        exit 1
+    fi
+fi
 printf 'deployment_bundle_verified=%s directory=%s\n' \
     "$bundle_name" "$canonical_directory"
