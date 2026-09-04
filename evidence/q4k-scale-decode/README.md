@@ -382,6 +382,58 @@ GB/s against the 4B's 8.11 -- and its falsifier is a third Q4_K_M checkpoint who
 GB/s sits between them, which should land between +1.83% and 0% if streaming rate orders the
 effect and anywhere else if it does not.
 
+### The +1.83% is the two patches alone, and the manifests say so
+
+The compile page above calls its control the post-E4 form and the device run calls its control
+the production deployment. Those are two different shaders, and the retained receipts settle
+which one the +1.83% was measured against without an inference.
+
+`served-ab-20260903T1953Z/inputs.tsv` records `candidate_series` as exactly
+`llama-vulkan-q4k-scale-word-select.patch,llama-vulkan-q4k-superblock-loop-licm.patch` and no
+`control_series` row at all. `run-served-binary-ab.sh` requires the served mode's control
+manifest to carry `candidate_series` `-` and the candidate's to carry `QWEN_AB_CANDIDATE_PATCH`
+alone, refusing either otherwise before an arm starts, and the run reached a verdict. **E4 is in
+neither arm.** `llama-vulkan-q4k-activation-group-sums.patch` applies over the pinned commit
+independently of the two scale patches -- `prepare-llama-census-source.sh` over the two of them
+alone prepares a tree -- so the candidate build carries the scale rewrite and the loop
+restructure over the production series and nothing else.
+
+| identity | control | candidate |
+| --- | --- | --- |
+| server SHA-256 | `5dd86b90...4782c2` | `2955d6dd...b47e98b` |
+| artifact manifest SHA-256 | `86cd22d6...039ee8` | `aae7a25e...6fbf4ef` |
+| production `patch_series_sha256` | `58e651d7...d43f02` | `58e651d7...d43f02` |
+| `candidate_series` | absent, the empty selection | the two scale patches |
+| `base_build_identity_sha256` | `f43db7ab...4d59f63` | the same value |
+| `mul_mat_vec_q4_k_f32_f32` ISA | `ad837848` | `433f3d04` |
+
+The two Q4_K digests are compiled here from the same two trees the manifests name and retained
+as `receipts/device-control-nr4/` and `receipts/device-candidate-nr4/`.
+
+| field | device control | device candidate | Table 1 `ctrl` | Table 1 `both` |
+| --- | ---: | ---: | ---: | ---: |
+| `isa_sha256` head | `ad837848` | `433f3d04` | `29454587` | `138bab50` |
+| VALU | 882 | 859 | 810 | 786 |
+| VMEM | 56 | 40 | 56 | 40 |
+| VGPR | 64 | **48** | 64 | **48** |
+| `Subgroups per SIMD` | 4 | **5** | 4 | **5** |
+| body instructions | 430 | 383 | 395 | 349 |
+| body longest VALU chain | 29 | 24 | 17 | 12 |
+
+**The reading that holds: the +1.83% is the total effect of the scale-word-select and the
+loop-LICM over the production build, and neither arm carried E4.** It is not an increment
+beyond E4, and E4's own earlier +2.37% is not added to it, because the manifests place E4
+outside both arms rather than inside both. Four of the five columns above agree across the two
+control choices -- the register result, the occupancy step, the memory-operation fall, and the
+direction -- so the mechanism the compile page attributes the gain to is the mechanism the
+device ran. The two that differ are the VALU totals and the dependent-chain lengths, and E4's
+own activation restructure is what separates them: it takes the whole shader 882 to 810 and the
+body chain 29 to 17, and it was in neither device arm.
+
+What is therefore still unmeasured is the pair over the post-E4 preimage the compile page
+receipts describe. `138bab50` has never been dispatched, and the sealed key is what makes that
+comparison one binary rather than a third build.
+
 ### The registered prediction, and the falsifier the null already met
 
 The mechanism is occupancy rather than instruction count. The scale rewrite takes the served
