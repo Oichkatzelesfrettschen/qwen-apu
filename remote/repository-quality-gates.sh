@@ -243,6 +243,11 @@ gate_cell test-summarize-power-envelope derive remote/test-summarize-power-envel
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-power-envelope.py'
 gate_cell test-power-envelope derive remote/test-power-envelope.sh \
     remote/test-power-envelope.sh
+gate_cell test-cpu-frequency-cap derive remote/test-cpu-frequency-cap.sh \
+    remote/test-cpu-frequency-cap.sh
+gate_cell test-run-power-factorial-campaign derive \
+    'remote/test-run-power-factorial-campaign.sh remote/test-fixtures/fake-cpupower.sh remote/test-fixtures/fake-ryzenadj.sh remote/test-fixtures/fake-sysfs-lib.sh' \
+    remote/test-run-power-factorial-campaign.sh
 gate_cell test-run-prefill-ladder derive remote/test-run-prefill-ladder.sh \
     remote/test-run-prefill-ladder.sh
 gate_cell test-feature-roster derive remote/test-feature-roster.sh \
