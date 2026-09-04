@@ -84,7 +84,10 @@ for line in open(os.environ["MAP"]):
     line = line.rstrip("\n")
     if not line or line.startswith("#") or line.startswith("lane\t"):
         continue
-    lane, pattern = line.split("\t", 1)
+    fields = line.split("\t")
+    if len(fields) < 2:
+        raise SystemExit("malformed lane-map row (missing tab separator): %s" % line)
+    lane, pattern = fields[0], fields[1]
     if ":" in pattern:
         commit, pattern = pattern.split(":", 1)
         override.append((commit, lane, pattern))

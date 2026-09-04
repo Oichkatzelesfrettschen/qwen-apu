@@ -173,6 +173,8 @@ gate_cell test-census-replay-corpus derive \
 gate_cell test-summarize-perf-logger-slice derive \
     remote/test-summarize-perf-logger-slice.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-perf-logger-slice.py'
+gate_cell test-summarize-prefill-ladder derive remote/test-summarize-prefill-ladder.py \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-prefill-ladder.py'
 gate_cell test-summarize-bracket-ab derive remote/test-summarize-bracket-ab.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-bracket-ab.py'
 gate_cell test-summarize-margin-witness derive remote/test-summarize-margin-witness.py \
@@ -223,6 +225,10 @@ gate_cell test-sync-runtime-tree derive remote/test-sync-runtime-tree.sh \
     remote/test-sync-runtime-tree.sh
 gate_cell test-web-search-live derive remote/test-web-search-live.sh \
     remote/test-web-search-live.sh
+gate_cell test-compute-state-lease derive remote/test-compute-state-lease.sh \
+    remote/test-compute-state-lease.sh
+gate_cell test-run-prefill-ladder derive remote/test-run-prefill-ladder.sh \
+    remote/test-run-prefill-ladder.sh
 gate_cell test-feature-roster derive remote/test-feature-roster.sh \
     remote/test-feature-roster.sh
 gate_cell test-run-served-binary-ab derive remote/test-run-served-binary-ab.sh \
