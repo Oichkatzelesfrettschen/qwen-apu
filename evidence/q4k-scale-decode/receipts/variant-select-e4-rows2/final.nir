@@ -1,0 +1,1088 @@
+shader: MESA_SHADER_COMPUTE
+source_blake3: {0x8589f77b, 0xb30ac997, 0x41d0125d, 0x9862bad6, 0x57036ca6, 0x38785ad9, 0xfb39639a, 0xe5cdf0d0}
+spec[0] = 0x00000040
+spec[1] = 0x00000002
+spec[2] = 0x00000001
+workgroup_size: 64, 1, 1
+num_ssbos: 7
+system_values_read: 0x00000000'00000000'00048400'00000000
+api_subgroup_size: 64
+max_subgroup_size: 64
+min_subgroup_size: 64
+uses_wide_subgroup_intrinsics: true
+bit_sizes_float: 0x30
+bit_sizes_int: 0x39
+separate_shader: true
+flrp_lowered: true
+writes_memory: true
+uniforms: 52
+decl_var push_const INTERP_MODE_NONE none block #0
+decl_var ssbo INTERP_MODE_NONE restrict readonly block#2 #1 (~0, 0, 3)
+decl_var ssbo INTERP_MODE_NONE restrict readonly block#2 #3 (~0, 0, 4)
+decl_var ssbo INTERP_MODE_NONE restrict writeonly block#2 #4 (~0, 0, 2)
+decl_var ssbo INTERP_MODE_NONE restrict readonly block#6 #5 (~0, 0, 1)
+decl_var ssbo INTERP_MODE_NONE restrict readonly block#8 #7 (~0, 0, 0)
+decl_var ssbo INTERP_MODE_NONE restrict readonly block#10 #9 (~0, 0, 0)
+decl_var ssbo INTERP_MODE_NONE restrict readonly block#12 #11 (~0, 0, 0)
+decl_function main () (entrypoint)
+
+impl main {
+    block b0:    // preds:
+    32      %0 = @load_scalar_arg_amd (base=14, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=0)
+    32      %1 = @load_scalar_arg_amd (base=15, arg_upper_bound_u32_amd=65535, arg_num_lsb_zero=0)
+    32      %2 = @load_scalar_arg_amd (base=16, arg_upper_bound_u32_amd=65535, arg_num_lsb_zero=0)
+    32x2    %3 = @load_scalar_arg_amd (base=13, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=0)
+    32      %4 = load_const (0x00000000 = 0.000000)
+    64      %5 = pack_64_2x32_split %3.x, %3.y
+    32      %6 = @load_global_amd (%5, %4 (0x0)) (base=0, access=readonly|reorderable|speculatable|smem-amd, align_mul=4, align_offset=0)
+    32      %7 = imul %6, %2
+    32      %8 = iadd %0, %7
+    32      %9 = @load_scalar_arg_amd (base=3, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=0)
+    32     %10 = load_const (0x0000000c = 12)
+    32     %11 = load_const (0x00000001)
+    32     %12 = ishl %8, %11 (0x1)
+    32     %13 = load_const (0x00000002)
+    32     %14 = iadd %12, %13 (0x2)
+    1      %15 = uge %9, %14
+                 // succs: b1 b25
+    if %15 {
+        block b1:    // preds: b0
+        32     %16 = @load_scalar_arg_amd (base=8, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=0)
+        32     %17 = @load_scalar_arg_amd (base=9, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=0)
+        32     %18 = @load_scalar_arg_amd (base=10, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=0)
+        32     %19 = @load_scalar_arg_amd (base=11, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=0)
+        32     %20 = iadd %1, %16
+        1      %21 = ine %20, %4 (0x0)
+                     // succs: b2 b3
+        if %21 {
+            block b2:    // preds: b1
+            32     %22 = load_const (0x4f7ffffe = 4.294967e+09)
+            32     %23 = u2f32 %18 // exact
+            32     %24 = frcp %23 // exact
+            32     %25 = fmul %24, %22 (4.294967e+09) // exact
+            32     %26 = f2u32 %25 // exact
+            32     %27 = imul %18, %26
+            32     %28 = isub %4 (0x0), %27
+            32     %29 = umul_high %26, %28
+            32     %30 = iadd %26, %29
+            32     %31 = umul_high %20, %30
+            32     %32 = imul %31, %18
+            32     %33 = isub %20, %32
+            1      %34 = uge %33, %18
+            32     %35 = b2i32 %34
+            32     %36 = iadd %31, %35
+            32     %37 = isub %33, %18
+            32     %38 = bcsel %34, %37, %33
+            1      %39 = uge %38, %18
+            32     %40 = b2i32 %39
+            32     %41 = iadd %36, %40
+            32     %42 = isub %38, %18
+            32     %43 = bcsel %39, %42, %38
+            32     %44 = @load_scalar_arg_amd (base=12, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=0)
+            32     %45 = u2f32 %44 // exact
+            32     %46 = frcp %45 // exact
+            32     %47 = fmul %46, %22 (4.294967e+09) // exact
+            32     %48 = f2u32 %47 // exact
+            32     %49 = imul %44, %48
+            32     %50 = isub %4 (0x0), %49
+            32     %51 = umul_high %48, %50
+            32     %52 = iadd %48, %51
+            32     %53 = umul_high %41, %52
+            32     %54 = imul %53, %44
+            32     %55 = isub %41, %54
+            1      %56 = uge %55, %44
+            32     %57 = b2i32 %56
+            32     %58 = iadd %53, %57
+            32     %59 = isub %55, %44
+            32     %60 = bcsel %56, %59, %55
+            1      %61 = uge %60, %44
+            32     %62 = b2i32 %61
+            32     %63 = iadd %58, %62
+            32     %64 = u2f32 %19 // exact
+            32     %65 = frcp %64 // exact
+            32     %66 = fmul %65, %22 (4.294967e+09) // exact
+            32     %67 = f2u32 %66 // exact
+            32     %68 = imul %19, %67
+            32     %69 = isub %4 (0x0), %68
+            32     %70 = umul_high %67, %69
+            32     %71 = iadd %67, %70
+            32     %72 = umul_high %43, %71
+            32     %73 = imul %72, %19
+            32     %74 = isub %43, %73
+            1      %75 = uge %74, %19
+            32     %76 = b2i32 %75
+            32     %77 = iadd %72, %76
+            32     %78 = isub %74, %19
+            32     %79 = bcsel %75, %78, %74
+            1      %80 = uge %79, %19
+            32     %81 = b2i32 %80
+            32     %82 = iadd %77, %81
+            32     %83 = imul %63, %17
+            32     %84 = iadd %83, %82
+                         // succs: b4
+        } else {
+            block b3:  // preds: b1, succs: b4
+        }
+        block b4:    // preds: b2 b3
+        32     %85 = phi b2: %84, b3: %4 (0x0)
+        32     %86 = @load_scalar_arg_amd (base=4, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=0)
+        32     %87 = @load_scalar_arg_amd (base=5, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=0)
+        32     %88 = load_const (0x00000008)
+        32     %89 = ushr %86, %88 (0x8)
+        32     %90 = imul %85, %89
+        32     %91 = @load_scalar_arg_amd (base=6, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=0)
+        32     %92 = @load_scalar_arg_amd (base=2, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=0)
+        32     %93 = @load_vector_arg_amd (base=18, arg_upper_bound_u32_amd=63, arg_num_lsb_zero=0)
+        32     %94 = iand %10 (0xc), %93
+        32     %95 = load_const (0x0000000f = 15)
+        32     %96 = iand %93, %95 (0xf)
+        32     %97 = isub %96, %94
+        32     %98 = ishl %97, %11 (0x1)
+        32     %99 = ubfe %96, %13 (0x2), %11 (0x1)
+        32    %100 = iadd %98, %99
+        32    %101 = load_const (0x00000005)
+        32    %102 = load_const (0x00000003)
+        32    %103 = ushr %96, %102 (0x3)
+        32    %104 = ishl %103, %101 (0x5)
+        32    %105 = ishl %100, %13 (0x2)
+        32    %106 = iadd %104, %105
+        32    %107 = load_const (0x00000006)
+        32    %108 = ishl %103, %107 (0x6)
+        32    %109 = iadd %108, %105
+        32    %110 = ushr %92, %88 (0x8)
+        32    %111 = load_const (0x00000004)
+        32    %112 = ushr %93, %111 (0x4)
+                     // succs: b5
+        loop  // unroll {
+            block b5:    // preds: b4 b8
+            32    %113 = phi b4: %4 (0x0), b8: %391
+            32    %114 = phi b4: %4 (0x0), b8: %276
+            32    %115 = phi b4: %112, b8: %392
+            1     %116 = uge %115, %110
+                         // succs: b6 b7
+            if %116 {
+                block b6:// preds: b5
+                break
+                // succs: b9
+            } else {
+                block b7:  // preds: b5, succs: b8
+            }
+            block b8:    // preds: b7
+            32    %117 = ishl %115, %88 (0x8)
+            32    %118 = iadd %117, %109
+            32    %119 = imul %87, %20
+            32    %120 = iadd %119, %118
+            32    %121 = @load_scalar_arg_amd (base=1, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=2)
+            32    %122 = load_const (0xffff8000 = -32768 = 4294934528)
+            64    %123 = pack_64_2x32_split %121, %122 (0xffff8000)
+            32x8  %124 = @load_global_amd (%123, %4 (0x0)) (base=0, access=readonly|reorderable|speculatable|smem-amd, align_mul=4, align_offset=0)
+            32x4  %125 = vec4 %124.e, %124.f, %124.g, %124.h
+            32    %126 = ushr %120, %13 (0x2)
+            32    %127 = ishl %126, %111 (0x4)
+            32x4  %128 = @load_ssbo (%125, %127) (access=readonly|reorderable, align_mul=16, align_offset=0, offset_shift=0)
+            32    %129 = load_const (0x00000080 = 128)
+            32    %130 = iadd %127, %129 (0x80)
+            32x4  %131 = @load_ssbo (%125, %130) (access=readonly|reorderable, align_mul=16, align_offset=0, offset_shift=0)
+            32    %132 = iadd %118, %129 (0x80)
+            32    %133 = iadd %119, %132
+            32    %134 = ushr %133, %13 (0x2)
+            32    %135 = ishl %134, %111 (0x4)
+            32x4  %136 = @load_ssbo (%125, %135) (access=readonly|reorderable, align_mul=16, align_offset=0, offset_shift=0)
+            32    %137 = iadd %135, %129 (0x80)
+            32x4  %138 = @load_ssbo (%125, %137) (access=readonly|reorderable, align_mul=16, align_offset=0, offset_shift=0)
+            32    %139 = fadd %128.x, %128.y
+            32    %140 = fadd %139, %128.z
+            32    %141 = fadd %140, %128.w
+            32    %142 = fadd %131.x, %131.y
+            32    %143 = fadd %142, %131.z
+            32    %144 = fadd %143, %131.w
+            32    %145 = fadd %136.x, %136.y
+            32    %146 = fadd %145, %136.z
+            32    %147 = fadd %146, %136.w
+            32    %148 = fadd %138.x, %138.y
+            32    %149 = fadd %148, %138.z
+            32    %150 = fadd %149, %138.w
+            32    %151 = imul %12, %110
+            32    %152 = iadd %90, %151
+            32    %153 = iadd %152, %115
+            32    %154 = load_const (0x00000090 = 144)
+            32    %155 = imul %153, %154 (0x90)
+            32x4  %156 = vec4 %124.a, %124.b, %124.c, %124.d
+            32    %157 = @load_ssbo (%156, %155) (access=readonly|reorderable, align_mul=16, align_offset=0, offset_shift=0)
+            32    %158 = ishl %103, %11 (0x1)
+            32    %159 = iadd %111 (0x4), %155
+            32    %160 = iadd %159, %158
+            32    %161 = load_const (0xfffffffc = -4 = 4294967292)
+            32    %162 = iand %158, %161 (0xfffffffc)
+            32    %163 = iadd %162, %159
+            32x2  %164 = @load_ssbo (%156, %163) (access=readonly|reorderable, align_mul=4, align_offset=0, offset_shift=0)
+            32    %165 = alignbyte_amd %164.y, %164.x, %160
+            32    %166 = alignbyte_amd %164.y, %164.y, %160
+            32    %167 = iadd %158, %88 (0x8)
+            32    %168 = iadd %159, %167
+            16    %169 = @load_ssbo (%156, %168) (access=readonly|reorderable, align_mul=2, align_offset=0, offset_shift=0)
+            16x2  %170 = unpack_32_2x16 %165
+            16x2  %171 = unpack_32_2x16 %166
+            32    %172 = pack_32_2x16_split %170.x, %171.x
+            32    %173 = u2u32 %169
+            32    %174 = ishl %173, %10 (0xc)
+            32    %175 = ior %174, %173
+            32    %176 = load_const (0x0f0f0f0f = 252645135)
+            32    %177 = iand %175, %176 (0xf0f0f0f)
+            32    %178 = load_const (0xc0c0c0c0 = -1061109568 = 3233857728)
+            32    %179 = iand %172, %178 (0xc0c0c0c0)
+            32    %180 = ushr %179, %13 (0x2)
+            32    %181 = ior %177, %180
+            32    %182 = load_const (0x00000010 = 16)
+            32    %183 = iadd %182 (0x10), %155
+            32    %184 = iadd %183, %106
+            32    %185 = @load_ssbo (%156, %184) (access=readonly|reorderable, align_mul=4, align_offset=0, offset_shift=0)
+            32    %186 = load_const (0x00000040 = 64)
+            32    %187 = iadd %106, %186 (0x40)
+            32    %188 = iadd %183, %187
+            32    %189 = @load_ssbo (%156, %188) (access=readonly|reorderable, align_mul=4, align_offset=0, offset_shift=0)
+            32    %190 = iand %185, %176 (0xf0f0f0f)
+            8x4   %191 = unpack_32_4x8 %190
+            32    %192 = u2f32 %191.w
+            32    %193 = fmul %128.w, %192
+            32    %194 = u2f32 %191.z
+            32    %195 = fmul %128.z, %194
+            32    %196 = fadd %195, %193
+            32    %197 = u2f32 %191.y
+            32    %198 = fmul %128.y, %197
+            32    %199 = fadd %198, %196
+            32    %200 = u2f32 %191.x
+            32    %201 = fmul %128.x, %200
+            32    %202 = fadd %201, %199
+            32    %203 = ushr %185, %111 (0x4)
+            32    %204 = iand %203, %176 (0xf0f0f0f)
+            8x4   %205 = unpack_32_4x8 %204
+            32    %206 = u2f32 %205.w
+            32    %207 = fmul %131.w, %206
+            32    %208 = u2f32 %205.z
+            32    %209 = fmul %131.z, %208
+            32    %210 = fadd %209, %207
+            32    %211 = u2f32 %205.y
+            32    %212 = fmul %131.y, %211
+            32    %213 = fadd %212, %210
+            32    %214 = u2f32 %205.x
+            32    %215 = fmul %131.x, %214
+            32    %216 = fadd %215, %213
+            32    %217 = iand %189, %176 (0xf0f0f0f)
+            8x4   %218 = unpack_32_4x8 %217
+            32    %219 = u2f32 %218.w
+            32    %220 = fmul %136.w, %219
+            32    %221 = u2f32 %218.z
+            32    %222 = fmul %136.z, %221
+            32    %223 = fadd %222, %220
+            32    %224 = u2f32 %218.y
+            32    %225 = fmul %136.y, %224
+            32    %226 = fadd %225, %223
+            32    %227 = u2f32 %218.x
+            32    %228 = fmul %136.x, %227
+            32    %229 = fadd %228, %226
+            32    %230 = ushr %189, %111 (0x4)
+            32    %231 = iand %230, %176 (0xf0f0f0f)
+            8x4   %232 = unpack_32_4x8 %231
+            32    %233 = u2f32 %232.w
+            32    %234 = fmul %138.w, %233
+            32    %235 = u2f32 %232.z
+            32    %236 = fmul %138.z, %235
+            32    %237 = fadd %236, %234
+            32    %238 = u2f32 %232.y
+            32    %239 = fmul %138.y, %238
+            32    %240 = fadd %239, %237
+            32    %241 = u2f32 %232.x
+            32    %242 = fmul %138.x, %241
+            32    %243 = fadd %242, %240
+            8x4   %244 = unpack_32_4x8 %181
+            32    %245 = u2f32 %244.w
+            32    %246 = fmul %150, %245
+            32    %247 = u2f32 %244.z
+            32    %248 = fmul %147, %247
+            32    %249 = fadd %248, %246
+            32    %250 = load_const (0x3f3f3f3f = 1061109567)
+            32    %251 = iand %172, %250 (0x3f3f3f3f)
+            8x4   %252 = unpack_32_4x8 %251
+            32    %253 = u2f32 %252.w
+            32    %254 = fmul %144, %253
+            32    %255 = fadd %254, %249
+            32    %256 = u2f32 %252.z
+            32    %257 = fmul %141, %256
+            32    %258 = fadd %257, %255
+            32    %259 = u2f32 %244.y
+            32    %260 = fmul %243, %259
+            32    %261 = u2f32 %244.x
+            32    %262 = fmul %229, %261
+            32    %263 = fadd %262, %260
+            32    %264 = u2f32 %252.y
+            32    %265 = fmul %216, %264
+            32    %266 = fadd %265, %263
+            32    %267 = u2f32 %252.x
+            32    %268 = fmul %202, %267
+            32    %269 = fadd %268, %266
+            16x2  %270 = unpack_32_2x16 %157
+            32    %271 = f2f32 %270.y
+            32    %272 = fmul %271, %258
+            32    %273 = fsub %114, %272
+            32    %274 = f2f32 %270.x
+            32    %275 = fmul %274, %269
+            32    %276 = fadd %275, %273
+            32    %277 = iadd %12, %11 (0x1)
+            32    %278 = imul %277, %110
+            32    %279 = iadd %90, %278
+            32    %280 = iadd %279, %115
+            32    %281 = imul %280, %154 (0x90)
+            32    %282 = @load_ssbo (%156, %281) (access=readonly|reorderable, align_mul=16, align_offset=0, offset_shift=0)
+            32    %283 = iadd %111 (0x4), %281
+            32    %284 = iadd %283, %158
+            32    %285 = iadd %162, %283
+            32x2  %286 = @load_ssbo (%156, %285) (access=readonly|reorderable, align_mul=4, align_offset=0, offset_shift=0)
+            32    %287 = alignbyte_amd %286.y, %286.x, %284
+            32    %288 = alignbyte_amd %286.y, %286.y, %284
+            32    %289 = iadd %283, %167
+            16    %290 = @load_ssbo (%156, %289) (access=readonly|reorderable, align_mul=2, align_offset=0, offset_shift=0)
+            16x2  %291 = unpack_32_2x16 %287
+            16x2  %292 = unpack_32_2x16 %288
+            32    %293 = pack_32_2x16_split %291.x, %292.x
+            32    %294 = u2u32 %290
+            32    %295 = ishl %294, %10 (0xc)
+            32    %296 = ior %295, %294
+            32    %297 = iand %296, %176 (0xf0f0f0f)
+            32    %298 = iand %293, %178 (0xc0c0c0c0)
+            32    %299 = ushr %298, %13 (0x2)
+            32    %300 = ior %297, %299
+            32    %301 = iadd %182 (0x10), %281
+            32    %302 = iadd %301, %106
+            32    %303 = @load_ssbo (%156, %302) (access=readonly|reorderable, align_mul=4, align_offset=0, offset_shift=0)
+            32    %304 = iadd %301, %187
+            32    %305 = @load_ssbo (%156, %304) (access=readonly|reorderable, align_mul=4, align_offset=0, offset_shift=0)
+            32    %306 = iand %303, %176 (0xf0f0f0f)
+            8x4   %307 = unpack_32_4x8 %306
+            32    %308 = u2f32 %307.w
+            32    %309 = fmul %128.w, %308
+            32    %310 = u2f32 %307.z
+            32    %311 = fmul %128.z, %310
+            32    %312 = fadd %311, %309
+            32    %313 = u2f32 %307.y
+            32    %314 = fmul %128.y, %313
+            32    %315 = fadd %314, %312
+            32    %316 = u2f32 %307.x
+            32    %317 = fmul %128.x, %316
+            32    %318 = fadd %317, %315
+            32    %319 = ushr %303, %111 (0x4)
+            32    %320 = iand %319, %176 (0xf0f0f0f)
+            8x4   %321 = unpack_32_4x8 %320
+            32    %322 = u2f32 %321.w
+            32    %323 = fmul %131.w, %322
+            32    %324 = u2f32 %321.z
+            32    %325 = fmul %131.z, %324
+            32    %326 = fadd %325, %323
+            32    %327 = u2f32 %321.y
+            32    %328 = fmul %131.y, %327
+            32    %329 = fadd %328, %326
+            32    %330 = u2f32 %321.x
+            32    %331 = fmul %131.x, %330
+            32    %332 = fadd %331, %329
+            32    %333 = iand %305, %176 (0xf0f0f0f)
+            8x4   %334 = unpack_32_4x8 %333
+            32    %335 = u2f32 %334.w
+            32    %336 = fmul %136.w, %335
+            32    %337 = u2f32 %334.z
+            32    %338 = fmul %136.z, %337
+            32    %339 = fadd %338, %336
+            32    %340 = u2f32 %334.y
+            32    %341 = fmul %136.y, %340
+            32    %342 = fadd %341, %339
+            32    %343 = u2f32 %334.x
+            32    %344 = fmul %136.x, %343
+            32    %345 = fadd %344, %342
+            32    %346 = ushr %305, %111 (0x4)
+            32    %347 = iand %346, %176 (0xf0f0f0f)
+            8x4   %348 = unpack_32_4x8 %347
+            32    %349 = u2f32 %348.w
+            32    %350 = fmul %138.w, %349
+            32    %351 = u2f32 %348.z
+            32    %352 = fmul %138.z, %351
+            32    %353 = fadd %352, %350
+            32    %354 = u2f32 %348.y
+            32    %355 = fmul %138.y, %354
+            32    %356 = fadd %355, %353
+            32    %357 = u2f32 %348.x
+            32    %358 = fmul %138.x, %357
+            32    %359 = fadd %358, %356
+            8x4   %360 = unpack_32_4x8 %300
+            32    %361 = u2f32 %360.w
+            32    %362 = fmul %150, %361
+            32    %363 = u2f32 %360.z
+            32    %364 = fmul %147, %363
+            32    %365 = fadd %364, %362
+            32    %366 = iand %293, %250 (0x3f3f3f3f)
+            8x4   %367 = unpack_32_4x8 %366
+            32    %368 = u2f32 %367.w
+            32    %369 = fmul %144, %368
+            32    %370 = fadd %369, %365
+            32    %371 = u2f32 %367.z
+            32    %372 = fmul %141, %371
+            32    %373 = fadd %372, %370
+            32    %374 = u2f32 %360.y
+            32    %375 = fmul %359, %374
+            32    %376 = u2f32 %360.x
+            32    %377 = fmul %345, %376
+            32    %378 = fadd %377, %375
+            32    %379 = u2f32 %367.y
+            32    %380 = fmul %332, %379
+            32    %381 = fadd %380, %378
+            32    %382 = u2f32 %367.x
+            32    %383 = fmul %318, %382
+            32    %384 = fadd %383, %381
+            16x2  %385 = unpack_32_2x16 %282
+            32    %386 = f2f32 %385.y
+            32    %387 = fmul %386, %373
+            32    %388 = fsub %113, %387
+            32    %389 = f2f32 %385.x
+            32    %390 = fmul %389, %384
+            32    %391 = fadd %390, %388
+            32    %392 = iadd %115, %111 (0x4)
+                         // succs: b5
+        }
+        block b9:    // preds: b6
+        32    %393 = @reduce (%114) (reduction_op=fadd, cluster_size=0)
+        32    %394 = @reduce (%113) (reduction_op=fadd, cluster_size=0)
+        64    %395 = load_const (0x0000000000000001 = 0.000000)
+        1     %396 = @inverse_ballot (%395 (0x1))
+                     // succs: b10 b23
+        if %396 {
+            block b10:   // preds: b9
+            32    %397 = @load_scalar_arg_amd (base=7, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=0)
+            1     %398 = bitnz %397, %4 (0x0)
+                         // succs: b11 b12
+            if %398 {
+                block b11:   // preds: b10
+                32    %399 = imul %91, %20
+                32    %400 = iadd %399, %12
+                32    %401 = @load_scalar_arg_amd (base=1, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=2)
+                32    %402 = load_const (0xffff8000 = -32768 = 4294934528)
+                64    %403 = pack_64_2x32_split %401, %402 (0xffff8000)
+                32x4  %404 = @load_global_amd (%403, %4 (0x0)) (base=48, access=readonly|reorderable|smem-amd, align_mul=4, align_offset=0)
+                32    %405 = ishl %400, %13 (0x2)
+                32    %406 = @load_ssbo (%404, %405) (access=readonly|reorderable|smem-amd, align_mul=4, align_offset=0, offset_shift=0)
+                32    %407 = fadd %393, %406
+                             // succs: b13
+            } else {
+                block b12:  // preds: b10, succs: b13
+            }
+            block b13:   // preds: b11 b12
+            32    %408 = phi b11: %407, b12: %393
+            1     %409 = bitnz %397, %11 (0x1)
+                         // succs: b14 b15
+            if %409 {
+                block b14:   // preds: b13
+                32    %410 = imul %91, %20
+                32    %411 = iadd %410, %12
+                32    %412 = @load_scalar_arg_amd (base=1, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=2)
+                32    %413 = load_const (0xffff8000 = -32768 = 4294934528)
+                64    %414 = pack_64_2x32_split %412, %413 (0xffff8000)
+                32x4  %415 = @load_global_amd (%414, %4 (0x0)) (base=64, access=readonly|reorderable|smem-amd, align_mul=4, align_offset=0)
+                32    %416 = ishl %411, %13 (0x2)
+                32    %417 = @load_ssbo (%415, %416) (access=readonly|reorderable|smem-amd, align_mul=4, align_offset=0, offset_shift=0)
+                32    %418 = fadd %408, %417
+                             // succs: b16
+            } else {
+                block b15:  // preds: b13, succs: b16
+            }
+            block b16:   // preds: b14 b15
+            32    %419 = phi b14: %418, b15: %408
+            32    %420 = imul %91, %20
+            32    %421 = iadd %420, %12
+            32    %422 = @load_scalar_arg_amd (base=1, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=2)
+            32    %423 = load_const (0xffff8000 = -32768 = 4294934528)
+            64    %424 = pack_64_2x32_split %422, %423 (0xffff8000)
+            32x4  %425 = @load_global_amd (%424, %4 (0x0)) (base=32, access=readonly|reorderable|smem-amd, align_mul=4, align_offset=0)
+            32    %426 = ishl %421, %13 (0x2)
+                         @store_ssbo (%419, %425, %426) (wrmask=x, access=writeonly, align_mul=4, align_offset=0, offset_shift=0)
+                         // succs: b17 b18
+            if %398 {
+                block b17:   // preds: b16
+                32x4  %427 = @load_global_amd (%424, %4 (0x0)) (base=48, access=readonly|reorderable|smem-amd, align_mul=4, align_offset=0)
+                32    %428 = iadd %426, %111 (0x4)
+                32    %429 = @load_ssbo (%427, %428) (access=readonly|reorderable|smem-amd, align_mul=4, align_offset=0, offset_shift=0)
+                32    %430 = fadd %394, %429
+                             // succs: b19
+            } else {
+                block b18:  // preds: b16, succs: b19
+            }
+            block b19:   // preds: b17 b18
+            32    %431 = phi b17: %430, b18: %394
+                         // succs: b20 b21
+            if %409 {
+                block b20:   // preds: b19
+                32x4  %432 = @load_global_amd (%424, %4 (0x0)) (base=64, access=readonly|reorderable|smem-amd, align_mul=4, align_offset=0)
+                32    %433 = iadd %426, %111 (0x4)
+                32    %434 = @load_ssbo (%432, %433) (access=readonly|reorderable|smem-amd, align_mul=4, align_offset=0, offset_shift=0)
+                32    %435 = fadd %431, %434
+                             // succs: b22
+            } else {
+                block b21:  // preds: b19, succs: b22
+            }
+            block b22:   // preds: b20 b21
+            32    %436 = phi b20: %435, b21: %431
+            32    %437 = iadd %426, %111 (0x4)
+                         @store_ssbo (%436, %425, %437) (wrmask=x, access=writeonly, align_mul=4, align_offset=0, offset_shift=0)
+                         // succs: b24
+        } else {
+            block b23:  // preds: b9, succs: b24
+        }
+        block b24:  // preds: b22 b23, succs: b67
+    } else {
+        block b25:   // preds: b0
+        1     %438 = ult %12, %9
+                     // succs: b26 b65
+        if %438 {
+            block b26:   // preds: b25
+            32    %439 = isub %9, %12
+            32    %440 = @load_scalar_arg_amd (base=8, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=0)
+            32    %441 = @load_scalar_arg_amd (base=9, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=0)
+            32    %442 = @load_scalar_arg_amd (base=10, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=0)
+            32    %443 = @load_scalar_arg_amd (base=11, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=0)
+            32    %444 = iadd %1, %440
+            1     %445 = ine %444, %4 (0x0)
+                         // succs: b27 b28
+            if %445 {
+                block b27:   // preds: b26
+                32    %446 = load_const (0x4f7ffffe = 4.294967e+09)
+                32    %447 = u2f32 %442 // exact
+                32    %448 = frcp %447 // exact
+                32    %449 = fmul %448, %446 (4.294967e+09) // exact
+                32    %450 = f2u32 %449 // exact
+                32    %451 = imul %442, %450
+                32    %452 = isub %4 (0x0), %451
+                32    %453 = umul_high %450, %452
+                32    %454 = iadd %450, %453
+                32    %455 = umul_high %444, %454
+                32    %456 = imul %455, %442
+                32    %457 = isub %444, %456
+                1     %458 = uge %457, %442
+                32    %459 = b2i32 %458
+                32    %460 = iadd %455, %459
+                32    %461 = isub %457, %442
+                32    %462 = bcsel %458, %461, %457
+                1     %463 = uge %462, %442
+                32    %464 = b2i32 %463
+                32    %465 = iadd %460, %464
+                32    %466 = isub %462, %442
+                32    %467 = bcsel %463, %466, %462
+                32    %468 = @load_scalar_arg_amd (base=12, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=0)
+                32    %469 = u2f32 %468 // exact
+                32    %470 = frcp %469 // exact
+                32    %471 = fmul %470, %446 (4.294967e+09) // exact
+                32    %472 = f2u32 %471 // exact
+                32    %473 = imul %468, %472
+                32    %474 = isub %4 (0x0), %473
+                32    %475 = umul_high %472, %474
+                32    %476 = iadd %472, %475
+                32    %477 = umul_high %465, %476
+                32    %478 = imul %477, %468
+                32    %479 = isub %465, %478
+                1     %480 = uge %479, %468
+                32    %481 = b2i32 %480
+                32    %482 = iadd %477, %481
+                32    %483 = isub %479, %468
+                32    %484 = bcsel %480, %483, %479
+                1     %485 = uge %484, %468
+                32    %486 = b2i32 %485
+                32    %487 = iadd %482, %486
+                32    %488 = u2f32 %443 // exact
+                32    %489 = frcp %488 // exact
+                32    %490 = fmul %489, %446 (4.294967e+09) // exact
+                32    %491 = f2u32 %490 // exact
+                32    %492 = imul %443, %491
+                32    %493 = isub %4 (0x0), %492
+                32    %494 = umul_high %491, %493
+                32    %495 = iadd %491, %494
+                32    %496 = umul_high %467, %495
+                32    %497 = imul %496, %443
+                32    %498 = isub %467, %497
+                1     %499 = uge %498, %443
+                32    %500 = b2i32 %499
+                32    %501 = iadd %496, %500
+                32    %502 = isub %498, %443
+                32    %503 = bcsel %499, %502, %498
+                1     %504 = uge %503, %443
+                32    %505 = b2i32 %504
+                32    %506 = iadd %501, %505
+                32    %507 = imul %487, %441
+                32    %508 = iadd %507, %506
+                             // succs: b29
+            } else {
+                block b28:  // preds: b26, succs: b29
+            }
+            block b29:   // preds: b27 b28
+            32    %509 = phi b27: %508, b28: %4 (0x0)
+            32    %510 = @load_scalar_arg_amd (base=4, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=0)
+            32    %511 = @load_scalar_arg_amd (base=5, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=0)
+            32    %512 = load_const (0x00000008)
+            32    %513 = ushr %510, %512 (0x8)
+            32    %514 = imul %509, %513
+            32    %515 = @load_scalar_arg_amd (base=6, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=0)
+            32    %516 = @load_scalar_arg_amd (base=2, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=0)
+            32    %517 = @load_vector_arg_amd (base=18, arg_upper_bound_u32_amd=63, arg_num_lsb_zero=0)
+            32    %518 = iand %10 (0xc), %517
+            32    %519 = load_const (0x0000000f = 15)
+            32    %520 = iand %517, %519 (0xf)
+            32    %521 = isub %520, %518
+            32    %522 = ishl %521, %11 (0x1)
+            32    %523 = ubfe %520, %13 (0x2), %11 (0x1)
+            32    %524 = iadd %522, %523
+            32    %525 = load_const (0x00000005)
+            32    %526 = load_const (0x00000003)
+            32    %527 = ushr %520, %526 (0x3)
+            32    %528 = ishl %527, %525 (0x5)
+            32    %529 = ishl %524, %13 (0x2)
+            32    %530 = iadd %528, %529
+            32    %531 = load_const (0x00000006)
+            32    %532 = ishl %527, %531 (0x6)
+            32    %533 = iadd %532, %529
+            32    %534 = ushr %516, %512 (0x8)
+            32    %535 = load_const (0x00000004)
+            32    %536 = ushr %517, %535 (0x4)
+                         // succs: b30
+            loop  // unroll {
+                block b30:   // preds: b29 b39
+                32    %537 = phi b29: %4 (0x0), b39: %818
+                32    %538 = phi b29: %4 (0x0), b39: %819
+                32    %539 = phi b29: %536, b39: %820
+                1     %540 = uge %539, %534
+                             // succs: b31 b32
+                if %540 {
+                    block b31:// preds: b30
+                    break
+                    // succs: b40
+                } else {
+                    block b32:  // preds: b30, succs: b33
+                }
+                block b33:   // preds: b32
+                32    %541 = ishl %539, %512 (0x8)
+                32    %542 = iadd %541, %533
+                32    %543 = imul %511, %444
+                32    %544 = iadd %543, %542
+                32    %545 = @load_scalar_arg_amd (base=1, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=2)
+                32    %546 = load_const (0xffff8000 = -32768 = 4294934528)
+                64    %547 = pack_64_2x32_split %545, %546 (0xffff8000)
+                32x4  %548 = @load_global_amd (%547, %4 (0x0)) (base=16, access=readonly|reorderable|speculatable|smem-amd, align_mul=4, align_offset=0)
+                32    %549 = ushr %544, %13 (0x2)
+                32    %550 = ishl %549, %535 (0x4)
+                32x4  %551 = @load_ssbo (%548, %550) (access=readonly|reorderable, align_mul=16, align_offset=0, offset_shift=0)
+                32    %552 = load_const (0x00000080 = 128)
+                32    %553 = iadd %550, %552 (0x80)
+                32x4  %554 = @load_ssbo (%548, %553) (access=readonly|reorderable, align_mul=16, align_offset=0, offset_shift=0)
+                32    %555 = iadd %542, %552 (0x80)
+                32    %556 = iadd %543, %555
+                32    %557 = ushr %556, %13 (0x2)
+                32    %558 = ishl %557, %535 (0x4)
+                32x4  %559 = @load_ssbo (%548, %558) (access=readonly|reorderable, align_mul=16, align_offset=0, offset_shift=0)
+                32    %560 = iadd %558, %552 (0x80)
+                32x4  %561 = @load_ssbo (%548, %560) (access=readonly|reorderable, align_mul=16, align_offset=0, offset_shift=0)
+                32    %562 = fadd %551.x, %551.y
+                32    %563 = fadd %562, %551.z
+                32    %564 = fadd %563, %551.w
+                32    %565 = fadd %554.x, %554.y
+                32    %566 = fadd %565, %554.z
+                32    %567 = fadd %566, %554.w
+                32    %568 = fadd %559.x, %559.y
+                32    %569 = fadd %568, %559.z
+                32    %570 = fadd %569, %559.w
+                32    %571 = fadd %561.x, %561.y
+                32    %572 = fadd %571, %561.z
+                32    %573 = fadd %572, %561.w
+                1     %574 = ine %439, %4 (0x0)
+                             // succs: b34 b38
+                if %574 {
+                    block b34:   // preds: b33
+                    32    %575 = imul %12, %534
+                    32    %576 = iadd %514, %575
+                    32    %577 = iadd %576, %539
+                    32x4  %578 = @load_global_amd (%547, %4 (0x0)) (base=0, access=readonly|reorderable|speculatable|smem-amd, align_mul=4, align_offset=0)
+                    32    %579 = load_const (0x00000090 = 144)
+                    32    %580 = imul %577, %579 (0x90)
+                    32    %581 = @load_ssbo (%578, %580) (access=readonly|reorderable, align_mul=16, align_offset=0, offset_shift=0)
+                    32    %582 = ishl %527, %11 (0x1)
+                    32    %583 = iadd %535 (0x4), %580
+                    32    %584 = iadd %583, %582
+                    32    %585 = load_const (0xfffffffc = -4 = 4294967292)
+                    32    %586 = iand %582, %585 (0xfffffffc)
+                    32    %587 = iadd %586, %583
+                    32x2  %588 = @load_ssbo (%578, %587) (access=readonly|reorderable, align_mul=4, align_offset=0, offset_shift=0)
+                    32    %589 = alignbyte_amd %588.y, %588.x, %584
+                    32    %590 = alignbyte_amd %588.y, %588.y, %584
+                    32    %591 = iadd %582, %512 (0x8)
+                    32    %592 = iadd %583, %591
+                    16    %593 = @load_ssbo (%578, %592) (access=readonly|reorderable, align_mul=2, align_offset=0, offset_shift=0)
+                    16x2  %594 = unpack_32_2x16 %589
+                    16x2  %595 = unpack_32_2x16 %590
+                    32    %596 = pack_32_2x16_split %594.x, %595.x
+                    32    %597 = u2u32 %593
+                    32    %598 = ishl %597, %10 (0xc)
+                    32    %599 = ior %598, %597
+                    32    %600 = load_const (0x0f0f0f0f = 252645135)
+                    32    %601 = iand %599, %600 (0xf0f0f0f)
+                    32    %602 = load_const (0xc0c0c0c0 = -1061109568 = 3233857728)
+                    32    %603 = iand %596, %602 (0xc0c0c0c0)
+                    32    %604 = ushr %603, %13 (0x2)
+                    32    %605 = ior %601, %604
+                    32    %606 = load_const (0x00000010 = 16)
+                    32    %607 = iadd %606 (0x10), %580
+                    32    %608 = iadd %607, %530
+                    32    %609 = @load_ssbo (%578, %608) (access=readonly|reorderable, align_mul=4, align_offset=0, offset_shift=0)
+                    32    %610 = load_const (0x00000040 = 64)
+                    32    %611 = iadd %530, %610 (0x40)
+                    32    %612 = iadd %607, %611
+                    32    %613 = @load_ssbo (%578, %612) (access=readonly|reorderable, align_mul=4, align_offset=0, offset_shift=0)
+                    32    %614 = iand %609, %600 (0xf0f0f0f)
+                    8x4   %615 = unpack_32_4x8 %614
+                    32    %616 = u2f32 %615.w
+                    32    %617 = fmul %551.w, %616
+                    32    %618 = u2f32 %615.z
+                    32    %619 = fmul %551.z, %618
+                    32    %620 = fadd %619, %617
+                    32    %621 = u2f32 %615.y
+                    32    %622 = fmul %551.y, %621
+                    32    %623 = fadd %622, %620
+                    32    %624 = u2f32 %615.x
+                    32    %625 = fmul %551.x, %624
+                    32    %626 = fadd %625, %623
+                    32    %627 = ushr %609, %535 (0x4)
+                    32    %628 = iand %627, %600 (0xf0f0f0f)
+                    8x4   %629 = unpack_32_4x8 %628
+                    32    %630 = u2f32 %629.w
+                    32    %631 = fmul %554.w, %630
+                    32    %632 = u2f32 %629.z
+                    32    %633 = fmul %554.z, %632
+                    32    %634 = fadd %633, %631
+                    32    %635 = u2f32 %629.y
+                    32    %636 = fmul %554.y, %635
+                    32    %637 = fadd %636, %634
+                    32    %638 = u2f32 %629.x
+                    32    %639 = fmul %554.x, %638
+                    32    %640 = fadd %639, %637
+                    32    %641 = iand %613, %600 (0xf0f0f0f)
+                    8x4   %642 = unpack_32_4x8 %641
+                    32    %643 = u2f32 %642.w
+                    32    %644 = fmul %559.w, %643
+                    32    %645 = u2f32 %642.z
+                    32    %646 = fmul %559.z, %645
+                    32    %647 = fadd %646, %644
+                    32    %648 = u2f32 %642.y
+                    32    %649 = fmul %559.y, %648
+                    32    %650 = fadd %649, %647
+                    32    %651 = u2f32 %642.x
+                    32    %652 = fmul %559.x, %651
+                    32    %653 = fadd %652, %650
+                    32    %654 = ushr %613, %535 (0x4)
+                    32    %655 = iand %654, %600 (0xf0f0f0f)
+                    8x4   %656 = unpack_32_4x8 %655
+                    32    %657 = u2f32 %656.w
+                    32    %658 = fmul %561.w, %657
+                    32    %659 = u2f32 %656.z
+                    32    %660 = fmul %561.z, %659
+                    32    %661 = fadd %660, %658
+                    32    %662 = u2f32 %656.y
+                    32    %663 = fmul %561.y, %662
+                    32    %664 = fadd %663, %661
+                    32    %665 = u2f32 %656.x
+                    32    %666 = fmul %561.x, %665
+                    32    %667 = fadd %666, %664
+                    8x4   %668 = unpack_32_4x8 %605
+                    32    %669 = u2f32 %668.w
+                    32    %670 = fmul %573, %669
+                    32    %671 = u2f32 %668.z
+                    32    %672 = fmul %570, %671
+                    32    %673 = fadd %672, %670
+                    32    %674 = load_const (0x3f3f3f3f = 1061109567)
+                    32    %675 = iand %596, %674 (0x3f3f3f3f)
+                    8x4   %676 = unpack_32_4x8 %675
+                    32    %677 = u2f32 %676.w
+                    32    %678 = fmul %567, %677
+                    32    %679 = fadd %678, %673
+                    32    %680 = u2f32 %676.z
+                    32    %681 = fmul %564, %680
+                    32    %682 = fadd %681, %679
+                    32    %683 = u2f32 %668.y
+                    32    %684 = fmul %667, %683
+                    32    %685 = u2f32 %668.x
+                    32    %686 = fmul %653, %685
+                    32    %687 = fadd %686, %684
+                    32    %688 = u2f32 %676.y
+                    32    %689 = fmul %640, %688
+                    32    %690 = fadd %689, %687
+                    32    %691 = u2f32 %676.x
+                    32    %692 = fmul %626, %691
+                    32    %693 = fadd %692, %690
+                    16x2  %694 = unpack_32_2x16 %581
+                    32    %695 = f2f32 %694.y
+                    32    %696 = fmul %695, %682
+                    32    %697 = fsub %538, %696
+                    32    %698 = f2f32 %694.x
+                    32    %699 = fmul %698, %693
+                    32    %700 = fadd %699, %697
+                    1     %701 = ult %11 (0x1), %439
+                                 // succs: b35 b36
+                    if %701 {
+                        block b35:   // preds: b34
+                        32    %702 = iadd %12, %11 (0x1)
+                        32    %703 = imul %702, %534
+                        32    %704 = iadd %514, %703
+                        32    %705 = iadd %704, %539
+                        32    %706 = imul %705, %579 (0x90)
+                        32    %707 = @load_ssbo (%578, %706) (access=readonly|reorderable, align_mul=16, align_offset=0, offset_shift=0)
+                        32    %708 = iadd %535 (0x4), %706
+                        32    %709 = iadd %708, %582
+                        32    %710 = iadd %586, %708
+                        32x2  %711 = @load_ssbo (%578, %710) (access=readonly|reorderable, align_mul=4, align_offset=0, offset_shift=0)
+                        32    %712 = alignbyte_amd %711.y, %711.x, %709
+                        32    %713 = alignbyte_amd %711.y, %711.y, %709
+                        32    %714 = iadd %708, %591
+                        16    %715 = @load_ssbo (%578, %714) (access=readonly|reorderable, align_mul=2, align_offset=0, offset_shift=0)
+                        16x2  %716 = unpack_32_2x16 %712
+                        16x2  %717 = unpack_32_2x16 %713
+                        32    %718 = pack_32_2x16_split %716.x, %717.x
+                        32    %719 = u2u32 %715
+                        32    %720 = ishl %719, %10 (0xc)
+                        32    %721 = ior %720, %719
+                        32    %722 = iand %721, %600 (0xf0f0f0f)
+                        32    %723 = iand %718, %602 (0xc0c0c0c0)
+                        32    %724 = ushr %723, %13 (0x2)
+                        32    %725 = ior %722, %724
+                        32    %726 = iadd %606 (0x10), %706
+                        32    %727 = iadd %726, %530
+                        32    %728 = @load_ssbo (%578, %727) (access=readonly|reorderable, align_mul=4, align_offset=0, offset_shift=0)
+                        32    %729 = iadd %726, %611
+                        32    %730 = @load_ssbo (%578, %729) (access=readonly|reorderable, align_mul=4, align_offset=0, offset_shift=0)
+                        32    %731 = iand %728, %600 (0xf0f0f0f)
+                        8x4   %732 = unpack_32_4x8 %731
+                        32    %733 = u2f32 %732.w
+                        32    %734 = fmul %551.w, %733
+                        32    %735 = u2f32 %732.z
+                        32    %736 = fmul %551.z, %735
+                        32    %737 = fadd %736, %734
+                        32    %738 = u2f32 %732.y
+                        32    %739 = fmul %551.y, %738
+                        32    %740 = fadd %739, %737
+                        32    %741 = u2f32 %732.x
+                        32    %742 = fmul %551.x, %741
+                        32    %743 = fadd %742, %740
+                        32    %744 = ushr %728, %535 (0x4)
+                        32    %745 = iand %744, %600 (0xf0f0f0f)
+                        8x4   %746 = unpack_32_4x8 %745
+                        32    %747 = u2f32 %746.w
+                        32    %748 = fmul %554.w, %747
+                        32    %749 = u2f32 %746.z
+                        32    %750 = fmul %554.z, %749
+                        32    %751 = fadd %750, %748
+                        32    %752 = u2f32 %746.y
+                        32    %753 = fmul %554.y, %752
+                        32    %754 = fadd %753, %751
+                        32    %755 = u2f32 %746.x
+                        32    %756 = fmul %554.x, %755
+                        32    %757 = fadd %756, %754
+                        32    %758 = iand %730, %600 (0xf0f0f0f)
+                        8x4   %759 = unpack_32_4x8 %758
+                        32    %760 = u2f32 %759.w
+                        32    %761 = fmul %559.w, %760
+                        32    %762 = u2f32 %759.z
+                        32    %763 = fmul %559.z, %762
+                        32    %764 = fadd %763, %761
+                        32    %765 = u2f32 %759.y
+                        32    %766 = fmul %559.y, %765
+                        32    %767 = fadd %766, %764
+                        32    %768 = u2f32 %759.x
+                        32    %769 = fmul %559.x, %768
+                        32    %770 = fadd %769, %767
+                        32    %771 = ushr %730, %535 (0x4)
+                        32    %772 = iand %771, %600 (0xf0f0f0f)
+                        8x4   %773 = unpack_32_4x8 %772
+                        32    %774 = u2f32 %773.w
+                        32    %775 = fmul %561.w, %774
+                        32    %776 = u2f32 %773.z
+                        32    %777 = fmul %561.z, %776
+                        32    %778 = fadd %777, %775
+                        32    %779 = u2f32 %773.y
+                        32    %780 = fmul %561.y, %779
+                        32    %781 = fadd %780, %778
+                        32    %782 = u2f32 %773.x
+                        32    %783 = fmul %561.x, %782
+                        32    %784 = fadd %783, %781
+                        8x4   %785 = unpack_32_4x8 %725
+                        32    %786 = u2f32 %785.w
+                        32    %787 = fmul %573, %786
+                        32    %788 = u2f32 %785.z
+                        32    %789 = fmul %570, %788
+                        32    %790 = fadd %789, %787
+                        32    %791 = iand %718, %674 (0x3f3f3f3f)
+                        8x4   %792 = unpack_32_4x8 %791
+                        32    %793 = u2f32 %792.w
+                        32    %794 = fmul %567, %793
+                        32    %795 = fadd %794, %790
+                        32    %796 = u2f32 %792.z
+                        32    %797 = fmul %564, %796
+                        32    %798 = fadd %797, %795
+                        32    %799 = u2f32 %785.y
+                        32    %800 = fmul %784, %799
+                        32    %801 = u2f32 %785.x
+                        32    %802 = fmul %770, %801
+                        32    %803 = fadd %802, %800
+                        32    %804 = u2f32 %792.y
+                        32    %805 = fmul %757, %804
+                        32    %806 = fadd %805, %803
+                        32    %807 = u2f32 %792.x
+                        32    %808 = fmul %743, %807
+                        32    %809 = fadd %808, %806
+                        16x2  %810 = unpack_32_2x16 %707
+                        32    %811 = f2f32 %810.y
+                        32    %812 = fmul %811, %798
+                        32    %813 = fsub %537, %812
+                        32    %814 = f2f32 %810.x
+                        32    %815 = fmul %814, %809
+                        32    %816 = fadd %815, %813
+                                     // succs: b37
+                    } else {
+                        block b36:  // preds: b34, succs: b37
+                    }
+                    block b37:   // preds: b35 b36
+                    32    %817 = phi b35: %816, b36: %537
+                                 // succs: b39
+                } else {
+                    block b38:  // preds: b33, succs: b39
+                }
+                block b39:   // preds: b37 b38
+                32    %818 = phi b37: %817, b38: %537
+                32    %819 = phi b37: %700, b38: %538
+                32    %820 = iadd %539, %535 (0x4)
+                             // succs: b30
+            }
+            block b40:   // preds: b31
+            1     %821 = ine %439, %4 (0x0)
+                         // succs: b41 b45
+            if %821 {
+                block b41:   // preds: b40
+                32    %822 = @reduce (%538) (reduction_op=fadd, cluster_size=0)
+                1     %823 = ult %11 (0x1), %439
+                             // succs: b42 b43
+                if %823 {
+                    block b42:   // preds: b41
+                    32    %824 = @reduce (%537) (reduction_op=fadd, cluster_size=0)
+                                 // succs: b44
+                } else {
+                    block b43:  // preds: b41, succs: b44
+                }
+                block b44:   // preds: b42 b43
+                32    %825 = phi b42: %824, b43: %537
+                             // succs: b46
+            } else {
+                block b45:  // preds: b40, succs: b46
+            }
+            block b46:   // preds: b44 b45
+            32    %826 = phi b44: %825, b45: %537
+            32    %827 = phi b44: %822, b45: %538
+            64    %828 = load_const (0x0000000000000001 = 0.000000)
+            1     %829 = @inverse_ballot (%828 (0x1))
+            1     %830 = iand %821, %829
+                         // succs: b47 b63
+            if %830 {
+                block b47:   // preds: b46
+                32    %831 = @load_scalar_arg_amd (base=7, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=0)
+                1     %832 = bitnz %831, %4 (0x0)
+                             // succs: b48 b49
+                if %832 {
+                    block b48:   // preds: b47
+                    32    %833 = imul %515, %444
+                    32    %834 = iadd %833, %12
+                    32    %835 = @load_scalar_arg_amd (base=1, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=2)
+                    32    %836 = load_const (0xffff8000 = -32768 = 4294934528)
+                    64    %837 = pack_64_2x32_split %835, %836 (0xffff8000)
+                    32x4  %838 = @load_global_amd (%837, %4 (0x0)) (base=48, access=readonly|reorderable|smem-amd, align_mul=4, align_offset=0)
+                    32    %839 = ishl %834, %13 (0x2)
+                    32    %840 = @load_ssbo (%838, %839) (access=readonly|reorderable|smem-amd, align_mul=4, align_offset=0, offset_shift=0)
+                    32    %841 = fadd %827, %840
+                                 // succs: b50
+                } else {
+                    block b49:  // preds: b47, succs: b50
+                }
+                block b50:   // preds: b48 b49
+                32    %842 = phi b48: %841, b49: %827
+                1     %843 = bitnz %831, %11 (0x1)
+                             // succs: b51 b52
+                if %843 {
+                    block b51:   // preds: b50
+                    32    %844 = imul %515, %444
+                    32    %845 = iadd %844, %12
+                    32    %846 = @load_scalar_arg_amd (base=1, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=2)
+                    32    %847 = load_const (0xffff8000 = -32768 = 4294934528)
+                    64    %848 = pack_64_2x32_split %846, %847 (0xffff8000)
+                    32x4  %849 = @load_global_amd (%848, %4 (0x0)) (base=64, access=readonly|reorderable|smem-amd, align_mul=4, align_offset=0)
+                    32    %850 = ishl %845, %13 (0x2)
+                    32    %851 = @load_ssbo (%849, %850) (access=readonly|reorderable|smem-amd, align_mul=4, align_offset=0, offset_shift=0)
+                    32    %852 = fadd %842, %851
+                                 // succs: b53
+                } else {
+                    block b52:  // preds: b50, succs: b53
+                }
+                block b53:   // preds: b51 b52
+                32    %853 = phi b51: %852, b52: %842
+                32    %854 = imul %515, %444
+                32    %855 = iadd %854, %12
+                32    %856 = @load_scalar_arg_amd (base=1, arg_upper_bound_u32_amd=0, arg_num_lsb_zero=2)
+                32    %857 = load_const (0xffff8000 = -32768 = 4294934528)
+                64    %858 = pack_64_2x32_split %856, %857 (0xffff8000)
+                32x4  %859 = @load_global_amd (%858, %4 (0x0)) (base=32, access=readonly|reorderable|smem-amd, align_mul=4, align_offset=0)
+                32    %860 = ishl %855, %13 (0x2)
+                             @store_ssbo (%853, %859, %860) (wrmask=x, access=writeonly, align_mul=4, align_offset=0, offset_shift=0)
+                1     %861 = ult %11 (0x1), %439
+                             // succs: b54 b61
+                if %861 {
+                    block b54:  // preds: b53, succs: b55 b56
+                    if %832 {
+                        block b55:   // preds: b54
+                        32x4  %862 = @load_global_amd (%858, %4 (0x0)) (base=48, access=readonly|reorderable|smem-amd, align_mul=4, align_offset=0)
+                        32    %863 = iadd %860, %535 (0x4)
+                        32    %864 = @load_ssbo (%862, %863) (access=readonly|reorderable|smem-amd, align_mul=4, align_offset=0, offset_shift=0)
+                        32    %865 = fadd %826, %864
+                                     // succs: b57
+                    } else {
+                        block b56:  // preds: b54, succs: b57
+                    }
+                    block b57:   // preds: b55 b56
+                    32    %866 = phi b55: %865, b56: %826
+                                 // succs: b58 b59
+                    if %843 {
+                        block b58:   // preds: b57
+                        32x4  %867 = @load_global_amd (%858, %4 (0x0)) (base=64, access=readonly|reorderable|smem-amd, align_mul=4, align_offset=0)
+                        32    %868 = iadd %860, %535 (0x4)
+                        32    %869 = @load_ssbo (%867, %868) (access=readonly|reorderable|smem-amd, align_mul=4, align_offset=0, offset_shift=0)
+                        32    %870 = fadd %866, %869
+                                     // succs: b60
+                    } else {
+                        block b59:  // preds: b57, succs: b60
+                    }
+                    block b60:   // preds: b58 b59
+                    32    %871 = phi b58: %870, b59: %866
+                    32    %872 = iadd %860, %535 (0x4)
+                                 @store_ssbo (%871, %859, %872) (wrmask=x, access=writeonly, align_mul=4, align_offset=0, offset_shift=0)
+                                 // succs: b62
+                } else {
+                    block b61:  // preds: b53, succs: b62
+                }
+                block b62:  // preds: b60 b61, succs: b64
+            } else {
+                block b63:  // preds: b46, succs: b64
+            }
+            block b64:  // preds: b62 b63, succs: b66
+        } else {
+            block b65:  // preds: b25, succs: b66
+        }
+        block b66:  // preds: b64 b65, succs: b67
+    }
+    block b67:  // preds: b24 b66, succs: b68
+    block b68:
+}
+

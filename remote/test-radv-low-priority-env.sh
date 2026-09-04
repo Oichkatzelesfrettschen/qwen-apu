@@ -155,6 +155,56 @@ serving_plain_output=$(GGML_VK_PIPELINE_CENSUS=stale QWEN_VULKAN_PROFILE=low-asy
     "$wrapper" sh -c 'printf "census=%s\n" "${GGML_VK_PIPELINE_CENSUS-unset}"')
 printf '%s\n' "$serving_plain_output" | grep -Fx 'census=unset' >/dev/null
 
+# The Q4_K variant key reaches a serving profile, since the arm and its control
+# are two pipelines of one executable and the comparison is read at the profile
+# the appliance serves under. An ambient GGML_VK_Q4K_VARIANT is scrubbed on
+# every profile and QWEN_Q4K_VARIANT is the one route past that scrub, so a
+# stale name cannot decide which mat-vec a launch creates.
+for serving_profile in paced-60 low-serialized low-async custom; do
+    # The nested shell expands its own runtime environment after the wrapper runs.
+    # shellcheck disable=SC2016
+    variant_output=$(GGML_VK_Q4K_VARIANT=e4/4 QWEN_Q4K_VARIANT=e4-scale/8 \
+        QWEN_VULKAN_PROFILE=$serving_profile \
+        "$wrapper" sh -c 'printf "variant=%s\n" "${GGML_VK_Q4K_VARIANT-unset}"')
+    if ! printf '%s\n' "$variant_output" | grep -Fx 'variant=e4-scale/8' >/dev/null; then
+        printf 'the %s profile did not carry QWEN_Q4K_VARIANT: %s\n' \
+            "$serving_profile" "$variant_output" >&2
+        exit 1
+    fi
+done
+# shellcheck disable=SC2016
+variant_ambient_output=$(GGML_VK_Q4K_VARIANT=e4/4 QWEN_VULKAN_PROFILE=low-async \
+    "$wrapper" sh -c 'printf "variant=%s\n" "${GGML_VK_Q4K_VARIANT-unset}"')
+printf '%s\n' "$variant_ambient_output" | grep -Fx 'variant=unset' >/dev/null
+# A value outside the admitted set names an arm the build cannot create, and the
+# wrapper refuses it while the argv is still readable rather than letting the
+# server end the load at pipeline creation.
+variant_status=0
+variant_error=$(QWEN_Q4K_VARIANT=e5-scale/4 QWEN_VULKAN_PROFILE=low-async \
+    "$wrapper" true 2>&1 >/dev/null) || variant_status=$?
+if [ "$variant_status" -ne 2 ]; then
+    printf 'RADV environment wrapper accepted QWEN_Q4K_VARIANT=e5-scale/4\n' >&2
+    exit 1
+fi
+printf '%s\n' "$variant_error" | grep -Fx \
+    'QWEN_Q4K_VARIANT is e4, e4-scale, or e4-scale-licm over /2, /4, or /8: e5-scale/4' >/dev/null
+variant_status=0
+QWEN_Q4K_VARIANT=e4-scale-licm/16 QWEN_VULKAN_PROFILE=low-async "$wrapper" true \
+    >/dev/null 2>/dev/null || variant_status=$?
+if [ "$variant_status" -ne 2 ]; then
+    printf 'RADV environment wrapper accepted QWEN_Q4K_VARIANT=e4-scale-licm/16\n' >&2
+    exit 1
+fi
+# The key states the whole tuple, so an algorithm without a row count leaves the
+# shape at whatever the AMD_GCN branch selected under a name claiming an arm.
+variant_status=0
+QWEN_Q4K_VARIANT=e4-scale-licm QWEN_VULKAN_PROFILE=low-async "$wrapper" true \
+    >/dev/null 2>/dev/null || variant_status=$?
+if [ "$variant_status" -ne 2 ]; then
+    printf 'RADV environment wrapper accepted a row-less QWEN_Q4K_VARIANT\n' >&2
+    exit 1
+fi
+
 # The int24 candidate admits its q8_1 mat-vec pipelines under
 # GGML_VK_FORCE_INTEGER_DOT, so every serving profile scrubs it the way it
 # scrubs the sideplane names and the diagnostic profile alone restores what the
