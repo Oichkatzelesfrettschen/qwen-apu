@@ -92,6 +92,12 @@ set -eu
 #   QWEN_AB_CANDIDATE_PATCH          the one candidate series member the candidate
 #                                    carries, default
 #                                    llama-vulkan-q4k-activation-group-sums.patch
+#   QWEN_AB_CONTROL_EXPERIMENT_KEY   the Q4_K mat-vec arm the control server is asked for,
+#   QWEN_AB_CANDIDATE_EXPERIMENT_KEY and the arm the candidate is asked for: an algorithm over
+#                                    e4, e4-scale, and e4-scale-licm with a row count of /2,
+#                                    /4, or /8. Each reaches its arm as QWEN_Q4K_VARIANT and is
+#                                    recorded in that arm's own arm-environment.tsv; an empty
+#                                    value leaves the build's default
 #   QWEN_AB_WITNESS_DIRECTORY        a run-kernel-delta-witness.sh output directory whose
 #                                    token identity and margin contract the summary reports
 #                                    beside the paired bound
@@ -217,6 +223,33 @@ bracket_bound=${QWEN_AB_BRACKET_BOUND:-0.02}
 # rows beside the paired bound and carries the directory on each, which is what
 # keeps one run's evidence from reading as another's. An absent directory
 # leaves both rows unavailable and decides nothing.
+# The Q4_K arm the binary is asked for. A sealed key selects the mat-vec
+# algorithm and its row count at pipeline creation, so a comparison of two arms
+# of one executable names that executable twice and differs by these two values
+# alone. Each reaches its arm inside the closed environment census_arm_exec
+# writes, so arm-environment.tsv states the key the arm ran under rather than
+# leaving it to the invoking shell, and inputs.tsv states the pair. An empty
+# value leaves the build's own default, which is what an ordinary two-binary
+# comparison uses.
+control_experiment_key=${QWEN_AB_CONTROL_EXPERIMENT_KEY:-}
+candidate_experiment_key=${QWEN_AB_CANDIDATE_EXPERIMENT_KEY:-}
+for experiment_key_value in "$control_experiment_key" "$candidate_experiment_key"; do
+    case $experiment_key_value in
+        '' | e4/2 | e4/4 | e4/8 | e4-scale/2 | e4-scale/4 | e4-scale/8 | \
+        e4-scale-licm/2 | e4-scale-licm/4 | e4-scale-licm/8) ;;
+        *)
+            printf 'an experiment key is e4, e4-scale, or e4-scale-licm over /2, /4, or /8: %s\n' \
+                "$experiment_key_value" >&2
+            exit 2
+            ;;
+    esac
+done
+if [ "$control_experiment_key" = "$candidate_experiment_key" ] &&
+    [ -n "$control_experiment_key" ]; then
+    printf 'the two experiment keys name one arm, so the comparison has no candidate: %s\n' \
+        "$control_experiment_key" >&2
+    exit 2
+fi
 witness_directory=${QWEN_AB_WITNESS_DIRECTORY:-}
 if [ -n "$witness_directory" ] && [ ! -r "$witness_directory/margin-summary.tsv" ]; then
     printf 'QWEN_AB_WITNESS_DIRECTORY names a run-kernel-delta-witness.sh output directory: %s\n' \
@@ -1064,6 +1097,8 @@ printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\
         "$candidate_candidate_series" "$candidate_patch"
     printf 'ab_mode\t%s\ninstrumentation\t%s\nbracket_subject\t%s\nbracket_null\t%s\nbracket_bound\t%s\n' \
         "$ab_mode" "$control_instrumentation" "$bracket_subject" "$bracket_null" "$bracket_bound"
+    printf 'control_experiment_key\t%s\ncandidate_experiment_key\t%s\n' \
+        "${control_experiment_key:--}" "${candidate_experiment_key:--}"
     printf 'denominator_server\t%s\ndenominator_server_sha256\t%s\n' \
         "$denominator_server" "$denominator_sha256"
     printf 'base_build_identity_sha256\t%s\n' "$base_build_identity_sha256"
@@ -1202,8 +1237,12 @@ for arm in $execution_arms; do
     # A warmup's clock state is what the regime precondition reads, so it runs
     # the control server under the sampler the named arms run under.
     case $arm in
-        K) server=$candidate_server ;;
-        *) server=$control_server ;;
+        K) server=$candidate_server; arm_experiment_key=$candidate_experiment_key ;;
+        # A warmup opens the list on the control server, so it opens on the
+        # control's own arm: a warmup that primed the candidate's pipeline
+        # would leave the first paired arm reading a cache the other never
+        # filled.
+        *) server=$control_server; arm_experiment_key=$control_experiment_key ;;
     esac
     mkdir -p "$arm_directory"
     printf 'served_ab_arm=start slot=%s arm=%s server=%s sidecar=%s\n' \
@@ -1287,6 +1326,7 @@ for arm in $execution_arms; do
             QWEN_EXECUTION_PROOF_SHA256="$execution_proof_sha256" \
             QWEN_BENCH_GENERATE="$ab_generate" \
             QWEN_PIPELINE_CENSUS="$census_file" \
+            QWEN_Q4K_VARIANT="$arm_experiment_key" \
             QWEN_VULKAN_EXTERNAL_LEASE_PROOF="$workload_lease_proof" \
             QWEN_STATE_DIRECTORY="$workload_lease_state_directory" \
             -- \

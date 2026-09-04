@@ -982,6 +982,8 @@ case_quiescence=reached
 case_replies=
 case_replace_model=
 case_replace_tree=
+case_control_key=
+case_candidate_key=
 
 run_ab() {
     ab_case=$1
@@ -1044,6 +1046,9 @@ run_ab() {
         SSH_CONNECTION="$run_ssh_connection" \
         GGML_VK_Q4K_SIDEPLANE=0 \
         QWEN_CACHE_OVERRIDE_CONTEXT_CEILING=65536 \
+        GGML_VK_Q4K_VARIANT=e4/8 \
+        QWEN_AB_CONTROL_EXPERIMENT_KEY="${case_control_key:-}" \
+        QWEN_AB_CANDIDATE_EXPERIMENT_KEY="${case_candidate_key:-}" \
         QWEN_MODELS_DIRECTORY="$models_directory" \
         QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
         QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
@@ -1072,6 +1077,8 @@ run_ab() {
     case_replies=
     case_replace_model=
     case_replace_tree=
+    case_control_key=
+    case_candidate_key=
     if [ "$ab_status" -ne "$ab_expected_status" ]; then
         printf 'expected exit %s, observed %s\n' "$ab_expected_status" "$ab_status" >&2
         sed -n '1,20p' "$temporary_directory/$ab_case-stdout.txt" >&2
@@ -1848,6 +1855,71 @@ done
 [ "$arm_environment_failures" -eq 0 ]
 printf 'arm_environment_closed=accepted records=%s\n' \
     "$(printf '%s\n' "$arm_records" | grep -c .)"
+
+# The sealed key binds the arm into its own receipt. Two arms of one executable
+# differ by the algorithm and the row count alone, so each arm's record carries
+# the key its role was asked for and the ambient GGML_VK_Q4K_VARIANT reaches
+# neither; the run's inputs state the pair.
+experiment_rates=$temporary_directory/rates-experiment
+write_rates "$experiment_rates" 10.000 11.000 11.000
+case_control_key=e4/4
+case_candidate_key=e4-scale-licm/4
+run_ab experiment_key_bound 0 promoted "$experiment_rates" "$one_clock"
+active_fixture=experiment_key_bound
+[ "$(awk -F'\t' '$1 == "control_experiment_key" { print $2 }' "$ab_last_output/inputs.tsv")" = 'e4/4' ]
+[ "$(awk -F'\t' '$1 == "candidate_experiment_key" { print $2 }' "$ab_last_output/inputs.tsv")" \
+    = 'e4-scale-licm/4' ]
+experiment_key_failures=0
+for arm_record in "$ab_last_output"/arms/*/arm-environment.tsv; do
+    [ -f "$arm_record" ] || continue
+    arm_role=$(basename "$(dirname "$arm_record")")
+    arm_key=$(awk -F'\t' '$1 == "QWEN_Q4K_VARIANT" { print $2 }' "$arm_record")
+    case $arm_role in
+        *-K) arm_expected=e4-scale-licm/4 ;;
+        *) arm_expected=e4/4 ;;
+    esac
+    if [ "$arm_key" != "$arm_expected" ]; then
+        printf 'arm %s carries experiment key %s where %s was asked for\n' \
+            "$arm_role" "${arm_key:--}" "$arm_expected" >&2
+        experiment_key_failures=1
+    fi
+done
+[ "$experiment_key_failures" -eq 0 ]
+printf 'experiment_key_bound=accepted\n'
+
+# A key naming no buildable arm, and a pair naming one arm twice, are each
+# refused before an arm runs.
+run_refusal() {
+    refusal_case=$1
+    refusal_message=$2
+    shift 2
+    run_index=$((run_index + 1))
+    active_fixture=$refusal_case
+    set +e
+    env -i PATH="$execution_path" HOME="$home_directory" \
+        QWEN_MODELS_DIRECTORY="$models_directory" \
+        QWEN_CENSUS_RUNTIME_REMOTE="$runtime_remote" \
+        QWEN_CENSUS_PRODUCTION_RECEIPT="$scoreboard_receipt/identity-check.tsv" \
+        QWEN_DRM_DEVICE="$fixture_drm" QWEN_HWMON_ROOT="$fixture_hwmon" \
+        QWEN_CENSUS_BROKER="$broker_stub" "$@" \
+        "$harness" "$control_server" "$candidate_server" "$model_id" \
+        "$temporary_directory/out-$run_index" \
+        >/dev/null 2>"$temporary_directory/$refusal_case-stderr.txt"
+    refusal_status=$?
+    set -e
+    [ "$refusal_status" -eq 2 ]
+    grep -q "$refusal_message" "$temporary_directory/$refusal_case-stderr.txt"
+    printf '%s=accepted\n' "$refusal_case"
+}
+run_refusal experiment_key_unknown \
+    'an experiment key is e4, e4-scale, or e4-scale-licm over /2, /4, or /8' \
+    QWEN_AB_CANDIDATE_EXPERIMENT_KEY=e5-scale/4
+run_refusal experiment_key_rowless \
+    'an experiment key is e4, e4-scale, or e4-scale-licm over /2, /4, or /8' \
+    QWEN_AB_CANDIDATE_EXPERIMENT_KEY=e4-scale-licm
+run_refusal experiment_key_identical \
+    'the two experiment keys name one arm' \
+    QWEN_AB_CONTROL_EXPERIMENT_KEY=e4/4 QWEN_AB_CANDIDATE_EXPERIMENT_KEY=e4/4
 
 # The lease as the clock's own authority. A campaign forces a DPM level every
 # workload on the machine then runs at, so it takes the shared Vulkan lease

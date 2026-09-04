@@ -1,10 +1,10 @@
 field	value	per_superblock
 run_mode	device	-
-spirv_path	$SCRATCH/spv3/mul_mat_vec_q4_k_v1_f32_f32_subgroup_no_shmem.spv	-
-spirv_sha256	c2af051ad2d0022ed9f1b3527cf9e51e4089fb875ac02e6c5524d7ac9d5c111f	-
-spirv_bytes	19572	-
-nir_sha256	2e3630334c8796523ac18ed32da408ed3c5b80393c5a62d979ebc891dd2efe15	-
-isa_sha256	908b31fead0394728664323a8f3f60195b48b7c3435066712c521dba54bb9373	-
+spirv_path	$SCRATCH/spv4/mul_mat_vec_q4_k_f32_f32_subgroup_no_shmem.spv	-
+spirv_sha256	f849f30d0a39a4c90639247e3f8f9a6b0f62bfc5a9bc2c0e0747290294c1e9d4	-
+spirv_bytes	19684	-
+nir_sha256	acd5e652dd238a694801c7b41267968944c8dc2252a6e787c177f0a31727344b	-
+isa_sha256	8eb28854fb42c20f0cd4b50d113ed9cd1eeb7d5f919815f1694ee91f0e8e0a55	-
 device_name	AMD Ryzen 5 5600X3D 6-Core Processor (RADV RAVEN2)	-
 driver_name	radv	-
 driver_info	Mesa 26.2.1-arch3.1	-
@@ -26,15 +26,15 @@ spilled_vgprs	0	-
 spilled_sgprs	0	-
 lds	0	-
 scratch	0	-
-code_size	11036	-
+code_size	11160	-
 waves_per_simd	-	-
-instruction_lines	2314	9.0391
-valu	1454	5.6797
-salu	668	2.6094
+instruction_lines	2344	9.1562
+valu	1473	5.7539
+salu	680	2.6562
 vmem	72	0.2812
 smem	70	0.2734
 lds_instructions	0	0.0000
-waitcnt	119	0.4648
+waitcnt	118	0.4609
 barrier	0	0.0000
 v_cvt_f32_ubyte	384	1.5000
 v_bfe	18	0.0703

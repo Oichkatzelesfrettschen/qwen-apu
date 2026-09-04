@@ -12,14 +12,15 @@ formulation and the two others take a _v0 and _v1 suffix of their own;
 evidence/q4k-scale-decode/ shows each value reproducing its standalone arm's ISA digest bit for
 bit at both shapes, which is what makes the multiplexed module the measured one.
 
-The key names the module and the row shape together. NUM_ROWS reaches the shader as
-specialization constant 1 and reaches the dispatch as the pipeline's own workgroup denominator,
-both from rm_kq in ggml_vk_load_shaders, so a value that moved one alone would dispatch a row
-count the shader does not compute; `-rows8` moves both. That suffix is what makes the eight-row
-shape reachable at all on this device, since the AMD_GCN branch sets rm_kq = 4 and a decode
-therefore never selects the eight-row pipeline.
+The key states the whole tuple as ALGORITHM/ROWS over e4, e4-scale, and e4-scale-licm crossed
+with 2, 4, and 8. NUM_ROWS reaches the shader as specialization constant 1 and reaches the
+dispatch as the pipeline's own workgroup denominator, both from rm_kq in ggml_vk_load_shaders,
+so an arm that named the algorithm alone would leave the row count at whatever the AMD_GCN
+branch selected and an arm that moved the specialization constant alone would dispatch a row
+count the shader does not compute. That branch sets rm_kq = 4, so the key is what makes the
+two-row and eight-row shapes reachable on this device at all.
 
-A value outside v0, v1, v2, and their -rows8 forms ends the load rather than falling back to the
+A name or a row count outside the admitted set ends the load rather than falling back to the
 default, since a default served under an arm's name is the confusion the sealed key exists to
 remove. The resolved variant and row count reach the log at load, and the census ledger's
 spirv_executed_sha256 is the authority on which module the device ran: summarize-bracket-ab.py's
@@ -31,10 +32,10 @@ q8_1 Q4_K families keep the default formulation under every key, so a MoE checkp
 integer-dot build measure nothing through this key.
 
 diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
-index 82d4a2fc0..93a7ab2bb 100644
+index 82d4a2fc0..20eb5f6bf 100644
 --- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
 +++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
-@@ -6261,6 +6261,54 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+@@ -6261,6 +6261,60 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
      }
      uint32_t rm_iq = 2 * rm_kq;
  
@@ -42,36 +43,42 @@ index 82d4a2fc0..93a7ab2bb 100644
 +    // formulation is compiled into this binary, so an arm changes the pipeline the device
 +    // creates and leaves the load, the compiler, the shader cache, and the executable digest
 +    // where they were; the arm the device ran is then read back from the census ledger's
-+    // spirv_executed_sha256 rather than from the key that asked for it. The key names the
-+    // module and the row shape together, since NUM_ROWS reaches the shader as specialization
-+    // constant 1 and reaches the dispatch as the pipeline's own workgroup denominator, and a
-+    // value that moved one alone would dispatch a row count the shader does not compute.
-+    // evidence/q4k-scale-decode/ carries the compile receipt each value reproduces.
++    // spirv_executed_sha256 rather than from the key that asked for it. The key states the
++    // whole tuple as ALGORITHM/ROWS, since NUM_ROWS reaches the shader as specialization
++    // constant 1 and reaches the dispatch as the pipeline's own workgroup denominator and an
++    // arm that named one half would leave the other at whatever this branch selected. The
++    // algorithms are the post-E4 control, that control with the four-byte-aligned scale read,
++    // and that read under the bottom-tested superblock loop; evidence/q4k-scale-decode/
++    // carries the compile receipt each name reproduces.
 +    uint32_t q4k_variant = 2;
 +    uint32_t rm_kq_q4k = rm_kq;
 +    const char * q4k_variant_key = getenv("GGML_VK_Q4K_VARIANT");
 +    if (q4k_variant_key != nullptr && q4k_variant_key[0] != '\0') {
 +        const std::string requested = q4k_variant_key;
-+        const std::string module_name = requested.substr(0, requested.find('-'));
-+        const std::string shape_name = requested.substr(module_name.size());
-+        if (module_name == "v0") {
++        const size_t separator = requested.rfind('/');
++        const std::string algorithm = requested.substr(0, separator == std::string::npos ? requested.size() : separator);
++        const std::string rows = separator == std::string::npos ? std::string() : requested.substr(separator + 1);
++        if (algorithm == "e4") {
 +            q4k_variant = 0;
-+        } else if (module_name == "v1") {
++        } else if (algorithm == "e4-scale") {
 +            q4k_variant = 1;
-+        } else if (module_name == "v2") {
++        } else if (algorithm == "e4-scale-licm") {
 +            q4k_variant = 2;
 +        } else {
-+            // A typo answered with the default would serve one arm under another arm's name,
++            // A name answered with the default would serve one arm under another arm's name,
 +            // which is the confusion the sealed key exists to remove.
-+            GGML_ABORT("GGML_VK_Q4K_VARIANT is v0, v1, or v2, each optionally -rows8: %s", q4k_variant_key);
++            GGML_ABORT("GGML_VK_Q4K_VARIANT is e4, e4-scale, or e4-scale-licm over /2, /4, or /8: %s", q4k_variant_key);
 +        }
-+        if (shape_name == "-rows8") {
++        if (rows == "2") {
++            rm_kq_q4k = 2;
++        } else if (rows == "4") {
++            rm_kq_q4k = 4;
++        } else if (rows == "8") {
 +            rm_kq_q4k = 8;
-+        } else if (!shape_name.empty()) {
-+            GGML_ABORT("GGML_VK_Q4K_VARIANT names one shape suffix, -rows8: %s", q4k_variant_key);
++        } else {
++            GGML_ABORT("GGML_VK_Q4K_VARIANT states its row count as /2, /4, or /8: %s", q4k_variant_key);
 +        }
-+        GGML_LOG_INFO("ggml_vulkan: q4k_variant=%u q4k_rows=%u key=%s\n",
-+                      q4k_variant, rm_kq_q4k, q4k_variant_key);
++        GGML_LOG_INFO("ggml_vulkan: q4k_variant=%s q4k_rows=%u\n", q4k_variant_key, rm_kq_q4k);
 +    }
 +    const void ** q4k_dmmv_f32_f32_data =
 +        q4k_variant == 0 ? arr_dmmv_q4_k_v0_f32_f32_data :
@@ -89,7 +96,7 @@ index 82d4a2fc0..93a7ab2bb 100644
      const bool use_subgroups = device->subgroup_arithmetic;
      // Ensure a subgroup size >= 16 is available
      const bool use_subgroups16 = use_subgroups && subgroup_min_size_16;
-@@ -6311,7 +6359,7 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+@@ -6311,7 +6365,7 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
              ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f32_f32[w][GGML_TYPE_Q2_K][i], "mul_mat_vec_q2_k_f32_f32", arr_dmmv_q2_k_f32_f32_len[reduc16], arr_dmmv_q2_k_f32_f32_data[reduc16], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
              ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f32_f32[w][GGML_TYPE_TQ2_0][i], "mul_mat_vec_tq2_0_f32_f32", arr_dmmv_tq2_0_f32_f32_len[reduc16], arr_dmmv_tq2_0_f32_f32_data[reduc16], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
              ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f32_f32[w][GGML_TYPE_Q3_K][i], "mul_mat_vec_q3_k_f32_f32", arr_dmmv_q3_k_f32_f32_len[reduc16], arr_dmmv_q3_k_f32_f32_data[reduc16], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
@@ -98,7 +105,7 @@ index 82d4a2fc0..93a7ab2bb 100644
              ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_q4_k_sideplane_f32_f32[w][i], "mul_mat_vec_q4_k_sideplane_f32_f32", arr_dmmv_q4_k_sideplane_f32_f32_len[reduc16], arr_dmmv_q4_k_sideplane_f32_f32_data[reduc16], "main", mul_mat_vec_num_bindings + 1, sizeof(vk_mat_vec_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
              ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f32_f32[w][GGML_TYPE_Q5_K][i], "mul_mat_vec_q5_k_f32_f32", arr_dmmv_q5_k_f32_f32_len[reduc16], arr_dmmv_q5_k_f32_f32_data[reduc16], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
              ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f32_f32[w][GGML_TYPE_Q6_K][i], "mul_mat_vec_q6_k_f32_f32", arr_dmmv_q6_k_f32_f32_len[reduc16], arr_dmmv_q6_k_f32_f32_data[reduc16], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
-@@ -6340,7 +6388,7 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
+@@ -6340,7 +6394,7 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
              ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f16_f32[w][GGML_TYPE_Q2_K][i], "mul_mat_vec_q2_k_f16_f32", arr_dmmv_q2_k_f16_f32_len[reduc16], arr_dmmv_q2_k_f16_f32_data[reduc16], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
              ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f16_f32[w][GGML_TYPE_TQ2_0][i], "mul_mat_vec_tq2_0_f16_f32", arr_dmmv_tq2_0_f16_f32_len[reduc16], arr_dmmv_tq2_0_f16_f32_data[reduc16], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
              ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f16_f32[w][GGML_TYPE_Q3_K][i], "mul_mat_vec_q3_k_f16_f32", arr_dmmv_q3_k_f16_f32_len[reduc16], arr_dmmv_q3_k_f16_f32_data[reduc16], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
@@ -108,16 +115,17 @@ index 82d4a2fc0..93a7ab2bb 100644
              ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f16_f32[w][GGML_TYPE_Q6_K][i], "mul_mat_vec_q6_k_f16_f32", arr_dmmv_q6_k_f16_f32_len[reduc16], arr_dmmv_q6_k_f16_f32_data[reduc16], "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_kq, 1, 1}, {wg_size_subgroup16, rm_kq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
              ggml_vk_create_pipeline(device, device->pipeline_dequant_mul_mat_vec_f16_f32[w][GGML_TYPE_IQ1_S][i],   "mul_mat_vec_iq1_s_f16_f32",   arr_dmmv_iq1_s_f16_f32_len[reduc16],   arr_dmmv_iq1_s_f16_f32_data[reduc16],   "main", mul_mat_vec_num_bindings, sizeof(vk_mat_vec_push_constants), {rm_iq, 1, 1}, {wg_size_subgroup16, rm_iq, i+1}, 1, true, use_subgroups16, force_subgroup_size16);
 diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_q4_k.comp b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_q4_k.comp
-index 3f11c2e43..3694a2b7d 100644
+index 3f11c2e43..3c8602aab 100644
 --- a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_q4_k.comp
 +++ b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_q4_k.comp
-@@ -15,11 +15,23 @@ layout (binding = 5) readonly buffer SIDEPLANE {vec4 data_sideplane_v4[];};
+@@ -15,11 +15,24 @@ layout (binding = 5) readonly buffer SIDEPLANE {vec4 data_sideplane_v4[];};
  #define SIDEPLANE_CHUNK(y_offset) (((y_offset) >> 6) * 8 + (((y_offset) & 63) >> 2))
  #endif
  
 +// One module per Q4_K mat-vec formulation, selected at compile time so that a build embeds
-+// every one of them and the host picks the pipeline. 0 is the post-E4 control, 1 adds the
-+// four-byte-aligned scale read, and 2 adds the bottom-tested superblock loop on top of it.
++// every one of them and the host picks the pipeline. 0 is the post-E4 control the key names
++// e4, 1 adds the four-byte-aligned scale read as e4-scale, and 2 adds the bottom-tested
++// superblock loop on top of it as e4-scale-licm.
 +// evidence/q4k-scale-decode/ carries the compile receipt each value reproduces.
 +#ifndef Q4K_VARIANT
 +#define Q4K_VARIANT 2
@@ -135,7 +143,7 @@ index 3f11c2e43..3694a2b7d 100644
      const uint y1_idx = i * QUANT_K + y_offset;
      const uint y2_idx = y1_idx + 128;
  
-@@ -58,6 +70,13 @@ void calc_superblock(const uint a_offset, const uint b_offset, const uint v_im,
+@@ -58,6 +71,13 @@ void calc_superblock(const uint a_offset, const uint b_offset, const uint v_im,
          const uint ib0 = a_offset + (first_row+n)*num_blocks_per_row;
          const FLOAT_TYPEV2 dm = FLOAT_TYPEV2(data_a[ib0 + i].dm);
  
@@ -149,7 +157,7 @@ index 3f11c2e43..3694a2b7d 100644
          // scales[v_im] and scales[v_im+2] are two-byte aligned, so nir_lower_mem_access_bit_sizes
          // lowers their vectorized load to a dword-aligned pair and one alignbyte shift per
          // component, and scales[v_im+4] costs a third load with its own address chain. All twelve
-@@ -74,6 +93,7 @@ void calc_superblock(const uint a_offset, const uint b_offset, const uint v_im,
+@@ -74,6 +94,7 @@ void calc_superblock(const uint a_offset, const uint b_offset, const uint v_im,
          const uint scale_byte = scale_shift >> 3;
          const uint32_t scale_0_4_l = pack32(u8vec4(scale_lo_b[scale_byte], scale_lo_b[scale_byte + 1],
                                                     scale_hi_b[scale_byte], scale_hi_b[scale_byte + 1]));
@@ -157,7 +165,7 @@ index 3f11c2e43..3694a2b7d 100644
          const uint32_t scale_0_4_h = (scale_0_4_l & 0xC0C0C0C0) >> 2;
          const vec4 scale_0_4_l_f = vec4(unpack8(scale_0_4_l & 0x3F3F3F3F));
          const vec4 scale8_f = vec4(unpack8((((scale8_u32 << 12) | scale8_u32) & 0x0F0F0F0F) | scale_0_4_h));
-@@ -163,12 +183,21 @@ void compute_outputs(const uint32_t first_row, const uint32_t num_rows) {
+@@ -163,12 +184,21 @@ void compute_outputs(const uint32_t first_row, const uint32_t num_rows) {
          }
      }
  
@@ -179,7 +187,7 @@ index 3f11c2e43..3694a2b7d 100644
      // nir_opt_licm hoists only out of blocks that dominate the loop successor (nir_opt_licm.c,
      // visit_cf_list), and a top-tested loop reaches its exit through the header break, so its
      // body dominates nothing and every loop-invariant value inside it stays inside: the two
-@@ -182,6 +211,7 @@ void compute_outputs(const uint32_t first_row, const uint32_t num_rows) {
+@@ -182,6 +212,7 @@ void compute_outputs(const uint32_t first_row, const uint32_t num_rows) {
              i += it_size;
          } while (i < num_blocks_per_row);
      }
