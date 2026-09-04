@@ -423,6 +423,9 @@ case $action in
                               QWEN_SEARXNG_PORT QWEN_SEARXNG_SETTINGS_TEMPLATE \
                               QWEN_SEARXNG_LAUNCH_COMMAND \
                               QWEN_SEARXNG_START_TIMEOUT \
+                              QWEN_SEARXNG_STOP_TIMEOUT \
+                              QWEN_SEARXNG_ROOT QWEN_SEARXNG_SOURCE \
+                              QWEN_SEARXNG_PYTHON \
                               QWEN_IMAGE_SERVICE QWEN_IMAGE_SERVICE_PROGRAM \
                               QWEN_IMAGE_PROFILES_JSON QWEN_IMAGE_PAGE_ORIGIN \
                               QWEN_IMAGE_PROFILE QWEN_IMAGE_TOKEN_KEY_FILE \

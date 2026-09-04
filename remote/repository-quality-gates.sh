@@ -15,7 +15,7 @@ script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 repository_root=$(CDPATH='' cd -- "$script_directory/.." && pwd)
 cd "$repository_root"
 
-for required_command in bash node shellcheck ruff mypy python3 curl flock git ps sha256sum c++ bwrap; do
+for required_command in bash node shellcheck ruff mypy python3 curl flock git ps sha256sum c++ ss bwrap; do
     if ! command -v "$required_command" >/dev/null 2>&1; then
         printf 'required quality-gate command is absent: %s\n' \
             "$required_command" >&2
@@ -239,6 +239,8 @@ gate_cell test-write-clangd-config derive remote/test-write-clangd-config.sh \
     remote/test-write-clangd-config.sh
 gate_cell test-check-trace-source-status derive \
     remote/test-check-trace-source-status.sh remote/test-check-trace-source-status.sh
+gate_cell test-admit-web-router-live derive \
+    remote/test-admit-web-router-live.sh remote/test-admit-web-router-live.sh
 gate_cell test-qwen-lan-launch derive remote/test-qwen-lan-launch.sh \
     remote/test-qwen-lan-launch.sh
 gate_cell test-prefix-checkpoint-key derive \
@@ -246,7 +248,8 @@ gate_cell test-prefix-checkpoint-key derive \
     remote/test-prefix-checkpoint-key.sh
 gate_cell test-sync-runtime-tree derive remote/test-sync-runtime-tree.sh \
     remote/test-sync-runtime-tree.sh
-gate_cell test-web-search-live derive remote/test-web-search-live.sh \
+gate_cell test-web-search-live derive \
+    'remote/test-web-search-live.sh remote/test-fixtures/fake-searxng-server.py remote/test-fixtures/fabricate-zombie.py' \
     remote/test-web-search-live.sh
 gate_cell test-compute-state-lease derive remote/test-compute-state-lease.sh \
     remote/test-compute-state-lease.sh

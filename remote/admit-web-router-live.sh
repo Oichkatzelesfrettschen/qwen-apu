@@ -111,6 +111,15 @@ umask 077
 # never names, which the next launch reads as a stray.
 PYTHONDONTWRITEBYTECODE=1
 export PYTHONDONTWRITEBYTECODE
+# A reused directory would combine this run's authorization state and
+# measurements with a prior one: only summary.tsv is truncated below, so
+# keys/token.key, the web-mcp grant and rate database, and query-timing.tsv
+# from an earlier run would otherwise survive into a freshly reported pass.
+if [ -e "$output_directory" ] && \
+    find "$output_directory" -mindepth 1 -maxdepth 1 -print -quit | grep -q .; then
+    printf 'output directory must be empty: %s\n' "$output_directory" >&2
+    exit 2
+fi
 mkdir -p "$output_directory"
 output_directory=$(CDPATH='' cd -- "$output_directory" && pwd)
 summary=$output_directory/summary.tsv
@@ -142,6 +151,7 @@ call() {
     call_body=${4:-}
     call_headers_file=$output_directory/http/$exchange-$call_label.headers
     call_out=$output_directory/http/$exchange-$call_label.response
+    call_time_file=$output_directory/http/$exchange-$call_label.time
     # dash ends the shell on a shift past $#, so the count is checked first.
     if [ "$#" -ge 4 ]; then
         shift 4
@@ -153,18 +163,30 @@ call() {
     if [ -s "$api_key_curl_config" ] && [ "${call_without_key:-0}" != 1 ]; then
         set -- "$@" --config "$api_key_curl_config"
     fi
+    # curl's own %{time_total} carries microsecond precision, so the elapsed
+    # time a caller reads off this exchange is the request's actual duration
+    # rather than the difference of two whole-second `date +%s` samples taken
+    # around it, which for the 180-510 ms searches this instance answers would
+    # usually read 0 and could read 1 depending only on whether the call
+    # happened to cross a wall-clock second boundary.
     if [ -n "$call_body" ]; then
         printf '%s' "$call_body" >"$output_directory/http/$exchange-$call_label.request"
         curl -sS --max-time 600 -o "$call_out" -D "$call_headers_file" \
+            -w '%{time_total}' \
             -X "$call_method" "$call_url" -H 'Content-Type: application/json' \
             --data-binary "@$output_directory/http/$exchange-$call_label.request" \
-            "$@" || true
+            "$@" >"$call_time_file" || true
     else
         curl -sS --max-time 60 -o "$call_out" -D "$call_headers_file" \
-            -X "$call_method" "$call_url" "$@" || true
+            -w '%{time_total}' \
+            -X "$call_method" "$call_url" "$@" >"$call_time_file" || true
     fi
     call_status=$(sed -n '1s/^HTTP\/[0-9.]* \([0-9]*\).*/\1/p' "$call_headers_file" 2>/dev/null | tail -1)
     call_status=${call_status:-000}
+    call_time_total=$(cat "$call_time_file" 2>/dev/null || true)
+    case $call_time_total in
+        '' | *[!0-9.]*) call_time_total=0 ;;
+    esac
 }
 
 remove_api_key_material() {
@@ -226,10 +248,34 @@ record profile_row observed \
 printf 'admission_start utc=%s host=%s profile=%s\n' "$(utc)" "$(uname -n)" \
     "$profile_id" >"$output_directory/run.log"
 cp "$state_directory/session.status" "$output_directory/ordinary-session.status" 2>/dev/null || true
+# The bind host and the profile are read back from the copy of the ordinary
+# session's own status line taken above, rather than assumed, so a router the
+# operator bound to the LAN or ran under a non-default profile is probed and
+# later restored the way it was found instead of at loopback under
+# low-async. Both the as-found probe below and restore_ordinary's own probe
+# read this one derivation, so a LAN-only router is never probed at the
+# loopback origin its socket never bound.
+ordinary_host=$(sed -n '1p' "$output_directory/ordinary-session.status" 2>/dev/null |
+    tr ' ' '\n' | sed -n 's/^host=//p')
+ordinary_profile=$(sed -n '1p' "$output_directory/ordinary-session.status" 2>/dev/null |
+    tr ' ' '\n' | sed -n 's/^profile=//p')
+case $ordinary_host in
+    '') ordinary_host=127.0.0.1 ;;
+esac
+case $ordinary_profile in
+    paced-60 | low-serialized | low-async) ;;
+    *) ordinary_profile=low-async ;;
+esac
+ordinary_lan=0
+case $ordinary_host in
+    127.0.0.1 | localhost | 0.0.0.0) ;;
+    *) ordinary_lan=1 ;;
+esac
+ordinary_router_origin=http://$ordinary_host:$server_port
 ordinary_running=0
 if pgrep -x llama-server >/dev/null 2>&1; then
     ordinary_running=1
-    call ordinary-models GET "$router_origin/v1/models"
+    call ordinary-models GET "$ordinary_router_origin/v1/models"
     jq -r '.data[].id' "$call_out" 2>/dev/null | sort >"$output_directory/ordinary-model-ids.txt" || true
     ordinary_server=$(readlink -f "/proc/$(pgrep -x llama-server | head -1)/exe")
 else
@@ -246,18 +292,43 @@ restore_ordinary() {
         return 0
     fi
     restoration_finished=1
+    # The harness's own test router is torn down unconditionally: it is what
+    # this run launched, and QWEN_ADMISSION_RESTORE names whether the ordinary
+    # router this run found gets relaunched, not whether the test router this
+    # run started gets cleaned up. An interrupt before step 13's own teardown
+    # reaches only this function, so a restore=0 run that never relaunches must
+    # still leave no test llama-server, broker, or search instance behind.
+    if pgrep -x llama-server >/dev/null 2>&1; then
+        "$script_directory/qwen-teardown.sh" >"$output_directory/pre-restore-teardown.log" 2>&1 || true
+    fi
     if [ "$restore" != 1 ]; then
         record ordinary_restore skipped 'QWEN_ADMISSION_RESTORE=0'
         return 0
     fi
-    if pgrep -x llama-server >/dev/null 2>&1; then
-        "$script_directory/qwen-teardown.sh" >"$output_directory/pre-restore-teardown.log" 2>&1 || true
+    if [ "$ordinary_running" != 1 ]; then
+        record ordinary_restore pass 'no ordinary router was running at admission start'
+        return 0
     fi
-    if QWEN_LLAMA_SERVER=$ordinary_server QWEN_ROUTER=1 QWEN_BIND_HOST=127.0.0.1 \
-        "$script_directory/qwen-launch.sh" low-async \
+    # ordinary_host, ordinary_profile, and ordinary_lan were derived once,
+    # above, from the copy of the ordinary session's own status line taken
+    # before this run touched anything, so the restored router is relaunched
+    # the way it was found instead of at loopback under low-async.
+    #
+    # qwen-launch.sh's own readiness probe reaches 127.0.0.1 unless
+    # QWEN_WEB_LAN=1 names QWEN_WEB_LAN_ADDRESS, which a plain non-web restore
+    # never sets; a server bound to the wildcard or to loopback still answers
+    # there, but one bound to one LAN literal alone does not, so a restored
+    # server the operator ran on such a literal would fail its own readiness
+    # probe and be torn down, trading a stopped appliance for a failed one.
+    # Naming the literal here reaches only that probe: the router-side LAN
+    # admission gate at qwen-launch.sh's web-section branch is not reached by
+    # a preset carrying none.
+    if QWEN_LLAMA_SERVER=$ordinary_server QWEN_ROUTER=1 QWEN_BIND_HOST=$ordinary_host \
+        QWEN_WEB_LAN=$ordinary_lan QWEN_WEB_LAN_ADDRESS=$ordinary_host \
+        "$script_directory/qwen-launch.sh" "$ordinary_profile" \
         >"$output_directory/ordinary-restore.log" 2>&1; then
         restored_server=$(readlink -f "/proc/$(pgrep -x llama-server | head -1)/exe" 2>/dev/null || true)
-        call restored-models GET "$router_origin/v1/models"
+        call restored-models GET "$ordinary_router_origin/v1/models"
         jq -r '.data[].id' "$call_out" 2>/dev/null | sort >"$output_directory/restored-model-ids.txt" || true
         if [ "$restored_server" != "$ordinary_server" ]; then
             record ordinary_restore fail \
@@ -271,7 +342,7 @@ restore_ordinary() {
             return 1
         fi
         record ordinary_restore pass \
-            "models=$(tr '\n' ',' <"$output_directory/restored-model-ids.txt")"
+            "host=$ordinary_host profile=$ordinary_profile models=$(tr '\n' ',' <"$output_directory/restored-model-ids.txt")"
     else
         record ordinary_restore fail "$(tail -1 "$output_directory/ordinary-restore.log")"
         return 1
@@ -510,9 +581,8 @@ tool_body() {
 search_params=$(jq -cn --arg q "$query" --arg a "$authorization" \
     --argjson n "$max_results" \
     '{query: $q, max_results: $n, include_domains: [], exclude_domains: [], authorization: $a}')
-search_start=$(date +%s)
 call search POST "$router_origin/tools" "$(tool_body web_search_exa "$search_params")"
-search_elapsed=$(( $(date +%s) - search_start ))
+search_elapsed=$call_time_total
 search_text=$(jq -r 'if type == "object" then (.error // .plain_text_response // tostring) else tostring end' \
     "$call_out" 2>/dev/null)
 cp "$call_out" "$output_directory/search-response.json"
@@ -538,9 +608,8 @@ sample_instance_cost after-search
 # alone, so the provider reads the source itself over one GET of the canonical
 # URL the Result ID was signed over.
 fetch_params=$(jq -cn --arg r "$result_id" '{result_id: $r}')
-fetch_start=$(date +%s)
 call fetch POST "$router_origin/tools" "$(tool_body web_fetch_exa "$fetch_params")"
-fetch_elapsed=$(( $(date +%s) - fetch_start ))
+fetch_elapsed=$call_time_total
 fetch_text=$(jq -r 'if type == "object" then (.error // .plain_text_response // tostring) else tostring end' \
     "$call_out" 2>/dev/null)
 cp "$call_out" "$output_directory/fetch-response.json"
