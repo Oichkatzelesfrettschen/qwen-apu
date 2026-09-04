@@ -1,0 +1,12 @@
+{
+  "label": "qwen38-2b-distill-03-package-25w",
+  "request_status": 0,
+  "teardown_status": 0,
+  "prefill_tok_per_second": 31.406931344448083,
+  "prefill_ms": 604.962,
+  "decode_tok_per_second": 9.825761180663465,
+  "decode_ms": 6411.717,
+  "prompt_tokens": 19,
+  "decode_tokens": 64,
+  "valid": true
+}
