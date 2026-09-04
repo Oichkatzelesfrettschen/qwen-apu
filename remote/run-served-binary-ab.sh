@@ -92,6 +92,9 @@ set -eu
 #   QWEN_AB_CANDIDATE_PATCH          the one candidate series member the candidate
 #                                    carries, default
 #                                    llama-vulkan-q4k-activation-group-sums.patch
+#   QWEN_AB_CONTROL_FORCE_INTEGER_DOT   1 arms GGML_VK_FORCE_INTEGER_DOT on every
+#                                    control arm, the warmups included; absent by default
+#   QWEN_AB_CANDIDATE_FORCE_INTEGER_DOT 1 arms it on every K arm; absent by default
 #   QWEN_AB_COOLDOWN_S               quiescence deadline between arms, default 30
 #   QWEN_CENSUS_ENGINE_CLOCK_POLICY  auto (default), high, profile_peak, or manual; a
 #                                    forced policy pins power_dpm_force_performance_level
@@ -186,6 +189,28 @@ if ! python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) > 0 else 1)' "$ab_
     exit 2
 fi
 candidate_patch=${QWEN_AB_CANDIDATE_PATCH:-llama-vulkan-q4k-activation-group-sums.patch}
+# The integer-dot arm is admitted per role rather than per binary, because one
+# build carries the E5 arm and its control and the environment is what separates
+# them: ggml_vk_force_integer_dot() decides whether a q8_1 pipeline is created
+# at all. radv-low-priority-env.sh scrubs GGML_VK_FORCE_INTEGER_DOT under every
+# serving profile, so the admission reaches the server as QWEN_FORCE_INTEGER_DOT
+# and every arm keeps low-async and its own submission shape. Each role admits
+# the exact "1" the backend compares against or nothing, so a third value is
+# refused here rather than silently running the control under the arm's name,
+# and the warmups take the control's value since they run the control server.
+ab_control_force_integer_dot=${QWEN_AB_CONTROL_FORCE_INTEGER_DOT:-}
+ab_candidate_force_integer_dot=${QWEN_AB_CANDIDATE_FORCE_INTEGER_DOT:-}
+for force_integer_dot_value in \
+    "$ab_control_force_integer_dot" "$ab_candidate_force_integer_dot"; do
+    case $force_integer_dot_value in
+        '' | 1) ;;
+        *)
+            printf 'QWEN_AB_CONTROL_FORCE_INTEGER_DOT and QWEN_AB_CANDIDATE_FORCE_INTEGER_DOT admit 1 or an unset value: %s\n' \
+                "$force_integer_dot_value" >&2
+            exit 2
+            ;;
+    esac
+done
 # `served` compares two serving builds by decode rate. `kernel-delta` compares
 # two census-instrumented builds whose candidate series differ by exactly the
 # candidate patch, collects the pipeline census in every arm, and judges the
@@ -989,6 +1014,13 @@ execution_proof=$output_directory/campaign-inputs.tsv
     printf 'runtime_tree_git_head\t%s\n' "$runtime_tree_git_head"
     printf 'model_id\t%s\n' "$model_id"
     printf 'arms\tW %s\n' "$arms"
+    # The two roles' integer-dot admission is a campaign input rather than a
+    # property of either binary, so a reader of the receipt alone knows which
+    # arms created a q8_1 pipeline. `-` is the absent value the arm runs under.
+    printf 'control_force_integer_dot\t%s\n' \
+        "${ab_control_force_integer_dot:--}"
+    printf 'candidate_force_integer_dot\t%s\n' \
+        "${ab_candidate_force_integer_dot:--}"
     printf 'control_server\t%s\n' "$control_server"
     printf 'control_server_sha256\t%s\n' "$control_sha256"
     printf 'candidate_server\t%s\n' "$candidate_server"
@@ -1013,6 +1045,8 @@ printf 'slot\tarm\tserver_sha256\tpredicted_n\tpredicted_ms\ttok_s\tcensus_rows\
     printf 'cache_k\t%s\ncache_v\t%s\nflash_attention\t%s\nctx_checkpoints\t%s\ncheckpoint_min_step\t%s\n' \
         "$cache_k" "$cache_v" "$flash" "$ctx_checkpoints" "$checkpoint_min_step"
     printf 'arms\tW %s\nprofile\tlow-async\ngenerate\t%s\n' "$arms" "$ab_generate"
+    printf 'control_force_integer_dot\t%s\ncandidate_force_integer_dot\t%s\n' \
+        "${ab_control_force_integer_dot:--}" "${ab_candidate_force_integer_dot:--}"
     printf 'served_ab_replicates\t%s\nserved_ab_bound\t%s\n' "$ab_replicates" "$ab_bound"
     printf 'warmup_arm\tW\nwarmup_sampler\ton\nwarmup_excluded_from_pairs\tyes\n'
     printf 'sclk_band\t%s\nregime_min_share\t%s\nregime_max_share\t%s\n' \
@@ -1191,9 +1225,16 @@ for arm in $execution_arms; do
         K) server=$candidate_server ;;
         *) server=$control_server ;;
     esac
+    # The integer-dot admission follows the same role selection the server
+    # follows, so a warmup carries the control's value and the arm-environment
+    # record of each arm states which value that arm ran under.
+    case $arm in
+        K) arm_force_integer_dot=$ab_candidate_force_integer_dot ;;
+        *) arm_force_integer_dot=$ab_control_force_integer_dot ;;
+    esac
     mkdir -p "$arm_directory"
-    printf 'served_ab_arm=start slot=%s arm=%s server=%s sidecar=%s\n' \
-        "$slot" "$arm" "$server" "$sidecar_state"
+    printf 'served_ab_arm=start slot=%s arm=%s server=%s sidecar=%s force_integer_dot=%s\n' \
+        "$slot" "$arm" "$server" "$sidecar_state" "${arm_force_integer_dot:--}"
     sidecar_pid=''
     sidecar_start_failed=0
     if [ "$sidecar_state" = on ] && [ "$ab_sampler" = broker ]; then
@@ -1273,6 +1314,7 @@ for arm in $execution_arms; do
             QWEN_EXECUTION_PROOF_SHA256="$execution_proof_sha256" \
             QWEN_BENCH_GENERATE="$ab_generate" \
             QWEN_PIPELINE_CENSUS="$census_file" \
+            QWEN_FORCE_INTEGER_DOT="$arm_force_integer_dot" \
             QWEN_VULKAN_EXTERNAL_LEASE_PROOF="$workload_lease_proof" \
             QWEN_STATE_DIRECTORY="$workload_lease_state_directory" \
             -- \

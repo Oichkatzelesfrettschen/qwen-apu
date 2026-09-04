@@ -1,0 +1,27 @@
+# The pinned SPIR-V producer the E5-S shader pack is compiled by, and the one
+# authority that states it. fetch-shaderc-toolchain.sh reads this file and
+# refuses a row it cannot verify against; build-spirv-shader-pack.sh records the
+# executed compiler's own version string and digest beside the pack, so a pack
+# built by another toolchain is visible after the fact rather than trusted.
+#
+# The appliance's distribution shaderc rejects GL_EXT_integer_dot_product
+# (evidence/web-admission-router-tools/build-raven2-vulkan-production.log:33),
+# which is a gate in the SPIR-V producer rather than in the driver, so E5-S0 and
+# E5-S1 need a producer that emits OpSDotKHR and the driver on the appliance
+# consumes what this one wrote.
+#
+# revision and sha256 read `-` because no fetch has run: a digest recalled
+# rather than measured is a fabricated pin, and the fetcher refuses an unfilled
+# row instead of downloading whatever the tag points at today. Filling them is
+# the first step of the compiler plan in
+# evidence/raven2-vulkan-kernel-census/e5/README.md: read the release archive's
+# published SHA-256 from the upstream release, record both here, and the fetch
+# becomes replayable.
+#
+# key	value
+project	google/shaderc
+revision	-
+archive_url	-
+archive_sha256	-
+prefix	shaderc-pinned
+minimum_glslc_version	2023.2
