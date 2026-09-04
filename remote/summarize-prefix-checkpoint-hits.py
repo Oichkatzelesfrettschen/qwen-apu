@@ -141,19 +141,25 @@ def verdict_stable_reuse(rows):
         return ("stable_reuse", "every later stable conversation restores",
                 "incomplete", "inconclusive",
                 f"failed_slots={','.join(row['slot'] for row in incomplete)}")
+    baseline_key = baseline.get("checkpoint_key")
+    baseline_key_known = baseline_key not in (None, "", UNKNOWN_STATE)
     hits = [row for row in later if row["hit"] == "yes"]
-    same_key = all(row.get("checkpoint_key") == baseline.get("checkpoint_key")
-                    for row in hits)
-    if len(hits) == len(later) and same_key and baseline.get("checkpoint_key"):
+    same_key = all(row.get("checkpoint_key") == baseline_key for row in hits)
+    if len(hits) == len(later) and same_key and baseline_key_known:
         return ("stable_reuse", "every later stable conversation restores",
                 f"{len(hits)} of {len(later)} restored, same key", "confirmed",
-                f"key={baseline.get('checkpoint_key')}")
+                f"key={baseline_key}")
+    if not baseline_key_known:
+        detail = f"the baseline capture key reads {baseline_key!r}, not a key"
+    elif not same_key:
+        detail = "checkpoint_key diverged across hits"
+    else:
+        detail = f"{len(hits)} of {len(later)} restored"
     return ("stable_reuse", "every later stable conversation restores",
-            f"{len(hits)} of {len(later)} restored", "refuted",
-            "same_key" if same_key else "checkpoint_key diverged across hits")
+            f"{len(hits)} of {len(later)} restored", "refuted", detail)
 
 
-def verdict_invalidation(rows, phase, label):
+def verdict_invalidation(rows, phase, label, baseline_identity):
     changed = rows_of(rows, phase)
     if not changed:
         return (label, "the request diverges from the pin and recomputes",
@@ -162,6 +168,17 @@ def verdict_invalidation(rows, phase, label):
     if row["status"] != "completed":
         return (label, "the request diverges from the pin and recomputes",
                 UNKNOWN_STATE, "inconclusive", "the request failed")
+    if baseline_identity is None:
+        return (label, "the request diverges from the pin and recomputes",
+                UNKNOWN_STATE, "inconclusive",
+                "the stable-phase baseline never completed, so no identity"
+                " exists to diverge from")
+    identity_diverged = row["identity_sha256"] != baseline_identity
+    if not identity_diverged:
+        return (label, "the request diverges from the pin and recomputes",
+                "identity unchanged", "inconclusive",
+                "this request's identity_sha256 matches the baseline's, so it"
+                " never sent a changed schema or template to diverge from")
     if row["hit"] == "no" and row["capture_seen"] == "no":
         return (label, "the request diverges from the pin and recomputes",
                 "no restore, no capture", "confirmed",
@@ -173,6 +190,7 @@ def verdict_invalidation(rows, phase, label):
 
 def verdict_recovery(rows, phase, label, baseline_key):
     recovered = rows_of(rows, phase)
+    baseline_key_known = baseline_key not in (None, "", UNKNOWN_STATE)
     if not recovered:
         return (label, "the original pin still restores", UNKNOWN_STATE,
                 "inconclusive", f"no {phase} request in the ledger")
@@ -180,26 +198,32 @@ def verdict_recovery(rows, phase, label, baseline_key):
     if row["status"] != "completed":
         return (label, "the original pin still restores", UNKNOWN_STATE,
                 "inconclusive", "the request failed")
-    if row["hit"] == "yes" and baseline_key and row.get("checkpoint_key") == baseline_key:
+    if not baseline_key_known:
+        return (label, "the original pin still restores", UNKNOWN_STATE,
+                "inconclusive",
+                f"the baseline capture key reads {baseline_key!r}, not a key")
+    if row["hit"] == "yes" and row.get("checkpoint_key") == baseline_key:
         return (label, "the original pin still restores",
                 f"restored key={row.get('checkpoint_key')}", "confirmed",
                 "the disruptor left the pin standing")
     return (label, "the original pin still restores",
             f"hit={row['hit']} key={row.get('checkpoint_key')}", "refuted",
-            "the disruptor evicted or replaced the pin, or the baseline never"
-            " captured one")
+            "the disruptor evicted or replaced the pin")
 
 
 def verdicts(rows):
     stable = rows_of(rows, "stable")
-    baseline_key = (stable[0].get("checkpoint_key")
-                    if stable and stable[0]["status"] == "completed" else None)
+    baseline_completed = bool(stable) and stable[0]["status"] == "completed"
+    baseline_key = stable[0].get("checkpoint_key") if baseline_completed else None
+    baseline_identity = stable[0]["identity_sha256"] if baseline_completed else None
     return [
         verdict_stable_reuse(rows),
-        verdict_invalidation(rows, "schema_change", "schema_invalidation"),
+        verdict_invalidation(rows, "schema_change", "schema_invalidation",
+                              baseline_identity),
         verdict_recovery(rows, "recovery_after_schema_change",
                           "recovery_after_schema_change", baseline_key),
-        verdict_invalidation(rows, "template_change", "template_invalidation"),
+        verdict_invalidation(rows, "template_change", "template_invalidation",
+                              baseline_identity),
         verdict_recovery(rows, "recovery_after_template_change",
                           "recovery_after_template_change", baseline_key),
     ]

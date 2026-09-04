@@ -91,13 +91,22 @@ harness computes its own identity instead: `identity_sha256` is the SHA-256
 of the system prompt joined to the canonicalized JSON of the tool-schema
 array the request carried, over `\x00` as the join byte. Two requests sharing
 this digest sent the same rendering input; two that differ sent a different
-one. The check is then read against the server's own log rather than assumed
-from the digest alone: a schema-change or template-change request is
-confirmed invalidating only where its own log window carries neither a
-`restored` nor a `captured` line, and a recovery request is confirmed
-surviving only where it restores under the exact key the run's own capture
-line named, not merely under any key. `remote/summarize-prefix-checkpoint-hits.py`
-states both as `refuted` rather than `confirmed` where the log disagrees with
+one. The identity check runs first and gates the log check rather than
+standing beside it: `remote/summarize-prefix-checkpoint-hits.py`'s
+`schema_invalidation` and `template_invalidation` checks read `inconclusive`
+where a phase's `identity_sha256` matches the stable-phase baseline's, since a
+request that never diverged from what it sent before tested nothing about
+invalidation whatever its log window shows, and an armed server sent the
+exact same schema twice would otherwise let a plain hit read as a confirmed
+invalidation by naming the wrong phase. Only where the identity actually
+diverged does the log decide the verdict: a schema-change or template-change
+request is confirmed invalidating only where its own log window carries
+neither a `restored` nor a `captured` line, and a recovery request is
+confirmed surviving only where it restores under the exact key the run's own
+capture line named -- required to differ from the ledger's `-` sentinel for an
+unparsed key on both sides, since two unparsed keys are not one shared key --
+not merely under any key. `remote/summarize-prefix-checkpoint-hits.py`
+states both as `refuted` or `inconclusive` rather than `confirmed` where the log disagrees with
 the identity story, which is the outcome a leaking mechanism would produce.
 
 ## The five checks, and their falsifiers

@@ -148,6 +148,17 @@ size_state=0
 [ "$(ledger_field "$healthy_requests" stable 1 checkpoint_size_mib)" = 12.500 ] || size_state=1
 report "$size_state" the_captured_size_is_read_from_the_log_line
 
+# log_bytes_scanned states this request's own window, not the log's
+# cumulative size: a schema-change or template-change request writes no new
+# log line at all, so its window is exactly zero bytes regardless of how much
+# an earlier request already appended to the shared file.
+scanned_state=0
+[ "$(ledger_field "$healthy_requests" schema_change 1 log_bytes_scanned)" = 0 ] \
+    || scanned_state=1
+[ "$(ledger_field "$healthy_requests" template_change 1 log_bytes_scanned)" = 0 ] \
+    || scanned_state=1
+report "$scanned_state" log_bytes_scanned_states_the_request_window_not_the_log_total
+
 summary_state=0
 summary=$healthy_output/summary.tsv
 # summary.tsv carries two tables separated by one blank line, the request

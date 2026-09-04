@@ -439,13 +439,20 @@ run_request() {
         baseline_prompt_ms=$prompt_ms
     fi
 
+    # The ledger states the bytes this request's own window covered, not the
+    # log's total size: a server that has been serving for a while carries
+    # bytes from every earlier request, and reading the absolute size here
+    # would inflate every row by that history rather than reporting what this
+    # request alone appended.
+    log_bytes_scanned=$((log_bytes_after - log_bytes_before))
+
     [ "$status" = completed ] || request_failures=$((request_failures + 1))
     record_request "$slot" "$run_request_phase" "$run_request_conversation" \
         "$run_request_route" "$identity" "$prompt_n" "$prompt_ms" \
         "$prompt_tok_s" "$predicted_n" "$hit" "$capture_seen" \
         "${checkpoint_key:--}" "$known_pin_key" "${checkpoint_size_mib:--}" \
         "${operation_ms:--}" "$avoided_tokens" "$avoided_ms" \
-        "$(lifetime_seconds)" "$log_bytes_after" "$status" "$reason"
+        "$(lifetime_seconds)" "$log_bytes_scanned" "$status" "$reason"
     printf 'prefix_checkpoint_hits_request=%s slot=%s phase=%s hit=%s capture_seen=%s prompt_n=%s reason=%s\n' \
         "$status" "$slot" "$run_request_phase" "$hit" "$capture_seen" "$prompt_n" "$reason"
 }

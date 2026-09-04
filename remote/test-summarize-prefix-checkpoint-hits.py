@@ -142,6 +142,48 @@ report("a_cold_conversation_that_restores_refutes_stable_reuse",
        verdict_of(verdicts, "stable_reuse")["verdict"] == "refuted",
        verdict_of(verdicts, "stable_reuse"))
 
+# A schema-change request whose identity never diverged from the baseline --
+# an unarmed server, or a caller that forgot to change the tool-schema set --
+# reads inconclusive rather than confirming invalidation over a request that
+# never tested it.
+undiverged = [
+    row(1, "stable", 1, "chat", "id-p", "no", "yes", checkpoint_key="key-p"),
+    row(2, "stable", 2, "chat", "id-p", "yes", "no", checkpoint_key="key-p"),
+    row(3, "schema_change", 1, "chat", "id-p", "no", "no"),
+]
+requests, verdicts = parse(summarize(undiverged).stdout)
+report("an_undiverged_identity_leaves_invalidation_inconclusive",
+       verdict_of(verdicts, "schema_invalidation")["verdict"] == "inconclusive",
+       verdict_of(verdicts, "schema_invalidation"))
+
+# A restore whose checkpoint_key reads the unknown sentinel -- the log line
+# never parsed a key -- never satisfies "same key as the baseline capture",
+# even where the baseline capture line was itself unparsed and also reads the
+# sentinel; two unknowns are not one shared key.
+unparsed_key = [
+    row(1, "stable", 1, "chat", "id-p", "no", "yes", checkpoint_key="-"),
+    row(2, "stable", 2, "chat", "id-p", "yes", "no", checkpoint_key="-"),
+]
+requests, verdicts = parse(summarize(unparsed_key).stdout)
+report("an_unparsed_baseline_key_refuses_stable_reuse",
+       verdict_of(verdicts, "stable_reuse")["verdict"] == "refuted",
+       verdict_of(verdicts, "stable_reuse"))
+
+# A recovery request restoring under the unknown-key sentinel, against a
+# baseline whose own capture line was never parsed, reads inconclusive rather
+# than confirming a key match neither side actually carries.
+unparsed_recovery = [
+    row(1, "stable", 1, "chat", "id-p", "no", "yes", checkpoint_key="-"),
+    row(2, "stable", 2, "chat", "id-p", "yes", "no", checkpoint_key="-"),
+    row(3, "schema_change", 1, "chat", "id-schema", "no", "no"),
+    row(4, "recovery_after_schema_change", 1, "chat", "id-p", "yes", "no",
+        checkpoint_key="-"),
+]
+requests, verdicts = parse(summarize(unparsed_recovery).stdout)
+report("an_unparsed_baseline_key_leaves_recovery_inconclusive",
+       verdict_of(verdicts, "recovery_after_schema_change")["verdict"] == "inconclusive",
+       verdict_of(verdicts, "recovery_after_schema_change"))
+
 # A ledger too short to test reuse at all reads inconclusive rather than a
 # false confirmation.
 short = [row(1, "stable", 1, "chat", "id-p", "no", "yes", checkpoint_key="key-p")]
