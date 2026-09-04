@@ -99,6 +99,11 @@ unset GGML_VK_PREFER_HOST_MEMORY
 # commit reads neither.
 unset GGML_VK_Q4K_SIDEPLANE
 unset GGML_VK_Q4K_SIDEPLANE_LOG
+# The Q4_K variant-select candidate reads GGML_VK_Q4K_VARIANT at pipeline
+# creation and ends the load on a value outside its admitted set, so an ambient
+# name decides which mat-vec a launch serves or refuses the launch outright.
+# QWEN_Q4K_VARIANT below is the one route past this scrub.
+unset GGML_VK_Q4K_VARIANT
 unset GGML_VK_SUBALLOCATION_BLOCK_SIZE
 unset GGML_VK_SUBMIT_TRACE
 unset GGML_VK_SYNC_LOGGER
@@ -217,6 +222,27 @@ export QWEN_VULKAN_PROFILE=$vulkan_profile
 # it; the promoted build carries no reader, and that build is never bundled.
 if [ -n "${QWEN_PIPELINE_CENSUS:-}" ]; then
     export GGML_VK_PIPELINE_CENSUS=$QWEN_PIPELINE_CENSUS
+fi
+# The Q4_K variant arm runs under the serving profile the comparison is read at,
+# since the whole point of one executable carrying every formulation is that the
+# arm changes the pipeline and nothing else; the key therefore crosses the scrub
+# under a QWEN_ name the way the census toggle does rather than belonging to one
+# profile. The admitted set is stated here as well as at pipeline creation
+# because a value the server refuses is a launch that reaches the device and
+# ends there, where this refusal names the input while the argv is still
+# readable. Only the variant-select candidate build reads the exported name; a
+# promoted build carries no reader and is never bundled with one.
+if [ -n "${QWEN_Q4K_VARIANT:-}" ]; then
+    case $QWEN_Q4K_VARIANT in
+        v0 | v1 | v2 | v0-rows8 | v1-rows8 | v2-rows8)
+            export GGML_VK_Q4K_VARIANT=$QWEN_Q4K_VARIANT
+            ;;
+        *)
+            printf 'QWEN_Q4K_VARIANT is v0, v1, or v2, each optionally -rows8: %s\n' \
+                "$QWEN_Q4K_VARIANT" >&2
+            exit 2
+            ;;
+    esac
 fi
 
 exec "$@"
