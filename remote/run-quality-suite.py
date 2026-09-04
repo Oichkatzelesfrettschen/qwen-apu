@@ -15,10 +15,13 @@ A row's `attachment` column names what the request carries besides the prompt.
 `image:NAME` sends the fixture that remote/generate-quality-images.py draws,
 whose content this repository declares, so a vision row is graded against a
 known answer rather than against a reader's impression. `tools:SET` offers the
-named set from remote/quality-tools.json in the request body. Nothing is
-executed on either path: the appliance runs without --tools, so the server holds
-no tool server, and what a tool row grades is the `tool_calls` object the model
-emitted.
+named set from remote/quality-tools.json in the request body. `web:` names
+neither a fixture nor a tool set; it marks a row whose correct answer requires
+current external information, so remote/run-conversational-suite.sh reads it to
+grade the web-off arm as an expected failure and the web-on arm as the
+measured gain. Nothing is executed on either path: the appliance runs without
+--tools, so the server holds no tool server, and what a tool row grades is the
+`tool_calls` object the model emitted.
 """
 
 import argparse
@@ -60,15 +63,23 @@ def parse_attachment(value):
     One column rather than two because a row carries images or tools and never
     both: an image row measures what the projector put in the embedding space
     and a tool row measures selection from a declared set, and mixing them would
-    leave a failure unattributable between the two.
+    leave a failure unattributable between the two. `web:` names neither a
+    fixture nor a tool set -- it marks a row whose correct answer depends on
+    current external information the served checkpoint cannot hold from
+    training, so it carries no name after the colon.
     """
     value = (value or "-").strip()
     if value in ("", "-"):
         return "none", ()
     kind, separator, names = value.partition(":")
-    if not separator or kind not in ("image", "tools"):
-        raise SystemExit(f"attachment must be `-`, `image:...`, or `tools:...`: {value}")
+    if not separator or kind not in ("image", "tools", "web"):
+        raise SystemExit(
+            f"attachment must be `-`, `image:...`, `tools:...`, or `web:`: {value}")
     parts = tuple(part for part in names.split("|") if part)
+    if kind == "web":
+        if parts:
+            raise SystemExit(f"a web row names nothing after the colon: {value}")
+        return kind, parts
     if not parts:
         raise SystemExit(f"attachment names nothing: {value}")
     if kind == "tools" and len(parts) != 1:
