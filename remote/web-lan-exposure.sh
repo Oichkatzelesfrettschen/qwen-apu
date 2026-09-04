@@ -268,7 +268,14 @@ print("ifname=%s" % ifname)
 print("mac=%s" % mac)
 print("prefixlen=%s" % prefixlen)
 print("nm_uuid=%s" % nm_uuid)
-print("nm_name=%s" % nm_name)
+# The session's status file is space-delimited key=value fields, and a
+# NetworkManager connection name commonly carries a space of its own
+# ("Wired connection 1"), which would split into extra fields under that
+# convention and read as several keys rather than one. Run-fold every space
+# in the name to an underscore here, at the one place that reads it, so
+# every consumer of QWEN_WEB_LAN_NM_NAME and the recorded lan_interface line
+# reads the identical single token.
+print("nm_name=%s" % "_".join(nm_name.split()))
 PYEOF
 )
 
