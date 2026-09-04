@@ -372,9 +372,15 @@ case $action in
         # registry filename, and object tuple through the tmux boundary. The
         # capacity policy re-stats the descriptor before selecting one row.
         # The approval broker's marker, port, program, state directory, signing
-        # key path, profile, API-key requirement, and readiness decision cross
-        # with them. qwen-web-launch.sh exports the values into the control
-        # shell, and the session script starts the broker beyond the boundary.
+        # key path, profile, API-key requirement, readiness decision, and its
+        # four rate bounds -- the aggregate authorize-minute bucket, the
+        # per-client grant and image-grant buckets, and the outstanding
+        # image-grant cap -- cross with them. authorize-broker.py falls back
+        # to its own hard-coded default for a bound left unforwarded, so a
+        # caller whose own environment named one reaches the broker only
+        # through this list. qwen-web-launch.sh exports the values into the
+        # control shell, and the session script starts the broker beyond the
+        # boundary.
         # The image service's marker, program, profile parameters, page origin,
         # and the three names its MCP child reads cross the same way, because
         # qwen-image-launch.sh exports them into this shell and the session
@@ -411,6 +417,10 @@ case $action in
                               QWEN_WEB_TOKEN_KEY_FILE QWEN_WEB_PROFILE \
                               QWEN_WEB_PROVIDER QWEN_WEB_PROFILES \
                               QWEN_WEB_BROKER_ORIGIN \
+                              QWEN_WEB_AUTHORIZE_PER_MINUTE \
+                              QWEN_WEB_GRANT_PER_CLIENT_PER_MINUTE \
+                              QWEN_WEB_IMAGE_GRANT_PER_CLIENT_PER_MINUTE \
+                              QWEN_IMAGE_MAX_OUTSTANDING_GRANTS_PER_CLIENT \
                               QWEN_WEB_LAN QWEN_WEB_LAN_ADDRESS \
                               QWEN_WEB_LAN_NAME QWEN_WEB_LAN_OPEN \
                               QWEN_WEB_LAN_OPEN_ALL_INTERFACES \

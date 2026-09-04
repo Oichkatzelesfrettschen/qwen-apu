@@ -70,6 +70,10 @@ PROVENANCE_URL = f"/artifacts/{PROVENANCE_SHA256}.json"
 START_WAIT_SECONDS = 15.0
 STOP_WAIT_SECONDS = 5.0
 CLOSE_WAIT_SECONDS = 10.0
+# Every arm in this module posts its POST /grant-image requests from one
+# loopback client address, so the default bound admits comfortably more than
+# any arm sends unless the arm overrides it to measure the bound itself.
+IMAGE_GRANT_PER_CLIENT_LIMIT_UNMETERED = 1000
 
 
 def approved_fields(**overrides):
@@ -287,11 +291,18 @@ class BrokerProcess:
     """A running approval broker and the client that speaks to its port."""
 
     def __init__(self, state_directory, token_key_path, api_key_path,
-                 language_profile, image_profile):
+                 language_profile, image_profile,
+                 image_grant_per_client_per_minute=(
+                     IMAGE_GRANT_PER_CLIENT_LIMIT_UNMETERED
+                 )):
         # The claim joins two profiles and the MCP child compares each against
         # its own setting, so the broker binds them separately: --profile is
         # the language profile a section serves and --image-profile is the
-        # image profile the ledger armed.
+        # image profile the ledger armed. Every arm in this module posts from
+        # one loopback client address, so the default per-client bucket admits
+        # comfortably more than any arm sends unless the arm overrides it to
+        # measure the bound itself -- the convention
+        # test-authorize-broker.py's own BrokerProcess applies.
         argv = [
             sys.executable,
             BROKER_PATH,
@@ -309,6 +320,8 @@ class BrokerProcess:
             image_profile,
             "--origin",
             ORIGIN,
+            "--image-grant-per-client-per-minute",
+            str(image_grant_per_client_per_minute),
         ]
         self.process = subprocess.Popen(
             argv,
@@ -323,11 +336,19 @@ class BrokerProcess:
             self.host, self.port = parts[1], int(parts[2])
 
     def post(self, path, payload, headers):
+        status, _response_headers, body = self.post_with_headers(
+            path, payload, headers
+        )
+        return status, body
+
+    def post_with_headers(self, path, payload, headers):
         connection = http.client.HTTPConnection(self.host, self.port, timeout=10)
         try:
             connection.request("POST", path, json.dumps(payload), headers)
             response = connection.getresponse()
-            return response.status, json.loads(response.read().decode("utf-8"))
+            response_headers = dict(response.getheaders())
+            body = json.loads(response.read().decode("utf-8"))
+            return response.status, response_headers, body
         finally:
             connection.close()
 
@@ -656,6 +677,58 @@ class ImageMcpTest(unittest.TestCase):
         # the handler on a claim shaped for search fields.
         statuses = {row[1] for row in self.audit_rows()}
         self.assertEqual(statuses, {"invalid_argument"})
+
+    def test_broker_refuses_image_grants_over_the_per_client_bound(self):
+        """The client-address bucket answers 429 ahead of every schema check.
+
+        `do_POST` calls `ledger.consume` for `grant-image-client-minute`
+        before it reads or parses the request body, so a caller that has
+        spent its own bucket is refused with 429 and Retry-After even where
+        the body it sent would otherwise fail schema or profile validation
+        with 400 -- the meter, not the claim shape, decides the outcome once
+        the bucket is empty.
+        """
+        limit = 2
+        broker = BrokerProcess(
+            self.state_directory,
+            self.token_key_path,
+            self.api_key_path,
+            LANGUAGE_PROFILE,
+            IMAGE_PROFILE,
+            image_grant_per_client_per_minute=limit,
+        )
+        self.brokers.append(broker)
+        secret_path = os.path.join(self.state_directory, SESSION_SECRET_FILE_NAME)
+        deadline = time.time() + START_WAIT_SECONDS
+        while time.time() < deadline and not os.path.exists(secret_path):
+            time.sleep(0.05)
+        with open(secret_path, encoding="ascii") as handle:
+            secret = handle.read().strip()
+        headers = {
+            "Content-Type": "application/json",
+            "Origin": ORIGIN,
+            SESSION_HEADER: secret,
+        }
+        malformed = approved_fields(image_profile="another-profile")
+        for _ in range(limit):
+            status, _response_headers, payload = broker.post_with_headers(
+                "/grant-image", malformed, headers
+            )
+            self.assertEqual(status, 400, payload)
+            self.assertIn("image profile", payload["error"])
+        status, response_headers, payload = broker.post_with_headers(
+            "/grant-image", malformed, headers
+        )
+        self.assertEqual(status, 429, payload)
+        self.assertIn("Retry-After", response_headers)
+        self.assertTrue(0 < int(response_headers["Retry-After"]) <= 60)
+        # A well-formed request against the exhausted bucket answers 429 the
+        # same way: the client bucket refuses ahead of the body being read.
+        status, response_headers, payload = broker.post_with_headers(
+            "/grant-image", approved_fields(), headers
+        )
+        self.assertEqual(status, 429, payload)
+        self.assertIn("Retry-After", response_headers)
 
     def test_completed_generation_carries_digest_and_url_alone(self):
         service = self.start_echo_service()
