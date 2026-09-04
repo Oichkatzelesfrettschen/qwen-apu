@@ -1,0 +1,80 @@
+The Q4_K superblock scale decode reads all twelve scale bytes as three four-byte-aligned
+words and gathers the halfword pair from byte lanes, in place of three loads at two-byte
+alignment. block_q4_K holds scales[12] as bytes; the shader reads scales[v_im],
+scales[v_im+2], and scales[v_im+4] through the packed16 view, so each is a 16-bit access at
+alignment 2, and nir_lower_mem_access_bit_sizes lowers the vectorized first pair to a
+dword-aligned buffer_load_dwordx2 plus one alignbyte_amd per component
+(shift_load_data_alignbyte_amd), which ACO selects as two v_alignbyte_b32 and a
+v_mov_b32_sdwa merge, over an address the body adds up per output row. The packed32 view
+carries the same twelve bytes as scales[0..2], four-byte aligned, so one read serves the
+pair and the eighth-scale halfword alike and the alignbyte lowering never runs.
+
+The merge is a byte gather rather than a shift-or because the four bytes wanted are lanes
+2*v_im and 2*v_im+1 of two words, which is a byte permute; v_im is invariant across both
+loops, so compute_outputs forms the selector once and passes it in. The selected bytes are
+the bytes the shift-or selected, over the whole twelve-byte input space and both values of
+v_im, so the accumulated value is unchanged bit for bit.
+
+Measured on the RADV RAVEN2 shim at the served shape, spec constants 0:64 1:4 2:1: the
+superblock loop body falls 395 to 365 instructions and 24 to 16 vector-memory instructions,
+its longest dependent chain 17 to 12, and the shader's VGPR allocation 64 to 48, which the
+driver reports as 5 subgroups per SIMD against 4. evidence/q4k-scale-decode/ carries the
+receipts, the four formulations this one was chosen over, and the appliance arms that
+remain unrun.
+
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_q4_k.comp b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_q4_k.comp
+index 48778a3e8..c3cf5ffb6 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_q4_k.comp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/mul_mat_vec_q4_k.comp
+@@ -8,7 +8,7 @@ layout(local_size_x_id = 0, local_size_y = 1, local_size_z = 1) in;
+ 
+ FLOAT_TYPE temp[NUM_COLS][NUM_ROWS];
+ 
+-void calc_superblock(const uint a_offset, const uint b_offset, const uint v_im, const uint q_offset, const uint y_offset, const uint i, const uint num_blocks_per_row, const uint first_row, const uint num_rows) {
++void calc_superblock(const uint a_offset, const uint b_offset, const uint v_im, const uint scale_shift, const uint scale_shift_c, const uint q_offset, const uint y_offset, const uint i, const uint num_blocks_per_row, const uint first_row, const uint num_rows) {
+     const uint y1_idx = i * QUANT_K + y_offset;
+     const uint y2_idx = y1_idx + 128;
+ 
+@@ -33,11 +33,22 @@ void calc_superblock(const uint a_offset, const uint b_offset, const uint v_im,
+         const uint ib0 = a_offset + (first_row+n)*num_blocks_per_row;
+         const FLOAT_TYPEV2 dm = FLOAT_TYPEV2(data_a[ib0 + i].dm);
+ 
+-        const uint32_t scale0_u32 = data_a_packed16[ib0 + i].scales[v_im    ];
+-        const uint32_t scale4_u32 = data_a_packed16[ib0 + i].scales[v_im + 2];
+-        const uint32_t scale8_u32 = data_a_packed16[ib0 + i].scales[v_im + 4];
++        // scales[v_im] and scales[v_im+2] are two-byte aligned, so nir_lower_mem_access_bit_sizes
++        // lowers their vectorized load to a dword-aligned pair and one alignbyte shift per
++        // component, and scales[v_im+4] costs a third load with its own address chain. All twelve
++        // scale bytes are three four-byte-aligned words of the packed32 view, so one read replaces
++        // the three loads, and the halfword pair is gathered from byte lanes under the selector the
++        // caller hoisted. The four bytes the gather produces are the four the shift-or produced.
++        const uint32_t scale_lo_u32 = data_a_packed32[ib0 + i].scales[0];
++        const uint32_t scale_hi_u32 = data_a_packed32[ib0 + i].scales[1];
++        const uint32_t scale_top_u32 = data_a_packed32[ib0 + i].scales[2];
++        const uint32_t scale8_u32 = (scale_top_u32 >> scale_shift) & 0x0000FFFFu;
+ 
+-        const uint32_t scale_0_4_l = (scale4_u32 << 16) | scale0_u32;
++        const u8vec4 scale_lo_b = unpack8(scale_lo_u32);
++        const u8vec4 scale_hi_b = unpack8(scale_hi_u32);
++        const uint scale_byte = scale_shift >> 3;
++        const uint32_t scale_0_4_l = pack32(u8vec4(scale_lo_b[scale_byte], scale_lo_b[scale_byte + 1],
++                                                   scale_hi_b[scale_byte], scale_hi_b[scale_byte + 1]));
+         const uint32_t scale_0_4_h = (scale_0_4_l & 0xC0C0C0C0) >> 2;
+         const vec4 scale_0_4_l_f = vec4(unpack8(scale_0_4_l & 0x3F3F3F3F));
+         const vec4 scale8_f = vec4(unpack8((((scale8_u32 << 12) | scale8_u32) & 0x0F0F0F0F) | scale_0_4_h));
+@@ -127,8 +138,14 @@ void compute_outputs(const uint32_t first_row, const uint32_t num_rows) {
+         }
+     }
+ 
++    // v_im is invariant across both loops, so the halfword selector the scale decode needs is
++    // formed once here. nir_opt_licm leaves the superblock loop's body alone, so a selector
++    // formed inside calc_superblock is rebuilt on every iteration.
++    const uint scale_shift = 16u * v_im;
++    const uint scale_shift_c = 16u - scale_shift;
++
+     [[unroll]] for (uint i = ix; i < num_blocks_per_row; i += it_size)
+-        calc_superblock(a_offset, b_offset, v_im, q_offset, y_offset, i, num_blocks_per_row, first_row, num_rows);
++        calc_superblock(a_offset, b_offset, v_im, scale_shift, scale_shift_c, q_offset, y_offset, i, num_blocks_per_row, first_row, num_rows);
+ 
+     reduce_result(temp, d_offset, first_row, num_rows, tid);
+ }

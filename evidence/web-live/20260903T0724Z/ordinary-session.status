@@ -1,0 +1,4 @@
+state=running server_pid=1428110 monitor_pid=1428347 latency_watchdog_pid=1428329 kernel_hazard_watchdog_pid=1428342 profile=low-async host=0.0.0.0 port=8080 context=24576 latency_mode=observe utc=2026-09-03T07:02:15Z
+speculation spec_type=off draft_n_max=default draft_p_min=default draft_backend_sampling=0 backend_sampling=0
+cache cache_type_k=registry cache_type_v=registry flash_attention=registry override_context_ceiling=registry
+router enabled=1 presets=$HOME/qwen-webui-state/.router-presets.active.jhZl3T preset_sha256=9356fa5126a6586b29ff1e42a0e144043d044ce8c678716525e8897f3f8ac9e8 models_max=1
