@@ -1,0 +1,271 @@
+#!/bin/sh
+set -eu
+
+# Reproduce the eight successor lanes of PR #105 from a base ref.
+#
+# The split is a path partition. docs/split-plan/lanes.tsv assigns every path
+# the source branch touches to one lane, to `shared` where several lanes each
+# own part of one file, or to `dropped` where the work belongs to neither. Each
+# lane branch replays the source commits in their original order, restricted to
+# the paths that lane owns: a commit whose whole file set lands in one lane is
+# cherry-picked so its authorship and message travel unchanged, and a commit
+# that spans lanes is re-committed per lane from `git checkout <commit> --
+# <paths>` under the original subject and body with a `Split-from:` trailer
+# naming the commit it came from. A lane's share of a shared file arrives from
+# docs/split-plan/shared/<lane>/, whose patches apply against the base version,
+# and evidence/SHA256SUMS is regenerated per lane so each manifest describes the
+# tree that lane actually carries.
+#
+# Three lanes stack rather than branching from the base, because
+# run-raven2-vulkan-kernel-census.sh introduces census-arm-lib.sh,
+# telemetry-broker.c, the two clock-sidecar readers, and
+# summarize-census-controls.py, and dpm-telemetry, correctness-witnesses, and
+# served-ab-harness each change or source those files rather than introducing
+# them. Rebasing the stack onto main after PR #106 merges therefore rebases
+# census-timing first and the three onto its new tip.
+#
+# The script rewrites the eight lane/* branches and leaves the checkout on the
+# last one. It writes nothing to any remote.
+
+usage() {
+    printf 'usage: %s [BASE_REF] [SOURCE_REF] [LANE...]\n' "$0" >&2
+    exit 2
+}
+
+[ "$#" -ge 1 ] || set -- origin/main
+[ "$#" -ge 2 ] || set -- "$1" origin/stage-a-census-brackets
+base_ref=$1
+source_ref=$2
+shift 2
+# A named lane rebuilds that branch alone. Every lane is rewritten where none
+# is named, and a lane whose branch is already published is rebuilt under a new
+# commit hash, so a run after a push names the lanes it means.
+requested_lanes=$*
+
+script_directory=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+repository_root=$(CDPATH='' cd -- "$script_directory/../.." && pwd)
+lane_map=$script_directory/lanes.tsv
+shared_root=$script_directory/shared
+
+[ -r "$lane_map" ] || { printf 'lane map is unreadable: %s\n' "$lane_map" >&2; exit 1; }
+
+cd "$repository_root"
+
+if [ -n "$(git status --porcelain)" ]; then
+    printf 'the working tree carries changes; the split rewrites it\n' >&2
+    exit 1
+fi
+
+base_commit=$(git rev-parse --verify "$base_ref^{commit}")
+source_commit=$(git rev-parse --verify "$source_ref^{commit}")
+commits=$(git rev-list --reverse "$base_commit..$source_commit")
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT HUP INT TERM
+
+# The lane branches are checked out into this same working tree, and the branch
+# carrying docs/split-plan/ is not among them, so the map and the shared slices
+# are copied out of the tree before the first checkout removes them.
+cp "$lane_map" "$work/lanes.tsv"
+lane_map=$work/lanes.tsv
+if [ -d "$shared_root" ]; then
+    cp -R "$shared_root" "$work/shared"
+    shared_root=$work/shared
+fi
+
+# lane_paths COMMIT LANE prints the paths that commit touches which the lane
+# owns, one per line, each prefixed by its status letter.
+lane_paths() {
+    git diff --name-status --no-renames "$1^" "$1" |
+        LANE=$2 MAP=$lane_map COMMIT=$(git rev-parse --short "$1") python3 -c '
+import fnmatch, os, sys
+plain, override = [], []
+for line in open(os.environ["MAP"]):
+    line = line.rstrip("\n")
+    if not line or line.startswith("#") or line.startswith("lane\t"):
+        continue
+    fields = line.split("\t")
+    if len(fields) < 2:
+        raise SystemExit("malformed lane-map row (missing tab separator): %s" % line)
+    lane, pattern = fields[0], fields[1]
+    if ":" in pattern:
+        commit, pattern = pattern.split(":", 1)
+        override.append((commit, lane, pattern))
+    else:
+        plain.append((lane, pattern))
+want = os.environ["LANE"]
+commit = os.environ["COMMIT"]
+for line in sys.stdin:
+    status, path = line.rstrip("\n").split("\t", 1)
+    lane = None
+    for which, candidate, pattern in override:
+        if commit.startswith(which) and fnmatch.fnmatch(path, pattern):
+            lane = candidate
+            break
+    if lane is None:
+        for candidate, pattern in plain:
+            if fnmatch.fnmatch(path, pattern):
+                lane = candidate
+                break
+    if lane == want:
+        print(status[0] + "\t" + path)
+'
+}
+
+# commit_is_pure COMMIT LANE succeeds where every path the commit touches
+# belongs to the lane, which is the condition a cherry-pick preserves.
+commit_is_pure() {
+    total=$(git diff --name-only --no-renames "$1^" "$1" | wc -l)
+    mine=$(lane_paths "$1" "$2" | wc -l)
+    [ "$total" -eq "$mine" ]
+}
+
+# lane_requested LANE succeeds where the caller named the lane or named none.
+lane_requested() {
+    [ -n "$requested_lanes" ] || return 0
+    for requested in $requested_lanes; do
+        [ "$requested" = "$1" ] && return 0
+    done
+    return 1
+}
+
+replay_lane() {
+    lane=$1
+    lane_base=$2
+    lane_requested "$lane" || return 0
+    printf '=== lane %s from %s\n' "$lane" "$lane_base"
+    git checkout -q -B "lane/$lane" "$lane_base"
+    for commit in $commits; do
+        lane_paths "$commit" "$lane" >"$work/paths"
+        [ -s "$work/paths" ] || continue
+        if commit_is_pure "$commit" "$lane"; then
+            if git cherry-pick -x "$commit" >/dev/null 2>&1; then
+                printf '  %s cherry-pick\n' "$(git rev-parse --short "$commit")"
+                continue
+            fi
+            git cherry-pick --abort >/dev/null 2>&1 || true
+        fi
+        while IFS='	' read -r status path; do
+            if [ "$status" = D ]; then
+                git rm -q --ignore-unmatch -- "$path"
+            else
+                git checkout -q "$commit" -- "$path"
+                # The shader laboratory's replay fixtures carry a
+                # radv-debug.log each, which a global *.log rule ignores, so
+                # the add is forced or the lane loses the three files
+                # test-lab-replay.sh reads.
+                git add -f -- "$path"
+            fi
+        done <"$work/paths"
+        if git diff --cached --quiet; then
+            continue
+        fi
+        git log -1 --format=%B "$commit" >"$work/message"
+        printf '\nSplit-from: %s\n' "$(git rev-parse "$commit")" >>"$work/message"
+        GIT_AUTHOR_NAME=$(git log -1 --format=%an "$commit") \
+        GIT_AUTHOR_EMAIL=$(git log -1 --format=%ae "$commit") \
+        GIT_AUTHOR_DATE=$(git log -1 --format=%aD "$commit") \
+            git commit -q --file="$work/message" --cleanup=verbatim
+        printf '  %s split\n' "$(git rev-parse --short "$commit")"
+    done
+    if [ -d "$shared_root/$lane" ]; then
+        # A shared slice is stored as the whole file the lane carries rather
+        # than as a patch, because three lanes stack and a patch against the
+        # base version would then apply over a file the lane below already
+        # changed. A stacked lane's slice holds census-timing's content with
+        # its own hunks on top, and copying states that directly.
+        (cd "$shared_root/$lane" && find . -type f -print) |
+            sed 's|^\./||' |
+            while read -r shared_path; do
+                cp "$shared_root/$lane/$shared_path" "$repository_root/$shared_path"
+            done
+        if ! git diff --quiet; then
+            git add -A
+            git commit -q -m "$lane: carry this lane's share of the files every lane touches
+
+CLAUDE.md, remote/repository-quality-gates.sh,
+evidence/raven2-vulkan-kernel-census/README.md, remote/build-llama-preset.sh,
+remote/radv-low-priority-env.sh, and remote/check-text-policy.py each carry
+paragraphs, gate cells, or hunks belonging to several successor lanes. This
+commit applies the hunks that describe $lane's own files, from
+docs/split-plan/shared/$lane/ in the split-plan branch.
+
+Split-from: $source_commit"
+            printf '  shared slice\n'
+        fi
+    fi
+    remote/refresh-evidence-manifest.sh
+    if ! git diff --quiet -- evidence/SHA256SUMS; then
+        git add evidence/SHA256SUMS
+        git commit -q -m "evidence: regenerate the manifest over this lane's tree
+
+remote/refresh-evidence-manifest.sh hashes the tracked evidence tree, so a lane
+carrying a subset of PR #105's evidence needs its own manifest for
+\`--check\` to pass on the lane alone."
+        printf '  manifest\n'
+    fi
+    printf '  tip %s\n' "$(git rev-parse --short HEAD)"
+}
+
+# deployment-followups is the one lane a path replay cannot build. Its six
+# commits predate PR #106 and change the same four files that merge repaired,
+# so replaying the branch's copy would revert main. The lane takes main's shape
+# and adds the branch's own checks on top: 74ddab7 cherry-picks onto the
+# repaired files, b02fabd's three deployment paths arrive as a three-way patch
+# application rather than as a checkout of the branch's whole file, the one
+# CLAUDE.md sentence naming the hard-link refusal is placed by name, and the
+# remaining four commits are pure.
+split_deployment_followups() {
+    lane=deployment-followups
+    lane_requested "$lane" || return 0
+    printf '=== lane %s from %s\n' "$lane" "$base_commit"
+    git checkout -q -B "lane/$lane" "$base_commit"
+    git cherry-pick -x 74ddab7 >/dev/null
+    printf '  74ddab7 cherry-pick\n'
+    git diff b02fabd^ b02fabd -- remote/build-deployment-bundle.sh \
+        remote/verify-deployment-bundle.sh remote/test-deployment-bundle.sh \
+        >"$work/b02fabd-deployment.patch"
+    git apply -3 "$work/b02fabd-deployment.patch"
+    python3 - "$repository_root/CLAUDE.md" <<'PYTHON'
+import sys
+path = sys.argv[1]
+old = """# open-verified-lock-descriptor.py opens without following a link or
+# truncating and holds exclusively for the activator and shared for the
+# resolver."""
+new = """# open-verified-lock-descriptor.py opens without following a link or
+# truncating, refuses a leaf with more than one hard link, and holds
+# exclusively for the activator and shared for the resolver."""
+with open(path) as handle:
+    text = handle.read()
+if old not in text:
+    raise SystemExit("the lock-leaf sentence anchor moved in CLAUDE.md")
+with open(path, "w") as handle:
+    handle.write(text.replace(old, new, 1))
+PYTHON
+    git add -A
+    git log -1 --format=%B b02fabd >"$work/message"
+    printf '\nSplit-from: %s\n' "$(git rev-parse b02fabd)" >>"$work/message"
+    GIT_AUTHOR_NAME=$(git log -1 --format=%an b02fabd) \
+    GIT_AUTHOR_EMAIL=$(git log -1 --format=%ae b02fabd) \
+    GIT_AUTHOR_DATE=$(git log -1 --format=%aD b02fabd) \
+        git commit -q --file="$work/message" --cleanup=verbatim
+    printf '  b02fabd split\n'
+    git cherry-pick -x a3105b4 7e9e09b 995ef68 f5f92d8 >/dev/null
+    printf '  a3105b4 7e9e09b 995ef68 f5f92d8 cherry-pick\n'
+    remote/refresh-evidence-manifest.sh
+    if ! git diff --quiet -- evidence/SHA256SUMS; then
+        git add evidence/SHA256SUMS
+        git commit -q -m "evidence: regenerate the manifest over this lane's tree"
+        printf '  manifest\n'
+    fi
+    printf '  tip %s\n' "$(git rev-parse --short HEAD)"
+}
+
+replay_lane census-timing "$base_commit"
+replay_lane build-cache-identity "$base_commit"
+replay_lane dpm-telemetry lane/census-timing
+replay_lane shader-e4 "$base_commit"
+replay_lane correctness-witnesses lane/census-timing
+replay_lane served-ab-harness lane/census-timing
+replay_lane retained-evidence "$base_commit"
+split_deployment_followups

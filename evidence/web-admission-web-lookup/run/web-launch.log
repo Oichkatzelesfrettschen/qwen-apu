@@ -1,0 +1,16 @@
+web_launch presets=$HOME/worktrees/qwen-apu/device-campaigns-20260903-web-search-live/evidence/web-admission-web-lookup/run/web-presets.ini unvalidated_depth_marker=absent authorizer_ready=1 bind=127.0.0.1
+web_launch searxng=owned url=http://127.0.0.1:8888 port=8888
+web_launch broker_port=8571 broker_state_dir=$HOME/worktrees/qwen-apu/device-campaigns-20260903-web-search-live/evidence/web-admission-web-lookup/run/web-mcp signing_key=configured profile=web-lookup provider=searxng review_section=- models_max=1
+web_launch static_path=$HOME/qwen-laptop-setup/remote/../webui
+runtime_tree=verified git_head=d96540988d7f82c0de39a17f00c2ed81f8d6b344 payload=42552a10b6357efe4109a1913ac3bfc420c62732c8b6cccf3692894c36052568 files=295
+active_deployment=natural-boundary-13d05a0-r4-image directory=$HOME/qwen-deployments/natural-boundary-13d05a0-r4-image
+router_preflight_subject=Qwen3.5-0.8B-Q8_0.gguf bytes=833592096
+runtime_tree=verified git_head=d96540988d7f82c0de39a17f00c2ed81f8d6b344 payload=42552a10b6357efe4109a1913ac3bfc420c62732c8b6cccf3692894c36052568 files=295
+runtime_tree=verified git_head=d96540988d7f82c0de39a17f00c2ed81f8d6b344 payload=42552a10b6357efe4109a1913ac3bfc420c62732c8b6cccf3692894c36052568 files=295
+started tmux_socket=qwen-runtime tmux_session=qwen-webui profile=low-async host=127.0.0.1 port=8080 context=24576 latency_mode=observe model=$HOME/models/Qwen3.5-0.8B-GGUF/Qwen3.5-0.8B-Q8_0.gguf server=$HOME/qwen-deployments/natural-boundary-13d05a0-r4-image/llama-server
+speculation spec_type=off draft_n_max=default draft_p_min=default draft_backend_sampling=0 backend_sampling=0
+cache cache_type_k=registry cache_type_v=registry flash_attention=registry override_context_ceiling=registry
+state=running server_pid=2401195 monitor_pid=2401481 latency_watchdog_pid=2401443 kernel_hazard_watchdog_pid=2401470 broker_pid=2401113 searxng_pid=2400971 profile=low-async host=127.0.0.1 port=8080 context=24576 latency_mode=observe utc=2026-09-03T20:15:28Z
+reachable at http://127.0.0.1:8080 (loopback only)
+approval broker at http://127.0.0.1:8571 (loopback only)
+stop it with $HOME/qwen-laptop-setup/remote/qwen-teardown.sh
