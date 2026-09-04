@@ -580,9 +580,16 @@ manifest's `q4k_variants` to admit both keys, and requires both roles to carry a
 those refusals removes a way for a receipt to name an arm the device never created: a build
 declaring no keys ignores the environment and runs its default shader, a half-keyed run leaves
 one role at that default, and two binaries under one key measure the build beside the arm.
-The witness is bound the same way: its own `inputs.tsv` must name this campaign's model and
-both server digests before its token-identity and margin rows are reported, since a stale
-directory would otherwise contribute an authoritative-looking verdict about another experiment.
+The witness is bound the same way and by one field more. Its own `inputs.tsv` must name this
+campaign's model, both server digests, and both experiment keys before its token-identity and
+margin rows are reported, since a stale directory would otherwise contribute an
+authoritative-looking verdict about another experiment. The keys are what carry that check
+under a keyed comparison: both roles are one executable by construction there, so the two
+server digests separate no arm pair and a witness for `e4/2` against `e4/4` would otherwise
+report as evidence for `e4/4` against `e4-scale-licm/4`.
+`run-kernel-delta-witness.sh` therefore takes the same pair, passes each arm's key into its own
+closed environment -- it launches llama-server directly rather than through
+`radv-low-priority-env.sh` -- and records the pair, with `-` on both sides for an unkeyed run.
 
 `remote/radv-low-priority-env.sh` scrubs `GGML_VK_Q4K_VARIANT` on every profile and forwards
 `QWEN_Q4K_VARIANT` past the scrub after the profile case, the route `QWEN_PIPELINE_CENSUS`

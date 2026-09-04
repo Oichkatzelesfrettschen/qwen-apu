@@ -2020,6 +2020,7 @@ mkdir -p "$witness_foreign"
     printf 'model_id\tsome-other-model\n'
     printf 'control_server_sha256\t%s\n' "$control_sha256"
     printf 'candidate_server_sha256\t%s\n' "$candidate_sha256"
+    printf 'control_experiment_key\t-\ncandidate_experiment_key\t-\n'
 } >"$witness_foreign/inputs.tsv"
 run_refusal witness_foreign_model \
     'the witness names model_id some-other-model where this campaign runs' \
@@ -2031,6 +2032,7 @@ mkdir -p "$witness_stale"
     printf 'model_id\t%s\n' "$model_id"
     printf 'control_server_sha256\t%s\n' "$control_sha256"
     printf 'candidate_server_sha256\tstaledigest\n'
+    printf 'control_experiment_key\t-\ncandidate_experiment_key\t-\n'
 } >"$witness_stale/inputs.tsv"
 run_refusal witness_stale_candidate \
     'the witness names candidate_server_sha256 staledigest where this campaign runs' \
@@ -2042,7 +2044,27 @@ mkdir -p "$witness_matching"
     printf 'model_id\t%s\n' "$model_id"
     printf 'control_server_sha256\t%s\n' "$control_sha256"
     printf 'candidate_server_sha256\t%s\n' "$candidate_sha256"
+    printf 'control_experiment_key\t-\ncandidate_experiment_key\t-\n'
 } >"$witness_matching/inputs.tsv"
+witness_keyed=$temporary_directory/witness-keyed
+mkdir -p "$witness_keyed"
+: >"$witness_keyed/margin-summary.tsv"
+{
+    printf 'model_id\t%s\n' "$model_id"
+    printf 'control_server_sha256\t%s\n' "$keyed_sha256"
+    printf 'candidate_server_sha256\t%s\n' "$keyed_sha256"
+    printf 'control_experiment_key\te4/2\n'
+    printf 'candidate_experiment_key\te4-scale-licm/2\n'
+} >"$witness_keyed/inputs.tsv"
+# One executable serves every keyed arm, so the digests match whatever pair the
+# witness ran; the keys are the only field that separates them.
+run_refusal_servers witness_other_arm_pair \
+    'the witness names control_experiment_key e4/2 where this campaign runs e4/4' \
+    "$keyed_server" "$keyed_server" \
+    QWEN_AB_CONTROL_EXPERIMENT_KEY=e4/4 \
+    QWEN_AB_CANDIDATE_EXPERIMENT_KEY=e4-scale-licm/4 \
+    QWEN_AB_WITNESS_DIRECTORY="$witness_keyed"
+
 witness_rates=$temporary_directory/rates-witness
 write_rates "$witness_rates" 10.000 11.000 11.000
 case_witness=$witness_matching

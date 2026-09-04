@@ -76,6 +76,32 @@ prompt_source=${QWEN_WITNESS_PROMPTS:-}
 # reaches nothing.
 radv_icd=${QWEN_RADV_ICD:-/usr/share/vulkan/icd.d/radeon_icd.x86_64.json}
 margin_summarizer=${QWEN_WITNESS_MARGIN_SUMMARIZER:-"$script_directory/summarize-margin-witness.py"}
+# The Q4_K arm each role is asked for. A keyed comparison names one executable
+# twice and differs by the pipeline the device creates, so the two server
+# digests identify the arms not at all and the keys are what a reader of this
+# witness joins it to a served comparison by. They reach each arm inside the
+# closed environment census_arm_exec writes, since this harness launches
+# llama-server directly rather than through radv-low-priority-env.sh, and
+# inputs.tsv records the pair; an unkeyed run records `-` on both.
+control_experiment_key=${QWEN_WITNESS_CONTROL_EXPERIMENT_KEY:-}
+candidate_experiment_key=${QWEN_WITNESS_CANDIDATE_EXPERIMENT_KEY:-}
+for experiment_key_value in "$control_experiment_key" "$candidate_experiment_key"; do
+    case $experiment_key_value in
+        '' | e4/2 | e4/4 | e4/8 | e4-scale/2 | e4-scale/4 | e4-scale/8 | \
+        e4-scale-licm/2 | e4-scale-licm/4 | e4-scale-licm/8) ;;
+        *)
+            printf 'an experiment key is e4, e4-scale, or e4-scale-licm over /2, /4, or /8: %s\n' \
+                "$experiment_key_value" >&2
+            exit 2
+            ;;
+    esac
+done
+if { [ -n "$control_experiment_key" ] || [ -n "$candidate_experiment_key" ]; } &&
+    { [ -z "$control_experiment_key" ] || [ -z "$candidate_experiment_key" ]; }; then
+    printf 'a keyed witness names an experiment key for both roles: control=%s candidate=%s\n' \
+        "${control_experiment_key:--}" "${candidate_experiment_key:--}" >&2
+    exit 2
+fi
 
 case $top_count in
     '' | *[!0-9]* | 0)
@@ -351,6 +377,7 @@ start_server() {
     if [ "$arm_device" = cpu ]; then
         census_arm_exec "$arm_environment_record" \
             VK_DRIVER_FILES="$radv_icd" VK_ICD_FILENAMES="$radv_icd" \
+            GGML_VK_Q4K_VARIANT="$arm_experiment_key" \
             -- \
             "$arm_server" \
             --model "$model_path" --host 127.0.0.1 --port "$server_port" \
@@ -365,6 +392,7 @@ start_server() {
         census_arm_exec "$arm_environment_record" \
             VK_DRIVER_FILES="$radv_icd" VK_ICD_FILENAMES="$radv_icd" \
             LLAMA_NO_CPU_FALLBACK=1 \
+            GGML_VK_Q4K_VARIANT="$arm_experiment_key" \
             -- \
             "$arm_server" \
             --model "$model_path" \
@@ -434,6 +462,8 @@ candidate_server_sha256=$(sha256sum "$candidate_server" | cut -d ' ' -f 1)
     printf 'arm_order\tC K K C\ncontrol_device\tVulkan0\ncandidate_device\t%s\n' "$candidate_device"
     printf 'contract\t%s\nn_probs\t%s\nnear_tie_nat\t%s\nmargin_retention\t%s\n' \
         "$contract" "$top_count" "$near_tie_nat" "$margin_retention"
+    printf 'control_experiment_key\t%s\ncandidate_experiment_key\t%s\n' \
+        "${control_experiment_key:--}" "${candidate_experiment_key:--}"
     printf 'prompt_source\t%s\nprompt_count\t%s\nprompts_sha256\t%s\n' \
         "${prompt_source:-builtin}" "$prompt_count" "$prompt_sha256"
 } >"$output_directory/inputs.tsv"
@@ -446,11 +476,13 @@ for arm in C K K C; do
             arm_server=$control_server
             arm_device=Vulkan0
             arm_sha256=$control_server_sha256
+            arm_experiment_key=$control_experiment_key
             ;;
         *)
             arm_server=$candidate_server
             arm_device=$candidate_device
             arm_sha256=$candidate_server_sha256
+            arm_experiment_key=$candidate_experiment_key
             ;;
     esac
     arm_directory=$output_directory/arms/$slot-$arm

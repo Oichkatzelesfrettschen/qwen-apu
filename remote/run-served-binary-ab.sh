@@ -844,9 +844,16 @@ if [ -n "$witness_directory" ]; then
         awk -F'\t' -v name="$1" '$1 == name { rows++; value = $2 }
             END { if (rows != 1) exit 1; print value }' "$witness_directory/inputs.tsv"
     }
+    # Under a keyed comparison both roles are one executable by construction, so
+    # the two server digests separate no arm pair and the keys are what a
+    # witness is joined by; run-kernel-delta-witness.sh records the pair it ran
+    # and an unkeyed run records `-` on both sides, which is what this compares
+    # against for a two-binary comparison.
     for witness_binding in "model_id=$model_id" \
         "control_server_sha256=$control_sha256" \
-        "candidate_server_sha256=$candidate_sha256"; do
+        "candidate_server_sha256=$candidate_sha256" \
+        "control_experiment_key=${control_experiment_key:--}" \
+        "candidate_experiment_key=${candidate_experiment_key:--}"; do
         witness_name=${witness_binding%%=*}
         witness_expected=${witness_binding#*=}
         witness_observed=$(witness_field "$witness_name") || witness_observed=
