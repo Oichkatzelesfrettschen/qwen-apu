@@ -48,6 +48,16 @@ a content-addressed pack from a pinned glslc, recording compiler identity,
 command line, source digest, module digest, and the `spirv-val` verdict, and
 `../README.md` carries the whole plan and the order its steps run in.
 
+`shader-pack/` is that pack, built on the workstation.
+`remote/shaderc-toolchain.tsv` pins `google/shaderc` at `v2026.3` against a
+measured archive digest, and the module the pinned compiler wrote is
+`2659f04ce6...` at 36940 bytes -- the `spirv_sha256` and `spirv_bytes` every
+receipt in this directory and in `../E5-S1/` records, so the pack carries those
+receipts' own subject rather than a second module compiled to the same
+description. Its disassembly holds 32 `OpSDot` instructions, every one carrying
+`PackedVectorFormat4x8Bit`, beside `SPV_KHR_integer_dot_product` and the
+`DotProduct` and `DotProductInput4x8BitPacked` capabilities.
+
 `GGML_VK_FORCE_INTEGER_DOT=1` is what admits the resulting pipelines on a device
 whose acceleration bits are all false. The patch's split capability state keeps
 that honest: the variable writes `integer_dot_software_lowered` and every
@@ -72,7 +82,8 @@ which is why that pair is read first.
 | SPIR-V receipt | measured | `../spirv/`, `../compile-matrix.tsv` |
 | ACO ISA, Arch toolchain | measured | `isa-arch-toolchain/` |
 | ACO ISA, from-source pre-2115 driver | measured, hash matches | `isa-pre-2115/` |
-| pinned extension-capable shader pack | designed, unrun | `remote/build-spirv-shader-pack.sh` |
+| pinned extension-capable shader pack | measured | `shader-pack/`, workstation |
+| packed dot in the module, by disassembly | measured | `shader-pack/dot-instruction-proof.tsv` |
 | appliance build consuming that pack | unrun | appliance |
 | combined activation-plus-consumer envelope | unrun | appliance, the gate in `../README.md` |
 | margin witness, served rate | unrun | appliance, behind that gate |

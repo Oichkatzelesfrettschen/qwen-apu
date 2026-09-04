@@ -1,0 +1,2 @@
+# module_name	source	defines
+mul_mat_vec_q4_k_q8_1_f32_subgroup_no_shmem	mul_mat_vecq.comp	FLOAT_TYPE=float,FLOAT_TYPEV2=vec2,DATA_A_Q4_K=1,D_TYPE=float,ACC_TYPE=float,USE_SUBGROUP_ADD_NO_SHMEM=1

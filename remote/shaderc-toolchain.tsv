@@ -7,21 +7,26 @@
 # The appliance's distribution shaderc rejects GL_EXT_integer_dot_product
 # (evidence/web-admission-router-tools/build-raven2-vulkan-production.log:33),
 # which is a gate in the SPIR-V producer rather than in the driver, so E5-S0 and
-# E5-S1 need a producer that emits OpSDotKHR and the driver on the appliance
+# E5-S1 need a producer that emits OpSDot and the driver on the appliance
 # consumes what this one wrote.
 #
-# revision and sha256 read `-` because no fetch has run: a digest recalled
-# rather than measured is a fabricated pin, and the fetcher refuses an unfilled
-# row instead of downloading whatever the tag points at today. Filling them is
-# the first step of the compiler plan in
-# evidence/raven2-vulkan-kernel-census/e5/README.md: read the release archive's
-# published SHA-256 from the upstream release, record both here, and the fetch
-# becomes replayable.
+# v2026.3 is the tag whose glslc reproduces the module every retained E5-S0 and
+# E5-S1 receipt names: `mul_mat_vecq.comp` at llama.cpp f280b269 under the
+# pinned defines and `-O` compiles to sha256 2659f04ce6... at 36940 bytes, the
+# spirv_sha256 and spirv_bytes both receipts record. archive_sha256 is measured
+# over the download rather than recalled, and the digest pins the shaderc
+# archive alone: utils/git-sync-deps resolves glslang, SPIRV-Tools, and
+# SPIRV-Headers from that revision's own DEPS at fetch time, so the built
+# compiler's identity is what pack-inputs.tsv records after the fact.
+#
+# prefix is one plain directory component under the fetcher's PREFIX_ROOT, and
+# it names the revision so two pins install beside each other rather than one
+# building over a toolchain a retained pack record names.
 #
 # key	value
 project	google/shaderc
-revision	-
-archive_url	-
-archive_sha256	-
-prefix	shaderc-pinned
+revision	v2026.3
+archive_url	https://github.com/google/shaderc/archive/refs/tags/v2026.3.tar.gz
+archive_sha256	ee493ccf1b3038b4ef2fe024664c5eb2dc4bcc1f6b05b33e3909de0e19c81024
+prefix	qwen-shaderc-v2026.3
 minimum_glslc_version	2023.2

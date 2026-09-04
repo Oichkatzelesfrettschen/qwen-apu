@@ -1,0 +1,4 @@
+isa_path	isa_sha256	v_mul_lo_u32	v_mul_u32_u24	v_mul_i32_i24	v_mad_u32_u24	v_mad_i32_i24	v_add3_u32	v_add_u32	v_mov_b32	v_perm_b32	v_bfe_u32	v_cvt_f32_f16	v_cvt_f32_ubyte0	v_mad_mix_f32	v_fma_f32	v_mac_f32	v_pk_fma_f16	sdwa_operand_uses	mul24_dual_byte_select	mul24_dword_by_byte_select
+evidence/raven2-vulkan-kernel-census/e5/E5-S0/isa-arch-toolchain/isa.s	a4d5f709398a68f579b86f469d1226ca5dc2a9e9a3dfb7837be803299c35b595	0	0	224	0	0	98	160	20	0	42	56	28	0	0	14	0	252	224	0
+evidence/raven2-vulkan-kernel-census/e5/E5-S0/isa-pre-2115/isa.s	a4d5f709398a68f579b86f469d1226ca5dc2a9e9a3dfb7837be803299c35b595	0	0	224	0	0	98	160	20	0	42	56	28	0	0	14	0	252	224	0
+evidence/raven2-vulkan-kernel-census/e5/E5-S1/isa-post-2115/isa.s	b9f5b4e6e25cd4ba611ba74c6d4484178b4e2100fd76b9ed8a17dcccd7724f5d	0	0	224	0	0	140	90	17	0	42	56	28	0	0	14	0	252	224	0

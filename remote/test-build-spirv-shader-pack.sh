@@ -30,12 +30,14 @@ if [ "${1:-}" = --version ]; then
 fi
 fake_output=''
 fake_defines=''
+fake_optimize=''
 fake_source=''
 while [ "$#" -gt 0 ]; do
     case $1 in
         -o) fake_output=$2; shift 2 ;;
         -D*) fake_defines="$fake_defines ${1#-D}"; shift ;;
         -I) shift 2 ;;
+        -O) fake_optimize=' -O'; shift ;;
         --target-env=* | -fshader-stage=*) shift ;;
         *) fake_source=$1; shift ;;
     esac
@@ -50,6 +52,7 @@ esac
 {
     printf 'FAKESPV'
     printf '%s' "$fake_defines"
+    printf '%s' "$fake_optimize"
     cat "$fake_source"
 } >"$fake_output"
 FAKE
@@ -150,6 +153,7 @@ grep -qxF "$(printf 'schema\tspirv-shader-pack-v1')" "$pack_inputs"
 grep -qxF "$(printf 'glslc_version\tshaderc v2026.3 fake-pinned')" "$pack_inputs"
 grep -qxF "$(printf 'spirv_val\tSPIRV-Tools v2026.3 fake')" "$pack_inputs"
 grep -qxF "$(printf 'target_env\tvulkan1.2')" "$pack_inputs"
+grep -qxF "$(printf 'optimize\t0')" "$pack_inputs"
 grep -qxF "$(printf 'declaration_sha256\t%s' \
     "$(sha256sum "$declaration" | cut -d ' ' -f 1)")" "$pack_inputs"
 grep -qxF "$(printf 'pack_sha256\t%s' \
@@ -157,6 +161,37 @@ grep -qxF "$(printf 'pack_sha256\t%s' \
 grep -qxF "$(printf 'glslc_sha256\t%s' \
     "$(sha256sum "$fake_bin/glslc" | cut -d ' ' -f 1)")" "$pack_inputs"
 printf 'pack_record=accepted\n'
+
+# The optimization setting reaches the compiler, the recorded command, and the
+# module's own digest, so a pack built with it is distinguishable from one
+# without after the fact rather than by the caller's memory.
+optimized_pack=$temporary_directory/pack-optimized
+QWEN_SHADER_PACK_GLSLC=$fake_bin/glslc QWEN_SHADER_PACK_OPTIMIZE=1 "$builder" \
+    "$declaration" "$source_directory" "$optimized_pack" \
+    >"$temporary_directory/optimized.log"
+grep -qxF "$(printf 'optimize\t1')" "$optimized_pack/pack-inputs.tsv"
+optimized_command=$(awk -F'\t' '$1 == "q4_k_extension" { print $6 }' \
+    "$optimized_pack/shader-pack.tsv")
+case $optimized_command in
+    'glslc --target-env=vulkan1.2 -fshader-stage=compute -O -I . -DDATA_A_Q4_K=1 -DD_TYPE=float -o - mul_mat_vecq.comp') ;;
+    *)
+        printf 'the optimized command is not the declared invocation: %s\n' \
+            "$optimized_command" >&2
+        exit 1
+        ;;
+esac
+optimized_digest=$(awk -F'\t' '$1 == "q4_k_extension" { print $8 }' \
+    "$optimized_pack/shader-pack.tsv")
+[ "$optimized_digest" != "$first_digest" ]
+printf 'optimize_setting=accepted\n'
+
+optimize_status=0
+QWEN_SHADER_PACK_GLSLC=$fake_bin/glslc QWEN_SHADER_PACK_OPTIMIZE=2 "$builder" \
+    "$declaration" "$source_directory" "$temporary_directory/pack-optimize-shape" \
+    >/dev/null 2>"$temporary_directory/optimize-shape.log" || optimize_status=$?
+[ "$optimize_status" -eq 2 ]
+grep -q 'the optimization setting is 0 or 1' "$temporary_directory/optimize-shape.log"
+printf 'optimize_shape=accepted\n'
 
 # An absent validator leaves the reason rather than an empty verdict, because a
 # blank cell beside three passes reads as a pass.
@@ -245,6 +280,35 @@ QWEN_SHADER_PACK_GLSLC=$fake_bin/glslc QWEN_SHADER_PACK_TARGET_ENV=opengl "$buil
 grep -q 'the target environment is vulkan1.0 through vulkan1.3' \
     "$temporary_directory/target-env.log"
 printf 'target_env_shape=accepted\n'
+
+# With no compiler named, the default is the one fetch-shaderc-toolchain.sh
+# installs: the ledger's own prefix row under QWEN_SHADERC_PREFIX_ROOT. The two
+# scripts read one row, so the documented fetch-then-pack sequence cannot point
+# the producer and the consumer at two directories.
+ledger_prefix_root=$temporary_directory/prefix-root
+mkdir -p "$ledger_prefix_root/shaderc-from-the-ledger/bin"
+cp "$fake_bin/glslc" "$ledger_prefix_root/shaderc-from-the-ledger/bin/glslc"
+fixture_ledger=$temporary_directory/shaderc-toolchain.tsv
+{
+    printf '# key\tvalue\n'
+    printf 'project\tgoogle/shaderc\n'
+    printf 'prefix\tshaderc-from-the-ledger\n'
+} >"$fixture_ledger"
+QWEN_SHADERC_LEDGER=$fixture_ledger QWEN_SHADERC_PREFIX_ROOT=$ledger_prefix_root \
+    "$builder" "$declaration" "$source_directory" "$temporary_directory/pack-default-glslc" \
+    >"$temporary_directory/default-glslc.log"
+grep -qxF "$(printf 'glslc_sha256\t%s' \
+    "$(sha256sum "$ledger_prefix_root/shaderc-from-the-ledger/bin/glslc" | cut -d ' ' -f 1)")" \
+    "$temporary_directory/pack-default-glslc/pack-inputs.tsv"
+printf 'ledger_default_compiler=accepted\n'
+
+ledger_absent_status=0
+QWEN_SHADERC_LEDGER=$temporary_directory/absent-ledger "$builder" \
+    "$declaration" "$source_directory" "$temporary_directory/pack-no-ledger" \
+    >/dev/null 2>"$temporary_directory/no-ledger.log" || ledger_absent_status=$?
+[ "$ledger_absent_status" -eq 1 ]
+grep -q 'the shaderc toolchain ledger is unreadable' "$temporary_directory/no-ledger.log"
+printf 'ledger_required_for_default=accepted\n'
 
 missing_glslc_status=0
 QWEN_SHADER_PACK_GLSLC=$temporary_directory/absent-glslc "$builder" \

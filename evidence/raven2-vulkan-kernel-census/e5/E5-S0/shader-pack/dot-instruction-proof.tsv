@@ -1,0 +1,10 @@
+key	value
+module_sha256	2659f04ce6642572a017369606825384e267aaa709b222ef83b95624303ef2a1
+spirv_extension	SPV_KHR_integer_dot_product
+capability_dot_product	1
+capability_dot_product_input_4x8_packed	1
+opsdot	32
+opsdot_packed_4x8	32
+opudot	0
+opsudot	0
+spirv_dis	SPIRV-Tools v2026.3 v2026.3-0-gb707790a

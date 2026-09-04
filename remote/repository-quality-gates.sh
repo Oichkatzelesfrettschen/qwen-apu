@@ -190,6 +190,8 @@ gate_cell test-summarize-prefix-checkpoint-hits derive \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-prefix-checkpoint-hits.py'
 gate_cell test-summarize-bracket-ab derive remote/test-summarize-bracket-ab.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-bracket-ab.py'
+gate_cell test-summarize-target-closure derive remote/test-summarize-target-closure.py \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-target-closure.py'
 gate_cell test-summarize-margin-witness derive remote/test-summarize-margin-witness.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-margin-witness.py'
 gate_cell test-summarize-radv-isa derive remote/test-summarize-radv-isa.py \
