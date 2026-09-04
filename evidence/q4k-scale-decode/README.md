@@ -338,9 +338,361 @@ The body and reduction ranges of every retained arm are `ctrl` 101-501 and 503-5
 and 485-549 at `NUM_ROWS = 4`; at `NUM_ROWS = 8` they are 107-854 and 856-984, 106-795 and
 797-925, 138-860 and 876-1004, and 138-796 and 812-940.
 
-## The appliance arms, none of which has run
+## Three verdicts, and this lane has passed one of them
 
-The two patches sit at `candidate` in `remote/llama-patch-series.tsv`. The scale-word-select's
+A candidate faces three separate questions and one number has been asked to answer all three.
+They are stated apart here because they have different bounds, different evidence, and
+different outcomes.
+
+| verdict | the question | the bound | outcome |
+| --- | --- | --- | --- |
+| component admission | does the change help at all, correctly | paired lower bound above zero, correctness held | **passed** |
+| target closure | does the production candidate clear the serving target | absolute lower bound above 10 tok/s | **provisional** |
+| platform promotion | is it worth a Raven2-wide default | one-sided 5% | **not passed** |
+
+**Component admission passed.** The 2B distill's paired interval is +1.63% to +2.04%, whose
+lower bound clears zero by more than a factor of three against the 0.8B null's +/-0.5% noise
+floor, and the token ids are bit-identical over 508 to 512 positions per prompt on all three
+classes with `min_retention` 1 and `max_abs_logprob_delta` 0. The change helps and it computes
+the same thing.
+
+**Target closure is provisional.** The candidate arms decoded 10.028, 10.017, 10.011, and
+10.022 tok/s, all four above 10, against controls at 9.848, 9.845, 9.842, and 9.821. Those are
+absolute rates rather than a paired difference, and this machine carries about 4% of
+uncontrolled spread on a repeated depth-0 rate and 30.6% between sweeps, so a set of four arms
+from one session states a central value and not a bound. What settles it is one `C K K C`
+composition run of the production candidate against `main`, read on its own absolute lower
+bound in a single sweep.
+
+**Platform promotion is not passed.** The whole interval lies below +5% on the primary class,
+the 4B measures -0.02% on the same binary and the same shader, and a default that helps one
+checkpoint and not another of the same quantization recipe is a profile setting rather than a
+platform default.
+
+Reading these apart is what the numbers support. One arm answering all three would have to be
+promoted on a bound it does not clear or discarded despite a gain it does carry, and the 2B
+against 4B split says the honest answer differs by checkpoint.
+
+## The ordered program, and what each arm still owes
+
+The device has answered one of these. `evidence/raven2-vulkan-kernel-census/q4k-scale-decode/`
+carries the served A/B of the composed candidate against the production control on all three
+classes, so the program below is written around that result rather than ahead of it.
+
+| order | arm | key | state |
+| ---: | --- | --- | --- |
+| 1 | E4 control at `NUM_ROWS = 4` | `e4/4` | the denominator every other arm is read against |
+| 2 | E4 plus scale-word-select at `NUM_ROWS = 4` | `e4-scale/4` | **unmeasured**, and the one arm that separates the two mechanisms |
+| 3 | E4 plus scale-word-select plus loop-LICM at `NUM_ROWS = 4` | `e4-scale-licm/4` | its post-E4 form is unmeasured; the pair over the production build measured +1.83% and is refuted at 5% |
+| 4 | the composed form at `NUM_ROWS = 2` | `e4-scale-licm/2` | the arm that separates occupancy from instruction count, since the control already reaches five subgroups there |
+| 5 | the composed form at `NUM_ROWS = 8` | `e4-scale-licm/8` | the shape whose VGPR allocation holds at 64 and whose occupancy holds at 4 |
+
+Every arm runs on the kernel-delta harness first, which reads the Q4_K pipeline's own exclusive
+bracket, and a served A/B follows for the local winner alone: a served rate prices the whole
+token and cannot say which pipeline moved, so spending a served window on an arm the bracket
+already places is spending it on the wrong question.
+
+The two-row shape is the arm the receipts made worth running. `e4/2` already allocates 48 VGPRs
+and reports five subgroups per SIMD, so the occupancy step the four-row candidate buys is
+present in that shape's control; an arm at `NUM_ROWS = 2` therefore reads the instruction result
+with the register result held fixed, which no four-row pair can do.
+
+Arm order follows the class policy: the 2B distill first, the 0.8B second, the 4B third, and a
+result becomes a Raven2-wide default only where the classes agree.
+
+### The device result the program is written around
+
+Measured, `evidence/raven2-vulkan-kernel-census/q4k-scale-decode/`: one candidate binary
+carrying the scale-word-select and the loop-LICM against the production control, nine arms
+`W C K K C C K K C` per class through `run-served-binary-ab.sh`, every arm at 1100 MHz under
+`auto` DPM.
+
+| class | mean paired delta | nominal 95% interval | tok/s, control against candidate |
+| --- | ---: | --- | ---: |
+| `qwen38-2b-distill` | +1.83% | +1.63% to +2.04% | 9.84 against 10.02 |
+| `qwen35-08b` Q8_0 | +0.26% | -0.28% to +0.80% | 19.03 against 19.08 |
+| `qwen38-4b-distill` | -0.02% | -0.10% to +0.06% | 3.379 against 3.379 |
+
+Token identity held bit for bit on all three classes under the `margin` contract, and the 0.8B
+file holds no Q4_K bytes, so its interval spanning zero is the harness's own noise floor at
+about +/-0.5% of a paired mean rather than a second reading of the shader.
+
+Every interval lies below the repository's one-sided 5% promotion bound, so arm (c) is refuted
+as a standalone promotion. The finding is larger than the verdict and it is the 2B against the
+4B: one quantization recipe, one binary, one control, two checkpoints that dispatch the same
+patched `mul_mat_vec_q4_k`, and intervals 1.85 points apart that do not come near touching. The
+compile receipt reads about 6% by issue share, the 2B delivers under a third of it, and the 4B
+delivers nothing measurable. Memory-boundness is the candidate account -- the 2B achieves 10.41
+GB/s against the 4B's 8.11 -- and its falsifier is a third Q4_K_M checkpoint whose achieved
+GB/s sits between them, which should land between +1.83% and 0% if streaming rate orders the
+effect and anywhere else if it does not.
+
+### The +1.83% is the two patches alone, and the manifests say so
+
+The compile page above calls its control the post-E4 form and the device run calls its control
+the production deployment. Those are two different shaders, and the retained receipts settle
+which one the +1.83% was measured against without an inference.
+
+`served-ab-20260903T1953Z/inputs.tsv` records `candidate_series` as exactly
+`llama-vulkan-q4k-scale-word-select.patch,llama-vulkan-q4k-superblock-loop-licm.patch` and no
+`control_series` row at all. `run-served-binary-ab.sh` requires the served mode's control
+manifest to carry `candidate_series` `-` and the candidate's to carry `QWEN_AB_CANDIDATE_PATCH`
+alone, refusing either otherwise before an arm starts, and the run reached a verdict. **E4 is in
+neither arm.** `llama-vulkan-q4k-activation-group-sums.patch` applies over the pinned commit
+independently of the two scale patches -- `prepare-llama-census-source.sh` over the two of them
+alone prepares a tree -- so the candidate build carries the scale rewrite and the loop
+restructure over the production series and nothing else.
+
+| identity | control | candidate |
+| --- | --- | --- |
+| server SHA-256 | `5dd86b90...4782c2` | `2955d6dd...b47e98b` |
+| artifact manifest SHA-256 | `86cd22d6...039ee8` | `aae7a25e...6fbf4ef` |
+| production `patch_series_sha256` | `58e651d7...d43f02` | `58e651d7...d43f02` |
+| `candidate_series` | absent, the empty selection | the two scale patches |
+| `base_build_identity_sha256` | `f43db7ab...4d59f63` | the same value |
+| `mul_mat_vec_q4_k_f32_f32` ISA | `ad837848` | `433f3d04` |
+
+The two Q4_K digests are compiled here from the same two trees the manifests name and retained
+as `receipts/device-control-nr4/` and `receipts/device-candidate-nr4/`.
+
+| field | device control | device candidate | Table 1 `ctrl` | Table 1 `both` |
+| --- | ---: | ---: | ---: | ---: |
+| `isa_sha256` head | `ad837848` | `433f3d04` | `29454587` | `138bab50` |
+| VALU | 882 | 859 | 810 | 786 |
+| VMEM | 56 | 40 | 56 | 40 |
+| VGPR | 64 | **48** | 64 | **48** |
+| `Subgroups per SIMD` | 4 | **5** | 4 | **5** |
+| body instructions | 430 | 383 | 395 | 349 |
+| body longest VALU chain | 29 | 24 | 17 | 12 |
+
+**The reading that holds: the +1.83% is the total effect of the scale-word-select and the
+loop-LICM over the production build, and neither arm carried E4.** It is not an increment
+beyond E4, and E4's own earlier +2.37% is not added to it, because the manifests place E4
+outside both arms rather than inside both. Four of the five columns above agree across the two
+control choices -- the register result, the occupancy step, the memory-operation fall, and the
+direction -- so the mechanism the compile page attributes the gain to is the mechanism the
+device ran. The two that differ are the VALU totals and the dependent-chain lengths, and E4's
+own activation restructure is what separates them: it takes the whole shader 882 to 810 and the
+body chain 29 to 17, and it was in neither device arm.
+
+What is therefore still unmeasured is the pair over the post-E4 preimage the compile page
+receipts describe. `138bab50` has never been dispatched, and the sealed key is what makes that
+comparison one binary rather than a third build.
+
+### The registered prediction, and the falsifier the null already met
+
+The mechanism is occupancy rather than instruction count. The scale rewrite takes the served
+shape's memory operations from 24 to 16 per superblock and its longest dependent chain from 17
+to 12, and it takes the VGPR allocation from 64 to 48, which is `floor(256/48) = 5` resident
+wave64s per SIMD against `floor(256/64) = 4`. The prediction is that a fifth resident wave hides
+DDR4 latency the fourth could not, so the Q4_K exclusive bracket falls further than the
+instruction count alone accounts for.
+
+The falsifier is a null device result, and arm (c) met it. A composed candidate carrying the
+whole register result returned +1.83% on the primary class and nothing on the 4B, so the fifth
+nominal resident wave is not becoming useful latency hiding under this two-compute-unit
+workload at either checkpoint. What the arms below still owe is the split: (b) reads the scale
+rewrite alone against (c)'s pair, and (d) reads the shape whose VGPR allocation holds at 64
+and whose occupancy therefore holds at 4, which is the one arm that moves the register result
+without moving the instruction result.
+
+### The 4B null is a census question, not a second served A/B
+
+The 4B measures -0.02% on the same binary and the same patched shader the 2B gains 1.83% on.
+A served rate prices the whole token, so it can say the 4B did not speed up and it cannot say
+why; another served A/B would repeat the same reading at higher precision and answer nothing.
+The arm that answers it is one `QWEN_CENSUS_MODE=attribution` census run at `I1` on
+`qwen38-4b-distill`, which reads the decode ledger the 2B run never collected.
+
+What that ledger must state, per pipeline and per graph:
+
+- the Q4_K pipeline names the device actually created and dispatched, with their
+  `spirv_executed_sha256` and their `constants` triple, which is what proves the patched module
+  reached this checkpoint at the shape the receipts describe rather than another variant or
+  another row count
+- `calls_per_graph` and `workgroups_per_graph` for each, which is the dispatch count the
+  attribution divides by
+- `exclusive_bracket_ms` and `pipeline_bracket_union_ms` for `mul_mat_vec_q4_k_f32_f32` and for
+  `mul_mat_vec_q6_k_f32_f32`, the subject and its null
+- `queue_completion_span_ms_per_graph` from the graphs row, the whole submitted graph every
+  family moves inside
+- whether the 4B's projections reach the mat-vec family at all or take a mat-mat pipeline, since
+  a decode that dispatches `mul_mm` for some tensor spends that time outside every mat-vec row
+
+Four readings follow from that ledger and they are mutually exclusive, so the run decides
+between them rather than adding a number to a pile.
+
+| observation | the reading |
+| --- | --- |
+| no Q4_K mat-vec pipeline appears, or its digest is another module | the patched shader was never dispatched on this checkpoint, and the null says nothing about the shader |
+| the pipeline is dispatched and its exclusive bracket holds across the pair | the shorter kernel bought no device time here, which is the memory-bound account measured directly |
+| the bracket shortens while the graph span holds | the saving is real and is absorbed elsewhere in the graph, so the whole-token null is a scheduling result rather than a kernel one |
+| the bracket shortens and the family owns a small share of the graph span | the kernel improved and the family is too small a term for a token to notice, which the 2B's own share would then be read against |
+
+Only the second of those four is the memory-boundness account this page names as the candidate.
+The other three would each move the finding somewhere else, and none of them can be
+distinguished from the served rate the 4B already produced.
+
+### Why the eight-row arm needed a host change to exist
+
+`ggml-vulkan.cpp` sets `rm_kq = 4` on its `AMD_GCN` branch and the decode ledger records
+`constants=64,4,1`, so a decode on this device dispatches the four-row pipeline and never
+selects the eight-row one. `NUM_ROWS` reaches the shader as specialization constant 1 and
+reaches the dispatch as the pipeline's own workgroup denominator, both from that one variable,
+so a served eight-row arm needs both moved together. `llama-vulkan-q4k-variant-select.patch`
+moves them from one key, which is what turns arm (d) from unmeasurable into an arm.
+
+## One binary, one sealed key: `llama-vulkan-q4k-variant-select.patch`
+
+Five things differ between two separately built A/B binaries and only one of them is the
+candidate: the shader source, the shader compiler invocation, the pipeline cache the driver
+fills, the C++ build flags, and the executable's own digest. The retained device runs above
+controlled the last two by binding both binaries to one base-build identity and left the rest
+resting on the build being reproducible. This patch removes the whole dimension: every Q4_K
+mat-vec formulation compiles into one `llama-server`, and `GGML_VK_Q4K_VARIANT` picks which
+module `vkCreateComputePipelines` receives.
+
+`mul_mat_vec_q4_k.comp` carries the three formulations under `Q4K_VARIANT`. 2 is the file's own
+default, so the module names a build already embeds keep the composed formulation and the two
+others take a `_v0` and `_v1` suffix; `vulkan-shaders-gen.cpp` emits both families across the
+two activation types and the three reductions, and `ggml_vk_load_shaders` selects the data and
+length arrays beside `rm_kq_q4k`. The key states the whole tuple as `ALGORITHM/ROWS` over `e4`,
+`e4-scale`, and `e4-scale-licm` crossed with 2, 4, and 8. `rm_kq` reaches the shader as
+specialization constant 1 and the dispatch as the pipeline's own workgroup denominator, so an
+arm that named the algorithm alone would leave the shape at whatever the `AMD_GCN` branch
+selected and an arm that moved the specialization constant alone would dispatch a row count the
+shader does not compute; a name or a row count outside the admitted set ends the load rather
+than serving the default under an arm's name.
+
+The build states what it admits and the arm states what it ran. `build-llama-preset.sh` derives
+a `q4k_variants` manifest row from the compiled source the way it derives
+`checkpoint_semantics` -- the multiplexed shader and the host reader together, `-` where either
+is absent, since one half alone answers every key with the default -- and
+`run-served-binary-ab.sh` passes each arm's own key into the closed environment
+`census_arm_exec` records, so `arm-environment.tsv` states the arm rather than the invoking
+shell and `inputs.tsv` states the pair.
+
+A keyed comparison replaces the series rule rather than adding to it. The two-binary comparison
+requires the control manifest to name the empty candidate selection and the candidate's to name
+one member, which is what isolates a patch across two builds; a keyed comparison isolates the
+arm inside one build, so it requires equal server and manifest digests instead, requires the
+manifest's `q4k_variants` to admit both keys, and requires both roles to carry a key. Each of
+those refusals removes a way for a receipt to name an arm the device never created: a build
+declaring no keys ignores the environment and runs its default shader, a half-keyed run leaves
+one role at that default, and two binaries under one key measure the build beside the arm.
+The witness is bound the same way and by one field more. Its own `inputs.tsv` must name this
+campaign's model, both server digests, and both experiment keys before its token-identity and
+margin rows are reported, since a stale directory would otherwise contribute an
+authoritative-looking verdict about another experiment. The keys are what carry that check
+under a keyed comparison: both roles are one executable by construction there, so the two
+server digests separate no arm pair and a witness for `e4/2` against `e4/4` would otherwise
+report as evidence for `e4/4` against `e4-scale-licm/4`.
+`run-kernel-delta-witness.sh` therefore takes the same pair, passes each arm's key into its own
+closed environment -- it launches llama-server directly rather than through
+`radv-low-priority-env.sh` -- and records the pair, with `-` on both sides for an unkeyed run.
+
+`remote/radv-low-priority-env.sh` scrubs `GGML_VK_Q4K_VARIANT` on every profile and forwards
+`QWEN_Q4K_VARIANT` past the scrub after the profile case, the route `QWEN_PIPELINE_CENSUS`
+already takes, so the ambient name reaches no launch and the harness's own per-arm value is the
+only one that does. The forward reaches a serving profile rather than the diagnostic one, because
+the arm and its control are two pipelines of one process and the comparison is read at
+`low-async`, the profile the appliance serves under. The wrapper states the admitted set as
+well as the server does, so a value naming no buildable arm is refused while the argv is still
+readable.
+
+**The seal is the executed module digest rather than the key.** Each variant is a distinct
+module, so the census decode ledger's `spirv_executed_sha256` states which one the device ran,
+and `summarize-bracket-ab.py`'s `module_identity` row already requires one subject digest per
+role with the two differing. A key that failed to take effect therefore refuses the run without
+a second mechanism, and a key that named the wrong arm is visible in the retained ledger rather
+than only in the invocation.
+
+**Falsifier for the multiplexing, and its test.** The +1.83% transfers to the sealed binary
+only where each multiplexed module is bit-identical in ISA to its standalone arm; an `#if`
+structure that perturbed register allocation would lose exactly the VGPR 48 and five-subgroup
+result the program rests on. `variant-select-receipts.tsv` beside this file is that test and it
+passes on all six arms.
+
+| field | `e4/2` | `e4/4` | `e4/8` | `e4-scale/2` | `e4-scale/4` | `e4-scale/8` | `e4-scale-licm/2` | `e4-scale-licm/4` | `e4-scale-licm/8` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `isa_sha256` head | 80418d9c | 29454587 | 299ef0ed | 8774d776 | 4eb61f83 | 908b31fe | 749043ea | 138bab50 | 8eb28854 |
+| VALU | 456 | 810 | 1520 | 436 | 776 | 1454 | 442 | 786 | 1473 |
+| SALU | 287 | 414 | 667 | 289 | 416 | 668 | 298 | 428 | 680 |
+| VMEM | 32 | 56 | 104 | 24 | 40 | 72 | 24 | 40 | 72 |
+| VGPR | **48** | 64 | 64 | **48** | **48** | 64 | **48** | **48** | 64 |
+| SGPR | 48 | 48 | 48 | 48 | 48 | 48 | 48 | 48 | 48 |
+| `Subgroups per SIMD` | **5** | 4 | 4 | **5** | **5** | 4 | **5** | **5** | 4 |
+| body instructions | 216 | 395 | 742 | 199 | 365 | 684 | 189 | 349 | 656 |
+| body longest VALU chain | 17 | 17 | 17 | 12 | 12 | 12 | 12 | 12 | 13 |
+| `s_waitcnt`, whole shader | 49 | 84 | 145 | 42 | 70 | 119 | 42 | 70 | 118 |
+| `v_alignbyte_b32` | 8 | 16 | 32 | 0 | 0 | 0 | 0 | 0 | 0 |
+
+Every four-row and eight-row digest equals the standalone arm's in Tables 1 and 2, on both
+routes: `glslc` over the prepared tree and the module `vulkan-shaders-gen` emits from it. The
+two-row column is new here and it is the one the program gained an arm for: `e4/2` already
+allocates 48 VGPRs and reports five subgroups, so that shape's control carries the occupancy
+step the four-row candidate has to buy.
+
+### Running the five arms on the appliance
+
+One build, one deployment, five arms selected by the key. `run-served-binary-ab.sh` names two
+server paths and compares them, so a run of two arms of one executable names that executable
+twice and differs by `QWEN_AB_CONTROL_EXPERIMENT_KEY` against
+`QWEN_AB_CANDIDATE_EXPERIMENT_KEY` alone. Each key reaches its arm inside the closed
+environment `census_arm_exec` writes, so `arm-environment.tsv` states the arm that ran and
+`inputs.tsv` states the pair; the build's own `artifact-manifest.tsv` states which keys it
+admits, on a `q4k_variants` row derived from the source it compiled.
+
+```sh
+# The one binary every arm runs, built from the candidate stage through the
+# variant-select member. Its manifest reads q4k_variants with all nine keys.
+remote/prepare-llama-census-source.sh $HOME/src/llama.cpp $HOME/src/llama.cpp-q4k-variant \
+    llama-server-vulkan-workload-lease.patch llama-vulkan-pipeline-census.patch \
+    llama-server-prefix-checkpoint.patch llama-vulkan-q4k-activation-group-sums.patch \
+    llama-vulkan-q4k-activation-sideplane.patch llama-vulkan-q4k-scale-word-select.patch \
+    llama-vulkan-q4k-superblock-loop-licm.patch llama-vulkan-q4k-variant-select.patch
+QWEN_LLAMA_CANDIDATE_SELECT="llama-server-vulkan-workload-lease.patch \
+llama-vulkan-pipeline-census.patch llama-server-prefix-checkpoint.patch \
+llama-vulkan-q4k-activation-group-sums.patch llama-vulkan-q4k-activation-sideplane.patch \
+llama-vulkan-q4k-scale-word-select.patch llama-vulkan-q4k-superblock-loop-licm.patch \
+llama-vulkan-q4k-variant-select.patch" \
+    remote/build-llama-preset.sh raven2-vulkan-census $HOME/src/llama.cpp-q4k-variant
+
+# The kernel-delta harness answers every arm first, on the Q4_K pipeline's own
+# exclusive bracket. SERVER is that one executable, named twice.
+for arm in e4-scale/4 e4-scale-licm/4 e4-scale-licm/2 e4-scale-licm/8; do
+    QWEN_AB_CONTROL_EXPERIMENT_KEY=e4/4 \
+    QWEN_AB_CANDIDATE_EXPERIMENT_KEY="$arm" \
+    QWEN_CENSUS_AB_MODE=kernel-delta \
+    QWEN_CENSUS_ENGINE_CLOCK_POLICY=manual QWEN_CENSUS_SCLK_LEVEL=2 \
+    QWEN_CENSUS_MCLK_FLOOR_MHZ=933 \
+    QWEN_AB_WITNESS_DIRECTORY="OUT-witness-${arm%%/*}" \
+        remote/run-served-binary-ab.sh SERVER SERVER qwen38-2b-distill \
+        "OUT-kernel-delta-$(printf '%s' "$arm" | tr / -)"
+done
+
+# The token-id and margin witness is its own run per arm pair, and the bracket
+# summary reads its verdicts through QWEN_AB_WITNESS_DIRECTORY above.
+QWEN_WITNESS_CONTRACT=margin QWEN_WITNESS_N_PROBS=10 \
+    remote/run-kernel-delta-witness.sh SERVER SERVER qwen38-2b-distill OUT-witness-e4-scale
+
+# A served A/B for the local winner alone, once the brackets have placed the arms.
+QWEN_AB_CONTROL_EXPERIMENT_KEY=e4/4 QWEN_AB_CANDIDATE_EXPERIMENT_KEY=WINNER \
+    remote/run-served-binary-ab.sh SERVER SERVER qwen38-2b-distill OUT-served-winner
+
+# The 4B null explanation, which is an attribution census rather than a comparison.
+QWEN_CENSUS_MODE=attribution QWEN_CENSUS_CALIBRATION_RECEIPT=CALIBRATION \
+QWEN_CENSUS_ARMS=I1 QWEN_Q4K_VARIANT=e4-scale-licm/4 \
+    remote/run-raven2-vulkan-kernel-census.sh qwen38-4b-distill OUT-4b-attribution
+```
+
+The 0.8B and the 4B follow the 2B in class order on every comparison arm, and the 0.8B stays
+the null: its file holds no Q4_K bytes, so every key returns the same rate on it and a nonzero
+result there says the key reached something outside the shader it names.
+
+## The appliance arms, and the preimage chain that orders them
+
+The three patches sit at `candidate` in `remote/llama-patch-series.tsv`. The scale-word-select's
 preimage is the E4 result at blob `48778a3e8`; the loop-licm patch's preimage is the
 scale-word-select result at `c3cf5ffb6`, because both edit `compute_outputs`' superblock loop
 and one hunk region cannot carry two independent preimages. A chained

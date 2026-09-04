@@ -416,11 +416,19 @@ else
     exit 1
 fi
 
-# 3. Launch the test router.
+# 3. Launch the test router. This harness posts more than
+# GRANT_PER_CLIENT_PER_MINUTE_DEFAULT's three /grant calls from one client
+# address -- the admin-issued grant, grant-wrong-profile, grant-wrong-session,
+# grant-foreign-origin, and the browser's own approval -- and
+# authorize-broker.py spends the per-client bucket ahead of the profile,
+# session, and origin checks each of those posts exists to measure, so the
+# bound is raised for this harness's one client the way admit-image-router.sh
+# raises its own image-grant twin.
 if QWEN_WEB_PRESETS=$web_presets QWEN_WEB_PROFILES=$ledger QWEN_WEB_PROVIDER=fake \
     QWEN_WEB_TOKEN_KEY_FILE=$token_key_file QWEN_WEB_STATE_DIR=$output_directory/web-mcp \
     QWEN_WEB_BROKER_PORT=$broker_port QWEN_WEB_AUTHORIZER_READY=1 \
     QWEN_MODEL_REGISTRY=$registry \
+    QWEN_WEB_GRANT_PER_CLIENT_PER_MINUTE=20 \
     "$script_directory/qwen-web-launch.sh" low-async >"$output_directory/web-launch.log" 2>&1; then
     record web_launch pass "$(grep '^web_launch' "$output_directory/web-launch.log" | tr '\n' ';')"
     # The session minted or reused the API key at 0600 in the state

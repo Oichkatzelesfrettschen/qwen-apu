@@ -69,6 +69,10 @@ STOP_WAIT_SECONDS = 5.0
 # loaded runner, and it exists so the wait never ends in a SIGKILL: a killed
 # broker skips the unlink, which is the property the residue arm measures.
 BROKER_SHUTDOWN_WAIT_SECONDS = 30.0
+# Every test in this module runs its requests from one loopback client
+# address, so the default per-client bucket admits comfortably more than any
+# arm sends unless the arm overrides it to measure the bound itself.
+PER_CLIENT_LIMIT_UNMETERED = 1000
 
 FIXTURES = {
     "search": {
@@ -100,6 +104,9 @@ class BrokerProcess:
             "--provider": "fake",
             "--profile": "default",
             "--origin": ORIGIN,
+            "--grant-per-client-per-minute": PER_CLIENT_LIMIT_UNMETERED,
+            "--image-grant-per-client-per-minute": PER_CLIENT_LIMIT_UNMETERED,
+            "--image-max-outstanding-grants-per-client": PER_CLIENT_LIMIT_UNMETERED,
         }
         arguments.update(overrides)
         argv = [sys.executable, BROKER_PATH]
@@ -681,11 +688,120 @@ class BrokerTest(unittest.TestCase):
 
         with ThreadPoolExecutor(max_workers=5) as executor:
             refusals = list(executor.map(exhaust, range(5)))
-        for status, _, payload in refusals:
+        for status, headers, payload in refusals:
             self.assertEqual(status, 429)
             self.assertIn("authorize-minute", payload["error"])
+            self.assertIn("Retry-After", headers)
+            self.assertTrue(0 <= int(headers["Retry-After"]) <= 60)
         statuses = [row[8] for row in self.audit_rows()]
         self.assertEqual(statuses.count("rate_limited"), 1)
+
+    def test_a_per_client_bucket_bounds_one_address_beneath_the_aggregate(self):
+        """The client-address bucket refuses one peer while the aggregate rate remains.
+
+        The aggregate `--per-minute` bucket is set far above what this arm
+        sends, so a 429 here can only come from the per-client bucket, and its
+        error names the bucket that refused rather than the aggregate one.
+        """
+        broker = self.launch(
+            **{
+                "--per-minute": 100,
+                "--grant-per-client-per-minute": 2,
+                "--image-grant-per-client-per-minute": 100,
+            }
+        )
+        for _ in range(2):
+            status, _, _ = self.post_grant(
+                broker, {"query": "raven2 vulkan decode", "profile_id": "default"}
+            )
+            self.assertEqual(status, 200)
+        status, headers, payload = self.post_grant(
+            broker, {"query": "raven2 vulkan decode", "profile_id": "default"}
+        )
+        self.assertEqual(status, 429)
+        self.assertIn("grant-client-minute:127.0.0.1", payload["error"])
+        self.assertIn("Retry-After", headers)
+        statuses = [row[8] for row in self.audit_rows()]
+        self.assertEqual(statuses.count("rate_limited"), 1)
+
+    def test_the_per_client_rate_names_come_from_the_environment(self):
+        state_directory = tempfile.mkdtemp()
+        token_key_path = os.path.join(state_directory, "token.key")
+        api_key_path = os.path.join(state_directory, "api.key")
+        with open(token_key_path, "w", encoding="ascii") as handle:
+            handle.write(TOKEN_SECRET + "\n")
+        os.chmod(token_key_path, 0o600)
+        with open(api_key_path, "w", encoding="ascii") as handle:
+            handle.write(API_KEY + "\n")
+        os.chmod(api_key_path, 0o600)
+        argv = [
+            sys.executable,
+            BROKER_PATH,
+            "--state-dir",
+            state_directory,
+            "--token-key-file",
+            token_key_path,
+            "--api-key-file",
+            api_key_path,
+            "--provider",
+            "fake",
+            "--profile",
+            "default",
+            "--origin",
+            ORIGIN,
+        ]
+        process = subprocess.Popen(
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env={
+                **os.environ,
+                "PYTHONDONTWRITEBYTECODE": "1",
+                "QWEN_WEB_GRANT_PER_CLIENT_PER_MINUTE": "1",
+                "QWEN_WEB_IMAGE_GRANT_PER_CLIENT_PER_MINUTE": "1",
+            },
+        )
+        try:
+            line = process.stdout.readline()
+            parts = line.split()
+            self.assertEqual(len(parts), 3)
+            host, port = parts[1], int(parts[2])
+            connection = http.client.HTTPConnection(host, port, timeout=10)
+            secret_path = os.path.join(state_directory, SESSION_SECRET_FILE_NAME)
+            deadline = time.time() + START_WAIT_SECONDS
+            while time.time() < deadline and not os.path.exists(secret_path):
+                time.sleep(0.05)
+            with open(secret_path, encoding="ascii") as handle:
+                secret = handle.read().strip()
+            headers = {
+                "Content-Type": "application/json",
+                "Origin": ORIGIN,
+                SESSION_HEADER: secret,
+            }
+            payload = json.dumps(
+                {"query": "raven2 vulkan decode", "profile_id": "default"}
+            )
+            connection.request("POST", "/grant", payload, headers)
+            first = connection.getresponse()
+            self.assertEqual(first.status, 200)
+            first.read()
+            connection.request("POST", "/grant", payload, headers)
+            second = connection.getresponse()
+            self.assertEqual(second.status, 429)
+            body = json.loads(second.read().decode("utf-8"))
+            self.assertIn("grant-client-minute", body["error"])
+            connection.close()
+        finally:
+            if process.poll() is None:
+                process.terminate()
+            try:
+                process.wait(timeout=STOP_WAIT_SECONDS)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=STOP_WAIT_SECONDS)
+            process.stdout.close()
+            process.stderr.close()
 
     def test_a_stale_session_refusal_has_an_explicit_retry_code(self):
         broker = self.launch()
@@ -881,6 +997,64 @@ class BrokerTest(unittest.TestCase):
                 self.grant_headers(secret))
             self.assertEqual(status, 400, body)
             self.assertIn(named, json.loads(body)["error"])
+
+    def test_a_second_outstanding_image_grant_is_refused_until_the_first_expires(self):
+        """image-service.py runs one job at a time with no queue.
+
+        A second unexpired grant from the same client buys that client a
+        standing ticket ahead of every other peer's next job, so the broker
+        refuses it rather than signing it; the refusal reads distinctly from
+        the per-minute buckets, which stay wide open here.
+        """
+        broker = self.launch(
+            **{
+                "--image-profile": "image-fixture-a",
+                "--image-max-outstanding-grants-per-client": 1,
+                "--lifetime": 60,
+            }
+        )
+        secret = self.session_secret()
+        status, _, body = broker.request(
+            "POST", "/grant-image", json.dumps(self.image_grant_body()),
+            self.grant_headers(secret))
+        self.assertEqual(status, 200, body)
+        status, headers, body = broker.request(
+            "POST", "/grant-image", json.dumps(self.image_grant_body()),
+            self.grant_headers(secret))
+        self.assertEqual(status, 429, body)
+        payload = json.loads(body)
+        self.assertIn("outstanding", payload["error"])
+        self.assertIn("Retry-After", headers)
+        self.assertTrue(0 < int(headers["Retry-After"]) <= 60)
+
+    def test_concurrent_outstanding_image_grants_admit_exactly_the_limit(self):
+        """Two simultaneous requests cannot both pass a limit of one.
+
+        reserve_outstanding_image_grant holds one lock across the read and
+        the append, so two handler threads racing this check cannot both
+        observe zero outstanding grants before either records its own;
+        without that, both would be admitted against a limit meant to admit
+        one.
+        """
+        broker = self.launch(
+            **{
+                "--image-profile": "image-fixture-a",
+                "--image-max-outstanding-grants-per-client": 1,
+                "--lifetime": 60,
+            }
+        )
+        secret = self.session_secret()
+
+        def attempt(_index):
+            return broker.request(
+                "POST", "/grant-image", json.dumps(self.image_grant_body()),
+                self.grant_headers(secret))
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            results = list(executor.map(attempt, range(8)))
+        statuses = [status for status, _, _ in results]
+        self.assertEqual(statuses.count(200), 1, statuses)
+        self.assertEqual(statuses.count(429), 7, statuses)
 
     def test_image_grant_refused_where_no_lane_is_armed(self):
         """A launch that armed no image lane signs no generation grant."""

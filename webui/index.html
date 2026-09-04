@@ -1164,6 +1164,30 @@ function artifactOrigin() {
   }
   return trustedArtifactOrigin(configured);
 }
+
+// An open household-LAN launch bounds prompt and output size through
+// qwen-capacity-policy.sh's QWEN_LAN_MAX_PROMPT_TOKENS and
+// QWEN_LAN_MAX_OUTPUT_TOKENS, which reach --n-predict (a default the
+// server applies only where a request omits max_tokens) and a clamped
+// --ctx-size. These two bounds are read from a meta tag alone, unlike the
+// broker and artifact origins: those two name a location the operator's own
+// browser chooses, so a query-parameter override is a same-machine
+// convenience, while a LAN token bound is a resource ceiling the launch
+// sets against every peer on the network. A query parameter is exactly the
+// input a peer being bounded controls from their own address bar, so
+// honoring one here would let the bound be raised by the traffic it exists
+// to limit; the meta tag the served page itself carries is what stays out
+// of a peer's reach.
+function configuredLanBound(metaName) {
+  const tag = document.querySelector(`meta[name="${metaName}"]`);
+  const configured = ((tag && tag.getAttribute('content')) || '').trim();
+  if (!configured) return null;
+  const parsed = Number.parseInt(configured, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+}
+const LAN_MAX_PROMPT_TOKENS = configuredLanBound('qwen-lan-max-prompt-tokens');
+const LAN_MAX_OUTPUT_TOKENS = configuredLanBound('qwen-lan-max-output-tokens');
+
 const BROKER_SESSION_HEADER = 'X-Qwen-Web-Session';
 const STALE_SESSION_SECRET_CODE = 'stale_session_secret';
 const CONTINUATION_CAP = 4;
@@ -2559,9 +2583,16 @@ $('#input').addEventListener('keydown', e => {
 $('#send').onclick = send;
 
 async function buildRequestBody(messages, webPermission, imagePermission) {
+  // The server applies --n-predict only where a request's own max_tokens is
+  // absent (server-context.cpp reads task.params.n_predict verbatim
+  // otherwise), so an explicit request value is what actually bounds output
+  // under a LAN launch; this page's own default of 512 already sits under
+  // most configured bounds, and the LAN bound only narrows it further.
+  const maxTokens = LAN_MAX_OUTPUT_TOKENS != null
+    ? Math.min(512, LAN_MAX_OUTPUT_TOKENS) : 512;
   const body = { model: requestModel, stream: true, temperature: 0.7,
                  stream_options: { include_usage: true },
-                 max_tokens: 512, messages };
+                 max_tokens: maxTokens, messages };
   const reasoningOn = $('#reasoning').checked;
   // Qwen3 emits its <think> block from the chat template, so the switch is a
   // template argument. reasoning_budget 0 ends the block immediately on builds
@@ -3349,6 +3380,51 @@ async function send() {
     prompt = `--- ${f.name} ---\n${f.text}\n--- end ${f.name} ---\n\n` + prompt;
   }
   const content = prompt;
+  // A LAN prompt bound is enforced here rather than left to the server: the
+  // server refuses an over-large prompt only once its token count meets the
+  // slot's own context (server-context.cpp), which would spend a full
+  // prefill pass finding that out. The request llama-server actually
+  // processes carries every prior turn `history` already holds beside this
+  // one, so the count below concatenates all of it -- not the new turn
+  // alone, which a short message could always pass while an accumulated
+  // conversation had already grown past the bound. The concatenation omits
+  // the chat template and any tool-definition tokens the real request also
+  // carries, so it undercounts what the server sees; it is a conservative
+  // trigger for this page's own refusal rather than an exact figure, and the
+  // server's own slot-context refusal remains the final backstop.
+  if (LAN_MAX_PROMPT_TOKENS != null) {
+    const composedText = [...history, { role: 'user', content }]
+      .map(message => (typeof message.content === 'string' ? message.content : ''))
+      .join('\n');
+    let promptTokens = null;
+    let tokenizeFailure = null;
+    try {
+      promptTokens = await serverTokenCount(composedText, requestModel);
+    } catch (error) {
+      // A configured bound this page cannot measure is a bound this page
+      // cannot honor, so an unavailable tokenizer refuses the turn rather
+      // than sending it unbounded; the server's own slot-context refusal is
+      // a backstop for an oversized request, not a substitute for admitting
+      // one this launch's own ceiling names.
+      tokenizeFailure = error;
+    }
+    if (tokenizeFailure != null) {
+      const note = turn('limit', '');
+      note.body.className = 'body meta bad';
+      note.body.textContent = 'This launch admits at most ' +
+        `${LAN_MAX_PROMPT_TOKENS} prompt tokens, and this page could not measure ` +
+        `this conversation's length (${tokenizeFailure.message}). Retry, or start a new conversation.`;
+      return;
+    }
+    if (promptTokens != null && promptTokens > LAN_MAX_PROMPT_TOKENS) {
+      const note = turn('limit', '');
+      note.body.className = 'body meta bad';
+      note.body.textContent = `This conversation is at least ${promptTokens} tokens, above the ` +
+        `${LAN_MAX_PROMPT_TOKENS}-token bound this launch admits. Shorten this message, ` +
+        'remove an attachment, or start a new conversation.';
+      return;
+    }
+  }
   // One user turn owns each Web permission snapshot. Reset the control at the
   // boundary; the captured value continues to govern every continuation round
   // and tool call produced by the active turn.
