@@ -1,4 +1,14 @@
-# E5-sdot-aco: the target-aware ACO lowering rung, and a correction to E5-int24
+# The target-aware ACO lowering rung: how both drivers were built, and a correction to the manual arm
+
+This is the branch account the E5-S1 receipts came from, retained where the path
+that rests on it lives. Its four paths F0 through F3 are the lane's E5
+production anchor, E5-S0, E5-S1, and E5-M in that order, and the directories it
+names moved with the reframe: `isa-target-aware/f1-stock-pre-2115/` is
+`../E5-S0/isa-pre-2115/`, `isa-target-aware/f2-target-aware-post-2115/` is
+`isa-post-2115/` beside this file, `isa-target-aware/f3-manual-int24-unaffected/`
+is `../E5-M/isa-across-2115/`, and `isa-target-aware/mnemonic-comparison.tsv` is
+`mnemonic-comparison.tsv` beside this file. Every count and digest below is
+unchanged by the move; `../README.md` carries the reframed hypothesis.
 
 `evidence/raven2-vulkan-kernel-census/e5/isa-shimmed-raven2/` reads
 `remote/raven2-shader-lab/lab.sh`'s ISA receipts against a device that
