@@ -1,0 +1,98 @@
+shader: MESA_SHADER_COMPUTE
+name: main
+workgroup_size: 64, 1, 1
+decl_function main () (entrypoint)
+
+impl main {
+	block b0:  // preds:
+	32     %0 = @load_local_invocation_index
+	32     %1 = load_const (0x00000002)
+	32     %2 = ishl %0, %1
+	32     %3 = @load_ssbo (%2)
+	1      %4 = ieq %0, %1
+	// succs: b1
+}
+
+After Instruction Selection:
+Compute Shader
+BB0
+/* logical preds: / linear preds: / kind: top-level, */
+	s1: %0:s[0-1] = p_parallelcopy s[8-9]
+	v1: %1:v[0] = v_lshlrev_b32 2, v0
+
+After RA:
+Compute Shader
+BB0
+	v1: v1 = v_lshlrev_b32 2, v0
+
+After lowering to hw instructions:
+Compute Shader
+BB0
+	v1: v1 = v_lshlrev_b32 2, v0
+
+Compute Shader
+disasm:
+BB0:
+	s_load_dwordx4 s[0:3], s[8:9], 0x0                          ; C00A0002 00000000
+	v_lshlrev_b32_e32 v1, 2, v0                                 ; 34020082
+	s_waitcnt lgkmcnt(0)                                        ; BF8CC07F
+	buffer_load_dword v2, v1, s[0:3], 0 offen                   ; E0501000 80000201
+	buffer_load_dword v3, v1, s[0:3], 0 offen offset:4          ; E0501004 80000301
+	v_and_b32_e32 v4, 15, v2                                    ; 2608048F
+	v_lshrrev_b32_e32 v5, 4, v2                                 ; 200A0484
+	v_cvt_f32_ubyte0_e32 v6, v4                                 ; 7E0C4304
+	v_cvt_f32_ubyte0_e32 v7, v5                                 ; 7E0E4305
+	s_waitcnt vmcnt(0)                                          ; BF8C0F70
+	v_fma_f32 v8, v6, v7, v8                                    ; D1C40008 04220D06
+	v_mac_f32_e32 v9, v6, v7                                    ; 2C120F06
+	ds_write_b32 v1, v9                                         ; D81A0000 00000901
+	s_barrier                                                   ; BF8A0000
+	s_endpgm                                                    ; BF810000
+
+Compute Shader:
+*** SHADER STATS ***
+SGPRs: 48
+VGPRs: 64
+Spilled SGPRs: 0
+Spilled VGPRs: 0
+Code Size: 120 bytes
+LDS: 0 blocks
+Scratch: 0 bytes per wave
+Max Waves: 4
+********************
+
+
+shader: MESA_SHADER_COMPUTE
+name: main
+workgroup_size: 64, 1, 1
+decl_function main () (entrypoint)
+
+impl main {
+	block b0:  // preds:
+	32     %0 = @load_subgroup_invocation
+}
+
+After Instruction Selection:
+Compute Shader
+BB0
+	v1: %1:v[0] = v_mov_b32 0
+
+Compute Shader
+disasm:
+BB0:
+	v_mov_b32_e32 v0, 0                                         ; 7E000280
+	s_endpgm                                                    ; BF810000
+
+Compute Shader:
+*** SHADER STATS ***
+SGPRs: 16
+VGPRs: 4
+Spilled SGPRs: 0
+Spilled VGPRs: 0
+Code Size: 8 bytes
+LDS: 0 blocks
+Scratch: 0 bytes per wave
+Max Waves: 10
+********************
+
+

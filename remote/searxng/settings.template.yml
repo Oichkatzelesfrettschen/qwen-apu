@@ -1,0 +1,81 @@
+# SearXNG settings for the qwen appliance, rendered by
+# remote/searxng-launch.sh into the state directory with __SECRET__ replaced by
+# a fresh 64-hexadecimal-character value. The instance runs as the serving user
+# with SEARXNG_SETTINGS_PATH naming the rendered copy and TMPDIR under the same
+# directory, because /etc/searxng/settings.yml is root-owned and the engine
+# caches under /tmp belong to the searxng account.
+#
+# The six engines below are the population measured to answer from this
+# address. bing, google, and wikipedia carry qwen-open; mdn, github, and
+# stackoverflow join them in qwen-broad, which the profile ledger names as
+# primary_category and fallback_category. duckduckgo, startpage, and qwant
+# answer a CAPTCHA page, brave returns a rate limit, and mojeek and yep deny
+# the request, so a category holding one of them reports a failing engine on
+# every search and the instance suspends it. The measured answer sizes are 18
+# to 20 results for qwen-open and 37 for qwen-broad, at 180 to 510 ms per
+# query, in 66 to 78 MB of resident memory over 5 threads.
+#
+# Which engines a category holds belongs to this file, so the population
+# changes by editing the instance rather than through any request field a model
+# or a profile row reaches.
+use_default_settings:
+  engines:
+    keep_only:
+      - bing
+      - google
+      - wikipedia
+      - mdn
+      - github
+      - stackoverflow
+general:
+  debug: false
+  instance_name: "qwen-search"
+  enable_metrics: false
+  donation_url: false
+  contact_url: false
+server:
+  port: 8888
+  bind_address: "127.0.0.1"
+  secret_key: "__SECRET__"
+  limiter: false
+  public_instance: false
+  image_proxy: false
+  method: "GET"
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+  formats:
+    - json
+    - html
+ui:
+  static_use_hash: false
+  query_in_title: false
+  infinite_scroll: false
+valkey:
+  url: false
+outgoing:
+  request_timeout: 6.0
+  max_request_timeout: 10.0
+  pool_connections: 8
+  pool_maxsize: 4
+  enable_http2: true
+engines:
+  - name: bing
+    categories: [qwen-open, qwen-broad, general]
+    disabled: false
+  - name: google
+    categories: [qwen-open, qwen-broad, general]
+    disabled: false
+  - name: wikipedia
+    categories: [qwen-open, qwen-broad, general]
+    disabled: false
+  - name: mdn
+    categories: [qwen-broad, it]
+    disabled: false
+  - name: github
+    categories: [qwen-broad, it]
+    disabled: false
+  - name: stackoverflow
+    categories: [qwen-broad, it]
+    disabled: false

@@ -241,6 +241,81 @@ if ! awk -F'	' '$1 == "image-sdxs-512-a" && $12 == "validator-gated" &&
     exit 1
 fi
 
+# The LAN exposure runs the whole admission again against the exposed lane.
+# 127.0.0.2 is a non-loopback literal by the listeners' own LOOPBACK_HOSTS
+# definition and is reachable on Linux without a second network, so the router,
+# the broker, the artifact listener, and the served page all answer over an
+# address the loopback default refuses. The arm reads three claims off the
+# summary: each listener bound the exposed address, the router and the broker
+# refuse a request carrying no bearer, and one page turn completed an approved
+# generation with every request on the exposed origins.
+lan_output=$work/output-lan
+mkdir -p "$lan_output"
+lan_state=$work/state-lan
+mkdir -p "$lan_state"
+set +e
+env -u QWEN_IMAGE_PROFILES -u QWEN_IMAGE_PROFILE \
+    QWEN_WEBUI_STATE_DIRECTORY="$lan_state" \
+    QWEN_MODEL_REGISTRY="$model_registry" \
+    QWEN_MODEL_ROOT="$model_root" \
+    QWEN_ADMISSION_MODEL_ID=image-admission-fixture \
+    QWEN_ADMISSION_CONTEXT=4096 \
+    QWEN_ADMISSION_RESTORE=0 \
+    QWEN_WEB_LAN=1 \
+    QWEN_WEB_LAN_ADDRESS=127.0.0.2 \
+    QWEN_LLAMA_SERVER="$script_directory/test-fixtures/fake-router-server.py" \
+    QWEN_VULKAN_LATENCY_PROBE="$latency_probe" \
+    QWEN_IMAGE_RUNTIME="$script_directory/test-fixtures/fake-image-runtime.sh" \
+    QWEN_IMAGE_RUNTIME_TEMPLATE=fixture \
+    QWEN_IMAGE_MODEL_PATH="$image_model_directory" \
+    QWEN_RADV_ICD="$fixture_icd" \
+    QWEN_SERVER_PORT=18082 \
+    QWEN_WEB_BROKER_PORT=18573 \
+    "$harness/admit-image-router.sh" "$lan_output" \
+    >"$work/lan.stdout" 2>"$work/lan.stderr"
+lan_status=$?
+set -e
+cat "$work/lan.stdout"
+if [ "$lan_status" -ne 0 ]; then
+    keep_on_failure=1
+    printf 'test-admit-image-router: the LAN exposure admission refused\n' >&2
+    awk -F'\t' '$2 != "accepted" && $2 != "observed" && $2 != "skipped" { print }' \
+        "$lan_output/summary.tsv" >&2 2>/dev/null || true
+    tail -c 2000 "$work/lan.stderr" >&2
+    exit 1
+fi
+for lan_check in router_listener_bound artifact_listener_bound \
+    session_records_lan_exposure exposed_router_requires_the_bearer \
+    exposed_grant_requires_the_bearer artifact_without_credential_refused \
+    browser_page_origin browser_grant_posted_once browser_generation_via_router \
+    browser_requests_stay_on_known_origins browser_artifact_fetched; do
+    if ! awk -F'\t' -v name="$lan_check" \
+        '$1 == name && $2 == "accepted" { found = 1 } END { exit found ? 0 : 1 }' \
+        "$lan_output/summary.tsv"; then
+        keep_on_failure=1
+        printf 'test-admit-image-router: %s was not accepted in the LAN run\n' \
+            "$lan_check" >&2
+        grep "^$lan_check	" "$lan_output/summary.tsv" >&2 || true
+        exit 1
+    fi
+done
+# The page turn ran against the exposed origin rather than the loopback one, so
+# the addresses the summary names are what distinguishes this arm from the
+# default run above.
+if ! grep -q '^browser_page_origin	accepted	origin=http://127.0.0.2:18082' \
+    "$lan_output/summary.tsv"; then
+    keep_on_failure=1
+    printf 'test-admit-image-router: the LAN page turn ran from another origin\n' >&2
+    grep '^browser_page_origin	' "$lan_output/summary.tsv" >&2 || true
+    exit 1
+fi
+if grep -q 'http://127.0.0.1:' "$lan_output/summary.tsv"; then
+    keep_on_failure=1
+    printf 'test-admit-image-router: the LAN run names a loopback origin\n' >&2
+    grep 'http://127.0.0.1:' "$lan_output/summary.tsv" >&2 || true
+    exit 1
+fi
+
 # The review pairing runs the whole admission again with the image row naming a
 # vision checkpoint. Two sections serve, the page's Review button appears
 # because `GET /props` reports a vision modality for the second row, and the

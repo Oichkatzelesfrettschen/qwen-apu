@@ -1095,6 +1095,128 @@ Clock selection is an execution-shape axis here, because a faster or more
 fragmented shader can lower apparent demand and select a lower state that
 cancels part of its own gain.
 
+## Retained runs
+
+`20260902T0222Z/` retains the chain run on head 7e9e09b with the v2
+instrument, ahead of the review that produced v3. It is classified
+`measurement_status=diagnostic instrument_version=pipeline-census-v2-pre-review
+merge_authority=no ownership_authority=no`. Its eight served arms refused
+at launch on `descriptor-backed model path requires approved model
+identity`, because the runner passed no artifact ledger and the served
+harness derives the approved identity from that ledger alone; the runner
+now requires the ledger and records its digest. The S arm completed at
+2.485 tok/s with 66 logger blocks under the serialized profile, and the
+sidecar held a 5.0001 ms period at a mean cost of 614 microseconds per
+sample on the appliance, which is the figure the sampler control exists
+to bound. No bracket, overlap, or ownership figure exists from that run.
+
+The first v3 calibration on head e18b840 was stopped after three arms and
+is retained on the appliance alone. Its `P-nosidecar` arm completed at
+8.379 tok/s and both `P` arms measured 9.9 tok/s and failed on
+`sensors=refused unavailable_outside_allowance=pp_dpm_fclk_surface_mhz
+allowed=-`: the runner decided the FCLK allowance with a size test, and
+sysfs reports every attribute at one page in `stat`, so the empty
+`pp_dpm_fclk` read as full and the allowance stayed off. The runner now
+reads the attribute and grants the allowance on an empty read. The
+sidecar itself held a 5.033 ms period at a mean cost of 603 microseconds
+over 3113 samples, inside both bounds.
+
+`20260902T0426Z/` retains the first calibration on the v3 head 34de93f,
+classified `measurement_status=diagnostic calibration_verdict=failed
+ownership_authority=provisional`. Every arm launched and every rate was
+measured; the run failed on the sidecar gap bound at nice 10, on the
+reader's refusal of the two-context file, on the reader classifying every
+graph as prefill through the f32 chunk products, and on the runtime monitor
+refusing the diagnostic profile. Its two I1 ledgers, read by the analysis
+head, are the first census records: 91% of a 97 ms decode graph inside the
+two mat-vec families, 3.4 ms of queue idle and residual, ownership
+conclusive at a 1% overlap, and the reproducibility build R byte-identical
+to P. `decode-decomposition.md` reads the ledgers against the predictions
+it registered ahead of them.
+
+`20260902T0525Z/` retains the second calibration on head 59c03c8, again
+`calibration_verdict=failed`, and closes two of the four failures: the S
+arm ran under the admitted diagnostic profile at 2.458 tok/s with 64
+logger blocks and its server exited cleanly, and the first I1 arm accepted
+whole with `ownership=conclusive`. The sampler at nice 19 on core 1 still
+opened holes up to 42 ms about once a second, the cadence of the guards
+that sample on that core at nice 0, so it is now confined to both cores.
+The two I1 arms sat 2.5% and 1.9% under their I0 neighbors, one outside
+the 2% collection bound, which is what the deferred emission below exists
+to remove.
+
+`20260902T0617Z/` retains the third calibration on head e4c148a, still
+`calibration_verdict=failed`: the I1 arm's per-graph emission moved to a
+preallocated binary buffer drained at context close, and both I1 slots then
+sat 0.9 to 1.9% under their I0 neighbors, inside the 0.02 collect bound for
+the first time. The sampler moved from core 1 alone to both cores and still
+opens gaps in every sampled arm, three to five per window on five of the
+eight P and I0 records, so the sidecar and compile pairs stay `incomplete`
+in `summary.tsv` and the next instrument change targets the sampler itself
+rather than the census path.
+
+`20260902T0819Z/` retains the fourth calibration on head f5f92d8e,
+`calibration_verdict=refuted`: the sampler moves to a standalone C
+telemetry broker on a 100 ms `pp_dpm_*` channel and clears its own bound on
+every one of fourteen completed arms, with the two collect slots again
+inside the 0.02 bound, but the sidecar and compile pairs both refute on
+replicates that disagree in sign, which reads as arm-to-arm scatter rather
+than the mechanism under test and moves the next chain link to a
+replicated-pair, paired-mean verdict.
+
+`20260902T1302Z/` retains the fifth calibration on head d490a39d,
+`calibration_verdict=unresolved`: four replicates per control move all
+three intervals to spanning their bound rather than refuting or
+accepting, but the selected graphics clock inside the request window
+steps from 1100 MHz to between 775 and 857 MHz across slots 9 to 12 while
+temperature falls rather than rises, so the decode-rate step this run
+also shows is a DPM selection and not a thermal ceiling, and a control
+pair straddling that step needs a per-arm clock-state check before its
+next paired-mean verdict.
+
+`20260902T1417Z/` retains the sixth calibration on head b7a3612f,
+`calibration_verdict=failed`: `arms.tsv` and `summary.tsv` now carry the
+per-arm clock state the prior link registered as a remedy, and the
+regime step reproduces on slot 10, whose sidecar refuses on
+`window_lost_fraction=0.0326` and turns the compile control
+`incomplete`, while the collect control's exact-mode rule reads every
+comparable pair as state-changed inside the sustained low regime the
+appliance actually serves under, so the next chain link moves that rule
+to a comparability band and a regime precondition ahead of slot 1.
+
+`20260902T1556Z/` retains the seventh calibration on head 05bd95f0, the
+first to run the regime precondition: three warmup arms settle the sidecar
+at a 658 MHz regime, a third band below the two prior runs' 750 to 857 MHz,
+and eleven of twenty-five named arms then refuse on `window_lost_fraction`
+between 0.0211 and 0.0625 against the 0.02 bound, leaving all three controls
+`incomplete`. The campaign starts one second after a twenty-minute build on
+the laptop's own two CPU cores, which is the registered explanation for a
+regime this much lower, and the served A/B still refuses at launch on an
+empty `candidate_series` selection the harness reads as a manifest error
+rather than as the empty set.
+
+`20260902T2011Z/` retains the eighth calibration on head 239af705, the first
+under a commanded engine clock (`sclk_level=2`, 1100 MHz, mclk floor 933 MHz)
+in place of the regime precondition: twenty-two of twenty-six arms complete,
+three failing on `clock_invariant`'s mclk floor and one on `clock_sidecar`'s
+`window_lost` bound, the sidecar and compile controls `incomplete` on the
+same failures and the collect control `unresolved` at a mean of +0.0294
+across four clean `1100/1100` pairs. Every cooldown times out
+(`cooldown_timeouts=26`) because the quiescence predicate wants a clock step
+below the regime's highest and the manual policy pins the highest, and the
+sibling E1 ISA dump at 20260902T2039Z reproduces the same 28-module set the
+20260902T1312Z dump recorded.
+
+`e4/served-ab-20260902T2032Z/` retains the first E4 served A/B to complete
+against a production control, comparing the pinned production `llama-server`
+(`5dd86b90...`) against the E4 candidate build (`7d9df19f...`) over four
+`C K` pairs under the same manual 1100/933 clock: `served_ab=unresolved` at a
+mean delta of +0.0150 (sd 0.0426, ci [-0.0529, +0.0828]), an interval wide
+enough to contain the design's registered +3.5% to +4.2% band without
+excluding zero, so the run neither confirms nor refutes the Q4_K
+activation-group-sums prediction and a higher replicate count or an
+identified scatter source is what would separate them.
+
 ## Order and falsifiers
 
 Runs go 2B, then 0.8B, then 4B. The 2B validates the instrument, the 0.8B

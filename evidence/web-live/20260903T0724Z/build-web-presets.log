@@ -1,0 +1,7 @@
+image_preset_skipped profile=image-sdxs-512-a execution_policy=refused
+image_preset_skipped profile=image-sdxs-512-b execution_policy=refused
+image_preset_skipped profile=image-sd15-lcm-a execution_policy=refused
+image_preset_skipped profile=image-sd15-base-a execution_policy=refused
+image_preset_skipped profile=image-sd-turbo-a execution_policy=refused
+web_preset_warning profile=web-compact validated_filled_depth=unknown model=qwen35-2b
+web_presets=written path=$HOME/web-live-admission-20260903T0724Z/web-presets.ini profiles=1 absent=0 projector_unresolved=0 mcp_configs=$HOME/web-live-admission-20260903T0724Z/web-mcp-configs-0d0c4d08848bfa1d image_profile=- review_section=-

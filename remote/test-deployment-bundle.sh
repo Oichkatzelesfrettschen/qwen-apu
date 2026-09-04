@@ -1013,6 +1013,150 @@ if ! grep -q 'names instrumentation pipeline-census-v3; a bundle carries serving
 fi
 report diagnostic_build_refused accepted
 
+
+# A merged router preset names one MCP configuration per web section. The
+# configuration is session state -- its contents name the state directory, the
+# broker signing key, and the per-profile budgets -- so the bundle records the
+# path and the digest rather than copying the file, and verification compares
+# that record against the preset alone. Reading the named files at resolution
+# would refuse every bundle on a machine that never armed the web lane, which
+# turns a web-lane concern into an outage across the whole roster.
+merged_configuration=$work_directory/web-open.json
+printf '{"mcpServers":{"web":{"command":"python3"}}}\n' >"$merged_configuration"
+merged_preset=$work_directory/router-presets-merged.ini
+{
+    printf '# qwen_web_sections=web-open\n'
+    printf '[qwen-2b]\nLLAMA_ARG_MODEL = %s/qwen-2b.gguf\nLLAMA_ARG_CTX_CHECKPOINTS = 0\n\n' \
+        "$model_root"
+    printf '[web-open]\nLLAMA_ARG_MODEL = %s/qwen-2b.gguf\nLLAMA_ARG_CTX_CHECKPOINTS = 0\n' \
+        "$model_root"
+    printf 'LLAMA_ARG_MCP_SERVERS_CONFIG = %s\n' "$merged_configuration"
+} >"$merged_preset"
+if ! QWEN_BUNDLE_ROUTER_PRESETS=$merged_preset "$builder" bundle-merged \
+    "$forced_server" "$forced_manifest" "$zero_ledger" "$deployment_root" \
+    >"$work_directory/merged-bundle.log" 2>"$work_directory/merged-bundle.err"; then
+    printf 'a merged preset failed bundle assembly\n' >&2
+    cat "$work_directory/merged-bundle.err" >&2
+    exit 1
+fi
+merged_recorded=$(awk -F'\t' '$1 == "web-open" { print $2 "\t" $3 }' \
+    "$deployment_root/bundle-merged/web-mcp-manifest.tsv")
+if [ "$merged_recorded" != "$merged_configuration	$(sha256sum -- \
+    "$merged_configuration" | cut -d ' ' -f 1)" ]; then
+    printf 'the bundle recorded no MCP configuration identity for web-open\n' >&2
+    exit 1
+fi
+if [ -e "$deployment_root/bundle-merged/web-open.json" ]; then
+    printf 'the bundle copied a session-state configuration into its own tree\n' >&2
+    exit 1
+fi
+# The record binds the preset, so a configuration path that moved between
+# assembly and activation is a preset the bundle no longer describes.
+awk -F'\t' -v OFS='\t' '
+    $1 == "web-open" { $2 = "/nonexistent/web-open.json" }
+    { print }' "$deployment_root/bundle-merged/web-mcp-manifest.tsv" \
+    >"$work_directory/mcp-drift.tsv"
+cp "$work_directory/mcp-drift.tsv" \
+    "$deployment_root/bundle-merged/web-mcp-manifest.tsv"
+drift_digest=$(sha256sum "$deployment_root/bundle-merged/web-mcp-manifest.tsv" |
+    cut -d ' ' -f 1)
+awk -F'\t' -v OFS='\t' -v digest="$drift_digest" '
+    $1 == "web-mcp-manifest.tsv" { $2 = digest }
+    { print }' "$deployment_root/bundle-merged/bundle-manifest.tsv" \
+    >"$work_directory/merged-manifest.tsv"
+cp "$work_directory/merged-manifest.tsv" \
+    "$deployment_root/bundle-merged/bundle-manifest.tsv"
+if "$activator" bundle-merged "$deployment_root" \
+    >/dev/null 2>"$work_directory/merged-drift.stderr"; then
+    printf 'a web MCP record diverging from its preset activated\n' >&2
+    exit 1
+fi
+if ! grep -q 'records configurations the bundled router preset does not name' \
+    "$work_directory/merged-drift.stderr"; then
+    printf 'the MCP record refusal lost its reason\n' >&2
+    exit 1
+fi
+report bundle_records_web_mcp_configurations accepted
+
+
+# A bundle whose router preset names no web section carries no MCP record, and
+# every bundle assembled before the merged preset is that shape: their presets
+# carry no `# qwen_web_sections=` marker at all. Requiring the record of every
+# bundle refused the whole roster on the appliance active deployment and left
+# it serving through recovery mode, so a marker-free bundle verifies with zero
+# web-mcp rows and a marker-carrying one requires exactly one.
+marker_free_preset=$work_directory/router-presets-marker-free.ini
+printf '[qwen-2b]\nLLAMA_ARG_MODEL = %s/qwen-2b.gguf\nLLAMA_ARG_CTX_CHECKPOINTS = 0\n' \
+    "$model_root" >"$marker_free_preset"
+if ! QWEN_BUNDLE_ROUTER_PRESETS=$marker_free_preset "$builder" bundle-marker-free \
+    "$forced_server" "$forced_manifest" "$zero_ledger" "$deployment_root" \
+    >"$work_directory/marker-free.log" 2>"$work_directory/marker-free.err"; then
+    printf 'a preset carrying no web section marker failed bundle assembly\n' >&2
+    cat "$work_directory/marker-free.err" >&2
+    exit 1
+fi
+if [ -e "$deployment_root/bundle-marker-free/web-mcp-manifest.tsv" ]; then
+    printf 'a marker-free bundle carries a web MCP record\n' >&2
+    exit 1
+fi
+if ! "$activator" bundle-marker-free "$deployment_root" >/dev/null; then
+    printf 'a marker-free bundle failed activation\n' >&2
+    exit 1
+fi
+# A bundle assembled before this lane carries no web-mcp-manifest.tsv row at
+# all, which is the exact shape natural-boundary-13d05a0-r2 refused under.
+grep -v '^web-mcp-manifest\.tsv	' \
+    "$deployment_root/bundle-marker-free/bundle-manifest.tsv" \
+    >"$work_directory/legacy-manifest.tsv"
+cp "$work_directory/legacy-manifest.tsv" \
+    "$deployment_root/bundle-marker-free/bundle-manifest.tsv"
+if ! "$verifier" "$deployment_root" bundle-marker-free \
+    >/dev/null 2>"$work_directory/legacy.stderr"; then
+    printf 'a bundle predating the web MCP record failed verification\n' >&2
+    cat "$work_directory/legacy.stderr" >&2
+    exit 1
+fi
+# The marker is what requires the record, so a marker-carrying bundle whose
+# manifest lost the row refuses rather than serving a preset the bundle no
+# longer describes.
+awk -F'\t' -v OFS='\t' '
+    $1 == "web-mcp-manifest.tsv" { $2 = "-" }
+    { print }' "$deployment_root/bundle-merged/bundle-manifest.tsv" \
+    >"$work_directory/merged-without-record.tsv"
+cp "$work_directory/merged-without-record.tsv" \
+    "$deployment_root/bundle-merged/bundle-manifest.tsv"
+if "$verifier" "$deployment_root" bundle-merged \
+    >/dev/null 2>"$work_directory/merged-without-record.stderr"; then
+    printf 'a marker-carrying bundle verified without its MCP record\n' >&2
+    exit 1
+fi
+if ! grep -q 'names web section web-open and its manifest records no web-mcp-manifest.tsv' \
+    "$work_directory/merged-without-record.stderr"; then
+    printf 'the missing-record refusal lost its reason\n' >&2
+    cat "$work_directory/merged-without-record.stderr" >&2
+    exit 1
+fi
+# A record on a preset that names no web section claims a grant the marker
+# withholds, so assembly refuses it too.
+smuggled_preset=$work_directory/router-presets-smuggled.ini
+{
+    printf '[qwen-2b]\nLLAMA_ARG_MODEL = %s/qwen-2b.gguf\n' "$model_root"
+    printf 'LLAMA_ARG_CTX_CHECKPOINTS = 0\n'
+    printf 'LLAMA_ARG_MCP_SERVERS_CONFIG = %s\n' "$merged_configuration"
+} >"$smuggled_preset"
+if QWEN_BUNDLE_ROUTER_PRESETS=$smuggled_preset "$builder" bundle-smuggled \
+    "$forced_server" "$forced_manifest" "$zero_ledger" "$deployment_root" \
+    >/dev/null 2>"$work_directory/smuggled.stderr"; then
+    printf 'a preset carrying an MCP key under no web section marker assembled\n' >&2
+    exit 1
+fi
+if ! grep -q 'head marker names no web section' "$work_directory/smuggled.stderr"; then
+    printf 'the unmarked MCP key refusal lost its reason\n' >&2
+    cat "$work_directory/smuggled.stderr" >&2
+    exit 1
+fi
+report web_mcp_record_follows_the_marker accepted
+
 # A present serving_eligible row carrying an empty value declares nothing and
 # is read as its own spelling rather than as the absent legacy declaration,
 # at assembly and against an assembled bundle.

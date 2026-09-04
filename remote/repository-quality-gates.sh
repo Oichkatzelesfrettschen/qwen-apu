@@ -173,6 +173,16 @@ gate_cell test-census-replay-corpus derive \
 gate_cell test-summarize-perf-logger-slice derive \
     remote/test-summarize-perf-logger-slice.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-perf-logger-slice.py'
+gate_cell test-summarize-prefill-ladder derive remote/test-summarize-prefill-ladder.py \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-prefill-ladder.py'
+gate_cell test-summarize-bracket-ab derive remote/test-summarize-bracket-ab.py \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-bracket-ab.py'
+gate_cell test-summarize-margin-witness derive remote/test-summarize-margin-witness.py \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-margin-witness.py'
+gate_cell test-summarize-radv-isa derive remote/test-summarize-radv-isa.py \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-radv-isa.py'
+gate_cell test-depth derive remote/raven2-shader-lab/test-depth.py \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/raven2-shader-lab/test-depth.py'
 
 # Ledger readers and registry checks: shell, no fixture server.
 gate_cell check-validated-tuples derive remote/check-validated-tuples.sh \
@@ -209,8 +219,28 @@ gate_cell test-measure-draft-pair derive remote/test-measure-draft-pair.sh \
 gate_cell test-classify-checkpoint-semantics derive \
     remote/test-classify-checkpoint-semantics.sh \
     remote/test-classify-checkpoint-semantics.sh
+gate_cell test-write-clangd-config derive remote/test-write-clangd-config.sh \
+    remote/test-write-clangd-config.sh
 gate_cell test-check-trace-source-status derive \
     remote/test-check-trace-source-status.sh remote/test-check-trace-source-status.sh
+gate_cell test-sync-runtime-tree derive remote/test-sync-runtime-tree.sh \
+    remote/test-sync-runtime-tree.sh
+gate_cell test-web-search-live derive remote/test-web-search-live.sh \
+    remote/test-web-search-live.sh
+gate_cell test-compute-state-lease derive remote/test-compute-state-lease.sh \
+    remote/test-compute-state-lease.sh
+gate_cell test-run-prefill-ladder derive remote/test-run-prefill-ladder.sh \
+    remote/test-run-prefill-ladder.sh
+gate_cell test-feature-roster derive remote/test-feature-roster.sh \
+    remote/test-feature-roster.sh
+gate_cell test-run-served-binary-ab derive remote/test-run-served-binary-ab.sh \
+    remote/test-run-served-binary-ab.sh
+gate_cell test-run-kernel-delta-witness derive remote/test-run-kernel-delta-witness.sh \
+    remote/test-run-kernel-delta-witness.sh
+gate_cell test-receipt-diff derive remote/raven2-shader-lab/test-receipt-diff.sh \
+    remote/raven2-shader-lab/test-receipt-diff.sh
+gate_cell test-lab-replay derive remote/raven2-shader-lab/test-lab-replay.sh \
+    remote/raven2-shader-lab/test-lab-replay.sh
 gate_cell test-web-presets derive remote/test-web-presets.sh \
     remote/test-web-presets.sh
 gate_cell test-qwen-capacity-policy derive remote/test-qwen-capacity-policy.sh \
@@ -265,6 +295,8 @@ gate_cell test-run-raven2-vulkan-kernel-census derive \
 gate_cell test-fallback-webui-model-state derive \
     remote/test-fallback-webui-model-state.mjs \
     'node remote/test-fallback-webui-model-state.mjs'
+gate_cell test-fallback-webui-roster derive remote/test-fallback-webui-roster.mjs \
+    'node remote/test-fallback-webui-roster.mjs'
 gate_cell test-fallback-webui-model-selection derive \
     remote/test-fallback-webui-model-selection.sh \
     remote/test-fallback-webui-model-selection.sh

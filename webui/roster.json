@@ -1,0 +1,391 @@
+{
+  "schema": "qwen-feature-roster/1",
+  "features": [
+    { "feature": "text-chat", "scope": "model" },
+    { "feature": "vision", "scope": "model" },
+    { "feature": "tool-selection", "scope": "model" },
+    { "feature": "guarded-tool-execution", "scope": "model" },
+    { "feature": "long-context", "scope": "model" },
+    { "feature": "context-checkpoints", "scope": "model" },
+    { "feature": "quarantine", "scope": "model" },
+    { "feature": "draft-pair-speculation", "scope": "draft-pair" },
+    { "feature": "web-search", "scope": "web-profile" },
+    { "feature": "image-generation", "scope": "image-profile" },
+    { "feature": "image-review", "scope": "image-profile" }
+  ],
+  "models": [
+    {
+      "id": "qwen38-2b-distill",
+      "role": "fast-text",
+      "tier": "production",
+      "class_rank": 1,
+      "tags": ["production"],
+      "features": [
+        { "feature": "text-chat", "status": "production", "evidence": "evidence/model-admission/roster-quality-sweep.md", "note": "graded 40 of 55 with thinking off, and the appliance primary performance target" },
+        { "feature": "vision", "status": "unsupported", "evidence": "-", "note": "the checkpoint ships text-only, so select-projector.sh finds no projector beside it" },
+        { "feature": "tool-selection", "status": "candidate", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "2 of 10 unaided; the row answers an image tool listing in prose, so a tool-shaped turn names another model" },
+        { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "tool-08 carried the injected city into the call; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated" },
+        { "feature": "long-context", "status": "production", "evidence": "evidence/depth-validation-32k/qwen38-2b-distill/", "note": "32768 filled and decoded at batch 128 ubatch 32 with zero resets and a passing control" },
+        { "feature": "context-checkpoints", "status": "production", "evidence": "evidence/ctx-checkpoint-natural-boundary/2b", "note": "count 2 holds token and log-probability identity across the setting on the natural-boundary build" },
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" }
+      ]
+    },
+    {
+      "id": "qwen35-4b-base",
+      "role": "vision",
+      "tier": "production",
+      "class_rank": 3,
+      "tags": ["production", "vision", "experimental"],
+      "features": [
+        { "feature": "text-chat", "status": "production", "evidence": "evidence/model-admission/roster-quality-sweep.md", "note": "graded 47 of 55 with thinking off, level with the 4B distill in every category" },
+        { "feature": "vision", "status": "production", "evidence": "evidence/depth-validation-32k-projector/qwen35-4b-base/", "note": "the revision-matched projector loads and a validated tuple reads projector_state loaded at 8192 through 32768" },
+        { "feature": "tool-selection", "status": "production", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "8 of 10 unaided" },
+        { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "tool-08 carried the injected city into the call; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated" },
+        { "feature": "long-context", "status": "experimental", "evidence": "-", "note": "llama-bench allocates no projector, so probe-depth-wedge.sh leaves a vision row at - and remote/probe-depth-projector.sh measures the tuple this row needs" },
+        { "feature": "context-checkpoints", "status": "unsupported", "evidence": "-", "note": "the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it" },
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" }
+      ]
+    },
+    {
+      "id": "qwen38-4b-distill",
+      "role": "balanced-text",
+      "tier": "production",
+      "class_rank": 3,
+      "tags": ["production"],
+      "features": [
+        { "feature": "text-chat", "status": "production", "evidence": "evidence/model-admission/roster-quality-sweep.md", "note": "graded 47 of 55 with thinking off across the seven-checkpoint sweep" },
+        { "feature": "vision", "status": "unsupported", "evidence": "-", "note": "the checkpoint ships text-only, so select-projector.sh finds no projector beside it and the vision profile selects qwen35-4b-base" },
+        { "feature": "tool-selection", "status": "production", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "9 of 10 unaided, and the image lane reads a schema-valid call from it in every run" },
+        { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "tool-08 carried the injected city into the call; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated" },
+        { "feature": "long-context", "status": "production", "evidence": "evidence/depth-validation-32k/qwen38-4b-distill/", "note": "32768 filled and decoded at batch 128 ubatch 32 with zero resets and a passing control" },
+        { "feature": "context-checkpoints", "status": "production", "evidence": "evidence/ctx-checkpoint-natural-boundary/4b", "note": "count 2 holds token and log-probability identity across the setting on the natural-boundary build" },
+        { "feature": "quarantine", "status": "unstable", "evidence": "evidence/quarantine/qwen38-4b-distill-d16384-b2048-ub512.md", "note": "profile scope removes depth 16384 at batch 2048 ubatch 512, which wedged the compute ring; the served 128/32 tuple stands" }
+      ]
+    },
+    {
+      "id": "qwen35-2b",
+      "role": "compact-vision",
+      "tier": "candidate",
+      "class_rank": 1,
+      "tags": ["candidate", "vision", "experimental"],
+      "features": [
+        { "feature": "text-chat", "status": "candidate", "evidence": "evidence/model-admission/roster-quality-sweep.md", "note": "graded 41 of 55 with thinking off" },
+        { "feature": "vision", "status": "candidate", "evidence": "evidence/depth-validation-32k-projector/qwen35-2b/", "note": "the revision-matched projector loads and a validated tuple reads projector_state loaded at 8192 through 32768" },
+        { "feature": "tool-selection", "status": "candidate", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "9 of 10 unaided" },
+        { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "tool-08 carried the injected city into the call; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated" },
+        { "feature": "long-context", "status": "experimental", "evidence": "-", "note": "llama-bench allocates no projector, so probe-depth-wedge.sh leaves a vision row at - and remote/probe-depth-projector.sh measures the tuple this row needs" },
+        { "feature": "context-checkpoints", "status": "unsupported", "evidence": "-", "note": "the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it" },
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" }
+      ]
+    },
+    {
+      "id": "qwen35-2b-hauhau",
+      "role": "uncensored-text",
+      "tier": "candidate",
+      "class_rank": 1,
+      "tags": ["candidate", "experimental"],
+      "features": [
+        { "feature": "text-chat", "status": "experimental", "evidence": "evidence/model-admission/uncensored-roster.md", "note": "one strict Vulkan load admits the row; remote/run-quality-roster.sh grades it" },
+        { "feature": "vision", "status": "unsupported", "evidence": "-", "note": "the checkpoint ships text-only, so select-projector.sh finds no projector beside it" },
+        { "feature": "tool-selection", "status": "experimental", "evidence": "-", "note": "the tool category of remote/run-quality-suite.py grades the row unaided and moves it off unmeasured" },
+        { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "tool-08 carried the injected city into the call on every measured arm; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated" },
+        { "feature": "long-context", "status": "experimental", "evidence": "-", "note": "the row enters at 8192 allocation with no filled depth; remote/probe-depth-wedge.sh measures it" },
+        { "feature": "context-checkpoints", "status": "unsupported", "evidence": "-", "note": "the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it" },
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" }
+      ]
+    },
+    {
+      "id": "qwen35-2b-heretic",
+      "role": "creative",
+      "tier": "candidate",
+      "class_rank": 1,
+      "tags": ["candidate", "experimental"],
+      "features": [
+        { "feature": "text-chat", "status": "experimental", "evidence": "evidence/model-admission/uncensored-roster.md", "note": "one strict Vulkan load admits the row; remote/run-quality-roster.sh grades it" },
+        { "feature": "vision", "status": "unsupported", "evidence": "-", "note": "the checkpoint ships text-only, so select-projector.sh finds no projector beside it" },
+        { "feature": "tool-selection", "status": "experimental", "evidence": "-", "note": "the tool category of remote/run-quality-suite.py grades the row unaided and moves it off unmeasured" },
+        { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "tool-08 carried the injected city into the call on every measured arm; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated" },
+        { "feature": "long-context", "status": "experimental", "evidence": "-", "note": "the row enters at 8192 allocation with no filled depth; remote/probe-depth-wedge.sh measures it" },
+        { "feature": "context-checkpoints", "status": "unsupported", "evidence": "-", "note": "the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it" },
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" }
+      ]
+    },
+    {
+      "id": "qwen35-2b-unredacted",
+      "role": "uncensored-text",
+      "tier": "candidate",
+      "class_rank": 1,
+      "tags": ["candidate", "experimental"],
+      "features": [
+        { "feature": "text-chat", "status": "experimental", "evidence": "evidence/model-admission/uncensored-roster.md", "note": "one strict Vulkan load admits the row; remote/run-quality-roster.sh grades it" },
+        { "feature": "vision", "status": "unsupported", "evidence": "-", "note": "the checkpoint ships text-only, so select-projector.sh finds no projector beside it" },
+        { "feature": "tool-selection", "status": "experimental", "evidence": "-", "note": "the tool category of remote/run-quality-suite.py grades the row unaided and moves it off unmeasured" },
+        { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "tool-08 carried the injected city into the call on every measured arm; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated" },
+        { "feature": "long-context", "status": "experimental", "evidence": "-", "note": "the row enters at 8192 allocation with no filled depth; remote/probe-depth-wedge.sh measures it" },
+        { "feature": "context-checkpoints", "status": "unsupported", "evidence": "-", "note": "the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it" },
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" }
+      ]
+    },
+    {
+      "id": "qwen38-2b-uncensored",
+      "role": "uncensored-text",
+      "tier": "candidate",
+      "class_rank": 1,
+      "tags": ["candidate", "experimental"],
+      "features": [
+        { "feature": "text-chat", "status": "experimental", "evidence": "evidence/model-admission/uncensored-roster.md", "note": "one strict Vulkan load admits the row; remote/run-quality-roster.sh grades it" },
+        { "feature": "vision", "status": "unsupported", "evidence": "-", "note": "the checkpoint ships text-only, so select-projector.sh finds no projector beside it" },
+        { "feature": "tool-selection", "status": "experimental", "evidence": "-", "note": "the tool category of remote/run-quality-suite.py grades the row unaided and moves it off unmeasured" },
+        { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "tool-08 carried the injected city into the call on every measured arm; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated" },
+        { "feature": "long-context", "status": "experimental", "evidence": "-", "note": "the row enters at 8192 allocation with no filled depth; remote/probe-depth-wedge.sh measures it" },
+        { "feature": "context-checkpoints", "status": "unsupported", "evidence": "-", "note": "the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it" },
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" }
+      ]
+    },
+    {
+      "id": "qwenseer-2b",
+      "role": "creative",
+      "tier": "candidate",
+      "class_rank": 1,
+      "tags": ["candidate", "experimental"],
+      "features": [
+        { "feature": "text-chat", "status": "experimental", "evidence": "evidence/model-admission/uncensored-roster.md", "note": "one strict Vulkan load admits the row; remote/run-quality-roster.sh grades it" },
+        { "feature": "vision", "status": "unsupported", "evidence": "-", "note": "the checkpoint ships text-only, so select-projector.sh finds no projector beside it" },
+        { "feature": "tool-selection", "status": "experimental", "evidence": "-", "note": "the tool category of remote/run-quality-suite.py grades the row unaided and moves it off unmeasured" },
+        { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "tool-08 carried the injected city into the call on every measured arm; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated" },
+        { "feature": "long-context", "status": "experimental", "evidence": "-", "note": "the row enters at 8192 allocation with no filled depth; remote/probe-depth-wedge.sh measures it" },
+        { "feature": "context-checkpoints", "status": "unsupported", "evidence": "-", "note": "the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it" },
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" }
+      ]
+    },
+    {
+      "id": "qwen35-08b",
+      "role": "compact-text",
+      "tier": "candidate",
+      "class_rank": 2,
+      "tags": ["candidate"],
+      "features": [
+        { "feature": "text-chat", "status": "candidate", "evidence": "evidence/model-admission/roster-quality-sweep.md", "note": "graded 33 of 55 with thinking off, the secondary fast target of the class policy" },
+        { "feature": "vision", "status": "unsupported", "evidence": "-", "note": "the publisher ships a projector this tree has not fetched, so the model directory holds none and the row runs text-only" },
+        { "feature": "tool-selection", "status": "candidate", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "9 of 10 unaided" },
+        { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "tool-08 carried the injected city into the call; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated" },
+        { "feature": "long-context", "status": "candidate", "evidence": "evidence/depth-validation-32k/qwen35-08b/", "note": "32768 filled and decoded at batch 128 ubatch 32" },
+        { "feature": "context-checkpoints", "status": "production", "evidence": "evidence/ctx-checkpoint-natural-boundary", "note": "count 2 holds token identity on the natural-boundary build, which removed the index 25 divergence the forced tail partition produced" },
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" }
+      ]
+    },
+    {
+      "id": "qwen35-08b-f16",
+      "role": "compact-precision",
+      "tier": "candidate",
+      "class_rank": 2,
+      "tags": ["candidate", "experimental"],
+      "features": [
+        { "feature": "text-chat", "status": "candidate", "evidence": "evidence/model-admission/roster-quality-sweep.md", "note": "graded 32 of 55 with thinking off; the same weights as qwen35-08b at the highest precision the publisher ships" },
+        { "feature": "vision", "status": "unsupported", "evidence": "-", "note": "the publisher ships a projector this tree has not fetched, so the model directory holds none and the row runs text-only" },
+        { "feature": "tool-selection", "status": "experimental", "evidence": "-", "note": "the tool category of remote/run-quality-suite.py grades the row unaided and moves it off unmeasured" },
+        { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "tool-08 carried the injected city into the call on every measured arm; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated" },
+        { "feature": "long-context", "status": "candidate", "evidence": "evidence/depth-validation-32k/qwen35-08b-f16/", "note": "32768 filled and decoded at batch 128 ubatch 32" },
+        { "feature": "context-checkpoints", "status": "unsupported", "evidence": "-", "note": "the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it" },
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" }
+      ]
+    },
+    {
+      "id": "qwen35-08b-unsloth-unc",
+      "role": "uncensored-text",
+      "tier": "candidate",
+      "class_rank": 2,
+      "tags": ["candidate", "experimental"],
+      "features": [
+        { "feature": "text-chat", "status": "experimental", "evidence": "evidence/model-admission/uncensored-roster.md", "note": "one strict Vulkan load admits the row; remote/run-quality-roster.sh grades it" },
+        { "feature": "vision", "status": "unsupported", "evidence": "-", "note": "the checkpoint ships text-only, so select-projector.sh finds no projector beside it" },
+        { "feature": "tool-selection", "status": "experimental", "evidence": "-", "note": "the tool category of remote/run-quality-suite.py grades the row unaided and moves it off unmeasured" },
+        { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "tool-08 carried the injected city into the call on every measured arm; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated" },
+        { "feature": "long-context", "status": "experimental", "evidence": "-", "note": "the row enters at 8192 allocation with no filled depth; remote/probe-depth-wedge.sh measures it" },
+        { "feature": "context-checkpoints", "status": "unsupported", "evidence": "-", "note": "the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it" },
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" }
+      ]
+    },
+    {
+      "id": "lfm25-vl-16b",
+      "role": "fast-vision",
+      "tier": "candidate",
+      "class_rank": 4,
+      "tags": ["candidate", "vision", "experimental"],
+      "features": [
+        { "feature": "text-chat", "status": "candidate", "evidence": "evidence/model-admission/roster-quality-sweep.md", "note": "graded 43 of 55 with thinking off at the roster fastest vision decode" },
+        { "feature": "vision", "status": "candidate", "evidence": "evidence/depth-validation-32k-projector/lfm25-vl-16b/", "note": "the revision-matched projector loads and a validated tuple reads projector_state loaded at 8192 through 32768" },
+        { "feature": "tool-selection", "status": "candidate", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "8 of 10 unaided" },
+        { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "tool-08 carried the injected city into the call; a runtime comparing emitted arguments against the user authorization moves the row to validator-gated" },
+        { "feature": "long-context", "status": "experimental", "evidence": "-", "note": "llama-bench allocates no projector, so probe-depth-wedge.sh leaves a vision row at - and remote/probe-depth-projector.sh measures the tuple this row needs" },
+        { "feature": "context-checkpoints", "status": "unsupported", "evidence": "-", "note": "the row sits outside remote/ctx-checkpoints.tsv and serves at 0; remote/run-ctx-checkpoint-sweep.sh measures the count that moves it" },
+        { "feature": "quarantine", "status": "unclaimed", "evidence": "-", "note": "-" }
+      ]
+    },
+    {
+      "id": "ministral3-3b",
+      "role": "dense-vision",
+      "tier": "quarantine",
+      "class_rank": 4,
+      "tags": ["quarantine"],
+      "features": [
+        { "feature": "text-chat", "status": "unsupported", "evidence": "evidence/quarantine/ministral3-3b.md", "note": "model scope quarantine removes the checkpoint from router-child launches; QWEN_ROUTER_INCLUDE_QUARANTINE exposes it on loopback for research" },
+        { "feature": "vision", "status": "unsupported", "evidence": "evidence/quarantine/ministral3-3b.md", "note": "the row names a required projector and model scope quarantine removes it before a projector loads" },
+        { "feature": "tool-selection", "status": "unsupported", "evidence": "evidence/quarantine/ministral3-3b.md", "note": "model scope quarantine removes the checkpoint before any graded arm runs" },
+        { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "every registry row reads refused, and model scope quarantine removes this one from the router path besides" },
+        { "feature": "long-context", "status": "unsupported", "evidence": "evidence/quarantine/ministral3-3b.md", "note": "the graph assert abort ends the load before a depth arm reaches a filled cache" },
+        { "feature": "context-checkpoints", "status": "unsupported", "evidence": "-", "note": "the row sits outside remote/ctx-checkpoints.tsv and serves at 0" },
+        { "feature": "quarantine", "status": "unstable", "evidence": "evidence/quarantine/ministral3-3b.md", "note": "model scope, runtime mode router-child, reason graph-assert-abort" }
+      ]
+    },
+    {
+      "id": "nanbeige42-3b",
+      "role": "research",
+      "tier": "quarantine",
+      "class_rank": 4,
+      "tags": ["quarantine"],
+      "features": [
+        { "feature": "text-chat", "status": "unsupported", "evidence": "evidence/quarantine/nanbeige42-3b.md", "note": "model scope quarantine removes the checkpoint from every launch path; QWEN_ROUTER_INCLUDE_QUARANTINE exposes it on loopback for research" },
+        { "feature": "vision", "status": "unsupported", "evidence": "-", "note": "the checkpoint ships text-only, so select-projector.sh finds no projector beside it" },
+        { "feature": "tool-selection", "status": "unsupported", "evidence": "evidence/quarantine/nanbeige42-3b.md", "note": "model scope quarantine removes the checkpoint before any graded arm runs" },
+        { "feature": "guarded-tool-execution", "status": "unsupported", "evidence": "evidence/model-admission/vision-and-tool-sweep.md", "note": "every registry row reads refused, and model scope quarantine removes this one from the launch path besides" },
+        { "feature": "long-context", "status": "unsupported", "evidence": "evidence/quarantine/nanbeige42-3b.md", "note": "the row carries no validated safe tuple, which is the quarantine reason itself" },
+        { "feature": "context-checkpoints", "status": "unsupported", "evidence": "-", "note": "the row sits outside remote/ctx-checkpoints.tsv and serves at 0" },
+        { "feature": "quarantine", "status": "unstable", "evidence": "evidence/quarantine/nanbeige42-3b.md", "note": "model scope, runtime mode any, reason no-validated-safe-tuple" }
+      ]
+    }
+  ],
+  "draft_pairs": [
+    {
+      "id": "qwen38-2b-distill+qwen35-08b-draft",
+      "target_model_id": "qwen38-2b-distill",
+      "draft_model_id": "qwen35-08b",
+      "tier": "candidate",
+      "features": [
+        { "feature": "draft-pair-speculation", "status": "experimental", "evidence": "evidence/draft-pairs/README.md", "note": "the pairing serves through its own picker section at spec_draft_n_max 2; remote/measure-draft-pair.sh measures it against a same-session control of the target alone" }
+      ]
+    },
+    {
+      "id": "qwen38-4b-distill+qwen35-08b-draft",
+      "target_model_id": "qwen38-4b-distill",
+      "draft_model_id": "qwen35-08b",
+      "tier": "candidate",
+      "features": [
+        { "feature": "draft-pair-speculation", "status": "experimental", "evidence": "evidence/draft-pairs/README.md", "note": "the pairing serves through its own picker section at spec_draft_n_max 2; remote/measure-draft-pair.sh measures it against a same-session control of the target alone" }
+      ]
+    }
+  ],
+  "web_profiles": [
+    {
+      "id": "web-balanced",
+      "model_id": "qwen38-4b-distill",
+      "execution_policy": "refused",
+      "features": [
+        { "feature": "web-search", "status": "unsupported", "evidence": "evidence/web-provider-contract.md", "note": "execution_policy refused emits no MCP configuration under every setting; a validator-gated row under QWEN_WEB_AUTHORIZER_READY arms the lane" }
+      ]
+    },
+    {
+      "id": "web-compact",
+      "model_id": "qwen35-2b",
+      "execution_policy": "refused",
+      "features": [
+        { "feature": "web-search", "status": "unsupported", "evidence": "evidence/web-provider-contract.md", "note": "execution_policy refused emits no MCP configuration under every setting; a validator-gated row under QWEN_WEB_AUTHORIZER_READY arms the lane" }
+      ]
+    },
+    {
+      "id": "web-fast-vl",
+      "model_id": "lfm25-vl-16b",
+      "execution_policy": "refused",
+      "features": [
+        { "feature": "web-search", "status": "unsupported", "evidence": "evidence/web-provider-contract.md", "note": "execution_policy refused emits no MCP configuration under every setting; a validator-gated row under QWEN_WEB_AUTHORIZER_READY arms the lane" }
+      ]
+    },
+    {
+      "id": "web-lookup",
+      "model_id": "qwen35-08b",
+      "execution_policy": "refused",
+      "features": [
+        { "feature": "web-search", "status": "unsupported", "evidence": "evidence/web-provider-contract.md", "note": "execution_policy refused emits no MCP configuration under every setting; a ui-mediated row emits a section the page retrieves through" }
+      ]
+    },
+    {
+      "id": "web-open",
+      "model_id": "qwen38-4b-distill",
+      "execution_policy": "validator-gated",
+      "features": [
+        { "feature": "web-search", "status": "unsupported", "evidence": "evidence/web-provider-contract.md", "note": "execution_policy refused emits no MCP configuration under every setting; a validator-gated row under QWEN_WEB_AUTHORIZER_READY arms the lane" }
+      ]
+    },
+    {
+      "id": "web-reader",
+      "model_id": "qwen38-2b-distill",
+      "execution_policy": "refused",
+      "features": [
+        { "feature": "web-search", "status": "unsupported", "evidence": "evidence/web-provider-contract.md", "note": "execution_policy refused emits no MCP configuration under every setting; a ui-mediated row emits a section the page retrieves through" }
+      ]
+    },
+    {
+      "id": "web-sovereign",
+      "model_id": "qwen38-4b-distill",
+      "execution_policy": "refused",
+      "features": [
+        { "feature": "web-search", "status": "unsupported", "evidence": "evidence/web-provider-contract.md", "note": "execution_policy refused emits no MCP configuration under every setting; the row names the qwen-yacy category of the local SearXNG instance" }
+      ]
+    },
+    {
+      "id": "web-vision",
+      "model_id": "qwen35-4b-base",
+      "execution_policy": "refused",
+      "features": [
+        { "feature": "web-search", "status": "unsupported", "evidence": "evidence/web-provider-contract.md", "note": "execution_policy refused emits no MCP configuration under every setting; a ui-mediated row emits a section the page retrieves through" }
+      ]
+    }
+  ],
+  "image_profiles": [
+    {
+      "id": "image-sdxs-512-a",
+      "execution_policy": "validator-gated",
+      "review_model": "lfm25-vl-16b",
+      "features": [
+        { "feature": "image-generation", "status": "candidate", "evidence": "evidence/image-appliance/served-turn-admission/README.md", "note": "validator-gated: one approved generation ran through the router and the served page, 40 accepted rows and one observed" },
+        { "feature": "image-review", "status": "candidate", "evidence": "evidence/image-appliance/paired-review-admission/", "note": "review_model lfm25-vl-16b; the paired launch fit one carve-out and the page parsed a vision review of its own artifact" }
+      ]
+    },
+    {
+      "id": "image-sdxs-512-b",
+      "execution_policy": "refused",
+      "review_model": "-",
+      "features": [
+        { "feature": "image-generation", "status": "unsupported", "evidence": "-", "note": "execution_policy refused emits no image server under every setting" },
+        { "feature": "image-review", "status": "unsupported", "evidence": "-", "note": "review_model reads -; the RADV RAVEN2 residency probe for a pairing runs on the appliance alone" }
+      ]
+    },
+    {
+      "id": "image-sd15-lcm-a",
+      "execution_policy": "refused",
+      "review_model": "-",
+      "features": [
+        { "feature": "image-generation", "status": "unsupported", "evidence": "-", "note": "execution_policy refused emits no image server under every setting" },
+        { "feature": "image-review", "status": "unsupported", "evidence": "-", "note": "review_model reads -; the RADV RAVEN2 residency probe for a pairing runs on the appliance alone" }
+      ]
+    },
+    {
+      "id": "image-sd15-base-a",
+      "execution_policy": "refused",
+      "review_model": "-",
+      "features": [
+        { "feature": "image-generation", "status": "unsupported", "evidence": "-", "note": "execution_policy refused emits no image server under every setting" },
+        { "feature": "image-review", "status": "unsupported", "evidence": "-", "note": "review_model reads -; the RADV RAVEN2 residency probe for a pairing runs on the appliance alone" }
+      ]
+    },
+    {
+      "id": "image-sd-turbo-a",
+      "execution_policy": "refused",
+      "review_model": "-",
+      "features": [
+        { "feature": "image-generation", "status": "unsupported", "evidence": "-", "note": "execution_policy refused emits no image server under every setting" },
+        { "feature": "image-review", "status": "unsupported", "evidence": "-", "note": "review_model reads -; the RADV RAVEN2 residency probe for a pairing runs on the appliance alone" }
+      ]
+    }
+  ]
+}

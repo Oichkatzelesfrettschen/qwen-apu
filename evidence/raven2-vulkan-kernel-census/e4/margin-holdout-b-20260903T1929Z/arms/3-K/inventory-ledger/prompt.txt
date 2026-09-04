@@ -1,0 +1,1 @@
+A warehouse holds 65 crates. Apply these events in order and print the crate count and a running total of crates shipped after each: ship 18, receive 24, ship 31, ship 7, receive 16, ship 22, receive 40, ship 35, ship 13, receive 9, ship 26, receive 19. State the final count, the total shipped, and the highest count reached.
