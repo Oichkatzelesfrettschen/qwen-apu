@@ -10,16 +10,20 @@ than one consumer, not the 23.1 an address-keyed cache reported before the key w
 corrected, and that correction is the run's first finding: keying the sideplane by
 `(buffer, offset)` is a correctness bug, not a tuning choice.
 
-`patches/llama-vulkan-q4k-activation-sideplane.patch` carries the change and replaces
-`patches/llama-vulkan-q4k-activation-group-sums.patch`'s `mul_mat_vec_q4_k.comp` hunk
-rather than stacking on it. Both patches declare that file at preimage `93fbacc62` and
-both hunk at `@@ -12,6` and `@@ -75,10`, so E4b-A is reproduced by applying the sideplane
-patch in place of E4 on a pristine tree. E4's own form survives as the
-`Q4K_SIDEPLANE`-clear branch, which is what makes a flag-clear arm equal to the E4
-control. The sideplane patch names no `mul_mat_vec_q5_k.comp` hunk, so E4's Q5_K hoist
-follows from how a tree was prepared rather than from this patch.
+`patches/llama-vulkan-q4k-activation-sideplane.patch` carries the change and stacks on
+`patches/llama-vulkan-q4k-activation-group-sums.patch` (E4). Its `mul_mat_vec_q4_k.comp`
+preimage is the E4 result at blob `48778a3e8`, and it takes a `candidate` row in
+`remote/llama-patch-series.tsv` after E4's, so `prepare-llama-census-source.sh` applies
+E4 then this one and `verify-llama-patch-series.sh` replays both in ledger order. E4's own
+form survives verbatim as the `Q4K_SIDEPLANE`-clear branch, which is what makes a
+flag-clear arm equal to the E4 control. The sideplane patch names no
+`mul_mat_vec_q5_k.comp` hunk, so E4's Q5_K hoist is E4's alone under either selection.
 Its SHA-256 is
-`39027e980f9dfecd5bc22ffe2848741f4470d7359c37522dab27d4b81faf0117`.
+`234a41deddbdf7b1e50d86de15ea21e90f16a175d536977431de0100499c442f`.
+The runs on this page were made against the earlier pristine-preimage form of the same
+change; the mechanism, the key, and the shaders are the ones the stacked patch carries.
+`evidence/e4b-summary-producer/` carries the gfx902 ISA receipts and the appliance arm
+order.
 
 ## The mechanism
 
@@ -243,8 +247,16 @@ minimum term is the only stage any of these three arms touches; the weight dot a
 | E4b-A consumer | 16 (3 `fma` + 1 multiply, times 4 rows) | 0 | 1 |
 | E4b-A pre-pass, per lane chunk | 12 adds, once | 4 | 1 store |
 
-Against E4 the consumer drops 12 adds and 3 of 4 `vec4` loads per lane per superblock;
-against the pinned shader it drops 48 of 64 operations and adds one `vec4` load.
+Against E4 the consumer drops 12 adds per lane per superblock; against the pinned shader
+it drops 48 of 64 operations and adds one `vec4` load.
+
+The load column is a GLSL count and the ISA refutes its reading.
+`evidence/e4b-summary-producer/` measures VMEM rising 56 to 58 across the consumer pair on
+gfx902, because the row loop re-reads `by10`, `by132`, `by20`, and `by232` for the weight
+dot at `sx` through `sw`; ACO already shares those loads between the two uses, so removing
+the group-sum loop removes no load and the sideplane read is additive. The whole consumer
+delta there is 13 of 810 VALU, 24 `v_add_f32_e32` removed against 11 address instructions
+returned.
 
 Traffic, per token column of K f32 elements and per mat-vec of an `M x K` Q4_K matrix.
 A Q4_K superblock is 144 bytes per 256 weights, so the weight stream is `0.5625 * M * K`
@@ -306,16 +318,23 @@ pre-pass that costs anything like a mat-vec dispatch erases the arm; a pre-pass 
 small fraction of one leaves E4b's registered ceiling of `52 x 0.16 = 8.32` ms in reach.
 That number is unmeasured here and the workstation cannot supply it.
 
+## Two falsifiers the ISA receipt answered
+
+`evidence/e4b-summary-producer/` runs both consumers and the pre-pass through
+`remote/raven2-shader-lab/lab.sh` on a drm-shimmed RAVEN2 node whose ACO reproduces this
+tree's retained E4 receipt exactly, `isa_sha256 29454587...185a1d` at VALU 810 and
+`v_mac_f32` 152.
+
+- **ACO ISA receipt.** Answered, and it reads against this page's GLSL count. VALU falls
+  810 to 797, 13 instructions of 810, where `v_add_f32_e32` falls 40 to 16 and the
+  sideplane's address arithmetic returns 11. VMEM rises 56 to 58, so the four activation
+  `vec4` loads are shared with the weight dot and no load is saved. The registered E4b
+  ceiling of 2.6 to 5.2% of the body is refuted on the compile side.
+- **VGPR and waves per SIMD.** Answered: VGPR 64 to 64, SGPR 48 to 48, LDS and scratch
+  zero in both, longest dependent VALU chain 17 in both. The arm moves no occupancy step.
+
 ## Falsifiers still open for the device
 
-- **ACO ISA receipt.** Whether ACO already hoists E4's four `vec4` reloads and already
-  forms the group sums, which would make the consumer's saving smaller than the GLSL count
-  says. `RADV_DEBUG=shaders` over `mul_mat_vec_q4_k_sideplane_f32_f32` and its E4
-  counterpart on the appliance answers it; the NVIDIA ICD here cannot.
-- **VGPR and waves per SIMD.** The consumer replaces four live `vec4` with one, which
-  should relieve pressure rather than add it, but P5 records the pinned kernel at 64 VGPRs
-  and 4 waves per SIMD, at the edge of the band, so `RADV_DEBUG=shaderstats` decides whether
-  the arm moves an occupancy step in either direction.
 - **The pre-pass dispatch cost on RADV.** Unmeasured. The 2B graph adds 84 dispatches of
   128 to 384 invocations each, 2 to 6 workgroups of 64, on a 2 CU device where the census
   measured 206 microseconds median per Q4_K mat-vec call and 1.83 ms of queue idle across
