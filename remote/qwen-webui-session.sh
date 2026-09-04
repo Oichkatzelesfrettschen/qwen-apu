@@ -74,16 +74,39 @@ lan_exposure=${QWEN_WEB_LAN:-0}
 lan_address=${QWEN_WEB_LAN_ADDRESS:-}
 lan_name=${QWEN_WEB_LAN_NAME:-}
 lan_open=${QWEN_WEB_LAN_OPEN:-0}
+lan_open_all_interfaces=${QWEN_WEB_LAN_OPEN_ALL_INTERFACES:-0}
+lan_ifindex=${QWEN_WEB_LAN_IFINDEX:-}
+lan_ifname=${QWEN_WEB_LAN_IFNAME:-}
+lan_mac=${QWEN_WEB_LAN_MAC:-}
+lan_prefixlen=${QWEN_WEB_LAN_PREFIXLEN:-}
+lan_nm_uuid=${QWEN_WEB_LAN_NM_UUID:-}
+lan_nm_name=${QWEN_WEB_LAN_NM_NAME:-}
 if [ "$lan_exposure" = 1 ] && [ -n "$lan_address" ]; then
-    lan_listen_host=0.0.0.0
+    # remote/web-lan-exposure.sh has already resolved QWEN_BIND_HOST to the
+    # exposure literal or, under the explicit all-interfaces opt-in, the
+    # wildcard; the router, the broker, and the artifact listener share that
+    # one bind so a peer and this session's own probes reach all three
+    # through the same address.
+    lan_listen_host=${QWEN_BIND_HOST:-$lan_address}
     lan_page_host=$lan_address
 else
     lan_exposure=0
     lan_address=''
     lan_name=''
     lan_open=0
+    lan_open_all_interfaces=0
+    lan_ifindex=''
+    lan_ifname=''
+    lan_mac=''
+    lan_prefixlen=''
+    lan_nm_uuid=''
+    lan_nm_name=''
     lan_listen_host=127.0.0.1
     lan_page_host=127.0.0.1
+fi
+lan_boundary=lan-authenticated
+if [ "$lan_exposure" = 1 ] && [ "$lan_open" = 1 ]; then
+    lan_boundary=lan-open-approved
 fi
 # The host a browser loaded the page from is the Origin it sends, so a launch
 # advertising two hosts admits two origins. authorize-broker.py reads
@@ -94,11 +117,57 @@ lan_name_origin=''
 if [ -n "$lan_name" ]; then
     lan_name_origin="http://$lan_name:$server_port"
 fi
+# QWEN_WEB_BROKER_ORIGIN and QWEN_IMAGE_PAGE_ORIGIN let a caller replace the
+# derived origin, which connect-qwen-webui.sh's own recommended loopback value
+# does for its SSH tunnel. Under the LAN exposure that override names a page
+# the broker and the artifact listener never admit, since neither reads an
+# origin outside the set it was started with: the browser sends the exposed
+# host as its Origin, the listener answers 403, and no approval can complete.
+# The comparison is the exact origin string rather than the bare host, because
+# a scheme or port that departs from $lan_page_origin or $lan_name_origin --
+# `https://` in place of `http://`, or a port other than $server_port --
+# recreates the same 403 the derived origin never triggers. An override is
+# refused here rather than left to fail at the first request, and the check
+# runs only where the exposure is active, since a loopback launch has no
+# conflicting origin to name.
+require_lan_admitted_origin() {
+    if [ "$2" = "$lan_page_origin" ]; then
+        return 0
+    fi
+    if [ -n "$lan_name_origin" ] && [ "$2" = "$lan_name_origin" ]; then
+        return 0
+    fi
+    printf '%s names an origin the LAN exposure does not admit: %s\n' \
+        "$1" "$2" >&2
+    printf 'admitted origins: %s%s\n' \
+        "$lan_page_origin" "${lan_name_origin:+, $lan_name_origin}" >&2
+    printf 'set %s to one of them, or leave it unset so the session derives it\n' \
+        "$1" >&2
+    exit 2
+}
+if [ "$lan_exposure" = 1 ] && [ -n "${QWEN_WEB_BROKER_ORIGIN:-}" ]; then
+    lan_broker_origin_rest=$QWEN_WEB_BROKER_ORIGIN
+    while [ -n "$lan_broker_origin_rest" ]; do
+        lan_broker_origin_entry=${lan_broker_origin_rest%%,*}
+        case $lan_broker_origin_rest in
+            *,*) lan_broker_origin_rest=${lan_broker_origin_rest#*,} ;;
+            *) lan_broker_origin_rest='' ;;
+        esac
+        require_lan_admitted_origin QWEN_WEB_BROKER_ORIGIN "$lan_broker_origin_entry"
+    done
+fi
+if [ "$lan_exposure" = 1 ] && [ -n "${QWEN_IMAGE_PAGE_ORIGIN:-}" ]; then
+    require_lan_admitted_origin QWEN_IMAGE_PAGE_ORIGIN "$QWEN_IMAGE_PAGE_ORIGIN"
+fi
 # The open opt-in reaches both listeners as one flag, expanded from a variable
 # so an unset value contributes no empty argument under `set -u`.
 lan_open_flag=''
 if [ "$lan_open" = 1 ]; then
     lan_open_flag=--open-lan
+fi
+lan_all_interfaces_flag=''
+if [ "$lan_open_all_interfaces" = 1 ]; then
+    lan_all_interfaces_flag=--open-all-interfaces
 fi
 # Compose the page URL for one admitted host. The companions are named as
 # query parameters over that same host, so a page loaded by name reaches the
@@ -133,6 +202,12 @@ searxng_log=$state_directory/searxng.log
 searxng_start_timeout=${QWEN_SEARXNG_START_TIMEOUT:-120}
 case $searxng_start_timeout in
     '' | *[!0-9]*) searxng_start_timeout=120 ;;
+esac
+# The teardown deadline for the guarded child, the same variable and default
+# remote/searxng-launch.sh's own stop path reads.
+searxng_stop_timeout=${QWEN_SEARXNG_STOP_TIMEOUT:-15}
+case $searxng_stop_timeout in
+    '' | *[!0-9]*) searxng_stop_timeout=15 ;;
 esac
 # The image service owns the Vulkan workload lease and the pinned image
 # runtime, and it allocates nothing on the device until a job arrives, so it is
@@ -193,10 +268,14 @@ cleanup() {
     fi
     # The instance holds the loopback port the next launch's own health gate
     # reads, so it is signalled and waited for rather than left to the process
-    # group.
+    # group. The production session invokes searxng-launch.sh serve directly
+    # rather than through its own bounded start/stop actions, so this trap is
+    # where an instance stuck handling SIGTERM -- an unhealthy startup, most
+    # plausibly -- would otherwise hold the whole session's cleanup open;
+    # terminate_guarded_child bounds it the way searxng-launch.sh bounds its
+    # own stop and startup-timeout paths.
     if [ -n "$searxng_pid" ]; then
-        kill "$searxng_pid" 2>/dev/null || true
-        wait "$searxng_pid" 2>/dev/null || true
+        terminate_guarded_child "$searxng_pid" "$searxng_stop_timeout"
     fi
     if [ -n "$router_preset_snapshot" ]; then
         rm -f -- "$router_preset_snapshot"
@@ -221,6 +300,26 @@ process_running() {
     [ -r "/proc/$process_pid/stat" ] || return 1
     process_state=$(sed 's/^.*) //' "/proc/$process_pid/stat" | awk '{ print $1 }')
     [ "$process_state" != Z ] && [ "$process_state" != X ]
+}
+
+# A guarded child that ignores or is stuck handling SIGTERM must not hold the
+# EXIT trap open indefinitely, so termination is bounded by a deadline with a
+# SIGKILL escalation past it, the same shape searxng-launch.sh's own `stop`
+# and startup-timeout paths apply to the process it owns directly.
+terminate_guarded_child() {
+    terminate_pid=$1
+    terminate_timeout=${2:-15}
+    kill "$terminate_pid" 2>/dev/null || true
+    terminate_waited=0
+    while [ "$terminate_waited" -lt "$terminate_timeout" ] && \
+        process_running "$terminate_pid"; do
+        sleep 1
+        terminate_waited=$((terminate_waited + 1))
+    done
+    if process_running "$terminate_pid"; then
+        kill -KILL "$terminate_pid" 2>/dev/null || true
+    fi
+    wait "$terminate_pid" 2>/dev/null || true
 }
 
 require_broker_running() {
@@ -315,20 +414,40 @@ if [ "$searxng_enabled" = 1 ]; then
     fi
     searxng_start_time=$(sed 's/^.*) //' "/proc/$searxng_pid/stat" |
         awk '{ print $20 }')
+    # The identity is recorded before the readiness wait rather than after it,
+    # so a teardown that arrives while this loop is still polling reads the
+    # pid, start time, and port off this file instead of finding only the
+    # generic `state=starting` line the broker block below would otherwise
+    # leave in place until health succeeds.
+    {
+        printf 'state=starting searxng_pid=%s utc=%s\n' \
+            "$searxng_pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf 'searxng_identity pid=%s start_time=%s port=%s url=%s\n' \
+            "$searxng_pid" "$searxng_start_time" "$searxng_port" "$searxng_url"
+    } >"$status_file"
     searxng_ready=0
-    attempt=0
-    # `curl -f` reads the status line: an instance that binds its port and
-    # answers 503 is one the launch waits out rather than admits.
-    while [ "$attempt" -lt $((searxng_start_timeout * 10)) ]; do
+    # The loop is bounded by elapsed wall-clock time rather than by attempt
+    # count: each curl below can consume its own --max-time before the loop
+    # sleeps and counts an attempt, so an attempt-counted loop against a
+    # stalling connection can run for the timeout multiplied by the curl
+    # budget instead of the timeout itself. The deadline is computed once and
+    # each request's own timeout is capped to what remains of it.
+    searxng_deadline=$(($(date +%s) + searxng_start_timeout))
+    while [ "$(date +%s)" -lt "$searxng_deadline" ]; do
         if ! kill -0 "$searxng_pid" 2>/dev/null; then
             break
         fi
-        if curl -fsS --max-time 5 -o /dev/null "$searxng_url/healthz" \
-            2>/dev/null; then
+        searxng_remaining=$((searxng_deadline - $(date +%s)))
+        [ "$searxng_remaining" -gt 0 ] || break
+        searxng_curl_timeout=$searxng_remaining
+        [ "$searxng_curl_timeout" -le 5 ] || searxng_curl_timeout=5
+        # `curl -f` reads the status line: an instance that binds its port and
+        # answers 503 is one the launch waits out rather than admits.
+        if curl -fsS --max-time "$searxng_curl_timeout" -o /dev/null \
+            "$searxng_url/healthz" 2>/dev/null; then
             searxng_ready=1
             break
         fi
-        attempt=$((attempt + 1))
         sleep 0.1
     done
     if [ "$searxng_ready" -ne 1 ]; then
@@ -336,12 +455,6 @@ if [ "$searxng_enabled" = 1 ]; then
             "$searxng_port" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$status_file"
         exit 1
     fi
-    {
-        printf 'state=starting searxng_pid=%s utc=%s\n' \
-            "$searxng_pid" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        printf 'searxng_identity pid=%s start_time=%s port=%s url=%s\n' \
-            "$searxng_pid" "$searxng_start_time" "$searxng_port" "$searxng_url"
-    } >"$status_file"
 fi
 
 broker_start_time=''
@@ -379,6 +492,7 @@ if [ "$broker_enabled" = 1 ]; then
         ${lan_address:+--lan-exposure "$lan_address"} \
         ${lan_name:+--lan-name "$lan_name"} \
         ${lan_open_flag:+"$lan_open_flag"} \
+        ${lan_all_interfaces_flag:+"$lan_all_interfaces_flag"} \
         --state-dir "$broker_state_directory" \
         --profile "$QWEN_WEB_PROFILE" \
         --image-profile "${QWEN_IMAGE_PROFILE:-}" \
@@ -426,8 +540,27 @@ if [ "$broker_enabled" = 1 ]; then
     # behind it is this launch's broker, serving this profile and provider and
     # signing with this key. A stale broker on the same port from an earlier
     # launch answers the line's grep and fails the pid comparison here.
-    broker_health=$(curl -sS --max-time 5 -H 'Host: 127.0.0.1' \
-        "http://127.0.0.1:$broker_port/health" 2>>"$broker_log" || true)
+    # The wildcard bind answers everywhere, so the loopback is the shortest
+    # path to it; a single-address bind answers on that address alone, and
+    # that address is not the loopback authorize-broker.py's own peer-address
+    # exemption reads. The probe therefore presents the Web UI bearer the same
+    # way a LAN reader would, through a curl config file on stdin rather than
+    # argv, so the key never reaches this process's own `/proc/PID/cmdline`.
+    # An unauthenticated launch (`api_key_file` empty) sends the same request
+    # with no config, which is the loopback probe's own request shape.
+    if [ "$lan_listen_host" = 0.0.0.0 ]; then
+        broker_probe_host=127.0.0.1
+    else
+        broker_probe_host=$lan_listen_host
+    fi
+    broker_health=$(
+        if [ -n "$api_key_file" ] && [ -s "$api_key_file" ]; then
+            printf 'header = "Authorization: Bearer %s"\n' "$(cat "$api_key_file")"
+        fi |
+            curl -sS --max-time 5 -H "Host: $broker_probe_host" -K - \
+                "http://$broker_probe_host:$broker_port/health" \
+                2>>"$broker_log" || true
+    )
     health_field() {
         printf '%s' "$broker_health" | tr -d '\n' |
             sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\{0,1\}\([^\",}]*\)\"\{0,1\}.*/\1/p"
@@ -501,6 +634,7 @@ if [ "$image_service_enabled" = 1 ]; then
         ${lan_address:+--lan-exposure "$lan_address"} \
         ${lan_name:+--lan-name "$lan_name"} \
         ${lan_open_flag:+"$lan_open_flag"} \
+        ${lan_all_interfaces_flag:+"$lan_all_interfaces_flag"} \
         >"$image_service_log" 2>&1 &
     image_service_pid=$!
     image_service_ready=0
@@ -816,7 +950,7 @@ fi
 # reader consults for what this launch serves, and the address on the network
 # is the one field a teardown, a status query, and an operator all read.
 # lan_exposure=0 records the loopback default.
-broker_status_field="$broker_status_field lan_exposure=$lan_exposure lan_address=${lan_address:--} lan_name=${lan_name:--} lan_open=$lan_open"
+broker_status_field="$broker_status_field lan_exposure=$lan_exposure lan_address=${lan_address:--} lan_name=${lan_name:--} lan_open=$lan_open lan_boundary=$lan_boundary"
 printf 'state=running server_pid=%s monitor_pid=%s latency_watchdog_pid=%s kernel_hazard_watchdog_pid=%s%s profile=%s host=%s port=%s context=%s latency_mode=%s utc=%s\n' \
     "$server_pid" "$monitor_pid" "$latency_watchdog_pid" \
     "$kernel_hazard_watchdog_pid" "$broker_status_field" "$vulkan_profile" \
@@ -892,12 +1026,20 @@ if [ "$lan_exposure" = 1 ]; then
         lan_primary_host=$lan_name
         lan_primary_page_url=$(compose_lan_page_url "$lan_name")
     fi
-    printf 'lan_exposure address=%s name=%s open=%s router=%s:%s broker=%s:%s artifacts=%s page=%s page_address=%s\n' \
-        "$lan_page_host" "${lan_name:--}" "$lan_open" \
+    printf 'lan_exposure address=%s name=%s open=%s boundary=%s router=%s:%s broker=%s:%s artifacts=%s page=%s page_address=%s\n' \
+        "$lan_page_host" "${lan_name:--}" "$lan_open" "$lan_boundary" \
         "$lan_primary_host" "$server_port" \
         "$lan_primary_host" "$broker_port" \
         "${image_service_listener:--}" \
         "$lan_primary_page_url" "$lan_page_url" >>"$status_file"
+    # The interface carrying the exposure literal identifies the link an
+    # operator plugged this appliance into, sanitized to <mac> wherever this
+    # line is copied into committed evidence; the NetworkManager fields read
+    # `-` where the host runs no NetworkManager connection for the interface.
+    printf 'lan_interface ifindex=%s ifname=%s mac=%s prefixlen=%s nm_uuid=%s nm_name=%s all_interfaces=%s\n' \
+        "${lan_ifindex:--}" "${lan_ifname:--}" "${lan_mac:--}" \
+        "${lan_prefixlen:--}" "${lan_nm_uuid:--}" "${lan_nm_name:--}" \
+        "$lan_open_all_interfaces" >>"$status_file"
     if [ "$lan_open" = 1 ]; then
         printf 'lan_open=1 every peer on this network can chat, approve a search, and approve a generation\n' \
             >>"$status_file"

@@ -64,6 +64,27 @@ and `(0x20 / 3) x 200` is 2133.33 MT/s. Their timing registers decode to
 CT16G4SFD8213 SPD EEPROMs. Rank derating and an HP firmware speed cap are ruled
 out for the installed population.
 
+The SMU firmware rather than the driver or the VBIOS sets the graphics ceiling.
+`smu10_emit_clock_levels` obtains both `OD_RANGE` bounds with
+`PPSMC_MSG_GetMinGfxclkFrequency` and `PPSMC_MSG_GetMaxGfxclkFrequency` on every
+read, and `smu10_set_fine_grain_clk_vol` rejects an overdrive maximum above that
+same reply, so the 200 and 1100 MHz this part prints are the firmware's own
+answers and a write above 1100 is refused before any message leaves the kernel.
+`amdgpu.ppfeaturemask` decides nothing here: `0xfff7bfff` is amdgpu's own
+default, it clears `PP_OVERDRIVE_MASK`, and `smu10_hwmgr_backend_init` then sets
+`od_enabled` to 1 unconditionally during `hw_init`, which is why
+`pp_od_clk_voltage` prints at all. The board's decomposed VBIOS carries a
+`powerplayinfo` table whose 1020 body bytes are zero and no `setengineclock`
+command, so there is no clock table or voltage curve in the image to raise.
+Boost is the CPU half of the same picture: AMD publishes 3.2 GHz for this part,
+`cpufreq/boost` reads 1 over an ACPI P0 of 2.3 GHz, and both cores were observed
+at 3.15 to 3.19 GHz under load. The package budget is the one power authority
+that is writable, and it reaches the SMU through `remote/power-envelope.sh`,
+since `/sys/class/powercap` creates no `constraint_*` file and the amdgpu hwmon
+names a `PPT` label with no `power1_cap` beside it.
+`evidence/power-envelope/README.md` carries the message table and registers the
+package-budget campaign.
+
 On this SMU10 path, `pp_dpm_mclk` is a misleading sysfs name: the kernel obtains
 its selected value with `PPSMC_MSG_GetFclkFrequency`. The 933 and 1067 MHz
 entries are dynamic fabric-clock states, not alternate DRAM training results,
@@ -697,43 +718,74 @@ decision, and `remote/web-lan-exposure.sh` holds what the decision costs.
 `QWEN_WEB_LAN_ADDRESS` names one routable IPv4 literal, because the broker and
 the artifact listener close DNS rebinding by comparing a request's Host header
 against a literal set and a name would send that comparison back through the
-resolver; `QWEN_BIND_HOST` is the router's own listener and is that literal or
-`0.0.0.0`, while every derived origin and Host rule reads the literal. The
-exposure then reaches three listeners: llama-server binds the address with
-`QWEN_REQUIRE_API_KEY=1`, `authorize-broker.py` binds the wildcard and adds the
-literal to its admitted Host set, and `image-service.py` does the same for
-`GET /artifacts/<sha256>.<png|json>`. The Web UI bearer becomes the credential
-each one requires -- `--lan-exposure` makes the broker read it on
-`POST /grant`, `POST /grant-image`, and a `GET /health` naming the literal,
-where a loopback Host keeps `/health` open so the session's own `curl` probe
-holds the key off a world-readable `/proc/PID/cmdline`, and the artifact
-listener already read it ahead of every lookup. The launch requires the key
-file to exist at mode 0600 owned by the serving user rather than minting one
-beside the socket, and refuses the exposure against either research override,
-since `qwen-capacity-policy.sh` forces 127.0.0.1 for the quarantine override
-and the unvalidated-depth marker and an exposure combined with one would print
-an address it never binds. `qwen-webui-session.sh` records `lan_exposure=`,
-`lan_address=`, `lan_name=`, and `lan_open=` on its `state=running` line and
-prints the page URL carrying `?broker=` and `?artifacts=`, because the page's
-meta tags name the loopback and a LAN browser handed the bare router address
-would point both back at its own machine. What the exposure changes is who
-reaches the approval dialog. The single-use grant the dialog signs, the schema
-the wrapper enforces, and the one human approval per network-reaching call stay
+resolver; `QWEN_BIND_HOST` is the router's own listener and defaults to that
+one literal, binding every interface only where `QWEN_BIND_HOST=0.0.0.0`
+carries the separate `QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1` opt-in, which the
+launch prints loudly rather than folding into the ordinary exposure line.
+Every derived origin and Host rule still reads the literal. The exposure then
+reaches three listeners bound to that one interface: llama-server binds the
+literal with `QWEN_REQUIRE_API_KEY=1`, `authorize-broker.py` and
+`image-service.py` bind it too and add it to their admitted Host sets, and
+each accepts the wildcard bind only where its own `--open-all-interfaces`
+flag names the same decision. The Web UI bearer becomes the credential each
+one requires -- `--lan-exposure` makes the broker read it on `POST /grant`,
+`POST /grant-image`, and a `GET /health` naming the literal, where a loopback
+Host keeps `/health` open so the session's own `curl` probe (now addressed at
+the bound literal rather than a hardcoded loopback, so a single-interface bind
+still answers it) holds the key off a world-readable `/proc/PID/cmdline`, and
+the artifact listener already read it ahead of every lookup. The launch
+requires the key file to exist at mode 0600 owned by the serving user rather
+than minting one beside the socket, and refuses the exposure against either
+research override, since `qwen-capacity-policy.sh` forces 127.0.0.1 for the
+quarantine override and the unvalidated-depth marker and an exposure combined
+with one would print an address it never binds.
+
+The literal names an address, and `web_lan_interface_report` in
+`remote/web-lan-exposure.sh` is what binds that address to a link. It reads
+`ip -j addr` for the interface index, name, and MAC carrying the literal and
+its prefix length, then `nmcli -t -f UUID,NAME,DEVICE connection show
+--active` for the NetworkManager connection running that interface, so the
+exposure names a link rather than only a number a DHCP lease could hand to
+any interface. `QWEN_WEB_LAN_TRUSTED_CONNECTIONS` -- a colon-separated list of
+connection UUIDs an operator declares -- gates that link: a declared list
+refuses a launch whose resolved connection is outside it under either bearer
+mode, and an absent list refuses `QWEN_WEB_LAN_OPEN=1` alone, since the
+bearer is what an authenticated launch on an undeclared connection still
+stands behind. A second loopback-range literal (127.0.0.2 and beyond) carries
+no interface of its own -- the whole `127.0.0.0/8` block routes through `lo`
+without a per-address row -- so it is exempted the way it already was from
+every other exposure rule the harnesses lean on. `qwen-webui-session.sh`
+records `lan_exposure=`, `lan_address=`, `lan_name=`, `lan_open=`, and
+`lan_boundary=` on its `state=running` line, a companion `lan_interface` line
+carrying the index, name, MAC, prefix length, and connection UUID and name,
+and prints the page URL carrying `?broker=` and `?artifacts=`, because the
+page's meta tags name the loopback and a LAN browser handed the bare router
+address would point both back at its own machine. A git copy of a retained
+`lan_interface` line sanitizes the MAC to `<mac>`, the way every other
+committed evidence file does. What the exposure changes is who reaches the
+approval dialog. The single-use grant the dialog signs, the schema the
+wrapper enforces, and the one human approval per network-reaching call stay
 exactly what they are, and every checked-in `execution_policy` still reads
 `refused`.
 
-A DHCP lease moves that literal, so `QWEN_WEB_LAN_NAME` adds one mDNS hostname
-to the admitted set and the set stays closed. It defaults to this machine's own
-`hostname -s` under `.local` where avahi-daemon runs and an explicit empty value
+A DHCP lease moves that literal, so `QWEN_WEB_LAN_NAME` adds one mDNS label to
+the admitted set and the set stays closed to exactly one lowercase RFC 1123
+label under `.local`. It defaults to this machine's own `hostname -s`
+lowercased under `.local` where avahi-daemon runs and an explicit empty value
 serves the literal alone. The rebinding closure holds for the name because a
 browser resolves a `.local` name by multicast to the hosts sharing the link
-rather than through a recursive resolver, so a name an attacker controls in DNS
-reaches neither socket; `authorize-broker.py --lan-name` and
-`image-service.py --lan-name` compare it casefolded beside the literal, each
-listener admits both page origins through CORS, and `trustedArtifactOrigin`
-admits the page's own hostname whether address or name -- the browser already
-resolved that host to fetch the page and the bearer is stored per page origin,
-so the credential returns to the machine that served the page and no other. The
+rather than through a recursive resolver, so a bare hostname, a public domain,
+a second label under `.local`, an uppercase letter, and a trailing dot are each
+refused by name: every one of them registers in the ordinary resolver, and
+admitting one would let a name an attacker controls in public DNS resolve to
+this socket under DNS rebinding. `web_lan_name_is_valid` in
+`remote/web-lan-exposure.sh` and `exposed_name` in `authorize-broker.py --lan-name`
+and `image-service.py --lan-name` apply the identical rule, so a name the
+launcher admits is a name both children admit too; each listener adds both page
+origins to its CORS allowlist, and `trustedArtifactOrigin` admits the page's own
+hostname whether address or name -- the browser already resolved that host to
+fetch the page and the bearer is stored per page origin, so the credential
+returns to the machine that served the page and no other. The
 launcher names the page by the name with the literal beside it, since the name
 outlives the lease.
 
@@ -763,6 +815,26 @@ remembered rather than send a stale bearer to a listener that wants none. A
 retry carry a remembered or fragment key; the field reveals itself with a
 one-line hint naming the launcher's printed link only where no such key exists
 or the retry itself came back rejected.
+
+`remote/qwen-lan-launch.sh` states the whole exposure decision as one of two
+named security profiles rather than a bearer flag among nine others.
+`lan-authenticated` is the default and the one-command fallback: every route
+requires the Web UI bearer, matching the ordinary loopback launch's own
+posture moved onto the network. `lan-open-approved` is the explicit household
+opt-in this file's policy section names: every reachable peer chats, consumes
+model time, and fetches a known artifact URL with no bearer, while the
+approval dialog and its single-use grant remain the whole gate on search and
+image execution. A caller naming a profile and a conflicting
+`QWEN_WEB_LAN_OPEN` states two different bearer policies and the launch
+refuses rather than picking one silently. `QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1`
+and `QWEN_WEB_LAN_TRUSTED_CONNECTIONS` reach the launch from the same two
+environment variables `web-lan-exposure.sh` reads, and the wrapper prints
+`LAN BOUNDARY: lan-open-approved` or `LAN BOUNDARY: lan-authenticated` in
+capitals at the end of every launch; `qwen-webui-control.sh status` echoes the
+same line first, since it is the session's own recorded `state=running` line.
+No unit file, crontab entry, or login hook starts either profile: the service
+starts and stops through the launch and teardown scripts alone, so a reboot
+leaves the machine with nothing listening under either boundary.
 
 The integer dot product is advertised, functional, and unaccelerated, which
 decides how most of this tree's bytes execute. RADV reports
@@ -1483,15 +1555,23 @@ a wrong answer for an outage nobody chose.
 # The web lane on the operator's own network, bearer required on every route.
 # The key exists before the listener does, so it is minted once and read out of
 # the state directory ahead of the launch rather than after the socket is up.
+# QWEN_BIND_HOST left unset binds the one QWEN_WEB_LAN_ADDRESS literal rather
+# than every interface; QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 is the separate,
+# loudly-printed opt-in that widens it to 0.0.0.0.
 openssl rand -hex 32 >~/qwen-webui-state/api.key
 chmod 600 ~/qwen-webui-state/api.key
-QWEN_WEB_LAN=1 QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=0.0.0.0 \
+QWEN_WEB_LAN=1 QWEN_WEB_LAN_ADDRESS=192.168.1.10 \
 QWEN_WEB_AUTHORIZER_READY=1 \
 QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
     ~/qwen-laptop-setup/remote/qwen-web-launch.sh low-async
 # The session's `lan_exposure` line in ~/qwen-webui-state/session.status names
 # the page URL, which carries ?broker= and ?artifacts= because the page's meta
-# tags name the loopback.
+# tags name the loopback. The `lan_interface` line beside it names the
+# interface index, name, MAC, prefix length, and NetworkManager connection
+# UUID and name that literal resolved to through `ip -j addr` and
+# `nmcli -t -f UUID,NAME,DEVICE connection show --active`; a git copy of that
+# line sanitizes the MAC to `<mac>` the way every other retained evidence file
+# does.
 # One router serving the whole roster on the LAN: the registry sections stay
 # tool-free and the web section carries the search tools, so the ordinary
 # launcher arms the broker and the search instance from the preset itself.
@@ -1500,28 +1580,46 @@ QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
 # loaded over the LAN derives both companions from its own address and the
 # bare router URL is the whole thing a browser needs.
 QWEN_SERVER_PORT=42069 \
-QWEN_WEB_LAN=1 QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_BIND_HOST=0.0.0.0 \
+QWEN_WEB_LAN=1 QWEN_WEB_LAN_ADDRESS=192.168.1.10 \
 QWEN_ROUTER=1 QWEN_WEB_AUTHORIZER_READY=1 \
 QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
     ~/qwen-laptop-setup/remote/qwen-launch.sh low-async
-# The same lane at one permanent address with no key step. QWEN_WEB_LAN_NAME
-# defaults to this machine's own `hostname -s` under `.local` where avahi
-# advertises it, so the operator bookmarks a name a DHCP lease does not move.
+# The household open mode at one permanent address with no key step.
 # QWEN_WEB_LAN_OPEN=1 removes the Web UI bearer from the router, the broker,
-# and the artifact listener: every peer on this network can chat, approve a
-# search, and approve a generation.
+# and the artifact listener: every reachable peer can chat, consume model
+# time, and fetch a known artifact URL with no credential, and the approval
+# dialog and its single-use grant remain the whole gate on search and image
+# execution. The exposed interface's own NetworkManager connection must
+# appear in QWEN_WEB_LAN_TRUSTED_CONNECTIONS -- a colon-separated list of
+# connection UUIDs from `nmcli -t -f UUID,NAME connection show --active` --
+# or the open opt-in refuses and says so; an authenticated launch on an
+# undeclared connection still proceeds, since the bearer stands behind it.
 QWEN_SERVER_PORT=42069 \
 QWEN_WEB_LAN=1 QWEN_WEB_LAN_ADDRESS=192.168.1.10 QWEN_WEB_LAN_OPEN=1 \
-QWEN_BIND_HOST=0.0.0.0 \
+QWEN_WEB_LAN_TRUSTED_CONNECTIONS=$(nmcli -t -f UUID,DEVICE connection show --active | \
+    awk -F: '$2 == "eth0" { print $1 }') \
 QWEN_ROUTER=1 QWEN_WEB_AUTHORIZER_READY=1 \
 QWEN_WEB_TOKEN_KEY_FILE=$HOME/qwen-web-token.key \
     ~/qwen-laptop-setup/remote/qwen-launch.sh low-async
-# The LAN bring-up states that whole environment once. It reads the address
-# from the default route, mints the broker signing key on the first run,
-# tears down a running session first, reads the image parameters path from
-# the active deployment's own image server, and prints the name to open.
-# QWEN_WEB_LAN_OPEN=0 serves the same listeners with the bearer required.
-~/qwen-laptop-setup/remote/qwen-lan-launch.sh [low-async]
+
+# The LAN bring-up states that whole environment once, under one of two named
+# security profiles: lan-authenticated (the default, bearer required on every
+# route, a one-command fallback) and lan-open-approved (the explicit household
+# opt-in above). It reads the address from the default route, mints the
+# broker signing key on the first run, tears down a running session first,
+# reads the image parameters path from the active deployment's own image
+# server, resolves the exposed interface and requires its NetworkManager
+# connection in QWEN_WEB_LAN_TRUSTED_CONNECTIONS under lan-open-approved, and
+# prints the active boundary in capitals before the name to open. The same
+# line appears first in `qwen-webui-control.sh status`, which echoes the
+# session's own recorded `state=running` line.
+~/qwen-laptop-setup/remote/qwen-lan-launch.sh lan-authenticated [low-async]
+QWEN_WEB_LAN_TRUSTED_CONNECTIONS=$(nmcli -t -f UUID,DEVICE connection show --active | \
+    awk -F: '$2 == "eth0" { print $1 }') \
+    ~/qwen-laptop-setup/remote/qwen-lan-launch.sh lan-open-approved [low-async]
+# QWEN_WEB_LAN_OPEN_ALL_INTERFACES=1 binds every interface instead of the one
+# selected address; the launch prints that decision loudly rather than
+# folding it into the ordinary exposure line.
 ~/qwen-laptop-setup/remote/qwen-teardown.sh
 ~/qwen-laptop-setup/remote/qwen-webui-control.sh status
 
@@ -1545,6 +1643,12 @@ remote/measure-bench-repeatability.sh MODEL    # what a depth-0 rate repeats to
 remote/run-quality-suite.py ENDPOINT OUT_JSON --long-context-characters 24000
                                                 # the 75-row graded suite at explicit depth
 remote/run-quality-roster.sh [OUTPUT_DIR]      # that suite against every servable row
+QWEN_WEB_API_KEY_FILE=~/qwen-webui-state/api.key \
+    remote/run-conversational-suite.sh [OUTPUT_DIR] [MODEL_ID...]
+                                                # the suite web-off through the API and
+                                                # web-on through the served page, per
+                                                # servable checkpoint a web section
+                                                # reaches; evidence/conversational-suite/
 remote/generate-quality-images.py [DIR]        # the vision fixtures, and --check
 remote/regrade-quality-roster.py RECORD...     # a grader change over retained replies
 remote/sample-gpu-clocks.sh OUT_TSV [SECONDS]  # the DPM step a rate ran at
@@ -1569,6 +1673,37 @@ remote/compute-state-lease.sh PROFILE COMMAND [ARG...]
                                                 # dominates the command's own
                                                 # status.
 remote/compute-state-lease.sh status           # the live values, no credential, no write
+                                                # measure-fixed-package-default,
+                                                # -20w, and -25w add the power
+                                                # term to that same state.
+remote/power-envelope.sh apply PROFILE          # the SMU package budget, one
+                                                # reversible term: ryzenadj
+                                                # --info is the snapshot, a
+                                                # profile writes the fields it
+                                                # names in milliwatts, the
+                                                # read-back is the proof, and
+                                                # THM LIMIT CORE bounds the term
+                                                # rather than being written.
+                                                # platform-default writes
+                                                # nothing and still snapshots.
+                                                # A failure part way through a
+                                                # profile rolls the limits it
+                                                # already wrote back from the
+                                                # snapshot, so exit 3 names an
+                                                # arm refused with the baseline
+                                                # returned and 4 a budget the
+                                                # platform would not return.
+                                                # The snapshot path is the
+                                                # claim: it is created under
+                                                # set -C, so one concurrent
+                                                # apply wins, and restore acts
+                                                # on the owner token that claim
+                                                # recorded alone.
+remote/power-envelope.sh restore | status       # the reversal, and the live
+                                                # limits with no write
+remote/build-ryzenadj.sh [SOURCE_DIRECTORY]    # the pinned RyzenAdj into
+                                                # ~/.local/bin; needs cmake and
+                                                # libpci-dev and no privilege
 remote/model-registry.sh id|path SELECTOR [FIELD]
 remote/model-registry.sh draft-pairs | draft-pair PAIR_ID [FIELD]
 remote/model-registry.sh ctx-checkpoints | ctx-checkpoint MODEL_ID
@@ -1851,6 +1986,8 @@ python3 remote/test-image-review.py
 python3 remote/web-mcp/test-fallback-page-image.py
 remote/test-quality-suite.py
 remote/test-quality-roster.sh
+python3 remote/test-conversational-suite-units.py
+remote/test-run-conversational-suite.sh
 remote/test-promote-llama-build.sh
 remote/test-classify-checkpoint-semantics.sh
 remote/test-prefix-checkpoint-key.sh
@@ -1871,6 +2008,7 @@ python3 remote/test-sample-clock-sidecar.py
 python3 remote/test-summarize-perf-logger-slice.py
 remote/test-census-sha256.sh
 remote/test-compute-state-lease.sh
+remote/test-power-envelope.sh
 remote/test-run-raven2-vulkan-kernel-census.sh
 remote/verify-llama-patch-series.sh
 QWEN_LLAMA_CANDIDATE_PATCHES=1 remote/verify-llama-patch-series.sh

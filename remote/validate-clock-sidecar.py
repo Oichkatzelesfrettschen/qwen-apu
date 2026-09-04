@@ -146,12 +146,17 @@ about the text after it, and requires that instant to name a row the record
 actually carries, since a marker naming no row is a fabricated or misplaced
 timestamp that would otherwise shrink a `dpm_marker_cadence` gap without a
 real refresh behind it; `dpm_marker_cadence` then compares the widest gap
-between consecutive markers against the declared `pp_dpm_period_ns` times 1.5,
-the same jitter allowance the row-gap check already carries, and refuses a
-sampler whose own freshness stamps drifted past what it declared: this is the
-sampler's read-time claim checked against itself, the marker half of the two
-mechanisms that keep a cached value from being counted as a fresh
-observation. A record naming a cadence through row position alone -- no
+against the declared `pp_dpm_period_ns` times 1.5, the same jitter allowance
+the row-gap check already carries, over both the gaps between consecutive
+in-window markers and the terminal gap from the last in-window marker to the
+window's own end, and refuses a sampler whose own freshness stamps drifted
+past what it declared: this is the sampler's read-time claim checked against
+itself, the marker half of the two mechanisms that keep a cached value from
+being counted as a fresh observation. The terminal gap closes the case a
+pairwise scan alone misses -- one early marker inside the window and none
+after it -- where the widest-pair check has nothing to compare and would
+otherwise read the rest of the window as fresh on the strength of a single
+early stamp. A record naming a cadence through row position alone -- no
 marker, one `pp_dpm_period_ns` -- is already read through
 `dpm_period_multiple` further down, over reads rather than rows, and a
 `temp1_period_multiple` beside it reads the temperature channel the same way;
@@ -580,6 +585,19 @@ def main():
             marker_gaps = [later - earlier for earlier, later in
                            zip(marker_instants, marker_instants[1:])
                            if later > args.window_begin_ns and earlier < args.window_end_ns]
+            # The span from the last in-window marker to the window's own
+            # end is a gap the pairwise scan never sees: a channel that
+            # refreshed once early in the window and never again holds no
+            # second marker to pair against, so the widest-pair check reads
+            # marker_gaps empty and the check falls through to not_run
+            # while the record stays stale for the rest of the window. A
+            # marker before window_begin is read through
+            # dpm_freshness_reads instead, since it names no in-window
+            # refresh at all.
+            in_window_markers = [instant for instant in marker_instants
+                                 if args.window_begin_ns <= instant < args.window_end_ns]
+            if in_window_markers:
+                marker_gaps.append(args.window_end_ns - in_window_markers[-1])
         else:
             marker_gaps = [later - earlier for earlier, later in
                            zip(marker_instants, marker_instants[1:])]

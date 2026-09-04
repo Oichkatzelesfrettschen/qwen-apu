@@ -1,0 +1,11 @@
+decode_ms=6427.441
+decode_tok_per_second=9.801723578637283
+decode_tokens=64
+label=qwen38-2b-distill-02-package-20w
+prefill_ms=603.822
+prefill_tok_per_second=31.46622680193832
+prompt_tokens=19
+request_status=0
+teardown_status=0
+valid=True
+served_decode=completed label=qwen38-2b-distill-02-package-20w result_directory=$HOME/power-envelope-campaign/20260904T0138Z/arms/qwen38-2b-distill-02-package-20w

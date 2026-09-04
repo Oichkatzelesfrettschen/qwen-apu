@@ -127,7 +127,10 @@ for row in rows:
             failures += 1
 
 # A tool grader without a tool set is a row that can only report a refusal, and
-# an image grader without an image grades the prompt.
+# an image grader without an image grades the prompt. A web_current row without
+# the web: attachment silently degrades into an ordinary text row that a model
+# can pass from training alone, which is the failure the attachment exists to
+# flag.
 for row in rows:
     kind, _ = module.parse_attachment(row.get("attachment"))
     if row["grader"] in ("tool_call", "no_tool_call") and kind != "tools":
@@ -136,6 +139,33 @@ for row in rows:
         failures += 1
     if row["category"] in ("vision", "photo") and kind != "image":
         print(f"{row['id']}: {row['category']} row with attachment kind {kind}",
+              file=sys.stderr)
+        failures += 1
+    if row["category"] == "web_current" and kind != "web":
+        print(f"{row['id']}: web_current row with attachment kind {kind}",
+              file=sys.stderr)
+        failures += 1
+    if kind == "web" and row["category"] != "web_current":
+        print(f"{row['id']}: web: attachment outside the web_current category",
+              file=sys.stderr)
+        failures += 1
+
+# parse_attachment("web:") carries no name, unlike image and tools, because it
+# marks a row rather than resolving a fixture or a declared set.
+if module.parse_attachment("web:") != ("web", ()):
+    print(f"parse_attachment('web:') returned {module.parse_attachment('web:')!r}",
+          file=sys.stderr)
+    failures += 1
+for bad_web_value in ("web:name", "web:a|b"):
+    try:
+        module.parse_attachment(bad_web_value)
+    except SystemExit as error:
+        if "web row names nothing" not in str(error):
+            print(f"{bad_web_value!r} raised the wrong refusal: {error}",
+                  file=sys.stderr)
+            failures += 1
+    else:
+        print(f"parse_attachment accepted a named web attachment: {bad_web_value!r}",
               file=sys.stderr)
         failures += 1
 

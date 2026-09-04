@@ -314,6 +314,19 @@ def main():
     parser.add_argument("--load-timeout", type=int, default=180)
     parser.add_argument("--dialog-timeout", type=int, default=600)
     parser.add_argument("--turn-timeout", type=int, default=900)
+    # The unconditional wait below holds the process for the full
+    # --dialog-timeout on any turn that proposes no tool call, because the
+    # dialog never opens. A roster sweep that drives many rows through one
+    # turn each pays that ceiling on every row the model answers from the
+    # prompt alone. --dialog-optional widens the wait condition to settle on
+    # either the dialog opening or the turn itself finishing, so a turn that
+    # proposes nothing exits as soon as the reply is in rather than after a
+    # full dialog-timeout wait, without changing the default path any
+    # existing caller (remote/admit-web-router-live.sh,
+    # remote/admit-image-router.sh) relies on.
+    parser.add_argument("--dialog-optional", action="store_true",
+                        help="settle the dialog wait on busy === false too, "
+                             "for a turn that may propose no tool call")
     arguments = parser.parse_args()
 
     profile_directory = tempfile.mkdtemp(prefix="qwen-page-drive.")
@@ -441,17 +454,27 @@ def main():
                 + json.dumps(arguments.prompt)
                 + "; document.querySelector('#send').click(); return true; })()"
             )
-            wait_for(page, "document.querySelector('" + dialog_id + "').open", arguments.dialog_timeout,
-                     "the approval dialog")
-            dialog = page.evaluate(
-                "(() => { const args = {}; document.querySelectorAll('" + args_list + " dt').forEach(dt => {"
-                " args[dt.textContent.trim()] = (dt.nextElementSibling || {}).textContent; });"
-                " return { heading: document.querySelector('" + dialog_id + " h2').textContent,"
-                " note: document.querySelector('" + note_id + "').textContent, args }; })()"
-            )
-            page.evaluate(
-                "(() => { document.querySelector('" + approve + "').click(); return true; })()"
-            )
+            if arguments.dialog_optional:
+                wait_for(
+                    page,
+                    "document.querySelector('" + dialog_id + "').open || busy === false",
+                    arguments.dialog_timeout,
+                    "the approval dialog or the turn to end",
+                )
+            else:
+                wait_for(page, "document.querySelector('" + dialog_id + "').open", arguments.dialog_timeout,
+                         "the approval dialog")
+            dialog_open = page.evaluate("document.querySelector('" + dialog_id + "').open")
+            if dialog_open:
+                dialog = page.evaluate(
+                    "(() => { const args = {}; document.querySelectorAll('" + args_list + " dt').forEach(dt => {"
+                    " args[dt.textContent.trim()] = (dt.nextElementSibling || {}).textContent; });"
+                    " return { heading: document.querySelector('" + dialog_id + " h2').textContent,"
+                    " note: document.querySelector('" + note_id + "').textContent, args }; })()"
+                )
+                page.evaluate(
+                    "(() => { document.querySelector('" + approve + "').click(); return true; })()"
+                )
             wait_for(page, "busy === false", arguments.turn_timeout, "the turn to end")
             if arguments.lane == "image":
                 # executeImageGeneration() awaits the artifact before it answers
