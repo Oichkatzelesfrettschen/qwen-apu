@@ -165,6 +165,8 @@ gate_cell test-summarize-kernel-census derive \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-summarize-kernel-census.py'
 gate_cell test-sample-clock-sidecar derive remote/test-sample-clock-sidecar.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-sample-clock-sidecar.py'
+gate_cell test-validate-clock-sidecar derive remote/test-validate-clock-sidecar.py \
+    'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-validate-clock-sidecar.py'
 gate_cell test-census-controls derive remote/test-census-controls.py \
     'PYTHONDONTWRITEBYTECODE=1 python3 remote/test-census-controls.py'
 gate_cell test-census-replay-corpus derive \
@@ -228,10 +230,9 @@ gate_cell test-check-trace-source-status derive \
     remote/test-check-trace-source-status.sh remote/test-check-trace-source-status.sh
 gate_cell test-qwen-lan-launch derive remote/test-qwen-lan-launch.sh \
     remote/test-qwen-lan-launch.sh
-gate_cell test-sync-runtime-tree derive remote/test-sync-runtime-tree.sh \
-    remote/test-sync-runtime-tree.sh
-gate_cell test-web-search-live derive remote/test-web-search-live.sh \
-    remote/test-web-search-live.sh
+gate_cell test-prefix-checkpoint-key derive \
+    'remote/test-prefix-checkpoint-key.sh remote/test-fixtures/prefix-checkpoint-key-probe.cpp patches/llama-server-prefix-checkpoint.patch' \
+    remote/test-prefix-checkpoint-key.sh
 gate_cell test-sync-runtime-tree derive remote/test-sync-runtime-tree.sh \
     remote/test-sync-runtime-tree.sh
 gate_cell test-web-search-live derive remote/test-web-search-live.sh \
