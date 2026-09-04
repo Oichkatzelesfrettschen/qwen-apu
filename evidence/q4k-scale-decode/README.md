@@ -338,9 +338,185 @@ The body and reduction ranges of every retained arm are `ctrl` 101-501 and 503-5
 and 485-549 at `NUM_ROWS = 4`; at `NUM_ROWS = 8` they are 107-854 and 856-984, 106-795 and
 797-925, 138-860 and 876-1004, and 138-796 and 812-940.
 
-## The appliance arms, none of which has run
+## The ordered program, and what each arm still owes
 
-The two patches sit at `candidate` in `remote/llama-patch-series.tsv`. The scale-word-select's
+The device has answered one of these. `evidence/raven2-vulkan-kernel-census/q4k-scale-decode/`
+carries the served A/B of the composed candidate against the production control on all three
+classes, so the program below is written around that result rather than ahead of it.
+
+| arm | binary | key | state |
+| --- | --- | --- | --- |
+| (a) E4 control at `NUM_ROWS = 4` | one | `v0` | the denominator every other arm is read against |
+| (b) E4 plus scale-word-select at `NUM_ROWS = 4` | one | `v1` | **unmeasured**, and the one arm that separates the two mechanisms |
+| (c) (b) plus loop-LICM at `NUM_ROWS = 4` | one | `v2` | **measured and refuted** at the 5% bound: 2B +1.83%, 4B -0.02%, 0.8B null |
+| (d) (a) against `NUM_ROWS = 8` | one | `v0` against `v0-rows8` | a shape arm the host reached for the first time through the key |
+| (e) `NUM_ROWS = 8` with the scale rewrite | one | `v1-rows8` | runs only where (b) fails for a geometry reason the eight-row shape names |
+
+Arm order follows the class policy: the 2B distill first, the 0.8B second, the 4B third, and a
+result becomes a Raven2-wide default only where the classes agree.
+
+### The device result the program is written around
+
+Measured, `evidence/raven2-vulkan-kernel-census/q4k-scale-decode/`: one candidate binary
+carrying the scale-word-select and the loop-LICM against the production control, nine arms
+`W C K K C C K K C` per class through `run-served-binary-ab.sh`, every arm at 1100 MHz under
+`auto` DPM.
+
+| class | mean paired delta | nominal 95% interval | tok/s, control against candidate |
+| --- | ---: | --- | ---: |
+| `qwen38-2b-distill` | +1.83% | +1.63% to +2.04% | 9.84 against 10.02 |
+| `qwen35-08b` Q8_0 | +0.26% | -0.28% to +0.80% | 19.03 against 19.08 |
+| `qwen38-4b-distill` | -0.02% | -0.10% to +0.06% | 3.379 against 3.379 |
+
+Token identity held bit for bit on all three classes under the `margin` contract, and the 0.8B
+file holds no Q4_K bytes, so its interval spanning zero is the harness's own noise floor at
+about +/-0.5% of a paired mean rather than a second reading of the shader.
+
+Every interval lies below the repository's one-sided 5% promotion bound, so arm (c) is refuted
+as a standalone promotion. The finding is larger than the verdict and it is the 2B against the
+4B: one quantization recipe, one binary, one control, two checkpoints that dispatch the same
+patched `mul_mat_vec_q4_k`, and intervals 1.85 points apart that do not come near touching. The
+compile receipt reads about 6% by issue share, the 2B delivers under a third of it, and the 4B
+delivers nothing measurable. Memory-boundness is the candidate account -- the 2B achieves 10.41
+GB/s against the 4B's 8.11 -- and its falsifier is a third Q4_K_M checkpoint whose achieved
+GB/s sits between them, which should land between +1.83% and 0% if streaming rate orders the
+effect and anywhere else if it does not.
+
+### The registered prediction, and the falsifier the null already met
+
+The mechanism is occupancy rather than instruction count. The scale rewrite takes the served
+shape's memory operations from 24 to 16 per superblock and its longest dependent chain from 17
+to 12, and it takes the VGPR allocation from 64 to 48, which is `floor(256/48) = 5` resident
+wave64s per SIMD against `floor(256/64) = 4`. The prediction is that a fifth resident wave hides
+DDR4 latency the fourth could not, so the Q4_K exclusive bracket falls further than the
+instruction count alone accounts for.
+
+The falsifier is a null device result, and arm (c) met it. A composed candidate carrying the
+whole register result returned +1.83% on the primary class and nothing on the 4B, so the fifth
+nominal resident wave is not becoming useful latency hiding under this two-compute-unit
+workload at either checkpoint. What the arms below still owe is the split: (b) reads the scale
+rewrite alone against (c)'s pair, and (d) reads the shape whose VGPR allocation holds at 64
+and whose occupancy therefore holds at 4, which is the one arm that moves the register result
+without moving the instruction result.
+
+### Why the eight-row arm needed a host change to exist
+
+`ggml-vulkan.cpp` sets `rm_kq = 4` on its `AMD_GCN` branch and the decode ledger records
+`constants=64,4,1`, so a decode on this device dispatches the four-row pipeline and never
+selects the eight-row one. `NUM_ROWS` reaches the shader as specialization constant 1 and
+reaches the dispatch as the pipeline's own workgroup denominator, both from that one variable,
+so a served eight-row arm needs both moved together. `llama-vulkan-q4k-variant-select.patch`
+moves them from one key, which is what turns arm (d) from unmeasurable into an arm.
+
+## One binary, one sealed key: `llama-vulkan-q4k-variant-select.patch`
+
+Five things differ between two separately built A/B binaries and only one of them is the
+candidate: the shader source, the shader compiler invocation, the pipeline cache the driver
+fills, the C++ build flags, and the executable's own digest. The retained device runs above
+controlled the last two by binding both binaries to one base-build identity and left the rest
+resting on the build being reproducible. This patch removes the whole dimension: every Q4_K
+mat-vec formulation compiles into one `llama-server`, and `GGML_VK_Q4K_VARIANT` picks which
+module `vkCreateComputePipelines` receives.
+
+`mul_mat_vec_q4_k.comp` carries the three formulations under `Q4K_VARIANT`. 2 is the file's own
+default, so the module names a build already embeds keep the composed formulation and the two
+others take a `_v0` and `_v1` suffix; `vulkan-shaders-gen.cpp` emits both families across the
+two activation types and the three reductions, and `ggml_vk_load_shaders` selects the data and
+length arrays beside `rm_kq_q4k`. The key names the module and the row shape together --
+`v0`, `v1`, `v2`, each optionally `-rows8` -- and a value outside that set ends the load rather
+than serving the default under an arm's name.
+
+`remote/radv-low-priority-env.sh` scrubs `GGML_VK_Q4K_VARIANT` on every profile and forwards
+`QWEN_Q4K_VARIANT` past the scrub after the profile case, the route `QWEN_PIPELINE_CENSUS`
+already takes. The forward reaches a serving profile rather than the diagnostic one, because
+the arm and its control are two pipelines of one process and the comparison is read at
+`low-async`, the profile the appliance serves under. The wrapper states the admitted set as
+well as the server does, so a value naming no buildable arm is refused while the argv is still
+readable.
+
+**The seal is the executed module digest rather than the key.** Each variant is a distinct
+module, so the census decode ledger's `spirv_executed_sha256` states which one the device ran,
+and `summarize-bracket-ab.py`'s `module_identity` row already requires one subject digest per
+role with the two differing. A key that failed to take effect therefore refuses the run without
+a second mechanism, and a key that named the wrong arm is visible in the retained ledger rather
+than only in the invocation.
+
+**Falsifier for the multiplexing, and its test.** The +1.83% transfers to the sealed binary
+only where each multiplexed module is bit-identical in ISA to its standalone arm; an `#if`
+structure that perturbed register allocation would lose exactly the VGPR 48 and five-subgroup
+result the program rests on. `variant-select-receipts.tsv` beside this file is that test and it
+passes on all six arms.
+
+| field | `v0` nr4 | `v1` nr4 | `v2` nr4 | `v0` nr8 | `v1` nr8 | `v2` nr8 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `isa_sha256` head | `29454587` | `4eb61f83` | `138bab50` | `299ef0ed` | `908b31fe` | `8eb28854` |
+| Table 1 or 2 arm | ctrl | scale-word-select | both | ctrl | scale-word-select | both |
+| VALU | 810 | 776 | 786 | 1520 | 1454 | 1473 |
+| SALU | 414 | 416 | 428 | 667 | 668 | 680 |
+| VMEM | 56 | 40 | 40 | 104 | 72 | 72 |
+| VGPR | 64 | **48** | **48** | 64 | 64 | 64 |
+| SGPR | 48 | 48 | 48 | 48 | 48 | 48 |
+| `Subgroups per SIMD` | 4 | **5** | **5** | 4 | 4 | 4 |
+| body instructions | 395 | 365 | 349 | 742 | 684 | 656 |
+| body longest VALU chain | 17 | 12 | 12 | 17 | 12 | 13 |
+| `s_waitcnt`, whole shader | 84 | 70 | 70 | 145 | 119 | 118 |
+| `v_alignbyte_b32` | 16 | 0 | 0 | 32 | 0 | 0 |
+
+Every digest equals the standalone arm's in Tables 1 and 2, on both routes: `glslc` over the
+prepared tree and the module `vulkan-shaders-gen` emits from it.
+
+### Running arms (a) through (d) on the appliance
+
+One build, one deployment, four arms selected by the key. `run-served-binary-ab.sh` names two
+server paths and compares them, so a run of two variants of one executable names that
+executable twice; the per-arm environment is the harness field this depends on, and the E5
+reframe lane is adding it under the receipt name `experiment_key`. Until that field lands, an
+arm is run by launching the candidate build with the arm's key and reading the census ledger,
+which is the shape the commands below take.
+
+```sh
+# The one binary every arm runs, built from the candidate stage through the
+# variant-select member.
+remote/prepare-llama-census-source.sh $HOME/src/llama.cpp $HOME/src/llama.cpp-q4k-variant \
+    llama-server-vulkan-workload-lease.patch llama-vulkan-pipeline-census.patch \
+    llama-server-prefix-checkpoint.patch llama-vulkan-q4k-activation-group-sums.patch \
+    llama-vulkan-q4k-activation-sideplane.patch llama-vulkan-q4k-scale-word-select.patch \
+    llama-vulkan-q4k-superblock-loop-licm.patch llama-vulkan-q4k-variant-select.patch
+QWEN_LLAMA_CANDIDATE_SELECT="llama-server-vulkan-workload-lease.patch \
+llama-vulkan-pipeline-census.patch llama-server-prefix-checkpoint.patch \
+llama-vulkan-q4k-activation-group-sums.patch llama-vulkan-q4k-activation-sideplane.patch \
+llama-vulkan-q4k-scale-word-select.patch llama-vulkan-q4k-superblock-loop-licm.patch \
+llama-vulkan-q4k-variant-select.patch" \
+    remote/build-llama-preset.sh raven2-vulkan-census $HOME/src/llama.cpp-q4k-variant
+
+# (a) against (b): the scale rewrite alone, the one unmeasured arm.
+QWEN_Q4K_VARIANT=v0 QWEN_CENSUS_AB_MODE=kernel-delta \
+QWEN_CENSUS_ENGINE_CLOCK_POLICY=manual QWEN_CENSUS_SCLK_LEVEL=2 \
+QWEN_CENSUS_MCLK_FLOOR_MHZ=933 \
+    remote/run-served-binary-ab.sh SERVER SERVER qwen38-2b-distill OUT-a-b
+# (a) against (c): the composed pair, already answered on the served rate and
+# unanswered on the Q4_K bracket.
+QWEN_Q4K_VARIANT=v0 QWEN_CENSUS_AB_MODE=kernel-delta \
+    remote/run-served-binary-ab.sh SERVER SERVER qwen38-2b-distill OUT-a-c
+# (d) the shape arm, which the AMD_GCN branch's rm_kq = 4 makes unreachable
+# without the key.
+QWEN_Q4K_VARIANT=v0 QWEN_CENSUS_AB_MODE=kernel-delta \
+    remote/run-served-binary-ab.sh SERVER SERVER qwen38-2b-distill OUT-a-d
+
+# The token-id and margin witness is its own run per arm pair.
+QWEN_WITNESS_CONTRACT=margin QWEN_WITNESS_N_PROBS=10 \
+    remote/run-kernel-delta-witness.sh SERVER SERVER qwen38-2b-distill OUT-witness
+```
+
+Each command's candidate arm carries the second key -- `v1`, `v2`, and `v0-rows8` in turn --
+through the harness's per-arm environment field. The 0.8B and the 4B follow the 2B in class
+order, and the 0.8B stays the null: its file holds no Q4_K bytes, so every key returns the
+same rate on it and a nonzero result there says the key reached something outside the shader
+it names.
+
+## The appliance arms, and the preimage chain that orders them
+
+The three patches sit at `candidate` in `remote/llama-patch-series.tsv`. The scale-word-select's
 preimage is the E4 result at blob `48778a3e8`; the loop-licm patch's preimage is the
 scale-word-select result at `c3cf5ffb6`, because both edit `compute_outputs`' superblock loop
 and one hunk region cannot carry two independent preimages. A chained
